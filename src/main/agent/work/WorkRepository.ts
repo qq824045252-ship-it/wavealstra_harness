@@ -537,6 +537,14 @@ export class WorkRepository {
       ...(sourceEvent ? { sourceEvent: { source: sourceEvent.source, eventId: sourceEvent.source_event_id,
         eventType: sourceEvent.event_type, sourceVersion: sourceEvent.source_version ?? undefined,
         receivedAt: sourceEvent.received_at, payload: json<Record<string, unknown>>(sourceEvent.payload_json, {}) } } : {}),
+      ...(sourceEvent?.event_type === "work.tick" ? { watchFollowUp: {
+        readOnly: true,
+        watchRule: this.getWork(binding.workId)?.watchRule,
+        previousReports: this.db.prepare(`SELECT deliverable_id AS deliverableId,substr(summary,1,2000) AS summary
+          FROM work_deliverables WHERE work_id=? AND execution_id!=? ORDER BY created_at DESC LIMIT 3`)
+          .all(binding.workId, binding.bindingId),
+        instructions: "这是按用户时间表触发的一次只读检查。读取当前来源，和已有报告比较，汇报重要变化或明确缺口；不重跑原任务的修改、购买、发送等副作用。不自行循环等待下一次，完成本次后交还宿主调度。说明用户停止条件是否已满足，不把一次检查当成整个事项已完成。",
+      } } : {}),
       ...(sourceEvent?.event_type === "deadline_expired" ? { deadlineFollowUp: {
         readOnly: true, deadlineRevision: json<Record<string, unknown>>(sourceEvent.payload_json, {}).deadlineRevision,
         deadlineAt: json<Record<string, unknown>>(sourceEvent.payload_json, {}).deadlineAt,

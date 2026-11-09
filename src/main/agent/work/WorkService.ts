@@ -1,3 +1,4 @@
+import { isScheduledFollowUp, scheduledFollowUpCurrent } from "./WorkScheduledFollowUp";
 import { WorkRuntimeObservation } from "./WorkRuntimeObservation";
 import { WorkGeneratedArtifacts } from "./WorkGeneratedArtifacts";
 import { reportWorkBlockerMutation, replyUserInputMutation, replyLegacyUserInputMutation } from "./WorkUserInputControls";
@@ -79,7 +80,7 @@ import { phase4ControlRequestSchema } from "../../../shared/bot-work-phase4";
 import { BotRegistry } from "./BotRegistry";
 import { WorkTeamService } from "./WorkTeamService";
 import { WorkRepository, newId } from "./WorkRepository";
-import { cronNextWake, type WorkNextWake } from "./WorkSchedule";
+import { cronNextWake, watchRuleProblem, type WorkNextWake } from "./WorkSchedule";
 import { normalizeTexts, normalizeSources, normalizeWatchRule, normalizeCriteria, currentAcceptedDeliverableIds, matchesFilter } from "./WorkControlNormalization";
 import { WorkNativeResultInbox } from "./WorkNativeResultInbox";
 import { WorkPartialResults } from "./WorkPartialResults";
@@ -393,6 +394,10 @@ export class WorkService {
       const inputSnapshotId = params.inputSnapshotId?.trim() || "snapshot:unbound";
       const goalSources = normalizeSources(params.goalSources, now);
       const watchRule = normalizeWatchRule(params.watchRule);
+      const scheduleProblem = watchRuleProblem(watchRule, now, this.computeNextWake);
+      if (scheduleProblem) return { ok: false, code: "invalid_request", message: scheduleProblem };
+      const mode = params.mode ?? (watchRule ? "watch" : "once");
+      if (mode === "once" && watchRule) return { ok: false, code: "invalid_request", message: "持续跟踪规则需要 watch 模式" };
       const snapshotId = `snap-${workId}-r1-s1`;
       const work: WorkDto = {
         workId,
@@ -414,9 +419,11 @@ export class WorkService {
         activeIntentSnapshotId: snapshotId,
         inputSnapshotId,
         goalSources,
-        mode: params.mode ?? "once",
+        mode,
         lifecycle: "active",
+        deadlineAt: params.deadlineAt,
         deadlineRevision: 1,
+        deadlineSetAt: params.deadlineAt === undefined ? undefined : now,
         acceptedDeliverableIds: [],
         activeExecutionIds: [],
         stateVersion: 1,
@@ -429,6 +436,7 @@ export class WorkService {
       this.repo.insertIntentSnapshot(this.intentSnapshot(work, ownerBot, params.sourceMessageId, work.createdBy));
       if (params.conversationId) this.repo.linkConversation(workId, params.conversationId, "desktop", now);
       if (watchRule) this.installSubscriptions(work, watchRule, now);
+      if (work.deadlineAt !== undefined) this.armDeadline(work, now);
       const outboxEventId = this.outbox({
         work, eventType: "work.created", operationId: params.operationId,
         bindingId: undefined, causalEventId: params.causalEventId,
@@ -500,9 +508,20 @@ export class WorkService {
     const nextInputSnapshotId = params.inputSnapshotId?.trim() || work.inputSnapshotId;
     const nextSources = params.goalSources === undefined ? work.goalSources : normalizeSources(params.goalSources, now);
     const hasNewCriteria = Array.isArray(params.criteria);
-    const nextWatchRule = params.watchRule === undefined
-      ? work.watchRule
-      : normalizeWatchRule(params.watchRule) ?? work.watchRule;
+    const nextWatchRule = params.watchRule === null ? undefined : params.watchRule === undefined ? work.watchRule
+      : normalizeWatchRule({ ...work.watchRule, ...params.watchRule,
+        ...(params.watchRule.cronExpression !== undefined && params.watchRule.nextWakeAt === undefined ? { nextWakeAt: undefined } : {}),
+        ...(params.watchRule.nextWakeAt !== undefined && params.watchRule.cronExpression === undefined ? { cronExpression: undefined } : {}) });
+    const nextMode = params.mode ?? (params.watchRule === null ? "once" : params.watchRule ? "watch" : work.mode);
+    if (params.mode === "once" && nextWatchRule) return { ok: false, code: "invalid_request", message: "清除持续跟踪规则后才可改为一次性事项" };
+    const scheduleProblem = params.watchRule ? watchRuleProblem({ ...nextWatchRule!,
+      // An unchanged, already-fired first wake is history, not a new invalid date.
+      nextWakeAt: params.watchRule.nextWakeAt }, now, this.computeNextWake) : undefined;
+    if (scheduleProblem) return { ok: false, code: "invalid_request", message: scheduleProblem };
+    const nextDeadlineAt = params.deadlineAt === undefined ? work.deadlineAt : params.deadlineAt ?? undefined;
+    const deadlineChanged = nextDeadlineAt !== work.deadlineAt;
+    if (this.teams.get(work.workId) && (params.watchRule != null || deadlineChanged && nextDeadlineAt !== undefined))
+      return { ok: false, code: "invalid_request", message: "团队委托暂不支持附加定时关注或期限检查；请新建独立的只读关注事项" };
     const sourceChanged = nextInputSnapshotId !== work.inputSnapshotId
       || JSON.stringify(nextSources) !== JSON.stringify(work.goalSources);
     if (sourceChanged && nextInputSnapshotId === work.inputSnapshotId) {
@@ -563,6 +582,10 @@ export class WorkService {
       goalSources: nextSources,
       activeIntentSnapshotId: snapshotId,
       watchRule: nextWatchRule,
+      mode: nextMode,
+      deadlineAt: nextDeadlineAt,
+      deadlineRevision: deadlineChanged ? work.deadlineRevision + 1 : work.deadlineRevision,
+      deadlineSetAt: deadlineChanged ? now : work.deadlineSetAt,
       progressSummary: params.progressSummary?.trim().slice(0, 2000) || work.progressSummary,
       stateVersion: nextStateVersion,
       updatedAt: now,
@@ -603,7 +626,8 @@ export class WorkService {
     );
     this.repo.supersedeNotifications(work.workId, nextIntentRevision, nextInputSnapshotId);
     this.repo.updateWork(nextWork);
-    if (params.watchRule !== undefined) this.syncSubscriptions(nextWork, now);
+    if (params.watchRule !== undefined) this.syncSubscriptions(nextWork, now, work.watchRule);
+    if (deadlineChanged) this.armDeadline(nextWork, now);
     const outboxEventId = this.outbox({
       work: nextWork, eventType: "work.amended", operationId: params.operationId,
       causalEventId: params.causalEventId,
@@ -774,6 +798,11 @@ export class WorkService {
   /** Only system-owned blockers for future execution become moot when stopping.
    * Unknown external effects and reconciliation conflicts must still be settled. */
   private clearStoppedExecutionBlockers(workId: string, now: number): void {
+    for (const blocker of this.repo.listOpenBlockers(workId)) {
+      if (blocker.blockerId.startsWith("offline:") && blocker.kind === "operational" && !blocker.unknownExternalEffectRef
+        && (blocker.reasonCode === "deadline-follow-up" || blocker.reasonCode === "unqueryable-offline-gap"))
+        this.repo.clearBlocker(blocker.blockerId, workId, now);
+    }
     for (const binding of this.repo.listBindings(workId)) {
       const blocker = this.repo.getBlocker(`continuation:${binding.bindingId}`);
       if (blocker?.kind === "operational" && !blocker.unknownExternalEffectRef) this.repo.clearBlocker(blocker.blockerId, workId, now);
@@ -935,6 +964,7 @@ export class WorkService {
     if (!binding) return undefined;
     const work = this.repo.getWork(binding.workId);
     if (this.authorityError() || !work || work.lifecycle !== "active" || binding.invalidatedAt
+      || !this.scheduledBindingCurrent(binding)
       || binding.operationId !== operationId || binding.intentRevision !== work.intentRevision
       || binding.inputSnapshotId !== work.inputSnapshotId || this.bots.getBot(binding.botId)?.status !== "active"
       || this.bots.getBot(work.ownerBotId)?.status !== "active"
@@ -942,6 +972,16 @@ export class WorkService {
       return "Work 当前状态不允许新的业务输入；原提交仍可查回和停止";
     }
     return undefined;
+  }
+
+  /** Validate the original timer even for continuations recovered under a new task. */
+  scheduledBindingCurrent(binding: WorkExecutionBindingDto): boolean {
+    const work = this.repo.getWork(binding.workId);
+    return !!work && this.partialResults.recovery.ancestry(binding).every(source => {
+      const event = source.inboxEventId ? this.repo.getInbox(source.inboxEventId) : undefined;
+      return !isScheduledFollowUp(event) || scheduledFollowUpCurrent(work, event,
+        event?.subscriptionId ? this.repo.getSubscription(event.subscriptionId) : undefined);
+    });
   }
 
   admitTaskAction(taskId: string, input: { operationId: string; actionKind: string; paths?: string[] }): string | undefined {
@@ -1018,8 +1058,9 @@ export class WorkService {
           trustedRoot: params.causal.trustedRoot });
         if (!admission.allowed) return { ok: false, code: "causal_guard", message: admission.message ?? "因果链已触限" };
       }
-      const readOnlyFollowUp = inboxEvent?.eventType === "deadline_expired"
-        || (inboxEvent?.payload.readOnlyFollowUp === true && inboxEvent?.eventType === "work.offline_catchup");
+      const readOnlyFollowUp = isScheduledFollowUp(inboxEvent);
+      if (readOnlyFollowUp && !scheduledFollowUpCurrent(work, inboxEvent, inboxEvent?.subscriptionId ? this.repo.getSubscription(inboxEvent.subscriptionId) : undefined))
+        return { ok: false, code: "invalid_request", message: "检查时间表或承诺期限已变更，旧触发不再派发" };
       const delegatedScope = readOnlyFollowUp ? ["workspace:read"] as string[] : params.delegatedScope ?? [...work.authorization.allowedScopes];
       const recoveryRequest = this.db.prepare(`SELECT plan.source_binding_id FROM work_dispatch_requests request
         JOIN work_continuation_plans plan ON plan.plan_id=request.continuation_plan_id
@@ -1190,6 +1231,10 @@ export class WorkService {
         if (resolved.kind === "worker" && resolved.binding?.bindingId !== binding.bindingId) {
           return { ok: false, code: "unauthorized_actor", message: "worker 只能为自己的绑定申请业务动作" };
         }
+        if (!this.scheduledBindingCurrent(binding))
+          return { ok: false, code: "version_conflict", message: "检查计划已停止或变更，旧检查不再准入新动作" };
+        if (params.actionKind !== "workspace:read" && this.partialResults.recovery.sourceReadOnly(binding))
+          return { ok: false, code: "unauthorized_actor", message: "本次定时检查或只读恢复只允许读取和查询，不允许写入、发送或再次委派" };
         // 团队成员委派范围是真实的业务身份边界（例如只读成员），退役后仍保留。
         // 负责人自己的 Work 不再被 Work 动作 scope 卡住：它的边界是应用权限模式、
         // 原生工具策略与本次工作区目录归属，否则历史只读授权的旧 Work 永远无法执行。
@@ -1730,6 +1775,7 @@ export class WorkService {
       const work = this.repo.getWork(workId);
       if (!work) return { ok: false, code: "not_found", message: "找不到 Work" };
       if (!this.isOwnerOrUser(work, resolved)) return { ok: false, code: "unauthorized_actor", message: "只有负责人或用户可添加关注规则" };
+      if (this.teams.get(work.workId)) return { ok: false, code: "invalid_request", message: "团队委托暂不支持附加关注规则；请新建独立的只读关注事项" };
       if (!input.source?.trim()) return { ok: false, code: "invalid_request", message: "订阅来源不能为空" };
       if (!input.catchUpPolicy) return { ok: false, code: "invalid_request", message: "订阅必须显式保存补处理策略" };
       const now = this.now();
@@ -1839,37 +1885,50 @@ export class WorkService {
     }
   }
 
-  private syncSubscriptions(work: WorkDto, now: number): void {
-    if (!work.watchRule) return;
+  private syncSubscriptions(work: WorkDto, now: number, previous?: WorkWatchRuleDto): void {
+    const rule = work.watchRule;
     const existing = this.repo.listSubscriptions(work.workId);
-    const wanted = new Set(work.watchRule.subscriptions);
+    const wanted = new Set(rule?.subscriptions ?? []);
     for (const subscription of existing) {
       if (!wanted.has(subscription.source) && !subscription.stoppedAt) {
-        this.repo.updateSubscription({ ...subscription, stoppedAt: now, updatedAt: now });
+        this.repo.updateSubscription({ ...subscription, stoppedAt: now, stoppedReason: "用户停止持续跟踪", updatedAt: now });
+        this.discardPendingSchedule(subscription.subscriptionId, now);
       }
     }
+    if (!rule) return;
     for (const source of wanted) {
-      if (existing.some(subscription => subscription.source === source && !subscription.stoppedAt)) continue;
-      this.repo.insertSubscription({
-        subscriptionId: newId("subscription"),
-        workId: work.workId,
-        source,
-        filter: {},
-        catchUpPolicy: work.watchRule.catchUpPolicy,
-        maxMergeWaitMs: work.watchRule.maxMergeWaitMs,
-        maxQueueDepth: work.watchRule.maxQueueDepth,
-        stopConditionText: work.watchRule.stopConditionText,
-        timezone: work.watchRule.timezone,
-        cronExpression: work.watchRule.cronExpression,
-        nextWakeAt: this.computeNextWake({
-          cronExpression: work.watchRule.cronExpression,
-          timezone: work.watchRule.timezone,
-          nextWakeAt: work.watchRule.nextWakeAt,
-        }, now),
-        createdAt: now,
-        updatedAt: now,
-      });
+      const current = existing.find(subscription => subscription.source === source && !subscription.stoppedAt);
+      const scheduleChanged = !current || current.cronExpression !== rule.cronExpression || current.timezone !== rule.timezone
+        || previous?.nextWakeAt !== rule.nextWakeAt || current.catchUpPolicy !== rule.catchUpPolicy;
+      if (current && scheduleChanged) this.discardPendingSchedule(current.subscriptionId, now);
+      const subscription: WorkSubscriptionDto = {
+        ...current, subscriptionId: current?.subscriptionId ?? newId("subscription"), workId: work.workId, source,
+        filter: current?.filter ?? {}, catchUpPolicy: rule.catchUpPolicy, maxMergeWaitMs: rule.maxMergeWaitMs,
+        maxQueueDepth: rule.maxQueueDepth, stopConditionText: rule.stopConditionText, timezone: rule.timezone,
+        cronExpression: rule.cronExpression,
+        nextWakeAt: scheduleChanged ? this.computeNextWake({ cronExpression: rule.cronExpression, timezone: rule.timezone,
+          nextWakeAt: rule.nextWakeAt !== undefined && rule.nextWakeAt > now ? rule.nextWakeAt : undefined }, now) : current.nextWakeAt,
+        scheduleRevision: current ? (current.scheduleRevision ?? 1) + (scheduleChanged ? 1 : 0) : 1,
+        configRevision: (current?.configRevision ?? 0) + 1, createdAt: current?.createdAt ?? now, updatedAt: now,
+      };
+      if (current) this.repo.updateSubscription(subscription); else this.repo.insertSubscription(subscription);
     }
+  }
+
+  private discardPendingSchedule(subscriptionId: string, now: number): void {
+    this.db.prepare(`UPDATE work_events_inbox SET status='skipped',processed_at=?
+      WHERE subscription_id=? AND event_type='work.tick' AND status IN ('pending','merged','blocked')`).run(now, subscriptionId);
+  }
+
+  private armDeadline(work: WorkDto, now: number): void {
+    // The superseded deadline remains in history but must not block a later
+    // cancelled/finished responsibility after the user changed that commitment.
+    for (const blocker of this.repo.listOpenBlockers(work.workId)) if (blocker.reasonCode === "deadline-follow-up")
+      this.repo.clearBlocker(blocker.blockerId, work.workId, now);
+    this.db.prepare("UPDATE work_deadline_instances SET state='cancelled' WHERE work_id=? AND state='armed'").run(work.workId);
+    if (work.deadlineAt !== undefined) this.db.prepare(`INSERT OR IGNORE INTO work_deadline_instances
+      (work_id,deadline_revision,deadline_at,state,created_at) VALUES (?,?,?,'armed',?)`)
+      .run(work.workId, work.deadlineRevision, work.deadlineAt, now);
   }
 
   /** Source-level dedupe first, then one durable processing identity per subscription. */
@@ -1993,6 +2052,8 @@ export class WorkService {
   }
 
   private applyPhase4Control(work: WorkDto, input: WorkPhase4ControlRequest, resolved: ResolvedActor, now: number): Mutation {
+    if (this.teams.get(work.workId) && (input.kind === "configure-subscription" || input.kind === "set-deadline" && input.deadlineAt != null))
+      return { ok: false, code: "invalid_request", message: "团队委托暂不支持附加定时关注或期限检查；请新建独立的只读关注事项" };
     if (input.kind === "configure-subscription") {
       const existing = input.subscriptionId
         ? this.repo.getSubscription(input.subscriptionId)
@@ -2002,7 +2063,9 @@ export class WorkService {
       const timezone = input.timezone ?? existing?.timezone;
       const cronExpression = input.cronExpression ?? existing?.cronExpression;
       if (timezone !== undefined && !validTimezone(timezone)) return { ok: false, code: "invalid_request", message: "时区必须是可以解析的 IANA 名称" };
-      const scheduleChanged = cronExpression !== existing?.cronExpression || timezone !== existing?.timezone;
+      const scheduleChanged = cronExpression !== existing?.cronExpression || timezone !== existing?.timezone
+        || input.nextWakeAt !== undefined && input.nextWakeAt !== existing?.nextWakeAt
+        || existing !== undefined && input.catchUpPolicy !== existing.catchUpPolicy;
       let nextWakeAt: number | undefined;
       try { nextWakeAt = input.nextWakeAt ?? this.computeNextWake({ cronExpression, timezone }, now); }
       catch { return { ok: false, code: "invalid_request", message: "Cron 表达式或时区无法解析" }; }
@@ -2024,6 +2087,7 @@ export class WorkService {
         lastCheckedAt: existing?.lastCheckedAt, stoppedReason: existing?.stoppedReason,
         createdAt: existing?.createdAt ?? now, updatedAt: now, stoppedAt: existing?.stoppedAt,
       };
+      if (existing && scheduleChanged) this.discardPendingSchedule(existing.subscriptionId, now);
       this.lastPhase4SubscriptionId = subscription.subscriptionId;
       if (existing) this.repo.updateSubscription(subscription);
       else {
@@ -2043,22 +2107,17 @@ export class WorkService {
       const subscription = this.repo.getSubscription(input.subscriptionId);
       if (!subscription || subscription.workId !== work.workId) return { ok: false, code: "not_found", message: "找不到订阅" };
       this.repo.updateSubscription({ ...subscription, stoppedAt: now, stoppedReason: input.reason, updatedAt: now });
+      this.discardPendingSchedule(subscription.subscriptionId, now);
       this.repo.updateWork(this.syncWatchRuleSources(work, now));
       return { ok: true };
     }
     if (input.kind === "set-deadline") {
       const changed = (work.deadlineAt ?? null) !== (input.deadlineAt ?? null);
       const revision = changed ? work.deadlineRevision + 1 : work.deadlineRevision;
-      if (changed) {
-        this.db.prepare("UPDATE work_deadline_instances SET state='cancelled' WHERE work_id=? AND state='armed'").run(work.workId);
-        if (input.deadlineAt !== null) {
-          this.db.prepare(`INSERT OR IGNORE INTO work_deadline_instances
-            (work_id,deadline_revision,deadline_at,state,created_at) VALUES (?,?,?,'armed',?)`)
-            .run(work.workId, revision, input.deadlineAt, now);
-        }
-      }
-      this.repo.updateWork({ ...work, deadlineAt: input.deadlineAt ?? undefined, deadlineRevision: revision,
-        deadlineSetAt: now, stateVersion: work.stateVersion + 1, updatedAt: now });
+      const next = { ...work, deadlineAt: input.deadlineAt ?? undefined, deadlineRevision: revision,
+        deadlineSetAt: now, stateVersion: work.stateVersion + 1, updatedAt: now };
+      if (changed) this.armDeadline(next, now);
+      this.repo.updateWork(next);
       return { ok: true };
     }
     // retry-backlog: allow the source to redeliver hard-refused routes and refill the finite overflow.
@@ -2252,6 +2311,14 @@ export class WorkService {
   private validatePayload(operationType: string, params: unknown): Fail | undefined {
     const problem = assertNoActorField(params);
     if (problem) return { ok: false, code: "invalid_request", message: problem };
+    const timing = params as { deadlineAt?: unknown; mode?: unknown };
+    if (["createWork", "amendWork"].includes(operationType)) {
+      if (timing.deadlineAt !== undefined && !(operationType === "amendWork" && timing.deadlineAt === null)
+        && (typeof timing.deadlineAt !== "number" || !Number.isSafeInteger(timing.deadlineAt) || timing.deadlineAt < 0))
+        return { ok: false, code: "invalid_request", message: "承诺期限必须是 Unix 毫秒时间戳" };
+      if (timing.mode !== undefined && timing.mode !== "once" && timing.mode !== "watch")
+        return { ok: false, code: "invalid_request", message: "事项模式无效" };
+    }
     const operationId = (params as { operationId?: unknown }).operationId;
     const title = (params as { title?: unknown }).title;
     if ((operationType === "createWork" || title !== undefined)

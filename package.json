@@ -565,7 +565,10 @@
     "test:bot-delegation-fidelity": "esbuild scripts/bot-delegation-fidelity-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/bot-delegation-fidelity-test.mjs && node scripts/test-guard.mjs out/tests/bot-delegation-fidelity-test.mjs",
     "test:bot-memory": "esbuild scripts/bot-memory-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/bot-memory-test.cjs --external:better-sqlite3 --external:onnxruntime-node --external:electron && node scripts/test-guard.mjs out/tests/bot-memory-test.cjs",
     "test:bot-memory-runtime": "esbuild scripts/bot-memory-runtime-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/bot-memory-runtime-test.mjs && node scripts/test-guard.mjs out/tests/bot-memory-runtime-test.mjs",
-    "test:bot-memory-live": "node scripts/test-guard.mjs scripts/bot-frontdoor-live-test.cjs --memory"
+    "test:bot-memory-live": "node scripts/test-guard.mjs scripts/bot-frontdoor-live-test.cjs --memory",
+    "test:bot-watch-scheduler": "esbuild scripts/bot-watch-scheduler-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/bot-watch-scheduler-test.mjs && node scripts/test-guard.mjs out/tests/bot-watch-scheduler-test.mjs",
+    "test:bot-watch-creation": "esbuild scripts/bot-watch-creation-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/bot-watch-creation-test.mjs && node scripts/test-guard.mjs out/tests/bot-watch-creation-test.mjs",
+    "test:bot-watch:live": "node scripts/bot-frontdoor-live-test.cjs --watch"
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.85.0",

@@ -1,3 +1,4 @@
+import { isScheduledFollowUp, scheduledFollowUpCurrent } from "./WorkScheduledFollowUp";
 import { createHash,randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { AppDatabase } from "../../db/AppDatabase";
@@ -46,13 +47,14 @@ export class WorkDispatchQueue {
     // Pending bindings resume through the adapter; only a new input/revision can
     // authorize a separately planned continuation.
     const inboxEvent = inboxEventId ? this.works.repo.getInbox(inboxEventId) : undefined;
-    const readOnlyFollowUp = inboxEvent?.eventType === "deadline_expired";
+    const readOnlyFollowUp = isScheduledFollowUp(inboxEvent);
+    if (readOnlyFollowUp && !scheduledFollowUpCurrent(work, inboxEvent, inboxEvent?.subscriptionId ? this.works.repo.getSubscription(inboxEvent.subscriptionId) : undefined)) return;
     if (inboxEventId && inboxEvent?.workId !== work.workId) return;
     if (!readOnlyFollowUp && bindings.some(binding => retainsInput(binding, work))) return;
     const taskId = `work-execution-${randomUUID()}`;
     const settings = this.botSettings?.(work);
     this.db.upsertTask({ id: taskId, title: work.title, updatedAt: Date.now(), cwd: work.workspacePath ?? settings?.effectiveWorkspacePath, spaceId: settings?.spaceId,
-      projectId: work.projectId, modelId: settings?.modelId || this.defaultModel(), permissionMode: this.permissionMode(), modePresetId: "native" });
+      projectId: work.projectId, modelId: settings?.modelId || this.defaultModel(), permissionMode: readOnlyFollowUp ? "readonly" : this.permissionMode(), modePresetId: "native" });
     this.db.connection.prepare(`INSERT INTO work_dispatch_requests(operation_id,work_id,task_id,bot_id,intent_revision,input_snapshot_id,state,created_at,inbox_event_id)
       VALUES (?,?,?,?,?,?,'pending',?,?)`).run(operationId, work.workId, taskId, work.ownerBotId, work.intentRevision, work.inputSnapshotId, Date.now(), inboxEventId ?? null);
   }
@@ -108,7 +110,10 @@ export class WorkDispatchQueue {
         this.finishRequest(request.operation_id,request.work_id,"cancelled"); continue;
       }
       const requestEvent = request.inbox_event_id ? this.works.repo.getInbox(request.inbox_event_id) : undefined;
-      const readOnlyFollowUp = requestEvent?.eventType === "deadline_expired";
+      const readOnlyFollowUp = isScheduledFollowUp(requestEvent);
+      if (readOnlyFollowUp && !scheduledFollowUpCurrent(work, requestEvent, requestEvent?.subscriptionId ? this.works.repo.getSubscription(requestEvent.subscriptionId) : undefined)) {
+        this.finishRequest(request.operation_id, request.work_id, "cancelled"); continue;
+      }
       if (!continuation && !readOnlyFollowUp && this.works.repo.listBindings(work.workId).some(binding => retainsInput(binding, work))) {
         this.finishRequest(request.operation_id, request.work_id, "cancelled");
         continue;
@@ -123,7 +128,7 @@ export class WorkDispatchQueue {
                 : work.authorization.allowedScopes,
           inboxEventId: request.inbox_event_id ?? undefined,
           causal: requestEvent ? { source: requestEvent.source, sourceEventId: requestEvent.sourceEventId,
-            causalEventId: requestEvent.causalEventId, trustedRoot: true, actionKind: readOnlyFollowUp ? "deadline-follow-up" : "source-dispatch" } : undefined,
+            causalEventId: requestEvent.causalEventId, trustedRoot: true, actionKind: readOnlyFollowUp ? "scheduled-follow-up" : "source-dispatch" } : undefined,
           versionGuard: { expectedStateVersion: work.stateVersion, expectedIntentRevision: work.intentRevision, expectedOwnerEpoch: work.ownerEpoch } });
         if (!result.ok) {
           if (["version_conflict", "epoch_mismatch", "invalid_lifecycle_transition"].includes(result.code)) continue;
@@ -208,9 +213,12 @@ export class WorkDispatchQueue {
       const event=this.works.ingress.listReady(workId,Date.now())[0];if(!event)continue;
       const subscription=event.subscriptionId?this.works.repo.getSubscription(event.subscriptionId):undefined;
       if(event.subscriptionId && !subscription) {this.sourceBlocked(workId,event.eventId,"事件缺少原订阅，等待核对");continue;}
+      if (isScheduledFollowUp(event) && !scheduledFollowUpCurrent(work, event, subscription)) {
+        this.works.repo.setInboxStatus(event.eventId, "skipped", Date.now()); continue;
+      }
       try {
         const result=await this.works.pausedBacklog.consume(event.eventId,async()=>{
-          if(event.eventType==="deadline_expired") return {inputSnapshotId:work.inputSnapshotId, sources:work.goalSources};
+          if(isScheduledFollowUp(event)) return {inputSnapshotId:work.inputSnapshotId, sources:work.goalSources};
           const needsReadback=subscription?.catchUpPolicy==="latest" || event.payload.authoritativeReadbackRequired===true;
           if(needsReadback) return observer.readCurrent(work);
           // each obligations need no current-state readback: their immutable event payload is the input.
@@ -219,11 +227,11 @@ export class WorkDispatchQueue {
           const sources=[...work.goalSources.filter(item=>!(item.sourceType==="external_input" && item.sourceRef===sourceRef)),eventSource];
           return {inputSnapshotId:sourceSnapshot(sources),sources};
         },(current,original,source)=>{
-          if(original.eventType==="deadline_expired") {
-            this.works.repo.insertOutbox({ eventId:`deadline-outbox:${original.eventId}`,
-              dedupeKey:`work:${current.workId}:op:deadline:${original.eventId}:work.source_dispatch_requested`,
+          if(isScheduledFollowUp(original)) {
+            this.works.repo.insertOutbox({ eventId:`followup-outbox:${original.eventId}`,
+              dedupeKey:`work:${current.workId}:op:followup:${original.eventId}:work.source_dispatch_requested`,
               eventType:"work.source_dispatch_requested", workId:current.workId, intentRevision:current.intentRevision,
-              stateVersion:current.stateVersion, ownerEpoch:current.ownerEpoch, requestId:`deadline:${original.eventId}`,
+              stateVersion:current.stateVersion, ownerEpoch:current.ownerEpoch, requestId:`followup:${original.eventId}`,
               payload:{ inputSnapshotId:current.inputSnapshotId, inboxEventId:original.eventId }, deliveryStatus:"pending",
               attemptCount:0, createdAt:Date.now() });
             return;
@@ -272,7 +280,8 @@ export class WorkDispatchQueue {
           .run(work.ownerBotId, plan.planId);
         plan = { ...plan, ownerBotId: work.ownerBotId, ownerEpoch: work.ownerEpoch };
       }
-      if (work.intentRevision !== plan.intentRevision || work.inputSnapshotId !== plan.inputSnapshotId || work.ownerEpoch !== plan.ownerEpoch || work.ownerBotId !== plan.ownerBotId || ["closed","closing"].includes(work.lifecycle)) {
+      if (work.intentRevision !== plan.intentRevision || work.inputSnapshotId !== plan.inputSnapshotId || work.ownerEpoch !== plan.ownerEpoch || work.ownerBotId !== plan.ownerBotId || ["closed","closing"].includes(work.lifecycle)
+        || source && !this.works.scheduledBindingCurrent(source)) {
         this.db.connection.prepare("UPDATE work_continuation_plans SET state='cancelled' WHERE plan_id=?").run(plan.planId);
         this.works.repo.markOutboxStatus(`continuation-approved:${plan.planId}:${plan.ownerEpoch}`,"invalidated");continue;
       }

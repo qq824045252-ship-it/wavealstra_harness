@@ -43,6 +43,7 @@ export interface WorkOfflineGapInput {
  */
 export class WorkWatchScheduler {
   private timer?: ReturnType<typeof setInterval>;
+  private intervalMs = 5_000;
   private sessionId = newId("host-session");
   private lastMonotonic?: { at: number; value: number };
 
@@ -58,9 +59,10 @@ export class WorkWatchScheduler {
   /** Register the scheduler on the real host lifecycle; the caller owns process exit. */
   start(intervalMs = 5_000): void {
     if (this.timer) return;
+    this.intervalMs = Math.max(500, intervalMs);
     this.timer = setInterval(() => {
       try { this.tick(); } catch (error) { console.warn("[Work] 调度 tick 失败", error); }
-    }, Math.max(500, intervalMs));
+    }, this.intervalMs);
     this.timer.unref?.();
   }
 
@@ -146,6 +148,15 @@ export class WorkWatchScheduler {
       if (!this.authority() || row.state === "recovered") return this.toGapDto(row);
       const subscription = this.works.repo.getSubscription(String(row.subscription_id));
       if (!subscription) return undefined;
+      // A cron gap is recoverable from the persisted schedule, not from an external
+      // business-history query. Do not enqueue a second generic latest readback.
+      if (subscription.source === "cron") {
+        this.db.prepare(`UPDATE work_offline_gaps SET queryable=1,state='recovering',
+          gap_reason='等待持久调度游标恢复；不代表业务来源历史已回查',updated_at=? WHERE gap_id=?`)
+          .run(this.now(), gapId);
+        this.settleScheduleGaps(subscription);
+        return this.toGapDto(this.gapRow(gapId)!);
+      }
       const queryable = options.queryable ?? (this.works.ingress.adapter(subscription.source)?.canQueryHistory === true);
       const policy = subscription.catchUpPolicy;
       if (!queryable) {
@@ -223,13 +234,30 @@ export class WorkWatchScheduler {
       if (!this.authority()) return [];
       this.upsertHostState({ sessionId: this.sessionId, now });
       const results: WorkTickResult[] = [];
-      for (const subscription of this.works.repo.listActiveSubscriptions()) {
+      const cursor = this.db.prepare(`SELECT last_scan_cursor FROM work_watch_host_state
+        WHERE last_scan_cursor IS NOT NULL ORDER BY (authority_id=?) DESC,rowid DESC LIMIT 1`)
+        .get(this.authorityId()) as { last_scan_cursor: string | null } | undefined;
+      const after = cursor?.last_scan_cursor ?? "";
+      const due = (comparison: ">" | "<=", limit: number) => this.db.prepare(`SELECT subscription.subscription_id
+        FROM work_subscriptions subscription JOIN works work ON work.work_id=subscription.work_id
+        WHERE subscription.stopped_at IS NULL AND work.lifecycle='active' AND subscription.next_wake_at<=?
+          AND subscription.subscription_id ${comparison} ? ORDER BY subscription.subscription_id LIMIT ?`)
+        .all(now, after, limit) as Array<{ subscription_id: string }>;
+      // A capacity-blocked each subscription must not starve the rest of the
+      // user's watches. Persist a bounded round-robin cursor across restarts.
+      const rows = due(">", 128);
+      if (rows.length < 128) rows.push(...due("<=", 128 - rows.length));
+      for (const row of rows) {
+        const subscription = this.works.repo.getSubscription(row.subscription_id)!;
         const work = this.works.getWork(subscription.workId);
-        if (!work || ["closing", "closed"].includes(work.lifecycle)) continue;
+        if (!work || work.lifecycle !== "active") continue;
         const fired = this.tickSubscription(work, subscription, now, wallJumped);
+        this.settleScheduleGaps(this.works.repo.getSubscription(subscription.subscriptionId)!);
         results.push({ subscriptionId: subscription.subscriptionId, workId: work.workId,
           scheduledAt: subscription.nextWakeAt ?? now, fired });
       }
+      if (rows.length) this.db.prepare("UPDATE work_watch_host_state SET last_scan_cursor=? WHERE authority_id=?")
+        .run(rows.at(-1)!.subscription_id, this.authorityId());
       this.expireDeadlines(now);
       return results;
     });
@@ -240,14 +268,48 @@ export class WorkWatchScheduler {
     if (!subscription.cronExpression && subscription.nextWakeAt === undefined) return fired;
     const revision = subscription.scheduleRevision ?? 1;
     const timezone = subscription.timezone;
-    let scheduledAt = subscription.nextWakeAt;
-    if (scheduledAt === undefined) return fired;
+    const scheduledAt = subscription.nextWakeAt;
+    if (scheduledAt === undefined || scheduledAt > now) return fired;
     let cursor = scheduledAt;
     let guard = 0;
     // A wall-clock rollback never replays a persisted slot; the high-water mark wins.
     const highWater = this.highestTickAt(subscription.subscriptionId, revision);
     if (wallJumped && highWater !== undefined && now < highWater) return fired;
+    // Coalesce an arbitrarily long gap without enumerating every missed minute.
+    // nextSlot is monotone: binary search its last starting instant whose successor
+    // is due. This is bounded by the timestamp width, not the offline duration.
+    if (subscription.cronExpression && subscription.catchUpPolicy !== "each") {
+      cursor = this.latestDueSlot(subscription, cursor, now);
+    }
+    if (subscription.catchUpPolicy === "skip" && cursor < now - this.intervalMs) {
+      this.works.repo.updateSubscription({ ...subscription,
+        nextWakeAt: this.nextSlot(subscription, now), updatedAt: this.now() });
+      return fired;
+    }
+    if (subscription.catchUpPolicy === "latest") {
+      // Replace only unclaimed checks. A frozen batch or an admitted execution owns
+      // its snapshot even if it has not yet changed the Inbox status.
+      const stale = this.db.prepare(`SELECT inbox.event_id FROM work_events_inbox inbox
+        JOIN work_schedule_ticks tick ON tick.inbox_event_id=inbox.event_id
+        WHERE inbox.subscription_id=? AND inbox.event_type='work.tick'
+          AND inbox.status='pending' AND inbox.frozen_at IS NULL
+          AND tick.schedule_revision=? AND tick.planned_at<?
+          AND NOT EXISTS (SELECT 1 FROM work_execution_bindings binding WHERE binding.inbox_event_id=inbox.event_id)`)
+        .all(subscription.subscriptionId, revision, cursor) as Array<{ event_id: string }>;
+      for (const event of stale) {
+        this.db.prepare("UPDATE work_events_inbox SET status='skipped',processed_at=?,process_reason='schedule-latest-coalesced' WHERE event_id=?")
+          .run(now, event.event_id);
+        this.db.prepare("UPDATE work_schedule_ticks SET status='skipped' WHERE inbox_event_id=?").run(event.event_id);
+      }
+    }
+    const depth = this.db.prepare(`SELECT COUNT(*) AS count FROM work_events_inbox
+      WHERE subscription_id=? AND status IN ('pending','merged','blocked')`)
+      .get(subscription.subscriptionId) as { count: number };
+    let available = Math.max(0, subscription.maxQueueDepth - depth.count);
+    if (!available) return fired;
     while (cursor <= now && guard++ < 64) {
+      // Keep the persisted continuation intact until capacity becomes available.
+      if (available <= 0) break;
       const slot = this.logicalSlot(cursor, subscription.cronExpression, timezone);
       const effectiveAt = cursor;
       const mergedInto = this.db.prepare(`SELECT tick_id,inbox_event_id,merged_from_slot_keys_json FROM work_schedule_ticks
@@ -270,8 +332,11 @@ export class WorkWatchScheduler {
           intentRevision: work.intentRevision, stateVersion: work.stateVersion, ownerEpoch: work.ownerEpoch,
           sourceVersion: String(cursor), payload: { scheduledAt: cursor, plannedAt: cursor, effectiveAt,
             logicalSlotKey: slot.key, plannedWallTime: slot.wallTime, scheduleRevision: revision,
-            timezone: timezone ?? null, dstNormalized: slot.normalized }, status: "pending", mergedCount: 1,
-          receivedAt: effectiveAt, targetKey: subscription.sourceTarget, processReason: "schedule-tick" });
+            timezone: timezone ?? null, dstNormalized: slot.normalized,
+            ...(subscription.catchUpPolicy === "latest" ? { authoritativeReadbackRequired: true,
+              catchUpFrom: scheduledAt, catchUpTo: cursor } : {}) }, status: "pending", mergedCount: 1,
+          receivedAt: now, targetKey: subscription.sourceTarget, processReason: "schedule-tick" });
+        available--;
         this.db.prepare("UPDATE work_schedule_ticks SET status='dispatched',inbox_event_id=? WHERE tick_id=?")
           .run(eventId, tickId);
         fired.push({ subscriptionId: subscription.subscriptionId, workId: work.workId, scheduledAt: cursor });
@@ -292,6 +357,32 @@ export class WorkWatchScheduler {
     const nextWakeAt = subscription.cronExpression ? cursor : undefined;
     if (nextWakeAt !== subscription.nextWakeAt) this.works.repo.updateSubscription({ ...subscription, nextWakeAt, updatedAt: this.now() });
     return fired;
+  }
+
+  private settleScheduleGaps(subscription: WorkSubscriptionDto): void {
+    if (subscription.source !== "cron") return;
+    // Recovered means the scheduling policy was applied. It says nothing about
+    // changes that happened in the watched business source while the host was away.
+    this.db.prepare(`UPDATE work_offline_gaps SET queryable=1,state='recovered',
+      gap_reason='已按策略恢复调度槽；业务来源需由后续检查读取',updated_at=?
+      WHERE subscription_id=? AND state IN ('open','recovering','unqueryable')
+        AND (? IS NULL OR offline_gap_to<?)`)
+      .run(this.now(), subscription.subscriptionId, subscription.nextWakeAt ?? null, subscription.nextWakeAt ?? null);
+  }
+
+  private latestDueSlot(subscription: WorkSubscriptionDto, first: number, now: number): number {
+    let low = first;
+    let high = now;
+    let latest = first;
+    for (let iteration = 0; low <= high && iteration < 64; iteration++) {
+      const middle = low + Math.floor((high - low) / 2);
+      const next = this.nextSlot(subscription, middle);
+      if (next !== undefined && next <= now) {
+        latest = Math.max(latest, next);
+        low = middle + 1;
+      } else high = middle - 1;
+    }
+    return latest;
   }
 
   private nextSlot(subscription: WorkSubscriptionDto, from: number): number | undefined {
@@ -409,7 +500,7 @@ export class WorkWatchScheduler {
     if (!workId) return;
     const work = this.works.getWork(workId);
     if (!work) return;
-    const blockerId = `offline:${reasonCode}`;
+    const blockerId = `offline:${workId}:${reasonCode}`;
     const existing = this.works.repo.getBlocker(blockerId);
     if (!existing) {
       this.works.repo.insertBlocker({ blockerId, workId, kind: "operational", reasonCode,
@@ -504,7 +595,8 @@ export function localParts(ms: number, timezone?: string): { date: string; time:
   const parts = Object.fromEntries(formatter.formatToParts(new Date(ms)).map(part => [part.type, part.value]));
   const date = `${parts.year}-${parts.month}-${parts.day}`;
   const time = `${String(Number(parts.hour) % 24).padStart(2, "0")}:${parts.minute}`;
-  const offsetMinutes = -new Date(ms).getTimezoneOffset();
+  const offsetMinutes = (Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day),
+    Number(parts.hour) % 24, Number(parts.minute), Number(parts.second)) - Math.floor(ms / 1000) * 1000) / 60_000;
   return { date, time, offsetMinutes };
 }
 
@@ -531,7 +623,7 @@ export function nominalWallSlot(cronExpression: string, effectiveAt: number,
     let guard = 0;
     while (candidate && candidate.getTime() <= pseudo + 60_000 && guard++ < 512) {
       if (candidate.getTime() <= pseudo) best = candidate;
-      candidate = cron.nextRun(new Date(candidate.getTime() + 60_000));
+      candidate = cron.nextRun(candidate);
     }
     if (!best) return { ...local, normalized: false };
     const date = `${best.getUTCFullYear()}-${String(best.getUTCMonth() + 1).padStart(2, "0")}-${String(best.getUTCDate()).padStart(2, "0")}`;

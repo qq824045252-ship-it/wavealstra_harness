@@ -18,7 +18,12 @@ export function workStatusLabel(work: WorkProjectionDto): string {
   if (work.lifecycle === "closed") return work.closureConclusion === "succeeded" ? "已完成" : work.closureConclusion === "cancelled" ? "已取消" : work.closureConclusion === "ended_unsuccessfully" ? "已结束 · 未完成" : "已结束";
   if (work.lifecycle === "paused") return "已暂停";
   if (work.lifecycle === "closing") return "正在结算";
-  if (work.mode === "watch") return "持续关注中";
+  if (work.mode === "watch") {
+    if (work.phase4 && !work.phase4.subscriptions.some(item => item.status !== "stopped" && item.nextWakeAt !== undefined)
+      && !work.executions.some(item => ["pending", "submitted", "running", "unknown"].includes(item.status))) return "暂无后续检查";
+    if (work.phase4 && !work.phase4.host.online) return "等待宿主恢复";
+    return "持续关注中";
+  }
   const blockers = work.blockers.filter(item => item.status === "open" && item.kind !== "external_effect" && !item.unknownExternalEffectRef);
   if (blockers.some(item => item.waitingForUserInput)) return "等待补充信息";
   if (blockers.length) return "需要处理";

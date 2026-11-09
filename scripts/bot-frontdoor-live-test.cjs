@@ -12,8 +12,9 @@ const windows = process.platform === 'win32';
 const selectedModel = process.env.BOT_FRONTDOOR_MODEL || 'opendesign/deepseek-v4.1-flash';
 const modelKey = `fixture/${selectedModel}`;
 const headless = process.env.BOT_WORK_DEV_HEADLESS === '1';
+const watchScenario = process.argv.includes('--watch');
 if (headless && process.platform !== 'linux') throw Error('Headless dev page validation requires Linux; it does not validate desktop input.');
-const out = path.join(root, memoryScenario ? 'out/diagnostics/bot-memory/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
+const out = path.join(root, memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-frontdoor-live-'));
 const agentDir = path.join(home, '.mybuddy'); fs.mkdirSync(agentDir, { recursive: true });
 for (const directory of ['AppData/Roaming', 'AppData/Local', 'Temp']) fs.mkdirSync(path.join(home, directory), { recursive: true });
@@ -117,6 +118,7 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     fs.writeFileSync(path.join(agentDir, 'models.json'), JSON.stringify({ providers: { fixture: { api: 'openai-completions', apiKey: 'fixture-only', baseUrl: `http://127.0.0.1:${provider.address().port}/v1`, models: [model] } } }));
     fs.writeFileSync(path.join(agentDir, 'settings.json'), JSON.stringify({ defaultProvider: 'fixture', defaultModel: selectedModel, enabledModels: [modelKey],
       memoryEnabled: memoryScenario, memoryGatewayEnabled: false, remoteAccessEnabled: false, closeToTray: false, theme: 'light', permissionMode: 'readonly' }));
+    const launch = async () => {
     const port = await freePort();
     const env = { ...process.env, HOME: home, USERPROFILE: home, APPDATA: path.join(home, 'AppData/Roaming'), LOCALAPPDATA: path.join(home, 'AppData/Local'), REMOTE_DEBUGGING_PORT: String(port),
       XDG_CONFIG_HOME: path.join(home, '.config'), XDG_CACHE_HOME: path.join(home, '.cache'), XDG_DATA_HOME: path.join(home, '.local/share'),
@@ -124,7 +126,8 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
         ...(headless ? ['--ozone-platform=headless', '--disable-gpu'] : [])]) };
     delete env.ELECTRON_RUN_AS_NODE;
     assert(process.env.npm_execpath && fs.existsSync(process.env.npm_execpath), 'launch through pnpm test script');
-    log = fs.openSync(path.join(out, 'dev.log'), 'w');
+    if (log !== undefined) fs.closeSync(log);
+    log = fs.openSync(path.join(out, 'dev.log'), 'a');
     // pnpm also ships native Linux/macOS executables without a .exe extension.
     const nativePnpm = !/\.(?:cjs|mjs|js)$/i.test(process.env.npm_execpath);
     if (process.platform === 'linux') { electronExecutable = fs.realpathSync(require('electron')); devDebugPort = port; }
@@ -144,6 +147,8 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     socket.addEventListener('message', event => { const value = JSON.parse(event.data), call = pending.get(value.id); if (!call) return; pending.delete(value.id); clearTimeout(call.timer); value.error ? call.reject(Error(JSON.stringify(value.error))) : call.resolve(value.result); });
     await rpc('Runtime.enable'); await rpc('Page.enable');
     await rpc('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
+    };
+    await launch();
     await until(() => evaluate('Boolean(window.api?.botWork?.sendMessage && document.querySelector("textarea"))'), 'preload and renderer');
     await evaluate('document.querySelector(".sidebar-user-main").click()');
     await until(() => evaluate('[...document.querySelectorAll("button")].some(button => button.textContent.includes("Bot 模式"))'), 'account navigation');
@@ -170,13 +175,25 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
         await until(async () => (await history()).messages.length === 0, 'blank new conversation');
       };
       const oldConversation = (await history()).conversationId;
+      if(electronWatch) { clearInterval(electronWatch); electronWatch=undefined; }
+      try { await rpc('Browser.close'); } catch {} socket.close(); socket=undefined;
+      await stopTestElectronMains();
+      if(processDev.exitCode===null) processDev.kill('SIGTERM');
+      await launch();
+      await until(()=>evaluate('Boolean(window.api?.botWork?.history)'), 'memory persisted after actual Electron restart');
+      if(!await evaluate('Boolean(document.querySelector("#bot-draft"))')) {
+        await evaluate('document.querySelector(".sidebar-user-main").click()');
+        await until(() => evaluate('[...document.querySelectorAll("button")].some(button => button.textContent.includes("Bot 模式"))'), 'account navigation after restart');
+        await evaluate('[...document.querySelectorAll("button")].find(button => button.textContent.includes("Bot 模式")).click()');
+      }
+      await until(()=>evaluate('Boolean(document.querySelector("#bot-draft"))'), 'Bot UI after memory restart');
       await newChat();
       await send('我的常用测试代号是什么？');
       await foregroundDone(0);
       report.recalledHistory = await history();
       assert.notEqual(report.recalledHistory.conversationId, oldConversation);
       assert(report.recalledHistory.messages.some(message => message.role === 'assistant' && message.text.includes('云杉7842')), 'real model recalls learned fact in fresh chat');
-      report.checks.push('real UI + real model: stable user fact automatically learned without approval and recalled in a new chat');
+      report.checks.push('real UI + real model: stable user fact automatically learned without approval and recalled in a new chat after actual Electron restart');
       await evaluate(`window.api.memory.forget(${JSON.stringify(report.memories.map(atom => atom.id))})`);
       await newChat();
       const before = requests.length;
@@ -187,6 +204,74 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       assert(!report.afterDeletion.messages.some(message => message.role === 'assistant' && message.text.includes('云杉7842')));
       assert.equal((await evaluate('window.api.botWork.listWorks(true)')).length, 0);
       report.checks.push('existing memory deletion removes provider evidence and real model recall, with no Work created');
+    } else if (watchScenario) {
+      const works = () => evaluate('window.api.botWork.listWorks(true)');
+      const detail = id => evaluate(`window.api.botWork.getWork(${JSON.stringify(id)})`);
+      let before = 0;
+      await send('请创建一个持续跟踪事项：每小时整点按 Asia/Shanghai 时区只读检查这项委托的进展，报告本次检查时间和“追踪验收正在进行”。不要修改文件或执行外部操作；现在不用检查。');
+      await foregroundDone(before);
+      let current = await works(); assert.equal(current.length, 1);
+      let work = await detail(current[0].workId);
+      const workId = work.workId;
+      assert.equal(work.mode, 'watch'); assert.equal(work.executions.length, 0);
+      let sub = work.phase4.subscriptions.find(item => item.status !== 'stopped');
+      assert(sub?.nextWakeAt > Date.now()); assert.equal(sub.timezone, 'Asia/Shanghai');
+      report.checks.push('real natural-language UI request -> persisted watch, timezone, no early execution');
+      before=(await history()).messages.filter(m=>m.role==='assistant'&&m.status==='completed').length;
+      await send(`把 ${workId} 的检查频率改为每天上海时间上午9点，仍然不要现在执行。`);
+      await foregroundDone(before);
+      work=await detail(workId); sub=work.phase4.subscriptions.find(item=>item.status!=='stopped');
+      assert.match(sub.cronExpression, /^(?:0 )?0 9 \* \* \*$/); assert.equal(sub.timezone, 'Asia/Shanghai');
+      assert.equal(work.executions.length, 0);
+      for (const [command, state] of [['暂停', 'paused'], ['恢复', 'active']]) {
+        before=(await history()).messages.filter(m=>m.role==='assistant'&&m.status==='completed').length;
+        await send(`${command} ${workId} 的持续跟踪。`); await foregroundDone(before);
+        assert.equal((await detail(workId)).lifecycle, state);
+      }
+      report.checks.push('model queries current guard before timing change, pause and resume');
+      const dueAt=Date.now()+120000;
+      before=(await history()).messages.filter(m=>m.role==='assistant'&&m.status==='completed').length;
+      await send(`将 ${workId} 改成一次性只读跟进，替换原来的每日重复安排。准确检查时间为 ${new Date(dueAt).toISOString()}（UTC），只有这一次，不要现在执行。`);
+      await foregroundDone(before);
+      work=await detail(workId); sub=work.phase4.subscriptions.find(item=>item.status!=='stopped');
+      assert.equal(sub.cronExpression, undefined); assert(Math.abs(sub.nextWakeAt-dueAt)<1000);
+      assert.equal(work.executions.length, 0);
+      // Restart the actual isolated pnpm dev process before the due slot. Never
+      // terminate the user's dev instance, GPU, renderer or production profile.
+      assert(Date.now()<dueAt, 'schedule must still be in the future before process restart');
+      if(electronWatch) { clearInterval(electronWatch); electronWatch=undefined; }
+      try { await rpc('Browser.close'); } catch {} socket.close(); socket=undefined;
+      await stopTestElectronMains();
+      if(processDev.exitCode===null) processDev.kill('SIGTERM');
+      await launch();
+      await until(()=>evaluate('Boolean(window.api?.botWork?.getWork)'), 'reopened preload');
+      work=await detail(workId); sub=work.phase4.subscriptions.find(item=>item.status!=='stopped');
+      assert(Math.abs(sub.nextWakeAt-dueAt)<1000);
+      await until(async()=>{
+        const value=await detail(workId);
+        const check=value.executions.find(item=>item.inboxEventId);
+        if(check?.status==='failed') throw Error('scheduled native execution failed: '+JSON.stringify(check));
+        return check?.status==='completed';
+      }, 'real due tick -> background model -> completed report after process restart');
+      work=await detail(workId);
+      assert.equal(work.executions.length, 1);
+      assert.deepEqual(work.executions[0].delegatedScope, ['workspace:read']);
+      await wait(6000); assert.equal((await detail(workId)).executions.length, 1);
+      assert.equal((await detail(workId)).phase4.subscriptions.find(item=>item.status!=='stopped').nextWakeAt, undefined);
+      report.checks.push('actual Electron main restart retains next wake; real scheduler dispatches exactly one read-only native model execution');
+      // Return to the same Bot UI after restart before sending explicit stop.
+      if(!await evaluate('Boolean(document.querySelector("#bot-draft"))')) {
+        await evaluate('document.querySelector(".sidebar-user-main").click()');
+        await evaluate('[...document.querySelectorAll("button")].find(button => button.textContent.includes("Bot 模式")).click()');
+      }
+      await until(()=>evaluate('Boolean(document.querySelector("#bot-draft"))'), 'Bot UI after restart');
+      before=(await history()).messages.filter(m=>m.role==='assistant'&&m.status==='completed').length;
+      await send(`取消 ${workId}，停止这项持续跟踪。`); await foregroundDone(before);
+      work=await detail(workId); assert(['closing','closed'].includes(work.lifecycle));
+      report.finalWork=work; report.history=await history();
+      const shot=await rpc('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});
+      fs.writeFileSync(path.join(out,'watch.png'),Buffer.from(shot.data,'base64'));
+      report.checks.push('explicit natural-language stop prevents further checks');
     } else {
     await send('今天杭州天气怎么样');
     await foregroundDone(0);
@@ -217,7 +302,7 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     }
     report.checks.push('criticism does not cancel; explicit stop does not restart query; no Work created');
     }
-    const shot=await rpc('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});fs.writeFileSync(path.join(out,memoryScenario?'memory.png':'weather.png'),Buffer.from(shot.data,'base64'));
+    const shot=await rpc('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});fs.writeFileSync(path.join(out,memoryScenario?'memory.png':watchScenario?'watch.png':'weather.png'),Buffer.from(shot.data,'base64'));
     report.status='passed';
   } catch (error) {
     report.status = 'failed'; report.error = String(error.stack || error); console.error(error); process.exitCode = 1;

@@ -106,6 +106,7 @@ export class WorkExecutionAdapter {
     if (!current) return;
     const canStart = work.lifecycle === "active" && !current.invalidatedAt
       && !["completed", "failed", "stopped", "invalidated"].includes(current.status)
+      && this.service.scheduledBindingCurrent(current)
       && current.intentRevision === work.intentRevision && current.inputSnapshotId === work.inputSnapshotId;
     if (!receipt) {
       if (["completed", "failed", "stopped", "invalidated"].includes(current.status)) {
@@ -116,8 +117,8 @@ export class WorkExecutionAdapter {
         throw new Error("终态成果补读缺少原始回执，不重新执行原业务");
       }
       if (!canStart) {
-        if (work.lifecycle === "paused" && !current.invalidatedAt && !current.attemptId) return;
-        if (current.attemptId || current.submissionReceipt) throw new Error("已尝试的原始提交缺少可核对回执，结果保留未知");
+        if (work.lifecycle === "paused" && !current.invalidatedAt && !current.attemptId && this.service.scheduledBindingCurrent(current)) return;
+        if (current.attemptId || current.submissionReceipt || current.submittedAt) throw new Error("已尝试的原始提交缺少可核对回执，结果保留未知");
         this.requireSuccess(this.service.reconcileExecution({ kind: "system", reason: "native-submission-absent" }, {
           bindingId: current.bindingId, outcome: "stopped", note: "原生存储确认没有该逻辑提交，未启动新的业务执行",
           usageTokens: 0,
@@ -137,7 +138,7 @@ export class WorkExecutionAdapter {
       work = this.service.getWork(current.workId);
       const latestBinding = this.service.repo.getBinding(current.bindingId);
       if (!work || !latestBinding) return;
-      if (work.lifecycle !== "active" || latestBinding.invalidatedAt) {
+      if (work.lifecycle !== "active" || latestBinding.invalidatedAt || !this.service.scheduledBindingCurrent(latestBinding)) {
         await this.native.stop(current);
         if (!this.isAuthority()) return;
         observation = await this.native.inspect(current, receipt);

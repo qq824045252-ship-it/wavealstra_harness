@@ -569,6 +569,8 @@ export interface CreateWorkParams {
   inputSnapshotId?: string;
   goalSources?: WorkGoalSourceDto[];
   watchRule?: Partial<WorkWatchRuleDto>;
+  /** Business deadline, not authorization expiry or an implicit repeating interval. */
+  deadlineAt?: number;
   causalEventId?: string;
 }
 
@@ -580,7 +582,10 @@ export interface AmendWorkParams {
   constraints?: string[];
   criteria?: WorkCriterionInput[];
   authorization?: Partial<WorkAuthorizationDto>;
-  watchRule?: Partial<WorkWatchRuleDto>;
+  watchRule?: Partial<WorkWatchRuleDto> | null;
+  mode?: WorkMode;
+  /** null explicitly clears the business deadline. */
+  deadlineAt?: number | null;
   inputSnapshotId?: string;
   goalSources?: WorkGoalSourceDto[];
   invalidateExecutionIds?: string[];

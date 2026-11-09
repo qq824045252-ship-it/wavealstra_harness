@@ -1,3 +1,4 @@
+import { isScheduledFollowUp } from "./WorkScheduledFollowUp";
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { WorkDto, WorkExecutionBindingDto } from "../../../shared/bot-work";
@@ -32,7 +33,7 @@ export class WorkAutomaticRecovery {
     }
     return chain;
   }
-  private sourceReadOnly(binding: WorkExecutionBindingDto): boolean {
+  sourceReadOnly(binding: WorkExecutionBindingDto): boolean {
     const work = this.works.getWork(binding.workId);
     return this.ancestry(binding).some(source => {
       const task = this.db.prepare("SELECT permission_mode FROM tasks WHERE id=?").get(source.taskId) as { permission_mode?: string } | undefined;
@@ -40,8 +41,7 @@ export class WorkAutomaticRecovery {
       const handoff = this.works.repo.listOutbox(source.workId).find(event => event.eventType === "work.owner_handed_off" && event.payload.previousEpoch === source.ownerEpoch);
       const originalOwner = handoff?.payload.previousOwnerBotId ?? (source.ownerEpoch === work?.ownerEpoch ? work.ownerBotId : undefined);
       return task?.permission_mode === "readonly"
-        || event?.eventType === "deadline_expired"
-        || (event?.eventType === "work.offline_catchup" && event.payload.readOnlyFollowUp === true)
+        || isScheduledFollowUp(event)
         || (source.botId !== originalOwner && source.delegatedScope.length > 0 && !source.delegatedScope.includes("workspace:write"));
     });
   }
@@ -59,7 +59,7 @@ export class WorkAutomaticRecovery {
   settleReadback(work: WorkDto, binding: WorkExecutionBindingDto, now: number): boolean {
     if (binding.status !== "completed" || work.lifecycle !== "active" || binding.invalidatedAt
       || binding.intentRevision !== work.intentRevision || binding.inputSnapshotId !== work.inputSnapshotId
-      || !this.works.collaboration.isDelegationAdopted(binding, work)) return false;
+      || !this.works.collaboration.isDelegationAdopted(binding, work) || !this.works.scheduledBindingCurrent(binding)) return false;
     const plan = this.db.prepare(`SELECT recovery.mode FROM work_dispatch_requests request
       JOIN work_automatic_recovery recovery ON recovery.plan_id=request.continuation_plan_id WHERE request.task_id=?`)
       .get(binding.taskId) as { mode: string } | undefined;
@@ -106,7 +106,7 @@ export class WorkAutomaticRecovery {
     work = current;
     if (work.lifecycle !== "active" || binding.status !== "failed" || binding.invalidatedAt
       || binding.intentRevision !== work.intentRevision || binding.inputSnapshotId !== work.inputSnapshotId
-      || !this.works.collaboration.isDelegationAdopted(binding, work)) return false;
+      || !this.works.collaboration.isDelegationAdopted(binding, work) || !this.works.scheduledBindingCurrent(binding)) return false;
     if (this.works.repo.listBindings(work.workId).some(other => other.bindingId !== binding.bindingId
       && other.botId === binding.botId && other.intentRevision === binding.intentRevision && other.inputSnapshotId === binding.inputSnapshotId
       && other.admittedAt > binding.admittedAt && ["pending", "submitted", "running", "completed"].includes(other.status))) return false;

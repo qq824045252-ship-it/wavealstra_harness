@@ -15,6 +15,11 @@ async function main() {
     for (const id of ["alice", "bob"]) bots.registerBot({ botId: id, userId: LOCAL_USER_ID, displayName: id });
     bots.registerBot({ botId: "foreign", userId: "another-user", displayName: "foreign" });
     const memory = new MemoryService(db, { semantic: false });
+    const insertCandidate = memory.repository.insertCandidate.bind(memory.repository);
+    memory.repository.insertCandidate = candidate => {
+      if (candidate.scopeType === "bot") assert(db.connection.inTransaction, "Bot candidate lifecycle must be atomic, never leaving a crash-time approval row");
+      return insertCandidate(candidate);
+    };
     const pipeline = new MemoryPipelineManager(db);
     const messages = new BotConversationRepository(db.connection);
     let enabled = true, sequence = 0, modelCalls = 0;

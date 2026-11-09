@@ -973,21 +973,27 @@ export class MemoryService {
         createdAt: Date.now(),
       };
       // A single bad candidate (e.g. scope deleted between capture and extraction) must not
-      // fail the whole batch: it becomes reviewable and the rest still reconcile.
+      // fail the whole batch: ordinary candidates remain reviewable; Bot candidates are rejected.
       try {
-        this.repository.insertCandidate(dto);
-        // An in-flight pending candidate may already have been resolved from the review UI.
-        if (this.repository.getCandidate(dto.id)?.status !== "pending") continue;
-        const evidenceTurns = botSource ? sourceTurns.filter(turn => candidate.userEvidence && turn.userText.includes(candidate.userEvidence))
-          .map(turn => ({ ...turn, userText: candidate.userEvidence!, assistantText: "" })) : sourceTurns;
-        const result = this.reconcileCandidate(dto, evidenceTurns);
-        if (result.status === "committed") {
-          committedCount++;
-          changed.add(scope.scopeType);
-        } else if (result.status === "needs_review") {
-          if (botSource) this.repository.resolveCandidate(dto.id, "rejected");
-          else reviewCount++;
-        }
+        const apply = () => {
+          this.repository.insertCandidate(dto);
+          // An in-flight pending candidate may already have been resolved from the review UI.
+          if (this.repository.getCandidate(dto.id)?.status !== "pending") return;
+          const evidenceTurns = botSource ? sourceTurns.filter(turn => candidate.userEvidence && turn.userText.includes(candidate.userEvidence))
+            .map(turn => ({ ...turn, userText: candidate.userEvidence!, assistantText: "" })) : sourceTurns;
+          const result = this.reconcileCandidate(dto, evidenceTurns);
+          if (result.status === "committed") {
+            committedCount++;
+            changed.add(scope.scopeType);
+          } else if (result.status === "needs_review") {
+            if (botSource) this.repository.resolveCandidate(dto.id, "rejected");
+            else reviewCount++;
+          }
+        };
+        // A crash must not expose this automatic Bot path as pending/needs_review.
+        // Keep source validation, reconciliation and rejection in one commit.
+        if (botSource) this.db.connection.transaction(apply)();
+        else apply();
       } catch (error) {
         console.warn("[MemoryKernel] candidate reconcile failed", error);
         try { this.repository.resolveCandidate(dto.id, botSource ? "rejected" : "needs_review"); } catch { /* candidate row may not exist */ }

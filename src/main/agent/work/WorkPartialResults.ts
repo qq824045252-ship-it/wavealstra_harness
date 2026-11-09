@@ -78,9 +78,13 @@ export class WorkPartialResults {
     this.db.prepare("INSERT OR IGNORE INTO work_subitem_results(fact_id,work_id,binding_id,item_id,result_json,created_at) VALUES (?,?,?,?,?,?)").run(factId,binding.workId,binding.bindingId,itemId,JSON.stringify(result),now);
   }
   isReadOnlyPlan(plan:WorkContinuationDto):boolean {
-    if (this.recovery.readOnlyPlan(plan.planId)) return true;
+    const source = this.works.repo.getBinding(plan.sourceBindingId);
+    if (this.recovery.readOnlyPlan(plan.planId) || source && this.recovery.sourceReadOnly(source)) return true;
+    return this.isArtifactRevalidationPlan(plan);
+  }
+  private isArtifactRevalidationPlan(plan:WorkContinuationDto):boolean {
     const items=this.list(plan.workId).filter(item=>item.bindingId===plan.sourceBindingId && plan.gapItemIds.includes(item.itemId));
-    return items.length===plan.gapItemIds.length && items.every(item=>item.origin==="artifact_revalidation");
+    return items.length > 0 && items.length===plan.gapItemIds.length && items.every(item=>item.origin==="artifact_revalidation");
   }
   observe(binding:WorkExecutionBindingDto,observation:WorkExecutionObservation):WorkExecutionObservation {
     if(observation.status==="running")return observation;
@@ -97,7 +101,7 @@ export class WorkPartialResults {
         outcome: observation.status === "completed" ? this.recovery.record(plan.planId)?.mode === "readback" ? "blocked" : "completed" : observation.status === "stopped" ? "stopped" : "failed",
         artifactRefs: observation.artifactRefs, writeConflicts: [], summary: observation.summary }] };
     }
-    if(!this.isReadOnlyPlan(plan))return observation;
+    if(!this.isArtifactRevalidationPlan(plan))return observation;
     const items=this.list(plan.workId).filter(item=>item.bindingId===plan.sourceBindingId && plan.gapItemIds.includes(item.itemId));
     const verified=observation.status==="completed" && items.every(item=>item.artifactRefs.every(path=>observation.readPaths?.includes(path)));
     const results:WorkSubitemResult[]=items.map(item=>({itemId:item.itemId,task:item.task,required:true,dependencies:item.dependencies,criterionIds:item.criterionIds,

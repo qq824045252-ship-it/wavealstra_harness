@@ -107,6 +107,17 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
         </> : <p>尚未设置验收条件，暂不能确认完成进度。</p>}
         {work.closureSummary && <p>{work.closureSummary}</p>}
       </section>
+      {work.mode === "watch" && work.phase4 && <section className="bot-detail-section" aria-label="持续跟踪安排">
+        <h3>持续跟踪</h3>
+        {work.phase4.subscriptions.filter(item => item.status !== "stopped").map(item => <p key={item.subscriptionId}>
+          {item.nextWakeAt !== undefined ? `下次检查 ${new Date(item.nextWakeAt).toLocaleString(undefined, { timeZone: item.timezone })}` : "本次安排没有后续检查"}
+          {item.timezone ? `（${item.timezone}）` : ""}
+          {item.cronExpression ? ` · 时间表 ${item.cronExpression}` : " · 一次性检查"}
+          {work.lifecycle === "paused" ? " · 已暂停" : ""}
+        </p>)}
+        {!work.phase4.subscriptions.some(item => item.status !== "stopped") && <p>已停止后续检查。</p>}
+        <p>按约定时间检查。应用退出或电脑休眠时不运行，恢复后按补查策略处理。</p>
+      </section>}
       <BotTeamPanel work={work} identities={identities} />
       <section className="bot-detail-section bot-work-next" aria-label="下一步">
         <h3>下一步</h3>

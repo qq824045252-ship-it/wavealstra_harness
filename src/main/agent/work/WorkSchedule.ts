@@ -29,3 +29,19 @@ export function nextWakeForRule(watchRule: WorkWatchRuleDto | undefined, from: n
     nextWakeAt: watchRule.nextWakeAt,
   }, from);
 }
+
+/** Validate before writing any Work or subscription rows. */
+export function watchRuleProblem(rule: WorkWatchRuleDto | undefined, now: number, compute: WorkNextWake): string | undefined {
+  if (!rule) return undefined;
+  if (rule.timezone) {
+    try { new Intl.DateTimeFormat("en", { timeZone: rule.timezone }).format(now); }
+    catch { return "时区必须是可以解析的 IANA 名称"; }
+  }
+  if (rule.nextWakeAt !== undefined && (!Number.isSafeInteger(rule.nextWakeAt) || rule.nextWakeAt <= now))
+    return "首次检查时间必须晚于当前时间";
+  if (rule.cronExpression) {
+    try { if (compute({ cronExpression: rule.cronExpression, timezone: rule.timezone }, now) === undefined) return "时间表没有下一次检查时间"; }
+    catch { return "Cron 表达式或时区无法解析"; }
+  }
+  return undefined;
+}

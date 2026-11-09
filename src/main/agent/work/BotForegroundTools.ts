@@ -18,8 +18,19 @@ const fields = { title: text.optional(), goalDescription: text.optional(), const
 const guard = z.object({ expectedStateVersion: z.number().int().positive(), expectedIntentRevision: z.number().int().positive(),
   expectedOwnerEpoch: z.number().int().positive() }).strict();
 const query = botWorkQuerySchema;
-const create = z.object({ ...fields, title: text }).strict();
-const change = z.object({ ...fields, workId: text, versionGuard: guard }).strict();
+const watchRule = z.object({
+  cronExpression: z.string().min(1).max(200).regex(/^\S+(?:\s+\S+){4}$/, "请使用五字段分钟级 Cron 时间表").optional().describe("五字段分钟级 Cron 时间表，按用户指定频率；不支持秒级轮询，不擅自提高检查频率"),
+  timezone: z.string().min(1).max(100).optional().describe("IANA 时区，如 Asia/Shanghai；未指定时使用当前宿主时区"),
+  nextWakeAt: z.number().int().nonnegative().optional().describe("一次性跟进或首次检查的 Unix 毫秒时间戳"),
+  catchUpPolicy: z.enum(["latest", "each", "skip"]).optional().describe("离线后补最新一次、逐次补查或跳过；默认 latest"),
+  stopConditionText: z.string().min(1).max(1000).optional().describe("保留用户给出的停止条件；检查后汇报是否满足，不自行宣称已完成"),
+}).strict();
+const timing = { mode: z.enum(["once", "watch"]).optional(), watchRule: watchRule.optional(),
+  deadlineAt: z.number().int().nonnegative().optional().describe("承诺期限 Unix 毫秒时间戳，到期只读跟进，不等同于自动取消") };
+const create = z.object({ ...fields, ...timing, title: text,
+  startImmediately: z.boolean().optional().describe("持续跟踪默认等到首次检查；仅用户要求现在也检查时设 true") }).strict();
+const change = z.object({ ...fields, ...timing, watchRule: watchRule.nullable().optional(),
+  deadlineAt: timing.deadlineAt.nullable().optional(), workId: text, versionGuard: guard }).strict();
 const control = z.object({ workId: text, reason: text.optional(), versionGuard: guard }).strict();
 const memory = z.object({ query: text }).strict();
 // One source for Function Calling and runtime validation: nested strictness,
@@ -89,8 +100,8 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
   const output = (value: unknown) => ({ output: [{ type: "text" as const, text: JSON.stringify(value) }] });
   const mutations = (["work_create", "work_amend", "work_pause", "work_resume", "work_cancel"] as const).map(name => defineTool({
     name, description: name === "work_create"
-      ? "受理长耗时、多步骤或文件/代码/桌面操作并派发后台。goalDescription、constraints、criteria 是你的规划，宿主会独立附上用户原文；忠实传达要求，计算结果和未验证假设不得写成用户约束。日常天气、新闻等实时查询直接使用前台 web_search/fetch_content，不创建 Work。用户已经提出的执行请求无需再确认创建任务。创建无需先查询版本；已有相同事项则查询进度，避免重复创建。返回成功才可声称已开始。"
-      : `${name}: 操作用户明确指定的已有事项，先查询并携带返回的 versionGuard；冲突重新查询。批评、催促、抱怨不是暂停或取消意图；仅明确要求停止/取消时调用对应控制。`,
+      ? "受理长耗时、多步骤或文件/代码/桌面操作并派发后台。goalDescription、constraints、criteria 是你的规划，宿主会独立附上用户原文；忠实传达要求，计算结果和未验证假设不得写成用户约束。日常天气、新闻等实时查询直接使用前台 web_search/fetch_content，不创建 Work。用户已经提出的执行请求无需再确认创建任务。持续跟踪使用 mode=watch 与 watchRule（cronExpression 或 nextWakeAt），不得只在文字中承诺；按用户指定频率和时区。deadlineAt 是到期跟进，不是授权到期。创建无需先查询版本；已有相同事项则查询进度，避免重复创建。返回成功才可声称已受理或已安排；未来检查不得声称正在执行。"
+      : `${name}: 操作用户明确指定的已有事项，先查询并携带返回的 versionGuard；冲突重新查询。work_amend 可改 watchRule/期限，watchRule=null 停止后续跟踪而保留事项；work_pause/resume 暂停/恢复，work_cancel 取消整个事项。仅改时间表不会立即重跑原任务。批评、催促、抱怨不是暂停或取消意图；仅明确要求停止/取消时调用对应控制。`,
     parameters: name === "work_create" ? inputParameters.create
       : name === "work_amend" ? inputParameters.change : inputParameters.control,
     replay: "safe",
@@ -105,9 +116,19 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
         const operationId = `bot:${conversationId}:tool:${api.taskId}`;
         let result: WorkControlResult;
         let previousSnapshotId: string | undefined;
+        let shouldSchedule = false;
+        let startWatchImmediately = false;
         if (name === "work_create") {
-          const input = create.parse(args);
-          result = works.createWork(actor(), { ...input,
+          const { startImmediately, ...input } = create.parse(args);
+          const mode = input.mode ?? (input.watchRule ? "watch" : "once");
+          if (mode === "watch" && !input.watchRule?.cronExpression && input.watchRule?.nextWakeAt === undefined)
+            throw new Error("持续跟踪需要用户指定的检查时间或频率，不能仅保存一句承诺");
+          if (input.watchRule && mode !== "watch") throw new Error("持续跟踪规则必须使用 watch 模式");
+          shouldSchedule = mode !== "watch";
+          startWatchImmediately = mode === "watch" && startImmediately === true;
+          result = works.createWork(actor(), { ...input, mode,
+            watchRule: input.watchRule ? { ...input.watchRule, subscriptions: ["cron"],
+              timezone: input.watchRule.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone } : undefined,
             criteria: input.criteria?.map(item => ({ ...item, origin: "assistant_proposal" as const })), operationId, ownerBotId: botId,
             conversationId, sourceMessageId: source.user_message_id, inputSnapshotId: `input:${source.user_message_id}`,
             authorization: bot.authorization });
@@ -122,34 +143,56 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
           const readGuard = z.object({ guard_json: z.string() }).safeParse(read);
           if (!readGuard.success || readGuard.data.guard_json !== JSON.stringify(input.versionGuard)) throw new Error("必须先查询 Work，并使用本回合读取的完整版本守卫");
           if (name === "work_amend") {
-            const amendment = change.parse(args);
-            // The model may revise its plan, never silently remove user-entered requirements.
+            const amended = change.parse(args);
+            if (amended.watchRule && !amended.watchRule.cronExpression && amended.watchRule.nextWakeAt === undefined
+              && !target.watchRule?.cronExpression && target.watchRule?.nextWakeAt === undefined)
+              throw new Error("持续跟踪需要检查时间或频率，不能保存空时间表");
+            const contentChanged = Object.keys(fields).some(key => amended[key as keyof typeof fields] !== undefined);
+            shouldSchedule = contentChanged && (amended.mode ?? target.mode) !== "watch";
             const retained = target.criteria.filter(item => item.origin !== "assistant_proposal");
-            if (amendment.criteria) preservedUserCriteria = retained.map(item => ({ id: item.id, text: item.text }));
-            result = works.amendWork(actor(), { ...amendment, operationId,
-              criteria: amendment.criteria ? [...retained.map(item => ({ id: item.id, text: item.text,
+            if (amended.criteria) preservedUserCriteria = retained.map(item => ({ id: item.id, text: item.text }));
+            result = works.amendWork(actor(), { ...amended, operationId,
+              criteria: amended.criteria ? [...retained.map(item => ({ id: item.id, text: item.text,
                 requiresRealEnvironmentCheck: item.requiresRealEnvironmentCheck, requiredEnvironment: item.requiredEnvironment })),
-                ...amendment.criteria.map(item => ({ ...item, origin: "assistant_proposal" as const }))] : undefined,
-              inputSnapshotId: `input:${source.user_message_id}`, sourceMessageId: source.user_message_id });
+                ...amended.criteria.map(item => ({ ...item, origin: "assistant_proposal" as const }))] : undefined,
+              watchRule: amended.watchRule ? { ...amended.watchRule, subscriptions: ["cron"],
+                timezone: amended.watchRule.timezone ?? target.watchRule?.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone } : amended.watchRule,
+              ...(contentChanged ? { inputSnapshotId: `input:${source.user_message_id}`, sourceMessageId: source.user_message_id } : {}) });
           }
           else if (name === "work_pause") result = works.pauseWork(actor(), { ...input, operationId });
-          else if (name === "work_resume") result = works.resumeWork(actor(), { ...input, operationId });
+          else if (name === "work_resume") { result = works.resumeWork(actor(), { ...input, operationId }); shouldSchedule = target.mode !== "watch"; }
           else result = works.cancelWork(actor(), { ...input, operationId });
         }
         if (result.ok) {
-          if (["work_create", "work_amend"].includes(name)) {
+          if (startWatchImmediately && !result.replayed) {
+            const subscription = works.repo.listSubscriptions(result.work.workId).find(item => item.source === "cron" && !item.stoppedAt);
+            if (!subscription) throw new Error("持续跟踪缺少已持久保存的时间表");
+            const eventId = `watch-start:${operationId}`;
+            works.repo.insertInbox({ eventId, dedupeKey: eventId, source: "cron", sourceEventId: eventId,
+              eventType: "work.tick", workId: result.work.workId, subscriptionId: subscription.subscriptionId,
+              intentRevision: result.work.intentRevision, stateVersion: result.work.stateVersion, ownerEpoch: result.work.ownerEpoch,
+              payload: { scheduledAt: Date.now(), immediate: true, scheduleRevision: subscription.scheduleRevision ?? 1 },
+              status: "pending", mergedCount: 1, receivedAt: Date.now(), processReason: "user-requested-first-check" });
+          }
+          if (name === "work_create" || name === "work_amend" && result.work.inputSnapshotId !== previousSnapshotId) {
             messages.linkWorkUserInput(source, result.work);
             messages.linkWorkAttachments(source, result.work.workId, result.work.inputSnapshotId, previousSnapshotId);
           }
           messages.linkWork(source, result.work.workId);
           works.repo.linkConversation(result.work.workId, conversationId, "desktop", Date.now());
-          if (["work_create", "work_amend", "work_resume"].includes(name)) options.schedule(result.work, operationId, name === "work_resume");
+          if (shouldSchedule && result.work.mode !== "watch") options.schedule(result.work, operationId, name === "work_resume");
         }
         return result;
       });
       options.wake(result.ok ? result.work.workId : undefined);
-      return output({ ...result, ...(result.ok && preservedUserCriteria.length ? { preservedUserCriteria,
-        amendmentNotice: "用户直接设置或确认的验收条件仍然保留；criteria 只更新助理建议检查。本次没有删除或改写这些用户验收条件，不得声称已经撤销。修改用户验收条件请使用现有用户编辑入口。" } : {}) });
+      if (!result.ok) return output(result);
+      const active = works.repo.listSubscriptions(result.work.workId).filter(item => !item.stoppedAt);
+      const next = active.filter(item => item.nextWakeAt !== undefined).sort((a, b) => a.nextWakeAt! - b.nextWakeAt!)[0];
+      return output({ ...result, ...(preservedUserCriteria.length ? { preservedUserCriteria,
+        amendmentNotice: "用户直接设置或确认的验收条件仍然保留；criteria 只更新助理建议检查。本次没有删除或改写这些用户验收条件，不得声称已经撤销。修改用户验收条件请使用现有用户编辑入口。" } : {}), tracking: { activeSubscriptions: active.length,
+        nextWakeAt: next?.nextWakeAt ?? null, timezone: next?.timezone ?? null,
+        cronExpression: next?.cronExpression ?? null, deadlineAt: result.work.deadlineAt ?? null,
+        hostMustBeRunning: true } });
     },
   }));
   return [defineTool({ name: "work_query_status", description: "查询当前 Bot 的事项。概览用 view:summary，默认仅未结束事项、每页20项；支持 status、search、limit、cursor，返回准确总数与nextQuery续页参数。只展示摘要，不能把本页数当总数；用 workId 按需读取完整成果和版本守卫。detail 必须指定 workId。不会启动业务工具。",
