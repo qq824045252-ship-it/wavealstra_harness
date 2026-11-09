@@ -1,3 +1,4 @@
+import { botMemorySource } from "./BotMemorySource";
 import { createHash, randomUUID } from "node:crypto";
 import type { AppDatabase } from "../db/AppDatabase";
 import type { MemoryPipelineStateDto, MemoryTurnDto, MemoryTurnExtractionState, MemoryTurnListRequest } from "../../shared/memory-kernel";
@@ -145,6 +146,8 @@ export class MemoryTurnRepository {
   }
 
   canExtractTask(taskId: string): boolean {
+    const bot = botMemorySource(this.db, taskId);
+    if (bot) return bot.status === "active";
     const task = this.db.getTask(taskId);
     if (!task || this.db.getTaskExecutionWorkspaceState(taskId)?.state === "trashed") return false;
     if (task.projectId) {
@@ -158,7 +161,7 @@ export class MemoryTurnRepository {
     return (this.conn.prepare(`SELECT DISTINCT m.task_id,t.title,w.state FROM memory_turns m
       LEFT JOIN tasks t ON t.id=m.task_id LEFT JOIN task_execution_workspace_state w ON w.task_id=m.task_id
       ORDER BY t.title,m.task_id`).all() as Array<{ task_id: string; title: string | null; state: string | null }>).map((row) => ({
-      id: row.task_id, title: row.title || "原任务已删除", trashed: row.state === "trashed",
+      id: row.task_id, title: row.title || (botMemorySource(this.db, row.task_id) ? "Bot 对话" : "原任务已删除"), trashed: row.state === "trashed",
     }));
   }
 
@@ -334,7 +337,7 @@ export class MemoryTurnRepository {
     return {
       id: String(row.id),
       taskId: String(row.task_id),
-      taskTitle: row.task_title ? String(row.task_title) : undefined,
+      taskTitle: row.task_title ? String(row.task_title) : botMemorySource(this.db, String(row.task_id)) ? "Bot 对话" : undefined,
       taskTrashed: row.task_workspace_state === "trashed",
       sessionId: row.session_id ? String(row.session_id) : undefined,
       userMessageId: row.user_message_id ? String(row.user_message_id) : undefined,

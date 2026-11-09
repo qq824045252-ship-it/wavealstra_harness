@@ -1,3 +1,4 @@
+import { botMemorySource, botMemoryTextEligible } from "./BotMemorySource";
 import { projectMemoryContext } from "../agent/MemoryContextProjection";
 import { createHash, randomUUID } from "node:crypto";
 import type { AgentSession, ModelRuntime } from "@earendil-works/pi-coding-agent";
@@ -113,6 +114,8 @@ interface ExtractedCandidate {
   operationHint: MemoryCandidateDto["operationHint"];
   replaces?: string;
   userEvidence?: string;
+  retention?: string;
+  sensitivity?: string;
   executionEvidence?: { turnId: string; toolCallId: string; quote: string };
 }
 
@@ -177,7 +180,7 @@ function isKind(value: unknown): value is MemoryKind {
   return ["identity", "preference", "fact", "decision", "constraint", "risk", "open_question", "progress", "procedure"].includes(String(value));
 }
 function isScope(value: unknown): value is MemoryScopeType {
-  return ["global", "workspace", "project", "task"].includes(String(value));
+  return ["global", "workspace", "project", "task", "bot"].includes(String(value));
 }
 function isOperation(value: unknown): value is MemoryCandidateDto["operationHint"] {
   return ["create", "update", "supersede", "resolve", "forget"].includes(String(value));
@@ -209,6 +212,8 @@ function extractCandidates(raw: string): ExtractedCandidate[] {
       explicit: row.explicit === true,
       operationHint: row.operationHint,
       replaces: cleanText(row.replaces, MEMORY_TITLE_MAX_CHARS) || undefined,
+      retention: typeof row.retention === "string" ? row.retention : undefined,
+      sensitivity: typeof row.sensitivity === "string" ? row.sensitivity : undefined,
       userEvidence: typeof row.userEvidence === "string" ? row.userEvidence.trim().slice(0, 600) : undefined,
       executionEvidence: row.executionEvidence && typeof row.executionEvidence === "object"
         ? row.executionEvidence as ExtractedCandidate["executionEvidence"] : undefined,
@@ -242,6 +247,7 @@ export class MemoryService {
   readonly cognition: MemoryCognitionService;
   readonly learning: MemorySkillLearningService;
   private readonly semantic: MemorySemanticProvider | null;
+  private readonly deletionVersions = new Map<string, number>();
 
   constructor(private readonly db: AppDatabase, opts?: { semantic?: boolean }) {
     this.repository = new MemoryRepository(db);
@@ -264,7 +270,7 @@ export class MemoryService {
   get(id: string): MemoryRecordDto | undefined { return this.repository.get(id); }
 
   /** Scope-safe visibility check used by Agent/MCP surfaces; guessed ids must not cross scope boundaries. */
-  canAccess(id: string, request: Pick<MemorySearchRequest, "taskId" | "projectId" | "workspaceId" | "includeInherited">): boolean {
+  canAccess(id: string, request: Pick<MemorySearchRequest, "taskId" | "projectId" | "workspaceId" | "botId" | "includeInherited">): boolean {
     const memory = this.repository.get(id);
     if (!memory) return false;
     const chain = this.resolveScopeChain({ ...request, includeInherited: request.includeInherited ?? true });
@@ -595,6 +601,10 @@ export class MemoryService {
         this.touchProjectScopes(current.scopes, Date.now());
       }
     })();
+    for (const scope of current?.scopes ?? []) {
+      const key = `${scope.scopeType}:${scope.scopeId ?? ""}`;
+      this.deletionVersions.set(key, (this.deletionVersions.get(key) ?? 0) + 1);
+    }
     if (current?.kind === "procedure") {
       try { this.learning.invalidateByMemoryIds([id]); }
       catch (error) { console.warn("[MemoryKernel] skill candidate invalidation failed", error); }
@@ -846,10 +856,26 @@ export class MemoryService {
       extractedCount: 0, committedCount: 0, reviewCount: 0,
     });
     if (!input.isEnabled()) return empty();
-    const userText = input.userText.trim();
+    const botSource = botMemorySource(this.db, input.taskId);
+    if (input.taskId.startsWith("bot-conversation-") && (!botSource || botSource.status !== "active")) return empty();
+    const rawTurns = botSource ? (input.sourceTurns ?? []).map(turn => {
+      const row = this.db.connection.prepare(`SELECT u.text FROM bot_send_receipts r
+        JOIN bot_messages u ON u.message_id=r.user_message_id AND u.role='user' AND u.status='completed'
+        JOIN bot_messages a ON a.message_id=r.assistant_message_id AND a.role='assistant' AND a.status='completed'
+        WHERE r.user_id=? AND r.bot_id=? AND r.conversation_id=? AND r.user_message_id=? AND r.assistant_message_id=?
+          AND u.conversation_id=r.conversation_id AND a.conversation_id=r.conversation_id
+          AND u.bot_id=r.bot_id AND a.bot_id=r.bot_id AND u.request_id=r.request_id AND a.request_id=r.request_id`)
+        .get(botSource.user_id, botSource.bot_id, input.taskId, turn.userMessageId ?? null, turn.assistantMessageId ?? null) as { text: string } | undefined;
+      return row && botMemoryTextEligible(row.text) ? { ...turn, userText: row.text, assistantText: "" } : undefined;
+    }).filter((turn): turn is MemoryTurnDto => Boolean(turn)) : input.sourceTurns;
+    const userText = botSource ? rawTurns?.at(-1)?.userText ?? "" : input.userText.trim();
+    if (botSource && !rawTurns?.length) return empty();
     // A short acknowledgement can close a batch containing earlier substantive turns.
     // Eligibility belongs to the captured batch, not the most recent input alone.
     if (!input.sourceTurns?.length && !userText) return empty();
+    const deletionStamp = () => JSON.stringify(this.resolveScopeChain({ taskId: input.taskId })
+      .map(scope => this.deletionVersions.get(`${scope.scopeType}:${scope.scopeId ?? ""}`) ?? 0));
+    const initialDeletionStamp = deletionStamp();
     const extractionScopeStamp = this.recallScopeStamp({ taskId: input.taskId });
     const assertExtractionScope = () => {
       if (this.recallScopeStamp({ taskId: input.taskId }) !== extractionScopeStamp) {
@@ -859,10 +885,10 @@ export class MemoryService {
     const task = this.db.getTask(input.taskId);
     const projectId = task?.projectId ?? undefined;
     const workspaceId = input.spaceId ?? task?.spaceId ?? undefined;
-    const existingQuery = (input.sourceTurns?.map(turn => turn.userText).join("\n") || userText).slice(-2000);
+    const existingQuery = (rawTurns?.map(turn => turn.userText).join("\n") || userText).slice(-2000);
     const existing = await this.searchHybrid({ taskId: input.taskId, projectId, workspaceId, query: existingQuery, limit: 40 });
     assertExtractionScope();
-    const sourceTurns = (input.sourceTurns?.length ? input.sourceTurns : [{
+    const sourceTurns = (rawTurns?.length ? rawTurns : [{
       id: `legacy:${input.taskId}:${Date.now()}`,
       taskId: input.taskId,
       userText,
@@ -903,14 +929,14 @@ export class MemoryService {
     };
     const response = await input.modelRuntime.completeSimple(
       input.model,
-      { systemPrompt: EXTRACTION_SYSTEM_PROMPT, messages: [{ role: "user", content: JSON.stringify(payload), timestamp: Date.now() }] },
+      { systemPrompt: EXTRACTION_SYSTEM_PROMPT + (botSource ? "\n当前来源是用户与私人 Bot 的直接对话。只提取有用户原话支持的稳定身份、偏好、长期事实、决定或约束。一次性请求、当前查询、临时日期/地点、健康/财务/身份等敏感细节、权限授予不得成为长期记忆。不要将问题当成事实。本模式的 scopeType 使用 bot；所有候选由宿主绑定到该 Bot 私有范围，不写全局或其他 Bot。每条额外输出 retention=stable、sensitivity=none，仅在确实长期且非敏感时使用；否则不要输出候选。userEvidence 仅引用支持该事实的最短原话，不附带其他信息。" : ""), messages: [{ role: "user", content: JSON.stringify(payload), timestamp: Date.now() }] },
       // Reasoning shares the response ceiling on Responses-compatible providers.
       // Leave room for both low-effort reasoning and the complete candidate JSON.
       { maxTokens: Math.min(input.model.maxTokens || 8192, input.model.reasoning ? 8192 : 4096), reasoning: "low", cacheRetention: "none" },
     );
     if (response.stopReason === "error" || response.stopReason === "aborted") throw new Error(response.errorMessage || "Memory extraction failed");
     if (response.stopReason === "length") throw new Error("记忆提炼输出被截断，请重试或减少本批对话");
-    if (!input.isEnabled()) return empty();
+    if (!input.isEnabled() || deletionStamp() !== initialDeletionStamp) return empty();
     assertExtractionScope();
     const extracted = extractCandidates(responseText(response));
     const changed = new Set<MemoryScopeType>();
@@ -919,6 +945,14 @@ export class MemoryService {
     for (const candidate of extracted) {
       if (!input.isEnabled()) break;
       assertExtractionScope();
+      // Private Bot learning never escalates uncertain facts to a new review workflow.
+      // Ignore unsupported/short-lived material; direct user quotes remain mandatory.
+      if (botSource && (!candidate.userEvidence || candidate.userEvidence.trim().length < 2
+        || !sourceTurns.some(turn => turn.userText.includes(candidate.userEvidence!))
+        || candidate.retention !== "stable" || candidate.sensitivity !== "none" || !botMemoryTextEligible(`${candidate.title} ${candidate.content} ${candidate.userEvidence ?? ""} ${candidate.replaces ?? ""}`)
+        || candidate.executionEvidence || ["progress", "open_question", "risk", "procedure"].includes(candidate.kind)
+        || (candidate.operationHint === "forget" && !/(?:忘记|删除.*记忆|forget|delete.*memor)/i.test(candidate.userEvidence ?? ""))
+        || (!candidate.explicit && candidate.confidence < 0.85))) continue;
       const scope = this.normalizeCandidateScope(candidate.scopeType, { projectId, workspaceId, taskId: input.taskId });
       if (!scope) continue;
       const dto: MemoryCandidateDto = {
@@ -944,15 +978,20 @@ export class MemoryService {
         this.repository.insertCandidate(dto);
         // An in-flight pending candidate may already have been resolved from the review UI.
         if (this.repository.getCandidate(dto.id)?.status !== "pending") continue;
-        const result = this.reconcileCandidate(dto, sourceTurns);
+        const evidenceTurns = botSource ? sourceTurns.filter(turn => candidate.userEvidence && turn.userText.includes(candidate.userEvidence))
+          .map(turn => ({ ...turn, userText: candidate.userEvidence!, assistantText: "" })) : sourceTurns;
+        const result = this.reconcileCandidate(dto, evidenceTurns);
         if (result.status === "committed") {
           committedCount++;
           changed.add(scope.scopeType);
-        } else if (result.status === "needs_review") reviewCount++;
+        } else if (result.status === "needs_review") {
+          if (botSource) this.repository.resolveCandidate(dto.id, "rejected");
+          else reviewCount++;
+        }
       } catch (error) {
         console.warn("[MemoryKernel] candidate reconcile failed", error);
-        try { this.repository.resolveCandidate(dto.id, "needs_review"); } catch { /* candidate row may not exist */ }
-        reviewCount++;
+        try { this.repository.resolveCandidate(dto.id, botSource ? "rejected" : "needs_review"); } catch { /* candidate row may not exist */ }
+        if (!botSource) reviewCount++;
       }
     }
     if (input.isEnabled()) this.learning.refresh();
@@ -1068,11 +1107,12 @@ export class MemoryService {
       confidence: candidate.confidence,
       explicit: candidate.explicit,
       sourceType: candidate.explicit ? "user" : "agent",
-      sourceTaskId: candidate.taskId,
+      sourceTaskId: botMemorySource(this.db, candidate.taskId) ? undefined : candidate.taskId,
+      sourceId: botMemorySource(this.db, candidate.taskId) ? candidate.taskId : undefined,
       scopeType: candidate.scopeType,
       scopeId: candidate.scopeId,
       evidence: [
-        { evidenceKind: "task", refId: candidate.taskId },
+        { evidenceKind: botMemorySource(this.db, candidate.taskId) ? "conversation" : "task", refId: candidate.taskId },
         ...sourceTurns.map((turn) => ({ evidenceKind: "conversation" as const, refId: turn.id, refTitle: "L0 conversation turn", excerpt: this.l0EvidenceExcerpt(turn) })),
       ],
     };
@@ -1166,7 +1206,7 @@ export class MemoryService {
   private channelBotId(taskId: string): string | undefined {
     const row = this.db.connection.prepare(`SELECT bot_id FROM bot_channel_bindings
       WHERE channel_type='desktop' AND channel_identifier=?`).get(JSON.stringify([LOCAL_USER_ID, taskId])) as { bot_id: string } | undefined;
-    return row?.bot_id;
+    return row?.bot_id ?? botMemorySource(this.db, taskId)?.bot_id;
   }
 
   private workMemoryScope(taskId: string): { bot_id: string; project_id: string | null } | undefined {
@@ -1217,6 +1257,8 @@ export class MemoryService {
   }
 
   private normalizeCandidateScope(scopeType: MemoryScopeType, ctx: { projectId?: string; workspaceId?: string; taskId: string }): { scopeType: MemoryScopeType; scopeId?: string } | null {
+    const conversation = botMemorySource(this.db, ctx.taskId);
+    if (conversation) return { scopeType: "bot", scopeId: conversation.bot_id };
     if (this.workMemoryScope(ctx.taskId)) return { scopeType: "task", scopeId: ctx.taskId };
     if (this.channelBotId(ctx.taskId)) return { scopeType: "task", scopeId: ctx.taskId };
     if (scopeType === "global") return { scopeType: "global" };

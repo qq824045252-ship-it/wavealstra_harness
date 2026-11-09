@@ -1,3 +1,5 @@
+import { BotConversationMemory } from "./work/BotConversationMemory";
+import { botMemorySource } from "../memory/BotMemorySource";
 import { z } from "zod";
 import { parseSubagentExecutionPolicy, SUBAGENT_POLICY_KEYS } from "../../shared/subagent-execution-policy";
 import { computerUseRunCoordinator } from "../capabilities/ComputerUseRunCoordinator";
@@ -1648,6 +1650,12 @@ export class AgentService {
       () => this.workHostAuthority.isAuthority(), () => this.settingsStore.read().defaultModelId,
       () => this.settingsStore.read().permissionMode ?? "default", undefined,
       (work, memberId) => memberId ? this.botSettings.forMember(work.workId, work.ownerBotId, memberId, work.workspacePath) : this.botSettings.forWork(work.workId, work.ownerBotId, work.workspacePath));
+    const botMemory = new BotConversationMemory({ db: this.db, userId: LOCAL_USER_ID,
+      memory: this.memoryService, pipeline: this.memoryPipeline,
+      enabled: () => !this.memoryDisposed && this.settingsStore.read().memoryEnabled && this.workHostAuthority.isAuthority(),
+      extract: id => this.queuePendingMemoryExtraction([id]),
+      changed: () => this.notifyMemoryChanged({ scope: "settings" }),
+    });
     this.botConversations ??= new BotConversationService({ db: this.db.connection, userId: LOCAL_USER_ID,
       bots: this.botRegistry, works: this.workService, models: this.durableModels, directory: join(getMyBuddyDir(), "bot-conversations"),
       botModel: botId => this.botSettings.get(botId).modelId || undefined,
@@ -1656,7 +1664,7 @@ export class AgentService {
         return durableDomainTools([createWebAccessCapabilityExtension], { cwd, models: this.durableModels! });
       },
       defaultModel: () => this.settingsStore.read().defaultModelId, isAuthority: () => this.workHostAuthority.isAuthority(),
-      memorySearch: (botId, query) => this.memoryService.search({ botId, query, scopeTypes: ["bot"], includeInherited: false, limit: 20 }),
+      memory: botMemory, memorySearch: (botId, query) => botMemory.search(botId, query),
       schedule: (work, operationId, retryBlocked) => this.workDispatchQueue!.enqueue(work, operationId, retryBlocked),
       wake: workId => { if (workId) this.workExecutions?.wakeWork(workId); this.workDispatchQueue?.wake(); },
       visionFallback: async (imagePaths, directory, requestId) => {
@@ -4102,28 +4110,32 @@ export class AgentService {
           if (pendingTurns.length === 0) break;
           const sourceIds = pendingTurns.map((turn) => turn.id);
           const sourcesExist = (): boolean => this.memoryPipeline.turns.allExist(sourceIds);
-          const task = this.db.getTask(taskId)!;
+          const botSource = botMemorySource(this.db, taskId);
+          const task = this.db.getTask(taskId);
+          const sourceIdentity = JSON.stringify(botSource ?? null);
           const canContinue = (): boolean => {
             if (this.memoryDisposed || sourceEpoch !== this.memorySourceEpoch || !this.settingsStore.read().memoryEnabled) return false;
             const current = this.db.getTask(taskId);
             return this.memoryPipeline.turns.canExtractTask(taskId)
-              && current?.projectId === task.projectId && current?.spaceId === task.spaceId && sourcesExist();
+              && current?.projectId === task?.projectId && current?.spaceId === task?.spaceId && sourcesExist()
+              && JSON.stringify(botMemorySource(this.db, taskId) ?? null) === sourceIdentity
+              && (!botSource || this.workHostAuthority.isAuthority());
           };
           this.memoryPipeline.beginL1(pendingTurns);
           this.notifyMemoryChanged({ scope: "settings" });
           try {
-            const settings = createAgentSettingsManager(this.resolveTaskExecutionWorkspaceCwd(taskId), getMyBuddyDir());
+            const settings = createAgentSettingsManager(botSource ? join(getMyBuddyDir(), "bot-conversations", taskId) : this.resolveTaskExecutionWorkspaceCwd(taskId), getMyBuddyDir());
             const provider = settings.getDefaultProvider();
             const id = settings.getDefaultModel();
             const defaultModelId = provider && id ? `${provider}/${id}` : this.settingsStore.read().defaultModelId;
-            const modelId = task.modelId || defaultModelId;
+            const modelId = (botSource ? this.botSettings.get(botSource.bot_id).modelId : task?.modelId) || defaultModelId;
             // Historical chats can reference a retired model. Background extraction
             // may use the current enabled default without changing that chat's model.
             const model = capturedModel ?? (modelId ? await this.resolveEnabledModel(modelId, settings) : undefined)
               ?? (defaultModelId && defaultModelId !== modelId ? await this.resolveEnabledModel(defaultModelId, settings) : undefined);
             if (!model) throw new Error("当前任务没有已启用的记忆提取模型");
             const result = await withModelInvocationSettings(settings, () => this.memoryService.extractAndStore({
-              taskId, spaceId: task.spaceId ?? undefined, projectBound: Boolean(task.projectId),
+              taskId, spaceId: task?.spaceId ?? undefined, projectBound: Boolean(task?.projectId),
               userText: pendingTurns[pendingTurns.length - 1].userText, assistantText: "",
               sourceTurns: pendingTurns, modelRuntime: this.modelRuntime!, model, isEnabled: canContinue,
             }));
@@ -4133,7 +4145,7 @@ export class AgentService {
             this.memoryPipeline.completeL1(taskId, pendingTurns);
             summary.processedTurns += pendingTurns.length;
             if (result.globalChanged) this.notifyMemoryChanged({ scope: "global" });
-            if (result.spaceChanged && task.spaceId) this.notifyMemoryChanged({ scope: "space", spaceId: task.spaceId });
+            if (result.spaceChanged && task?.spaceId) this.notifyMemoryChanged({ scope: "space", spaceId: task.spaceId });
           } catch (error) {
             if (this.memoryDisposed || sourceEpoch !== this.memorySourceEpoch) { summary.interrupted = true; return summary; }
             if (!sourcesExist()) { this.memoryPipeline.turns.requeueProcessing(sourceIds); continue; }

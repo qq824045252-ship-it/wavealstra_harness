@@ -285,6 +285,40 @@ try {
   const noFallback = await agent.queuePendingMemoryExtraction(["retired-model"]);
   assert.equal(noFallback.failedTurns, 1);
   assert.equal(pipeline.turns.get(unavailable.id)?.extractionState, "failed", "disabled defaults remain disabled and retryable");
+  // The actual AgentService single-writer queue accepts foreground sources without Task rows.
+  const { BotRegistry } = await import("../src/main/agent/work/BotRegistry");
+  const { BotConversationRepository } = await import("../src/main/agent/work/BotConversationRepository");
+  const { BotConversationMemory } = await import("../src/main/agent/work/BotConversationMemory");
+  const { LOCAL_USER_ID } = await import("../src/shared/bot-work");
+  new BotRegistry(db.connection).registerBot({ botId: "memory-queue-bot", userId: LOCAL_USER_ID, displayName: "Queue Bot" });
+  const conversations = new BotConversationRepository(db.connection);
+  agent.botSettings = { get: () => ({ modelId: "test/model" }) };
+  agent.workHostAuthority = { isAuthority: () => true };
+  agent.resolveEnabledModel = async () => ({ id: "model", provider: "test" });
+  const botMemory = new BotConversationMemory({ db, userId: LOCAL_USER_ID, memory, pipeline, enabled: () => enabled,
+    changed: () => { notifications++; }, extract: id => agent.queuePendingMemoryExtraction([id]) });
+  const botTurn = (requestId: string, text: string) => {
+    const receipt = conversations.accept(LOCAL_USER_ID, { botId: "memory-queue-bot", requestId, text });
+    conversations.update(receipt.assistantMessageId, "completed", "收到。");
+    const source = botMemory.capture("memory-queue-bot", requestId); assert(source);
+    return source;
+  };
+  const botSource = botTurn("queue-1", "以后默认用中文回答");
+  response = async payload => ({ candidates: [{ kind: "preference", title: "回复语言", content: "默认用中文回答", scopeType: "bot",
+    retention: "stable", sensitivity: "none", confidence: 1, explicit: true, operationHint: "create", userEvidence: payload.conversationTurns[0].user }] });
+  await botMemory.extract(botSource);
+  assert.equal(db.getTask(botSource), undefined);
+  assert.equal(memory.listExactScope("bot", "memory-queue-bot").length, 1);
+  assert.equal(pipeline.turns.listByTask(botSource)[0].extractionState, "completed");
+  const retrySource = botTurn("queue-2", "以后回复时保留必要的不确定性");
+  response = async () => { enabled = false; return { candidates: [] }; };
+  await botMemory.extract(retrySource);
+  assert.equal(pipeline.turns.listByTask(retrySource)[0].extractionState, "failed", "disable leaves Bot source retryable");
+  enabled = true;
+  response = async () => ({ candidates: [] });
+  await botMemory.extract(retrySource);
+  assert.equal(pipeline.turns.listByTask(retrySource)[0].extractionState, "completed", "reenabling can retry without process restart");
+  console.log("PASS actual AgentService Bot queue: private learning, configured model, source pointers, disabled-to-reenabled retry without fake Task");
   console.log("PASS retired-model recovery uses only the enabled current default and preserves chat selection");
   console.log("memory-extraction-lifecycle-test: PASS (bulk/selected deletion, atomic rollback, exact scope, preserved memories, and safe in-flight/queued extraction and projection generation)");
 } finally {

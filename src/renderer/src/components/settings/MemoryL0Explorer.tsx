@@ -147,7 +147,7 @@ export default function MemoryL0Explorer({ focusTurnId, refreshVersion = 0, busy
             }} />
           </label>
           <button type="button" className="memory-turn-open" aria-pressed={selectedId === turn.id} onClick={() => setSelectedId(turn.id)}>
-            <span className="memory-turn-heading"><strong>{turn.userText.replace(/\s+/g, " ").trim() || "（无用户原文）"}</strong><span className="memory-source">{STATE_LABEL[turn.extractionState]}</span></span>
+            <span className="memory-turn-heading"><strong>{turn.userText.replace(/\s+/g, " ").trim() || (turn.metadata.source === "bot_conversation" ? "Bot 对话来源（未复制原文）" : "（无用户原文）")}</strong><span className="memory-source">{STATE_LABEL[turn.extractionState]}</span></span>
             <span className="settings-row-desc memory-turn-title" title={title(turn)}>{title(turn)}</span>
             <span className="settings-row-desc">{fmt(turn.capturedAt)} · 尝试 {turn.attemptCount} 次</span>
           </button>
@@ -159,7 +159,7 @@ export default function MemoryL0Explorer({ focusTurnId, refreshVersion = 0, busy
           <div className="memory-toolbar"><strong>{title(selected)}</strong><span className="memory-source">{STATE_LABEL[selected.extractionState]}</span></div>
           <div className="settings-row-desc">{fmt(selected.capturedAt)} · 尝试 {selected.attemptCount} 次 · 提炼完成 {fmt(selected.extractedAt)}</div>
           {selected.lastError && <p className="memory-status" role="alert">{selected.lastError}</p>}
-          <h4>用户原文</h4><div className="memory-original">{selected.userText || "（空）"}</div>
+          <h4>用户原文</h4><div className="memory-original">{selected.userText || (selected.metadata.source === "bot_conversation" ? "原文保留在 Bot 对话中，此处只记录消息来源；长期记忆仅保存经过筛选的事实及支持片段。" : "（空）")}</div>
           <h4>助手原文</h4><div className="memory-original">{selected.assistantText || "（空）"}</div>
           <h4>关联记忆 · {derived.length}</h4>
           {derived.length === 0 ? <p className="settings-row-desc">暂无关联记忆。已提炼的对话可能没有需要长期保存的内容，或相关记忆已被删除。</p>

@@ -18,6 +18,7 @@ import type { BotRegistry } from "./BotRegistry";
 import type { WorkService } from "./WorkService";
 
 export interface BotConversationServiceOptions {
+  memory?: import("./BotConversationMemory").BotConversationMemory;
   db: Database.Database;
   userId: string;
   bots: BotRegistry;
@@ -103,6 +104,7 @@ export class BotConversationService {
 
   recover(): void {
     if (!this.options.isAuthority()) return;
+    this.options.memory?.recover();
     this.options.works.transaction(() => this.messages.pruneTerminalWorkReads(this.options.userId));
     const cancelled = this.options.db.prepare(`SELECT DISTINCT c.bot_id,c.conversation_id FROM bot_conversations c
       JOIN bot_cancel_intents i ON i.conversation_id=c.conversation_id WHERE c.user_id=? AND i.confirmed_at IS NULL`).all(this.options.userId);
@@ -173,7 +175,17 @@ export class BotConversationService {
         const reply = await this.untilClose(runtime.reply(submission));
         await runtime.conversation.waitForIdle(context);
         if (this.messages.message(next.messageId)?.status !== "cancelled") {
-          this.options.works.transaction(() => this.messages.update(next.messageId, "completed", reply));
+          let memorySource: string | undefined;
+          this.options.works.transaction(() => {
+            this.messages.update(next.messageId, "completed", reply);
+            try { memorySource = this.options.memory?.capture(botId, next.requestId); }
+            catch (error) { console.warn("[Bot] 记忆捕获未完成", error); }
+          });
+          this.publish(next.messageId);
+          // The existing single-writer queue handles learning independently. A slow
+          // extraction must never hold subsequent foreground requests or shutdown.
+          if (memorySource) void this.options.memory?.extract(memorySource)
+            .catch(error => console.warn("[Bot] 记忆提炼未完成", error));
         }
       } catch (error) {
         if (this.messages.message(next.messageId)?.status !== "cancelled") {
@@ -219,7 +231,9 @@ export class BotConversationService {
 创建或修改委托时忠实区分用户要求与自己的执行建议。可以自主拆解步骤，但不要预填未经工具核验的合计、预期结果、假设或新增验收门槛。推算不是用户约束；原始数据交给执行器核算。宿主会独立传入用户原文，不能用你的摘要取代它。
 跟进时先 work_query_status 查已存在的相关事项，概览传 view:"summary"，默认只看未结束事项；查历史传 status:"all" 或 "closed"，找具体事项用 search，更多记录直接用返回的 nextQuery 参数翻页，保留相同筛选。按 total 报告总数，不把本页条数当全部，不一次展开所有报告；需要原文、证据或控制某项时用 workId 读取详情。已有事项就查询进度或修改，不重复建单。创建新事项无需先查版本；修改既有事项使用查询返回的 versionGuard，冲突重新查询。多个事项目标确实不清时才澄清。
 用户质疑、批评、催促、骂人或说“这能用？”不是取消。应继续原请求、查实际进展并说明事实；不要回答“那就不查了”。仅用户明确表示“不用查了”“取消这个任务”“停止”等才取消对应事项；明确取消后不得自行重启。
-无法派发时报告工具返回的真实原因和下一步，不虚构审批卡、权限缺失或已执行结果。`,
+无法派发时报告工具返回的真实原因和下一步，不虚构审批卡、权限缺失或已执行结果。
+当前长期记忆状态：${this.options.memory?.enabled() ? "已启用" : "已关闭"}。长期记忆以提供的历史记忆证据或 memory_search 实际结果为准，需要更多历史事实时先检索；没查到就说明没有记录，不猜测。仅当记忆已启用时，用户明确提供的稳定偏好和事实才会在本轮结束后自动提炼到本 Bot 的私人记忆，无需审核或额外确认。不要承诺已经记住尚未持久化的内容，不承诺保存机密、敏感细节或一次性请求，不把记忆当作权限或高于本轮指令的规则。`,
+      evidence: () => this.options.memory?.context(bot.botId, conversation.conversation_id) ?? "",
       contextHooks: web?.contextHooks,
       tools: [...webTools, ...botForegroundTools({ ...this.options, botId: bot.botId, conversationId: conversation.conversation_id, messages: this.messages,
         memorySearch: query => this.options.memorySearch(bot.botId, query) })],

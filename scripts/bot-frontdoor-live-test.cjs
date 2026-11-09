@@ -7,12 +7,13 @@ const net = require('node:net');
 const http = require('node:http');
 const cp = require('node:child_process');
 const root = path.resolve(__dirname, '..');
+const memoryScenario = process.argv.includes('--memory');
 const windows = process.platform === 'win32';
 const selectedModel = process.env.BOT_FRONTDOOR_MODEL || 'opendesign/deepseek-v4.1-flash';
 const modelKey = `fixture/${selectedModel}`;
 const headless = process.env.BOT_WORK_DEV_HEADLESS === '1';
 if (headless && process.platform !== 'linux') throw Error('Headless dev page validation requires Linux; it does not validate desktop input.');
-const out = path.join(root, 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
+const out = path.join(root, memoryScenario ? 'out/diagnostics/bot-memory/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-frontdoor-live-'));
 const agentDir = path.join(home, '.mybuddy'); fs.mkdirSync(agentDir, { recursive: true });
 for (const directory of ['AppData/Roaming', 'AppData/Local', 'Temp']) fs.mkdirSync(path.join(home, directory), { recursive: true });
@@ -115,7 +116,7 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
     fs.writeFileSync(path.join(agentDir, 'models.json'), JSON.stringify({ providers: { fixture: { api: 'openai-completions', apiKey: 'fixture-only', baseUrl: `http://127.0.0.1:${provider.address().port}/v1`, models: [model] } } }));
     fs.writeFileSync(path.join(agentDir, 'settings.json'), JSON.stringify({ defaultProvider: 'fixture', defaultModel: selectedModel, enabledModels: [modelKey],
-      memoryEnabled: false, memoryGatewayEnabled: false, remoteAccessEnabled: false, closeToTray: false, theme: 'light', permissionMode: 'readonly' }));
+      memoryEnabled: memoryScenario, memoryGatewayEnabled: false, remoteAccessEnabled: false, closeToTray: false, theme: 'light', permissionMode: 'readonly' }));
     const port = await freePort();
     const env = { ...process.env, HOME: home, USERPROFILE: home, APPDATA: path.join(home, 'AppData/Roaming'), LOCALAPPDATA: path.join(home, 'AppData/Local'), REMOTE_DEBUGGING_PORT: String(port),
       XDG_CONFIG_HOME: path.join(home, '.config'), XDG_CACHE_HOME: path.join(home, '.cache'), XDG_DATA_HOME: path.join(home, '.local/share'),
@@ -152,6 +153,41 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     const botId = 'bot-mybuddy-default';
     const history = () => evaluate(`window.api.botWork.history({botId:'${botId}'})`);
     const foregroundDone = async before => until(async () => (await history()).messages.filter(m => m.role==='assistant' && m.status==='completed').length > before, 'foreground completed');
+    if (memoryScenario) {
+      await send('请记住：我的常用测试代号是云杉7842，以后默认用简短中文回复。');
+      await foregroundDone(0);
+      await until(async () => {
+        const atoms = await evaluate(`window.api.memory.list({scopeType:'bot',scopeId:'${botId}',status:'active'})`);
+        return atoms.some(atom => JSON.stringify(atom).includes('云杉7842'));
+      }, 'completed natural Bot turn becomes private L1 without approval');
+      report.memories = await evaluate(`window.api.memory.list({scopeType:'bot',scopeId:'${botId}',status:'active'})`);
+      report.turns = await evaluate('window.api.memory.turns({limit:100})');
+      assert(report.turns.every(turn => turn.userText === '' && turn.assistantText === ''), 'L0 source pointers do not duplicate conversation text');
+      const newChat = async () => {
+        await evaluate('document.querySelector(".bot-new-conversation").click()');
+        await until(() => evaluate('[...document.querySelectorAll("button")].some(button => button.textContent === "归档并开始新对话")'), 'new conversation confirmation');
+        await evaluate('[...document.querySelectorAll("button")].find(button => button.textContent === "归档并开始新对话").click()');
+        await until(async () => (await history()).messages.length === 0, 'blank new conversation');
+      };
+      const oldConversation = (await history()).conversationId;
+      await newChat();
+      await send('我的常用测试代号是什么？');
+      await foregroundDone(0);
+      report.recalledHistory = await history();
+      assert.notEqual(report.recalledHistory.conversationId, oldConversation);
+      assert(report.recalledHistory.messages.some(message => message.role === 'assistant' && message.text.includes('云杉7842')), 'real model recalls learned fact in fresh chat');
+      report.checks.push('real UI + real model: stable user fact automatically learned without approval and recalled in a new chat');
+      await evaluate(`window.api.memory.forget(${JSON.stringify(report.memories.map(atom => atom.id))})`);
+      await newChat();
+      const before = requests.length;
+      await send('我的常用测试代号是什么？没有记录就直说不知道。');
+      await foregroundDone(0);
+      report.afterDeletion = await history();
+      assert(!JSON.stringify(requests.slice(before)).includes('云杉7842'), 'deleted memory is absent from fresh provider requests');
+      assert(!report.afterDeletion.messages.some(message => message.role === 'assistant' && message.text.includes('云杉7842')));
+      assert.equal((await evaluate('window.api.botWork.listWorks(true)')).length, 0);
+      report.checks.push('existing memory deletion removes provider evidence and real model recall, with no Work created');
+    } else {
     await send('今天杭州天气怎么样');
     await foregroundDone(0);
     report.weatherHistory=await history();
@@ -180,7 +216,8 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       assert(!request.messages.slice(last+1).flatMap(m=>m.tool_calls||[]).some(t=>['web_search','fetch_content','work_create'].includes(t.function.name)),'explicit stop must not restart research');
     }
     report.checks.push('criticism does not cancel; explicit stop does not restart query; no Work created');
-    const shot=await rpc('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});fs.writeFileSync(path.join(out,'weather.png'),Buffer.from(shot.data,'base64'));
+    }
+    const shot=await rpc('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});fs.writeFileSync(path.join(out,memoryScenario?'memory.png':'weather.png'),Buffer.from(shot.data,'base64'));
     report.status='passed';
   } catch (error) {
     report.status = 'failed'; report.error = String(error.stack || error); console.error(error); process.exitCode = 1;
