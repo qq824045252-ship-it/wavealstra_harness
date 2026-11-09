@@ -22,13 +22,22 @@ export function createBotConversationState(): BotConversationUiState {
 }
 
 export function createBotConversationActions({ get, set, getApi }: AppContext): Pick<AppActions,
-  "setBotAttachments" | "setBotDraft" | "submitBotDraft" | "setActiveBotId" | "refreshBotHistory" | "cancelBotSend" | "archiveBotConversation"> {
+  "forgetDeletedBot" | "setBotAttachments" | "setBotDraft" | "submitBotDraft" | "setActiveBotId" | "refreshBotHistory" | "cancelBotSend" | "archiveBotConversation"> {
   const histories = new Map<string, number>();
   const persist = () => {
     try { localStorage.setItem(storageKey, JSON.stringify({ drafts: get().botDrafts, attachments: get().botAttachmentDrafts,
       requests: Object.fromEntries(Object.entries(get().botPendingSends).map(([botId, pending]) => [botId, pending.request])) })); } catch { /* Host receipt remains authoritative. */ }
   };
   return {
+    forgetDeletedBot: botId => {
+      histories.set(botId, (histories.get(botId) ?? 0) + 1);
+      const omit = <T,>(values: Record<string, T>) => { const next = { ...values }; delete next[botId]; return next; };
+      set(state => ({ botDrafts: omit(state.botDrafts), botAttachmentDrafts: omit(state.botAttachmentDrafts),
+        botHistories: omit(state.botHistories), botPendingSends: omit(state.botPendingSends),
+        botConversationErrors: omit(state.botConversationErrors),
+        ...(state.activeBotId === botId ? { botDraft: "", activeBotId: null, selectedWorkId: null } : {}) }));
+      persist();
+    },
     setBotAttachments: (botId, attachments) => {
       set(state => ({ botAttachmentDrafts: { ...state.botAttachmentDrafts, [botId]: attachments } }));
       persist();

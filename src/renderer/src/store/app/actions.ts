@@ -142,6 +142,7 @@ export interface AppActions {
   deleteMarketConnector: (id: string) => Promise<void>;
   setConnectorEnabled: (id: string, enabled: boolean) => Promise<void>;
   setPage: (page: Page) => void;
+  forgetDeletedBot: (botId: string) => void;
   setBotDraft: (text: string) => void;
   setBotAttachments: (botId: string, attachments: import("@/types").Attachment[]) => void;
   submitBotDraft: () => Promise<void>;

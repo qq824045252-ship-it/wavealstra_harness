@@ -651,6 +651,7 @@ const api = {
     phase4Control: request => ipcRenderer.invoke(BotWorkIpc.phase4Control, request),
     hostStatus: () => ipcRenderer.invoke(BotWorkIpc.hostStatus),
     listBots: () => ipcRenderer.invoke(BotWorkIpc.listBots),
+    deleteBot: request => ipcRenderer.invoke(BotWorkIpc.deleteBot, request),
     createBot: request => ipcRenderer.invoke(BotWorkIpc.createBot, request),
     updateWorkspaceAuthorization: request => ipcRenderer.invoke(BotWorkIpc.updateWorkspaceAuthorization, request),
     teamControl: request => ipcRenderer.invoke(BotWorkIpc.teamControl, request),

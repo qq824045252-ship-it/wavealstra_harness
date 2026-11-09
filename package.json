@@ -547,7 +547,8 @@
     "test:durable-workspace-binding": "esbuild scripts/durable-workspace-binding-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/durable-workspace-binding-test.mjs && node scripts/test-guard.mjs out/tests/durable-workspace-binding-test.mjs",
     "test:work-isolation-retirement": "esbuild scripts/work-isolation-retirement-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/work-isolation-retirement-test.mjs && node scripts/test-guard.mjs out/tests/work-isolation-retirement-test.mjs",
     "test:bot-work-automatic-recovery": "esbuild scripts/bot-work-automatic-recovery-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/bot-work-automatic-recovery-test.mjs && node scripts/test-guard.mjs out/tests/bot-work-automatic-recovery-test.mjs",
-    "test:bot-work-recovery-dev": "node scripts/bot-work-recovery-dev-test.cjs"
+    "test:bot-work-recovery-dev": "node scripts/bot-work-recovery-dev-test.cjs",
+    "test:bot-deletion": "esbuild scripts/bot-deletion-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/bot-deletion-test.mjs && node scripts/test-guard.mjs out/tests/bot-deletion-test.mjs"
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.85.0",

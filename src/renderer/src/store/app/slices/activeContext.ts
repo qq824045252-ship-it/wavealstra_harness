@@ -100,6 +100,7 @@ export function createActiveContextActions(
   | "setFullAccessDuringRun"
   | "setHomeSpaceId"
   | "setBotAttachments"
+  | "forgetDeletedBot"
   | "setBotDraft"
   | "submitBotDraft"
   | "refreshBotHistory"

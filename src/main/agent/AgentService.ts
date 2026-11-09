@@ -281,6 +281,7 @@ import { ConversationInteractionRepository } from "./ConversationInteractionRepo
 import { ConversationInteractionService } from "./ConversationInteractionService";
 import { ConversationGoalService } from "./ConversationGoalService";
 import { BotRegistry } from "./work/BotRegistry";
+import { BotDeletionService } from "./work/BotDeletionService";
 import { BotCreationService } from "./work/BotCreationService";
 import { BotExpertBindingService } from "./work/BotExpertBindingService";
 import { BotWorkContextService } from "./work/BotWorkContextService";
@@ -1150,6 +1151,14 @@ export class AgentService {
     return new BotCreationService(this.db.connection, this.botRegistry, {
       userId: LOCAL_USER_ID, isAuthority: () => this.workHostAuthority.isAuthority(),
     }).updateWorkspaceAuthorization(request);
+  }
+
+  deleteBot(request: unknown) {
+    const result = new BotDeletionService(this.db.connection, this.botRegistry, this.workService, {
+      userId: LOCAL_USER_ID, isAuthority: () => this.workHostAuthority.isAuthority(),
+    }).delete(request);
+    if (result.ok) this.workDispatchQueue?.wake();
+    return result;
   }
 
   createBot(request: unknown) {
