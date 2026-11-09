@@ -101,6 +101,7 @@ const GUI_TESTS = new Set([
   "test:svg-preview-resize",
   "test:consult-selection",
   "test:consult-entry:desktop",
+  "test:mode-navigation:desktop",
   // Electron 运行时 / e2e
   "test:html-edit-electron",
   "test:local-capabilities-electron",

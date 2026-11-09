@@ -7,7 +7,6 @@ import { useVirtualizer, type VirtualItem, type Virtualizer } from "@tanstack/re
 import { useDismissOnClickOutside } from "@/hooks/useDismissOnClickOutside";
 import { useActiveTask, useActiveTaskArtifacts, useVisibleTaskArtifacts, useAppStore } from "@/store/appStore";
 import type { Artifact, ChatMessage, Space } from "@/types";
-import { heroCategories } from "@/mock/data";
 import MessageItem from "./MessageItem";
 import { durableMessageToChatMessage } from "@/store/app/messages/historyMapper";
 import { botMessagePresentation } from "@/lib/botMessagePresentation";
@@ -29,7 +28,7 @@ import {
   IconX,
 } from "@/components/common/icons";
 import type { McpServerDto, ModePresetDto, WelcomeMode } from "@shared/agent-ipc";
-import { WELCOME_MODE_LABELS } from "@shared/mode-profile";
+import { WELCOME_MODES, WELCOME_MODE_LABELS } from "@shared/mode-profile";
 import { buildPresetBarChips, isTaskModeLocked } from "@/lib/modePresetBar";
 import { COPY, getWorkspaceBreadcrumb } from "@/lib/workspaceDisplay";
 import { heroHeadline, heroSubline } from "./heroCopy";
@@ -112,22 +111,13 @@ function HomeHero(): React.JSX.Element {
     [tasks],
   );
 
-  const categoryToMode: Record<string, WelcomeMode> = {
-    日常办公: "working",
-    代码开发: "coding",
-    通用模式: "general",
-  };
-  const modeToCategory: Record<string, string> = {
-    working: "日常办公",
-    coding: "代码开发",
-    bot: "通用模式",
-  };
-  const category = modeToCategory[welcomeMode] ?? heroCategories[0];
-
   useEffect(() => {
+    let current = true;
+    setPresets([]);
     void window.api?.agent?.getModeProfile?.(welcomeMode).then((p) => {
-      setPresets(p?.policy?.presets ?? []);
+      if (current) setPresets(p?.policy?.presets ?? []);
     });
+    return () => { current = false; };
   }, [welcomeMode]);
 
   // Preset Bar 可用性：仅当 preset 声明了 providerMcpIds 才需要查 MCP（复用现有 mcp:listServers）
@@ -179,14 +169,14 @@ function HomeHero(): React.JSX.Element {
       </div>
 
       <div className="hero-categories">
-        {heroCategories.map((c) => {
-          const mode = categoryToMode[c] ?? DEFAULT_WELCOME_MODE;
+        {WELCOME_MODES.map((mode) => {
+          const c = WELCOME_MODE_LABELS[mode];
           return (
             <button
               key={c}
               type="button"
-              className={`pill ${c === category ? "dark" : ""}`}
-              aria-pressed={c === category}
+              className={`pill ${mode === welcomeMode ? "dark" : ""}`}
+              aria-pressed={mode === welcomeMode}
               onClick={() => setWelcomeMode(mode)}
             >
               <WelcomeModeIcon mode={mode} size={13} />

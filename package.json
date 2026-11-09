@@ -354,6 +354,7 @@
     "test:regenerate-stop-runtime": "esbuild scripts/regenerate-stop-runtime-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/regenerate-stop-runtime.mjs && node scripts/test-guard.mjs out/tests/regenerate-stop-runtime.mjs",
     "test:conversation-branch:workspace": "esbuild scripts/conversation-branch-workspace-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/conversation-branch-workspace.mjs && node scripts/test-guard.mjs out/tests/conversation-branch-workspace.mjs",
     "test:consult-selection": "node scripts/run-consult-selection-test.cjs",
+    "test:mode-navigation:desktop": "node scripts/mode-navigation-desktop-test.cjs",
     "test:consult-entry:desktop": "node scripts/consult-entry-electron-test.cjs",
     "test:model-catalog-update": "esbuild scripts/model-catalog-update-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/model-catalog-update-test.mjs && node scripts/test-guard.mjs out/tests/model-catalog-update-test.mjs",
     "models:refresh": "esbuild scripts/refresh-model-catalogs.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/refresh-model-catalogs.mjs && node out/tests/refresh-model-catalogs.mjs --apply",
