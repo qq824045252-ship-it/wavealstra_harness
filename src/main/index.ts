@@ -1044,6 +1044,8 @@ function registerIpc(): void {
     rendererUrl: process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href,
     decideAction: request => agentService.decideWorkAction(request),
   }));
+  ipcMain.handle(BotWorkIpc.listAutonomyRules, () => agentService.listWorkAutonomyRules());
+  ipcMain.handle(BotWorkIpc.revokeAutonomyRule, (_e, ruleId: string) => agentService.revokeWorkAutonomyRule(ruleId));
   ipcMain.handle(BotWorkIpc.phase3Control, (_e, request: unknown) => agentService.phase3WorkControl(request));
   ipcMain.handle(BotWorkIpc.phase4Control, (_e, request: unknown) => agentService.phase4WorkControl(request));
   ipcMain.handle(BotWorkIpc.hostStatus, () => agentService.getWorkHostStatus());

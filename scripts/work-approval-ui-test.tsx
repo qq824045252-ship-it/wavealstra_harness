@@ -109,7 +109,9 @@ async function main() {
   await check("conversation and details share one synchronous in-flight decision lock", async () => {
     const projection = await reset(fixture({ scopeMissing: false }));
     await act(async () => root!.render(<><Card work={projection} /><Card work={projection} /></>));
-    const all = buttons(); assert.equal(all.length, 4);
+    // 每张卡：允许本次 / 拒绝 / 暂不处理（+ 条件性的长期规则按钮）。
+    const all = buttons(); assert.equal(all.length, 6);
+    assert.deepEqual(all.map(button => button.textContent), ["允许本次", "拒绝", "暂不处理", "允许本次", "拒绝", "暂不处理"]);
     await act(async () => { click(all[0]); click(all[3]); }); assert.equal(requests.length, 1);
     assert.ok(buttons().every(button => button.disabled));
   });

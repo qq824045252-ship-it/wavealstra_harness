@@ -648,6 +648,8 @@ const api = {
 
   botWork: {
     decideAction: request => ipcRenderer.invoke(BotWorkIpc.decideAction, request),
+    listAutonomyRules: () => ipcRenderer.invoke(BotWorkIpc.listAutonomyRules),
+    revokeAutonomyRule: ruleId => ipcRenderer.invoke(BotWorkIpc.revokeAutonomyRule, ruleId),
     phase3Control: request => ipcRenderer.invoke(BotWorkIpc.phase3Control, request),
     phase4Control: request => ipcRenderer.invoke(BotWorkIpc.phase4Control, request),
     hostStatus: () => ipcRenderer.invoke(BotWorkIpc.hostStatus),

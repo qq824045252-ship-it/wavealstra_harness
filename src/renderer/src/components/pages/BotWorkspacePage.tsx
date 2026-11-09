@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import type { BotDto, WorkProjectionDto } from "@shared/bot-work";
 import type { BotMessageDto } from "@shared/bot-conversation";
 import type { BotWorkHostStatusDto } from "@shared/bot-work-ipc";
+import type { WorkAutonomyRule } from "@shared/bot-work-autonomy";
 import { useAppStore } from "@/store/appStore";
 const ChatMarkdown = lazy(() => import("@/components/chat/ChatMarkdown"));
 import { IconArchive, IconChevronDown, IconArrowUp, IconBot, IconCheck, IconChevronRight, IconClock, IconListTodo, IconMessageDashed, IconPanel, IconSearch, IconSettings, IconStop, IconX } from "@/components/common/icons";
@@ -59,6 +60,8 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   const [archiveConfirm, setArchiveConfirm] = useState(false);
   const [archiving, setArchiving] = useState(false);
   const [archiveError, setArchiveError] = useState("");
+  const [rules, setRules] = useState<WorkAutonomyRule[]>([]);
+  const [rulesError, setRulesError] = useState("");
   const [navigationNotice, setNavigationNotice] = useState("");
   const requestedWork = useRef<string | null>(null);
   const [awayFromBottom, setAwayFromBottom] = useState(false);
@@ -106,6 +109,11 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   useEffect(() => {
     const dialog = settingsRef.current;
     if (settingsOpen) dialog?.showModal(); else if (dialog?.open) dialog.close();
+  }, [settingsOpen]);
+  useEffect(() => {
+    if (!settingsOpen) return;
+    setRulesError("");
+    void window.api?.botWork.listAutonomyRules().then(setRules).catch(error => setRulesError(error instanceof Error ? error.message : "读取授权规则失败"));
   }, [settingsOpen]);
   useEffect(() => {
     if (view !== "conversation" || !followLatest.current) return;
@@ -243,7 +251,19 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
     <BotTeamDialog open={teamOpen} onClose={() => setTeamOpen(false)} />
     <dialog ref={settingsRef} className="bot-settings-dialog" aria-labelledby="bot-settings-title" onCancel={event => { event.preventDefault(); setSettingsOpen(false); setArchiveConfirm(false); }}>
       <header className="bot-inspector-header"><h2 id="bot-settings-title">Bot 设置与对话管理</h2><button type="button" className="bot-icon-button" aria-label="关闭 Bot 设置" onClick={() => { setSettingsOpen(false); setArchiveConfirm(false); }}><IconX size={18} /></button></header>
-      <div className="bot-settings-body">{activeBot && <section className="bot-settings-identity" aria-label="Bot 身份与职责"><h3>{activeBot.displayName}</h3><p>{activeBot.responsibilitySummary || "尚未设置具体职责。你可以在对话中说明这次希望它协助的目标。"}</p><p>独立 Bot 身份。当前配置与操作范围以已生效的版本及授权为准。</p></section>}{activeBot && <><details className="bot-advanced"><summary>专家配置与权限审阅</summary><BotExpertReview botId={activeBot.botId} /></details><section className="bot-archive-section">{archiveError && <p role="alert" className="bot-alert">{archiveError}</p>}<h3>归档当前对话</h3><p>收起这段对话，开始新的聊天。事项记录仍会保留。</p>{archiveConfirm ? <div role="group" aria-label="确认归档"><p>确定归档当前对话吗？</p><button type="button" disabled={archiving} onClick={() => { setArchiving(true); setArchiveError(""); void useAppStore.getState().archiveBotConversation(activeBot.botId).then(() => { setArchiveConfirm(false); setSettingsOpen(false); }).catch(error => setArchiveError(error instanceof Error ? error.message : "归档未完成，请稍后重试。")).finally(() => setArchiving(false)); }}>{archiving ? "正在归档…" : "确认归档"}</button><button type="button" disabled={archiving} onClick={() => setArchiveConfirm(false)}>取消</button></div> : <button type="button" onClick={() => setArchiveConfirm(true)}><IconArchive size={15} />归档对话</button>}</section></>}</div>
+      <div className="bot-settings-body">{activeBot && <section className="bot-settings-identity" aria-label="Bot 身份与职责"><h3>{activeBot.displayName}</h3><p>{activeBot.responsibilitySummary || "尚未设置具体职责。你可以在对话中说明这次希望它协助的目标。"}</p><p>独立 Bot 身份。当前配置与操作范围以已生效的版本及授权为准。</p></section>}{activeBot && <><details className="bot-advanced"><summary>专家配置与权限审阅</summary><BotExpertReview botId={activeBot.botId} /></details>
+          <section className="bot-archive-section" aria-label="已保存的授权规则">
+            <h3>已保存的授权规则</h3>
+            <p>只有你在审批卡上明确选择“以后这样处理”才会出现在这里；撤销后立即影响尚未执行的动作。</p>
+            {rulesError && <p role="alert" className="bot-alert">{rulesError}</p>}
+            {rules.length === 0 ? <p>还没有保存的规则。</p> : <ul>{rules.map(rule => <li key={rule.ruleId}>
+              <span>{rule.decision === "allow" ? "允许" : "禁止"} · {rule.scope.projectId ? `项目 ${rule.scope.projectId}` : rule.scope.workspaceId ? "本工作区" : rule.scope.repo ? `仓库 ${rule.scope.repo}` : "全部"} · {(rule.scope.effect ?? []).join(",")} · {rule.reason}</span>
+              <button type="button" onClick={() => { void window.api?.botWork.revokeAutonomyRule(rule.ruleId).then(revoked => {
+                if (revoked) setRules(current => current.filter(item => item.ruleId !== rule.ruleId));
+                else setRulesError("撤销未完成，请刷新后重试");
+              }).catch(() => setRulesError("撤销未完成，请刷新后重试")); }}>撤销</button>
+            </li>)}</ul>}
+          </section><section className="bot-archive-section">{archiveError && <p role="alert" className="bot-alert">{archiveError}</p>}<h3>归档当前对话</h3><p>收起这段对话，开始新的聊天。事项记录仍会保留。</p>{archiveConfirm ? <div role="group" aria-label="确认归档"><p>确定归档当前对话吗？</p><button type="button" disabled={archiving} onClick={() => { setArchiving(true); setArchiveError(""); void useAppStore.getState().archiveBotConversation(activeBot.botId).then(() => { setArchiveConfirm(false); setSettingsOpen(false); }).catch(error => setArchiveError(error instanceof Error ? error.message : "归档未完成，请稍后重试。")).finally(() => setArchiving(false)); }}>{archiving ? "正在归档…" : "确认归档"}</button><button type="button" disabled={archiving} onClick={() => setArchiveConfirm(false)}>取消</button></div> : <button type="button" onClick={() => setArchiveConfirm(true)}><IconArchive size={15} />归档对话</button>}</section></>}</div>
     </dialog>
   </div>;
 }
