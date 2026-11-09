@@ -6,7 +6,7 @@ import { z } from "zod";
  * 的风险与主人偏好完全不同，不能继续压成一个 `workspace:write`。
  */
 export const workEffectSchema = z.enum([
-  "read", "local_write", "repo_write", "external_write", "message", "publish", "delete", "credential",
+  "read", "work_progress", "local_write", "repo_write", "external_write", "message", "publish", "delete", "credential",
   "financial", "physical_input",
 ]);
 export type WorkEffect = z.infer<typeof workEffectSchema>;

@@ -17,6 +17,8 @@ export interface AutonomyContext {
   permissionMode: "auto" | "default" | "readonly";
   /** 这个动作的 actionKind 已同时被 Work 授权范围和本次委派覆盖。 */
   scopeGranted?: boolean;
+  /** Host verified current active bound Work and exact version guards. Not model supplied. */
+  internalProgressVerified?: boolean;
   /** 写入目标可证明落在已授权工作区根内（只对本地写有意义）。 */
   targetInsideWorkspace?: boolean;
 }
@@ -48,6 +50,12 @@ export class WorkAutonomyPolicy {
     if (isHardGateAction(descriptor)) {
       return { kind: "ask", reason: `高风险动作（${descriptor.operation}）必须由主人明确批准`, hardGate: true,
         citedRuleIds: [], citedDecisionIds: [] };
+    }
+    if (descriptor.effect === "work_progress") {
+      if (descriptor.source === "builtin" && descriptor.operation === "report_work_progress"
+        && context.internalProgressVerified === true && context.scopeGranted === true)
+        return { kind: "allow", source: "scope", reason: "当前绑定事项的进展记录，不授予文件写入或验收权限", citedRuleIds: [], citedDecisionIds: [] };
+      return { kind: "deny", reason: "进展更新必须对应当前活动事项和最新版本；未改变事项状态或验收事实", citedRuleIds: [] };
     }
     // 2) 只读模式按效果区分：可证明的读取仍然允许，其余一律拒绝。
     if (context.permissionMode === "readonly") {

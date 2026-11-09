@@ -199,6 +199,13 @@ export class WorkActionApprovals {
           bindingId: binding.bindingId, actionHash, projectId: work.projectId, workspaceId: binding.workspaceBinding,
           delegatedScope: binding.delegatedScope, permissionMode: input.permissionMode,
           scopeGranted: !scopeMissing,
+          internalProgressVerified: descriptor.effect === "work_progress" && input.toolName === "conversation_goal_update"
+            && input.actionKind === "workspace:read" && !input.needsApproval && work.lifecycle === "active"
+            && (descriptor.target === undefined || descriptor.target === work.workId)
+            && typeof input.arguments === "object" && input.arguments !== null
+            && (input.arguments as Record<string, unknown>).expectedStateVersion === work.stateVersion
+            && (input.arguments as Record<string, unknown>).expectedIntentRevision === work.intentRevision
+            && (input.arguments as Record<string, unknown>).expectedOwnerEpoch === work.ownerEpoch,
           targetInsideWorkspace: targetsInsideWorkspace(input.taskRoot ?? binding.workspaceBinding, input.toolName, input.arguments) };
         const verdict = restriction ? undefined : this.autonomy.decide(descriptor, decisionContext);
         const decision = verdict && verdict.kind !== "ask"

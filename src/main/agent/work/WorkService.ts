@@ -4,7 +4,7 @@ import type { ReplyUserInputParams, ReplyLegacyUserInputParams } from "../../../
 import { settleWorkAdmission, settleWorkExecution } from "./WorkExecutionSettlement";
 import { WorkResultCards } from "./WorkResultCards";
 import { WorkPhase5Facts } from "./WorkPhase5Facts";
-import { checkControlGuard } from "./WorkControlGuards";
+import { checkControlGuard, isWorkerProgressAmend, checkWorkerProgress } from "./WorkControlGuards";
 import type {
   WorkCardReadResult, WorkExpandedDiagnosticsDto, WorkSummaryProjectionDto,
 } from "../../../shared/bot-work-phase5";
@@ -459,14 +459,12 @@ export class WorkService {
     if (outcome.ok && !outcome.replayed) this.emitCurrentProjection(outcome.work.workId);
     return outcome;
   }
-
   // ================================================================= amend
 
   amendWork(actor: WorkActor, params: AmendWorkParams): WorkControlResult {
-    return this.runWorkControl(actor, "amendWork", params, { guard: "full", ownerOnly: true, allowLifecycles: ["active", "paused"] },
+    return this.runWorkControl(actor, "amendWork", params, { guard: "full", ownerOnly: !(actor.kind === "worker" && isWorkerProgressAmend(params)), allowLifecycles: actor.kind === "worker" ? ["active"] : ["active", "paused"] },
       (work, resolved, now) => this.applyAmend(work, resolved, params, now));
   }
-
   /** Trusted host source readback. Not exposed as a model tool or IPC actor. */
   applyObservedSources(workId: string, operationId: string, readBefore: WorkDto,
     current: { inputSnapshotId: string; sources: WorkGoalSourceDto[] }): WorkControlResult {
@@ -504,6 +502,8 @@ export class WorkService {
   }
 
   private applyAmend(work: WorkDto, resolved: ResolvedActor, params: AmendWorkParams, now: number): Mutation {
+    const progressError = resolved.kind === "worker" ? checkWorkerProgress(work, params, resolved.binding) : undefined;
+    if (progressError) return progressError;
     const nextTitle = params.title?.trim().slice(0, 240) ?? work.title;
     const nextDescription = params.goalDescription === undefined
       ? work.goalDescription

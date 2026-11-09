@@ -19,6 +19,14 @@ const context: AutonomyContext = { userId: "user-1", botId: "bot-1", workId: "wo
   actionHash: "hash-1", projectId: "p1", workspaceId: "ws-1", repo: "owner/repo", delegatedScope: ["workspace:read", "workspace:write"],
   permissionMode: "auto" };
 
+await check("progress reporting is internal mutation, never an implicit read or write grant", () => {
+  const args = { expectedStateVersion: 1, expectedIntentRevision: 1, expectedOwnerEpoch: 1, status: "active", progressSummary: "done" };
+  assert.equal(classifyWorkAction({ toolName: "conversation_goal_update", arguments: args }).effect, "work_progress");
+  for (const arguments_ of [{ ...args, status: "paused" }, { ...args, criterionUpdates: [{ id: "c1", status: "met" }] },
+    { ...args, title: "new requirements" }, { ...args, unexpected: true }])
+    assert.notEqual(classifyWorkAction({ toolName: "conversation_goal_update", arguments: arguments_ }).effect, "work_progress");
+});
+
 await check("only registered conversation goal getter is a trusted read", () => {
   const getter = classifyWorkAction({ toolName: "conversation_goal_get", arguments: { workId: "work-current" } });
   assert.equal(getter.effect, "read"); assert.equal(getter.target, "work-current");

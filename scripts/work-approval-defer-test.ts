@@ -1,3 +1,4 @@
+import { ConversationGoalService } from "../src/main/agent/ConversationGoalService";
 /** P0-D：非阻塞 defer、ignore≠reject、去重与可复用规则（真实 SQLite + WorkService）。 */
 import assert from "node:assert/strict";
 import { mkdtemp, rm, mkdir, symlink, unlink } from "node:fs/promises";
@@ -22,7 +23,7 @@ async function fixture(label: string, projectId?: string) {
   bots.registerBot({ botId: DEFAULT_BOT_ID, userId: LOCAL_USER_ID, displayName: label, authorization: DESKTOP_USER_GRANTS });
   const works = new WorkService(db.connection, { bots, resourceHostId: `host-${label}` });
   const work = unwrap(works.createWork(user, { operationId: `create-${label}`, title: label,
-    inputSnapshotId: `input-${label}`, projectId, workspacePath: root, authorization: DESKTOP_USER_GRANTS }));
+    inputSnapshotId: `input-${label}`, ...(label === "goal-progress" ? { criteria: [{ id: "c1", text: "Verify real file" }] } : {}), projectId, workspacePath: root, authorization: DESKTOP_USER_GRANTS }));
   const taskId = `task-${label}`;
   db.upsertTask({ id: taskId, title: label, cwd: root, updatedAt: Date.now() });
   unwrap(works.dispatchExecution(user, { operationId: `dispatch-${label}`, workId: work.workId, botId: DEFAULT_BOT_ID, taskId,
@@ -36,6 +37,44 @@ async function fixture(label: string, projectId?: string) {
   });
   return { db, works, work, taskId, binding, request };
 }
+
+await check("bound progress metadata needs no file-write approval and cannot resume or attest", async () => {
+  const f = await fixture("goal-progress");
+  try {
+    const args = { workId: f.work.workId, progressSummary: "Verified two real files", status: "active", ...guard(f.works.getWork(f.work.workId)!) };
+    const ask = (id: string, values: unknown) => f.works.approvals.request({ taskId: f.taskId, operationId: id,
+      toolName: "conversation_goal_update", arguments: values, actionKind: "workspace:read", summary: "Report progress",
+      permissionMode: "readonly", needsApproval: false, deferrable: true });
+    assert.equal((await ask("progress-ok", args)).kind, "allow");
+    assert.equal(f.works.approvals.list(f.work.workId).length, 0);
+    const goals = new ConversationGoalService(f.works, () => {});
+    const beforeProgress = f.works.getWork(f.work.workId)!;
+    const applied = goals.update({ goalId: f.work.workId, progressSummary: args.progressSummary, criterionUpdates: [{ id: "c1", evidence: "wc -c output: 5" }] },
+      { actor: goals.modelActor(f.taskId), versionGuard: guard(f.works.getWork(f.work.workId)!) });
+    assert(applied.ok, JSON.stringify(applied));
+    assert.match(f.works.getWork(f.work.workId)!.progressSummary ?? "", /待核验证据 \[c1\]：wc -c output: 5/);
+    assert.equal(f.works.getWork(f.work.workId)!.criteria[0]!.status, "pending", "reported evidence is not acceptance");
+    const afterProgress = f.works.getWork(f.work.workId)!;
+    assert.deepEqual(afterProgress.authorization, beforeProgress.authorization);
+    assert.deepEqual(afterProgress.goalSources, beforeProgress.goalSources);
+    assert.equal(afterProgress.intentRevision, beforeProgress.intentRevision);
+    const liveBinding = f.works.repo.bindingForTask(f.taskId)!;
+    f.works.repo.updateBinding({ ...liveBinding, invalidatedAt: Date.now() });
+    assert.equal(goals.update({ goalId: f.work.workId, progressSummary: "must not change" },
+      { actor: goals.modelActor(f.taskId), versionGuard: guard(afterProgress) }).ok, false);
+    f.works.repo.updateBinding(liveBinding);
+    assert.equal((await ask("progress-stale", args)).kind, "deny");
+    const current = f.works.getWork(f.work.workId)!;
+    const fresh = { ...args, ...guard(current) };
+    assert.equal((await ask("progress-other", { ...fresh, workId: "foreign-work" })).kind, "deny");
+    for (const status of ["paused", "cancelled", "achieved"]) assert.notEqual((await ask(`bad-${status}`, { ...fresh, status })).kind, "allow");
+    assert.notEqual((await ask("bad-attest", { ...fresh, criterionUpdates: [{ id: "c1", status: "met", evidence: "claim" }] })).kind, "allow");
+    const pause = f.works.pauseWork(user, { workId: f.work.workId, operationId: "pause", versionGuard: guard(f.works.getWork(f.work.workId)!) });
+    assert(pause.ok);
+    assert.equal((await ask("cannot-resume", { ...fresh, ...guard(f.works.getWork(f.work.workId)!) })).kind, "deny");
+    assert.equal(f.works.getWork(f.work.workId)!.lifecycle, "paused");
+  } finally { f.db.close(); }
+});
 
 await check("native goal inspection stays read-only with no approval card", async () => {
   const f = await fixture("goal-get-read");

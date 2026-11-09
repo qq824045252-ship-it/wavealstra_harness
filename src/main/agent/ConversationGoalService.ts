@@ -153,6 +153,16 @@ export class ConversationGoalService {
       return { ok: false, code: "invalid_request", message: "阻碍由执行或用户反馈产生，不能直接设置" };
     }
 
+    // Worker evidence is a report, never an attestation. Preserve it visibly in
+    // the progress journal instead of silently discarding evidence-only updates.
+    const reported = (request.criterionUpdates ?? []).filter(update => update.status === undefined && update.evidence !== undefined);
+    if (actor.kind === "worker" && reported.length) {
+      if (reported.some(update => !work.criteria.some(criterion => criterion.id === update.id)))
+        return { ok: false, code: "not_found", message: "找不到待报告证据的验收项" };
+      const summary = [request.progressSummary, ...reported.map(update => `待核验证据 [${update.id}]：${update.evidence}`)].filter(Boolean).join("\n");
+      if (summary.length > 2000) return { ok: false, code: "invalid_request", message: "进展和待核验证据超过2000字符，请精简或分次提交" };
+      request = { ...request, progressSummary: summary };
+    }
     const criterionUpdates = (request.criterionUpdates ?? []).filter(update => update.status !== undefined);
     const textUpdates = (request.criterionUpdates ?? []).filter(update => update.text !== undefined);
     if (textUpdates.some(update => !work.criteria.some(criterion => criterion.id === update.id))) {

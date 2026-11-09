@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { lstatSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import type { WorkActionDescriptor } from "../../../shared/bot-work-action";
@@ -183,6 +184,15 @@ function classifyShell(command: string, context: WorkActionClassificationInput["
   return conservativeDescriptor("shell 命令无法可靠归类，按未分类外部写入处理");
 }
 
+// Progress is an internal mutation, not a read or blanket workspace write.
+const progressArguments = z.object({
+  workId: z.string().min(1).optional(), progressSummary: z.string().max(2000).optional(),
+  status: z.literal("active").optional(),
+  expectedStateVersion: z.number().int().nonnegative(), expectedIntentRevision: z.number().int().nonnegative(),
+  expectedOwnerEpoch: z.number().int().nonnegative(),
+  criterionUpdates: z.array(z.object({ id: z.string().min(1).max(100), evidence: z.string().max(1000).optional() }).strict()).max(12).optional(),
+}).strict().refine(value => value.progressSummary !== undefined || !!value.criterionUpdates?.length);
+
 export function classifyWorkAction(input: WorkActionClassificationInput): WorkActionDescriptor {
   const name = input.toolName.trim();
   const args = asRecord(input.arguments);
@@ -230,6 +240,11 @@ export function classifyWorkAction(input: WorkActionClassificationInput): WorkAc
     return workActionDescriptorSchema.parse({ ...common, effect: "local_write", operation: "write_file",
       target: str(args.path) ?? str(args.file_path), environment: "local", reversibility: "recoverable",
       blastRadius: "single", hardGate: false, source: "builtin" });
+  }
+  if (name === "conversation_goal_update" && progressArguments.safeParse(args).success) {
+    return workActionDescriptorSchema.parse({ ...common, effect: "work_progress", operation: "report_work_progress",
+      target: str(args.workId), environment: "local", reversibility: "recoverable", blastRadius: "single",
+      hardGate: false, source: "builtin" });
   }
   // Exact built-in registration in conversation-runtime-extension.ts only reads
   // current-task goal/version state. Do not infer safety from a *_get suffix:
