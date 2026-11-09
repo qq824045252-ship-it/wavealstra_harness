@@ -10,6 +10,7 @@ export interface WorkConversationFeedbackOptions {
   works: WorkService;
   isAuthority: () => boolean;
   pollIntervalMs?: number;
+  prepareImages?: (workId: string) => Promise<void>;
 }
 
 /** Durable facts are replayable inputs; completed Bot messages are atomic delivery
@@ -118,7 +119,12 @@ export class WorkConversationFeedback {
             `事项已关闭（${work.closureConclusion ?? "已结束"}）。${work.closureSummary ? `\n${work.closureSummary}` : ""}\n关闭状态不等同于用户验收。`, { kind: "closure", category: "result" });
         }
         return count;
-      }); } catch (error) {
+      });
+        // File reads/materialization must run after all enclosing Work transactions.
+        if (this.options.prepareImages) queueMicrotask(() => {
+          void this.options.prepareImages!(candidate.workId).catch(error => console.warn("[Work] 报告图片待重试", error));
+        });
+      } catch (error) {
         // A broken Work must not starve feedback for every other original chat.
         console.warn("[Work] 原对话反馈待重试", candidate.workId, error);
       }

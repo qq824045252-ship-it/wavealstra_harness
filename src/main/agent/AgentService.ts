@@ -10,6 +10,7 @@ import { currentNodePlatform } from "../platform/runtime";
 import { DurableBotService } from "./durable/DurableBotService";
 import { BotWorkIpc } from "../../shared/bot-work-ipc";
 import { BotConversationService } from "./work/BotConversationService";
+import { BotReportImageService } from "./work/BotReportImageService";
 import { WorkConversationFeedback } from "./work/WorkConversationFeedback";
 import { WorkDispatchQueue } from "./work/WorkDispatchQueue";
 import { resolveWorkContinuationCwd } from "./work/WorkContinuationWorkspace";
@@ -625,6 +626,7 @@ export class AgentService {
   private botConversations?: BotConversationService;
   private workDispatchQueue?: WorkDispatchQueue;
   private workConversationFeedback?: WorkConversationFeedback;
+  private botReportImages?: BotReportImageService;
   private readonly executionFailures: ExecutionFailureRepository;
   private readonly executionAttempts: ExecutionAttemptRepository;
   private readonly loadoutObservations: AgentLoadoutObservationService;
@@ -833,7 +835,9 @@ export class AgentService {
       },
       isAuthority: () => this.workHostAuthority.isAuthority(),
     });
-    this.workConversationFeedback = new WorkConversationFeedback({ db: db.connection, userId: LOCAL_USER_ID, works: this.workService, isAuthority: () => this.workHostAuthority.isAuthority() });
+    this.botReportImages = new BotReportImageService(db.connection, LOCAL_USER_ID, this.workService, () => this.artifactService);
+    this.workConversationFeedback = new WorkConversationFeedback({ db: db.connection, userId: LOCAL_USER_ID, works: this.workService,
+      isAuthority: () => this.workHostAuthority.isAuthority(), prepareImages: workId => this.botReportImages!.captureWork(workId) });
     this.workConversationFeedback.start();
     this.workService.scheduler.beginHostSession(previousWorkLease);
     this.conversationGoals = new ConversationGoalService(
@@ -1192,7 +1196,10 @@ export class AgentService {
     return new WorkProjectionJournal(this.db.connection, this.workService).sync(LOCAL_USER_ID, request);
   }
   sendBotMessage(request: unknown) { return this.requireBotConversations().send(request); }
-  botMessageHistory(request: unknown) { return this.requireBotConversations().history(request); }
+  async botMessageHistory(request: unknown) {
+    const history = this.requireBotConversations().history(request);
+    return this.botReportImages ? this.botReportImages.hydrateHistory(history) : history;
+  }
   cancelBotSend(botId: string, requestId: string) { return this.requireBotConversations().cancel(botId, requestId); }
   archiveBotConversation(botId: string, conversationId: string) { return this.requireBotConversations().archive(botId, conversationId); }
   private requireBotConversations(): BotConversationService {

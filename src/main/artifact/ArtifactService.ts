@@ -694,6 +694,9 @@ export class ArtifactService {
     if (descriptor.source.type === "managed-content") {
       const content = this.storage.read(descriptor.source.storagePath);
       if (content === null) return null;
+      if (options?.inline && descriptor.kind === "image" && /^data:image\/(?:png|jpeg|gif|webp|bmp|avif|x-icon);base64,/i.test(content)) {
+        return { content: artifactImageUrl(id, "full", { version: descriptor.version }), kind: "image" };
+      }
       return { content, kind: (descriptor.capabilities?.originalKind as string | undefined) ?? descriptor.kind };
     }
     const target = this.workspaceTarget(id);

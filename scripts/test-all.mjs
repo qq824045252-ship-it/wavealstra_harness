@@ -245,6 +245,7 @@ const HEADLESS_TESTS = new Set([
   "test:web-access-extract-runtime", // Default fixture is local; real weather request is opt-in.
   "test:chat-composer-ui", // React DOM behavior using linkedom; no Electron/display dependency.
   "test:cloudflared-cli-detect",
+  "test:bot-report-images-ui",
   "test:work-conversation-feedback",
   "test:wechat-callback-auth",
   "test:wecom-media",

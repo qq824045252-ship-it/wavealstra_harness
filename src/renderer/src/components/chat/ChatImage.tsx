@@ -1,5 +1,6 @@
-import { createContext, useContext, useEffect, useMemo, useState } from "react";
-import { artifactImageUrl } from "@shared/artifact-ipc";
+import { createPortal } from "react-dom";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { artifactImageUrl, parseArtifactImageUrl } from "@shared/artifact-ipc";
 import type { ArtifactDescriptor } from "@shared/artifact-types";
 import type { ChatMessage } from "@/types";
 import { useAppStore } from "@/store/appStore";
@@ -13,21 +14,28 @@ import {
 import { markdownImageSources } from "@/lib/markdownImages";
 
 const EMPTY_IMAGES: ArtifactDescriptor[] = [];
-const ImageScopeContext = createContext<string | null>(null);
+interface ImageScope {
+  taskId: string | null;
+  artifacts?: ArtifactDescriptor[];
+  sources?: Record<string, string>;
+}
+const ImageScopeContext = createContext<ImageScope>({ taskId: null });
 
 /** 单条消息内联图片数阈值（P4）：超出折叠成网格 + "查看全部 n 张" */
 const MAX_INLINE_IMAGES = 12;
 
 /** Explicit message scope: Gateway/BTW never borrow the task left active in the sidebar. */
-export function ChatImageScope({ taskId, children }: { taskId: string | null; children: React.ReactNode }): React.JSX.Element {
-  return <ImageScopeContext.Provider value={taskId}>{children}</ImageScopeContext.Provider>;
+export function ChatImageScope({ taskId, artifacts, sources, children }: ImageScope & { children: React.ReactNode }): React.JSX.Element {
+  const scope = useMemo(() => ({ taskId, artifacts, sources }), [taskId, artifacts, sources]);
+  return <ImageScopeContext.Provider value={scope}>{children}</ImageScopeContext.Provider>;
 }
 
 function useImageScope() {
-  const taskId = useContext(ImageScopeContext);
+  const scope = useContext(ImageScopeContext);
+  const { taskId } = scope;
   const descriptors = useAppStore((s) => taskId ? s.artifactProjection.artifactsByTask[taskId] ?? EMPTY_IMAGES : EMPTY_IMAGES);
   const cwd = useAppStore((s) => s.tasks.find((t) => t.id === taskId)?.cwd);
-  return { taskId, descriptors, cwd };
+  return { taskId, descriptors: scope.artifacts ?? descriptors, cwd, sources: scope.sources };
 }
 
 /**
@@ -73,10 +81,12 @@ export function ChatImage({
   fallback?: boolean;
   loading?: boolean;
 }): React.JSX.Element {
-  const { taskId, descriptors, cwd } = useImageScope();
+  const { taskId, descriptors, cwd, sources } = useImageScope();
   const resolved = useMemo(
-    () => artifact?.taskId === taskId ? artifact : resolveChatImageArtifact(source, descriptors, taskId, cwd),
-    [artifact, source, descriptors, taskId, cwd],
+    () => sources
+      ? descriptors.find((item) => item.taskId === taskId && item.id === (sources[source] ?? parseArtifactImageUrl(source)?.artifactId))
+      : artifact?.taskId === taskId ? artifact : resolveChatImageArtifact(source, descriptors, taskId, cwd),
+    [artifact, source, descriptors, taskId, cwd, sources],
   );
   const id = resolved?.id;
   const version = resolved?.version;
@@ -85,6 +95,7 @@ export function ChatImage({
   const ensure = useAppStore((s) => s.ensureArtifactRenderPayload);
   const release = useAppStore((s) => s.releaseArtifactRender);
   const openArtifact = useAppStore((s) => s.openArtifact);
+  const [previewId, setPreviewId] = useState<string | null>(null);
   const [failedSource, setFailedSource] = useState<string | null>(null);
   const svgText = useMemo(() => {
     if (!resolved || !isSvgArtifact(resolved) || !payload || payload.artifactVersion !== version) return null;
@@ -114,15 +125,15 @@ export function ChatImage({
   const intrinsicSize = thumbnail
     ?? (fresh?.width && fresh.height ? { width: fresh.width, height: fresh.height } : undefined);
   const src = useMemo(() => {
-    if (!id) return directChatImageSource(source);
+    if (!id) return sources && /^mybuddy-artifact:/i.test(source) ? null : directChatImageSource(source);
     if (isSvg) return svgObjectUrl;
     return thumbnail?.url ?? artifactImageUrl(id, "thumb", { version });
-  }, [id, isSvg, svgObjectUrl, thumbnail, source, version]);
+  }, [id, isSvg, svgObjectUrl, thumbnail, source, version, sources]);
 
   useEffect(() => {
     // 只为元数据/SVG 文本做 hydration：图片字节不经过这条 IPC。
-    if (id && !loading) void ensure(id);
-  }, [id, version, loading, ensure]);
+    if (id && !loading && !sources) void ensure(id);
+  }, [id, version, loading, ensure, sources]);
 
   useEffect(() => {
     if (!id) return undefined;
@@ -137,12 +148,13 @@ export function ChatImage({
     return (
       <span className="chat-image-status" role="status" style={{ display: "block", padding: "12px 0" }}>
         {pending ? "图片加载中…" : `图片无法显示：${alt || "未找到图片"}`}
-        {!pending && id && <button type="button" className="md-file-link" onClick={() => openArtifact(id)}>打开产物</button>}
+        {!pending && id && <button type="button" className="md-file-link" onClick={() => sources ? setFailedSource(null) : openArtifact(id)}>{sources ? "重试图片" : "打开产物"}</button>}
       </span>
     );
   }
+  const openImage = () => { if (id) sources ? setPreviewId(id) : openArtifact(id); };
   return (
-    <img
+    <><img
       src={src}
       alt={alt}
       title={title ?? (id ? "点击查看原图" : alt)}
@@ -167,14 +179,31 @@ export function ChatImage({
         cursor: id ? "zoom-in" : undefined,
       }}
       onError={() => setFailedSource(src)}
-      onClick={id ? () => openArtifact(id) : undefined}
+      onClick={id ? openImage : undefined}
       role={id ? "button" : undefined}
       tabIndex={id ? 0 : undefined}
       onKeyDown={id ? (event) => {
-        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openArtifact(id); }
+        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openImage(); }
       } : undefined}
     />
+    {sources && id && previewId === id && <ScopedImagePreview id={id} version={version} alt={alt} onClose={() => setPreviewId(null)} />}</>
   );
+}
+
+/** Bot reports do not have an active sidebar Task. Open their exact snapshot
+ * without mutating navigation or borrowing the ordinary Task's artifact panel. */
+function ScopedImagePreview({ id, version, alt, onClose }: { id: string; version?: number; alt: string; onClose: () => void }): React.JSX.Element {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => { dialog.current?.showModal(); }, []);
+  return createPortal(<dialog ref={dialog} aria-label="报告原图" onCancel={event => { event.preventDefault(); onClose(); }}
+    onClose={onClose} style={{ maxWidth: "95vw", maxHeight: "95vh", padding: 16, borderRadius: 12 }}>
+    <div style={{ display: "flex", justifyContent: "space-between", gap: 16, marginBottom: 12 }}>
+      <span>{alt}</span><button type="button" onClick={onClose}>关闭原图</button>
+    </div>
+    {failed ? <p role="alert">原图无法显示，请关闭后重试。</p> : <img src={artifactImageUrl(id, "full", { version })} alt={alt}
+      style={{ display: "block", maxWidth: "90vw", maxHeight: "80vh", objectFit: "contain" }} onError={() => setFailed(true)} />}
+  </dialog>, document.body);
 }
 
 /** Show generated images in their reply even if the model only emits a download link. */

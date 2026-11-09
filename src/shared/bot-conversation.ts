@@ -24,7 +24,13 @@ export const botMessageSchema = z.object({
   status: z.enum(["queued", "running", "completed", "cancelled", "unknown", "failed"]),
   workIds: z.array(id), workFeedback: workFeedbackSchema.optional(), error: z.string().optional(), createdAt: z.number(), updatedAt: z.number(),
 });
-export type BotMessageDto = z.infer<typeof botMessageSchema>;
+/** Host-resolved, message-only image scope. No active-task or owner fallback. */
+export interface BotReportImages {
+  taskId: string;
+  artifacts: import("./artifact-types").ArtifactDescriptor[];
+  sources: Record<string, string>;
+}
+export type BotMessageDto = z.infer<typeof botMessageSchema> & { reportImages?: BotReportImages };
 export interface BotHistoryDto { conversationId: string; botId: string; revision: number; archived: boolean; messages: BotMessageDto[]; before?: number }
 export interface BotMessageEvent { botId: string; conversationId: string; revision: number; message: BotMessageDto }
 
