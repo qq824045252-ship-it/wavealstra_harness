@@ -223,12 +223,16 @@ try {
       unwrap(works.reportBlocker(user, { operationId: `report:${kind}`, workId: fixture.workId,
         reason: "Needs specialist reconciliation", kind, waitingForUserInput: true,
         unknownExternalEffectRef: kind === "external_effect" ? "effect" : undefined }));
-      const blocker = works.repo.listOpenBlockers(fixture.workId)[0];
+      const blocker = works.repo.listBlockers(fixture.workId)[0];
       assert.equal(userInputBlockerSnapshot(blocker), undefined);
       assert.equal(reviewWork(works, user, { kind: "reply_user_input", request: { operationId: `reply:${kind}`, workId: fixture.workId,
         blockerId: blocker.blockerId, blockerSnapshot: "forged", inputSnapshotId: works.getWork(fixture.workId)!.inputSnapshotId,
         reply: "Force clear", evidenceRef: "none", versionGuard: guard(fixture.workId) } }).ok, false);
-      assert.equal(works.repo.getBlocker(blocker.blockerId)?.status, "open");
+      assert.equal(works.repo.getBlocker(blocker.blockerId)?.status, kind === "external_effect" ? "cleared" : "open");
+      if (kind === "external_effect") {
+        assert.equal(blocker.unknownExternalEffectRef, "effect");
+        assert.equal(blocker.details?.effectDisposition, "continue_without_replay");
+      }
     }
   });
   check("a question from an old input cannot be answered using a fresh guard", () => {

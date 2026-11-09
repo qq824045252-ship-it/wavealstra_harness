@@ -277,7 +277,6 @@ export class WorkDispatchQueue {
         this.works.repo.markOutboxStatus(`continuation-approved:${plan.planId}:${plan.ownerEpoch}`,"invalidated");continue;
       }
       if (work.lifecycle !== "active") continue;
-      this.works.partialResults.recovery.reconcileMode(work.workId, plan.planId);
       const request=z.object({operation_id:z.string(),task_id:z.string(),state:z.string()}).optional().parse(this.db.connection.prepare("SELECT operation_id,task_id,state FROM work_dispatch_requests WHERE continuation_plan_id=?").get(plan.planId));
       if(request) {
         if (!this.works.repo.bindingForTask(request.task_id) && this.works.partialResults.isReadOnlyPlan(plan)) {

@@ -7,6 +7,7 @@ import { ensureBotWorkPhase5Tables } from "./bot-work-phase5-schema";
 import { ensureGatewayDeliveryTables } from "./gateway-delivery-schema";
 import { retireWorkIsolation } from "./work-isolation-retirement";
 import { retireWorkBudget } from "./work-budget-retirement";
+import { retireWorkEffectBlockers } from "./work-effect-retirement";
 import { parseCronExecution } from "../../shared/cron-execution";
 import { isGatewayBotTaskId } from "../../shared/gateway-task";
 import { WorkspacePathError } from "../workspace/WorkspacePathError";
@@ -402,6 +403,7 @@ export class AppDatabase {
         || budgetRetirement.clearedTeamBudgetErrors || budgetRetirement.resetDispatchBudgetRequests) {
         console.info(`[AppDatabase] work budget retired: ${JSON.stringify(budgetRetirement)}`);
       }
+      retireWorkEffectBlockers(this.db);
       if (startVersion === 35) console.info("[AppDatabase] migrated v35 -> v36 (Work budget retirement)");
       this.migrateLegacyWelcomeModeIds();
       this.db.pragma(`user_version = ${CURRENT_DATABASE_SCHEMA_VERSION}`);

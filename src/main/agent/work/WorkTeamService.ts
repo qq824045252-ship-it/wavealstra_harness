@@ -10,6 +10,7 @@ import type { BotRegistry } from "./BotRegistry";
 import type { WorkService } from "./WorkService";
 import type { WorkExecutionAdapter } from "./WorkExecutionAdapter";
 import type { WorkActor, WorkDto, WorkExecutionBindingDto } from "../../../shared/bot-work";
+import { workAdmissionInFlight, workExecutionInFlight } from "../../../shared/work-effect-policy";
 import { workTeamControlSchema, workTeamPlanSchema, type WorkTeamControlResult,
   type WorkTeamDto, type WorkTeamExecution, type WorkTeamTemplateDto, type WorkTeamPlan } from "../../../shared/bot-work-team";
 
@@ -32,7 +33,7 @@ const recoveryRowSchema = z.object({ recovery_id: z.string(), work_id: z.string(
 type TeamRow = z.infer<typeof teamRowSchema>;
 type ExecutionRow = z.infer<typeof executionRowSchema>;
 type RecoveryRow = z.infer<typeof recoveryRowSchema>;
-const TERMINAL_BINDING = new Set(["completed", "failed", "stopped", "invalidated", "unknown"]);
+const TERMINAL_BINDING = new Set(["completed", "failed", "stopped", "invalidated"]);
 interface TeamDependencyResult {
   botId: string; bindingId: string; executionStatus: WorkExecutionBindingDto["status"]; responsibility: string;
   deliverableId?: string; status: string; summary: string; artifactRefs: string[];
@@ -131,9 +132,9 @@ export class WorkTeamService {
           if (!actor.grants?.allowRedelegation || !work.authorization.allowRedelegation) throw new TeamError("unauthorized_actor", "当前入口或事项未授权团队委派");
           if (work.lifecycle !== "active" || team.intent_revision === work.intentRevision && team.input_snapshot_id === work.inputSnapshotId)
             throw new TeamError("invalid_request", "只能为已变更的当前要求重新安排团队，不能重跑原要求");
-          const unsettled = this.works.repo.listBindings(work.workId).some(binding => !["completed", "failed", "stopped"].includes(binding.status)
-            && !(binding.status === "invalidated" && !binding.attemptId && !binding.submissionReceipt && !binding.submittedAt));
-          if (unsettled || this.works.repo.listAdmissions(work.workId).some(item => ["admitted", "unknown"].includes(item.state))
+          const unsettled = this.works.repo.listBindings(work.workId).some(binding => workExecutionInFlight(binding.status)
+            || binding.status === "invalidated" && !!(binding.attemptId || binding.submissionReceipt || binding.submittedAt));
+          if (unsettled || this.works.repo.listAdmissions(work.workId).some(workAdmissionInFlight)
             || this.works.repo.listOpenBlockers(work.workId).some(item => item.kind === "external_effect"))
             throw new TeamError("unsettled_effects", "原执行或效果尚未确认，不能重新安排业务动作");
           if (request.plan.ownerBotId !== work.ownerBotId) throw new TeamError("unauthorized_actor", "重新安排不能更换负责人，请先使用负责人交接");
@@ -331,7 +332,7 @@ export class WorkTeamService {
           const binding = this.works.repo.bindingForTask(original.task_id);
           if (!binding || !TERMINAL_BINDING.has(binding.status) || binding.invalidatedAt
             || !this.works.collaboration.isDelegationAdopted(binding, work)) continue;
-          if (this.works.repo.listAdmissions(work.workId).some(item => item.bindingId === binding.bindingId && ["admitted", "unknown"].includes(item.state))) continue;
+          if (this.works.repo.listAdmissions(work.workId).some(item => item.bindingId === binding.bindingId && workAdmissionInFlight(item))) continue;
           if (!this.bindingReported(original, binding)) {
             try {
               this.reportResult(work, original, binding);
@@ -364,7 +365,7 @@ export class WorkTeamService {
           if (bot.authorization.targetWhitelist.length && !bot.authorization.targetWhitelist.includes(work.workspacePath ?? ""))
             throw new TeamError("unauthorized_actor", "工作区不在执行 Bot 授权范围内");
           const rowScopes = z.array(z.string()).parse(JSON.parse(row.scopes_json));
-          const scopes = recovery?.failure_class === "unknown_external_effect" ? ["workspace:read"] : rowScopes;
+          const scopes = rowScopes;
           if (scopes.some(scope => !bot.authorization.allowedScopes.includes(scope)))
             throw new TeamError("unauthorized_actor", "执行 Bot 已失去所需范围授权");
           const operationId = recovery?.operation_id ?? `team-dispatch:${row.task_id}`;
@@ -511,6 +512,22 @@ export class WorkTeamService {
       }
     });
   }
+  private recoverySourceSettled(recovery: RecoveryRow): boolean {
+    const source = recovery.source_binding_id ? this.works.repo.getBinding(recovery.source_binding_id) : undefined;
+    if (!source || source.workId !== recovery.work_id || source.taskId !== recovery.task_id
+      || !TERMINAL_BINDING.has(source.status)
+      || (source.invalidatedAt || source.status === "invalidated") && (source.attemptId || source.submissionReceipt || source.submittedAt)) return false;
+    // A persisted pre-upgrade claim is not proof that its native source stopped.
+    // Exclude only this exact recovery's own binding so a lost dispatch response
+    // can still adopt it idempotently without creating another execution.
+    const others = this.taskBindings(recovery.work_id, recovery.task_id)
+      .filter(binding => binding.operationId !== recovery.operation_id);
+    if (others.some(binding => workExecutionInFlight(binding.status)
+      || binding.status === "invalidated" && !!(binding.attemptId || binding.submissionReceipt || binding.submittedAt))) return false;
+    const ids = new Set(others.map(binding => binding.bindingId));
+    return !this.works.repo.listAdmissions(recovery.work_id)
+      .some(admission => admission.bindingId && ids.has(admission.bindingId) && workAdmissionInFlight(admission));
+  }
   private claimRecovery(recovery: RecoveryRow, work: WorkDto): boolean {
     return this.works.transaction(() => {
       this.works.collaboration.assertAuthority();
@@ -521,6 +538,7 @@ export class WorkTeamService {
           .run(this.now(), recovery.recovery_id);
         return false;
       }
+      if (!this.recoverySourceSettled(recovery)) return false;
       const claimed = this.db.prepare("UPDATE work_team_recovery_attempts SET state='claimed',claimed_at=?,attempt_count=attempt_count+1 WHERE recovery_id=? AND state IN ('pending','claimed')")
         .run(this.now(), recovery.recovery_id);
       if (!claimed.changes) return false;
@@ -567,7 +585,11 @@ export class WorkTeamService {
         pendingSteps: [...new Set(own.flatMap(item => item.uncoveredScope))], priorDeliverables: own,
         attempts: history.map(item => ({ generation: item.generation, state: item.state, outcome: item.outcome,
           failureClass: item.failure_class, failureMessage: item.failure_message })) },
-      instructions: this.instructionsFor(row, identity, recovery.failure_class === "unknown_external_effect") };
+      uncertainOperations: this.works.repo.listAdmissions(work.workId)
+        .filter(item => item.state === "unknown" && item.bindingId === recovery.source_binding_id)
+        .map(item => ({ operationId: item.operationId, actionKind: item.actionKind })),
+      instructions: this.instructionsFor(row, identity, scopes.length === 1 && scopes[0] === "workspace:read")
+        + " 未知效果只保留为诊断，不阻止独立步骤；它不代表原动作未发生。先回读或核对幂等回执，不盲目重发同一未知操作，不把失败或未知报告为成功。" };
     this.works.transaction(() => {
       this.works.collaboration.assertAuthority();
       this.db.prepare("UPDATE work_team_executions SET original_input_json=COALESCE(original_input_json,input_json),input_json=?,error=NULL WHERE work_id=? AND ordinal=?")
@@ -612,6 +634,7 @@ export class WorkTeamService {
       const binding = this.works.repo.bindingForTask(row.task_id);
       const recovery = this.latestRecovery(work.workId, row.task_id);
       if (recovery && ["pending", "claimed"].includes(recovery.state)) {
+        if (!this.recoverySourceSettled(recovery)) continue;
         if (this.waitingReason(work, plan, row, rows)) continue;
         return { row, recovery };
       }
@@ -723,12 +746,13 @@ export class WorkTeamService {
   }
 
   /** A durable team recovery may continue the same task after its prior attempt is
-   * failed/stopped/unknown. It still cannot collide with a running execution. */
+   * failed/stopped. Native uncertainty is not confirmation that execution ended. */
   allowsRecoveryBinding(workId: string, taskId: string, operationId: string, occupied: WorkExecutionBindingDto): boolean {
     const recovery = this.recoveryForOperation(operationId);
     return Boolean(recovery && recovery.work_id === workId && recovery.task_id === taskId
       && ["pending", "claimed"].includes(recovery.state) && occupied.workId === workId
-      && occupied.taskId === taskId && ["failed", "stopped", "unknown", "invalidated"].includes(occupied.status));
+      && occupied.taskId === taskId && this.recoverySourceSettled(recovery)
+      && (occupied.operationId === operationId || ["failed", "stopped", "invalidated"].includes(occupied.status)));
   }
 
   dispatchError(workId: string, taskId: string, botId: string, scopes: string[] | undefined, operationId?: string): string | undefined {
@@ -739,7 +763,9 @@ export class WorkTeamService {
     if (recovery) {
       if (recovery.task_id !== taskId || recovery.bot_id !== botId || !["pending", "claimed"].includes(recovery.state))
         return "自动恢复必须使用原成员身份与当前代次";
-      const expected = recovery.failure_class === "unknown_external_effect" ? ["workspace:read"] : JSON.parse(row.scopes_json) as string[];
+      if (recovery.work_id !== workId || !this.recoverySourceSettled(recovery))
+        return "原生执行尚未确认结束或仍有在途操作，不能启动恢复";
+      const expected = JSON.parse(row.scopes_json) as string[];
       if (hash(scopes) !== hash(expected)) return "自动恢复不能扩大或改变原成员的工作范围";
       return undefined;
     }

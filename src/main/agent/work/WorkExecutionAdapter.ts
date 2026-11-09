@@ -91,6 +91,9 @@ export class WorkExecutionAdapter {
         try { await this.deliverBinding(binding); }
         catch (error) { this.service.nativeResults.readFailed(binding, error); this.onError(binding.bindingId, error); }
       }
+      // Retired uncertainty must not strand an already requested cancellation
+      // merely because its terminal native receipt was consumed before upgrade.
+      this.service.settlePendingClosure(work.workId);
     }
   }
 

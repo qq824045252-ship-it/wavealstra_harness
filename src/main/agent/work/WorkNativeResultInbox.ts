@@ -191,7 +191,7 @@ export class WorkNativeResultInbox {
   }
 
   readFailed(binding: WorkExecutionBindingDto, error: unknown): void {
-    this.works.runtimeObservations.readFailed(binding,error);
+    const observationChanged = this.works.runtimeObservations.readFailed(binding,error);
     this.works.transaction(() => {
       this.assertAuthority();
       const now = Date.now();
@@ -199,12 +199,20 @@ export class WorkNativeResultInbox {
         ON CONFLICT(binding_id) DO UPDATE SET failures=failures+1,last_error=excluded.last_error,
         exhausted_at=CASE WHEN failures>=4 OR excluded.first_failure_at-first_failure_at>=90000 THEN excluded.first_failure_at ELSE exhausted_at END`)
         .run(binding.bindingId, now, error instanceof Error ? error.message : String(error));
-      this.require(this.works.reconcileExecution({ kind: "system", reason: "native-readback-failed" }, {
-        bindingId: binding.bindingId,
-        outcome: ["completed", "failed", "stopped", "invalidated"].includes(this.works.repo.getBinding(binding.bindingId)?.status ?? "")
-          ? this.works.repo.getBinding(binding.bindingId)!.status : "unknown",
-        unknownExternalEffectRef: `native-read:${binding.bindingId}`,
-      }));
+      // A failed status query says nothing about whether the original native
+      // process stopped. Keep its last lifecycle/admissions, so cancellation and
+      // recovery cannot race a still-running writer. The outage itself is only a
+      // nonblocking diagnostic and does not freeze independent tools or Works.
+      const ref = `native-read:${binding.bindingId}`;
+      const recorded = this.works.repo.listBlockers(binding.workId).some(item => item.unknownExternalEffectRef === ref);
+      if (!recorded) this.works.repo.insertBlocker({ blockerId: `native-read-diagnostic:${binding.bindingId}`,
+        workId: binding.workId, kind: "external_effect", unknownExternalEffectRef: ref,
+        reason: "原生执行状态暂不可回读；保留原执行身份，不自动重发", waitingForUserInput: false,
+        status: "open", createdAt: now });
+      if (!recorded || observationChanged) {
+        const work = this.works.repo.getWork(binding.workId);
+        if (work) this.works.repo.updateWork({ ...work, stateVersion: work.stateVersion + 1, updatedAt: now });
+      }
     });
   }
 

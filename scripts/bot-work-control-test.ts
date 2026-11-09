@@ -283,9 +283,13 @@ try {
     workId: p09.work.workId,
     reason: "取消",
   }), "P09 cancel");
-  assert.equal(p09Cancel.work.lifecycle, "closing", "P09 stays closing");
-  assert.notEqual(p09Cancel.work.lifecycle, "closed", "P09 is not closed");
-  assert.equal(service.getProjection(p09.work.workId)?.blockers.some((blocker) => blocker.status === "open"), true, "P09 keeps the open blocker");
+  assert.equal(p09Cancel.work.lifecycle, "closing", "P09 cannot assume an unknown native execution has stopped");
+  assert.equal(service.repo.getBinding(p09Binding)?.status, "unknown", "cancellation never rewrites the unknown execution as success");
+  const p09Diagnostic = service.getProjection(p09.work.workId)?.blockers.find(blocker => blocker.unknownExternalEffectRef === "ext-p09");
+  assert.equal(p09Diagnostic?.status, "cleared");
+  assert.equal(p09Diagnostic?.details?.effectDisposition, "continue_without_replay");
+  unwrap(service.reconcileExecution(user(LOCAL_USER_ID, wide), { bindingId: p09Binding, outcome: "stopped" }), "P09 confirmed stop");
+  assert.equal(service.getWork(p09.work.workId)?.lifecycle, "closed");
 
   // P10 — handoff does not reject the old worker's own deliverable.
   bots.registerBot({ botId: "bot-worker", userId: LOCAL_USER_ID, displayName: "执行 Bot" });

@@ -596,6 +596,28 @@ async function main() {
       assert.deepEqual(opened, ["/fixture/result.html"]);
       await unmount();
     });
+    await check("unknown effects remain visible as nonblocking evidence while real blockers remain actionable", async () => {
+      await unmount();
+      const { createRoot } = await import("react-dom/client");
+      container = testDocument.body.appendChild(testDocument.createElement("div")); root = createRoot(container);
+      const base = { workId: projection.workId, waitingForUserInput: false, createdAt: 1 };
+      await act(async () => root!.render(<BotWorkDetails work={{ ...projection, blockers: [
+        { ...base, blockerId: "legacy-effect", kind: "external_effect", reason: "Lost legacy receipt", status: "open", unknownExternalEffectRef: "legacy-receipt" },
+        { ...base, blockerId: "new-effect", kind: "operational", reason: "Timed-out process", status: "cleared", unknownExternalEffectRef: "process-receipt", details: { effectDisposition: "continue_without_replay" } },
+        { ...base, blockerId: "actual-blocker", kind: "operational", reason: "Required permission is missing", status: "open" },
+      ] }} ownerName="Owner" includeClosed onReplyToBlocker={() => {}} />));
+      const diagnostics = container.querySelector('[aria-label="非阻塞执行记录"]');
+      assert(diagnostics, "both old and normalized uncertain results have a visible diagnostic section");
+      assert.match(diagnostics.textContent!, /Lost legacy receipt/);
+      assert.match(diagnostics.textContent!, /Timed-out process/);
+      assert.match(diagnostics.textContent!, /未知结果不会自动重放/);
+      const blockers = container.querySelector('[aria-label="需要关注的阻碍"]');
+      assert(blockers);
+      assert.match(blockers.textContent!, /Required permission is missing/);
+      assert.doesNotMatch(blockers.textContent!, /Lost legacy receipt|Timed-out process/);
+      assert.equal(diagnostics.querySelector("button"), null, "uncertainty does not offer an unsafe replay or clear button");
+      await unmount();
+    });
     await check("retired isolation and approval surfaces render nothing in Work details", async () => {
       await unmount();
       const { createRoot } = await import("react-dom/client");

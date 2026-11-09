@@ -85,7 +85,7 @@ export class WorkPhase5Facts {
   /** A blocker waiting for a human is substantive; internal retries are not. */
   recordEscalation(work: WorkDto, reason: string, now: number) {
     const open = this.repo.listOpenBlockers(work.workId)
-      .filter(blocker => blocker.waitingForUserInput || blocker.kind === "external_effect");
+      .filter(blocker => blocker.waitingForUserInput);
     const card = this.cards.ensure({
       work, kind: "blocked_escalation", outcome: WorkResultCards.escalationOutcome(work, open),
       title: `${work.title}：需要你的决定`, summary: open.map(blocker => blocker.reason).join("\n"),

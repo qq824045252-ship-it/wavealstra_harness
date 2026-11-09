@@ -4,6 +4,7 @@ import { userInputBlockerSnapshot, type ReplyUserInputParams, type ReplyLegacyUs
 import type { WorkPhase5Facts } from "./WorkPhase5Facts";
 import { WorkRepository, newId } from "./WorkRepository";
 import { legacyUserInputSource } from "./WorkLegacyUserInput";
+import { isWorkEffectDiagnostic } from "../../../shared/work-effect-policy";
 
 interface ResolvedInputActor {
   kind: WorkActor["kind"];
@@ -48,7 +49,8 @@ export function reportWorkBlockerMutation(
   });
   const next: WorkDto = { ...work, stateVersion: work.stateVersion + 1, updatedAt: now };
   repo.updateWork(next);
-  if (params.waitingForUserInput) phase5.recordEscalation(next, params.reason, now);
+  if (params.waitingForUserInput && !isWorkEffectDiagnostic({ kind: params.kind ?? "operational",
+    unknownExternalEffectRef: params.unknownExternalEffectRef })) phase5.recordEscalation(next, params.reason, now);
   else phase5.refreshSummary(next.workId);
   return { ok: true };
 }

@@ -16,12 +16,22 @@ export function settleWorkExecution({ repo, work, binding, params, now, tryClose
   const status = params.outcome;
   const settled = terminal.has(status);
   const unknownRef = params.unknownExternalEffectRef ?? binding.bindingId;
-  const needsBlocker = status === "unknown" && !repo.listOpenBlockers(work.workId).some(item => item.unknownExternalEffectRef === unknownRef);
+  const needsBlocker = status === "unknown" && !repo.listBlockers(work.workId).some(item => item.unknownExternalEffectRef === unknownRef);
+  const settleOrphanedAdmissions = () => {
+    if (!settled) return;
+    for (const admission of repo.listAdmissions(work.workId)) {
+      if (admission.bindingId === binding.bindingId && admission.state === "admitted") {
+        settleWorkAdmission({ repo, admissionId: admission.admissionId, outcome: "unknown",
+          note: "原执行已结束，工具回执未确认；保留诊断并继续独立步骤，不自动重放原操作", now, tryClose });
+      }
+    }
+  };
   if (terminal.has(binding.status) && status !== binding.status
     || binding.status === status && !needsBlocker) {
     // A retained native fact may have already settled execution while adoption was
     // pending. Clearing its final blocker must still finish a later cancellation.
-    const settlement = tryClose(work, now);
+    settleOrphanedAdmissions();
+    const settlement = tryClose(repo.getWork(work.workId)!, now);
     const latest = repo.getWork(work.workId)!;
     return { ok: true, replayed: latest.stateVersion === work.stateVersion, operationId: binding.operationId,
       work: latest, outboxEventId: settlement.ok ? settlement.outboxEventId : undefined };
@@ -62,7 +72,11 @@ export function settleWorkExecution({ repo, work, binding, params, now, tryClose
     updatedAt: now,
   };
   repo.updateWork(next);
-  const settlement = tryClose(next, now);
+  // A final native observation can arrive after an interrupted host lost
+  // afterTool. Do not strand those admissions as permanently in-flight. Preserve
+  // their uncertainty (never success/no-effect) and original operation identity.
+  settleOrphanedAdmissions();
+  const settlement = tryClose(repo.getWork(work.workId)!, now);
   const latest = repo.getWork(work.workId)!;
   return {
     ok: true, replayed: false, operationId: binding.operationId,
@@ -77,14 +91,20 @@ export function settleWorkAdmission({ repo, admissionId, outcome, note, now, try
 }): { ok: boolean; message?: string } {
   const admission = repo.getAdmission(admissionId);
   if (!admission) return { ok: false, message: "找不到准入记录" };
+  if (admission.state === outcome) return { ok: true };
+  // A late uncertain result cannot replace a confirmed completed invocation.
+  if (admission.state !== "admitted" && admission.state !== "unknown") return { ok: true };
   repo.updateAdmissionState(admission.admissionId, outcome, now);
-  if (outcome === "unknown") {
+  if (outcome === "unknown" && !repo.listBlockers(admission.workId).some(item => item.unknownExternalEffectRef === admission.admissionId)) {
     repo.insertBlocker({
       blockerId: newId("blocker"), workId: admission.workId,
       reason: note ? `外部效果未知：${note}` : "外部效果未知，需要核对",
       kind: "external_effect", unknownExternalEffectRef: admission.admissionId,
       waitingForUserInput: false, status: "open", createdAt: now,
     });
+  }
+  if (outcome !== "unknown") for (const blocker of repo.listOpenBlockers(admission.workId)) {
+    if (blocker.unknownExternalEffectRef === admission.admissionId) repo.clearBlocker(blocker.blockerId, admission.workId, now);
   }
   const work = repo.getWork(admission.workId);
   if (work) {

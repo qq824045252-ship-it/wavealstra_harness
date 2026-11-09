@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { AssistantMessage, TextContent, TranscriptContext } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat";
-import { ModelRuntime, createEditTool, createWriteTool } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, ModelRuntime, createEditTool, createWriteTool } from "@earendil-works/pi-coding-agent";
 import { defineTool, type ToolRegistration, type JsonObject } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import type { PermissionMode } from "../src/shared/agent-ipc";
@@ -29,6 +29,7 @@ import { currentDurableExecutionContext } from "../src/main/agent/durable/Durabl
 import { durableDomainTools } from "../src/main/agent/durable/DurableDomainTools";
 import { retireWorkIsolation } from "../src/main/db/work-isolation-retirement";
 import { createDurableToolPolicy, type DurableToolPolicyOptions } from "../src/main/agent/durable/DurableToolPolicy";
+import { createDurableSubagentTools } from "../src/main/agent/durable/DurableSubagents";
 import { recoverInterruptedExecutions } from "../src/main/agent/ExecutionRestartRecovery";
 import { prepareFileEffect, verifyFileEffect, type ExternalEffectRecovery } from "../src/main/agent/durable/DurableEffectRecovery";
 
@@ -52,7 +53,7 @@ async function waitUntil(check: () => boolean): Promise<void> {
 }
 
 async function fixture(taskId: string, respond: (request: TranscriptContext) => AssistantMessage["content"],
-  mode: "native" | "codemode" = "native", extraTools: ToolRegistration[] = [], isolatedSourceRoots: string[] = [], effectRecovery?: ExternalEffectRecovery) {
+  mode: "native" | "codemode" = "native", extraTools: ToolRegistration[] = [], isolatedSourceRoots: string[] = [], effectRecovery?: ExternalEffectRecovery, withSubagents = false) {
   const cwd = join(root, taskId);
   await mkdir(cwd);
   db.upsertTask({ id: taskId, title: taskId, updatedAt: Date.now() });
@@ -90,7 +91,7 @@ async function fixture(taskId: string, respond: (request: TranscriptContext) => 
       requestInteraction: (context, request, signal, toolCallId) => interactions.requestDurable(context, request, { key: toolCallId, signal }),
     })], { taskId, cwd, models });
     return DurableBotRuntime.open({ taskId, cwd, directory: join(cwd, "state"), models,
-      model: { provider: "fixture", modelId: "model" }, toolMode: mode, tools: [...domain.tools, ...extraTools],
+      model: { provider: "fixture", modelId: "model" }, toolMode: mode, tools: [...domain.tools, ...extraTools, ...(withSubagents ? createDurableSubagentTools({ taskId, cwd, models, permissionMode: () => state.permission }) : [])],
       contextHooks: domain.contextHooks, toolHooks: policy.hooks, instructions: () => "fixture", onSnapshot: () => {},
     });
   };
@@ -307,10 +308,10 @@ try {
     const r = await f.open();
     try { assert.equal((await (await r.submit("execute", taskId)).wait(ctx)).status, "done"); }
     finally { await r.close(); }
-    assert.deepEqual(settled, [scenario === "invalid-url" || scenario === "missing-selector" || scenario === "read-failure" ? "released" : "unknown"]);
+    assert.deepEqual(settled, [scenario === "invalid-url" || scenario === "missing-selector" ? "released" : "consumed"]);
     if (scenario === "invalid-url" || scenario === "missing-selector") assert.equal(surfaceCalls, 0, "validation cannot touch browser");
   }
-  console.log("PASS host validation proof releases only the exact unstarted call; started failure stays unknown, read failure releases, output cannot forge proof");
+  console.log("PASS host validation proof releases only the exact unstarted call; completed failures are consumed, output cannot forge not-started proof");
 
   // A nonzero process exit is not proof that no effect occurred. In particular,
   // a failed subprocess can follow an already-completed write.
@@ -321,7 +322,8 @@ try {
       parameters: Type.Object({ action: Type.String() }),
       execute: async () => new Promise(resolve => {
         execFile(process.execPath, ["-e", "require('node:fs').writeFileSync('partial.txt','proof'); process.exitCode=2"],
-          { cwd: join(root, "partial-shell") }, error => resolve({ isError: Boolean(error), output: text(String(error)) }));
+          { cwd: join(root, "partial-shell") }, error => resolve({ isError: Boolean(error), output: text(String(error)),
+            structuredOutput: { exitCode: error?.code ?? 0 } }));
       }),
     })]);
   const partialOutcomes: string[] = [];
@@ -330,8 +332,111 @@ try {
   try { assert.equal((await (await partialRuntime.submit("partial shell", "partial-shell")).wait(ctx)).status, "done"); }
   finally { await partialRuntime.close(); }
   assert.equal(await readFile(join(partialShell.cwd, "partial.txt"), "utf8"), "proof");
-  assert.deepEqual(partialOutcomes, ["unknown"], "Process failure after a real write cannot erase that effect");
-  console.log("PASS real process partial write plus failure retains unknown rather than falsely declaring not_started");
+  assert.deepEqual(partialOutcomes, ["consumed"], "A completed failure consumes the action without denying its partial effects");
+  assert.equal(failures.list(partialShell.taskId).filter(item => !item.resolvedAt).length, 0);
+  console.log("PASS real process partial write plus failure is consumed without falsely declaring not_started");
+
+  // Exercise the installed native shell, not a mocked afterTool callback. Six
+  // independent durable stores run concurrently, including nested Code Mode calls.
+  const shellName = process.platform === "win32" ? "powershell" : "bash";
+  const quoteShell = (value: string) => "'" + value.replaceAll("'", process.platform === "win32" ? "''" : "'\"'\"'") + "'";
+  const nodeCommand = (code: string) => `${process.platform === "win32" ? "& " : ""}${quoteShell(process.execPath)} -e ${quoteShell(code)}${process.platform === "win32" ? "; exit $LASTEXITCODE" : ""}`;
+  await Promise.all(Array.from({ length: 6 }, async (_, index) => {
+    const mode = index % 2 ? "codemode" : "native";
+    const taskId = `native-shell-failure-${index}`;
+    const failedCommand = nodeCommand("require('node:fs').appendFileSync('partial.txt','once\\n'); console.error('intentional failure'); process.exitCode=2");
+    const outcomes: string[] = [];
+    const f = await fixture(taskId, request => {
+      const results = request.messages.filter(message => message.role === "toolResult");
+      if (!results.length) return mode === "native" ? call(shellName, { command: failedCommand }, "partial-process")
+        : call("codemode", { code: `const result = await tools.${shellName}(${JSON.stringify({ command: failedCommand })}); console.log(result);` }, "partial-code");
+      if (results.length === 1) return mode === "native" ? call("write", { path: "continued.txt", content: "independent work continued" }, "independent-write")
+        : call("codemode", { code: 'await tools.write({path:"continued.txt",content:"independent work continued"});' }, "independent-code");
+      return text("The command failed after a partial write; independent work completed.");
+    }, mode);
+    f.state.settle = (_id, outcome) => outcomes.push(outcome);
+    let r = await f.open();
+    try {
+      const submitted = await r.submit("run a failing shell and continue", taskId);
+      assert.equal((await submitted.wait(ctx)).status, "done");
+      assert.equal(await readFile(join(f.cwd, "partial.txt"), "utf8"), "once\n");
+      assert.equal(await readFile(join(f.cwd, "continued.txt"), "utf8"), "independent work continued");
+      assert.deepEqual(outcomes, ["consumed", "consumed"], `${mode} completed failure must not create an unknown settlement`);
+      const records = (db.connection.prepare("SELECT record_json FROM execution_attempts WHERE task_id=? ORDER BY rowid").all(taskId) as Array<{ record_json: string }>).map(row => JSON.parse(row.record_json));
+      const shellAttempt = records.find(record => record.toolName === shellName);
+      assert(shellAttempt, "native shell execution must be tracked");
+      assert.equal(shellAttempt.status, "failed", "nonzero structured exit is a failure, even if the native adapter does not preserve isError");
+      assert.equal(shellAttempt.phase, "finished");
+      assert.equal(shellAttempt.verification?.observed?.exitCode, 2, "keep the actual structured process exit as evidence");
+      assert.equal(failures.list(taskId).filter(item => !item.resolvedAt).length, 0);
+      await r.close();
+      recoverInterruptedExecutions(attempts, failures);
+      r = await f.open();
+      const duplicate = await r.submit("run a failing shell and continue", taskId);
+      assert.equal(duplicate.id, submitted.id);
+      assert.equal((await duplicate.wait(ctx)).status, "done");
+      assert.equal(await readFile(join(f.cwd, "partial.txt"), "utf8"), "once\n", "completed unsafe shell is never replayed on reopen");
+      assert.equal(attemptCount(taskId), records.length);
+      assert.equal(failures.list(taskId).filter(item => !item.resolvedAt).length, 0);
+    } finally { await r.close(); }
+  }));
+  console.log("PASS six parallel native/Code Mode shells preserve partial effects and nonzero exit evidence, continue independent tools, and never replay on reopen");
+
+  const childOutcomes: string[] = [];
+  const childFixture = await fixture("child-shell-failure", request => {
+    const parent = request.messages.some(message => message.role === "system" && message.toolsAdded?.some(tool => tool.name === "subagent"));
+    const results = request.messages.filter(message => message.role === "toolResult");
+    if (parent) return results.length ? text("child completed independent work") : call("subagent", {
+      agent: "shell-worker", task: "Run a partial failing command then write continued.txt", model: "fixture/model",
+      agentScope: "project", confirmProjectAgents: false, isolation: "shared",
+    });
+    if (!results.length) return call(shellName, { command: nodeCommand("require('node:fs').appendFileSync('child-partial.txt','once'); process.exitCode=2") }, "child-partial");
+    if (results.length === 1) return call("write", { path: "child-continued.txt", content: "continued" }, "child-continued");
+    return text("The shell failed with partial effects; the next tool succeeded.");
+  }, "native", [], [], undefined, true);
+  await mkdir(join(childFixture.cwd, CONFIG_DIR_NAME, "agents"), { recursive: true });
+  await writeFile(join(childFixture.cwd, CONFIG_DIR_NAME, "agents", "shell-worker.md"), `---\nname: shell-worker\ndescription: Native shell failure fixture\ntools: ${shellName},write\n---\nRun the shell then continue independent work.\n`);
+  childFixture.state.settle = (_id, outcome) => childOutcomes.push(outcome);
+  let childRuntime = await childFixture.open();
+  try {
+    const submission = await childRuntime.submit("delegate the command", "child-failure-input");
+    assert.equal((await submission.wait(ctx)).status, "done");
+    assert.equal(await readFile(join(childFixture.cwd, "child-partial.txt"), "utf8"), "once");
+    assert.equal(await readFile(join(childFixture.cwd, "child-continued.txt"), "utf8"), "continued");
+    assert.deepEqual(childOutcomes, ["consumed", "consumed", "consumed"], "child failures and delegation settle without a whole-task blocker");
+    await childRuntime.close();
+    recoverInterruptedExecutions(attempts, failures);
+    childRuntime = await childFixture.open();
+    assert.equal((await (await childRuntime.submit("delegate the command", "child-failure-input")).wait(ctx)).status, "done");
+    assert.equal(await readFile(join(childFixture.cwd, "child-partial.txt"), "utf8"), "once", "child unsafe shell is not replayed");
+    assert.equal(failures.list(childFixture.taskId).filter(item => !item.resolvedAt).length, 0);
+  } finally { await childRuntime.close(); }
+  console.log("PASS native subagent shell failure continues independent child tools and never replays after reopen");
+
+  const timeoutOutcomes: string[] = [];
+  const timedOut = await fixture("native-shell-timeout", request => {
+    const results = request.messages.filter(message => message.role === "toolResult");
+    if (!results.length) return call(shellName, { command: nodeCommand("require('node:fs').appendFileSync('timeout-partial.txt','once'); setInterval(()=>{},1000)"), timeout: 1 }, "timed-process");
+    if (results.length === 1) return call("write", { path: "timeout-continued.txt", content: "continued" }, "timeout-independent");
+    return text("The timed-out command may have partial effects; independent work continued.");
+  });
+  timedOut.state.settle = (_id, outcome) => timeoutOutcomes.push(outcome);
+  let timedRuntime = await timedOut.open();
+  try {
+    const submitted = await timedRuntime.submit("run bounded command then continue", "timeout-input");
+    assert.equal((await submitted.wait(ctx)).status, "done");
+    assert.equal(await readFile(join(timedOut.cwd, "timeout-partial.txt"), "utf8"), "once");
+    assert.equal(await readFile(join(timedOut.cwd, "timeout-continued.txt"), "utf8"), "continued");
+    assert.deepEqual(timeoutOutcomes, ["unknown", "consumed"], "a true timeout retains uncertainty without stopping unrelated tools");
+    const timedAttempt = db.connection.prepare("SELECT status FROM execution_attempts WHERE task_id=? AND status='inconclusive'").get(timedOut.taskId);
+    assert(timedAttempt, "the timed-out process retains durable uncertainty evidence");
+    await timedRuntime.close();
+    recoverInterruptedExecutions(attempts, failures);
+    timedRuntime = await timedOut.open();
+    assert.equal((await (await timedRuntime.submit("run bounded command then continue", "timeout-input")).wait(ctx)).status, "done");
+    assert.equal(await readFile(join(timedOut.cwd, "timeout-partial.txt"), "utf8"), "once", "timed-out unsafe command cannot replay after reopen");
+  } finally { await timedRuntime.close(); }
+  console.log("PASS real shell timeout preserves unknown partial effects, permits independent tools and does not replay");
 
   let effects = 0;
   const effectFile = join(root, "unconfirmed-effect.txt");

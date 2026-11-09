@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
@@ -67,13 +69,16 @@ try {
   const broken = new WorkExecutionAdapter(works, unavailable, LOCAL_USER_ID, () => true, () => {});
   for (let index = 0; index < 9; index++) await broken.flush(); await broken.close();
   assert.equal(reads, 5, "readback is bounded durably, not an infinite polling loop");
-  assert.equal(works.repo.getBinding(unknown.bindingId)?.status, "unknown");
-  assert.equal(works.repo.listOpenBlockers(unknownWork.workId).length, 1);
-  const unknownVersion = works.getWork(unknownWork.workId)!.stateVersion;
+  assert.equal(works.repo.getBinding(unknown.bindingId)?.status, unknown.status, "unavailable readback must not manufacture terminal state");
+  assert.equal(works.repo.listOpenBlockers(unknownWork.workId).length, 0);
+  assert(works.repo.listBlockers(unknownWork.workId).some(item => item.unknownExternalEffectRef && item.details?.effectDisposition === "continue_without_replay"), "unknown readback remains diagnostic evidence");
   db.close(); db = new AppDatabase(path); bots = new BotRegistry(db.connection); works = new WorkService(db.connection, { bots });
   assert.equal(works.nativeResults.shouldInspect(unknown.bindingId), false);
-  unwrap(works.reconcileExecution({ kind: "system", reason: "repeat-unknown" }, { bindingId: unknown.bindingId, outcome: "unknown", unknownExternalEffectRef: `native-read:${unknown.bindingId}` }));
-  assert.equal(works.getWork(unknownWork.workId)?.stateVersion, unknownVersion);
+  works.nativeResults.readFailed(unknown, new Error("still unavailable"));
+  const unknownVersion = works.getWork(unknownWork.workId)!.stateVersion;
+  works.nativeResults.readFailed(unknown, new Error("still unavailable"));
+  assert.equal(works.getWork(unknownWork.workId)?.stateVersion, unknownVersion, "repeated identical read failure is idempotent within the host");
+  assert.equal(works.repo.listBlockers(unknownWork.workId).filter(item => item.unknownExternalEffectRef === `native-read:${unknown.bindingId}`).length, 1);
   const recoveredPort: WorkExecutionPort = { ...unavailable, find: async () => receipt(unknown), inspect: async () => ({ ...done, usageTokens: 8 }) };
   const recovered = new WorkExecutionAdapter(works, recoveredPort, LOCAL_USER_ID, () => true, (_id, error) => { throw error; });
   recovered.wake(unknown.taskId); await recovered.flush(); await recovered.close();
@@ -130,7 +135,7 @@ try {
   works.nativeResults.receive(pendingUsage, receipt(pendingUsage), { ...done, usageTokens: 4 });
   assert.equal(works.getWork(pendingUsageWork.workId)?.closureConclusion, "cancelled");
 
-  // Stopping still waits for real execution settlement and unknown external effects.
+  // Stopping still waits for live executions, but not unknown historical effects.
   for (const conclusion of ["ended_unsuccessfully", "cancelled"] as const) {
     const live = create(`live-${conclusion}`), running = bind(live, `live-root-${conclusion}`);
     assert.equal(unwrap(works.closeWork(user, { workId: live.workId, operationId: `live-stop-${conclusion}`, conclusion,
@@ -143,8 +148,89 @@ try {
     works.repo.insertBlocker({ blockerId, workId: target.workId, kind, reason: "unresolved effect",
       unknownExternalEffectRef: "unverified-receipt", waitingForUserInput: false, status: "open", createdAt: Date.now() });
     assert.equal(unwrap(works.closeWork(user, { workId: target.workId, operationId: `stop-${kind}`, conclusion: "ended_unsuccessfully",
-      closureSummary: "Do not discard unknown obligations" })).lifecycle, "closing");
-    assert.equal(works.repo.getBlocker(blockerId)?.status, "open");
+      closureSummary: "Retain unknown evidence without blocking closure" })).lifecycle, "closed");
+    assert.equal(works.repo.getBlocker(blockerId)?.status, "cleared");
+    assert.equal(works.repo.getBlocker(blockerId)?.unknownExternalEffectRef, "unverified-receipt");
+    assert.equal(works.repo.getBlocker(blockerId)?.details?.effectDisposition, "continue_without_replay");
+  }
+
+  // Unknown native liveness retains admitted tools; only terminal observations
+  // may release orphaned admissions, and exact late receipts can refine them.
+  const orphanWork = create("orphan-admission"), orphan = bind(orphanWork, "orphan-root");
+  assert.equal(works.admitTaskAction(orphan.taskId, { operationId: "orphan-tool", actionKind: "workspace:write" }), undefined);
+  unwrap(works.reconcileExecution({ kind: "system", reason: "lost-native-read" }, { bindingId: orphan.bindingId, outcome: "unknown" }));
+  assert.equal(works.repo.listAdmissions(orphanWork.workId)[0]?.state, "admitted");
+  assert.equal(unwrap(works.cancelWork(user, { workId: orphanWork.workId, operationId: "cancel-orphan" })).lifecycle, "closing");
+  unwrap(works.reconcileExecution({ kind: "system", reason: "native-confirmed-stopped" }, { bindingId: orphan.bindingId, outcome: "stopped" }));
+  assert.equal(works.repo.listAdmissions(orphanWork.workId)[0]?.state, "unknown", "confirmed terminal invocation retires a lost tool callback as uncertainty");
+  assert.equal(works.repo.listOpenBlockers(orphanWork.workId).length, 0);
+  works.settleTaskAction(orphan.taskId, "orphan-tool", "consumed");
+  assert.equal(works.repo.listAdmissions(orphanWork.workId)[0]?.state, "consumed");
+  assert.equal(works.repo.getBinding(orphan.bindingId)?.status, "stopped", "a late tool receipt does not manufacture whole-execution success");
+  // Model the previously persisted closing state from the old hard gate. The
+  // adapter's settlement seam finishes the existing cancellation with no submit.
+  const oldClosing = works.getWork(orphanWork.workId)!;
+  works.repo.updateWork({ ...oldClosing, lifecycle: "closing", pendingConclusion: "cancelled",
+    stateVersion: oldClosing.stateVersion + 1 });
+  works.settlePendingClosure(orphanWork.workId);
+  assert.equal(works.getWork(orphanWork.workId)?.closureConclusion, "cancelled");
+  const closedVersion = works.getWork(orphanWork.workId)!.stateVersion;
+  works.settlePendingClosure(orphanWork.workId);
+  assert.equal(works.getWork(orphanWork.workId)!.stateVersion, closedVersion, "historical close re-evaluation is idempotent");
+
+  // A live process survives a failed inspection. Cancellation cannot infer that
+  // it stopped, settle its admitted write, or start a second writable execution.
+  {
+    const liveDb = new AppDatabase(join(root, "live-inspection.db"));
+    const liveBots = new BotRegistry(liveDb.connection);
+    liveBots.registerBot({ userId: LOCAL_USER_ID, botId: DEFAULT_BOT_ID, displayName: "live fixture", authorization: DESKTOP_USER_GRANTS });
+    const liveWorks = new WorkService(liveDb.connection, { bots: liveBots });
+    const liveWork = unwrap(liveWorks.createWork(user, { operationId: "live-inspect", title: "Live inspection", inputSnapshotId: "live-input", authorization: DESKTOP_USER_GRANTS }));
+    const dispatched = unwrap(liveWorks.dispatchExecution(user, { workId: liveWork.workId, operationId: "live-root", botId: DEFAULT_BOT_ID,
+      taskId: "live-root", durableStoreKey: "live-store", conversationId: "1", workspaceBinding: root }));
+    const liveBinding = liveWorks.repo.getBinding(dispatched.activeExecutionIds[0])!;
+    assert.equal(liveWorks.admitTaskAction(liveBinding.taskId, { operationId: "live-write", actionKind: "workspace:write" }), undefined);
+    const child = spawn(process.execPath, ["-e", "require('node:fs').appendFileSync('live-write.txt','once'); console.log('ready'); setInterval(()=>{},1000)"], { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
+    const exited = once(child, "exit");
+    let inspectionFails = true, confirmedStopped = false, submits = 0, stops = 0;
+    const livePort: WorkExecutionPort = {
+      prepare: async () => { throw new Error("must not prepare a competing task"); },
+      find: async () => receipt(liveBinding),
+      submit: async () => { submits++; throw new Error("must not replay the running task"); },
+      inspect: async () => {
+        if (inspectionFails) throw new Error("transient native inspection failure");
+        return confirmedStopped ? { ...done, status: "stopped" } : { status: "running" };
+      },
+      stop: async () => { stops++; }, // Request acknowledgement alone is not process-exit evidence.
+    };
+    const liveAdapter = new WorkExecutionAdapter(liveWorks, livePort, LOCAL_USER_ID, () => true, () => {});
+    try {
+      await once(child.stdout!, "data");
+      liveWorks.nativeResults.receive(liveBinding, receipt(liveBinding), { status: "running" });
+      await liveAdapter.flush();
+      assert.equal(child.exitCode, null);
+      assert.equal(liveWorks.repo.getBinding(liveBinding.bindingId)?.status, "running");
+      assert.equal(liveWorks.repo.listAdmissions(liveWork.workId)[0]?.state, "admitted");
+      assert.equal(unwrap(liveWorks.cancelWork(user, { workId: liveWork.workId, operationId: "cancel-live" })).lifecycle, "closing");
+      inspectionFails = false;
+      liveAdapter.wake(liveBinding.taskId); await liveAdapter.flush();
+      assert(stops > 0);
+      assert.equal(liveWorks.getWork(liveWork.workId)?.lifecycle, "closing", "stop request without terminal receipt cannot close Work");
+      assert.equal(liveWorks.repo.listBindings(liveWork.workId).length, 1);
+      assert.equal(liveWorks.repo.listAdmissions(liveWork.workId)[0]?.state, "admitted");
+      assert.equal(rowCount(liveDb.connection.prepare("SELECT count(*) count FROM work_automatic_recovery").get()), 0, "transient read failure cannot create competing recovery");
+      assert.equal(submits, 0);
+      assert.equal(await readFile(join(root, "live-write.txt"), "utf8"), "once");
+      child.kill(); await exited; confirmedStopped = true;
+      liveAdapter.wake(liveBinding.taskId); await liveAdapter.flush();
+      assert.equal(liveWorks.repo.getBinding(liveBinding.bindingId)?.status, "stopped");
+      assert.equal(liveWorks.getWork(liveWork.workId)?.closureConclusion, "cancelled");
+      assert.equal(await readFile(join(root, "live-write.txt"), "utf8"), "once", "the live writer was never replayed");
+      assert.equal(liveWorks.repo.listAdmissions(liveWork.workId)[0]?.state, "unknown", "lost afterTool callback stays uncertain after actual stop");
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) { child.kill(); await exited; }
+      await liveAdapter.close(); liveDb.close();
+    }
   }
 
   // Snapshot epochs and per-user sequences persist across reopen and list scopes stay distinct.

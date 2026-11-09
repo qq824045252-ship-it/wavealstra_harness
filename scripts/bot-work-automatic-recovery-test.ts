@@ -32,7 +32,13 @@ async function run(name: string, final: "completed" | "failed" | "stopped", unkn
         assert.equal(await readFile(artifact, "utf8"), "杭州：已有真实任务结果\n"); assert(text.includes(artifact), "every recovery retains ancestral artifact path");
         if (name === "ancestry") assert(text.includes("original-source-weather-payload"), "later recovery keeps original trigger payload");
         if (unknown || name === "readonly") {
-          assert(works.admitTaskAction(binding.taskId, { operationId: `write:${binding.bindingId}`, actionKind: "workspace:write" }));
+          const denied = works.admitTaskAction(binding.taskId, { operationId: `write:${binding.bindingId}`, actionKind: "workspace:write" });
+          if (name === "readonly") assert(denied, "source readonly scope cannot widen during recovery");
+          else {
+            assert.equal(denied, undefined, "unknown history does not prevent authorized independent work");
+            await writeFile(join(root, `${name}-independent.txt`), "independent recovery output");
+            works.settleTaskAction(binding.taskId, `write:${binding.bindingId}`, "consumed");
+          }
           assert.equal(works.admitTaskAction(binding.taskId, { operationId: `read:${binding.bindingId}`, actionKind: "workspace:read" }), undefined);
           works.settleTaskAction(binding.taskId, `read:${binding.bindingId}`, "consumed");
         }
@@ -101,11 +107,7 @@ async function run(name: string, final: "completed" | "failed" | "stopped", unkn
     if (name === "legacy-quota") assert.equal(works.repo.getBlocker(`dispatch:${name}`)?.status, "cleared", "same-identity successful dispatch resolves its own historical quota refusal");
     assert(!works.repo.listBlockers(work.workId).some(b => b.waitingForUserInput), "runtime failure is not a user decision");
     if (final === "stopped") assert.equal(inputs.length, 1, "user stop is not retried");
-    else if (unknown) {
-      assert.equal(inputs.length, 2); assert.equal(works.getWork(work.workId)?.lifecycle, "closing");
-      assert.equal(works.getWork(work.workId)?.pendingConclusion, "ended_unsuccessfully");
-      assert(works.partialResults.gaps(work.workId).length > 0, "readback success is not business success");
-    } else if (["ancestry", "successful-readback", "gap-chain"].includes(name)) {
+    else if (["ancestry", "successful-readback", "gap-chain"].includes(name)) {
       assert.equal(inputs.length, 3); assert.equal(works.getWork(work.workId)?.closureConclusion, "ended_unsuccessfully");
       if (name === "gap-chain") assert(!works.partialResults.gaps(work.workId).some(item => item.itemId === "missing-step"), "real descendant evidence resolves original failed subitem across absent intermediate facts");
     } else if (final === "completed") {
@@ -118,7 +120,12 @@ async function run(name: string, final: "completed" | "failed" | "stopped", unkn
       else assert.equal(works.getWork(work.workId)?.closureConclusion, "ended_unsuccessfully");
     }
     const recoveryRequests = db.connection.prepare("SELECT task_id FROM work_dispatch_requests WHERE continuation_plan_id IS NOT NULL").all() as { task_id: string }[];
-    if (unknown || name === "readonly") assert(recoveryRequests.every(r => db.getTask(r.task_id)?.permissionMode === "readonly"));
+    if (name === "readonly") assert(recoveryRequests.every(r => db.getTask(r.task_id)?.permissionMode === "readonly"));
+    if (unknown) {
+      assert.equal(await readFile(join(root, `${name}-independent.txt`), "utf8"), "independent recovery output");
+      assert(recoveryRequests.every(r => db.getTask(r.task_id)?.permissionMode === "auto"));
+      assert.equal(works.repo.getBlocker("unknown")?.details?.effectDisposition, "continue_without_replay");
+    }
     if (name === "handoff") assert(recoveryRequests.every(r => db.getTask(r.task_id)?.permissionMode === "auto"), "handoff does not turn former owner into restricted member");
   } finally { await queue.close(); await adapter.close(); db.close(); }
 }
@@ -136,5 +143,5 @@ try {
   await run("watch", "failed");
   await run("no-progress", "failed");
   await run("unknown-effect", "completed", true);
-  console.log("PASS automatic recovery: root task, original output, restart dedupe, stop, no progress and read-only unknown effect");
+  console.log("PASS automatic recovery: root task, original output, restart dedupe, stop, no progress and nonblocking unknown-effect evidence");
 } finally { await rm(root, { recursive: true, force: true }); }

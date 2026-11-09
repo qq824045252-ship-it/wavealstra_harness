@@ -1,4 +1,5 @@
 import { userInputBlockerSnapshot } from "@shared/bot-work-review";
+import { isWorkEffectDiagnostic, WORK_EFFECT_DISPOSITION } from "@shared/work-effect-policy";
 import { useRef, useState } from "react";
 import type { WorkCriterionDto, WorkLifecycle, WorkProjectionDto } from "@shared/bot-work";
 import type { WorkPhase3ControlRequest } from "@shared/bot-work-phase3-control";
@@ -26,7 +27,9 @@ function criterionLabel(criterion: WorkCriterionDto): string {
 export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: string; includeClosed: boolean;
   onReplyToBlocker?: (blocker: WorkProjectionDto["blockers"][number]) => void }): React.JSX.Element {
   const { work, ownerName, includeClosed } = props;
-  const openBlockers = work.blockers.filter((blocker) => blocker.status === "open");
+  const openBlockers = work.blockers.filter((blocker) => blocker.status === "open" && !isWorkEffectDiagnostic(blocker));
+  const effectDiagnostics = work.blockers.filter(blocker => isWorkEffectDiagnostic(blocker)
+    && (blocker.status === "open" || blocker.details?.effectDisposition === WORK_EFFECT_DISPOSITION));
   const identities = useAppStore(s => s.botIdentities);
   const [targetBotId, setTargetBotId] = useState("");
   const [question, setQuestion] = useState("");
@@ -122,8 +125,7 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
         {openBlockers.map(blocker => <article key={blocker.blockerId}>
           <p>{blocker.waitingForUserInput ? "需要处理：" : "阻碍："}{blocker.reason}</p>
           {userInputBlockerSnapshot(blocker) || blocker.legacyUserInput ? <p>请在下方「回复待补充信息」中填写回复和依据。</p>
-            : blocker.unknownExternalEffectRef || blocker.kind === "external_effect" ? <p>先核对原操作效果；未确认前不能解除或重做。</p>
-                : blocker.blockerId.startsWith("continuation:") ? <p>已有成果保留，恢复时只处理必要缺口，不会重跑整个事项。</p>
+            : blocker.blockerId.startsWith("continuation:") ? <p>已有成果保留，恢复时只处理必要缺口，不会重跑整个事项。</p>
                   : <p>执行问题保留在此处，普通回复不会解除阻碍。</p>}
           {blocker.waitingForUserInput && blocker.kind === "operational" && !blocker.unknownExternalEffectRef
             && (!blocker.reasonCode || blocker.reasonCode === "user-input") && !blocker.blockerId.startsWith("continuation:")
@@ -134,6 +136,11 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
         </article>)}
         {work.uncoveredScope.length > 0 && <p>尚未覆盖：{work.uncoveredScope.join("、")}</p>}
       </section>}
+      {effectDiagnostics.length > 0 && <details className="bot-detail-section" aria-label="非阻塞执行记录">
+        <summary>非阻塞执行记录（{effectDiagnostics.length}）</summary>
+        <p>执行记录已保留，不阻止其他步骤。失败不会被视为成功，未知结果不会自动重放。</p>
+        <ul>{effectDiagnostics.map(item => <li key={item.blockerId}>{item.reason}</li>)}</ul>
+      </details>}
       {work.phase4 && (!work.phase4.host.online || work.phase4.offlineGaps.some(gap => gap.state !== "recovered")) && <section className="bot-work-alert" aria-label="运行提醒">
         <h3>运行提醒</h3>
         {!work.phase4.host.online && <p role="status">运行服务离线，持续关注当前不可用。</p>}

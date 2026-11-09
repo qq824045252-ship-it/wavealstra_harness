@@ -156,7 +156,7 @@ export class WorkPartialResults {
     const source = this.works.repo.getBinding(params.sourceBindingId);
     if (!source || !this.works.collaboration.isDelegationAdopted(source, work))
       return { ok: false, code: "version_conflict", message: "缺口执行不属于当前输入要求" };
-    if (!["completed","failed","stopped"].includes(source.status) || this.works.repo.listOpenBlockers(work.workId).some(item => item.kind === "external_effect"))
+    if (!["completed","failed","stopped"].includes(source.status))
       return { ok: false, code: "unsettled_effects", message: "原执行或外部效果尚未核对，不能补跑" };
     const ids = [...new Set(params.gapItemIds)].sort();
     const available = this.gaps(work.workId).filter(item => item.bindingId === source.bindingId);

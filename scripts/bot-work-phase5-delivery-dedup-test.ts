@@ -99,6 +99,39 @@ function channel(kind: "queryable" | "unqueryable" | "best-effort", behaviour: {
   };
 }
 
+// Historical effect alerts must stop before any physical send, without hiding
+// a real question that shared the original card.
+for (const scenario of ["effect-only", "reference-only", "mixed", "later-question"] as const) {
+  check(`retired effect escalation delivery: ${scenario}`, () => {
+    const f = fixture(`retired-${scenario}`);
+    const effect = { blockerId: `effect:${f.suffix}`, workId: f.work.workId,
+      kind: scenario === "reference-only" ? "operational" as const : "external_effect" as const,
+      reason: "Original uncertain operation", unknownExternalEffectRef: `receipt:${f.suffix}`,
+      status: "open" as const, waitingForUserInput: true, createdAt: clock };
+    const question = { blockerId: `question:${f.suffix}`, workId: f.work.workId,
+      kind: "operational" as const, reason: "Choose the actual destination", reasonCode: "user-input" as const,
+      status: "open" as const, waitingForUserInput: true, createdAt: clock };
+    works.repo.insertBlocker(effect);
+    if (scenario === "mixed") works.repo.insertBlocker(question);
+    const originalSources = scenario === "mixed" ? [effect, question] : [effect];
+    const card = works.cards.ensure({ work: f.work, kind: "blocked_escalation",
+      outcome: WorkResultCards.escalationOutcome(f.work, originalSources), title: "Needs your decision",
+      summary: originalSources.map(item => item.reason).join("\n"), unverifiedScope: [], now: clock });
+    const notificationId = `old-effect-alert:${f.suffix}`;
+    works.repo.insertNotification({ notificationId, workId: f.work.workId, semanticKey: notificationId,
+      kind: "blocked", title: "Needs your decision", body: effect.reason, stateVersion: f.work.stateVersion,
+      intentRevision: f.work.intentRevision, delivery: "pending", createdAt: clock, attemptCount: 0, cardKey: card.cardKey });
+    if (scenario === "later-question") works.repo.insertBlocker({ ...question, createdAt: clock + 1 });
+    const before = sendCount();
+    works.deliverPendingNotifications(channel("queryable"), f.work.workId);
+    assert.equal(sendCount() - before, scenario === "mixed" ? 1 : 0);
+    assert.equal(cardsOf(f.work.workId)[0].currency, scenario === "mixed" ? "current" : "superseded");
+    assert.equal(works.repo.listBlockers(f.work.workId).find(item => item.blockerId === effect.blockerId)?.unknownExternalEffectRef,
+      effect.unknownExternalEffectRef, "original diagnostic remains available");
+    if (scenario === "mixed" || scenario === "later-question") assert.equal(works.cards.pendingDecisions(f.work.workId).length, 1);
+  });
+}
+
 // ---------------------------------------------------------------- BW-A42 cards
 
 check("acceptance commits exactly one semantic card with the notification", () => {

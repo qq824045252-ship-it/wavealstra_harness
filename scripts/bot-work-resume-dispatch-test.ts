@@ -206,7 +206,9 @@ try {
       const cancelled = unwrap(f.works.cancelWork(user, { workId: work.workId, operationId: "cancel-blockers:cancel" }));
       await f.queue.flush();
       assert.equal(cancelled.lifecycle, "closing");
-      assert.equal(f.works.repo.getBlocker("external-pending")?.status, "open");
+      assert.equal(f.works.repo.getBlocker("external-pending")?.status, "cleared");
+      assert.equal(f.works.repo.getBlocker("external-pending")?.unknownExternalEffectRef, "original-effect");
+      assert.equal(f.works.repo.getBlocker("external-pending")?.details?.effectDisposition, "continue_without_replay");
       assert.equal(f.works.repo.getBlocker(`diagnostic:${binding.bindingId}`)?.status, "open");
       assert.equal(f.effects(), 2); assert.deepEqual(f.errors, []);
     } finally { await f.close(); }

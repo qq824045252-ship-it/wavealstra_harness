@@ -51,10 +51,6 @@ export class WorkAutomaticRecovery {
   markEvidenceRead(bindingId: string): void {
     this.db.prepare("INSERT INTO work_terminal_evidence_reads(binding_id,version) VALUES (?,1) ON CONFLICT(binding_id) DO UPDATE SET version=1").run(bindingId);
   }
-  reconcileMode(workId: string, planId: string): void {
-    if (this.works.repo.listOpenBlockers(workId).some(blocker => blocker.kind === "external_effect"))
-      this.db.prepare("UPDATE work_automatic_recovery SET mode='readback' WHERE plan_id=? AND mode='recover'").run(planId);
-  }
   readOnlyPlan(planId: string): boolean {
     const record = this.record(planId);
     const source = record && this.works.repo.getBinding(record.source_binding_id);
@@ -92,9 +88,7 @@ export class WorkAutomaticRecovery {
       JOIN work_automatic_recovery recovery ON recovery.plan_id=request.continuation_plan_id WHERE request.task_id=?`)
       .get(taskId) as { plan_id: string; mode: string; work_id: string } | undefined;
     if (!row) return false;
-    // A receipt can become unknown after task preparation. Do not reinterpret
-    // that as authorization to repeat the uncertain action on the next tool call.
-    return this.readOnlyPlan(row.plan_id) || this.works.repo.listOpenBlockers(row.work_id).some(blocker => blocker.kind === "external_effect");
+    return this.readOnlyPlan(row.plan_id);
   }
   isSyntheticItem(binding: WorkExecutionBindingDto, itemId: string): boolean {
     const row = this.db.prepare(`SELECT recovery.source_binding_id FROM work_dispatch_requests request
@@ -136,9 +130,8 @@ export class WorkAutomaticRecovery {
       .all(work.workId, work.intentRevision, work.inputSnapshotId) as Recovery[];
     const sourcePlan = this.db.prepare(`SELECT recovery.* FROM work_dispatch_requests request JOIN work_automatic_recovery recovery
       ON recovery.plan_id=request.continuation_plan_id WHERE request.task_id=?`).get(binding.taskId) as Recovery | undefined;
-    const unknown = this.works.repo.listOpenBlockers(work.workId).some(blocker => blocker.kind === "external_effect");
     const repeated = prior.some(row => row.fingerprint === fingerprint);
-    const mode = sourcePlan?.mode === "readback" ? "exhausted" : unknown || repeated ? "readback" : "recover";
+    const mode = sourcePlan?.mode === "readback" ? "exhausted" : repeated ? "readback" : "recover";
     const planId = `automatic-recovery:${binding.bindingId}`;
     this.db.prepare("INSERT INTO work_automatic_recovery(source_binding_id,plan_id,fingerprint,mode,created_at) VALUES (?,?,?,?,?)")
       .run(binding.bindingId, planId, fingerprint, mode, now);
@@ -175,9 +168,12 @@ export class WorkAutomaticRecovery {
       completed: facts.filter(item => item.outcome === "completed"),
       remaining: this.works.partialResults.gaps(binding.workId).filter(item => sourceIds.has(item.bindingId)).map(item => ({ itemId: item.itemId, task: item.task, outcome: item.outcome, criterionIds: item.criterionIds })),
       retainedResults: results.map(result => ({ summary: result.summary, artifacts: result.artifactRefs })),
+      uncertainOperations: this.works.repo.listAdmissions(binding.workId)
+        .filter(item => item.state === "unknown" && item.bindingId && sourceIds.has(item.bindingId))
+        .map(item => ({ operationId: item.operationId, actionKind: item.actionKind })),
       instructions: record.mode === "readback"
         ? "只读核对已有成果并给用户交付部分结果、来源及具体缺项。未知外部效果不得重发重做；不要声称未知动作未发生。不要再次调用同一个失败方法。"
-        : "这是原事项的定向恢复，不是重做原任务。先读取已有报告与成功步骤；只补缺失部分。网络/解析/依赖失败时换方法或数据源，不要重复同一失败调用。已有文件不得重建、已发消息不得重发。有用结果立刻汇报；无法继续时交付部分结果和具体原因，不要求用户批准重试。",
+        : "这是原事项的定向恢复，不是重做原任务。普通工具失败直接处理，未知效果不阻止独立步骤。先读取已有报告与成功步骤；只补缺失部分。uncertainOperations 保留原调用身份，不代表未执行；核对实际状态或幂等回执前不得盲目重发同一未知操作。网络/解析/依赖失败时换方法或数据源，不要重复同一失败调用。已有文件不得重建、已发消息不得重发。有用结果立刻汇报；无法继续时交付部分结果和具体原因，不要求用户批准重试。",
       itemId: `recover:${source.bindingId}` }, originalGoal: JSON.parse(this.works.repo.executionInput(this.ancestry(source).at(-1) ?? source)) });
   }
 }

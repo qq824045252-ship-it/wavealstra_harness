@@ -1,4 +1,5 @@
 import { botAttachmentSchema } from "../../../shared/bot-conversation";
+import { nonBlockingEffect, workAdmissionInFlight } from "../../../shared/work-effect-policy";
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type {
@@ -764,6 +765,7 @@ export class WorkRepository {
   // ---------------------------------------------------------------- blockers
 
   insertBlocker(blocker: WorkBlockerDto): void {
+    blocker = nonBlockingEffect(blocker);
     this.db.prepare(`INSERT INTO work_blockers (
       blocker_id,work_id,reported_by_bot_id,reason,kind,unknown_external_effect_ref,
       reason_code,details_json,source_ref,subscription_id,causal_chain_id,
@@ -809,9 +811,9 @@ export class WorkRepository {
     if (!["团队共享预算已耗尽，未启动下一成员", "团队仍有未核实的供应商用量，核对原预留后才能继续",
       "团队仍有未核实的供应商用量，不能派发新的执行"].includes(reason)) return false;
     if (this.bindingForTask(taskId)) return false;
-    if (this.listAdmissions(workId).some(item => item.state === "admitted" || item.state === "unknown")) return false;
-    return !this.db.prepare(`SELECT 1 FROM work_blockers WHERE work_id=? AND status='open'
-      AND (kind='external_effect' OR unknown_external_effect_ref IS NOT NULL) LIMIT 1`).get(workId);
+    if (this.listAdmissions(workId).some(workAdmissionInFlight)) return false;
+    // Uncertain effects do not revive retired quota refusals on unstarted tasks.
+    return true;
   }
 
   private isRetiredTeamQuotaBlocker(row: BlockerRow): boolean {
@@ -826,7 +828,7 @@ export class WorkRepository {
   }
 
   reopenBlocker(blockerId: string, workId: string): void {
-    this.db.prepare("UPDATE work_blockers SET status='open',cleared_at=NULL WHERE blocker_id=? AND work_id=?").run(blockerId, workId);
+    this.db.prepare("UPDATE work_blockers SET status='open',cleared_at=NULL WHERE blocker_id=? AND work_id=? AND kind!='external_effect' AND unknown_external_effect_ref IS NULL").run(blockerId, workId);
   }
 
   // ------------------------------------------------------------- subscriptions
@@ -1219,7 +1221,7 @@ function mapEvidence(row: EvidenceRow): WorkEvidenceDto {
 }
 
 function mapBlocker(row: BlockerRow): WorkBlockerDto {
-  return {
+  return nonBlockingEffect({
     blockerId: row.blocker_id,
     workId: row.work_id,
     reportedByBotId: row.reported_by_bot_id ?? undefined,
@@ -1235,7 +1237,7 @@ function mapBlocker(row: BlockerRow): WorkBlockerDto {
     status: row.status,
     createdAt: row.created_at,
     clearedAt: row.cleared_at ?? undefined,
-  };
+  });
 }
 
 function mapAdmission(row: AdmissionRow): WorkAdmissionDto {

@@ -89,12 +89,14 @@ try {
   assert.equal(works.causal.admit({ ...causalInput, operationId: "different-operation" }).allowed, false, "same-state causal loop protection still applies");
   create("new-after-upgrade");
   dispatch(works.getWork(original.workId)!, "dispatch-after-upgrade");
-  // A matching-looking blocker must never hide an unknown external effect.
+  // A matching-looking historical blocker must retain unknown evidence without blocking Work.
   const protectedWork = create("protected");
   db.connection.prepare("INSERT INTO work_blockers(blocker_id,work_id,kind,reason,reason_code,unknown_external_effect_ref,waiting_for_user_input,status,created_at) VALUES (?,?,'operational','effect','budget-exhausted','unverified-effect',0,'open',1)")
     .run(`budget:exhausted:${protectedWork.workId}`, protectedWork.workId);
-  assert.equal(works.repo.listOpenBlockers(protectedWork.workId).length, 1);
-  assert.equal(unwrap(works.closeWork(user, { operationId: "stop-protected", workId: protectedWork.workId, conclusion: "ended_unsuccessfully", closureSummary: "Unverified external effect remains" })).lifecycle, "closing");
+  assert.equal(works.repo.listOpenBlockers(protectedWork.workId).length, 0);
+  assert.equal(works.repo.getBlocker(`budget:exhausted:${protectedWork.workId}`)?.unknownExternalEffectRef, "unverified-effect");
+  assert.equal(works.repo.getBlocker(`budget:exhausted:${protectedWork.workId}`)?.details?.effectDisposition, "continue_without_replay");
+  assert.equal(unwrap(works.closeWork(user, { operationId: "stop-protected", workId: protectedWork.workId, conclusion: "ended_unsuccessfully", closureSummary: "Unverified external effect remains diagnostic evidence" })).lifecycle, "closed");
   bots.registerBot({ userId: LOCAL_USER_ID, botId: "quota-team-member", displayName: "member", authorization: DESKTOP_USER_GRANTS });
   const teamResult = works.teams.handle({ ...user, grants: { ...DESKTOP_USER_GRANTS, allowRedelegation: true } }, { kind: "create", request: {
     operationId: "quota-team", title: "legacy team quota", goalDescription: "Read input", workspacePath: root, criteria: ["Report findings"],
@@ -113,11 +115,13 @@ try {
   assert.equal(works.repo.canIgnoreRetiredTeamQuotaFailure(teamWorkId, teamTaskId, "other preparation error"), false);
   works.repo.insertBlocker({ blockerId: "team-real-effect", workId: teamWorkId, kind: "external_effect", reason: "unverified actual effect",
     unknownExternalEffectRef: "actual", waitingForUserInput: false, status: "open", createdAt: 2 });
-  assert.equal(works.repo.canIgnoreRetiredTeamQuotaFailure(teamWorkId, teamTaskId, legacyError), false);
-  assert.equal(works.teams.get(teamWorkId)!.executions[0].error, legacyError, "unsettled effects prevent treating the old failure as safe to retry");
+  assert.equal(works.repo.canIgnoreRetiredTeamQuotaFailure(teamWorkId, teamTaskId, legacyError), true);
+  assert.equal(works.teams.get(teamWorkId)!.executions[0].error, undefined, "unknown historical effects do not revive retired quota failures");
+  assert.equal(works.repo.getBlocker("team-real-effect")?.unknownExternalEffectRef, "actual");
+  assert.equal(works.repo.getBlocker("team-real-effect")?.details?.effectDisposition, "continue_without_replay");
   assert.equal(works.repo.canIgnoreRetiredTeamQuotaFailure(original.workId, "dispatch-after-upgrade", legacyError), false, "existing binding prevents quota-only reinterpretation");
   assert.equal(works.causal.list(causalWork.workId).some(row => row.chain_id === oldCausal.chainId), false, "retired quota refusals are not current monitor items");
   const noAuthority = new WorkService(db.connection, { bots, isAuthority: () => false });
   assert.equal(noAuthority.createWork(user, { operationId: "no-authority", title: "no" }).ok, false);
-  console.log("PASS no Work quota contracts or runtime blocking; legacy v35 budget storage is retired while business history, authority and external-effect guards are preserved");
+  console.log("PASS no Work quota contracts or runtime blocking; legacy v35 budget storage is retired while business history, authority and external-effect evidence are preserved");
 } finally { db.close(); await rm(root, { recursive: true, force: true }); }

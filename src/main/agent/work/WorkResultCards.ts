@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import { z } from "zod";
+import { isWorkEffectDiagnostic } from "../../../shared/work-effect-policy";
 import type {
   WorkBlockerDto, WorkDeliverableDto, WorkDto,
 } from "../../../shared/bot-work";
@@ -37,7 +38,7 @@ const listText = (values: ReadonlyArray<string>): string => JSON.stringify([...n
 /** Blockers that must reach the user; internal retries/backoff stay in the diagnostics ledger. */
 export function pendingDecisionBlockers(blockers: WorkBlockerDto[]): WorkBlockerDto[] {
   return blockers.filter(blocker => blocker.status === "open"
-    && (blocker.waitingForUserInput || blocker.kind === "external_effect"));
+    && !isWorkEffectDiagnostic(blocker) && blocker.waitingForUserInput);
 }
 
 /**
@@ -299,6 +300,17 @@ export class WorkResultCards {
       if (latest?.card_key && latest.card_key !== row.card_key) return "superseded";
     }
     const outcome = JSON.parse(row.canonical_outcome_json) as WorkOutcomePayload;
+    if (row.kind === "blocked_escalation") {
+      // Legacy escalation cards saved codes and the exact joined reasons, not
+      // blocker IDs. Require both to identify their sources conservatively:
+      // another/new question in this Work must not keep an old effect alert alive.
+      const sources = this.repo.listBlockers(work.workId).filter(blocker => blocker.createdAt <= row.created_at
+        && outcome.pendingBlockerCodes.includes(blocker.reasonCode ?? blocker.kind)
+        && (`\n${row.summary}\n`).includes(`\n${blocker.reason}\n`));
+      const sameSources = sources.map(blocker => blocker.reason).join("\n") === row.summary
+        && listText(sources.map(blocker => blocker.reasonCode ?? blocker.kind)) === listText(outcome.pendingBlockerCodes);
+      if (sameSources && sources.some(isWorkEffectDiagnostic) && !pendingDecisionBlockers(sources).length) return "superseded";
+    }
     const superseded = outcome.deliverables.some(item => this.repo.getDeliverable(item.deliverableId)?.status === "superseded");
     return superseded ? "superseded" : "current";
   }

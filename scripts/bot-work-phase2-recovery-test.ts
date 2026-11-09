@@ -233,7 +233,9 @@ async function run() {
         assert.equal(rowCount(db.connection.prepare("SELECT COUNT(*) count FROM work_native_inbox WHERE consumed_at IS NULL").get()), 0);
         assert.deepEqual(fixture.errors, []);
         if (scenario === "effect-unknown") {
-          assert(works.repo.listOpenBlockers(work.workId).some(blocker => blocker.kind === "external_effect"));
+          assert(works.repo.listBlockers(work.workId).some(blocker => blocker.kind === "external_effect"
+            && blocker.status === "cleared" && blocker.details?.effectDisposition === "continue_without_replay"));
+          assert(!works.repo.listOpenBlockers(work.workId).some(blocker => blocker.kind === "external_effect"));
           assert(works.repo.listAdmissions(work.workId).some(admission => admission.state === "unknown"));
           assert.notEqual(works.getWork(work.workId)?.closureConclusion, "succeeded");
         } else {

@@ -1,4 +1,5 @@
 import { TOOL_NOT_STARTED_MEMO } from "./DurableToolOutcome";
+import { isNativeNotStarted } from "./DurableToolLifecycle";
 import { workShellRead } from "../work/WorkShellRead";
 import { resolve } from "node:path";
 import { z } from "zod";
@@ -192,23 +193,38 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
             observed: { reason: "receipt-verifier-unavailable-or-not-authorized" }, checkedAt: Date.now() };
         }
         const proof = await api.memo(TOOL_NOT_STARTED_MEMO, context);
-        const notStarted = proof !== null && typeof proof === "object" && !Array.isArray(proof)
+        const notStarted = isNativeNotStarted(api.taskId, String(api.conversationId)) || proof !== null && typeof proof === "object" && !Array.isArray(proof)
           && proof.toolName === call.name && proof.callId === call.id && proof.taskId === api.taskId
           && proof.conversationId === api.conversationId && proof.phase === "validation";
+        // A matching preexisting file cannot turn a blocked/unstarted call into a
+        // successful write, or leave a spurious unverified-effect diagnosis.
+        if (notStarted) evidence = undefined;
         const reconciled = evidence?.status === "passed";
-        const settlement = notStarted ? "released" : reconciled || (!evidence && !interrupted && !result.isError) ? "consumed" : mayWrite ? "unknown" : "released";
+        // A completed error is a normal tool result, not a lost execution. In
+        // particular, native shell exit_code covers every command without parsing
+        // shell text. A nonzero exit does NOT prove that no partial write occurred.
+        // Throws/timeouts and interrupted tasks retain uncertainty, but Work stores
+        // that fact as a diagnostic rather than locking unrelated work.
+        const threw = result.diagnostics?.some(item => item.code === "tool_error") === true;
+        const completedResponse = !interrupted && !threw;
+        const exitCode = result.structuredOutput && typeof result.structuredOutput === "object"
+          && !Array.isArray(result.structuredOutput) && typeof result.structuredOutput.exitCode === "number"
+          && Number.isSafeInteger(result.structuredOutput.exitCode) ? result.structuredOutput.exitCode : undefined;
+        const settlement = notStarted ? "released" : reconciled || (!evidence && completedResponse) ? "consumed" : mayWrite ? "unknown" : "released";
         options.settleWorkAction?.(`tool:${api.conversationId}:${api.taskId}:${call.id}`, settlement);
         if (attempt) {
-          const status = notStarted ? "failed" : evidence?.status ?? (interrupted ? "inconclusive" : result.isError ? "failed" : "passed");
+          const status = notStarted ? "failed" : evidence?.status ?? (!completedResponse ? "inconclusive" : result.isError ? "failed" : "passed");
           options.attempts.settleDurable({ ...attempt, status, phase: "finished", finishedAt: Date.now(),
-            transportStatus: result.isError ? "failed" : "succeeded", causeCode: reconciled ? undefined : evidence ? "effect-unverified" : interrupted?.code,
+            transportStatus: completedResponse ? "succeeded" : "failed", observedExitCode: exitCode,
+            causeCode: reconciled ? undefined : evidence ? "effect-unverified" : interrupted?.code ?? (threw ? "tool_error" : undefined),
             recovery: status === "inconclusive" ? "requires-user-action" : undefined,
             verifierId: evidence?.verifierId ?? attempt.verifierId,
             // Business/file verification is used only when an explicit pre-execution intent exists.
             verification: { ...execution, attemptId: attempt.id, verifierId: evidence?.verifierId ?? attempt.verifierId, verifierVersion: 1,
               target: attempt.target, canonicalTarget: evidence?.canonicalTarget ?? attempt.target, status,
               expected: evidence?.expected ?? { successfulToolResponse: true }, observed: evidence?.observed ?? { isError: result.isError === true,
-                diagnosticCodes: (result.diagnostics ?? []).map(item => item.code ?? "") }, checkedAt: Date.now(),
+                diagnosticCodes: (result.diagnostics ?? []).map(item => item.code ?? ""),
+                ...(exitCode === undefined ? {} : { exitCode }), completedResponse, notStarted }, checkedAt: Date.now(),
               ...(!reconciled && interrupted?.code ? { causeCode: interrupted.code } : {}),
             },
           });

@@ -531,8 +531,10 @@ export class WorkNotificationDelivery {
         || card?.currency !== "historical" && ["accepted_result", "closure_succeeded"].includes(card?.kind ?? "")
           && card?.deliverableIds.includes(item.deliverableId)));
     const currentSummary = notification.kind !== "summary" || this.works.phase5.isOwnerSummaryCurrent(latest, notification.cardKey);
+    const currentEscalation = notification.kind !== "blocked" || card?.kind !== "blocked_escalation"
+      || card.currency === "current";
     // Closed:succeeded still has a valid delivery obligation.
-    if (cancelled || revisionChanged || !artifactsValid || !currentDeliverable || !currentSummary) {
+    if (cancelled || revisionChanged || !artifactsValid || !currentDeliverable || !currentSummary || !currentEscalation) {
       this.db.prepare("UPDATE work_notification_identity SET semantic_validity=? WHERE notification_id=?")
         .run(cancelled ? "cancelled" : "superseded", notificationId);
       const changed = this.works.getWork(latest.workId)!;

@@ -258,8 +258,8 @@ export class WorkService {
       .filter((deliverable) => currentResultIds.has(deliverable.deliverableId))
       .flatMap((deliverable) => deliverable.uncoveredScope))];
     const nextSteps: string[] = [];
-    if (work.lifecycle === "closing") nextSteps.push("等待在途执行与外部效果结算");
-    const settlingActions = this.repo.listAdmissions(work.workId).filter(item => item.state === "admitted" || item.state === "unknown").length;
+    if (work.lifecycle === "closing") nextSteps.push("等待在途执行结束");
+    const settlingActions = this.repo.listAdmissions(work.workId).filter(item => item.state === "admitted").length;
     const gaps = this.partialResults.gaps(work.workId);
     if (work.lifecycle === "paused") nextSteps.push(settlingActions ? "已暂停，正在结算在途操作" : "事项已暂停，恢复后继续");
     if (gaps.length) nextSteps.push(`保留已确认成果，仍有 ${gaps.length} 项必要缺口待核对：未执行动作可关联后续证据覆盖，其余缺口按原身份处理`);
@@ -821,12 +821,13 @@ export class WorkService {
     return { ok: true, outboxEventId };
   }
 
-  /** Closing work may only finish when no execution, admission, blocker or unknown effect remains. */
+  /** In-flight work still settles normally. Recorded uncertainty is not a lock
+   * and accepting that risk never supplies success/acceptance evidence. */
   private isSettled(work: WorkDto): boolean {
     const bindings = this.repo.listBindings(work.workId);
     if (bindings.some((binding) => UNSETTLED_BINDING_STATUSES.has(binding.status))) return false;
     const admissions = this.repo.listAdmissions(work.workId);
-    if (admissions.some((admission) => admission.state === "admitted" || admission.state === "unknown")) return false;
+    if (admissions.some((admission) => admission.state === "admitted")) return false;
     if (this.repo.listOpenBlockers(work.workId).length > 0) return false;
     return true;
   }
@@ -841,6 +842,18 @@ export class WorkService {
       operationId: `settle-${work.workId}-${work.stateVersion}`,
       closureSummary: work.closureSummary,
     }, now);
+  }
+
+  /** Re-evaluate a previously requested stop after historical diagnostic
+   * retirement, even when every native terminal receipt was already read. */
+  settlePendingClosure(workId: string): void {
+    if (this.authorityError()) return;
+    this.transaction(() => {
+      const work = this.repo.getWork(workId);
+      if (work?.lifecycle !== "closing") return;
+      this.tryCloseSettled(work, this.now());
+      this.emitCurrentProjection(workId);
+    });
   }
 
   // ============================================================ delegation
@@ -946,7 +959,7 @@ export class WorkService {
       const binding = this.repo.bindingForTask(taskId);
       if (!binding) return;
       const admission = this.repo.listAdmissions(binding.workId).find(item => item.operationId === operationId);
-      if (admission && admission.state === "admitted") this.settleAdmission(admission.admissionId, outcome);
+      if (admission && (admission.state === "admitted" || admission.state === "unknown")) this.settleAdmission(admission.admissionId, outcome);
     });
   }
 

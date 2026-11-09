@@ -29,6 +29,8 @@ class FakeHost implements WorkExecutionPort {
   readonly failOnce = new Set<string>();
   readonly failAlways = new Set<string>();
   readonly unknown = new Set<string>();
+  readonly unreadable = new Set<string>();
+  onUnknownEffect?: (taskId: string) => void;
   readonly runningRecovery = new Set<string>();
   writes = 0;
   sequence = 0;
@@ -46,12 +48,16 @@ class FakeHost implements WorkExecutionPort {
     return receipt;
   }
   async inspect(binding: { bindingId: string; taskId: string; operationId: string; botId: string }): Promise<WorkExecutionObservation> {
+    if (this.unreadable.has(binding.taskId)) throw new Error("native checkpoint temporarily unavailable");
     const assignment = this.assignment.get(binding.bindingId);
     const botId: string = assignment?.botId ?? binding.botId;
     const recovery = binding.operationId.startsWith("team-recovery:");
     if (recovery && this.runningRecovery.has(binding.taskId)) return { status: "running" } as WorkExecutionObservation;
     if (this.failAlways.has(botId)) return { status: "failed", summary: "same empty failure", hasWriteConflicts: false, artifactRefs: [] } as WorkExecutionObservation;
-    if (!recovery && this.unknown.has(botId)) return { status: "unknown", summary: "effect is unknown", hasWriteConflicts: false, artifactRefs: [] } as unknown as WorkExecutionObservation;
+    if (!recovery && this.unknown.has(botId)) {
+      this.onUnknownEffect?.(binding.taskId);
+      return { status: "failed", summary: "native task finished after uncertain tool effect", hasWriteConflicts: false, artifactRefs: [this.artifact] };
+    }
     if (!recovery && this.failOnce.has(botId)) {
       this.failOnce.delete(botId);
       return { status: "failed", summary: "failed after writing the file", hasWriteConflicts: false, artifactRefs: [this.artifact] } as WorkExecutionObservation;
@@ -155,7 +161,7 @@ try {
     } finally { await f.close(); }
   }
 
-  // Unknown external effects are verified read-only; no write is replayed, and the
+  // Unknown effects retain their facts without narrowing authorized recovery; no write is replayed, and the
   // next independent member is not blocked by the unknown result.
   {
     const f = fixture();
@@ -165,13 +171,18 @@ try {
       const workId = created.work!.workId;
       const [, d] = created.team!.executions;
       f.host.unknown.add("recovery-a");
+      f.host.onUnknownEffect = taskId => {
+        assert.equal(f.works.admitTaskAction(taskId, { operationId: "uncertain-tool", actionKind: "workspace:write" }), undefined);
+        f.works.settleTaskAction(taskId, "uncertain-tool", "unknown");
+      };
       await wait(() => f.bindings(workId).some(binding => binding.taskId === d!.taskId && binding.status === "completed"),
         "independent member survives unknown effect", () => f.flush(4));
       const aBindings = f.bindings(workId).filter(binding => binding.taskId === created.team!.executions[0]!.taskId);
-      assert.equal(aBindings[0]!.status, "unknown", "the original unknown fact is not rewritten as success");
+      assert.equal(aBindings[0]!.status, "failed", "the original terminal failure is not rewritten as success");
+      assert(f.works.repo.listAdmissions(workId).some(admission => admission.operationId === "uncertain-tool" && admission.state === "unknown"), "unknown tool outcome remains factual");
       const recovery = aBindings.find(binding => binding.operationId.startsWith("team-recovery:"));
-      assert(recovery, "read-only verification continuation");
-      assert.deepEqual(recovery!.delegatedScope, ["workspace:read"]);
+      assert(recovery, "independent recovery continuation");
+      assert.deepEqual(recovery!.delegatedScope, ["workspace:read", "workspace:write"], "recovery retains the member's authorized scope");
       assert.equal(f.host.writes, 1, "unknown effect does not repeat the write");
     } finally { await f.close(); }
   }
@@ -216,6 +227,61 @@ try {
     } finally { await f.close(); }
   }
 
+  // Pre-upgrade pending/claimed continuations cannot race an unknown native
+  // source, or a terminal source with a still-admitted tool invocation.
+  for (const persistedState of ["pending", "claimed"] as const) {
+    const f = fixture();
+    try {
+      const created = f.create(`legacy-${persistedState}`, [{ botId: "recovery-a" }, { botId: "recovery-d" }], true);
+      assert(created.ok && created.work && created.team);
+      const workId = created.work.workId;
+      f.host.failOnce.add("recovery-a");
+      await f.works.teams.dispatchPending(f.db, f.adapter, () => "fixture");
+      await f.adapter.flush();
+      const source = f.bindings(workId)[0];
+      assert.equal(source.status, "failed");
+      const ownBindings = () => f.bindings(workId).filter(binding => binding.taskId === source.taskId);
+      // Persist the same legacy recovery row production previously created.
+      const service = f.works.teams as any;
+      service.ensureRecovery(f.works.getWork(workId), service.rows(workId)[0], source);
+      const recovery = f.db.connection.prepare("SELECT * FROM work_team_recovery_attempts WHERE work_id=?").get(workId) as any;
+      assert(recovery);
+      f.db.connection.prepare("UPDATE work_team_recovery_attempts SET state=? WHERE recovery_id=?").run(persistedState, recovery.recovery_id);
+      f.works.repo.updateBinding({ ...source, status: "unknown" });
+      f.host.unreadable.add(source.taskId);
+      const scopes = ["workspace:read", "workspace:write"];
+      f.works.repo.updateBinding({ ...source, status: "invalidated", attemptId: source.attemptId ?? "already-attempted" });
+      assert(f.works.teams.dispatchError(workId, source.taskId, source.botId, scopes, recovery.operation_id), "attempted invalidation does not prove the native execution ended");
+      f.works.repo.updateBinding({ ...source, status: "unknown" });
+      assert.equal(f.works.teams.allowsRecoveryBinding(workId, source.taskId, recovery.operation_id, { ...source, status: "unknown" }), false);
+      assert(f.works.teams.dispatchError(workId, source.taskId, source.botId, scopes, recovery.operation_id));
+      await f.works.teams.dispatchPending(f.db, f.adapter, () => "fixture");
+      await f.adapter.flush();
+      assert.equal(ownBindings().length, 1, "persisted claim cannot dispatch while source liveness is unknown");
+      assert(f.host.submissions.some(item => item.botId === "recovery-d"), "blocked old claim must not starve an independent member");
+      assert.equal((f.db.connection.prepare("SELECT state FROM work_team_recovery_attempts WHERE recovery_id=?").get(recovery.recovery_id) as any).state, persistedState);
+      f.host.unreadable.delete(source.taskId);
+      f.works.repo.updateBinding(source);
+      f.works.repo.insertAdmission({ admissionId: `live:${workId}`, workId, bindingId: source.bindingId,
+        operationId: "live-tool", actionKind: "workspace:write", state: "admitted",
+        intentRevision: source.intentRevision, ownerEpoch: source.ownerEpoch, admittedAt: Date.now() });
+      assert(f.works.teams.dispatchError(workId, source.taskId, source.botId, scopes, recovery.operation_id));
+      await f.works.teams.dispatchPending(f.db, f.adapter, () => "fixture");
+      assert.equal(ownBindings().length, 1, "source admission remains an in-flight guard");
+      f.works.repo.updateAdmissionState(`live:${workId}`, "unknown", Date.now());
+      assert.equal(f.works.teams.dispatchError(workId, source.taskId, source.botId, scopes, recovery.operation_id), undefined);
+      f.host.runningRecovery.add(source.taskId);
+      await f.works.teams.dispatchPending(f.db, f.adapter, () => "fixture");
+      await f.adapter.flush();
+      assert.equal(ownBindings().length, 2, "terminal source with uncertain effect permits independent continuation");
+      const own = f.bindings(workId).find(binding => binding.operationId === recovery.operation_id)!;
+      f.db.connection.prepare("UPDATE work_team_recovery_attempts SET state='claimed' WHERE recovery_id=?").run(recovery.recovery_id);
+      assert.equal(f.works.teams.allowsRecoveryBinding(workId, source.taskId, recovery.operation_id, own), true);
+      await f.works.teams.dispatchPending(f.db, f.adapter, () => "fixture");
+      assert.equal(ownBindings().length, 2, "lost response adopts the exact existing recovery without a duplicate");
+    } finally { await f.close(); }
+  }
+
   // Restart after the failure and duplicate delivery both claim the same durable
   // continuation, producing exactly one recovery binding and one final team result.
   {
@@ -242,7 +308,7 @@ try {
       assert.equal(attempts.n, 1, "duplicate delivery/restart does not create another recovery generation");
     } finally { await f.close(); }
   }
-  console.log("PASS team recovery: same identity continuation, single write, dependency advancement, independent members, read-only unknown effects, stop cancellation, no-progress stop and restart dedup");
+  console.log("PASS team recovery: same identity continuation, single write, dependency advancement, independent members, nonblocking unknown effects, stop cancellation, no-progress stop and restart dedup");
 } catch (error) {
   console.error(error);
   process.exitCode = 1;

@@ -202,8 +202,12 @@ try {
   await queue.flush(); const uncertainBinding = bindings(uncertain.work!.workId)[0]!;
   works.transaction(() => works.repo.updateBinding({ ...uncertainBinding, status: "unknown" }));
   await works.teams.dispatchPending(db, adapter, () => "fixture");
-  assert.equal(bindings(uncertain.work!.workId).length, 2, "the unknown member reuses its report while the next member starts");
-  assert.equal(bindings(uncertain.work!.workId)[0].status, "unknown", "recovery never rewrites the original unknown result as success");
+  assert.equal(bindings(uncertain.work!.workId).length, 1, "unknown native liveness holds the dependent member");
+  assert.equal(bindings(uncertain.work!.workId)[0].status, "unknown");
+  assert(works.reconcileExecution(user, { bindingId: uncertainBinding.bindingId, outcome: "failed", note: "Confirmed native termination" }).ok);
+  await works.teams.dispatchPending(db, adapter, () => "fixture");
+  assert.equal(bindings(uncertain.work!.workId).length, 2, "confirmed terminal member can reuse its report and release the next member");
+  assert.equal(bindings(uncertain.work!.workId)[0].status, "failed", "report reuse never rewrites native failure as success");
   assert.equal(bindings(uncertain.work!.workId)[1].taskId, uncertain.team!.executions[1]!.taskId, "the next member keeps its own identity");
   assert.equal(works.teams.get(uncertain.work!.workId)!.executions[0]!.status, "recovered");
   assert.equal(works.teams.get(uncertain.work!.workId)!.executions[0]!.recoveryOutcome, "reused_existing_result");
