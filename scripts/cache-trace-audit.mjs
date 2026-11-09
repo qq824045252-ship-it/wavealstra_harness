@@ -7,6 +7,35 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const tokenCount = value => Number.isSafeInteger(value) && value >= 0;
+const requestFailed = (result, raw) => ['error', 'aborted', 'observation-failed'].includes(result?.outcome)
+  || raw?.terminal === 'response.failed' || ['failed', 'cancelled'].includes(raw?.responseStatus);
+
+function rawUsageEvidence(raw) {
+  const input = raw?.usage?.inputTokens, cached = raw?.usage?.cachedTokens;
+  const inputTokenState = input == null ? 'missing' : tokenCount(input) ? 'valid' : 'invalid';
+  const cacheReadState = !raw?.cachedTokensPresent ? 'missing'
+    : !tokenCount(cached) || (inputTokenState === 'valid' && cached > input) ? 'invalid'
+    : cached === 0 ? 'explicit-zero' : 'positive';
+  const rawUsageState = inputTokenState === 'invalid' || cacheReadState === 'invalid' ? 'invalid'
+    : inputTokenState === 'missing' || cacheReadState === 'missing' ? 'missing' : 'complete';
+  return { inputTokenState, cacheReadState, rawUsageState };
+}
+
+// A normalized zero may mean the provider did not report usage. Only a successful
+// predecessor's valid raw prompt count can support a cache-reuse estimate.
+function predecessorUsage(result, raw) {
+  if (!result) return { previousUsageState: 'missing-result', previousPromptTokens: null };
+  if (requestFailed(result, raw)) return { previousUsageState: 'request-failed', previousPromptTokens: null };
+  if (!['stop', 'length', 'toolUse'].includes(result.outcome)
+    || !['response.completed', 'response.incomplete'].includes(raw?.terminal)) {
+    return { previousUsageState: 'unobserved-success', previousPromptTokens: null };
+  }
+  const evidence = rawUsageEvidence(raw);
+  const previousUsageState = evidence.inputTokenState !== 'valid' ? `raw-input-${evidence.inputTokenState}`
+    : evidence.cacheReadState === 'invalid' ? 'raw-cache-invalid' : 'available';
+  return { previousUsageState, previousPromptTokens: previousUsageState === 'available' ? raw.usage.inputTokens : null };
+}
+
 const compareHashes = (a, b, keys) => {
   if (!a || !b) return null;
   const known = keys.filter(key => typeof a[key] === 'string' && typeof b[key] === 'string');
@@ -15,7 +44,7 @@ const compareHashes = (a, b, keys) => {
 };
 
 export function summarizeCacheTraces(records) {
-  const groups = new Map(), sends = new Map(), results = new Map();
+  const groups = new Map(), sends = new Map(), results = new Map(), rawUsages = new Map();
   const ordered = [...records].sort((a,b)=>String(a.epoch).localeCompare(String(b.epoch)) || (a.sequence ?? a.at) - (b.sequence ?? b.at));
   for (const row of ordered) {
     if (row.version !== 1 || !row.epoch || !row.request) continue;
@@ -23,6 +52,7 @@ export function summarizeCacheTraces(records) {
     const list = groups.get(key) ?? [];list.push(row);groups.set(key,list);
     if (row.event === 'request' && row.stage === 'http') sends.set(`${key}/${row.attempt}`,row);
     if (row.event === 'result') results.set(key,row);
+    if (row.event === 'provider-usage') rawUsages.set(key,row);
   }
   const calls=[];
   for (const rows of groups.values()) {
@@ -32,17 +62,15 @@ export function summarizeCacheTraces(records) {
     const first=http[0],last=http.at(-1);
     const before=first?.previous;
     const prior=before?sends.get(`${result.epoch}/${before.request}/${before.attempt}`):undefined;
-    const priorUsage=before?results.get(`${result.epoch}/${before.request}`)?.usage:undefined;
-    const promptTokens=u=>u?(u.input??0)+(u.cacheRead??0)+(u.cacheWrite??0):null;
-    const previousPromptTokens=promptTokens(priorUsage);
+    const priorKey=before?`${result.epoch}/${before.request}`:undefined;
+    const {previousUsageState,previousPromptTokens}=predecessorUsage(results.get(priorKey),rawUsages.get(priorKey));
     const raw=rows.findLast(r=>r.event==='provider-usage');
     const rawUsage=raw ? { terminal:raw.terminal,responseStatus:raw.responseStatus,coverage:raw.coverage,
       usagePresent:raw.usagePresent,cachedTokensPresent:raw.cachedTokensPresent,usage:raw.usage } : null;
-    const cacheReadState=!raw?.cachedTokensPresent?'missing':!tokenCount(raw.usage?.cachedTokens)?'invalid':
-      raw.usage.cachedTokens===0?'explicit-zero':'positive';
-    const measured=cacheReadState==='explicit-zero'||cacheReadState==='positive';
-    const failed=['error','aborted'].includes(result.outcome)||raw?.terminal==='response.failed'||raw?.responseStatus==='failed';
-    const rawHitRate=measured&&tokenCount(raw.usage?.inputTokens)&&raw.usage.inputTokens>0?raw.usage.cachedTokens/raw.usage.inputTokens:null;
+    const {cacheReadState,inputTokenState,rawUsageState}=rawUsageEvidence(raw);
+    const measured=rawUsageState==='complete';
+    const failed=requestFailed(result,raw);
+    const rawHitRate=measured&&raw.usage.inputTokens>0?raw.usage.cachedTokens/raw.usage.inputTokens:null;
     const historyUncachedTokens=!failed&&measured&&previousPromptTokens>0?Math.max(0,previousPromptTokens-raw.usage.cachedTokens):null;
     const complete=http.length>0&&http.every(r=>r.coverage==='complete');
     const retryChanged=complete&&http.some(r=>r.bodyHash!==first.bodyHash||compareHashes(r,first,['affinityHash','endpointHash'])===true);
@@ -57,20 +85,20 @@ export function summarizeCacheTraces(records) {
     else if(changed||routeChanged)classification='client-request-changed';
     else if(before&&before.prefix===true){
       const partial=historyUncachedTokens!=null&&historyUncachedTokens>Math.max(512,(previousPromptTokens??0)*0.08);
-      classification=!prior?'history-gap':partial?
+      classification=!prior?'history-gap':previousPromptTokens===null?'predecessor-usage-unavailable':partial?
         rawHitRate!=null&&rawHitRate<0.5?'stable-prefix-low-cache':'stable-prefix-partial-cache':
         previousPromptTokens>0&&rawHitRate!=null&&rawHitRate<0.5?'stable-prefix-new-input':'stable-prefix';
     }
     const requestClassification=classification;
     if(failed)classification='request-failed';
-    else if(cacheReadState==='missing')classification='raw-cache-usage-missing';
-    else if(cacheReadState==='invalid')classification='raw-cache-usage-invalid';
+    else if(rawUsageState==='missing')classification='raw-cache-usage-missing';
+    else if(rawUsageState==='invalid')classification='raw-cache-usage-invalid';
     calls.push({at:result.at,epoch:result.epoch,request:result.request,sessionHash:result.sessionHash,
       source:result.source??'main',parentSessionHash:result.parentSessionHash,
       responseHash:result.responseHash,responseModelHash:result.responseModelHash,classification,requestClassification,
-      hitRate:result.hitRate,usage:result.usage,outcome:result.outcome,rawUsage,cacheReadState,rawHitRate,
+      hitRate:result.hitRate,usage:result.usage,outcome:result.outcome,rawUsage,cacheReadState,inputTokenState,rawUsageState,rawHitRate,
       normalizedCacheReadMatches:measured&&tokenCount(result.usage?.cacheRead)?result.usage.cacheRead===raw.usage.cachedTokens:null,
-      previousPromptTokens,historyUncachedTokens,
+      previousPromptTokens,previousUsageState,historyUncachedTokens,
       sends:http.length,httpStatuses:rows.filter(r=>r.event==='http-result').map(r=>r.status),
       inputCount:last?.inputCount,sharedItems:before?.sharedItems,changedFields:before?.changedFields??[],
       firstDifference:before?.firstDifference?{index:before.firstDifference.index,
@@ -89,6 +117,8 @@ export function summarizeCacheTraces(records) {
     'Only observed HTTP JSON sends have final-body coverage; WebSockets and arbitrary request streams remain explicit gaps.',
     'Header hashes cover SDK fetch arguments only, not automatic HTTP headers or WebSocket frames; null means unobserved, not empty.',
     'Missing raw cache usage is unknown, not zero. Normalized usage and hitRate are retained unchanged; rawHitRate uses provider counts.',
+    'Raw input/cache counts must be non-negative safe integers and cached tokens cannot exceed input tokens; invalid or missing counts do not produce cache estimates.',
+    'A failed, unobserved or invalidly metered predecessor cannot establish reusable prompt size; predecessor-usage-unavailable preserves that uncertainty.',
     'All-header changes can be SDK retry bookkeeping; only the fixed affinity subset and endpoint contribute to routeChanged.',
     'historyUncachedTokens compares the preceding prompt size with current cache reads; it is a diagnostic estimate, not proven waste or billable savings.',
   ]};
