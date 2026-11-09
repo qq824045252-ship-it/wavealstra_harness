@@ -1,3 +1,4 @@
+import { getMarkdown } from "stream-markdown-parser";
 import type { BotMessageDto } from "@shared/bot-conversation";
 import type { WorkProjectionDto } from "@shared/bot-work";
 
@@ -92,4 +93,46 @@ export function botWorkTimeline(messages: BotMessageDto[]): BotTimelineEntry[] {
 export function activeBotReply(messages: BotMessageDto[]): BotMessageDto | undefined {
   return messages.find(message => message.role === "assistant" && message.status === "running")
     ?? messages.find(message => message.role === "assistant" && ["queued", "unknown"].includes(message.status));
+}
+
+
+const excerptMarkdown = getMarkdown("bot-work-card-excerpt");
+type ExcerptToken = { type: string; content: string; children?: ExcerptToken[] | null };
+
+/** A bounded, plain-text excerpt, not a generated summary or a new outcome.
+ * Only the list preview is shortened. Reports, paths and evidence remain intact
+ * in the work details and original conversation message.
+ */
+export function workCardExcerpt(markdown: string, title?: string): string {
+  const parts: string[] = [];
+  let heading = false;
+  let table = false;
+  const shortPath = (path: string): string => {
+    const name = path.replace(/[\\/]+$/, "").split(/[\\/]/).at(-1) ?? "";
+    return !name || /^[a-f\d]{24,}(?:\.|$)/i.test(name) ? "成果文件" : name;
+  };
+  const inlineText = (tokens: ExcerptToken[]): string => tokens.map(token => {
+    if (token.type === "softbreak" || token.type === "hardbreak") return " ";
+    if (token.type === "code_inline" && /^(?:[A-Za-z]:[\\/]|\\\\|\/(?!\/))/.test(token.content)) return shortPath(token.content);
+    if (token.type === "text" || token.type === "code_inline" || token.type === "math_inline") return token.content;
+    // Do not render HTML, images, link destinations or fenced source code in a card.
+    return token.children && token.type !== "image" ? inlineText(token.children) : "";
+  }).join("");
+  for (const token of excerptMarkdown.parse(markdown, {})) {
+    if (token.type === "heading_open") heading = true;
+    if (token.type === "heading_close") heading = false;
+    if (token.type === "table_open") table = true;
+    if (token.type === "table_close") table = false;
+    if (token.type !== "inline" || table) continue;
+    const text = inlineText(token.children ?? []).replace(/\s+/g, " ").trim();
+    // A heading can carry a failure or caveat. Only omit an exact duplicate of
+    // the title already shown on this card; preserve every other heading in order.
+    if (text && !(heading && text === title)) parts.push(text);
+  }
+  const text = parts.join(" ")
+    .replace(/(?<![\w:/])(?:[A-Za-z]:[\\/]|\\\\|\/(?!\/))[^\s`<>|，。；、）)]+/g, shortPath)
+    .replace(/\b[a-f\d]{32,}\b/gi, "（校验值见原文）");
+  if (!text) return "打开查看完整内容与附件。";
+  const points = Array.from(text);
+  return points.length > 120 ? `${points.slice(0, 119).join("").trimEnd()}…` : text;
 }

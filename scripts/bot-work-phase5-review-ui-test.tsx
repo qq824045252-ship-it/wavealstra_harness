@@ -530,6 +530,36 @@ async function main() {
         assert.equal(useAppStore.getState().botDraft, draft, "background refresh retains the reply draft");
       } finally { await unmount(); useAppStore.setState(originalState, true); }
     });
+    await check("workspace: list excerpts are short prose and the same card opens the untouched complete report", async () => {
+      await unmount(); testDocument.body.replaceChildren();
+      const originalState = useAppStore.getState();
+      const owner = { botId: "owner", displayName: "Owner", status: "active", authorization: work.authorization } as BotDto;
+      const summary = "# Review current output\n\n总工期 **9 天**，关键路径 **A → C → D → E**。\n\n"
+        + "证据已保存。".repeat(60) + "\n\n末尾原文：`/home/test/reports/schedule.json`，未做视觉验收。";
+      const current = { ...projection, deliverables: [{ ...proposal, summary }] };
+      const original = JSON.stringify(current);
+      try {
+        useAppStore.setState({ activeBotId: "owner", botIdentities: [owner], selectedWorkId: null, botWorks: [current],
+          refreshBotHistory: async () => {}, refreshBotWork: async () => {} });
+        const { createRoot } = await import("react-dom/client");
+        container = testDocument.body.appendChild(testDocument.createElement("div")); root = createRoot(container);
+        await act(async () => root!.render(<StrictMode><BotWorkspacePage /></StrictMode>));
+        const activeTab = container.querySelectorAll(".bot-view-tabs button")[1];
+        await act(async () => activeTab.dispatchEvent(new testWindow.Event("click", { bubbles: true })));
+        const card = container.querySelector<HTMLButtonElement>(".bot-work-card")!;
+        const text = card.querySelector(".bot-work-excerpt")!.textContent!;
+        assert.match(text, /^成果摘录：总工期 9 天，关键路径 A → C → D → E。/);
+        assert.ok(Array.from(text).length <= 125);
+        assert.doesNotMatch(text, /\*\*|#|\/home|末尾原文/);
+        assert.match(card.textContent!, /查看完整内容/);
+        await act(async () => card.dispatchEvent(new testWindow.Event("click", { bubbles: true })));
+        assert.equal(useAppStore.getState().selectedWorkId, current.workId);
+        assert.match(container.querySelector(".bot-work-details")!.textContent!, /末尾原文/);
+        assert.match(container.querySelector(".bot-work-details")!.textContent!, /\/home\/test\/reports\/schedule.json/);
+        assert.match(container.querySelector(".bot-work-details")!.textContent!, /未做视觉验收/);
+        assert.equal(JSON.stringify(useAppStore.getState().botWorks[0]), original, "opening the excerpt changes no result/status/evidence");
+      } finally { await unmount(); useAppStore.setState(originalState, true); }
+    });
     await check("workspace: repeated state refreshes keep one inspector panel and both historical/current cards", async () => {
       await unmount(); testDocument.body.replaceChildren();
       const originalState = useAppStore.getState();

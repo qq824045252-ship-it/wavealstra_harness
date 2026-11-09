@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { BotMessageDto } from "../src/shared/bot-conversation";
-import { activeBotReply, botMessageStatus, botWorkTimeline, shouldSendBotComposer, workMatchesView, workStatusLabel, workExecutionComplete } from "../src/renderer/src/lib/botWorkspacePresentation";
+import { activeBotReply, botMessageStatus, botWorkTimeline, shouldSendBotComposer, workMatchesView, workStatusLabel, workExecutionComplete, workCardExcerpt } from "../src/renderer/src/lib/botWorkspacePresentation";
 import type { BotDto, WorkProjectionDto } from "../src/shared/bot-work";
 import type { WorkResultCardDto } from "../src/shared/bot-work-phase5";
 import Sidebar, { AccountNavigation } from "../src/renderer/src/components/Sidebar";
@@ -508,3 +508,31 @@ assert(reportHtml.indexOf("合计 42 元") < reportHtml.indexOf("完整原始消
 assert.match(renderToStaticMarkup(createElement(BotMessage, { message: structuredResult, botName: "Bot", works: [], onOpenWork() {}, onCancel() {} })), /report.csv/, "persisted filename survives missing/closed Work projections");
 
 assert.doesNotMatch(renderToStaticMarkup(createElement(WorkFiles, { files: [{ ref: "/unregistered/private.txt", name: "private.txt" }] })), /打开文件|打开保存版本/, "unregistered model file references remain text, not privileged file-open actions");
+
+
+// List excerpts are deterministic presentation, not generated/rewritten results.
+const longReport = "# QA6-D 排期报告\n\n总工期 **9 天**，关键路径 **A → C → D → E**，5 条依赖全部校验通过。\n\n"
+  + "| 任务 | 工期 |\n| --- | --- |\n| A | 2 |\n\n"
+  + "## 证据\n\n未做浏览器视觉渲染。" + "完整证据。".repeat(70);
+const excerpt = workCardExcerpt(longReport, "QA6-D 排期报告");
+assert.ok(excerpt.startsWith("总工期 9 天，关键路径 A → C → D → E，5 条依赖全部校验通过。"));
+assert.match(excerpt, /未做浏览器视觉渲染/);
+assert.doesNotMatch(excerpt, /\*\*|##|\||QA6-D/);
+assert.equal(Array.from(excerpt).length, 120);
+assert.ok(excerpt.endsWith("…"));
+assert.match(longReport, /\*\*9 天\*\*/, "original report is unchanged");
+assert.equal(workCardExcerpt("[官方结论](https://example.com/report) **25 件** &amp; `total_count`；仍未验收。"),
+  "官方结论 25 件 & total_count；仍未验收。");
+assert.equal(workCardExcerpt("产物 `/home/test/.mybuddy/durable/" + "a".repeat(64) + "/artifacts/" + "b".repeat(64) + ".json`，CSV 在 `C:\\Users\\Tester\\reports\\sales.csv`。"),
+  "产物 成果文件，CSV 在 sales.csv。");
+assert.equal(workCardExcerpt("请检查 /home/test/reports/sales.csv；不要重跑。"), "请检查 sales.csv；不要重跑。");
+assert.equal(workCardExcerpt("数量 25/25；9 < 10；日期 2026/11/09；https://example.com/report。"),
+  "数量 25/25；9 < 10；日期 2026/11/09；https://example.com/report。");
+assert.equal(workCardExcerpt("# 总计 **25 件**"), "总计 25 件");
+assert.equal(workCardExcerpt("```python\nprint('/home/test/private')\n```\n\n|A|B|\n|-|-|\n|1|2|"), "打开查看完整内容与附件。");
+assert.equal(workCardExcerpt("![图](https://example.com/p.png)\n\n<b>尚未核验</b>，不能确认通过。"), "尚未核验，不能确认通过。");
+assert.ok(!/[\uD800-\uDBFF]$/.test(workCardExcerpt("🙂".repeat(130)).slice(0, -1)), "truncation does not split surrogate pairs");
+
+assert.equal(workCardExcerpt("## 未通过\n\n25 条测试通过。"), "未通过 25 条测试通过。");
+assert.equal(workCardExcerpt("## 未验证\n\n产物已保存。"), "未验证 产物已保存。");
+assert.equal(workCardExcerpt("路径 `C:\\Users\\Tester\\My Reports\\sales.csv`，仍未验收。"), "路径 sales.csv，仍未验收。");

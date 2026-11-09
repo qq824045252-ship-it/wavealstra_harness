@@ -12,7 +12,7 @@ import ChatComposer from "@/components/chat/ChatComposer";
 import ChatMarkdown from "@/components/chat/ChatMarkdown";
 import { IconPlus, IconArchive, IconChevronDown, IconArrowUp, IconBot, IconCheck, IconChevronRight, IconClock, IconListTodo, IconMessageDashed, IconPanel, IconSearch, IconSettings, IconStop, IconX } from "@/components/common/icons";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
-import { activeBotReply, botParticipatesInWork, botMessageStatus, botWorkTimeline, shouldSendBotComposer, workMatchesView, workStatusLabel, type BotWorkspaceView } from "@/lib/botWorkspacePresentation";
+import { activeBotReply, botParticipatesInWork, botMessageStatus, botWorkTimeline, shouldSendBotComposer, workMatchesView, workStatusLabel, workCardExcerpt, type BotWorkspaceView } from "@/lib/botWorkspacePresentation";
 import { BotWorkDetails } from "./BotWorkDetails";
 import { BotResultReport } from "./BotWorkResult";
 import { BotTeamDialog } from "./BotTeamDialog";
@@ -330,7 +330,7 @@ function WorkCard({ work, selected, onSelect }: { work: WorkProjectionDto; selec
   const latest = [...work.deliverables].reverse().find(item => item.status === "accepted" || item.status === "proposed");
   return <button type="button" className="bot-work-card" aria-pressed={selected} onClick={onSelect}>
     <div className="bot-work-card-top"><span className={`bot-status-badge ${work.closureConclusion === "succeeded" ? "success" : ""}`}>{workStatusLabel(work)}</span><span>{work.team ? `${work.team.members.length + 1} 位 Bot 组队` : work.mode === "watch" ? "持续关注" : "单次委托"}</span></div>
-    <strong>{work.title}</strong><p>{latest?.summary ?? work.nextSteps[0] ?? "打开查看目标、进展与成果。"}</p>
-    <div className="bot-work-card-bottom"><span>{work.deliverables.length ? `${work.deliverables.length} 项成果` : "等待成果"} · {new Date(work.updatedAt).toLocaleDateString("zh-CN", { month: "short", day: "numeric" })}</span><IconChevronRight size={16} /></div>
+    <strong>{work.title}</strong><p className="bot-work-excerpt"><span>{latest ? "成果摘录：" : "下一步："}</span>{workCardExcerpt(latest?.summary ?? work.nextSteps[0] ?? "打开查看目标、进展与成果。", work.title)}</p>
+    <div className="bot-work-card-bottom"><span>{work.deliverables.length ? `${work.deliverables.length} 项成果` : "等待成果"} · {new Date(work.updatedAt).toLocaleDateString("zh-CN", { month: "short", day: "numeric" })}</span><span className="bot-work-card-open">查看完整内容<IconChevronRight size={16} /></span></div>
   </button>;
 }
