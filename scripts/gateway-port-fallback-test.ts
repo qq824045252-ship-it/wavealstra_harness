@@ -45,17 +45,23 @@ async function main(): Promise<void> {
   check(WEBHOOK_PORT_CANDIDATES.length > 0, "候选端口表非空");
   check(!WEBHOOK_PORT_CANDIDATES.includes(DEFAULT_WEBHOOK_PORT as never), "候选表不含历史首选端口本身");
 
+  // Use private ephemeral fixtures: a running desktop may legitimately own a
+  // production candidate. Never close that application or assume its port is free.
+  const reserved = await Promise.all(Array.from({ length: 5 }, () => listen(0)));
+  const ports = reserved.map(server => (server.address() as import("node:net").AddressInfo).port);
+  await closeAll(reserved);
+  const [preferred, ...candidates] = ports as [number, number, number, number, number];
   // 1. 首选与前两个候选都被占用 → 应落到第三个候选
   const held: Server[] = [];
   try {
-    const blockedPorts = [DEFAULT_WEBHOOK_PORT, WEBHOOK_PORT_CANDIDATES[0]!, WEBHOOK_PORT_CANDIDATES[1]!];
+    const blockedPorts = [preferred, candidates[0]!, candidates[1]!];
     for (const port of blockedPorts) {
       try { held.push(await listen(port)); } catch { /* 已被系统占用同样算阻塞 */ }
     }
-    const result = await listenOnFirstAvailablePort(() => occupier());
-    check(result.port !== DEFAULT_WEBHOOK_PORT, `首选 ${DEFAULT_WEBHOOK_PORT} 不可用时自动切换（实际 ${result.port}）`);
-    check(WEBHOOK_PORT_CANDIDATES.includes(result.port as never), "实际端口来自候选表");
-    check(result.port === WEBHOOK_PORT_CANDIDATES[2], `跳过被占用的两个候选，落到 ${WEBHOOK_PORT_CANDIDATES[2]}`);
+    const result = await listenOnFirstAvailablePort(() => occupier(), preferred, candidates);
+    check(result.port !== preferred, `首选 ${preferred} 不可用时自动切换（实际 ${result.port}）`);
+    check(candidates.includes(result.port), "实际端口来自候选表");
+    check(result.port === candidates[2], `跳过被占用的两个候选，落到 ${candidates[2]}`);
     check(result.server.listening, "返回的 server 确实在监听（端口与实际一致）");
 
     const probe = await fetch(`http://127.0.0.1:${result.port}/`);
@@ -68,19 +74,19 @@ async function main(): Promise<void> {
   // 2. 全部端口不可用 → 必须抛错
   const all: Server[] = [];
   try {
-    for (const port of [DEFAULT_WEBHOOK_PORT, ...WEBHOOK_PORT_CANDIDATES]) {
+    for (const port of [preferred, ...candidates]) {
       try { all.push(await listen(port)); } catch { /* 忽略 */ }
     }
     let threw = false;
-    try { await listenOnFirstAvailablePort(() => occupier()); } catch { threw = true; }
+    try { await listenOnFirstAvailablePort(() => occupier(), preferred, candidates); } catch { threw = true; }
     check(threw, "全部端口不可用时明确抛错（不静默成功）");
   } finally {
     await closeAll(all);
   }
 
   // 3. 首选可用时直接用它（不回退）
-  const direct = await listenOnFirstAvailablePort(() => occupier(), WEBHOOK_PORT_CANDIDATES[3]);
-  check(direct.port === WEBHOOK_PORT_CANDIDATES[3], "首选可用时不回退");
+  const direct = await listenOnFirstAvailablePort(() => occupier(), candidates[3], candidates);
+  check(direct.port === candidates[3], "首选可用时不回退");
   await new Promise<void>((r) => direct.server.close(() => r()));
 
   console.log(`\n${failed === 0 ? "PASS" : "FAIL"}  passed=${passed} failed=${failed}`);
