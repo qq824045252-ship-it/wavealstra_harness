@@ -138,7 +138,7 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     await new Promise(resolve => provider.listen(0, '127.0.0.1', resolve));
     const model = { id: selectedModel, name: live ? 'DeepSeek live verification' : 'Settings fixture', reasoning: false, input: ['text'], contextWindow: 128000, maxTokens: 4096,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
-    fs.writeFileSync(path.join(agentDir, 'models.json'), JSON.stringify({ providers: { fixture: { api: 'openai-completions', apiKey: 'fixture-only', baseUrl: live ? "http://127.0.0.1:3425/v1" : `http://127.0.0.1:${provider.address().port}/v1`, models: [model] } } }));
+    fs.writeFileSync(path.join(agentDir, 'models.json'), JSON.stringify({ providers: { fixture: { api: 'openai-completions', apiKey: 'fixture-only', baseUrl: live ? "http://127.0.0.1:3425/v1" : `http://127.0.0.1:${provider.address().port}/v1`, models: [model, ...Array.from({length: 50}, (_, i) => ({...model, id: `disabled-${i}`, name: `Disabled catalog model ${i}`}))] } } }));
     fs.writeFileSync(path.join(agentDir, 'settings.json'), JSON.stringify({ defaultProvider: 'fixture', defaultModel: selectedModel, enabledModels: [modelKey],
       memoryEnabled: false, memoryGatewayEnabled: false, remoteAccessEnabled: false, closeToTray: false, theme: 'light', permissionMode: 'readonly' }));
     const port = await freePort();
@@ -177,10 +177,22 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     const botId = 'bot-mybuddy-default';
     await evaluate(`document.querySelector('[aria-label="Bot 设置与对话管理"]').click()`);
     await until(() => evaluate(`Boolean(document.querySelector('[aria-label="Bot 工作文件夹"]'))`), "settings form");
+    const choices = await evaluate(`Array.from(document.querySelector('[aria-label="Bot 模型"]').options, option => ({value:option.value, disabled:option.disabled}))`);
+    assert.deepEqual(choices.map(item => item.value), ['', modelKey], 'disabled catalog models do not flood the picker');
+    assert(await evaluate(`document.querySelector('[aria-label="Bot 模型"]').getBoundingClientRect().height <= 200`), 'model list has bounded height');
+    await evaluate(`(() => {const el=document.querySelector('[aria-label="搜索 Bot 模型"]'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(el,'no-such-model'); el.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+    await until(() => evaluate(`document.querySelector('.bot-model-settings').textContent.includes('没有匹配')`), 'search empty state');
+    await evaluate(`(() => {const el=document.querySelector('[aria-label="搜索 Bot 模型"]'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(el,'fixture'); el.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+    await until(() => evaluate(`document.querySelector('[aria-label="Bot 模型"]').options.length === 2`), 'search by provider id');
+    report.checks.push('50 disabled catalog models hidden, searchable by provider, bounded native list, empty-state feedback');
     const folder = path.join(home, 'chosen-workspace'); fs.mkdirSync(folder);
     const evidence = `BOT_SETTINGS_VERIFIED_${Date.now()}`; fs.writeFileSync(path.join(folder,'settings-evidence.txt'),evidence);
     await evaluate(`(() => { const el = document.querySelector('[aria-label="Bot 工作文件夹"]'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, ${JSON.stringify(folder)}); el.dispatchEvent(new Event('input', { bubbles: true })); })()`);
     await evaluate(`(() => { const el = document.querySelector('[aria-label="Bot 模型"]'); el.value=${JSON.stringify(modelKey)}; el.dispatchEvent(new Event('change', { bubbles:true })); })()`);
+    await evaluate(`[...document.querySelectorAll('button')].find(x => x.textContent === '刷新模型列表').click()`);
+    await until(() => evaluate(`[...document.querySelectorAll('button')].some(x => x.textContent === '刷新模型列表' && !x.disabled)`), 'catalog refreshed');
+    assert.equal(await evaluate(`document.querySelector('[aria-label="Bot 工作文件夹"]').value`), folder, 'refresh preserves draft folder');
+    assert.equal(await evaluate(`document.querySelector('[aria-label="Bot 模型"]').value`), modelKey, 'refresh preserves draft model');
     await evaluate(`[...document.querySelectorAll('button')].find(x => x.textContent === '保存 Bot 设置').click()`);
     await until(() => evaluate('document.querySelector(".bot-execution-settings").textContent.includes("已保存")'), 'save through UI and IPC');
     const saved = await evaluate(`window.api.botWork.getSettings('${botId}')`);
@@ -204,6 +216,14 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       report.checks.push('LIVE DeepSeek model read exact unseen on-disk evidence from selected workspace');
     }
     report.checks.push(`real Electron UI save, close/reopen, exact model, dedicated space, persisted native cwd; ${live ? 'live local DeepSeek transport' : 'HTTP fixture transport, not live LLM'}`);
+    await evaluate(`document.querySelector('[aria-label="Bot 设置与对话管理"]').click()`);
+    await until(() => evaluate(`Boolean(document.querySelector('[aria-label="Bot 模型"]'))`), 'reopen settings for navigation');
+    await evaluate(`[...document.querySelectorAll('button')].find(x => x.textContent === '管理模型').click()`);
+    await until(() => evaluate(`!document.querySelector('.bot-settings-dialog[open]') && document.querySelector('.settings-content-title')?.textContent === '模型'`), 'model manager is not trapped behind Bot modal');
+    await evaluate(`document.querySelector('.settings-content-head .icon-btn').click()`);
+    await evaluate(`document.querySelector('[aria-label="Bot 设置与对话管理"]').click()`);
+    await until(() => evaluate(`document.querySelector('[aria-label="Bot 模型"]')?.value === ${JSON.stringify(modelKey)}`), 'return from manager preserves saved selection');
+    report.checks.push('model manager navigation closes native modal; return retains saved model');
     report.status='passed';
   } catch (error) {
     report.status = 'failed'; report.error = String(error.stack || error); console.error(error); process.exitCode = 1;

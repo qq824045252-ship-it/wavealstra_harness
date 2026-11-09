@@ -226,3 +226,9 @@
 .bot-settings-dialog { width:min(680px,calc(100vw - 40px)); }
 .bot-settings-body .bot-execution-settings .bot-setting-choice { flex-direction:row; justify-content:flex-start; margin:0; text-align:left; }
 .bot-settings-body .bot-execution-settings .bot-setting-choice input { width:auto; flex:none; padding:0; }
+
+.bot-model-settings { display: grid; gap: 8px; min-width: 0; }
+.bot-model-settings > label { display: grid; gap: 6px; min-width: 0; }
+.bot-model-settings select { height: 172px; overflow-y: auto; }
+.bot-model-settings select option { padding: 6px 8px; }
+.bot-model-actions { display: flex; flex-wrap: wrap; gap: 8px; }
