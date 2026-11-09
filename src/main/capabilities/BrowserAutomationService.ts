@@ -1,4 +1,3 @@
-import { withManagedResource } from "../platform/managed-resources";
 import type { BrowserHost } from "../browser/BrowserHost";
 import { BrowserContentService } from "../browser/BrowserContentService";
 import { PageCaptureError } from "../artifact/PageInspectionService";
@@ -84,7 +83,7 @@ export class BrowserAutomationService {
   }
 
   async execute(input: BrowserExecInput, signal?: AbortSignal): Promise<BrowserExecOutput> {
-    return withManagedResource({ kind: "browser", action: input.action, readonly: ["status", "read", "screenshot"].includes(input.action) }, () => this.executeManaged(input, signal));
+    return this.executeManaged(input, signal);
   }
 
   private async executeManaged(input: BrowserExecInput, signal?: AbortSignal): Promise<BrowserExecOutput> {

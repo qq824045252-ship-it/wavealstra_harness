@@ -1,6 +1,5 @@
 import type { ResourceRecoveryAttempt } from "../../../../shared/resource-recovery";
 import { isComputerExecReadonly } from "../../../../shared/pi-event-mapper";
-import { withManagedResource } from "../../managed-resources";
 import { randomUUID } from "node:crypto";
 import { computerUseRunCoordinator } from "../../../capabilities/ComputerUseRunCoordinator";
 import { withComputerUseDeliveryEvidence, validateComputerAction } from "../../../capabilities/ComputerUsePolicy";
@@ -129,7 +128,7 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
   }
 
   execute(input: ComputerExecInput, externalSignal?: AbortSignal): Promise<ComputerExecOutput> {
-    return withManagedResource({ kind: "desktop", taskId: input.taskId, action: input.action ?? "batch", inputKey: input.action?.startsWith("key_") ? input.key : input.button ?? "left", readonly: isComputerExecReadonly(input) }, () => this.executeManaged(input, externalSignal));
+    return this.executeManaged(input, externalSignal);
   }
 
   private executeManaged(input: ComputerExecInput, externalSignal?: AbortSignal): Promise<ComputerExecOutput> {

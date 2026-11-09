@@ -1,4 +1,4 @@
-import type { WorkSubitemDto, WorkContinuationDto, WorkResourceRecoveryDto } from "./bot-work-phase3";
+import type { WorkSubitemDto, WorkContinuationDto } from "./bot-work-phase3";
 import type { WorkCollaborationMessage, WorkNotificationIdentity } from "./bot-work-collaboration";
 /**
  * BOT-WORK-1.0 shared contract.
@@ -491,14 +491,12 @@ export interface WorkDto {
 /** Reconnect/UI projection. Derived from persisted facts only. */
 export interface WorkProjectionDto {
   team?: import("./bot-work-team").WorkTeamDto;
-  approvals?: import("./bot-work-approval").WorkActionApprovalDto[];
   phase4?: import("./bot-work-phase4").WorkPhase4Projection;
   phase3?: {
     subitems: WorkSubitemDto[];
     continuations: WorkContinuationDto[];
     gaps: WorkSubitemDto[];
-    resourceWaits: string[];
-    resourceRecoveries: WorkResourceRecoveryDto[];
+    /** 仍有准入但未结算的动作数（真实执行记录，不是审批）。 */
     settlingActions: number;
     pausedEventCount: number;
     artifactSnapshotId?: string;
@@ -823,6 +821,8 @@ export interface AdmitActionParams {
   bindingId?: string;
   actionKind: string;
   operationId: string;
+  /** 工具声明的真实目标路径；只用于工作区目录归属，不是资源隔离或审批。 */
+  paths?: string[];
   versionGuard?: ExpectedVersionGuard;
 }
 

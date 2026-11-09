@@ -7,7 +7,6 @@ import { BotRegistry } from "../src/main/agent/work/BotRegistry";
 import { WorkService, DESKTOP_USER_GRANTS } from "../src/main/agent/work/WorkService";
 import { WorkDispatchQueue } from "../src/main/agent/work/WorkDispatchQueue";
 import { WorkExecutionAdapter, type WorkExecutionPort } from "../src/main/agent/work/WorkExecutionAdapter";
-import { fileResource } from "../src/main/agent/work/WorkResourceGate";
 import { LOCAL_USER_ID, type WorkActor, type WorkDto } from "../src/shared/bot-work";
 import type { AgentSubmissionReceipt } from "../src/shared/agent-ipc";
 import { collectOwnerSummaryFacts } from "../src/main/agent/work/WorkOwnerSummaryFacts";
@@ -111,37 +110,9 @@ try {
   const sent = submissions.length; await flush(); assert.equal(submissions.length, sent);
   assert.equal(works.collaboration.history(workId).filter(message => message.kind === "result").length, 3);
 
-  // Native gates reject outside paths, symlink escapes, opaque tools and replaced root identity.
-  const binding = bindings(workId)[0]!;
-  assert.equal(works.teams.resourceError(binding, [fileResource(join(workspace, "input.txt"), "read")]), undefined);
-  assert.match(works.teams.resourceError(binding, [fileResource(join(root, "outside.txt"), "read")])!, /超出/);
-  writeFileSync(join(root, "secret.txt"), "outside");
-  symlinkSync(join(root, "secret.txt"), join(workspace, "escape.txt"));
-  assert.match(works.teams.resourceError(binding, [fileResource(join(workspace, "escape.txt"), "read")])!, /超出/);
-  assert.match(works.teams.resourceError(binding, [{ kind: "host", scope: "local-host", key: "shell", mode: "write" }])!, /不透明/);
-  const verification = { kind: "host" as const, scope: "local-host", key: "scoped-read-verification", mode: "read" as const,
-    readVerification: { root: realpathSync(workspace), target: realpathSync(join(workspace, "input.txt")) } };
-  assert.equal(works.teams.resourceError(binding, [verification]), undefined, "trusted bounded verification is authorized");
-  assert.match(works.teams.resourceError(binding, [{ ...verification, mode: "write" }])!, /不透明/);
-  assert.match(works.teams.resourceError(binding, [{ ...verification, key: "unclassified-tool" }])!, /不透明/);
-  assert.match(works.teams.resourceError(binding, [{ kind: "host", scope: "local-host", key: verification.key, mode: "read" }])!, /不透明/);
-  assert.match(works.teams.resourceError(binding, [{ ...verification, readVerification: { ...verification.readVerification, root } }])!, /执行根/);
-  assert.match(works.teams.resourceError(binding, [{ ...verification, readVerification: { ...verification.readVerification, target: join(root, "secret.txt") } }])!, /工作区/);
-  assert.match(works.teams.resourceError(binding, [{ ...verification, readVerification: { ...verification.readVerification, target: join(workspace, "escape.txt") } }])!, /工作区/);
-  assert.match(works.teams.resourceError(binding, [{ ...verification, path: join(workspace, "input.txt") }])!, /不透明/);
-  const savedAuthorization = bots.getBot(binding.botId)!.authorization;
-  for (const authorization of [
-    { ...savedAuthorization, allowedScopes: [] },
-    { ...savedAuthorization, targetWhitelist: [root] },
-  ]) {
-    db.connection.prepare("UPDATE bots SET authorization_json=? WHERE bot_id=?").run(JSON.stringify(authorization), binding.botId);
-    assert(works.teams.resourceError(binding, [verification]), "revoked scope/target cannot use trusted verification");
-  }
-  db.connection.prepare("UPDATE bots SET authorization_json=? WHERE bot_id=?").run(JSON.stringify(savedAuthorization), binding.botId);
-  const oldWorkspace = join(root, "old-workspace"); renameSync(workspace, oldWorkspace); mkdirSync(workspace);
-  assert.match(works.teams.resourceError(binding, [fileResource(workspace, "read")])!, /身份已变化/);
-  assert.match(works.teams.resourceError(binding, [verification])!, /身份已变化/);
-  rmSync(workspace, { recursive: true }); renameSync(oldWorkspace, workspace);
+  // Retired shared-resource gate: team identity, bindings and directory ownership stay,
+  // but there is no per-resource authorization hook left to call.
+  assert.equal(works.repo.listBindings(workId).length, 3);
 
   // Preparation failure can retry only with the current versions and no binding.
   const retrySetup = setup(), retry = ok(works.teams.handle(user, { kind: "create", request: retrySetup.request }));
@@ -174,7 +145,7 @@ try {
   const replanned = ok(works.teams.handle(user, { kind: "replan", workId, versionGuard: guard(works.getWork(workId)!), plan: revisedPlan }));
   assert.equal(replanned.team!.executions.length, 2);
   assert.deepEqual(works.getWork(workId)!.participants.map(item => item.botId), [initial.plan.members[1]!.botId]);
-  assert.match(works.repo.executionInput(binding), /teamAssignment/, "old immutable team input remains available");
+  assert.match(works.repo.executionInput(bindings(workId)[0]!), /teamAssignment/, "old immutable team input remains available");
   await flush(); assert.equal(bindings(workId).length, 5);
   reject(works.teams.handle(user, { kind: "replan", workId, versionGuard: guard(works.getWork(workId)!), plan: revisedPlan }), "invalid_request");
 

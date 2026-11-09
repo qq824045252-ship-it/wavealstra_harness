@@ -4,10 +4,8 @@ import type { WorkBudgetReservationDto, WorkCriterionDto, WorkLifecycle, WorkPro
 import type { WorkPhase3ControlRequest } from "@shared/bot-work-phase3-control";
 import type { WorkPhase4ControlRequest, WorkPhase4ControlResult } from "@shared/bot-work-phase4";
 import { useAppStore } from "@/store/appStore";
-import { BotWorkApprovals } from "./BotWorkApprovals";
 import { WorkCardsPanel } from "./BotWorkCardsPanel";
 import { BotTeamPanel } from "./BotTeamPanel";
-import { ResourceEffectReview } from "./ResourceEffectReview";
 import { WorkReviewPanel } from "./BotWorkReviewPanel";
 
 export function lifecycleLabel(lifecycle: WorkLifecycle): string {
@@ -76,7 +74,6 @@ function UnknownBudgetReconciliation(props: {
 }
 
 export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: string; includeClosed: boolean;
-  onOpenResourceWork?: (workId: string) => void;
   onReplyToBlocker?: (blocker: WorkProjectionDto["blockers"][number]) => void }): React.JSX.Element {
   const { work, ownerName, includeClosed } = props;
   const openBlockers = work.blockers.filter((blocker) => blocker.status === "open");
@@ -85,7 +82,6 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
   const [question, setQuestion] = useState("");
   const [controlNotice, setControlNotice] = useState("");
   const [busy, setBusy] = useState(false);
-  const [safeRecovery, setSafeRecovery] = useState<string | null>(null);
   const [phase4Notice, setPhase4Notice] = useState("");
   const [watchSource, setWatchSource] = useState("hook");
   const [watchPolicy, setWatchPolicy] = useState<"latest" | "each" | "skip">("latest");
@@ -109,7 +105,7 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
   const versionGuard = { expectedStateVersion: work.stateVersion, expectedIntentRevision: work.intentRevision, expectedOwnerEpoch: work.ownerEpoch };
   const control = async (request: WorkPhase3ControlRequest) => {
     setBusy(true);
-    const requestId = request.kind === "continue" || request.kind === "handoff" || request.kind === "retry_resource_recovery" || request.kind === "reconcile_resource_effect" || request.kind === "prepare_resource_effect" ? request.request.operationId
+    const requestId = request.kind === "continue" || request.kind === "handoff" ? request.request.operationId
       : request.kind === "collaborate" ? request.request.messageId : undefined;
     const original = requestId ? controlRequests.current.get(requestId) ?? request : request;
     if (requestId) controlRequests.current.set(requestId, original);
@@ -180,16 +176,11 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
         {!work.inputSnapshotBound && <p role="status">输入版本尚未绑定，不能据此确认成果已验证。</p>}
         {openBlockers.map(blocker => <article key={blocker.blockerId}>
           <p>{blocker.waitingForUserInput ? "需要处理：" : "阻碍："}{blocker.reason}</p>
-          {blocker.reasonCode === "resource-dispatch-wait" && typeof blocker.details?.sourceWorkId === "string"
-            && blocker.details.sourceWorkId !== work.workId && props.onOpenResourceWork && <button type="button"
-              onClick={() => props.onOpenResourceWork?.(String(blocker.details!.sourceWorkId))}>打开来源事项核对资源</button>}
-          {blocker.reasonCode?.startsWith("resource-") && <p>资源恢复不会重跑原动作，也不会强制释放未知效果。请查看来源事项的“执行情况”。</p>}
           {userInputBlockerSnapshot(blocker) || blocker.legacyUserInput ? <p>请在下方「回复待补充信息」中填写回复和依据。</p>
-            : work.approvals?.some(item => item.approvalId === blocker.blockerId && item.status === "pending") ? <p>请在下方「后台操作审批」中决定本次操作。</p>
-              : blocker.reasonCode?.startsWith("budget-") || blocker.windowId ? <p>请在运行提醒或高级设置中核对预算与实际用量，普通回复不能解除。</p>
-                : blocker.unknownExternalEffectRef || blocker.kind === "external_effect" ? <p>先核对原操作效果；未确认前不能解除或重做。</p>
-                  : work.approvals?.some(item => item.approvalId === blocker.blockerId) || blocker.blockerId.startsWith("continuation:") ? <p>原操作不会自动重跑。请在执行情况中核对并仅补跑必要缺口；新动作仍需通过授权检查。</p>
-                    : <p>请核对执行情况或高级设置中的对应控制。此阻碍不能用普通回复强制解除。</p>}
+            : blocker.reasonCode?.startsWith("budget-") || blocker.windowId ? <p>请在运行提醒或高级设置中核对预算与实际用量，普通回复不能解除。</p>
+              : blocker.unknownExternalEffectRef || blocker.kind === "external_effect" ? <p>先核对原操作效果；未确认前不能解除或重做。</p>
+                : blocker.blockerId.startsWith("continuation:") ? <p>原操作不会自动重跑。请在执行情况中核对并仅补跑必要缺口。</p>
+                  : <p>请核对执行情况或高级设置中的对应控制。此阻碍不能用普通回复强制解除。</p>}
           {!userInputBlockerSnapshot(blocker) && props.onReplyToBlocker && work.lifecycle !== "closed" && <>
             <button type="button" onClick={() => props.onReplyToBlocker?.(blocker)}>向负责人回复此问题</button>
             <p>打开关联事项的对话草稿，由你填写并发送。回复供负责人核对，原阻碍暂保留；权限、预算和未知效果仍走专门入口。</p>
@@ -207,34 +198,12 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
         {(work.phase4.budget.unknownReservations ?? []).map(reservation => <UnknownBudgetReconciliation
           key={reservation.reservationId} work={work} reservation={reservation} busy={busy} submit={runPhase4} />)}
       </section>}
-      {work.phase3 && (work.lifecycle === "paused" || work.phase3.settlingActions > 0 || work.phase3.resourceWaits.length > 0
-        || work.phase3.resourceRecoveries.length > 0 || work.phase3.gaps.length > 0
+      {work.phase3 && (work.lifecycle === "paused" || work.phase3.settlingActions > 0 || work.phase3.gaps.length > 0
         || work.phase3.subitems.some(item => item.outcome === "completed") || work.phase3.continuations.length > 0)
         && <section className="bot-detail-section" aria-label="事项执行情况">
         <h3>执行情况</h3>
         {work.lifecycle !== "paused" && work.phase3.settlingActions > 0 && <p role="status">仍有 {work.phase3.settlingActions} 项在途操作等待结算。</p>}
         {work.lifecycle === "paused" && <p>{work.phase3.settlingActions ? "已暂停，正在结算在途操作" : "已暂停"}，积压 {work.phase3.pausedEventCount} 条事件。</p>}
-        {work.phase3.resourceWaits.map(reason => <p role="status" key={reason}>{reason}</p>)}
-        {work.phase3.resourceRecoveries.map(recovery => {
-          const confirmationKey = `${recovery.token}:${recovery.attempts}:${recovery.exhaustedAt}:${work.stateVersion}`;
-          const resourceLabel = recovery.resourceKinds.some(kind => kind === "desktop" || kind === "browser") ? "桌面或浏览器输入" : "共享资源";
-          return <article key={recovery.token} aria-label="资源隔离恢复">
-            <p role="status">{resourceLabel}仍被隔离。{recovery.reason}</p>
-            {recovery.pendingProbe && <p>恢复核对仍有在途步骤，资源继续隔离。</p>}
-            {recovery.exhaustedAt !== undefined && !recovery.pendingProbe && <>
-              <p>自动核对已停止（重试次数已耗尽），资源仍被隔离。请先核对并停止旧执行及其子任务，再重新核对；桌面操作还需确认输入已释放。只有执行、输入清理和原操作效果均得到确认后，资源才会释放。</p>
-              <label><input type="checkbox" checked={safeRecovery === confirmationKey} disabled={busy}
-                onChange={event => setSafeRecovery(event.target.checked ? confirmationKey : null)} />我已确认环境安全，可以重新核对</label>
-              <button type="button" disabled={busy || safeRecovery !== confirmationKey}
-                onClick={() => { void control({ kind: "retry_resource_recovery", request: {
-                  operationId: operation(`recovery:${confirmationKey}`), workId: work.workId, token: recovery.token,
-                  expectedAttempts: recovery.attempts, expectedExhaustedAt: recovery.exhaustedAt!, confirmEnvironmentSafe: true, versionGuard,
-                } }); }}>重新核对隔离资源</button>
-              <p>此操作只重试恢复核对，不重做业务、不清除未知效果。已结束事项也可核对其遗留隔离资源。</p>
-            </>}
-            <ResourceEffectReview work={work} recovery={recovery} busy={busy} submit={control} />
-          </article>;
-        })}
         <p>已保留 {work.phase3.subitems.filter(item => item.outcome === "completed").length} 项子项成果，必要缺口 {work.phase3.gaps.length} 项。</p>
         {work.phase3.gaps.map(gap => <details key={gap.factId}>
           <summary>{(gap.task || gap.itemId).slice(0, 110)}{(gap.task || gap.itemId).length > 110 ? "…" : ""} · {gap.outcome}</summary>
@@ -264,7 +233,7 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
       <h3>{work.lifecycle === "closed" ? "成果记录与验收" : "需要你决定"}</h3>
       {/* Review drafts retain their reviewed snapshot across background updates. */}
       <WorkReviewPanel key={`review:${work.workId}`} work={work} includeClosed={includeClosed} />
-      <BotWorkApprovals work={work} /><WorkCardsPanel key={JSON.stringify(["cards", work.workId, work.intentRevision, work.inputSnapshotId,
+      <WorkCardsPanel key={JSON.stringify(["cards", work.workId, work.intentRevision, work.inputSnapshotId,
         work.ownerEpoch, work.stateVersion, work.phase3?.artifactSnapshotId])} work={work} includeClosed={includeClosed} />
       {work.criteria.length === 0 ? <p>没有验收条件。</p> : (
         <ul>{work.criteria.map((criterion) => <li key={criterion.id}>{criterion.text} · {criterionLabel(criterion)}</li>)}</ul>

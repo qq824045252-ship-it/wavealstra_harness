@@ -143,7 +143,7 @@ try {
   await send("query-running", "查询");
   await send("delegate-b", "委托 B");
   await queue.flush();
-  assert.equal(effects, 1, "shared mutable roots are serialized");
+  await wait(() => effects === 2, "独立 root 并发启动，不再有共享资源序列化屏障");
   const b = works.listWorks(LOCAL_USER_ID).find(work => work.workId !== a.workId)!;
   const bBinding = works.repo.listBindings(b.workId)[0]!;
   assert.equal(bBinding.conversationId, aBinding.conversationId, "real native roots independently start with the same numeric conversation ID");
@@ -160,13 +160,16 @@ try {
   const snapshot = new WorkProjectionJournal(db.connection, works).sync(LOCAL_USER_ID, { includeClosed: false });
   assert.equal(snapshot.kind, "snapshot");
   await send("cancel-b", `取消 ${b.workId}`, b.workId);
-  await queue.flush();
+  // 两个独立 root 并发运行：取消 b 之后仍在途的派发要等 b 的模拟工具返回，
+  // 因此先发起 flush，再释放工具，避免把 flush 与 held 互相等待成死锁。
+  const cancelFlush = queue.flush();
   releaseEffect(); held = Promise.resolve();
+  await cancelFlush;
   await wait(async () => { await adapter.flush(); return works.repo.getBinding(aBinding.bindingId)?.status === "completed"
     && works.repo.getReservation(aBinding.reservationId!)?.state === "committed"; }, "native result and exact usage consumption");
   assert.equal(errors.length, 0, errors.map(String).join("\n"));
-  assert.equal(effects, 1);
-  assert.equal((await readFile(join(cwd, "effects.txt"), "utf8")).trim().split("\n").length, 1);
+  assert.equal(effects, 2);
+  assert.equal((await readFile(join(cwd, "effects.txt"), "utf8")).trim().split("\n").length, 2);
   assert.equal(works.repo.listDeliverables(a.workId).length, 1);
   assert.equal(works.getWork(a.workId)?.lifecycle, "active", "native completion is not acceptance");
   const version = works.getWork(a.workId)!.stateVersion;
@@ -175,7 +178,7 @@ try {
   assert.equal(works.getWork(a.workId)!.stateVersion, version);
   assert.equal(works.repo.getBinding(aBinding.bindingId)?.status, "completed");
   await send("amend-a", `修订 ${a.workId}`, a.workId);
-  await wait(async () => { await queue.flush(); return effects === 2 && works.repo.listBindings(a.workId).filter(binding => binding.status === "completed").length === 2; }, "new input gets its own root");
+  await wait(async () => { await queue.flush(); return effects === 3 && works.repo.listBindings(a.workId).filter(binding => binding.status === "completed").length === 2; }, "new input gets its own root");
   const amendedBindings = works.repo.listBindings(a.workId);
   assert.equal(amendedBindings.length, 2);
   assert.equal(amendedBindings[0].conversationId, amendedBindings[1].conversationId);
@@ -199,7 +202,8 @@ try {
   if (snapshot.kind === "snapshot") {
     const delta = new WorkProjectionJournal(db.connection, works).sync(LOCAL_USER_ID, { includeClosed: false, cursor: snapshot.cursor });
     assert.equal(delta.kind, "delta");
-    assert(delta.kind === "delta" && delta.events.some(event => event.kind === "remove" && event.workId === b.workId));
+    assert(["closing", "closed"].includes(works.getWork(b.workId)?.lifecycle ?? ""),
+      "cancelled Work settles through its real in-flight execution instead of disappearing as an unstarted binding");
   }
   holdForeground = true;
   const beforeClose = foreground.send({ botId: DEFAULT_BOT_ID, requestId: "normal-close", text: "关闭前的普通消息" });
@@ -233,7 +237,7 @@ try {
   db.connection.prepare("UPDATE bots SET status='disabled' WHERE bot_id=?").run(DEFAULT_BOT_ID);
   assert.throws(() => foreground.send({ botId: DEFAULT_BOT_ID, requestId: "disabled-new", text: "委托 disabled" }));
   assert.equal(foreground.send({ botId: DEFAULT_BOT_ID, requestId: "after-normal-close", text: "重新打开后的下一条消息" }).replayed, true, "disabled Bot may still return an already accepted receipt");
-  console.log("PASS Phase 2 real foreground/native root/control/inbox/projection chain; ordinary chat Task count=0; original+amended effects=2, one per input/root, numeric native IDs equal and namespaces isolated");
+  console.log("PASS Phase 2 real foreground/native root/control/inbox/projection chain; ordinary chat Task count=0; original+independent+amended effects=3, one per input/root, numeric native IDs equal and namespaces isolated");
 } finally {
   releaseEffect(); await foreground.close(); await queue.close(); await adapter.close(); await native.close(); lease.stop(); db.close(); await rm(root, { recursive: true, force: true });
 }

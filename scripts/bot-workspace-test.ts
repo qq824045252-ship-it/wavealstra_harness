@@ -239,13 +239,10 @@ for (const closureConclusion of ["succeeded", "cancelled", "ended_unsuccessfully
   assert.match(closedDetails, /未采纳（已结束）/);
   assert.match(closedDetails, /成果记录与验收/);
 }
-const emptyExecution: NonNullable<WorkProjectionDto["phase3"]> = { subitems: [], continuations: [], gaps: [], resourceWaits: [],
-  resourceRecoveries: [], settlingActions: 0, pausedEventCount: 0, handoffs: [], collaborationMessages: [] };
+const emptyExecution: NonNullable<WorkProjectionDto["phase3"]> = { subitems: [], continuations: [], gaps: [],
+  settlingActions: 0, pausedEventCount: 0, handoffs: [], collaborationMessages: [] };
 assert.doesNotMatch(renderDetails({ lifecycle: "active", phase3: emptyExecution }), /aria-label="事项执行情况"/,
   "empty execution diagnostics should not occupy the everyday overview");
-assert.match(renderDetails({ lifecycle: "active", phase3: { ...emptyExecution, resourceWaits: ["正在等待共享资源"] } }),
-  /aria-label="事项执行情况"/, "real resource waits remain visible");
-
 assert.match(renderDetails({ lifecycle: "active", phase3: { ...emptyExecution, settlingActions: 1 } }),
   /仍有 1 项在途操作等待结算/, "unsettled effects are not empty diagnostics and remain visible");
 
@@ -403,19 +400,11 @@ assert.match(closedBudgetPage, /unknown-provider-1/, "completed Work retains acc
 night.lifecycle = "active";
 snapshot.botWorkCursor = savedSnapshot.botWorkCursor;
 delete night.phase4;
-night.phase3 = { subitems: [], continuations: [], gaps: [], resourceWaits: [], settlingActions: 1,
-  pausedEventCount: 0, handoffs: [], collaborationMessages: [], resourceRecoveries: [{
-    token: 1, resourceKinds: ["desktop"], attempts: 4, exhaustedAt: 100, pendingProbe: false, reason: "原操作效果待核对",
-  }] };
-const exhaustedPage = renderToStaticMarkup(createElement(BotWorkspacePage));
-assert.match(exhaustedPage, /自动核对已停止/);
-assert.ok(exhaustedPage.indexOf("重新核对隔离资源") < exhaustedPage.indexOf("高级设置与诊断"), "isolation recovery must not be hidden in advanced settings");
-assert.match(exhaustedPage, /我已确认环境安全，可以重新核对/);
-assert.match(exhaustedPage, /<button[^>]*disabled[^>]*>重新核对隔离资源<\/button>/, "rendered retry is disabled before explicit confirmation");
-night.phase3.resourceRecoveries[0]!.pendingProbe = true;
-const pendingRecoveryPage = renderToStaticMarkup(createElement(BotWorkspacePage));
-assert.match(pendingRecoveryPage, /恢复核对仍有在途步骤，资源继续隔离/);
-assert.doesNotMatch(pendingRecoveryPage, /自动核对已停止|重新核对隔离资源<\/button>/, "an exhausted budget cannot make an outstanding probe look stopped");
+night.phase3 = { subitems: [], continuations: [], gaps: [], settlingActions: 1,
+  pausedEventCount: 0, handoffs: [], collaborationMessages: [] };
+const settlingPage = renderToStaticMarkup(createElement(BotWorkspacePage));
+assert.match(settlingPage, /仍有 1 项在途操作等待结算/, "real in-flight admissions stay visible without any approval surface");
+assert.doesNotMatch(settlingPage, /共享资源|后台操作审批|授权规则|重新核对隔离资源/, "retired isolation and approval surfaces never render");
 delete night.phase3;
 snapshot.selectedWorkId = handoff.workId;
 const handoffPage = renderToStaticMarkup(createElement(BotWorkspacePage));

@@ -9,6 +9,8 @@ import type {
   WorkCardReadResult, WorkExpandedDiagnosticsDto, WorkSummaryProjectionDto,
 } from "../../../shared/bot-work-phase5";
 import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
+import { isAbsolute, relative, resolve } from "node:path";
 import type Database from "better-sqlite3";
 import type {
   AcceptDeliverableParams,
@@ -78,7 +80,6 @@ import { WorkRepository, newId } from "./WorkRepository";
 import { cronNextWake, type WorkNextWake } from "./WorkSchedule";
 import { normalizeTexts, normalizeSources, normalizeWatchRule, normalizeCriteria, currentAcceptedDeliverableIds, matchesFilter } from "./WorkControlNormalization";
 import { WorkNativeResultInbox } from "./WorkNativeResultInbox";
-import { WorkResourceGate, type ResourceLease } from "./WorkResourceGate";
 import { WorkPartialResults } from "./WorkPartialResults";
 import { WorkArtifactValidation } from "./WorkArtifactValidation";
 import { WorkCollaborationService } from "./WorkCollaborationService";
@@ -88,11 +89,7 @@ import { WorkWatchIngress } from "./WorkWatchIngress";
 import { WorkBudgetService } from "./WorkBudgetService";
 import { WorkCausalGuard } from "./WorkCausalGuard";
 import { WorkWatchScheduler } from "./WorkWatchScheduler";
-import { WorkActionApprovals } from "./WorkActionApprovals";
-import { authorizeWorkResourceOwner, finalizeWorkResource } from "./WorkResourceSettlement";
 import { continuationWorkSchema, type ContinuationWorkParams } from "../../../shared/bot-work-phase3";
-import type { PrepareResourceEffectParams, ReconcileResourceEffectParams, RetryResourceRecoveryParams } from "../../../shared/bot-work-phase3-control";
-import { resourceRecoveryProjection, runResourceRecoveryControl, runResourceEffectReviewControl, runPrepareResourceEffectControl } from "./WorkResourceRecoveryControl";
 
 /** Local desktop entry envelope. It never creates branch/worktree implicitly. */
 export const DESKTOP_USER_GRANTS: WorkAuthorizationDto = {
@@ -104,7 +101,6 @@ export const DESKTOP_USER_GRANTS: WorkAuthorizationDto = {
 
 export interface WorkServiceOptions {
   bots: BotRegistry;
-  resourceHostId?: string;
   now?: () => number;
   emitProjection?: (projection: WorkProjectionDto) => void;
   computeNextWake?: WorkNextWake;
@@ -131,14 +127,12 @@ export class WorkService {
   readonly teams: WorkTeamService;
   readonly repo: WorkRepository;
   readonly nativeResults: WorkNativeResultInbox;
-  readonly resourceGate: WorkResourceGate;
   readonly partialResults: WorkPartialResults;
   readonly artifacts: WorkArtifactValidation;
   readonly collaboration: WorkCollaborationService;
   readonly notifications: WorkNotificationDelivery;
   readonly pausedBacklog: WorkPausedBacklog;
   readonly ingress: WorkWatchIngress;
-  readonly approvals: WorkActionApprovals;
   readonly budget: WorkBudgetService;
   readonly causal: WorkCausalGuard;
   readonly scheduler: WorkWatchScheduler;
@@ -162,14 +156,10 @@ export class WorkService {
     this.emit = options.emitProjection;
     this.computeNextWake = options.computeNextWake ?? cronNextWake;
     this.authority = options.isAuthority;
-    this.approvals = new WorkActionApprovals(db, this, { now: this.now, isAuthority: () => !this.authority || this.authority() });
     this.budget = new WorkBudgetService(db, this, { now: this.now, isAuthority: () => !this.authority || this.authority() });
     this.ingress = new WorkWatchIngress(db, this, { now: this.now, isAuthority: () => !this.authority || this.authority() });
     this.causal = new WorkCausalGuard(db, this, { now: this.now });
     this.scheduler = new WorkWatchScheduler(db, this, { now: this.now, isAuthority: () => !this.authority || this.authority() });
-    this.resourceGate = new WorkResourceGate(db, { hostId: options.resourceHostId ?? newId("resource-host"),
-      isAuthority: () => !this.authority || this.authority(), now: this.now,
-      authorize: (owner, resources, actionId) => authorizeWorkResourceOwner({ service: this, bots: this.bots, now: this.now, owner, resources, actionId }) });
     this.partialResults = new WorkPartialResults(db, this);
     this.artifacts = new WorkArtifactValidation(db, this);
     this.collaboration = new WorkCollaborationService(db, this, this.bots, { now: this.now, isAuthority: () => !this.authority || this.authority() });
@@ -267,14 +257,9 @@ export class WorkService {
       .flatMap((deliverable) => deliverable.uncoveredScope))];
     const nextSteps: string[] = [];
     if (work.lifecycle === "closing") nextSteps.push("等待在途执行与外部效果结算");
-    const resourceWaits = this.resourceGate.waiting(work.workId);
-    const { resourceRecoveries, nextSteps: recoverySteps } = resourceRecoveryProjection(this.db, this.resourceGate, work.workId);
-    const settlingActions = Math.max(this.repo.listAdmissions(work.workId).filter(item => item.state === "admitted" || item.state === "unknown").length,
-      this.resourceGate.live().filter(lease => lease.owner.workId === work.workId).length);
+    const settlingActions = this.repo.listAdmissions(work.workId).filter(item => item.state === "admitted" || item.state === "unknown").length;
     const gaps = this.partialResults.gaps(work.workId);
     if (work.lifecycle === "paused") nextSteps.push(settlingActions ? "已暂停，正在结算在途操作" : "事项已暂停，恢复后继续");
-    for (const reason of resourceWaits) nextSteps.push(reason);
-    nextSteps.push(...recoverySteps);
     if (gaps.length) nextSteps.push(`保留已确认成果，仍有 ${gaps.length} 项必要缺口待核对：未执行动作可关联后续证据覆盖，其余缺口按原身份处理`);
     if (work.lifecycle !== "closed") {
       for (const blocker of blockers.filter((item) => item.status === "open" && item.waitingForUserInput)) {
@@ -314,7 +299,6 @@ export class WorkService {
       acceptedDeliverableIds: [...currentResultIds],
       deliverables,
       blockers,
-      approvals: this.approvals.list(work.workId),
       executions,
       notifications,
       cards: this.cards.list(work),
@@ -333,7 +317,7 @@ export class WorkService {
       },
       phase3: {
         subitems: this.partialResults.list(work.workId), continuations: this.partialResults.plans(work.workId),
-        gaps, resourceWaits, resourceRecoveries, settlingActions, pausedEventCount: this.pausedBacklog.count(work.workId),
+        gaps, settlingActions, pausedEventCount: this.pausedBacklog.count(work.workId),
         artifactSnapshotId: this.artifacts.currentSnapshotId(work.workId),
         handoffs: this.collaboration.history(work.workId).filter(message => message.kind === "handoff"),
         collaborationMessages: this.collaboration.history(work.workId),
@@ -648,7 +632,6 @@ export class WorkService {
           ...work, lifecycle: "paused", stateVersion: work.stateVersion + 1, updatedAt: now,
         };
         this.repo.updateWork(next);
-        this.resourceGate.cancelWaiting({ workId: work.workId });
         const outboxEventId = this.outbox({
           work: next, eventType: "work.paused", operationId: params.operationId,
           payload: { reason: params.reason, activeExecutionIds: work.activeExecutionIds },
@@ -691,7 +674,6 @@ export class WorkService {
   }
 
   private applyCancellation(work: WorkDto, params: { operationId: string; reason?: string }, now: number): Mutation {
-    this.resourceGate.cancelWaiting({ workId: work.workId });
     let next = work;
     if (work.lifecycle !== "closed" && work.lifecycle !== "closing") {
       next = {
@@ -773,7 +755,6 @@ export class WorkService {
         return this.closeWithConclusion(work, "succeeded", params, now);
       }
       // ended_unsuccessfully: settle first, then close.
-      this.resourceGate.cancelWaiting({ workId: work.workId });
       this.clearStoppedExecutionBlockers(work.workId, now);
       if (this.isSettled(work)) {
         return this.closeWithConclusion(work, "ended_unsuccessfully", params, now);
@@ -794,7 +775,6 @@ export class WorkService {
   /** Only system-owned blockers for future execution become moot when stopping.
    * Unknown usage/effects and reconciliation conflicts must still be settled. */
   private clearStoppedExecutionBlockers(workId: string, now: number): void {
-    this.approvals.retireForStop(workId);
     for (const binding of this.repo.listBindings(workId)) {
       const blocker = this.repo.getBlocker(`continuation:${binding.bindingId}`);
       if (blocker?.kind === "operational" && !blocker.unknownExternalEffectRef) this.repo.clearBlocker(blocker.blockerId, workId, now);
@@ -847,18 +827,8 @@ export class WorkService {
     return { ok: true, outboxEventId };
   }
 
-  /** Called by the trusted recovery coordinator within the Work transaction. */
-  finalizeRecoveredResource(lease: ResourceLease): void {
-    this.transaction(() => {
-      const denied = this.authorityError(); if (denied) throw new Error(denied.message);
-      finalizeWorkResource({ db: this.db, service: this, lease, now: this.now,
-        tryClose: (work, now) => this.tryCloseSettled(work, now) });
-    });
-  }
-
   /** Closing work may only finish when no execution, admission, blocker or unknown effect remains. */
   private isSettled(work: WorkDto): boolean {
-    if (this.resourceGate.live().some(lease => lease.owner.workId === work.workId)) return false;
     const bindings = this.repo.listBindings(work.workId);
     if (bindings.some((binding) => UNSETTLED_BINDING_STATUSES.has(binding.status))) return false;
     // Provider requests can reserve independently of an execution binding.
@@ -882,14 +852,6 @@ export class WorkService {
   }
 
   // ============================================================ delegation
-
-  prepareResourceEffect = (actor: WorkActor, params: PrepareResourceEffectParams): WorkControlResult =>
-    runPrepareResourceEffectControl(actor, params, this.db, this.resourceGate, this.repo, this.runWorkControl.bind(this), this.outbox.bind(this));
-  reconcileResourceEffect = (actor: WorkActor, params: ReconcileResourceEffectParams): WorkControlResult =>
-    runResourceEffectReviewControl(actor, params, this.db, this.resourceGate, this.repo, this.runWorkControl.bind(this), this.outbox.bind(this));
-
-  retryResourceRecovery = (actor: WorkActor, params: RetryResourceRecoveryParams): WorkControlResult =>
-    runResourceRecoveryControl(actor, params, this.db, this.resourceGate, this.repo, this.runWorkControl.bind(this), this.outbox.bind(this));
 
   handoffOwner(actor: WorkActor, params: HandoffOwnerParams): WorkControlResult {
     return this.runWorkControl(actor, "handoffOwner", params, {
@@ -977,7 +939,7 @@ export class WorkService {
     return undefined;
   }
 
-  admitTaskAction(taskId: string, input: { operationId: string; actionKind: string }): string | undefined {
+  admitTaskAction(taskId: string, input: { operationId: string; actionKind: string; paths?: string[] }): string | undefined {
     const binding = this.repo.bindingForTask(taskId);
     if (!binding) return undefined;
     const admitted = this.admitNewAction({ kind: "worker", botId: binding.botId, bindingId: binding.bindingId }, {
@@ -992,7 +954,6 @@ export class WorkService {
       if (!binding) return;
       const admission = this.repo.listAdmissions(binding.workId).find(item => item.operationId === operationId);
       if (admission && admission.state === "admitted") this.settleAdmission(admission.admissionId, outcome);
-      this.approvals.settleAction(taskId, operationId, outcome);
     });
   }
 
@@ -1161,6 +1122,23 @@ export class WorkService {
   }
 
   /** New business side effect admission. Blocked in paused/closing/closed. */
+  /** 绑定任务的目录归属：工具目标必须落在本次工作区根内（词法 + realpath）。 */
+  private workspaceBoundaryError(work: WorkDto, binding: WorkExecutionBindingDto, paths: readonly string[]): string | undefined {
+    if (!paths.length) return undefined;
+    const roots = [work.workspacePath, binding.workspaceBinding].filter((item): item is string => !!item);
+    if (!roots.length) return "该事项没有已绑定的工作目录，拒绝访问工作区之外的路径";
+    const canonical = (path: string): string | undefined => { try { return realpathSync(path); } catch { return undefined; } };
+    for (const root of roots) for (const path of paths) {
+      const absolute = isAbsolute(path) ? path : resolve(root, path);
+      const realRoot = canonical(root) ?? resolve(root);
+      const realTarget = canonical(absolute) ?? resolve(absolute);
+      const relRoot = relative(realRoot, realTarget);
+      if (relRoot !== "" && (relRoot.startsWith("..") || isAbsolute(relRoot)))
+        return `目标 ${absolute} 不在本次工作区 ${root} 内，拒绝执行`;
+    }
+    return undefined;
+  }
+
   admitNewAction(actor: WorkActor, params: AdmitActionParams): { ok: true; admission: WorkAdmissionDto } | Fail {
     const authorityError = this.authorityError();
     if (authorityError) return authorityError;
@@ -1180,15 +1158,8 @@ export class WorkService {
       if (work.lifecycle !== "active") {
         return { ok: false, code: "invalid_lifecycle_transition", message: `事项处于 ${work.lifecycle}，拒绝新的业务动作` };
       }
-      if (work.authorization.expiresAt !== undefined && work.authorization.expiresAt <= this.now()) {
-        return { ok: false, code: "unauthorized_actor", message: "事项授权已过期" };
-      }
       if (this.bots.getBot(work.ownerBotId)?.status !== "active") {
         return { ok: false, code: "bot_disabled", message: "主负责人已停用，不能准入新业务动作" };
-      }
-      const scopedApproval = !!resolved.binding && this.approvals.permits(resolved.binding.bindingId, params.operationId, params.actionKind);
-      if (!this.authorizedFor(work, params.actionKind) && !scopedApproval) {
-        return { ok: false, code: "unauthorized_actor", message: `事项授权不允许动作 ${params.actionKind}` };
       }
       if (work.budget.windowExpiresAt !== undefined && work.budget.windowExpiresAt <= this.now()) {
         return { ok: false, code: "budget_exhausted", message: "预算期限已到，拒绝新的业务动作" };
@@ -1202,7 +1173,7 @@ export class WorkService {
         if (!binding || binding.workId !== work.workId) {
           return { ok: false, code: "not_found", message: "找不到有效执行绑定" };
         }
-        if (binding.invalidatedAt || TERMINAL_BINDING_STATUSES.has(binding.status) && !this.approvals.permitsDeferred(binding.bindingId, params.operationId, params.actionKind)) {
+        if (binding.invalidatedAt || TERMINAL_BINDING_STATUSES.has(binding.status)) {
           return { ok: false, code: "version_conflict", message: "执行绑定已失效或被停止" };
         }
         if (binding.intentRevision !== work.intentRevision) {
@@ -1214,14 +1185,20 @@ export class WorkService {
         if (!this.collaboration.isDelegationAdopted(binding, work)) {
           return { ok: false, code: "epoch_mismatch", message: "当前负责人尚未接管原执行委派" };
         }
+        if (params.paths?.length) {
+          const boundary = this.workspaceBoundaryError(work, binding, params.paths);
+          if (boundary) return { ok: false, code: "unauthorized_actor", message: boundary };
+        }
         if (resolved.kind === "worker" && resolved.binding?.bindingId !== binding.bindingId) {
           return { ok: false, code: "unauthorized_actor", message: "worker 只能为自己的绑定申请业务动作" };
         }
+        // 成员委派范围是真实的业务身份边界（例如只读成员），不是逐动作审批：
+        // 共享资源隔离与 Work 动作审批退役后仍必须保留。
+        if (binding.delegatedScope.length > 0 && !binding.delegatedScope.includes(params.actionKind)) {
+          return { ok: false, code: "unauthorized_actor", message: "业务动作超出了本执行的委派范围" };
+        }
         if (this.bots.getBot(binding.botId)?.status !== "active") {
           return { ok: false, code: "bot_disabled", message: "执行 Bot 已暂停或停用，不能准入新业务动作" };
-        }
-        if (binding.delegatedScope.length > 0 && !binding.delegatedScope.includes(params.actionKind) && !scopedApproval) {
-          return { ok: false, code: "unauthorized_actor", message: "业务动作超出了本执行的委派范围" };
         }
       }
       const existing = this.repo.listAdmissions(work.workId).find(item => item.operationId === params.operationId);
@@ -2247,8 +2224,7 @@ export class WorkService {
       }
       const now = this.now();
       if (work.authorization.expiresAt !== undefined && work.authorization.expiresAt <= now
-        && !(operationType === "cancelWork" || operationType === "closeWork" || operationType === "retryResourceRecovery" || operationType === "reconcileResourceEffect" || operationType === "prepareResourceEffect"
-          || operationType === "phase4:reconcile-budget-reservation")) {
+        && !(operationType === "cancelWork" || operationType === "closeWork" || operationType === "phase4:reconcile-budget-reservation")) {
         // Renewing an expired delegation is a user authorization change, not new
         // business execution. Models cannot renew themselves, and the new deadline
         // and capabilities still intersect the current authenticated host grant.

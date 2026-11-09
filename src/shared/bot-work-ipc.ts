@@ -19,9 +19,6 @@ import type {
 } from "./bot-work-phase5";
 
 export const BotWorkIpc = {
-  decideAction: "bot-work:decide-action",
-  listAutonomyRules: "bot-work:list-autonomy-rules",
-  revokeAutonomyRule: "bot-work:revoke-autonomy-rule",
   hostStatus: "bot-work:host-status",
   listBots: "bot-work:list-bots",
   createBot: "bot-work:create-bot",
@@ -68,9 +65,6 @@ export interface BotWorkNotificationReadResult {
 }
 
 export interface BotWorkApi {
-  decideAction(request: import("./bot-work-approval").WorkActionDecision): Promise<import("./bot-work-approval").WorkActionDecisionResult>;
-  listAutonomyRules(): Promise<import("./bot-work-autonomy").WorkAutonomyRule[]>;
-  revokeAutonomyRule(ruleId: string): Promise<boolean>;
   hostStatus(): Promise<BotWorkHostStatusDto>;
   listBots(): Promise<BotDto[]>;
   createBot(request: BotCreateRequest): Promise<BotCreateResult>;

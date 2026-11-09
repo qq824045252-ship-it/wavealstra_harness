@@ -14,7 +14,6 @@ import { BotCreationService } from "../src/main/agent/work/BotCreationService";
 import { WorkService, DESKTOP_USER_GRANTS } from "../src/main/agent/work/WorkService";
 import { WorkExecutionAdapter } from "../src/main/agent/work/WorkExecutionAdapter";
 import { WorkDispatchQueue } from "../src/main/agent/work/WorkDispatchQueue";
-import { WorkToolResourcePolicy } from "../src/main/agent/work/WorkToolResourcePolicy";
 import { DurableBotService } from "../src/main/agent/durable/DurableBotService";
 import { createDurableToolPolicy } from "../src/main/agent/durable/DurableToolPolicy";
 import { ConversationInteractionService } from "../src/main/agent/ConversationInteractionService";
@@ -111,11 +110,6 @@ function open() {
       const policy = createDurableToolPolicy({ taskId: task.id, taskRoot: cwd, getPermissionMode: () => "auto", toolAllowed: () => true,
         interactions: new ConversationInteractionService(new ConversationInteractionRepository(db.connection), () => {}),
         attempts: new ExecutionAttemptRepository(db.connection), failures: new ExecutionFailureRepository(db.connection),
-        resourcePolicy: new WorkToolResourcePolicy(works.resourceGate, context => {
-          const binding = works.repo.bindingForTask(context.taskId); assert(binding);
-          return { taskId: binding.taskId, durableStoreKey: binding.durableStoreKey, conversationId: binding.conversationId,
-            workspaceBinding: binding.workspaceBinding, bindingId: binding.bindingId, workId: binding.workId };
-        }, { allowGitBranchOrWorktree: () => false }),
         admitWorkAction: input => works.admitTaskAction(task.id, input), settleWorkAction: (operationId, outcome) => works.settleTaskAction(task.id, operationId, outcome) });
       return { contextHooks: [], tools: [], toolHooks: { beforeTool: policy.hooks.beforeTool,
         afterTool: async (call, result, api, context) => {
@@ -123,7 +117,7 @@ function open() {
           toolsObserved.push({ taskId: task.id, name: call.name, error: Boolean(settled.isError) }); return settled;
         } } };
     }, onSettled: () => adapter?.wake(), emit: () => {} });
-  adapter = new WorkExecutionAdapter(works, { ...native.workExecutionPort(), resourceBoundary: "host-action-gate" }, LOCAL_USER_ID, () => true, (_id, error) => errors.push(String(error)));
+  adapter = new WorkExecutionAdapter(works, native.workExecutionPort(), LOCAL_USER_ID, () => true, (_id, error) => errors.push(String(error)));
   queue = new WorkDispatchQueue(db, works, adapter, () => true, () => "teamfixture/test");
 }
 async function close() { await queue.close(); await adapter.close(); await native.close(); db.close(); }
@@ -174,7 +168,6 @@ try {
   assert.equal(works.getWork(workId)?.acceptedDeliverableIds.length, 0);
   assert(!existsSync(forbidden));
   assert.equal(toolsObserved.filter(item => item.name === "bash" && !item.error).length, hasSystemVerification ? 3 : 0);
-  assert.equal(works.resourceGate.live().length, 0, "trusted team verification leaves no quarantined lease");
   assert.equal(toolsObserved.filter(item => item.name === "read" && !item.error).length, 2);
   assert(!modelCalls.some(item => item.input.includes("OUTSIDE_SECRET_MUST_NOT_READ")));
   const callsBefore = modelCalls.length, tasksBefore = db.listTasks().map(task => task.id).sort();
@@ -190,15 +183,9 @@ try {
   assert.equal(modelCalls.length, callsBefore, "reopen and repeat create never repeat native execution");
   assert.deepEqual(db.listTasks().map(task => task.id).sort(), tasksBefore);
   assert.equal(works.teams.get(workId)?.state, "awaiting_review");
+  // 共享资源隔离退役：真实只读校验不再持久化租约或指纹。
   if (hasSystemVerification) {
-    const persisted = db.connection.prepare("SELECT resources_json FROM work_resource_leases WHERE json_extract(resources_json,'$[0].key')='scoped-read-verification'").all() as Array<{ resources_json: string }>;
-    assert.equal(persisted.length, 3, "all verification targets persist across native reopen");
-    for (const row of persisted) {
-      const resource = JSON.parse(row.resources_json)[0];
-      assert.equal(resource.readVerification.root, cwd);
-      assert.equal(resource.readVerification.target, join(cwd, "alpha.txt"));
-      assert.equal(resource.path, undefined, "authorization metadata never becomes a path hash baseline");
-    }
+    assert.equal(works.repo.listOpenBlockers(workId).filter(item => item.reasonCode?.startsWith("resource-")).length, 0);
   }
   assert.equal(works.collaboration.history(workId).length, messages.length);
   // Real durable roots overlap only when explicitly selected. Hold the alpha model
@@ -219,7 +206,6 @@ try {
   for (let pass = 0; pass < 4; pass++) { await queue.flush(); await delay(20); }
   assert.equal(modelCalls.length, parallelCalls, "parallel reopening does not replay effects");
   assert.equal(works.repo.listBindings(parallelId).length, 3);
-  assert.equal(works.resourceGate.live().length, 0);
   console.log("PASS native parallel team: real overlapping roots, real file verification, owner barrier and reopened idempotency");
   assert.deepEqual(errors, []);
   console.log("PASS real native team: separate identities/namespaces, actual file reads, denied write/outside read, sequential results, owner synthesis, proposed acceptance and reopened idempotency");

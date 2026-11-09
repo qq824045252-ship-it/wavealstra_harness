@@ -18,12 +18,9 @@ export function legacyUserInputSource(db: Database.Database, work: WorkDto, bloc
     || blocker.reasonCode || Object.keys(blocker.details ?? {}).length || blocker.sourceRef || blocker.subscriptionId
     || blocker.windowId || blocker.causalChainId || blocker.unknownExternalEffectRef
     || work.inputSnapshotId === "snapshot:unbound") return undefined;
+  // 共享资源隔离与动作审批的数据已退役，只剩真实执行准入仍是机器引用。
   const machineReference = (id: string) => Boolean(
-    db.prepare("SELECT 1 FROM work_action_approvals WHERE approval_id=? OR operation_id=? LIMIT 1").get(id, id)
-    || db.prepare("SELECT 1 FROM work_action_admissions WHERE admission_id=? OR operation_id=? LIMIT 1").get(id, id)
-    || db.prepare("SELECT 1 FROM work_resource_leases WHERE action_id=? LIMIT 1").get(id)
-    || db.prepare("SELECT 1 FROM work_resource_waiters WHERE action_id=? LIMIT 1").get(id)
-    || db.prepare("SELECT 1 FROM work_resource_denials WHERE action_id=? LIMIT 1").get(id));
+    db.prepare("SELECT 1 FROM work_action_admissions WHERE admission_id=? OR operation_id=? LIMIT 1").get(id, id));
   if (machineReference(blocker.blockerId)) return undefined;
   // The legacy receipt did not persist blockerId. Even a valid report hash cannot
   // identify one row if its immutable owner/reason/time tuple has been duplicated.

@@ -281,14 +281,6 @@ export class WorkPhase5Facts {
 
   private resourceRows(work: WorkDto): WorkExpandedDiagnosticsDto["resources"]["items"] {
     const rows: WorkExpandedDiagnosticsDto["resources"]["items"] = [];
-    for (const lease of this.works.resourceGate.live().filter(item => item.owner.workId === work.workId)) {
-      rows.push({ kind: "lease", ref: String(lease.token), state: "held",
-        detail: lease.resources.map(resource => resource.path ?? resource.kind).join(","), at: lease.expiresAt });
-    }
-    for (const recovery of this.works.resourceGate.recoveryStatus(work.workId)) {
-      rows.push({ kind: "recovery", ref: String(recovery.token),
-        state: recovery.pendingProbe ? "probing" : "pending", detail: recovery.reason, at: recovery.exhaustedAt });
-    }
     for (const subscription of this.repo.listSubscriptions(work.workId, { includeStopped: true })) {
       rows.push({ kind: "subscription", ref: subscription.subscriptionId,
         state: subscription.stoppedAt ? "stopped" : subscription.source,

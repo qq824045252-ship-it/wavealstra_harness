@@ -29,10 +29,7 @@ import type { DurableBotRuntime, DurableBotOptions } from "./durable/DurableBotR
 import type { DurableBotSnapshot } from "../../shared/durable-bot";
 import { setSubagentIpcBackend } from "./subagent-ipc-host";
 import { createDurableToolPolicy } from "./durable/DurableToolPolicy";
-import { WorkToolResourcePolicy } from "./work/WorkToolResourcePolicy";
-import { installWorkManagedResourceBoundary } from "./work/WorkManagedResourceBoundary";
 import { WorkCollaborationContext } from "./work/WorkCollaborationContext";
-import { WorkResourceRecovery, readResourceEffectEvidence } from "./work/WorkResourceRecovery";
 import { workPhase3ControlSchema, type WorkPhase3ControlResult } from "../../shared/bot-work-phase3-control";
 import { createDurableConsultSession, createDurableConsultToolHooks, runDurableMultiModelConsult } from "./durable/DurableConsultSession";
 import { currentDurableExecutionContext, currentDurableInvocation } from "./durable/DurableExecutionContext";
@@ -817,7 +814,6 @@ export class AgentService {
     this.workHostAuthority.start();
     this.workService = new WorkService(db.connection, {
       bots: this.botRegistry,
-      resourceHostId: this.workHostAuthority.status().authorityId,
       emitProjection: (projection) => {
         this.emitPatch({ type: "work_projection_snapshot", projection });
         // Delivery is a background obligation: a new card wakes the host drain.
@@ -829,20 +825,6 @@ export class AgentService {
     this.workConversationFeedback = new WorkConversationFeedback({ db: db.connection, userId: LOCAL_USER_ID, works: this.workService, isAuthority: () => this.workHostAuthority.isAuthority() });
     this.workConversationFeedback.start();
     this.workService.scheduler.beginHostSession(previousWorkLease);
-    installWorkManagedResourceBoundary(this.workService.resourceGate, taskId => {
-      const invocation = currentDurableInvocation();
-      const binding = taskId ? this.workService.repo.bindingForTask(taskId) : undefined;
-      if (binding) return { taskId: binding.taskId, durableStoreKey: binding.durableStoreKey,
-        conversationId: binding.conversationId, workspaceBinding: binding.workspaceBinding,
-        bindingId: binding.bindingId, workId: binding.workId,
-        childId: invocation && String(invocation.native.conversationId) !== binding.conversationId
-          ? String(invocation.native.conversationId) : undefined };
-      const stored = taskId ? z.object({ directory: z.string(), cwd: z.string() }).optional().parse(this.db.connection
-        .prepare("SELECT directory,cwd FROM durable_bot_bindings WHERE task_id=?").get(taskId)) : undefined;
-      return { taskId: taskId ?? "managed-host", durableStoreKey: stored?.directory ?? `managed:${this.getWorkHostStatus().authorityId}`,
-        conversationId: invocation ? String(invocation.native.conversationId) : "direct-service",
-        workspaceBinding: stored?.cwd ?? getMyBuddyDir() };
-    });
     this.conversationGoals = new ConversationGoalService(
       this.workService,
       (patch) => this.emitPatch(patch),
@@ -1206,16 +1188,6 @@ export class AgentService {
     return this.workService.getProjection(workId);
   }
 
-  listWorkAutonomyRules() { return this.workService.approvals.listAutonomyRules(LOCAL_USER_ID); }
-
-  revokeWorkAutonomyRule(ruleId: string) { return this.workService.approvals.revokeAutonomyRule(LOCAL_USER_ID, ruleId); }
-
-  decideWorkAction(request: unknown) {
-    const result = this.workService.approvals.decide(LOCAL_USER_ID, request);
-    if (result.ok) { this.workExecutions?.wakeWork(result.approval.workId); this.workDispatchQueue?.wake(); }
-    return result;
-  }
-
   getWorkService(): WorkService {
     return this.workService;
   }
@@ -1263,9 +1235,6 @@ export class AgentService {
         return { ok: true, messageId: result.message.messageId, replayed: result.replayed };
       }
       const result = input.kind === "continue" ? this.workService.continueWork(actor, input.request)
-        : input.kind === "prepare_resource_effect" ? this.workService.prepareResourceEffect(actor, input.request)
-        : input.kind === "reconcile_resource_effect" ? this.workService.reconcileResourceEffect(actor, input.request)
-        : input.kind === "retry_resource_recovery" ? this.workService.retryResourceRecovery(actor, input.request)
           : this.workService.handoffOwner(actor, input.request);
       if (result.ok) { this.workDispatchQueue?.wake(); this.workExecutions?.wakeWork(result.work.workId); }
       return result;
@@ -1650,50 +1619,15 @@ export class AgentService {
   async resumePersistedTasks(): Promise<void> {
     if (!this.durableBots) throw new Error("执行服务尚未初始化");
     const nativeWork = this.durableBots.workExecutionPort();
-    const resources = new WorkResourceRecovery(this.db.connection, this.workService.resourceGate, {
-      transaction: fn => this.workService.transaction(fn),
-      stopOriginal: async (lease, recovery) => {
-        recovery.assertCurrent();
-        const binding = lease.owner.bindingId ? this.workService.repo.getBinding(lease.owner.bindingId) : undefined;
-        if (!binding || this.workService.repo.bindingForTask(binding.taskId)?.bindingId !== binding.bindingId
-          || binding.workId !== lease.owner.workId || binding.taskId !== lease.owner.taskId
-          || binding.durableStoreKey !== lease.owner.durableStoreKey || binding.conversationId !== lease.owner.conversationId
-          || binding.workspaceBinding !== lease.owner.workspaceBinding)
-          throw new Error("原操作绑定身份不一致，不能停止其他执行");
-        await nativeWork.stop(binding);
-        recovery.assertCurrent();
-      },
-      inspectExecution: (lease, recovery) => {
-        if (!this.durableBots) throw new Error("原生执行服务尚未就绪");
-        return this.durableBots.resourceQuiescence(lease.owner, recovery);
-      },
-      drainInput: async (lease, execution, recovery) => {
-        recovery.assertCurrent();
-        if (lease.resources.some(resource => resource.kind === "desktop")) {
-          if (lease.hostId !== this.workHostAuthority.status().authorityId)
-            throw new Error("旧宿主的桌面输入缺少原驱动释放回执，保持隔离等待核对");
-          return computerUseRunCoordinator.cancelAndWait(lease.owner.taskId, recovery);
-        }
-        return { queueDrained: execution.ownedChildrenStopped, inputReleased: true, receipt: execution.receipt };
-      },
-      verifyEffect: async (lease, recovery) => { recovery.assertCurrent(); return readResourceEffectEvidence(this.db.connection, lease); },
-      onRecovered: lease => this.workService.finalizeRecoveredResource(lease),
-    });
-    this.workExecutions ??= new WorkExecutionAdapter(this.workService, { ...nativeWork, resourceBoundary: "host-action-gate",
-      stop: async binding => {
-        await nativeWork.stop(binding);
-        if (this.workService.resourceGate.live().some(lease => lease.owner.taskId === binding.taskId
-          && lease.resources.some(resource => resource.kind === "desktop")))
-          await computerUseRunCoordinator.cancelAndWait(binding.taskId);
-      } }, LOCAL_USER_ID,
+    this.workExecutions ??= new WorkExecutionAdapter(this.workService, nativeWork, LOCAL_USER_ID,
       () => this.workHostAuthority.isAuthority(),
-      (bindingId, error) => console.warn("[Work] 原生执行核对未完成", bindingId, error), resources);
+      (bindingId, error) => console.warn("[Work] 原生执行核对未完成", bindingId, error));
     await this.workExecutions.flush();
     this.workExecutions.start();
     if (!this.durableModels) throw new Error("模型服务尚未初始化");
     this.workDispatchQueue ??= new WorkDispatchQueue(this.db, this.workService, this.workExecutions,
       () => this.workHostAuthority.isAuthority(), () => this.settingsStore.read().defaultModelId,
-      () => this.settingsStore.read().permissionMode ?? "default", () => this.resumeDeferredWorkActions());
+      () => this.settingsStore.read().permissionMode ?? "default");
     this.botConversations ??= new BotConversationService({ db: this.db.connection, userId: LOCAL_USER_ID,
       bots: this.botRegistry, works: this.workService, models: this.durableModels, directory: join(getMyBuddyDir(), "bot-conversations"),
       defaultModel: () => this.settingsStore.read().defaultModelId, isAuthority: () => this.workHostAuthority.isAuthority(),
@@ -1782,40 +1716,6 @@ export class AgentService {
         ttftMs: null, decodeMs: null, generationTps: null, modelWallMs: null, outputTokens: message.usage.output, reasoningTokens: null } });
   }
 
-  /** Outbox polling only reattaches the same native action; it never issues a new model turn. */
-  private async resumeDeferredWorkActions(): Promise<void> {
-    if (!this.durableBots || !this.workHostAuthority.isAuthority()) return;
-    const approvals = this.workService.approvals;
-    approvals.recover();
-    for (const row of approvals.deferred.listQueued()) {
-      const source = approvals.deferredSource(row.approvalId);
-      const binding = source && this.workService.repo.getBinding(source.bindingId);
-      if (!source || !binding || !row.payload.sourceConversationId) {
-        approvals.finishDeferred(row.approvalId, "released", "缺少原始执行身份，动作未补跑；请重新提出这一动作", row.deliveryId);
-        continue;
-      }
-      try {
-        const native = await this.durableBots.resumeDeferredAction(source.taskId, binding, {
-          approvalId: row.approvalId, deliveryId: row.deliveryId, sourceConversationId: row.payload.sourceConversationId,
-          toolName: row.payload.originalCall.name, arguments: row.payload.originalCall.arguments,
-        });
-        const latest = approvals.deferred.get(row.approvalId);
-        if (native?.state.status === "terminal" && latest && ["queued", "running"].includes(latest.status)) {
-          // Successful settlement comes from afterTool's verified receipt, never a parent completion flag.
-          approvals.finishDeferred(row.approvalId, latest.status === "queued" ? "released" : "unknown",
-            latest.status === "queued" ? "原生工具在准入前结束，动作确定未执行；请核对工具是否可用及参数"
-              : "原生补跑已结束但缺少效果结算回执；未重复执行，请核对原动作", row.deliveryId);
-        }
-      } catch (error) {
-        console.warn("[Work] 精确审批续跑未完成", row.approvalId, error);
-        const latest = approvals.deferred.get(row.approvalId);
-        approvals.finishDeferred(row.approvalId, latest?.status === "queued" ? "released" : "unknown",
-          latest?.status === "queued" ? "续跑尚未获准执行，原动作未启动；请核对原始执行环境"
-            : "无法核对原生续跑状态，未创建替代执行；请检查原执行记录", row.deliveryId);
-      }
-    }
-  }
-
   private readonly durableAssemblies = new Map<string, { key: string; assembly: AssemblyTraceDto }>();
   /** Keyed by the task object a synchronous permission phase shares; see durableToolAllowed. */
   private readonly durableAssemblyMemo = new WeakMap<TaskDto, AssemblyTraceDto>();
@@ -1834,21 +1734,6 @@ export class AgentService {
     const policy = createDurableToolPolicy({ taskId: task.id, taskRoot: cwd, getPermissionMode,
       interactions: this.conversationInteractions, failures: this.executionFailures, attempts: this.executionAttempts,
       providerIds, getPolicy, effectRecovery, ensureRuntimeReady: id => this.runtimeRequirements.ensureProviderReady(id),
-      resourcePolicy: new WorkToolResourcePolicy(this.workService.resourceGate, context => {
-        const binding = this.workService.repo.bindingForTask(context.taskId);
-        if (binding) return { taskId: binding.taskId, durableStoreKey: binding.durableStoreKey,
-          conversationId: binding.conversationId, workspaceBinding: binding.workspaceBinding,
-          bindingId: binding.bindingId, workId: binding.workId,
-          childId: context.conversationId === binding.conversationId ? undefined : context.conversationId };
-        const stored = z.object({ directory: z.string() }).optional().parse(this.db.connection
-          .prepare("SELECT directory FROM durable_bot_bindings WHERE task_id=?").get(context.taskId));
-        if (!stored) throw new Error("受管工具缺少真实 Durable 存储身份");
-        return { taskId: context.taskId, durableStoreKey: stored.directory, conversationId: context.conversationId,
-          workspaceBinding: context.taskRoot };
-      }, { allowGitBranchOrWorktree }),
-      workActionApproved: (taskId, operationId, toolName) => this.workService.approvals.approvedTaskAction(taskId, operationId, toolName),
-      approveWorkAction: (input, signal) => this.workService.approvals.request(input, signal),
-      deferActions: true,
       admitWorkAction: input => this.workService.admitTaskAction(task.id, input),
       settleWorkAction: (operationId, outcome) => this.workService.settleTaskAction(task.id, operationId, outcome),
       toolAllowed: name => this.durableToolAllowed(this.db.getTask(task.id) ?? task, name) });

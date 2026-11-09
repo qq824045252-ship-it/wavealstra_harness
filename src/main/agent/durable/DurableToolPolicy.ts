@@ -1,8 +1,5 @@
-import { DeferredActionIdentity } from "./DurableDeferredAction";
-import { isNativeNotStarted } from "./DurableToolLifecycle";
 import { workShellRead } from "../work/WorkShellRead";
 import { resolve } from "node:path";
-import type { WorkToolResourcePolicy, ToolResourceContext } from "../work/WorkToolResourcePolicy";
 import { z } from "zod";
 import type { Context } from "@earendil-works/chord/context";
 import type { HookApi, ToolExecutionResult, ToolHookCall, ToolHooks } from "@earendil-works/pi-durable";
@@ -47,13 +44,8 @@ export interface DurableToolPolicyOptions {
   ensureRuntimeReady?: (providerId: string) => Promise<void>;
   toolAllowed?: (name: string) => boolean;
   effectRecovery?: ExternalEffectRecovery;
-  workActionApproved?: (taskId: string, operationId: string, toolName: string) => boolean | undefined;
-  approveWorkAction?: (input: import("../work/WorkActionApprovals").WorkActionRequest, signal?: AbortSignal) => Promise<import("../../../shared/bot-work-approval").WorkActionAuthorization>;
-  /** P0-D：需要主人决定时不再占住执行栈，动作以 not_started 挂起后继续其它步骤。 */
-  deferActions?: boolean;
-  admitWorkAction?: (input: { operationId: string; actionKind: string }) => string | undefined;
+  admitWorkAction?: (input: { operationId: string; actionKind: string; paths: string[] }) => string | undefined;
   settleWorkAction?: (operationId: string, outcome: "consumed" | "released" | "unknown") => void;
-  resourcePolicy?: WorkToolResourcePolicy;
 }
 
 /** Native ToolTask hooks run for model tools, child agents, and Code Mode's nested calls. */
@@ -87,46 +79,37 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
       if (!active || active.execution.taskId !== options.taskId) throw new Error("审批缺少当前任务的持久执行身份");
       if (options.getPermissionMode() === "readonly") return false;
       if (request.toolCallId !== active.native.callId) throw new Error("工具内部审批身份与当前原生动作不匹配");
-      const workApproved = options.workActionApproved?.(options.taskId,
-        `tool:${active.native.conversationId}:${active.native.taskId}:${active.native.callId}`, request.toolName);
-      if (workApproved !== undefined) return workApproved;
       return approve(request, active.native, active.context);
     },
     hooks: {
       beforeTool: async (call, api, context) => {
         const originalCall = call;
-        const deferredIdentity = await api.snapshot(DeferredActionIdentity, api.taskId, context);
-        const refuseBeforeApproval = async (reason: string) => {
+        const refuse = (reason: string) => {
           const summary = summarizeToolInput(call.name, call.arguments);
-          await options.approveWorkAction?.({ taskId: options.taskId, taskRoot: options.taskRoot,
-            operationId: `tool:${api.conversationId}:${api.taskId}:${call.id}`, toolName: call.name, arguments: call.arguments,
-            actionKind: "workspace:write", summary: summary.summary, detail: summary.detail,
-            permissionMode: options.getPermissionMode(), needsApproval: false, deniedReason: reason,
-            deferrable: options.deferActions === true }, context.abortSignal);
-          return { block: reason };
+          return { block: `${reason}${summary.summary ? `（${summary.summary}）` : ""}` };
         };
-        if (options.toolAllowed && !options.toolAllowed(call.name)) return refuseBeforeApproval(`当前任务未授权工具：${call.name}`);
+        if (options.toolAllowed && !options.toolAllowed(call.name)) return refuse(`当前任务未授权工具：${call.name}`);
         call = policyCall(call);
-        if (options.toolAllowed && !options.toolAllowed(call.name)) return refuseBeforeApproval(`当前任务未授权工具：${call.name}`);
+        if (options.toolAllowed && !options.toolAllowed(call.name)) return refuse(`当前任务未授权工具：${call.name}`);
         await identity(api, context, call);
         // The built-in Code Mode VM has no ambient filesystem/network access. Its
         // executeTool leaves each enter this hook with their own exact identity.
-        // Approving/defering the container would persist and later rerun the whole program.
         if (originalCall.name === "codemode") return undefined;
         const mode = options.getPermissionMode();
         const mcp = mcpReadTools.has(call.name) ? null : classifyMcpToolCall(call.name, call.arguments, options.providerIds);
         const shellRead = workShellRead(call.name, call.arguments);
         const sideEffect = !shellRead && (mcp?.sideEffect ?? isSideEffectTool(call.name, call.arguments));
         const dangerous = mcp?.dangerous ?? isDangerousTool(call.name, call.arguments);
-        if (mode === "readonly" && (sideEffect || dangerous)) return refuseBeforeApproval("当前为只读/计划/仅问答模式，已阻止写操作与命令执行");
-        if (mcp && !mcp.decision.allowed && !mcp.decision.requiresApproval) return refuseBeforeApproval(mcp.decision.reason);
+        if (mode === "readonly" && (sideEffect || dangerous)) return refuse("当前为只读/计划/仅问答模式，已阻止写操作与命令执行");
+        if (mcp && !mcp.decision.allowed && !mcp.decision.requiresApproval) return refuse(mcp.decision.reason);
 
         if (mcp && options.ensureRuntimeReady && isManagedToolProvider(mcp.identity.providerId)) {
           await options.ensureRuntimeReady(mcp.identity.providerId);
         }
-        const paths = mcp?.decision.isLocalWrite ? mcp.decision.paths :
-          (call.name === "write" || call.name === "edit") && typeof call.arguments.path === "string" ? [call.arguments.path] : [];
-        const resourcePaths = mcp?.decision.paths.length ? mcp.decision.paths : paths;
+        const declaredPath = typeof call.arguments.path === "string" ? call.arguments.path
+          : typeof call.arguments.file_path === "string" ? call.arguments.file_path : undefined;
+        const paths = mcp?.decision.isLocalWrite ? mcp.decision.paths
+          : ["read", "write", "edit", "glob", "grep", "ls"].includes(call.name) && declaredPath ? [declaredPath] : [];
         const child = (await api.snapshot(DurableSubagentIdentity, api.conversationId, context))?.value;
         if (child && child.taskId !== options.taskId) return { block: "子代理身份与宿主任务不一致" };
         const taskRoot = child?.workspace.cwd ?? options.taskRoot;
@@ -139,7 +122,7 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
         for (const path of paths) {
           const absolute = resolve(taskRoot, path);
           const access = filePolicy?.decide("write", absolute);
-          if (access?.scope === "isolated-source") return refuseBeforeApproval(access.reason);
+          if (access?.scope === "isolated-source") return refuse(access.reason);
           if (access && !access.allowed) externalPath = absolute;
         }
         // Code Mode and subagent containers grant nothing: each child reaches this hook itself.
@@ -147,53 +130,17 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
         const operationId = `tool:${api.conversationId}:${api.taskId}:${call.id}`;
         const actionKind = ["subagent", "subagent_steer"].includes(call.name) ? "delegate"
           : sideEffect || dangerous ? "workspace:write" : "workspace:read";
-        const summary = summarizeToolInput(call.name, call.arguments);
-        const workApproval = await options.approveWorkAction?.({ taskId: options.taskId, taskRoot, operationId,
-          toolName: call.name, arguments: call.arguments, actionKind, summary: summary.summary,
-          originalCall: { name: originalCall.name, arguments: jsonArguments.parse(originalCall.arguments) }, sourceConversationId: String(api.conversationId),
-          continuationApprovalId: deferredIdentity?.approvalId || undefined, continuationDeliveryId: deferredIdentity?.deliveryId || undefined,
-          detail: [summary.detail, externalPath ? `工作目录之外的写入：${externalPath}` : undefined].filter(Boolean).join("\n"),
-          permissionMode: mode, needsApproval, deferrable: options.deferActions === true }, context.abortSignal);
-        if (workApproval?.kind === "defer") return { block: `[deferred] 该动作已暂缓（未执行）：${workApproval.reason}。审批 ${workApproval.approvalId}；继续完成其它不依赖此动作的步骤，不要重复请求同一动作，也不要把这条结果当成整个任务失败。`
-          + (call.name === "bash" ? " 可继续发起新的只读核验：逐文件使用 read、wc -c \"./file\"、stat \"./file\"，目录使用 ls -la \"./dir\"；无需 cd 或 $PWD，不要将多文件、管道、&& 或混合读写放进同一命令。已有成功写入仍可读取核验，不要因原复合命令暂缓就放弃全部校验。后续独立写入优先用结构化 write（自动创建父目录），但不得改写并重提此卡片中尚待批准的写入动作。" : "") };
-        if (workApproval?.kind === "deny") return { block: `后台操作未获准继续：${workApproval.reason}；本次没有启动新的执行，请查看审批、阻碍和原动作回执` };
-        const refuseWork = async (reason: string) => {
-          await options.approveWorkAction?.({ taskId: options.taskId, taskRoot, operationId,
-            toolName: call.name, arguments: call.arguments, actionKind, summary: summary.summary,
-          originalCall: { name: originalCall.name, arguments: jsonArguments.parse(originalCall.arguments) }, sourceConversationId: String(api.conversationId),
-          continuationApprovalId: deferredIdentity?.approvalId || undefined, continuationDeliveryId: deferredIdentity?.deliveryId || undefined, detail: summary.detail,
-            permissionMode: options.getPermissionMode(), needsApproval, deniedReason: reason,
-            deferrable: options.deferActions === true }, context.abortSignal);
-          return { block: reason };
-        };
-        if (options.getPermissionMode() === "readonly" && (sideEffect || dangerous)) return refuseWork("当前为只读模式，已阻止写操作与命令执行");
-        if (options.toolAllowed && (!options.toolAllowed(originalCall.name) || !options.toolAllowed(call.name))) return refuseWork("审批等待期间工具授权已变化，未执行");
-        if ((workApproval === undefined || workApproval.kind === "not_applicable") && mode !== "auto" && needsApproval) {
+        if (mode !== "auto" && needsApproval) {
           const summary = summarizeToolInput(call.name, call.arguments);
           const allowed = await approve({ toolCallId: call.id, toolName: call.name, dangerous,
             summary: summary.summary, detail: [summary.detail, externalPath ? `工作目录之外的写入：${externalPath}` : undefined].filter(Boolean).join("\n"),
           }, api, context);
           if (!allowed) return { block: "用户已拒绝该操作" };
         }
-        const resourceContext: ToolResourceContext = { taskId: options.taskId, conversationId: String(api.conversationId), nativeTaskId: String(api.taskId), taskRoot };
         const admitWork = async () => {
-          const denied = options.admitWorkAction?.({ operationId, actionKind });
-          if (denied) { await refuseWork(denied); return denied; }
-          const resourceInput = { call, context: resourceContext, sideEffect: sideEffect || dangerous, paths: resourcePaths };
-          const resourceDenied = await options.resourcePolicy?.beforeWait(resourceInput, context.abortSignal);
-          if (resourceDenied) {
-            const notStarted = options.resourcePolicy?.refuse(resourceInput, resourceDenied) === true;
-            options.settleWorkAction?.(operationId, notStarted ? "released" : "unknown");
-            if (notStarted) await refuseWork(resourceDenied);
-          }
-          if (!resourceDenied && ((sideEffect || dangerous) && options.getPermissionMode() === "readonly"
-            || options.toolAllowed && (!options.toolAllowed(originalCall.name) || !options.toolAllowed(call.name)))) {
-            options.resourcePolicy?.after(resourceInput, "released");
-            options.settleWorkAction?.(operationId, "released");
-            const reason = "资源等待期间权限已变化，动作未执行";
-            await refuseWork(reason); return reason;
-          }
-          return resourceDenied;
+          const denied = options.admitWorkAction?.({ operationId, actionKind, paths });
+          if (denied) return denied;
+          return undefined;
         };
         if (sideEffect || dangerous) {
           const execution = await durableExecutionContext(options.taskId, api, context);
@@ -222,7 +169,7 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
         return undefined;
       },
       afterTool: async (call, result, api, context) => {
-        // The container owns no effect receipt or resource lease; its leaves do.
+        // The container owns no effect receipt; its leaves do.
         if (call.name === "codemode") return undefined;
         // Pi also reports validation failures here, before beforeTool or execution ran.
         try { call = policyCall(call); }
@@ -232,25 +179,6 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
         const attempt = options.attempts.findDurable(execution, call.id);
         const mcp = mcpReadTools.has(call.name) ? null : classifyMcpToolCall(call.name, call.arguments, options.providerIds);
         const mayWrite = !workShellRead(call.name, call.arguments) && (mcp?.sideEffect ?? (isSideEffectTool(call.name, call.arguments) || isDangerousTool(call.name, call.arguments)));
-        const child = (await api.snapshot(DurableSubagentIdentity, api.conversationId, context))?.value;
-        const resourcePaths = mcp?.decision.paths.length ? mcp.decision.paths :
-          (call.name === "write" || call.name === "edit") && typeof call.arguments.path === "string" ? [call.arguments.path] : [];
-        const resourceInput = { call, sideEffect: mayWrite, paths: resourcePaths, context: {
-          taskId: options.taskId, conversationId: String(api.conversationId), nativeTaskId: String(api.taskId), taskRoot: child?.workspace.cwd ?? options.taskRoot,
-        } };
-        if (isNativeNotStarted(api.taskId, String(api.conversationId))) {
-          options.resourcePolicy?.confirmNotStarted(resourceInput, "native-tool-checkpoint:call");
-        }
-        if (options.resourcePolicy?.wasNotStarted(resourceInput)) {
-          options.settleWorkAction?.(`tool:${api.conversationId}:${api.taskId}:${call.id}`, "released");
-          if (attempt) options.attempts.settleDurable({ ...attempt, status: "failed", phase: "finished", finishedAt: Date.now(),
-            transportStatus: "failed", causeCode: "resource-admission-denied", verifierId: "durable-resource-admission", recovery: undefined,
-            verification: { ...execution, attemptId: attempt.id, verifierId: "durable-resource-admission", verifierVersion: 1,
-              target: attempt.target, canonicalTarget: attempt.target, status: "failed", expected: { admitted: true },
-              observed: { admitted: false, effect: "not_started" }, checkedAt: Date.now() } });
-          const blockedResult: ToolExecutionResult = { ...result, isError: true, details: { resourceAdmission: "not_started" } };
-          return blockedResult;
-        }
         const savedIntent = await api.memo("mybuddy.effect-intent", context);
         const intent = savedIntent === undefined ? undefined : effectIntentSchema.parse(savedIntent);
         let evidence: EffectEvidence | undefined;
@@ -265,7 +193,6 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
         const reconciled = evidence?.status === "passed";
         const settlement = reconciled || (!evidence && !interrupted && !result.isError) ? "consumed" : mayWrite ? "unknown" : "released";
         options.settleWorkAction?.(`tool:${api.conversationId}:${api.taskId}:${call.id}`, settlement);
-        options.resourcePolicy?.after(resourceInput, settlement);
         if (attempt) {
           const status = evidence?.status ?? (interrupted ? "inconclusive" : result.isError ? "failed" : "passed");
           options.attempts.settleDurable({ ...attempt, status, phase: "finished", finishedAt: Date.now(),
@@ -298,7 +225,7 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
           message: `${call.name} 已中断，外部操作结果尚未确认：${interrupted.message}`,
           nextAction: "先回读文件、业务回执或外部状态。确认结果前不要重复提交同一副作用操作。",
         });
-        return undefined;
+        return undefined as ToolExecutionResult | undefined;
       },
     },
   };

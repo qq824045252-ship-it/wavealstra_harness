@@ -7,9 +7,9 @@ import type { BotWorkApi } from "../src/shared/bot-work-ipc";
 import type { WorkControlResult, WorkDto, WorkProjectionDto } from "../src/shared/bot-work";
 import type { WorkCardReadResult, WorkExpandedDiagnosticsDto } from "../src/shared/bot-work-phase5";
 import type { WorkReviewControlRequest } from "../src/shared/bot-work-review";
-import { ResourceEffectReview } from "../src/renderer/src/components/pages/ResourceEffectReview";
 import type { WorkPhase3ControlRequest } from "../src/shared/bot-work-phase3-control";
 import { WorkReviewPanel } from "../src/renderer/src/components/pages/BotWorkReviewPanel";
+import { BotWorkDetails } from "../src/renderer/src/components/pages/BotWorkDetails";
 import { WorkCardsPanel } from "../src/renderer/src/components/pages/BotWorkCardsPanel";
 import BotWorkspacePage from "../src/renderer/src/components/pages/BotWorkspacePage";
 import type { BotDto } from "../src/shared/bot-work";
@@ -56,7 +56,7 @@ const projection: WorkProjectionDto = {
     canonicalOutcomeHash: "outcome", title: "Retained result", summary: "One accepted result", deliverableIds: ["accepted"],
     evidenceIds: [], sourceRefs: [], artifactRefs: [], unverifiedScope: [], createdAt: 6, currency: "current",
     readVersion: 0, notificationIds: [] }],
-  phase3: { subitems: [], continuations: [], gaps: [], resourceWaits: [], resourceRecoveries: [], settlingActions: 0,
+  phase3: { subitems: [], continuations: [], gaps: [], settlingActions: 0,
     pausedEventCount: 0, artifactSnapshotId: "artifacts:7", handoffs: [], collaborationMessages: [] },
 };
 const success: WorkControlResult = { ok: true, replayed: false, operationId: "review-reply", work };
@@ -590,39 +590,14 @@ async function main() {
         await unmount(); useAppStore.setState(originalState, true); console.error = originalError;
       }
     });
-    await check("resource effect: exact scope, stale confirmation and uncertain retry keep original control", async () => {
+    await check("retired isolation and approval surfaces render nothing in Work details", async () => {
       await unmount();
       const { createRoot } = await import("react-dom/client");
       container = testDocument.body.appendChild(testDocument.createElement("div")); root = createRoot(container);
-      const recovery = { token: 45, actionId: "resource:exact:task:call", taskId: "original-task", workspacePath: "/workspace/original",
-        resourceKinds: ["host"], resourceScope: ["host:local-host:unclassified-tool:write"], attempts: 4, exhaustedAt: 55, effectReviewPrepared: { preparedAt: 40, readyAt: 45 } };
-      const calls: WorkPhase3ControlRequest[] = [];
-      const submit = async (request: WorkPhase3ControlRequest) => { calls.push(request); return undefined; };
-      const draw = async (value = projection) => { await act(async () => root!.render(<ResourceEffectReview work={value} recovery={recovery} busy={false} submit={submit} />)); };
-      await act(async () => root!.render(<ResourceEffectReview work={projection} recovery={{ ...recovery, effectReviewPrepared: undefined }} busy={false} submit={submit} />));
-      assert.equal(container.querySelector('[aria-label="原操作效果核对依据"]'), null, "cannot attest before native stop preparation");
-      const prepare = [...container.querySelectorAll("button")].find(b => b.textContent === "停止原执行并准备核对")!;
-      assert.equal(prepare.disabled, true);
-      await change("确认停止原执行以准备核对", true);
-      await click("停止原执行并准备核对"); assert.equal(calls.pop()!.kind, "prepare_resource_effect");
-      await draw();
-      assert.match(container.textContent!, /original-task/); assert.match(container.textContent!, /unclassified-tool/);
-      const save = () => [...container.querySelectorAll("button")].find(b => b.textContent === "保存效果结论并核对恢复")!;
-      assert.equal(save().disabled, true);
-      await change("原操作效果核对依据", "核对工作目录和外部记录，确认没有写入，证据为检查日志一号");
-      await change("确认原操作完整范围并停止原执行", true);
-      await click("保存效果结论并核对恢复"); await click("保存效果结论并核对恢复");
-      assert.deepEqual(calls[0], calls[1], "unknown transport outcome retries same operation");
-      const request = calls[0]; assert.equal(request.kind, "reconcile_resource_effect");
-      if (request.kind !== "reconcile_resource_effect") throw Error("unexpected request");
-      assert.equal(request.request.token, 45); assert.equal(request.request.confirmStopOriginal, true);
-      assert.equal(request.request.conclusion, "not_occurred");
-      await draw({ ...projection, stateVersion: projection.stateVersion + 1 });
-      assert.equal(save().disabled, true, "remote version invalidates confirmation");
-      await change("确认原操作完整范围并停止原执行", true);
-      await change("原操作效果核对结论", "occurred"); assert.equal(save().disabled, true, "changed conclusion invalidates confirmation");
-      await act(async () => root!.render(<ResourceEffectReview work={projection} recovery={{ ...recovery, pendingProbe: true }} busy={false} submit={submit} />));
-      assert.equal(container.textContent, "", "pending probe cannot offer user effect settlement");
+      await act(async () => root!.render(<BotWorkDetails work={{ ...projection, phase3: { ...projection.phase3!, settlingActions: 1 } }}
+        ownerName="Owner" includeClosed onReplyToBlocker={() => {}} />));
+      assert.match(container.textContent!, /仍有 1 项在途操作等待结算/);
+      assert.doesNotMatch(container.textContent!, /共享资源|后台操作审批|授权规则|重新核对隔离资源|原操作效果核对/);
     });
     console.log(`Bot Work review UI: ${count} React lifecycle scenarios passed (controlled API promises, no real IPC/browser claim)`);
   } finally {

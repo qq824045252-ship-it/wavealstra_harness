@@ -1,35 +1,34 @@
-# Work 后台授权与 Bot 回写
+# Work 动作审批与共享资源隔离（已退役）
 
-## 行为
+## 现状
 
-- 普通事项、补跑与团队派发均冻结当前应用的权限模式到后台 Task；默认、自动与只读都经过同一原生工具边界。应用自动模式不会扩大 Work 或委派 scope。
-- 所有工具入口只有一条决定路径：先过确定性自治策略（用户 deny > hard gate > 只读边界 > 缺委派范围的一次性扩权 > 用户 allow > 已授权常规动作 > 兼容先例 > 询问主人），再进原生授权、资源与效果通道。`auto` 只是策略的一个低优先级输入，不能替主人同意 hard gate、显式 deny、未分类/未知外部效果，也不能突破 Work 或委派 scope。
-- 只读模式按效果区分：可证明的读取（`pwd`/`ls`/`cat`/`grep`、结构化 `gh` 查询、无写入 flag 的 `curl` GET 等）继续执行，本地写、仓库写、外部写与命令执行一律拒绝。
-- 已授权范围内的常规动作连续执行、不逐条弹卡：可证明的读取，以及目标能证明落在本次绑定工作区根内的本地写（结构化文件工具的真实 path、或逐段解析且没有变量展开/通配/越界路径的受支持 shell 写语法，允许字面量引号）。证明不了目标位置、或者属于外部/未分类效果时仍交给主人决定。
-- 审批范围内的读取不落审批行，决定记在 `work_decisions`；写类自动放行保留审批行与来源（`scope`/`policy`/`precedent`），便于复核。
-- 后台审批以 Work、绑定、原生工具调用和完整参数指纹登记。Bot 对话及事项详情可以处理；待决定列表通过持久 blocker 收录。
-- 默认五分钟绝对期限，关闭窗口不续期。重新启动接回原审批；到期默认拒绝。已进入执行的动作交给原执行/效果结算，不误记为“未执行”。
-- 用户决定携带审批版本、Work 状态/要求/负责人代次与绑定身份。重复同一决定返回原回执，反向决定、旧版本及其他用户的请求拒绝。
-- scope 不足时先阻止动作。用户明确勾选后，只为该工具的原参数授予一次操作范围，不改 Work、Bot、成员、目录、工具清单或全局设置。组队边界仍独立检查。委派类 scope 拒绝保存持久阻碍，但不提供一次扩权或混入工作区写入补跑。
-- “以后这样处理”保存的规则只覆盖卡片上展示的具体效果/操作/provider/环境/目标与项目或工作区，不比已批准的动作更宽；缺少具体 provider/target，或没有可信项目/工作区（或仓库身份，当前 Work 不带可信 repo）时明确拒绝保存。保存规则先完成全部范围验证，再在同一事务里写决定、授权与规则；验证失败时审批状态、版本、规则和续跑都不变。
-- 撤销规则立即生效：命中规则的已放行但尚未执行的动作在下次核对时转为 `invalidated`，不再执行；先例每次命中都复核整条引用链中的规则、决定是否仍然有效（缺失、循环、跨用户或被替代的来源全部失效），撤销/过期后历史先例不能复活权限。
-- 拒绝和超时保存已核实 `not_started` 缺口。定向补跑保留原成果，只允许已选缺口对应的原写工具和参数；未知效果不进入这种补跑。
-- 未选项目目录的事项补跑沿用原执行绑定的目录，但保留独立的新 Task / Durable store。只有当前版本的持久补跑计划可以获得此共享路径；取消、版本过期或原任务已回收时拒绝，不新建目录重做。原目录仍被未回收补跑任务引用时禁止搬入回收区，异步停止前后均复核。
-- `pwd`、无参数 `ls` 和单个字面路径的 `ls`/`cat` 经过严格完整命令语法识别后由原生环境的文件接口执行，不启动 shell，不受 PATH、启动脚本或导出函数影响。复合命令、重定向、展开、通配符及其他 shell 名称不走此优化。
-- 后台执行结果、成果、阻碍及关闭结论写回原始已认证用户消息所在的 Bot 对话，不猜测当前会话，也不因负责人变化改收件人。消息、去重回执和会话版本在同一事务内提交；重启和周期扫描恢复失败的回写。回写不触发模型，也不代表用户验收。
+Issue #21 决定**移除项目内的共享资源隔离，以及与它配套的 Work 动作授权、审批、规则保存和审批续跑**，恢复普通任务与个人 Bot 的可用性。本文记录退役后的实际契约；历史设计见 §退役前的机制 与 `docs/bot-work-phase3-execution-plan.md`（该文档描述的是已删除的实现）。
+
+退役范围（代码已删除）：
+
+- 执行链：`WorkResourceGate`、`WorkToolResourcePolicy`、`WorkManagedResourceBoundary`、`WorkResourceRecovery`、`WorkResourceRecoveryControl`、`WorkResourceEffectReview`、`WorkResourceSettlement`、`WorkResourceBlockers`、`platform/managed-resources`。
+- 动作审批：`WorkActionApprovals`、`WorkAutonomyPolicy`、`WorkDecisionLedger`、`WorkActionClassifier`、`WorkDecisionJudge`、`WorkApprovalIpc`、`shared/bot-work-action|approval|autonomy`。
+- 审批续跑：`WorkDeferredActions`、`DurableDeferredAction`、`db/bot-work-deferred-schema`、`DurableToolPolicy` 的 defer 分支、`AppDatabase` 的延迟表初始化。
+- UI/IPC：`ResourceEffectReview`、`BotWorkApprovals`、`bot-work:decide-action|list-autonomy-rules|revoke-autonomy-rule` 通道、Bot 设置里的“已保存的授权规则”、`phase3Control` 的资源核对 kind。
+
+## 现在的执行契约
+
+- 工具执行只经过原生 Pi Durable 边界：工具白名单、只读模式、MCP 副作用分类、`TaskFileAccessPolicy`、效果意图/回读、真实 `execution_attempts` 与失败记录。没有任何 host 级共享资源租约、隔离或跨 Work 屏障。
+- 权限模式就是应用当前的权限模式：`auto` 直接执行，`default` 在原生边界弹出一次真实确认，`readonly` 拒绝写入与命令执行。Work 任务不再被强制设成 auto，也不会被 Work 专用审批卡挡住。
+- 目录归属仍然生效：Work/团队绑定任务的工具目标（`read`/`write`/`edit`/`glob`/`grep`/`ls` 声明的 `path`/`file_path`）必须落在本次绑定工作区内（词法 + realpath）；成员 `delegatedScope` 仍是真实的业务范围（例如只读成员不能写）。这不是逐动作审批，也不会生成审批卡。
+- 真实取消、停止、预算、成果采纳、业务验收、通知、记忆与任务数据保持原语义；`work_action_admissions` 只记录真实执行准入，不再依赖审批或 scope 放行。
+- 未知外部效果的**业务**记录（`work_blockers.kind='external_effect'`、`execution_failures`）继续存在并如实显示，但不再阻塞无关任务或派发。
+
+## 数据迁移
+
+`src/main/db/work-isolation-retirement.ts` 在每次启动（`AppDatabase.migrate`）幂等执行：
+
+- `DROP TABLE IF EXISTS` 退役专用表：`work_resource_*`（leases/waiters/recovery/denials/fingerprints/opaque_observations/observation_clock/effect_preparations/effect_reviews）、`work_action_approvals`、`work_action_approval_claims`、`work_autonomy_rules`、`work_decisions`、`work_deferred_actions`。
+- 删除只由退役机制写入的 blockers：`work-approval:*`、`resource-dispatch:*`、`resource-recovery:*`。真实 `continuation:*`、预算、用户输入等 blocker 保留。
+- 不提升 `user_version`（提升会触发整库备份重建），不删 Work、admissions、子项成果、缺口覆盖、执行回执、Bot/任务/会话/消息/记忆。旧审批不会被重放，也不会被改写成成功。
 
 ## 验证边界
 
-`test:work-autonomy` 覆盖动作矩阵、策略优先级（hard gate/只读/缺范围/deny/allow/常规范围放行/先例）、规则撤销后先例失效、只读按效果区分，以及 shell 反例（重定向、命令替换、`find -exec`、`awk system`、管道到 `tee`、换行拼接、未知 flag）不得被判成读取。
+`test:work-isolation-retirement` 用真实 SQLite 覆盖：旧 profile 打开时清表/清 blocker、业务数据与 schema 版本不变、迁移可重复、全新 profile 不建退役表、旧 blocker 不再拒绝新动作。`test:durable-tool-policy` 覆盖退役表与旧 pending 审批存在时真实读写与重启都不被挡住；`test:bot-work-phase2`、`test:bot-work-resume-dispatch`、`test:bot-work-team-native` 覆盖独立 Work 并发、无跨 Work 屏障、成员目录归属与只读成员边界。
 
-`test:work-approval-defer` 用真实 SQLite + WorkService 覆盖 defer、ignore、hard gate 不可存规则、auto 不放行 hard gate/未分类命令、授权工作区连续执行零新增卡片、`saveRule` 失败零部分提交，以及撤销规则后未执行动作失效。
-
-`test:work-approval-native` 使用真实 SQLite、Pi Durable 运行时和文件工具，模型响应为确定性测试提供者；不冒充线上模型测试。覆盖真实 `pwd → write → ls/read`、拒绝、超时、重开、重复决定/提交、版本过期、参数绑定及配置继承。
-
-`test:work-team-approval-native` 使用真实队列、SQLite、Durable 文件工具及确定性模型，验证成员在授权工作区内的常规写入按范围执行、边界尝试（工作区外写入、不透明 shell、只读成员）仍需精确授权，并确认一次授权仍不能越过团队目录、成员 scope 或不透明 shell 边界。
-
-`test:work-conversation-feedback` 覆盖原会话、归档、负责人变化、重启、重复事件、SQLite 失败重试及不触发模型队列。
-
-`test:work-approval-ui` 使用实际 React DOM 与可信 IPC 入口，覆盖双处卡片并发点击、断线原决定查回、版本刷新、到期、明确 scope 勾选以及文字转义。它不能代替完整桌面应用/真实模型验收。本次隔离测试未配置线上模型凭据；未读取用户真实凭据或声称已完成线上模型验收。
-
-S1 加固：shell 读取按支持命令与选项逐项证明；wget 默认落盘、git branch 删除、curl 数据提交不再误判读取。复合写入必须验证每段和每个写目标，裸文件名及断链符号链接也检查。auto 不再把策略 ask 改成 allow；Git push 可保存规则的目标限定到具体 remote + refspec。
+真机验收（真实在线模型搜索/网页/读写、真实桌面 UI 点击、Bot 后备真实任务全链路、Windows profile）尚未在本轮执行，不能据此宣称 Issue #21 已整体验收通过。

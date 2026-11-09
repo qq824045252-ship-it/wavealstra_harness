@@ -24,8 +24,7 @@ import { TaskFileAccessPolicy } from "../src/main/security/TaskFileAccessPolicy"
 import { DurableBotRuntime } from "../src/main/agent/durable/DurableBotRuntime";
 import { currentDurableExecutionContext } from "../src/main/agent/durable/DurableExecutionContext";
 import { durableDomainTools } from "../src/main/agent/durable/DurableDomainTools";
-import { WorkResourceGate, resourceOwnerKey, fileResource } from "../src/main/agent/work/WorkResourceGate";
-import { WorkToolResourcePolicy } from "../src/main/agent/work/WorkToolResourcePolicy";
+import { retireWorkIsolation } from "../src/main/db/work-isolation-retirement";
 import { createDurableToolPolicy, type DurableToolPolicyOptions } from "../src/main/agent/durable/DurableToolPolicy";
 import { recoverInterruptedExecutions } from "../src/main/agent/ExecutionRestartRecovery";
 import { prepareFileEffect, verifyFileEffect, type ExternalEffectRecovery } from "../src/main/agent/durable/DurableEffectRecovery";
@@ -73,20 +72,13 @@ async function fixture(taskId: string, respond: (request: TranscriptContext) => 
       return stream;
     },
   });
-  const state: { permission: PermissionMode; allowed: boolean; deniedTools: Set<string>; resourcePolicy?: WorkToolResourcePolicy;
-    approve?: DurableToolPolicyOptions["approveWorkAction"];
+  const state: { permission: PermissionMode; allowed: boolean; deniedTools: Set<string>;
     admit?: (input: { operationId: string; actionKind: string }) => string | undefined;
     settle?: (operationId: string, outcome: "consumed" | "released" | "unknown") => void } = { permission: "auto", allowed: true, deniedTools: new Set<string>() };
   const open = async () => {
     const policy = createDurableToolPolicy({ taskId, taskRoot: cwd, getPermissionMode: () => state.permission,
       interactions, attempts, failures, getPolicy: () => new TaskFileAccessPolicy({ taskId, taskRoot: cwd, isolatedSourceRoots }),
-      effectRecovery, resourcePolicy: state.resourcePolicy, approveWorkAction: async (input, signal) => {
-        if (!state.approve) return { kind: "not_applicable" } as const;
-        const result = await state.approve(input, signal);
-        if (result && typeof result === "object") return result;
-        return result === undefined ? { kind: "not_applicable" } as const
-          : result ? { kind: "allow", source: "exact" } as const : { kind: "deny", reason: "denied" } as const;
-      },
+      effectRecovery,
       admitWorkAction: input => state.admit?.(input), settleWorkAction: (operationId, outcome) => state.settle?.(operationId, outcome),
       toolAllowed: name => !state.deniedTools.has(name) && (state.allowed || !["write", "mcp__filesystem__write_file"].includes(name)),
     });
@@ -127,135 +119,30 @@ try {
   assert.equal((await verifyFileEffect({ ...writeIntent, path: root, canonicalPath: root })).status, "inconclusive", "directories cannot become an unbounded verification stream");
   console.log("PASS file recovery compares native output, rejects changed bytes and supports cancellation");
 
-  for (const historicalEffect of [false, true]) {
-    const f = await fixture(`resource-denied-${historicalEffect}`, request => request.messages.at(-1)?.role === "toolResult"
-      ? text("blocked before action") : call("write", { path: "resource.txt", content: "new write" }));
-    const works = new WorkService(db.connection, { bots: policyBots });
-    const user: WorkActor = { kind: "user", userId: LOCAL_USER_ID, grants: DESKTOP_USER_GRANTS };
-    const created = works.createWork(user, { operationId: `${f.taskId}:create`, title: "resource denial", workspacePath: f.cwd,
-      inputSnapshotId: "resource-input", authorization: DESKTOP_USER_GRANTS }); assert(created.ok);
-    const dispatched = works.dispatchExecution(user, { workId: created.work.workId, operationId: `${f.taskId}:dispatch`, botId: DEFAULT_BOT_ID,
-      taskId: f.taskId, durableStoreKey: `store:${f.taskId}`, conversationId: "1", workspaceBinding: f.cwd, delegatedScope: ["workspace:read", "workspace:write"] }); assert(dispatched.ok);
-    const binding = works.repo.bindingForTask(f.taskId); assert(binding);
-    const owner = { taskId: f.taskId, durableStoreKey: binding.durableStoreKey, conversationId: binding.conversationId,
-      workspaceBinding: binding.workspaceBinding, bindingId: binding.bindingId, workId: binding.workId };
-    const gate = new WorkResourceGate(db.connection, { hostId: `denied:${f.taskId}`, authorize: () => historicalEffect ? undefined : "资源授权已暂停，未执行新动作" });
-    f.state.resourcePolicy = new WorkToolResourcePolicy(gate, () => owner);
-    f.state.admit = input => {
-      const denied = works.admitTaskAction(f.taskId, input);
-      if (!denied && historicalEffect) {
-        const pieces = input.operationId.split(":"), nativeTaskId = pieces[2], callId = pieces.slice(3).join(":");
-        const lease = gate.acquire({ actionId: `resource:${resourceOwnerKey(owner)}:${nativeTaskId}:${callId}`, owner, resources: [fileResource(join(f.cwd, "resource.txt"), "write")] });
-        assert(lease.ok); writeFileSyncForFixture(join(f.cwd, "resource.txt"), "earlier unknown effect"); gate.release(lease.lease, "unknown");
-      }
-      return denied;
-    };
-    f.state.settle = (operationId, outcome) => works.settleTaskAction(f.taskId, operationId, outcome);
-    const r = await f.open();
+  // 旧 profile：退役专用表与旧 blocker 仍在时，真实读写与重启都不再被挡住，也不重放历史动作。
+  const ungated = await fixture("legacy-quarantine", request => {
+    const last = request.messages.at(-1);
+    if (last?.role !== "toolResult") return call("write", { path: "resource.txt", content: "new write" }, "write-after-old-quarantine");
+    assert(!last.isError, "old shared leases cannot reject unrelated native tools");
+    return last.toolCallId === "write-after-old-quarantine" ? call("read", { path: "resource.txt" }, "read-after-write") : text("verified");
+  });
+  db.connection.exec(`CREATE TABLE IF NOT EXISTS work_resource_leases (token INTEGER PRIMARY KEY, lease_json TEXT NOT NULL, state TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS work_action_approvals (approval_id TEXT PRIMARY KEY, work_id TEXT, binding_id TEXT, operation_id TEXT, fingerprint TEXT, data_json TEXT);
+    CREATE TABLE IF NOT EXISTS work_deferred_actions (approval_id TEXT PRIMARY KEY);`);
+  db.connection.prepare("INSERT INTO work_resource_leases(token,lease_json,state) VALUES (1,?, 'quarantined')")
+    .run(JSON.stringify({ owner: { taskId: "old-task" }, resources: [{ kind: "host", key: "unclassified-tool" }] }));
+  db.connection.prepare("INSERT INTO work_action_approvals(approval_id,work_id,binding_id,operation_id,fingerprint,data_json) VALUES ('work-approval:old','w','b','old','f','{\"status\":\"pending\"}')").run();
+  db.connection.prepare("INSERT INTO work_deferred_actions(approval_id) VALUES ('work-approval:old')").run();
+  retireWorkIsolation(db.connection);
+  for (const pass of [1, 2]) {
+    const native = await ungated.open();
     try {
-      assert.equal((await (await r.submit("attempt", `resource-denied-${historicalEffect}`)).wait(ctx)).status, "done");
-      const admissions = works.repo.listAdmissions(binding.workId); assert.equal(admissions.length, 1);
-      assert.equal(admissions[0]?.state, historicalEffect ? "unknown" : "released");
-      if (historicalEffect) {
-        assert.equal(await readFile(join(f.cwd, "resource.txt"), "utf8"), "earlier unknown effect");
-        assert.equal(gate.live()[0] && gate.leaseState(gate.live()[0]!), "quarantined");
-      } else {
-        await assert.rejects(access(join(f.cwd, "resource.txt")));
-        assert.equal(works.repo.listOpenBlockers(binding.workId).filter(blocker => blocker.kind === "external_effect").length, 0);
-        assert.equal(failures.list(f.taskId).filter(failure => failure.sideEffects === "unknown").length, 0);
-      }
-    } finally { await r.close(); }
+      assert.equal((await (await native.submit("write and verify", `ungated-${pass}`)).wait(ctx)).status, "done");
+      assert.equal(await readFile(join(ungated.cwd, "resource.txt"), "utf8"), "new write");
+      assert.equal(interactions.listByTask(ungated.taskId).filter(item => item.status === "pending").length, 0);
+    } finally { await native.close(); }
   }
-  console.log("PASS native resource denial has persistent not-started proof; released admissions have no unknown effect, while original quarantined effects stay unknown");
-
-  for (const [index, command] of ["wc -l", "ls -R"].entries()) {
-    const seen: string[] = [], refusals: string[] = [];
-    const f = await fixture(`shell-recovery-${index}`, request => {
-      const last = request.messages.at(-1);
-      if (last?.role !== "toolResult") return call("bash", { command }, "unsupported-read");
-      seen.push(last.toolCallId);
-      const body = last.content.filter(block => block.type === "text").map(block => block.text).join("\n");
-      if (last.toolCallId === "unsupported-read" || last.toolCallId === "still-unbounded") {
-        assert(last.isError, "unsupported shell reads stay refused even with an explicit path");
-        assert.match(body, /范围未核实.*内置 read.*明确文件路径/);
-        assert.match(body, /完整内容上统计.*分段读完/);
-        assert.match(body, /ls -l "\.\/dir"/);
-        assert.match(body, /wc -c.*单个明确字面路径/);
-        assert.match(body, /内置 write\/edit.*逐个重新读取.*不会解除任意 Shell 命令限制/);
-        refusals.push(body);
-        return last.toolCallId === "unsupported-read" ? call("bash", { command: 'ls "./"' }, "scoped-directory")
-          : text(`保留未覆盖项及恢复指引：${body}`);
-      }
-      if (last.toolCallId === "scoped-directory") {
-        assert(!last.isError); assert.match(body, /proof\.txt/);
-        return call("write", { path: "proof.txt", content: "must not write before reread" }, "before-reread");
-      }
-      if (last.toolCallId === "before-reread") {
-        assert(last.isError); assert.match(body, /内置 read.*重新读取目标版本.*列目录不能代替/);
-        return call("read", { path: "proof.txt" }, "scoped-reread");
-      }
-      if (last.toolCallId === "scoped-reread") {
-        assert(!last.isError); assert.match(body, /original proof/);
-        return call("write", { path: "proof.txt", content: "trusted scoped recovery\n" }, "scoped-write");
-      }
-      assert.equal(last.toolCallId, "scoped-write"); assert(!last.isError);
-      return call("bash", { command: 'wc --files0-from "./proof.txt"' }, "still-unbounded");
-    });
-    const works = new WorkService(db.connection, { bots: policyBots });
-    const user: WorkActor = { kind: "user", userId: LOCAL_USER_ID, grants: DESKTOP_USER_GRANTS };
-    const created = works.createWork(user, { operationId: `${f.taskId}:create`, title: "shell guard recovery", workspacePath: f.cwd,
-      inputSnapshotId: "shell-recovery-input", authorization: DESKTOP_USER_GRANTS }); assert(created.ok);
-    const dispatched = works.dispatchExecution(user, { workId: created.work.workId, operationId: `${f.taskId}:dispatch`, botId: DEFAULT_BOT_ID,
-      taskId: f.taskId, durableStoreKey: `store:${f.taskId}`, conversationId: "1", workspaceBinding: f.cwd,
-      delegatedScope: ["workspace:read", "workspace:write"] }); assert(dispatched.ok);
-    const binding = works.repo.bindingForTask(f.taskId); assert(binding);
-    const owner = { taskId: f.taskId, durableStoreKey: binding.durableStoreKey, conversationId: binding.conversationId,
-      workspaceBinding: binding.workspaceBinding, bindingId: binding.bindingId, workId: binding.workId };
-    await writeFile(join(f.cwd, "proof.txt"), "original proof\n");
-    works.resourceGate.noteOpaqueObservation(owner, "bash");
-    f.state.resourcePolicy = new WorkToolResourcePolicy(works.resourceGate, () => owner);
-    f.state.approve = (input, signal) => {
-      const result = works.approvals.request(input, signal);
-      // Unknown native shell now asks before the resource gate. Explicitly
-      // approve this exact fixture action; that must NOT bypass resource denial.
-      const pending = works.approvals.list(binding.workId).find(item => item.operationId === input.operationId && item.status === "pending");
-      if (pending) {
-        const current = works.getWork(binding.workId)!;
-        assert(works.approvals.decide(LOCAL_USER_ID, { approvalId: pending.approvalId, workId: binding.workId,
-          bindingId: binding.bindingId, expectedVersion: pending.version, expectedStateVersion: current.stateVersion,
-          expectedIntentRevision: current.intentRevision, expectedOwnerEpoch: current.ownerEpoch, approved: true }).ok);
-      }
-      return result;
-    };
-    f.state.admit = input => works.admitTaskAction(f.taskId, input);
-    f.state.settle = (operationId, outcome) => works.settleTaskAction(f.taskId, operationId, outcome);
-    const r = await f.open();
-    try {
-      assert.equal((await (await r.submit("recover without broadening shell scope", f.taskId)).wait(ctx)).status, "done");
-      assert.deepEqual(seen, ["unsupported-read", "scoped-directory", "before-reread", "scoped-reread", "scoped-write", "still-unbounded"]);
-      assert.equal(refusals.length, 2, "the executor received the precise actionable refusal both before and after scoped recovery");
-      assert.equal(await readFile(join(f.cwd, "proof.txt"), "utf8"), "trusted scoped recovery\n");
-      assert.equal(failures.list(f.taskId).filter(failure => failure.sideEffects === "unknown").length, 0);
-    } finally { await r.close(); }
-    // Independently reopened SQLite-backed Work state retains exactly the guidance seen by the executor.
-    const reopened = new AppDatabase(join(root, "app.db"));
-    try {
-      const recovered = new WorkService(reopened.connection, { bots: new BotRegistry(reopened.connection) });
-      const shellDenials = recovered.approvals.list(binding.workId).filter(approval => approval.toolName === "bash");
-      assert.equal(shellDenials.length, 2);
-      for (const approval of shellDenials) {
-        assert.equal(approval.status, "denied"); assert(approval.outcome);
-        assert(refusals.some(body => body.includes(approval.outcome!)));
-        const blocker = recovered.repo.getBlocker(approval.approvalId);
-        assert(blocker); assert.equal(blocker.status, "open"); assert(blocker.reason.includes(approval.outcome));
-        const gap = recovered.partialResults.list(binding.workId).find(item => item.itemId === approval.approvalId);
-        assert(gap); assert.equal(gap.outcome, "not_started"); assert(gap.summary.includes(approval.outcome));
-      }
-      assert.equal(recovered.resourceGate.live().filter(lease => lease.owner.taskId === f.taskId).length, 0,
-        "not-started shell refusals create no unknown-effect quarantine");
-    } finally { reopened.close(); }
-  }
-  console.log("PASS wc/flag refusals reach executor and durable blocker/partial result with precise recovery; only a trusted scoped reread permits its write, never arbitrary shell");
+  console.log("PASS legacy host quarantine cannot block native read/write, including reopen, without deleting historical rows");
 
   let receiptReads = 0;
   let mutations = 0;

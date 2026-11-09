@@ -3,7 +3,6 @@ import { realpathSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { fileResourceIdentity, resourcePathContains } from "../../platform/resource-identity";
 import { validateWorkReadPath } from "../../platform/work-shell-read";
-import type { WorkResource } from "./WorkResourceGate";
 import type Database from "better-sqlite3";
 import { z } from "zod";
 import type { AppDatabase } from "../../db/AppDatabase";
@@ -417,37 +416,6 @@ export class WorkTeamService {
     });
   }
 
-  /** Mandatory on every native resource gate; text instructions are not an access boundary. */
-  resourceError(binding: WorkExecutionBindingDto, resources: WorkResource[]): string | undefined {
-    if (!this.row(binding.workId)) return undefined;
-    const work = this.works.getWork(binding.workId)!;
-    const workspace = this.db.prepare("SELECT canonical_path,entity FROM work_team_workspaces WHERE work_id=?").get(binding.workId) as { canonical_path: string; entity: string } | undefined;
-    if (!workspace || workspace.canonical_path !== work.workspacePath || fileResourceIdentity(workspace.canonical_path).entity !== workspace.entity)
-      return "团队工作区身份已变化，必须核对后重新授权";
-    const bot = this.bots.getBot(binding.botId);
-    if (!bot || bot.status !== "active" || bot.authorization.expiresAt !== undefined && bot.authorization.expiresAt <= this.now()) return "团队成员授权已失效";
-    for (const resource of resources) {
-      let path: string;
-      if (resource.kind === "host" && resource.scope === "local-host" && resource.key === "scoped-read-verification"
-        && resource.mode === "read" && resource.readVerification && !resource.path && !resource.sourcePath
-        && resource.entity === undefined && resource.expectedVersion === undefined) {
-        // Only the trusted FD adapter emits this target. Keep the coarse read
-        // lease for writer exclusion; never reintroduce a racy pathname hash.
-        try {
-          if (resource.readVerification.root !== workspace.canonical_path) return "只读校验执行根不属于团队授权工作区";
-          path = validateWorkReadPath(workspace.canonical_path, resource.readVerification.target);
-        } catch (error) { return error instanceof Error ? error.message : String(error); }
-      } else {
-        if (!["file", "directory"].includes(resource.kind) || !resource.path || resource.readVerification)
-          return "团队仅授权所选工作区的明确文件操作，不允许不透明 shell、外部连接或桌面控制";
-        path = fileResourceIdentity(resource.path).path;
-      }
-      if (!work.workspacePath || !resourcePathContains(work.workspacePath, path)) return "文件目标超出团队授权工作区";
-      if (!bot.authorization.allowedScopes.includes(resource.mode === "write" ? "workspace:write" : "workspace:read")) return "团队成员没有当前文件操作授权";
-      if (bot.authorization.targetWhitelist.length && !bot.authorization.targetWhitelist.includes(work.workspacePath)) return "团队工作区已不在成员授权范围";
-    }
-    return undefined;
-  }
 
   dispatchError(workId: string, taskId: string, botId: string, scopes: string[] | undefined): string | undefined {
     if (!this.row(workId)) return undefined;

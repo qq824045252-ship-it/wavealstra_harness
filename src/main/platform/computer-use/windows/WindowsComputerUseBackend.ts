@@ -1,6 +1,5 @@
 import type { ResourceRecoveryAttempt } from "../../../../shared/resource-recovery";
 import { isComputerExecReadonly } from "../../../../shared/pi-event-mapper";
-import { withManagedResource } from "../../managed-resources";
 import { validateComputerAction } from "../../../capabilities/ComputerUsePolicy";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
@@ -372,7 +371,7 @@ export class WindowsComputerUseBackend implements ComputerUseBackend {
   }
 
   async execute(input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {
-    return withManagedResource({ kind: "desktop", taskId: input.taskId, action: input.action ?? "batch", inputKey: input.action?.startsWith("key_") ? input.key : input.button ?? "left", readonly: isComputerExecReadonly(input) }, () => this.executeManaged(input, signal));
+    return this.executeManaged(input, signal);
   }
 
   private async executeManaged(input: ComputerExecInput, signal?: AbortSignal): Promise<ComputerExecOutput> {

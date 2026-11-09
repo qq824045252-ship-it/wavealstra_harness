@@ -1,5 +1,7 @@
 # Bot / Work — Phase 3 执行规划（供 Codex 实施）
 
+> **已退役（Issue #21）**：本文描述的 `WorkResourceGate` 共享资源隔离、跨 Work 资源屏障与动作审批已整体移除，现状见 [work-action-approval-loop.md](work-action-approval-loop.md)。本文仅作历史实施记录，不再是现行契约。
+
 > 状态：**已实施 / P3-00～P3-08 已接线，组件与 headless 门禁通过；BW-A31 真实桌面输入受阻，Phase 3 整体未验收**
 >
 > 实施与证据：[Phase 3 实施与验证记录](reviews/bot-work-phase3-2026-11-07.md)。该记录列出各 BW 场景的实际行为、故障窗口、门禁结果与未运行范围。

@@ -15,7 +15,6 @@ import { WorkService, DESKTOP_USER_GRANTS } from "../src/main/agent/work/WorkSer
 import { WorkHostAuthority } from "../src/main/agent/work/WorkHostAuthority";
 import { WorkExecutionAdapter } from "../src/main/agent/work/WorkExecutionAdapter";
 import { WorkDispatchQueue } from "../src/main/agent/work/WorkDispatchQueue";
-import { WorkToolResourcePolicy } from "../src/main/agent/work/WorkToolResourcePolicy";
 import { WorkProjectionJournal } from "../src/main/agent/work/WorkProjectionJournal";
 import { DurableBotService } from "../src/main/agent/durable/DurableBotService";
 import { createDurableSubagentTools } from "../src/main/agent/durable/DurableSubagents";
@@ -119,12 +118,6 @@ export async function openNativeHost(root: string, stage: number) {
       const policy = createDurableToolPolicy({ taskId: task.id, taskRoot: cwd, getPermissionMode: () => "auto", toolAllowed: () => true,
         interactions: new ConversationInteractionService(new ConversationInteractionRepository(db.connection), () => {}),
         attempts: new ExecutionAttemptRepository(db.connection), failures: new ExecutionFailureRepository(db.connection),
-        resourcePolicy: new WorkToolResourcePolicy(works.resourceGate, context => {
-          const binding = works.repo.bindingForTask(context.taskId); assert(binding, "all background tools use a real persisted Work binding");
-          return { taskId: binding.taskId, durableStoreKey: binding.durableStoreKey, conversationId: binding.conversationId,
-            workspaceBinding: binding.workspaceBinding, bindingId: binding.bindingId, workId: binding.workId,
-            childId: String(context.conversationId) === binding.conversationId ? undefined : String(context.conversationId) };
-        }, { allowGitBranchOrWorktree: allowGitIsolation }),
         admitWorkAction: input => works.admitTaskAction(task.id, input), settleWorkAction: (operationId, outcome) => works.settleTaskAction(task.id, operationId, outcome) });
       return { contextHooks: [], toolHooks: {
         beforeTool: async (call, api, context) => guardSubagentWriteCall(call, api.conversationId, task.id) ?? await policy.hooks.beforeTool?.(call, api, context),

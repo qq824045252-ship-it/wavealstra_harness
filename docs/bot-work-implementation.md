@@ -108,6 +108,8 @@ Phase 1 交付时，Phase 2 的前台独立对话、Work 受理与控制工具�
 
 Phase 3 继续完成资源门控、结算、部分成果和交接。Phase 4 完成真实订阅、离线补处理、因果防环与原生用量记账。Phase 5 完成通知渠道、双页面交互、跨端同步，以及全部适用 BW 场景与端到端故事。Phase 3～5 及 BOT-WORK-1.0 总体尚未验收完成。
 
+**已退役（Issue #21）：本文中 `WorkResourceGate` 资源共享隔离与 Work 动作审批的现行描述已失效，现状见 [work-action-approval-loop.md](work-action-approval-loop.md)。**
+
 **Phase 3 已按 [执行规划](bot-work-phase3-execution-plan.md) 完成 P3-00～P3-08 实施（审核基线 `main@a6bb4a5`），不是只有文档确认。** 资源身份与成组准入（`WorkResourceGate`）、文件/Shell/MCP/Code Mode 统一动作 gate、桌面与浏览器输入边界、多源产物指纹与写前/验收前重验、部分成果与缺口定向补跑、暂停积压与在途结算、八类协作消息与原子交接、通知发送前重验均已接入现有 SQLite schema（32）、Inbox/Outbox 与投影；未引入旧数据迁移层。逐项证据见 [Phase 3 实施与验证记录](reviews/bot-work-phase3-2026-11-07.md)：typecheck 与 `test:all`（336 项，失败 0）通过，`test:bot-work-phase3:dev` 真实 dev 页面通过；BW-A31 真实 Windows 桌面输入仍受 `FOCUS_FAILED` 阻塞，Linux/Omarchy、移动端与发行包桌面未运行，因此 Phase 3 不得整体标记验收通过。
 
 

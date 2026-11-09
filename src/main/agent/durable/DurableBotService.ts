@@ -1,6 +1,3 @@
-import type { DeferredNativeInput } from "./DurableDeferredAction";
-import type { ResourceRecoveryAttempt } from "../../../shared/resource-recovery";
-import type { WorkResourceOwner } from "../work/WorkResourceGate";
 import { createHash } from "node:crypto";
 import { existsSync, statSync, readFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
@@ -688,51 +685,10 @@ export class DurableBotService {
     }
   }
 
-  /** Reopens the exact original namespace; never submits a model prompt or changes the binding cwd. */
-  async resumeDeferredAction(taskId: string, expected: { durableStoreKey: string; workspaceBinding: string }, input: DeferredNativeInput) {
-    const binding = this.binding(taskId);
-    if (!binding || binding.directory !== expected.durableStoreKey || binding.cwd !== expected.workspaceBinding) {
-      throw new Error("原审批执行命名空间已改变，不能改用新工作目录续跑");
-    }
-    const open = await this.openBound(taskId);
-    const nativeTaskId = await open.runtime.submitDeferredAction(input);
-    return open.runtime.harness.getTask(nativeTaskId as import("@earendil-works/pi-durable").TaskId, context);
-  }
-
   async submit(request: AgentPromptRequest): Promise<AgentPromptResult> {
     const { submission } = await this.admitTracked(request);
     const state = await submission.status(context);
     return submissionResult(request.taskId, state);
-  }
-
-  /** Native graph proof for resource recovery. Root status alone is never sufficient. */
-  async resourceQuiescence(owner: WorkResourceOwner, recovery?: ResourceRecoveryAttempt): Promise<{ executionStopped: boolean; ownedChildrenStopped: boolean; receipt: string }> {
-    recovery?.assertCurrent();
-    const probeContext = recovery ? withAbortSignal(recovery.signal, context) : context;
-    const stored = this.binding(owner.taskId);
-    if (!stored || stored.directory !== owner.durableStoreKey || stored.cwd !== owner.workspaceBinding)
-      throw new Error("资源恢复与原生存储命名空间不一致");
-    const open = await this.open(owner.taskId);
-    recovery?.assertCurrent();
-    const graph = await open.runtime.harness.inspect(probeContext);
-    recovery?.assertCurrent();
-    const tasks = await open.runtime.conversation.commit(async tx => {
-      const statuses: Array<{ id: number; terminal: boolean }> = [];
-      let cursor: Cursor | undefined;
-      do {
-        recovery?.assertCurrent();
-        const page = await tx.scanTasks({}, 200, cursor);
-        recovery?.assertCurrent();
-        for (const task of page.items) statuses.push({ id: task.id, terminal: task.state.status === "terminal" });
-        cursor = page.next;
-      } while (cursor);
-      return statuses;
-    }, probeContext);
-    recovery?.assertCurrent();
-    const quiet = graph.tasks.length === 0 && tasks.every(task => task.terminal);
-    return { executionStopped: quiet, ownedChildrenStopped: quiet,
-      receipt: JSON.stringify({ taskId: owner.taskId, store: owner.durableStoreKey, conversationId: owner.conversationId,
-        workspace: owner.workspaceBinding, activeTasks: graph.tasks.length, tasks, checkedAt: Date.now() }) };
   }
 
   workExecutionPort(): WorkExecutionPort {

@@ -2,14 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import type { BotDto, WorkProjectionDto } from "@shared/bot-work";
 import type { BotMessageDto } from "@shared/bot-conversation";
 import type { BotWorkHostStatusDto } from "@shared/bot-work-ipc";
-import type { WorkAutonomyRule } from "@shared/bot-work-autonomy";
 import { useAppStore } from "@/store/appStore";
 import ChatComposer from "@/components/chat/ChatComposer";
 import ChatMarkdown from "@/components/chat/ChatMarkdown";
 import { IconArchive, IconChevronDown, IconArrowUp, IconBot, IconCheck, IconChevronRight, IconClock, IconListTodo, IconMessageDashed, IconPanel, IconSearch, IconSettings, IconStop, IconX } from "@/components/common/icons";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { activeBotReply, botParticipatesInWork, botMessageStatus, botWorkTimeline, needsWorkDecision, shouldSendBotComposer, workMatchesView, workStatusLabel, type BotWorkspaceView } from "@/lib/botWorkspacePresentation";
-import { BotWorkApprovals, visibleWorkApproval } from "./BotWorkApprovals";
 import { BotWorkDetails } from "./BotWorkDetails";
 import { BotTeamDialog } from "./BotTeamDialog";
 import { BotWorkspaceAuthorization } from "./BotWorkspaceAuthorization";
@@ -63,8 +61,6 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   const [newConversationOpen, setNewConversationOpen] = useState(false);
   const [archiving, setArchiving] = useState(false);
   const [archiveError, setArchiveError] = useState("");
-  const [rules, setRules] = useState<WorkAutonomyRule[]>([]);
-  const [rulesError, setRulesError] = useState("");
   const [navigationNotice, setNavigationNotice] = useState("");
   const requestedWork = useRef<string | null>(null);
   const [awayFromBottom, setAwayFromBottom] = useState(false);
@@ -79,7 +75,6 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   const lastBot = useRef(activeBotId);
   const activeBot = identities.find(bot => bot.botId === activeBotId) ?? null;
   const botWorks = works.filter(work => botParticipatesInWork(work, activeBot?.botId));
-  const pendingApprovalVersion = botWorks.flatMap(work => work.approvals?.filter(visibleWorkApproval).map(item => `${item.approvalId}:${item.version}:${item.continuation?.status ?? item.status}`) ?? []).join("|");
   const selected = botWorks.find(work => work.workId === selectedWorkId) ?? null;
   const messages = activeBotId ? histories[activeBotId]?.messages ?? [] : [];
   const lastMessage = messages[messages.length - 1];
@@ -122,11 +117,6 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
     if (newConversationOpen) dialog?.showModal(); else if (dialog?.open) dialog.close();
   }, [newConversationOpen]);
   useEffect(() => {
-    if (!settingsOpen) return;
-    setRulesError("");
-    void window.api?.botWork.listAutonomyRules().then(setRules).catch(error => setRulesError(error instanceof Error ? error.message : "读取授权规则失败"));
-  }, [settingsOpen]);
-  useEffect(() => {
     if (view !== "conversation" || !followLatest.current) return;
     const frame = requestAnimationFrame(() => {
       const el = threadRef.current;
@@ -143,7 +133,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
       }
     });
     return () => cancelAnimationFrame(frame);
-  }, [activeBotId, view, messages.length, lastMessage?.text, lastMessage?.status, activeReply?.messageId, activeReply?.text, activeReply?.status, pendingApprovalVersion]);
+  }, [activeBotId, view, messages.length, lastMessage?.text, lastMessage?.status, activeReply?.messageId, activeReply?.text, activeReply?.status]);
   useEffect(() => {
     const thread = threadRef.current;
     const list = thread?.querySelector(".bot-message-list");
@@ -183,20 +173,6 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
         state.setSelectedWorkId(workId); setInspectorOpen(true); setNavigationNotice("");
       } else setNavigationNotice("暂时无法打开此事项，请在已结束列表中核对或稍后重试。");
     });
-  };
-  const openResourceWork = (workId: string) => {
-    requestedWork.current = workId;
-    const originBotId = activeBotId;
-    setNavigationNotice("正在读取资源来源事项…");
-    void useAppStore.getState().refreshBotWork(true).then(() => {
-      const state = useAppStore.getState();
-      if (requestedWork.current !== workId || state.activeBotId !== originBotId) return;
-      const target = state.botWorks.find(item => item.workId === workId);
-      if (!target) { setNavigationNotice("来源事项不可访问，请核对当前账号和事项列表。"); return; }
-      setIncludeClosed(true);
-      if (!botParticipatesInWork(target, originBotId)) state.setActiveBotId(target.ownerBotId);
-      state.setSelectedWorkId(workId); setInspectorOpen(true); setNavigationNotice("");
-    }).catch(() => setNavigationNotice("读取资源来源事项失败，请稍后重试。"));
   };
   const changeView = (next: BotWorkspaceView) => {
     requestedWork.current = null; setNavigationNotice("");
@@ -271,7 +247,6 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
               <summary>{botWorks.find(work => work.workId === row.workId)?.title ?? "事项"} · {row.messages.length} 条进展与历史记录（展开查看）</summary>
               {row.messages.map(message => <BotMessage key={message.messageId} message={message} botName={activeBot?.displayName ?? "Bot"} works={botWorks} onOpenWork={openWork} onCancel={() => {}} />)}
             </details>)}</div>}
-          {botWorks.filter(work => work.approvals?.some(visibleWorkApproval)).map(work => <BotWorkApprovals key={work.workId} work={work} />)}
         </div>
         {awayFromBottom && <button type="button" className="bot-latest-button" onClick={() => { const el = threadRef.current; if (el) el.scrollTop = el.scrollHeight; followLatest.current = true; followReplyTail.current = true; setAwayFromBottom(false); }}><IconChevronDown size={14} />回到最新消息</button>}
       </> : <section className="bot-work-browser" aria-label={`${views.find(item => item.id === view)?.label}事项`}>
@@ -287,7 +262,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
     </section>
     {selected && <dialog ref={inspectorRef} className={`bot-inspector ${compact ? "is-drawer" : ""}`} aria-label="事项详情" onCancel={event => { event.preventDefault(); setInspectorOpen(false); }} onClick={event => { if (event.target === event.currentTarget) { const r = event.currentTarget.getBoundingClientRect(); if (event.clientX < r.left || event.clientX > r.right) setInspectorOpen(false); } }}>
       <header className="bot-inspector-header"><span>事项详情</span><button type="button" className="bot-icon-button" aria-label="关闭详情" onClick={() => setInspectorOpen(false)}><IconX size={18} /></button></header>
-      <div className="bot-inspector-body"><BotWorkDetails key={selected.workId} work={selected} ownerName={identities.find(bot => bot.botId === selected.ownerBotId)?.displayName ?? selected.ownerBotId} includeClosed={includeClosed} onOpenResourceWork={openResourceWork} onReplyToBlocker={blocker => replyToBlocker(selected, blocker)} /></div>
+      <div className="bot-inspector-body"><BotWorkDetails key={selected.workId} work={selected} ownerName={identities.find(bot => bot.botId === selected.ownerBotId)?.displayName ?? selected.ownerBotId} includeClosed={includeClosed} onReplyToBlocker={blocker => replyToBlocker(selected, blocker)} /></div>
     </dialog>}
     <dialog ref={newConversationRef} className="bot-settings-dialog" aria-labelledby="bot-new-conversation-title" onCancel={event => { event.preventDefault(); if (!archiving) setNewConversationOpen(false); }}>
       <header className="bot-inspector-header"><h2 id="bot-new-conversation-title">开始新对话</h2><button type="button" className="bot-icon-button" aria-label="取消新对话" disabled={archiving} onClick={() => setNewConversationOpen(false)}><IconX size={18} /></button></header>
@@ -304,18 +279,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
     <dialog ref={settingsRef} className="bot-settings-dialog" aria-labelledby="bot-settings-title" onCancel={event => { event.preventDefault(); setSettingsOpen(false); setArchiveConfirm(false); }}>
       <header className="bot-inspector-header"><h2 id="bot-settings-title">Bot 设置与对话管理</h2><button type="button" className="bot-icon-button" aria-label="关闭 Bot 设置" onClick={() => { setSettingsOpen(false); setArchiveConfirm(false); }}><IconX size={18} /></button></header>
       <div className="bot-settings-body">{activeBot && <section className="bot-settings-identity" aria-label="Bot 身份与职责"><h3>{activeBot.displayName}</h3><p>{activeBot.responsibilitySummary || "尚未设置具体职责。你可以在对话中说明这次希望它协助的目标。"}</p><p>独立 Bot 身份。当前配置与操作范围以已生效的版本及授权为准。</p></section>}{activeBot && <><BotWorkspaceAuthorization key={activeBot.botId} bot={activeBot} /><details className="bot-advanced"><summary>专家配置与权限审阅</summary><BotExpertReview botId={activeBot.botId} /></details>
-          <section className="bot-archive-section" aria-label="已保存的授权规则">
-            <h3>已保存的授权规则</h3>
-            <p>只有你在审批卡上明确选择“以后这样处理”才会出现在这里；撤销后立即影响尚未执行的动作。</p>
-            {rulesError && <p role="alert" className="bot-alert">{rulesError}</p>}
-            {rules.length === 0 ? <p>还没有保存的规则。</p> : <ul>{rules.map(rule => <li key={rule.ruleId}>
-              <span>{rule.decision === "allow" ? "允许" : "禁止"} · {rule.scope.projectId ? `项目 ${rule.scope.projectId}` : rule.scope.workspaceId ? "本工作区" : rule.scope.repo ? `仓库 ${rule.scope.repo}` : "全部"} · {(rule.scope.effect ?? []).join(",")} · {rule.reason}</span>
-              <button type="button" onClick={() => { void window.api?.botWork.revokeAutonomyRule(rule.ruleId).then(revoked => {
-                if (revoked) setRules(current => current.filter(item => item.ruleId !== rule.ruleId));
-                else setRulesError("撤销未完成，请刷新后重试");
-              }).catch(() => setRulesError("撤销未完成，请刷新后重试")); }}>撤销</button>
-            </li>)}</ul>}
-          </section><section className="bot-archive-section">{archiveError && <p role="alert" className="bot-alert">{archiveError}</p>}<h3>归档当前对话</h3><p>收起这段对话，开始新的聊天。事项记录仍会保留。</p>{archiveConfirm ? <div role="group" aria-label="确认归档"><p>确定归档当前对话吗？</p><button type="button" disabled={archiving} onClick={() => { setArchiving(true); setArchiveError(""); void useAppStore.getState().archiveBotConversation(activeBot.botId).then(() => { setArchiveConfirm(false); setSettingsOpen(false); }).catch(error => setArchiveError(error instanceof Error ? error.message : "归档未完成，请稍后重试。")).finally(() => setArchiving(false)); }}>{archiving ? "正在归档…" : "确认归档"}</button><button type="button" disabled={archiving} onClick={() => setArchiveConfirm(false)}>取消</button></div> : <button type="button" onClick={() => setArchiveConfirm(true)}><IconArchive size={15} />归档对话</button>}</section></>}</div>
+<section className="bot-archive-section">{archiveError && <p role="alert" className="bot-alert">{archiveError}</p>}<h3>归档当前对话</h3><p>收起这段对话，开始新的聊天。事项记录仍会保留。</p>{archiveConfirm ? <div role="group" aria-label="确认归档"><p>确定归档当前对话吗？</p><button type="button" disabled={archiving} onClick={() => { setArchiving(true); setArchiveError(""); void useAppStore.getState().archiveBotConversation(activeBot.botId).then(() => { setArchiveConfirm(false); setSettingsOpen(false); }).catch(error => setArchiveError(error instanceof Error ? error.message : "归档未完成，请稍后重试。")).finally(() => setArchiving(false)); }}>{archiving ? "正在归档…" : "确认归档"}</button><button type="button" disabled={archiving} onClick={() => setArchiveConfirm(false)}>取消</button></div> : <button type="button" onClick={() => setArchiveConfirm(true)}><IconArchive size={15} />归档对话</button>}</section></>}</div>
     </dialog>
   </div>;
 }
