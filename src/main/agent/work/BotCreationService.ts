@@ -12,7 +12,7 @@ function comparableName(value: string): string {
   return value.trim().normalize("NFKC").toLowerCase();
 }
 
-/** Metadata only: never creates a Work, runtime, conversation, tool grant or external message. */
+/** Host-managed identity and explicit future-Work file grants; never starts execution or sends messages. */
 export class BotCreationService {
   constructor(
     private readonly db: Database.Database,
