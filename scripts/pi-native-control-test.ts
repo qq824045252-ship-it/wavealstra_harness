@@ -2,7 +2,7 @@ import { projectLegacyExecutionControlHistory } from "../src/main/agent/LegacyEx
 import { nativeRunPhaseLabel } from "../src/shared/generation-stats";
 import assert from "node:assert/strict";
 import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
-import { createConversationRuntimeExtension } from "../src/main/agent/conversation-runtime-extension";
+import { canRefreshProgressGuard, createConversationRuntimeExtension } from "../src/main/agent/conversation-runtime-extension";
 import { mapPiEventToPatches, type MapperContext } from "../src/shared/pi-event-mapper";
 import { PromptSubmissionCoordinator } from "../src/main/agent/PromptSubmissionCoordinator";
 
@@ -127,6 +127,50 @@ test("tool wait, native retry and user input are not mislabeled as thinking", ()
   assert.match(nativeRunPhaseLabel("waiting", []), /正在准备回复/);
   assert.doesNotMatch(nativeRunPhaseLabel("waiting", []), /思考|thinking/i);
 });
+test("progress refresh tolerates bookkeeping but not concurrent content or intent changes", () => {
+  const before: any = { workId: "w", stateVersion: 5, intentRevision: 1, ownerEpoch: 1,
+    lifecycle: "active", inputSnapshotId: "input", progressSummary: "old", criteria: [{ id: "c", status: "pending" }] };
+  const now = { ...before, stateVersion: 28 };
+  const params = { expectedStateVersion: 5, expectedIntentRevision: 1, expectedOwnerEpoch: 1, progressSummary: "new" };
+  assert(canRefreshProgressGuard(before, now, params));
+  for (const change of [{ progressSummary: "other report" }, { intentRevision: 2 }, { ownerEpoch: 2 },
+    { lifecycle: "paused" }, { inputSnapshotId: "replacement" }, { criteria: [] }, { workId: "other" }])
+    assert(!canRefreshProgressGuard(before, { ...now, ...change }, params));
+  assert(!canRefreshProgressGuard(undefined, now, params));
+  assert(!canRefreshProgressGuard(before, now, { ...params, expectedStateVersion: 4 }));
+  assert(!canRefreshProgressGuard(before, now, { ...params, status: "cancelled" }));
+  assert(!canRefreshProgressGuard(before, now, { ...params, criterionUpdates: [{ id: "c", status: "met" }] }));
+  assert(canRefreshProgressGuard(before, now, { ...params, criterionUpdates: [{ id: "c", evidence: "read back" }] }));
+});
+try {
+  const registered = new Map<string, any>();
+  let work: any = { workId: "w", stateVersion: 5, intentRevision: 1, ownerEpoch: 1, lifecycle: "active",
+    inputSnapshotId: "i", criteria: [], progressSummary: "old" };
+  const bridge: any = { resolveContext: () => ({ taskId: "t" }), goal: {
+    getLive: () => ({ id: "w", title: "test", status: "active" }),
+    workService: { getWork: () => work }, modelActor: () => ({ kind: "worker" }),
+    update: (request: any, context: any) => {
+      if (context.versionGuard.expectedStateVersion !== work.stateVersion)
+        return { ok: false, code: "conflict", message: "version conflict" };
+      work = { ...work, stateVersion: work.stateVersion + 1, progressSummary: request.progressSummary };
+      return { ok: true, goal: { id: "w", title: "test" } };
+    },
+  } };
+  createConversationRuntimeExtension(bridge)({ on: () => {}, registerTool: (tool: any) => registered.set(tool.name, tool) } as any);
+  await registered.get("conversation_goal_get").execute("get", {});
+  work = { ...work, stateVersion: 28 };
+  const params = { expectedStateVersion: 5, expectedIntentRevision: 1, expectedOwnerEpoch: 1, status: "active", progressSummary: "saved" };
+  const saved = await registered.get("conversation_goal_update").execute("update", params);
+  assert(!saved.isError); assert.equal(work.progressSummary, "saved");
+  work = { ...work, stateVersion: 30, progressSummary: "other actor" };
+  const conflict = await registered.get("conversation_goal_update").execute("conflict", { ...params, expectedStateVersion: 29 });
+  assert(conflict.isError); assert.equal(work.progressSummary, "other actor");
+  assert.equal(conflict.details.versionGuard.expectedStateVersion, 30);
+  results.push({ name: "real registered progress tool refreshes bookkeeping and returns conflicts without overwrite", passed: true });
+} catch (error) {
+  results.push({ name: "registered progress tool", passed: false, error: String(error) });
+  console.error(error);
+}
 mkdirSync("artifacts/pi-native-control", { recursive: true });
 writeFileSync("artifacts/pi-native-control/contract-results.json", JSON.stringify({ at: new Date().toISOString(), results, passed: results.every(r => r.passed) }, null, 2));
 process.exitCode = results.every(r => r.passed) ? 0 : 1;

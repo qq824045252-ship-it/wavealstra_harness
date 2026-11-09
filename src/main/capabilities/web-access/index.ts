@@ -2248,24 +2248,25 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 				normalized = normalizeFetchContentParams(params);
 			} catch (err) {
 				const error = err instanceof Error ? err.message : String(err);
-				return { content: [{ type: "text", text: `Error: ${error}` }], details: { error } };
+				return { isError: true, content: [{ type: "text", text: `Error: ${error}` }], details: { error } };
 			}
 			const { urlList, options } = normalized;
 			const mode = options.mode ?? "readable";
 			if (mode === "answer" && !options.prompt) {
-				return { content: [{ type: "text", text: "Error: mode answer requires prompt." }], details: { error: "mode answer requires prompt" } };
+				return { isError: true, content: [{ type: "text", text: "Error: mode answer requires prompt." }], details: { error: "mode answer requires prompt" } };
 			}
 			if (mode === "raw" && (options.forceClone === true || options.timestamp || options.frames || options.prompt || options.model || options.answerModel)) {
-				return { content: [{ type: "text", text: "Error: mode raw cannot be combined with forceClone, prompt, timestamp, frames, model, or answerModel." }], details: { error: "Incompatible raw mode options" } };
+				return { isError: true, content: [{ type: "text", text: "Error: mode raw cannot be combined with forceClone, prompt, timestamp, frames, model, or answerModel." }], details: { error: "Incompatible raw mode options" } };
 			}
 			if (mode !== "answer" && options.answerModel) {
-				return { content: [{ type: "text", text: "Error: answerModel requires mode answer." }], details: { error: "answerModel requires mode answer" } };
+				return { isError: true, content: [{ type: "text", text: "Error: answerModel requires mode answer." }], details: { error: "answerModel requires mode answer" } };
 			}
 			if (mode === "answer" && options.model) {
-				return { content: [{ type: "text", text: "Error: use answerModel, not model, with mode answer." }], details: { error: "model is incompatible with mode answer" } };
+				return { isError: true, content: [{ type: "text", text: "Error: use answerModel, not model, with mode answer." }], details: { error: "model is incompatible with mode answer" } };
 			}
 			if (urlList.length === 0) {
 				return {
+					isError: true,
 					content: [{ type: "text", text: "Error: No URL provided." }],
 					details: { error: "No URL provided" },
 				};
@@ -2322,6 +2323,7 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 				const result = presentedResults[0];
 				if (result.error) {
 					return {
+						isError: true,
 						content: [{ type: "text", text: `Error: ${result.error}` }],
 						details: { urls: urlList, urlCount: 1, successful: 0, error: result.error, responseId, prompt: params.prompt, timestamp: params.timestamp, frames: params.frames },
 					};
@@ -2388,6 +2390,7 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 			output += `\n---\nUse ${toolNames.getSearchContent}({ responseId: "${responseId}", urlIndex: 0 }) to retrieve bounded content slices.`;
 
 			return {
+				isError: successful === 0,
 				content: [{ type: "text", text: output }],
 				details: { urls: urlList, urlCount: urlList.length, successful, totalChars, responseId },
 			};

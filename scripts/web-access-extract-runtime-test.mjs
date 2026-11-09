@@ -57,6 +57,21 @@ try {
   const aborted = await extractContent('https://example.com/weather', controller.signal, { lookup });
   assert.equal(aborted.error, 'Aborted');
   assert.equal(calls.length, 2, 'aborted extraction must not fetch');
+  await build({ entryPoints: [join(root, 'src/main/capabilities/web-access/index.ts')],
+    bundle: true, platform: 'node', format: 'esm', packages: 'external',
+    outfile: join(temp, 'extension.mjs'), logLevel: 'silent' });
+  const { createWebAccessCapabilityExtension } = await import(pathToFileURL(join(temp, 'extension.mjs')).href);
+  const registered = new Map();
+  createWebAccessCapabilityExtension(new Proxy({ registerTool: tool => registered.set(tool.name, tool) },
+    { get: (target, key) => target[key] ?? (() => {}) }));
+  const fetchTool = registered.get('fetch_content');
+  for (const params of [{}, { url: 'http://127.0.0.1/private', mode: 'raw' },
+    { urls: ['http://127.0.0.1/a', 'http://127.0.0.1/b'], mode: 'raw' },
+    { url: 'https://example.com', mode: 'answer' }]) {
+    const response = await fetchTool.execute('error-test', params, new AbortController().signal, undefined, { cwd: temp, hasUI: false });
+    assert.equal(response.isError, true, JSON.stringify(params));
+  }
+  assert.equal(calls.length, 2, 'blocked and invalid requests must never fetch');
   if (process.argv.includes('--live-weather')) {
     globalThis.fetch = savedFetch;
     const live = await extractContent('https://www.weather.com.cn/weather1d/101210101.shtml', undefined, { timeoutMs: 15000 });

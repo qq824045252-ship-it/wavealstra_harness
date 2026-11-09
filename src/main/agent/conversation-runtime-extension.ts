@@ -5,7 +5,7 @@ import type { ConversationInteractionService } from "./ConversationInteractionSe
 import type { ConversationExecutionContext } from "./ConversationExecutionContext";
 import { projectLegacyExecutionControlHistory } from "./LegacyExecutionControlHistory";
 import type { ConversationInteractionAnswer, ConversationInteractionRequest } from "../../shared/conversation-interaction";
-import type { ExpectedVersionGuard } from "../../shared/bot-work";
+import type { WorkDto, ExpectedVersionGuard } from "../../shared/bot-work";
 
 export interface ConversationRuntimeBridge {
   resolveContext: () => ConversationExecutionContext | undefined;
@@ -52,6 +52,13 @@ async function requestInteraction(bridge: ConversationRuntimeBridge, context: Co
 
 export function createConversationRuntimeExtension(bridge: ConversationRuntimeBridge): ExtensionFactory {
   return (pi: ExtensionAPI) => {
+    // Keep only the last explicitly observed snapshot per conversation. Refreshing
+    // bookkeeping versions must never overwrite another actor's progress or intent.
+    const observed = new Map<string, WorkDto>();
+    const remember = (taskId: string, work: WorkDto | undefined) => {
+      if (observed.size >= 128 && !observed.has(taskId)) observed.delete(observed.keys().next().value!);
+      if (work) observed.set(taskId, structuredClone(work)); else observed.delete(taskId);
+    };
     pi.on("context", (event) => {
       const messages = projectLegacyExecutionControlHistory(event.messages);
       return messages === event.messages ? undefined : { messages };
@@ -102,6 +109,7 @@ export function createConversationRuntimeExtension(bridge: ConversationRuntimeBr
           const taskId = requireContext(bridge).taskId;
           const goal = bridge.goal.getLive(taskId, params.workId);
           const work = goal ? bridge.goal.workService.getWork(goal.id) : undefined;
+          remember(taskId, work);
           return result(
             goal
               ? `当前 Work：${goal.title}（${goal.status}，r${work?.intentRevision ?? 1} / v${work?.stateVersion ?? 1} / epoch ${work?.ownerEpoch ?? 1}）`
@@ -168,11 +176,23 @@ export function createConversationRuntimeExtension(bridge: ConversationRuntimeBr
             expectedIntentRevision: params.expectedIntentRevision,
             expectedOwnerEpoch: params.expectedOwnerEpoch,
           };
+          const latest = bridge.goal.workService.getWork(goal.id);
+          if (canRefreshProgressGuard(observed.get(context.taskId), latest, params)) guard.expectedStateVersion = latest!.stateVersion;
           const updated = bridge.goal.update(
             { goalId: goal.id, ...params },
             { actor: bridge.goal.modelActor(context.taskId), versionGuard: guard },
           );
-          if (!updated.ok) throw new Error(updated.message);
+          if (!updated.ok) {
+            const current = bridge.goal.workService.getWork(goal.id);
+            remember(context.taskId, current);
+            return { ...failure("conversation_goal_update", new Error(updated.message)), details: {
+              error: updated.message, goal: bridge.goal.getLive(context.taskId, params.workId),
+              versionGuard: current ? { expectedStateVersion: current.stateVersion,
+                expectedIntentRevision: current.intentRevision, expectedOwnerEpoch: current.ownerEpoch } : undefined,
+              instruction: "请基于返回的最新目标与进展重新评估；不要盲目重放原更新。",
+            } };
+          }
+          remember(context.taskId, bridge.goal.workService.getWork(goal.id));
           return result(`已更新 Work「${updated.goal.title}」。`, { goal: updated.goal });
         } catch (error) { return failure("conversation_goal_update", error); }
       },
@@ -218,4 +238,17 @@ export function createConversationRuntimeExtension(bridge: ConversationRuntimeBr
       },
     });
   };
+}
+
+/** Only a progress-only report can be rebased over unrelated runtime bookkeeping. */
+export function canRefreshProgressGuard(before: WorkDto | undefined, now: WorkDto | undefined, params: Record<string, any>): boolean {
+  if (!before || !now || before.workId !== now.workId || now.lifecycle !== "active"
+    || before.lifecycle !== now.lifecycle || before.stateVersion !== params.expectedStateVersion
+    || before.intentRevision !== params.expectedIntentRevision || now.intentRevision !== before.intentRevision
+    || before.ownerEpoch !== params.expectedOwnerEpoch || now.ownerEpoch !== before.ownerEpoch
+    || before.inputSnapshotId !== now.inputSnapshotId || before.progressSummary !== now.progressSummary
+    || JSON.stringify(before.criteria) !== JSON.stringify(now.criteria)
+    || params.status !== undefined && params.status !== "active" || typeof params.progressSummary !== "string") return false;
+  return Object.keys(params).every(key => ["workId", "status", "progressSummary", "criterionUpdates", "expectedStateVersion", "expectedIntentRevision", "expectedOwnerEpoch"].includes(key))
+    && (!params.criterionUpdates || params.criterionUpdates.every((update: any) => update.status === undefined && update.text === undefined));
 }
