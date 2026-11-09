@@ -19,6 +19,7 @@ import { BotRegistry } from "../src/main/agent/work/BotRegistry";
 import { DESKTOP_USER_GRANTS, WorkService } from "../src/main/agent/work/WorkService";
 import { DEFAULT_BOT_ID, LOCAL_USER_ID, type WorkActor } from "../src/shared/bot-work";
 import type { WorkActionApprovalDto } from "../src/shared/bot-work-approval";
+import { DurableSubagentIdentity } from "../src/main/agent/durable/DurableSubagents";
 import { DurableBotRuntime } from "../src/main/agent/durable/DurableBotRuntime";
 import { createDurableToolPolicy } from "../src/main/agent/durable/DurableToolPolicy";
 import { resolveWorkContinuationCwd } from "../src/main/agent/work/WorkContinuationWorkspace";
@@ -55,7 +56,7 @@ async function until(check: () => boolean) {
   const end = Date.now() + 15_000;
   while (!check()) { if (Date.now() > end) throw new Error("Native fixture did not reach expected state"); await new Promise(r => setTimeout(r, 10)); }
 }
-async function fixture(taskId: string, withoutWorkPath = false, verifyCommands = false, lateGuard: "block" | "throw" | undefined = undefined, taskWriteGrant = false, deferActions = false) {
+async function fixture(taskId: string, withoutWorkPath = false, verifyCommands = false, lateGuard: "block" | "throw" | undefined = undefined, taskWriteGrant = false, deferActions = false, codeMode = false) {
   const cwd = join(root, taskId); await mkdir(cwd);
   db.upsertTask({ id: taskId, title: taskId, updatedAt: Date.now() });
   let now = Date.now();
@@ -72,6 +73,11 @@ async function fixture(taskId: string, withoutWorkPath = false, verifyCommands =
   const observed: Array<{ name: string; error: boolean; body: string }> = [];
   const respond = (request: TranscriptContext): AssistantMessage["content"] => {
     const last = request.messages.at(-1);
+    if (codeMode) {
+      if (last?.role !== "toolResult") return call("codemode", { code: 'await tools.write({path:"proof.txt",content:"native proof\\n"}); text("script finished");' }, "code-leaf");
+      observed.push({ name: last.toolName, error: !!last.isError, body: JSON.stringify(last.content) });
+      return text("Code leaf deferred; original script must never replay.");
+    }
     if (last?.role !== "toolResult") return call("bash", { command: "pwd" }, "pwd");
     observed.push({ name: last.toolName, error: !!last.isError, body: JSON.stringify(last.content) });
     if (last.isError) return text("Blocked; retain completed work and await a new authorized step.");
@@ -107,11 +113,12 @@ async function fixture(taskId: string, withoutWorkPath = false, verifyCommands =
       approveWorkAction: (input, signal) => works.approvals.request(input, signal), deferActions,
       admitWorkAction: input => works.admitTaskAction(taskId, input),
       settleWorkAction: (id, outcome) => works.settleTaskAction(taskId, id, outcome),
-      resourcePolicy: new WorkToolResourcePolicy(works.resourceGate, () => ({ taskId, workId: binding.workId, bindingId: binding.bindingId,
-        durableStoreKey: binding.durableStoreKey, conversationId: binding.conversationId, workspaceBinding: binding.workspaceBinding })),
+      resourcePolicy: new WorkToolResourcePolicy(works.resourceGate, context => ({ taskId, workId: binding.workId, bindingId: binding.bindingId,
+        durableStoreKey: binding.durableStoreKey, conversationId: binding.conversationId, workspaceBinding: binding.workspaceBinding,
+        childId: context.conversationId === binding.conversationId ? undefined : context.conversationId })),
     });
     return DurableBotRuntime.open({ taskId, cwd, directory: join(cwd, "state"), models, model: { provider: "fixture", modelId: "model" },
-      toolMode: "native", toolHooks: { ...policy.hooks, beforeTool: async (call, api, context) => {
+      toolMode: codeMode ? "codemode" : "native", toolHooks: { ...policy.hooks, beforeTool: async (call, api, context) => {
         const result = await policy.hooks.beforeTool?.(call, api, context);
         if (result && "block" in result) return result;
         if (lateGuard && call.name === "write") {
@@ -489,7 +496,129 @@ try {
       assert(f.observed.some(x => x.name === "write" && x.error), "the agent received a machine-readable deferred result");
       assert(f.works.partialResults.list(f.binding.workId).some(x => x.itemId === approval.approvalId && x.outcome === "not_started"),
         "the deferred action is retained as a not_started gap for a later continuation");
-      console.log("PASS deferred approval: run completes without the action, no write, not_started gap retained");
+      const saved = f.works.approvals.deferred.get(approval.approvalId)!;
+      assert(saved, "exact leaf payload is persisted before the original run ends");
+      assert.deepEqual(saved.payload.originalCall, { name: "write", arguments: { path: "proof.txt", content: "native proof\n" } });
+      f.works.repo.updateBinding({ ...f.binding, status: "completed" });
+      await runtime.close(); f.restart();
+      const late = f.pending()!; assert(late, "late approval survives completed binding and service restart");
+      const accepted = f.works.approvals.decide(LOCAL_USER_ID, f.decision(late));
+      assert(accepted.ok, JSON.stringify(accepted));
+      assert.equal(f.works.approvals.deferred.get(late.approvalId)?.status, "queued");
+      const reopened = await f.open();
+      const input = { approvalId: late.approvalId, deliveryId: f.works.approvals.deferred.get(late.approvalId)!.deliveryId, sourceConversationId: saved.payload.sourceConversationId!,
+        toolName: saved.payload.originalCall.name, arguments: saved.payload.originalCall.arguments };
+      let nativeId: number;
+      try {
+        const beforeModelCalls = f.observed.length;
+        const ids = await Promise.all([reopened.submitDeferredAction(input), reopened.submitDeferredAction(input)]);
+        assert.equal(ids[0], ids[1], "concurrent duplicate deliveries share the exact native receipt"); nativeId = ids[0];
+        await reopened.harness.waitForTask(nativeId as import("@earendil-works/pi-durable").TaskId, ctx);
+        assert.equal(await readFile(join(f.cwd, "proof.txt"), "utf8"), "native proof\n");
+        assert.equal(f.works.approvals.deferred.get(late.approvalId)?.status, "consumed");
+        assert.equal(f.observed.length, beforeModelCalls, "exact continuation makes no model request and never reruns pwd/whole turn");
+        assert(f.works.partialResults.list(f.binding.workId).some(x => x.itemId === late.approvalId && x.outcome === "completed"));
+        assert.equal(f.works.approvals.list(f.binding.workId).filter(x => x.status === "pending").length, 0);
+        await assert.rejects(reopened.submitDeferredAction({ ...input, arguments: { path: "wrong.txt", content: "changed" } }),
+          /持久执行内容已变化/, "same approval cannot substitute a different payload");
+      } finally { await reopened.close(); }
+      // A sentinel written after settlement detects a physical replay even when original writes are idempotent.
+      await writeFile(join(f.cwd, "proof.txt"), "sentinel after settlement\n");
+      f.restart(); const twice = await f.open();
+      try {
+        assert.equal(await twice.submitDeferredAction(input), nativeId!);
+        await twice.harness.waitForTask(nativeId! as import("@earendil-works/pi-durable").TaskId, ctx);
+        assert.equal(await readFile(join(f.cwd, "proof.txt"), "utf8"), "sentinel after settlement\n",
+          "restart and redelivery do not overwrite the settled file");
+      } finally { await twice.close(); }
+      console.log("PASS late native continuation: completed binding + restart, exact persisted write, zero model calls, duplicate receipt and no physical replay");
+    } finally { await runtime.close(); }
+  }
+  {
+    const f = await fixture("codemode-late-leaf", false, false, undefined, false, true, true);
+    let runtime = await f.open();
+    try {
+      const first = await runtime.submit("Defer only the nested write", "code-deferred");
+      await until(() => !!f.pending()); const approval = f.pending()!;
+      await first.wait(ctx);
+      const saved = f.works.approvals.deferred.get(approval.approvalId)!;
+      assert.equal(saved.payload.originalCall.name, "write", "persist Code Mode leaf, not enclosing script");
+      await assert.rejects(access(join(f.cwd, "proof.txt")));
+      f.works.repo.updateBinding({ ...f.binding, status: "completed" });
+      await runtime.close(); f.restart(); runtime = await f.open();
+      assert(f.works.approvals.decide(LOCAL_USER_ID, f.decision(f.pending()!)).ok);
+      const before = f.observed.length;
+      const id = await runtime.submitDeferredAction({ approvalId: approval.approvalId, deliveryId: f.works.approvals.deferred.get(approval.approvalId)!.deliveryId,
+        sourceConversationId: saved.payload.sourceConversationId!, toolName: saved.payload.originalCall.name,
+        arguments: saved.payload.originalCall.arguments });
+      await runtime.harness.waitForTask(id as import("@earendil-works/pi-durable").TaskId, ctx);
+      assert.equal(await readFile(join(f.cwd, "proof.txt"), "utf8"), "native proof\n");
+      assert.equal(f.works.approvals.deferred.get(approval.approvalId)?.status, "consumed");
+      assert.equal(f.observed.length, before, "late Code Mode approval never reruns model or enclosing script");
+      console.log("PASS Code Mode late approval: callable-only write leaf resumes after restart, no script/model replay");
+    } finally { await runtime.close(); }
+  }
+  {
+    const f = await fixture("child-late-leaf", false, false, undefined, false, true);
+    const childCwd = join(f.cwd, "isolated-child"); await mkdir(childCwd);
+    let runtime = await f.open();
+    try {
+      const child = await runtime.harness.createConversation({ ownership: { kind: "ownerless" },
+        agent: { cwd: childCwd, model: { provider: "fixture", modelId: "model" }, tools: (await runtime.conversation.agent(ctx)).tools },
+        init: async (tx, id) => {
+          // The fixture exercises the production durable identity/cwd resolver, not a replacement tool executor.
+          (await tx.doc(DurableSubagentIdentity, id)).value = { taskId: f.binding.taskId,
+            parentConversationId: runtime.conversation.id, workspace: { kind: "shared", cwd: childCwd },
+            item: { id: "fixture-child", selection: { model: "fixture/model" } } } as never;
+        } }, ctx);
+      const original = await child.submit({ type: "input", content: "Child exact write", requestId: "child-defer" }, ctx);
+      await until(() => !!f.pending()); const approval = f.pending()!;
+      await original.wait(ctx);
+      const saved = f.works.approvals.deferred.get(approval.approvalId)!;
+      assert.equal(saved.payload.taskRoot, childCwd);
+      assert.equal(saved.payload.sourceConversationId, String(child.id));
+      f.works.repo.updateBinding({ ...f.binding, status: "completed" });
+      await runtime.close(); f.restart(); runtime = await f.open();
+      const accepted = f.works.approvals.decide(LOCAL_USER_ID, f.decision(f.pending()!));
+      assert(accepted.ok, JSON.stringify(accepted));
+      const id = await runtime.submitDeferredAction({ approvalId: approval.approvalId, deliveryId: f.works.approvals.deferred.get(approval.approvalId)!.deliveryId,
+        sourceConversationId: saved.payload.sourceConversationId!, toolName: saved.payload.originalCall.name,
+        arguments: saved.payload.originalCall.arguments });
+      await runtime.harness.waitForTask(id as import("@earendil-works/pi-durable").TaskId, ctx);
+      assert.equal(f.works.approvals.deferred.get(approval.approvalId)?.status, "consumed", JSON.stringify({ deferred: f.works.approvals.deferred.get(approval.approvalId), approvals: f.works.approvals.list(f.binding.workId), blockers: f.works.repo.listOpenBlockers(f.binding.workId) }));
+      assert.equal(await readFile(join(childCwd, "proof.txt"), "utf8"), "native proof\n");
+      await assert.rejects(access(join(f.cwd, "proof.txt")), "child continuation must not write in parent cwd");
+      assert.equal(f.works.approvals.deferred.get(approval.approvalId)?.status, "consumed");
+      console.log("PASS child continuation preserves durable conversation identity and isolated cwd across restart");
+    } finally { await runtime.close(); }
+  }
+  {
+    const f = await fixture("expired-native-delivery", false, false, undefined, false, true);
+    const runtime = await f.open();
+    try {
+      const original = await runtime.submit("Deferred write with an expired delivery", "expired-delivery");
+      await until(() => !!f.pending()); const card = f.pending()!;
+      await original.wait(ctx);
+      assert(f.works.approvals.decide(LOCAL_USER_ID, f.decision(card)).ok);
+      const first = f.works.approvals.deferred.get(card.approvalId)!;
+      f.advance();
+      const frozen = { approvalId: card.approvalId, sourceConversationId: first.payload.sourceConversationId!,
+        toolName: first.payload.originalCall.name, arguments: first.payload.originalCall.arguments };
+      const oldId = await runtime.submitDeferredAction({ ...frozen, deliveryId: first.deliveryId });
+      await runtime.harness.waitForTask(oldId as import("@earendil-works/pi-durable").TaskId, ctx);
+      await assert.rejects(access(join(f.cwd, "proof.txt")), "expired delivery never writes");
+      const expired = f.works.approvals.list(f.binding.workId).find(a => a.approvalId === card.approvalId)!;
+      const refreshed = f.works.approvals.decide(LOCAL_USER_ID, { ...f.decision(expired), decision: "refresh", approved: false, grantScopeOnce: false });
+      assert(refreshed.ok, JSON.stringify(refreshed));
+      assert(f.works.approvals.decide(LOCAL_USER_ID, f.decision(f.pending()!)).ok);
+      const second = f.works.approvals.deferred.get(card.approvalId)!;
+      assert.notEqual(second.deliveryId, first.deliveryId);
+      const newId = await runtime.submitDeferredAction({ ...frozen, deliveryId: second.deliveryId });
+      assert.notEqual(newId, oldId, "new explicit approval is not stranded behind old unexecuted native receipt");
+      await runtime.harness.waitForTask(newId as import("@earendil-works/pi-durable").TaskId, ctx);
+      assert.equal(await readFile(join(f.cwd, "proof.txt"), "utf8"), "native proof\n");
+      assert.equal(f.works.approvals.deferred.get(card.approvalId)?.status, "consumed");
+      console.log("PASS expired native receipt + refresh + independent approval executes the original action once");
     } finally { await runtime.close(); }
   }
   console.log("PASS cancellation/end retire only pending approvals; admitted/unknown effects retain settlement obligations across stop");

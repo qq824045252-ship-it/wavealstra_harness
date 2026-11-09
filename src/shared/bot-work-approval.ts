@@ -3,6 +3,7 @@ import { z } from "zod";
 export const workActionApprovalSchema = z.object({
   approvalId: z.string(), workId: z.string(), bindingId: z.string(), taskId: z.string(), operationId: z.string(),
   actionHash: z.string().optional(),
+  continuation: z.object({ status: z.enum(["deferred", "queued", "running", "consumed", "unknown", "invalidated"]), reason: z.string().optional() }).optional(),
   toolName: z.string(), summary: z.string(), detail: z.string(), requiredScope: z.string(), scopeMissing: z.boolean(),
   intentRevision: z.number(), inputSnapshotId: z.string(), ownerEpoch: z.number(),
   status: z.enum(["pending", "approved", "denied", "ignored", "expired", "invalidated", "consumed"]),
@@ -27,7 +28,7 @@ export const workActionDecisionSchema = z.object({
   expectedVersion: z.number().int().positive(), expectedStateVersion: z.number().int().positive(),
   expectedIntentRevision: z.number().int().positive(), expectedOwnerEpoch: z.number().int().positive(),
   /** allow / deny / ignore 三态；ignore 不等于拒绝，也不取消事项。 */
-  decision: z.enum(["allow", "deny", "ignore"]).optional(),
+  decision: z.enum(["allow", "deny", "ignore", "refresh"]).optional(),
   approved: z.boolean().optional(), grantScopeOnce: z.boolean().default(false),
   /** 用户明确保存的可复用规则；只有软决策才允许携带。 */
   saveRule: z.enum(["project", "repo", "workspace"]).optional(),

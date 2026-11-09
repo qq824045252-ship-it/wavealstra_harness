@@ -8,7 +8,7 @@ const ChatMarkdown = lazy(() => import("@/components/chat/ChatMarkdown"));
 import { IconArchive, IconChevronDown, IconArrowUp, IconBot, IconCheck, IconChevronRight, IconClock, IconListTodo, IconMessageDashed, IconPanel, IconSearch, IconSettings, IconStop, IconX } from "@/components/common/icons";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { botParticipatesInWork, botMessageStatus, botWorkTimeline, needsWorkDecision, shouldSendBotComposer, workMatchesView, workStatusLabel, type BotWorkspaceView } from "@/lib/botWorkspacePresentation";
-import { BotWorkApprovals } from "./BotWorkApprovals";
+import { BotWorkApprovals, visibleWorkApproval } from "./BotWorkApprovals";
 import { BotWorkDetails } from "./BotWorkDetails";
 import { BotTeamDialog } from "./BotTeamDialog";
 import { BotExpertReview } from "./BotExpertReview";
@@ -73,7 +73,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   const lastBot = useRef(activeBotId);
   const activeBot = identities.find(bot => bot.botId === activeBotId) ?? null;
   const botWorks = works.filter(work => botParticipatesInWork(work, activeBot?.botId));
-  const pendingApprovalVersion = botWorks.flatMap(work => work.approvals?.filter(item => item.status === "pending").map(item => `${item.approvalId}:${item.version}`) ?? []).join("|");
+  const pendingApprovalVersion = botWorks.flatMap(work => work.approvals?.filter(visibleWorkApproval).map(item => `${item.approvalId}:${item.version}:${item.continuation?.status ?? item.status}`) ?? []).join("|");
   const selected = botWorks.find(work => work.workId === selectedWorkId) ?? null;
   const messages = activeBotId ? histories[activeBotId]?.messages ?? [] : [];
   const lastMessage = messages[messages.length - 1];
@@ -230,7 +230,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
               <summary>{botWorks.find(work => work.workId === row.workId)?.title ?? "事项"} · {row.messages.length} 条进展与历史记录（展开查看）</summary>
               {row.messages.map(message => <BotMessage key={message.messageId} message={message} botName={activeBot?.displayName ?? "Bot"} works={botWorks} onOpenWork={openWork} onCancel={() => {}} />)}
             </details>)}</div>}
-          {botWorks.filter(work => work.approvals?.some(item => item.status === "pending")).map(work => <BotWorkApprovals key={work.workId} work={work} />)}
+          {botWorks.filter(work => work.approvals?.some(visibleWorkApproval)).map(work => <BotWorkApprovals key={work.workId} work={work} />)}
         </div>
         {awayFromBottom && <button type="button" className="bot-latest-button" onClick={() => { const el = threadRef.current; if (el) el.scrollTop = el.scrollHeight; followLatest.current = true; setAwayFromBottom(false); }}><IconChevronDown size={14} />回到最新消息</button>}
       </> : <section className="bot-work-browser" aria-label={`${views.find(item => item.id === view)?.label}事项`}>

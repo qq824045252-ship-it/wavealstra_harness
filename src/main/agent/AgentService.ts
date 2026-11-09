@@ -1205,7 +1205,7 @@ export class AgentService {
 
   decideWorkAction(request: unknown) {
     const result = this.workService.approvals.decide(LOCAL_USER_ID, request);
-    if (result.ok) this.workExecutions?.wakeWork(result.approval.workId);
+    if (result.ok) { this.workExecutions?.wakeWork(result.approval.workId); this.workDispatchQueue?.wake(); }
     return result;
   }
 
@@ -1686,7 +1686,7 @@ export class AgentService {
     if (!this.durableModels) throw new Error("模型服务尚未初始化");
     this.workDispatchQueue ??= new WorkDispatchQueue(this.db, this.workService, this.workExecutions,
       () => this.workHostAuthority.isAuthority(), () => this.settingsStore.read().defaultModelId,
-      () => this.settingsStore.read().permissionMode ?? "default");
+      () => this.settingsStore.read().permissionMode ?? "default", () => this.resumeDeferredWorkActions());
     this.botConversations ??= new BotConversationService({ db: this.db.connection, userId: LOCAL_USER_ID,
       bots: this.botRegistry, works: this.workService, models: this.durableModels, directory: join(getMyBuddyDir(), "bot-conversations"),
       defaultModel: () => this.settingsStore.read().defaultModelId, isAuthority: () => this.workHostAuthority.isAuthority(),
@@ -1772,6 +1772,40 @@ export class AgentService {
       sourceKind: info.sourceKind, sourceDetail: "pi-durable", message, userTurn: null,
       sample: { turnIndex: info.generationTaskId, requestStartedAt: null, firstResponseAt: null, completedAt: message.timestamp,
         ttftMs: null, decodeMs: null, generationTps: null, modelWallMs: null, outputTokens: message.usage.output, reasoningTokens: null } });
+  }
+
+  /** Outbox polling only reattaches the same native action; it never issues a new model turn. */
+  private async resumeDeferredWorkActions(): Promise<void> {
+    if (!this.durableBots || !this.workHostAuthority.isAuthority()) return;
+    const approvals = this.workService.approvals;
+    approvals.recover();
+    for (const row of approvals.deferred.listQueued()) {
+      const source = approvals.deferredSource(row.approvalId);
+      const binding = source && this.workService.repo.getBinding(source.bindingId);
+      if (!source || !binding || !row.payload.sourceConversationId) {
+        approvals.finishDeferred(row.approvalId, "released", "缺少原始执行身份，动作未补跑；请重新提出这一动作", row.deliveryId);
+        continue;
+      }
+      try {
+        const native = await this.durableBots.resumeDeferredAction(source.taskId, binding, {
+          approvalId: row.approvalId, deliveryId: row.deliveryId, sourceConversationId: row.payload.sourceConversationId,
+          toolName: row.payload.originalCall.name, arguments: row.payload.originalCall.arguments,
+        });
+        const latest = approvals.deferred.get(row.approvalId);
+        if (native?.state.status === "terminal" && latest && ["queued", "running"].includes(latest.status)) {
+          // Successful settlement comes from afterTool's verified receipt, never a parent completion flag.
+          approvals.finishDeferred(row.approvalId, latest.status === "queued" ? "released" : "unknown",
+            latest.status === "queued" ? "原生工具在准入前结束，动作确定未执行；请核对工具是否可用及参数"
+              : "原生补跑已结束但缺少效果结算回执；未重复执行，请核对原动作", row.deliveryId);
+        }
+      } catch (error) {
+        console.warn("[Work] 精确审批续跑未完成", row.approvalId, error);
+        const latest = approvals.deferred.get(row.approvalId);
+        approvals.finishDeferred(row.approvalId, latest?.status === "queued" ? "released" : "unknown",
+          latest?.status === "queued" ? "续跑尚未获准执行，原动作未启动；请核对原始执行环境"
+            : "无法核对原生续跑状态，未创建替代执行；请检查原执行记录", row.deliveryId);
+      }
+    }
   }
 
   private readonly durableAssemblies = new Map<string, { key: string; assembly: AssemblyTraceDto }>();

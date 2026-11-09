@@ -1,3 +1,4 @@
+import type { DeferredNativeInput } from "./DurableDeferredAction";
 import type { ResourceRecoveryAttempt } from "../../../shared/resource-recovery";
 import type { WorkResourceOwner } from "../work/WorkResourceGate";
 import { createHash } from "node:crypto";
@@ -685,6 +686,17 @@ export class DurableBotService {
       if (!recovered) throw error;
       return reopened.runtime.reply(recovered);
     }
+  }
+
+  /** Reopens the exact original namespace; never submits a model prompt or changes the binding cwd. */
+  async resumeDeferredAction(taskId: string, expected: { durableStoreKey: string; workspaceBinding: string }, input: DeferredNativeInput) {
+    const binding = this.binding(taskId);
+    if (!binding || binding.directory !== expected.durableStoreKey || binding.cwd !== expected.workspaceBinding) {
+      throw new Error("原审批执行命名空间已改变，不能改用新工作目录续跑");
+    }
+    const open = await this.openBound(taskId);
+    const nativeTaskId = await open.runtime.submitDeferredAction(input);
+    return open.runtime.harness.getTask(nativeTaskId as import("@earendil-works/pi-durable").TaskId, context);
   }
 
   async submit(request: AgentPromptRequest): Promise<AgentPromptResult> {

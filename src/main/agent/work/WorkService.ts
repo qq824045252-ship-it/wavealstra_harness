@@ -1202,7 +1202,7 @@ export class WorkService {
         if (!binding || binding.workId !== work.workId) {
           return { ok: false, code: "not_found", message: "找不到有效执行绑定" };
         }
-        if (binding.invalidatedAt || TERMINAL_BINDING_STATUSES.has(binding.status)) {
+        if (binding.invalidatedAt || TERMINAL_BINDING_STATUSES.has(binding.status) && !this.approvals.permitsDeferred(binding.bindingId, params.operationId, params.actionKind)) {
           return { ok: false, code: "version_conflict", message: "执行绑定已失效或被停止" };
         }
         if (binding.intentRevision !== work.intentRevision) {

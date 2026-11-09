@@ -1,3 +1,4 @@
+import { DeferredActionTask, submitDeferredNativeAction, type DeferredNativeInput } from "./DurableDeferredAction";
 import { withNativeNotStarted } from "./DurableToolLifecycle";
 import { canRebindDurableWorkspace, migrateDurableWorkspace, WorkspaceMigrationBusyError } from "./DurableWorkspaceMigration";
 import { withWorkShellRead } from "../work/WorkShellRead";
@@ -444,6 +445,11 @@ export class DurableBotRuntime {
       // The watch consumes this marker after all earlier read evidence. Receipt state may be newer than this view.
       this.pendingAuditInputs.delete(requestId);
     }
+  }
+
+  async submitDeferredAction(input: DeferredNativeInput): Promise<number> {
+    this.assertSessionHealthy();
+    return submitDeferredNativeAction(this.harness, input);
   }
 
   async submit(content: UserInput, requestId: string, whenBusy: "steer" | "followUp" = "followUp", metadata?: BotInputMetadata) {
@@ -1110,7 +1116,7 @@ function botExtension(
       return changed;
     },
   };
-  return defineExtension({ name: "mybuddy.bot", tools: [...native, codemode],
+  return defineExtension({ name: "mybuddy.bot", tasks: [DeferredActionTask], tools: [...native, codemode],
     sections: [section("mybuddy", async (input, context) => {
       const child = await input.read.snapshot(DurableSubagentIdentity, input.conversationId, context);
       const consult = await input.read.snapshot(DurableConsultIdentity, input.conversationId, context);

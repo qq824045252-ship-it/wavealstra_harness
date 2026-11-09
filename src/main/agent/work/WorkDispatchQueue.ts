@@ -25,7 +25,8 @@ export class WorkDispatchQueue {
   constructor(private readonly db: AppDatabase, private readonly works: WorkService,
     private readonly adapter: WorkExecutionAdapter, private readonly isAuthority: () => boolean,
     private readonly defaultModel: () => string | undefined,
-    private readonly permissionMode: () => import("../../../shared/agent-ipc").PermissionMode = () => "default") {}
+    private readonly permissionMode: () => import("../../../shared/agent-ipc").PermissionMode = () => "default",
+    private readonly resumeDeferredActions?: () => Promise<void>) {}
 
   enqueue(work: WorkDto, operationId: string, retryBlocked = false, inboxEventId?: string): void {
     const current = this.works.getWork(work.workId);
@@ -72,6 +73,7 @@ export class WorkDispatchQueue {
 
   private async deliver(): Promise<void> {
     if (!this.isAuthority()) return;
+    await this.resumeDeferredActions?.();
     await this.works.teams.dispatchPending(this.db, this.adapter, this.defaultModel, this.permissionMode);
     await this.drainSourceEvents();
     this.prepareSourceIntents();

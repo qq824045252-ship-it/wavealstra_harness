@@ -1,3 +1,4 @@
+import { DeferredActionIdentity } from "./DurableDeferredAction";
 import { isNativeNotStarted } from "./DurableToolLifecycle";
 import { workShellRead } from "../work/WorkShellRead";
 import { resolve } from "node:path";
@@ -94,6 +95,7 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
     hooks: {
       beforeTool: async (call, api, context) => {
         const originalCall = call;
+        const deferredIdentity = await api.snapshot(DeferredActionIdentity, api.taskId, context);
         const refuseBeforeApproval = async (reason: string) => {
           const summary = summarizeToolInput(call.name, call.arguments);
           await options.approveWorkAction?.({ taskId: options.taskId, taskRoot: options.taskRoot,
@@ -107,6 +109,10 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
         call = policyCall(call);
         if (options.toolAllowed && !options.toolAllowed(call.name)) return refuseBeforeApproval(`当前任务未授权工具：${call.name}`);
         await identity(api, context, call);
+        // The built-in Code Mode VM has no ambient filesystem/network access. Its
+        // executeTool leaves each enter this hook with their own exact identity.
+        // Approving/defering the container would persist and later rerun the whole program.
+        if (originalCall.name === "codemode") return undefined;
         const mode = options.getPermissionMode();
         const mcp = mcpReadTools.has(call.name) ? null : classifyMcpToolCall(call.name, call.arguments, options.providerIds);
         const shellRead = workShellRead(call.name, call.arguments);
@@ -144,13 +150,17 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
         const summary = summarizeToolInput(call.name, call.arguments);
         const workApproval = await options.approveWorkAction?.({ taskId: options.taskId, taskRoot, operationId,
           toolName: call.name, arguments: call.arguments, actionKind, summary: summary.summary,
+          originalCall: { name: originalCall.name, arguments: jsonArguments.parse(originalCall.arguments) }, sourceConversationId: String(api.conversationId),
+          continuationApprovalId: deferredIdentity?.approvalId || undefined, continuationDeliveryId: deferredIdentity?.deliveryId || undefined,
           detail: [summary.detail, externalPath ? `工作目录之外的写入：${externalPath}` : undefined].filter(Boolean).join("\n"),
           permissionMode: mode, needsApproval, deferrable: options.deferActions === true }, context.abortSignal);
         if (workApproval?.kind === "defer") return { block: `[deferred] 该动作已暂缓（未执行）：${workApproval.reason}。审批 ${workApproval.approvalId}；继续完成其它不依赖此动作的步骤，不要重复请求同一动作，也不要把这条结果当成整个任务失败。` };
         if (workApproval?.kind === "deny") return { block: `后台操作未获准继续：${workApproval.reason}；本次没有启动新的执行，请查看审批、阻碍和原动作回执` };
         const refuseWork = async (reason: string) => {
           await options.approveWorkAction?.({ taskId: options.taskId, taskRoot, operationId,
-            toolName: call.name, arguments: call.arguments, actionKind, summary: summary.summary, detail: summary.detail,
+            toolName: call.name, arguments: call.arguments, actionKind, summary: summary.summary,
+          originalCall: { name: originalCall.name, arguments: jsonArguments.parse(originalCall.arguments) }, sourceConversationId: String(api.conversationId),
+          continuationApprovalId: deferredIdentity?.approvalId || undefined, continuationDeliveryId: deferredIdentity?.deliveryId || undefined, detail: summary.detail,
             permissionMode: options.getPermissionMode(), needsApproval, deniedReason: reason,
             deferrable: options.deferActions === true }, context.abortSignal);
           return { block: reason };
@@ -211,6 +221,8 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
         return undefined;
       },
       afterTool: async (call, result, api, context) => {
+        // The container owns no effect receipt or resource lease; its leaves do.
+        if (call.name === "codemode") return undefined;
         // Pi also reports validation failures here, before beforeTool or execution ran.
         try { call = policyCall(call); }
         catch { return undefined; }

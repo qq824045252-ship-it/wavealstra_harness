@@ -1,6 +1,6 @@
 /** P0-D：非阻塞 defer、ignore≠reject、去重与可复用规则（真实 SQLite + WorkService）。 */
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, symlink, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppDatabase } from "../src/main/db/AppDatabase";
@@ -76,11 +76,11 @@ await check("later approval only resumes the original action and records a reusa
     assert.equal(decided.ok, true, decided.ok ? "" : decided.message);
     const approval = f.works.approvals.list(f.work.workId).find(item => item.approvalId === deferred.approvalId)!;
     assert.equal(approval.status, "approved");
-    assert.equal(f.works.approvals.permits(f.binding.bindingId, "tool:1:3:push", "workspace:write"), true);
+    assert.equal(f.works.approvals.permits(f.binding.bindingId, "tool:1:3:push", "workspace:write"), false, "queued continuation cannot race the original model invocation");
     // 同工作区、同 effect/operation 的后续动作命中保存的规则，不再出卡。
     const next = await f.request("tool:1:4:push", "bash", { command: "git push origin feature/x" });
-    assert.equal(next.kind, "allow", "a saved workspace rule authorizes the next compatible action");
-    assert.equal(next.kind === "allow" ? next.source : "", "policy");
+    assert.equal(next.kind, "defer", "saved rules cannot duplicate an already queued logical action");
+    assert.equal(next.kind === "defer" ? next.approvalId : "", deferred.approvalId);
     assert.equal((await f.request("other-ref", "bash", { command: "git push origin feature/y" })).kind, "defer");
     assert.equal((await f.request("other-remote", "bash", { command: "git push upstream feature/x" })).kind, "defer");
     assert.deepEqual(f.works.approvals.listAutonomyRules(LOCAL_USER_ID)[0]?.scope.provider, ["git"]);
@@ -212,6 +212,11 @@ await check("revoking a rule retires not-yet-executed approvals and never re-aut
     assert.equal(decided.ok, true, decided.ok ? "" : decided.message);
     const rules = f.works.approvals.listAutonomyRules(LOCAL_USER_ID);
     assert.equal(rules.length, 1);
+    // Retire the first exact attempt as provably not started; rule behavior is
+    // tested independently from S2's same-logical-action pending deduplication.
+    assert.equal(f.works.approvals.claimDeferred(deferred.approvalId, "first-native-attempt", f.works.approvals.deferred.get(deferred.approvalId)!.deliveryId), true);
+    f.works.admitTaskAction(f.taskId, { operationId: "first-native-attempt", actionKind: "workspace:write" });
+    f.works.settleTaskAction(f.taskId, "first-native-attempt", "released");
     const next = await f.request("tool:4:2:push", "bash", { command: "git push origin feature/r" });
     assert.equal(next.kind, "allow"); assert.equal(next.kind === "allow" ? next.source : "", "policy");
     assert.equal(f.works.approvals.list(f.work.workId).find(item => item.operationId === "tool:4:2:push")?.status, "approved");
@@ -272,4 +277,139 @@ await check("approved actions revalidate indirect precedent provenance after rev
   } finally { f.db.close(); }
 });
 
+
+await check("S2 late approval survives terminal binding and claims only the exact durable action", async () => {
+  const f = await fixture("s2-late");
+  try {
+    const result = await f.request("old-write", "write", { path: "../late.txt", content: "once" });
+    assert.equal(result.kind, "defer"); if (result.kind !== "defer") return;
+    f.works.repo.updateBinding({ ...f.binding, status: "completed" });
+    f.works.approvals.recover();
+    const card = f.works.approvals.list(f.work.workId)[0];
+    assert.equal(card.status, "pending", "logical action outlives execution attempt");
+    const w = f.works.getWork(f.work.workId)!;
+    const request = { approvalId: card.approvalId, workId: w.workId, bindingId: f.binding.bindingId,
+      expectedVersion: card.version, expectedStateVersion: w.stateVersion, expectedIntentRevision: w.intentRevision,
+      expectedOwnerEpoch: w.ownerEpoch, decision: "allow", grantScopeOnce: true };
+    assert.equal(f.works.approvals.decide(LOCAL_USER_ID, request).ok, true);
+    const again = f.works.approvals.decide(LOCAL_USER_ID, request);
+    assert.equal(again.ok && again.replayed, true);
+    assert.equal(f.works.approvals.deferred.listQueued().length, 1);
+    const retry = await f.request("model-retry-new-id", "write", { path: "../late.txt", content: "once" });
+    assert.equal(retry.kind, "defer");
+    assert.equal(f.works.approvals.list(f.work.workId).length, 1, "model retry shares original logical action");
+    assert.equal(f.works.approvals.claimDeferred(card.approvalId, "new-op", f.works.approvals.deferred.get(card.approvalId)!.deliveryId), true);
+    assert.equal(f.works.approvals.claimDeferred(card.approvalId, "other-op", f.works.approvals.deferred.get(card.approvalId)!.deliveryId), false);
+    assert.equal(f.works.approvals.permitsDeferred(f.binding.bindingId, "new-op", "workspace:write"), true);
+    assert.equal(f.works.approvals.permitsDeferred(f.binding.bindingId, "other-op", "workspace:write"), false);
+    const mismatched = await f.request("new-op", "write", { path: "../other.txt", content: "once" });
+    assert.equal(mismatched.kind, "deny", "claim is not permission for different parameters");
+    const exact = await f.request("new-op", "write", { path: "../late.txt", content: "once" });
+    assert.equal(exact.kind, "allow");
+    assert.equal(f.works.admitTaskAction(f.taskId, { operationId: "new-op", actionKind: "workspace:write" }), undefined);
+    assert.match(f.works.admitTaskAction(f.taskId, { operationId: "unrelated", actionKind: "workspace:write" }) ?? "", /失效|停止/);
+    f.works.settleTaskAction(f.taskId, "new-op", "consumed");
+    assert.equal(f.works.approvals.deferred.get(card.approvalId)?.status, "consumed");
+    assert.equal(f.works.partialResults.list(w.workId).find(item => item.itemId === card.approvalId)?.outcome, "completed");
+    assert.equal((await f.request("new-op", "write", { path: "../late.txt", content: "once" })).kind, "deny");
+  } finally { f.db.close(); }
+});
+await check("S2 owner changes invalidate queued work and payload registration is atomic", async () => {
+  const f = await fixture("s2-guards");
+  try {
+    await assert.rejects(f.request("oversized", "write", { path: "../large.txt", content: "x".repeat(1_048_577) }), /上限/);
+    assert.equal(f.works.approvals.list(f.work.workId).length, 0, "oversized payload leaves no orphan approval");
+    const result = await f.request("old-write", "write", { path: "../old.txt", content: "x" });
+    if (result.kind !== "defer") throw new Error("expected defer");
+    const card = f.works.approvals.list(f.work.workId)[0], w = f.works.getWork(f.work.workId)!;
+    assert.equal(f.works.approvals.decide(LOCAL_USER_ID, { approvalId: card.approvalId, workId: w.workId,
+      bindingId: f.binding.bindingId, expectedVersion: card.version, expectedStateVersion: w.stateVersion,
+      expectedIntentRevision: w.intentRevision, expectedOwnerEpoch: w.ownerEpoch, decision: "allow", grantScopeOnce: true }).ok, true);
+    f.works.repo.updateWork({ ...f.works.getWork(w.workId)!, ownerEpoch: w.ownerEpoch + 1 });
+    assert.equal(f.works.approvals.claimDeferred(card.approvalId, "wrong-epoch", f.works.approvals.deferred.get(card.approvalId)!.deliveryId), false);
+    assert.equal(f.works.approvals.deferred.get(card.approvalId)?.status, "invalidated");
+  } finally { f.db.close(); }
+});
+
+await check("S2 expiry refresh is not approval and unknown effects cannot be reclaimed", async () => {
+  const f = await fixture("s2-expiry");
+  try {
+    const result = await f.request("old", "write", { path: "../refresh.txt", content: "x" });
+    if (result.kind !== "defer") throw new Error("expected defer");
+    const original = f.works.approvals.list(f.work.workId)[0];
+    const staleDeliveryId = f.works.approvals.deferred.get(original.approvalId)!.deliveryId;
+    f.db.connection.prepare("UPDATE work_action_approvals SET data_json=? WHERE approval_id=?")
+      .run(JSON.stringify({ ...original, expiresAt: Date.now() - 10 }), original.approvalId);
+    f.works.approvals.recover();
+    const decide = (decision: "refresh" | "allow") => {
+      const a = f.works.approvals.list(f.work.workId)[0], w = f.works.getWork(f.work.workId)!;
+      return f.works.approvals.decide(LOCAL_USER_ID, { approvalId: a.approvalId, workId: w.workId,
+        bindingId: f.binding.bindingId, expectedVersion: a.version, expectedStateVersion: w.stateVersion,
+        expectedIntentRevision: w.intentRevision, expectedOwnerEpoch: w.ownerEpoch, decision, grantScopeOnce: true });
+    };
+    assert.equal(f.works.approvals.list(f.work.workId)[0].status, "expired");
+    assert.equal(decide("refresh").ok, true);
+    assert.equal(f.works.approvals.list(f.work.workId)[0].status, "pending");
+    assert.equal(f.works.approvals.deferred.listQueued().length, 0, "refresh never schedules execution");
+    assert.equal(decide("allow").ok, true);
+    assert.equal(f.works.approvals.claimDeferred(original.approvalId, "stale-delivery", staleDeliveryId), false);
+    f.works.approvals.finishDeferred(original.approvalId, "released", "old native terminal", staleDeliveryId);
+    assert.equal(f.works.approvals.deferred.get(original.approvalId)?.status, "queued", "old delivery cannot retire refreshed approval");
+    assert.equal(f.works.approvals.claimDeferred(original.approvalId, "new", f.works.approvals.deferred.get(original.approvalId)!.deliveryId), true);
+    f.works.admitTaskAction(f.taskId, { operationId: "new", actionKind: "workspace:write" });
+    f.works.settleTaskAction(f.taskId, "new", "unknown");
+    assert.equal(f.works.approvals.deferred.get(original.approvalId)?.status, "unknown");
+    assert.equal(f.works.approvals.claimDeferred(original.approvalId, "again", f.works.approvals.deferred.get(original.approvalId)!.deliveryId), false);
+    assert.equal(decide("refresh").ok, false);
+    assert.equal(f.works.approvals.deferred.listQueued().length, 0);
+  } finally { f.db.close(); }
+});
+
+await check("S2 corrupt payload is isolated and credential values are not persisted", async () => {
+  const f = await fixture("s2-payload");
+  try {
+    const secret = "credential-value-not-for-persistence";
+    const denied = await f.request("secret", "mcp__example__send", { password: secret });
+    assert.equal(denied.kind, "deny");
+    assert.equal(f.db.connection.prepare("SELECT payload_json FROM work_deferred_actions").all().length, 0);
+    assert.equal(JSON.stringify(f.works.approvals.list(f.work.workId)).includes(secret), false);
+    for (const name of ["broken", "healthy"]) {
+      const result = await f.request(name, "write", { path: `../${name}.txt`, content: name });
+      if (result.kind !== "defer") throw new Error("expected defer");
+      const a = f.works.approvals.list(f.work.workId).find(a => a.approvalId === result.approvalId)!, w = f.works.getWork(f.work.workId)!;
+      assert.equal(f.works.approvals.decide(LOCAL_USER_ID, { approvalId: a.approvalId, workId: w.workId,
+        bindingId: f.binding.bindingId, expectedVersion: a.version, expectedStateVersion: w.stateVersion,
+        expectedIntentRevision: w.intentRevision, expectedOwnerEpoch: w.ownerEpoch, decision: "allow", grantScopeOnce: true }).ok, true);
+      if (name === "broken") f.db.connection.prepare("UPDATE work_deferred_actions SET payload_hash='corrupt' WHERE approval_id=?").run(a.approvalId);
+    }
+    assert.equal(f.works.approvals.deferred.listQueued().length, 1, "healthy row still drains");
+    const broken = f.works.approvals.list(f.work.workId).find(a => a.operationId === "broken")!;
+    assert.equal(broken.continuation?.status, "invalidated");
+    assert.match(broken.continuation?.reason ?? "", /损坏/);
+  } finally { f.db.close(); }
+});
+
+await check("S2 freezes canonical cwd and file target across delayed approval", async () => {
+  const f = await fixture("s2-target");
+  try {
+    const first = join(root, "original-target"), second = join(root, "redirected-target"), link = join(root, "target-link");
+    await mkdir(first); await mkdir(second); await symlink(first, link);
+    const response = await f.request("symlink-write", "write", { path: join(link, "new.txt"), content: "x", password: "" });
+    // This is an in-workspace action, so force missing scope to exercise exact user approval.
+    if (response.kind === "allow") {
+      const current = f.works.getWork(f.work.workId)!;
+      f.works.repo.updateWork({ ...current, authorization: { ...current.authorization, allowedScopes: ["workspace:read"] } });
+    }
+    const deferred = await f.request("symlink-write-missing-scope", "write", { path: join(link, "new.txt"), content: "x" });
+    assert.equal(deferred.kind, "defer"); if (deferred.kind !== "defer") return;
+    const card = f.works.approvals.list(f.work.workId).find(a => a.approvalId === deferred.approvalId)!, w = f.works.getWork(f.work.workId)!;
+    assert.equal(f.works.approvals.decide(LOCAL_USER_ID, { approvalId: card.approvalId, workId: w.workId,
+      bindingId: f.binding.bindingId, expectedVersion: card.version, expectedStateVersion: w.stateVersion,
+      expectedIntentRevision: w.intentRevision, expectedOwnerEpoch: w.ownerEpoch, decision: "allow", grantScopeOnce: true }).ok, true);
+    await unlink(link); await symlink(second, link);
+    assert.equal(f.works.approvals.claimDeferred(card.approvalId, "redirected-attempt", f.works.approvals.deferred.get(card.approvalId)!.deliveryId), false);
+    assert.equal(f.works.approvals.deferred.get(card.approvalId)?.status, "invalidated");
+    assert.match(f.works.approvals.list(w.workId).find(a => a.approvalId === card.approvalId)?.outcome ?? "", /实际目标已变化/);
+  } finally { f.db.close(); }
+});
 await rm(root, { recursive: true, force: true });console.log(`work approval defer: ${count} checks passed`);

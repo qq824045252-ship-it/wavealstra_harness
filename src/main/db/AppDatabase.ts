@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { ensureWorkDeferredTables } from "./bot-work-deferred-schema";
 import { ensureBotWorkTables } from "./bot-work-schema";
 import { ensureBotWorkPhase2Tables } from "./bot-work-phase2-schema";
 import { ensureBotWorkPhase3Tables } from "./bot-work-phase3-schema";
@@ -380,6 +381,7 @@ export class AppDatabase {
       ensureBotWorkPhase3Tables(this.db);
       ensureBotWorkPhase4Tables(this.db);
       ensureBotWorkPhase5Tables(this.db);
+      ensureWorkDeferredTables(this.db);
       ensureGatewayDeliveryTables(this.db);
       this.migrateLegacyWelcomeModeIds();
       this.db.pragma(`user_version = ${CURRENT_DATABASE_SCHEMA_VERSION}`);

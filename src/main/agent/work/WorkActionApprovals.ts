@@ -9,12 +9,18 @@ import type { WorkService } from "./WorkService";
 import { classifyWorkAction, mcpIdentityOf, targetsInsideWorkspace } from "./WorkActionClassifier";
 import { WorkDecisionLedger } from "./WorkDecisionLedger";
 import { WorkAutonomyPolicy } from "./WorkAutonomyPolicy";
+import { WorkDeferredActions, deferredTargetUnchanged, type WorkDeferredPayload } from "./WorkDeferredActions";
 
 export interface WorkActionRequest {
   taskRoot?: string; taskId: string; operationId: string; toolName: string; arguments: unknown; actionKind: string;
   summary: string; detail?: string; deniedReason?: string; permissionMode: PermissionMode; needsApproval: boolean;
   /** P0-D：显式请求非阻塞挂起。默认仍等待决定，只有确认支持 defer 的调用方开启。 */
   deferrable?: boolean;
+  originalCall?: { name: string; arguments: unknown };
+  continuationApprovalId?: string;
+  continuationDeliveryId?: string;
+  sourceConversationId?: string;
+  nativeContext?: WorkDeferredPayload["nativeContext"];
 }
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const rowSchema = z.object({ approval_id: z.string(), work_id: z.string(), binding_id: z.string(), operation_id: z.string(),
@@ -30,9 +36,19 @@ function describeAction(input: WorkActionRequest): WorkActionDescriptor {
   }
 }
 
+/** Deferred payloads cannot persist credential values. Credential-aware adapters
+ * must provide a supported reference resolver before those actions can be queued. */
+function hasCredentialValues(value: unknown): boolean {
+  if (typeof value === "string") return /(?:-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|Bearer\s+[A-Za-z0-9._~-]{12,}|(?:api[_-]?key|access[_-]?token|password)\s*[=:]\s*[^\s]{6,})/i.test(value);
+  if (!value || typeof value !== "object") return false;
+  return Object.entries(value).some(([key, item]) => /^(?:password|passwd|secret|clientSecret|apiKey|api_key|accessToken|access_token|refreshToken|refresh_token|authorization|cookie|privateKey)$/i.test(key)
+    && typeof item === "string" && item.length > 0 || hasCredentialValues(item));
+}
+
 /** A persisted, exact-action permission, never a mutation of Work/Bot/global scopes.
  * Observers may disappear; the absolute deadline and decision survive process restarts. */
 export class WorkActionApprovals {
+  readonly deferred: WorkDeferredActions;
   private readonly ledger: WorkDecisionLedger;
   private readonly autonomy: WorkAutonomyPolicy;
   private readonly ruleCache = new Map<string, Set<string>>();
@@ -49,11 +65,15 @@ export class WorkActionApprovals {
     CREATE TABLE IF NOT EXISTS work_action_approval_claims (
       source_gap_id TEXT PRIMARY KEY, approval_id TEXT NOT NULL
     );`);
+    this.deferred = new WorkDeferredActions(db);
   }
 
   list(workId: string): WorkActionApprovalDto[] {
     return this.db.prepare("SELECT * FROM work_action_approvals WHERE work_id=? ORDER BY rowid").all(workId)
-      .map(raw => workActionApprovalSchema.parse(JSON.parse(rowSchema.parse(raw).data_json)));
+      .map(raw => { const value = workActionApprovalSchema.parse(JSON.parse(rowSchema.parse(raw).data_json));
+        this.deferred.get(value.approvalId);
+        const deferred = this.deferred.state(value.approvalId);
+        return deferred ? { ...value, continuation: { status: deferred.status, reason: deferred.reason } } : value; });
   }
   private get(id: string) {
     const raw = this.db.prepare("SELECT * FROM work_action_approvals WHERE approval_id=?").get(id);
@@ -64,7 +84,8 @@ export class WorkActionApprovals {
   private current(value: WorkActionApprovalDto): boolean {
     const work = this.works.getWork(value.workId), binding = this.works.repo.getBinding(value.bindingId);
     return !!work && !!binding && work.lifecycle === "active" && !binding.invalidatedAt
-      && !["completed", "failed", "stopped", "invalidated"].includes(binding.status)
+      && (! ["completed", "failed", "stopped", "invalidated"].includes(binding.status)
+        || ["completed", "failed"].includes(binding.status) && !!this.deferred.get(value.approvalId))
       && binding.taskId === value.taskId && binding.workId === work.workId
       && work.intentRevision === value.intentRevision && binding.intentRevision === value.intentRevision
       && work.inputSnapshotId === value.inputSnapshotId && binding.inputSnapshotId === value.inputSnapshotId
@@ -82,8 +103,31 @@ export class WorkActionApprovals {
       && !(input.actionKind === "delegate" && input.deniedReason)) return { kind: "not_applicable" };
     const work = this.works.getWork(binding.workId);
     if (!work || !this.options.isAuthority()) return { kind: "deny", reason: "当前宿主不持有该事项的审批权威，动作未执行" };
+    if (input.continuationApprovalId && !this.deferred.forOperation(input.operationId)) {
+      const candidate = this.deferred.get(input.continuationApprovalId);
+      const source = candidate && this.get(candidate.approvalId)?.value;
+      if (!candidate || candidate.deliveryId !== input.continuationDeliveryId || source?.bindingId !== binding.bindingId || candidate.payload.toolName !== input.toolName
+        || hash(candidate.payload.arguments) !== hash(input.arguments)
+        || candidate.payload.taskRoot !== (input.taskRoot ?? binding.workspaceBinding)
+        || candidate.payload.sourceConversationId !== input.sourceConversationId
+        || !this.claimDeferred(candidate.approvalId, input.operationId, input.continuationDeliveryId))
+        return { kind: "deny", reason: "暂缓动作的原始参数、执行身份或有效授权不匹配，未补跑" };
+    }
+    const resumed = this.deferred.forOperation(input.operationId);
+    if (resumed) {
+      const original = this.get(resumed.approvalId)?.value;
+      const payload = resumed.payload;
+      const exact = original?.bindingId === binding.bindingId && payload.taskRoot === (input.taskRoot ?? binding.workspaceBinding)
+        && payload.toolName === input.toolName && hash(payload.arguments) === hash(input.arguments) && payload.actionKind === input.actionKind;
+      if (!exact || !deferredTargetUnchanged(payload) || input.deniedReason || !this.permits(binding.bindingId, input.operationId, input.actionKind))
+        return { kind: "deny", reason: input.deniedReason ?? "补跑身份、参数或授权已变化，未执行" };
+      return { kind: "allow", source: "exact" };
+    }
     const scopeMissing = !work.authorization.allowedScopes.includes(input.actionKind)
       || binding.delegatedScope.length > 0 && !binding.delegatedScope.includes(input.actionKind);
+    const credentialPayload = input.deferrable && (describeAction(input).effect === "credential"
+      || hasCredentialValues(input.arguments) || hasCredentialValues(input.originalCall?.arguments));
+    if (credentialPayload) input = { ...input, summary: "凭据相关操作需要安全引用", detail: "该工具尚无可恢复的凭据引用适配器，未保存敏感参数，未执行；请通过安全凭据入口处理该动作。" };
     const priorAdmission = this.works.repo.listAdmissions(work.workId).find(item => item.operationId === input.operationId);
     const possiblePriorEffect = !!priorAdmission && ["admitted", "unknown", "consumed"].includes(priorAdmission.state);
     const actionHash = hash([binding.workspaceBinding, input.taskRoot ?? binding.workspaceBinding, input.toolName, input.arguments, input.actionKind]);
@@ -96,13 +140,16 @@ export class WorkActionApprovals {
       && value.approvalId !== approvalId && value.actionHash === actionHash && value.requiredScope === "workspace:write"
       && value.outcome !== "continuation-outside-plan");
     let outsidePlan = input.actionKind === "workspace:write" && continuation.length > 0 && (!matching.length || alreadyFinished || alreadyClaimed);
-    let restriction = possiblePriorEffect ? "原动作已有执行准入或未知效果，必须核对原回执；没有启动新的执行" : input.deniedReason ?? (outsidePlan
+    let restriction = possiblePriorEffect ? "原动作已有执行准入或未知效果，必须核对原回执；没有启动新的执行" : input.deniedReason ?? (credentialPayload ? "不能将凭据明文登记为延迟执行参数，需要安全凭据引用" : undefined) ?? (outsidePlan
       ? "补跑仅允许已选缺口的原工具及原参数，拒绝新增或重复其他业务动作" : undefined);
     const fingerprint = hash([binding.taskId, binding.durableStoreKey, binding.conversationId, binding.workspaceBinding,
       input.taskRoot ?? binding.workspaceBinding, input.operationId, input.toolName, input.arguments, input.actionKind]);
     let stored = this.get(approvalId);
     let grantedBy: "policy" | "precedent" | "scope" | "auto" | "exact" = "exact";
     let skipped: "policy" | "precedent" | "scope" | "auto" | undefined;
+    const persistedAction = stored && this.deferred.get(stored.value.approvalId);
+    if (persistedAction && persistedAction.status !== "deferred")
+      return { kind: "deny", reason: "原动作已交给唯一持久补跑记录，不能再次从模型调用执行；请查看原动作回执" };
     if (stored && stored.fingerprint !== fingerprint) throw new Error("审批动作身份不能用于不同工具或参数");
     // Read-only shell commands are classified by the native policy. Never silently
     // turn application auto mode into Work authorization or allow readonly writes.
@@ -110,6 +157,12 @@ export class WorkActionApprovals {
       const reason = restriction;
       this.works.transaction(() => this.settle(stored!.value, possiblePriorEffect ? "invalidated" : "denied", reason));
     }
+    const existingDeferred = this.list(work.workId).find(value => value.bindingId === binding.bindingId
+      && value.actionHash === actionHash && value.intentRevision === work.intentRevision
+      && value.inputSnapshotId === work.inputSnapshotId && value.ownerEpoch === work.ownerEpoch
+      && ["queued", "running", "consumed", "unknown"].includes(value.continuation?.status ?? ""));
+    if (existingDeferred) return { kind: "defer", approvalId: existingDeferred.approvalId,
+      reason: "同一原动作已有持久补跑或执行回执，未创建新动作，也未重复执行；请查看原审批状态" };
     // 同一动作（版本未变）已暂不处理/拒绝时不再重复打扰。
     const versionSameAction = this.list(work.workId).find(value => value.bindingId === binding.bindingId
       && value.actionHash === actionHash && value.intentRevision === work.intentRevision
@@ -171,6 +224,13 @@ export class WorkActionApprovals {
             citedDecisionIds: verdict.kind === "allow" ? verdict.citedDecisionIds : [] } : undefined };
         this.db.prepare("INSERT OR IGNORE INTO work_action_approvals(approval_id,work_id,binding_id,operation_id,fingerprint,data_json) VALUES (?,?,?,?,?,?)")
           .run(approvalId, work.workId, binding.bindingId, input.operationId, fingerprint, JSON.stringify(value));
+        if (input.deferrable && value.status === "pending") this.deferred.register(approvalId, {
+          taskRoot: input.taskRoot ?? binding.workspaceBinding, toolName: input.toolName,
+          arguments: z.record(z.string(), z.json()).parse(input.arguments), actionKind: input.actionKind,
+          permissionMode: input.permissionMode,
+          originalCall: { name: input.originalCall?.name ?? input.toolName, arguments: z.record(z.string(), z.json()).parse(input.originalCall?.arguments ?? input.arguments) },
+          sourceConversationId: input.sourceConversationId, nativeContext: input.nativeContext,
+        }, now);
         if (automatic) {
           grantedBy = verdict?.kind === "allow" ? verdict.source : "auto";
           this.touch(work.workId);
@@ -222,10 +282,21 @@ export class WorkActionApprovals {
       const mode = request.decision ?? (request.approved === false ? "deny" : "allow");
       const decision = JSON.stringify(request);
       if (row.decision_json === decision) return { ok: true, approval: value, replayed: true };
-      if (value.status !== "pending") return { ok: false, code: "already_resolved", message: "审批已结束，不能再次执行" };
+      if (mode !== "refresh" && value.status !== "pending") return { ok: false, code: "already_resolved", message: "审批已结束，不能再次执行" };
       if (value.version !== request.expectedVersion || work.stateVersion !== request.expectedStateVersion
         || work.intentRevision !== request.expectedIntentRevision || work.ownerEpoch !== request.expectedOwnerEpoch || !this.current(value))
         return { ok: false, code: "version_conflict", message: "事项或审批已变化，请刷新后重新判断" };
+      if (mode === "refresh") {
+        const deferred = this.deferred.get(value.approvalId);
+        if (!deferred || !["expired", "ignored"].includes(value.status) || deferred.status !== "deferred" || request.saveRule)
+          return { ok: false, code: "invalid_request", message: "该动作不能刷新：需要完整原始参数且确认从未执行；未知效果不能重放" };
+        const fresh = { ...value, status: "pending" as const, version: value.version + 1,
+          expiresAt: this.options.now() + (this.options.ttlMs ?? 5 * 60_000), resolvedAt: undefined, outcome: undefined };
+        this.db.prepare("UPDATE work_action_approvals SET data_json=?,decision_json=? WHERE approval_id=?")
+          .run(JSON.stringify(fresh), decision, value.approvalId);
+        this.block(fresh, "原动作已重新展示，尚未授权执行");
+        return { ok: true, approval: fresh, replayed: false };
+      }
       if (mode === "allow" && value.scopeMissing && (!request.grantScopeOnce || !["workspace:read", "workspace:write"].includes(value.requiredScope)))
         return { ok: false, code: "invalid_request", message: "必须明确授权本次缺失的工作区范围；其他授权请通过事项配置处理" };
       if (request.saveRule && (mode !== "allow" || value.descriptor?.hardGate))
@@ -251,10 +322,48 @@ export class WorkActionApprovals {
       }
       const next = this.settle(value, mode === "allow" ? "approved" : mode === "ignore" ? "ignored" : "denied",
         mode === "allow" ? "user-approved-once" : mode === "ignore" ? "user-ignored" : "user-denied");
+      if (mode === "allow" && this.deferred.get(value.approvalId)) {
+        if (!this.deferred.enqueue(value.approvalId, this.options.now())) throw new Error("原动作不能重复排队");
+      }
       if (rule) this.ledger.addRule(rule);
       this.db.prepare("UPDATE work_action_approvals SET decision_json=? WHERE approval_id=?").run(decision, value.approvalId);
       return { ok: true, approval: next, replayed: false };
     });
+  }
+
+  deferredSource(approvalId: string): WorkActionApprovalDto | undefined { return this.get(approvalId)?.value; }
+
+  claimDeferred(approvalId: string, attemptOperationId: string, expectedDeliveryId: string): boolean {
+    return this.works.transaction(() => {
+      this.recover();
+      const value = this.get(approvalId)?.value, action = this.deferred.get(approvalId);
+      if (!this.options.isAuthority() || !value || !action || action.status !== "queued"
+        || action.deliveryId !== expectedDeliveryId || value.status !== "approved" || !this.current(value) || !this.citationsValid(value)
+        || value.expiresAt <= this.options.now()) return false;
+      if (this.works.repo.listAdmissions(value.workId).some(a => a.operationId === value.operationId
+        && ["admitted", "unknown", "consumed"].includes(a.state))) return false;
+      if (!deferredTargetUnchanged(action.payload)) {
+        this.settle(value, "invalidated", "原动作的工作目录或文件实际目标已变化，动作未执行；请重新核对目标");
+        return false;
+      }
+      const claimed = this.deferred.claim(approvalId, attemptOperationId, this.options.now());
+      if (claimed) this.touch(value.workId);
+      return claimed;
+    });
+  }
+  finishDeferred(approvalId: string, outcome: "consumed" | "released" | "unknown", reason: string | undefined, expectedDeliveryId: string): void {
+    this.works.transaction(() => {
+      const action = this.deferred.get(approvalId), value = this.get(approvalId)?.value;
+      if (!action || !value || action.deliveryId !== expectedDeliveryId || ["consumed", "invalidated"].includes(action.status)) return;
+      if (action.attemptOperationId) this.settleAction(value.taskId, action.attemptOperationId, outcome);
+      else {
+        this.deferred.settle(approvalId, outcome === "released" ? "invalidated" : "unknown", this.options.now(), reason ?? "原生补跑没有可核对的结算回执，未重放");
+        this.block(value, reason ?? "补跑受阻，需要核对原执行状态；没有重复执行");
+      }
+    });
+  }
+  permitsDeferred(bindingId: string, operationId: string, actionKind: string): boolean {
+    return !!this.deferred.forOperation(operationId) && this.permits(bindingId, operationId, actionKind);
   }
 
   listAutonomyRules(userId: string) { return this.ledger.listRules(userId); }
@@ -269,22 +378,43 @@ export class WorkActionApprovals {
 
   approvedTaskAction(taskId: string, operationId: string, toolName: string): boolean | undefined {
     const binding = this.works.repo.bindingForTask(taskId); if (!binding) return undefined;
-    const value = this.list(binding.workId).find(value => value.bindingId === binding.bindingId && value.operationId === operationId);
+    const resumed = this.deferred.forOperation(operationId);
+    const value = this.list(binding.workId).find(value => value.bindingId === binding.bindingId
+      && (resumed ? value.approvalId === resumed.approvalId : value.operationId === operationId));
     return !!value && value.toolName === toolName && this.permits(binding.bindingId, operationId, value.requiredScope);
   }
   permits(bindingId: string, operationId: string, actionKind: string): boolean {
     this.ruleCache.clear();
-    const row = this.db.prepare("SELECT * FROM work_action_approvals WHERE binding_id=? AND operation_id=?").get(bindingId, operationId);
+    const deferred = this.deferred.forOperation(operationId);
+    const row = deferred ? this.db.prepare("SELECT * FROM work_action_approvals WHERE approval_id=? AND binding_id=?").get(deferred.approvalId, bindingId)
+      : this.db.prepare("SELECT * FROM work_action_approvals WHERE binding_id=? AND operation_id=?").get(bindingId, operationId);
     if (!row) return false;
     const value = workActionApprovalSchema.parse(JSON.parse(rowSchema.parse(row).data_json));
-    const admission = this.works.repo.listAdmissions(value.workId).find(a => a.operationId === value.operationId);
+    if (deferred && deferred.status !== "running") return false;
+    if (!deferred && this.deferred.state(value.approvalId)) return false;
+    const admission = this.works.repo.listAdmissions(value.workId).find(a => a.operationId === operationId);
     if (admission && admission.state !== "admitted") return false;
+    if (deferred && !admission && !deferredTargetUnchanged(deferred.payload)) return false;
     return value.status === "approved" && value.requiredScope === actionKind && this.current(value) && this.citationsValid(value)
       && (value.expiresAt > this.options.now() || admission?.state === "admitted" && admission.admittedAt < value.expiresAt);
   }
   settleAction(taskId: string, operationId: string, outcome: string): void {
     const binding = this.works.repo.bindingForTask(taskId); if (!binding) return;
-    const value = this.list(binding.workId).find(value => value.bindingId === binding.bindingId && value.operationId === operationId);
+    const deferred = this.deferred.forOperation(operationId);
+    const value = this.list(binding.workId).find(value => value.bindingId === binding.bindingId
+      && (deferred ? value.approvalId === deferred.approvalId : value.operationId === operationId));
+    if (deferred && value) {
+      this.deferred.settle(value.approvalId, outcome === "consumed" ? "consumed" : outcome === "released" ? "invalidated" : "unknown", this.options.now(),
+        outcome === "released" ? "补跑没有执行；请核对原因，未自动重试" : outcome === "unknown" ? "原效果未知，禁止重放" : undefined);
+      if (outcome !== "consumed") this.block(value, outcome === "released"
+        ? "补跑动作未执行，需要核对原因；没有自动重试" : "补跑动作效果未知，等待原生回执核对；没有重放");
+      if (outcome === "consumed") {
+        this.works.partialResults.record(binding, [{ itemId: value.approvalId, task: value.summary, required: true,
+          dependencies: [], criterionIds: [], nativeStatus: "host_approval_continuation_verified", outcome: "completed",
+          artifactRefs: [], writeConflicts: [], summary: "批准后仅执行原动作，原生回执已结算", origin: "native" }], this.options.now());
+        this.works.repo.clearBlocker(value.approvalId, value.workId, this.options.now());
+      }
+    }
     const recovered = (value?.status === "invalidated" || value?.status === "consumed" && value.outcome === "unknown") && outcome === "consumed"
       && this.works.repo.listAdmissions(binding.workId).some(a => a.operationId === operationId && a.state === "consumed");
     if (value && (value.status === "approved" || recovered)) {
@@ -306,6 +436,8 @@ export class WorkActionApprovals {
       if (this.works.repo.listAdmissions(workId).some(a => a.operationId === value.operationId && ["admitted", "unknown"].includes(a.state))) continue;
       if (["pending", "approved"].includes(value.status)) this.db.prepare("UPDATE work_action_approvals SET data_json=? WHERE approval_id=?")
         .run(JSON.stringify({ ...value, status: "invalidated", version: value.version + 1, resolvedAt: this.options.now(), outcome: "work-stopped" }), value.approvalId);
+      const deferred = this.deferred.get(value.approvalId);
+      if (deferred && ["deferred", "queued"].includes(deferred.status)) this.deferred.settle(value.approvalId, "invalidated", this.options.now(), "work-stopped");
       this.works.repo.clearBlocker(value.approvalId, workId, this.options.now());
     }
   }
@@ -332,7 +464,7 @@ export class WorkActionApprovals {
         const value = workActionApprovalSchema.parse(JSON.parse(rowSchema.parse(row).data_json));
         // 已准入/未知/已消费的动作交给执行回执结算，不因时钟或规则变化假装回滚。
         const inFlight = this.works.repo.listAdmissions(value.workId)
-          .some(a => a.operationId === value.operationId && ["admitted", "unknown", "consumed"].includes(a.state));
+          .some(a => (a.operationId === value.operationId || a.operationId === this.deferred.get(value.approvalId)?.attemptOperationId) && ["admitted", "unknown", "consumed"].includes(a.state));
         if (!this.current(value)) this.settle(value, "invalidated", "事项、负责人或执行身份已失效，未恢复原动作");
         // 撤销/过期后的规则不能再支撑已经放行但尚未执行的动作。
         else if (!inFlight && !this.citationsValid(value)) this.settle(value, "invalidated", "支撑该动作的授权规则已撤销或过期，未执行；需要重新确认");
@@ -368,8 +500,13 @@ export class WorkActionApprovals {
   }
   private settle(value: WorkActionApprovalDto, status: WorkActionApprovalDto["status"], outcome: string): WorkActionApprovalDto {
     const next = { ...value, status, outcome, version: value.version + 1, resolvedAt: this.options.now() };
+    const deferred = this.deferred.get(value.approvalId);
+    if (deferred && status === "expired" && deferred.status === "queued")
+      this.deferred.settle(value.approvalId, "deferred", this.options.now(), "批准已过期，重新展示并确认后才可补跑");
+    if (deferred && ["invalidated", "denied"].includes(status) && ["deferred", "queued"].includes(deferred.status))
+      this.deferred.settle(value.approvalId, "invalidated", this.options.now(), outcome);
     this.db.prepare("UPDATE work_action_approvals SET data_json=? WHERE approval_id=?").run(JSON.stringify(next), value.approvalId);
-    if (status === "approved" || status === "consumed") {
+    if (status === "approved" || status === "consumed" && outcome === "consumed") {
       this.works.repo.clearBlocker(value.approvalId, value.workId, this.options.now());
       this.touch(value.workId);
     } else this.block(next, outcome === "user-ignored"

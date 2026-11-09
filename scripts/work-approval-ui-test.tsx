@@ -150,6 +150,73 @@ async function main() {
     await reset(fixture({ expiresAt: Date.now() - 1 })); assert.ok(buttons().every(button => button.disabled));
     await act(async () => buttons().forEach(click)); assert.equal(requests.length, 0);
   });
+  await check("continuation states expose progress and unknown effects without execution controls", async () => {
+    for (const status of ["queued", "running", "consumed", "unknown", "invalidated"] as const) {
+      await reset(fixture({ status: "approved", continuation: { status, reason: "目标版本已核对" } }));
+      assert.equal(container.querySelector("[data-continuation-status]")?.getAttribute("data-continuation-status"), status);
+      assert.match(container.textContent!, /目标版本已核对/);
+      assert.equal(buttons().length, 0);
+      assert.equal(container.querySelector("input"), null);
+      assert.equal(requests.length, 0);
+      if (status === "consumed" || status === "invalidated") {
+        assert.equal(container.querySelector("[data-continuation-status]")!.closest("details")!.hasAttribute("open"), false, "settled history starts collapsed");
+      }
+    }
+    assert.match(container.textContent!, /不会继续执行/);
+    await reset(fixture({ status: "approved", continuation: { status: "unknown" } }));
+    assert.match(container.textContent!, /不会自动重放/);
+  });
+  await check("expired and ignored payloads refresh the same action without authorizing it", async () => {
+    for (const status of ["expired", "ignored"] as const) {
+      const projection = await reset(fixture({ status, continuation: { status: "deferred" } }));
+      assert.deepEqual(buttons().map(button => button.textContent), ["重新打开原动作审批"]);
+      assert.match(container.textContent!, /不授予权限，也不会立即执行/);
+      await act(async () => click(buttons()[0]));
+      assert.equal(requests.length, 1);
+      assert.equal(requests[0].decision, "refresh");
+      assert.equal(requests[0].approved, false);
+      assert.equal(requests[0].grantScopeOnce, false);
+      assert.equal(requests[0].approvalId, projection.approvals![0].approvalId);
+      assert.equal(requests[0].expectedVersion, projection.approvals![0].version);
+      await act(async () => receipt.reject(new Error("refresh receipt lost")));
+      const original = requests[0]; receipt = deferred();
+      await render({ ...projection, stateVersion: 99 });
+      await act(async () => click(buttons()[0]));
+      assert.deepEqual(requests[1], original);
+    }
+  });
+  await check("refresh result requires a fresh independent approval and scope confirmation", async () => {
+    const projection = await reset(fixture({ status: "expired", continuation: { status: "deferred" } }));
+    await act(async () => click(buttons()[0]));
+    const refreshed = { ...projection.approvals![0], status: "pending" as const, version: 2, expiresAt: Date.now() + 60000 };
+    await act(async () => receipt.resolve({ ok: true, replayed: false, approval: refreshed }));
+    await render({ ...projection, stateVersion: 2, approvals: [refreshed] });
+    assert.equal(buttons()[0].disabled, true);
+    assert.equal(container.querySelector<HTMLInputElement>("input")!.checked, false);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].decision, "refresh");
+  });
+  await check("unknown ignore response cannot silently retry as a denial or approval", async () => {
+    await reset(fixture({ scopeMissing: false }));
+    await act(async () => click(buttons()[2]));
+    await act(async () => receipt.reject(new Error("ignore receipt lost")));
+    assert.equal(buttons()[0].disabled, true); assert.equal(buttons()[1].disabled, true);
+    assert.equal(buttons()[2].disabled, false);
+    const original = requests[0]; receipt = deferred();
+    await act(async () => buttons().forEach(click));
+    assert.equal(requests.length, 2); assert.deepEqual(requests[1], original);
+  });
+  await check("locally expired pending payload refreshes projection before renewing approval", async () => {
+    await reset(fixture({ expiresAt: Date.now() - 1, continuation: { status: "deferred" } }));
+    const refresh = buttons().find(button => button.textContent === "刷新审批状态")!;
+    assert.ok(refresh); await act(async () => click(refresh));
+    assert.equal(refreshes, 1); assert.equal(requests.length, 0);
+    assert.ok(!buttons().some(button => button.textContent === "重新打开原动作审批"));
+  });
+  await check("legacy expired approvals without persisted payload cannot be refreshed", async () => {
+    await reset(fixture({ status: "expired" }));
+    assert.equal(buttons().length, 0); assert.equal(requests.length, 0);
+  });
   await check("late completion after unmount cannot corrupt a different pending approval", async () => {
     await reset(); await act(async () => click(buttons()[1])); const oldReceipt = receipt;
     await reset(); await act(async () => oldReceipt.resolve({ ok: false, code: "already_resolved", message: "old refusal" }));
@@ -162,6 +229,13 @@ async function main() {
     const { default: Page } = await import("../src/renderer/src/components/pages/BotWorkspacePage");
     container = doc.body.appendChild(doc.createElement("div")); root = createRoot(container);
     await act(async () => root!.render(<Page />)); assert.equal(container.querySelectorAll(".bot-approval-card").length, 1);
+    for (const status of ["queued", "running", "unknown", "consumed"] as const) {
+      await act(async () => store.setState({ botWorks: [{ ...projection, approvals: [{ ...projection.approvals![0], status: "approved", continuation: { status } }] }] }));
+      assert.ok(container.querySelector(`[data-continuation-status="${status}"]`), `conversation must retain ${status} continuation`);
+    }
+    await act(async () => store.setState({ botWorks: [{ ...projection, approvals: [{ ...projection.approvals![0], status: "ignored", continuation: { status: "deferred" } }] }] }));
+    assert.ok(buttons().some(button => button.textContent === "重新打开原动作审批"));
+    await act(async () => store.setState({ botWorks: [projection] }));
     await act(async () => store.getState().setSelectedWorkId(projection.workId));
     assert.ok(container.querySelector(".bot-inspector-body .bot-approval-card"));
     await act(async () => store.setState({ botWorks: [{ ...projection, approvals: [] }] }));

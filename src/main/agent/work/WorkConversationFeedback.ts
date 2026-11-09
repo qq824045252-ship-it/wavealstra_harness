@@ -98,6 +98,18 @@ export class WorkConversationFeedback {
             { kind: "result", category: "result", executionId: result.executionId,
               intentRevision: result.intentRevision, inputSnapshotId: result.inputSnapshotId });
         }
+        for (const approval of works.approvals.list(work.workId)) {
+          const continuation = approval.continuation;
+          if (!continuation || !["consumed", "unknown", "invalidated"].includes(continuation.status)) continue;
+          const body = continuation.status === "consumed"
+            ? `已按你的批准补执行原动作：${approval.summary}。原生执行回执已结算，未重跑其它步骤；事项验收仍按原要求进行。`
+            : continuation.status === "unknown"
+              ? `补跑动作的效果尚未确认：${approval.summary}。已停止自动重放，请核对原执行回执。`
+              : `原动作未补执行：${approval.summary}。${continuation.reason ?? "授权或执行条件已变化，请核对当前事项。"}`;
+          emit(`deferred:${approval.approvalId}`, [continuation.status, continuation.reason ?? null], body,
+            { kind: "result", category: continuation.status === "consumed" ? "result" : "decision",
+              executionId: approval.bindingId, intentRevision: approval.intentRevision, inputSnapshotId: approval.inputSnapshotId });
+        }
         for (const blocker of works.repo.listBlockers(work.workId)) {
           emit(`blocker:${blocker.blockerId}`, blocker,
             blocker.status === "open"

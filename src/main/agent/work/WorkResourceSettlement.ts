@@ -15,17 +15,18 @@ export function authorizeWorkResourceOwner(input: { service: WorkService; bots: 
     || binding.durableStoreKey !== owner.durableStoreKey || binding.conversationId !== owner.conversationId
     || binding.workspaceBinding !== owner.workspaceBinding) return "资源执行命名空间不匹配";
   const work = service.repo.getWork(binding.workId);
-  if (!work || work.lifecycle !== "active" || binding.invalidatedAt
-    || binding.intentRevision !== work.intentRevision || binding.inputSnapshotId !== work.inputSnapshotId
-    || ["completed", "failed", "stopped", "invalidated"].includes(binding.status)) return "事项暂停、终止或执行输入已失效，拒绝新动作";
-  if (!service.collaboration.isDelegationAdopted(binding, work)) return "新负责人尚未接管此执行委派";
-  const teamError = service.teams?.resourceError(binding, resources);
-  if (teamError) return teamError;
   const action = resources.some(resource => resource.mode === "write") ? "workspace:write" : "workspace:read";
   const parts = input.actionId?.split(":");
   const operationId = input.actionId?.startsWith("resource:") && parts
     ? `tool:${owner.childId ?? owner.conversationId}:${parts[2]}:${parts.slice(3).join(":")}` : undefined;
   const approved = operationId && service.approvals.permits(binding.bindingId, operationId, action);
+  if (!work || work.lifecycle !== "active" || binding.invalidatedAt
+    || binding.intentRevision !== work.intentRevision || binding.inputSnapshotId !== work.inputSnapshotId
+    || ["completed", "failed", "stopped", "invalidated"].includes(binding.status)
+      && !(operationId && service.approvals.permitsDeferred(binding.bindingId, operationId, action))) return "事项暂停、终止或执行输入已失效，拒绝新动作";
+  if (!service.collaboration.isDelegationAdopted(binding, work)) return "新负责人尚未接管此执行委派";
+  const teamError = service.teams?.resourceError(binding, resources);
+  if (teamError) return teamError;
   if ((!work.authorization.allowedScopes.includes(action) || binding.delegatedScope.length > 0 && !binding.delegatedScope.includes(action)) && !approved)
     return "实际资源动作超出事项或执行委派范围";
   if (bots.getBot(binding.botId)?.status !== "active" || bots.getBot(work.ownerBotId)?.status !== "active") return "Bot 不可受理新资源动作";
