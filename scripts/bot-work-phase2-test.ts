@@ -171,8 +171,7 @@ try {
   const cancelFlush = queue.flush();
   releaseEffect(); held = Promise.resolve();
   await cancelFlush;
-  await wait(async () => { await adapter.flush(); return works.repo.getBinding(aBinding.bindingId)?.status === "completed"
-    && works.repo.getReservation(aBinding.reservationId!)?.state === "committed"; }, "native result and exact usage consumption");
+  await wait(async () => { await adapter.flush(); return works.repo.getBinding(aBinding.bindingId)?.status === "completed"; }, "native result independent of usage telemetry");
   assert.equal(errors.length, 0, errors.map(String).join("\n"));
   assert.equal(effects, 2);
   assert.equal((await readFile(join(cwd, "effects.txt"), "utf8")).trim().split("\n").length, 2);

@@ -35,13 +35,13 @@ export const createTeamWorkSchema = workTeamPlanSchema.safeExtend({
   projectId: id.optional(),
   conversationId: id.optional(),
   criteria: z.array(z.string().trim().min(1).max(1000)).min(1).max(12),
-  budgetTokens: z.number().int().min(1024).max(1000000).default(32768),
 });
 const versionGuard = z.object({ expectedStateVersion: z.number().int().positive(),
   expectedIntentRevision: z.number().int().positive(), expectedOwnerEpoch: z.number().int().positive() }).strict();
 export const workTeamControlSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("create"), request: createTeamWorkSchema }).strict(),
   z.object({ kind: z.literal("get"), workId: id }).strict(),
+  z.object({ kind: z.literal("get_by_operation"), operationId: id }).strict(),
   z.object({ kind: z.literal("retry"), workId: id, versionGuard, confirmNotStarted: z.literal(true) }).strict(),
   z.object({ kind: z.literal("replan"), workId: id, versionGuard, plan: workTeamPlanSchema }).strict(),
   z.object({ kind: z.literal("list_templates") }).strict(),

@@ -1,3 +1,4 @@
+import { WorkAutomaticRecovery } from "./WorkAutomaticRecovery";
 import { WorkGapCoverage } from "./WorkGapCoverage";
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
@@ -34,8 +35,9 @@ const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(valu
 /** Facts and continuation intents share the WorkService business transaction. */
 export class WorkPartialResults {
   readonly coverage: WorkGapCoverage;
+  readonly recovery: WorkAutomaticRecovery;
   constructor(private readonly db: Database.Database, private readonly works: WorkService) {
-    ensureWorkPartialTables(db); this.coverage = new WorkGapCoverage(db, works);
+    ensureWorkPartialTables(db); this.coverage = new WorkGapCoverage(db, works); this.recovery = new WorkAutomaticRecovery(db, works);
   }
 
   list(workId: string): WorkSubitemDto[] {
@@ -76,6 +78,7 @@ export class WorkPartialResults {
     this.db.prepare("INSERT OR IGNORE INTO work_subitem_results(fact_id,work_id,binding_id,item_id,result_json,created_at) VALUES (?,?,?,?,?,?)").run(factId,binding.workId,binding.bindingId,itemId,JSON.stringify(result),now);
   }
   isReadOnlyPlan(plan:WorkContinuationDto):boolean {
+    if (this.recovery.readOnlyPlan(plan.planId)) return true;
     const items=this.list(plan.workId).filter(item=>item.bindingId===plan.sourceBindingId && plan.gapItemIds.includes(item.itemId));
     return items.length===plan.gapItemIds.length && items.every(item=>item.origin==="artifact_revalidation");
   }
@@ -83,7 +86,18 @@ export class WorkPartialResults {
     if(observation.status==="running")return observation;
     const request=z.object({continuation_plan_id:z.string().nullable()}).optional().parse(this.db.prepare("SELECT continuation_plan_id FROM work_dispatch_requests WHERE task_id=?").get(binding.taskId));
     const plan=request?.continuation_plan_id && this.plans(binding.workId).find(plan=>plan.planId===request.continuation_plan_id);
-    if(!plan || !this.isReadOnlyPlan(plan))return observation;
+    if (!plan) return observation;
+    if (this.recovery.record(plan.planId)) {
+      const source = this.works.repo.getBinding(plan.sourceBindingId);
+      if (!source) return observation;
+      const item = this.list(plan.workId).find(item => item.bindingId === source.bindingId && item.itemId === `recover:${source.bindingId}`);
+      if (!item) return observation;
+      return { ...observation, subitems: [...observation.subitems ?? [], { itemId: item.itemId, task: item.task,
+        required: true, dependencies: [], criterionIds: item.criterionIds, nativeStatus: observation.status,
+        outcome: observation.status === "completed" ? this.recovery.record(plan.planId)?.mode === "readback" ? "blocked" : "completed" : observation.status === "stopped" ? "stopped" : "failed",
+        artifactRefs: observation.artifactRefs, writeConflicts: [], summary: observation.summary }] };
+    }
+    if(!this.isReadOnlyPlan(plan))return observation;
     const items=this.list(plan.workId).filter(item=>item.bindingId===plan.sourceBindingId && plan.gapItemIds.includes(item.itemId));
     const verified=observation.status==="completed" && items.every(item=>item.artifactRefs.every(path=>observation.readPaths?.includes(path)));
     const results:WorkSubitemResult[]=items.map(item=>({itemId:item.itemId,task:item.task,required:true,dependencies:item.dependencies,criterionIds:item.criterionIds,
@@ -91,18 +105,22 @@ export class WorkPartialResults {
       artifactRefs:item.artifactRefs,writeConflicts:[],summary:verified?"原生只读执行已读取当前产物，仍等待必要验收反馈":"核验未提供当前产物的成功读取凭据，原业务效果未重做",origin:"artifact_revalidation"}));
     return {...observation,artifactRefs:[...new Set([...observation.artifactRefs,...(verified?items.flatMap(item=>item.artifactRefs):[])])],subitems:[...observation.subitems ?? [],...results]};
   }
-  private resolvedByContinuation(item: WorkSubitemDto, seen=new Set<string>()): boolean {
-    if(seen.has(item.factId)) return false;
-    seen.add(item.factId);
-    for (const plan of this.plans(item.workId).filter(plan => plan.sourceBindingId === item.bindingId && plan.gapItemIds.includes(item.itemId))) {
-      const request = z.object({ task_id: z.string() }).optional().parse(this.db.prepare("SELECT task_id FROM work_dispatch_requests WHERE continuation_plan_id=? AND state='dispatched'").get(plan.planId));
-      const binding = request && this.works.repo.bindingForTask(request.task_id);
-      if (!binding || !["completed","failed","stopped"].includes(binding.status)) continue;
-      const results = this.list(item.workId).filter(result => result.bindingId === binding.bindingId);
-      if (results.some(result => (result.itemId === item.itemId || result.task === item.task)
-        && (result.outcome === "completed" || this.resolvedByContinuation(result,new Set(seen))))) return true;
-    }
-    return false;
+  private resolvedByContinuation(item: WorkSubitemDto, seen = new Set<string>()): boolean {
+    return this.plans(item.workId).filter(plan => plan.sourceBindingId === item.bindingId && plan.gapItemIds.includes(item.itemId))
+      .some(plan => this.continuationCompletes(item, plan.planId, seen));
+  }
+  private continuationCompletes(item: WorkSubitemDto, planId: string, seen: Set<string>): boolean {
+    if (seen.has(planId)) return false;
+    const nextSeen = new Set(seen).add(planId);
+    const request = z.object({ task_id: z.string() }).optional().parse(this.db.prepare("SELECT task_id FROM work_dispatch_requests WHERE continuation_plan_id=? AND state='dispatched'").get(planId));
+    const binding = request && this.works.repo.bindingForTask(request.task_id);
+    if (!binding || !["completed", "failed", "stopped"].includes(binding.status)) return false;
+    if (this.list(item.workId).some(result => result.bindingId === binding.bindingId
+      && (result.itemId === item.itemId || result.task === item.task) && result.outcome === "completed")) return true;
+    // A continuation may fail before emitting this item. Its persistent descendant
+    // still owns the same gap; only a real matching completed fact resolves it.
+    return this.plans(item.workId).filter(plan => plan.sourceBindingId === binding.bindingId && plan.state !== "cancelled")
+      .some(plan => this.continuationCompletes(item, plan.planId, nextSeen));
   }
   record(binding: WorkExecutionBindingDto, items: WorkSubitemResult[], now = Date.now()): void {
     if (!this.db.inTransaction) throw new Error("逐项结果必须与原生 Inbox 消费同事务提交");
@@ -115,7 +133,7 @@ export class WorkPartialResults {
       // Terminal item evidence is immutable. A delayed running/unknown projection cannot erase it.
       if (priorResult && !["unknown", "not_started"].includes(priorResult.outcome)) continue;
       let deliverableId = prior?.deliverable_id ?? undefined;
-      if (item.outcome === "completed") {
+      if (item.outcome === "completed" && !this.recovery.isSyntheticItem(binding, item.itemId)) {
         deliverableId = `partial:${factId}`;
         const result = this.works.submitDeliverable({ kind: "worker", botId: binding.botId, bindingId: binding.bindingId }, {
           operationId: deliverableId, deliverableId, workId: binding.workId, bindingId: binding.bindingId,
@@ -146,8 +164,6 @@ export class WorkPartialResults {
     if (selected.some(item => !item || item.outcome === "unknown")) return { ok: false, code: "invalid_request", message: "只能补跑已核实、仍未覆盖的必要子项" };
     const readonly=selected.filter(item=>item?.origin==="artifact_revalidation").length;
     if(readonly && readonly!==selected.length)return {ok:false,code:"invalid_request",message:"产物只读核验与业务补跑必须分别受理，保持核验执行只读"};
-    if (work.budget.usedTokens + work.budget.reservedTokens >= work.budget.maxTokens || work.budget.windowExpiresAt !== undefined && work.budget.windowExpiresAt <= now)
-      return { ok: false, code: "budget_exhausted", message: "原预算窗口不足以受理补跑" };
     const keys = ids.map(id => hash([source.bindingId,id]));
     const planId = `continuation:${hash([work.workId,work.intentRevision,work.inputSnapshotId,keys])}`;
     const existing = this.plans(work.workId).find(plan => plan.planId === planId);
@@ -183,7 +199,8 @@ export class WorkPartialResults {
     const row = z.object({ continuation_plan_id: z.string().nullable() }).optional().parse(this.db.prepare("SELECT continuation_plan_id FROM work_dispatch_requests WHERE task_id=?").get(binding.taskId));
     const plan = row?.continuation_plan_id && this.plans(binding.workId).find(item => item.planId === row.continuation_plan_id);
     if (!plan) return undefined;
+    const recovery = this.recovery.input(binding, plan.planId); if (recovery) return recovery;
     const items = this.list(binding.workId).filter(item => item.bindingId === plan.sourceBindingId && plan.gapItemIds.includes(item.itemId));
-    return `只完成以下已受理的缺口计划 ${plan.planId}。已完成的文件、发送或其他效果不得重做。保持原输入、要求和预算。\n${JSON.stringify(items.map(item => ({ itemId: item.itemId, task: item.task, criterionIds: item.criterionIds, dependencies: item.dependencies, previousOutcome: item.outcome, writeConflicts: item.writeConflicts })))}`;
+    return `只完成以下已受理的缺口计划 ${plan.planId}。已完成的文件、发送或其他效果不得重做。保持原输入和要求。\n${JSON.stringify(items.map(item => ({ itemId: item.itemId, task: item.task, criterionIds: item.criterionIds, dependencies: item.dependencies, previousOutcome: item.outcome, writeConflicts: item.writeConflicts })))}`;
   }
 }

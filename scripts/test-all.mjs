@@ -75,6 +75,7 @@ const SERIAL_TEST_PATTERNS = [/^test:core-performance/, /^test:bot-work-phase2-r
  * （历史教训：`-ui$` 与 `:desktop$` 都曾漏出 GUI 用例，混进"无头"门禁）。
  */
 const GUI_TESTS = new Set([
+  "test:bot-work-recovery-dev",
   "test:bot-work-phase5:dev",
   "test:bot-work-phase3:dev",
   "test:bot-work-phase3-focus-desktop",
@@ -236,6 +237,7 @@ const KNOWN_HEADLESS_RED = new Set([
  * 显式清单优先于下面的命名兜底，否则它们会被 `^test:browser-` 之类正则误伤。
  */
 const HEADLESS_TESTS = new Set([
+  "test:web-access-extract-runtime", // Default fixture is local; real weather request is opt-in.
   "test:chat-composer-ui", // React DOM behavior using linkedom; no Electron/display dependency.
   "test:cloudflared-cli-detect",
   "test:work-conversation-feedback",
@@ -253,7 +255,8 @@ const HEADLESS_TESTS = new Set([
   "test:bot-work-phase4-offline-catchup",
   "test:bot-work-phase4-schedule-clock",
   "test:bot-work-phase4-causal-guard",
-  "test:bot-work-phase4-shared-budget",
+  "test:bot-work-no-quota",
+  "test:bot-work-automatic-recovery",
   "test:bot-work-phase4-backpressure",
   "test:bot-work-phase5-delivery-dedup",
   "test:bot-work-phase5-reconnect-diagnostics",

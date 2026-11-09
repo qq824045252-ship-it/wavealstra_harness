@@ -290,8 +290,6 @@ export class WorkPhase5Facts {
       rows.push({ kind: "causal", ref: chain.chain_id, state: chain.decision,
         detail: chain.reason_code ?? undefined, at: chain.created_at });
     }
-    rows.push({ kind: "budget", ref: work.budget.windowId, state: String(work.budget.unknownUsageCount),
-      detail: `${work.budget.usedTokens}/${work.budget.maxTokens}` });
     return rows;
   }
 }

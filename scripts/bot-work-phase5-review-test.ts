@@ -217,7 +217,7 @@ try {
     assert.equal((reopened.getProjection(fixture.workId)!.blockers[0].details!.response as { reply: string }).reply, "Use November 8");
     assert.equal(reviewWork(works, user, { ...request, request: { ...request.request, reply: "Use another date" } }).ok, false);
   });
-  check("budget, unknown effects and untyped operational blockers cannot be force-cleared by a reply", () => {
+  check("unknown effects and untyped operational blockers cannot be force-cleared by a reply", () => {
     for (const kind of ["operational", "external_effect", "backpressure", "write_conflict"] as const) {
       const fixture = proposed(`blocked-${kind}`, true);
       unwrap(works.reportBlocker(user, { operationId: `report:${kind}`, workId: fixture.workId,
@@ -270,7 +270,7 @@ try {
       versionGuard: { ...request.request.versionGuard, expectedStateVersion: before.stateVersion - 1 } } }).ok, false);
     const answered = unwrap(reviewWork(works, user, request));
     assert.deepEqual(answered.criteria, before.criteria); assert.deepEqual(answered.authorization, before.authorization);
-    assert.deepEqual(answered.activeExecutionIds, before.activeExecutionIds); assert.deepEqual(answered.budget, before.budget);
+    assert.deepEqual(answered.activeExecutionIds, before.activeExecutionIds);
     const saved = works.repo.getBlocker(blocker.blockerId)!;
     assert.equal(saved.status, "cleared");
     assert.equal((saved.details!.response as { reportOperationId: string }).reportOperationId, request.request.reportOperationId);
@@ -293,9 +293,9 @@ try {
     const { fixture, blocker, request } = legacyQuestion("excluded");
     const current = works.getWork(fixture.workId)!;
     for (const mutation of [ { reportedByBotId: undefined }, { reportedByBotId: "different-owner" },
-      { blockerId: "approval:system" }, { reasonCode: "budget-exhausted" as const }, { unknownExternalEffectRef: "effect" },
+      { blockerId: "approval:system" }, { reasonCode: "resource-recovery-exhausted" as const }, { unknownExternalEffectRef: "effect" },
       { details: { resource: "desktop" } }, { sourceRef: "source" }, { subscriptionId: "subscription" },
-      { windowId: "budget" }, { causalChainId: "chain" }, { reason: "Forged question" }, { createdAt: blocker.createdAt + 1 } ]) {
+      { windowId: "legacy-window" }, { causalChainId: "chain" }, { reason: "Forged question" }, { createdAt: blocker.createdAt + 1 } ]) {
       assert.equal(legacyUserInputSource(db.connection, current, { ...blocker, ...mutation }), undefined);
     }
     db.connection.prepare("INSERT INTO work_action_admissions(admission_id,work_id,binding_id,operation_id,action_kind,state,intent_revision,owner_epoch,admitted_at) VALUES (?,?,?,?,?,?,?,?,?)")

@@ -63,6 +63,13 @@ export class WorkTeamService {
     try {
       if (actor.kind !== "user" || !actor.userId.trim()) throw new TeamError("unauthorized_actor", "组队操作需要已认证用户，模型不能代替用户授权");
       const request = workTeamControlSchema.parse(raw);
+      if (request.kind === "get_by_operation") {
+        const previous = teamRowSchema.optional().parse(this.db.prepare("SELECT * FROM work_teams WHERE user_id=? AND operation_id=?")
+          .get(actor.userId, request.operationId));
+        const work = previous ? this.works.getWork(previous.work_id) : undefined;
+        if (!previous || !work || work.userId !== actor.userId) throw new TeamError("not_found", "找不到该操作的团队事项");
+        return { ok: true, operationId: request.operationId, work, team: this.get(work.workId), replayed: true };
+      }
       if (request.kind === "get") {
         const work = this.works.getWork(request.workId);
         if (!work || work.userId !== actor.userId) throw new TeamError("not_found", "找不到事项");
@@ -79,9 +86,8 @@ export class WorkTeamService {
           if (work.lifecycle !== "active" || team.intent_revision === work.intentRevision && team.input_snapshot_id === work.inputSnapshotId)
             throw new TeamError("invalid_request", "只能为已变更的当前要求重新安排团队，不能重跑原要求");
           const unsettled = this.works.repo.listBindings(work.workId).some(binding => !["completed", "failed", "stopped"].includes(binding.status)
-            && !(binding.status === "invalidated" && !binding.attemptId && !binding.submissionReceipt && !binding.submittedAt)
-            || binding.reservationId && ["reserved", "unknown"].includes(this.works.repo.getReservation(binding.reservationId)?.state ?? ""));
-          if (unsettled || this.hasUnknownBudget(work.workId) || this.works.repo.listAdmissions(work.workId).some(item => ["admitted", "unknown"].includes(item.state))
+            && !(binding.status === "invalidated" && !binding.attemptId && !binding.submissionReceipt && !binding.submittedAt));
+          if (unsettled || this.works.repo.listAdmissions(work.workId).some(item => ["admitted", "unknown"].includes(item.state))
             || this.works.repo.listOpenBlockers(work.workId).some(item => item.kind === "external_effect"))
             throw new TeamError("unsettled_effects", "原执行或效果尚未确认，不能重新安排业务动作");
           if (request.plan.ownerBotId !== work.ownerBotId) throw new TeamError("unauthorized_actor", "重新安排不能更换负责人，请先使用负责人交接");
@@ -182,7 +188,7 @@ export class WorkTeamService {
           conversationId: input.conversationId, criteria: input.criteria.map(text => ({ text })),
           inputSnapshotId: `team-input:${hash([input, workspacePath])}`,
           authorization: { allowedScopes: scopes, targetWhitelist: [workspacePath], allowGitBranchOrWorktree: false,
-            allowRedelegation: true, expiresAt: actor.grants.expiresAt }, budget: { maxTokens: input.budgetTokens },
+            allowRedelegation: true, expiresAt: actor.grants.expiresAt },
           constraints: ["仅在用户选择的工作区内执行分配职责，不共享其他 Bot 私人记忆。", plan.executionPolicy === "parallel" ? "成员按明确依赖有界并行，文件写入仍通过资源互斥；负责人等待所有成员结算后只读汇总，不替代用户验收。" : "成员按顺序执行，禁止重复其他成员已确认效果。负责人只读汇总，不替代用户验收。"] });
         if (!created.ok) throw new TeamError(created.code, created.message);
         const workId = created.work.workId;
@@ -234,7 +240,7 @@ export class WorkTeamService {
     const state = work.lifecycle === "closed" && work.closureConclusion === "succeeded" ? "completed"
       : work.lifecycle === "closed" && work.closureConclusion === "ended_unsuccessfully" ? "ended_unsuccessfully"
         : work.lifecycle === "closed" ? "cancelled" : work.lifecycle === "closing" ? "closing" : work.lifecycle === "paused" ? "paused"
-          : this.hasUnknownBudget(workId) ? "blocked" : superseded ? "superseded"
+          : superseded ? "superseded"
       : executions.some(item => item.error || item.status === "unknown" || item.status === "blocked")
         || ["failed", "stopped", "invalidated"].includes(executions.at(-1)?.status ?? "") ? "blocked"
         : executions.at(-1)?.status === "completed" ? "awaiting_review"
@@ -260,8 +266,7 @@ export class WorkTeamService {
         const binding = this.works.repo.bindingForTask(row.task_id);
         if (!binding) { if (plan.executionPolicy !== "parallel") { next = row; break; } continue; }
         if (!["completed", "failed", "stopped"].includes(binding.status) || binding.invalidatedAt || !this.works.collaboration.isDelegationAdopted(binding, work)) { if (plan.executionPolicy !== "parallel") break; continue; }
-        const pending = binding.reservationId && ["reserved", "unknown"].includes(this.works.repo.getReservation(binding.reservationId)?.state ?? "");
-        if (pending || this.works.repo.listAdmissions(work.workId).some(item => item.bindingId === binding.bindingId && ["admitted", "unknown"].includes(item.state))) { if (plan.executionPolicy !== "parallel") break; continue; }
+        if (this.works.repo.listAdmissions(work.workId).some(item => item.bindingId === binding.bindingId && ["admitted", "unknown"].includes(item.state))) { if (plan.executionPolicy !== "parallel") break; continue; }
         if (!row.reported) {
           try {
             this.reportResult(work, row, binding);
@@ -282,11 +287,6 @@ export class WorkTeamService {
       if (plan.executionPolicy === "parallel") next = this.rows(work.workId).find(row => !row.cancelled && !row.error
         && !this.works.repo.bindingForTask(row.task_id) && !this.waitingReason(work!, plan, row, this.rows(work!.workId)));
       if (!next || next.error) continue;
-      // Dispatch reservations do not account for every provider attempt. Generation,
-      // compaction and retry usage may remain unknown after the binding settles.
-      // Keep known results visible, but never start another team stage until the
-      // entire Work ledger has been reconciled through the existing guarded path.
-      if (this.hasUnknownBudget(work.workId)) continue;
       // Unknown external effects anywhere in this Work require reconciliation first.
       if (this.works.repo.listOpenBlockers(work.workId).some(item => item.kind === "external_effect")) continue;
       try {
@@ -297,12 +297,9 @@ export class WorkTeamService {
           throw new TeamError("unauthorized_actor", "执行 Bot 已停用或所需范围不在其当前授权内");
         if (bot.authorization.expiresAt !== undefined && bot.authorization.expiresAt <= this.now()) throw new TeamError("unauthorized_actor", "执行 Bot 授权已过期");
         if (bot.authorization.targetWhitelist.length && !bot.authorization.targetWhitelist.includes(work.workspacePath ?? "")) throw new TeamError("unauthorized_actor", "工作区不在执行 Bot 授权范围内");
-        const available = this.works.budget.availableTokens(work.workId) ?? 0;
-        if (available <= 0) throw new TeamError("budget_exhausted", "团队共享预算已耗尽，未启动下一成员");
         this.works.transaction(() => {
           this.works.collaboration.assertAuthority();
           const current = this.works.getWork(work!.workId)!;
-          if (this.hasUnknownBudget(current.workId)) throw new TeamError("unsettled_effects", "团队仍有未核实的供应商用量，核对原预留后才能继续");
           if (current.lifecycle !== "active" || current.stateVersion !== work!.stateVersion) throw new TeamError("version_conflict", "事项状态已变化");
           if (identity !== next!.bot_id) {
             if (this.works.repo.bindingForTask(next!.task_id)) throw new TeamError("unsettled_effects", "已有负责人汇总绑定，不能替换身份");
@@ -349,7 +346,7 @@ export class WorkTeamService {
         work = this.works.getWork(work.workId)!;
         const result = await adapter.dispatch({ kind: "bot", userId: work.userId, botId: work.ownerBotId, host: "background", grants: work.authorization }, {
           operationId: `team-dispatch:${next.task_id}`, taskId: next.task_id, workId: work.workId, botId: identity,
-          delegatedScope: scopes, reserveTokens: Math.min(4096, available), versionGuard: guard(work) });
+          delegatedScope: scopes, versionGuard: guard(work) });
         if (!result.ok) throw new TeamError(result.code, result.message);
       } catch (error) {
         if (error instanceof TeamError && ["version_conflict", "epoch_mismatch", "invalid_lifecycle_transition"].includes(error.code)) continue;
@@ -376,7 +373,6 @@ export class WorkTeamService {
   /** Dependencies freeze a result boundary, not an assumption that a predecessor succeeded. */
   private waitingReason(work: WorkDto, plan: WorkTeamPlan, row: ExecutionRow, rows: ExecutionRow[]): string | undefined {
     if (work.lifecycle !== "active") return "事项未处于执行状态";
-    if (this.hasUnknownBudget(work.workId)) return "等待共享预算核对";
     if (this.works.repo.listOpenBlockers(work.workId).some(item => item.kind === "external_effect")) return "等待未知外部效果核对";
     const predecessors = row.role === "owner_summary" || plan.executionPolicy !== "parallel"
       ? rows.filter(item => item.ordinal < row.ordinal)
@@ -387,7 +383,7 @@ export class WorkTeamService {
       if (previous.error && !binding) return `等待成员 ${previous.bot_id} 的准备阻碍处理`;
       if (!binding || !["completed", "failed", "stopped"].includes(binding.status) || binding.invalidatedAt
         || !this.works.collaboration.isDelegationAdopted(binding, work)) return `等待成员 ${previous.bot_id} 的执行结果`;
-      if (!previous.reported || binding.reservationId && ["reserved", "unknown"].includes(this.works.repo.getReservation(binding.reservationId)?.state ?? "")
+      if (!previous.reported
         || this.works.repo.listAdmissions(work.workId).some(item => item.bindingId === binding.bindingId && ["admitted", "unknown"].includes(item.state)))
         return `等待成员 ${previous.bot_id} 的结果与效果结算`;
     }
@@ -419,15 +415,10 @@ export class WorkTeamService {
 
   dispatchError(workId: string, taskId: string, botId: string, scopes: string[] | undefined): string | undefined {
     if (!this.row(workId)) return undefined;
-    if (this.hasUnknownBudget(workId)) return "团队仍有未核实的供应商用量，不能派发新的执行";
     const row = this.rows(workId).find(item => item.task_id === taskId);
     if (!row || row.bot_id !== botId || !row.input_json || row.cancelled || row.error) return "团队执行必须使用持久分工与原任务身份，不能追加未授权执行";
     if (hash(scopes) !== hash(JSON.parse(row.scopes_json))) return "团队执行不能改变用户批准的委派范围";
     return undefined;
-  }
-
-  private hasUnknownBudget(workId: string): boolean {
-    return this.works.repo.listReservations(workId).some(reservation => reservation.state === "unknown");
   }
 
   private checkGuard(work: WorkDto, expected: { expectedStateVersion: number; expectedIntentRevision: number; expectedOwnerEpoch: number }): void {
@@ -449,5 +440,11 @@ export class WorkTeamService {
     });
   }
   private row(workId: string): TeamRow | undefined { return teamRowSchema.optional().parse(this.db.prepare("SELECT * FROM work_teams WHERE work_id=?").get(workId)); }
-  private rows(workId: string): ExecutionRow[] { return this.db.prepare("SELECT * FROM work_team_executions WHERE work_id=? ORDER BY ordinal").all(workId).map(row => executionRowSchema.parse(row)); }
+  private rows(workId: string): ExecutionRow[] {
+    return this.db.prepare("SELECT * FROM work_team_executions WHERE work_id=? ORDER BY ordinal").all(workId).map(raw => {
+      const row = executionRowSchema.parse(raw);
+      return row.error && this.works.repo.canIgnoreRetiredTeamQuotaFailure(workId, row.task_id, row.error)
+        ? { ...row, error: null } : row;
+    });
+  }
 }

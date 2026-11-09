@@ -36,7 +36,6 @@ import type {
   WorkAdmissionDto,
   WorkAuthorizationDto,
   WorkBlockerDto,
-  WorkBudgetReservationDto,
   WorkControlErrorCode,
   WorkControlResult,
   WorkCriterionDto,
@@ -86,7 +85,6 @@ import { WorkCollaborationService } from "./WorkCollaborationService";
 import { WorkNotificationDelivery } from "./WorkNotificationDelivery";
 import { WorkPausedBacklog } from "./WorkPausedBacklog";
 import { WorkWatchIngress } from "./WorkWatchIngress";
-import { WorkBudgetService } from "./WorkBudgetService";
 import { WorkCausalGuard } from "./WorkCausalGuard";
 import { WorkWatchScheduler } from "./WorkWatchScheduler";
 import { continuationWorkSchema, type ContinuationWorkParams } from "../../../shared/bot-work-phase3";
@@ -133,7 +131,6 @@ export class WorkService {
   readonly notifications: WorkNotificationDelivery;
   readonly pausedBacklog: WorkPausedBacklog;
   readonly ingress: WorkWatchIngress;
-  readonly budget: WorkBudgetService;
   readonly causal: WorkCausalGuard;
   readonly scheduler: WorkWatchScheduler;
   readonly cards: WorkResultCards;
@@ -156,7 +153,6 @@ export class WorkService {
     this.emit = options.emitProjection;
     this.computeNextWake = options.computeNextWake ?? cronNextWake;
     this.authority = options.isAuthority;
-    this.budget = new WorkBudgetService(db, this, { now: this.now, isAuthority: () => !this.authority || this.authority() });
     this.ingress = new WorkWatchIngress(db, this, { now: this.now, isAuthority: () => !this.authority || this.authority() });
     this.causal = new WorkCausalGuard(db, this, { now: this.now });
     this.scheduler = new WorkWatchScheduler(db, this, { now: this.now, isAuthority: () => !this.authority || this.authority() });
@@ -306,7 +302,6 @@ export class WorkService {
       phase4: {
         subscriptions: this.projectSubscriptions(work),
         offlineGaps: this.scheduler.gaps(work.workId),
-        budget: this.budget.snapshot(work.workId),
         causal: this.causal.list(work.workId, 10).map(item => ({ chainId: item.chain_id, rootEventId: item.root_event_id,
           parentChainId: item.parent_chain_id ?? undefined, originWorkId: item.origin_work_id,
           targetWorkId: item.target_work_id, depth: item.depth, hops: item.hops,
@@ -388,7 +383,6 @@ export class WorkService {
       const authorization = intersectAuthorization(params.authorization, resolved.grants);
       const inputSnapshotId = params.inputSnapshotId?.trim() || "snapshot:unbound";
       const goalSources = normalizeSources(params.goalSources, now);
-      const budget = this.initialBudget(workId, params, authorization, now);
       const watchRule = normalizeWatchRule(params.watchRule);
       const snapshotId = `snap-${workId}-r1-s1`;
       const work: WorkDto = {
@@ -417,14 +411,12 @@ export class WorkService {
         acceptedDeliverableIds: [],
         activeExecutionIds: [],
         stateVersion: 1,
-        budget,
         watchRule,
         createdBy: resolved.kind === "user" ? "user" : "bot",
         createdAt: now,
         updatedAt: now,
       };
       this.repo.insertWork(work);
-      this.budget.ensureWindow(work);
       this.repo.insertIntentSnapshot(this.intentSnapshot(work, ownerBot, params.sourceMessageId, work.createdBy));
       if (params.conversationId) this.repo.linkConversation(workId, params.conversationId, "desktop", now);
       if (watchRule) this.installSubscriptions(work, watchRule, now);
@@ -586,10 +578,8 @@ export class WorkService {
         settledAt: neverSubmitted ? now : binding.settledAt,
       };
       this.repo.updateBinding(nextBinding);
-      if (neverSubmitted && binding.reservationId) this.commitBudgetUsage(binding.workId, binding.reservationId, 0);
       invalidatedBindings.push(nextBinding);
     }
-    nextWork.budget = this.repo.getWork(work.workId)!.budget;
     nextWork.activeExecutionIds = this.repo.listBindings(work.workId)
       .filter(binding => UNSETTLED_BINDING_STATUSES.has(binding.status)).map(binding => binding.bindingId);
 
@@ -773,15 +763,11 @@ export class WorkService {
   }
 
   /** Only system-owned blockers for future execution become moot when stopping.
-   * Unknown usage/effects and reconciliation conflicts must still be settled. */
+   * Unknown external effects and reconciliation conflicts must still be settled. */
   private clearStoppedExecutionBlockers(workId: string, now: number): void {
     for (const binding of this.repo.listBindings(workId)) {
       const blocker = this.repo.getBlocker(`continuation:${binding.bindingId}`);
       if (blocker?.kind === "operational" && !blocker.unknownExternalEffectRef) this.repo.clearBlocker(blocker.blockerId, workId, now);
-    }
-    const budget = this.repo.getBlocker(`budget:exhausted:${workId}`);
-    if (budget?.kind === "operational" && budget.reasonCode === "budget-exhausted" && !budget.unknownExternalEffectRef) {
-      this.repo.clearBlocker(budget.blockerId, workId, now);
     }
   }
 
@@ -831,8 +817,6 @@ export class WorkService {
   private isSettled(work: WorkDto): boolean {
     const bindings = this.repo.listBindings(work.workId);
     if (bindings.some((binding) => UNSETTLED_BINDING_STATUSES.has(binding.status))) return false;
-    // Provider requests can reserve independently of an execution binding.
-    if (this.repo.listReservations(work.workId).some(reservation => reservation.state === "reserved" || reservation.state === "unknown")) return false;
     const admissions = this.repo.listAdmissions(work.workId);
     if (admissions.some((admission) => admission.state === "admitted" || admission.state === "unknown")) return false;
     if (this.repo.listOpenBlockers(work.workId).length > 0) return false;
@@ -932,7 +916,6 @@ export class WorkService {
       || binding.operationId !== operationId || binding.intentRevision !== work.intentRevision
       || binding.inputSnapshotId !== work.inputSnapshotId || this.bots.getBot(binding.botId)?.status !== "active"
       || this.bots.getBot(work.ownerBotId)?.status !== "active"
-      || (work.budget.windowExpiresAt !== undefined && work.budget.windowExpiresAt <= this.now())
       || (work.authorization.expiresAt !== undefined && work.authorization.expiresAt <= this.now())) {
       return "Work 当前状态不允许新的业务输入；原提交仍可查回和停止";
     }
@@ -940,6 +923,8 @@ export class WorkService {
   }
 
   admitTaskAction(taskId: string, input: { operationId: string; actionKind: string; paths?: string[] }): string | undefined {
+    if (this.partialResults.recovery.readOnlyTask(taskId) && input.actionKind !== "workspace:read")
+      return "本次恢复只读取并交付已有成果，不重做未知业务效果；请使用读取或查询工具核对原结果。";
     const binding = this.repo.bindingForTask(taskId);
     if (!binding) return undefined;
     const admitted = this.admitNewAction({ kind: "worker", botId: binding.botId, bindingId: binding.bindingId }, {
@@ -1007,19 +992,16 @@ export class WorkService {
           causalEventId: params.causal.causalEventId, parentChainId: params.causal.parentChainId,
           originWorkId: work.workId, inputSnapshotId: work.inputSnapshotId,
           actionKind: params.causal.actionKind ?? "dispatch", operationId: params.operationId,
-          trustedRoot: params.causal.trustedRoot, budgetAvailable: this.budget.availableTokens(work.workId)! > 0 });
+          trustedRoot: params.causal.trustedRoot });
         if (!admission.allowed) return { ok: false, code: "causal_guard", message: admission.message ?? "因果链已触限" };
       }
       const readOnlyFollowUp = inboxEvent?.eventType === "deadline_expired"
         || (inboxEvent?.payload.readOnlyFollowUp === true && inboxEvent?.eventType === "work.offline_catchup");
       const delegatedScope = readOnlyFollowUp ? ["workspace:read"] as string[] : params.delegatedScope ?? [...work.authorization.allowedScopes];
-      const reservationOutcome = params.reserveTokens && params.reserveTokens > 0
-        ? this.reserveBudgetInternal(work, newId("budget"), params.reserveTokens, now)
-        : undefined;
-      if (typeof reservationOutcome === "string") {
-        return { ok: false, code: "budget_exhausted", message: reservationOutcome };
-      }
-      const reservation = reservationOutcome as WorkBudgetReservationDto | undefined;
+      const recoveryRequest = this.db.prepare(`SELECT plan.source_binding_id FROM work_dispatch_requests request
+        JOIN work_continuation_plans plan ON plan.plan_id=request.continuation_plan_id
+        JOIN work_automatic_recovery recovery ON recovery.plan_id=plan.plan_id WHERE request.task_id=?`).get(params.taskId) as { source_binding_id: string } | undefined;
+      const recoverySource = recoveryRequest && this.repo.getBinding(recoveryRequest.source_binding_id);
       const binding: WorkExecutionBindingDto = {
         bindingId: newId("binding"),
         workId: work.workId,
@@ -1031,10 +1013,9 @@ export class WorkService {
         intentRevision: work.intentRevision,
         ownerEpoch: work.ownerEpoch,
         inputSnapshotId: work.inputSnapshotId,
-        expertSnapshot: this.snapshotOf(target),
+        expertSnapshot: recoverySource?.expertSnapshot ?? this.snapshotOf(target),
         delegatedScope,
         workspaceBinding: params.workspaceBinding,
-        reservationId: reservation?.reservationId,
         inboxEventId: params.inboxEventId,
         status: "pending",
         admittedAt: now,
@@ -1042,7 +1023,6 @@ export class WorkService {
       this.repo.insertBinding(binding);
       const next: WorkDto = {
         ...work,
-        budget: this.repo.getWork(work.workId)!.budget,
         activeExecutionIds: [...new Set([...work.activeExecutionIds, binding.bindingId])],
         stateVersion: work.stateVersion + 1,
         updatedAt: now,
@@ -1054,7 +1034,6 @@ export class WorkService {
         payload: {
           bindingId: binding.bindingId, taskId: binding.taskId, durableStoreKey: binding.durableStoreKey,
           conversationId: binding.conversationId, botId: binding.botId, intentRevision: binding.intentRevision,
-          reservationId: reservation?.reservationId,
         },
       });
       return { ok: true, outboxEventId };
@@ -1116,7 +1095,6 @@ export class WorkService {
       const authorityError = this.authorityError();
       if (authorityError) return authorityError;
       return settleWorkExecution({ repo: this.repo, work, binding, params, now: this.now(),
-        commitUsage: (reservation, tokens, now) => this.commitBudgetInternal(work, reservation, tokens, now),
         tryClose: (next, now) => this.tryCloseSettled(next, now) });
     });
   }
@@ -1160,9 +1138,6 @@ export class WorkService {
       }
       if (this.bots.getBot(work.ownerBotId)?.status !== "active") {
         return { ok: false, code: "bot_disabled", message: "主负责人已停用，不能准入新业务动作" };
-      }
-      if (work.budget.windowExpiresAt !== undefined && work.budget.windowExpiresAt <= this.now()) {
-        return { ok: false, code: "budget_exhausted", message: "预算期限已到，拒绝新的业务动作" };
       }
       // A worker's execution identity comes from the host actor, including when
       // the business payload omits bindingId. Never turn that omission into an
@@ -1685,7 +1660,7 @@ export class WorkService {
   }
 
   /** Trusted user classification of a uniquely proven historical owner report.
-   * No tool permission, effect, budget, execution or acceptance fact is changed. */
+   * No tool permission, effect, execution or acceptance fact is changed. */
   replyLegacyUserInput(actor: WorkActor, params: ReplyLegacyUserInputParams): WorkControlResult {
     return this.runWorkControl(actor, "replyLegacyUserInput", params, {
       guard: "full", ownerOnly: false, allowLifecycles: ["active", "paused"],
@@ -1705,64 +1680,6 @@ export class WorkService {
       if (next.lifecycle === "closing") this.tryCloseSettled(next, now);
       return { ok: true };
     });
-  }
-
-  // ================================================================ budgets
-
-  reserveBudget(workId: string, reservationId: string, tokens: number): { ok: true; reservation: WorkBudgetReservationDto } | Fail {
-    const result = this.budget.reserve({ workId, reservationId, tokens });
-    return result.ok ? result : { ok: false, code: result.code, message: result.message };
-  }
-
-  /**
-   * Phase 4 dependency #3: reservations/usage survive restarts, retries and handoff.
-   * A missing provider report is counted as unknown, never as zero consumption.
-   */
-  commitBudgetUsage(workId: string, reservationId: string, reportedTokens?: number): { ok: boolean; message?: string } {
-    return this.budget.commit(workId, reservationId, reportedTokens);
-  }
-
-  /** Only a persisted policy may open the next window; handoff/restart never does. */
-  openBudgetWindow(actor: WorkActor, workId: string, input: { windowId: string; maxTokens: number; windowExpiresAt?: number }): Fail | { ok: true; work: WorkDto } {
-    return this.transaction(() => {
-      const resolved = this.resolveActor(actor);
-      if (typeof resolved === "string") return { ok: false, code: "unauthorized_actor", message: resolved };
-      const work = this.repo.getWork(workId);
-      if (!work) return { ok: false, code: "not_found", message: "找不到 Work" };
-      if (!this.isOwnerOrUser(work, resolved)) return { ok: false, code: "unauthorized_actor", message: "只有负责人或用户可开启预算窗口" };
-      const opened = this.budget.openExplicitWindow(work, { ...input, allowNextWindow: work.budget.allowNextWindow });
-      return typeof opened === "string"
-        ? { ok: false, code: opened === "policy" ? "invalid_lifecycle_transition" : "unsettled_effects", message: opened }
-        : { ok: true, work: opened };
-    });
-  }
-
-  private initialBudget(workId: string, params: CreateWorkParams, authorization: WorkAuthorizationDto, now: number): WorkDto["budget"] {
-    const requested = params.budget?.maxTokens;
-    const maxTokens = Math.min(
-      typeof requested === "number" && requested > 0 ? requested : 500_000,
-      authorization.budgetLimitTokens ?? Number.MAX_SAFE_INTEGER,
-    );
-    return {
-      windowId: `win-${workId}-1`,
-      maxTokens,
-      usedTokens: 0,
-      reservedTokens: 0,
-      unknownUsageCount: 0,
-      windowStartAt: now,
-      windowExpiresAt: params.budget?.windowExpiresAt,
-      allowNextWindow: Boolean(params.budget?.allowNextWindow),
-    };
-  }
-
-  private reserveBudgetInternal(work: WorkDto, reservationId: string, tokens: number, _now: number,
-    detail: { requestKind?: WorkBudgetReservationDto["requestKind"]; bindingId?: string; attemptIdentity?: string } = {}): WorkBudgetReservationDto | string {
-    const result = this.budget.reserve({ workId: work.workId, reservationId, tokens, ...detail });
-    return result.ok ? result.reservation : result.message;
-  }
-
-  private commitBudgetInternal(_work: WorkDto, reservation: WorkBudgetReservationDto, reportedTokens: number, _now: number): void {
-    this.budget.commit(reservation.workId, reservation.reservationId, reportedTokens);
   }
 
   // ============================================================ telemetry
@@ -2028,7 +1945,7 @@ export class WorkService {
 
   // ============================================================= phase 4 control
 
-  /** Guarded IPC/API entry for subscription, deadline, budget policy and receipt reconciliation. */
+  /** Guarded IPC/API entry for subscription and deadline changes. */
   phase4Control(actor: WorkActor, request: unknown): WorkPhase4ControlResult {
     const parsed = phase4ControlRequestSchema.safeParse(request);
     if (!parsed.success) return { ok: false, code: "invalid_request", message: parsed.error.issues[0]?.message ?? "Phase 4 控制请求无效" };
@@ -2037,27 +1954,16 @@ export class WorkService {
     const result = this.runWorkControl(actor, `phase4:${input.kind}`, input as unknown as
       { operationId: string; workId: string; versionGuard?: ExpectedVersionGuard }, {
       guard: "full", ownerOnly: true,
-      // Accounting for an existing request must remain possible after execution stops.
-      allowLifecycles: input.kind === "reconcile-budget-reservation" ? ["active", "paused", "closing", "closed"] : ["active", "paused"],
+      allowLifecycles: ["active", "paused"],
     }, (work, resolved, now) => this.applyPhase4Control(work, input, resolved, now));
     if (!result.ok) return { ok: false, code: result.code, message: result.message };
     if (input.kind === "configure-subscription") subscriptionId = this.lastPhase4SubscriptionId ?? input.subscriptionId;
     if (input.kind === "retry-backlog") subscriptionId = input.subscriptionId;
     return { ok: true, replayed: result.replayed, operationId: input.operationId, workId: result.work.workId,
-      subscriptionId, deadlineAt: result.work.deadlineAt, budgetWindowId: result.work.budget.windowId };
+      subscriptionId, deadlineAt: result.work.deadlineAt };
   }
 
   private applyPhase4Control(work: WorkDto, input: WorkPhase4ControlRequest, resolved: ResolvedActor, now: number): Mutation {
-    if (input.kind === "reconcile-budget-reservation") {
-      if (resolved.kind !== "user" && resolved.kind !== "bot") {
-        return { ok: false, code: "unauthorized_actor", message: "只有当前主负责人或用户可以核对未知用量" };
-      }
-      const result = this.budget.reconcileUnknown(work, input, {
-        kind: resolved.kind, userId: resolved.userId, botId: resolved.bot?.botId,
-      });
-      if (result.ok) this.tryCloseSettled(this.repo.getWork(work.workId)!, now);
-      return result;
-    }
     if (input.kind === "configure-subscription") {
       const existing = input.subscriptionId
         ? this.repo.getSubscription(input.subscriptionId)
@@ -2124,12 +2030,6 @@ export class WorkService {
       }
       this.repo.updateWork({ ...work, deadlineAt: input.deadlineAt ?? undefined, deadlineRevision: revision,
         deadlineSetAt: now, stateVersion: work.stateVersion + 1, updatedAt: now });
-      return { ok: true };
-    }
-    if (input.kind === "set-budget-policy") {
-      const updated = this.budget.setPolicy(work, { maxTokens: input.maxTokens, windowMs: input.windowMs,
-        timezone: input.timezone, autoRollover: input.autoRollover });
-      if (typeof updated === "string") return { ok: false, code: "invalid_request", message: updated };
       return { ok: true };
     }
     // retry-backlog: allow the source to redeliver hard-refused routes and refill the finite overflow.
@@ -2226,7 +2126,7 @@ export class WorkService {
       }
       const now = this.now();
       if (work.authorization.expiresAt !== undefined && work.authorization.expiresAt <= now
-        && !(operationType === "cancelWork" || operationType === "closeWork" || operationType === "phase4:reconcile-budget-reservation")) {
+        && !(operationType === "cancelWork" || operationType === "closeWork")) {
         // Renewing an expired delegation is a user authorization change, not new
         // business execution. Models cannot renew themselves, and the new deadline
         // and capabilities still intersect the current authenticated host grant.
@@ -2466,7 +2366,17 @@ export class WorkService {
 }
 
 function parseWork(value: string): WorkDto | undefined {
-  try { return JSON.parse(value) as WorkDto; } catch { return undefined; }
+  try {
+    const snapshot = JSON.parse(value) as WorkDto & { budget?: unknown; budgetPolicy?: unknown };
+    // Historical receipts stay unchanged on disk, but replay uses today's DTO.
+    delete snapshot.budget; delete snapshot.budgetPolicy;
+    if (snapshot.authorization) {
+      const authorization = { ...snapshot.authorization } as WorkDto["authorization"] & { budgetLimitTokens?: unknown };
+      delete authorization.budgetLimitTokens;
+      snapshot.authorization = authorization;
+    }
+    return snapshot;
+  } catch { return undefined; }
 }
 
 function resolvedIsBot(actor: { kind: WorkActor["kind"] }): boolean { return actor.kind === "bot" || actor.kind === "worker"; }

@@ -290,66 +290,31 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     const phase4After = await evaluate(`window.api.botWork.getWork(${JSON.stringify(original.workId)})`);
     assert.equal(phase4After.phase4.subscriptions.length, 1);
     assert.equal(phase4After.phase4.subscriptions[0].source, 'hook');
-    assert.equal(phase4After.phase4.budget.windowId.length > 0, true);
+    assert.equal("budget" in phase4After.phase4, false, "Work projection has no quota module");
     await until(() => evaluate('document.querySelector("#bot-work-inspector").innerText.includes("关注与运行")'), 'Phase 4 projection rendered');
-    await until(() => evaluate('document.querySelector("#bot-work-inspector").innerText.includes("共享预算")'), 'Phase 4 budget projection rendered');
+    assert(await evaluate(`!document.querySelector(".budget-reconciliation") && !document.querySelector('[aria-label="预算上限"]')`), 'budget controls are absent');
     report.actualControlChecks.push('phase4 subscription saved through real preload/IPC and current-version guard; phase4 projection rendered in the dev page');
-    // Seed one provider-unknown ledger fact only; the reconciliation itself must
-    // travel through the real form, guarded preload/IPC and accounting transaction.
+    const deadlineAt = Date.now() + 3600000;
+    const deadlineResponse = await evaluate(`window.api.botWork.phase4Control(${JSON.stringify({
+      kind: 'set-deadline', operationId: 'dev-phase4-deadline', workId: original.workId, deadlineAt,
+      versionGuard: { expectedStateVersion: phase4After.stateVersion, expectedIntentRevision: phase4After.intentRevision,
+        expectedOwnerEpoch: phase4After.ownerEpoch },
+    })})`);
+    assert.equal(deadlineResponse.ok, true);
+    assert.equal((await evaluate(`window.api.botWork.getWork(${JSON.stringify(original.workId)})`)).phase4.deadlineAt, deadlineAt);
+    report.actualControlChecks.push('deadline remains available through guarded real IPC; no Work budget projection, editor or reconciliation is present');
+    const tasksBeforeClosure = (await evaluate('window.api.db.listTasks()')).length;
     isolatedSql({ statements: [
-      { sql: "INSERT INTO work_budget_reservations(reservation_id,work_id,window_id,tokens,state,created_at,request_kind,metering) VALUES (?,?,?,20,'unknown',?,'generation','unknown')",
-        params: ['dev-phase4-unknown', original.workId, phase4After.phase4.budget.windowId, Date.now()] },
-      { sql: "UPDATE works SET state_version=state_version+1,updated_at=? WHERE work_id=?", params: [Date.now(), original.workId] },
-    ] });
-    await until(() => evaluate('Boolean(document.querySelector(".budget-reconciliation"))'), 'unknown provider reservation projected');
-    await evaluate('document.querySelector(".budget-reconciliation summary").click()');
-    assert(await evaluate('document.querySelector(".budget-reconciliation button").disabled'));
-    assert.equal(await evaluate('document.querySelector(\'[aria-label="已核实 tokens"]\').value'), '', 'unknown amount has no default zero');
-    const fillReconciliation = async (label, value) => {
-      await evaluate(`(() => { const input = document.querySelector(${JSON.stringify(`[aria-label="${label}"]`)});
-        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(value)});
-        input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
-      await until(() => evaluate(`document.querySelector(${JSON.stringify(`[aria-label="${label}"]`)}).value === ${JSON.stringify(value)}`), `reconciliation input ${label}`);
-    };
-    await fillReconciliation('已核实 tokens', '7');
-    await fillReconciliation('预算核对说明', '隔离 fixture 账单已核实');
-    await fillReconciliation('预算核对凭据', 'fixture:provider-invoice-7');
-    assert(await evaluate('document.querySelector(".budget-reconciliation button").disabled'), 'amount and evidence still require explicit confirmation');
-    await evaluate('document.querySelector(".budget-reconciliation input[type=checkbox]").click()');
-    await until(() => evaluate('!document.querySelector(".budget-reconciliation button").disabled'), 'confirmed accounting command enabled');
-    const accountingRequestsBefore = (await evaluate('window.api.db.listTasks()')).length;
-    await evaluate('document.querySelector(".budget-reconciliation button").click()');
-    await until(() => isolatedSql({ statements: [], query: { sql: "SELECT reservation_id FROM work_budget_reservations WHERE reservation_id='dev-phase4-unknown' AND state='committed' AND reported_tokens=7" } }).length === 1, 'unknown usage settled through UI and real IPC');
-    await until(() => evaluate('!document.querySelector(".budget-reconciliation")'), 'settled unknown disappears after current projection refresh');
-    assert.equal(isolatedSql({ statements: [], query: { sql: "SELECT operation_id FROM work_operation_receipts WHERE operation_type='phase4:reconcile-budget-reservation' AND work_id=?", params: [original.workId] } }).length, 1);
-    assert.equal((await evaluate('window.api.db.listTasks()')).length, accountingRequestsBefore, 'accounting does not launch a new business execution');
-    assert.equal((await evaluate(`window.api.botWork.getWork(${JSON.stringify(original.workId)})`)).lifecycle, 'paused');
-    report.seededPresentationFacts.push('one unknown provider reservation in the isolated database; no real provider outage or invoice is claimed');
-    report.actualControlChecks.push('unknown amount starts empty; reason, evidence and explicit confirmation required; actual form/preload/IPC commits 7 tokens to original window with one control receipt; Work stays paused and no Task is created');
-    isolatedSql({ statements: [
-      { sql: "INSERT INTO work_budget_reservations(reservation_id,work_id,window_id,tokens,state,created_at,request_kind,metering) VALUES (?,?,?,3,'unknown',?,'generation','unknown')",
-        params: ['dev-phase4-closed-unknown', original.workId, phase4After.phase4.budget.windowId, Date.now()] },
       { sql: "UPDATE works SET lifecycle='closed',state_version=state_version+1,updated_at=? WHERE work_id=?", params: [Date.now(), original.workId] },
     ] });
-    await evaluate('[...document.querySelectorAll("button")].find(button => button.textContent === "查看已结束事项").click()');
+    await evaluate('[...document.querySelectorAll(".bot-view-tabs button")].find(button => button.querySelector("span")?.textContent === "已结束").click()');
     await until(() => evaluate('[...document.querySelectorAll(".bot-work-card")].some(card => card.innerText.includes("界面验收事项") && card.innerText.includes("已结束"))'), 'closed Work loaded through includeClosed scope');
     await evaluate('[...document.querySelectorAll(".bot-work-card")].find(card => card.innerText.includes("界面验收事项")).click()');
-    await until(() => evaluate('Boolean(document.querySelector(".budget-reconciliation"))'), 'closed Work accounting remains accessible');
-    await evaluate('document.querySelector(".budget-reconciliation summary").click()');
-    await evaluate(`(() => { const select = document.querySelector('[aria-label="未知用量处理方式"]');
-      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(select, 'released');
-      select.dispatchEvent(new Event('change', { bubbles: true })); })()`);
-    await fillReconciliation('已核实 tokens', '0');
-    await fillReconciliation('预算核对说明', '隔离 fixture 确认请求未发送');
-    await fillReconciliation('预算核对凭据', 'fixture:request-not-sent');
-    await evaluate('document.querySelector(".budget-reconciliation input[type=checkbox]").click()');
-    await until(() => evaluate('!document.querySelector(".budget-reconciliation button").disabled'), 'explicit zero confirmed for release');
-    await evaluate('document.querySelector(".budget-reconciliation button").click()');
-    await until(() => isolatedSql({ statements: [], query: { sql: "SELECT reservation_id FROM work_budget_reservations WHERE reservation_id='dev-phase4-closed-unknown' AND state='released' AND reported_tokens=0" } }).length === 1, 'closed Work reservation released through real controls');
-    await until(() => evaluate('document.querySelector("#bot-work-inspector").innerText.includes("已结束") && !document.querySelector(".budget-reconciliation")'), 'closed Work remains selected after accounting refresh');
-    assert.equal((await evaluate('window.api.db.listTasks()')).length, accountingRequestsBefore);
-    report.seededPresentationFacts.push('closed lifecycle and a second unknown request are isolated database fixtures');
-    report.actualControlChecks.push('view-completed toggle requests all scope; explicit zero release works after closure and preserves closed selection/lifecycle without new execution');
+    await until(() => evaluate('document.querySelector(".bot-inspector").innerText.includes("已结束")'), 'closed Work remains accessible');
+    assert(await evaluate(`!document.querySelector(".budget-reconciliation") && !document.querySelector('[aria-label="预算上限"]')`), 'closed Work has no retired quota controls');
+    assert.equal((await evaluate('window.api.db.listTasks()')).length, tasksBeforeClosure);
+    report.seededPresentationFacts.push('closed lifecycle is an isolated database fixture');
+    report.actualControlChecks.push('closed tab requests all scope; selected results remain accessible without creating a new execution');
     const phase3shot = await rpc('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
     fs.writeFileSync(path.join(out, 'phase3-page.png'), Buffer.from(phase3shot.data, 'base64'));
     report.finalProjection = await evaluate(`window.api.botWork.getWork(${JSON.stringify(original.workId)})`);

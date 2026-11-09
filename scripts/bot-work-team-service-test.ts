@@ -35,19 +35,13 @@ const port: WorkExecutionPort = {
   find: async binding => receipts.get(binding.bindingId),
   submit: async (binding, text) => {
     assert.equal(works.checkTaskInput(binding.taskId, binding.operationId), undefined);
-    if (unknownGeneration.has(binding.taskId)) {
-      const admission = works.budget.admitProviderRequest({ taskId: binding.taskId, conversationId: binding.conversationId,
-        generationTaskId: 1, sourceKind: "main", requestKind: "generation", estimatedTokens: 100 });
-      assert(admission.allowed && admission.reservationId);
-      assert(works.budget.settleProviderUsage({ taskId: binding.taskId, conversationId: binding.conversationId,
-        generationTaskId: 1, reported: false, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }).ok);
-    }
     const receipt: AgentSubmissionReceipt = { taskId: binding.taskId, operationId: binding.operationId, submissionId: 1, status: "done" };
     submissions.push({ taskId: binding.taskId, botId: binding.botId, input: JSON.parse(text) });
     receipts.set(binding.bindingId, receipt); return receipt;
   },
   inspect: async binding => runningTasks.has(binding.taskId) ? ({ status: "running" }) : ({ status: failSummary.has(binding.taskId) ? "failed" : "completed", summary: `actual fixture result from ${binding.botId}`,
-    hasWriteConflicts: false, artifactRefs: [], usageTokens: 2 }),
+    failureReason: failSummary.has(binding.taskId) ? "fixture provider ended after partial findings" : undefined,
+    hasWriteConflicts: false, artifactRefs: [], usageTokens: unknownGeneration.has(binding.taskId) ? undefined : 2 }),
   stop: async () => {},
 };
 const adapter = new WorkExecutionAdapter(works, port, LOCAL_USER_ID, () => authority, (_id, error) => errors.push(error));
@@ -63,7 +57,7 @@ function setup() {
   const plan: WorkTeamPlan = { ownerBotId: `${name}-owner`, ownerResponsibility: "只读核对并统一汇总",
     members: ["a", "b"].map(suffix => ({ botId: `${name}-${suffix}`, responsibility: `独立检查 ${suffix}`, delegatedScope: ["workspace:read"] })) };
   const request = { operationId: name, ...plan, title: name, goalDescription: "逐项检查输入", workspacePath: workspace,
-    criteria: ["有来源的团队成果并明确缺口"], budgetTokens: 16384 };
+    criteria: ["有来源的团队成果并明确缺口"] };
   return { name, plan, request };
 }
 async function flush(count = 5) { for (let i = 0; i < count; i++) await queue.flush(); }
@@ -97,6 +91,29 @@ try {
   assert.equal(replay.operationId, initial.request.operationId);
   reject(works.teams.handle(user, { kind: "create", request: { ...initial.request, title: "changed" } }), "idempotency_conflict");
   reject(works.teams.handle({ kind: "user", userId: "foreign-user", grants }, { kind: "get", workId }), "not_found");
+  // A pending creation from before quota removal can resolve its original
+  // operation without replaying a differently hashed creation request.
+  const beforeLookup = { works: countWorks(), tasks: db.listTasks().length, bindings: bindings(workId).length,
+    work: works.getWork(workId), team: works.teams.get(workId), submissions: submissions.length };
+  const lookup = { kind: "get_by_operation" as const, operationId: initial.request.operationId };
+  const found = ok(works.teams.handle(user, lookup));
+  assert.equal(found.operationId, initial.request.operationId); assert.equal(found.replayed, true);
+  assert.deepEqual(found.work, beforeLookup.work); assert.deepEqual(found.team, beforeLookup.team);
+  reject(works.teams.handle({ kind: "user", userId: "foreign-user", grants }, lookup), "not_found");
+  reject(works.teams.handle(user, { ...lookup, operationId: "missing-team-operation" }), "not_found");
+  const priorHash = (db.connection.prepare("SELECT request_hash FROM work_teams WHERE work_id=?").get(workId) as { request_hash: string }).request_hash;
+  db.connection.prepare("UPDATE work_teams SET request_hash=? WHERE work_id=?").run("historical-request-with-retired-budget-field", workId);
+  try {
+    reject(works.teams.handle(user, { kind: "create", request: initial.request }), "idempotency_conflict");
+    const historical = ok(works.teams.handle(user, lookup));
+    assert.equal(historical.operationId, initial.request.operationId); assert.equal(historical.replayed, true);
+    assert.deepEqual(historical.work, beforeLookup.work); assert.deepEqual(historical.team, beforeLookup.team);
+    assert.equal((db.connection.prepare("SELECT request_hash FROM work_teams WHERE work_id=?").get(workId) as { request_hash: string }).request_hash,
+      "historical-request-with-retired-budget-field", "lookup never rewrites the original creation receipt");
+  } finally { db.connection.prepare("UPDATE work_teams SET request_hash=? WHERE work_id=?").run(priorHash, workId); }
+  assert.deepEqual({ works: countWorks(), tasks: db.listTasks().length, bindings: bindings(workId).length,
+    work: works.getWork(workId), team: works.teams.get(workId), submissions: submissions.length }, beforeLookup,
+    "lookup neither creates work/tasks nor changes the existing operation");
   queue.enqueue(works.getWork(workId)!, "must-not-schedule-owner");
   assert.equal((db.connection.prepare("SELECT count(*) n FROM work_dispatch_requests WHERE work_id=?").get(workId) as { n: number }).n, 0);
   await queue.flush(); assert.equal(bindings(workId).length, 1);
@@ -188,55 +205,26 @@ try {
   assert.equal(works.teams.get(uncertain.work!.workId)!.state, "blocked");
   works.transaction(() => works.repo.updateBinding(uncertainBinding)); await flush();
 
-  // A failed provider request can release the dispatch envelope while its generation
-  // usage stays unknown. That debt fences all later stages and explicit replanning.
-  for (const replanBeforeReconciliation of [false, true]) {
-    const meteringSetup = setup(), metering = ok(works.teams.handle(user, { kind: "create", request: meteringSetup.request }));
-    const meteringWorkId = metering.work!.workId, firstTask = metering.team!.executions[0]!.taskId;
-    unknownGeneration.add(firstTask); failSummary.add(firstTask);
-    await queue.flush();
-    const firstBinding = bindings(meteringWorkId)[0]!;
-    assert.equal(firstBinding.status, "failed");
-    assert.equal(works.repo.getReservation(firstBinding.reservationId!)!.state, "released");
-    const generation = works.repo.listReservations(meteringWorkId).find(item => item.requestKind === "generation")!;
-    assert.equal(generation.bindingId, firstBinding.bindingId); assert.equal(generation.state, "unknown");
-    const taskCount = db.listTasks().length, submissionCount = submissions.length;
-    await flush();
-    assert.equal(bindings(meteringWorkId).length, 1);
-    assert.equal(db.listTasks().length, taskCount, "unknown generation must not prepare later member/owner tasks");
-    assert.equal(submissions.length, submissionCount);
-    assert.equal(works.teams.get(meteringWorkId)!.state, "blocked");
-    assert(works.repo.listDeliverables(meteringWorkId).some(item => item.executionId === firstBinding.bindingId), "settled result remains visible");
-    assert(works.collaboration.history(meteringWorkId).some(item => item.kind === "blocked"), "result reporting is not suppressed by unknown usage");
-    assert.equal(works.budget.release(meteringWorkId, generation.reservationId).ok, false, "unknown usage cannot be blindly released");
-    assert(works.pauseWork(user, { operationId: `metering-pause:${meteringWorkId}`, workId: meteringWorkId }).ok);
-    assert.equal(works.teams.get(meteringWorkId)!.state, "paused", "unknown metering must not mask an explicit pause");
-    assert.equal(works.repo.getReservation(generation.reservationId)!.state, "unknown", "pause does not settle unknown usage");
-    await flush(); assert.equal(db.listTasks().length, taskCount);
-    assert(works.resumeWork(user, { operationId: `metering-resume:${meteringWorkId}`, workId: meteringWorkId }).ok);
-    assert.equal(works.teams.get(meteringWorkId)!.state, "blocked", "resume does not forgive metering debt");
-    await flush(); assert.equal(db.listTasks().length, taskCount); assert.equal(submissions.length, submissionCount);
-    if (replanBeforeReconciliation) {
-      assert(works.amendWork(user, { operationId: `metering-amend:${meteringWorkId}`, workId: meteringWorkId,
-        goalDescription: "Only inspect the new requirements after reconciling prior provider usage" }).ok);
-      reject(works.teams.handle(user, { kind: "replan", workId: meteringWorkId,
-        versionGuard: guard(works.getWork(meteringWorkId)!), plan: meteringSetup.plan }), "unsettled_effects");
-      assert.equal(works.teams.get(meteringWorkId)!.state, "blocked");
-    }
-    // Use the existing authenticated reconciliation contract, with explicit fixture
-    // evidence of zero usage, rather than mutating the ledger or inventing a receipt.
-    const reconciled = works.phase4Control(user, { kind: "reconcile-budget-reservation", operationId: `metering-reconcile:${meteringWorkId}`,
-      workId: meteringWorkId, reservationId: generation.reservationId, windowId: generation.windowId,
-      resolution: "released", reportedTokens: 0, reason: "Isolated provider fixture verified this rejected request consumed no tokens",
-      evidenceRef: `fixture-confirmed-no-usage:${firstTask}`, versionGuard: guard(works.getWork(meteringWorkId)!) });
-    assert(reconciled.ok, JSON.stringify(reconciled));
-    if (replanBeforeReconciliation) ok(works.teams.handle(user, { kind: "replan", workId: meteringWorkId,
-      versionGuard: guard(works.getWork(meteringWorkId)!), plan: meteringSetup.plan }));
-    await flush();
-    assert.equal(bindings(meteringWorkId).length, replanBeforeReconciliation ? 4 : 3);
-    assert.equal(works.teams.get(meteringWorkId)!.state, "awaiting_review");
-    assert.equal(submissions.filter(item => item.taskId === firstTask).length, 1, "reconciliation must not replay the failed request");
-  }
+  // Missing provider metering no longer creates a Work quota hold. A failed
+  // attempt retains its result while explicit lifecycle controls still apply.
+  const meteringSetup = setup(), metering = ok(works.teams.handle(user, { kind: "create", request: meteringSetup.request }));
+  const meteringWorkId = metering.work!.workId, firstTask = metering.team!.executions[0]!.taskId;
+  unknownGeneration.add(firstTask); failSummary.add(firstTask);
+  await queue.flush();
+  const firstBinding = bindings(meteringWorkId)[0]!;
+  assert.equal(firstBinding.status, "failed");
+  assert.equal("budget" in works.getWork(meteringWorkId)!, false);
+  const taskCount = db.listTasks().length;
+  assert(works.pauseWork(user, { operationId: `metering-pause:${meteringWorkId}`, workId: meteringWorkId }).ok);
+  assert.equal(works.teams.get(meteringWorkId)!.state, "paused");
+  await flush(); assert.equal(db.listTasks().length, taskCount, "removed quotas never override an explicit pause");
+  assert(works.resumeWork(user, { operationId: `metering-resume:${meteringWorkId}`, workId: meteringWorkId }).ok);
+  await flush();
+  assert.equal(bindings(meteringWorkId).length, 3);
+  assert.equal(works.teams.get(meteringWorkId)!.state, "awaiting_review");
+  assert(works.repo.listDeliverables(meteringWorkId).some(item => item.executionId === firstBinding.bindingId), "settled partial result remains visible");
+  assert(works.collaboration.history(meteringWorkId).some(item => item.kind === "blocked"), "failure reporting is retained");
+  assert.equal(submissions.filter(item => item.taskId === firstTask).length, 1, "missing usage never causes the failed request to be replayed");
 
   // Parallel plans reserve independent identities while dependencies and the owner
   // wait for settled results; a bounded slot never means bypassing resource gates.
@@ -302,24 +290,14 @@ try {
   for (const row of debt.team!.executions.slice(0, 2)) runningTasks.add(row.taskId);
   await flush(3);
   const debtBindings = bindings(debtId); assert.equal(debtBindings.length, 2);
-  const charged = debtBindings[0]!;
-  const admission = works.budget.admitProviderRequest({ taskId: charged.taskId, conversationId: charged.conversationId,
-    generationTaskId: 88, sourceKind: "main", requestKind: "generation", estimatedTokens: 100 });
-  assert(admission.allowed && admission.reservationId);
-  assert(works.budget.settleProviderUsage({ taskId: charged.taskId, conversationId: charged.conversationId,
-    generationTaskId: 88, reported: false, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }).ok);
+  unknownGeneration.add(debtBindings[0]!.taskId);
+  assert.equal(bindings(debtId).length, 2, "the owner still waits for actual in-flight members");
   for (const row of debt.team!.executions.slice(0, 2)) runningTasks.delete(row.taskId);
   await flush(3);
-  assert.equal(bindings(debtId).length, 2, "unknown usage fences the owner without replaying or replacing either member");
-  assert(bindings(debtId).every(binding => binding.status === "completed"), "in-flight members can settle their original attempts");
-  assert.equal(works.teams.get(debtId)!.state, "blocked");
-  const reservation = works.repo.getReservation(admission.reservationId)!;
-  assert(works.phase4Control(user, { kind: "reconcile-budget-reservation", operationId: `parallel-debt:${debtId}`, workId: debtId,
-    reservationId: reservation.reservationId, windowId: reservation.windowId, resolution: "released", reportedTokens: 0,
-    reason: "Fixture confirmed rejected provider request had zero usage", evidenceRef: "fixture:parallel-zero-usage",
-    versionGuard: guard(works.getWork(debtId)!) }).ok);
-  await flush(3);
+  assert.equal(bindings(debtId).length, 3, "missing usage does not impose a removed quota gate on the owner");
+  assert(bindings(debtId).every(binding => binding.status === "completed"));
   assert.equal(works.teams.get(debtId)!.state, "awaiting_review");
+  assert.equal("budget" in works.getWork(debtId)!, false);
   for (const row of debt.team!.executions) assert.equal(submissions.filter(item => item.taskId === row.taskId).length, 1);
   console.log("Parallel team: bounded overlapping members, dependency snapshots, owner barrier and pause/resume passed");
 

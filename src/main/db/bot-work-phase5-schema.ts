@@ -5,7 +5,7 @@ import type Database from "better-sqlite3";
  * behind a notification intent, and the current owner's summary watermark.
  *
  * `work_result_cards` projects an acceptance fact that already committed. It is the only
- * write point for card read state, and it never owns Work lifecycle, ownership, budget or
+ * write point for card read state, and it never owns Work lifecycle, ownership or
  * execution authority, so it cannot become a second Work table.
  *
  * Only the current schema is created. Incompatible files keep the AppDatabase

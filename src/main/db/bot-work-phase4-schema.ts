@@ -2,8 +2,7 @@ import type Database from "better-sqlite3";
 
 /**
  * Phase 4 business ledgers: source-target watermarks, frozen merge batches, logical
- * schedule instances, observed offline gaps, causal admissions, a three-bucket budget
- * window ledger and per-provider-request reservations.
+ * schedule instances, observed offline gaps and causal admissions.
  *
  * Only the current schema is created. Incompatible file databases keep the existing
  * AppDatabase backup/reset contract; no old-schema migration or dual read path exists.
@@ -45,25 +44,14 @@ export function ensureBotWorkPhase4Tables(db: Database.Database): void {
   add("work_events_inbox", "target_key", "target_key TEXT");
   add("work_events_inbox", "process_reason", "process_reason TEXT");
 
-  // Reservations stay the only ledger; actual quantity and request identity are separate.
-  add("work_budget_reservations", "reported_tokens", "reported_tokens INTEGER");
-  add("work_budget_reservations", "request_kind", "request_kind TEXT");
-  add("work_budget_reservations", "request_id", "request_id TEXT");
-  add("work_budget_reservations", "binding_id", "binding_id TEXT");
-  add("work_budget_reservations", "attempt_id", "attempt_id TEXT");
-  add("work_budget_reservations", "attempt_identity", "attempt_identity TEXT");
-  add("work_budget_reservations", "receipt_key", "receipt_key TEXT");
-  add("work_budget_reservations", "metering", "metering TEXT CHECK(metering IS NULL OR metering IN ('reserved','reported','unknown','released'))");
-
   // The execution binding remembers which immutable each event it was dispatched for.
   add("work_execution_bindings", "inbox_event_id", "inbox_event_id TEXT");
   add("work_dispatch_requests", "inbox_event_id", "inbox_event_id TEXT");
 
-  // Business commitment deadline is independent from authorization/budget expiry.
+  // Business commitment deadline is independent from authorization expiry.
   add("works", "deadline_at", "deadline_at INTEGER");
   add("works", "deadline_revision", "deadline_revision INTEGER NOT NULL DEFAULT 1");
   add("works", "deadline_set_at", "deadline_set_at INTEGER");
-  add("works", "budget_policy_json", "budget_policy_json TEXT NOT NULL DEFAULT '{}'");
   add("works", "causal_policy_json", "causal_policy_json TEXT NOT NULL DEFAULT '{}'");
 
   // Stable blocker reason codes and structured detail; kind keeps its existing CHECK set.
@@ -173,7 +161,7 @@ export function ensureBotWorkPhase4Tables(db: Database.Database): void {
       hops INTEGER NOT NULL CHECK (hops >= 0),
       dispatch_count INTEGER NOT NULL DEFAULT 0 CHECK (dispatch_count >= 0),
       admission_key TEXT NOT NULL UNIQUE,
-      decision TEXT NOT NULL CHECK (decision IN ('admitted','blocked-loop','blocked-depth','blocked-hops','blocked-budget','unknown-attribution')),
+      decision TEXT NOT NULL CHECK (decision IN ('admitted','blocked-loop','blocked-depth','blocked-hops','unknown-attribution')),
       reason_code TEXT,
       created_at INTEGER NOT NULL
     );
@@ -181,55 +169,6 @@ export function ensureBotWorkPhase4Tables(db: Database.Database): void {
       ON work_causal_chains(target_work_id, target_state_hash, created_at);
     CREATE INDEX IF NOT EXISTS idx_work_causal_chains_root
       ON work_causal_chains(root_event_id);
-
-    CREATE TABLE IF NOT EXISTS work_budget_windows (
-      window_id TEXT PRIMARY KEY,
-      work_id TEXT NOT NULL,
-      policy_revision INTEGER NOT NULL,
-      scope TEXT NOT NULL DEFAULT 'work' CHECK (scope IN ('work','window')),
-      period_start_at INTEGER NOT NULL,
-      period_end_at INTEGER,
-      timezone TEXT,
-      limit_tokens INTEGER NOT NULL CHECK (limit_tokens >= 0),
-      auto_rollover INTEGER NOT NULL DEFAULT 0 CHECK (auto_rollover IN (0,1)),
-      carry_policy TEXT NOT NULL DEFAULT 'none' CHECK (carry_policy IN ('none','outstanding')),
-      status TEXT NOT NULL CHECK (status IN ('open','closed','exhausted')),
-      committed_tokens INTEGER NOT NULL DEFAULT 0 CHECK (committed_tokens >= 0),
-      reserved_tokens INTEGER NOT NULL DEFAULT 0 CHECK (reserved_tokens >= 0),
-      unknown_tokens INTEGER NOT NULL DEFAULT 0 CHECK (unknown_tokens >= 0),
-      created_at INTEGER NOT NULL,
-      closed_at INTEGER,
-      UNIQUE (work_id, policy_revision, period_start_at)
-    );
-    CREATE INDEX IF NOT EXISTS idx_work_budget_windows_work
-      ON work_budget_windows(work_id, status, period_start_at);
-
-    CREATE TABLE IF NOT EXISTS work_budget_requests (
-      request_id TEXT PRIMARY KEY,
-      work_id TEXT NOT NULL,
-      window_id TEXT NOT NULL,
-      binding_id TEXT,
-      task_id TEXT NOT NULL,
-      conversation_id TEXT,
-      generation_task_id INTEGER,
-      request_kind TEXT NOT NULL,
-      attempt_identity TEXT NOT NULL UNIQUE,
-      estimated_tokens INTEGER NOT NULL CHECK (estimated_tokens >= 0),
-      reported_tokens INTEGER,
-      metering TEXT NOT NULL CHECK (metering IN ('reserved','reported','unknown','released')),
-      receipt_key TEXT UNIQUE,
-      created_at INTEGER NOT NULL,
-      settled_at INTEGER
-    );
-    CREATE INDEX IF NOT EXISTS idx_work_budget_requests_work
-      ON work_budget_requests(work_id, metering, created_at);
-    CREATE INDEX IF NOT EXISTS idx_work_budget_requests_task
-      ON work_budget_requests(task_id, generation_task_id, metering);
-
-    CREATE TABLE IF NOT EXISTS work_budget_request_sequences (
-      task_id TEXT PRIMARY KEY,
-      sequence INTEGER NOT NULL DEFAULT 0
-    );
 
     CREATE TABLE IF NOT EXISTS work_watch_host_state (
       authority_id TEXT PRIMARY KEY,
@@ -262,8 +201,6 @@ export function ensureBotWorkPhase4Tables(db: Database.Database): void {
       ON work_events_inbox(batch_id, status, merge_deadline_at);
     CREATE INDEX IF NOT EXISTS idx_work_inbox_target
       ON work_events_inbox(subscription_id, target_key, status, received_at);
-    CREATE UNIQUE INDEX IF NOT EXISTS uq_work_budget_reservation_attempt
-      ON work_budget_reservations(attempt_identity) WHERE attempt_identity IS NOT NULL;
   `);
 
   // New business tables join the existing per-user projection journal.
@@ -271,12 +208,9 @@ export function ensureBotWorkPhase4Tables(db: Database.Database): void {
     ["work_schedule_ticks", row => `${row}.work_id`],
     ["work_offline_gaps", row => `${row}.work_id`],
     ["work_causal_chains", row => `${row}.target_work_id`],
-    ["work_budget_windows", row => `${row}.work_id`],
-    ["work_budget_requests", row => `${row}.work_id`],
     ["work_ingress_routes", row => `${row}.work_id`],
     ["work_events_inbox", row => `${row}.work_id`],
     ["work_subscriptions", row => `${row}.work_id`],
-    ["work_budget_reservations", row => `${row}.work_id`],
   ];
   for (const [table, reference] of sources) for (const operation of ["INSERT", "UPDATE", "DELETE"]) {
     const workId = reference(operation === "DELETE" ? "OLD" : "NEW");

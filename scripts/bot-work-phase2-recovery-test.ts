@@ -160,10 +160,10 @@ async function seed(root: string, scenario: string) {
   }
   const { db, works, native, adapter } = fixture;
   const work = unwrap(works.createWork(user, { operationId: "create", title: scenario, authorization: DESKTOP_USER_GRANTS,
-    inputSnapshotId: "source-v1", budget: { maxTokens: 200, windowExpiresAt: Date.now() + 60000 } }));
+    inputSnapshotId: "source-v1" }));
   db.upsertTask({ id: "original-root", title: scenario, cwd: join(root, "workspace"), modelId: "fixture/fixture", permissionMode: "auto", updatedAt: Date.now() });
   const namespace = await native.workExecutionPort().prepare("original-root");
-  const bound = unwrap(works.dispatchExecution(user, { operationId: "original-operation", workId: work.workId, botId: DEFAULT_BOT_ID, ...namespace, reserveTokens: 20 }));
+  const bound = unwrap(works.dispatchExecution(user, { operationId: "original-operation", workId: work.workId, botId: DEFAULT_BOT_ID, ...namespace }));
   const binding = works.repo.getBinding(bound.activeExecutionIds[0])!;
   writeFileSync(join(root, "projection.json"), JSON.stringify(new WorkProjectionJournal(db.connection, works).sync(LOCAL_USER_ID, { includeClosed: true })));
   if (scenario === "outbox") checkpoint(root, scenario);
@@ -218,7 +218,6 @@ async function run() {
         if (scenario === "received" || scenario === "consume-transaction") {
           assert.equal(rowCount(db.connection.prepare("SELECT COUNT(*) count FROM work_native_inbox WHERE consumed_at IS NULL").get()), 1);
           assert.equal(works.repo.listDeliverables(work.workId).length, 0);
-          assert.equal(works.getWork(work.workId)?.budget.usedTokens, 0);
         }
         if (scenario === "accepted-cancel") unwrap(works.cancelWork(user, { operationId: "cancel-after-lost-receipt", workId: work.workId }));
         await native.resumePersisted();
@@ -238,8 +237,6 @@ async function run() {
           assert(works.repo.listAdmissions(work.workId).some(admission => admission.state === "unknown"));
           assert.notEqual(works.getWork(work.workId)?.closureConclusion, "succeeded");
         } else {
-          assert(works.getWork(work.workId)!.budget.usedTokens > 0, "actual usage settles original exact reservation");
-          assert.equal(works.repo.getReservation(binding.reservationId!)?.state, "committed");
         }
         if (scenario === "effect-receipt") {
           const history = await native.history(binding.taskId);

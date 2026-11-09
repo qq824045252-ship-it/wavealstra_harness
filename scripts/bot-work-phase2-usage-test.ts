@@ -86,36 +86,33 @@ try {
   assert(created.ok); works.transaction(() => queue.enqueue(created.work, "owned-dispatch"));
   await queue.flush();
   const until = Date.now() + 15000;
-  while (works.getWork(created.work.workId)?.budget.usedTokens !== 27) {
+  while (works.repo.listBindings(created.work.workId)[0]?.status !== "completed") {
     if (Date.now() > until) throw new Error(`owned usage timeout: root=${rootRequests}, child=${childRequests}, ${JSON.stringify(works.getProjection(created.work.workId))}, errors=${errors.map(String).join(";")}`);
     await adapter.flush(); await delay(20);
   }
   assert.equal(rootRequests, 2); assert.equal(childRequests, 1);
   assert.deepEqual(errors, []);
-  assert.equal(works.getWork(created.work.workId)?.budget.usedTokens, 27, "root 5+5 and owned child 17 are charged exactly once");
   for (let repeat = 0; repeat < 3; repeat++) await adapter.flush();
-  assert.equal(works.getWork(created.work.workId)?.budget.usedTokens, 27);
-  assert.equal(works.getWork(created.work.workId)?.budget.reservedTokens, 0);
-  console.log("PASS real Pi owned child total: parent 5+5 + child 17 = Work reservation usage 27, no replay charge");
+  const initialBinding = works.repo.listBindings(created.work.workId)[0];
+  const initialReceipt = await native.workExecutionPort().find(initialBinding); assert(initialReceipt);
+  const initialObservation = await native.workExecutionPort().inspect(initialBinding, initialReceipt);
+  assert(initialObservation.status !== "running");
+  assert.equal(initialObservation.usageTokens, 27, "raw parent+child usage telemetry remains available without a quota module");
+  console.log("PASS parent and owned child raw usage remains 27 without quota accounting");
   for (const mode of ["quota", "business", "after-tool"]) {
     scenario = mode; rootRequests = 0; childRequests = 0;
-    const expiresAt = Date.now() + 60000;
-    const next = works.createWork(actor, { operationId: `create-${mode}`, title: mode, inputSnapshotId: `source-${mode}`, authorization: grants,
-      budget: { maxTokens: 200, windowExpiresAt: expiresAt } });
-    assert(next.ok); const windowId = next.work.budget.windowId;
+    const next = works.createWork(actor, { operationId: `create-${mode}`, title: mode, inputSnapshotId: `source-${mode}`, authorization: grants });
+    assert(next.ok);
     works.transaction(() => queue.enqueue(next.work, `dispatch-${mode}`)); await queue.flush();
     const deadline = Date.now() + 15000;
     const expected = mode === "business" ? 10 : 27;
-    while (works.getWork(next.work.workId)?.budget.usedTokens !== expected) {
+    while (works.repo.listBindings(next.work.workId)[0]?.status !== "completed") {
       if (Date.now() > deadline) throw new Error(`${mode} usage timeout: root=${rootRequests}, child=${childRequests}, ${JSON.stringify(works.getProjection(next.work.workId))}`);
       await adapter.flush(); await delay(20);
     }
     assert.equal(childRequests, mode === "business" ? 1 : 2, "only provider quota before tools may receive the native bounded retry");
     assert.equal(rootRequests, 2);
     assert.equal(works.repo.listBindings(next.work.workId).length, 1, "business adapter never adds another retry root");
-    assert.equal(works.repo.listReservations(next.work.workId).length, 1);
-    assert.equal(works.getWork(next.work.workId)?.budget.windowId, windowId);
-    assert.equal(works.getWork(next.work.workId)?.budget.windowExpiresAt, expiresAt);
     const binding = works.repo.listBindings(next.work.workId)[0];
     const history = await native.history(binding.taskId);
     if (mode === "quota") assert(JSON.stringify(history).includes("retried after provider concurrency rejection"), "successful retry retains its per-child recovery evidence");
@@ -135,8 +132,7 @@ try {
     } finally { await handle.storage.close(context); handle.lease.release(); }
     assert.equal(identities, 1, "all attempts reuse the one original owned-child identity");
     for (let repeat = 0; repeat < 3; repeat++) await adapter.flush();
-    assert.equal(works.getWork(next.work.workId)?.budget.usedTokens, expected);
-    console.log(`PASS BW-A12 ${mode}: child requests=${childRequests}, one business binding/reservation, original budget/deadline, usage=${expected}`);
+    console.log(`PASS BW-A12 ${mode}: child requests=${childRequests}, one business binding, original child deadline, expected telemetry=${expected}`);
   }
   assert.equal(effects, 1, "failure after a child tool must not repeat its actual effect");
 } finally {

@@ -74,6 +74,7 @@ export class WorkDispatchQueue {
   private async deliver(): Promise<void> {
     if (!this.isAuthority()) return;
     await this.resumeDeferredActions?.();
+    this.resumeRetiredQuotaRequests();
     await this.works.teams.dispatchPending(this.db, this.adapter, this.defaultModel, this.permissionMode);
     await this.drainSourceEvents();
     this.prepareSourceIntents();
@@ -116,8 +117,8 @@ export class WorkDispatchQueue {
           workId: work.workId, botId: request.bot_id,
           delegatedScope: readOnlyFollowUp ? ["workspace:read"]
             : continuation && this.works.partialResults.isReadOnlyPlan(continuation) ? ["workspace:read"]
-              : work.authorization.allowedScopes,
-          reserveTokens: readOnlyFollowUp ? 0 : Math.min(4096, Math.max(1, work.budget.maxTokens - work.budget.usedTokens - work.budget.reservedTokens)),
+              : continuation ? work.authorization.allowedScopes.filter(scope => this.works.repo.getBinding(continuation.sourceBindingId)?.delegatedScope.includes(scope))
+                : work.authorization.allowedScopes,
           inboxEventId: request.inbox_event_id ?? undefined,
           causal: requestEvent ? { source: requestEvent.source, sourceEventId: requestEvent.sourceEventId,
             causalEventId: requestEvent.causalEventId, trustedRoot: true, actionKind: readOnlyFollowUp ? "deadline-follow-up" : "source-dispatch" } : undefined,
@@ -153,6 +154,23 @@ export class WorkDispatchQueue {
     }
   }
 
+  private resumeRetiredQuotaRequests(): void {
+    this.works.transaction(() => {
+      if (!this.isAuthority()) return;
+      const rows = this.db.connection.prepare("SELECT * FROM work_dispatch_requests WHERE state='blocked'").all();
+      for (const raw of rows) {
+        const request = rowSchema.extend({ error: z.string().nullable() }).parse(raw);
+        if (!request.error?.startsWith("budget_exhausted: ")) continue;
+        // Only a proven pre-submission quota refusal is eligible. Retain the
+        // operation/task identity and original error until normal dispatch settles.
+        if (this.works.repo.bindingForTask(request.task_id)
+          || this.works.repo.getBindingByOperation(request.work_id, `dispatch:${request.operation_id}`)) continue;
+        this.db.connection.prepare("UPDATE work_dispatch_requests SET state='pending',attempts=0 WHERE operation_id=? AND state='blocked'")
+          .run(request.operation_id);
+      }
+    });
+  }
+
   private prepareSourceIntents():void {
     this.works.transaction(()=>{
       if(!this.isAuthority())return;
@@ -182,8 +200,7 @@ export class WorkDispatchQueue {
         for(const subscription of this.works.repo.listSubscriptions(workId)) this.works.ingress.refillBlocked(subscription);
       });
       work=this.works.getWork(workId)!;
-      const pendingBinding=this.works.repo.listBindings(workId).some(binding=>["pending","submitted","running","unknown"].includes(binding.status)
-        || binding.reservationId && ["reserved","unknown"].includes(this.works.repo.getReservation(binding.reservationId)?.state ?? ""));
+      const pendingBinding=this.works.repo.listBindings(workId).some(binding=>["pending","submitted","running","unknown"].includes(binding.status));
       const pendingIntent=this.works.repo.listOutbox(workId,["pending","attempted","unknown"]).some(event=>event.eventType==="work.source_dispatch_requested");
       if(pendingBinding || pendingIntent || this.db.connection.prepare("SELECT 1 FROM work_dispatch_requests WHERE work_id=? AND state IN ('pending','blocked')").get(workId))continue;
       const event=this.works.ingress.listReady(workId,Date.now())[0];if(!event)continue;
@@ -240,14 +257,31 @@ export class WorkDispatchQueue {
     });
   }
   private prepareWorkContinuations(work: WorkDto): void {
-    for (const plan of this.works.partialResults.plans(work.workId).filter(plan => plan.state === "pending")) {
+    for (let plan of this.works.partialResults.plans(work.workId).filter(plan => plan.state === "pending")) {
+      const source = this.works.repo.getBinding(plan.sourceBindingId);
+      if (this.works.partialResults.recovery.record(plan.planId) && source
+        && plan.intentRevision === work.intentRevision && plan.inputSnapshotId === work.inputSnapshotId
+        && this.works.collaboration.isDelegationAdopted(source, work)
+        && !this.db.connection.prepare("SELECT 1 FROM work_dispatch_requests request JOIN work_execution_bindings binding ON binding.task_id=request.task_id WHERE request.continuation_plan_id=?").get(plan.planId)
+        && (plan.ownerEpoch !== work.ownerEpoch || plan.ownerBotId !== work.ownerBotId)) {
+        this.db.connection.prepare("UPDATE work_continuation_plans SET owner_bot_id=?,owner_epoch=? WHERE plan_id=?")
+          .run(work.ownerBotId, work.ownerEpoch, plan.planId);
+        this.db.connection.prepare("UPDATE work_dispatch_requests SET bot_id=? WHERE continuation_plan_id=?")
+          .run(work.ownerBotId, plan.planId);
+        plan = { ...plan, ownerBotId: work.ownerBotId, ownerEpoch: work.ownerEpoch };
+      }
       if (work.intentRevision !== plan.intentRevision || work.inputSnapshotId !== plan.inputSnapshotId || work.ownerEpoch !== plan.ownerEpoch || work.ownerBotId !== plan.ownerBotId || ["closed","closing"].includes(work.lifecycle)) {
         this.db.connection.prepare("UPDATE work_continuation_plans SET state='cancelled' WHERE plan_id=?").run(plan.planId);
         this.works.repo.markOutboxStatus(`continuation-approved:${plan.planId}:${plan.ownerEpoch}`,"invalidated");continue;
       }
       if (work.lifecycle !== "active") continue;
+      this.works.partialResults.recovery.reconcileMode(work.workId, plan.planId);
       const request=z.object({operation_id:z.string(),task_id:z.string(),state:z.string()}).optional().parse(this.db.connection.prepare("SELECT operation_id,task_id,state FROM work_dispatch_requests WHERE continuation_plan_id=?").get(plan.planId));
       if(request) {
+        if (!this.works.repo.bindingForTask(request.task_id) && this.works.partialResults.isReadOnlyPlan(plan)) {
+          const task = this.db.getTask(request.task_id);
+          if (task && task.permissionMode !== "readonly") this.db.upsertTask({ ...task, permissionMode: "readonly", updatedAt: Date.now() });
+        }
         if(request.state==="cancelled" && !this.works.repo.bindingForTask(request.task_id)
           && !this.db.connection.prepare("SELECT 1 FROM work_dispatch_requests WHERE work_id=? AND state='pending' AND operation_id!=?").get(work.workId,request.operation_id))
           this.db.connection.prepare("UPDATE work_dispatch_requests SET state='pending',bot_id=?,error=NULL WHERE operation_id=?").run(work.ownerBotId,request.operation_id);
@@ -256,7 +290,9 @@ export class WorkDispatchQueue {
       }
       if (this.db.connection.prepare("SELECT 1 FROM work_dispatch_requests WHERE work_id=? AND intent_revision=? AND input_snapshot_id=? AND state='pending'").get(work.workId,work.intentRevision,work.inputSnapshotId)) continue;
       const taskId = `work-execution-${randomUUID()}`;
-      this.db.upsertTask({id:taskId,title:`补齐：${work.title}`,updatedAt:Date.now(),cwd:work.workspacePath,projectId:work.projectId,modelId:this.defaultModel(),permissionMode:this.permissionMode(),modePresetId:"native"});
+      const sourceBinding = this.works.repo.getBinding(plan.sourceBindingId);
+      const sourceTask = sourceBinding && this.db.getTask(sourceBinding.taskId);
+      this.db.upsertTask({id:taskId,title:`补齐：${work.title}`,updatedAt:Date.now(),cwd:sourceBinding?.workspaceBinding ?? work.workspacePath,projectId:work.projectId,modelId:sourceTask?.modelId ?? this.defaultModel(),permissionMode:this.works.partialResults.isReadOnlyPlan(plan) || sourceTask?.permissionMode === "readonly" || this.permissionMode() === "readonly" ? "readonly" : sourceTask?.permissionMode ?? this.permissionMode(),modePresetId:"native"});
       this.db.connection.prepare(`INSERT INTO work_dispatch_requests(operation_id,work_id,task_id,bot_id,intent_revision,input_snapshot_id,state,created_at,continuation_plan_id)
         VALUES (?,?,?,?,?,?,'pending',?,?)`).run(plan.planId,work.workId,taskId,work.ownerBotId,work.intentRevision,work.inputSnapshotId,Date.now(),plan.planId);
       this.works.repo.markOutboxStatus(`continuation-approved:${plan.planId}:${plan.ownerEpoch}`,"delivered");
@@ -272,15 +308,12 @@ export class WorkDispatchQueue {
         const blockerId = `continuation:${binding.bindingId}`;
         const blocker = this.works.repo.getBlocker(blockerId);
         const planned = this.works.partialResults.plans(work.workId).some(plan => plan.sourceBindingId === binding.bindingId && plan.state !== "cancelled");
-        const incomplete = !planned && retainsInput(binding, work)
-          && (binding.invalidatedAt !== undefined || ["failed", "stopped", "invalidated"].includes(binding.status));
-        if (!incomplete && blocker?.status === "open") {
+        // A failed native input gets an exact persisted continuation. A user stop
+        // or invalidation is never permission to restart it.
+        if (this.works.partialResults.recovery.settleReadback(this.works.getWork(work.workId)!, binding, now)) changed = true;
+        if (!planned && this.works.partialResults.recovery.prepare(work, binding, now)) changed = true;
+        if (blocker?.status === "open") {
           this.works.repo.clearBlocker(blockerId, work.workId, now); changed = true;
-        } else if (incomplete && !blocker) {
-          this.works.repo.insertBlocker({ blockerId, workId: work.workId, kind: "operational",
-            reason: "原执行已失败、停止或失效，已有成果与执行事实仍保留。请核对必要缺口并受理定向补跑；恢复不会重新执行整个原始输入。",
-            waitingForUserInput: true, status: "open", createdAt: now });
-          changed = true;
         }
       }
       if (changed) {

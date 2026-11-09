@@ -122,13 +122,14 @@ try {
       f.schedule(invalidated, "invalidated-result:reschedule"); f.resume(invalidated, "resume"); await f.queue.flush();
       assert.equal(f.effects(), 1, "invalidating prior results must not erase execution dedupe");
       assert.equal(f.works.repo.listBindings(work.workId).length, 1); assert.equal(f.db.listTasks().length, 1);
-      assert.equal(f.works.repo.getBlocker(`continuation:${original.bindingId}`)?.status, "open");
+      assert.notEqual(f.works.repo.getBlocker(`continuation:${original.bindingId}`)?.status, "open");
       const cancelled = unwrap(f.works.cancelWork(user, { workId: work.workId, operationId: "invalidated-result:cancel" }));
       assert.equal(cancelled.lifecycle, "closed"); assert.deepEqual(f.errors, []);
     } finally { await f.close(); }
   }
 
-  for (const status of ["completed", "failed", "stopped"] as const) {
+  // Failed executions are covered by bot-work-automatic-recovery: exact continuation, not a second root.
+  for (const status of ["completed", "stopped"] as const) {
     const f = await fixture(status, status);
     try {
       const work = f.create("original"); await f.queue.flush();
@@ -140,16 +141,13 @@ try {
         assert.equal(f.effects(), 1, `${status}: pause/resume must not rerun the same input in another root`);
         assert.equal(f.works.repo.listBindings(work.workId).length, 1);
         assert.equal(f.db.listTasks().length, 1);
-        assert.equal(f.works.getWork(work.workId)?.budget.usedTokens, 2);
+        assert.equal("budget" in f.works.getWork(work.workId)!, false);
         assert.deepEqual(f.works.repo.listDeliverables(work.workId), originalResults);
         assert.equal(f.works.getWork(work.workId)?.lifecycle, "active");
         assert.equal(f.works.getWork(work.workId)?.acceptedDeliverableIds.length, 0);
       }
       const continuation = f.works.repo.listOpenBlockers(work.workId).filter(blocker => blocker.blockerId.startsWith("continuation:"));
-      assert.equal(continuation.length, status === "completed" ? 0 : 1, "incomplete original execution needs one visible follow-up decision");
-      if (continuation[0]) {
-        assert.equal(continuation[0].kind, "operational"); assert.equal(continuation[0].waitingForUserInput, true);
-      }
+      assert.equal(continuation.length, 0, "completed/stopped originals do not create artificial user decisions");
       // A real requirement revision is new work, even when its source snapshot is unchanged.
       const amended = unwrap(f.works.amendWork(user, { workId: work.workId, operationId: `${status}:amend`, constraints: ["only perform the explicitly remaining step"] }));
       assert.equal(amended.inputSnapshotId, work.inputSnapshotId);
@@ -184,15 +182,12 @@ try {
       const resumed = unwrap(f.works.resumeWork(user, { workId: work.workId, operationId: "stop-race:resume" }));
       f.schedule(resumed, "stop-race:resume", true); release(); await stopping; await f.queue.flush();
       assert.equal(f.effects(), 1); assert.equal(f.works.repo.listBindings(work.workId).length, 1);
-      const blocker = f.works.repo.listOpenBlockers(work.workId).find(item => item.blockerId.startsWith("continuation:"));
-      assert(blocker, "a late stop receipt cannot silently lose the continuation decision");
-      unwrap(f.works.clearBlocker(user, { workId: work.workId, operationId: "stop-race:resolved", blockerId: blocker.blockerId }));
-      await f.queue.flush(); assert.equal(f.works.repo.getBlocker(blocker.blockerId)?.status, "cleared", "explicitly resolved planning blockers must not be reopened by polling");
+      assert(!f.works.repo.listOpenBlockers(work.workId).some(item => item.blockerId.startsWith("continuation:")), "user stop does not create a retry decision");
       assert.equal(f.effects(), 1); assert.deepEqual(f.errors, []);
     } finally { await f.close(); }
   }
 
-  // Giving up a continuation clears only planning gaps, never unsettled side effects or usage.
+  // Giving up a continuation clears only planning gaps, never unsettled side effects or independent diagnostics.
   {
     const f = await fixture("cancel-blockers", "failed");
     try {
@@ -201,18 +196,18 @@ try {
       f.works.transaction(() => {
         f.works.repo.insertBlocker({ blockerId: "external-pending", workId: work.workId, kind: "external_effect", reason: "external receipt remains unknown",
           unknownExternalEffectRef: "original-effect", waitingForUserInput: false, status: "open", createdAt: Date.now() });
-        f.works.repo.insertBlocker({ blockerId: `usage:${binding.bindingId}`, workId: work.workId, kind: "operational", reason: "original usage remains unverified",
+        f.works.repo.insertBlocker({ blockerId: `diagnostic:${binding.bindingId}`, workId: work.workId, kind: "operational", reason: "independent diagnostic remains unresolved",
           waitingForUserInput: false, status: "open", createdAt: Date.now() });
       });
       const nextInput = unwrap(f.works.amendWork(user, { workId: work.workId, operationId: "cancel-blockers:amend", inputSnapshotId: "new-source" }));
       f.schedule(nextInput, "cancel-blockers:new-input"); await f.queue.flush();
-      assert.equal(f.works.repo.getBlocker(`continuation:${binding.bindingId}`)?.status, "cleared");
+      assert.notEqual(f.works.repo.getBlocker(`continuation:${binding.bindingId}`)?.status, "open");
       assert.equal(f.effects(), 2, "a real unknown effect on the old execution no longer blocks the amended input");
       const cancelled = unwrap(f.works.cancelWork(user, { workId: work.workId, operationId: "cancel-blockers:cancel" }));
       await f.queue.flush();
       assert.equal(cancelled.lifecycle, "closing");
       assert.equal(f.works.repo.getBlocker("external-pending")?.status, "open");
-      assert.equal(f.works.repo.getBlocker(`usage:${binding.bindingId}`)?.status, "open");
+      assert.equal(f.works.repo.getBlocker(`diagnostic:${binding.bindingId}`)?.status, "open");
       assert.equal(f.effects(), 2); assert.deepEqual(f.errors, []);
     } finally { await f.close(); }
   }
@@ -221,7 +216,7 @@ try {
     const f = await fixture("ended", "stopped");
     try {
       const work = f.create("original"); await f.queue.flush();
-      assert(f.works.repo.listOpenBlockers(work.workId).some(blocker => blocker.blockerId.startsWith("continuation:")));
+      assert(!f.works.repo.listOpenBlockers(work.workId).some(blocker => blocker.blockerId.startsWith("continuation:")));
       const closed = unwrap(f.works.closeWork(user, { workId: work.workId, operationId: "ended:close", conclusion: "ended_unsuccessfully", closureSummary: "stop after recording the remaining gap" }));
       assert.equal(closed.lifecycle, "closed"); assert.equal(closed.closureConclusion, "ended_unsuccessfully");
       assert.equal(f.works.repo.listOpenBlockers(work.workId).length, 0); assert.equal(f.effects(), 1);

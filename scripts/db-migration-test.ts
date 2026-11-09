@@ -41,7 +41,7 @@ function assertCurrentSchema(db: AppDatabase, label: string): void {
     "work_conversations", "work_participants", "work_execution_bindings", "work_action_admissions",
     "work_deliverables", "work_evidence", "work_blockers", "work_operation_receipts",
     "work_telemetry_state", "work_source_events", "work_events_inbox", "work_events_outbox",
-    "work_subscriptions", "work_budget_reservations", "work_notifications", "work_host_lease",
+    "work_subscriptions", "work_notifications", "work_host_lease",
   ]) assert(tableExists(db, table), `${label}: ${table} exists`);
   assert(!tableExists(db, "conversation_goals"), `${label}: retired conversation_goals is not created`);
   assert(!tableExists(db, "project_memory"), `${label}: legacy project_memory is absent`);

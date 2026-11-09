@@ -9,7 +9,7 @@ import ChatComposer from "@/components/chat/ChatComposer";
 import ChatMarkdown from "@/components/chat/ChatMarkdown";
 import { IconPlus, IconArchive, IconChevronDown, IconArrowUp, IconBot, IconCheck, IconChevronRight, IconClock, IconListTodo, IconMessageDashed, IconPanel, IconSearch, IconSettings, IconStop, IconX } from "@/components/common/icons";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
-import { activeBotReply, botParticipatesInWork, botMessageStatus, botWorkTimeline, needsWorkDecision, shouldSendBotComposer, workMatchesView, workStatusLabel, type BotWorkspaceView } from "@/lib/botWorkspacePresentation";
+import { activeBotReply, botParticipatesInWork, botMessageStatus, botWorkTimeline, shouldSendBotComposer, workMatchesView, workStatusLabel, type BotWorkspaceView } from "@/lib/botWorkspacePresentation";
 import { BotWorkDetails } from "./BotWorkDetails";
 import { BotTeamDialog } from "./BotTeamDialog";
 import { BotWorkspaceAuthorization } from "./BotWorkspaceAuthorization";
@@ -31,7 +31,6 @@ const examples = [
 const views: Array<{ id: BotWorkspaceView; label: string; icon: typeof IconBot }> = [
   { id: "conversation", label: "对话", icon: IconMessageDashed },
   { id: "active", label: "进行中", icon: IconClock },
-  { id: "decisions", label: "待你决定", icon: IconListTodo },
   { id: "closed", label: "已结束", icon: IconCheck },
 ];
 
@@ -208,7 +207,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
     if (!owner) { setNavigationNotice("负责人暂不可用，请先核对 Bot 状态；问题和已有草稿均已保留。"); return; }
     const marker = `问题引用：${work.workId} / ${blocker.blockerId}`;
     const existing = state.activeBotId === owner.botId ? state.botDraft : state.botDrafts[owner.botId] ?? "";
-    const quote = `${marker}\n事项：${work.title}\n查看版本：要求 r${work.intentRevision}，负责人代次 ${work.ownerEpoch}，状态 v${work.stateVersion}\n原问题：${blocker.reason}\n我的回复：\n\n请先核对当前状态和这条回复；不要把回复本身当作授权、预算核对完成或重跑整个任务的许可。`;
+    const quote = `${marker}\n事项：${work.title}\n查看版本：要求 r${work.intentRevision}，负责人代次 ${work.ownerEpoch}，状态 v${work.stateVersion}\n原问题：${blocker.reason}\n我的回复：\n\n请先核对当前状态和这条回复；不要把回复本身当作授权或重跑整个任务的许可。`;
     const draft = existing.includes(marker) ? existing : [existing, quote].filter(Boolean).join("\n\n");
     if (draft.length > 32000) { setNavigationNotice("现有草稿较长，请先整理后再引用问题。没有覆盖或发送任何内容。"); return; }
     // setActiveBotId retains the previous Bot's draft and restores the owner's.
@@ -239,7 +238,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
       <nav className="bot-view-tabs" aria-label="对话与事项">
         {views.map(item => {
           const count = item.id === "conversation" ? undefined : item.id === "closed" && !allWorksLoaded ? undefined : botWorks.filter(work => workMatchesView(work, item.id)).length;
-          return <button type="button" key={item.id} aria-current={view === item.id ? "page" : undefined} onClick={() => changeView(item.id)}><item.icon size={15} /><span>{item.label}</span>{count !== undefined && <span className={`bot-tab-count ${item.id === "decisions" && count ? "needs-attention" : ""}`}>{count}</span>}</button>;
+          return <button type="button" key={item.id} aria-current={view === item.id ? "page" : undefined} onClick={() => changeView(item.id)}><item.icon size={15} /><span>{item.label}</span>{count !== undefined && <span className="bot-tab-count">{count}</span>}</button>;
         })}
       </nav>
       {workError && <p className="bot-alert" role="alert">{workError}</p>}
@@ -267,8 +266,8 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
             </details>)}</div>}
         </div>
       </> : <section className="bot-work-browser" aria-label={`${views.find(item => item.id === view)?.label}事项`}>
-        <header className="bot-list-heading"><div><h2>{view === "active" ? "正在为你推进" : view === "decisions" ? "等你给个方向" : "每一件事，都有记录"}</h2><p>{view === "active" ? "进行、暂停和结算中的事项都在这里。" : view === "decisions" ? "需要你的判断、补充信息或实测确认。" : "保留已完成、已取消与未完成的结束记录。"}</p></div><label className="bot-work-search"><IconSearch size={15} /><span className="bot-sr-only">搜索事项</span><input value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索事项" /></label></header>
-        {view === "closed" && !allWorksLoaded ? <p role="status">正在读取已结束事项…</p> : filteredWorks.length ? <div className="bot-work-grid">{filteredWorks.map(work => <WorkCard key={work.workId} work={work} selected={work.workId === selected?.workId} onSelect={() => openWork(work.workId)} />)}</div> : <div className="bot-list-empty"><IconListTodo size={30} /><h3>{query ? "没有找到匹配的事项" : view === "decisions" ? "暂时没有需要你决定的事" : view === "closed" ? "还没有结束的事项" : "还没有进行中的事项"}</h3><p>{query ? "试试其他关键词。" : view === "decisions" ? "需要你参与时，会在这里清楚地列出来。" : "回到对话，说说你想交给我的事。"}</p><button type="button" onClick={() => { setView("conversation"); composerRef.current?.focus(); }}>回到对话</button></div>}
+        <header className="bot-list-heading"><div><h2>{view === "active" ? "正在为你推进" : "每一件事，都有记录"}</h2><p>{view === "active" ? "进行、暂停和结算中的事项都在这里。" : "保留已完成、已取消与未完成的结束记录。"}</p></div><label className="bot-work-search"><IconSearch size={15} /><span className="bot-sr-only">搜索事项</span><input value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索事项" /></label></header>
+        {view === "closed" && !allWorksLoaded ? <p role="status">正在读取已结束事项…</p> : filteredWorks.length ? <div className="bot-work-grid">{filteredWorks.map(work => <WorkCard key={work.workId} work={work} selected={work.workId === selected?.workId} onSelect={() => openWork(work.workId)} />)}</div> : <div className="bot-list-empty"><IconListTodo size={30} /><h3>{query ? "没有找到匹配的事项" : view === "closed" ? "还没有结束的事项" : "还没有进行中的事项"}</h3><p>{query ? "试试其他关键词。" : "回到对话，说说你想交给我的事。"}</p><button type="button" onClick={() => { setView("conversation"); composerRef.current?.focus(); }}>回到对话</button></div>}
       </section>}
       <form className="bot-composer input-area" onDragOver={event => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; } }} onDrop={event => { if (event.dataTransfer.files.length) { event.preventDefault(); void addAttachments(Array.from(event.dataTransfer.files)); } }} onSubmit={event => { event.preventDefault(); send(); }}>
         {view === "conversation" && awayFromBottom && <button type="button" className="bot-latest-button" onClick={() => { const el = threadRef.current; if (el) el.scrollTop = el.scrollHeight; followLatest.current = true; followReplyTail.current = true; setAwayFromBottom(false); }}><IconChevronDown size={14} />回到最新消息</button>}
@@ -314,10 +313,9 @@ function BotMessage({ message, botName, works, onOpenWork, onCancel }: { message
 }
 
 function WorkCard({ work, selected, onSelect }: { work: WorkProjectionDto; selected: boolean; onSelect: () => void }): React.JSX.Element {
-  const attention = needsWorkDecision(work);
   const latest = [...work.deliverables].reverse().find(item => item.status === "accepted" || item.status === "proposed");
   return <button type="button" className="bot-work-card" aria-pressed={selected} onClick={onSelect}>
-    <div className="bot-work-card-top"><span className={`bot-status-badge ${attention ? "attention" : work.closureConclusion === "succeeded" ? "success" : ""}`}>{workStatusLabel(work)}</span><span>{work.team ? `${work.team.members.length + 1} 位 Bot 组队` : work.mode === "watch" ? "持续关注" : "单次委托"}</span></div>
+    <div className="bot-work-card-top"><span className={`bot-status-badge ${work.closureConclusion === "succeeded" ? "success" : ""}`}>{workStatusLabel(work)}</span><span>{work.team ? `${work.team.members.length + 1} 位 Bot 组队` : work.mode === "watch" ? "持续关注" : "单次委托"}</span></div>
     <strong>{work.title}</strong><p>{work.nextSteps[0] ?? latest?.summary ?? "打开查看目标、进展与成果。"}</p>
     <div className="bot-work-card-bottom"><span>{work.deliverables.length ? `${work.deliverables.length} 项成果` : "等待成果"} · {new Date(work.updatedAt).toLocaleDateString("zh-CN", { month: "short", day: "numeric" })}</span><IconChevronRight size={16} /></div>
   </button>;

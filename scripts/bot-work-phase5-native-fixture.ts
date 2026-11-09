@@ -153,7 +153,7 @@ export async function openNativeHost(root: string, stage: number) {
   const directSubmission = async (workId: string, taskId: string, modelId: string, botId = DEFAULT_BOT_ID, operationId = `native:${taskId}`) => {
     db.upsertTask({ id: taskId, title: taskId, cwd, modelId, permissionMode: "auto", updatedAt: Date.now() });
     const namespace = await port.prepare(taskId);
-    const work = unwrap(works.dispatchExecution(user, { operationId, workId, botId, ...namespace, reserveTokens: 100,
+    const work = unwrap(works.dispatchExecution(user, { operationId, workId, botId, ...namespace,
       delegatedScope: ["workspace:read", "workspace:write", "delegate"], versionGuard: guard(works.getWork(workId)!) }));
     const binding = works.repo.listBindings(work.workId).find(entry => entry.taskId === taskId)!; assert(binding);
     works.markDispatchAttempt(binding.bindingId, `attempt:${taskId}`);

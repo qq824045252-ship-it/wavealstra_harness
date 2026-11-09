@@ -25,14 +25,14 @@ const owner: WorkActor = { kind: "bot", userId: LOCAL_USER_ID, botId: DEFAULT_BO
 const unwrap = (value: WorkControlResult) => { if (!value.ok) throw new Error(`${value.code}: ${value.message}`); return value.work; };
 const guard = (work: WorkDto) => ({ expectedStateVersion: work.stateVersion, expectedIntentRevision: work.intentRevision, expectedOwnerEpoch: work.ownerEpoch });
 let sequence = 0;
-function fixture(name: string, reserveTokens = 0) {
+function fixture(name: string, _retiredReservationFixture = 0) {
   const suffix = `${name}-${++sequence}`;
   let work = unwrap(works.createWork(user, { operationId: `create:${suffix}`, title: suffix,
     authorization: grants, inputSnapshotId: `input:${suffix}`, criteria: [{ text: "Current checked evidence" }] }));
   const taskId = `task:${suffix}`;
   db.upsertTask({ id: taskId, title: suffix, updatedAt: Date.now() });
   work = unwrap(works.dispatchExecution(user, { operationId: `dispatch:${suffix}`, workId: work.workId, botId: DEFAULT_BOT_ID,
-    taskId, durableStoreKey: `store:${suffix}`, conversationId: "1", workspaceBinding: root, reserveTokens, delegatedScope: ["workspace:read", "workspace:write"] }));
+    taskId, durableStoreKey: `store:${suffix}`, conversationId: "1", workspaceBinding: root, delegatedScope: ["workspace:read", "workspace:write"] }));
   const binding = works.repo.listBindings(work.workId)[0];
   const worker: WorkActor = { kind: "worker", botId: binding.botId, bindingId: binding.bindingId };
   return { suffix, work, binding, worker };
@@ -110,7 +110,7 @@ try {
   assert.equal(handed.stateVersion, before.stateVersion + 1);
   assert.equal(handed.inputSnapshotId, before.inputSnapshotId);
   assert.equal(handed.intentRevision, before.intentRevision);
-  assert.deepEqual(handed.budget, before.budget);
+  assert.equal("budget" in handed, false);
   const race = works2.handoffOwner(user, { operationId: "handoff:race", workId: before.workId, targetBotId: "concurrent-owner", preparationId: competing.preparationId, versionGuard: guard(before) });
   assert.equal(race.ok, false);
   assert.equal(works2.getWork(before.workId)!.ownerBotId, "next-owner");
@@ -146,8 +146,8 @@ try {
   assert.match(deferred.consume_error, /^pending_adoption:/);
   assert.deepEqual(JSON.parse(deferred.payload_json), nativeResult);
   assert.equal(works.repo.getBinding(pending.binding.bindingId)!.status, "completed", "actual native completion settles even before adoption");
-  assert.equal(works.getWork(pending.work.workId)!.budget.usedTokens, 7);
-  assert.equal(works.getWork(pending.work.workId)!.budget.reservedTokens, 0);
+  assert.equal("budget" in works.getWork(pending.work.workId)!, false);
+  assert.equal("budget" in works.getWork(pending.work.workId)!, false);
   assert.equal(works.repo.listDeliverables(pending.work.workId).length, 0, "unadopted native results are not published");
   assert.equal(works.partialResults.list(pending.work.workId).length, 0, "partial publication follows the same adoption gate");
   assert.equal(works.repo.getBlocker(`adoption:${pending.binding.bindingId}`)!.status, "open");
@@ -167,7 +167,7 @@ try {
     assert.deepEqual(recovered.nativeResults.consume(), []);
     assert.equal(recovered.repo.listDeliverables(pending.work.workId).length, 0, "restart keeps the pending fact pending");
     const adopted = unwrap(recovered.handoffOwner(user, { operationId: "adopt-retained-native-result", workId: pending.work.workId, targetBotId: "concurrent-owner" }));
-    assert.equal(adopted.budget.usedTokens, 7, "adoption does not settle native usage twice");
+    assert.equal("budget" in works.getWork(pending.work.workId)!, false);
     const outputs = recovered.repo.listDeliverables(pending.work.workId);
     assert.equal(outputs.length, 2, "adoption immediately replays aggregate and completed partial facts");
     assert(outputs.every(output => output.status === "proposed" && output.ownerEpoch === pending.binding.ownerEpoch && output.producerBotId === pending.binding.botId));
@@ -180,7 +180,7 @@ try {
     assert.deepEqual(recovered.nativeResults.receive(pending.binding, nativeReceipt(pending), nativeResult), []);
     assert.deepEqual(works.nativeResults.receive(pending.binding, nativeReceipt(pending), nativeResult), [], "the original connection may replay its pre-handoff binding snapshot safely");
     assert.equal(recovered.getWork(pending.work.workId)!.stateVersion, completedVersion);
-    assert.equal(works.getWork(pending.work.workId)!.budget.usedTokens, 7);
+    assert.equal("budget" in works.getWork(pending.work.workId)!, false);
     assert.equal(recovered.repo.listDeliverables(pending.work.workId).length, outputs.length);
   } finally { pendingDb.close(); }
 
@@ -210,7 +210,7 @@ try {
     assert.equal(works.collaboration.isDelegationPending(works.repo.getBinding(stalePending.binding.bindingId)!, changed), false);
     assert(works.repo.listDeliverables(stalePending.work.workId).every(output => output.status === "superseded"), `${change} cannot become a current adopted result`);
     assert.equal(works.repo.getBlocker(`adoption:${stalePending.binding.bindingId}`)!.status, "cleared");
-    assert.equal(works.getWork(stalePending.work.workId)!.budget.usedTokens, 7);
+    assert.equal("budget" in works.getWork(pending.work.workId)!, false);
     assert.equal(works.partialResults.gaps(stalePending.work.workId).length, 0, "revoked or stale facts cannot authorize new gap work");
     const staleContinuation = works.continueWork(user, { operationId: `continue-stale:${stalePending.suffix}`, workId: stalePending.work.workId,
       sourceBindingId: stalePending.binding.bindingId, gapItemIds: ["gap"], reason: "stale gap must stay historical", versionGuard: guard(changed) });
@@ -227,7 +227,7 @@ try {
   const cancelledState = works.getWork(cancelledPending.work.workId)!;
   assert.equal(cancelledState.lifecycle, "closed", "cancellation can settle without a new handoff");
   assert.equal(cancelledState.closureConclusion, "cancelled");
-  assert.equal(cancelledState.budget.usedTokens, 7);
+  assert.equal("budget" in works.getWork(pending.work.workId)!, false);
   assert(works.repo.listDeliverables(cancelledPending.work.workId).every(output => output.status === "superseded"));
   assert.equal(works.repo.listNotifications(cancelledPending.work.workId).some(notification => notification.kind === "result"), false);
   assert.equal(works.repo.getBlocker(`adoption:${cancelledPending.binding.bindingId}`)!.status, "cleared");

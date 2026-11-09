@@ -1,8 +1,8 @@
 import { userInputBlockerSnapshot } from "@shared/bot-work-review";
-import { useEffect, useRef, useState } from "react";
-import type { WorkBudgetReservationDto, WorkCriterionDto, WorkLifecycle, WorkProjectionDto } from "@shared/bot-work";
+import { useRef, useState } from "react";
+import type { WorkCriterionDto, WorkLifecycle, WorkProjectionDto } from "@shared/bot-work";
 import type { WorkPhase3ControlRequest } from "@shared/bot-work-phase3-control";
-import type { WorkPhase4ControlRequest, WorkPhase4ControlResult } from "@shared/bot-work-phase4";
+import type { WorkPhase4ControlRequest } from "@shared/bot-work-phase4";
 import { useAppStore } from "@/store/appStore";
 import { WorkCardsPanel } from "./BotWorkCardsPanel";
 import { BotTeamPanel } from "./BotTeamPanel";
@@ -23,56 +23,6 @@ function criterionLabel(criterion: WorkCriterionDto): string {
   return "待验收";
 }
 
-function UnknownBudgetReconciliation(props: {
-  work: WorkProjectionDto;
-  reservation: Pick<WorkBudgetReservationDto, "reservationId" | "windowId" | "tokens" | "requestKind" | "createdAt">;
-  busy: boolean;
-  submit: (request: WorkPhase4ControlRequest) => Promise<WorkPhase4ControlResult | undefined>;
-}): React.JSX.Element {
-  const { work, reservation, busy, submit } = props;
-  const [resolution, setResolution] = useState<"committed" | "released">("committed");
-  const [amount, setAmount] = useState("");
-  const [reason, setReason] = useState("");
-  const [evidenceRef, setEvidenceRef] = useState("");
-  const [confirmed, setConfirmed] = useState(false);
-  const pending = useRef<{ signature: string; request: WorkPhase4ControlRequest } | null>(null);
-  const tokens = Number(amount);
-  const valid = amount.trim() !== "" && Number.isSafeInteger(tokens) && tokens >= 0
-    && (resolution !== "released" || tokens === 0) && reason.trim() !== "" && evidenceRef.trim() !== "" && confirmed;
-  const reconcile = async () => {
-    if (!valid || busy) return;
-    const payload = { kind: "reconcile-budget-reservation" as const, workId: work.workId,
-      reservationId: reservation.reservationId, windowId: reservation.windowId, resolution,
-      reportedTokens: tokens, reason: reason.trim(), evidenceRef: evidenceRef.trim() };
-    const signature = JSON.stringify(payload);
-    // Keep the exact original command after an unknown transport outcome. A fresh
-    // projection must not turn a retry into a different accounting operation.
-    if (pending.current?.signature !== signature) pending.current = { signature, request: {
-      ...payload, operationId: `desktop:${crypto.randomUUID()}`,
-      versionGuard: { expectedStateVersion: work.stateVersion, expectedIntentRevision: work.intentRevision, expectedOwnerEpoch: work.ownerEpoch },
-    } };
-    const response = await submit(pending.current.request);
-    if (response) pending.current = null;
-  };
-  return <details className="budget-reconciliation">
-    <summary>核对未知用量：预留 {reservation.tokens} tokens</summary>
-    <p>请求 {reservation.reservationId} · 原窗口 {reservation.windowId} · {new Date(reservation.createdAt).toLocaleString()}</p>
-    <p>核对供应商账单或请求凭据后填写实际用量。确认未产生消耗时，填写 0 并选择释放。</p>
-    <label>处理方式<select aria-label="未知用量处理方式" value={resolution}
-      onChange={event => { setResolution(event.target.value as typeof resolution); setConfirmed(false); }}>
-      <option value="committed">按已核实用量结算</option><option value="released">确认未消耗，释放预留</option>
-    </select></label>
-    <label>已核实 tokens<input aria-label="已核实 tokens" type="number" min={0} step={1} value={amount}
-      onChange={event => { setAmount(event.target.value); setConfirmed(false); }} /></label>
-    <label>核对说明<input aria-label="预算核对说明" maxLength={1000} value={reason}
-      onChange={event => { setReason(event.target.value); setConfirmed(false); }} /></label>
-    <label>账单或请求凭据<input aria-label="预算核对凭据" maxLength={1000} value={evidenceRef}
-      onChange={event => { setEvidenceRef(event.target.value); setConfirmed(false); }} /></label>
-    <label><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} />我已核实这笔请求的实际消耗</label>
-    <button type="button" disabled={busy || !valid} onClick={() => { void reconcile(); }}>保存预算核对结果</button>
-  </details>;
-}
-
 export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: string; includeClosed: boolean;
   onReplyToBlocker?: (blocker: WorkProjectionDto["blockers"][number]) => void }): React.JSX.Element {
   const { work, ownerName, includeClosed } = props;
@@ -86,14 +36,6 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
   const [watchSource, setWatchSource] = useState("hook");
   const [watchPolicy, setWatchPolicy] = useState<"latest" | "each" | "skip">("latest");
   const [deadlineInput, setDeadlineInput] = useState("");
-  const remoteBudgetLimit = work.phase4?.budget.limitTokens ?? 500000;
-  // A draft belongs to the policy it was edited against. A remote policy change
-  // invalidates it, while unrelated Work refreshes must retain local edits.
-  const [budgetDraft, setBudgetDraft] = useState<{ base: number; value: string } | null>(null);
-  const budgetLimit = budgetDraft?.base === remoteBudgetLimit ? budgetDraft.value : String(remoteBudgetLimit);
-  useEffect(() => { setBudgetDraft(null); }, [remoteBudgetLimit]);
-  const budgetDirty = budgetLimit.trim() !== "" && Number.isSafeInteger(Number(budgetLimit))
-    && Number(budgetLimit) >= 0 && Number(budgetLimit) !== remoteBudgetLimit;
   const operations = useRef(new Map<string, string>());
   const controlRequests = useRef(new Map<string, WorkPhase3ControlRequest>());
   const operation = (key: string) => {
@@ -139,9 +81,6 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
   };
 
   const satisfied = work.criteria.filter(item => item.status === "satisfied").length;
-  const needsDecision = openBlockers.filter(item => item.waitingForUserInput);
-  const currentProposals = work.deliverables.filter(item => item.status === "proposed"
-    && item.intentRevision === work.intentRevision && item.inputSnapshotId === work.inputSnapshotId);
   const conclusionText = work.closureConclusion ? {
     succeeded: "已完成", ended_unsuccessfully: "未达成，已结束", cancelled: "已取消",
   }[work.closureConclusion] : undefined;
@@ -169,7 +108,6 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
         <h3>下一步</h3>
         {work.nextSteps.length === 0 ? <p>{work.lifecycle === "closed" ? "事项已结束。" : "暂无已记录的下一步。"}</p>
           : <ul>{work.nextSteps.map(step => <li key={step}>{step}</li>)}</ul>}
-        {work.lifecycle !== "closed" && (needsDecision.length > 0 || currentProposals.length > 0) && <p className="bot-work-decision-hint">需要你决定：{currentProposals.length > 0 ? `${currentProposals.length} 份成果待评审` : "有问题等待你的回复"}，请查看下方评审与阻碍。</p>}
       </section>
       {(openBlockers.length > 0 || !work.inputSnapshotBound || work.uncoveredScope.length > 0) && <section className="bot-work-alert" aria-label="需要关注的阻碍">
         <h3>需要关注</h3>
@@ -177,26 +115,22 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
         {openBlockers.map(blocker => <article key={blocker.blockerId}>
           <p>{blocker.waitingForUserInput ? "需要处理：" : "阻碍："}{blocker.reason}</p>
           {userInputBlockerSnapshot(blocker) || blocker.legacyUserInput ? <p>请在下方「回复待补充信息」中填写回复和依据。</p>
-            : blocker.reasonCode?.startsWith("budget-") || blocker.windowId ? <p>请在运行提醒或高级设置中核对预算与实际用量，普通回复不能解除。</p>
-              : blocker.unknownExternalEffectRef || blocker.kind === "external_effect" ? <p>先核对原操作效果；未确认前不能解除或重做。</p>
-                : blocker.blockerId.startsWith("continuation:") ? <p>原操作不会自动重跑。请在执行情况中核对并仅补跑必要缺口。</p>
-                  : <p>请核对执行情况或高级设置中的对应控制。此阻碍不能用普通回复强制解除。</p>}
-          {!userInputBlockerSnapshot(blocker) && props.onReplyToBlocker && work.lifecycle !== "closed" && <>
+            : blocker.unknownExternalEffectRef || blocker.kind === "external_effect" ? <p>先核对原操作效果；未确认前不能解除或重做。</p>
+                : blocker.blockerId.startsWith("continuation:") ? <p>已有成果保留，恢复时只处理必要缺口，不会重跑整个事项。</p>
+                  : <p>执行问题保留在此处，普通回复不会解除阻碍。</p>}
+          {blocker.waitingForUserInput && blocker.kind === "operational" && !blocker.unknownExternalEffectRef
+            && (!blocker.reasonCode || blocker.reasonCode === "user-input") && !blocker.blockerId.startsWith("continuation:")
+            && !userInputBlockerSnapshot(blocker) && !blocker.legacyUserInput && props.onReplyToBlocker && work.lifecycle !== "closed" && <>
             <button type="button" onClick={() => props.onReplyToBlocker?.(blocker)}>向负责人回复此问题</button>
-            <p>打开关联事项的对话草稿，由你填写并发送。回复供负责人核对，原阻碍暂保留；权限、预算和未知效果仍走专门入口。</p>
+            <p>打开关联事项的对话草稿，由你填写并发送。回复供负责人核对，原阻碍暂保留；权限和未知效果仍需单独核对。</p>
           </>}
         </article>)}
         {work.uncoveredScope.length > 0 && <p>尚未覆盖：{work.uncoveredScope.join("、")}</p>}
       </section>}
-      {work.phase4 && (!work.phase4.host.online || work.phase4.budget.unknownUsageCount > 0 || work.phase4.budget.availableTokens <= 0
-        || work.phase4.offlineGaps.some(gap => gap.state !== "recovered")) && <section className="bot-work-alert" aria-label="运行与用量提醒">
+      {work.phase4 && (!work.phase4.host.online || work.phase4.offlineGaps.some(gap => gap.state !== "recovered")) && <section className="bot-work-alert" aria-label="运行提醒">
         <h3>运行提醒</h3>
         {!work.phase4.host.online && <p role="status">运行服务离线，持续关注当前不可用。</p>}
         {work.phase4.offlineGaps.some(gap => gap.state !== "recovered") && <p>存在尚未恢复或无法回查的离线记录，请在高级设置中核对。</p>}
-        {work.phase4.budget.availableTokens <= 0 && <p>可用预算已耗尽。继续运行前，请在高级设置中核对预算。</p>}
-        {work.phase4.budget.unknownUsageCount > 0 && <p>有 {work.phase4.budget.unknownUsageCount} 笔用量尚未确认。核对实际消耗后才能准确结算。</p>}
-        {(work.phase4.budget.unknownReservations ?? []).map(reservation => <UnknownBudgetReconciliation
-          key={reservation.reservationId} work={work} reservation={reservation} busy={busy} submit={runPhase4} />)}
       </section>}
       {work.phase3 && (work.lifecycle === "paused" || work.phase3.settlingActions > 0 || work.phase3.gaps.length > 0
         || work.phase3.subitems.some(item => item.outcome === "completed") || work.phase3.continuations.length > 0)
@@ -230,7 +164,7 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
         {deliverable.artifactRefs.length > 0 && <ul>{deliverable.artifactRefs.map(ref => <li key={ref}>{ref}</li>)}</ul>}
         <p>已保存 {deliverable.evidenceRefs.length} 条证据</p>
       </article>)}
-      <h3>{work.lifecycle === "closed" ? "成果记录与验收" : "需要你决定"}</h3>
+      <h3>成果记录与验收</h3>
       {/* Review drafts retain their reviewed snapshot across background updates. */}
       <WorkReviewPanel key={`review:${work.workId}`} work={work} includeClosed={includeClosed} />
       <WorkCardsPanel key={JSON.stringify(["cards", work.workId, work.intentRevision, work.inputSnapshotId,
@@ -240,7 +174,7 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
       )}
       <details className="bot-advanced">
         <summary>高级设置与诊断</summary>
-        <p>交接、关注规则、预算与版本记录。这里的操作可能影响后续运行。</p>
+        <p>交接、关注规则与版本记录。这里的操作可能影响后续运行。</p>
         <dl>
           <dt>负责人代次</dt><dd>{ownerName} · {work.ownerEpoch}</dd>
           <dt>版本</dt><dd>要求 r{work.intentRevision} · 来源 v{work.sourceVersion} · 状态 v{work.stateVersion}</dd>
@@ -267,7 +201,7 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
         <button type="button" disabled={busy || !question.trim()} onClick={() => { void control({ kind: "collaborate", request: { messageId: operation(`question:${question}`),
           workId: work.workId, kind: "question", recipientBotIds: [work.ownerBotId], body: question, versionGuard } }); }}>保存问题</button>
       </section>}
-      {work.phase4 && <section className="bot-detail-section" aria-label="关注、离线与预算">
+      {work.phase4 && <section className="bot-detail-section" aria-label="关注与离线">
         <h3>关注与运行</h3>
         <p>{work.phase4.host.online ? "运行服务在线" : "运行服务离线，持续关注当前不可用"}
           {work.phase4.host.lastScanAt ? ` · 最近实际检查 ${new Date(work.phase4.host.lastScanAt).toLocaleString()}` : " · 尚无实际检查记录"}
@@ -309,17 +243,6 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
             · 策略 {{ latest: "合并为最新一次", each: "逐条处理", skip: "跳过积压" }[gap.policy]} · {{ open: "待恢复", recovering: "恢复中", recovered: "已恢复", unqueryable: "不可回查" }[gap.state]}</p>
           <p>已补 {gap.recoveredCount} · 已合并 {gap.mergedCount} · 已跳过 {gap.skippedCount} · 未知 {gap.unknownCount ?? "未统计"}{gap.gapReason ? ` · ${gap.gapReason}` : ""}</p>
         </article>)}
-
-        <h3>共享预算</h3>
-        <p>窗口 {work.phase4.budget.windowId} · {new Date(work.phase4.budget.periodStartAt).toLocaleString()} ~ {work.phase4.budget.periodEndAt ? new Date(work.phase4.budget.periodEndAt).toLocaleString() : "无期限"}
-          · {work.phase4.budget.timezone ?? "默认时区"} · 策略 r{work.phase4.budget.policyRevision} · {work.phase4.budget.autoRollover ? "允许续期" : "不自动续期"}</p>
-        <p>上限 {work.phase4.budget.limitTokens} · 已结算 {work.phase4.budget.committedTokens} · 在途预留 {work.phase4.budget.reservedTokens} · 未知 {work.phase4.budget.unknownTokens}（{work.phase4.budget.unknownUsageCount} 笔）· 可用 {work.phase4.budget.availableTokens}</p>
-        {work.phase4.budget.pendingRollover && <p role="status">{work.phase4.budget.pendingRollover}</p>}
-        <label>预算上限<input aria-label="预算上限" type="number" min={0} step={1} disabled={busy} value={budgetLimit}
-          onChange={event => setBudgetDraft({ base: remoteBudgetLimit, value: event.target.value })} /></label>
-        <button type="button" disabled={busy || !["active", "paused"].includes(work.lifecycle) || !budgetDirty}
-          onClick={() => { if (!budgetDirty || busy) return; void runPhase4({ kind: "set-budget-policy", operationId: operation(`budget:${budgetLimit}:${work.stateVersion}`),
-            workId: work.workId, maxTokens: Number(budgetLimit), versionGuard }); }}>保存预算政策</button>
 
         <h3>因果准入</h3>
         {work.phase4.causal.length === 0 ? <p>尚无因果准入记录。</p> : <details><summary>最近 {work.phase4.causal.length} 次准入</summary>

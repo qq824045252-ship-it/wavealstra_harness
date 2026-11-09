@@ -184,13 +184,13 @@ export function WorkReviewPanel({ work, includeClosed }: {
           <p>已找到此问题唯一匹配的原始负责人报告，但旧记录未标明问题类型。请先判断它是否仅需补充信息。</p>
           <label><input type="checkbox" aria-label={`确认仅信息问题 ${blocker.blockerId}`} checked={legacyConfirmed[blocker.blockerId] ?? false} disabled={locked}
             onChange={event => edit(() => setLegacyConfirmed({ ...legacyConfirmed, [blocker.blockerId]: event.target.checked }))} />
-            我确认这仅是信息问题，不涉及操作授权、预算、资源、写入冲突或未知效果；回复及依据足以解决这一个问题</label>
+            我确认这仅是信息问题，不涉及操作授权、资源、写入冲突或未知效果；回复及依据足以解决这一个问题</label>
         </>}
         <label>回复<textarea aria-label={`问题回复 ${blocker.blockerId}`} value={reply.reply} maxLength={2000} disabled={locked}
           onChange={event => edit(() => setReplies({ ...replies, [blocker.blockerId]: { ...reply, reply: event.target.value } }))} /></label>
         <label>依据或记录<input aria-label={`回复依据 ${blocker.blockerId}`} value={reply.evidenceRef} maxLength={2000} disabled={locked}
           onChange={event => edit(() => setReplies({ ...replies, [blocker.blockerId]: { ...reply, evidenceRef: event.target.value } }))} /></label>
-        <p>只保存此问题的回复，不批准操作、不更改预算，也不自动恢复执行。</p>
+        <p>只保存此问题的回复，不批准操作，也不自动恢复执行。</p>
         <button type="button" disabled={disabled || !reply.reply.trim() || !reply.evidenceRef.trim() || !!blocker.legacyUserInput && !legacyConfirmed[blocker.blockerId]}
           onClick={() => {
             const body = { blockerId: blocker.blockerId, blockerSnapshot: blocker.legacyUserInput?.blockerSnapshot ?? userInputBlockerSnapshot(blocker)!,

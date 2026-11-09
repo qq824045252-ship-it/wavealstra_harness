@@ -231,10 +231,6 @@ export class WorkWatchScheduler {
           scheduledAt: subscription.nextWakeAt ?? now, fired });
       }
       this.expireDeadlines(now);
-      for (const raw of this.db.prepare("SELECT work_id FROM works WHERE lifecycle IN ('active','paused')").all() as Array<{ work_id: string }>) {
-        const work = this.works.getWork(raw.work_id);
-        if (work) this.works.budget.rollover(work, now);
-      }
       return results;
     });
   }

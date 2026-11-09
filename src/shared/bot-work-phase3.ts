@@ -21,7 +21,7 @@ export const workSubitemSchema = z.object({
 export type WorkSubitemResult = z.infer<typeof workSubitemSchema>;
 export const workExecutionObservationSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("running"), subitems: z.array(workSubitemSchema).optional() }).strict(),
-  z.object({ status: z.enum(["completed", "failed", "stopped"]), summary: z.string(), hasWriteConflicts: z.boolean(),
+  z.object({ status: z.enum(["completed", "failed", "stopped"]), summary: z.string(), failureReason: z.string().optional(), hasWriteConflicts: z.boolean(),
     artifactRefs: z.array(z.string()), sourceEntryId: z.number().optional(), usageTokens: z.number().nonnegative().optional(),
     subitems: z.array(workSubitemSchema).optional(),readPaths:z.array(z.string()).optional() }).strict(),
 ]);

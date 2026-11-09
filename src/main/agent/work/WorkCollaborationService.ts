@@ -94,8 +94,7 @@ export class WorkCollaborationService {
           sourceEventId: parsed.messageId, causalEventId: parsed.causalMessageId, originWorkId: work.workId,
           originBotId: sender.botId ?? undefined, inputSnapshotId: work.inputSnapshotId,
           actionKind: "delegate-message", operationId: parsed.messageId,
-          trustedRoot: sender.kind === "user" || sender.botId === work.ownerBotId,
-          budgetAvailable: this.works.budget.availableTokens(work.workId)! > 0 });
+          trustedRoot: sender.kind === "user" || sender.botId === work.ownerBotId });
         if (!admission.allowed) throw new Error(`${admission.reasonCode ?? "causal-guard"}: ${admission.message}`);
       }
       const allowed = new Set([work.ownerBotId, ...work.participants.map(item => item.botId)]);
@@ -214,7 +213,7 @@ export class WorkCollaborationService {
     }
     this.db.prepare("DELETE FROM work_participants WHERE work_id=? AND bot_id=?").run(before.workId, before.ownerBotId);
     const input = { messageId: `handoff:${next.workId}:${operationId}`, workId: next.workId, kind: "handoff" as const,
-      recipientBotIds: [next.ownerBotId], body: `负责人由 ${this.bots.getBot(before.ownerBotId)?.displayName ?? "原负责人"} 交接为 ${this.bots.getBot(next.ownerBotId)?.displayName ?? "新负责人"}，沿用当前要求、输入、成果和预算`,
+      recipientBotIds: [next.ownerBotId], body: `负责人由 ${this.bots.getBot(before.ownerBotId)?.displayName ?? "原负责人"} 交接为 ${this.bots.getBot(next.ownerBotId)?.displayName ?? "新负责人"}，沿用当前要求、输入、成果`,
       artifactRefs: [], executionRefs: this.works.repo.listBindings(next.workId).filter(binding => this.isDelegationAdopted(binding, next)).map(binding => ({
         bindingId: binding.bindingId, taskId: binding.taskId, durableStoreKey: binding.durableStoreKey,
         conversationId: binding.conversationId, workspaceBinding: binding.workspaceBinding })),

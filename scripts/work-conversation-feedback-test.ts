@@ -55,7 +55,7 @@ try {
   const history = () => messages.history(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID, conversationId: source.conversationId });
   assert.equal(history().messages.length, 5);
   assert(history().messages.some(m => m.text.includes("不代表用户已验收")));
-  assert(history().messages.some(m => m.text.includes("需要你的输入")));
+  assert(history().messages.some(m => m.text.includes("需要你补充信息")));
   assert(history().messages.slice(2).every(m => m.role === "assistant" && m.status === "completed" && m.workIds[0] === work.workId));
   assert.equal(messages.next(source.conversationId), undefined, "feedback must not queue a model turn");
   assert.equal(history().messages.filter(m => m.text.includes("产出成果")).length, 1, "one native observation is not repeated as binding + deliverable bodies");
@@ -168,8 +168,22 @@ try {
     const diagnostic = history().messages.find(m => m.workFeedback?.eventId === `binding:partial-${status}`);
     assert(diagnostic);
     assert(diagnostic.text.includes(`独立诊断:${status}`), "a partial deliverable must not erase its parent binding diagnostic");
-    if (status !== "completed") assert.equal(diagnostic.workFeedback?.category, "decision");
+    assert.equal(diagnostic.workFeedback?.category, "progress", "terminal execution failures are not requests for a user decision");
   }
+
+  const recovery = create("automatic-recovery-feedback");
+  for (const [blockerId, waitingForUserInput] of [["continuation:old-failure", true], ["recovery-ended:no-progress", false]] as const) {
+    works.repo.insertBlocker({ blockerId, workId: recovery.workId, reason: "自动恢复仍有执行缺口", kind: "operational",
+      status: "open", waitingForUserInput, createdAt: 11 });
+  }
+  assert.equal(feedback.drain(recovery.workId), 2);
+  const recoveryMessages = history().messages.filter(message => message.workFeedback?.workId === recovery.workId);
+  assert(recoveryMessages.every(message => message.workFeedback?.category === "progress"));
+  assert(recoveryMessages.every(message => !message.text.includes("需要你补充信息")));
+  for (const blockerId of ["continuation:old-failure", "recovery-ended:no-progress"]) works.repo.clearBlocker(blockerId, recovery.workId, 12);
+  assert.equal(feedback.drain(recovery.workId), 0, "clearing internal recovery blockers does not spam the conversation");
+  assert.equal(works.repo.listBlockers(recovery.workId).filter(blocker => blocker.status === "cleared").length, 2,
+    "feedback suppression never discards durable blocker history");
 
   const origin = messages.workOrigin(LOCAL_USER_ID, independent.workId)!;
   const spoofKey = createHash("sha256").update(JSON.stringify([independent.workId, "blocker:spoof"])).digest("hex");

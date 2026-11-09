@@ -76,19 +76,10 @@ export class WorkNativeResultInbox {
         return;
       }
       if (observation.subitems?.length) this.works.partialResults.record(binding,observation.subitems);
+      // Settlement cannot move a terminal binding backwards, but late output is
+      // still evidence. submitDeliverable preserves invalidated output as history.
+      if (observation.status !== "running") this.preserveResult(binding, observation, fact.namespace_hash);
       if (canSettle) {
-        if ((observation.status === "completed" || observation.status === "failed")
-          && !this.works.repo.listDeliverables(binding.workId).some(item => item.deliverableId === `result:${binding.bindingId}`)) {
-          this.require(this.works.submitDeliverable({ kind: "worker", botId: binding.botId, bindingId: binding.bindingId }, {
-            operationId: `result:${binding.bindingId}`, workId: binding.workId, bindingId: binding.bindingId,
-            deliverableId: `result:${binding.bindingId}`, summary: observation.summary || "原生执行已结束，成果仍待负责人核验",
-            artifactRefs: observation.artifactRefs, hasWriteConflicts: observation.hasWriteConflicts,
-            evidence: [{ kind: "tool_receipt", sourceRef: `durable:${fact.namespace_hash}:answer:${observation.sourceEntryId ?? binding.bindingId}` }],
-            uncoveredScope: observation.subitems?.filter(item => item.required && item.outcome !== "completed").map(item => `${item.task}：${item.outcome}`)
-              ?? (observation.status === "failed" ? ["本次执行失败，必要目标仍待核验"] : []),
-            uncoveredCriterionIds: [...new Set((observation.subitems ?? []).filter(item => item.required && item.outcome !== "completed").flatMap(item => item.criterionIds))],
-          }));
-        }
         this.reconcile(binding, observation);
         if(observation.status!=="running") this.works.partialResults.settle(binding);
       }
@@ -111,11 +102,46 @@ export class WorkNativeResultInbox {
     return failures;
   }
 
+  private preserveResult(binding: WorkExecutionBindingDto, observation: Exclude<WorkExecutionObservation, { status: "running" }>, namespaceHash: string): void {
+    const rootId = `result:${binding.bindingId}`;
+    const results = this.works.repo.listDeliverables(binding.workId);
+    const existing = results.find(item => item.deliverableId === rootId);
+    const failureReason = observation.failureReason?.trim();
+    const summary = observation.summary.trim();
+    // Old failed observations used summary for the error itself. Without separate
+    // result content or artifact evidence, do not propose that error as an output.
+    const resultSummary = observation.status === "completed" || failureReason && summary !== failureReason ? summary : "";
+    const work = this.works.getWork(binding.workId)!;
+    if (existing?.status === "proposed" && observation.status !== "completed" && failureReason
+      && !existing.artifactRefs.length && existing.summary.trim() === failureReason
+      && binding.intentRevision === work.intentRevision && binding.inputSnapshotId === work.inputSnapshotId && !binding.invalidatedAt) {
+      this.works.repo.updateDeliverableReview(existing.deliverableId, { status: "superseded", reviewedAt: Date.now(),
+        rejectedReason: "原记录仅包含执行异常，已保留为历史事实，不作为成果" });
+      this.works.repo.updateWork({ ...work, stateVersion: work.stateVersion + 1, updatedAt: Date.now() });
+    }
+    if (observation.status !== "completed" && !resultSummary && !observation.artifactRefs.length) return;
+    const deliverableSummary = resultSummary || "已保留原执行产物，成果仍待负责人核验";
+    if (existing && existing.summary === deliverableSummary && existing.hasWriteConflicts === observation.hasWriteConflicts && observation.artifactRefs.every(path => existing.artifactRefs.includes(path))) return;
+    // Backfill must not rewrite an earlier receipt or silently drop newly recovered
+    // artifacts. This stable ID survives rereads, restarts and inbox recovery cycles.
+    const deliverableId = existing ? `result-recovered:${binding.bindingId}:${hash([resultSummary, [...observation.artifactRefs].sort(), observation.hasWriteConflicts])}` : rootId;
+    if (results.some(item => item.deliverableId === deliverableId)) return;
+    const incomplete = observation.subitems?.filter(item => item.required && item.outcome !== "completed") ?? [];
+    this.require(this.works.submitDeliverable({ kind: "worker", botId: binding.botId, bindingId: binding.bindingId }, {
+      operationId: deliverableId, workId: binding.workId, bindingId: binding.bindingId, deliverableId,
+      summary: deliverableSummary,
+      artifactRefs: observation.artifactRefs, hasWriteConflicts: observation.hasWriteConflicts,
+      evidence: [{ kind: "tool_receipt", sourceRef: `durable:${namespaceHash}:answer:${observation.sourceEntryId ?? binding.bindingId}` }],
+      uncoveredScope: [...incomplete.map(item => `${item.task}：${item.outcome}`),
+        ...(observation.status === "completed" ? [] : [observation.status === "stopped" ? "本次执行已停止，剩余目标仍待核验" : "本次执行失败，剩余目标仍待核验"])],
+      uncoveredCriterionIds: [...new Set(incomplete.flatMap(item => item.criterionIds))],
+    }));
+  }
+
   private reconcile(binding: WorkExecutionBindingDto, observation: WorkExecutionObservation): void {
     this.require(this.works.reconcileExecution({ kind: "system", reason: "native-result-inbox" }, {
       bindingId: binding.bindingId, outcome: observation.status,
-      ...(observation.status === "running" ? {} : { note: observation.summary, usageTokens: observation.usageTokens }),
-      reservationId: binding.reservationId,
+      ...(observation.status === "running" ? {} : { note: observation.failureReason || observation.summary, usageTokens: observation.usageTokens }),
     }));
   }
 

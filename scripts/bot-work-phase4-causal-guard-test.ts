@@ -68,13 +68,6 @@ try {
   const forged = admission(a, "forged-ref", { causalEventId: "chain-does-not-exist" });
   assert.equal(forged.allowed, false, "forged should be blocked"); assert.equal(forged.reasonCode, "causal-attribution-unknown");
 
-  // Budget exhaustion blocks only new admission; usage settlement still lands.
-  const exhausted = admission(a, "budget-blocked", { budgetAvailable: false, targetState: { step: 99 } });
-  assert.equal(exhausted.allowed, false, "exhausted should be blocked"); assert.equal(exhausted.reasonCode, "budget-exhausted");
-  assert(works.reserveBudget(a.workId, "settle-reservation", 50).ok);
-  assert(works.commitBudgetUsage(a.workId, "settle-reservation", 50).ok);
-  assert.equal(works.getWork(a.workId)!.budget.usedTokens, 50, "exhaustion never blocks committed usage");
-
   // A dispatch carrying a blocked chain never starts, while a fresh trusted root still can.
   const deniedDispatch = works.dispatchExecution(user, { operationId: "dispatch-blocked", workId: a.workId, botId: DEFAULT_BOT_ID,
     taskId: "blocked-task", durableStoreKey: "store:blocked", conversationId: "1", workspaceBinding: root,
@@ -84,7 +77,7 @@ try {
   assert.equal(works.repo.bindingForTask("blocked-task"), undefined);
   unwrap(works.dispatchExecution(user, { operationId: "dispatch-fresh", workId: b.workId, botId: DEFAULT_BOT_ID,
     taskId: "fresh-task", durableStoreKey: "store:fresh", conversationId: "1", workspaceBinding: root,
-    causal: { source: "hook", sourceEventId: "fresh-source", trustedRoot: true }, reserveTokens: 10 }));
+    causal: { source: "hook", sourceEventId: "fresh-source", trustedRoot: true } }));
 
   // Handoff does not reset the chain.
   unwrap(works.handoffOwner(user, { operationId: "handoff", workId: a.workId, targetBotId: "bot-expert",
@@ -100,7 +93,6 @@ try {
   const afterRestart = admission(a, "same-state-after-restart", { parentChainId: rootChain.chainId, targetState: advanced });
   assert.equal(afterRestart.allowed, false, "afterRestart should be blocked");
   assert.equal(works.causal.list(a.workId).some(item => item.decision === "blocked-loop"), true);
-  assert.equal(works.getWork(a.workId)!.budget.usedTokens, 50);
   console.log("Phase 4 BW-A39 causal: trusted chain identity, same-state loop guard, cross-work fan-out, bounded ping-pong, unknown attribution, settlement and restart/handoff persistence passed");
 } finally {
   db.close(); await rm(root, { recursive: true, force: true });

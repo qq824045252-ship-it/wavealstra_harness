@@ -84,8 +84,8 @@ export class WorkExecutionAdapter {
     for (const failure of this.service.nativeResults.consume()) this.onError(failure.bindingId, failure.error);
     for (const work of this.service.listWorks(this.userId, { includeClosed: true })) {
       for (const binding of this.service.repo.listBindings(work.workId)) {
-        const pendingUsage = binding.reservationId && ["reserved", "unknown"].includes(this.service.repo.getReservation(binding.reservationId)?.state ?? "");
-        if (["completed", "failed", "stopped", "invalidated"].includes(binding.status) && !pendingUsage) continue;
+        const terminal = ["completed", "failed", "stopped", "invalidated"].includes(binding.status);
+        if (terminal && this.service.partialResults.recovery.evidenceRead(binding.bindingId)) continue;
         if (!this.service.nativeResults.shouldInspect(binding.bindingId)) continue;
         if (!this.isAuthority()) return;
         try { await this.deliverBinding(binding); }
@@ -105,10 +105,16 @@ export class WorkExecutionAdapter {
       && !["completed", "failed", "stopped", "invalidated"].includes(current.status)
       && current.intentRevision === work.intentRevision && current.inputSnapshotId === work.inputSnapshotId;
     if (!receipt) {
-      if (["completed", "failed", "stopped", "invalidated"].includes(current.status)) throw new Error("终态预算补读缺少原始回执，保留未知额度且不重新执行");
+      if (["completed", "failed", "stopped", "invalidated"].includes(current.status)) {
+        if (!current.attemptId && !current.submissionReceipt && !current.submittedAt) {
+          this.service.partialResults.recovery.markEvidenceRead(current.bindingId);
+          return;
+        }
+        throw new Error("终态成果补读缺少原始回执，不重新执行原业务");
+      }
       if (!canStart) {
         if (work.lifecycle === "paused" && !current.invalidatedAt && !current.attemptId) return;
-        if (current.attemptId || current.submissionReceipt) throw new Error("已尝试的原始提交缺少可核对回执，结果与用量保留未知");
+        if (current.attemptId || current.submissionReceipt) throw new Error("已尝试的原始提交缺少可核对回执，结果保留未知");
         this.requireSuccess(this.service.reconcileExecution({ kind: "system", reason: "native-submission-absent" }, {
           bindingId: current.bindingId, outcome: "stopped", note: "原生存储确认没有该逻辑提交，未启动新的业务执行",
           usageTokens: 0,
@@ -137,9 +143,9 @@ export class WorkExecutionAdapter {
     if (!this.isAuthority()) return;
     const failures = this.service.nativeResults.receive(current, receipt, observation);
     for (const failure of failures) this.onError(failure.bindingId, failure.error);
-    if (!failures.length && (observation.status === "running" || observation.usageTokens !== undefined || !current.reservationId)) this.service.nativeResults.readRecovered(current);
-    if (observation.status !== "running" && observation.usageTokens === undefined && current.reservationId) {
-      this.service.nativeResults.readFailed(current, new Error("原生终态用量尚未完整返回"));
+    if (!failures.length) {
+      this.service.nativeResults.readRecovered(current);
+      if (observation.status !== "running") this.service.partialResults.recovery.markEvidenceRead(current.bindingId);
     }
     this.service.emitCurrentProjection(current.workId);
   }

@@ -34,8 +34,11 @@ import { HOST_LEASE_TTL_MS, grants, guard, hash, openNativeHost, unwrap, user, w
 type Story = { workA: string; workB: string; subA: string; subB: string; r1Binding: string; r2Binding: string;
   r2Receipt: AgentSubmissionReceipt; identities: unknown; beforeRecovery: ReturnType<NativeHost["counts"]>;
   beforeDelivery?: ReturnType<NativeHost["counts"]>; beforeDeliveryIdentities?: unknown;
-  beforeDeliveryBudgets?: { a: WorkDto["budget"]; b: WorkDto["budget"] };
+  beforeDeliveryWorkState?: { a: ReturnType<typeof workControlState>; b: ReturnType<typeof workControlState> };
   phoneToken?: string; desktopBeforeClose?: WorkListUpdate; finalCardKey?: string; preservedHash?: string; pendingNotificationIds?: string[] };
+const workControlState = (work: WorkDto) => ({ workId: work.workId, lifecycle: work.lifecycle,
+  intentRevision: work.intentRevision, ownerEpoch: work.ownerEpoch, inputSnapshotId: work.inputSnapshotId,
+  authorization: work.authorization });
 const readStory = (root: string) => JSON.parse(readFileSync(join(root, "story.json"), "utf8")) as Story;
 const saveStory = (root: string, story: Story) => writeFileSync(join(root, "story.json"), JSON.stringify(story, null, 2));
 const identity = (binding: WorkExecutionBindingDto) => ({ bindingId: binding.bindingId, taskId: binding.taskId,
@@ -80,7 +83,6 @@ async function stageOne(host: NativeHost) {
   const create = (operationId: string, title: string, realCheck: boolean) => unwrap(works.createWork(user, { operationId, title,
     mode: "watch", authorization: grants, workspacePath: cwd, inputSnapshotId: source.inputSnapshotId, goalSources: [source],
     criteria: [{ text: "自动检查通过" }, ...(realCheck ? [{ text: "Omarchy 实测通过", requiresRealEnvironmentCheck: true, requiredEnvironment: "omarchy" }] : [])],
-    budget: { maxTokens: 10000, windowExpiresAt: Date.now() + 3600000 },
     watchRule: { catchUpPolicy: "latest", maxMergeWaitMs: 1000, maxQueueDepth: 8,
       stopConditionText: realCheck ? "Omarchy 实测通过且无回归，由用户确认结束" : "B 独立停止条件，由用户确认结束" } }));
   const a = create("story-create-a", "Watch A: Linux 检查与有限实测职责", true), b = create("story-create-b", "Watch B: 同来源独立职责", false);
@@ -91,7 +93,8 @@ async function stageOne(host: NativeHost) {
     assert(result.ok); assert(result.subscriptionId); return result.subscriptionId;
   };
   const subA = subscribe(a.workId, "A"), subB = subscribe(b.workId, "B");
-  assert.notEqual(a.budget.windowId, b.budget.windowId);
+  assert.notEqual(a.workId, b.workId); assert.notEqual(subA, subB);
+  assert.equal("budget" in a, false); assert.equal("budget" in b, false);
   assert.equal(works.getWork(a.workId)!.criteria[1].status, "pending");
   host.step(1, "同一持久库立项 A 与同宿主同来源 B，冻结有限职责、授权、验收和停止条件", { a: a.workId, b: b.workId, subA, subB, source });
 
@@ -154,7 +157,7 @@ async function stageTwo(host: NativeHost) {
   await host.adapter.flush();
   assert.deepEqual(identities(host), story.identities, "lost receipt recovery cannot create another binding/root");
   assert.deepEqual(host.counts(), story.beforeRecovery, "recovery reads native history without rerunning tools or models");
-  assert.equal(works.getWork(story.workA)!.budget.usedTokens, 40, "r1 and r2 native root/children usage settle once after receipt recovery");
+  assert.equal("budget" in works.getWork(story.workA)!, false, "receipt recovery cannot restore retired quota state");
   const late = works.repo.listDeliverables(story.workA).find(item => item.executionId === story.r1Binding)!; assert(late);
   assert.equal(late.status, "superseded");
   const refuseLate = reviewWork(works, user, { kind: "accept_deliverable", request: { operationId: "refuse-late-r1", workId: story.workA,
@@ -274,7 +277,7 @@ async function stageTwo(host: NativeHost) {
     assert.deepEqual(works.cards.list(closed).map(card => card.semanticCardKey).sort(), cardsBefore, "closing after acceptance reuses its semantic card");
     assert(works.repo.listSubscriptions(story.workA, { includeStopped: true }).every(subscription => subscription.stoppedAt !== undefined));
     assert.deepEqual(works.ingress.cursor(story.subB, "hook", "B"), cursorBefore);
-    assert.deepEqual(works.getWork(story.workB)!.budget, bBefore.budget);
+    assert.deepEqual(workControlState(works.getWork(story.workB)!), workControlState(bBefore));
     assert.equal(works.getWork(story.workB)!.lifecycle, "active");
     const aBindings = works.repo.listBindings(story.workA).map(identity), aEffects = host.counts();
     works.ingestSourceEvent({ source: "hook", sourceEventId: "closed-A-late-hook", sourceVersion: "3", eventType: "changed", payload: { target: "A" } });
@@ -287,10 +290,10 @@ async function stageTwo(host: NativeHost) {
     assert.equal(works.getWork(story.workB)!.lifecycle, "active");
     assert.deepEqual(works.repo.listBindings(story.workA).map(identity), aBindings);
     assert.equal(works.ingress.cursor(story.subB, "hook", "B")?.highestConsumedVersion, "3");
-    assert.equal(works.getWork(story.workA)!.budget.usedTokens, 70);
-    assert.equal(works.getWork(story.workB)!.budget.usedTokens, 10);
+    assert.equal("budget" in works.getWork(story.workA)!, false);
+    assert.equal("budget" in works.getWork(story.workB)!, false);
     story.finalCardKey = works.cards.list(closed).filter(card => card.currency === "current").at(-1)!.semanticCardKey;
-    host.step(9, "当前版本反馈后用户关闭有限 Watch A；A 停止唤醒，B 的原预算/游标不受清理影响并继续真实执行", {
+    host.step(9, "当前版本反馈后用户关闭有限 Watch A；A 停止唤醒，B 的原授权/游标不受清理影响并继续真实执行", {
       conclusion: closed.closureConclusion, subscriptions: works.repo.listSubscriptions(story.workA, { includeStopped: true }),
       bBinding: works.repo.listBindings(story.workB).map(identity), counts: host.counts() });
   } finally { await phone.close(); }
@@ -299,7 +302,7 @@ async function stageTwo(host: NativeHost) {
   story.pendingNotificationIds = works.repo.listNotifications(story.workA).map(notification => notification.notificationId).sort();
   assert.equal((host.ledger.prepare("SELECT COUNT(*) AS count FROM notifications").get() as { count: number }).count, 0);
   story.beforeDelivery = host.counts(); story.beforeDeliveryIdentities = identities(host);
-  story.beforeDeliveryBudgets = { a: works.getWork(story.workA)!.budget, b: works.getWork(story.workB)!.budget }; saveStory(host.root, story);
+  story.beforeDeliveryWorkState = { a: workControlState(works.getWork(story.workA)!), b: workControlState(works.getWork(story.workB)!) }; saveStory(host.root, story);
   checkpoint(host.root, 2, "accepted-and-closed-before-notification");
 }
 
@@ -309,7 +312,7 @@ async function stageThree(host: NativeHost) {
   await host.native.resumePersisted(); await host.queue.flush(); await host.adapter.flush();
   assert.deepEqual(host.counts(), story.beforeDelivery, "second restart may only recover delivery, never models or business tools");
   assert.deepEqual(identities(host), story.beforeDeliveryIdentities);
-  assert.deepEqual({ a: works.getWork(story.workA)!.budget, b: works.getWork(story.workB)!.budget }, story.beforeDeliveryBudgets);
+  assert.deepEqual({ a: workControlState(works.getWork(story.workA)!), b: workControlState(works.getWork(story.workB)!) }, story.beforeDeliveryWorkState);
   let failFirst = true;
   const channel: WorkNotificationChannel = { channel: "fixture-desktop", deliveryGuarantee: "idempotent-queryable", supportsIdempotencyKey: true, supportsReceiptQuery: true,
     lookup: ({ idempotencyKey }) => host.ledger.prepare("SELECT 1 FROM notifications WHERE effect_key=?").get(idempotencyKey) ? "delivered" : "missing",
@@ -373,11 +376,11 @@ async function stageThree(host: NativeHost) {
     const evidence = JSON.stringify(diagnostics);
     assert(evidence.includes("phase5-next-owner") || evidence.includes('"ownerEpoch":2'));
     assert(evidence.includes("gap") || evidence.includes("continuation") || evidence.includes("subitem"));
-    assert(evidence.includes("budget") || evidence.includes("usedTokens"));
+    assert(!evidence.includes('"budget"') && !evidence.includes('"usedTokens"'), "expanded diagnostics do not restore retired quota state");
     assert.deepEqual(host.counts(), story.beforeDelivery);
     assert.deepEqual(identities(host), story.beforeDeliveryIdentities);
     host.step(10, "第二次真实强杀后仅补通知，已投递效果不重复；真实桌面 reducer 与配对 Remote 增量/快照/只读事实收敛", {
-      counts: host.counts(), notifications: actual, attempts, budgets: story.beforeDeliveryBudgets, physicalNotificationEffects: externalCount,
+      counts: host.counts(), notifications: actual, attempts, workState: story.beforeDeliveryWorkState, physicalNotificationEffects: externalCount,
       cursor: desktop.cursor, desktop: { workId: desktopA.workId, lifecycle: desktopA.lifecycle, intentRevision: desktopA.intentRevision, ownerEpoch: desktopA.ownerEpoch },
       mobile: { workId: mobileA.workId, lifecycle: mobileA.lifecycle, intentRevision: mobileA.intentRevision, ownerEpoch: mobileA.ownerEpoch }, diagnostics });
   } finally { await phone.close(); notifications.stop(); }

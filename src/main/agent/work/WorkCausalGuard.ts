@@ -4,7 +4,7 @@ import type { WorkDto } from "../../../shared/bot-work";
 import { newId } from "./WorkRepository";
 import type { WorkService } from "./WorkService";
 
-export type CausalDecision = "admitted" | "blocked-loop" | "blocked-depth" | "blocked-hops" | "blocked-budget" | "unknown-attribution";
+export type CausalDecision = "admitted" | "blocked-loop" | "blocked-depth" | "blocked-hops" | "unknown-attribution";
 
 export interface CausalPolicy {
   maxDepth: number;
@@ -29,7 +29,6 @@ export interface CausalAdmissionInput {
   operationId: string;
   /** Host-verified root: an external fact, user instruction or system trigger. */
   trustedRoot?: boolean;
-  budgetAvailable?: boolean;
   targetState?: unknown;
   policy?: Partial<CausalPolicy>;
 }
@@ -38,7 +37,7 @@ export interface CausalAdmission {
   allowed: boolean;
   chainId: string;
   decision: CausalDecision;
-  reasonCode?: "causal-loop-guard" | "causal-depth" | "causal-hops" | "causal-attribution-unknown" | "budget-exhausted";
+  reasonCode?: "causal-loop-guard" | "causal-depth" | "causal-hops" | "causal-attribution-unknown";
   message?: string;
   rootEventId: string;
   depth: number;
@@ -114,8 +113,14 @@ export class WorkCausalGuard {
       const depth = parent ? parent.depth + 1 : 0;
       const hops = parent ? parent.hops + 1 : 0;
       const dispatchCount = parent ? parent.dispatch_count + 1 : 1;
-      const admissionKey = createHash("sha256").update(JSON.stringify([root, work.workId,
+      const originalAdmissionKey = createHash("sha256").update(JSON.stringify([root, work.workId,
         input.subscriptionId ?? null, work.inputSnapshotId, stateHash, input.operationId])).digest("hex");
+      // A historical quota refusal did not admit business work. Re-evaluate it
+      // against the current causal guards without rewriting the old audit fact.
+      const previous = this.byAdmissionKey(originalAdmissionKey);
+      const admissionKey = previous && (previous.decision as string) === "blocked-budget"
+        ? createHash("sha256").update(`quota-retired:${originalAdmissionKey}`).digest("hex")
+        : originalAdmissionKey;
       const existing = this.byAdmissionKey(admissionKey);
       if (existing) return this.toResult(existing);
 
@@ -135,10 +140,6 @@ export class WorkCausalGuard {
         decision = "blocked-loop";
         reasonCode = "causal-loop-guard";
         message = `同链在同一业务状态再次请求执行（${input.actionKind}），未创建新的业务工作`;
-      } else if (input.budgetAvailable === false) {
-        decision = "blocked-budget";
-        reasonCode = "budget-exhausted";
-        message = "共享预算已耗尽，未创建新的业务工作；已有结果与用量仍可结算";
       } else if (depth > policy.maxDepth) {
         decision = "blocked-depth";
         reasonCode = "causal-depth";
@@ -201,7 +202,7 @@ export class WorkCausalGuard {
   }
 
   list(workId: string, limit = 20): ChainRow[] {
-    return this.db.prepare("SELECT * FROM work_causal_chains WHERE target_work_id=? ORDER BY created_at DESC,rowid DESC LIMIT ?")
+    return this.db.prepare("SELECT * FROM work_causal_chains WHERE target_work_id=? AND decision!='blocked-budget' ORDER BY created_at DESC,rowid DESC LIMIT ?")
       .all(workId, limit) as ChainRow[];
   }
 

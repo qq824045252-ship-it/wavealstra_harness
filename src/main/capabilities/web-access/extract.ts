@@ -1,6 +1,8 @@
 import { Readability } from "@mozilla/readability";
 import { resizeImage } from "@earendil-works/pi-coding-agent";
-import { parseHTML } from "linkedom";
+// Text extraction needs a DOM, not native canvas. The official worker entry
+// bundles the same parser with a canvas shim and no optional native imports.
+import { parseHTML } from "linkedom/worker";
 import TurndownService from "turndown";
 import pLimit from "p-limit";
 import { activityMonitor } from "./activity.ts";

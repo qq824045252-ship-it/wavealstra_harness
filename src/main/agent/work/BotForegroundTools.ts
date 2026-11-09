@@ -133,7 +133,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
       return output(result);
     },
   }));
-  return [defineTool({ name: "work_query_status", description: "读取当前 Bot 的已知 Work、成果、预算及版本守卫。不会启动业务工具。",
+  return [defineTool({ name: "work_query_status", description: "读取当前 Bot 的已知 Work、成果及版本守卫。不会启动业务工具。",
     parameters: inputParameters.query, replay: "safe",
     execute: async (args, api, context) => {
       const requestId = await botForegroundRequest(api, api.callId, context);
@@ -150,7 +150,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
         const visibleMessages = works.collaboration.list(actor(), work.workId);
         return { ...projection, phase3: projection?.phase3 ? { ...projection.phase3,
           collaborationMessages: visibleMessages, handoffs: visibleMessages.filter(message => message.kind === "handoff") } : undefined,
-          budget: work.budget, versionGuard };
+          versionGuard };
       });
     })); } }), ...mutations,
   defineTool({ name: "memory_search", description: "查询当前 Bot 私有记忆，不访问其他 Bot 或项目。",

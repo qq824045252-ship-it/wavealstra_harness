@@ -55,7 +55,7 @@ export const workReviewControlSchema = z.discriminatedUnion("kind", [
 export type WorkReviewControlRequest = z.input<typeof workReviewControlSchema>;
 
 /** Only explicitly typed information requests can be answered here. Operational,
- * budget, resource and unknown-effect blockers must use their own guarded controls. */
+ * resource and unknown-effect blockers must use their own guarded controls. */
 export function userInputBlockerSnapshot(blocker: WorkBlockerDto): string | undefined {
   if (blocker.kind !== "operational" || blocker.reasonCode !== "user-input" || !blocker.waitingForUserInput
     || blocker.unknownExternalEffectRef || !blocker.sourceRef || blocker.subscriptionId || blocker.windowId

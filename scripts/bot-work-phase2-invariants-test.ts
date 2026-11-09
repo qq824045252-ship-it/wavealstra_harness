@@ -23,15 +23,15 @@ let db = new AppDatabase(path);
 let bots = new BotRegistry(db.connection); bots.registerBot({ userId: LOCAL_USER_ID, botId: DEFAULT_BOT_ID, displayName: "fixture", authorization: DESKTOP_USER_GRANTS });
 let works = new WorkService(db.connection, { bots });
 const create = (id: string) => unwrap(works.createWork(user, { operationId: id, title: id, inputSnapshotId: `source:${id}`, authorization: DESKTOP_USER_GRANTS }));
-const bind = (work: WorkDto, id: string, reserveTokens?: number) => {
+const bind = (work: WorkDto, id: string) => {
   const result = unwrap(works.dispatchExecution(user, { workId: work.workId, operationId: id, botId: DEFAULT_BOT_ID, taskId: id,
-    durableStoreKey: `store:${id}`, conversationId: "1", workspaceBinding: root, reserveTokens }));
+    durableStoreKey: `store:${id}`, conversationId: "1", workspaceBinding: root }));
   return works.repo.getBinding(result.activeExecutionIds.at(-1)!)!;
 };
 try {
   // Each namespace may legitimately use numeric conversationId=1.
-  const first = create("namespace-a"); const a = bind(first, "root-a", 20);
-  const second = create("namespace-b"); const b = bind(second, "root-b", 30);
+  const first = create("namespace-a"); const a = bind(first, "root-a");
+  const second = create("namespace-b"); const b = bind(second, "root-b");
   assert.equal(a.conversationId, b.conversationId);
   const receipt = (binding: typeof a): AgentSubmissionReceipt => ({ taskId: binding.taskId, operationId: binding.operationId, submissionId: 1, status: "done" });
   const done = { status: "completed" as const, summary: "first result", artifactRefs: ["artifact.txt"], hasWriteConflicts: false, sourceEntryId: 3 };
@@ -41,14 +41,8 @@ try {
   assert.equal(works.repo.listDeliverables(second.workId)[0].summary, "second result");
   // Late usage is an additional settlement fact, not a rewritten deliverable operation.
   assert.deepEqual(works.nativeResults.receive(a, receipt(a), { ...done, usageTokens: 7 }), []);
-  assert.equal(works.getWork(first.workId)?.budget.usedTokens, 7);
-  assert.equal(works.getWork(second.workId)?.budget.usedTokens, 9);
   assert.equal(works.repo.listDeliverables(first.workId).length, 1);
   assert.deepEqual(works.nativeResults.receive(a, receipt(a), { ...done, usageTokens: 7 }), []);
-  assert.equal(works.getWork(first.workId)?.budget.usedTokens, 7);
-  const wrong = works.reconcileExecution({ kind: "system", reason: "wrong-reservation" }, { bindingId: a.bindingId, outcome: "completed", usageTokens: 500, reservationId: b.reservationId });
-  assert.equal(wrong.ok, false);
-  assert.equal(works.getWork(second.workId)?.budget.usedTokens, 9);
   assert.throws(() => works.nativeResults.receive(a, receipt(b), done));
 
   // A failed result transaction cannot starve an unrelated root's durable inbox.
@@ -66,17 +60,15 @@ try {
   assert.equal(works.repo.listDeliverables(cWork.workId).length, 1);
   assert.equal(works.repo.listOpenBlockers(cWork.workId).length, 0);
 
-  const unknownWork = create("unreadable"); const unknown = bind(unknownWork, "root-unknown", 15);
+  const unknownWork = create("unreadable"); const unknown = bind(unknownWork, "root-unknown");
   let reads = 0;
-  const unavailable: WorkExecutionPort = { prepare: async () => { throw new Error("not preparation"); }, find: async () => { reads++; throw new Error("read unavailable"); },
+  const unavailable: WorkExecutionPort = { prepare: async () => { throw new Error("not preparation"); }, find: async binding => { if (binding.bindingId === unknown.bindingId) reads++; throw new Error("read unavailable"); },
     submit: async () => { throw new Error("must never replay business"); }, inspect: async () => { throw new Error("not reached"); }, stop: async () => {} };
   const broken = new WorkExecutionAdapter(works, unavailable, LOCAL_USER_ID, () => true, () => {});
   for (let index = 0; index < 9; index++) await broken.flush(); await broken.close();
   assert.equal(reads, 5, "readback is bounded durably, not an infinite polling loop");
   assert.equal(works.repo.getBinding(unknown.bindingId)?.status, "unknown");
   assert.equal(works.repo.listOpenBlockers(unknownWork.workId).length, 1);
-  assert.equal(works.repo.getReservation(unknown.reservationId!)?.state, "unknown");
-  assert.equal(works.getWork(unknownWork.workId)?.budget.reservedTokens, 15);
   const unknownVersion = works.getWork(unknownWork.workId)!.stateVersion;
   db.close(); db = new AppDatabase(path); bots = new BotRegistry(db.connection); works = new WorkService(db.connection, { bots });
   assert.equal(works.nativeResults.shouldInspect(unknown.bindingId), false);
@@ -86,20 +78,16 @@ try {
   const recovered = new WorkExecutionAdapter(works, recoveredPort, LOCAL_USER_ID, () => true, (_id, error) => { throw error; });
   recovered.wake(unknown.taskId); await recovered.flush(); await recovered.close();
   assert.equal(works.repo.getBinding(unknown.bindingId)?.status, "completed", "trusted native terminal wake can start bounded readback after exhaustion");
-  assert.equal(works.getWork(unknownWork.workId)?.budget.usedTokens, 8);
   assert.equal(works.repo.listOpenBlockers(unknownWork.workId).length, 0);
-  const stoppedWork = create("stopped-usage"); const stopped = bind(stoppedWork, "root-stopped", 12);
+  const stoppedWork = create("stopped-usage"); const stopped = bind(stoppedWork, "root-stopped");
   unwrap(works.reconcileExecution({ kind: "system", reason: "stopped-usage-missing" }, { bindingId: stopped.bindingId, outcome: "stopped" }));
-  assert.equal(works.repo.getReservation(stopped.reservationId!)?.state, "unknown");
-  assert(works.repo.listOpenBlockers(stoppedWork.workId).some(blocker => blocker.blockerId === `usage:${stopped.bindingId}`));
+  assert.equal(works.repo.listOpenBlockers(stoppedWork.workId).length, 0, "missing telemetry never blocks known terminal results");
   const stoppedPort: WorkExecutionPort = { ...unavailable, find: async () => receipt(stopped), inspect: async () => ({ ...done, status: "stopped", usageTokens: 6 }) };
   const stoppedAdapter = new WorkExecutionAdapter(works, stoppedPort, LOCAL_USER_ID, () => true, (_id, error) => { throw error; });
   await stoppedAdapter.flush(); await stoppedAdapter.close();
   assert.equal(works.repo.getBinding(stopped.bindingId)?.status, "stopped");
-  assert.equal(works.repo.getReservation(stopped.reservationId!)?.state, "committed");
-  assert.equal(works.getWork(stoppedWork.workId)?.budget.usedTokens, 6);
   assert.equal(works.repo.listOpenBlockers(stoppedWork.workId).length, 0);
-  const lostWork = create("lost-terminal-receipt"); const lostBinding = bind(lostWork, "lost-terminal-root", 10);
+  const lostWork = create("lost-terminal-receipt"); const lostBinding = bind(lostWork, "lost-terminal-root");
   unwrap(works.reconcileExecution({ kind: "system", reason: "terminal-unbilled" }, { bindingId: lostBinding.bindingId, outcome: "stopped" }));
   let terminalSubmissions = 0;
   const lostPort: WorkExecutionPort = { ...unavailable, find: async () => undefined,
@@ -109,9 +97,6 @@ try {
   unwrap(works.pauseWork(user, { workId: lostWork.workId, operationId: "pause-unbilled" }));
   await lostAdapter.flush(); await lostAdapter.close();
   assert.equal(terminalSubmissions, 0);
-  assert.equal(works.repo.getReservation(lostBinding.reservationId!)?.state, "unknown", "missing receipt does not prove zero cost");
-  assert.equal(works.getWork(lostWork.workId)?.budget.usedTokens, 0);
-  assert.equal(works.getWork(lostWork.workId)?.budget.reservedTokens, 10);
   const intermittentWork = create("intermittent-native-read"); const intermittent = bind(intermittentWork, "intermittent-root");
   let failRead = true, alternating = true, nativeReads = 0;
   const intermittentPort: WorkExecutionPort = { ...unavailable, find: async binding => {
@@ -135,69 +120,32 @@ try {
   assert(works.getWork(intermittentWork.workId)?.activeExecutionIds.includes(intermittent.bindingId));
   await intermittentAdapter.close();
   unwrap(works.reconcileExecution({ kind: "system", reason: "fixture-ended" }, { bindingId: intermittent.bindingId, outcome: "completed" }));
-  const pendingUsageWork = create("unknown-then-terminal-usage"); const pendingUsage = bind(pendingUsageWork, "unknown-then-terminal-root", 11);
+  const pendingUsageWork = create("unknown-then-terminal-usage"); const pendingUsage = bind(pendingUsageWork, "unknown-then-terminal-root");
   works.nativeResults.receive(pendingUsage, receipt(pendingUsage), { status: "running" });
   works.nativeResults.readFailed(pendingUsage, new Error("temporary outage before result"));
   unwrap(works.cancelWork(user, { workId: pendingUsageWork.workId, operationId: "cancel-pending-usage" }));
   works.nativeResults.receive(pendingUsage, receipt(pendingUsage), done);
-  assert.equal(works.repo.getReservation(pendingUsage.reservationId!)?.state, "unknown");
-  assert(works.repo.listOpenBlockers(pendingUsageWork.workId).some(blocker => blocker.blockerId === `usage:${pendingUsage.bindingId}`));
-  assert.equal(works.getWork(pendingUsageWork.workId)?.lifecycle, "closing", "unknown usage cannot silently close the responsibility");
+  assert.equal(works.repo.listOpenBlockers(pendingUsageWork.workId).length, 0);
+  assert.equal(works.getWork(pendingUsageWork.workId)?.lifecycle, "closed", "known terminal outcome can close without token telemetry");
   works.nativeResults.receive(pendingUsage, receipt(pendingUsage), { ...done, usageTokens: 4 });
   assert.equal(works.getWork(pendingUsageWork.workId)?.closureConclusion, "cancelled");
-  assert.equal(works.getWork(pendingUsageWork.workId)?.budget.usedTokens, 4);
 
-  // Stopping does not require funding another execution, but does require settlement.
-  const exhaust = (work: WorkDto) => {
-    assert.equal(works.reserveBudget(work.workId, `over-budget:${work.workId}`, work.budget.maxTokens + 1).ok, false);
-    assert.equal(works.repo.getBlocker(`budget:exhausted:${work.workId}`)?.status, "open");
-  };
+  // Stopping still waits for real execution settlement and unknown external effects.
   for (const conclusion of ["ended_unsuccessfully", "cancelled"] as const) {
-    const target = create(`stop-exhausted-${conclusion}`);
-    const execution = bind(target, `settled-${conclusion}`, 10);
-    unwrap(works.reconcileExecution({ kind: "system", reason: "fixture-complete" }, { bindingId: execution.bindingId, outcome: "completed", usageTokens: 2 }));
-    exhaust(works.getWork(target.workId)!);
-    const completed = works.closeWork(user, { workId: target.workId, operationId: `reject-success-${conclusion}`, conclusion: "succeeded" });
-    assert.equal(completed.ok, false, "completion must not dismiss a budget blocker");
-    assert.equal(works.repo.getBlocker(`budget:exhausted:${target.workId}`)?.status, "open");
-    const closed = unwrap(works.closeWork(user, { workId: target.workId, operationId: `stop-${conclusion}`, conclusion, closureSummary: "Owner stopped with remaining gaps" }));
-    assert.equal(closed.lifecycle, "closed"); assert.equal(closed.closureConclusion, conclusion);
-    assert.equal(closed.budget.usedTokens, 2);
-    assert.equal(works.repo.getBlocker(`budget:exhausted:${target.workId}`)?.status, "cleared");
-
-    // Non-binding reservations are real obligations even without an accompanying blocker.
-    for (const state of ["reserved", "unknown"] as const) {
-      const pending = create(`unbound-${state}-${conclusion}`);
-      const reservationId = `unbound:${pending.workId}`;
-      assert(works.reserveBudget(pending.workId, reservationId, 5).ok);
-      if (state === "unknown") db.connection.prepare("UPDATE work_budget_reservations SET state='unknown' WHERE reservation_id=?").run(reservationId);
-      exhaust(works.getWork(pending.workId)!);
-      const closing = unwrap(works.closeWork(user, { workId: pending.workId, operationId: `stop-${pending.workId}`, conclusion, closureSummary: "Stop without hiding unsettled usage" }));
-      assert.equal(closing.lifecycle, "closing", `${state} unbound usage still prevents ${conclusion}`);
-      assert.equal(works.repo.getReservation(reservationId)?.state, state);
-    }
-
-    const live = create(`live-${conclusion}`), running = bind(live, `live-root-${conclusion}`, 10);
-    exhaust(works.getWork(live.workId)!);
-    assert.equal(unwrap(works.closeWork(user, { workId: live.workId, operationId: `live-stop-${conclusion}`, conclusion, closureSummary: "Wait for actual execution settlement" })).lifecycle, "closing");
-    unwrap(works.reconcileExecution({ kind: "system", reason: "fixture-settled" }, { bindingId: running.bindingId, outcome: "stopped", usageTokens: 3 }));
+    const live = create(`live-${conclusion}`), running = bind(live, `live-root-${conclusion}`);
+    assert.equal(unwrap(works.closeWork(user, { workId: live.workId, operationId: `live-stop-${conclusion}`, conclusion,
+      closureSummary: "Wait for actual execution settlement" })).lifecycle, "closing");
+    unwrap(works.reconcileExecution({ kind: "system", reason: "fixture-settled" }, { bindingId: running.bindingId, outcome: "stopped" }));
     assert.equal(works.getWork(live.workId)?.closureConclusion, conclusion);
   }
-  for (const blockerCase of ["unknown-effect", "receipt-conflict", "other-operational", "wrong-budget-code"] as const) {
-    const target = create(`preserve-${blockerCase}`);
-    const budgetId = `budget:exhausted:${target.workId}`;
-    const blockerId = blockerCase === "unknown-effect" || blockerCase === "wrong-budget-code" ? budgetId : `fixture:${target.workId}`;
-    works.repo.insertBlocker({ blockerId, workId: target.workId, kind: "operational", reason: blockerCase,
-      reasonCode: blockerCase === "receipt-conflict" || blockerCase === "wrong-budget-code" ? "budget-reconciliation-conflict" : "budget-exhausted",
-      unknownExternalEffectRef: blockerCase === "unknown-effect" ? "unverified-receipt" : undefined,
-      waitingForUserInput: true, status: "open", createdAt: Date.now() });
-    assert.equal(unwrap(works.closeWork(user, { workId: target.workId, operationId: `stop-${blockerCase}`, conclusion: "ended_unsuccessfully", closureSummary: "Do not discard unknown obligations" })).lifecycle, "closing");
+  for (const kind of ["external_effect", "operational"] as const) {
+    const target = create(`preserve-${kind}`), blockerId = `fixture:${kind}`;
+    works.repo.insertBlocker({ blockerId, workId: target.workId, kind, reason: "unresolved effect",
+      unknownExternalEffectRef: "unverified-receipt", waitingForUserInput: false, status: "open", createdAt: Date.now() });
+    assert.equal(unwrap(works.closeWork(user, { workId: target.workId, operationId: `stop-${kind}`, conclusion: "ended_unsuccessfully",
+      closureSummary: "Do not discard unknown obligations" })).lifecycle, "closing");
     assert.equal(works.repo.getBlocker(blockerId)?.status, "open");
   }
-  const stuck = create("legacy-closing-budget"); exhaust(stuck);
-  works.repo.updateWork({ ...works.getWork(stuck.workId)!, lifecycle: "closing", pendingConclusion: "ended_unsuccessfully", closureSummary: "Previously requested stop" });
-  db.close(); db = new AppDatabase(path); bots = new BotRegistry(db.connection); works = new WorkService(db.connection, { bots });
-  assert.equal(unwrap(works.closeWork(user, { workId: stuck.workId, operationId: "retry-legacy-stop", conclusion: "ended_unsuccessfully", closureSummary: "Previously requested stop" })).closureConclusion, "ended_unsuccessfully");
 
   // Snapshot epochs and per-user sequences persist across reopen and list scopes stay distinct.
   const journal = new WorkProjectionJournal(db.connection, works);
@@ -249,6 +197,5 @@ try {
   assert.equal(submissions, 1, "prepare races and lost dispatch acknowledgement cannot start a second business execution");
   assert.equal(works.repo.listBindings(queued.workId).length, 1);
   assert.equal(rowCount(db.connection.prepare("SELECT COUNT(*) count FROM work_dispatch_requests WHERE work_id=? AND state='dispatched'").get(queued.workId)), 1);
-  assert.equal(works.repo.getReservation(works.repo.listBindings(queued.workId)[0].reservationId!)?.state, "committed");
-  console.log("PASS Phase 2 namespace isolation, exact/late billing, poison isolation, bounded unknown recovery, persistent scopes, multi-connection lease/CAS, queued prepare and lost dispatch receipt");
+  console.log("PASS Phase 2 namespace isolation, late telemetry without quota blocking, poison isolation, bounded unknown recovery, persistent scopes, multi-connection lease/CAS, queued prepare and lost dispatch receipt");
 } finally { db.close(); await rm(root, { recursive: true, force: true }); }

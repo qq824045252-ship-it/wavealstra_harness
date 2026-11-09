@@ -79,9 +79,9 @@ function stableSortAt(timestamp: number): number {
 }
 
 /** 置顶只改展示位置：从整棵筛选后的树里抽出已置顶任务，折叠的空间也算。 */
-function collectPinnedRows(nodes: WorkspaceTreeNode[], tasks: Task[]): VisibleRow[] {
+function collectPinnedRows(nodes: WorkspaceTreeNode[], tasks: Task[]): Array<Extract<VisibleRow, { kind: "task" }>> {
   const byId = new Map(tasks.map((task) => [task.id, task]));
-  const rows: VisibleRow[] = [];
+  const rows: Array<Extract<VisibleRow, { kind: "task" }>> = [];
   const walk = (list: WorkspaceTreeNode[]): void => {
     for (const node of list) {
       if (node.kind === "space") {
@@ -868,7 +868,7 @@ export default function Sidebar({ onClose, onCreateBot }: { onClose?: () => void
               <span className="sidebar-bot-avatar"><IconBot size={18} /></span><span><strong>{bot.displayName}</strong><small>{botPresenceLabel(bot.status, botHostStatus ? botHostStatus.online : null)}</small></span>
             </button>
           ))}
-          <div className="sidebar-bot-tip"><IconListTodo size={18} /><strong>事项始终在手边</strong><p>在顶部查看进行中、待你决定和已结束的事项。对话与记录，随时接着聊。</p></div>
+          <div className="sidebar-bot-tip"><IconListTodo size={18} /><strong>事项始终在手边</strong><p>在顶部查看进行中和已结束的事项。对话与记录，随时接着聊。</p></div>
         </div>
       ) : <>
       <div className="sidebar-primary-action">

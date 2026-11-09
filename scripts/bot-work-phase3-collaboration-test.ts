@@ -88,7 +88,7 @@ try {
   assert.equal(memory.canAccess(other.id, { taskId: "collaborator-root" }), false);
   assert.equal(memory.canAccess(own.id, { taskId: "collaborator-root" }), true);
   assert.throws(() => memory.updateFromTask("collaborator-root", { id: other.id, content: "stolen" }), /作用域|审核|scope/i);
-  const savedBudget = works.getWork(work.workId)!.budget;
+  assert.equal("budget" in works.getWork(work.workId)!, false);
   const messages = collaboration.history(work.workId);
   db.close();
   const reopened = new AppDatabase(path);
@@ -97,7 +97,7 @@ try {
   const restored = new WorkCollaborationService(reopened.connection, reopenedWorks, reopenedBots);
   assert.deepEqual(restored.list(user, work.workId), messages);
   assert.equal(restored.send(owner, first).replayed, true);
-  assert.deepEqual(reopenedWorks.getWork(work.workId)!.budget, savedBudget);
+  assert.equal("budget" in reopenedWorks.getWork(work.workId)!, false);
   reopened.close();
   console.log("Phase 3 collaboration: eight message kinds, durable replay, namespace/recipient/recursion guards and actual Memory isolation passed");
 } finally { try { db.close(); } catch { /* already closed for restart */ } rmSync(root, { recursive: true, force: true }); }

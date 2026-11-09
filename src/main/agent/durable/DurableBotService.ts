@@ -95,10 +95,7 @@ export interface DurableBotServiceOptions {
   prepareTask?: (request: AgentPromptRequest) => Promise<AgentPromptRequest>;
   beforeSubmit?: (request: AgentPromptRequest) => void;
   beforeModelRequest?: (taskId: string) => void;
-  providerBudgetControlled?: (taskId: string) => boolean;
-  onProviderRequest?: (taskId: string, input: { conversationId: string; generationTaskId: number;
-    sourceKind: "main" | "subagent"; requestKind: "generation" | "compaction";
-    modelId: string; modelApi: string; estimatedTokens: number }) => void | Promise<void>;
+  providerAuthorityGuarded?: (taskId: string) => boolean;
   onProviderUsage?: (taskId: string, input: { conversationId: string; generationTaskId: number;
     reported: boolean; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }) => void;
   resumeAllowed?: (taskId: string) => boolean;
@@ -405,8 +402,7 @@ export class DurableBotService {
         onResponse: (message, info) => this.options.onResponse?.(taskId, message, info),
         onRequest: info => this.options.onRequest?.(taskId, info),
         beforeProviderRequest: () => this.options.beforeModelRequest?.(taskId),
-        providerBudgetControlled: () => this.options.providerBudgetControlled?.(taskId) ?? false,
-        onProviderRequest: input => this.options.onProviderRequest?.(taskId, input),
+        providerAuthorityGuarded: () => this.options.providerAuthorityGuarded?.(taskId) ?? false,
         onProviderUsage: input => this.options.onProviderUsage?.(taskId, input),
         onTool: this.options.onTool,
         observedUsage: conversationId => this.options.observedUsage?.(taskId, conversationId) ?? { inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheHitRate: null },

@@ -110,16 +110,14 @@ try {
     "the bounded deadline is honored while another subscription is flooded");
   assert.equal(works.repo.listInbox(quiet.workId, ["merged"]).length, 1);
 
-  // A blocked queue does not block other Works' deadlines, settlement or budget reconciliation.
+  // A blocked queue does not block other Works' deadlines or result settlement.
   const deadlineWork = create("deadline-other");
   works.phase4Control(user, { kind: "set-deadline", operationId: "deadline-other-set", workId: deadlineWork.workId,
     deadlineAt: clock.at + 10, versionGuard: guard(works.getWork(deadlineWork.workId)!) });
   clock.at += 20;
   works.tick(clock.at);
   assert.equal(works.repo.listInbox(deadlineWork.workId, ["pending"]).filter(item => item.eventType === "deadline_expired").length, 1);
-  assert(works.reserveBudget(bounded.workId, "bounded-settlement", 5).ok);
-  assert(works.commitBudgetUsage(bounded.workId, "bounded-settlement", 5).ok);
-  assert.equal(works.getWork(bounded.workId)!.budget.usedTokens, 5, "backpressure never blocks settlement");
+  assert.equal("budget" in works.getWork(bounded.workId)!, false, "backpressure does not introduce quota state");
 
   // Resolve the remaining overflow and clear the single persistent blocker.
   for (const row of works.repo.listInbox(bounded.workId, ["pending"])) works.completeInboxEvent(row.eventId, () => {});

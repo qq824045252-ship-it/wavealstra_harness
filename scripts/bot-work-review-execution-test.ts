@@ -202,6 +202,154 @@ try {
     assert.deepEqual(result.artifactRefs, ["early.png"]);
     assert.ok(pages > 1, "persisted evidence must span the scan boundary");
   });
+
+  const unanswered = (input: number | undefined, reason = "faulted", detail = "provider disconnected"): SubmissionRecord => ({
+    type: "input", status: "unanswered", id: 10 as SubmissionRecord["id"],
+    conversationId: 1 as SubmissionRecord["conversationId"], entry: input as EntryRecord["id"] | undefined,
+    reason, detail,
+  });
+  const inputEntry = (id: number): EntryRecord => ({ ...entry(id, 1, [{ role: "user", content: "next request", timestamp: id }]), kind: "pi.user" });
+  const fileEntries = (id: number, name: "read" | "write" | "edit", path: string, isError = false) => [
+    entry(id, 1, [assistant([{ type: "toolCall", id: `file-${id}`, name, arguments: { path } }])]),
+    entry(id + 1, 1, [{ role: "toolResult", toolCallId: `file-${id}`, toolName: name,
+      content: [{ type: "text", text: isError ? "operation failed" : "operation succeeded" }], isError, timestamp: id + 1 }]),
+  ];
+  await check("failed and stopped inputs retain only successful artifacts and distinct response content before the next input", async () => {
+    const entries = [inputEntry(30), ...fileEntries(31, "write", "saved.txt"), ...fileEntries(33, "edit", "rejected.txt", true),
+      ...fileEntries(35, "read", "source.txt"),
+      entry(37, 1, [assistant([{ type: "text", text: "已完成第一部分" }])]),
+      entry(38, 1, [{ ...assistant([]), stopReason: "error", errorMessage: "provider disconnected" }]),
+      inputEntry(39), ...effectEntries(40, 1, "foreign.png", ["foreign-conflict"]),
+      ...fileEntries(42, "write", "foreign.txt"), entry(44, 1, [assistant([{ type: "text", text: "其他请求的成果" }])]),
+    ];
+    for (const reason of ["faulted", "aborted"]) {
+      const result = await readDurableWorkExecution(persisted(entries), unanswered(30, reason), root);
+      assert.notEqual(result.status, "running"); if (result.status === "running") return;
+      assert.equal(result.status, reason === "aborted" ? "stopped" : "failed");
+      assert.equal(result.summary, "已完成第一部分");
+      assert.equal(result.failureReason, "provider disconnected");
+      assert.deepEqual(result.artifactRefs, [join(root, "saved.txt")]);
+      assert.deepEqual(result.readPaths, [join(root, "source.txt")]);
+      assert.equal(result.hasWriteConflicts, false);
+      assert.equal(result.sourceEntryId, 38);
+      assert.equal(result.usageTokens, reason === "aborted" ? undefined : 10);
+    }
+  });
+  await check("the first next-input entry on a new page is excluded before any artifact or subitem merge", async () => {
+    let pages = 0;
+    const entries = [inputEntry(1000), ...fileEntries(1001, "write", "first-page.txt"),
+      ...Array.from({ length: 197 }, (_, index) => entry(1003 + index, 1)), inputEntry(1200),
+      entry(1201, 1, [assistant([{ type: "toolCall", id: "foreign-child", name: "subagent", arguments: {} }])]),
+      entry(1202, 1, [{ role: "toolResult", toolCallId: "foreign-child", toolName: "subagent", content: [], isError: false, timestamp: 1202,
+        details: { results: [{ subagentId: "foreign", status: "completed", exitCode: 0, artifactRefs: ["foreign-child.txt"], writeConflicts: ["foreign-conflict"] }] } }]),
+    ];
+    const result = await readDurableWorkExecution(persisted(entries, () => pages++), unanswered(1000), root);
+    assert.notEqual(result.status, "running"); if (result.status === "running") return;
+    assert.equal(pages, 2);
+    assert.deepEqual(result.artifactRefs, [join(root, "first-page.txt")]);
+    assert.equal(result.hasWriteConflicts, false);
+    assert.equal(result.subitems, undefined);
+  });
+  await check("completed scans also stop before a later input and never attribute its answer", async () => {
+    const entries = [inputEntry(2000), ...fileEntries(2001, "write", "own.txt"), inputEntry(2003),
+      ...fileEntries(2004, "write", "later.txt"), entry(2006, 1, [assistant([{ type: "text", text: "later answer" }])])];
+    const result = await readDurableWorkExecution(persisted(entries), completed(2000, 2006), root);
+    assert.notEqual(result.status, "running"); if (result.status === "running") return;
+    assert.equal(result.status, "failed"); assert.equal(result.summary, "");
+    assert.deepEqual(result.artifactRefs, [join(root, "own.txt")]);
+    assert.equal(result.usageTokens, 2);
+  });
+  await check("unplaced failures cannot scan a conversation and provider error text is not result content", async () => {
+    let scans = 0;
+    const result = await readDurableWorkExecution(persisted([], () => scans++), unanswered(undefined));
+    assert.equal(scans, 0);
+    assert.notEqual(result.status, "running"); if (result.status === "running") return;
+    assert.equal(result.summary, ""); assert.equal(result.failureReason, "provider disconnected");
+    const failedAnswer = await readDurableWorkExecution(persisted([inputEntry(2100), entry(2101, 1,
+      [{ ...assistant([{ type: "text", text: "provider disconnected" }]), stopReason: "error", errorMessage: "provider disconnected" }])]), completed(2100, 2101));
+    assert.notEqual(failedAnswer.status, "running"); if (failedAnswer.status === "running") return;
+    assert.equal(failedAnswer.summary, ""); assert.equal(failedAnswer.failureReason, "provider disconnected");
+    const partialAnswer = await readDurableWorkExecution(persisted([inputEntry(2100), entry(2101, 1,
+      [{ ...assistant([{ type: "text", text: "已核实的天气和来源" }]), stopReason: "error", errorMessage: "provider disconnected" }])]), completed(2100, 2101));
+    assert.notEqual(partialAnswer.status, "running"); if (partialAnswer.status === "running") return;
+    assert.equal(partialAnswer.summary, "已核实的天气和来源"); assert.equal(partialAnswer.failureReason, "provider disconnected");
+  });
+  await check("failed tool image details cannot become artifacts", async () => {
+    const result = await readDurableWorkExecution(persisted([inputEntry(2200),
+      entry(2201, 1, [assistant([{ type: "toolCall", id: "failed-image", name: "fixture", arguments: {} }])]),
+      entry(2202, 1, [{ role: "toolResult", toolCallId: "failed-image", toolName: "fixture", content: [], timestamp: 2202,
+        isError: true, details: { imagePaths: ["not-produced.png"], artifactRefs: ["not-produced.txt"] } }]),
+    ]), unanswered(2200), root);
+    assert.notEqual(result.status, "running"); if (result.status === "running") return;
+    assert.deepEqual(result.artifactRefs, []);
+  });
+  await check("native inbox settles pure failures without proposing errors and delivers stopped partial output", () => {
+    for (const status of ["failed", "stopped"] as const) {
+      for (const summary of ["", "provider disconnected"]) {
+        const work = create(); const binding = bind(work.workId, operation());
+        const receipt: AgentSubmissionReceipt = { taskId: binding.taskId, operationId: binding.operationId, submissionId: 3000, status: "unanswered" };
+        assert.deepEqual(service.nativeResults.receive(binding, receipt,
+          { status, summary, failureReason: "provider disconnected", artifactRefs: [], hasWriteConflicts: false }), []);
+        assert.equal(service.repo.listDeliverables(work.workId).length, 0);
+        assert.equal(service.repo.getBinding(binding.bindingId)?.status, status);
+        assert.equal(service.repo.getBinding(binding.bindingId)?.settlementNote, "provider disconnected");
+      }
+      const work = create(); const binding = bind(work.workId, operation());
+      const receipt: AgentSubmissionReceipt = { taskId: binding.taskId, operationId: binding.operationId, submissionId: 3001, status: "unanswered" };
+      const observation = { status, summary: "已完成第一部分", failureReason: "provider disconnected", artifactRefs: ["saved.txt"], hasWriteConflicts: false };
+      assert.deepEqual(service.nativeResults.receive(binding, receipt, observation), []);
+      assert.deepEqual(service.nativeResults.receive(binding, receipt, { ...observation, sourceEntryId: 9 }), []);
+      const results = service.repo.listDeliverables(work.workId);
+      assert.equal(results.length, 1); assert.equal(results[0]?.summary, "已完成第一部分");
+      assert.deepEqual(results[0]?.artifactRefs, ["saved.txt"]);
+      assert.ok(results[0]?.uncoveredScope.length, "partial output still identifies unfinished scope");
+    }
+  });
+  await check("artifact-only interrupted output is stable and legacy failure wording is never proposed", () => {
+    const work = create(); const binding = bind(work.workId, operation());
+    const receipt: AgentSubmissionReceipt = { taskId: binding.taskId, operationId: binding.operationId, submissionId: 3050, status: "unanswered" };
+    const observation = { status: "failed" as const, summary: "provider disconnected", artifactRefs: [], hasWriteConflicts: false };
+    assert.deepEqual(service.nativeResults.receive(binding, receipt, observation), []);
+    assert.equal(service.repo.listDeliverables(work.workId).length, 0);
+    assert.deepEqual(service.nativeResults.receive(binding, receipt, { ...observation, artifactRefs: ["saved.txt"] }), []);
+    assert.deepEqual(service.nativeResults.receive(binding, receipt, { ...observation, artifactRefs: ["saved.txt"], sourceEntryId: 7 }), []);
+    const results = service.repo.listDeliverables(work.workId);
+    assert.equal(results.length, 1);
+    assert.notEqual(results[0]?.summary, observation.summary);
+    assert.deepEqual(results[0]?.artifactRefs, ["saved.txt"]);
+  });
+  await check("late native output is retained without changing an already stopped binding", () => {
+    const work = create(); const binding = bind(work.workId, operation());
+    unwrap(service.cancelWork(user, { operationId: operation(), workId: work.workId }));
+    unwrap(service.reconcileExecution(user, { bindingId: binding.bindingId, outcome: "stopped" }));
+    const receipt: AgentSubmissionReceipt = { taskId: binding.taskId, operationId: binding.operationId, submissionId: 3060, status: "done" };
+    assert.deepEqual(service.nativeResults.receive(binding, receipt,
+      { status: "completed", summary: "停止前已完成的产物", artifactRefs: ["saved-before-stop.txt"], hasWriteConflicts: false }), []);
+    assert.equal(service.repo.getBinding(binding.bindingId)?.status, "stopped");
+    assert.equal(service.getWork(work.workId)?.closureConclusion, "cancelled");
+    assert.deepEqual(service.repo.listDeliverables(work.workId).map(item => item.artifactRefs), [["saved-before-stop.txt"]]);
+  });
+  await check("legacy error proposals are superseded and recovered evidence is delivered exactly once", () => {
+    const work = create(); const binding = bind(work.workId, operation());
+    const rootId = `result:${binding.bindingId}`;
+    unwrap(service.submitDeliverable({ kind: "worker", botId: binding.botId, bindingId: binding.bindingId }, {
+      operationId: rootId, deliverableId: rootId, workId: work.workId, bindingId: binding.bindingId,
+      summary: "provider disconnected", artifactRefs: [],
+    }));
+    unwrap(service.reconcileExecution({ kind: "system", reason: "fixture prior release" }, { bindingId: binding.bindingId, outcome: "failed", note: "provider disconnected" }));
+    const receipt: AgentSubmissionReceipt = { taskId: binding.taskId, operationId: binding.operationId, submissionId: 3100, status: "unanswered" };
+    const observation = { status: "failed" as const, summary: "已保存天气文件", failureReason: "provider disconnected", artifactRefs: ["weather.txt"], hasWriteConflicts: false };
+    assert.deepEqual(service.nativeResults.receive(binding, receipt, observation), []);
+    assert.deepEqual(service.nativeResults.receive(binding, receipt, { ...observation, sourceEntryId: 11 }), []);
+    const results = service.repo.listDeliverables(work.workId);
+    assert.equal(results.length, 2);
+    assert.equal(results.find(item => item.deliverableId === rootId)?.status, "superseded");
+    const recovered = results.find(item => item.deliverableId !== rootId)!;
+    assert.equal(recovered.status, "proposed"); assert.equal(recovered.summary, "已保存天气文件");
+    assert.deepEqual(recovered.artifactRefs, ["weather.txt"]);
+    assert.equal(service.repo.listOutbox(work.workId).filter(item => item.eventType === "work.deliverable_proposed").length, 2,
+      "one original legacy proposal and one recovered proposal, never a duplicate delivery");
+  });
 } finally {
   db.close();
   rmSync(root, { recursive: true, force: true });

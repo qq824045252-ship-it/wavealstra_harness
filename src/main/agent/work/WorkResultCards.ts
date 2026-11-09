@@ -202,7 +202,7 @@ export class WorkResultCards {
     return { digest: summaryDigest, cardKey, pendingDecisionCodes };
   }
 
-  /** Read facts only: no Work control version, ownership, execution or budget change. */
+  /** Read facts only: no Work control version, ownership, execution change. */
   markRead(input: {
     workId: string; semanticCardKey: string; userId: string; readAt: number;
   }): WorkCardReadResult {

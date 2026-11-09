@@ -82,7 +82,7 @@ export class WorkConversationFeedback {
             && result.summary === binding.settlementNote);
           emit(`binding:${binding.bindingId}`, [binding.status, binding.settlementNote ?? null, binding.settledAt ?? null],
             [labels[binding.status], hasResult ? undefined : binding.settlementNote].filter(Boolean).join("\n"),
-            { kind: "binding", category: binding.status === "completed" ? "progress" : "decision",
+            { kind: "binding", category: "progress",
               executionId: binding.bindingId, intentRevision: binding.intentRevision, inputSnapshotId: binding.inputSnapshotId });
         }
         for (const result of results) {
@@ -99,11 +99,19 @@ export class WorkConversationFeedback {
               intentRevision: result.intentRevision, inputSnapshotId: result.inputSnapshotId });
         }
         for (const blocker of works.repo.listBlockers(work.workId)) {
+          // Recovery and effect reconciliation are host work, not a request for
+          // the user to approve another run. Preserve real information questions.
+          const needsInput = blocker.waitingForUserInput && blocker.kind === "operational"
+            && !blocker.unknownExternalEffectRef && (!blocker.reasonCode || blocker.reasonCode === "user-input")
+            && !blocker.blockerId.startsWith("continuation:");
+          // Routine recovery may clear many internal blockers in a single pass.
+          // Their facts remain in Work history; don't send a message per cleanup.
+          if (blocker.status !== "open" && !needsInput) continue;
           emit(`blocker:${blocker.blockerId}`, blocker,
             blocker.status === "open"
-              ? `后台事项受阻：${blocker.reason}\n${blocker.waitingForUserInput ? "需要你的输入或决定后才能继续。" : "需要进一步处理，事项尚未完成。"}`
+              ? `后台事项受阻：${blocker.reason}\n${needsInput ? "需要你补充信息后才能继续。" : "需要进一步处理，事项尚未完成。"}`
               : `阻塞已解除：${blocker.reason}`,
-            { kind: "blocker", category: blocker.status === "open" ? "decision" : "progress" });
+            { kind: "blocker", category: blocker.status === "open" && needsInput ? "decision" : "progress" });
         }
         if (work.lifecycle === "closed") {
           emit("closure", [work.closedAt, work.closureConclusion, work.closureSummary],

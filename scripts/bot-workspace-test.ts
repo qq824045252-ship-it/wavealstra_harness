@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { BotMessageDto } from "../src/shared/bot-conversation";
-import { activeBotReply, botMessageStatus, botWorkTimeline, needsWorkDecision, shouldSendBotComposer, workMatchesView, workStatusLabel } from "../src/renderer/src/lib/botWorkspacePresentation";
+import { activeBotReply, botMessageStatus, botWorkTimeline, shouldSendBotComposer, workMatchesView, workStatusLabel } from "../src/renderer/src/lib/botWorkspacePresentation";
 import type { BotDto, WorkProjectionDto } from "../src/shared/bot-work";
 import type { WorkResultCardDto } from "../src/shared/bot-work-phase5";
 import Sidebar, { AccountNavigation } from "../src/renderer/src/components/Sidebar";
@@ -46,9 +46,10 @@ assert.match(botPage, /bot-header-more/, "secondary actions leave room for the B
 assert.match(botPage, /创建一个 Bot，给它名称和职责/);
 const navigation = botPage.match(/<nav class="bot-view-tabs"[^>]*>([\s\S]*?)<\/nav>/)?.[1];
 assert.ok(navigation);
-assert.equal((navigation.match(/<button /g) ?? []).length, 4, "navigation has exactly four stable entry points");
-for (const title of ["对话", "进行中", "待你决定", "已结束"]) assert.match(navigation, new RegExp(`<span>${title}</span>`));
+assert.equal((navigation.match(/<button /g) ?? []).length, 3, "navigation has exactly three stable entry points");
+for (const title of ["对话", "进行中", "已结束"]) assert.match(navigation, new RegExp(`<span>${title}</span>`));
 assert.match(navigation, /aria-current="page"/);
+assert.doesNotMatch(navigation + botSidebar, /待你决定/, "retired decision navigation is not exposed anywhere");
 assert.match(botPage, /还没有 Bot/);
 assert.doesNotMatch(botPage, /<progress|class="bot-work-details"|aria-label="事项详情"/, "empty state cannot fabricate Work details or progress");
 assert.match(botPage, /<button[^>]*disabled[^>]*aria-label="发送消息"/);
@@ -121,20 +122,13 @@ function work(overrides: Partial<WorkProjectionDto> & Pick<WorkProjectionDto, "w
     ...overrides,
   };
 }
-// Pure presentation behavior: lifecycle truth wins over stale decision text.
-const blocker: WorkProjectionDto["blockers"][number] = { blockerId: "b1", workId: "decision", reason: "请确认范围",
+// Tasks awaiting real information stay in the active task list, not a separate decision column.
+const blocker: WorkProjectionDto["blockers"][number] = { blockerId: "b1", workId: "question", reason: "请确认范围",
   kind: "operational", waitingForUserInput: true, status: "open", createdAt: 1 };
 const plain = work({ workId: "plain", title: "普通事项", nextSteps: [] });
-assert.equal(needsWorkDecision(plain), false);
-assert.equal(needsWorkDecision({ ...plain, blockers: [blocker] }), true);
-assert.equal(needsWorkDecision({ ...plain, blockers: [{ ...blocker, status: "cleared" }] }), false);
-assert.equal(needsWorkDecision({ ...plain, blockers: [{ ...blocker, waitingForUserInput: false }] }), false);
-for (const step of ["需要你的决定：选择范围", "等待实测反馈：日志齐全"]) {
-  const decision = { ...plain, nextSteps: [step] };
-  assert.equal(needsWorkDecision(decision), true);
-  assert.equal(workMatchesView(decision, "decisions"), true);
-  assert.equal(workStatusLabel(decision), "待你决定");
-  assert.equal(needsWorkDecision({ ...decision, lifecycle: "closed" }), false);
+for (const candidate of [plain, { ...plain, blockers: [blocker] }, { ...plain, nextSteps: ["等待实测反馈：日志齐全"] }]) {
+  assert.equal(workMatchesView(candidate, "active"), true);
+  assert.equal(workStatusLabel(candidate), "进行中");
 }
 for (const lifecycle of ["active", "paused", "closing", "closed"] as const) {
   const candidate = { ...plain, lifecycle };
@@ -206,19 +200,8 @@ const proposedOutput: WorkProjectionDto["deliverables"][number] = {
   status: "proposed", summary: "Current proposal", artifactRefs: [], evidenceRefs: [], uncoveredScope: [],
   uncoveredCriterionIds: [], isSpeculation: false, hasWriteConflicts: false, createdAt: 5,
 };
-const proposalDecision = { ...plain, deliverables: [proposedOutput] };
-assert.equal(needsWorkDecision(proposalDecision), true, "a current proposal needs review even without a next-step hint");
-assert.equal(workMatchesView(proposalDecision, "decisions"), true);
-for (const change of [
-  { intentRevision: proposedOutput.intentRevision - 1 }, { inputSnapshotId: "different-input" },
-  { ownerEpoch: proposedOutput.ownerEpoch + 1 }, { status: "accepted" as const }, { status: "rejected" as const },
-]) {
-  const candidate = { ...proposalDecision, deliverables: [{ ...proposedOutput, ...change }] };
-  assert.equal(needsWorkDecision(candidate), false, `noncurrent or settled proposal cannot need review: ${JSON.stringify(change)}`);
-  assert.equal(workMatchesView(candidate, "decisions"), false);
-}
-assert.equal(needsWorkDecision({ ...proposalDecision, lifecycle: "closed" }), false,
-  "a closed matter cannot need proposal review");
+assert.equal(workMatchesView({ ...plain, deliverables: [proposedOutput] }, "active"), true,
+  "pending result review remains reachable from active tasks");
 
 const renderReview = (changes: Partial<WorkProjectionDto> = {}) => renderToStaticMarkup(createElement(WorkReviewPanel, {
   work: { ...completedWork, lifecycle: "active", deliverables: [proposedOutput], ...changes }, includeClosed: true,
@@ -350,7 +333,7 @@ assert.match(populatedPage, /<dialog[^>]*aria-label="事项详情"/);
 assert.match(populatedPage, /<details class="bot-advanced"><summary>高级设置与诊断<\/summary>/, "advanced settings start collapsed");
 const detailsStart = populatedPage.indexOf('class="bot-work-details"');
 const overview = populatedPage.slice(detailsStart);
-const orderedHeadings = ["目标", "进度", "下一步", "成果与证据", "需要你决定"];
+const orderedHeadings = ["目标", "进度", "下一步", "成果与证据", "成果记录与验收"];
 for (let index = 1; index < orderedHeadings.length; index++) {
   assert.ok(overview.indexOf(`<h3>${orderedHeadings[index - 1]}</h3>`) < overview.indexOf(`<h3>${orderedHeadings[index]}</h3>`), "details prioritize actionable information");
 }
@@ -368,12 +351,6 @@ night.phase4 = {
     detectedBy: "heartbeat-stale", confidence: "inferred", policy: "latest", policyRevision: 2, queryable: false,
     recoveredCount: 0, mergedCount: 1, skippedCount: undefined, unknownCount: undefined, state: "unqueryable",
     gapReason: "来源没有历史回查能力" }],
-  budget: { windowId: "bw-1", policyRevision: 3, scope: "window", periodStartAt: 100, periodEndAt: 200,
-    timezone: "Asia/Shanghai", limitTokens: 500, committedTokens: 120, reservedTokens: 30, unknownTokens: 20,
-    unknownUsageCount: 2, availableTokens: 330, autoRollover: true, carryPolicy: "none", status: "open",
-    pendingRollover: "仍有未核对用量，等待结算后续期",
-    unknownReservations: [{ reservationId: "unknown-provider-1", windowId: "bw-1", tokens: 20,
-      requestKind: "generation", createdAt: 150 }] },
   causal: [{ chainId: "chain-1", rootEventId: "root-1", originWorkId: night.workId, targetWorkId: night.workId,
     depth: 2, hops: 2, dispatchCount: 3, decision: "blocked-loop", reasonCode: "causal-loop-guard", createdAt: 110 }],
   deadlineAt: 300, deadlineRevision: 4, host: { authorityId: "local", sessionId: "session-1", online: true,
@@ -385,23 +362,16 @@ assert.match(phase4Page, /repo-a/);
 assert.match(phase4Page, /合并为最新一次/);
 assert.match(phase4Page, /固定合并截止/);
 assert.match(phase4Page, /不可回查/);
-assert.match(phase4Page, /已结算 120/);
-assert.match(phase4Page, /在途预留 30/);
-assert.match(phase4Page, /未知 20/);
-assert.match(phase4Page, /仍有未核对用量，等待结算后续期/);
-assert.match(phase4Page, /unknown-provider-1/);
-assert.match(phase4Page, /原窗口 bw-1/);
-assert.match(phase4Page, /aria-label="已核实 tokens"[^>]*value=""/, "unknown usage is never prefilled as zero");
-assert.match(phase4Page, /<button[^>]*disabled[^>]*>保存预算核对结果<\/button>/, "reconciliation requires explicit amount, reason, evidence and confirmation");
+assert.doesNotMatch(phase4Page, /共享预算|预算上限|保存预算|核对未知用量|全团队 token/,
+  "Work budgeting is removed, including its editor and reconciliation controls");
 assert.match(phase4Page, /causal-loop-guard/);
 assert.match(phase4Page, /承诺期限/);
-assert.ok(phase4Page.indexOf("unknown-provider-1") < phase4Page.indexOf("高级设置与诊断"), "unknown usage confirmation remains visible outside advanced settings");
-snapshot.botWorkCursor = { epoch: "closed-budget-fixture", sequence: 1, scope: "all" };
+snapshot.botWorkCursor = { epoch: "closed-work-fixture", sequence: 1, scope: "all" };
 night.lifecycle = "closed";
-const closedBudgetPage = renderToStaticMarkup(createElement(BotWorkspacePage));
-assert.match(closedBudgetPage, /已结束/);
-assert.match(closedBudgetPage, /核对未知用量/);
-assert.match(closedBudgetPage, /unknown-provider-1/, "completed Work retains access to outstanding accounting in the all scope");
+const closedPhase4Page = renderToStaticMarkup(createElement(BotWorkspacePage));
+assert.match(closedPhase4Page, /已结束/);
+assert.match(closedPhase4Page, /不可回查/, "completed tasks retain their actual offline history");
+assert.doesNotMatch(closedPhase4Page, /预算|额度|核对未知用量/);
 night.lifecycle = "active";
 snapshot.botWorkCursor = savedSnapshot.botWorkCursor;
 delete night.phase4;

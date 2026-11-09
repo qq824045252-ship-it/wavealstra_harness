@@ -7,7 +7,7 @@ import type { WorkClosureConclusion, WorkCriterionStatus, WorkLifecycle, WorkNot
  *
  * Identities here are the ones written by the host. A card is a projection of an
  * already-committed acceptance fact, never a second Work state: it carries no
- * lifecycle, owner, budget or execution authority.
+ * lifecycle, owner or execution authority.
  */
 
 export const WORK_RESULT_CARD_KINDS = [
@@ -359,7 +359,7 @@ export interface WorkExpandedDiagnosticsDto {
     readAt?: number;
   }>;
   resources: WorkDiagnosticsSection<{
-    kind: "lease" | "wait" | "recovery" | "subscription" | "causal" | "budget";
+    kind: "lease" | "wait" | "recovery" | "subscription" | "causal";
     ref: string;
     state: string;
     detail?: string;

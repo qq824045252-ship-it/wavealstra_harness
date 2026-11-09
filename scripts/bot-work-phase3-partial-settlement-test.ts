@@ -22,7 +22,7 @@ const unwrap=(result:WorkControlResult)=>{if(!result.ok) throw Error(`${result.c
 const guard=(work:WorkDto)=>({expectedStateVersion:work.stateVersion,expectedIntentRevision:work.intentRevision,expectedOwnerEpoch:work.ownerEpoch});
 const item=(itemId:string,outcome:WorkSubitemResult["outcome"],artifactRefs:string[]=[]):WorkSubitemResult=>({itemId,task:`task-${itemId}`,required:true,dependencies:[],criterionIds:[],nativeStatus:outcome==="blocked"?"completed":outcome,outcome,artifactRefs,writeConflicts:outcome==="blocked"?["same.txt"]:[],summary:`result-${itemId}`});
 const make=(id:string,criteria:Parameters<WorkService["createWork"]>[1]["criteria"]=[])=>unwrap(works.createWork(user,{operationId:id,title:id,inputSnapshotId:`input-${id}`,criteria,authorization:DESKTOP_USER_GRANTS,workspacePath:root}));
-const bind=(work:WorkDto,id:string)=>{unwrap(works.dispatchExecution(user,{operationId:id,workId:work.workId,botId:DEFAULT_BOT_ID,taskId:id,durableStoreKey:`store:${id}`,conversationId:"1",workspaceBinding:root,reserveTokens:30}));return works.repo.bindingForTask(id)!;};
+const bind=(work:WorkDto,id:string)=>{unwrap(works.dispatchExecution(user,{operationId:id,workId:work.workId,botId:DEFAULT_BOT_ID,taskId:id,durableStoreKey:`store:${id}`,conversationId:"1",workspaceBinding:root}));return works.repo.bindingForTask(id)!;};
 const receipt=(binding:ReturnType<typeof bind>):AgentSubmissionReceipt=>({taskId:binding.taskId,operationId:binding.operationId,submissionId:1,status:"done"});
 try {
   await writeFile(join(root,"done.txt"),"retained-effect");
@@ -33,7 +33,7 @@ try {
   assert.equal(works.partialResults.gaps(work.workId)[0].itemId,"two");
   const partial=works.repo.listDeliverables(work.workId).find(result=>result.deliverableId.startsWith("partial:"))!;
   assert.equal(partial.status,"proposed"); assert.deepEqual(partial.artifactRefs,[join(root,"done.txt")]);
-  assert.equal(works.getWork(work.workId)?.budget.usedTokens,7);
+  assert.equal("budget" in works.getWork(work.workId)!, false);
   const gapClose=works.closeWork(user,{operationId:"cannot-close",workId:work.workId,conclusion:"succeeded",versionGuard:guard(works.getWork(work.workId)!)});
   assert.equal(gapClose.ok,false);if(!gapClose.ok){const gap=works.partialResults.gaps(work.workId)[0];assert.ok(gapClose.message.includes(gap.task));assert.ok(gapClose.message.includes(gap.outcome));}
   const beforeResume=works.repo.listBindings(work.workId).length;
@@ -58,7 +58,7 @@ try {
   assert.deepEqual(errors,[]);assert.equal(submitted.length,1);assert.equal(works.repo.listBindings(work.workId).length,beforeResume+1);
   assert(submittedTexts[0].includes("task-two"));assert(!submittedTexts[0].includes("task-one"));
   assert.equal(await readFile(join(root,"done.txt"),"utf8"),"retained-effect");assert.equal(await readFile(join(root,"gap.txt"),"utf8"),"new-gap-effect");
-  assert.equal(works.getWork(work.workId)?.budget.usedTokens,10);assert.equal(works.partialResults.gaps(work.workId).length,0);
+  assert.equal("budget" in works.getWork(work.workId)!, false);assert.equal(works.partialResults.gaps(work.workId).length,0);
 
   // Chain items absent from native results remain explicit unstarted necessary gaps.
   const parsed=readNativeSubitems("chain",JSON.stringify({plan:[{itemId:"a",task:"a"},{itemId:"b",task:"b",dependencies:["a"]},{itemId:"c",task:"c",dependencies:["b"]}],results:[{subagentId:"a",status:"completed",exitCode:0},{subagentId:"b",status:"error",exitCode:1,rejected:true,errorMessage:"not authorized"}]}));
@@ -106,7 +106,7 @@ try {
     VALUES (?,?,?,?,?,?,'pending',?,?)`).run(originalPlan.planId,handoff.workId,"pending-old-owner-task",DEFAULT_BOT_ID,handoff.intentRevision,handoff.inputSnapshotId,Date.now(),originalPlan.planId);
   let handed=unwrap(works.handoffOwner(handoffUser,{operationId:"handoff-owner",workId:handoff.workId,targetBotId:"new-owner",versionGuard:guard(works.getWork(handoff.workId)!)}));
   assert.equal(works.partialResults.plans(handoff.workId)[0].ownerEpoch,1);
-  handed=unwrap(works.continueWork(handoffUser,{operationId:"new-owner-adopt-plan",workId:handoff.workId,sourceBindingId:handoffBinding.bindingId,gapItemIds:["handoff-item"],reason:"new owner checked original gap and budget",versionGuard:guard(handed)}));
+  handed=unwrap(works.continueWork(handoffUser,{operationId:"new-owner-adopt-plan",workId:handoff.workId,sourceBindingId:handoffBinding.bindingId,gapItemIds:["handoff-item"],reason:"new owner checked original gap",versionGuard:guard(handed)}));
   const adopted=works.partialResults.plans(handoff.workId);assert.equal(adopted.length,1);assert.equal(adopted[0].planId,originalPlan.planId);assert.equal(adopted[0].ownerBotId,"new-owner");assert.equal(adopted[0].ownerEpoch,handed.ownerEpoch);
   assert.deepEqual(db.connection.prepare("SELECT task_id,bot_id,state FROM work_dispatch_requests WHERE continuation_plan_id=?").get(originalPlan.planId),{task_id:"pending-old-owner-task",bot_id:"new-owner",state:"pending"});
 
@@ -116,5 +116,5 @@ try {
   unwrap(await observer.files(user,source.workId,"sources-first",[join(root,"input-a.txt"),join(root,"input-b.txt")]));
   await writeFile(join(root,"input-a.txt"),"C"); const refreshed=unwrap(await observer.file(user,source.workId,"sources-update",join(root,"input-a.txt")));
   assert.equal(refreshed.goalSources.length,2);assert(refreshed.goalSources.some(row=>row.sourceRef===join(root,"input-b.txt")));
-  console.log("Phase 3 partial settlement: retained success, structured gaps, one persistent gap-only continuation, unchanged effects/budget, and current artifact/environment checks passed");
+  console.log("Phase 3 partial settlement: retained success, structured gaps, one persistent gap-only continuation, unchanged effects, and current artifact/environment checks passed");
 } finally { db.close();await rm(root,{recursive:true,force:true}); }

@@ -15,7 +15,7 @@ type Mutation = { ok: true } | { ok: false; code: WorkControlErrorCode; message:
 
 /** These mutations run only inside WorkService.runWorkControl: the service owns
  * authorization, CAS, lifecycle, transaction boundaries and idempotency receipts.
- * They never dispatch work or relax action/resource/budget/acceptance guards. */
+ * They never dispatch work or relax action/resource/acceptance guards. */
 export function reportWorkBlockerMutation(
   { repo, phase5 }: { repo: WorkRepository; phase5: Pick<WorkPhase5Facts, "recordEscalation" | "refreshSummary"> },
   work: WorkDto, resolved: ResolvedInputActor, params: ReportBlockerParams, now: number, ownerOrUser: boolean,

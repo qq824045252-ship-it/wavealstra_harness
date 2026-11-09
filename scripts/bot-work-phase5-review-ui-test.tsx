@@ -39,8 +39,7 @@ const work: WorkDto = {
   authorization: { allowedScopes: ["workspace:read"], targetWhitelist: [], allowRedelegation: false, allowGitBranchOrWorktree: false },
   activeIntentSnapshotId: "intent:2", inputSnapshotId: "input:2", goalSources: [], mode: "once", lifecycle: "active",
   acceptedDeliverableIds: ["accepted"], activeExecutionIds: [], deadlineRevision: 1, stateVersion: 7,
-  budget: { windowId: "budget", maxTokens: 100, usedTokens: 0, reservedTokens: 0, unknownUsageCount: 0,
-    windowStartAt: 1, allowNextWindow: false }, createdBy: "user", createdAt: 1, updatedAt: 7,
+  createdBy: "user", createdAt: 1, updatedAt: 7,
 };
 const proposal: WorkProjectionDto["deliverables"][number] = {
   deliverableId: "proposal", workId: work.workId, producerBotId: "owner", executionId: "execution", intentRevision: 2,
@@ -438,7 +437,7 @@ async function main() {
         reasonCode: "user-input" as const, sourceRef: "question:source", waitingForUserInput: true, status: "open" as const, createdAt: 1,
         details: { userInput: { kind: "reply", inputSnapshotId: projection.inputSnapshotId, intentRevision: 2, ownerEpoch: 3 } } };
       const value = { ...projection, blockers: [blocker,
-        { ...blocker, blockerId: "budget", reasonCode: "budget-exhausted" as const },
+        { ...blocker, blockerId: "write-conflict", kind: "write_conflict" as const, reasonCode: undefined },
         { ...blocker, blockerId: "unknown", unknownExternalEffectRef: "effect" },
         { ...blocker, blockerId: "generic", reasonCode: undefined, details: undefined }] };
       await render("review", false, value);
@@ -508,6 +507,15 @@ async function main() {
         const { createRoot } = await import("react-dom/client");
         container = testDocument.body.appendChild(testDocument.createElement("div")); root = createRoot(container);
         await act(async () => root!.render(<StrictMode><BotWorkspacePage /></StrictMode>));
+        const tabs = [...container.querySelectorAll<HTMLButtonElement>(".bot-view-tabs button")];
+        assert.equal(tabs.length, 3);
+        assert.deepEqual(tabs.map(tab => tab.querySelector("span")?.textContent), ["对话", "进行中", "已结束"]);
+        assert.doesNotMatch(container.textContent!, /待你决定/);
+        await act(async () => tabs[1].dispatchEvent(new testWindow.Event("click", { bubbles: true })));
+        assert.match(container.querySelector(".bot-work-browser")!.textContent!, /Review current output/,
+          "a task needing real input remains reachable in the active view");
+        await act(async () => tabs[2].dispatchEvent(new testWindow.Event("click", { bubbles: true })));
+        await act(async () => tabs[0].dispatchEvent(new testWindow.Event("click", { bubbles: true })));
         await click("向负责人回复此问题");
         const after = useAppStore.getState();
         assert.equal(after.activeBotId, "owner"); assert.equal(after.selectedWorkId, legacy.workId);
@@ -534,9 +542,7 @@ async function main() {
         projection.cards![0],
       ], phase4: { subscriptions: [], offlineGaps: [], causal: [], deadlineRevision: 1,
         host: { authorityId: "test", sessionId: "test", online: true, activeSince: 1 },
-        budget: { windowId: "window", policyRevision: 1, scope: "window", periodStartAt: 1,
-          limitTokens: 500000, committedTokens: 5, reservedTokens: 0, unknownTokens: 0,
-          unknownUsageCount: 0, availableTokens: 499995, autoRollover: false, carryPolicy: "none", status: "open" } } };
+      } };
       try {
         useAppStore.setState({ activeBotId: "owner", botIdentities: [owner], selectedWorkId: current.workId,
           botWorks: [current], refreshBotHistory: async () => {}, refreshBotWork: async () => {},
@@ -547,33 +553,16 @@ async function main() {
         container = testDocument.body.appendChild(testDocument.createElement("div"));
         root = createRoot(container);
         await act(async () => root!.render(<StrictMode><BotWorkspacePage /></StrictMode>));
-        const saveBudget = () => [...container.querySelectorAll("button")].find(button => button.textContent === "保存预算政策")!;
-        const input = () => container.querySelector<HTMLInputElement>('[aria-label="预算上限"]')!;
-        assert.equal(saveBudget().disabled, true, "an unchanged policy cannot be submitted");
-        assert.equal(input().value, "500000");
-        // linkedom does not implement React's native input/change tracking. Drive
-        // the mounted input's real onChange callback, then assert committed DOM.
-        const editBudget = async (value: string) => {
-          const field = input();
-          const propsKey = Object.keys(field).find(key => key.startsWith("__reactProps$"))!;
-          const props = (field as unknown as Record<string, { onChange: (event: { target: { value: string } }) => void }>)[propsKey];
-          await act(async () => props.onChange({ target: { value } }));
+        const assertNoBudget = () => {
+          assert.equal(container.querySelector('[aria-label="预算上限"]'), null);
+          assert.doesNotMatch(container.textContent!, /共享预算|保存预算|预算核对|全团队 token/);
         };
-        await editBudget("600000");
-        assert.equal(saveBudget().disabled, false, "a changed valid policy enables save");
-        await act(async () => useAppStore.setState({ botWorks: [{ ...current, stateVersion: 8 }] }));
-        assert.equal(input().value, "600000", "unrelated state refresh retains the edit");
-        for (const invalid of ["", "-1", "1.5", "9007199254740992", "500000", "0500000"]) {
-          await editBudget(invalid);
-          assert.equal(saveBudget().disabled, true, `invalid or numerically unchanged budget ${invalid} cannot save`);
-        }
-        await editBudget("600000");
+        assertNoBudget();
         assert.match(container.querySelector('[data-message-id="stopped"]')!.textContent!, /已停止/);
         assert.doesNotMatch(container.querySelector('[data-message-id="stopped"]')!.textContent!, /处理中|正在回复|等待回复/);
         for (let version = 8; version <= 14; version++) {
           current = { ...current, stateVersion: version,
-            cards: current.cards!.map(card => card.cardKey === "card" ? { ...card, summary: `Current result ${version}` } : card),
-            phase4: { ...current.phase4!, budget: { ...current.phase4!.budget, limitTokens: version * 100000 } } };
+            cards: current.cards!.map(card => card.cardKey === "card" ? { ...card, summary: `Current result ${version}` } : card) };
           await act(async () => useAppStore.setState({ botWorks: [current] }));
           assert.equal(container.querySelectorAll('[aria-label="结果卡片与证据"]').length, 1);
           assert.equal(container.querySelectorAll('[aria-label="成果评审与结束"]').length, 1);
@@ -582,8 +571,7 @@ async function main() {
           assert.equal([...container.querySelectorAll("h3")].filter(item => item.textContent === "外部通知").length, 0);
           assert.match(container.textContent!, new RegExp(`Current result ${version}`));
           if (version > 8) assert.doesNotMatch(container.textContent!, new RegExp(`Current result ${version - 1}`));
-          assert.equal(input().value, String(version * 100000), "remote policy changes replace the old input");
-          assert.equal(saveBudget().disabled, true);
+          assertNoBudget();
         }
         assert.equal(errors.filter(args => args.some(arg => String(arg).includes("same key"))).length, 0);
       } finally {
@@ -598,6 +586,15 @@ async function main() {
         ownerName="Owner" includeClosed onReplyToBlocker={() => {}} />));
       assert.match(container.textContent!, /仍有 1 项在途操作等待结算/);
       assert.doesNotMatch(container.textContent!, /共享资源|后台操作审批|授权规则|重新核对隔离资源|原操作效果核对/);
+      await act(async () => root!.render(<BotWorkDetails work={{ ...projection, blockers: [
+        { blockerId: "continuation:old", workId: projection.workId, kind: "operational", reason: "Old execution gap",
+          waitingForUserInput: true, status: "open", createdAt: 1 },
+        { blockerId: "recovery-ended:gap", workId: projection.workId, kind: "operational", reason: "Recovery ended without a new result",
+          waitingForUserInput: false, status: "open", createdAt: 1 },
+      ] }} ownerName="Owner" includeClosed onReplyToBlocker={() => {}} />));
+      assert.doesNotMatch(container.textContent!, /向负责人回复此问题/,
+        "operational recovery gaps do not ask the user to fill information or approve a rerun");
+      assert.match(container.textContent!, /Recovery ended without a new result/, "remaining execution gaps are still visible");
     });
     console.log(`Bot Work review UI: ${count} React lifecycle scenarios passed (controlled API promises, no real IPC/browser claim)`);
   } finally {

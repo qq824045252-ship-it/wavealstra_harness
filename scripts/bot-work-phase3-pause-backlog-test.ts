@@ -20,7 +20,7 @@ const subscribe=(work:WorkDto,policy:WorkSubscriptionDto["catchUpPolicy"],depth=
 };
 const event=(work:WorkDto,subscription:WorkSubscriptionDto,id:string,version=id)=>works.ingestSourceEvent({workId:work.workId,subscriptionId:subscription.subscriptionId,source:"hook",sourceEventId:id,eventType:"changed",sourceVersion:version,payload:{version}});
 try {
-  const work=create("inflight");unwrap(works.dispatchExecution(user,{operationId:"root",workId:work.workId,botId:DEFAULT_BOT_ID,taskId:"root",durableStoreKey:"native:root",conversationId:"1",workspaceBinding:root,reserveTokens:20}));
+  const work=create("inflight");unwrap(works.dispatchExecution(user,{operationId:"root",workId:work.workId,botId:DEFAULT_BOT_ID,taskId:"root",durableStoreKey:"native:root",conversationId:"1",workspaceBinding:root}));
   const binding=works.repo.bindingForTask("root")!;
   const admitted=works.admitNewAction({kind:"worker",botId:DEFAULT_BOT_ID,bindingId:binding.bindingId},{operationId:"before-pause",admissionId:"unused",workId:work.workId,bindingId:binding.bindingId,actionKind:"workspace:write"});assert(admitted.ok);
   unwrap(works.pauseWork(user,{operationId:"pause",workId:work.workId,versionGuard:guard(works.getWork(work.workId)!)}));
@@ -28,7 +28,7 @@ try {
   assert(works.getProjection(work.workId)?.nextSteps.some(step=>/结算/.test(step)),"paused projection retains in-flight obligations");
   await writeFile(join(root,"effect.txt"),"actual admitted effect");assert(works.settleAdmission(admitted.admission.admissionId,"consumed").ok);
   assert.deepEqual(works.nativeResults.receive(binding,{taskId:binding.taskId,operationId:binding.operationId,submissionId:1,status:"done"},{status:"completed",summary:"late settlement",hasWriteConflicts:false,artifactRefs:[join(root,"effect.txt")],usageTokens:4}),[]);
-  assert.equal(works.getWork(work.workId)?.lifecycle,"paused");assert.equal(works.getWork(work.workId)?.budget.usedTokens,4);assert.equal(works.repo.listDeliverables(work.workId).length,1);
+  assert.equal(works.getWork(work.workId)?.lifecycle,"paused");assert.equal("budget" in works.getWork(work.workId)!, false);assert.equal(works.repo.listDeliverables(work.workId).length,1);
 
   const each=create("each"),eachSub=subscribe(each,"each",2);
   unwrap(works.pauseWork(user,{operationId:"each-pause",workId:each.workId,versionGuard:guard(works.getWork(each.workId)!)}));

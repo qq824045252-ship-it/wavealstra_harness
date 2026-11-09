@@ -70,6 +70,8 @@ let root: Root | undefined;
 let container: HTMLElement;
 let closeCalls = 0;
 let requests: CreateTeamWorkRequest[] = [];
+let lookupRequests: string[] = [];
+let lookupReply = deferred<WorkTeamControlResult>();
 let templateCalls: WorkTeamControlRequest[] = [];
 let hostTemplates: WorkTeamTemplateDto[] = [];
 let forbiddenCalls: string[] = [];
@@ -81,7 +83,7 @@ let initialState: AppState;
 let createRoot: typeof import("react-dom/client")["createRoot"];
 let BotTeamDialog: typeof import("../src/renderer/src/components/pages/BotTeamDialog")["BotTeamDialog"];
 const api = { botWork: {
-  teamControl: async (request: WorkTeamControlRequest) => { if (request.kind === "list_templates") return { ok: true, templates: hostTemplates };
+  teamControl: async (request: WorkTeamControlRequest) => { if (request.kind === "get_by_operation") { lookupRequests.push(request.operationId); return lookupReply.promise; } if (request.kind === "list_templates") return { ok: true, templates: hostTemplates };
     if (request.kind === "save_template") { templateCalls.push(request); const template = { ...request.request.plan, templateId: "template-a", name: request.request.name, createdAt: 1 }; hostTemplates = [template]; return { ok: true, template }; }
     if (request.kind === "delete_template") { templateCalls.push(request); hostTemplates = hostTemplates.filter(item => item.templateId !== request.templateId); return { ok: true }; } if (request.kind === "create") { requests.push(structuredClone(request.request)); return reply.promise; } throw new Error("unexpected template operation"); },
   listBots: async () => hostBots,
@@ -111,7 +113,7 @@ async function mount() {
 }
 async function reset() {
   await unmount(); values.clear(); requests = []; templateCalls = []; hostTemplates = []; forbiddenCalls = []; closeCalls = 0;
-  reply = deferred<WorkTeamControlResult>(); hostBots = [mybuddy, other];
+  reply = deferred<WorkTeamControlResult>(); lookupReply = deferred<WorkTeamControlResult>(); lookupRequests = []; hostBots = [mybuddy, other];
   store.setState({ ...initialState, page: "bot", activeBotId: mybuddy.botId, activeTaskId: "ordinary-task",
     draft: ordinaryDraft, botIdentities: hostBots, botIdentitiesLoaded: true, botWorks: [work], selectedWorkId: work.workId,
     botDraft: "MyBuddy draft", botDrafts: { [mybuddy.botId]: "MyBuddy draft", [other.botId]: "Other draft" },
@@ -194,6 +196,32 @@ async function main() {
       await act(async () => reply.reject(new Error("connection lost"))); await close(); await unmount(); reply = deferred<WorkTeamControlResult>(); await mount();
       await submit(); assert.deepEqual(requests[1], original);
     });
+    await check("legacy pending creation resolves its original operation without replaying a changed create request", async () => {
+      await reset(); await fill(); await submit(); const original = requests[0]; const existing = creationReceipt();
+      await act(async () => reply.reject(new Error("lost receipt"))); await unmount();
+      const stored = JSON.stringify({ ...original, budgetTokens: 30000 }); values.set("mybuddy.pending-team-creation", stored);
+      requests = []; await mount();
+      assert.equal(container.querySelector("#team-budget"), null);
+      await submit(); assert.deepEqual(lookupRequests, [original.operationId]); assert.deepEqual(requests, []);
+      assert.equal(values.get("mybuddy.pending-team-creation"), stored, "lookup preserves the original uncertain request");
+      await act(async () => lookupReply.reject(new Error("lookup lost")));
+      assert.equal(values.get("mybuddy.pending-team-creation"), stored);
+      lookupReply = deferred<WorkTeamControlResult>(); await submit();
+      await act(async () => lookupReply.resolve({ ...existing, replayed: true }));
+      assert.deepEqual(requests, []); assert.equal(store.getState().selectedWorkId, "new-team");
+      assert.equal(values.has("mybuddy.pending-team-creation"), false);
+    });
+    await check("legacy pending creation needs another explicit click after a definitive missing receipt", async () => {
+      await reset(); await fill(); await submit(); const original = requests[0];
+      await act(async () => reply.reject(new Error("never received"))); await unmount();
+      values.set("mybuddy.pending-team-creation", JSON.stringify({ ...original, budgetTokens: 30000 }));
+      requests = []; await mount(); await submit();
+      await act(async () => lookupReply.resolve({ ok: false, code: "not_found", message: "No creation" }));
+      assert.equal(requests.length, 0); assert.equal(submitButton().textContent, "创建并开工");
+      reply = deferred<WorkTeamControlResult>(); await submit();
+      assert.equal(requests.length, 1); assert.equal(requests[0].operationId, original.operationId);
+      assert.equal("budgetTokens" in requests[0], false); await succeed();
+    });
     await check("closing before success never steals newer navigation", async () => {
       await reset(); await fill(); await submit(); await close();
       await act(async () => store.setState({ activeBotId: other.botId, selectedWorkId: null }));
@@ -216,7 +244,12 @@ async function main() {
       assert.equal(requests.length, 0); assert.match(container.textContent!, /无法保存请求/);
     });
     await check("fresh success selects the exact owner and persisted Work", async () => {
-      await reset(); await fill(); await submit(); await succeed();
+      await reset(); await fill();
+      assert.equal(container.querySelector("#team-budget"), null, "team creation has no budget editor");
+      assert.doesNotMatch(container.textContent!, /预算|额度/);
+      await submit();
+      assert.equal("budgetTokens" in requests[0], false, "team creation does not send a hidden budget");
+      await succeed();
       assert.equal(store.getState().activeBotId, mybuddy.botId); assert.equal(store.getState().selectedWorkId, "new-team");
       assert.equal(store.getState().activeTaskId, "ordinary-task"); assert.equal(store.getState().botDraft, "MyBuddy draft");
     });

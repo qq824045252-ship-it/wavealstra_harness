@@ -86,7 +86,6 @@ export function ensureBotWorkTables(db: Database.Database): void {
       progress_summary TEXT,
       watch_rule_json TEXT CHECK (watch_rule_json IS NULL OR json_valid(watch_rule_json)),
       state_version INTEGER NOT NULL DEFAULT 1 CHECK (state_version > 0),
-      budget_json TEXT NOT NULL CHECK (json_valid(budget_json)),
       created_by TEXT NOT NULL CHECK (created_by IN ('user','bot')),
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
@@ -158,7 +157,6 @@ export function ensureBotWorkTables(db: Database.Database): void {
       expert_snapshot_json TEXT NOT NULL CHECK (json_valid(expert_snapshot_json)),
       delegated_scope_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(delegated_scope_json)),
       workspace_binding TEXT NOT NULL,
-      reservation_id TEXT,
       status TEXT NOT NULL CHECK (status IN ('pending','submitted','running','completed','failed','stopped','unknown','invalidated')),
       attempt_id TEXT,
       submission_receipt TEXT,
@@ -352,17 +350,6 @@ export function ensureBotWorkTables(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_work_subscriptions_work ON work_subscriptions(work_id, stopped_at);
     CREATE INDEX IF NOT EXISTS idx_work_subscriptions_wake ON work_subscriptions(next_wake_at);
-
-    CREATE TABLE IF NOT EXISTS work_budget_reservations (
-      reservation_id TEXT PRIMARY KEY,
-      work_id TEXT NOT NULL,
-      window_id TEXT NOT NULL,
-      tokens INTEGER NOT NULL CHECK (tokens >= 0),
-      state TEXT NOT NULL CHECK (state IN ('reserved','committed','released','unknown')),
-      created_at INTEGER NOT NULL,
-      settled_at INTEGER
-    );
-    CREATE INDEX IF NOT EXISTS idx_work_budget_reservations_work ON work_budget_reservations(work_id, state);
 
     CREATE TABLE IF NOT EXISTS work_notifications (
       notification_id TEXT PRIMARY KEY,

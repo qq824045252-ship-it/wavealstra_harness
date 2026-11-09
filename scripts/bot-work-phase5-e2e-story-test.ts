@@ -100,7 +100,8 @@ step("委托立项：A 记录停止条件与实测要求，B 是同宿主对照"
   assert.equal(works.getWork(workA)!.ownerEpoch, 1);
   assert.ok(works.repo.listSubscriptions(workA).length >= 1);
   assert.ok(works.repo.listSubscriptions(workB).length >= 1);
-  assert.notEqual(works.getWork(workA)!.budget.windowId, works.getWork(workB)!.budget.windowId);
+  assert.equal("budget" in works.getWork(workA)!, false);
+  assert.equal("budget" in works.getWork(workB)!, false);
   assert.equal(works.getWork(workA)!.criteria[1]!.status, "pending", "A 未提前通过实测");
 });
 
@@ -259,7 +260,7 @@ step("当前版本通过并关闭：可信入口关闭 A，B 的订阅/游标/�
   assert.equal(bAfter.lifecycle, "active", "B 仍活跃");
   assert.equal(bAfter.ownerEpoch, bBefore.ownerEpoch);
   assert.deepEqual(works.ingress.cursor(subB, "hook", "B"), bCursorBefore, "B 的游标未被 A 的清理改动");
-  assert.deepEqual(bAfter.budget.windowId, bBefore.budget.windowId);
+  assert.equal("budget" in bAfter, false);
   // A closed work keeps its history for the all-scope view.
   const all = journal.sync(LOCAL_USER_ID, { includeClosed: true });
   assert.equal(all.kind, "snapshot");

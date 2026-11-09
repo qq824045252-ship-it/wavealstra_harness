@@ -379,7 +379,7 @@ export class BotRegistry {
         sharePersonalMemoryWithTeam: false,
         allowUnconfirmedSpeculationInMemory: false,
       }),
-      authorization: parseJson<WorkAuthorizationDto>(row.authorization_json, minimumAuthorization()),
+      authorization: normalizeAuthorization(parseJson<WorkAuthorizationDto>(row.authorization_json, minimumAuthorization())),
       foregroundAllowedTools: parseJson<string[]>(row.foreground_allowed_tools_json, []),
       notificationPolicyJson: row.notification_policy_json,
       status: row.status,
@@ -396,7 +396,6 @@ function normalizeAuthorization(input: Partial<WorkAuthorizationDto> | undefined
     targetWhitelist: [...new Set(input?.targetWhitelist ?? [])],
     allowGitBranchOrWorktree: Boolean(input?.allowGitBranchOrWorktree),
     allowRedelegation: Boolean(input?.allowRedelegation),
-    ...(typeof input?.budgetLimitTokens === "number" ? { budgetLimitTokens: input.budgetLimitTokens } : {}),
     ...(typeof input?.expiresAt === "number" ? { expiresAt: input.expiresAt } : {}),
   };
 }

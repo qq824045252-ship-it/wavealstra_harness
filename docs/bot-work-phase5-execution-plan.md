@@ -1,5 +1,7 @@
 # Bot / Work — Phase 5 执行规划（供 Codex / agent 实施）
 
+> 2026-11-09 产品变更：Work 额度/预算模块已删除。本文旧有的共享预算、额度预留、用量结算阻塞、续期与预算控制要求均已被 [无预算运行约定](bot-work-no-quota.md) 取代，不应按旧条款重新实现。原生用量遥测、授权/审批、未知外部效果防重与上下文容量限制仍保留；已有数据库中的预算历史仅保留为惰性记录，不自动删除或清库。
+
 > 最新状态（2026-11-08）：**剩余代码功能与生产原生十步故事已完成，整体验收仍待实机/真实账户证据。** 实现冻结 **[fff50d77538654565a562b2122109fea302576a7](https://github.com/qq824045252-ship-it/wavealstra_harness/commit/fff50d77538654565a562b2122109fea302576a7)**；最终完整门禁 **353 passed / 1 failed / 0 known failed / 1 new regression（158.45 秒，exit 1）**，唯一 AT-SPI socket EPERM 在基线 `ac03fd5` 亦复现。真实 Gateway 出站、独立负责人汇总、桌面评审/反馈/关闭和两次真实原生 SIGKILL 恢复已补齐，详见 [功能补全与原生验收复核](reviews/bot-work-phase5-completion-2026-11-08.md)。[第一轮加固](reviews/bot-work-phase5-followup-2026-11-08.md) 与 [首轮 Windows 证据](reviews/bot-work-phase5-2026-11-07.md) 保留为历史记录。
 >
 > 确认日期：2026-11-07（Asia/Shanghai）。

@@ -34,11 +34,11 @@ export function runWorkRegressions(): void {
     operationId: op(), title: "验收当前输入", inputSnapshotId: "input-A",
     authorization: actor.grants, criteria: [{ id: "check", text: "检查通过" }], ...extra,
   }));
-  const dispatch = (workId: string, reserveTokens = 0) => {
+  const dispatch = (workId: string) => {
     const operationId = op();
     const work = unwrap(service.dispatchExecution(actor, {
       workId, operationId, botId: DEFAULT_BOT_ID, taskId: operationId,
-      durableStoreKey: operationId, conversationId: operationId, workspaceBinding: root, reserveTokens,
+      durableStoreKey: operationId, conversationId: operationId, workspaceBinding: root,
     }));
     const bindingId = work.activeExecutionIds.at(-1);
     assert.ok(bindingId);
@@ -131,30 +131,15 @@ export function runWorkRegressions(): void {
     unwrap(service.amendWork(actor, { operationId: op(), workId: feedback.workId, inputSnapshotId: "input-C" }));
     assert.equal(service.getWork(feedback.workId)?.criteria[0]?.status, "pending");
 
-    const budget = create({ budget: { maxTokens: 100 } });
-    const budgetBinding = dispatch(budget.workId, 80);
-    assert.equal(service.getWork(budget.workId)?.budget.reservedTokens, 80);
-    const denied = service.dispatchExecution(actor, {
-      operationId: op(), workId: budget.workId, botId: DEFAULT_BOT_ID, taskId: "over-budget",
-      durableStoreKey: "over-budget", conversationId: "over-budget", workspaceBinding: root, reserveTokens: 80,
-    });
-    assert.equal(denied.ok, false, "concurrent executions share one budget");
-    assert.equal(service.repo.listReservations(budget.workId).length, 1);
-    const reservation = service.repo.listReservations(budget.workId)[0];
-    assert.ok(reservation);
-    unwrap(service.reconcileExecution(actor, { bindingId: budgetBinding, outcome: "completed", usageTokens: 90, reservationId: reservation.reservationId }));
-    assert.equal(service.getWork(budget.workId)?.budget.usedTokens, 90, "actual usage is not clamped to the estimate or overwritten");
-    unwrap(service.reconcileExecution(actor, { bindingId: budgetBinding, outcome: "completed", usageTokens: 90, reservationId: reservation.reservationId }));
-    assert.equal(service.getWork(budget.workId)?.budget.usedTokens, 90, "repeated settlement does not charge twice");
-    assert.equal(service.getWork(budget.workId)?.budget.reservedTokens, 0);
+    const noQuota = create({});
+    const firstExecution = dispatch(noQuota.workId), secondExecution = dispatch(noQuota.workId);
+    assert.notEqual(firstExecution, secondExecution, "independent dispatches do not share a token quota");
+    unwrap(service.reconcileExecution(actor, { bindingId: firstExecution, outcome: "completed" }));
+    const settledVersion = service.getWork(noQuota.workId)!.stateVersion;
+    unwrap(service.reconcileExecution(actor, { bindingId: firstExecution, outcome: "completed", usageTokens: 9000000 }));
+    assert.equal(service.getWork(noQuota.workId)!.stateVersion, settledVersion, "late telemetry does not reopen execution settlement");
+    assert.equal(service.repo.listOpenBlockers(noQuota.workId).length, 0);
 
-    const unknownBudget = create({ budget: { maxTokens: 100 } });
-    assert.equal(service.reserveBudget(unknownBudget.workId, "unknown-reservation", 80).ok, true);
-    assert.equal(service.commitBudgetUsage(unknownBudget.workId, "unknown-reservation").ok, true);
-    assert.equal(service.commitBudgetUsage(unknownBudget.workId, "unknown-reservation").ok, true);
-    assert.equal(service.getWork(unknownBudget.workId)?.budget.unknownUsageCount, 1);
-    assert.equal(service.getWork(unknownBudget.workId)?.budget.reservedTokens, 80, "unknown usage retains its allocation");
-    assert.equal(service.reserveBudget(unknownBudget.workId, "next-reservation", 80).ok, false);
 
     const notificationWork = create({ criteria: [] });
     unwrap(service.closeWork(actor, { operationId: op(), workId: notificationWork.workId, conclusion: "succeeded" }));

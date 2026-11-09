@@ -137,7 +137,6 @@ export interface WorkAuthorizationDto {
   targetWhitelist: string[];
   allowGitBranchOrWorktree: boolean;
   allowRedelegation: boolean;
-  budgetLimitTokens?: number;
   expiresAt?: number;
 }
 
@@ -176,37 +175,6 @@ export interface WorkGoalSourceDto {
   /** Immutable identity of the inspected input (content hash or provider revision). */
   inputSnapshotId: string;
   observedAt: number;
-}
-
-export interface WorkBudgetDto {
-  windowId: string;
-  maxTokens: number;
-  usedTokens: number;
-  reservedTokens: number;
-  unknownUsageCount: number;
-  windowStartAt: number;
-  windowExpiresAt?: number;
-  /** Only a persisted policy may roll the window; retries/handoff never do. */
-  allowNextWindow: boolean;
-  /** Committed actual usage, kept separate from the legacy reserved-union projection. */
-  committedTokens?: number;
-  /** Tokens held by requests whose trusted provider receipt is still missing. */
-  unknownTokens?: number;
-  /** Persisted window policy identity; a policy change is a new revision. */
-  policyRevision?: number;
-  windowTimezone?: string;
-  windowDurationMs?: number;
-  autoRollover?: boolean;
-}
-
-export interface WorkBudgetPolicyDto {
-  policyRevision: number;
-  scope: "work" | "window";
-  maxTokens: number;
-  windowDurationMs?: number;
-  timezone?: string;
-  autoRollover: boolean;
-  carryPolicy: "none" | "outstanding";
 }
 
 export interface WorkWatchRuleDto {
@@ -293,9 +261,6 @@ export type WorkBlockerReasonCode =
   | "causal-depth"
   | "causal-hops"
   | "causal-attribution-unknown"
-  | "budget-exhausted"
-  | "budget-rollover-pending"
-  | "budget-reconciliation-conflict"
   | "unqueryable-offline-gap"
   | "source-readback"
   | "dispatch-blocked"
@@ -340,7 +305,6 @@ export interface WorkExecutionBindingDto {
   expertSnapshot: ExpertConfigSnapshotDto;
   delegatedScope: string[];
   workspaceBinding: string;
-  reservationId?: string;
   inboxEventId?: string;
   status: WorkExecutionStatus;
   attemptId?: string;
@@ -363,25 +327,6 @@ export interface WorkAdmissionDto {
   ownerEpoch: number;
   admittedAt: number;
   settledAt?: number;
-}
-
-export interface WorkBudgetReservationDto {
-  reservationId: string;
-  workId: string;
-  windowId: string;
-  tokens: number;
-  state: "reserved" | "committed" | "released" | "unknown";
-  createdAt: number;
-  settledAt?: number;
-  /** Trusted provider receipt quantity; never clamped to the reservation estimate. */
-  reportedTokens?: number;
-  requestKind?: "dispatch" | "generation" | "compaction" | "child" | "retry";
-  requestId?: string;
-  bindingId?: string;
-  attemptId?: string;
-  attemptIdentity?: string;
-  receiptKey?: string;
-  metering?: "reserved" | "reported" | "unknown" | "released";
 }
 
 export interface WorkSubscriptionDto {
@@ -472,15 +417,13 @@ export interface WorkDto {
 
   watchRule?: WorkWatchRuleDto;
 
-  /** Business commitment deadline, independent of authorization/budget expiry. */
+  /** Business commitment deadline, independent of authorization expiry. */
   deadlineAt?: number;
   deadlineRevision: number;
   deadlineSetAt?: number;
-  budgetPolicy?: WorkBudgetPolicyDto;
   causalPolicy?: { maxDepth: number; maxHops: number; maxDispatches: number };
 
   stateVersion: number;
-  budget: WorkBudgetDto;
   createdBy: "user" | "bot";
   createdAt: number;
   updatedAt: number;
@@ -576,7 +519,6 @@ export type WorkControlErrorCode =
   | "invalid_lifecycle_transition"
   | "unmet_acceptance_criteria"
   | "unsettled_effects"
-  | "budget_exhausted"
   | "causal_guard"
   | "capacity_refused"
   | "speculation_not_acceptable"
@@ -620,7 +562,6 @@ export interface CreateWorkParams {
   sourceMessageId?: string;
   ownerBotId?: string;
   authorization?: Partial<WorkAuthorizationDto>;
-  budget?: { maxTokens?: number; windowExpiresAt?: number; allowNextWindow?: boolean };
   inputSnapshotId?: string;
   goalSources?: WorkGoalSourceDto[];
   watchRule?: Partial<WorkWatchRuleDto>;
@@ -693,7 +634,6 @@ export interface DispatchExecutionParams {
   conversationId: string;
   workspaceBinding: string;
   delegatedScope?: string[];
-  reserveTokens?: number;
   /** Immutable each-event obligation this binding executes. */
   inboxEventId?: string;
   causal?: {
@@ -715,7 +655,6 @@ export interface ReconcileExecutionParams {
   /** Unknown external effects keep the work open until read back. */
   unknownExternalEffectRef?: string;
   usageTokens?: number;
-  reservationId?: string;
 }
 
 export interface SubmitDeliverableParams {
@@ -976,8 +915,6 @@ export function intersectAuthorization(
     ? wanted.allowedScopes
     : granted.allowedScopes.includes("workspace:read") ? ["workspace:read"] : [];
   const allowedScopes = requestedScopes.filter((scope) => granted.allowedScopes.includes(scope));
-  const budgetLimitTokens = [wanted.budgetLimitTokens, granted.budgetLimitTokens]
-    .filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0);
   const expiresAt = [wanted.expiresAt, granted.expiresAt]
     .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
   return {
@@ -985,7 +922,6 @@ export function intersectAuthorization(
     targetWhitelist: [...new Set((wanted.targetWhitelist ?? []).filter((target) => granted.targetWhitelist.includes(target)))].sort(),
     allowGitBranchOrWorktree: Boolean(wanted.allowGitBranchOrWorktree) && granted.allowGitBranchOrWorktree,
     allowRedelegation: Boolean(wanted.allowRedelegation) && granted.allowRedelegation,
-    ...(budgetLimitTokens.length ? { budgetLimitTokens: Math.min(...budgetLimitTokens) } : {}),
     ...(expiresAt.length ? { expiresAt: Math.min(...expiresAt) } : {}),
   };
 }

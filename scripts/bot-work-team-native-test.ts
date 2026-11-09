@@ -135,7 +135,7 @@ try {
   const request: CreateTeamWorkRequest = { operationId: randomUUID(), title: "Native team verification", goalDescription: "Read both independent files and summarize actual results",
     ownerBotId: ids[0]!, ownerResponsibility: "Summarize supplied member results without changing files", workspacePath: cwd,
     members: [{ botId: ids[1]!, responsibility: "READ_ALPHA_ASSIGNMENT", delegatedScope: ["workspace:read"] },
-      { botId: ids[2]!, responsibility: "READ_BETA_ASSIGNMENT", delegatedScope: ["workspace:read"] }], criteria: ["Both source contents and denied actions are correctly reported"], budgetTokens: 32768 };
+      { botId: ids[2]!, responsibility: "READ_BETA_ASSIGNMENT", delegatedScope: ["workspace:read"] }], criteria: ["Both source contents and denied actions are correctly reported"] };
   const actor: WorkActor = { kind: "user", userId: LOCAL_USER_ID, grants: { ...DESKTOP_USER_GRANTS, allowRedelegation: true } };
   const result = works.teams.handle(actor, { kind: "create", request }); assert(result.ok && result.work, JSON.stringify(result));
   const workId = result.work.workId;

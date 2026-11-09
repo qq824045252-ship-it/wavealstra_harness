@@ -4,8 +4,6 @@ import type Database from "better-sqlite3";
 import type {
   WorkAdmissionDto,
   WorkBlockerDto,
-  WorkBudgetDto,
-  WorkBudgetReservationDto,
   WorkDeliverableDto,
   WorkDto,
   WorkEvidenceDto,
@@ -62,10 +60,8 @@ interface WorkRow {
   deadline_at: number | null;
   deadline_revision: number;
   deadline_set_at: number | null;
-  budget_policy_json: string;
   causal_policy_json: string;
   state_version: number;
-  budget_json: string;
   created_by: "user" | "bot";
   created_at: number;
   updated_at: number;
@@ -98,7 +94,6 @@ export interface BindingRow {
   expert_snapshot_json: string;
   delegated_scope_json: string;
   workspace_binding: string;
-  reservation_id: string | null;
   status: WorkExecutionBindingDto["status"];
   attempt_id: string | null;
   submission_receipt: string | null;
@@ -209,24 +204,6 @@ interface SubscriptionRow {
   stopped_at: number | null;
 }
 
-interface ReservationRow {
-  reservation_id: string;
-  work_id: string;
-  window_id: string;
-  tokens: number;
-  state: WorkBudgetReservationDto["state"];
-  created_at: number;
-  settled_at: number | null;
-  reported_tokens: number | null;
-  request_kind: string | null;
-  request_id: string | null;
-  binding_id: string | null;
-  attempt_id: string | null;
-  attempt_identity: string | null;
-  receipt_key: string | null;
-  metering: WorkBudgetReservationDto["metering"] | null;
-}
-
 interface InboxRow {
   event_id: string;
   dedupe_key: string;
@@ -297,7 +274,15 @@ interface NotificationRow {
 }
 
 export class WorkRepository {
-  constructor(private readonly db: Database.Database) {}
+  private readonly legacyWorkInsert: boolean;
+
+  constructor(private readonly db: Database.Database) {
+    // Older current-version files retain their inert quota history. Their required
+    // JSON column has no default; supply an empty tombstone only for new rows.
+    // Do not bump the schema version or rewrite existing history to remove a module.
+    this.legacyWorkInsert = (db.prepare("PRAGMA table_info(works)").all() as Array<{ name: string }>)
+      .some(column => column.name === "budget_json");
+  }
 
   // ------------------------------------------------------------------ works
 
@@ -308,18 +293,18 @@ export class WorkRepository {
       constraints_json,criteria_json,authorization_json,active_intent_snapshot_id,
       input_snapshot_id,goal_sources_json,mode,lifecycle,pending_conclusion,cancel_requested_at,
       closure_conclusion,closure_summary,accepted_deliverable_ids_json,active_execution_ids_json,
-      progress_summary,watch_rule_json,deadline_at,deadline_revision,deadline_set_at,budget_policy_json,
-      causal_policy_json,state_version,budget_json,created_by,created_at,updated_at,
-      closed_at,close_operation_id
+      progress_summary,watch_rule_json,deadline_at,deadline_revision,deadline_set_at,
+      causal_policy_json,state_version,created_by,created_at,updated_at,
+      closed_at,close_operation_id${this.legacyWorkInsert ? ",budget_json" : ""}
     ) VALUES (
       @workId,@userId,@projectId,@workspacePath,@sourceMessageId,@legacyTaskId,
       @ownerBotId,@ownerEpoch,@intentRevision,@sourceVersion,@title,@goalDescription,
       @constraintsJson,@criteriaJson,@authorizationJson,@activeIntentSnapshotId,
       @inputSnapshotId,@goalSourcesJson,@mode,@lifecycle,@pendingConclusion,@cancelRequestedAt,
       @closureConclusion,@closureSummary,@acceptedDeliverableIdsJson,@activeExecutionIdsJson,
-      @progressSummary,@watchRuleJson,@deadlineAt,@deadlineRevision,@deadlineSetAt,@budgetPolicyJson,
-      @causalPolicyJson,@stateVersion,@budgetJson,@createdBy,@createdAt,@updatedAt,
-      @closedAt,@closeOperationId
+      @progressSummary,@watchRuleJson,@deadlineAt,@deadlineRevision,@deadlineSetAt,
+      @causalPolicyJson,@stateVersion,@createdBy,@createdAt,@updatedAt,
+      @closedAt,@closeOperationId${this.legacyWorkInsert ? ",'{}'" : ""}
     )`).run(this.workParams(work));
   }
 
@@ -335,8 +320,8 @@ export class WorkRepository {
       closure_conclusion=@closureConclusion, closure_summary=@closureSummary,
       accepted_deliverable_ids_json=@acceptedDeliverableIdsJson, active_execution_ids_json=@activeExecutionIdsJson,
       progress_summary=@progressSummary, watch_rule_json=@watchRuleJson, deadline_at=@deadlineAt,
-      deadline_revision=@deadlineRevision, deadline_set_at=@deadlineSetAt, budget_policy_json=@budgetPolicyJson,
-      causal_policy_json=@causalPolicyJson, state_version=@stateVersion, budget_json=@budgetJson, updated_at=@updatedAt,
+      deadline_revision=@deadlineRevision, deadline_set_at=@deadlineSetAt,
+      causal_policy_json=@causalPolicyJson, state_version=@stateVersion, updated_at=@updatedAt,
       closed_at=@closedAt, close_operation_id=@closeOperationId
       WHERE work_id=@workId`).run(this.workParams(work));
   }
@@ -374,10 +359,8 @@ export class WorkRepository {
       deadlineAt: work.deadlineAt ?? null,
       deadlineRevision: work.deadlineRevision ?? 1,
       deadlineSetAt: work.deadlineSetAt ?? null,
-      budgetPolicyJson: jsonText(work.budgetPolicy ?? {}),
       causalPolicyJson: jsonText(work.causalPolicy ?? {}),
       stateVersion: work.stateVersion,
-      budgetJson: jsonText(work.budget),
       createdBy: work.createdBy,
       createdAt: work.createdAt,
       updatedAt: work.updatedAt,
@@ -441,9 +424,7 @@ export class WorkRepository {
       goalDescription: row.goal_description ?? undefined,
       constraints: json<string[]>(row.constraints_json, []),
       criteria: json<WorkDto["criteria"]>(row.criteria_json, []),
-      authorization: json<WorkAuthorizationDto>(row.authorization_json, {
-        allowedScopes: [], targetWhitelist: [], allowGitBranchOrWorktree: false, allowRedelegation: false,
-      }),
+      authorization: readAuthorization(row.authorization_json),
       activeIntentSnapshotId: row.active_intent_snapshot_id,
       inputSnapshotId: row.input_snapshot_id,
       goalSources: json<WorkGoalSourceDto[]>(row.goal_sources_json, []),
@@ -460,13 +441,8 @@ export class WorkRepository {
       deadlineAt: row.deadline_at ?? undefined,
       deadlineRevision: row.deadline_revision,
       deadlineSetAt: row.deadline_set_at ?? undefined,
-      budgetPolicy: json<WorkDto["budgetPolicy"] | undefined>(row.budget_policy_json, undefined),
       causalPolicy: json<WorkDto["causalPolicy"] | undefined>(row.causal_policy_json, undefined),
       stateVersion: row.state_version,
-      budget: json<WorkBudgetDto>(row.budget_json, {
-        windowId: `win-${row.work_id}-1`, maxTokens: 0, usedTokens: 0, reservedTokens: 0,
-        unknownUsageCount: 0, windowStartAt: row.created_at, allowNextWindow: false,
-      }),
       createdBy: row.created_by,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -614,13 +590,12 @@ export class WorkRepository {
   insertBinding(binding: WorkExecutionBindingDto): void {
     this.db.prepare(`INSERT INTO work_execution_bindings (
       binding_id,work_id,operation_id,bot_id,task_id,durable_store_key,conversation_id,intent_revision,
-      owner_epoch,input_snapshot_id,expert_snapshot_json,delegated_scope_json,workspace_binding,reservation_id,
+      owner_epoch,input_snapshot_id,expert_snapshot_json,delegated_scope_json,workspace_binding,
       status,attempt_id,submission_receipt,settlement_note,admitted_at,submitted_at,invalidated_at,settled_at,inbox_event_id
     ) VALUES (@bindingId,@workId,@operationId,@botId,@taskId,@durableStoreKey,@conversationId,@intentRevision,
-      @ownerEpoch,@inputSnapshotId,@expertSnapshotJson,@delegatedScopeJson,@workspaceBinding,@reservationId,
+      @ownerEpoch,@inputSnapshotId,@expertSnapshotJson,@delegatedScopeJson,@workspaceBinding,
       @status,@attemptId,@submissionReceipt,@settlementNote,@admittedAt,@submittedAt,@invalidatedAt,@settledAt,@inboxEventId)`).run({
       ...binding,
-      reservationId: binding.reservationId ?? null,
       attemptId: binding.attemptId ?? null,
       submissionReceipt: binding.submissionReceipt ?? null,
       settlementNote: binding.settlementNote ?? null,
@@ -828,7 +803,24 @@ export class WorkRepository {
 
   listBlockers(workId: string): WorkBlockerDto[] {
     return (this.db.prepare("SELECT * FROM work_blockers WHERE work_id=? ORDER BY created_at ASC")
-      .all(workId) as BlockerRow[]).map(mapBlocker);
+      .all(workId) as BlockerRow[]).filter(row => !isRetiredQuotaBlocker(row) && !this.isRetiredTeamQuotaBlocker(row)).map(mapBlocker);
+  }
+
+  /** Read-only retirement of exact module errors; never reinterpret an existing execution/effect. */
+  canIgnoreRetiredTeamQuotaFailure(workId: string, taskId: string, reason: string): boolean {
+    if (!["团队共享预算已耗尽，未启动下一成员", "团队仍有未核实的供应商用量，核对原预留后才能继续",
+      "团队仍有未核实的供应商用量，不能派发新的执行"].includes(reason)) return false;
+    if (this.bindingForTask(taskId)) return false;
+    if (this.listAdmissions(workId).some(item => item.state === "admitted" || item.state === "unknown")) return false;
+    return !this.db.prepare(`SELECT 1 FROM work_blockers WHERE work_id=? AND status='open'
+      AND (kind='external_effect' OR unknown_external_effect_ref IS NOT NULL) LIMIT 1`).get(workId);
+  }
+
+  private isRetiredTeamQuotaBlocker(row: BlockerRow): boolean {
+    const prefix = "团队执行尚未启动，需核对后继续：";
+    return row.kind === "operational" && !row.unknown_external_effect_ref
+      && row.blocker_id.startsWith("team-dispatch:") && row.reason.startsWith(prefix)
+      && this.canIgnoreRetiredTeamQuotaFailure(row.work_id, row.blocker_id.slice("team-dispatch:".length), row.reason.slice(prefix.length));
   }
 
   listOpenBlockers(workId: string): WorkBlockerDto[] {
@@ -1055,50 +1047,6 @@ export class WorkRepository {
     this.db.prepare("UPDATE work_events_outbox SET delivery_status=? WHERE event_id=?").run(status, eventId);
   }
 
-  // ----------------------------------------------------------------- budget
-
-  insertReservation(reservation: WorkBudgetReservationDto): void {
-    this.db.prepare(`INSERT INTO work_budget_reservations
-      (reservation_id,work_id,window_id,tokens,state,created_at,settled_at,reported_tokens,request_kind,
-       request_id,binding_id,attempt_id,attempt_identity,receipt_key,metering)
-      VALUES (@reservationId,@workId,@windowId,@tokens,@state,@createdAt,@settledAt,@reportedTokens,@requestKind,
-       @requestId,@bindingId,@attemptId,@attemptIdentity,@receiptKey,@metering)`).run({
-      ...reservation,
-      settledAt: reservation.settledAt ?? null,
-      reportedTokens: reservation.reportedTokens ?? null,
-      requestKind: reservation.requestKind ?? "dispatch",
-      requestId: reservation.requestId ?? null,
-      bindingId: reservation.bindingId ?? null,
-      attemptId: reservation.attemptId ?? null,
-      attemptIdentity: reservation.attemptIdentity ?? null,
-      receiptKey: reservation.receiptKey ?? null,
-      metering: reservation.metering ?? "reserved",
-    });
-  }
-
-  listReservations(workId: string): WorkBudgetReservationDto[] {
-    return (this.db.prepare("SELECT * FROM work_budget_reservations WHERE work_id=? ORDER BY created_at ASC")
-      .all(workId) as ReservationRow[]).map(mapReservation);
-  }
-
-  getReservation(reservationId: string): WorkBudgetReservationDto | undefined {
-    return this.listReservationsById(reservationId)[0];
-  }
-
-  private listReservationsById(reservationId: string): WorkBudgetReservationDto[] {
-    const row = this.db.prepare("SELECT * FROM work_budget_reservations WHERE reservation_id=?")
-      .get(reservationId) as ReservationRow | undefined;
-    return row ? [mapReservation(row)] : [];
-  }
-
-  updateReservation(reservationId: string, state: WorkBudgetReservationDto["state"], now: number,
-    reportedTokens?: number | null): void {
-    this.db.prepare(`UPDATE work_budget_reservations SET state=?, settled_at=?,
-      reported_tokens=COALESCE(?,reported_tokens), metering=? WHERE reservation_id=?`)
-      .run(state, now, reportedTokens === undefined ? null : reportedTokens,
-        state === "committed" ? "reported" : state === "released" ? "released" : state, reservationId);
-  }
-
   // ---------------------------------------------------------- notifications
 
   insertNotification(notification: WorkNotificationDto): boolean {
@@ -1217,7 +1165,6 @@ function mapBinding(row: BindingRow): WorkExecutionBindingDto {
     }),
     delegatedScope: json<string[]>(row.delegated_scope_json, []),
     workspaceBinding: row.workspace_binding,
-    reservationId: row.reservation_id ?? undefined,
     status: row.status,
     attemptId: row.attempt_id ?? undefined,
     submissionReceipt: row.submission_receipt ?? undefined,
@@ -1338,26 +1285,6 @@ function mapSubscription(row: SubscriptionRow): WorkSubscriptionDto {
   };
 }
 
-function mapReservation(row: ReservationRow): WorkBudgetReservationDto {
-  return {
-    reservationId: row.reservation_id,
-    workId: row.work_id,
-    windowId: row.window_id,
-    tokens: row.tokens,
-    state: row.state,
-    createdAt: row.created_at,
-    settledAt: row.settled_at ?? undefined,
-    reportedTokens: row.reported_tokens ?? undefined,
-    requestKind: (row.request_kind ?? undefined) as WorkBudgetReservationDto["requestKind"],
-    requestId: row.request_id ?? undefined,
-    bindingId: row.binding_id ?? undefined,
-    attemptId: row.attempt_id ?? undefined,
-    attemptIdentity: row.attempt_identity ?? undefined,
-    receiptKey: row.receipt_key ?? undefined,
-    metering: row.metering ?? undefined,
-  };
-}
-
 function mapInbox(row: InboxRow): WorkInboxEventDto {
   return {
     eventId: row.event_id,
@@ -1435,4 +1362,22 @@ function mapNotification(row: NotificationRow): WorkNotificationDto {
 
 export function newId(prefix: string): string {
   return `${prefix}-${randomUUID()}`;
+}
+
+/** Ignore only module-owned quota blocks, preserving their original audit rows.
+ * A matching-looking blocker with an external-effect reference is still enforced.
+ */
+function isRetiredQuotaBlocker(row: BlockerRow): boolean {
+  if (row.kind !== "operational" || row.unknown_external_effect_ref) return false;
+  return (row.blocker_id === `budget:exhausted:${row.work_id}` || row.blocker_id === "causal:budget-exhausted") && row.reason_code === "budget-exhausted"
+    || row.blocker_id === `budget:receipt-conflict:${row.work_id}` && row.reason_code === "budget-reconciliation-conflict"
+    || row.blocker_id.startsWith("usage:") && row.reason === "原生用量尚未完整返回，保留原预算预留待核对";
+}
+
+function readAuthorization(raw: string): WorkAuthorizationDto {
+  const value = json<WorkAuthorizationDto & { budgetLimitTokens?: unknown }>(raw, {
+    allowedScopes: [], targetWhitelist: [], allowGitBranchOrWorktree: false, allowRedelegation: false,
+  });
+  const { budgetLimitTokens: _retired, ...authorization } = value;
+  return authorization;
 }

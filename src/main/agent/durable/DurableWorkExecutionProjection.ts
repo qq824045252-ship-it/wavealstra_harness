@@ -1,94 +1,97 @@
 import { z } from "zod";
-import { isAbsolute,resolve } from "node:path";
-import type { Cursor, EntryRecord, SubmissionRecord, Tx } from "@earendil-works/pi-durable";
+import { isAbsolute, resolve } from "node:path";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { Cursor, SubmissionRecord, Tx } from "@earendil-works/pi-durable";
 import type { WorkExecutionObservation } from "../work/WorkExecutionAdapter";
 import { DurableHistoryProjection, durableContentText } from "./DurableHistoryProjection";
 import type { WorkSubitemResult } from "../../../shared/bot-work-phase3";
 
-/**
- * Read the accepted input-to-answer span from its original persisted conversation.
- * Pi may settle several steered inputs with one answer; this span is shared run
- * evidence, not exclusive causal attribution to an input. The Work admission
- * gate rejects new business operation IDs on a bound execution task.
- */
+/** Read only this input's persisted evidence, before the next user input. */
 export async function readDurableWorkExecution(
   tx: Pick<Tx, "scanEntries">,
   record: SubmissionRecord,
-  workspaceBinding?:string,
+  workspaceBinding?: string,
 ): Promise<WorkExecutionObservation> {
   if (record.status === "queued" || record.status === "placed") return { status: "running" };
-  if (record.status === "unanswered") {
-    const partial = new DurableHistoryProjection();
-    let usageTokens = 0;
-    let cursor: Cursor | undefined;
-    let reported = false;
-    let nextInput = false;
-    if (record.type === "input" && record.entry !== undefined) do {
-      const page = await tx.scanEntries({ conversationId: record.conversationId, minEntryId: record.entry, order: "ascending" }, 200, cursor);
-      partial.merge(page.items, new Map(), {});
-      for (const entry of page.items) {
-        if (entry.id !== record.entry && entry.model?.some(message => message.role === "user")) { nextInput = true; break; }
-        for (const message of entry.model ?? []) if (message.role === "assistant") {
-          reported = true; usageTokens += message.usage.totalTokens;
-        }
-      }
-      cursor = page.next;
-    } while (cursor && !nextInput);
-    const subitems=partial.messages.flatMap(message => (message.tools ?? []).flatMap(tool => tool.detail ? readNativeSubitems(tool.id,tool.detail) : []));
-    return { status: record.reason === "aborted" ? "stopped" : "failed",
-      summary: typeof record.detail === "string" ? record.detail : record.reason, hasWriteConflicts: false, artifactRefs: [],
-      // An interrupted provider may have unreported spend. Never call that zero.
-      usageTokens: reported && record.reason !== "aborted" ? usageTokens : undefined,
-      ...(subitems.length ? {subitems} : {}) };
-  }
-  if (record.type !== "input" || record.status !== "done" || record.answer === undefined) {
-    throw new Error("原生回执不是已结束的业务输入");
-  }
+  if (record.type !== "input") throw new Error("原生回执不是已结束的业务输入");
+  const evidence = await scanExecutionEvidence(tx, record, workspaceBinding);
+  const answer = evidence.answer;
+  const status = record.status === "unanswered" ? record.reason === "aborted" ? "stopped" : "failed"
+    : !answer || ["error", "length"].includes(answer.stopReason) ? "failed"
+      : answer.stopReason === "aborted" ? "stopped" : "completed";
+  const failureReason = status === "completed" ? undefined : record.status === "unanswered"
+    ? (typeof record.detail === "string" && record.detail.trim() ? record.detail : record.reason)
+    : answer?.errorMessage || (answer?.stopReason === "length" ? "原生输出达到长度限制"
+      : answer?.stopReason === "aborted" ? "原生执行已停止" : "原生输入未产生可核对的成果");
+  // Provider errors and tool-use narration are not deliverables. Retain actual
+  // response content independently, even if a later generation failed or stopped.
+  const summary = evidence.responses.filter(response => response.text !== failureReason).at(-1)?.text ?? "";
+  const subitems = evidence.projection.messages.flatMap(message => (message.tools ?? [])
+    .flatMap(tool => tool.detail ? readNativeSubitems(tool.id, tool.detail) : []));
+  return {
+    status, summary,
+    ...(failureReason ? { failureReason } : {}),
+    sourceEntryId: record.status === "done" && answer ? record.answer : evidence.lastEntryId,
+    // An interrupted provider may have unreported spend. Never call that zero.
+    usageTokens: record.status === "unanswered" && (!evidence.reported || record.reason === "aborted") ? undefined : evidence.usageTokens,
+    hasWriteConflicts: evidence.projection.messages.some(message => message.tools?.some(tool => nativeWriteConflicts(tool.detail))),
+    artifactRefs: [...new Set([...evidence.artifacts, ...subitems.flatMap(item => item.artifactRefs)])],
+    ...(subitems.length ? { subitems } : {}),
+    ...(evidence.readPaths.size ? { readPaths: [...evidence.readPaths] } : {}),
+  };
+}
+
+/** All terminal paths share the same crop, successful-tool checks and pagination. */
+async function scanExecutionEvidence(tx: Pick<Tx, "scanEntries">,
+  record: Extract<SubmissionRecord, { type: "input" }>, workspaceBinding?: string) {
   const projection = new DurableHistoryProjection();
-  let answerEntry: EntryRecord | undefined;
+  const fileCalls = new Map<string, { name: string; path: string }>();
+  const readPaths = new Set<string>(), artifacts = new Set<string>();
+  const responses: Array<{ text: string }> = [];
+  let answer: AssistantMessage | undefined;
+  let lastEntryId: number | undefined;
+  let usageTokens = 0, reported = false;
   let cursor: Cursor | undefined;
-  let usageTokens = 0;
-  const fileCalls=new Map<string,{name:string;path:string}>(),successfulReads=new Set<string>(),producedArtifacts=new Set<string>();
-  do {
-    const page = await tx.scanEntries({ conversationId: record.conversationId,
-      minEntryId: record.entry, maxEntryId: record.answer, order: "ascending" }, 200, cursor);
-    projection.merge(page.items, new Map(), {});
-    for(const entry of page.items)for(const message of entry.model ?? []) {
-      if(message.role==="assistant")for(const block of message.content) {
-        if(block.type==="toolCall" && ["read","write","edit"].includes(block.name) && typeof block.arguments.path==="string" && (workspaceBinding || isAbsolute(block.arguments.path)))
-          fileCalls.set(block.id,{name:block.name,path:resolve(workspaceBinding ?? "",block.arguments.path)});
-      }
-      if(message.role==="toolResult") {
-        const call=fileCalls.get(message.toolCallId);
-        if(call && message.toolName===call.name && !message.isError) {
-          if(call.name==="read")successfulReads.add(call.path);else producedArtifacts.add(call.path);
+  if (record.entry !== undefined) do {
+    const page = await tx.scanEntries({ conversationId: record.conversationId, minEntryId: record.entry,
+      ...(record.status === "done" ? { maxEntryId: record.answer } : {}), order: "ascending" }, 200, cursor);
+    const nextInput = page.items.findIndex(entry => entry.id !== record.entry && entry.model?.some(message => message.role === "user"));
+    // Crop BEFORE merging or extracting anything, including subitems and conflicts.
+    const entries = nextInput < 0 ? page.items : page.items.slice(0, nextInput);
+    projection.merge(entries, new Map(), {});
+    for (const entry of entries) for (const message of entry.model ?? []) {
+      lastEntryId = entry.id;
+      if (message.role === "assistant") {
+        reported = true;
+        usageTokens += message.usage.totalTokens;
+        if (record.status === "done" && entry.id === record.answer) answer = message;
+        const text = durableContentText(message.content).trim();
+        if (text && message.stopReason !== "toolUse" && text !== message.errorMessage?.trim()) responses.push({ text });
+        for (const block of message.content) {
+          if (block.type === "toolCall" && ["read", "write", "edit"].includes(block.name)
+            && typeof block.arguments.path === "string" && (workspaceBinding || isAbsolute(block.arguments.path)))
+            fileCalls.set(block.id, { name: block.name, path: resolve(workspaceBinding ?? "", block.arguments.path) });
         }
-        if(!message.isError) {
-          const artifacts=z.object({artifactRefs:z.array(z.string())}).safeParse(message.details);
-          if(artifacts.success)for(const path of artifacts.data.artifactRefs)producedArtifacts.add(workspaceBinding?resolve(workspaceBinding,path):path);
+      }
+      if (message.role === "toolResult") {
+        const call = fileCalls.get(message.toolCallId);
+        if (call && message.toolName === call.name && !message.isError) {
+          if (call.name === "read") readPaths.add(call.path); else artifacts.add(call.path);
+        }
+        if (!message.isError) {
+          const details = z.object({ artifactRefs: z.array(z.string()).optional(), imagePaths: z.array(z.string()).optional() }).safeParse(message.details);
+          if (details.success) {
+            for (const path of details.data.artifactRefs ?? []) artifacts.add(workspaceBinding ? resolve(workspaceBinding, path) : path);
+            for (const path of details.data.imagePaths ?? []) artifacts.add(path);
+          }
         }
         fileCalls.delete(message.toolCallId);
       }
     }
-    usageTokens += page.items.reduce((sum, entry) => sum + (entry.model ?? []).reduce((tokens, message) =>
-      tokens + (message.role === "assistant" ? message.usage.totalTokens : 0), 0), 0);
-    answerEntry ??= page.items.find(entry => entry.id === record.answer);
+    if (nextInput >= 0) break;
     cursor = page.next;
   } while (cursor);
-  const answer = answerEntry?.model?.find(message => message.role === "assistant");
-  const subitems=projection.messages.flatMap(message => (message.tools ?? []).flatMap(tool => tool.detail ? readNativeSubitems(tool.id, tool.detail) : []));
-  const readPaths=[...successfulReads];
-  return {
-    sourceEntryId: record.answer,
-    usageTokens,
-    status: !answer || ["error", "length"].includes(answer.stopReason) ? "failed" : answer.stopReason === "aborted" ? "stopped" : "completed",
-    summary: answer ? durableContentText(answer.content) : "原生输入未产生可核对的成果",
-    hasWriteConflicts: projection.messages.some(message => message.tools?.some(tool => nativeWriteConflicts(tool.detail))),
-    artifactRefs: [...new Set([...producedArtifacts,...projection.messages.flatMap(message => (message.artifacts ?? [])
-      .flatMap(artifact => artifact.path ? [artifact.path] : []))])],
-    ...(subitems.length ? {subitems} : {}),
-    ...(readPaths.length?{readPaths}:{}),
-  };
+  return { projection, readPaths, artifacts, responses, answer, lastEntryId, usageTokens, reported };
 }
 
 const nativePlanSchema = z.object({ itemId: z.string(), task: z.string(), required: z.boolean().optional(), dependencies: z.array(z.string()).optional(),
