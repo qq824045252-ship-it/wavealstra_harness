@@ -62,16 +62,17 @@ export class BotSettingsService {
       return { settings: next, ...choices };
     });
   }
-  forWork(workId: string, botId: string): BotSettingsDto {
+  forWork(workId: string, botId: string, workspacePath?: string): BotSettingsDto {
     const row = this.db.connection.prepare("SELECT settings_json FROM bot_work_settings WHERE work_id=?").get(workId) as {settings_json: string} | undefined;
     if (row) return JSON.parse(row.settings_json) as BotSettingsDto;
-    const settings = this.get(botId);
+    const base = this.get(botId);
+    const settings = workspacePath ? { ...base, workspacePath, effectiveWorkspacePath: workspacePath } : base;
     this.ensureSpace(settings);
     this.db.connection.prepare("INSERT OR IGNORE INTO bot_work_settings VALUES(?,?)").run(workId, JSON.stringify(settings));
     return settings;
   }
-  forMember(workId: string, ownerBotId: string, memberBotId: string): BotSettingsDto {
-    const owner = this.forWork(workId, ownerBotId);
+  forMember(workId: string, ownerBotId: string, memberBotId: string, workspacePath?: string): BotSettingsDto {
+    const owner = this.forWork(workId, ownerBotId, workspacePath);
     if (memberBotId === ownerBotId) return owner;
     const row = this.db.connection.prepare("SELECT settings_json FROM bot_work_member_settings WHERE work_id=? AND bot_id=?").get(workId, memberBotId) as {settings_json: string} | undefined;
     if (row) return JSON.parse(row.settings_json) as BotSettingsDto;
@@ -86,6 +87,7 @@ export class BotSettingsService {
       UNION ALL SELECT s.settings_json FROM bot_work_settings s JOIN work_team_executions t ON t.work_id=s.work_id WHERE t.task_id=? LIMIT 1`).get(taskId, taskId) as {settings_json: string} | undefined;
     if (!row) return undefined;
     const settings = JSON.parse(row.settings_json) as BotSettingsDto;
+    if (!isAbsolute(settings.effectiveWorkspacePath)) throw new Error("事项工作目录必须是绝对路径");
     if (!settings.workspacePath) mkdirSync(settings.effectiveWorkspacePath, {recursive:true});
     if (!existsSync(settings.effectiveWorkspacePath) || !statSync(settings.effectiveWorkspacePath).isDirectory())
       throw new Error("Bot 工作文件夹已不存在，请恢复文件夹后重试，原任务不会迁移到其他目录");

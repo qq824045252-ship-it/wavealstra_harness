@@ -1640,7 +1640,7 @@ export class AgentService {
     this.workDispatchQueue ??= new WorkDispatchQueue(this.db, this.workService, this.workExecutions,
       () => this.workHostAuthority.isAuthority(), () => this.settingsStore.read().defaultModelId,
       () => this.settingsStore.read().permissionMode ?? "default", undefined,
-      (work, memberId) => memberId ? this.botSettings.forMember(work.workId, work.ownerBotId, memberId) : this.botSettings.forWork(work.workId, work.ownerBotId));
+      (work, memberId) => memberId ? this.botSettings.forMember(work.workId, work.ownerBotId, memberId, work.workspacePath) : this.botSettings.forWork(work.workId, work.ownerBotId, work.workspacePath));
     this.botConversations ??= new BotConversationService({ db: this.db.connection, userId: LOCAL_USER_ID,
       bots: this.botRegistry, works: this.workService, models: this.durableModels, directory: join(getMyBuddyDir(), "bot-conversations"),
       botModel: botId => this.botSettings.get(botId).modelId || undefined,

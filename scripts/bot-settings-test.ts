@@ -63,6 +63,9 @@ try {
   await settings.save({...input, expectedRevision: 1, workspacePath: folderB});
   assert.equal(settings.taskWorkspace(task.id), folderA, "changing folder never moves old Work");
   assert.equal(settings.forWork(made.work.workId, bot.botId).effectiveWorkspacePath, folderA);
+  const explicit = works.createWork({ kind: "user", userId: LOCAL_USER_ID, entry: "desktop", grants: DESKTOP_USER_GRANTS }, { operationId: "explicit-folder", title: "explicit folder", ownerBotId: bot.botId, workspacePath: folderA });
+  assert(explicit.ok);
+  assert.equal(settings.forWork(explicit.work.workId, bot.botId, explicit.work.workspacePath).effectiveWorkspacePath, folderA, "explicit Work folder overrides current Bot default B");
   const reset = await settings.save({...input, expectedRevision: 2, workspacePath: ""});
   assert(reset.settings.effectiveWorkspacePath.startsWith(join(root, "workspaces")), "empty restores dedicated default folder");
   assert.equal(db.getSpace(saved.settings.spaceId)?.path, undefined, "space grouping cannot silently migrate running tasks");
