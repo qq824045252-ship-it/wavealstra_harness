@@ -550,6 +550,7 @@
     "test:bot-work-recovery-dev": "node scripts/bot-work-recovery-dev-test.cjs",
     "test:bot-deletion": "esbuild scripts/bot-deletion-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/bot-deletion-test.mjs && node scripts/test-guard.mjs out/tests/bot-deletion-test.mjs",
     "test:bot-settings": "esbuild scripts/bot-settings-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/bot-settings-test.mjs && node scripts/test-guard.mjs out/tests/bot-settings-test.mjs",
+    "test:bot-frontdoor:live": "node scripts/bot-frontdoor-live-test.cjs",
     "test:bot-settings-dev": "node scripts/bot-settings-dev-test.cjs"
   },
   "dependencies": {

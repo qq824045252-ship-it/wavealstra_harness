@@ -42,7 +42,7 @@ export interface BotForegroundToolOptions {
   isAuthority: () => boolean;
 }
 
-/** This list is the entire foreground capability surface, including recovered tools. */
+/** Foreground Work/memory controls. Read-only web tools are mounted separately by the host. */
 export const BOT_FOREGROUND_TOOLS = new Set(["work_query_status", "work_create", "work_amend", "work_pause", "work_resume", "work_cancel", "memory_search"]);
 
 export function botForegroundTools(options: BotForegroundToolOptions) {
@@ -86,7 +86,9 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
   const actor = (): WorkActor => ({ kind: "bot", userId, botId, host: "foreground", grants: DESKTOP_USER_GRANTS });
   const output = (value: unknown) => ({ output: [{ type: "text" as const, text: JSON.stringify(value) }] });
   const mutations = (["work_create", "work_amend", "work_pause", "work_resume", "work_cancel"] as const).map(name => defineTool({
-    name, description: `${name}: 仅对用户明确委托或选中的事项操作。先查询并原样携带读取时三元 versionGuard；冲突须重新判断。不能扩大授权、续权或代替验收。`,
+    name, description: name === "work_create"
+      ? "受理长耗时、多步骤或文件/代码/桌面操作并派发后台。日常天气、新闻等实时查询直接使用前台 web_search/fetch_content，不创建 Work。用户已经提出的执行请求无需再确认创建任务。创建无需先查询版本；已有相同事项则查询进度，避免重复创建。返回成功才可声称已开始。"
+      : `${name}: 操作用户明确指定的已有事项，先查询并携带返回的 versionGuard；冲突重新查询。批评、催促、抱怨不是暂停或取消意图；仅明确要求停止/取消时调用对应控制。`,
     parameters: name === "work_create" ? inputParameters.create
       : name === "work_amend" ? inputParameters.change : inputParameters.control,
     replay: "safe",

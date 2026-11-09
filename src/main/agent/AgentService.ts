@@ -1644,6 +1644,10 @@ export class AgentService {
     this.botConversations ??= new BotConversationService({ db: this.db.connection, userId: LOCAL_USER_ID,
       bots: this.botRegistry, works: this.workService, models: this.durableModels, directory: join(getMyBuddyDir(), "bot-conversations"),
       botModel: botId => this.botSettings.get(botId).modelId || undefined,
+      webTools: async cwd => {
+        const { createWebAccessCapabilityExtension } = await import("../capabilities/web-access");
+        return durableDomainTools([createWebAccessCapabilityExtension], { cwd, models: this.durableModels! });
+      },
       defaultModel: () => this.settingsStore.read().defaultModelId, isAuthority: () => this.workHostAuthority.isAuthority(),
       memorySearch: (botId, query) => this.memoryService.search({ botId, query, scopeTypes: ["bot"], includeInherited: false, limit: 20 }),
       schedule: (work, operationId, retryBlocked) => this.workDispatchQueue!.enqueue(work, operationId, retryBlocked),

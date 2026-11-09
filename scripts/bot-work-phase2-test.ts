@@ -45,6 +45,7 @@ const reply = (modelId: string, request: TranscriptContext): AssistantMessage["c
   const user = [...request.messages].reverse().find(message => message.role === "user");
   const input = user ? contentText(user.content) : "";
   if (last?.role === "toolResult") {
+    if (last.toolName === "fetch_content" && input === "前台抓取失败") assert.equal(last.isError, true, "failed fetch remains a failed native tool result");
     if (last.toolName === "work_query_status" && /暂停|修订|取消/.test(input)) {
       const targets = JSON.parse(contentText(last.content));
       const selected = targets.find((item: { workId: string }) => input.includes(item.workId)) ?? targets[0];
@@ -53,6 +54,9 @@ const reply = (modelId: string, request: TranscriptContext): AssistantMessage["c
     }
     return text(contentText(last.content));
   }
+  if (input === "前台天气") return tool("web_search", {});
+  if (input === "前台抓取失败") return tool("fetch_content", {});
+  if (input === "扩展写入越权") return tool("unrelated_extension_write", {});
   if (input.startsWith("委托")) return tool("work_create", { title: input, criteria: [{ text: "核验实际成果" }] });
   if (/查询|暂停|修订|取消/.test(input)) return tool("work_query_status", {});
   if (input === "越权写文件") return tool("write", { path: join(cwd, "forbidden.txt"), content: "forbidden" });
@@ -109,6 +113,11 @@ const queue = new WorkDispatchQueue(db, works, adapter, () => lease.isAuthority(
 const streamEvents: import("../src/shared/bot-conversation").BotMessageEvent[] = [];
 let foreground = new BotConversationService({ db: db.connection, userId: LOCAL_USER_ID, bots, works, models, directory: join(root, "foreground"),
   defaultModel: () => "fixture/front", isAuthority: () => lease.isAuthority(), memorySearch: () => [], schedule: (work, operationId) => queue.enqueue(work, operationId),
+  webTools: async () => ({ contextHooks: [], tools: [
+    defineTool({ name: "web_search", description: "search fixture", parameters: Type.Object({}), replay: "safe", execute: async () => ({output:text("dated source fixture")}) }),
+    defineTool({ name: "fetch_content", description: "failure fixture", parameters: Type.Object({}), replay: "safe", execute: async () => ({output:text("Blocked internal address: fixture"), isError:true}) }),
+    defineTool({ name: "unrelated_extension_write", description: "never exposed", parameters: Type.Object({}), replay: "unsafe", execute: async () => { assert.fail("frontend must only mount the two web read tools"); } }),
+  ] }),
   wake: () => { void queue.flush(); }, onMessage: event => streamEvents.push(event) });
 const send = async (requestId: string, value: string, selectedWorkId?: string, attachments?: { name: string; path: string }[]) => {
   const request = { botId: DEFAULT_BOT_ID, requestId, text: value, selectedWorkId, attachments };
@@ -130,6 +139,14 @@ try {
 
   assert.equal(db.listTasks().length, 0, "ordinary Bot conversation must not create Task");
   assert.equal(works.listWorks(LOCAL_USER_ID).length, 0);
+  const weather = await send("frontend-weather", "前台天气");
+  assert.equal(foreground.messages.message(weather.assistantMessageId)?.text, "dated source fixture");
+  const fetchFailure = await send("frontend-fetch-error", "前台抓取失败");
+  assert.match(foreground.messages.message(fetchFailure.assistantMessageId)?.text ?? "", /Blocked internal address/);
+  await send("frontend-filter", "扩展写入越权");
+  assert.equal(db.listTasks().length, 0);
+  assert.equal(works.listWorks(LOCAL_USER_ID).length, 0);
+  console.log("PASS frontend default web search/fetch executes for existing Bot without Task/Work; errors retained; non-web extension is not exposed");
   const attachmentPath = join(root, "background-material.txt");
   writeFileSync(attachmentPath, "background material evidence");
   const accepted = await send("delegate-a", "委托 A");
