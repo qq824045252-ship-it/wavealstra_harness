@@ -8,6 +8,8 @@ import { useAppStore } from "@/store/appStore";
 import { WorkCardsPanel } from "./BotWorkCardsPanel";
 import { BotTeamPanel } from "./BotTeamPanel";
 import { WorkReviewPanel } from "./BotWorkReviewPanel";
+import { workStatusLabel } from "@/lib/botWorkspacePresentation";
+import { WorkFiles, WorkResultText, generatedWorkFiles, workFiles } from "./BotWorkResult";
 
 export function lifecycleLabel(lifecycle: WorkLifecycle): string {
   if (lifecycle === "active") return "进行中";
@@ -36,13 +38,6 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
   const [controlNotice, setControlNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [phase4Notice, setPhase4Notice] = useState("");
-  const [artifactNotice, setArtifactNotice] = useState("");
-  const openGeneratedArtifact = async (path: string) => {
-    try {
-      if (!window.api?.openFolder) throw new Error("文件打开接口不可用");
-      await window.api.openFolder(path); setArtifactNotice("");
-    } catch (error) { setArtifactNotice(`无法打开文件：${error instanceof Error ? error.message : String(error)}`); }
-  };
   const [watchSource, setWatchSource] = useState("hook");
   const [watchPolicy, setWatchPolicy] = useState<"latest" | "each" | "skip">("latest");
   const [deadlineInput, setDeadlineInput] = useState("");
@@ -91,14 +86,11 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
   };
 
   const satisfied = work.criteria.filter(item => item.status === "satisfied").length;
-  const conclusionText = work.closureConclusion ? {
-    succeeded: "已完成", ended_unsuccessfully: "未达成，已结束", cancelled: "已取消",
-  }[work.closureConclusion] : undefined;
 
   return (
     <div className="bot-work-details">
       <header className="bot-work-detail-heading">
-        <span className="bot-work-status" data-state={work.lifecycle}>{conclusionText ?? lifecycleLabel(work.lifecycle)}</span>
+        <span className="bot-work-status" data-state={work.lifecycle}>{workStatusLabel(work)}</span>
         <h2>{work.title}</h2>
         <p>{ownerName} · {work.mode === "watch" ? "持续关注" : "一次性事项"}</p>
       </header>
@@ -177,24 +169,18 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
           <strong>{{ recovering: "恢复中", running: "正在执行", waiting: "等待执行器", interrupted: "执行已中断" }[observation.state]}</strong>：{observation.reason}
         </p>)}
       </section>}
-      {!!work.generatedArtifacts?.length && <section aria-label="已生成文件">
-        <h3>已生成文件</h3>
-        <p>已登记生成文件。快照保留登记时的版本，源文件可能继续变化；文件生成不代表任务或验收已经通过。</p>
-        {artifactNotice && <p role="alert">{artifactNotice}</p>}
-        <ul>{work.generatedArtifacts.map(artifact => <li key={`${artifact.bindingId}:${artifact.path}:${artifact.digest}`}>
-          <span style={{ overflowWrap: "anywhere" }}>{artifact.path} · {artifact.sizeBytes} 字节</span>
-          <button type="button" onClick={() => void openGeneratedArtifact(artifact.snapshotPath ?? artifact.path)}>{artifact.snapshotPath ? "打开保存版本" : "打开当前文件"}</button>
-          <button type="button" onClick={() => void window.api?.showItemInFolder?.(artifact.path)}>定位文件</button>
-          <details><summary>文件版本</summary><p style={{ overflowWrap: "anywhere" }}>SHA-256：{artifact.digest}</p></details>
-        </li>)}</ul>
-      </section>}
       <h3>成果与证据</h3>
       {work.deliverables.length === 0 ? <p>尚无保存的成果。</p> : work.deliverables.map(deliverable => <article key={deliverable.deliverableId}>
         <strong>{{ proposed: work.lifecycle === "closed" ? "未采纳（已结束）" : "待评审", accepted: "已采纳", rejected: "已拒绝", superseded: "历史成果" }[deliverable.status]}</strong>
-        <p style={{ whiteSpace: "pre-wrap" }}>{deliverable.summary}</p>
-        {deliverable.artifactRefs.length > 0 && <ul>{deliverable.artifactRefs.map(ref => <li key={ref}>{ref}</li>)}</ul>}
+        <WorkResultText text={deliverable.summary} />
+        <WorkFiles files={workFiles(deliverable.artifactRefs, work, deliverable.executionId)} />
         <p>已保存 {deliverable.evidenceRefs.length} 条证据</p>
       </article>)}
+      {!!work.generatedArtifacts?.length && <details className="bot-advanced" aria-label="全部生成文件">
+        <summary>全部生成文件 · {work.generatedArtifacts.length}</summary>
+        <p>文件生成不代表验收通过。保存版本与原始路径均保留。</p>
+        <WorkFiles files={generatedWorkFiles(work)} />
+      </details>}
       <h3>成果记录与验收</h3>
       {/* Review drafts retain their reviewed snapshot across background updates. */}
       <WorkReviewPanel key={`review:${work.workId}`} work={work} includeClosed={includeClosed} />

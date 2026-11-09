@@ -68,6 +68,7 @@ export class WorkConversationFeedback {
           if (this.messages.appendWorkFeedback(origin, work.workId, event, JSON.stringify(version), `【${work.title}】\n${body}`, { ...metadata, workId: work.workId, eventId: event })) count++;
         };
         const results = works.repo.listDeliverables(work.workId);
+        const generated = works.generatedArtifacts.list(work.workId);
         for (const binding of works.repo.listBindings(work.workId)) {
           if (!["completed", "failed", "stopped", "invalidated", "unknown"].includes(binding.status)) continue;
           const labels: Record<string, string> = { completed: "后台执行已结束，成果仍需核验；不代表用户已验收。",
@@ -97,7 +98,20 @@ export class WorkConversationFeedback {
             + `${result.hasWriteConflicts ? "\n存在写入冲突，仍需处理。" : ""}`
             + `${result.rejectedReason ? `\n未通过核验：${result.rejectedReason}` : ""}`,
             { kind: "result", category: "result", executionId: result.executionId,
-              intentRevision: result.intentRevision, inputSnapshotId: result.inputSnapshotId });
+              intentRevision: result.intentRevision, inputSnapshotId: result.inputSnapshotId,
+              report: { title: work.title, summary: result.summary, artifactRefs: result.artifactRefs,
+                files: result.artifactRefs.map(ref => {
+                  const candidates = generated.filter(item => item.bindingId === result.executionId);
+                  const sources = candidates.filter(item => item.path === ref);
+                  const artifact = candidates.find(item => item.snapshotPath === ref) ?? (sources.length === 1 ? sources[0] : undefined);
+                  return { ref, name: (artifact?.path ?? ref).split(/[\\/]/).pop() || ref, openPath: artifact?.snapshotPath ?? artifact?.path };
+                }),
+                reviewStatus: result.status, current, notices: [
+                  ...result.uncoveredScope.length ? [`尚未覆盖：${result.uncoveredScope.join("；")}`] : [],
+                  ...result.isSpeculation ? ["该成果包含推测，仍需验证。"] : [],
+                  ...result.hasWriteConflicts ? ["存在写入冲突，仍需处理。"] : [],
+                  ...result.rejectedReason ? [`未通过核验：${result.rejectedReason}`] : [],
+                ] } });
         }
         for (const blocker of works.repo.listBlockers(work.workId)) {
           // Recovery and effect reconciliation are host work, not a request for

@@ -16,6 +16,13 @@ export const workFeedbackSchema = z.object({
   workId: id, eventId: z.string().min(1).max(500), kind: z.enum(["binding", "result", "blocker", "closure"]),
   category: z.enum(["progress", "decision", "result"]), executionId: id.optional(),
   intentRevision: z.number().int().positive().optional(), inputSnapshotId: z.string().min(1).max(2000).optional(),
+  /** Immutable host projection of this exact result version; text retains the full original record. */
+  report: z.object({
+    title: z.string(), summary: z.string(), artifactRefs: z.array(z.string()),
+    files: z.array(z.object({ ref: z.string(), name: z.string(), openPath: z.string().optional() }).strict()).optional(),
+    reviewStatus: z.enum(["proposed", "accepted", "rejected", "superseded"]),
+    current: z.boolean(), notices: z.array(z.string()),
+  }).strict().optional(),
 }).strict();
 export type WorkFeedbackDto = z.infer<typeof workFeedbackSchema>;
 /** One host-observed activity, separate from the model's answer. Never tool input/output. */

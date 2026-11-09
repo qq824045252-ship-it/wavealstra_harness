@@ -42,9 +42,13 @@ try {
     taskId: "background-task", durableStoreKey: "store", conversationId: "background-native-conversation", intentRevision: work.intentRevision,
     ownerEpoch: work.ownerEpoch, inputSnapshotId: work.inputSnapshotId, expertSnapshot: bots.activeSnapshot(DEFAULT_BOT_ID)!,
     delegatedScope: [], workspaceBinding: root, status: "completed", admittedAt: 1, settledAt: 2, settlementNote: fullResult });
+  const savedPath = join(root, "artifacts", "0123456789.csv");
+  db.connection.transaction(() => works.generatedArtifacts.record(works.repo.getBinding("binding-1")!, [{
+    path: join(root, "report.csv"), snapshotPath: savedPath, digest: "saved-digest", sizeBytes: 42, registeredAt: 2, sourceEntryId: 1,
+  }]))();
   const submitted = works.submitDeliverable({ kind: "worker", botId: DEFAULT_BOT_ID, bindingId: "binding-1" }, {
     operationId: "result:binding-1", deliverableId: "result:binding-1", workId: work.workId, bindingId: "binding-1",
-    summary: fullResult, artifactRefs: ["artifact:report"], uncoveredScope: ["发行包验证"], uncoveredCriterionIds: [],
+    summary: fullResult, artifactRefs: ["artifact:report", savedPath], uncoveredScope: ["发行包验证"], uncoveredCriterionIds: [],
     isSpeculation: false, hasWriteConflicts: false });
   assert(submitted.ok);
   assert.equal(works.repo.getDeliverable("result:binding-1")?.summary, fullResult, "authoritative result must not be truncated to a card preview");
@@ -67,6 +71,26 @@ try {
   assert.equal(initialFeedback[0].workFeedback?.executionId, "binding-1");
   assert.equal(initialFeedback[1].workFeedback?.executionId, "binding-1");
   assert(initialFeedback[1].text.includes(fullResult), "Bot feedback retains the complete result, trailing caveat, source and Markdown image");
+  const report = initialFeedback[1].workFeedback?.report;
+  assert.equal(report?.title, work.title);
+  assert.equal(report?.summary, fullResult);
+  assert.deepEqual(report?.artifactRefs, ["artifact:report", savedPath]);
+  assert.deepEqual(report?.files?.find(file => file.ref === savedPath), { ref: savedPath, name: "report.csv", openPath: savedPath });
+  assert.equal(report?.files?.find(file => file.ref === "artifact:report")?.openPath, undefined);
+  assert.deepEqual(report?.notices, ["尚未覆盖：发行包验证"]);
+  assert.equal(report?.reviewStatus, "proposed");
+  // Previous structured metadata is upgraded only for the unchanged version.
+  db.connection.prepare("UPDATE bot_work_feedback SET metadata_json=json_remove(metadata_json,'$.report') WHERE message_id=?")
+    .run(initialFeedback[1].messageId);
+  const preUpgrade = history();
+  assert.equal(feedback.drain(), 0);
+  const postUpgrade = history();
+  assert.deepEqual(postUpgrade.messages.map(m => [m.messageId, m.text]), preUpgrade.messages.map(m => [m.messageId, m.text]));
+  assert.equal(postUpgrade.messages.find(m => m.messageId === initialFeedback[1].messageId)?.workFeedback?.report?.summary, fullResult);
+  assert(postUpgrade.revision > preUpgrade.revision, "renderer is notified when display metadata is upgraded");
+  const stableRevision = postUpgrade.revision;
+  assert.equal(feedback.drain(), 0);
+  assert.equal(history().revision, stableRevision, "no repeated revision churn after upgrade");
   // Upgrade an already-delivered legacy history in place: only additive metadata,
   // no reset, no body mutation, no repeated send, and no lifecycle/criteria change.
   db.connection.exec("DELETE FROM bot_work_feedback");
@@ -193,6 +217,16 @@ try {
     "feedback suppression never discards durable blocker history");
 
   const origin = messages.workOrigin(LOCAL_USER_ID, independent.workId)!;
+  const oldReport = { workId: independent.workId, eventId: "result:versioned", kind: "result" as const, category: "result" as const,
+    report: { title: "版本报告", summary: "旧版", artifactRefs: ["old.csv"], reviewStatus: "proposed" as const, current: true, notices: [] } };
+  messages.appendWorkFeedback(origin, independent.workId, "result:versioned", "v1", "旧版原文", oldReport);
+  db.connection.prepare("DELETE FROM bot_work_feedback WHERE json_extract(metadata_json,'$.eventId')='result:versioned'").run();
+  messages.appendWorkFeedback(origin, independent.workId, "result:versioned", "v2", "新版原文", { ...oldReport,
+    report: { ...oldReport.report, summary: "新版", artifactRefs: ["new.csv"] } });
+  const versions = history().messages.filter(m => m.workFeedback?.eventId === "result:versioned");
+  assert.equal(versions[0].workFeedback?.report, undefined, "older legacy report cannot borrow today's files or summary");
+  assert.equal(versions[0].text, "旧版原文");
+  assert.equal(versions[1].workFeedback?.report?.summary, "新版");
   const spoofKey = createHash("sha256").update(JSON.stringify([independent.workId, "blocker:spoof"])).digest("hex");
   const spoofVersion = createHash("sha256").update("1").digest("hex");
   const spoofRequest = `work-feedback:${spoofKey}:0000000000000000:${spoofVersion}`;

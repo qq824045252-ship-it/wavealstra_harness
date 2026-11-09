@@ -3,11 +3,35 @@ import type { WorkProjectionDto } from "@shared/bot-work";
 
 export type BotWorkspaceView = "conversation" | "active" | "closed";
 
+/** Execution and acceptance are separate facts. No display state mutates Work. */
+export function workExecutionComplete(work: WorkProjectionDto): boolean {
+  const bindings = work.executions.filter(item => item.intentRevision === work.intentRevision
+    && item.inputSnapshotId === work.inputSnapshotId && !item.invalidatedAt && item.status !== "invalidated");
+  return bindings.length > 0 && bindings.every(item => item.status === "completed")
+    && !work.phase3?.settlingActions
+    && !work.runtimeObservations?.some(item => bindings.some(binding => binding.bindingId === item.bindingId)
+      && ["running", "recovering", "waiting"].includes(item.state));
+}
+
 export function workStatusLabel(work: WorkProjectionDto): string {
   if (work.lifecycle === "closed") return work.closureConclusion === "succeeded" ? "已完成" : work.closureConclusion === "cancelled" ? "已取消" : work.closureConclusion === "ended_unsuccessfully" ? "已结束 · 未完成" : "已结束";
   if (work.lifecycle === "paused") return "已暂停";
   if (work.lifecycle === "closing") return "正在结算";
-  return "进行中";
+  if (work.mode === "watch") return "持续关注中";
+  const blockers = work.blockers.filter(item => item.status === "open" && item.kind !== "external_effect" && !item.unknownExternalEffectRef);
+  if (blockers.some(item => item.waitingForUserInput)) return "等待补充信息";
+  if (blockers.length) return "需要处理";
+  if (workExecutionComplete(work)) {
+    if (work.phase3?.gaps.some(item => item.required) || work.criteria.some(item => item.status === "failed" || item.status === "blocked")) return "执行已结束 · 尚有缺口";
+    return work.inputSnapshotBound && work.criteria.length > 0 && work.criteria.every(item => item.status === "satisfied" || item.status === "waived")
+      && !work.uncoveredScope.length ? "执行已完成 · 待结算" : "执行已完成 · 待核验";
+  }
+  const current = work.executions.filter(item => item.intentRevision === work.intentRevision && item.inputSnapshotId === work.inputSnapshotId && !item.invalidatedAt);
+  if (current.some(item => item.status === "running" || item.status === "submitted")) return "正在执行";
+  if (current.some(item => item.status === "unknown")) return "执行状态待核对";
+  if (current.some(item => item.status === "pending")) return "等待执行";
+  if (current.some(item => item.status === "failed" || item.status === "stopped")) return "执行已结束 · 未完成";
+  return "尚未执行";
 }
 
 export function workMatchesView(work: WorkProjectionDto, view: BotWorkspaceView): boolean {
@@ -38,7 +62,7 @@ export function botParticipatesInWork(work: WorkProjectionDto, botId: string | n
 }
 
 export type BotTimelineEntry = { key: string; kind: "message"; message: BotMessageDto }
-  | { key: string; kind: "progress"; workId: string; messages: BotMessageDto[] };
+  | { key: string; kind: "progress"; workId: string; workIds: string[]; messages: BotMessageDto[] };
 
 /** Presentation only. Durable messages and order remain intact inside each fold.
  * Latest decisions/results stay visible; ordinary progress and older versions of
@@ -56,9 +80,10 @@ export function botWorkTimeline(messages: BotMessageDto[]): BotTimelineEntry[] {
     const fold = feedback && !message.error && (feedback.category === "progress" || latest.get(eventKey(message)) !== message.messageId);
     const previous = rows.at(-1);
     if (!fold) rows.push({ key: message.messageId, kind: "message", message });
-    else if (previous?.kind === "progress" && previous.workId === feedback.workId)
+    else if (previous?.kind === "progress" && previous.messages[0].conversationId === message.conversationId) {
       previous.messages.push(message);
-    else rows.push({ key: `progress:${message.messageId}`, kind: "progress", workId: feedback.workId, messages: [message] });
+      if (!previous.workIds.includes(feedback.workId)) previous.workIds.push(feedback.workId);
+    } else rows.push({ key: `progress:${message.messageId}`, kind: "progress", workId: feedback.workId, workIds: [feedback.workId], messages: [message] });
   }
   return rows;
 }

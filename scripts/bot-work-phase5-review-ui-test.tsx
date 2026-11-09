@@ -11,7 +11,7 @@ import type { WorkPhase3ControlRequest } from "../src/shared/bot-work-phase3-con
 import { WorkReviewPanel } from "../src/renderer/src/components/pages/BotWorkReviewPanel";
 import { BotWorkDetails } from "../src/renderer/src/components/pages/BotWorkDetails";
 import { WorkCardsPanel } from "../src/renderer/src/components/pages/BotWorkCardsPanel";
-import BotWorkspacePage from "../src/renderer/src/components/pages/BotWorkspacePage";
+import BotWorkspacePage, { BotMessage } from "../src/renderer/src/components/pages/BotWorkspacePage";
 import type { BotDto } from "../src/shared/bot-work";
 import { useAppStore } from "../src/renderer/src/store/appStore";
 
@@ -509,7 +509,7 @@ async function main() {
         await act(async () => root!.render(<StrictMode><BotWorkspacePage /></StrictMode>));
         const tabs = [...container.querySelectorAll<HTMLButtonElement>(".bot-view-tabs button")];
         assert.equal(tabs.length, 3);
-        assert.deepEqual(tabs.map(tab => tab.querySelector("span")?.textContent), ["对话", "进行中", "已结束"]);
+        assert.deepEqual(tabs.map(tab => tab.querySelector("span")?.textContent), ["对话", "未结束", "已结束"]);
         assert.doesNotMatch(container.textContent!, /待你决定/);
         await act(async () => tabs[1].dispatchEvent(new testWindow.Event("click", { bubbles: true })));
         assert.match(container.querySelector(".bot-work-browser")!.textContent!, /Review current output/,
@@ -588,11 +588,14 @@ async function main() {
         runtimeObservations: [{ bindingId: "b", state: "recovering", reason: "宿主正在恢复原执行" }],
         generatedArtifacts: [{ bindingId: "b", path: "/fixture/result.html", digest: "a".repeat(64), sizeBytes: 31, registeredAt: 1, sourceEntryId: 12 }],
       }} ownerName="Owner" includeClosed />));
-      assert.match(container.textContent!, /已生成文件/);
-      assert.match(container.textContent!, /31 字节/);
-      assert.match(container.textContent!, /不代表任务或验收已经通过/);
+      assert.match(container.textContent!, /全部生成文件/);
+      const generated = container.querySelector<HTMLDetailsElement>('details[aria-label="全部生成文件"]')!;
+      assert.equal(generated.hasAttribute("open"), false);
+      generated.setAttribute("open", "");
+      assert.match(container.textContent!, /31 B/);
+      assert.match(container.textContent!, /文件生成不代表验收通过/);
       assert.match(container.textContent!, /恢复中/);
-      await click("打开当前文件");
+      await click("打开文件");
       assert.deepEqual(opened, ["/fixture/result.html"]);
       await unmount();
     });
@@ -616,6 +619,45 @@ async function main() {
       assert.match(blockers.textContent!, /Required permission is missing/);
       assert.doesNotMatch(blockers.textContent!, /Lost legacy receipt|Timed-out process/);
       assert.equal(diagnostics.querySelector("button"), null, "uncertainty does not offer an unsafe replay or clear button");
+      await unmount();
+    });
+    await check("result card keeps long text and scripts expandable and opens the exact saved attachment", async () => {
+      await unmount();
+      const { createRoot } = await import("react-dom/client");
+      container = testDocument.body.appendChild(testDocument.createElement("div")); root = createRoot(container);
+      const opened: string[] = [], revealed: string[] = [];
+      Object.assign(testWindow.api!, { openFolder: async (path: string) => { opened.push(path); }, showItemInFolder: async (path: string) => { revealed.push(path); } });
+      const generated = [
+        { bindingId: "b", path: "/fixture/report.csv", snapshotPath: "/snap/hash-csv", digest: "csv", sizeBytes: 42, registeredAt: 1, sourceEntryId: 1 },
+        { bindingId: "b", path: "/fixture/create.py", snapshotPath: "/snap/hash-py", digest: "py", sizeBytes: 100, registeredAt: 1, sourceEntryId: 2 },
+      ];
+      await act(async () => root!.render(<BotMessage botName="MyBuddy" works={[{ ...projection, generatedArtifacts: generated }]}
+        onOpenWork={() => {}} onCancel={() => {}} message={{ messageId: "result-long", conversationId: "chat", botId: "owner", requestId: "r", ordinal: 1,
+          role: "assistant", status: "completed", text: "完整原文与原始引用", workIds: [projection.workId], createdAt: 1, updatedAt: 1,
+          workFeedback: { workId: projection.workId, eventId: "result:b", kind: "result", category: "result", executionId: "b", report: {
+            title: "六任务中的 CSV 报告", summary: "报告结论\n\n" + "完整内容。".repeat(350), artifactRefs: ["/snap/hash-py", "/snap/hash-csv"],
+            reviewStatus: "proposed", current: true, notices: ["尚未覆盖：实机验收"],
+          } },
+        }} />));
+      assert(container.querySelector(".bot-result-body.is-collapsed"));
+      await click("展开完整报告");
+      assert.equal(container.querySelector(".bot-result-body.is-collapsed"), null);
+      await click("收起长报告");
+      assert(container.querySelector(".bot-result-body.is-collapsed"));
+      const scripts = container.querySelector<HTMLDetailsElement>(".bot-result-other-files")!;
+      assert.equal(scripts.hasAttribute("open"), false, "scripts stay accessible without competing with the report");
+      const files = [...container.querySelectorAll<HTMLLIElement>(".bot-result-files > li")];
+      assert(files[0].textContent!.includes("report.csv"));
+      const openReport = [...files[0].querySelectorAll("button")].find(button => button.textContent === "打开保存版本")!;
+      await act(async () => { openReport.click(); });
+      assert.deepEqual(opened, ["/snap/hash-csv"]);
+      files[0].querySelector("details")!.setAttribute("open", "");
+      await act(async () => { [...files[0].querySelectorAll("button")].find(button => button.textContent === "定位文件")!.click(); });
+      assert.deepEqual(revealed, ["/fixture/report.csv"]);
+      const original = container.querySelector<HTMLDetailsElement>(".bot-original-report")!;
+      assert.equal(original.hasAttribute("open"), false);
+      original.setAttribute("open", "");
+      assert.match(original.textContent!, /完整原文与原始引用/);
       await unmount();
     });
     await check("retired isolation and approval surfaces render nothing in Work details", async () => {

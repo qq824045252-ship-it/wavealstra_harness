@@ -186,9 +186,20 @@ export class BotConversationRepository {
           WHERE m.conversation_id=? AND m.bot_id=? AND m.role='assistant' AND m.message_id LIKE 'work-feedback-%'
             AND m.request_id LIKE ? AND f.message_id IS NULL`).all(origin.conversation_id, origin.bot_id, `${prefix}%`) as { message_id: string }[];
         for (const item of legacy) annotated = this.saveFeedbackMetadata(item.message_id,
-          unchanged && item.message_id === previous?.message_id ? metadata : { ...metadata, category: "progress" }) || annotated;
+          unchanged && item.message_id === previous?.message_id ? metadata : { ...metadata, report: undefined, category: "progress" }) || annotated;
       }
       if (unchanged) {
+        // Upgrade only the exact unchanged event version. Never attach today's
+        // result body/files to an older report, and never emit another message.
+        if (metadata?.report && previous) {
+          const saved = this.db.prepare("SELECT metadata_json FROM bot_work_feedback WHERE message_id=?")
+            .get(previous.message_id) as { metadata_json: string } | undefined;
+          if (saved && !JSON.parse(saved.metadata_json).report) {
+            this.db.prepare("UPDATE bot_work_feedback SET metadata_json=? WHERE message_id=?")
+              .run(JSON.stringify(workFeedbackSchema.parse(metadata)), previous.message_id);
+            annotated = true;
+          }
+        }
         if (annotated) this.touch(origin.conversation_id);
         return false;
       }

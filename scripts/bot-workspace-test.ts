@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { BotMessageDto } from "../src/shared/bot-conversation";
-import { activeBotReply, botMessageStatus, botWorkTimeline, shouldSendBotComposer, workMatchesView, workStatusLabel } from "../src/renderer/src/lib/botWorkspacePresentation";
+import { activeBotReply, botMessageStatus, botWorkTimeline, shouldSendBotComposer, workMatchesView, workStatusLabel, workExecutionComplete } from "../src/renderer/src/lib/botWorkspacePresentation";
 import type { BotDto, WorkProjectionDto } from "../src/shared/bot-work";
 import type { WorkResultCardDto } from "../src/shared/bot-work-phase5";
 import Sidebar, { AccountNavigation } from "../src/renderer/src/components/Sidebar";
 import ChatMarkdown from "../src/renderer/src/components/chat/ChatMarkdown";
 import BotWorkspacePage, { BotMessage } from "../src/renderer/src/components/pages/BotWorkspacePage";
 import { BotWorkDetails } from "../src/renderer/src/components/pages/BotWorkDetails";
+import { WorkFiles, workFiles, generatedWorkFiles } from "../src/renderer/src/components/pages/BotWorkResult";
 import { WorkCardsPanel } from "../src/renderer/src/components/pages/BotWorkCardsPanel";
 import { WorkReviewPanel } from "../src/renderer/src/components/pages/BotWorkReviewPanel";
 import { useAppStore } from "../src/renderer/src/store/appStore";
@@ -64,7 +65,7 @@ assert.match(botPage, /创建一个 Bot，给它名称和职责/);
 const navigation = botPage.match(/<nav class="bot-view-tabs"[^>]*>([\s\S]*?)<\/nav>/)?.[1];
 assert.ok(navigation);
 assert.equal((navigation.match(/<button /g) ?? []).length, 3, "navigation has exactly three stable entry points");
-for (const title of ["对话", "进行中", "已结束"]) assert.match(navigation, new RegExp(`<span>${title}</span>`));
+for (const title of ["对话", "未结束", "已结束"]) assert.match(navigation, new RegExp(`<span>${title}</span>`));
 assert.match(navigation, /aria-current="page"/);
 assert.doesNotMatch(navigation + botSidebar, /待你决定/, "retired decision navigation is not exposed anywhere");
 assert.match(botPage, /还没有 Bot/);
@@ -145,7 +146,7 @@ const blocker: WorkProjectionDto["blockers"][number] = { blockerId: "b1", workId
 const plain = work({ workId: "plain", title: "普通事项", nextSteps: [] });
 for (const candidate of [plain, { ...plain, blockers: [blocker] }, { ...plain, nextSteps: ["等待实测反馈：日志齐全"] }]) {
   assert.equal(workMatchesView(candidate, "active"), true);
-  assert.equal(workStatusLabel(candidate), "进行中");
+  assert.equal(workStatusLabel(candidate), candidate.blockers.length ? "等待补充信息" : "尚未执行");
 }
 for (const lifecycle of ["active", "paused", "closing", "closed"] as const) {
   const candidate = { ...plain, lifecycle };
@@ -153,7 +154,7 @@ for (const lifecycle of ["active", "paused", "closing", "closed"] as const) {
   assert.equal(workMatchesView(candidate, "conversation"), lifecycle !== "closed");
   assert.equal(workMatchesView(candidate, "closed"), lifecycle === "closed");
 }
-assert.equal(workStatusLabel(plain), "进行中");
+assert.equal(workStatusLabel(plain), "尚未执行");
 assert.equal(workStatusLabel({ ...plain, lifecycle: "paused" }), "已暂停");
 assert.equal(workStatusLabel({ ...plain, lifecycle: "closing" }), "正在结算");
 assert.equal(workStatusLabel({ ...plain, lifecycle: "closed", closureConclusion: "succeeded" }), "已完成");
@@ -161,6 +162,21 @@ assert.equal(workStatusLabel({ ...plain, lifecycle: "closed", closureConclusion:
 assert.equal(workStatusLabel({ ...plain, lifecycle: "closed", closureConclusion: "ended_unsuccessfully" }), "已结束 · 未完成");
 assert.equal(workStatusLabel({ ...plain, lifecycle: "closed", closureConclusion: undefined }), "已结束",
   "missing closure evidence cannot imply failure or success");
+const completeBinding = { bindingId: "done", workId: plain.workId, intentRevision: plain.intentRevision,
+  inputSnapshotId: plain.inputSnapshotId, ownerEpoch: plain.ownerEpoch, status: "completed", settledAt: 4 } as WorkProjectionDto["executions"][number];
+const executed = { ...plain, executions: [completeBinding] };
+assert.equal(workExecutionComplete(executed), true);
+assert.equal(workStatusLabel(executed), "执行已完成 · 待核验");
+assert.equal(workMatchesView(executed, "closed"), false, "execution success never fabricates Work acceptance or closure");
+assert.equal(workStatusLabel({ ...executed, mode: "watch" }), "持续关注中");
+assert.equal(workStatusLabel({ ...executed, blockers: [blocker] }), "等待补充信息");
+for (const status of ["pending", "submitted", "running", "unknown", "failed", "stopped", "invalidated"] as const) {
+  assert.equal(workExecutionComplete({ ...plain, executions: [{ ...completeBinding, status }] }), false);
+}
+assert.equal(workExecutionComplete({ ...executed, intentRevision: 99 }), false, "old requirements cannot imply completion");
+assert.equal(workExecutionComplete({ ...executed, inputSnapshotId: "new-input" }), false);
+assert.equal(workExecutionComplete({ ...executed, executions: [{ ...completeBinding, invalidatedAt: 5 }] }), false);
+assert.equal(workStatusLabel({ ...executed, criteria: [{ ...plain.criteria[0], status: "satisfied" }] }), "执行已完成 · 待结算");
 const message = { role: "assistant", status: "completed" } as BotMessageDto;
 assert.equal(botMessageStatus(message), "已回复");
 assert.equal(botMessageStatus({ ...message, role: "user" }), "已发送");
@@ -459,3 +475,36 @@ const queuedReply = { messageId: "queued", role: "assistant", status: "queued" }
 assert.equal(activeBotReply([runningReply, queuedReply]), runningReply, "stop targets current generation before later queued reply");
 assert.equal(activeBotReply([queuedReply]), queuedReply);
 assert.equal(activeBotReply([{ ...runningReply, status: "completed" }]), undefined);
+
+// Interleaved progress from six Works becomes one fold, without crossing a reply or losing order.
+const sixProgress = Array.from({ length: 6 }, (_, i) => feedbackMessage(`six-${i}`, `work-${i}`, `binding:${i}`, "progress"));
+const groupedSix = botWorkTimeline(sixProgress);
+assert.equal(groupedSix.length, 1);
+assert.equal(groupedSix[0].kind === "progress" && groupedSix[0].workIds.length, 6);
+assert.deepEqual(groupedSix.flatMap(row => row.kind === "progress" ? row.messages : [row.message]), sixProgress);
+const generated = [
+  { bindingId: "done", path: "/work/report.csv", snapshotPath: "/snap/hash-report", digest: "sha-one", sizeBytes: 20, registeredAt: 1, sourceEntryId: 1 },
+  { bindingId: "done", path: "/work/create.py", snapshotPath: "/snap/hash-script", digest: "sha-two", sizeBytes: 40, registeredAt: 1, sourceEntryId: 2 },
+];
+const fileWork = { ...executed, generatedArtifacts: generated };
+assert.deepEqual(workFiles(["/snap/hash-report"], fileWork, "done").map(file => file.name), ["report.csv"]);
+assert.equal(workFiles(["/snap/hash-report"], fileWork, "another-execution")[0].artifact, undefined, "same basename never crosses execution boundaries");
+const attachmentHtml = renderToStaticMarkup(createElement(WorkFiles, { files: workFiles(["/snap/hash-script", "/snap/hash-report"], fileWork, "done") }));
+assert(attachmentHtml.indexOf("report.csv") < attachmentHtml.indexOf("create.py"), "readable reports precede scripts");
+assert.match(attachmentHtml, /<details class="bot-result-other-files"><summary>其他文件与脚本/);
+assert.match(attachmentHtml, /<summary>路径与版本<\/summary><p>\/snap\/hash-report/);
+assert.match(attachmentHtml, /打开保存版本/);
+assert.equal(generatedWorkFiles({ ...fileWork, generatedArtifacts: [...generated, { ...generated[0], digest: "new-version", snapshotPath: "/snap/new-version" }] }).length, 3, "same-name historical versions stay available");
+const structuredResult: BotMessageDto = { ...feedbackMessage("result-card", "plain", "result:done", "result"),
+  text: "完整原始消息 /snap/hash-report", workFeedback: { workId: "plain", eventId: "result:done", kind: "result", category: "result", executionId: "done",
+    report: { title: "CSV 汇总", summary: "合计 42 元。", artifactRefs: ["/snap/hash-report"], files: [{ ref: "/snap/hash-report", name: "report.csv" }], reviewStatus: "proposed", current: true, notices: ["尚未覆盖：现场验收"] } } };
+const reportHtml = renderToStaticMarkup(createElement(BotMessage, { message: structuredResult, botName: "Bot", works: [fileWork], onOpenWork() {}, onCancel() {} }));
+assert.match(reportHtml, /成果：CSV 汇总/);
+assert.match(reportHtml, /合计 42 元/);
+assert.match(reportHtml, /成果已生成 · 待核验/);
+assert.match(reportHtml, /尚未覆盖：现场验收/);
+assert.match(reportHtml, /<details class="bot-original-report"><summary>原始消息与完整记录/);
+assert(reportHtml.indexOf("合计 42 元") < reportHtml.indexOf("完整原始消息"));
+assert.match(renderToStaticMarkup(createElement(BotMessage, { message: structuredResult, botName: "Bot", works: [], onOpenWork() {}, onCancel() {} })), /report.csv/, "persisted filename survives missing/closed Work projections");
+
+assert.doesNotMatch(renderToStaticMarkup(createElement(WorkFiles, { files: [{ ref: "/unregistered/private.txt", name: "private.txt" }] })), /打开文件|打开保存版本/, "unregistered model file references remain text, not privileged file-open actions");

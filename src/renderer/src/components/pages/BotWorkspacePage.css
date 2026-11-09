@@ -7,10 +7,10 @@
 .bot-workspace h3 { font-size:14px; line-height:1.5; }
 .bot-workspace h4 { font-size:13px; }
 .bot-workspace p { line-height:1.65; }
-.bot-workspace button, .bot-navigation-drawer button { font:inherit; cursor:pointer; }
-.bot-workspace button:where(:not(.send-btn)) { display:inline-flex; align-items:center; justify-content:center; gap:6px; padding:8px 11px; border:1px solid var(--border-default); border-radius:9px; color:var(--fg); background:var(--bg-elevated); font-size:12px; transition:background var(--motion-fast),border-color var(--motion-fast); }
-.bot-workspace button:where(:not(.send-btn)):hover:not(:disabled) { background:var(--bg-hover); border-color:var(--border-strong); }
-.bot-workspace button:where(:not(.send-btn)):disabled { opacity:.45; cursor:not-allowed; }
+.bot-workspace button:not(.table-node__resize-handle), .bot-navigation-drawer button { font:inherit; cursor:pointer; }
+.bot-workspace button:where(:not(.send-btn, .table-node__resize-handle)) { display:inline-flex; align-items:center; justify-content:center; gap:6px; padding:8px 11px; border:1px solid var(--border-default); border-radius:9px; color:var(--fg); background:var(--bg-elevated); font-size:12px; transition:background var(--motion-fast),border-color var(--motion-fast); }
+.bot-workspace button:where(:not(.send-btn, .table-node__resize-handle)):hover:not(:disabled) { background:var(--bg-hover); border-color:var(--border-strong); }
+.bot-workspace button:where(:not(.send-btn, .table-node__resize-handle)):disabled { opacity:.45; cursor:not-allowed; }
 .bot-workspace :is(button,a,input,textarea,select,summary):focus-visible, .sidebar-mode-nav button:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
 .bot-workspace .bot-icon-button { flex:0 0 auto; width:34px; height:34px; padding:6px; border:0; background:transparent; }
 .bot-workspace .bot-quiet-button { border-color:transparent; background:transparent; color:var(--fg-secondary); }
@@ -87,6 +87,7 @@
 .bot-inspector-header { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:17px 20px; border-bottom:1px solid var(--border-subtle); font-size:11px; color:var(--fg-secondary); flex-shrink:0; }
 .bot-inspector-body { padding:24px; overflow:auto; overscroll-behavior:contain; }
 .bot-inspector.is-drawer { position:fixed; inset:0 0 0 auto; width:min(430px,calc(100vw - 32px)); height:100dvh; max-width:none; box-shadow:var(--shadow-lg); }
+.bot-inspector.is-overlay { position:absolute; inset:0 0 0 auto; width:min(430px,calc(100% - 32px)); z-index:5; box-shadow:var(--shadow-lg); }
 .bot-inspector::backdrop, .bot-settings-dialog::backdrop, .bot-navigation-drawer::backdrop { background:var(--overlay); }
 .bot-work-details { font-size:12px; line-height:1.7; overflow-wrap:anywhere; }
 .bot-work-details h2 { font-size:20px; margin:6px 0 10px; }
@@ -195,7 +196,7 @@
 .bot-team-template button { padding:6px 9px; border:1px solid var(--border-default); border-radius:7px; background:var(--bg-elevated); color:var(--fg); cursor:pointer; }
 
 /* Routine Work updates retain their durable history without filling the chat. */
-.bot-work-progress { margin: 8px 0; color: var(--fg-secondary); border: 1px solid var(--border-default); border-radius: 10px; padding: 10px 14px; }
+.bot-work-progress { margin: 0; color: var(--fg-secondary); border: 1px solid var(--border-default); border-radius: 10px; padding: 0 12px; }
 .bot-work-progress > summary { cursor: pointer; font-size: 13px; line-height: 1.5; }
 .bot-work-progress[open] > summary { margin-bottom: 14px; }
 .bot-work-progress .bot-message { margin-top: 12px; }
@@ -232,3 +233,31 @@
 .bot-model-settings select { height: 172px; overflow-y: auto; }
 .bot-model-settings select option { padding: 6px 8px; }
 .bot-model-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* Result-first layout: readable report, useful files, then expandable raw records. */
+.bot-result-report { min-width:0; border:1px solid var(--border-default); border-radius:14px; padding:18px; background:var(--surface-right); }
+.bot-result-report > header { display:flex; flex-wrap:wrap; align-items:flex-start; gap:10px; margin-bottom:16px; }
+.bot-result-report > header h3 { flex:1 1 220px; font-size:16px; overflow-wrap:anywhere; }
+.bot-result-report .bot-status-badge { white-space:nowrap; margin-top:2px; }
+.bot-result-body { min-width:0; overflow-wrap:anywhere; }
+.bot-result-body.is-collapsed { max-height:320px; overflow:hidden; mask-image:linear-gradient(#000 85%,transparent); }
+.bot-result-expand { margin-top:8px; }
+.bot-assistant-content .md table { min-width:480px; }
+.bot-assistant-content .md th { white-space:nowrap; }
+.bot-assistant-content .md pre { max-width:100%; overflow:auto; }
+.bot-result-attachments { border-top:1px solid var(--border-subtle); padding-top:14px; margin-top:18px; }
+.bot-result-files { display:flex; flex-direction:column; list-style:none; padding:0!important; margin:10px 0!important; gap:8px; }
+.bot-result-files > li { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:10px; margin:0!important; border:1px solid var(--border-subtle); border-radius:9px; min-width:0; }
+.bot-result-files > li > div { display:flex; flex-direction:column; gap:4px; flex:1 1 150px; min-width:0; }
+.bot-result-files strong { font-size:12px; overflow-wrap:anywhere; }
+.bot-result-files small { color:var(--fg-secondary); font-size:11px; }
+.bot-result-files > li > details { flex-basis:100%; min-width:0; color:var(--fg-secondary); }
+.bot-result-files details p { overflow-wrap:anywhere; font-size:11px; }
+.bot-result-files details summary { padding:2px 0; font-size:11px; }
+.bot-original-report { margin-top:14px; border-top:1px solid var(--border-subtle); color:var(--fg-secondary); }
+.bot-original-report[open] > .md { margin-top:10px; color:var(--fg); }
+.bot-result-notices { padding-left:18px; margin:12px 0; color:var(--fg-secondary); font-size:12px; }
+.bot-result-other-files { margin-top:8px; color:var(--fg-secondary); }
+@media (max-width:700px) { .bot-assistant-content { padding-left:0; } .bot-result-report { padding:13px; } }
+
+.bot-work-details .table-node__resize-handle { margin:0; }
