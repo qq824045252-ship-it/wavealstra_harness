@@ -1199,6 +1199,10 @@ export class AgentService {
     return this.workService.getProjection(workId);
   }
 
+  listWorkAutonomyRules() { return this.workService.approvals.listAutonomyRules(LOCAL_USER_ID); }
+
+  revokeWorkAutonomyRule(ruleId: string) { return this.workService.approvals.revokeAutonomyRule(LOCAL_USER_ID, ruleId); }
+
   decideWorkAction(request: unknown) {
     const result = this.workService.approvals.decide(LOCAL_USER_ID, request);
     if (result.ok) this.workExecutions?.wakeWork(result.approval.workId);
@@ -1802,6 +1806,7 @@ export class AgentService {
       }, { allowGitBranchOrWorktree }),
       workActionApproved: (taskId, operationId, toolName) => this.workService.approvals.approvedTaskAction(taskId, operationId, toolName),
       approveWorkAction: (input, signal) => this.workService.approvals.request(input, signal),
+      deferActions: true,
       admitWorkAction: input => this.workService.admitTaskAction(task.id, input),
       settleWorkAction: (operationId, outcome) => this.workService.settleTaskAction(task.id, operationId, outcome),
       toolAllowed: name => this.durableToolAllowed(this.db.getTask(task.id) ?? task, name) });

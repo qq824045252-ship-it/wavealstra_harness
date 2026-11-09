@@ -55,7 +55,7 @@ async function until(check: () => boolean) {
   const end = Date.now() + 15_000;
   while (!check()) { if (Date.now() > end) throw new Error("Native fixture did not reach expected state"); await new Promise(r => setTimeout(r, 10)); }
 }
-async function fixture(taskId: string, withoutWorkPath = false, verifyCommands = false, lateGuard: "block" | "throw" | undefined = undefined, taskWriteGrant = false) {
+async function fixture(taskId: string, withoutWorkPath = false, verifyCommands = false, lateGuard: "block" | "throw" | undefined = undefined, taskWriteGrant = false, deferActions = false) {
   const cwd = join(root, taskId); await mkdir(cwd);
   db.upsertTask({ id: taskId, title: taskId, updatedAt: Date.now() });
   let now = Date.now();
@@ -104,7 +104,7 @@ async function fixture(taskId: string, withoutWorkPath = false, verifyCommands =
   });
   const open = async () => {
     const policy = createDurableToolPolicy({ taskId, taskRoot: cwd, getPermissionMode: () => permissionMode, interactions, attempts, failures,
-      approveWorkAction: (input, signal) => works.approvals.request(input, signal),
+      approveWorkAction: (input, signal) => works.approvals.request(input, signal), deferActions,
       admitWorkAction: input => works.admitTaskAction(taskId, input),
       settleWorkAction: (id, outcome) => works.settleTaskAction(taskId, id, outcome),
       resourcePolicy: new WorkToolResourcePolicy(works.resourceGate, () => ({ taskId, workId: binding.workId, bindingId: binding.bindingId,
@@ -323,13 +323,13 @@ try {
             const request = { taskId: binding.taskId, taskRoot: f.cwd, operationId: `tool:1:service-${scenario}:continued-write`, toolName: "write",
               arguments: { path: "proof.txt", content: "native proof\n" }, actionKind: "workspace:write",
               summary: "Retry original write", permissionMode: "auto" as const, needsApproval: true };
-            assert.equal(await f.works.approvals.request({ ...request, operationId: "different-write",
-              arguments: { path: "unrequested.txt", content: "forbidden" } }), false, "continuation cannot write different arguments");
+            assert.equal((await f.works.approvals.request({ ...request, operationId: "different-write",
+              arguments: { path: "unrequested.txt", content: "forbidden" } })).kind, "deny", "continuation cannot write different arguments");
             await assert.rejects(access(join(f.cwd, "proof.txt")));
             const awaitingOriginal = f.works.approvals.request(request);
-            assert.equal(await f.works.approvals.request({ ...request, operationId: "same-args-new-pending-call" }), false,
+            assert.equal((await f.works.approvals.request({ ...request, operationId: "same-args-new-pending-call" })).kind, "deny",
               "same pending gap cannot be claimed by a different call ID");
-            assert.equal(await awaitingOriginal, true);
+            assert.equal((await awaitingOriginal).kind, "allow");
             assert.equal(f.works.admitTaskAction(binding.taskId, { operationId: request.operationId, actionKind: request.actionKind }), undefined);
             const resources = new WorkToolResourcePolicy(f.works.resourceGate, () => ({ taskId: binding.taskId,
               workId: binding.workId, bindingId: binding.bindingId, durableStoreKey: binding.durableStoreKey,
@@ -388,7 +388,7 @@ try {
               "duplicate trusted recovery leaves approval version and outcome unchanged");
             assert.deepEqual(f.works.partialResults.list(binding.workId), settledItems,
               "duplicate recovery neither reopens nor duplicates completed gap results");
-            assert.equal(await f.works.approvals.request({ ...request, operationId: "same-args-after-success" }), false,
+            assert.equal((await f.works.approvals.request({ ...request, operationId: "same-args-after-success" })).kind, "deny",
               "completed gap cannot be repeated under a different call ID");
             const receipt = { taskId: binding.taskId, operationId: binding.operationId, submissionId: 1, status: "done" as const };
             receipts.set(binding.bindingId, receipt); return receipt;
@@ -441,7 +441,7 @@ try {
     const approval = stopped.pending()!; assert(approval);
     if (effect !== "pending") {
       assert(stopped.works.approvals.decide(LOCAL_USER_ID, stopped.decision(approval)).ok);
-      assert.equal(await waiting, true);
+      assert.equal((await waiting).kind, "allow");
       assert.equal(stopped.works.admitTaskAction(stopped.binding.taskId, request), undefined);
       const admission = stopped.works.repo.listAdmissions(stopped.binding.workId).find(a => a.operationId === request.operationId)!;
       if (effect === "unknown") stopped.works.repo.updateAdmissionState(admission.admissionId, "unknown", Date.now());
@@ -454,7 +454,7 @@ try {
       : stopped.works.closeWork(user, { operationId: `end-pending-${effect}`, workId: stopped.binding.workId,
         conclusion, closureSummary: "Explicitly stop this fixture without claiming success" });
     assert(result.ok, JSON.stringify(result));
-    if (effect === "pending") assert.equal(await waiting, false);
+    if (effect === "pending") assert.equal((await waiting).kind, "deny", "stopping an unstarted action denies the waiting request");
     assert(stopped.works.reconcileExecution({ kind: "system", reason: "fixture confirms stopped native binding" },
       { bindingId: stopped.binding.bindingId, outcome: "stopped", usageTokens: 0 }).ok);
     const work = stopped.works.getWork(stopped.binding.workId)!;
@@ -474,6 +474,24 @@ try {
     }
     await assert.rejects(access(join(stopped.cwd, "never-created.txt")));
   }
+  // P0-D 生产开关：需要主人决定时不再占住执行栈，run 正常收尾、文件不产生。
+  {
+    const f = await fixture("native-defer", false, false, undefined, false, true);
+    const runtime = await f.open();
+    try {
+      const submission = await runtime.submit("pwd, write proof.txt, ls, read proof.txt", "input-defer");
+      await until(() => !!f.pending());
+      const approval = f.pending()!;
+      assert.equal(approval.status, "pending");
+      assert.equal((await submission.wait(ctx)).status, "done", "a deferred action must not hold the run open");
+      await assert.rejects(access(join(f.cwd, "proof.txt")), "the deferred action never executed");
+      assert.equal(f.observed.filter(x => x.name === "bash").length, 1, "only the independent read command ran");
+      assert(f.observed.some(x => x.name === "write" && x.error), "the agent received a machine-readable deferred result");
+      assert(f.works.partialResults.list(f.binding.workId).some(x => x.itemId === approval.approvalId && x.outcome === "not_started"),
+        "the deferred action is retained as a not_started gap for a later continuation");
+      console.log("PASS deferred approval: run completes without the action, no write, not_started gap retained");
+    } finally { await runtime.close(); }
+  }
   console.log("PASS cancellation/end retire only pending approvals; admitted/unknown effects retain settlement obligations across stop");
   const uncertain = await fixture("native-uncertain-admission");
   const uncertainRequest = { taskId: uncertain.binding.taskId, operationId: "uncertain-operation", toolName: "write",
@@ -482,7 +500,7 @@ try {
   const awaiting = uncertain.works.approvals.request(uncertainRequest);
   const approval = uncertain.pending()!; assert(approval);
   assert(uncertain.works.approvals.decide(LOCAL_USER_ID, uncertain.decision(approval)).ok);
-  assert.equal(await awaiting, true);
+  assert.equal((await awaiting).kind, "allow");
   assert.equal(uncertain.works.admitTaskAction(uncertain.binding.taskId,
     { operationId: uncertainRequest.operationId, actionKind: uncertainRequest.actionKind }), undefined);
   uncertain.advance();
@@ -496,7 +514,7 @@ try {
     "unknown effect cannot be mislabeled as unexecuted just because approval deadline elapsed");
   assert.equal(uncertain.works.approvals.permits(uncertain.binding.bindingId, uncertainRequest.operationId, "workspace:write"), false,
     "unknown effect needs recovery, never fresh execution permission");
-  assert.equal(await uncertain.works.approvals.request(uncertainRequest), false, "re-entering the original tool after unknown admission is fenced");
+  assert.equal((await uncertain.works.approvals.request(uncertainRequest)).kind, "deny", "re-entering the original tool after unknown admission is fenced");
   assert(!uncertain.works.partialResults.list(uncertain.binding.workId).some(x => x.outcome === "not_started"));
   console.log("PASS admitted action survives approval deadline; unknown effect is neither replayable nor mislabeled not_started");
   for (const priorState of ["none", "admitted", "unknown"] as const) {
@@ -504,7 +522,7 @@ try {
     const request = { taskId: delegate.binding.taskId, operationId: `delegate-op-${priorState}`, toolName: "subagent",
       arguments: { task: "Fixture delegation must remain under existing host policy" }, actionKind: "delegate",
       summary: "Delegate fixture", permissionMode: "auto" as const, needsApproval: true };
-    assert.equal(await delegate.works.approvals.request(request), undefined,
+    assert.equal((await delegate.works.approvals.request(request)).kind, "not_applicable",
       "ordinary delegation must continue through existing policy, never gain workspace one-shot authorization");
     assert.deepEqual(delegate.works.approvals.list(delegate.binding.workId), []);
     assert.deepEqual(delegate.works.repo.listOpenBlockers(delegate.binding.workId), []);
@@ -517,7 +535,7 @@ try {
         intentRevision: work.intentRevision, ownerEpoch: work.ownerEpoch, admittedAt: Date.now() });
     }
     const refusal = { ...request, deniedReason: "Fixture host explicitly rejects delegation outside this member scope" };
-    assert.equal(await delegate.works.approvals.request(refusal), false);
+    assert.equal((await delegate.works.approvals.request(refusal)).kind, "deny");
     const approval = delegate.works.approvals.list(delegate.binding.workId)[0]!; assert(approval);
     assert.equal(approval.requiredScope, "delegate");
     assert.equal(approval.status, priorState === "none" ? "denied" : "invalidated");
@@ -535,7 +553,7 @@ try {
       assert.equal(delegate.works.repo.listAdmissions(delegate.binding.workId)[0]?.state, priorState);
     }
     const version = delegate.works.getWork(delegate.binding.workId)!.stateVersion;
-    assert.equal(await delegate.works.approvals.request(refusal), false);
+    assert.equal((await delegate.works.approvals.request(refusal)).kind, "deny");
     assert.deepEqual(delegate.works.approvals.list(delegate.binding.workId), [approval]);
     assert.deepEqual(delegate.works.repo.listOpenBlockers(delegate.binding.workId), blockers);
     assert.equal(delegate.works.getWork(delegate.binding.workId)!.stateVersion, version,

@@ -80,7 +80,13 @@ async function fixture(taskId: string, respond: (request: TranscriptContext) => 
   const open = async () => {
     const policy = createDurableToolPolicy({ taskId, taskRoot: cwd, getPermissionMode: () => state.permission,
       interactions, attempts, failures, getPolicy: () => new TaskFileAccessPolicy({ taskId, taskRoot: cwd, isolatedSourceRoots }),
-      effectRecovery, resourcePolicy: state.resourcePolicy, approveWorkAction: async (input, signal) => state.approve?.(input, signal),
+      effectRecovery, resourcePolicy: state.resourcePolicy, approveWorkAction: async (input, signal) => {
+        if (!state.approve) return { kind: "not_applicable" } as const;
+        const result = await state.approve(input, signal);
+        if (result && typeof result === "object") return result;
+        return result === undefined ? { kind: "not_applicable" } as const
+          : result ? { kind: "allow", source: "exact" } as const : { kind: "deny", reason: "denied" } as const;
+      },
       admitWorkAction: input => state.admit?.(input), settleWorkAction: (operationId, outcome) => state.settle?.(operationId, outcome),
       toolAllowed: name => !state.deniedTools.has(name) && (state.allowed || !["write", "mcp__filesystem__write_file"].includes(name)),
     });

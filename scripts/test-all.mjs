@@ -280,6 +280,8 @@ const HEADLESS_TESTS = new Set([
   "test:durable-sync",
   "test:durable-tool-policy",
   "test:work-approval-native",
+  "test:work-autonomy",
+  "test:work-approval-defer",
   "test:work-team-approval-native",
   "test:work-approval-ui",
   "test:task-diagnostics",

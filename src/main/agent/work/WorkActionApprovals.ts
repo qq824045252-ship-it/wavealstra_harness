@@ -2,12 +2,17 @@ import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import { z } from "zod";
 import type { PermissionMode } from "../../../shared/agent-ipc";
-import { workActionApprovalSchema, workActionDecisionSchema, type WorkActionApprovalDto, type WorkActionDecisionResult } from "../../../shared/bot-work-approval";
+import { workActionApprovalSchema, workActionDecisionSchema, type WorkActionApprovalDto, type WorkActionAuthorization, type WorkActionDecisionResult } from "../../../shared/bot-work-approval";
 import type { WorkService } from "./WorkService";
+import { classifyWorkAction } from "./WorkActionClassifier";
+import { WorkDecisionLedger } from "./WorkDecisionLedger";
+import { WorkAutonomyPolicy } from "./WorkAutonomyPolicy";
 
 export interface WorkActionRequest {
   taskRoot?: string; taskId: string; operationId: string; toolName: string; arguments: unknown; actionKind: string;
   summary: string; detail?: string; deniedReason?: string; permissionMode: PermissionMode; needsApproval: boolean;
+  /** P0-D：显式请求非阻塞挂起。默认仍等待决定，只有确认支持 defer 的调用方开启。 */
+  deferrable?: boolean;
 }
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const rowSchema = z.object({ approval_id: z.string(), work_id: z.string(), binding_id: z.string(), operation_id: z.string(),
@@ -16,8 +21,12 @@ const rowSchema = z.object({ approval_id: z.string(), work_id: z.string(), bindi
 /** A persisted, exact-action permission, never a mutation of Work/Bot/global scopes.
  * Observers may disappear; the absolute deadline and decision survive process restarts. */
 export class WorkActionApprovals {
+  private readonly ledger: WorkDecisionLedger;
+  private readonly autonomy: WorkAutonomyPolicy;
   constructor(private readonly db: Database.Database, private readonly works: WorkService,
     private readonly options: { now: () => number; isAuthority: () => boolean; ttlMs?: number }) {
+    this.ledger = new WorkDecisionLedger(db, options.now);
+    this.autonomy = new WorkAutonomyPolicy(this.ledger, options.now);
     db.exec(`CREATE TABLE IF NOT EXISTS work_action_approvals (
       approval_id TEXT PRIMARY KEY, work_id TEXT NOT NULL REFERENCES works(work_id),
       binding_id TEXT NOT NULL REFERENCES work_execution_bindings(binding_id), operation_id TEXT NOT NULL,
@@ -51,15 +60,15 @@ export class WorkActionApprovals {
   }
 
   /** undefined means this is an ordinary Task and its existing approval policy applies. */
-  async request(input: WorkActionRequest, signal?: AbortSignal): Promise<boolean | undefined> {
+  async request(input: WorkActionRequest, signal?: AbortSignal): Promise<WorkActionAuthorization> {
     const binding = this.works.repo.bindingForTask(input.taskId);
-    if (!binding) return undefined;
+    if (!binding) return { kind: "not_applicable" };
     // Non-workspace delegation stays under its existing host policy. Persist an
     // explicit refusal, but never turn it into a one-action scope grant.
     if (!["workspace:read", "workspace:write"].includes(input.actionKind)
-      && !(input.actionKind === "delegate" && input.deniedReason)) return undefined;
+      && !(input.actionKind === "delegate" && input.deniedReason)) return { kind: "not_applicable" };
     const work = this.works.getWork(binding.workId);
-    if (!work || !this.options.isAuthority()) return false;
+    if (!work || !this.options.isAuthority()) return { kind: "deny", reason: "当前宿主不持有该事项的审批权威，动作未执行" };
     const scopeMissing = !work.authorization.allowedScopes.includes(input.actionKind)
       || binding.delegatedScope.length > 0 && !binding.delegatedScope.includes(input.actionKind);
     const priorAdmission = this.works.repo.listAdmissions(work.workId).find(item => item.operationId === input.operationId);
@@ -79,6 +88,7 @@ export class WorkActionApprovals {
     const fingerprint = hash([binding.taskId, binding.durableStoreKey, binding.conversationId, binding.workspaceBinding,
       input.taskRoot ?? binding.workspaceBinding, input.operationId, input.toolName, input.arguments, input.actionKind]);
     let stored = this.get(approvalId);
+    let grantedBy: "policy" | "precedent" | "auto" | "exact" = "exact";
     if (stored && stored.fingerprint !== fingerprint) throw new Error("审批动作身份不能用于不同工具或参数");
     // Read-only shell commands are classified by the native policy. Never silently
     // turn application auto mode into Work authorization or allow readonly writes.
@@ -86,7 +96,19 @@ export class WorkActionApprovals {
       const reason = restriction;
       this.works.transaction(() => this.settle(stored!.value, possiblePriorEffect ? "invalidated" : "denied", reason));
     }
-    if (!stored && !continuation.length && !restriction && !scopeMissing && (!input.needsApproval || input.permissionMode === "auto")) return true;
+    // 同一动作（版本未变）已暂不处理/拒绝时不再重复打扰。
+    const versionSameAction = this.list(work.workId).find(value => value.bindingId === binding.bindingId
+      && value.actionHash === actionHash && value.intentRevision === work.intentRevision
+      && value.inputSnapshotId === work.inputSnapshotId && value.ownerEpoch === work.ownerEpoch
+      && ["pending", "ignored", "denied", "expired"].includes(value.status));
+    if (!stored && versionSameAction && input.deferrable) {
+      if (versionSameAction.status === "pending") return { kind: "defer", approvalId: versionSameAction.approvalId,
+        reason: versionSameAction.outcome ?? "等待你确认，该动作未执行" };
+      if (versionSameAction.status === "ignored") return { kind: "defer", approvalId: versionSameAction.approvalId,
+        reason: "你已选择暂不处理该动作（未执行）；其它步骤可以继续" };
+      return { kind: "deny", reason: versionSameAction.outcome ?? "该动作先前未获准执行" };
+    }
+    if (!stored && !continuation.length && !restriction && !scopeMissing && (!input.needsApproval || input.permissionMode === "auto")) return { kind: "allow", source: "auto" };
     if (!stored) {
       this.works.transaction(() => {
         if (!this.options.isAuthority()) throw new Error("审批登记时宿主权威已变化");
@@ -100,9 +122,26 @@ export class WorkActionApprovals {
             }
           }
         }
-        const denied = !!restriction || input.permissionMode === "readonly" && input.actionKind !== "workspace:read";
-        const automatic = !denied && !scopeMissing && (!input.needsApproval || input.permissionMode === "auto");
+        // P0-B：确定性自治策略先决定“谁来决定”，资源/效果通道保持不变。
+        const descriptor = classifyWorkAction({ toolName: input.toolName, arguments: input.arguments });
+        const verdict = !restriction ? this.autonomy.decide(descriptor, { userId: work.userId, botId: binding.botId,
+          workId: work.workId, bindingId: binding.bindingId, actionHash,
+          workspaceId: binding.workspaceBinding, delegatedScope: binding.delegatedScope,
+          permissionMode: input.permissionMode }) : undefined;
+        const policyDenied = verdict?.kind === "deny" ? verdict.reason : undefined;
+        if (verdict && verdict.kind !== "ask") this.autonomy.record(verdict, descriptor, { userId: work.userId,
+          botId: binding.botId, workId: work.workId, bindingId: binding.bindingId, actionHash,
+          workspaceId: binding.workspaceBinding, delegatedScope: binding.delegatedScope,
+          permissionMode: input.permissionMode }, verdict.reason);
+        const denied = !!restriction || !!policyDenied || input.permissionMode === "readonly" && input.actionKind !== "workspace:read";
+        const automatic = !denied && !scopeMissing && (verdict?.kind === "allow" || !input.needsApproval || input.permissionMode === "auto");
         const value: WorkActionApprovalDto = { approvalId, workId: work.workId, bindingId: binding.bindingId,
+          descriptor: { effect: descriptor.effect, operation: descriptor.operation, provider: descriptor.provider,
+            target: descriptor.target, environment: descriptor.environment, reversibility: descriptor.reversibility,
+            blastRadius: descriptor.blastRadius, hardGate: descriptor.hardGate || (verdict?.kind === "ask" && verdict.hardGate),
+            reason: descriptor.reason },
+          question: verdict?.kind === "ask" ? verdict.reason : undefined,
+          ruleScope: { projectId: work.projectId, workspaceId: binding.workspaceBinding, botId: binding.botId },
           actionHash, taskId: binding.taskId, operationId: input.operationId, toolName: input.toolName,
           summary: input.summary, detail: input.detail ?? "", requiredScope: input.actionKind, scopeMissing,
           intentRevision: work.intentRevision, inputSnapshotId: work.inputSnapshotId, ownerEpoch: work.ownerEpoch,
@@ -110,18 +149,38 @@ export class WorkActionApprovals {
           expiresAt: now + (this.options.ttlMs ?? 5 * 60_000), outcome: outsidePlan ? "continuation-outside-plan" : restriction ?? (denied ? "readonly-policy" : undefined) };
         this.db.prepare("INSERT OR IGNORE INTO work_action_approvals(approval_id,work_id,binding_id,operation_id,fingerprint,data_json) VALUES (?,?,?,?,?,?)")
           .run(approvalId, work.workId, binding.bindingId, input.operationId, fingerprint, JSON.stringify(value));
-        if (automatic) this.touch(work.workId);
-        else this.block(value, denied ? restriction ?? "当前应用只读策略拒绝此操作，未执行" : scopeMissing
+        if (automatic) {
+          grantedBy = verdict?.kind === "allow" ? verdict.source : "auto";
+          this.touch(work.workId);
+        }
+        else this.block(value, denied ? restriction ?? policyDenied ?? "当前应用只读策略拒绝此操作，未执行" : scopeMissing
           ? `缺少 ${input.actionKind} 授权；仅此工具动作可由你授权后继续，已完成步骤不重跑`
           : "后台操作等待你确认，超时会默认拒绝，未执行");
       });
       stored = this.get(approvalId)!;
     }
+    // P0-D：deferrable 调用方不占执行栈——动作以 not_started 挂起，稍后由
+    // continuation 只恢复这一动作；默认调用方保持原有等待语义。
+    if (input.deferrable) {
+      this.recover();
+      const value = this.get(approvalId)!.value;
+      if (value.status === "approved" && this.current(value)) return { kind: "allow", source: grantedBy };
+      if (value.status === "ignored") return { kind: "defer", approvalId, reason: "你已选择暂不处理该动作（未执行）" };
+      if (value.status === "pending") {
+        this.recordDeferredGap(value);
+        return { kind: "defer", approvalId, reason: value.outcome ?? "等待你确认，该动作未执行" };
+      }
+      return { kind: "deny", reason: value.outcome ?? "该动作未获准执行" };
+    }
     for (;;) {
       if (!this.options.isAuthority()) throw new Error("审批观察宿主已失去权威，保留请求等待原身份恢复");
       this.recover();
       const value = this.get(approvalId)!.value;
-      if (value.status !== "pending") return value.status === "approved" && this.current(value);
+      if (value.status !== "pending") {
+        if (value.status === "approved" && this.current(value)) return { kind: "allow", source: grantedBy };
+        if (value.status === "ignored") return { kind: "defer", approvalId, reason: "你已选择暂不处理该动作（未执行）" };
+        return { kind: "deny", reason: value.outcome ?? "该动作未获准执行" };
+      }
       if (signal?.aborted) throw new Error("审批观察已中断；原请求保留并按原期限默认拒绝");
       await new Promise<void>(resolve => setTimeout(resolve, 100));
     }
@@ -137,19 +196,35 @@ export class WorkActionApprovals {
       const work = value && this.works.getWork(value.workId);
       if (!row || !value || !work || work.userId !== userId || value.workId !== request.workId || value.bindingId !== request.bindingId)
         return { ok: false, code: "not_found", message: "找不到属于当前用户与执行的审批" };
+      const mode = request.decision ?? (request.approved === false ? "deny" : "allow");
       const decision = JSON.stringify(request);
       if (row.decision_json === decision) return { ok: true, approval: value, replayed: true };
       if (value.status !== "pending") return { ok: false, code: "already_resolved", message: "审批已结束，不能再次执行" };
       if (value.version !== request.expectedVersion || work.stateVersion !== request.expectedStateVersion
         || work.intentRevision !== request.expectedIntentRevision || work.ownerEpoch !== request.expectedOwnerEpoch || !this.current(value))
         return { ok: false, code: "version_conflict", message: "事项或审批已变化，请刷新后重新判断" };
-      if (request.approved && value.scopeMissing && (!request.grantScopeOnce || !["workspace:read", "workspace:write"].includes(value.requiredScope)))
+      if (mode === "allow" && value.scopeMissing && (!request.grantScopeOnce || !["workspace:read", "workspace:write"].includes(value.requiredScope)))
         return { ok: false, code: "invalid_request", message: "必须明确授权本次缺失的工作区范围；其他授权请通过事项配置处理" };
-      const next = this.settle(value, request.approved ? "approved" : "denied", request.approved ? "user-approved-once" : "user-denied");
+      if (request.saveRule && (mode !== "allow" || value.descriptor?.hardGate))
+        return { ok: false, code: "invalid_request", message: "hard gate 或非允许决定不能保存为长期规则" };
+      const next = this.settle(value, mode === "allow" ? "approved" : mode === "ignore" ? "ignored" : "denied",
+        mode === "allow" ? "user-approved-once" : mode === "ignore" ? "user-ignored" : "user-denied");
+      if (mode === "allow" && request.saveRule) {
+        const scope = request.saveRule === "project" ? { projectId: value.ruleScope?.projectId }
+          : request.saveRule === "repo" ? { repo: undefined } : { workspaceId: value.ruleScope?.workspaceId };
+        if (!value.descriptor || !Object.values(scope).some(Boolean))
+          return { ok: false, code: "invalid_request", message: "该事项没有可绑定的项目/仓库/工作区，不能保存长期规则" };
+        this.ledger.addRule({ userId, botId: value.ruleScope?.botId, decision: "allow",
+          reason: "你在审批卡上选择以后这样处理", scope: { ...scope, effect: [value.descriptor.effect],
+            operation: [value.descriptor.operation], environment: [value.descriptor.environment] }, createdBy: "user" });
+      }
       this.db.prepare("UPDATE work_action_approvals SET decision_json=? WHERE approval_id=?").run(decision, value.approvalId);
       return { ok: true, approval: next, replayed: false };
     });
   }
+
+  listAutonomyRules(userId: string) { return this.ledger.listRules(userId); }
+  revokeAutonomyRule(userId: string, ruleId: string): boolean { return this.ledger.revokeRule(ruleId, userId); }
 
   approvedTaskAction(taskId: string, operationId: string, toolName: string): boolean | undefined {
     const binding = this.works.repo.bindingForTask(taskId); if (!binding) return undefined;
@@ -234,13 +309,29 @@ export class WorkActionApprovals {
     if (status === "approved" || status === "consumed") {
       this.works.repo.clearBlocker(value.approvalId, value.workId, this.options.now());
       this.touch(value.workId);
-    } else this.block(next, `${outcome === "user-denied" ? "你已拒绝继续此操作" : outcome}。保留已完成步骤；没有重新提交整个任务。`);
+    } else this.block(next, outcome === "user-ignored"
+      ? "你选择暂不处理该动作：它没有被执行，也没有取消整个事项；其它步骤可以继续，不会重复询问"
+      : `${outcome === "user-denied" ? "你已拒绝继续此操作" : outcome}。保留已完成步骤；没有重新提交整个任务。`);
     return next;
+  }
+  /** P0-D：暂缓的动作必须留下 not_started 缺口，后续批准才能定向补跑。 */
+  private recordDeferredGap(value: WorkActionApprovalDto): void {
+    const work = this.works.getWork(value.workId);
+    if (!work || ["closing", "closed"].includes(work.lifecycle)) return;
+    if (this.works.repo.listAdmissions(value.workId).some(a => a.operationId === value.operationId
+      && ["admitted", "unknown", "consumed"].includes(a.state))) return;
+    const binding = this.works.repo.getBinding(value.bindingId);
+    if (!binding) return;
+    if (this.works.partialResults.list(value.workId).some(item => item.itemId === value.approvalId)) return;
+    this.works.transaction(() => this.works.partialResults.record(binding, [{ itemId: value.approvalId,
+      task: `仅处理先前未执行的动作：${value.toolName}。${value.summary}\n${value.detail}。保留其他已完成步骤，不得重跑整个委托。`,
+      required: true, dependencies: [], criterionIds: [], nativeStatus: "host_approval_not_started", outcome: "not_started",
+      artifactRefs: [], writeConflicts: [], summary: "该动作已暂缓，未执行；等待主人决定", origin: "native" }], this.options.now()));
   }
   private block(value: WorkActionApprovalDto, reason: string): void {
     const work = this.works.getWork(value.workId);
     if (["workspace:read", "workspace:write"].includes(value.requiredScope)
-      && ["denied", "expired", "invalidated"].includes(value.status) && work && !["closing", "closed"].includes(work.lifecycle)
+      && ["denied", "ignored", "expired", "invalidated"].includes(value.status) && work && !["closing", "closed"].includes(work.lifecycle)
       && value.outcome !== "continuation-outside-plan" && !this.works.repo.listAdmissions(value.workId).some(a => a.operationId === value.operationId && ["admitted", "unknown", "consumed"].includes(a.state))) {
       const binding = this.works.repo.getBinding(value.bindingId);
       if (binding) this.works.partialResults.record(binding, [{ itemId: value.approvalId,

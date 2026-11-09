@@ -47,7 +47,9 @@ export interface DurableToolPolicyOptions {
   toolAllowed?: (name: string) => boolean;
   effectRecovery?: ExternalEffectRecovery;
   workActionApproved?: (taskId: string, operationId: string, toolName: string) => boolean | undefined;
-  approveWorkAction?: (input: import("../work/WorkActionApprovals").WorkActionRequest, signal?: AbortSignal) => Promise<boolean | undefined>;
+  approveWorkAction?: (input: import("../work/WorkActionApprovals").WorkActionRequest, signal?: AbortSignal) => Promise<import("../../../shared/bot-work-approval").WorkActionAuthorization>;
+  /** P0-D：需要主人决定时不再占住执行栈，动作以 not_started 挂起后继续其它步骤。 */
+  deferActions?: boolean;
   admitWorkAction?: (input: { operationId: string; actionKind: string }) => string | undefined;
   settleWorkAction?: (operationId: string, outcome: "consumed" | "released" | "unknown") => void;
   resourcePolicy?: WorkToolResourcePolicy;
@@ -97,7 +99,8 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
           await options.approveWorkAction?.({ taskId: options.taskId, taskRoot: options.taskRoot,
             operationId: `tool:${api.conversationId}:${api.taskId}:${call.id}`, toolName: call.name, arguments: call.arguments,
             actionKind: "workspace:write", summary: summary.summary, detail: summary.detail,
-            permissionMode: options.getPermissionMode(), needsApproval: false, deniedReason: reason }, context.abortSignal);
+            permissionMode: options.getPermissionMode(), needsApproval: false, deniedReason: reason,
+            deferrable: options.deferActions === true }, context.abortSignal);
           return { block: reason };
         };
         if (options.toolAllowed && !options.toolAllowed(call.name)) return refuseBeforeApproval(`当前任务未授权工具：${call.name}`);
@@ -142,17 +145,19 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
         const workApproval = await options.approveWorkAction?.({ taskId: options.taskId, taskRoot, operationId,
           toolName: call.name, arguments: call.arguments, actionKind, summary: summary.summary,
           detail: [summary.detail, externalPath ? `工作目录之外的写入：${externalPath}` : undefined].filter(Boolean).join("\n"),
-          permissionMode: mode, needsApproval }, context.abortSignal);
-        if (workApproval === false) return { block: "后台操作未获准继续；本次没有启动新的执行，请查看审批、阻碍和原动作回执" };
+          permissionMode: mode, needsApproval, deferrable: options.deferActions === true }, context.abortSignal);
+        if (workApproval?.kind === "defer") return { block: `[deferred] 该动作已暂缓（未执行）：${workApproval.reason}。审批 ${workApproval.approvalId}；继续完成其它不依赖此动作的步骤，不要重复请求同一动作，也不要把这条结果当成整个任务失败。` };
+        if (workApproval?.kind === "deny") return { block: `后台操作未获准继续：${workApproval.reason}；本次没有启动新的执行，请查看审批、阻碍和原动作回执` };
         const refuseWork = async (reason: string) => {
           await options.approveWorkAction?.({ taskId: options.taskId, taskRoot, operationId,
             toolName: call.name, arguments: call.arguments, actionKind, summary: summary.summary, detail: summary.detail,
-            permissionMode: options.getPermissionMode(), needsApproval, deniedReason: reason }, context.abortSignal);
+            permissionMode: options.getPermissionMode(), needsApproval, deniedReason: reason,
+            deferrable: options.deferActions === true }, context.abortSignal);
           return { block: reason };
         };
         if (options.getPermissionMode() === "readonly" && (sideEffect || dangerous)) return refuseWork("当前为只读模式，已阻止写操作与命令执行");
         if (options.toolAllowed && (!options.toolAllowed(originalCall.name) || !options.toolAllowed(call.name))) return refuseWork("审批等待期间工具授权已变化，未执行");
-        if (workApproval === undefined && mode !== "auto" && needsApproval) {
+        if ((workApproval === undefined || workApproval.kind === "not_applicable") && mode !== "auto" && needsApproval) {
           const summary = summarizeToolInput(call.name, call.arguments);
           const allowed = await approve({ toolCallId: call.id, toolName: call.name, dangerous,
             summary: summary.summary, detail: [summary.detail, externalPath ? `工作目录之外的写入：${externalPath}` : undefined].filter(Boolean).join("\n"),
