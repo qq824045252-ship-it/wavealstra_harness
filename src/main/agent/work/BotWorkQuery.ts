@@ -1,0 +1,134 @@
+import { createHash } from "node:crypto";
+import type Database from "better-sqlite3";
+import { z } from "zod";
+import type { WorkLifecycle, WorkMode, WorkClosureConclusion, DeliverableStatus } from "../../../shared/bot-work";
+
+export const botWorkQuerySchema = z.object({
+  workId: z.string().min(1).max(32000).regex(/\S/).trim().optional(),
+  view: z.enum(["summary", "detail"]).optional().describe("summary返回分页摘要；detail必须指定workId并返回原始完整详情数组"),
+  status: z.enum(["open", "all", "active", "paused", "closing", "closed"]).optional().describe("open=active/paused/closing，默认open；历史用all或closed"),
+  search: z.string().min(1).max(200).regex(/\S/).trim().optional().describe("在标题和目标中按字面子串搜索，不把%或_当通配符"),
+  limit: z.number().int().min(1).max(50).optional(),
+  cursor: z.string().min(1).max(2048).optional().describe("续页须保留status/search/workId筛选；直接使用上页nextQuery参数"),
+}).strict();
+export type BotWorkQueryInput = z.infer<typeof botWorkQuerySchema>;
+const cursorSchema = z.object({ v: z.literal(1), scope: z.string(), createdAt: z.number().int().nonnegative(), workId: z.string().min(1) }).strict();
+const visible = `w.user_id=@userId AND (w.owner_bot_id=@botId OR EXISTS
+  (SELECT 1 FROM work_participants p WHERE p.work_id=w.work_id AND p.bot_id=@botId))`;
+
+export interface BotWorkSummary {
+  workId: string;
+  title: string;
+  mode: WorkMode;
+  lifecycle: WorkLifecycle;
+  ownerBotId: string;
+  closureConclusion: WorkClosureConclusion | null;
+  progressSummary: string | null;
+  closureSummary: string | null;
+  latestDeliverableSummary: string | null;
+  latestDeliverableStatus: DeliverableStatus | null;
+  createdAt: number;
+  updatedAt: number;
+  deadlineAt: number | null;
+  openBlockerCount: number;
+  needsUserInput: boolean;
+  nextWakeAt: number | null;
+  activeSubscriptionCount: number;
+  stoppedSubscriptionCount: number;
+  watchRule: { cronExpression: string | null; timezone: string | null; stopConditionText: string | null } | null;
+  versionGuard: { expectedStateVersion: number; expectedIntentRevision: number; expectedOwnerEpoch: number };
+  /** Summaries omit long reports, history and evidence. Read workId for originals. */
+  detailAvailable: true;
+}
+
+/** SQL-only catalogue. Never hydrate every Work or build projections to list it. */
+export class BotWorkQuery {
+  constructor(private readonly db: Database.Database, private readonly userId: string, private readonly botId: string) {
+    // Additive indexes support existing current-schema databases without discarding data.
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_works_user_created ON works(user_id,created_at DESC,work_id DESC);
+      CREATE INDEX IF NOT EXISTS idx_work_participants_bot_work ON work_participants(bot_id,work_id);`);
+  }
+
+  canRead(workId: string): boolean {
+    return !!this.db.prepare(`SELECT 1 FROM works w WHERE w.work_id=@workId AND ${visible}`)
+      .get({ userId: this.userId, botId: this.botId, workId });
+  }
+
+  soleOpenWorkId(): string | undefined {
+    const rows = this.db.prepare(`SELECT w.work_id FROM works w WHERE ${visible} AND w.lifecycle!='closed' LIMIT 2`)
+      .all({ userId: this.userId, botId: this.botId }) as Array<{ work_id: string }>;
+    return rows.length === 1 ? rows[0]!.work_id : undefined;
+  }
+
+  page(input: BotWorkQueryInput) {
+    const status = input.status ?? (input.workId ? "all" : "open");
+    const limit = input.limit ?? 20;
+    // Bind cursors to caller and filters. They are positions, never authorization.
+    const scope = createHash("sha256").update(JSON.stringify([this.userId, this.botId, status, input.search ?? "", input.workId ?? ""]))
+      .digest("hex");
+    let after: z.infer<typeof cursorSchema> | undefined;
+    if (input.cursor) {
+      try { after = cursorSchema.parse(JSON.parse(Buffer.from(input.cursor, "base64url").toString("utf8"))); }
+      catch { throw new Error("查询游标无效，请重新查询第一页"); }
+      if (after.scope !== scope) throw new Error("查询游标与当前用户、Bot 或筛选不匹配，请重新查询第一页");
+    }
+    const params: Record<string, string | number> = { userId: this.userId, botId: this.botId };
+    const predicates = [visible];
+    if (input.workId) { predicates.push("w.work_id=@workId"); params.workId = input.workId; }
+    if (input.search) {
+      // Literal substring search, including % and _, rather than SQL wildcards.
+      predicates.push("(instr(lower(w.title),lower(@search))>0 OR instr(lower(coalesce(w.goal_description,'')),lower(@search))>0)");
+      params.search = input.search;
+    }
+    const base = predicates.join(" AND ");
+    const counts = this.db.prepare(`SELECT w.lifecycle,COUNT(*) count FROM works w WHERE ${base} GROUP BY w.lifecycle`)
+      .all(params) as Array<{ lifecycle: WorkLifecycle; count: number }>;
+    const statusCounts: Record<WorkLifecycle, number> = { active: 0, paused: 0, closing: 0, closed: 0 };
+    for (const row of counts) statusCounts[row.lifecycle] = row.count;
+    const total = status === "all" ? Object.values(statusCounts).reduce((sum, count) => sum + count, 0)
+      : status === "open" ? statusCounts.active + statusCounts.paused + statusCounts.closing : statusCounts[status];
+    if (status === "open") predicates.push("w.lifecycle!='closed'");
+    else if (status !== "all") { predicates.push("w.lifecycle=@status"); params.status = status; }
+    if (after) {
+      predicates.push("(w.created_at<@createdAt OR (w.created_at=@createdAt AND w.work_id<@afterId))");
+      params.createdAt = after.createdAt; params.afterId = after.workId;
+    }
+    params.take = limit + 1;
+    // Text is sliced in SQLite, so even oversized historical reports never enter the host's list response.
+    const rows = this.db.prepare(`SELECT w.work_id workId,substr(w.title,1,200) title,w.mode,w.lifecycle,w.owner_bot_id ownerBotId,
+      w.closure_conclusion closureConclusion,substr(w.progress_summary,1,400) progressSummary,substr(w.closure_summary,1,400) closureSummary,
+      w.created_at createdAt,w.updated_at updatedAt,w.deadline_at deadlineAt,w.state_version stateVersion,
+      w.intent_revision intentRevision,w.owner_epoch ownerEpoch,
+      (SELECT substr(d.summary,1,400) FROM work_deliverables d WHERE d.work_id=w.work_id
+        AND d.intent_revision=w.intent_revision AND d.input_snapshot_id=w.input_snapshot_id
+        AND d.status IN ('proposed','accepted') ORDER BY d.created_at DESC,d.deliverable_id DESC LIMIT 1) latestDeliverableSummary,
+      (SELECT d.status FROM work_deliverables d WHERE d.work_id=w.work_id
+        AND d.intent_revision=w.intent_revision AND d.input_snapshot_id=w.input_snapshot_id
+        AND d.status IN ('proposed','accepted') ORDER BY d.created_at DESC,d.deliverable_id DESC LIMIT 1) latestDeliverableStatus,
+      substr(json_extract(w.watch_rule_json,'$.cronExpression'),1,200) cronExpression,
+      substr(json_extract(w.watch_rule_json,'$.timezone'),1,100) timezone,
+      substr(json_extract(w.watch_rule_json,'$.stopConditionText'),1,400) stopConditionText,
+      (SELECT COUNT(*) FROM work_blockers b WHERE b.work_id=w.work_id AND b.status='open') openBlockerCount,
+      EXISTS(SELECT 1 FROM work_blockers b WHERE b.work_id=w.work_id AND b.status='open' AND b.waiting_for_user_input=1) needsUserInput,
+      (SELECT MIN(s.next_wake_at) FROM work_subscriptions s WHERE s.work_id=w.work_id AND s.stopped_at IS NULL) nextWakeAt,
+      (SELECT COUNT(*) FROM work_subscriptions s WHERE s.work_id=w.work_id AND s.stopped_at IS NULL) activeSubscriptionCount,
+      (SELECT COUNT(*) FROM work_subscriptions s WHERE s.work_id=w.work_id AND s.stopped_at IS NOT NULL) stoppedSubscriptionCount
+      FROM works w WHERE ${predicates.join(" AND ")} ORDER BY w.created_at DESC,w.work_id DESC LIMIT @take`)
+      .all(params) as Array<Omit<BotWorkSummary, "watchRule" | "versionGuard" | "detailAvailable" | "needsUserInput"> & {
+        cronExpression: string | null; timezone: string | null; stopConditionText: string | null; needsUserInput: number;
+        stateVersion: number; intentRevision: number; ownerEpoch: number;
+      }>;
+    const hasMore = rows.length > limit;
+    const items: BotWorkSummary[] = rows.slice(0, limit).map(({ stateVersion, intentRevision, ownerEpoch,
+      cronExpression, timezone, stopConditionText, needsUserInput, ...row }) => ({ ...row, needsUserInput: !!needsUserInput,
+      watchRule: row.mode === "watch" ? { cronExpression, timezone, stopConditionText } : null,
+      versionGuard: { expectedStateVersion: stateVersion, expectedIntentRevision: intentRevision, expectedOwnerEpoch: ownerEpoch },
+      detailAvailable: true }));
+    const last = items.at(-1);
+    const nextCursor = hasMore && last ? Buffer.from(JSON.stringify({ v: 1, scope, createdAt: last.createdAt, workId: last.workId })).toString("base64url") : null;
+    const nextQuery: BotWorkQueryInput | null = nextCursor ? { view: "summary", status, limit, cursor: nextCursor,
+      ...(input.search ? { search: input.search } : {}), ...(input.workId ? { workId: input.workId } : {}) } : null;
+    return { items, total, statusCounts, status, limit, hasMore, nextCursor, nextQuery, order: "createdAt_desc_workId_desc" as const,
+      detailHint: "列表仅为摘要；使用 workId 查询完整成果、证据和历史。提交成果不等于整项完成；总数不是本页条数。" };
+  }
+}

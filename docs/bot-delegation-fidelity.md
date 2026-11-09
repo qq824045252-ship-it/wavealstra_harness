@@ -31,8 +31,8 @@ calculations and proposed checks are not authenticated user instructions.
   Existing permissions and explicit artifact acceptance are unchanged.
 - Normal dispatch, persisted retry, recovery and gap-only continuation all retain the
   bound original input. Continuations remain limited to their remaining steps.
-- A bound receipt whose message identity no longer matches is an input integrity
-  error; the host must not fall back to treating the model's summary as user text.
+- If neither an immutable Work-owned copy nor an authenticated original is available
+  for a Bot source, execution fails closed. The host must not treat the model's summary as user text.
 
 ## Validation and limits
 

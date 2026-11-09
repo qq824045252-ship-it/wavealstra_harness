@@ -7,6 +7,7 @@ import { DESKTOP_USER_GRANTS, WorkService } from "./WorkService";
 import type { BotRegistry } from "./BotRegistry";
 import type { BotConversationRepository } from "./BotConversationRepository";
 import { botForegroundRequest } from "./BotForegroundIdentity";
+import { BotWorkQuery, botWorkQuerySchema } from "./BotWorkQuery";
 
 // Validate the wire text before trimming so its length and non-blank rules can be
 // represented exactly in the model-visible JSON Schema as well as at execution.
@@ -16,7 +17,7 @@ const fields = { title: text.optional(), goalDescription: text.optional(), const
   criteria: z.array(criterion).max(12).optional() };
 const guard = z.object({ expectedStateVersion: z.number().int().positive(), expectedIntentRevision: z.number().int().positive(),
   expectedOwnerEpoch: z.number().int().positive() }).strict();
-const query = z.object({ workId: text.optional() }).strict();
+const query = botWorkQuerySchema;
 const create = z.object({ ...fields, title: text }).strict();
 const change = z.object({ ...fields, workId: text, versionGuard: guard }).strict();
 const control = z.object({ workId: text, reason: text.optional(), versionGuard: guard }).strict();
@@ -59,25 +60,23 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
       || !["queued", "running", "unknown"].includes(message.status)) throw new Error("原始用户消息已结束或不属于当前对话");
     return value;
   };
-  const available = () => works.listWorks(userId, { includeClosed: true })
-    .filter(work => work.ownerBotId === botId || work.participants.some(member => member.botId === botId));
+  const catalogue = new BotWorkQuery(db, userId, botId);
   const select = (workId: string, source: ReturnType<typeof receipt>) => {
     const reference = source.reference_message_id ? messages.message(source.reference_message_id)?.workIds ?? [] : [];
     const userMessage = messages.message(source.user_message_id);
-    const known = available();
-    const candidates = known.filter(work => work.lifecycle !== "closed");
     // Read the actual user input, not model arguments or the current UI selection.
     // Include unknown/foreign IDs so they cannot fall back to an unrelated card.
     const explicit = [...new Set(userMessage?.text.match(/(?<![A-Za-z0-9_-])work-[A-Za-z0-9_-]+(?![A-Za-z0-9_-])/g) ?? [])];
     const linked = userMessage?.workIds ?? [];
+    const soleOpen = explicit.length || reference.length || source.selected_work_id ? undefined : catalogue.soleOpenWorkId();
     const allowed = explicit.length ? explicit.length === 1 ? explicit : []
       : reference.length ? reference.length === 1 ? reference : []
       : source.selected_work_id ? [source.selected_work_id]
-      : candidates.length === 1 ? [candidates[0]!.workId] : [];
+      : soleOpen ? [soleOpen] : [];
     // Links support follow-up calls/replay for Work created in this request, but
     // cannot override an explicit target or rescue ambiguous explicit IDs.
     if (!allowed.includes(workId) && !(explicit.length === 0 && linked.includes(workId))) throw new Error("请明确要控制的 Work 卡片或 workId；多个事项不能按模糊消息全局控制");
-    const target = known.find(work => work.workId === workId);
+    const target = catalogue.canRead(workId) ? works.getWork(workId) : undefined;
     if (!target) throw new Error("Work 不属于当前用户与 Bot");
     return target;
   };
@@ -153,7 +152,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
         amendmentNotice: "用户直接设置或确认的验收条件仍然保留；criteria 只更新助理建议检查。本次没有删除或改写这些用户验收条件，不得声称已经撤销。修改用户验收条件请使用现有用户编辑入口。" } : {}) });
     },
   }));
-  return [defineTool({ name: "work_query_status", description: "读取当前 Bot 的已知 Work、成果及版本守卫。不会启动业务工具。",
+  return [defineTool({ name: "work_query_status", description: "查询当前 Bot 的事项。概览用 view:summary，默认仅未结束事项、每页20项；支持 status、search、limit、cursor，返回准确总数与nextQuery续页参数。只展示摘要，不能把本页数当总数；用 workId 按需读取完整成果和版本守卫。detail 必须指定 workId。不会启动业务工具。",
     parameters: inputParameters.query, replay: "safe",
     execute: async (args, api, context) => {
       const requestId = await botForegroundRequest(api, api.callId, context);
@@ -161,17 +160,31 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
       assertActive();
       const source = receipt(requestId);
       const input = query.parse(args);
-      return available().filter(work => !input.workId || work.workId === input.workId).map(work => {
+      if (input.view === "detail" && !input.workId) throw new Error("完整详情必须指定 workId；概览请用 view:summary");
+      if (input.workId && input.view !== "summary") {
+        if (input.cursor || input.search || input.status || input.limit) throw new Error("按 workId 读取详情时不要携带列表筛选或游标");
+        if (!catalogue.canRead(input.workId)) return [];
+        const work = works.getWork(input.workId)!;
         const versionGuard = { expectedStateVersion: work.stateVersion, expectedIntentRevision: work.intentRevision, expectedOwnerEpoch: work.ownerEpoch };
         db.prepare(`INSERT INTO bot_work_reads(conversation_id,request_id,work_id,guard_json) VALUES (?,?,?,?)
           ON CONFLICT(conversation_id,request_id,work_id) DO UPDATE SET guard_json=excluded.guard_json`)
           .run(conversationId, source.request_id, work.workId, JSON.stringify(versionGuard));
         const projection = works.getProjection(work.workId);
         const visibleMessages = works.collaboration.list(actor(), work.workId);
-        return { ...projection, phase3: projection?.phase3 ? { ...projection.phase3,
+        return [{ ...projection, phase3: projection?.phase3 ? { ...projection.phase3,
           collaborationMessages: visibleMessages, handoffs: visibleMessages.filter(message => message.kind === "handoff") } : undefined,
-          versionGuard };
-      });
+          versionGuard }];
+      }
+      const legacy = Object.keys(input).length === 0;
+      const page = catalogue.page(legacy ? { status: "all" } : input);
+      const recordRead = db.prepare(`INSERT INTO bot_work_reads(conversation_id,request_id,work_id,guard_json) VALUES (?,?,?,?)
+        ON CONFLICT(conversation_id,request_id,work_id) DO UPDATE SET guard_json=excluded.guard_json`);
+      for (const item of page.items) recordRead.run(conversationId, source.request_id, item.workId, JSON.stringify(item.versionGuard));
+      if (!legacy) return page;
+      // Preserve the old list's array shape. Metadata belongs to an item because
+      // JSON.stringify ignores non-index properties attached to an Array.
+      const { items, ...queryPage } = page;
+      return items.map((item, index) => index === 0 ? { ...item, queryPage } : item);
     })); } }), ...mutations,
   defineTool({ name: "memory_search", description: "查询当前 Bot 私有记忆，不访问其他 Bot 或项目。",
     parameters: inputParameters.memory, replay: "safe",
