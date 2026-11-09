@@ -54,7 +54,7 @@ export class BotExpertBindingService {
     const packages = skillIds.map(id => {
       const candidate = privateRoot ? resolve(privateRoot, id) : undefined;
       const privatePath = candidate && candidate.startsWith(resolve(privateRoot!) + sep) && existsSync(join(candidate, "SKILL.md")) ? candidate
-        : privateRoot && expert?.skills?.length === 1 && existsSync(join(privateRoot, "SKILL.md")) ? privateRoot : undefined;
+        : privateRoot && expert?.skills?.length === 1 && expert.skills.includes(id) && existsSync(join(privateRoot, "SKILL.md")) ? privateRoot : undefined;
       const directory = privatePath ?? this.options.resolveSkillDirectory?.(id);
       if (!directory) throw new Error(`技能「${id}」不可用，请先安装并启用`);
       return { id, directory, origin: privatePath ? "private" as const : "global" as const };
