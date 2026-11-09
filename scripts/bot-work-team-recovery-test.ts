@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentSubmissionReceipt } from "../src/shared/agent-ipc";
@@ -32,6 +32,7 @@ class FakeHost implements WorkExecutionPort {
   readonly unreadable = new Set<string>();
   onUnknownEffect?: (taskId: string) => void;
   readonly runningRecovery = new Set<string>();
+  readonly observations = new Map<string, (attempt: number) => WorkExecutionObservation>();
   writes = 0;
   sequence = 0;
   constructor(private readonly workspace: string, private readonly artifact: string) {}
@@ -53,6 +54,9 @@ class FakeHost implements WorkExecutionPort {
     const botId: string = assignment?.botId ?? binding.botId;
     const recovery = binding.operationId.startsWith("team-recovery:");
     if (recovery && this.runningRecovery.has(binding.taskId)) return { status: "running" } as WorkExecutionObservation;
+    const custom = this.observations.get(botId);
+    if (custom) return custom(this.submissions.filter(item => item.taskId === binding.taskId)
+      .findIndex(item => item.operationId === binding.operationId) + 1);
     if (this.failAlways.has(botId)) return { status: "failed", summary: "same empty failure", hasWriteConflicts: false, artifactRefs: [] } as WorkExecutionObservation;
     if (!recovery && this.unknown.has(botId)) {
       this.onUnknownEffect?.(binding.taskId);
@@ -227,6 +231,109 @@ try {
     } finally { await f.close(); }
   }
 
+  // Rephrasing an error/result or inventing missing artifact names is not
+  // progress. Re-observing an existing file with identical bytes is not either.
+  for (const artifacts of ["missing", "unchanged", "recreated"] as const) {
+    const f = fixture();
+    try {
+      writeFileSync(f.artifact, "retained bytes");
+      f.host.observations.set("recovery-c", attempt => {
+        if (artifacts === "recreated") {
+          writeFileSync(`${f.artifact}.new`, "retained bytes"); renameSync(`${f.artifact}.new`, f.artifact);
+        }
+        return { status: "failed", summary: `Another explanation ${attempt}`, failureReason: `Provider error ${attempt}`,
+          artifactRefs: artifacts === "missing" ? [join(f.workspace, `missing-${attempt}`), f.workspace] : [f.artifact],
+          hasWriteConflicts: false };
+      });
+      const created = f.create(`wording-${artifacts}`, [{ botId: "recovery-c" }, { botId: "recovery-b" }]);
+      assert(created.ok && created.work && created.team);
+      const workId = created.work.workId;
+      if (artifacts === "unchanged") {
+        const taskId = created.team.executions[0]!.taskId;
+        f.host.runningRecovery.add(taskId);
+        await wait(() => f.bindings(workId).filter(binding => binding.taskId === taskId).length === 2,
+          "durable byte baseline before restart", () => f.flush(2));
+        await f.queue.close(); await f.adapter.close(); f.reopen();
+        f.host.runningRecovery.delete(taskId);
+      }
+      await f.flush(16);
+      assert.equal(f.bindings(workId).filter(binding => binding.taskId === created.team!.executions[0]!.taskId).length, 2,
+        "wording, missing paths, directories and unchanged bytes cannot buy another retry");
+      assert.equal(f.team(workId).executions[0]!.recoveryOutcome, "no_progress");
+      assert.equal(f.host.submissions.some(item => item.botId === "recovery-b"), false);
+    } finally { await f.close(); }
+  }
+
+  // The same path and report can carry new verified bytes. Let the existing
+  // bounded recovery finish instead of stopping on identical wording.
+  {
+    const f = fixture();
+    try {
+      f.host.observations.set("recovery-c", attempt => {
+        writeFileSync(f.artifact, `completed stage ${attempt}`);
+        return { status: attempt < 4 ? "failed" : "completed", summary: "same report", failureReason: "same error",
+          artifactRefs: [f.artifact], hasWriteConflicts: false };
+      });
+      const created = f.create("real-byte-progress", [{ botId: "recovery-c" }, { botId: "recovery-b" }]);
+      assert(created.ok && created.work && created.team);
+      const workId = created.work.workId;
+      await wait(() => f.team(workId).state === "awaiting_review", "verified bytes allow remaining recovery", () => f.flush(4));
+      assert.equal(f.bindings(workId).filter(binding => binding.taskId === created.team!.executions[0]!.taskId).length, 4);
+      assert.equal(readFileSync(f.artifact, "utf8"), "completed stage 4");
+      assert.equal(f.team(workId).executions[0]!.status, "recovered");
+    } finally { await f.close(); }
+  }
+
+  // Retain completed native subitems without mistaking one partial deliverable
+  // for the whole assignment. Rewording the same completed child is not progress.
+  for (const advancing of [false, true]) {
+    const f = fixture();
+    try {
+      f.host.observations.set("recovery-c", attempt => ({
+        status: advancing && attempt === 4 ? "completed" : "failed", summary: `report ${attempt}`,
+        failureReason: `failure ${attempt}`, artifactRefs: [], hasWriteConflicts: false,
+        subitems: [{ itemId: advancing ? `stage-${attempt}` : "stage-1", childId: advancing ? `child-${attempt}` : "child-1",
+          task: `reworded completed task ${attempt}`, required: true, dependencies: [], criterionIds: [],
+          nativeStatus: "completed", outcome: "completed", artifactRefs: [], writeConflicts: [], summary: `partial ${attempt}` },
+        ...(advancing && attempt === 4 ? [] : [{ itemId: "remaining", task: "unfinished step", required: true,
+          dependencies: [], criterionIds: [], nativeStatus: "failed", outcome: "failed" as const,
+          artifactRefs: [], writeConflicts: [], summary: "still missing" }])] }));
+      const created = f.create(`native-steps-${advancing}`, [{ botId: "recovery-c" }, { botId: "recovery-b" }]);
+      assert(created.ok && created.work && created.team);
+      const workId = created.work.workId;
+      await f.flush(20);
+      assert.equal(f.bindings(workId).filter(binding => binding.taskId === created.team!.executions[0]!.taskId).length, advancing ? 4 : 2);
+      assert.equal(f.team(workId).state, advancing ? "awaiting_review" : "blocked");
+      assert.equal(f.host.submissions.some(item => item.botId === "recovery-b"), advancing,
+        "partial success cannot release a dependent member while this member is failing");
+      assert(f.works.repo.listDeliverables(workId).some(item => item.deliverableId.startsWith("partial:")), "retain partial outputs");
+    } finally { await f.close(); }
+  }
+
+  // Progress belongs to the failed member, not another parallel member.
+  {
+    const f = fixture();
+    try {
+      writeFileSync(f.artifact, "original member output");
+      f.host.observations.set("recovery-c", attempt => ({ status: "failed", summary: "same empty failure",
+        artifactRefs: attempt === 1 ? [f.artifact] : [], hasWriteConflicts: false }));
+      f.host.observations.set("recovery-d", () => {
+        writeFileSync(f.artifact, "independent output");
+        return { status: "completed", summary: "independent success", artifactRefs: [f.artifact], hasWriteConflicts: false };
+      });
+      const created = f.create("member-scoped-progress", [{ botId: "recovery-c" }, { botId: "recovery-d" }], true);
+      assert(created.ok && created.work && created.team);
+      const workId = created.work.workId, taskId = created.team.executions[0]!.taskId;
+      f.host.runningRecovery.add(taskId);
+      await wait(() => f.host.submissions.some(item => item.botId === "recovery-d"), "parallel member completes", () => f.flush(3));
+      f.host.runningRecovery.delete(taskId);
+      await f.flush(12);
+      assert.equal(f.bindings(workId).filter(binding => binding.taskId === taskId).length, 2,
+        "an independent artifact must not reset this member's stagnation budget");
+      assert.equal(f.team(workId).executions[0]!.recoveryOutcome, "no_progress");
+    } finally { await f.close(); }
+  }
+
   // Pre-upgrade pending/claimed continuations cannot race an unknown native
   // source, or a terminal source with a still-admitted tool invocation.
   for (const persistedState of ["pending", "claimed"] as const) {
@@ -308,7 +415,7 @@ try {
       assert.equal(attempts.n, 1, "duplicate delivery/restart does not create another recovery generation");
     } finally { await f.close(); }
   }
-  console.log("PASS team recovery: same identity continuation, single write, dependency advancement, independent members, nonblocking unknown effects, stop cancellation, no-progress stop and restart dedup");
+  console.log("PASS team recovery: same identity continuation, single write, dependency advancement, independent members, nonblocking unknown effects, stop cancellation, verified byte/native-item progress, wording-independent stagnation, partial-result dependency barrier and restart dedup");
 } catch (error) {
   console.error(error);
   process.exitCode = 1;

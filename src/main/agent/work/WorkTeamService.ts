@@ -444,12 +444,16 @@ export class WorkTeamService {
     return row.reported === 1 && first?.bindingId === binding.bindingId;
   }
   private progressHash(workId: string, taskId: string): string {
-    // A repeated execution that emits the same report is not progress. Hash the
-    // distinct content, not the number of attempts or their execution ids.
-    const facts = [...new Set(this.taskDeliverables(workId, taskId).map(item => JSON.stringify({
-      status: item.status, summary: item.summary,
-      artifacts: [...item.artifactRefs].sort(), uncovered: [...item.uncoveredScope].sort() })))].sort();
-    return hash(facts);
+    const work = this.works.getWork(workId)!;
+    const bindings = this.taskBindings(workId, taskId).filter(binding => binding.intentRevision === work.intentRevision
+      && binding.inputSnapshotId === work.inputSnapshotId && this.works.collaboration.isDelegationAdopted(binding, work));
+    const bindingIds = new Set(bindings.map(binding => binding.bindingId));
+    // Use the native receiver's durable content and completed child facts, never
+    // model summaries, error wording, report ids or another member's progress.
+    const completed = [...new Set(this.works.partialResults.list(workId)
+      .filter(item => bindingIds.has(item.bindingId) && item.outcome === "completed" && !item.itemId.startsWith("recover:"))
+      .map(item => JSON.stringify([item.childId ?? item.itemId, item.childConversationId ?? "", item.workspaceBinding ?? ""])))].sort();
+    return hash([this.works.artifacts.progressSnapshotId(workId, [...bindingIds]), completed]);
   }
   private settleRecoveryAttempts(workId: string, taskId: string): void {
     const active = this.db.prepare("SELECT * FROM work_team_recovery_attempts WHERE work_id=? AND task_id=? AND state='dispatched' AND binding_id IS NOT NULL")
@@ -472,12 +476,18 @@ export class WorkTeamService {
     const last = history.at(-1);
     const failureMessage = (binding.settlementNote || binding.status).slice(0, 2000);
     const progress = this.progressHash(work.workId, row.task_id);
+    // A completed child is reusable output, not proof that its parent assignment
+    // finished. Keep that output but recover the remaining work before dependents run.
+    const partialResultIds = new Set(this.works.partialResults.list(work.workId)
+      .filter(item => item.bindingId === binding.bindingId).map(item => item.deliverableId));
     const reusable = this.taskDeliverables(work.workId, row.task_id).some(item =>
-      item.executionId === binding.bindingId && ["proposed", "accepted"].includes(item.status) && item.uncoveredScope.length === 0);
+      item.executionId === binding.bindingId && !partialResultIds.has(item.deliverableId)
+      && ["proposed", "accepted"].includes(item.status) && item.uncoveredScope.length === 0
+      && !item.hasWriteConflicts && !item.isSpeculation);
     const unknownEffect = binding.status === "unknown"
       || this.works.repo.listOpenBlockers(work.workId).some(item => item.kind === "external_effect");
     const failureClass = unknownEffect ? "unknown_external_effect" : binding.invalidatedAt ? "preparation" : "execution";
-    const noProgress = Boolean(last && last.progress_hash === progress && last.failure_message === failureMessage);
+    const noProgress = Boolean(last && last.progress_hash === progress);
     const exhausted = history.length >= 3 || (noProgress && history.length >= 1);
     const generation = (last?.generation ?? 0) + 1;
     const state = reusable ? "completed" : exhausted ? "stopped" : "pending";

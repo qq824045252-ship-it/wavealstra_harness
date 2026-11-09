@@ -69,6 +69,19 @@ export class WorkArtifactValidation {
     for(const row of this.currentDependencies(workId)) byPath.set(row.path,fingerprintSchema.parse(JSON.parse(row.fingerprint_json)));
     return this.snapshotId({workId,inputSnapshotId:work?.inputSnapshotId ?? "",intentRevision:work?.intentRevision ?? 0,observed:[...byPath.values()]});
   }
+  /** Durable byte progress for one execution lineage, not an acceptance proof.
+   * Ignore missing paths, file-identity churn and unrelated members' artifacts. */
+  progressSnapshotId(workId: string, bindingIds: readonly string[]): string {
+    const scope = new Set(bindingIds);
+    const byPath = new Map<string, string>();
+    for (const row of this.currentDependencies(workId)) {
+      if (!scope.has(row.binding_id)) continue;
+      const item = fingerprintSchema.parse(JSON.parse(row.fingerprint_json));
+      if (!/^[a-f0-9]{64}$/.test(item.digest)) continue;
+      byPath.set(item.path, item.digest);
+    }
+    return createHash("sha256").update(JSON.stringify([...byPath.entries()].sort())).digest("hex");
+  }
   private currentDependencies(workId:string) {
     const work=this.works.getWork(workId);
     if(!work) return [];
