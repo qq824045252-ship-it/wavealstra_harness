@@ -168,7 +168,7 @@ try {
   }
   console.log("PASS native resource denial has persistent not-started proof; released admissions have no unknown effect, while original quarantined effects stay unknown");
 
-  for (const [index, command] of ["wc -l", "ls -1"].entries()) {
+  for (const [index, command] of ["wc -l", "ls -R"].entries()) {
     const seen: string[] = [], refusals: string[] = [];
     const f = await fixture(`shell-recovery-${index}`, request => {
       const last = request.messages.at(-1);
@@ -214,7 +214,19 @@ try {
     await writeFile(join(f.cwd, "proof.txt"), "original proof\n");
     works.resourceGate.noteOpaqueObservation(owner, "bash");
     f.state.resourcePolicy = new WorkToolResourcePolicy(works.resourceGate, () => owner);
-    f.state.approve = (input, signal) => works.approvals.request(input, signal);
+    f.state.approve = (input, signal) => {
+      const result = works.approvals.request(input, signal);
+      // Unknown native shell now asks before the resource gate. Explicitly
+      // approve this exact fixture action; that must NOT bypass resource denial.
+      const pending = works.approvals.list(binding.workId).find(item => item.operationId === input.operationId && item.status === "pending");
+      if (pending) {
+        const current = works.getWork(binding.workId)!;
+        assert(works.approvals.decide(LOCAL_USER_ID, { approvalId: pending.approvalId, workId: binding.workId,
+          bindingId: binding.bindingId, expectedVersion: pending.version, expectedStateVersion: current.stateVersion,
+          expectedIntentRevision: current.intentRevision, expectedOwnerEpoch: current.ownerEpoch, approved: true }).ok);
+      }
+      return result;
+    };
     f.state.admit = input => works.admitTaskAction(f.taskId, input);
     f.state.settle = (operationId, outcome) => works.settleTaskAction(f.taskId, operationId, outcome);
     const r = await f.open();

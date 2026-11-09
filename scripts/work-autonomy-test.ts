@@ -19,6 +19,15 @@ const context: AutonomyContext = { userId: "user-1", botId: "bot-1", workId: "wo
   actionHash: "hash-1", projectId: "p1", workspaceId: "ws-1", repo: "owner/repo", delegatedScope: ["workspace:read", "workspace:write"],
   permissionMode: "auto" };
 
+await check("only registered conversation goal getter is a trusted read", () => {
+  const getter = classifyWorkAction({ toolName: "conversation_goal_get", arguments: { workId: "work-current" } });
+  assert.equal(getter.effect, "read"); assert.equal(getter.target, "work-current");
+  assert.equal(getter.operation, "inspect_work_goal");
+  for (const toolName of ["conversation_goal_create", "conversation_goal_update", "conversation_goal_close", "conversation_goal_get_other", "untrusted_get"]) {
+    assert.notEqual(classifyWorkAction({ toolName, arguments: {} }).effect, "read", toolName);
+  }
+});
+
 await check("action matrix: read/local write/repo/protected/force/publish/delete/message/credential/physical/unknown", () => {
   const read = classifyWorkAction({ toolName: "read", arguments: { path: "a.txt" } });
   assert.equal(read.effect, "read"); assert.equal(read.hardGate, false);

@@ -37,6 +37,17 @@ async function fixture(label: string, projectId?: string) {
   return { db, works, work, taskId, binding, request };
 }
 
+await check("native goal inspection stays read-only with no approval card", async () => {
+  const f = await fixture("goal-get-read");
+  try {
+    const read = await f.works.approvals.request({ taskId: f.taskId, operationId: "goal-read", toolName: "conversation_goal_get",
+      arguments: { workId: f.work.workId }, actionKind: "workspace:read", summary: "Read current goal",
+      permissionMode: "readonly", needsApproval: false, deferrable: true });
+    assert.equal(read.kind, "allow");
+    assert.equal(f.works.approvals.list(f.work.workId).length, 0);
+  } finally { f.db.close(); }
+});
+
 await check("defer returns immediately, records a not_started gap and does not block independent actions", async () => {
   const f = await fixture("defer");
   try {

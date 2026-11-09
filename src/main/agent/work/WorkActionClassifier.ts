@@ -231,6 +231,14 @@ export function classifyWorkAction(input: WorkActionClassificationInput): WorkAc
       target: str(args.path) ?? str(args.file_path), environment: "local", reversibility: "recoverable",
       blastRadius: "single", hardGate: false, source: "builtin" });
   }
+  // Exact built-in registration in conversation-runtime-extension.ts only reads
+  // current-task goal/version state. Do not infer safety from a *_get suffix:
+  // goal create/update/close and unregistered/MCP names keep their own policy.
+  if (name === "conversation_goal_get") {
+    return workActionDescriptorSchema.parse({ ...common, effect: "read", operation: "inspect_work_goal",
+      target: str(args.workId), environment: "local", reversibility: "reversible", blastRadius: "single",
+      hardGate: false, source: "builtin" });
+  }
   if (["read", "ls", "glob", "grep", "search", "web_search", "fetch_content", "get_search_content", "source_check"].includes(name)) {
     return workActionDescriptorSchema.parse({ ...common, effect: "read", operation: name === "read" ? "read_file" : "inspect",
       target: str(args.path), environment: "local", reversibility: "reversible", blastRadius: "single",
