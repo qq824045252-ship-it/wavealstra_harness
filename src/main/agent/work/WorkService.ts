@@ -1192,9 +1192,11 @@ export class WorkService {
         if (resolved.kind === "worker" && resolved.binding?.bindingId !== binding.bindingId) {
           return { ok: false, code: "unauthorized_actor", message: "worker 只能为自己的绑定申请业务动作" };
         }
-        // 成员委派范围是真实的业务身份边界（例如只读成员），不是逐动作审批：
-        // 共享资源隔离与 Work 动作审批退役后仍必须保留。
-        if (binding.delegatedScope.length > 0 && !binding.delegatedScope.includes(params.actionKind)) {
+        // 团队成员委派范围是真实的业务身份边界（例如只读成员），退役后仍保留。
+        // 负责人自己的 Work 不再被 Work 动作 scope 卡住：它的边界是应用权限模式、
+        // 原生工具策略与本次工作区目录归属，否则历史只读授权的旧 Work 永远无法执行。
+        if (binding.botId !== work.ownerBotId && binding.delegatedScope.length > 0
+          && !binding.delegatedScope.includes(params.actionKind)) {
           return { ok: false, code: "unauthorized_actor", message: "业务动作超出了本执行的委派范围" };
         }
         if (this.bots.getBot(binding.botId)?.status !== "active") {

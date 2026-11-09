@@ -116,6 +116,27 @@ try {
   });
   second.close();
 
+  check("an owner Work with a historical read-only authorization can still execute writes", () => {
+    const readOnly = { ...DESKTOP_USER_GRANTS, allowedScopes: ["workspace:read"] };
+    const db3 = new AppDatabase(join(root, "owner-scope.db"));
+    const bots3 = new BotRegistry(db3.connection);
+    bots3.registerBot({ botId: DEFAULT_BOT_ID, userId: LOCAL_USER_ID, displayName: "Owner", authorization: readOnly });
+    const works3 = new WorkService(db3.connection, { bots: bots3 });
+    const created = works3.createWork(user, { operationId: "create:read-only-owner", title: "旧只读授权",
+      authorization: readOnly, inputSnapshotId: "input:read-only" });
+    assert(created.ok);
+    db3.upsertTask({ id: "task-read-only", title: "task", updatedAt: Date.now() });
+    const dispatched = works3.dispatchExecution(user, { operationId: "dispatch:read-only-owner", workId: created.work.workId,
+      botId: DEFAULT_BOT_ID, taskId: "task-read-only", durableStoreKey: "store:read-only", conversationId: "1",
+      workspaceBinding: root, delegatedScope: ["workspace:read"] });
+    assert(dispatched.ok);
+    assert.equal(works3.repo.bindingForTask("task-read-only")?.delegatedScope.includes("workspace:write"), false,
+      "the binding keeps the historical read-only scope for audit");
+    assert.equal(works3.admitTaskAction("task-read-only", { operationId: "owner-write", actionKind: "workspace:write" }), undefined,
+      "the owner Work is no longer blocked by the retired Work action scope");
+    assert.equal(works3.admitTaskAction("task-read-only", { operationId: "owner-read", actionKind: "workspace:read" }), undefined);
+    db3.close();
+  });
   const fresh = new AppDatabase(join(root, "fresh.db"));
   check("a fresh profile never materializes the retired tables", () => {
     const present = tables(fresh);

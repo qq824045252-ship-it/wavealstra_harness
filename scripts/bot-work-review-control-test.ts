@@ -126,15 +126,24 @@ try {
   check("worker identity always binds action admission to its persisted execution", () => {
     const work = create();
     const binding = dispatch(work.workId, DEFAULT_BOT_ID, ["workspace:read"]);
-    const denied = service.admitNewAction(worker(binding), {
+    // 负责人自己的 Work 不再被退役的 Work 动作 scope 拦住（历史只读授权照常执行）。
+    const ownerWrite = service.admitNewAction(worker(binding), {
       admissionId: operation(), operationId: operation(), workId: work.workId, actionKind: "workspace:write",
     });
-    assert.equal(denied.ok, false, "omitting payload bindingId cannot enlarge delegated scope");
+    assert.equal(ownerWrite.ok, true, "the owner Work is not gated by the retired action scope");
     const allowed = service.admitNewAction(worker(binding), {
       admissionId: operation(), operationId: operation(), workId: work.workId, actionKind: "workspace:read",
     });
     assert.equal(allowed.ok, true);
-    if (allowed.ok) assert.equal(allowed.admission.bindingId, binding.bindingId);
+    if (allowed.ok) assert.equal(allowed.admission.bindingId, binding.bindingId, "omitting payload bindingId uses the persisted binding");
+    // 其他 Bot 的只读委派范围仍是真实的团队成员边界。
+    bots.registerBot({ botId: "bot-member", userId: LOCAL_USER_ID, displayName: "Member",
+      authorization: { allowedScopes: ["workspace:read"], targetWhitelist: [], allowGitBranchOrWorktree: false, allowRedelegation: false } });
+    const member = dispatch(work.workId, "bot-member", ["workspace:read"]);
+    const memberWrite = service.admitNewAction(worker(member), {
+      admissionId: operation(), operationId: operation(), workId: work.workId, actionKind: "workspace:write",
+    });
+    assert.equal(memberWrite.ok, false, "a read-only member bot stays read-only");
     unwrap(service.amendWork(user, { operationId: operation(), workId: work.workId, inputSnapshotId: "input-B" }));
     const stale = service.admitNewAction(worker(binding), {
       admissionId: operation(), operationId: operation(), workId: work.workId, actionKind: "workspace:read",
