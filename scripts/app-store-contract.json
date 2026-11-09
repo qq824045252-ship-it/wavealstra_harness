@@ -16,7 +16,8 @@
     "markBotNotificationRead": "BOT-WORK UI-02/UI-03/UI-05: independent Bot selection, draft and authoritative Work projection; ordinary Task actions stay unchanged.",
     "refreshBotHistory": "Phase 2 persistent Bot conversation sending and recovery.",
     "cancelBotSend": "Phase 2 persistent Bot conversation sending and recovery.",
-    "archiveBotConversation": "Phase 2 persistent Bot conversation sending and recovery."
+    "archiveBotConversation": "Phase 2 persistent Bot conversation sending and recovery.",
+    "setBotAttachments": "Bot attachments: update only the named Bot attachment draft, separate from ordinary Task drafts."
   },
   "publicExports": {
     "CreateRelatedTaskOptions": "type",
@@ -619,6 +620,7 @@
     "botHistories": "Phase 2 separate Bot message identities and scoped durable projection cursor.",
     "botPendingSends": "Phase 2 separate Bot message identities and scoped durable projection cursor.",
     "botConversationErrors": "Phase 2 separate Bot message identities and scoped durable projection cursor.",
-    "botWorkCursor": "Phase 2 separate Bot message identities and scoped durable projection cursor."
+    "botWorkCursor": "Phase 2 separate Bot message identities and scoped durable projection cursor.",
+    "botAttachmentDrafts": "Bot attachments: durable per-Bot file drafts survive switching and lost acknowledgements without crossing Task context."
   }
 }

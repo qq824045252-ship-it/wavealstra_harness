@@ -143,6 +143,7 @@ export interface AppActions {
   setConnectorEnabled: (id: string, enabled: boolean) => Promise<void>;
   setPage: (page: Page) => void;
   setBotDraft: (text: string) => void;
+  setBotAttachments: (botId: string, attachments: import("@/types").Attachment[]) => void;
   submitBotDraft: () => Promise<void>;
   refreshBotHistory: (botId: string) => Promise<void>;
   cancelBotSend: (botId: string, requestId: string) => Promise<void>;

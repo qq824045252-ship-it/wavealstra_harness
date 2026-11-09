@@ -1634,6 +1634,12 @@ export class AgentService {
       memorySearch: (botId, query) => this.memoryService.search({ botId, query, scopeTypes: ["bot"], includeInherited: false, limit: 20 }),
       schedule: (work, operationId, retryBlocked) => this.workDispatchQueue!.enqueue(work, operationId, retryBlocked),
       wake: workId => { if (workId) this.workExecutions?.wakeWork(workId); this.workDispatchQueue?.wake(); },
+      visionFallback: async (imagePaths, directory, requestId) => {
+        const result = await routeVisionForPaths({ model: undefined, provider: this.builtinCapabilities.visionProvider(), imagePaths,
+          prompt: "准确描述用户附带图片中的可见内容及文字。", context: { taskId: `bot-attachment-${requestId}`, taskRoot: directory, toolCallId: `bot-attachment-${requestId}` } });
+        if (result.route !== "delegated-vision" || !result.descriptions?.length) throw new Error(result.error ?? "未配置图片识别模型");
+        return result.descriptions.map(item => `${item.imagePath}\n${item.text}`).join("\n");
+      },
       onMessage: event => broadcast(BotWorkIpc.messageChanged, event),
     });
     this.workDispatchQueue.start();

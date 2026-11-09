@@ -1,3 +1,5 @@
+import { ComposerAttachmentChips } from "@/components/chat/ComposerAttachmentChips";
+import { composerFiles, mergeComposerAttachments, pastedComposerFiles, pickComposerAttachment } from "@/components/chat/composerAttachments";
 import { useEffect, useRef, useState } from "react";
 import type { BotDto, WorkProjectionDto } from "@shared/bot-work";
 import type { BotMessageDto } from "@shared/bot-conversation";
@@ -5,7 +7,7 @@ import type { BotWorkHostStatusDto } from "@shared/bot-work-ipc";
 import { useAppStore } from "@/store/appStore";
 import ChatComposer from "@/components/chat/ChatComposer";
 import ChatMarkdown from "@/components/chat/ChatMarkdown";
-import { IconArchive, IconChevronDown, IconArrowUp, IconBot, IconCheck, IconChevronRight, IconClock, IconListTodo, IconMessageDashed, IconPanel, IconSearch, IconSettings, IconStop, IconX } from "@/components/common/icons";
+import { IconPlus, IconArchive, IconChevronDown, IconArrowUp, IconBot, IconCheck, IconChevronRight, IconClock, IconListTodo, IconMessageDashed, IconPanel, IconSearch, IconSettings, IconStop, IconX } from "@/components/common/icons";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { activeBotReply, botParticipatesInWork, botMessageStatus, botWorkTimeline, needsWorkDecision, shouldSendBotComposer, workMatchesView, workStatusLabel, type BotWorkspaceView } from "@/lib/botWorkspacePresentation";
 import { BotWorkDetails } from "./BotWorkDetails";
@@ -35,6 +37,9 @@ const views: Array<{ id: BotWorkspaceView; label: string; icon: typeof IconBot }
 
 export default function BotWorkspacePage(props: { onToggleNavigation?: () => void; navigationVisible?: boolean; onCreateBot?: () => void } = {}): React.JSX.Element {
   const setPage = useAppStore(s => s.setPage);
+  const attachmentDrafts = useAppStore(s => s.botAttachmentDrafts);
+  const [attachmentError, setAttachmentError] = useState("");
+  const [attachmentBusy, setAttachmentBusy] = useState(false);
   const botDraft = useAppStore(s => s.botDraft);
   const setBotDraft = useAppStore(s => s.setBotDraft);
   const submitBotDraft = useAppStore(s => s.submitBotDraft);
@@ -80,7 +85,20 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   const lastMessage = messages[messages.length - 1];
   const activeReply = activeBotReply(messages);
   const sending = Boolean(activeBotId && pendingSends[activeBotId]?.sending);
-  const canSend = Boolean(activeBotId && botDraft.trim() && !sending);
+  const attachments = activeBotId ? attachmentDrafts[activeBotId] ?? [] : [];
+  const canSend = Boolean(activeBotId && (botDraft.trim() || attachments.length || pendingSends[activeBotId]) && !sending && !attachmentBusy);
+  const addAttachments = async (source: File[] | "pick") => {
+    const botId = activeBotId;
+    if (!botId) return;
+    setAttachmentBusy(true); setAttachmentError("");
+    try {
+      const selected = source === "pick" ? await pickComposerAttachment() : undefined;
+      const incoming = source === "pick" ? (selected ? [selected] : []) : await composerFiles(source);
+      const state = useAppStore.getState();
+      state.setBotAttachments(botId, mergeComposerAttachments(state.botAttachmentDrafts[botId] ?? [], incoming));
+    } catch (error) { if (useAppStore.getState().activeBotId === botId) setAttachmentError(error instanceof Error ? error.message : String(error)); }
+    finally { setAttachmentBusy(false); }
+  };
 
   useEffect(() => () => { requestedWork.current = null; }, []);
   useEffect(() => { void useAppStore.getState().refreshBotWork(includeClosed); }, [includeClosed]);
@@ -93,7 +111,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   }, [activeBotId, includeClosed]);
   useEffect(() => {
     if (lastBot.current === activeBotId) return;
-    lastBot.current = activeBotId;
+    lastBot.current = activeBotId; setAttachmentError("");
     requestedWork.current = null; setNavigationNotice("");
     setView("conversation"); setQuery(""); setSettingsOpen(false); setArchiveConfirm(false); setNewConversationOpen(false); setInspectorOpen(false);
     followLatest.current = true; followReplyTail.current = false; previousScrollTop.current = 0;
@@ -252,11 +270,12 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
         <header className="bot-list-heading"><div><h2>{view === "active" ? "正在为你推进" : view === "decisions" ? "等你给个方向" : "每一件事，都有记录"}</h2><p>{view === "active" ? "进行、暂停和结算中的事项都在这里。" : view === "decisions" ? "需要你的判断、补充信息或实测确认。" : "保留已完成、已取消与未完成的结束记录。"}</p></div><label className="bot-work-search"><IconSearch size={15} /><span className="bot-sr-only">搜索事项</span><input value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索事项" /></label></header>
         {view === "closed" && !allWorksLoaded ? <p role="status">正在读取已结束事项…</p> : filteredWorks.length ? <div className="bot-work-grid">{filteredWorks.map(work => <WorkCard key={work.workId} work={work} selected={work.workId === selected?.workId} onSelect={() => openWork(work.workId)} />)}</div> : <div className="bot-list-empty"><IconListTodo size={30} /><h3>{query ? "没有找到匹配的事项" : view === "decisions" ? "暂时没有需要你决定的事" : view === "closed" ? "还没有结束的事项" : "还没有进行中的事项"}</h3><p>{query ? "试试其他关键词。" : view === "decisions" ? "需要你参与时，会在这里清楚地列出来。" : "回到对话，说说你想交给我的事。"}</p><button type="button" onClick={() => { setView("conversation"); composerRef.current?.focus(); }}>回到对话</button></div>}
       </section>}
-      <form className="bot-composer input-area" onSubmit={event => { event.preventDefault(); send(); }}>
+      <form className="bot-composer input-area" onDragOver={event => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; } }} onDrop={event => { if (event.dataTransfer.files.length) { event.preventDefault(); void addAttachments(Array.from(event.dataTransfer.files)); } }} onSubmit={event => { event.preventDefault(); send(); }}>
         {view === "conversation" && awayFromBottom && <button type="button" className="bot-latest-button" onClick={() => { const el = threadRef.current; if (el) el.scrollTop = el.scrollHeight; followLatest.current = true; followReplyTail.current = true; setAwayFromBottom(false); }}><IconChevronDown size={14} />回到最新消息</button>}
         {activeBotId && sendErrors[activeBotId] && <p className="bot-send-error" role="alert">{sendErrors[activeBotId]}</p>}
         {selected && <div className="bot-composer-context"><button type="button" onClick={() => setInspectorOpen(true)}><IconListTodo size={14} /><span>当前事项：{selected.title}</span><IconChevronRight size={14} /></button><button type="button" className="bot-icon-button" aria-label="取消关联事项，返回普通对话" onClick={() => { requestedWork.current = null; setNavigationNotice(""); setSelectedWorkId(null); setInspectorOpen(false); }}><IconX size={14} /></button></div>}
-        <div className="bot-composer-box input-box"><label htmlFor="bot-draft" className="bot-sr-only">给 Bot 发消息</label><ChatComposer ref={composerRef} aria-label="给 Bot 发消息" id="bot-draft" value={botDraft} maxLength={32000} onChange={event => setBotDraft(event.target.value)} onKeyDown={event => { if (shouldSendBotComposer({ key: event.key, shiftKey: event.shiftKey, isComposing: event.nativeEvent.isComposing, keyCode: event.keyCode })) { event.preventDefault(); send(); } }} placeholder={selected ? "补充要求，或问问这件事的进展…" : "说说你想做什么…"} rows={2} toolbarClassName="bot-composer-toolbar input-toolbar" toolbar={<><span className="bot-composer-status" role="status">{sending ? "正在发送…" : notice ? "消息已发送" : "Enter 发送 · Shift + Enter 换行"}</span><span className="bot-composer-send-actions">{activeReply && activeBotId && <button type="button" className="bot-stop-button send-btn stop-btn" aria-label="停止当前回复" onClick={() => { void useAppStore.getState().cancelBotSend(activeBotId, activeReply.requestId); }}><IconStop size={15} /></button>}<button type="submit" className="bot-send-button send-btn" disabled={!canSend} aria-label={activeBotId && pendingSends[activeBotId]?.error ? "重试原请求" : "发送消息"}><IconArrowUp size={17} /></button></span></>} /></div>
+        {attachmentError && <p className="bot-send-error" role="alert">{attachmentError}</p>}
+        <div className="bot-composer-box input-box">{attachments.length > 0 && <div className="input-attach-chips"><ComposerAttachmentChips attachments={attachments} onRemove={item => { if (activeBotId) useAppStore.getState().setBotAttachments(activeBotId, attachments.filter(value => value.path !== item.path)); }} /></div>}<label htmlFor="bot-draft" className="bot-sr-only">给 Bot 发消息</label><ChatComposer ref={composerRef} aria-label="给 Bot 发消息" id="bot-draft" onPaste={event => { const files = pastedComposerFiles(event.clipboardData); if (files.length) { event.preventDefault(); void addAttachments(files); } }} value={botDraft} maxLength={32000} onChange={event => setBotDraft(event.target.value)} onKeyDown={event => { if (shouldSendBotComposer({ key: event.key, shiftKey: event.shiftKey, isComposing: event.nativeEvent.isComposing, keyCode: event.keyCode })) { event.preventDefault(); send(); } }} placeholder={selected ? "补充要求，或问问这件事的进展…" : "说说你想做什么…"} rows={2} toolbarClassName="bot-composer-toolbar input-toolbar" toolbar={<><button type="button" className="input-tool-btn" aria-label="添加附件" title="添加附件" disabled={!activeBotId || attachmentBusy} onClick={() => void addAttachments("pick")}><IconPlus size={16} /></button><span className="bot-composer-status" role="status">{sending ? "正在发送…" : notice ? "消息已发送" : "Enter 发送 · Shift + Enter 换行"}</span><span className="bot-composer-send-actions">{activeReply && activeBotId && <button type="button" className="bot-stop-button send-btn stop-btn" aria-label="停止当前回复" onClick={() => { void useAppStore.getState().cancelBotSend(activeBotId, activeReply.requestId); }}><IconStop size={15} /></button>}<button type="submit" className="bot-send-button send-btn" disabled={!canSend} aria-label={activeBotId && pendingSends[activeBotId]?.error ? "重试原请求" : "发送消息"}><IconArrowUp size={17} /></button></span></>} /></div>
       </form>
     </section>
     {selected && <dialog ref={inspectorRef} className={`bot-inspector ${compact ? "is-drawer" : ""}`} aria-label="事项详情" onCancel={event => { event.preventDefault(); setInspectorOpen(false); }} onClick={event => { if (event.target === event.currentTarget) { const r = event.currentTarget.getBoundingClientRect(); if (event.clientX < r.left || event.clientX > r.right) setInspectorOpen(false); } }}>
@@ -287,7 +306,7 @@ function BotMessage({ message, botName, works, onOpenWork, onCancel }: { message
   const running = message.role === "assistant" && ["queued", "running", "unknown"].includes(message.status);
   return <article className={`bot-message msg-row ${message.role}`} data-message-id={message.messageId} data-streaming={message.role === "assistant" && message.status === "running" ? "true" : undefined} aria-label={`${message.role === "user" ? "你" : botName}的消息`}>
     {message.role === "assistant" && <div className="bot-message-author"><span className="bot-avatar" aria-hidden="true"><IconBot size={16} /></span><strong>{botName}</strong></div>}
-    {message.role === "user" ? <div className="user-bubble"><div className="user-bubble-text">{message.text}</div></div> : <div className="bot-assistant-content">{message.text ? <ChatMarkdown resolveTaskFiles={false} text={message.text} streaming={message.status === "running"} /> : <p className="bot-reply-placeholder">{message.status === "completed" ? "没有文本回复" : botMessageStatus(message)}{running && <span className="bot-typing-dots" aria-hidden="true">···</span>}</p>}</div>}
+    {message.role === "user" ? <div className="user-bubble">{Boolean(message.attachments?.length) && <div className="input-attach-chips"><ComposerAttachmentChips attachments={message.attachments ?? []} /></div>}{message.text && <div className="user-bubble-text">{message.text}</div>}</div> : <div className="bot-assistant-content">{message.text ? <ChatMarkdown resolveTaskFiles={false} text={message.text} streaming={message.status === "running"} /> : <p className="bot-reply-placeholder">{message.status === "completed" ? "没有文本回复" : botMessageStatus(message)}{running && <span className="bot-typing-dots" aria-hidden="true">···</span>}</p>}</div>}
     {message.workIds.length > 0 && <div className="bot-message-work-links">{message.workIds.map(workId => <button type="button" key={workId} onClick={() => onOpenWork(workId)}><IconListTodo size={14} /><span>{works.find(work => work.workId === workId)?.title ?? "查看关联事项"}</span><IconChevronRight size={14} /></button>)}</div>}
     <div className="bot-message-meta">{(message.text || !running) && <span>{botMessageStatus(message)}</span>}<time dateTime={new Date(message.createdAt).toISOString()}>{new Date(message.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time>{running && <button type="button" onClick={onCancel}><IconStop size={14} />停止回复</button>}</div>
     {message.error && <p className="bot-alert" role="alert">{message.error}</p>}

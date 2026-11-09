@@ -1,3 +1,5 @@
+import { ComposerAttachmentChips } from "./ComposerAttachmentChips";
+import { composerFiles, mergeComposerAttachments, pickComposerAttachment } from "./composerAttachments";
 import ChatComposer from "./ChatComposer";
 import { useConsultSelection } from "./useConsultSelection";
 import { requestConsultForMessage } from "@shared/multi-model-consult";
@@ -214,6 +216,10 @@ export default function ChatInput({
   const btwActive = useBtwStore((s) => s.active);
   const btwStreaming = useBtwStore((s) => s.streaming);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const attachmentListRef = useRef(attachments);
+  attachmentListRef.current = attachments;
+  const attachmentScopeRef = useRef(draftScope);
+  attachmentScopeRef.current = draftScope;
   /** 从「+ → 技能」或 `/` 菜单选中的技能，显示为输入框顶芯片 */
   const [attachedSkills, setAttachedSkills] = useState<AttachedSkill[]>([]);
   /** 从「+ → MCP」选中/导入的服务器，显示为输入框顶芯片 */
@@ -1081,70 +1087,29 @@ export default function ChatInput({
     });
   };
 
-  /** 无磁盘 path 的 File（截图粘贴常见）→ 主进程落盘后返回真实路径 */
-  const persistBlobFile = async (file: File): Promise<Attachment | null> => {
-    if (!window.api?.saveTempFile) return null;
-    try {
-      const buffer = await file.arrayBuffer();
-      if (!buffer.byteLength) return null;
-      // 大文件转 base64 用分块，避免 apply 爆栈
-      const bytes = new Uint8Array(buffer);
-      let binary = "";
-      const chunk = 0x8000;
-      for (let i = 0; i < bytes.length; i += chunk) {
-        binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-      }
-      const base64 = btoa(binary);
-      const saved = await window.api.saveTempFile({
-        name: file.name || (file.type.startsWith("image/") ? "screenshot.png" : "paste.bin"),
-        base64,
-        mimeType: file.type || undefined,
-      });
-      if (!saved?.path) return null;
-      return { name: saved.name || file.name || "paste.bin", path: saved.path };
-    } catch (err) {
-      console.warn("[ChatInput] saveTempFile failed", err);
-      return null;
-    }
-  };
-
+  const [attachmentError, setAttachmentError] = useState("");
   const addFilesFromDrop = (files: FileList | File[]): void => {
-    void (async () => {
-      const next: Attachment[] = [];
-      for (const file of Array.from(files)) {
-        const path =
-          window.api?.getPathForFile?.(file) ||
-          (file as File & { path?: string }).path ||
-          "";
-        if (path) {
-          next.push({ name: file.name || path.split(/[/\\]/).pop() || "file", path });
-          continue;
-        }
-        // 剪贴板截图等：无 path，必须落盘，否则发送时会被 filter 掉，LLM 看不到
-        if (file.size > 0 || file.type.startsWith("image/")) {
-          const saved = await persistBlobFile(file);
-          if (saved) {
-            next.push(saved);
-            continue;
-          }
-        }
-        // 兜底：仍无 path 时只保留 name（会在气泡显示，但 agent 读不到——尽量避免走到这）
-        if (file.name) next.push({ name: file.name });
-      }
-      mergeAttachmentList(next);
-    })();
+    const scope = draftScope;
+    void composerFiles(files).then(next => {
+      if (attachmentScopeRef.current !== scope) return;
+      const merged = mergeComposerAttachments(attachmentListRef.current, next);
+      attachmentListRef.current = merged;
+      setAttachments(merged);
+      setAttachmentError("");
+    }).catch(error => setAttachmentError(error instanceof Error ? error.message : String(error)));
   };
-
   const pickAttachment = async (): Promise<void> => {
-    const file = await window.api?.pickLocalFile?.();
-    if (!file?.name && !file?.path) return;
-    const name = file.name || file.path.split(/[/\\]/).pop() || "未命名文件";
-    const path = file.path || undefined;
-    setAttachments((prev) => {
-      if (prev.some((a) => (path && a.path === path) || a.name === name)) return prev;
-      return [...prev, { name, path }];
-    });
-    textareaRef.current?.focus();
+    const scope = draftScope;
+    try {
+      const file = await pickComposerAttachment();
+      if (attachmentScopeRef.current !== scope) return;
+      if (file) {
+        const merged = mergeComposerAttachments(attachmentListRef.current, [file]);
+        attachmentListRef.current = merged; setAttachments(merged);
+      }
+      setAttachmentError("");
+      textareaRef.current?.focus();
+    } catch (error) { setAttachmentError(error instanceof Error ? error.message : String(error)); }
   };
 
   /** 是否有更高层弹层打开：BTW 的 Esc 不得与这些弹层抢（统一 dismiss 语义） */
@@ -1264,6 +1229,7 @@ export default function ChatInput({
         if (e.dataTransfer.files?.length) addFilesFromDrop(e.dataTransfer.files);
       }}
     >
+      {attachmentError && <p role="alert">{attachmentError}</p>}
       {showExecPermBar && (
         <div className="exec-perm-bar">
           <div className="exec-perm-title">{execLabel}</div>
@@ -1569,50 +1535,8 @@ export default function ChatInput({
               </span>
               );
             })}
-            {attachments
-              .filter((a) => !refFiles.some((f) => f.path && f.path === a.path))
-              .map((a) => {
-              const label = shortFileLabel(a.name, a.path);
-              const dragPath = a.path?.trim() || "";
-              const dragEnabled = Boolean(dragPath) && typeof window.api?.startNativeDrag === "function";
-              return (
-              <span
-                key={a.path ?? a.name}
-                className={`attach-chip file-chip${dragEnabled ? " is-draggable" : ""}`}
-                title={
-                  dragEnabled
-                    ? `${a.path}\n可拖到桌面或其它应用`
-                    : (a.path ?? a.name)
-                }
-                draggable={dragEnabled}
-                onDragStart={(e) => {
-                  if (!dragEnabled) {
-                    e.preventDefault();
-                    return;
-                  }
-                  e.preventDefault();
-                  window.api?.startNativeDrag?.(dragPath);
-                }}
-              >
-                <FileBadge name={label} size={16} />
-                <span className="attach-chip-name">{label}</span>
-                <button
-                  type="button"
-                  className="attach-chip-x"
-                  aria-label={`移除文件 ${label}`}
-                  draggable={false}
-                  onDragStart={(e) => e.preventDefault()}
-                  onClick={() =>
-                    setAttachments((prev) =>
-                      prev.filter((x) => (x.path ?? x.name) !== (a.path ?? a.name)),
-                    )
-                  }
-                >
-                  <IconX size={12} />
-                </button>
-              </span>
-              );
-            })}
+            <ComposerAttachmentChips attachments={attachments.filter(a => !refFiles.some(f => f.path && f.path === a.path))}
+              onRemove={attachment => setAttachments(previous => previous.filter(item => (item.path ?? item.name) !== (attachment.path ?? attachment.name)))} />
           </div>
         )}
         {showStreamingMode && (

@@ -1,3 +1,4 @@
+import { botAttachmentSchema } from "../../../shared/bot-conversation";
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type {
@@ -512,6 +513,14 @@ export class WorkRepository {
   }
 
   // ----------------------------------------------------------- participants
+
+  attachmentInput(binding: WorkExecutionBindingDto): string {
+    const row = this.db.prepare("SELECT attachments_json FROM bot_work_attachments WHERE work_id=? AND input_snapshot_id=?")
+      .get(binding.workId, binding.inputSnapshotId) as { attachments_json: string } | undefined;
+    if (!row) return "";
+    const attachments = botAttachmentSchema.array().parse(JSON.parse(row.attachments_json));
+    return `\n\n用户附件（此执行输入快照的宿主持久副本；读取实际文件，不要仅凭文件名推断内容）：\n${attachments.map(item => JSON.stringify(item)).join("\n")}`;
+  }
 
   executionInput(binding: WorkExecutionBindingDto): string {
     const row = this.db.prepare(`SELECT title,goal_description,constraints_json,criteria_json

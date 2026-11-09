@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+import { BotAttachmentInputError, prepareBotAttachmentInput, type BotVisionFallback } from "./BotAttachmentInput";
+import { snapshotBotAttachments } from "./BotAttachmentStorage";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type Database from "better-sqlite3";
@@ -26,6 +29,7 @@ export interface BotConversationServiceOptions {
   memorySearch: (botId: string, query: string) => unknown;
   schedule: (work: WorkDto, operationId: string, retryBlocked?: boolean) => void;
   wake: (workId?: string) => void;
+  visionFallback?: BotVisionFallback;
   onMessage?: (event: import("../../../shared/bot-conversation").BotMessageEvent) => void;
 }
 
@@ -34,6 +38,7 @@ export class BotConversationService {
   readonly messages: BotConversationRepository;
   private readonly drains = new Map<string, Promise<void>>();
   private readonly runtimes = new Map<string, DurableBotRuntime>();
+  private readonly runtimeModels = new Map<string, unknown>();
   private readonly openings = new Map<string, Promise<DurableBotRuntime>>();
   private readonly stops = new Map<string, Promise<void>>();
   private readonly shutdown = new AbortController();
@@ -56,7 +61,11 @@ export class BotConversationService {
         if (!message || message.botId !== request.botId || message.conversationId !== conversation?.conversation_id) throw new Error("消息引用不属于当前对话");
         message.workIds.forEach(workId => this.assertWork(request.botId, workId));
       }
-      return this.messages.accept(this.options.userId, request);
+      const key = createHash("sha256").update(JSON.stringify([this.options.userId, request.botId, request.requestId])).digest("hex");
+      let attachments;
+      try { attachments = prior ? undefined : snapshotBotAttachments(this.options.directory, key, request.attachments ?? []); }
+      catch (error) { throw new Error(`BOT_ATTACHMENT_REJECTED: ${error instanceof Error ? error.message : String(error)}`); }
+      return this.messages.accept(this.options.userId, request, attachments);
     });
     if (this.options.bots.getBot(receipt.botId)?.status === "active") this.kick(receipt.botId, receipt.conversationId);
     return receipt;
@@ -143,8 +152,15 @@ export class BotConversationService {
         const runtime = await this.runtime(conversation);
         if (this.messages.message(next.messageId)?.status === "cancelled") continue;
         runtime.resume();
-        const submission = await runtime.submit(user.text, next.requestId, "followUp",
-          { text: user.text, displayText: user.text, attachments: [], botRequestId: next.requestId });
+        const prior = await runtime.conversation.commit(tx => tx.submissionByRequest(runtime.conversation.id, next.requestId), context);
+        let submission = prior && await runtime.harness.submission(prior.id, context);
+        if (!submission) {
+          const input = await prepareBotAttachmentInput({ text: user.text, attachments: user.attachments ?? [],
+            model: this.runtimeModels.get(conversationId), directory: join(this.options.directory, conversationId),
+            requestId: next.requestId, visionFallback: this.options.visionFallback });
+          submission = await runtime.submit(input, next.requestId, "followUp",
+            { text: user.text, displayText: user.text, attachments: user.attachments ?? [], botRequestId: next.requestId });
+        }
         const reply = await this.untilClose(runtime.reply(submission));
         await runtime.conversation.waitForIdle(context);
         if (this.messages.message(next.messageId)?.status !== "cancelled") {
@@ -152,7 +168,7 @@ export class BotConversationService {
         }
       } catch (error) {
         if (this.messages.message(next.messageId)?.status !== "cancelled") {
-          this.options.works.transaction(() => this.messages.update(next.messageId, "unknown", this.messages.message(next.messageId)?.text ?? next.text, error instanceof Error ? error.message : String(error)));
+          this.options.works.transaction(() => this.messages.update(next.messageId, error instanceof BotAttachmentInputError ? "failed" : "unknown", this.messages.message(next.messageId)?.text ?? next.text, error instanceof Error ? error.message : String(error)));
         }
         const runtime = this.runtimes.get(conversationId);
         if (runtime?.isSessionFailed()) { this.runtimes.delete(conversationId); await runtime.close(); }
@@ -177,6 +193,7 @@ export class BotConversationService {
     const directory = join(this.options.directory, conversation.conversation_id);
     mkdirSync(directory, { recursive: true });
     const model = await resolveBotModel(this.options.models, undefined, this.options.defaultModel());
+    this.runtimeModels.set(conversation.conversation_id, this.options.models.getModel(model.target.provider, model.target.modelId));
     const allowed = (name: string) => BOT_FOREGROUND_TOOLS.has(name) && (this.options.bots.getBot(bot.botId)?.foregroundAllowedTools.includes(name) ?? false);
     const runtime = await DurableBotRuntime.open({ directory, cwd: directory, models: this.options.models, model: model.target,
       toolMode: "native", toolAllowed: allowed,

@@ -99,6 +99,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
         const source = receipt(requestId);
         const operationId = `bot:${conversationId}:tool:${api.taskId}`;
         let result: WorkControlResult;
+        let previousSnapshotId: string | undefined;
         if (name === "work_create") {
           const input = create.parse(args);
           result = works.createWork(actor(), { ...input, operationId, ownerBotId: botId,
@@ -107,6 +108,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
         } else {
           const input = name === "work_amend" ? change.parse(args) : control.parse(args);
           const target = select(input.workId, source);
+          previousSnapshotId = target.inputSnapshotId;
           // Team membership grants shared facts, not control of the owner's Work.
           if (target.ownerBotId !== botId) throw new Error("团队成员只能查看和讨论此事项；请联系负责人修改、暂停或取消");
           const read = db.prepare(`SELECT guard_json FROM bot_work_reads WHERE conversation_id=? AND request_id=? AND work_id=?`)
@@ -120,6 +122,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
           else result = works.cancelWork(actor(), { ...input, operationId });
         }
         if (result.ok) {
+          if (["work_create", "work_amend"].includes(name)) messages.linkWorkAttachments(source, result.work.workId, result.work.inputSnapshotId, previousSnapshotId);
           messages.linkWork(source, result.work.workId);
           works.repo.linkConversation(result.work.workId, conversationId, "desktop", Date.now());
           if (["work_create", "work_amend", "work_resume"].includes(name)) options.schedule(result.work, operationId, name === "work_resume");

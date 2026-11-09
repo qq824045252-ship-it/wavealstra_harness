@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { z } from "zod";
-import { botMessageSchema, workFeedbackSchema, type WorkFeedbackDto, type BotHistoryDto, type BotHistoryRequest, type BotMessageDto, type BotSendReceipt, type BotSendRequest } from "../../../shared/bot-conversation";
+import { botAttachmentSchema, type BotAttachmentDto, botMessageSchema, workFeedbackSchema, type WorkFeedbackDto, type BotHistoryDto, type BotHistoryRequest, type BotMessageDto, type BotSendReceipt, type BotSendRequest } from "../../../shared/bot-conversation";
 
 const conversationRow = z.object({ conversation_id: z.string(), bot_id: z.string(), user_id: z.string(), revision: z.number(),
   current_request_id: z.string().nullable(), archived_at: z.number().nullable(), created_at: z.number(), updated_at: z.number() });
@@ -23,13 +23,14 @@ export class BotConversationRepository {
     return row ? conversationRow.parse(row) : undefined;
   }
 
-  accept(userId: string, input: BotSendRequest): BotSendReceipt {
+  accept(userId: string, input: BotSendRequest, persistedAttachments: BotAttachmentDto[] = input.attachments ?? []): BotSendReceipt {
     const payload = JSON.stringify({ text: input.text, conversationId: input.conversationId ?? null,
-      selectedWorkId: input.selectedWorkId ?? null, referenceMessageId: input.referenceMessageId ?? null });
+      selectedWorkId: input.selectedWorkId ?? null, referenceMessageId: input.referenceMessageId ?? null,
+      ...(input.attachments?.length ? { attachments: input.attachments } : {}) });
     const hash = createHash("sha256").update(payload).digest("hex");
     const prior = this.receipt(userId, input.botId, input.requestId);
     if (prior) {
-      if (prior.payload_hash !== hash) throw new Error("同一消息请求 ID 已用于不同正文或事项引用");
+      if (prior.payload_hash !== hash) throw new Error("同一消息请求 ID 已用于不同正文、附件或事项引用");
       return { botId: input.botId, conversationId: prior.conversation_id, requestId: input.requestId,
         userMessageId: prior.user_message_id, assistantMessageId: prior.assistant_message_id, replayed: true };
     }
@@ -48,6 +49,8 @@ export class BotConversationRepository {
     const insert = this.db.prepare(`INSERT INTO bot_messages(message_id,conversation_id,bot_id,request_id,role,text,status,created_at,updated_at)
       VALUES (?,?,?,?,?,?,?,?,?)`);
     insert.run(receipt.userMessageId, receipt.conversationId, input.botId, input.requestId, "user", input.text, "completed", now, now);
+    if (persistedAttachments.length) this.db.prepare("INSERT INTO bot_message_attachments(message_id,attachments_json) VALUES (?,?)")
+      .run(receipt.userMessageId, JSON.stringify(z.array(botAttachmentSchema).parse(persistedAttachments)));
     insert.run(receipt.assistantMessageId, receipt.conversationId, input.botId, input.requestId, "assistant", "", "queued", now, now);
     this.db.prepare(`INSERT INTO bot_send_receipts(user_id,bot_id,request_id,payload_hash,conversation_id,user_message_id,
       assistant_message_id,selected_work_id,reference_message_id) VALUES (?,?,?,?,?,?,?,?,?)`).run(userId, input.botId,
@@ -115,6 +118,19 @@ export class BotConversationRepository {
         AND m.conversation_id=r.conversation_id AND m.bot_id=r.bot_id AND m.request_id=r.request_id
         AND m.role='assistant' AND m.status IN ('completed','cancelled','failed')
     )`).run(userId).changes;
+  }
+
+  /** Immutable input attachment snapshot, independent of human-readable goal length. */
+  linkWorkAttachments(receipt: BotMessageReceipt, workId: string, inputSnapshotId: string, previousSnapshotId?: string): void {
+    const existing = this.db.prepare("SELECT attachments_json FROM bot_work_attachments WHERE work_id=? AND input_snapshot_id=?")
+      .get(workId, previousSnapshotId ?? inputSnapshotId) as { attachments_json: string } | undefined;
+    const current = this.message(receipt.user_message_id);
+    const reference = receipt.reference_message_id ? this.message(receipt.reference_message_id) : undefined;
+    const referenced = reference?.botId === receipt.bot_id && reference.conversationId === receipt.conversation_id ? reference.attachments ?? [] : [];
+    const inherited = existing ? z.array(botAttachmentSchema).parse(JSON.parse(existing.attachments_json)) : [];
+    const attachments = [...new Map([...inherited, ...(current?.attachments ?? []), ...referenced].map(item => [item.path, item])).values()];
+    if (attachments.length) this.db.prepare("INSERT OR IGNORE INTO bot_work_attachments(work_id,input_snapshot_id,attachments_json) VALUES (?,?,?)")
+      .run(workId, inputSnapshotId, JSON.stringify(attachments));
   }
 
   linkWork(receipt: BotMessageReceipt, workId: string): void {
@@ -203,10 +219,12 @@ export class BotConversationRepository {
 
   private mapMessage(value: unknown): BotMessageDto {
     const row = messageRow.parse(value);
+    const attachmentRow = this.db.prepare("SELECT attachments_json FROM bot_message_attachments WHERE message_id=?").get(row.message_id) as { attachments_json: string } | undefined;
+    const attachments = attachmentRow ? z.array(botAttachmentSchema).parse(JSON.parse(attachmentRow.attachments_json)) : undefined;
     const metadata = this.db.prepare("SELECT metadata_json FROM bot_work_feedback WHERE message_id=?").get(row.message_id) as { metadata_json: string } | undefined;
     const parsed = metadata ? workFeedbackSchema.safeParse(JSON.parse(metadata.metadata_json)) : undefined;
     return { messageId: row.message_id, conversationId: row.conversation_id, botId: row.bot_id, requestId: row.request_id,
-      workFeedback: parsed?.success ? parsed.data : undefined,
+      workFeedback: parsed?.success ? parsed.data : undefined, attachments,
       ordinal: row.ordinal, role: row.role, text: row.text, status: row.status,
       workIds: z.array(z.string()).parse(JSON.parse(row.work_ids_json)), error: row.error ?? undefined,
       createdAt: row.created_at, updatedAt: row.updated_at };

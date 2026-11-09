@@ -2,10 +2,12 @@ import { z } from "zod";
 import type { WorkProjectionDto } from "./bot-work";
 
 const id = z.string().trim().min(1).max(200);
+export const botAttachmentSchema = z.object({ name: z.string().trim().min(1).max(255), path: z.string().min(1).max(8192) }).strict();
+export type BotAttachmentDto = z.infer<typeof botAttachmentSchema>;
 export const botSendSchema = z.object({
-  botId: id, requestId: id, text: z.string().trim().min(1).max(32000),
+  botId: id, requestId: id, text: z.string().trim().max(32000), attachments: z.array(botAttachmentSchema).max(10).optional(),
   conversationId: id.optional(), selectedWorkId: id.optional(), referenceMessageId: id.optional(),
-}).strict();
+}).strict().refine(input => input.text.length > 0 || (input.attachments?.length ?? 0) > 0, "请输入消息或添加附件");
 export type BotSendRequest = z.infer<typeof botSendSchema>;
 export const botHistorySchema = z.object({ botId: id, conversationId: id.optional(), before: z.number().int().positive().optional() }).strict();
 export type BotHistoryRequest = z.infer<typeof botHistorySchema>;
@@ -18,7 +20,7 @@ export const workFeedbackSchema = z.object({
 export type WorkFeedbackDto = z.infer<typeof workFeedbackSchema>;
 export const botMessageSchema = z.object({
   messageId: id, conversationId: id, botId: id, requestId: id, ordinal: z.number().int().positive(),
-  role: z.enum(["user", "assistant"]), text: z.string(),
+  role: z.enum(["user", "assistant"]), text: z.string(), attachments: z.array(botAttachmentSchema).optional(),
   status: z.enum(["queued", "running", "completed", "cancelled", "unknown", "failed"]),
   workIds: z.array(id), workFeedback: workFeedbackSchema.optional(), error: z.string().optional(), createdAt: z.number(), updatedAt: z.number(),
 });

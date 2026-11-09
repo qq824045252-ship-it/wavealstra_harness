@@ -97,6 +97,37 @@ async function main() {
   assert.equal(lost.durable.size, 1);
   assert.equal(lost.store.getState().botDraft, "在等待时修改的草稿", "accepting original request must preserve edited text");
 
+  const files = fixture(); files.store.setState({ activeBotId: "a" });
+  files.store.getState().setBotAttachments("a", [{ name: "report.txt", path: "/tmp/report.txt" }]);
+  files.store.getState().setBotAttachments("b", [{ name: "other.png", path: "/tmp/other.png" }]);
+  await files.store.getState().submitBotDraft();
+  assert.equal(files.calls.length, 1, "attachment-only draft sends");
+  assert.equal(files.calls[0].text, "");
+  assert.deepEqual(files.calls[0].attachments, [{ name: "report.txt", path: "/tmp/report.txt" }]);
+  assert.deepEqual(files.store.getState().botAttachmentDrafts.a, []);
+  assert.equal(files.store.getState().botAttachmentDrafts.b[0].name, "other.png", "other Bot attachment draft survives");
+  lost.store.getState().setBotAttachments("a", [{ name: "new.txt", path: "/tmp/new.txt" }]);
+  const held = deferred<BotSendReceipt>(); lost.sender(() => held.promise);
+  const pendingFile = lost.store.getState().submitBotDraft();
+  const originalFile = lost.calls.at(-1)!;
+  lost.store.getState().setBotAttachments("a", [{ name: "changed.txt", path: "/tmp/changed.txt" }]);
+  held.resolve({ botId: "a", requestId: originalFile.requestId, conversationId: "conversation-a", userMessageId: "file-u", assistantMessageId: "file-a", replayed: false });
+  await pendingFile;
+  assert.equal(lost.store.getState().botAttachmentDrafts.a[0].name, "changed.txt", "late receipt preserves changed attachment draft");
+
+  const rejected = fixture(); rejected.store.setState({ activeBotId: "a" });
+  rejected.store.getState().setBotAttachments("a", [{ name: "missing.txt", path: "/tmp/missing.txt" }]);
+  rejected.sender(async () => { throw new Error("BOT_ATTACHMENT_REJECTED: 附件不存在"); });
+  await rejected.store.getState().submitBotDraft();
+  assert.equal(rejected.store.getState().botPendingSends.a, undefined, "definite pre-accept rejection permits correction");
+  assert.equal(rejected.store.getState().botAttachmentDrafts.a[0].name, "missing.txt", "rejection preserves editable draft");
+  assert.equal(rejected.store.getState().botConversationErrors.a, "附件不存在");
+  const rejectedId = rejected.calls[0].requestId;
+  rejected.store.getState().setBotAttachments("a", [{ name: "present.txt", path: "/tmp/present.txt" }]);
+  await rejected.store.getState().submitBotDraft();
+  assert.notEqual(rejected.calls[1].requestId, rejectedId, "corrected request gets a new identity only after definitive rejection");
+  assert.equal(rejected.calls[1].attachments?.[0].name, "present.txt");
+
   const old = deferred<BotHistoryDto>();
   let reads = 0;
   lost.reader(async () => ++reads === 1 ? old.promise : { ...lost.history("a"), revision: 5 });

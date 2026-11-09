@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
-import { appendFileSync, existsSync } from "node:fs";
+import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -110,8 +110,8 @@ const streamEvents: import("../src/shared/bot-conversation").BotMessageEvent[] =
 let foreground = new BotConversationService({ db: db.connection, userId: LOCAL_USER_ID, bots, works, models, directory: join(root, "foreground"),
   defaultModel: () => "fixture/front", isAuthority: () => lease.isAuthority(), memorySearch: () => [], schedule: (work, operationId) => queue.enqueue(work, operationId),
   wake: () => { void queue.flush(); }, onMessage: event => streamEvents.push(event) });
-const send = async (requestId: string, value: string, selectedWorkId?: string) => {
-  const request = { botId: DEFAULT_BOT_ID, requestId, text: value, selectedWorkId };
+const send = async (requestId: string, value: string, selectedWorkId?: string, attachments?: { name: string; path: string }[]) => {
+  const request = { botId: DEFAULT_BOT_ID, requestId, text: value, selectedWorkId, attachments };
   const receipt = foreground.send(request);
   await wait(() => ["completed", "failed"].includes(foreground.messages.message(receipt.assistantMessageId)?.status ?? ""), value);
   assert.equal(foreground.messages.message(receipt.assistantMessageId)?.status, "completed", foreground.messages.message(receipt.assistantMessageId)?.error);
@@ -130,6 +130,8 @@ try {
 
   assert.equal(db.listTasks().length, 0, "ordinary Bot conversation must not create Task");
   assert.equal(works.listWorks(LOCAL_USER_ID).length, 0);
+  const attachmentPath = join(root, "background-material.txt");
+  writeFileSync(attachmentPath, "background material evidence");
   const accepted = await send("delegate-a", "委托 A");
   await wait(() => effects === 1, "backend starts independently");
   const a = works.listWorks(LOCAL_USER_ID)[0]!;
@@ -141,11 +143,15 @@ try {
   assert.throws(() => foreground.send({ botId: DEFAULT_BOT_ID, requestId: "delegate-a", text: "different" }));
   assert.equal(works.listWorks(LOCAL_USER_ID).length, 1);
   await send("query-running", "查询");
-  await send("delegate-b", "委托 B");
+  await send("delegate-b", "委托 B", undefined, [{ name: "background-material.txt", path: attachmentPath }]);
   await queue.flush();
   await wait(() => effects === 2, "独立 root 并发启动，不再有共享资源序列化屏障");
   const b = works.listWorks(LOCAL_USER_ID).find(work => work.workId !== a.workId)!;
   const bBinding = works.repo.listBindings(b.workId)[0]!;
+  const backgroundAttachment = foreground.messages.history(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID }).messages.find(message => message.requestId === "delegate-b" && message.role === "user")?.attachments?.[0];
+  assert(backgroundAttachment, "user attachment is persisted");
+  assert(works.repo.attachmentInput(bBinding).includes(backgroundAttachment.path), "host forwards exact durable attachment path into background input snapshot");
+  assert.equal(await readFile(backgroundAttachment.path, "utf8"), "background material evidence");
   assert.equal(bBinding.conversationId, aBinding.conversationId, "real native roots independently start with the same numeric conversation ID");
   assert.notEqual(bBinding.durableStoreKey, aBinding.durableStoreKey);
   foreground.archive(DEFAULT_BOT_ID, accepted.conversationId);
