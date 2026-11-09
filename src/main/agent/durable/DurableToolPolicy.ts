@@ -154,7 +154,8 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
           continuationApprovalId: deferredIdentity?.approvalId || undefined, continuationDeliveryId: deferredIdentity?.deliveryId || undefined,
           detail: [summary.detail, externalPath ? `工作目录之外的写入：${externalPath}` : undefined].filter(Boolean).join("\n"),
           permissionMode: mode, needsApproval, deferrable: options.deferActions === true }, context.abortSignal);
-        if (workApproval?.kind === "defer") return { block: `[deferred] 该动作已暂缓（未执行）：${workApproval.reason}。审批 ${workApproval.approvalId}；继续完成其它不依赖此动作的步骤，不要重复请求同一动作，也不要把这条结果当成整个任务失败。` };
+        if (workApproval?.kind === "defer") return { block: `[deferred] 该动作已暂缓（未执行）：${workApproval.reason}。审批 ${workApproval.approvalId}；继续完成其它不依赖此动作的步骤，不要重复请求同一动作，也不要把这条结果当成整个任务失败。`
+          + (call.name === "bash" ? " 可继续发起新的只读核验：逐文件使用 read、wc -c \"./file\"、stat \"./file\"，目录使用 ls -la \"./dir\"；无需 cd 或 $PWD，不要将多文件、管道、&& 或混合读写放进同一命令。已有成功写入仍可读取核验，不要因原复合命令暂缓就放弃全部校验。后续独立写入优先用结构化 write（自动创建父目录），但不得改写并重提此卡片中尚待批准的写入动作。" : "") };
         if (workApproval?.kind === "deny") return { block: `后台操作未获准继续：${workApproval.reason}；本次没有启动新的执行，请查看审批、阻碍和原动作回执` };
         const refuseWork = async (reason: string) => {
           await options.approveWorkAction?.({ taskId: options.taskId, taskRoot, operationId,

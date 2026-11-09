@@ -12,11 +12,11 @@ export async function verifyReadonlyCommands(root: string): Promise<void> {
   const path = join(cwd, "中文 proof.txt"), empty = join(cwd, "empty.txt");
   const bytes = Buffer.from("Hello from Bot 第三轮复测\n");
   await writeFile(path, bytes); await writeFile(empty, ""); await writeFile(outside, "must not read");
-  for (const command of ["wc --files0-from=/etc/passwd", 'wc -c "x" "y"', "sha256sum -c file", "stat -L file", "ls -R .", "ls -L .", "ls -la .",
+  for (const command of ["wc --files0-from=/etc/passwd", 'wc -c "x" "y"', "sha256sum -c file", "stat -L file", "ls -R .", "ls -L .",
     "du -a .", "awk 'END{print NR}' file", "ls -l$(touch pwn)", 'wc -c "$(cat /etc/passwd)"', "ls -l . >output", "ls -l . | cat",
     "wc -c file; echo $?; touch pwn", "wc -c file && echo $?", "wc -c file; echo $PATH", "wc -c file; echo $(touch pwn)",
     "wc -c file; printf '%s' $?", "wc -c file; echo $? >output", "wc -c file; echo $?\nwhoami", "cat file; echo $?", "pwd; echo $?",
-    "wc -c file; wc -c other; echo $?", "FOO=bar wc -c file", 'wc -c "x"; pwd', 'wc -c "x"\nwhoami', 'wc -c "x""y"', "wc -c --files0-from=x"]) {
+    "wc -c file; wc -c other; echo $?", "FOO=bar wc -c file", 'wc -c "x"\nwhoami', 'wc -c "x""y"', "wc -c --files0-from=x"]) {
     assert.equal(workShellRead("bash", { command }), undefined, command);
   }
   for (const command of ["ls -l proof.txt", "wc -c proof.txt", "stat proof.txt", 'wc -c "中文 proof.txt"']) {

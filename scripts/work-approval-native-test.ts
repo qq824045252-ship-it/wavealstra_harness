@@ -73,6 +73,11 @@ async function fixture(taskId: string, withoutWorkPath = false, verifyCommands =
   const observed: Array<{ name: string; error: boolean; body: string }> = [];
   const respond = (request: TranscriptContext): AssistantMessage["content"] => {
     const last = request.messages.at(-1);
+    if (taskId === "readonly-sequence-regression") {
+      if (last?.role !== "toolResult") return call("bash", { command: 'ls -la; echo "---"; cat .mybuddy-task.json' }, "read-sequence");
+      observed.push({ name: last.toolName, error: !!last.isError, body: JSON.stringify(last.content) });
+      return text("Read sequence completed.");
+    }
     if (codeMode) {
       if (last?.role !== "toolResult") return call("codemode", { code: 'await tools.write({path:"proof.txt",content:"native proof\\n"}); text("script finished");' }, "code-leaf");
       observed.push({ name: last.toolName, error: !!last.isError, body: JSON.stringify(last.content) });
@@ -143,7 +148,9 @@ async function fixture(taskId: string, withoutWorkPath = false, verifyCommands =
 try {
   await verifyReadonlyCommands(root);
   for (const command of ["pwd;touch injected", "pwd && touch injected", "ls >file", "cat $(touch injected)",
-    "cat `touch injected`", "pwd\ntouch injected", "ls -R file", "cat -n file", "bash -c pwd", "ls -- file", "cat *", "cat ~/file"]) {
+    "cat `touch injected`", "pwd\ntouch injected", "ls -R file", "cat -n file", "bash -c pwd", "ls -- file", "cat *", "cat ~/file", 'ls -la; echo "---"; cat .mybuddy-task.json; touch injected',
+    'ls -la; echo "$(touch injected)"; cat .mybuddy-task.json', 'ls -la; echo -n; cat .mybuddy-task.json',
+    'ls -la | cat .mybuddy-task.json', 'ls -la && cat .mybuddy-task.json', 'ls -la; cat -n file']) {
     assert.equal(workShellRead("bash", { command }), undefined, `unsafe/unsupported command stays gated: ${command}`);
   }
   for (const name of ["powershell", "terminal_exec", "mcp_call_tool"]) assert.equal(workShellRead(name, { command: "pwd" }), undefined);
@@ -828,6 +835,22 @@ try {
     console.log(`PASS native late guard ${mode}: no effect, no host quarantine, no unknown admission after restart`);
   }
 
+  {
+    const f = await fixture("readonly-sequence-regression");
+    await writeFile(join(f.cwd, ".mybuddy-task.json"), '{"taskId":"read-scope-proof"}');
+    f.setMode("readonly");
+    const runtime = await f.open();
+    try {
+      assert.equal((await (await runtime.submit("Read task metadata", "sequence")).wait(ctx)).status, "done");
+      assert.equal(f.observed.length, 1);
+      assert.equal(f.observed[0]?.error, false, f.observed[0]?.body);
+      assert.match(f.observed[0]!.body, /read-scope-proof/);
+      assert.match(f.observed[0]!.body, /真实系统只读校验/);
+      assert.equal(f.works.approvals.list(f.binding.workId).length, 0, "real read sequence must not ask for write scope");
+      assert.equal(f.works.resourceGate.live().filter(lease => lease.owner.workId === f.binding.workId).length, 0);
+    } finally { await runtime.close(); }
+    console.log("PASS exact live-model readonly sequence: real ls/cat, readonly scope, zero approvals, no stranded resources");
+  }
   await assert.rejects(access(shellMarker), "native pwd/ls/cat reads must not source attacker BASH_ENV");
   await assert.rejects(access(pathMarker), "native ls/cat reads must not execute attacker PATH commands");
   console.log("PASS native pwd/ls/cat bypass hostile BASH_ENV and PATH commands using actual environment file APIs");

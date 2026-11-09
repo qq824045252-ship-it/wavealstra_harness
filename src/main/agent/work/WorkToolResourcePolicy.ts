@@ -61,13 +61,17 @@ export class WorkToolResourcePolicy {
       try { verifiedTarget = validateWorkReadPath(context.taskRoot, bounded.path); }
       catch (error) { return error instanceof Error ? error.message : String(error); }
     }
+    if (bounded?.steps) for (const step of bounded.steps) if ("command" in step) {
+      const leaf = workShellRead("bash", { command: step.command })!;
+      validateWorkReadPath(context.taskRoot, leaf.path);
+    }
     const shellRead = bounded?.path ?? boundedShellRead(call);
     // Verification never hashes a path before the FD-safe executor opens it. A
     // conservative host read lease excludes all managed writers without a second
     // pathname resolution in acquire/validateVersions (which could race a symlink).
-    if (bounded?.verification) resources.push({ kind: "host", scope: "local-host", key: "scoped-read-verification", mode: "read",
+    if (bounded?.verification || bounded?.steps) resources.push({ kind: "host", scope: "local-host", key: "scoped-read-verification", mode: "read",
       readVerification: { root: realpathSync(context.taskRoot), target: verifiedTarget! } });
-    const filePaths = bounded?.verification ? [] : shellRead ? [shellRead] : input.paths.length ? input.paths : ["read", "write", "edit"].includes(call.name)
+    const filePaths = bounded?.verification || bounded?.steps ? [] : shellRead ? [shellRead] : input.paths.length ? input.paths : ["read", "write", "edit"].includes(call.name)
       ? [args.path ?? args.file_path].filter((path): path is string => Boolean(path)) : [];
     for (const path of filePaths) {
       // Only trusted adapters supply paths; resolve relative names against the actual child workspace.
@@ -93,7 +97,7 @@ export class WorkToolResourcePolicy {
         return `已有不透明观察；覆盖现有文件 ${resource.path} 前，必须通过可信读取入口（内置 read）以该明确路径重新读取目标版本，再用同一路径的内置 write/edit 修改。`
           + `读取其他文件或列目录不能代替该目标的重读，也不会解除任意 Shell 命令限制。`;
     }
-    if (coarse && sideEffect && !bounded?.verification) {
+    if (coarse && sideEffect && !bounded?.verification && !bounded?.steps) {
       for (const observed of this.gate.observedResources(owner)) {
         if (fileResourceIdentity(observed.path).version !== observed.version) return `version_conflict: 先前读取的文件已变化：${observed.path}`;
       }
@@ -161,7 +165,8 @@ export class WorkToolResourcePolicy {
     // Persist the version that produced the read, even if the resource changed during it.
     // Omitting that observation would let a later write silently adopt the new content.
     // Metadata/count/hash verification is evidence, not a content read that grants a later overwrite baseline.
-    const verification = workShellRead(input.call.name, input.call.arguments)?.verification;
+    const readPlan = workShellRead(input.call.name, input.call.arguments);
+    const verification = readPlan?.verification || readPlan?.steps;
     if ((!input.sideEffect || state.boundedRead) && !verification) for (const resource of state.observed) this.gate.observe(owner, resource);
     if (state.opaqueObservation) this.gate.noteOpaqueObservation(owner, input.call.name);
     const action = actionOf.parse(input.call.arguments);

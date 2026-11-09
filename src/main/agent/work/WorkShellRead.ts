@@ -1,11 +1,45 @@
 import { executeWorkReadCommand, validateWorkReadPath, type ScopedReadCommand } from "../../platform/work-shell-read";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 
+type ReadStep = { command: string } | { echo: string };
+export interface WorkShellReadPlan { path: string; directory: boolean; verification?: ScopedReadCommand; echoExitCode?: boolean; steps?: ReadStep[] }
+
+/** A literal semicolon sequence is interpreted by the host, never shell -c.
+ * Parse the complete sequence before any step runs; reject expansions and control flow. */
+function readSequence(command: string): ReadStep[] | undefined {
+  if (/[&|<>`$\\\r\n*?\[\]{}()!\x00-\x1f]/.test(command)) return undefined;
+  let quote = "", start = 0; const parts: string[] = [];
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i]!;
+    if (quote) { if (c === quote) quote = ""; }
+    else if (c === "'" || c === '\"') quote = c;
+    else if (c === ";") { parts.push(command.slice(start, i).trim()); start = i + 1; }
+  }
+  if (quote || !parts.length) return undefined;
+  parts.push(command.slice(start).trim());
+  if (parts.length > 32 || parts.some(part => !part)) return undefined;
+  const steps: ReadStep[] = [];
+  for (const part of parts) {
+    const echo = /^echo(?: +(?:"([^";]*)"|'([^';]*)'|([^\s'";]+)))?$/.exec(part);
+    if (echo) {
+      const text = echo[1] ?? echo[2] ?? echo[3] ?? "";
+      if (text.startsWith("-") && echo[3]) return undefined;
+      steps.push({ echo: text });
+    } else {
+      if (part.includes(";") || !workShellRead("bash", { command: part })) return undefined;
+      steps.push({ command: part });
+    }
+  }
+  return steps;
+}
+
 /** Complete literal-only grammar. Accepted verification commands use a pinned
  * system executable and file descriptor, never shell/PATH or user functions. */
-export function workShellRead(name: string, args: unknown): { path: string; directory: boolean; verification?: ScopedReadCommand; echoExitCode?: boolean } | undefined {
+export function workShellRead(name: string, args: unknown): WorkShellReadPlan | undefined {
   if (name !== "bash" || !args || typeof args !== "object" || !("command" in args) || typeof args.command !== "string") return undefined;
   const original = args.command.trim();
+  const steps = readSequence(original);
+  if (steps) return { path: ".", directory: true, steps };
   // This exact suffix is a host-rendered status query, not a second shell
   // command. Parse the entire preceding literal read before admitting anything.
   const statusSuffix = /; *echo +\$\?$/.exec(original);
@@ -24,11 +58,12 @@ export function workShellRead(name: string, args: unknown): { path: string; dire
   if (offset !== command.length) return undefined;
   const words = tokens.map(token => /^['"]/.test(token) ? token.slice(1, -1) : token);
   const verb = words.shift();
+  if (verb === "ls" && words.length === 1 && /^-[laA1]+$/.test(words[0]!)) words.push(".");
   const path = words.at(-1);
   if (!path || path.startsWith("-") || path.startsWith("~")) return undefined;
   const flags = words.slice(0, -1);
   if (!statusSuffix && (verb === "cat" || verb === "ls") && !flags.length) return { path, directory: verb === "ls" };
-  const supported = verb === "ls" ? flags.length === 1 && /^-[lA1]+$/.test(flags[0])
+  const supported = verb === "ls" ? flags.length === 1 && /^-[laA1]+$/.test(flags[0])
     : verb === "wc" ? flags.length === 1 && /^-[cl]+$/.test(flags[0])
     : verb === "stat" || verb === "sha256sum" || verb === "sha1sum" || verb === "md5sum" ? flags.length === 0
     : verb === "du" ? flags.length === 1 && flags[0] === "-b"
@@ -53,13 +88,29 @@ export function presentWorkReadResult(result: Awaited<ReturnType<typeof executeW
  * scripts or exported functions. Every other command retains the native shell. */
 export function withWorkShellRead(tool: ToolRegistration): ToolRegistration {
   if (tool.name !== "bash") return tool;
-  return { ...tool, execute: async (args, api, context) => {
+  return { ...tool, execute: async (args, api, context): Promise<Awaited<ReturnType<ToolRegistration["execute"]>>> => {
     const read = workShellRead(tool.name, args);
     if (!read) return tool.execute(args, api, context);
     const timeout = (args as { timeout?: number }).timeout;
     if (timeout !== undefined && (!Number.isFinite(timeout) || timeout <= 0 || timeout > 2_147_483_647 / 1000)) throw new Error("Invalid timeout: must be a finite positive number within the native limit");
     if (!api.env) throw new Error("读取缺少当前原生执行环境");
     context.abortSignal?.throwIfAborted();
+    if (read.steps) {
+      if (!(api.env instanceof NodeExecutionEnv)) throw new Error("可信只读序列要求本机执行环境");
+      // Preflight all paths, then each leaf revalidates immediately before execution.
+      for (const step of read.steps) if ("command" in step) {
+        const leaf = workShellRead("bash", { command: step.command })!;
+        validateWorkReadPath(api.env.cwd, leaf.path);
+      }
+      let completedSteps = 0;
+      for (const step of read.steps) {
+        context.abortSignal?.throwIfAborted();
+        if ("echo" in step) { api.output(`${step.echo}\n`);  }
+        else await withWorkShellRead(tool).execute({ ...(args as Record<string, unknown>), command: step.command }, api, context);
+        completedSteps++;
+      }
+      return { structuredOutput: { completedSteps, evidenceSource: "host-interpreted-scoped-read-sequence" } };
+    }
     const path = getOrThrow(await api.env.absolutePath(read.path, context));
     if (read.verification) {
       if (!(api.env instanceof NodeExecutionEnv)) throw new Error("可信系统只读校验要求本机执行环境");

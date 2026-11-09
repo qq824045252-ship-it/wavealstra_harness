@@ -29,8 +29,11 @@ const rowSchema = z.object({ approval_id: z.string(), work_id: z.string(), bindi
 /** 结构化分类失败不能把动作降级成低风险：一律按保守的未分类动作处理。 */
 function describeAction(input: WorkActionRequest): WorkActionDescriptor {
   try {
-    return classifyWorkAction({ toolName: input.toolName, arguments: input.arguments,
+    const descriptor = classifyWorkAction({ toolName: input.toolName, arguments: input.arguments,
       mcp: mcpIdentityOf(input.toolName), effect: input.needsApproval ? "side-effect" : "read" });
+    if (descriptor.operation === "shell_read" && input.actionKind === "workspace:write")
+      return conservativeDescriptor("命令外观只读，但没有匹配可信只读执行适配器；请拆成明确路径的单条读取，不能直接按只读放行任意 Shell");
+    return descriptor;
   } catch {
     return conservativeDescriptor("动作参数无法结构化归类，按未分类外部写入处理");
   }

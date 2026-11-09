@@ -168,6 +168,24 @@ try {
   const newAfterOpaque = call("shell", "new-file", "write", { path: join(directory, "new-after-opaque.txt"), content: "new target" }, true);
   assert.equal(policyB.before(newAfterOpaque), undefined); writeFileSync(join(directory, "new-after-opaque.txt"), "new target"); policyB.after(newAfterOpaque, "consumed");
 
+  writeFileSync(join(directory, "sequence.txt"), "sequence proof");
+  const sequenceRead = call("sequence-reader", "sequence", "bash", { command: 'ls -la; echo "---"; cat sequence.txt' }, false);
+  assert.equal(policyA.before(sequenceRead), undefined);
+  const sequenceLease = gateA.live().find(lease => lease.owner.taskId === "sequence-reader");
+  assert(sequenceLease);
+  assert.equal(gateB.acquire({ actionId: "writer-during-sequence", owner: owner("sequence-writer"), resources: [fileResource(other, "write")] }).ok, false,
+    "a bounded multi-target read still excludes managed writers for the whole sequence");
+  policyA.after(sequenceRead, "consumed");
+  assert.equal(gateA.live().filter(lease => lease.owner.taskId === "sequence-reader").length, 0);
+  const childRoot = join(directory, "sequence-root"); mkdirSync(childRoot);
+  symlinkSync(other, join(childRoot, "outside-link"));
+  for (const target of ["../other.txt", "outside-link"]) {
+    const escaped = call("sequence-escape", target, "bash", { command: `ls -la; cat ${target}` }, false);
+    escaped.context.taskRoot = childRoot;
+    assert.throws(() => policyA.before(escaped), /工作区/);
+    assert.equal(gateA.live().filter(lease => lease.owner.taskId === "sequence-escape").length, 0, "preflight refuses every escaped leaf before acquiring a lease");
+  }
+
   const unclassified = call("opaque-mcp", "read", "mcp__fixture__opaque_reader", { path: other }, false);
   assert.match(policyA.before(unclassified) ?? "", /缺少可信路径适配器/, "opaque path claims cannot create an unguarded read-modify-write premise");
   const classified = classifyMcpToolCall("mcp__fixture__read_file", { path: other }); assert(classified);
