@@ -3,8 +3,10 @@ import type Database from "better-sqlite3";
 import { z } from "zod";
 import type { PermissionMode } from "../../../shared/agent-ipc";
 import { workActionApprovalSchema, workActionDecisionSchema, type WorkActionApprovalDto, type WorkActionAuthorization, type WorkActionDecisionResult } from "../../../shared/bot-work-approval";
+import { conservativeDescriptor, type WorkActionDescriptor } from "../../../shared/bot-work-action";
+import type { WorkAutonomyRule } from "../../../shared/bot-work-autonomy";
 import type { WorkService } from "./WorkService";
-import { classifyWorkAction } from "./WorkActionClassifier";
+import { classifyWorkAction, mcpIdentityOf, targetsInsideWorkspace } from "./WorkActionClassifier";
 import { WorkDecisionLedger } from "./WorkDecisionLedger";
 import { WorkAutonomyPolicy } from "./WorkAutonomyPolicy";
 
@@ -18,11 +20,22 @@ const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(valu
 const rowSchema = z.object({ approval_id: z.string(), work_id: z.string(), binding_id: z.string(), operation_id: z.string(),
   fingerprint: z.string(), decision_json: z.string().nullable(), data_json: z.string() });
 
+/** 结构化分类失败不能把动作降级成低风险：一律按保守的未分类动作处理。 */
+function describeAction(input: WorkActionRequest): WorkActionDescriptor {
+  try {
+    return classifyWorkAction({ toolName: input.toolName, arguments: input.arguments,
+      mcp: mcpIdentityOf(input.toolName), effect: input.needsApproval ? "side-effect" : "read" });
+  } catch {
+    return conservativeDescriptor("动作参数无法结构化归类，按未分类外部写入处理");
+  }
+}
+
 /** A persisted, exact-action permission, never a mutation of Work/Bot/global scopes.
  * Observers may disappear; the absolute deadline and decision survive process restarts. */
 export class WorkActionApprovals {
   private readonly ledger: WorkDecisionLedger;
   private readonly autonomy: WorkAutonomyPolicy;
+  private readonly ruleCache = new Map<string, Set<string>>();
   constructor(private readonly db: Database.Database, private readonly works: WorkService,
     private readonly options: { now: () => number; isAuthority: () => boolean; ttlMs?: number }) {
     this.ledger = new WorkDecisionLedger(db, options.now);
@@ -88,7 +101,8 @@ export class WorkActionApprovals {
     const fingerprint = hash([binding.taskId, binding.durableStoreKey, binding.conversationId, binding.workspaceBinding,
       input.taskRoot ?? binding.workspaceBinding, input.operationId, input.toolName, input.arguments, input.actionKind]);
     let stored = this.get(approvalId);
-    let grantedBy: "policy" | "precedent" | "auto" | "exact" = "exact";
+    let grantedBy: "policy" | "precedent" | "scope" | "auto" | "exact" = "exact";
+    let skipped: "policy" | "precedent" | "scope" | "auto" | undefined;
     if (stored && stored.fingerprint !== fingerprint) throw new Error("审批动作身份不能用于不同工具或参数");
     // Read-only shell commands are classified by the native policy. Never silently
     // turn application auto mode into Work authorization or allow readonly writes.
@@ -108,7 +122,6 @@ export class WorkActionApprovals {
         reason: "你已选择暂不处理该动作（未执行）；其它步骤可以继续" };
       return { kind: "deny", reason: versionSameAction.outcome ?? "该动作先前未获准执行" };
     }
-    if (!stored && !continuation.length && !restriction && !scopeMissing && (!input.needsApproval || input.permissionMode === "auto")) return { kind: "allow", source: "auto" };
     if (!stored) {
       this.works.transaction(() => {
         if (!this.options.isAuthority()) throw new Error("审批登记时宿主权威已变化");
@@ -122,41 +135,51 @@ export class WorkActionApprovals {
             }
           }
         }
-        // P0-B：确定性自治策略先决定“谁来决定”，资源/效果通道保持不变。
-        const descriptor = classifyWorkAction({ toolName: input.toolName, arguments: input.arguments });
-        const verdict = !restriction ? this.autonomy.decide(descriptor, { userId: work.userId, botId: binding.botId,
-          workId: work.workId, bindingId: binding.bindingId, actionHash,
-          workspaceId: binding.workspaceBinding, delegatedScope: binding.delegatedScope,
-          permissionMode: input.permissionMode }) : undefined;
-        const policyDenied = verdict?.kind === "deny" ? verdict.reason : undefined;
-        if (verdict && verdict.kind !== "ask") this.autonomy.record(verdict, descriptor, { userId: work.userId,
-          botId: binding.botId, workId: work.workId, bindingId: binding.bindingId, actionHash,
-          workspaceId: binding.workspaceBinding, delegatedScope: binding.delegatedScope,
-          permissionMode: input.permissionMode }, verdict.reason);
-        const denied = !!restriction || !!policyDenied || input.permissionMode === "readonly" && input.actionKind !== "workspace:read";
-        const automatic = !denied && !scopeMissing && (verdict?.kind === "allow" || !input.needsApproval || input.permissionMode === "auto");
+        // P0-B：所有入口只有一条路径——确定性自治策略先决定“谁来决定”，
+        // 再进入原生授权/资源/效果通道。auto 只是策略的一个输入，不能绕过
+        // hard gate、显式 deny、真实 scope 上限或未分类的外部效果。
+        const descriptor = describeAction(input);
+        const decisionContext = { userId: work.userId, botId: binding.botId, workId: work.workId,
+          bindingId: binding.bindingId, actionHash, projectId: work.projectId, workspaceId: binding.workspaceBinding,
+          delegatedScope: binding.delegatedScope, permissionMode: input.permissionMode,
+          scopeGranted: !scopeMissing,
+          targetInsideWorkspace: targetsInsideWorkspace(input.taskRoot ?? binding.workspaceBinding, input.toolName, input.arguments) };
+        const verdict = restriction ? undefined : this.autonomy.decide(descriptor, decisionContext);
+        const decision = verdict && verdict.kind !== "ask"
+          ? this.autonomy.record(verdict, descriptor, decisionContext, verdict.reason) : undefined;
+        const denied = !!restriction || verdict?.kind === "deny";
+        const automatic = !denied && !scopeMissing && verdict?.kind === "allow";
+        // 原生层本来就不需要审批的读取不落审批行：决定已记入 work_decisions，没必要每个读都写一份审批记录。
+        if (automatic && !input.needsApproval) { skipped = verdict?.kind === "allow" ? verdict.source : "auto"; return; }
         const value: WorkActionApprovalDto = { approvalId, workId: work.workId, bindingId: binding.bindingId,
           descriptor: { effect: descriptor.effect, operation: descriptor.operation, provider: descriptor.provider,
             target: descriptor.target, environment: descriptor.environment, reversibility: descriptor.reversibility,
             blastRadius: descriptor.blastRadius, hardGate: descriptor.hardGate || (verdict?.kind === "ask" && verdict.hardGate),
             reason: descriptor.reason },
-          question: verdict?.kind === "ask" ? verdict.reason : undefined,
+          question: verdict?.kind === "ask" && !automatic ? verdict.reason : undefined,
           ruleScope: { projectId: work.projectId, workspaceId: binding.workspaceBinding, botId: binding.botId },
           actionHash, taskId: binding.taskId, operationId: input.operationId, toolName: input.toolName,
           summary: input.summary, detail: input.detail ?? "", requiredScope: input.actionKind, scopeMissing,
           intentRevision: work.intentRevision, inputSnapshotId: work.inputSnapshotId, ownerEpoch: work.ownerEpoch,
           status: possiblePriorEffect ? "invalidated" : denied ? "denied" : automatic ? "approved" : "pending", version: 1, createdAt: now,
-          expiresAt: now + (this.options.ttlMs ?? 5 * 60_000), outcome: outsidePlan ? "continuation-outside-plan" : restriction ?? (denied ? "readonly-policy" : undefined) };
+          expiresAt: now + (this.options.ttlMs ?? 5 * 60_000),
+          outcome: outsidePlan ? "continuation-outside-plan" : restriction
+            ?? (denied ? (verdict?.kind === "deny" ? verdict.reason : "自动化策略拒绝此动作，未执行") : undefined),
+          decision: decision && verdict ? { decisionId: decision.decisionId,
+            source: verdict.kind === "allow" ? verdict.source : "policy",
+            citedRuleIds: verdict.citedRuleIds,
+            citedDecisionIds: verdict.kind === "allow" ? verdict.citedDecisionIds : [] } : undefined };
         this.db.prepare("INSERT OR IGNORE INTO work_action_approvals(approval_id,work_id,binding_id,operation_id,fingerprint,data_json) VALUES (?,?,?,?,?,?)")
           .run(approvalId, work.workId, binding.bindingId, input.operationId, fingerprint, JSON.stringify(value));
         if (automatic) {
           grantedBy = verdict?.kind === "allow" ? verdict.source : "auto";
           this.touch(work.workId);
         }
-        else this.block(value, denied ? restriction ?? policyDenied ?? "当前应用只读策略拒绝此操作，未执行" : scopeMissing
-          ? `缺少 ${input.actionKind} 授权；仅此工具动作可由你授权后继续，已完成步骤不重跑`
+        else this.block(value, denied ? (verdict?.kind === "deny" ? verdict.reason : restriction ?? "自动化策略拒绝此动作，未执行")
+          : scopeMissing ? `缺少 ${input.actionKind} 授权；仅此工具动作可由你授权后继续，已完成步骤不重跑`
           : "后台操作等待你确认，超时会默认拒绝，未执行");
       });
+      if (skipped) return { kind: "allow", source: skipped };
       stored = this.get(approvalId)!;
     }
     // P0-D：deferrable 调用方不占执行栈——动作以 not_started 挂起，稍后由
@@ -207,24 +230,42 @@ export class WorkActionApprovals {
         return { ok: false, code: "invalid_request", message: "必须明确授权本次缺失的工作区范围；其他授权请通过事项配置处理" };
       if (request.saveRule && (mode !== "allow" || value.descriptor?.hardGate))
         return { ok: false, code: "invalid_request", message: "hard gate 或非允许决定不能保存为长期规则" };
-      const next = this.settle(value, mode === "allow" ? "approved" : mode === "ignore" ? "ignored" : "denied",
-        mode === "allow" ? "user-approved-once" : mode === "ignore" ? "user-ignored" : "user-denied");
+      // “允许本次并保存规则”先把全部范围验证完，再写决定；任何失败都不得留下部分批准。
+      let rule: Omit<WorkAutonomyRule, "ruleId" | "createdAt"> | undefined;
       if (mode === "allow" && request.saveRule) {
         const scope = request.saveRule === "project" ? { projectId: value.ruleScope?.projectId }
-          : request.saveRule === "repo" ? { repo: undefined } : { workspaceId: value.ruleScope?.workspaceId };
-        if (!value.descriptor || !Object.values(scope).some(Boolean))
-          return { ok: false, code: "invalid_request", message: "该事项没有可绑定的项目/仓库/工作区，不能保存长期规则" };
-        this.ledger.addRule({ userId, botId: value.ruleScope?.botId, decision: "allow",
-          reason: "你在审批卡上选择以后这样处理", scope: { ...scope, effect: [value.descriptor.effect],
-            operation: [value.descriptor.operation], environment: [value.descriptor.environment] }, createdBy: "user" });
+          : request.saveRule === "workspace" ? { workspaceId: value.ruleScope?.workspaceId }
+          : undefined;
+        if (!value.descriptor || !scope || !Object.values(scope).some(Boolean))
+          return { ok: false, code: "invalid_request", message: request.saveRule === "repo"
+            ? "该事项没有可信的仓库身份，不能保存仓库级规则"
+            : "该事项没有可绑定的项目/工作区，不能保存长期规则" };
+        if (!value.descriptor.target || !value.descriptor.provider)
+          return { ok: false, code: "invalid_request", message: "该动作没有可精确绑定的目标，只能允许本次，不能保存为更宽的长期规则" };
+        rule = { userId, botId: value.ruleScope?.botId, decision: "allow",
+          reason: "你在审批卡上选择以后这样处理",
+          // 规则只能覆盖这次看到的具体效果/操作/环境/目标，不能比已批准的动作更宽。
+          scope: { ...scope, effect: [value.descriptor.effect], operation: [value.descriptor.operation],
+            environment: [value.descriptor.environment], target: [value.descriptor.target],
+            ...(value.descriptor.provider ? { provider: [value.descriptor.provider] } : {}) }, createdBy: "user" };
       }
+      const next = this.settle(value, mode === "allow" ? "approved" : mode === "ignore" ? "ignored" : "denied",
+        mode === "allow" ? "user-approved-once" : mode === "ignore" ? "user-ignored" : "user-denied");
+      if (rule) this.ledger.addRule(rule);
       this.db.prepare("UPDATE work_action_approvals SET decision_json=? WHERE approval_id=?").run(decision, value.approvalId);
       return { ok: true, approval: next, replayed: false };
     });
   }
 
   listAutonomyRules(userId: string) { return this.ledger.listRules(userId); }
-  revokeAutonomyRule(userId: string, ruleId: string): boolean { return this.ledger.revokeRule(ruleId, userId); }
+  /** 撤销后立即重新评估尚未执行的动作，不等下一次请求或调度。 */
+  revokeAutonomyRule(userId: string, ruleId: string): boolean {
+    return this.works.transaction(() => {
+      if (!this.ledger.revokeRule(ruleId, userId)) return false;
+      this.recover();
+      return true;
+    });
+  }
 
   approvedTaskAction(taskId: string, operationId: string, toolName: string): boolean | undefined {
     const binding = this.works.repo.bindingForTask(taskId); if (!binding) return undefined;
@@ -232,12 +273,13 @@ export class WorkActionApprovals {
     return !!value && value.toolName === toolName && this.permits(binding.bindingId, operationId, value.requiredScope);
   }
   permits(bindingId: string, operationId: string, actionKind: string): boolean {
+    this.ruleCache.clear();
     const row = this.db.prepare("SELECT * FROM work_action_approvals WHERE binding_id=? AND operation_id=?").get(bindingId, operationId);
     if (!row) return false;
     const value = workActionApprovalSchema.parse(JSON.parse(rowSchema.parse(row).data_json));
     const admission = this.works.repo.listAdmissions(value.workId).find(a => a.operationId === value.operationId);
     if (admission && admission.state !== "admitted") return false;
-    return value.status === "approved" && value.requiredScope === actionKind && this.current(value)
+    return value.status === "approved" && value.requiredScope === actionKind && this.current(value) && this.citationsValid(value)
       && (value.expiresAt > this.options.now() || admission?.state === "admitted" && admission.admittedAt < value.expiresAt);
   }
   settleAction(taskId: string, operationId: string, outcome: string): void {
@@ -270,6 +312,7 @@ export class WorkActionApprovals {
   /** Called on boot and by the background scheduler even with no renderer attached. */
   recover(): void {
     if (!this.options.isAuthority()) return;
+    this.ruleCache.clear();
     this.works.transaction(() => {
       // Repair presentation flags from prior versions without clearing the blocker,
       // changing approval outcomes, or granting a fresh execution.
@@ -287,12 +330,32 @@ export class WorkActionApprovals {
       for (const workId of changed) this.touch(workId);
       for (const row of this.db.prepare("SELECT * FROM work_action_approvals WHERE json_extract(data_json,'$.status') IN ('pending','approved')").all()) {
         const value = workActionApprovalSchema.parse(JSON.parse(rowSchema.parse(row).data_json));
+        // 已准入/未知/已消费的动作交给执行回执结算，不因时钟或规则变化假装回滚。
+        const inFlight = this.works.repo.listAdmissions(value.workId)
+          .some(a => a.operationId === value.operationId && ["admitted", "unknown", "consumed"].includes(a.state));
         if (!this.current(value)) this.settle(value, "invalidated", "事项、负责人或执行身份已失效，未恢复原动作");
-        // Once admitted, execution/effect settlement owns the outcome, not a wall clock.
-        else if (value.expiresAt <= this.options.now() && !this.works.repo.listAdmissions(value.workId).some(a => a.operationId === value.operationId && ["admitted", "unknown", "consumed"].includes(a.state)))
-          this.settle(value, "expired", "审批超时，默认拒绝；该动作未执行");
+        // 撤销/过期后的规则不能再支撑已经放行但尚未执行的动作。
+        else if (!inFlight && !this.citationsValid(value)) this.settle(value, "invalidated", "支撑该动作的授权规则已撤销或过期，未执行；需要重新确认");
+        else if (!inFlight && value.expiresAt <= this.options.now()) this.settle(value, "expired", "审批超时，默认拒绝；该动作未执行");
       }
     });
+  }
+  /** 引用来源必须每次都复核：撤销/过期/被 supersede 后不再支持任何尚未执行的动作。 */
+  private citationsValid(value: WorkActionApprovalDto): boolean {
+    const decision = value.decision;
+    if (!decision) return true;
+    const work = this.works.getWork(value.workId);
+    if (!work) return false;
+    const active = this.activeRules(work.userId);
+    return decision.citedRuleIds.every(ruleId => active.has(ruleId))
+      && decision.citedDecisionIds.every(decisionId => this.ledger.isDecisionValid(decisionId, work.userId, active));
+  }
+  private activeRules(userId: string): Set<string> {
+    const cached = this.ruleCache.get(userId);
+    if (cached) return cached;
+    const active = this.ledger.activeRuleIds(userId);
+    this.ruleCache.set(userId, active);
+    return active;
   }
   private approvalContinuation(taskId: string) {
     const raw = this.db.prepare("SELECT continuation_plan_id FROM work_dispatch_requests WHERE task_id=?").get(taskId);

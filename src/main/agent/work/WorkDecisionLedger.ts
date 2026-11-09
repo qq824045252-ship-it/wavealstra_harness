@@ -3,7 +3,7 @@ import type Database from "better-sqlite3";
 import { z } from "zod";
 import type { WorkActionDescriptor } from "../../../shared/bot-work-action";
 import {
-  workAutonomyRuleSchema, scopeMatches, type WorkAutonomyRule, type WorkAutonomyOutcome,
+  workAutonomyRuleSchema, type WorkAutonomyRule, type WorkAutonomyOutcome,
   type WorkDecision, workDecisionSchema,
 } from "../../../shared/bot-work-autonomy";
 
@@ -49,6 +49,47 @@ export class WorkDecisionLedger {
       .all(userId).map(raw => workAutonomyRuleSchema.parse(JSON.parse(ruleRow.parse(raw).rule_json)));
   }
 
+  /** 撤销/过期/已删除的规则不再有效；先例与已放行动作每次都要复核它引用的来源。 */
+  activeRuleIds(userId: string): Set<string> {
+    const now = this.now();
+    return new Set(this.listRules(userId).filter(rule => rule.scope.expiresAt === undefined || rule.scope.expiresAt > now)
+      .map(rule => rule.ruleId));
+  }
+
+  isSuperseded(decisionId: string): boolean {
+    const row = this.db.prepare("SELECT superseded_by FROM work_decisions WHERE decision_id=?").get(decisionId);
+    return z.object({ superseded_by: z.string().nullable() }).optional().parse(row)?.superseded_by != null;
+  }
+
+  /** Revalidate the entire provenance graph; missing, cyclic or foreign sources fail closed. */
+  isDecisionValid(decisionId: string, userId: string, active = this.activeRuleIds(userId)): boolean {
+    const visiting = new Set<string>(), verified = new Set<string>();
+    const visit = (id: string): boolean => {
+      if (verified.has(id)) return true;
+      if (visiting.has(id)) return false;
+      const raw = this.db.prepare("SELECT decision_json,superseded_by FROM work_decisions WHERE decision_id=? AND user_id=?")
+        .get(id, userId);
+      if (!raw) return false;
+      const row = z.object({ decision_json: z.string(), superseded_by: z.string().nullable() }).safeParse(raw);
+      if (!row.success || row.data.superseded_by !== null) return false;
+      let decoded: unknown;
+      try { decoded = JSON.parse(row.data.decision_json); } catch { return false; }
+      const parsed = workDecisionSchema.safeParse(decoded);
+      if (!parsed.success) return false;
+      const decision = parsed.data;
+      if (decision.userId !== userId || decision.decisionId !== id || decision.outcome !== "allowed"
+        || decision.supersededBy || !decision.reusable
+        || decision.citedRuleIds.length + decision.citedDecisionIds.length === 0) return false;
+      visiting.add(id);
+      const valid = decision.citedRuleIds.every(ruleId => active.has(ruleId))
+        && decision.citedDecisionIds.every(visit);
+      visiting.delete(id);
+      if (valid) verified.add(id);
+      return valid;
+    };
+    return visit(decisionId);
+  }
+
   record(input: Omit<WorkDecision, "decisionId" | "createdAt" | "policyVersion"> & {
     decisionId?: string; policyVersion: string; supersedes?: string;
   }): WorkDecision {
@@ -77,19 +118,19 @@ export class WorkDecisionLedger {
       });
   }
 
-  /** 只有明确可复用、未被 supersede、作用域完全兼容的决定才算先例；ignore/expired 不算。 */
+  /** 只有明确可复用、未被 supersede、且引用的规则仍然有效的决定才算先例；ignore/expired 不算。 */
   precedentFor(userId: string, descriptor: WorkActionDescriptor, action: {
     effect: string; operation: string; provider?: string; target?: string; environment: string;
     projectId?: string; workspaceId?: string; repo?: string; botId?: string;
   }): WorkDecision | undefined {
-    const now = this.now();
+    const active = this.activeRuleIds(userId);
     const candidates = this.db.prepare(`SELECT decision_json FROM work_decisions
       WHERE user_id=? AND outcome='allowed' AND reusable=1 AND superseded_by IS NULL
         AND descriptor_json LIKE ? ORDER BY created_at DESC LIMIT 20`).all(userId, `%"effect":"${descriptor.effect}"%`)
       .map(raw => workDecisionSchema.parse(JSON.parse(decisionRow.parse(raw).decision_json)));
-    void now;
-    void scopeMatches;
-    return candidates.find(decision => decision.descriptor.effect === action.effect
+    return candidates.find(decision => decision.citedRuleIds.length > 0
+      && this.isDecisionValid(decision.decisionId, userId, active)
+      && decision.descriptor.effect === action.effect
       && decision.descriptor.operation === action.operation
       && (decision.descriptor.provider ?? undefined) === (action.provider ?? undefined)
       && (decision.descriptor.target ?? undefined) === (action.target ?? undefined)

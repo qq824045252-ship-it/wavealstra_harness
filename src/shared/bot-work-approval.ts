@@ -17,6 +17,9 @@ export const workActionApprovalSchema = z.object({
   /** 可以安全表达长期规则的作用域键（无则不提供“以后这样处理”）。 */
   ruleScope: z.object({ projectId: z.string().optional(), repo: z.string().optional(), workspaceId: z.string().optional(),
     botId: z.string().optional() }).strict().optional(),
+  /** 放行来源：规则/先例/明确范围/auto 必须可追溯；规则撤销后要能复核。 */
+  decision: z.object({ decisionId: z.string(), source: z.string(), citedRuleIds: z.array(z.string()).max(16),
+    citedDecisionIds: z.array(z.string()).max(16) }).strict().optional(),
 });
 export type WorkActionApprovalDto = z.infer<typeof workActionApprovalSchema>;
 export const workActionDecisionSchema = z.object({
@@ -32,7 +35,7 @@ export const workActionDecisionSchema = z.object({
 export type WorkActionDecision = z.infer<typeof workActionDecisionSchema>;
 /** P0-D：审批返回显式结果，避免用 boolean 猜“拒绝/未处理/不适用”。 */
 export type WorkActionAuthorization =
-  | { kind: "allow"; source: "policy" | "precedent" | "exact" | "auto" }
+  | { kind: "allow"; source: "policy" | "precedent" | "scope" | "exact" | "auto" }
   | { kind: "deny"; reason: string }
   | { kind: "defer"; approvalId: string; reason: string }
   | { kind: "not_applicable" };

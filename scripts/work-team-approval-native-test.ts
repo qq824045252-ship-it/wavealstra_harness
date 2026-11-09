@@ -134,9 +134,10 @@ try {
     await queue.flush();
     for (const approval of works.approvals.list(workId).filter(item => item.status === "pending")) {
       assert.equal(db.getTask(approval.taskId)?.permissionMode, "default", "team-created task inherits callback default, never auto");
-      if (approved.length === 0) {
-        assert.equal(approval.toolName, "write"); assert.equal(approval.scopeMissing, false);
-        assert(!existsSync(join(cwd, "approved.txt")), "authorized write still waits for default-mode approval");
+      if (approval.toolName === "write" && !approval.scopeMissing) {
+        assert.match(approval.detail, /工作目录之外的写入/, "the remaining write card is a boundary attempt, never the authorized in-workspace write");
+        assert.equal(existsSync(join(cwd, "approved.txt")), true,
+          "the authorized in-workspace write already ran by scope, without a default-mode card");
       }
       const work = works.getWork(workId)!;
       const decision = { approvalId: approval.approvalId, workId, bindingId: approval.bindingId,
@@ -151,7 +152,9 @@ try {
   }
   await queue.flush();
   assert.deepEqual(errors, []);
-  assert.equal(approved.length, 4, "legal write plus three distinct boundary attempts have distinct exact approvals");
+  assert.equal(approved.length, 2, "only outside write and missing member scope require decisions; literal in-workspace printf is proven by policy");
+  assert(works.approvals.list(workId).filter(item => approved.includes(item.approvalId)).every(item => item.toolName === "write"),
+    "a proven local shell write does not request redundant approval, while the separate team tool boundary still rejects execution");
   assert.equal(readFileSync(join(cwd, "approved.txt"), "utf8"), "APPROVED_TEAM_WRITE_VERIFIED\n");
   assert.equal(readFileSync(outside, "utf8"), "OUTSIDE_SECRET_MUST_NOT_READ\n");
   assert(!existsSync(forbidden)); assert(!existsSync(join(cwd, "readonly-forbidden.txt")));

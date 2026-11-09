@@ -588,10 +588,31 @@ try {
       assert.equal(await readFile(join(f.cwd, "proof.txt"), "utf8"), "native proof\n");
       assert.equal(await readFile(join(f.cwd, "daily-report/second.txt"), "utf8"), "second report\n");
       assert(f.observed.every(item => !item.error));
-      assert.equal(f.works.approvals.list(f.binding.workId).length, 0, "existing task write grant plus auto runs consecutive tools without per-command prompts");
+      assert.equal(f.works.approvals.list(f.binding.workId).filter(item => item.status === "pending").length, 0,
+        "existing task write grant plus auto runs consecutive tools without per-command prompts");
+      assert.equal(f.works.approvals.list(f.binding.workId).every(item => item.decision?.source === "scope"
+        || item.decision?.source === "auto"), true, "auto grants are recorded with their policy source, not as owner decisions");
       assert.equal(f.works.resourceGate.live().filter(lease => lease.owner.workId === f.binding.workId).length, 0);
     } finally { await runtime.close(); }
     console.log("PASS task-scoped auto: two actual files, nested directory, readonly verification, no per-command approval or stranded lease");
+  }
+  {
+    // 默认（逐条确认）模式下的首要验收：已授权范围内建目录/写两份文档/读取校验连续完成，普通叶子步骤零新增审批。
+    const f = await fixture("routine-default-mode", false, true, undefined, true);
+    f.setMode("default");
+    const runtime = await f.open();
+    try {
+      assert.equal((await (await runtime.submit("Complete the scoped multi-file task under default mode", "routine-default")).wait(ctx)).status, "done");
+      assert.equal(await readFile(join(f.cwd, "proof.txt"), "utf8"), "native proof\n");
+      assert.equal(await readFile(join(f.cwd, "daily-report/second.txt"), "utf8"), "second report\n");
+      assert(f.observed.every(item => !item.error), JSON.stringify(f.observed));
+      assert.equal(f.works.approvals.list(f.binding.workId).filter(item => item.status === "pending").length, 0,
+        "authorized in-workspace work runs under default mode without per-step cards");
+      assert.equal(f.works.approvals.list(f.binding.workId).every(item => item.decision?.source === "scope"), true,
+        "each routine write is authorized by the Work scope, never by an owner decision");
+      assert.equal(f.works.resourceGate.live().filter(lease => lease.owner.workId === f.binding.workId).length, 0);
+    } finally { await runtime.close(); }
+    console.log("PASS default-mode scope autonomy: mkdir/files/read/verify run as real tools with zero fresh approvals");
   }
   {
     const f = await fixture("legacy-user-effect", false, false, "block", true);
@@ -651,7 +672,7 @@ try {
         assert.equal((await (await nextRuntime.submit("New authorized multi-file task", "new-write")).wait(ctx)).status, "done");
         assert.equal(await readFile(join(next.cwd, "daily-report/second.txt"), "utf8"), "second report\n");
         assert(next.observed.every(item => !item.error), JSON.stringify(next.observed));
-        assert.equal(next.works.approvals.list(next.binding.workId).length, 0);
+        assert.equal(next.works.approvals.list(next.binding.workId).filter(item => item.status === "pending").length, 0);
         assert.equal(next.works.resourceGate.live().length, 0);
       } finally { await nextRuntime.close(); }
       console.log("PASS legacy human effect review: actual native abort/quiescence after reopen, no original replay, next authorized multi-file task succeeds without prompts");
