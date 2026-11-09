@@ -6,7 +6,7 @@ import { workActionApprovalSchema, workActionDecisionSchema, type WorkActionAppr
 import { conservativeDescriptor, type WorkActionDescriptor } from "../../../shared/bot-work-action";
 import type { WorkAutonomyRule } from "../../../shared/bot-work-autonomy";
 import type { WorkService } from "./WorkService";
-import { classifyWorkAction, mcpIdentityOf, targetsInsideWorkspace } from "./WorkActionClassifier";
+import { classifyWorkAction, progressPreservesCriteria, mcpIdentityOf, targetsInsideWorkspace } from "./WorkActionClassifier";
 import { WorkDecisionLedger } from "./WorkDecisionLedger";
 import { WorkAutonomyPolicy } from "./WorkAutonomyPolicy";
 import { WorkDeferredActions, deferredTargetUnchanged, type WorkDeferredPayload } from "./WorkDeferredActions";
@@ -202,6 +202,7 @@ export class WorkActionApprovals {
           internalProgressVerified: descriptor.effect === "work_progress" && input.toolName === "conversation_goal_update"
             && input.actionKind === "workspace:read" && !input.needsApproval && work.lifecycle === "active"
             && (descriptor.target === undefined || descriptor.target === work.workId)
+            && progressPreservesCriteria(input.arguments, work.criteria)
             && typeof input.arguments === "object" && input.arguments !== null
             && (input.arguments as Record<string, unknown>).expectedStateVersion === work.stateVersion
             && (input.arguments as Record<string, unknown>).expectedIntentRevision === work.intentRevision

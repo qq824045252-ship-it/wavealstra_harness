@@ -55,7 +55,7 @@ export class WorkAutonomyPolicy {
       if (descriptor.source === "builtin" && descriptor.operation === "report_work_progress"
         && context.internalProgressVerified === true && context.scopeGranted === true)
         return { kind: "allow", source: "scope", reason: "当前绑定事项的进展记录，不授予文件写入或验收权限", citedRuleIds: [], citedDecisionIds: [] };
-      return { kind: "deny", reason: "进展更新必须对应当前活动事项和最新版本；未改变事项状态或验收事实", citedRuleIds: [] };
+      return { kind: "deny", reason: "进展更新必须对应当前活动事项和最新版本；重新调用 conversation_goal_get，criterionUpdates 只传 id/evidence，不传验收 status；未改变事项状态或验收事实", citedRuleIds: [] };
     }
     // 2) 只读模式按效果区分：可证明的读取仍然允许，其余一律拒绝。
     if (context.permissionMode === "readonly") {

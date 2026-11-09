@@ -190,8 +190,15 @@ const progressArguments = z.object({
   status: z.literal("active").optional(),
   expectedStateVersion: z.number().int().nonnegative(), expectedIntentRevision: z.number().int().nonnegative(),
   expectedOwnerEpoch: z.number().int().nonnegative(),
-  criterionUpdates: z.array(z.object({ id: z.string().min(1).max(100), evidence: z.string().max(1000).optional() }).strict()).max(12).optional(),
+  criterionUpdates: z.array(z.object({ id: z.string().min(1).max(100), status: z.literal("pending").optional(), evidence: z.string().max(1000).optional() }).strict()).max(12).optional(),
 }).strict().refine(value => value.progressSummary !== undefined || !!value.criterionUpdates?.length);
+
+/** A redundant pending field is not permission to reset accepted criteria. */
+export function progressPreservesCriteria(args: unknown, criteria: readonly { id: string; status: string }[]): boolean {
+  const parsed = progressArguments.safeParse(args);
+  return parsed.success && (parsed.data.criterionUpdates ?? []).every(update =>
+    criteria.some(criterion => criterion.id === update.id && (update.status === undefined || criterion.status === "pending")));
+}
 
 export function classifyWorkAction(input: WorkActionClassificationInput): WorkActionDescriptor {
   const name = input.toolName.trim();

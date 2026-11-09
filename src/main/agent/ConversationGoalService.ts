@@ -153,6 +153,17 @@ export class ConversationGoalService {
       return { ok: false, code: "invalid_request", message: "阻碍由执行或用户反馈产生，不能直接设置" };
     }
 
+    if (actor.kind === "worker" && request.criterionUpdates?.some(update => update.status === "pending")) {
+      if (request.criterionUpdates.some(update => update.status === "pending"
+        && !work.criteria.some(criterion => criterion.id === update.id && criterion.status === "pending")))
+        return { ok: false, code: "invalid_request", message: "不能将已有验收事实改回 pending；请仅提交 id/evidence 并使用最新版本" };
+      request = { ...request, criterionUpdates: request.criterionUpdates.map(update => {
+        if (update.status !== "pending") return update;
+        const { status: _status, ...evidenceOnly } = update;
+        return evidenceOnly;
+      }) };
+    }
+
     // Worker evidence is a report, never an attestation. Preserve it visibly in
     // the progress journal instead of silently discarding evidence-only updates.
     const reported = (request.criterionUpdates ?? []).filter(update => update.status === undefined && update.evidence !== undefined);

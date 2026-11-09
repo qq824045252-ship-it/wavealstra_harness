@@ -41,7 +41,7 @@ async function fixture(label: string, projectId?: string) {
 await check("bound progress metadata needs no file-write approval and cannot resume or attest", async () => {
   const f = await fixture("goal-progress");
   try {
-    const args = { workId: f.work.workId, progressSummary: "Verified two real files", status: "active", ...guard(f.works.getWork(f.work.workId)!) };
+    const args = { workId: f.work.workId, progressSummary: "Verified two real files", status: "active", criterionUpdates: [{ id: "c1", status: "pending", evidence: "wc -c output: 5" }], ...guard(f.works.getWork(f.work.workId)!) };
     const ask = (id: string, values: unknown) => f.works.approvals.request({ taskId: f.taskId, operationId: id,
       toolName: "conversation_goal_update", arguments: values, actionKind: "workspace:read", summary: "Report progress",
       permissionMode: "readonly", needsApproval: false, deferrable: true });
@@ -49,7 +49,7 @@ await check("bound progress metadata needs no file-write approval and cannot res
     assert.equal(f.works.approvals.list(f.work.workId).length, 0);
     const goals = new ConversationGoalService(f.works, () => {});
     const beforeProgress = f.works.getWork(f.work.workId)!;
-    const applied = goals.update({ goalId: f.work.workId, progressSummary: args.progressSummary, criterionUpdates: [{ id: "c1", evidence: "wc -c output: 5" }] },
+    const applied = goals.update({ goalId: f.work.workId, progressSummary: args.progressSummary, criterionUpdates: [{ id: "c1", status: "pending", evidence: "wc -c output: 5" }] },
       { actor: goals.modelActor(f.taskId), versionGuard: guard(f.works.getWork(f.work.workId)!) });
     assert(applied.ok, JSON.stringify(applied));
     assert.match(f.works.getWork(f.work.workId)!.progressSummary ?? "", /待核验证据 \[c1\]：wc -c output: 5/);
@@ -58,6 +58,12 @@ await check("bound progress metadata needs no file-write approval and cannot res
     assert.deepEqual(afterProgress.authorization, beforeProgress.authorization);
     assert.deepEqual(afterProgress.goalSources, beforeProgress.goalSources);
     assert.equal(afterProgress.intentRevision, beforeProgress.intentRevision);
+    f.works.repo.updateWork({ ...afterProgress, criteria: afterProgress.criteria.map(criterion => ({ ...criterion, status: "satisfied" })) });
+    assert.equal((await ask("cannot-reset-accepted", { ...args, ...guard(afterProgress) })).kind, "deny");
+    assert.equal(goals.update({ goalId: f.work.workId, progressSummary: "reset attempt", criterionUpdates: [{ id: "c1", status: "pending", evidence: "x" }] },
+      { actor: goals.modelActor(f.taskId), versionGuard: guard(afterProgress) }).ok, false);
+    assert.equal(f.works.getWork(f.work.workId)!.criteria[0]!.status, "satisfied");
+    f.works.repo.updateWork(afterProgress);
     const liveBinding = f.works.repo.bindingForTask(f.taskId)!;
     f.works.repo.updateBinding({ ...liveBinding, invalidatedAt: Date.now() });
     assert.equal(goals.update({ goalId: f.work.workId, progressSummary: "must not change" },
