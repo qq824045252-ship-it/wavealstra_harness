@@ -1313,7 +1313,9 @@ export class WorkService {
         ownerEpoch: binding.ownerEpoch,
         inputSnapshotId: binding.inputSnapshotId,
         status: stale ? "superseded" : "proposed",
-        summary: params.summary.trim().slice(0, 2000),
+        // This is the authoritative result relayed to the originating Bot chat,
+        // not a card preview. Truncation can remove caveats, sources and images.
+        summary: params.summary.trim(),
         artifactRefs: normalizeTexts(params.artifactRefs),
         evidenceRefs: evidenceIds,
         uncoveredScope: normalizeTexts(params.uncoveredScope),

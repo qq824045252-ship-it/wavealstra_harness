@@ -7,13 +7,30 @@ import type { BotDto, WorkProjectionDto } from "../src/shared/bot-work";
 import type { WorkResultCardDto } from "../src/shared/bot-work-phase5";
 import Sidebar, { AccountNavigation } from "../src/renderer/src/components/Sidebar";
 import ChatMarkdown from "../src/renderer/src/components/chat/ChatMarkdown";
-import BotWorkspacePage from "../src/renderer/src/components/pages/BotWorkspacePage";
+import BotWorkspacePage, { BotMessage } from "../src/renderer/src/components/pages/BotWorkspacePage";
 import { BotWorkDetails } from "../src/renderer/src/components/pages/BotWorkDetails";
 import { WorkCardsPanel } from "../src/renderer/src/components/pages/BotWorkCardsPanel";
 import { WorkReviewPanel } from "../src/renderer/src/components/pages/BotWorkReviewPanel";
 import { useAppStore } from "../src/renderer/src/store/appStore";
 
 const menu = renderToStaticMarkup(createElement(AccountNavigation, { go: () => {}, openProjects: () => {} }));
+const activityMessage: BotMessageDto = { messageId: "activity-message", conversationId: "activity-chat", botId: "activity-bot",
+  requestId: "activity-request", ordinal: 1, role: "assistant", text: "", status: "running", workIds: [], createdAt: 1, updatedAt: 1,
+  activity: { tool: "web_search", status: "running" } };
+const renderActivity = (message: BotMessageDto) => renderToStaticMarkup(createElement(BotMessage, { message,
+  botName: "Bot", works: [], onOpenWork: () => {}, onCancel: () => {} }));
+for (const text of ["", "正在核对资料。"] ) {
+  const html = renderActivity({ ...activityMessage, text });
+  assert.match(html, /role="status"[^>]*>正在搜索实时信息/);
+  assert.equal((html.match(/正在搜索实时信息/g) ?? []).length, 1, "tool activity uses one status line with or without streamed text");
+  assert.match(html, /停止回复/, "waiting on a search keeps cancellation available");
+}
+assert.equal(botMessageStatus({ ...activityMessage, activity: { tool: "fetch_content", status: "running" } }), "正在读取来源");
+assert.equal(botMessageStatus({ ...activityMessage, activity: { tool: "web_search", status: "error" } }), "搜索未成功，正在整理回复");
+assert.equal(botMessageStatus({ ...activityMessage, activity: { tool: "web_search", status: "success" } }), "搜索已返回，正在整理回复");
+for (const status of ["completed", "cancelled", "failed", "unknown"] as const) {
+  assert.doesNotMatch(renderActivity({ ...activityMessage, status }), /正在搜索实时信息/, "terminal or unknown messages must not advertise ongoing tools");
+}
 assert.ok(menu.indexOf("助手") < menu.indexOf("项目"));
 assert.ok(menu.indexOf("项目") < menu.indexOf("Bot 模式"));
 assert.ok(menu.indexOf("Bot 模式") < menu.indexOf("自动化"));

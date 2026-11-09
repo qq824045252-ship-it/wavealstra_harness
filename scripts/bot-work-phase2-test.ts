@@ -17,6 +17,9 @@ import { WorkExecutionAdapter } from "../src/main/agent/work/WorkExecutionAdapte
 import { WorkDispatchQueue } from "../src/main/agent/work/WorkDispatchQueue";
 import { WorkProjectionJournal } from "../src/main/agent/work/WorkProjectionJournal";
 import { BotConversationService } from "../src/main/agent/work/BotConversationService";
+import { BotConversationRepository } from "../src/main/agent/work/BotConversationRepository";
+import type { BotConversation } from "../src/main/agent/work/BotConversationRepository";
+import type { DurableBotSnapshot } from "../src/shared/durable-bot";
 import { DurableBotService } from "../src/main/agent/durable/DurableBotService";
 import { DEFAULT_BOT_ID, LOCAL_USER_ID, type WorkActor, type WorkControlResult } from "../src/shared/bot-work";
 
@@ -25,6 +28,8 @@ const text = (value: string) => [{ type: "text" as const, text: value }];
 let toolSequence = 0;
 let holdForeground = false;
 let foregroundHeld = false;
+let releaseSearch!: () => void;
+const searchHeld = new Promise<void>(resolve => { releaseSearch = resolve; });
 const tool = (name: string, args: Extract<AssistantMessage["content"][number], { type: "toolCall" }>["arguments"]): AssistantMessage["content"] => [{ type: "toolCall", id: `fixture-${++toolSequence}`, name, arguments: args }];
 const contentText = (content: TranscriptContext["messages"][number]["content"]) => typeof content === "string" ? content : content.filter(block => block.type === "text").map(block => block.text).join("\n");
 const wait = async (predicate: () => boolean | Promise<boolean>, description: string) => {
@@ -114,7 +119,7 @@ const streamEvents: import("../src/shared/bot-conversation").BotMessageEvent[] =
 let foreground = new BotConversationService({ db: db.connection, userId: LOCAL_USER_ID, bots, works, models, directory: join(root, "foreground"),
   defaultModel: () => "fixture/front", isAuthority: () => lease.isAuthority(), memorySearch: () => [], schedule: (work, operationId) => queue.enqueue(work, operationId),
   webTools: async () => ({ contextHooks: [], tools: [
-    defineTool({ name: "web_search", description: "search fixture", parameters: Type.Object({}), replay: "safe", execute: async () => ({output:text("dated source fixture")}) }),
+    defineTool({ name: "web_search", description: "search fixture", parameters: Type.Object({}), replay: "safe", execute: async () => { await searchHeld; return {output:text("dated source fixture")}; } }),
     defineTool({ name: "fetch_content", description: "failure fixture", parameters: Type.Object({}), replay: "safe", execute: async () => ({output:text("Blocked internal address: fixture"), isError:true}) }),
     defineTool({ name: "unrelated_extension_write", description: "never exposed", parameters: Type.Object({}), replay: "unsafe", execute: async () => { assert.fail("frontend must only mount the two web read tools"); } }),
   ] }),
@@ -139,10 +144,37 @@ try {
 
   assert.equal(db.listTasks().length, 0, "ordinary Bot conversation must not create Task");
   assert.equal(works.listWorks(LOCAL_USER_ID).length, 0);
-  const weather = await send("frontend-weather", "前台天气");
+  const weatherDone = send("frontend-weather", "前台天气");
+  await wait(() => streamEvents.some(event => event.message.requestId === "frontend-weather" && event.message.activity?.tool === "web_search" && event.message.activity.status === "running"), "search activity before tool completion");
+  const weatherActivity = foreground.history({ botId: DEFAULT_BOT_ID }).messages.find(message => message.requestId === "frontend-weather" && message.role === "assistant")!;
+  assert.deepEqual(weatherActivity.activity, { tool: "web_search", status: "running" }, "reconnected readers see the same bounded tool status");
+  assert.equal(weatherActivity.text, "", "activity must not become fabricated answer text");
+  assert.equal(new BotConversationRepository(db.connection).message(weatherActivity.messageId)?.activity?.tool, "web_search", "activity does not rely on service memory");
+  const nativeSnapshot: DurableBotSnapshot = { backend: "pi-durable", epoch: "fixture", revision: 1, conversationId: "native",
+    toolMode: "native", busy: true, queued: 0, pendingInputs: [], compacting: false, messages: [
+      { id: "user", role: "user", text: "前台天气", botRequestId: "older-request", createdAt: 1 },
+      { id: "assistant", role: "assistant", text: "foreign answer", createdAt: 2,
+        tools: [{ id: "foreign-tool", tool: "fetch_content", summary: "private arguments", output: "private output", status: "running" }] },
+    ] };
+  const conversation = foreground.messages.conversation(LOCAL_USER_ID, DEFAULT_BOT_ID, weatherActivity.conversationId)!;
+  const applySnapshot = () => (foreground as unknown as { stream(conversation: BotConversation, snapshot: DurableBotSnapshot): void }).stream(conversation, nativeSnapshot);
+  applySnapshot();
+  assert.deepEqual(foreground.messages.message(weatherActivity.messageId), weatherActivity, "same user text with another native request cannot change answer or activity");
+  const activityFrames = () => streamEvents.filter(event => event.message.requestId === "frontend-weather" && event.message.activity?.status === "running").length;
+  const frameCount = activityFrames();
+  await delay(250);
+  assert.equal(activityFrames(), frameCount, "waiting for a tool must not spam status messages");
+  releaseSearch();
+  const weather = await weatherDone;
   assert.equal(foreground.messages.message(weather.assistantMessageId)?.text, "dated source fixture");
+  assert.equal(foreground.messages.message(weather.assistantMessageId)?.activity, undefined, "final reconciliation removes transient activity");
+  nativeSnapshot.messages[0].botRequestId = "frontend-weather";
+  const completedWeather = foreground.messages.message(weather.assistantMessageId);
+  applySnapshot();
+  assert.deepEqual(foreground.messages.message(weather.assistantMessageId), completedWeather, "late snapshot cannot revive activity on a completed request");
   const fetchFailure = await send("frontend-fetch-error", "前台抓取失败");
   assert.match(foreground.messages.message(fetchFailure.assistantMessageId)?.text ?? "", /Blocked internal address/);
+  assert(streamEvents.some(event => event.message.requestId === "frontend-fetch-error" && event.message.activity?.tool === "fetch_content" && event.message.activity.status === "error"), "failed tool remains a failure, not success progress");
   await send("frontend-filter", "扩展写入越权");
   assert.equal(db.listTasks().length, 0);
   assert.equal(works.listWorks(LOCAL_USER_ID).length, 0);
@@ -241,7 +273,9 @@ try {
   foreground = new BotConversationService({ db: db.connection, userId: LOCAL_USER_ID, bots, works, models, directory: join(root, "foreground"),
     defaultModel: () => "fixture/front", isAuthority: () => lease.isAuthority(), memorySearch: () => [], schedule: (work, operationId) => queue.enqueue(work, operationId), wake: () => {} });
   const cancelCloseRace = works.transaction(() => foreground.messages.accept(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID, requestId: "cancel-close-race", text: "queued before closing" }));
+  foreground.messages.update(cancelCloseRace.assistantMessageId, "running", "", undefined, { tool: "web_search", status: "running" });
   await Promise.all([foreground.cancel(DEFAULT_BOT_ID, "cancel-close-race"), foreground.close()]);
+  assert.equal(foreground.messages.message(cancelCloseRace.assistantMessageId)?.activity, undefined, "cancellation clears persisted tool activity atomically");
   assert(!existsSync(join(root, "foreground", cancelCloseRace.conversationId, ".mybuddy-owner.json")), "cancel and close in the same tick cannot leak a native runtime lease");
   foreground = new BotConversationService({ db: db.connection, userId: LOCAL_USER_ID, bots, works, models, directory: join(root, "foreground"),
     defaultModel: () => "fixture/front", isAuthority: () => lease.isAuthority(), memorySearch: () => [], schedule: (work, operationId) => queue.enqueue(work, operationId), wake: () => {} });

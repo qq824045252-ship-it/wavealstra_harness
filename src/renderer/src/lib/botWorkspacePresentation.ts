@@ -17,6 +17,14 @@ export function workMatchesView(work: WorkProjectionDto, view: BotWorkspaceView)
 
 export function botMessageStatus(message: BotMessageDto): string {
   if (message.status === "completed") return message.role === "user" ? "已发送" : "已回复";
+  if (message.status === "running" && message.activity) {
+    const { tool, status } = message.activity;
+    const labels: Record<string, string> = { web_search: "搜索", fetch_content: "读取来源", work_query_status: "查询事项进展",
+      work_create: "创建事项", work_amend: "更新事项", work_pause: "暂停事项", work_resume: "恢复事项", work_cancel: "取消事项", memory_search: "查询记忆" };
+    const label = labels[tool] ?? "工具调用";
+    if (status === "running") return tool === "web_search" ? "正在搜索实时信息" : `正在${label}`;
+    return `${label}${status === "error" ? "未成功" : "已返回"}，正在整理回复`;
+  }
   return { queued: "等待回复", running: "正在回复", cancelled: "已停止", unknown: "结果待核对", failed: "回复失败" }[message.status];
 }
 

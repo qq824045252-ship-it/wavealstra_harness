@@ -248,13 +248,23 @@ export class BotConversationService {
     const source = this.messages.receipt(this.options.userId, conversation.bot_id, current.current_request_id);
     const message = source && this.messages.message(source.assistant_message_id);
     if (!message || message.status !== "running") return;
-    const row = snapshot.messages.slice(lastUser + 1).reverse().find(item => item.role === "assistant");
-    if (!row?.text || row.text === message.text) return;
+    const rows = snapshot.messages.slice(lastUser + 1).filter(item => item.role === "assistant");
+    const row = rows.at(-1);
+    const text = row?.text || message.text;
+    // Deduplicate native tool observations, including partial/committed rows.
+    // Only expose a bounded activity label, never arguments, outputs or reasoning.
+    const tools = [...new Map(rows.flatMap(item => item.tools ?? []).map(tool => [tool.id, tool])).values()];
+    const tool = [...tools].reverse().find(item => item.status === "running") ?? tools.at(-1);
+    const activity = tool ? { tool: tool.tool, status: tool.status } : undefined;
+    const activityChanged = activity?.tool !== message.activity?.tool || activity?.status !== message.activity?.status;
+    if (text === message.text && !activityChanged) return;
     const now = Date.now();
-    if (now - (this.streamedAt.get(message.messageId) ?? 0) < 80) return;
+    // Phase transitions must not be lost behind a text frame's throttle. Unchanged
+    // snapshots do nothing, so a long tool call produces one quiet status line.
+    if (!activityChanged && now - (this.streamedAt.get(message.messageId) ?? 0) < 80) return;
     this.streamedAt.set(message.messageId, now);
     // Persist at a bounded cadence: a reconnect reads the same revision, not a blank placeholder.
-    this.messages.update(message.messageId, "running", row.text);
+    this.messages.update(message.messageId, "running", text, undefined, activity);
     this.publish(message.messageId);
   }
 

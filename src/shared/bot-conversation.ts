@@ -18,11 +18,16 @@ export const workFeedbackSchema = z.object({
   intentRevision: z.number().int().positive().optional(), inputSnapshotId: z.string().min(1).max(2000).optional(),
 }).strict();
 export type WorkFeedbackDto = z.infer<typeof workFeedbackSchema>;
+/** One host-observed activity, separate from the model's answer. Never tool input/output. */
+export const botActivitySchema = z.object({
+  tool: z.string().min(1).max(200), status: z.enum(["running", "success", "error"]),
+}).strict();
+export type BotActivityDto = z.infer<typeof botActivitySchema>;
 export const botMessageSchema = z.object({
   messageId: id, conversationId: id, botId: id, requestId: id, ordinal: z.number().int().positive(),
   role: z.enum(["user", "assistant"]), text: z.string(), attachments: z.array(botAttachmentSchema).optional(),
   status: z.enum(["queued", "running", "completed", "cancelled", "unknown", "failed"]),
-  workIds: z.array(id), workFeedback: workFeedbackSchema.optional(), error: z.string().optional(), createdAt: z.number(), updatedAt: z.number(),
+  workIds: z.array(id), workFeedback: workFeedbackSchema.optional(), activity: botActivitySchema.optional(), error: z.string().optional(), createdAt: z.number(), updatedAt: z.number(),
 });
 /** Host-resolved, message-only image scope. No active-task or owner fallback. */
 export interface BotReportImages {

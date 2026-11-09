@@ -36,15 +36,18 @@ try {
     assert(result.ok); return result.work;
   };
   const work = create("feedback-work");
+  const fullResult = `产出成果\n${"核实过的报告正文。".repeat(500)}\n末尾限制：发行包尚未验证。\n来源：https://example.com/final-source\n![报告图片](report.png)`;
   messages.linkWork(messages.receipt(LOCAL_USER_ID, DEFAULT_BOT_ID, "source")!, work.workId);
   works.repo.insertBinding({ bindingId: "binding-1", workId: work.workId, operationId: "binding-operation", botId: DEFAULT_BOT_ID,
     taskId: "background-task", durableStoreKey: "store", conversationId: "background-native-conversation", intentRevision: work.intentRevision,
     ownerEpoch: work.ownerEpoch, inputSnapshotId: work.inputSnapshotId, expertSnapshot: bots.activeSnapshot(DEFAULT_BOT_ID)!,
-    delegatedScope: [], workspaceBinding: root, status: "completed", admittedAt: 1, settledAt: 2, settlementNote: "产出成果" });
-  works.repo.insertDeliverable({ deliverableId: "result:binding-1", workId: work.workId, executionId: "binding-1", producerBotId: DEFAULT_BOT_ID,
-    intentRevision: work.intentRevision, ownerEpoch: work.ownerEpoch, inputSnapshotId: work.inputSnapshotId, status: "proposed",
-    summary: "产出成果", artifactRefs: ["artifact:report"], evidenceRefs: [], uncoveredScope: ["发行包验证"], uncoveredCriterionIds: [],
-    isSpeculation: false, hasWriteConflicts: false, createdAt: 3 });
+    delegatedScope: [], workspaceBinding: root, status: "completed", admittedAt: 1, settledAt: 2, settlementNote: fullResult });
+  const submitted = works.submitDeliverable({ kind: "worker", botId: DEFAULT_BOT_ID, bindingId: "binding-1" }, {
+    operationId: "result:binding-1", deliverableId: "result:binding-1", workId: work.workId, bindingId: "binding-1",
+    summary: fullResult, artifactRefs: ["artifact:report"], uncoveredScope: ["发行包验证"], uncoveredCriterionIds: [],
+    isSpeculation: false, hasWriteConflicts: false });
+  assert(submitted.ok);
+  assert.equal(works.repo.getDeliverable("result:binding-1")?.summary, fullResult, "authoritative result must not be truncated to a card preview");
   works.repo.insertBlocker({ blockerId: "blocker-1", workId: work.workId, reason: "需要确认范围", kind: "operational",
     status: "open", waitingForUserInput: true, createdAt: 4 });
   const before = works.getWork(work.workId)!;
@@ -63,6 +66,7 @@ try {
   assert.deepEqual(initialFeedback.map(m => m.workFeedback?.category), ["progress", "result", "decision"]);
   assert.equal(initialFeedback[0].workFeedback?.executionId, "binding-1");
   assert.equal(initialFeedback[1].workFeedback?.executionId, "binding-1");
+  assert(initialFeedback[1].text.includes(fullResult), "Bot feedback retains the complete result, trailing caveat, source and Markdown image");
   // Upgrade an already-delivered legacy history in place: only additive metadata,
   // no reset, no body mutation, no repeated send, and no lifecycle/criteria change.
   db.connection.exec("DELETE FROM bot_work_feedback");
@@ -109,6 +113,9 @@ try {
   db.connection.exec("DROP TABLE bot_work_feedback"); // Existing v35 database upgrade, not a schema reset.
   db.close(); db = new AppDatabase(path);
   ({ bots, works, messages, feedback } = open());
+  assert.equal(works.repo.getDeliverable("result:binding-1")?.summary, fullResult, "reopening preserves the full result");
+  assert(messages.history(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID, conversationId: source.conversationId }).messages
+    .some(message => message.messageId === initialFeedback[1].messageId && message.text.includes(fullResult)), "reopened originating history retains the whole report");
   assert.equal(feedback.recover(), 1, "recovery discovers closure after restart");
   assert.equal(feedback.recover(), 0, "persisted result/blocker deliveries dedupe across restart");
   assert.equal(history().messages.length, finalCount + 1);

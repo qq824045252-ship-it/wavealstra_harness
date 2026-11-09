@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { z } from "zod";
-import { botAttachmentSchema, type BotAttachmentDto, botMessageSchema, workFeedbackSchema, type WorkFeedbackDto, type BotHistoryDto, type BotHistoryRequest, type BotMessageDto, type BotSendReceipt, type BotSendRequest } from "../../../shared/bot-conversation";
+import { botActivitySchema, type BotActivityDto, botAttachmentSchema, type BotAttachmentDto, botMessageSchema, workFeedbackSchema, type WorkFeedbackDto, type BotHistoryDto, type BotHistoryRequest, type BotMessageDto, type BotSendReceipt, type BotSendRequest } from "../../../shared/bot-conversation";
 
 const conversationRow = z.object({ conversation_id: z.string(), bot_id: z.string(), user_id: z.string(), revision: z.number(),
   current_request_id: z.string().nullable(), archived_at: z.number().nullable(), created_at: z.number(), updated_at: z.number() });
@@ -91,12 +91,16 @@ export class BotConversationRepository {
     return row ? this.mapMessage(row) : undefined;
   }
 
-  update(messageId: string, status: BotMessageDto["status"], text: string, error?: string): void {
+  update(messageId: string, status: BotMessageDto["status"], text: string, error?: string, activity?: BotActivityDto): void {
     this.db.transaction(() => {
       const message = this.message(messageId);
       if (!message) throw new Error("消息不存在");
       this.db.prepare("UPDATE bot_messages SET status=?,text=?,error=?,updated_at=? WHERE message_id=?")
         .run(status, text, error ?? null, Date.now(), messageId);
+      if (status === "running" && activity) {
+        this.db.prepare("INSERT OR REPLACE INTO bot_message_activity(message_id,activity_json) VALUES (?,?)")
+          .run(messageId, JSON.stringify(botActivitySchema.parse(activity)));
+      } else this.db.prepare("DELETE FROM bot_message_activity WHERE message_id=?").run(messageId);
       // A persisted user message is completed before its assistant starts. Only the
       // assistant's terminal transition ends the request's read-before-write scope.
       if (message.role === "assistant" && ["completed", "cancelled", "failed"].includes(status)) {
@@ -223,8 +227,11 @@ export class BotConversationRepository {
     const attachments = attachmentRow ? z.array(botAttachmentSchema).parse(JSON.parse(attachmentRow.attachments_json)) : undefined;
     const metadata = this.db.prepare("SELECT metadata_json FROM bot_work_feedback WHERE message_id=?").get(row.message_id) as { metadata_json: string } | undefined;
     const parsed = metadata ? workFeedbackSchema.safeParse(JSON.parse(metadata.metadata_json)) : undefined;
+    const activityRow = row.status === "running" ? this.db.prepare("SELECT activity_json FROM bot_message_activity WHERE message_id=?")
+      .get(row.message_id) as { activity_json: string } | undefined : undefined;
+    const activity = activityRow ? botActivitySchema.safeParse(JSON.parse(activityRow.activity_json)) : undefined;
     return { messageId: row.message_id, conversationId: row.conversation_id, botId: row.bot_id, requestId: row.request_id,
-      workFeedback: parsed?.success ? parsed.data : undefined, attachments,
+      workFeedback: parsed?.success ? parsed.data : undefined, attachments, activity: activity?.success ? activity.data : undefined,
       ordinal: row.ordinal, role: row.role, text: row.text, status: row.status,
       workIds: z.array(z.string()).parse(JSON.parse(row.work_ids_json)), error: row.error ?? undefined,
       createdAt: row.created_at, updatedAt: row.updated_at };
