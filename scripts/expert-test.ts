@@ -367,7 +367,7 @@ displayName:
   writeFileSync(join(brokenFolder, "prompt.md"), `---\nname: ${first.id}\n---\n\nMust never replace accepted template.\n`);
   let folderError = "";
   try { svc.installByPath(brokenFolder); } catch (error) { folderError = String(error); }
-  assert(Boolean(folderError) && svc.getDetail(first.id).revision === removedSkill.revision, "头像复制失败不删除或覆盖旧专家");
+  assert(folderError.includes("头像必须是普通文件") && svc.getDetail(first.id).revision === removedSkill.revision, "头像复制失败不删除或覆盖旧专家");
   const brokenZip = new JSZip();
   brokenZip.file("prompt.md", `---\nname: ${first.id}\n---\n\nMust never replace accepted template.\n`);
   brokenZip.file("skills/collision", "file blocks nested directory");

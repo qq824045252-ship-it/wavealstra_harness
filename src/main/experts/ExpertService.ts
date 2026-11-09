@@ -771,6 +771,12 @@ function parsePluginDir(srcDir: string): Omit<StoredExpert, "enabled" | "source"
   };
 }
 
+/** Validate explicitly: some Node/filesystem combinations copy a directory as an empty file. */
+function copyExpertAvatar(source: string, destination: string): void {
+  if (!lstatSync(source).isFile()) throw new Error("专家头像必须是普通文件");
+  copyFileSync(source, destination);
+}
+
 /** 拷贝原始目录中的头像（avatars/* 或 avatar.*），无则返回 undefined */
 function copyAvatar(srcDir: string, destDir: string): string | undefined {
   const candidates: string[] = [];
@@ -788,7 +794,7 @@ function copyAvatar(srcDir: string, destDir: string): string | undefined {
   if (rootAvatar) candidates.push(join(srcDir, rootAvatar));
   if (candidates.length === 0) return undefined;
   const ext = candidates[0].split(".").pop() ?? "png";
-  copyFileSync(candidates[0], join(destDir, `avatar.${ext}`));
+  copyExpertAvatar(candidates[0], join(destDir, `avatar.${ext}`));
   return `avatar.${ext}`;
 }
 
@@ -1118,7 +1124,7 @@ export class ExpertService {
       if (pkg.avatarPath) {
         const ext = (pkg.avatarPath.split(".").pop() ?? "png").toLowerCase();
         avatarFile = `avatar.${ext}`;
-        copyFileSync(pkg.avatarPath, join(dest, avatarFile));
+        copyExpertAvatar(pkg.avatarPath, join(dest, avatarFile));
       }
       const category = p.categoryId ? CATEGORY_ZH[p.categoryId] : undefined;
       // 专家包自带 skills/ → 专家私有目录（不进入全局 Skill Center）
