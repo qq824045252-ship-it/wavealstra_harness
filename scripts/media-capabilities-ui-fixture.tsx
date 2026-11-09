@@ -13,7 +13,9 @@ container.style.cssText = "max-width:1020px;margin:0 auto;padding:24px;height:10
 const root = createRoot(container);
 const clone = <T,>(value: T): T => structuredClone(value);
 const assert = (condition: unknown, message: string): void => { if (!condition) throw new Error(message); };
-const settle = () => new Promise(resolve => setTimeout(resolve, 35));
+// Yield without an arbitrary 35 ms cushion: fast interaction must not lose edits
+// to pending passive effects after the initial settings render.
+const settle = () => new Promise(resolve => setTimeout(resolve, 0));
 let config: BuiltinCapabilitiesConfigDto;
 let search: WebSearchConfigDto;
 type ModelCatalog = Partial<Record<MediaCapabilityId, Array<{ id: string; label: string }>>>;
@@ -393,6 +395,12 @@ export async function run(): Promise<string[]> {
   await save();
   assert(config.mediaBindings!["image-generation"]?.model === "vendor/custom-model", "自定义模型名称可以保存");
   assert(calls.refresh === 0, "目录已存在时保存不重复刷新");
+  await clickText("刷新状态");
+  assert(element<HTMLInputElement>('[aria-label="图片生成模型（自定义）"]').value === "vendor/custom-model", "同服务目录刷新不退出自定义编辑");
+  await change('[aria-label="图片生成服务"]', MAGPIE_CONNECTION_ID);
+  assert(!document.querySelector('[aria-label="图片生成模型（自定义）"]'), "切换服务同步重置自定义编辑");
+  await change('[aria-label="图片生成服务"]', "api-or");
+  assert(!document.querySelector('[aria-label="图片生成模型（自定义）"]'), "切回原服务也从目录选择开始");
   await setup(value => {
     value.connections = { "api-or": { name: "OpenRouter", protocol: "openrouter", baseUrl: OPENROUTER_API_ROOT, auth: "none", timeoutMs: 60000 } };
     value.mediaBindings!["image-generation"] = { connectionId: "api-or", model: "vendor/legacy-model", selection: "manual" };

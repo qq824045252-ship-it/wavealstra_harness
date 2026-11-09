@@ -240,8 +240,8 @@ function MediaModelField({ id, binding, service, disabled, onChange }: {
   const choices = service?.models[id] ?? [];
   const hasCatalogue = choices.length > 0;
   const [custom, setCustom] = useState(false);
-  // Switching service (or its catalogue) always starts from the selectable list.
-  useEffect(() => { setCustom(false); }, [service?.id, hasCatalogue]);
+  // The parent keys this field by service/catalogue so resets happen during
+  // reconciliation, never in a delayed effect that can overwrite a user edit.
   const label = service?.id && id === "ocr" && service.models.ocr?.some(row => row.id === BAIDU_OCR_DEFAULT_MODE)
     ? "OCR 识别模式" : `${MEDIA_ROWS[id].title}模型`;
   const placeholder = id === "ocr" ? "输入支持图片的模型名称" : "输入服务支持的模型名称";
@@ -614,7 +614,7 @@ export default function CapabilitiesTab(): React.JSX.Element {
               </optgroup>
               <option value={ADD_SERVICE}>＋ 自定义兼容 API…</option>
             </SettingsSelect>
-            {!legacy && <MediaModelField id={id} binding={binding} service={service} onChange={model => changeConfig(current => ({
+            {!legacy && <MediaModelField key={JSON.stringify([service?.id, Boolean(service?.models[id]?.length)])} id={id} binding={binding} service={service} onChange={model => changeConfig(current => ({
               ...current,
               mediaBindings: { ...current.mediaBindings, [id]: { ...mediaBinding(current, id), model } },
             }))} />}
