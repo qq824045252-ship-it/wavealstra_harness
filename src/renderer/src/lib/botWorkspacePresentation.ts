@@ -63,3 +63,9 @@ export function botWorkTimeline(messages: BotMessageDto[]): BotTimelineEntry[] {
   }
   return rows;
 }
+
+/** Stop targets the running reply, not a later message waiting in the send queue. */
+export function activeBotReply(messages: BotMessageDto[]): BotMessageDto | undefined {
+  return messages.find(message => message.role === "assistant" && message.status === "running")
+    ?? messages.find(message => message.role === "assistant" && ["queued", "unknown"].includes(message.status));
+}

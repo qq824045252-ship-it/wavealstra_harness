@@ -236,6 +236,7 @@ const KNOWN_HEADLESS_RED = new Set([
  * 显式清单优先于下面的命名兜底，否则它们会被 `^test:browser-` 之类正则误伤。
  */
 const HEADLESS_TESTS = new Set([
+  "test:chat-composer-ui", // React DOM behavior using linkedom; no Electron/display dependency.
   "test:cloudflared-cli-detect",
   "test:work-conversation-feedback",
   "test:wechat-callback-auth",

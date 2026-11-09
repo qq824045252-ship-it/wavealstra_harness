@@ -8,6 +8,7 @@ import { DEFAULT_WELCOME_MODE, resolveWelcomeMode } from "../../shared/mode-prof
 import { resolvedPathKey } from "../platform/paths";
 import { currentNodePlatform } from "../platform/runtime";
 import { DurableBotService } from "./durable/DurableBotService";
+import { BotWorkIpc } from "../../shared/bot-work-ipc";
 import { BotConversationService } from "./work/BotConversationService";
 import { WorkConversationFeedback } from "./work/WorkConversationFeedback";
 import { WorkDispatchQueue } from "./work/WorkDispatchQueue";
@@ -1693,6 +1694,7 @@ export class AgentService {
       memorySearch: (botId, query) => this.memoryService.search({ botId, query, scopeTypes: ["bot"], includeInherited: false, limit: 20 }),
       schedule: (work, operationId, retryBlocked) => this.workDispatchQueue!.enqueue(work, operationId, retryBlocked),
       wake: workId => { if (workId) this.workExecutions?.wakeWork(workId); this.workDispatchQueue?.wake(); },
+      onMessage: event => broadcast(BotWorkIpc.messageChanged, event),
     });
     this.workDispatchQueue.start();
     this.workService.scheduler.start();

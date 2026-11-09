@@ -91,7 +91,7 @@ export class DurableHistoryProjection {
       for (const message of entry.model ?? []) {
         if (message.role === "user" && (entry.kind === "pi.user" || entry.kind === "mybuddy.user")) {
           const input = metadata.get(entry.id);
-          this.rows.set(id, { id, projectionVersion: 1, entryId: String(entry.id), role: "user", text: input?.displayText ?? durableContentText(message.content), attachments: input?.attachments, createdAt: message.timestamp });
+          this.rows.set(id, { id, projectionVersion: 1, entryId: String(entry.id), role: "user", botRequestId: input?.botRequestId, text: input?.displayText ?? durableContentText(message.content), attachments: input?.attachments, createdAt: message.timestamp });
           this.dirty = true;
           if (entry.id >= this.latestInputEntry) { this.latestInputEntry = entry.id; this.turnStartedAt = message.timestamp; }
           if (entry.id >= this.latestStatusEntry) { this.latestStatusEntry = entry.id; this.outcome = undefined; this.error = undefined; }

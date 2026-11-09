@@ -24,6 +24,8 @@ export const botMessageSchema = z.object({
 });
 export type BotMessageDto = z.infer<typeof botMessageSchema>;
 export interface BotHistoryDto { conversationId: string; botId: string; revision: number; archived: boolean; messages: BotMessageDto[]; before?: number }
+export interface BotMessageEvent { botId: string; conversationId: string; revision: number; message: BotMessageDto }
+
 export interface BotSendReceipt { conversationId: string; botId: string; requestId: string; userMessageId: string; assistantMessageId: string; replayed: boolean }
 
 export interface WorkListCursor { epoch: string; sequence: number; scope: "open" | "all" }

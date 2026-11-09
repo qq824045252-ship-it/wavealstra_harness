@@ -75,12 +75,19 @@ models.registerProvider("fixture", { api: "openai-completions", apiKey: "fixture
       if (options?.signal?.aborted) abort();
       return stream;
     }
-    queueMicrotask(() => {
+    queueMicrotask(async () => {
       try {
         const content = reply(model.id, request);
         const stopReason = content.some(block => block.type === "toolCall") ? "toolUse" : "stop";
         const message: AssistantMessage = { role: "assistant", content, stopReason, api: model.api, provider: model.provider, model: model.id,
           timestamp: Date.now(), usage: { input: 3, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 5, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+        if (model.id === "front" && contentText(content) === "前台普通答复") {
+          stream.push({ type: "start", partial: { ...message, content: text("") } });
+          for (const part of ["前台", "前台普通", "前台普通答复"]) {
+            stream.push({ type: "text_delta", contentIndex: 0, delta: part, partial: { ...message, content: text(part) } });
+            await delay(180);
+          }
+        }
         stream.push({ type: "done", reason: stopReason, message }); stream.end();
       } catch (error) { stream.end(); throw error; }
     }); return stream;
@@ -99,9 +106,10 @@ const native = new DurableBotService({ db, models, agentDir: join(root, "native"
 const errors: unknown[] = [];
 adapter = new WorkExecutionAdapter(works, native.workExecutionPort(), LOCAL_USER_ID, () => lease.isAuthority(), (_id, error) => errors.push(error));
 const queue = new WorkDispatchQueue(db, works, adapter, () => lease.isAuthority(), () => "fixture/backend");
+const streamEvents: import("../src/shared/bot-conversation").BotMessageEvent[] = [];
 let foreground = new BotConversationService({ db: db.connection, userId: LOCAL_USER_ID, bots, works, models, directory: join(root, "foreground"),
   defaultModel: () => "fixture/front", isAuthority: () => lease.isAuthority(), memorySearch: () => [], schedule: (work, operationId) => queue.enqueue(work, operationId),
-  wake: () => { void queue.flush(); } });
+  wake: () => { void queue.flush(); }, onMessage: event => streamEvents.push(event) });
 const send = async (requestId: string, value: string, selectedWorkId?: string) => {
   const request = { botId: DEFAULT_BOT_ID, requestId, text: value, selectedWorkId };
   const receipt = foreground.send(request);
@@ -112,6 +120,14 @@ const send = async (requestId: string, value: string, selectedWorkId?: string) =
 try {
   const ordinary = await send("ordinary", "你好");
   assert.equal(foreground.messages.message(ordinary.assistantMessageId)?.text, "前台普通答复");
+  const liveFrames = streamEvents.filter(event => event.message.requestId === "ordinary" && event.message.status === "running");
+  assert(liveFrames.length >= 2, "foreground persists and emits partial text before final response");
+  assert(liveFrames.some(event => event.message.text.length < "前台普通答复".length));
+  assert(liveFrames.every((event, index) => !index || event.revision > liveFrames[index - 1].revision));
+  assert.equal(streamEvents.at(-1)?.message.status, "completed");
+  assert.equal(streamEvents.at(-1)?.message.text, "前台普通答复");
+  console.log("PASS native Bot incremental text transport, persistent monotonic revisions and final reconciliation");
+
   assert.equal(db.listTasks().length, 0, "ordinary Bot conversation must not create Task");
   assert.equal(works.listWorks(LOCAL_USER_ID).length, 0);
   const accepted = await send("delegate-a", "委托 A");

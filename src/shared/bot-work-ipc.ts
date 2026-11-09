@@ -32,6 +32,7 @@ export const BotWorkIpc = {
   syncWorks: "bot-work:sync-works",
   sendMessage: "bot-work:send-message",
   history: "bot-work:history",
+  messageChanged: "bot-work:message-changed",
   cancelSend: "bot-work:cancel-send",
   archiveConversation: "bot-work:archive-conversation",
   getWork: "bot-work:get-work",
@@ -79,6 +80,7 @@ export interface BotWorkApi {
   syncWorks(request: WorkListRequest): Promise<WorkListUpdate>;
   sendMessage(request: BotSendRequest): Promise<BotSendReceipt>;
   history(request: BotHistoryRequest): Promise<BotHistoryDto>;
+  onMessageChanged?(listener: (event: import("./bot-conversation").BotMessageEvent) => void): () => void;
   cancelSend(botId: string, requestId: string): Promise<void>;
   archiveConversation(botId: string, conversationId: string): Promise<void>;
   getWork(workId: string): Promise<WorkProjectionDto | undefined>;

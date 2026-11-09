@@ -662,6 +662,11 @@ const api = {
     syncWorks: request => ipcRenderer.invoke(BotWorkIpc.syncWorks, request),
     sendMessage: request => ipcRenderer.invoke(BotWorkIpc.sendMessage, request),
     history: request => ipcRenderer.invoke(BotWorkIpc.history, request),
+    onMessageChanged: listener => {
+      const handler = (_event: Electron.IpcRendererEvent, payload: import("../shared/bot-conversation").BotMessageEvent) => listener(payload);
+      ipcRenderer.on(BotWorkIpc.messageChanged, handler);
+      return () => ipcRenderer.removeListener(BotWorkIpc.messageChanged, handler);
+    },
     cancelSend: (botId, requestId) => ipcRenderer.invoke(BotWorkIpc.cancelSend, botId, requestId),
     archiveConversation: (botId, conversationId) => ipcRenderer.invoke(BotWorkIpc.archiveConversation, botId, conversationId),
     getWork: (workId: string) => ipcRenderer.invoke(BotWorkIpc.getWork, workId),

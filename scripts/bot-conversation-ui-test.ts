@@ -1,3 +1,4 @@
+import { mergeBotMessageEvent } from "../src/renderer/src/store/app/slices/botMessageStream";
 import assert from "node:assert/strict";
 import type { BotHistoryDto, BotSendReceipt, BotSendRequest, WorkListUpdate } from "../src/shared/bot-conversation";
 import type { BotDto, WorkProjectionDto } from "../src/shared/bot-work";
@@ -36,6 +37,22 @@ function fixture() {
 }
 
 async function main() {
+  const message = { messageId: "answer", conversationId: "conversation-a", botId: "a", requestId: "request-a", ordinal: 2,
+    role: "assistant" as const, text: "", status: "running" as const, workIds: [], createdAt: 1, updatedAt: 1 };
+  const initial: BotHistoryDto = { botId: "a", conversationId: "conversation-a", revision: 1, archived: false, messages: [message] };
+  const event = { botId: "a", conversationId: "conversation-a", revision: 2, message: { ...message, text: "first token" } };
+  const streamed = mergeBotMessageEvent(initial, event)!;
+  assert.equal(streamed.messages[0].text, "first token");
+  assert.equal(mergeBotMessageEvent(streamed, event), streamed, "duplicate frame is idempotent");
+  assert.equal(mergeBotMessageEvent(streamed, { ...event, revision: 1 }), streamed, "out-of-order frame ignored");
+  assert.equal(mergeBotMessageEvent(initial, { ...event, botId: "b" }), initial, "other Bot cannot overwrite this history");
+  assert.equal(mergeBotMessageEvent(initial, { ...event, conversationId: "archived" }), initial, "old conversation cannot overwrite new conversation");
+  assert.equal(mergeBotMessageEvent(initial, { ...event, message: { ...event.message, requestId: "other-request" } }), initial);
+  const stopped = { ...streamed, revision: 3, messages: [{ ...message, text: "first token", status: "cancelled" as const }] };
+  assert.equal(mergeBotMessageEvent(stopped, { ...event, revision: 4 }), stopped, "late running frame cannot revive stopped message");
+  assert.equal(mergeBotMessageEvent({ ...initial, archived: true }, event)?.archived, true);
+  console.log("PASS Bot stream identity, revision ordering, duplicate, archive and cancellation fences");
+
   const f = fixture();
   const taskDraft = { title: "普通 Task 草稿" };
   f.store.setState({ activeBotId: "a", activeTaskId: "ordinary-task", draft: taskDraft, botDraft: "", selectedWorkId: "work-a" });

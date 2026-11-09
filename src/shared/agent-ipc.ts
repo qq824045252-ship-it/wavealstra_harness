@@ -2088,6 +2088,8 @@ export interface ChatToolCallDto {
 }
 
 export interface ChatMessageDto {
+  /** Host-authored foreground input identity; never inferred from displayed text. */
+  botRequestId?: string;
   /** Immutable presentation revision within one Durable runtime epoch. Live rows omit it. */
   projectionVersion?: number;
   streaming?: boolean;

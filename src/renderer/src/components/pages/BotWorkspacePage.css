@@ -215,3 +215,21 @@
 .bot-work-progress > summary { cursor: pointer; font-size: 13px; line-height: 1.5; }
 .bot-work-progress[open] > summary { margin-bottom: 14px; }
 .bot-work-progress .bot-message { margin-top: 12px; }
+
+/* Keep the Bot identity and primary conversation actions visible at narrow widths. */
+.bot-header-more { position:relative; flex-shrink:0; }
+.bot-header-more > summary { list-style:none; cursor:pointer; padding:8px; color:var(--fg-secondary); font-size:12px; border-radius:8px; }
+.bot-header-more > summary::-webkit-details-marker { display:none; }
+.bot-header-menu { position:absolute; right:0; top:calc(100% + 6px); z-index:10; min-width:150px; padding:6px; display:flex; flex-direction:column; gap:2px; border:1px solid var(--border-default); border-radius:10px; background:var(--bg-panel); box-shadow:var(--shadow-md); }
+.bot-header-menu .bot-quiet-button { display:flex; width:100%; justify-content:flex-start; white-space:nowrap; }
+.bot-workspace .bot-message-meta button { min-height:30px; padding:5px 9px; font-size:11px; }
+@media (max-width:640px) {
+  .bot-workspace-header { gap:7px; padding:12px; }
+  .bot-header-avatar { display:none; }
+  .bot-workspace-actions { gap:2px; }
+  .bot-workspace .bot-new-conversation { padding:8px 6px; white-space:nowrap; }
+  .bot-heading h1 { font-size:15px; }
+}
+
+.bot-composer-send-actions { display:flex; gap:6px; align-items:center; }
+.bot-workspace .bot-stop-button { min-height:34px; border-color:var(--border-strong); }

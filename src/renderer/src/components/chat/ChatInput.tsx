@@ -1,3 +1,4 @@
+import ChatComposer from "./ChatComposer";
 import { useConsultSelection } from "./useConsultSelection";
 import { requestConsultForMessage } from "@shared/multi-model-consult";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -248,7 +249,6 @@ export default function ChatInput({
     droppedTextCaret.current = null;
     el.focus();
     el.setSelectionRange(caret, caret);
-    autoResize(el);
   }, [text, btwText]);
 
   useEffect(() => {
@@ -844,15 +844,6 @@ export default function ChatInput({
     };
   }, []);
 
-  // 正文变化后收敛高度，避免清空/切任务后残留大块空白
-  useEffect(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-    const maxH = variant === "home" ? 220 : 180;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, maxH)}px`;
-  }, [text, btwText, variant]);
-
   // 退出 BTW 时丢弃 BTW 输入草稿（不写回主 composer text）
   useEffect(() => {
     if (!btwActive && btwText) setBtwText("");
@@ -1207,12 +1198,6 @@ export default function ChatInput({
       e.preventDefault();
       attachSkill(slashMatches[0]!);
     }
-  };
-
-  const autoResize = (el: HTMLTextAreaElement): void => {
-    const maxH = variant === "home" ? 220 : 180;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, maxH)}px`;
   };
 
   return (
@@ -1677,8 +1662,9 @@ export default function ChatInput({
         )}
           </div>
         )}
-        <textarea
+        <ChatComposer
           ref={textareaRef}
+          maxHeight={variant === "home" ? 220 : 180}
           className="input-textarea"
           rows={variant === "home" ? 3 : 2}
           placeholder={
@@ -1705,7 +1691,6 @@ export default function ChatInput({
             } else {
               setText(e.target.value);
             }
-            autoResize(e.target);
           }}
           onKeyDown={onKeyDown}
           onPaste={(e) => {
@@ -1729,8 +1714,7 @@ export default function ChatInput({
               addFilesFromDrop(files);
             }
           }}
-        />
-        <div className="input-toolbar">
+          toolbar={<>
           <div className="input-popup-anchor add-menu-anchor" ref={addAnchorRef}>
             <button
               className={`input-tool-btn ${addOpen ? "active" : ""}`}
@@ -2220,7 +2204,8 @@ export default function ChatInput({
               <IconArrowUp size={16} />
             </button>
           )}
-        </div>
+          </>}
+        />
         {variant === "home" && (
           <div className="input-context-bar">
             <WorkspacePicker

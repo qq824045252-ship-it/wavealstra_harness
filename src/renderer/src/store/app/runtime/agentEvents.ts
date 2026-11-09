@@ -1,3 +1,4 @@
+import { mergeBotMessageEvent } from "../slices/botMessageStream";
 import type { ExternalAgentUiEvent } from "../../../../../shared/external-agent";
 import type { RuntimeBinding } from "./binding";
 import type { AgentDeltaBuffer } from "./deltaBuffer";
@@ -13,6 +14,17 @@ export function bindAgentEvents(
     isActive,
     addCleanup,
   } = binding;
+
+  addCleanup(api.botWork?.onMessageChanged?.(event => {
+    if (!isActive()) return;
+    const history = get().botHistories[event.botId];
+    const merged = mergeBotMessageEvent(history, event);
+    if (merged !== history && merged) {
+      set(state => ({ botHistories: { ...state.botHistories, [event.botId]: merged } }));
+    } else if (!history || history.conversationId === event.conversationId && !history.messages.some(message => message.messageId === event.message.messageId)) {
+      void get().refreshBotHistory(event.botId);
+    }
+  }));
 
   addCleanup(
     api.agent.onEvent((patch) => {

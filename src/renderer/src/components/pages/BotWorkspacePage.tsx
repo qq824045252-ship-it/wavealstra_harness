@@ -1,13 +1,14 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { BotDto, WorkProjectionDto } from "@shared/bot-work";
 import type { BotMessageDto } from "@shared/bot-conversation";
 import type { BotWorkHostStatusDto } from "@shared/bot-work-ipc";
 import type { WorkAutonomyRule } from "@shared/bot-work-autonomy";
 import { useAppStore } from "@/store/appStore";
-const ChatMarkdown = lazy(() => import("@/components/chat/ChatMarkdown"));
+import ChatComposer from "@/components/chat/ChatComposer";
+import ChatMarkdown from "@/components/chat/ChatMarkdown";
 import { IconArchive, IconChevronDown, IconArrowUp, IconBot, IconCheck, IconChevronRight, IconClock, IconListTodo, IconMessageDashed, IconPanel, IconSearch, IconSettings, IconStop, IconX } from "@/components/common/icons";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
-import { botParticipatesInWork, botMessageStatus, botWorkTimeline, needsWorkDecision, shouldSendBotComposer, workMatchesView, workStatusLabel, type BotWorkspaceView } from "@/lib/botWorkspacePresentation";
+import { activeBotReply, botParticipatesInWork, botMessageStatus, botWorkTimeline, needsWorkDecision, shouldSendBotComposer, workMatchesView, workStatusLabel, type BotWorkspaceView } from "@/lib/botWorkspacePresentation";
 import { BotWorkApprovals, visibleWorkApproval } from "./BotWorkApprovals";
 import { BotWorkDetails } from "./BotWorkDetails";
 import { BotTeamDialog } from "./BotTeamDialog";
@@ -58,6 +59,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [teamOpen, setTeamOpen] = useState(false);
   const [archiveConfirm, setArchiveConfirm] = useState(false);
+  const [newConversationOpen, setNewConversationOpen] = useState(false);
   const [archiving, setArchiving] = useState(false);
   const [archiveError, setArchiveError] = useState("");
   const [rules, setRules] = useState<WorkAutonomyRule[]>([]);
@@ -69,7 +71,10 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const inspectorRef = useRef<HTMLDialogElement>(null);
   const settingsRef = useRef<HTMLDialogElement>(null);
+  const newConversationRef = useRef<HTMLDialogElement>(null);
   const followLatest = useRef(true);
+  const followReplyTail = useRef(false);
+  const previousScrollTop = useRef(0);
   const lastBot = useRef(activeBotId);
   const activeBot = identities.find(bot => bot.botId === activeBotId) ?? null;
   const botWorks = works.filter(work => botParticipatesInWork(work, activeBot?.botId));
@@ -77,6 +82,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   const selected = botWorks.find(work => work.workId === selectedWorkId) ?? null;
   const messages = activeBotId ? histories[activeBotId]?.messages ?? [] : [];
   const lastMessage = messages[messages.length - 1];
+  const activeReply = activeBotReply(messages);
   const sending = Boolean(activeBotId && pendingSends[activeBotId]?.sending);
   const canSend = Boolean(activeBotId && botDraft.trim() && !sending);
 
@@ -93,8 +99,8 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
     if (lastBot.current === activeBotId) return;
     lastBot.current = activeBotId;
     requestedWork.current = null; setNavigationNotice("");
-    setView("conversation"); setQuery(""); setSettingsOpen(false); setArchiveConfirm(false); setInspectorOpen(false);
-    followLatest.current = true;
+    setView("conversation"); setQuery(""); setSettingsOpen(false); setArchiveConfirm(false); setNewConversationOpen(false); setInspectorOpen(false);
+    followLatest.current = true; followReplyTail.current = false; previousScrollTop.current = 0;
   }, [activeBotId]);
   useEffect(() => { if (selectedWorkId) setInspectorOpen(true); }, [selectedWorkId]);
   useEffect(() => {
@@ -111,25 +117,54 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
     if (settingsOpen) dialog?.showModal(); else if (dialog?.open) dialog.close();
   }, [settingsOpen]);
   useEffect(() => {
+    const dialog = newConversationRef.current;
+    if (newConversationOpen) dialog?.showModal(); else if (dialog?.open) dialog.close();
+  }, [newConversationOpen]);
+  useEffect(() => {
     if (!settingsOpen) return;
     setRulesError("");
     void window.api?.botWork.listAutonomyRules().then(setRules).catch(error => setRulesError(error instanceof Error ? error.message : "读取授权规则失败"));
   }, [settingsOpen]);
   useEffect(() => {
     if (view !== "conversation" || !followLatest.current) return;
-    const frame = requestAnimationFrame(() => { const el = threadRef.current; if (el) el.scrollTop = el.scrollHeight; });
+    const frame = requestAnimationFrame(() => {
+      const el = threadRef.current;
+      if (!el) return;
+      const reply = followReplyTail.current ? null : el.querySelector<HTMLElement>('[data-streaming="true"]');
+      const bottom = el.scrollHeight - el.clientHeight;
+      // Keep the start of a long answer readable. Once it fills the viewport,
+      // pause following rather than dragging the reader past its opening.
+      const start = reply ? reply.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop - 16 : bottom;
+      el.scrollTop = reply ? Math.min(bottom, Math.max(0, start)) : bottom;
+      if (reply && bottom > start + 24) {
+        followLatest.current = false;
+        setAwayFromBottom(true);
+      }
+    });
     return () => cancelAnimationFrame(frame);
-  }, [activeBotId, view, messages.length, lastMessage?.text, lastMessage?.status, pendingApprovalVersion]);
+  }, [activeBotId, view, messages.length, lastMessage?.text, lastMessage?.status, activeReply?.messageId, activeReply?.text, activeReply?.status, pendingApprovalVersion]);
+  useEffect(() => {
+    const thread = threadRef.current;
+    const list = thread?.querySelector(".bot-message-list");
+    if (!thread || !list || typeof ResizeObserver === "undefined") return;
+    let frame = 0;
+    // Markdown can grow after the text frame commits (tables, code and fonts).
+    // Only explicit tail-following tracks those layout changes; readers stay put.
+    const observer = new ResizeObserver(() => {
+      if (!followLatest.current || !followReplyTail.current) return;
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        if (followLatest.current && followReplyTail.current) thread.scrollTop = thread.scrollHeight;
+      });
+    });
+    observer.observe(list);
+    return () => { observer.disconnect(); cancelAnimationFrame(frame); };
+  }, [activeBotId, view, messages.length]);
   useEffect(() => {
     const body = inspectorRef.current?.querySelector(".bot-inspector-body");
     if (body) body.scrollTop = 0;
   }, [selected?.workId]);
-  useEffect(() => {
-    const textarea = composerRef.current;
-    if (!textarea) return;
-    textarea.style.height = "auto";
-    textarea.style.height = `${Math.min(textarea.scrollHeight, 180)}px`;
-  }, [botDraft, view]);
+
 
   const openWork = (workId: string) => {
     requestedWork.current = workId;
@@ -169,7 +204,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   };
   const send = () => {
     if (!canSend) return;
-    followLatest.current = true; setAwayFromBottom(false); setView("conversation"); void submitBotDraft();
+    followLatest.current = true; followReplyTail.current = false; previousScrollTop.current = 0; setAwayFromBottom(false); setView("conversation"); void submitBotDraft();
   };
   const draftExample = (text: string) => { setBotDraft(text); setView("conversation"); composerRef.current?.focus(); };
   const replyToBlocker = (work: WorkProjectionDto, blocker: WorkProjectionDto["blockers"][number]) => {
@@ -197,9 +232,12 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
         <span className="bot-avatar bot-header-avatar" aria-hidden="true"><IconBot size={21} /></span>
         <div className="bot-heading"><h1>{activeBot?.displayName ?? "Bot 模式"}</h1><p><span className={`bot-presence ${hostStatus?.online && activeBot?.status === "active" ? "is-online" : ""}`} />{activeBot ? presenceLabel(activeBot, hostStatus) : "你的长期个人助理"}<span className="bot-heading-description"> · 对话有延续，事项有着落</span></p></div>
         <div className="bot-workspace-actions">
+          <button type="button" className="bot-quiet-button bot-new-conversation" disabled={!activeBot || messages.length === 0} onClick={() => { setArchiveError(""); setNewConversationOpen(true); }}>新对话</button>
+          <details className="bot-header-more" onClick={event => { if ((event.target as HTMLElement).closest("button")) event.currentTarget.open = false; }}><summary aria-label="更多 Bot 操作">更多</summary><div className="bot-header-menu">
           <button type="button" className="bot-quiet-button" onClick={() => { setInspectorOpen(false); setSettingsOpen(false); setTeamOpen(true); }}>组队开工</button>
           {props.onCreateBot && <button type="button" className="bot-quiet-button" onClick={() => { setInspectorOpen(false); setSettingsOpen(false); props.onCreateBot?.(); }}>+ 新建 Bot</button>}
           <button type="button" className="bot-quiet-button bot-return" onClick={() => setPage("chat")}>返回普通模式</button>
+          </div></details>
           <button type="button" className="bot-icon-button" aria-label="Bot 设置与对话管理" onClick={() => setSettingsOpen(true)}><IconSettings size={18} /></button>
         </div>
       </header>
@@ -214,7 +252,9 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
       {view === "conversation" ? <>
         <div className="bot-thread" ref={threadRef} role="log" aria-label="对话记录" aria-live="off" onScroll={() => {
           const el = threadRef.current; if (!el) return;
-          followLatest.current = el.scrollHeight - el.scrollTop - el.clientHeight < 72;
+          const movedUp = el.scrollTop < previousScrollTop.current - 1;
+          previousScrollTop.current = el.scrollTop;
+          followLatest.current = !movedUp && el.scrollHeight - el.scrollTop - el.clientHeight < 72;
           setAwayFromBottom(!followLatest.current);
         }}>
           {messages.length === 0 ? <div className="bot-conversation-empty">
@@ -232,7 +272,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
             </details>)}</div>}
           {botWorks.filter(work => work.approvals?.some(visibleWorkApproval)).map(work => <BotWorkApprovals key={work.workId} work={work} />)}
         </div>
-        {awayFromBottom && <button type="button" className="bot-latest-button" onClick={() => { const el = threadRef.current; if (el) el.scrollTop = el.scrollHeight; followLatest.current = true; setAwayFromBottom(false); }}><IconChevronDown size={14} />回到最新消息</button>}
+        {awayFromBottom && <button type="button" className="bot-latest-button" onClick={() => { const el = threadRef.current; if (el) el.scrollTop = el.scrollHeight; followLatest.current = true; followReplyTail.current = true; setAwayFromBottom(false); }}><IconChevronDown size={14} />回到最新消息</button>}
       </> : <section className="bot-work-browser" aria-label={`${views.find(item => item.id === view)?.label}事项`}>
         <header className="bot-list-heading"><div><h2>{view === "active" ? "正在为你推进" : view === "decisions" ? "等你给个方向" : "每一件事，都有记录"}</h2><p>{view === "active" ? "进行、暂停和结算中的事项都在这里。" : view === "decisions" ? "需要你的判断、补充信息或实测确认。" : "保留已完成、已取消与未完成的结束记录。"}</p></div><label className="bot-work-search"><IconSearch size={15} /><span className="bot-sr-only">搜索事项</span><input value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索事项" /></label></header>
         {view === "closed" && !allWorksLoaded ? <p role="status">正在读取已结束事项…</p> : filteredWorks.length ? <div className="bot-work-grid">{filteredWorks.map(work => <WorkCard key={work.workId} work={work} selected={work.workId === selected?.workId} onSelect={() => openWork(work.workId)} />)}</div> : <div className="bot-list-empty"><IconListTodo size={30} /><h3>{query ? "没有找到匹配的事项" : view === "decisions" ? "暂时没有需要你决定的事" : view === "closed" ? "还没有结束的事项" : "还没有进行中的事项"}</h3><p>{query ? "试试其他关键词。" : view === "decisions" ? "需要你参与时，会在这里清楚地列出来。" : "回到对话，说说你想交给我的事。"}</p><button type="button" onClick={() => { setView("conversation"); composerRef.current?.focus(); }}>回到对话</button></div>}
@@ -240,7 +280,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
       <form className="bot-composer" onSubmit={event => { event.preventDefault(); send(); }}>
         {activeBotId && sendErrors[activeBotId] && <p className="bot-send-error" role="alert">{sendErrors[activeBotId]}</p>}
         {selected && <div className="bot-composer-context"><button type="button" onClick={() => setInspectorOpen(true)}><IconListTodo size={14} /><span>当前事项：{selected.title}</span><IconChevronRight size={14} /></button><button type="button" className="bot-icon-button" aria-label="取消关联事项，返回普通对话" onClick={() => { requestedWork.current = null; setNavigationNotice(""); setSelectedWorkId(null); setInspectorOpen(false); }}><IconX size={14} /></button></div>}
-        <div className="bot-composer-box"><label htmlFor="bot-draft" className="bot-sr-only">给 Bot 发消息</label><textarea ref={composerRef} id="bot-draft" value={botDraft} maxLength={32000} onChange={event => setBotDraft(event.target.value)} onKeyDown={event => { if (shouldSendBotComposer({ key: event.key, shiftKey: event.shiftKey, isComposing: event.nativeEvent.isComposing, keyCode: event.keyCode })) { event.preventDefault(); send(); } }} placeholder={selected ? "补充要求，或问问这件事的进展…" : "说说你想做什么…"} rows={2} /><div className="bot-composer-toolbar"><span role="status">{sending ? "正在发送…" : notice ? "消息已发送" : "Enter 发送 · Shift + Enter 换行"}</span><button type="submit" className="bot-send-button" disabled={!canSend} aria-label={activeBotId && pendingSends[activeBotId]?.error ? "重试原请求" : "发送消息"}><span>{activeBotId && pendingSends[activeBotId]?.error ? "重试原请求" : "发送"}</span><IconArrowUp size={17} /></button></div></div>
+        <div className="bot-composer-box input-box"><label htmlFor="bot-draft" className="bot-sr-only">给 Bot 发消息</label><ChatComposer ref={composerRef} aria-label="给 Bot 发消息" id="bot-draft" value={botDraft} maxLength={32000} onChange={event => setBotDraft(event.target.value)} onKeyDown={event => { if (shouldSendBotComposer({ key: event.key, shiftKey: event.shiftKey, isComposing: event.nativeEvent.isComposing, keyCode: event.keyCode })) { event.preventDefault(); send(); } }} placeholder={selected ? "补充要求，或问问这件事的进展…" : "说说你想做什么…"} rows={2} toolbarClassName="bot-composer-toolbar input-toolbar" toolbar={<><span role="status">{sending ? "正在发送…" : notice ? "消息已发送" : "Enter 发送 · Shift + Enter 换行"}</span><span className="bot-composer-send-actions">{activeReply && activeBotId && <button type="button" className="bot-stop-button" aria-label="停止当前回复" onClick={() => { void useAppStore.getState().cancelBotSend(activeBotId, activeReply.requestId); }}><IconStop size={15} /><span>停止</span></button>}<button type="submit" className="bot-send-button" disabled={!canSend} aria-label={activeBotId && pendingSends[activeBotId]?.error ? "重试原请求" : "发送消息"}><span>{activeBotId && pendingSends[activeBotId]?.error ? "重试原请求" : "发送"}</span><IconArrowUp size={17} /></button></span></>} /></div>
         <p className="bot-composer-note">{selected ? "消息将关联到当前事项。切换或取消关联，不会删除记录。" : "重要操作仍需遵守你的授权与确认。"}</p>
       </form>
     </section>
@@ -248,6 +288,17 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
       <header className="bot-inspector-header"><span>事项详情</span><button type="button" className="bot-icon-button" aria-label="关闭详情" onClick={() => setInspectorOpen(false)}><IconX size={18} /></button></header>
       <div className="bot-inspector-body"><BotWorkDetails key={selected.workId} work={selected} ownerName={identities.find(bot => bot.botId === selected.ownerBotId)?.displayName ?? selected.ownerBotId} includeClosed={includeClosed} onOpenResourceWork={openResourceWork} onReplyToBlocker={blocker => replyToBlocker(selected, blocker)} /></div>
     </dialog>}
+    <dialog ref={newConversationRef} className="bot-settings-dialog" aria-labelledby="bot-new-conversation-title" onCancel={event => { event.preventDefault(); if (!archiving) setNewConversationOpen(false); }}>
+      <header className="bot-inspector-header"><h2 id="bot-new-conversation-title">开始新对话</h2><button type="button" className="bot-icon-button" aria-label="取消新对话" disabled={archiving} onClick={() => setNewConversationOpen(false)}><IconX size={18} /></button></header>
+      <div className="bot-settings-body"><p>当前对话将归档，已创建的事项继续保留。新对话从空白上下文开始。</p>{activeReply && <p role="status">请先停止或等待当前回复完成，再开始新对话。</p>}{archiveError && <p role="alert" className="bot-alert">{archiveError}</p>}
+        <button type="button" disabled={archiving || Boolean(activeReply)} onClick={() => {
+          if (!activeBotId) return;
+          const sourceBotId = activeBotId;
+          setArchiving(true); setArchiveError("");
+          void useAppStore.getState().archiveBotConversation(sourceBotId).then(() => { if (useAppStore.getState().activeBotId !== sourceBotId) return; setNewConversationOpen(false); setView("conversation"); setSelectedWorkId(null); setInspectorOpen(false); requestAnimationFrame(() => composerRef.current?.focus()); }).catch(error => setArchiveError(error instanceof Error ? error.message : "开始新对话失败，请重试。")).finally(() => setArchiving(false));
+        }}>{archiving ? "正在归档…" : "归档并开始新对话"}</button><button type="button" disabled={archiving} onClick={() => setNewConversationOpen(false)}>取消</button>
+      </div>
+    </dialog>
     <BotTeamDialog open={teamOpen} onClose={() => setTeamOpen(false)} />
     <dialog ref={settingsRef} className="bot-settings-dialog" aria-labelledby="bot-settings-title" onCancel={event => { event.preventDefault(); setSettingsOpen(false); setArchiveConfirm(false); }}>
       <header className="bot-inspector-header"><h2 id="bot-settings-title">Bot 设置与对话管理</h2><button type="button" className="bot-icon-button" aria-label="关闭 Bot 设置" onClick={() => { setSettingsOpen(false); setArchiveConfirm(false); }}><IconX size={18} /></button></header>
@@ -270,11 +321,11 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
 
 function BotMessage({ message, botName, works, onOpenWork, onCancel }: { message: BotMessageDto; botName: string; works: WorkProjectionDto[]; onOpenWork: (id: string) => void; onCancel: () => void }): React.JSX.Element {
   const running = message.role === "assistant" && ["queued", "running", "unknown"].includes(message.status);
-  return <article className={`bot-message msg-row ${message.role}`} data-message-id={message.messageId} aria-label={`${message.role === "user" ? "你" : botName}的消息`}>
+  return <article className={`bot-message msg-row ${message.role}`} data-message-id={message.messageId} data-streaming={message.role === "assistant" && message.status === "running" ? "true" : undefined} aria-label={`${message.role === "user" ? "你" : botName}的消息`}>
     {message.role === "assistant" && <div className="bot-message-author"><span className="bot-avatar" aria-hidden="true"><IconBot size={16} /></span><strong>{botName}</strong></div>}
-    {message.role === "user" ? <div className="user-bubble"><div className="user-bubble-text">{message.text}</div></div> : <div className="bot-assistant-content">{message.text ? <Suspense fallback={<p style={{ whiteSpace: "pre-wrap" }}>{message.text}</p>}><ChatMarkdown resolveTaskFiles={false} text={message.text} streaming={message.status === "running"} /></Suspense> : <p className="bot-reply-placeholder">{message.status === "completed" ? "没有文本回复" : botMessageStatus(message)}{running && <span className="bot-typing-dots" aria-hidden="true">···</span>}</p>}</div>}
+    {message.role === "user" ? <div className="user-bubble"><div className="user-bubble-text">{message.text}</div></div> : <div className="bot-assistant-content">{message.text ? <ChatMarkdown resolveTaskFiles={false} text={message.text} streaming={message.status === "running"} /> : <p className="bot-reply-placeholder">{message.status === "completed" ? "没有文本回复" : botMessageStatus(message)}{running && <span className="bot-typing-dots" aria-hidden="true">···</span>}</p>}</div>}
     {message.workIds.length > 0 && <div className="bot-message-work-links">{message.workIds.map(workId => <button type="button" key={workId} onClick={() => onOpenWork(workId)}><IconListTodo size={14} /><span>{works.find(work => work.workId === workId)?.title ?? "查看关联事项"}</span><IconChevronRight size={14} /></button>)}</div>}
-    <div className="bot-message-meta"><span>{botMessageStatus(message)}</span><time dateTime={new Date(message.createdAt).toISOString()}>{new Date(message.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time>{running && <button type="button" onClick={onCancel}><IconStop size={11} />停止回复</button>}</div>
+    <div className="bot-message-meta">{(message.text || !running) && <span>{botMessageStatus(message)}</span>}<time dateTime={new Date(message.createdAt).toISOString()}>{new Date(message.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time>{running && <button type="button" onClick={onCancel}><IconStop size={14} />停止回复</button>}</div>
     {message.error && <p className="bot-alert" role="alert">{message.error}</p>}
   </article>;
 }

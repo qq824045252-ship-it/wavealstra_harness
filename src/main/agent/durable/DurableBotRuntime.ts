@@ -592,7 +592,8 @@ export class DurableBotRuntime {
       const attachments = input.attachments.flatMap(item => item && typeof item === "object" && !Array.isArray(item)
         && typeof item.name === "string" && typeof item.path === "string" ? [{ name: item.name, path: item.path }] : []);
       const audit = durableInputAuditSchema.safeParse(input.audit);
-      target.set(entry.id, { text: input.text, displayText: input.displayText, attachments, ...(audit.success ? { audit: audit.data } : {}) });
+      target.set(entry.id, { text: input.text, displayText: input.displayText, attachments,
+        ...(typeof input.botRequestId === "string" ? { botRequestId: input.botRequestId } : {}), ...(audit.success ? { audit: audit.data } : {}) });
     }
   }
 

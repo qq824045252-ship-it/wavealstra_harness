@@ -26,6 +26,7 @@ export interface BotConversationServiceOptions {
   memorySearch: (botId: string, query: string) => unknown;
   schedule: (work: WorkDto, operationId: string, retryBlocked?: boolean) => void;
   wake: (workId?: string) => void;
+  onMessage?: (event: import("../../../shared/bot-conversation").BotMessageEvent) => void;
 }
 
 /** Persistent foreground messages have their own identity and native root, without a Task row. */
@@ -37,6 +38,7 @@ export class BotConversationService {
   private readonly stops = new Map<string, Promise<void>>();
   private readonly shutdown = new AbortController();
   private closing = false;
+  private readonly streamedAt = new Map<string, number>();
   constructor(private readonly options: BotConversationServiceOptions) {
     this.messages = new BotConversationRepository(options.db);
   }
@@ -77,6 +79,7 @@ export class BotConversationService {
       this.messages.update(message.messageId, "cancelled", message.text);
       this.options.db.prepare("INSERT OR IGNORE INTO bot_cancel_intents(conversation_id,request_id) VALUES (?,?)").run(source.conversation_id, requestId);
     });
+    this.publish(message.messageId);
     await this.stopPending(botId, source.conversation_id);
     this.options.wake();
   }
@@ -149,12 +152,12 @@ export class BotConversationService {
         }
       } catch (error) {
         if (this.messages.message(next.messageId)?.status !== "cancelled") {
-          this.options.works.transaction(() => this.messages.update(next.messageId, "unknown", next.text, error instanceof Error ? error.message : String(error)));
+          this.options.works.transaction(() => this.messages.update(next.messageId, "unknown", this.messages.message(next.messageId)?.text ?? next.text, error instanceof Error ? error.message : String(error)));
         }
         const runtime = this.runtimes.get(conversationId);
         if (runtime?.isSessionFailed()) { this.runtimes.delete(conversationId); await runtime.close(); }
         return;
-      } finally { this.options.wake(); }
+      } finally { this.streamedAt.delete(next.messageId); this.publish(next.messageId); this.options.wake(); }
     }
   }
 
@@ -190,9 +193,39 @@ export class BotConversationService {
           message.botId !== receipt.bot_id || message.requestId !== requestId ||
           !["queued", "running", "unknown"].includes(message.status)) return { block: "原始消息已结束或身份不可核对" };
       } },
-      onSnapshot: () => {},
+      onSnapshot: snapshot => this.stream(conversation, snapshot),
     });
     return runtime;
+  }
+
+  private stream(conversation: BotConversation, snapshot: import("../../../shared/durable-bot").DurableBotSnapshot): void {
+    if (this.closing || !this.options.isAuthority()) return;
+    const current = this.messages.conversation(this.options.userId, conversation.bot_id, conversation.conversation_id);
+    if (!current || current.archived_at !== null || !current.current_request_id) return;
+    // Match the persisted native input identity, never a timestamp or repeated user text.
+    let lastUser = snapshot.messages.length - 1;
+    while (lastUser >= 0 && snapshot.messages[lastUser].role !== "user") lastUser--;
+    if (lastUser < 0 || snapshot.messages[lastUser].botRequestId !== current.current_request_id) return;
+    const source = this.messages.receipt(this.options.userId, conversation.bot_id, current.current_request_id);
+    const message = source && this.messages.message(source.assistant_message_id);
+    if (!message || message.status !== "running") return;
+    const row = snapshot.messages.slice(lastUser + 1).reverse().find(item => item.role === "assistant");
+    if (!row?.text || row.text === message.text) return;
+    const now = Date.now();
+    if (now - (this.streamedAt.get(message.messageId) ?? 0) < 80) return;
+    this.streamedAt.set(message.messageId, now);
+    // Persist at a bounded cadence: a reconnect reads the same revision, not a blank placeholder.
+    this.messages.update(message.messageId, "running", row.text);
+    this.publish(message.messageId);
+  }
+
+  private publish(messageId: string): void {
+    const message = this.messages.message(messageId);
+    if (!message) return;
+    const conversation = this.messages.conversation(this.options.userId, message.botId, message.conversationId);
+    if (!conversation || conversation.archived_at !== null) return;
+    this.options.onMessage?.({ botId: message.botId, conversationId: message.conversationId,
+      revision: conversation.revision, message });
   }
 
   private stopPending(botId: string, conversationId: string): Promise<void> {
