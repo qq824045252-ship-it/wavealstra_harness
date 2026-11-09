@@ -86,15 +86,14 @@ export class BotSettingsService {
       UNION ALL SELECT s.settings_json FROM bot_work_settings s JOIN work_team_executions t ON t.work_id=s.work_id WHERE t.task_id=? LIMIT 1`).get(taskId, taskId) as {settings_json: string} | undefined;
     if (!row) return undefined;
     const settings = JSON.parse(row.settings_json) as BotSettingsDto;
+    if (!settings.workspacePath) mkdirSync(settings.effectiveWorkspacePath, {recursive:true});
     if (!existsSync(settings.effectiveWorkspacePath) || !statSync(settings.effectiveWorkspacePath).isDirectory())
       throw new Error("Bot 工作文件夹已不存在，请恢复文件夹后重试，原任务不会迁移到其他目录");
     return settings.effectiveWorkspacePath;
   }
   private ensureSpace(settings: BotSettingsDto): void {
-    if (settings.workspacePath) {
-      if (!existsSync(settings.effectiveWorkspacePath) || !statSync(settings.effectiveWorkspacePath).isDirectory())
-        throw new Error("指定的 Bot 工作文件夹已不存在，请恢复文件夹或重新选择");
-    } else mkdirSync(settings.effectiveWorkspacePath, {recursive: true});
+    // Filesystem preparation belongs to native dispatch, where failures become visible blockers.
+    // Enqueue must persist first; a vanished folder must not leave a Work with no dispatch request.
     if (!this.db.getSpace(settings.spaceId)) this.db.upsertSpace({ id: settings.spaceId, name: `${this.bots.getBot(settings.botId)!.displayName} · 工作空间` });
     // Space is a grouping, not a mutable cwd override. Each Work carries its original folder.
   }
