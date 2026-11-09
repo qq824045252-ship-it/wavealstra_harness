@@ -36,9 +36,13 @@ export class WorkAutomaticRecovery {
     const work = this.works.getWork(binding.workId);
     return this.ancestry(binding).some(source => {
       const task = this.db.prepare("SELECT permission_mode FROM tasks WHERE id=?").get(source.taskId) as { permission_mode?: string } | undefined;
+      const event = source.inboxEventId ? this.works.repo.getInbox(source.inboxEventId) : undefined;
+      const handoff = this.works.repo.listOutbox(source.workId).find(event => event.eventType === "work.owner_handed_off" && event.payload.previousEpoch === source.ownerEpoch);
+      const originalOwner = handoff?.payload.previousOwnerBotId ?? (source.ownerEpoch === work?.ownerEpoch ? work.ownerBotId : undefined);
       return task?.permission_mode === "readonly"
-        || (source.inboxEventId && this.works.repo.getInbox(source.inboxEventId)?.eventType === "deadline_expired")
-        || (source.botId !== work?.ownerBotId && source.delegatedScope.length > 0 && !source.delegatedScope.includes("workspace:write"));
+        || event?.eventType === "deadline_expired"
+        || (event?.eventType === "work.offline_catchup" && event.payload.readOnlyFollowUp === true)
+        || (source.botId !== originalOwner && source.delegatedScope.length > 0 && !source.delegatedScope.includes("workspace:write"));
     });
   }
   evidenceRead(bindingId: string): boolean {
@@ -174,6 +178,6 @@ export class WorkAutomaticRecovery {
       instructions: record.mode === "readback"
         ? "只读核对已有成果并给用户交付部分结果、来源及具体缺项。未知外部效果不得重发重做；不要声称未知动作未发生。不要再次调用同一个失败方法。"
         : "这是原事项的定向恢复，不是重做原任务。先读取已有报告与成功步骤；只补缺失部分。网络/解析/依赖失败时换方法或数据源，不要重复同一失败调用。已有文件不得重建、已发消息不得重发。有用结果立刻汇报；无法继续时交付部分结果和具体原因，不要求用户批准重试。",
-      itemId: `recover:${source.bindingId}` }, originalGoal: JSON.parse(this.works.repo.executionInput(source)) });
+      itemId: `recover:${source.bindingId}` }, originalGoal: JSON.parse(this.works.repo.executionInput(this.ancestry(source).at(-1) ?? source)) });
   }
 }

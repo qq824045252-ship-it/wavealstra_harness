@@ -181,7 +181,7 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     assert.equal(requests.flatMap(body => body.messages).filter(message => message.role === 'assistant' && message.tool_calls?.some(call => call.function.name === 'write')).length, 1, 'original file write not replayed');
     report.retainedPath = retainedPath;
     assert(recovered.phase3.continuations.some(plan => plan.planId.startsWith('automatic-recovery:')), 'host created recovery plan');
-    assert(recovered.deliverables.some(result => result.summary.includes('自动恢复验收成果')), 'recovery output retained');
+    assert.equal(recovered.deliverables.filter(result => result.summary.includes('自动恢复验收成果')).length, 1, 'recovery output retained exactly once, without synthetic-gap duplication');
     assert(requests.some(body => JSON.stringify(body.messages).includes('这是原事项的定向恢复')), 'native model receives targeted recovery instructions');
     await until(() => evaluate('document.querySelector(".bot-thread").innerText.includes("自动恢复验收成果：")'), 'automatic recovery feedback visible');
     report.checks.push('real composer send, native provider HTTP 400 failure, host automatic continuation, successful native result and conversation feedback');

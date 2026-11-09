@@ -30,6 +30,7 @@ async function run(name: string, final: "completed" | "failed" | "stopped", unkn
       if (!text.includes('"recovery"')) { writes++; await writeFile(artifact, "杭州：已有真实任务结果\n"); }
       else {
         assert.equal(await readFile(artifact, "utf8"), "杭州：已有真实任务结果\n"); assert(text.includes(artifact), "every recovery retains ancestral artifact path");
+        if (name === "ancestry") assert(text.includes("original-source-weather-payload"), "later recovery keeps original trigger payload");
         if (unknown || name === "readonly") {
           assert(works.admitTaskAction(binding.taskId, { operationId: `write:${binding.bindingId}`, actionKind: "workspace:write" }));
           assert.equal(works.admitTaskAction(binding.taskId, { operationId: `read:${binding.bindingId}`, actionKind: "workspace:read" }), undefined);
@@ -67,9 +68,17 @@ async function run(name: string, final: "completed" | "failed" | "stopped", unkn
       reason: "legacy quota dispatch refusal", waitingForUserInput: false, status: "open", createdAt: Date.now() });
   }
   await queue.flush();
+  if (name === "ancestry") works.transaction(() => {
+    works.repo.insertInbox({ eventId: "original-event", dedupeKey: "original-event", source: "test", sourceEventId: "source", eventType: "test", workId: work.workId,
+      intentRevision: work.intentRevision, stateVersion: work.stateVersion, ownerEpoch: work.ownerEpoch, status: "processed", payload: { request: "original-source-weather-payload" }, mergedCount: 0, receivedAt: Date.now() });
+    const original = works.repo.listBindings(work.workId)[0]!;
+    works.repo.updateBinding({ ...original, inboxEventId: "original-event" });
+  });
   if (unknown) works.transaction(() => works.repo.insertBlocker({ blockerId: "unknown", workId: work.workId, kind: "external_effect", reason: "receipt lost", waitingForUserInput: false, status: "open", createdAt: Date.now() }));
   permissionMode = "auto"; // A later application default cannot widen the source task's readonly mode.
   if (name === "handoff") {
+    const original = works.repo.listBindings(work.workId)[0]!;
+    works.repo.updateBinding({ ...original, delegatedScope: ["workspace:read"] }); // Retired owner scope did not restrict its auto task.
     bots.registerBot({ botId: "next-owner", userId: LOCAL_USER_ID, displayName: "next", authorization: { ...DESKTOP_USER_GRANTS, allowRedelegation: true } });
     unwrap(works.handoffOwner({ kind: "user", userId: LOCAL_USER_ID, grants: { ...DESKTOP_USER_GRANTS, allowRedelegation: true } },
       { operationId: "handoff-owner", workId: work.workId, targetBotId: "next-owner" }));
@@ -103,6 +112,7 @@ async function run(name: string, final: "completed" | "failed" | "stopped", unkn
     }
     const recoveryRequests = db.connection.prepare("SELECT task_id FROM work_dispatch_requests WHERE continuation_plan_id IS NOT NULL").all() as { task_id: string }[];
     if (unknown || name === "readonly") assert(recoveryRequests.every(r => db.getTask(r.task_id)?.permissionMode === "readonly"));
+    if (name === "handoff") assert(recoveryRequests.every(r => db.getTask(r.task_id)?.permissionMode === "auto"), "handoff does not turn former owner into restricted member");
   } finally { await queue.close(); await adapter.close(); db.close(); }
 }
 try {
