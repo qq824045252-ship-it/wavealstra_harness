@@ -30,4 +30,5 @@
 - `pnpm -s test:bot-work-team-service` / `test:bot-work-team-native`：团队队列、原生适配器、依赖与 owner 汇总回归。
 - `test:bot-team-ui`：恢复中/已恢复文案与“仍需验收”边界。
 - 全量门禁：`pnpm -s test:all` 399/399 通过（0 失败、0 新增回归）。
-- 未执行：使用公网真实模型和真实桌面 UI 注入成员失败的完整端到端验收；本轮团队证据来自本地测试模型/fixture，已单独标注，不冒充公网真实模型验收。
+- 真实 Electron：`pnpm -s test:bot-work-recovery-dev` 使用临时 HOME、真实 `pnpm dev` 页面和本地 HTTP 模型夹具，通过单独 Work 的失败恢复；这是本地测试模型证据，不是公网模型验收。
+- 未执行：团队多成员任务在真实桌面 UI 中注入成员失败并连接公网真实模型的完整端到端验收；本轮团队证据来自原生适配器/团队 fixture，已单独标注，不冒充公网真实模型验收。

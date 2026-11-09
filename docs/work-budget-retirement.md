@@ -46,4 +46,5 @@
 - `pnpm -s test:work-budget-retirement`：新库无预算表/列；构造带全部旧预算表、列、blocker、`blocked-budget` 因果行的 v35 旧库；升级到 v36 后业务行数/关系不变、`integrity_check` 与 `foreign_key_check` 通过、旧预算结构/记录/CHECK 文本消失；清理后可正常派发独立 Work；事务回滚、部分迁移、重复启动幂等。
 - 相关专项：`test:bot-work-team-recovery`、`test:bot-work-team-service`、`test:bot-work-phase2*`、`test:bot-work-phase3*`、`test:bot-work-phase4-*`、`test:bot-work-phase5*`、`test:db-schema-discard`。
 - 全量门禁：`pnpm -s test:all` 以 399/399 通过（0 失败、0 新增回归）。
+- 真实 Electron：`pnpm -s test:bot-work-recovery-dev` 在临时 HOME + 本地 HTTP 模型夹具下通过单独 Work 恢复，确认预算删除没有破坏真实桌面恢复链路。
 - 未执行项：真实用户旧 profile 的桌面升级验收（本轮没有上传/复制用户数据库；由 fixture 构造等价 v35 旧结构）。
