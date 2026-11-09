@@ -1,3 +1,4 @@
+import { TOOL_NOT_STARTED_MEMO } from "./DurableToolOutcome";
 import { workShellRead } from "../work/WorkShellRead";
 import { resolve } from "node:path";
 import { z } from "zod";
@@ -190,11 +191,15 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
             expected: { operationId: intent.operationId, completed: intent.contract.completedValues },
             observed: { reason: "receipt-verifier-unavailable-or-not-authorized" }, checkedAt: Date.now() };
         }
+        const proof = await api.memo(TOOL_NOT_STARTED_MEMO, context);
+        const notStarted = proof !== null && typeof proof === "object" && !Array.isArray(proof)
+          && proof.toolName === call.name && proof.callId === call.id && proof.taskId === api.taskId
+          && proof.conversationId === api.conversationId && proof.phase === "validation";
         const reconciled = evidence?.status === "passed";
-        const settlement = reconciled || (!evidence && !interrupted && !result.isError) ? "consumed" : mayWrite ? "unknown" : "released";
+        const settlement = notStarted ? "released" : reconciled || (!evidence && !interrupted && !result.isError) ? "consumed" : mayWrite ? "unknown" : "released";
         options.settleWorkAction?.(`tool:${api.conversationId}:${api.taskId}:${call.id}`, settlement);
         if (attempt) {
-          const status = evidence?.status ?? (interrupted ? "inconclusive" : result.isError ? "failed" : "passed");
+          const status = notStarted ? "failed" : evidence?.status ?? (interrupted ? "inconclusive" : result.isError ? "failed" : "passed");
           options.attempts.settleDurable({ ...attempt, status, phase: "finished", finishedAt: Date.now(),
             transportStatus: result.isError ? "failed" : "succeeded", causeCode: reconciled ? undefined : evidence ? "effect-unverified" : interrupted?.code,
             recovery: status === "inconclusive" ? "requires-user-action" : undefined,
@@ -217,7 +222,7 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
           return { ...result, isError: true, output: [...(result.output ?? []), { type: "text", text: "核验未确认原操作完成；没有自动重发。" }],
             details: { recovery: { verifierId: evidence.verifierId, checkedAt: evidence.checkedAt, status: evidence.status } } };
         }
-        if (!interrupted) return undefined;
+        if (!interrupted || notStarted) return undefined;
         options.interactions.cancelExecution(execution.executionId, "当前工具执行已结束");
         if (!(mcp?.sideEffect ?? isSideEffectTool(call.name, call.arguments))) return undefined;
         options.failures.recordIfAbsent({ ...execution, causeCode: "durable-tool-interrupted", phase: "recover",

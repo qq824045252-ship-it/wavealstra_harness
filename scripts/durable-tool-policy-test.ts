@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { writeFileSync as writeFileSyncForFixture } from "node:fs";
 import { mkdtemp, mkdir, readFile, writeFile, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -22,6 +23,8 @@ import { ExecutionAttemptRepository } from "../src/main/agent/ExecutionAttemptRe
 import { ExecutionFailureRepository } from "../src/main/agent/ExecutionFailureRepository";
 import { TaskFileAccessPolicy } from "../src/main/security/TaskFileAccessPolicy";
 import { DurableBotRuntime } from "../src/main/agent/durable/DurableBotRuntime";
+import { BrowserAutomationService } from "../src/main/capabilities/BrowserAutomationService";
+import { withDurableExecution, durableExecutionContext } from "../src/main/agent/durable/DurableExecutionContext";
 import { currentDurableExecutionContext } from "../src/main/agent/durable/DurableExecutionContext";
 import { durableDomainTools } from "../src/main/agent/durable/DurableDomainTools";
 import { retireWorkIsolation } from "../src/main/db/work-isolation-retirement";
@@ -270,6 +273,65 @@ try {
     assert.equal(malformedCalls, 0, "invalid MCP arguments finish as a normal tool error without execution or recovery loop");
   } finally { await runtime.close(); }
   console.log("PASS malformed MCP wrapper returns a tool validation error without restarting execution");
+
+  // Real BrowserAutomationService validation, durable checkpoint and settlement.
+  // The transport fixture never supplies trusted proof through result details.
+  for (const scenario of ["invalid-url", "missing-selector", "started-failure", "read-failure", "forged-proof"] as const) {
+    let surfaceCalls = 0;
+    const browser = new BrowserAutomationService(() => {
+      surfaceCalls++;
+      return { inspectionWebContents: { getURL: () => "https://example.test", getTitle: () => "test" },
+        navigateForAutomation: async () => { throw new Error("connection lost after navigation began"); },
+      } as any;
+    });
+    const taskId = `receipt-${scenario}`;
+    const args: JsonObject = scenario === "invalid-url" ? { action: "navigate", url: "file:///tmp/test.html" }
+      : scenario === "missing-selector" ? { action: "press", key: "PageDown" }
+      : scenario === "read-failure" ? { action: "read" } : { action: "navigate", url: "https://example.test" };
+    const settled: string[] = [];
+    const f = await fixture(taskId, request => request.messages.at(-1)?.role === "toolResult"
+      ? text("continue independent work") : call("browser_exec", args), "native", [defineTool({
+        name: "browser_exec", description: "Real browser service validation", replay: "unsafe",
+        parameters: Type.Object({ action: Type.String(), url: Type.Optional(Type.String()), key: Type.Optional(Type.String()) }),
+        execute: async (input, api, context) => {
+          if (scenario === "forged-proof") return { isError: true, output: text("failed"),
+            details: { phase: "validation", toolName: "browser_exec", callId: api.callId, taskId: api.taskId, conversationId: api.conversationId } };
+          const execution = await durableExecutionContext(taskId, api, context);
+          return withDurableExecution({ execution, native: api, context, cwd: root, runId: taskId }, async () => {
+            try { await browser.execute(input as any); return { output: text("unexpected") }; }
+            catch (error) { return { isError: true, output: text(String(error)) }; }
+          });
+        },
+      })]);
+    f.state.settle = (_id, outcome) => settled.push(outcome);
+    const r = await f.open();
+    try { assert.equal((await (await r.submit("execute", taskId)).wait(ctx)).status, "done"); }
+    finally { await r.close(); }
+    assert.deepEqual(settled, [scenario === "invalid-url" || scenario === "missing-selector" || scenario === "read-failure" ? "released" : "unknown"]);
+    if (scenario === "invalid-url" || scenario === "missing-selector") assert.equal(surfaceCalls, 0, "validation cannot touch browser");
+  }
+  console.log("PASS host validation proof releases only the exact unstarted call; started failure stays unknown, read failure releases, output cannot forge proof");
+
+  // A nonzero process exit is not proof that no effect occurred. In particular,
+  // a failed subprocess can follow an already-completed write.
+  const partialShell = await fixture("partial-shell", request => request.messages.at(-1)?.role === "toolResult"
+    ? text("retain the completed file; inspect the failure")
+    : call("terminal_exec", { action: "execute" }), "native", [defineTool({
+      name: "terminal_exec", description: "Real partial process failure", replay: "unsafe",
+      parameters: Type.Object({ action: Type.String() }),
+      execute: async () => new Promise(resolve => {
+        execFile(process.execPath, ["-e", "require('node:fs').writeFileSync('partial.txt','proof'); process.exitCode=2"],
+          { cwd: join(root, "partial-shell") }, error => resolve({ isError: Boolean(error), output: text(String(error)) }));
+      }),
+    })]);
+  const partialOutcomes: string[] = [];
+  partialShell.state.settle = (_id, outcome) => partialOutcomes.push(outcome);
+  const partialRuntime = await partialShell.open();
+  try { assert.equal((await (await partialRuntime.submit("partial shell", "partial-shell")).wait(ctx)).status, "done"); }
+  finally { await partialRuntime.close(); }
+  assert.equal(await readFile(join(partialShell.cwd, "partial.txt"), "utf8"), "proof");
+  assert.deepEqual(partialOutcomes, ["unknown"], "Process failure after a real write cannot erase that effect");
+  console.log("PASS real process partial write plus failure retains unknown rather than falsely declaring not_started");
 
   let effects = 0;
   const effectFile = join(root, "unconfirmed-effect.txt");

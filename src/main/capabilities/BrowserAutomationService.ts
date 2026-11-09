@@ -2,6 +2,7 @@ import type { BrowserHost } from "../browser/BrowserHost";
 import { BrowserContentService } from "../browser/BrowserContentService";
 import { PageCaptureError } from "../artifact/PageInspectionService";
 import { randomUUID } from "node:crypto";
+import { recordHostToolNotStarted } from "../agent/durable/DurableToolOutcome";
 import { currentDurableInvocation } from "../agent/durable/DurableExecutionContext";
 
 export type BrowserExecAction =
@@ -83,6 +84,22 @@ export class BrowserAutomationService {
   }
 
   async execute(input: BrowserExecInput, signal?: AbortSignal): Promise<BrowserExecOutput> {
+    // Validate the complete request before touching the browser surface. A durable
+    // checkpoint written here proves this exact invocation never began its action.
+    try {
+      if (!["status", "navigate", "read", "click", "fill", "press", "screenshot"].includes(input.action)) {
+        throw new BrowserAutomationError("INVALID_INPUT", `不支持的 browser_exec action：${String(input.action)}`);
+      }
+      if (input.action === "navigate") assertHttpUrl(requireShort(input.url, "url", 2_000));
+      if (["click", "fill", "press"].includes(input.action)) requireShort(input.selector, "selector", 1_000);
+      if (input.action === "press") requireShort(input.key, "key", 60);
+      if (input.action === "fill" && (input.text?.length ?? 0) > 100_000) {
+        throw new BrowserAutomationError("INVALID_INPUT", "text 过长", { max: 100_000 });
+      }
+    } catch (error) {
+      await recordHostToolNotStarted("browser_exec");
+      throw error;
+    }
     return this.executeManaged(input, signal);
   }
 

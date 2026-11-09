@@ -74,6 +74,18 @@ void (async () => {
   await app.whenReady();
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/`;
+  const preflight = await fixture(url);
+  try {
+    const originalUrl = preflight.wc.getURL();
+    const originalFocus = await preflight.wc.executeJavaScript("document.activeElement.tagName");
+    await assert.rejects(preflight.service.execute({ action: "navigate", url: "file:///tmp/blocked.html" }), /只允许 http/);
+    await assert.rejects(preflight.service.execute({ action: "press", key: "PageDown" }), /selector 不能为空/);
+    assert.equal(preflight.wc.getURL(), originalUrl);
+    assert.equal(await preflight.wc.executeJavaScript("document.activeElement.tagName"), originalFocus);
+    await preflight.service.execute({ action: "click", selector: "#increment" });
+    assert.equal(await preflight.wc.executeJavaScript("document.querySelector('#count').textContent"), "1");
+    results.push({ mode: "invalid-input-then-independent-action", invalidUrl: "not_started", missingSelector: "not_started", continued: true });
+  } finally { preflight.close(); }
   for (const mode of ["hidden", "inspector", "blocker", "minimized", "visible"] as const) {
     const f = await fixture(url);
     try {
