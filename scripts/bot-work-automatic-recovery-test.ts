@@ -42,6 +42,10 @@ async function run(name: string, final: "completed" | "failed" | "stopped", unkn
     },
     inspect: async binding => {
       const continuation = !!works.partialResults.executionInput(binding);
+      if (continuation) {
+        assert.equal(db.getTask(binding.taskId)?.spaceId,"bot-test-space", "recovery stays in the original Bot workspace");
+        assert.equal(db.getTask(binding.taskId)?.modelId,"original-bot-model", "recovery keeps the original Bot model");
+      }
       const stage = stages.get(binding.bindingId) ?? 0;
       const staged = ["ancestry", "successful-readback", "gap-chain"].includes(name);
       const status = !continuation ? final === "stopped" ? "stopped" : "failed" : staged && stage === 1 ? "failed" : final;
@@ -62,6 +66,9 @@ async function run(name: string, final: "completed" | "failed" | "stopped", unkn
   };
   let { adapter, queue } = create();
   works.transaction(() => queue.enqueue(work, name));
+  const originalTaskId = (db.connection.prepare("SELECT task_id FROM work_dispatch_requests WHERE operation_id=?").get(name) as {task_id: string}).task_id;
+  db.upsertSpace({id:"bot-test-space",name:"Bot workspace"});
+  db.upsertTask({...db.getTask(originalTaskId)!,spaceId:"bot-test-space",modelId:"original-bot-model"});
   if (name === "legacy-quota") {
     db.connection.prepare("UPDATE work_dispatch_requests SET state='blocked',attempts=3,error='budget_exhausted: old exhausted window' WHERE operation_id=?").run(name);
     works.repo.insertBlocker({ blockerId: `dispatch:${name}`, workId: work.workId, kind: "operational",
