@@ -19,10 +19,18 @@ export const workSubitemSchema = z.object({
   origin:z.enum(["native","artifact_revalidation"]).optional(),
 }).strict();
 export type WorkSubitemResult = z.infer<typeof workSubitemSchema>;
+export const generatedArtifactSchema = z.object({
+  path: z.string(), snapshotPath: z.string().optional(), digest: z.string(), sizeBytes: z.number().nonnegative(),
+  registeredAt: z.number(), sourceEntryId: z.number(),
+}).strict();
+export type GeneratedArtifact = z.infer<typeof generatedArtifactSchema>;
+export const workRuntimeStateSchema = z.enum(["recovering", "running", "waiting", "interrupted"]);
+export type WorkRuntimeState = z.infer<typeof workRuntimeStateSchema>;
+export interface WorkRuntimeObservationDto { bindingId: string; state: WorkRuntimeState; reason: string; observedAt?: number }
 export const workExecutionObservationSchema = z.discriminatedUnion("status", [
-  z.object({ status: z.literal("running"), subitems: z.array(workSubitemSchema).optional() }).strict(),
+  z.object({ status: z.literal("running"), runtimeState: workRuntimeStateSchema.optional(), runtimeReason: z.string().optional(), generatedArtifacts: z.array(generatedArtifactSchema).optional(), subitems: z.array(workSubitemSchema).optional() }).strict(),
   z.object({ status: z.enum(["completed", "failed", "stopped"]), summary: z.string(), failureReason: z.string().optional(), hasWriteConflicts: z.boolean(),
-    artifactRefs: z.array(z.string()), sourceEntryId: z.number().optional(), usageTokens: z.number().nonnegative().optional(),
+    generatedArtifacts: z.array(generatedArtifactSchema).optional(), artifactRefs: z.array(z.string()), sourceEntryId: z.number().optional(), usageTokens: z.number().nonnegative().optional(),
     subitems: z.array(workSubitemSchema).optional(),readPaths:z.array(z.string()).optional() }).strict(),
 ]);
 

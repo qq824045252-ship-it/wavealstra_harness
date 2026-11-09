@@ -578,6 +578,24 @@ async function main() {
         await unmount(); useAppStore.setState(originalState, true); console.error = originalError;
       }
     });
+    await check("running files are visible without implying accepted output and open the exact registered path", async () => {
+      await unmount();
+      const { createRoot } = await import("react-dom/client");
+      container = testDocument.body.appendChild(testDocument.createElement("div")); root = createRoot(container);
+      const opened: string[] = [];
+      Object.assign(testWindow.api!, { openFolder: async (path: string) => { opened.push(path); } });
+      await act(async () => root!.render(<BotWorkDetails work={{ ...projection, deliverables: [],
+        runtimeObservations: [{ bindingId: "b", state: "recovering", reason: "宿主正在恢复原执行" }],
+        generatedArtifacts: [{ bindingId: "b", path: "/fixture/result.html", digest: "a".repeat(64), sizeBytes: 31, registeredAt: 1, sourceEntryId: 12 }],
+      }} ownerName="Owner" includeClosed />));
+      assert.match(container.textContent!, /已生成文件/);
+      assert.match(container.textContent!, /31 字节/);
+      assert.match(container.textContent!, /不代表任务或验收已经通过/);
+      assert.match(container.textContent!, /恢复中/);
+      await click("打开当前文件");
+      assert.deepEqual(opened, ["/fixture/result.html"]);
+      await unmount();
+    });
     await check("retired isolation and approval surfaces render nothing in Work details", async () => {
       await unmount();
       const { createRoot } = await import("react-dom/client");

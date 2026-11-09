@@ -28,6 +28,7 @@ import type { DurableDomainTools } from "./DurableDomainTools";
 import type { DurableEvidenceOptions } from "./DurableEvidenceProjection";
 import { DurableUserEntryNotFoundError, findDurableUserEntry } from "./DurableConversationBranch";
 import { durableContentText } from "./DurableHistoryProjection";
+import { durableWorkRuntimeState } from "./DurableWorkRuntimeState";
 import { readDurableWorkExecution } from "./DurableWorkExecutionProjection";
 import { DurableMcp } from "./DurableMcp";
 import type { ExternalEffectRecovery } from "./DurableEffectRecovery";
@@ -196,8 +197,10 @@ export class DurableBotService {
   }
 
   private open(taskId: string, admissionBoundary = false): Promise<OpenBot> {
-    // Interactive access takes over a queued startup item: the drain must not open it again.
-    this.resumeAdmission?.claim(taskId);
+    // Reading history opens a paused native Harness but does not resume it. Keep the
+    // startup queue entry: openBound deduplicates the runtime, and the drain still
+    // owes this original input its resume hand-over. Claiming here stranded work
+    // whenever a foreground read beat the bounded startup queue.
     const pending = this.rebinding.get(taskId);
     if (pending) return pending;
     const operation = (async () => {
@@ -715,8 +718,15 @@ export class DurableBotService {
       inspect: async (binding, receipt) => {
         const { open, record } = await this.workSubmission(binding);
         if (!record || record.id !== receipt.submissionId || record.requestId !== receipt.operationId) throw new Error("执行回执与原命名空间不一致");
-        const observation = await open.runtime.conversation.commit(tx => readDurableWorkExecution(tx, record, binding.workspaceBinding), context);
-        if (observation.status === "running") return observation;
+        const observation = await open.runtime.conversation.commit(tx => readDurableWorkExecution(tx, record, binding.workspaceBinding, binding.durableStoreKey), context);
+        if (observation.status === "running") {
+          const inspection = await open.runtime.harness.inspect(context);
+          // A storage failure can evict/reopen a Session after the startup drain
+          // has ended. Resume the existing receipt, never submit a replacement.
+          // The same authority/lifecycle checks used at startup still apply.
+          if (inspection.scheduling === "paused" && !this.resumeSkipReason(binding.taskId)) open.runtime.resume();
+          return { ...observation, ...durableWorkRuntimeState(inspection) };
+        }
         const dedicated = this.options.db.connection.prepare("SELECT 1 FROM work_dispatch_requests WHERE task_id=? AND work_id=?")
           .get(binding.taskId, binding.workId);
         if (dedicated) {
@@ -724,7 +734,8 @@ export class DurableBotService {
           // include exactly its root, owned children and compaction, without
           // attributing a shared answer or another Work's history to this binding.
           const inspection = await open.runtime.harness.inspect(context);
-          if (inspection.tasks.length) return { status: "running" };
+          if (inspection.tasks.length) return { status: "running", generatedArtifacts: observation.generatedArtifacts,
+            ...durableWorkRuntimeState(inspection) };
           const interruptedUsage = await open.runtime.conversation.commit(async tx => {
             let cursor: Cursor | undefined;
             do {

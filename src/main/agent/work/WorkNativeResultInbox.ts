@@ -27,6 +27,12 @@ export class WorkNativeResultInbox {
     this.works.transaction(() => {
       this.assertAuthority();
       this.works.artifacts.record(binding,artifacts);
+      this.works.generatedArtifacts.record(binding,payload.generatedArtifacts ?? []);
+      if (this.works.runtimeObservations.record(binding,payload)) {
+        const work = this.works.getWork(binding.workId);
+        if (work) this.works.repo.updateWork({ ...work, stateVersion: work.stateVersion + 1, updatedAt: Date.now() });
+        this.works.emitCurrentProjection(binding.workId);
+      }
       this.db.prepare(`INSERT OR IGNORE INTO work_native_inbox(fact_id,binding_id,namespace_hash,payload_json,received_at)
         VALUES (?,?,?,?,?)`).run(factId, binding.bindingId, namespaceHash, JSON.stringify(payload), Date.now());
       // This position references a fact already durable in the same transaction. It is
@@ -185,6 +191,7 @@ export class WorkNativeResultInbox {
   }
 
   readFailed(binding: WorkExecutionBindingDto, error: unknown): void {
+    this.works.runtimeObservations.readFailed(binding,error);
     this.works.transaction(() => {
       this.assertAuthority();
       const now = Date.now();

@@ -33,6 +33,13 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
   const [controlNotice, setControlNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [phase4Notice, setPhase4Notice] = useState("");
+  const [artifactNotice, setArtifactNotice] = useState("");
+  const openGeneratedArtifact = async (path: string) => {
+    try {
+      if (!window.api?.openFolder) throw new Error("文件打开接口不可用");
+      await window.api.openFolder(path); setArtifactNotice("");
+    } catch (error) { setArtifactNotice(`无法打开文件：${error instanceof Error ? error.message : String(error)}`); }
+  };
   const [watchSource, setWatchSource] = useState("hook");
   const [watchPolicy, setWatchPolicy] = useState<"latest" | "each" | "skip">("latest");
   const [deadlineInput, setDeadlineInput] = useState("");
@@ -157,6 +164,23 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
           return <article key={blocker.blockerId}><p>{blocker.reason}</p><p>{response.reply}</p><p>依据：{response.evidenceRef}</p></article>;
         })}
       </details>}
+      {!!work.runtimeObservations?.length && <section aria-label="当前执行状态">
+        <h3>当前执行状态</h3>
+        {work.runtimeObservations.map(observation => <p key={observation.bindingId} role="status">
+          <strong>{{ recovering: "恢复中", running: "正在执行", waiting: "等待执行器", interrupted: "执行已中断" }[observation.state]}</strong>：{observation.reason}
+        </p>)}
+      </section>}
+      {!!work.generatedArtifacts?.length && <section aria-label="已生成文件">
+        <h3>已生成文件</h3>
+        <p>已登记生成文件。快照保留登记时的版本，源文件可能继续变化；文件生成不代表任务或验收已经通过。</p>
+        {artifactNotice && <p role="alert">{artifactNotice}</p>}
+        <ul>{work.generatedArtifacts.map(artifact => <li key={`${artifact.bindingId}:${artifact.path}:${artifact.digest}`}>
+          <span style={{ overflowWrap: "anywhere" }}>{artifact.path} · {artifact.sizeBytes} 字节</span>
+          <button type="button" onClick={() => void openGeneratedArtifact(artifact.snapshotPath ?? artifact.path)}>{artifact.snapshotPath ? "打开保存版本" : "打开当前文件"}</button>
+          <button type="button" onClick={() => void window.api?.showItemInFolder?.(artifact.path)}>定位文件</button>
+          <details><summary>文件版本</summary><p style={{ overflowWrap: "anywhere" }}>SHA-256：{artifact.digest}</p></details>
+        </li>)}</ul>
+      </section>}
       <h3>成果与证据</h3>
       {work.deliverables.length === 0 ? <p>尚无保存的成果。</p> : work.deliverables.map(deliverable => <article key={deliverable.deliverableId}>
         <strong>{{ proposed: work.lifecycle === "closed" ? "未采纳（已结束）" : "待评审", accepted: "已采纳", rejected: "已拒绝", superseded: "历史成果" }[deliverable.status]}</strong>

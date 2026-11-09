@@ -1,3 +1,5 @@
+import { WorkRuntimeObservation } from "./WorkRuntimeObservation";
+import { WorkGeneratedArtifacts } from "./WorkGeneratedArtifacts";
 import { reportWorkBlockerMutation, replyUserInputMutation, replyLegacyUserInputMutation } from "./WorkUserInputControls";
 import { legacyUserInputSource } from "./WorkLegacyUserInput";
 import type { ReplyUserInputParams, ReplyLegacyUserInputParams } from "../../../shared/bot-work-review";
@@ -127,6 +129,8 @@ export class WorkService {
   readonly nativeResults: WorkNativeResultInbox;
   readonly partialResults: WorkPartialResults;
   readonly artifacts: WorkArtifactValidation;
+  readonly generatedArtifacts: WorkGeneratedArtifacts;
+  readonly runtimeObservations: WorkRuntimeObservation;
   readonly collaboration: WorkCollaborationService;
   readonly notifications: WorkNotificationDelivery;
   readonly pausedBacklog: WorkPausedBacklog;
@@ -158,6 +162,8 @@ export class WorkService {
     this.scheduler = new WorkWatchScheduler(db, this, { now: this.now, isAuthority: () => !this.authority || this.authority() });
     this.partialResults = new WorkPartialResults(db, this);
     this.artifacts = new WorkArtifactValidation(db, this);
+    this.generatedArtifacts = new WorkGeneratedArtifacts(db, this);
+    this.runtimeObservations = new WorkRuntimeObservation(id => this.repo.listBindings(id));
     this.collaboration = new WorkCollaborationService(db, this, this.bots, { now: this.now, isAuthority: () => !this.authority || this.authority() });
     this.notifications = new WorkNotificationDelivery(db, this, { now: this.now, isAuthority: () => !this.authority || this.authority(), artifacts: this.artifacts });
     this.cards = new WorkResultCards(db, this.repo);
@@ -294,6 +300,8 @@ export class WorkService {
       criteria: work.criteria,
       acceptedDeliverableIds: [...currentResultIds],
       deliverables,
+      generatedArtifacts: this.generatedArtifacts.list(work.workId),
+      runtimeObservations: this.runtimeObservations.forWork(work.workId),
       blockers,
       executions,
       notifications,

@@ -2,8 +2,9 @@
  * Bounded startup resumption.
  *
  * Only the startup drain goes through this queue. Interactive reads (history, prompt, abort)
- * call `open()` directly, so they never wait behind background recovery: a foreground open
- * claims its queued entry and the drain later skips it instead of opening the runtime twice.
+ * call `open()` directly, so they never wait behind background recovery. The service
+ * deduplicates opens but retains the queued resume obligation: a history read alone
+ * must not consume it. Explicit claim is only for a caller taking over resume too.
  *
  * "Delivered" means `open()` resolved and `runtime.resume()` was invoked. Pi's resume is
  * synchronous, so a delivered item may still be running tools, subtasks or receipt work; the
@@ -71,7 +72,7 @@ export class ResumeAdmission {
     }
   }
 
-  /** Foreground access takes ownership of a queued task: the caller opens it without waiting. */
+  /** Explicit transfer of the complete open+resume obligation, not a read-only history access. */
   claim(taskId: string): boolean {
     if (!this.pendingSet.delete(taskId)) return false;
     this.claimed.push(taskId);

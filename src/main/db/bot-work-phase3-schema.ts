@@ -1,3 +1,4 @@
+import { ensureWorkGeneratedArtifactTables } from "../agent/work/WorkGeneratedArtifacts";
 import type Database from "better-sqlite3";
 import { ensureWorkArtifactTables } from "../agent/work/WorkArtifactValidation";
 import { ensureWorkPausedTables } from "../agent/work/WorkPausedBacklog";
@@ -8,6 +9,7 @@ import { ensureWorkCollaborationTables } from "../agent/work/WorkCollaborationSe
 export function ensureBotWorkPhase3Tables(db: Database.Database): void {
   ensureWorkPartialTables(db);
   ensureWorkArtifactTables(db);
+  ensureWorkGeneratedArtifactTables(db);
   ensureWorkPausedTables(db);
   ensureWorkCollaborationTables(db);
   // New business facts share the existing per-user stream and retention boundary.
@@ -15,6 +17,7 @@ export function ensureBotWorkPhase3Tables(db: Database.Database): void {
     ["work_subitem_results", row => `${row}.work_id`],
     ["work_continuation_plans", row => `${row}.work_id`],
     ["work_artifact_dependencies", row => `${row}.work_id`],
+    ["work_generated_artifacts", row => `(SELECT work_id FROM work_execution_bindings WHERE binding_id=${row}.binding_id)`],
     ["work_collaboration_messages", row => `${row}.work_id`],
     ["work_handoff_preparations", row => `${row}.work_id`],
     ["work_delegation_adoptions", row => `(SELECT work_id FROM work_execution_bindings WHERE binding_id=${row}.binding_id)`],

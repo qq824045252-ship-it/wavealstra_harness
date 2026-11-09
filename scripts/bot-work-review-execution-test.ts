@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppDatabase } from "../src/main/db/AppDatabase";
@@ -349,6 +349,33 @@ try {
     assert.deepEqual(recovered.artifactRefs, ["weather.txt"]);
     assert.equal(service.repo.listOutbox(work.workId).filter(item => item.eventType === "work.deliverable_proposed").length, 2,
       "one original legacy proposal and one recovered proposal, never a duplicate delivery");
+  });
+  await check("registered running files survive restart and terminal replay without early or duplicate proposals", async () => {
+    const work = create(), binding = bind(work.workId, operation());
+    const path = join(root, "retained.html"); writeFileSync(path, "<h1>real file</h1>");
+    const receipt: AgentSubmissionReceipt = { taskId: binding.taskId, operationId: binding.operationId, submissionId: 4010, status: "placed" };
+    const artifact = { path, digest: "a".repeat(64), sizeBytes: 18, registeredAt: 1, sourceEntryId: 4011 };
+    const running = { status: "running" as const, generatedArtifacts: [artifact] };
+    assert.deepEqual(service.nativeResults.receive(binding, receipt, running), []);
+    assert.deepEqual(service.nativeResults.receive(binding, receipt, running), []);
+    assert.equal(service.getProjection(work.workId)?.generatedArtifacts?.length, 1);
+    assert.equal(service.repo.listDeliverables(work.workId).length, 0, "a saved file is not yet a final answer");
+    assert.equal(service.getWork(work.workId)?.criteria[0].status, "pending");
+    const reopened = new AppDatabase(join(root, "work.db"));
+    const recovered = new WorkService(reopened.connection, { bots: new BotRegistry(reopened.connection) });
+    assert.equal(recovered.getProjection(work.workId)?.generatedArtifacts?.length, 1);
+    const terminal = { status: "failed" as const, summary: "", failureReason: "model interrupted", artifactRefs: [path], hasWriteConflicts: false, generatedArtifacts: [artifact] };
+    assert.deepEqual(recovered.nativeResults.receive(binding, { ...receipt, status: "unanswered" }, terminal), []);
+    assert.deepEqual(recovered.nativeResults.receive(binding, { ...receipt, status: "unanswered" }, terminal), []);
+    assert.equal(recovered.repo.listDeliverables(work.workId).length, 1);
+    assert.equal(recovered.repo.listOutbox(work.workId).filter(row => row.eventType === "work.deliverable_proposed").length, 1);
+    assert.equal(recovered.getWork(work.workId)?.criteria[0].status, "pending");
+    reopened.close();
+    const other = create(), otherBinding = bind(other.workId, operation());
+    assert.deepEqual(service.nativeResults.receive(otherBinding, { ...receipt, taskId: otherBinding.taskId, operationId: otherBinding.operationId },
+      { ...running, generatedArtifacts: [{ ...artifact, digest: "b".repeat(64) }] }), []);
+    assert.equal(service.getProjection(work.workId)?.generatedArtifacts?.[0].digest, artifact.digest, "same path in another Work cannot replace provenance");
+    assert.equal(service.getProjection(other.workId)?.generatedArtifacts?.length, 1);
   });
 } finally {
   db.close();

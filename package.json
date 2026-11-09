@@ -401,6 +401,7 @@
     "test:subagent:live": "esbuild scripts/subagent-live-scenarios.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/subagent-live-scenarios.mjs && node scripts/test-guard.mjs out/tests/subagent-live-scenarios.mjs",
     "test:durable-bot": "esbuild scripts/durable-bot-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/durable-bot-test.mjs && node scripts/test-guard.mjs out/tests/durable-bot-test.mjs",
     "test:durable-provider-authority": "esbuild scripts/durable-provider-authority-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/durable-provider-authority-test.mjs && node scripts/test-guard.mjs out/tests/durable-provider-authority-test.mjs",
+    "test:durable-work-liveness": "esbuild scripts/durable-work-liveness-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/durable-work-liveness-test.mjs && node scripts/test-guard.mjs out/tests/durable-work-liveness-test.mjs",
     "test:durable-session-recovery": "esbuild scripts/durable-session-recovery-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/durable-session-recovery-test.mjs && node scripts/test-guard.mjs out/tests/durable-session-recovery-test.mjs",
     "test:durable-turn-evidence": "esbuild scripts/durable-turn-evidence-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/durable-turn-evidence-test.mjs && node scripts/test-guard.mjs out/tests/durable-turn-evidence-test.mjs",
     "test:durable-log-repair": "esbuild scripts/durable-log-repair-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/durable-log-repair-test.mjs && node scripts/test-guard.mjs out/tests/durable-log-repair-test.mjs",
@@ -553,7 +554,9 @@
     "test:bot-deletion": "esbuild scripts/bot-deletion-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/bot-deletion-test.mjs && node scripts/test-guard.mjs out/tests/bot-deletion-test.mjs",
     "test:bot-settings": "esbuild scripts/bot-settings-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/bot-settings-test.mjs && node scripts/test-guard.mjs out/tests/bot-settings-test.mjs",
     "test:bot-frontdoor:live": "node scripts/bot-frontdoor-live-test.cjs",
-    "test:bot-settings-dev": "node scripts/bot-settings-dev-test.cjs"
+    "test:bot-settings-dev": "node scripts/bot-settings-dev-test.cjs",
+    "test:durable-artifact-registration": "esbuild scripts/durable-artifact-registration-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/durable-artifact-registration-test.mjs && node scripts/test-guard.mjs out/tests/durable-artifact-registration-test.mjs",
+    "test:work-artifact-desktop": "esbuild scripts/work-artifact-desktop-fixture.tsx --bundle --platform=browser --format=iife --jsx=automatic --alias:@=./src/renderer/src --alias:@shared=./src/shared --loader:.css=empty --outfile=out/tests/work-artifact-desktop-fixture.js && electron scripts/work-artifact-desktop-test.cjs"
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.85.0",

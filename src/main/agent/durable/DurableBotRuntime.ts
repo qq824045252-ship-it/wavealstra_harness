@@ -1,3 +1,4 @@
+import { createDurableArtifactRegistrationTool, withDurableArtifactRegistration } from "./DurableArtifactRegistration";
 import { withNativeNotStarted } from "./DurableToolLifecycle";
 import { canRebindDurableWorkspace, migrateDurableWorkspace, WorkspaceMigrationBusyError } from "./DurableWorkspaceMigration";
 import { withWorkShellRead } from "../work/WorkShellRead";
@@ -201,7 +202,7 @@ export class DurableBotRuntime {
     const handle = options.storage ? undefined : await openDurableStorage(options.directory, ctx, { readOnly: options.readOnly });
     const storage = options.storage ?? handle!.storage;
     const registry = createRegistry();
-    const native = [...codingTools(), ...(options.tools ?? [])];
+    const native = [...codingTools(options.directory), ...(options.tools ?? [])];
     let compatibility: ToolRegistration[] = [];
     try {
       if (options.restoreTools) {
@@ -306,7 +307,7 @@ export class DurableBotRuntime {
     if (contextHooks) this.options.contextHooks = [...contextHooks];
     if (toolHooks) this.options.toolHooks = toolHooks;
     if (extensions || contextHooks) {
-      if (extensions) this.nativeTools = [...codingTools(), ...extensions];
+      if (extensions) this.nativeTools = [...codingTools(this.options.directory), ...extensions];
       const available = this.nativeTools;
       this.codemode = createDurableCodeMode(() => available.filter(tool => this.options.toolAllowed?.(tool.name) !== false), this.options.assets, join(this.options.directory, "images"), async (code, context) => {
         const tools = await this.options.prepareCodeMode?.(code, context) ?? [];
@@ -963,10 +964,11 @@ export class DurableBotRuntime {
  * （两个 Tag 都生效），Linux/macOS 复用 CodingTools 自带的 bash。
  * 平台判定见 `platform/shell-tools.ts`（业务侧不再直接判断 process.platform）。
  */
-function codingTools(): ToolRegistration[] {
+function codingTools(directory: string): ToolRegistration[] {
   return [
-    ...(CodingTools.tools ?? []).map(tool => tool.name === "read" ? withDurableImageRead(tool) : withWorkShellRead(tool)),
+    ...(CodingTools.tools ?? []).map(tool => tool.name === "read" ? withDurableImageRead(tool) : withDurableArtifactRegistration(withWorkShellRead(tool), directory)),
     ...createPlatformShellTools(),
+    createDurableArtifactRegistrationTool(directory),
   ];
 }
 

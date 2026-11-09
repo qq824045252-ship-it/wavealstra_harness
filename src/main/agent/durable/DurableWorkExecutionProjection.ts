@@ -1,3 +1,5 @@
+import { durableRegisteredArtifact } from "./DurableArtifactRegistration";
+import type { GeneratedArtifact } from "../../../shared/bot-work-phase3";
 import { z } from "zod";
 import { isAbsolute, resolve } from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
@@ -11,10 +13,11 @@ export async function readDurableWorkExecution(
   tx: Pick<Tx, "scanEntries">,
   record: SubmissionRecord,
   workspaceBinding?: string,
+  durableStoreKey?: string,
 ): Promise<WorkExecutionObservation> {
-  if (record.status === "queued" || record.status === "placed") return { status: "running" };
   if (record.type !== "input") throw new Error("原生回执不是已结束的业务输入");
-  const evidence = await scanExecutionEvidence(tx, record, workspaceBinding);
+  const evidence = await scanExecutionEvidence(tx, record, workspaceBinding, durableStoreKey);
+  if (record.status === "queued" || record.status === "placed") return { status: "running", ...(evidence.generatedArtifacts.length ? { generatedArtifacts: evidence.generatedArtifacts } : {}) };
   const answer = evidence.answer;
   const status = record.status === "unanswered" ? record.reason === "aborted" ? "stopped" : "failed"
     : !answer || ["error", "length"].includes(answer.stopReason) ? "failed"
@@ -29,7 +32,7 @@ export async function readDurableWorkExecution(
   const subitems = evidence.projection.messages.flatMap(message => (message.tools ?? [])
     .flatMap(tool => tool.detail ? readNativeSubitems(tool.id, tool.detail) : []));
   return {
-    status, summary,
+    status, summary, ...(evidence.generatedArtifacts.length ? { generatedArtifacts: evidence.generatedArtifacts } : {}),
     ...(failureReason ? { failureReason } : {}),
     sourceEntryId: record.status === "done" && answer ? record.answer : evidence.lastEntryId,
     // An interrupted provider may have unreported spend. Never call that zero.
@@ -43,11 +46,12 @@ export async function readDurableWorkExecution(
 
 /** All terminal paths share the same crop, successful-tool checks and pagination. */
 async function scanExecutionEvidence(tx: Pick<Tx, "scanEntries">,
-  record: Extract<SubmissionRecord, { type: "input" }>, workspaceBinding?: string) {
+  record: Extract<SubmissionRecord, { type: "input" }>, workspaceBinding?: string, durableStoreKey?: string) {
   const projection = new DurableHistoryProjection();
   const fileCalls = new Map<string, { name: string; path: string }>();
   const readPaths = new Set<string>(), artifacts = new Set<string>();
   const responses: Array<{ text: string }> = [];
+  const generatedArtifacts: GeneratedArtifact[] = [];
   let answer: AssistantMessage | undefined;
   let lastEntryId: number | undefined;
   let usageTokens = 0, reported = false;
@@ -59,6 +63,14 @@ async function scanExecutionEvidence(tx: Pick<Tx, "scanEntries">,
     // Crop BEFORE merging or extracting anything, including subitems and conflicts.
     const entries = nextInput < 0 ? page.items : page.items.slice(0, nextInput);
     projection.merge(entries, new Map(), {});
+    for (const entry of entries) {
+      const registered = durableRegisteredArtifact(entry, record.id, workspaceBinding, durableStoreKey);
+      if (registered) {
+        artifacts.add(registered.snapshotPath ?? registered.path);
+        generatedArtifacts.push({ path: registered.path, digest: registered.digest, sizeBytes: registered.sizeBytes,
+          registeredAt: registered.registeredAt, sourceEntryId: entry.id, ...(registered.snapshotPath ? { snapshotPath: registered.snapshotPath } : {}) });
+      }
+    }
     for (const entry of entries) for (const message of entry.model ?? []) {
       lastEntryId = entry.id;
       if (message.role === "assistant") {
@@ -91,7 +103,9 @@ async function scanExecutionEvidence(tx: Pick<Tx, "scanEntries">,
     if (nextInput >= 0) break;
     cursor = page.next;
   } while (cursor);
-  return { projection, readPaths, artifacts, responses, answer, lastEntryId, usageTokens, reported };
+  // A registered immutable version replaces the mutable source path in delivery.
+  for (const artifact of generatedArtifacts) if (artifact.snapshotPath) artifacts.delete(artifact.path);
+  return { projection, readPaths, artifacts, generatedArtifacts, responses, answer, lastEntryId, usageTokens, reported };
 }
 
 const nativePlanSchema = z.object({ itemId: z.string(), task: z.string(), required: z.boolean().optional(), dependencies: z.array(z.string()).optional(),
