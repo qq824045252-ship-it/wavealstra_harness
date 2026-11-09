@@ -655,6 +655,7 @@ const api = {
     hostStatus: () => ipcRenderer.invoke(BotWorkIpc.hostStatus),
     listBots: () => ipcRenderer.invoke(BotWorkIpc.listBots),
     createBot: request => ipcRenderer.invoke(BotWorkIpc.createBot, request),
+    updateWorkspaceAuthorization: request => ipcRenderer.invoke(BotWorkIpc.updateWorkspaceAuthorization, request),
     teamControl: request => ipcRenderer.invoke(BotWorkIpc.teamControl, request),
     listBotExpertVersions: (botId: string) => ipcRenderer.invoke(BotWorkIpc.listBotExpertVersions, botId),
     adoptBotExpertVersion: (botId: string, expected) => ipcRenderer.invoke(BotWorkIpc.adoptBotExpertVersion, botId, expected),

@@ -24,6 +24,7 @@ export function BotCreateDialog({ open, onClose }: { open: boolean; onClose: () 
   const [pending, setPending] = useState(readPending);
   const [name, setName] = useState(() => pending?.displayName ?? "");
   const [responsibility, setResponsibility] = useState(() => pending?.responsibilitySummary ?? "");
+  const [allowWorkspaceFiles, setAllowWorkspaceFiles] = useState(pending?.allowWorkspaceFiles ?? false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [created, setCreated] = useState<BotDto | null>(null);
@@ -55,7 +56,7 @@ export function BotCreateDialog({ open, onClose }: { open: boolean; onClose: () 
   }, [open]);
 
   const close = () => { intentEpoch.current += 1; openRef.current = false; onClose(); };
-  const reset = () => { setPending(null); setName(""); setResponsibility(""); setCreated(null); setError(""); };
+  const reset = () => { setPending(null); setName(""); setResponsibility(""); setAllowWorkspaceFiles(false); setCreated(null); setError(""); };
   const openBot = (bot: BotDto) => {
     const state = useAppStore.getState();
     state.setActiveBotId(bot.botId);
@@ -64,7 +65,7 @@ export function BotCreateDialog({ open, onClose }: { open: boolean; onClose: () 
   };
   const submit = async () => {
     if (inFlight.current || (!pending && (!name.trim() || duplicateName))) return;
-    const request = pending ?? { requestId: crypto.randomUUID(), displayName: name.trim(), responsibilitySummary: responsibility.trim() };
+    const request = pending ?? { requestId: crypto.randomUUID(), displayName: name.trim(), responsibilitySummary: responsibility.trim(), allowWorkspaceFiles };
     const parsed = botCreateRequestSchema.safeParse(request);
     if (!parsed.success) { setError("请填写 1–80 字的名称，职责说明最多 2000 字。"); return; }
     // Save before dispatch. Reloads and lost acknowledgements retry the same identity.
@@ -118,7 +119,9 @@ export function BotCreateDialog({ open, onClose }: { open: boolean; onClose: () 
       <label htmlFor="bot-create-responsibility">主要职责 <span>选填</span></label>
       <textarea id="bot-create-responsibility" name="responsibilitySummary" value={responsibility} onChange={event => { setResponsibility(event.target.value); setError(""); }}
         maxLength={2000} disabled={Boolean(pending)} placeholder="例如：帮我拆解学习目标、整理材料，按我确认的计划跟进。" rows={4} />
-      <p className="bot-create-boundary">默认使用基础协调能力。创建不会自动执行任务、连接外部服务或扩大操作权限。</p>
+      <label><input type="checkbox" checked={allowWorkspaceFiles} disabled={Boolean(pending)} onChange={event => setAllowWorkspaceFiles(event.target.checked)} />允许新委托在分配的工作区内创建、修改文件</label>
+      <p>勾选后，范围内常规文件操作无需逐次审批。不会授权删除、Git 推送、外部发送、凭据操作或任意 shell；已有事项不变。</p>
+      <p className="bot-create-boundary">默认使用基础协调能力。创建不会自动执行任务或连接外部服务，文件操作以你勾选的范围为准。</p>
       {error && <p className="bot-create-error" role="alert">{error}</p>}
       {pending && <p className="bot-create-pending" role="status">{busy ? "正在创建。关闭窗口不会撤销已提交的请求。" : "上次创建结果尚未确认。重试会核对原请求，不会重复创建。"}</p>}
       <footer className="bot-create-actions"><button type="button" onClick={close}>{pending ? "关闭" : "取消"}</button>

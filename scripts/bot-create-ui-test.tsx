@@ -389,6 +389,7 @@ async function main() {
       reply = deferred<BotCreateResult>(); await submit(); assert.deepEqual(requests[1], original);
     });
     await testStoreRefreshRace();
+    await testWorkspaceGrant();
     await testEntries();
   } finally {
     await unmount(); store.setState(initialState, true); values.clear();
@@ -421,6 +422,47 @@ async function testStoreRefreshRace() {
     await stale;
     assert.equal(isolated.getState().activeBotId, created.botId); assert.equal(isolated.getState().page, "bot");
     assert.ok(isolated.getState().botIdentities.some(item => item.botId === created.botId));
+  });
+}
+
+async function toggleCheckbox(input: HTMLInputElement, checked: boolean) {
+  await act(async () => {
+    input.checked = checked;
+    input.dispatchEvent(new testWindow.Event("click", { bubbles: true }));
+  });
+}
+async function testWorkspaceGrant() {
+  await check("explicit creation grant is saved with the immutable retry request", async () => {
+    await reset(); await fill("Writable helper");
+    const checkbox = container.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    assert.equal(Boolean(checkbox.checked), false);
+    await toggleCheckbox(checkbox, true);
+    await submit();
+    assert.equal(requests[0].allowWorkspaceFiles, true);
+    assert.equal(checkbox.disabled, true);
+    assert.equal(JSON.parse(storage.getItem("mybuddy.pending-bot-creation")!).allowWorkspaceFiles, true);
+    await succeed();
+  });
+  await check("settings grant requires confirmation, uses version guard and never mutates old Work", async () => {
+    await reset(); await unmount();
+    const { BotWorkspaceAuthorization } = await import("../src/renderer/src/components/pages/BotWorkspaceAuthorization");
+    const saved: unknown[] = [];
+    api!.botWork.updateWorkspaceAuthorization = async request => {
+      saved.push(request); return { ok: true, bot: mybuddy, replayed: false };
+    };
+    container = testDocument.body.appendChild(testDocument.createElement("div")); root = createRoot(container);
+    await act(async () => root!.render(<BotWorkspaceAuthorization bot={mybuddy} />));
+    assert.match(container.textContent!, /已有事项/);
+    await toggleCheckbox(container.querySelector<HTMLInputElement>('input[type="checkbox"]')!, true);
+    const button = container.querySelector<HTMLButtonElement>("button")!;
+    assert.equal(button.disabled, true);
+    await toggleCheckbox(container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')[1], true);
+    assert.equal(button.disabled, false);
+    await act(async () => nativeClick(button));
+    assert.deepEqual(saved, [{ botId: mybuddy.botId, expectedUpdatedAt: mybuddy.updatedAt,
+      allowWorkspaceFiles: true, confirmNewWorksOnly: true }]);
+    assert.deepEqual(store.getState().botWorks, [work]);
+    assert.deepEqual(forbiddenCalls, []);
   });
 }
 

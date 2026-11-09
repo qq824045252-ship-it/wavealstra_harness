@@ -1050,6 +1050,11 @@ function registerIpc(): void {
   ipcMain.handle(BotWorkIpc.phase4Control, (_e, request: unknown) => agentService.phase4WorkControl(request));
   ipcMain.handle(BotWorkIpc.hostStatus, () => agentService.getWorkHostStatus());
   ipcMain.handle(BotWorkIpc.listBots, () => agentService.listBots());
+  ipcMain.handle(BotWorkIpc.updateWorkspaceAuthorization, createBotIpcHandler({
+    getMainWindow: () => botManagementWindow,
+    rendererUrl: process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href,
+    createBot: request => agentService.updateBotWorkspaceAuthorization(request),
+  }));
   ipcMain.handle(BotWorkIpc.createBot, createBotIpcHandler({
     getMainWindow: () => botManagementWindow,
     rendererUrl: process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href,

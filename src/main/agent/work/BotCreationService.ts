@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
-import { botCreateSchema, type BotCreateResult } from "../../../shared/bot-create";
+import { botCreateSchema, botWorkspaceAuthorizationSchema, type BotCreateResult } from "../../../shared/bot-create";
 import { minimumAuthorization, type ExpertProfileDto } from "../../../shared/bot-work";
 import type { BotRegistry } from "./BotRegistry";
 
@@ -20,6 +20,39 @@ export class BotCreationService {
     private readonly host: { userId: string; isAuthority: () => boolean },
   ) {}
 
+  updateWorkspaceAuthorization(request: unknown): BotCreateResult {
+    const parsed = botWorkspaceAuthorizationSchema.safeParse(request);
+    if (!parsed.success) return { ok: false, code: "invalid_request", message: "请确认此设置只影响新委托" };
+    const input = parsed.data;
+    try {
+      return this.db.transaction((): BotCreateResult => {
+        if (!this.host.isAuthority()) return { ok: false, code: "not_authority", message: "请在主宿主恢复后重试" };
+        const bot = this.bots.getBot(input.botId);
+        if (!bot || bot.userId !== this.host.userId) return { ok: false, code: "forbidden", message: "不能修改此 Bot 的授权" };
+        if (bot.updatedAt !== input.expectedUpdatedAt) return { ok: false, code: "request_conflict", message: "Bot 已更新，请刷新并重新确认" };
+        const before = bot.authorization.allowedScopes;
+        const next = [...before.filter(scope => scope !== "workspace:write"), ...(input.allowWorkspaceFiles ? ["workspace:write"] : [])];
+        if (JSON.stringify(before) === JSON.stringify(next)) return { ok: true, bot, replayed: true };
+        const now = Math.max(Date.now(), bot.updatedAt + 1);
+        this.db.prepare("UPDATE bots SET authorization_json=?, updated_at=? WHERE bot_id=? AND user_id=?")
+          .run(JSON.stringify({ ...bot.authorization, allowedScopes: next }), now, bot.botId, this.host.userId);
+        this.audit(bot.botId, before, next, now);
+        return { ok: true, bot: this.bots.getBot(bot.botId)!, replayed: false };
+      }).immediate();
+    } catch { return { ok: false, code: "storage_error", message: "授权设置未确认保存，请刷新后重试" }; }
+  }
+
+  private audit(botId: string, previous: string[], next: string[], now: number): void {
+    this.db.exec(`CREATE TABLE IF NOT EXISTS bot_workspace_authorization_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, bot_id TEXT NOT NULL, user_id TEXT NOT NULL,
+      previous_scopes_json TEXT NOT NULL, next_scopes_json TEXT NOT NULL,
+      applies_to TEXT NOT NULL CHECK(applies_to='new_works'), created_at INTEGER NOT NULL
+    )`);
+    this.db.prepare(`INSERT INTO bot_workspace_authorization_events
+      (bot_id,user_id,previous_scopes_json,next_scopes_json,applies_to,created_at) VALUES (?,?,?,?, 'new_works',?)`)
+      .run(botId, this.host.userId, JSON.stringify(previous), JSON.stringify(next), now);
+  }
+
   createBot(request: unknown): BotCreateResult {
     const parsed = botCreateSchema.safeParse(request);
     if (!parsed.success) return { ok: false, code: "invalid_request", message: "请填写 1–80 字的名称及不超过 2000 字的职责；创建请求格式无效" };
@@ -27,7 +60,7 @@ export class BotCreationService {
     // Stable, namespaced identity avoids a schema bump (which discards existing user databases).
     // The immutable initial expert version also serves as the durable request fingerprint.
     const botId = `bot-created-${digest([this.host.userId, input.requestId])}`;
-    const creationRevision = `bot-create-v1:${digest([input.displayName, input.responsibilitySummary])}`;
+    const creationRevision = `bot-create-v1:${digest(input.allowWorkspaceFiles ? [input.displayName, input.responsibilitySummary, true] : [input.displayName, input.responsibilitySummary])}`;
     try {
       return this.db.transaction((): BotCreateResult => {
         // Check the persisted host lease inside the write lock, not a renderer-supplied claim.
@@ -61,8 +94,10 @@ export class BotCreationService {
         const bot = this.bots.registerBot({
           botId, userId: this.host.userId, displayName: input.displayName,
           responsibilitySummary: input.responsibilitySummary, expertProfile: profile,
-          authorization: minimumAuthorization(),
+          authorization: { ...minimumAuthorization(), allowedScopes: input.allowWorkspaceFiles
+            ? ["workspace:read", "workspace:write"] : ["workspace:read"] },
         });
+        if (input.allowWorkspaceFiles) this.audit(botId, ["workspace:read"], bot.authorization.allowedScopes, Date.now());
         return { ok: true, bot, replayed: false };
       }).immediate();
     } catch {

@@ -225,6 +225,36 @@ if (!isMainThread) {
     assert.equal(db.connection.pragma("user_version", { simple: true }), CURRENT_DATABASE_SCHEMA_VERSION);
     assert.equal(readdirSync(root).some(name => name.startsWith("app.db.discarded-")), false);
     assert.equal(db.getTask("keep-existing-task")?.title, "Existing conversation");
+    const writableRequest = { ...request("文件助理"), allowWorkspaceFiles: true };
+    const writable = ok(service().createBot(writableRequest)).bot;
+    assert.deepEqual(writable.authorization, { ...minimumAuthorization(), allowedScopes: ["workspace:read", "workspace:write"] });
+    assert.equal(count("bot_workspace_authorization_events"), 1);
+    assert(ok(service().createBot(writableRequest)).replayed);
+    error(service().createBot({ ...writableRequest, allowWorkspaceFiles: false }), "request_conflict");
+    const edit = { botId: writable.botId, expectedUpdatedAt: writable.updatedAt,
+      allowWorkspaceFiles: false, confirmNewWorksOnly: true };
+    error(service("another-user").updateWorkspaceAuthorization(edit), "forbidden");
+    error(service().updateWorkspaceAuthorization({ ...edit, confirmNewWorksOnly: false }), "invalid_request");
+    error(service().updateWorkspaceAuthorization({ ...edit, allowedScopes: ["*"] }), "invalid_request");
+    const readonly = ok(service().updateWorkspaceAuthorization(edit)).bot;
+    assert.deepEqual(readonly.authorization, minimumAuthorization());
+    assert(readonly.updatedAt > writable.updatedAt);
+    error(service().updateWorkspaceAuthorization({ ...edit, allowWorkspaceFiles: true }), "request_conflict");
+    assert.equal(count("bot_workspace_authorization_events"), 2);
+    const again = ok(service().updateWorkspaceAuthorization({ ...edit, expectedUpdatedAt: readonly.updatedAt, allowWorkspaceFiles: true })).bot;
+    assert.deepEqual(again.authorization.allowedScopes, ["workspace:read", "workspace:write"]);
+    assert.equal(count("bot_workspace_authorization_events"), 3);
+    db.connection.exec("CREATE TEMP TRIGGER fail_grant_audit BEFORE INSERT ON bot_workspace_authorization_events BEGIN SELECT RAISE(ABORT, 'audit failure'); END");
+    error(service().updateWorkspaceAuthorization({ ...edit, expectedUpdatedAt: again.updatedAt }), "storage_error");
+    assert.deepEqual(bots.getBot(again.botId), again, "audit failure rolls back the authorization and version");
+    db.connection.exec("DROP TRIGGER fail_grant_audit");
+    // Grant changes do not mutate any existing Work, execution, approval or task.
+    const afterGrant = unaffectedCounts();
+    delete afterGrant.bot_workspace_authorization_events;
+    assert.deepEqual(afterGrant, initial);
+    authority.release();
+    error(service().updateWorkspaceAuthorization({ ...edit, expectedUpdatedAt: again.updatedAt }), "not_authority");
+    assert(authority.acquire().ok);
     console.log("PASS Bot creation: strict validation, least privilege, immutable own expert, user/name isolation, atomic rollback, single authority, trusted IPC, concurrent/lost-response replay, durable reopen without data reset");
   } finally {
     authority.release();

@@ -25,6 +25,7 @@ export const BotWorkIpc = {
   hostStatus: "bot-work:host-status",
   listBots: "bot-work:list-bots",
   createBot: "bot-work:create-bot",
+  updateWorkspaceAuthorization: "bot-work:update-workspace-authorization",
   teamControl: "bot-work:team-control",
   listBotExpertVersions: "bot-work:list-bot-expert-versions",
   adoptBotExpertVersion: "bot-work:adopt-bot-expert-version",
@@ -73,6 +74,7 @@ export interface BotWorkApi {
   hostStatus(): Promise<BotWorkHostStatusDto>;
   listBots(): Promise<BotDto[]>;
   createBot(request: BotCreateRequest): Promise<BotCreateResult>;
+  updateWorkspaceAuthorization(request: import("./bot-create").BotWorkspaceAuthorizationRequest): Promise<BotCreateResult>;
   teamControl(request: WorkTeamControlRequest): Promise<WorkTeamControlResult>;
   listBotExpertVersions(botId: string): Promise<BotExpertVersionDto[]>;
   adoptBotExpertVersion(botId: string, expected: { pendingVersion: number; snapshotId: string }): Promise<BotExpertAdoptionResult>;

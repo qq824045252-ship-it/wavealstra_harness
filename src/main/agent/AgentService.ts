@@ -1164,6 +1164,12 @@ export class AgentService {
     return this.botRegistry.listBots(LOCAL_USER_ID);
   }
 
+  updateBotWorkspaceAuthorization(request: unknown) {
+    return new BotCreationService(this.db.connection, this.botRegistry, {
+      userId: LOCAL_USER_ID, isAuthority: () => this.workHostAuthority.isAuthority(),
+    }).updateWorkspaceAuthorization(request);
+  }
+
   createBot(request: unknown) {
     return new BotCreationService(this.db.connection, this.botRegistry, {
       userId: LOCAL_USER_ID, isAuthority: () => this.workHostAuthority.isAuthority(),
