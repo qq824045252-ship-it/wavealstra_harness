@@ -1,6 +1,6 @@
 import { ComposerAttachmentChips } from "@/components/chat/ComposerAttachmentChips";
 import { composerFiles, mergeComposerAttachments, pastedComposerFiles, pickComposerAttachment } from "@/components/chat/composerAttachments";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { BotDto, WorkProjectionDto } from "@shared/bot-work";
 import type { BotMessageDto } from "@shared/bot-conversation";
 import type { BotWorkHostStatusDto } from "@shared/bot-work-ipc";
@@ -10,9 +10,10 @@ import { artifactImageUrl } from "@shared/artifact-ipc";
 import { ChatImageScope } from "@/components/chat/ChatImage";
 import ChatComposer from "@/components/chat/ChatComposer";
 import ChatMarkdown from "@/components/chat/ChatMarkdown";
-import { IconPlus, IconArchive, IconChevronDown, IconArrowUp, IconBot, IconCheck, IconChevronRight, IconClock, IconListTodo, IconMessageDashed, IconPanel, IconSearch, IconSettings, IconStop, IconX } from "@/components/common/icons";
+import { IconPlus, IconArchive, IconChevronDown, IconArrowUp, IconBot, IconCheck, IconChevronRight, IconClock, IconListTodo, IconMessageDashed, IconPanel, IconSettings, IconStop, IconX } from "@/components/common/icons";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
-import { activeBotReply, botParticipatesInWork, botMessageStatus, botWorkTimeline, shouldSendBotComposer, workMatchesView, workStatusLabel, workCardExcerpt, type BotWorkspaceView } from "@/lib/botWorkspacePresentation";
+import { activeBotReply, botParticipatesInWork, botMessageStatus, botWorkTimeline, shouldSendBotComposer, workMatchesView, type BotWorkspaceView } from "@/lib/botWorkspacePresentation";
+import { BotWorkBrowser } from "./BotWorkBrowser";
 import { BotWorkDetails } from "./BotWorkDetails";
 import { BotResultReport } from "./BotWorkResult";
 import { BotTeamDialog } from "./BotTeamDialog";
@@ -62,7 +63,6 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   const allWorksLoaded = useAppStore(s => s.botWorkCursor?.scope === "all");
   const [includeClosed, setIncludeClosed] = useState(allWorksLoaded);
   const [view, setView] = useState<BotWorkspaceView>("conversation");
-  const [query, setQuery] = useState("");
   const compact = useMediaQuery("(max-width: 1180px)");
   const [inspectorOpen, setInspectorOpen] = useState(Boolean(selectedWorkId));
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -84,7 +84,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   const previousScrollTop = useRef(0);
   const lastBot = useRef(activeBotId);
   const activeBot = identities.find(bot => bot.botId === activeBotId) ?? null;
-  const botWorks = works.filter(work => botParticipatesInWork(work, activeBot?.botId));
+  const botWorks = useMemo(() => works.filter(work => botParticipatesInWork(work, activeBotId)), [works, activeBotId]);
   const selected = botWorks.find(work => work.workId === selectedWorkId) ?? null;
   const messages = activeBotId ? histories[activeBotId]?.messages ?? [] : [];
   const lastMessage = messages[messages.length - 1];
@@ -118,7 +118,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
     if (lastBot.current === activeBotId) return;
     lastBot.current = activeBotId; setAttachmentError("");
     requestedWork.current = null; setNavigationNotice("");
-    setView("conversation"); setQuery(""); setSettingsOpen(false); setArchiveConfirm(false); setNewConversationOpen(false); setInspectorOpen(false);
+    setView("conversation"); setSettingsOpen(false); setArchiveConfirm(false); setNewConversationOpen(false); setInspectorOpen(false);
     followLatest.current = true; followReplyTail.current = false; previousScrollTop.current = 0;
   }, [activeBotId]);
   useEffect(() => { if (selectedWorkId) setInspectorOpen(true); }, [selectedWorkId]);
@@ -199,7 +199,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   };
   const changeView = (next: BotWorkspaceView) => {
     requestedWork.current = null; setNavigationNotice("");
-    setView(next); setQuery("");
+    setView(next);
     if (next === "closed") setIncludeClosed(true);
   };
   const send = () => {
@@ -222,8 +222,6 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
     setView("conversation"); setInspectorOpen(false);
     requestAnimationFrame(() => { setInspectorOpen(false); composerRef.current?.focus(); });
   };
-  const filteredWorks = botWorks.filter(work => workMatchesView(work, view) && work.title.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
-    .sort((a, b) => b.updatedAt - a.updatedAt);
 
   return <div className="bot-workspace" onKeyDownCapture={event => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { setInspectorOpen(false); setSettingsOpen(false); } }}>
     <section className="bot-conversation" aria-label="Bot 对话">
@@ -271,10 +269,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
               {row.messages.map(message => <BotMessage key={message.messageId} message={message} botName={activeBot?.displayName ?? "Bot"} works={botWorks} onOpenWork={openWork} onCancel={() => {}} />)}
             </details>)}</div>}
         </div>
-      </> : <section className="bot-work-browser" aria-label={`${views.find(item => item.id === view)?.label}事项`}>
-        <header className="bot-list-heading"><div><h2>{view === "active" ? "尚未结束的事项" : "每一件事，都有记录"}</h2><p>{view === "active" ? "执行状态与验收分开显示。已有结果的事项不代表仍在运行。" : "保留已完成、已取消与未完成的结束记录。"}</p></div><label className="bot-work-search"><IconSearch size={15} /><span className="bot-sr-only">搜索事项</span><input value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索事项" /></label></header>
-        {view === "closed" && !allWorksLoaded ? <p role="status">正在读取已结束事项…</p> : filteredWorks.length ? <div className="bot-work-grid">{filteredWorks.map(work => <WorkCard key={work.workId} work={work} selected={work.workId === selected?.workId} onSelect={() => openWork(work.workId)} />)}</div> : <div className="bot-list-empty"><IconListTodo size={30} /><h3>{query ? "没有找到匹配的事项" : view === "closed" ? "还没有结束的事项" : "没有尚未结束的事项"}</h3><p>{query ? "试试其他关键词。" : "回到对话，说说你想交给我的事。"}</p><button type="button" onClick={() => { setView("conversation"); composerRef.current?.focus(); }}>回到对话</button></div>}
-      </section>}
+      </> : <BotWorkBrowser key={`${activeBotId}-${view}`} works={botWorks} view={view} loading={view === "closed" && !allWorksLoaded} selectedWorkId={selected?.workId} onOpenWork={openWork} onConversation={() => { setView("conversation"); requestAnimationFrame(() => composerRef.current?.focus()); }} />}
       <form className="bot-composer input-area" onDragOver={event => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; } }} onDrop={event => { if (event.dataTransfer.files.length) { event.preventDefault(); void addAttachments(Array.from(event.dataTransfer.files)); } }} onSubmit={event => { event.preventDefault(); send(); }}>
         {view === "conversation" && awayFromBottom && <button type="button" className="bot-latest-button" onClick={() => { const el = threadRef.current; if (el) el.scrollTop = el.scrollHeight; followLatest.current = true; followReplyTail.current = true; setAwayFromBottom(false); }}><IconChevronDown size={14} />回到最新消息</button>}
         {activeBotId && sendErrors[activeBotId] && <p className="bot-send-error" role="alert">{sendErrors[activeBotId]}</p>}
@@ -324,13 +319,4 @@ export function BotMessage({ message, botName, works, onOpenWork, onCancel }: { 
     <div className="bot-message-meta">{(message.text || !running) && <span role={running ? "status" : undefined}>{botMessageStatus(message)}</span>}<time dateTime={new Date(message.createdAt).toISOString()}>{new Date(message.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time>{running && <button type="button" onClick={onCancel}><IconStop size={14} />停止回复</button>}</div>
     {message.error && <p className="bot-alert" role="alert">{message.error}</p>}
   </article>;
-}
-
-function WorkCard({ work, selected, onSelect }: { work: WorkProjectionDto; selected: boolean; onSelect: () => void }): React.JSX.Element {
-  const latest = [...work.deliverables].reverse().find(item => item.status === "accepted" || item.status === "proposed");
-  return <button type="button" className="bot-work-card" aria-pressed={selected} onClick={onSelect}>
-    <div className="bot-work-card-top"><span className={`bot-status-badge ${work.closureConclusion === "succeeded" ? "success" : ""}`}>{workStatusLabel(work)}</span><span>{work.team ? `${work.team.members.length + 1} 位 Bot 组队` : work.mode === "watch" ? "持续关注" : "单次委托"}</span></div>
-    <strong>{work.title}</strong><p className="bot-work-excerpt"><span>{latest ? "成果摘录：" : "下一步："}</span>{workCardExcerpt(latest?.summary ?? work.nextSteps[0] ?? "打开查看目标、进展与成果。", work.title)}</p>
-    <div className="bot-work-card-bottom"><span>{work.deliverables.length ? `${work.deliverables.length} 项成果` : "等待成果"} · {new Date(work.updatedAt).toLocaleDateString("zh-CN", { month: "short", day: "numeric" })}</span><span className="bot-work-card-open">查看完整内容<IconChevronRight size={16} /></span></div>
-  </button>;
 }

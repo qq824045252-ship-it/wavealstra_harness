@@ -2,12 +2,13 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { BotMessageDto } from "../src/shared/bot-conversation";
-import { activeBotReply, botMessageStatus, botWorkTimeline, shouldSendBotComposer, workMatchesView, workStatusLabel, workExecutionComplete, workCardExcerpt } from "../src/renderer/src/lib/botWorkspacePresentation";
+import { activeBotReply, botMessageStatus, botWorkTimeline, shouldSendBotComposer, workMatchesView, workStatusLabel, workExecutionComplete, workCardExcerpt, workStatus, workSearchText, workMatchesSearch } from "../src/renderer/src/lib/botWorkspacePresentation";
 import type { BotDto, WorkProjectionDto } from "../src/shared/bot-work";
 import type { WorkResultCardDto } from "../src/shared/bot-work-phase5";
 import Sidebar, { AccountNavigation } from "../src/renderer/src/components/Sidebar";
 import ChatMarkdown from "../src/renderer/src/components/chat/ChatMarkdown";
 import BotWorkspacePage, { BotMessage } from "../src/renderer/src/components/pages/BotWorkspacePage";
+import { BotWorkBrowser } from "../src/renderer/src/components/pages/BotWorkBrowser";
 import { BotWorkDetails } from "../src/renderer/src/components/pages/BotWorkDetails";
 import { WorkFiles, workFiles, generatedWorkFiles } from "../src/renderer/src/components/pages/BotWorkResult";
 import { WorkCardsPanel } from "../src/renderer/src/components/pages/BotWorkCardsPanel";
@@ -177,6 +178,28 @@ assert.equal(workExecutionComplete({ ...executed, intentRevision: 99 }), false, 
 assert.equal(workExecutionComplete({ ...executed, inputSnapshotId: "new-input" }), false);
 assert.equal(workExecutionComplete({ ...executed, executions: [{ ...completeBinding, invalidatedAt: 5 }] }), false);
 assert.equal(workStatusLabel({ ...executed, criteria: [{ ...plain.criteria[0], status: "satisfied" }] }), "执行已完成 · 待结算");
+// List filters use the same authoritative state as their badge, never infer success from text.
+assert.equal(workStatus(executed).group, "results");
+assert.equal(workStatus({ ...executed, blockers: [blocker] }).group, "attention");
+assert.equal(workStatus({ ...plain, lifecycle: "paused" }).group, "paused");
+assert.equal(workStatus({ ...executed, intentRevision: 99 }).group, "waiting");
+assert.equal(workStatus({ ...plain, lifecycle: "closed", closureConclusion: "succeeded" }).group, "succeeded");
+assert.equal(workStatus({ ...plain, lifecycle: "closed" }).group, "ended");
+assert.equal(workStatus({ ...executed, executions: [{ ...completeBinding, status: "unknown" }] }).group, "attention");
+const indexed = workSearchText({ ...plain, title: "器件价格核对", nextSteps: ["联系供应商 ACME"], criteria: [{ ...plain.criteria[0], text: "比较贴片电容" }],
+  deliverables: [{ summary: "完整报告含 47uF", artifactRefs: ["报价结果.xlsx"] } as WorkProjectionDto["deliverables"][number]] });
+assert.ok(workMatchesSearch(indexed, "ACME   电容"));
+assert.ok(workMatchesSearch(indexed, "４７ｕｆ 报价结果"), "width-normalized terms find report text and files, not only titles");
+assert.ok(!workMatchesSearch(indexed, "ACME missing"));
+assert.ok(workMatchesSearch(workSearchText({ ...plain, generatedArtifacts: [{ path: "/tmp/generated-only.csv", snapshotPath: "/tmp/snapshot-only.csv" } as NonNullable<WorkProjectionDto["generatedArtifacts"]>[number]] }), "generated-only.csv snapshot-only.csv"), "generated-only files remain findable without a deliverable summary");
+const largeList = Array.from({ length: 1000 }, (_, i) => work({ workId: `list-${i}`, title: `列表事项 ${i}`, updatedAt: i }));
+const listHtml = renderToStaticMarkup(createElement(BotWorkBrowser, { works: largeList, view: "active", loading: false, onOpenWork: () => {}, onConversation: () => {} }));
+assert.equal((listHtml.match(/class="bot-work-card"/g) ?? []).length, 24, "large list mounts only one page, without dropping searchable Work");
+assert.match(listHtml, /共 1000 件 · 当前 1–24 件/);
+assert.match(listHtml, /第 1 \/ 42 页/);
+assert.match(listHtml, /按事项状态筛选/);
+assert.match(listHtml, /最久未更新优先/);
+
 const message = { role: "assistant", status: "completed" } as BotMessageDto;
 assert.equal(botMessageStatus(message), "已回复");
 assert.equal(botMessageStatus({ ...message, role: "user" }), "已发送");

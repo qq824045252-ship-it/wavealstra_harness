@@ -14,30 +14,56 @@ export function workExecutionComplete(work: WorkProjectionDto): boolean {
       && ["running", "recovering", "waiting"].includes(item.state));
 }
 
-export function workStatusLabel(work: WorkProjectionDto): string {
-  if (work.lifecycle === "closed") return work.closureConclusion === "succeeded" ? "已完成" : work.closureConclusion === "cancelled" ? "已取消" : work.closureConclusion === "ended_unsuccessfully" ? "已结束 · 未完成" : "已结束";
-  if (work.lifecycle === "paused") return "已暂停";
-  if (work.lifecycle === "closing") return "正在结算";
+export type WorkStatusGroup = "running" | "waiting" | "attention" | "results" | "watching" | "paused"
+  | "succeeded" | "cancelled" | "unsuccessful" | "ended";
+
+/** Labels and list filters share one decision, never infer state from report text. */
+export function workStatus(work: WorkProjectionDto): { label: string; group: WorkStatusGroup } {
+  if (work.lifecycle === "closed") {
+    if (work.closureConclusion === "succeeded") return { label: "已完成", group: "succeeded" };
+    if (work.closureConclusion === "cancelled") return { label: "已取消", group: "cancelled" };
+    if (work.closureConclusion === "ended_unsuccessfully") return { label: "已结束 · 未完成", group: "unsuccessful" };
+    return { label: "已结束", group: "ended" };
+  }
+  if (work.lifecycle === "paused") return { label: "已暂停", group: "paused" };
+  if (work.lifecycle === "closing") return { label: "正在结算", group: "running" };
   if (work.mode === "watch") {
     if (work.phase4 && !work.phase4.subscriptions.some(item => item.status !== "stopped" && item.nextWakeAt !== undefined)
-      && !work.executions.some(item => ["pending", "submitted", "running", "unknown"].includes(item.status))) return "暂无后续检查";
-    if (work.phase4 && !work.phase4.host.online) return "等待宿主恢复";
-    return "持续关注中";
+      && !work.executions.some(item => ["pending", "submitted", "running", "unknown"].includes(item.status))) return { label: "暂无后续检查", group: "waiting" };
+    if (work.phase4 && !work.phase4.host.online) return { label: "等待宿主恢复", group: "waiting" };
+    return { label: "持续关注中", group: "watching" };
   }
   const blockers = work.blockers.filter(item => item.status === "open" && item.kind !== "external_effect" && !item.unknownExternalEffectRef);
-  if (blockers.some(item => item.waitingForUserInput)) return "等待补充信息";
-  if (blockers.length) return "需要处理";
+  if (blockers.some(item => item.waitingForUserInput)) return { label: "等待补充信息", group: "attention" };
+  if (blockers.length) return { label: "需要处理", group: "attention" };
   if (workExecutionComplete(work)) {
-    if (work.phase3?.gaps.some(item => item.required) || work.criteria.some(item => item.status === "failed" || item.status === "blocked")) return "执行已结束 · 尚有缺口";
-    return work.inputSnapshotBound && work.criteria.length > 0 && work.criteria.every(item => item.status === "satisfied" || item.status === "waived")
-      && !work.uncoveredScope.length ? "执行已完成 · 待结算" : "执行已完成 · 待核验";
+    if (work.phase3?.gaps.some(item => item.required) || work.criteria.some(item => item.status === "failed" || item.status === "blocked")) return { label: "执行已结束 · 尚有缺口", group: "attention" };
+    return { label: work.inputSnapshotBound && work.criteria.length > 0 && work.criteria.every(item => item.status === "satisfied" || item.status === "waived")
+      && !work.uncoveredScope.length ? "执行已完成 · 待结算" : "执行已完成 · 待核验", group: "results" };
   }
   const current = work.executions.filter(item => item.intentRevision === work.intentRevision && item.inputSnapshotId === work.inputSnapshotId && !item.invalidatedAt);
-  if (current.some(item => item.status === "running" || item.status === "submitted")) return "正在执行";
-  if (current.some(item => item.status === "unknown")) return "执行状态待核对";
-  if (current.some(item => item.status === "pending")) return "等待执行";
-  if (current.some(item => item.status === "failed" || item.status === "stopped")) return "执行已结束 · 未完成";
-  return "尚未执行";
+  if (current.some(item => item.status === "running" || item.status === "submitted")) return { label: "正在执行", group: "running" };
+  if (current.some(item => item.status === "unknown")) return { label: "执行状态待核对", group: "attention" };
+  if (current.some(item => item.status === "pending")) return { label: "等待执行", group: "waiting" };
+  if (current.some(item => item.status === "failed" || item.status === "stopped")) return { label: "执行已结束 · 未完成", group: "attention" };
+  return { label: "尚未执行", group: "waiting" };
+}
+
+export function workStatusLabel(work: WorkProjectionDto): string {
+  return workStatus(work).label;
+}
+
+/** Index full text, not the shortened list excerpt, so older results stay findable. */
+export function workSearchText(work: WorkProjectionDto): string {
+  return [work.workId, work.title, work.closureSummary, ...work.criteria.map(item => item.text),
+    ...work.nextSteps, ...work.blockers.filter(item => item.status === "open").map(item => item.reason),
+    ...work.deliverables.map(item => item.summary), ...work.deliverables.flatMap(item => item.artifactRefs),
+    ...(work.generatedArtifacts ?? []).flatMap(item => [item.path, item.snapshotPath])]
+    .filter(Boolean).join("\n").normalize("NFKC").toLocaleLowerCase();
+}
+
+export function workMatchesSearch(text: string, query: string): boolean {
+  return query.normalize("NFKC").toLocaleLowerCase().trim().split(/\s+/).every(term => text.includes(term));
 }
 
 export function workMatchesView(work: WorkProjectionDto, view: BotWorkspaceView): boolean {

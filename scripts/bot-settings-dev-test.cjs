@@ -14,7 +14,7 @@ const modelKey = `fixture/${selectedModel}`;
 const headless = process.env.BOT_WORK_DEV_HEADLESS === '1';
 const phase5 = process.env.BOT_WORK_DEV_PHASE5 === '1';
 if (headless && process.platform !== 'linux') throw Error('Headless dev page validation requires Linux; it does not validate desktop input.');
-const out = path.join(root, live ? 'out/diagnostics/bot-settings/live' : 'out/diagnostics/bot-settings/dev'); fs.mkdirSync(out, { recursive: true });
+const out = path.join(root, process.env.BOT_WORK_BROWSER_DEV === '1' ? 'out/diagnostics/bot-work-browser/dev' : live ? 'out/diagnostics/bot-settings/live' : 'out/diagnostics/bot-settings/dev'); fs.mkdirSync(out, { recursive: true });
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-work-phase3-dev-'));
 const agentDir = path.join(home, '.mybuddy'); fs.mkdirSync(agentDir, { recursive: true });
 for (const directory of ['AppData/Roaming', 'AppData/Local', 'Temp']) fs.mkdirSync(path.join(home, directory), { recursive: true });
@@ -224,6 +224,7 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     await evaluate(`document.querySelector('[aria-label="Bot 设置与对话管理"]').click()`);
     await until(() => evaluate(`document.querySelector('[aria-label="Bot 模型"]')?.value === ${JSON.stringify(modelKey)}`), 'return from manager preserves saved selection');
     report.checks.push('model manager navigation closes native modal; return retains saved model');
+    if (process.env.BOT_WORK_BROWSER_DEV === '1') await require('./bot-work-browser-dev-checks.cjs')({ evaluate, rpc, until, report, out });
     report.status='passed';
   } catch (error) {
     report.status = 'failed'; report.error = String(error.stack || error); console.error(error); process.exitCode = 1;
