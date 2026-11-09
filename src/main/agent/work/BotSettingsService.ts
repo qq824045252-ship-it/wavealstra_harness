@@ -46,7 +46,8 @@ export class BotSettingsService {
     if (input.workspacePath && (!isAbsolute(input.workspacePath) || !existsSync(input.workspacePath) || !statSync(input.workspacePath).isDirectory()))
       throw new Error("请选择已存在的文件夹绝对路径");
     const effectiveWorkspacePath = input.workspacePath ? realpathSync(input.workspacePath) : join(this.root, previous.spaceId.replace("bot-space-", ""));
-    const next = { ...input, revision: previous.revision + 1, spaceId: previous.spaceId, effectiveWorkspacePath };
+    const { expectedRevision: _expectedRevision, ...values } = input;
+    const next = { ...values, revision: previous.revision + 1, spaceId: previous.spaceId, effectiveWorkspacePath };
     const profile = this.assemble(input);
     return this.db.transaction(() => {
       if (this.get(input.botId).revision !== input.expectedRevision) throw new Error("Bot 设置已在其他窗口更新，请重新打开设置");
@@ -90,7 +91,10 @@ export class BotSettingsService {
     return settings.effectiveWorkspacePath;
   }
   private ensureSpace(settings: BotSettingsDto): void {
-    mkdirSync(settings.effectiveWorkspacePath, {recursive: true});
+    if (settings.workspacePath) {
+      if (!existsSync(settings.effectiveWorkspacePath) || !statSync(settings.effectiveWorkspacePath).isDirectory())
+        throw new Error("指定的 Bot 工作文件夹已不存在，请恢复文件夹或重新选择");
+    } else mkdirSync(settings.effectiveWorkspacePath, {recursive: true});
     if (!this.db.getSpace(settings.spaceId)) this.db.upsertSpace({ id: settings.spaceId, name: `${this.bots.getBot(settings.botId)!.displayName} · 工作空间` });
     // Space is a grouping, not a mutable cwd override. Each Work carries its original folder.
   }
