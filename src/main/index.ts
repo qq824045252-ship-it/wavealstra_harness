@@ -67,7 +67,7 @@ import { ConversationRuntimeIpc } from "../shared/conversation-runtime";
 import type { ConversationInteractionRespondRequest } from "../shared/conversation-interaction";
 import type { ConversationGoalCreateRequest, ConversationGoalUpdateRequest } from "../shared/conversation-goal";
 import { BotWorkIpc } from "../shared/bot-work-ipc";
-import { createBotIpcHandler } from "./agent/work/BotCreationIpc";
+import { createBotIpcHandler, createBotSettingsIpcHandler } from "./agent/work/BotCreationIpc";
 import { createWorkTeamIpcHandler } from "./agent/work/WorkTeamIpc";
 import type { AttestCriteriaParams, RecordUserFeedbackParams } from "../shared/bot-work";
 import {
@@ -1041,6 +1041,12 @@ function registerIpc(): void {
   ipcMain.handle(BotWorkIpc.phase3Control, (_e, request: unknown) => agentService.phase3WorkControl(request));
   ipcMain.handle(BotWorkIpc.phase4Control, (_e, request: unknown) => agentService.phase4WorkControl(request));
   ipcMain.handle(BotWorkIpc.hostStatus, () => agentService.getWorkHostStatus());
+  ipcMain.handle(BotWorkIpc.getSettings, (_e, botId: string) => agentService.getBotSettings(botId));
+  ipcMain.handle(BotWorkIpc.saveSettings, createBotSettingsIpcHandler({
+    getMainWindow: () => botManagementWindow,
+    rendererUrl: process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href,
+    save: request => agentService.saveBotSettings(request),
+  }));
   ipcMain.handle(BotWorkIpc.listBots, () => agentService.listBots());
   ipcMain.handle(BotWorkIpc.updateWorkspaceAuthorization, createBotIpcHandler({
     getMainWindow: () => botManagementWindow,

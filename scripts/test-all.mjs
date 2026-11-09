@@ -75,6 +75,7 @@ const SERIAL_TEST_PATTERNS = [/^test:core-performance/, /^test:bot-work-phase2-r
  * （历史教训：`-ui$` 与 `:desktop$` 都曾漏出 GUI 用例，混进"无头"门禁）。
  */
 const GUI_TESTS = new Set([
+  "test:bot-settings-dev",
   "test:bot-work-recovery-dev",
   "test:bot-work-phase5:dev",
   "test:bot-work-phase3:dev",

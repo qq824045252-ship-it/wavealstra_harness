@@ -40,3 +40,20 @@ export function createBotIpcHandler(options: {
     return options.createBot(request);
   };
 }
+
+/** Settings mount host capabilities only from the application's own top-level window. */
+export function createBotSettingsIpcHandler(options: {
+  getMainWindow: () => MainWindow | null; rendererUrl: string;
+  save: (request: unknown) => Promise<import("../../../shared/bot-settings").BotSettingsResult>;
+}): (event: SenderEvent, request: unknown) => Promise<import("../../../shared/bot-settings").BotSettingsResult> {
+  const trustedUrl = documentUrl(options.rendererUrl);
+  return async (event, request) => {
+    const window = options.getMainWindow();
+    if (!window || window.isDestroyed() || event.sender.isDestroyed()
+      || event.sender !== window.webContents || !event.senderFrame
+      || event.senderFrame !== window.webContents.mainFrame
+      || !trustedUrl || documentUrl(event.senderFrame.url) !== trustedUrl)
+      return { ok: false, message: "只能从应用主窗口保存 Bot 设置" };
+    return options.save(request);
+  };
+}

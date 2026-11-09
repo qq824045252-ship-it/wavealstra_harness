@@ -216,3 +216,13 @@
 }
 
 .bot-composer-send-actions { display:flex; gap:6px; align-items:center; }
+
+.bot-execution-settings { display: grid; gap: 12px; padding-block: 16px; border-bottom: 1px solid var(--border-color, #4444); }
+.bot-execution-settings > label { display: grid; gap: 6px; }
+.bot-execution-settings input:not([type=checkbox]), .bot-execution-settings select { width: 100%; min-width: 0; padding: 8px; border: 1px solid var(--border-color, #8885); border-radius: 8px; background: var(--bg-primary, transparent); color: inherit; }
+.bot-execution-settings fieldset { border: 1px solid var(--border-color, #8885); border-radius: 8px; display: grid; gap: 8px; padding: 12px; max-height: 220px; overflow: auto; }
+.bot-execution-settings .bot-setting-choice { display: flex; gap: 8px; align-items: center; overflow-wrap: anywhere; }
+.bot-execution-settings p { font-size: 12px; opacity: .8; line-height: 1.6; margin: 0; }
+.bot-settings-dialog { width:min(680px,calc(100vw - 40px)); }
+.bot-settings-body .bot-execution-settings .bot-setting-choice { flex-direction:row; justify-content:flex-start; margin:0; text-align:left; }
+.bot-settings-body .bot-execution-settings .bot-setting-choice input { width:auto; flex:none; padding:0; }

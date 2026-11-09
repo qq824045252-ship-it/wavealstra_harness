@@ -283,6 +283,7 @@ import { ConversationGoalService } from "./ConversationGoalService";
 import { BotRegistry } from "./work/BotRegistry";
 import { BotDeletionService } from "./work/BotDeletionService";
 import { BotCreationService } from "./work/BotCreationService";
+import { BotSettingsService } from "./work/BotSettingsService";
 import { BotExpertBindingService } from "./work/BotExpertBindingService";
 import { BotWorkContextService } from "./work/BotWorkContextService";
 import { DESKTOP_USER_GRANTS, WorkService } from "./work/WorkService";
@@ -615,6 +616,7 @@ export class AgentService {
   private readonly conversationInteractions: ConversationInteractionService;
   private readonly conversationGoals: ConversationGoalService;
   private readonly botRegistry: BotRegistry;
+  private readonly botSettings: BotSettingsService;
   private readonly botExpertBindings: BotExpertBindingService;
   private readonly botWorkContext: BotWorkContextService;
   private readonly workService: WorkService;
@@ -810,6 +812,14 @@ export class AgentService {
         return skill?.enabled && skill.filePath ? dirname(skill.filePath) : undefined;
       },
     });
+    this.botSettings = new BotSettingsService(this.db, this.botRegistry, LOCAL_USER_ID, join(getMyBuddyDir(), "bot-workspaces"), async () => {
+      const enabledMcp = this.mcpRuntime.previewMcpFilter("working", this.modeProfiles.getProfile("working").policy.mcpPolicy).enabled;
+      return { models: (await this.listModels()).filter(item => item.kind !== "image-generation").map(item => ({ id: item.id, name: item.name, available: item.enabled !== false && item.available !== false })),
+        experts: this.listExperts().map(item => ({ id: item.id, name: item.name, available: item.enabled })),
+        skills: this.listSkills().map(item => ({ id: item.id, name: item.name, available: item.enabled })),
+        mcps: enabledMcp.map(id => ({id, name: id, available: true})),
+        connectors: this.listConnectors().map(item => ({id: item.id, name: item.name, available: Boolean(item.installed && item.enabled !== false)})) };
+    }, input => this.botExpertBindings.assembleSettings(input, LOCAL_USER_ID));
     this.workHostAuthority = new WorkHostAuthority(db.connection, `authority-${randomUUID()}`);
     const previousWorkLease = this.workHostAuthority.snapshot();
     this.workHostAuthority.start();
@@ -1018,6 +1028,8 @@ export class AgentService {
       this.db.bindTaskExecutionWorkspaceCwd(taskId, continuation);
       return continuation;
     }
+    const botWorkspace = this.botSettings?.taskWorkspace(taskId);
+    if (botWorkspace) { this.db.bindTaskExecutionWorkspaceCwd(taskId, botWorkspace); return botWorkspace; }
     return resolveTaskWorkspaceCwd(this.db, this.taskWorkspace, taskId);
   }
 
@@ -1261,6 +1273,12 @@ export class AgentService {
     } catch (error) {
       return { ok: false, code: "invalid_request", message: error instanceof Error ? error.message : String(error) };
     }
+  }
+
+  async getBotSettings(botId: string) { return this.botSettings.view(botId); }
+  async saveBotSettings(request: unknown): Promise<import("../../shared/bot-settings").BotSettingsResult> {
+    try { return { ok: true, view: await this.botSettings.save(request) }; }
+    catch (error) { return { ok: false, message: error instanceof Error ? error.message : String(error) }; }
   }
 
   /** R09: read the immutable expert versions so a human can review before adopting. */
@@ -1621,9 +1639,11 @@ export class AgentService {
     if (!this.durableModels) throw new Error("模型服务尚未初始化");
     this.workDispatchQueue ??= new WorkDispatchQueue(this.db, this.workService, this.workExecutions,
       () => this.workHostAuthority.isAuthority(), () => this.settingsStore.read().defaultModelId,
-      () => this.settingsStore.read().permissionMode ?? "default");
+      () => this.settingsStore.read().permissionMode ?? "default", undefined,
+      (work, memberId) => memberId ? this.botSettings.forMember(work.workId, work.ownerBotId, memberId) : this.botSettings.forWork(work.workId, work.ownerBotId));
     this.botConversations ??= new BotConversationService({ db: this.db.connection, userId: LOCAL_USER_ID,
       bots: this.botRegistry, works: this.workService, models: this.durableModels, directory: join(getMyBuddyDir(), "bot-conversations"),
+      botModel: botId => this.botSettings.get(botId).modelId || undefined,
       defaultModel: () => this.settingsStore.read().defaultModelId, isAuthority: () => this.workHostAuthority.isAuthority(),
       memorySearch: (botId, query) => this.memoryService.search({ botId, query, scopeTypes: ["bot"], includeInherited: false, limit: 20 }),
       schedule: (work, operationId, retryBlocked) => this.workDispatchQueue!.enqueue(work, operationId, retryBlocked),

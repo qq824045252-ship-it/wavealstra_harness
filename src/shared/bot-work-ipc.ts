@@ -19,6 +19,8 @@ import type {
 } from "./bot-work-phase5";
 
 export const BotWorkIpc = {
+  getSettings: "bot-work:get-settings",
+  saveSettings: "bot-work:save-settings",
   hostStatus: "bot-work:host-status",
   listBots: "bot-work:list-bots",
   createBot: "bot-work:create-bot",
@@ -66,6 +68,8 @@ export interface BotWorkNotificationReadResult {
 }
 
 export interface BotWorkApi {
+  getSettings(botId: string): Promise<import("./bot-settings").BotSettingsView>;
+  saveSettings(request: import("./bot-settings").BotSettingsSaveRequest): Promise<import("./bot-settings").BotSettingsResult>;
   hostStatus(): Promise<BotWorkHostStatusDto>;
   listBots(): Promise<BotDto[]>;
   createBot(request: BotCreateRequest): Promise<BotCreateResult>;

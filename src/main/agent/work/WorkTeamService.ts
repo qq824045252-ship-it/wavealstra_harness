@@ -251,7 +251,8 @@ export class WorkTeamService {
 
   /** Called by the existing durable dispatch queue. Never replay an already-bound task. */
   async dispatchPending(app: AppDatabase, adapter: WorkExecutionAdapter, model: () => string | undefined,
-    permission: () => import("../../../shared/agent-ipc").PermissionMode = () => "default"): Promise<void> {
+    permission: () => import("../../../shared/agent-ipc").PermissionMode = () => "default",
+    botSettings?: (work: import("../../../shared/bot-work").WorkDto, botId?: string) => import("../../../shared/bot-settings").BotSettingsDto): Promise<void> {
     for (const raw of this.db.prepare("SELECT * FROM work_teams ORDER BY created_at,work_id").all()) {
       this.works.collaboration.assertAuthority();
       const team = teamRowSchema.parse(raw);
@@ -340,8 +341,10 @@ export class WorkTeamService {
             this.db.prepare("UPDATE work_team_executions SET input_json=? WHERE work_id=? AND ordinal=? AND input_json IS NULL")
               .run(JSON.stringify(input), work!.workId, next!.ordinal);
           }
+          const settings = botSettings?.(work!, bot.botId);
+          const previousTask = app.getTask(next!.task_id);
           app.upsertTask({ id: next!.task_id, title: `${work!.title} · ${next!.role === "owner_summary" ? "负责人汇总" : bot.displayName}`,
-            updatedAt: this.now(), cwd: work!.workspacePath, projectId: work!.projectId, modelId: model(), permissionMode: permission(), modePresetId: "native" });
+            updatedAt: this.now(), cwd: previousTask?.cwd ?? work!.workspacePath ?? settings?.effectiveWorkspacePath, spaceId: previousTask?.spaceId ?? settings?.spaceId, projectId: work!.projectId, modelId: previousTask?.modelId ?? (settings?.modelId || model()), permissionMode: permission(), modePresetId: "native" });
         });
         work = this.works.getWork(work.workId)!;
         const result = await adapter.dispatch({ kind: "bot", userId: work.userId, botId: work.ownerBotId, host: "background", grants: work.authorization }, {

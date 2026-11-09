@@ -26,7 +26,8 @@ export class WorkDispatchQueue {
     private readonly adapter: WorkExecutionAdapter, private readonly isAuthority: () => boolean,
     private readonly defaultModel: () => string | undefined,
     private readonly permissionMode: () => import("../../../shared/agent-ipc").PermissionMode = () => "default",
-    private readonly resumeDeferredActions?: () => Promise<void>) {}
+    private readonly resumeDeferredActions?: () => Promise<void>,
+    private readonly botSettings?: (work: WorkDto, botId?: string) => import("../../../shared/bot-settings").BotSettingsDto) {}
 
   enqueue(work: WorkDto, operationId: string, retryBlocked = false, inboxEventId?: string): void {
     const current = this.works.getWork(work.workId);
@@ -49,8 +50,9 @@ export class WorkDispatchQueue {
     if (inboxEventId && inboxEvent?.workId !== work.workId) return;
     if (!readOnlyFollowUp && bindings.some(binding => retainsInput(binding, work))) return;
     const taskId = `work-execution-${randomUUID()}`;
-    this.db.upsertTask({ id: taskId, title: work.title, updatedAt: Date.now(), cwd: work.workspacePath,
-      projectId: work.projectId, modelId: this.defaultModel(), permissionMode: this.permissionMode(), modePresetId: "native" });
+    const settings = this.botSettings?.(work);
+    this.db.upsertTask({ id: taskId, title: work.title, updatedAt: Date.now(), cwd: work.workspacePath ?? settings?.effectiveWorkspacePath, spaceId: settings?.spaceId,
+      projectId: work.projectId, modelId: settings?.modelId || this.defaultModel(), permissionMode: this.permissionMode(), modePresetId: "native" });
     this.db.connection.prepare(`INSERT INTO work_dispatch_requests(operation_id,work_id,task_id,bot_id,intent_revision,input_snapshot_id,state,created_at,inbox_event_id)
       VALUES (?,?,?,?,?,?,'pending',?,?)`).run(operationId, work.workId, taskId, work.ownerBotId, work.intentRevision, work.inputSnapshotId, Date.now(), inboxEventId ?? null);
   }
@@ -75,7 +77,7 @@ export class WorkDispatchQueue {
     if (!this.isAuthority()) return;
     await this.resumeDeferredActions?.();
     this.resumeRetiredQuotaRequests();
-    await this.works.teams.dispatchPending(this.db, this.adapter, this.defaultModel, this.permissionMode);
+    await this.works.teams.dispatchPending(this.db, this.adapter, this.defaultModel, this.permissionMode, this.botSettings);
     await this.drainSourceEvents();
     this.prepareSourceIntents();
     this.prepareContinuations();
