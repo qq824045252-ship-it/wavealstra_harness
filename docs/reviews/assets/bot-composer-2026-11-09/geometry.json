@@ -1,0 +1,514 @@
+[
+  {
+    "width": 1280,
+    "normal": {
+      ".input-area": {
+        "x": 332.3046875,
+        "y": 767.021484375,
+        "width": 880,
+        "height": 132.978515625,
+        "bottom": 0,
+        "padding": "10px 24px 14px",
+        "border": "0px none rgb(236, 236, 234)",
+        "borderRadius": "0px",
+        "background": "rgba(0, 0, 0, 0)",
+        "lineHeight": "normal"
+      },
+      ".input-box": {
+        "x": 356.298828125,
+        "y": 777.021484375,
+        "width": 832.01171875,
+        "height": 108.984375,
+        "bottom": 13.994140625,
+        "padding": "0px",
+        "border": "0.625px solid color(srgb 0.564275 0.753363 0.986298 / 0.314824)",
+        "borderRadius": "16px",
+        "background": "rgb(34, 34, 38)",
+        "lineHeight": "normal"
+      },
+      ".input-textarea": {
+        "x": 356.923828125,
+        "y": 777.646484375,
+        "width": 830.76171875,
+        "height": 53.994140625,
+        "bottom": 68.359375,
+        "padding": "8px 16px 4px",
+        "border": "0px none rgb(236, 236, 234)",
+        "borderRadius": "0px",
+        "background": "rgba(0, 0, 0, 0)",
+        "lineHeight": "21px"
+      },
+      ".input-toolbar": {
+        "x": 356.923828125,
+        "y": 835.390625,
+        "width": 830.76171875,
+        "height": 49.990234375,
+        "bottom": 14.619140625,
+        "padding": "8px 12px 10px",
+        "border": "0px none rgb(236, 236, 234)",
+        "borderRadius": "0px",
+        "background": "rgba(0, 0, 0, 0)",
+        "lineHeight": "normal"
+      },
+      ".send-btn": {
+        "x": 1143.701171875,
+        "y": 843.388671875,
+        "width": 31.9921875,
+        "height": 31.9921875,
+        "bottom": 24.619140625,
+        "padding": "0px",
+        "border": "0px none rgb(125, 124, 120)",
+        "borderRadius": "8px",
+        "background": "rgb(236, 236, 234)",
+        "lineHeight": "normal"
+      }
+    },
+    "bot": {
+      ".input-area": {
+        "x": 332.3046875,
+        "y": 767.021484375,
+        "width": 880,
+        "height": 132.978515625,
+        "bottom": 0,
+        "padding": "10px 24px 14px",
+        "border": "0px none rgb(236, 236, 234)",
+        "borderRadius": "0px",
+        "background": "rgba(0, 0, 0, 0)",
+        "lineHeight": "normal"
+      },
+      ".input-box": {
+        "x": 356.298828125,
+        "y": 777.021484375,
+        "width": 832.01171875,
+        "height": 108.984375,
+        "bottom": 13.994140625,
+        "padding": "0px",
+        "border": "0.625px solid rgba(255, 255, 255, 0.12)",
+        "borderRadius": "16px",
+        "background": "rgb(34, 34, 38)",
+        "lineHeight": "normal"
+      },
+      ".input-textarea": {
+        "x": 356.923828125,
+        "y": 777.646484375,
+        "width": 830.76171875,
+        "height": 53.994140625,
+        "bottom": 68.359375,
+        "padding": "8px 16px 4px",
+        "border": "0px none rgb(236, 236, 234)",
+        "borderRadius": "0px",
+        "background": "rgba(0, 0, 0, 0)",
+        "lineHeight": "21px"
+      },
+      ".input-toolbar": {
+        "x": 356.923828125,
+        "y": 835.390625,
+        "width": 830.76171875,
+        "height": 49.990234375,
+        "bottom": 14.619140625,
+        "padding": "8px 12px 10px",
+        "border": "0px none rgb(236, 236, 234)",
+        "borderRadius": "0px",
+        "background": "rgba(0, 0, 0, 0)",
+        "lineHeight": "normal"
+      },
+      ".send-btn": {
+        "x": 1143.701171875,
+        "y": 843.388671875,
+        "width": 31.9921875,
+        "height": 31.9921875,
+        "bottom": 24.619140625,
+        "padding": "0px",
+        "border": "0px none rgb(125, 124, 120)",
+        "borderRadius": "8px",
+        "background": "rgb(236, 236, 234)",
+        "lineHeight": "normal"
+      }
+    },
+    "overflow": false
+  },
+  {
+    "width": 800,
+    "normal": {
+      ".input-area": {
+        "x": 0.625,
+        "y": 767.021484375,
+        "width": 799.375,
+        "height": 132.978515625,
+        "bottom": 0,
+        "padding": "10px 24px 14px",
+        "border": "0px none rgb(236, 236, 234)",
+        "borderRadius": "0px",
+        "background": "rgba(0, 0, 0, 0)",
+        "lineHeight": "normal"
+      },
+      ".input-box": {
+        "x": 24.619140625,
+        "y": 777.021484375,
+        "width": 751.38671875,
+        "height": 108.984375,
+        "bottom": 13.994140625,
+        "padding": "0px",
+        "border": "0.625px solid color(srgb 0.564275 0.753363 0.986298 / 0.314824)",
+        "borderRadius": "16px",
+        "background": "rgb(34, 34, 38)",
+        "lineHeight": "normal"
+      },
+      ".input-textarea": {
+        "x": 25.244140625,
+        "y": 777.646484375,
+        "width": 750.13671875,
+        "height": 53.994140625,
+        "bottom": 68.359375,
+        "padding": "8px 16px 4px",
+        "border": "0px none rgb(236, 236, 234)",
+        "borderRadius": "0px",
+        "background": "rgba(0, 0, 0, 0)",
+        "lineHeight": "21px"
+      },
+      ".input-toolbar": {
+        "x": 25.244140625,
+        "y": 835.390625,
+        "width": 750.13671875,
+        "height": 49.990234375,
+        "bottom": 14.619140625,
+        "padding": "8px 12px 10px",
+        "border": "0px none rgb(236, 236, 234)",
+        "borderRadius": "0px",
+        "background": "rgba(0, 0, 0, 0)",
+        "lineHeight": "normal"
+      },
+      ".send-btn": {
+        "x": 731.396484375,
+        "y": 843.388671875,
+        "width": 31.9921875,
+        "height": 31.9921875,
+        "bottom": 24.619140625,
+        "padding": "0px",
+        "border": "0px none rgb(125, 124, 120)",
+        "borderRadius": "8px",
+        "background": "rgb(236, 236, 234)",
+        "lineHeight": "normal"
+      }
+    },
+    "bot": {
+      ".input-area": {
+        "x": 0.625,
+        "y": 767.021484375,
+        "width": 799.375,
+        "height": 132.978515625,
+        "bottom": 0,
+        "padding": "10px 24px 14px",
+        "border": "0px none rgb(236, 236, 234)",
+        "borderRadius": "0px",
+        "background": "rgba(0, 0, 0, 0)",
+        "lineHeight": "normal"
+      },
+      ".input-box": {
+        "x": 24.619140625,
+        "y": 777.021484375,
+        "width": 751.38671875,
+        "height": 108.984375,
+        "bottom": 13.994140625,
+        "padding": "0px",
+        "border": "0.625px solid rgba(255, 255, 255, 0.12)",
+        "borderRadius": "16px",
+        "background": "rgb(34, 34, 38)",
+        "lineHeight": "normal"
+      },
+      ".input-textarea": {
+        "x": 25.244140625,
+        "y": 777.646484375,
+        "width": 750.13671875,
+        "height": 53.994140625,
+        "bottom": 68.359375,
+        "padding": "8px 16px 4px",
+        "border": "0px none rgb(236, 236, 234)",
+        "borderRadius": "0px",
+        "background": "rgba(0, 0, 0, 0)",
+        "lineHeight": "21px"
+      },
+      ".input-toolbar": {
+        "x": 25.244140625,
+        "y": 835.390625,
+        "width": 750.13671875,
+        "height": 49.990234375,
+        "bottom": 14.619140625,
+        "padding": "8px 12px 10px",
+        "border": "0px none rgb(236, 236, 234)",
+        "borderRadius": "0px",
+        "background": "rgba(0, 0, 0, 0)",
+        "lineHeight": "normal"
+      },
+      ".send-btn": {
+        "x": 731.396484375,
+        "y": 843.388671875,
+        "width": 31.9921875,
+        "height": 31.9921875,
+        "bottom": 24.619140625,
+        "padding": "0px",
+        "border": "0px none rgb(125, 124, 120)",
+        "borderRadius": "8px",
+        "background": "rgb(236, 236, 234)",
+        "lineHeight": "normal"
+      }
+    },
+    "overflow": false
+  },
+  {
+    "width": 640,
+    "normal": {
+      ".input-area": {
+        "x": 0.625,
+        "y": 767.021484375,
+        "width": 639.375,
+        "height": 132.978515625,
+        "bottom": 0,
+        "padding": "10px 24px 14px",
+        "border": "0px none rgb(236, 236, 234)",
+        "borderRadius": "0px",
+        "background": "rgba(0, 0, 0, 0)",
+        "lineHeight": "normal"
+      },
+      ".input-box": {
+        "x": 24.619140625,
+        "y": 777.021484375,
+        "width": 591.38671875,
+        "height": 108.984375,
+        "bottom": 13.994140625,
+        "padding": "0px",
+        "border": "0.625px solid color(srgb 0.564275 0.753363 0.986298 / 0.314824)",
+        "borderRadius": "16px",
+        "background": "rgb(34, 34, 38)",
+        "lineHeight": "normal"
+      },
+      ".input-textarea": {
+        "x": 25.244140625,
+        "y": 777.646484375,
+        "width": 590.13671875,
+        "height": 53.994140625,
+        "bottom": 68.359375,
+        "padding": "8px 16px 4px",
+        "border": "0px none rgb(236, 236, 234)",
+        "borderRadius": "0px",
+        "background": "rgba(0, 0, 0, 0)",
+        "lineHeight": "21px"
+      },
+      ".input-toolbar": {
+        "x": 25.244140625,
+        "y": 835.390625,
+        "width": 590.13671875,
+        "height": 49.990234375,
+        "bottom": 14.619140625,
+        "padding": "8px 12px 10px",
+        "border": "0px none rgb(236, 236, 234)",
+        "borderRadius": "0px",
+        "background": "rgba(0, 0, 0, 0)",
+        "lineHeight": "normal"
+      },
+      ".send-btn": {
+        "x": 571.396484375,
+        "y": 843.388671875,
+        "width": 31.9921875,
+        "height": 31.9921875,
+        "bottom": 24.619140625,
+        "padding": "0px",
+        "border": "0px none rgb(125, 124, 120)",
+        "borderRadius": "8px",
+        "background": "rgb(236, 236, 234)",
+        "lineHeight": "normal"
+      }
+    },
+    "bot": {
+      ".input-area": {
+        "x": 0.625,
+        "y": 767.021484375,
+        "width": 639.375,
+        "height": 132.978515625,
+        "bottom": 0,
+        "padding": "10px 24px 14px",
+        "border": "0px none rgb(236, 236, 234)",
+        "borderRadius": "0px",
+        "background": "rgba(0, 0, 0, 0)",
+        "lineHeight": "normal"
+      },
+      ".input-box": {
+        "x": 24.619140625,
+        "y": 777.021484375,
+        "width": 591.38671875,
+        "height": 108.984375,
+        "bottom": 13.994140625,
+        "padding": "0px",
+        "border": "0.625px solid rgba(255, 255, 255, 0.12)",
+        "borderRadius": "16px",
+        "background": "rgb(34, 34, 38)",
+        "lineHeight": "normal"
+      },
+      ".input-textarea": {
+        "x": 25.244140625,
+        "y": 777.646484375,
+        "width": 590.13671875,
+        "height": 53.994140625,
+        "bottom": 68.359375,
+        "padding": "8px 16px 4px",
+        "border": "0px none rgb(236, 236, 234)",
+        "borderRadius": "0px",
+        "background": "rgba(0, 0, 0, 0)",
+        "lineHeight": "21px"
+      },
+      ".input-toolbar": {
+        "x": 25.244140625,
+        "y": 835.390625,
+        "width": 590.13671875,
+        "height": 49.990234375,
+        "bottom": 14.619140625,
+        "padding": "8px 12px 10px",
+        "border": "0px none rgb(236, 236, 234)",
+        "borderRadius": "0px",
+        "background": "rgba(0, 0, 0, 0)",
+        "lineHeight": "normal"
+      },
+      ".send-btn": {
+        "x": 571.396484375,
+        "y": 843.388671875,
+        "width": 31.9921875,
+        "height": 31.9921875,
+        "bottom": 24.619140625,
+        "padding": "0px",
+        "border": "0px none rgb(125, 124, 120)",
+        "borderRadius": "8px",
+        "background": "rgb(236, 236, 234)",
+        "lineHeight": "normal"
+      }
+    },
+    "overflow": false
+  },
+  {
+    "width": 390,
+    "normal": {
+      ".input-area": {
+        "x": 0.625,
+        "y": 767.021484375,
+        "width": 389.375,
+        "height": 132.978515625,
+        "bottom": 0,
+        "padding": "10px 24px 14px",
+        "border": "0px none rgb(236, 236, 234)",
+        "borderRadius": "0px",
+        "background": "rgba(0, 0, 0, 0)",
+        "lineHeight": "normal"
+      },
+      ".input-box": {
+        "x": 24.619140625,
+        "y": 777.021484375,
+        "width": 341.38671875,
+        "height": 108.984375,
+        "bottom": 13.994140625,
+        "padding": "0px",
+        "border": "0.625px solid color(srgb 0.564275 0.753363 0.986298 / 0.314824)",
+        "borderRadius": "16px",
+        "background": "rgb(34, 34, 38)",
+        "lineHeight": "normal"
+      },
+      ".input-textarea": {
+        "x": 25.244140625,
+        "y": 777.646484375,
+        "width": 340.13671875,
+        "height": 53.994140625,
+        "bottom": 68.359375,
+        "padding": "8px 16px 4px",
+        "border": "0px none rgb(236, 236, 234)",
+        "borderRadius": "0px",
+        "background": "rgba(0, 0, 0, 0)",
+        "lineHeight": "21px"
+      },
+      ".input-toolbar": {
+        "x": 25.244140625,
+        "y": 835.390625,
+        "width": 340.13671875,
+        "height": 49.990234375,
+        "bottom": 14.619140625,
+        "padding": "8px 12px 10px",
+        "border": "0px none rgb(236, 236, 234)",
+        "borderRadius": "0px",
+        "background": "rgba(0, 0, 0, 0)",
+        "lineHeight": "normal"
+      },
+      ".send-btn": {
+        "x": 321.396484375,
+        "y": 843.388671875,
+        "width": 31.9921875,
+        "height": 31.9921875,
+        "bottom": 24.619140625,
+        "padding": "0px",
+        "border": "0px none rgb(125, 124, 120)",
+        "borderRadius": "8px",
+        "background": "rgb(236, 236, 234)",
+        "lineHeight": "normal"
+      }
+    },
+    "bot": {
+      ".input-area": {
+        "x": 0.625,
+        "y": 767.021484375,
+        "width": 389.375,
+        "height": 132.978515625,
+        "bottom": 0,
+        "padding": "10px 24px 14px",
+        "border": "0px none rgb(236, 236, 234)",
+        "borderRadius": "0px",
+        "background": "rgba(0, 0, 0, 0)",
+        "lineHeight": "normal"
+      },
+      ".input-box": {
+        "x": 24.619140625,
+        "y": 777.021484375,
+        "width": 341.38671875,
+        "height": 108.984375,
+        "bottom": 13.994140625,
+        "padding": "0px",
+        "border": "0.625px solid rgba(255, 255, 255, 0.12)",
+        "borderRadius": "16px",
+        "background": "rgb(34, 34, 38)",
+        "lineHeight": "normal"
+      },
+      ".input-textarea": {
+        "x": 25.244140625,
+        "y": 777.646484375,
+        "width": 340.13671875,
+        "height": 53.994140625,
+        "bottom": 68.359375,
+        "padding": "8px 16px 4px",
+        "border": "0px none rgb(236, 236, 234)",
+        "borderRadius": "0px",
+        "background": "rgba(0, 0, 0, 0)",
+        "lineHeight": "21px"
+      },
+      ".input-toolbar": {
+        "x": 25.244140625,
+        "y": 835.390625,
+        "width": 340.13671875,
+        "height": 49.990234375,
+        "bottom": 14.619140625,
+        "padding": "8px 12px 10px",
+        "border": "0px none rgb(236, 236, 234)",
+        "borderRadius": "0px",
+        "background": "rgba(0, 0, 0, 0)",
+        "lineHeight": "normal"
+      },
+      ".send-btn": {
+        "x": 321.396484375,
+        "y": 843.388671875,
+        "width": 31.9921875,
+        "height": 31.9921875,
+        "bottom": 24.619140625,
+        "padding": "0px",
+        "border": "0px none rgb(125, 124, 120)",
+        "borderRadius": "8px",
+        "background": "rgb(236, 236, 234)",
+        "lineHeight": "normal"
+      }
+    },
+    "overflow": false
+  }
+]
