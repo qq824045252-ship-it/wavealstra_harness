@@ -78,6 +78,26 @@ function stableSortAt(timestamp: number): number {
   return Math.floor(timestamp / 60_000) * 60_000;
 }
 
+/** 置顶只改展示位置：从整棵筛选后的树里抽出已置顶任务，折叠的空间也算。 */
+function collectPinnedRows(nodes: WorkspaceTreeNode[], tasks: Task[]): VisibleRow[] {
+  const byId = new Map(tasks.map((task) => [task.id, task]));
+  const rows: VisibleRow[] = [];
+  const walk = (list: WorkspaceTreeNode[]): void => {
+    for (const node of list) {
+      if (node.kind === "space") {
+        walk(node.children);
+        continue;
+      }
+      if (!node.isFavorited) continue;
+      const task = byId.get(node.id);
+      if (!task) continue;
+      rows.push({ key: `pinned-${node.id}`, kind: "task", task, depth: 0, node });
+    }
+  };
+  walk(nodes);
+  return rows;
+}
+
 function notificationTimeLabel(timestamp: number): string {
   const delta = Math.max(0, Date.now() - timestamp);
   if (delta < 60_000) return "刚刚";
@@ -201,6 +221,9 @@ export default function Sidebar({ onClose, onCreateBot }: { onClose?: () => void
   const tree = useMemo(() => {
     return buildWorkspaceTree(spacesDto, tasksDto, { includeArchived: false });
   }, [spacesDto, tasksDto]);
+
+  const pinnedRows = useMemo(() => collectPinnedRows(tree, tasks), [tree, tasks]);
+  const pinnedTaskIdSet = useMemo(() => new Set(pinnedRows.map((row) => row.task.id)), [pinnedRows]);
 
   const getParentChildren = useCallback(
     (parentId: string | null): WorkspaceTreeNode[] => {
@@ -861,15 +884,33 @@ export default function Sidebar({ onClose, onCreateBot }: { onClose?: () => void
       </div>
 
       {(() => {
-        const independentRows = visibleRows.filter((r) => r.kind === "task" && (r.task.spaceId == null));
-        const workspaceRows = visibleRows.filter((r) => !(r.kind === "task" && (r.task.spaceId == null)));
-        // 计数统计的是任务数量（与侧栏列表同源、同筛选）：
-        // 独立任务 = 无 spaceId 的任务；工作空间 = 有 spaceId 的任务（含嵌套，折叠不影响计数）。
-        const independentTaskCount = tasksDto.filter((t) => t.spaceId == null).length;
-        const workspaceTaskCount = tasksDto.filter((t) => t.spaceId != null).length;
+        const independentRows = visibleRows.filter((r) => r.kind === "task" && r.task.spaceId == null && !pinnedTaskIdSet.has(r.task.id));
+        const workspaceRows = visibleRows.filter((r) => !(r.kind === "task" && (r.task.spaceId == null || pinnedTaskIdSet.has(r.task.id))));
+        // 计数与下面看得见的行一致。置顶任务已经抽到顶部，不重复计入这两个数。
+        const independentTaskCount = tasksDto.filter((t) => t.spaceId == null && !t.isFavorited).length;
+        const workspaceTaskCount = tasksDto.filter((t) => t.spaceId != null && !t.isFavorited).length;
+        const pinnedIndependent = pinnedRows.some((row) => row.task.spaceId == null);
         return (
           <div className="sidebar-scroll" ref={sidebarScrollRef} onDragOver={handleRootDragOver} onDrop={handleRootDrop}>
             <div className="sidebar-ia-label">工作</div>
+            {pinnedRows.length > 0 && (
+              <div className="sidebar-pinned">
+                <div className="sidebar-tree-header">
+                  <span className="section-title">置顶 ({pinnedRows.length})</span>
+                </div>
+                <div className="sidebar-section-list">
+                  {pinnedRows.map((row) => (
+                    <div key={row.key} className="sidebar-pinned-row">
+                      <TaskItem
+                        task={row.task}
+                        indent={taskIndent(0)}
+                        onDragStartNotify={handleTaskNotifyDragStart}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             <div className="sidebar-tree-header">
               <span className="section-title">独立任务</span>
               <span className="sidebar-section-count">{independentTaskCount}</span>
@@ -885,7 +926,7 @@ export default function Sidebar({ onClose, onCreateBot }: { onClose?: () => void
             </div>
             <div className="sidebar-section-list">
               {independentRows.length === 0 ? (
-                <div className="sidebar-empty">暂无独立任务</div>
+                pinnedIndependent ? null : <div className="sidebar-empty">暂无独立任务</div>
               ) : (
                 independentRows.map((row) => <div key={row.key}>{renderRow(row)}</div>)
               )}

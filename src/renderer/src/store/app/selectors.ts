@@ -29,6 +29,7 @@ function sameSidebarTask(previous: Task, current: Task): boolean {
     previous.status === current.status &&
     previous.archived === current.archived &&
     previous.doneAckedAt === current.doneAckedAt &&
+    Boolean(previous.isFavorited) === Boolean(current.isFavorited) &&
     getTaskDisplayStatus(previous) === getTaskDisplayStatus(current)
   );
 }
