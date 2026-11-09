@@ -66,6 +66,15 @@ try {
   const explicit = works.createWork({ kind: "user", userId: LOCAL_USER_ID, entry: "desktop", grants: DESKTOP_USER_GRANTS }, { operationId: "explicit-folder", title: "explicit folder", ownerBotId: bot.botId, workspacePath: folderA });
   assert(explicit.ok);
   assert.equal(settings.forWork(explicit.work.workId, bot.botId, explicit.work.workspacePath).effectiveWorkspacePath, folderA, "explicit Work folder overrides current Bot default B");
+  const privateRoot = join(root,"private-single"); mkdirSync(join(privateRoot,"references"), {recursive:true});
+  writeFileSync(join(privateRoot,"SKILL.md"), "---\nname: private\ndescription: private test\n---\nPrivate package\n");
+  writeFileSync(join(privateRoot,"references","evidence.txt"),"private evidence");
+  const sourceExperts = { getDetail: () => ({id:"single-private",revision:"v1",name:"Private expert",instructions:"private instructions",skills:["private"],mcpIds:[],connectorIds:[],enabled:true}),
+    getPrivateSkillsDir: () => privateRoot } as unknown as ExpertService;
+  const mixed = new BotExpertBindingService(bots, sourceExperts, taskExperts, {rootDir:join(root,"mixed"),resolveSkillDirectory:id=>id === "skill" ? skillDir : undefined})
+    .assembleSettings({...input,expertId:"single-private"},LOCAL_USER_ID);
+  assert.equal(readFileSync(join(mixed.skillPackages!.find(item=>item.id === "skill")!.directory,"references","evidence.txt"),"utf8"),"frozen skill evidence", "extra global skill never receives the single private skill root");
+  assert.equal(readFileSync(join(mixed.skillPackages!.find(item=>item.id === "private")!.directory,"references","evidence.txt"),"utf8"),"private evidence");
   const reset = await settings.save({...input, expectedRevision: 2, workspacePath: ""});
   assert(reset.settings.effectiveWorkspacePath.startsWith(join(root, "workspaces")), "empty restores dedicated default folder");
   assert.equal(db.getSpace(saved.settings.spaceId)?.path, undefined, "space grouping cannot silently migrate running tasks");
