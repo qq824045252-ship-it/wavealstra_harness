@@ -965,13 +965,14 @@ export class WorkService {
         }
         return { ok: true };
       }
-      const teamError = this.teams.dispatchError(work.workId, params.taskId, params.botId, params.delegatedScope);
+      const teamError = this.teams.dispatchError(work.workId, params.taskId, params.botId, params.delegatedScope, params.operationId);
       if (teamError) return { ok: false, code: "unauthorized_actor", message: teamError };
       const occupied = this.repo.bindingForTask(params.taskId);
       if (occupied && (occupied.workId !== work.workId || occupied.botId !== params.botId)) {
         return { ok: false, code: "invalid_request", message: "执行 Task 已属于另一事项或 Bot，不能复用其上下文" };
       }
-      if (occupied && UNSETTLED_BINDING_STATUSES.has(occupied.status)) {
+      if (occupied && UNSETTLED_BINDING_STATUSES.has(occupied.status)
+        && !this.teams.allowsRecoveryBinding(work.workId, params.taskId, params.operationId, occupied)) {
         return { ok: false, code: "unsettled_effects", message: "该 task 已绑定未结算执行，不能同时承接另一次派发" };
       }
       if (!this.authorizedFor(work, params.delegatedScope?.every(scope => scope === "workspace:read") ? "workspace:read" : "workspace:write")) {

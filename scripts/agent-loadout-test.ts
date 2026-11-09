@@ -221,7 +221,7 @@ try {
 
   // Development contract: incompatible DB versions are discarded, not migrated.
   db.upsertTask({ id: "task-migrate", title: "discard me", status: "completed", updatedAt: Date.now() });
-  db.connection.pragma(`user_version = ${CURRENT_DATABASE_SCHEMA_VERSION - 1}`);
+  db.connection.pragma(`user_version = ${CURRENT_DATABASE_SCHEMA_VERSION - 2}`);
   db.close();
   const migrated = new AppDatabase();
   assert.equal(migrated.schemaVersion, CURRENT_DATABASE_SCHEMA_VERSION);

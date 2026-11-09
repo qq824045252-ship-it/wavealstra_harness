@@ -6,6 +6,7 @@ import { ensureBotWorkPhase4Tables } from "./bot-work-phase4-schema";
 import { ensureBotWorkPhase5Tables } from "./bot-work-phase5-schema";
 import { ensureGatewayDeliveryTables } from "./gateway-delivery-schema";
 import { retireWorkIsolation } from "./work-isolation-retirement";
+import { retireWorkBudget } from "./work-budget-retirement";
 import { parseCronExecution } from "../../shared/cron-execution";
 import { isGatewayBotTaskId } from "../../shared/gateway-task";
 import { WorkspacePathError } from "../workspace/WorkspacePathError";
@@ -64,7 +65,18 @@ import type { TaskWriteGrantRow } from "../../shared/external-write";
 import type { ExternalAgentPinDto } from "../../shared/external-agent";
 import { computeEffectiveArchived as sharedComputeEffectiveArchived } from "../../shared/workspace-tree";
 
-export const CURRENT_DATABASE_SCHEMA_VERSION = 35;
+export const CURRENT_DATABASE_SCHEMA_VERSION = 36;
+
+/**
+ * Only versions with a real in-place migration may skip the backup/reset path.
+ * v35 introduced the Work budget tables; v36 retires them. Keeping this set
+ * explicit prevents unrelated old schemas from being silently upgraded.
+ */
+export const MIGRATABLE_DATABASE_SCHEMA_VERSIONS: ReadonlySet<number> = new Set([35]);
+
+function canMigrateInPlace(version: number): boolean {
+  return version === CURRENT_DATABASE_SCHEMA_VERSION || MIGRATABLE_DATABASE_SCHEMA_VERSIONS.has(version);
+}
 
 /** tasks.external_agent_pin_json → TaskDto.externalAgentPin；损坏/缺失一律按未固定处理。 */
 function parseExternalAgentPin(raw: string | null | undefined): TaskDto["externalAgentPin"] {
@@ -243,7 +255,7 @@ function reserveDatabaseBackupPath(candidate: string): string {
 }
 
 /**
- * user_version 与 CURRENT_DATABASE_SCHEMA_VERSION 不一致（降级/回滚/迁移中断/损坏）时：
+ * user_version 既不是当前版本、也没有显式原地迁移路径（降级/回滚/迁移中断/损坏）时：
  * 把 db / -wal / -shm 改名到同目录 `${dbPath}.discarded-<UTC 时间戳>[-wal|-shm]` 备份，再让构造函数重建空库。
  *
  * 任何情况下都不删除用户数据：rename 失败会回滚已改名的文件并抛错（启动失败好过静默清库）。
@@ -263,7 +275,7 @@ function resetIncompatibleDatabaseFile(dbPath: string): void {
       version = -1;
     }
   }
-  if (version === CURRENT_DATABASE_SCHEMA_VERSION) return;
+  if (canMigrateInPlace(version)) return;
 
   const stamp = incompatibleDatabaseBackupStamp();
   const moved: Array<{ source: string; backup: string }> = [];
@@ -346,15 +358,16 @@ export class AppDatabase {
 
   private migrate(): void {
     const startVersion = this.schemaVersion;
-    if (startVersion !== 0 && startVersion !== CURRENT_DATABASE_SCHEMA_VERSION) {
+    if (startVersion !== 0 && !canMigrateInPlace(startVersion)) {
       throw new Error(
         `数据库版本 ${startVersion} 与当前开发 schema ${CURRENT_DATABASE_SCHEMA_VERSION} 不一致；文件库应在打开前被重建`,
       );
     }
 
     this.db.transaction(() => {
-      // Development contract: schema is current-only. Existing incompatible file databases
-      // are discarded before opening; a fresh database is materialized directly at CURRENT.
+      // v35 -> v36 is the one explicit in-place migration (Work budget retirement).
+      // Every other incompatible version is discarded before opening; a fresh
+      // database is materialized directly at CURRENT.
       this.ensureCurrentCoreSchema();
       this.ensureProjectTodosTable();
       this.ensureProjectEventsTable();
@@ -383,6 +396,13 @@ export class AppDatabase {
       ensureBotWorkPhase5Tables(this.db);
       ensureGatewayDeliveryTables(this.db);
       retireWorkIsolation(this.db);
+      const budgetRetirement = retireWorkBudget(this.db);
+      if (budgetRetirement.droppedTables.length || budgetRetirement.droppedColumns.length
+        || budgetRetirement.deletedBlockers || budgetRetirement.deletedCausalAdmissions
+        || budgetRetirement.clearedTeamBudgetErrors || budgetRetirement.resetDispatchBudgetRequests) {
+        console.info(`[AppDatabase] work budget retired: ${JSON.stringify(budgetRetirement)}`);
+      }
+      if (startVersion === 35) console.info("[AppDatabase] migrated v35 -> v36 (Work budget retirement)");
       this.migrateLegacyWelcomeModeIds();
       this.db.pragma(`user_version = ${CURRENT_DATABASE_SCHEMA_VERSION}`);
     })();

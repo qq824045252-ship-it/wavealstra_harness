@@ -285,6 +285,8 @@ const HEADLESS_TESTS = new Set([
   "test:durable-sync",
   "test:durable-tool-policy",
   "test:work-isolation-retirement",
+  "test:work-budget-retirement",
+  "test:bot-work-team-recovery",
   "test:task-diagnostics",
   "test:durable-subagent",
   "test:durable-consult",

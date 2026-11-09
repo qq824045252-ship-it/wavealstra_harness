@@ -58,7 +58,7 @@ export type WorkReviewControlRequest = z.input<typeof workReviewControlSchema>;
  * resource and unknown-effect blockers must use their own guarded controls. */
 export function userInputBlockerSnapshot(blocker: WorkBlockerDto): string | undefined {
   if (blocker.kind !== "operational" || blocker.reasonCode !== "user-input" || !blocker.waitingForUserInput
-    || blocker.unknownExternalEffectRef || !blocker.sourceRef || blocker.subscriptionId || blocker.windowId
+    || blocker.unknownExternalEffectRef || !blocker.sourceRef || blocker.subscriptionId
     || blocker.causalChainId) return undefined;
   const parsed = z.object({ kind: z.literal("reply"), inputSnapshotId: z.string().min(1).max(2000),
     intentRevision: z.number().int().positive(), ownerEpoch: z.number().int().positive(),

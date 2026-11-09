@@ -59,7 +59,6 @@ export function ensureBotWorkPhase4Tables(db: Database.Database): void {
   add("work_blockers", "details_json", "details_json TEXT NOT NULL DEFAULT '{}'");
   add("work_blockers", "source_ref", "source_ref TEXT");
   add("work_blockers", "subscription_id", "subscription_id TEXT");
-  add("work_blockers", "window_id", "window_id TEXT");
   add("work_blockers", "causal_chain_id", "causal_chain_id TEXT");
 
   db.exec(`

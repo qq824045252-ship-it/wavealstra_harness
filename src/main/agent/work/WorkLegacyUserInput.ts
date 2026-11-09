@@ -16,7 +16,7 @@ export function legacyUserInputSource(db: Database.Database, work: WorkDto, bloc
     || blocker.kind !== "operational" || blocker.reportedByBotId !== work.ownerBotId
     || !/^blocker-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(blocker.blockerId)
     || blocker.reasonCode || Object.keys(blocker.details ?? {}).length || blocker.sourceRef || blocker.subscriptionId
-    || blocker.windowId || blocker.causalChainId || blocker.unknownExternalEffectRef
+    || blocker.causalChainId || blocker.unknownExternalEffectRef
     || work.inputSnapshotId === "snapshot:unbound") return undefined;
   // 共享资源隔离与动作审批的数据已退役，只剩真实执行准入仍是机器引用。
   const machineReference = (id: string) => Boolean(

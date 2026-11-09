@@ -65,16 +65,15 @@ try {
     .run(`budget:exhausted:${original.workId}`, original.workId);
   db.connection.prepare("UPDATE work_operation_receipts SET result_snapshot_json=json_set(result_snapshot_json,'$.budget',json('{\"maxTokens\":0}'),'$.budgetPolicy',json('{\"maxTokens\":0}'),'$.authorization.budgetLimitTokens',0) WHERE operation_id='original'").run();
   const legacyReceipt = db.connection.prepare("SELECT result_snapshot_json FROM work_operation_receipts WHERE operation_id='original'").get();
-  const history = db.connection.prepare("SELECT * FROM work_budget_reservations").all();
-  const legacyQuota = db.connection.prepare("SELECT budget_json FROM works WHERE work_id=?").get(original.workId);
   db.close(); db = new AppDatabase(path); bots = new BotRegistry(db.connection); works = new WorkService(db.connection, { bots });
-  assert.equal(db.connection.pragma("user_version", { simple: true }), version, "no version reset or business-history discard");
-  assert.deepEqual(db.connection.prepare("SELECT * FROM work_budget_reservations").all(), history);
-  assert.deepEqual(db.connection.prepare("SELECT budget_json FROM works WHERE work_id=?").get(original.workId), legacyQuota);
+  assert.equal(db.connection.pragma("user_version", { simple: true }), version, "retirement keeps the current version");
+  assert.deepEqual(db.connection.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'work_budget_%'").all(), [], "legacy budget tables are permanently retired");
+  assert(!columns("works").includes("budget_json"));
+  assert(!columns("work_execution_bindings").includes("reservation_id"));
   assert.equal(works.getWork(original.workId)!.title, "original");
   assert.equal("budgetLimitTokens" in works.getWork(original.workId)!.authorization, false);
   assert.equal(works.repo.listOpenBlockers(original.workId).length, 0, "old quota blockers are inert without rewriting them");
-  assert.equal(works.repo.getBlocker(`budget:exhausted:${original.workId}`)!.status, "open", "historical blocker row survives unchanged");
+  assert.equal(works.repo.getBlocker(`budget:exhausted:${original.workId}`), undefined, "retired budget blocker is removed");
   const replay = create("original");
   assert.equal(replay.workId, original.workId);
   assert.equal("budget" in replay, false); assert.equal("budgetPolicy" in replay, false);
@@ -86,7 +85,7 @@ try {
   assert.equal(retriedCausal.allowed, true, "a historical quota refusal is re-evaluated without a quota");
   assert.notEqual(retriedCausal.chainId, oldCausal.chainId);
   assert.equal(works.causal.admit(causalInput).chainId, retriedCausal.chainId, "post-removal retry stays idempotent");
-  assert.deepEqual(db.connection.prepare("SELECT decision FROM work_causal_chains WHERE chain_id=?").get(oldCausal.chainId), { decision: "blocked-budget" });
+  assert.equal(db.connection.prepare("SELECT decision FROM work_causal_chains WHERE chain_id=?").get(oldCausal.chainId), undefined, "retired budget refusal row is removed");
   assert.equal(works.causal.admit({ ...causalInput, operationId: "different-operation" }).allowed, false, "same-state causal loop protection still applies");
   create("new-after-upgrade");
   dispatch(works.getWork(original.workId)!, "dispatch-after-upgrade");
@@ -120,5 +119,5 @@ try {
   assert.equal(works.causal.list(causalWork.workId).some(row => row.chain_id === oldCausal.chainId), false, "retired quota refusals are not current monitor items");
   const noAuthority = new WorkService(db.connection, { bots, isAuthority: () => false });
   assert.equal(noAuthority.createWork(user, { operationId: "no-authority", title: "no" }).ok, false);
-  console.log("PASS no Work quota contracts, storage, provider-usage blocking or admission; current-version history and authority/effect guards preserved");
+  console.log("PASS no Work quota contracts or runtime blocking; legacy v35 budget storage is retired while business history, authority and external-effect guards are preserved");
 } finally { db.close(); await rm(root, { recursive: true, force: true }); }

@@ -154,7 +154,6 @@ interface BlockerRow {
   details_json: string;
   source_ref: string | null;
   subscription_id: string | null;
-  window_id: string | null;
   causal_chain_id: string | null;
   unknown_external_effect_ref: string | null;
   waiting_for_user_input: number;
@@ -767,10 +766,10 @@ export class WorkRepository {
   insertBlocker(blocker: WorkBlockerDto): void {
     this.db.prepare(`INSERT INTO work_blockers (
       blocker_id,work_id,reported_by_bot_id,reason,kind,unknown_external_effect_ref,
-      reason_code,details_json,source_ref,subscription_id,window_id,causal_chain_id,
+      reason_code,details_json,source_ref,subscription_id,causal_chain_id,
       waiting_for_user_input,status,created_at,cleared_at
     ) VALUES (@blockerId,@workId,@reportedByBotId,@reason,@kind,@unknownExternalEffectRef,
-      @reasonCode,@detailsJson,@sourceRef,@subscriptionId,@windowId,@causalChainId,
+      @reasonCode,@detailsJson,@sourceRef,@subscriptionId,@causalChainId,
       @waitingForUserInput,@status,@createdAt,@clearedAt)`).run({
       ...blocker,
       reportedByBotId: blocker.reportedByBotId ?? null,
@@ -779,7 +778,6 @@ export class WorkRepository {
       detailsJson: jsonText(blocker.details ?? {}),
       sourceRef: blocker.sourceRef ?? null,
       subscriptionId: blocker.subscriptionId ?? null,
-      windowId: blocker.windowId ?? null,
       causalChainId: blocker.causalChainId ?? null,
       waitingForUserInput: blocker.waitingForUserInput ? 1 : 0,
       clearedAt: blocker.clearedAt ?? null,
@@ -1231,7 +1229,6 @@ function mapBlocker(row: BlockerRow): WorkBlockerDto {
     details: json<Record<string, unknown>>(row.details_json, {}),
     sourceRef: row.source_ref ?? undefined,
     subscriptionId: row.subscription_id ?? undefined,
-    windowId: row.window_id ?? undefined,
     causalChainId: row.causal_chain_id ?? undefined,
     unknownExternalEffectRef: row.unknown_external_effect_ref ?? undefined,
     waitingForUserInput: row.waiting_for_user_input === 1,

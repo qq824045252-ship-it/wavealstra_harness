@@ -474,7 +474,7 @@ try {
     kind: "decision", title: "Old memory", content: "must be discarded with incompatible DB",
     scopeType: "task", scopeId: "old-task", sourceType: "manual", explicit: true,
   });
-  seed.connection.pragma(`user_version = ${CURRENT_DATABASE_SCHEMA_VERSION - 1}`);
+  seed.connection.pragma(`user_version = ${CURRENT_DATABASE_SCHEMA_VERSION - 2}`);
   seed.close();
 
   const reset = new AppDatabase(resetPath);

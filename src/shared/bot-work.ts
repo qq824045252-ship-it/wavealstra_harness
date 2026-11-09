@@ -282,7 +282,6 @@ export interface WorkBlockerDto {
   details?: Record<string, unknown>;
   sourceRef?: string;
   subscriptionId?: string;
-  windowId?: string;
   causalChainId?: string;
   unknownExternalEffectRef?: string;
   waitingForUserInput: boolean;

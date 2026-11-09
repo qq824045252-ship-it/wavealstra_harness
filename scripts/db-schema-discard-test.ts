@@ -66,7 +66,7 @@ function captureWarnings(fn: () => void): string[] {
 }
 
 const root = mkdtempSync(join(tmpdir(), "mybuddy-db-discard-"));
-const outdatedVersion = CURRENT_DATABASE_SCHEMA_VERSION - 1;
+const outdatedVersion = CURRENT_DATABASE_SCHEMA_VERSION - 2;
 try {
   check("Incompatible database is renamed to a .discarded backup, then rebuilt", () => {
     const dbPath = join(root, "plain.db");

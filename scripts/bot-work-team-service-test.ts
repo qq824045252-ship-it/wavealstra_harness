@@ -192,39 +192,44 @@ try {
   await flush(); assert.equal(bindings(suspended.work!.workId).length, 0);
   assert.equal(works.teams.get(suspended.work!.workId)!.state, "cancelled");
   const failedSetup = setup(), failed = ok(works.teams.handle(user, { kind: "create", request: failedSetup.request }));
-  failSummary.add(failed.team!.executions[2]!.taskId); await flush();
-  assert.equal(works.teams.get(failed.work!.workId)!.state, "blocked");
-  assert.equal(bindings(failed.work!.workId).length, 3);
+  failSummary.add(failed.team!.executions[2]!.taskId); await flush(10);
+  assert.equal(works.teams.get(failed.work!.workId)!.state, "blocked", "the same empty failure stops after no progress");
+  assert.equal(bindings(failed.work!.workId).length, 4, "one bounded continuation keeps the original owner task identity");
+  assert.match(works.teams.get(failed.work!.workId)!.executions[2]!.error!, /没有新进展|恢复已停止/);
 
   // In-flight/unknown results hold the next member instead of spawning a replacement.
   const uncertainSetup = setup(), uncertain = ok(works.teams.handle(user, { kind: "create", request: uncertainSetup.request }));
   await queue.flush(); const uncertainBinding = bindings(uncertain.work!.workId)[0]!;
   works.transaction(() => works.repo.updateBinding({ ...uncertainBinding, status: "unknown" }));
   await works.teams.dispatchPending(db, adapter, () => "fixture");
-  assert.equal(bindings(uncertain.work!.workId).length, 1);
-  assert.equal(works.teams.get(uncertain.work!.workId)!.state, "blocked");
-  works.transaction(() => works.repo.updateBinding(uncertainBinding)); await flush();
+  assert.equal(bindings(uncertain.work!.workId).length, 2, "the unknown member reuses its report while the next member starts");
+  assert.equal(bindings(uncertain.work!.workId)[0].status, "unknown", "recovery never rewrites the original unknown result as success");
+  assert.equal(bindings(uncertain.work!.workId)[1].taskId, uncertain.team!.executions[1]!.taskId, "the next member keeps its own identity");
+  assert.equal(works.teams.get(uncertain.work!.workId)!.executions[0]!.status, "recovered");
+  assert.equal(works.teams.get(uncertain.work!.workId)!.executions[0]!.recoveryOutcome, "reused_existing_result");
 
-  // Missing provider metering no longer creates a Work quota hold. A failed
-  // attempt retains its result while explicit lifecycle controls still apply.
+  // Missing provider metering no longer creates a Work quota hold, while explicit
+  // lifecycle controls still apply.
   const meteringSetup = setup(), metering = ok(works.teams.handle(user, { kind: "create", request: meteringSetup.request }));
   const meteringWorkId = metering.work!.workId, firstTask = metering.team!.executions[0]!.taskId;
-  unknownGeneration.add(firstTask); failSummary.add(firstTask);
+  unknownGeneration.add(firstTask); runningTasks.add(firstTask);
   await queue.flush();
   const firstBinding = bindings(meteringWorkId)[0]!;
-  assert.equal(firstBinding.status, "failed");
+  assert.equal(firstBinding.status, "running");
   assert.equal("budget" in works.getWork(meteringWorkId)!, false);
-  const taskCount = db.listTasks().length;
+  const planTasks = () => metering.team!.executions.filter(row => db.getTask(row.taskId)).length;
   assert(works.pauseWork(user, { operationId: `metering-pause:${meteringWorkId}`, workId: meteringWorkId }).ok);
   assert.equal(works.teams.get(meteringWorkId)!.state, "paused");
-  await flush(); assert.equal(db.listTasks().length, taskCount, "removed quotas never override an explicit pause");
+  await flush(); assert.equal(planTasks(), 1, "removed quotas never override an explicit pause");
   assert(works.resumeWork(user, { operationId: `metering-resume:${meteringWorkId}`, workId: meteringWorkId }).ok);
-  await flush();
+  await flush(); assert.equal(planTasks(), 1, "resume waits for the still-running member");
+  runningTasks.delete(firstTask);
+  await flush(6);
   assert.equal(bindings(meteringWorkId).length, 3);
   assert.equal(works.teams.get(meteringWorkId)!.state, "awaiting_review");
   assert(works.repo.listDeliverables(meteringWorkId).some(item => item.executionId === firstBinding.bindingId), "settled partial result remains visible");
-  assert(works.collaboration.history(meteringWorkId).some(item => item.kind === "blocked"), "failure reporting is retained");
-  assert.equal(submissions.filter(item => item.taskId === firstTask).length, 1, "missing usage never causes the failed request to be replayed");
+  assert(works.collaboration.history(meteringWorkId).some(item => item.kind === "result"), "member result reporting is retained");
+  assert.equal(submissions.filter(item => item.taskId === firstTask).length, 1, "missing usage never causes the request to be replayed");
 
   // Parallel plans reserve independent identities while dependencies and the owner
   // wait for settled results; a bounded slot never means bypassing resource gates.
@@ -277,12 +282,16 @@ try {
   assert(works.reconcileExecution({ kind: "system", reason: "fixture-native-stop" }, { bindingId: stoppedBinding.bindingId,
     outcome: "stopped", usageTokens: 0, note: "STOPPED_WITHOUT_ARTIFACT" }).ok);
   assert.equal(works.repo.listDeliverables(stoppedId).length, 0);
+  runningTasks.delete(stoppedFirst.taskId);
+  await flush(2);
+  const stoppedRecovery = bindings(stoppedId).filter(binding => binding.taskId === stoppedFirst.taskId);
+  assert.equal(stoppedRecovery.length, 2, "the failed member continues under its original task identity");
+  assert.equal(stoppedRecovery[1]!.botId, stoppedFirst.botId, "recovery keeps the original member identity");
   await flush(4);
   const stoppedInput = submissions.find(item => item.taskId === stoppedSecond.taskId)!.input.teamAssignment.previousResults;
-  assert.equal(stoppedInput.length, 1, "a predecessor without a deliverable must remain visible");
-  assert.equal(stoppedInput[0]!.status, "no_deliverable");
-  assert(JSON.stringify(stoppedInput).includes("STOPPED_WITHOUT_ARTIFACT"));
-  assert(JSON.stringify(stoppedInput).includes('"executionStatus":"stopped"'));
+  assert.equal(stoppedInput.length, 1, "the dependent member receives the recovered result");
+  assert.equal((stoppedInput[0] as { executionStatus?: string }).executionStatus, "completed");
+  assert(JSON.stringify(stoppedInput).includes("actual fixture result"));
   const debtSetup = setup();
   const debt = ok(works.teams.handle(user, { kind: "create", request: { ...debtSetup.request,
     executionPolicy: "parallel", maxConcurrency: 2 } }));

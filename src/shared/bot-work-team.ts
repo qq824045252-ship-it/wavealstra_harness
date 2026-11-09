@@ -57,10 +57,16 @@ export interface WorkTeamExecution extends WorkTeamMember {
   role: "member" | "owner_summary";
   taskId: string;
   bindingId?: string;
-  status: WorkExecutionStatus | "queued" | "blocked" | "cancelled";
+  status: WorkExecutionStatus | "queued" | "recovering" | "recovered" | "blocked" | "cancelled";
   error?: string;
   resultSummary?: string;
   waitingReason?: string;
+  /** Durable automatic-recovery progress; the original task/member identity is unchanged. */
+  recoveryState?: "pending" | "claimed" | "dispatched" | "completed" | "stopped";
+  recoveryGeneration?: number;
+  recoveryAttempts?: number;
+  recoveryOutcome?: string;
+  failureReason?: string;
 }
 export interface WorkTeamDto extends WorkTeamPlan {
   workId: string;

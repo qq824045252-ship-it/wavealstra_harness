@@ -425,6 +425,21 @@ async function testRecoveryControls() {
       await render(projection("blocked", { workId: "other-work" })); await render(original);
       await act(async () => controlReply.resolve({ ok: false, code: "late", message: "Stale Work A notice" })); assert.doesNotMatch(container.textContent!, /Stale Work A notice/);
     });
+    await check("team panel shows automatic recovery progress and recovered state without claiming completion", async () => {
+      const value = projection("blocked");
+      value.team!.executions[0] = { ...value.team!.executions[0], status: "recovering", recoveryState: "pending",
+        recoveryGeneration: 2, recoveryAttempts: 2, failureReason: "temporary provider failure" };
+      await start(value);
+      assert.match(container.textContent!, /自动恢复中/);
+      assert.match(container.textContent!, /第 2 次/);
+      assert.match(container.textContent!, /不重复已确认效果/);
+      value.team!.executions[0] = { ...value.team!.executions[0], status: "recovered", recoveryState: "completed",
+        recoveryOutcome: "completed", failureReason: "temporary provider failure" };
+      await render(value);
+      assert.match(container.textContent!, /已自动恢复/);
+      assert.match(container.textContent!, /仍需负责人核对与用户验收/);
+      assert.match(container.textContent!, /原失败：temporary provider failure/);
+    });
     await check("already-bound unknown execution does not expose a preparation retry", async () => {
       const value = projection("blocked"); value.team!.executions[0].bindingId = "original-binding"; value.team!.executions[0].status = "unknown";
       await start(value); assert.equal([...container.querySelectorAll("button")].some(item => item.textContent === "重试未启动的准备"), false); assert.deepEqual(calls, []);

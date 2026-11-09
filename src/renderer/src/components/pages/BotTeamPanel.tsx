@@ -3,7 +3,7 @@ import { useAppStore } from "@/store/appStore";
 import type { BotDto, WorkProjectionDto } from "@shared/bot-work";
 import type { WorkTeamControlRequest, WorkTeamDto, WorkTeamExecution } from "@shared/bot-work-team";
 const stateLabels: Record<WorkTeamDto["state"], string> = { closing: "收尾结算中", completed: "已验收完成", ended_unsuccessfully: "已结束，目标未达成", queued: "等待开工", running: "执行中", blocked: "执行受阻", awaiting_review: "汇总已就绪，待验收", paused: "已暂停", cancelled: "已取消", superseded: "原计划已失效，等待重新安排" };
-const executionLabels: Record<WorkTeamExecution["status"], string> = { queued: "排队中", pending: "准备中", submitted: "已派发", running: "执行中", completed: "执行结束，待核验", failed: "执行失败", stopped: "已停止", unknown: "结果未知，待核对", invalidated: "已失效", blocked: "受阻", cancelled: "已取消" };
+const executionLabels: Record<WorkTeamExecution["status"], string> = { queued: "排队中", pending: "准备中", submitted: "已派发", running: "执行中", recovering: "自动恢复中", recovered: "已自动恢复，待核验", completed: "执行结束，待核验", failed: "执行失败", stopped: "已停止", unknown: "结果未知，待核对", invalidated: "已失效", blocked: "受阻", cancelled: "已取消" };
 const messageLabels: Record<string, string> = { delegate: "分工", accepted: "接手", question: "问题", result: "成果", blocked: "阻碍", change: "变更", cancel: "取消", handoff: "交接" };
 export function BotTeamPanel({ work, identities }: { work: WorkProjectionDto; identities: BotDto[] }): React.JSX.Element | null {
   const projectionKey = `${work.workId}:${work.intentRevision}:${work.ownerEpoch}:${work.stateVersion}`;
@@ -49,6 +49,9 @@ export function BotTeamPanel({ work, identities }: { work: WorkProjectionDto; id
       <p>{execution.responsibility}</p><p>范围：{execution.delegatedScope.includes("workspace:write") ? "指定工作区读写" : "指定工作区只读"}</p>
       {execution.dependsOnBotIds?.length ? <p>前置成员：{execution.dependsOnBotIds.map(name).join("、")}</p> : null}
       {execution.waitingReason && <p role="status">{execution.waitingReason}</p>}
+      {execution.status === "recovering" && <p role="status">原成员身份不变，正在自动恢复第 {execution.recoveryGeneration ?? 1} 次；已完成的成果会先读回复用，不重复已确认效果。</p>}
+      {execution.status === "recovered" && <p role="status">已自动恢复，原成员身份与依赖保持不变；恢复结果仍需负责人核对与用户验收。</p>}
+      {execution.failureReason && <p role="status">原失败：{execution.failureReason}</p>}
       {execution.error && <p role="status" className="bot-create-error">{execution.error}</p>}
       {execution.resultSummary && <details><summary>执行结果</summary><p>{execution.resultSummary}</p></details>}
     </article>)}

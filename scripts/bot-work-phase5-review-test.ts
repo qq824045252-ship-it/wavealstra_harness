@@ -295,7 +295,7 @@ try {
     for (const mutation of [ { reportedByBotId: undefined }, { reportedByBotId: "different-owner" },
       { blockerId: "approval:system" }, { reasonCode: "resource-recovery-exhausted" as const }, { unknownExternalEffectRef: "effect" },
       { details: { resource: "desktop" } }, { sourceRef: "source" }, { subscriptionId: "subscription" },
-      { windowId: "legacy-window" }, { causalChainId: "chain" }, { reason: "Forged question" }, { createdAt: blocker.createdAt + 1 } ]) {
+      { causalChainId: "chain" }, { reason: "Forged question" }, { createdAt: blocker.createdAt + 1 } ]) {
       assert.equal(legacyUserInputSource(db.connection, current, { ...blocker, ...mutation }), undefined);
     }
     db.connection.prepare("INSERT INTO work_action_admissions(admission_id,work_id,binding_id,operation_id,action_kind,state,intent_revision,owner_epoch,admitted_at) VALUES (?,?,?,?,?,?,?,?,?)")

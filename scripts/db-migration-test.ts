@@ -43,6 +43,8 @@ function assertCurrentSchema(db: AppDatabase, label: string): void {
     "work_telemetry_state", "work_source_events", "work_events_inbox", "work_events_outbox",
     "work_subscriptions", "work_notifications", "work_host_lease",
   ]) assert(tableExists(db, table), `${label}: ${table} exists`);
+  assert(!tableExists(db, "work_budget_reservations"), `${label}: retired work_budget_reservations is not created`);
+  assert(!columnExists(db, "works", "budget_json"), `${label}: retired works.budget_json is not created`);
   assert(!tableExists(db, "conversation_goals"), `${label}: retired conversation_goals is not created`);
   assert(!tableExists(db, "project_memory"), `${label}: legacy project_memory is absent`);
   assert(!tableExists(db, "project_memory_evidence"), `${label}: legacy project memory evidence is absent`);
