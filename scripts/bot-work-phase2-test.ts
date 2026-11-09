@@ -21,6 +21,7 @@ import { BotConversationRepository } from "../src/main/agent/work/BotConversatio
 import type { BotConversation } from "../src/main/agent/work/BotConversationRepository";
 import type { DurableBotSnapshot } from "../src/shared/durable-bot";
 import { DurableBotService } from "../src/main/agent/durable/DurableBotService";
+import { botAttachmentSchema } from "../src/shared/bot-conversation";
 import { DEFAULT_BOT_ID, LOCAL_USER_ID, type WorkActor, type WorkControlResult } from "../src/shared/bot-work";
 
 const root = await mkdtemp(join(tmpdir(), "bot-work-phase2-"));
@@ -199,7 +200,23 @@ try {
   const bBinding = works.repo.listBindings(b.workId)[0]!;
   const backgroundAttachment = foreground.messages.history(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID }).messages.find(message => message.requestId === "delegate-b" && message.role === "user")?.attachments?.[0];
   assert(backgroundAttachment, "user attachment is persisted");
-  assert(works.repo.attachmentInput(bBinding).includes(backgroundAttachment.path), "host forwards exact durable attachment path into background input snapshot");
+  // The snapshot contains JSON lines: Windows path separators are escaped on the wire.
+  const forwardedAttachments = (binding: typeof bBinding) => works.repo.attachmentInput(binding).trim().split("\n").slice(1)
+    .map(line => botAttachmentSchema.parse(JSON.parse(line)));
+  assert.deepEqual(forwardedAttachments(bBinding), [backgroundAttachment], "host forwards exact durable attachment path into background input snapshot");
+  const pathFixtures = [
+    { name: "drive.txt", path: String.raw`C:\Users\vivion\文档\background-material.txt` },
+    { name: "unc.txt", path: String.raw`\\server\share\background-material.txt` },
+    { name: "posix.txt", path: '/tmp/文档/background-"material".txt' },
+  ];
+  const pathFixtureBinding = { ...bBinding, inputSnapshotId: `${bBinding.inputSnapshotId}:path-roundtrip` };
+  db.connection.prepare("INSERT INTO bot_work_attachments (work_id,input_snapshot_id,attachments_json) VALUES (?,?,?)")
+    .run(b.workId, pathFixtureBinding.inputSnapshotId, JSON.stringify(pathFixtures));
+  try {
+    assert.deepEqual(forwardedAttachments(pathFixtureBinding), pathFixtures, "drive, UNC and quoted POSIX paths survive the actual snapshot serializer unchanged on every platform");
+  } finally {
+    db.connection.prepare("DELETE FROM bot_work_attachments WHERE work_id=? AND input_snapshot_id=?").run(b.workId, pathFixtureBinding.inputSnapshotId);
+  }
   assert.equal(await readFile(backgroundAttachment.path, "utf8"), "background material evidence");
   assert.equal(bBinding.conversationId, aBinding.conversationId, "real native roots independently start with the same numeric conversation ID");
   assert.notEqual(bBinding.durableStoreKey, aBinding.durableStoreKey);
