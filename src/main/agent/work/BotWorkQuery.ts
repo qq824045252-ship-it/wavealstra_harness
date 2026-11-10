@@ -45,20 +45,24 @@ export interface BotWorkSummary {
 
 /** SQL-only catalogue. Never hydrate every Work or build projections to list it. */
 export class BotWorkQuery {
-  constructor(private readonly db: Database.Database, private readonly userId: string, private readonly botId: string) {
+  constructor(private readonly db: Database.Database, private readonly userId: string, private readonly botId: string, private readonly teamId?: string) {
     // Additive indexes support existing current-schema databases without discarding data.
     db.exec(`CREATE INDEX IF NOT EXISTS idx_works_user_created ON works(user_id,created_at DESC,work_id DESC);
       CREATE INDEX IF NOT EXISTS idx_work_participants_bot_work ON work_participants(bot_id,work_id);`);
   }
 
+  private visible(): string {
+    return this.teamId ? `w.user_id=@userId AND EXISTS (SELECT 1 FROM work_team_ownership t WHERE t.work_id=w.work_id AND t.team_id=@teamId)` : visible;
+  }
+
   canRead(workId: string): boolean {
-    return !!this.db.prepare(`SELECT 1 FROM works w WHERE w.work_id=@workId AND ${visible}`)
-      .get({ userId: this.userId, botId: this.botId, workId });
+    return !!this.db.prepare(`SELECT 1 FROM works w WHERE w.work_id=@workId AND ${this.visible()}`)
+      .get({ userId: this.userId, botId: this.botId, teamId: this.teamId ?? "", workId });
   }
 
   soleOpenWorkId(): string | undefined {
-    const rows = this.db.prepare(`SELECT w.work_id FROM works w WHERE ${visible} AND w.lifecycle!='closed' LIMIT 2`)
-      .all({ userId: this.userId, botId: this.botId }) as Array<{ work_id: string }>;
+    const rows = this.db.prepare(`SELECT w.work_id FROM works w WHERE ${this.visible()} AND w.lifecycle!='closed' LIMIT 2`)
+      .all({ userId: this.userId, botId: this.botId, teamId: this.teamId ?? "" }) as Array<{ work_id: string }>;
     return rows.length === 1 ? rows[0]!.work_id : undefined;
   }
 
@@ -66,7 +70,7 @@ export class BotWorkQuery {
     const status = input.status ?? (input.workId ? "all" : "open");
     const limit = input.limit ?? 20;
     // Bind cursors to caller and filters. They are positions, never authorization.
-    const scope = createHash("sha256").update(JSON.stringify([this.userId, this.botId, status, input.search ?? "", input.workId ?? ""]))
+    const scope = createHash("sha256").update(JSON.stringify([this.userId, this.botId, this.teamId ?? null, status, input.search ?? "", input.workId ?? ""]))
       .digest("hex");
     let after: z.infer<typeof cursorSchema> | undefined;
     if (input.cursor) {
@@ -74,8 +78,8 @@ export class BotWorkQuery {
       catch { throw new Error("查询游标无效，请重新查询第一页"); }
       if (after.scope !== scope) throw new Error("查询游标与当前用户、Bot 或筛选不匹配，请重新查询第一页");
     }
-    const params: Record<string, string | number> = { userId: this.userId, botId: this.botId };
-    const predicates = [visible];
+    const params: Record<string, string | number> = { userId: this.userId, botId: this.botId, teamId: this.teamId ?? "" };
+    const predicates = [this.visible()];
     if (input.workId) { predicates.push("w.work_id=@workId"); params.workId = input.workId; }
     if (input.search) {
       // Literal substring search, including % and _, rather than SQL wildcards.

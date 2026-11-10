@@ -6,7 +6,7 @@ import { botActivitySchema, type BotActivityDto, botAttachmentSchema, type BotAt
 import type { WorkDto } from "../../../shared/bot-work";
 import { BOT_MESSAGE_ID_PREFIX } from "../../../shared/bot-conversation";
 
-const conversationRow = z.object({ conversation_id: z.string(), bot_id: z.string(), user_id: z.string(), revision: z.number(),
+const conversationRow = z.object({ conversation_id: z.string(), bot_id: z.string(), team_id: z.string().nullable().optional(), user_id: z.string(), revision: z.number(),
   current_request_id: z.string().nullable(), archived_at: z.number().nullable(), created_at: z.number(), updated_at: z.number() });
 export type BotConversation = z.infer<typeof conversationRow>;
 const receiptRow = z.object({ user_id: z.string(), bot_id: z.string(), request_id: z.string(), payload_hash: z.string(),
@@ -20,34 +20,43 @@ const messageRow = z.object({ message_id: z.string(), conversation_id: z.string(
 export class BotConversationRepository {
   constructor(readonly db: Database.Database) {}
 
-  conversation(userId: string, botId: string, conversationId?: string): BotConversation | undefined {
-    const row = conversationId ? this.db.prepare("SELECT * FROM bot_conversations WHERE user_id=? AND bot_id=? AND conversation_id=?").get(userId, botId, conversationId)
-      : this.db.prepare("SELECT * FROM bot_conversations WHERE user_id=? AND bot_id=? AND archived_at IS NULL").get(userId, botId);
+  conversation(userId: string, botId: string, conversationId?: string, teamId?: string): BotConversation | undefined {
+    // Explicit IDs are internal receipt identities. External send/history validate
+    // team scope separately; old requests retain their original executing Bot.
+    const row = conversationId ? this.db.prepare(`SELECT * FROM bot_conversations WHERE user_id=? AND conversation_id=?
+      AND (bot_id=? OR team_id IS NOT NULL)`).get(userId, conversationId, botId)
+      : teamId ? this.db.prepare("SELECT * FROM bot_conversations WHERE user_id=? AND team_id=? AND archived_at IS NULL").get(userId, teamId)
+      : this.db.prepare("SELECT * FROM bot_conversations WHERE user_id=? AND bot_id=? AND team_id IS NULL AND archived_at IS NULL").get(userId, botId);
     return row ? conversationRow.parse(row) : undefined;
+  }
+
+  assertScope(conversation: BotConversation | undefined, teamId?: string): void {
+    if (conversation && (conversation.team_id ?? undefined) !== teamId) throw new Error("对话不属于当前团队或个人空间");
   }
 
   accept(userId: string, input: BotSendRequest, persistedAttachments: BotAttachmentDto[] = input.attachments ?? []): BotSendReceipt {
     const payload = JSON.stringify({ text: input.text, conversationId: input.conversationId ?? null,
-      selectedWorkId: input.selectedWorkId ?? null, referenceMessageId: input.referenceMessageId ?? null,
+      ...(input.teamId ? { teamId: input.teamId } : {}), selectedWorkId: input.selectedWorkId ?? null, referenceMessageId: input.referenceMessageId ?? null,
       ...(input.attachments?.length ? { attachments: input.attachments } : {}) });
     const hash = createHash("sha256").update(payload).digest("hex");
     const prior = this.receipt(userId, input.botId, input.requestId);
     if (prior) {
       if (prior.payload_hash !== hash) throw new Error("同一消息请求 ID 已用于不同正文、附件或事项引用");
-      return { botId: input.botId, conversationId: prior.conversation_id, requestId: input.requestId,
+      return { botId: input.botId, teamId: input.teamId, conversationId: prior.conversation_id, requestId: input.requestId,
         userMessageId: prior.user_message_id, assistantMessageId: prior.assistant_message_id, replayed: true };
     }
-    let conversation = this.conversation(userId, input.botId, input.conversationId);
+    let conversation = this.conversation(userId, input.botId, input.conversationId, input.teamId);
+    this.assertScope(conversation, input.teamId);
     if (input.conversationId && !conversation) throw new Error("对话不属于当前用户与 Bot");
     if (conversation?.archived_at) throw new Error("该对话已归档，请开始新对话");
     const now = Date.now();
     if (!conversation) {
       const conversationId = `bot-conversation-${randomUUID()}`;
-      this.db.prepare("INSERT INTO bot_conversations(conversation_id,bot_id,user_id,created_at,updated_at) VALUES (?,?,?,?,?)")
-        .run(conversationId, input.botId, userId, now, now);
+      this.db.prepare("INSERT INTO bot_conversations(conversation_id,bot_id,user_id,created_at,updated_at,team_id) VALUES (?,?,?,?,?,?)")
+        .run(conversationId, input.botId, userId, now, now, input.teamId ?? null);
       conversation = this.conversation(userId, input.botId, conversationId)!;
     }
-    const receipt: BotSendReceipt = { botId: input.botId, conversationId: conversation.conversation_id, requestId: input.requestId,
+    const receipt: BotSendReceipt = { botId: input.botId, teamId: input.teamId, conversationId: conversation.conversation_id, requestId: input.requestId,
       userMessageId: `${BOT_MESSAGE_ID_PREFIX}${randomUUID()}`, assistantMessageId: `${BOT_MESSAGE_ID_PREFIX}${randomUUID()}`, replayed: false };
     const insert = this.db.prepare(`INSERT INTO bot_messages(message_id,conversation_id,bot_id,request_id,role,text,status,created_at,updated_at)
       VALUES (?,?,?,?,?,?,?,?,?)`);
@@ -74,12 +83,13 @@ export class BotConversationRepository {
   }
 
   history(userId: string, request: BotHistoryRequest): BotHistoryDto {
-    const conversation = this.conversation(userId, request.botId, request.inbox ? botInboxId(userId, request.botId) : request.conversationId);
-    if (!conversation) return { conversationId: "", botId: request.botId, revision: 0, archived: false, messages: [] };
+    const conversation = this.conversation(userId, request.botId, request.inbox ? botInboxId(userId, request.botId) : request.conversationId, request.teamId);
+    this.assertScope(conversation, request.teamId);
+    if (!conversation) return { conversationId: "", botId: request.botId, teamId: request.teamId, revision: 0, archived: false, messages: [] };
     const rows = this.db.prepare("SELECT * FROM bot_messages WHERE conversation_id=? AND ordinal<? ORDER BY ordinal DESC LIMIT 101")
       .all(conversation.conversation_id, request.before ?? Number.MAX_SAFE_INTEGER);
     const messages = rows.slice(0, 100).map(row => this.mapMessage(row)).reverse();
-    return { conversationId: conversation.conversation_id, botId: request.botId, revision: conversation.revision,
+    return { conversationId: conversation.conversation_id, botId: request.botId, teamId: request.teamId, revision: conversation.revision,
       archived: conversation.archived_at !== null, messages, before: rows.length > 100 ? messages[0]?.ordinal : undefined };
   }
 
@@ -87,7 +97,7 @@ export class BotConversationRepository {
     // Scope comes from the host, never renderer input. No runtime creation, mutation
     // or current-conversation restriction: queued and archived requests stay visible.
     const rows = this.db.prepare(`SELECT m.*, c.archived_at FROM bot_messages m
-      JOIN bot_conversations c ON c.conversation_id=m.conversation_id AND c.bot_id=m.bot_id
+      JOIN bot_conversations c ON c.conversation_id=m.conversation_id
       WHERE c.user_id=? AND m.role='assistant' AND m.status IN ('queued','running','unknown')
       ORDER BY m.updated_at DESC, m.ordinal DESC`).all(userId) as Array<{ archived_at: number | null }>;
     const prompt = this.db.prepare("SELECT * FROM bot_messages WHERE conversation_id=? AND bot_id=? AND request_id=? AND role='user' ORDER BY ordinal LIMIT 1");
@@ -135,7 +145,7 @@ export class BotConversationRepository {
       SELECT 1 FROM bot_send_receipts r
       JOIN bot_conversations c ON c.conversation_id=r.conversation_id
       JOIN bot_messages m ON m.message_id=r.assistant_message_id
-      WHERE r.user_id=? AND c.user_id=r.user_id AND c.bot_id=r.bot_id
+      WHERE r.user_id=? AND c.user_id=r.user_id
         AND r.conversation_id=bot_work_reads.conversation_id AND r.request_id=bot_work_reads.request_id
         AND m.conversation_id=r.conversation_id AND m.bot_id=r.bot_id AND m.request_id=r.request_id
         AND m.role='assistant' AND m.status IN ('completed','cancelled','failed')
@@ -171,10 +181,10 @@ export class BotConversationRepository {
       intentRevision: work.intentRevision, sourceVersion: work.sourceVersion,
       ...(message.attachments?.length ? { attachments: message.attachments } : {}) });
     const reference = receipt.reference_message_id ? this.message(receipt.reference_message_id) : undefined;
-    const references = reference?.botId === receipt.bot_id && reference.conversationId === receipt.conversation_id
+    const references = reference?.conversationId === receipt.conversation_id
       && reference.ordinal < current.ordinal ? [compact(reference)] : [];
     if (references.length && reference?.role === 'assistant') {
-      const original = this.receipt(receipt.user_id, receipt.bot_id, reference.requestId);
+      const original = this.receipt(receipt.user_id, reference.botId, reference.requestId);
       const originalUser = original && this.message(original.user_message_id);
       if (originalUser && originalUser.ordinal < current.ordinal) references.unshift(compact(originalUser));
     }
@@ -189,7 +199,7 @@ export class BotConversationRepository {
       .get(workId, previousSnapshotId ?? inputSnapshotId) as { attachments_json: string } | undefined;
     const current = this.message(receipt.user_message_id);
     const reference = receipt.reference_message_id ? this.message(receipt.reference_message_id) : undefined;
-    const referenced = reference?.botId === receipt.bot_id && reference.conversationId === receipt.conversation_id ? reference.attachments ?? [] : [];
+    const referenced = reference?.conversationId === receipt.conversation_id ? reference.attachments ?? [] : [];
     const source = this.db.prepare("SELECT messages_json,references_json FROM bot_work_user_inputs WHERE work_id=? AND source_message_id=?")
       .get(workId, receipt.user_message_id) as { messages_json: string; references_json: string } | undefined;
     const contextAttachments = source ? [source.messages_json, source.references_json].flatMap(value =>
@@ -213,7 +223,7 @@ export class BotConversationRepository {
   /** Resolve the original authenticated send, never the current owner or active chat. */
   workOrigin(userId: string, workId: string): BotConversation | undefined {
     const row = this.db.prepare(`SELECT c.* FROM bot_send_receipts r
-      JOIN bot_conversations c ON c.conversation_id=r.conversation_id AND c.bot_id=r.bot_id AND c.user_id=r.user_id
+      JOIN bot_conversations c ON c.conversation_id=r.conversation_id AND c.user_id=r.user_id
       JOIN bot_messages m ON m.message_id=r.user_message_id AND m.conversation_id=c.conversation_id
         AND m.bot_id=r.bot_id AND m.request_id=r.request_id AND m.role='user'
       JOIN works w ON w.work_id=? AND w.user_id=r.user_id
@@ -332,6 +342,7 @@ export class BotConversationRepository {
 
   private mapMessage(value: unknown): BotMessageDto {
     const row = messageRow.parse(value);
+    const scope = this.db.prepare("SELECT team_id FROM bot_conversations WHERE conversation_id=?").get(row.conversation_id) as { team_id: string | null };
     const version = this.db.prepare('SELECT revision FROM bot_message_revisions WHERE message_id=?').get(row.message_id) as { revision: number } | undefined;
     const attachmentRow = this.db.prepare("SELECT attachments_json FROM bot_message_attachments WHERE message_id=?").get(row.message_id) as { attachments_json: string } | undefined;
     const attachments = attachmentRow ? z.array(botAttachmentSchema).parse(JSON.parse(attachmentRow.attachments_json)) : undefined;
@@ -340,7 +351,7 @@ export class BotConversationRepository {
     const activityRow = row.status === "running" ? this.db.prepare("SELECT activity_json FROM bot_message_activity WHERE message_id=?")
       .get(row.message_id) as { activity_json: string } | undefined : undefined;
     const activity = activityRow ? botActivitySchema.safeParse(JSON.parse(activityRow.activity_json)) : undefined;
-    return { messageRevision: version?.revision ?? 0, messageId: row.message_id, conversationId: row.conversation_id, botId: row.bot_id, requestId: row.request_id,
+    return { teamId: scope?.team_id ?? undefined, messageRevision: version?.revision ?? 0, messageId: row.message_id, conversationId: row.conversation_id, botId: row.bot_id, requestId: row.request_id,
       workFeedback: parsed?.success ? parsed.data : undefined, attachments, activity: activity?.success ? activity.data : undefined,
       ordinal: row.ordinal, role: row.role, text: row.text, status: row.status,
       workIds: z.array(z.string()).parse(JSON.parse(row.work_ids_json)), error: row.error ?? undefined,

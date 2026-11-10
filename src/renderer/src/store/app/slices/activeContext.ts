@@ -20,6 +20,7 @@ export interface ActiveContextState {
   botWorkCursor: WorkListCursor | null;
   activeTaskId: string | null;
   activeBotId: string | null;
+  activeTeam: import("../../../../../shared/bot-work-team").WorkTeamTemplateDto | null;
   selectedWorkId: string | null;
   botDraft: string;
   botSubmissionNotice: boolean;
@@ -58,6 +59,7 @@ export function createActiveContextState(): ActiveContextState {
     botWorkCursor: null,
     activeTaskId: null,
     activeBotId: null,
+    activeTeam: null,
     selectedWorkId: null,
     botDraft: "",
     botSubmissionNotice: false,
@@ -107,6 +109,7 @@ export function createActiveContextActions(
   | "cancelBotSend"
   | "archiveBotConversation"
   | "setActiveBotId"
+  | "setActiveTeam"
   | "createBot"
   | "setSelectedWorkId"
   | "refreshBotWork"
@@ -198,7 +201,7 @@ export function createActiveContextActions(
             botWorkError: null,
             botDraft: activeBotId === state.activeBotId ? state.botDraft : state.botDrafts[activeBotId ?? ""] ?? "",
             activeBotId,
-            selectedWorkId: !invalidatedBot && botWorks.some((work) => work.workId === selectedWorkId && botParticipatesInWork(work, activeBotId)
+            selectedWorkId: !invalidatedBot && botWorks.some((work) => work.workId === selectedWorkId && (state.activeTeam ? work.team?.teamId === state.activeTeam.templateId : botParticipatesInWork(work, activeBotId))
               && (includeClosed || work.lifecycle !== "closed"))
               ? selectedWorkId ?? null
               : null,

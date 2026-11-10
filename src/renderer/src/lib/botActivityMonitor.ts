@@ -10,7 +10,7 @@ export type ActivityKind = "task" | "subagent" | "bot" | "work";
 export interface ActivityRow {
   id: string; kind: ActivityKind; title: string; owner: string; label: string;
   running: boolean; ended: boolean; detail: string; updatedAt: number;
-  taskId?: string; subagentId?: string; botId?: string; workId?: string; messageId?: string; sourceRequest?: BotActiveRequestDto; teamWork?: boolean;
+  taskId?: string; subagentId?: string; botId?: string; workId?: string; messageId?: string; sourceRequest?: BotActiveRequestDto; teamWork?: boolean; teamId?: string;
 }
 export const activityKindLabels: Record<ActivityKind, string> = { task: "普通任务", subagent: "子代理", bot: "Bot 对话", work: "Bot Work" };
 function taskText(task: Task): string {
@@ -22,24 +22,31 @@ function taskText(task: Task): string {
 export function buildActivityRows(input: {
   tasks: Task[]; works: WorkProjectionDto[]; bots: BotDto[];
   histories: Record<string, BotHistoryDto>; subagents: Record<string, SubagentSummaryDto[]>;
-  now: number; activeRequests?: BotActiveRequestDto[]; scopeBotId?: string | null;
+  now: number; activeRequests?: BotActiveRequestDto[]; scopeBotId?: string | null; scopeTeamId?: string;
 }): ActivityRow[] {
   // Default UI scope is one Bot. Team work never belongs to a member's
   // personal inbox; unbound ordinary tasks appear only in explicit global view.
-  if (input.scopeBotId !== undefined && input.scopeBotId !== null) {
+  if (input.scopeTeamId) {
+    const teamId = input.scopeTeamId;
+    const works = input.works.filter(work => work.team?.teamId === teamId);
+    const taskIds = new Set(works.flatMap(work => work.executions.map(binding => binding.taskId)));
+    input = { ...input, works, tasks: input.tasks.filter(task => taskIds.has(task.id)),
+      histories: Object.fromEntries(Object.entries(input.histories).filter(([, history]) => history.teamId === teamId)),
+      activeRequests: input.activeRequests?.filter(request => request.message.teamId === teamId) };
+  } else if (input.scopeBotId !== undefined && input.scopeBotId !== null) {
     const botId = input.scopeBotId;
     const works = input.works.filter(work => work.ownerBotId === botId && !work.team);
     const taskIds = new Set(works.flatMap(work => work.executions.map(binding => binding.taskId)));
     input = { ...input, works, tasks: input.tasks.filter(task => taskIds.has(task.id)),
       bots: input.bots.filter(bot => bot.botId === botId),
-      histories: Object.fromEntries(Object.entries(input.histories).filter(([, history]) => history.botId === botId)),
-      activeRequests: input.activeRequests?.filter(request => request.message.botId === botId) };
+      histories: Object.fromEntries(Object.entries(input.histories).filter(([, history]) => history.botId === botId && !history.teamId)),
+      activeRequests: input.activeRequests?.filter(request => request.message.botId === botId && !request.message.teamId) };
   }
   const rows: ActivityRow[] = [];
   // A current stream may have advanced after the active-request query.
   // Prefer its newer terminal observation rather than reviving a finished reply.
   const activeRequests = (input.activeRequests ?? []).filter(request => {
-    const newer = input.histories[request.message.botId]?.messages.find(item => item.messageId === request.message.messageId);
+    const newer = input.histories[request.message.teamId ? `team:${request.message.teamId}` : request.message.botId]?.messages.find(item => item.messageId === request.message.messageId);
     return !(newer && newer.updatedAt >= request.message.updatedAt && ["completed", "failed", "cancelled"].includes(newer.status));
   });
   const activeMessageIds = new Set(activeRequests.map(request => request.message.messageId));
@@ -75,18 +82,18 @@ export function buildActivityRows(input: {
       rows.push({ id: "bot:" + message.messageId, kind: "bot", title: prompt?.text || "Bot 对话",
         owner: names.get(message.botId) ?? "Bot", label: botMessageStatus(message),
         running: message.status === "running", ended: !["queued", "running", "unknown"].includes(message.status),
-        detail: message.text || message.error || botMessageStatus(message), updatedAt: message.updatedAt, botId: message.botId, messageId: message.messageId });
+        detail: message.text || message.error || botMessageStatus(message), updatedAt: message.updatedAt, botId: message.botId, teamId: message.teamId, messageId: message.messageId });
     }
   }
   for (const request of activeRequests) {
     const message = request.message;
     if (!["queued", "running", "unknown"].includes(message.status)) continue;
-    const inCurrentWindow = input.histories[message.botId]?.messages.some(item => item.messageId === message.messageId)
-      && !input.histories[message.botId]?.archived;
+    const inCurrentWindow = input.histories[message.teamId ? `team:${message.teamId}` : message.botId]?.messages.some(item => item.messageId === message.messageId)
+      && !input.histories[message.teamId ? `team:${message.teamId}` : message.botId]?.archived;
     rows.push({ id: "bot:" + message.messageId, kind: "bot", title: request.prompt?.text || "Bot 对话",
       owner: names.get(message.botId) ?? "Bot", label: botMessageStatus(message), running: message.status === "running",
       ended: false, detail: message.text || message.error || botMessageStatus(message), updatedAt: message.updatedAt,
-      botId: message.botId, messageId: message.messageId, sourceRequest: inCurrentWindow ? undefined : request });
+      botId: message.botId, teamId: message.teamId, messageId: message.messageId, sourceRequest: inCurrentWindow ? undefined : request });
   }
   for (const work of input.works) {
     if (work.team?.removedAt) continue;

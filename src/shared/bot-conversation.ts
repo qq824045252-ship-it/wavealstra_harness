@@ -9,11 +9,11 @@ const id = z.string().trim().min(1).max(200);
 export const botAttachmentSchema = z.object({ name: z.string().trim().min(1).max(255), path: z.string().min(1).max(8192) }).strict();
 export type BotAttachmentDto = z.infer<typeof botAttachmentSchema>;
 export const botSendSchema = z.object({
-  botId: id, requestId: id, text: z.string().trim().max(32000), attachments: z.array(botAttachmentSchema).max(10).optional(),
+  botId: id, teamId: id.optional(), requestId: id, text: z.string().trim().max(32000), attachments: z.array(botAttachmentSchema).max(10).optional(),
   conversationId: id.optional(), selectedWorkId: id.optional(), referenceMessageId: id.optional(),
 }).strict().refine(input => input.text.length > 0 || (input.attachments?.length ?? 0) > 0, "请输入消息或添加附件");
 export type BotSendRequest = z.infer<typeof botSendSchema>;
-export const botHistorySchema = z.object({ inbox: z.boolean().optional(), botId: id, conversationId: id.optional(), before: z.number().int().positive().optional() }).strict();
+export const botHistorySchema = z.object({ inbox: z.boolean().optional(), botId: id, teamId: id.optional(), conversationId: id.optional(), before: z.number().int().positive().optional() }).strict();
 export type BotHistoryRequest = z.infer<typeof botHistorySchema>;
 /** Host-authored durable Work feedback, never inferred from message wording. */
 export const workFeedbackSchema = z.object({
@@ -40,7 +40,7 @@ export const botActivitySchema = z.object({
 }).strict();
 export type BotActivityDto = z.infer<typeof botActivitySchema>;
 export const botMessageSchema = z.object({
-  messageId: id, conversationId: id, botId: id, requestId: id, ordinal: z.number().int().positive(),
+  messageId: id, conversationId: id, botId: id, teamId: id.optional(), requestId: id, ordinal: z.number().int().positive(),
   messageRevision: z.number().int().nonnegative().optional(),
   role: z.enum(["user", "assistant"]), text: z.string(), attachments: z.array(botAttachmentSchema).optional(),
   status: z.enum(["queued", "running", "completed", "cancelled", "unknown", "failed"]),
@@ -53,10 +53,10 @@ export interface BotReportImages {
   sources: Record<string, string>;
 }
 export type BotMessageDto = z.infer<typeof botMessageSchema> & { reportImages?: BotReportImages };
-export interface BotHistoryDto { conversationId: string; botId: string; revision: number; archived: boolean; messages: BotMessageDto[]; before?: number }
-export interface BotMessageEvent { botId: string; conversationId: string; revision: number; message: BotMessageDto }
+export interface BotHistoryDto { conversationId: string; botId: string; teamId?: string; revision: number; archived: boolean; messages: BotMessageDto[]; before?: number }
+export interface BotMessageEvent { botId: string; teamId?: string; conversationId: string; revision: number; message: BotMessageDto }
 
-export interface BotSendReceipt { conversationId: string; botId: string; requestId: string; userMessageId: string; assistantMessageId: string; replayed: boolean }
+export interface BotSendReceipt { conversationId: string; botId: string; teamId?: string; requestId: string; userMessageId: string; assistantMessageId: string; replayed: boolean }
 
 export interface WorkListCursor { epoch: string; sequence: number; scope: "open" | "all" }
 export type WorkListEvent = { sequence: number } & (

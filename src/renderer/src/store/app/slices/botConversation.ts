@@ -12,6 +12,7 @@ export interface BotConversationUiState {
   botPendingSends: Record<string, PendingSend>;
   botConversationErrors: Record<string, string>;
 }
+export const botConversationScope = (botId: string, teamId?: string) => teamId ? `team:${teamId}` : botId;
 const storageKey = "mybuddy.bot-conversation-drafts";
 const savedSchema = z.object({ drafts: z.record(z.string(), z.string()), requests: z.record(z.string(), botSendSchema), attachments: z.record(z.string(), z.array(z.object({ name: z.string(), path: z.string().optional() }))).default({}) });
 export function createBotConversationState(): BotConversationUiState {
@@ -22,7 +23,7 @@ export function createBotConversationState(): BotConversationUiState {
 }
 
 export function createBotConversationActions({ get, set, getApi }: AppContext): Pick<AppActions,
-  "forgetDeletedBot" | "setBotAttachments" | "setBotDraft" | "submitBotDraft" | "setActiveBotId" | "refreshBotHistory" | "cancelBotSend" | "archiveBotConversation"> {
+  "forgetDeletedBot" | "setBotAttachments" | "setBotDraft" | "submitBotDraft" | "setActiveBotId" | "setActiveTeam" | "refreshBotHistory" | "cancelBotSend" | "archiveBotConversation"> {
   const histories = new Map<string, number>();
   const persist = () => {
     try { localStorage.setItem(storageKey, JSON.stringify({ drafts: get().botDrafts, attachments: get().botAttachmentDrafts,
@@ -43,42 +44,53 @@ export function createBotConversationActions({ get, set, getApi }: AppContext): 
       persist();
     },
     setBotDraft: text => {
-      const botId = get().activeBotId;
+      const active = get();
+      const botId = active.activeBotId ? botConversationScope(active.activeBotId, active.activeTeam?.templateId) : null;
       set(state => ({ botDraft: text, botSubmissionNotice: false, botDrafts: botId ? { ...state.botDrafts, [botId]: text } : state.botDrafts }));
       persist();
     },
+    setActiveTeam: team => {
+      try { if (team) localStorage.setItem("mybuddy.active-team", team.templateId); else localStorage.removeItem("mybuddy.active-team"); } catch {}
+      if (!team) { set({ activeTeam: null }); return; }
+      const key = botConversationScope(team.ownerBotId, team.templateId);
+      set(state => ({ activeTeam: team, activeBotId: team.ownerBotId, selectedWorkId: null, botDraft: state.botDrafts[key] ?? "", botSubmissionNotice: false, page: "bot" }));
+      void get().refreshBotHistory(team.ownerBotId, team.templateId);
+    },
     setActiveBotId: botId => {
-      set(state => ({ activeBotId: botId, selectedWorkId: null, botDraft: botId ? state.botDrafts[botId] ?? "" : "", botSubmissionNotice: false }));
+      try { localStorage.removeItem("mybuddy.active-team"); } catch {}
+      set(state => ({ activeTeam: null, activeBotId: botId, selectedWorkId: null, botDraft: botId ? state.botDrafts[botId] ?? "" : "", botSubmissionNotice: false }));
       if (botId) void get().refreshBotHistory(botId);
     },
     submitBotDraft: async (options = {}) => {
-      const { activeBotId: botId, botDraft, selectedWorkId } = get();
+      const { activeBotId: botId, activeTeam, botDraft, selectedWorkId } = get();
+      const teamId = activeTeam?.templateId;
+      const scopeKey = botConversationScope(botId ?? "", teamId);
       if (!botId) return;
       if (options.editRejectedRequestId) {
         const item = get().botPendingSends[options.editRejectedRequestId];
-        if (!item || item.request.botId !== botId || !item.error?.includes("BOT_ATTACHMENT_REJECTED:")) return;
-        if (botDraft.trim() || get().botAttachmentDrafts[botId]?.length) return;
+        if (!item || (item.request.botId !== botId || item.request.teamId !== teamId) || !item.error?.includes("BOT_ATTACHMENT_REJECTED:")) return;
+        if (botDraft.trim() || get().botAttachmentDrafts[scopeKey]?.length) return;
         set(state => {
           const pending = { ...state.botPendingSends }; delete pending[item.request.requestId];
           return { botPendingSends: pending, botDraft: item.request.text,
-            botDrafts: { ...state.botDrafts, [botId]: item.request.text },
-            botAttachmentDrafts: { ...state.botAttachmentDrafts, [botId]: item.request.attachments ?? [] } };
+            botDrafts: { ...state.botDrafts, [scopeKey]: item.request.text },
+            botAttachmentDrafts: { ...state.botAttachmentDrafts, [scopeKey]: item.request.attachments ?? [] } };
         });
         persist(); return;
       }
-      const attachments = get().botAttachmentDrafts[botId] ?? [];
+      const attachments = get().botAttachmentDrafts[scopeKey] ?? [];
       const previous = options.retryRequestId ? get().botPendingSends[options.retryRequestId] : undefined;
-      if (options.retryRequestId && (!previous || previous.request.botId !== botId || previous.sending)) return;
+      if (options.retryRequestId && (!previous || (previous.request.botId !== botId || previous.request.teamId !== teamId) || previous.sending)) return;
       if (!previous && !botDraft.trim() && !attachments.length) return;
       // Each send owns its identity. A missing receipt can be retried independently
       // without hijacking a newer draft or blocking unrelated messages.
-      const request = previous?.request ?? { botId, requestId: crypto.randomUUID(), text: botDraft.trim(),
+      const request = previous?.request ?? { botId, teamId, requestId: crypto.randomUUID(), text: botDraft.trim(),
         attachments: attachments.map(item => ({ name: item.name, path: item.path ?? "" })),
-        conversationId: get().botHistories[botId]?.conversationId || undefined,
+        conversationId: get().botHistories[scopeKey]?.conversationId || undefined,
         selectedWorkId: selectedWorkId ?? undefined, referenceMessageId: options.referenceMessageId };
       set(state => ({ botPendingSends: { ...state.botPendingSends, [request.requestId]: { request, sending: true } },
-        ...(!previous ? { botDraft: "", botDrafts: { ...state.botDrafts, [botId]: "" },
-          botAttachmentDrafts: { ...state.botAttachmentDrafts, [botId]: [] } } : {}) }));
+        ...(!previous ? { botDraft: "", botDrafts: { ...state.botDrafts, [scopeKey]: "" },
+          botAttachmentDrafts: { ...state.botAttachmentDrafts, [scopeKey]: [] } } : {}) }));
       persist();
       try {
         const api = getApi();
@@ -88,10 +100,10 @@ export function createBotConversationActions({ get, set, getApi }: AppContext): 
         if (!get().botPendingSends[request.requestId]) return; // Bot deleted while the receipt was in flight.
         set(state => {
           const pending = { ...state.botPendingSends }; delete pending[request.requestId];
-          return { botPendingSends: pending, ...(state.activeBotId === botId ? { botSubmissionNotice: true } : {}) };
+          return { botPendingSends: pending, ...(state.activeBotId === botId && state.activeTeam?.templateId === teamId ? { botSubmissionNotice: true } : {}) };
         });
         persist();
-        await get().refreshBotHistory(botId);
+        await get().refreshBotHistory(botId, teamId);
         await get().refreshBotWork(get().botWorkCursor?.scope === "all");
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -103,32 +115,33 @@ export function createBotConversationActions({ get, set, getApi }: AppContext): 
         persist();
       }
     },
-    refreshBotHistory: async botId => {
-      const sequence = (histories.get(botId) ?? 0) + 1; histories.set(botId, sequence);
+    refreshBotHistory: async (botId, teamId) => {
+      const scopeKey = botConversationScope(botId, teamId);
+      const sequence = (histories.get(scopeKey) ?? 0) + 1; histories.set(scopeKey, sequence);
       try {
         const api = getApi(); if (!api) throw new Error("主机离线，消息状态待核对");
-        const history = await api.botWork.history({ botId });
-        if (histories.get(botId) !== sequence || history.botId !== botId) return;
+        const history = await api.botWork.history({ botId, teamId });
+        if (histories.get(scopeKey) !== sequence || history.botId !== botId) return;
         set(state => {
-          const observed = state.botHistories[botId];
+          const observed = state.botHistories[scopeKey];
           if (observed?.conversationId === history.conversationId && observed.revision > history.revision) return {};
-          const errors = { ...state.botConversationErrors }; delete errors[botId];
-          return { botHistories: { ...state.botHistories, [botId]: history }, botConversationErrors: errors };
+          const errors = { ...state.botConversationErrors }; delete errors[scopeKey];
+          return { botHistories: { ...state.botHistories, [scopeKey]: history }, botConversationErrors: errors };
         });
       } catch (error) {
-        if (histories.get(botId) === sequence) set(state => ({ botConversationErrors: { ...state.botConversationErrors,
-          [botId]: error instanceof Error ? error.message : String(error) } }));
+        if (histories.get(scopeKey) === sequence) set(state => ({ botConversationErrors: { ...state.botConversationErrors,
+          [scopeKey]: error instanceof Error ? error.message : String(error) } }));
       }
     },
     cancelBotSend: async (botId, requestId) => {
       await getApi()?.botWork.cancelSend(botId, requestId);
-      await get().refreshBotHistory(botId);
+      await get().refreshBotHistory(botId, get().activeTeam?.templateId);
     },
-    archiveBotConversation: async botId => {
-      const history = get().botHistories[botId];
+    archiveBotConversation: async (botId, teamId) => {
+      const history = get().botHistories[botConversationScope(botId, teamId)];
       if (!history?.conversationId) return;
       await getApi()?.botWork.archiveConversation(botId, history.conversationId);
-      await get().refreshBotHistory(botId);
+      await get().refreshBotHistory(botId, teamId);
     },
   };
 }

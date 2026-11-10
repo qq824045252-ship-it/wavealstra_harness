@@ -24,7 +24,7 @@ function fixture() {
   let archived = false;
   const api = { botWork: {
     sendMessage: async (request: BotSendRequest) => { calls.push(request); return send(request); },
-    history: ({ botId }: { botId: string }) => read(botId),
+    history: ({ botId, teamId }: { botId: string; teamId?: string }) => teamId ? Promise.resolve({ ...history(botId), teamId, conversationId: `conversation-team-${teamId}` }) : read(botId),
     listBots: async () => ["a", "b"].map(botId => ({ botId, userId: "user", status: "active", authorization: {} })),
     syncWorks: async (): Promise<WorkListUpdate> => ({ kind: "snapshot", cursor: { epoch: "ui", sequence: 0, scope: "open" }, works: [] }),
     hostStatus: async () => ({ online: true, isAuthority: true, authorityId: "ui-host" }),
@@ -67,6 +67,33 @@ async function main() {
   assert.deepEqual(aLater.messages.map(item => item.messageId), ["answer", "answer-b"]);
   assert.equal(mergeBotMessageEvent(aLater, { ...event, revision: 13,
     message: { ...parallelHistory.messages[0], text: "stale A", messageRevision: 1 } }), aLater);
+
+  const scoped = fixture();
+  const team = { templateId: "team-a", name: "Research", ownerBotId: "a", ownerResponsibility: "coordinate", members: [], executionPolicy: "parallel" as const, maxConcurrency: 2, createdAt: 1 };
+  scoped.store.getState().setActiveBotId("a");
+  scoped.store.getState().setBotDraft("personal draft");
+  scoped.store.getState().setActiveTeam(team);
+  await scoped.store.getState().refreshBotHistory("a", team.templateId);
+  assert.equal(scoped.store.getState().page, "bot");
+  assert.equal(scoped.store.getState().botDraft, "");
+  scoped.store.getState().setBotDraft("team A draft");
+  scoped.store.getState().setBotAttachments("team:team-a", [{ name: "team.txt", path: "/team.txt" }]);
+  scoped.store.getState().setActiveTeam({ ...team, templateId: "team-b", name: "Engineering" });
+  assert.equal(scoped.store.getState().botDraft, "");
+  scoped.store.getState().setBotDraft("team B draft");
+  scoped.store.getState().setActiveBotId("a");
+  assert.equal(scoped.store.getState().activeTeam, null);
+  assert.equal(scoped.store.getState().botDraft, "personal draft");
+  scoped.store.getState().setActiveTeam(team);
+  assert.equal(scoped.store.getState().botDraft, "team A draft");
+  await scoped.store.getState().submitBotDraft();
+  assert.equal(scoped.calls[0].teamId, "team-a");
+  assert.equal(scoped.calls[0].conversationId, "conversation-team-team-a");
+  assert.equal(scoped.calls[0].attachments?.[0].name, "team.txt");
+  assert.equal(scoped.store.getState().botDrafts.a, "personal draft");
+  assert.equal(scoped.store.getState().botDrafts["team:team-b"], "team B draft");
+  assert.equal(scoped.store.getState().botHistories["team:team-a"].conversationId, "conversation-team-team-a");
+  console.log("PASS teams and leader keep distinct histories, drafts, attachments and outgoing request scope");
 
   const f = fixture();
   const taskDraft = { title: "普通 Task 草稿" };

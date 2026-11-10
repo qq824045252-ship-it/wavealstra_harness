@@ -2,7 +2,7 @@ import type { BotHistoryDto, BotMessageEvent } from "../../../../../shared/bot-c
 
 /** Full-text replacement frames tolerate missing frames; persistent revisions reject old polls/events. */
 export function mergeBotMessageEvent(history: BotHistoryDto | undefined, event: BotMessageEvent): BotHistoryDto | undefined {
-  if (!history || history.botId !== event.botId || history.conversationId !== event.conversationId || history.archived
+  if (!history || (history.teamId ? history.teamId !== event.teamId : history.botId !== event.botId || Boolean(event.teamId)) || history.conversationId !== event.conversationId || history.archived
     || event.message.botId !== event.botId
     || event.message.conversationId !== event.conversationId || event.message.role !== "assistant") return history;
   const existing = history.messages.find(message => message.messageId === event.message.messageId);

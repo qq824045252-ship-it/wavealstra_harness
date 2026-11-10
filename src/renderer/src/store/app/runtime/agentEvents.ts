@@ -17,12 +17,13 @@ export function bindAgentEvents(
 
   addCleanup(api.botWork?.onMessageChanged?.(event => {
     if (!isActive()) return;
-    const history = get().botHistories[event.botId];
+    const scopeKey = event.teamId ? `team:${event.teamId}` : Object.keys(get().botHistories).find(key => get().botHistories[key]?.conversationId === event.conversationId) ?? event.botId;
+    const history = get().botHistories[scopeKey];
     const merged = mergeBotMessageEvent(history, event);
     if (merged !== history && merged) {
-      set(state => ({ botHistories: { ...state.botHistories, [event.botId]: merged } }));
+      set(state => ({ botHistories: { ...state.botHistories, [scopeKey]: merged } }));
     } else if (!history || history.conversationId === event.conversationId && !history.messages.some(message => message.messageId === event.message.messageId)) {
-      void get().refreshBotHistory(event.botId);
+      void get().refreshBotHistory(event.botId, scopeKey.startsWith("team:") ? scopeKey.slice(5) : undefined);
     }
   }));
 

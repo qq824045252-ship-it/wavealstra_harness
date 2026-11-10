@@ -149,10 +149,11 @@ export interface AppActions {
   setBotDraft: (text: string) => void;
   setBotAttachments: (botId: string, attachments: import("@/types").Attachment[]) => void;
   submitBotDraft: (options?: { retryRequestId?: string; editRejectedRequestId?: string; referenceMessageId?: string }) => Promise<void>;
-  refreshBotHistory: (botId: string) => Promise<void>;
+  refreshBotHistory: (botId: string, teamId?: string) => Promise<void>;
   cancelBotSend: (botId: string, requestId: string) => Promise<void>;
-  archiveBotConversation: (botId: string) => Promise<void>;
+  archiveBotConversation: (botId: string, teamId?: string) => Promise<void>;
   createBot: (request: import("../../../../shared/bot-create").BotCreateRequest) => Promise<import("../../../../shared/bot-create").BotCreateResult>;
+  setActiveTeam: (team: import("../../../../shared/bot-work-team").WorkTeamTemplateDto | null) => void;
   setActiveBotId: (botId: string | null) => void;
   setSelectedWorkId: (workId: string | null) => void;
   refreshBotWork: (includeClosed?: boolean) => Promise<void>;

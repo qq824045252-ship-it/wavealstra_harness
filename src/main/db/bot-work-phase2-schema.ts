@@ -11,7 +11,7 @@ export function ensureBotWorkPhase2Tables(db: Database.Database): void {
       revision INTEGER NOT NULL DEFAULT 0, current_request_id TEXT, archived_at INTEGER,
       created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
     );
-    CREATE UNIQUE INDEX IF NOT EXISTS uq_bot_live_conversation ON bot_conversations(user_id,bot_id) WHERE archived_at IS NULL;
+
     CREATE TABLE IF NOT EXISTS bot_messages (
       ordinal INTEGER PRIMARY KEY AUTOINCREMENT, message_id TEXT NOT NULL UNIQUE,
       conversation_id TEXT NOT NULL REFERENCES bot_conversations(conversation_id), bot_id TEXT NOT NULL,
@@ -120,6 +120,12 @@ export function ensureBotWorkPhase2Tables(db: Database.Database): void {
         WHERE user_id=NEW.user_id AND sequence<=NEW.sequence-${WORK_PROJECTION_EVENT_RETENTION};
     END;
   `);
+  // Additive scope migration: never bump/reset the application schema or rewrite history.
+  const conversationColumns = db.pragma("table_info(bot_conversations)") as Array<{ name: string }>;
+  if (!conversationColumns.some(column => column.name === "team_id")) db.exec("ALTER TABLE bot_conversations ADD COLUMN team_id TEXT");
+  db.exec(`DROP INDEX IF EXISTS uq_bot_live_conversation;
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_bot_personal_live ON bot_conversations(user_id,bot_id) WHERE archived_at IS NULL AND team_id IS NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_bot_team_live ON bot_conversations(user_id,team_id) WHERE archived_at IS NULL AND team_id IS NOT NULL;`);
   // Run at startup as well, including when there are no connected readers or new writes.
   // Keep the stream epoch/sequence: pruning must never reuse a tombstone's sequence.
   db.prepare(`DELETE FROM work_projection_events WHERE sequence <= (

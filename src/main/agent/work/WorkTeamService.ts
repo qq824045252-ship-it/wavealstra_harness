@@ -1,3 +1,4 @@
+import { ensureTeamConversation } from "./WorkDeliveryTargets";
 import { createHash, randomUUID } from "node:crypto";
 import { realpathSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
@@ -361,10 +362,12 @@ export class WorkTeamService {
           if (bot.authorization.targetWhitelist.length && !bot.authorization.targetWhitelist.includes(workspacePath))
             throw new TeamError("unauthorized_actor", `${bot.displayName} 未被授权访问所选工作区`);
         }
+        const conversationId = !sourceMessageId && owningTeam
+          ? ensureTeamConversation(this.db, actor.userId, input.ownerBotId, owningTeam.templateId) : input.conversationId;
         const now = this.now();
         const created = this.works.createWork(actor, { operationId: `team:${hash([actor.userId, input.operationId])}`, title: input.title,
           goalDescription: input.goalDescription, ownerBotId: input.ownerBotId, workspacePath, projectId: input.projectId,
-          conversationId: input.conversationId, sourceMessageId,
+          conversationId, sourceMessageId,
           criteria: input.criteria.map(text => ({ text, ...(sourceMessageId ? { origin: "assistant_proposal" as const } : {}) })),
           inputSnapshotId: `team-input:${hash([input, workspacePath])}`,
           authorization: { allowedScopes: scopes, targetWhitelist: [workspacePath], allowGitBranchOrWorktree: false,

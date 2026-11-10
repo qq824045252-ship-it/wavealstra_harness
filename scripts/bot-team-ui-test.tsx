@@ -370,15 +370,12 @@ async function main() {
       const teamButton = [...container.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent?.includes("Research team"))!;
       await act(async () => nativeClick(teamButton));
       assert(!container.querySelector(".bot-team-task-row"), "ordinary owner Work is not guessed to belong to a saved team");
-      const delegate = [...container.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent === "交给团队新任务")!;
-      await act(async () => nativeClick(delegate));
-      const taskForm = container.querySelector<HTMLFormElement>(".bot-create-dialog form") ?? [...container.querySelectorAll<HTMLFormElement>("form")].at(-1)!;
-      assert.equal(taskForm.querySelector<HTMLSelectElement>("#team-owner")?.value, mybuddy.botId);
-      for (const [id, value] of Object.entries({ "team-title": "Owned task", "team-goal": "Review", "team-workspace": "/tmp/test", "team-criteria": "Report" }))
-        await edit(taskForm.querySelector<HTMLInputElement | HTMLTextAreaElement>(`#${id}`)!, value);
-      await act(async () => taskForm.dispatchEvent(new testWindow.Event("submit", { bubbles: true, cancelable: true })));
-      assert.equal(requests[0]?.templateId, team.templateId);
-      assert.equal(requests[0]?.members[0].botId, other.botId);
+      assert.equal(store.getState().activeTeam?.templateId, team.templateId);
+      assert.equal(store.getState().page, "bot", "clicking a named team opens the shared full workspace");
+      assert.equal(store.getState().selectedWorkId, null);
+      assert.equal(store.getState().botDrafts[mybuddy.botId], "MyBuddy draft", "personal draft is preserved");
+      assert.equal(requests.length, 0, "opening team does not create a Work or hijack a personal conversation");
+      assert.equal(container.querySelector('dialog[open]'), null, "team opens as a page, not management modal");
     });
     await check("team settings edits stable team identity without dispatching or changing personal selection", async () => {
       await reset(); await unmount();

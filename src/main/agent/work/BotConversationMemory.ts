@@ -45,7 +45,7 @@ export class BotConversationMemory {
   context(botId: string, conversationId: string): string {
     if (!this.allowedBot(botId)) return "";
     const conversation = this.messages.conversation(this.options.userId, botId, conversationId);
-    if (!conversation) return "";
+    if (!conversation || conversation.team_id) return "";
     // Stable preferences should also influence unrelated requests. Bounded active L1,
     // read afresh at every provider request: no stale in-memory copy after deletion.
     return this.options.memory.resolveContext({ botId, scopeTypes: ["bot"], includeInherited: false,
@@ -56,6 +56,7 @@ export class BotConversationMemory {
   capture(botId: string, requestId: string): string | undefined {
     if (!this.allowedBot(botId)) return;
     const receipt = this.messages.receipt(this.options.userId, botId, requestId);
+    if (receipt && this.messages.conversation(this.options.userId, botId, receipt.conversation_id)?.team_id) return;
     if (!receipt || botMemorySource(this.options.db, receipt.conversation_id, this.options.userId)?.bot_id !== botId) return;
     const user = this.messages.message(receipt.user_message_id);
     const assistant = this.messages.message(receipt.assistant_message_id);

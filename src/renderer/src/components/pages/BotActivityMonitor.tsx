@@ -13,13 +13,14 @@ const PAGE_SIZE = 40;
 export function BotActivityMonitor({ onOpenBotMessage, onOpenWork }: { onOpenBotMessage: (messageId: string) => void; onOpenWork?: () => void }): React.JSX.Element {
   const [open, setOpen] = useState(false);
   const activeBotId = useAppStore(s => s.activeBotId);
+  const activeTeam = useAppStore(s => s.activeTeam);
   const [globalBotId, setGlobalBotId] = useState<string | null>(null);
   const globalScope = globalBotId !== null && globalBotId === activeBotId;
   const setGlobalScope = (global: boolean) => setGlobalBotId(global ? activeBotId : null);
   return <><button type="button" className="bot-quiet-button" aria-haspopup="dialog" onClick={() => { setGlobalScope(false); setOpen(true); }}>所有消息</button>
-    {open && <ActivityWindow key={(activeBotId ?? "") + ":" + globalScope} scopeBotId={globalScope ? null : activeBotId ?? ""} onScopeChange={setGlobalScope} onClose={() => setOpen(false)} onOpenBotMessage={onOpenBotMessage} onOpenWork={onOpenWork} />}</>;
+    {open && <ActivityWindow key={(activeTeam?.templateId ?? activeBotId ?? "") + ":" + globalScope} scopeTeamId={globalScope ? undefined : activeTeam?.templateId} scopeBotId={globalScope ? null : activeBotId ?? ""} onScopeChange={setGlobalScope} onClose={() => setOpen(false)} onOpenBotMessage={onOpenBotMessage} onOpenWork={onOpenWork} />}</>;
 }
-export function ActivityWindow({ scopeBotId, onScopeChange, onClose, onOpenBotMessage, onOpenWork }: { scopeBotId: string | null; onScopeChange: (global: boolean) => void; onClose: () => void; onOpenBotMessage: (messageId: string) => void; onOpenWork?: () => void }): React.JSX.Element {
+export function ActivityWindow({ scopeTeamId, scopeBotId, onScopeChange, onClose, onOpenBotMessage, onOpenWork }: { scopeTeamId?: string; scopeBotId: string | null; onScopeChange: (global: boolean) => void; onClose: () => void; onOpenBotMessage: (messageId: string) => void; onOpenWork?: () => void }): React.JSX.Element {
   const tasks = useAppStore(s => s.tasks);
   const works = useAppStore(s => s.botWorks);
   const [monitorWorks, setMonitorWorks] = useState<WorkProjectionDto[]>(works);
@@ -41,7 +42,7 @@ export function ActivityWindow({ scopeBotId, onScopeChange, onClose, onOpenBotMe
   const [limit, setLimit] = useState(PAGE_SIZE);
   const dialog = useRef<HTMLDialogElement>(null);
   const refreshing = useRef(false);
-  const scope = String(scopeBotId) + ":" + bots.map(bot => bot.userId + ":" + bot.botId).sort().join("|");
+  const scope = String(scopeTeamId) + ":" + String(scopeBotId) + ":" + bots.map(bot => bot.userId + ":" + bot.botId).sort().join("|");
   useEffect(() => { dialog.current?.showModal(); return () => dialog.current?.close(); }, []);
   useEffect(() => {
     setSubagents({}); setActiveRequests([]); setLoading(true);
@@ -56,15 +57,15 @@ export function ActivityWindow({ scopeBotId, onScopeChange, onClose, onOpenBotMe
         const requestRead = window.api?.botWork.activeRequests();
         if (!requestRead) throw new Error("Bot 活跃请求接口不可用，请更新并重启应用");
         const requests = await requestRead;
-        if (live) setActiveRequests(scopeBotId === null ? requests : requests.filter(request => request.message.botId === scopeBotId));
+        if (live) setActiveRequests(scopeBotId === null ? requests : requests.filter(request => scopeTeamId ? request.message.teamId === scopeTeamId : request.message.botId === scopeBotId && !request.message.teamId));
         const [workSnapshot] = await Promise.all([window.api!.botWork.listWorks(true),
-          ...state.botIdentities.filter(bot => scopeBotId === null || bot.botId === scopeBotId).map(bot => state.refreshBotHistory(bot.botId))]);
+          ...state.botIdentities.filter(bot => scopeBotId === null || bot.botId === scopeBotId).map(bot => state.refreshBotHistory(bot.botId, scopeTeamId))]);
         if (live) setMonitorWorks(workSnapshot);
         // Keep this all-Work view local: the main page may independently sync
         // an open-only cursor and must not erase closed rows in this reader.
         // Task-scoped API preserves existing access checks. Bound concurrency prevents
         // a large history from flooding IPC; snapshots never open/restart a task.
-        const boundTasks = new Set(workSnapshot.filter(work => work.ownerBotId === scopeBotId && !work.team).flatMap(work => work.executions.map(binding => binding.taskId)));
+        const boundTasks = new Set(workSnapshot.filter(work => (scopeTeamId ? work.team?.teamId === scopeTeamId : work.ownerBotId === scopeBotId && !work.team)).flatMap(work => work.executions.map(binding => binding.taskId)));
         const candidates = state.tasks.filter(task => (scopeBotId === null || boundTasks.has(task.id)) && !task.archived && (!scanned.has(task.id) || activeTasks.has(task.id) || task.status === "in_progress" || task.durable?.busy));
         const next: Record<string, SubagentSummaryDto[]> = {};
         let cursor = 0;
@@ -87,7 +88,7 @@ export function ActivityWindow({ scopeBotId, onScopeChange, onClose, onOpenBotMe
     const unsubscribe = window.api?.subagent?.onEvent?.(() => void refresh());
     return () => { live = false; clearInterval(timer); unsubscribe?.(); };
   }, [scope]);
-  const rows = useMemo(() => buildActivityRows({ tasks, works: monitorWorks, bots, histories, subagents, now: checkedAt, activeRequests, scopeBotId }), [tasks, monitorWorks, bots, histories, subagents, checkedAt, activeRequests, scopeBotId]);
+  const rows = useMemo(() => buildActivityRows({ tasks, works: monitorWorks, bots, histories, subagents, now: checkedAt, activeRequests, scopeBotId, scopeTeamId }), [tasks, monitorWorks, bots, histories, subagents, checkedAt, activeRequests, scopeBotId, scopeTeamId]);
   const filtered = rows.filter(row => (includeEnded || !row.ended) && (kind === "all" || row.kind === kind)
     && [row.title, row.owner, row.label, row.detail].join(" ").toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
   useEffect(() => {
@@ -120,6 +121,12 @@ export function ActivityWindow({ scopeBotId, onScopeChange, onClose, onOpenBotMe
       return;
     }
     if (row.workId && row.botId) { state.setActiveBotId(row.botId); state.setSelectedWorkId(row.workId); state.setPage("bot"); onOpenWork?.(); }
+    else if (row.teamId && row.botId) {
+      void window.api?.botWork.teamControl({ kind: "list_templates" }).then(result => {
+        const team = result?.ok && result.templates?.find(item => item.templateId === row.teamId);
+        if (team) { state.setActiveTeam(team); if (row.messageId) onOpenBotMessage(row.messageId); }
+      });
+    }
     else if (row.botId) { state.setActiveBotId(row.botId); state.setSelectedWorkId(null); state.setPage("bot"); if (row.messageId) onOpenBotMessage(row.messageId); }
     else if (row.taskId) {
       state.setActiveTask(row.taskId);
@@ -129,10 +136,10 @@ export function ActivityWindow({ scopeBotId, onScopeChange, onClose, onOpenBotMe
   };
   const failedSources = Object.keys(errors).filter(id => scopeBotId === null || id === scopeBotId).length;
   return <dialog ref={dialog} className="bot-activity-window" aria-label="所有消息与任务进度" onCancel={event => { event.preventDefault(); onClose(); }}>
-    <header><h2>{scopeBotId === null ? "全部任务与消息" : (bots[0]?.displayName ?? "当前 Bot") + " · 所有消息"}</h2>
+    <header><h2>{scopeBotId === null ? "全部任务与消息" : (scopeTeamId ? useAppStore.getState().activeTeam?.name ?? "当前团队" : bots[0]?.displayName ?? "当前 Bot") + " · 所有消息"}</h2>
       <button type="button" aria-label="关闭所有消息" onClick={onClose}><IconX size={20} /></button></header>
     <div className="bot-activity-controls">
-      <select aria-label="消息范围" value={scopeBotId === null ? "all" : "bot"} onChange={event => onScopeChange(event.target.value === "all")}><option value="bot">当前 Bot</option><option value="all">全局总览</option></select>
+      <select aria-label="消息范围" value={scopeBotId === null ? "all" : "bot"} onChange={event => onScopeChange(event.target.value === "all")}><option value="bot">{scopeTeamId ? "当前团队" : "当前 Bot"}</option><option value="all">全局总览</option></select>
       <input autoFocus type="search" aria-label="搜索所有任务与消息" placeholder="搜索任务或消息" value={query} onChange={event => { setQuery(event.target.value); setLimit(PAGE_SIZE); }} />
       <select aria-label="任务类型" value={kind} onChange={event => { setKind(event.target.value as ActivityKind | "all"); setLimit(PAGE_SIZE); }}><option value="all">所有类型</option>{Object.entries(activityKindLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>
       <label><input type="checkbox" checked={includeEnded} onChange={event => { setIncludeEnded(event.target.checked); setLimit(PAGE_SIZE); }} />包含已结束</label>

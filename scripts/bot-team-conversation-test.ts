@@ -1,0 +1,78 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { ToolExecutionApi } from "@earendil-works/pi-durable";
+import { AppDatabase } from "../src/main/db/AppDatabase";
+import { BotRegistry } from "../src/main/agent/work/BotRegistry";
+import { BotConversationRepository } from "../src/main/agent/work/BotConversationRepository";
+import { BotConversationService } from "../src/main/agent/work/BotConversationService";
+import { botForegroundTools } from "../src/main/agent/work/BotForegroundTools";
+import { WorkService, DESKTOP_USER_GRANTS } from "../src/main/agent/work/WorkService";
+import { BotWorkQuery } from "../src/main/agent/work/BotWorkQuery";
+const root = mkdtempSync(join(tmpdir(), "team-conversation-"));
+let app = new AppDatabase(join(root, "app.db"));
+try {
+  let db = app.connection;
+  const bots = new BotRegistry(db);
+  for (const botId of ["owner", "member", "next-owner"]) bots.registerBot({ botId, userId: "user", displayName: botId, authorization: DESKTOP_USER_GRANTS });
+  const works = new WorkService(db, { bots });
+  const actor = { kind: "user" as const, userId: "user", grants: { ...DESKTOP_USER_GRANTS, allowRedelegation: true } };
+  const plan = { ownerBotId: "owner", ownerResponsibility: "汇总", members: [{ botId: "member", responsibility: "核验", delegatedScope: ["workspace:read" as const] }] };
+  const save = (name: string) => { const r = works.teams.handle(actor, { kind: "save_template", request: { operationId: name, name, plan } }); assert(r.ok && r.template); return r.template; };
+  const a = save("A"), b = save("B");
+  let repo = new BotConversationRepository(db);
+  const personal = repo.accept("user", { botId: "owner", requestId: "personal", text: "个人秘密" });
+  const first = repo.accept("user", { botId: "owner", teamId: a.templateId, requestId: "a1", text: "团队 A 原始需求" });
+  const second = repo.accept("user", { botId: "owner", teamId: b.templateId, requestId: "b1", text: "团队 B" });
+  assert.equal(new Set([personal.conversationId, first.conversationId, second.conversationId]).size, 3);
+  assert.equal(repo.history("user", { botId: "owner" }).messages[0].text, "个人秘密");
+  assert.equal(repo.history("user", { botId: "owner", teamId: a.templateId }).messages.length, 2);
+  assert.throws(() => repo.history("user", { botId: "owner", conversationId: first.conversationId }), /空间/);
+  assert.throws(() => repo.accept("user", { botId: "owner", teamId: b.templateId, conversationId: first.conversationId, requestId: "wrong", text: "错误" }), /空间/);
+  assert(repo.accept("user", { botId: "owner", teamId: a.templateId, requestId: "a1", text: "团队 A 原始需求" }).replayed);
+  assert.throws(() => repo.accept("user", { botId: "owner", teamId: b.templateId, requestId: "a1", text: "团队 A 原始需求" }), /请求 ID/);
+  const tools = botForegroundTools({ db, userId: "user", botId: "owner", teamId: a.templateId, conversationId: first.conversationId,
+    bots, works, messages: repo, isAuthority: () => true, schedule: () => {}, wake: () => {}, botWorkspace: () => root,
+    memorySearch: () => { throw Error("private memory leaked"); } });
+  let serial = 0;
+  const invoke = async (name: string, args: unknown) => {
+    const tool = tools.find(t => t.name === name)!;
+    const result = await tool.execute(args as never, { callId: `call-${++serial}`, taskId: `tool-${serial}`, memo: async () => first.requestId } as unknown as ToolExecutionApi, BACKGROUND_CONTEXT);
+    const text = result.output?.find(block => block.type === "text"); assert(text?.type === "text"); return JSON.parse(text.text);
+  };
+  await assert.rejects(invoke("memory_search", { query: "秘密" }), /私人记忆/);
+  await assert.rejects(invoke("work_team_create", { templateId: b.templateId, title: "错队", goalDescription: "错队", criteria: ["一"] }), /其他团队/);
+  const created = await invoke("work_team_create", { title: "团队工作", goalDescription: "核对原始需求", criteria: ["有真实证据"] });
+  assert(created.ok, JSON.stringify(created));
+  assert.equal(works.teams.get(created.work.workId)?.teamId, a.templateId);
+  assert.equal(repo.workOrigin("user", created.work.workId)?.conversation_id, first.conversationId);
+  assert(new BotWorkQuery(db, "user", "owner", a.templateId).canRead(created.work.workId));
+  assert(!new BotWorkQuery(db, "user", "owner", b.templateId).canRead(created.work.workId));
+  assert.equal(new BotWorkQuery(db, "user", "owner", a.templateId).page({}).total, 1);
+  repo.appendWorkDelivery("user", created.work.workId, "result", "v1", "团队 A 成果");
+  assert(repo.history("user", { botId: "owner", teamId: a.templateId }).messages.some(m => m.text === "团队 A 成果"));
+  assert(!repo.history("user", { botId: "owner" }).messages.some(m => m.text === "团队 A 成果"));
+  db.prepare("UPDATE work_team_templates SET plan_json=? WHERE template_id=?").run(JSON.stringify({ ...plan, ownerBotId: "next-owner" }), a.templateId);
+  const uiWork = works.teams.handle(actor, { kind: "create", request: { ...plan, ownerBotId: "next-owner", templateId: a.templateId,
+    operationId: "ui-team", title: "团队界面创建", goalDescription: "独立成果", workspacePath: root, criteria: ["结果"] } });
+  assert(uiWork.ok && uiWork.work, JSON.stringify(uiWork));
+  assert.equal(repo.resolveWorkDelivery("user", uiWork.work.workId)?.conversation_id, first.conversationId);
+  const after = repo.accept("user", { botId: "next-owner", teamId: a.templateId, requestId: "a2", text: "新队长继续" });
+  assert.equal(after.conversationId, first.conversationId);
+  assert.equal(repo.message(first.userMessageId)?.botId, "owner");
+  assert(repo.activeRequests("user").some(r => r.message.messageId === after.assistantMessageId));
+  const service = new BotConversationService({ db, userId: "user", bots, works, models: {} as never, directory: root,
+    defaultModel: () => undefined, isAuthority: () => false, memorySearch: () => [], schedule: () => {}, wake: () => {} });
+  assert.equal(service.history({ botId: "next-owner", teamId: a.templateId }).conversationId, first.conversationId);
+  assert.throws(() => service.history({ botId: "owner", teamId: a.templateId }), /负责人/);
+  assert.throws(() => service.history({ botId: "next-owner", teamId: a.templateId, inbox: true }), /收件箱/);
+  await service.close();
+  app.close(); app = new AppDatabase(join(root, "app.db")); db = app.connection; repo = new BotConversationRepository(db);
+  assert.equal(repo.history("user", { botId: "next-owner", teamId: a.templateId }).conversationId, first.conversationId);
+  assert.equal(repo.history("user", { botId: "owner" }).conversationId, personal.conversationId);
+  assert.equal(repo.resolveWorkDelivery("user", created.work.workId)?.conversation_id, first.conversationId);
+  assert.equal(repo.message(after.userMessageId)?.teamId, a.templateId);
+  console.log("PASS team conversations: isolation, replay, history, leader replacement, private memory isolation, team-only tools, original input/result routing and normal reopen");
+} finally { app.close(); rmSync(root, { recursive: true, force: true }); }

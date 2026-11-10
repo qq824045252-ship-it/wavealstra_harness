@@ -49,6 +49,7 @@ export interface BotForegroundToolOptions {
   db: Database.Database;
   userId: string;
   botId: string;
+  teamId?: string;
   conversationId: string;
   bots: BotRegistry;
   messages: BotConversationRepository;
@@ -79,7 +80,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
       || !["queued", "running", "unknown"].includes(message.status)) throw new Error("原始用户消息已结束或不属于当前对话");
     return value;
   };
-  const catalogue = new BotWorkQuery(db, userId, botId);
+  const catalogue = new BotWorkQuery(db, userId, botId, options.teamId);
   const select = (workId: string, source: ReturnType<typeof receipt>) => {
     const reference = source.reference_message_id ? messages.message(source.reference_message_id)?.workIds ?? [] : [];
     const userMessage = messages.message(source.user_message_id);
@@ -128,6 +129,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
         let startWatchImmediately = false;
         if (name === "work_create") {
           const { startImmediately, ...input } = create.parse(args);
+          if (options.teamId) throw new Error("当前是团队会话，请用 work_team_create 为当前团队派发，不创建个人事项");
           const mode = input.mode ?? (input.watchRule ? "watch" : "once");
           if (mode === "watch" && !input.watchRule?.cronExpression && input.watchRule?.nextWakeAt === undefined)
             throw new Error("持续跟踪需要用户指定的检查时间或频率，不能仅保存一句承诺");
@@ -243,7 +245,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
       z.object({}).strict().parse(_args);
       const requestId = await botForegroundRequest(api, api.callId, context);
       assertActive(); receipt(requestId);
-      const templates = works.teams.foregroundTemplates(userId, botId).map(template => ({ ...template,
+      const templates = works.teams.foregroundTemplates(userId, botId).filter(team => !options.teamId || team.templateId === options.teamId).map(template => ({ ...template,
         members: template.members.map(member => ({ ...member,
           displayName: bots.getBot(member.botId)?.displayName ?? member.botId,
           responsibilitySummary: bots.getBot(member.botId)?.responsibilitySummary ?? "" })) }));
@@ -254,6 +256,8 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
     parameters: parameters(teamCreate), replay: "safe",
     execute: async (args, api, context) => {
       const input = teamCreate.parse(args);
+      if (options.teamId && input.templateId && input.templateId !== options.teamId) throw new Error("不能向其他团队派发任务");
+      if (options.teamId) input.templateId = options.teamId;
       const requestId = await botForegroundRequest(api, api.callId, context);
       const result = works.transaction(() => {
         assertActive();
@@ -275,11 +279,12 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
     } }),
   defineTool({ name: "memory_search", description: "查询当前 Bot 私有记忆，不访问其他 Bot 或项目。",
     parameters: inputParameters.memory, replay: "safe",
-    execute: async args => { assertActive(); return output(options.memorySearch(memory.parse(args).query)); } }),
+    execute: async args => { assertActive(); if (options.teamId) throw new Error("团队会话不读取私人记忆"); return output(options.memorySearch(memory.parse(args).query)); } }),
   defineTool({ name: "memory_forget", description: "用户明确要求忘记时，先 memory_search 找到对应记录，再删除当前 Bot 的这些私人记忆。必须提供当前用户要求忘记的原话。只在工具成功后说已忘记；不删除聊天历史，不创建 Work。",
     parameters: parameters(memoryForget), replay: "safe",
     execute: async (args, api, context) => {
       assertActive();
+      if (options.teamId) throw new Error("团队会话不修改私人记忆");
       const input = memoryForget.parse(args);
       const requestId = await botForegroundRequest(api, api.callId, context);
       const source = receipt(requestId);

@@ -1,3 +1,6 @@
+import { BotTeamManagement } from "./BotTeamManagement";
+import { BotTeamSettings } from "./BotTeamSettings";
+import { botConversationScope } from "@/store/app/slices/botConversation";
 import { BotWorkNavigation } from "./BotWorkNavigation";
 import { BotWorkInbox } from "./BotWorkInbox";
 import { ComposerAttachmentChips } from "@/components/chat/ComposerAttachmentChips";
@@ -52,6 +55,9 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   const identities = useAppStore(s => s.botIdentities);
   const works = useAppStore(s => s.botWorks);
   const activeBotId = useAppStore(s => s.activeBotId);
+  const activeTeam = useAppStore(s => s.activeTeam);
+  const teamId = activeTeam?.templateId;
+  const scopeKey = activeBotId ? botConversationScope(activeBotId, teamId) : "";
   const selectedWorkId = useAppStore(s => s.selectedWorkId);
   const setSelectedWorkId = useAppStore(s => s.setSelectedWorkId);
   const hostStatus = useAppStore(s => s.botHostStatus);
@@ -77,20 +83,21 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   const followLatest = useRef(true);
   const followReplyTail = useRef(false);
   const previousScrollTop = useRef(0);
-  const lastBot = useRef(activeBotId);
+  const lastBot = useRef(scopeKey);
   const activeBot = identities.find(bot => bot.botId === activeBotId) ?? null;
-  const botWorks = useMemo(() => works.filter(work => personalBotWork(work, activeBotId)), [works, activeBotId]);
+  const botWorks = useMemo(() => works.filter(work => !work.team?.removedAt && (teamId ? work.team?.teamId === teamId : personalBotWork(work, activeBotId))), [works, activeBotId, teamId]);
+  const displayName = activeTeam?.name ?? activeBot?.displayName ?? "Bot";
   const selected = botWorks.find(work => work.workId === selectedWorkId) ?? null;
-  const messages = activeBotId ? histories[activeBotId]?.messages ?? [] : [];
+  const messages = activeBotId ? histories[scopeKey]?.messages ?? [] : [];
   const questionsByRequest = useMemo(() => new Map(messages.filter(item => item.role === "user").map(item => [item.requestId, item])), [messages]);
   const lastMessage = messages[messages.length - 1];
   const activeReply = activeBotReply(messages);
-  const pending = Object.values(pendingSends).filter(item => item.request.botId === activeBotId);
+  const pending = Object.values(pendingSends).filter(item => item.request.botId === activeBotId && item.request.teamId === teamId);
   const runningReplies = messages.filter(item => item.role === "assistant" && item.status === "running");
   const queuedReplies = messages.filter(item => item.role === "assistant" && item.status === "queued");
   const [replyReference, setReplyReference] = useState<BotMessageDto | null>(null);
-  const reference = replyReference?.botId === activeBotId ? replyReference : null;
-  const attachments = activeBotId ? attachmentDrafts[activeBotId] ?? [] : [];
+  const reference = replyReference?.conversationId === histories[scopeKey]?.conversationId ? replyReference : null;
+  const attachments = activeBotId ? attachmentDrafts[scopeKey] ?? [] : [];
   const canSend = Boolean(activeBotId && (botDraft.trim() || attachments.length) && !attachmentBusy);
   const addAttachments = async (source: File[] | "pick") => {
     const botId = activeBotId;
@@ -100,7 +107,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
       const selected = source === "pick" ? await pickComposerAttachment() : undefined;
       const incoming = source === "pick" ? (selected ? [selected] : []) : await composerFiles(source);
       const state = useAppStore.getState();
-      state.setBotAttachments(botId, mergeComposerAttachments(state.botAttachmentDrafts[botId] ?? [], incoming));
+      state.setBotAttachments(scopeKey, mergeComposerAttachments(state.botAttachmentDrafts[scopeKey] ?? [], incoming));
     } catch (error) { if (useAppStore.getState().activeBotId === botId) setAttachmentError(error instanceof Error ? error.message : String(error)); }
     finally { setAttachmentBusy(false); }
   };
@@ -109,18 +116,18 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   useEffect(() => { void useAppStore.getState().refreshBotWork(includeClosed); }, [includeClosed]);
   useEffect(() => {
     if (!activeBotId) return;
-    const refresh = () => { void useAppStore.getState().refreshBotHistory(activeBotId); void useAppStore.getState().refreshBotWork(includeClosed); };
+    const refresh = () => { void useAppStore.getState().refreshBotHistory(activeBotId, teamId); void useAppStore.getState().refreshBotWork(includeClosed); };
     refresh();
     const timer = setInterval(refresh, 1500);
     return () => clearInterval(timer);
-  }, [activeBotId, includeClosed]);
+  }, [activeBotId, teamId, includeClosed]);
   useEffect(() => {
-    if (lastBot.current === activeBotId) return;
-    lastBot.current = activeBotId; setAttachmentError("");
+    if (lastBot.current === scopeKey) return;
+    lastBot.current = scopeKey; setReplyReference(null); setAttachmentError("");
     requestedWork.current = null; setNavigationNotice("");
     setView("conversation"); setSettingsOpen(false); setArchiveConfirm(false); setNewConversationOpen(false); setInspectorOpen(false);
     followLatest.current = true; followReplyTail.current = false; previousScrollTop.current = 0;
-  }, [activeBotId]);
+  }, [scopeKey]);
   useEffect(() => { if (selectedWorkId) setInspectorOpen(true); }, [selectedWorkId]);
   useEffect(() => {
     const dialog = inspectorRef.current;
@@ -181,7 +188,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
 
 
   const openWork = (workId: string) => {
-    if (works.some(work => work.workId === workId && work.team)) { window.dispatchEvent(new CustomEvent("mybuddy:open-team-work", { detail: { workId } })); return; }
+    if (works.some(work => work.workId === workId && work.team && work.team.teamId !== teamId)) { window.dispatchEvent(new CustomEvent("mybuddy:open-team-work", { detail: { workId } })); return; }
     requestedWork.current = workId;
     setNavigationNotice("");
     if (botWorks.some(work => work.workId === workId)) { setSelectedWorkId(workId); setInspectorOpen(true); return; }
@@ -193,9 +200,9 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
     void useAppStore.getState().refreshBotWork(true).then(() => {
       const state = useAppStore.getState();
       if (requestedWork.current !== workId || state.activeBotId !== botId) return;
-      if (state.botWorks.some(work => work.workId === workId && work.team)) {
+      if (state.botWorks.some(work => work.workId === workId && work.team && work.team.teamId !== teamId)) {
         window.dispatchEvent(new CustomEvent("mybuddy:open-team-work", { detail: { workId } })); setNavigationNotice("");
-      } else if (state.botWorks.some(work => work.workId === workId && !work.team && botParticipatesInWork(work, botId))) {
+      } else if (state.botWorks.some(work => work.workId === workId && (teamId ? work.team?.teamId === teamId : !work.team && botParticipatesInWork(work, botId)))) {
         state.setSelectedWorkId(workId); setInspectorOpen(true); setNavigationNotice("");
       } else setNavigationNotice("暂时无法打开此事项，请在已结束列表中核对或稍后重试。");
     });
@@ -231,7 +238,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
       <header className="bot-workspace-header">
         {props.onToggleNavigation && <button type="button" className="bot-icon-button" aria-label={props.navigationVisible ? "收起导航" : "展开导航"} aria-expanded={props.navigationVisible} onClick={props.onToggleNavigation}><IconPanel size={18} /></button>}
         <span className="bot-avatar bot-header-avatar" aria-hidden="true"><IconBot size={21} /></span>
-        <div className="bot-heading"><h1>{activeBot?.displayName ?? "Bot 模式"}</h1><p><span className={`bot-presence ${hostStatus?.online && activeBot?.status === "active" ? "is-online" : ""}`} />{activeBot ? presenceLabel(activeBot, hostStatus) : "你的长期个人助理"}<span className="bot-heading-description"> · 对话有延续，事项有着落</span></p></div>
+        <div className="bot-heading"><h1>{activeTeam?.name ?? activeBot?.displayName ?? "Bot 模式"}</h1><p><span className={`bot-presence ${hostStatus?.online && activeBot?.status === "active" ? "is-online" : ""}`} />{activeBot ? presenceLabel(activeBot, hostStatus) : "你的长期个人助理"}<span className="bot-heading-description"> · {activeTeam ? `团队工作台 · ${activeTeam.members.length + 1} 位成员` : "对话有延续，事项有着落"}</span></p></div>
         <div className="bot-workspace-actions">
           <button type="button" className="bot-quiet-button bot-new-conversation" disabled={!activeBot || messages.length === 0} onClick={() => { setArchiveError(""); setNewConversationOpen(true); }}>新对话</button>
           <BotActivityMonitor onOpenWork={() => { setIncludeClosed(true); setInspectorOpen(true); }} onOpenBotMessage={messageId => {
@@ -245,7 +252,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
         </div>
       </header>
       <BotWorkNavigation works={botWorks} view={view} allWorksLoaded={allWorksLoaded} onChange={changeView} />
-      {activeBotId && <BotWorkInbox key={activeBotId} botId={activeBotId} works={botWorks} onOpenWork={openWork} />}
+      {!activeTeam && activeBotId && <BotWorkInbox key={activeBotId} botId={activeBotId} works={botWorks} onOpenWork={openWork} />}
       {workError && <p className="bot-alert" role="alert">{workError}</p>}
       {navigationNotice && <p className="bot-navigation-notice" role="status">{navigationNotice}</p>}
       {view === "conversation" ? <>
@@ -264,26 +271,26 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
             {!activeBot && props.onCreateBot && <button type="button" className="bot-empty-create" onClick={props.onCreateBot}>创建第一个 Bot</button>}
             {activeBot && <div className="bot-example-grid">{examples.map(example => <button type="button" key={example.title} onClick={() => draftExample(example.text)}><span>{example.title}</span><IconArrowUp size={16} /></button>)}</div>}
           </div> : <div className="bot-message-list">{botWorkTimeline(messages).map(row => row.kind === "message"
-            ? <BotMessage key={row.key} message={row.message} botName={activeBot?.displayName ?? "Bot"} works={botWorks} onOpenWork={openWork} sourceQuestion={questionsByRequest.get(row.message.requestId)} onReply={() => { setReplyReference(row.message); composerRef.current?.focus(); }} onCancel={() => { if (activeBotId) void useAppStore.getState().cancelBotSend(activeBotId, row.message.requestId); }} />
+            ? <BotMessage key={row.key} message={row.message} botName={displayName} works={botWorks} onOpenWork={openWork} sourceQuestion={questionsByRequest.get(row.message.requestId)} onReply={() => { setReplyReference(row.message); composerRef.current?.focus(); }} onCancel={() => { if (activeBotId) void useAppStore.getState().cancelBotSend(row.message.botId, row.message.requestId); }} />
             : <details key={row.key} className="bot-work-progress" aria-label="事项进展记录">
               <summary>{row.workIds.length > 1 ? `${row.workIds.length} 个事项` : botWorks.find(work => work.workId === row.workId)?.title ?? "事项"} · {row.messages.length} 条执行记录（展开查看）</summary>
-              {row.messages.map(message => <BotMessage key={message.messageId} message={message} botName={activeBot?.displayName ?? "Bot"} works={botWorks} onOpenWork={openWork} onCancel={() => {}} />)}
+              {row.messages.map(message => <BotMessage key={message.messageId} message={message} botName={displayName} works={botWorks} onOpenWork={openWork} onCancel={() => {}} />)}
             </details>)}</div>}
         </div>
       </> : <BotWorkBrowser key={`${activeBotId}-${view}`} works={botWorks} view={view} loading={(view === "closed" || view === "completed") && !allWorksLoaded} selectedWorkId={selected?.workId} onOpenWork={openWork} onConversation={() => { setView("conversation"); requestAnimationFrame(() => composerRef.current?.focus()); }} />}
       <form className="bot-composer input-area" onDragOver={event => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; } }} onDrop={event => { if (event.dataTransfer.files.length) { event.preventDefault(); void addAttachments(Array.from(event.dataTransfer.files)); } }} onSubmit={event => { event.preventDefault(); send(); }}>
         {view === "conversation" && awayFromBottom && <button type="button" className="bot-latest-button" onClick={() => { const el = threadRef.current; if (el) el.scrollTop = el.scrollHeight; followLatest.current = true; followReplyTail.current = true; setAwayFromBottom(false); }}><IconChevronDown size={14} />回到最新消息</button>}
-        {activeBotId && sendErrors[activeBotId] && <p className="bot-send-error" role="alert">{sendErrors[activeBotId]}</p>}
+        {activeBotId && sendErrors[scopeKey] && <p className="bot-send-error" role="alert">{sendErrors[scopeKey]}</p>}
         {selected && <div className="bot-composer-context"><button type="button" onClick={() => setInspectorOpen(true)}><IconListTodo size={14} /><span>当前事项：{selected.title}</span><IconChevronRight size={14} /></button><button type="button" className="bot-icon-button" aria-label="取消关联事项，返回普通对话" onClick={() => { requestedWork.current = null; setNavigationNotice(""); setSelectedWorkId(null); setInspectorOpen(false); }}><IconX size={14} /></button></div>}
         {reference && <div className="bot-composer-context"><span>回复：{reference.text.slice(0, 100) || "附件消息"}</span><button type="button" aria-label="取消引用" onClick={() => setReplyReference(null)}><IconX size={14} /></button></div>}
         {pending.length > 0 && <div className="bot-pending-requests" aria-label="待确认发送的消息">{pending.map(item => <div key={item.request.requestId} className="bot-pending-request"><span>{item.request.text.slice(0, 100) || item.request.attachments?.map(file => file.name).join("、")}</span><small>{item.sending ? "正在发送" : item.error}</small>{!item.sending && (item.error?.includes("BOT_ATTACHMENT_REJECTED:") ? <button type="button" disabled={Boolean(botDraft.trim() || attachments.length)} title="先发送或清空当前草稿，再编辑这条消息" onClick={() => void submitBotDraft({ editRejectedRequestId: item.request.requestId })}>编辑重发</button> : <button type="button" onClick={() => void submitBotDraft({ retryRequestId: item.request.requestId })}>重试此消息</button>)}</div>)}</div>}
         {attachmentError && <p className="bot-send-error" role="alert">{attachmentError}</p>}
-        <div className="bot-composer-box input-box">{attachments.length > 0 && <div className="input-attach-chips"><ComposerAttachmentChips attachments={attachments} onRemove={item => { if (activeBotId) useAppStore.getState().setBotAttachments(activeBotId, attachments.filter(value => value.path !== item.path)); }} /></div>}<label htmlFor="bot-draft" className="bot-sr-only">给 Bot 发消息</label><ChatComposer ref={composerRef} aria-label="给 Bot 发消息" id="bot-draft" onPaste={event => { const files = pastedComposerFiles(event.clipboardData); if (files.length) { event.preventDefault(); void addAttachments(files); } }} value={botDraft} maxLength={32000} onChange={event => setBotDraft(event.target.value)} onKeyDown={event => { if (shouldSendBotComposer({ key: event.key, shiftKey: event.shiftKey, isComposing: event.nativeEvent.isComposing, keyCode: event.keyCode })) { event.preventDefault(); send(); } }} placeholder={selected ? "补充要求，或问问这件事的进展…" : "说说你想做什么…"} rows={2} toolbarClassName="bot-composer-toolbar input-toolbar" toolbar={<><button type="button" className="input-tool-btn" aria-label="添加附件" title="添加附件" disabled={!activeBotId || attachmentBusy} onClick={() => void addAttachments("pick")}><IconPlus size={16} /></button><span className="bot-composer-status" role="status">{runningReplies.length || queuedReplies.length ? `${runningReplies.length} 条正在回复 · ${queuedReplies.length} 条等待 · 可继续发送` : notice ? "消息已发送 · 可继续发送" : "Enter 发送 · Shift + Enter 换行"}</span><span className="bot-composer-send-actions"><button type="submit" className="bot-send-button send-btn" disabled={!canSend} aria-label="发送消息"><IconArrowUp size={17} /></button></span></>} /></div>
+        <div className="bot-composer-box input-box">{attachments.length > 0 && <div className="input-attach-chips"><ComposerAttachmentChips attachments={attachments} onRemove={item => { if (activeBotId) useAppStore.getState().setBotAttachments(scopeKey, attachments.filter(value => value.path !== item.path)); }} /></div>}<label htmlFor="bot-draft" className="bot-sr-only">给 Bot 发消息</label><ChatComposer ref={composerRef} aria-label="给 Bot 发消息" id="bot-draft" onPaste={event => { const files = pastedComposerFiles(event.clipboardData); if (files.length) { event.preventDefault(); void addAttachments(files); } }} value={botDraft} maxLength={32000} onChange={event => setBotDraft(event.target.value)} onKeyDown={event => { if (shouldSendBotComposer({ key: event.key, shiftKey: event.shiftKey, isComposing: event.nativeEvent.isComposing, keyCode: event.keyCode })) { event.preventDefault(); send(); } }} placeholder={selected ? "补充要求，或问问这件事的进展…" : "说说你想做什么…"} rows={2} toolbarClassName="bot-composer-toolbar input-toolbar" toolbar={<><button type="button" className="input-tool-btn" aria-label="添加附件" title="添加附件" disabled={!activeBotId || attachmentBusy} onClick={() => void addAttachments("pick")}><IconPlus size={16} /></button><span className="bot-composer-status" role="status">{runningReplies.length || queuedReplies.length ? `${runningReplies.length} 条正在回复 · ${queuedReplies.length} 条等待 · 可继续发送` : notice ? "消息已发送 · 可继续发送" : "Enter 发送 · Shift + Enter 换行"}</span><span className="bot-composer-send-actions"><button type="submit" className="bot-send-button send-btn" disabled={!canSend} aria-label="发送消息"><IconArrowUp size={17} /></button></span></>} /></div>
       </form>
     </section>
     {selected && <dialog ref={inspectorRef} className={`bot-inspector ${compact ? "is-drawer" : view === "conversation" ? "is-overlay" : ""}`} aria-label="事项详情" onCancel={event => { event.preventDefault(); setInspectorOpen(false); }} onClick={event => { if (event.target === event.currentTarget) { const r = event.currentTarget.getBoundingClientRect(); if (event.clientX < r.left || event.clientX > r.right) setInspectorOpen(false); } }}>
       <header className="bot-inspector-header"><span>事项详情</span><button type="button" className="bot-icon-button" aria-label="关闭详情" onClick={() => setInspectorOpen(false)}><IconX size={18} /></button></header>
-      <div className="bot-inspector-body"><BotWorkDetails key={selected.workId} work={selected} ownerName={identities.find(bot => bot.botId === selected.ownerBotId)?.displayName ?? selected.ownerBotId} includeClosed={includeClosed} onReplyToBlocker={blocker => replyToBlocker(selected, blocker)} /></div>
+      <div className="bot-inspector-body"><BotWorkDetails key={selected.workId} work={selected} ownerName={activeTeam?.name ?? identities.find(bot => bot.botId === selected.ownerBotId)?.displayName ?? selected.ownerBotId} includeClosed={includeClosed} onReplyToBlocker={blocker => replyToBlocker(selected, blocker)} /></div>
     </dialog>}
     <dialog ref={newConversationRef} className="bot-settings-dialog" aria-labelledby="bot-new-conversation-title" onCancel={event => { event.preventDefault(); if (!archiving) setNewConversationOpen(false); }}>
       <header className="bot-inspector-header"><h2 id="bot-new-conversation-title">开始新对话</h2><button type="button" className="bot-icon-button" aria-label="取消新对话" disabled={archiving} onClick={() => setNewConversationOpen(false)}><IconX size={18} /></button></header>
@@ -292,14 +299,14 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
           if (!activeBotId) return;
           const sourceBotId = activeBotId;
           setArchiving(true); setArchiveError("");
-          void useAppStore.getState().archiveBotConversation(sourceBotId).then(() => { if (useAppStore.getState().activeBotId !== sourceBotId) return; setNewConversationOpen(false); setView("conversation"); setSelectedWorkId(null); setInspectorOpen(false); requestAnimationFrame(() => composerRef.current?.focus()); }).catch(error => setArchiveError(error instanceof Error ? error.message : "开始新对话失败，请重试。")).finally(() => setArchiving(false));
+          void useAppStore.getState().archiveBotConversation(sourceBotId, teamId).then(() => { if (useAppStore.getState().activeBotId !== sourceBotId) return; setNewConversationOpen(false); setView("conversation"); setSelectedWorkId(null); setInspectorOpen(false); requestAnimationFrame(() => composerRef.current?.focus()); }).catch(error => setArchiveError(error instanceof Error ? error.message : "开始新对话失败，请重试。")).finally(() => setArchiving(false));
         }}>{archiving ? "正在归档…" : "归档并开始新对话"}</button><button type="button" disabled={archiving} onClick={() => setNewConversationOpen(false)}>取消</button>
       </div>
     </dialog>
     <dialog ref={settingsRef} className="bot-settings-dialog" aria-labelledby="bot-settings-title" onCancel={event => { event.preventDefault(); setSettingsOpen(false); setArchiveConfirm(false); }}>
-      <header className="bot-inspector-header"><h2 id="bot-settings-title">Bot 设置与对话管理</h2><button type="button" className="bot-icon-button" aria-label="关闭 Bot 设置" onClick={() => { setSettingsOpen(false); setArchiveConfirm(false); }}><IconX size={18} /></button></header>
-      <div className="bot-settings-body">{activeBot && <section className="bot-settings-identity" aria-label="Bot 身份与职责"><h3>{activeBot.displayName}</h3><p>{activeBot.responsibilitySummary || "尚未设置具体职责。你可以在对话中说明这次希望它协助的目标。"}</p><p>独立 Bot 身份。当前配置与操作范围以已生效的版本及授权为准。</p></section>}{activeBot && <><BotExecutionSettings key={`settings-${activeBot.botId}-${settingsOpen}`} botId={activeBot.botId} onManageModels={() => { setSettingsOpen(false); setArchiveConfirm(false); }} /><BotWorkspaceAuthorization key={activeBot.botId} bot={activeBot} /><details className="bot-advanced"><summary>专家配置与权限审阅</summary><BotExpertReview botId={activeBot.botId} /></details>
-<BotDeletion bot={activeBot} onDeleted={() => setSettingsOpen(false)} /><section className="bot-archive-section">{archiveError && <p role="alert" className="bot-alert">{archiveError}</p>}<h3>归档当前对话</h3><p>收起这段对话，开始新的聊天。事项记录仍会保留。</p>{archiveConfirm ? <div role="group" aria-label="确认归档"><p>确定归档当前对话吗？</p><button type="button" disabled={archiving || Boolean(activeReply) || pending.length > 0} title={activeReply || pending.length ? "仍有前台消息未结束，请先处理对应消息" : undefined} onClick={() => { setArchiving(true); setArchiveError(""); void useAppStore.getState().archiveBotConversation(activeBot.botId).then(() => { setArchiveConfirm(false); setSettingsOpen(false); }).catch(error => setArchiveError(error instanceof Error ? error.message : "归档未完成，请稍后重试。")).finally(() => setArchiving(false)); }}>{archiving ? "正在归档…" : "确认归档"}</button><button type="button" disabled={archiving} onClick={() => setArchiveConfirm(false)}>取消</button></div> : <button type="button" onClick={() => setArchiveConfirm(true)}><IconArchive size={15} />归档对话</button>}</section></>}</div>
+      <header className="bot-inspector-header"><h2 id="bot-settings-title">{activeTeam ? "团队设置" : "Bot 设置与对话管理"}</h2><button type="button" className="bot-icon-button" aria-label="关闭 Bot 设置" onClick={() => { setSettingsOpen(false); setArchiveConfirm(false); }}><IconX size={18} /></button></header>
+      <div className="bot-settings-body">{activeTeam ? <><BotTeamManagement team={activeTeam} onChanged={() => { window.dispatchEvent(new Event("mybuddy:teams-refresh")); void useAppStore.getState().refreshBotWork(true); }} /><BotTeamSettings key={activeTeam.templateId} team={activeTeam} onCancel={() => setSettingsOpen(false)} onSaved={team => { useAppStore.getState().setActiveTeam(team); setSettingsOpen(false); window.dispatchEvent(new CustomEvent("mybuddy:team-updated", { detail: team })); }} /></> : <>{activeBot && <section className="bot-settings-identity" aria-label="Bot 身份与职责"><h3>{activeBot.displayName}</h3><p>{activeBot.responsibilitySummary || "尚未设置具体职责。你可以在对话中说明这次希望它协助的目标。"}</p><p>独立 Bot 身份。当前配置与操作范围以已生效的版本及授权为准。</p></section>}{activeBot && <><BotExecutionSettings key={`settings-${activeBot.botId}-${settingsOpen}`} botId={activeBot.botId} onManageModels={() => { setSettingsOpen(false); setArchiveConfirm(false); }} /><BotWorkspaceAuthorization key={activeBot.botId} bot={activeBot} /><details className="bot-advanced"><summary>专家配置与权限审阅</summary><BotExpertReview botId={activeBot.botId} /></details>
+<BotDeletion bot={activeBot} onDeleted={() => setSettingsOpen(false)} /><section className="bot-archive-section">{archiveError && <p role="alert" className="bot-alert">{archiveError}</p>}<h3>归档当前对话</h3><p>收起这段对话，开始新的聊天。事项记录仍会保留。</p>{archiveConfirm ? <div role="group" aria-label="确认归档"><p>确定归档当前对话吗？</p><button type="button" disabled={archiving || Boolean(activeReply) || pending.length > 0} title={activeReply || pending.length ? "仍有前台消息未结束，请先处理对应消息" : undefined} onClick={() => { setArchiving(true); setArchiveError(""); void useAppStore.getState().archiveBotConversation(activeBot.botId).then(() => { setArchiveConfirm(false); setSettingsOpen(false); }).catch(error => setArchiveError(error instanceof Error ? error.message : "归档未完成，请稍后重试。")).finally(() => setArchiving(false)); }}>{archiving ? "正在归档…" : "确认归档"}</button><button type="button" disabled={archiving} onClick={() => setArchiveConfirm(false)}>取消</button></div> : <button type="button" onClick={() => setArchiveConfirm(true)}><IconArchive size={15} />归档对话</button>}</section></>}</>}</div>
     </dialog>
   </div>;
 }
