@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { DEFAULT_SEARCH_POLICY, normalizeSearchPolicy, type SearchProviderRun, type WebSearchPolicy } from "../../../shared/web-search";
-import { mergeSearchSources, runSearchBatch } from "./search-aggregation";
+import { mergeSearchSources, runSearchBatch, probeSearchAvailability } from "./search-aggregation";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { activityMonitor } from "./activity.ts";
 import { CredentialResolutionError } from "./credential-source.ts";
@@ -211,6 +211,9 @@ export interface FullSearchOptions extends SearchOptions {
 	extensionContext?: ExtensionContext;
 	onProviderUpdate?: (runs: SearchProviderRun[]) => void;
 	budget?: { remaining: number; deadline: number };
+	/** Reserve request slots for remaining queries instead of rejecting the whole tool call. */
+	queriesRemaining?: number;
+	queryAllowance?: { remaining: number };
 }
 
 function errorMessage(err: unknown): string {
@@ -406,12 +409,7 @@ async function searchWithProviders(
 	options: FullSearchOptions,
 	selectedProviders?: ResolvedSearchProvider[],
 ): Promise<AttributedSearchResponse> {
-	const providers = selectedProviders ?? (await Promise.all(ALL_SEARCH_PROVIDERS.map(async (provider) => ({
-		provider,
-		available: provider === "gemini"
-			? isGeminiApiAvailable()
-			: await isResolvedProviderAvailable(provider, options),
-	})))).filter((entry) => entry.available).map((entry) => entry.provider);
+	const providers = selectedProviders ?? (await probeSearchAvailability(ALL_SEARCH_PROVIDERS, async provider => provider === "gemini" ? isGeminiApiAvailable() : isResolvedProviderAvailable(provider as ResolvedSearchProvider, options), Math.min(2000, (options.budget?.deadline ?? Date.now() + getSearchPolicy().totalTimeoutMs) - Date.now()), options.signal)).filter(entry => entry.available).map(entry => entry.provider as ResolvedSearchProvider);
 	if (providers.length === 0) {
 		throw new Error("No configured search provider available for provider \"all\". AnySearch, xAI, Bright Data, and SerpBase are excluded.");
 	}
@@ -427,18 +425,32 @@ async function runMeasuredSearch(
 ): Promise<AttributedSearchResponse> {
 	const policy = getSearchPolicy();
 	if (providers.length > 6) throw new Error("Select at most 6 search providers explicitly.");
-	if (providers.length > (options.budget?.remaining ?? policy.maxRequests)) throw new Error("Search request budget exceeded. Reduce queries or providers.");
+	const requestedProviders = providers;
+	const skipped: SearchProviderRun[] = [];
+	const eligible: string[] = [];
+	const availability = await probeSearchAvailability(providers, p => isResolvedProviderAvailable(p as ResolvedSearchProvider, options), Math.min(2000, (options.budget?.deadline ?? Date.now() + policy.totalTimeoutMs) - Date.now()), options.signal);
+	for (const item of availability) {
+		if (item.available) eligible.push(item.provider);
+		else skipped.push({ query, provider: item.provider, status: "error", durationMs: 0, results: [], answer: "", error: `未发起请求：${item.error ?? "供应商未配置、凭据不可用或搜索模型未启用"}。` });
+	}
+	const remaining = options.budget?.remaining ?? policy.maxRequests;
+	const slots = Math.max(0, Math.min(remaining, options.queryAllowance?.remaining ?? remaining));
+	providers = eligible.slice(0, slots);
+	for (const provider of eligible.slice(slots)) skipped.push({ query, provider, status: "error", durationMs: 0, results: [], answer: "", error: "未发起请求：为其他查询保留额度，本查询的供应商覆盖已缩减。" });
+	if (options.queryAllowance) options.queryAllowance.remaining -= providers.length;
 	if (options.budget) options.budget.remaining -= providers.length;
 	const availableMs = options.budget ? options.budget.deadline - Date.now() : policy.totalTimeoutMs;
 	if (availableMs <= 0) throw new Error("Search overall deadline exceeded");
 	const batch = await runSearchBatch(query, providers, {
 		signal: options.signal, providerTimeoutMs: policy.providerTimeoutMs, totalTimeoutMs: availableMs,
-		onUpdate: options.onProviderUpdate,
+		onUpdate: runs => options.onProviderUpdate?.([...runs, ...skipped]),
 		run: async (provider, signal) => {
 			const response = await run(provider, signal);
 			return response;
 		},
 	});
+	batch.runs.push(...skipped);
+	batch.runs.sort((a, b) => requestedProviders.indexOf(a.provider) - requestedProviders.indexOf(b.provider));
 	for (const item of batch.runs) {
 		const reply = batch.replies.get(item.provider) as AttributedSearchResponse | undefined;
 		if (reply?.provider && reply.provider !== "all") item.provider = reply.provider;
@@ -447,7 +459,7 @@ async function runMeasuredSearch(
 	const errors = batch.runs.filter(r => r.error).map(r => ({ provider: r.provider as ResolvedSearchProvider, error: r.error! }));
 	const results = mergeSearchSources(batch.runs);
 	return {
-		provider: providers.length === 1 ? (batch.runs[0].provider as ResolvedSearchProvider) : "all",
+		provider: providers.length === 1 ? ((batch.replies.get(providers[0]) as AttributedSearchResponse | undefined)?.provider ?? providers[0] as ResolvedSearchProvider) : "all",
 		answer: batch.runs.map(r => `## ${r.provider} (${r.status})\n\n${r.error ?? r.answer}`).join("\n\n"),
 		results, providerRuns: batch.runs,
 		providerResponses: successful.map(r => ({ provider: r.provider as ResolvedSearchProvider, answer: r.answer, results: r.results })),
@@ -457,6 +469,8 @@ async function runMeasuredSearch(
 }
 
 export async function search(query: string, options: FullSearchOptions = {}): Promise<AttributedSearchResponse> {
+	// Compute once for the whole query, including all fallback/automatic candidates.
+	if (options.queriesRemaining && !options.queryAllowance) options = { ...options, queryAllowance: { remaining: Math.ceil((options.budget?.remaining ?? getSearchPolicy().maxRequests) / options.queriesRemaining) } };
 	const config = getSearchConfig();
 	const policy = config.searchPolicy;
 	const explicit = options.provider !== undefined && options.provider !== "auto";
@@ -471,6 +485,7 @@ export async function search(query: string, options: FullSearchOptions = {}): Pr
 		const runs: SearchProviderRun[] = [];
 		const budget = options.budget ?? { remaining: getSearchPolicy().maxRequests, deadline: Date.now() + getSearchPolicy().totalTimeoutMs };
 		for (const candidate of routing.providers) {
+			if (options.queryAllowance && options.queryAllowance.remaining < 1) break;
 			const result = await runMeasuredSearch(query, [candidate], { ...options, budget, onProviderUpdate: current => options.onProviderUpdate?.([...runs, ...current]) }, (p, signal) => searchWithResolvedProvider(p as ResolvedSearchProvider, query, { ...options, signal }));
 			runs.push(...(result.providerRuns ?? []));
 			if (result.providerRuns?.some(r => r.status === "success" || r.status === "empty")) return { ...result, providerRuns: runs };
@@ -492,9 +507,9 @@ async function searchAutomatically(query: string, options: FullSearchOptions): P
 	for (const candidate of ALL_SEARCH_PROVIDERS) {
 		options.signal?.throwIfAborted();
 		if (candidate === "openai" && !shouldTryOpenAIInAuto(options)) continue;
-		if (budget.remaining < 1 || Date.now() >= budget.deadline) break;
+		if (budget.remaining < 1 || (options.queryAllowance && options.queryAllowance.remaining < 1) || Date.now() >= budget.deadline) break;
 		try {
-			if (!(await isResolvedProviderAvailable(candidate, options))) continue;
+			if (!(await probeSearchAvailability([candidate], p => isResolvedProviderAvailable(p as ResolvedSearchProvider, options), Math.min(2000, budget.deadline - Date.now()), options.signal))[0].available) continue;
 		} catch { continue; }
 		const result = await runMeasuredSearch(query, [candidate], { ...options, budget, onProviderUpdate: current => options.onProviderUpdate?.([...runs, ...current]) }, (p, signal) => searchWithResolvedProvider(p as ResolvedSearchProvider, query, { ...options, signal }));
 		runs.push(...(result.providerRuns ?? []));

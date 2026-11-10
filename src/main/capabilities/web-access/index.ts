@@ -555,6 +555,7 @@ interface PendingCurate {
 	allInlineContent: ExtractedContent[];
 	queryList: string[];
 	includeContent: boolean;
+	evidenceMode?: "snippets" | "verify";
 	numResults?: number;
 	recencyFilter?: "day" | "week" | "month" | "year";
 	domainFilter?: string[];
@@ -859,6 +860,7 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 		onReport?: (report: WebSearchReport) => void;
 		urls: string[];
 		includeContent: boolean;
+		evidenceMode?: "snippets" | "verify";
 		inlineContent?: ExtractedContent[];
 		signal?: AbortSignal;
 		curated?: boolean;
@@ -1123,6 +1125,8 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 
 	async function buildSearchReturn(opts: SearchReturnOptions): Promise<AgentToolResult<Record<string, unknown>>> {
 		// Stay inside the native tool invocation. No post-return callbacks or agent wakeups.
+		const returnStarted = Date.now();
+		let pageReadMs = 0, assessmentMs = 0;
 		opts.signal?.throwIfAborted();
 		if (opts.includeContent && !hasFullInlineCoverage(opts.urls, opts.inlineContent)) {
 			const present = new Set((opts.inlineContent ?? []).map(item => item.url));
@@ -1132,11 +1136,16 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 			opts = { ...opts, inlineContent: [...(opts.inlineContent ?? []), ...stripThumbnails(fetched)] };
 		}
 		const report = opts.report ?? buildWebSearchReport(generateId(), opts.queryList, opts.results);
-		if (getSearchPolicy().verifySources && opts.context && report.sources.length) {
+		if (opts.evidenceMode === "verify" && getSearchPolicy().verifySources && opts.context && report.sources.length) {
 			opts.onReport?.({ ...report, status: "running", notice: "搜索已完成，正在读取关键原文并核验结论…" });
+			const pageStarted = Date.now();
 			const fetched = await fetchEvidencePages(report.sources.map(s => s.url), opts.signal);
+			pageReadMs = Date.now() - pageStarted;
 			const artifact = buildResearchArtifact({ query: opts.queryList.join("；"), results: report.sources, fetched });
+			opts.onReport?.({ ...report, status: "running", notice: "原文读取已结束，正在进行模型语义核验；缺失或冲突的证据将如实标明…" });
+			const assessmentStarted = Date.now();
 			report.evidence = await assessResearchEvidence(artifact, opts.context, opts.signal);
+			assessmentMs = Date.now() - assessmentStarted;
 			for (const source of report.sources) {
 				const evidenceSource = artifact.sources.find(s => s.url === source.url);
 				if (evidenceSource?.fetched) { source.evidence = "page"; source.fetchedAt = evidenceSource.fetch_timestamp; source.contentHash = evidenceSource.content_hash; }
@@ -1146,6 +1155,9 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 			storeResearchArtifact(artifact);
 			pi.appendEntry("web-search-results", { id: artifact.id, type: "research", timestamp: artifact.timestamp, artifact });
 		}
+		if (!report.evidence) report.notice = (report.notice ?? "") + (opts.evidenceMode === "verify"
+			? " 本次未完成原文核验（检查核验设置、模型和来源是否可用）；不能据此确认结论。"
+			: " 快速搜索仅返回来源及摘要，未进行原文语义核验；需要核验时使用 evidenceMode=verify 或 source_check。");
 		const sc = opts.results.filter(r => !r.error).length;
 		const tr = opts.results.reduce((sum, r) => sum + r.results.length, 0);
 
@@ -1179,6 +1191,8 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 			isError: report.status === "error",
 			details: {
 				webSearch: report,
+				evidenceMode: opts.evidenceMode ?? "snippets",
+				postSearchTiming: { pageReadMs, assessmentMs, totalMs: Date.now() - returnStarted },
 				queries: opts.queryList,
 				queryCount: opts.queryList.length,
 				successfulQueries: sc,
@@ -1315,6 +1329,7 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 							context: ctx,
 							urls: filtered.urls,
 							includeContent: pc.includeContent,
+							evidenceMode: pc.evidenceMode,
 							inlineContent: filteredInline.length > 0 ? filteredInline : undefined,
 							curated: true,
 							curatedFrom: pc.searchResults.size,
@@ -1514,14 +1529,15 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 		name: toolNames.webSearch,
 		label: "Web Search",
 		description:
-			`Search the web using OpenAI, Brave, Parallel, TinyFish, Search1API, Searchinfinity, Querit, Tavily, SERPdive, Kagi, Ollama, SearXNG, Exa, Perplexity, Gemini, AnySearch, xAI, Bright Data, or SerpBase. Pass a provider array to search only those providers simultaneously, or use provider "all" to search every eligible provider except AnySearch, xAI, Bright Data, and SerpBase. Returns attributed provider results and, when enabled, exact-page evidence assessments. Provider summaries and repeated URLs are not independent verification. Cite original passages, retain conflicts, and never infer confidence from provider counts. OpenAI search uses a Codex subscription or OpenAI API key; xAI search uses a SuperGrok/X Premium subscription or xAI API key. AnySearch, xAI, Bright Data, and SerpBase are available only when explicitly selected. For comprehensive research, prefer queries (plural) with 2-4 varied angles over a single query — each query gets its own synthesized answer, so varying phrasing and scope gives much broader coverage. When includeContent is true, full page content is fetched in the background. Searches auto-open the interactive browser curator and stream results live; set workflow to "none" to skip curation or "auto-summary" for a model-generated summary without the browser curator. The configured provider is used when provider is omitted or set to auto; omit provider unless explicitly overriding it. Without a configured provider, auto-selects OpenAI when suitable and available, then Exa, Brave, Parallel, TinyFish, Search1API, Searchinfinity, Querit, Tavily, SERPdive, Kagi, Ollama, Perplexity, Gemini API, or Gemini Web. When SearXNG is configured, it is preferred first for local/private search.`,
+			`Search the web using OpenAI, Brave, Parallel, TinyFish, Search1API, Searchinfinity, Querit, Tavily, SERPdive, Kagi, Ollama, SearXNG, Exa, Perplexity, Gemini, AnySearch, xAI, Bright Data, or SerpBase. Pass a provider array to search only those providers simultaneously, or use provider "all" to search every eligible provider except AnySearch, xAI, Bright Data, and SerpBase. Returns attributed sources and snippets quickly by default. Only request evidenceMode=verify when original-page semantic verification is needed; that adds page reads and a model call. Provider summaries and repeated URLs are not independent verification. Cite original passages, retain conflicts, and never infer confidence from provider counts. OpenAI search uses a Codex subscription or OpenAI API key; xAI search uses a SuperGrok/X Premium subscription or xAI API key. AnySearch, xAI, Bright Data, and SerpBase are available only when explicitly selected. For comprehensive research, prefer queries (plural) with 2-4 varied angles over a single query — each query gets its own synthesized answer, so varying phrasing and scope gives much broader coverage. When includeContent is true, full page content is fetched within this call. Searches auto-open the interactive browser curator and stream results live; set workflow to "none" to skip curation or "auto-summary" for a model-generated summary without the browser curator. The configured provider is used when provider is omitted or set to auto; omit provider unless explicitly overriding it. Without a configured provider, auto-selects OpenAI when suitable and available, then Exa, Brave, Parallel, TinyFish, Search1API, Searchinfinity, Querit, Tavily, SERPdive, Kagi, Ollama, Perplexity, Gemini API, or Gemini Web. When SearXNG is configured, it is preferred first for local/private search.`,
 		promptSnippet:
-			"Use for web research. Omit provider to honor configured parallel search; only override when the user requests a particular provider. Use up to 4 queries within the total request budget. Base claims on cited original passages, not provider consensus. Report partial failures and conflicting evidence.",
+			"Use for web research. Omit provider to honor configured parallel search; only override when the user requests a particular provider. Use up to 4 queries; provider coverage is fairly allocated within the total request budget. Ordinary questions use the default quick snippets mode; request evidenceMode=verify only for explicit deep verification. Base claims on cited original passages, not provider consensus. Report partial failures and conflicting evidence.",
 		parameters: Type.Object({
 			query: Type.Optional(Type.String({ description: "Single search query. For research tasks, prefer 'queries' with multiple varied angles instead." })),
 			queries: Type.Optional(Type.Array(Type.String(), { description: "Multiple queries searched in sequence, each returning its own synthesized answer. Prefer this for research — vary phrasing, scope, and angle across 2-4 queries to maximize coverage. Good: ['React vs Vue performance benchmarks 2026', 'React vs Vue developer experience comparison', 'React ecosystem size vs Vue ecosystem']. Bad: ['React vs Vue', 'React vs Vue comparison', 'React vs Vue review'] (too similar, redundant results)." })),
 			numResults: Type.Optional(Type.Number({ description: "Results per query (default: 5, max: 20)" })),
 			includeContent: Type.Optional(Type.Boolean({ description: "Fetch full page content within this tool call" })),
+			evidenceMode: Type.Optional(StringEnum(["snippets", "verify"], { description: "snippets (default): return search sources immediately without an extra model call. verify: fetch original pages and assess evidence with a model when source verification is enabled; slower, use only when needed." })),
 			recencyFilter: Type.Optional(
 				StringEnum(["day", "week", "month", "year"], { description: "Filter by recency" }),
 			),
@@ -1541,8 +1557,6 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 			const queryList = normalizeQueryList(rawQueryList);
 			const policy = getSearchPolicy();
 			if (queryList.length > 4) throw new Error("一次搜索最多包含 4 个不同查询，请缩小范围。");
-			const selection = resolveRequestedProvider(params.provider);
-			if (Array.isArray(selection) && selection.length * queryList.length > policy.maxRequests) throw new Error("查询数 × 供应商数超过本次调用上限，请减少查询或提高设置中的上限。");
 			const budget = { remaining: policy.maxRequests, deadline: Date.now() + policy.totalTimeoutMs };
 			const emitReport = (webSearch: WebSearchReport) => onUpdate?.({ content: [{ type: "text", text: searchReportSummary(webSearch) }], details: { webSearch } });
 			const configWorkflow = loadConfigForExtensionInit().workflow;
@@ -1611,6 +1625,7 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 					allInlineContent,
 					queryList,
 					includeContent,
+					evidenceMode: params.evidenceMode === "verify" ? "verify" : "snippets",
 					numResults: params.numResults,
 					recencyFilter,
 					domainFilter: params.domainFilter,
@@ -1668,6 +1683,7 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 					const requestedProvider = pc.searchProvider;
 					try {
 						const response = await search(queryList[qi], {
+						queriesRemaining: queryList.length - qi,
 							budget,
 							onProviderUpdate: providerRuns => emitReport(buildWebSearchReport(callId, queryList, [...searchResults.values(), { query: queryList[qi], answer: "", results: [], error: null, providerRuns }], true)),
 							provider: requestedProvider,
@@ -1766,6 +1782,7 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 
 				try {
 					const response = await search(query, {
+						queriesRemaining: queryList.length - i,
 						budget,
 						onProviderUpdate: providerRuns => emitReport(buildWebSearchReport(callId, queryList, [...searchResults, { query, answer: "", results: [], error: null, providerRuns }], true)),
 						provider: resolvedProvider,
@@ -1823,7 +1840,7 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 				signal,
 				queryList,
 				results: searchResults,
-				context: ctx, onReport: emitReport,
+				context: ctx, onReport: emitReport, evidenceMode: params.evidenceMode === "verify" ? "verify" : "snippets",
 				report: buildWebSearchReport(callId, queryList, searchResults),
 				urls: allUrls,
 				includeContent: params.includeContent ?? false,

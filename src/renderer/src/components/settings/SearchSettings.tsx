@@ -46,7 +46,7 @@ export default function SearchSettings({ value, configured, disabled, onChange }
       {value.mode === "fallback" && <ol className="search-order">{value.providers.map((p, i) => <li key={p} title={searchProviderLabel(p)}><span>{searchProviderLabel(p)}</span><button type="button" disabled={i === 0} aria-label={`上移 ${p}`} onClick={() => { const providers = [...value.providers]; [providers[i - 1], providers[i]] = [providers[i], providers[i - 1]]; onChange({ ...value, providers }); }}>↑</button></li>)}</ol>}
     </div>}
     <label className="search-verify" title="最多读取 5 个网页；引用原文、保留分歧，会增加等待时间和模型用量。">
-      <input type="checkbox" checked={value.verifySources} onChange={e => onChange({ ...value, verifySources: e.target.checked })} />读取关键原文并核验结论<small>最多 5 页 · 更慢更贵</small>
+      <input type="checkbox" checked={value.verifySources} onChange={e => onChange({ ...value, verifySources: e.target.checked })} />允许按需读取原文并核验<small>普通搜索直接返回摘要；深度核验最多 5 页，更慢更贵</small>
     </label>
     <details className="search-limits-details"><summary>等待与调用上限</summary><div className="search-limits">
       <label>单家超时（秒）<input aria-label="单家超时" type="number" min={1} max={120} value={value.providerTimeoutMs / 1000} onChange={e => onChange({ ...value, providerTimeoutMs: Number(e.target.value) * 1000 })} /></label>

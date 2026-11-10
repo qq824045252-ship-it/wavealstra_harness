@@ -220,7 +220,10 @@ export async function assessResearchEvidence(artifact: ResearchArtifact, ctx: Pi
 			}, { signal: controller.signal, maxTokens: 3000 });
 			if (response.stopReason === "error" || response.stopReason === "aborted") throw new Error(response.errorMessage || "核验被取消");
 			const text = response.content.filter(p => p.type === "text").map(p => (p as { text: string }).text).join("\n").trim().replace(/^```(?:json)?\s*|\s*```$/g, "");
-			const evidence = validateEvidenceResponse(JSON.parse(text), { ...artifact, passages });
+			if (!text) throw new Error(`核验模型返回空正文（stopReason=${response.stopReason}），未生成证据结论`);
+			let parsed: unknown;
+			try { parsed = JSON.parse(text); } catch { throw new Error(`核验模型未返回完整有效 JSON（stopReason=${response.stopReason}，正文字符数=${text.length}），未生成证据结论`); }
+			const evidence = validateEvidenceResponse(parsed, { ...artifact, passages });
 			if (exactClaim && (evidence.length !== 1 || evidence[0].claim.trim() !== artifact.query.trim())) throw new Error("核验模型改变了待验证断言");
 			return evidence.map(e => ({ ...e, model: `${model.provider}/${model.id}` }));
 		})()]);

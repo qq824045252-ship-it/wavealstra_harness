@@ -71,3 +71,24 @@ export async function runSearchBatch(query: string, providers: string[], options
   }));
   return { runs, replies };
 }
+
+/** Availability is local discovery, not a provider request. Bound hung credential/model discovery too. */
+export async function probeSearchAvailability(providers: string[], check: (provider: string) => Promise<boolean>, timeoutMs: number, signal?: AbortSignal): Promise<Array<{ provider: string; available: boolean; error?: string }>> {
+  return Promise.all(providers.map(async provider => {
+    signal?.throwIfAborted();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let abort: (() => void) | undefined;
+    try {
+      const deadline = new Promise<never>((_, reject) => {
+        abort = () => reject(new Error("Aborted"));
+        signal?.addEventListener("abort", abort, { once: true });
+        if (signal?.aborted) { abort(); return; }
+        timer = setTimeout(() => reject(new Error("availability-timeout")), Math.max(1, timeoutMs));
+      });
+      return { provider, available: await Promise.race([deadline, Promise.resolve().then(() => check(provider))]) };
+    } catch (error) {
+      signal?.throwIfAborted();
+      return { provider, available: false, error: error instanceof Error && error.message === "availability-timeout" ? "可用性检查超时" : "可用性检查失败" };
+    } finally { clearTimeout(timer); if (abort) signal?.removeEventListener("abort", abort); }
+  }));
+}

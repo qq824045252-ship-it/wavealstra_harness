@@ -28,7 +28,7 @@ const server = http.createServer(async (req, res) => {
     assert(support && contra, 'actual page passages must reach evidence model');
     content = JSON.stringify({ claims: [{ claim: '该设备支持离线运行。', rationale: '旧版与新版的原文说明不同，存在版本限制。', citations: [{ passageId: support.passage_id, quote: support.text, stance: 'support' }, { passageId: contra.passage_id, quote: contra.text, stance: 'contradict' }] }] });
   } else {
-    if (dispatchedSearch < searchRounds) { dispatchedSearch++; tool = { name: 'web_search', arguments: JSON.stringify({ query: '该设备是否支持离线运行 · 搜索轮次 '+dispatchedSearch }) }; }
+    if (dispatchedSearch < searchRounds) { dispatchedSearch++; tool = { name: 'web_search', arguments: JSON.stringify({ query: '该设备是否支持离线运行 · 搜索轮次 '+dispatchedSearch, evidenceMode: 'verify' }) }; }
     else content = 'MULTI_SEARCH_DESKTOP_COMPLETE';
   }
   const packet = (delta, finish_reason) => ({ id: 'search-fixture-' + requests.length, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: 'fixture', choices: [{ index: 0, delta, finish_reason }] });

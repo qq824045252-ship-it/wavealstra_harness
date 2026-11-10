@@ -7,6 +7,7 @@ const net = require('node:net');
 const http = require('node:http');
 const cp = require('node:child_process');
 const root = path.resolve(__dirname, '..');
+const searchScenario = process.argv.includes('--search');
 const teamWorkspaceScenario = process.argv.includes('--team-workspace');
 const teamTransientFailure = process.argv.includes('--team-transient-failure');
 const teamTransportFailure = process.argv.includes('--team-transport-failure') || teamTransientFailure;
@@ -26,7 +27,7 @@ const headless = process.env.BOT_WORK_DEV_HEADLESS === '1';
 const trackingScenario = process.argv.includes('--tracking');
 const watchScenario = process.argv.includes('--watch');
 if (headless && process.platform !== 'linux') throw Error('Headless dev page validation requires Linux; it does not validate desktop input.');
-const out = path.join(root, teamWorkspaceScenario ? 'out/diagnostics/bot-team-workspace/live' : concurrentScenario ? 'out/diagnostics/bot-concurrent/live' : completionScenario ? 'out/diagnostics/bot-completion/live' : trackingScenario ? 'out/diagnostics/bot-tracking/live' : teamTransientFailure ? 'out/diagnostics/bot-team-transient-failure/live' : teamTransportFailure ? 'out/diagnostics/bot-team-transport-failure/live' : teamFailureScenario ? 'out/diagnostics/bot-team-failure/live' : teamFreeScenario ? 'out/diagnostics/bot-team-free/live' : teamPlanningScenario ? 'out/diagnostics/bot-team-planning/live' : teamScenario ? 'out/diagnostics/bot-team-frontdoor/live' : cacheScenario ? 'out/diagnostics/bot-cache/live' : memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
+const out = path.join(root, searchScenario ? 'out/diagnostics/bot-search/live' : teamWorkspaceScenario ? 'out/diagnostics/bot-team-workspace/live' : concurrentScenario ? 'out/diagnostics/bot-concurrent/live' : completionScenario ? 'out/diagnostics/bot-completion/live' : trackingScenario ? 'out/diagnostics/bot-tracking/live' : teamTransientFailure ? 'out/diagnostics/bot-team-transient-failure/live' : teamTransportFailure ? 'out/diagnostics/bot-team-transport-failure/live' : teamFailureScenario ? 'out/diagnostics/bot-team-failure/live' : teamFreeScenario ? 'out/diagnostics/bot-team-free/live' : teamPlanningScenario ? 'out/diagnostics/bot-team-planning/live' : teamScenario ? 'out/diagnostics/bot-team-frontdoor/live' : cacheScenario ? 'out/diagnostics/bot-cache/live' : memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-frontdoor-live-'));
 const agentDir = path.join(home, '.mybuddy'); fs.mkdirSync(agentDir, { recursive: true });
 for (const directory of ['AppData/Roaming', 'AppData/Local', 'Temp']) fs.mkdirSync(path.join(home, directory), { recursive: true });
@@ -149,6 +150,17 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     fs.writeFileSync(path.join(agentDir, 'models.json'), JSON.stringify({ providers: { fixture: { api: 'openai-completions', apiKey: 'fixture-only', baseUrl: `http://127.0.0.1:${provider.address().port}/v1`, models: [model, ...(teamTransportFailure?[{...model,id:'controlled-unavailable',name:'Controlled unavailable member'}]:[])] } } }));
     fs.writeFileSync(path.join(agentDir, 'settings.json'), JSON.stringify({ defaultProvider: 'fixture', defaultModel: selectedModel, enabledModels: [modelKey, ...(teamTransportFailure?['fixture/controlled-unavailable']:[])],
       memoryEnabled: memoryScenario, memoryGatewayEnabled: false, remoteAccessEnabled: false, closeToTray: false, theme: 'light', permissionMode: 'readonly' }));
+    if (searchScenario) {
+      const searchPath = process.env.BOT_SEARCH_CONFIG_PATH || path.join(os.homedir(), '.mybuddy/web-search.json');
+      const liveSearch = fs.existsSync(searchPath) ? JSON.parse(fs.readFileSync(searchPath, 'utf8')) : {};
+      report.searchConfigAvailable = fs.existsSync(searchPath);
+      const providers = ['tavily', 'serper'];
+      fs.writeFileSync(path.join(agentDir, 'web-search.json'), JSON.stringify({
+        tavilyApiKey: liveSearch.tavilyApiKey, serperApiKey: liveSearch.serperApiKey,
+        apiKeyPools: Object.fromEntries(providers.filter(p => liveSearch.apiKeyPools?.[p]).map(p => [p, liveSearch.apiKeyPools[p]])),
+        workflow: 'none', searchPolicy: { mode: 'parallel', providers, providerTimeoutMs: 30000, totalTimeoutMs: 60000, maxRequests: 2, verifySources: true }
+      }), { mode: 0o600 });
+    }
     const launch = async () => {
     const port = await freePort();
     const env = { ...process.env, HOME: home, USERPROFILE: home, APPDATA: path.join(home, 'AppData/Roaming'), LOCALAPPDATA: path.join(home, 'AppData/Local'), REMOTE_DEBUGGING_PORT: String(port),
@@ -193,7 +205,31 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       assert(requestId, 'accepted user request identity');
       await until(async () => (await history()).messages.some(m=>m.role==='assistant'&&m.requestId===requestId&&m.status==='completed'), 'matching foreground request completed');
     };
-    if (teamWorkspaceScenario) {
+    if (searchScenario) {
+      report.cases = [];
+      for (const [label, prompt] of [
+        ['single-quick', '请只调用一次 web_search，query="Node.js fs readFile official documentation"，workflow="none"，不要抓取正文或核验，不创建 Work。用两句话及来源 URL 回答 readFile 用途，不能声称已独立核验。'],
+        ['multi-quick', '请只调用一次 web_search，queries=["Node.js fs readFile official documentation","Node.js fs writeFile official documentation"]，workflow="none"，不要抓取正文或核验，不创建 Work。分两行给各自用途和 URL，覆盖不足如实说。'],
+        ['single-verify', '请只调用一次 web_search，query="Node.js fs readFile official documentation"，evidenceMode="verify"，workflow="none"，不要调用其他工具也不创建 Work。两句报告来源及核验结果，若核验不完整必须明说。']
+      ]) {
+        const started = Date.now(), requestOffset = requests.length;
+        await send(prompt); await foregroundDone(0);
+        const messages = (await history()).messages;
+        const answer = messages.filter(m => m.role === 'assistant').at(-1);
+        const calls = requests.slice(requestOffset);
+        const toolResults = calls.flatMap(r => r.messages.filter(m => m.role === 'tool').map(m => typeof m.content === 'string' ? m.content : JSON.stringify(m.content)));
+        const row = { label, elapsedMs: Date.now() - started, modelRequests: calls.length, answer: answer.text, toolResults };
+        report.cases.push(row);
+        assert(toolResults.some(x => x.includes('Merged sources')), 'real search result must reach real model');
+        assert.equal(answer.workIds.length, 0, 'ordinary search stays foreground');
+        assert(answer.text.length > 0);
+        if (!report.searchConfigAvailable) assert(toolResults.some(x => x.includes('未发起请求')), 'missing configuration is explicit, never fabricated sources');
+        if (label.endsWith('quick')) assert(toolResults.some(x => x.includes('未进行原文语义核验')), 'quick mode cannot claim verification');
+        const shot = await rpc('Page.captureScreenshot', { format: 'png' });
+        fs.writeFileSync(path.join(out, label+'.png'), Buffer.from(shot.data, 'base64'));
+      }
+      report.checks.push(report.searchConfigAvailable ? 'three real-model UI searches: single quick, batched multi-query, explicit original-page verification; outputs and wall time recorded' : 'real-model UI empty-source failure paths verified; no configured live search API, actual provider latency comparison NOT performed');
+    } else if (teamWorkspaceScenario) {
       const member = await evaluate(`window.api.botWork.createBot({requestId:crypto.randomUUID(),displayName:'验收成员',responsibilitySummary:'只读核验并按事实汇报'})`);
       assert(member.ok, JSON.stringify(member));
       await until(()=>evaluate(`document.querySelectorAll('.sidebar-bot-identity').length >= 2`), 'new member appears in sidebar');
@@ -641,6 +677,7 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     if (socket) try { report.visibleText = await evaluate('document.body.innerText'); const shot = await rpc('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }); fs.writeFileSync(path.join(out, 'failed-page.png'), Buffer.from(shot.data, 'base64')); } catch {}
   }
   finally {
+    if (searchScenario) { try { fs.unlinkSync(path.join(agentDir, 'web-search.json')); } catch {} }
     if (electronWatch) clearInterval(electronWatch);
     fs.writeFileSync(path.join(out, 'report.json'), JSON.stringify(report, null, 2));
     fs.writeFileSync(path.join(out, 'provider-requests.json'), JSON.stringify(requests, null, 2));

@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { normalizeSearchPolicy, searchPolicyFromConfig, DEFAULT_SEARCH_POLICY } from "../src/shared/web-search";
-import { canonicalSearchUrl, mergeSearchSources, runSearchBatch } from "../src/main/capabilities/web-access/search-aggregation";
+import { canonicalSearchUrl, mergeSearchSources, runSearchBatch, probeSearchAvailability } from "../src/main/capabilities/web-access/search-aggregation";
 import { buildResearchArtifact, validateEvidenceResponse, assessClaim } from "../src/main/capabilities/web-access/source-check";
 import { buildWebSearchReport } from "../src/main/capabilities/web-access/search-report";
 import { mergeWebSearchReports } from "../src/renderer/src/lib/mergeWebSearchReports";
@@ -13,6 +13,16 @@ let count = 0;
 async function test(name: string, action: () => unknown | Promise<unknown>) { await action(); count++; console.log(`PASS ${name}`); }
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const result = (url = "https://example.com/spec") => ({ answer: "unverified summary", results: [{ title: "Spec", url, snippet: "仪器精度为百分之一。" }] });
+
+await test("availability probes are concurrent, bounded and abortable", async () => {
+  const started: string[] = [];
+  const result = await probeSearchAvailability(["hung", "fast"], async p => { started.push(p); return p === "hung" ? new Promise(() => {}) : true; }, 20);
+  assert.deepEqual(started, ["hung", "fast"]);
+  assert.equal(result[0].error, "可用性检查超时"); assert.equal(result[1].available, true);
+  const controller = new AbortController();
+  const pending = probeSearchAvailability(["hung"], async () => new Promise(() => {}), 10000, controller.signal);
+  controller.abort(); await assert.rejects(pending);
+});
 
 await test("16 search rounds merge without losing queries, origins, provider traces or conflicting evidence", () => {
   const calls: ToolCall[] = Array.from({ length: 16 }, (_, i) => {
@@ -122,6 +132,7 @@ globalThis.fetch = (async (url: string | URL | Request) => {
   if (value.includes("google.serper.dev/search")) { if (scenario === "partial") return new Response("fixture failure", { status: 500 }); await delay(15); return new Response(JSON.stringify({ organic: [{ title: "Spec", link: "https://example.com/spec?utm_source=serper", snippet: "另一家摘要。" }, { title: "Other", link: "https://another.example/spec", snippet: "独有发现。" }] }), { status: 200 }); }
   throw new Error("Unexpected network request in isolated fixture");
 }) as typeof fetch;
+const fixtureFetch = globalThis.fetch;
 try {
   const { createWebAccessCapabilityExtension } = await import("../src/main/capabilities/web-access/index");
   const registered = new Map<string, any>(); const entries: unknown[] = [];
@@ -166,11 +177,49 @@ try {
     const failed = await tool.execute("failed-test", { query: "fixture" }, undefined, undefined, { hasUI: false });
     assert.equal(failed.isError, true); assert.equal(failed.details.webSearch.status, "error");
   });
-  await test("request multiplication is rejected before any network dispatch", async () => {
+  await test("multi-query budget distributes work instead of rejecting all queries", async () => {
+    globalThis.fetch = fixtureFetch; scenario = "ok";
     writeFileSync(join(profile, "web-search.json"), JSON.stringify({ ...config, searchPolicy: { ...config.searchPolicy, maxRequests: 2 } }));
     const before = requests.length;
-    await assert.rejects(() => tool.execute("budget-test", { queries: ["one", "two"] }, undefined, undefined, { hasUI: false }), /调用上限/);
-    assert.equal(requests.length, before);
+    const r = await tool.execute("budget-test", { queries: ["one", "two"] }, undefined, undefined, { hasUI: false });
+    assert.equal(requests.length - before, 2);
+    assert.deepEqual(r.details.webSearch.runs.filter((x: any) => x.status === "success").map((x: any) => x.query), ["one", "two"]);
+    assert.equal(r.details.webSearch.status, "partial");
+    assert.equal(r.details.webSearch.runs.filter((x: any) => /覆盖已缩减/.test(x.error ?? "")).length, 2);
+  });
+  await test("failed fallback candidates cannot consume the next query's reserved slots", async () => {
+    globalThis.fetch = fixtureFetch; scenario = "fallback";
+    writeFileSync(join(profile, "web-search.json"), JSON.stringify({ ...config, searchPolicy: { ...config.searchPolicy, mode: "fallback", maxRequests: 2 } }));
+    const before = requests.length;
+    const r = await tool.execute("fallback-budget", { queries: ["one", "two"] }, undefined, undefined, { hasUI: false });
+    assert.equal(requests.length - before, 2);
+    assert.deepEqual(r.details.webSearch.runs.map((x: any) => x.query), ["one", "two"]);
+    assert(r.details.webSearch.runs.every((x: any) => x.provider === "tavily"));
+    scenario = "ok";
+  });
+  await test("default quick mode never fetches pages or calls a judge even when policy enables verification", async () => {
+    writeFileSync(join(profile, "web-search.json"), JSON.stringify({ ...config, searchPolicy: { ...config.searchPolicy, verifySources: true } }));
+    const before = requests.length;
+    const r = await tool.execute("quick", { query: "quick" }, undefined, undefined, { hasUI: false });
+    assert.equal(requests.length - before, 2, "only provider requests, no hidden page fetches");
+    assert.equal(r.details.webSearch.evidence, undefined);
+    assert.match(r.details.webSearch.notice, /未进行原文语义核验/);
+    assert(r.details.webSearch.sources.every((s: any) => s.evidence === "snippet"));
+  });
+  await test("unavailable Codex is visible but does not consume a request slot or prevent other queries", async () => {
+    writeFileSync(join(profile, "web-search.json"), JSON.stringify({ ...config, searchPolicy: { ...config.searchPolicy, providers: ["codex", "tavily"], maxRequests: 2 } }));
+    const before = requests.length;
+    const r = await tool.execute("unavailable", { queries: ["one", "two"] }, undefined, undefined, { hasUI: false });
+    assert.equal(requests.length - before, 2);
+    assert((entries.at(-1) as any).queries.every((q: any) => q.provider === "tavily"), "actual responder identity must not be the skipped Codex entry");
+    assert.equal(r.details.webSearch.runs.filter((x: any) => x.provider === "tavily" && x.status === "success").length, 2);
+    assert(r.details.webSearch.runs.filter((x: any) => x.provider === "codex").every((x: any) => /未发起请求/.test(x.error)));
+  });
+  await test("explicit verification with no page content reports missing evidence rather than inventing a conclusion", async () => {
+    writeFileSync(join(profile, "web-search.json"), JSON.stringify({ ...config, searchPolicy: { ...config.searchPolicy, verifySources: true } }));
+    const r = await tool.execute("verify", { query: "verify", evidenceMode: "verify" }, undefined, undefined, { hasUI: false });
+    assert.equal(r.details.webSearch.evidence[0].status, "missing-evidence");
+    assert.equal(r.details.webSearch.evidence[0].citations.length, 0);
   });
 } finally { globalThis.fetch = nativeFetch; }
 await test("reports survive serialization without turning partial coverage into consensus", () => {
