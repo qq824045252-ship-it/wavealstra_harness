@@ -1,0 +1,9 @@
+.workspace-foreground-row { display:flex; align-items:center; gap:7px; width:100%; min-height:38px; padding:6px 10px; border:0; border-radius:6px; background:transparent; color:inherit; text-align:left; cursor:pointer; }
+.workspace-foreground-row:hover { background:var(--bg-hover,rgba(128,128,128,.1)); }
+.workspace-foreground-row > span { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.workspace-foreground-row > small { flex:none; color:var(--text-muted,#888); font-size:11px; }
+.workspace-foreground-view { display:flex; flex-direction:column; min-height:0; height:100%; }
+.workspace-foreground-heading { display:flex; gap:12px; align-items:center; padding:18px 24px; border-bottom:1px solid var(--border-color,#ddd); }
+.workspace-foreground-heading h2 { font-size:16px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin:0; }
+.workspace-foreground-messages { overflow:auto; flex:1; padding:24px; }
+.workspace-foreground-messages > .bot-message { max-width:900px; margin:0 auto 24px; }

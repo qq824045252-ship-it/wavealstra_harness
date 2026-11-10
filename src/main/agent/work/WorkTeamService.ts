@@ -578,7 +578,7 @@ export class WorkTeamService {
           const previousTask = app.getTask(row.task_id);
           app.upsertTask({ id: row.task_id, title: `${work.title} · ${row.role === "owner_summary" ? "负责人汇总" : bot.displayName}`,
             updatedAt: this.now(), cwd: previousTask?.cwd ?? work.workspacePath ?? settings?.effectiveWorkspacePath,
-            spaceId: previousTask?.spaceId ?? settings?.spaceId, projectId: work.projectId,
+            spaceId: settings?.spaceId ?? previousTask?.spaceId, projectId: work.projectId,
             modelId: previousTask?.modelId ?? (settings?.modelId || model()), permissionMode: permission(), modePresetId: "native" });
           const result = await adapter.dispatch({ kind: "bot", userId: work.userId, botId: work.ownerBotId, host: "background", grants: work.authorization }, {
             operationId, taskId: row.task_id, workId: work.workId, botId: identity, delegatedScope: scopes, versionGuard: guard(work) });

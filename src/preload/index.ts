@@ -665,6 +665,7 @@ const api = {
     sendMessage: request => ipcRenderer.invoke(BotWorkIpc.sendMessage, request),
     history: request => ipcRenderer.invoke(BotWorkIpc.history, request),
     activeRequests: () => ipcRenderer.invoke(BotWorkIpc.activeRequests),
+    workspaceNavigation: () => ipcRenderer.invoke(BotWorkIpc.workspaceNavigation),
     onMessageChanged: listener => {
       const handler = (_event: Electron.IpcRendererEvent, payload: import("../shared/bot-conversation").BotMessageEvent) => listener(payload);
       ipcRenderer.on(BotWorkIpc.messageChanged, handler);

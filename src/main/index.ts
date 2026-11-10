@@ -1080,6 +1080,7 @@ function registerIpc(): void {
   ipcMain.handle(BotWorkIpc.sendMessage, (_e, request: unknown) => agentService.sendBotMessage(request));
   ipcMain.handle(BotWorkIpc.history, (_e, request: unknown) => agentService.botMessageHistory(request));
   ipcMain.handle(BotWorkIpc.activeRequests, () => agentService.botActiveRequests());
+  ipcMain.handle(BotWorkIpc.workspaceNavigation, () => agentService.botWorkspaceNavigation());
   ipcMain.handle(BotWorkIpc.cancelSend, (_e, botId: string, requestId: string) => agentService.cancelBotSend(botId, requestId));
   ipcMain.handle(BotWorkIpc.archiveConversation, (_e, botId: string, conversationId: string) => agentService.archiveBotConversation(botId, conversationId));
   ipcMain.handle(BotWorkIpc.listWorks, (_e, includeClosed?: boolean) => agentService.listWorkProjections(Boolean(includeClosed)));

@@ -1,0 +1,26 @@
+const {runRendererFixture}=require('./renderer-fixture-driver.cjs');
+const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
+const out=path.join(__dirname,'../out/tests');
+runRendererFixture({name:'bot-workspace-navigation',width:1200,height:900},async fixture=>{
+ const run=code=>fixture.evaluate(code);
+ const wait=async code=>{const end=Date.now()+8000;while(!await run(code)){if(Date.now()>end)throw Error('timeout '+code);await new Promise(r=>setTimeout(r,30));}};
+ fs.writeFileSync(path.join(out,'bot-workspace-navigation-ui.html'),'<html><body><div id="root"></div><script src="bot-workspace-navigation-ui.js"></script></body></html>');
+ await fixture.loadFile(path.join(out,'bot-workspace-navigation-ui.html'));
+ await wait(`document.querySelectorAll('.workspace-foreground-row').length===22`);
+ assert.equal(await run(`document.querySelectorAll('.workspace-overview .workspace-overview-task-row').length`),30);
+ await run(`[...document.querySelectorAll('.workspace-foreground-row')].find(b=>b.textContent.includes('再看')).click()`);
+ await wait(`document.querySelectorAll('.workspace-foreground-row').length===36`);
+ await run(`[...document.querySelectorAll('.workspace-foreground-row')].find(b=>b.textContent==='个人任务0已回复').click()`);
+ await wait(`!!document.querySelector('.workspace-foreground-messages h2')`);
+ assert((await run(`document.querySelector('.workspace-foreground-messages').innerText`)).includes('个人任务0结果'));
+ assert(!(await run(`document.querySelector('.workspace-foreground-messages').innerText`)).includes('个人任务1结果'));
+ await run(`document.querySelector('.workspace-foreground-heading button').click()`);
+ await wait(`!!document.querySelector('.workspace-overview')`);
+ await run(`[...document.querySelectorAll('.workspace-foreground-row')].find(b=>b.textContent==='团队任务已回复').click()`);
+ await wait(`document.querySelector('.workspace-foreground-messages')?.innerText.includes('团队任务结果')`);
+ await run(`[...document.querySelectorAll('.space-header')].find(b=>b.querySelector('.space-name').textContent==='学习搭子').click()`);
+ await wait(`!!document.querySelector('.workspace-overview')`);
+ assert(!await run(`!!document.querySelector('.workspace-foreground-messages')`),'folder navigation never reopens stale selected request');
+ await run('window.cleanupWorkspaceFixture()');
+ console.log('PASS navigation UI: paginated list, exact archived request, markdown, team isolation, back/folder return');
+});

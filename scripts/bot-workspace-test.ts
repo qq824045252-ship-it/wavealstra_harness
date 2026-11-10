@@ -230,7 +230,7 @@ function renderCards(workChanges: Partial<WorkProjectionDto> = {}, cardChanges: 
   }));
 }
 assert.match(renderCards(), /已完成并关闭/, "a successful close renders on the reused acceptance card");
-assert.match(renderCards({}, { unverifiedScope: ["已在采纳后核验的条件"] }), /生成此卡时尚未验证：.*当前验收状态请查看上方进度/, "immutable acceptance-card gaps are historical, not a contradictory current criterion status");
+assert.match(renderCards({}, { unverifiedScope: ["已在采纳后核验的条件"] }), /生成此卡时尚未验证[\s\S]*历史记录[\s\S]*快照，不代表当前仍有缺口[\s\S]*当前状态见上方进度/, "immutable acceptance-card gaps are historical, not a contradictory current criterion status");
 assert.match(renderCards({}, { kind: "closure_succeeded" }), /已完成并关闭/);
 const incompleteWorkStates: Array<Partial<WorkProjectionDto>> = [
   { lifecycle: "active" }, { lifecycle: "closing" }, { closureConclusion: "cancelled" },

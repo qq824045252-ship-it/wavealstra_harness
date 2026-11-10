@@ -1,3 +1,4 @@
+import { BotWorkspaceNavigationService } from "./work/BotWorkspaceNavigationService";
 import { BotWorkResultTurn } from "./work/BotWorkResultTurn";
 import { WorkCompletionCoordinator } from "./work/WorkCompletionCoordinator";
 import { BotConversationMemory } from "./work/BotConversationMemory";
@@ -1209,6 +1210,7 @@ export class AgentService {
     return new WorkProjectionJournal(this.db.connection, this.workService).sync(LOCAL_USER_ID, request);
   }
   sendBotMessage(request: unknown) { return this.requireBotConversations().send(request); }
+  botWorkspaceNavigation() { return new BotWorkspaceNavigationService(this.db, LOCAL_USER_ID).snapshot(); }
   botActiveRequests() { return this.requireBotConversations().activeRequests(); }
   async botMessageHistory(request: unknown) {
     const history = this.requireBotConversations().history(request);

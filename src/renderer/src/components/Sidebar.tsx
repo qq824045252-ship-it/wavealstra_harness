@@ -1,3 +1,6 @@
+import "./workspace/WorkspaceForeground.css";
+import { useBotWorkspaceNavigation, openWorkspaceRequest, foregroundStatus } from "@/hooks/useBotWorkspaceNavigation";
+import type { BotWorkspaceRequestDto } from "@shared/bot-workspace-navigation";
 import { BotTeamsNavigation } from "./BotTeamsNavigation";
 import { APP_VERSION } from "@shared/app-version";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -56,9 +59,11 @@ import {
 
 
 
-type VisibleRow =
+type TreeRow =
   | { key: string; kind: "space"; space: Space; depth: number; collapsed: boolean; node: WorkspaceTreeNode; hasChildren: boolean }
   | { key: string; kind: "task"; task: Task; depth: number; node: WorkspaceTreeNode };
+
+type VisibleRow = TreeRow | { key: string; kind: "foreground"; request: BotWorkspaceRequestDto; depth: number } | { key: string; kind: "foreground-more"; spaceId: string; remaining: number; depth: number };
 
 const TASK_DRAG_TYPE = "application/x-mybuddy-task";
 const SPACE_DRAG_TYPE = "application/x-mybuddy-space";
@@ -126,6 +131,8 @@ function botPresenceLabel(status: "active" | "paused" | "disabled", hostOnline: 
 
 export default function Sidebar({ onClose, onCreateBot }: { onClose?: () => void; onCreateBot?: () => void } = {}): React.JSX.Element {
   const tasks = useSidebarTasks();
+  const { requests: foregroundRequests, error: foregroundError } = useBotWorkspaceNavigation();
+  const [foregroundLimits, setForegroundLimits] = useState<Record<string, number>>({});
   const spaces = useAppStore((s) => s.spaces);
   const page = useAppStore((s) => s.page);
   const botIdentities = useAppStore((s) => s.botIdentities);
@@ -245,9 +252,15 @@ export default function Sidebar({ onClose, onCreateBot }: { onClose?: () => void
           const space = spaces.find((s) => s.id === n.id);
           if (!space) continue;
           const collapsed = !expandedSet.has(n.id);
-          const hasChildren = n.children.length > 0;
+          const requests = foregroundRequests.filter(request => request.spaceId === n.id).sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
+          const hasChildren = n.children.length > 0 || requests.length > 0;
           rows.push({ key: `space-${n.id}`, kind: "space", space, depth, collapsed, node: n, hasChildren });
-          if (!collapsed && n.children.length) walk(n.children, depth + 1);
+          if (!collapsed) {
+            const limit = foregroundLimits[n.id] ?? 20;
+            for (const request of requests.slice(0, limit)) rows.push({ key: request.id, kind: "foreground", request, depth: depth + 1 });
+            if (requests.length > limit) rows.push({ key: `more-${n.id}`, kind: "foreground-more", spaceId: n.id, remaining: requests.length - limit, depth: depth + 1 });
+            if (n.children.length) walk(n.children, depth + 1);
+          }
         } else {
           const task = tasks.find((t) => t.id === n.id);
           if (!task) continue;
@@ -257,7 +270,7 @@ export default function Sidebar({ onClose, onCreateBot }: { onClose?: () => void
     };
     walk(tree, 0);
     return rows;
-  }, [tree, spaces, tasks, expandedSpaceIds]);
+  }, [tree, spaces, tasks, expandedSpaceIds, foregroundRequests, foregroundLimits]);
 
   const [popup, setPopup] = useState<"more" | "account" | null>(null);
   const [filterOpen, setFilterOpen] = useState(false);
@@ -402,7 +415,7 @@ export default function Sidebar({ onClose, onCreateBot }: { onClose?: () => void
   // DnD helpers
   const isFiltered = taskFilterStatus !== "all" || taskFilterTime !== "all";
 
-  const handleRowDragStart = (e: React.DragEvent, row: VisibleRow): void => {
+  const handleRowDragStart = (e: React.DragEvent, row: TreeRow): void => {
     if (isFiltered) {
       e.preventDefault();
       setDndError("筛选状态下暂不支持拖拽排序，请先清除筛选");
@@ -429,7 +442,7 @@ export default function Sidebar({ onClose, onCreateBot }: { onClose?: () => void
     setDragged({ id: taskId, kind: "task", parentId: t.spaceId ?? null });
   };
 
-  const handleRowDragOver = (e: React.DragEvent, row: VisibleRow): void => {
+  const handleRowDragOver = (e: React.DragEvent, row: TreeRow): void => {
     if (isFiltered) { e.preventDefault(); e.dataTransfer.dropEffect = "none"; return; }
     const types = Array.from(e.dataTransfer.types);
     if (!isTreeDrag(types)) return;
@@ -463,7 +476,7 @@ export default function Sidebar({ onClose, onCreateBot }: { onClose?: () => void
     }
   };
 
-  const handleRowDragLeave = (e: React.DragEvent, row: VisibleRow): void => {
+  const handleRowDragLeave = (e: React.DragEvent, row: TreeRow): void => {
     const targetId = row.kind === "space" ? row.space.id : row.task.id;
     if (dropTarget?.id === targetId) {
       const related = e.relatedTarget as Node | null;
@@ -472,7 +485,7 @@ export default function Sidebar({ onClose, onCreateBot }: { onClose?: () => void
     }
   };
 
-  const handleRowDrop = async (e: React.DragEvent, targetRow: VisibleRow): Promise<void> => {
+  const handleRowDrop = async (e: React.DragEvent, targetRow: TreeRow): Promise<void> => {
     if (isFiltered) { e.preventDefault(); setDndError("筛选状态下暂不支持拖拽排序，请先清除筛选"); setDragged(null); setDropTarget(null); return; }
     const types = Array.from(e.dataTransfer.types);
     if (!isTreeDrag(types) && !dragged) return;
@@ -651,6 +664,10 @@ export default function Sidebar({ onClose, onCreateBot }: { onClose?: () => void
   };
 
   const renderRow = (row: VisibleRow): React.JSX.Element => {
+    if (row.kind === "foreground-more") return <button type="button" className="workspace-foreground-row" style={{ paddingLeft: taskIndent(row.depth) }} onClick={() => setForegroundLimits(current => ({ ...current, [row.spaceId]: (current[row.spaceId] ?? 20) + 30 }))}>再看 30 条前台任务 · 还有 {row.remaining} 条</button>;
+    if (row.kind === "foreground") return <button type="button" className="workspace-foreground-row" style={{ paddingLeft: taskIndent(row.depth) }} title={row.request.title} onClick={() => { openWorkspaceRequest(row.request); onClose?.(); }}>
+      <IconMessageDashed size={14} /><span>{row.request.title}</span><small>{foregroundStatus(row.request.status)}</small>
+    </button>;
     const isDrop = dropTarget?.id === (row.kind === "space" ? row.space.id : row.task.id);
     const dropPos = isDrop ? dropTarget!.position : null;
     const isDragged = dragged?.id === (row.kind === "space" ? row.space.id : row.task.id);
@@ -889,7 +906,7 @@ export default function Sidebar({ onClose, onCreateBot }: { onClose?: () => void
         const workspaceRows = visibleRows.filter((r) => !(r.kind === "task" && (r.task.spaceId == null || pinnedTaskIdSet.has(r.task.id))));
         // 计数与下面看得见的行一致。置顶任务已经抽到顶部，不重复计入这两个数。
         const independentTaskCount = tasksDto.filter((t) => t.spaceId == null && !t.isFavorited).length;
-        const workspaceTaskCount = tasksDto.filter((t) => t.spaceId != null && !t.isFavorited).length;
+        const workspaceTaskCount = tasksDto.filter((t) => t.spaceId != null && !t.isFavorited).length + foregroundRequests.filter(request => spaces.some(space => space.id === request.spaceId && !space.effectiveArchived && !space.archived)).length;
         const pinnedIndependent = pinnedRows.some((row) => row.task.spaceId == null);
         return (
           <div className="sidebar-scroll" ref={sidebarScrollRef} onDragOver={handleRootDragOver} onDrop={handleRootDrop}>
@@ -940,6 +957,7 @@ export default function Sidebar({ onClose, onCreateBot }: { onClose?: () => void
               </button>
             </div>
             <div className="sidebar-section-list">
+              {foregroundError && <p className="bot-alert" role="status">前台任务加载失败：{foregroundError}</p>}
               {workspaceRows.length === 0 ? (
                 <div className="sidebar-empty sidebar-empty--cta">
                   <div>还没有工作空间</div>

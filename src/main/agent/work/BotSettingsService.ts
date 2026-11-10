@@ -1,3 +1,4 @@
+import { BotWorkspaceNavigationService } from "./BotWorkspaceNavigationService";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
@@ -64,8 +65,8 @@ export class BotSettingsService {
   }
   forWork(workId: string, botId: string, workspacePath?: string): BotSettingsDto {
     const row = this.db.connection.prepare("SELECT settings_json FROM bot_work_settings WHERE work_id=?").get(workId) as {settings_json: string} | undefined;
-    if (row) return JSON.parse(row.settings_json) as BotSettingsDto;
-    const base = this.get(botId);
+    if (row) { const frozen = JSON.parse(row.settings_json) as BotSettingsDto; return { ...frozen, spaceId: new BotWorkspaceNavigationService(this.db, this.userId).spaceForWork(workId, botId) }; }
+    const base = { ...this.get(botId), spaceId: new BotWorkspaceNavigationService(this.db, this.userId).spaceForWork(workId, botId) };
     const settings = workspacePath ? { ...base, workspacePath, effectiveWorkspacePath: workspacePath } : base;
     this.ensureSpace(settings);
     this.db.connection.prepare("INSERT OR IGNORE INTO bot_work_settings VALUES(?,?)").run(workId, JSON.stringify(settings));
@@ -75,7 +76,7 @@ export class BotSettingsService {
     const owner = this.forWork(workId, ownerBotId, workspacePath);
     if (memberBotId === ownerBotId) return owner;
     const row = this.db.connection.prepare("SELECT settings_json FROM bot_work_member_settings WHERE work_id=? AND bot_id=?").get(workId, memberBotId) as {settings_json: string} | undefined;
-    if (row) return JSON.parse(row.settings_json) as BotSettingsDto;
+    if (row) return { ...JSON.parse(row.settings_json) as BotSettingsDto, spaceId: owner.spaceId };
     const member = this.get(memberBotId);
     const frozen = { ...member, spaceId: owner.spaceId, effectiveWorkspacePath: owner.effectiveWorkspacePath, workspacePath: owner.workspacePath };
     this.db.connection.prepare("INSERT INTO bot_work_member_settings VALUES(?,?,?)").run(workId, memberBotId, JSON.stringify(frozen));
@@ -96,7 +97,7 @@ export class BotSettingsService {
   private ensureSpace(settings: BotSettingsDto): void {
     // Filesystem preparation belongs to native dispatch, where failures become visible blockers.
     // Enqueue must persist first; a vanished folder must not leave a Work with no dispatch request.
-    if (!this.db.getSpace(settings.spaceId)) this.db.upsertSpace({ id: settings.spaceId, name: `${this.bots.getBot(settings.botId)!.displayName} · 工作空间` });
+    if (settings.spaceId.startsWith("bot-space-")) new BotWorkspaceNavigationService(this.db, this.userId).ensureBot(settings.botId);
     // Space is a grouping, not a mutable cwd override. Each Work carries its original folder.
   }
 }

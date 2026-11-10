@@ -7,6 +7,7 @@ const net = require('node:net');
 const http = require('node:http');
 const cp = require('node:child_process');
 const root = path.resolve(__dirname, '..');
+const workspaceNavigationScenario = process.argv.includes('--workspace-navigation');
 const searchScenario = process.argv.includes('--search');
 const teamWorkspaceScenario = process.argv.includes('--team-workspace');
 const teamTransientFailure = process.argv.includes('--team-transient-failure');
@@ -27,7 +28,7 @@ const headless = process.env.BOT_WORK_DEV_HEADLESS === '1';
 const trackingScenario = process.argv.includes('--tracking');
 const watchScenario = process.argv.includes('--watch');
 if (headless && process.platform !== 'linux') throw Error('Headless dev page validation requires Linux; it does not validate desktop input.');
-const out = path.join(root, searchScenario ? 'out/diagnostics/bot-search/live' : teamWorkspaceScenario ? 'out/diagnostics/bot-team-workspace/live' : concurrentScenario ? 'out/diagnostics/bot-concurrent/live' : completionScenario ? 'out/diagnostics/bot-completion/live' : trackingScenario ? 'out/diagnostics/bot-tracking/live' : teamTransientFailure ? 'out/diagnostics/bot-team-transient-failure/live' : teamTransportFailure ? 'out/diagnostics/bot-team-transport-failure/live' : teamFailureScenario ? 'out/diagnostics/bot-team-failure/live' : teamFreeScenario ? 'out/diagnostics/bot-team-free/live' : teamPlanningScenario ? 'out/diagnostics/bot-team-planning/live' : teamScenario ? 'out/diagnostics/bot-team-frontdoor/live' : cacheScenario ? 'out/diagnostics/bot-cache/live' : memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
+const out = path.join(root, workspaceNavigationScenario ? 'out/diagnostics/bot-workspace-navigation/live' : searchScenario ? 'out/diagnostics/bot-search/live' : teamWorkspaceScenario ? 'out/diagnostics/bot-team-workspace/live' : concurrentScenario ? 'out/diagnostics/bot-concurrent/live' : completionScenario ? 'out/diagnostics/bot-completion/live' : trackingScenario ? 'out/diagnostics/bot-tracking/live' : teamTransientFailure ? 'out/diagnostics/bot-team-transient-failure/live' : teamTransportFailure ? 'out/diagnostics/bot-team-transport-failure/live' : teamFailureScenario ? 'out/diagnostics/bot-team-failure/live' : teamFreeScenario ? 'out/diagnostics/bot-team-free/live' : teamPlanningScenario ? 'out/diagnostics/bot-team-planning/live' : teamScenario ? 'out/diagnostics/bot-team-frontdoor/live' : cacheScenario ? 'out/diagnostics/bot-cache/live' : memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-frontdoor-live-'));
 const agentDir = path.join(home, '.mybuddy'); fs.mkdirSync(agentDir, { recursive: true });
 for (const directory of ['AppData/Roaming', 'AppData/Local', 'Temp']) fs.mkdirSync(path.join(home, directory), { recursive: true });
@@ -205,7 +206,42 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       assert(requestId, 'accepted user request identity');
       await until(async () => (await history()).messages.some(m=>m.role==='assistant'&&m.requestId===requestId&&m.status==='completed'), 'matching foreground request completed');
     };
-    if (searchScenario) {
+    if (workspaceNavigationScenario) {
+      await send('空间导航测试：计算17+8，只回复数字，不使用工具不创建后台事项。'); await foregroundDone(0);
+      const first = await history(); assert(first.messages.some(m=>m.role==='assistant' && /25/.test(m.text)));
+      await evaluate(`window.api.botWork.archiveConversation(${JSON.stringify(botId)},${JSON.stringify(first.conversationId)})`);
+      // Send through the normal product UI after starting a fresh conversation.
+      await evaluate(`[...document.querySelectorAll('.sidebar-bot-identity')].find(b=>b.textContent.includes('MyBuddy')).click()`);
+      await wait(1500);
+      await send('空间导航第二条：计算23+19，只回复数字，不创建后台事项。'); await foregroundDone(0);
+      const second = await history(); assert.notEqual(first.conversationId, second.conversationId);
+      const member = await evaluate(`window.api.botWork.createBot({requestId:crypto.randomUUID(),displayName:'空间成员',responsibilitySummary:'核验任务'})`); assert(member.ok);
+      const saved = await evaluate(`window.api.botWork.teamControl({kind:'save_template',request:{operationId:crypto.randomUUID(),name:'空间团队',plan:{ownerBotId:${JSON.stringify(botId)},ownerResponsibility:'汇总',members:[{botId:${JSON.stringify(member.bot.botId)},responsibility:'核对',delegatedScope:['workspace:read']}],executionPolicy:'parallel',maxConcurrency:1}}})`);
+      assert(saved.ok,JSON.stringify(saved));
+      await evaluate(`window.dispatchEvent(new Event('mybuddy:teams-refresh'))`);
+      await until(()=>evaluate(`[...document.querySelectorAll('.sidebar-bot-identity')].some(b=>b.textContent.includes('空间团队'))`),'team navigation appears');
+      await evaluate(`[...document.querySelectorAll('.sidebar-bot-identity')].find(b=>b.textContent.includes('空间团队')).click()`);
+      teamId=(await evaluate(`window.api.botWork.teamControl({kind:'list_templates'})`)).templates.find(t=>t.name==='空间团队').templateId;
+      await until(()=>evaluate(`document.querySelector('.bot-heading h1')?.textContent==='空间团队'`),'team workspace');
+      await send('团队空间任务：计算7+8，只回复数字，不创建后台事项。'); await foregroundDone(0);
+      await evaluate(`[...document.querySelectorAll('button')].find(b=>b.textContent.trim()==='普通模式').click()`);
+      const nav = await evaluate('window.api.botWork.workspaceNavigation()'); report.navigation=nav;
+      assert.equal(nav.foregroundRequests.length,3); assert.equal(nav.foregroundRequests.filter(r=>r.teamId===teamId).length,1);
+      assert.equal((await evaluate('window.api.db.listTasks()')).length,0,'no fake native Task from foreground requests');
+      const expand = async name => { await until(()=>evaluate(`[...document.querySelectorAll('.space-header')].some(e=>e.querySelector('.space-name')?.textContent===${JSON.stringify(name)})`),'space '+name); await evaluate(`[...document.querySelectorAll('.space-header')].find(e=>e.querySelector('.space-name')?.textContent===${JSON.stringify(name)}).querySelector('.space-chevron').click()`); };
+      await expand('Bot'); await expand('MyBuddy · 工作空间');
+      await until(()=>evaluate(`document.querySelectorAll('.workspace-foreground-row').length===2`),'two personal foreground tasks');
+      await evaluate(`[...document.querySelectorAll('.workspace-foreground-row')].find(e=>e.textContent.includes('计算17+8')).click()`);
+      await until(()=>evaluate(`document.querySelector('[aria-label="前台任务对话"]')?.innerText.includes('25')`),'archived original answer reachable');
+      assert(!await evaluate(`document.querySelector('[aria-label="前台任务对话"]').innerText.includes('42')`),'does not substitute current conversation');
+      await evaluate(`document.querySelector('.workspace-foreground-heading button').click()`);
+      await until(()=>evaluate(`document.querySelector('.workspace-overview')?.innerText.includes('前台任务')`),'return to space overview');
+      await expand('Bot团队'); await expand('空间团队 · 工作空间');
+      await evaluate(`[...document.querySelectorAll('.workspace-foreground-row')].find(e=>e.textContent.includes('团队空间任务')).click()`);
+      await until(()=>evaluate(`document.querySelector('[aria-label="前台任务对话"]')?.innerText.includes('15')`),'team original answer reachable');
+      assert(!await evaluate(`document.querySelector('[aria-label="前台任务对话"]').innerText.includes('空间导航测试')`));
+      report.checks.push('real model personal and team requests visible under distinct space trees; archived original reply accessible; return navigation; no fake Tasks');
+    } else if (searchScenario) {
       report.cases = [];
       for (const [label, prompt] of [
         ['single-quick', '请只调用一次 web_search，query="Node.js fs readFile official documentation"，workflow="none"，不要抓取正文或核验，不创建 Work。用两句话及来源 URL 回答 readFile 用途，不能声称已独立核验。'],
