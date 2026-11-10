@@ -1,0 +1,11 @@
+import '../src/renderer/src/styles/global.css';
+import '../src/renderer/src/components/pages/BotWorkspacePage.css';
+import './bot-workspace-navigation-ui-env';
+import {createRoot} from 'react-dom/client';
+import {useAppStore} from '../src/renderer/src/store/appStore';
+import {BotDisplayGroups} from '../src/renderer/src/components/BotDisplayGroups';
+const bots=[{botId:'a',displayName:'学习搭子',status:'active'},{botId:'b',displayName:'ERP 前端',status:'active'}];
+let data:any=JSON.parse(localStorage.getItem('groups-fixture')||'{"groups":[],"membership":{}}');
+(window as any).api={botWork:{displayGroups:async(c:any)=>{if(c.kind==='create'){if(data.groups.some((g:any)=>g.name===c.name))throw Error('分组名称已存在');const id='g'+Date.now();data.groups.push({id,name:c.name,collapsed:false});if(c.botId)data.membership[c.botId]=id;}if(c.kind==='rename')data.groups.find((g:any)=>g.id===c.id).name=c.name;if(c.kind==='collapse')data.groups.find((g:any)=>g.id===c.id).collapsed=c.collapsed;if(c.kind==='move'){if(c.groupId)data.membership[c.botId]=c.groupId;else delete data.membership[c.botId];}if(c.kind==='delete'){data.groups=data.groups.filter((g:any)=>g.id!==c.id);for(const key of Object.keys(data.membership))if(data.membership[key]===c.id)delete data.membership[key];}localStorage.setItem('groups-fixture',JSON.stringify(data));return structuredClone(data);}}};
+useAppStore.setState({botIdentities:bots as any,activeBotId:'a',activeTeam:null,setActiveBotId:(id:string)=>useAppStore.setState({activeBotId:id})});
+createRoot(document.getElementById('root')!).render(<aside className="sidebar" style={{width:300,height:'100vh'}}><BotDisplayGroups/></aside>);

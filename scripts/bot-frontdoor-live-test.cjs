@@ -7,6 +7,7 @@ const net = require('node:net');
 const http = require('node:http');
 const cp = require('node:child_process');
 const root = path.resolve(__dirname, '..');
+const displayGroupsScenario = process.argv.includes('--display-groups');
 const workspaceNavigationScenario = process.argv.includes('--workspace-navigation');
 const composerScenario = process.argv.includes('--composer');
 const searchScenario = process.argv.includes('--search');
@@ -29,7 +30,7 @@ const headless = process.env.BOT_WORK_DEV_HEADLESS === '1';
 const trackingScenario = process.argv.includes('--tracking');
 const watchScenario = process.argv.includes('--watch');
 if (headless && process.platform !== 'linux') throw Error('Headless dev page validation requires Linux; it does not validate desktop input.');
-const out = path.join(root, composerScenario ? 'out/diagnostics/bot-composer/live' : workspaceNavigationScenario ? 'out/diagnostics/bot-workspace-navigation/live' : searchScenario ? 'out/diagnostics/bot-search/live' : teamWorkspaceScenario ? 'out/diagnostics/bot-team-workspace/live' : concurrentScenario ? 'out/diagnostics/bot-concurrent/live' : completionScenario ? 'out/diagnostics/bot-completion/live' : trackingScenario ? 'out/diagnostics/bot-tracking/live' : teamTransientFailure ? 'out/diagnostics/bot-team-transient-failure/live' : teamTransportFailure ? 'out/diagnostics/bot-team-transport-failure/live' : teamFailureScenario ? 'out/diagnostics/bot-team-failure/live' : teamFreeScenario ? 'out/diagnostics/bot-team-free/live' : teamPlanningScenario ? 'out/diagnostics/bot-team-planning/live' : teamScenario ? 'out/diagnostics/bot-team-frontdoor/live' : cacheScenario ? 'out/diagnostics/bot-cache/live' : memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
+const out = path.join(root, displayGroupsScenario ? 'out/diagnostics/bot-display-groups/live' : composerScenario ? 'out/diagnostics/bot-composer/live' : workspaceNavigationScenario ? 'out/diagnostics/bot-workspace-navigation/live' : searchScenario ? 'out/diagnostics/bot-search/live' : teamWorkspaceScenario ? 'out/diagnostics/bot-team-workspace/live' : concurrentScenario ? 'out/diagnostics/bot-concurrent/live' : completionScenario ? 'out/diagnostics/bot-completion/live' : trackingScenario ? 'out/diagnostics/bot-tracking/live' : teamTransientFailure ? 'out/diagnostics/bot-team-transient-failure/live' : teamTransportFailure ? 'out/diagnostics/bot-team-transport-failure/live' : teamFailureScenario ? 'out/diagnostics/bot-team-failure/live' : teamFreeScenario ? 'out/diagnostics/bot-team-free/live' : teamPlanningScenario ? 'out/diagnostics/bot-team-planning/live' : teamScenario ? 'out/diagnostics/bot-team-frontdoor/live' : cacheScenario ? 'out/diagnostics/bot-cache/live' : memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-frontdoor-live-'));
 const agentDir = path.join(home, '.mybuddy'); fs.mkdirSync(agentDir, { recursive: true });
 for (const directory of ['AppData/Roaming', 'AppData/Local', 'Temp']) fs.mkdirSync(path.join(home, directory), { recursive: true });
@@ -213,7 +214,28 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       assert(requestId, 'accepted user request identity');
       await until(async () => (await history()).messages.some(m=>m.role==='assistant'&&m.requestId===requestId&&m.status==='completed'), 'matching foreground request completed');
     };
-    if (workspaceNavigationScenario) {
+    if (displayGroupsScenario) {
+      const click=async text=>evaluate(`[...document.querySelectorAll('button')].find(b=>b.textContent.trim()===${JSON.stringify(text)}).click()`);
+      await click('＋ 创建分组');
+      await until(()=>evaluate('document.querySelector(".bot-display-dialog").open'),'group dialog');
+      await evaluate(`(()=>{const e=document.querySelector('.bot-display-dialog input');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,'验收分组');e.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+      await click('保存');
+      await until(()=>evaluate('document.querySelectorAll(".bot-display-group").length===2'),'created group');
+      await evaluate(`document.querySelector('.bot-display-row .bot-display-actions>button').click()`);
+      await click('验收分组');
+      const snapshot=await evaluate(`window.api.botWork.displayGroups({kind:'list'})`);
+      assert.equal(snapshot.membership[botId],snapshot.groups[0].id);
+      await evaluate('window.__groupsReloadMarker = true');
+      await rpc('Page.reload');
+      await until(()=>evaluate('window.__groupsReloadMarker !== true && document.readyState === "complete"'),'new document loaded');
+      await until(()=>evaluate('document.querySelector(".bot-display-group:first-of-type .bot-display-row")?.textContent.includes("MyBuddy")'),'persistent group after reload');
+      await evaluate(`document.querySelector('[aria-label="管理分组 验收分组"]').click()`);
+      await click('删除分组');
+      await until(()=>evaluate('document.querySelectorAll(".bot-display-group").length===1'),'deleted group');
+      assert.equal((await evaluate('window.api.botWork.listBots()')).length,1);
+      assert.equal((await evaluate(`window.api.botWork.displayGroups({kind:'list'})`)).groups.length,0);
+      report.checks.push('actual pnpm dev + preload IPC + SQLite: create, move, reload, delete group, Bot survives');
+    } else if (workspaceNavigationScenario) {
       await send('空间导航测试：计算17+8，只回复数字，不使用工具不创建后台事项。'); await foregroundDone(0);
       const first = await history(); assert(first.messages.some(m=>m.role==='assistant' && /25/.test(m.text)));
       await evaluate(`window.api.botWork.archiveConversation(${JSON.stringify(botId)},${JSON.stringify(first.conversationId)})`);

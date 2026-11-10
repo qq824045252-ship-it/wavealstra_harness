@@ -1,0 +1,20 @@
+const {runRendererFixture}=require('./renderer-fixture-driver.cjs');
+const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
+const out=path.join(__dirname,'../out/tests');
+runRendererFixture({name:'bot-display-groups',width:900,height:760},async f=>{
+ const run=c=>f.evaluate(c),wait=async c=>{for(let i=0;i<100;i++){if(await run(c))return;await new Promise(r=>setTimeout(r,50));}throw Error('timeout '+c);};
+ const click=text=>run(`[...document.querySelectorAll('button')].find(b=>b.textContent.trim()===${JSON.stringify(text)}).click()`);
+ const fill=text=>run(`(()=>{const e=document.querySelector('dialog input');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,${JSON.stringify(text)});e.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+ fs.writeFileSync(path.join(out,'bot-display-groups-ui.html'),'<html><head><meta charset="utf-8"><link rel="stylesheet" href="bot-display-groups-ui.css"></head><body style="margin:0;background:#181818;color:#ddd"><div id="root"></div><script src="bot-display-groups-ui.js"></script></body></html>');
+ await f.loadFile(path.join(out,'bot-display-groups-ui.html'));await wait(`document.querySelectorAll('.bot-display-row').length===2`);
+ await click('＋ 创建分组');await wait(`document.querySelector('dialog').open`);await fill('ERP');await click('保存');await wait(`document.querySelectorAll('.bot-display-group').length===2`);
+ await run(`document.querySelector('[aria-label="移动 ERP 前端 到分组"]').click()`);await click('ERP');await wait(`document.querySelector('.bot-display-group:first-of-type .bot-display-row')?.textContent.includes('ERP 前端')`);
+ await run(`document.querySelector('.bot-display-group header>button').click()`);await wait(`!document.querySelector('.bot-display-group:first-of-type .bot-display-row')`);
+ await run(`document.querySelector('.bot-display-group header>button').click()`);await wait(`!!document.querySelector('.bot-display-group:first-of-type .bot-display-row')`);
+ await run(`document.querySelector('[aria-label="管理分组 ERP"]').click()`);await click('重命名分组');await fill('产品');await click('保存');await wait(`!!document.querySelector('[aria-label="管理分组 产品"]')`);
+ await f.screenshot(path.join(out,'bot-display-groups.png'));
+ await f.loadFile(path.join(out,'bot-display-groups-ui.html'));await wait(`!!document.querySelector('[aria-label="管理分组 产品"]')`);
+ await run(`document.querySelector('[aria-label="管理分组 产品"]').click()`);await click('删除分组');await wait(`document.querySelectorAll('.bot-display-group').length===1`);assert.equal(await run(`document.querySelectorAll('.bot-display-row').length`),2);
+ await click('＋ 创建分组');await click('取消');assert.equal(await run(`document.querySelector('dialog').open`),false);
+ console.log('PASS real renderer groups: create, move, collapse, rename, reload, delete preserving Bots, cancel');
+});

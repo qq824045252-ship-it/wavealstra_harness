@@ -1,3 +1,4 @@
+import { BotDisplayGroupsService } from "./work/BotDisplayGroupsService";
 import { BotWorkspaceNavigationService } from "./work/BotWorkspaceNavigationService";
 import { BotWorkResultTurn } from "./work/BotWorkResultTurn";
 import { WorkCompletionCoordinator } from "./work/WorkCompletionCoordinator";
@@ -1210,6 +1211,7 @@ export class AgentService {
   syncWorkProjections(request: unknown) {
     return new WorkProjectionJournal(this.db.connection, this.workService).sync(LOCAL_USER_ID, request);
   }
+  botDisplayGroups(request: unknown) { return new BotDisplayGroupsService(this.db.connection, LOCAL_USER_ID).execute(request); }
   botWorkspaceNavigation() { return new BotWorkspaceNavigationService(this.db, LOCAL_USER_ID).snapshot(); }
   async sendBotMessage(request: unknown) {
     const input = (await import("../../shared/bot-conversation")).botSendSchema.parse(request);

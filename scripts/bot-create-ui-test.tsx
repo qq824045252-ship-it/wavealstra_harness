@@ -79,6 +79,7 @@ let initialState: AppState;
 let createRoot: typeof import("react-dom/client")["createRoot"];
 let BotCreateDialog: typeof import("../src/renderer/src/components/pages/BotCreateDialog")["BotCreateDialog"];
 const api = { botWork: {
+  displayGroups: async () => ({groups:[],membership:{}}),
   teamControl: async () => ({ ok: true, templates: [], teams: [] }),
   createBot: async (request: BotCreateRequest) => { requests.push(structuredClone(request)); return reply.promise; },
   listBots: async () => hostBots,
