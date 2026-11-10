@@ -106,6 +106,7 @@ export const DESKTOP_USER_GRANTS: WorkAuthorizationDto = {
 
 export interface WorkServiceOptions {
   bots: BotRegistry;
+  requestExpert?: (work: WorkDto, botId: string) => import("../../../shared/bot-work").ExpertConfigSnapshotDto | undefined;
   now?: () => number;
   emitProjection?: (projection: WorkProjectionDto) => void;
   computeNextWake?: WorkNextWake;
@@ -146,6 +147,7 @@ export class WorkService {
   readonly cards: WorkResultCards;
   readonly phase5: WorkPhase5Facts;
   private readonly bots: BotRegistry;
+  private readonly requestExpert?: WorkServiceOptions["requestExpert"];
   private readonly now: () => number;
   private readonly emit?: (projection: WorkProjectionDto) => void;
   private readonly computeNextWake: WorkNextWake;
@@ -159,6 +161,7 @@ export class WorkService {
     this.repo = new WorkRepository(db);
     this.nativeResults = new WorkNativeResultInbox(db, this, () => !this.authority || this.authority());
     this.bots = options.bots;
+    this.requestExpert = options.requestExpert;
     this.now = options.now ?? (() => Date.now());
     this.emit = options.emitProjection;
     this.computeNextWake = options.computeNextWake ?? cronNextWake;
@@ -1088,7 +1091,7 @@ export class WorkService {
         intentRevision: work.intentRevision,
         ownerEpoch: work.ownerEpoch,
         inputSnapshotId: work.inputSnapshotId,
-        expertSnapshot: recoverySource?.expertSnapshot ?? this.snapshotOf(target),
+        expertSnapshot: recoverySource?.expertSnapshot ?? this.requestExpert?.(work, target.botId) ?? this.snapshotOf(target),
         delegatedScope,
         workspaceBinding: params.workspaceBinding,
         inboxEventId: params.inboxEventId,
@@ -2370,7 +2373,7 @@ export class WorkService {
       constraints: work.constraints,
       criteria: work.criteria,
       authorization: work.authorization,
-      expertSnapshot: this.snapshotOf(ownerBot),
+      expertSnapshot: this.requestExpert?.(work, ownerBot.botId) ?? this.snapshotOf(ownerBot),
       inputSnapshotId: work.inputSnapshotId,
       goalSources: work.goalSources,
       createdBy,

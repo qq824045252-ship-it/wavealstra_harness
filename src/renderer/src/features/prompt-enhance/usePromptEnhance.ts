@@ -257,11 +257,12 @@ export function usePromptEnhance(
     setStatus((s) => (s === "enhancing" ? "idle" : s));
     // 只响应环境锚点变化；mode/tag/preset 等由返回时的 fingerprint 比对兜底
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [context.taskId, context.projectId, context.spaceId]);
+  }, [context.taskId, context.projectId, context.spaceId, context.draftScope]);
 
   // 卸载时清理定时器
   useEffect(() => {
     return () => {
+      invalidateInflight();
       if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
       if (settleTimerRef.current) clearTimeout(settleTimerRef.current);
     };

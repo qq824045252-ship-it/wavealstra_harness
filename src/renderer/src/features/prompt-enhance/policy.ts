@@ -72,6 +72,7 @@ export function buildFingerprint(context: PromptEnhanceContext, sourceText: stri
     : undefined;
   const fields = {
     surface: context.surface,
+    draftScope: context.draftScope,
     sourceText,
     taskId: context.taskId,
     projectId: context.projectId,

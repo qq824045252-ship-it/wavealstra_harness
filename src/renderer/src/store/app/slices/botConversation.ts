@@ -1,11 +1,12 @@
 import type { Attachment } from "@/types";
 import { z } from "zod";
-import { botSendSchema, type BotHistoryDto, type BotSendRequest } from "../../../../../shared/bot-conversation";
+import { botSendSchema, botComposerSelectionSchema, type BotComposerSelection, type BotHistoryDto, type BotSendRequest } from "../../../../../shared/bot-conversation";
 import type { AppActions } from "../actions";
 import type { AppContext } from "../context";
 
 interface PendingSend { request: BotSendRequest; sending: boolean; error?: string }
 export interface BotConversationUiState {
+  botComposerDrafts: Record<string, BotComposerSelection>;
   botDrafts: Record<string, string>;
   botAttachmentDrafts: Record<string, Attachment[]>;
   botHistories: Record<string, BotHistoryDto>;
@@ -14,26 +15,27 @@ export interface BotConversationUiState {
 }
 export const botConversationScope = (botId: string, teamId?: string) => teamId ? `team:${teamId}` : botId;
 const storageKey = "mybuddy.bot-conversation-drafts";
-const savedSchema = z.object({ drafts: z.record(z.string(), z.string()), requests: z.record(z.string(), botSendSchema), attachments: z.record(z.string(), z.array(z.object({ name: z.string(), path: z.string().optional() }))).default({}) });
+const savedSchema = z.object({ selections: z.record(z.string(), botComposerSelectionSchema).default({}), drafts: z.record(z.string(), z.string()), requests: z.record(z.string(), botSendSchema), attachments: z.record(z.string(), z.array(z.object({ name: z.string(), path: z.string().optional() }))).default({}) });
 export function createBotConversationState(): BotConversationUiState {
-  let saved: z.infer<typeof savedSchema> = { drafts: {}, requests: {}, attachments: {} };
+  let saved: z.infer<typeof savedSchema> = { drafts: {}, requests: {}, attachments: {}, selections: {} };
   try { saved = savedSchema.parse(JSON.parse(localStorage.getItem(storageKey) ?? "{}")); } catch { /* An absent/invalid cache is not an accepted send. */ }
-  return { botDrafts: saved.drafts, botAttachmentDrafts: saved.attachments, botHistories: {}, botConversationErrors: {},
+  return { botComposerDrafts: saved.selections, botDrafts: saved.drafts, botAttachmentDrafts: saved.attachments, botHistories: {}, botConversationErrors: {},
     botPendingSends: Object.fromEntries(Object.entries(saved.requests).map(([, request]) => [request.requestId, { request, sending: false, error: "发送结果未确认，请按原请求重试" }])) };
 }
 
 export function createBotConversationActions({ get, set, getApi }: AppContext): Pick<AppActions,
-  "forgetDeletedBot" | "setBotAttachments" | "setBotDraft" | "submitBotDraft" | "setActiveBotId" | "setActiveTeam" | "refreshBotHistory" | "cancelBotSend" | "archiveBotConversation"> {
+  "setBotComposerSelection" | "forgetDeletedBot" | "setBotAttachments" | "setBotDraft" | "submitBotDraft" | "setActiveBotId" | "setActiveTeam" | "refreshBotHistory" | "cancelBotSend" | "archiveBotConversation"> {
   const histories = new Map<string, number>();
   const persist = () => {
-    try { localStorage.setItem(storageKey, JSON.stringify({ drafts: get().botDrafts, attachments: get().botAttachmentDrafts,
+    try { localStorage.setItem(storageKey, JSON.stringify({ selections: get().botComposerDrafts, drafts: get().botDrafts, attachments: get().botAttachmentDrafts,
       requests: Object.fromEntries(Object.entries(get().botPendingSends).map(([botId, pending]) => [botId, pending.request])) })); } catch { /* Host receipt remains authoritative. */ }
   };
   return {
+    setBotComposerSelection: (scope, selection) => { set(state => ({ botComposerDrafts: {...state.botComposerDrafts, [scope]: selection} })); persist(); },
     forgetDeletedBot: botId => {
       histories.set(botId, (histories.get(botId) ?? 0) + 1);
       const omit = <T,>(values: Record<string, T>) => { const next = { ...values }; delete next[botId]; return next; };
-      set(state => ({ botDrafts: omit(state.botDrafts), botAttachmentDrafts: omit(state.botAttachmentDrafts),
+      set(state => ({ botComposerDrafts: omit(state.botComposerDrafts), botDrafts: omit(state.botDrafts), botAttachmentDrafts: omit(state.botAttachmentDrafts),
         botHistories: omit(state.botHistories), botPendingSends: Object.fromEntries(Object.entries(state.botPendingSends).filter(([, item]) => item.request.botId !== botId)),
         botConversationErrors: omit(state.botConversationErrors),
         ...(state.activeBotId === botId ? { botDraft: "", activeBotId: null, selectedWorkId: null } : {}) }));
@@ -68,11 +70,12 @@ export function createBotConversationActions({ get, set, getApi }: AppContext): 
       if (!botId) return;
       if (options.editRejectedRequestId) {
         const item = get().botPendingSends[options.editRejectedRequestId];
-        if (!item || (item.request.botId !== botId || item.request.teamId !== teamId) || !item.error?.includes("BOT_ATTACHMENT_REJECTED:")) return;
+        if (!item || (item.request.botId !== botId || item.request.teamId !== teamId) || !(item.error?.includes("BOT_ATTACHMENT_REJECTED:") || item.error?.includes("BOT_SELECTION_REJECTED:"))) return;
         if (botDraft.trim() || get().botAttachmentDrafts[scopeKey]?.length) return;
         set(state => {
           const pending = { ...state.botPendingSends }; delete pending[item.request.requestId];
           return { botPendingSends: pending, botDraft: item.request.text,
+            ...(item.request.selection ? { botComposerDrafts: { ...state.botComposerDrafts, [scopeKey]: item.request.selection } } : {}),
             botDrafts: { ...state.botDrafts, [scopeKey]: item.request.text },
             botAttachmentDrafts: { ...state.botAttachmentDrafts, [scopeKey]: item.request.attachments ?? [] } };
         });
@@ -85,6 +88,7 @@ export function createBotConversationActions({ get, set, getApi }: AppContext): 
       // Each send owns its identity. A missing receipt can be retried independently
       // without hijacking a newer draft or blocking unrelated messages.
       const request = previous?.request ?? { botId, teamId, requestId: crypto.randomUUID(), text: botDraft.trim(),
+        selection: get().botComposerDrafts[scopeKey],
         attachments: attachments.map(item => ({ name: item.name, path: item.path ?? "" })),
         conversationId: get().botHistories[scopeKey]?.conversationId || undefined,
         selectedWorkId: selectedWorkId ?? undefined, referenceMessageId: options.referenceMessageId };

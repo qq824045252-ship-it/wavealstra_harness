@@ -1,3 +1,4 @@
+import { BotConversationRepository } from "../src/main/agent/work/BotConversationRepository";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -78,5 +79,23 @@ try {
   const reset = await settings.save({...input, expectedRevision: 2, workspacePath: ""});
   assert(reset.settings.effectiveWorkspacePath.startsWith(join(root, "workspaces")), "empty restores dedicated default folder");
   assert.equal(db.getSpace(saved.settings.spaceId)?.path, undefined, "space grouping cannot silently migrate running tasks");
+  const messages = new BotConversationRepository(db.connection);
+  const selection = {modelId:"test/model",expertId:"",skillIds:["skill"],mcpIds:["mcp"],connectorIds:["connector"]};
+  const messageA = messages.accept(LOCAL_USER_ID,{botId:bot.botId,requestId:"composer-a",text:"use selected abilities",selection});
+  const chosen = await settings.prepareMessage(bot.botId, selection);
+  settings.captureMessage(messageA.userMessageId,bot.botId,chosen);
+  const messageB = messages.accept(LOCAL_USER_ID,{botId:bot.botId,requestId:"composer-b",text:"no abilities",selection:{...selection,modelId:"",skillIds:[],mcpIds:[],connectorIds:[]}});
+  settings.captureMessage(messageB.userMessageId,bot.botId,await settings.prepareMessage(bot.botId,{...selection,modelId:"",skillIds:[],mcpIds:[],connectorIds:[]}));
+  assert.deepEqual(settings.messageSettings(messageA.userMessageId,bot.botId)!.profile.allowedMcpIds,["mcp"]);
+  assert.deepEqual(settings.messageSettings(messageB.userMessageId,bot.botId)!.profile.allowedMcpIds,[]);
+  assert.equal(settings.get(bot.botId).revision,3,"composer never mutates Bot defaults");
+  assert.equal(settings.messageSettings(messageA.userMessageId,"other-bot"),undefined);
+  assert.equal(service().messageSettings(messageA.userMessageId,bot.botId)!.settings.modelId,"test/model","selection survives restart");
+  assert.throws(()=>messages.accept(LOCAL_USER_ID,{botId:bot.botId,requestId:"composer-a",text:"use selected abilities",selection:{...selection,modelId:""}}),/请求 ID/);
+  await assert.rejects(settings.prepareMessage(bot.botId,{...selection,mcpIds:["missing"]}),/MCP不可用/);
+  const selectedWork = works.createWork({kind:"user",userId:LOCAL_USER_ID,entry:"desktop",grants:DESKTOP_USER_GRANTS},
+    {operationId:"composer-work",title:"selected work",ownerBotId:bot.botId,sourceMessageId:messageB.userMessageId});
+  assert(selectedWork.ok);
+  assert.equal(settings.forWork(selectedWork.work.workId,bot.botId).modelId, "", "Work inherits request choice rather than current Bot model");
   console.log("PASS Bot settings: persistence, isolation, stale save, unavailable capability, real dispatch model/space/cwd, old Work immutability, reset");
 } finally { db.close(); rmSync(root, {recursive: true, force: true}); }

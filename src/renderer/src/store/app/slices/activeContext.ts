@@ -12,6 +12,7 @@ import type { AppContext } from "../context";
 import type { StreamingSendMode, TaskDraft } from "../types";
 
 export interface ActiveContextState {
+  botComposerDrafts: BotConversationUiState["botComposerDrafts"];
   botDrafts: BotConversationUiState["botDrafts"];
   botAttachmentDrafts: BotConversationUiState["botAttachmentDrafts"];
   botHistories: BotConversationUiState["botHistories"];
@@ -101,6 +102,7 @@ export function createActiveContextActions(
   | "setStreamingSendMode"
   | "setFullAccessDuringRun"
   | "setHomeSpaceId"
+  | "setBotComposerSelection"
   | "setBotAttachments"
   | "forgetDeletedBot"
   | "setBotDraft"

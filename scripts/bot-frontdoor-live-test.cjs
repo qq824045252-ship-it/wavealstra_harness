@@ -8,6 +8,7 @@ const http = require('node:http');
 const cp = require('node:child_process');
 const root = path.resolve(__dirname, '..');
 const workspaceNavigationScenario = process.argv.includes('--workspace-navigation');
+const composerScenario = process.argv.includes('--composer');
 const searchScenario = process.argv.includes('--search');
 const teamWorkspaceScenario = process.argv.includes('--team-workspace');
 const teamTransientFailure = process.argv.includes('--team-transient-failure');
@@ -28,7 +29,7 @@ const headless = process.env.BOT_WORK_DEV_HEADLESS === '1';
 const trackingScenario = process.argv.includes('--tracking');
 const watchScenario = process.argv.includes('--watch');
 if (headless && process.platform !== 'linux') throw Error('Headless dev page validation requires Linux; it does not validate desktop input.');
-const out = path.join(root, workspaceNavigationScenario ? 'out/diagnostics/bot-workspace-navigation/live' : searchScenario ? 'out/diagnostics/bot-search/live' : teamWorkspaceScenario ? 'out/diagnostics/bot-team-workspace/live' : concurrentScenario ? 'out/diagnostics/bot-concurrent/live' : completionScenario ? 'out/diagnostics/bot-completion/live' : trackingScenario ? 'out/diagnostics/bot-tracking/live' : teamTransientFailure ? 'out/diagnostics/bot-team-transient-failure/live' : teamTransportFailure ? 'out/diagnostics/bot-team-transport-failure/live' : teamFailureScenario ? 'out/diagnostics/bot-team-failure/live' : teamFreeScenario ? 'out/diagnostics/bot-team-free/live' : teamPlanningScenario ? 'out/diagnostics/bot-team-planning/live' : teamScenario ? 'out/diagnostics/bot-team-frontdoor/live' : cacheScenario ? 'out/diagnostics/bot-cache/live' : memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
+const out = path.join(root, composerScenario ? 'out/diagnostics/bot-composer/live' : workspaceNavigationScenario ? 'out/diagnostics/bot-workspace-navigation/live' : searchScenario ? 'out/diagnostics/bot-search/live' : teamWorkspaceScenario ? 'out/diagnostics/bot-team-workspace/live' : concurrentScenario ? 'out/diagnostics/bot-concurrent/live' : completionScenario ? 'out/diagnostics/bot-completion/live' : trackingScenario ? 'out/diagnostics/bot-tracking/live' : teamTransientFailure ? 'out/diagnostics/bot-team-transient-failure/live' : teamTransportFailure ? 'out/diagnostics/bot-team-transport-failure/live' : teamFailureScenario ? 'out/diagnostics/bot-team-failure/live' : teamFreeScenario ? 'out/diagnostics/bot-team-free/live' : teamPlanningScenario ? 'out/diagnostics/bot-team-planning/live' : teamScenario ? 'out/diagnostics/bot-team-frontdoor/live' : cacheScenario ? 'out/diagnostics/bot-cache/live' : memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-frontdoor-live-'));
 const agentDir = path.join(home, '.mybuddy'); fs.mkdirSync(agentDir, { recursive: true });
 for (const directory of ['AppData/Roaming', 'AppData/Local', 'Temp']) fs.mkdirSync(path.join(home, directory), { recursive: true });
@@ -162,6 +163,12 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
         workflow: 'none', searchPolicy: { mode: 'parallel', providers, providerTimeoutMs: 30000, totalTimeoutMs: 60000, maxRequests: 2, verifySources: true }
       }), { mode: 0o600 });
     }
+    if (composerScenario) {
+      const mcpDir=path.join(agentDir,'plugins/mcp');fs.mkdirSync(mcpDir,{recursive:true});
+      fs.writeFileSync(path.join(mcpDir,'mcp.json'),JSON.stringify({mcpServers:{'composer-probe':{command:process.execPath,args:[path.join(root,'scripts/durable-mcp-lazy-fixture.mjs'),path.join(out,'mcp-audit.jsonl')],enabled:true}}}));
+      const skill=path.join(agentDir,'plugins/skills/composer-probe');fs.mkdirSync(skill,{recursive:true});
+      fs.writeFileSync(path.join(skill,'SKILL.md'),'---\nname: composer-probe\ndescription: Verify the current composer skill is actually loaded.\n---\nThe verification marker is COMPOSER_SKILL_20261110. Include this marker only after reading this file.\n');
+    }
     const launch = async () => {
     const port = await freePort();
     const env = { ...process.env, HOME: home, USERPROFILE: home, APPDATA: path.join(home, 'AppData/Roaming'), LOCALAPPDATA: path.join(home, 'AppData/Local'), REMOTE_DEBUGGING_PORT: String(port),
@@ -241,6 +248,34 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       await until(()=>evaluate(`document.querySelector('[aria-label="前台任务对话"]')?.innerText.includes('15')`),'team original answer reachable');
       assert(!await evaluate(`document.querySelector('[aria-label="前台任务对话"]').innerText.includes('空间导航测试')`));
       report.checks.push('real model personal and team requests visible under distinct space trees; archived original reply accessible; return navigation; no fake Tasks');
+    } else if (composerScenario) {
+      await until(()=>evaluate(`!document.querySelector('[aria-label="选择 Bot 模型"]').disabled`),'model catalog ready');
+      assert.equal(await evaluate(`!!document.querySelector('[aria-label="增强提示词"]')`),false);
+      await evaluate(`document.querySelector('[aria-label="选择 Bot 模型"]').click()`);
+      await until(()=>evaluate(`!!document.querySelector('[aria-label="Bot 模型列表"]')`),'model menu');
+      await evaluate(`[...document.querySelectorAll('[role="option"]')].find(b=>b.textContent.includes('Frontdoor live')).click()`);
+      for(const category of ['技能','MCP']) {
+        await evaluate(`document.querySelector('[aria-label="添加"]').click()`);
+        await until(()=>evaluate(`!!document.querySelector('.add-menu')`),'add menu');
+        await evaluate(`[...document.querySelectorAll('.add-menu-item')].find(b=>b.textContent.trim()===${JSON.stringify(category)}).click()`);
+        await until(()=>evaluate(`[...document.querySelectorAll('.add-menu-flyout-item')].some(b=>b.textContent.includes('composer-probe'))`),'select '+category);
+        await evaluate(`[...document.querySelectorAll('.add-menu-flyout-item')].find(b=>b.textContent.includes('composer-probe')).click()`);
+      }
+      await send('请在当前对话使用所选技能与 MCP，不创建 Work。先 read_skill 读取 composer-probe 的 SKILL.md，再 mcp_list_tools 查看 composer-probe，调用其中 read_cwd，label="composer-live"。最后用两行返回技能验证标记与工具返回的真实 cwd。不得猜测。');
+      await foregroundDone(0);
+      report.composerHistory=await history();
+      const answer=report.composerHistory.messages.filter(m=>m.role==='assistant').at(-1);
+      assert(answer.text.includes('COMPOSER_SKILL_20261110'),'selected skill content reached the real model');
+      assert(fs.readFileSync(path.join(out,'mcp-audit.jsonl'),'utf8').includes('composer-live'),'real MCP stdio call occurred');
+      assert.equal((await evaluate('window.api.botWork.listWorks(true)')).length,0,'selection works in foreground, not an empty button/background-only');
+      await evaluate(`document.querySelector('#bot-draft').focus()`);await rpc('Input.insertText',{text:'帮我写一句邀请同事喝咖啡的话'});
+      await until(()=>evaluate(`!!document.querySelector('[aria-label="增强提示词"]')`),'enhance visible only for text');
+      await evaluate(`document.querySelector('[aria-label="增强提示词"]').click()`);
+      await until(()=>evaluate(`!!document.querySelector('[aria-label="恢复原文"]')`),'real model enhancement applied');
+      report.enhancedDraft=await evaluate(`document.querySelector('#bot-draft').value`);
+      await evaluate(`document.querySelector('[aria-label="恢复原文"]').click()`);
+      assert.equal(await evaluate(`document.querySelector('#bot-draft').value`),'帮我写一句邀请同事喝咖啡的话');
+      report.checks.push('real dev UI selects model/skill/MCP; real model reads selected SKILL.md and calls native stdio MCP in foreground; no Work; real enhancement and undo');
     } else if (searchScenario) {
       report.cases = [];
       for (const [label, prompt] of [

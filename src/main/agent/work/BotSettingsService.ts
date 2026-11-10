@@ -12,7 +12,8 @@ export class BotSettingsService {
     private readonly userId: string, private readonly root: string,
     private readonly catalog: () => Promise<Omit<BotSettingsView, "settings">>,
     private readonly assemble: (input: ReturnType<typeof botSettingsSchema.parse>) => StageExpertVersionInput) {
-    db.connection.exec(`CREATE TABLE IF NOT EXISTS bot_execution_settings (
+    db.connection.exec(`CREATE TABLE IF NOT EXISTS bot_message_execution_settings (message_id TEXT PRIMARY KEY REFERENCES bot_messages(message_id) ON DELETE CASCADE, bot_id TEXT NOT NULL, settings_json TEXT NOT NULL, profile_json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS bot_execution_settings (
       bot_id TEXT PRIMARY KEY REFERENCES bots(bot_id) ON DELETE CASCADE, revision INTEGER NOT NULL, settings_json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS bot_work_settings (
       work_id TEXT PRIMARY KEY REFERENCES works(work_id) ON DELETE CASCADE, settings_json TEXT NOT NULL);
@@ -34,6 +35,34 @@ export class BotSettingsService {
       connectorIds: profile.configuration?.sourceExpertId ? [] : profile.allowedConnectorIds };
   }
   async view(botId: string): Promise<BotSettingsView> { return { settings: this.get(botId), ...await this.catalog() }; }
+  async prepareMessage(botId: string, selection?: import("../../../shared/bot-conversation").BotComposerSelection) {
+    const base = this.get(botId);
+    if (!selection) return { settings: base, profile: this.bots.activeSnapshot(botId)! };
+    const choices = await this.catalog();
+    for (const [ids, available, label] of [
+      [selection.modelId ? [selection.modelId] : [], choices.models, "模型"],
+      [selection.expertId ? [selection.expertId] : [], choices.experts, "专家"],
+      [selection.skillIds, choices.skills, "技能"], [selection.mcpIds, choices.mcps, "MCP"],
+      [selection.connectorIds, choices.connectors, "连接器"],
+    ] as const) for (const id of ids) if (!available.some(item => item.id === id && item.available)) throw new Error(`${label}不可用：${id}，请重新选择`);
+    const assembled = this.assemble({ ...base, ...selection, expectedRevision: base.revision });
+    return { settings: { ...base, ...selection }, profile: {
+      ...this.bots.activeSnapshot(botId)!, ...assembled, revision: assembled.sourceRevision,
+      capturedAt: Date.now(), allowedSkillIds: assembled.allowedSkillIds ?? [],
+      allowedMcpIds: assembled.allowedMcpIds ?? [], allowedConnectorIds: assembled.allowedConnectorIds ?? [],
+    } };
+  }
+  captureMessage(messageId: string, botId: string, frozen: Awaited<ReturnType<BotSettingsService["prepareMessage"]>>) {
+    this.db.connection.prepare("INSERT OR IGNORE INTO bot_message_execution_settings VALUES (?,?,?,?)")
+      .run(messageId, botId, JSON.stringify(frozen.settings), JSON.stringify(frozen.profile));
+  }
+  messageSettings(messageId: string | undefined, botId: string) {
+    if (!messageId) return undefined;
+    const row = this.db.connection.prepare("SELECT settings_json,profile_json FROM bot_message_execution_settings WHERE message_id=? AND bot_id=?")
+      .get(messageId, botId) as { settings_json: string; profile_json: string } | undefined;
+    return row ? { settings: JSON.parse(row.settings_json) as BotSettingsDto,
+      profile: JSON.parse(row.profile_json) as import("../../../shared/bot-work").ExpertConfigSnapshotDto } : undefined;
+  }
   async save(request: unknown): Promise<BotSettingsView> {
     const input = botSettingsSchema.parse(request);
     const previous = this.get(input.botId);
@@ -66,7 +95,8 @@ export class BotSettingsService {
   forWork(workId: string, botId: string, workspacePath?: string): BotSettingsDto {
     const row = this.db.connection.prepare("SELECT settings_json FROM bot_work_settings WHERE work_id=?").get(workId) as {settings_json: string} | undefined;
     if (row) { const frozen = JSON.parse(row.settings_json) as BotSettingsDto; return { ...frozen, spaceId: new BotWorkspaceNavigationService(this.db, this.userId).spaceForWork(workId, botId) }; }
-    const base = { ...this.get(botId), spaceId: new BotWorkspaceNavigationService(this.db, this.userId).spaceForWork(workId, botId) };
+    const work = this.db.connection.prepare("SELECT source_message_id FROM works WHERE work_id=?").get(workId) as { source_message_id?: string } | undefined;
+    const base = { ...(this.messageSettings(work?.source_message_id, botId)?.settings ?? this.get(botId)), spaceId: new BotWorkspaceNavigationService(this.db, this.userId).spaceForWork(workId, botId) };
     const settings = workspacePath ? { ...base, workspacePath, effectiveWorkspacePath: workspacePath } : base;
     this.ensureSpace(settings);
     this.db.connection.prepare("INSERT OR IGNORE INTO bot_work_settings VALUES(?,?)").run(workId, JSON.stringify(settings));

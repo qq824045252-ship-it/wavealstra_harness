@@ -1,0 +1,12 @@
+.bot-composer-capabilities { display:flex; align-items:center; gap:8px; min-width:0; flex:1; position:relative; }
+.bot-composer-capability-chips { display:flex; gap:5px; flex:1; min-width:0; flex-wrap:wrap; max-height:84px; overflow:auto; }
+.bot-composer-capabilities .attach-chip { max-width:200px; }
+.bot-composer-model { margin-left:auto; max-width:260px; min-width:120px; }
+.bot-composer-model .model-trigger { max-width:100%; }
+.bot-composer-model .model-popup { bottom:calc(100% + 12px); right:0; left:auto; width:min(360px,calc(100vw - 40px)); }
+.bot-composer-model .model-popup input { width:100%; padding:8px; box-sizing:border-box; }
+.bot-composer-model .model-options { max-height:300px; overflow:auto; }
+.bot-composer-model .model-option { display:flex; gap:8px; align-items:center; width:100%; text-align:left; }
+.bot-composer-model .model-option span { flex:1; }
+.bot-composer-capability-error { position:absolute; bottom:100%; left:0; padding:8px; background:var(--bg-elevated); color:var(--danger); }
+@media(max-width:700px) { .bot-composer-model { max-width:160px; min-width:80px; } .bot-composer-capabilities { gap:4px; } }

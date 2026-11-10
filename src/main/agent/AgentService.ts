@@ -834,6 +834,7 @@ export class AgentService {
     this.workHostAuthority.start();
     this.workService = new WorkService(db.connection, {
       bots: this.botRegistry,
+      requestExpert: (work, botId) => botId === work.ownerBotId ? this.botSettings.messageSettings(work.sourceMessageId, botId)?.profile : undefined,
       emitProjection: (projection) => {
         this.emitPatch({ type: "work_projection_snapshot", projection });
         // Delivery is a background obligation: a new card wakes the host drain.
@@ -1209,8 +1210,16 @@ export class AgentService {
   syncWorkProjections(request: unknown) {
     return new WorkProjectionJournal(this.db.connection, this.workService).sync(LOCAL_USER_ID, request);
   }
-  sendBotMessage(request: unknown) { return this.requireBotConversations().send(request); }
   botWorkspaceNavigation() { return new BotWorkspaceNavigationService(this.db, LOCAL_USER_ID).snapshot(); }
+  async sendBotMessage(request: unknown) {
+    const input = (await import("../../shared/bot-conversation")).botSendSchema.parse(request);
+    const service = this.requireBotConversations();
+    // A retry retains its original frozen selection even if defaults/catalog changed.
+    const prior = service.messages.receipt(LOCAL_USER_ID, input.botId, input.requestId);
+    const frozen = prior ? undefined : await this.botSettings.prepareMessage(input.botId, input.selection)
+      .catch(error => { throw new Error(`BOT_SELECTION_REJECTED: ${error instanceof Error ? error.message : String(error)}`); });
+    return service.send(input, frozen);
+  }
   botActiveRequests() { return this.requireBotConversations().activeRequests(); }
   async botMessageHistory(request: unknown) {
     const history = this.requireBotConversations().history(request);
@@ -1673,7 +1682,16 @@ export class AgentService {
     this.botConversations ??= new BotConversationService({ db: this.db.connection, userId: LOCAL_USER_ID,
       bots: this.botRegistry, works: this.workService, models: this.durableModels, directory: join(getMyBuddyDir(), "bot-conversations"),
       botModel: botId => this.botSettings.get(botId).modelId || undefined,
+      messageSettings: (messageId, botId) => this.botSettings.messageSettings(messageId, botId),
+      captureSettings: (messageId, botId, frozen) => this.botSettings.captureMessage(messageId, botId, frozen),
       botWorkspace: botId => this.botSettings.get(botId).effectiveWorkspacePath,
+      composerTools: async (profile, cwd) => {
+        const { openBotComposerRuntime } = await import("./work/BotComposerRuntime");
+        return openBotComposerRuntime({ profile, cwd, models: this.durableModels!,
+          connectorSkillRoots: this.connectorsService.getPrivateSkillDirs(profile.allowedConnectorIds),
+          enabledMcpIds: this.mcpRuntime.previewMcpFilter("working", this.modeProfiles.getProfile("working").policy.mcpPolicy).enabled,
+          readOnly: () => this.settingsStore.read().permissionMode === "readonly" });
+      },
       webTools: async cwd => {
         const { createWebAccessCapabilityExtension } = await import("../capabilities/web-access");
         return durableDomainTools([createWebAccessCapabilityExtension], { cwd, models: this.durableModels! });

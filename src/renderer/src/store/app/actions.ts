@@ -148,6 +148,7 @@ export interface AppActions {
   forgetDeletedBot: (botId: string) => void;
   setBotDraft: (text: string) => void;
   setBotAttachments: (botId: string, attachments: import("@/types").Attachment[]) => void;
+  setBotComposerSelection: (scope: string, selection: import("@shared/bot-conversation").BotComposerSelection) => void;
   submitBotDraft: (options?: { retryRequestId?: string; editRejectedRequestId?: string; referenceMessageId?: string }) => Promise<void>;
   refreshBotHistory: (botId: string, teamId?: string) => Promise<void>;
   cancelBotSend: (botId: string, requestId: string) => Promise<void>;

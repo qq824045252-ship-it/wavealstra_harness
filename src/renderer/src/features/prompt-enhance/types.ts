@@ -12,6 +12,8 @@ export type EnhanceSurface = "new-task" | "chat";
 
 export interface PromptEnhanceContext {
   surface: EnhanceSurface;
+  /** Renderer-only draft identity; never treated as a native Task id. */
+  draftScope?: string;
   /** chat 用：当前任务 id（主进程据此解析 Mode/Tag/Expert/Skill/workspace 环境） */
   taskId?: string;
   /** new-task 可选：目标项目（无 taskId 时的执行环境锚点之一） */

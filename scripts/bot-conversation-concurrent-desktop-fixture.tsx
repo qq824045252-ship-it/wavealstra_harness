@@ -1,3 +1,4 @@
+import { emptyModePolicy } from "../src/shared/mode-profile";
 /** Actual page/store in Chromium, controlled host replies (not model acceptance). */
 import "../src/renderer/src/styles/global.css";
 import "../src/renderer/src/styles/systemTypography.css";
@@ -12,7 +13,16 @@ const receipts = new Map<string, (receipt: BotSendReceipt) => void>();
 let history: BotHistoryDto = { botId: "bot", conversationId: "chat", revision: 1, archived: false, messages: [] };
 const publish = () => useAppStore.setState({ botHistories: { bot: structuredClone(history) } });
 const bot = { botId: "bot", displayName: "并发助理", status: "active", authorization: { allowedScopes: [] } } as unknown as BotDto;
-Object.assign(window, { api: { botWork: {
+let enhanceResolve: ((value:{text:string})=>void)|undefined;
+Object.assign(window, { api: {
+  enhance: {prompt:()=>new Promise(resolve=>{enhanceResolve=resolve;})},
+  agent: {getModeProfile:async()=>({policy:emptyModePolicy()}),getAppSettings:async()=>({skillModeFilterEnabled:false})},
+  mcp: {listServers:async()=>[{name:"fixture-mcp",installed:true,disabled:false,endpoint:"stdio",transport:"stdio",sourceId:"fixture"}]},
+  botWork: {
+  getSettings: async()=>({settings:{botId:"bot",revision:0,workspacePath:"",effectiveWorkspacePath:"/fixture",spaceId:"bot-space",modelId:"model-a",expertId:"",skillIds:[],mcpIds:[],connectorIds:[]},
+    models:[{id:"model-a",name:"Model A",available:true},{id:"model-b",name:"Model B",available:true}],
+    experts:[{id:"fixture-expert",name:"Fixture expert",available:true}],skills:[{id:"fixture-skill",name:"Fixture skill",available:true}],
+    mcps:[{id:"fixture-mcp",name:"fixture-mcp",available:true}],connectors:[{id:"fixture-connector",name:"Fixture connector",available:true}]}),
   sendMessage: (request: BotSendRequest) => {
     requests.push(request);
     const time = Date.now();
@@ -30,9 +40,13 @@ Object.assign(window, { api: { botWork: {
   },
 } } });
 useAppStore.setState({ activeBotId: "bot", botIdentities: [bot], botHistories: { bot: history }, botWorks: [], botPendingSends: {},
+  experts:[{id:"fixture-expert",name:"Fixture expert",enabled:true,installed:true}] as never,
+  skills:[{id:"fixture-skill",name:"Fixture skill",enabled:true,installed:true,description:"fixture"}] as never,
+  connectors:[{id:"fixture-connector",name:"Fixture connector",enabled:true,installed:true}] as never,
+  refreshConnectors:async()=>{},
   refreshBotWork: async () => {}, botHostStatus: { online: true } as never });
 Object.assign(window, { concurrentFixture: {
-  requests, cancellations, draft: (text: string) => useAppStore.getState().setBotDraft(text),
+  requests, cancellations, resolveEnhance:(text:string)=>enhanceResolve?.({text}), draft: (text: string) => useAppStore.getState().setBotDraft(text),
   acknowledge: (index: number) => { const request = requests[index]; receipts.get(request.requestId)!({ botId: "bot", conversationId: "chat", requestId: request.requestId,
     userMessageId: `u-${request.requestId}`, assistantMessageId: `a-${request.requestId}`, replayed: false }); },
   answer: (index: number, text: string, revision: number, status: "running" | "completed") => {

@@ -37,7 +37,8 @@ export class BotConversationRepository {
   accept(userId: string, input: BotSendRequest, persistedAttachments: BotAttachmentDto[] = input.attachments ?? []): BotSendReceipt {
     const payload = JSON.stringify({ text: input.text, conversationId: input.conversationId ?? null,
       ...(input.teamId ? { teamId: input.teamId } : {}), selectedWorkId: input.selectedWorkId ?? null, referenceMessageId: input.referenceMessageId ?? null,
-      ...(input.attachments?.length ? { attachments: input.attachments } : {}) });
+      ...(input.attachments?.length ? { attachments: input.attachments } : {}),
+      ...(input.selection ? { selection: input.selection } : {}) });
     const hash = createHash("sha256").update(payload).digest("hex");
     const prior = this.receipt(userId, input.botId, input.requestId);
     if (prior) {

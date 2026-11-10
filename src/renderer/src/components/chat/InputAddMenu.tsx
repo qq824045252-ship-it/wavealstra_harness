@@ -49,6 +49,7 @@ type SubMenu =
   | null;
 
 interface Props {
+  contextMode?: "bot";
   onClose: () => void;
   onSelectConsult?: () => void;
   consultDisabled?: boolean;
@@ -219,6 +220,7 @@ function historyAttachmentPath(task: Task, path?: string): string | undefined {
 
 export default function InputAddMenu({
   onClose,
+  contextMode,
   onSelectConsult,
   consultDisabled,
   onAttachFile,
@@ -238,14 +240,14 @@ export default function InputAddMenu({
   // 直接订阅整棵 tasks，避免仅依赖 artifacts 引用导致偶发不同步
   const tasks = useAppStore((s) => s.tasks);
   const spaces = useAppStore((s) => s.spaces);
-  const activeTaskId = useAppStore((s) => s.activeTaskId);
+  const activeTaskId = useAppStore((s) => contextMode ? null : s.activeTaskId);
   const skills = useAppStore((s) => s.skills);
   const experts = useAppStore((s) => s.experts);
   const connectors = useAppStore((s) => s.connectors);
   const refreshConnectors = useAppStore((s) => s.refreshConnectors);
   const installConnector = useAppStore((s) => s.installConnector);
-  const welcomeMode = useAppStore((s) => s.welcomeMode);
-  const modePresetId = useAppStore((s) => s.modePresetId);
+  const welcomeMode = useAppStore((s) => contextMode ? "working" : s.welcomeMode);
+  const modePresetId = useAppStore((s) => contextMode ? null : s.modePresetId);
   const setPage = useAppStore((s) => s.setPage);
   const hookArtifacts = useActiveTaskArtifacts();
   const [recommendedExpertIds, setRecommendedExpertIds] = useState<string[]>([]);
@@ -715,7 +717,7 @@ export default function InputAddMenu({
     }
   };
 
-  const headerArtifact: Artifact | undefined = hookArtifacts[0] ?? undefined;
+  const headerArtifact: Artifact | undefined = contextMode ? undefined : hookArtifacts[0] ?? undefined;
 
   const portalStyle =
     menuPos != null
@@ -751,6 +753,7 @@ export default function InputAddMenu({
         >
           <IconFolder size={14} /> 本地文件
         </button>
+        {!contextMode && <>
         <button type="button" className="add-menu-flyout-item" onClick={onClose}>
           <IconBook size={14} /> 腾讯文档
         </button>
@@ -760,6 +763,7 @@ export default function InputAddMenu({
         <button type="button" className="add-menu-flyout-item" onClick={onClose}>
           <IconBook size={14} /> 乐享知识库
         </button>
+        </>}
       </div>
     ) : activeSub === "refTask" ? (
       <div
@@ -1274,7 +1278,7 @@ export default function InputAddMenu({
             <IconChevronRight size={14} className="add-menu-chevron" />
           </button>
 
-          <button
+          {onSelectRefTask && <button
             type="button"
             ref={(el) => {
               itemRefs.current.refTask = el;
@@ -1285,9 +1289,9 @@ export default function InputAddMenu({
           >
             <IconList size={15} className="add-menu-item-icon" /> 引用任务
             <IconChevronRight size={14} className="add-menu-chevron" />
-          </button>
+          </button>}
 
-          <button
+          {onSelectRefFile && <button
             type="button"
             ref={(el) => {
               itemRefs.current.ref = el;
@@ -1301,9 +1305,9 @@ export default function InputAddMenu({
               <span className="add-menu-item-count">{refFiles.length}</span>
             )}
             <IconChevronRight size={14} className="add-menu-chevron" />
-          </button>
+          </button>}
 
-          {welcomeMode !== "general" && <button
+          {onSelectExternalAgent && welcomeMode !== "general" && <button
             type="button"
             ref={(el) => {
               itemRefs.current.externalAgent = el;

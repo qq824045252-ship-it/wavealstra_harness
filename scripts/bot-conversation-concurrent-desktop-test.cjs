@@ -16,6 +16,30 @@ app.whenReady().then(async () => {
     const evaluate = code => win.webContents.executeJavaScript(code);
     const wait = async code => { const end = Date.now()+8000; while (!await evaluate(code)) { if(Date.now()>end) throw Error('timeout: '+code); await new Promise(r=>setTimeout(r,40)); } };
     await wait('Boolean(window.concurrentFixture)');
+    await wait(`!document.querySelector('[aria-label="选择 Bot 模型"]').disabled`);
+    assert.equal(await evaluate(`Boolean(document.querySelector('[aria-label="增强提示词"]'))`),false,'empty draft hides enhance');
+    await evaluate(`document.querySelector('[aria-label="选择 Bot 模型"]').click()`);
+    await wait(`document.querySelector('[aria-label="Bot 模型列表"]')`);
+    await evaluate(`[...document.querySelectorAll('[role="option"]')].find(e=>e.textContent.includes('Model B')).click()`);
+    await evaluate(`window.concurrentFixture.draft('请优化这句话')`);
+    await wait(`document.querySelector('[aria-label="增强提示词"]')`);
+    await evaluate(`document.querySelector('[aria-label="增强提示词"]').click()`);
+    await wait(`document.querySelector('[aria-label="增强中…"]')`);
+    await evaluate(`window.concurrentFixture.resolveEnhance('优化后的输入')`);
+    await wait(`document.querySelector('textarea').value==='优化后的输入'`);
+    await evaluate(`document.querySelector('[aria-label="恢复原文"]').click()`);
+    await wait(`document.querySelector('textarea').value==='请优化这句话'`);
+    for (const [category, item] of [['专家','Fixture expert'],['技能','Fixture skill'],['MCP','fixture-mcp']]) {
+      await evaluate(`document.querySelector('[aria-label="添加"]').click()`);
+      await wait(`document.querySelector('.add-menu')`);
+      await evaluate(`[...document.querySelectorAll('.add-menu-item')].find(e=>e.textContent.trim()===${JSON.stringify(category)}).click()`);
+      await wait(`[...document.querySelectorAll('.add-menu-flyout-item')].some(e=>e.textContent.includes(${JSON.stringify(item)}))`);
+      await evaluate(`[...document.querySelectorAll('.add-menu-flyout-item')].find(e=>e.textContent.includes(${JSON.stringify(item)})).click()`);
+    }
+    await evaluate(`document.querySelector('[aria-label="添加"]').click()`);
+    await evaluate(`[...document.querySelectorAll('.add-menu-item')].find(e=>e.textContent.trim()==='连接器').click()`);
+    await wait(`document.querySelector('.add-menu-connect-btn')`);
+    await evaluate(`document.querySelector('.add-menu-connect-btn').click()`);
     for (const text of ['A 查天气', 'B 算术', 'C 写文档']) {
       await evaluate(`window.concurrentFixture.draft(${JSON.stringify(text)})`);
       await wait(`!document.querySelector('[aria-label="发送消息"]').disabled`);
@@ -23,6 +47,7 @@ app.whenReady().then(async () => {
     }
     await wait('window.concurrentFixture.requests.length===3');
     assert.equal(await evaluate(`document.querySelector('textarea').value`), '');
+    assert.deepEqual(await evaluate('window.concurrentFixture.requests[0].selection'),{modelId:'model-b',expertId:'fixture-expert',skillIds:['fixture-skill'],mcpIds:['fixture-mcp'],connectorIds:['fixture-connector']});
     await evaluate('window.concurrentFixture.acknowledge(1);window.concurrentFixture.acknowledge(2);window.concurrentFixture.acknowledge(0)');
     await wait('!document.querySelector(".bot-pending-request")');
     await evaluate('window.concurrentFixture.answer(1,"B = 4",12,"completed");window.concurrentFixture.answer(0,"A 正在查",11,"running")');
