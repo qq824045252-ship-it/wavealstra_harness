@@ -24,8 +24,11 @@ export function applyCompletionDecision(options: WorkCompletionOptions, binding:
   }
   // A legacy "please accept" marker is not a user-information requirement.
   // Only a real result review may decide it is unnecessary; never clear unknown effects here.
+  const reviewedTurn = db.prepare("SELECT context_json FROM work_completion_turns WHERE binding_id=?").get(binding.bindingId) as {context_json:string}|undefined;
+  const reviewedQuestions: Array<{blockerId:string;reason:string}> = reviewedTurn ? JSON.parse(reviewedTurn.context_json).pendingQuestions ?? [] : [];
   if (decision.decision !== "ask") for (const blocker of works.repo.listOpenBlockers(work.workId)) {
-    if (blocker.kind === "operational" && blocker.waitingForUserInput && !blocker.unknownExternalEffectRef)
+    if (blocker.kind === "operational" && blocker.waitingForUserInput && !blocker.unknownExternalEffectRef
+      && reviewedQuestions.some(question => question.blockerId === blocker.blockerId && question.reason === blocker.reason))
       works.repo.clearBlocker(blocker.blockerId, work.workId, Date.now());
   }
   // Semantic follow-up items are resolved by this exact follow-up result review,

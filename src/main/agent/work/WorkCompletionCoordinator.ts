@@ -47,6 +47,11 @@ export class WorkCompletionCoordinator {
   private row(bindingId: string): CompletionTurn | undefined {
     return this.options.db.prepare("SELECT * FROM work_completion_turns WHERE binding_id=?").get(bindingId) as CompletionTurn | undefined;
   }
+  private questions(workId: string) {
+    return this.options.works.repo.listOpenBlockers(workId)
+      .filter(item => item.waitingForUserInput && item.kind === "operational" && !item.unknownExternalEffectRef)
+      .map(item => ({blockerId:item.blockerId,reason:item.reason})).sort((a,b)=>a.blockerId.localeCompare(b.blockerId));
+  }
   private current(bindingId: string) { return this.options.works.automaticCompletion.outcome(bindingId); }
   private async process(bindingId: string): Promise<void> {
     const { works, db } = this.options;
@@ -68,7 +73,8 @@ export class WorkCompletionCoordinator {
         executionFacts: { status: binding.status, outputReceived: candidate.executionDelivered,
           diagnosticSummary: candidate.summary },
         criteria: candidate.work.criteria,
-        pendingQuestions: works.repo.listOpenBlockers(binding.workId).filter(item => item.waitingForUserInput).map(item => item.reason),
+        continuationScope: binding.delegatedScope,
+        pendingQuestions: this.questions(binding.workId),
         actualMissing: works.partialResults.gaps(binding.workId).map(item => ({task:item.task, summary:item.summary, outcome:item.outcome})),
         unknownEffects: works.repo.listAdmissions(binding.workId).filter(item => item.state === "unknown").map(item => item.operationId),
       }));
@@ -90,9 +96,11 @@ export class WorkCompletionCoordinator {
         const latestResults = works.repo.listDeliverables(binding.workId).filter(item => item.executionId === bindingId && item.status !== "superseded")
           .map(item => ({summary:item.summary,artifactRefs:item.artifactRefs,uncoveredScope:item.uncoveredScope}));
         const frozen = JSON.parse(row.context_json);
-        if (JSON.stringify(latestResults) !== JSON.stringify(frozen.results)) {
+        const pendingQuestions = this.questions(binding.workId);
+        if (JSON.stringify(latestResults) !== JSON.stringify(frozen.results)
+          || JSON.stringify(pendingQuestions) !== JSON.stringify(frozen.pendingQuestions ?? [])) {
           db.prepare("UPDATE work_completion_turns SET context_json=?,decision_json=NULL,state='queued',retry_at=0 WHERE binding_id=?")
-            .run(JSON.stringify({...frozen,results:latestResults,actualMissing:current.conclusion === "succeeded" ? [] : [current.summary]}),bindingId);
+            .run(JSON.stringify({...frozen,results:latestResults,pendingQuestions,actualMissing:current.conclusion === "succeeded" ? [] : [current.summary]}),bindingId);
           return; // A late result must not be guided by a decision on older evidence.
         }
         db.prepare("UPDATE work_completion_turns SET decision_json=?,error=NULL WHERE binding_id=?").run(JSON.stringify(decision), bindingId);

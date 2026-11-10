@@ -39,7 +39,7 @@ export class BotWorkResultTurn {
 pendingQuestions 和旧 constraints 里“请老板验收/采纳/确认结束”是历史工作流提示，不是用户新要求。必须自己核对成果，不能因为它们存在就 ask；只有真正缺少用户独有且完成原委托不可缺的信息才 ask。
 完成判定必须以用户真正委托为边界。例如用户让测试项目并列出bug，找出缺陷并交付报告就是完成，不要求修复缺陷；测试报告主动声明未做的额外验证不能凭空成为必做项。criteria处于pending只说明没有走人工验收，不证明成果缺失。executionFacts.diagnosticSummary是保守诊断而非目标失败判决。unknownEffects只代表某个历史工具回执未知，不自动否定后续已交付的成果；必须判断是否影响原目标所要求的事实，不能伪造该工具的成功或重放该动作。如报告已按要求完成、未知动作与交付无关，outcome可为completed并如实保留必要局限；若用户要求的发送/写入等效果本身无法核实，必须unknown或partial。
 返回一个 JSON 对象，不要代码块：{"decision":"deliver|continue|ask","outcome":"completed|partial|unknown","reply":"给用户的清晰结果或下一步，含具体成果、局限和可用文件说明，不要原样倾倒调试日志","missing":[{"task":"确实缺少且尚未执行的原请求部分","requestExcerpt":"原始请求中逐字存在的对应要求"}]}。
-outcome必须明确标注原目标是否完成：completed仅有充分实际结果，partial为已知缺项或失败，unknown为无法核实；不得因进程completed而填completed。deliver：已足够回答，或无可靠办法继续；直接交付，不追问验收，失败/不确定须如实写明。continue：还缺原请求中明确的一部分且可独立继续，只补该部分、不重复已做写入/发送/发布，reply说明已获得什么和接下来补什么。已有未知外部效果不得重做；无法区分是否发生就deliver说明。ask：只限缺少用户独有的必要信息，reply问一个具体问题；工具失败、权限、内部版本、验收不是ask理由。非continue时missing必须空数组。不要复述内部workId/bindingId/状态枚举。` });
+outcome必须明确标注原目标是否完成：completed仅有充分实际结果，partial为已知缺项或失败，unknown为无法核实；不得因进程completed而填completed。deliver：已足够回答，或无可靠办法继续；直接交付，不追问验收，失败/不确定须如实写明。continue：还缺原请求中明确的一部分且可在continuationScope内独立继续（只读范围不能安排写文件），只补该部分、不重复已做写入/发送/发布，reply说明已获得什么和接下来补什么。已有未知外部效果不得重做；无法区分是否发生就deliver说明。ask：只限缺少用户独有的必要信息，reply问一个具体问题；工具失败、权限、内部版本、验收不是ask理由。非continue时missing必须空数组。不要复述内部workId/bindingId/状态枚举。` });
     this.active.set(input.eventId, runtime);
     let timeout: ReturnType<typeof setTimeout> | undefined;
     try {

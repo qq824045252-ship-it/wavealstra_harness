@@ -42,8 +42,11 @@ let failReview = false;
 let reviewPartial = false;
 let reviewContinue = false;
 let lateResultWork: string | undefined;
+let lateQuestionWork: string | undefined;
 const coordinator = new WorkCompletionCoordinator({ db: db.connection, works, isAuthority: () => authority,
   review: async input => { reviewed.push(input.eventId); if (failReview) throw Error("model unavailable");
+    if (lateQuestionWork) { works.repo.insertBlocker({blockerId:"late-question",workId:lateQuestionWork,kind:"operational",reason:"必须提供收件人",waitingForUserInput:true,status:"open",createdAt:Date.now()}); lateQuestionWork=undefined; }
+    if ((input.context.pendingQuestions as Array<{blockerId:string}>|undefined)?.some(item=>item.blockerId === "late-question")) return {decision:"ask",outcome:"partial",reply:"必须提供收件人",missing:[]};
     if (input.context.title === "waiting-input") return {decision:"ask",outcome:"partial",reply:"已交付请求的文字方案；收件人是谁？",missing:[]};
     if (lateResultWork) { db.connection.prepare("UPDATE work_deliverables SET summary=summary || ' 后到证据' WHERE work_id=?").run(lateResultWork); lateResultWork=undefined; }
     if (reviewContinue && ["continue-required","team-review-followup"].includes(String(input.context.title))) { reviewContinue=false; return {decision:"continue",outcome:"partial",reply:"已完成第一部分，补充剩余内容",missing:[{task:"补充剩余内容",requestExcerpt:String(input.context.title)}]}; }
@@ -150,6 +153,12 @@ try {
   const late = create("late-result"); await flush(); lateResultWork=late; states.set(late,"completed"); await flush();
   assert.equal(works.getWork(late)?.lifecycle,"active","old result decision cannot close changed evidence");
   await flush(); assert.equal(works.getWork(late)?.lifecycle,"closed","changed result is reviewed in a new generation");
+  const questionRace=create("late-user-question"); await flush(); lateQuestionWork=questionRace; states.set(questionRace,"completed"); await flush();
+  assert.equal(works.getWork(questionRace)?.lifecycle,"active","a stale review cannot clear a new user-information question");
+  assert.equal(works.repo.listOpenBlockers(questionRace).length,1);
+  await flush();
+  assert.equal(works.getWork(questionRace)?.lifecycle,"active","fresh model review retains genuine question");
+
   const partial = create("review-partial"); await flush(); reviewPartial=true; states.set(partial,"completed"); await flush(); reviewPartial=false;
   assert.equal(works.getWork(partial)?.closureConclusion,"ended_unsuccessfully","model's partial finding cannot be relabeled success");
   const continuation = create("continue-required"); await flush(); reviewContinue=true; states.set(continuation,"completed"); await flush();
