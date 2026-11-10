@@ -552,11 +552,15 @@ assert(reportHtml.indexOf("合计 42 元") < reportHtml.indexOf("完整原始消
 // Report text has one reading surface, even when the host wraps it in metadata.
 const dedupReport = structuredResult.workFeedback!.report!;
 assert.equal(additionalReportRecord(dedupReport, dedupReport.summary), "");
+assert.equal(additionalReportRecord(dedupReport, `【${dedupReport.title}】\n${dedupReport.summary}`), "", "completion delivery title is not supplemental content");
+assert.equal(additionalReportRecord(dedupReport, `【${dedupReport.title}】\r\n后台成果，结果已返回\r\n${dedupReport.summary}\r\n成果：/snap/hash-report\r\n尚未覆盖：现场验收`), "", "legacy delivery title and status wrappers are already represented");
+assert.equal(additionalReportRecord(dedupReport, `【${dedupReport.title}】\n${dedupReport.summary}\n独有证据：31 字节`), "独有证据：31 字节");
+assert.equal(additionalReportRecord(dedupReport, `【不同任务】\n${dedupReport.summary}`), "【不同任务】", "only the exact current title wrapper can be suppressed");
 assert.equal(additionalReportRecord(dedupReport, `后台成果，结果已返回\n${dedupReport.summary}\n成果：/snap/hash-report\n尚未覆盖：现场验收`), "");
 assert.equal(additionalReportRecord(dedupReport, `后台成果，结果已返回\n${dedupReport.summary}\n额外证据：磁盘回读已完成`), "额外证据：磁盘回读已完成");
 assert.equal(additionalReportRecord(dedupReport, "另一份完整原文"), "另一份完整原文");
 assert.equal(additionalReportRecord(dedupReport, `不是报告正文：${dedupReport.summary}仍需另行处理`), `不是报告正文：${dedupReport.summary}仍需另行处理`, "substring overlap is not equivalence");
-const duplicateMessage = { ...structuredResult, text: `后台成果，结果已返回\n${dedupReport.summary}\n成果：/snap/hash-report\n尚未覆盖：现场验收` };
+const duplicateMessage = { ...structuredResult, text: `【${dedupReport.title}】\n后台成果，结果已返回\n${dedupReport.summary}\n成果：/snap/hash-report\n尚未覆盖：现场验收` };
 const duplicateHtml = renderToStaticMarkup(createElement(BotMessage, { message: duplicateMessage, botName: "Bot", works: [], onOpenWork() {}, onCancel() {} }));
 assert.equal(duplicateHtml.split("合计 42 元").length - 1, 1);
 assert.doesNotMatch(duplicateHtml, /bot-original-report/);

@@ -65,7 +65,12 @@ export function BotResultReport({ message, work, renderMarkdown }: { message: Bo
 
 /** Presentation-only subtraction: never rewrite the persisted message or infer semantic equivalence. */
 export function additionalReportRecord(report: NonNullable<WorkFeedbackDto["report"]>, originalText: string): string {
-  const original = originalText.replace(/\r\n/g, "\n").trim();
+  let original = originalText.replace(/\r\n/g, "\n").trim();
+  // WorkConversationFeedback prefixes every delivered message with the exact
+  // Work title. It is already the card heading, not supplemental evidence.
+  const titlePrefix = `【${report.title}】`;
+  if (original === titlePrefix) return "";
+  if (original.startsWith(`${titlePrefix}\n`)) original = original.slice(titlePrefix.length + 1).trim();
   const displayed = (report.structured?.conclusions.map(item => item.text).join("\n") ?? report.summary).replace(/\r\n/g, "\n").trim();
   if (!original || original === displayed) return "";
   // Structured projections may omit JSON fields; keep their source intact.
