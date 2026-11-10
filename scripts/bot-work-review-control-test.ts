@@ -54,6 +54,36 @@ function check(name: string, fn: () => void): void {
 }
 
 try {
+  check("facade extraction preserves replay, read-only projection and outer transaction atomicity", () => {
+    const work = create(); const binding = dispatch(work.workId);
+    const params = { operationId: operation(), workId: work.workId, bindingId: binding.bindingId,
+      deliverableId: operation(), summary: "抽取边界真实持久化", evidence: [{ kind: "inspection" as const,
+        sourceRef: "test:facade-boundary", criterionIds: ["check"], detail: "verified" }] };
+    const snapshot = () => {
+      const tables = db.connection.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'work_%' ORDER BY name").all() as { name: string }[];
+      return tables.map(({ name }) => [name, db.connection.prepare(`SELECT * FROM "${name}" ORDER BY rowid`).all()]);
+    };
+    // A receipt write failure must roll back deliverable/evidence/work/outbox as one unit.
+    const before = snapshot(); const saveReceipt = service.repo.saveReceipt.bind(service.repo);
+    service.repo.saveReceipt = () => { throw new Error("boundary receipt write failure"); };
+    try { assert.throws(() => service.submitDeliverable(worker(binding), params), /boundary receipt write failure/); }
+    finally { service.repo.saveReceipt = saveReceipt; }
+    assert.deepEqual(snapshot(), before);
+    unwrap(service.submitDeliverable(worker(binding), params));
+    const submitted = snapshot();
+    const replay = service.submitDeliverable(worker(binding), params);
+    assert(replay.ok && replay.replayed);
+    assert.deepEqual(snapshot(), submitted, "submission replay creates no facts/outbox/receipts");
+    const acceptance = { operationId: operation(), workId: work.workId, deliverableId: params.deliverableId };
+    unwrap(service.acceptDeliverable(user, acceptance));
+    const accepted = snapshot();
+    const acceptedReplay = service.acceptDeliverable(user, acceptance);
+    assert(acceptedReplay.ok && acceptedReplay.replayed);
+    assert.deepEqual(snapshot(), accepted, "acceptance replay creates no extra semantic cards or receipts");
+    const projection = service.getProjection(work.workId);
+    assert.deepEqual(service.getProjection(work.workId), projection);
+    assert.deepEqual(snapshot(), accepted, "projection builder must not write any Work facts");
+  });
   check("archive/deletion retains evidence, persists, rejects running work and never claims success", () => {
     const manage = (workId: string, action: "archive" | "delete" | "restore", actor = user) => reviewWork(service, actor, { kind: "manage_archive", request: { workId, action, operationId: operation() } });
     const active = create(); const binding = dispatch(active.workId);

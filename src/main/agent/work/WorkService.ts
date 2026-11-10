@@ -1,5 +1,7 @@
+import type { Fail, Mutation, ResolvedActor } from "./WorkControlTypes";
+import { WorkProjectionBuilder } from "./WorkProjectionBuilder";
+import { submitDeliverableMutation, acceptDeliverableMutation, rejectDeliverableMutation, recordUserFeedbackMutation, attestCriteriaMutation } from "./WorkDeliverableMutations";
 import { WorkRecordArchive } from "./WorkRecordArchive";
-import { projectDeliverableReport } from "./WorkReportPresentation";
 import { recordWorkDelivery } from "./WorkDeliveryTargets";
 import { WorkAutomaticCompletion } from "./WorkAutomaticCompletion";
 import { isScheduledFollowUp, scheduledFollowUpCurrent } from "./WorkScheduledFollowUp";
@@ -72,14 +74,13 @@ import {
   WORK_MAX_PARTICIPANTS,
   assertNoActorField,
   canonicalControlInput,
-  criterionNeedsEnvironment,
   intersectAuthorization,
   isCriterionResolved,
   isRequiredCriterion,
   minimumAuthorization,
 } from "../../../shared/bot-work";
 import type { BotDto } from "../../../shared/bot-work";
-import type { WorkSubscriptionMonitorDto, WorkPhase4ControlRequest, WorkPhase4ControlResult } from "../../../shared/bot-work-phase4";
+import type { WorkPhase4ControlRequest, WorkPhase4ControlResult } from "../../../shared/bot-work-phase4";
 import { phase4ControlRequestSchema } from "../../../shared/bot-work-phase4";
 import { BotRegistry } from "./BotRegistry";
 import { WorkTeamService } from "./WorkTeamService";
@@ -112,18 +113,8 @@ export interface WorkServiceOptions {
   /** Only the authoritative host may create control instructions (F14 / BW-A13). */
   isAuthority?: () => boolean;
 }
-type Fail = { ok: false; code: WorkControlErrorCode; message: string; latestWorkSnapshot?: WorkDto };
-type Mutation = { ok: true; outboxEventId?: string } | Fail;
-interface ResolvedActor {
-  userId: string;
-  kind: WorkActor["kind"];
-  bot?: BotDto;
-  grants: WorkAuthorizationDto;
-  binding?: WorkExecutionBindingDto;
-}
 const TERMINAL_BINDING_STATUSES = new Set<WorkExecutionStatus>(["completed", "failed", "stopped", "invalidated"]);
 const UNSETTLED_BINDING_STATUSES = new Set<WorkExecutionStatus>(["pending", "submitted", "running", "unknown"]);
-const EXECUTION_EVIDENCE_KINDS = new Set<WorkEvidenceKind>(["automated_test", "tool_receipt", "inspection", "artifact"]);
 export class WorkService {
   readonly automaticCompletion: WorkAutomaticCompletion;
   readonly teams: WorkTeamService;
@@ -253,97 +244,16 @@ export class WorkService {
   }
 
   private project(work: WorkDto): WorkProjectionDto {
-    const deliverables = this.repo.listDeliverables(work.workId);
-    const blockers = this.repo.listBlockers(work.workId).map(blocker => {
-      const legacyUserInput = legacyUserInputSource(this.db, work, blocker);
-      return legacyUserInput ? { ...blocker, legacyUserInput } : blocker;
-    });
-    const executions = this.repo.listBindings(work.workId);
-    const notifications = this.repo.listNotifications(work.workId).map(notification => ({ ...notification, ...this.notifications.identity(notification.notificationId) }));
-    const subscriptions = this.repo.listSubscriptions(work.workId);
-    const currentResultIds = new Set(currentAcceptedDeliverableIds(work, deliverables, executions));
-    const unresolved = work.criteria.filter((criterion) => isRequiredCriterion(criterion) && !isCriterionResolved(criterion));
-    const uncoveredScope = [...new Set(deliverables
-      .filter((deliverable) => currentResultIds.has(deliverable.deliverableId))
-      .flatMap((deliverable) => deliverable.uncoveredScope))];
-    const nextSteps: string[] = [];
-    if (work.lifecycle === "closing") nextSteps.push("等待在途执行结束");
-    const settlingActions = this.repo.listAdmissions(work.workId).filter(item => item.state === "admitted").length;
-    const gaps = this.partialResults.gaps(work.workId);
-    if (work.lifecycle === "paused") nextSteps.push(settlingActions ? "已暂停，正在结算在途操作" : "事项已暂停，恢复后继续");
-    if (gaps.length) nextSteps.push(`保留已确认成果，仍有 ${gaps.length} 项必要缺口待核对：未执行动作可关联后续证据覆盖，其余缺口按原身份处理`);
-    if (work.lifecycle !== "closed") {
-      for (const blocker of blockers.filter((item) => item.status === "open" && item.waitingForUserInput)) {
-        nextSteps.push(`需要你的决定：${blocker.reason}`);
-      }
-      const realEnvironment = unresolved.filter(criterion => criterionNeedsEnvironment(criterion));
-      if (realEnvironment.length > 0) {
-        nextSteps.push(`等待实测反馈：${realEnvironment.map(criterion => criterion.text).join("、")}`);
-      }
-      const pendingText = unresolved.filter(criterion => !criterionNeedsEnvironment(criterion));
-      if (pendingText.length > 0) nextSteps.push(`待验收：${pendingText.map(criterion => criterion.text).join("、")}`);
-      const hasCurrentExecution = executions.some(binding => UNSETTLED_BINDING_STATUSES.has(binding.status)
-        && binding.invalidatedAt === undefined && binding.intentRevision === work.intentRevision
-        && binding.inputSnapshotId === work.inputSnapshotId);
-      const hasPendingResult = deliverables.some(deliverable => deliverable.status === "proposed"
-        && deliverable.intentRevision === work.intentRevision && deliverable.inputSnapshotId === work.inputSnapshotId);
-      if (currentResultIds.size === 0 && !hasCurrentExecution && !hasPendingResult) nextSteps.push("安排后台执行");
-    }
-    return {
-      workId: work.workId,
-      title: work.title,
-      mode: work.mode,
-      watchPlan: work.watchRule ? { scheduleBasis: work.watchRule.scheduleBasis, scheduleRationale: work.watchRule.scheduleRationale } : undefined,
-      lifecycle: work.lifecycle,
-      pendingConclusion: work.pendingConclusion,
-      closureConclusion: work.closureConclusion,
-      closureSummary: work.closureSummary,
-      ownerBotId: work.ownerBotId,
-      team: this.teams?.get(work.workId),
-      archive: this.recordArchive?.get(work.workId),
-      ownerEpoch: work.ownerEpoch,
-      intentRevision: work.intentRevision,
-      sourceVersion: work.sourceVersion,
-      stateVersion: work.stateVersion,
-      inputSnapshotId: work.inputSnapshotId,
-      inputSnapshotBound: work.inputSnapshotId !== "snapshot:unbound",
-      goalSources: work.goalSources,
-      criteria: work.criteria,
-      acceptedDeliverableIds: [...currentResultIds],
-      deliverables: deliverables.map(result => projectDeliverableReport(result, executions, binding => this.repo.reportContext(binding))),
-      generatedArtifacts: this.generatedArtifacts.list(work.workId),
-      historicalGeneratedArtifacts: this.generatedArtifacts.list(work.workId, true).filter(artifact =>
-        !executions.some(binding => binding.bindingId === artifact.bindingId
-          && binding.intentRevision === work.intentRevision && binding.inputSnapshotId === work.inputSnapshotId)),
-      runtimeObservations: this.runtimeObservations.forWork(work.workId),
-      blockers,
-      executions,
-      notifications,
-      cards: this.cards.list(work),
-      subscriptionIds: subscriptions.map(subscription => subscription.subscriptionId),
-      phase4: {
-        subscriptions: this.projectSubscriptions(work),
-        offlineGaps: this.scheduler.gaps(work.workId),
-        causal: this.causal.list(work.workId, 10).map(item => ({ chainId: item.chain_id, rootEventId: item.root_event_id,
-          parentChainId: item.parent_chain_id ?? undefined, originWorkId: item.origin_work_id,
-          targetWorkId: item.target_work_id, depth: item.depth, hops: item.hops,
-          dispatchCount: item.dispatch_count, decision: item.decision,
-          reasonCode: item.reason_code ?? undefined, createdAt: item.created_at })),
-        deadlineAt: work.deadlineAt, deadlineRevision: work.deadlineRevision,
-        host: this.scheduler.hostState(),
-      },
-      phase3: {
-        subitems: this.partialResults.list(work.workId), continuations: this.partialResults.plans(work.workId),
-        gaps, settlingActions, pausedEventCount: this.pausedBacklog.count(work.workId),
-        artifactSnapshotId: this.artifacts.currentSnapshotId(work.workId),
-        handoffs: this.collaboration.history(work.workId).filter(message => message.kind === "handoff"),
-        collaborationMessages: this.collaboration.history(work.workId),
-      },
-      uncoveredScope,
-      nextSteps,
-      updatedAt: work.updatedAt,
-      closedAt: work.closedAt,
-    };
+    return new WorkProjectionBuilder({
+      repo: this.repo,
+      legacyUserInput: (source, blocker) => legacyUserInputSource(this.db, source, blocker),
+      notifications: this.notifications, partialResults: this.partialResults,
+      teams: this.teams, recordArchive: this.recordArchive,
+      generatedArtifacts: this.generatedArtifacts, runtimeObservations: this.runtimeObservations,
+      cards: this.cards, scheduler: this.scheduler, causal: this.causal,
+      pausedBacklog: this.pausedBacklog, artifacts: this.artifacts,
+      collaboration: this.collaboration, ingress: this.ingress,
+    }).build(work);
   }
 
   // ================================================================ create
@@ -1321,6 +1231,14 @@ export class WorkService {
     });
   }
 
+  private deliverableMutationDeps() {
+    return {
+      repo: this.repo, collaboration: this.collaboration, artifacts: this.artifacts, phase5: this.phase5,
+      emitCurrentProjection: (workId: string) => this.emitCurrentProjection(workId),
+      outbox: (params: Parameters<WorkService["outbox"]>[0]) => this.outbox(params),
+    };
+  }
+
   submitDeliverable(actor: WorkActor, params: SubmitDeliverableParams): WorkControlResult {
     const resolved = this.resolveActor(actor);
     if (typeof resolved === "string") return { ok: false, code: "unauthorized_actor", message: resolved };
@@ -1342,84 +1260,9 @@ export class WorkService {
           work, outboxEventId: receipt.outbox_event_id ?? undefined,
         };
       }
-      const binding = this.repo.getBinding(params.bindingId);
-      if (!binding || binding.workId !== work.workId) {
-        return { ok: false, code: "unauthorized_actor", message: "提交成果必须绑定本事项的有效执行" };
-      }
-      if (resolved.kind === "worker" && resolved.binding?.bindingId !== binding.bindingId) {
-        return { ok: false, code: "unauthorized_actor", message: "worker 只能提交自己执行的成果" };
-      }
-      if (resolved.kind === "bot" && resolved.bot?.botId !== binding.botId && resolved.bot?.botId !== work.ownerBotId) {
-        return { ok: false, code: "unauthorized_actor", message: "该 Bot 没有这次执行的委派" };
-      }
-      const pendingAdoption = this.collaboration.isDelegationPending(binding, work);
-      if (pendingAdoption && (work.lifecycle === "active" || work.lifecycle === "paused")) {
-        return { ok: false, code: "epoch_mismatch", message: "当前负责人尚未接管此执行委派；接管后可重试成果提交，当前输入未作废" };
-      }
-      // A late result from an invalidated/unknown execution is still recorded, but with
-      // the binding's own revision/snapshot as a historical deliverable (R04/R06).
-      const now = this.now();
-      const stale = pendingAdoption || binding.intentRevision !== work.intentRevision || binding.inputSnapshotId !== work.inputSnapshotId
-        || binding.invalidatedAt !== undefined || binding.status === "invalidated";
-      const deliverableId = params.deliverableId?.trim() || newId("deliverable");
-      const evidenceIds: string[] = [];
-      const evidenceRows: WorkEvidenceDto[] = [];
-      for (const input of params.evidence ?? []) {
-        if (!EXECUTION_EVIDENCE_KINDS.has(input.kind) || input.kind === "real_environment") {
-          return { ok: false, code: "invalid_request", message: "执行结果只能记录自动化/工具/检查类证据，实测反馈必须由用户或宿主提供" };
-        }
-        if (!input.sourceRef?.trim()) {
-          return { ok: false, code: "invalid_request", message: "证据必须带可追溯来源" };
-        }
-        const evidenceId = newId("evidence");
-        evidenceIds.push(evidenceId);
-        evidenceRows.push({
-          evidenceId,
-          workId: work.workId,
-          deliverableId,
-          executionId: binding.bindingId,
-          criterionIds: input.criterionIds ?? [],
-          kind: input.kind,
-          provenance: "execution",
-          sourceRef: input.sourceRef,
-          sourceSha: input.sourceSha,
-          inputSnapshotId: binding.inputSnapshotId,
-          environment: input.environment,
-          intentRevision: binding.intentRevision,
-          detail: input.detail,
-          recordedAt: now,
-        });
-      }
-      const deliverable: WorkDeliverableDto = {
-        deliverableId,
-        workId: work.workId,
-        producerBotId: binding.botId,
-        executionId: binding.bindingId,
-        intentRevision: binding.intentRevision,
-        ownerEpoch: binding.ownerEpoch,
-        inputSnapshotId: binding.inputSnapshotId,
-        status: stale ? "superseded" : "proposed",
-        // This is the authoritative result relayed to the originating Bot chat,
-        // not a card preview. Truncation can remove caveats, sources and images.
-        summary: params.summary.trim(),
-        artifactRefs: normalizeTexts(params.artifactRefs),
-        evidenceRefs: evidenceIds,
-        uncoveredScope: normalizeTexts(params.uncoveredScope),
-        uncoveredCriterionIds: params.uncoveredCriterionIds
-          ?? (params.hasWriteConflicts ? work.criteria.map(criterion => criterion.id) : []),
-        isSpeculation: Boolean(params.isSpeculation),
-        hasWriteConflicts: Boolean(params.hasWriteConflicts),
-        createdAt: now,
-      };
-      this.repo.insertDeliverable(deliverable);
-      for (const evidence of evidenceRows) this.repo.insertEvidence(evidence);
-      const next: WorkDto = { ...work, stateVersion: work.stateVersion + 1, updatedAt: now };
-      this.repo.updateWork(next);
-      const outboxEventId = this.outbox({
-        work: next, eventType: stale ? "work.deliverable_historical" : "work.deliverable_proposed",
-        operationId: params.operationId, bindingId: binding.bindingId,
-        payload: { deliverableId, intentRevision: binding.intentRevision, stale },
-      });
+      const mutation = submitDeliverableMutation(this.deliverableMutationDeps(), work, resolved, params, () => this.now());
+      if (!mutation.ok) return mutation;
+      const { work: next, outboxEventId, now } = mutation;
       this.repo.saveReceipt({
         userId: resolved.userId, operationId: params.operationId, workId: work.workId,
         operationType: "submitDeliverable", payloadHash, workSnapshot: next, outboxEventId, now,
@@ -1434,158 +1277,13 @@ export class WorkService {
     const artifactInspection = this.artifacts.capture(params.workId);
     return this.runWorkControl(actor, "acceptDeliverable", params, {
       guard: "full", ownerOnly: false, allowLifecycles: ["active", "paused", "closing"],
-    }, (work, resolved, now) => {
-      if (!this.artifacts.validate(artifactInspection, now)) {
-        this.emitCurrentProjection(work.workId);
-        return { ok: false, code: "version_conflict", message: "产物版本发生变化，已保留历史成果并重新打开相关验收项" };
-      }
-
-      if (!this.isOwnerOrUser(work, resolved)) {
-        return { ok: false, code: "unauthorized_actor", message: "仅当前主负责人或用户可验收成果" };
-      }
-      const deliverable = this.repo.getDeliverable(params.deliverableId);
-      if (!deliverable || deliverable.workId !== work.workId) {
-        return { ok: false, code: "not_found", message: "找不到成果记录" };
-      }
-      if (deliverable.status === "superseded") return { ok: false, code: "version_conflict", message: "历史成果需要重新核验，不能直接验收" };
-      if (deliverable.status === "accepted") {
-        return { ok: false, code: "invalid_request", message: "成果已采纳；重试请使用原操作 ID" };
-      }
-      if (deliverable.isSpeculation) {
-        return { ok: false, code: "speculation_not_acceptable", message: "未经确认的推测不能成为已确认事实" };
-      }
-      if (deliverable.hasWriteConflicts && !params.partialAcceptance) {
-        return { ok: false, code: "unmet_acceptance_criteria", message: "成果包含被阻止的必需写入，补齐前不能验收" };
-      }
-      if (params.partialAcceptance && (!params.partialAcceptance.reason?.trim()
-        || (params.criterionUpdates ?? []).some(update => !params.partialAcceptance!.criterionIds.includes(update.criterionId)))) {
-        return { ok: false, code: "invalid_request", message: "部分采纳必须记录依据，且只能核验明确覆盖的验收项" };
-      }
-      const binding = this.repo.getBinding(deliverable.executionId);
-      if (!binding || binding.workId !== work.workId) {
-        return { ok: false, code: "not_found", message: "成果缺少有效执行来源" };
-      }
-      if (binding.invalidatedAt || binding.status === "invalidated") {
-        return { ok: false, code: "version_conflict", message: "执行已被新要求失效，不能按当前成果验收" };
-      }
-      if (!this.collaboration.isDelegationAdopted(binding, work)) {
-        return { ok: false, code: "epoch_mismatch", message: "当前负责人尚未接管此执行委派，不能验收成果" };
-      }
-      if (deliverable.intentRevision !== work.intentRevision) {
-        return {
-          ok: false, code: "version_conflict",
-          message: `成果基于要求 r${deliverable.intentRevision}，当前为 r${work.intentRevision}；保留为历史证据`,
-        };
-      }
-      if (deliverable.inputSnapshotId !== work.inputSnapshotId) {
-        return {
-          ok: false, code: "version_conflict",
-          message: "成果基于旧的输入快照，不能确认当前目标",
-        };
-      }
-      const waivers = new Map((params.waivers ?? []).map((waiver) => [waiver.criterionId, waiver]));
-      if (waivers.size > 0 && resolved.kind !== "user") {
-        return { ok: false, code: "unauthorized_actor", message: "只有用户可以豁免必要验收条件" };
-      }
-      const nextCriteria = work.criteria.map(criterion => ({ ...criterion }));
-      for (const update of params.criterionUpdates ?? []) {
-        if (deliverable.uncoveredCriterionIds.includes(update.criterionId)) {
-          return { ok: false, code: "unmet_acceptance_criteria", message: "该验收项仍有未补齐的成果缺口" };
-        }
-        const criterion = nextCriteria.find(item => item.id === update.criterionId);
-        if (!criterion) return { ok: false, code: "not_found", message: `找不到验收条件 ${update.criterionId}` };
-        if (update.evidenceIds.length === 0) {
-          return { ok: false, code: "unmet_acceptance_criteria", message: `验收条件「${criterion.text}」没有依据证据` };
-        }
-        for (const evidenceId of update.evidenceIds) {
-          const evidence = this.repo.getEvidence(evidenceId);
-          if (!evidence || evidence.workId !== work.workId) {
-            return { ok: false, code: "not_found", message: "找不到验收证据" };
-          }
-          if (evidence.provenance === "execution") {
-            return { ok: false, code: "unmet_acceptance_criteria", message: "执行者自述只作为待核验材料，必须使用宿主核对后的证据" };
-          }
-          if (evidence.deliverableId !== deliverable.deliverableId && evidence.executionId !== binding.bindingId) {
-            return { ok: false, code: "unmet_acceptance_criteria", message: "证据不属于该成果或执行" };
-          }
-          if (evidence.intentRevision !== work.intentRevision || evidence.inputSnapshotId !== work.inputSnapshotId) {
-            return { ok: false, code: "version_conflict", message: "证据对应旧要求或旧输入快照，不能确认当前目标" };
-          }
-          if (!evidence.criterionIds.includes(criterion.id)) {
-            return { ok: false, code: "unmet_acceptance_criteria", message: `证据没有覆盖验收条件「${criterion.text}」` };
-          }
-          if (criterionNeedsEnvironment(criterion)) {
-            if (evidence.kind !== "real_environment" || evidence.provenance !== "user") {
-              return {
-                ok: false, code: "unmet_acceptance_criteria",
-                message: `验收条件「${criterion.text}」要求真实环境实测反馈，不能由自动测试或推测代替`,
-              };
-            }
-            if (!evidence.environment?.trim()) {
-              return { ok: false, code: "unmet_acceptance_criteria", message: "实测证据必须注明环境" };
-            }
-            if (criterion.requiredEnvironment
-              && evidence.environment.trim().toLowerCase() !== criterion.requiredEnvironment.trim().toLowerCase()) {
-              return {
-                ok: false, code: "unmet_acceptance_criteria",
-                message: `实测环境 ${evidence.environment} 与要求环境 ${criterion.requiredEnvironment} 不一致`,
-              };
-            }
-          }
-          criterion.evidenceRefs = [...new Set([...criterion.evidenceRefs, evidence.evidenceId])];
-        }
-        criterion.status = "satisfied";
-        criterion.verifiedIntentRevision = criterion.requiredIntentRevision;
-      }
-      for (const waiver of waivers.values()) {
-        const criterion = nextCriteria.find(item => item.id === waiver.criterionId);
-        if (!criterion) return { ok: false, code: "not_found", message: `找不到验收条件 ${waiver.criterionId}` };
-        if (!waiver.reason?.trim()) return { ok: false, code: "invalid_request", message: "豁免必须记录原因" };
-        criterion.status = "waived";
-        criterion.waivedReason = waiver.reason.trim().slice(0, 1000);
-        criterion.waivedByUserId = resolved.userId;
-      }
-      this.repo.updateDeliverableReview(deliverable.deliverableId, {
-        status: "accepted", reviewedAt: now, reviewedByBotId: resolved.bot?.botId ?? `user:${resolved.userId}`,
-      });
-      const next: WorkDto = {
-        ...work,
-        criteria: nextCriteria,
-        acceptedDeliverableIds: [...new Set([...work.acceptedDeliverableIds, deliverable.deliverableId])],
-        progressSummary: params.progressSummary?.trim().slice(0, 2000) || work.progressSummary,
-        stateVersion: work.stateVersion + 1,
-        updatedAt: now,
-      };
-      this.repo.updateWork(next);
-      const outboxEventId = this.outbox({
-        work: next, eventType: "work.deliverable_accepted", operationId: params.operationId,
-        bindingId: binding.bindingId, payload: { deliverableId: deliverable.deliverableId, partialAcceptance: params.partialAcceptance },
-      });
-      // Same transaction: the one card for this accepted outcome. A replay lands on the
-      // same key, so a re-observed result never mints a second card.
-      this.phase5.recordAcceptance(next, deliverable, now);
-      return { ok: true, outboxEventId };
-    });
+    }, (work, resolved, now) => acceptDeliverableMutation(this.deliverableMutationDeps(), work, resolved, params, now, artifactInspection, this.isOwnerOrUser(work, resolved)));
   }
 
   rejectDeliverable(actor: WorkActor, params: RejectDeliverableParams): WorkControlResult {
     return this.runWorkControl(actor, "rejectDeliverable", params, {
       guard: "full", ownerOnly: true, allowLifecycles: ["active", "paused", "closing"],
-    }, (work, _resolved, now) => {
-      const deliverable = this.repo.getDeliverable(params.deliverableId);
-      if (!deliverable || deliverable.workId !== work.workId) {
-        return { ok: false, code: "not_found", message: "找不到成果记录" };
-      }
-      if (deliverable.status !== "proposed") {
-        return { ok: false, code: "invalid_request", message: "只有待验收成果可以拒绝" };
-      }
-      this.repo.updateDeliverableReview(deliverable.deliverableId, {
-        status: "rejected", reviewedAt: now, reviewedByBotId: work.ownerBotId, rejectedReason: params.reason,
-      });
-      const next: WorkDto = { ...work, stateVersion: work.stateVersion + 1, updatedAt: now };
-      this.repo.updateWork(next);
-      return { ok: true };
-    });
+    }, (work, resolved, now) => rejectDeliverableMutation(this.deliverableMutationDeps(), work, resolved, params, now));
   }
 
   // ============================================================ user feedback
@@ -1597,69 +1295,7 @@ export class WorkService {
     const artifactInspection = this.artifacts.capture(params.workId);
     return this.runWorkControl(actor, "recordUserFeedback", params, {
       guard: "full", ownerOnly: false, allowLifecycles: ["active", "paused", "closing"],
-    }, (work, _resolved, now) => {
-      if (!this.artifacts.validate(artifactInspection, now)) {
-        this.emitCurrentProjection(work.workId);
-        return { ok: false, code: "version_conflict", message: "产物版本发生变化，已保留历史成果并重新打开相关验收项" };
-      }
-
-      if (work.userId !== resolved.userId) return { ok: false, code: "not_found", message: "找不到 Work" };
-      if (!params.environment?.trim()) return { ok: false, code: "invalid_request", message: "实测反馈必须注明环境" };
-      if (!params.sourceRef?.trim()) return { ok: false, code: "invalid_request", message: "实测反馈必须注明被测版本" };
-      const inputSnapshotId = params.inputSnapshotId?.trim();
-      if (!inputSnapshotId || inputSnapshotId === "snapshot:unbound") {
-        return { ok: false, code: "invalid_request", message: "实测反馈必须明确绑定被测输入快照，不能默认使用当前版本" };
-      }
-      if (artifactInspection.observed.length && params.artifactSnapshotId !== this.artifacts.snapshotId(artifactInspection))
-        return { ok: false, code: "version_conflict", message: "实测反馈必须绑定被测产物版本，旧产物反馈不能验证当前结果" };
-      const historical = inputSnapshotId !== work.inputSnapshotId;
-      const criteria = work.criteria.map(criterion => ({ ...criterion }));
-      const evidenceId = newId("evidence");
-      const affected: string[] = [];
-      for (const criterionId of params.criterionIds) {
-        const criterion = criteria.find(item => item.id === criterionId);
-        if (!criterion) return { ok: false, code: "not_found", message: `找不到验收条件 ${criterionId}` };
-        if (historical) {
-          affected.push(criterion.id);
-          continue;
-        }
-        if (criterion.requiredEnvironment
-          && criterion.requiredEnvironment.trim().toLowerCase() !== params.environment.trim().toLowerCase()) {
-          return {
-            ok: false, code: "unmet_acceptance_criteria",
-            message: `反馈环境 ${params.environment} 与要求环境 ${criterion.requiredEnvironment} 不一致`,
-          };
-        }
-        criterion.status = params.failed ? "failed" : "satisfied";
-        // Explicit user feedback adopts this check as a user requirement, even
-        // when the initial check was only a model suggestion.
-        delete criterion.origin;
-        criterion.verifiedIntentRevision = criterion.requiredIntentRevision;
-        criterion.evidenceRefs = [...new Set([...criterion.evidenceRefs, evidenceId])];
-        affected.push(criterion.id);
-      }
-      this.repo.insertEvidence({
-        evidenceId,
-        workId: work.workId,
-        criterionIds: affected,
-        kind: "real_environment",
-        provenance: "user",
-        sourceRef: params.sourceRef.trim(),
-        sourceSha: params.sourceSha,
-        inputSnapshotId,
-        environment: params.environment.trim(),
-        intentRevision: work.intentRevision,
-        detail: params.detail,
-        recordedAt: now,
-      });
-      const next: WorkDto = { ...work, criteria, stateVersion: work.stateVersion + 1, updatedAt: now };
-      this.repo.updateWork(next);
-      const outboxEventId = this.outbox({
-        work: next, eventType: "work.user_feedback_recorded", operationId: params.operationId,
-        payload: { evidenceId, failed: params.failed, environment: params.environment, historical },
-      });
-      return { ok: true, outboxEventId };
-    });
+    }, (work, _resolved, now) => recordUserFeedbackMutation(this.deliverableMutationDeps(), work, resolved, params, now, artifactInspection));
   }
 
   /**
@@ -1671,74 +1307,7 @@ export class WorkService {
     const artifactInspection = params.inputSnapshotId !== undefined ? this.artifacts.capture(params.workId) : undefined;
     return this.runWorkControl(actor, "attestCriteria", params, {
       guard: "full", ownerOnly: false, allowLifecycles: ["active", "paused", "closing"],
-    }, (work, resolved, now) => {
-      if (resolved.kind !== "user" || resolved.userId !== work.userId) {
-        return { ok: false, code: "unauthorized_actor", message: "只有用户可以确认验收条件" };
-      }
-      if (params.inputSnapshotId !== undefined && (params.inputSnapshotId !== work.inputSnapshotId
-        || params.inputSnapshotId === "snapshot:unbound" || !artifactInspection
-        || !this.artifacts.validate(artifactInspection, now)
-        || artifactInspection.observed.length > 0 && params.artifactSnapshotId !== this.artifacts.snapshotId(artifactInspection))) {
-        return { ok: false, code: "version_conflict", message: "验收依据的输入或产物已变化，请核对当前版本" };
-      }
-      const criteria = work.criteria.map(criterion => ({ ...criterion }));
-      const evidenceId = newId("evidence");
-      const evidenceCriteria: string[] = [];
-      for (const update of params.criterionUpdates) {
-        const criterion = criteria.find(item => item.id === update.criterionId);
-        if (!criterion) return { ok: false, code: "not_found", message: `找不到验收条件 ${update.criterionId}` };
-        delete criterion.origin;
-        if (update.status === "pending") {
-          criterion.status = "pending";
-          criterion.verifiedIntentRevision = undefined;
-          criterion.evidenceRefs = [];
-          criterion.waivedReason = undefined;
-          criterion.waivedByUserId = undefined;
-          continue;
-        }
-        if (update.status === "waived") {
-          if (!update.evidence?.trim()) return { ok: false, code: "invalid_request", message: "豁免验收条件必须记录原因" };
-          criterion.status = "waived";
-          criterion.waivedReason = update.evidence.trim().slice(0, 1000);
-          criterion.waivedByUserId = resolved.userId;
-          continue;
-        }
-        if (update.status === "met" && criterionNeedsEnvironment(criterion)) {
-          return {
-            ok: false, code: "unmet_acceptance_criteria",
-            message: `验收条件「${criterion.text}」要求注明环境与版本的实测反馈，请在 Bot 模式提交实测结果`,
-          };
-        }
-        criterion.status = update.status === "met" ? "satisfied" : "failed";
-        criterion.verifiedIntentRevision = criterion.requiredIntentRevision;
-        criterion.evidenceRefs = [...new Set([...criterion.evidenceRefs, evidenceId])];
-        evidenceCriteria.push(criterion.id);
-      }
-      if (evidenceCriteria.length > 0) {
-        this.repo.insertEvidence({
-          evidenceId,
-          workId: work.workId,
-          criterionIds: evidenceCriteria,
-          kind: "user_attestation",
-          provenance: "user",
-          sourceRef: `user-attestation:${params.operationId}`,
-          inputSnapshotId: work.inputSnapshotId,
-          intentRevision: work.intentRevision,
-          detail: params.progressSummary
-            ?? params.criterionUpdates.map(update => update.evidence).filter(Boolean).join("; ").slice(0, 2000),
-          recordedAt: now,
-        });
-      }
-      const next: WorkDto = {
-        ...work,
-        criteria,
-        progressSummary: params.progressSummary?.trim().slice(0, 2000) || work.progressSummary,
-        stateVersion: work.stateVersion + 1,
-        updatedAt: now,
-      };
-      this.repo.updateWork(next);
-      return { ok: true };
-    });
+    }, (work, resolved, now) => attestCriteriaMutation(this.deliverableMutationDeps(), work, resolved, params, now, artifactInspection));
   }
 
   // ============================================================== blockers
@@ -2158,26 +1727,6 @@ export class WorkService {
     return { ok: true };
   }
 
-  private projectSubscriptions(work: WorkDto): WorkSubscriptionMonitorDto[] {
-    const host = this.scheduler.hostState();
-    return this.repo.listSubscriptions(work.workId, { includeStopped: true }).map(subscription => {
-      const stats = this.ingress.queueStats(subscription);
-      const cursors = this.ingress.listCursors(subscription.subscriptionId).map(cursor => ({
-        source: cursor.source, targetKey: cursor.targetKey, highestAcceptedVersion: cursor.highestAcceptedVersion,
-        highestConsumedVersion: cursor.highestConsumedVersion, highestFrozenVersion: cursor.highestFrozenVersion,
-        replayCursor: cursor.replayCursor, enumerationWatermark: cursor.enumerationWatermark,
-      }));
-      const status = subscription.stoppedAt !== undefined ? "stopped" as const
-        : work.lifecycle === "paused" ? "paused" as const : work.lifecycle === "closing" ? "closing" as const
-          : host.online ? "online" as const : "offline" as const;
-      return { subscriptionId: subscription.subscriptionId, workId: work.workId, source: subscription.source,
-        targetKey: subscription.sourceTarget, status, catchUpPolicy: subscription.catchUpPolicy,
-        timezone: subscription.timezone, cronExpression: subscription.cronExpression,
-        scheduleRevision: subscription.scheduleRevision ?? 1, configRevision: subscription.configRevision ?? 1,
-        nextWakeAt: subscription.nextWakeAt, lastCheckedAt: subscription.lastCheckedAt,
-        versionMode: subscription.versionMode ?? "readback", queue: stats, cursors };
-    });
-  }
 
   // ================================================================ internal
 
