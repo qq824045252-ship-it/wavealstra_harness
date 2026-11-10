@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { BotMessageDto } from "../src/shared/bot-conversation";
-import { activeBotReply, botMessageStatus, botWorkTimeline, shouldSendBotComposer, workMatchesView, workStatusLabel, workExecutionComplete, workCardExcerpt, workStatus, workSearchText, workMatchesSearch } from "../src/renderer/src/lib/botWorkspacePresentation";
+import { linkedConversationWork, personalBotWork, activeBotReply, botMessageStatus, botWorkTimeline, shouldSendBotComposer, workMatchesView, workStatusLabel, workExecutionComplete, workCardExcerpt, workStatus, workSearchText, workMatchesSearch } from "../src/renderer/src/lib/botWorkspacePresentation";
 import type { BotDto, WorkProjectionDto } from "../src/shared/bot-work";
 import type { WorkResultCardDto } from "../src/shared/bot-work-phase5";
 import Sidebar, { AccountNavigation } from "../src/renderer/src/components/Sidebar";
@@ -176,7 +176,7 @@ const measuredExecutionMetrics=renderToStaticMarkup(createElement(WorkExecutionM
 assert.match(measuredExecutionMetrics,/100 tokens/);assert.match(measuredExecutionMetrics,/20 tokens/);
 const rawExecutionMetrics=renderToStaticMarkup(createElement(WorkExecutionMetrics,{work:{...executed,executions:[{...completeBinding,metrics:{inputTokens:null,totalInputTokens:100,outputTokens:20,cacheReadTokens:90,cacheWriteTokens:null,reportedCalls:1,calls:1,complete:false,observedAt:1,contextTokens:null,contextWindow:1000,contextEstimated:true}}]}}));
 assert.match(rawExecutionMetrics,/总输入/);assert.match(rawExecutionMetrics,/100 tokens/);assert.match(rawExecutionMetrics,/90%/);assert.match(rawExecutionMetrics,/缓存写<\/dt><dd>—/);
-assert.match(measuredExecutionMetrics,/23%/);assert.match(measuredExecutionMetrics,/≈&lt;0.001M/);
+assert.match(measuredExecutionMetrics,/23%/);assert.match(measuredExecutionMetrics,/≈0.000M/);
 assert.match(measuredExecutionMetrics,/原生子调用/);
 assert.equal(workExecutionComplete(executed), true);
 assert.equal(workStatusLabel(executed), "正在核对结果");
@@ -660,3 +660,16 @@ for (const conclusion of ["succeeded", "cancelled", "ended_unsuccessfully", unde
  assert.equal(workMatchesView(ended, "active"), false);
 }
 assert.equal(workMatchesView(executed, "completed"), false);
+
+{
+const work = {workId:"linked",ownerBotId:"owner",team:{members:[]}} as unknown as WorkProjectionDto;
+const message = {...activityMessage,botId:"owner",conversationId:"source",workIds:["linked"]};
+assert(linkedConversationWork(work,[message],"owner",undefined,"source"));
+assert(!personalBotWork(work,"owner"),"inspection does not move team Work into personal list");
+assert(!linkedConversationWork(work,[message],"other",undefined,"source"));
+assert(!linkedConversationWork(work,[message],"owner",undefined,"new-conversation"));
+assert(!linkedConversationWork(work,[message],"owner","different-team","source"));
+assert(!linkedConversationWork(work,[{...message,role:"user"}],"owner",undefined,"source"));
+assert(!linkedConversationWork({...work,team:{...work.team!,removedAt:1}},[message],"owner",undefined,"source"));
+assert(!linkedConversationWork({...work,archive:{archivedAt:1,deletedAt:2}},[message],"owner",undefined,"source"));
+}

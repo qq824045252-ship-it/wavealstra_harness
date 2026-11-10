@@ -22,7 +22,7 @@ import ChatComposer from "@/components/chat/ChatComposer";
 import ChatMarkdown from "@/components/chat/ChatMarkdown";
 import { IconPlus, IconArchive, IconChevronDown, IconArrowUp, IconBot, IconChevronRight, IconListTodo, IconPanel, IconSettings, IconX } from "@/components/common/icons";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
-import { activeBotReply, personalBotWork, botMessageStatus, botWorkTimeline, shouldSendBotComposer, type BotWorkspaceView } from "@/lib/botWorkspacePresentation";
+import { activeBotReply, personalBotWork, linkedConversationWork, botMessageStatus, botWorkTimeline, shouldSendBotComposer, type BotWorkspaceView } from "@/lib/botWorkspacePresentation";
 import { BotWorkBrowser } from "./BotWorkBrowser";
 import { BotWorkDetails } from "./BotWorkDetails";
 import { BotResultReport } from "./BotWorkResult";
@@ -97,9 +97,15 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   const activeBot = identities.find(bot => bot.botId === activeBotId) ?? null;
   const botWorks = useMemo(() => works.filter(work => !work.team?.removedAt && (teamId ? work.team?.teamId === teamId : personalBotWork(work, activeBotId))), [works, activeBotId, teamId]);
   const displayName = activeTeam?.name ?? activeBot?.displayName ?? "Bot";
-  const inlineWork = botWorks.find(work => work.workId === inlineWorkId) ?? null;
-  const selected = botWorks.find(work => work.workId === selectedWorkId) ?? null;
   const messages = activeBotId ? histories[scopeKey]?.messages ?? [] : [];
+  // Lists/counts retain team ownership. A trusted result link in the source
+  // conversation can still open its team's details without moving the Work.
+  const detailWorks = useMemo(() => {
+    const owned = new Set(botWorks.map(work => work.workId));
+    return works.filter(work => owned.has(work.workId) || linkedConversationWork(work, messages, activeBotId, teamId, histories[scopeKey]?.conversationId));
+  }, [works, botWorks, messages, activeBotId, teamId, histories[scopeKey]?.conversationId]);
+  const inlineWork = detailWorks.find(work => work.workId === inlineWorkId) ?? null;
+  const selected = (view === "conversation" ? detailWorks : botWorks).find(work => work.workId === selectedWorkId) ?? null;
   const questionsByRequest = useMemo(() => new Map(messages.filter(item => item.role === "user").map(item => [item.requestId, item])), [messages]);
   const activeReply = activeBotReply(messages);
   const { followLatest, awayFromBottom, pauseFollowing, restoreScroll, followBottom } = useBotThreadScroll(
@@ -205,10 +211,10 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
       } else { setInlineWorkId(null); setInspectorOpen(true); }
       setNavigationNotice("");
     };
-    // Resolve only within the current Bot/team. Never let a late history fetch
+    // Resolve current ownership or an explicit source-conversation result link. Never let a late history fetch
     // open another team's work after navigation or a new conversation.
     requestedWork.current = workId; pendingWorkOpen.current = null;
-    if (botWorks.some(work => work.workId === workId)) { show(); return; }
+    if (detailWorks.some(work => work.workId === workId)) { show(); return; }
     pendingWorkOpen.current = { workId, scope: sourceScope, conversationId: sourceConversation, show };
     setPendingWorkId(workId);
     setIncludeClosed(true); setNavigationNotice("正在读取关联事项…");
@@ -222,9 +228,9 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
     if (requestedWork.current !== pending.workId || pending.scope !== scopeKey ||
       histories[scopeKey]?.conversationId !== pending.conversationId) { pendingWorkOpen.current = null; return; }
     pendingWorkOpen.current = null; setPendingWorkId(null);
-    if (botWorks.some(work => work.workId === pending.workId)) pending.show();
+    if (detailWorks.some(work => work.workId === pending.workId)) pending.show();
     else setNavigationNotice("暂时无法打开此事项，可能已删除或不属于当前对话。");
-  }, [botWorks, allWorksLoaded, scopeKey, histories[scopeKey]?.conversationId, pendingWorkId]);
+  }, [works, botWorks, messages, allWorksLoaded, scopeKey, histories[scopeKey]?.conversationId, pendingWorkId]);
   const changeView = (next: BotWorkspaceView) => {
     requestedWork.current = null; setNavigationNotice("");
     setInlineWorkId(null); setInspectorOpen(false);
@@ -284,7 +290,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
       {workError && <p className="bot-alert" role="alert">{workError}</p>}
       {navigationNotice && <p className="bot-navigation-notice" role="status">{navigationNotice}</p>}
       {inlineWorkId && <BotWorkConversationDetail work={inlineWork} conversationName={displayName}
-        ownerName={inlineWork?.team?.teamId ? displayName : identities.find(bot => bot.botId === inlineWork?.ownerBotId)?.displayName ?? displayName}
+        ownerName={inlineWork?.team?.teamName ?? identities.find(bot => bot.botId === inlineWork?.ownerBotId)?.displayName ?? displayName}
         includeClosed={includeClosed} onBack={returnToConversation}
         onReplyToBlocker={blocker => { if (inlineWork) { returnToConversation(); replyToBlocker(inlineWork, blocker); } }} />}
       {view === "conversation" ? <>
@@ -297,10 +303,10 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
             {!activeBot && props.onCreateBot && <button type="button" className="bot-empty-create" onClick={props.onCreateBot}>创建第一个 Bot</button>}
             {activeBot && <div className="bot-example-grid">{examples.map(example => <button type="button" key={example.title} onClick={() => draftExample(example.text)}><span>{example.title}</span><IconArrowUp size={16} /></button>)}</div>}
           </div> : <div className="bot-message-list">{botWorkTimeline(messages).map(row => row.kind === "message"
-            ? <BotMessage key={row.key} message={row.message} botName={displayName} works={botWorks} onOpenWork={openWork} sourceQuestion={questionsByRequest.get(row.message.requestId)} onReply={() => { setReplyReference(row.message); composerRef.current?.focus(); }} onCancel={() => { if (activeBotId) void useAppStore.getState().cancelBotSend(row.message.botId, row.message.requestId); }} />
+            ? <BotMessage key={row.key} message={row.message} botName={displayName} works={detailWorks} onOpenWork={openWork} sourceQuestion={questionsByRequest.get(row.message.requestId)} onReply={() => { setReplyReference(row.message); composerRef.current?.focus(); }} onCancel={() => { if (activeBotId) void useAppStore.getState().cancelBotSend(row.message.botId, row.message.requestId); }} />
             : <details key={row.key} className="bot-work-progress" aria-label="事项进展记录">
-              <summary>{row.workIds.length > 1 ? `${row.workIds.length} 个事项` : botWorks.find(work => work.workId === row.workId)?.title ?? "事项"} · {row.messages.length} 条执行记录（展开查看）</summary>
-              {row.messages.map(message => <BotMessage key={message.messageId} message={message} botName={displayName} works={botWorks} onOpenWork={openWork} onCancel={() => {}} />)}
+              <summary>{row.workIds.length > 1 ? `${row.workIds.length} 个事项` : detailWorks.find(work => work.workId === row.workId)?.title ?? "事项"} · {row.messages.length} 条执行记录（展开查看）</summary>
+              {row.messages.map(message => <BotMessage key={message.messageId} message={message} botName={displayName} works={detailWorks} onOpenWork={openWork} onCancel={() => {}} />)}
             </details>)}</div>}
         </div>
       </> : <BotWorkBrowser key={`${activeBotId}-${view}`} works={botWorks} view={view} loading={(view === "closed" || view === "completed") && !allWorksLoaded} selectedWorkId={selected?.workId} onOpenWork={openWork} onConversation={() => { setView("conversation"); requestAnimationFrame(() => composerRef.current?.focus()); }} />}

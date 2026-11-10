@@ -99,6 +99,16 @@ export function personalBotWork(work: WorkProjectionDto, botId: string | null | 
   return !work.team && botParticipatesInWork(work, botId);
 }
 
+/** A source conversation may inspect its linked team result without adding it
+ * to personal lists/counts. Never infer an association from text or an ID alone. */
+export function linkedConversationWork(work: WorkProjectionDto, messages: BotMessageDto[], botId: string | null | undefined,
+  teamId: string | undefined, conversationId: string | undefined): boolean {
+  return Boolean(conversationId && work.team && !work.team.removedAt && !work.archive?.deletedAt
+    && botParticipatesInWork(work, botId)
+    && messages.some(message => message.role === "assistant" && message.botId === botId
+      && message.teamId === teamId && message.conversationId === conversationId && message.workIds.includes(work.workId)));
+}
+
 export type BotTimelineEntry = { key: string; kind: "message"; message: BotMessageDto }
   | { key: string; kind: "progress"; workId: string; workIds: string[]; messages: BotMessageDto[] };
 
