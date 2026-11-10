@@ -3,3 +3,5 @@
 .bot-team-directory-dialog p{margin:14px 0;color:var(--fg-secondary)}.bot-team-directory-dialog h3{margin:16px 0 8px}.bot-team-directory-dialog header{margin-bottom:16px}.bot-team-directory-members{padding:8px 14px;background:var(--bg-elevated);border-radius:10px;margin-bottom:16px}
 
 .bot-team-directory-dialog textarea{width:100%;min-height:76px;box-sizing:border-box;padding:10px;border:1px solid var(--border-default);border-radius:8px;background:var(--bg-panel);color:inherit;resize:vertical}.bot-team-settings-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:20px}
+
+.bot-team-workspace-picker{display:flex;align-items:center;gap:8px}.bot-team-workspace-picker input{flex:1;min-width:0}.bot-team-workspace-picker button{flex-shrink:0}@media(max-width:520px){.bot-team-workspace-picker{flex-direction:column;align-items:stretch}}

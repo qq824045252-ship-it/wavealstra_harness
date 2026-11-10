@@ -42,6 +42,8 @@ export function BotTeamDialog({ open, onClose, initialTeam }: { open: boolean; o
   const [selectedTeamId, setSelectedTeamId] = useState(pending?.templateId ?? initialTeam?.templateId ?? "");
   const [title, setTitle] = useState(pending?.title ?? "");
   const [goal, setGoal] = useState(pending?.goalDescription ?? "");
+  const [pickingFolder, setPickingFolder] = useState(false);
+  const folderFlight = useRef(false);
   const [workspace, setWorkspace] = useState(pending?.workspacePath ?? "");
   const [owner, setOwner] = useState(pending?.ownerBotId ?? initialTeam?.ownerBotId ?? activeBotId ?? "");
   const [ownerResponsibility, setOwnerResponsibility] = useState(pending?.ownerResponsibility ?? initialTeam?.ownerResponsibility ?? "核对各成员成果、整理结论与证据，明确待验收项和阻碍。");
@@ -91,6 +93,18 @@ export function BotTeamDialog({ open, onClose, initialTeam }: { open: boolean; o
   const openWork = (result: { workId: string; ownerBotId: string }) => {
     const state = useAppStore.getState();
     state.setPage("bot"); close(); window.dispatchEvent(new CustomEvent("mybuddy:open-team-work", { detail: { workId: result.workId } }));
+  };
+  const chooseWorkspace = async () => {
+    if (folderFlight.current || pending || busy) return;
+    const startedEpoch = epoch.current;
+    folderFlight.current = true; setPickingFolder(true); setError("");
+    try {
+      if (!window.api) throw new Error("本地文件夹选择不可用。");
+      const folder = await window.api.pickLocalFolder();
+      if (mounted.current && openRef.current && epoch.current === startedEpoch && folder) setWorkspace(folder.path);
+    } catch (cause) {
+      if (mounted.current && openRef.current && epoch.current === startedEpoch) setError(cause instanceof Error ? cause.message : "无法打开文件夹选择，请重试或粘贴目录路径。");
+    } finally { folderFlight.current = false; if (mounted.current) setPickingFolder(false); }
   };
   const submit = async () => {
     if (inFlight.current || (!pending && !valid)) return;
@@ -196,7 +210,7 @@ export function BotTeamDialog({ open, onClose, initialTeam }: { open: boolean; o
           {templates.length > 0 && <details className="bot-team-template"><summary>管理团队模板</summary>{templates.map(template => <div className="bot-team-template-row" key={template.templateId}><span>{template.name}</span>{deleteTemplateId === template.templateId ? <><span>仅删除模板？</span><button type="button" disabled={templateBusy} onClick={() => { void deleteTemplate(template.templateId); }}>确认删除</button><button type="button" disabled={templateBusy} onClick={() => setDeleteTemplateId(null)}>保留</button></> : <button type="button" disabled={templateBusy} onClick={() => setDeleteTemplateId(template.templateId)}>删除模板</button>}</div>)}</details>}
           <label htmlFor="team-title">事项名称</label><input id="team-title" value={title} onChange={event => setTitle(event.target.value)} maxLength={200} required placeholder="例如：梳理项目现状与改进建议" />
           <label htmlFor="team-goal">共同目标</label><textarea id="team-goal" value={goal} onChange={event => setGoal(event.target.value)} maxLength={2000} rows={3} required placeholder="说明希望得到什么，以及不需要做什么。" />
-          <label htmlFor="team-workspace">工作区绝对路径</label><input id="team-workspace" value={workspace} onChange={event => setWorkspace(event.target.value)} maxLength={2000} required placeholder="指定这次团队可以处理的本地目录" />
+          <label htmlFor="team-workspace">工作文件夹</label><div className="bot-team-workspace-picker"><input id="team-workspace" value={workspace} onChange={event => setWorkspace(event.target.value)} maxLength={2000} required placeholder="选择现有文件夹，或粘贴本机目录路径" /><button type="button" disabled={busy || pickingFolder || Boolean(pending)} onClick={() => void chooseWorkspace()}>{pickingFolder ? "正在选择…" : "选择文件夹"}</button></div><p className="bot-team-scope">使用本机已有文件夹，选中后自动填入路径；无需导入，不会上传或移动文件。</p>
           <label htmlFor="team-owner">主负责人</label><select id="team-owner" disabled={Boolean(selectedTeamId)} value={owner} onChange={event => { setOwner(event.target.value); setMembers(current => current.filter(member => member.botId !== event.target.value).map(member => ({ ...member, dependsOnBotIds: member.dependsOnBotIds?.filter(id => id !== event.target.value) }))); }} required>
             <option value="">选择负责人</option>{candidates.map(bot => <option key={bot.botId} value={bot.botId}>{bot.displayName}</option>)}</select>
           <label htmlFor="team-owner-role">负责人的汇总职责</label><textarea id="team-owner-role" value={ownerResponsibility} onChange={event => setOwnerResponsibility(event.target.value)} maxLength={2000} rows={2} required />

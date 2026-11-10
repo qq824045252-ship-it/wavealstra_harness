@@ -73,6 +73,7 @@ let requests: CreateTeamWorkRequest[] = [];
 let lookupRequests: string[] = [];
 let lookupReply = deferred<WorkTeamControlResult>();
 let templateCalls: WorkTeamControlRequest[] = [];
+let folderReply = deferred<{path:string;name:string} | null>();
 let openedTeamWorks: string[] = [];
 testWindow.addEventListener("mybuddy:open-team-work", (event: Event) => openedTeamWorks.push((event as CustomEvent<{workId: string}>).detail.workId));
 let hostTemplates: WorkTeamTemplateDto[] = [];
@@ -84,7 +85,7 @@ let store: typeof import("../src/renderer/src/store/appStore")["useAppStore"];
 let initialState: AppState;
 let createRoot: typeof import("react-dom/client")["createRoot"];
 let BotTeamDialog: typeof import("../src/renderer/src/components/pages/BotTeamDialog")["BotTeamDialog"];
-const api = { botWork: {
+const api = { pickLocalFolder: () => folderReply.promise, botWork: {
   teamControl: async (request: WorkTeamControlRequest) => { if (request.kind === "get_by_operation") { lookupRequests.push(request.operationId); return lookupReply.promise; } if (request.kind === "list_templates") return { ok: true, templates: hostTemplates };
     if (request.kind === "save_template") { templateCalls.push(request); const template = { ...request.request.plan, templateId: "template-a", name: request.request.name, createdAt: 1 }; hostTemplates = [template]; return { ok: true, template }; }
     if (request.kind === "update_template") { templateCalls.push(request); const template = { ...request.plan, templateId: request.templateId, name: request.name, createdAt: 1 }; hostTemplates = [template]; return { ok: true, template }; }
@@ -115,7 +116,7 @@ async function mount() {
   await act(async () => root!.render(<StrictMode><Harness /></StrictMode>));
 }
 async function reset() {
-  await unmount(); values.clear(); openedTeamWorks = []; requests = []; templateCalls = []; hostTemplates = []; forbiddenCalls = []; closeCalls = 0;
+  await unmount(); folderReply = deferred<{path:string;name:string} | null>(); values.clear(); openedTeamWorks = []; requests = []; templateCalls = []; hostTemplates = []; forbiddenCalls = []; closeCalls = 0;
   reply = deferred<WorkTeamControlResult>(); lookupReply = deferred<WorkTeamControlResult>(); lookupRequests = []; hostBots = [mybuddy, other];
   store.setState({ ...initialState, page: "bot", activeBotId: mybuddy.botId, activeTaskId: "ordinary-task",
     draft: ordinaryDraft, botIdentities: hostBots, botIdentitiesLoaded: true, botWorks: [work], selectedWorkId: work.workId,
@@ -389,6 +390,18 @@ async function main() {
       await act(async () => container.querySelector("form")!.dispatchEvent(new testWindow.Event("submit", { bubbles: true, cancelable: true })));
       assert.equal(saved?.templateId, team.templateId); assert.equal(saved?.name, "After"); assert.equal(saved?.members[0].responsibility, "Updated responsibility");
       assert.equal(requests.length, 0); assert.equal(store.getState().selectedWorkId, work.workId);
+    });
+    await check("folder picker fills a local path, cancellation preserves text and late results do not reopen", async () => {
+      await reset();
+      const choose = () => [...container.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent === "选择文件夹")!;
+      await act(async () => nativeClick(choose()));
+      await act(async () => folderReply.resolve({ path: "/home/test/项目目录", name: "项目目录" }));
+      assert.equal(container.querySelector<HTMLInputElement>("#team-workspace")!.value, "/home/test/项目目录");
+      folderReply = deferred(); await act(async () => nativeClick(choose())); await act(async () => folderReply.resolve(null));
+      assert.equal(container.querySelector<HTMLInputElement>("#team-workspace")!.value, "/home/test/项目目录");
+      folderReply = deferred(); await act(async () => nativeClick(choose())); await close();
+      await act(async () => folderReply.resolve({ path: "/late", name: "late" })); await act(async () => openDialog!());
+      assert.equal(container.querySelector<HTMLInputElement>("#team-workspace")!.value, "/home/test/项目目录"); assert.equal(requests.length, 0);
     });
     await testRecoveryControls();
     console.log(`PASS ${count} team UI behaviour checks`);
