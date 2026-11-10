@@ -7,3 +7,14 @@
 .workspace-foreground-heading h2 { font-size:16px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin:0; }
 .workspace-foreground-messages { overflow:auto; flex:1; padding:24px; }
 .workspace-foreground-messages > .bot-message { max-width:900px; margin:0 auto 24px; }
+
+.workspace-conversation-row {display:flex;align-items:center;gap:7px;width:100%;min-height:38px;padding:6px 10px;border:0;border-radius:6px;background:transparent;color:inherit;text-align:left;cursor:pointer;}
+.workspace-conversation-row:hover {background:var(--bg-hover,rgba(128,128,128,.1));}
+.workspace-conversation-row > span:nth-child(2) {flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.workspace-conversation-row small,.workspace-conversation-group summary small {color:var(--text-muted,#888);font-size:11px;white-space:nowrap;}
+.workspace-conversation-group {margin:8px 0;border:1px solid var(--border-color,#ddd);border-radius:8px;overflow:hidden;}
+.workspace-conversation-group summary {padding:12px;cursor:pointer;}
+.workspace-conversation-group summary small {float:right;}
+.workspace-conversation-group > p {padding:0 12px;color:var(--text-muted,#888);}
+
+.workspace-origin-conversation {max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:var(--text-muted,#888);}

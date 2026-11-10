@@ -7,8 +7,8 @@ import type { WorkProjectionDto } from '@shared/bot-work';
 import './WorkspaceForeground.css';
 
 /** The original foreground receipt remains authoritative, including archived conversations. */
-export function WorkspaceForegroundConversation({ request, spaceName, onBack }: {
-  request: BotWorkspaceRequestDto; spaceName: string; onBack: () => void;
+export function WorkspaceForegroundConversation({ request, conversationTitle, spaceName, onBack }: {
+  request: BotWorkspaceRequestDto; conversationTitle?: string; spaceName: string; onBack: () => void;
 }): React.JSX.Element {
   const [messages, setMessages] = useState<BotMessageDto[]>([]);
   const [error, setError] = useState('');
@@ -47,7 +47,7 @@ export function WorkspaceForegroundConversation({ request, spaceName, onBack }: 
     return () => { live = false; unsubscribe?.(); };
   }, [request.botId, request.teamId, request.conversationId, request.requestId]);
   return <section className="workspace-foreground-view" aria-label="前台任务对话">
-    <header className="workspace-foreground-heading"><button className="btn btn--ghost" type="button" onClick={work ? () => setWork(undefined) : onBack}>← {work ? '返回对话' : spaceName}</button><h2 title={request.title}>{work?.title ?? request.title}</h2></header>
+    <header className="workspace-foreground-heading"><button className="btn btn--ghost" type="button" onClick={work ? () => setWork(undefined) : onBack}>← {work ? '返回对话' : spaceName}</button><span className="workspace-origin-conversation" title={request.conversationId}>{conversationTitle ?? '原对话'}</span><h2 title={request.title}>{work?.title ?? request.title}</h2></header>
     <div className="workspace-foreground-messages">
       {error && <p role="alert">{error}</p>}
       {loading && <p role="status">正在读取原始对话…</p>}

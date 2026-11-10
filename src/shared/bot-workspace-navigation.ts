@@ -6,4 +6,8 @@ export interface BotWorkspaceRequestDto {
   requestId: string; messageId: string; title: string; status: BotMessageDto['status'];
   createdAt: number; updatedAt: number; archived: boolean;
 }
-export interface BotWorkspaceNavigationDto { spaces: SpaceDto[]; taskSpaces: Array<{taskId:string;spaceId:string}>; foregroundRequests: BotWorkspaceRequestDto[]; }
+export interface BotWorkspaceConversationDto {
+  conversationId: string; botId: string; teamId?: string; spaceId: string;
+  title: string; createdAt: number; updatedAt: number; archived: boolean;
+}
+export interface BotWorkspaceNavigationDto { spaces: SpaceDto[]; taskSpaces: Array<{taskId:string;spaceId:string}>; foregroundRequests: BotWorkspaceRequestDto[]; conversations: BotWorkspaceConversationDto[]; }

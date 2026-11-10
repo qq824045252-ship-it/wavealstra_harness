@@ -66,7 +66,16 @@ export class BotWorkspaceNavigationService {
       const foregroundRequests = rows.map(row => ({id:`bot-request:${row.bot_id}:${row.request_id}`,spaceId:row.team_id ? this.ensureTeam(row.team_id,'历史团队') : this.ensureBot(row.bot_id),
         botId:row.bot_id,teamId:row.team_id ?? undefined,conversationId:row.conversation_id,requestId:row.request_id,messageId:row.message_id,
         title:row.title.trim().replace(/\s+/g,' ').slice(0,120) || '附件对话',status:row.status,createdAt:row.created_at,updatedAt:row.updated_at,archived:row.archived_at !== null}));
-      return {spaces:this.db.listSpaces(),taskSpaces,foregroundRequests};
+      // Conversation nodes are navigation projections, not extra mutable spaces.
+      // Empty persisted chats remain visible; internal result inboxes are not chats.
+      const conversationRows = this.db.connection.prepare(`SELECT c.conversation_id,c.bot_id,c.team_id,c.created_at,c.updated_at,c.archived_at,
+        (SELECT m.text FROM bot_messages m WHERE m.conversation_id=c.conversation_id AND m.role='user' ORDER BY m.ordinal LIMIT 1) AS title
+        FROM bot_conversations c WHERE c.user_id=? AND c.conversation_id NOT LIKE 'bot-inbox-%'
+        ORDER BY c.created_at DESC,c.conversation_id`).all(this.userId) as Array<{conversation_id:string;bot_id:string;team_id:string|null;created_at:number;updated_at:number;archived_at:number|null;title:string|null}>;
+      const conversations = conversationRows.map(row => ({conversationId:row.conversation_id,botId:row.bot_id,teamId:row.team_id ?? undefined,
+        spaceId:row.team_id ? this.ensureTeam(row.team_id,'历史团队') : this.ensureBot(row.bot_id),
+        title:row.title?.trim().replace(/\s+/g,' ').slice(0,120) || '新对话',createdAt:row.created_at,updatedAt:row.updated_at,archived:row.archived_at !== null}));
+      return {spaces:this.db.listSpaces(),taskSpaces,foregroundRequests,conversations};
     });
   }
 }

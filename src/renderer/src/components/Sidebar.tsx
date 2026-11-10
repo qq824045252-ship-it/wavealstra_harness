@@ -1,7 +1,7 @@
 import { BotDisplayGroups } from "./BotDisplayGroups";
 import "./workspace/WorkspaceForeground.css";
 import { useBotWorkspaceNavigation, openWorkspaceRequest, foregroundStatus } from "@/hooks/useBotWorkspaceNavigation";
-import type { BotWorkspaceRequestDto } from "@shared/bot-workspace-navigation";
+import type { BotWorkspaceRequestDto, BotWorkspaceConversationDto } from "@shared/bot-workspace-navigation";
 import { BotTeamsNavigation } from "./BotTeamsNavigation";
 import { APP_VERSION } from "@shared/app-version";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -64,7 +64,7 @@ type TreeRow =
   | { key: string; kind: "space"; space: Space; depth: number; collapsed: boolean; node: WorkspaceTreeNode; hasChildren: boolean }
   | { key: string; kind: "task"; task: Task; depth: number; node: WorkspaceTreeNode };
 
-type VisibleRow = TreeRow | { key: string; kind: "foreground"; request: BotWorkspaceRequestDto; depth: number } | { key: string; kind: "foreground-more"; spaceId: string; remaining: number; depth: number };
+type VisibleRow = TreeRow | {key:string;kind:"conversation";conversation:BotWorkspaceConversationDto;depth:number;expanded:boolean;count:number} | { key: string; kind: "foreground"; request: BotWorkspaceRequestDto; depth: number } | { key: string; kind: "foreground-more"; spaceId: string; remaining: number; depth: number };
 
 const TASK_DRAG_TYPE = "application/x-mybuddy-task";
 const SPACE_DRAG_TYPE = "application/x-mybuddy-space";
@@ -125,7 +125,8 @@ export function AccountNavigation({ go, openProjects }: { go: (page: Page) => vo
 
 export default function Sidebar({ onClose, onCreateBot }: { onClose?: () => void; onCreateBot?: () => void } = {}): React.JSX.Element {
   const tasks = useSidebarTasks();
-  const { requests: foregroundRequests, error: foregroundError } = useBotWorkspaceNavigation();
+  const { requests: foregroundRequests, conversations: foregroundConversations, error: foregroundError } = useBotWorkspaceNavigation();
+  const [expandedConversations, setExpandedConversations] = useState<Record<string, boolean>>({});
   const [foregroundLimits, setForegroundLimits] = useState<Record<string, number>>({});
   const spaces = useAppStore((s) => s.spaces);
   const page = useAppStore((s) => s.page);
@@ -243,12 +244,19 @@ export default function Sidebar({ onClose, onCreateBot }: { onClose?: () => void
           if (!space) continue;
           const collapsed = !expandedSet.has(n.id);
           const requests = foregroundRequests.filter(request => request.spaceId === n.id).sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
-          const hasChildren = n.children.length > 0 || requests.length > 0;
+          const conversations = foregroundConversations.filter(conversation => conversation.spaceId === n.id);
+          const hasChildren = n.children.length > 0 || conversations.length > 0;
           rows.push({ key: `space-${n.id}`, kind: "space", space, depth, collapsed, node: n, hasChildren });
           if (!collapsed) {
-            const limit = foregroundLimits[n.id] ?? 20;
-            for (const request of requests.slice(0, limit)) rows.push({ key: request.id, kind: "foreground", request, depth: depth + 1 });
-            if (requests.length > limit) rows.push({ key: `more-${n.id}`, kind: "foreground-more", spaceId: n.id, remaining: requests.length - limit, depth: depth + 1 });
+            for (const conversation of conversations) {
+              const items = requests.filter(request => request.conversationId === conversation.conversationId);
+              const expanded = Boolean(expandedConversations[conversation.conversationId]);
+              rows.push({key:`conversation-${conversation.conversationId}`,kind:"conversation",conversation,depth:depth+1,expanded,count:items.length});
+              if (!expanded) continue;
+              const limit = foregroundLimits[conversation.conversationId] ?? 20;
+              for (const request of items.slice(0,limit)) rows.push({key:request.id,kind:"foreground",request,depth:depth+2});
+              if (items.length>limit) rows.push({key:`more-${conversation.conversationId}`,kind:"foreground-more",spaceId:conversation.conversationId,remaining:items.length-limit,depth:depth+2});
+            }
             if (n.children.length) walk(n.children, depth + 1);
           }
         } else {
@@ -260,7 +268,7 @@ export default function Sidebar({ onClose, onCreateBot }: { onClose?: () => void
     };
     walk(tree, 0);
     return rows;
-  }, [tree, spaces, tasks, expandedSpaceIds, foregroundRequests, foregroundLimits]);
+  }, [tree, spaces, tasks, expandedSpaceIds, foregroundRequests, foregroundConversations, foregroundLimits, expandedConversations]);
 
   const [popup, setPopup] = useState<"more" | "account" | null>(null);
   const [filterOpen, setFilterOpen] = useState(false);
@@ -654,6 +662,7 @@ export default function Sidebar({ onClose, onCreateBot }: { onClose?: () => void
   };
 
   const renderRow = (row: VisibleRow): React.JSX.Element => {
+    if (row.kind === "conversation") return <button type="button" className="workspace-conversation-row" data-conversation-id={row.conversation.conversationId} aria-expanded={row.expanded} style={{paddingLeft:taskIndent(row.depth)}} title={`${row.conversation.title} · ${row.conversation.conversationId}`} onClick={()=>setExpandedConversations(current=>({...current,[row.conversation.conversationId]:!row.expanded}))}><span aria-hidden="true">{row.expanded ? '▾' : '▸'}</span><span>{row.conversation.title}</span><small>{row.conversation.archived ? '历史 · ' : ''}{row.count}</small></button>;
     if (row.kind === "foreground-more") return <button type="button" className="workspace-foreground-row" style={{ paddingLeft: taskIndent(row.depth) }} onClick={() => setForegroundLimits(current => ({ ...current, [row.spaceId]: (current[row.spaceId] ?? 20) + 30 }))}>再看 30 条前台任务 · 还有 {row.remaining} 条</button>;
     if (row.kind === "foreground") return <button type="button" className="workspace-foreground-row" style={{ paddingLeft: taskIndent(row.depth) }} title={row.request.title} onClick={() => { openWorkspaceRequest(row.request); onClose?.(); }}>
       <IconMessageDashed size={14} /><span>{row.request.title}</span><small>{foregroundStatus(row.request.status)}</small>

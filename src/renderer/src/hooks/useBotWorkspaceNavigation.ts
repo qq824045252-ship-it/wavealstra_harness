@@ -1,9 +1,9 @@
 import { useEffect, useSyncExternalStore } from 'react';
-import type { BotWorkspaceNavigationDto, BotWorkspaceRequestDto } from '@shared/bot-workspace-navigation';
+import type { BotWorkspaceNavigationDto, BotWorkspaceRequestDto, BotWorkspaceConversationDto } from '@shared/bot-workspace-navigation';
 import { useAppStore } from '@/store/appStore';
 
 const listeners = new Set<() => void>();
-let snapshot: { requests: BotWorkspaceRequestDto[]; error: string } = { requests: [], error: '' };
+let snapshot: { requests: BotWorkspaceRequestDto[]; conversations: BotWorkspaceConversationDto[]; error: string } = { requests: [], conversations: [], error: '' };
 let pending: Promise<void> | undefined;
 let selected: BotWorkspaceRequestDto | null = null;
 export function openWorkspaceRequest(request: BotWorkspaceRequestDto): void {
@@ -33,8 +33,8 @@ async function refresh(): Promise<void> {
         const tasks = state.tasks.map(task => { const spaceId = owners.get(task.id); if (!spaceId || spaceId === task.spaceId) return task; changed = true; return { ...task, spaceId }; });
         return { ...(JSON.stringify(state.spaces) === JSON.stringify(spaces) ? {} : { spaces }), ...(changed ? { tasks } : {}) };
       });
-      if (snapshot.error || JSON.stringify(snapshot.requests) !== JSON.stringify(result.foregroundRequests)) {
-        snapshot = { requests: result.foregroundRequests, error: '' }; listeners.forEach(listener => listener());
+      if (snapshot.error || JSON.stringify(snapshot.requests) !== JSON.stringify(result.foregroundRequests) || JSON.stringify(snapshot.conversations) !== JSON.stringify(result.conversations ?? [])) {
+        snapshot = { requests: result.foregroundRequests, conversations: result.conversations ?? [], error: '' }; listeners.forEach(listener => listener());
       }
     } catch (error) {
       snapshot = { ...snapshot, error: error instanceof Error ? error.message : '前台任务暂时无法加载' }; listeners.forEach(listener => listener());
