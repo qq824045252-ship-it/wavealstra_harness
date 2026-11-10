@@ -1,3 +1,5 @@
+import { dispatchExecutionMutation } from "./WorkDispatchMutation";
+import { WorkIntentMutations } from "./WorkIntentMutations";
 import { pauseWorkMutation, resumeWorkMutation } from "./WorkPauseResumeMutations";
 import { handoffOwnerMutation, addParticipantMutation } from "./WorkDelegationMutations";
 import { WorkClosureMutations } from "./WorkClosureMutations";
@@ -16,7 +18,7 @@ import type { ReplyUserInputParams, ReplyLegacyUserInputParams } from "../../../
 import { settleWorkAdmission, settleWorkExecution } from "./WorkExecutionSettlement";
 import { WorkResultCards } from "./WorkResultCards";
 import { WorkPhase5Facts } from "./WorkPhase5Facts";
-import { checkControlGuard, isWorkerProgressAmend, checkWorkerProgress } from "./WorkControlGuards";
+import { checkControlGuard, isWorkerProgressAmend } from "./WorkControlGuards";
 import type {
   WorkCardReadResult, WorkExpandedDiagnosticsDto, WorkSummaryProjectionDto,
 } from "../../../shared/bot-work-phase5";
@@ -47,24 +49,16 @@ import type {
   WorkActor,
   WorkAdmissionDto,
   WorkAuthorizationDto,
-  WorkBlockerDto,
-  WorkControlErrorCode,
   WorkControlResult,
-  WorkCriterionDto,
-  WorkDeliverableDto,
   WorkDto,
   WorkEvidenceDto,
-  WorkEvidenceKind,
-  WorkEvidenceProvenance,
   WorkExecutionBindingDto,
   WorkExecutionStatus,
   WorkGoalSourceDto,
   WorkInboxEventDto,
-  WorkIntentSnapshotDto,
   WorkNotificationChannel,
   WorkNotificationDto,
   WorkOutboxInstructionDto,
-  WorkParticipantDto,
   WorkProjectionDto,
   WorkSourceEventDto,
   WorkSubscriptionDto,
@@ -72,8 +66,6 @@ import type {
   WorkWatchRuleDto,
 } from "../../../shared/bot-work";
 import {
-  DEFAULT_BOT_ID,
-  WORK_MAX_CRITERIA,
   assertNoActorField,
   canonicalControlInput,
   intersectAuthorization,
@@ -85,8 +77,8 @@ import { phase4ControlRequestSchema } from "../../../shared/bot-work-phase4";
 import { BotRegistry } from "./BotRegistry";
 import { WorkTeamService } from "./WorkTeamService";
 import { WorkRepository, newId } from "./WorkRepository";
-import { cronNextWake, watchRuleProblem, type WorkNextWake } from "./WorkSchedule";
-import { normalizeTexts, normalizeSources, normalizeWatchRule, normalizeCriteria, currentAcceptedDeliverableIds, matchesFilter } from "./WorkControlNormalization";
+import { cronNextWake, type WorkNextWake } from "./WorkSchedule";
+import { matchesFilter } from "./WorkControlNormalization";
 import { WorkNativeResultInbox } from "./WorkNativeResultInbox";
 import { WorkPartialResults } from "./WorkPartialResults";
 import { WorkArtifactValidation } from "./WorkArtifactValidation";
@@ -299,72 +291,10 @@ export class WorkService {
           work: snapshot, outboxEventId: existing.outbox_event_id ?? undefined,
         };
       }
-      if (!params.title?.trim()) return { ok: false, code: "invalid_request", message: "Work 标题不能为空" };
-      const ownerBot = this.bots.getBot(params.ownerBotId ?? (resolved.bot?.botId ?? DEFAULT_BOT_ID));
-      if (!ownerBot) return { ok: false, code: "not_found", message: "找不到负责人 Bot" };
-      if (ownerBot.userId !== resolved.userId) {
-        return { ok: false, code: "unauthorized_actor", message: "负责人 Bot 不属于当前用户" };
-      }
-      if (ownerBot.status !== "active") {
-        return { ok: false, code: "bot_disabled", message: "Bot 已停用，不能分配新事项" };
-      }
-      const now = this.now();
-      const workId = newId("work");
-      const criteria = normalizeCriteria(params.criteria, 1, now);
-      if (typeof criteria === "string") return { ok: false, code: "invalid_request", message: criteria };
-      const authorization = intersectAuthorization(params.authorization, resolved.grants);
-      const inputSnapshotId = params.inputSnapshotId?.trim() || "snapshot:unbound";
-      const goalSources = normalizeSources(params.goalSources, now);
-      const watchRule = normalizeWatchRule(params.watchRule);
-      const scheduleProblem = watchRuleProblem(watchRule, now, this.computeNextWake);
-      if (scheduleProblem) return { ok: false, code: "invalid_request", message: scheduleProblem };
-      const mode = params.mode ?? (watchRule ? "watch" : "once");
-      if (mode === "once" && watchRule) return { ok: false, code: "invalid_request", message: "持续跟踪规则需要 watch 模式" };
-      const snapshotId = `snap-${workId}-r1-s1`;
-      const work: WorkDto = {
-        workId,
-        userId: resolved.userId,
-        projectId: params.projectId,
-        workspacePath: params.workspacePath,
-        sourceMessageId: params.sourceMessageId,
-        legacyTaskId: undefined,
-        ownerBotId: ownerBot.botId,
-        ownerEpoch: 1,
-        participants: [],
-        intentRevision: 1,
-        sourceVersion: 1,
-        title: params.title.trim().slice(0, 240),
-        goalDescription: params.goalDescription?.trim().slice(0, 2000) || undefined,
-        constraints: normalizeTexts(params.constraints),
-        criteria,
-        authorization,
-        activeIntentSnapshotId: snapshotId,
-        inputSnapshotId,
-        goalSources,
-        mode,
-        lifecycle: "active",
-        deadlineAt: params.deadlineAt,
-        deadlineRevision: 1,
-        deadlineSetAt: params.deadlineAt === undefined ? undefined : now,
-        acceptedDeliverableIds: [],
-        activeExecutionIds: [],
-        stateVersion: 1,
-        watchRule,
-        createdBy: resolved.kind === "user" ? "user" : "bot",
-        createdAt: now,
-        updatedAt: now,
-      };
-      this.repo.insertWork(work);
-      recordWorkDelivery(this.db, work, params);
-      this.repo.insertIntentSnapshot(this.intentSnapshot(work, ownerBot, params.sourceMessageId, work.createdBy));
-      if (params.conversationId) this.repo.linkConversation(workId, params.conversationId, "desktop", now);
-      if (watchRule) this.installSubscriptions(work, watchRule, now);
-      if (work.deadlineAt !== undefined) this.armDeadline(work, now);
-      const outboxEventId = this.outbox({
-        work, eventType: "work.created", operationId: params.operationId,
-        bindingId: undefined, causalEventId: params.causalEventId,
-        payload: { title: work.title, mode: work.mode },
-      });
+      const mutation = this.intentMutations().create(resolved, params);
+      if (!mutation.ok) return mutation;
+      const { work, outboxEventId, now } = mutation;
+      const workId = work.workId;
       this.repo.saveReceipt({
         userId: resolved.userId, operationId: params.operationId, workId,
         operationType: "createWork", payloadHash, workSnapshot: work,
@@ -417,169 +347,21 @@ export class WorkService {
     return outcome;
   }
 
-  private applyAmend(work: WorkDto, resolved: ResolvedActor, params: AmendWorkParams, now: number): Mutation {
-    const progressError = resolved.kind === "worker" ? checkWorkerProgress(work, params, resolved.binding) : undefined;
-    if (progressError) return progressError;
-    const nextTitle = params.title?.trim().slice(0, 240) ?? work.title;
-    const nextDescription = params.goalDescription === undefined
-      ? work.goalDescription
-      : params.goalDescription.trim().slice(0, 2000) || undefined;
-    const nextConstraints = params.constraints === undefined ? work.constraints : normalizeTexts(params.constraints);
-    const nextAuthorization = resolved.kind === "user"
-      ? intersectAuthorization({ ...work.authorization, ...params.authorization }, resolved.grants)
-      : intersectAuthorization({ ...work.authorization, ...params.authorization }, work.authorization);
-    const nextInputSnapshotId = params.inputSnapshotId?.trim() || work.inputSnapshotId;
-    const nextSources = params.goalSources === undefined ? work.goalSources : normalizeSources(params.goalSources, now);
-    const hasNewCriteria = Array.isArray(params.criteria);
-    const nextWatchRule = params.watchRule === null ? undefined : params.watchRule === undefined ? work.watchRule
-      : normalizeWatchRule({ ...work.watchRule, ...params.watchRule,
-        ...(params.watchRule.cronExpression !== undefined && params.watchRule.nextWakeAt === undefined ? { nextWakeAt: undefined } : {}),
-        ...(params.watchRule.nextWakeAt !== undefined && params.watchRule.cronExpression === undefined ? { cronExpression: undefined } : {}) });
-    if (params.watchRule && nextWatchRule) {
-      const timingChanged = nextWatchRule.cronExpression !== work.watchRule?.cronExpression
-        || nextWatchRule.timezone !== work.watchRule?.timezone
-        || nextWatchRule.nextWakeAt !== work.watchRule?.nextWakeAt;
-      // Provenance describes a particular schedule, not the Work forever.
-      if (timingChanged && params.watchRule.scheduleBasis === undefined) {
-        delete nextWatchRule.scheduleBasis;
-        delete nextWatchRule.scheduleRationale;
-      } else if (params.watchRule.scheduleBasis === "user_specified"
-        || timingChanged && params.watchRule.scheduleRationale === undefined) {
-        delete nextWatchRule.scheduleRationale;
-      }
-    }
-    const nextMode = params.mode ?? (params.watchRule === null ? "once" : params.watchRule ? "watch" : work.mode);
-    if (params.mode === "once" && nextWatchRule) return { ok: false, code: "invalid_request", message: "清除持续跟踪规则后才可改为一次性事项" };
-    const scheduleProblem = params.watchRule ? watchRuleProblem({ ...nextWatchRule!,
-      // An unchanged, already-fired first wake is history, not a new invalid date.
-      nextWakeAt: params.watchRule.nextWakeAt }, now, this.computeNextWake) : undefined;
-    if (scheduleProblem) return { ok: false, code: "invalid_request", message: scheduleProblem };
-    const nextDeadlineAt = params.deadlineAt === undefined ? work.deadlineAt : params.deadlineAt ?? undefined;
-    const deadlineChanged = nextDeadlineAt !== work.deadlineAt;
-    if (this.teams.get(work.workId) && (params.watchRule != null || deadlineChanged && nextDeadlineAt !== undefined))
-      return { ok: false, code: "invalid_request", message: "团队委托暂不支持附加定时关注或期限检查；请新建独立的只读关注事项" };
-    const sourceChanged = nextInputSnapshotId !== work.inputSnapshotId
-      || JSON.stringify(nextSources) !== JSON.stringify(work.goalSources);
-    if (sourceChanged && nextInputSnapshotId === work.inputSnapshotId) {
-      return { ok: false, code: "invalid_request", message: "变更目标来源时必须提供新的输入快照身份" };
-    }
-
-    // Requirement identity changes only when the goal/constraints/criteria text or the
-    // authorization changes. A target-input change bumps sourceVersion, not intentRevision.
-    const candidateCriteria = hasNewCriteria
-      ? this.mergeCriteria(work, params.criteria ?? [], work.intentRevision + 1, resolved, false)
-      : work.criteria;
-    if (typeof candidateCriteria === "string") return { ok: false, code: "invalid_request", message: candidateCriteria };
-    const definition = (criterion: WorkCriterionDto) => [criterion.id, criterion.text, criterion.origin, criterion.requiresRealEnvironmentCheck, criterion.requiredEnvironment ?? ""];
-    const criteriaDefinitionsChanged = hasNewCriteria
-      && JSON.stringify(candidateCriteria.map(definition)) !== JSON.stringify(work.criteria.map(definition));
-    const requirementChanged = nextTitle !== work.title
-      || nextDescription !== work.goalDescription
-      || JSON.stringify(nextConstraints) !== JSON.stringify(work.constraints)
-      || JSON.stringify(nextAuthorization) !== JSON.stringify(work.authorization)
-      || criteriaDefinitionsChanged;
-    const intentChanged = requirementChanged;
-    const nextIntentRevision = intentChanged ? work.intentRevision + 1 : work.intentRevision;
-    const nextSourceVersion = sourceChanged ? work.sourceVersion + 1 : work.sourceVersion;
-    const nextStateVersion = work.stateVersion + 1;
-    // Progress and other control facts bump stateVersion only. A second row at the
-    // same requirement revision is stored only when the source version moves.
-    const snapshotChanged = intentChanged || sourceChanged;
-    const snapshotId = snapshotChanged
-      ? `snap-${work.workId}-r${nextIntentRevision}-s${nextSourceVersion}`
-      : work.activeIntentSnapshotId;
-    let nextCriteria = sourceChanged
-      ? this.resetCriteriaForNewInput({ ...work, criteria: candidateCriteria }, nextInputSnapshotId)
-      : candidateCriteria;
-    if (intentChanged) nextCriteria = nextCriteria.map(criterion => ({
-      ...criterion, status: "pending", requiredIntentRevision: nextIntentRevision,
-      verifiedIntentRevision: undefined, evidenceRefs: [], waivedReason: undefined, waivedByUserId: undefined,
-    }));
-    for (const input of params.criteria ?? []) {
-      if (input.status !== "waived") continue;
-      const criterion = nextCriteria.find(item => item.id === input.id);
-      if (criterion && resolved.kind === "user") {
-        criterion.status = "waived";
-        criterion.waivedReason = input.waiveReason;
-        criterion.waivedByUserId = resolved.userId;
-      }
-    }
-
-    const nextWork: WorkDto = {
-      ...work,
-      title: nextTitle,
-      goalDescription: nextDescription,
-      constraints: nextConstraints,
-      criteria: nextCriteria,
-      authorization: nextAuthorization,
-      intentRevision: nextIntentRevision,
-      sourceVersion: nextSourceVersion,
-      inputSnapshotId: nextInputSnapshotId,
-      goalSources: nextSources,
-      activeIntentSnapshotId: snapshotId,
-      watchRule: nextWatchRule,
-      mode: nextMode,
-      deadlineAt: nextDeadlineAt,
-      deadlineRevision: deadlineChanged ? work.deadlineRevision + 1 : work.deadlineRevision,
-      deadlineSetAt: deadlineChanged ? now : work.deadlineSetAt,
-      progressSummary: params.progressSummary?.trim().slice(0, 2000) || work.progressSummary,
-      stateVersion: nextStateVersion,
-      updatedAt: now,
-    };
-
-    const invalidated = new Set(params.invalidateExecutionIds ?? []);
-    if (intentChanged || sourceChanged) {
-      for (const binding of this.repo.listBindings(work.workId)) {
-        if (!TERMINAL_BINDING_STATUSES.has(binding.status)) invalidated.add(binding.bindingId);
-      }
-    }
-    const invalidatedBindings: WorkExecutionBindingDto[] = [];
-    for (const bindingId of invalidated) {
-      const binding = this.repo.getBinding(bindingId);
-      if (!binding || binding.workId !== work.workId) continue;
-      if (binding.invalidatedAt) continue;
-      const neverSubmitted = binding.status === "pending" && !binding.attemptId && !binding.submissionReceipt;
-      const nextBinding: WorkExecutionBindingDto = {
-        ...binding,
-        invalidatedAt: now,
-        status: neverSubmitted ? "invalidated" : binding.status,
-        settledAt: neverSubmitted ? now : binding.settledAt,
-      };
-      this.repo.updateBinding(nextBinding);
-      invalidatedBindings.push(nextBinding);
-    }
-    nextWork.activeExecutionIds = this.repo.listBindings(work.workId)
-      .filter(binding => UNSETTLED_BINDING_STATUSES.has(binding.status)).map(binding => binding.bindingId);
-
-    const ownerBot = this.bots.getBot(nextWork.ownerBotId);
-    if (!ownerBot) return { ok: false, code: "not_found", message: "找不到负责人 Bot" };
-    if (snapshotChanged) {
-      this.repo.insertIntentSnapshot(this.intentSnapshot(nextWork, ownerBot, params.sourceMessageId, resolved.kind === "user" ? "user" : "bot"));
-    }
-    this.repo.supersedeStaleDeliverables(work.workId, nextIntentRevision, nextInputSnapshotId);
-    nextWork.acceptedDeliverableIds = currentAcceptedDeliverableIds(
-      nextWork, this.repo.listDeliverables(work.workId), this.repo.listBindings(work.workId),
-    );
-    this.repo.supersedeNotifications(work.workId, nextIntentRevision, nextInputSnapshotId);
-    this.repo.updateWork(nextWork);
-    if (params.watchRule !== undefined) this.syncSubscriptions(nextWork, now, work.watchRule);
-    if (deadlineChanged) this.armDeadline(nextWork, now);
-    const outboxEventId = this.outbox({
-      work: nextWork, eventType: "work.amended", operationId: params.operationId,
-      causalEventId: params.causalEventId,
-      payload: {
-        previousRevision: work.intentRevision, nextRevision: nextIntentRevision,
-        previousSourceVersion: work.sourceVersion, nextSourceVersion,
-        invalidatedExecutions: invalidatedBindings.map(binding => binding.bindingId),
-      },
+  private intentMutations(): WorkIntentMutations {
+    return new WorkIntentMutations({
+      repo: this.repo, bots: this.bots, teams: this.teams, now: () => this.now(),
+      computeNextWake: this.computeNextWake, requestExpert: (work, botId) => this.requestExpert?.(work, botId),
+      snapshotOf: bot => this.snapshotOf(bot),
+      recordDelivery: (work, params) => recordWorkDelivery(this.db, work, params),
+      installSubscriptions: (work, rule, now) => this.installSubscriptions(work, rule, now),
+      syncSubscriptions: (work, now, previous) => this.syncSubscriptions(work, now, previous),
+      armDeadline: (work, now) => this.armDeadline(work, now),
+      outbox: params => this.outbox(params),
     });
-    for (const binding of invalidatedBindings) {
-      this.outbox({
-        work: nextWork, eventType: "work.execution.stop_requested", operationId: params.operationId,
-        bindingId: binding.bindingId, payload: { bindingId: binding.bindingId, reason: "requirement_changed" },
-      });
-    }
-    return { ok: true, outboxEventId };
+  }
+
+  private applyAmend(work: WorkDto, resolved: ResolvedActor, params: AmendWorkParams, now: number): Mutation {
+    return this.intentMutations().applyAmend(work, resolved, params, now);
   }
 
   // ============================================================ lifecycle
@@ -733,96 +515,16 @@ export class WorkService {
   dispatchExecution(actor: WorkActor, params: DispatchExecutionParams): WorkControlResult {
     return this.runWorkControl(actor, "dispatchExecution", params, {
       guard: "full", ownerOnly: true, allowLifecycles: ["active"],
-    }, (work, _resolved, now) => {
-      if (!params.taskId?.trim() || !params.durableStoreKey?.trim() || !params.conversationId?.trim()) {
-        return { ok: false, code: "invalid_request", message: "执行绑定必须包含 task、Durable 存储与接收 conversation 身份" };
-      }
-      if (this.bots.getBot(work.ownerBotId)?.status !== "active") {
-        return { ok: false, code: "bot_disabled", message: "主负责人已停用，不能启动新执行" };
-      }
-      const existing = this.repo.getBindingByOperation(work.workId, params.operationId);
-      if (existing) {
-        if (existing.taskId !== params.taskId || existing.durableStoreKey !== params.durableStoreKey
-          || existing.conversationId !== params.conversationId) {
-          return { ok: false, code: "idempotency_conflict", message: "重试不能重新分配 task、存储命名空间或 conversation" };
-        }
-        return { ok: true };
-      }
-      const teamError = this.teams.dispatchError(work.workId, params.taskId, params.botId, params.delegatedScope, params.operationId);
-      if (teamError) return { ok: false, code: "unauthorized_actor", message: teamError };
-      const occupied = this.repo.bindingForTask(params.taskId);
-      if (occupied && (occupied.workId !== work.workId || occupied.botId !== params.botId)) {
-        return { ok: false, code: "invalid_request", message: "执行 Task 已属于另一事项或 Bot，不能复用其上下文" };
-      }
-      if (occupied && UNSETTLED_BINDING_STATUSES.has(occupied.status)
-        && !this.teams.allowsRecoveryBinding(work.workId, params.taskId, params.operationId, occupied)) {
-        return { ok: false, code: "unsettled_effects", message: "该 task 已绑定未结算执行，不能同时承接另一次派发" };
-      }
-      if (!this.authorizedFor(work, params.delegatedScope?.every(scope => scope === "workspace:read") ? "workspace:read" : "workspace:write")) {
-        return { ok: false, code: "unauthorized_actor", message: "事项授权未包含工作区写入范围" };
-      }
-      const target = this.bots.getBot(params.botId);
-      if (!target) return { ok: false, code: "not_found", message: "找不到执行 Bot" };
-      if (target.userId !== work.userId) return { ok: false, code: "unauthorized_actor", message: "执行 Bot 不属于该事项用户" };
-      if (target.status !== "active") return { ok: false, code: "bot_disabled", message: "执行 Bot 已停用" };
-      if (!work.inputSnapshotId || work.inputSnapshotId === "snapshot:unbound") {
-        return { ok: false, code: "invalid_request", message: "启动执行前必须绑定可追溯的输入快照" };
-      }
-      const inboxEvent = params.inboxEventId ? this.repo.getInbox(params.inboxEventId) : undefined;
-      if (inboxEvent && inboxEvent.workId !== work.workId) return { ok: false, code: "invalid_request", message: "派发引用了另一事项的事件" };
-      if (params.causal) {
-        const admission = this.causal.admit({ workId: work.workId, subscriptionId: inboxEvent?.subscriptionId ?? undefined,
-          source: params.causal.source, sourceEventId: params.causal.sourceEventId,
-          causalEventId: params.causal.causalEventId, parentChainId: params.causal.parentChainId,
-          originWorkId: work.workId, inputSnapshotId: work.inputSnapshotId,
-          actionKind: params.causal.actionKind ?? "dispatch", operationId: params.operationId,
-          trustedRoot: params.causal.trustedRoot });
-        if (!admission.allowed) return { ok: false, code: "causal_guard", message: admission.message ?? "因果链已触限" };
-      }
-      const readOnlyFollowUp = isScheduledFollowUp(inboxEvent);
-      if (readOnlyFollowUp && !scheduledFollowUpCurrent(work, inboxEvent, inboxEvent?.subscriptionId ? this.repo.getSubscription(inboxEvent.subscriptionId) : undefined))
-        return { ok: false, code: "invalid_request", message: "检查时间表或承诺期限已变更，旧触发不再派发" };
-      const delegatedScope = readOnlyFollowUp ? ["workspace:read"] as string[] : params.delegatedScope ?? [...work.authorization.allowedScopes];
-      const recoveryRequest = this.db.prepare(`SELECT plan.source_binding_id FROM work_dispatch_requests request
+    }, (work, _resolved, now) => dispatchExecutionMutation({
+      repo: this.repo, bots: this.bots, teams: this.teams, causal: this.causal,
+      authorizedFor: (source, kind) => this.authorizedFor(source, kind),
+      recoveryRequest: taskId => this.db.prepare(`SELECT plan.source_binding_id FROM work_dispatch_requests request
         JOIN work_continuation_plans plan ON plan.plan_id=request.continuation_plan_id
-        JOIN work_automatic_recovery recovery ON recovery.plan_id=plan.plan_id WHERE request.task_id=?`).get(params.taskId) as { source_binding_id: string } | undefined;
-      const recoverySource = recoveryRequest && this.repo.getBinding(recoveryRequest.source_binding_id);
-      const binding: WorkExecutionBindingDto = {
-        bindingId: newId("binding"),
-        workId: work.workId,
-        operationId: params.operationId,
-        botId: target.botId,
-        taskId: params.taskId,
-        durableStoreKey: params.durableStoreKey,
-        conversationId: params.conversationId,
-        intentRevision: work.intentRevision,
-        ownerEpoch: work.ownerEpoch,
-        inputSnapshotId: work.inputSnapshotId,
-        expertSnapshot: recoverySource?.expertSnapshot ?? this.requestExpert?.(work, target.botId) ?? this.snapshotOf(target),
-        delegatedScope,
-        workspaceBinding: params.workspaceBinding,
-        inboxEventId: params.inboxEventId,
-        status: "pending",
-        admittedAt: now,
-      };
-      this.repo.insertBinding(binding);
-      const next: WorkDto = {
-        ...work,
-        activeExecutionIds: [...new Set([...work.activeExecutionIds, binding.bindingId])],
-        stateVersion: work.stateVersion + 1,
-        updatedAt: now,
-      };
-      this.repo.updateWork(next);
-      const outboxEventId = this.outbox({
-        work: next, eventType: "work.execution.dispatch_requested", operationId: params.operationId,
-        bindingId: binding.bindingId,
-        payload: {
-          bindingId: binding.bindingId, taskId: binding.taskId, durableStoreKey: binding.durableStoreKey,
-          conversationId: binding.conversationId, botId: binding.botId, intentRevision: binding.intentRevision,
-        },
-      });
-      return { ok: true, outboxEventId };
-    });
+        JOIN work_automatic_recovery recovery ON recovery.plan_id=plan.plan_id WHERE request.task_id=?`).get(taskId) as { source_binding_id: string } | undefined,
+      requestExpert: this.requestExpert,
+      snapshotOf: bot => this.snapshotOf(bot),
+      outbox: params => this.outbox(params),
+    }, work, params, now));
   }
 
   /** Allowed regardless of lifecycle: it is recovery of an already-attempted submission. */
@@ -1710,26 +1412,6 @@ export class WorkService {
     return this.bots.activeSnapshot(bot.botId)!;
   }
 
-  private intentSnapshot(work: WorkDto, ownerBot: BotDto, sourceMessageId: string | undefined, createdBy: "user" | "bot"): WorkIntentSnapshotDto {
-    return {
-      snapshotId: work.activeIntentSnapshotId,
-      workId: work.workId,
-      intentRevision: work.intentRevision,
-      sourceVersion: work.sourceVersion,
-      title: work.title,
-      goalDescription: work.goalDescription,
-      constraints: work.constraints,
-      criteria: work.criteria,
-      authorization: work.authorization,
-      expertSnapshot: this.requestExpert?.(work, ownerBot.botId) ?? this.snapshotOf(ownerBot),
-      inputSnapshotId: work.inputSnapshotId,
-      goalSources: work.goalSources,
-      createdBy,
-      sourceMessageId,
-      createdAt: work.updatedAt,
-    };
-  }
-
   private outbox(params: {
     work: WorkDto;
     eventType: string;
@@ -1759,70 +1441,7 @@ export class WorkService {
     return eventId;
   }
 
-  private mergeCriteria(
-    work: WorkDto,
-    inputs: NonNullable<AmendWorkParams["criteria"]>,
-    nextIntentRevision: number,
-    resolved: ResolvedActor,
-    sourceChanged: boolean,
-  ): WorkCriterionDto[] | string {
-    if (inputs.length > WORK_MAX_CRITERIA) return `验收条件最多 ${WORK_MAX_CRITERIA} 项`;
-    const previous = new Map(work.criteria.map(criterion => [criterion.id, criterion]));
-    const next: WorkCriterionDto[] = [];
-    for (const input of inputs) {
-      const text = input.text?.trim().slice(0, 500);
-      if (!text) continue;
-      const id = input.id?.trim() || newId("criterion");
-      const before = previous.get(id);
-      const sameDefinition = before
-        && before.text === text
-        && before.origin === input.origin
-        && Boolean(before.requiresRealEnvironmentCheck) === Boolean(input.requiresRealEnvironmentCheck)
-        && (before.requiredEnvironment ?? "") === (input.requiredEnvironment ?? "");
-      const waiverRequested = input.status === "waived";
-      if (input.status && input.status !== "pending" && input.status !== "waived") {
-        return "修改要求不能直接写入已满足/已失败；请提交证据或由用户豁免";
-      }
-      if (waiverRequested) {
-        if (resolved.kind !== "user") return "只有用户可以豁免必要验收条件";
-        if (!input.waiveReason?.trim()) return "豁免验收条件必须记录原因";
-      }
-      if (sameDefinition && !sourceChanged) {
-        next.push({ ...before, text });
-        continue;
-      }
-      next.push({
-        id,
-        text,
-        ...(input.origin === "assistant_proposal" ? { origin: input.origin } : {}),
-        status: waiverRequested ? "waived" : "pending",
-        requiredIntentRevision: nextIntentRevision,
-        requiresRealEnvironmentCheck: Boolean(input.requiresRealEnvironmentCheck),
-        requiredEnvironment: input.requiredEnvironment?.trim() || undefined,
-        evidenceRefs: [],
-        waivedReason: waiverRequested ? input.waiveReason?.trim().slice(0, 1000) : undefined,
-        waivedByUserId: waiverRequested ? resolved.userId : undefined,
-      });
-    }
-    return next;
-  }
 
-  private resetCriteriaForNewInput(work: WorkDto, nextInputSnapshotId: string): WorkCriterionDto[] {
-    if (nextInputSnapshotId === work.inputSnapshotId) return work.criteria;
-    const evidence = new Map(this.repo.listEvidence(work.workId).map(item => [item.evidenceId, item]));
-    return work.criteria.map(criterion => {
-      const refsSnapshot = criterion.evidenceRefs
-        .map(id => evidence.get(id))
-        .some(item => item && item.inputSnapshotId !== nextInputSnapshotId);
-      if (!refsSnapshot) return criterion;
-      return {
-        ...criterion,
-        status: "pending",
-        verifiedIntentRevision: undefined,
-        evidenceRefs: [],
-      };
-    });
-  }
 }
 
 function parseWork(value: string): WorkDto | undefined {

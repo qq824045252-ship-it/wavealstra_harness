@@ -20,7 +20,7 @@ In particular, artifact invalidation may commit useful facts even when a control
 WorkService falls from 2,515 to about 2,064 lines. This is a responsibility boundary,
 not a line-count workaround. Public IPC and service signatures are unchanged.
 
-## Later batches
+## Responsibility roadmap (status below)
 
 1. **Closure**: cancellation, closure preconditions, settled check, terminal writes,
    stopped-execution blocker cleanup. Keep a single `tryCloseSettled` shared by all
@@ -71,3 +71,21 @@ shows structured conclusions; the fixture now checks all three requested areas i
 message and uses the current completed tab. The full real-model UI fixture passed on
 rerun, including independent foreground result-thinking, one returned result and
 completed-list visibility. Screenshot was inspected; it is not a physical-input test.
+
+## Batches 4–5
+
+- `WorkIntentMutations` owns creation facts, amendments, criteria reconciliation and
+  intent snapshots. Facade retains initial and in-transaction actor checks, creation
+  idempotency/receipt and observed-source compare-and-swap. Subscription/deadline
+  callbacks still call the existing implementation.
+- `WorkDispatchMutation` owns immutable execution binding creation and dispatch facts.
+  Recovery-source SQL remains a narrow facade callback; its read order is unchanged.
+- WorkService is now 1,466 lines, with seven domain modules plus shared internal types.
+  No new runtime dependency cycle, schema, IPC, policy or approval was introduced.
+- Typecheck, architecture 5/5, control, review control (12 scenarios), review execution,
+  automatic completion, schedule-clock and watch-scheduler checks pass.
+- Subscription extraction is deliberately pending the independent watch fix. Native
+  submission receipt/settlement coordination and shared control admission remain in
+  the facade for now; existing `WorkExecutionSettlement` is reused, not duplicated.
+
+Final real-model UI completion was rerun after the Intent/Dispatch extraction and passed.
