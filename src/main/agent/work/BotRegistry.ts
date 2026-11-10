@@ -380,7 +380,12 @@ export class BotRegistry {
         allowUnconfirmedSpeculationInMemory: false,
       }),
       authorization: normalizeAuthorization(parseJson<WorkAuthorizationDto>(row.authorization_json, minimumAuthorization())),
-      foregroundAllowedTools: parseJson<string[]>(row.foreground_allowed_tools_json, []),
+      // Team templates are another shape of the existing create-Work capability.
+      // Older Bot rows need no grant rewrite to expose the new host-owned entry.
+      foregroundAllowedTools: (() => {
+        const tools = parseJson<string[]>(row.foreground_allowed_tools_json, []);
+        return tools.includes("work_create") ? [...new Set([...tools, "work_team_templates", "work_team_create"])] : tools;
+      })(),
       notificationPolicyJson: row.notification_policy_json,
       status: row.status,
       createdAt: row.created_at,

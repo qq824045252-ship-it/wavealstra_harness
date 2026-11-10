@@ -7,6 +7,7 @@ const net = require('node:net');
 const http = require('node:http');
 const cp = require('node:child_process');
 const root = path.resolve(__dirname, '..');
+const teamScenario = process.argv.includes('--team');
 const cacheScenario = process.argv.includes('--cache');
 const memoryScenario = process.argv.includes('--memory');
 const windows = process.platform === 'win32';
@@ -15,7 +16,7 @@ const modelKey = `fixture/${selectedModel}`;
 const headless = process.env.BOT_WORK_DEV_HEADLESS === '1';
 const watchScenario = process.argv.includes('--watch');
 if (headless && process.platform !== 'linux') throw Error('Headless dev page validation requires Linux; it does not validate desktop input.');
-const out = path.join(root, cacheScenario ? 'out/diagnostics/bot-cache/live' : memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
+const out = path.join(root, teamScenario ? 'out/diagnostics/bot-team-frontdoor/live' : cacheScenario ? 'out/diagnostics/bot-cache/live' : memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-frontdoor-live-'));
 const agentDir = path.join(home, '.mybuddy'); fs.mkdirSync(agentDir, { recursive: true });
 for (const directory of ['AppData/Roaming', 'AppData/Local', 'Temp']) fs.mkdirSync(path.join(home, directory), { recursive: true });
@@ -159,7 +160,38 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     const botId = 'bot-mybuddy-default';
     const history = () => evaluate(`window.api.botWork.history({botId:'${botId}'})`);
     const foregroundDone = async before => until(async () => (await history()).messages.filter(m => m.role==='assistant' && m.status==='completed').length > before, 'foreground completed');
-    if (cacheScenario) {
+    if (teamScenario) {
+      const workspace = path.join(home, 'team-workspace'); fs.mkdirSync(workspace);
+      fs.writeFileSync(path.join(workspace, 'alpha.txt'), 'ALPHA-31415\n');
+      fs.writeFileSync(path.join(workspace, 'beta.txt'), 'BETA-27182\n');
+      const members = [];
+      for (const label of ['甲读取员','乙读取员']) {
+        const created = await evaluate(`window.api.botWork.createBot({requestId:crypto.randomUUID(),displayName:${JSON.stringify(label)},responsibilitySummary:'按团队分工读取指定文件并报告原文'})`);
+        assert(created.ok, JSON.stringify(created)); members.push(created.bot.botId);
+      }
+      const settings = (await evaluate(`window.api.botWork.getSettings('${botId}')`)).settings;
+      const saved = await evaluate(`window.api.botWork.saveSettings(${JSON.stringify({botId,expectedRevision:settings.revision,workspacePath:workspace,modelId:modelKey,expertId:'',skillIds:[],mcpIds:[],connectorIds:[]})})`);
+      assert(saved.ok, JSON.stringify(saved));
+      const template = await evaluate(`window.api.botWork.teamControl(${JSON.stringify({kind:'save_template',request:{operationId:'live-template',name:'文件双人核对',plan:{ownerBotId:botId,ownerResponsibility:'汇总两位成员各自读到的文件原文，清楚标明文件名，不推算内容',executionPolicy:'parallel',maxConcurrency:2,members:members.map((id,index)=>({botId:id,responsibility:`使用真实 read 工具读取 ${path.join(workspace,index===0?'alpha.txt':'beta.txt')}，只报告该文件原文，不写盘`,delegatedScope:['workspace:read']}))}}})})`);
+      assert(template.ok, JSON.stringify(template));
+      await send('请使用已保存的“文件双人核对”团队，现在并行读取 alpha.txt、beta.txt，分别报告真实文件内容并汇总。不要创建普通独立 Work，不需要再次确认，不能猜测文件内容。');
+      await foregroundDone(0);
+      await until(async () => {
+        const works=await evaluate('window.api.botWork.listWorks(true)');
+        return works.length===1 && works[0].team?.executions.every(e=>['completed','recovered'].includes(e.status));
+      }, 'real model team members and owner summary complete');
+      report.works=await evaluate('window.api.botWork.listWorks(true)');
+      report.history=await history();
+      const team=report.works[0].team;
+      assert.equal(team.executions.length,3);
+      assert.equal(team.executions.filter(e=>e.role==='owner_summary').length,1);
+      const summary=team.executions.find(e=>e.role==='owner_summary').resultSummary;
+      assert(summary.includes('ALPHA-31415')&&summary.includes('BETA-27182'), summary);
+      await until(()=>evaluate(`document.querySelector('.bot-thread').textContent.includes('ALPHA-31415') && document.querySelector('.bot-thread').textContent.includes('BETA-27182')`),'team results visibly returned to original Bot conversation');
+      assert(requests.some(r=>r.messages?.some(m=>m.tool_calls?.some(c=>c.function?.name==='work_team_create'))));
+      report.checks.push('real Bot composer -> real online model template selection -> two durable team members -> owner summary -> original conversation');
+      report.checks.push('exact file values verified, one Work, three executions, no fabricated tool results');
+    } else if (cacheScenario) {
       const csv=['id,region,units,price',...Array.from({length:1200},(_,i)=>`${i+1},${['east','west','north'][i%3]},${i%9+1},${10+i%7}`)].join('\n');
       const prompts=[
         '这是隔离测试数据，仅在当前对话分析，不创建后台委托，不联网，不调用工具，不保存长期记忆。先确认列名、首末记录，80字以内。\n'+csv,
@@ -329,7 +361,7 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     }
     report.checks.push('criticism does not cancel; explicit stop does not restart query; no Work created');
     }
-    const shot=await rpc('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});fs.writeFileSync(path.join(out,cacheScenario?'cache.png':memoryScenario?'memory.png':watchScenario?'watch.png':'weather.png'),Buffer.from(shot.data,'base64'));
+    const shot=await rpc('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});fs.writeFileSync(path.join(out,teamScenario?'team.png':cacheScenario?'cache.png':memoryScenario?'memory.png':watchScenario?'watch.png':'weather.png'),Buffer.from(shot.data,'base64'));
     report.status='passed';
   } catch (error) {
     report.status = 'failed'; report.error = String(error.stack || error); console.error(error); process.exitCode = 1;

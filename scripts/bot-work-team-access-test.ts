@@ -29,7 +29,7 @@ try {
   const receipt = messages.accept(LOCAL_USER_ID, { botId: "member", requestId: "member-query", text: "查看所选团队事项", selectedWorkId: work.workId });
   const tools = botForegroundTools({ db: db.connection, userId: LOCAL_USER_ID, botId: "member",
     conversationId: receipt.conversationId, bots, messages, works, isAuthority: () => true,
-    schedule: () => { throw Error("A member must not schedule owner work"); }, wake: () => {}, memorySearch: () => [] });
+    botWorkspace: () => root, schedule: () => { throw Error("A member must not schedule owner work"); }, wake: () => {}, memorySearch: () => [] });
   let call = 0;
   const invoke = async (name: string, args: unknown) => {
     const api = { callId: `call-${++call}`, taskId: `tool-${call}`, memo: async () => receipt.requestId } as unknown as ToolExecutionApi;
@@ -46,6 +46,46 @@ try {
   assert.deepEqual(works.getWork(work.workId), before);
   assert.equal(db.listTasks().length, 0);
   assert.deepEqual(bots.getBot("member")?.authorization, minimumAuthorization());
+
+  assert(bots.getBot("owner")?.foregroundAllowedTools.includes("work_team_create"), "existing create-Work capability exposes team tools without editing stored grants");
+  // Real foreground tools reuse a saved owner template, preserving user input and
+  // the existing team engine. No synthetic user actor or ordinary dispatch.
+  const template = works.teams.handle(user, { kind: "save_template", request: { operationId: "saved-team", name: "只读盘点团队",
+    plan: { ownerBotId: "owner", ownerResponsibility: "汇总事实", members: [{ botId: "member", responsibility: "检查文件", delegatedScope: ["workspace:read"] }] } } });
+  assert(template.ok && template.template);
+  const ownerInput = messages.accept(LOCAL_USER_ID, { botId: "owner", requestId: "owner-team", text: "请用盘点团队核对两个文件，保留我这句话" });
+  const ownerTools = botForegroundTools({ db: db.connection, userId: LOCAL_USER_ID, botId: "owner",
+    conversationId: ownerInput.conversationId, bots, messages, works, isAuthority: () => true,
+    botWorkspace: () => root, schedule: () => { throw Error("Team must use WorkTeamService, not an ordinary dispatch"); },
+    wake: () => {}, memorySearch: () => [] });
+  const invokeOwner = async (name: string, args: unknown, taskId = "saved-team-create") => {
+    const api = { callId: `owner-${++call}`, taskId, memo: async () => ownerInput.requestId } as unknown as ToolExecutionApi;
+    const result = await ownerTools.find(tool => tool.name === name)!.execute(args as never, api, BACKGROUND_CONTEXT);
+    const content = result.output?.find(item => item.type === "text"); assert(content?.type === "text"); return JSON.parse(content.text);
+  };
+  assert.equal((await invokeOwner("work_team_templates", {})).templates.length, 1);
+  assert.equal((await invoke("work_team_templates", {})).templates.length, 0, "members cannot adopt owner's templates");
+  const request = { templateId: template.template.templateId, title: "团队盘点", goalDescription: "模型规划", criteria: ["核对文件"] };
+  const started = await invokeOwner("work_team_create", request);
+  assert(started.ok, JSON.stringify(started));
+  assert.equal(started.work.ownerBotId, "owner");
+  assert.equal(started.team.executions.length, 2);
+  assert.equal(started.work.criteria[0].origin, "assistant_proposal");
+  assert.equal(started.work.sourceMessageId, ownerInput.userMessageId);
+  assert.equal(started.work.workspacePath, root);
+  assert(db.connection.prepare("SELECT messages_json FROM bot_work_user_inputs WHERE work_id=?").get(started.work.workId));
+  assert(messages.message(ownerInput.userMessageId)?.workIds.includes(started.work.workId));
+  assert.equal((await invokeOwner("work_team_create", request)).work.workId, started.work.workId, "native replay does not create a second team");
+  assert.deepEqual(bots.getBot("owner")?.authorization, minimumAuthorization(), "no permanent grant expansion");
+  assert.equal((await invoke("work_team_create", request)).ok, false);
+  await assert.rejects(invokeOwner("work_team_create", { ...request, workspacePath: "/" }), /unrecognized|Unrecognized/);
+  const details = await invokeOwner("work_query_status", { workId: started.work.workId });
+  assert.equal(details[0].team.executions.length, 2);
+  const paused = await invokeOwner("work_pause", { workId: started.work.workId, versionGuard: details[0].versionGuard }, "pause-team");
+  assert(paused.ok && paused.work.lifecycle === "paused");
+  const pausedFacts = await invokeOwner("work_query_status", { workId: started.work.workId });
+  assert((await invokeOwner("work_resume", { workId: started.work.workId, versionGuard: pausedFacts[0].versionGuard }, "resume-team")).ok);
+  assert.equal(works.teams.get(started.work.workId)?.executions.length, 2, "resume preserves member identities");
 
   let calls = 0;
   const frame = { url: "file:///app/renderer/index.html?language=zh#bot" };

@@ -33,6 +33,8 @@ const change = z.object({ ...fields, ...timing, watchRule: watchRule.nullable().
   deadlineAt: timing.deadlineAt.nullable().optional(), workId: text, versionGuard: guard }).strict();
 const control = z.object({ workId: text, reason: text.optional(), versionGuard: guard }).strict();
 const memory = z.object({ query: text }).strict();
+const teamCreate = z.object({ templateId: z.string().min(1).max(200), title: z.string().min(1).max(240),
+  goalDescription: z.string().min(1).max(2000), criteria: z.array(z.string().min(1).max(1000)).min(1).max(12) }).strict();
 // One source for Function Calling and runtime validation: nested strictness,
 // array bounds and all three positive version guards must not drift apart.
 const parameters = <Schema extends z.ZodType>(schema: Schema) =>
@@ -52,10 +54,11 @@ export interface BotForegroundToolOptions {
   wake: (workId?: string) => void;
   memorySearch: (query: string) => unknown;
   isAuthority: () => boolean;
+  botWorkspace?: (botId: string) => string;
 }
 
 /** Foreground Work/memory controls. Read-only web tools are mounted separately by the host. */
-export const BOT_FOREGROUND_TOOLS = new Set(["work_query_status", "work_create", "work_amend", "work_pause", "work_resume", "work_cancel", "memory_search"]);
+export const BOT_FOREGROUND_TOOLS = new Set(["work_query_status", "work_create", "work_amend", "work_pause", "work_resume", "work_cancel", "memory_search", "work_team_templates", "work_team_create"]);
 
 export function botForegroundTools(options: BotForegroundToolOptions) {
   const { db, works, bots, messages, userId, botId, conversationId } = options;
@@ -180,7 +183,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
           }
           messages.linkWork(source, result.work.workId);
           works.repo.linkConversation(result.work.workId, conversationId, "desktop", Date.now());
-          if (shouldSchedule && result.work.mode !== "watch") options.schedule(result.work, operationId, name === "work_resume");
+          if (shouldSchedule && result.work.mode !== "watch" && !works.teams.get(result.work.workId)) options.schedule(result.work, operationId, name === "work_resume");
         }
         return result;
       });
@@ -229,6 +232,37 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
       const { items, ...queryPage } = page;
       return items.map((item, index) => index === 0 ? { ...item, queryPage } : item);
     })); } }), ...mutations,
+  defineTool({ name: "work_team_templates", description: "查询当前 Bot 负责的已保存团队分工。用户要求多 Bot 协作时先查询，再使用模板创建团队；无模板请如实说明并引导组队界面保存，不能声称已组队。",
+    parameters: parameters(z.object({}).strict()), replay: "safe",
+    execute: async (_args, api, context) => {
+      z.object({}).strict().parse(_args);
+      const requestId = await botForegroundRequest(api, api.callId, context);
+      assertActive(); receipt(requestId);
+      return output({ templates: works.teams.foregroundTemplates(userId, botId), workspacePath: options.botWorkspace?.(botId) ?? null });
+    } }),
+  defineTool({ name: "work_team_create", description: "用 work_team_templates 返回的分工创建并启动团队。负责人保持当前 Bot，成员和依赖沿用已保存模板，工作目录来自 Bot 设置。title/goalDescription/criteria 是执行规划，宿主独立保留用户原文与附件。用户要求执行即可开工，无需再次确认。不要另调用 work_create 重复派发。成功后可用 work_query_status 查询成员进度，work_pause/resume/cancel 控制已有团队。",
+    parameters: parameters(teamCreate), replay: "safe",
+    execute: async (args, api, context) => {
+      const input = teamCreate.parse(args);
+      const requestId = await botForegroundRequest(api, api.callId, context);
+      const result = works.transaction(() => {
+        assertActive();
+        const source = receipt(requestId);
+        const workspacePath = options.botWorkspace?.(botId);
+        if (!workspacePath) throw new Error("当前 Bot 没有可用工作目录，请在 Bot 设置中指定文件夹");
+        const result = works.teams.createFromForeground(actor(), { ...input,
+          operationId: `bot:${conversationId}:team:${api.taskId}`, workspacePath, conversationId, sourceMessageId: source.user_message_id });
+        if (result.ok && result.work) {
+          messages.linkWorkUserInput(source, result.work);
+          messages.linkWorkAttachments(source, result.work.workId, result.work.inputSnapshotId);
+          messages.linkWork(source, result.work.workId);
+          works.repo.linkConversation(result.work.workId, conversationId, "desktop", Date.now());
+        }
+        return result;
+      });
+      if (result.ok && result.work) options.wake(result.work.workId);
+      return output(result);
+    } }),
   defineTool({ name: "memory_search", description: "查询当前 Bot 私有记忆，不访问其他 Bot 或项目。",
     parameters: inputParameters.memory, replay: "safe",
     execute: async args => { assertActive(); return output(options.memorySearch(memory.parse(args).query)); } })];

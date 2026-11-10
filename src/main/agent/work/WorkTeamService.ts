@@ -107,9 +107,35 @@ export class WorkTeamService {
   constructor(private readonly db: Database.Database, private readonly works: WorkService,
     private readonly bots: BotRegistry, private readonly now: () => number = Date.now) { ensureWorkTeamSchema(db); }
 
+  /** Saved plans are user-owned. The foreground can reuse its own plans, never invent an actor or grant. */
+  foregroundTemplates(userId: string, botId: string): WorkTeamTemplateDto[] {
+    const bot = this.bots.getBot(botId);
+    if (!bot || bot.userId !== userId || bot.status !== "active") return [];
+    return this.templates(userId).filter(template => template.ownerBotId === botId);
+  }
+
+  createFromForeground(actor: WorkActor, input: { templateId: string; operationId: string; title: string;
+    goalDescription: string; criteria: string[]; workspacePath: string; conversationId: string; sourceMessageId: string }): WorkTeamControlResult {
+    if (actor.kind !== "bot" || actor.host !== "foreground" || !actor.botId)
+      return { ok: false, code: "unauthorized_actor", message: "需要当前前台 Bot 身份" };
+    const bot = this.bots.getBot(actor.botId);
+    const template = this.foregroundTemplates(actor.userId, actor.botId).find(item => item.templateId === input.templateId);
+    if (!bot || !template) return { ok: false, code: "not_found", message: "找不到当前 Bot 负责的团队模板，请先在组队界面保存分工" };
+    const { templateId: _id, name: _name, createdAt: _created, ...plan } = template;
+    const { templateId: _template, sourceMessageId, ...request } = input;
+    // Reusing the saved user-selected team grants delegation only to this exact plan,
+    // like the desktop team entry; it never edits the Bot's lasting authorization.
+    return this.control({ ...actor, grants: { ...bot.authorization, allowRedelegation: true } }, { kind: "create", request: { ...request, ...plan } }, sourceMessageId);
+  }
+
   handle(actor: WorkActor, raw: unknown): WorkTeamControlResult {
+    if (actor.kind !== "user" || !actor.userId.trim())
+      return { ok: false, code: "unauthorized_actor", message: "组队操作需要已认证用户，模型不能代替用户授权" };
+    return this.control(actor, raw);
+  }
+
+  private control(actor: Extract<WorkActor, { kind: "user" | "bot" }>, raw: unknown, sourceMessageId?: string): WorkTeamControlResult {
     try {
-      if (actor.kind !== "user" || !actor.userId.trim()) throw new TeamError("unauthorized_actor", "组队操作需要已认证用户，模型不能代替用户授权");
       const request = workTeamControlSchema.parse(raw);
       if (request.kind === "get_by_operation") {
         const previous = teamRowSchema.optional().parse(this.db.prepare("SELECT * FROM work_teams WHERE user_id=? AND operation_id=?")
@@ -234,7 +260,8 @@ export class WorkTeamService {
         const now = this.now();
         const created = this.works.createWork(actor, { operationId: `team:${hash([actor.userId, input.operationId])}`, title: input.title,
           goalDescription: input.goalDescription, ownerBotId: input.ownerBotId, workspacePath, projectId: input.projectId,
-          conversationId: input.conversationId, criteria: input.criteria.map(text => ({ text })),
+          conversationId: input.conversationId, sourceMessageId,
+          criteria: input.criteria.map(text => ({ text, ...(sourceMessageId ? { origin: "assistant_proposal" as const } : {}) })),
           inputSnapshotId: `team-input:${hash([input, workspacePath])}`,
           authorization: { allowedScopes: scopes, targetWhitelist: [workspacePath], allowGitBranchOrWorktree: false,
             allowRedelegation: true, expiresAt: actor.grants.expiresAt },
@@ -251,7 +278,8 @@ export class WorkTeamService {
         for (const [ordinal, member] of assignments.entries()) {
           if (member.role === "member") {
             const added = this.works.addParticipant(actor, { operationId: `team-member:${workId}:${ordinal}`, workId,
-              botId: member.botId, delegatedScope: member.delegatedScope, role: "worker" });
+              botId: member.botId, delegatedScope: member.delegatedScope, role: "worker",
+              versionGuard: guard(this.works.getWork(workId)!) });
             if (!added.ok) throw new TeamError(added.code, added.message);
           }
           this.db.prepare("INSERT INTO work_team_executions(work_id,ordinal,bot_id,task_id,role,responsibility,scopes_json) VALUES (?,?,?,?,?,?,?)")
