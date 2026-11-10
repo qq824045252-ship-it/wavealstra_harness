@@ -21,7 +21,7 @@ export class WorkSubscriptionMutations {
   constructor(private readonly deps: SubscriptionMutationDeps) {}
 
   addSubscription(work: WorkDto, input: WorkSubscriptionInput): { ok: true; subscription: WorkSubscriptionDto } | Fail {
-    if (this.deps.teams.get(work.workId)) return { ok: false, code: "invalid_request", message: "团队委托暂不支持附加关注规则；请新建独立的只读关注事项" };
+    if (this.deps.teams.get(work.workId) && (work.mode !== "watch" || input.source !== "cron")) return { ok: false, code: "invalid_request", message: "团队委托暂不支持附加关注规则；请新建独立的只读关注事项" };
     if (!input.source?.trim()) return { ok: false, code: "invalid_request", message: "订阅来源不能为空" };
     if (!input.catchUpPolicy) return { ok: false, code: "invalid_request", message: "订阅必须显式保存补处理策略" };
     const now = this.deps.now();
@@ -166,7 +166,7 @@ export class WorkSubscriptionMutations {
   }
 
   applyPhase4Control(work: WorkDto, input: WorkPhase4ControlRequest, resolved: ResolvedActor, now: number): Mutation {
-    if (this.deps.teams.get(work.workId) && (input.kind === "configure-subscription" || input.kind === "set-deadline" && input.deadlineAt != null))
+    if (this.deps.teams.get(work.workId) && (work.mode !== "watch" || input.kind === "configure-subscription" && input.source !== "cron") && (input.kind === "configure-subscription" || input.kind === "set-deadline" && input.deadlineAt != null))
       return { ok: false, code: "invalid_request", message: "团队委托暂不支持附加定时关注或期限检查；请新建独立的只读关注事项" };
     if (input.kind === "configure-subscription") {
       const existing = input.subscriptionId

@@ -1,3 +1,4 @@
+import { workWatchIntentSchema } from "./work-watch-intent";
 import { z } from "zod";
 import type { WorkDto, WorkExecutionStatus } from "./bot-work";
 
@@ -40,6 +41,9 @@ export const workTeamPlanSchema = z.object({
   }
 });
 export const createTeamWorkSchema = workTeamPlanSchema.safeExtend({
+  mode: z.enum(["once", "watch"]).optional(),
+  watchRule: workWatchIntentSchema.optional(),
+  deadlineAt: z.number().int().nonnegative().optional(),
   operationId: id,
   templateId: id.optional(),
   title: z.string().trim().min(1).max(240),
@@ -103,7 +107,8 @@ export interface WorkTeamDto extends WorkTeamPlan {
   intentRevision: number;
   inputSnapshotId: string;
   ownerEpoch: number;
-  state: "expired" | "queued" | "running" | "blocked" | "awaiting_review" | "paused" | "cancelled" | "superseded" | "completed" | "ended_unsuccessfully" | "closing";
+  state: "watching" | "expired" | "queued" | "running" | "blocked" | "awaiting_review" | "paused" | "cancelled" | "superseded" | "completed" | "ended_unsuccessfully" | "closing";
+  watchRound?: number;
   executions: WorkTeamExecution[];
   createdAt: number;
 }

@@ -138,7 +138,7 @@ export class WorkIntentMutations {
     if (scheduleProblem) return { ok: false, code: "invalid_request", message: scheduleProblem };
     const nextDeadlineAt = params.deadlineAt === undefined ? work.deadlineAt : params.deadlineAt ?? undefined;
     const deadlineChanged = nextDeadlineAt !== work.deadlineAt;
-    if (this.deps.teams.get(work.workId) && (params.watchRule != null || deadlineChanged && nextDeadlineAt !== undefined))
+    if (this.deps.teams.get(work.workId) && work.mode !== "watch" && (params.watchRule != null || deadlineChanged && nextDeadlineAt !== undefined))
       return { ok: false, code: "invalid_request", message: "团队委托暂不支持附加定时关注或期限检查；请新建独立的只读关注事项" };
     const sourceChanged = nextInputSnapshotId !== work.inputSnapshotId
       || JSON.stringify(nextSources) !== JSON.stringify(work.goalSources);

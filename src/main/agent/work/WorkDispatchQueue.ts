@@ -190,7 +190,9 @@ export class WorkDispatchQueue {
           this.works.repo.markOutboxStatus(event.eventId,"invalidated");continue;
         }
         if(work.lifecycle!=="active")continue;
-        this.enqueue(work,`source:${event.eventId}`,false,event.payload.inboxEventId as string | undefined);
+        if (this.works.teams.get(work.workId)) {
+          if (!this.works.teams.watchCycles.enqueue(work,event.payload.inboxEventId as string | undefined)) continue;
+        } else this.enqueue(work,`source:${event.eventId}`,false,event.payload.inboxEventId as string | undefined);
         this.works.repo.markOutboxStatus(event.eventId,"delivered");
       }
     });
@@ -209,6 +211,7 @@ export class WorkDispatchQueue {
         for(const subscription of this.works.repo.listSubscriptions(workId)) this.works.ingress.refillBlocked(subscription);
       });
       work=this.works.getWork(workId)!;
+      if (this.works.teams.watchCycles.pending(workId)) continue;
       const pendingBinding=this.works.repo.listBindings(workId).some(binding=>["pending","submitted","running","unknown"].includes(binding.status));
       const pendingIntent=this.works.repo.listOutbox(workId,["pending","attempted","unknown"]).some(event=>event.eventType==="work.source_dispatch_requested");
       if(pendingBinding || pendingIntent || this.db.connection.prepare("SELECT 1 FROM work_dispatch_requests WHERE work_id=? AND state IN ('pending','blocked')").get(workId))continue;

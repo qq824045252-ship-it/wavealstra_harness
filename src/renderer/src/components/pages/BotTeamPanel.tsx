@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useAppStore } from "@/store/appStore";
 import type { BotDto, WorkProjectionDto } from "@shared/bot-work";
 import type { WorkTeamControlRequest, WorkTeamDto, WorkTeamExecution } from "@shared/bot-work-team";
-const stateLabels: Record<WorkTeamDto["state"], string> = { expired: "到期结束", closing: "收尾结算中", completed: "已验收完成", ended_unsuccessfully: "已结束，目标未达成", queued: "等待开工", running: "执行中", blocked: "执行受阻", awaiting_review: "团队汇总已返回", paused: "已暂停", cancelled: "已取消", superseded: "原计划已失效，等待重新安排" };
+const stateLabels: Record<WorkTeamDto["state"], string> = { watching: "持续追踪 · 等待下一轮", expired: "到期结束", closing: "收尾结算中", completed: "已验收完成", ended_unsuccessfully: "已结束，目标未达成", queued: "等待开工", running: "执行中", blocked: "执行受阻", awaiting_review: "团队汇总已返回", paused: "已暂停", cancelled: "已取消", superseded: "原计划已失效，等待重新安排" };
 const executionLabels: Record<WorkTeamExecution["status"], string> = { queued: "排队中", pending: "准备中", submitted: "已派发", running: "执行中", recovering: "自动恢复中", recovered: "已自动恢复", completed: "执行结束", failed: "执行失败", stopped: "已停止", unknown: "结果未知，待核对", invalidated: "已失效", blocked: "受阻", cancelled: "已取消" };
 export function BotTeamPanel({ work, identities }: { work: WorkProjectionDto; identities: BotDto[] }): React.JSX.Element | null {
   const projectionKey = `${work.workId}:${work.intentRevision}:${work.ownerEpoch}:${work.stateVersion}`;
@@ -41,7 +41,7 @@ export function BotTeamPanel({ work, identities }: { work: WorkProjectionDto; id
   const name = (botId: string) => identities.find(bot => bot.botId === botId)?.displayName.trim() || "成员名称不可用";
   const current = work.phase3?.collaborationMessages.filter(message => message.intentRevision === work.intentRevision && message.inputSnapshotId === work.inputSnapshotId) ?? [];
   return <section className="bot-detail-section bot-team-panel" aria-label="团队分工与协作">
-    <div className="bot-team-progress"><h3>{team.teamName ? `${team.teamName} · 团队负责` : "团队协作"}</h3><span className="bot-status-badge">{stateLabels[team.state]}</span></div>
+    <div className="bot-team-progress"><h3>{team.teamName ? `${team.teamName} · 团队负责` : "团队协作"}</h3><span className="bot-status-badge">{stateLabels[team.state]}{team.watchRound ? ` · 第 ${team.watchRound} 轮` : ""}</span></div>
     <p>{team.members.length + 1} 位 Bot · {team.executionPolicy === "parallel" ? `按依赖并行（最多 ${team.maxConcurrency ?? 2} 位成员）` : "成员依次执行"} · 负责人统一汇总</p>
     <p>先看汇总结论与成员结果；执行状态与成果记录分别保留，真实缺口会单独显示。</p>
     <article><strong>{name(work.ownerBotId)} · 队长 / 执行协调</strong><p>{team.ownerResponsibility}</p><p>负责核对与只读汇总，成员已结算或确认因前置失败无法启动后开始。</p></article>

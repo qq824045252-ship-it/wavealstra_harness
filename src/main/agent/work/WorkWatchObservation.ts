@@ -93,3 +93,37 @@ export function watchReadEvidence(db: Database.Database, binding: WorkExecutionB
     return JSON.stringify(proofs.sort((a,b) => JSON.stringify([a!.source,a!.key]).localeCompare(JSON.stringify([b!.source,b!.key]))));
   } catch { return undefined; }
 }
+
+/** Team owner evidence is the immutable per-round member read receipts, not the
+ * owner's prose. All member results must be complete and agree on shared keys. */
+export function watchTeamReadEvidence(db: Database.Database, repo: import("./WorkRepository").WorkRepository,
+  binding: WorkExecutionBindingDto | undefined, result: WorkDeliverableDto): string | undefined {
+  const direct = watchReadEvidence(db,binding,result);
+  if (!binding || binding.status !== "completed") return direct;
+  const observation = parseWatchObservation(result.summary);
+  if (observation?.status !== "observed") return undefined;
+  try {
+    const assignment = JSON.parse(repo.executionInput(binding)).teamAssignment;
+    if (assignment?.role !== "owner_summary" || !assignment.watchRound) return direct;
+    if (!Array.isArray(assignment.previousResults) || !assignment.previousResults.length) return undefined;
+    const proofs = new Map<string,{source:string;key:string;outputHash:string}>();
+    for (const member of assignment.previousResults) {
+      const source = repo.getBinding(member.bindingId);
+      const value = repo.listDeliverables(binding.workId).find(r=>r.deliverableId===member.deliverableId && r.executionId===member.bindingId);
+      if (!source || !value || source.inboxEventId !== binding.inboxEventId || source.workId !== binding.workId
+        || value.isSpeculation || value.hasWriteConflicts || value.uncoveredScope.length) return undefined;
+      const evidence = watchReadEvidence(db,source,value); if (!evidence) return undefined;
+      for (const proof of JSON.parse(evidence) as Array<{source:string;key:string;outputHash:string}>) {
+        const key=JSON.stringify([proof.source,proof.key]);
+        if (proofs.has(key) && proofs.get(key)!.outputHash!==proof.outputHash) return undefined;
+        proofs.set(key,proof);
+      }
+    }
+    const selected = observation.facts.map(f=>proofs.get(JSON.stringify([resolve(binding.workspaceBinding,f.source),f.key]))
+      ?? proofs.get(JSON.stringify([f.source,f.key])));
+    const selectedKeys = new Set(selected.filter(Boolean).map(p=>JSON.stringify([p!.source,p!.key])));
+    if (selected.some(p=>!p) || selectedKeys.size!==selected.length || selectedKeys.size!==proofs.size
+      || [...proofs.keys()].some(key=>!selectedKeys.has(key))) return undefined;
+    return JSON.stringify(selected.sort((a,b)=>JSON.stringify([a!.source,a!.key]).localeCompare(JSON.stringify([b!.source,b!.key]))));
+  } catch { return undefined; }
+}

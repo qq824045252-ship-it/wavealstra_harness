@@ -71,7 +71,10 @@ try {
   assert.equal(catalogue.templates.length, 1);
   assert.equal(catalogue.templates[0].members[0].displayName, "member");
   assert.equal((await invoke("work_team_templates", {})).templates.length, 0, "members cannot adopt owner's templates");
-  const request = { templateId: template.template.templateId, title: "团队盘点", goalDescription: "模型规划", criteria: ["核对文件"] };
+  const request = { mode: "once" as const, requestedOutcome: "one_time" as const, templateId: template.template.templateId, title: "团队盘点", goalDescription: "模型规划", criteria: ["核对文件"] };
+  await assert.rejects(invokeOwner("work_team_create", {...request,requestedOutcome:"ongoing",mode:"once"}), /持续目标不能/);
+  await assert.rejects(invokeOwner("work_team_create", {...request,requestedOutcome:"ongoing",mode:"watch",watchRule:{nextWakeAt:Date.now()+60000,scheduleBasis:"user_specified"}}), /持续目标需要后续周期/);
+  await assert.rejects(invokeOwner("work_team_create", {...request,requestedOutcome:"ongoing",mode:"watch",watchRule:{cronExpression:"* * * * *",scheduleBasis:"recommended"}}), /建议检查频率须给出/);
   const started = await invokeOwner("work_team_create", request);
   assert(started.ok, JSON.stringify(started));
   assert.equal(started.work.ownerBotId, "owner");
@@ -96,7 +99,7 @@ try {
   assert.equal((await invokeOwner("work_team_templates", {})).templates[0].members[0].responsibility, "检查文件", "task plan never mutates saved template");
   const candidates = (await invokeOwner("work_team_templates", {})).availableBots;
   assert.deepEqual(candidates.map((bot: { botId: string }) => bot.botId).sort(), ["member", "outsider"]);
-  const freeRequest = { title: "自然组队", goalDescription: "当前委托分工", criteria: ["核对两个文件"], taskAssignment: {
+  const freeRequest = { mode: "once" as const, requestedOutcome: "one_time" as const, title: "自然组队", goalDescription: "当前委托分工", criteria: ["核对两个文件"], taskAssignment: {
     ownerResponsibility: "汇总", members: [{ botId: "outsider", responsibility: "读取乙" },
       { botId: "member", responsibility: "核对乙", dependsOnBotIds: ["outsider"] }] } };
   const defaultWorkspace = settings.get("owner").effectiveWorkspacePath;
@@ -110,7 +113,7 @@ try {
   assert.deepEqual(free.team.members.map((member: { delegatedScope: string[] }) => member.delegatedScope), [["workspace:read"], ["workspace:read"]]);
   assert.equal((await invokeOwner("work_team_templates", {})).templates.length, 1, "free team does not save a template");
   assert.equal((await invokeOwner("work_team_create", freeRequest, "free-team")).work.workId, free.work.workId);
-  assert.equal((await invokeOwner("work_team_create", { title: "missing", goalDescription: "missing", criteria: ["check"] }, "missing-plan")).ok, false);
+  assert.equal((await invokeOwner("work_team_create", { mode: "once", requestedOutcome: "one_time", title: "missing", goalDescription: "missing", criteria: ["check"] }, "missing-plan")).ok, false);
   assert.equal(works.teams.createFromForeground({ kind: "bot", userId: LOCAL_USER_ID, botId: "owner", host: "foreground", grants }, {
     ...freeRequest, operationId: "forged-source", workspacePath: root, conversationId: ownerInput.conversationId, sourceMessageId: "missing-source" }).ok, false);
   bots.registerBot({ botId: "foreign", userId: "another-user", displayName: "foreign", authorization: minimumAuthorization() });

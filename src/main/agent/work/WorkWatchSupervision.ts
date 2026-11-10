@@ -1,6 +1,6 @@
 import type { WorkCompletionOptions } from "./WorkCompletionCoordinator";
 import type { WorkResultDecision } from "./BotWorkResultTurn";
-import { watchObservationDelivery, watchReadEvidence } from "./WorkWatchObservation";
+import { watchObservationDelivery, watchTeamReadEvidence } from "./WorkWatchObservation";
 
 /** A durable, independent owner review per observation. A round never closes the
  * standing commission, and reviewing a receipt never repeats its business effects. */
@@ -21,7 +21,9 @@ export class WorkWatchSupervision {
     const rows = this.options.db.prepare(`WITH pending AS (SELECT b.binding_id,b.work_id,b.admitted_at,r.retry_at,
         ROW_NUMBER() OVER (PARTITION BY b.work_id ORDER BY b.admitted_at,b.rowid) ordinal FROM work_execution_bindings b
       JOIN works w ON w.work_id=b.work_id LEFT JOIN work_watch_reviews r ON r.binding_id=b.binding_id
-      WHERE w.mode='watch' AND w.lifecycle IN ('active','paused','closing') AND b.bot_id=w.owner_bot_id
+      WHERE w.mode='watch' AND w.lifecycle IN ('active','paused','closing') AND (b.bot_id=w.owner_bot_id OR (w.lifecycle='closing' AND EXISTS (SELECT 1 FROM work_team_executions e WHERE e.work_id=w.work_id AND e.task_id=b.task_id)
+        AND NOT EXISTS (SELECT 1 FROM work_team_executions owner JOIN work_execution_bindings ob ON ob.task_id=owner.task_id
+          WHERE owner.work_id=w.work_id AND owner.role='owner_summary')))
       AND b.intent_revision=w.intent_revision AND b.input_snapshot_id=w.input_snapshot_id
       AND b.owner_epoch=w.owner_epoch AND b.invalidated_at IS NULL
       AND b.status IN ('completed','failed','stopped')
@@ -63,7 +65,9 @@ export class WorkWatchSupervision {
   hasPending(workId: string): boolean {
     return Boolean(this.options.db.prepare(`SELECT 1 FROM work_execution_bindings b
       JOIN works w ON w.work_id=b.work_id LEFT JOIN work_watch_reviews r ON r.binding_id=b.binding_id
-      WHERE b.work_id=? AND b.bot_id=w.owner_bot_id AND b.owner_epoch=w.owner_epoch
+      WHERE b.work_id=? AND (b.bot_id=w.owner_bot_id OR (w.lifecycle='closing' AND EXISTS (SELECT 1 FROM work_team_executions e WHERE e.work_id=w.work_id AND e.task_id=b.task_id)
+        AND NOT EXISTS (SELECT 1 FROM work_team_executions owner JOIN work_execution_bindings ob ON ob.task_id=owner.task_id
+          WHERE owner.work_id=w.work_id AND owner.role='owner_summary'))) AND b.owner_epoch=w.owner_epoch
       AND b.intent_revision=w.intent_revision AND b.input_snapshot_id=w.input_snapshot_id AND b.invalidated_at IS NULL AND b.status IN ('completed','failed','stopped')
       AND (r.binding_id IS NULL OR r.state='queued')
       AND NOT EXISTS (SELECT 1 FROM bot_work_feedback f WHERE json_extract(f.metadata_json,'$.executionId')=b.binding_id
@@ -89,17 +93,19 @@ export class WorkWatchSupervision {
     const allResults = works.repo.listDeliverables(work.workId);
     const position = allResults.findIndex(r => r.executionId === id);
     const prior = allResults.slice(0,position < 0 ? 0 : position).filter(r => r.executionId !== id && r.intentRevision === work.intentRevision
-      && r.inputSnapshotId === work.inputSnapshotId && r.status !== 'superseded').slice(-3);
+      && r.inputSnapshotId === work.inputSnapshotId && r.producerBotId === work.ownerBotId && r.status !== 'superseded').slice(-3);
     const source = JSON.parse(works.repo.executionInput(binding));
     const {instructions:_instructions,teamAssignment:_assignment,...originalRequest} = source;
     const result = results.find(r => r.deliverableId === `result:${id}`);
     const presentation = result ? watchObservationDelivery(work,result,works.repo.listDeliverables(work.workId),
-      item => watchReadEvidence(db,works.repo.getBinding(item.executionId),item)) : {silent:false,summary:binding.settlementNote || '本轮没有返回可用结果'};
-    const context = {watchSupervision:true,originalRequest,title:work.title,goal:work.goalDescription,
+      item => watchTeamReadEvidence(db,works.repo,works.repo.getBinding(item.executionId),item)) : {silent:false,summary:binding.settlementNote || '本轮没有返回可用结果'};
+    const context = {watchSupervision:true,teamRound:source.teamAssignment?.watchRound?.sequence,originalRequest,title:work.title,goal:work.goalDescription,
       watchRule:work.watchRule,lifecycle:work.lifecycle,
       nextWakeAt:works.repo.listSubscriptions(work.workId).filter(s => !s.stoppedAt).map(s => s.nextWakeAt).filter(Boolean),
       observedAt:binding.settledAt, reviewAt:Date.now(), executionStatus:binding.status,
       results:results.map(r=>({summary:r.summary,artifactRefs:r.artifactRefs,uncoveredScope:r.uncoveredScope})),
+      teamPartialResults: source.teamAssignment?.role === 'owner_summary' && (binding.status !== 'completed' || !results.length)
+        ? {notice:'负责人本轮未完成，下列仅为本轮成员已结算的部分依据，不代表全队完成', results:source.teamAssignment.previousResults ?? []} : undefined,
       previousResults:prior.map(r=>({summary:r.summary,createdAt:r.createdAt})),
       observationSummary:presentation.summary, hostProvenUnchanged:presentation.silent,
       notificationMode:work.watchRule?.notificationMode ?? 'every_check',
@@ -138,7 +144,7 @@ export class WorkWatchSupervision {
       // Silence only with host-verified unchanged evidence, never an LLM assertion.
       const silent = presentation.silent && decision.outcome === 'completed' && decision.decision !== 'ask' && !error;
       if (!silent && !this.options.deliver({bindingId:id,eventId:`watch-supervision:${id}`,text:decision.reply,category:'result',
-        notices:[`本轮执行回执时间：${binding.settledAt ? new Date(binding.settledAt).toISOString() : '未记录'}（不是来源内容发布时间）`,...(error ? [`前台整理错误：${error}`] : []), work.lifecycle!=='active' ? '持续委托已暂停或正在结束，不会安排新检查。' : '本轮结束不结束持续委托，后续按已保存计划运行。']})) throw Error('持续委托结果尚未送达原会话');
+        notices:[...(source.teamAssignment?.watchRound?.sequence ? [`团队观察轮次：第 ${source.teamAssignment.watchRound.sequence} 轮（持久调度记录）`] : []),`本轮执行回执时间：${binding.settledAt ? new Date(binding.settledAt).toISOString() : '未记录'}（不是来源内容发布时间）`,...(error ? [`前台整理错误：${error}`] : []), work.lifecycle!=='active' ? '持续委托已暂停或正在结束，不会安排新检查。' : '本轮结束不结束持续委托，后续按已保存计划运行。']})) throw Error('持续委托结果尚未送达原会话');
       db.prepare('UPDATE work_watch_reviews SET state=?,reviewed_at=?,retry_at=0 WHERE binding_id=?').run(silent?'silent':'delivered',Date.now(),id);
     });
   }

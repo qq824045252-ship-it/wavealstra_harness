@@ -1,4 +1,5 @@
-import { watchEndedByTime } from "../../../shared/work-watch-expiry";
+import { WorkTeamWatchCycles } from "./WorkTeamWatchCycles";
+import { watchEndedByTime, watchTimeExpired } from "../../../shared/work-watch-expiry";
 import { ensureTeamConversation } from "./WorkDeliveryTargets";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, realpathSync, statSync } from "node:fs";
@@ -114,8 +115,20 @@ export function ensureWorkTeamSchema(db: Database.Database): void {
 
 /** A bounded, explicit user-created team. It does not create a second execution engine. */
 export class WorkTeamService {
+  readonly watchCycles: WorkTeamWatchCycles;
   constructor(private readonly db: Database.Database, private readonly works: WorkService,
-    private readonly bots: BotRegistry, private readonly now: () => number = Date.now) { ensureWorkTeamSchema(db); }
+    private readonly bots: BotRegistry, private readonly now: () => number = Date.now) { ensureWorkTeamSchema(db); this.watchCycles = new WorkTeamWatchCycles(db, works, now); }
+
+  requestImmediateWatch(work: WorkDto): void {
+    const subscription = this.works.repo.listSubscriptions(work.workId).find(s => s.source === "cron" && !s.stoppedAt);
+    if (!subscription) throw new Error("团队持续委托缺少持久时间表");
+    const eventId = `team-watch-start:${work.workId}`;
+    this.works.repo.insertInbox({ eventId, dedupeKey: eventId, source: "cron", sourceEventId: eventId,
+      eventType: "work.tick", workId: work.workId, subscriptionId: subscription.subscriptionId,
+      intentRevision: work.intentRevision, stateVersion: work.stateVersion, ownerEpoch: work.ownerEpoch,
+      payload: { scheduledAt: this.now(), immediate: true, scheduleRevision: subscription.scheduleRevision ?? 1 },
+      status: "pending", mergedCount: 1, receivedAt: this.now(), processReason: "user-requested-team-first-check" });
+  }
 
   /** Explicit team action, never called by list/read projections. No leader directory fallback. */
   resolveWorkspace(userId: string, templateId: string): string {
@@ -158,6 +171,7 @@ export class WorkTeamService {
   }
 
   createFromForeground(actor: WorkActor, input: { templateId?: string; operationId: string; title: string;
+    mode?: "once" | "watch"; watchRule?: import("../../../shared/bot-work-team").CreateTeamWorkRequest["watchRule"]; deadlineAt?: number;
     goalDescription: string; criteria: string[]; workspacePath: string; conversationId: string; sourceMessageId: string; taskAssignment?: WorkTeamTaskAssignment }): WorkTeamControlResult {
     if (actor.kind !== "bot" || actor.host !== "foreground" || !actor.botId)
       return { ok: false, code: "unauthorized_actor", message: "需要当前前台 Bot 身份" };
@@ -399,6 +413,8 @@ export class WorkTeamService {
           ? ensureTeamConversation(this.db, actor.userId, input.ownerBotId, owningTeam.templateId) : input.conversationId;
         const now = this.now();
         const created = this.works.createWork(actor, { operationId: `team:${hash([actor.userId, input.operationId])}`, title: input.title,
+          mode: input.mode, deadlineAt: input.deadlineAt,
+          watchRule: input.watchRule ? { ...input.watchRule, subscriptions: ["cron"], timezone: input.watchRule.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone } : undefined,
           goalDescription: input.goalDescription, ownerBotId: input.ownerBotId, workspacePath, projectId: input.projectId,
           conversationId, sourceMessageId,
           criteria: input.criteria.map(text => ({ text, ...(sourceMessageId ? { origin: "assistant_proposal" as const } : {}) })),
@@ -476,14 +492,16 @@ export class WorkTeamService {
       : work.lifecycle === "closed" && work.closureConclusion === "ended_unsuccessfully" ? "ended_unsuccessfully"
         : work.lifecycle === "closed" ? "cancelled" : work.lifecycle === "closing" ? "closing" : work.lifecycle === "paused" ? "paused"
           : superseded ? "superseded"
+
       : executions.some(item => item.error || ["blocked", "unknown", "failed", "stopped", "invalidated"].includes(item.status))
         || executions.at(-1)?.status === "blocked" ? "blocked"
+        : work.mode === "watch" && !this.watchCycles.pending(workId) ? "watching"
         : executions.at(-1)?.status === "completed" || executions.at(-1)?.status === "recovered" ? "awaiting_review"
           : executions.some(item => item.status !== "queued") ? "running" : "queued";
     const ownership = this.db.prepare("SELECT team_id,team_name FROM work_team_ownership WHERE work_id=?").get(workId) as { team_id: string; team_name: string } | undefined;
     const visibility = this.db.prepare("SELECT removed_at,removal_requested_at FROM work_team_record_visibility WHERE work_id=?").get(workId) as { removed_at: number | null; removal_requested_at: number | null } | undefined;
     return { ...plan, ...(visibility?.removed_at ? { removedAt: visibility.removed_at } : {}), ...(visibility?.removal_requested_at ? { removalRequestedAt: visibility.removal_requested_at } : {}), ...(ownership ? { teamId: ownership.team_id, teamName: ownership.team_name } : {}), ownerBotId: work.ownerBotId, workId, intentRevision: row.intent_revision, inputSnapshotId: row.input_snapshot_id,
-      ownerEpoch: work.ownerEpoch, state, executions, createdAt: row.created_at };
+      ownerEpoch: work.ownerEpoch, state, watchRound: work.mode === "watch" ? this.watchCycles.current(workId)?.sequence : undefined, executions, createdAt: row.created_at };
   }
 
   /** Called by the existing durable dispatch queue. Never replay an already-bound task. */
@@ -507,6 +525,7 @@ export class WorkTeamService {
         this.finishRequestedRemoval(work.workId);
         this.cancelStaleRecoveries(team, work);
         if (work.lifecycle !== "active" || team.intent_revision !== work.intentRevision || team.input_snapshot_id !== work.inputSnapshotId) continue;
+        if (work.mode === "watch" && (!this.watchCycles.eligible(work) || watchTimeExpired(work, this.now()))) continue;
         const plan = workTeamPlanSchema.parse(JSON.parse(team.plan_json));
         // Settle/report native facts first, then decide whether this member needs a
         // durable continuation. Reporting is per binding, so a recovery result is
@@ -582,7 +601,7 @@ export class WorkTeamService {
             spaceId: settings?.spaceId ?? previousTask?.spaceId, projectId: work.projectId,
             modelId: previousTask?.modelId ?? (settings?.modelId || model()), permissionMode: permission(), modePresetId: "native" });
           const result = await adapter.dispatch({ kind: "bot", userId: work.userId, botId: work.ownerBotId, host: "background", grants: work.authorization }, {
-            operationId, taskId: row.task_id, workId: work.workId, botId: identity, delegatedScope: scopes, versionGuard: guard(work) });
+            operationId, taskId: row.task_id, workId: work.workId, botId: identity, delegatedScope: scopes, inboxEventId: this.watchCycles.current(work.workId)?.inbox_event_id, versionGuard: guard(work) });
           if (!result.ok) throw new TeamError(result.code, result.message);
           if (recovery) this.markRecoveryDispatched(recovery, work.workId, operationId);
         } catch (error) {
@@ -756,7 +775,8 @@ export class WorkTeamService {
       executionPolicy: plan.executionPolicy ?? "sequential", dependsOnBotIds: dependencyIds,
       dependencyPolicy: "依赖表示等待前置成员结算并读取其真实结果，不代表成功。前置失败时仅执行可确认安全的分工，明确报告无法覆盖的目标，不伪造前置成功。",
       historicalResultPolicy: "历史成果与效果不因要求变化而消失。只用于核对来源和避免重复，不自动满足当前验收；变更后重新安排仅只读，不重做已有业务动作。",
-      instructions: this.instructionsFor(row, identity, false) };
+      watchRound: this.watchCycles.current(work.workId),
+      instructions: this.instructionsFor(row, identity, work.mode === "watch") + (work.mode === "watch" ? " 本轮是长期委托的一次新观察，不结束长期职责；只读核验当前事实，不重复历史写入；成员失败与未覆盖必须进入负责人本轮报告。" : "") };
     this.db.prepare("UPDATE work_team_executions SET input_json=? WHERE work_id=? AND ordinal=? AND input_json IS NULL")
       .run(JSON.stringify(input), work.workId, row.ordinal);
   }

@@ -104,7 +104,11 @@ export class WorkConversationFeedback {
         const managed = (bindingId: string) => (this.options.superviseWatch && work.mode === "watch"
           && (() => {
             const binding = works.repo.getBinding(bindingId);
-            if (!binding || binding.botId !== work.ownerBotId || !["completed", "failed", "stopped"].includes(binding.status)) return false;
+            if (!binding) return false;
+            // Team member observations remain in the Work detail. The owner
+            // delivers one coherent round, including any partial failures.
+            if (binding.botId !== work.ownerBotId && works.teams.get(work.workId)) return true;
+            if (binding.botId !== work.ownerBotId || !["completed", "failed", "stopped"].includes(binding.status)) return false;
             const table = this.options.db.prepare("SELECT 1 FROM sqlite_master WHERE name='work_watch_reviews'").get();
             if (table && this.options.db.prepare("SELECT 1 FROM work_watch_reviews WHERE binding_id=? AND state IN ('delivered','silent')").get(bindingId)) return true;
             return ["active", "paused", "closing"].includes(work.lifecycle) && !binding.invalidatedAt

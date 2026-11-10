@@ -1,3 +1,4 @@
+import { workWatchIntentSchema } from "../../../shared/work-watch-intent";
 import type Database from "better-sqlite3";
 import { workTeamTaskAssignmentSchema } from "../../../shared/bot-work-team";
 import { defineTool } from "@earendil-works/pi-durable";
@@ -19,18 +20,7 @@ const fields = { title: text.optional(), goalDescription: text.optional(), const
 const guard = z.object({ expectedStateVersion: z.number().int().positive(), expectedIntentRevision: z.number().int().positive(),
   expectedOwnerEpoch: z.number().int().positive() }).strict();
 const query = botWorkQuerySchema;
-const watchRule = z.object({
-  endsAt: z.number().int().nonnegative().max(8640000000000000).optional().describe("仅用户明确指定的持续追踪终止时刻，Unix毫秒。按用户时区换算为绝对时刻；到期停止新轮并结算在途，不代表目标成功。无限持续不填；举例365天不是指定期限；不能用任意语义停止条件推断日期。暂停和离线不会顺延"),
-  notificationMode: z.enum(["every_check", "changes_only"]).optional().describe("用户要求仅变化时通知必须设changes_only；每轮汇报用every_check。旧任务未配置时保持每轮汇报"),
-  notifyInitial: z.boolean().optional().describe("changes_only首轮是否通知；默认false只建立基线，用户要求首次也汇报才设true"),
-  cronExpression: z.string().min(1).max(200).regex(/^\S+(?:\s+\S+){4}$/, "请使用五字段分钟级 Cron 时间表").optional().describe("五字段分钟级 Cron 时间表，按用户指定频率；不支持秒级轮询，不擅自提高检查频率"),
-  timezone: z.string().min(1).max(100).optional().describe("IANA 时区，如 Asia/Shanghai；未指定时使用当前宿主时区"),
-  nextWakeAt: z.number().int().nonnegative().optional().describe("一次性跟进或首次检查的 Unix 毫秒时间戳"),
-  catchUpPolicy: z.enum(["latest", "each", "skip"]).optional().describe("离线后补最新一次、逐次补查或跳过；默认 latest"),
-  scheduleBasis: z.enum(["user_specified", "recommended"]).optional().describe("区分用户指定时间与助理建议安排；创建watch必填。没有指定频率时可按任务建议合理低频，不冒充用户原话"),
-  scheduleRationale: z.string().min(1).max(1000).optional().describe("建议安排的理由及可更改说明；scheduleBasis=recommended时必填"),
-  stopConditionText: z.string().min(1).max(1000).optional().describe("保留用户给出的停止条件；检查后汇报是否满足，不自行宣称已完成"),
-}).strict();
+const watchRule = workWatchIntentSchema;
 const timing = { mode: z.enum(["once", "watch"]).optional(), watchRule: watchRule.optional(),
   deadlineAt: z.number().int().nonnegative().optional().describe("承诺期限 Unix 毫秒时间戳，到期只读跟进，不等同于自动取消") };
 const create = z.object({ ...fields, ...timing, title: text,
@@ -42,9 +32,25 @@ const change = z.object({ ...fields, ...timing, watchRule: watchRule.nullable().
 const control = z.object({ workId: text, reason: text.optional(), versionGuard: guard }).strict();
 const memory = z.object({ query: text }).strict();
 const memoryForget = z.object({ ids: z.array(text).min(1).max(20), userEvidence: text }).strict();
-const teamCreate = z.object({ templateId: z.string().min(1).max(200).optional(), title: z.string().min(1).max(240),
+const teamCreate = z.object({ ...timing, requestedOutcome: create.shape.requestedOutcome, mode: create.shape.mode, startImmediately: create.shape.startImmediately, templateId: z.string().min(1).max(200).optional(), title: z.string().min(1).max(240),
   goalDescription: z.string().min(1).max(2000), criteria: z.array(z.string().min(1).max(1000)).min(1).max(12),
   taskAssignment: workTeamTaskAssignmentSchema.optional().describe("按本次任务从候选 Bot 或模板内选成员并分配具体职责、依赖；负责人汇总。不用模板时必须提供。不能新建 Bot 或增加权限。依赖成员须排在前面，互不依赖的成员无需填写依赖。省略则沿用模板分工") }).strict();
+function validateWatchIntent(requestedOutcome: "ongoing" | "one_time", input: { mode: "once" | "watch"; watchRule?: z.infer<typeof watchRule> }): void {
+  const mode = input.mode;
+          if (requestedOutcome === "ongoing" && mode !== "watch")
+            throw new Error("持续目标不能按一次性计划受理；请保留ongoing理解并提供watch安排，不能只在目标文字里承诺持续");
+          if (requestedOutcome === "one_time" && input.watchRule?.cronExpression)
+            throw new Error("一次性目标不能创建无限周期；未来只检查一次请使用nextWakeAt，不设置cronExpression");
+          if (requestedOutcome === "ongoing" && !input.watchRule?.cronExpression)
+            throw new Error("持续目标需要后续周期安排；只有一次nextWakeAt不能满足持续跟进。可按任务建议合理频率并明确说明，也可询问必要偏好");
+          if (mode === "watch" && !input.watchRule?.cronExpression && input.watchRule?.nextWakeAt === undefined)
+            throw new Error("未来跟进需要有效检查时间或频率；可按任务建议合理安排并明确说明，不能仅保存一句承诺");
+          if (input.watchRule && mode !== "watch") throw new Error("持续跟踪规则必须使用 watch 模式");
+          if (mode === "watch" && !input.watchRule?.scheduleBasis)
+            throw new Error("检查安排须区分用户指定与助理建议；建议频率必须明确说明，不能冒充用户已指定");
+          if (input.watchRule?.scheduleBasis === "recommended" && !input.watchRule.scheduleRationale?.trim())
+            throw new Error("建议检查频率须给出简短理由和可更改说明");
+}
 // One source for Function Calling and runtime validation: nested strictness,
 // array bounds and all three positive version guards must not drift apart.
 const parameters = <Schema extends z.ZodType>(schema: Schema) =>
@@ -140,19 +146,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
           const mode = input.mode;
           // Enforce the model's structured distinction, not a host-language
           // heuristic that claims to understand arbitrary natural-language intent.
-          if (requestedOutcome === "ongoing" && mode !== "watch")
-            throw new Error("持续目标不能按一次性计划受理；请保留ongoing理解并提供watch安排，不能只在目标文字里承诺持续");
-          if (requestedOutcome === "one_time" && input.watchRule?.cronExpression)
-            throw new Error("一次性目标不能创建无限周期；未来只检查一次请使用nextWakeAt，不设置cronExpression");
-          if (requestedOutcome === "ongoing" && !input.watchRule?.cronExpression)
-            throw new Error("持续目标需要后续周期安排；只有一次nextWakeAt不能满足持续跟进。可按任务建议合理频率并明确说明，也可询问必要偏好");
-          if (mode === "watch" && !input.watchRule?.cronExpression && input.watchRule?.nextWakeAt === undefined)
-            throw new Error("未来跟进需要有效检查时间或频率；可按任务建议合理安排并明确说明，不能仅保存一句承诺");
-          if (input.watchRule && mode !== "watch") throw new Error("持续跟踪规则必须使用 watch 模式");
-          if (mode === "watch" && !input.watchRule?.scheduleBasis)
-            throw new Error("检查安排须区分用户指定与助理建议；建议频率必须明确说明，不能冒充用户已指定");
-          if (input.watchRule?.scheduleBasis === "recommended" && !input.watchRule.scheduleRationale?.trim())
-            throw new Error("建议检查频率须给出简短理由和可更改说明");
+          validateWatchIntent(requestedOutcome, input);
           shouldSchedule = mode !== "watch";
           startWatchImmediately = mode === "watch" && startImmediately === true;
           result = works.createWork(actor(), { ...input, mode,
@@ -281,10 +275,11 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
       const workspacePath = options.teamId ? works.teams.resolveWorkspace(userId, options.teamId) : options.botWorkspace?.(botId);
       return output({ templates, availableBots: workspacePath ? works.teams.foregroundCandidates(userId, botId, workspacePath) : [], workspacePath: workspacePath ?? null });
     } }),
-  defineTool({ name: "work_team_create", description: "创建并启动团队：先查 work_team_templates；可省略 templateId，提供 taskAssignment 从 availableBots 自主选择适合本次委托的成员和依赖，宿主默认有界并行。也可复用模板内成员和上限。负责人保持当前 Bot，权限仅来自已有范围，目录来自 Bot 设置。title/goalDescription/criteria 是执行规划，宿主独立保留用户原文与附件。用户要求执行即可开工，无需再次确认。不要另调用 work_create 重复派发。成功后可用 work_query_status 查询成员进度，work_pause/resume/cancel 控制已有团队。",
+  defineTool({ name: "work_team_create", description: "创建并启动团队：先查 work_team_templates；可省略 templateId，提供 taskAssignment 从 availableBots 自主选择适合本次委托的成员和依赖，宿主默认有界并行。也可复用模板内成员和上限。负责人保持当前 Bot，权限仅来自已有范围，目录来自 Bot 设置。title/goalDescription/criteria 是执行规划，宿主独立保留用户原文与附件。用户要求执行即可开工，无需再次确认。不要另调用 work_create 重复派发。持续委托必须传 requestedOutcome=ongoing、mode=watch 和 watchRule 周期/时区，不能创建once后文字承诺持续；每轮重新观察由成员执行、负责人汇总，默认等首次检查，用户要求现在也检查才startImmediately=true。成功后可用 work_query_status 查询成员进度，work_pause/resume/cancel 控制已有团队。",
     parameters: parameters(teamCreate), replay: "safe",
     execute: async (args, api, context) => {
-      const input = teamCreate.parse(args);
+      const { requestedOutcome, startImmediately, ...input } = teamCreate.parse(args);
+      validateWatchIntent(requestedOutcome, input);
       if (options.teamId && input.templateId && input.templateId !== options.teamId) throw new Error("不能向其他团队派发任务");
       if (options.teamId) input.templateId = options.teamId;
       const requestId = await botForegroundRequest(api, api.callId, context);
@@ -296,6 +291,9 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
         const result = works.teams.createFromForeground(actor(), { ...input,
           operationId: `bot:${conversationId}:${options.requestNamespace ? `request:${options.requestNamespace}:` : ""}team:${api.taskId}`, workspacePath, conversationId, sourceMessageId: source.user_message_id });
         if (result.ok && result.work) {
+          if (startImmediately && result.work.mode === "watch" && !result.replayed) {
+            works.teams.requestImmediateWatch(result.work);
+          }
           messages.linkWorkUserInput(source, result.work);
           messages.linkWorkAttachments(source, result.work.workId, result.work.inputSnapshotId);
           messages.linkWork(source, result.work.workId);

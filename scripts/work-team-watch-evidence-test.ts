@@ -1,0 +1,31 @@
+import assert from "node:assert/strict";
+import Database from "better-sqlite3";
+import { watchTeamReadEvidence } from "../src/main/agent/work/WorkWatchObservation";
+import type { WorkRepository } from "../src/main/agent/work/WorkRepository";
+import type { WorkDeliverableDto, WorkExecutionBindingDto } from "../src/shared/bot-work";
+const db=new Database(":memory:");
+db.exec('CREATE TABLE work_native_inbox(binding_id TEXT,payload_json TEXT,received_at INTEGER)');
+const base={workId:"work",intentRevision:1,inputSnapshotId:"input",ownerEpoch:1,status:"completed",workspaceBinding:"/workspace",inboxEventId:"round-1"};
+const member={...base,bindingId:"member",botId:"reader"} as WorkExecutionBindingDto;
+const owner={...base,bindingId:"owner",botId:"leader"} as WorkExecutionBindingDto;
+const summary=JSON.stringify({protocol:"watch-observation-v1",status:"observed",facts:[{source:"/workspace/source.txt",key:"file_content",value:"actual"}],summary:"original"});
+const result={...base,executionId:"member",deliverableId:"member-result",summary,uncoveredScope:[],isSpeculation:false,hasWriteConflicts:false} as unknown as WorkDeliverableDto;
+const ownerResult={...result,executionId:"owner",deliverableId:"owner-result"};
+let partial=false, event="round-1", include=true;
+const repo={getBinding:()=>({...member,inboxEventId:event}),listDeliverables:()=>include?[result]:[],executionInput:()=>JSON.stringify({teamAssignment:{role:"owner_summary",watchRound:{sequence:1},previousResults:[{bindingId:"member",deliverableId:"member-result"}]}})} as unknown as WorkRepository;
+const record=()=>{db.prepare('DELETE FROM work_native_inbox').run();db.prepare('INSERT INTO work_native_inbox VALUES (?,?,1)').run("member",JSON.stringify({status:"completed",summary,readEvidence:[{target:"/workspace/source.txt",kind:"file-content",toolName:"read",outputHash:"a".repeat(64),partial,at:1}]}));};
+try {
+ record(); const proof=watchTeamReadEvidence(db,repo,owner,ownerResult);assert(proof?.includes('a'.repeat(64)));
+ assert.equal(watchTeamReadEvidence(db,repo,owner,{...ownerResult,summary:summary.replace('original','different owner prose')}),proof,"prose cannot change evidence");
+ partial=true;record();assert.equal(watchTeamReadEvidence(db,repo,owner,ownerResult),undefined);
+ partial=false;record();event="old-round";assert.equal(watchTeamReadEvidence(db,repo,owner,ownerResult),undefined);
+ event="round-1";include=false;assert.equal(watchTeamReadEvidence(db,repo,owner,ownerResult),undefined);
+ include=true;assert.equal(watchTeamReadEvidence(db,repo,owner,{...ownerResult,summary:summary.replace('source.txt','other.txt')}),undefined);
+ const second={...result,executionId:"member2",deliverableId:"member2-result",summary:summary.replaceAll('source.txt','second.txt')};
+ const secondBinding={...member,bindingId:"member2"};
+ const aliasRepo={getBinding:(id:string)=>id==='member2'?secondBinding:member,listDeliverables:()=>[result,second],executionInput:()=>JSON.stringify({teamAssignment:{role:'owner_summary',watchRound:{sequence:1},previousResults:[{bindingId:'member',deliverableId:'member-result'},{bindingId:'member2',deliverableId:'member2-result'}]}})} as unknown as WorkRepository;
+ db.prepare('INSERT INTO work_native_inbox VALUES (?,?,2)').run('member2',JSON.stringify({status:'completed',summary:second.summary,readEvidence:[{target:'/workspace/second.txt',kind:'file-content',toolName:'read',outputHash:'b'.repeat(64),partial:false,at:2}]}));
+ const aliased=JSON.parse(summary);aliased.facts.push({...aliased.facts[0],source:'./source.txt'});
+ assert.equal(watchTeamReadEvidence(db,aliasRepo,owner,{...ownerResult,summary:JSON.stringify(aliased)}),undefined,'two aliases cannot cover another member source');
+ console.log('PASS team observation proof: exact member raw read, prose independent, no partial/missing/cross-round/other-source equality');
+} finally { db.close(); }
