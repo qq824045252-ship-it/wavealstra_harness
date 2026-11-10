@@ -120,6 +120,8 @@ async function evaluate(expression) {
 }
 // Transparent recording transport: every inference is forwarded to the real configured model.
 const provider = http.createServer(async (req,res) => {
+  const upstreamAbort = new AbortController();
+  res.once('close', () => upstreamAbort.abort());
   try {
     let raw=''; for await(const chunk of req) raw+=chunk;
     const body = JSON.parse(raw); requests.push(body);
@@ -135,7 +137,7 @@ const provider = http.createServer(async (req,res) => {
       res.end(JSON.stringify({error:{message:'Controlled ordinary unavailable provider; no execution or process crash',type:'service_unavailable'}})); return;
     }
     const response=await fetch((process.env.BOT_FRONTDOOR_BASE_URL || 'http://127.0.0.1:3425/v1')+'/chat/completions', {
-      method:'POST',headers:{'content-type':'application/json'},body:teamTransientFailure&&body.model==='controlled-unavailable'?JSON.stringify({...body,model:selectedModel}):raw});
+      method:'POST',signal:AbortSignal.any([upstreamAbort.signal,AbortSignal.timeout(240000)]),headers:{'content-type':'application/json'},body:teamTransientFailure&&body.model==='controlled-unavailable'?JSON.stringify({...body,model:selectedModel}):raw});
     if (concurrentScenario && currentText?.includes('CONCURRENT_SLOW')) await wait(40000);
     res.writeHead(response.status,{'content-type':response.headers.get('content-type')||'text/event-stream'});
     const audit={requestIndex,requestStartedAt,firstDeltaAt:null,endedAt:null,usage:[],label:/AUDIT_[ABM]/.exec(currentText||'')?.[0]||'composer',usageOmitted:metricsAuditScenario && (currentText||'').includes('AUDIT_M')};
@@ -1067,7 +1069,7 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       if (windows) cp.execFileSync('taskkill.exe', ['/PID', String(processDev.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
       else processDev.kill('SIGTERM');
     } }
-    if (log !== undefined) fs.closeSync(log); await new Promise(resolve=>provider.close(resolve));
+    if (log !== undefined) fs.closeSync(log); provider.closeAllConnections(); await new Promise(resolve=>provider.close(resolve));
     console.log(`Bot frontdoor pnpm dev UI: ${report.status}; ${path.join(out, 'report.json')}`);
   }
 })();

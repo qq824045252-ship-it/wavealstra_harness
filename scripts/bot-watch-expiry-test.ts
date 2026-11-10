@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { BotRegistry } from "../src/main/agent/work/BotRegistry";
 import { WorkService, DESKTOP_USER_GRANTS } from "../src/main/agent/work/WorkService";
+import { WorkWatchSupervision } from "../src/main/agent/work/WorkWatchSupervision";
 import { WorkConversationFeedback } from "../src/main/agent/work/WorkConversationFeedback";
 import { watchEndedByTime, watchTimeExpired } from "../src/shared/work-watch-expiry";
 import { workStatus } from "../src/renderer/src/lib/botWorkspacePresentation";
@@ -56,6 +57,7 @@ try {
   assert(dispatch.ok,JSON.stringify(dispatch)); const binding=works.repo.listBindings(running.workId)[0]; assert(binding);
   now+=30_000; works.scheduler.tick(now);
   assert.equal(works.getWork(running.workId)!.lifecycle,"closing");
+  assert.deepEqual(works.getProjection(running.workId)!.nextSteps,["已停止新检查，等待在途回执与最后一轮汇报"]);
   assert(db.connection.prepare("SELECT 1 FROM work_events_outbox WHERE work_id=? AND event_type='work.execution.stop_requested'").get(running.workId));
   assert(works.reconcileExecution({kind:"system",reason:"fixture-native-stop"},{bindingId:binding.bindingId,outcome:"stopped",note:"normal native stop receipt",usageTokens:0}).ok);
   works.scheduler.tick(now); assert.equal(works.getWork(running.workId)!.lifecycle,"closing","wait for final foreground review");
@@ -72,5 +74,23 @@ try {
   for(const endsAt of [NaN,Infinity,-1,now,8640000000000001]) {
     assert(!works.createWork(actor,{operationId:`invalid-${++sequence}`,title:"invalid",mode:"watch",watchRule:{endsAt}}).ok);
   }
+  const integrated=create(now+10_000);
+  const dispatchIntegrated=works.dispatchExecution(actor,{operationId:"integrated",workId:integrated.workId,botId:DEFAULT_BOT_ID,taskId:"expiry-integrated",
+    durableStoreKey:"integrated-store",conversationId:"integrated-native",workspaceBinding:root,delegatedScope:["workspace:read"],versionGuard:guard(integrated)});
+  assert(dispatchIntegrated.ok);const integratedBinding=works.repo.listBindings(integrated.workId)[0];
+  const deliveredFeedback=new WorkConversationFeedback({db:db.connection,userId:LOCAL_USER_ID,works,isAuthority:()=>true,superviseWatch:true});
+  const supervisor=new WorkWatchSupervision({db:db.connection,works,isAuthority:()=>true,wake:()=>{},
+    deliver: input=>deliveredFeedback.deliverCompletion(input),review:async input=>{
+      assert.equal(input.context.lifecycle,"closing");
+      return {decision:"deliver",outcome:"partial",reply:"期限已到，本轮按正常停止回执结算；没有继续下一轮。",missing:[]};
+    }});
+  works.scheduler.setExpiryReviewGate(id=>!supervisor.hasPending(id));
+  now+=10_000;works.scheduler.tick(now);
+  assert(works.reconcileExecution({kind:"system",reason:"normal-stop-receipt"},{bindingId:integratedBinding.bindingId,outcome:"stopped",note:"stop acknowledged",usageTokens:0}).ok);
+  assert(supervisor.hasPending(integrated.workId));works.scheduler.tick(now);assert.equal(works.getWork(integrated.workId)!.lifecycle,"closing");
+  supervisor.wake();
+  for(let n=0;n<50&&supervisor.hasPending(integrated.workId);n++) await new Promise(resolve=>setTimeout(resolve,10));
+  assert(!supervisor.hasPending(integrated.workId),"real supervision ledger and feedback delivery settle stopped round");
+  works.scheduler.tick(now);assert(watchEndedByTime(works.getWork(integrated.workId)!));supervisor.close();
   console.log("PASS watch expiry: absolute boundary, pause, restart, no fabricated semantic success, user cancellation priority, final review gate, neutral feedback, idempotence, extension, reminder separation");
 } finally { db!.close(); rmSync(root,{recursive:true,force:true}); }

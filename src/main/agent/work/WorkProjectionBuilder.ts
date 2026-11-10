@@ -60,12 +60,12 @@ export class WorkProjectionBuilder {
       .filter((deliverable) => currentResultIds.has(deliverable.deliverableId))
       .flatMap((deliverable) => deliverable.uncoveredScope))];
     const nextSteps: string[] = [];
-    if (work.lifecycle === "closing") nextSteps.push("等待在途执行结束");
+    if (work.lifecycle === "closing") nextSteps.push(work.watchRule?.termination ? "已停止新检查，等待在途回执与最后一轮汇报" : "等待在途执行结束");
     const settlingActions = this.sources.repo.listAdmissions(work.workId).filter(item => item.state === "admitted").length;
     const gaps = this.sources.partialResults.gaps(work.workId);
     if (work.lifecycle === "paused") nextSteps.push(settlingActions ? "已暂停，正在结算在途操作" : "事项已暂停，恢复后继续");
-    if (gaps.length) nextSteps.push(`保留已确认成果，仍有 ${gaps.length} 项必要缺口待核对：未执行动作可关联后续证据覆盖，其余缺口按原身份处理`);
-    if (work.lifecycle !== "closed") {
+    if (gaps.length && !work.watchRule?.termination) nextSteps.push(`保留已确认成果，仍有 ${gaps.length} 项必要缺口待核对：未执行动作可关联后续证据覆盖，其余缺口按原身份处理`);
+    if (work.lifecycle !== "closed" && !work.watchRule?.termination) {
       for (const blocker of blockers.filter((item) => item.status === "open" && item.waitingForUserInput)) {
         nextSteps.push(`需要你的决定：${blocker.reason}`);
       }

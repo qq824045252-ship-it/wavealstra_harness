@@ -111,6 +111,7 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
       </section>
       {work.mode === "watch" && work.phase4 && <section className="bot-detail-section" aria-label="持续跟踪安排">
         <h3>持续跟踪</h3>
+        {work.watchPlan?.endsAt !== undefined && <p>终止时间 {new Date(work.watchPlan.endsAt).toLocaleString(undefined, { timeZone: work.phase4.subscriptions[0]?.timezone })}（{work.phase4.subscriptions[0]?.timezone ?? "本机时区"}）；到期停止新检查并结算，不等同于目标成功。</p>}
         {work.watchPlan?.scheduleBasis === "recommended" && <p>建议安排，可随时更改。{work.watchPlan.scheduleRationale}</p>}
         {work.phase4.subscriptions.filter(item => item.status !== "stopped").map(item => <p key={item.subscriptionId}>
           {item.nextWakeAt !== undefined ? `下次检查 ${new Date(item.nextWakeAt).toLocaleString(undefined, { timeZone: item.timezone })}` : "本次安排没有后续检查"}

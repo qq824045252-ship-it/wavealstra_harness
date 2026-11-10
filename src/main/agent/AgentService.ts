@@ -1737,6 +1737,7 @@ export class AgentService {
       isAuthority: () => this.workHostAuthority.isAuthority(), review: input => this.botResultTurns!.review(input),
       deliver: input => this.workConversationFeedback!.deliverCompletion(input), wake: () => {} });
     this.workWatchSupervision.start();
+    this.workService.scheduler.setExpiryReviewGate(workId => !this.workWatchSupervision!.hasPending(workId));
     this.workCompletion.start();
     this.workDispatchQueue.start();
     this.workService.scheduler.start();

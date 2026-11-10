@@ -177,7 +177,7 @@ export class WorkPhase5Facts {
       acceptedCount: projection.acceptedDeliverableIds.length,
       currentCardKeys: currentCards.map(card => card.cardKey),
       currentConclusion: work.watchRule?.termination ? (work.lifecycle === "closed" ? "到期结束" : "已到期，正在结算") : work.closureConclusion ?? (currentCards.find(card => card.kind === "owner_summary")?.summary || currentCards.at(-1)?.summary || undefined),
-      pendingUserDecisions: [...new Set([...decisions.map(blocker => blocker.reason), ...this.ownerSummaries.pendingDecisions(work)])],
+      pendingUserDecisions: work.watchRule?.termination ? [] : [...new Set([...decisions.map(blocker => blocker.reason), ...this.ownerSummaries.pendingDecisions(work)])],
       nextSteps: projection.nextSteps.slice(0, 6),
       unverifiedScope: this.cards.unverifiedScope(work, projection.phase3?.artifactSnapshotId),
       delivery: notifications.map(notification => {
