@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useAppStore } from "@/store/appStore";
 import type { WorkProjectionDto } from "@shared/bot-work";
 import type { BotActiveRequestDto } from "@shared/bot-conversation";
@@ -12,16 +12,17 @@ const PAGE_SIZE = 40;
 /** Mounted only while open: no background polling or global mutation of execution state. */
 export function BotActivityMonitor({ onOpenBotMessage, onOpenWork }: { onOpenBotMessage: (messageId: string) => void; onOpenWork?: () => void }): React.JSX.Element {
   const [open, setOpen] = useState(false);
+  const anchor = useRef<HTMLButtonElement>(null);
   const activeBotId = useAppStore(s => s.activeBotId);
   const activeTeam = useAppStore(s => s.activeTeam);
   const [globalBotId, setGlobalBotId] = useState<string | null>(null);
   const contextKey = activeTeam ? "team:" + activeTeam.templateId : activeBotId;
   const globalScope = globalBotId !== null && globalBotId === contextKey;
   const setGlobalScope = (global: boolean) => setGlobalBotId(global ? contextKey : null);
-  return <><button type="button" className="bot-quiet-button" aria-haspopup="dialog" onClick={() => { setGlobalScope(false); setOpen(true); }}>所有消息</button>
-    {open && <ActivityWindow key={(activeTeam?.templateId ?? activeBotId ?? "") + ":" + globalScope} scopeTeamId={globalScope ? undefined : activeTeam?.templateId} scopeBotId={globalScope ? null : activeBotId ?? ""} onScopeChange={setGlobalScope} onClose={() => setOpen(false)} onOpenBotMessage={onOpenBotMessage} onOpenWork={onOpenWork} />}</>;
+  return <><button type="button" ref={anchor} className="bot-quiet-button" aria-haspopup="dialog" aria-expanded={open} onClick={() => { setGlobalScope(false); setOpen(value => !value); }}>所有消息</button>
+    {open && <ActivityWindow anchor={anchor.current} key={(activeTeam?.templateId ?? activeBotId ?? "") + ":" + globalScope} scopeTeamId={globalScope ? undefined : activeTeam?.templateId} scopeBotId={globalScope ? null : activeBotId ?? ""} onScopeChange={setGlobalScope} onClose={() => setOpen(false)} onOpenBotMessage={onOpenBotMessage} onOpenWork={onOpenWork} />}</>;
 }
-export function ActivityWindow({ scopeTeamId, scopeBotId, onScopeChange, onClose, onOpenBotMessage, onOpenWork }: { scopeTeamId?: string; scopeBotId: string | null; onScopeChange: (global: boolean) => void; onClose: () => void; onOpenBotMessage: (messageId: string) => void; onOpenWork?: () => void }): React.JSX.Element {
+export function ActivityWindow({ anchor, scopeTeamId, scopeBotId, onScopeChange, onClose, onOpenBotMessage, onOpenWork }: { anchor: HTMLButtonElement | null; scopeTeamId?: string; scopeBotId: string | null; onScopeChange: (global: boolean) => void; onClose: () => void; onOpenBotMessage: (messageId: string) => void; onOpenWork?: () => void }): React.JSX.Element {
   const tasks = useAppStore(s => s.tasks);
   const works = useAppStore(s => s.botWorks);
   const [monitorWorks, setMonitorWorks] = useState<WorkProjectionDto[]>(works);
@@ -39,12 +40,42 @@ export function ActivityWindow({ scopeTeamId, scopeBotId, onScopeChange, onClose
   const [checkedAt, setCheckedAt] = useState(0);
   const [query, setQuery] = useState("");
   const [kind, setKind] = useState<ActivityKind | "all">("all");
-  const [includeEnded, setIncludeEnded] = useState(false);
+  const [includeEnded, setIncludeEnded] = useState(true);
   const [limit, setLimit] = useState(PAGE_SIZE);
   const dialog = useRef<HTMLDialogElement>(null);
   const refreshing = useRef(false);
   const scope = String(scopeTeamId) + ":" + String(scopeBotId) + ":" + bots.map(bot => bot.userId + ":" + bot.botId).sort().join("|");
-  useEffect(() => { dialog.current?.showModal(); return () => dialog.current?.close(); }, []);
+  useLayoutEffect(() => {
+    const element = dialog.current;
+    if (!element || !anchor) return;
+    const position = () => {
+      const button = anchor.getBoundingClientRect();
+      const width = Math.min(560, window.innerWidth - 24);
+      const below = window.innerHeight - button.bottom - 16;
+      const above = button.top - 16;
+      const openBelow = below >= 240 || below >= above;
+      const height = Math.max(100, Math.min(640, openBelow ? below : above));
+      element.style.width = width + "px";
+      element.style.maxHeight = height + "px";
+      element.style.left = Math.max(12, Math.min(button.right - width, window.innerWidth - width - 12)) + "px";
+      element.style.top = (openBelow ? Math.max(12, button.bottom + 8) : Math.max(12, button.top - element.getBoundingClientRect().height - 8)) + "px";
+    };
+    element.showPopover();
+    position();
+    const resize = new ResizeObserver(position);
+    resize.observe(anchor); resize.observe(element);
+    window.addEventListener("resize", position);
+    window.addEventListener("scroll", position, true);
+    const dismiss = (event: PointerEvent) => { if (!element.contains(event.target as Node) && !anchor.contains(event.target as Node)) onClose(); };
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") { event.preventDefault(); onClose(); anchor.focus(); } };
+    document.addEventListener("pointerdown", dismiss);
+    document.addEventListener("keydown", escape);
+    return () => {
+      resize.disconnect(); element.hidePopover();
+      window.removeEventListener("resize", position); window.removeEventListener("scroll", position, true);
+      document.removeEventListener("pointerdown", dismiss); document.removeEventListener("keydown", escape);
+    };
+  }, [anchor]);
   useEffect(() => {
     setSubagents({}); setActiveRequests([]); setLoading(true);
     let live = true;
@@ -81,7 +112,7 @@ export function ActivityWindow({ scopeTeamId, scopeBotId, onScopeChange, onClose
         }));
         if (live) { activeTasks = new Set(Object.entries(next).filter(([, items]) => items.length > 0).map(([id]) => id)); setSubagents(current => ({ ...current, ...next })); setCheckedAt(Date.now()); setLoadError(""); }
       } catch (error) {
-        if (live) { setSubagents({}); setLoadError(error instanceof Error ? error.message : String(error)); }
+        if (live) { setLoadError(error instanceof Error ? error.message : String(error)); }
       } finally { refreshing.current = false; if (live) setLoading(false); }
     };
     void refresh();
@@ -90,7 +121,14 @@ export function ActivityWindow({ scopeTeamId, scopeBotId, onScopeChange, onClose
     return () => { live = false; clearInterval(timer); unsubscribe?.(); };
   }, [scope]);
   const rows = useMemo(() => buildActivityRows({ tasks, works: monitorWorks, bots, histories, subagents, now: checkedAt, activeRequests, scopeBotId, scopeTeamId }), [tasks, monitorWorks, bots, histories, subagents, checkedAt, activeRequests, scopeBotId, scopeTeamId]);
-  const filtered = rows.filter(row => (includeEnded || !row.ended) && (kind === "all" || row.kind === kind)
+  // Keep rows in their original positions while open. Status still updates in place;
+  // newly discovered rows append instead of moving the user's click target.
+  const rowOrder = useRef(new Map<string, number>());
+  const stableRows = useMemo(() => {
+    for (const row of rows) if (!rowOrder.current.has(row.id)) rowOrder.current.set(row.id, rowOrder.current.size);
+    return [...rows].sort((a, b) => rowOrder.current.get(a.id)! - rowOrder.current.get(b.id)!);
+  }, [rows]);
+  const filtered = stableRows.filter(row => (includeEnded || !row.ended) && (kind === "all" || row.kind === kind)
     && [row.title, row.owner, row.label, row.detail].join(" ").toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
   useEffect(() => {
     const source = inspected?.sourceRequest;
@@ -141,11 +179,11 @@ export function ActivityWindow({ scopeTeamId, scopeBotId, onScopeChange, onClose
     onClose();
   };
   const failedSources = Object.keys(errors).filter(id => scopeBotId === null || id === scopeBotId).length;
-  return <dialog ref={dialog} className="bot-activity-window" aria-label="所有消息与任务进度" onCancel={event => { event.preventDefault(); onClose(); }}>
+  return <dialog ref={dialog} popover="manual" className="bot-activity-window" aria-label="所有消息与任务进度" onCancel={event => { event.preventDefault(); onClose(); }}>
     <header><h2>{scopeBotId === null ? "全部任务与消息" : (scopeTeamId ? useAppStore.getState().activeTeam?.name ?? "当前团队" : bots[0]?.displayName ?? "当前 Bot") + " · 所有消息"}</h2>
       <button type="button" aria-label="关闭所有消息" onClick={onClose}><IconX size={20} /></button></header>
     <div className="bot-activity-controls">
-      <select aria-label="消息范围" value={scopeBotId === null ? "all" : "bot"} onChange={event => onScopeChange(event.target.value === "all")}><option value="bot">{scopeTeamId ? "当前团队" : "当前 Bot"}</option><option value="all">全局总览</option></select>
+      <select aria-label="消息范围" value={scopeBotId === null ? "all" : "bot"} onChange={event => onScopeChange(event.target.value === "all")}><option value="bot">{useAppStore.getState().activeTeam ? "当前团队" : "当前 Bot"}</option><option value="all">全局总览</option></select>
       <input autoFocus type="search" aria-label="搜索所有任务与消息" placeholder="搜索任务或消息" value={query} onChange={event => { setQuery(event.target.value); setLimit(PAGE_SIZE); }} />
       <select aria-label="任务类型" value={kind} onChange={event => { setKind(event.target.value as ActivityKind | "all"); setLimit(PAGE_SIZE); }}><option value="all">所有类型</option>{Object.entries(activityKindLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>
       <label><input type="checkbox" checked={includeEnded} onChange={event => { setIncludeEnded(event.target.checked); setLimit(PAGE_SIZE); }} />包含已结束</label>
@@ -160,7 +198,7 @@ export function ActivityWindow({ scopeTeamId, scopeBotId, onScopeChange, onClose
       <h4>你的原始请求</h4><div>{inspected.sourceRequest.prompt?.text || "原请求正文不可用"}</div>
       <h4>回复与进展</h4><div>{inspected.sourceRequest.message.text || inspected.sourceRequest.message.error || inspected.label}</div>
     </div> : <div className="bot-activity-list">
-      {!loading && !filtered.length && <p className="bot-activity-empty">{query || kind !== "all" ? "没有匹配的任务或消息。" : "当前没有未结束的任务。勾选「包含已结束」查看已有消息与结果。"}</p>}
+      {!loading && !filtered.length && <p className="bot-activity-empty">{query || kind !== "all" ? "没有匹配的任务或消息。" : "当前没有任务或消息。"}</p>}
       {filtered.slice(0, limit).map(row => <button type="button" className="bot-activity-row" key={row.id} data-activity-id={row.id} title={row.owner + " · " + activityKindLabels[row.kind]} onClick={() => openRow(row)}>
         <strong className="bot-activity-title" title={row.title}>{row.title}</strong>
         <span className={`bot-activity-status${row.running ? " is-running" : ""}`} title={row.label}>{row.label}</span>

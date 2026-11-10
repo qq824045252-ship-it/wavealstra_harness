@@ -1,7 +1,7 @@
 /* Scoped selectors intentionally beat BotWorkspacePage's generic button rules. */
-dialog.bot-activity-window { position:fixed; inset:0; margin:auto; width:min(560px,calc(100vw - 32px)); max-width:calc(100vw - 24px); height:fit-content; max-height:min(720px,calc(100dvh - 48px)); padding:0; border:1px solid var(--border-default); border-radius:12px; background:var(--bg-panel); color:var(--fg); box-shadow:var(--shadow-md); }
-dialog.bot-activity-window[open] { display:flex; flex-direction:column; }
-.bot-activity-window::backdrop { background:rgba(0,0,0,.18); }
+dialog.bot-activity-window { position:fixed; inset:auto; margin:0; width:min(560px,calc(100vw - 32px)); max-width:calc(100vw - 24px); height:fit-content; max-height:min(720px,calc(100dvh - 48px)); padding:0; border:1px solid var(--border-default); border-radius:12px; background:var(--bg-panel); color:var(--fg); box-shadow:var(--shadow-md); }
+dialog.bot-activity-window:popover-open { display:flex; flex-direction:column; }
+.bot-activity-window::backdrop { background:transparent; pointer-events:none; }
 .bot-activity-window header { display:flex; gap:12px; justify-content:space-between; align-items:center; padding:14px 18px 8px; flex-shrink:0; }
 .bot-activity-window header h2 { min-width:0; overflow-wrap:anywhere; margin:0; font-size:16px; line-height:1.4; font-weight:650; }
 .bot-activity-window header button { display:flex; flex:0 0 auto; width:28px; height:28px; background:transparent; border:0; color:var(--fg-secondary); padding:4px; cursor:pointer; }

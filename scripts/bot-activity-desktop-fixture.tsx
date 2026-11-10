@@ -13,4 +13,4 @@ useAppStore.setState({ activeBotId: "owner", tasks, botWorks: works, botIdentiti
   setActiveTask: id => { navigations.push("task:" + id); }, openSubagentView: (taskId, id) => { navigations.push("sub:" + taskId + ":" + id); },
   setActiveBotId: id => { navigations.push("bot:" + id); }, setSelectedWorkId: id => { navigations.push("work:" + id); }, setPage: page => { navigations.push("page:" + page); },
 });
-createRoot(document.getElementById("root")!).render(<div className="bot-workspace"><BotActivityMonitor onOpenBotMessage={id => navigations.push("message:" + id)} /></div>);
+createRoot(document.getElementById("root")!).render(<div className="bot-workspace" style={{ justifyContent: "flex-end" }}><BotActivityMonitor onOpenBotMessage={id => navigations.push("message:" + id)} /></div>);

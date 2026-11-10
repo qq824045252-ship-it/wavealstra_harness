@@ -14,19 +14,26 @@ app.whenReady().then(async () => {
  const wait=async(s)=>{const end=Date.now()+10000;while(!await ev(s)){if(Date.now()>end)throw Error("Timeout "+s);await new Promise(r=>setTimeout(r,30));}};
  const open=async()=>{await ev("document.querySelector('#root button').click()");await wait("!!document.querySelector('select[aria-label=\"消息范围\"]')");
  await ev("(()=>{const s=document.querySelector('select[aria-label=\"消息范围\"]');s.value='all';s.dispatchEvent(new Event('change',{bubbles:true}))})()");
- await wait("document.querySelectorAll('.bot-activity-row').length === 4");};
+ await wait("document.querySelectorAll('.bot-activity-row').length === 6");};
  await wait("document.querySelector('#root button')"); await open();
+ assert(await ev("document.querySelector('dialog').matches(':popover-open') && !document.querySelector('dialog').matches(':modal')"),"non-blocking anchored menu, not modal");
+ await win.webContents.debugger.sendCommand("Input.dispatchMouseEvent",{type:"mousePressed",x:1,y:1,button:"left",clickCount:1});
+ await win.webContents.debugger.sendCommand("Input.dispatchMouseEvent",{type:"mouseReleased",x:1,y:1,button:"left",clickCount:1});
+ await wait("!document.querySelector('dialog')");
+ await open();
+ await ev("document.querySelector('#root button').click()");
+ await wait("!document.querySelector('dialog')");
+ await open();
  assert(await ev("document.querySelector('.bot-activity-summary').textContent.includes('执行中 3')"));
- assert(!await ev("document.querySelector('[data-activity-id=\"task:failed\"]')"));
- await ev("document.querySelector('input[type=checkbox]').click()");
- await wait("document.querySelectorAll('.bot-activity-row').length === 6");
+ assert(await ev("!!document.querySelector('[data-activity-id=\"task:failed\"]')"));
+
  assert(await ev("document.querySelector('[data-activity-id=\"task:failed\"]').textContent.includes('执行失败')"));
  assert(await ev("Array.from(document.querySelectorAll('.bot-activity-row')).every(row=>row.children.length===2 && !row.querySelector('time,.bot-activity-detail,.bot-activity-meta'))"),"list contains only task name and progress");
  for(const width of [1050,760,440]){
  await win.webContents.debugger.sendCommand("Emulation.setDeviceMetricsOverride",{width,height:850,deviceScaleFactor:1,mobile:false});
  await new Promise(r=>setTimeout(r,100));
  assert(await ev("(()=>{const d=document.querySelector('dialog');const r=d.getBoundingClientRect();return r.left>=0 && r.right<=innerWidth && d.scrollWidth<=d.clientWidth+1})()"),"no overflow "+width);
- assert(await ev("(()=>{const d=document.querySelector('dialog').getBoundingClientRect();const r=document.querySelector('.bot-activity-row');const t=r.querySelector('.bot-activity-title').getBoundingClientRect();return getComputedStyle(r).display==='grid' && t.width>=r.clientWidth*.5 && r.getBoundingClientRect().height<=70 && d.height<780 && Math.abs(d.left-(innerWidth-d.width)/2)<2})()"),"compact, centered, title-first layout under real Bot workspace CSS "+width);
+ assert(await ev("(()=>{const d=document.querySelector('dialog').getBoundingClientRect();const r=document.querySelector('.bot-activity-row');const t=r.querySelector('.bot-activity-title').getBoundingClientRect();return getComputedStyle(r).display==='grid' && t.width>=r.clientWidth*.5 && r.getBoundingClientRect().height<=70 && d.height<780 && Math.abs(d.top-document.querySelector('#root button').getBoundingClientRect().bottom-8)<2})()"),"compact, button-anchored, title-first layout under real Bot workspace CSS "+width);
  const shot=await win.webContents.debugger.sendCommand("Page.captureScreenshot",{format:"png",captureBeyondViewport:false});
  fs.writeFileSync(path.join(out,"bot-activity-"+width+".png"),Buffer.from(shot.data,"base64"));
  }
@@ -85,6 +92,17 @@ app.whenReady().then(async () => {
  await ev(`(()=>{const s=window.monitorGetState();window.monitorSetState({activeTeam:{templateId:"team-a",name:"调研小队",ownerBotId:"owner",members:[]},botHistories:{...s.botHistories,"team:team-a":{...s.botHistories.owner,teamId:"team-a",messages:s.botHistories.owner.messages.map(m=>({...m,teamId:"team-a",messageId:"team-"+m.messageId,text:m.role==="user"?"团队专属委托":"团队正在整理"}))}}})})()`);
  await wait("document.querySelectorAll('.bot-activity-row').length===1 && document.querySelector('.bot-activity-row').textContent.includes('团队专属委托')");
  assert(await ev("document.querySelector('h2').textContent.includes('调研小队')"));
+ await ev(`(()=>{const w=window.monitorGetState().botWorks[0];window.monitorSetState({botWorks:[{...w,workId:"team-open",title:"团队任务一",team:{teamId:"team-a",teamName:"调研小队",members:[]},updatedAt:500},{...w,workId:"team-closed",title:"团队任务二",team:{teamId:"team-a",teamName:"调研小队",members:[]},lifecycle:"closed",closureConclusion:"ended_unsuccessfully",updatedAt:400}]})})()`);
+ await wait("document.querySelectorAll('.bot-activity-row').length===3");
+ assert(await ev("!!document.querySelector('[data-activity-id=\"work:team-closed\"]')"),"closed team task is visible by default");
+ const beforeOrder=await ev("Array.from(document.querySelectorAll('.bot-activity-row')).map(e=>e.dataset.activityId)");
+ await ev(`(()=>{const s=window.monitorGetState();window.monitorSetState({botWorks:s.botWorks.map(w=>({...w,updatedAt:w.workId==="team-closed"?9000:300})),botHistories:{...s.botHistories,"team:team-a":{...s.botHistories["team:team-a"],messages:s.botHistories["team:team-a"].messages.map(m=>({...m,status:"completed",updatedAt:9900}))}}})})()`);
+ await wait("document.querySelector('[data-activity-id=\"bot:team-reply\"]').textContent.includes('已回复')");
+ await new Promise(r=>setTimeout(r,5500));
+ assert.deepEqual(await ev("Array.from(document.querySelectorAll('.bot-activity-row')).map(e=>e.dataset.activityId)"),beforeOrder,"real status updates must not reorder or remove a row while open");
+ const teamShot=await win.webContents.debugger.sendCommand("Page.captureScreenshot",{format:"png",captureBeyondViewport:false});
+ fs.writeFileSync(path.join(out,"bot-activity-team-two.png"),Buffer.from(teamShot.data,"base64"));
+
  await ev("(()=>{const s=document.querySelector('select[aria-label=\"消息范围\"]');s.value='all';s.dispatchEvent(new Event('change',{bubbles:true}))})()");
  await wait("document.querySelector('h2').textContent.includes('全部任务')");
  await ev("window.monitorSetState({activeTeam:{templateId:'team-b',name:'另一团队',ownerBotId:'owner',members:[]}})");
