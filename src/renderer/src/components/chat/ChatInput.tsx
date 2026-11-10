@@ -1,11 +1,10 @@
-import { ModelOptionButton } from "./ModelOptionButton";
+import { ModelMenu } from "./ModelMenu";
 import { ComposerAttachmentChips } from "./ComposerAttachmentChips";
 import { composerFiles, mergeComposerAttachments, pickComposerAttachment } from "./composerAttachments";
 import ChatComposer from "./ChatComposer";
 import { useConsultSelection } from "./useConsultSelection";
 import { requestConsultForMessage } from "@shared/multi-model-consult";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { useDismissOnClickOutside } from "@/hooks/useDismissOnClickOutside";
 import { selectActiveTaskArtifacts, useAppStore, type StreamingSendMode } from "@/store/appStore";
 import type {
@@ -19,12 +18,6 @@ import type { LocalConnectorDto, ModeSkillPolicy } from "@shared/agent-ipc";
 import type { ExternalAgentDescriptorDto } from "@shared/external-agent";
 import { isSkillVisibleForMode, sortSkillsByModePolicy } from "@shared/mode-access-filter";
 import { emptyModePolicy } from "@shared/mode-profile";
-import {
-  hasReasoningOption,
-  reasoningEffortLabel,
-  reasoningEffortValues,
-  reasoningPreferenceSummary,
-} from "@shared/model-metadata";
 import { activeConnectorChips } from "@/lib/connectorChips";
 import { activeExecutionLabel, taskHasActiveExecution } from "@/utils/taskFilters";
 import { canTriggerEnhance } from "@/features/prompt-enhance/policy";
@@ -75,12 +68,6 @@ import {
   REFERENCE_CONTEXT_START,
   buildTaskReferenceBlock,
 } from "@/lib/taskReference";
-import {
-  layoutRect,
-  layoutViewportSize,
-  placeFixedSideFlyout,
-  placeStackOrSide,
-} from "@/lib/placeFixedMenu";
 import {
   clearTaskComposerDraft,
   composerDraftScope,
@@ -419,14 +406,6 @@ export default function ChatInput({
   const [addOpen, setAddOpen] = useState(false);
   const [permOpen, setPermOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
-  const [maxMode, setMaxMode] = useState(false);
-  /** 模型列表悬停项 id，用于自动弹出思考等级菜单 */
-  const [hoverModelId, setHoverModelId] = useState<string | null>(null);
-  /** 预览卡：顶边对齐当前模型行，落在列表左侧 */
-  const [flyoutPos, setFlyoutPos] = useState<{ top: number; left: number } | null>(null);
-  /** 思考强度子菜单：挂在「思考强度」行下方，不改预览卡 */
-  const [detailPos, setDetailPos] = useState<{ top: number; left: number } | null>(null);
-  const [thinkingDetailOpen, setThinkingDetailOpen] = useState(false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [projectOpen, setProjectOpen] = useState(false);
   const [modeOpen, setModeOpen] = useState(false);
@@ -443,30 +422,11 @@ export default function ChatInput({
   }, [chatFocusTick]);
 
   const modelAnchorRef = useRef<HTMLDivElement>(null);
-  const modelPopupRef = useRef<HTMLDivElement>(null);
-  const modelOptionsRef = useRef<HTMLDivElement>(null);
-  const thinkingFlyoutRef = useRef<HTMLDivElement>(null);
-  const thinkingEntryRef = useRef<HTMLButtonElement>(null);
-  const thinkingDetailRef = useRef<HTMLDivElement>(null);
-  const flyoutRowRef = useRef<HTMLElement | null>(null);
   const addAnchorRef = useRef<HTMLDivElement>(null);
   const streamingModeAnchorRef = useRef<HTMLDivElement>(null);
   /** portal 到 body 的添加菜单根节点（含子菜单），需纳入 click-outside */
   const addMenuRootRef = useRef<HTMLDivElement>(null);
-  const hoverLeaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useDismissOnClickOutside(
-    modelOpen,
-    () => {
-      setModelOpen(false);
-      setHoverModelId(null);
-      setFlyoutPos(null);
-      setDetailPos(null);
-      setThinkingDetailOpen(false);
-    },
-    modelAnchorRef,
-    [thinkingFlyoutRef, thinkingDetailRef],
-  );
   useDismissOnClickOutside(addOpen, () => setAddOpen(false), addAnchorRef, [addMenuRootRef]);
   useDismissOnClickOutside(streamingModeOpen, () => setStreamingModeOpen(false), streamingModeAnchorRef);
   useDismissOnClickOutside(pinMenuOpen, () => setPinMenuOpen(false), pinChipRef);
@@ -555,10 +515,6 @@ export default function ChatInput({
   const closeAllPopups = (): void => {
     setPermOpen(false);
     setModelOpen(false);
-    setHoverModelId(null);
-    setFlyoutPos(null);
-    setDetailPos(null);
-    setThinkingDetailOpen(false);
     setAddOpen(false);
     setWorkspaceOpen(false);
     setProjectOpen(false);
@@ -566,75 +522,6 @@ export default function ChatInput({
     setTagOpen(false);
     setHomePermOpen(false);
   };
-
-  const samePos = (
-    prev: { top: number; left: number } | null,
-    next: { top: number; left: number },
-  ): boolean => Boolean(prev && prev.top === next.top && prev.left === next.left);
-
-  const positionThinkingFlyout = (
-    rowEl: HTMLElement | null,
-    detailOpen = thinkingDetailOpen,
-  ): void => {
-    const popup = modelPopupRef.current;
-    if (!rowEl || !popup) return;
-    const viewport = layoutViewportSize();
-    const flyout = thinkingFlyoutRef.current;
-    const next = placeFixedSideFlyout({
-      row: layoutRect(rowEl),
-      avoid: layoutRect(popup),
-      flyoutWidth: flyout?.offsetWidth ?? 220,
-      flyoutHeight: flyout?.offsetHeight ?? 72,
-      viewport,
-    });
-    setFlyoutPos((prev) => (samePos(prev, next) ? prev : next));
-
-    if (!detailOpen) {
-      setDetailPos((prev) => (prev == null ? prev : null));
-      return;
-    }
-    const detail = thinkingDetailRef.current;
-    const dnext = placeStackOrSide({
-      preview: {
-        top: next.top,
-        left: next.left,
-        width: flyout?.offsetWidth ?? 220,
-        height: flyout?.offsetHeight ?? 72,
-      },
-      menuWidth: detail?.offsetWidth ?? 200,
-      menuHeight: detail?.offsetHeight ?? 52,
-      viewport,
-    });
-    setDetailPos((prev) => (samePos(prev, dnext) ? prev : dnext));
-  };
-
-  const openThinkingFlyout = (modelId: string, rowEl: HTMLElement | null): void => {
-    if (hoverLeaveTimer.current) {
-      clearTimeout(hoverLeaveTimer.current);
-      hoverLeaveTimer.current = null;
-    }
-    flyoutRowRef.current = rowEl;
-    const keepDetail = hoverModelId === modelId && thinkingDetailOpen;
-    if (!keepDetail) setThinkingDetailOpen(false);
-    setHoverModelId(modelId);
-    positionThinkingFlyout(rowEl, keepDetail);
-  };
-
-  const scheduleCloseThinkingFlyout = (): void => {
-    if (hoverLeaveTimer.current) clearTimeout(hoverLeaveTimer.current);
-    hoverLeaveTimer.current = setTimeout(() => {
-      setHoverModelId(null);
-      setFlyoutPos(null);
-      setDetailPos(null);
-      setThinkingDetailOpen(false);
-      flyoutRowRef.current = null;
-    }, 200);
-  };
-
-  /** Product capability truth comes from model metadata, not Pi transport levels. */
-  const reasoningOptionsForModel = (m: ModelConfig) => m.metadata?.reasoningOptions ?? [];
-  const canThinkOn = (m: ModelConfig): boolean =>
-    Boolean(m.supportsReasoning && reasoningOptionsForModel(m).length > 0);
 
   const availableModels = useMemo(() => {
     const seen = new Set<string>();
@@ -648,22 +535,6 @@ export default function ChatInput({
     });
   }, [models]);
 
-  useLayoutEffect(() => {
-    if (!modelOpen || !hoverModelId) return;
-    positionThinkingFlyout(flyoutRowRef.current);
-  }, [modelOpen, hoverModelId, thinkingDetailOpen]);
-
-  useEffect(() => {
-    if (!modelOpen || !hoverModelId) return;
-    const onMove = (): void => positionThinkingFlyout(flyoutRowRef.current);
-    const scroller = modelOptionsRef.current;
-    scroller?.addEventListener("scroll", onMove, { passive: true });
-    window.addEventListener("resize", onMove);
-    return () => {
-      scroller?.removeEventListener("scroll", onMove);
-      window.removeEventListener("resize", onMove);
-    };
-  }, [modelOpen, hoverModelId]);
   const activeModel = availableModels.find((m) => m.id === activeModelId);
   const fullAccess = permissionMode === "auto";
   // 已允许完全访问时，无需在执行过程中重复显示开关条
@@ -1823,239 +1694,10 @@ export default function ChatInput({
               </span>
               <IconChevronDown size={12} className="model-trigger-chevron" />
             </button>
-            {modelOpen && (
-              <div
-                className="input-popup model-popup"
-                ref={modelPopupRef}
-                onClick={(e) => e.stopPropagation()}
-              >
-                <div className="model-max-row">
-                  <span className="model-max-label">
-                    <span className="model-max-icon">M</span>
-                    Max 模式
-                  </span>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={maxMode}
-                    aria-label="Max 模式"
-                    className={`switch model-max-switch ${maxMode ? "on" : ""}`}
-                    onClick={() => setMaxMode((value) => !value)}
-                  />
-                </div>
-                <div className="model-options" ref={modelOptionsRef}>
-                  {/* F2：显式模型标记的复位路径 —— 跟随 Tag/Mode 建议（不写全局默认） */}
-                  <button
-                    type="button"
-                    className={`model-option follow-suggestion ${!modelExplicit ? "active" : ""}`}
-                    title={
-                      modelExplicit
-                        ? "清除本任务显式模型选择，改由 Tag/Mode 建议（可解析时）或默认链决定"
-                        : "当前未显式选择：模型由 Tag/Mode 建议或默认链决定"
-                    }
-                    onClick={() => void followSuggestedModel()}
-                  >
-                    <IconSparkles size={15} className="model-option-icon" />
-                    <span className="model-option-name">
-                      {modelExplicit ? "跟随场景建议（Tag/Mode）" : "跟随场景建议 · 未显式选择"}
-                    </span>
-                    {!modelExplicit && <IconCheck size={14} className="model-option-check" />}
-                  </button>
-                  {availableModels.map((m) => {
-                    const selected = m.id === activeModelId;
-                    const canThink = canThinkOn(m);
-                    const showFlyout = hoverModelId === m.id && canThink;
-                    return (
-                      <div
-                        key={m.id}
-                        className={`model-option-wrap ${showFlyout ? "flyout-open" : ""}`}
-                        onMouseEnter={(e) => {
-                          if (canThink) openThinkingFlyout(m.id, e.currentTarget);
-                        }}
-                        onMouseLeave={scheduleCloseThinkingFlyout}
-                      >
-                        <ModelOptionButton name={m.name} selected={selected}
-                          icon={<ModelBrandIcon modelName={m.name} vendor={m.vendor} size={16} />}
-                          onClick={() => { setActiveModel(m.id); if (!canThink) closeAllPopups(); }} />
-                      </div>
-                    );
-                  })}
-                </div>
-                <button
-                  type="button"
-                  className="input-popup-config"
-                  onClick={() => {
-                    setSettingsOpen(true, "models");
-                    setModelOpen(false);
-                    setHoverModelId(null);
-                    setFlyoutPos(null);
-                    setDetailPos(null);
-                    setThinkingDetailOpen(false);
-                  }}
-                >
-                  <IconPencil size={14} /> 配置自定义模型
-                </button>
-              </div>
-            )}
-            {modelOpen &&
-              (() => {
-                const hoverModel = availableModels.find((m) => m.id === hoverModelId);
-                if (!hoverModel || !flyoutPos || typeof document === "undefined") return null;
-                const options = reasoningOptionsForModel(hoverModel);
-                if (!hoverModel.supportsReasoning || options.length === 0) return null;
-                const selected = hoverModel.id === activeModelId;
-                const preference = modelPreferences[hoverModel.id]?.reasoning;
-                const effortValues = reasoningEffortValues(options);
-                const hasToggle = hasReasoningOption(options, "toggle");
-                const budgetOption = options.find((option) => option.type === "budget_tokens");
-                const summary = reasoningPreferenceSummary(preference, hoverModel.metadata);
-                const thinkingOn =
-                  preference?.enabled === false || preference?.effort === "none"
-                    ? false
-                    : true;
-                const keepFlyout = (): void => {
-                  if (hoverLeaveTimer.current) {
-                    clearTimeout(hoverLeaveTimer.current);
-                    hoverLeaveTimer.current = null;
-                  }
-                };
-                const applyPreference = (next: typeof preference, close = false): void => {
-                  if (!selected) setActiveModel(hoverModel.id);
-                  setModelReasoningPreference(hoverModel.id, next);
-                  if (close) closeAllPopups();
-                };
-                return (
-                  <>
-                    {createPortal(
-                      <div
-                        ref={thinkingFlyoutRef}
-                        className="model-thinking-flyout"
-                        style={{ top: flyoutPos.top, left: flyoutPos.left }}
-                        onMouseEnter={keepFlyout}
-                        onMouseLeave={scheduleCloseThinkingFlyout}
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <div className="model-thinking-title" title={hoverModel.name}>
-                          {hoverModel.name}
-                        </div>
-                        <div className="model-thinking-divider" />
-                        <button
-                          ref={thinkingEntryRef}
-                          type="button"
-                          className={`model-thinking-entry ${thinkingDetailOpen ? "open" : ""}`}
-                          onMouseEnter={() => setThinkingDetailOpen(true)}
-                          onClick={() => setThinkingDetailOpen(true)}
-                        >
-                          <span>思考偏好</span>
-                          <span className="model-thinking-entry-val">
-                            <span className="model-thinking-entry-key">{summary}</span>
-                            <IconChevronDown
-                              size={12}
-                              style={{ transform: "rotate(-90deg)" }}
-                            />
-                          </span>
-                        </button>
-                      </div>,
-                      document.body,
-                    )}
-                    {thinkingDetailOpen &&
-                      createPortal(
-                        <div
-                          ref={thinkingDetailRef}
-                          className="model-thinking-flyout model-thinking-detail"
-                          style={{
-                            top: detailPos?.top ?? 0,
-                            left: detailPos?.left ?? 0,
-                            visibility: detailPos ? "visible" : "hidden",
-                          }}
-                          onMouseEnter={keepFlyout}
-                          onMouseLeave={scheduleCloseThinkingFlyout}
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <button
-                            type="button"
-                            className="model-thinking-level"
-                            onClick={() => applyPreference(undefined, true)}
-                          >
-                            <span className="model-thinking-level-key">模型默认</span>
-                            {!preference && <IconCheck size={14} />}
-                          </button>
-
-                          {hasToggle && (
-                            <div className="model-thinking-row">
-                              <span>Reasoning</span>
-                              <button
-                                type="button"
-                                role="switch"
-                                aria-checked={thinkingOn}
-                                aria-label="Reasoning"
-                                className={`switch model-max-switch ${thinkingOn ? "on" : ""}`}
-                                onClick={() => applyPreference({
-                                  ...(preference ?? {}),
-                                  enabled: !thinkingOn,
-                                })}
-                              />
-                            </div>
-                          )}
-
-                          {effortValues.length > 0 && (
-                            <>
-                              <div className="model-thinking-section-label">{hoverModel.metadata?.reasoningControl === "toggle" ? "思考开关" : "Effort"}</div>
-                              <div className="model-thinking-levels">
-                                {effortValues.map((effort) => (
-                                  <button
-                                    type="button"
-                                    key={effort}
-                                    className={`model-thinking-level ${preference?.effort === effort ? "active" : ""}`}
-                                    onClick={() => applyPreference({
-                                      ...(preference ?? {}),
-                                      ...(hasToggle ? { enabled: effort === "none" ? false : true } : {}),
-                                      effort,
-                                    }, true)}
-                                  >
-                                    <span className="model-thinking-level-key">
-                                      {reasoningEffortLabel(effort, hoverModel.metadata)}
-                                    </span>
-                                    {preference?.effort === effort && <IconCheck size={14} />}
-                                  </button>
-                                ))}
-                              </div>
-                            </>
-                          )}
-
-                          {budgetOption && (
-                            <>
-                              <div className="model-thinking-section-label">Budget Tokens</div>
-                              <div className="model-thinking-row">
-                                <input
-                                  type="number"
-                                  min={budgetOption.min}
-                                  max={budgetOption.max}
-                                  value={preference?.budgetTokens ?? ""}
-                                  placeholder="模型默认"
-                                  onChange={(event) => {
-                                    const raw = event.target.value;
-                                    applyPreference({
-                                      ...(preference ?? {}),
-                                      ...(hasToggle ? { enabled: true } : {}),
-                                      budgetTokens: raw ? Number(raw) : undefined,
-                                    });
-                                  }}
-                                />
-                              </div>
-                              <div className="model-thinking-section-label">
-                                {budgetOption.min != null || budgetOption.max != null
-                                  ? `${budgetOption.min ?? "?"} – ${budgetOption.max ?? "?"}`
-                                  : "模型未声明范围"}
-                              </div>
-                            </>
-                          )}
-                        </div>,
-                        document.body,
-                      )}
-                  </>
-                );
-              })()}
+            {modelOpen && <ModelMenu models={availableModels} modelId={activeModelId} preferences={modelPreferences}
+              explicit={modelExplicit} onSelect={setActiveModel} onPreference={setModelReasoningPreference}
+              onFollow={() => void followSuggestedModel()} onConfigure={() => setSettingsOpen(true, "models")}
+              onClose={() => setModelOpen(false)} />}
           </div>
           {/* Prompt Enhance：工具栏内只放一个图标。
               无字默认隐藏；增强后 ✨ 换成恢复图标，hover 才出「恢复原文」。 */}

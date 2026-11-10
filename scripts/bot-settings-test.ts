@@ -80,7 +80,7 @@ try {
   assert(reset.settings.effectiveWorkspacePath.startsWith(join(root, "workspaces")), "empty restores dedicated default folder");
   assert.equal(db.getSpace(saved.settings.spaceId)?.path, undefined, "space grouping cannot silently migrate running tasks");
   const messages = new BotConversationRepository(db.connection);
-  const selection = {modelId:"test/model",expertId:"",skillIds:["skill"],mcpIds:["mcp"],connectorIds:["connector"]};
+  const selection = {reasoningPreference:{effort:"high"},modelId:"test/model",expertId:"",skillIds:["skill"],mcpIds:["mcp"],connectorIds:["connector"]};
   const messageA = messages.accept(LOCAL_USER_ID,{botId:bot.botId,requestId:"composer-a",text:"use selected abilities",selection});
   const chosen = await settings.prepareMessage(bot.botId, selection);
   settings.captureMessage(messageA.userMessageId,bot.botId,chosen);
@@ -91,6 +91,8 @@ try {
   assert.equal(settings.get(bot.botId).revision,3,"composer never mutates Bot defaults");
   assert.equal(settings.messageSettings(messageA.userMessageId,"other-bot"),undefined);
   assert.equal(service().messageSettings(messageA.userMessageId,bot.botId)!.settings.modelId,"test/model","selection survives restart");
+  assert.deepEqual(service().messageSettings(messageA.userMessageId,bot.botId)!.settings.reasoningPreference,{effort:"high"},"reasoning preference survives restart without mutating Bot defaults");
+  assert.equal(settings.get(bot.botId).reasoningPreference,undefined);
   assert.throws(()=>messages.accept(LOCAL_USER_ID,{botId:bot.botId,requestId:"composer-a",text:"use selected abilities",selection:{...selection,modelId:""}}),/请求 ID/);
   await assert.rejects(settings.prepareMessage(bot.botId,{...selection,mcpIds:["missing"]}),/MCP不可用/);
   const selectedWork = works.createWork({kind:"user",userId:LOCAL_USER_ID,entry:"desktop",grants:DESKTOP_USER_GRANTS},

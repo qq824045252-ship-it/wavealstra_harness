@@ -33,6 +33,7 @@ export interface BotConversationServiceOptions {
   messageSettings?: (messageId: string, botId: string) => { settings: import("../../../shared/bot-settings").BotSettingsDto; profile: import("../../../shared/bot-work").ExpertConfigSnapshotDto } | undefined;
   captureSettings?: (messageId: string, botId: string, frozen: Awaited<ReturnType<import("./BotSettingsService").BotSettingsService["prepareMessage"]>>) => void;
   composerTools?: (profile: import("../../../shared/bot-work").ExpertConfigSnapshotDto, cwd: string) => Promise<import("./BotComposerRuntime").BotComposerRuntime>;
+  thinking?: (modelId: string, preference?: import("../../../shared/model-metadata").ModelReasoningPreferenceDto) => import("@earendil-works/pi-ai").ModelThinkingLevel | undefined;
   botModel?: (botId: string) => string | undefined;
   botWorkspace?: (botId: string, prepareDefault?: boolean) => string;
   isAuthority: () => boolean;
@@ -209,7 +210,7 @@ export class BotConversationService {
           const model = await resolveBotModel(this.options.models, preferred, this.options.defaultModel());
           if (preferred && model.repairedFrom) throw new Error(`Bot 模型 ${preferred} 不可用，请在 Bot 设置中选择可用模型`);
           this.runtimeInstructions.set(next.messageId, selected?.profile.configuration?.instructions ?? this.options.bots.activeSnapshot(botId)?.configuration?.instructions ?? "");
-          await runtime.configure(model.target, "native");
+          await runtime.configure(model.target, "native", this.options.thinking?.(`${model.target.provider}/${model.target.modelId}`, selected?.settings.reasoningPreference));
           this.runtimeModels.set(next.messageId, this.options.models.getModel(model.target.provider, model.target.modelId));
           const input = await prepareBotAttachmentInput({ text: user.text, attachments: user.attachments ?? [],
             model: this.runtimeModels.get(next.messageId), directory: join(this.options.directory, conversationId),

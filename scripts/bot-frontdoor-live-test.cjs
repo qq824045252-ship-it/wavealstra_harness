@@ -9,6 +9,7 @@ const cp = require('node:child_process');
 const root = path.resolve(__dirname, '..');
 const displayGroupsScenario = process.argv.includes('--display-groups');
 const workspaceNavigationScenario = process.argv.includes('--workspace-navigation');
+const modelPreferenceScenario = process.argv.includes('--model-preference');
 const composerScenario = process.argv.includes('--composer');
 const searchScenario = process.argv.includes('--search');
 const teamWorkspaceScenario = process.argv.includes('--team-workspace');
@@ -33,7 +34,7 @@ const watchStatusScenario = process.argv.includes('--watch-status');
 const watchScenario = process.argv.includes('--watch');
 const watchIntentScenario = process.argv.includes('--watch-intent');
 if (headless && process.platform !== 'linux') throw Error('Headless dev page validation requires Linux; it does not validate desktop input.');
-const out = path.join(root, watchStatusScenario ? 'out/diagnostics/bot-watch-status/live' : teamDefaultWorkspaceScenario ? 'out/diagnostics/bot-team-default-workspace/live' : watchIntentScenario ? 'out/diagnostics/bot-watch-intent/live' : displayGroupsScenario ? 'out/diagnostics/bot-display-groups/live' : composerScenario ? 'out/diagnostics/bot-composer/live' : workspaceNavigationScenario ? 'out/diagnostics/bot-workspace-navigation/live' : searchScenario ? 'out/diagnostics/bot-search/live' : teamWorkspaceScenario ? 'out/diagnostics/bot-team-workspace/live' : concurrentScenario ? 'out/diagnostics/bot-concurrent/live' : completionScenario ? 'out/diagnostics/bot-completion/live' : trackingScenario ? 'out/diagnostics/bot-tracking/live' : teamTransientFailure ? 'out/diagnostics/bot-team-transient-failure/live' : teamTransportFailure ? 'out/diagnostics/bot-team-transport-failure/live' : teamFailureScenario ? 'out/diagnostics/bot-team-failure/live' : teamFreeScenario ? 'out/diagnostics/bot-team-free/live' : teamPlanningScenario ? 'out/diagnostics/bot-team-planning/live' : teamScenario ? 'out/diagnostics/bot-team-frontdoor/live' : cacheScenario ? 'out/diagnostics/bot-cache/live' : memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
+const out = path.join(root, modelPreferenceScenario ? 'out/diagnostics/bot-model-preference/live' : watchStatusScenario ? 'out/diagnostics/bot-watch-status/live' : teamDefaultWorkspaceScenario ? 'out/diagnostics/bot-team-default-workspace/live' : watchIntentScenario ? 'out/diagnostics/bot-watch-intent/live' : displayGroupsScenario ? 'out/diagnostics/bot-display-groups/live' : composerScenario ? 'out/diagnostics/bot-composer/live' : workspaceNavigationScenario ? 'out/diagnostics/bot-workspace-navigation/live' : searchScenario ? 'out/diagnostics/bot-search/live' : teamWorkspaceScenario ? 'out/diagnostics/bot-team-workspace/live' : concurrentScenario ? 'out/diagnostics/bot-concurrent/live' : completionScenario ? 'out/diagnostics/bot-completion/live' : trackingScenario ? 'out/diagnostics/bot-tracking/live' : teamTransientFailure ? 'out/diagnostics/bot-team-transient-failure/live' : teamTransportFailure ? 'out/diagnostics/bot-team-transport-failure/live' : teamFailureScenario ? 'out/diagnostics/bot-team-failure/live' : teamFreeScenario ? 'out/diagnostics/bot-team-free/live' : teamPlanningScenario ? 'out/diagnostics/bot-team-planning/live' : teamScenario ? 'out/diagnostics/bot-team-frontdoor/live' : cacheScenario ? 'out/diagnostics/bot-cache/live' : memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-frontdoor-live-'));
 const agentDir = path.join(home, '.mybuddy'); fs.mkdirSync(agentDir, { recursive: true });
 for (const directory of ['AppData/Roaming', 'AppData/Local', 'Temp']) fs.mkdirSync(path.join(home, directory), { recursive: true });
@@ -151,7 +152,7 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
 (async () => {
   try {
     await new Promise(resolve=>provider.listen(0,"127.0.0.1",resolve));
-    const model = { id: selectedModel, name: 'Frontdoor live verification', reasoning: false, input: ['text'], contextWindow: 128000, maxTokens: 4096,
+    const model = { id: selectedModel, name: 'Frontdoor live verification', reasoning: modelPreferenceScenario, input: ['text'], contextWindow: 128000, maxTokens: 4096,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
     fs.writeFileSync(path.join(agentDir, 'models.json'), JSON.stringify({ providers: { fixture: { api: 'openai-completions', apiKey: 'fixture-only', baseUrl: `http://127.0.0.1:${provider.address().port}/v1`, models: [model, ...(teamTransportFailure?[{...model,id:'controlled-unavailable',name:'Controlled unavailable member'}]:[])] } } }));
     fs.writeFileSync(path.join(agentDir, 'settings.json'), JSON.stringify({ defaultProvider: 'fixture', defaultModel: selectedModel, enabledModels: [modelKey, ...(teamTransportFailure?['fixture/controlled-unavailable']:[])],
@@ -217,7 +218,20 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       assert(requestId, 'accepted user request identity');
       await until(async () => (await history()).messages.some(m=>m.role==='assistant'&&m.requestId===requestId&&m.status==='completed'), 'matching foreground request completed');
     };
-    if (displayGroupsScenario) {
+    if (modelPreferenceScenario) {
+      await until(()=>evaluate(`!document.querySelector('[aria-label="选择 Bot 模型"]').disabled`),'model catalog ready');
+      await evaluate(`document.querySelector('[aria-label="选择 Bot 模型"]').click()`);
+      await until(()=>evaluate(`!!document.querySelector('[aria-label="Bot 模型列表"]')`),'shared menu');
+      await evaluate(`[...document.querySelectorAll('.model-option')].find(b=>b.textContent.includes('Frontdoor live')).click()`);
+      await until(()=>evaluate(`!document.querySelector('[aria-label="Max 模式"]').disabled`),'declared reasoning available');
+      await evaluate(`document.querySelector('[aria-label="Max 模式"]').click()`);
+      await evaluate(`document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`);
+      await send('只计算23+19，直接返回答案，不调用工具也不创建Work。');await foregroundDone();
+      const answer=(await history()).messages.filter(m=>m.role==='assistant').at(-1);assert(answer.text.includes('42'));
+      assert(requests.some(request=>['high','xhigh'].includes(request.reasoning_effort)),'native reasoning sent to real model transport');
+      report.modelPreferences=requests.map(request=>({model:request.model,reasoning_effort:request.reasoning_effort}));
+      report.checks.push('shared menu Max selection → immutable Bot request → native runtime thinking → real provider request and answer');
+    } else if (displayGroupsScenario) {
       const click=async text=>evaluate(`[...document.querySelectorAll('button')].find(b=>b.textContent.trim()===${JSON.stringify(text)}).click()`);
       await click('＋ 创建分组');
       await until(()=>evaluate('document.querySelector(".bot-display-dialog").open'),'group dialog');

@@ -1684,6 +1684,18 @@ export class AgentService {
     this.botConversations ??= new BotConversationService({ db: this.db.connection, userId: LOCAL_USER_ID,
       bots: this.botRegistry, works: this.workService, models: this.durableModels, directory: join(getMyBuddyDir(), "bot-conversations"),
       botModel: botId => this.botSettings.get(botId).modelId || undefined,
+      thinking: (id, preference) => {
+        const slash = id.indexOf("/");
+        const model = this.durableModels!.getModel(id.slice(0, slash), id.slice(slash + 1));
+        if (!model) return undefined;
+        if (preference) {
+          const level = this.nativeReasoningLevel(model, preference);
+          if (level === undefined) throw new Error("当前模型不支持这组思考偏好，请重新选择");
+          return level;
+        }
+        const settings = createAgentSettingsManager(getMyBuddyDir(), getMyBuddyDir());
+        return settings.getModelThinkingLevel(model.provider, model.id) ?? settings.getDefaultThinkingLevel();
+      },
       messageSettings: (messageId, botId) => this.botSettings.messageSettings(messageId, botId),
       captureSettings: (messageId, botId, frozen) => this.botSettings.captureMessage(messageId, botId, frozen),
       botWorkspace: (botId, prepareDefault) => this.botSettings.resolveWorkspace(botId, prepareDefault),

@@ -1,4 +1,4 @@
-import { ModelOptionButton } from "@/components/chat/ModelOptionButton";
+import { ModelMenu } from "@/components/chat/ModelMenu";
 import { useEffect, useRef, useState } from "react";
 import { useAppStore } from "@/store/appStore";
 import type { BotSettingsView } from "@shared/bot-settings";
@@ -23,7 +23,8 @@ export function BotComposerCapabilities({ botId, scope, text, attach, attachment
   const [error, setError] = useState("");
   const [addOpen, setAddOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
-  const [modelQuery, setModelQuery] = useState("");
+  const models = useAppStore(state => state.models);
+  const globalPreferences = useAppStore(state => state.modelPreferences);
   const root = useRef<HTMLDivElement>(null), addAnchor = useRef<HTMLDivElement>(null), addRoot = useRef<HTMLDivElement>(null);
   const epoch = useRef(0);
   const refresh = async () => {
@@ -32,18 +33,22 @@ export function BotComposerCapabilities({ botId, scope, text, attach, attachment
       const next = await window.api!.botWork.getSettings(botId);
       if (own !== epoch.current) return;
       setCatalog(next); setError("");
+      void useAppStore.getState().refreshModelConfiguration();
       if (!useAppStore.getState().botComposerDrafts[scope]) {
         const { modelId, expertId, skillIds, mcpIds, connectorIds } = next.settings;
-        setSelection(scope, { modelId, expertId, skillIds, mcpIds, connectorIds });
+        const reasoningPreference = useAppStore.getState().modelPreferences[modelId]?.reasoning;
+        setSelection(scope, { modelId, expertId, skillIds, mcpIds, connectorIds, ...(reasoningPreference ? { reasoningPreference } : {}) });
       }
     } catch (cause) { if (own === epoch.current) setError(String(cause)); }
   };
   useEffect(() => { void refresh(); return () => { epoch.current++; }; }, [botId, scope]);
-  useDismissOnClickOutside(addOpen || modelOpen, () => { setAddOpen(false); setModelOpen(false); }, root, [addRoot]);
+  useDismissOnClickOutside(addOpen, () => setAddOpen(false), root, [addRoot]);
   const update = (patch: Partial<BotComposerSelection>) => {
     const current = useAppStore.getState().botComposerDrafts[scope];
     if (!current) return;
-    setSelection(scope, { ...current, ...patch }); setError("");
+    const next = { ...current, ...patch };
+    if (!next.reasoningPreference) delete next.reasoningPreference;
+    setSelection(scope, next); setError("");
   };
   const add = (key: "skillIds" | "mcpIds" | "connectorIds", id: string) => {
     const current = useAppStore.getState().botComposerDrafts[scope];
@@ -89,16 +94,14 @@ export function BotComposerCapabilities({ botId, scope, text, attach, attachment
       <button type="button" className="pill-select ghost as-btn model-trigger" aria-label="选择 Bot 模型" aria-expanded={modelOpen}
         disabled={!selection} onClick={() => { void refresh(); setAddOpen(false); setModelOpen(!modelOpen); }}>
         {selectedModel && <ModelBrandIcon modelName={selectedModel.name} size={16} />}<span className="model-trigger-label">{selectedModel?.name ?? (selection?.modelId || "跟随默认模型")}</span><IconChevronDown size={12} /></button>
-      {modelOpen && <div className="input-popup model-popup" role="listbox" aria-label="Bot 模型列表">
-        <input className="bot-model-search" type="search" aria-label="搜索模型" placeholder="搜索模型" value={modelQuery} onChange={event => setModelQuery(event.target.value)} />
-        <div className="model-options"><ModelOptionButton role="option" name="跟随默认模型" selected={!selection?.modelId}
-          onClick={() => {update({modelId:""});setModelOpen(false);}} />
-          {catalog?.models.filter(item => item.available && `${item.name} ${item.id}`.toLowerCase().includes(modelQuery.toLowerCase())).map(model =>
-          <ModelOptionButton key={model.id} role="option" name={model.name} selected={selection?.modelId === model.id}
-            icon={<ModelBrandIcon modelName={model.name} size={16} />} title={model.name}
-            onClick={() => {update({modelId:model.id});setModelOpen(false);}} />)}</div>
-        <button type="button" className="input-popup-config" onClick={() => {setModelOpen(false);useAppStore.getState().setSettingsOpen(true,"models");}}><IconPencil size={14} /> 管理模型</button>
-      </div>}
+      {modelOpen && <ModelMenu label="Bot 模型列表" models={(catalog?.models ?? []).filter(item => item.available).map(item => models.find(model => model.id === item.id) ?? {id:item.id,name:item.name,vendor:"",supportsImages:false,supportsReasoning:false})}
+        modelId={selection?.modelId} preferences={selection?.modelId ? { [selection.modelId]: { reasoning: selection.reasoningPreference } } : {}}
+        explicit={Boolean(selection?.modelId)} followLabel="跟随 Bot 默认模型"
+        onSelect={id => update({modelId:id, reasoningPreference:globalPreferences[id]?.reasoning})}
+        onPreference={(id, preference) => update({modelId:id, reasoningPreference:preference})}
+        onFollow={() => { update({modelId:"",reasoningPreference:undefined});setModelOpen(false); }}
+        onConfigure={() => {setModelOpen(false);useAppStore.getState().setSettingsOpen(true,"models");}}
+        onClose={() => setModelOpen(false)} /> }
     </div>
     <PromptEnhanceControl surface="new-task" status={enhance.status} notice={enhance.notice} empty={!text.trim()}
       canUndo={Boolean(enhance.undo && text === enhance.undo.applied)} onEnhance={() => enhance.requestEnhance(text, selection?.modelId || undefined)} onUndo={() => enhance.undoEnhance(text)} />

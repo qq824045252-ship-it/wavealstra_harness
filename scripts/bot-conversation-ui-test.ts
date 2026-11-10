@@ -68,6 +68,15 @@ async function main() {
   assert.equal(mergeBotMessageEvent(aLater, { ...event, revision: 13,
     message: { ...parallelHistory.messages[0], text: "stale A", messageRevision: 1 } }), aLater);
 
+  const configured = fixture();
+  configured.store.getState().setActiveBotId("a");
+  configured.store.getState().setBotComposerSelection("a", {modelId:"test/a",expertId:"",skillIds:[],mcpIds:[],connectorIds:[],reasoningPreference:{effort:"high"}});
+  configured.store.getState().setBotDraft("first preference");
+  const firstPreference = configured.store.getState().submitBotDraft();
+  configured.store.getState().setBotComposerSelection("a", {modelId:"test/a",expertId:"",skillIds:[],mcpIds:[],connectorIds:[],reasoningPreference:{effort:"low"}});
+  await firstPreference;
+  assert.equal(configured.calls[0].selection?.reasoningPreference?.effort,"high","in-flight request keeps original thinking selection");
+  assert.equal(configured.store.getState().botComposerDrafts.a.reasoningPreference?.effort,"low");
   const scoped = fixture();
   const team = { templateId: "team-a", name: "Research", ownerBotId: "a", ownerResponsibility: "coordinate", members: [], executionPolicy: "parallel" as const, maxConcurrency: 2, createdAt: 1 };
   scoped.store.getState().setActiveBotId("a");

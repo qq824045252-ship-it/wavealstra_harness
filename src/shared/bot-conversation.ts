@@ -9,6 +9,7 @@ const id = z.string().trim().min(1).max(200);
 export const botAttachmentSchema = z.object({ name: z.string().trim().min(1).max(255), path: z.string().min(1).max(8192) }).strict();
 export type BotAttachmentDto = z.infer<typeof botAttachmentSchema>;
 export const botComposerSelectionSchema = z.object({
+  reasoningPreference: z.object({enabled:z.boolean().optional(),effort:z.string().max(40).optional(),budgetTokens:z.number().int().nonnegative().optional()}).strict().optional(),
   modelId: z.string().trim().max(500), expertId: z.string().trim().max(240),
   skillIds: z.array(id).max(100), mcpIds: z.array(id).max(100), connectorIds: z.array(id).max(100),
 }).strict();

@@ -1,0 +1,10 @@
+import '../src/renderer/src/styles/global.css';
+import '../src/renderer/src/components/pages/BotComposerCapabilities.css';
+import '../src/renderer/src/components/pages/BotWorkspacePage.css';
+import './bot-workspace-navigation-ui-env';
+import {createRoot} from 'react-dom/client';
+import {useState} from 'react';
+import {ModelMenu} from '../src/renderer/src/components/chat/ModelMenu';
+const models:any[]=[{id:'test/a',name:'Reasoning model with long name',vendor:'test',supportsReasoning:true,metadata:{reasoningOptions:[{type:'effort',values:['none','low','high']}] }},{id:'test/b',name:'Plain model',vendor:'test',supportsReasoning:false}];
+function App(){const [open,setOpen]=useState(false),[id,setId]=useState('test/a'),[prefs,setPrefs]=useState<any>({});Object.assign(window,{menuState:{id,prefs}});return <div className="bot-workspace bot-composer-capabilities" style={{height:'100vh'}}><div className="input-popup-anchor bot-composer-model" style={{position:'absolute',bottom:30,right:30}}><button id="open" onClick={()=>setOpen(!open)}>Models</button>{open&&<ModelMenu models={models} modelId={id} explicit preferences={prefs} onSelect={setId} onPreference={(id,p)=>{setId(id);setPrefs({...prefs,[id]:{reasoning:p}})}} onFollow={()=>setId('')} onConfigure={()=>{}} onClose={()=>setOpen(false)} />}</div></div>};
+createRoot(document.getElementById('root')!).render(<App/>);

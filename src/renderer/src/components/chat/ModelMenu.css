@@ -1,0 +1,1 @@
+.model-menu-search { width:calc(100% - 20px); margin:10px; padding:8px 10px; box-sizing:border-box; border:1px solid var(--border); border-radius:8px; background:var(--bg-input); color:var(--fg); font:inherit; font-size:13px; flex-shrink:0; }
