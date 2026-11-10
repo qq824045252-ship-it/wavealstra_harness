@@ -24,9 +24,10 @@ function receipt(id:string){
  works.repo.insertDeliverable({deliverableId:`result:${id}`,workId:work.workId,executionId:id,producerBotId:DEFAULT_BOT_ID,intentRevision:work.intentRevision,ownerEpoch:work.ownerEpoch,inputSnapshotId:work.inputSnapshotId,status:'proposed',summary:id,artifactRefs:[],evidenceRefs:[],uncoveredScope:[],uncoveredCriterionIds:[],isSpeculation:false,hasWriteConflicts:false,createdAt:Date.now()});
  db.connection.prepare('INSERT INTO work_native_inbox(fact_id,binding_id,namespace_hash,payload_json,received_at,consumed_at) VALUES (?,?,?,?,?,?)').run(id,id,id,'{}',Date.now(),Date.now());
 }
-let calls=0,fail=false,deliveryBlocked=false;
+let calls=0,fail=false,deliveryBlocked=false,preferences="",replaceDuringReview:string|undefined;
+const reviewPreferences:string[]=[];
 const reviewContexts:any[]=[];
-const options={db:db.connection,works,isAuthority:()=>true,wake:()=>{},deliver:(input:any)=>deliveryBlocked?false:feedback.deliverCompletion(input),review:async(input:any)=>{calls++;reviewContexts.push(input.context);assert(input.context.watchSupervision);await delay(20);if(fail)throw Error('temporary provider unavailable');return {decision:'deliver' as const,outcome:'completed' as const,reply:'已对照目标核对：'+input.context.observationSummary,missing:[]};}};
+const options={db:db.connection,works,isAuthority:()=>true,preferences:(taskId:string)=>{assert(works.repo.bindingForTask(taskId));return preferences;},wake:()=>{},deliver:(input:any)=>deliveryBlocked?false:feedback.deliverCompletion(input),review:async(input:any)=>{calls++;reviewContexts.push(input.context);reviewPreferences.push(input.personalPreferences);assert(input.context.watchSupervision);await delay(20);if(replaceDuringReview!==undefined){preferences=replaceDuringReview;replaceDuringReview=undefined;}if(fail)throw Error('temporary provider unavailable');return {decision:'deliver' as const,outcome:'completed' as const,reply:'已对照目标核对：'+input.context.observationSummary,missing:[]};}};
 let supervisor=new WorkWatchSupervision(options);
 async function flush(){supervisor.wake();supervisor.wake();await delay(60);}
 receipt('round1');feedback.drain();assert.equal((db.connection.prepare("SELECT count(*) n FROM bot_work_feedback WHERE json_extract(metadata_json,'$.executionId')='round1'").get() as {n:number}).n,0,'raw result waits for independent owner review');
@@ -39,6 +40,17 @@ const failed=db.connection.prepare('SELECT state,error FROM work_watch_reviews W
 assert.equal((db.connection.prepare("SELECT count(*) n FROM work_watch_reviews WHERE state='delivered'").get() as any).n,3);
 fail=false;deliveryBlocked=true;receipt('delivery-retry');await flush();const countBeforeRetry=calls;
 db.connection.prepare('UPDATE work_watch_reviews SET retry_at=0 WHERE binding_id=?').run('delivery-retry');deliveryBlocked=false;await flush();assert.equal(calls,countBeforeRetry,'delivery retry reuses persisted model verdict');
+// Current preference version invalidates cached decisions, without persisting its text.
+preferences="old-private-marker";deliveryBlocked=true;receipt('preference-cache');await flush();
+const cachedCalls=calls;
+preferences="new-private-marker";deliveryBlocked=false;db.connection.prepare('UPDATE work_watch_reviews SET retry_at=0 WHERE binding_id=?').run('preference-cache');await flush();
+assert.equal(calls,cachedCalls+1,'changed preference reruns review rather than delivering cached old verdict');
+assert.equal(reviewPreferences.at(-1),'new-private-marker');
+assert(!String((db.connection.prepare('SELECT context_json FROM work_watch_reviews WHERE binding_id=?').get('preference-cache') as any).context_json).includes('private-marker'),'persistent context stores only preference fingerprint');
+preferences="deleted-private-marker";replaceDuringReview="";receipt('preference-race');await flush();
+assert.notEqual((db.connection.prepare('SELECT state FROM work_watch_reviews WHERE binding_id=?').get('preference-race') as any).state,'delivered','forget during inference discards obsolete reply');
+await flush();assert.equal(reviewPreferences.at(-1),'');
+assert.equal((db.connection.prepare('SELECT state FROM work_watch_reviews WHERE binding_id=?').get('preference-race') as any).state,'delivered','fresh empty preference review delivers normally');
 const input=works.repo.executionInput.bind(works.repo);works.repo.executionInput=()=>{throw Error('missing execution context');};receipt('context-error');await flush();
 db.connection.prepare('UPDATE work_watch_reviews SET retry_at=0 WHERE binding_id=?').run('context-error');await flush();assert.equal((db.connection.prepare('SELECT state FROM work_watch_reviews WHERE binding_id=?').get('context-error') as {state:string}).state,'delivered','context preparation failure has bounded visible fallback');works.repo.executionInput=input;
 receipt('team-owner-stopped');

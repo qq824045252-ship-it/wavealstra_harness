@@ -39,18 +39,22 @@ const feedback = new WorkConversationFeedback({ db: db.connection, works, userId
 const reviewed: string[] = [];
 const historicalReceiptAt = Date.UTC(2026,10,9,9);
 let deliveryAvailable = true;
+let currentPreferences = "",changePreferencesDuringReview: string | undefined;
+const reviewedPreferences: string[] = [];
 let failReview = false;
 let reviewPartial = false;
 let reviewContinue = false;
 let lateResultWork: string | undefined;
 let lateQuestionWork: string | undefined;
-const coordinator = new WorkCompletionCoordinator({ db: db.connection, works, isAuthority: () => authority,
+const coordinator = new WorkCompletionCoordinator({ db: db.connection, works, isAuthority: () => authority, preferences: () => currentPreferences,
   review: async input => { assert(!("teamAssignment" in (input.context.originalRequest as object)),"review input must not contain executor report-format instructions"); const temporal = input.context.temporalContext as {reviewAt:string;observedAt:string|null;historicalRecovery:boolean;freshExecution:boolean};
     assert(Number.isFinite(Date.parse(temporal.reviewAt))); assert(temporal.observedAt && Number.isFinite(Date.parse(temporal.observedAt)));
     assert.equal(temporal.freshExecution,false,"review never claims a fresh business execution");
     if (["healthy","legacy-unreviewed"].includes(String(input.context.title))) assert.equal(temporal.historicalRecovery,input.context.title === "legacy-unreviewed","recovered enrollment is distinguished from live receipt");
     if (input.context.title === "legacy-unreviewed") assert.equal(temporal.observedAt,new Date(historicalReceiptAt).toISOString(),"historical receipt time is not replaced with review time");
-    reviewed.push(input.eventId); if (failReview) throw Error("model unavailable");
+    reviewed.push(input.eventId); reviewedPreferences.push(input.personalPreferences ?? "");
+    if(changePreferencesDuringReview!==undefined){currentPreferences=changePreferencesDuringReview;changePreferencesDuringReview=undefined;}
+    if (failReview) throw Error("model unavailable");
     if (lateQuestionWork) { works.repo.insertBlocker({blockerId:"late-question",workId:lateQuestionWork,kind:"operational",reason:"必须提供收件人",waitingForUserInput:true,status:"open",createdAt:Date.now()}); lateQuestionWork=undefined; }
     if ((input.context.pendingQuestions as Array<{blockerId:string}>|undefined)?.some(item=>item.blockerId === "late-question")) return {decision:"ask",outcome:"partial",reply:"必须提供收件人",missing:[]};
     if (input.context.title === "waiting-input") return {decision:"ask",outcome:"partial",reply:"已交付请求的文字方案；收件人是谁？",missing:[]};
@@ -70,6 +74,11 @@ function create(name: string, watch = false, criteria?: string[]) {
   return result.work.workId;
 }
 try {
+  currentPreferences="old-completion-marker";
+  const memoryRace=create("memory-race");await flush();states.set(memoryRace,"completed");changePreferencesDuringReview="";await flush();
+  assert.notEqual(works.getWork(memoryRace)?.lifecycle,"closed","preference deletion during review prevents stale closure delivery");
+  await flush();assert.equal(works.getWork(memoryRace)?.lifecycle,"closed");assert.equal(reviewedPreferences.at(-1),"");
+  assert(!JSON.stringify(db.connection.prepare("SELECT context_json FROM work_completion_turns WHERE binding_id IN (SELECT binding_id FROM work_execution_bindings WHERE work_id=?)").all(memoryRace)).includes("completion-marker"),"no preference text copy in durable completion context");
   const healthy = create("healthy"); await flush();
   assert.equal(works.getWork(healthy)?.lifecycle, "active", "running remains active");
   states.set(healthy, "completed"); await flush();
@@ -152,7 +161,7 @@ try {
   assert(six.every(id => works.getWork(id)?.lifecycle === "closed"));
   for (const id of six) {
     const bindingId=works.repo.listBindings(id)[0].bindingId;
-    assert.equal(reviewed.filter(event => event === `completion:${bindingId}:review:1`).length,1,"one result review per exact execution");
+    assert.equal(reviewed.filter(event => event.startsWith(`completion:${bindingId}:review:1:`)).length,1,"one result review per exact execution");
     const origin=feedback.messages.resolveWorkDelivery(LOCAL_USER_ID,id)!;
     const history=feedback.messages.history(LOCAL_USER_ID,{botId:origin.bot_id,conversationId:origin.conversation_id});
     assert(history.messages.some(message => message.workIds.includes(id) && message.workFeedback?.category === "result" && message.text.includes(works.getWork(id)!.title)));

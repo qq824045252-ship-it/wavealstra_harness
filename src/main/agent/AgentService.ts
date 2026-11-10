@@ -1729,11 +1729,16 @@ export class AgentService {
     this.botResultTurns ??= new BotWorkResultTurn({ models: this.durableModels, directory: join(getMyBuddyDir(), "bot-result-turns"),
       defaultModel: () => this.settingsStore.read().defaultModelId, botModel: botId => this.botSettings.get(botId).modelId || undefined,
       isAuthority: () => this.workHostAuthority.isAuthority() });
-    this.workCompletion ??= new WorkCompletionCoordinator({ db: this.db.connection, works: this.workService,
+    const resultPreferences = (taskId: string): string => {
+      if (!this.settingsStore.read().memoryEnabled || !this.memoryService.allowsPersonalBotBaseline({ taskId })) return "";
+      return this.memoryService.resolveContext({ taskId, scopeTypes: ["bot"], kinds: ["preference", "identity", "constraint"],
+        statuses: ["active"], includeInherited: false, budgetChars: 3000, limit: 6 }).text;
+    };
+    this.workCompletion ??= new WorkCompletionCoordinator({ db: this.db.connection, works: this.workService, preferences: resultPreferences,
       isAuthority: () => this.workHostAuthority.isAuthority(), review: input => this.botResultTurns!.review(input),
       deliver: input => this.workConversationFeedback!.deliverCompletion(input),
       wake: () => queueMicrotask(() => this.workDispatchQueue?.wake()) });
-    this.workWatchSupervision ??= new WorkWatchSupervision({ db: this.db.connection, works: this.workService,
+    this.workWatchSupervision ??= new WorkWatchSupervision({ db: this.db.connection, works: this.workService, preferences: resultPreferences,
       isAuthority: () => this.workHostAuthority.isAuthority(), review: input => this.botResultTurns!.review(input),
       deliver: input => this.workConversationFeedback!.deliverCompletion(input), wake: () => {} });
     this.workWatchSupervision.start();

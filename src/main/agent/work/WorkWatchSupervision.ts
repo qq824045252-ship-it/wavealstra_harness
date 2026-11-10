@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { WorkWatchFollowUp } from "./WorkWatchFollowUp";
 import { watchGoalEvidence, watchGoalMet, watchGoalClosureSummary } from "./WorkWatchGoal";
 import type { WorkCompletionOptions } from "./WorkCompletionCoordinator";
@@ -97,13 +98,15 @@ export class WorkWatchSupervision {
       || binding.inputSnapshotId !== work.inputSnapshotId) return;
     const results = works.repo.listDeliverables(work.workId).filter(r => r.executionId === id && r.status !== 'superseded');
     const rawEvidence = watchGoalEvidence(this.options.db,works,binding);
-    const evidence = JSON.stringify([work.watchRule,rawEvidence,results.map(r => [r.deliverableId,r.summary,r.status,r.uncoveredScope,r.artifactRefs,r.isSpeculation,r.hasWriteConflicts])]);
-    return {binding,work,results,evidence,rawEvidence};
+    const personalPreferences = this.options.preferences?.(binding.taskId) ?? "";
+    const preferenceFingerprint = createHash("sha256").update(personalPreferences).digest("hex");
+    const evidence = JSON.stringify([preferenceFingerprint,work.watchRule,rawEvidence,results.map(r => [r.deliverableId,r.summary,r.status,r.uncoveredScope,r.artifactRefs,r.isSpeculation,r.hasWriteConflicts])]);
+    return {binding,work,results,evidence,rawEvidence,personalPreferences,preferenceFingerprint};
   }
   private async process(id: string): Promise<void> {
     const {works,db} = this.options;
     const current = this.snapshot(id); if (!current) return;
-    const {binding,work,results,evidence,rawEvidence} = current;
+    const {binding,work,results,evidence,rawEvidence,personalPreferences,preferenceFingerprint} = current;
     // A later observation stopped because the goal was already proven is not a
     // new failed goal. Keep its native receipt in details without another model
     // verdict/message contradicting the accepted round.
@@ -124,7 +127,7 @@ export class WorkWatchSupervision {
     const result = results.find(r => r.deliverableId === `result:${id}`);
     const presentation = result ? watchObservationDelivery(work,result,works.repo.listDeliverables(work.workId),
       item => watchTeamReadEvidence(db,works.repo,works.repo.getBinding(item.executionId),item)) : {silent:false,summary:binding.settlementNote || '本轮没有返回可用结果'};
-    const context = {watchSupervision:true,teamRound:source.teamAssignment?.watchRound?.sequence,originalRequest,title:work.title,goal:work.goalDescription,
+    const context = {watchSupervision:true,preferenceFingerprint,teamRound:source.teamAssignment?.watchRound?.sequence,originalRequest,title:work.title,goal:work.goalDescription,
       watchRule:work.watchRule,lifecycle:work.lifecycle,
       nextWakeAt:works.repo.listSubscriptions(work.workId).filter(s => !s.stoppedAt).map(s => s.nextWakeAt).filter(Boolean),
       observedAt:binding.settledAt, reviewAt:Date.now(), executionStatus:binding.status,
@@ -138,14 +141,14 @@ export class WorkWatchSupervision {
       notificationMode:work.watchRule?.notificationMode ?? 'every_check',
       nextAction:work.lifecycle==='active' ? '本轮观察不完整时可提出原委托内只读 followUp，由宿主持久补查并再次核对，不改变周期；否则按已保存的周期继续下一轮；如用户明确的可观察停止条件已由本轮真实证据满足，提交 stopAssessment 由宿主结束，否则继续' : work.lifecycle==='closing' ? '已停止新轮，整理末轮结果，说明正在收尾；不承诺下一轮' : '已暂停，只整理已发生的本轮观察，不承诺下一轮', evidence};
     db.prepare('INSERT OR IGNORE INTO work_watch_reviews(binding_id,context_json) VALUES (?,?)').run(id,JSON.stringify(context));
-    db.prepare("UPDATE work_watch_reviews SET context_json=?,decision_json=NULL WHERE binding_id=? AND json_extract(context_json,'$.evidence')<>?").run(JSON.stringify(context),id,evidence);
+    db.prepare("UPDATE work_watch_reviews SET context_json=?,decision_json=NULL WHERE binding_id=? AND json_extract(context_json,'$.evidence') IS NOT ?").run(JSON.stringify(context),id,evidence);
     const row = db.prepare('SELECT * FROM work_watch_reviews WHERE binding_id=?').get(id) as {context_json:string;decision_json:string|null;attempts:number;error:string|null};
     const attempt = row.attempts > 0 && !row.error && !row.decision_json ? row.attempts : row.attempts+1;
     db.prepare('UPDATE work_watch_reviews SET attempts=?,error=NULL WHERE binding_id=?').run(attempt,id);
     let decision: WorkResultDecision;
     let error: string | undefined;
     try {
-      decision = row.decision_json ? JSON.parse(row.decision_json) : await this.options.review({eventId:`watch-review:${id}:${attempt}`,botId:work.ownerBotId,context});
+      decision = row.decision_json ? JSON.parse(row.decision_json) : await this.options.review({eventId:`watch-review:${id}:${attempt}:${preferenceFingerprint}`,botId:work.ownerBotId,personalPreferences,context});
     } catch (failure) {
       error = failure instanceof Error ? failure.message : String(failure);
       if (attempt < 2) {

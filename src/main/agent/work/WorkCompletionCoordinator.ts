@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { WorkService } from "./WorkService";
 import type { WorkResultDecision, WorkResultTurnInput } from "./BotWorkResultTurn";
@@ -9,6 +10,7 @@ export interface WorkCompletionDelivery {
 export interface CompletionTurn { binding_id: string; context_json: string; decision_json: string | null; state: string; attempts: number; retry_at: number; error: string | null }
 export interface WorkCompletionOptions {
   db: Database.Database; works: WorkService; isAuthority: () => boolean;
+  preferences?: (taskId: string) => string;
   review: (input: WorkResultTurnInput) => Promise<WorkResultDecision>;
   deliver: (input: WorkCompletionDelivery) => boolean; wake: () => void;
 }
@@ -69,13 +71,15 @@ export class WorkCompletionCoordinator {
     const results = works.repo.listDeliverables(binding.workId).filter(item => item.executionId === bindingId && item.status !== "superseded");
     const raw = results.map(item => item.summary).filter(Boolean).join("\n\n");
     const eventId = `completion:${bindingId}`;
+    const personalPreferences = this.options.preferences?.(binding.taskId) ?? "";
+    const preferenceFingerprint = createHash("sha256").update(personalPreferences).digest("hex");
     if (!this.row(bindingId)) {
       const source = JSON.parse(works.repo.executionInput(binding));
       // Execution recipes (including team report JSON instructions) are not the
       // user's request. Feeding them back to the judge can override its schema.
       const { teamAssignment: _teamAssignment, instructions: _instructions, ...originalRequest } = source;
       db.prepare("INSERT OR IGNORE INTO work_completion_turns(binding_id,context_json) VALUES (?,?)").run(bindingId, JSON.stringify({
-        temporalContext: this.temporalContext(bindingId),
+        temporalContext: this.temporalContext(bindingId), preferenceFingerprint,
         originalRequest, title: candidate.work.title, goal: candidate.work.goalDescription,
         results: results.map(item => ({ summary: item.summary, artifactRefs: item.artifactRefs, uncoveredScope: item.uncoveredScope })),
         previousResults: works.repo.listDeliverables(binding.workId).filter(item => item.executionId !== bindingId
@@ -91,7 +95,12 @@ export class WorkCompletionCoordinator {
         unknownEffects: works.repo.listAdmissions(binding.workId).filter(item => item.state === "unknown").map(item => item.operationId),
       }));
     }
-    const row = this.row(bindingId)!;
+    let row = this.row(bindingId)!;
+    if (JSON.parse(row.context_json).preferenceFingerprint !== preferenceFingerprint) {
+      db.prepare("UPDATE work_completion_turns SET context_json=?,decision_json=NULL,state='queued',retry_at=0 WHERE binding_id=?")
+        .run(JSON.stringify({...JSON.parse(row.context_json),preferenceFingerprint}),bindingId);
+      row = this.row(bindingId)!;
+    }
     try {
       let decision: WorkResultDecision;
       if (row.decision_json) decision = JSON.parse(row.decision_json);
@@ -104,7 +113,7 @@ export class WorkCompletionCoordinator {
         const reviewContext = JSON.parse(row.context_json);
         // Also sanitize persisted turns written by an older host.
         const { teamAssignment: _teamAssignment, instructions: _instructions, ...originalRequest } = reviewContext.originalRequest ?? {};
-        decision = await this.options.review({ eventId: `${eventId}:review:${attempt}`, botId: binding.botId, context: {...reviewContext, originalRequest, temporalContext: this.temporalContext(bindingId)} });
+        decision = await this.options.review({ eventId: `${eventId}:review:${attempt}:${preferenceFingerprint}`, botId: binding.botId, personalPreferences, context: {...reviewContext, originalRequest, temporalContext: this.temporalContext(bindingId)} });
       }
       if (this.closed || !this.options.isAuthority()) return;
       works.transaction(() => {
@@ -114,10 +123,13 @@ export class WorkCompletionCoordinator {
           .map(item => ({summary:item.summary,artifactRefs:item.artifactRefs,uncoveredScope:item.uncoveredScope}));
         const frozen = JSON.parse(row.context_json);
         const pendingQuestions = this.questions(binding.workId);
-        if (JSON.stringify(latestResults) !== JSON.stringify(frozen.results)
+        const latestPreferences = this.options.preferences?.(binding.taskId) ?? "";
+        const latestPreferenceFingerprint = createHash("sha256").update(latestPreferences).digest("hex");
+        if (latestPreferenceFingerprint !== preferenceFingerprint
+          || JSON.stringify(latestResults) !== JSON.stringify(frozen.results)
           || JSON.stringify(pendingQuestions) !== JSON.stringify(frozen.pendingQuestions ?? [])) {
           db.prepare("UPDATE work_completion_turns SET context_json=?,decision_json=NULL,state='queued',retry_at=0 WHERE binding_id=?")
-            .run(JSON.stringify({...frozen,results:latestResults,pendingQuestions,actualMissing:current.conclusion === "succeeded" ? [] : [current.summary]}),bindingId);
+            .run(JSON.stringify({...frozen,preferenceFingerprint:latestPreferenceFingerprint,results:latestResults,pendingQuestions,actualMissing:current.conclusion === "succeeded" ? [] : [current.summary]}),bindingId);
           return; // A late result must not be guided by a decision on older evidence.
         }
         db.prepare("UPDATE work_completion_turns SET decision_json=?,error=NULL WHERE binding_id=?").run(JSON.stringify(decision), bindingId);
