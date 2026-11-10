@@ -1,3 +1,4 @@
+import { WorkExecutionMetricsStore } from "./WorkExecutionMetrics";
 import { botAttachmentSchema } from "../../../shared/bot-conversation";
 import { nonBlockingEffect, workAdmissionInFlight } from "../../../shared/work-effect-policy";
 import { randomUUID } from "node:crypto";
@@ -277,8 +278,10 @@ interface NotificationRow {
 
 export class WorkRepository {
   private readonly legacyWorkInsert: boolean;
+  private readonly metrics: WorkExecutionMetricsStore;
 
   constructor(private readonly db: Database.Database) {
+    this.metrics = new WorkExecutionMetricsStore(db);
     // Older current-version files retain their inert quota history. Their required
     // JSON column has no default; supply an empty tombstone only for new rows.
     // Do not bump the schema version or rewrite existing history to remove a module.
@@ -654,26 +657,28 @@ export class WorkRepository {
     });
   }
 
+  consumeMetricsChange(bindingId: string): boolean { return this.metrics.consumeChange(bindingId); }
+
   getBinding(bindingId: string): WorkExecutionBindingDto | undefined {
     const row = this.db.prepare("SELECT * FROM work_execution_bindings WHERE binding_id=?").get(bindingId) as BindingRow | undefined;
-    return row ? mapBinding(row) : undefined;
+    return row ? { ...mapBinding(row), metrics: this.metrics.read(row.binding_id) } : undefined;
   }
 
   bindingForTask(taskId: string): WorkExecutionBindingDto | undefined {
     const row = this.db.prepare("SELECT * FROM work_execution_bindings WHERE task_id=? ORDER BY admitted_at DESC, rowid DESC LIMIT 1")
       .get(taskId) as BindingRow | undefined;
-    return row ? mapBinding(row) : undefined;
+    return row ? { ...mapBinding(row), metrics: this.metrics.read(row.binding_id) } : undefined;
   }
 
   getBindingByOperation(workId: string, operationId: string): WorkExecutionBindingDto | undefined {
     const row = this.db.prepare("SELECT * FROM work_execution_bindings WHERE work_id=? AND operation_id=?")
       .get(workId, operationId) as BindingRow | undefined;
-    return row ? mapBinding(row) : undefined;
+    return row ? { ...mapBinding(row), metrics: this.metrics.read(row.binding_id) } : undefined;
   }
 
   listBindings(workId: string): WorkExecutionBindingDto[] {
     return (this.db.prepare("SELECT * FROM work_execution_bindings WHERE work_id=? ORDER BY admitted_at ASC")
-      .all(workId) as BindingRow[]).map(mapBinding);
+      .all(workId) as BindingRow[]).map(row => ({ ...mapBinding(row), metrics: this.metrics.read(row.binding_id) }));
   }
 
   // ------------------------------------------------------------- admissions

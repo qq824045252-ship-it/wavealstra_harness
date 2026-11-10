@@ -9,6 +9,7 @@ import Sidebar, { AccountNavigation } from "../src/renderer/src/components/Sideb
 import ChatMarkdown from "../src/renderer/src/components/chat/ChatMarkdown";
 import BotWorkspacePage, { BotMessage } from "../src/renderer/src/components/pages/BotWorkspacePage";
 import { BotWorkBrowser } from "../src/renderer/src/components/pages/BotWorkBrowser";
+import { WorkExecutionMetrics } from "../src/renderer/src/components/pages/WorkExecutionMetrics";
 import { BotWorkDetails } from "../src/renderer/src/components/pages/BotWorkDetails";
 import { WorkFiles, workFiles, generatedWorkFiles, additionalReportRecord } from "../src/renderer/src/components/pages/BotWorkResult";
 import { WorkCardsPanel } from "../src/renderer/src/components/pages/BotWorkCardsPanel";
@@ -168,6 +169,13 @@ assert.equal(workStatusLabel({ ...plain, lifecycle: "closed", closureConclusion:
 const completeBinding = { bindingId: "done", workId: plain.workId, intentRevision: plain.intentRevision,
   inputSnapshotId: plain.inputSnapshotId, ownerEpoch: plain.ownerEpoch, status: "completed", settledAt: 4 } as WorkProjectionDto["executions"][number];
 const executed = { ...plain, executions: [completeBinding] };
+const unknownExecutionMetrics=renderToStaticMarkup(createElement(WorkExecutionMetrics,{work:executed}));
+assert.match(unknownExecutionMetrics,/执行统计|未采集到统计/);
+assert.doesNotMatch(unknownExecutionMetrics,/输入 0|输出 0|缓存 0%/);
+const measuredExecutionMetrics=renderToStaticMarkup(createElement(WorkExecutionMetrics,{work:{...executed,executions:[{...completeBinding,metrics:{inputTokens:100,outputTokens:20,cacheReadTokens:30,cacheWriteTokens:0,reportedCalls:1,calls:1,complete:true,observedAt:1,contextTokens:120,contextWindow:1000,contextEstimated:true}}]}}));
+assert.match(measuredExecutionMetrics,/100 tokens/);assert.match(measuredExecutionMetrics,/20 tokens/);
+assert.match(measuredExecutionMetrics,/23%/);assert.match(measuredExecutionMetrics,/≈&lt;0.001M/);
+assert.match(measuredExecutionMetrics,/原生子调用/);
 assert.equal(workExecutionComplete(executed), true);
 assert.equal(workStatusLabel(executed), "正在核对结果");
 assert.equal(workMatchesView(executed, "closed"), false, "execution success never fabricates Work acceptance or closure");

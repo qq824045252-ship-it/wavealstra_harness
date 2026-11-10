@@ -153,7 +153,7 @@ export class WorkExecutionAdapter {
       this.service.nativeResults.readRecovered(current);
       if (observation.status !== "running") this.service.partialResults.recovery.markEvidenceRead(current.bindingId);
     }
-    this.service.emitCurrentProjection(current.workId);
+    this.service.emitCurrentProjection(current.workId, { force: this.service.repo.consumeMetricsChange(current.bindingId) });
   }
 
   private requireSuccess(result: WorkControlResult): void {

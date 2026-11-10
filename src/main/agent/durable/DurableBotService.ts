@@ -1,3 +1,4 @@
+import { WorkExecutionMetricsStore } from "../work/WorkExecutionMetrics";
 import { createHash } from "node:crypto";
 import { existsSync, statSync, readFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
@@ -119,7 +120,9 @@ export class DurableBotService {
   private resumeAdmission?: ResumeAdmission;
   /** Last startup drain outcome: delivered means open+resume was handed over, not that native work finished. */
   lastResumeReport?: ResumeAdmissionReport;
+  private readonly workMetrics: WorkExecutionMetricsStore;
   constructor(private readonly options: DurableBotServiceOptions) {
+    this.workMetrics = new WorkExecutionMetricsStore(options.db.connection);
     options.db.connection.exec(`CREATE TABLE IF NOT EXISTS durable_bot_bindings (
       task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
       backend TEXT NOT NULL CHECK(backend = 'pi-durable'), directory TEXT NOT NULL UNIQUE, cwd TEXT NOT NULL)`);
@@ -403,11 +406,11 @@ export class DurableBotService {
         restoreTools: names => mcp.restoreTools(names),
         prepareCodeMode: (code, context) => (this.opened.get(taskId)?.mcp ?? mcp).codeModeTools(code, context),
         onEntries: (entries, info) => this.options.onEntries?.(taskId, entries, info),
-        onResponse: (message, info) => this.options.onResponse?.(taskId, message, info),
+        onResponse: (message, info) => { this.workMetrics.response(taskId, message, info); this.options.onResponse?.(taskId, message, info); },
         onRequest: info => this.options.onRequest?.(taskId, info),
         beforeProviderRequest: () => this.options.beforeModelRequest?.(taskId),
         providerAuthorityGuarded: () => this.options.providerAuthorityGuarded?.(taskId) ?? false,
-        onProviderUsage: input => this.options.onProviderUsage?.(taskId, input),
+        onProviderUsage: input => { this.workMetrics.usage(taskId, input); this.options.onProviderUsage?.(taskId, input); },
         onTool: this.options.onTool,
         observedUsage: conversationId => this.options.observedUsage?.(taskId, conversationId) ?? { inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheHitRate: null },
         waitingForInput: () => this.options.waitingForInput?.(taskId) ?? false,
@@ -427,6 +430,7 @@ export class DurableBotService {
         ...(wasm && worker && existsSync(wasm) && existsSync(worker) ? { assets: { wasm: loadQuickJSWasm(wasm), workerUrl: pathToFileURL(worker) } } : {}),
         instructions: () => this.options.instructions(db.getTask(taskId) ?? task),
         onSnapshot: snapshot => {
+          this.workMetrics.project(taskId, snapshot);
           // Projection only; this status is never consulted to resume or finish durable work.
           taskProjection.writeStatus(taskId, snapshot.busy ? "in_progress" : snapshot.error || snapshot.outcome === "failed" ? "failed" : snapshot.outcome === "completed" ? "completed" : "pending");
           const messageTime = snapshot.messages.at(-1)?.createdAt;
@@ -706,6 +710,7 @@ export class DurableBotService {
       submit: async (binding, text) => {
         const { open } = await this.workSubmission(binding);
         if (String(open.runtime.conversation.id) !== binding.conversationId) throw new Error("原接收会话已变化，拒绝改用另一会话派发");
+        this.workMetrics.begin(binding);
         const accepted = await this.submit({ taskId: binding.taskId, userMessageId: binding.operationId,
           assistantMessageId: `work:${binding.bindingId}`, text });
         if (!accepted.receipt) throw new Error(accepted.error?.message ?? "原生执行未返回受理回执");
@@ -719,6 +724,7 @@ export class DurableBotService {
       inspect: async (binding, receipt) => {
         const { open, record } = await this.workSubmission(binding);
         if (!record || record.id !== receipt.submissionId || record.requestId !== receipt.operationId) throw new Error("执行回执与原命名空间不一致");
+        await open.runtime.refresh();
         const observation = await open.runtime.conversation.commit(tx => readDurableWorkExecution(tx, record, binding.workspaceBinding, binding.durableStoreKey), context);
         if (observation.status === "running") {
           const inspection = await open.runtime.harness.inspect(context);

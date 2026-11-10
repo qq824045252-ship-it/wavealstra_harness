@@ -1,3 +1,4 @@
+import { WorkExecutionMetrics } from "./WorkExecutionMetrics";
 import { BotWorkArchiveActions } from "./BotWorkArchiveActions";
 import { BotCollaborationLog } from "./BotCollaborationLog";
 import { userInputBlockerSnapshot } from "@shared/bot-work-review";
@@ -98,6 +99,7 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
         <p>{ownerName} · {work.mode === "watch" ? "持续关注" : "一次性事项"}</p>
       </header>
       <BotWorkArchiveActions key={work.workId} work={work} />
+      <WorkExecutionMetrics work={work} />
       <section className="bot-detail-section" aria-label="目标与进度">
         <h3>目标</h3>
         <p>{work.title}</p>

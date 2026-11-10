@@ -294,7 +294,12 @@ export interface WorkBlockerDto {
   clearedAt?: number;
 }
 
+export type WorkExecutionMetrics = import("./bot-conversation").BotForegroundMetrics & {
+  observedAt: number; complete: boolean; calls: number;
+};
+
 export interface WorkExecutionBindingDto {
+  metrics?: WorkExecutionMetrics;
   bindingId: string;
   workId: string;
   operationId: string;

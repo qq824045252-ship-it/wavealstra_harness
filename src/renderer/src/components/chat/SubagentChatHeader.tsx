@@ -1,5 +1,6 @@
+import { ExecutionUsageMetrics } from "./ExecutionUsageMetrics";
 import { modelBadgeTitle, type ModelBadge } from "@/lib/modelBadge";
-import { subagentHeaderMetrics, type HeaderUsage } from "@/lib/subagentHeaderMetrics";
+import type { HeaderUsage } from "@/lib/subagentHeaderMetrics";
 import { IconChevronLeft } from "@/components/common/icons";
 import "./SubagentChatHeader.css";
 
@@ -31,12 +32,7 @@ export default function SubagentChatHeader(props: Props): React.JSX.Element {
         {props.model && <span className="ro-model" title={modelBadgeTitle(props.model)}>{props.model.label}</span>}
       </div>
     </div>
-    <dl className="subagent-detail-metrics" aria-label="本子代理累计用量与耗时">
-      {subagentHeaderMetrics(props.usage).map((metric) => <div key={metric.key} data-metric={metric.key} title={metric.title}>
-        <dt>{metric.label}</dt><dd>{metric.value}</dd>
-      </div>)}
-      <div data-metric="elapsed" title={props.elapsedTitle}><dt>耗时</dt><dd>{props.elapsed ?? "—"}</dd></div>
-    </dl>
+    <ExecutionUsageMetrics usage={props.usage} elapsed={props.elapsed} elapsedTitle={props.elapsedTitle}/>
     <button type="button" className="icon-btn subagent-detail-close" title="关闭子代理对话" aria-label="关闭子代理对话" onClick={props.onBack}>✕</button>
   </header>;
 }

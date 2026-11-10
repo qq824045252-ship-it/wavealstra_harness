@@ -1,0 +1,7 @@
+.work-execution-metrics-note {color:var(--fg-muted);font-size:12px;line-height:1.5;margin:6px 0;}
+.work-execution-metrics-row {border-bottom:1px solid var(--border);padding:10px 0;min-width:0;}
+.work-execution-metrics-row summary {cursor:pointer;overflow-wrap:anywhere;font-size:13px;}
+.work-execution-metrics-row summary span {color:var(--fg-muted);font-size:12px;margin-left:8px;}
+.work-execution-metrics-identity {font-size:11px;color:var(--fg-muted);overflow-wrap:anywhere;}
+.work-execution-metrics .subagent-detail-metrics {margin:12px 0;}
+.work-execution-metrics-extra {display:flex;flex-wrap:wrap;gap:8px 16px;font-size:12px;color:var(--fg-muted);}

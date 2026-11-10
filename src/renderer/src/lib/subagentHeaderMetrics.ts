@@ -13,7 +13,7 @@ export interface HeaderMetric { key: string; label: string; value: string; title
  * Read only this child's snapshot. Never add parent/siblings or sum snapshots.
  * Missing/invalid counters remain unknown; explicit zero is a valid measurement.
  */
-export function subagentHeaderMetrics(usage?: HeaderUsage): HeaderMetric[] {
+export function subagentHeaderMetrics(usage?: HeaderUsage, scope = "本子代理累计"): HeaderMetric[] {
   const number = (value: unknown): number | undefined =>
     typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
   // Spawn/failed-call snapshots can contain only zero placeholders. Without
@@ -27,7 +27,7 @@ export function subagentHeaderMetrics(usage?: HeaderUsage): HeaderMetric[] {
   const hit = denominator !== undefined && Number.isFinite(denominator) && denominator > 0 ? read! / denominator : undefined;
   const token = (key: string, label: string, value: number | undefined, meaning: string): HeaderMetric => ({
     key, label, value: formatTokenCount(value),
-    title: value === undefined ? `${meaning}：未取得有效计量，不按 0 计算` : `${meaning}：${formatCount(value)} tokens（本子代理累计）`,
+    title: value === undefined ? `${meaning}：未取得有效计量，不按 0 计算` : `${meaning}：${formatCount(value)} tokens（${scope}）`,
   });
   return [
     token("input", "新输入", input, "未命中的输入，不含缓存读取和缓存写入"),
@@ -35,6 +35,6 @@ export function subagentHeaderMetrics(usage?: HeaderUsage): HeaderMetric[] {
     token("cacheRead", "缓存读", read, "命中缓存的输入 token"),
     token("cacheWrite", "缓存写", write, "写入缓存的输入 token"),
     { key: "hit", label: "缓存命中率", value: formatRateDash(hit),
-      title: "本子代理累计：缓存读 ÷（新输入 + 缓存读 + 缓存写）；缺少任一分量或分母为 0 时显示 —" },
+      title: `${scope}：缓存读 ÷（新输入 + 缓存读 + 缓存写）；缺少任一分量或分母为 0 时显示 —` },
   ];
 }
