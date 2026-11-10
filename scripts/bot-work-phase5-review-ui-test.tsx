@@ -494,23 +494,19 @@ async function main() {
       const originalState = useAppStore.getState(); const beforeReviews = reviewRequests.length; let sends = 0;
       const owner = { botId: "owner", displayName: "Owner", status: "active", authorization: work.authorization } as BotDto;
       const member = { botId: "member", displayName: "Member", status: "active", authorization: work.authorization } as BotDto;
-      const legacy: WorkProjectionDto = { ...projection, team: { workId: projection.workId,
-        intentRevision: projection.intentRevision, inputSnapshotId: projection.inputSnapshotId,
-        ownerEpoch: projection.ownerEpoch, ownerBotId: projection.ownerBotId, createdAt: work.createdAt,
-        state: "awaiting_review", ownerResponsibility: "Review results",
-        members: [{ botId: "member", responsibility: "Read sources", delegatedScope: ["workspace:read"] }], executions: [] },
+      const legacy: WorkProjectionDto = { ...projection, team: undefined,
         blockers: [{ blockerId: "legacy-question", workId: work.workId, reason: "Please clarify the expected date", kind: "operational" as const,
           waitingForUserInput: true, status: "open" as const, createdAt: 1 }] };
       try {
-        useAppStore.setState({ activeBotId: "member", botIdentities: [owner, member], selectedWorkId: legacy.workId,
-          botWorks: [legacy], botDraft: "Member unfinished draft", botDrafts: { member: "Member unfinished draft", owner: "Owner unfinished draft" },
+        useAppStore.setState({ activeBotId: "owner", activeTeam: null, botIdentities: [owner, member], selectedWorkId: legacy.workId,
+          botWorks: [legacy], botDraft: "Owner unfinished draft", botDrafts: { member: "Member unfinished draft", owner: "Owner unfinished draft" },
           refreshBotHistory: async () => {}, refreshBotWork: async () => {}, submitBotDraft: async () => { sends += 1; } });
         const { createRoot } = await import("react-dom/client");
         container = testDocument.body.appendChild(testDocument.createElement("div")); root = createRoot(container);
         await act(async () => root!.render(<StrictMode><BotWorkspacePage /></StrictMode>));
         const tabs = [...container.querySelectorAll<HTMLButtonElement>(".bot-view-tabs button")];
-        assert.equal(tabs.length, 3);
-        assert.deepEqual(tabs.map(tab => tab.querySelector("span")?.textContent), ["对话", "未结束", "已结束"]);
+        assert.equal(tabs.length, 4);
+        assert.deepEqual(tabs.map(tab => tab.querySelector("span")?.textContent), ["对话", "进行中", "已完成", "其他记录"]);
         assert.doesNotMatch(container.textContent!, /待你决定/);
         await act(async () => tabs[1].dispatchEvent(new testWindow.Event("click", { bubbles: true })));
         assert.match(container.querySelector(".bot-work-browser")!.textContent!, /Review current output/,

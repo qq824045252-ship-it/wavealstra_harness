@@ -25,8 +25,8 @@ try {
  register(DEFAULT_BOT_ID); register("test-bot"); register("other-bot"); register("foreign", "other-user");
  assert.equal(remove(DEFAULT_BOT_ID).ok, false); assert.equal(remove("foreign").ok, false);
  authority = false; assert.equal(remove("test-bot").ok, false); authority = true;
- const work = create("test-bot");
  db.connection.prepare(`INSERT INTO bot_conversations(conversation_id,bot_id,user_id,created_at,updated_at) VALUES ('conv','test-bot',?,1,1)`).run(LOCAL_USER_ID);
+ const work = create("test-bot");
  db.connection.exec(`INSERT INTO bot_messages(message_id,conversation_id,bot_id,request_id,role,text,status,created_at,updated_at)
  VALUES ('msg','conv','test-bot','req','assistant','hello','running',1,1)`);
  assert.equal(remove("test-bot").ok, false, "running conversation rejects without side effects");

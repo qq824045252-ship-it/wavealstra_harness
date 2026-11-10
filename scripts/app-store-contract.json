@@ -18,7 +18,10 @@
     "refreshBotHistory": "Phase 2 persistent Bot conversation sending and recovery.",
     "cancelBotSend": "Phase 2 persistent Bot conversation sending and recovery.",
     "archiveBotConversation": "Phase 2 persistent Bot conversation sending and recovery.",
-    "setBotAttachments": "Bot attachments: update only the named Bot attachment draft, separate from ordinary Task drafts."
+    "setBotAttachments": "Bot attachments: update only the named Bot attachment draft, separate from ordinary Task drafts.",
+    "setActiveTeam": "Select a stable team identity, preserving independent personal/team drafts and conversation scopes.",
+    "openSubagentView": "Open a specific subagent conversation while retaining its parent task navigation.",
+    "closeSubagentView": "Return from the subagent conversation to its parent task without deleting the run."
   },
   "publicExports": {
     "CreateRelatedTaskOptions": "type",
@@ -155,7 +158,8 @@
   ],
   "optionalStateKeys": [
     "browserPreviousPanelMode",
-    "subagentDrawer"
+    "subagentDrawer",
+    "subagentView"
   ],
   "actionKeys": [
     "abortActiveTask",
@@ -622,6 +626,8 @@
     "botPendingSends": "Phase 2 separate Bot message identities and scoped durable projection cursor.",
     "botConversationErrors": "Phase 2 separate Bot message identities and scoped durable projection cursor.",
     "botWorkCursor": "Phase 2 separate Bot message identities and scoped durable projection cursor.",
-    "botAttachmentDrafts": "Bot attachments: durable per-Bot file drafts survive switching and lost acknowledgements without crossing Task context."
+    "botAttachmentDrafts": "Bot attachments: durable per-Bot file drafts survive switching and lost acknowledgements without crossing Task context.",
+    "activeTeam": "Explicit selected team workspace scope; kept separate from personal Bot conversations and drafts.",
+    "subagentView": "Independent subagent conversation navigation retains parent task and completed subagent visibility."
   }
 }

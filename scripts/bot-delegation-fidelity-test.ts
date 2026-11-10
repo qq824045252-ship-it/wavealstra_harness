@@ -110,7 +110,7 @@ try {
   const longBinding = bind(longWork), longInput = JSON.parse(works.repo.executionInput(longBinding));
   assert.equal(longInput.userRequest.messages[0].text, longText);
   assert.deepEqual(longInput.userRequest.referencedContext.map((row: { role: string; text: string }) => [row.role, row.text]),
-    [["assistant", "助理建议：日期可能为2031-01-01，尚未核验。"]]);
+    [["user", "这是独立上下文，只能引用不能冒充本次指令。"], ["assistant", "助理建议：日期可能为2031-01-01，尚未核验。"]]);
   assert(!JSON.stringify(longInput.userRequest.messages).includes("不相关的未来任务"), "unbound dialogue is context, not this Work's authenticated request");
 
   // A direct user-authored criterion remains a hard gate, including after a frontend amendment.

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import { AppDatabase } from "../src/main/db/AppDatabase";
@@ -74,7 +74,7 @@ try {
   assert.equal(started.team.executions.length, 2);
   assert.equal(started.work.criteria[0].origin, "assistant_proposal");
   assert.equal(started.work.sourceMessageId, ownerInput.userMessageId);
-  assert.equal(started.work.workspacePath, root);
+  assert.equal(dirname(started.work.workspacePath), join(root, "team-workspaces"), "team work uses its dedicated directory, not the owner directory");
   assert(db.connection.prepare("SELECT messages_json FROM bot_work_user_inputs WHERE work_id=?").get(started.work.workId));
   assert(messages.message(ownerInput.userMessageId)?.workIds.includes(started.work.workId));
   assert.equal((await invokeOwner("work_team_create", request)).work.workId, started.work.workId, "native replay does not create a second team");

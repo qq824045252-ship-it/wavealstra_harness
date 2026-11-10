@@ -74,7 +74,8 @@ try {
     const taskId = operation();
     const binding = bind(work.workId, taskId);
     const goals = new ConversationGoalService(service, () => {}, { resolveBotId: () => DEFAULT_BOT_ID });
-    assert.deepEqual(service.repo.listConversationIds(work.workId), [], "worker context does not become a foreground conversation");
+    assert.ok(!service.repo.listConversationIds(work.workId).includes(taskId), "worker context does not become a foreground conversation");
+    assert.equal(service.repo.listConversationIds(work.workId).length, 1, "owner delivery target is established independently of the worker");
     assert.equal(goals.getLive(taskId)?.id, work.workId);
     assert.equal(goals.getLive(taskId, "unrelated-work"), undefined, "an explicit unrelated Work cannot replace the trusted binding");
     const before = service.listWorks(LOCAL_USER_ID, { includeClosed: true }).length;
