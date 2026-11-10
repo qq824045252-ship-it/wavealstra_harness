@@ -20,7 +20,7 @@ const storage = {
   removeItem: (key: string) => { values.delete(key); },
   clear: () => values.clear(),
 };
-Object.assign(globalThis, { window: testWindow, document: testDocument,
+Object.assign(globalThis, { window: testWindow, document: testDocument, CustomEvent: testWindow.CustomEvent,
   localStorage: storage, IS_REACT_ACT_ENVIRONMENT: true,
   requestAnimationFrame: (fn: () => void) => setTimeout(fn, 0), cancelAnimationFrame: clearTimeout });
 Object.defineProperty(testWindow, "localStorage", { configurable: true, value: storage });
@@ -73,6 +73,8 @@ let requests: CreateTeamWorkRequest[] = [];
 let lookupRequests: string[] = [];
 let lookupReply = deferred<WorkTeamControlResult>();
 let templateCalls: WorkTeamControlRequest[] = [];
+let openedTeamWorks: string[] = [];
+testWindow.addEventListener("mybuddy:open-team-work", (event: Event) => openedTeamWorks.push((event as CustomEvent<{workId: string}>).detail.workId));
 let hostTemplates: WorkTeamTemplateDto[] = [];
 let forbiddenCalls: string[] = [];
 let reply = deferred<WorkTeamControlResult>();
@@ -85,6 +87,7 @@ let BotTeamDialog: typeof import("../src/renderer/src/components/pages/BotTeamDi
 const api = { botWork: {
   teamControl: async (request: WorkTeamControlRequest) => { if (request.kind === "get_by_operation") { lookupRequests.push(request.operationId); return lookupReply.promise; } if (request.kind === "list_templates") return { ok: true, templates: hostTemplates };
     if (request.kind === "save_template") { templateCalls.push(request); const template = { ...request.request.plan, templateId: "template-a", name: request.request.name, createdAt: 1 }; hostTemplates = [template]; return { ok: true, template }; }
+    if (request.kind === "update_template") { templateCalls.push(request); const template = { ...request.plan, templateId: request.templateId, name: request.name, createdAt: 1 }; hostTemplates = [template]; return { ok: true, template }; }
     if (request.kind === "delete_template") { templateCalls.push(request); hostTemplates = hostTemplates.filter(item => item.templateId !== request.templateId); return { ok: true }; } if (request.kind === "create") { requests.push(structuredClone(request.request)); return reply.promise; } throw new Error("unexpected template operation"); },
   listBots: async () => hostBots,
   syncWorks: async (): Promise<WorkListUpdate> => ({ kind: "snapshot", cursor: { epoch: "create-ui", sequence: 0, scope: "open" }, works: [work] }),
@@ -112,7 +115,7 @@ async function mount() {
   await act(async () => root!.render(<StrictMode><Harness /></StrictMode>));
 }
 async function reset() {
-  await unmount(); values.clear(); requests = []; templateCalls = []; hostTemplates = []; forbiddenCalls = []; closeCalls = 0;
+  await unmount(); values.clear(); openedTeamWorks = []; requests = []; templateCalls = []; hostTemplates = []; forbiddenCalls = []; closeCalls = 0;
   reply = deferred<WorkTeamControlResult>(); lookupReply = deferred<WorkTeamControlResult>(); lookupRequests = []; hostBots = [mybuddy, other];
   store.setState({ ...initialState, page: "bot", activeBotId: mybuddy.botId, activeTaskId: "ordinary-task",
     draft: ordinaryDraft, botIdentities: hostBots, botIdentitiesLoaded: true, botWorks: [work], selectedWorkId: work.workId,
@@ -208,7 +211,7 @@ async function main() {
       assert.equal(values.get("mybuddy.pending-team-creation"), stored);
       lookupReply = deferred<WorkTeamControlResult>(); await submit();
       await act(async () => lookupReply.resolve({ ...existing, replayed: true }));
-      assert.deepEqual(requests, []); assert.equal(store.getState().selectedWorkId, "new-team");
+      assert.deepEqual(requests, []); assert.equal(openedTeamWorks.at(-1), "new-team"); assert.equal(store.getState().selectedWorkId, work.workId);
       assert.equal(values.has("mybuddy.pending-team-creation"), false);
     });
     await check("legacy pending creation needs another explicit click after a definitive missing receipt", async () => {
@@ -243,14 +246,14 @@ async function main() {
       try { await submit(); } finally { storage.setItem = save; }
       assert.equal(requests.length, 0); assert.match(container.textContent!, /无法保存请求/);
     });
-    await check("fresh success selects the exact owner and persisted Work", async () => {
+    await check("fresh success opens the persisted team Work without selecting it in personal Bot", async () => {
       await reset(); await fill();
       assert.equal(container.querySelector("#team-budget"), null, "team creation has no budget editor");
       assert.doesNotMatch(container.textContent!, /预算|额度/);
       await submit();
       assert.equal("budgetTokens" in requests[0], false, "team creation does not send a hidden budget");
       await succeed();
-      assert.equal(store.getState().activeBotId, mybuddy.botId); assert.equal(store.getState().selectedWorkId, "new-team");
+      assert.equal(store.getState().activeBotId, mybuddy.botId); assert.equal(openedTeamWorks.at(-1), "new-team"); assert.equal(store.getState().selectedWorkId, work.workId);
       assert.equal(store.getState().activeTaskId, "ordinary-task"); assert.equal(store.getState().botDraft, "MyBuddy draft");
     });
     await check("a confirmed team can be followed by a distinct new team", async () => {
@@ -273,11 +276,13 @@ async function main() {
       await act(async () => nativeClick(confirm)); assert.equal(templateCalls[1].kind, "delete_template"); assert.equal(requests.length, 0);
     });
     await check("participating members can browse Work without becoming its owner", async () => {
-      const { botParticipatesInWork } = await import("../src/renderer/src/lib/botWorkspacePresentation");
+      const { botParticipatesInWork, personalBotWork } = await import("../src/renderer/src/lib/botWorkspacePresentation");
       const projection = { ...work, team: { members: [{ botId: other.botId }] } } as unknown as WorkProjectionDto;
       assert.equal(botParticipatesInWork(projection, other.botId), true); assert.equal(botParticipatesInWork(projection, "unrelated"), false);
       assert.equal(botParticipatesInWork(work, other.botId), false); assert.equal(botParticipatesInWork(work, mybuddy.botId), true);
       assert.equal(projection.ownerBotId, mybuddy.botId);
+      assert.equal(personalBotWork(projection, mybuddy.botId), false); assert.equal(personalBotWork(projection, other.botId), false);
+      assert.equal(personalBotWork(work, mybuddy.botId), true);
     });
     await check("lost creation receipt reconciles the immutable operation after a rename and owner handoff", async () => {
       await reset(); await fill(); await submit(); const original = requests[0];
@@ -285,7 +290,7 @@ async function main() {
       assert.deepEqual(requests[1], original);
       await act(async () => reply.resolve({ ...creationReceipt({ title: "Renamed team", ownerBotId: other.botId, ownerEpoch: 2 }), replayed: true }));
       assert.match(container.textContent!, /Renamed team/); assert.doesNotMatch(container.textContent!, /回执与原请求不符/);
-      assert.equal(store.getState().activeBotId, other.botId); assert.equal(store.getState().selectedWorkId, "new-team");
+      assert.equal(store.getState().activeBotId, mybuddy.botId); assert.equal(openedTeamWorks.at(-1), "new-team"); assert.equal(store.getState().selectedWorkId, work.workId);
       assert.equal(values.has("mybuddy.pending-team-creation"), false);
     });
     await check("missing or wrong operation binding and inconsistent Work identity retain the original pending request", async () => {
@@ -371,6 +376,19 @@ async function main() {
       await act(async () => taskForm.dispatchEvent(new testWindow.Event("submit", { bubbles: true, cancelable: true })));
       assert.equal(requests[0]?.templateId, team.templateId);
       assert.equal(requests[0]?.members[0].botId, other.botId);
+    });
+    await check("team settings edits stable team identity without dispatching or changing personal selection", async () => {
+      await reset(); await unmount();
+      const { BotTeamSettings } = await import("../src/renderer/src/components/pages/BotTeamSettings");
+      const team: WorkTeamTemplateDto = { templateId: "settings-team", name: "Before", createdAt: 1, ownerBotId: mybuddy.botId, ownerResponsibility: "Coordinate", members: [{ botId: other.botId, responsibility: "Read", delegatedScope: ["workspace:read"] }] };
+      let saved: WorkTeamTemplateDto | undefined;
+      container = testDocument.body.appendChild(testDocument.createElement("div")); root = createRoot(container);
+      await act(async () => root!.render(<BotTeamSettings team={team} onSaved={value => { saved = value; }} onCancel={() => {}} />));
+      await edit(container.querySelector<HTMLInputElement>('input:not([type=checkbox])')!, "After");
+      await edit(container.querySelector<HTMLTextAreaElement>(`textarea[aria-label="${other.displayName}的职责"]`)!, "Updated responsibility");
+      await act(async () => container.querySelector("form")!.dispatchEvent(new testWindow.Event("submit", { bubbles: true, cancelable: true })));
+      assert.equal(saved?.templateId, team.templateId); assert.equal(saved?.name, "After"); assert.equal(saved?.members[0].responsibility, "Updated responsibility");
+      assert.equal(requests.length, 0); assert.equal(store.getState().selectedWorkId, work.workId);
     });
     await testRecoveryControls();
     console.log(`PASS ${count} team UI behaviour checks`);

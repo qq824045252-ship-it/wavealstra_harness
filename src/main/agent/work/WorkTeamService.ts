@@ -274,6 +274,21 @@ export class WorkTeamService {
           this.works.emitCurrentProjection(work.workId);
           return { ok: true, work: this.works.getWork(work.workId), team: this.get(work.workId) };
         }
+        if (request.kind === "update_template") {
+          const current = this.templates(actor.userId).find(item => item.templateId === request.templateId);
+          if (!current) throw new TeamError("not_found", "找不到团队，可能已被删除");
+          const currentValue = { name: current.name, plan: workTeamPlanSchema.parse({ ownerBotId: current.ownerBotId, ownerResponsibility: current.ownerResponsibility, members: current.members, executionPolicy: current.executionPolicy, maxConcurrency: current.maxConcurrency }) };
+          const nextValue = { name: request.name, plan: request.plan };
+          if (hash(currentValue) === hash(nextValue)) return { ok: true, template: current, replayed: true };
+          if (hash(currentValue) !== hash(request.expected)) throw new TeamError("team_changed", "团队设置已有更新，请重新打开设置后修改");
+          this.validatePlan(actor.userId, request.plan);
+          if (this.templates(actor.userId).some(item => item.templateId !== current.templateId && item.name === request.name))
+            throw new TeamError("name_conflict", "已有同名团队，请使用不同名称");
+          this.db.prepare("UPDATE work_team_templates SET name=?,plan_json=? WHERE template_id=? AND user_id=? AND deleted_at IS NULL")
+            .run(request.name, JSON.stringify(request.plan), current.templateId, actor.userId);
+          // Existing commissions keep their execution plan and historical team name.
+          return { ok: true, template: { ...request.plan, templateId: current.templateId, name: request.name, createdAt: current.createdAt } };
+        }
         if (request.kind === "delete_template") {
           const found = this.templates(actor.userId).find(item => item.templateId === request.templateId);
           if (!found) throw new TeamError("not_found", "找不到团队模板");

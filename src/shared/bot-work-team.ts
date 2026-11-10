@@ -58,6 +58,9 @@ export const workTeamControlSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("list_templates") }).strict(),
   z.object({ kind: z.literal("save_template"), request: z.object({ operationId: id,
     name: z.string().trim().min(1).max(120), plan: workTeamPlanSchema }).strict() }).strict(),
+  z.object({ kind: z.literal("update_template"), templateId: id,
+    name: z.string().trim().min(1).max(120), plan: workTeamPlanSchema,
+    expected: z.object({ name: z.string(), plan: workTeamPlanSchema }).strict() }).strict(),
   z.object({ kind: z.literal("delete_template"), templateId: id }).strict(),
 ]);
 export type WorkTeamMember = z.infer<typeof workTeamMemberSchema>;

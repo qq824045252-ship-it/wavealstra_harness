@@ -94,6 +94,11 @@ export function botParticipatesInWork(work: WorkProjectionDto, botId: string | n
   return Boolean(botId && (work.ownerBotId === botId || work.team?.members.some(member => member.botId === botId)));
 }
 
+/** Team commissions belong to their team, not each member's personal inbox/count. */
+export function personalBotWork(work: WorkProjectionDto, botId: string | null | undefined): boolean {
+  return !work.team && botParticipatesInWork(work, botId);
+}
+
 export type BotTimelineEntry = { key: string; kind: "message"; message: BotMessageDto }
   | { key: string; kind: "progress"; workId: string; workIds: string[]; messages: BotMessageDto[] };
 

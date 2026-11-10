@@ -14,7 +14,7 @@ import ChatComposer from "@/components/chat/ChatComposer";
 import ChatMarkdown from "@/components/chat/ChatMarkdown";
 import { IconPlus, IconArchive, IconChevronDown, IconArrowUp, IconBot, IconChevronRight, IconListTodo, IconPanel, IconSettings, IconStop, IconX } from "@/components/common/icons";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
-import { activeBotReply, botParticipatesInWork, botMessageStatus, botWorkTimeline, shouldSendBotComposer, type BotWorkspaceView } from "@/lib/botWorkspacePresentation";
+import { activeBotReply, personalBotWork, botParticipatesInWork, botMessageStatus, botWorkTimeline, shouldSendBotComposer, type BotWorkspaceView } from "@/lib/botWorkspacePresentation";
 import { BotWorkBrowser } from "./BotWorkBrowser";
 import { BotWorkDetails } from "./BotWorkDetails";
 import { BotResultReport } from "./BotWorkResult";
@@ -81,7 +81,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   const previousScrollTop = useRef(0);
   const lastBot = useRef(activeBotId);
   const activeBot = identities.find(bot => bot.botId === activeBotId) ?? null;
-  const botWorks = useMemo(() => works.filter(work => botParticipatesInWork(work, activeBotId)), [works, activeBotId]);
+  const botWorks = useMemo(() => works.filter(work => personalBotWork(work, activeBotId)), [works, activeBotId]);
   const selected = botWorks.find(work => work.workId === selectedWorkId) ?? null;
   const messages = activeBotId ? histories[activeBotId]?.messages ?? [] : [];
   const questionsByRequest = useMemo(() => new Map(messages.filter(item => item.role === "user").map(item => [item.requestId, item])), [messages]);
@@ -183,6 +183,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
 
 
   const openWork = (workId: string) => {
+    if (works.some(work => work.workId === workId && work.team)) { window.dispatchEvent(new CustomEvent("mybuddy:open-team-work", { detail: { workId } })); return; }
     requestedWork.current = workId;
     setNavigationNotice("");
     if (botWorks.some(work => work.workId === workId)) { setSelectedWorkId(workId); setInspectorOpen(true); return; }
@@ -194,7 +195,9 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
     void useAppStore.getState().refreshBotWork(true).then(() => {
       const state = useAppStore.getState();
       if (requestedWork.current !== workId || state.activeBotId !== botId) return;
-      if (state.botWorks.some(work => work.workId === workId && botParticipatesInWork(work, botId))) {
+      if (state.botWorks.some(work => work.workId === workId && work.team)) {
+        window.dispatchEvent(new CustomEvent("mybuddy:open-team-work", { detail: { workId } })); setNavigationNotice("");
+      } else if (state.botWorks.some(work => work.workId === workId && !work.team && botParticipatesInWork(work, botId))) {
         state.setSelectedWorkId(workId); setInspectorOpen(true); setNavigationNotice("");
       } else setNavigationNotice("暂时无法打开此事项，请在已结束列表中核对或稍后重试。");
     });

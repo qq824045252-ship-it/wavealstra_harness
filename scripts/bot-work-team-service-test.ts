@@ -90,6 +90,12 @@ try {
   assert.equal(ok(works.teams.handle(user, { kind: "create", request: ownedRequest })).work?.workId, owned.work?.workId);
   reject(works.teams.handle(user, { kind: "create", request: { ...ownedRequest, operationId: "unknown-owning-team", templateId: "missing" } }), "not_found");
   reject(works.teams.handle(user, { kind: "create", request: { ...ownedRequest, operationId: "wrong-team-owner", ownerBotId: `${initial.name}-new-owner` } }), "invalid_team");
+  const updateTeam = { kind: "update_template" as const, templateId: template.templateId, name: "Audit revised", plan: { ...initial.plan, ownerResponsibility: "Updated coordination" }, expected: { name: "Audit", plan: initial.plan } };
+  assert.equal(ok(works.teams.handle(user, updateTeam)).template?.templateId, template.templateId);
+  assert.equal(ok(works.teams.handle(user, updateTeam)).replayed, true);
+  reject(works.teams.handle(user, { ...updateTeam, name: "Stale update" }), "team_changed");
+  reject(works.teams.handle({ kind: "user", userId: "foreign-user", grants }, updateTeam), "not_found");
+  assert.equal(works.teams.get(owned.work!.workId)?.teamName, "Audit", "settings changes do not rewrite existing execution ownership snapshot");
   ok(works.teams.handle(user, { kind: "delete_template", templateId: template.templateId }));
   assert.equal(works.teams.get(owned.work!.workId)?.teamName, "Audit", "historical team ownership survives template deletion");
   reject(works.teams.handle(user, { kind: "save_template", request: { operationId: "template-one", name: "Audit", plan: initial.plan } }), "not_found");

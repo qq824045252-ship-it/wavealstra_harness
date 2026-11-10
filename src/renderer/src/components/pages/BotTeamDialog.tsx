@@ -90,7 +90,7 @@ export function BotTeamDialog({ open, onClose, initialTeam }: { open: boolean; o
     && criteria.split("\n").some(line => line.trim());
   const openWork = (result: { workId: string; ownerBotId: string }) => {
     const state = useAppStore.getState();
-    state.setActiveBotId(result.ownerBotId); state.setSelectedWorkId(result.workId); state.setPage("bot"); close();
+    state.setPage("bot"); close(); window.dispatchEvent(new CustomEvent("mybuddy:open-team-work", { detail: { workId: result.workId } }));
   };
   const submit = async () => {
     if (inFlight.current || (!pending && !valid)) return;
