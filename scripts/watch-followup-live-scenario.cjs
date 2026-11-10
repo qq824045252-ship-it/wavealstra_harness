@@ -1,0 +1,38 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
+exports.run=async({send,foregroundDone,until,evaluate,history,rpc,report,requests,out,home,modelKey,botId})=>{
+ const workspace=path.join(home,'watch-source');fs.mkdirSync(workspace,{recursive:true});
+ const file=path.join(workspace,'progress.txt'),seed=crypto.randomBytes(6).toString('hex'),a='WAITING_'+seed,b='READY_'+seed;
+ fs.writeFileSync(file,a+'\n');
+ const settings=(await evaluate(`window.api.botWork.getSettings('${botId}')`)).settings;
+ assert((await evaluate(`window.api.botWork.saveSettings(${JSON.stringify({botId,expectedRevision:settings.revision,workspacePath:workspace,modelId:modelKey,expertId:'',skillIds:[],mcpIds:[],connectorIds:[]})})`)).ok);
+ const detail=id=>evaluate(`window.api.botWork.getWork(${JSON.stringify(id)})`);
+ await send(`创建持续跟踪事项，标题“真实周期跟踪-${seed}”。每分钟整点（UTC）检查一次现有文件 ${file}，现在不要提前检查。每轮用真实read读取，简短返回文件完整原文和检查时间，即使内容没变也报告本次观察。不要写文件、不要联网，持续执行直到我暂停或取消，不要在第一轮后结束事项。`);
+ await foregroundDone();
+ const works=await evaluate('window.api.botWork.listWorks(true)');assert.equal(works.length,1);const id=works[0].workId;
+ let w=await detail(id);assert.equal(w.mode,'watch');assert.equal(w.lifecycle,'active');assert.equal(w.executions.length,0);
+ const sub=w.phase4.subscriptions.find(s=>s.status==='online');assert(sub.nextWakeAt>Date.now());assert.equal(sub.cronExpression,'* * * * *');
+ report.schedule={workId:id,nextWakeAt:sub.nextWakeAt,cronExpression:sub.cronExpression,timezone:sub.timezone};
+ const completed=async()=> (await detail(id)).executions.filter(e=>e.inboxEventId&&e.status==='completed');
+ const observe=async(n,expected)=>{
+  await until(async()=>{w=await detail(id);report.latestWork=w;const failed=w.executions.find(e=>e.status==='failed');if(failed)throw Error('native scheduled check failed: '+JSON.stringify(failed));return (await completed()).length>=n;},'actual clock tick #'+n);
+  const rows=await completed();assert.equal(rows.length,n,'no duplicated dispatch at observation');const e=rows[n-1];
+  await until(async()=>{const h=await history();report.history=h;return h.messages.some(m=>m.workFeedback?.executionId===e.bindingId&&m.workFeedback?.kind==='result'&&m.text.includes(expected));},'actual check #'+n+' result returns to original conversation');
+  w=await detail(id);assert.equal(w.lifecycle,'active','watch stays active after completed round');
+  const messages=(await history()).messages.filter(m=>m.workFeedback?.executionId===e.bindingId&&m.workFeedback?.kind==='result');assert.equal(messages.length,1,'one result per execution');
+  report.rounds.push({executionId:e.bindingId,inboxEventId:e.inboxEventId,expected,result:messages[0].text,observedAt:Date.now(),nextWakeAt:w.phase4.subscriptions.find(s=>s.status==='online')?.nextWakeAt});
+  assert(report.rounds.at(-1).nextWakeAt>Date.now(),'next scheduled check persists');
+ };
+ report.rounds=[];
+ await observe(1,a);fs.writeFileSync(file,b+'\n');
+ await observe(2,b);
+ await observe(3,b);
+ const beforePause=(await detail(id)).executions.length;
+ await send(`暂停 ${id} 的持续跟踪，不要取消、不要立即再检查。`);await foregroundDone();
+ w=await detail(id);assert.equal(w.lifecycle,'paused');
+ report.pauseAt=Date.now();await new Promise(r=>setTimeout(r,70000));
+ w=await detail(id);assert.equal(w.executions.length,beforePause,'pause prevents next actual clock slot');assert.equal(w.lifecycle,'paused');assert.equal(fs.readFileSync(file,'utf8'),b+'\n','watch never changes source');
+ report.finalWork=w;report.history=await history();
+ await evaluate(`[...document.querySelectorAll('.bot-thread details')].forEach(d=>{if(!d.open)d.querySelector('summary')?.click()})`);
+ for(const width of [1280,390]){await rpc('Emulation.setDeviceMetricsOverride',{width,height:900,deviceScaleFactor:1,mobile:false});await new Promise(r=>setTimeout(r,200));assert(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'));const shot=await rpc('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,'watch-followup-'+width+'.png'),Buffer.from(shot.data,'base64'));}
+ report.checks.push('real minute scheduler: three distinct native read checks; changed and unchanged observations return to original conversation exactly once; persistent active watch and next wake; real 70s paused window dispatches no new check; no business writes');
+};
