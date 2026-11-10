@@ -27,6 +27,16 @@ app.whenReady().then(async () => {
     await new Promise(r=>setTimeout(r,100));
     assert.deepEqual(await win.webContents.executeJavaScript('window.opened'),[snapshot]);
     assert.equal(fs.readFileSync(snapshot,'utf8'),'<h1>original</h1>');
+    // Re-execution: current artifacts are empty, but the original result remains openable.
+    work.intentRevision = 2; work.inputSnapshotId = 'new-input';
+    work.historicalGeneratedArtifacts = work.generatedArtifacts; work.generatedArtifacts = [];
+    work.deliverables = [{deliverableId:'result:b',executionId:'b',workId:'fixture',producerBotId:'owner',intentRevision:1,ownerEpoch:1,inputSnapshotId:'input',status:'superseded',summary:'Original report',artifactRefs:[snapshot],evidenceRefs:[],uncoveredScope:[],uncoveredCriterionIds:[],isSpeculation:false,hasWriteConflicts:false,createdAt:1}];
+    await win.webContents.executeJavaScript(`window.renderArtifactFixture(${JSON.stringify(work)})`);
+    await new Promise(r=>setTimeout(r,100));
+    assert(await win.webContents.executeJavaScript(`document.body.textContent.includes('result.html')`));
+    await win.webContents.executeJavaScript(`[...document.querySelectorAll('button')].find(b=>b.textContent==='打开保存版本').click()`);
+    await new Promise(r=>setTimeout(r,100));
+    assert.deepEqual(await win.webContents.executeJavaScript('window.opened'),[snapshot,snapshot]);
     await win.webContents.executeJavaScript(`window.api.openFolder=async()=>{throw new Error('missing fixture')};[...document.querySelectorAll('button')].find(b=>b.textContent==='打开保存版本').click()`);
     await new Promise(r=>setTimeout(r,100));
     assert(await win.webContents.executeJavaScript(`document.body.textContent.includes('无法打开文件')`));

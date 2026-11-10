@@ -10,7 +10,8 @@ export interface WorkFile { ref: string; name: string; artifact?: GeneratedFile;
 /** Match exact paths within this execution, never a basename or the selected Task. */
 export function workFiles(refs: string[], work?: WorkProjectionDto, executionId?: string): WorkFile[] {
   return [...new Set(refs)].map(ref => {
-    const candidates = work?.generatedArtifacts?.filter(item => !executionId || item.bindingId === executionId) ?? [];
+    const candidates = [...(work?.generatedArtifacts ?? []), ...(executionId ? work?.historicalGeneratedArtifacts ?? [] : [])]
+      .filter(item => !executionId || item.bindingId === executionId);
     const sources = candidates.filter(item => item.path === ref);
     const artifact = candidates.find(item => item.snapshotPath === ref) ?? (sources.length === 1 ? sources[0] : undefined);
     return { ref, name: fileNameFromPath(artifact?.path ?? ref), artifact };

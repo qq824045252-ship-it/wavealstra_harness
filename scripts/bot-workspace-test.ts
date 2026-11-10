@@ -520,6 +520,12 @@ const generated = [
 const fileWork = { ...executed, generatedArtifacts: generated };
 assert.deepEqual(workFiles(["/snap/hash-report"], fileWork, "done").map(file => file.name), ["report.csv"]);
 assert.equal(workFiles(["/snap/hash-report"], fileWork, "another-execution")[0].artifact, undefined, "same basename never crosses execution boundaries");
+const rerunWork = { ...fileWork, intentRevision: fileWork.intentRevision + 1, generatedArtifacts: [], historicalGeneratedArtifacts: generated };
+assert.equal(workFiles(["/snap/hash-report"], rerunWork, "done")[0].name, "report.csv");
+assert.equal(workFiles(["/snap/hash-report"], rerunWork, "done")[0].artifact?.snapshotPath, "/snap/hash-report");
+assert.equal(workFiles(["/snap/hash-report"], rerunWork, "new-execution")[0].artifact, undefined);
+assert.equal(workFiles(["/snap/hash-report"], rerunWork)[0].artifact, undefined, "history requires exact execution identity");
+assert.deepEqual(generatedWorkFiles(rerunWork), [], "old files do not masquerade as current generated files");
 const attachmentHtml = renderToStaticMarkup(createElement(WorkFiles, { files: workFiles(["/snap/hash-script", "/snap/hash-report"], fileWork, "done") }));
 assert(attachmentHtml.indexOf("report.csv") < attachmentHtml.indexOf("create.py"), "readable reports precede scripts");
 assert.match(attachmentHtml, /<details class="bot-result-other-files"><summary>其他文件与脚本/);

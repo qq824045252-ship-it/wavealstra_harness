@@ -68,7 +68,7 @@ export class WorkConversationFeedback {
           if (this.messages.appendWorkFeedback(origin, work.workId, event, JSON.stringify(version), `【${work.title}】\n${body}`, { ...metadata, workId: work.workId, eventId: event })) count++;
         };
         const results = works.repo.listDeliverables(work.workId);
-        const generated = works.generatedArtifacts.list(work.workId);
+        const generated = works.generatedArtifacts.list(work.workId, true);
         for (const binding of works.repo.listBindings(work.workId)) {
           if (!["completed", "failed", "stopped", "invalidated", "unknown"].includes(binding.status)) continue;
           const labels: Record<string, string> = { completed: "后台执行已结束，成果仍需核验；不代表用户已验收。",

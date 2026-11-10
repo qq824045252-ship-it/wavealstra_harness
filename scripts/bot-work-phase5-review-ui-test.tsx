@@ -661,12 +661,12 @@ async function main() {
         { bindingId: "b", path: "/fixture/report.csv", snapshotPath: "/snap/hash-csv", digest: "csv", sizeBytes: 42, registeredAt: 1, sourceEntryId: 1 },
         { bindingId: "b", path: "/fixture/create.py", snapshotPath: "/snap/hash-py", digest: "py", sizeBytes: 100, registeredAt: 1, sourceEntryId: 2 },
       ];
-      await act(async () => root!.render(<BotMessage botName="MyBuddy" works={[{ ...projection, generatedArtifacts: generated }]}
+      await act(async () => root!.render(<BotMessage botName="MyBuddy" works={[{ ...projection, intentRevision: projection.intentRevision + 1, generatedArtifacts: [], historicalGeneratedArtifacts: generated }]}
         onOpenWork={() => {}} onCancel={() => {}} message={{ messageId: "result-long", conversationId: "chat", botId: "owner", requestId: "r", ordinal: 1,
           role: "assistant", status: "completed", text: "完整原文与原始引用", workIds: [projection.workId], createdAt: 1, updatedAt: 1,
           workFeedback: { workId: projection.workId, eventId: "result:b", kind: "result", category: "result", executionId: "b", report: {
             title: "六任务中的 CSV 报告", summary: "报告结论\n\n" + "完整内容。".repeat(350), artifactRefs: ["/snap/hash-py", "/snap/hash-csv"],
-            reviewStatus: "proposed", current: true, notices: ["尚未覆盖：实机验收"],
+            reviewStatus: "proposed", current: false, notices: ["尚未覆盖：实机验收"],
           } },
         }} />));
       assert(container.querySelector(".bot-result-body.is-collapsed"));

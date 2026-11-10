@@ -100,6 +100,26 @@ try {
   assert(history().messages.slice(2).every(m => m.workFeedback));
   assert.deepEqual(works.getWork(work.workId), before);
 
+  // Re-execution changes the current input, not the identity or availability of saved results.
+  works.repo.updateWork({ ...before, intentRevision: before.intentRevision + 1,
+    inputSnapshotId: "new-input", stateVersion: before.stateVersion + 1 });
+  assert.equal(works.generatedArtifacts.list(work.workId).length, 0, "old files are not current completion evidence");
+  assert.equal(works.getProjection(work.workId)?.historicalGeneratedArtifacts?.[0].snapshotPath, savedPath);
+  feedback.drain(work.workId);
+  const historicalReport = history().messages.filter(m => m.workFeedback?.kind === "result").at(-1)?.workFeedback?.report;
+  assert.equal(historicalReport?.current, false);
+  assert.deepEqual(historicalReport?.files?.find(file => file.ref === savedPath), { ref: savedPath, name: "report.csv", openPath: savedPath });
+  assert.equal(historicalReport?.files?.find(file => file.ref === "artifact:report")?.openPath, undefined);
+  // A persisted broken display projection is repaired without duplicating the report.
+  const historicalMessage = history().messages.filter(m => m.workFeedback?.kind === "result").at(-1)!;
+  db.connection.prepare("UPDATE bot_work_feedback SET metadata_json=json_remove(metadata_json,'$.report.files') WHERE message_id=?").run(historicalMessage.messageId);
+  const countBeforeRepair = history().messages.length;
+  assert.equal(feedback.drain(work.workId), 0);
+  assert.equal(history().messages.length, countBeforeRepair);
+  assert.equal(history().messages.find(m => m.messageId === historicalMessage.messageId)?.workFeedback?.report?.files?.[1].openPath, savedPath);
+  works.repo.updateWork(before);
+  feedback.drain(work.workId);
+
   const revision = history().revision;
   assert.throws(() => db.connection.transaction(() => { messages.appendWorkFeedback(messages.workOrigin(LOCAL_USER_ID, work.workId)!, work.workId, "crash", "1", "rollback"); throw Error("crash"); })());
   assert.equal(history().revision, revision, "failed delivery rolls back message and revision together");

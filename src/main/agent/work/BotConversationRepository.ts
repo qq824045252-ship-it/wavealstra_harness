@@ -232,10 +232,19 @@ export class BotConversationRepository {
         if (metadata?.report && previous) {
           const saved = this.db.prepare("SELECT metadata_json FROM bot_work_feedback WHERE message_id=?")
             .get(previous.message_id) as { metadata_json: string } | undefined;
-          if (saved && !JSON.parse(saved.metadata_json).report) {
-            this.db.prepare("UPDATE bot_work_feedback SET metadata_json=? WHERE message_id=?")
-              .run(JSON.stringify(workFeedbackSchema.parse(metadata)), previous.message_id);
-            annotated = true;
+          if (saved) {
+            const existing = workFeedbackSchema.parse(JSON.parse(saved.metadata_json));
+            // Repair resolved file labels/targets after a re-execution. The event
+            // fingerprint is unchanged and resolution is scoped to its binding;
+            // preserve the saved report body and never substitute current files.
+            const upgraded = !existing.report ? metadata : { ...existing,
+              report: { ...existing.report, files: metadata.report.files } };
+            const json = JSON.stringify(workFeedbackSchema.parse(upgraded));
+            if (json !== saved.metadata_json) {
+              this.db.prepare("UPDATE bot_work_feedback SET metadata_json=? WHERE message_id=?")
+                .run(json, previous.message_id);
+              annotated = true;
+            }
           }
         }
         if (annotated) this.touch(origin.conversation_id);

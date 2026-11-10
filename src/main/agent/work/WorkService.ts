@@ -303,6 +303,9 @@ export class WorkService {
       acceptedDeliverableIds: [...currentResultIds],
       deliverables,
       generatedArtifacts: this.generatedArtifacts.list(work.workId),
+      historicalGeneratedArtifacts: this.generatedArtifacts.list(work.workId, true).filter(artifact =>
+        !executions.some(binding => binding.bindingId === artifact.bindingId
+          && binding.intentRevision === work.intentRevision && binding.inputSnapshotId === work.inputSnapshotId)),
       runtimeObservations: this.runtimeObservations.forWork(work.workId),
       blockers,
       executions,

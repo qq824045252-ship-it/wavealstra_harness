@@ -29,13 +29,13 @@ export class WorkGeneratedArtifacts {
       this.works.emitCurrentProjection(binding.workId);
     }
   }
-  list(workId: string): Array<GeneratedArtifact & { bindingId: string }> {
+  list(workId: string, includeHistory = false): Array<GeneratedArtifact & { bindingId: string }> {
     const work = this.works.getWork(workId);
     if (!work) return [];
     return this.db.prepare(`SELECT a.binding_id,a.payload_json FROM work_generated_artifacts a
       JOIN work_execution_bindings b ON b.binding_id=a.binding_id
-      WHERE b.work_id=? AND b.intent_revision=? AND b.input_snapshot_id=? ORDER BY a.rowid`)
-      .all(workId, work.intentRevision, work.inputSnapshotId).map(value => {
+      WHERE b.work_id=? AND (? OR (b.intent_revision=? AND b.input_snapshot_id=?)) ORDER BY a.rowid`)
+      .all(workId, includeHistory ? 1 : 0, work.intentRevision, work.inputSnapshotId).map(value => {
         const row = z.object({ binding_id: z.string(), payload_json: z.string() }).parse(value);
         return { ...generatedArtifactSchema.parse(JSON.parse(row.payload_json)), bindingId: row.binding_id };
       });

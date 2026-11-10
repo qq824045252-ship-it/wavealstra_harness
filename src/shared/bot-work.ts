@@ -468,6 +468,8 @@ export interface WorkProjectionDto {
   deliverables: WorkDeliverableDto[];
   runtimeObservations?: import("./bot-work-phase3").WorkRuntimeObservationDto[];
   generatedArtifacts?: Array<import("./bot-work-phase3").GeneratedArtifact & { bindingId: string }>;
+  /** Previous input revisions: display/open only, never current completion evidence. */
+  historicalGeneratedArtifacts?: Array<import("./bot-work-phase3").GeneratedArtifact & { bindingId: string }>;
   blockers: WorkBlockerDto[];
   executions: WorkExecutionBindingDto[];
   notifications: WorkNotificationDto[];
