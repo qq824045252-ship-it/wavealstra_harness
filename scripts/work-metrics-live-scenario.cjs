@@ -39,6 +39,7 @@ exports.run=async({send,foregroundDone,until,evaluate,history,rpc,report,request
    else assert(ui.metrics.find(row=>row.key===key).title.includes(execution.metrics[field].toLocaleString('en-US')+' tokens'),'exact UI tooltip '+key);
  assert(execution.metrics.cacheReadTokens>0,'real Work native calls include cache hit');
  assert(ledger.length>1,'multi-call native Work');
+ assert(ui.metrics.find(row=>row.key==='hit').text.includes(Math.round(execution.metrics.cacheReadTokens/execution.metrics.totalInputTokens*100)+'%'),'raw read/total cache rate shown');
  assert(ui.metrics.some(row=>row.key==='finished'),'completion time shown');
  for(const width of [1040,390]) {
    await rpc('Emulation.setDeviceMetricsOverride',{width,height:900,deviceScaleFactor:1,mobile:false});

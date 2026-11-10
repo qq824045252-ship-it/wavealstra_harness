@@ -174,6 +174,8 @@ assert.match(unknownExecutionMetrics,/执行统计|未采集到统计/);
 assert.doesNotMatch(unknownExecutionMetrics,/输入 0|输出 0|缓存 0%/);
 const measuredExecutionMetrics=renderToStaticMarkup(createElement(WorkExecutionMetrics,{work:{...executed,executions:[{...completeBinding,metrics:{inputTokens:100,outputTokens:20,cacheReadTokens:30,cacheWriteTokens:0,reportedCalls:1,calls:1,complete:true,observedAt:1,contextTokens:120,contextWindow:1000,contextEstimated:true}}]}}));
 assert.match(measuredExecutionMetrics,/100 tokens/);assert.match(measuredExecutionMetrics,/20 tokens/);
+const rawExecutionMetrics=renderToStaticMarkup(createElement(WorkExecutionMetrics,{work:{...executed,executions:[{...completeBinding,metrics:{inputTokens:null,totalInputTokens:100,outputTokens:20,cacheReadTokens:90,cacheWriteTokens:null,reportedCalls:1,calls:1,complete:false,observedAt:1,contextTokens:null,contextWindow:1000,contextEstimated:true}}]}}));
+assert.match(rawExecutionMetrics,/总输入/);assert.match(rawExecutionMetrics,/100 tokens/);assert.match(rawExecutionMetrics,/90%/);assert.match(rawExecutionMetrics,/缓存写<\/dt><dd>—/);
 assert.match(measuredExecutionMetrics,/23%/);assert.match(measuredExecutionMetrics,/≈&lt;0.001M/);
 assert.match(measuredExecutionMetrics,/原生子调用/);
 assert.equal(workExecutionComplete(executed), true);
