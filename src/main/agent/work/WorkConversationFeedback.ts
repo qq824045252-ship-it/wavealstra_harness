@@ -108,6 +108,9 @@ export class WorkConversationFeedback {
         };
         const results = works.repo.listDeliverables(work.workId);
         const generated = works.generatedArtifacts.list(work.workId, true);
+        const memberBindings = new Set((this.options.db.prepare(`SELECT b.binding_id FROM work_team_executions e
+          JOIN work_execution_bindings b ON b.work_id=e.work_id AND b.task_id=e.task_id
+          WHERE e.work_id=? AND e.role='member'`).all(work.workId) as Array<{ binding_id: string }>).map(row => row.binding_id));
         for (const binding of works.repo.listBindings(work.workId)) {
           if (!["completed", "failed", "stopped", "invalidated", "unknown"].includes(binding.status) || managed(binding.bindingId)) continue;
           const labels: Record<string, string> = { completed: "后台结果已返回。",
@@ -145,7 +148,7 @@ export class WorkConversationFeedback {
             + `${result.isSpeculation ? "\n该成果包含推测，仍需验证。" : ""}`
             + `${result.hasWriteConflicts ? "\n存在写入冲突，仍需处理。" : ""}`
             + `${result.rejectedReason ? `\n未通过核验：${result.rejectedReason}` : ""}`,
-            { kind: "result", category: "result", executionId: result.executionId,
+            { kind: "result", category: memberBindings.has(result.executionId) ? "progress" : "result", executionId: result.executionId,
               intentRevision: result.intentRevision, inputSnapshotId: result.inputSnapshotId,
               report: { title: work.title, summary: result.summary, artifactRefs: result.artifactRefs, ...presentation,
                 files: result.artifactRefs.map(ref => {

@@ -71,7 +71,7 @@ export class BotConversationService {
         const message = this.messages.message(request.referenceMessageId);
         const conversation = this.messages.conversation(this.options.userId, request.botId, request.conversationId, request.teamId);
         this.messages.assertScope(conversation, request.teamId);
-        if (!message || message.conversationId !== conversation?.conversation_id) throw new Error("消息引用不属于当前对话");
+        if (!message || !conversation || !this.messages.messageBelongsToConversation(this.options.userId, conversation.conversation_id, message.messageId)) throw new Error("消息引用不属于当前对话");
         message.workIds.forEach(workId => this.assertWork(request.botId, workId, request.teamId));
       }
       const key = createHash("sha256").update(JSON.stringify([this.options.userId, request.botId, request.requestId])).digest("hex");

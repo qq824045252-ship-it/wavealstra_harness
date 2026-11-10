@@ -13,6 +13,18 @@ export function ensureBotInbox(db: Database.Database, userId: string, botId: str
   return id;
 }
 
+/** Personal work binds its owner identity at creation/delivery, not the UI selection. */
+export function ensurePersonalConversation(db: Database.Database, userId: string, botId: string): string | undefined {
+  if (!db.prepare("SELECT 1 FROM bots WHERE user_id=? AND bot_id=?").get(userId, botId)) return;
+  const prior = db.prepare("SELECT conversation_id FROM bot_conversations WHERE user_id=? AND bot_id=? AND team_id IS NULL AND archived_at IS NULL")
+    .get(userId, botId) as { conversation_id: string } | undefined;
+  if (prior) return prior.conversation_id;
+  const id = `bot-conversation-${randomUUID()}`, now = Date.now();
+  db.prepare("INSERT INTO bot_conversations(conversation_id,bot_id,user_id,created_at,updated_at) VALUES (?,?,?,?,?)")
+    .run(id, botId, userId, now, now);
+  return id;
+}
+
 /** Stable team scope survives changes to the executing leader. */
 export function ensureTeamConversation(db: Database.Database, userId: string, botId: string, teamId: string): string {
   const prior = db.prepare("SELECT conversation_id FROM bot_conversations WHERE user_id=? AND team_id=? AND archived_at IS NULL")
@@ -25,7 +37,7 @@ export function ensureTeamConversation(db: Database.Database, userId: string, bo
 }
 
 /** Called inside Work creation: UI/native/Gateway Work without a Bot chat gets
- * an explicit owner inbox. This does not replace Gateway delivery targets. */
+ * an explicit owner conversation. This does not replace Gateway delivery targets. */
 export function recordWorkDelivery(db: Database.Database, work: { workId: string; userId: string; ownerBotId: string },
   input: { conversationId?: string; sourceMessageId?: string }): void {
   const source = input.sourceMessageId ? db.prepare(`SELECT c.conversation_id FROM bot_messages m
@@ -35,7 +47,7 @@ export function recordWorkDelivery(db: Database.Database, work: { workId: string
     .get(input.sourceMessageId, work.userId) as { conversation_id: string } | undefined : undefined;
   const explicit = input.conversationId ? db.prepare(`SELECT conversation_id FROM bot_conversations
     WHERE conversation_id=? AND user_id=? AND (bot_id=? OR team_id IS NOT NULL)`).get(input.conversationId, work.userId, work.ownerBotId) as { conversation_id: string } | undefined : undefined;
-  const target = source?.conversation_id ?? explicit?.conversation_id ?? ensureBotInbox(db, work.userId, work.ownerBotId);
+  const target = source?.conversation_id ?? explicit?.conversation_id ?? ensurePersonalConversation(db, work.userId, work.ownerBotId);
   if (target) db.prepare(`INSERT OR IGNORE INTO work_conversations(work_id,conversation_id,channel_type,last_referenced_at)
-    VALUES (?,?,'bot-delivery',?)`).run(work.workId, target, Date.now());
+    VALUES (?,?,'bot-delivery',?) ON CONFLICT(work_id,conversation_id) DO UPDATE SET channel_type='bot-delivery'`).run(work.workId, target, Date.now());
 }

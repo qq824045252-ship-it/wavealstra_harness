@@ -1,4 +1,4 @@
-import { botInboxId, ensureBotInbox } from "./WorkDeliveryTargets";
+import { botInboxId, ensurePersonalConversation, ensureTeamConversation } from "./WorkDeliveryTargets";
 import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { z } from "zod";
@@ -82,12 +82,26 @@ export class BotConversationRepository {
     return row ? this.mapMessage(row) : undefined;
   }
 
+  messageBelongsToConversation(userId: string, conversationId: string, messageId: string): boolean {
+    return Boolean(this.db.prepare(`SELECT 1 FROM bot_messages m JOIN bot_conversations c ON c.conversation_id=m.conversation_id
+      JOIN bot_conversations target ON target.conversation_id=? AND target.user_id=c.user_id
+      WHERE m.message_id=? AND c.user_id=? AND (m.conversation_id=target.conversation_id OR
+        (m.conversation_id LIKE 'bot-inbox-%' AND EXISTS (SELECT 1 FROM bot_work_feedback f
+          JOIN work_conversations t ON t.work_id=json_extract(f.metadata_json,'$.workId')
+          WHERE f.message_id=m.message_id AND t.channel_type='bot-delivery' AND t.conversation_id=target.conversation_id)))`)
+      .get(conversationId, messageId, userId));
+  }
+
   history(userId: string, request: BotHistoryRequest): BotHistoryDto {
     const conversation = this.conversation(userId, request.botId, request.inbox ? botInboxId(userId, request.botId) : request.conversationId, request.teamId);
     this.assertScope(conversation, request.teamId);
     if (!conversation) return { conversationId: "", botId: request.botId, teamId: request.teamId, revision: 0, archived: false, messages: [] };
-    const rows = this.db.prepare("SELECT * FROM bot_messages WHERE conversation_id=? AND ordinal<? ORDER BY ordinal DESC LIMIT 101")
-      .all(conversation.conversation_id, request.before ?? Number.MAX_SAFE_INTEGER);
+    const rows = this.db.prepare(`SELECT m.* FROM bot_messages m JOIN bot_conversations c ON c.conversation_id=m.conversation_id
+      WHERE c.user_id=? AND (m.conversation_id=? OR (m.conversation_id LIKE 'bot-inbox-%' AND EXISTS (
+        SELECT 1 FROM bot_work_feedback f JOIN work_conversations t ON t.work_id=json_extract(f.metadata_json,'$.workId')
+        WHERE f.message_id=m.message_id AND t.channel_type='bot-delivery' AND t.conversation_id=?)))
+      AND m.ordinal<? ORDER BY m.ordinal DESC LIMIT 101`)
+      .all(userId, conversation.conversation_id, conversation.conversation_id, request.before ?? Number.MAX_SAFE_INTEGER);
     const messages = rows.slice(0, 100).map(row => this.mapMessage(row)).reverse();
     return { conversationId: conversation.conversation_id, botId: request.botId, teamId: request.teamId, revision: conversation.revision,
       archived: conversation.archived_at !== null, messages, before: rows.length > 100 ? messages[0]?.ordinal : undefined };
@@ -181,7 +195,7 @@ export class BotConversationRepository {
       intentRevision: work.intentRevision, sourceVersion: work.sourceVersion,
       ...(message.attachments?.length ? { attachments: message.attachments } : {}) });
     const reference = receipt.reference_message_id ? this.message(receipt.reference_message_id) : undefined;
-    const references = reference?.conversationId === receipt.conversation_id
+    const references = reference && this.messageBelongsToConversation(receipt.user_id, receipt.conversation_id, reference.messageId)
       && reference.ordinal < current.ordinal ? [compact(reference)] : [];
     if (references.length && reference?.role === 'assistant') {
       const original = this.receipt(receipt.user_id, reference.botId, reference.requestId);
@@ -199,7 +213,7 @@ export class BotConversationRepository {
       .get(workId, previousSnapshotId ?? inputSnapshotId) as { attachments_json: string } | undefined;
     const current = this.message(receipt.user_message_id);
     const reference = receipt.reference_message_id ? this.message(receipt.reference_message_id) : undefined;
-    const referenced = reference?.conversationId === receipt.conversation_id ? reference.attachments ?? [] : [];
+    const referenced = reference && this.messageBelongsToConversation(receipt.user_id, receipt.conversation_id, reference.messageId) ? reference.attachments ?? [] : [];
     const source = this.db.prepare("SELECT messages_json,references_json FROM bot_work_user_inputs WHERE work_id=? AND source_message_id=?")
       .get(workId, receipt.user_message_id) as { messages_json: string; references_json: string } | undefined;
     const contextAttachments = source ? [source.messages_json, source.references_json].flatMap(value =>
@@ -236,18 +250,26 @@ export class BotConversationRepository {
   }
 
   /** Explicit delivery target first; legacy authenticated origin second. Old
-   * unlinked Work projects into its known owner inbox, never a guessed live chat. */
+   * unlinked Work is bound to its known team/owner, never the selected UI chat. */
   resolveWorkDelivery(userId: string, workId: string): BotConversation | undefined {
     const work = this.db.prepare("SELECT owner_bot_id FROM works WHERE work_id=? AND user_id=?").get(workId, userId) as { owner_bot_id: string } | undefined;
     if (!work) return;
     const targets = this.db.prepare(`SELECT c.* FROM work_conversations t JOIN bot_conversations c ON c.conversation_id=t.conversation_id
       WHERE t.work_id=? AND t.channel_type='bot-delivery' AND c.user_id=?`).all(workId, userId);
-    if (targets.length === 1) return conversationRow.parse(targets[0]);
+    if (targets.length === 1 && !conversationRow.parse(targets[0]).conversation_id.startsWith("bot-inbox-")) return conversationRow.parse(targets[0]);
     if (targets.length > 1) return; // Ambiguous persisted provenance is not guessed.
     const origin = this.workOrigin(userId, workId);
-    if (origin) return origin;
-    const id = ensureBotInbox(this.db, userId, work.owner_bot_id);
-    return id ? this.conversation(userId, work.owner_bot_id, id) : undefined;
+    const hasTeams = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='work_team_ownership'").get();
+    const team = hasTeams ? this.db.prepare("SELECT team_id FROM work_team_ownership WHERE work_id=?").get(workId) as { team_id: string } | undefined : undefined;
+    const id = origin?.conversation_id ?? (team ? ensureTeamConversation(this.db, userId, work.owner_bot_id, team.team_id)
+      : ensurePersonalConversation(this.db, userId, work.owner_bot_id));
+    if (!id) return;
+    // Only replace the retired inbox route. Messages, IDs, original text and
+    // Work state remain intact; history projects them through this exact link.
+    this.db.prepare("DELETE FROM work_conversations WHERE work_id=? AND channel_type='bot-delivery' AND conversation_id LIKE 'bot-inbox-%'").run(workId);
+    this.db.prepare("INSERT OR IGNORE INTO work_conversations(work_id,conversation_id,channel_type,last_referenced_at) VALUES (?,?,'bot-delivery',?) ON CONFLICT(work_id,conversation_id) DO UPDATE SET channel_type='bot-delivery'").run(workId, id, Date.now());
+    this.touch(id);
+    return this.conversation(userId, origin?.bot_id ?? work.owner_bot_id, id);
   }
 
   appendWorkDelivery(userId: string, workId: string, event: string, version: string, text: string, metadata?: WorkFeedbackDto):
@@ -272,8 +294,11 @@ export class BotConversationRepository {
       const prefix = `work-feedback:${key}:`;
       const fingerprint = createHash("sha256").update(version).digest("hex");
       const previous = this.db.prepare(`SELECT message_id,request_id FROM bot_messages
-        WHERE conversation_id=? AND bot_id=? AND role='assistant' AND message_id LIKE 'work-feedback-%' AND request_id LIKE ? ORDER BY ordinal DESC LIMIT 1`)
-        .get(origin.conversation_id, origin.bot_id, `${prefix}%`) as { message_id: string; request_id: string } | undefined;
+        WHERE (conversation_id=? OR (conversation_id LIKE 'bot-inbox-%' AND EXISTS (
+          SELECT 1 FROM bot_work_feedback f JOIN work_conversations t ON t.work_id=json_extract(f.metadata_json,'$.workId')
+          WHERE f.message_id=bot_messages.message_id AND t.channel_type='bot-delivery' AND t.conversation_id=?)))
+        AND role='assistant' AND message_id LIKE 'work-feedback-%' AND request_id LIKE ? ORDER BY ordinal DESC LIMIT 1`)
+        .get(origin.conversation_id, origin.conversation_id, `${prefix}%`) as { message_id: string; request_id: string } | undefined;
       const unchanged = previous?.request_id.endsWith(`:${fingerprint}`);
       let annotated = false;
       if (metadata) {
@@ -298,7 +323,7 @@ export class BotConversationRepository {
             // Repair resolved file labels/targets after a re-execution. The event
             // fingerprint is unchanged and resolution is scoped to its binding;
             // preserve the saved report body and never substitute current files.
-            const upgraded = !existing.report ? metadata : { ...existing,
+            const upgraded = !existing.report ? metadata : { ...existing, category: metadata.category,
               report: { ...existing.report, files: metadata.report.files } };
             const json = JSON.stringify(workFeedbackSchema.parse(upgraded));
             if (json !== saved.metadata_json) {

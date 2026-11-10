@@ -54,6 +54,7 @@ const botPage = renderToStaticMarkup(createElement(BotWorkspacePage));
 assert.match(botPage, /所有消息/);
 assert.doesNotMatch(botPage, /更多 Bot 操作|组队开工|返回普通模式/);
 assert.match(botPage, /新对话/);
+assert.doesNotMatch(botPage, /任务收件箱/, "task results must use the conversation, not a second scrolling panel");
 assert.match(botPage, /aria-labelledby="bot-new-conversation-title"/);
 assert.match(botPage, /归档并开始新对话/);
 assert.match(botPage, /class="input-textarea"/, "Bot uses the same controlled composer as ordinary chat");

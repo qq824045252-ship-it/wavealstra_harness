@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { ensureBotInbox } from "../src/main/agent/work/WorkDeliveryTargets";
 import { projectTeamReport } from "../src/main/agent/work/WorkReportPresentation";
 import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -218,17 +219,17 @@ try {
 
   const orphan = create("unlinked-work", false);
   works.repo.insertBlocker({ blockerId: "orphan-blocker", workId: orphan.workId, reason: "No origin", kind: "operational", status: "open", waitingForUserInput: true, createdAt: 6 });
-  assert.equal(feedback.drain(orphan.workId), 1, "unlinked Work is delivered to its explicit Bot inbox, never the active chat");
+  assert.equal(feedback.drain(orphan.workId), 1, "UI Work delivers to its owning Bot conversation");
   const inbox = messages.resolveWorkDelivery(LOCAL_USER_ID, orphan.workId)!;
-  assert(inbox.conversation_id.startsWith("bot-inbox-"));
-  assert.notEqual(inbox.conversation_id, messages.history(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID }).conversationId);
+  assert(!inbox.conversation_id.startsWith("bot-inbox-"));
+  assert.equal(inbox.conversation_id, messages.history(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID }).conversationId);
   const inboxMeta = { workId: orphan.workId, eventId: "result:inbox", kind: "result" as const, category: "result" as const };
   const delivered = messages.appendWorkDelivery(LOCAL_USER_ID, orphan.workId, "result:inbox", "1", "团队结果已返回", inboxMeta);
   assert(delivered.delivered && delivered.inserted);
   assert.deepEqual(messages.appendWorkDelivery(LOCAL_USER_ID, orphan.workId, "result:inbox", "1", "团队结果已返回", inboxMeta),
     { delivered: true, inserted: false, conversationId: inbox.conversation_id });
-  assert.equal(messages.history(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID, inbox: true }).messages.at(-1)?.text, "团队结果已返回");
-  assert.equal(messages.history(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID }).messages.length, 2, "inbox never changes the current chat");
+  assert.equal(messages.history(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID }).messages.at(-1)?.text, "团队结果已返回");
+  assert.equal(messages.history(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID }).messages.length, 4, "result appears naturally in the owner conversation");
   assert.equal(messages.resolveWorkDelivery("another-user", orphan.workId), undefined);
   assert.equal(messages.resolveWorkDelivery(LOCAL_USER_ID, work.workId)?.conversation_id, source.conversationId, "archived original destination survives owner handoff");
   const legacy = create("legacy-inbox", false);
@@ -236,6 +237,41 @@ try {
   const beforeLegacy = JSON.stringify(works.getWork(legacy.workId));
   assert.equal(messages.resolveWorkDelivery(LOCAL_USER_ID, legacy.workId)?.conversation_id, inbox.conversation_id);
   assert.equal(JSON.stringify(works.getWork(legacy.workId)), beforeLegacy, "legacy projection neither executes nor mutates Work");
+  // Upgrade old inbox routing without moving/removing the original message.
+  const oldInboxId = ensureBotInbox(db.connection, LOCAL_USER_ID, DEFAULT_BOT_ID)!;
+  const oldInbox = messages.conversation(LOCAL_USER_ID, DEFAULT_BOT_ID, oldInboxId)!;
+  const oldMeta = { ...inboxMeta, workId: legacy.workId, eventId: "result:legacy" };
+  messages.appendWorkFeedback(oldInbox, legacy.workId, "result:legacy", "1", "原有历史结果", oldMeta);
+  db.connection.prepare("DELETE FROM work_conversations WHERE work_id=? AND channel_type='bot-delivery'").run(legacy.workId);
+  db.connection.prepare("INSERT INTO work_conversations VALUES (?,?,'bot-delivery',1)").run(legacy.workId, oldInboxId);
+  const oldMessage = messages.history(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID, inbox: true }).messages.at(-1)!;
+  assert.equal(messages.resolveWorkDelivery(LOCAL_USER_ID, legacy.workId)?.conversation_id, inbox.conversation_id);
+  assert(messages.history(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID }).messages.some(m => m.messageId === oldMessage.messageId));
+  assert(messages.messageBelongsToConversation(LOCAL_USER_ID, inbox.conversation_id, oldMessage.messageId), "projected result remains replyable");
+  assert(!messages.messageBelongsToConversation("other-user", inbox.conversation_id, oldMessage.messageId));
+  assert.equal(messages.message(oldMessage.messageId)?.conversationId, oldInboxId, "raw historical provenance is retained");
+  assert.equal(messages.appendWorkDelivery(LOCAL_USER_ID, legacy.workId, "result:legacy", "1", "原有历史结果", oldMeta).inserted, false, "replay must not duplicate projected history");
+  assert(!messages.history(LOCAL_USER_ID, { botId: "new-owner" }).messages.some(m => m.messageId === oldMessage.messageId));
+  const legacyTeam = create("legacy-team-delivery", false);
+  db.connection.exec("CREATE TABLE IF NOT EXISTS work_team_ownership(work_id TEXT PRIMARY KEY,team_id TEXT,team_name TEXT)");
+  db.connection.prepare("INSERT INTO work_teams VALUES (?,?,'legacy-team','digest','{}',1,'input',1)").run(legacyTeam.workId, LOCAL_USER_ID);
+  db.connection.prepare("INSERT INTO work_team_ownership VALUES (?, 'known-team', '已确认团队')").run(legacyTeam.workId);
+  db.connection.prepare("UPDATE work_conversations SET conversation_id=? WHERE work_id=? AND channel_type='bot-delivery'").run(oldInboxId, legacyTeam.workId);
+  const teamMeta = { ...oldMeta, workId: legacyTeam.workId, eventId: "result:team" };
+  messages.appendWorkFeedback(oldInbox, legacyTeam.workId, "result:team", "1", "团队历史结果", teamMeta);
+  const teamDestination = messages.resolveWorkDelivery(LOCAL_USER_ID, legacyTeam.workId)!;
+  assert.equal(teamDestination.team_id, "known-team", "known team identity overrides retired owner inbox");
+  assert(messages.history(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID, teamId: "known-team" }).messages.some(m => m.text === "团队历史结果"));
+  assert(!messages.history(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID }).messages.some(m => m.text === "团队历史结果"));
+  db.connection.prepare("INSERT INTO work_teams VALUES (?,?,'member-report','digest','{}',1,'input',1)").run(work.workId, LOCAL_USER_ID);
+  db.connection.prepare("INSERT INTO work_team_executions(work_id,ordinal,bot_id,task_id,role,responsibility,scopes_json) VALUES (?,0,?,?,'member','核对','[]')")
+    .run(work.workId, reportBinding.botId, reportBinding.taskId);
+  const originalResultCount = history().messages.filter(m => m.workFeedback?.eventId === "result:result:binding-1").length;
+  feedback.drain(work.workId);
+  const folded = history().messages.filter(m => m.workFeedback?.eventId === "result:result:binding-1");
+  assert.equal(folded.length, originalResultCount, "recategorizing existing member reports does not duplicate messages");
+  assert.equal(folded.at(-1)?.workFeedback?.category, "progress", "members fold into execution history, only owner conclusion is main result");
+  assert.equal(works.repo.getDeliverable("result:binding-1")?.summary, fullResult, "member report source text is retained");
   works.repo.updateWork({ ...works.getWork(work.workId)!, lifecycle: "closed", closedAt: 8, closureConclusion: "cancelled", closureSummary: "已取消" });
   const finalCount = history().messages.length;
   db.connection.exec("DROP TABLE bot_work_feedback"); // Existing v35 database upgrade, not a schema reset.
