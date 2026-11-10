@@ -40,18 +40,20 @@ export default function App(): React.JSX.Element {
   const theme = useAppStore((s) => s.theme);
   const searchOpen = useAppStore((s) => s.searchOpen);
   const compactBotLayout = useMediaQuery("(max-width: 1180px)");
+  const compactAutomationLayout = useMediaQuery("(max-width: 720px)");
+  const usesNavigationDrawer = (page === "bot" && compactBotLayout) || (page === "automation" && compactAutomationLayout);
   const [botNavigationOpen, setBotNavigationOpen] = useState(false);
   const [botCreateOpen, setBotCreateOpen] = useState(false);
   const openBotCreation = () => { setBotNavigationOpen(false); setBotCreateOpen(true); };
   const botNavigationRef = useRef<HTMLDialogElement>(null);
   const botSidebarVisible = compactBotLayout ? botNavigationOpen : !sidebarCollapsed;
-  useEffect(() => { setBotNavigationOpen(false); }, [page, compactBotLayout]);
+  useEffect(() => { setBotNavigationOpen(false); }, [page, compactBotLayout, compactAutomationLayout]);
   useEffect(() => { if (searchOpen || settingsOpen) { setBotNavigationOpen(false); setBotCreateOpen(false); } }, [searchOpen, settingsOpen]);
   useEffect(() => {
     const dialog = botNavigationRef.current;
-    if (page === "bot" && compactBotLayout && botNavigationOpen) dialog?.showModal();
+    if (usesNavigationDrawer && botNavigationOpen) dialog?.showModal();
     else if (dialog?.open) dialog.close();
-  }, [page, compactBotLayout, botNavigationOpen]);
+  }, [usesNavigationDrawer, botNavigationOpen]);
 
   useEffect(() => {
     applyTheme(theme);
@@ -141,13 +143,13 @@ export default function App(): React.JSX.Element {
 
   return (
     <div className={`app ${page === "bot" ? "app--bot" : ""}`}>
-      {page === "bot" && compactBotLayout ? <dialog ref={botNavigationRef} className="bot-navigation-drawer" aria-label="主导航" onCancel={event => { event.preventDefault(); setBotNavigationOpen(false); }} onClick={event => { if (event.target === event.currentTarget) setBotNavigationOpen(false); }}>
+      {usesNavigationDrawer ? <dialog ref={botNavigationRef} className="bot-navigation-drawer" aria-label="主导航" onCancel={event => { event.preventDefault(); setBotNavigationOpen(false); }} onClick={event => { if (event.target === event.currentTarget) setBotNavigationOpen(false); }}>
         <Sidebar onClose={() => setBotNavigationOpen(false)} onCreateBot={openBotCreation} />
       </dialog> : !sidebarCollapsed && <Sidebar onCreateBot={openBotCreation} />}
       <div
         className={`main-area ${panelExpanded ? "panel-expanded" : ""} ${showArtifactPanel ? "has-artifact-panel" : ""}`}
       >
-        {sidebarCollapsed && page !== "chat" && page !== "bot" && (
+        {sidebarCollapsed && !usesNavigationDrawer && page !== "chat" && page !== "bot" && (
           <button className="icon-btn sidebar-expand-float" title="展开侧边栏" onClick={toggleSidebar}>
             <IconPanel size={15} />
           </button>
@@ -173,7 +175,7 @@ export default function App(): React.JSX.Element {
         ) : page === "experts" || page === "skills" || page === "mcp" || page === "connectors" ? (
           <HubPage tab={page} />
         ) : page === "automation" ? (
-          <AutomationPage />
+          <AutomationPage onToggleNavigation={usesNavigationDrawer ? () => setBotNavigationOpen(open => !open) : undefined} />
         ) : page === "files" ? (
           <FilesPage />
         ) : page === "mailbox" ? (

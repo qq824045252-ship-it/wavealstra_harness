@@ -24800,3 +24800,29 @@ html[data-theme="dark"] .chat-column.task-ambient[data-mode="general"] {
 }
 
 .text-prompt-description { margin: -6px 0 18px; color: var(--fg-secondary); font-size: 12px; line-height: 1.6; }
+
+/* Reuse the existing navigation drawer on narrow automation pages; keep controls reachable without hover. */
+@media (max-width: 720px) {
+  .auto-root .auto-toolbar { padding: 10px 12px; gap: 8px; }
+  .auto-root .auto-toolbar-search { order: 2; flex-basis: 100%; max-width: none; min-width: 0; }
+  .auto-root .auto-toolbar-actions { order: 3; width: 100%; margin-left: 0; gap: 6px; }
+  .auto-root .auto-toolbar-btn { padding: 0 10px; }
+  .auto-page { width: 100%; box-sizing: border-box; padding: 8px 12px 32px; }
+  .auto-row { flex-wrap: wrap; gap: 6px; padding: 10px 8px; border-bottom: 1px solid var(--border-subtle); }
+  .auto-row-main { flex: 1 1 90%; flex-wrap: wrap; gap: 5px 8px; }
+  .auto-row-name { flex-basis: 100%; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+  .auto-row-id { flex: 1 1 100%; }
+  .auto-row-schedule { flex: 1 1 100%; white-space: normal; overflow-wrap: anywhere; }
+  .auto-row-right { width: 100%; min-width: 0; justify-content: space-between; }
+  .auto-row-next { text-align: left; }
+  .auto-row-actions { display: inline-flex; }
+  .auto-row:hover .auto-row-next:not(.running) { opacity: 1; width: auto; min-width: 0; overflow: visible; }
+  .auto-batch-bar { flex-wrap: wrap; padding: 8px 12px; }
+  .auto-form-topbar { flex-wrap: wrap; padding: 10px 12px; gap: 8px; }
+  .auto-form-breadcrumb { flex-wrap: wrap; }
+  .auto-form-top-actions { margin-left: auto; }
+  .auto-form-container { padding: 16px 12px 32px; }
+  .auto-freq-row { min-width: 0; }
+  .auto-freq-row input { max-width: 100%; box-sizing: border-box; }
+  .auto-toast { max-width: calc(100% - 24px); white-space: normal; box-sizing: border-box; }
+}

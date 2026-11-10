@@ -33,6 +33,7 @@ import {
   IconLink,
   IconMore,
   IconPause,
+  IconPanel,
   IconPlay,
   IconPlus,
   IconSearch,
@@ -339,6 +340,7 @@ export interface AutomationPageProps {
   variant?: "page" | "modal";
   startInForm?: boolean;
   onClose?: () => void;
+  onToggleNavigation?: () => void;
 }
 
 export default function AutomationPage({
@@ -346,6 +348,7 @@ export default function AutomationPage({
   variant = "page",
   startInForm = false,
   onClose,
+  onToggleNavigation,
 }: AutomationPageProps = {}): React.JSX.Element {
   const spaces = useAppStore((s) => s.spaces);
   const connectors = useAppStore((s) => s.connectors);
@@ -991,6 +994,7 @@ export default function AutomationPage({
       <div className={`content-col ${variant === "modal" ? "auto-root-modal" : ""}`}>
         <div className="auto-form-topbar">
           <div className="auto-form-breadcrumb">
+            {onToggleNavigation && <button type="button" className="icon-btn" aria-label="打开主导航" onClick={onToggleNavigation}><IconPanel size={16} /></button>}
             <button type="button" className="auto-form-crumb-btn" onClick={() => setView("list")}>
               <IconZap size={15} />
               自动化
@@ -1702,6 +1706,7 @@ export default function AutomationPage({
       )}
 
       <div className="auto-toolbar">
+        {onToggleNavigation && <button type="button" className="icon-btn" aria-label="打开主导航" onClick={onToggleNavigation}><IconPanel size={16} /></button>}
         <div className="hub-tabs">
           <button
             type="button"
