@@ -1,3 +1,4 @@
+import { botExecutionDiagnostics } from "./work/BotExecutionDiagnostics";
 import { BotDisplayGroupsService } from "./work/BotDisplayGroupsService";
 import { BotWorkspaceNavigationService } from "./work/BotWorkspaceNavigationService";
 import { BotWorkResultTurn } from "./work/BotWorkResultTurn";
@@ -1212,6 +1213,7 @@ export class AgentService {
     return new WorkProjectionJournal(this.db.connection, this.workService).sync(LOCAL_USER_ID, request);
   }
   botDisplayGroups(request: unknown) { return new BotDisplayGroupsService(this.db.connection, LOCAL_USER_ID).execute(request); }
+  botExecutionDiagnostics(request: unknown) { return botExecutionDiagnostics(this.db.connection, LOCAL_USER_ID, request, this.taskDiagnostics, this.workService, this.botRegistry); }
   botWorkspaceNavigation() { return new BotWorkspaceNavigationService(this.db, LOCAL_USER_ID).snapshot(); }
   async sendBotMessage(request: unknown) {
     const input = (await import("../../shared/bot-conversation")).botSendSchema.parse(request);
@@ -1681,7 +1683,7 @@ export class AgentService {
       extract: id => this.queuePendingMemoryExtraction([id]),
       changed: () => this.notifyMemoryChanged({ scope: "settings" }),
     });
-    this.botConversations ??= new BotConversationService({ db: this.db.connection, userId: LOCAL_USER_ID,
+    this.botConversations ??= new BotConversationService({ onTool: event => this.taskDiagnostics.observeTool(event), db: this.db.connection, userId: LOCAL_USER_ID,
       bots: this.botRegistry, works: this.workService, models: this.durableModels, directory: join(getMyBuddyDir(), "bot-conversations"),
       botModel: botId => this.botSettings.get(botId).modelId || undefined,
       thinking: (id, preference) => {

@@ -74,6 +74,11 @@ console.log("== 缓存计算（加权，不是算术平均） ==");
   assert(cache.hitRate !== null && Math.round(cache.hitRate * 100) === 83, `加权命中率 83%（${cache.hitRate}）`);
   assert(cache.cacheRead === 10_000 && cache.input === 2_000, "分量求和正确");
   assert(cache.degraded === false, "分量齐全不标降级");
+  const partial = summarizeCache([
+    request({id:'known',executionId:'same'}),
+    request({id:'missing',executionId:'same',usage:{input:1000,output:1,cacheRead:null,cacheWrite:null}}),
+  ]);
+  assert(partial.hitRate === null, '同轮部分请求缓存缺失，不把部分和当完整命中率');
 
   const degraded = summarizeCache([request({ id: "r3", executionId: "t2", usage: { input: 1_000, output: 1, cacheRead: 1_000, cacheWrite: null } })]);
   assert(degraded.hitRate !== null && degraded.degraded, `cacheWrite 未知 → 用已知分量算并标降级（${degraded.hitRate}）`);

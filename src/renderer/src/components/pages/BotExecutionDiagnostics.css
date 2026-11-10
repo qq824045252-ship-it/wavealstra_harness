@@ -1,0 +1,6 @@
+.bot-execution-diagnostics-selectors {display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin:12px 0;}
+.bot-execution-diagnostics-selectors label {display:flex;gap:8px;align-items:center;min-width:0;max-width:100%;}
+.bot-execution-diagnostics-selectors select {min-width:0;max-width:100%;background:var(--bg-secondary);color:inherit;}
+.bot-execution-diagnostics-selectors label {flex:1 1 240px;}
+.bot-execution-diagnostics-selectors label > span {flex-shrink:0;white-space:nowrap;}
+.bot-execution-diagnostics-selectors select {flex:1;border:1px solid var(--border-color);border-radius:6px;padding:6px 8px;font:inherit;}

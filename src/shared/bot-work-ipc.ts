@@ -46,6 +46,7 @@ export const BotWorkIpc = {
   markNotificationRead: "bot-work:mark-notification-read",
   markCardRead: "bot-work:mark-card-read",
   workSummary: "bot-work:work-summary",
+  executionDiagnostics: "bot-work:execution-diagnostics",
   workDiagnostics: "bot-work:work-diagnostics",
   resendNotification: "bot-work:resend-notification",
   reviewControl: "bot-work:review-control",
@@ -100,6 +101,7 @@ export interface BotWorkApi {
   /** Read facts only: never a Work control version or a new execution. */
   markCardRead(request: WorkCardReadRequest): Promise<WorkCardReadResult>;
   workSummary(workId: string): Promise<WorkSummaryProjectionDto | undefined>;
+  executionDiagnostics(request: import("./bot-execution-diagnostics").BotExecutionDiagnosticsRequest): Promise<import("./bot-execution-diagnostics").BotExecutionDiagnosticsDto>;
   workDiagnostics(request: WorkDiagnosticsRequest): Promise<WorkExpandedDiagnosticsDto | undefined>;
   /** Explicit user-authorized resend of a delivery whose external outcome is unknown. */
   resendNotification(request: WorkManualResendRequest): Promise<WorkControlResult>;

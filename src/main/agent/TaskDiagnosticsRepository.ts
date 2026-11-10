@@ -103,11 +103,16 @@ export class TaskDiagnosticsRepository {
       id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
       started_at INTEGER NOT NULL, record_json TEXT NOT NULL CHECK(json_valid(record_json)));
       CREATE INDEX IF NOT EXISTS idx_task_tool_diagnostics ON task_tool_diagnostics(task_id, started_at);
+      CREATE TABLE IF NOT EXISTS scope_tool_diagnostics (id TEXT PRIMARY KEY,task_id TEXT NOT NULL,started_at INTEGER NOT NULL,record_json TEXT NOT NULL CHECK(json_valid(record_json)));
+      CREATE INDEX IF NOT EXISTS idx_scope_tool_diagnostics ON scope_tool_diagnostics(task_id,started_at);
+      CREATE INDEX IF NOT EXISTS idx_task_request_scope ON task_request_diagnostics(json_extract(record_json,'$.executionScope'),started_at);
       CREATE INDEX IF NOT EXISTS idx_task_diagnostic_waits ON conversation_interactions(task_id, execution_id);`);
     // A process restart loses the observation interval. Keep that gap unknown rather than charging downtime.
     db.prepare(`UPDATE task_request_diagnostics SET record_json=json_set(record_json,'$.status','interrupted')
       WHERE json_extract(record_json,'$.status')='running'`).run();
     db.prepare(`UPDATE task_tool_diagnostics SET record_json=json_set(record_json,'$.status','interrupted','$.complete',json('false'),'$.segmentStartedAt',NULL)
+      WHERE json_extract(record_json,'$.status')='running'`).run();
+    db.prepare(`UPDATE scope_tool_diagnostics SET record_json=json_set(record_json,'$.status','interrupted','$.complete',json('false'),'$.segmentStartedAt',NULL)
       WHERE json_extract(record_json,'$.status')='running'`).run();
     } catch { this.unavailable = "本次启动未能打开诊断存储，执行功能仍可使用"; }
   }
@@ -182,11 +187,14 @@ export class TaskDiagnosticsRepository {
   observeTool(event: ToolDiagnosticEvent): void {
     if (this.unavailable) return;
     try {
-      if (!event.taskId || !this.db.prepare("SELECT 1 FROM tasks WHERE id=?").get(event.taskId)) return;
+      const scoped = !event.taskId && Boolean(event.executionScope);
+      if (!scoped && (!event.taskId || !this.db.prepare("SELECT 1 FROM tasks WHERE id=?").get(event.taskId))) return;
+      const table = scoped ? "scope_tool_diagnostics" : "task_tool_diagnostics";
+      const owner = scoped ? event.executionScope! : event.taskId!;
       const id = `${event.executionScope ?? event.taskId}:${event.conversationId}:${event.toolTaskId}`;
-      const row = recordRow.optional().parse(this.db.prepare("SELECT record_json FROM task_tool_diagnostics WHERE id=?").get(id));
+      const row = recordRow.optional().parse(this.db.prepare(`SELECT record_json FROM ${table} WHERE id=?`).get(id));
       let value: StoredTool = row ? toolSchema.parse(JSON.parse(row.record_json)) : {
-        id, taskId: event.taskId, conversationId: event.conversationId, executionId: `durable:${event.taskId}:${event.conversationId}:${event.toolTaskId}`,
+        id, taskId: owner, conversationId: event.conversationId, executionId: scoped ? `${owner}:${event.conversationId}:${event.toolTaskId}` : `durable:${owner}:${event.conversationId}:${event.toolTaskId}`,
         sourceKind: event.sourceKind, name: event.name, callId: event.callId, startedAt: event.at, finishedAt: null,
         status: "running", intervals: [], segmentStartedAt: null, complete: true, diagnostics: [],
       };
@@ -198,7 +206,7 @@ export class TaskDiagnosticsRepository {
         value.segmentStartedAt = null; value.finishedAt = event.at;
         value.status = event.isError ? "failed" : "completed"; value.diagnostics = event.diagnostics ?? [];
       }
-      this.db.prepare(`INSERT INTO task_tool_diagnostics VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET record_json=excluded.record_json`)
+      this.db.prepare(`INSERT INTO ${table} VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET record_json=excluded.record_json`)
         .run(value.id, value.taskId, value.startedAt, JSON.stringify(value));
     } catch { /* Observation cannot affect the tool outcome. */ }
   }
@@ -251,12 +259,18 @@ export class TaskDiagnosticsRepository {
     catch { return this.emptyList(taskId, "诊断记录暂时无法读取，执行功能仍可使用"); }
   }
 
+  listScopes(id: string, scopes: string[]): TaskDiagnosticsDto {
+    if (!scopes.length) return { ...this.emptyList(id, ""), unavailable: undefined };
+    try { return this.readList(id, undefined, 0, scopes); }
+    catch { return this.emptyList(id, "诊断记录暂时无法读取"); }
+  }
+
   private emptyList(taskId: string, unavailable: string): TaskDiagnosticsDto {
     return { taskId, capturedAt: Date.now(), offset: 0, requests: [], tools: [], waits: [], truncated: false, unavailable,
       totals: { modelMs: null, toolMs: null, waitingMs: 0, knownCostUsd: null, costComplete: false, unknownUsageRequests: 0 } };
   }
 
-  private readList(taskId: string, limit: number | undefined, offset: number): TaskDiagnosticsDto {
+  private readList(taskId: string, limit: number | undefined, offset: number, scopes?: string[]): TaskDiagnosticsDto {
     const now = Date.now();
     const skip = Number.isSafeInteger(offset) && offset >= 0 ? offset : 0;
     if (this.unavailable) return this.emptyList(taskId, this.unavailable);
@@ -264,10 +278,13 @@ export class TaskDiagnosticsRepository {
     const bound = bounded ? Math.max(1, Math.min(500, Math.floor(limit))) : undefined;
     const pageSql = (order: string) => bound === undefined ? `ORDER BY ${order}` : `ORDER BY ${order} LIMIT ? OFFSET ?`;
     const read = <T>(statement: string, order: string, parse: (row: unknown) => T[]): { rows: T[]; truncated: boolean } => {
-      const sql = `SELECT record_json FROM ${statement} WHERE task_id=? ${pageSql(order)}`;
+      const where = scopes ? (statement === "task_request_diagnostics" ? "json_extract(record_json,'$.executionScope')" : "task_id") + " IN (SELECT value FROM json_each(?))" : "task_id=?";
+      if (scopes && statement === "task_tool_diagnostics") statement = "scope_tool_diagnostics";
+      const sql = `SELECT record_json FROM ${statement} WHERE ${where} ${pageSql(order)}`;
+      const owner = scopes ? JSON.stringify(scopes) : taskId;
       const raw = bound === undefined
-        ? this.db.prepare(sql).all(taskId)
-        : this.db.prepare(sql).all(taskId, bound + 1, skip);
+        ? this.db.prepare(sql).all(owner)
+        : this.db.prepare(sql).all(owner, bound + 1, skip);
       const truncated = bound !== undefined && raw.length > bound;
       return { rows: raw.slice(0, bound ?? raw.length).flatMap(row => parse(row)), truncated };
     };
@@ -276,7 +293,7 @@ export class TaskDiagnosticsRepository {
       return result.success ? [{ ...result.data, executionId: result.data.executionId ?? requestExecutionId(result.data) }] : [];
     });
     const requests = requestPage.rows;
-    const waitRows = bound === undefined
+    const waitRows = scopes ? [] : bound === undefined
       ? this.db.prepare(`SELECT id,execution_id,title,created_at,resolved_at,status FROM conversation_interactions WHERE task_id=? ORDER BY created_at DESC,id DESC`).all(taskId)
       : this.db.prepare(`SELECT id,execution_id,title,created_at,resolved_at,status FROM conversation_interactions WHERE task_id=? ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?`).all(taskId, bound + 1, skip);
     const waits: WaitDiagnostic[] = waitRows.slice(0, bound ?? waitRows.length).map(row => { const item = waitRow.parse(row); return { id: item.id, executionId: item.execution_id, title: item.title,
@@ -285,7 +302,7 @@ export class TaskDiagnosticsRepository {
     const stored = storedPage.rows.slice(0, bound ?? storedPage.rows.length);
     const toolWaiting = new Map<string, Interval[]>();
     const executionIds = [...new Set(stored.map(value => value.executionId))];
-    if (executionIds.length) {
+    if (!scopes && executionIds.length) {
       const rows = this.db.prepare(`SELECT execution_id,created_at AS start,COALESCE(resolved_at,?) AS end
         FROM conversation_interactions WHERE task_id=? AND execution_id IN (${executionIds.map(() => "?").join(",")})`).all(now, taskId, ...executionIds);
       for (const row of rows) {

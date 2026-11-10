@@ -155,7 +155,9 @@ const trendStyles = [
 
 /** 单个标签的缓存命中率走势：未知值断开，0% 用异常色标出。 */
 function CacheTrend({ points, label }: { points: CacheTrendPoint[]; label: string }): React.JSX.Element {
-  const known = points.filter((point) => point.hitRate !== null);
+  const allPoints = points;
+  const known = allPoints.filter((point) => point.hitRate !== null);
+  points = sampleCacheTrend(allPoints);
   const width = 600;
   const height = 132;
   const left = 32;
@@ -166,14 +168,14 @@ function CacheTrend({ points, label }: { points: CacheTrendPoint[]; label: strin
     ? left + (width - left - right) / 2
     : left + ((width - left - right) * index) / (points.length - 1);
   const y = (rate: number) => top + (height - top - bottom) * (1 - rate);
-  const lastRate = [...points].reverse().find((point) => point.hitRate !== null)?.hitRate ?? null;
+  const lastRate = allPoints.at(-1)?.hitRate ?? null;
   const average = known.length > 0 ? known.reduce((sum, point) => sum + (point.hitRate ?? 0), 0) / known.length : null;
   const zeroCount = points.filter((point) => point.hitRate === 0).length;
   return <section className="td-trend" data-testid="cache-trend" data-trend-label={label}>
     <header className="td-trend-head">
       <span className="td-trend-title">{label} 缓存命中率趋势</span>
       <span className="td-trend-meta">
-        最近 {lastRate === null ? "—" : `${Math.round(lastRate * 100)}%`} · 均值 {average === null ? "—" : `${Math.round(average * 100)}%`} · {points.length} 轮
+        最近 {lastRate === null ? "—" : `${Math.round(lastRate * 100)}%`} · 已知轮次均值 {average === null ? "—" : `${Math.round(average * 100)}%`} · {allPoints.length} 轮
         {zeroCount > 0 ? ` · 0% ${zeroCount} 次` : ""}
       </span>
     </header>
@@ -185,12 +187,18 @@ function CacheTrend({ points, label }: { points: CacheTrendPoint[]; label: strin
         </g>
       ))}
       {(() => {
-        const own = points
-          .map((point, index) => ({ point, index }))
-          .filter((item) => item.point.hitRate !== null);
-        if (own.length === 0) return null;
-        const polygon = own.map((item) => `${x(item.index)},${y(item.point.hitRate ?? 0)}`).join(" ");
-        return <polyline points={polygon} fill="none" stroke={trendStyles[0]!.color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />;
+        const segments: string[][] = [[]];
+        const sourceIndices = new Map(allPoints.map((point, index) => [point.key, index]));
+        let previousSourceIndex = -1;
+        points.forEach((point, index) => {
+          const sourceIndex = sourceIndices.get(point.key)!;
+          const crossesUnknown = allPoints.slice(previousSourceIndex + 1, sourceIndex).some(item => item.hitRate === null);
+          previousSourceIndex = sourceIndex;
+          if (point.hitRate === null) { segments.push([]); return; }
+          if (crossesUnknown) segments.push([]);
+          segments[segments.length - 1]!.push(`${x(index)},${y(point.hitRate)}`);
+        });
+        return segments.filter(segment => segment.length > 1).map((segment, index) => <polyline key={index} points={segment.join(" ")} fill="none" stroke={trendStyles[0]!.color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />);
       })()}
       {points.map((point, index) => point.hitRate === null ? null : (
         <circle key={point.key} cx={x(index)} cy={y(point.hitRate)} r={point.hitRate === 0 ? 4 : 2.6}
@@ -200,7 +208,7 @@ function CacheTrend({ points, label }: { points: CacheTrendPoint[]; label: strin
       ))}
     </svg>
     {points.length < 2 && <p className="task-diagnostic-note">只有一轮观测，还不足以形成趋势。</p>}
-    {known.length < points.length && <p className="task-diagnostic-note">{points.length - known.length} 轮的命中率未知（用量缺失），趋势里留空而不补 0。</p>}
+    {known.length < allPoints.length && <p className="task-diagnostic-note">{allPoints.length - known.length} 轮的命中率未知（用量缺失），趋势里留空而不补 0。</p>}
   </section>;
 }
 
@@ -218,7 +226,7 @@ function TabBody({ tab, filter, now }: { tab: DiagnosticsTab; filter: Filter; no
       ))}
       <span className="td-count">共 {tab.turns.length} 轮</span>
     </div>
-    <CacheTrend points={sampleCacheTrend(tab.cacheTrend)} label={tab.label} />
+    <CacheTrend points={tab.cacheTrend} label={tab.label} />
     {rows.length === 0
       ? <p className="task-diagnostic-note">{tab.turns.length === 0 ? "此页没有观测记录。" : `没有「${verdictLabels[filter as Verdict] ?? "该判定"}」的轮次。`}</p>
       : rows.map((turn) => <TurnCard turn={turn} key={turn.key} />)}

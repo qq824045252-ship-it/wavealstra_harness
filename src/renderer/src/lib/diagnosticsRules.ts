@@ -175,7 +175,7 @@ export function summarizeCache(requests: ModelRequestDiagnostic[]): CacheSummary
     if (w === null) degraded = true; else { cacheWrite += w; anyWrite = true; }
   }
   const denominator = input + cacheRead + cacheWrite;
-  const hitRate = anyInput && anyRead && denominator > 0 ? cacheRead / denominator : null;
+  const hitRate = requests.every(request => request.usage.input !== null && request.usage.cacheRead !== null) && anyInput && anyRead && denominator > 0 ? cacheRead / denominator : null;
   return {
     hitRate,
     cacheRead: anyRead ? cacheRead : null,

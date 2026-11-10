@@ -11,7 +11,9 @@ const displayGroupsScenario = process.argv.includes('--display-groups');
 const workspaceNavigationScenario = process.argv.includes('--workspace-navigation');
 const modelPreferenceScenario = process.argv.includes('--model-preference');
 const workMetricsScenario = process.argv.includes('--work-metrics');
-const metricsAuditScenario = process.argv.includes('--metrics-audit');
+const botDiagnosticsWorkScenario = process.argv.includes('--bot-diagnostics-work');
+const botDiagnosticsScenario = process.argv.includes('--bot-diagnostics');
+const metricsAuditScenario = process.argv.includes('--metrics-audit') || botDiagnosticsScenario;
 const composerScenario = process.argv.includes('--composer') || metricsAuditScenario;
 const searchScenario = process.argv.includes('--search');
 const teamWorkspaceScenario = process.argv.includes('--team-workspace');
@@ -374,6 +376,25 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
         report.metricsAuditDb={calls:db.prepare('SELECT message_id,generation_id,value_json FROM bot_foreground_usage').all(),metrics:db.prepare('SELECT message_id,value_json FROM bot_foreground_metrics').all()};db.close();
         report.rawUsageAudit=structuredClone(rawUsageAudit);
         report.metricsReconciliation=require('./bot-metrics-reconcile.cjs').reconcile(report);
+        if(botDiagnosticsScenario) {
+          report.botDiagnostics=await evaluate(`window.api.botWork.executionDiagnostics({kind:'foreground',botId:${JSON.stringify(botId)},conversationId:${JSON.stringify(report.metricsAuditHistory.conversationId)}})`);
+          const diag=report.botDiagnostics.groups[0].value;
+          assert(diag.requests.length>=6,'real generations in scoped diagnostic records');
+          assert(diag.requests.some(row=>row.usage.cacheRead===null),'missing raw usage stays unknown');
+          assert(diag.tools.length>0,'real foreground tools observed');
+          await evaluate(`[...document.querySelectorAll('.bot-workspace-actions button')].find(b=>b.textContent==='执行诊断').click()`);
+          await until(()=>evaluate(`!!document.querySelector('[data-testid="task-diagnostics-view"]')`),'shared diagnostic view rendered');
+          assert(await evaluate(`document.querySelector('[aria-label="前台执行诊断"]').textContent.includes('缓存')`));
+          for(const width of [1040,390]) {
+            await rpc('Emulation.setDeviceMetricsOverride',{width,height:844,deviceScaleFactor:1,mobile:false});await wait(300);
+            assert(await evaluate(`document.querySelector('.runtime-inspector').getBoundingClientRect().right<=innerWidth`),'dialog viewport');
+            const shot=await rpc('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,'diagnostics-'+width+'.png'),Buffer.from(shot.data,'base64'));
+          }
+          await evaluate(`document.querySelector('[aria-label="关闭执行诊断"]').click()`);
+          await rpc('Emulation.clearDeviceMetricsOverride');
+          report.checks.push('real foreground scope + shared diagnostics + unknown cache gap + desktop/narrow UI');
+        }
+
       }
       await evaluate(`document.querySelector('#bot-draft').focus()`);await rpc('Input.insertText',{text:'帮我写一句邀请同事喝咖啡的话'});
       await until(()=>evaluate(`!!document.querySelector('[aria-label="增强提示词"]')`),'enhance visible only for text');
@@ -972,6 +993,26 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       assert(!request.messages.slice(last+1).flatMap(m=>m.tool_calls||[]).some(t=>['web_search','fetch_content','work_create'].includes(t.function.name)),'explicit stop must not restart research');
     }
     report.checks.push('criticism does not cancel; explicit stop does not restart query; no Work created');
+    }
+    if(botDiagnosticsWorkScenario) {
+      const works=await evaluate('window.api.botWork.listWorks(true)');
+      assert(works.length>0);
+      report.workDiagnostics=[];
+      for(const work of works) {
+        const next=await evaluate(`window.api.botWork.executionDiagnostics({kind:'work',workId:${JSON.stringify(work.workId)}})`);
+        report.workDiagnostics.push(next);
+        assert(next.groups.length>0,'Work owns real execution groups');
+        assert(next.groups.some(g=>g.value.requests.length>0),'Work raw model diagnostic records');
+      }
+      const work=works[0];
+      await evaluate(`[...document.querySelectorAll('.bot-view-tabs button')].find(b=>b.querySelector('span')?.textContent==='已完成').click()`);
+      await until(()=>evaluate(`!!document.querySelector('.bot-team-history button')`),'team history Work link');
+      await evaluate(`document.querySelector('.bot-team-history').open=true;document.querySelector('.bot-team-history button').click()`);
+      await until(()=>evaluate(`!![...document.querySelectorAll('.bot-work-details button')].find(b=>b.textContent==='执行诊断')`),'Work diagnostic button');
+      await evaluate(`[...document.querySelectorAll('.bot-work-details button')].find(b=>b.textContent==='执行诊断').click()`);
+      await until(()=>evaluate(`!!document.querySelector('[data-testid="task-diagnostics-view"]')`),'Work shared diagnostics');
+      assert(await evaluate(`(()=>{const b=document.querySelector('[aria-label="关闭执行诊断"]'),r=b.getBoundingClientRect();return b.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2))})()`),'diagnostics is above the native team dialog, not hidden behind it');
+      report.checks.push('real Work binding → raw diagnostic records → visible shared Work dialog above team modal');
     }
     const shot=await rpc('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});fs.writeFileSync(path.join(out,watchIntentScenario?'watch-intent.png':teamWorkspaceScenario?'team-workspace.png':completionScenario?'completion.png':trackingScenario?'tracking.png':teamScenario?'team.png':cacheScenario?'cache.png':memoryScenario?'memory.png':watchScenario?'watch.png':'weather.png'),Buffer.from(shot.data,'base64'));
     report.status='passed';

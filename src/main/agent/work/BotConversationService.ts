@@ -41,6 +41,7 @@ export interface BotConversationServiceOptions {
   schedule: (work: WorkDto, operationId: string, retryBlocked?: boolean) => void;
   wake: (workId?: string) => void;
   visionFallback?: BotVisionFallback;
+  onTool?: (event: import("../../../shared/task-diagnostics").ToolDiagnosticEvent) => void;
   onMessage?: (event: import("../../../shared/bot-conversation").BotMessageEvent) => void;
 }
 
@@ -392,6 +393,8 @@ ${conversation.team_id ? `当前是独立团队会话（teamId=${conversation.te
           message.botId !== receipt.bot_id || message.requestId !== requestId ||
           !["queued", "running", "unknown"].includes(message.status)) return { block: "原始消息已结束或身份不可核对" };
       } },
+      executionIdentity: { sourceKind: "main", executionScope: `bot-foreground:${key}` },
+      onTool: this.options.onTool,
       onProviderUsage: usage => this.messages.metrics.usage(key, usage),
       onResponse: (response, identity) => { if (identity.sourceKind === "main") this.messages.metrics.usage(key, {
         usageEvidence: identity.usageEvidence, generationTaskId: identity.generationTaskId, responseTimestamp: response.timestamp, reported: response.stopReason !== "error" && response.stopReason !== "aborted",

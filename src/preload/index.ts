@@ -680,6 +680,7 @@ const api = {
     markNotificationRead: (notificationId: string) => ipcRenderer.invoke(BotWorkIpc.markNotificationRead, notificationId),
     markCardRead: (request) => ipcRenderer.invoke(BotWorkIpc.markCardRead, request),
     workSummary: (workId: string) => ipcRenderer.invoke(BotWorkIpc.workSummary, workId),
+    executionDiagnostics: (request) => ipcRenderer.invoke(BotWorkIpc.executionDiagnostics, request),
     workDiagnostics: (request) => ipcRenderer.invoke(BotWorkIpc.workDiagnostics, request),
     resendNotification: (request) => ipcRenderer.invoke(BotWorkIpc.resendNotification, request),
     reviewControl: (request) => ipcRenderer.invoke(BotWorkIpc.reviewControl, request),

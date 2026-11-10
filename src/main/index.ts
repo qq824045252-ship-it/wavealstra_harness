@@ -1091,6 +1091,7 @@ function registerIpc(): void {
   ipcMain.handle(BotWorkIpc.markNotificationRead, (_e, notificationId: string) => agentService.markWorkNotificationRead(notificationId));
   ipcMain.handle(BotWorkIpc.markCardRead, (_e, request: unknown) => agentService.markWorkCardRead(request));
   ipcMain.handle(BotWorkIpc.workSummary, (_e, workId: string) => agentService.getWorkSummary(workId));
+  ipcMain.handle(BotWorkIpc.executionDiagnostics, (_e, request: unknown) => agentService.botExecutionDiagnostics(request));
   ipcMain.handle(BotWorkIpc.workDiagnostics, (_e, request: unknown) => agentService.getWorkDiagnostics(request));
   ipcMain.handle(BotWorkIpc.resendNotification, (_e, request: unknown) => agentService.resendWorkNotification(request));
   ipcMain.handle(BotWorkIpc.reviewControl, (_e, request: unknown) => agentService.reviewWork(request));
