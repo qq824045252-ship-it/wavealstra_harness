@@ -70,12 +70,17 @@ const bindings = (workId: string) => works.repo.listBindings(workId);
 const countWorks = () => works.listWorks(LOCAL_USER_ID, { includeClosed: true }).length;
 try {
   const config = setup();
-  const result = ok(works.teams.handle(user, {kind:"create",request:{...config.request,mode:"watch",watchRule:{cronExpression:"* * * * *",timezone:"UTC",scheduleBasis:"user_specified"}}}));
+  const result = ok(works.teams.handle(user, {kind:"create",request:{...config.request,mode:"watch",watchRule:{cronExpression:"* * * * *",timezone:"UTC",scheduleBasis:"user_specified",notificationMode:"changes_only"}}}));
   const id=result.work!.workId;
   await flush(); assert.equal(bindings(id).length,0,"future team watch does not dispatch before first tick");
   works.teams.requestImmediateWatch(works.getWork(id)!);
   await flush(14);
   assert.equal(bindings(id).length,3,"one round includes both members and owner");
+  const ownerInput = submissions.find(s => s.input.teamAssignment.role === "owner_summary")!.input;
+  const ownerInstructions = (ownerInput.teamAssignment as unknown as {instructions:string}).instructions;
+  assert(ownerInstructions.includes('watch-observation-v1'), 'changes-only owner receives observation output contract');
+  assert(!ownerInstructions.includes('bot-team-report-v1'), 'ordinary team report cannot conflict with watch observation');
+
   assert.equal(works.getWork(id)!.lifecycle,"active");
   assert.equal(works.teams.watchCycles.pending(id),false);
   const first = bindings(id).map(b=>b.taskId);
@@ -117,6 +122,10 @@ try {
     payload:{scheduledAt:Date.now(),scheduleRevision:sub.scheduleRevision??1},status:"pending",mergedCount:1,receivedAt:Date.now()});
   await flush(14);
   assert.equal(works.teams.watchCycles.current(changed.workId)!.sequence,2);
+  const regularOwner = submissions.find(s => s.input.teamAssignment.role === "owner_summary" && bindings(changed.workId).some(b => b.taskId === s.taskId));
+  assert(regularOwner, 'every-check owner was dispatched');
+  assert((regularOwner.input.teamAssignment as unknown as {instructions:string}).instructions.includes('bot-team-report-v1'), 'ordinary team reports retain their presentation contract');
+
   assert.equal(works.teams.watchCycles.pending(changed.workId),false);
   console.log("PASS team watch: deferred first round, two member+owner cycles, exact event dedupe, historical attribution, pause");
 } finally { await queue.close(); db.close(); rmSync(root,{recursive:true,force:true}); }
