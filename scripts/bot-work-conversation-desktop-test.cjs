@@ -8,12 +8,16 @@ app.whenReady().then(async()=>{let win;try{
  win=new BrowserWindow({width:1100,height:900,show:true});win.webContents.on('console-message',(_e,_l,m)=>console.log('renderer:',m)); await win.loadFile(path.join(dir,'index.html')); 
  const ev=s=>win.webContents.executeJavaScript(s),wait=async s=>{for(let i=0;i<100;i++){if(await ev(s))return;await new Promise(r=>setTimeout(r,40));}throw Error(s);};
  await wait('document.querySelectorAll("[data-message-id]").length===16');
+ await ev(`document.addEventListener('click', e=>{if(e.target.closest('.bot-message-work-links button')) window.beforeDetailScroll=document.querySelector('.bot-thread').scrollTop;}, true)`);
+ const stableLayout=async()=>{let last='',same=0;for(let i=0;i<50;i++){const next=await ev(`JSON.stringify([innerWidth,innerHeight,document.querySelector('.bot-thread')?.scrollHeight])`);same=next===last?same+1:0;if(same>=3)return;last=next;await new Promise(r=>setTimeout(r,100));}throw Error('window layout did not settle');};
  const click=async(selector)=>{const r=await ev(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2}})()`);win.webContents.sendInputEvent({type:'mouseDown',button:'left',x:Math.round(r.x),y:Math.round(r.y),clickCount:1});win.webContents.sendInputEvent({type:'mouseUp',button:'left',x:Math.round(r.x),y:Math.round(r.y),clickCount:1});await new Promise(r=>setTimeout(r,100));};
  for(const width of [1100,760,390]){
-  win.setSize(width,900);await new Promise(r=>setTimeout(r,100));
-  await ev(`document.querySelector('[data-message-id="m4"] button').scrollIntoView({block:'center'})`);await new Promise(r=>setTimeout(r,100));
-  const before=await ev('document.querySelector(".bot-thread").scrollTop');
+  win.setSize(width,900);await stableLayout();
+  await ev(`document.querySelector('[data-message-id="m4"] .bot-message-work-links button').scrollIntoView({block:'center'})`);await new Promise(r=>setTimeout(r,100));
   await click('[data-message-id="m4"] .bot-message-work-links button');
+  // Native click helper may reposition/focus the target; preserve the viewport
+  // at the actual click, not before a second scrollIntoView.
+  const before=await ev('window.beforeDetailScroll');
   await wait('!!document.querySelector(".bot-work-conversation-detail")');
   assert(await ev('document.querySelector(".bot-thread").hidden'));
   assert(await ev('!document.querySelector("dialog[open]")'),'no blocking side overlay');

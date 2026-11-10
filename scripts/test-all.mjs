@@ -77,6 +77,7 @@ const SERIAL_TEST_PATTERNS = [/^test:core-performance/, /^test:bot-work-query-sc
 const GUI_TESTS = new Set([
   "test:bot-display-groups-ui",
   "test:bot-conversation-concurrent-desktop",
+  "test:bot-scroll-desktop",
   "test:bot-activity-desktop",
   "test:bot-rename-desktop",
   "test:bot-report-dedup-desktop",

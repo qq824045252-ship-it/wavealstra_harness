@@ -1,3 +1,4 @@
+import { useBotThreadScroll } from "@/hooks/useBotThreadScroll";
 import { BotComposerCapabilities } from "./BotComposerCapabilities";
 import { BotWorkConversationDetail } from "./BotWorkConversationDetail";
 import { BotMessageActions } from "./BotMessageActions";
@@ -82,7 +83,6 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   const requestedWork = useRef<string | null>(null);
   const [pendingWorkId, setPendingWorkId] = useState<string | null>(null);
   const pendingWorkOpen = useRef<{ workId: string; scope: string; conversationId?: string; show: () => void } | null>(null);
-  const [awayFromBottom, setAwayFromBottom] = useState(false);
   const threadRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const inspectorRef = useRef<HTMLDialogElement>(null);
@@ -92,9 +92,6 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   const renderedSettingsEpoch = settingsEpoch.current;
   const closeSettings = () => { settingsEpoch.current++; setSettingsOpen(false); };
   const newConversationRef = useRef<HTMLDialogElement>(null);
-  const followLatest = useRef(true);
-  const followReplyTail = useRef(false);
-  const previousScrollTop = useRef(0);
   const lastBot = useRef(scopeKey);
   const activeBot = identities.find(bot => bot.botId === activeBotId) ?? null;
   const botWorks = useMemo(() => works.filter(work => !work.team?.removedAt && (teamId ? work.team?.teamId === teamId : personalBotWork(work, activeBotId))), [works, activeBotId, teamId]);
@@ -103,8 +100,11 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   const selected = botWorks.find(work => work.workId === selectedWorkId) ?? null;
   const messages = activeBotId ? histories[scopeKey]?.messages ?? [] : [];
   const questionsByRequest = useMemo(() => new Map(messages.filter(item => item.role === "user").map(item => [item.requestId, item])), [messages]);
-  const lastMessage = messages[messages.length - 1];
   const activeReply = activeBotReply(messages);
+  const { followLatest, awayFromBottom, pauseFollowing, restoreScroll, followBottom } = useBotThreadScroll(
+    threadRef, `${scopeKey}:${histories[scopeKey]?.conversationId ?? ""}`,
+    view === "conversation" && !inlineWorkId, messages,
+  );
   const pending = Object.values(pendingSends).filter(item => item.request.botId === activeBotId && item.request.teamId === teamId);
   const runningReplies = messages.filter(item => item.role === "assistant" && item.status === "running");
   const queuedReplies = messages.filter(item => item.role === "assistant" && item.status === "queued");
@@ -139,7 +139,6 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
     lastBot.current = scopeKey; setReplyReference(null); setAttachmentError("");
     requestedWork.current = null; pendingWorkOpen.current = null; setNavigationNotice(""); setInlineWorkId(null); returnTarget.current = null;
     setView("conversation"); closeSettings(); setArchiveConfirm(false); setNewConversationOpen(false); setInspectorOpen(false);
-    followLatest.current = true; followReplyTail.current = false; previousScrollTop.current = 0;
   }, [scopeKey]);
   useEffect(() => {
     if (suppressAutoInline.current) { suppressAutoInline.current = false; return; }
@@ -151,7 +150,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
       scrollTop: threadRef.current?.scrollTop ?? 0, follow: followLatest.current,
       trigger: document.activeElement instanceof HTMLElement ? document.activeElement : null };
     setNavigationNotice("");
-    followLatest.current = false; setIncludeClosed(true);
+    pauseFollowing(); setIncludeClosed(true);
     setInlineWorkId(selected.workId); setInspectorOpen(false);
   }, [selected?.workId, scopeKey, view]);
   useEffect(() => {
@@ -172,41 +171,6 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
     if (newConversationOpen) dialog?.showModal(); else if (dialog?.open) dialog.close();
   }, [newConversationOpen]);
   useEffect(() => {
-    if (inlineWorkId || view !== "conversation" || !followLatest.current) return;
-    const frame = requestAnimationFrame(() => {
-      const el = threadRef.current;
-      if (!el) return;
-      const reply = followReplyTail.current ? null : el.querySelector<HTMLElement>('[data-streaming="true"]');
-      const bottom = el.scrollHeight - el.clientHeight;
-      // Keep the start of a long answer readable. Once it fills the viewport,
-      // pause following rather than dragging the reader past its opening.
-      const start = reply ? reply.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop - 16 : bottom;
-      el.scrollTop = reply ? Math.min(bottom, Math.max(0, start)) : bottom;
-      if (reply && bottom > start + 24) {
-        followLatest.current = false;
-        setAwayFromBottom(true);
-      }
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [activeBotId, view, messages.length, lastMessage?.text, lastMessage?.status, activeReply?.messageId, activeReply?.text, activeReply?.status]);
-  useEffect(() => {
-    const thread = threadRef.current;
-    const list = thread?.querySelector(".bot-message-list");
-    if (!thread || !list || typeof ResizeObserver === "undefined") return;
-    let frame = 0;
-    // Markdown can grow after the text frame commits (tables, code and fonts).
-    // Only explicit tail-following tracks those layout changes; readers stay put.
-    const observer = new ResizeObserver(() => {
-      if (inlineWorkId || !followLatest.current || !followReplyTail.current) return;
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => {
-        if (followLatest.current && followReplyTail.current) thread.scrollTop = thread.scrollHeight;
-      });
-    });
-    observer.observe(list);
-    return () => { observer.disconnect(); cancelAnimationFrame(frame); };
-  }, [activeBotId, view, messages.length, inlineWorkId]);
-  useEffect(() => {
     const body = inspectorRef.current?.querySelector(".bot-inspector-body");
     if (body) body.scrollTop = 0;
   }, [selected?.workId]);
@@ -219,9 +183,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
     setNavigationNotice("");
     requestAnimationFrame(() => {
       if (target?.scope !== currentScope.current || target.conversationId !== useAppStore.getState().botHistories[target.scope]?.conversationId) return;
-      if (threadRef.current) threadRef.current.scrollTop = target.scrollTop;
-      previousScrollTop.current = target.scrollTop;
-      followLatest.current = target.follow;
+      restoreScroll(target.scrollTop, target.follow);
       if (target.trigger?.isConnected) target.trigger.focus({ preventScroll: true });
     });
   };
@@ -237,7 +199,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
       setSelectedWorkId(workId);
       if (inline) {
         setIncludeClosed(true); // Keep a selected Work visible when it finishes during reading.
-        returnTarget.current = target; followLatest.current = false;
+        returnTarget.current = target; pauseFollowing();
         setInlineWorkId(workId); setInspectorOpen(false);
       } else { setInlineWorkId(null); setInspectorOpen(true); }
       setNavigationNotice("");
@@ -270,7 +232,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   };
   const send = () => {
     if (!canSend) return;
-    followLatest.current = true; followReplyTail.current = false; previousScrollTop.current = 0; setAwayFromBottom(false); setView("conversation"); void submitBotDraft({ referenceMessageId: reference?.messageId }); setReplyReference(null);
+    followBottom(); setView("conversation"); void submitBotDraft({ referenceMessageId: reference?.messageId }); setReplyReference(null);
   };
   const draftExample = (text: string) => { setBotDraft(text); setView("conversation"); composerRef.current?.focus(); };
   const replyToBlocker = (work: WorkProjectionDto, blocker: WorkProjectionDto["blockers"][number]) => {
@@ -307,6 +269,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
             setNewConversationOpen(true);
           }}>新对话</button>
           <BotActivityMonitor onOpenWork={() => { suppressAutoInline.current = false; setIncludeClosed(true); setInspectorOpen(true); }} onOpenBotMessage={messageId => {
+            pauseFollowing();
             setView("conversation"); setInspectorOpen(false);
             requestAnimationFrame(() => requestAnimationFrame(() => {
               const node = Array.from(threadRef.current?.querySelectorAll<HTMLElement>("[data-message-id]") ?? []).find(item => item.dataset.messageId === messageId);
@@ -324,13 +287,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
         includeClosed={includeClosed} onBack={returnToConversation}
         onReplyToBlocker={blocker => { if (inlineWork) { returnToConversation(); replyToBlocker(inlineWork, blocker); } }} />}
       {view === "conversation" ? <>
-        <div className="bot-thread" hidden={Boolean(inlineWorkId)} ref={threadRef} role="log" aria-label="对话记录" aria-live="off" onScroll={() => {
-          const el = threadRef.current; if (!el) return;
-          const movedUp = el.scrollTop < previousScrollTop.current - 1;
-          previousScrollTop.current = el.scrollTop;
-          followLatest.current = !movedUp && el.scrollHeight - el.scrollTop - el.clientHeight < 72;
-          setAwayFromBottom(!followLatest.current);
-        }}>
+        <div className="bot-thread" hidden={Boolean(inlineWorkId)} ref={threadRef} role="log" aria-label="对话记录" aria-live="off" tabIndex={0}>
           {messages.length === 0 ? <div className="bot-conversation-empty">
             <span className="bot-welcome-icon" aria-hidden="true"><IconBot size={30} /></span>
             <span className="bot-eyebrow">从一句话开始</span>
@@ -347,7 +304,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
         </div>
       </> : <BotWorkBrowser key={`${activeBotId}-${view}`} works={botWorks} view={view} loading={(view === "closed" || view === "completed") && !allWorksLoaded} selectedWorkId={selected?.workId} onOpenWork={openWork} onConversation={() => { setView("conversation"); requestAnimationFrame(() => composerRef.current?.focus()); }} />}
       <form hidden={Boolean(inlineWorkId)} className="bot-composer input-area" onDragOver={event => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; } }} onDrop={event => { if (event.dataTransfer.files.length) { event.preventDefault(); void addAttachments(Array.from(event.dataTransfer.files)); } }} onSubmit={event => { event.preventDefault(); send(); }}>
-        {view === "conversation" && awayFromBottom && <button type="button" className="bot-latest-button" onClick={() => { const el = threadRef.current; if (el) el.scrollTop = el.scrollHeight; followLatest.current = true; followReplyTail.current = true; setAwayFromBottom(false); }}><IconChevronDown size={14} />回到最新消息</button>}
+        {view === "conversation" && awayFromBottom && <button type="button" className="bot-latest-button" onClick={followBottom}><IconChevronDown size={14} />回到最新消息</button>}
         {activeBotId && sendErrors[scopeKey] && <p className="bot-send-error" role="alert">{sendErrors[scopeKey]}</p>}
         {selected && <div className="bot-composer-context"><button type="button" onClick={() => openWork(selected.workId)}><IconListTodo size={14} /><span>当前事项：{selected.title}</span><IconChevronRight size={14} /></button><button type="button" className="bot-icon-button" aria-label="取消关联事项，返回普通对话" onClick={() => { requestedWork.current = null; setNavigationNotice(""); setSelectedWorkId(null); setInspectorOpen(false); }}><IconX size={14} /></button></div>}
         {reference && <div className="bot-composer-context"><span>回复：{reference.text.slice(0, 100) || "附件消息"}</span><button type="button" aria-label="取消引用" onClick={() => setReplyReference(null)}><IconX size={14} /></button></div>}
