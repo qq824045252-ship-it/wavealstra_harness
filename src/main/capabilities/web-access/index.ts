@@ -2228,9 +2228,9 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: toolNames.fetchContent,
 		label: "Fetch Content",
-		description: `Fetch URL(s) and extract readable content as markdown. Use mode "raw" for exact textual HTTP response bodies or mode "answer" with prompt to answer using only fetched content. Direct image URLs return resized image content. Supports YouTube transcripts, GitHub repositories, PDFs, and local videos. Full original content is stored for retrieval with ${toolNames.getSearchContent}.`,
+		description: `Fetch URL(s) and extract readable content as markdown. Use mode "raw" for exact textual HTTP response bodies or mode "answer" with prompt to answer using only fetched content. Mode answer invokes a separate model after fetching; prefer readable when you will use the original text to write your own answer. Direct image URLs return resized image content. Supports YouTube transcripts, GitHub repositories, PDFs, and local videos. Full original content is stored for retrieval with ${toolNames.getSearchContent}.`,
 		promptSnippet:
-			"Use to fetch readable or raw URL content, direct images, GitHub repos, and videos. Mode answer answers a prompt using only the fetched source.",
+			"Use readable to read original evidence for your own answer. Mode answer is a separate model call, not required to verify or quote a source. Also supports raw URLs, images, repos and videos.",
 		parameters: Type.Object({
 			url: Type.Optional(Type.String({ description: "Single URL to fetch" })),
 			urls: Type.Optional(Type.Array(Type.String(), { description: "Multiple URLs (parallel)" })),
@@ -2321,6 +2321,7 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 					}
 				}))
 				: fetchResults;
+			const policyHint = "同一网址、同一读取路径在当前条件下重复调用不会修复这次访问拒绝；不要用镜像绕过明确的访问策略。已有来源摘录仍可用于有限答复，但不能称原页核验成功；没有证据的部分应明确未确认。此提示仅针对本次失败，不阻止其他正常来源或之后已修复的读取。";
 			const successful = presentedResults.filter((r) => !r.error).length;
 			const totalChars = presentedResults.reduce((sum, r) => sum + r.content.length, 0);
 
@@ -2341,8 +2342,8 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 				if (result.error) {
 					return {
 						isError: true,
-						content: [{ type: "text", text: `Error: ${result.error}` }],
-						details: { urls: urlList, urlCount: 1, successful: 0, error: result.error, responseId, prompt: params.prompt, timestamp: params.timestamp, frames: params.frames },
+						content: [{ type: "text", text: `Error: ${result.error}${result.errorCode === "url-policy" ? `\n${policyHint}` : ""}` }],
+						details: { urls: urlList, urlCount: 1, successful: 0, error: result.error, ...(result.errorCode ? {errorCode:result.errorCode,retryable:result.retryable} : {}), responseId, prompt: params.prompt, timestamp: params.timestamp, frames: params.frames },
 					};
 				}
 
@@ -2398,9 +2399,9 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 
 			// Multi-URL: existing behavior (summary + responseId)
 			let output = "## Fetched URLs\n\n";
-			for (const { url, title, content, error } of presentedResults) {
+			for (const { url, title, content, error, errorCode } of presentedResults) {
 				if (error) {
-					output += `- ${url}: Error - ${error}\n`;
+					output += `- ${url}: Error - ${error}${errorCode === "url-policy" ? `\n${policyHint}` : ""}\n`;
 				} else {
 					output += `- ${title || url} (${content.length} chars)\n`;
 				}
@@ -2410,7 +2411,7 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 			return {
 				isError: successful === 0,
 				content: [{ type: "text", text: output }],
-				details: { urls: urlList, urlCount: urlList.length, successful, totalChars, responseId },
+				details: { urls: urlList, urlCount: urlList.length, successful, totalChars, responseId, results: presentedResults.map(r=>({url:r.url,error:r.error,errorCode:r.errorCode,retryable:r.retryable})) },
 			};
 		},
 

@@ -22,7 +22,7 @@ import { extractWithFirecrawl, isFirecrawlAvailable } from "./firecrawl.ts";
 import { extractWithBrightDataUnlocker, isBrightDataUnlockerAvailable } from "./brightdata-unlocker.ts";
 import { isVideoFile, extractVideo, extractVideoFrame, getLocalVideoDuration } from "./video-extract.ts";
 import { appendDeclaredWebLinks, discoverDeclaredWebLinks, type DeclaredWebLink } from "./declared-web-links.ts";
-import { fetchRemoteUrl, configuredPinnedProxy, PINNED_PUBLIC_PROXY, loadFetchContentDomainPolicy, loadSsrfConfig, validateRemoteUrl, type Lookup } from "./ssrf-protection.ts";
+import { fetchRemoteUrl, configuredPinnedProxy, PINNED_PUBLIC_PROXY, loadFetchContentDomainPolicy, loadSsrfConfig, validateRemoteUrl, UrlPolicyError, type Lookup } from "./ssrf-protection.ts";
 import { formatSeconds, getWebSearchConfigPath } from "./utils.ts";
 
 const DEFAULT_TIMEOUT_MS = 30000;
@@ -82,6 +82,9 @@ export interface ExtractedContent {
 	title: string;
 	content: string;
 	error: string | null;
+	/** This attempt only; no cached/global restriction, and no claim about other URLs. */
+	errorCode?: "url-policy";
+	retryable?: false;
 	thumbnail?: { data: string; mimeType: string };
 	frames?: VideoFrame[];
 	duration?: number;
@@ -282,7 +285,8 @@ export async function extractContent(
       const ticket=configuredPinnedProxy(err);
       if (!options?.lookup && (!options?.mode || ["raw","readable"].includes(options.mode)) && ticket)
         return extractViaHttp(url,signal,{...options,[PINNED_PUBLIC_PROXY]:ticket});
-			return { url, title: "", content: "", error: errorMessage(err) };
+			return { url, title: "", content: "", error: errorMessage(err),
+				...(err instanceof UrlPolicyError ? { errorCode: "url-policy" as const, retryable: false as const } : {}) };
 		}
 	}
 

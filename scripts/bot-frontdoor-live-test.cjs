@@ -132,7 +132,8 @@ async function evaluate(expression) {
 // Transparent recording transport: every inference is forwarded to the real configured model.
 const provider = http.createServer(async (req,res) => {
   const upstreamAbort = new AbortController();
-  res.once('close', () => upstreamAbort.abort());
+  let transportAudit;
+  res.once('close', () => { if (transportAudit && !transportAudit.endedAt) transportAudit.endedAt=Date.now(); upstreamAbort.abort(); });
   try {
     let raw=''; for await(const chunk of req) raw+=chunk;
     const body = JSON.parse(raw); requests.push(body);
@@ -152,6 +153,7 @@ const provider = http.createServer(async (req,res) => {
     if (concurrentScenario && currentText?.includes('CONCURRENT_SLOW')) await wait(40000);
     res.writeHead(response.status,{'content-type':response.headers.get('content-type')||'text/event-stream'});
     const audit={requestIndex,requestStartedAt,firstDeltaAt:null,endedAt:null,usage:[],label:/AUDIT_[ABM]/.exec(currentText||'')?.[0]||'composer',usageOmitted:metricsAuditScenario && (currentText||'').includes('AUDIT_M')};
+    transportAudit=audit;
     rawUsageAudit.push(audit);
     let pendingFrame=''; const decoder=new TextDecoder();
     const inspect=(line)=>{if(!line.startsWith('data: ') || line==='data: [DONE]') return line;
@@ -580,7 +582,18 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
         const answer = messages.filter(m => m.role === 'assistant').at(-1);
         const calls = requests.slice(requestOffset);
         const toolResults = calls.flatMap(r => r.messages.slice(r.messages.findLastIndex(m => m.role === 'user') + 1).filter(m => m.role === 'tool').map(m => typeof m.content === 'string' ? m.content : JSON.stringify(m.content)));
-        const row = { label, elapsedMs: Date.now() - started, modelRequests: calls.length, answer: answer.text, toolResults };
+        const timing = rawUsageAudit.filter(a => a.requestIndex >= requestOffset && a.endedAt);
+        if (searchGroundingScenario) assert.equal(timing.length,calls.length,"each completed real model call has a transport span");
+        const gaps = timing.slice(1).map((a,i) => {
+          const messages = requests[a.requestIndex].messages;
+          const current = messages.slice(messages.findLastIndex(m=>m.role==='user')+1);
+          const toolCalls = current.findLast(m=>m.role==='assistant' && m.tool_calls?.length)?.tool_calls || [];
+          return {elapsedMs:Math.max(0,a.requestStartedAt-timing[i].endedAt),tools:toolCalls.map(t=>t.function?.name)};
+        });
+        const row = { label, elapsedMs: Date.now() - started, modelRequests: calls.length, answer: answer.text, toolResults,
+          modelTransportMs: timing.reduce((sum,a)=>sum+a.endedAt-a.requestStartedAt,0),
+          toolAndDispatchGaps: gaps, modelSpans: timing.map(a=>({start:a.requestStartedAt,end:a.endedAt})),
+          measurementNote:'Model spans include local gateway/transport and streaming. Gaps include tools plus local dispatch, not pure network timings.' };
         report.cases.push(row);
         assert(toolResults.some(x => x.includes('Merged sources')), 'real search result must reach real model');
         assert.equal(answer.workIds.length, 0, 'ordinary search stays foreground');

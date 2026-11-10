@@ -1,0 +1,455 @@
+{
+  "baselineCommit": "265466b97a12fbd27a9e6f3d773e0a3c0b98c125",
+  "model": "opendesign/deepseek-v4.1-flash-eco",
+  "environment": "Isolated HOME, real pnpm dev renderer and real local model gateway, headless renderer not native pointer input",
+  "method": "One sequential paired run per query. Model spans include gateway/network/streaming; gaps include tool and local dispatch. Before run had timing instrumentation but no product optimization. After run overlapped non-fault regression load. Not a statistically controlled latency guarantee.",
+  "before": [
+    {
+      "label": "astronomy",
+      "elapsedMs": 32989,
+      "modelTransportMs": 30031,
+      "modelRequests": 4,
+      "answer": "- **恒星自转周期**（相对恒星自转一周）：**24.6229 小时**。这是 Mars Fact Sheet 中“Sidereal rotation period (hrs)”那一行的原值 —— https://www.mnealon.eosc.edu/Kepler%27sMars_files/Page786.htm\n- **平均太阳日**（一个 sol，正午到正午）：**24.6597 小时**。这是同一表“Length of day (hrs)”的原值 —— 同上链接；NASA GISS 用时分秒写作 24 小时 39 分 35.244 秒，与之相符 —— https://www.giss.nasa.gov/tools/mars24/help/notes.html\n\n两者不能混用：24.6229 h 是自转周期，24.6597 h 才是日常意义上的“火星一天”，两者相差约 0.037 小时（约 2 分 12 秒）。\n\n说明：官方页 https://nssdc.gsfc.nasa.gov/planetary/factsheet/marsfact.html 直接抓取被代理拦截（返回 fake-IP 地址错误）；搜索结果里该页摘要只到轨道参数就被截断，所以上表数值取自同一 Fact Sheet 表格的镜像副本，并已与 ESA 页面所列的同一对数值（24.6229 / 24.6597 h）交叉核对一致。",
+      "toolAndDispatchGaps": [
+        {
+          "elapsedMs": 1231,
+          "tools": [
+            "web_search"
+          ]
+        },
+        {
+          "elapsedMs": 131,
+          "tools": [
+            "fetch_content"
+          ]
+        },
+        {
+          "elapsedMs": 1028,
+          "tools": [
+            "web_search"
+          ]
+        }
+      ],
+      "modelSpans": [
+        {
+          "start": 1794352259291,
+          "end": 1794352262983
+        },
+        {
+          "start": 1794352264214,
+          "end": 1794352270604
+        },
+        {
+          "start": 1794352270735,
+          "end": 1794352275968
+        },
+        {
+          "start": 1794352276996,
+          "end": 1794352291712
+        }
+      ],
+      "measurementNote": "Model spans include local gateway/transport and streaming. Gaps include tools plus local dispatch, not pure network timings."
+    },
+    {
+      "label": "food-safety",
+      "elapsedMs": 21579,
+      "modelTransportMs": 19874,
+      "modelRequests": 3,
+      "answer": "- **冰箱：40 °F（4 °C）或更低；冰柜：0 °F（−18 °C）或更低。** 这是 FDA「Food Safety Quick Tips, Step 4: Chill」中的原文：「set fridge to 40 °F or below and freezer at 0 °F or below」— https://www.fda.gov/media/115446/download；FDA「Tips to Chill Food」的原文是：「Your refrigerator should register at 40° F (4° C) or below and the freezer unit at 0° F (-18° C)」— https://www.fda.gov/food/people-risk-foodborne-illness/tips-chill-food-food-safety-moms-be\n- **易腐食品：室温存放不超过 2 小时；气温高于 90 °F（32 °C）时缩短为 1 小时。** FDA 原文：「Never allow meat, poultry, seafood, eggs, or produce or other foods that require refrigeration to sit at room temperature for more than two hours—one hour if the air temperature is above 90° F」— https://www.fda.gov/consumers/consumer-updates/are-you-storing-food-safely；「Chill groceries, leftovers, and food delivery items within 2 hours, or 1 hour if exposed to temperatures above 90 °F」— https://www.fda.gov/media/115446/download\n\n以上内容均可由 FDA 页面自身的摘要直接支撑；政府出版物「Basics for Safe Food Handling」给出的三条数字相同（2 小时 / 高于 90 °F 时 1 小时 / 冰箱 40 °F、冰柜 0 °F）— https://www.govinfo.gov/content/pkg/GOVPUB-A110-PURL-gpo26772/pdf/GOVPUB-A110-PURL-gpo26772.pdf\n\n说明：我尝试直接打开 FDA 的「Safe Food Handling」页（https://www.fda.gov/food/buy-store-serve-safe-food/safe-food-handling）核验原文，但抓取被代理拦截（返回 fake-IP 地址错误），因此上面两条依据的是 FDA 其他页面的搜索结果摘要，未能核验该「Safe Food Handling」主页面原文；数字在多个 FDA 来源间一致。",
+      "toolAndDispatchGaps": [
+        {
+          "elapsedMs": 1299,
+          "tools": [
+            "web_search"
+          ]
+        },
+        {
+          "elapsedMs": 67,
+          "tools": [
+            "fetch_content"
+          ]
+        }
+      ],
+      "modelSpans": [
+        {
+          "start": 1794352292365,
+          "end": 1794352296485
+        },
+        {
+          "start": 1794352297784,
+          "end": 1794352302532
+        },
+        {
+          "start": 1794352302599,
+          "end": 1794352313605
+        }
+      ],
+      "measurementNote": "Model spans include local gateway/transport and streaming. Gaps include tools plus local dispatch, not pure network timings."
+    },
+    {
+      "label": "consumer-rights",
+      "elapsedMs": 24445,
+      "modelTransportMs": 22501,
+      "modelRequests": 3,
+      "answer": "- **商品（网购带货）：从交付日起算 14 天** —— Your Europe 原文：「For goods this means 14 days from the date of delivery」— https://europa.eu/youreurope/citizens/consumers/shopping/returns/index_en.htm\n- **服务：从合同达成日起算 14 天** —— 同一页原文：「for services 14 days after the day the contract was agreed」— 同上；另一 Your Europe 页表述为「expires 14 days after the day you received your goods (or concluded a contract for services)」— https://europa.eu/youreurope/citizens/consumers/shopping/shopping-consumer-rights/index_en.htm\n\n两者不能混用：商品的起算点是收货日，不是下单日；服务没有“收货”这一环节，起算点是合同签订（达成）日。\n\n补充一点术语精确性：欧盟《消费者权利指令》对商品的说法是消费者（或其指定、且非承运人的第三方）实际取得实物之日（「acquires physical possession」）— https://eur-lex.europa.eu/eli/dir/2011/83/oj/eng\n\n说明：我尝试直接抓取 Your Europe 原页核验，但被代理拦截（返回 fake-IP 地址错误），以上引文来自搜索结果中该页自身的摘要，未能逐字核对原页全文；两个 Your Europe 页面表述一致。",
+      "toolAndDispatchGaps": [
+        {
+          "elapsedMs": 1436,
+          "tools": [
+            "web_search"
+          ]
+        },
+        {
+          "elapsedMs": 80,
+          "tools": [
+            "fetch_content"
+          ]
+        }
+      ],
+      "modelSpans": [
+        {
+          "start": 1794352314128,
+          "end": 1794352319392
+        },
+        {
+          "start": 1794352320828,
+          "end": 1794352326542
+        },
+        {
+          "start": 1794352326622,
+          "end": 1794352338145
+        }
+      ],
+      "measurementNote": "Model spans include local gateway/transport and streaming. Gaps include tools plus local dispatch, not pure network timings."
+    },
+    {
+      "label": "programming",
+      "elapsedMs": 41222,
+      "modelTransportMs": 36421,
+      "modelRequests": 5,
+      "answer": "- **不传 encoding：返回 Buffer（原始字节，而非字符串）** —— Node.js 文档原句：「If no encoding is specified, then the raw buffer is returned.」（引自 nodejs.org/api/fs.html 的 fs.readFile 节，经该问答引述）— https://stackoverflow.com/questions/66050041/why-is-the-node-js-javascript-function-res-writedata-outputting-numbers-when-i\n- **传 `'utf8'`：返回 string（按 UTF-8 解码后的文本）** —— 官方 API 文档同类表述：「If no encoding is specified (using `options.encoding`), the data is returned as a `Buffer` object. Otherwise, the data will be a string.」— https://nodejs.org/api/fs.html\n\n同一规则适用于 `fs.readFileSync` 与 `fsPromises.readFile`（后者文档原句相同，见上条 nodejs.org 链接）；`'utf8'` 与 `{ encoding: 'utf8' }` 等价。\n\n说明：我尝试直接抓取 nodejs.org/api/fs.html 与 GitHub 上的 doc/api/fs.md 原文，两次均被代理拦截（返回 fake-IP 地址错误），故以上引文来自搜索结果中这些页面自身的摘要，未逐字核对整节原文；`fs.readFile` 那句「raw buffer」来自引用官方文档的二手页面，非我直接读到原页。",
+      "toolAndDispatchGaps": [
+        {
+          "elapsedMs": 1321,
+          "tools": [
+            "web_search"
+          ]
+        },
+        {
+          "elapsedMs": 66,
+          "tools": [
+            "fetch_content"
+          ]
+        },
+        {
+          "elapsedMs": 88,
+          "tools": [
+            "fetch_content"
+          ]
+        },
+        {
+          "elapsedMs": 2893,
+          "tools": [
+            "web_search"
+          ]
+        }
+      ],
+      "modelSpans": [
+        {
+          "start": 1794352338822,
+          "end": 1794352343270
+        },
+        {
+          "start": 1794352344591,
+          "end": 1794352351612
+        },
+        {
+          "start": 1794352351678,
+          "end": 1794352357451
+        },
+        {
+          "start": 1794352357539,
+          "end": 1794352366130
+        },
+        {
+          "start": 1794352369023,
+          "end": 1794352379611
+        }
+      ],
+      "measurementNote": "Model spans include local gateway/transport and streaming. Gaps include tools plus local dispatch, not pure network timings."
+    },
+    {
+      "label": "http-standard",
+      "elapsedMs": 31085,
+      "modelTransportMs": 28214,
+      "modelRequests": 4,
+      "answer": "- **`Retry-After: 120` 的单位是秒**（delay-seconds，即非负十进制整数），含义是“收到响应后等 120 秒再重试”（也就是 2 分钟）。RFC 9110 §10.2.3 原文：“The Retry-After field value can be either an HTTP-date or a number of seconds to delay after receiving the response.” — https://www.rfc-editor.org/rfc/rfc9110.html\n- **也可以用 HTTP-date（绝对时刻）**：语法是 `Retry-After = HTTP-date / delay-seconds`，`delay-seconds = 1*DIGIT` — https://grammars.wiki/catalog/rfc9110-http/Retry-After.html\n  HTTP-date 首选 IMF-fixdate 形式并带 GMT，例如 `Retry-After: Fri, 31 Dec 1999 23:59:59 GMT`；HTTP-date 定义（§5.6.7）还包含两种供兼容解析的过时格式（RFC 850 式与 asctime 式），但发送方应以 IMF-fixdate 生成 — https://www.rfc-editor.org/rfc/rfc9110.html\n\n不确定/限制说明：直接抓取 rfc-editor.org 原页被代理拦截（返回 fake-IP 地址错误），因此 §10.2.3 的句子与 §5.6.7 的格式说法来自搜索中该 RFC 页面自身的摘要，未逐字核对全文；上面的 ABNF 规则取自转载该 RFC ABNF 的目录页，非 RFC 原页。",
+      "toolAndDispatchGaps": [
+        {
+          "elapsedMs": 1231,
+          "tools": [
+            "web_search"
+          ]
+        },
+        {
+          "elapsedMs": 83,
+          "tools": [
+            "fetch_content"
+          ]
+        },
+        {
+          "elapsedMs": 1180,
+          "tools": [
+            "web_search"
+          ]
+        }
+      ],
+      "modelSpans": [
+        {
+          "start": 1794352380225,
+          "end": 1794352384807
+        },
+        {
+          "start": 1794352386038,
+          "end": 1794352390609
+        },
+        {
+          "start": 1794352390692,
+          "end": 1794352399437
+        },
+        {
+          "start": 1794352400617,
+          "end": 1794352410933
+        }
+      ],
+      "measurementNote": "Model spans include local gateway/transport and streaming. Gaps include tools plus local dispatch, not pure network timings."
+    },
+    {
+      "label": "measurement",
+      "elapsedMs": 19419,
+      "modelTransportMs": 17738,
+      "modelRequests": 2,
+      "answer": "- **固定数值 + 单位：`c = 299 792 458`，单位 `m s⁻¹`（即 299 792 458 米每秒）。** NIST「SI Units – Length」原文：米「is defined by taking the fixed numerical value of the speed of light in vacuum c to be 299,792,458 when expressed in the unit m s⁻¹」，同页另写「The speed of light in vacuum is 299 792 458 meters per second」— https://www.nist.gov/pml/owm/si-units-length\n- **不是近似值，而是精确值**：这一数值被定义为固定值（“fixed numerical value”），米由此反推定义；NIST/CODATA 常数表同样给出 `299 792 458 m s⁻¹`，且标准不确定度标注为「(exact)」— https://physics.nist.gov/cuu/Constants/Value/c.html\n- 同一表述见 NIST SP 330（SI 手册）：`c = 299 792 458 m/s`，其中数值 299 792 458、单位 m/s — https://www.nist.gov/pml/special-publication-330/sp-330-section-2\n\n说明：以上引文来自搜索结果中 NIST 页面自身的摘要，本轮未再抓取原页全文逐字核对（前几轮同类原页抓取均被本机代理拦截）。",
+      "toolAndDispatchGaps": [
+        {
+          "elapsedMs": 1211,
+          "tools": [
+            "web_search"
+          ]
+        }
+      ],
+      "modelSpans": [
+        {
+          "start": 1794352411618,
+          "end": 1794352417804
+        },
+        {
+          "start": 1794352419015,
+          "end": 1794352430567
+        }
+      ],
+      "measurementNote": "Model spans include local gateway/transport and streaming. Gaps include tools plus local dispatch, not pure network timings."
+    }
+  ],
+  "after": [
+    {
+      "label": "astronomy",
+      "elapsedMs": 25387,
+      "modelTransportMs": 23532,
+      "modelRequests": 3,
+      "answer": "**火星“一天”有两个不同的量，不能混用：**\n\n- **恒星自转周期（sidereal rotation period）：24.6229 小时**（约 24 小时 37 分），即相对于恒星背景转一圈的时间 — [NSSDC 火星数据表对照页摘录](https://www-k12.atmos.washington.edu/k12/resources/mars_data-information/mars_earth_comp_NSSDC_and.html)（NASA NSSDC Mars Fact Sheet 的转载表格）\n- **平均太阳日（mean solar day，即一个 sol）：24 小时 39 分 35.244 秒 ≈ 24.6597 小时** — [NASA GISS Mars24 技术说明](https://www.giss.nasa.gov/tools/mars24/help/notes.html)；JPL Horizons 也给出 Mean solar day (sol) = 88775.24415 s — [JPL Horizons](https://ssd.jpl.nasa.gov/api/horizons.api?CENTER=%4010&COMMAND=499&EPHEM_TYPE=V&TLIST=%272026-APR-11+00%3A01%3A09.185%27&VEC_TABLE=3&format=text)\n\n即太阳日比恒星自转周期长约 **2.2 分钟**（约 0.15%），这就是 sol 与恒星日必须区分的原因。\n\n限制说明：NASA Mars Fact Sheet 原页本次抓取被网络策略拦截（nssdc.gsfc.nasa.gov 解析到代理地址 198.18.0.36），上述恒星自转数值来自其转载表格摘录，未逐字核验原页；太阳日数值来自 NASA GISS/JPL 原页摘录。",
+      "toolAndDispatchGaps": [
+        {
+          "elapsedMs": 1283,
+          "tools": [
+            "web_search",
+            "web_search"
+          ]
+        },
+        {
+          "elapsedMs": 162,
+          "tools": [
+            "fetch_content"
+          ]
+        }
+      ],
+      "modelSpans": [
+        {
+          "start": 1794352701365,
+          "end": 1794352706662
+        },
+        {
+          "start": 1794352707945,
+          "end": 1794352715102
+        },
+        {
+          "start": 1794352715264,
+          "end": 1794352726342
+        }
+      ],
+      "measurementNote": "Model spans include local gateway/transport and streaming. Gaps include tools plus local dispatch, not pure network timings."
+    },
+    {
+      "label": "food-safety",
+      "elapsedMs": 12084,
+      "modelTransportMs": 10487,
+      "modelRequests": 2,
+      "answer": "**FDA「Safe Food Handling」的冷藏要点：**\n\n- **冰箱：40 °F 或以下**（约 4 °C）；**冰柜：0 °F 或以下**（约 −18 °C），并建议用器具温度计确认温度稳定 — [FDA Safe Food Handling](https://www.fda.gov/food/buy-store-serve-safe-food/safe-food-handling)\n- **易腐食品（肉、禽、蛋、海鲜等）应在烹饪或购买后 2 小时内冷藏或冷冻** — 同上\n- **如果室外温度高于 90 °F，上述时限缩短为 1 小时** — 同上（FDA 另一篇 [Are You Storing Food Safely?](https://www.fda.gov/consumers/consumer-updates/are-you-storing-food-safely) 也给出同样的“2 小时 / 高于 90 °F 时 1 小时”表述）\n\n补充提醒（同页）：切勿在室温台面上解冻，安全解冻方式只有冰箱、冷水、微波三种。以上均为 FDA 官方页面摘录，未逐字核验原页全文。",
+      "toolAndDispatchGaps": [
+        {
+          "elapsedMs": 1223,
+          "tools": [
+            "web_search",
+            "web_search"
+          ]
+        }
+      ],
+      "modelSpans": [
+        {
+          "start": 1794352726987,
+          "end": 1794352731588
+        },
+        {
+          "start": 1794352732811,
+          "end": 1794352738697
+        }
+      ],
+      "measurementNote": "Model spans include local gateway/transport and streaming. Gaps include tools plus local dispatch, not pure network timings."
+    },
+    {
+      "label": "consumer-rights",
+      "elapsedMs": 17190,
+      "modelTransportMs": 15413,
+      "modelRequests": 2,
+      "answer": "**欧盟 Your Europe：14天撤回权（冷静期）的起算点，商品和服务要分开计算：**\n\n- **商品（goods）：自交货之日起 14 天**，即从你收货那天起算 — [Your Europe: Returns and the right of withdrawal](https://europa.eu/youreurope/citizens/consumers/shopping/returns/index_en.htm)\n- **服务（services）：自合同签订之日起 14 天**，即从合同达成那天之后开始计算，不是你实际使用服务的那天 — [Your Europe: Returns and the right of withdrawal](https://europa.eu/youreurope/citizens/consumers/shopping/returns/index_en.htm)\n\n两点补充：\n\n- 适用前提是远程合同或非营业场所签订的合同。远程合同例如网购、电话下单；非营业场所签订的合同例如推销员上门。在这种情况下，消费者无需说明理由即可取消。同一 Your Europe 页面还说明：如果撤回权期限的最后一天不是工作日，期限顺延到下一个工作日。\n- 欧盟《消费者权利指令》2011/83 的措辞更具体：在销售合同中，14 天从“消费者或消费者指定、且不是承运人的第三方实际取得商品占有”之日起算；而在服务合同中，14 天从合同签订之日起算 — [Directive 2011/83/EU 序言第 40 条](https://eur-lex.europa.eu/eli/dir/2011/83/oj/eng)\n\n上述内容均来自官方页面摘录，尚未逐字核验原页全文。",
+      "toolAndDispatchGaps": [
+        {
+          "elapsedMs": 1364,
+          "tools": [
+            "web_search",
+            "web_search"
+          ]
+        }
+      ],
+      "modelSpans": [
+        {
+          "start": 1794352739322,
+          "end": 1794352744483
+        },
+        {
+          "start": 1794352745847,
+          "end": 1794352756099
+        }
+      ],
+      "measurementNote": "Model spans include local gateway/transport and streaming. Gaps include tools plus local dispatch, not pure network timings."
+    },
+    {
+      "label": "programming",
+      "elapsedMs": 15543,
+      "modelTransportMs": 13574,
+      "modelRequests": 2,
+      "answer": "**Node.js 官方文档（fs.readFile）的说明：**\n\n- **不传 encoding**（即 `options.encoding` 为默认值 `null`）：返回 **Buffer 对象**，也就是原始字节 — [Node.js fs 文档](https://nodejs.org/api/fs.html) 原文为“If no encoding is specified (using `options.encoding`), the data is returned as a {Buffer} object. Otherwise, the data will be a string.”（[GitHub doc/api/fs.md](https://github.com/nodejs/node/blob/v24.x/doc/api/fs.md) 保留了 `{Buffer}` 类型标注）\n- **传 `'utf8'`**（`fs.readFile(path, 'utf8', cb)` 或 `{ encoding: 'utf8' }`）：返回 **字符串（string）**；因为第二个参数是字符串时即指定编码 — 同上文档（“If `options` is a string, then it specifies the `encoding`”）\n\n同一段说明也适用于 `filehandle.readFile()` 与 `fsPromises.readFile`，只有传了 `encoding` 才是字符串，其余情况是 Buffer。以上为官方文档页面摘录，未逐字核验整页。",
+      "toolAndDispatchGaps": [
+        {
+          "elapsedMs": 1497,
+          "tools": [
+            "web_search",
+            "web_search"
+          ]
+        }
+      ],
+      "modelSpans": [
+        {
+          "start": 1794352756706,
+          "end": 1794352761348
+        },
+        {
+          "start": 1794352762845,
+          "end": 1794352771777
+        }
+      ],
+      "measurementNote": "Model spans include local gateway/transport and streaming. Gaps include tools plus local dispatch, not pure network timings."
+    },
+    {
+      "label": "http-standard",
+      "elapsedMs": 24285,
+      "modelTransportMs": 22401,
+      "modelRequests": 3,
+      "answer": "**RFC 9110 第10.2.3节（Retry-After）**\n\n- **`Retry-After: 120` 的单位是秒**：该值等于 delay-seconds（`delay-seconds = 1*DIGIT`），是非负十进制整数，表示收到响应后还需等待多少秒；因此 120 就是 **120 秒（2 分钟）** — [RFC 9110 §10.2.3 摘录](https://rfc.breadtoasting.com/rfc/9110/10)；RFC 本身给的两个示例正是 `Retry-After: 120` 与 `Retry-After: Fri, 31 Dec 1999 23:59:59 GMT`，并说明前者“延迟为 2 分钟”（[规范引文](https://github.com/Azure/autorest/issues/4988)）\n- **另一种格式是 HTTP-date**（绝对时间点，语法为 `Retry-After = HTTP-date / delay-seconds`）；发送方应使用首选的 **IMF-fixdate** 格式，即 `Fri, 31 Dec 1999 23:59:59 GMT` 这种 GMT 固定长度格式 — [RFC 9110 §5.6.7 及 ABNF（httpwg 官方仓库）](https://github.com/httpwg/http-core/blob/main/httpbis.abnf)\n- 两种旧的 HTTP-date 格式（**rfc850-date** 如 `02-Jun-82`、**asctime-date** 如 `Jun 2 ...`）已属 obs-date；RFC 9110 §5.6.7 要求接收方解析时间戳时接受全部三种格式（[RFC 9110 PDF 摘录](https://www.rfc-editor.org/rfc/rfc9110.pdf)）\n\n限制说明：rfc-editor.org 原页本次抓取被网络策略拦截（解析到代理地址 198.18.0.41），以上依据为规范文本的检索摘录与 httpwg ABNF 仓库，未逐字核验 rfc-editor 原页全文。",
+      "toolAndDispatchGaps": [
+        {
+          "elapsedMs": 1284,
+          "tools": [
+            "web_search",
+            "web_search"
+          ]
+        },
+        {
+          "elapsedMs": 103,
+          "tools": [
+            "fetch_content"
+          ]
+        }
+      ],
+      "modelSpans": [
+        {
+          "start": 1794352772420,
+          "end": 1794352778022
+        },
+        {
+          "start": 1794352779306,
+          "end": 1794352784475
+        },
+        {
+          "start": 1794352784578,
+          "end": 1794352796208
+        }
+      ],
+      "measurementNote": "Model spans include local gateway/transport and streaming. Gaps include tools plus local dispatch, not pure network timings."
+    },
+    {
+      "label": "measurement",
+      "elapsedMs": 16761,
+      "modelTransportMs": 15097,
+      "modelRequests": 2,
+      "answer": "**NIST「SI Units – Length」页面的说法：**\n\n- **数值与单位：真空光速 c = 299 792 458 m s⁻¹（即 299 792 458 米每秒）**。NIST 的原文是：“The speed of light in vacuum is 299 792 458 meters per second.”（[NIST: SI Units – Length](https://www.nist.gov/pml/owm/si-units-length)）\n- **这是固定值，不是近似值**：米被定义为“取真空光速 c 的固定数值 299 792 458，以单位 m s⁻¹ 表示”，其中秒由铯频率 ΔνCs 定义 — 同页，以及 [NIST: Definitions of SI Base Units](https://www.nist.gov/si-redefinition/definitions-si-base-units)\n- **精确性有两处旁证**：NIST CODATA 把该值的“标准不确定度（standard uncertainty）”标为 **exact** — [CODATA Value: speed of light in vacuum](https://physics.nist.gov/cuu/Constants/Value/c.html)；BIPM 也写明“This definition implies the exact relation c = 299 792 458 m s–1”（[BIPM: metre](https://www.bipm.org/en/si-base-units/metre)）\n\n一句话：299 792 458 m/s 是定义性常数，按定义精确，没有测量误差；不应把它写成“约 3×10⁸ m/s”那样的近似值。以上为官方页面检索摘录，未逐字核验整页。",
+      "toolAndDispatchGaps": [
+        {
+          "elapsedMs": 1160,
+          "tools": [
+            "web_search",
+            "web_search"
+          ]
+        }
+      ],
+      "modelSpans": [
+        {
+          "start": 1794352796995,
+          "end": 1794352802702
+        },
+        {
+          "start": 1794352803862,
+          "end": 1794352813252
+        }
+      ],
+      "measurementNote": "Model spans include local gateway/transport and streaming. Gaps include tools plus local dispatch, not pure network timings."
+    }
+  ],
+  "factCheck": {
+    "reference": "bot-search-grounding-2026-11-11.json: independently fetched official-page excerpts and SHA-256 evidence",
+    "scope": "Core requested quantities/units/definitions checked, not blanket validation of every ancillary sentence or mirror URL. App original fetch remains blocked by fake-IP in isolated profile; search excerpts do not count as fetched original pages.",
+    "results": {
+      "astronomy": "24.6229h sidereal distinct from solar 24h39m35.244s / approximately24.6597h; GISS value separately attributed, no false exact conversion",
+      "food-safety": "FDA <=40F refrigerator / <=0F freezer; 2h or1h above90F",
+      "consumer-rights": "Your Europe 14days delivery for goods and after contract agreement for services; response is overview not deadline arithmetic/legal advice",
+      "programming": "Core data types correct: without encoding Buffer, utf8 string. Wording caveat: callback fs.readFile supplies data to callback; the function does not directly return Buffer/string. Answer uses ambiguous 返回 and is not certified fully precise API prose.",
+      "http-standard": "RFC9110 120 delay-seconds, alternative HTTP-date and IMF-fixdate; abbreviated legacy examples are not complete copyable HTTP dates",
+      "measurement": "NIST fixed exact299792458m/s, not measured approximation"
+    },
+    "remainingCaveats": [
+      "Node callback value vs direct function return wording needs improvement; not introduced as a new API behavior by this change",
+      "HTTP legacy date snippets are incomplete date examples, not valid full HTTP-date headers",
+      "Astronomy JPL last decimal and derived0.15% were not independently checked against saved originals; no blanket source validation claim"
+    ]
+  }
+}

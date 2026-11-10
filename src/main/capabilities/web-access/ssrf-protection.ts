@@ -5,7 +5,10 @@ import { getWebSearchConfigPath } from "./utils.ts";
 
 import { existingProxyForFakeAddresses, fetchThroughExistingPublicProxy, type ExistingProxy } from "./pinned-public-proxy";
 
-class FakeIpAddressError extends Error { constructor(readonly addresses: LookupAddress[], message:string) { super(message); } }
+/** Classification only: does not change URL policy or grant access. */
+export class UrlPolicyError extends Error {}
+
+class FakeIpAddressError extends UrlPolicyError { constructor(readonly addresses: LookupAddress[], message:string) { super(message); } }
 
 export const PINNED_PUBLIC_PROXY = Symbol("verified-pinned-public-proxy");
 export function configuredPinnedProxy(error:unknown):ExistingProxy|undefined { return error instanceof FakeIpAddressError ? existingProxyForFakeAddresses(error.addresses) : undefined; }
@@ -202,7 +205,7 @@ export async function validateRemoteUrl(rawUrl: string | URL, options: Validatio
 	assertDomainPolicy(hostname, options.domainPolicy);
 	if (options.enabled === false) return url;
 	if (hostname === "localhost" || hostname.endsWith(".localhost")) {
-		throw new Error(`Blocked internal hostname: ${hostname}`);
+		throw new UrlPolicyError(`Blocked internal hostname: ${hostname}`);
 	}
 
 	const allowRanges = parseAllowRanges(options.allowRanges);
@@ -289,10 +292,10 @@ function normalizeHostname(hostname: string): string {
 function assertDomainPolicy(hostname: string, policy?: DomainPolicy): void {
 	if (!policy) return;
 	if (policy.deny.some((entry) => domainMatches(hostname, entry))) {
-		throw new Error(`Blocked hostname by fetch_content domain policy: ${hostname}`);
+		throw new UrlPolicyError(`Blocked hostname by fetch_content domain policy: ${hostname}`);
 	}
 	if (policy.allow.length > 0 && !policy.allow.some((entry) => domainMatches(hostname, entry))) {
-		throw new Error(`Hostname not allowed by fetch_content domain policy: ${hostname}`);
+		throw new UrlPolicyError(`Hostname not allowed by fetch_content domain policy: ${hostname}`);
 	}
 }
 
@@ -374,10 +377,10 @@ function assertPublicAddress(address: string, hostname: string, allowRanges: Par
 		const hint = isFakeIpProxyAddress(normalized)
 			? '. This address is in 198.18.0.0/15, commonly used by TUN/fake-IP proxies. If that matches your setup, configure ssrf.allowRanges with ["198.18.0.0/15"] in web-search.json.'
 			: "";
-		throw new Error(`Blocked internal address for ${hostname}: ${normalized}${hint}`);
+		throw new UrlPolicyError(`Blocked internal address for ${hostname}: ${normalized}${hint}`);
 	}
 	if (ipVersion === 6 && isBlockedIPv6(normalized)) {
-		throw new Error(`Blocked internal address for ${hostname}: ${normalized}`);
+		throw new UrlPolicyError(`Blocked internal address for ${hostname}: ${normalized}`);
 	}
 }
 
