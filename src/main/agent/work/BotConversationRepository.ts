@@ -83,6 +83,21 @@ export class BotConversationRepository {
       archived: conversation.archived_at !== null, messages, before: rows.length > 100 ? messages[0]?.ordinal : undefined };
   }
 
+  activeRequests(userId: string): import("../../../shared/bot-conversation").BotActiveRequestDto[] {
+    // Scope comes from the host, never renderer input. No runtime creation, mutation
+    // or current-conversation restriction: queued and archived requests stay visible.
+    const rows = this.db.prepare(`SELECT m.*, c.archived_at FROM bot_messages m
+      JOIN bot_conversations c ON c.conversation_id=m.conversation_id AND c.bot_id=m.bot_id
+      WHERE c.user_id=? AND m.role='assistant' AND m.status IN ('queued','running','unknown')
+      ORDER BY m.updated_at DESC, m.ordinal DESC`).all(userId) as Array<{ archived_at: number | null }>;
+    const prompt = this.db.prepare("SELECT * FROM bot_messages WHERE conversation_id=? AND bot_id=? AND request_id=? AND role='user' ORDER BY ordinal LIMIT 1");
+    return rows.map(row => {
+      const message = this.mapMessage(row);
+      const source = prompt.get(message.conversationId, message.botId, message.requestId);
+      return { message, prompt: source ? this.mapMessage(source) : undefined, archived: row.archived_at !== null };
+    });
+  }
+
   pending(userId: string): BotConversation[] {
     return this.db.prepare(`SELECT DISTINCT c.* FROM bot_conversations c JOIN bot_messages m ON m.conversation_id=c.conversation_id
       WHERE c.user_id=? AND m.role='assistant' AND m.status IN ('queued','running','unknown')`).all(userId).map(row => conversationRow.parse(row));

@@ -76,6 +76,7 @@ const SERIAL_TEST_PATTERNS = [/^test:core-performance/, /^test:bot-work-query-sc
  */
 const GUI_TESTS = new Set([
   "test:bot-conversation-concurrent-desktop",
+  "test:bot-activity-desktop",
   "test:bot-work-browser-desktop",
   "test:bot-work-inbox-desktop",
   "test:bot-work-browser-dev",
@@ -247,6 +248,8 @@ const KNOWN_HEADLESS_RED = new Set([
  * 显式清单优先于下面的命名兜底，否则它们会被 `^test:browser-` 之类正则误伤。
  */
 const HEADLESS_TESTS = new Set([
+  "test:bot-active-requests",
+  "test:bot-activity-monitor",
   "test:bot-work-query-scale",
   "test:durable-artifact-registration",
   "test:durable-work-liveness",

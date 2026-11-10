@@ -1203,6 +1203,7 @@ export class AgentService {
     return new WorkProjectionJournal(this.db.connection, this.workService).sync(LOCAL_USER_ID, request);
   }
   sendBotMessage(request: unknown) { return this.requireBotConversations().send(request); }
+  botActiveRequests() { return this.requireBotConversations().activeRequests(); }
   async botMessageHistory(request: unknown) {
     const history = this.requireBotConversations().history(request);
     return this.botReportImages ? this.botReportImages.hydrateHistory(history) : history;

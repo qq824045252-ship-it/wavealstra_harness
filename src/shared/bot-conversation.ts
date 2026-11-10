@@ -71,3 +71,6 @@ export const workListRequestSchema = z.object({ includeClosed: z.boolean(), curs
   epoch: id, sequence: z.number().int().nonnegative(), scope: z.enum(["open", "all"]),
 }).strict().optional() }).strict();
 export type WorkListRequest = z.infer<typeof workListRequestSchema>;
+
+/** Unfinished foreground requests, including archived conversations; read-only. */
+export interface BotActiveRequestDto { message: BotMessageDto; prompt?: BotMessageDto; archived: boolean }

@@ -82,6 +82,8 @@ export class BotConversationService {
     return receipt;
   }
 
+  activeRequests() { return this.messages.activeRequests(this.options.userId); }
+
   history(input: unknown) {
     const request = botHistorySchema.parse(input);
     this.assertBot(request.botId, false);

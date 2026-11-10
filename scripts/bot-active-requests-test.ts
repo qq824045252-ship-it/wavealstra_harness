@@ -1,0 +1,31 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs"; import { tmpdir } from "node:os"; import { join } from "node:path";
+import { AppDatabase } from "../src/main/db/AppDatabase";
+import { BotRegistry } from "../src/main/agent/work/BotRegistry";
+import { BotConversationRepository } from "../src/main/agent/work/BotConversationRepository";
+const root = mkdtempSync(join(tmpdir(), "active-requests-"));
+const db = new AppDatabase(join(root, "app.db")); const repo = new BotConversationRepository(db.connection); const bots = new BotRegistry(db.connection);
+try {
+  bots.registerBot({ botId: "a", userId: "alice", displayName: "A" });
+  bots.registerBot({ botId: "b", userId: "bob", displayName: "B" });
+  const a = repo.accept("alice", { botId: "a", requestId: "r-a", text: "原始问题" });
+  repo.update(a.assistantMessageId, "running", "进行中原文");
+  db.connection.prepare("UPDATE bot_conversations SET archived_at=1 WHERE conversation_id=?").run(a.conversationId);
+  const next = repo.accept("alice", { botId: "a", requestId: "r-new", text: "新问题" });
+  const b = repo.accept("bob", { botId: "b", requestId: "r-b", text: "别人的秘密" });
+  const before = (db.connection.prepare("SELECT total_changes() AS n").get() as { n: number }).n;
+  const rows = repo.activeRequests("alice");
+  assert.equal(rows.length, 2);
+  assert(rows.find(row => row.message.messageId === a.assistantMessageId)?.archived);
+  assert.equal(rows.find(row => row.message.messageId === a.assistantMessageId)?.prompt?.text, "原始问题");
+  assert(rows.some(row => row.message.messageId === next.assistantMessageId && row.message.status === "queued"));
+  assert(!rows.some(row => row.message.messageId === b.assistantMessageId));
+  assert.equal((db.connection.prepare("SELECT total_changes() AS n").get() as { n: number }).n, before, "query must not mutate any state");
+  repo.update(a.assistantMessageId, "completed", "完成");
+  assert.equal(repo.activeRequests("alice").length, 1);
+  repo.update(next.assistantMessageId, "unknown", "状态待核对");
+  assert.equal(repo.activeRequests("alice")[0].message.status, "unknown");
+  repo.update(next.assistantMessageId, "failed", "失败");
+  assert.equal(repo.activeRequests("alice").length, 0);
+  console.log("PASS active requests: current-user scope, old conversation, original prompt, queued/unknown, terminal removal and read-only");
+} finally { db.close(); rmSync(root, { recursive: true, force: true }); }

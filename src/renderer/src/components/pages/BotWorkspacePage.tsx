@@ -18,7 +18,7 @@ import { activeBotReply, personalBotWork, botParticipatesInWork, botMessageStatu
 import { BotWorkBrowser } from "./BotWorkBrowser";
 import { BotWorkDetails } from "./BotWorkDetails";
 import { BotResultReport } from "./BotWorkResult";
-import { BotTeamDialog } from "./BotTeamDialog";
+import { BotActivityMonitor } from "./BotActivityMonitor";
 import { BotWorkspaceAuthorization } from "./BotWorkspaceAuthorization";
 import { BotDeletion } from "./BotDeletion";
 import { BotExecutionSettings } from "./BotExecutionSettings";
@@ -39,7 +39,6 @@ const examples = [
 ];
 
 export default function BotWorkspacePage(props: { onToggleNavigation?: () => void; navigationVisible?: boolean; onCreateBot?: () => void } = {}): React.JSX.Element {
-  const setPage = useAppStore(s => s.setPage);
   const attachmentDrafts = useAppStore(s => s.botAttachmentDrafts);
   const [attachmentError, setAttachmentError] = useState("");
   const [attachmentBusy, setAttachmentBusy] = useState(false);
@@ -63,7 +62,6 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   const compact = useMediaQuery("(max-width: 1180px)");
   const [inspectorOpen, setInspectorOpen] = useState(Boolean(selectedWorkId));
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [teamOpen, setTeamOpen] = useState(false);
   const [archiveConfirm, setArchiveConfirm] = useState(false);
   const [newConversationOpen, setNewConversationOpen] = useState(false);
   const [archiving, setArchiving] = useState(false);
@@ -236,11 +234,13 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
         <div className="bot-heading"><h1>{activeBot?.displayName ?? "Bot 模式"}</h1><p><span className={`bot-presence ${hostStatus?.online && activeBot?.status === "active" ? "is-online" : ""}`} />{activeBot ? presenceLabel(activeBot, hostStatus) : "你的长期个人助理"}<span className="bot-heading-description"> · 对话有延续，事项有着落</span></p></div>
         <div className="bot-workspace-actions">
           <button type="button" className="bot-quiet-button bot-new-conversation" disabled={!activeBot || messages.length === 0} onClick={() => { setArchiveError(""); setNewConversationOpen(true); }}>新对话</button>
-          <details className="bot-header-more" onClick={event => { if ((event.target as HTMLElement).closest("button")) event.currentTarget.open = false; }}><summary aria-label="更多 Bot 操作">更多</summary><div className="bot-header-menu">
-          <button type="button" className="bot-quiet-button" onClick={() => { setInspectorOpen(false); setSettingsOpen(false); setTeamOpen(true); }}>组队开工</button>
-          {props.onCreateBot && <button type="button" className="bot-quiet-button" onClick={() => { setInspectorOpen(false); setSettingsOpen(false); props.onCreateBot?.(); }}>+ 新建 Bot</button>}
-          <button type="button" className="bot-quiet-button bot-return" onClick={() => setPage("chat")}>返回普通模式</button>
-          </div></details>
+          <BotActivityMonitor onOpenBotMessage={messageId => {
+            setView("conversation"); setInspectorOpen(false);
+            requestAnimationFrame(() => requestAnimationFrame(() => {
+              const node = Array.from(threadRef.current?.querySelectorAll<HTMLElement>("[data-message-id]") ?? []).find(item => item.dataset.messageId === messageId);
+              node?.scrollIntoView({ block: "center" });
+            }));
+          }} />
           <button type="button" className="bot-icon-button" aria-label="Bot 设置与对话管理" onClick={() => setSettingsOpen(true)}><IconSettings size={18} /></button>
         </div>
       </header>
@@ -296,7 +296,6 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
         }}>{archiving ? "正在归档…" : "归档并开始新对话"}</button><button type="button" disabled={archiving} onClick={() => setNewConversationOpen(false)}>取消</button>
       </div>
     </dialog>
-    <BotTeamDialog open={teamOpen} onClose={() => setTeamOpen(false)} />
     <dialog ref={settingsRef} className="bot-settings-dialog" aria-labelledby="bot-settings-title" onCancel={event => { event.preventDefault(); setSettingsOpen(false); setArchiveConfirm(false); }}>
       <header className="bot-inspector-header"><h2 id="bot-settings-title">Bot 设置与对话管理</h2><button type="button" className="bot-icon-button" aria-label="关闭 Bot 设置" onClick={() => { setSettingsOpen(false); setArchiveConfirm(false); }}><IconX size={18} /></button></header>
       <div className="bot-settings-body">{activeBot && <section className="bot-settings-identity" aria-label="Bot 身份与职责"><h3>{activeBot.displayName}</h3><p>{activeBot.responsibilitySummary || "尚未设置具体职责。你可以在对话中说明这次希望它协助的目标。"}</p><p>独立 Bot 身份。当前配置与操作范围以已生效的版本及授权为准。</p></section>}{activeBot && <><BotExecutionSettings key={`settings-${activeBot.botId}-${settingsOpen}`} botId={activeBot.botId} onManageModels={() => { setSettingsOpen(false); setArchiveConfirm(false); }} /><BotWorkspaceAuthorization key={activeBot.botId} bot={activeBot} /><details className="bot-advanced"><summary>专家配置与权限审阅</summary><BotExpertReview botId={activeBot.botId} /></details>
