@@ -28,8 +28,23 @@
 - `test:bot-watch-expiry` 通过，另已接入真实 `WorkWatchSupervision.hasPending` 账本与前台投递的联合专项（模型回复使用受控夹具，未冒充真实 LLM）。
 - `test:bot-watch-creation`、`test:bot-watch-intake`、`test:bot-watch-scheduler`、`test:work-watch-supervision` 通过。
 - `test:remote-work-sync` 19 项通过；`test:bot-work-phase5-reconnect-diagnostics` 19 项通过。
-- 真实模型场景尝试两次，均在首条前台请求收到 Open Design/Cloudflare origin invalid or incomplete response，上游未正常结束流，未创建 Work。**真实 LLM 有限期链路尚未验收通过**，不能把专项的受控回复当作真实模型验收。
+- 真实模型场景尝试两次，均在首条前台请求收到 Open Design/Cloudflare origin invalid or incomplete response，上游未正常结束流，未创建 Work。这两次没有验收通过；后续替代模型真实验收见下，不能把专项的受控回复当作真实模型验收。
 - 测试代理补齐客户端断连取消上游与 240 秒请求超时，避免错误长流拖住隔离测试清理。仅影响测试夹具。
 - 无生产资料修改、无生产实例重启、无崩溃故障注入。
 
 复验命令见上。成功条件：真实模型创建含明确 endsAt 的 Watch、原生读取实际文件、回到原对话、真实墙钟到期并等最后一轮监督结算、显示“到期结束”而不是成功/取消、随后至少一个分钟槽没有新派发。
+
+
+## 已配置替代模型真实复验通过
+
+仅隔离测试用 `BOT_FRONTDOOR_MODEL=opendesign/deepseek-v4.1-flash-eco`，没有修改用户全局或生产模型配置。先查本机已配置模型，Codex 最小请求为 HTTP 429 usage_limit_reached；eco 最小请求 200 且真实返回 OK，然后运行同一个完整场景。
+
+- 基线：`0349792`，真实 Electron dev renderer + preload + 真实模型 + 原生 read + 临时磁盘文件，非物理桌面输入验收。
+- 真实模型正确创建 `watchRule.endsAt=1794317814933`，即 `2026-11-10T13:36:54.933Z`。
+- 实际完成 3 轮 read，3 轮前台监督均交付；未提前结束长期委托。
+- `closedAt=1794317819149`，即 `13:36:59.149Z`，在 5 秒调度 tick 内结束。`closureConclusion=NULL`，结构原因为 `schedule_expired`，没有成功、失败或用户取消的虚假结论。
+- 原对话出现“到期结束”消息，无需用户确认。随后实际等待 65 秒，没有新增执行，源文件未修改。
+- 1280px / 390px 真实 renderer 截图均无横向溢出，已目视检查结束信息在对话中可见。
+- 报告：`out/diagnostics/bot-watch-expiry/live/report.json`（status=passed）；截图 `watch-expiry-1280.png` / `watch-expiry-390.png`。先前失败观察记录也保留于该目录，没有改写为成功。
+
+这证明有限时间条件、周期执行、前台监督、自然到期收尾的实际链路；不证明任意语义停止条件能自动判定，也不证明外部 X 账号来源接入或离线期间连续观测。
