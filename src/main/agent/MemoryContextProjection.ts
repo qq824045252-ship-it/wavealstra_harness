@@ -1,10 +1,11 @@
 import {
   MEMORY_CONTEXT_DEFAULT_BUDGET, MEMORY_CONTEXT_HARD_BUDGET,
-  type MemorySearchRequest, type ResolvedMemoryContext, type MemoryRevisionDto, type MemoryScopeType,
+  type MemorySearchRequest, type MemoryKind, type ResolvedMemoryContext, type MemoryRevisionDto, type MemoryScopeType,
 } from "../../shared/memory-kernel";
 import type { MemoryService } from "../memory/MemoryService";
 
 const PROJECT_BASELINE_LIMIT = 8;
+const BOT_PREFERENCE_BASELINE_LIMIT = 6;
 
 export const MEMORY_EVIDENCE_RENDERER = "memory-l1-v1";
 export interface MemoryEvidenceBlock {
@@ -97,7 +98,15 @@ export function projectMemoryContext(
     ? memory.search({ ...input, query: undefined, scopeTypes: ["project"], statuses: ["active"], limit: PROJECT_BASELINE_LIMIT })
       .filter((hit) => !queriedIds.has(hit.memory.id) && visible(hit.memory.id))
     : [];
-  const hits = [...queried, ...projectBaseline];
+  // Language, units and formatting preferences apply even to an unrelated Work query.
+  // Keep this bounded, current and personal; unrelated facts still require query recall.
+  const baselineKinds: MemoryKind[] = ["preference", "identity", "constraint"];
+  const allowedBaselineKinds = baselineKinds.filter(kind => !input.kinds?.length || input.kinds.includes(kind));
+  const botBaseline = input.query?.trim() && allowedBaselineKinds.length && memory.allowsPersonalBotBaseline(input)
+    ? memory.search({ ...input, query: undefined, scopeTypes: ["bot"], kinds: allowedBaselineKinds,
+      statuses: ["active"], limit: BOT_PREFERENCE_BASELINE_LIMIT }).filter(hit => visible(hit.memory.id))
+    : [];
+  const hits = [...botBaseline, ...queried, ...projectBaseline];
   const relevantIds = queriedIds;
   for (const scenario of scenarios) {
     if (coveredScenarios.has(scenario.id)) continue;

@@ -65,6 +65,30 @@ async function extract(f: Fixture, operationHint: string, title: string, content
 }
 
 const cases: Array<[string, (f: Fixture) => Promise<void> | void]> = [
+  ["personal Work keeps stable Bot preferences across unrelated queries", f => {
+    f.memory.update({id: f.own.id, title: "答复格式", content: "默认使用简短中文列表"});
+    const prompt = projectMemoryContext(f.memory, {taskId: "worker", query: "统计季度库存数量", trackRecall: false});
+    assert(prompt.items.some(item => item.id === f.own.id), "stable Bot preference must not disappear on unrelated Work query");
+    assert(!prompt.items.some(item => item.id === f.other.id || item.id === f.global.id));
+    assert.equal(prompt.items.filter(item => item.id === f.own.id).length, 1);
+    for (const filter of [{kinds:["fact" as const]}, {scopeTypes:["project" as const]}])
+      assert(!projectMemoryContext(f.memory,{taskId:"worker",query:"统计季度库存数量",trackRecall:false,...filter}).items.some(x=>x.id===f.own.id));
+    f.memory.update({id: f.own.id, content: "默认使用简短西班牙语列表"});
+    const next = projectMemoryContext(f.memory, {taskId: "worker", query: "整理会议议程", trackRecall: false});
+    assert.match(next.text, /西班牙语/); assert.doesNotMatch(next.text, /简短中文/);
+    f.memory.forget(f.own.id);
+    assert(!projectMemoryContext(f.memory, {taskId: "worker", query: "核对行程安排", trackRecall: false}).items.some(item => item.id === f.own.id));
+    assert(!projectMemoryContext(f.memory, {taskId: "ordinary", query: "统计季度库存数量", trackRecall: false}).items.some(item => item.scopeType === "bot"));
+  }],
+  ["stable baseline does not widen team privacy or pull unrelated facts", f => {
+    f.memory.update({id: f.own.id, title: "答复格式", content: "默认使用简短中文列表"});
+    const fact=f.memory.create({kind:"fact",title:"私有历史",content:"山谷梅花",scopeType:"bot",scopeId:DEFAULT_BOT_ID,sourceType:"user"});
+    assert(!projectMemoryContext(f.memory,{taskId:"worker",query:"统计季度库存数量",trackRecall:false}).items.some(x=>x.id===fact.id));
+    const work=f.db.connection.prepare("SELECT work_id FROM work_execution_bindings WHERE task_id='worker'").get() as {work_id:string};
+    f.db.connection.prepare("INSERT INTO work_teams(work_id,user_id,operation_id,request_hash,plan_json,intent_revision,input_snapshot_id,created_at) VALUES (?,?,?,'test','{}',1,'test',?)")
+      .run(work.work_id,LOCAL_USER_ID,"team-test",Date.now());
+    assert(!projectMemoryContext(f.memory,{taskId:"worker",query:"统计季度库存数量",trackRecall:false}).items.some(x=>x.id===f.own.id));
+  }],
   ["worker reads authorized facts but cannot update or rebind them", async f => {
     const tool = await toolsFor(f.memory, "worker");
     for (const record of [f.own, f.shared]) {

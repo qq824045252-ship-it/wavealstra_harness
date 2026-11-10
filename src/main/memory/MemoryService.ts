@@ -1223,6 +1223,18 @@ export class MemoryService {
       .get(taskId) as { bot_id: string; project_id: string | null } | undefined;
   }
 
+  /** Stable private preferences are automatic only in personal Bot contexts.
+   * Team executors keep their existing explicit retrieval behavior, not a new private baseline.
+   */
+  allowsPersonalBotBaseline(request: MemorySearchRequest): boolean {
+    if (!this.resolveScopeChain(request).some(scope => scope.scopeType === "bot")) return false;
+    if (!request.taskId) return true;
+    const hasTeams = this.db.connection.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='work_teams'").get();
+    if (hasTeams && this.db.connection.prepare(`SELECT 1 FROM work_execution_bindings b
+      JOIN work_teams t ON t.work_id=b.work_id WHERE b.task_id=? LIMIT 1`).get(request.taskId)) return false;
+    return !this.db.connection.prepare("SELECT 1 FROM bot_conversations WHERE conversation_id=? AND team_id IS NOT NULL").get(request.taskId);
+  }
+
   resolveScopeChain(request: MemorySearchRequest): Array<{ scopeType: MemoryScopeType; scopeId?: string; distance: number }> {
     const task = request.taskId ? this.db.getTask(request.taskId) : undefined;
     const work = request.taskId ? this.workMemoryScope(request.taskId) : undefined;
