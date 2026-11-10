@@ -33,7 +33,7 @@ function SectionTitle({ children, count }: { children: string; count?: number })
   );
 }
 
-function Dot({ state }: { state: "running" | "ok" | "err" }): React.JSX.Element {
+function Dot({ state }: { state: "running" | "ok" | "err" | "idle" }): React.JSX.Element {
   return <span className={`ro-dot ro-dot--${state}`} aria-hidden />;
 }
 
@@ -168,9 +168,10 @@ export default function RuntimeObservatory(): React.JSX.Element | null {
     return () => clearInterval(timer);
   }, [hasRunning]);
 
-  const subagentCount = vm.runningSubagents.length + vm.doneSubagents.length;
+  const subagentCount = vm.runningSubagents.length + vm.queuedSubagents.length + vm.doneSubagents.length;
   const empty =
-    vm.runningSubagents.length === 0 && vm.doneSubagents.length === 0 && activeExternalAgents.length === 0 && vm.backgroundTasks.length === 0;
+    vm.runningSubagents.length === 0 && vm.queuedSubagents.length === 0 && vm.doneSubagents.length === 0
+    && activeExternalAgents.length === 0 && vm.backgroundTasks.length === 0;
 
   if (!activeTaskId) return null;
 
@@ -196,6 +197,15 @@ export default function RuntimeObservatory(): React.JSX.Element | null {
       {subagentCount > 0 && (
         <>
           <SectionTitle count={subagentCount}>子代理</SectionTitle>
+          {/* 排队口径：并行派发请求了 N 个、实际只开了 M 个时，用户必须看得到差额与原因 */}
+          {vm.subagentConcurrency && vm.subagentConcurrency.queued > 0 && (
+            <div className="ro-hint">
+              <span>{vm.subagentConcurrency.workers} 并发 · {vm.subagentConcurrency.queued} 排队</span>
+              {vm.subagentConcurrency.serializedReason && (
+                <span className="ro-hint-detail">{vm.subagentConcurrency.serializedReason}</span>
+              )}
+            </div>
+          )}
           <ul className="ro-list ro-list--subagents">
             {vm.runningSubagents.map((s) => (
               <li key={`run:${s.id}`} className="ro-row">
@@ -217,6 +227,22 @@ export default function RuntimeObservatory(): React.JSX.Element | null {
                   <UsageGrid usage={s.usage} />
                   <span className="ro-sub">{s.work}</span>
                 </button>
+              </li>
+            ))}
+            {vm.queuedSubagents.map((q) => (
+              <li key={`queued:${q.id}`} className="ro-row ro-row--queued">
+                <span className="ro-status-col">
+                  <Dot state="idle" />
+                </span>
+                <div className="ro-row-main" title="已计划，等待并发名额；子会话创建后才可打开临时 Chat">
+                  <span className="ro-item-head">
+                    <span className="ro-name" title={`id: ${q.id}`}>
+                      <IconUsers size={12} /> {q.displayName || q.role}
+                    </span>
+                    <span className="ro-label ro-label--queued">排队中</span>
+                  </span>
+                  <span className="ro-sub" title={q.task}>{q.task || "等待并发名额"}</span>
+                </div>
               </li>
             ))}
             {vm.doneSubagents.map((d) => {

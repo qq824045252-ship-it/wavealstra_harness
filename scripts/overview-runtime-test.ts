@@ -403,6 +403,65 @@ console.log("== 复用场景：同 id 先完成再运行 → running 优先，do
   assert(vmNoRunning.doneSubagents.some((d) => d.id === "sa-reuse-1" && d.state === "completed"), "实例已结束 → done 记录恢复展示");
 }
 
+console.log("== 并行派发排队项（运行中 details 的 plan/results/running 差集） ==");
+{
+  const planItem = (index: number, name: string, task: string) => ({
+    itemId: `durable-t1-${index}`, index, agent: "scout", displayName: name, task, required: true, dependencies: [], isolation: "shared",
+  });
+  const dispatchDetail = (extra: Record<string, unknown> = {}): string => JSON.stringify({
+    mode: "parallel",
+    concurrency: {
+      workers: 1, queued: 1, maxConcurrency: 1,
+      serializedReason: "仓库/Work 禁止分支与 worktree，且子代理工具集可写；无法并发写入隔离，本次派发串行（1 并发）",
+    },
+    plan: [planItem(0, "妙蛙种子", "只读代码侦察 A"), planItem(1, "小火龙", "只读代码侦察 B")],
+    results: [],
+    ...extra,
+  });
+  const dispatchMsg = (detail: string, status: "running" | "success" = "running"): ChatMessage => msg({
+    id: "m-queue",
+    streaming: status === "running",
+    blocks: [{ type: "tool", toolCall: { id: "tc-queue", tool: "subagent", summary: "2 个并行：scout · 妙蛙种子、scout · 小火龙", status, detail } }],
+  });
+  const overview = (messages: ChatMessage[], activeSubagents: SubagentSummaryDto[]) => buildRuntimeOverview({
+    taskId: "task-q", messages, activeSubagents, terminalSessions: {}, now: NOW,
+  });
+
+  const vm = overview(
+    [dispatchMsg(dispatchDetail())],
+    [subagentDto({ subagentId: "durable-t1-0", role: "scout", displayName: "妙蛙种子" })],
+  );
+  assert(vm.runningSubagents.length === 1, "只有真建了子会话的项算运行中");
+  assert(vm.queuedSubagents.length === 1, `排队项被列出（${vm.queuedSubagents.length}）`);
+  assert(vm.queuedSubagents[0]?.displayName === "小火龙", `排队项优先显示 displayName（${vm.queuedSubagents[0]?.displayName}）`);
+  assert(vm.queuedSubagents[0]?.role === "scout" && vm.queuedSubagents[0]?.task === "只读代码侦察 B", "排队项带 agent 与任务首行");
+  assert(vm.subagentConcurrency?.workers === 1 && vm.subagentConcurrency?.queued === 1, "并发口径来自 details（1 并发 / 1 排队）");
+  assert(Boolean(vm.subagentConcurrency?.serializedReason), "串行原因随 details 透出，不靠猜");
+
+  const rolling = overview([dispatchMsg(dispatchDetail({ results: [{ subagentId: "durable-t1-0", status: "completed", exitCode: 0 }] }))],
+    [subagentDto({ subagentId: "durable-t1-1", role: "scout", displayName: "小火龙" })]);
+  assert(rolling.queuedSubagents.length === 0, "rolling pool：已完结项不再算排队");
+  assert(rolling.runningSubagents[0]?.id === "durable-t1-1", "轮到的小火龙进入运行中");
+  assert(rolling.subagentConcurrency === undefined || rolling.subagentConcurrency.queued === 0, "队列排空后计数归零");
+
+  const chain = overview([dispatchMsg(JSON.stringify({
+    mode: "chain", concurrency: { workers: 1, queued: 0, maxConcurrency: 1 },
+    plan: [planItem(0, "步一", "t1"), planItem(1, "步二", "t2")], results: [],
+  }))], []);
+  assert(chain.queuedSubagents.length === 0 && chain.subagentConcurrency === undefined, "chain 的未执行项不算并发排队");
+
+  const finished = overview([dispatchMsg(dispatchDetail(), "success")], []);
+  assert(finished.queuedSubagents.length === 0, "派发已结束：不再残留排队行");
+
+  // 旧 details（没有 concurrency 字段）仍能列出排队项，只是不显示并发口径
+  const legacy = overview([dispatchMsg(JSON.stringify({ mode: "parallel", plan: [planItem(0, "A", "t0"), planItem(1, "B", "t1")], results: [] }))],
+    [subagentDto({ subagentId: "durable-t1-0" })]);
+  assert(legacy.queuedSubagents.length === 1 && legacy.subagentConcurrency === undefined, "旧格式 details 兼容：有排队项、无并发口径");
+
+  const malformed = overview([dispatchMsg("{not json")], []);
+  assert(malformed.queuedSubagents.length === 0, "畸形 details 安全降级（不抛错、无排队行）");
+}
+
 console.log("== task scope 隔离（纯函数输入隔离） ==");
 {
   const mTask1 = msg({

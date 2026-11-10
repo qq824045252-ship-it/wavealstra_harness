@@ -13871,6 +13871,8 @@ button.font-picker-item {
 .ro-dot--running { background: #e0b84d; }
 .ro-dot--ok { background: #6fd08a; }
 .ro-dot--err { background: #e07a7a; }
+/* 排队中：没有子会话，不使用运行/完成色，避免被读成“在跑” */
+.ro-dot--idle { background: var(--fg-muted); opacity: 0.5; }
 
 .ro-row-main {
   display: flex;
@@ -13991,6 +13993,26 @@ button.font-picker-item {
 .ro-label--idle, .ro-label--ok, .ro-label--completed { background: #223a28; color: #6fd08a; }
 .ro-label--failed { background: #3a2222; color: #e07a7a; }
 .ro-label--cancelled { background: var(--bg-active); color: var(--fg-muted); }
+.ro-label--queued { background: var(--bg-active); color: var(--fg-muted); }
+
+/* 排队行：计划已定、子会话未创建 → 不可点击，文字降一级 */
+.ro-row--queued .ro-name { color: var(--fg-muted); }
+
+/* 并发口径提示：一行计数 + 一行原因（窄面板可折行，不做省略） */
+.ro-hint {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 0 2px 4px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.ro-hint-detail {
+  line-height: 1.35;
+  word-break: break-word;
+}
 
 /* 模型标签：独立一行显示在智能体名称下方，窄面板也放得下完整模型名；完整标识与来源在 title */
 .ro-model {
