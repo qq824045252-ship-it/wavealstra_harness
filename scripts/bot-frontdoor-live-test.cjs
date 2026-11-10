@@ -157,7 +157,7 @@ const provider = http.createServer(async (req,res) => {
     }
     if((metricsAuditScenario || workMetricsScenario) && pendingFrame) res.write(inspect(pendingFrame));
     audit.endedAt=Date.now();res.end();
-  } catch(error) { res.writeHead(502);res.end(String(error)); }
+  } catch(error) { if (!res.destroyed) { if (!res.headersSent) res.writeHead(502); res.end(String(error)); } }
 });
 async function send(text) {
   // New-conversation transitions can replace the textarea after preload is ready.
