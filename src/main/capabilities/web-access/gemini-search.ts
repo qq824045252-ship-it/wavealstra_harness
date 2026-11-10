@@ -431,12 +431,12 @@ async function runMeasuredSearch(
 	const availability = await probeSearchAvailability(providers, p => isResolvedProviderAvailable(p as ResolvedSearchProvider, options), Math.min(2000, (options.budget?.deadline ?? Date.now() + policy.totalTimeoutMs) - Date.now()), options.signal);
 	for (const item of availability) {
 		if (item.available) eligible.push(item.provider);
-		else skipped.push({ query, provider: item.provider, status: "error", durationMs: 0, results: [], answer: "", error: `未发起请求：${item.error ?? "供应商未配置、凭据不可用或搜索模型未启用"}。` });
+		else skipped.push({ query, provider: item.provider, status: "error", durationMs: 0, results: [], answer: "", skippedReason: "unavailable", error: `未发起请求：${item.error ?? "供应商未配置、凭据不可用或搜索模型未启用"}。` });
 	}
 	const remaining = options.budget?.remaining ?? policy.maxRequests;
 	const slots = Math.max(0, Math.min(remaining, options.queryAllowance?.remaining ?? remaining));
 	providers = eligible.slice(0, slots);
-	for (const provider of eligible.slice(slots)) skipped.push({ query, provider, status: "error", durationMs: 0, results: [], answer: "", error: "未发起请求：为其他查询保留额度，本查询的供应商覆盖已缩减。" });
+	for (const provider of eligible.slice(slots)) skipped.push({ query, provider, status: "error", durationMs: 0, results: [], answer: "", skippedReason: "request-limit", error: "未发起请求：为其他查询保留额度，本查询的供应商覆盖已缩减。" });
 	if (options.queryAllowance) options.queryAllowance.remaining -= providers.length;
 	if (options.budget) options.budget.remaining -= providers.length;
 	const availableMs = options.budget ? options.budget.deadline - Date.now() : policy.totalTimeoutMs;
@@ -491,6 +491,9 @@ export async function search(query: string, options: FullSearchOptions = {}): Pr
 			if (result.providerRuns?.some(r => r.status === "success" || r.status === "empty")) return { ...result, providerRuns: runs };
 			options.signal?.throwIfAborted();
 			const last = runs[runs.length - 1];
+			// Local unavailability is not an attempted provider failure. The configured
+			// fallback list already authorizes trying the next eligible provider.
+			if (last.skippedReason === "unavailable") continue;
 			const kind = last.status === "timeout" ? "transient" : classifyProviderError(candidate, new Error(last.error)).kind;
 			if (!routing.fallbackOn.includes(kind as SearchRoutingConfig["fallbackOn"][number])) break;
 		}

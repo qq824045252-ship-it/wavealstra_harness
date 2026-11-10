@@ -149,6 +149,47 @@ try {
     assert.match(r.content[0].text, /Tavily original/);
     assert(!r.isError);
   });
+  await test("fallback skips an unavailable primary without consuming the next query's slot", async () => {
+    writeFileSync(join(profile, "web-search.json"), JSON.stringify({ ...config,
+      searchPolicy: { ...config.searchPolicy, mode: "fallback", providers: ["codex", "tavily"], maxRequests: 2 } }));
+    const before = requests.length;
+    const r = await tool.execute("unavailable-fallback", { queries: ["one", "two"] }, undefined, undefined, { hasUI: false });
+    assert.equal(requests.length - before, 2);
+    assert.deepEqual(r.details.webSearch.runs.map((x: any) => [x.query, x.provider, x.status]), [
+      ["one", "codex", "error"], ["one", "tavily", "success"],
+      ["two", "codex", "error"], ["two", "tavily", "success"]]);
+    assert.equal(r.details.webSearch.status, "partial");
+  });
+  await test("explicit unavailable provider never switches to configured fallback", async () => {
+    const before = requests.length;
+    const r = await tool.execute("explicit-unavailable", { query: "one", provider: "codex" }, undefined, undefined, { hasUI: false });
+    assert.equal(requests.length, before);
+    assert.equal(r.details.webSearch.runs.length, 1);
+    assert.equal(r.details.webSearch.runs[0].skippedReason, "unavailable");
+  });
+  await test("all unavailable fallback candidates end visibly without network requests", async () => {
+    writeFileSync(join(profile, "web-search.json"), JSON.stringify({ workflow: "none",
+      searchPolicy: { ...config.searchPolicy, mode: "fallback", providers: ["codex", "openai"] } }));
+    const before = requests.length;
+    const r = await tool.execute("all-unavailable", { query: "one" }, undefined, undefined, { hasUI: false });
+    assert.equal(requests.length, before);
+    assert.equal(r.details.webSearch.runs.length, 2);
+    assert(r.details.webSearch.runs.every((x: any) => x.skippedReason === "unavailable"));
+    assert.equal(r.details.webSearch.status, "error");
+  });
+  await test("provider authentication denial is not mistaken for local unavailability", async () => {
+    writeFileSync(join(profile, "web-search.json"), JSON.stringify({ ...config, tavilyApiKey: "fixture-auth-denied", searchPolicy: { ...config.searchPolicy, mode: "fallback" } }));
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      requests.push(String(url)); return new Response("unauthorized", { status: 401 });
+    }) as typeof fetch;
+    const before = requests.length;
+    try {
+      const r = await tool.execute("auth-denied", { query: "one" }, undefined, undefined, { hasUI: false });
+      assert.equal(requests.length - before, 1);
+      assert.deepEqual(r.details.webSearch.runs.map((x: any) => x.provider), ["tavily"]);
+      assert.equal(r.details.webSearch.runs[0].skippedReason, undefined);
+    } finally { globalThis.fetch = fixtureFetch; }
+  });
   await test("saved routing changes affect an already registered tool and fallback retains both attempts", async () => {
     scenario = "fallback";
     writeFileSync(join(profile, "web-search.json"), JSON.stringify({ ...config, searchPolicy: { ...config.searchPolicy, mode: "fallback" } }));

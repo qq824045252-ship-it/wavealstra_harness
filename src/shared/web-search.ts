@@ -50,6 +50,8 @@ export type SearchRunStatus = "queued" | "running" | "success" | "empty" | "time
 export interface SearchProviderRun {
   query: string; provider: string; status: SearchRunStatus; durationMs: number;
   results: WebSearchSource[]; answer: string; answerTruncated?: boolean; error?: string;
+  /** Local discovery/limits prevented a request; never infer this from provider error text. */
+  skippedReason?: "unavailable" | "request-limit";
 }
 export interface SearchEvidenceCitation { passageId: string; url: string; quote: string; kind: "snippet" | "page"; stance: "support" | "contradict" | "context" }
 export interface SearchEvidence {

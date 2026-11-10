@@ -1,0 +1,67 @@
+{
+  "checkedAt": "2026-11-10T22:46:30.464Z",
+  "model": "opendesign/deepseek-v4.1-flash-eco",
+  "validation": "Real model + actual public keyless Exa search + isolated Electron renderer. Retrieval/return validation, not original-page semantic verification.",
+  "cases": [
+    {
+      "scenario": "weather",
+      "elapsedMs": 11909,
+      "searchSucceeded": true,
+      "answer": "据 2026-11-10 发布的预报，杭州在 11 月 11 日至 13 日以阴到多云为主，最高温约 18–19℃，最低温约 4℃（11 日）到 13 日升至 13℃左右，12–13 日有小雨，来源 https://exa.ai/library/weather/hangzhou-zhejiang-china?latitude=30.2636&longitude=120.2459&date=2026-11-11；当天杭州网消息也印证 10 日早晨最低仅 4.5℃、之后气温逐步回升（https://ori.hangzhou.com.cn/ornews/content/2026-11/10/content_9369799.htm）。\n\n本次只由单一供应商（Exa）返回结果，其他供应商未发起或不可用，以上为搜索摘要，未核验原页面。",
+      "providerEvidence": [
+        "- codex | 杭州天气预报 浙江杭州 未来三天 天气 | error | 0 results | 0ms | 未发起请求：供应商未配置、凭据不可用或搜索模型未启用。",
+        "- exa | 杭州天气预报 浙江杭州 未来三天 天气 | success | 5 results | 1036ms"
+      ]
+    },
+    {
+      "scenario": "travel",
+      "elapsedMs": 12222,
+      "searchSucceeded": true,
+      "answer": "西湖景区本身环湖公共区域（苏堤、白堤、断桥、湖滨、花港观鱼等）免费开放、无需门票，但景区内的独立点位另收费：雷峰塔 40 元/人、三潭印月上岛约 55 元含船票、岳王庙、郭庄等单独售票；灵隐飞来峰景区自 2025 年 12 月 1 日起免票但需在小程序实名预约（来源：https://hz.bendibao.com/tour/2023426/145270.shtm ，灵隐免票另见 https://www.news.cn/20251119/72b13e875f2f434b94365ba8c31d7fc8/c.html）。\n\n本次仅 Exa 一家返回结果（codex 未发起），以上为搜索摘要、未核验原页面，票价与预约规则请以景区官方最新公告为准。",
+      "providerEvidence": [
+        "- codex | 杭州西湖景区 是否免费开放 景区门票 收费景点 雷峰塔 灵隐寺 | error | 0 results | 0ms | 未发起请求：供应商未配置、凭据不可用或搜索模型未启用。",
+        "- exa | 杭州西湖景区 是否免费开放 景区门票 收费景点 雷峰塔 灵隐寺 | success | 5 results | 992ms"
+      ]
+    },
+    {
+      "scenario": "software",
+      "elapsedMs": 8766,
+      "searchSucceeded": true,
+      "answer": "`fs.readFile()` 是 Node.js 文件系统模块用来异步读取整个文件内容的接口：传入路径、可选编码和回调，文件数据会一次性读入内存并交给回调（出错时返回 err），适合读取普通配置文件或整段文本；promise 版本是 `fsPromises.readFile()`。官方文档：https://nodejs.org/api/fs.html ，入门示例见 https://nodejs.org/learn/manipulating-files/reading-files-with-nodejs 。\n\n本次仅 Exa 一家返回来源（codex 未发起），以上基于搜索摘要，未核验原始页面。",
+      "providerEvidence": [
+        "- codex | Node.js fs.readFile official documentation usage read entire file | error | 0 results | 0ms | 未发起请求：供应商未配置、凭据不可用或搜索模型未启用。",
+        "- exa | Node.js fs.readFile official documentation usage read entire file | success | 5 results | 1048ms"
+      ]
+    },
+    {
+      "scenario": "health",
+      "elapsedMs": 9119,
+      "searchSucceeded": true,
+      "answer": "WHO 建议 18–64 岁成人每周进行至少 150–300 分钟中等强度有氧运动，或 75–150 分钟高强度有氧运动，也可将中等强度与高强度运动组合，并在一周内分多次进行；每周应有 2 天或更多天进行加强主要肌群的力量训练。官方来源：https://www.who.int/news-room/fact-sheets/detail/physical-activity 与指南 https://www.who.int/publications/i/item/9789240015128 。\n\n本次仅 Exa 返回来源（codex 未发起），以上为搜索摘要，未核验原页面。",
+      "providerEvidence": [
+        "- codex | WHO physical activity recommendations adults 150 minutes moderate intensity per week official | error | 0 results | 0ms | 未发起请求：供应商未配置、凭据不可用或搜索模型未启用。",
+        "- exa | WHO physical activity recommendations adults 150 minutes moderate intensity per week official | success | 5 results | 995ms"
+      ]
+    },
+    {
+      "scenario": "consumer",
+      "elapsedMs": 12781,
+      "searchSucceeded": true,
+      "answer": "在欧盟，网购、电话或上门推销等远程合同和场外合同，通常可在货物签收或服务合同签订之日起 14 天内无理由撤回，无需说明理由，也不承担退货运费之外的费用；如果商家未告知撤回权，期限最长可延长至 12 个月。例外包括定制商品、易腐或保质期短的商品、已拆封的密封音像或软件、报纸杂志等定期出版物、住宿交通娱乐等特定日期服务，以及成交价随市场波动的商品等（来源：https://europa.eu/youreurope/citizens/consumers/shopping/returns/index_en.htm ，指令原文 https://eur-lex.europa.eu/legal-content/en/TXT/HTML/?from=EN&uri=CELEX%3A32011L0083 ）。\n\n本次仅 Exa 返回来源（codex 未发起），以上为搜索摘要，未核验原页面。",
+      "providerEvidence": [
+        "- codex | EU consumer right of withdrawal 14 days distance selling official European Commission exceptions | error | 0 results | 0ms | 未发起请求：供应商未配置、凭据不可用或搜索模型未启用。",
+        "- exa | EU consumer right of withdrawal 14 days distance selling official European Commission exceptions | success | 5 results | 1045ms"
+      ]
+    },
+    {
+      "scenario": "science",
+      "elapsedMs": 9990,
+      "searchSucceeded": true,
+      "answer": "NASA 说明，火星自转一周，也就是一个火星日“sol”，约需 24 小时 37 分钟，比地球日长约 40 分钟（来源：https://science.nasa.gov/asset/hubble/mars-rotation/ ，NASA 教育资料 https://science.nasa.gov/wp-content/uploads/2023/10/Surviving_on_Mars.pdf 同样写作 24 小时 37 分）。\n\n本次仅 Exa 一家返回来源（codex 未发起），以上为搜索摘要，未核验原页面。",
+      "providerEvidence": [
+        "- codex | NASA Mars day length sol 24 hours 37 minutes official | error | 0 results | 0ms | 未发起请求：供应商未配置、凭据不可用或搜索模型未启用。",
+        "- exa | NASA Mars day length sol 24 hours 37 minutes official | success | 5 results | 1003ms"
+      ]
+    }
+  ]
+}

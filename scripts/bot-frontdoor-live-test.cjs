@@ -29,7 +29,8 @@ const botDiagnosticsWorkScenario = process.argv.includes('--bot-diagnostics-work
 const botDiagnosticsScenario = process.argv.includes('--bot-diagnostics');
 const metricsAuditScenario = process.argv.includes('--metrics-audit') || botDiagnosticsScenario;
 const composerScenario = process.argv.includes('--composer') || metricsAuditScenario;
-const searchScenario = process.argv.includes('--search');
+const searchFallbackScenario = process.argv.includes('--search-fallback');
+const searchScenario = process.argv.includes('--search') || searchFallbackScenario;
 const teamWorkspaceScenario = process.argv.includes('--team-workspace');
 const teamTransientFailure = process.argv.includes('--team-transient-failure');
 const teamTransportFailure = process.argv.includes('--team-transport-failure') || teamTransientFailure;
@@ -52,7 +53,7 @@ const watchStatusScenario = process.argv.includes('--watch-status');
 const watchScenario = process.argv.includes('--watch');
 const watchIntentScenario = process.argv.includes('--watch-intent');
 if (headless && process.platform !== 'linux') throw Error('Headless dev page validation requires Linux; it does not validate desktop input.');
-const out = path.join(root, remindersUiScenario ? 'out/diagnostics/bot-reminders/ui' : remindersScenario ? 'out/diagnostics/bot-reminders/live' : deadlineScenario ? 'out/diagnostics/bot-deadline-followup/live' : watchSupplementScenario ? 'out/diagnostics/bot-watch-supplement/live' : teamWatchChangesScenario ? 'out/diagnostics/bot-team-watch-changes/live' : webWatchScenario ? 'out/diagnostics/bot-web-watch/live' : teamWatchGoalScenario ? 'out/diagnostics/bot-team-watch-goal/live' : watchGoalScenario ? 'out/diagnostics/bot-watch-goal/live' : teamWatchScenario ? 'out/diagnostics/bot-team-watch/live' : watchExpiryScenario ? 'out/diagnostics/bot-watch-expiry/live' : watchChangesScenario ? 'out/diagnostics/bot-watch-changes/live' : watchFollowupScenario ? 'out/diagnostics/bot-watch-followup/live' : multiDelegationScenario ? 'out/diagnostics/bot-multi-delegation/live' : teamSubagentScenario ? 'out/diagnostics/bot-team-subagent/live' : workMetricsScenario ? 'out/diagnostics/work-execution-metrics/live' : modelPreferenceScenario ? 'out/diagnostics/bot-model-preference/live' : watchStatusScenario ? 'out/diagnostics/bot-watch-status/live' : teamDefaultWorkspaceScenario ? 'out/diagnostics/bot-team-default-workspace/live' : watchIntentScenario ? 'out/diagnostics/bot-watch-intent/live' : displayGroupsScenario ? 'out/diagnostics/bot-display-groups/live' : composerScenario ? 'out/diagnostics/bot-composer/live' : workspaceNavigationScenario ? 'out/diagnostics/bot-workspace-navigation/live' : searchScenario ? 'out/diagnostics/bot-search/live' : teamWorkspaceScenario ? 'out/diagnostics/bot-team-workspace/live' : concurrentScenario ? 'out/diagnostics/bot-concurrent/live' : completionScenario ? 'out/diagnostics/bot-completion/live' : trackingScenario ? 'out/diagnostics/bot-tracking/live' : teamTransientFailure ? 'out/diagnostics/bot-team-transient-failure/live' : teamTransportFailure ? 'out/diagnostics/bot-team-transport-failure/live' : teamFailureScenario ? 'out/diagnostics/bot-team-failure/live' : teamFreeScenario ? 'out/diagnostics/bot-team-free/live' : teamPlanningScenario ? 'out/diagnostics/bot-team-planning/live' : teamScenario ? 'out/diagnostics/bot-team-frontdoor/live' : cacheScenario ? 'out/diagnostics/bot-cache/live' : memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
+const out = path.join(root, remindersUiScenario ? 'out/diagnostics/bot-reminders/ui' : remindersScenario ? 'out/diagnostics/bot-reminders/live' : deadlineScenario ? 'out/diagnostics/bot-deadline-followup/live' : watchSupplementScenario ? 'out/diagnostics/bot-watch-supplement/live' : teamWatchChangesScenario ? 'out/diagnostics/bot-team-watch-changes/live' : webWatchScenario ? 'out/diagnostics/bot-web-watch/live' : teamWatchGoalScenario ? 'out/diagnostics/bot-team-watch-goal/live' : watchGoalScenario ? 'out/diagnostics/bot-watch-goal/live' : teamWatchScenario ? 'out/diagnostics/bot-team-watch/live' : watchExpiryScenario ? 'out/diagnostics/bot-watch-expiry/live' : watchChangesScenario ? 'out/diagnostics/bot-watch-changes/live' : watchFollowupScenario ? 'out/diagnostics/bot-watch-followup/live' : multiDelegationScenario ? 'out/diagnostics/bot-multi-delegation/live' : teamSubagentScenario ? 'out/diagnostics/bot-team-subagent/live' : workMetricsScenario ? 'out/diagnostics/work-execution-metrics/live' : modelPreferenceScenario ? 'out/diagnostics/bot-model-preference/live' : watchStatusScenario ? 'out/diagnostics/bot-watch-status/live' : teamDefaultWorkspaceScenario ? 'out/diagnostics/bot-team-default-workspace/live' : watchIntentScenario ? 'out/diagnostics/bot-watch-intent/live' : displayGroupsScenario ? 'out/diagnostics/bot-display-groups/live' : composerScenario ? 'out/diagnostics/bot-composer/live' : workspaceNavigationScenario ? 'out/diagnostics/bot-workspace-navigation/live' : searchFallbackScenario ? 'out/diagnostics/bot-search-fallback/live' : searchScenario ? 'out/diagnostics/bot-search/live' : teamWorkspaceScenario ? 'out/diagnostics/bot-team-workspace/live' : concurrentScenario ? 'out/diagnostics/bot-concurrent/live' : completionScenario ? 'out/diagnostics/bot-completion/live' : trackingScenario ? 'out/diagnostics/bot-tracking/live' : teamTransientFailure ? 'out/diagnostics/bot-team-transient-failure/live' : teamTransportFailure ? 'out/diagnostics/bot-team-transport-failure/live' : teamFailureScenario ? 'out/diagnostics/bot-team-failure/live' : teamFreeScenario ? 'out/diagnostics/bot-team-free/live' : teamPlanningScenario ? 'out/diagnostics/bot-team-planning/live' : teamScenario ? 'out/diagnostics/bot-team-frontdoor/live' : cacheScenario ? 'out/diagnostics/bot-cache/live' : memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-frontdoor-live-'));
 const agentDir = path.join(home, '.mybuddy'); fs.mkdirSync(agentDir, { recursive: true });
 for (const directory of ['AppData/Roaming', 'AppData/Local', 'Temp']) fs.mkdirSync(path.join(home, directory), { recursive: true });
@@ -204,7 +205,12 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       const destination=path.join(home,'.local/share/com.follow.clash/config.yaml');fs.mkdirSync(path.dirname(destination),{recursive:true});fs.writeFileSync(destination,stringify(compatible));
       report.existingProxyConfigurationCopied=true;
     }
-    if (searchScenario) {
+    if (searchFallbackScenario) {
+      // Public keyless Exa adapter; no production credentials/configuration needed.
+      fs.writeFileSync(path.join(agentDir, 'web-search.json'), JSON.stringify({ workflow:'none',
+        searchPolicy:{mode:'fallback',providers:['codex','exa'],providerTimeoutMs:30000,totalTimeoutMs:45000,maxRequests:2,verifySources:false} }), {mode:0o600});
+      report.searchConfigAvailable=true;
+    } else if (searchScenario) {
       const searchPath = process.env.BOT_SEARCH_CONFIG_PATH || path.join(os.homedir(), '.mybuddy/web-search.json');
       const liveSearch = fs.existsSync(searchPath) ? JSON.parse(fs.readFileSync(searchPath, 'utf8')) : {};
       report.searchConfigAvailable = fs.existsSync(searchPath);
@@ -548,28 +554,42 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       report.checks.push('actual persisted mode and future wake checked; proposed cadence distinguished; no keyword classifier, additional intake model, production task edit, or crash injection');
     } else if (searchScenario) {
       report.cases = [];
-      for (const [label, prompt] of [
+      for (const [label, prompt] of (searchFallbackScenario ? [
+        ['weather', '联网搜索杭州天气预报，说明预报日期和来源，不能用记忆冒充实时数据。'],
+        ['travel', '联网查杭州西湖景区是否需要门票，区分景区与具体收费景点，给来源。'],
+        ['software', '联网查 Node.js readFile 的用途，给官方文档来源。'],
+        ['health', '联网查 WHO 对成人每周运动时长的公开建议，给官方来源；只要一般信息。'],
+        ['consumer', '联网查欧盟消费者网购通常有多少天撤回期，给官方来源，简述例外。'],
+        ['science', '联网查 NASA 所述火星一天多长，给官方来源。']
+      ].map(([label,prompt])=>[label,prompt+'只调用一次 web_search，workflow="none"；不要指定 provider，不抓取正文，不创建 Work。两三句话简答，必须贴出至少一个真实来源 URL，搜索失败必须明说。']) : [
         ['single-quick', '请只调用一次 web_search，query="Node.js fs readFile official documentation"，workflow="none"，不要抓取正文或核验，不创建 Work。用两句话及来源 URL 回答 readFile 用途，不能声称已独立核验。'],
         ['multi-quick', '请只调用一次 web_search，queries=["Node.js fs readFile official documentation","Node.js fs writeFile official documentation"]，workflow="none"，不要抓取正文或核验，不创建 Work。分两行给各自用途和 URL，覆盖不足如实说。'],
         ['single-verify', '请只调用一次 web_search，query="Node.js fs readFile official documentation"，evidenceMode="verify"，workflow="none"，不要调用其他工具也不创建 Work。两句报告来源及核验结果，若核验不完整必须明说。']
-      ]) {
+      ])) {
         const started = Date.now(), requestOffset = requests.length;
         await send(prompt); await foregroundDone(0);
         const messages = (await history()).messages;
         const answer = messages.filter(m => m.role === 'assistant').at(-1);
         const calls = requests.slice(requestOffset);
-        const toolResults = calls.flatMap(r => r.messages.filter(m => m.role === 'tool').map(m => typeof m.content === 'string' ? m.content : JSON.stringify(m.content)));
+        const toolResults = calls.flatMap(r => r.messages.slice(r.messages.findLastIndex(m => m.role === 'user') + 1).filter(m => m.role === 'tool').map(m => typeof m.content === 'string' ? m.content : JSON.stringify(m.content)));
         const row = { label, elapsedMs: Date.now() - started, modelRequests: calls.length, answer: answer.text, toolResults };
         report.cases.push(row);
         assert(toolResults.some(x => x.includes('Merged sources')), 'real search result must reach real model');
         assert.equal(answer.workIds.length, 0, 'ordinary search stays foreground');
+        if(searchFallbackScenario){
+          assert(toolResults.some(x=>x.includes('codex') && x.includes('未发起请求')), 'unavailable primary remains visible');
+          row.searchSucceeded = toolResults.some(x=>/exa \|.*\| success/.test(x));
+          assert(toolResults.some(x=>/exa \|.*\| (success|error|timeout|empty)/.test(x)), 'real public Exa fallback was attempted');
+          if (row.searchSucceeded) assert(/https?:\/\//.test(answer.text), 'answer includes source link');
+          else assert(/失败|无法|未能|没有.*结果|超时/.test(answer.text), 'provider failure is reported, not invented success');
+        }
         assert(answer.text.length > 0);
         if (!report.searchConfigAvailable) assert(toolResults.some(x => x.includes('未发起请求')), 'missing configuration is explicit, never fabricated sources');
         if (label.endsWith('quick')) assert(toolResults.some(x => x.includes('未进行原文语义核验')), 'quick mode cannot claim verification');
         const shot = await rpc('Page.captureScreenshot', { format: 'png' });
         fs.writeFileSync(path.join(out, label+'.png'), Buffer.from(shot.data, 'base64'));
       }
-      report.checks.push(report.searchConfigAvailable ? 'three real-model UI searches: single quick, batched multi-query, explicit original-page verification; outputs and wall time recorded' : 'real-model UI empty-source failure paths verified; no configured live search API, actual provider latency comparison NOT performed');
+      report.checks.push(searchFallbackScenario ? 'six different real-model frontend queries using actual public Exa fallback after unavailable primary; no mock search provider' : report.searchConfigAvailable ? 'three real-model UI searches: single quick, batched multi-query, explicit original-page verification; outputs and wall time recorded' : 'real-model UI empty-source failure paths verified; no configured live search API, actual provider latency comparison NOT performed');
     } else if (teamWorkspaceScenario) {
       const member = await evaluate(`window.api.botWork.createBot({requestId:crypto.randomUUID(),displayName:'验收成员',responsibilitySummary:'只读核验并按事实汇报'})`);
       assert(member.ok, JSON.stringify(member));
