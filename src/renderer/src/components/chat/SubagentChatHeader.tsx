@@ -29,7 +29,6 @@ export default function SubagentChatHeader(props: Props): React.JSX.Element {
       <div className="subagent-detail-status">
         <span className={`ro-label ro-label--${props.stateTone}`}>{props.stateLabel}</span>
         {props.model && <span className="ro-model" title={modelBadgeTitle(props.model)}>{props.model.label}</span>}
-        <span className="subagent-detail-scope">本子代理累计 · M = 百万 token</span>
       </div>
     </div>
     <dl className="subagent-detail-metrics" aria-label="本子代理累计用量与耗时">
