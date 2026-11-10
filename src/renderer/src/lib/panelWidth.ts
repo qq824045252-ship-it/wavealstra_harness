@@ -1,7 +1,7 @@
 import type { ArtifactKind } from "@/types";
 
-/** 侧栏默认宽度（默认 390px） */
-export const PANEL_RAIL_WIDTH = 390;
+/** 侧栏默认宽度（375px：7 个图标 + 右侧窗口按钮平均分布且不重叠） */
+export const PANEL_RAIL_WIDTH = 375;
 
 /**
  * 聊天区最小保留宽度（含输入框 gutter）。

@@ -134,8 +134,6 @@ export default function ExtensionTopBar({
             )}
           </button>
 
-          <div className="extension-nav-divider" />
-
           {/* 📁 工作空间文件 */}
           <button
             type="button"

@@ -10913,7 +10913,7 @@ html[data-theme="dark"] .switch.on {
   align-items: center;
   gap: 2px;
   flex-shrink: 0;
-  padding-right: 6px;
+  padding-right: 2px;
 }
 
 .extension-top-actions .icon-btn.active {
@@ -23938,15 +23938,19 @@ html[data-theme="dark"] .chat-column.task-ambient[data-mode="general"] {
 .extension-nav-tabs {
   display: flex;
   align-items: center;
-  gap: 7px;
+  /* 7 个图标在可用宽度内平均分布；不再用固定 7px 挤在左边，也不会和右侧窗口按钮重叠 */
+  justify-content: space-between;
+  gap: 4px;
+  padding: 0 2px;
   min-width: 0;
   flex: 1;
 }
 
 .extension-tab-btn {
   position: relative;
-  width: 30px;
-  height: 30px;
+  /* 28px：375px 列宽下 7 个主图标 + 3 个窗口按钮仍能平均分布、徽标不压到邻居 */
+  width: 28px;
+  height: 28px;
   border-radius: var(--radius-sm, 6px);
   display: inline-flex;
   align-items: center;
@@ -24009,14 +24013,6 @@ html[data-theme="dark"] .chat-column.task-ambient[data-mode="general"] {
 .extension-tab-badge.changes {
   background: #f59e0b;
   color: #ffffff;
-}
-
-.extension-nav-divider {
-  width: 1px;
-  height: 14px;
-  background: var(--border-subtle, var(--border));
-  margin-inline: 3px;
-  flex-shrink: 0;
 }
 
 .extension-file-subbar {
