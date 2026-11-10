@@ -13,7 +13,19 @@ export function watchGoalEvidence(db: Database.Database, works: WorkService, bin
 function collectEvidence(db: Database.Database, works: WorkService, binding: WorkExecutionBindingDto): WatchGoalEvidence[] {
   const input = JSON.parse(works.repo.executionInput(binding));
   const team = input.teamAssignment;
-  if (works.teams.get(binding.workId) && team?.role !== "owner_summary") return [];
+  if (works.teams.get(binding.workId) && team?.role !== "owner_summary") {
+    // A host-issued owner supplement is not an ordinary team member. Its own
+    // completed native reads can prove the exact watched condition.
+    const work = works.getWork(binding.workId);
+    const request = db.prepare("SELECT continuation_plan_id FROM work_dispatch_requests WHERE task_id=?").get(binding.taskId) as {continuation_plan_id:string|null}|undefined;
+    const plan = request?.continuation_plan_id && works.partialResults.plans(binding.workId).find(p => p.planId === request.continuation_plan_id);
+    const source = plan && works.repo.getBinding(plan.sourceBindingId);
+    if (!work || !plan || !source || binding.botId !== work.ownerBotId || plan.ownerBotId !== work.ownerBotId
+      || plan.ownerEpoch !== work.ownerEpoch || plan.intentRevision !== work.intentRevision || plan.inputSnapshotId !== work.inputSnapshotId
+      || plan.state === "cancelled" || !plan.gapItemIds.length || !plan.gapItemIds.every(id => id.startsWith("watch-followup:"))
+      || !works.partialResults.isReadOnlyPlan(plan) || !works.collaboration.isDelegationAdopted(source,work)
+      || !works.scheduledBindingCurrent(binding) || binding.delegatedScope.some(scope => scope !== "workspace:read")) return [];
+  }
   let ids: string[] = [binding.bindingId];
   if (team?.role === "owner_summary" && team.watchRound) {
     const current = works.teams.get(binding.workId);

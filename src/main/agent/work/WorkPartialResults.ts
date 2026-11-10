@@ -80,6 +80,9 @@ export class WorkPartialResults {
   isReadOnlyPlan(plan:WorkContinuationDto):boolean {
     const source = this.works.repo.getBinding(plan.sourceBindingId);
     if (this.recovery.readOnlyPlan(plan.planId) || source && this.recovery.sourceReadOnly(source)) return true;
+    const items = this.list(plan.workId).filter(item => item.bindingId === plan.sourceBindingId && plan.gapItemIds.includes(item.itemId));
+    if (items.length === plan.gapItemIds.length && items.length > 0
+      && items.every(item => item.nativeStatus === "watch_read_followup" && item.itemId.startsWith("watch-followup:"))) return true;
     return this.isArtifactRevalidationPlan(plan);
   }
   private isArtifactRevalidationPlan(plan:WorkContinuationDto):boolean {

@@ -54,8 +54,8 @@ try {
     const text = result.output?.find(block => block.type === "text"); assert(text?.type === "text"); return JSON.parse(text.text);
   };
   await assert.rejects(invoke("memory_search", { query: "秘密" }), /私人记忆/);
-  await assert.rejects(invoke("work_team_create", { templateId: b.templateId, title: "错队", goalDescription: "错队", criteria: ["一"] }), /其他团队/);
-  const created = await invoke("work_team_create", { title: "团队工作", goalDescription: "核对原始需求", criteria: ["有真实证据"] });
+  await assert.rejects(invoke("work_team_create", { requestedOutcome: "one_time", mode: "once", templateId: b.templateId, title: "错队", goalDescription: "错队", criteria: ["一"] }), /其他团队/);
+  const created = await invoke("work_team_create", { requestedOutcome: "one_time", mode: "once", title: "团队工作", goalDescription: "核对原始需求", criteria: ["有真实证据"] });
   assert(created.ok, JSON.stringify(created));
   assert.equal(works.teams.get(created.work.workId)?.teamId, a.templateId);
   assert.equal(created.work.workspacePath, defaultA);

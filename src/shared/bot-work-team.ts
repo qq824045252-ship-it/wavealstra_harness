@@ -1,4 +1,4 @@
-import { workWatchIntentSchema } from "./work-watch-intent";
+import { workWatchNormalizedSchema } from "./work-watch-intent";
 import { z } from "zod";
 import type { WorkDto, WorkExecutionStatus } from "./bot-work";
 
@@ -42,7 +42,7 @@ export const workTeamPlanSchema = z.object({
 });
 export const createTeamWorkSchema = workTeamPlanSchema.safeExtend({
   mode: z.enum(["once", "watch"]).optional(),
-  watchRule: workWatchIntentSchema.optional(),
+  watchRule: workWatchNormalizedSchema.optional(),
   deadlineAt: z.number().int().nonnegative().optional(),
   operationId: id,
   templateId: id.optional(),

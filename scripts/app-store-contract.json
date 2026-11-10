@@ -21,7 +21,8 @@
     "setBotAttachments": "Bot attachments: update only the named Bot attachment draft, separate from ordinary Task drafts.",
     "setActiveTeam": "Select a stable team identity, preserving independent personal/team drafts and conversation scopes.",
     "openSubagentView": "Open a specific subagent conversation while retaining its parent task navigation.",
-    "closeSubagentView": "Return from the subagent conversation to its parent task without deleting the run."
+    "closeSubagentView": "Return from the subagent conversation to its parent task without deleting the run.",
+    "setBotComposerSelection": "Update the active Bot or team composer model, experts, skills, MCP and connectors without changing ordinary task selection."
   },
   "publicExports": {
     "CreateRelatedTaskOptions": "type",
@@ -628,6 +629,7 @@
     "botWorkCursor": "Phase 2 separate Bot message identities and scoped durable projection cursor.",
     "botAttachmentDrafts": "Bot attachments: durable per-Bot file drafts survive switching and lost acknowledgements without crossing Task context.",
     "activeTeam": "Explicit selected team workspace scope; kept separate from personal Bot conversations and drafts.",
-    "subagentView": "Independent subagent conversation navigation retains parent task and completed subagent visibility."
+    "subagentView": "Independent subagent conversation navigation retains parent task and completed subagent visibility.",
+    "botComposerDrafts": "Per-Bot and per-team composer capability drafts, isolated from ordinary task drafts and other Bot identities."
   }
 }

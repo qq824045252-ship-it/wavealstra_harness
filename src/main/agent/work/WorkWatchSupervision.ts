@@ -1,3 +1,4 @@
+import { WorkWatchFollowUp } from "./WorkWatchFollowUp";
 import { watchGoalEvidence, watchGoalMet, watchGoalClosureSummary } from "./WorkWatchGoal";
 import type { WorkCompletionOptions } from "./WorkCompletionCoordinator";
 import type { WorkResultDecision } from "./BotWorkResultTurn";
@@ -9,7 +10,9 @@ export class WorkWatchSupervision {
   private timer?: ReturnType<typeof setInterval>;
   private active = new Set<string>();
   private closed = false;
+  private readonly followUp: WorkWatchFollowUp;
   constructor(private readonly options: WorkCompletionOptions) {
+    this.followUp = new WorkWatchFollowUp(options);
     options.db.exec(`CREATE TABLE IF NOT EXISTS work_watch_reviews (
       binding_id TEXT PRIMARY KEY, context_json TEXT NOT NULL, decision_json TEXT,
       state TEXT NOT NULL DEFAULT 'queued', attempts INTEGER NOT NULL DEFAULT 0,
@@ -131,8 +134,9 @@ export class WorkWatchSupervision {
         ? {notice:'负责人本轮未完成，下列仅为本轮成员已结算的部分依据，不代表全队完成', results:source.teamAssignment.previousResults ?? []} : undefined,
       previousResults:prior.map(r=>({summary:r.summary,createdAt:r.createdAt})),
       observationSummary:presentation.summary, hostProvenUnchanged:presentation.silent,
+      followUpAvailability:this.followUp.availability(work,binding),
       notificationMode:work.watchRule?.notificationMode ?? 'every_check',
-      nextAction:work.lifecycle==='active' ? '按已保存的周期继续下一轮；本回合不执行工具、不改变周期；如用户明确的可观察停止条件已由本轮真实证据满足，提交 stopAssessment 由宿主结束，否则继续' : work.lifecycle==='closing' ? '已停止新轮，整理末轮结果，说明正在收尾；不承诺下一轮' : '已暂停，只整理已发生的本轮观察，不承诺下一轮', evidence};
+      nextAction:work.lifecycle==='active' ? '本轮观察不完整时可提出原委托内只读 followUp，由宿主持久补查并再次核对，不改变周期；否则按已保存的周期继续下一轮；如用户明确的可观察停止条件已由本轮真实证据满足，提交 stopAssessment 由宿主结束，否则继续' : work.lifecycle==='closing' ? '已停止新轮，整理末轮结果，说明正在收尾；不承诺下一轮' : '已暂停，只整理已发生的本轮观察，不承诺下一轮', evidence};
     db.prepare('INSERT OR IGNORE INTO work_watch_reviews(binding_id,context_json) VALUES (?,?)').run(id,JSON.stringify(context));
     db.prepare("UPDATE work_watch_reviews SET context_json=?,decision_json=NULL WHERE binding_id=? AND json_extract(context_json,'$.evidence')<>?").run(JSON.stringify(context),id,evidence);
     const row = db.prepare('SELECT * FROM work_watch_reviews WHERE binding_id=?').get(id) as {context_json:string;decision_json:string|null;attempts:number;error:string|null};
@@ -167,11 +171,14 @@ export class WorkWatchSupervision {
       // Silence only with host-verified unchanged evidence, never an LLM assertion.
       const met = !error && watchGoalMet(latest.work,latest.binding,decision,originalRequest,latest.rawEvidence);
       const requestedStop = decision.stopAssessment?.status === "met";
+      this.followUp.settle(binding,decision);
+      const followUp = !met && !error ? this.followUp.enqueue(latest.work,binding,decision,originalRequest) : {scheduled:false};
       const reply = requestedStop && !met ? `${presentation.summary}\n\n停止条件尚未由本轮有效证据完成核对，未将持续委托标记完成。` : decision.reply;
-      const silent = !requestedStop && decision.stopAssessment?.status !== 'unknown' && presentation.silent && decision.outcome === 'completed' && decision.decision !== 'ask' && !error;
+      const silent = !decision.followUp && !requestedStop && decision.stopAssessment?.status !== 'unknown' && presentation.silent && decision.outcome === 'completed' && decision.decision !== 'ask' && !error;
       if (!silent && !this.options.deliver({bindingId:id,eventId:`watch-supervision:${id}`,text:reply,category:'result',
-        notices:[...(source.teamAssignment?.watchRound?.sequence ? [`团队观察轮次：第 ${source.teamAssignment.watchRound.sequence} 轮（持久调度记录）`] : []),`本轮执行回执时间：${binding.settledAt ? new Date(binding.settledAt).toISOString() : '未记录'}（不是来源内容发布时间）`,...(error ? [`前台整理错误：${error}`] : []), met ? '已依据本轮实际观察核对停止条件，停止新检查并结算在途轮次，无须人工确认。' : work.lifecycle!=='active' ? '持续委托已暂停或正在结束，不会安排新检查。' : '本轮结束不结束持续委托，后续按已保存计划运行。']})) throw Error('持续委托结果尚未送达原会话');
+        notices:[...(followUp.notice ? [followUp.notice] : []),...(source.teamAssignment?.watchRound?.sequence ? [`团队观察轮次：第 ${source.teamAssignment.watchRound.sequence} 轮（持久调度记录）`] : []),`本轮执行回执时间：${binding.settledAt ? new Date(binding.settledAt).toISOString() : '未记录'}（不是来源内容发布时间）`,...(error ? [`前台整理错误：${error}`] : []), met ? '已依据本轮实际观察核对停止条件，停止新检查并结算在途轮次，无须人工确认。' : work.lifecycle!=='active' ? '持续委托已暂停或正在结束，不会安排新检查。' : '本轮结束不结束持续委托，后续按已保存计划运行。']})) throw Error('持续委托结果尚未送达原会话');
       db.prepare('UPDATE work_watch_reviews SET state=?,reviewed_at=?,retry_at=0 WHERE binding_id=?').run(met?'finishing':silent?'silent':'delivered',Date.now(),id);
+      if (followUp.scheduled) this.options.wake();
       if (met) {
         works.beginReviewedWatchCompletion(work.workId,id,watchGoalClosureSummary(decision));
         if (!this.hasPending(work.workId) && works.settleReviewedWatchCompletion(work.workId,id,watchGoalClosureSummary(decision)))

@@ -1,3 +1,5 @@
+import {createHash} from 'node:crypto';
+import {watchGoalEvidence} from '../src/main/agent/work/WorkWatchGoal';
 import assert from 'node:assert/strict';
 import {mkdtempSync} from 'node:fs';
 import {tmpdir} from 'node:os';
@@ -8,6 +10,7 @@ import {BotRegistry} from '../src/main/agent/work/BotRegistry';
 import {WorkService,DESKTOP_USER_GRANTS} from '../src/main/agent/work/WorkService';
 import {BotConversationRepository} from '../src/main/agent/work/BotConversationRepository';
 import {WorkConversationFeedback} from '../src/main/agent/work/WorkConversationFeedback';
+import {WorkWatchFollowUp} from '../src/main/agent/work/WorkWatchFollowUp';
 import {WorkWatchSupervision} from '../src/main/agent/work/WorkWatchSupervision';
 import {LOCAL_USER_ID,DEFAULT_BOT_ID} from '../src/shared/bot-work';
 const root=mkdtempSync(join(tmpdir(),'watch-supervisor-')),db=new AppDatabase(join(root,'test.db'));
@@ -17,7 +20,7 @@ const source=messages.accept(LOCAL_USER_ID,{botId:DEFAULT_BOT_ID,requestId:'sour
 const created=works.createWork({kind:'user',userId:LOCAL_USER_ID,entry:'desktop',grants:DESKTOP_USER_GRANTS},{operationId:'create',title:'持续观察',mode:'watch',ownerBotId:DEFAULT_BOT_ID,inputSnapshotId:'input',authorization:DESKTOP_USER_GRANTS,conversationId:source.conversationId,sourceMessageId:source.userMessageId,watchRule:{cronExpression:'* * * * *',timezone:'UTC'}});assert(created.ok);const work=created.work;
 const feedback=new WorkConversationFeedback({db:db.connection,userId:LOCAL_USER_ID,works,isAuthority:()=>true,superviseWatch:true});
 function receipt(id:string){
- works.repo.insertBinding({bindingId:id,workId:work.workId,operationId:id,botId:DEFAULT_BOT_ID,taskId:id,durableStoreKey:'store',conversationId:'native',intentRevision:work.intentRevision,ownerEpoch:work.ownerEpoch,inputSnapshotId:work.inputSnapshotId,expertSnapshot:bots.activeSnapshot(DEFAULT_BOT_ID)!,delegatedScope:[],workspaceBinding:root,status:'completed',admittedAt:Date.now(),settledAt:Date.now(),settlementNote:id});
+ works.repo.insertBinding({bindingId:id,workId:work.workId,operationId:id,botId:DEFAULT_BOT_ID,taskId:id,durableStoreKey:'store',conversationId:'native',intentRevision:work.intentRevision,ownerEpoch:work.ownerEpoch,inputSnapshotId:work.inputSnapshotId,expertSnapshot:bots.activeSnapshot(DEFAULT_BOT_ID)!,delegatedScope:['workspace:read'],workspaceBinding:root,status:'completed',admittedAt:Date.now(),settledAt:Date.now(),settlementNote:id});
  works.repo.insertDeliverable({deliverableId:`result:${id}`,workId:work.workId,executionId:id,producerBotId:DEFAULT_BOT_ID,intentRevision:work.intentRevision,ownerEpoch:work.ownerEpoch,inputSnapshotId:work.inputSnapshotId,status:'proposed',summary:id,artifactRefs:[],evidenceRefs:[],uncoveredScope:[],uncoveredCriterionIds:[],isSpeculation:false,hasWriteConflicts:false,createdAt:Date.now()});
  db.connection.prepare('INSERT INTO work_native_inbox(fact_id,binding_id,namespace_hash,payload_json,received_at,consumed_at) VALUES (?,?,?,?,?,?)').run(id,id,id,'{}',Date.now(),Date.now());
 }
@@ -45,6 +48,44 @@ works.repo.executionInput=b=>b.bindingId==='team-owner-stopped' ? JSON.stringify
 await flush();
 assert.equal(reviewContexts.at(-1).teamPartialResults.results[0].summary,'成员已读取的真实部分结果','expiry/stopped owner review retains already settled member evidence');
 works.repo.executionInput=input;
+// Persistent supplemental reads use the existing queue, never mutate the schedule.
+const follow = new WorkWatchFollowUp(options);
+const request = {userRequest:{messages:[{text:'持续观察文件内容，缺失时继续补查完整内容'}]}};
+const partial = {decision:'deliver' as const,outcome:'partial' as const,reply:'首轮只得到部分内容',missing:[],
+ followUp:{task:'读取同一文件剩余内容并核对完整状态',requestExcerpt:'补查完整内容'}};
+const scheduleBefore=JSON.stringify(works.repo.listSubscriptions(work.workId));
+receipt('incomplete');works.repo.updateBinding({...works.repo.getBinding('incomplete')!,delegatedScope:['workspace:read']});
+const originalBinding=works.repo.getBinding('incomplete')!;
+const arrange=(b=originalBinding,d=partial)=>works.transaction(()=>follow.enqueue(works.getWork(work.workId)!,b,d,request));
+const arranged=arrange();assert(arranged.scheduled,JSON.stringify(arranged));
+const plan=works.partialResults.plans(work.workId).find(p=>p.sourceBindingId==='incomplete')!;
+assert(works.partialResults.isReadOnlyPlan(plan),'host enforces readonly even if source had write scope');
+assert(arrange().scheduled);assert.equal(works.partialResults.plans(work.workId).filter(p=>p.sourceBindingId==='incomplete').length,1,'replay keeps exact one plan');
+assert.equal(JSON.stringify(works.repo.listSubscriptions(work.workId)),scheduleBefore,'supplement does not rewrite cron');
+function child(id:string,p:typeof plan){receipt(id);works.repo.updateBinding({...works.repo.getBinding(id)!,delegatedScope:['workspace:read']});
+ db.connection.prepare("INSERT INTO work_dispatch_requests(operation_id,work_id,task_id,bot_id,intent_revision,input_snapshot_id,state,created_at,continuation_plan_id) VALUES (?,?,?,?,?,?,'dispatched',?,?)")
+ .run(id,work.workId,id,work.ownerBotId,work.intentRevision,work.inputSnapshotId,Date.now(),p.planId);
+ return works.repo.getBinding(id)!;}
+const second=child('supplement-one',plan);assert.equal(follow.availability(works.getWork(work.workId)!,second).attempts,1);assert(arrange(second).scheduled);
+const secondPlan=works.partialResults.plans(work.workId).find(p=>p.sourceBindingId===second.bindingId)!;
+const third=child('supplement-two',secondPlan);assert(!arrange(third).scheduled,'same observation chain cannot spin forever');
+works.transaction(()=>follow.settle(second,{decision:'deliver',outcome:'completed',reply:'完整读取成功',missing:[]}));
+assert(!works.partialResults.gaps(work.workId).some(g=>g.bindingId==='incomplete'),'verified supplement resolves source gap');
+const teamLookup=works.teams.get.bind(works.teams);works.teams.get=()=>({ownerBotId:work.ownerBotId} as any);
+const proof='READY';db.connection.prepare('UPDATE work_native_inbox SET payload_json=? WHERE binding_id=?').run(JSON.stringify({status:'completed',summary:proof,hasWriteConflicts:false,artifactRefs:[],readEvidence:[{toolCallId:'read',toolName:'read',kind:'file-content',target:'/fixture/source',at:Date.now(),partial:false,outputHash:createHash('sha256').update(proof).digest('hex'),outputText:proof}]}),second.bindingId);
+assert.equal(watchGoalEvidence(db.connection,works,second)[0]?.text,proof,'team owner supplemental native evidence remains usable');
+assert.equal(watchGoalEvidence(db.connection,works,originalBinding).length,0,'ordinary team execution without owner summary or host supplement is not promoted');
+const scheduleCurrent=works.scheduledBindingCurrent.bind(works);works.scheduledBindingCurrent=()=>false;
+assert.equal(watchGoalEvidence(db.connection,works,second).length,0,'old schedule supplemental evidence cannot close team');works.scheduledBindingCurrent=scheduleCurrent;
+const validWork=works.getWork(work.workId)!;works.repo.updateWork({...validWork,ownerEpoch:validWork.ownerEpoch+1});
+assert.equal(watchGoalEvidence(db.connection,works,second).length,0,'old owner supplementary evidence cannot close team');works.repo.updateWork(validWork);works.teams.get=teamLookup;
+receipt('next-scheduled-round');const next=works.repo.getBinding('next-scheduled-round')!;
+works.repo.updateBinding({...next,delegatedScope:['workspace:read']});assert.equal(follow.availability(works.getWork(work.workId)!,works.repo.getBinding(next.bindingId)!).attempts,0,'future schedule has its own follow-up allowance');
+assert(!arrange(originalBinding,{...partial,followUp:{...partial.followUp,requestExcerpt:'invented new goal'}}).scheduled);
+assert(!follow.availability({...works.getWork(work.workId)!,lifecycle:'paused'},originalBinding).allowed);
+assert(!follow.availability({...works.getWork(work.workId)!,watchRule:{...work.watchRule!,endsAt:Date.now()-1}},originalBinding).allowed);
+assert(!follow.availability(works.getWork(work.workId)!,{...originalBinding,status:'stopped'}).allowed);
+assert(!follow.availability(works.getWork(work.workId)!,{...originalBinding,delegatedScope:[]}).allowed);
 const latest=works.getWork(work.workId)!;works.repo.updateWork({...latest,lifecycle:'closed',closureConclusion:'cancelled',updatedAt:Date.now()});
 feedback.drain();assert((db.connection.prepare("SELECT count(*) n FROM bot_work_feedback WHERE json_extract(metadata_json,'$.kind')='closure'").get() as {n:number}).n>0,'watch closure feedback is not suppressed by reviewed round');
 supervisor.close();feedback.close();db.close();console.log('PASS: multi-round owner review, nonblocking queue, no duplicate raw results, restart receipts, visible model failure fallback; standing work remains active');

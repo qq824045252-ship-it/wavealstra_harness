@@ -1,3 +1,5 @@
+import {workWatchIntentSchema} from "../src/shared/work-watch-intent";
+import {createTeamWorkSchema} from "../src/shared/bot-work-team";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -56,6 +58,7 @@ try {
   const future = Date.now() + 3_600_000;
   for (const args of [
     { ...once, requestedOutcome: "ongoing" },
+    { title: "model guessed epoch cannot delay cron", requestedOutcome:"ongoing", mode:"watch", watchRule:{cronExpression:"* * * * *",timezone:"UTC",nextWakeAt:future + 20*86400000,scheduleBasis:"user_specified"}},
     { title: "ongoing without timing", requestedOutcome: "ongoing", mode: "watch" },
     { title: "one-time cannot recur", requestedOutcome: "one_time", mode: "watch", watchRule: { cronExpression: "0 9 * * *", scheduleBasis: "user_specified" } },
     { title: "ongoing only one wake", requestedOutcome: "ongoing", mode: "watch", watchRule: { nextWakeAt: future, scheduleBasis: "user_specified" } },
@@ -66,6 +69,11 @@ try {
   ]) await rejectWithoutSideEffects(args);
   assert.equal(counts().works, 0);
 
+  const normalized=workWatchIntentSchema.parse({cronExpression:"* * * * *",timezone:"UTC",firstCheckAt:new Date(future).toISOString(),scheduleBasis:"user_specified"});
+  assert.equal(createTeamWorkSchema.shape.watchRule.parse(normalized)?.nextWakeAt,future,"team internal DTO accepts already-normalized first check without re-transform failure");
+  const delayed = await invoke({title:"Explicit delayed first observation",requestedOutcome:"ongoing",mode:"watch",
+    watchRule:{cronExpression:"* * * * *",timezone:"UTC",firstCheckAt:new Date(future).toISOString(),scheduleBasis:"user_specified"}});
+  assert(delayed.ok);assert.equal(delayed.tracking.nextWakeAt,future,"explicit future first start is preserved without model epoch arithmetic");
   const explicit = await invoke({ title: "Hourly repository observations", requestedOutcome: "ongoing", mode: "watch",
     watchRule: { cronExpression: "0 * * * *", timezone: "Asia/Shanghai", scheduleBasis: "user_specified" } },
     "Keep an eye on this repository. Check hourly in Shanghai time.");
