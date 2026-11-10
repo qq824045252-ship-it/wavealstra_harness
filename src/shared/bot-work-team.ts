@@ -39,6 +39,7 @@ export const workTeamPlanSchema = z.object({
 });
 export const createTeamWorkSchema = workTeamPlanSchema.safeExtend({
   operationId: id,
+  templateId: id.optional(),
   title: z.string().trim().min(1).max(240),
   goalDescription: z.string().trim().min(1).max(2000),
   workspacePath: z.string().trim().min(1).max(4096),
@@ -81,6 +82,9 @@ export interface WorkTeamExecution extends WorkTeamMember {
   failureReason?: string;
 }
 export interface WorkTeamDto extends WorkTeamPlan {
+  /** Stable owning team; absent for historical/ad-hoc commissions. */
+  teamId?: string;
+  teamName?: string;
   workId: string;
   intentRevision: number;
   inputSnapshotId: string;

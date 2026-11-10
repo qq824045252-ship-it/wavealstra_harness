@@ -78,7 +78,15 @@ try {
   assert.equal(ok(works.teams.handle(user, { kind: "save_template", request: { operationId: "template-one", name: "Audit", plan: initial.plan } })).replayed, true);
   reject(works.teams.handle(user, { kind: "save_template", request: { operationId: "template-two", name: "Audit", plan: initial.plan } }), "name_conflict");
   assert.deepEqual(ok(works.teams.handle({ kind: "user", userId: "foreign-user", grants }, { kind: "list_templates" })).templates, []);
+  const ownedRequest = { ...initial.request, operationId: "owned-team-work", templateId: template.templateId };
+  const owned = ok(works.teams.handle(user, { kind: "create", request: ownedRequest }));
+  assert.equal(owned.team?.teamId, template.templateId);
+  assert.equal(owned.team?.teamName, "Audit");
+  assert.equal(ok(works.teams.handle(user, { kind: "create", request: ownedRequest })).work?.workId, owned.work?.workId);
+  reject(works.teams.handle(user, { kind: "create", request: { ...ownedRequest, operationId: "unknown-owning-team", templateId: "missing" } }), "not_found");
+  reject(works.teams.handle(user, { kind: "create", request: { ...ownedRequest, operationId: "wrong-team-owner", ownerBotId: `${initial.name}-new-owner` } }), "invalid_team");
   ok(works.teams.handle(user, { kind: "delete_template", templateId: template.templateId }));
+  assert.equal(works.teams.get(owned.work!.workId)?.teamName, "Audit", "historical team ownership survives template deletion");
   reject(works.teams.handle(user, { kind: "save_template", request: { operationId: "template-one", name: "Audit", plan: initial.plan } }), "not_found");
 
   // Frozen member inputs, sequential real adapter dispatch and a genuine owner stage.

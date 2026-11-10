@@ -51,6 +51,9 @@ export function ensureWorkTeamSchema(db: Database.Database): void {
     operation_id TEXT NOT NULL, request_hash TEXT NOT NULL, plan_json TEXT NOT NULL,
     intent_revision INTEGER NOT NULL, input_snapshot_id TEXT NOT NULL, created_at INTEGER NOT NULL,
     UNIQUE(user_id,operation_id));
+    CREATE TABLE IF NOT EXISTS work_team_ownership (
+      work_id TEXT PRIMARY KEY REFERENCES work_teams(work_id), team_id TEXT NOT NULL, team_name TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS idx_work_team_ownership_team ON work_team_ownership(team_id);
     CREATE TABLE IF NOT EXISTS work_team_executions (
       work_id TEXT NOT NULL REFERENCES work_teams(work_id), ordinal INTEGER NOT NULL,
       bot_id TEXT NOT NULL, task_id TEXT NOT NULL UNIQUE, role TEXT NOT NULL,
@@ -183,7 +186,7 @@ export class WorkTeamService {
     // The authenticated user commission permits this exact team dispatch, like the
     // desktop entry. Host-derived scopes stay within every existing Bot grant;
     // the actor remains the foreground Bot and no lasting authorization is edited.
-    return this.control({ ...actor, grants: { ...bot.authorization, allowRedelegation: true } }, { kind: "create", request: { ...request, ...plan } }, sourceMessageId);
+    return this.control({ ...actor, grants: { ...bot.authorization, allowRedelegation: true } }, { kind: "create", request: { ...request, ...plan, templateId: input.templateId } }, sourceMessageId);
   }
 
   handle(actor: WorkActor, raw: unknown): WorkTeamControlResult {
@@ -302,6 +305,10 @@ export class WorkTeamService {
         }
         if (!actor.grants?.allowRedelegation) throw new TeamError("unauthorized_actor", "当前用户入口未授权选定成员协作");
         const plan = workTeamPlanSchema.parse({ ownerBotId: input.ownerBotId, ownerResponsibility: input.ownerResponsibility, members: input.members, executionPolicy: input.executionPolicy, maxConcurrency: input.maxConcurrency });
+        const owningTeam = input.templateId ? this.templates(actor.userId).find(team => team.templateId === input.templateId) : undefined;
+        if (input.templateId && !owningTeam) throw new TeamError("not_found", "该团队不存在或已删除");
+        if (owningTeam && (owningTeam.ownerBotId !== plan.ownerBotId || plan.members.some(member => !owningTeam.members.some(saved => saved.botId === member.botId))))
+          throw new TeamError("invalid_team", "任务负责人和成员必须属于所选团队");
         this.validatePlan(actor.userId, plan);
         if (!isAbsolute(input.workspacePath)) throw new TeamError("invalid_workspace", "工作区必须是绝对路径");
         let workspacePath: string;
@@ -328,6 +335,8 @@ export class WorkTeamService {
         const workId = created.work.workId;
         this.db.prepare("INSERT INTO work_teams(work_id,user_id,operation_id,request_hash,plan_json,intent_revision,input_snapshot_id,created_at) VALUES (?,?,?,?,?,?,?,?)")
           .run(workId, actor.userId, input.operationId, digest, JSON.stringify(plan), created.work.intentRevision, created.work.inputSnapshotId, now);
+        if (owningTeam) this.db.prepare("INSERT INTO work_team_ownership(work_id,team_id,team_name) VALUES (?,?,?)")
+          .run(workId, owningTeam.templateId, owningTeam.name);
         const workspaceIdentity = fileResourceIdentity(workspacePath);
         if (!workspaceIdentity.entity) throw new TeamError("invalid_workspace", "工作区缺少可核验的目录身份");
         this.db.prepare("INSERT INTO work_team_workspaces(work_id,canonical_path,entity) VALUES (?,?,?)").run(workId, workspacePath, workspaceIdentity.entity);
@@ -396,7 +405,8 @@ export class WorkTeamService {
         || executions.at(-1)?.status === "blocked" ? "blocked"
         : executions.at(-1)?.status === "completed" || executions.at(-1)?.status === "recovered" ? "awaiting_review"
           : executions.some(item => item.status !== "queued") ? "running" : "queued";
-    return { ...plan, ownerBotId: work.ownerBotId, workId, intentRevision: row.intent_revision, inputSnapshotId: row.input_snapshot_id,
+    const ownership = this.db.prepare("SELECT team_id,team_name FROM work_team_ownership WHERE work_id=?").get(workId) as { team_id: string; team_name: string } | undefined;
+    return { ...plan, ...(ownership ? { teamId: ownership.team_id, teamName: ownership.team_name } : {}), ownerBotId: work.ownerBotId, workId, intentRevision: row.intent_revision, inputSnapshotId: row.input_snapshot_id,
       ownerEpoch: work.ownerEpoch, state, executions, createdAt: row.created_at };
   }
 

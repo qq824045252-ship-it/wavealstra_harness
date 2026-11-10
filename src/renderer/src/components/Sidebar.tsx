@@ -1,3 +1,4 @@
+import { BotTeamsNavigation } from "./BotTeamsNavigation";
 import { APP_VERSION } from "@shared/app-version";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -29,7 +30,6 @@ import {
   IconBell,
   IconBot,
   IconMessageDashed,
-  IconListTodo,
   IconBroom,
   IconChevronDown,
   IconChevronRight,
@@ -868,7 +868,7 @@ export default function Sidebar({ onClose, onCreateBot }: { onClose?: () => void
               <span className="sidebar-bot-avatar"><IconBot size={18} /></span><span><strong>{bot.displayName}</strong><small>{botPresenceLabel(bot.status, botHostStatus ? botHostStatus.online : null)}</small></span>
             </button>
           ))}
-          <div className="sidebar-bot-tip"><IconListTodo size={18} /><strong>事项始终在手边</strong><p>在顶部查看进行中和已结束的事项。对话与记录，随时接着聊。</p></div>
+          <BotTeamsNavigation />
         </div>
       ) : <>
       <div className="sidebar-primary-action">

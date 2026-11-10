@@ -33,20 +33,21 @@ function clearPendingTemplate(operationId: string) {
 type MemberDraft = { botId: string; responsibility: string; delegatedScope: Array<"workspace:read" | "workspace:write">; dependsOnBotIds?: string[] };
 
 /** An explicit human delegation: nothing is dispatched until the form is submitted. */
-export function BotTeamDialog({ open, onClose }: { open: boolean; onClose: () => void }): React.JSX.Element {
+export function BotTeamDialog({ open, onClose, initialTeam }: { open: boolean; onClose: () => void; initialTeam?: WorkTeamTemplateDto }): React.JSX.Element {
   const bots = useAppStore(s => s.botIdentities);
   const activeBotId = useAppStore(s => s.activeBotId);
   const [pendingCreation, setPendingCreation] = useState(readPending);
   const pending = pendingCreation?.request;
   const [creationNotFound, setCreationNotFound] = useState(false);
+  const [selectedTeamId, setSelectedTeamId] = useState(pending?.templateId ?? initialTeam?.templateId ?? "");
   const [title, setTitle] = useState(pending?.title ?? "");
   const [goal, setGoal] = useState(pending?.goalDescription ?? "");
   const [workspace, setWorkspace] = useState(pending?.workspacePath ?? "");
-  const [owner, setOwner] = useState(pending?.ownerBotId ?? activeBotId ?? "");
-  const [ownerResponsibility, setOwnerResponsibility] = useState(pending?.ownerResponsibility ?? "核对各成员成果、整理结论与证据，明确待验收项和阻碍。");
-  const [members, setMembers] = useState<MemberDraft[]>(pending?.members ?? []);
-  const [executionPolicy, setExecutionPolicy] = useState<"sequential" | "parallel">(pending?.executionPolicy ?? "sequential");
-  const [maxConcurrency, setMaxConcurrency] = useState(pending?.maxConcurrency ?? 2);
+  const [owner, setOwner] = useState(pending?.ownerBotId ?? initialTeam?.ownerBotId ?? activeBotId ?? "");
+  const [ownerResponsibility, setOwnerResponsibility] = useState(pending?.ownerResponsibility ?? initialTeam?.ownerResponsibility ?? "核对各成员成果、整理结论与证据，明确待验收项和阻碍。");
+  const [members, setMembers] = useState<MemberDraft[]>(pending?.members ?? initialTeam?.members ?? []);
+  const [executionPolicy, setExecutionPolicy] = useState<"sequential" | "parallel">(pending?.executionPolicy ?? initialTeam?.executionPolicy ?? "sequential");
+  const [maxConcurrency, setMaxConcurrency] = useState(pending?.maxConcurrency ?? initialTeam?.maxConcurrency ?? 2);
   const [criteria, setCriteria] = useState(pending?.criteria.join("\n") ?? "");
   const [templates, setTemplates] = useState<WorkTeamTemplateDto[]>([]);
   const [templateName, setTemplateName] = useState("");
@@ -79,7 +80,8 @@ export function BotTeamDialog({ open, onClose }: { open: boolean; onClose: () =>
     return () => { live = false; };
   }, [open]);
   const close = () => { epoch.current++; openRef.current = false; onClose(); };
-  const candidates = bots.filter(bot => bot.status === "active");
+  const selectedTeam = templates.find(team => team.templateId === selectedTeamId) ?? (initialTeam?.templateId === selectedTeamId ? initialTeam : undefined);
+  const candidates = bots.filter(bot => bot.status === "active" && (!selectedTeam || bot.botId === selectedTeam.ownerBotId || selectedTeam.members.some(member => member.botId === bot.botId)));
   const candidate = (id: string) => candidates.find(bot => bot.botId === id);
   const valid = title.trim() && goal.trim() && workspace.trim() && ownerResponsibility.trim()
     && candidate(owner)?.authorization.allowedScopes.includes("workspace:read") && members.length > 0
@@ -93,7 +95,7 @@ export function BotTeamDialog({ open, onClose }: { open: boolean; onClose: () =>
   const submit = async () => {
     if (inFlight.current || (!pending && !valid)) return;
     const request = pending ?? { operationId: `desktop-team:${crypto.randomUUID()}`, title: title.trim(), goalDescription: goal.trim(),
-      workspacePath: workspace.trim(), executionPolicy, maxConcurrency: executionPolicy === "parallel" ? maxConcurrency : 1, ownerBotId: owner, ownerResponsibility: ownerResponsibility.trim(),
+      workspacePath: workspace.trim(), ...(selectedTeamId ? { templateId: selectedTeamId } : {}), executionPolicy, maxConcurrency: executionPolicy === "parallel" ? maxConcurrency : 1, ownerBotId: owner, ownerResponsibility: ownerResponsibility.trim(),
       members: members.map(member => ({ ...member, responsibility: member.responsibility.trim() })),
       criteria: criteria.split("\n").map(line => line.trim()).filter(Boolean) };
     const parsed = createTeamWorkSchema.safeParse(request);
@@ -178,11 +180,12 @@ export function BotTeamDialog({ open, onClose }: { open: boolean; onClose: () =>
     <header className="bot-create-header"><span className="bot-avatar" aria-hidden="true"><IconBot size={20} /></span>
       <div><h2 id="bot-team-title">组队开工</h2><p>一个目标，明确分工，由负责人统一汇总</p></div>
       <button type="button" className="icon-btn" aria-label="关闭组队开工" onClick={close}><IconX size={18} /></button></header>
-    {created ? <section className="bot-create-success"><h3>已建立团队事项</h3><p>{created.title} 已受理。成员按计划在各自范围内执行，负责人随后核对和汇总。执行结束仍需验收。</p><div className="bot-create-actions"><button type="button" onClick={() => { setCreated(null); setTitle(""); setGoal(""); setCriteria(""); setError(""); }}>再建一队</button><button type="button" onClick={() => openWork(created)}>查看团队事项</button></div></section>
+    {created ? <section className="bot-create-success"><h3>已建立团队事项</h3><p>{created.title} 已受理。成员按计划在各自范围内执行，负责人随后核对和汇总。结果会随团队事项返回。</p><div className="bot-create-actions"><button type="button" onClick={() => { setCreated(null); setTitle(""); setGoal(""); setCriteria(""); setError(""); }}>再建一队</button><button type="button" onClick={() => openWork(created)}>查看团队事项</button></div></section>
       : <form onSubmit={event => { event.preventDefault(); void submit(); }}>
         <p>选择负责人和至少一位成员。每位成员使用自己的身份和已有权限，不共享私人记忆。</p>
         <fieldset disabled={Boolean(pending)}>
-          {templates.length > 0 && <><label htmlFor="team-template">使用团队模板</label><select id="team-template" defaultValue="" onChange={event => {
+          {templates.length > 0 && <><label htmlFor="team-template">使用团队模板</label><select id="team-template" value={selectedTeamId} onChange={event => {
+            setSelectedTeamId(event.target.value);
             const template = templates.find(item => item.templateId === event.target.value); if (!template) return;
             setOwner(template.ownerBotId); setOwnerResponsibility(template.ownerResponsibility);
             setExecutionPolicy(template.executionPolicy ?? "sequential"); setMaxConcurrency(template.maxConcurrency ?? 2);
@@ -194,7 +197,7 @@ export function BotTeamDialog({ open, onClose }: { open: boolean; onClose: () =>
           <label htmlFor="team-title">事项名称</label><input id="team-title" value={title} onChange={event => setTitle(event.target.value)} maxLength={200} required placeholder="例如：梳理项目现状与改进建议" />
           <label htmlFor="team-goal">共同目标</label><textarea id="team-goal" value={goal} onChange={event => setGoal(event.target.value)} maxLength={2000} rows={3} required placeholder="说明希望得到什么，以及不需要做什么。" />
           <label htmlFor="team-workspace">工作区绝对路径</label><input id="team-workspace" value={workspace} onChange={event => setWorkspace(event.target.value)} maxLength={2000} required placeholder="指定这次团队可以处理的本地目录" />
-          <label htmlFor="team-owner">主负责人</label><select id="team-owner" value={owner} onChange={event => { setOwner(event.target.value); setMembers(current => current.filter(member => member.botId !== event.target.value).map(member => ({ ...member, dependsOnBotIds: member.dependsOnBotIds?.filter(id => id !== event.target.value) }))); }} required>
+          <label htmlFor="team-owner">主负责人</label><select id="team-owner" disabled={Boolean(selectedTeamId)} value={owner} onChange={event => { setOwner(event.target.value); setMembers(current => current.filter(member => member.botId !== event.target.value).map(member => ({ ...member, dependsOnBotIds: member.dependsOnBotIds?.filter(id => id !== event.target.value) }))); }} required>
             <option value="">选择负责人</option>{candidates.map(bot => <option key={bot.botId} value={bot.botId}>{bot.displayName}</option>)}</select>
           <label htmlFor="team-owner-role">负责人的汇总职责</label><textarea id="team-owner-role" value={ownerResponsibility} onChange={event => setOwnerResponsibility(event.target.value)} maxLength={2000} rows={2} required />
           <label htmlFor="team-execution-policy">执行方式</label><select id="team-execution-policy" value={executionPolicy} onChange={event => setExecutionPolicy(event.target.value as "sequential" | "parallel")}>

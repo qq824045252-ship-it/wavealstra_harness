@@ -40,10 +40,10 @@ export function BotTeamPanel({ work, identities }: { work: WorkProjectionDto; id
   const name = (botId: string) => identities.find(bot => bot.botId === botId)?.displayName.trim() || "成员名称不可用";
   const current = work.phase3?.collaborationMessages.filter(message => message.intentRevision === work.intentRevision && message.inputSnapshotId === work.inputSnapshotId) ?? [];
   return <section className="bot-detail-section bot-team-panel" aria-label="团队分工与协作">
-    <div className="bot-team-progress"><h3>团队协作</h3><span className="bot-status-badge">{stateLabels[team.state]}</span></div>
+    <div className="bot-team-progress"><h3>{team.teamName ? `${team.teamName} · 团队负责` : "团队协作"}</h3><span className="bot-status-badge">{stateLabels[team.state]}</span></div>
     <p>{team.members.length + 1} 位 Bot · {team.executionPolicy === "parallel" ? `按依赖并行（最多 ${team.maxConcurrency ?? 2} 位成员）` : "成员依次执行"} · 负责人统一汇总</p>
     <p>先看汇总结论与成员结果；执行状态与成果记录分别保留，真实缺口会单独显示。</p>
-    <article><strong>{name(work.ownerBotId)} · 当前负责人</strong><p>{team.ownerResponsibility}</p><p>负责核对与只读汇总，成员已结算或确认因前置失败无法启动后开始。</p></article>
+    <article><strong>{name(work.ownerBotId)} · 队长 / 执行协调</strong><p>{team.ownerResponsibility}</p><p>负责核对与只读汇总，成员已结算或确认因前置失败无法启动后开始。</p></article>
     {team.executions.map(execution => <article key={execution.taskId} aria-label={`${name(execution.botId)}的团队任务`}>
       <div className="bot-team-progress"><strong>{name(execution.botId)} · {execution.role === "owner_summary" ? "负责人汇总" : "成员"}</strong><span>{execution.notStartedReason ? "未启动" : executionLabels[execution.status]}</span></div>
       <p>{execution.responsibility}</p><p>范围：{execution.delegatedScope.includes("workspace:write") ? "指定工作区读写" : "指定工作区只读"}</p>

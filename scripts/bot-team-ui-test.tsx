@@ -350,6 +350,28 @@ async function main() {
       await act(async () => container.querySelector<HTMLInputElement>('.bot-team-member-toggle input')!.dispatchEvent(new testWindow.Event("click", { bubbles: true })));
       await submit(); assert.equal(requests[0].members.length, 1); assert.deepEqual(requests[0].members[0].dependsOnBotIds, []);
     });
+    await check("sidebar team directory loads real saved teams, excludes unrelated tasks and delegates with stable identity", async () => {
+      await reset(); await unmount();
+      const { BotTeamsNavigation } = await import("../src/renderer/src/components/BotTeamsNavigation");
+      const team: WorkTeamTemplateDto = { templateId: "saved-owner-team", name: "Research team", createdAt: 1,
+        ownerBotId: mybuddy.botId, ownerResponsibility: "Summarize", members: [{ botId: other.botId, responsibility: "Read", delegatedScope: ["workspace:read"] }] };
+      hostTemplates = [team];
+      container = testDocument.body.appendChild(testDocument.createElement("div")); root = createRoot(container);
+      await act(async () => root!.render(<BotTeamsNavigation />));
+      assert(container.textContent?.includes("我的 Bot 团队")); assert(!container.textContent?.includes("事项始终在手边"));
+      const teamButton = [...container.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent?.includes("Research team"))!;
+      await act(async () => nativeClick(teamButton));
+      assert(!container.querySelector(".bot-team-task-row"), "ordinary owner Work is not guessed to belong to a saved team");
+      const delegate = [...container.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent === "交给团队新任务")!;
+      await act(async () => nativeClick(delegate));
+      const taskForm = container.querySelector<HTMLFormElement>(".bot-create-dialog form") ?? [...container.querySelectorAll<HTMLFormElement>("form")].at(-1)!;
+      assert.equal(taskForm.querySelector<HTMLSelectElement>("#team-owner")?.value, mybuddy.botId);
+      for (const [id, value] of Object.entries({ "team-title": "Owned task", "team-goal": "Review", "team-workspace": "/tmp/test", "team-criteria": "Report" }))
+        await edit(taskForm.querySelector<HTMLInputElement | HTMLTextAreaElement>(`#${id}`)!, value);
+      await act(async () => taskForm.dispatchEvent(new testWindow.Event("submit", { bubbles: true, cancelable: true })));
+      assert.equal(requests[0]?.templateId, team.templateId);
+      assert.equal(requests[0]?.members[0].botId, other.botId);
+    });
     await testRecoveryControls();
     console.log(`PASS ${count} team UI behaviour checks`);
   } finally { await unmount(); }

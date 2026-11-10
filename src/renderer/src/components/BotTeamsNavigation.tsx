@@ -1,0 +1,124 @@
+import { useEffect, useRef, useState } from "react";
+import { useAppStore } from "@/store/appStore";
+import { IconBot, IconPlus, IconX } from "@/components/common/icons";
+import { BotTeamDialog } from "./pages/BotTeamDialog";
+import { workTeamControlSchema, type WorkTeamTemplateDto, type WorkTeamMember, type WorkTeamPlan } from "@shared/bot-work-team";
+import "./BotTeamsNavigation.css";
+
+type SavedTeamRequest = { operationId: string; name: string; plan: WorkTeamPlan };
+const pendingTeamKey = "mybuddy.pending-team-directory";
+function pendingTeam(): SavedTeamRequest | null {
+  try { const parsed = workTeamControlSchema.safeParse({ kind: "save_template", request: JSON.parse(localStorage.getItem(pendingTeamKey) ?? "null") });
+    return parsed.success && parsed.data.kind === "save_template" ? parsed.data.request : null;
+  } catch { return null; }
+}
+/** Named teams reuse the persisted team service; task membership is an explicit server identity. */
+export function BotTeamsNavigation(): React.JSX.Element {
+  const bots = useAppStore(s => s.botIdentities);
+  const works = useAppStore(s => s.botWorks);
+  const [teams, setTeams] = useState<WorkTeamTemplateDto[]>([]);
+  const [error, setError] = useState("");
+  const [selected, setSelected] = useState<WorkTeamTemplateDto | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [delegating, setDelegating] = useState<WorkTeamTemplateDto | null>(null);
+  const [pending] = useState(pendingTeam);
+  const [name, setName] = useState(pending?.name ?? "");
+  const [owner, setOwner] = useState(pending?.plan.ownerBotId ?? "");
+  const [members, setMembers] = useState<WorkTeamMember[]>(pending?.plan.members ?? []);
+  const [saving, setSaving] = useState(false);
+  const saveFlight = useRef(false);
+  const saveRequest = useRef<SavedTeamRequest | null>(pending);
+  const viewEpoch = useRef(0);
+  const dialog = useRef<HTMLDialogElement>(null);
+  const candidates = bots.filter(bot => bot.status === "active");
+  const botName = (id: string) => bots.find(bot => bot.botId === id)?.displayName ?? "已停用 Bot";
+  useEffect(() => {
+    let live = true;
+    void window.api?.botWork.teamControl({ kind: "list_templates" }).then(result => {
+      if (!live) return;
+      if (result.ok) setTeams(result.templates ?? []); else setError(result.message);
+    }).catch(() => { if (live) setError("团队暂时无法加载。"); });
+    return () => { live = false; };
+  }, []);
+  useEffect(() => {
+    if (creating || selected) { if (!dialog.current?.open) dialog.current?.showModal(); }
+    else dialog.current?.close();
+  }, [creating, selected]);
+  const close = () => { viewEpoch.current++; setCreating(false); setSelected(null); };
+  const openTeam = (team: WorkTeamTemplateDto) => {
+    viewEpoch.current++; setError(""); setSelected(team);
+    void useAppStore.getState().refreshBotWork(true);
+  };
+  const openWork = (work: { workId: string; ownerBotId: string }) => {
+    const state = useAppStore.getState();
+    state.setActiveBotId(work.ownerBotId); state.setSelectedWorkId(work.workId); state.setPage("bot"); close();
+  };
+  const save = async () => {
+    if (saveFlight.current) return;
+    if (!saveRequest.current) saveRequest.current = {
+      operationId: `desktop-team-registry:${crypto.randomUUID()}`, name: name.trim(),
+      plan: { ownerBotId: owner, ownerResponsibility: "统筹团队分工、跟进执行，并向用户汇总成果与未完成事项。", members,
+        executionPolicy: "parallel", maxConcurrency: Math.min(4, Math.max(1, members.length)) },
+    };
+    try { localStorage.setItem(pendingTeamKey, JSON.stringify(saveRequest.current)); }
+    catch { saveRequest.current = null; setError("本地无法保存创建请求，尚未提交。"); return; }
+    const epoch = viewEpoch.current;
+    saveFlight.current = true; setSaving(true); setError("");
+    try {
+      const result = await window.api?.botWork.teamControl({ kind: "save_template", request: saveRequest.current });
+      if (!result?.ok || !result.template) {
+        if (result && !result.ok) { setError(result.message); saveRequest.current = null; localStorage.removeItem(pendingTeamKey); }
+        else setError("保存结果尚未确认，请重试核对原请求。");
+        return;
+      }
+      const team = result.template;
+      saveRequest.current = null; localStorage.removeItem(pendingTeamKey);
+      setTeams(current => [...current.filter(item => item.templateId !== team.templateId), team]);
+      if (viewEpoch.current === epoch) { setCreating(false); setSelected(team); }
+    } catch { setError("保存结果尚未确认，请重试核对原请求，不会重复创建。"); }
+    finally { saveFlight.current = false; setSaving(false); }
+  };
+  const tasks = selected ? works.filter(work => work.team?.teamId === selected.templateId) : [];
+  const adHoc = works.filter(work => work.team && !work.team.teamId);
+  return <section className="bot-teams-navigation" aria-label="我的 Bot 团队">
+    <div className="sidebar-tree-header"><span className="section-title">我的 Bot 团队</span><span className="sidebar-section-count">{teams.length}</span>
+      <button type="button" className="sidebar-bot-create" onClick={() => { viewEpoch.current++; setError(""); setCreating(true); if (!saveRequest.current) { setName(""); setOwner(candidates[0]?.botId ?? ""); setMembers([]); } }}><IconPlus size={12} />新建团队</button>
+    </div>
+    {!teams.length && <p className="sidebar-empty">把常用 Bot 组成团队，统一接收任务和返回成果。</p>}
+    {teams.map(team => <button type="button" className="sidebar-bot-row sidebar-bot-identity" key={team.templateId} onClick={() => openTeam(team)}>
+      <span className="sidebar-bot-avatar"><IconBot size={18} /></span><span><strong>{team.name}</strong><small>{team.members.length + 1} 位 Bot · 队长 {botName(team.ownerBotId)}</small></span>
+    </button>)}
+    {adHoc.length > 0 && <details className="bot-team-history"><summary>临时组队事项（{adHoc.length}）</summary>{adHoc.map(work => <button type="button" key={work.workId} onClick={() => openWork(work)}>{work.title}</button>)}</details>}
+    {error && !creating && !selected && <p role="status">{error}</p>}
+    <dialog ref={dialog} className="bot-team-directory-dialog" aria-label={creating ? "新建 Bot 团队" : "团队工作空间"} onCancel={event => { event.preventDefault(); close(); }} onClose={close}>
+      <header><h2>{creating ? "新建 Bot 团队" : selected?.name}</h2><button type="button" aria-label="关闭团队面板" onClick={close}><IconX size={18} /></button></header>
+      {creating ? <form onSubmit={event => { event.preventDefault(); void save(); }}>
+        <p>先建立团队。之后交给这个团队的任务、进度和成果会归在一起；队长负责协调与汇报。</p>
+        <fieldset disabled={saving || Boolean(saveRequest.current)}>
+          <label>团队名称<input required maxLength={120} value={name} onChange={e => setName(e.target.value)} placeholder="例如：产品研发团队" /></label>
+          <label>队长<select required value={owner} onChange={e => { setOwner(e.target.value); setMembers(current => current.filter(m => m.botId !== e.target.value)); }}>
+            <option value="">选择 Bot</option>{candidates.map(bot => <option key={bot.botId} value={bot.botId}>{bot.displayName}</option>)}
+          </select></label>
+          <h3>团队成员</h3>
+          {candidates.filter(bot => bot.botId !== owner).map(bot => {
+            const member = members.find(item => item.botId === bot.botId);
+            return <div key={bot.botId} className="bot-team-member-choice"><label><input type="checkbox" checked={Boolean(member)} onChange={e => setMembers(current => e.target.checked ? [...current, { botId: bot.botId, responsibility: "", delegatedScope: bot.authorization.allowedScopes.filter((scope): scope is "workspace:read" | "workspace:write" => scope === "workspace:read" || scope === "workspace:write") }] : current.filter(item => item.botId !== bot.botId))} />{bot.displayName}</label>
+              {member && <input aria-label={`${bot.displayName}的职责`} required maxLength={2000} placeholder="这个成员负责什么" value={member.responsibility} onChange={e => setMembers(current => current.map(item => item.botId === bot.botId ? { ...item, responsibility: e.target.value } : item))} />}
+            </div>;
+          })}
+          {candidates.length < 2 && <p>至少需要两位可用 Bot，请先在侧栏新建 Bot。</p>}
+        </fieldset>
+        <button type="submit" disabled={saving || (!saveRequest.current && (!name.trim() || !owner || !members.length || members.some(m => !m.responsibility.trim())))}>{saving ? "正在保存…" : saveRequest.current ? "核对保存结果" : "创建团队"}</button>
+      </form> : selected && <>
+        <p>{selected.members.length + 1} 位 Bot · 队长 {botName(selected.ownerBotId)} 负责统筹汇报</p>
+        <div className="bot-team-directory-members">{selected.members.map(member => <p key={member.botId}><strong>{botName(member.botId)}</strong> · {member.responsibility}</p>)}</div>
+        <button type="button" onClick={() => { setDelegating(selected); close(); }}>交给团队新任务</button>
+        <h3>团队任务与成果</h3>
+        <p>任务由「{selected.name}」负责，队长协调成员执行。</p>
+        {!tasks.length ? <p>当前已加载记录中还没有这个团队的任务。</p> : tasks.map(work => <button className="bot-team-task-row" type="button" key={work.workId} onClick={() => openWork(work)}><strong>{work.title}</strong><span>{work.lifecycle === "closed" ? "已结束" : "进行中"} · 打开进度与成果</span></button>)}
+      </>}
+      {error && <p role="alert">{error}</p>}
+    </dialog>
+    {delegating && <BotTeamDialog key={delegating.templateId} initialTeam={delegating} open onClose={() => setDelegating(null)} />}
+  </section>;
+}
