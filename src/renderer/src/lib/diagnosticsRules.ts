@@ -502,6 +502,19 @@ export function buildDiagnosticsReport(value: TaskDiagnosticsDto, now = Date.now
   };
 }
 
+/**
+ * 趋势降采样：长任务可能有上千轮，SVG 点位数必须收敛，但**不能丢掉 0% 这些关键点**。
+ * 规则：保留首尾 + 所有 0% 点 + 按步长抽样填满，再按原顺序去重。纯函数，可单测。
+ */
+export function sampleCacheTrend(points: CacheTrendPoint[], max = 240): CacheTrendPoint[] {
+  if (points.length <= max) return points;
+  const keep = new Set<number>([0, points.length - 1]);
+  points.forEach((point, index) => { if (point.hitRate === 0) keep.add(index); });
+  const stride = Math.ceil(points.length / Math.max(1, max - keep.size));
+  for (let index = 0; index < points.length; index += stride) keep.add(index);
+  return [...keep].sort((a, b) => a - b).map((index) => points[index]!).slice(0, max + 1);
+}
+
 /** 缓存一行的可读文本（UI 与测试共用）：`83% · 缓存读 1.2M · 新输入 340K · 缓存写 0` */
 export function cacheLine(cache: CacheSummary): string {
   const parts = [

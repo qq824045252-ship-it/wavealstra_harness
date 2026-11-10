@@ -14,6 +14,7 @@ import {
   bucketTurns,
   cacheLine,
   percentile,
+  sampleCacheTrend,
   summarizeCache,
 } from "@/lib/diagnosticsRules";
 
@@ -219,6 +220,20 @@ console.log("== 主任务 / 子代理 分组 + 缓存趋势 ==");
     `趋势按时间排序并带来源（${report.cacheTrend.map((point) => point.sourceKind).join(",")}）`);
   assert(report.cacheTrend.every((point) => point.hitRate !== null), "每轮都有命中率点位");
   assert(report.groupSummary.main.ok + report.groupSummary.subagent.ok + report.groupSummary.auxiliary.ok === 4, "分组汇总分别计数");
+}
+
+console.log("== 趋势降采样（长任务不卡、关键点不丢） ==");
+{
+  const points = Array.from({ length: 1000 }, (_, index) => ({
+    key: `k${index}`, label: `第 ${index + 1} 轮`, sourceKind: "main" as const, order: index + 1,
+    hitRate: index === 500 || index === 900 ? 0 : 0.9, startedAt: NOW + index,
+  }));
+  const sampled = sampleCacheTrend(points);
+  assert(sampled.length <= 241, `降采样到 ≤241 点（${sampled.length}）`);
+  assert(sampled.filter((point) => point.hitRate === 0).length === 2, "0% 关键点不会被采样丢掉");
+  assert(sampled[0]?.key === "k0" && sampled[sampled.length - 1]?.key === "k999", "首尾保留");
+  assert(sampleCacheTrend(points.slice(0, 10)).length === 10, "短序列原样返回");
+  assert(sampleCacheTrend([]).length === 0, "空序列不炸");
 }
 
 console.log("== 判定优先级 + 无 200 条截断 ==");

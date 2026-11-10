@@ -3,6 +3,7 @@ import type { ModelRequestDiagnostic, TaskDiagnosticsDto, ToolDiagnostic } from 
 import {
   buildDiagnosticsReport,
   cacheLine,
+  sampleCacheTrend,
   type CacheTrendPoint,
   type Finding,
   type TurnDiagnostics,
@@ -222,6 +223,10 @@ export function TaskDiagnosticsView({ value, now = Date.now() }: { value: TaskDi
   const [filter, setFilter] = useState<Filter>("all");
   const [showRules, setShowRules] = useState(false);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  /** 每组默认只渲染最近这么多轮；长任务（上千轮）一屏全渲染会卡，也不利于阅读 */
+  const [windowSize, setWindowSize] = useState<Record<string, number>>({});
+  const groupWindow = 30;
+  const groupStep = 50;
   const groupOrder: Array<{ key: SourceKind; title: string }> = [
     { key: "main", title: groupLabels.main },
     { key: "subagent", title: groupLabels.subagent },
@@ -284,14 +289,16 @@ export function TaskDiagnosticsView({ value, now = Date.now() }: { value: TaskDi
       {report.rules.map((rule) => <li key={rule.ruleId}><span className="td-rule">{rule.ruleId}</span>{rule.text}</li>)}
     </ul>}
 
-    <CacheTrend points={report.cacheTrend} />
+    <CacheTrend points={sampleCacheTrend(report.cacheTrend)} />
 
     {report.turns.length === 0 && <p className="task-diagnostic-note">尚无观测记录。历史回放不会伪造新的请求。</p>}
 
     {groupOrder.map((group) => {
       const total = report.groups[group.key].length;
       if (total === 0) return null;
-      const rows = rowsIn(group.key);
+      const all = rowsIn(group.key);
+      const size = windowSize[group.key] ?? groupWindow;
+      const rows = all.slice(0, size);
       // 主任务默认展开；子代理/辅助任务轮次多时收起，避免一屏全是子代理
       const isCollapsed = collapsed[group.key] ?? (group.key !== "main" && total > 3);
       return <section className="td-group" key={group.key} data-group={group.key}>
@@ -304,7 +311,18 @@ export function TaskDiagnosticsView({ value, now = Date.now() }: { value: TaskDi
           <span className="td-group-toggle">{isCollapsed ? "展开" : "收起"}</span>
         </button>
         {!isCollapsed && (rows.length > 0
-          ? rows.map((turn) => <TurnCard turn={turn} key={turn.key} />)
+          ? <>
+            {rows.map((turn) => <TurnCard turn={turn} key={turn.key} />)}
+            {all.length > rows.length && (
+              <div className="td-more">
+                <span>已显示最近 {rows.length} / {all.length} 轮</span>
+                <button type="button" className="td-more-btn"
+                  onClick={() => setWindowSize((current) => ({ ...current, [group.key]: size + groupStep }))}>
+                  再看 {Math.min(groupStep, all.length - rows.length)} 轮
+                </button>
+              </div>
+            )}
+          </>
           : <p className="task-diagnostic-note">{filter === "all" ? "没有记录。" : `没有「${verdictLabels[filter as Verdict] ?? "该判定"}」的轮次。`}</p>)}
       </section>;
     })}
