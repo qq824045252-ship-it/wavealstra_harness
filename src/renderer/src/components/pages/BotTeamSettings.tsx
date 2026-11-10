@@ -1,14 +1,18 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAppStore } from "@/store/appStore";
 import { workTeamPlanSchema, type WorkTeamTemplateDto, type WorkTeamMember, type WorkTeamPlan } from "@shared/bot-work-team";
 
 const planOf = (team: WorkTeamTemplateDto): WorkTeamPlan => ({ ownerBotId: team.ownerBotId, ownerResponsibility: team.ownerResponsibility,
-  members: team.members, executionPolicy: team.executionPolicy, maxConcurrency: team.maxConcurrency });
+  members: team.members, executionPolicy: team.executionPolicy, maxConcurrency: team.maxConcurrency, workspacePath: team.workspacePath });
 
 /** Edit the persistent team, not the frozen plan of an already running commission. */
 export function BotTeamSettings({ team, onSaved, onCancel }: { team: WorkTeamTemplateDto; onSaved: (team: WorkTeamTemplateDto) => void; onCancel: () => void }): React.JSX.Element {
   const bots = useAppStore(s => s.botIdentities);
   const [name, setName] = useState(team.name), [owner, setOwner] = useState(team.ownerBotId);
+  const [workspacePath, setWorkspacePath] = useState(team.workspacePath ?? "");
+  const [pickingFolder, setPickingFolder] = useState(false);
+  const mounted = useRef(true), pickerFlight = useRef(false);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const [responsibility, setResponsibility] = useState(team.ownerResponsibility);
   const [members, setMembers] = useState<WorkTeamMember[]>(team.members);
   const [policy, setPolicy] = useState<"sequential" | "parallel">(team.executionPolicy ?? "sequential");
@@ -16,8 +20,8 @@ export function BotTeamSettings({ team, onSaved, onCancel }: { team: WorkTeamTem
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   const candidates = bots.filter(bot => bot.status === "active");
   const save = async (event: React.FormEvent) => {
-    event.preventDefault(); if (busy) return;
-    const plan = workTeamPlanSchema.safeParse({ ownerBotId: owner, ownerResponsibility: responsibility, members, executionPolicy: policy, maxConcurrency: policy === "parallel" ? concurrency : 1 });
+    event.preventDefault(); if (busy || pickingFolder) return;
+    const plan = workTeamPlanSchema.safeParse({ ownerBotId: owner, ownerResponsibility: responsibility, members, executionPolicy: policy, maxConcurrency: policy === "parallel" ? concurrency : 1, ...(workspacePath.trim() ? { workspacePath: workspacePath.trim() } : {}) });
     if (!plan.success) { setError("请填写负责人职责、至少一位成员及分工，并检查成员依赖。"); return; }
     setBusy(true); setError("");
     try {
@@ -29,11 +33,26 @@ export function BotTeamSettings({ team, onSaved, onCancel }: { team: WorkTeamTem
     } catch { setError("保存结果暂未确认，可以重试核对，不会新建团队或重启任务。"); }
     finally { setBusy(false); }
   };
+  const pickWorkspace = async () => {
+    if (pickerFlight.current || busy) return;
+    pickerFlight.current = true; setPickingFolder(true); setError("");
+    try {
+      if (!window.api) throw new Error("本地文件夹选择不可用。");
+      const folder = await window.api.pickLocalFolder();
+      if (mounted.current && folder) setWorkspacePath(folder.path);
+    } catch (cause) { if (mounted.current) setError(cause instanceof Error ? cause.message : "无法打开文件夹选择。"); }
+    finally { pickerFlight.current = false; if (mounted.current) setPickingFolder(false); }
+  };
   const remove = (id: string) => setMembers(current => current.filter(m => m.botId !== id).map(m => ({ ...m, dependsOnBotIds: m.dependsOnBotIds?.filter(dep => dep !== id) })));
   return <form aria-label="团队设置" onSubmit={event => void save(event)}>
     <p>统一管理这个团队。保存后用于新任务；已经开始的任务保留原分工，不会被重启。</p>
     <fieldset disabled={busy}>
       <label>团队名称<input required maxLength={120} value={name} onChange={e => setName(e.target.value)} /></label>
+      <label htmlFor="team-settings-workspace">团队工作文件夹</label>
+      <div className="bot-team-workspace-picker"><input id="team-settings-workspace" value={workspacePath} maxLength={4096} placeholder="留空使用团队自己的默认文件夹" onChange={e => setWorkspacePath(e.target.value)} />
+        <button type="button" disabled={busy || pickingFolder} onClick={() => void pickWorkspace()}>{pickingFolder ? "正在选择…" : "选择文件夹"}</button>
+        <button type="button" disabled={busy || pickingFolder || !workspacePath} onClick={() => setWorkspacePath("")}>使用默认目录</button></div>
+      <p>仅影响此团队之后的新委托。留空使用团队独立目录，不沿用队长个人目录；不会移动现有文件或修改正在执行的任务。</p>
       <label>队长<select value={owner} onChange={e => { setOwner(e.target.value); remove(e.target.value); }}>
         {!candidates.some(bot => bot.botId === owner) && <option value={owner}>原队长已停用，请重新选择</option>}
         {candidates.map(bot => <option key={bot.botId} value={bot.botId}>{bot.displayName}</option>)}
@@ -54,6 +73,6 @@ export function BotTeamSettings({ team, onSaved, onCancel }: { team: WorkTeamTem
       {policy === "parallel" && <label>最多同时执行的成员<select value={concurrency} onChange={e => setConcurrency(Number(e.target.value))}>{[1, 2, 3, 4].map(n => <option key={n} value={n}>{n} 位</option>)}</select></label>}
     </fieldset>
     {error && <p role="alert">{error}</p>}
-    <div className="bot-team-settings-actions"><button type="button" onClick={onCancel} disabled={busy}>取消</button><button type="submit" disabled={busy || !name.trim() || !members.length}>{busy ? "正在保存…" : "保存团队设置"}</button></div>
+    <div className="bot-team-settings-actions"><button type="button" onClick={onCancel} disabled={busy}>取消</button><button type="submit" disabled={busy || pickingFolder || !name.trim() || !members.length}>{busy ? "正在保存…" : "保存团队设置"}</button></div>
   </form>;
 }

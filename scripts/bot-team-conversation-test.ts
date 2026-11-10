@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -22,6 +22,17 @@ try {
   const plan = { ownerBotId: "owner", ownerResponsibility: "汇总", members: [{ botId: "member", responsibility: "核验", delegatedScope: ["workspace:read" as const] }] };
   const save = (name: string) => { const r = works.teams.handle(actor, { kind: "save_template", request: { operationId: name, name, plan } }); assert(r.ok && r.template); return r.template; };
   const a = save("A"), b = save("B");
+  assert(!existsSync(join(root, "team-workspaces")), "listing/saving teams does not create directories");
+  const resolved = works.teams.handle(actor, { kind: "resolve_workspace", templateId: a.templateId });
+  assert(resolved.ok && resolved.workspacePath);
+  const defaultA = resolved.workspacePath;
+  assert(existsSync(defaultA));
+  assert.notEqual(defaultA, root, "not the leader workspace");
+  assert.notEqual(defaultA, works.teams.resolveWorkspace("user", b.templateId), "each team owns its directory");
+  assert.equal(defaultA, works.teams.resolveWorkspace("user", a.templateId));
+  assert.throws(() => works.teams.resolveWorkspace("foreign-user", a.templateId), /不存在/);
+  const invalid = works.teams.handle(actor, { kind: "save_template", request: { operationId: "invalid-path", name: "invalid", plan: { ...plan, workspacePath: "relative" } } });
+  assert(!invalid.ok && invalid.code === "invalid_workspace");
   let repo = new BotConversationRepository(db);
   const personal = repo.accept("user", { botId: "owner", requestId: "personal", text: "个人秘密" });
   const first = repo.accept("user", { botId: "owner", teamId: a.templateId, requestId: "a1", text: "团队 A 原始需求" });
@@ -47,6 +58,7 @@ try {
   const created = await invoke("work_team_create", { title: "团队工作", goalDescription: "核对原始需求", criteria: ["有真实证据"] });
   assert(created.ok, JSON.stringify(created));
   assert.equal(works.teams.get(created.work.workId)?.teamId, a.templateId);
+  assert.equal(created.work.workspacePath, defaultA);
   assert.equal(repo.workOrigin("user", created.work.workId)?.conversation_id, first.conversationId);
   assert(new BotWorkQuery(db, "user", "owner", a.templateId).canRead(created.work.workId));
   assert(!new BotWorkQuery(db, "user", "owner", b.templateId).canRead(created.work.workId));
@@ -54,7 +66,10 @@ try {
   repo.appendWorkDelivery("user", created.work.workId, "result", "v1", "团队 A 成果");
   assert(repo.history("user", { botId: "owner", teamId: a.templateId }).messages.some(m => m.text === "团队 A 成果"));
   assert(!repo.history("user", { botId: "owner" }).messages.some(m => m.text === "团队 A 成果"));
-  db.prepare("UPDATE work_team_templates SET plan_json=? WHERE template_id=?").run(JSON.stringify({ ...plan, ownerBotId: "next-owner" }), a.templateId);
+  const explicitPath = join(root, "selected-team-folder"); mkdirSync(explicitPath);
+  db.prepare("UPDATE work_team_templates SET plan_json=? WHERE template_id=?").run(JSON.stringify({ ...plan, ownerBotId: "next-owner", workspacePath: explicitPath }), a.templateId);
+  assert.equal(works.teams.resolveWorkspace("user", a.templateId), explicitPath);
+  assert.equal(works.getWork(created.work.workId)?.workspacePath, defaultA, "settings never migrate an existing commission");
   const uiWork = works.teams.handle(actor, { kind: "create", request: { ...plan, ownerBotId: "next-owner", templateId: a.templateId,
     operationId: "ui-team", title: "团队界面创建", goalDescription: "独立成果", workspacePath: root, criteria: ["结果"] } });
   assert(uiWork.ok && uiWork.work, JSON.stringify(uiWork));

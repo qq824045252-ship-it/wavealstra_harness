@@ -1,7 +1,7 @@
 import { ensureTeamConversation } from "./WorkDeliveryTargets";
 import { createHash, randomUUID } from "node:crypto";
-import { realpathSync, statSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import { mkdirSync, realpathSync, statSync } from "node:fs";
+import { dirname, join, isAbsolute } from "node:path";
 import { fileResourceIdentity, resourcePathContains } from "../../platform/resource-identity";
 import { validateWorkReadPath } from "../../platform/work-shell-read";
 import type Database from "better-sqlite3";
@@ -115,6 +115,24 @@ export class WorkTeamService {
   constructor(private readonly db: Database.Database, private readonly works: WorkService,
     private readonly bots: BotRegistry, private readonly now: () => number = Date.now) { ensureWorkTeamSchema(db); }
 
+  /** Explicit team action, never called by list/read projections. No leader directory fallback. */
+  resolveWorkspace(userId: string, templateId: string): string {
+    const template = this.templates(userId).find(item => item.templateId === templateId);
+    if (!template) throw new TeamError("not_found", "团队不存在或已删除");
+    if (template.workspacePath) return this.validateWorkspace(template.workspacePath);
+    if (!this.db.name || this.db.name === ":memory:" || !isAbsolute(this.db.name))
+      throw new TeamError("invalid_workspace", "当前数据库没有持久存储目录，请为团队选择工作目录");
+    const directory = join(dirname(this.db.name), "team-workspaces", hash([userId, templateId]));
+    mkdirSync(directory, { recursive: true });
+    return this.validateWorkspace(directory);
+  }
+
+  private validateWorkspace(directory: string): string {
+    if (!isAbsolute(directory)) throw new TeamError("invalid_workspace", "工作区必须是绝对路径");
+    try { const path = realpathSync(directory); if (!statSync(path).isDirectory()) throw Error(); return path; }
+    catch { throw new TeamError("invalid_workspace", "工作区必须是当前可访问的目录，请重新选择文件夹"); }
+  }
+
   /** Saved plans are user-owned. The foreground can reuse its own plans, never invent an actor or grant. */
   foregroundTemplates(userId: string, botId: string): WorkTeamTemplateDto[] {
     const bot = this.bots.getBot(botId);
@@ -213,6 +231,7 @@ export class WorkTeamService {
         if (!work || work.userId !== actor.userId) throw new TeamError("not_found", "找不到事项");
         return { ok: true, team: this.get(work.workId) };
       }
+      if (request.kind === "resolve_workspace") return { ok: true, workspacePath: this.resolveWorkspace(actor.userId, request.templateId) };
       if (request.kind === "list_templates") return { ok: true, templates: this.templates(actor.userId, request.includeDeleted) };
       return this.works.transaction(() => {
         this.works.collaboration.assertAuthority();
@@ -230,6 +249,7 @@ export class WorkTeamService {
             throw new TeamError("unsettled_effects", "原执行或效果尚未确认，不能重新安排业务动作");
           if (request.plan.ownerBotId !== work.ownerBotId) throw new TeamError("unauthorized_actor", "重新安排不能更换负责人，请先使用负责人交接");
           this.validatePlan(actor.userId, request.plan);
+          if (request.plan.workspacePath) this.validateWorkspace(request.plan.workspacePath);
           if (request.plan.members.some(member => member.delegatedScope.some(scope => scope !== "workspace:read")))
             throw new TeamError("unauthorized_actor", "变更要求后的重新安排仅允许只读复核；写入补做必须先明确未完成步骤，不能重复旧效果");
           const workspace = this.db.prepare("SELECT canonical_path,entity FROM work_team_workspaces WHERE work_id=?").get(work.workId) as { canonical_path: string; entity: string } | undefined;
@@ -302,11 +322,12 @@ export class WorkTeamService {
         if (request.kind === "update_template") {
           const current = this.templates(actor.userId).find(item => item.templateId === request.templateId);
           if (!current) throw new TeamError("not_found", "找不到团队，可能已被删除");
-          const currentValue = { name: current.name, plan: workTeamPlanSchema.parse({ ownerBotId: current.ownerBotId, ownerResponsibility: current.ownerResponsibility, members: current.members, executionPolicy: current.executionPolicy, maxConcurrency: current.maxConcurrency }) };
+          const currentValue = { name: current.name, plan: workTeamPlanSchema.parse({ ownerBotId: current.ownerBotId, ownerResponsibility: current.ownerResponsibility, members: current.members, executionPolicy: current.executionPolicy, maxConcurrency: current.maxConcurrency, workspacePath: current.workspacePath }) };
           const nextValue = { name: request.name, plan: request.plan };
           if (hash(currentValue) === hash(nextValue)) return { ok: true, template: current, replayed: true };
           if (hash(currentValue) !== hash(request.expected)) throw new TeamError("team_changed", "团队设置已有更新，请重新打开设置后修改");
           this.validatePlan(actor.userId, request.plan);
+          if (request.plan.workspacePath) this.validateWorkspace(request.plan.workspacePath);
           if (this.templates(actor.userId).some(item => item.templateId !== current.templateId && item.name === request.name))
             throw new TeamError("name_conflict", "已有同名团队，请使用不同名称");
           this.db.prepare("UPDATE work_team_templates SET name=?,plan_json=? WHERE template_id=? AND user_id=? AND deleted_at IS NULL")
@@ -331,6 +352,7 @@ export class WorkTeamService {
             return { ok: true, template: this.templates(actor.userId).find(item => item.templateId === previous.template_id), replayed: true };
           }
           this.validatePlan(actor.userId, input.plan);
+          if (input.plan.workspacePath) this.validateWorkspace(input.plan.workspacePath);
           if (this.templates(actor.userId).some(item => item.name === input.name)) throw new TeamError("name_conflict", "已有同名团队模板，请使用不同名称");
           const template: WorkTeamTemplateDto = { ...input.plan, name: input.name, templateId: `team-template-${randomUUID()}`, createdAt: this.now() };
           this.db.prepare("INSERT INTO work_team_templates(template_id,user_id,operation_id,request_hash,name,plan_json,created_at) VALUES (?,?,?,?,?,?,?)")

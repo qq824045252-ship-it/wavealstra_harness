@@ -80,7 +80,7 @@ export function buildActivityRows(input: {
       if (message.role !== "assistant" || message.workFeedback || activeMessageIds.has(message.messageId)) continue;
       const prompt = history.messages.find(item => item.requestId === message.requestId && item.role === "user");
       rows.push({ id: "bot:" + message.messageId, kind: "bot", title: prompt?.text || "Bot 对话",
-        owner: names.get(message.botId) ?? "Bot", label: botMessageStatus(message),
+        owner: message.teamId ? input.works.find(work => work.team?.teamId === message.teamId)?.team?.teamName ?? "团队对话" : names.get(message.botId) ?? "Bot", label: botMessageStatus(message),
         running: message.status === "running", ended: !["queued", "running", "unknown"].includes(message.status),
         detail: message.text || message.error || botMessageStatus(message), updatedAt: message.updatedAt, botId: message.botId, teamId: message.teamId, messageId: message.messageId });
     }
@@ -91,7 +91,7 @@ export function buildActivityRows(input: {
     const inCurrentWindow = input.histories[message.teamId ? `team:${message.teamId}` : message.botId]?.messages.some(item => item.messageId === message.messageId)
       && !input.histories[message.teamId ? `team:${message.teamId}` : message.botId]?.archived;
     rows.push({ id: "bot:" + message.messageId, kind: "bot", title: request.prompt?.text || "Bot 对话",
-      owner: names.get(message.botId) ?? "Bot", label: botMessageStatus(message), running: message.status === "running",
+      owner: message.teamId ? input.works.find(work => work.team?.teamId === message.teamId)?.team?.teamName ?? "团队对话" : names.get(message.botId) ?? "Bot", label: botMessageStatus(message), running: message.status === "running",
       ended: false, detail: message.text || message.error || botMessageStatus(message), updatedAt: message.updatedAt,
       botId: message.botId, teamId: message.teamId, messageId: message.messageId, sourceRequest: inCurrentWindow ? undefined : request });
   }

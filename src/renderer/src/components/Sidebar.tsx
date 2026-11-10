@@ -130,6 +130,7 @@ export default function Sidebar({ onClose, onCreateBot }: { onClose?: () => void
   const page = useAppStore((s) => s.page);
   const botIdentities = useAppStore((s) => s.botIdentities);
   const activeBotId = useAppStore((s) => s.activeBotId);
+  const activeTeam = useAppStore((s) => s.activeTeam);
   const botHostStatus = useAppStore((s) => s.botHostStatus);
   const setActiveBotId = useAppStore((s) => s.setActiveBotId);
   const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId);
@@ -864,11 +865,11 @@ export default function Sidebar({ onClose, onCreateBot }: { onClose?: () => void
         <div className="sidebar-scroll" aria-label="Bot 导航">
           <div className="sidebar-tree-header"><span className="section-title">我的 Bot</span><span className="sidebar-section-count">{botIdentities.length}</span>{onCreateBot && <button type="button" className="sidebar-bot-create" onClick={() => { onClose?.(); onCreateBot(); }}>+ 新建 Bot</button>}</div>
           {botIdentities.length === 0 ? <div className="sidebar-empty">还没有 Bot，点击「新建 Bot」开始。</div> : botIdentities.map(bot => (
-            <button key={bot.botId} type="button" className="sidebar-bot-row sidebar-bot-identity" aria-pressed={bot.botId === activeBotId} onClick={() => { setActiveBotId(bot.botId); onClose?.(); }}>
+            <button key={bot.botId} type="button" className="sidebar-bot-row sidebar-bot-identity" aria-pressed={!activeTeam && bot.botId === activeBotId} onClick={() => { setActiveBotId(bot.botId); onClose?.(); }}>
               <span className="sidebar-bot-avatar"><IconBot size={18} /></span><span><strong>{bot.displayName}</strong><small>{botPresenceLabel(bot.status, botHostStatus ? botHostStatus.online : null)}</small></span>
             </button>
           ))}
-          <BotTeamsNavigation />
+          <BotTeamsNavigation onSelect={() => onClose?.()} />
         </div>
       ) : <>
       <div className="sidebar-primary-action">

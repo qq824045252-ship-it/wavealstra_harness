@@ -79,6 +79,10 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const inspectorRef = useRef<HTMLDialogElement>(null);
   const settingsRef = useRef<HTMLDialogElement>(null);
+  const settingsEpoch = useRef(0);
+  const currentScope = useRef(scopeKey); currentScope.current = scopeKey;
+  const renderedSettingsEpoch = settingsEpoch.current;
+  const closeSettings = () => { settingsEpoch.current++; setSettingsOpen(false); };
   const newConversationRef = useRef<HTMLDialogElement>(null);
   const followLatest = useRef(true);
   const followReplyTail = useRef(false);
@@ -125,7 +129,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
     if (lastBot.current === scopeKey) return;
     lastBot.current = scopeKey; setReplyReference(null); setAttachmentError("");
     requestedWork.current = null; setNavigationNotice("");
-    setView("conversation"); setSettingsOpen(false); setArchiveConfirm(false); setNewConversationOpen(false); setInspectorOpen(false);
+    setView("conversation"); closeSettings(); setArchiveConfirm(false); setNewConversationOpen(false); setInspectorOpen(false);
     followLatest.current = true; followReplyTail.current = false; previousScrollTop.current = 0;
   }, [scopeKey]);
   useEffect(() => { if (selectedWorkId) setInspectorOpen(true); }, [selectedWorkId]);
@@ -233,7 +237,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
     requestAnimationFrame(() => { setInspectorOpen(false); composerRef.current?.focus(); });
   };
 
-  return <div className="bot-workspace" onKeyDownCapture={event => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { setInspectorOpen(false); setSettingsOpen(false); } }}>
+  return <div className="bot-workspace" onKeyDownCapture={event => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { setInspectorOpen(false); closeSettings(); } }}>
     <section className="bot-conversation" aria-label="Bot 对话">
       <header className="bot-workspace-header">
         {props.onToggleNavigation && <button type="button" className="bot-icon-button" aria-label={props.navigationVisible ? "收起导航" : "展开导航"} aria-expanded={props.navigationVisible} onClick={props.onToggleNavigation}><IconPanel size={18} /></button>}
@@ -248,7 +252,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
               node?.scrollIntoView({ block: "center" });
             }));
           }} />
-          <button type="button" className="bot-icon-button" aria-label="Bot 设置与对话管理" onClick={() => setSettingsOpen(true)}><IconSettings size={18} /></button>
+          <button type="button" className="bot-icon-button" aria-label={activeTeam ? "团队设置与管理" : "Bot 设置与对话管理"} onClick={() => { settingsEpoch.current++; setSettingsOpen(true); }}><IconSettings size={18} /></button>
         </div>
       </header>
       <BotWorkNavigation works={botWorks} view={view} allWorksLoaded={allWorksLoaded} onChange={changeView} />
@@ -303,10 +307,10 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
         }}>{archiving ? "正在归档…" : "归档并开始新对话"}</button><button type="button" disabled={archiving} onClick={() => setNewConversationOpen(false)}>取消</button>
       </div>
     </dialog>
-    <dialog ref={settingsRef} className="bot-settings-dialog" aria-labelledby="bot-settings-title" onCancel={event => { event.preventDefault(); setSettingsOpen(false); setArchiveConfirm(false); }}>
-      <header className="bot-inspector-header"><h2 id="bot-settings-title">{activeTeam ? "团队设置" : "Bot 设置与对话管理"}</h2><button type="button" className="bot-icon-button" aria-label="关闭 Bot 设置" onClick={() => { setSettingsOpen(false); setArchiveConfirm(false); }}><IconX size={18} /></button></header>
-      <div className="bot-settings-body">{activeTeam ? <><BotTeamManagement team={activeTeam} onChanged={() => { window.dispatchEvent(new Event("mybuddy:teams-refresh")); void useAppStore.getState().refreshBotWork(true); }} /><BotTeamSettings key={activeTeam.templateId} team={activeTeam} onCancel={() => setSettingsOpen(false)} onSaved={team => { useAppStore.getState().setActiveTeam(team); setSettingsOpen(false); window.dispatchEvent(new CustomEvent("mybuddy:team-updated", { detail: team })); }} /></> : <>{activeBot && <section className="bot-settings-identity" aria-label="Bot 身份与职责"><h3>{activeBot.displayName}</h3><p>{activeBot.responsibilitySummary || "尚未设置具体职责。你可以在对话中说明这次希望它协助的目标。"}</p><p>独立 Bot 身份。当前配置与操作范围以已生效的版本及授权为准。</p></section>}{activeBot && <><BotExecutionSettings key={`settings-${activeBot.botId}-${settingsOpen}`} botId={activeBot.botId} onManageModels={() => { setSettingsOpen(false); setArchiveConfirm(false); }} /><BotWorkspaceAuthorization key={activeBot.botId} bot={activeBot} /><details className="bot-advanced"><summary>专家配置与权限审阅</summary><BotExpertReview botId={activeBot.botId} /></details>
-<BotDeletion bot={activeBot} onDeleted={() => setSettingsOpen(false)} /><section className="bot-archive-section">{archiveError && <p role="alert" className="bot-alert">{archiveError}</p>}<h3>归档当前对话</h3><p>收起这段对话，开始新的聊天。事项记录仍会保留。</p>{archiveConfirm ? <div role="group" aria-label="确认归档"><p>确定归档当前对话吗？</p><button type="button" disabled={archiving || Boolean(activeReply) || pending.length > 0} title={activeReply || pending.length ? "仍有前台消息未结束，请先处理对应消息" : undefined} onClick={() => { setArchiving(true); setArchiveError(""); void useAppStore.getState().archiveBotConversation(activeBot.botId).then(() => { setArchiveConfirm(false); setSettingsOpen(false); }).catch(error => setArchiveError(error instanceof Error ? error.message : "归档未完成，请稍后重试。")).finally(() => setArchiving(false)); }}>{archiving ? "正在归档…" : "确认归档"}</button><button type="button" disabled={archiving} onClick={() => setArchiveConfirm(false)}>取消</button></div> : <button type="button" onClick={() => setArchiveConfirm(true)}><IconArchive size={15} />归档对话</button>}</section></>}</>}</div>
+    <dialog ref={settingsRef} className="bot-settings-dialog" aria-labelledby="bot-settings-title" onCancel={event => { event.preventDefault(); closeSettings(); setArchiveConfirm(false); }}>
+      <header className="bot-inspector-header"><h2 id="bot-settings-title">{activeTeam ? "团队设置" : "Bot 设置与对话管理"}</h2><button type="button" className="bot-icon-button" aria-label={activeTeam ? "关闭团队设置" : "关闭 Bot 设置"} onClick={() => { closeSettings(); setArchiveConfirm(false); }}><IconX size={18} /></button></header>
+      <div className="bot-settings-body">{activeTeam ? <><BotTeamManagement team={activeTeam} onChanged={() => { window.dispatchEvent(new Event("mybuddy:teams-refresh")); void useAppStore.getState().refreshBotWork(true); }} /><BotTeamSettings key={activeTeam.templateId} team={activeTeam} onCancel={() => closeSettings()} onSaved={team => { window.dispatchEvent(new CustomEvent("mybuddy:team-updated", { detail: team })); if (currentScope.current !== scopeKey || settingsEpoch.current !== renderedSettingsEpoch) return; useAppStore.getState().setActiveTeam(team); closeSettings(); }} /></> : <>{activeBot && <section className="bot-settings-identity" aria-label="Bot 身份与职责"><h3>{activeBot.displayName}</h3><p>{activeBot.responsibilitySummary || "尚未设置具体职责。你可以在对话中说明这次希望它协助的目标。"}</p><p>独立 Bot 身份。当前配置与操作范围以已生效的版本及授权为准。</p></section>}{activeBot && <><BotExecutionSettings key={`settings-${activeBot.botId}-${settingsOpen}`} botId={activeBot.botId} onManageModels={() => { closeSettings(); setArchiveConfirm(false); }} /><BotWorkspaceAuthorization key={activeBot.botId} bot={activeBot} /><details className="bot-advanced"><summary>专家配置与权限审阅</summary><BotExpertReview botId={activeBot.botId} /></details>
+<BotDeletion bot={activeBot} onDeleted={() => closeSettings()} /><section className="bot-archive-section">{archiveError && <p role="alert" className="bot-alert">{archiveError}</p>}<h3>归档当前对话</h3><p>收起这段对话，开始新的聊天。事项记录仍会保留。</p>{archiveConfirm ? <div role="group" aria-label="确认归档"><p>确定归档当前对话吗？</p><button type="button" disabled={archiving || Boolean(activeReply) || pending.length > 0} title={activeReply || pending.length ? "仍有前台消息未结束，请先处理对应消息" : undefined} onClick={() => { setArchiving(true); setArchiveError(""); void useAppStore.getState().archiveBotConversation(activeBot.botId).then(() => { setArchiveConfirm(false); closeSettings(); }).catch(error => setArchiveError(error instanceof Error ? error.message : "归档未完成，请稍后重试。")).finally(() => setArchiving(false)); }}>{archiving ? "正在归档…" : "确认归档"}</button><button type="button" disabled={archiving} onClick={() => setArchiveConfirm(false)}>取消</button></div> : <button type="button" onClick={() => setArchiveConfirm(true)}><IconArchive size={15} />归档对话</button>}</section></>}</>}</div>
     </dialog>
   </div>;
 }

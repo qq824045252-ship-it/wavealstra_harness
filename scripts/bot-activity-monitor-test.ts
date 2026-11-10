@@ -54,3 +54,11 @@ const teamOnly = buildActivityRows({ ...input, scopeBotId: "owner", works: [{ ..
 assert(!teamOnly.some(row => row.kind === "work"), "team Work is not personal Bot context");
 assert.equal(buildActivityRows({ ...input, scopeBotId: null }).length, rows.length, "explicit global view preserves all sources");
 console.log("PASS personal Bot scope, team exclusion and explicit global view");
+const teamHistory = { ...histories.owner, teamId: "team-a", conversationId: "team-a-conversation", messages: histories.owner.messages.map(message => ({ ...message, teamId: "team-a", conversationId: "team-a-conversation", messageId: "team-" + message.messageId })) };
+const teamContext = { ...input, histories: { ...histories, "team:team-a": teamHistory } };
+assert(!buildActivityRows({ ...teamContext, scopeBotId: "owner" }).some(row => row.teamId), "personal scope excludes same leader's team requests");
+const onlyTeam = buildActivityRows({ ...teamContext, scopeBotId: "owner", scopeTeamId: "team-a" });
+assert.deepEqual(onlyTeam.map(row => row.id), ["bot:team-reply"]);
+assert.equal(onlyTeam[0].teamId, "team-a");
+assert.equal(buildActivityRows({ ...teamContext, scopeBotId: "owner", scopeTeamId: "team-b" }).length, 0);
+console.log("PASS independent team message scope under the same leader");

@@ -249,7 +249,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
         members: template.members.map(member => ({ ...member,
           displayName: bots.getBot(member.botId)?.displayName ?? member.botId,
           responsibilitySummary: bots.getBot(member.botId)?.responsibilitySummary ?? "" })) }));
-      const workspacePath = options.botWorkspace?.(botId);
+      const workspacePath = options.teamId ? works.teams.resolveWorkspace(userId, options.teamId) : options.botWorkspace?.(botId);
       return output({ templates, availableBots: workspacePath ? works.teams.foregroundCandidates(userId, botId, workspacePath) : [], workspacePath: workspacePath ?? null });
     } }),
   defineTool({ name: "work_team_create", description: "创建并启动团队：先查 work_team_templates；可省略 templateId，提供 taskAssignment 从 availableBots 自主选择适合本次委托的成员和依赖，宿主默认有界并行。也可复用模板内成员和上限。负责人保持当前 Bot，权限仅来自已有范围，目录来自 Bot 设置。title/goalDescription/criteria 是执行规划，宿主独立保留用户原文与附件。用户要求执行即可开工，无需再次确认。不要另调用 work_create 重复派发。成功后可用 work_query_status 查询成员进度，work_pause/resume/cancel 控制已有团队。",
@@ -262,7 +262,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
       const result = works.transaction(() => {
         assertActive();
         const source = receipt(requestId);
-        const workspacePath = options.botWorkspace?.(botId);
+        const workspacePath = input.templateId ? works.teams.resolveWorkspace(userId, input.templateId) : options.botWorkspace?.(botId);
         if (!workspacePath) throw new Error("当前 Bot 没有可用工作目录，请在 Bot 设置中指定文件夹");
         const result = works.teams.createFromForeground(actor(), { ...input,
           operationId: `bot:${conversationId}:${options.requestNamespace ? `request:${options.requestNamespace}:` : ""}team:${api.taskId}`, workspacePath, conversationId, sourceMessageId: source.user_message_id });

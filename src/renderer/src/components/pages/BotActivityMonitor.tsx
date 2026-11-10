@@ -103,7 +103,12 @@ export function ActivityWindow({ scopeTeamId, scopeBotId, onScopeChange, onClose
     }
     // A request can finish while this reader is open. Fetch its exact original
     // history window, never replace the active Bot's store with archived history.
-    void window.api?.botWork.history({ botId: source.message.botId, conversationId: source.message.conversationId, before: source.message.ordinal + 1 }).then(history => {
+    void (async () => {
+      if (!window.api) throw new Error("主机离线");
+      const listed = source.message.teamId ? await window.api.botWork.teamControl({ kind: "list_templates" }) : undefined;
+      const owner = listed?.ok ? listed.templates?.find(team => team.templateId === source.message.teamId)?.ownerBotId : undefined;
+      return window.api.botWork.history({ botId: owner ?? source.message.botId, teamId: source.message.teamId, conversationId: source.message.conversationId, before: source.message.ordinal + 1 });
+    })().then(history => {
       if (!live) return;
       const message = history.messages.find(item => item.messageId === source.message.messageId);
       if (!message) { setInspectError("原请求的最终状态暂时无法读取，下面保留上次记录。"); return; }

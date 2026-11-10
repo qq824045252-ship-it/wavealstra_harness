@@ -17,7 +17,7 @@ function pendingTeam(): SavedTeamRequest | null {
   } catch { return null; }
 }
 /** Named teams reuse the persisted team service; task membership is an explicit server identity. */
-export function BotTeamsNavigation(): React.JSX.Element {
+export function BotTeamsNavigation({ onSelect }: { onSelect?: () => void } = {}): React.JSX.Element {
   const activeTeam = useAppStore(state => state.activeTeam);
   const bots = useAppStore(s => s.botIdentities);
   const works = useAppStore(s => s.botWorks);
@@ -52,7 +52,7 @@ export function BotTeamsNavigation(): React.JSX.Element {
         try { const saved = localStorage.getItem("mybuddy.active-team"); const team = listed.find(item => item.templateId === saved); if (team && !useAppStore.getState().activeTeam) useAppStore.getState().setActiveTeam(team); } catch {}
       } else setError(result.message);
     }).catch(() => { if (live) setError("团队暂时无法加载。"); });
-    const refresh = () => { void window.api?.botWork.teamControl({ kind: "list_templates" }).then(result => { if (live && result.ok) setTeams(result.templates ?? []); }); };
+    const refresh = () => { void window.api?.botWork.teamControl({ kind: "list_templates" }).then(result => { if (live && result.ok) { const listed = result.templates ?? []; setTeams(listed); const state = useAppStore.getState(); if (state.activeTeam && !listed.some(team => team.templateId === state.activeTeam?.templateId)) state.setActiveBotId(state.activeBotId); } }); };
     window.addEventListener("mybuddy:teams-refresh", refresh);
     return () => { live = false; window.removeEventListener("mybuddy:teams-refresh", refresh); };
   }, []);
@@ -63,7 +63,7 @@ export function BotTeamsNavigation(): React.JSX.Element {
   const close = () => { viewEpoch.current++; setManaging(false); setCreating(false); setSelected(null); setSettings(false); setDetailId(null); setDetailSnapshot(null); };
   const openTeam = (team: WorkTeamTemplateDto) => {
     close(); setError(""); setSavedNotice("");
-    useAppStore.getState().setActiveTeam(team);
+    useAppStore.getState().setActiveTeam(team); onSelect?.();
     void useAppStore.getState().refreshBotWork(true);
   };
   const openWork = (work: { workId: string }) => { setSettings(false); setDetailId(work.workId); };
@@ -121,7 +121,7 @@ export function BotTeamsNavigation(): React.JSX.Element {
       <button type="button" className="sidebar-bot-create" onClick={() => { viewEpoch.current++; setError(""); setCreating(true); if (!saveRequest.current) { setName(""); setOwner(candidates[0]?.botId ?? ""); setMembers([]); } }}><IconPlus size={12} />新建团队</button>
     </div>
     {!teams.length && <p className="sidebar-empty">把常用 Bot 组成团队，统一接收任务和返回成果。</p>}
-    {teams.map(team => <button type="button" className={`sidebar-bot-row sidebar-bot-identity ${activeTeam?.templateId === team.templateId ? "active" : ""}`} key={team.templateId} onClick={() => openTeam(team)}>
+    {teams.map(team => <button type="button" className={`sidebar-bot-row sidebar-bot-identity ${activeTeam?.templateId === team.templateId ? "active" : ""}`} aria-pressed={activeTeam?.templateId === team.templateId} key={team.templateId} onClick={() => openTeam(team)}>
       <span className="sidebar-bot-avatar"><IconBot size={18} /></span><span><strong>{team.name}</strong><small>{team.members.length + 1} 位 Bot · 队长 {botName(team.ownerBotId)}</small></span>
     </button>)}
     {adHoc.length > 0 && <details className="bot-team-history"><summary>临时与历史团队事项（{adHoc.length}）</summary>{adHoc.map(work => <button type="button" key={work.workId} onClick={() => openWork(work)}>{work.title}</button>)}</details>}

@@ -26,6 +26,8 @@ export const workTeamPlanSchema = z.object({
   members: z.array(workTeamMemberSchema).min(1).max(24),
   executionPolicy: z.enum(["sequential", "parallel"]).optional(),
   maxConcurrency: z.number().int().min(1).max(4).optional(),
+  /** Optional team-specific folder; omitted means the host-managed team directory. */
+  workspacePath: z.string().trim().min(1).max(4096).optional(),
 }).strict().superRefine((plan, ctx) => {
   const ids = plan.members.map(member => member.botId);
   if (new Set(ids).size !== ids.length || ids.includes(plan.ownerBotId)) {
@@ -55,6 +57,7 @@ export const workTeamControlSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("get_by_operation"), operationId: id }).strict(),
   z.object({ kind: z.literal("retry"), workId: id, versionGuard, confirmNotStarted: z.literal(true) }).strict(),
   z.object({ kind: z.literal("replan"), workId: id, versionGuard, plan: workTeamPlanSchema }).strict(),
+  z.object({ kind: z.literal("resolve_workspace"), templateId: id }).strict(),
   z.object({ kind: z.literal("list_templates"), includeDeleted: z.boolean().optional() }).strict(),
   z.object({ kind: z.literal("save_template"), request: z.object({ operationId: id,
     name: z.string().trim().min(1).max(120), plan: workTeamPlanSchema }).strict() }).strict(),
@@ -109,5 +112,5 @@ export interface WorkTeamTemplateDto extends WorkTeamPlan {
   createdAt: number;
 }
 export type WorkTeamControlResult =
-  | { ok: true; operationId?: string; work?: WorkDto; team?: WorkTeamDto; templates?: WorkTeamTemplateDto[]; template?: WorkTeamTemplateDto; replayed?: boolean }
+  | { ok: true; workspacePath?: string; operationId?: string; work?: WorkDto; team?: WorkTeamDto; templates?: WorkTeamTemplateDto[]; template?: WorkTeamTemplateDto; replayed?: boolean }
   | { ok: false; code: string; message: string };

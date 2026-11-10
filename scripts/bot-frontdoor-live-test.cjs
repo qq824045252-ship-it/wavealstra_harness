@@ -216,7 +216,7 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       await send('请立即交给本团队一次性后台任务：计算 123+456，成员核算，负责人汇总数值。不要联网，不写文件，不要求人工确认。');
       await send('独立插话：17+8，只答数字，不创建任务。');
       await until(async()=> (await history()).messages.some(m=>m.role==='assistant'&&m.status==='completed'&&/25/.test(m.text)), 'team concurrent arithmetic');
-      await until(async()=> (await evaluate('window.api.botWork.listWorks(true)')).some(w=>w.team?.teamId===teamId&&w.lifecycle==='closed'), 'team real Work auto finishes');
+      await until(async()=> { const list=await evaluate('window.api.botWork.listWorks(true)'); const h=await history(); if (!list.length && h.messages.filter(m=>m.role==='assistant'&&!m.workFeedback).length>=2 && h.messages.filter(m=>m.role==='assistant'&&!m.workFeedback).every(m=>['completed','failed'].includes(m.status))) throw Error('Team delegation produced no Work: '+h.messages.filter(m=>m.role==='assistant').map(m=>m.text).join(' | ')); return list.some(w=>w.team?.teamId===teamId&&w.lifecycle==='closed'); }, 'team real Work auto finishes');
       const works=await evaluate('window.api.botWork.listWorks(true)');
       assert.equal(works.length,1); assert.equal(works[0].team.teamId,teamId); assert.equal(works[0].closureConclusion,'succeeded');
       await until(async()=> (await history()).messages.some(m=>m.workFeedback?.kind==='result'&&/579/.test(m.text)), 'result delivered to team conversation');
@@ -233,7 +233,7 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       assert(!await evaluate(`document.querySelector('.bot-thread').innerText.includes('579')`));
       await evaluate(`[...document.querySelectorAll('.sidebar-bot-identity')].find(b=>b.textContent.includes('真实团队 A')).click()`); teamId=teamA;
       await until(()=>evaluate(`document.querySelector('.bot-thread').innerText.includes('579')`),'return restores team A conversation');
-      await evaluate(`document.querySelector('[aria-label="Bot 设置与对话管理"]').click()`);
+      await evaluate(`document.querySelector('[aria-label="团队设置与管理"]').click()`);
       await until(()=>evaluate(`!!document.querySelector('form[aria-label="团队设置"]')`),'team-specific settings reachable');
       report.checks.push('real UI team creation enters shared full workspace; real concurrent model reply; actual team Work returns 579 and closes; personal and second team histories isolated; settings reachable');
     } else if (concurrentScenario) {

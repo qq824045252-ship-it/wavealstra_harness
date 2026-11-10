@@ -89,6 +89,7 @@ const api = { pickLocalFolder: () => folderReply.promise, botWork: {
   teamControl: async (request: WorkTeamControlRequest) => { if (request.kind === "get_by_operation") { lookupRequests.push(request.operationId); return lookupReply.promise; } if (request.kind === "list_templates") return { ok: true, templates: hostTemplates };
     if (request.kind === "save_template") { templateCalls.push(request); const template = { ...request.request.plan, templateId: "template-a", name: request.request.name, createdAt: 1 }; hostTemplates = [template]; return { ok: true, template }; }
     if (request.kind === "set_work_team" || request.kind === "remove_work" || request.kind === "restore_work" || request.kind === "restore_template") { templateCalls.push(request); return { ok: true }; }
+    if (request.kind === "resolve_workspace") return { ok: true, workspacePath: "/teams/default/" + request.templateId };
     if (request.kind === "update_template") { templateCalls.push(request); const template = { ...request.plan, templateId: request.templateId, name: request.name, createdAt: 1 }; hostTemplates = [template]; return { ok: true, template }; }
     if (request.kind === "delete_template") { templateCalls.push(request); hostTemplates = hostTemplates.filter(item => item.templateId !== request.templateId); return { ok: true }; } if (request.kind === "create") { requests.push(structuredClone(request.request)); return reply.promise; } throw new Error("unexpected template operation"); },
   listWorks: async () => [],
@@ -380,15 +381,24 @@ async function main() {
     await check("team settings edits stable team identity without dispatching or changing personal selection", async () => {
       await reset(); await unmount();
       const { BotTeamSettings } = await import("../src/renderer/src/components/pages/BotTeamSettings");
-      const team: WorkTeamTemplateDto = { templateId: "settings-team", name: "Before", createdAt: 1, ownerBotId: mybuddy.botId, ownerResponsibility: "Coordinate", members: [{ botId: other.botId, responsibility: "Read", delegatedScope: ["workspace:read"] }] };
+      const team: WorkTeamTemplateDto = { templateId: "settings-team", name: "Before", createdAt: 1, workspacePath: "/saved/team", ownerBotId: mybuddy.botId, ownerResponsibility: "Coordinate", members: [{ botId: other.botId, responsibility: "Read", delegatedScope: ["workspace:read"] }] };
       let saved: WorkTeamTemplateDto | undefined;
       container = testDocument.body.appendChild(testDocument.createElement("div")); root = createRoot(container);
       await act(async () => root!.render(<BotTeamSettings team={team} onSaved={value => { saved = value; }} onCancel={() => {}} />));
+      assert.equal(container.querySelector<HTMLInputElement>("#team-settings-workspace")!.value, "/saved/team");
+      const pickFolder = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "选择文件夹")!;
+      await act(async () => nativeClick(pickFolder));
+      await act(async () => folderReply.resolve({ path: "/selected/team", name: "team" }));
+      assert.equal(container.querySelector<HTMLInputElement>("#team-settings-workspace")!.value, "/selected/team");
       await edit(container.querySelector<HTMLInputElement>('input:not([type=checkbox])')!, "After");
       await edit(container.querySelector<HTMLTextAreaElement>(`textarea[aria-label="${other.displayName}的职责"]`)!, "Updated responsibility");
       await act(async () => container.querySelector("form")!.dispatchEvent(new testWindow.Event("submit", { bubbles: true, cancelable: true })));
-      assert.equal(saved?.templateId, team.templateId); assert.equal(saved?.name, "After"); assert.equal(saved?.members[0].responsibility, "Updated responsibility");
+      assert.equal(saved?.templateId, team.templateId); assert.equal(saved?.workspacePath, "/selected/team"); assert.equal(saved?.name, "After"); assert.equal(saved?.members[0].responsibility, "Updated responsibility");
       assert.equal(requests.length, 0); assert.equal(store.getState().selectedWorkId, work.workId);
+      await act(async () => nativeClick([...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "使用默认目录")!));
+      await act(async () => container.querySelector("form")!.dispatchEvent(new testWindow.Event("submit", { bubbles: true, cancelable: true })));
+      assert.equal(saved?.workspacePath, undefined);
+
     });
     await check("folder picker fills a local path, cancellation preserves text and late results do not reopen", async () => {
       await reset();
@@ -418,6 +428,14 @@ async function main() {
       assert.match(container.textContent!, /不会删除磁盘成果文件/);
       await act(async () => nativeClick(button("确认移到回收站"))); assert.equal(templateCalls[1].kind, "remove_work");
       assert.equal(requests.length, 0);
+    });
+    await check("saved team without a configured folder receives its own default workspace automatically", async () => {
+      await reset(); await unmount();
+      const team: WorkTeamTemplateDto = { templateId: "default-folder-team", name: "Default folder team", createdAt: 1, ownerBotId: mybuddy.botId, ownerResponsibility: "Coordinate", members: [{ botId: other.botId, responsibility: "Read", delegatedScope: ["workspace:read"] }] };
+      container = testDocument.body.appendChild(testDocument.createElement("div")); root = createRoot(container);
+      await act(async () => root!.render(<BotTeamDialog open initialTeam={team} onClose={() => {}} />));
+      assert.equal(container.querySelector<HTMLInputElement>("#team-workspace")!.value, "/teams/default/default-folder-team");
+      assert.equal(requests.length, 0, "preparing the team folder does not submit a task");
     });
     await testRecoveryControls();
     console.log(`PASS ${count} team UI behaviour checks`);

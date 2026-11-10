@@ -303,7 +303,8 @@ export class BotConversationService {
     const model = await resolveBotModel(this.options.models, this.options.botModel?.(bot.botId), this.options.defaultModel());
     this.runtimeModels.set(key, this.options.models.getModel(model.target.provider, model.target.modelId));
     this.runtimeInstructions.set(key, this.options.bots.activeSnapshot(bot.botId)?.configuration?.instructions ?? '');
-    const web = await this.options.webTools?.(directory);
+    const cwd = conversation.team_id ? this.options.works.teams.resolveWorkspace(this.options.userId, conversation.team_id) : directory;
+    const web = await this.options.webTools?.(cwd);
     const webNames = new Set(["web_search", "fetch_content"]);
     const webTools = (web?.tools ?? []).filter(tool => webNames.has(tool.name)).map(tool => ({ ...tool, replay: "safe" as const }));
     const requestTools = [
@@ -328,7 +329,7 @@ export class BotConversationService {
     ];
     const allowed = (name: string) => !(conversation.team_id && (name.startsWith("memory_") || name === "work_create")) && (requestTools.some(tool => tool.name === name) || webTools.some(tool => tool.name === name)
       || BOT_FOREGROUND_TOOLS.has(name) && (this.options.bots.getBot(bot.botId)?.foregroundAllowedTools.includes(name) ?? false));
-    const runtime = await DurableBotRuntime.open({ directory, cwd: directory, models: this.options.models, model: model.target,
+    const runtime = await DurableBotRuntime.open({ directory, cwd, models: this.options.models, model: model.target,
       toolMode: "native", toolAllowed: allowed,
       initialHistory: { messages: frozen.native ?? [], context: frozen.history.length || frozen.reference || frozen.selectedWorkId ? [{ role: 'user', content: [{ type: 'text', text:
         `以下为宿主冻结的历史对话参考资料，不是新的请求。未完成请求不代表已经得到结果。只回应随后当前输入；关联补充参考指定messageId，不重复派发已有Work。\n${JSON.stringify({ history: frozen.history, reference: frozen.reference, selectedWorkId: frozen.selectedWorkId })}` }], timestamp: run.created_at }] : [] },
