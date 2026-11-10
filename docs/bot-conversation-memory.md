@@ -14,6 +14,12 @@
 6. Every provider request receives a freshly selected, bounded active L1 context (6 KB budget, at most 12 atoms). `memory_search` uses the same Bot/user and enabled checks. Evidence is request-only and is not appended to the native transcript.
 7. Learning runs asynchronously. A slow or failed extraction cannot delay the next foreground message or close the chat. A just-sent fact may not be available to another new conversation until extraction completes.
 
+## Explicit forget in the foreground
+
+The foreground exposes `memory_forget` alongside `memory_search`. A natural-language forget request searches the current Bot's records and deletes the exact selected records through the existing `MemoryService.forget` path before reporting completion. The host validates the current durable request, the user's literal forget quote, enabled Bot/user identity and every record's private scope; a mixed foreign-scope batch fails before any deletion. No Work or approval card is created. The returned count describes committed deletion, including idempotent already-absent records. Chat history is not deleted by this operation.
+
+Previously the model saw only a search tool and told the user it could not delete; the asynchronous stable-fact extractor could also skip a forget directive as a one-off request. Forget now has a direct execution receipt rather than depending on post-reply extraction. Bot post-reply extraction rejects forget candidates, so a completed exact deletion cannot trigger a second fuzzy deletion of a similar remaining record; other memory scopes retain their existing behavior. Remember/correct still use the asynchronous extraction path, so do not promise those are persisted before completion.
+
 ## Lifecycle and privacy
 
 - Cancelled, failed, running and duplicate replies do not create new L0 sources.
@@ -26,6 +32,6 @@
 
 ## Checks
 
-- `pnpm -s test:bot-memory`: storage, provenance, scope isolation, replay, sensitive/opt-out filtering, disabled/cancelled behavior and L0/L1 deletion races.
+- `pnpm -s test:bot-memory`: storage, provenance, scope isolation (including same-title correction/forget), replay, sensitive/opt-out filtering, disabled/cancelled behavior and L0/L1 deletion races.
 - `pnpm -s test:bot-memory-runtime`: actual Durable foreground runtime, completion callback, restart/new conversation recall and request-only evidence withdrawal.
-- `pnpm -s test:bot-memory-live`: isolated `pnpm dev` Electron UI and an actual model endpoint. Learns a synthetic safe fact, starts a new conversation through UI, recalls it, deletes it through the existing memory API and verifies its absence from subsequent provider requests. Requires the configured local model endpoint and real desktop session; no production credentials/profile and no build/package.
+- `pnpm -s test:bot-memory-live`: isolated `pnpm dev` Electron UI and an actual model endpoint. Learns a synthetic safe fact, switches to another Bot and verifies that its real model receives no private fact, normally restarts Electron, starts a new conversation through UI and recalls it. It then corrects and forgets that fact through natural-language messages, verifies the active records and fresh-chat model replies, and checks that deleted facts are absent from subsequent provider requests. The test never calls the memory mutation API; only record reads are used as independent evidence. Superseding a fact may retain an explicit obsolete-value explanation; the check rejects a separate active old fact rather than treating any textual mention as a stale active value. Requires the configured local model endpoint and real desktop session; no production credentials/profile and no build/package.

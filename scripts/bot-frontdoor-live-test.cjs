@@ -112,9 +112,17 @@ const provider = http.createServer(async (req,res) => {
   } catch(error) { res.writeHead(502);res.end(String(error)); }
 });
 async function send(text) {
-  await evaluate('document.querySelector("#bot-draft").focus()');
-  await rpc('Input.insertText', { text });
-  await until(() => evaluate(`document.querySelector('#bot-draft').value === ${JSON.stringify(text)}`), 'composer text');
+  // New-conversation transitions can replace the textarea after preload is ready.
+  // Re-focus only an empty composer; never append a duplicate prompt or resend a receipt.
+  await until(async () => {
+    const value = await evaluate('document.querySelector("#bot-draft")?.value');
+    if (value === text) return true;
+    if (value === '') {
+      await evaluate('document.querySelector("#bot-draft").focus()');
+      await rpc('Input.insertText', { text });
+    }
+    return false;
+  }, 'composer text');
   await evaluate('document.querySelector(".bot-composer button[type=submit]").click()');
   await until(() => evaluate('document.querySelector("#bot-draft").value === ""'), 'accepted receipt clears matching draft');
 }
@@ -165,7 +173,7 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     await evaluate('[...document.querySelectorAll("button")].find(button => button.textContent.includes("Bot 模式")).click()');
     await until(() => evaluate('Boolean(document.querySelector("#bot-draft"))'), 'independent Bot page');
     await until(() => evaluate('window.api.botWork.hostStatus().then(value => value.isAuthority)'), 'authoritative Bot host');
-    const botId = 'bot-mybuddy-default';
+    let botId = 'bot-mybuddy-default';
     const history = () => evaluate(`window.api.botWork.history({botId:'${botId}'})`);
     const foregroundDone = async _before => {
       const requestId=(await history()).messages.filter(m=>m.role==='user').at(-1)?.requestId;
@@ -311,15 +319,31 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
         await evaluate('document.querySelector(".bot-new-conversation").click()');
         await until(() => evaluate('[...document.querySelectorAll("button")].some(button => button.textContent === "归档并开始新对话")'), 'new conversation confirmation');
         await evaluate('[...document.querySelectorAll("button")].find(button => button.textContent === "归档并开始新对话").click()');
-        await until(async () => (await history()).messages.length === 0, 'blank new conversation');
+        await until(async () => (await history()).messages.length === 0 && await evaluate('!document.querySelector("dialog[open]")'), 'blank new conversation and dismissed dialog');
       };
+      const originalBotId = botId;
+      const other = await evaluate(`window.api.botWork.createBot({requestId:crypto.randomUUID(),displayName:'隔离记忆搭档',responsibilitySummary:'独立记忆验收'})`);
+      assert(other.ok, JSON.stringify(other));
+      await until(()=>evaluate(`[...document.querySelectorAll('.sidebar-bot-identity')].some(b=>b.textContent.includes('隔离记忆搭档'))`), 'second Bot appears');
+      await evaluate(`[...document.querySelectorAll('.sidebar-bot-identity')].find(b=>b.textContent.includes('隔离记忆搭档')).click()`);
+      botId = other.bot.botId;
+      await until(()=>evaluate(`document.querySelector('.bot-workspace')?.innerText.includes('隔离记忆搭档')`), 'second Bot selected');
+      const isolationStart = requests.length;
+      await send('我的常用测试代号是什么？没有记录就直说不知道。'); await foregroundDone(0);
+      report.otherBotHistory = await history();
+      assert(!JSON.stringify(requests.slice(isolationStart)).includes('云杉7842'), 'other Bot never receives private memory');
+      assert(!report.otherBotHistory.messages.some(m=>m.role==='assistant'&&m.text.includes('云杉7842')));
+      await evaluate(`[...document.querySelectorAll('.sidebar-bot-identity')].find(b=>b.querySelector('strong')?.textContent==='MyBuddy').click()`);
+      botId = originalBotId;
+      await until(()=>evaluate(`document.querySelector('.sidebar-bot-identity[aria-pressed=true] strong')?.textContent==='MyBuddy'`), 'original Bot selected');
+      report.checks.push('second Bot real model receives neither private fact nor original conversation');
       const oldConversation = (await history()).conversationId;
       if(electronWatch) { clearInterval(electronWatch); electronWatch=undefined; }
       try { await rpc('Browser.close'); } catch {} socket.close(); socket=undefined;
       await stopTestElectronMains();
       if(processDev.exitCode===null) processDev.kill('SIGTERM');
       await launch();
-      await until(()=>evaluate('Boolean(window.api?.botWork?.history)'), 'memory persisted after actual Electron restart');
+      await until(()=>evaluate('Boolean(window.api?.botWork?.history && document.querySelector(".sidebar-user-main"))'), 'memory persisted after actual Electron restart');
       if(!await evaluate('Boolean(document.querySelector("#bot-draft"))')) {
         await evaluate('document.querySelector(".sidebar-user-main").click()');
         await until(() => evaluate('[...document.querySelectorAll("button")].some(button => button.textContent.includes("Bot 模式"))'), 'account navigation after restart');
@@ -333,16 +357,34 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       assert.notEqual(report.recalledHistory.conversationId, oldConversation);
       assert(report.recalledHistory.messages.some(message => message.role === 'assistant' && message.text.includes('云杉7842')), 'real model recalls learned fact in fresh chat');
       report.checks.push('real UI + real model: stable user fact automatically learned without approval and recalled in a new chat after actual Electron restart');
-      await evaluate(`window.api.memory.forget(${JSON.stringify(report.memories.map(atom => atom.id))})`);
+      await send('修正一下：我的常用测试代号现在改成雪松9361，旧的云杉7842不再使用。请更新长期记忆。');
+      await foregroundDone(0);
+      await until(async () => {
+        const atoms = await evaluate(`window.api.memory.list({scopeType:'bot',scopeId:'${botId}',status:'active'})`);
+        return atoms.some(atom => atom.content.includes('雪松9361')) && !atoms.some(atom => atom.content.includes('云杉7842') && !atom.content.includes('雪松9361'));
+      }, 'natural correction replaces old active fact');
+      report.correctedMemories = await evaluate(`window.api.memory.list({scopeType:'bot',scopeId:'${botId}',status:'active'})`);
+      await newChat();
+      await send('我的常用测试代号是什么？'); await foregroundDone(0);
+      report.correctedRecall = await history();
+      assert(report.correctedRecall.messages.some(m=>m.role==='assistant'&&m.text.includes('雪松9361')));
+      await send('忘记我的常用测试代号，删除关于这个代号的长期记忆。'); await foregroundDone(0);
+      await until(async () => {
+        const atoms = await evaluate(`window.api.memory.list({scopeType:'bot',scopeId:'${botId}',status:'active'})`);
+        return !atoms.some(atom => /雪松9361|云杉7842/.test(atom.content));
+      }, 'natural forget removes active fact');
+      assert(requests.some(request => request.messages.some(message => message.tool_calls?.some(call => call.function?.name === 'memory_forget'))), 'real model invokes synchronous forget tool');
+      report.forgottenReply = (await history()).messages.filter(m=>m.role==='assistant').at(-1)?.text;
+      assert(!/无法.*删|没有删除能力|记忆管理界面/.test(report.forgottenReply), 'forget must return a truthful completed receipt, not redirect the user');
       await newChat();
       const before = requests.length;
       await send('我的常用测试代号是什么？没有记录就直说不知道。');
       await foregroundDone(0);
       report.afterDeletion = await history();
-      assert(!JSON.stringify(requests.slice(before)).includes('云杉7842'), 'deleted memory is absent from fresh provider requests');
+      assert(!/云杉7842|雪松9361/.test(JSON.stringify(requests.slice(before))), 'deleted memory is absent from fresh provider requests');
       assert(!report.afterDeletion.messages.some(message => message.role === 'assistant' && message.text.includes('云杉7842')));
       assert.equal((await evaluate('window.api.botWork.listWorks(true)')).length, 0);
-      report.checks.push('existing memory deletion removes provider evidence and real model recall, with no Work created');
+      report.checks.push('natural correction supersedes old fact; natural forget removes provider evidence and fresh-chat recall, no API deletion and no Work');
     } else if (watchScenario) {
       const works = () => evaluate('window.api.botWork.listWorks(true)');
       const detail = id => evaluate(`window.api.botWork.getWork(${JSON.stringify(id)})`);

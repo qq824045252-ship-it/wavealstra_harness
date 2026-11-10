@@ -951,7 +951,9 @@ export class MemoryService {
         || !sourceTurns.some(turn => turn.userText.includes(candidate.userEvidence!))
         || candidate.retention !== "stable" || candidate.sensitivity !== "none" || !botMemoryTextEligible(`${candidate.title} ${candidate.content} ${candidate.userEvidence ?? ""} ${candidate.replaces ?? ""}`)
         || candidate.executionEvidence || ["progress", "open_question", "risk", "procedure"].includes(candidate.kind)
-        || (candidate.operationHint === "forget" && !/(?:忘记|删除.*记忆|forget|delete.*memor)/i.test(candidate.userEvidence ?? ""))
+        // Foreground forget has an exact tool receipt. Never run the same deletion
+        // again through fuzzy reconciliation after that reply. Other scopes retain their existing path.
+        || candidate.operationHint === "forget"
         || (!candidate.explicit && candidate.confidence < 0.85))) continue;
       const scope = this.normalizeCandidateScope(candidate.scopeType, { projectId, workspaceId, taskId: input.taskId });
       if (!scope) continue;

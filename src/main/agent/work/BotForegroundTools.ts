@@ -33,6 +33,7 @@ const change = z.object({ ...fields, ...timing, watchRule: watchRule.nullable().
   deadlineAt: timing.deadlineAt.nullable().optional(), workId: text, versionGuard: guard }).strict();
 const control = z.object({ workId: text, reason: text.optional(), versionGuard: guard }).strict();
 const memory = z.object({ query: text }).strict();
+const memoryForget = z.object({ ids: z.array(text).min(1).max(20), userEvidence: text }).strict();
 const teamCreate = z.object({ templateId: z.string().min(1).max(200), title: z.string().min(1).max(240),
   goalDescription: z.string().min(1).max(2000), criteria: z.array(z.string().min(1).max(1000)).min(1).max(12) }).strict();
 // One source for Function Calling and runtime validation: nested strictness,
@@ -53,12 +54,13 @@ export interface BotForegroundToolOptions {
   schedule: (work: WorkDto, operationId: string, retryBlocked?: boolean) => void;
   wake: (workId?: string) => void;
   memorySearch: (query: string) => unknown;
+  memoryForget?: (ids: string[], userText: string, evidence: string) => unknown;
   isAuthority: () => boolean;
   botWorkspace?: (botId: string) => string;
 }
 
 /** Foreground Work/memory controls. Read-only web tools are mounted separately by the host. */
-export const BOT_FOREGROUND_TOOLS = new Set(["work_query_status", "work_create", "work_amend", "work_pause", "work_resume", "work_cancel", "memory_search", "work_team_templates", "work_team_create"]);
+export const BOT_FOREGROUND_TOOLS = new Set(["work_query_status", "work_create", "work_amend", "work_pause", "work_resume", "work_cancel", "memory_search", "memory_forget", "work_team_templates", "work_team_create"]);
 
 export function botForegroundTools(options: BotForegroundToolOptions) {
   const { db, works, bots, messages, userId, botId, conversationId } = options;
@@ -265,5 +267,15 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
     } }),
   defineTool({ name: "memory_search", description: "查询当前 Bot 私有记忆，不访问其他 Bot 或项目。",
     parameters: inputParameters.memory, replay: "safe",
-    execute: async args => { assertActive(); return output(options.memorySearch(memory.parse(args).query)); } })];
+    execute: async args => { assertActive(); return output(options.memorySearch(memory.parse(args).query)); } }),
+  defineTool({ name: "memory_forget", description: "用户明确要求忘记时，先 memory_search 找到对应记录，再删除当前 Bot 的这些私人记忆。必须提供当前用户要求忘记的原话。只在工具成功后说已忘记；不删除聊天历史，不创建 Work。",
+    parameters: parameters(memoryForget), replay: "safe",
+    execute: async (args, api, context) => {
+      assertActive();
+      const input = memoryForget.parse(args);
+      const requestId = await botForegroundRequest(api, api.callId, context);
+      const source = receipt(requestId);
+      if (!options.memoryForget) throw new Error("当前记忆删除服务不可用");
+      return output(options.memoryForget(input.ids, messages.message(source.user_message_id)!.text, input.userEvidence));
+    } })];
 }

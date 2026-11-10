@@ -22,11 +22,13 @@ const works = new WorkService(db.connection, { bots });
 const messages = new BotConversationRepository(db.connection);
 const scheduled: { workId: string; retryBlocked: boolean | undefined }[] = [];
 const memoryQueries: string[] = [];
+const forgetInputs: unknown[] = [];
 const first = messages.accept(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID, requestId: "contract-first", text: "创建并管理这项委托" });
 const tools: ToolRegistration[] = botForegroundTools({ db: db.connection, userId: LOCAL_USER_ID, botId: DEFAULT_BOT_ID,
   conversationId: first.conversationId, bots, messages, works, isAuthority: () => true,
   schedule: (work, _operation, retryBlocked) => scheduled.push({ workId: work.workId, retryBlocked }), wake: () => {},
-  memorySearch: query => { memoryQueries.push(query); return []; } });
+  memorySearch: query => { memoryQueries.push(query); return []; },
+  memoryForget: (ids, userText, evidence) => { forgetInputs.push({ ids, userText, evidence }); return { forgottenCount: ids.length }; } });
 const findTool = (name: string) => { const tool = tools.find(item => item.name === name); assert(tool, name); return tool; };
 // Check the JSON actually sent to Function Calling, not TypeBox metadata or the Zod object.
 const schemas = new Map(tools.map(tool => [tool.name, Type.Unsafe(JSON.parse(JSON.stringify(tool.parameters)))]));
@@ -90,6 +92,8 @@ try {
     ["work_create", { ...createArgs, actor: { kind: "system" } }],
     ["work_create", { ...createArgs, authorization: DESKTOP_USER_GRANTS }],
     ["work_query_status", { workId: " \n " }], ["work_query_status", { workId: work.workId, actor: "system" }],
+    ["memory_forget", { ids: [], userEvidence: "忘记" }], ["memory_forget", { ids: ["x"], userEvidence: " " }],
+    ["memory_forget", { ids: ["x"], userEvidence: "忘记", botId: "foreign" }],
     ["memory_search", {}], ["memory_search", { query: " \t " }], ["memory_search", { query: "q".repeat(32001) }],
     ["memory_search", { query: "valid", botId: "another-bot" }],
     ["work_amend", { workId: work.workId, versionGuard: guard, constraints: Array(31).fill("constraint") }],
@@ -113,6 +117,12 @@ try {
     criteria: Array(12).fill({ text: "criterion", requiresRealEnvironmentCheck: false }) }), "documented limits are inclusive");
   await validInvoke("memory_search", { query: "  remembered constraint  " });
   assert.deepEqual(memoryQueries, ["remembered constraint"]);
+  const forgetRequest = messages.accept(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID, requestId: "forget-request", text: "忘记测试代号" });
+  await validInvoke("memory_forget", { ids: ["memory-fixture"], userEvidence: "忘记测试代号" }, forgetRequest.requestId);
+  assert.deepEqual(forgetInputs, [{ ids: ["memory-fixture"], userText: "忘记测试代号", evidence: "忘记测试代号" }]);
+  messages.update(forgetRequest.assistantMessageId, "completed", "done");
+  await assert.rejects(() => validInvoke("memory_forget", { ids: ["memory-fixture"], userEvidence: "忘记测试代号" }, forgetRequest.requestId), /原始用户消息已结束/);
+
 
   // A correct-looking version alone cannot replace a read made by this request.
   await assert.rejects(() => validInvoke("work_pause", { workId: work.workId, versionGuard: guard }), /必须先查询/);

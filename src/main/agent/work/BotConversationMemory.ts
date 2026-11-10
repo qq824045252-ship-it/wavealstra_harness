@@ -21,6 +21,27 @@ export class BotConversationMemory {
     return this.options.memory.search({ botId, query, scopeTypes: ["bot"], includeInherited: false, statuses: ["active"], limit: 20 });
   }
 
+  /** Exact records selected by the foreground model, anchored to the current user's request. */
+  forget(botId: string, ids: string[], userText: string, evidence: string) {
+    if (!this.allowedBot(botId)) throw new Error("当前 Bot 记忆未启用或不可用");
+    if (!evidence.trim() || !userText.includes(evidence)
+      || !/(?:忘记|删除.*记忆|forget|delete.*memor)/i.test(evidence)
+      || /(?:不要|别|不必|不能|勿).{0,4}(?:忘记|删除)|(?:don['’]?t|do not|never)\s+(?:forget|delete)/i.test(userText)) {
+      throw new Error("仅在当前用户明确要求忘记时删除记忆，不能用历史消息或模型推测替代");
+    }
+    const result = this.options.db.connection.transaction(() => {
+      const records = [...new Set(ids)].map(id => this.options.memory.get(id));
+      if (records.some(record => record && (!record.scopes.length || record.scopes.some(scope => scope.scopeType !== "bot" || scope.scopeId !== botId)))) {
+        throw new Error("只能删除当前 Bot 的私人记忆，不能删除其他范围");
+      }
+      const present = records.filter(record => record !== undefined);
+      for (const record of present) this.options.memory.forget(record.id);
+      return { forgottenCount: present.length, alreadyAbsentCount: records.length - present.length, titles: present.map(record => record.title) };
+    })();
+    this.options.changed();
+    return result;
+  }
+
   context(botId: string, conversationId: string): string {
     if (!this.allowedBot(botId)) return "";
     const conversation = this.messages.conversation(this.options.userId, botId, conversationId);

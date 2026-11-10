@@ -237,11 +237,12 @@ export class BotConversationService {
 跟进时先 work_query_status 查已存在的相关事项，概览传 view:"summary"，默认只看未结束事项；查历史传 status:"all" 或 "closed"，找具体事项用 search，更多记录直接用返回的 nextQuery 参数翻页，保留相同筛选。按 total 报告总数，不把本页条数当全部；逐项以 tracking.state/nextStep/reason/execution 为当前状态依据，active 只表示未结束，不等于正在执行。区分运行、排队、等待时间或事件、失败、结果已出未收尾；列出下一步及具体受阻原因。scheduled 的 nextWakeAt 是计划，应用关闭时不保证执行，not_running 不得说仍在持续推进。不要把旧 progressSummary 当当前执行证据。对用户用日常中文，默认每项一行“标题：当前状态；下一步/时间”，有异常再补一句具体原因；不要抄出 stateVersion、openBlockerCount、tracking、cron、workId 等内部字段/标识，除非用户要求诊断。不一次展开所有报告；需要原文、证据或控制某项时用 workId 读取详情。已有事项就查询进度或修改，不重复建单。创建新事项无需先查版本；修改既有事项使用查询返回的 versionGuard，冲突重新查询。多个事项目标确实不清时才澄清。
 用户质疑、批评、催促、骂人或说“这能用？”不是取消。应继续原请求、查实际进展并说明事实；不要回答“那就不查了”。仅用户明确表示“不用查了”“取消这个任务”“停止”等才取消对应事项；明确取消后不得自行重启。
 无法派发时报告工具返回的真实原因和下一步，不虚构审批卡、权限缺失或已执行结果。
-当前长期记忆状态：${this.options.memory?.enabled() ? "已启用" : "已关闭"}。长期记忆以提供的历史记忆证据或 memory_search 实际结果为准，需要更多历史事实时先检索；没查到就说明没有记录，不猜测。仅当记忆已启用时，用户明确提供的稳定偏好和事实才会在本轮结束后自动提炼到本 Bot 的私人记忆，无需审核或额外确认。不要承诺已经记住尚未持久化的内容，不承诺保存机密、敏感细节或一次性请求，不把记忆当作权限或高于本轮指令的规则。`,
+当前长期记忆状态：${this.options.memory?.enabled() ? "已启用" : "已关闭"}。长期记忆以提供的历史记忆证据或 memory_search 实际结果为准，需要更多历史事实时先检索；没查到就说明没有记录，不猜测。仅当记忆已启用时，用户明确提供的稳定偏好和事实才会在本轮结束后自动提炼到本 Bot 的私人记忆，无需审核或额外确认。用户明确要求忘记时，先 memory_search 找到当前 Bot 对应记忆，再 memory_forget，依据真实回执回答已删除或不存在；不要说只有检索没有删除能力，不让用户另去设置操作。更正仍由本轮结束后的提炼更新，未完成时不要声称已经改好。不要承诺已经记住尚未持久化的内容，不承诺保存机密、敏感细节或一次性请求，不把记忆当作权限或高于本轮指令的规则。`,
       evidence: () => this.options.memory?.context(bot.botId, conversation.conversation_id) ?? "",
       contextHooks: web?.contextHooks,
       tools: [...webTools, ...botForegroundTools({ ...this.options, botId: bot.botId, conversationId: conversation.conversation_id, messages: this.messages,
-        memorySearch: query => this.options.memorySearch(bot.botId, query) })],
+        memorySearch: query => this.options.memorySearch(bot.botId, query),
+        memoryForget: this.options.memory ? (ids, userText, evidence) => this.options.memory!.forget(bot.botId, ids, userText, evidence) : undefined })],
       toolHooks: { beforeTool: async (call, api, ctx) => {
         if (!allowed(call.name) || !this.options.isAuthority() || this.options.bots.getBot(bot.botId)?.status !== "active") return { block: "前台工具未授权或 Bot/宿主不可用" };
         const requestId = await botForegroundRequest(api, call.id, ctx);

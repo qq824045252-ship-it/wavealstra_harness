@@ -19,6 +19,10 @@ const root = await mkdtemp(join(tmpdir(), "bot-memory-native-"));
 const db = new AppDatabase(join(root, "app.db"));
 const bots = new BotRegistry(db.connection);
 bots.registerBot({ userId: LOCAL_USER_ID, botId: "memory-native", displayName: "memory native" });
+assert(bots.getBot("memory-native")!.foregroundAllowedTools.includes("memory_forget"));
+// Old persisted rows must not hide the new user-requested forget action.
+db.connection.prepare("UPDATE bots SET foreground_allowed_tools_json=? WHERE bot_id=?").run(JSON.stringify(["memory_search"]), "memory-native");
+assert(bots.getBot("memory-native")!.foregroundAllowedTools.includes("memory_forget"));
 const works = new WorkService(db.connection, { bots, isAuthority: () => true });
 const memory = new MemoryService(db, { semantic: false });
 const pipeline = new MemoryPipelineManager(db);
