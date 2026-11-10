@@ -37,8 +37,8 @@ export function BotTeamManagement({ team, work, onChanged }: {
       </select></label>
       <button type="button" disabled={busy || !target} onClick={() => void perform({ kind: "set_work_team", workId: work.workId, templateId: target }, "事项已移动，未重新执行。")}>移动此事项</button>
       {work.team?.removedAt ? <button type="button" disabled={busy} onClick={() => void perform({ kind: "restore_work", workId: work.workId }, "事项已恢复。")}>恢复此事项</button>
-        : <><button type="button" disabled={busy || work.lifecycle !== "closed"} onClick={() => setConfirm("work")}>删除此事项</button>
-          {work.lifecycle !== "closed" && <p>此事项尚未结束。请先在事项详情停止或结束它，再删除；移动不受影响。</p>}</>}
+        : <><button type="button" disabled={busy || !!work.team?.removalRequestedAt} onClick={() => setConfirm("work")}>{work.team?.removalRequestedAt ? "正在停止并移到回收站…" : work.lifecycle === "closed" ? "删除此事项" : "停止并删除此事项"}</button>
+          {work.lifecycle !== "closed" && <p>{work.team?.removalRequestedAt ? "已请求停止此事项；执行停止后自动移到回收站，不影响其他事项。" : "可直接停止此事项并移到回收站，不必先到详情结束；保留已有成果文件。"}</p>}</>}
     </section>}
     {team && <section>
       <h3>管理团队：{team.name}</h3>
@@ -46,11 +46,11 @@ export function BotTeamManagement({ team, work, onChanged }: {
       <button type="button" disabled={busy} onClick={() => setConfirm("team")}>删除此团队</button>
     </section>}
     {confirm && <div role="alert" className="bot-team-management-confirm">
-      <p>{confirm === "team" ? `将团队“${team?.name}”移到回收站？不删除成员、事项或文件。` : `将事项“${work?.title}”移到回收站？可恢复；不会删除磁盘成果文件。`}</p>
+      <p>{confirm === "team" ? `将团队“${team?.name}”移到回收站？不删除成员、事项或文件。` : `${work?.lifecycle === "closed" ? "将" : "停止且仅停止此事项，然后将"}事项“${work?.title}”移到回收站？可恢复；不会删除磁盘成果文件。`}</p>
       <button type="button" disabled={busy} onClick={() => setConfirm(null)}>取消</button>
       <button type="button" disabled={busy} onClick={() => {
         if (confirm === "team" && team) void perform({ kind: "delete_template", templateId: team.templateId }, "团队已移到回收站，历史事项保留。");
-        if (confirm === "work" && work) void perform({ kind: "remove_work", workId: work.workId }, "事项已移到回收站，成果文件未删除。");
+        if (confirm === "work" && work) void perform({ kind: work.lifecycle === "closed" ? "remove_work" : "stop_and_remove_work", workId: work.workId }, work.lifecycle === "closed" ? "事项已移到回收站，成果文件未删除。" : "已受理停止并删除；执行停止后自动移到回收站。");
       }}>确认移到回收站</button>
     </div>}
     <details className="bot-team-recycle"><summary>回收站（团队 {teams.filter(item => item.deletedAt).length} · 事项 {removed.length}）</summary>

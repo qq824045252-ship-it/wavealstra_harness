@@ -88,7 +88,7 @@ let BotTeamDialog: typeof import("../src/renderer/src/components/pages/BotTeamDi
 const api = { pickLocalFolder: () => folderReply.promise, botWork: {
   teamControl: async (request: WorkTeamControlRequest) => { if (request.kind === "get_by_operation") { lookupRequests.push(request.operationId); return lookupReply.promise; } if (request.kind === "list_templates") return { ok: true, templates: hostTemplates };
     if (request.kind === "save_template") { templateCalls.push(request); const template = { ...request.request.plan, templateId: "template-a", name: request.request.name, createdAt: 1 }; hostTemplates = [template]; return { ok: true, template }; }
-    if (request.kind === "set_work_team" || request.kind === "remove_work" || request.kind === "restore_work" || request.kind === "restore_template") { templateCalls.push(request); return { ok: true }; }
+    if (request.kind === "set_work_team" || request.kind === "remove_work" || request.kind === "stop_and_remove_work" || request.kind === "restore_work" || request.kind === "restore_template") { templateCalls.push(request); return { ok: true }; }
     if (request.kind === "resolve_workspace") return { ok: true, workspacePath: "/teams/default/" + request.templateId };
     if (request.kind === "update_template") { templateCalls.push(request); const template = { ...request.plan, templateId: request.templateId, name: request.name, createdAt: 1 }; hostTemplates = [template]; return { ok: true, template }; }
     if (request.kind === "delete_template") { templateCalls.push(request); hostTemplates = hostTemplates.filter(item => item.templateId !== request.templateId); return { ok: true }; } if (request.kind === "create") { requests.push(structuredClone(request.request)); return reply.promise; } throw new Error("unexpected template operation"); },
@@ -427,6 +427,12 @@ async function main() {
       await act(async () => nativeClick(button("删除此事项"))); assert.equal(templateCalls.length, 1);
       assert.match(container.textContent!, /不会删除磁盘成果文件/);
       await act(async () => nativeClick(button("确认移到回收站"))); assert.equal(templateCalls[1].kind, "remove_work");
+      await act(async () => root!.render(<BotTeamManagement work={{ ...work, lifecycle: "active" }} onChanged={() => changes++} />));
+      assert.equal(button("停止并删除此事项").disabled, false);
+      await act(async () => nativeClick(button("停止并删除此事项")));
+      assert.match(container.textContent!, /停止且仅停止此事项/);
+      await act(async () => nativeClick(button("确认移到回收站")));
+      assert.equal(templateCalls.at(-1)?.kind, "stop_and_remove_work");
       assert.equal(requests.length, 0);
     });
     await check("saved team without a configured folder receives its own default workspace automatically", async () => {

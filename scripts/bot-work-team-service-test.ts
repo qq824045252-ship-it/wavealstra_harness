@@ -118,6 +118,35 @@ try {
   ok(works.teams.handle(user, { kind: "delete_template", templateId: target.templateId }));
   ok(works.teams.handle(user, { kind: "delete_template", templateId: template.templateId }));
 
+  // Explicit deletion stops only its own Work and persists until native settlement.
+  const removalSetup = setup(), removal = ok(works.teams.handle(user, { kind: "create", request: removalSetup.request }));
+  const removalId = removal.work!.workId;
+  const untouchedSetup = setup(), untouched = ok(works.teams.handle(user, { kind: "create", request: untouchedSetup.request }));
+  reject(works.teams.handle({ ...user, userId: "foreign" }, { kind: "stop_and_remove_work", workId: removalId }), "not_found");
+  const removed = ok(works.teams.handle(user, { kind: "stop_and_remove_work", workId: removalId }));
+  assert.equal(removed.work?.lifecycle, "closed"); assert.ok(removed.team?.removedAt);
+  assert.equal(works.getWork(untouched.work!.workId)?.lifecycle, "active");
+  assert.equal(ok(works.teams.handle(user, { kind: "stop_and_remove_work", workId: removalId })).team?.removedAt, removed.team?.removedAt);
+  assert.equal(ok(works.teams.handle(user, { kind: "restore_work", workId: removalId })).team?.removalRequestedAt, undefined);
+  assert.equal(works.getWork(removalId)?.lifecycle, "closed", "restore never reruns cancelled work");
+
+  const stoppingSetup = setup(), stopping = ok(works.teams.handle(user, { kind: "create", request: stoppingSetup.request }));
+  for (const item of stopping.team!.executions) runningTasks.add(item.taskId);
+  await queue.flush();
+  const liveBindings = bindings(stopping.work!.workId);
+  assert.ok(liveBindings.some(item => item.status === "running"));
+  const pendingRemoval = ok(works.teams.handle(user, { kind: "stop_and_remove_work", workId: stopping.work!.workId }));
+  assert.ok(pendingRemoval.team?.removalRequestedAt); assert.equal(pendingRemoval.team?.removedAt, undefined);
+  assert.equal(pendingRemoval.work?.lifecycle, "closing", "running work stays visible until stop settles");
+  for (const binding of liveBindings) {
+    runningTasks.delete(binding.taskId);
+    assert(works.reconcileExecution(user, { bindingId: binding.bindingId, outcome: "failed", note: "Fixture confirmed native termination" }).ok);
+  }
+  works.settlePendingClosure(stopping.work!.workId);
+  const reopened = new WorkService(db.connection, { bots, isAuthority: () => authority });
+  reopened.teams.finishRequestedRemoval(stopping.work!.workId);
+  assert.ok(reopened.teams.get(stopping.work!.workId)?.removedAt, "persisted request completes after restart and stop receipt");
+
   // Frozen member inputs, sequential real adapter dispatch and a genuine owner stage.
   const created = ok(works.teams.handle(user, { kind: "create", request: initial.request }));
   const workId = created.work!.workId;

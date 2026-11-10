@@ -106,6 +106,7 @@ export function ensureWorkTeamSchema(db: Database.Database): void {
     if (!columns(table).size || columns(table).has(name)) return;
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
   };
+  add("work_team_record_visibility", "removal_requested_at", "removal_requested_at INTEGER");
   add("work_team_executions", "reported_binding_id", "reported_binding_id TEXT");
   add("work_team_executions", "original_input_json", "original_input_json TEXT");
 }
@@ -297,7 +298,7 @@ export class WorkTeamService {
           this.works.emitCurrentProjection(work.workId);
           return { ok: true, work: this.works.getWork(work.workId), team: this.get(work.workId) };
         }
-        if (request.kind === "set_work_team" || request.kind === "remove_work" || request.kind === "restore_work") {
+        if (request.kind === "set_work_team" || request.kind === "remove_work" || request.kind === "stop_and_remove_work" || request.kind === "restore_work") {
           const work = this.works.getWork(request.workId);
           if (!work || work.userId !== actor.userId || !this.row(work.workId)) throw new TeamError("not_found", "找不到团队事项");
           if (request.kind === "set_work_team") {
@@ -305,10 +306,19 @@ export class WorkTeamService {
             if (!target) throw new TeamError("not_found", "目标团队不存在或已删除");
             this.db.prepare("INSERT INTO work_team_ownership(work_id,team_id,team_name) VALUES (?,?,?) ON CONFLICT(work_id) DO UPDATE SET team_id=excluded.team_id,team_name=excluded.team_name")
               .run(work.workId, target.templateId, target.name);
+          } else if (request.kind === "stop_and_remove_work") {
+            this.db.prepare("INSERT INTO work_team_record_visibility(work_id,removal_requested_at) VALUES (?,?) ON CONFLICT(work_id) DO UPDATE SET removal_requested_at=COALESCE(removal_requested_at,excluded.removal_requested_at)").run(work.workId, this.now());
+            if (work.lifecycle !== "closed") {
+              const stopped = this.works.cancelWork(actor, { operationId: `team-remove:${work.workId}:${work.intentRevision}`, workId: work.workId,
+                reason: "用户选择停止此事项并移到回收站", versionGuard: { expectedStateVersion: work.stateVersion,
+                  expectedIntentRevision: work.intentRevision, expectedOwnerEpoch: work.ownerEpoch } });
+              if (!stopped.ok) throw new TeamError(stopped.code, stopped.message);
+            }
+            this.finishRequestedRemoval(work.workId);
           } else if (request.kind === "remove_work") {
             if (work.lifecycle !== "closed") throw new TeamError("work_not_ended", "此事项仍未结束，请先停止或结束事项，再移入回收站；删除不会暗中停止执行");
             this.db.prepare("INSERT INTO work_team_record_visibility(work_id,removed_at) VALUES (?,?) ON CONFLICT(work_id) DO UPDATE SET removed_at=COALESCE(removed_at,excluded.removed_at)").run(work.workId, this.now());
-          } else this.db.prepare("UPDATE work_team_record_visibility SET removed_at=NULL WHERE work_id=?").run(work.workId);
+          } else this.db.prepare("UPDATE work_team_record_visibility SET removed_at=NULL,removal_requested_at=NULL WHERE work_id=?").run(work.workId);
           this.works.emitCurrentProjection(work.workId);
           return { ok: true, work: this.works.getWork(work.workId), team: this.get(work.workId) };
         }
@@ -470,12 +480,20 @@ export class WorkTeamService {
         : executions.at(-1)?.status === "completed" || executions.at(-1)?.status === "recovered" ? "awaiting_review"
           : executions.some(item => item.status !== "queued") ? "running" : "queued";
     const ownership = this.db.prepare("SELECT team_id,team_name FROM work_team_ownership WHERE work_id=?").get(workId) as { team_id: string; team_name: string } | undefined;
-    const visibility = this.db.prepare("SELECT removed_at FROM work_team_record_visibility WHERE work_id=?").get(workId) as { removed_at: number | null } | undefined;
-    return { ...plan, ...(visibility?.removed_at ? { removedAt: visibility.removed_at } : {}), ...(ownership ? { teamId: ownership.team_id, teamName: ownership.team_name } : {}), ownerBotId: work.ownerBotId, workId, intentRevision: row.intent_revision, inputSnapshotId: row.input_snapshot_id,
+    const visibility = this.db.prepare("SELECT removed_at,removal_requested_at FROM work_team_record_visibility WHERE work_id=?").get(workId) as { removed_at: number | null; removal_requested_at: number | null } | undefined;
+    return { ...plan, ...(visibility?.removed_at ? { removedAt: visibility.removed_at } : {}), ...(visibility?.removal_requested_at ? { removalRequestedAt: visibility.removal_requested_at } : {}), ...(ownership ? { teamId: ownership.team_id, teamName: ownership.team_name } : {}), ownerBotId: work.ownerBotId, workId, intentRevision: row.intent_revision, inputSnapshotId: row.input_snapshot_id,
       ownerEpoch: work.ownerEpoch, state, executions, createdAt: row.created_at };
   }
 
   /** Called by the existing durable dispatch queue. Never replay an already-bound task. */
+  /** Persisted removal is completed only after the existing stop receipts settle. */
+  finishRequestedRemoval(workId: string): void {
+    const work = this.works.getWork(workId);
+    if (work?.lifecycle !== "closed") return;
+    const result = this.db.prepare("UPDATE work_team_record_visibility SET removed_at=? WHERE work_id=? AND removal_requested_at IS NOT NULL AND removed_at IS NULL").run(this.now(), workId);
+    if (result.changes) this.works.emitCurrentProjection(workId);
+  }
+
   async dispatchPending(app: AppDatabase, adapter: WorkExecutionAdapter, model: () => string | undefined,
     permission: () => import("../../../shared/agent-ipc").PermissionMode = () => "default",
     botSettings?: (work: WorkDto, botId?: string) => import("../../../shared/bot-settings").BotSettingsDto): Promise<void> {
@@ -485,6 +503,7 @@ export class WorkTeamService {
       try {
         let work = this.works.getWork(team.work_id);
         if (!work) continue;
+        this.finishRequestedRemoval(work.workId);
         this.cancelStaleRecoveries(team, work);
         if (work.lifecycle !== "active" || team.intent_revision !== work.intentRevision || team.input_snapshot_id !== work.inputSnapshotId) continue;
         const plan = workTeamPlanSchema.parse(JSON.parse(team.plan_json));

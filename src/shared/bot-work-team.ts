@@ -66,6 +66,7 @@ export const workTeamControlSchema = z.discriminatedUnion("kind", [
     expected: z.object({ name: z.string(), plan: workTeamPlanSchema }).strict() }).strict(),
   z.object({ kind: z.literal("set_work_team"), workId: id, templateId: id }).strict(),
   z.object({ kind: z.literal("remove_work"), workId: id }).strict(),
+  z.object({ kind: z.literal("stop_and_remove_work"), workId: id }).strict(),
   z.object({ kind: z.literal("restore_work"), workId: id }).strict(),
   z.object({ kind: z.literal("restore_template"), templateId: id }).strict(),
   z.object({ kind: z.literal("delete_template"), templateId: id }).strict(),
@@ -97,6 +98,7 @@ export interface WorkTeamDto extends WorkTeamPlan {
   teamName?: string;
   /** Recoverable removal from normal team/task lists; execution and artifacts remain intact. */
   removedAt?: number;
+  removalRequestedAt?: number;
   workId: string;
   intentRevision: number;
   inputSnapshotId: string;
