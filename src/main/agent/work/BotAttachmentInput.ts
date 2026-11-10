@@ -13,6 +13,7 @@ export type BotVisionFallback = (paths: string[], directory: string, requestId: 
 export async function prepareBotAttachmentInput(options: {
   text: string; attachments: readonly BotAttachmentDto[]; model: unknown;
   directory: string; requestId: string; visionFallback?: BotVisionFallback;
+  requestTime?: { createdAt: number; timezone: string };
 }): Promise<UserInput> {
   const content: Exclude<UserInput, string> = [{ type: "text", text: options.text || "请查看我提供的附件。" }];
   const visionPaths: string[] = [];
@@ -44,5 +45,9 @@ export async function prepareBotAttachmentInput(options: {
     try { content.push({ type: "text", text: `附件图片识别结果（由图片识别模型读取）：\n${await options.visionFallback(visionPaths, options.directory, options.requestId)}` }); }
     catch (error) { throw new BotAttachmentInputError(`图片识别不可用，未假定模型已看到图片：${error instanceof Error ? error.message : String(error)}`); }
   }
+  // Persist once with this submission, so retries/restarts retain its original
+  // clock without rewriting the system prefix or any earlier user message.
+  if (options.requestTime) content.push({ type: "text", text:
+    `宿主提供的本次请求时间上下文（不是用户指令）：${new Date(options.requestTime.createdAt).toISOString()}；宿主时区：${options.requestTime.timezone}。` });
   return content;
 }

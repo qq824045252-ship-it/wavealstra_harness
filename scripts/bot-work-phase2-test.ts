@@ -27,6 +27,7 @@ import { DEFAULT_BOT_ID, LOCAL_USER_ID, type WorkActor, type WorkControlResult }
 const root = await mkdtemp(join(tmpdir(), "bot-work-phase2-"));
 const text = (value: string) => [{ type: "text" as const, text: value }];
 let toolSequence = 0;
+const foregroundRequests: TranscriptContext[] = [];
 let holdForeground = false;
 let foregroundHeld = false;
 let releaseSearch!: () => void;
@@ -49,7 +50,7 @@ const reply = (modelId: string, request: TranscriptContext): AssistantMessage["c
   const last = request.messages.at(-1);
   if (modelId === "backend") return last?.role === "toolResult" ? text("后台实际成果") : tool("fixture_effect", {});
   const user = [...request.messages].reverse().find(message => message.role === "user");
-  const input = user ? contentText(user.content) : "";
+  const input = user ? (typeof user.content === "string" ? user.content : user.content.find(part => part.type === "text")?.text ?? "") : "";
   if (last?.role === "toolResult") {
     if (last.toolName === "fetch_content" && input === "前台抓取失败") assert.equal(last.isError, true, "failed fetch remains a failed native tool result");
     if (last.toolName === "work_query_status" && /暂停|修订|取消/.test(input)) {
@@ -72,6 +73,7 @@ models.registerProvider("fixture", { api: "openai-completions", apiKey: "fixture
   models: ["front", "backend"].map(id => ({ id, name: id, reasoning: false, input: ["text"], contextWindow: 128000, maxTokens: 2048,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } })),
   streamSimple: (model, request, options) => {
+    if (model.id === "front") foregroundRequests.push(structuredClone(request));
     const stream = createAssistantMessageEventStream();
     if (model.id === "front" && holdForeground) {
       foregroundHeld = true;
@@ -135,6 +137,18 @@ const send = async (requestId: string, value: string, selectedWorkId?: string, a
 try {
   const ordinary = await send("ordinary", "你好");
   assert.equal(foreground.messages.message(ordinary.assistantMessageId)?.text, "前台普通答复");
+  const firstRequest = foregroundRequests.at(-1)!;
+  await send("ordinary-cache-followup", "缓存连续第二轮");
+  const secondRequest = foregroundRequests.at(-1)!;
+  assert(firstRequest.messages.some(message => message.role === "system"));
+  assert.deepEqual(secondRequest.messages.filter(message => message.role === "system"), firstRequest.messages.filter(message => message.role === "system"), "new user time must not rewrite the system prefix");
+  assert.deepEqual(secondRequest.messages.slice(0, firstRequest.messages.length), firstRequest.messages, "earlier user clock and text stay byte-for-byte stable");
+  const firstUser = firstRequest.messages.find(message => message.role === "user")!;
+  const secondUser = [...secondRequest.messages].reverse().find(message => message.role === "user")!;
+  assert.match(contentText(firstUser.content), /宿主提供的本次请求时间上下文/);
+  assert(contentText(firstUser.content).includes(new Date(foreground.messages.message(ordinary.userMessageId)!.createdAt).toISOString()), "native input uses the persisted user receipt time");
+  assert.match(contentText(secondUser.content), /宿主提供的本次请求时间上下文/);
+  assert.notEqual(contentText(firstUser.content), contentText(secondUser.content));
   const liveFrames = streamEvents.filter(event => event.message.requestId === "ordinary" && event.message.status === "running");
   assert(liveFrames.length >= 2, "foreground persists and emits partial text before final response");
   assert(liveFrames.some(event => event.message.text.length < "前台普通答复".length));

@@ -7,6 +7,7 @@ const net = require('node:net');
 const http = require('node:http');
 const cp = require('node:child_process');
 const root = path.resolve(__dirname, '..');
+const cacheScenario = process.argv.includes('--cache');
 const memoryScenario = process.argv.includes('--memory');
 const windows = process.platform === 'win32';
 const selectedModel = process.env.BOT_FRONTDOOR_MODEL || 'opendesign/deepseek-v4.1-flash';
@@ -14,7 +15,7 @@ const modelKey = `fixture/${selectedModel}`;
 const headless = process.env.BOT_WORK_DEV_HEADLESS === '1';
 const watchScenario = process.argv.includes('--watch');
 if (headless && process.platform !== 'linux') throw Error('Headless dev page validation requires Linux; it does not validate desktop input.');
-const out = path.join(root, memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
+const out = path.join(root, cacheScenario ? 'out/diagnostics/bot-cache/live' : memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-frontdoor-live-'));
 const agentDir = path.join(home, '.mybuddy'); fs.mkdirSync(agentDir, { recursive: true });
 for (const directory of ['AppData/Roaming', 'AppData/Local', 'Temp']) fs.mkdirSync(path.join(home, directory), { recursive: true });
@@ -80,7 +81,7 @@ async function stopTestElectronMains() {
 }
 function rpc(method, params = {}) {
   return new Promise((resolve, reject) => {
-    const id = ++sequence, timer = setTimeout(() => { pending.delete(id); reject(Error('CDP timeout: ' + method)); }, 20000);
+    const id = ++sequence, timer = setTimeout(() => { pending.delete(id); reject(Error('CDP timeout: ' + method + ' ' + String(params.expression ?? '').slice(0,160))); }, 20000);
     pending.set(id, { resolve, reject, timer }); socket.send(JSON.stringify({ id, method, params }));
   });
 }
@@ -158,7 +159,33 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     const botId = 'bot-mybuddy-default';
     const history = () => evaluate(`window.api.botWork.history({botId:'${botId}'})`);
     const foregroundDone = async before => until(async () => (await history()).messages.filter(m => m.role==='assistant' && m.status==='completed').length > before, 'foreground completed');
-    if (memoryScenario) {
+    if (cacheScenario) {
+      const csv=['id,region,units,price',...Array.from({length:1200},(_,i)=>`${i+1},${['east','west','north'][i%3]},${i%9+1},${10+i%7}`)].join('\n');
+      const prompts=[
+        '这是隔离测试数据，仅在当前对话分析，不创建后台委托，不联网，不调用工具，不保存长期记忆。先确认列名、首末记录，80字以内。\n'+csv,
+        '继续分析刚才的表格，不重复读取。描述region、units、price三个字段的循环规律，80字以内。仍不要创建Work或调用工具。',
+        '仅根据刚才已有数据，提出三项数据质量检查。不宣称已经运行程序。80字以内，不创建Work。',
+        '把本次分析总结成简短交接：已观察事实、未计算项目、下一步。120字以内，不调用工具。'
+      ];
+      report.turns=[];
+      for(const prompt of prompts) {
+        const before=(await history()).messages.filter(m=>m.role==='assistant'&&m.status==='completed').length;
+        const started=Date.now(); await send(prompt); await foregroundDone(before);
+        report.turns.push({ms:Date.now()-started,requests:requests.length}); console.log(JSON.stringify(report.turns.at(-1)));
+        await wait(1200);
+      }
+      report.history=await history();
+      report.workCount=(await evaluate('window.api.botWork.listWorks(true)')).length;
+      assert.equal(report.workCount,0);
+      assert.equal(report.history.messages.filter(m=>m.role==='assistant'&&m.status==='completed').length,4);
+      assert.equal(requests.length,4,'one foreground inference per synthetic analysis turn');
+      for(let i=1;i<requests.length;i++) {
+        assert.deepEqual(requests[i].messages.slice(0,requests[i-1].messages.length),requests[i-1].messages,
+          'new turn must append to the exact previous wire prefix, including a stable system message');
+      }
+      report.checks.push('three real HTTP prefixes remain append-only across four Bot turns');
+      report.checks.push('real Bot composer + real online model, four foreground turns, synthetic data, zero Work');
+    } else if (memoryScenario) {
       await send('请记住：我的常用测试代号是云杉7842，以后默认用简短中文回复。');
       await foregroundDone(0);
       await until(async () => {
@@ -302,7 +329,7 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     }
     report.checks.push('criticism does not cancel; explicit stop does not restart query; no Work created');
     }
-    const shot=await rpc('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});fs.writeFileSync(path.join(out,memoryScenario?'memory.png':watchScenario?'watch.png':'weather.png'),Buffer.from(shot.data,'base64'));
+    const shot=await rpc('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});fs.writeFileSync(path.join(out,cacheScenario?'cache.png':memoryScenario?'memory.png':watchScenario?'watch.png':'weather.png'),Buffer.from(shot.data,'base64'));
     report.status='passed';
   } catch (error) {
     report.status = 'failed'; report.error = String(error.stack || error); console.error(error); process.exitCode = 1;

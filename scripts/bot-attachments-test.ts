@@ -60,6 +60,13 @@ try {
   const image = join(root, "sample.png"); const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aFOsAAAAASUVORK5CYII=", "base64"); writeFileSync(image, png);
   const imageOptions = { text: "image", attachments: [{ name: "sample.png", path: image }], model: { input: ["text", "image"] }, directory: root, requestId: "image" };
   const imageInput = await prepareBotAttachmentInput(imageOptions);
+  const requestTime = { createdAt: Date.parse("2026-11-09T23:00:00.000Z"), timezone: "Asia/Shanghai" };
+  const timedInput = await prepareBotAttachmentInput({ ...imageOptions, requestTime });
+  assert(Array.isArray(timedInput) && Array.isArray(imageInput));
+  assert.deepEqual(timedInput.slice(0, imageInput.length), imageInput, "clock metadata preserves exact user text and image blocks");
+  assert.match(JSON.stringify(timedInput.at(-1)), /2026-11-09T23:00:00.000Z.*Asia\/Shanghai/);
+  assert.deepEqual(await prepareBotAttachmentInput({ ...imageOptions, requestTime }), timedInput, "retry uses persisted request time, not wall clock");
+
   assert(Array.isArray(imageInput) && imageInput.some(block => block.type === "image" && block.data === png.toString("base64")));
   await assert.rejects(() => prepareBotAttachmentInput({ ...imageOptions, model: { input: ["text"] } }), BotAttachmentInputError);
   const fallback = await prepareBotAttachmentInput({ ...imageOptions, model: { input: ["text"] }, visionFallback: async paths => { assert.deepEqual(paths, [image]); return "real fallback fixture"; } });
