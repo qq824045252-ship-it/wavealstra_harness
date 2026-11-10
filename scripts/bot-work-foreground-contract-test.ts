@@ -7,12 +7,36 @@ import type { ToolExecutionApi, ToolRegistration } from "@earendil-works/pi-dura
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { z } from "zod";
+import { botForegroundRequest } from "../src/main/agent/work/BotForegroundIdentity";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { BotRegistry } from "../src/main/agent/work/BotRegistry";
 import { BotConversationRepository } from "../src/main/agent/work/BotConversationRepository";
 import { botForegroundTools, BOT_FOREGROUND_TOOLS } from "../src/main/agent/work/BotForegroundTools";
 import { WorkService, DESKTOP_USER_GRANTS } from "../src/main/agent/work/WorkService";
 import { DEFAULT_BOT_ID, LOCAL_USER_ID, type ExpectedVersionGuard, type WorkActor, type WorkControlResult, type WorkDto } from "../src/shared/bot-work";
+
+// Reproduced from the real sixth watch request: pi.compaction inserted a
+// role=user summary after the original mybuddy.user and before work_create.
+const userEntry = (kind: string, data: unknown) => ({kind,data,model:[{role:"user",content:[{type:"text",text:"input"}]}]});
+const toolEntry = {kind:"pi.assistant",model:[{role:"assistant",content:[{type:"toolCall",id:"identity-call",name:"work_create",arguments:{}}]}]};
+const originalEntry = userEntry("mybuddy.user",{mybuddyInput:{botRequestId:"correct-request"}});
+const resolveIdentity = async (pages: unknown[][]) => {
+  let stored: string | undefined;
+  const api = {memo: async (_key:string,value:unknown) => {
+    if (typeof value === "string") stored=value;
+    return stored;
+  },entries: async (_options:unknown,_limit:number,cursor?:number) => {
+    const index=cursor??0; return {items:pages[index],next:index+1<pages.length?index+1:undefined};
+  }} as unknown as Parameters<typeof botForegroundRequest>[0];
+  return botForegroundRequest(api,"identity-call",BACKGROUND_CONTEXT);
+};
+assert.equal(await resolveIdentity([[toolEntry,originalEntry]]),"correct-request");
+assert.equal(await resolveIdentity([[toolEntry,userEntry("pi.compaction",{})],[originalEntry]]),"correct-request");
+assert.equal(await resolveIdentity([[toolEntry,userEntry("pi.compaction",{}),userEntry("pi.user",{mybuddyImported:true}),originalEntry]]),"correct-request");
+await assert.rejects(resolveIdentity([[toolEntry,userEntry("mybuddy.user",{}),originalEntry]]),/mybuddyInput/);
+await assert.rejects(resolveIdentity([[toolEntry,userEntry("pi.compaction",{}),userEntry("pi.user",{mybuddyImported:true})]]),/原始输入身份/);
+await assert.rejects(resolveIdentity([[originalEntry]]),/原始输入身份/);
+console.log("PASS foreground identity: original request, compaction and pagination, imported history, malformed input boundary, missing original and missing call");
 
 const root = await mkdtemp(join(tmpdir(), "bot-foreground-contract-"));
 const db = new AppDatabase(join(root, "business.db"));

@@ -14,10 +14,19 @@ exports.run=async({send,foregroundDone,until,evaluate,history,rpc,report,out,hom
  ];
  const settings=(await evaluate(`window.api.botWork.getSettings('${botId}')`)).settings;
  assert((await evaluate(`window.api.botWork.saveSettings(${JSON.stringify({botId,expectedRevision:settings.revision,workspacePath:workspace,modelId:modelKey,expertId:'',skillIds:[],mcpIds:[],connectorIds:[]})})`)).ok);
- report.scenarios=[];
+ report.scenarios=[]; report.sourcesInitiallyReady=process.env.BOT_WATCH_SOURCES_READY==='1';
  const details=id=>evaluate(`window.api.botWork.getWork(${JSON.stringify(id)})`);
+ const nativeProof=(bindingId,c,target)=>{
+  const row=database.prepare('SELECT context_json FROM work_watch_reviews WHERE binding_id=?').get(bindingId);
+  const observations=row ? JSON.parse(row.context_json).verifiedObservations ?? [] : [];
+  const source=observations.find(o=>o.source===target&&o.text.includes(c.content.trim()));
+  const extra=!c.extra||observations.some(o=>o.source===path.join(workspace,c.extra)&&o.text.includes(c.extraContent.trim()));
+  const web=c.name!=='网页资料核查'||observations.some(o=>o.source?.includes('example.com')&&o.text.includes('Example Domain'));
+  return source&&extra&&web ? observations : undefined;
+ };
  for(let index=0;index<cases.length;index++){
   const c=cases[index],target=path.join(workspace,c.file),brief=path.join(workspace,`brief-${index}.txt`);
+  if(process.env.BOT_WATCH_SOURCES_READY==='1')fs.writeFileSync(target,c.content);
   if(c.extra)fs.writeFileSync(path.join(workspace,c.extra),c.extraContent);
   fs.writeFileSync(brief,`待核查资料路径：${target}${c.extra?' 和 '+path.join(workspace,c.extra):''}。本线索文件没有具体结果，必须读取目标资料才能回答。\n`);
   const prior=(await evaluate('window.api.botWork.listWorks(true)')).map(w=>w.workId);
@@ -40,7 +49,8 @@ exports.run=async({send,foregroundDone,until,evaluate,history,rpc,report,out,hom
    w=await details(id);report.latestWork=w;
    const h=await history();report.history=h;
    entry=h.messages.find(m=>m.workFeedback?.workId===id&&m.workFeedback?.kind==='result'&&m.text.includes(c.expected)
-    && executions(id).some(e=>e.bindingId===m.workFeedback.executionId&&e.status==='completed'));
+    && executions(id).some(e=>e.bindingId===m.workFeedback.executionId&&e.status==='completed')
+    && nativeProof(m.workFeedback.executionId,c,target));
    return !!entry;
   },'real autonomous supplemental '+c.name);
   assert.equal(w.lifecycle,'active','one successful supplement is not end of standing Work');
@@ -52,7 +62,7 @@ exports.run=async({send,foregroundDone,until,evaluate,history,rpc,report,out,hom
   await send(`暂停持续委托 ${id}，保留已有结果，不再检查。`);await foregroundDone();
   w=await details(id);assert.equal(w.lifecycle,'paused');
   assert.equal(fs.readFileSync(target,'utf8'),c.content,'no business writes');
-  report.scenarios.push({name:c.name,workId:id,executionId:supplemental.bindingId,expected:c.expected,actual:entry.text,autonomousSupplement,executions:executions(id),paused:true});
+  report.scenarios.push({name:c.name,workId:id,executionId:supplemental.bindingId,expected:c.expected,actual:entry.text,autonomousSupplement,nativeEvidence:nativeProof(supplemental.bindingId,c,target),executions:executions(id),paused:true});
   fs.writeFileSync(path.join(out,'supplement-progress.json'),JSON.stringify(report.scenarios,null,2));
  }
  database.close();

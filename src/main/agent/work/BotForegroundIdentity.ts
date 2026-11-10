@@ -19,6 +19,10 @@ export async function botForegroundRequest(api: Pick<HookApi, "memo"> & Partial<
         continue;
       }
       if (!entry.model?.some(message => message.role === "user")) continue;
+      // Native compaction summaries and imported conversation history are model
+      // user messages, but are not the immutable input that admitted this call.
+      // Do not ask the model to manufacture host-only mybuddyInput metadata.
+      if (entry.kind === "pi.compaction" || (entry.data as { mybuddyImported?: boolean } | undefined)?.mybuddyImported === true) continue;
       const input = inputSchema.parse(entry.data);
       return api.memo("mybuddy.bot-input", input.mybuddyInput.botRequestId, context);
     }

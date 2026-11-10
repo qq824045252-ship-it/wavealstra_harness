@@ -185,7 +185,7 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
 (async () => {
   try {
     await new Promise(resolve=>provider.listen(0,"127.0.0.1",resolve));
-    const model = { id: selectedModel, name: 'Frontdoor live verification', reasoning: modelPreferenceScenario, input: ['text'], contextWindow: 128000, maxTokens: 4096,
+    const model = { id: selectedModel, name: 'Frontdoor live verification', reasoning: modelPreferenceScenario, input: ['text'], contextWindow: 128000, maxTokens: watchSupplementScenario ? 16384 : 4096,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
     fs.writeFileSync(path.join(agentDir, 'models.json'), JSON.stringify({ providers: { fixture: { api: 'openai-completions', apiKey: 'fixture-only', baseUrl: `http://127.0.0.1:${provider.address().port}/v1`, models: [model, ...(teamTransportFailure?[{...model,id:'controlled-unavailable',name:'Controlled unavailable member'}]:[])] } } }));
     fs.writeFileSync(path.join(agentDir, 'settings.json'), JSON.stringify({ defaultProvider: 'fixture', defaultModel: selectedModel, enabledModels: [modelKey, ...(teamTransportFailure?['fixture/controlled-unavailable']:[])],
