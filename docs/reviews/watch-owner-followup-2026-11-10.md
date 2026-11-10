@@ -26,3 +26,11 @@
 测试使用 Omarchy 隔离 HOME、真实 Electron 页面/CDP、现有真实模型 `opendesign/deepseek-v4.1-flash-eco`。不是 mocked 模型或 mocked 工具。headless 页面验收不等于物理桌面键鼠验收。第六类联网沿用本机已有代理配置投影，不设置防火墙、不新增 Cloudflare 或 Codex 依赖。
 
 按用户要求暂缓崩溃/故障注入，未启动新的实机故障注入活动。上一次完整默认门禁 432 项出现三个既有夹具漂移与一个并行超时；夹具分别修复字段登记、团队新合同参数和三位 M 文案，未改失败白名单。最终门禁结果另列，不以旧通过覆盖新代码。
+
+## 推送后完成的非故障注入门禁
+
+- `pnpm -s typecheck`：通过，scripts 0 错误。
+- 默认聚合用例中排除下列 20 个故障/恢复相关用例后：411 通过、0 失败、0 已知失败、0 新回归，3.7 分钟。
+- `test:project-task-defaults` 单独补跑通过（临时 fault 子串误匹配 defaults，已补回）；合计本轮非故障注入门禁 412 项通过。
+- 暂缓：bot-work-automatic-recovery、bot-work-phase2-recovery、bot-work-phase3-handoff、bot-work-phase3-pause-backlog、bot-work-phase5-e2e-story、bot-work-phase5-native-story、bot-work-team-recovery、crash-reporting、durable-session-recovery、durable-work-liveness、durable-workspace-binding、execution-restart-recovery、gateway-inbox-crash、input-guardian、input-guardian-process、prompt-failure-recovery、runtime-requirement-recovery、session-history-recovery、skill-authoring-recovery、ui-automation-recovery。
+- 临时过滤入口仅用于这次验证，正式 `test:all` 和失败基线未改。六类真实验收仍在进行，不能把本节当作六类全过。
