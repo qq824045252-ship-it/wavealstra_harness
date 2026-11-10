@@ -37,6 +37,7 @@ const adapter = new WorkExecutionAdapter(works, port, LOCAL_USER_ID, () => autho
 const queue = new WorkDispatchQueue(db, works, adapter, () => authority, () => "fixture");
 const feedback = new WorkConversationFeedback({ db: db.connection, works, userId: LOCAL_USER_ID, isAuthority: () => authority });
 const reviewed: string[] = [];
+const historicalReceiptAt = Date.UTC(2026,10,9,9);
 let deliveryAvailable = true;
 let failReview = false;
 let reviewPartial = false;
@@ -44,7 +45,12 @@ let reviewContinue = false;
 let lateResultWork: string | undefined;
 let lateQuestionWork: string | undefined;
 const coordinator = new WorkCompletionCoordinator({ db: db.connection, works, isAuthority: () => authority,
-  review: async input => { assert(!("teamAssignment" in (input.context.originalRequest as object)),"review input must not contain executor report-format instructions"); reviewed.push(input.eventId); if (failReview) throw Error("model unavailable");
+  review: async input => { assert(!("teamAssignment" in (input.context.originalRequest as object)),"review input must not contain executor report-format instructions"); const temporal = input.context.temporalContext as {reviewAt:string;observedAt:string|null;historicalRecovery:boolean;freshExecution:boolean};
+    assert(Number.isFinite(Date.parse(temporal.reviewAt))); assert(temporal.observedAt && Number.isFinite(Date.parse(temporal.observedAt)));
+    assert.equal(temporal.freshExecution,false,"review never claims a fresh business execution");
+    if (["healthy","legacy-unreviewed"].includes(String(input.context.title))) assert.equal(temporal.historicalRecovery,input.context.title === "legacy-unreviewed","recovered enrollment is distinguished from live receipt");
+    if (input.context.title === "legacy-unreviewed") assert.equal(temporal.observedAt,new Date(historicalReceiptAt).toISOString(),"historical receipt time is not replaced with review time");
+    reviewed.push(input.eventId); if (failReview) throw Error("model unavailable");
     if (lateQuestionWork) { works.repo.insertBlocker({blockerId:"late-question",workId:lateQuestionWork,kind:"operational",reason:"必须提供收件人",waitingForUserInput:true,status:"open",createdAt:Date.now()}); lateQuestionWork=undefined; }
     if ((input.context.pendingQuestions as Array<{blockerId:string}>|undefined)?.some(item=>item.blockerId === "late-question")) return {decision:"ask",outcome:"partial",reply:"必须提供收件人",missing:[]};
     if (input.context.title === "waiting-input") return {decision:"ask",outcome:"partial",reply:"已交付请求的文字方案；收件人是谁？",missing:[]};
@@ -76,6 +82,7 @@ try {
   const legacy = create("legacy-unreviewed"); await flush(); states.set(legacy,"completed");
   await queue.flush();
   const legacyBinding = works.repo.listBindings(legacy)[0];
+  db.connection.prepare("UPDATE work_native_inbox SET received_at=? WHERE binding_id=?").run(historicalReceiptAt,legacyBinding.bindingId);
   db.connection.prepare("DELETE FROM work_automatic_completion WHERE binding_id=?").run(legacyBinding.bindingId);
   works.repo.insertBlocker({blockerId:"legacy-acceptance",workId:legacy,kind:"operational",reason:"请老板采纳成果",waitingForUserInput:true,status:"open",createdAt:Date.now()});
   works.transaction(() => works.automaticCompletion.recoverUnreviewed());

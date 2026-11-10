@@ -52,6 +52,14 @@ export class WorkCompletionCoordinator {
       .filter(item => item.waitingForUserInput && item.kind === "operational" && !item.unknownExternalEffectRef)
       .map(item => ({blockerId:item.blockerId,reason:item.reason})).sort((a,b)=>a.blockerId.localeCompare(b.blockerId));
   }
+  private temporalContext(bindingId: string) {
+    const receipt = this.options.db.prepare("SELECT MAX(received_at) observed_at FROM work_native_inbox WHERE binding_id=? AND consumed_at IS NOT NULL")
+      .get(bindingId) as { observed_at: number | null };
+    const tracked = this.options.db.prepare("SELECT recovered FROM work_automatic_completion WHERE binding_id=?").get(bindingId) as { recovered: number } | undefined;
+    return { reviewAt: new Date().toISOString(), observedAt: receipt.observed_at == null ? null : new Date(receipt.observed_at).toISOString(),
+      observedAtMeaning: "host_received_execution_receipt_not_source_measurement_time", historicalRecovery: Boolean(tracked?.recovered),
+      freshExecution: false };
+  }
   private current(bindingId: string) { return this.options.works.automaticCompletion.outcome(bindingId); }
   private async process(bindingId: string): Promise<void> {
     const { works, db } = this.options;
@@ -67,6 +75,7 @@ export class WorkCompletionCoordinator {
       // user's request. Feeding them back to the judge can override its schema.
       const { teamAssignment: _teamAssignment, instructions: _instructions, ...originalRequest } = source;
       db.prepare("INSERT OR IGNORE INTO work_completion_turns(binding_id,context_json) VALUES (?,?)").run(bindingId, JSON.stringify({
+        temporalContext: this.temporalContext(bindingId),
         originalRequest, title: candidate.work.title, goal: candidate.work.goalDescription,
         results: results.map(item => ({ summary: item.summary, artifactRefs: item.artifactRefs, uncoveredScope: item.uncoveredScope })),
         previousResults: works.repo.listDeliverables(binding.workId).filter(item => item.executionId !== bindingId
@@ -87,13 +96,15 @@ export class WorkCompletionCoordinator {
       let decision: WorkResultDecision;
       if (row.decision_json) decision = JSON.parse(row.decision_json);
       else {
-        this.options.deliver({ bindingId, eventId: `${eventId}:progress`, category: "progress", text: "后台结果已返回，我正在对照你的委托整理结论。你可以继续交代其他事情。" });
+        this.options.deliver({ bindingId, eventId: `${eventId}:progress`, category: "progress", text: this.temporalContext(bindingId).historicalRecovery
+          ? "正在整理此前执行的历史结果，没有重新执行任务。你可以继续交代其他事情。"
+          : "后台结果已返回，我正在对照你的委托整理结论。你可以继续交代其他事情。" });
         const attempt = row.state === "running" ? Math.max(1,row.attempts) : row.attempts + 1;
         db.prepare("UPDATE work_completion_turns SET state='running',attempts=? WHERE binding_id=?").run(attempt,bindingId);
         const reviewContext = JSON.parse(row.context_json);
         // Also sanitize persisted turns written by an older host.
         const { teamAssignment: _teamAssignment, instructions: _instructions, ...originalRequest } = reviewContext.originalRequest ?? {};
-        decision = await this.options.review({ eventId: `${eventId}:review:${attempt}`, botId: binding.botId, context: {...reviewContext, originalRequest} });
+        decision = await this.options.review({ eventId: `${eventId}:review:${attempt}`, botId: binding.botId, context: {...reviewContext, originalRequest, temporalContext: this.temporalContext(bindingId)} });
       }
       if (this.closed || !this.options.isAuthority()) return;
       works.transaction(() => {
@@ -120,7 +131,7 @@ export class WorkCompletionCoordinator {
         const exhausted = (this.row(bindingId)?.attempts ?? 0) >= 2;
         db.prepare("UPDATE work_completion_turns SET state='queued',retry_at=?,error=? WHERE binding_id=?").run(Date.now() + 15000, message, bindingId);
         const delivered = this.options.deliver({ bindingId, eventId: `${eventId}:fallback:${exhausted ? "final" : "retrying"}`, category: "result", text: raw || "后台没有返回可用的结果正文。",
-          notices: [exhausted ? "结果整理未能完成，先交付真实执行结果；没有重跑业务任务。" : "结果整理暂时失败，先交付真实执行结果；正在重试整理，不会重跑业务任务。", message, ...candidate.conclusion === "ended_unsuccessfully" ? [candidate.summary] : []] });
+          notices: [...this.temporalContext(bindingId).historicalRecovery ? ["以下是历史执行记录，不代表刚刚重新执行或当前环境状态。"] : [], exhausted ? "结果整理未能完成，先交付真实执行结果；没有重跑业务任务。" : "结果整理暂时失败，先交付真实执行结果；正在重试整理，不会重跑业务任务。", message, ...candidate.conclusion === "ended_unsuccessfully" ? [candidate.summary] : []] });
         if (exhausted && delivered) {
           works.automaticCompletion.recordDelivery(bindingId, "已交付原始执行结果；结果整理失败，未将其冒充独立核验。", "unknown");
           works.automaticCompletion.drain();

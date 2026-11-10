@@ -10,8 +10,10 @@ export class WorkAutomaticCompletion {
     private readonly finish: (work: WorkDto, conclusion: "succeeded" | "ended_unsuccessfully", summary: string, bindingId: string) => void,
     private readonly isAuthority: () => boolean) {
     db.exec(`CREATE TABLE IF NOT EXISTS work_automatic_completion (
-      binding_id TEXT PRIMARY KEY, work_id TEXT NOT NULL, consumed_at INTEGER);
+      binding_id TEXT PRIMARY KEY, work_id TEXT NOT NULL, consumed_at INTEGER, recovered INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS work_automatic_completion_deliveries (binding_id TEXT PRIMARY KEY, summary TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT 'completed', goal_reviewed INTEGER NOT NULL DEFAULT 0)`);
+    if (!(db.prepare("PRAGMA table_info(work_automatic_completion)").all() as Array<{name:string}>).some(row => row.name === "recovered"))
+      db.exec("ALTER TABLE work_automatic_completion ADD COLUMN recovered INTEGER NOT NULL DEFAULT 0");
     if (!(db.prepare("PRAGMA table_info(work_automatic_completion_deliveries)").all() as Array<{name:string}>).some(row => row.name === "outcome"))
       db.exec("ALTER TABLE work_automatic_completion_deliveries ADD COLUMN outcome TEXT NOT NULL DEFAULT 'unknown'");
     if (!(db.prepare("PRAGMA table_info(work_automatic_completion_deliveries)").all() as Array<{name:string}>).some(row => row.name === "goal_reviewed"))
@@ -29,8 +31,8 @@ export class WorkAutomaticCompletion {
    * Enrolment requests a model review; it neither reruns effects nor declares success. */
   recoverUnreviewed(): void {
     if (!this.isAuthority()) return;
-    this.db.prepare(`INSERT OR IGNORE INTO work_automatic_completion(binding_id,work_id)
-      SELECT b.binding_id,w.work_id FROM works w JOIN work_execution_bindings b ON b.work_id=w.work_id
+    this.db.prepare(`INSERT OR IGNORE INTO work_automatic_completion(binding_id,work_id,recovered)
+      SELECT b.binding_id,w.work_id,1 FROM works w JOIN work_execution_bindings b ON b.work_id=w.work_id
       WHERE w.lifecycle='active' AND w.mode='once' AND w.cancel_requested_at IS NULL
         AND b.bot_id=w.owner_bot_id AND b.owner_epoch=w.owner_epoch
         AND b.intent_revision=w.intent_revision AND b.input_snapshot_id=w.input_snapshot_id
