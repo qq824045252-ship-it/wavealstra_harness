@@ -82,16 +82,30 @@ export function projectTeamReport(summary: string, input: unknown): Pick<Report,
       sources.set(source, label);
     }
   }
-  // References may only identify this binding's frozen request/evidence envelope.
+  // Models sometimes copy a field label together with its value. Accept only
+  // an exact, correctly typed alias from this immutable evidence envelope.
+  // Never guess an identifier, strip arbitrary prefixes, or cross task scopes.
+  const aliases = new Map<string, string>();
+  for (const item of teamAssignment.previousResults) {
+    for (const key of ["botId", "bindingId", "deliverableId"] as const) {
+      const value = item[key];
+      if (value) aliases.set(`${key}:${value}`, value);
+    }
+  }
+  const canonical = (source: string): string | undefined => {
+    if (sources.has(source)) return ambiguous.has(source) ? undefined : source;
+    const value = aliases.get(source);
+    return value && !ambiguous.has(value) ? value : undefined;
+  };
   // Existence is provenance, NOT proof that a sentence follows from its source.
-  if (!requests.has(draft.data.requestMessageId) || draft.data.conclusions.some(item => item.evidenceRefs.some(source => (!sources.has(source) || ambiguous.has(source))))) return result;
+  if (!requests.has(draft.data.requestMessageId) || draft.data.conclusions.some(item => item.evidenceRefs.some(source => !canonical(source)))) return result;
   result.structured = { version: 1, conclusions: draft.data.conclusions.map(item => ({
     text: item.text, requestMessageId: draft.data.requestMessageId, requestText: requests.get(draft.data.requestMessageId)!,
-    sources: item.evidenceRefs.map(source => ({ ref: source, label: sources.get(source)! })),
+    sources: item.evidenceRefs.map(source => ({ ref: canonical(source)!, label: sources.get(canonical(source)!)! })),
   })), observations: draft.data.observations };
   return result;
 }
 
 export const TEAM_REPORT_FORMAT = `最终报告优先使用以下可选 JSON 格式（可包在 json 代码块中），不另写其他段落：
 {"format":"bot-team-report-v1","requestMessageId":"userRequest.messages 中本次用户请求的真实 messageId","conclusions":[{"text":"针对本次用户请求的结论和必要证据","evidenceRefs":["teamAssignment.previousResults 中真实的 deliverableId、bindingId 或 botId"]}],"observations":["仅供补充、不影响用户目标的额外观察"]}
-conclusions 只写本次请求相关结果与真实缺口；额外检查、建议和局限放 observations，没有则空数组。不要为了填字段新增业务动作。身份、分工、原生失败由宿主展示，不必重编。真实标识仅填写引用字段，不在面向用户的 text 中重复。引用只能使用当前输入中提供的真实标识；它们只证明来源存在，不保证结论正确，不能以引用代替核对。不要添加未有可靠依据的统计或精确比较。没有这些请求/来源标识时直接用普通文字交付，不等待、不要求用户补格式、不重跑任务。`;
+conclusions 只写本次请求相关结果与真实缺口；额外检查、建议和局限放 observations，没有则空数组。不要为了填字段新增业务动作。身份、分工、原生失败由宿主展示，不必重编。真实标识仅填写引用字段，不在面向用户的 text 中重复。引用直接复制字段值，不加 botId:、bindingId:、deliverableId: 等字段名前缀。引用只能使用当前输入中提供的真实标识；它们只证明来源存在，不保证结论正确，不能以引用代替核对。不要添加未有可靠依据的统计或精确比较。没有这些请求/来源标识时直接用普通文字交付，不等待、不要求用户补格式、不重跑任务。`;

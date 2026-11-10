@@ -54,9 +54,15 @@ try {
     assert.equal(fallback.structured, undefined, "unparseable/foreign references fall back, never repair or rerun");
     assert.equal(fallback.teamFacts?.[1].failureReason, "ENOENT", "fallback cannot hide native failure");
   }
+  const labeled = { ...draft, conclusions: [{ ...draft.conclusions[0], evidenceRefs: ["deliverableId:result-a", "bindingId:binding-b", "botId:a"] }] };
+  assert.deepEqual(projectTeamReport(JSON.stringify(labeled), reportInput).structured?.conclusions[0].sources.map(item => item.ref), ["result-a", "binding-b", "a"], "exact field-value aliases remain readable and retain canonical provenance");
+  for (const invalid of ["botId:result-a", "bindingId:foreign", "deliverableId:result-a-extra", "unknown:result-a", "botId:botId:a"]) {
+    assert.equal(projectTeamReport(JSON.stringify({ ...draft, conclusions: [{ ...draft.conclusions[0], evidenceRefs: [invalid] }] }), reportInput).structured, undefined, "wrong type, foreign identity and arbitrary prefixes remain invalid");
+  }
   assert.deepEqual(projectTeamReport(JSON.stringify(draft), {}), {}, "missing historical context returns raw-only presentation");
   const repeatedBot = { ...reportInput, teamAssignment: { ...reportInput.teamAssignment,
     previousResults: [...reportInput.teamAssignment.previousResults, { ...reportInput.teamAssignment.previousResults[0], responsibility: "另一个分工", bindingId: "binding-a-2", deliverableId: "result-a-2" }] } };
+  assert.equal(projectTeamReport(JSON.stringify({ ...draft, conclusions: [{ ...draft.conclusions[0], evidenceRefs: ["botId:a"] }] }), repeatedBot).structured, undefined, "aliases do not resolve ambiguous members");
   assert.equal(projectTeamReport(JSON.stringify({ ...draft, conclusions: [{ ...draft.conclusions[0], evidenceRefs: ["a"] }] }), repeatedBot).structured,
     undefined, "ambiguous bot identity cannot misattribute two different assignments");
   assert(projectTeamReport(JSON.stringify(draft), repeatedBot).structured, "exact binding/result references remain usable");
