@@ -16,6 +16,12 @@ export const botCreateSchema = z.object({
 }).strict();
 export const botCreateRequestSchema = botCreateSchema;
 
+export const botRenameSchema = z.object({
+  botId: z.string().min(1), expectedUpdatedAt: z.number().int().nonnegative(),
+  displayName: botCreateSchema.shape.displayName,
+}).strict();
+export type BotRenameRequest = z.input<typeof botRenameSchema>;
+
 export type BotCreateRequest = z.input<typeof botCreateSchema>;
 export type BotCreateErrorCode = "invalid_request" | "duplicate_name" | "request_conflict"
   | "forbidden" | "not_authority" | "storage_error";

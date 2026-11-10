@@ -652,6 +652,7 @@ const api = {
     hostStatus: () => ipcRenderer.invoke(BotWorkIpc.hostStatus),
     listBots: () => ipcRenderer.invoke(BotWorkIpc.listBots),
     deleteBot: request => ipcRenderer.invoke(BotWorkIpc.deleteBot, request),
+    renameBot: request => ipcRenderer.invoke(BotWorkIpc.renameBot, request),
     createBot: request => ipcRenderer.invoke(BotWorkIpc.createBot, request),
     getSettings: botId => ipcRenderer.invoke(BotWorkIpc.getSettings, botId),
     saveSettings: request => ipcRenderer.invoke(BotWorkIpc.saveSettings, request),

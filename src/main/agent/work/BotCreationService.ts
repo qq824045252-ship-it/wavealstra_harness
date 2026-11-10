@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
-import { botCreateSchema, botWorkspaceAuthorizationSchema, type BotCreateResult } from "../../../shared/bot-create";
+import { botCreateSchema, botRenameSchema, botWorkspaceAuthorizationSchema, type BotCreateResult } from "../../../shared/bot-create";
 import { minimumAuthorization, type ExpertProfileDto } from "../../../shared/bot-work";
 import type { BotRegistry } from "./BotRegistry";
 
@@ -19,6 +19,31 @@ export class BotCreationService {
     private readonly bots: BotRegistry,
     private readonly host: { userId: string; isAuthority: () => boolean },
   ) {}
+
+  renameBot(request: unknown): BotCreateResult {
+    const parsed = botRenameSchema.safeParse(request);
+    if (!parsed.success) return { ok: false, code: "invalid_request", message: "名称需要 1–80 字，不能包含控制字符" };
+    const input = parsed.data;
+    try {
+      return this.db.transaction((): BotCreateResult => {
+        if (!this.host.isAuthority()) return { ok: false, code: "not_authority", message: "请在主宿主恢复后重试" };
+        const bot = this.bots.getBot(input.botId);
+        if (!bot || bot.userId !== this.host.userId) return { ok: false, code: "forbidden", message: "不能重命名此 Bot" };
+        if (bot.displayName === input.displayName) return { ok: true, bot, replayed: true };
+        if (bot.updatedAt !== input.expectedUpdatedAt) return { ok: false, code: "request_conflict", message: "Bot 已在其他位置更新，请关闭后重新打开重命名" };
+        if (this.bots.listBots(this.host.userId).some(other => other.botId !== bot.botId && comparableName(other.displayName) === comparableName(input.displayName)))
+          return { ok: false, code: "duplicate_name", message: "已有同名 Bot，请换一个名称" };
+        const now = Math.max(Date.now(), bot.updatedAt + 1);
+        this.db.prepare("UPDATE bots SET display_name=?, updated_at=? WHERE bot_id=? AND user_id=?")
+          .run(input.displayName, now, bot.botId, this.host.userId);
+        // Rename only the automatic grouping; user-named spaces and all paths remain unchanged.
+        const spaceId = `bot-space-${createHash("sha256").update(bot.botId).digest("hex").slice(0, 24)}`;
+        this.db.prepare("UPDATE spaces SET name=?, updated_at=? WHERE id=? AND name=?")
+          .run(`${input.displayName} · 工作空间`, now, spaceId, `${bot.displayName} · 工作空间`);
+        return { ok: true, bot: this.bots.getBot(bot.botId)!, replayed: false };
+      }).immediate();
+    } catch { return { ok: false, code: "storage_error", message: "名称未确认保存，请重新打开查看后重试" }; }
+  }
 
   updateWorkspaceAuthorization(request: unknown): BotCreateResult {
     const parsed = botWorkspaceAuthorizationSchema.safeParse(request);

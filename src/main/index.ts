@@ -1058,6 +1058,11 @@ function registerIpc(): void {
     rendererUrl: process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href,
     createBot: request => agentService.deleteBot(request),
   }));
+  ipcMain.handle(BotWorkIpc.renameBot, createBotIpcHandler({
+    getMainWindow: () => botManagementWindow,
+    rendererUrl: process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href,
+    createBot: request => agentService.renameBot(request),
+  }));
   ipcMain.handle(BotWorkIpc.createBot, createBotIpcHandler({
     getMainWindow: () => botManagementWindow,
     rendererUrl: process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href,

@@ -24,6 +24,7 @@ export const BotWorkIpc = {
   hostStatus: "bot-work:host-status",
   listBots: "bot-work:list-bots",
   createBot: "bot-work:create-bot",
+  renameBot: "bot-work:rename-bot",
   deleteBot: "bot-work:delete-bot",
   updateWorkspaceAuthorization: "bot-work:update-workspace-authorization",
   teamControl: "bot-work:team-control",
@@ -73,6 +74,7 @@ export interface BotWorkApi {
   saveSettings(request: import("./bot-settings").BotSettingsSaveRequest): Promise<import("./bot-settings").BotSettingsResult>;
   hostStatus(): Promise<BotWorkHostStatusDto>;
   listBots(): Promise<BotDto[]>;
+  renameBot(request: import("./bot-create").BotRenameRequest): Promise<BotCreateResult>;
   createBot(request: BotCreateRequest): Promise<BotCreateResult>;
   deleteBot(request: { botId: string; expectedUpdatedAt: number }): Promise<BotCreateResult>;
   updateWorkspaceAuthorization(request: import("./bot-create").BotWorkspaceAuthorizationRequest): Promise<BotCreateResult>;

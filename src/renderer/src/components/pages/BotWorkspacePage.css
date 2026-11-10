@@ -324,3 +324,12 @@
 .bot-work-details .bot-result-report article { border:0; border-radius:0; padding:0; background:transparent; }
 .bot-work-details .bot-result-report > header h3 { display:none; }
 .bot-work-details .bot-result-report > header { margin-bottom:8px; }
+
+.bot-rename-trigger { font-size: 12px; padding: 3px 8px; }
+.bot-rename-dialog { width: min(420px, calc(100vw - 32px)); padding: 24px; border: 1px solid var(--border-default, #555); border-radius: 14px; background: var(--bg-elevated, #202124); color: var(--fg, #eee); }
+.bot-rename-dialog::backdrop { background: #0008; }
+.bot-rename-dialog h2 { margin: 0 0 18px; font-size: 18px; }
+.bot-rename-dialog label { display: grid; gap: 8px; }
+.bot-rename-dialog input { width: 100%; box-sizing: border-box; padding: 10px; }
+.bot-rename-dialog p { display:block; font-size:13px; line-height:1.6; margin-top:12px; color:var(--fg-secondary); }
+.bot-rename-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }

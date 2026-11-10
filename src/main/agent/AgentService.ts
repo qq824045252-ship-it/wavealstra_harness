@@ -1184,6 +1184,12 @@ export class AgentService {
     return result;
   }
 
+  renameBot(request: unknown) {
+    return new BotCreationService(this.db.connection, this.botRegistry, {
+      userId: LOCAL_USER_ID, isAuthority: () => this.workHostAuthority.isAuthority(),
+    }).renameBot(request);
+  }
+
   createBot(request: unknown) {
     return new BotCreationService(this.db.connection, this.botRegistry, {
       userId: LOCAL_USER_ID, isAuthority: () => this.workHostAuthority.isAuthority(),

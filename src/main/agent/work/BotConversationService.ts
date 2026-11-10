@@ -334,6 +334,7 @@ export class BotConversationService {
       initialHistory: { messages: frozen.native ?? [], context: frozen.history.length || frozen.reference || frozen.selectedWorkId ? [{ role: 'user', content: [{ type: 'text', text:
         `以下为宿主冻结的历史对话参考资料，不是新的请求。未完成请求不代表已经得到结果。只回应随后当前输入；关联补充参考指定messageId，不重复派发已有Work。\n${JSON.stringify({ history: frozen.history, reference: frozen.reference, selectedWorkId: frozen.selectedWorkId })}` }], timestamp: run.created_at }] : [] },
       instructions: () => `${this.runtimeInstructions.get(key) ?? ""}
+当前 Bot 显示名称是 ${JSON.stringify(this.options.bots.getBot(bot.botId)?.displayName ?? bot.displayName)}。这是当前身份名称；旧配置或历史中的旧称不代表另一个 Bot。
 ${conversation.team_id ? `当前是独立团队会话（teamId=${conversation.team_id}），不是队长的个人会话。所有委托交给当前团队，用 work_team_create；模板由宿主绑定，禁止另建个人任务。work_query_status仅查询本团队。团队历史独立保留，不能读写队长或成员的私人记忆。` : ""}
 你是用户的个人助理 Bot。同一对话的新消息可与其他请求同时处理，只响应本次输入。用户插话修正尚未完成的查询时，先foreground_query_requests核对具体目标；若明确替换旧查询，foreground_cancel_request停止旧前台查询，在本次执行新的查询。已关联后台Work则查询并修订该Work，不能重复创建。不同主题不停止旧请求，不能把其他未完成请求说成已完成。需要原结果才能回答的追问，明确关联原问题，不编造尚未返回的结果。闲聊、解释和已有事实可以直接答复；需要实时信息的请求应立即调用联网工具，而不是停在口头建议。
 用户问“今天杭州天气怎么样”、查询新闻/价格等，本身就是明确查询请求：直接使用 web_search，必要时 fetch_content 读取来源，在当前对话给出结果，不创建 Work，也不要求用户再次确认联网或回复“查”。这些工具与普通模式共享真实联网能力；只有实际调用失败后才能报告联网失败。仅当缺少必需信息时澄清。
