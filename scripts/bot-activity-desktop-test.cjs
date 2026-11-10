@@ -1,11 +1,13 @@
 const { app, BrowserWindow } = require("electron");
 const fs = require("node:fs"); const path = require("node:path"); const os = require("node:os"); const { pathToFileURL } = require("node:url"); const assert = require("node:assert/strict");
+let verified = false;
+process.on("exit", () => { if (!verified) process.exitCode = 1; });
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), "activity-ui-")); app.setPath("userData", path.join(profile, "profile"));
 app.whenReady().then(async () => {
  let win; try {
  const out=path.resolve("out/tests"); const html=path.join(profile,"index.html");
  fs.writeFileSync(html, `<html><head><meta charset="utf-8"><link rel="stylesheet" href="${pathToFileURL(path.join(out,"bot-activity-desktop-fixture.css"))}"><style>:root{--bg-panel:#fff;--bg-app:#fafafa;--fg-primary:#222;--fg-secondary:#666;--border-default:#ddd;--bg-hover:#eee}*{box-sizing:border-box}body{font:14px system-ui;margin:20px}button,input,select{font:inherit}</style></head><body><div id="root"></div><script src="${pathToFileURL(path.join(out,"bot-activity-desktop-fixture.js"))}"></script></body></html>`);
- win=new BrowserWindow({width:1050,height:850,show:true,webPreferences:{contextIsolation:true}});
+ win=new BrowserWindow({width:1050,height:850,show:true,webPreferences:{contextIsolation:true,backgroundThrottling:false}});
  const errors=[]; win.webContents.on("console-message",(_e,level,message)=>{if(level>=3)errors.push(message)});
  await win.loadFile(html); win.webContents.debugger.attach("1.3");
  const ev=s=>win.webContents.executeJavaScript(s);
@@ -43,10 +45,26 @@ app.whenReady().then(async () => {
  await wait("document.querySelector('.bot-activity-request')?.textContent.includes('原对话已归档')");
  assert(await ev("document.querySelector('.bot-activity-request').textContent.includes('旧会话委托')"));
  assert(!await ev("window.monitorNavigations.includes('message:old')"),"old request must not navigate to current conversation");
- await ev("document.querySelector('.bot-activity-request button').click()");
  await ev("window.monitorSetActive([])");
+ await wait("document.querySelector('.bot-activity-request')?.textContent.includes('旧请求最终结果')");
+ await ev("document.querySelector('.bot-activity-request button').click()");
  await wait(`!document.querySelector('[data-activity-id="bot:old"]')`);
+ await ev(`window.monitorSetState({botWorks:[{workId:"team-work",title:"团队调研",mode:"once",lifecycle:"active",ownerBotId:"owner",ownerEpoch:1,intentRevision:1,sourceVersion:1,stateVersion:1,inputSnapshotId:"input",inputSnapshotBound:true,goalSources:[],criteria:[],acceptedDeliverableIds:[],deliverables:[],blockers:[],executions:[],notifications:[],subscriptionIds:[],uncoveredScope:[],nextSteps:[],updatedAt:300,team:{teamId:"team-a",teamName:"研究团队",members:[]}}]})`);
+ await wait(`document.querySelector('[data-activity-id="work:team-work"]')`);
+ assert(await ev(`document.querySelector('[data-activity-id="work:team-work"]').textContent.includes('研究团队')`));
+ await ev(`document.querySelector('[data-activity-id="work:team-work"]').click()`);
+ await wait("!document.querySelector('dialog')");
+ assert.equal(await ev("window.monitorNavigations.at(-1)"),"team-work:team-work");
+ await ev("document.querySelector('#root button').click()");
+ await wait("document.querySelector('dialog')");
+ await ev(`window.monitorSetState({botWorks:Array.from({length:1000},(_,i)=>({workId:"scale-"+i,title:"并行委托编号 "+i,mode:"once",lifecycle:"active",ownerBotId:"owner",ownerEpoch:1,intentRevision:1,sourceVersion:1,stateVersion:1,inputSnapshotId:"input",inputSnapshotBound:true,goalSources:[],criteria:[],acceptedDeliverableIds:[],deliverables:[],blockers:[],executions:[],notifications:[],subscriptionIds:[],uncoveredScope:[],nextSteps:["下一步 "+i],updatedAt:300+i}))})`);
+ await wait("document.querySelectorAll('.bot-activity-row').length === 40");
+ assert(await ev("document.querySelector('.bot-activity-load').textContent.includes('还有')"));
+ await ev("(()=>{const i=document.querySelector('input[type=search]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(i,'编号 999');i.dispatchEvent(new Event('input',{bubbles:true}))})()");
+ await wait("document.querySelectorAll('.bot-activity-row').length === 1");
+ assert(await ev(`document.querySelector('[data-activity-id="work:scale-999"]') !== null`));
  assert.deepEqual(errors,[]);
+ verified = true;
  console.log("PASS real Electron activity window: default/current + ended filter, search, three source navigations, reopen, Escape, 1050/760/440px layouts.");
  }catch(e){console.error(e);process.exitCode=1;}finally{win?.destroy();app.exit(process.exitCode||0);}
 });

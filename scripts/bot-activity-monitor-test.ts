@@ -34,3 +34,14 @@ assert.equal(cross.filter(row => row.kind === "bot").length, 2, "current request
 assert(!cross.find(row => row.id === "bot:old")?.running);
 assert(!cross.find(row => row.id === "bot:old")?.ended);
 assert(cross.find(row => row.id === "bot:old")?.sourceRequest?.archived);
+
+const terminalRace = buildActivityRows({ ...input, histories: { owner: { ...histories.owner, messages: histories.owner.messages.map(message => ({ ...message, status: "completed" })) } }, activeRequests: [{ message: histories.owner.messages[1], archived: false }] });
+assert(terminalRace.find(row => row.kind === "bot")?.ended);
+assert(!terminalRace.find(row => row.kind === "bot")?.running);
+
+const staleStream = buildActivityRows({ ...input, tasks: [{ ...tasks[0], status: "failed" }] });
+assert(!staleStream.find(row => row.kind === "task")?.running, "failed task is not revived by stale stream flags");
+
+const idleChild = buildActivityRows({ ...input, subagents: { ordinary: [{ ...subagents.ordinary[0], status: "idle", workerAlive: true }] } });
+assert.equal(idleChild.find(row => row.kind === "subagent")?.label, "等待工具调用");
+assert(!idleChild.find(row => row.kind === "subagent")?.running);

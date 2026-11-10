@@ -234,7 +234,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
         <div className="bot-heading"><h1>{activeBot?.displayName ?? "Bot 模式"}</h1><p><span className={`bot-presence ${hostStatus?.online && activeBot?.status === "active" ? "is-online" : ""}`} />{activeBot ? presenceLabel(activeBot, hostStatus) : "你的长期个人助理"}<span className="bot-heading-description"> · 对话有延续，事项有着落</span></p></div>
         <div className="bot-workspace-actions">
           <button type="button" className="bot-quiet-button bot-new-conversation" disabled={!activeBot || messages.length === 0} onClick={() => { setArchiveError(""); setNewConversationOpen(true); }}>新对话</button>
-          <BotActivityMonitor onOpenBotMessage={messageId => {
+          <BotActivityMonitor onOpenWork={() => { setIncludeClosed(true); setInspectorOpen(true); }} onOpenBotMessage={messageId => {
             setView("conversation"); setInspectorOpen(false);
             requestAnimationFrame(() => requestAnimationFrame(() => {
               const node = Array.from(threadRef.current?.querySelectorAll<HTMLElement>("[data-message-id]") ?? []).find(item => item.dataset.messageId === messageId);
