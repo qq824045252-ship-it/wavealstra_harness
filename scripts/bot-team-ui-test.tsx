@@ -384,6 +384,23 @@ async function testRecoveryControls() {
       await start(value); assert.match(container.textContent!, /按依赖并行（最多 3 位成员）/);
       assert.match(container.textContent!, /前置成员：MyBuddy/); assert.match(container.textContent!, /等待前置成员结算/);
     });
+    await check("host provenance stays collapsed and bound to the exact member", async () => {
+      const value = projection("blocked");
+      value.team!.executions[0].bindingId = "binding-exact-member";
+      await start(value);
+      const details = container.querySelector('details[aria-label="Existing assistant的执行来源"]');
+      assert(details && !details.hasAttribute("open"));
+      assert.match(details.textContent!, /other-bot/); assert.match(details.textContent!, /binding-exact-member/);
+      assert(details.textContent!.includes(value.team!.executions[0].taskId));
+      delete value.team!.executions[0].bindingId; await render(value);
+      assert.match(container.querySelector('details[aria-label="Existing assistant的执行来源"]')!.textContent!, /尚无执行回执/);
+      assert.doesNotMatch(container.textContent!, /binding-exact-member/);
+      value.team!.executions[0].botId = "missing-bot-internal-id"; await render(value);
+      const missing = container.querySelector('article[aria-label="成员名称不可用的团队任务"]');
+      assert(missing); assert.doesNotMatch(missing.querySelector('strong')!.textContent!, /missing-bot/);
+      assert.match(missing.querySelector('details[aria-label="成员名称不可用的执行来源"]')!.textContent!, /missing-bot-internal-id/);
+
+    });
     await check("retry sends the exact current triple guard and not-started confirmation once", async () => {
       await start(projection("blocked", { stateVersion: 7, intentRevision: 3, ownerEpoch: 2 }));
       const retry = button("重试未启动的准备"); await act(async () => { nativeClick(retry); nativeClick(retry); });

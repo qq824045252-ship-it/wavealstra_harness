@@ -21,7 +21,7 @@ const user: WorkActor = { kind: "user", userId: LOCAL_USER_ID, grants };
 let authority = true;
 const works = new WorkService(db.connection, { bots, isAuthority: () => authority });
 const receipts = new Map<string, AgentSubmissionReceipt>();
-const submissions: Array<{ taskId: string; botId: string; input: { teamAssignment: { role: string; botId: string; previousResults: Array<{ status: string }> } } }> = [];
+const submissions: Array<{ taskId: string; botId: string; input: { teamAssignment: { role: string; botId: string; displayName: string; previousResults: Array<{ status: string; botId: string; displayName: string; responsibility: string; summary: string; bindingId?: string }> } } }> = [];
 const failPrepare = new Set<string>();
 const failSummary = new Set<string>();
 const unknownGeneration = new Set<string>();
@@ -124,6 +124,18 @@ try {
   const ownerInput = submissions.find(item => item.taskId === created.team!.executions[2]!.taskId)!.input.teamAssignment;
   assert.equal(ownerInput.role, "owner_summary"); assert.equal(ownerInput.previousResults.length, 2);
   assert(ownerInput.previousResults.every(item => item.status === "proposed"));
+  assert.equal(ownerInput.displayName, "owner");
+  assert.deepEqual(ownerInput.previousResults.map(item => [item.displayName, item.responsibility]),
+    [["a", "独立检查 a"], ["b", "独立检查 b"]], "host names and assigned responsibilities reach the owner together");
+  for (const result of ownerInput.previousResults) {
+    assert.equal(result.summary, `actual fixture result from ${result.botId}`, "raw member evidence remains unchanged");
+    assert(result.bindingId, "technical provenance remains available for inspection");
+  }
+  const display = (works.teams as unknown as { memberDisplayName(work: WorkDto, botId: string): string }).memberDisplayName.bind(works.teams);
+  bots.registerBot({ botId: "foreign-readable-name", userId: "different-user", displayName: "PRIVATE NAME", authorization: grants });
+  assert.equal(display(works.getWork(workId)!, "foreign-readable-name"), "成员名称不可用", "never reveal another user's registry name");
+  assert.equal(display(works.getWork(workId)!, "missing-bot"), "成员名称不可用", "missing identities are not guessed");
+
   const sent = submissions.length; await flush(); assert.equal(submissions.length, sent);
   assert.equal(works.collaboration.history(workId).filter(message => message.kind === "result").length, 3);
 

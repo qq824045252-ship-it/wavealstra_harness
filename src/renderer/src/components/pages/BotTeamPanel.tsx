@@ -37,7 +37,7 @@ export function BotTeamPanel({ work, identities }: { work: WorkProjectionDto; id
   if (!team) return null;
   const replanMembers = team.members.filter(member => member.botId !== work.ownerBotId).map(member => ({ ...member,
     dependsOnBotIds: member.dependsOnBotIds?.filter(id => id !== work.ownerBotId), delegatedScope: ["workspace:read" as const] }));
-  const name = (botId: string) => identities.find(bot => bot.botId === botId)?.displayName ?? botId;
+  const name = (botId: string) => identities.find(bot => bot.botId === botId)?.displayName.trim() || "成员名称不可用";
   const current = work.phase3?.collaborationMessages.filter(message => message.intentRevision === work.intentRevision && message.inputSnapshotId === work.inputSnapshotId) ?? [];
   return <section className="bot-detail-section bot-team-panel" aria-label="团队分工与协作">
     <div className="bot-team-progress"><h3>团队协作</h3><span className="bot-status-badge">{stateLabels[team.state]}</span></div>
@@ -54,6 +54,11 @@ export function BotTeamPanel({ work, identities }: { work: WorkProjectionDto; id
       {execution.failureReason && <p role="status">原失败：{execution.failureReason}</p>}
       {execution.error && <p role="status" className="bot-create-error">{execution.error}</p>}
       {execution.resultSummary && <details><summary>执行结果</summary><p>{execution.resultSummary}</p></details>}
+      <details aria-label={`${name(execution.botId)}的执行来源`}><summary>执行来源与标识</summary>
+        <p>成员：{name(execution.botId)} · {execution.responsibility}</p>
+        <p>Bot：<code>{execution.botId}</code></p><p>任务：<code>{execution.taskId}</code></p>
+        {execution.bindingId ? <p>本次执行：<code>{execution.bindingId}</code></p> : <p>尚无执行回执</p>}
+      </details>
     </article>)}
     {team.state === "blocked" && work.lifecycle === "active" && team.executions.some(execution => execution.error && !execution.bindingId) && <div>
       <p>确认阻碍已解决后，可重新核对未启动的准备步骤。已启动或结果未知的执行不会因此重复派发。</p>

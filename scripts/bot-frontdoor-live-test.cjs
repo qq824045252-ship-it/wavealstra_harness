@@ -202,9 +202,21 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       assert.equal(team.executions.length,teamFailureScenario?4:3);
       assert.equal(team.executions.filter(e=>e.role==='owner_summary').length,1);
       const summary=team.executions.find(e=>e.role==='owner_summary').resultSummary;
+      const memberNames = teamFailureScenario ? ['甲读取员', '乙读取员', '依赖核对员'] : ['甲读取员', '乙读取员'];
+      for (const name of memberNames) assert(summary.includes(name), `owner summary must identify ${name} by host display name`);
+      assert(!/bot-created-[a-f0-9]+|binding-[a-f0-9]+/.test(summary),
+        'main owner report uses member names, not internal identity/binding IDs');
+      report.checks.push('owner result identifies every member by host display name; technical IDs stay out of the main report');
+
       assert(summary.includes('ALPHA-31415')&&(teamFailureScenario && !teamTransientFailure ? /不存在|缺失|失败|未找到/.test(summary) && !summary.includes('BETA-27182') : summary.includes('BETA-27182')), summary);
       await until(()=>evaluate(`document.querySelector('.bot-thread').textContent.includes('ALPHA-31415') && document.querySelector('.bot-thread').textContent.includes(${JSON.stringify(teamFailureScenario?'beta.txt':'BETA-27182')})`),'team results visibly returned to original Bot conversation');
       assert(requests.some(r=>r.messages?.some(m=>m.tool_calls?.some(c=>c.function?.name==='work_team_create'))));
+      const ownerReportSelector = `[...document.querySelectorAll('.bot-result-report')].find(el=>${JSON.stringify(memberNames)}.every(name=>el.textContent.includes(name)))`;
+      await until(()=>evaluate(`Boolean(${ownerReportSelector})`),'named owner summary rendered in original conversation');
+      await evaluate(`${ownerReportSelector}.scrollIntoView({block:'start'})`); await wait(150);
+      const readableShot = await rpc('Page.captureScreenshot', {format:'png',captureBeyondViewport:false});
+      fs.writeFileSync(path.join(out,'team-result.png'),Buffer.from(readableShot.data,'base64'));
+
       report.checks.push('real Bot composer -> real online model template selection -> durable team members -> owner summary -> original conversation');
       report.checks.push(teamTransportFailure&&!teamTransientFailure?'one successful read, one controlled provider failure, dependent scope accounted for, truthful owner summary':teamFailureScenario&&!teamTransientFailure?'one successful read, one real missing-file failure, dependent scope accounted for, truthful owner summary':`exact file values verified, one Work, ${team.executions.length} team executions, no fabricated tool results`);
       assert.equal(report.works[0].executions.filter(e=>e.taskId===team.executions[0].taskId).length,1,'successful member is never redispatched by sibling recovery');
