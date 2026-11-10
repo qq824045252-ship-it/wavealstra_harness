@@ -438,8 +438,14 @@ export class WorkWatchScheduler {
   }
 
   private expireDeadlines(now: number): void {
-    const rows = this.db.prepare(`SELECT * FROM works WHERE lifecycle IN ('active','paused')
-      AND deadline_at IS NOT NULL AND deadline_at<=? ORDER BY deadline_at ASC LIMIT 64`).all(now) as Array<Record<string, unknown>>;
+    // Filter settled instances before the bounded scan. Otherwise the first 64
+    // historical deadlines permanently hide every newer commitment.
+    const rows = this.db.prepare(`SELECT w.* FROM works w LEFT JOIN work_deadline_instances d
+      ON d.work_id=w.work_id AND d.deadline_revision=w.deadline_revision AND d.deadline_at=w.deadline_at
+      WHERE w.lifecycle IN ('active','paused') AND w.deadline_at IS NOT NULL AND w.deadline_at<=?
+      AND (d.work_id IS NULL OR d.state='armed'
+        OR (w.lifecycle='active' AND d.state='followed-up' AND d.inbox_event_id IS NULL))
+      ORDER BY w.deadline_at ASC,w.work_id ASC LIMIT 64`).all(now) as Array<Record<string, unknown>>;
     for (const raw of rows) {
       const work = this.works.getWork(String(raw.work_id));
       if (!work || work.deadlineAt === undefined || work.deadlineAt > now) continue;
@@ -454,7 +460,10 @@ export class WorkWatchScheduler {
         instance = this.db.prepare("SELECT * FROM work_deadline_instances WHERE work_id=? AND deadline_revision=? AND deadline_at=?")
           .get(work.workId, revision, at) as { state: string; inbox_event_id: string | null } | undefined;
       }
-      if (!instance || instance.state !== "armed") continue;
+      // A paused expiry records the fact but has no dispatched event. Once
+      // resumed it still owes exactly one follow-up, unlike an emitted expiry.
+      if (!instance || !(instance.state === "armed" || work.lifecycle === "active"
+        && instance.state === "followed-up" && instance.inbox_event_id === null)) continue;
       if (work.lifecycle === "paused") {
         this.db.prepare("UPDATE work_deadline_instances SET state='followed-up',followed_at=? WHERE work_id=? AND deadline_revision=? AND deadline_at=?")
           .run(now, work.workId, revision, at);
@@ -473,6 +482,7 @@ export class WorkWatchScheduler {
       if (event) {
         this.db.prepare("UPDATE work_deadline_instances SET state='followed-up',inbox_event_id=?,followed_at=? WHERE work_id=? AND deadline_revision=? AND deadline_at=?")
           .run(eventId, now, work.workId, revision, at);
+        this.works.repo.clearBlocker(`offline:${work.workId}:deadline-follow-up`, work.workId, now);
         this.works.repo.updateWork({ ...work, stateVersion: work.stateVersion + 1, updatedAt: now });
       }
     }

@@ -290,7 +290,10 @@ try {
   assert.equal(work.mode, "once"); assert.equal(work.watchRule, undefined);
   assert(works.repo.listSubscriptions(work.workId).every(item => item.stoppedAt));
   clock.at += 24 * 60 * 60_000; works.tick(clock.at); await queue.flush();
-  assert.equal(works.repo.listBindings(work.workId).length, 3);
+  assert.equal(works.repo.listBindings(work.workId).length, 4, "the missed independent deadline is still followed up after the watch is stopped");
+  const resumedDeadline = works.repo.listBindings(work.workId).at(-1)!;
+  assert.equal(works.repo.getInbox(resumedDeadline.inboxEventId!)?.eventType, "deadline_expired");
+  settle(work.workId);
 
   request("明天安排一次跟进", work.workId);
   work = unwrap(await invoke("work_amend", { workId: work.workId, versionGuard: await read(work.workId),
@@ -298,7 +301,7 @@ try {
   assert.equal(work.mode, "watch"); assert(work.deadlineRevision > 1);
   clock.at += 60_000; works.tick(clock.at); await queue.flush(); settle(work.workId);
   const onceCount = works.repo.listBindings(work.workId).length;
-  assert.equal(onceCount, 4);
+  assert.equal(onceCount, 5);
   clock.at += 60_000; works.tick(clock.at); await queue.flush();
   const due = works.repo.listBindings(work.workId).at(-1)!;
   assert.equal(works.repo.getInbox(due.inboxEventId!)?.eventType, "deadline_expired");

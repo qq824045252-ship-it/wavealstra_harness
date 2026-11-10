@@ -152,6 +152,55 @@ try {
     now += 2_000; tick();
     assert(works.repo.listOpenBlockers(fixture.work.workId).some(b => b.reasonCode === "deadline-follow-up"));
   }
+  // Settled deadlines cannot occupy the bounded scan forever. This is a
+  // normal many-commitment flow, not crash/fault injection.
+  const deadlineWork = () => {
+    const id = `deadline-population-${++sequence}`;
+    const result = works.createWork(actor, { operationId: id, title: id, inputSnapshotId: id,
+      workspacePath: root, mode: "once", deadlineAt: now - 1, authorization: DESKTOP_USER_GRANTS });
+    assert(result.ok); return result.work;
+  };
+  const deadlineEvents = (work: WorkDto) => works.repo.listInbox(work.workId).filter(event => event.eventType === "deadline_expired");
+  const population = Array.from({ length: 130 }, deadlineWork);
+  tick(); tick(); tick();
+  assert.equal(population.filter(work => deadlineEvents(work).length === 1).length, 130,
+    "more than 64 deadlines must all advance across bounded passes");
+  tick(); assert(population.every(work => deadlineEvents(work).length === 1), "settled deadlines never repeat");
+  const pausedDeadline = deadlineWork();
+  assert(works.pauseWork(actor, { operationId: "pause-overdue", workId: pausedDeadline.workId, versionGuard: guard(pausedDeadline.workId) }).ok);
+  tick(); tick();
+  assert.equal(deadlineEvents(pausedDeadline).length, 0, "paused expiry must not execute");
+  assert(works.repo.listOpenBlockers(pausedDeadline.workId).some(item => item.reasonCode === "deadline-follow-up"));
+  assert(works.resumeWork(actor, { operationId: "resume-overdue", workId: pausedDeadline.workId, versionGuard: guard(pausedDeadline.workId) }).ok);
+  tick(); tick();
+  assert.equal(deadlineEvents(pausedDeadline).length, 1, "resume catches up the missed commitment once");
+  assert(!works.repo.listOpenBlockers(pausedDeadline.workId).some(item => item.reasonCode === "deadline-follow-up"),
+    "queued follow-up clears the obsolete pause diagnostic");
+  assert(works.pauseWork(actor, { operationId: "pause-already-followed", workId: pausedDeadline.workId, versionGuard: guard(pausedDeadline.workId) }).ok);
+  tick();
+  assert(works.resumeWork(actor, { operationId: "resume-already-followed", workId: pausedDeadline.workId, versionGuard: guard(pausedDeadline.workId) }).ok);
+  tick(); assert.equal(deadlineEvents(pausedDeadline).length, 1, "already emitted follow-up cannot repeat after another pause");
+  const pausedPopulation = Array.from({ length: 70 }, deadlineWork);
+  for (const work of pausedPopulation) assert(works.pauseWork(actor, { operationId: `pause-${work.workId}`, workId: work.workId, versionGuard: guard(work.workId) }).ok);
+  tick(); tick();
+  const afterPaused = deadlineWork(); tick();
+  assert.equal(deadlineEvents(afterPaused).length, 1, "paused deadline facts cannot starve an active commitment");
+  assert(pausedPopulation.every(work => deadlineEvents(work).length === 0));
+  const revised = deadlineWork();
+  assert(works.pauseWork(actor, { operationId: "pause-revised", workId: revised.workId, versionGuard: guard(revised.workId) }).ok);
+  tick();
+  assert(works.phase4Control(actor, { kind: "set-deadline", operationId: "move-revised", workId: revised.workId,
+    deadlineAt: now + 10_000, versionGuard: guard(revised.workId) }).ok);
+  assert(works.resumeWork(actor, { operationId: "resume-revised", workId: revised.workId, versionGuard: guard(revised.workId) }).ok);
+  tick(); assert.equal(deadlineEvents(revised).length, 0, "revised deadline must not resurrect the old overdue instance");
+  now += 10_000; tick(); assert.equal(deadlineEvents(revised).length, 1);
+  const cancelledDeadline = deadlineWork();
+  assert(works.pauseWork(actor, { operationId: "pause-cleared-deadline", workId: cancelledDeadline.workId, versionGuard: guard(cancelledDeadline.workId) }).ok);
+  tick();
+  assert(works.phase4Control(actor, { kind: "set-deadline", operationId: "clear-deadline", workId: cancelledDeadline.workId,
+    deadlineAt: null, versionGuard: guard(cancelledDeadline.workId) }).ok);
+  assert(works.resumeWork(actor, { operationId: "resume-cleared-deadline", workId: cancelledDeadline.workId, versionGuard: guard(cancelledDeadline.workId) }).ok);
+  tick(); assert.equal(deadlineEvents(cancelledDeadline).length, 0, "removed commitment must stay removed");
   // Large populations use a persistent fair 128-subscription pass. Full each
   // queues at the front may not starve new watches, including after host reopen.
   for (const subscription of works.repo.listActiveSubscriptions()) works.repo.updateSubscription({ ...subscription, stoppedAt: now, updatedAt: now });
