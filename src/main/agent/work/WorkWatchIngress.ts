@@ -1,3 +1,4 @@
+import { watchTimeExpired } from "../../../shared/work-watch-expiry";
 import type Database from "better-sqlite3";
 import { createHash } from "node:crypto";
 import type { WorkDto, WorkInboxEventDto, WorkSourceEventDto, WorkSubscriptionDto } from "../../../shared/bot-work";
@@ -215,7 +216,7 @@ export class WorkWatchIngress {
     const stale = policy === "latest" && event.sourceVersion !== undefined
       ? this.isStale(subscription, targetKey, event.sourceVersion) : false;
 
-    if (work.lifecycle !== "active" && work.lifecycle !== "paused") {
+    if (watchTimeExpired(work, this.now()) || work.lifecycle !== "active" && work.lifecycle !== "paused") {
       this.upsertRoute({ source: event.source, sourceEventId: event.sourceEventId, subscriptionId: subscription.subscriptionId,
         workId: work.workId, targetKey, state: "rejected", reasonCode: "work-not-active", sourceVersion: event.sourceVersion,
         trust: input.trust ?? "adapter", acceptedAt: now });
@@ -482,7 +483,7 @@ export class WorkWatchIngress {
   listReady(workId: string, now = this.now()): WorkInboxEventDto[] {
     this.freezeDueBatches(now, workId);
     const work = this.works.getWork(workId);
-    if (!work || work.lifecycle !== "active") return [];
+    if (!work || watchTimeExpired(work, now) || work.lifecycle !== "active") return [];
     const rows = this.db.prepare(`SELECT * FROM work_events_inbox WHERE work_id=? AND status IN ('pending','merged')
       AND (status='pending' OR frozen_at IS NOT NULL) ORDER BY received_at ASC,rowid ASC`).all(workId) as Array<Record<string, unknown>>;
     const seenBatches = new Set<string>();

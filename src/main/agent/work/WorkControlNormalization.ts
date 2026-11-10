@@ -22,6 +22,7 @@ export function normalizeWatchRule(input: Partial<WorkWatchRuleDto> | undefined)
   if (!input) return undefined;
   const catchUpPolicy = input.catchUpPolicy ?? "latest";
   return {
+    endsAt: input.endsAt,
     subscriptions: normalizeTexts(input.subscriptions ?? (input.cronExpression || input.nextWakeAt !== undefined ? ["cron"] : [])),
     cronExpression: input.cronExpression?.trim() || undefined,
     scheduleBasis: input.scheduleBasis,

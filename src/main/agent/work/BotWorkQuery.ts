@@ -36,7 +36,7 @@ export interface BotWorkSummary {
   nextWakeAt: number | null;
   activeSubscriptionCount: number;
   stoppedSubscriptionCount: number;
-  watchRule: { cronExpression: string | null; timezone: string | null; stopConditionText: string | null } | null;
+  watchRule: { cronExpression: string | null; timezone: string | null; stopConditionText: string | null; endsAt: number | null; terminationReason: string | null } | null;
   versionGuard: { expectedStateVersion: number; expectedIntentRevision: number; expectedOwnerEpoch: number };
   /** Summaries omit long reports, history and evidence. Read workId for originals. */
   detailAvailable: true;
@@ -114,6 +114,8 @@ export class BotWorkQuery {
       substr(json_extract(w.watch_rule_json,'$.cronExpression'),1,200) cronExpression,
       substr(json_extract(w.watch_rule_json,'$.timezone'),1,100) timezone,
       substr(json_extract(w.watch_rule_json,'$.stopConditionText'),1,400) stopConditionText,
+      json_extract(w.watch_rule_json,'$.endsAt') endsAt,
+      json_extract(w.watch_rule_json,'$.termination.reason') terminationReason,
       (SELECT COUNT(*) FROM work_blockers b WHERE b.work_id=w.work_id AND b.status='open') openBlockerCount,
       EXISTS(SELECT 1 FROM work_blockers b WHERE b.work_id=w.work_id AND b.status='open' AND b.waiting_for_user_input=1) needsUserInput,
       (SELECT MIN(s.next_wake_at) FROM work_subscriptions s WHERE s.work_id=w.work_id AND s.stopped_at IS NULL) nextWakeAt,
@@ -121,15 +123,15 @@ export class BotWorkQuery {
       (SELECT COUNT(*) FROM work_subscriptions s WHERE s.work_id=w.work_id AND s.stopped_at IS NOT NULL) stoppedSubscriptionCount
       FROM works w WHERE ${predicates.join(" AND ")} ORDER BY w.created_at DESC,w.work_id DESC LIMIT @take`)
       .all(params) as Array<Omit<BotWorkSummary, "watchRule" | "versionGuard" | "detailAvailable" | "needsUserInput" | "tracking"> & {
-        cronExpression: string | null; timezone: string | null; stopConditionText: string | null; needsUserInput: number;
+        cronExpression: string | null; timezone: string | null; stopConditionText: string | null; endsAt: number | null; terminationReason: string | null; needsUserInput: number;
         stateVersion: number; intentRevision: number; ownerEpoch: number;
       }>;
     const hasMore = rows.length > limit;
     const tracking = workTrackingReader(this.db);
     const observedAt = Date.now();
     const summaries: Array<Omit<BotWorkSummary, "tracking">> = rows.slice(0, limit).map(({ stateVersion, intentRevision, ownerEpoch,
-      cronExpression, timezone, stopConditionText, needsUserInput, ...row }) => ({ ...row, needsUserInput: !!needsUserInput,
-      watchRule: row.mode === "watch" ? { cronExpression, timezone, stopConditionText } : null,
+      cronExpression, timezone, stopConditionText, endsAt, terminationReason, needsUserInput, ...row }) => ({ ...row, needsUserInput: !!needsUserInput,
+      watchRule: row.mode === "watch" ? { cronExpression, timezone, stopConditionText, endsAt, terminationReason } : null,
       versionGuard: { expectedStateVersion: stateVersion, expectedIntentRevision: intentRevision, expectedOwnerEpoch: ownerEpoch },
       detailAvailable: true }));
     const items: BotWorkSummary[] = summaries.map(item => ({ ...item, tracking: tracking(item, observedAt) }));

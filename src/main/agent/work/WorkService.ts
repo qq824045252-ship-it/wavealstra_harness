@@ -1,3 +1,4 @@
+import { expireWatchTime } from "./WorkWatchExpiry";
 import { WorkSubscriptionMutations } from "./WorkSubscriptionMutations";
 import { WorkSubscriptionStore } from "./WorkSubscriptionStore";
 import { dispatchExecutionMutation } from "./WorkDispatchMutation";
@@ -437,6 +438,12 @@ export class WorkService {
       this.tryCloseSettled(work, this.now());
       this.emitCurrentProjection(workId);
     });
+  }
+
+  /** Scheduler-owned deterministic termination, not an approval or success decision. */
+  expireWatchTime(workId: string, now: number, reviewDelivered: boolean): void {
+    if (this.authorityError()) return;
+    this.transaction(() => expireWatchTime(this, workId, now, reviewDelivered, params => this.outbox(params)));
   }
 
   // ============================================================ delegation

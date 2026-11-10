@@ -1,3 +1,4 @@
+import { watchTimeExpired } from "../../../shared/work-watch-expiry";
 import { isScheduledFollowUp, scheduledFollowUpCurrent } from "./WorkScheduledFollowUp";
 import { createHash,randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -32,7 +33,7 @@ export class WorkDispatchQueue {
 
   enqueue(work: WorkDto, operationId: string, retryBlocked = false, inboxEventId?: string): void {
     const current = this.works.getWork(work.workId);
-    if (!current || current.lifecycle !== "active" || current.intentRevision !== work.intentRevision || current.inputSnapshotId !== work.inputSnapshotId) return;
+    if (!current || watchTimeExpired(current, Date.now()) || current.lifecycle !== "active" || current.intentRevision !== work.intentRevision || current.inputSnapshotId !== work.inputSnapshotId) return;
     work = current;
     if (this.works.teams.get(work.workId)) return;
     if (this.db.connection.prepare("SELECT 1 FROM work_dispatch_requests WHERE operation_id=?").get(operationId)) return;
@@ -92,7 +93,7 @@ export class WorkDispatchQueue {
         continue;
       }
       const work = this.works.getWork(request.work_id);
-      if (!work || work.lifecycle === "closed" || work.lifecycle === "closing" || work.intentRevision !== request.intent_revision || work.inputSnapshotId !== request.input_snapshot_id) {
+      if (!work || watchTimeExpired(work, Date.now()) || work.lifecycle === "closed" || work.lifecycle === "closing" || work.intentRevision !== request.intent_revision || work.inputSnapshotId !== request.input_snapshot_id) {
         this.db.connection.prepare("UPDATE work_dispatch_requests SET state='cancelled' WHERE operation_id=?").run(request.operation_id);
         continue;
       }

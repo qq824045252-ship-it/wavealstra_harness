@@ -33,6 +33,8 @@ export function nextWakeForRule(watchRule: WorkWatchRuleDto | undefined, from: n
 /** Validate before writing any Work or subscription rows. */
 export function watchRuleProblem(rule: WorkWatchRuleDto | undefined, now: number, compute: WorkNextWake): string | undefined {
   if (!rule) return undefined;
+  if (rule.endsAt !== undefined && (!Number.isSafeInteger(rule.endsAt) || rule.endsAt <= now || rule.endsAt > 8640000000000000))
+    return "持续追踪终止时间必须是未来的有效 Unix 毫秒时刻";
   if (rule.timezone) {
     try { new Intl.DateTimeFormat("en", { timeZone: rule.timezone }).format(now); }
     catch { return "时区必须是可以解析的 IANA 名称"; }

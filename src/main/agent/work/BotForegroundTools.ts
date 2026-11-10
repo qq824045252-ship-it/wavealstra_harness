@@ -20,6 +20,7 @@ const guard = z.object({ expectedStateVersion: z.number().int().positive(), expe
   expectedOwnerEpoch: z.number().int().positive() }).strict();
 const query = botWorkQuerySchema;
 const watchRule = z.object({
+  endsAt: z.number().int().nonnegative().max(8640000000000000).optional().describe("仅用户明确指定的持续追踪终止时刻，Unix毫秒。按用户时区换算为绝对时刻；到期停止新轮并结算在途，不代表目标成功。无限持续不填；举例365天不是指定期限；不能用任意语义停止条件推断日期。暂停和离线不会顺延"),
   notificationMode: z.enum(["every_check", "changes_only"]).optional().describe("用户要求仅变化时通知必须设changes_only；每轮汇报用every_check。旧任务未配置时保持每轮汇报"),
   notifyInitial: z.boolean().optional().describe("changes_only首轮是否通知；默认false只建立基线，用户要求首次也汇报才设true"),
   cronExpression: z.string().min(1).max(200).regex(/^\S+(?:\s+\S+){4}$/, "请使用五字段分钟级 Cron 时间表").optional().describe("五字段分钟级 Cron 时间表，按用户指定频率；不支持秒级轮询，不擅自提高检查频率"),

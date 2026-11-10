@@ -42,6 +42,8 @@ export interface WorkOfflineGapInput {
  * offline gaps are persisted facts rather than "the app was probably running" claims.
  */
 export class WorkWatchScheduler {
+  private expiryReviewDelivered: (workId: string) => boolean = () => false;
+  setExpiryReviewGate(delivered: (workId: string) => boolean): void { this.expiryReviewDelivered = delivered; }
   private timer?: ReturnType<typeof setInterval>;
   private intervalMs = 5_000;
   private sessionId = newId("host-session");
@@ -234,6 +236,10 @@ export class WorkWatchScheduler {
       if (!this.authority()) return [];
       this.upsertHostState({ sessionId: this.sessionId, now });
       const results: WorkTickResult[] = [];
+      for (const row of this.db.prepare(`SELECT work_id FROM works WHERE mode='watch' AND lifecycle IN ('active','paused','closing')
+        AND ((json_type(watch_rule_json,'$.endsAt') IN ('integer','real') AND json_extract(watch_rule_json,'$.endsAt')<=?)
+          OR json_extract(watch_rule_json,'$.termination.reason')='schedule_expired')`).all(now) as Array<{ work_id: string }>)
+        this.works.expireWatchTime(row.work_id, now, this.expiryReviewDelivered(row.work_id));
       const cursor = this.db.prepare(`SELECT last_scan_cursor FROM work_watch_host_state
         WHERE last_scan_cursor IS NOT NULL ORDER BY (authority_id=?) DESC,rowid DESC LIMIT 1`)
         .get(this.authorityId()) as { last_scan_cursor: string | null } | undefined;

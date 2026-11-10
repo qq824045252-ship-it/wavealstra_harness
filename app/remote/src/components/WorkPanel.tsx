@@ -237,6 +237,7 @@ function WorkDetail({ client, work }: { client: RemoteClient; work: RemoteWorkSu
 }
 
 function lifecycleLabel(work: RemoteWorkSummary): string {
+  if (work.watchTermination) return work.lifecycle === 'closed' ? '到期结束' : '已到期，正在结算'
   const { lifecycle, closureConclusion } = work
   if (lifecycle === 'closed') {
     if (closureConclusion === 'succeeded') return '已完成并关闭'

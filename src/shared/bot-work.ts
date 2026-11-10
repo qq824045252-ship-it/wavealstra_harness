@@ -180,6 +180,10 @@ export interface WorkGoalSourceDto {
 }
 
 export interface WorkWatchRuleDto {
+  /** Explicit absolute time, never inferred from an illustrative duration or stop-condition prose. */
+  endsAt?: number;
+  /** Host-owned termination fact. No success, failure or user-cancellation is implied. */
+  termination?: { reason: "schedule_expired"; scheduledEndsAt: number; requestedAt: number; settledAt?: number };
   notificationMode?: "every_check" | "changes_only";
   notifyInitial?: boolean;
   scheduleBasis?: "user_specified" | "recommended";
@@ -462,7 +466,7 @@ export interface WorkProjectionDto {
   workId: string;
   title: string;
   mode: WorkMode;
-  watchPlan?: Pick<WorkWatchRuleDto, "scheduleBasis" | "scheduleRationale">;
+  watchPlan?: Pick<WorkWatchRuleDto, "scheduleBasis" | "scheduleRationale" | "endsAt" | "termination">;
   lifecycle: WorkLifecycle;
   pendingConclusion?: WorkClosureConclusion;
   closureConclusion?: WorkClosureConclusion;

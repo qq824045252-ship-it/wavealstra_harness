@@ -103,7 +103,7 @@ export interface WorkTeamDto extends WorkTeamPlan {
   intentRevision: number;
   inputSnapshotId: string;
   ownerEpoch: number;
-  state: "queued" | "running" | "blocked" | "awaiting_review" | "paused" | "cancelled" | "superseded" | "completed" | "ended_unsuccessfully" | "closing";
+  state: "expired" | "queued" | "running" | "blocked" | "awaiting_review" | "paused" | "cancelled" | "superseded" | "completed" | "ended_unsuccessfully" | "closing";
   executions: WorkTeamExecution[];
   createdAt: number;
 }

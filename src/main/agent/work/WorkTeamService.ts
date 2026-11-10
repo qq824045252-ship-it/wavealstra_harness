@@ -1,3 +1,4 @@
+import { watchEndedByTime } from "../../../shared/work-watch-expiry";
 import { ensureTeamConversation } from "./WorkDeliveryTargets";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, realpathSync, statSync } from "node:fs";
@@ -471,7 +472,7 @@ export class WorkTeamService {
         failureReason: recovered || stopped ? recovery.failure_message : undefined };
     });
     const superseded = row.intent_revision !== work.intentRevision || row.input_snapshot_id !== work.inputSnapshotId;
-    const state = work.lifecycle === "closed" && work.closureConclusion === "succeeded" ? "completed"
+    const state = watchEndedByTime(work) ? "expired" : work.lifecycle === "closed" && work.closureConclusion === "succeeded" ? "completed"
       : work.lifecycle === "closed" && work.closureConclusion === "ended_unsuccessfully" ? "ended_unsuccessfully"
         : work.lifecycle === "closed" ? "cancelled" : work.lifecycle === "closing" ? "closing" : work.lifecycle === "paused" ? "paused"
           : superseded ? "superseded"

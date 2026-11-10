@@ -1,3 +1,4 @@
+import { watchTimeExpired } from "../../../shared/work-watch-expiry";
 import type { z } from "zod";
 import type { workExecutionObservationSchema } from "../../../shared/bot-work-phase3";
 import type { AgentSubmissionReceipt } from "../../../shared/agent-ipc";
@@ -104,7 +105,7 @@ export class WorkExecutionAdapter {
     if (!work || !this.isAuthority()) return;
     const current = this.service.repo.getBinding(binding.bindingId);
     if (!current) return;
-    const canStart = work.lifecycle === "active" && !current.invalidatedAt
+    const canStart = !watchTimeExpired(work, Date.now()) && work.lifecycle === "active" && !current.invalidatedAt
       && !["completed", "failed", "stopped", "invalidated"].includes(current.status)
       && this.service.scheduledBindingCurrent(current)
       && current.intentRevision === work.intentRevision && current.inputSnapshotId === work.inputSnapshotId;
@@ -140,7 +141,7 @@ export class WorkExecutionAdapter {
       work = this.service.getWork(current.workId);
       const latestBinding = this.service.repo.getBinding(current.bindingId);
       if (!work || !latestBinding) return;
-      if (work.lifecycle !== "active" || latestBinding.invalidatedAt || !this.service.scheduledBindingCurrent(latestBinding)) {
+      if (watchTimeExpired(work, Date.now()) || work.lifecycle !== "active" || latestBinding.invalidatedAt || !this.service.scheduledBindingCurrent(latestBinding)) {
         await this.native.stop(current);
         if (!this.isAuthority()) return;
         observation = await this.native.inspect(current, receipt);

@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useAppStore } from "@/store/appStore";
 import type { BotDto, WorkProjectionDto } from "@shared/bot-work";
 import type { WorkTeamControlRequest, WorkTeamDto, WorkTeamExecution } from "@shared/bot-work-team";
-const stateLabels: Record<WorkTeamDto["state"], string> = { closing: "收尾结算中", completed: "已验收完成", ended_unsuccessfully: "已结束，目标未达成", queued: "等待开工", running: "执行中", blocked: "执行受阻", awaiting_review: "团队汇总已返回", paused: "已暂停", cancelled: "已取消", superseded: "原计划已失效，等待重新安排" };
+const stateLabels: Record<WorkTeamDto["state"], string> = { expired: "到期结束", closing: "收尾结算中", completed: "已验收完成", ended_unsuccessfully: "已结束，目标未达成", queued: "等待开工", running: "执行中", blocked: "执行受阻", awaiting_review: "团队汇总已返回", paused: "已暂停", cancelled: "已取消", superseded: "原计划已失效，等待重新安排" };
 const executionLabels: Record<WorkTeamExecution["status"], string> = { queued: "排队中", pending: "准备中", submitted: "已派发", running: "执行中", recovering: "自动恢复中", recovered: "已自动恢复", completed: "执行结束", failed: "执行失败", stopped: "已停止", unknown: "结果未知，待核对", invalidated: "已失效", blocked: "受阻", cancelled: "已取消" };
 export function BotTeamPanel({ work, identities }: { work: WorkProjectionDto; identities: BotDto[] }): React.JSX.Element | null {
   const projectionKey = `${work.workId}:${work.intentRevision}:${work.ownerEpoch}:${work.stateVersion}`;

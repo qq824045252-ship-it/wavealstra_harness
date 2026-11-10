@@ -274,6 +274,7 @@ export interface WorkSummaryProjectionDto {
   lifecycle: WorkLifecycle;
   /** Authoritative closure state; result-card kinds retain their original identity. */
   closureConclusion?: WorkClosureConclusion;
+  watchTermination?: import("./bot-work").WorkWatchRuleDto["termination"];
   mode: "once" | "watch";
   ownerBotId: string;
   ownerEpoch: number;

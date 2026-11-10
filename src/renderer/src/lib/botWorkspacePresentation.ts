@@ -1,3 +1,4 @@
+import { watchEndedByTime } from "@shared/work-watch-expiry";
 import { watchPresentation } from "./botWatchPresentation";
 import { isWorkArchived } from "@shared/bot-work-archive";
 import { getMarkdown } from "stream-markdown-parser";
@@ -21,6 +22,7 @@ export type WorkStatusGroup = "running" | "waiting" | "attention" | "results" | 
 
 /** Labels and list filters share one decision, never infer state from report text. */
 export function workStatus(work: WorkProjectionDto): { label: string; group: WorkStatusGroup } {
+  if (watchEndedByTime({ ...work, watchRule: work.watchPlan })) return { label: "到期结束", group: "ended" };
   if (work.lifecycle === "closed") {
     if (work.closureConclusion === "succeeded") return { label: "已完成", group: "succeeded" };
     if (work.closureConclusion === "cancelled") return { label: "已取消", group: "cancelled" };
@@ -29,7 +31,7 @@ export function workStatus(work: WorkProjectionDto): { label: string; group: Wor
   }
   if (work.archive?.archivedAt) return { label: "已归档 · 未完成", group: "unsuccessful" };
   if (work.lifecycle === "paused") return { label: "已暂停", group: "paused" };
-  if (work.lifecycle === "closing") return { label: "正在结算", group: "running" };
+  if (work.lifecycle === "closing") return { label: work.watchPlan?.termination ? "已到期 · 正在结算" : "正在结算", group: "running" };
   if (work.mode === "watch") return watchPresentation(work);
   const blockers = work.blockers.filter(item => item.status === "open" && item.kind !== "external_effect" && !item.unknownExternalEffectRef);
   if (blockers.some(item => item.waitingForUserInput)) return { label: "等待补充信息", group: "attention" };

@@ -40,6 +40,7 @@ export function toRemoteWork(summary: WorkSummaryProjectionDto, cards: RemoteWor
     goal: summary.goal,
     lifecycle: summary.lifecycle,
     closureConclusion: summary.closureConclusion,
+    watchTermination: summary.watchTermination,
     mode: summary.mode,
     ownerEpoch: summary.ownerEpoch,
     intentRevision: summary.intentRevision,

@@ -1,5 +1,6 @@
 import { watchObservationDelivery, watchReadEvidence } from "./WorkWatchObservation";
 import type { WorkCompletionDelivery } from "./WorkCompletionCoordinator";
+import { watchEndedByTime } from "../../../shared/work-watch-expiry";
 import type Database from "better-sqlite3";
 import type { WorkFeedbackDto } from "../../../shared/bot-conversation";
 import type { WorkDto } from "../../../shared/bot-work";
@@ -201,9 +202,12 @@ export class WorkConversationFeedback {
               : `阻塞已解除：${blocker.reason}`,
             { kind: "blocker", category: blocker.status === "open" && needsInput ? "decision" : "progress" });
         }
+        if (work.lifecycle === "closing" && work.watchRule?.termination) {
+          emit("watch-expiry", work.watchRule.termination, "持续追踪期限已到，已停止新的检查，正在结算在途执行并整理最后一轮汇报。", { kind: "binding", category: "progress" });
+        }
         if (work.lifecycle === "closed" && (work.mode === "watch" || !works.repo.listBindings(work.workId).some(binding => managed(binding.bindingId)))) {
           emit("closure", [work.closedAt, work.closureConclusion, work.closureSummary],
-            `事项已关闭（${work.closureConclusion ?? "已结束"}）。${work.closureSummary ? `\n${work.closureSummary}` : ""}\n关闭状态不等同于用户验收。`, { kind: "closure", category: "result" });
+            `事项已关闭（${watchEndedByTime(work) ? "到期结束" : work.closureConclusion ?? "已结束"}）。${work.closureSummary ? `\n${work.closureSummary}` : ""}\n关闭状态不等同于用户验收。`, { kind: "closure", category: "result" });
         }
         return count;
       });

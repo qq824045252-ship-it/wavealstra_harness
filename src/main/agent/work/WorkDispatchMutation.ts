@@ -1,3 +1,4 @@
+import { watchTimeExpired } from "../../../shared/work-watch-expiry";
 import type { BotDto, DispatchExecutionParams, ExpertConfigSnapshotDto, WorkDto, WorkExecutionStatus, WorkExecutionBindingDto } from "../../../shared/bot-work";
 import type { BotRegistry } from "./BotRegistry";
 import type { WorkTeamService } from "./WorkTeamService";
@@ -35,6 +36,7 @@ export function dispatchExecutionMutation(deps: DispatchMutationDeps, work: Work
     }
     return { ok: true };
   }
+  if (watchTimeExpired(work, now)) return { ok: false, code: "invalid_lifecycle_transition", message: "持续追踪期限已到，不再启动新的检查" };
   const teamError = deps.teams.dispatchError(work.workId, params.taskId, params.botId, params.delegatedScope, params.operationId);
   if (teamError) return { ok: false, code: "unauthorized_actor", message: teamError };
   const occupied = deps.repo.bindingForTask(params.taskId);

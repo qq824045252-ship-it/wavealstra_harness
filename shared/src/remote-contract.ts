@@ -536,6 +536,7 @@ export interface RemoteWorkSummary {
   goal?: string
   lifecycle: 'active' | 'paused' | 'closing' | 'closed'
   closureConclusion?: 'succeeded' | 'cancelled' | 'ended_unsuccessfully'
+  watchTermination?: { reason: 'schedule_expired'; scheduledEndsAt: number; requestedAt: number; settledAt?: number }
   mode: 'once' | 'watch'
   ownerEpoch: number
   intentRevision: number
