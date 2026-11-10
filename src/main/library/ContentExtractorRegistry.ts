@@ -243,17 +243,20 @@ class XlsxExtractor implements ContentExtractor {
       checkBudget(budget);
       const wb = XLSX.read(buffer, { type: "buffer", sheetRows: this.maxSheetRows, cellDates: false });
       const parts: string[] = [];
+      let rowsTruncated = false;
       for (const sheetName of wb.SheetNames) {
         checkBudget(budget);
         const sheet = wb.Sheets[sheetName];
         if (!sheet) continue;
+        if (sheet["!fullref"] && sheet["!fullref"] !== sheet["!ref"]) rowsTruncated = true;
         const csv = XLSX.utils.sheet_to_csv(sheet, { blankrows: false });
-        const text = csv.replace(/[,\t]/g, " ").trim();
+        const text = csv.trim(); // Preserve quoted cells, empty columns and delimiters.
         if (text) parts.push(`[工作表 ${sheetName}]\n${text}`);
         if (parts.join("\n").length > budget.maxOutputChars) break;
       }
       if (parts.length === 0) return { status: "unsupported", text: null, truncated: false, error: "无可抽取工作表" };
-      return capOutput(parts.join("\n\n"), budget);
+      const result = capOutput(parts.join("\n\n"), budget);
+      return { ...result, truncated: result.truncated || rowsTruncated };
     } catch (err) {
       return { status: "error", text: null, truncated: false, error: err instanceof Error ? err.message : String(err) };
     }
@@ -354,7 +357,8 @@ class PdfExtractor implements ContentExtractor {
       if (parts.length === 0) {
         return { status: "unsupported", text: null, truncated: false, error: "PDF 无可抽取文本（扫描件？）" };
       }
-      return capOutput(parts.join("\n"), budget);
+      const result = capOutput(parts.join("\n"), budget);
+      return { ...result, truncated: result.truncated || doc.numPages > this.maxPages };
     } catch (err) {
       return { status: "error", text: null, truncated: false, error: err instanceof Error ? err.message : String(err) };
     } finally {

@@ -1,3 +1,7 @@
+import * as XLSX from "xlsx";
+import JSZip from "jszip";
+import { ContentExtractorRegistry } from "../src/main/library/ContentExtractorRegistry";
+import { createRequire } from "node:module";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, unlinkSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -73,7 +77,39 @@ try {
   assert(JSON.stringify(fallback).includes("real fallback fixture"));
   const pdf = join(root, "document.pdf"); writeFileSync(pdf, "%PDF fixture");
   const pdfInput = await prepareBotAttachmentInput({ ...imageOptions, attachments: [{ name: "document.pdf", path: pdf }] });
-  assert(JSON.stringify(pdfInput).includes("尚未解析内容"));
+  assert(JSON.stringify(pdfInput).includes("正文未能抽取"));
+  const fixtures = await createRequire(import.meta.url)(process.cwd() + "/scripts/bot-attachment-fixtures.cjs").create(join(root, "documents"));
+  for (const fixture of fixtures) {
+    const prepared = JSON.stringify(await prepareBotAttachmentInput({ ...imageOptions, attachments: [fixture] }));
+    for (const pattern of fixture.expected.slice(0, fixture.name === "expenses.xlsx" || fixture.name === "stock.csv" ? -1 : undefined))
+      assert(new RegExp(pattern).test(prepared), fixture.name + ": extracted source content reaches frontend");
+  }
+
+  const manyRows = join(root, "many.xlsx");
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(Array.from({ length: 5010 }, (_, i) => [i])), "Rows");
+  writeFileSync(manyRows, XLSX.write(workbook, { type: "buffer", bookType: "xlsx" }));
+  const limited = JSON.stringify(await prepareBotAttachmentInput({ ...imageOptions, attachments: [{ name: "many.xlsx", path: manyRows }] }));
+  assert(limited.includes("内容已截断"), "row-limited workbook must not claim full extraction");
+  const pageCount = 501, pageIds = Array.from({length:pageCount},(_,i)=>i+5);
+  const stream = "BT /F1 12 Tf 20 700 Td (page evidence) Tj ET";
+  const objects = ["<< /Type /Catalog /Pages 2 0 R >>", `<< /Type /Pages /Kids [${pageIds.map(id=>`${id} 0 R`).join(" ")}] /Count ${pageCount} >>`, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>", `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`, ...pageIds.map(()=>"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 4 0 R >>")];
+  let manyPdf = "%PDF-1.4\n"; const offsets:number[]=[];
+  objects.forEach((obj,i)=>{offsets.push(Buffer.byteLength(manyPdf));manyPdf+=`${i+1} 0 obj\n${obj}\nendobj\n`;});
+  const xref=Buffer.byteLength(manyPdf);manyPdf+=`xref\n0 ${objects.length+1}\n0000000000 65535 f \n${offsets.map(n=>String(n).padStart(10,"0")+" 00000 n \n").join("")}trailer\n<< /Size ${objects.length+1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
+  const pagesPath=join(root,"pages.pdf");writeFileSync(pagesPath,manyPdf);
+  const pages=await new ContentExtractorRegistry().extract("pdf","application/pdf",pagesPath);
+  assert.equal(pages.status,"extracted");assert(pages.truncated,"page-limited PDF cannot claim complete extraction");
+  const cellsPath = join(root,"cells.xlsx");
+  const cellsBook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(cellsBook, XLSX.utils.aoa_to_sheet([["Name","Optional","Amount"],["Smith, John",undefined,73]]),"Cells");
+  writeFileSync(cellsPath,XLSX.write(cellsBook,{type:"buffer",bookType:"xlsx"}));
+  const cells = await prepareBotAttachmentInput({...imageOptions,attachments:[{name:"cells.xlsx",path:cellsPath}]});
+  assert(Array.isArray(cells) && cells.some(b=>b.type==="text" && b.text.includes('"Smith, John",,73')), "quoted cell and blank column must retain CSV structure");
+  const longDoc = new JSZip(); longDoc.file("word/document.xml", "<w:t>" + "x".repeat(70000) + "</w:t>");
+  const longPath = join(root,"long.docx"); writeFileSync(longPath, await longDoc.generateAsync({type:"nodebuffer"}));
+  const cap = JSON.stringify(await prepareBotAttachmentInput({ ...imageOptions, attachments: [{name:"long.docx",path:longPath}] }));
+  assert(cap.includes("内容已截断") && cap.length < 66000, "frontend caps document text and states truncation");
   await assert.rejects(() => prepareBotAttachmentInput({ ...imageOptions, attachments: request.attachments! }), /无法读取/);
   console.log("PASS Bot attachment-only contract, stable copies, payload identity, restart, missing/oversize files, inline text, vision capability and honest document fallback");
 } finally { db.close(); rmSync(root, { recursive: true, force: true }); }
