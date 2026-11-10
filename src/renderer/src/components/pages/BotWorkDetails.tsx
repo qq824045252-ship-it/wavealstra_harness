@@ -9,7 +9,7 @@ import { WorkCardsPanel } from "./BotWorkCardsPanel";
 import { BotTeamPanel } from "./BotTeamPanel";
 import { WorkReviewPanel } from "./BotWorkReviewPanel";
 import { workStatusLabel } from "@/lib/botWorkspacePresentation";
-import { WorkFiles, WorkResultText, generatedWorkFiles, workFiles } from "./BotWorkResult";
+import { WorkFiles, WorkReport, WorkResultText, generatedWorkFiles } from "./BotWorkResult";
 
 export function lifecycleLabel(lifecycle: WorkLifecycle): string {
   if (lifecycle === "active") return "进行中";
@@ -104,8 +104,11 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
         {requiredCriteria.length > 0 ? <>
           <p>已通过 {satisfied} / {requiredCriteria.length} 项验收{requiredCriteria.some(item => item.status === "waived") ? "（另有已豁免项）" : ""}</p>
           <progress value={satisfied} max={requiredCriteria.length} aria-label="已通过的验收项" />
-        </> : <p>尚未设置验收条件，暂不能确认完成进度。</p>}
-        {work.closureSummary && <p>{work.closureSummary}</p>}
+        </> : <p>{work.lifecycle === "closed"
+          ? `${workStatusLabel(work)}。本事项未设置用户验收条件，不显示验收通过率。`
+          : "本事项未设置用户验收条件，执行进展见下方。"}</p>}
+        {work.lifecycle === "closed" && requiredCriteria.length > 0 && <p>结束状态：{workStatusLabel(work)}。验收记录按实际结果保留。</p>}
+        {work.closureSummary && <details className="bot-original-report"><summary>结束说明原文</summary><WorkResultText text={work.closureSummary} /></details>}
       </section>
       {work.mode === "watch" && work.phase4 && <section className="bot-detail-section" aria-label="持续跟踪安排">
         <h3>持续跟踪</h3>
@@ -119,11 +122,11 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
         <p>按约定时间检查。应用退出或电脑休眠时不运行，恢复后按补查策略处理。</p>
       </section>}
       <BotTeamPanel work={work} identities={identities} />
-      <section className="bot-detail-section bot-work-next" aria-label="下一步">
+      {work.lifecycle !== "closed" && <section className="bot-detail-section bot-work-next" aria-label="下一步">
         <h3>下一步</h3>
-        {work.nextSteps.length === 0 ? <p>{work.lifecycle === "closed" ? "事项已结束。" : "暂无已记录的下一步。"}</p>
+        {work.nextSteps.length === 0 ? <p>暂无已记录的下一步。</p>
           : <ul>{work.nextSteps.map(step => <li key={step}>{step}</li>)}</ul>}
-      </section>
+      </section>}
       {(openBlockers.length > 0 || !work.inputSnapshotBound || work.uncoveredScope.length > 0) && <section className="bot-work-alert" aria-label="需要关注的阻碍">
         <h3>需要关注</h3>
         {!work.inputSnapshotBound && <p role="status">输入版本尚未绑定，不能据此确认成果已验证。</p>}
@@ -184,9 +187,15 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
       </section>}
       <h3>成果与证据</h3>
       {work.deliverables.length === 0 ? <p>尚无保存的成果。</p> : work.deliverables.map(deliverable => <article key={deliverable.deliverableId}>
-        <strong>{{ proposed: work.lifecycle === "closed" ? "未采纳（已结束）" : "待评审", accepted: "已采纳", rejected: "已拒绝", superseded: "历史成果" }[deliverable.status]}</strong>
-        <WorkResultText text={deliverable.summary} />
-        <WorkFiles files={workFiles(deliverable.artifactRefs, work, deliverable.executionId)} />
+        <WorkReport report={{ title: work.title, summary: deliverable.summary, artifactRefs: deliverable.artifactRefs,
+          ...deliverable.presentation, reviewStatus: deliverable.status,
+          current: deliverable.intentRevision === work.intentRevision && deliverable.inputSnapshotId === work.inputSnapshotId,
+          notices: [...deliverable.uncoveredScope.map(scope => `尚未覆盖：${scope}`),
+            ...(deliverable.isSpeculation ? ["该成果包含推测，仍需验证。"] : []),
+            ...(deliverable.hasWriteConflicts ? ["存在写入冲突，仍需处理。"] : []),
+            ...(deliverable.rejectedReason ? [`未通过核验：${deliverable.rejectedReason}`] : [])],
+        }} originalText={deliverable.summary} executionId={deliverable.executionId} work={work}
+          renderMarkdown={text => <WorkResultText text={text} />} />
         <p>已保存 {deliverable.evidenceRefs.length} 条证据</p>
       </article>)}
       {!!work.generatedArtifacts?.length && <details className="bot-advanced" aria-label="全部生成文件">
@@ -197,8 +206,10 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
       <h3>成果记录与验收</h3>
       {/* Review drafts retain their reviewed snapshot across background updates. */}
       <WorkReviewPanel key={`review:${work.workId}`} work={work} includeClosed={includeClosed} />
-      <WorkCardsPanel key={JSON.stringify(["cards", work.workId, work.intentRevision, work.inputSnapshotId,
-        work.ownerEpoch, work.stateVersion, work.phase3?.artifactSnapshotId])} work={work} includeClosed={includeClosed} />
+      <details className="bot-advanced"><summary>投递与版本记录</summary>
+        <WorkCardsPanel key={JSON.stringify(["cards", work.workId, work.intentRevision, work.inputSnapshotId,
+          work.ownerEpoch, work.stateVersion, work.phase3?.artifactSnapshotId])} work={work} includeClosed={includeClosed} />
+      </details>
       {requiredCriteria.length === 0 ? <p>没有用户设置的验收条件。</p> : (
         <ul>{requiredCriteria.map((criterion) => <li key={criterion.id}>{criterion.text} · {criterionLabel(criterion)}</li>)}</ul>
       )}

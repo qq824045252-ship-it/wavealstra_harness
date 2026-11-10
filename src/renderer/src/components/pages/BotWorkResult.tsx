@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { BotMessageDto } from "@shared/bot-conversation";
+import type { BotMessageDto, WorkFeedbackDto } from "@shared/bot-conversation";
 import type { WorkProjectionDto } from "@shared/bot-work";
 import { fileNameFromPath } from "@/lib/localFilePath";
 import ChatMarkdown from "@/components/chat/ChatMarkdown";
@@ -60,11 +60,18 @@ function formatSize(bytes: number): string {
 
 export function BotResultReport({ message, work, renderMarkdown }: { message: BotMessageDto; work?: WorkProjectionDto;
   renderMarkdown: (text: string) => React.JSX.Element }): React.JSX.Element {
+  return <WorkReport report={message.workFeedback!.report!} originalText={message.text} executionId={message.workFeedback?.executionId} work={work} renderMarkdown={renderMarkdown} />;
+}
+
+export function WorkReport({ report, originalText, executionId, work, renderMarkdown }: {
+  report: NonNullable<WorkFeedbackDto["report"]>; originalText: string; executionId?: string; work?: WorkProjectionDto;
+  renderMarkdown: (text: string) => React.JSX.Element;
+}): React.JSX.Element {
   const [expanded, setExpanded] = useState(false);
-  const report = message.workFeedback!.report!;
+  const unprojectedJson = !report.structured && /^(?:```(?:json)?\s*)?[{[]/.test(report.summary.trim());
   const bodyText = report.structured?.conclusions.map(item => item.text).join("\n") ?? report.summary;
   const long = bodyText.length > 1600 || bodyText.split("\n").length > 20;
-  const files = workFiles(report.artifactRefs, work, message.workFeedback?.executionId).map(file => ({ ...file,
+  const files = workFiles(report.artifactRefs, work, executionId).map(file => ({ ...file,
     name: report.files?.find(item => item.ref === file.ref)?.name ?? file.name,
     openPath: report.files?.find(item => item.ref === file.ref)?.openPath }));
   return <section className="bot-result-report" aria-label={`成果：${report.title}`}>
@@ -75,7 +82,7 @@ export function BotResultReport({ message, work, renderMarkdown }: { message: Bo
       {report.structured ? <section aria-label="本次请求的结论"><h4>本次请求的结论</h4>{report.structured.conclusions.map((item, index) => <article key={index}>
         {renderMarkdown(item.text)}<details><summary>关联请求与来源</summary><p>{item.requestText}</p>
         <p>引用关联不代表结论已自动证实。</p><ul>{item.sources.map(source => <li key={source.ref}>{source.label}<details><summary>来源标识</summary><code>{source.ref}</code></details></li>)}</ul>
-        </details></article>)}</section> : renderMarkdown(report.summary)}
+        </details></article>)}</section> : unprojectedJson ? <p>报告已返回；此记录未生成可读投影，请展开原始消息查看完整内容。</p> : renderMarkdown(report.summary)}
     </div>
     {report.teamFacts && <section aria-label="汇总时的执行事实"><h4>汇总时的执行事实</h4><ul>{report.teamFacts.map((fact, index) => <li key={index}>
       <strong>{fact.displayName}</strong>：{{ completed: "执行结束", failed: "执行失败", stopped: "执行停止", invalidated: "执行已失效", unknown: "执行结果未知", not_started: "未启动", running: "执行中", submitted: "已派发", pending: "准备中" }[fact.executionStatus] ?? fact.executionStatus}
@@ -88,7 +95,7 @@ export function BotResultReport({ message, work, renderMarkdown }: { message: Bo
     {long && <button className="bot-result-expand" type="button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? "收起长报告" : "展开完整报告"}</button>}
     {report.notices.length > 0 && <ul className="bot-result-notices">{report.notices.map((notice, i) => <li key={i}>{notice}</li>)}</ul>}
     <WorkFiles files={files} />
-    <details className="bot-original-report"><summary>原始消息与完整记录</summary><p>成果记录：{{ proposed: "已生成，尚未登记采纳", accepted: "已采纳", rejected: "未采纳", superseded: "已被后续成果替代" }[report.reviewStatus]}。这是成果记录状态，不是新的操作授权请求。</p>{renderMarkdown(message.text)}</details>
+    <details className="bot-original-report"><summary>原始消息与完整记录</summary><p>成果记录：{{ proposed: "已生成，尚未登记采纳", accepted: "已采纳", rejected: "未采纳", superseded: "已被后续成果替代" }[report.reviewStatus]}。这是成果记录状态，不是新的操作授权请求。</p>{renderMarkdown(originalText)}</details>
   </section>;
 }
 

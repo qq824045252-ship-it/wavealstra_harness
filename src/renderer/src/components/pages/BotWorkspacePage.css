@@ -323,3 +323,13 @@
 }
 
 .bot-view-tabs button > span { white-space:nowrap; }
+
+/* Detail reports share the conversation renderer without forcing a wide column. */
+.bot-work-details .bot-result-report { max-width:100%; min-width:0; }
+.bot-work-details .bot-result-report article, .bot-work-details .bot-original-report { min-width:0; overflow-wrap:anywhere; }
+.bot-work-details .bot-original-report .md { max-width:100%; overflow-x:auto; }
+
+.bot-work-details .bot-result-report { border:0; border-radius:0; padding:0; background:transparent; }
+.bot-work-details .bot-result-report article { border:0; border-radius:0; padding:0; background:transparent; }
+.bot-work-details .bot-result-report > header h3 { display:none; }
+.bot-work-details .bot-result-report > header { margin-bottom:8px; }

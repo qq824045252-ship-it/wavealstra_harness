@@ -465,7 +465,7 @@ export interface WorkProjectionDto {
   goalSources: WorkGoalSourceDto[];
   criteria: WorkCriterionDto[];
   acceptedDeliverableIds: string[];
-  deliverables: WorkDeliverableDto[];
+  deliverables: Array<WorkDeliverableDto & { presentation?: Pick<NonNullable<import("./bot-conversation").WorkFeedbackDto["report"]>, "structured" | "teamFacts"> }>;
   runtimeObservations?: import("./bot-work-phase3").WorkRuntimeObservationDto[];
   generatedArtifacts?: Array<import("./bot-work-phase3").GeneratedArtifact & { bindingId: string }>;
   /** Previous input revisions: display/open only, never current completion evidence. */

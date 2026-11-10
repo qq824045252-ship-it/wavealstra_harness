@@ -1,3 +1,4 @@
+import { projectDeliverableReport } from "./WorkReportPresentation";
 import { recordWorkDelivery } from "./WorkDeliveryTargets";
 import { WorkAutomaticCompletion } from "./WorkAutomaticCompletion";
 import { isScheduledFollowUp, scheduledFollowUpCurrent } from "./WorkScheduledFollowUp";
@@ -307,7 +308,7 @@ export class WorkService {
       goalSources: work.goalSources,
       criteria: work.criteria,
       acceptedDeliverableIds: [...currentResultIds],
-      deliverables,
+      deliverables: deliverables.map(result => projectDeliverableReport(result, executions, binding => this.repo.reportContext(binding))),
       generatedArtifacts: this.generatedArtifacts.list(work.workId),
       historicalGeneratedArtifacts: this.generatedArtifacts.list(work.workId, true).filter(artifact =>
         !executions.some(binding => binding.bindingId === artifact.bindingId

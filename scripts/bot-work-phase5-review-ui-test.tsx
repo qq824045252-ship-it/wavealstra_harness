@@ -138,6 +138,7 @@ async function complete(panel: Panel, failed = false) {
 }
 let count = 0;
 async function check(name: string, run: () => Promise<void>) {
+  if (process.env.BOT_WORK_UI_FILTER && !name.includes(process.env.BOT_WORK_UI_FILTER)) return;
   await run(); count += 1; console.log(`PASS ${count}: ${name}`);
 }
 
@@ -607,6 +608,31 @@ async function main() {
       } finally {
         await unmount(); useAppStore.setState(originalState, true); console.error = originalError;
       }
+    });
+    await check("terminal detail separates outcome from absent criteria and reuses readable reports", async () => {
+      await unmount();
+      const { createRoot } = await import("react-dom/client");
+      container = testDocument.body.appendChild(testDocument.createElement("div")); root = createRoot(container);
+      const summary = '{"format":"bot-team-report-v1","conclusions":[]}';
+      for (const [conclusion, label] of [["succeeded", "已完成"], ["cancelled", "已取消"], ["ended_unsuccessfully", "未完成"]] as const) {
+        await act(async () => root!.render(<BotWorkDetails work={{ ...projection, lifecycle: "closed", closureConclusion: conclusion,
+          criteria: [], closureSummary: summary, deliverables: [{ ...proposal, summary, presentation: {
+            structured: { version: 1, conclusions: [{ text: "两份文件已保存", requestMessageId: "req", requestText: "整理文件", sources: [{ ref: "member", label: "资料员" }] }], observations: ["附加说明"] },
+            teamFacts: [{ displayName: "核对员", responsibility: "核对文件", executionStatus: "failed", failureReason: "连接中断", sourceRefs: ["member"] }],
+          } }], }} ownerName="Owner" includeClosed />));
+        const progress = container.querySelector('[aria-label="目标与进度"]')!;
+        assert.match(progress.textContent!, new RegExp(label));
+        assert.match(progress.textContent!, /不显示验收通过率/);
+        assert.doesNotMatch(progress.textContent!, /暂不能确认完成进度/);
+        assert.equal(progress.querySelector('details')!.hasAttribute('open'), false);
+        const report = container.querySelector('.bot-result-report')!;
+        assert.match(report.querySelector('.bot-result-body')!.textContent!, /两份文件已保存/);
+        assert.doesNotMatch(report.querySelector('.bot-result-body')!.textContent!, /bot-team-report-v1/);
+        assert.match(report.textContent!, /执行失败/);
+        assert.match(report.textContent!, /连接中断/);
+        assert.equal(report.querySelector('.bot-original-report')!.hasAttribute('open'), false);
+      }
+      await unmount();
     });
     await check("running files are visible without implying accepted output and open the exact registered path", async () => {
       await unmount();

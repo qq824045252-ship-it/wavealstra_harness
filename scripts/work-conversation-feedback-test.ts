@@ -110,6 +110,13 @@ try {
     isSpeculation: false, hasWriteConflicts: false });
   assert(submitted.ok);
   assert.equal(works.repo.getDeliverable("result:binding-1")?.summary, fullResult, "authoritative result must not be truncated to a card preview");
+  const detailResult = works.getProjection(work.workId)!.deliverables.find(item => item.deliverableId === "result:binding-1")!;
+  assert.deepEqual(detailResult.presentation, projectTeamReport(fullResult, reportInput), "details use the same frozen report projection as conversation results");
+  const priorBinding = works.repo.getBinding("binding-1")!;
+  db.connection.prepare("UPDATE work_execution_bindings SET owner_epoch = owner_epoch + 1 WHERE binding_id = ?").run("binding-1");
+  assert.equal(works.getProjection(work.workId)!.deliverables.find(item => item.deliverableId === "result:binding-1")?.presentation, undefined, "details must not attach a foreign execution generation");
+  db.connection.prepare("UPDATE work_execution_bindings SET owner_epoch = ? WHERE binding_id = ?").run(priorBinding.ownerEpoch, "binding-1");
+
   works.repo.insertBlocker({ blockerId: "blocker-1", workId: work.workId, reason: "需要确认范围", kind: "operational",
     status: "open", waitingForUserInput: true, createdAt: 4 });
   const before = works.getWork(work.workId)!;
