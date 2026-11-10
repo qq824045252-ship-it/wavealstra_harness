@@ -630,10 +630,16 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       await until(async () => (await history()).messages.some(item => item.workFeedback?.kind === 'result' || item.text?.includes('居家整理')), 'result returned to original conversation');
       const deliveredText=(await history()).messages.find(item=>item.workFeedback?.eventId === `completion:${work.executions.at(-1).bindingId}`)?.workFeedback?.report?.summary;
       assert(deliveredText, 'result has a readable summary');
-      await until(()=>evaluate(`document.body.innerText.includes(${JSON.stringify(deliveredText.slice(0,32))})`),'actual result summary rendered in conversation without refresh click');
+      const deliveredMessage = (await history()).messages.find(item => item.workFeedback?.eventId === `completion:${work.executions.at(-1).bindingId}`);
+      assert(deliveredMessage?.messageId, 'result is attached to a persisted Bot message');
+      // The foreground result-thinking turn may return structured conclusions;
+      // the report renderer displays those, not the raw JSON summary prefix.
+      const resultSelector = `[data-message-id="${deliveredMessage.messageId}"] .bot-result-report`;
+      await until(() => evaluate(`(() => { const card = document.querySelector(${JSON.stringify(resultSelector)}); return !!card && ['厨房', '卧室', '书桌'].every(area => card.innerText.includes(area)); })()`),
+        'actual structured three-area result rendered in its own message without refresh click');
       await evaluate(`document.querySelectorAll('[data-work-id]').item(document.querySelectorAll('[data-work-id]').length-1)?.scrollIntoView({block:'end'})`);
       const conversationShot=await rpc('Page.captureScreenshot',{format:'png',captureBeyondViewport:false}); fs.writeFileSync(path.join(out,'completion-conversation.png'),Buffer.from(conversationShot.data,'base64'));
-      await evaluate(`[...document.querySelectorAll('button')].find(item=>/^已结束/.test(item.textContent.trim())).click()`);
+      await evaluate(`[...document.querySelectorAll('button')].find(item=>/^已完成/.test(item.textContent.trim())).click()`);
       await until(() => evaluate(`!!document.querySelector('[data-work-id="${workId}"]')`), 'completed Work visible in ended tab');
       report.work = work; report.history = await history();
       const processed = report.history.messages.filter(item => item.workFeedback?.eventId === `completion:${work.executions.at(-1).bindingId}`);

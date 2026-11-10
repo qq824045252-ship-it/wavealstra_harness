@@ -67,5 +67,7 @@ Live normal-flow check on Omarchy: an isolated Electron dev instance using the r
 DeepSeek model created a once Work, produced the requested three-area home plan,
 returned it to the Bot conversation and closed `succeeded` without human acceptance.
 The older live fixture waited for the raw summary prefix, whereas the current renderer
-shows structured conclusions; its selector is being updated separately. This is not
-reported as a full fixture pass until the revised fixture completes.
+shows structured conclusions; the fixture now checks all three requested areas inside the exact persisted result
+message and uses the current completed tab. The full real-model UI fixture passed on
+rerun, including independent foreground result-thinking, one returned result and
+completed-list visibility. Screenshot was inspected; it is not a physical-input test.
