@@ -2,7 +2,7 @@ import { getMarkdown } from "stream-markdown-parser";
 import type { BotMessageDto } from "@shared/bot-conversation";
 import type { WorkProjectionDto } from "@shared/bot-work";
 
-export type BotWorkspaceView = "conversation" | "active" | "closed";
+export type BotWorkspaceView = "conversation" | "active" | "completed" | "closed";
 
 /** Execution and acceptance are separate facts. No display state mutates Work. */
 export function workExecutionComplete(work: WorkProjectionDto): boolean {
@@ -39,7 +39,7 @@ export function workStatus(work: WorkProjectionDto): { label: string; group: Wor
   if (workExecutionComplete(work)) {
     if (work.phase3?.gaps.some(item => item.required) || work.criteria.some(item => item.status === "failed" || item.status === "blocked")) return { label: "执行已结束 · 尚有缺口", group: "attention" };
     return { label: work.inputSnapshotBound && work.criteria.length > 0 && work.criteria.every(item => item.status === "satisfied" || item.status === "waived")
-      && !work.uncoveredScope.length ? "执行已完成 · 待结算" : "执行已完成 · 待核验", group: "results" };
+      && !work.uncoveredScope.length ? "正在整理最终结果" : "正在核对结果", group: "results" };
   }
   const current = work.executions.filter(item => item.intentRevision === work.intentRevision && item.inputSnapshotId === work.inputSnapshotId && !item.invalidatedAt);
   if (current.some(item => item.status === "running" || item.status === "submitted")) return { label: "正在执行", group: "running" };
@@ -67,7 +67,8 @@ export function workMatchesSearch(text: string, query: string): boolean {
 }
 
 export function workMatchesView(work: WorkProjectionDto, view: BotWorkspaceView): boolean {
-  if (view === "closed") return work.lifecycle === "closed";
+  if (view === "completed") return work.lifecycle === "closed" && work.closureConclusion === "succeeded";
+  if (view === "closed") return work.lifecycle === "closed" && work.closureConclusion !== "succeeded";
   return work.lifecycle !== "closed";
 }
 

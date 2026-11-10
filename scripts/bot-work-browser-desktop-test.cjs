@@ -40,10 +40,10 @@ app.whenReady().then(async () => {
     await evaluate(`document.querySelector('.bot-work-browser').scrollTop=1000`);
     await new Promise(resolve => setTimeout(resolve, 60));
     assert(await evaluate(`document.querySelector('input[type=search]').getBoundingClientRect().top >= document.querySelector('.bot-work-browser').getBoundingClientRect().top`), 'sticky search remains fully visible while scrolling');
-    await filter('执行完成');
+    await filter('核对结果');
     await until(`document.querySelectorAll('.bot-work-card').length === 20`, 'execution-complete filter');
     assert.equal(await evaluate(`document.querySelector('.bot-work-browser').scrollTop`), 0, 'filter starts at first result');
-    assert(await evaluate(`[...document.querySelectorAll('.bot-work-card .bot-status-badge')].every(item=>item.textContent==='执行已完成 · 待核验')`), 'execution completion does not claim accepted closure');
+    assert(await evaluate(`[...document.querySelectorAll('.bot-work-card .bot-status-badge')].every(item=>item.textContent==='正在核对结果')`), 'execution completion does not claim accepted closure');
     await filter('需处理');
     await until(`document.querySelectorAll('.bot-work-card').length === 24`, 'attention page bound');
     assert(await evaluate(`[...document.querySelectorAll('.bot-work-card .bot-status-badge')].every(item=>/状态待核对|未完成/.test(item.textContent))`));
@@ -75,10 +75,23 @@ app.whenReady().then(async () => {
     assert(await evaluate(`[...document.querySelectorAll('.bot-work-card')].every(item=>item.getBoundingClientRect().height < 280)`), 'compact readable cards');
     await screenshot('bot-work-browser-desktop-narrow.png');
     await evaluate(`window.refreshBrowserFixture(window.browserFixtureWorks.map((work,index)=>({...work,lifecycle:'closed',closureConclusion:index%2?'cancelled':'succeeded'})));window.setBrowserFixtureView('closed')`);
-    await until(`document.querySelector('[aria-label="已结束事项"]') && document.querySelectorAll('.bot-work-card').length === 24`, 'switch resets browsing scope');
+    await until(`document.querySelector('[aria-label="其他记录事项"]') && document.querySelectorAll('.bot-work-card').length === 24`, 'switch resets browsing scope');
+    assert(await evaluate(`[...document.querySelectorAll('.bot-work-card .bot-status-badge')].every(item=>item.textContent==='已取消')`), 'successful outcomes never leak into other records');
     await filter('已取消');
     await until(`document.querySelector('.bot-work-list-summary').textContent.includes('匹配 68 件')`, 'closed outcome filter');
     assert(await evaluate(`[...document.querySelectorAll('.bot-work-card .bot-status-badge')].every(item=>item.textContent==='已取消')`));
+    await evaluate("window.setBrowserFixtureView('completed')");
+    await until(`document.querySelector('[aria-label="已完成事项"]') && document.querySelectorAll('.bot-work-card').length === 24`, 'completed destination');
+    assert(await evaluate(`[...document.querySelectorAll('.bot-work-card .bot-status-badge')].every(item=>item.textContent==='已完成')`), 'only succeeded appears in completed');
+    assert(await evaluate(`!document.querySelector('.bot-work-filters')`), 'completed never offers unfinished subfilters');
+    assert(await evaluate(`[...document.querySelectorAll('.bot-work-card')].every(item=>!item.textContent.includes('下一步：')&&!item.textContent.includes('等待成果'))`), 'closed cards do not display stale active instructions');
+
+    for (const width of [390, 760, 1440]) {
+      await viewport(width); await new Promise(resolve => setTimeout(resolve, 200));
+      assert(await evaluate(`document.documentElement.scrollWidth <= innerWidth && document.querySelector('.bot-work-browser').scrollWidth <= document.querySelector('.bot-work-browser').clientWidth + 1`), 'no overflow at ' + width);
+      assert(await evaluate(`[...document.querySelectorAll('.bot-view-tabs button > span:first-of-type')].every(item=>item.getBoundingClientRect().height < 25)`), 'navigation labels stay on one line at ' + width);
+      await screenshot('bot-work-outcomes-' + width + '.png');
+    }
     assert.deepEqual(errors, [], 'no renderer errors');
     console.log('PASS real Electron: 137 tasks, bounded pages, full-text search, status filters, closed outcomes, refresh/shrink/grow, selection, 440px layout');
   } catch (error) { console.error(error); process.exitCode = 1; }

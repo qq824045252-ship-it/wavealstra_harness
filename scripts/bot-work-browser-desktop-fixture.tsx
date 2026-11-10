@@ -1,3 +1,4 @@
+import { BotWorkNavigation } from "../src/renderer/src/components/pages/BotWorkNavigation";
 import { StrictMode, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { WorkProjectionDto } from "../src/shared/bot-work";
@@ -17,9 +18,9 @@ const works: WorkProjectionDto[] = Array.from({ length: 137 }, (_, index) => {
 Object.assign(window, { browserFixtureWorks: works, browserFixtureSelected: [] });
 function Fixture() {
   const [items, setItems] = useState(works);
-  const [view, setView] = useState<"active" | "closed">("active");
+  const [view, setView] = useState<"active" | "completed" | "closed">("active");
   const [selected, setSelected] = useState<string | null>(null);
   Object.assign(window, { refreshBrowserFixture: (items: WorkProjectionDto[]) => setItems(items), setBrowserFixtureView: setView });
-  return <StrictMode><div className="bot-workspace"><div className="bot-conversation"><BotWorkBrowser key={view} works={items} view={view} loading={false} selectedWorkId={selected} onConversation={() => {}} onOpenWork={id => { setSelected(id); (window as unknown as { browserFixtureSelected: string[] }).browserFixtureSelected.push(id); }} /></div></div></StrictMode>;
+  return <StrictMode><div className="bot-workspace"><div className="bot-conversation"><BotWorkNavigation works={items} view={view} allWorksLoaded={true} onChange={next => { if (next !== "conversation") setView(next); }} /><BotWorkBrowser key={view} works={items} view={view} loading={false} selectedWorkId={selected} onConversation={() => {}} onOpenWork={id => { setSelected(id); (window as unknown as { browserFixtureSelected: string[] }).browserFixtureSelected.push(id); }} /></div></div></StrictMode>;
 }
 createRoot(document.getElementById("root")!).render(<Fixture />);

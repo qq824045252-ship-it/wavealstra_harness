@@ -65,8 +65,8 @@ assert.match(botPage, /bot-header-more/, "secondary actions leave room for the B
 assert.match(botPage, /创建一个 Bot，给它名称和职责/);
 const navigation = botPage.match(/<nav class="bot-view-tabs"[^>]*>([\s\S]*?)<\/nav>/)?.[1];
 assert.ok(navigation);
-assert.equal((navigation.match(/<button /g) ?? []).length, 3, "navigation has exactly three stable entry points");
-for (const title of ["对话", "未结束", "已结束"]) assert.match(navigation, new RegExp(`<span>${title}</span>`));
+assert.equal((navigation.match(/<button /g) ?? []).length, 4, "navigation separates completed outcomes from other closed records");
+for (const title of ["对话", "进行中", "已完成", "其他记录"]) assert.match(navigation, new RegExp(`<span>${title}</span>`));
 assert.match(navigation, /aria-current="page"/);
 assert.doesNotMatch(navigation + botSidebar, /待你决定/, "retired decision navigation is not exposed anywhere");
 assert.match(botPage, /还没有 Bot/);
@@ -167,7 +167,7 @@ const completeBinding = { bindingId: "done", workId: plain.workId, intentRevisio
   inputSnapshotId: plain.inputSnapshotId, ownerEpoch: plain.ownerEpoch, status: "completed", settledAt: 4 } as WorkProjectionDto["executions"][number];
 const executed = { ...plain, executions: [completeBinding] };
 assert.equal(workExecutionComplete(executed), true);
-assert.equal(workStatusLabel(executed), "执行已完成 · 待核验");
+assert.equal(workStatusLabel(executed), "正在核对结果");
 assert.equal(workMatchesView(executed, "closed"), false, "execution success never fabricates Work acceptance or closure");
 assert.equal(workStatusLabel({ ...executed, mode: "watch" }), "持续关注中");
 assert.equal(workStatusLabel({ ...executed, blockers: [blocker] }), "等待补充信息");
@@ -177,7 +177,7 @@ for (const status of ["pending", "submitted", "running", "unknown", "failed", "s
 assert.equal(workExecutionComplete({ ...executed, intentRevision: 99 }), false, "old requirements cannot imply completion");
 assert.equal(workExecutionComplete({ ...executed, inputSnapshotId: "new-input" }), false);
 assert.equal(workExecutionComplete({ ...executed, executions: [{ ...completeBinding, invalidatedAt: 5 }] }), false);
-assert.equal(workStatusLabel({ ...executed, criteria: [{ ...plain.criteria[0], status: "satisfied" }] }), "执行已完成 · 待结算");
+assert.equal(workStatusLabel({ ...executed, criteria: [{ ...plain.criteria[0], status: "satisfied" }] }), "正在整理最终结果");
 // List filters use the same authoritative state as their badge, never infer success from text.
 assert.equal(workStatus(executed).group, "results");
 assert.equal(workStatus({ ...executed, blockers: [blocker] }).group, "attention");
@@ -597,3 +597,11 @@ assert.ok(!/[\uD800-\uDBFF]$/.test(workCardExcerpt("🙂".repeat(130)).slice(0, 
 assert.equal(workCardExcerpt("## 未通过\n\n25 条测试通过。"), "未通过 25 条测试通过。");
 assert.equal(workCardExcerpt("## 未验证\n\n产物已保存。"), "未验证 产物已保存。");
 assert.equal(workCardExcerpt("路径 `C:\\Users\\Tester\\My Reports\\sales.csv`，仍未验收。"), "路径 sales.csv，仍未验收。");
+
+for (const conclusion of ["succeeded", "cancelled", "ended_unsuccessfully", undefined] as const) {
+ const ended = { ...plain, lifecycle: "closed" as const, closureConclusion: conclusion };
+ assert.equal(workMatchesView(ended, "completed"), conclusion === "succeeded");
+ assert.equal(workMatchesView(ended, "closed"), conclusion !== "succeeded");
+ assert.equal(workMatchesView(ended, "active"), false);
+}
+assert.equal(workMatchesView(executed, "completed"), false);

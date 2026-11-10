@@ -1,3 +1,4 @@
+import { BotWorkNavigation } from "./BotWorkNavigation";
 import { BotWorkInbox } from "./BotWorkInbox";
 import { ComposerAttachmentChips } from "@/components/chat/ComposerAttachmentChips";
 import { composerFiles, mergeComposerAttachments, pastedComposerFiles, pickComposerAttachment } from "@/components/chat/composerAttachments";
@@ -11,9 +12,9 @@ import { artifactImageUrl } from "@shared/artifact-ipc";
 import { ChatImageScope } from "@/components/chat/ChatImage";
 import ChatComposer from "@/components/chat/ChatComposer";
 import ChatMarkdown from "@/components/chat/ChatMarkdown";
-import { IconPlus, IconArchive, IconChevronDown, IconArrowUp, IconBot, IconCheck, IconChevronRight, IconClock, IconListTodo, IconMessageDashed, IconPanel, IconSettings, IconStop, IconX } from "@/components/common/icons";
+import { IconPlus, IconArchive, IconChevronDown, IconArrowUp, IconBot, IconChevronRight, IconListTodo, IconPanel, IconSettings, IconStop, IconX } from "@/components/common/icons";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
-import { activeBotReply, botParticipatesInWork, botMessageStatus, botWorkTimeline, shouldSendBotComposer, workMatchesView, type BotWorkspaceView } from "@/lib/botWorkspacePresentation";
+import { activeBotReply, botParticipatesInWork, botMessageStatus, botWorkTimeline, shouldSendBotComposer, type BotWorkspaceView } from "@/lib/botWorkspacePresentation";
 import { BotWorkBrowser } from "./BotWorkBrowser";
 import { BotWorkDetails } from "./BotWorkDetails";
 import { BotResultReport } from "./BotWorkResult";
@@ -35,11 +36,6 @@ const examples = [
   { title: "梳理今天的重点", text: "帮我梳理今天最重要的三件事。先问我必要的背景。" },
   { title: "持续跟进一件事", text: "我想让你持续跟进一件事，先帮我明确目标、检查频率和需要我确认的边界。" },
   { title: "一起推进一个目标", text: "我想把一个目标拆成可执行的步骤，先和我确认目标与验收条件。" },
-];
-const views: Array<{ id: BotWorkspaceView; label: string; icon: typeof IconBot }> = [
-  { id: "conversation", label: "对话", icon: IconMessageDashed },
-  { id: "active", label: "未结束", icon: IconClock },
-  { id: "closed", label: "已结束", icon: IconCheck },
 ];
 
 export default function BotWorkspacePage(props: { onToggleNavigation?: () => void; navigationVisible?: boolean; onCreateBot?: () => void } = {}): React.JSX.Element {
@@ -206,7 +202,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   const changeView = (next: BotWorkspaceView) => {
     requestedWork.current = null; setNavigationNotice("");
     setView(next);
-    if (next === "closed") setIncludeClosed(true);
+    if (next === "closed" || next === "completed") setIncludeClosed(true);
   };
   const send = () => {
     if (!canSend) return;
@@ -245,12 +241,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
           <button type="button" className="bot-icon-button" aria-label="Bot 设置与对话管理" onClick={() => setSettingsOpen(true)}><IconSettings size={18} /></button>
         </div>
       </header>
-      <nav className="bot-view-tabs" aria-label="对话与事项">
-        {views.map(item => {
-          const count = item.id === "conversation" ? undefined : item.id === "closed" && !allWorksLoaded ? undefined : botWorks.filter(work => workMatchesView(work, item.id)).length;
-          return <button type="button" key={item.id} aria-current={view === item.id ? "page" : undefined} onClick={() => changeView(item.id)}><item.icon size={15} /><span>{item.label}</span>{count !== undefined && <span className="bot-tab-count">{count}</span>}</button>;
-        })}
-      </nav>
+      <BotWorkNavigation works={botWorks} view={view} allWorksLoaded={allWorksLoaded} onChange={changeView} />
       {activeBotId && <BotWorkInbox key={activeBotId} botId={activeBotId} works={botWorks} onOpenWork={openWork} />}
       {workError && <p className="bot-alert" role="alert">{workError}</p>}
       {navigationNotice && <p className="bot-navigation-notice" role="status">{navigationNotice}</p>}
@@ -276,7 +267,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
               {row.messages.map(message => <BotMessage key={message.messageId} message={message} botName={activeBot?.displayName ?? "Bot"} works={botWorks} onOpenWork={openWork} onCancel={() => {}} />)}
             </details>)}</div>}
         </div>
-      </> : <BotWorkBrowser key={`${activeBotId}-${view}`} works={botWorks} view={view} loading={view === "closed" && !allWorksLoaded} selectedWorkId={selected?.workId} onOpenWork={openWork} onConversation={() => { setView("conversation"); requestAnimationFrame(() => composerRef.current?.focus()); }} />}
+      </> : <BotWorkBrowser key={`${activeBotId}-${view}`} works={botWorks} view={view} loading={(view === "closed" || view === "completed") && !allWorksLoaded} selectedWorkId={selected?.workId} onOpenWork={openWork} onConversation={() => { setView("conversation"); requestAnimationFrame(() => composerRef.current?.focus()); }} />}
       <form className="bot-composer input-area" onDragOver={event => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; } }} onDrop={event => { if (event.dataTransfer.files.length) { event.preventDefault(); void addAttachments(Array.from(event.dataTransfer.files)); } }} onSubmit={event => { event.preventDefault(); send(); }}>
         {view === "conversation" && awayFromBottom && <button type="button" className="bot-latest-button" onClick={() => { const el = threadRef.current; if (el) el.scrollTop = el.scrollHeight; followLatest.current = true; followReplyTail.current = true; setAwayFromBottom(false); }}><IconChevronDown size={14} />回到最新消息</button>}
         {activeBotId && sendErrors[activeBotId] && <p className="bot-send-error" role="alert">{sendErrors[activeBotId]}</p>}
