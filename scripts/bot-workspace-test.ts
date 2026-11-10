@@ -538,7 +538,15 @@ const structuredResult: BotMessageDto = { ...feedbackMessage("result-card", "pla
 const reportHtml = renderToStaticMarkup(createElement(BotMessage, { message: structuredResult, botName: "Bot", works: [fileWork], onOpenWork() {}, onCancel() {} }));
 assert.match(reportHtml, /成果：CSV 汇总/);
 assert.match(reportHtml, /合计 42 元/);
-assert.match(reportHtml, /成果已生成 · 待核验/);
+assert.match(reportHtml, /结果已返回/);
+assert.doesNotMatch(reportHtml, /成果已生成 · 待核验/);
+assert.match(reportHtml, /成果记录：已生成，尚未登记采纳/);
+assert.equal(structuredResult.workFeedback!.report!.reviewStatus, "proposed", "presentation does not accept a result");
+for (const [reviewStatus, label] of [["rejected", "未通过核验"], ["accepted", "负责人已核验"], ["superseded", "已被新成果替代"]] as const) {
+  const otherStatus = { ...structuredResult, workFeedback: { ...structuredResult.workFeedback!, report: { ...structuredResult.workFeedback!.report!, reviewStatus } } };
+  assert(renderToStaticMarkup(createElement(BotMessage, { message: otherStatus, botName: "Bot", works: [], onOpenWork() {}, onCancel() {} })).includes(label), "real review outcomes remain visible");
+}
+
 assert.match(reportHtml, /尚未覆盖：现场验收/);
 assert.match(reportHtml, /<details class="bot-original-report"><summary>原始消息与完整记录/);
 assert(reportHtml.indexOf("合计 42 元") < reportHtml.indexOf("完整原始消息"));

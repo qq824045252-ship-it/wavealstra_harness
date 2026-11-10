@@ -359,7 +359,7 @@ async function testRecoveryControls() {
   const originalControl = api!.botWork.teamControl;
   let calls: WorkTeamControlRequest[] = [];
   let controlReply = deferred<WorkTeamControlResult>();
-  const projection = (state: "blocked" | "superseded", patch: Partial<WorkProjectionDto> = {}): WorkProjectionDto => ({ ...work,
+  const projection = (state: "blocked" | "superseded" | "awaiting_review", patch: Partial<WorkProjectionDto> = {}): WorkProjectionDto => ({ ...work,
     team: { workId: work.workId, ownerBotId: mybuddy.botId, ownerResponsibility: "Review all evidence", intentRevision: 1, inputSnapshotId: "input", ownerEpoch: 1, state, createdAt: 1,
       members: [{ botId: other.botId, responsibility: "Inspect earlier effects", delegatedScope: ["workspace:read", "workspace:write"] }],
       executions: [{ botId: other.botId, responsibility: "Inspect earlier effects", delegatedScope: ["workspace:read", "workspace:write"], role: "member", taskId: "member-task", status: "blocked", error: "Setup unavailable" }] }, ...patch });
@@ -383,6 +383,14 @@ async function testRecoveryControls() {
       value.team!.executions[0].dependsOnBotIds = [mybuddy.botId]; value.team!.executions[0].waitingReason = "等待前置成员结算";
       await start(value); assert.match(container.textContent!, /按依赖并行（最多 3 位成员）/);
       assert.match(container.textContent!, /前置成员：MyBuddy/); assert.match(container.textContent!, /等待前置成员结算/);
+    });
+    await check("returned team summary is not presented as a new mandatory approval", async () => {
+      const value = projection("awaiting_review"); value.team!.executions[0].status = "completed";
+      await start(value); assert.match(container.textContent!, /团队汇总已返回/);
+      assert.doesNotMatch(container.textContent!, /待核验|待验收|请在成果评审/);
+      assert.equal(value.team!.state, "awaiting_review", "presentation does not mutate review or work completion state");
+      value.team!.executions[0].status = "failed"; await render(value);
+      assert.match(container.textContent!, /执行失败/, "actual failures remain visible");
     });
     await check("host provenance stays collapsed and bound to the exact member", async () => {
       const value = projection("blocked");
@@ -454,7 +462,7 @@ async function testRecoveryControls() {
         recoveryOutcome: "completed", failureReason: "temporary provider failure" };
       await render(value);
       assert.match(container.textContent!, /已自动恢复/);
-      assert.match(container.textContent!, /仍需负责人核对与用户验收/);
+      assert.match(container.textContent!, /以报告证据和真实缺口为准/);
       assert.match(container.textContent!, /原失败：temporary provider failure/);
     });
     await check("terminal dependency failure is shown as unstarted without a retry approval", async () => {

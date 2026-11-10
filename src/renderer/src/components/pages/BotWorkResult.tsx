@@ -68,13 +68,13 @@ export function BotResultReport({ message, work, renderMarkdown }: { message: Bo
     openPath: report.files?.find(item => item.ref === file.ref)?.openPath }));
   return <section className="bot-result-report" aria-label={`成果：${report.title}`}>
     <header><h3>{report.title}</h3><span className="bot-status-badge">{!report.current ? "历史成果" : {
-      proposed: "成果已生成 · 待核验", accepted: "负责人已核验", rejected: "未通过核验", superseded: "已被新成果替代",
+      proposed: "结果已返回", accepted: "负责人已核验", rejected: "未通过核验", superseded: "已被新成果替代",
     }[report.reviewStatus]}</span></header>
     <div className={`bot-result-body ${long && !expanded ? "is-collapsed" : ""}`}>{renderMarkdown(report.summary)}</div>
     {long && <button className="bot-result-expand" type="button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? "收起长报告" : "展开完整报告"}</button>}
     {report.notices.length > 0 && <ul className="bot-result-notices">{report.notices.map((notice, i) => <li key={i}>{notice}</li>)}</ul>}
     <WorkFiles files={files} />
-    <details className="bot-original-report"><summary>原始消息与完整记录</summary>{renderMarkdown(message.text)}</details>
+    <details className="bot-original-report"><summary>原始消息与完整记录</summary><p>成果记录：{{ proposed: "已生成，尚未登记采纳", accepted: "已采纳", rejected: "未采纳", superseded: "已被后续成果替代" }[report.reviewStatus]}。这是成果记录状态，不是新的操作授权请求。</p>{renderMarkdown(message.text)}</details>
   </section>;
 }
 
