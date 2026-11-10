@@ -180,7 +180,7 @@ export function BotTeamDialog({ open, onClose, initialTeam }: { open: boolean; o
     <header className="bot-create-header"><span className="bot-avatar" aria-hidden="true"><IconBot size={20} /></span>
       <div><h2 id="bot-team-title">组队开工</h2><p>一个目标，明确分工，由负责人统一汇总</p></div>
       <button type="button" className="icon-btn" aria-label="关闭组队开工" onClick={close}><IconX size={18} /></button></header>
-    {created ? <section className="bot-create-success"><h3>已建立团队事项</h3><p>{created.title} 已受理。成员按计划在各自范围内执行，负责人随后核对和汇总。结果会随团队事项返回。</p><div className="bot-create-actions"><button type="button" onClick={() => { setCreated(null); setTitle(""); setGoal(""); setCriteria(""); setError(""); }}>再建一队</button><button type="button" onClick={() => openWork(created)}>查看团队事项</button></div></section>
+    {created ? <section className="bot-create-success"><h3>已建立团队事项</h3><p>{created.title} 已受理。成员按计划在各自范围内执行，负责人随后核对和汇总。结果会随团队事项返回，也可在负责人的任务收件箱查看，无需留在此窗口等待。</p><div className="bot-create-actions"><button type="button" onClick={() => { setCreated(null); setTitle(""); setGoal(""); setCriteria(""); setError(""); }}>再建一队</button><button type="button" onClick={() => openWork(created)}>查看团队事项</button></div></section>
       : <form onSubmit={event => { event.preventDefault(); void submit(); }}>
         <p>选择负责人和至少一位成员。每位成员使用自己的身份和已有权限，不共享私人记忆。</p>
         <fieldset disabled={Boolean(pending)}>

@@ -77,6 +77,7 @@ const SERIAL_TEST_PATTERNS = [/^test:core-performance/, /^test:bot-work-query-sc
 const GUI_TESTS = new Set([
   "test:bot-conversation-concurrent-desktop",
   "test:bot-work-browser-desktop",
+  "test:bot-work-inbox-desktop",
   "test:bot-work-browser-dev",
   "test:work-artifact-desktop",
   "test:bot-settings-dev",

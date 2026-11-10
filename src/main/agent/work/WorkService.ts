@@ -1,3 +1,4 @@
+import { recordWorkDelivery } from "./WorkDeliveryTargets";
 import { isScheduledFollowUp, scheduledFollowUpCurrent } from "./WorkScheduledFollowUp";
 import { WorkRuntimeObservation } from "./WorkRuntimeObservation";
 import { WorkGeneratedArtifacts } from "./WorkGeneratedArtifacts";
@@ -436,6 +437,7 @@ export class WorkService {
         updatedAt: now,
       };
       this.repo.insertWork(work);
+      recordWorkDelivery(this.db, work, params);
       this.repo.insertIntentSnapshot(this.intentSnapshot(work, ownerBot, params.sourceMessageId, work.createdBy));
       if (params.conversationId) this.repo.linkConversation(workId, params.conversationId, "desktop", now);
       if (watchRule) this.installSubscriptions(work, watchRule, now);

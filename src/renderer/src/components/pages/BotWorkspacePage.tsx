@@ -1,3 +1,4 @@
+import { BotWorkInbox } from "./BotWorkInbox";
 import { ComposerAttachmentChips } from "@/components/chat/ComposerAttachmentChips";
 import { composerFiles, mergeComposerAttachments, pastedComposerFiles, pickComposerAttachment } from "@/components/chat/composerAttachments";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -250,6 +251,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
           return <button type="button" key={item.id} aria-current={view === item.id ? "page" : undefined} onClick={() => changeView(item.id)}><item.icon size={15} /><span>{item.label}</span>{count !== undefined && <span className="bot-tab-count">{count}</span>}</button>;
         })}
       </nav>
+      {activeBotId && <BotWorkInbox key={activeBotId} botId={activeBotId} works={botWorks} onOpenWork={openWork} />}
       {workError && <p className="bot-alert" role="alert">{workError}</p>}
       {navigationNotice && <p className="bot-navigation-notice" role="status">{navigationNotice}</p>}
       {view === "conversation" ? <>

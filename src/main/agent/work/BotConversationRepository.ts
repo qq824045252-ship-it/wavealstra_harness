@@ -1,3 +1,4 @@
+import { botInboxId, ensureBotInbox } from "./WorkDeliveryTargets";
 import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { z } from "zod";
@@ -73,7 +74,7 @@ export class BotConversationRepository {
   }
 
   history(userId: string, request: BotHistoryRequest): BotHistoryDto {
-    const conversation = this.conversation(userId, request.botId, request.conversationId);
+    const conversation = this.conversation(userId, request.botId, request.inbox ? botInboxId(userId, request.botId) : request.conversationId);
     if (!conversation) return { conversationId: "", botId: request.botId, revision: 0, archived: false, messages: [] };
     const rows = this.db.prepare("SELECT * FROM bot_messages WHERE conversation_id=? AND ordinal<? ORDER BY ordinal DESC LIMIT 101")
       .all(conversation.conversation_id, request.before ?? Number.MAX_SAFE_INTEGER);
@@ -207,6 +208,31 @@ export class BotConversationRepository {
         )
       ) ORDER BY m.ordinal LIMIT 1`).get(workId, userId);
     return row ? conversationRow.parse(row) : undefined;
+  }
+
+  /** Explicit delivery target first; legacy authenticated origin second. Old
+   * unlinked Work projects into its known owner inbox, never a guessed live chat. */
+  resolveWorkDelivery(userId: string, workId: string): BotConversation | undefined {
+    const work = this.db.prepare("SELECT owner_bot_id FROM works WHERE work_id=? AND user_id=?").get(workId, userId) as { owner_bot_id: string } | undefined;
+    if (!work) return;
+    const targets = this.db.prepare(`SELECT c.* FROM work_conversations t JOIN bot_conversations c ON c.conversation_id=t.conversation_id
+      WHERE t.work_id=? AND t.channel_type='bot-delivery' AND c.user_id=?`).all(workId, userId);
+    if (targets.length === 1) return conversationRow.parse(targets[0]);
+    if (targets.length > 1) return; // Ambiguous persisted provenance is not guessed.
+    const origin = this.workOrigin(userId, workId);
+    if (origin) return origin;
+    const id = ensureBotInbox(this.db, userId, work.owner_bot_id);
+    return id ? this.conversation(userId, work.owner_bot_id, id) : undefined;
+  }
+
+  appendWorkDelivery(userId: string, workId: string, event: string, version: string, text: string, metadata?: WorkFeedbackDto):
+    { delivered: boolean; inserted: boolean; conversationId?: string } {
+    return this.db.transaction(() => {
+      const target = this.resolveWorkDelivery(userId, workId);
+      if (!target) return { delivered: false, inserted: false };
+      const inserted = this.appendWorkFeedback(target, workId, event, version, text, metadata);
+      return { delivered: true, inserted, conversationId: target.conversation_id };
+    })();
   }
 
   /** The message itself is the delivery receipt: append and revision commit together.

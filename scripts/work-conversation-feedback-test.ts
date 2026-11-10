@@ -206,6 +206,23 @@ try {
   const orphan = create("unlinked-work", false);
   works.repo.insertBlocker({ blockerId: "orphan-blocker", workId: orphan.workId, reason: "No origin", kind: "operational", status: "open", waitingForUserInput: true, createdAt: 6 });
   assert.equal(feedback.drain(orphan.workId), 0, "unlinked Work never falls back to active chat");
+  const inbox = messages.resolveWorkDelivery(LOCAL_USER_ID, orphan.workId)!;
+  assert(inbox.conversation_id.startsWith("bot-inbox-"));
+  assert.notEqual(inbox.conversation_id, messages.history(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID }).conversationId);
+  const inboxMeta = { workId: orphan.workId, eventId: "result:inbox", kind: "result" as const, category: "result" as const };
+  const delivered = messages.appendWorkDelivery(LOCAL_USER_ID, orphan.workId, "result:inbox", "1", "团队结果已返回", inboxMeta);
+  assert(delivered.delivered && delivered.inserted);
+  assert.deepEqual(messages.appendWorkDelivery(LOCAL_USER_ID, orphan.workId, "result:inbox", "1", "团队结果已返回", inboxMeta),
+    { delivered: true, inserted: false, conversationId: inbox.conversation_id });
+  assert.equal(messages.history(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID, inbox: true }).messages.at(-1)?.text, "团队结果已返回");
+  assert.equal(messages.history(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID }).messages.length, 2, "inbox never changes the current chat");
+  assert.equal(messages.resolveWorkDelivery("another-user", orphan.workId), undefined);
+  assert.equal(messages.resolveWorkDelivery(LOCAL_USER_ID, work.workId)?.conversation_id, source.conversationId, "archived original destination survives owner handoff");
+  const legacy = create("legacy-inbox", false);
+  db.connection.prepare("DELETE FROM work_conversations WHERE work_id=? AND channel_type='bot-delivery'").run(legacy.workId);
+  const beforeLegacy = JSON.stringify(works.getWork(legacy.workId));
+  assert.equal(messages.resolveWorkDelivery(LOCAL_USER_ID, legacy.workId)?.conversation_id, inbox.conversation_id);
+  assert.equal(JSON.stringify(works.getWork(legacy.workId)), beforeLegacy, "legacy projection neither executes nor mutates Work");
   works.repo.updateWork({ ...works.getWork(work.workId)!, lifecycle: "closed", closedAt: 8, closureConclusion: "cancelled", closureSummary: "已取消" });
   const finalCount = history().messages.length;
   db.connection.exec("DROP TABLE bot_work_feedback"); // Existing v35 database upgrade, not a schema reset.

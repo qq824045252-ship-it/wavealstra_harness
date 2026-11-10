@@ -13,7 +13,7 @@ export const botSendSchema = z.object({
   conversationId: id.optional(), selectedWorkId: id.optional(), referenceMessageId: id.optional(),
 }).strict().refine(input => input.text.length > 0 || (input.attachments?.length ?? 0) > 0, "请输入消息或添加附件");
 export type BotSendRequest = z.infer<typeof botSendSchema>;
-export const botHistorySchema = z.object({ botId: id, conversationId: id.optional(), before: z.number().int().positive().optional() }).strict();
+export const botHistorySchema = z.object({ inbox: z.boolean().optional(), botId: id, conversationId: id.optional(), before: z.number().int().positive().optional() }).strict();
 export type BotHistoryRequest = z.infer<typeof botHistorySchema>;
 /** Host-authored durable Work feedback, never inferred from message wording. */
 export const workFeedbackSchema = z.object({
