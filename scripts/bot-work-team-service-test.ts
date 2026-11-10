@@ -60,7 +60,12 @@ function setup() {
     criteria: ["有来源的团队成果并明确缺口"] };
   return { name, plan, request };
 }
-async function flush(count = 5) { for (let i = 0; i < count; i++) await queue.flush(); }
+async function flush(count = 5) { for (let i = 0; i < count; i++) {
+  await queue.flush();
+  for (const id of works.automaticCompletion.pending()) if (works.transaction(() => works.automaticCompletion.outcome(id)))
+    works.automaticCompletion.recordDelivery(id,"fixture report delivered");
+  works.automaticCompletion.drain();
+} }
 const bindings = (workId: string) => works.repo.listBindings(workId);
 const countWorks = () => works.listWorks(LOCAL_USER_ID, { includeClosed: true }).length;
 try {
@@ -126,8 +131,8 @@ try {
   assert.equal((db.connection.prepare("SELECT count(*) n FROM work_dispatch_requests WHERE work_id=?").get(workId) as { n: number }).n, 0);
   await queue.flush(); assert.equal(bindings(workId).length, 1);
   await flush(); assert.equal(bindings(workId).length, 3);
-  assert.equal(works.teams.get(workId)!.state, "awaiting_review");
-  assert.equal(works.getWork(workId)!.lifecycle, "active");
+  assert.equal(works.teams.get(workId)!.state, "ended_unsuccessfully");
+  assert.equal(works.getWork(workId)!.lifecycle, "closed");
   assert(works.repo.listDeliverables(workId).every(result => result.status === "proposed"));
   const ownerInput = submissions.find(item => item.taskId === created.team!.executions[2]!.taskId)!.input.teamAssignment;
   assert.equal(ownerInput.role, "owner_summary"); assert.equal(ownerInput.previousResults.length, 2);
@@ -160,7 +165,7 @@ try {
   failPrepare.delete(retryTask);
   ok(works.teams.handle(user, { kind: "retry", workId: retry.work!.workId, versionGuard: guard(works.getWork(retry.work!.workId)!), confirmNotStarted: true }));
   await flush(); assert.equal(bindings(retry.work!.workId)[0]!.taskId, retryTask);
-  reject(works.teams.handle(user, { kind: "retry", workId: retry.work!.workId, versionGuard: guard(works.getWork(retry.work!.workId)!), confirmNotStarted: true }), "invalid_request");
+  reject(works.teams.handle(user, { kind: "retry", workId: retry.work!.workId, versionGuard: guard(works.getWork(retry.work!.workId)!), confirmNotStarted: true }), "invalid_lifecycle_transition");
 
   // Revoked owner/reporting rights block only that team; independent teams still proceed.
   const pausedSetup = setup(), paused = ok(works.teams.handle(user, { kind: "create", request: pausedSetup.request }));
@@ -169,22 +174,26 @@ try {
   const independentSetup = setup(), independent = ok(works.teams.handle(user, { kind: "create", request: independentSetup.request }));
   await flush();
   assert.equal(works.teams.get(paused.work!.workId)!.state, "blocked");
-  assert.equal(works.teams.get(independent.work!.workId)!.state, "awaiting_review");
+  assert.equal(works.teams.get(independent.work!.workId)!.state, "ended_unsuccessfully");
   db.connection.prepare("UPDATE bots SET status='active' WHERE bot_id=?").run(pausedSetup.plan.ownerBotId);
-  await flush(); assert.equal(works.teams.get(paused.work!.workId)!.state, "awaiting_review");
+  await flush(); assert.equal(works.teams.get(paused.work!.workId)!.state, "ended_unsuccessfully");
 
   // Changed requirements never silently repeat prior effects; explicit replan retains history.
-  const originalTasks = bindings(workId).map(item => item.taskId);
-  const amended = works.amendWork(user, { operationId: "new-requirements", workId, goalDescription: "Check updated input separately" });
-  assert(amended.ok); assert.equal(works.teams.get(workId)!.state, "superseded");
-  await flush(); assert.deepEqual(bindings(workId).map(item => item.taskId), originalTasks);
-  const revisedPlan = { ...initial.plan, members: [initial.plan.members[1]!] };
-  const replanned = ok(works.teams.handle(user, { kind: "replan", workId, versionGuard: guard(works.getWork(workId)!), plan: revisedPlan }));
+  const replanSetup = setup();
+  const replanWork = ok(works.teams.handle(user, { kind: "create", request: replanSetup.request }));
+  const replanWorkId = replanWork.work!.workId;
+  await flush(1); // Change requirements before owner delivery, not after automatic closure.
+  const originalTasks = bindings(replanWorkId).map(item => item.taskId);
+  const amended = works.amendWork(user, { operationId: "new-requirements", workId: replanWorkId, goalDescription: "Check updated input separately" });
+  assert(amended.ok); assert.equal(works.teams.get(replanWorkId)!.state, "superseded");
+  await flush(); assert.deepEqual(bindings(replanWorkId).map(item => item.taskId), originalTasks);
+  const revisedPlan = { ...replanSetup.plan, members: [replanSetup.plan.members[1]!] };
+  const replanned = ok(works.teams.handle(user, { kind: "replan", workId: replanWorkId, versionGuard: guard(works.getWork(replanWorkId)!), plan: revisedPlan }));
   assert.equal(replanned.team!.executions.length, 2);
-  assert.deepEqual(works.getWork(workId)!.participants.map(item => item.botId), [initial.plan.members[1]!.botId]);
-  assert.match(works.repo.executionInput(bindings(workId)[0]!), /teamAssignment/, "old immutable team input remains available");
-  await flush(); assert.equal(bindings(workId).length, 5);
-  reject(works.teams.handle(user, { kind: "replan", workId, versionGuard: guard(works.getWork(workId)!), plan: revisedPlan }), "invalid_request");
+  assert.deepEqual(works.getWork(replanWorkId)!.participants.map(item => item.botId), [replanSetup.plan.members[1]!.botId]);
+  assert.match(works.repo.executionInput(bindings(replanWorkId)[0]!), /teamAssignment/, "old immutable team input remains available");
+  await flush(); assert.equal(bindings(replanWorkId).length, originalTasks.length + 2);
+  reject(works.teams.handle(user, { kind: "replan", workId: replanWorkId, versionGuard: guard(works.getWork(replanWorkId)!), plan: revisedPlan }), "invalid_request");
 
   // A prepared but unsubmitted owner input is safely re-frozen after explicit handoff.
   const handedSetup = setup(), handed = ok(works.teams.handle(user, { kind: "create", request: handedSetup.request }));
@@ -201,7 +210,7 @@ try {
   await flush();
   const reassigned = submissions.find(item => item.taskId === summaryTask)!;
   assert.equal(reassigned.botId, newOwner); assert.equal(reassigned.input.teamAssignment.botId, newOwner);
-  assert.equal(works.teams.get(handed.work!.workId)!.state, "awaiting_review");
+  assert.equal(works.teams.get(handed.work!.workId)!.state, "ended_unsuccessfully");
 
   // Pause/cancel before submission does not start a member, and summary failure is not running forever.
   const suspendedSetup = setup(), suspended = ok(works.teams.handle(user, { kind: "create", request: suspendedSetup.request }));
@@ -213,7 +222,7 @@ try {
   assert.equal(works.teams.get(suspended.work!.workId)!.state, "cancelled");
   const failedSetup = setup(), failed = ok(works.teams.handle(user, { kind: "create", request: failedSetup.request }));
   failSummary.add(failed.team!.executions[2]!.taskId); await flush(10);
-  assert.equal(works.teams.get(failed.work!.workId)!.state, "blocked", "the same empty failure stops after no progress");
+  assert.equal(works.teams.get(failed.work!.workId)!.state, "ended_unsuccessfully", "failed report is delivered then ended after no progress");
   assert.equal(bindings(failed.work!.workId).length, 4, "one bounded continuation keeps the original owner task identity");
   assert.match(works.teams.get(failed.work!.workId)!.executions[2]!.error!, /没有新进展|恢复已停止/);
 
@@ -250,7 +259,7 @@ try {
   runningTasks.delete(firstTask);
   await flush(6);
   assert.equal(bindings(meteringWorkId).length, 3);
-  assert.equal(works.teams.get(meteringWorkId)!.state, "awaiting_review");
+  assert.equal(works.teams.get(meteringWorkId)!.state, "ended_unsuccessfully");
   assert(works.repo.listDeliverables(meteringWorkId).some(item => item.executionId === firstBinding.bindingId), "settled partial result remains visible");
   assert(works.collaboration.history(meteringWorkId).some(item => item.kind === "result"), "member result reporting is retained");
   assert.equal(submissions.filter(item => item.taskId === firstTask).length, 1, "missing usage never causes the request to be replayed");
@@ -290,12 +299,12 @@ try {
   assert(!bindings(parallelId).some(binding => binding.taskId === po!.taskId), "owner still waits for independent member");
   assert.equal(submissions.filter(item => item.taskId === pc!.taskId)[0]!.input.teamAssignment.previousResults.length, 1);
   runningTasks.delete(pb!.taskId); await flush(4);
-  assert.equal(works.teams.get(parallelId)!.state, "awaiting_review");
+  assert.equal(works.teams.get(parallelId)!.state, "ended_unsuccessfully");
   for (const member of parallel.team!.executions) assert.equal(submissions.filter(item => item.taskId === member.taskId).length, 1);
   assert(works.handoffOwner(user, { operationId: `parallel-handoff:${parallelId}`, workId: parallelId,
-    targetBotId: `${parallelSetup.name}-new-owner` }).ok);
+    targetBotId: `${parallelSetup.name}-new-owner` }).ok === false);
   assert(!collectOwnerSummaryFacts(works, works.getWork(parallelId)!, Date.now()).payload.waitingForBotIds.includes(`${parallelSetup.name}-new-owner`),
-    "handoff after a completed owner summary must not invent an unstarted summary for the new owner");
+    "closed team rejects handoff and must not invent an unstarted summary");
   const stoppedSetup = setup();
   const stopped = ok(works.teams.handle(user, { kind: "create", request: { ...stoppedSetup.request,
     executionPolicy: "parallel", maxConcurrency: 2, members: stoppedSetup.plan.members.map((member, index) =>
@@ -329,7 +338,7 @@ try {
   await flush(3);
   assert.equal(bindings(debtId).length, 3, "missing usage does not impose a removed quota gate on the owner");
   assert(bindings(debtId).every(binding => binding.status === "completed"));
-  assert.equal(works.teams.get(debtId)!.state, "awaiting_review");
+  assert.equal(works.teams.get(debtId)!.state, "ended_unsuccessfully");
   assert.equal("budget" in works.getWork(debtId)!, false);
   for (const row of debt.team!.executions) assert.equal(submissions.filter(item => item.taskId === row.taskId).length, 1);
   console.log("Parallel team: bounded overlapping members, dependency snapshots, owner barrier and pause/resume passed");

@@ -271,6 +271,7 @@ const HEADLESS_TESTS = new Set([
   "test:bot-work-phase4-causal-guard",
   "test:bot-work-no-quota",
   "test:bot-work-automatic-recovery",
+  "test:bot-work-automatic-completion",
   "test:bot-work-phase4-backpressure",
   "test:bot-work-phase5-delivery-dedup",
   "test:bot-work-phase5-reconnect-diagnostics",

@@ -1,4 +1,5 @@
 import { recordWorkDelivery } from "./WorkDeliveryTargets";
+import { WorkAutomaticCompletion } from "./WorkAutomaticCompletion";
 import { isScheduledFollowUp, scheduledFollowUpCurrent } from "./WorkScheduledFollowUp";
 import { WorkRuntimeObservation } from "./WorkRuntimeObservation";
 import { WorkGeneratedArtifacts } from "./WorkGeneratedArtifacts";
@@ -127,6 +128,7 @@ const UNSETTLED_BINDING_STATUSES = new Set<WorkExecutionStatus>(["pending", "sub
 const EXECUTION_EVIDENCE_KINDS = new Set<WorkEvidenceKind>(["automated_test", "tool_receipt", "inspection", "artifact"]);
 
 export class WorkService {
+  readonly automaticCompletion: WorkAutomaticCompletion;
   readonly teams: WorkTeamService;
   readonly repo: WorkRepository;
   readonly nativeResults: WorkNativeResultInbox;
@@ -173,6 +175,9 @@ export class WorkService {
     this.phase5 = new WorkPhase5Facts(this, this.now, db);
     this.pausedBacklog = new WorkPausedBacklog(db, this);
     this.teams = new WorkTeamService(db, this, this.bots, this.now);
+    this.automaticCompletion = new WorkAutomaticCompletion(db, this, (work, conclusion, summary, bindingId) => {
+      this.closeWithConclusion(work, conclusion, { operationId: `automatic-completion:${bindingId}`, closureSummary: summary }, this.now());
+    }, () => !this.authorityError());
   }
 
   private authorityError(): Fail | undefined {
@@ -845,7 +850,7 @@ export class WorkService {
       semanticKey: `work:${work.workId}:closed:${conclusion}`,
       kind: "closed",
       title: `事项已结束：${work.title}`,
-      body: conclusion === "succeeded" ? "验收条件已满足" : next.closureSummary,
+      body: next.closureSummary ?? (conclusion === "succeeded" ? "事项已完成" : undefined),
       stateVersion: next.stateVersion,
       intentRevision: next.intentRevision,
       delivery: "pending",

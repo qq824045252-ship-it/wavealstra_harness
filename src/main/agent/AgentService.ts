@@ -1,3 +1,5 @@
+import { BotWorkResultTurn } from "./work/BotWorkResultTurn";
+import { WorkCompletionCoordinator } from "./work/WorkCompletionCoordinator";
 import { BotConversationMemory } from "./work/BotConversationMemory";
 import { botMemorySource } from "../memory/BotMemorySource";
 import { z } from "zod";
@@ -628,6 +630,8 @@ export class AgentService {
   private botConversations?: BotConversationService;
   private workDispatchQueue?: WorkDispatchQueue;
   private workConversationFeedback?: WorkConversationFeedback;
+  private workCompletion?: WorkCompletionCoordinator;
+  private botResultTurns?: BotWorkResultTurn;
   private botReportImages?: BotReportImageService;
   private readonly executionFailures: ExecutionFailureRepository;
   private readonly executionAttempts: ExecutionAttemptRepository;
@@ -833,6 +837,7 @@ export class AgentService {
         this.emitPatch({ type: "work_projection_snapshot", projection });
         // Delivery is a background obligation: a new card wakes the host drain.
         this.workNotificationWake?.();
+        this.workCompletion?.wake();
         try { this.workConversationFeedback?.drain(projection.workId); } catch (error) { console.warn("[Work] Bot 回写等待恢复", error); }
       },
       isAuthority: () => this.workHostAuthority.isAuthority(),
@@ -1676,6 +1681,14 @@ export class AgentService {
       },
       onMessage: event => broadcast(BotWorkIpc.messageChanged, event),
     });
+    this.botResultTurns ??= new BotWorkResultTurn({ models: this.durableModels, directory: join(getMyBuddyDir(), "bot-result-turns"),
+      defaultModel: () => this.settingsStore.read().defaultModelId, botModel: botId => this.botSettings.get(botId).modelId || undefined,
+      isAuthority: () => this.workHostAuthority.isAuthority() });
+    this.workCompletion ??= new WorkCompletionCoordinator({ db: this.db.connection, works: this.workService,
+      isAuthority: () => this.workHostAuthority.isAuthority(), review: input => this.botResultTurns!.review(input),
+      deliver: input => this.workConversationFeedback!.deliverCompletion(input),
+      wake: () => queueMicrotask(() => this.workDispatchQueue?.wake()) });
+    this.workCompletion.start();
     this.workDispatchQueue.start();
     this.workService.scheduler.start();
     this.botConversations.recover();
@@ -1905,6 +1918,7 @@ export class AgentService {
     this.expertBindings.purge(taskId);
   }
   async closeDurableBots(): Promise<void> {
+    this.workCompletion?.close(); await this.botResultTurns?.close();
     this.workConversationFeedback?.close();
     await this.botConversations?.close(); await this.workDispatchQueue?.close();
     await this.workExecutions?.close(); await this.durableBots?.close();

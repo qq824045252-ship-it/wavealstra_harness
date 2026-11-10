@@ -15,6 +15,7 @@ const structuredReportScenario = process.argv.includes('--structured-report');
 const teamPlanningScenario = process.argv.includes('--team-planning') || teamFreeScenario;
 const teamScenario = process.argv.includes('--team') || teamFailureScenario || teamPlanningScenario;
 const concurrentScenario = process.argv.includes('--concurrent');
+const completionScenario = process.argv.includes('--completion');
 const cacheScenario = process.argv.includes('--cache');
 const memoryScenario = process.argv.includes('--memory');
 const windows = process.platform === 'win32';
@@ -24,7 +25,7 @@ const headless = process.env.BOT_WORK_DEV_HEADLESS === '1';
 const trackingScenario = process.argv.includes('--tracking');
 const watchScenario = process.argv.includes('--watch');
 if (headless && process.platform !== 'linux') throw Error('Headless dev page validation requires Linux; it does not validate desktop input.');
-const out = path.join(root, concurrentScenario ? 'out/diagnostics/bot-concurrent/live' : trackingScenario ? 'out/diagnostics/bot-tracking/live' : teamTransientFailure ? 'out/diagnostics/bot-team-transient-failure/live' : teamTransportFailure ? 'out/diagnostics/bot-team-transport-failure/live' : teamFailureScenario ? 'out/diagnostics/bot-team-failure/live' : teamFreeScenario ? 'out/diagnostics/bot-team-free/live' : teamPlanningScenario ? 'out/diagnostics/bot-team-planning/live' : teamScenario ? 'out/diagnostics/bot-team-frontdoor/live' : cacheScenario ? 'out/diagnostics/bot-cache/live' : memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
+const out = path.join(root, concurrentScenario ? 'out/diagnostics/bot-concurrent/live' : completionScenario ? 'out/diagnostics/bot-completion/live' : trackingScenario ? 'out/diagnostics/bot-tracking/live' : teamTransientFailure ? 'out/diagnostics/bot-team-transient-failure/live' : teamTransportFailure ? 'out/diagnostics/bot-team-transport-failure/live' : teamFailureScenario ? 'out/diagnostics/bot-team-failure/live' : teamFreeScenario ? 'out/diagnostics/bot-team-free/live' : teamPlanningScenario ? 'out/diagnostics/bot-team-planning/live' : teamScenario ? 'out/diagnostics/bot-team-frontdoor/live' : cacheScenario ? 'out/diagnostics/bot-cache/live' : memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-frontdoor-live-'));
 const agentDir = path.join(home, '.mybuddy'); fs.mkdirSync(agentDir, { recursive: true });
 for (const directory of ['AppData/Roaming', 'AppData/Local', 'Temp']) fs.mkdirSync(path.join(home, directory), { recursive: true });
@@ -221,6 +222,30 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       report.checks.push('real model slow response overlapped by independent arithmetic; request-specific UI stop; third request completes; controlled 503 isolated; subsequent real model completes');
       report.messages = (await history()).messages;
       report.visibleText = await evaluate('document.body.innerText');
+    } else if (completionScenario) {
+      await send('请建立一次性后台委托，标题“自动收尾验收”：写一份周末居家整理计划，包含厨房、卧室、书桌三个区域，每个区域两步。直接交付文字结果，不用创建文件，不需要我确认或验收，不要设持续追踪。');
+      await foregroundDone(0);
+      await until(async () => (await evaluate('window.api.botWork.listWorks(true)')).length === 1, 'one real Work created');
+      const workId = (await evaluate('window.api.botWork.listWorks(true)'))[0].workId;
+      await until(async () => (await evaluate(`window.api.botWork.getWork(${JSON.stringify(workId)})`)).lifecycle === 'closed', 'automatic closure without review clicks');
+      const work = await evaluate(`window.api.botWork.getWork(${JSON.stringify(workId)})`);
+      assert.equal(work.closureConclusion, 'succeeded', JSON.stringify(work));
+      assert(work.deliverables.some(item => item.summary.includes('厨房') && item.summary.includes('卧室') && item.summary.includes('书桌')));
+      assert(work.deliverables.every(item => item.status === 'proposed'), 'no forged human acceptance');
+      await until(async () => (await history()).messages.some(item => item.workFeedback?.kind === 'result' || item.text?.includes('居家整理')), 'result returned to original conversation');
+      const deliveredText=(await history()).messages.find(item=>item.workFeedback?.eventId === `completion:${work.executions.at(-1).bindingId}`)?.workFeedback?.report?.summary;
+      assert(deliveredText, 'result has a readable summary');
+      await until(()=>evaluate(`document.body.innerText.includes(${JSON.stringify(deliveredText.slice(0,32))})`),'actual result summary rendered in conversation without refresh click');
+      await evaluate(`document.querySelectorAll('[data-work-id]').item(document.querySelectorAll('[data-work-id]').length-1)?.scrollIntoView({block:'end'})`);
+      const conversationShot=await rpc('Page.captureScreenshot',{format:'png',captureBeyondViewport:false}); fs.writeFileSync(path.join(out,'completion-conversation.png'),Buffer.from(conversationShot.data,'base64'));
+      await evaluate(`[...document.querySelectorAll('button')].find(item=>/^已结束/.test(item.textContent.trim())).click()`);
+      await until(() => evaluate(`!!document.querySelector('[data-work-id="${workId}"]')`), 'completed Work visible in ended tab');
+      report.work = work; report.history = await history();
+      const processed = report.history.messages.filter(item => item.workFeedback?.eventId === `completion:${work.executions.at(-1).bindingId}`);
+      assert.equal(processed.length, 1, 'one meaningful result delivery precedes closure');
+      assert(!processed[0].text.includes('事项已关闭（succeeded）'));
+      assert(requests.some(request => request.messages.some(message => JSON.stringify(message.content).includes('个人助理的结果处理回合'))), 'real independent foreground result-thinking model turn ran');
+      report.checks.push('real UI + DeepSeek -> real once Work -> actual three-area result -> automatic closed -> visible in ended tab; no acceptance clicks or forged criteria');
     } else if (trackingScenario) {
       await send('请建立持续跟踪事项，标题“明日检查”：每天 Asia/Shanghai 时区上午9点只读检查委托进展。现在不用执行，不修改任何文件。');
       await foregroundDone(0);
@@ -554,7 +579,7 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     }
     report.checks.push('criticism does not cancel; explicit stop does not restart query; no Work created');
     }
-    const shot=await rpc('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});fs.writeFileSync(path.join(out,trackingScenario?'tracking.png':teamScenario?'team.png':cacheScenario?'cache.png':memoryScenario?'memory.png':watchScenario?'watch.png':'weather.png'),Buffer.from(shot.data,'base64'));
+    const shot=await rpc('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});fs.writeFileSync(path.join(out,completionScenario?'completion.png':trackingScenario?'tracking.png':teamScenario?'team.png':cacheScenario?'cache.png':memoryScenario?'memory.png':watchScenario?'watch.png':'weather.png'),Buffer.from(shot.data,'base64'));
     report.status='passed';
   } catch (error) {
     report.status = 'failed'; report.error = String(error.stack || error); console.error(error); process.exitCode = 1;

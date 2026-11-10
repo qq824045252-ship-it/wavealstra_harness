@@ -26,6 +26,8 @@ export class WorkNativeResultInbox {
     const artifacts = this.works.artifacts.register(binding,artifactRefs);
     this.works.transaction(() => {
       this.assertAuthority();
+      const currentBinding = this.works.repo.getBinding(binding.bindingId);
+      if (currentBinding) this.works.automaticCompletion.observe(currentBinding, payload.status);
       this.works.artifacts.record(binding,artifacts);
       this.works.generatedArtifacts.record(binding,payload.generatedArtifacts ?? []);
       if (this.works.runtimeObservations.record(binding,payload)) {

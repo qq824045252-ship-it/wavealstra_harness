@@ -159,6 +159,7 @@ export class WorkDispatchQueue {
       const work = this.works.getWork(z.object({ work_id: z.string() }).parse(row).work_id);
       if (work) this.syncContinuationBlockers(work, this.works.repo.listBindings(work.workId));
     }
+    if (this.isAuthority()) this.works.automaticCompletion.drain();
   }
 
   private resumeRetiredQuotaRequests(): void {

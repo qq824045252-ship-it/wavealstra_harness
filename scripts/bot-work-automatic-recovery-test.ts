@@ -101,7 +101,12 @@ async function run(name: string, final: "completed" | "failed" | "stopped", unkn
   db = new AppDatabase(path); bots = new BotRegistry(db.connection); works = new WorkService(db.connection, { bots });
   ({ adapter, queue } = create());
   try {
-    for (let i = 0; i < 8; i++) await queue.flush();
+    for (let i = 0; i < 8; i++) {
+      await queue.flush();
+      for (const id of works.automaticCompletion.pending()) if (works.transaction(() => works.automaticCompletion.outcome(id)))
+        works.automaticCompletion.recordDelivery(id,"fixture report delivered");
+      works.automaticCompletion.drain();
+    }
     assert.deepEqual(errors, []);
     assert.equal(writes, 1, "continuation must never replay completed file write");
     if (name === "legacy-quota") assert.equal(works.repo.getBlocker(`dispatch:${name}`)?.status, "cleared", "same-identity successful dispatch resolves its own historical quota refusal");

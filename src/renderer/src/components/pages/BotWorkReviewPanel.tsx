@@ -120,7 +120,7 @@ export function WorkReviewPanel({ work, includeClosed }: {
   const inputBlockers = reviewed.blockers.filter(item => item.status === "open" && (userInputBlockerSnapshot(item) || item.legacyUserInput));
   return <section className="bot-work-review bot-detail-section" aria-label="成果评审与结束">
     <h3>评审与确认</h3>
-    <p>依次采纳成果、核对验收条件，再确认结束。执行完成不会自动完成这三步。</p>
+    <p>一次性委托执行完成、整理并交付成果后会自动移入已结束，无需你确认。以下是可选的成果反馈和手动结束入口；助理建议的检查不是结束前置条件。</p>
     {stale && <div role="alert"><p>事项已有更新，已保留你的填写内容和原评审版本。请核对最新成果、要求与负责人后再提交。</p>
       <button type="button" disabled={locked} onClick={reviewLatest}>已核对最新状态，继续评审</button>
     </div>}

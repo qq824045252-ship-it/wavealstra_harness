@@ -77,6 +77,10 @@ export class WorkAutomaticRecovery {
       this.works.repo.updateWork({ ...current, progressSummary: `${reason} 本轮处理结束，后续关注计划保持运行。`, stateVersion: current.stateVersion + 1, updatedAt: now });
       return;
     }
+    if (this.works.automaticCompletion.tracked(binding.bindingId)) {
+      this.works.repo.updateWork({ ...current, progressSummary: reason, stateVersion: current.stateVersion + 1, updatedAt: now });
+      return; // New terminal events are reported by the result lane before ending.
+    }
     const closure = this.works.closeWork({ kind: "bot", botId: current.ownerBotId, userId: current.userId,
       host: "background", grants: current.authorization }, { operationId: `recovery-ended:${binding.bindingId}`,
       workId: current.workId, conclusion: "ended_unsuccessfully", closureSummary: reason,

@@ -70,7 +70,7 @@ export class WorkPhase5Facts {
       work, kind,
       outcome: WorkResultCards.closureOutcome(work, this.repo.listDeliverables(work.workId), conclusion),
       title: `事项已结束：${work.title}`,
-      summary: conclusion === "succeeded" ? "验收条件已满足" : work.closureSummary ?? "",
+      summary: work.closureSummary ?? (conclusion === "succeeded" ? "事项已完成" : ""),
       unverifiedScope: this.unverifiedText(work),
       now,
     });

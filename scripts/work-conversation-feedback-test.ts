@@ -113,7 +113,7 @@ try {
   assert.deepEqual(works.getWork(work.workId), before, "feedback cannot accept, close or otherwise mutate Work");
   const history = () => messages.history(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID, conversationId: source.conversationId });
   assert.equal(history().messages.length, 5);
-  assert(history().messages.some(m => m.text.includes("不代表用户已验收")));
+  assert.equal(works.repo.getDeliverable("result:binding-1")?.status, "proposed", "natural feedback must not forge acceptance");
   assert(history().messages.some(m => m.text.includes("需要你补充信息")));
   assert(history().messages.slice(2).every(m => m.role === "assistant" && m.status === "completed" && m.workIds[0] === work.workId));
   assert.equal(messages.next(source.conversationId), undefined, "feedback must not queue a model turn");
@@ -205,7 +205,7 @@ try {
 
   const orphan = create("unlinked-work", false);
   works.repo.insertBlocker({ blockerId: "orphan-blocker", workId: orphan.workId, reason: "No origin", kind: "operational", status: "open", waitingForUserInput: true, createdAt: 6 });
-  assert.equal(feedback.drain(orphan.workId), 0, "unlinked Work never falls back to active chat");
+  assert.equal(feedback.drain(orphan.workId), 1, "unlinked Work is delivered to its explicit Bot inbox, never the active chat");
   const inbox = messages.resolveWorkDelivery(LOCAL_USER_ID, orphan.workId)!;
   assert(inbox.conversation_id.startsWith("bot-inbox-"));
   assert.notEqual(inbox.conversation_id, messages.history(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID }).conversationId);

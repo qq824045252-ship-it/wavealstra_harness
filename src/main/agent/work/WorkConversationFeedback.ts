@@ -1,3 +1,4 @@
+import type { WorkCompletionDelivery } from "./WorkCompletionCoordinator";
 import type Database from "better-sqlite3";
 import type { WorkFeedbackDto } from "../../../shared/bot-conversation";
 import type { WorkDto } from "../../../shared/bot-work";
@@ -51,6 +52,39 @@ export class WorkConversationFeedback {
     }
   }
 
+  /** Exact event delivery, used by the independent result-processing lane. */
+  deliverCompletion(input: WorkCompletionDelivery): boolean {
+    if (!this.options.isAuthority()) return false;
+    const { works, userId } = this.options;
+    return works.transaction(() => {
+      const binding = works.repo.getBinding(input.bindingId);
+      const work = binding && works.getWork(binding.workId);
+      if (!binding || !work || work.userId !== userId || binding.intentRevision !== work.intentRevision
+        || binding.inputSnapshotId !== work.inputSnapshotId || binding.ownerEpoch !== work.ownerEpoch) return false;
+      const results = works.repo.listDeliverables(work.workId).filter(item => item.executionId === binding.bindingId && item.status !== "superseded");
+      const refs = [...new Set(results.flatMap(item => item.artifactRefs))];
+      const raw = results.map(item => item.summary).join("\n\n") || binding.settlementNote || "没有可用结果正文";
+      const generated = works.generatedArtifacts.list(work.workId, true).filter(item => item.bindingId === binding.bindingId);
+      const result = results.at(-1);
+      const metadata: WorkFeedbackDto = { workId: work.workId, eventId: input.eventId,
+        kind: input.category === "progress" ? "binding" : "result", category: input.category,
+        executionId: binding.bindingId, intentRevision: binding.intentRevision, inputSnapshotId: binding.inputSnapshotId,
+        ...(input.category === "progress" ? {} : { report: {
+          title: work.title, summary: input.text, artifactRefs: refs, reviewStatus: result?.status ?? "proposed", current: true,
+          ...projectTeamReport(raw, works.repo.reportContext(binding)),
+          notices: [...input.notices ?? [], ...results.flatMap(item => item.uncoveredScope),
+            ...results.some(item => item.hasWriteConflicts) ? ["成果存在写入冲突"] : [],
+            ...results.some(item => item.isSpeculation) ? ["部分结论尚未验证"] : []],
+          files: refs.map(ref => { const candidates = generated.filter(item => item.path === ref);
+            const artifact = generated.find(item => item.snapshotPath === ref) ?? (candidates.length === 1 ? candidates[0] : undefined);
+            return { ref, name: (artifact?.path ?? ref).split(/[\\/]/).pop() || ref, openPath: artifact?.snapshotPath ?? artifact?.path }; }),
+        } }),
+      };
+      const text = `【${work.title}】\n${input.text}${input.category !== "progress" && raw !== input.text ? `\n\n原始执行记录：\n${raw}` : ""}`;
+      return this.messages.appendWorkDelivery(userId, work.workId, input.eventId, JSON.stringify([input.text,input.notices ?? [],refs]), text, metadata).delivered;
+    });
+  }
+
   private drainPending(workId?: string): number {
     if (!this.options.isAuthority()) return 0;
     const { works, userId } = this.options;
@@ -62,8 +96,12 @@ export class WorkConversationFeedback {
         if (!this.options.isAuthority()) return 0;
         const work = works.getWork(candidate.workId);
         if (!work || work.userId !== userId) return 0;
-        const origin = this.messages.workOrigin(userId, work.workId);
+        const origin = this.messages.resolveWorkDelivery(userId, work.workId);
         if (!origin) return 0; // Never guess an active conversation as a fallback.
+        const managed = (bindingId: string) => work.mode === "once"
+          && (work.lifecycle === "active" || work.closeOperationId?.startsWith("automatic-completion:"))
+          && works.automaticCompletion.tracked(bindingId)
+          && works.repo.getBinding(bindingId)?.botId === work.ownerBotId;
         let count = 0;
         const emit = (event: string, version: unknown, body: string, metadata: Omit<WorkFeedbackDto, "workId" | "eventId">) => {
           if (this.messages.appendWorkFeedback(origin, work.workId, event, JSON.stringify(version), `【${work.title}】\n${body}`, { ...metadata, workId: work.workId, eventId: event })) count++;
@@ -71,8 +109,8 @@ export class WorkConversationFeedback {
         const results = works.repo.listDeliverables(work.workId);
         const generated = works.generatedArtifacts.list(work.workId, true);
         for (const binding of works.repo.listBindings(work.workId)) {
-          if (!["completed", "failed", "stopped", "invalidated", "unknown"].includes(binding.status)) continue;
-          const labels: Record<string, string> = { completed: "后台执行已结束，成果仍需核验；不代表用户已验收。",
+          if (!["completed", "failed", "stopped", "invalidated", "unknown"].includes(binding.status) || managed(binding.bindingId)) continue;
+          const labels: Record<string, string> = { completed: "后台结果已返回。",
             failed: "后台执行失败，事项尚未因此完成。", stopped: "后台执行已停止。",
             invalidated: "该后台执行已失效，其结果不能作为当前事项完成的依据。", unknown: "后台执行结果暂不确定，需要核对。" };
           // The execution note and deliverable often originate from the same
@@ -89,6 +127,7 @@ export class WorkConversationFeedback {
               executionId: binding.bindingId, intentRevision: binding.intentRevision, inputSnapshotId: binding.inputSnapshotId });
         }
         for (const result of results) {
+          if (managed(result.executionId)) continue;
           const current = result.intentRevision === work.intentRevision && result.inputSnapshotId === work.inputSnapshotId;
           let presentation: ReturnType<typeof projectTeamReport> = {};
           try {
@@ -98,8 +137,8 @@ export class WorkConversationFeedback {
               presentation = projectTeamReport(result.summary, works.repo.reportContext(binding));
           } catch { /* Missing historical context falls back to the unchanged report. */ }
 
-          const review = { proposed: "待负责人核验", accepted: "负责人核验通过", rejected: "未通过负责人核验", superseded: "已被后续成果替代" }[result.status];
-          const label = !current ? "历史执行成果（不代表当前要求已完成）" : "后台成果（不代表用户已验收）";
+          const review = { proposed: "结果已返回", accepted: "已采纳", rejected: "未采纳", superseded: "已被后续成果替代" }[result.status];
+          const label = !current ? "历史执行成果（不代表当前要求已完成）" : "后台成果";
           emit(`result:${result.deliverableId}`, [result, current],
             `${label}，${review}\n${result.summary}${result.artifactRefs.length ? `\n成果：${result.artifactRefs.join("\n")}` : ""}`
             + `${result.uncoveredScope.length ? `\n尚未覆盖：${result.uncoveredScope.join("；")}` : ""}`
@@ -137,7 +176,7 @@ export class WorkConversationFeedback {
               : `阻塞已解除：${blocker.reason}`,
             { kind: "blocker", category: blocker.status === "open" && needsInput ? "decision" : "progress" });
         }
-        if (work.lifecycle === "closed") {
+        if (work.lifecycle === "closed" && !works.repo.listBindings(work.workId).some(binding => managed(binding.bindingId))) {
           emit("closure", [work.closedAt, work.closureConclusion, work.closureSummary],
             `事项已关闭（${work.closureConclusion ?? "已结束"}）。${work.closureSummary ? `\n${work.closureSummary}` : ""}\n关闭状态不等同于用户验收。`, { kind: "closure", category: "result" });
         }
