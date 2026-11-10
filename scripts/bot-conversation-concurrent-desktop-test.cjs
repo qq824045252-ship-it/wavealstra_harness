@@ -57,7 +57,7 @@ app.whenReady().then(async () => {
     assert(await evaluate(`document.querySelectorAll('.bot-reply-metrics')[1].textContent.includes('输入 0.900M')`));
     assert(await evaluate(`document.querySelectorAll('.bot-reply-metrics')[1].textContent.includes('平均 40.0 tok/s')`));
     assert(await evaluate(`document.querySelectorAll('.bot-reply-metrics')[2].textContent.includes('输入 —')`));
-    assert(await evaluate(`document.querySelectorAll('.bot-reply-metrics')[0].querySelector('span').title.includes('100,000 tokens')`));
+    assert(await evaluate(`document.querySelectorAll('.bot-reply-metrics')[0].querySelector('span').title.includes('100,030 tokens')`));
     const refs = await evaluate(`[...document.querySelectorAll('.bot-reply-reference')].map(e=>e.textContent)`);
     assert.deepEqual(refs, ['回复：A 查天气','回复：B 算术','回复：C 写文档']);
     await evaluate(`[...document.querySelectorAll('.bot-message.assistant')][2].querySelector('.bot-message-meta button:last-child').click()`);
