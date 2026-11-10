@@ -10,7 +10,8 @@ const root = path.resolve(__dirname, '..');
 const teamTransientFailure = process.argv.includes('--team-transient-failure');
 const teamTransportFailure = process.argv.includes('--team-transport-failure') || teamTransientFailure;
 const teamFailureScenario = process.argv.includes('--team-failure') || teamTransportFailure;
-const teamPlanningScenario = process.argv.includes('--team-planning');
+const teamFreeScenario = process.argv.includes('--team-free');
+const teamPlanningScenario = process.argv.includes('--team-planning') || teamFreeScenario;
 const teamScenario = process.argv.includes('--team') || teamFailureScenario || teamPlanningScenario;
 const cacheScenario = process.argv.includes('--cache');
 const memoryScenario = process.argv.includes('--memory');
@@ -21,7 +22,7 @@ const headless = process.env.BOT_WORK_DEV_HEADLESS === '1';
 const trackingScenario = process.argv.includes('--tracking');
 const watchScenario = process.argv.includes('--watch');
 if (headless && process.platform !== 'linux') throw Error('Headless dev page validation requires Linux; it does not validate desktop input.');
-const out = path.join(root, trackingScenario ? 'out/diagnostics/bot-tracking/live' : teamTransientFailure ? 'out/diagnostics/bot-team-transient-failure/live' : teamTransportFailure ? 'out/diagnostics/bot-team-transport-failure/live' : teamFailureScenario ? 'out/diagnostics/bot-team-failure/live' : teamPlanningScenario ? 'out/diagnostics/bot-team-planning/live' : teamScenario ? 'out/diagnostics/bot-team-frontdoor/live' : cacheScenario ? 'out/diagnostics/bot-cache/live' : memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
+const out = path.join(root, trackingScenario ? 'out/diagnostics/bot-tracking/live' : teamTransientFailure ? 'out/diagnostics/bot-team-transient-failure/live' : teamTransportFailure ? 'out/diagnostics/bot-team-transport-failure/live' : teamFailureScenario ? 'out/diagnostics/bot-team-failure/live' : teamFreeScenario ? 'out/diagnostics/bot-team-free/live' : teamPlanningScenario ? 'out/diagnostics/bot-team-planning/live' : teamScenario ? 'out/diagnostics/bot-team-frontdoor/live' : cacheScenario ? 'out/diagnostics/bot-cache/live' : memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-frontdoor-live-'));
 const agentDir = path.join(home, '.mybuddy'); fs.mkdirSync(agentDir, { recursive: true });
 for (const directory of ['AppData/Roaming', 'AppData/Local', 'Temp']) fs.mkdirSync(path.join(home, directory), { recursive: true });
@@ -212,8 +213,8 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       fs.writeFileSync(path.join(workspace, 'alpha.txt'), 'ALPHA-31415\n');
       if (!teamFailureScenario || teamTransientFailure) fs.writeFileSync(path.join(workspace, 'beta.txt'), 'BETA-27182\n');
       const members = [];
-      for (const label of (teamFailureScenario ? ['甲读取员','乙读取员','依赖核对员'] : ['甲读取员','乙读取员'])) {
-        const created = await evaluate(`window.api.botWork.createBot({requestId:crypto.randomUUID(),displayName:${JSON.stringify(label)},responsibilitySummary:'按团队分工读取指定文件并报告原文'})`);
+      for (const label of (teamFreeScenario ? ['文件读取员','交叉核对员','图片设计师'] : teamFailureScenario ? ['甲读取员','乙读取员','依赖核对员'] : ['甲读取员','乙读取员'])) {
+        const created = await evaluate(`window.api.botWork.createBot({requestId:crypto.randomUUID(),displayName:${JSON.stringify(label)},responsibilitySummary:${JSON.stringify(label==='图片设计师'?'只负责图片设计和视觉创作，不适合文件读取核验':label==='交叉核对员'?'复核他人结果、交叉验证文件原文并报告差异':'读取指定文件并报告原文')}})`);
         assert(created.ok, JSON.stringify(created)); members.push(created.bot.botId);
       }
       const settings = (await evaluate(`window.api.botWork.getSettings('${botId}')`)).settings;
@@ -224,9 +225,9 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
         const unavailable=await evaluate(`window.api.botWork.saveSettings(${JSON.stringify({botId:members[1],expectedRevision:memberSettings.revision,workspacePath:workspace,modelId:'fixture/controlled-unavailable',expertId:'',skillIds:[],mcpIds:[],connectorIds:[]})})`);
         assert(unavailable.ok,JSON.stringify(unavailable));
       }
-      const template = await evaluate(`window.api.botWork.teamControl(${JSON.stringify({kind:'save_template',request:{operationId:'live-template',name:'文件双人核对',plan:{ownerBotId:botId,ownerResponsibility:'汇总两位成员各自读到的文件原文，清楚标明文件名，不推算内容',executionPolicy:'parallel',maxConcurrency:2,members:members.map((id,index)=>({botId:id,responsibility:teamPlanningScenario?'通用文件整理，等待本次任务分工':index===2?'仅核对乙读取员的真实 beta.txt 结果，若前置失败或缺失就如实说明无法核对，不推算、不造文件、不写盘':`使用真实 read 工具读取 ${path.join(workspace,index===0?'alpha.txt':'beta.txt')}，只报告该文件原文；不存在必须报告失败，不替代、不创建文件、不写盘`,delegatedScope:['workspace:read'],...(index===2?{dependsOnBotIds:[members[1]]}:{})}))}}})})`);
+      const template = teamFreeScenario ? {ok:true} : await evaluate(`window.api.botWork.teamControl(${JSON.stringify({kind:'save_template',request:{operationId:'live-template',name:'文件双人核对',plan:{ownerBotId:botId,ownerResponsibility:'汇总两位成员各自读到的文件原文，清楚标明文件名，不推算内容',executionPolicy:'parallel',maxConcurrency:2,members:members.map((id,index)=>({botId:id,responsibility:teamPlanningScenario?'通用文件整理，等待本次任务分工':index===2?'仅核对乙读取员的真实 beta.txt 结果，若前置失败或缺失就如实说明无法核对，不推算、不造文件、不写盘':`使用真实 read 工具读取 ${path.join(workspace,index===0?'alpha.txt':'beta.txt')}，只报告该文件原文；不存在必须报告失败，不替代、不创建文件、不写盘`,delegatedScope:['workspace:read'],...(index===2?{dependsOnBotIds:[members[1]]}:{})}))}}})})`);
       assert(template.ok, JSON.stringify(template));
-      await send((teamPlanningScenario ? '本次请重新安排分工：甲读取员读取 beta.txt，乙读取员等甲完成后读取 alpha.txt 并核对甲的 beta 原文；负责人汇总两者。本次分工不要保存覆盖模板。' : '')+'请使用已保存的“文件双人核对”团队，现在读取 alpha.txt、beta.txt，分别报告真实文件内容并汇总。不存在的文件必须标明失败，不能替代或创建；依赖缺失文件的分工说明无法完成。不要创建普通独立 Work，不需要再次确认，不能猜测文件内容。');
+      await send((teamFreeScenario ? '从现有 Bot 自主挑选适合文件读取和交叉核对的两位成员组队，不使用或保存任何团队模板，不安排图片设计。先由读取成员读取 beta.txt，再由核对成员等前者完成后读取 alpha.txt 并核对 beta 原文，负责人汇总结果。' : '')+(teamPlanningScenario && !teamFreeScenario ? '本次请重新安排分工：甲读取员读取 beta.txt，乙读取员等甲完成后读取 alpha.txt 并核对甲的 beta 原文；负责人汇总两者。本次分工不要保存覆盖模板。' : '')+(teamFreeScenario ? '请直接开始，读取原文，不创建普通独立 Work，不猜测内容。' : '请使用已保存的“文件双人核对”团队，现在读取 alpha.txt、beta.txt，分别报告真实文件内容并汇总。不存在的文件必须标明失败，不能替代或创建；依赖缺失文件的分工说明无法完成。不要创建普通独立 Work，不需要再次确认，不能猜测文件内容。'));
       await foregroundDone(0);
       await until(async () => {
         const works=await evaluate('window.api.botWork.listWorks(true)');
@@ -246,12 +247,13 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
         assert(team.members.find(m=>m.botId===members[1]).responsibility.includes('alpha'));
         assert.deepEqual(team.members.find(m=>m.botId===members[1]).dependsOnBotIds,[members[0]]);
         const preserved=await evaluate(`window.api.botWork.teamControl({kind:'list_templates'})`);
-        assert(preserved.templates[0].members.every(m=>m.responsibility==='通用文件整理，等待本次任务分工'));
+        if (teamFreeScenario) { assert.equal(preserved.templates.length, 0); assert.equal(JSON.parse(createCall.function.arguments).templateId, undefined); assert(!team.members.some(member=>member.botId===members[2]), 'irrelevant designer not selected'); }
+        else assert(preserved.templates[0].members.every(m=>m.responsibility==='通用文件整理，等待本次任务分工'));
         report.checks.push('real model selected current-task responsibilities and dependency; saved template unchanged');
       }
 
       const summary=team.executions.find(e=>e.role==='owner_summary').resultSummary;
-      const memberNames = teamFailureScenario ? ['甲读取员', '乙读取员', '依赖核对员'] : ['甲读取员', '乙读取员'];
+      const memberNames = teamFreeScenario ? ['文件读取员', '交叉核对员'] : teamFailureScenario ? ['甲读取员', '乙读取员', '依赖核对员'] : ['甲读取员', '乙读取员'];
       for (const name of memberNames) assert(summary.includes(name), `owner summary must identify ${name} by host display name`);
       assert(!/bot-created-[a-f0-9]+|binding-[a-f0-9]+/.test(summary),
         'main owner report uses member names, not internal identity/binding IDs');

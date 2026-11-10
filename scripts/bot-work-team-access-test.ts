@@ -90,6 +90,24 @@ try {
   assert.deepEqual(assigned.team.members[0].delegatedScope, ["workspace:read"]);
   assert.equal((await invokeOwner("work_team_create", { ...request, taskAssignment }, "assigned-team")).work.workId, assigned.work.workId);
   assert.equal((await invokeOwner("work_team_templates", {})).templates[0].members[0].responsibility, "检查文件", "task plan never mutates saved template");
+  const candidates = (await invokeOwner("work_team_templates", {})).availableBots;
+  assert.deepEqual(candidates.map((bot: { botId: string }) => bot.botId).sort(), ["member", "outsider"]);
+  const freeRequest = { title: "自然组队", goalDescription: "当前委托分工", criteria: ["核对两个文件"], taskAssignment: {
+    ownerResponsibility: "汇总", members: [{ botId: "outsider", responsibility: "读取乙" },
+      { botId: "member", responsibility: "核对乙", dependsOnBotIds: ["outsider"] }] } };
+  const free = await invokeOwner("work_team_create", freeRequest, "free-team");
+  assert(free.ok, JSON.stringify(free));
+  assert.equal(free.work.sourceMessageId, ownerInput.userMessageId);
+  assert.equal(free.team.ownerBotId, "owner");
+  assert.deepEqual(free.team.members.map((member: { delegatedScope: string[] }) => member.delegatedScope), [["workspace:read"], ["workspace:read"]]);
+  assert.equal((await invokeOwner("work_team_templates", {})).templates.length, 1, "free team does not save a template");
+  assert.equal((await invokeOwner("work_team_create", freeRequest, "free-team")).work.workId, free.work.workId);
+  assert.equal((await invokeOwner("work_team_create", { title: "missing", goalDescription: "missing", criteria: ["check"] }, "missing-plan")).ok, false);
+  assert.equal(works.teams.createFromForeground({ kind: "bot", userId: LOCAL_USER_ID, botId: "owner", host: "foreground", grants }, {
+    ...freeRequest, operationId: "forged-source", workspacePath: root, conversationId: ownerInput.conversationId, sourceMessageId: "missing-source" }).ok, false);
+  bots.registerBot({ botId: "foreign", userId: "another-user", displayName: "foreign", authorization: minimumAuthorization() });
+  assert.equal((await invokeOwner("work_team_create", { ...freeRequest, taskAssignment: { ...freeRequest.taskAssignment,
+    members: [{ botId: "foreign", responsibility: "读取" }] } }, "foreign-team")).ok, false);
   const flexibleTemplate = works.teams.handle(user, { kind: "save_template", request: { operationId: "flexible-team", name: "多人目录团队",
     plan: { ownerBotId: "owner", ownerResponsibility: "汇总", executionPolicy: "parallel", maxConcurrency: 2,
       members: [{ botId: "member", responsibility: "通用读取", delegatedScope: ["workspace:read"] },

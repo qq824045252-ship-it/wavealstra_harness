@@ -114,16 +114,57 @@ export class WorkTeamService {
     return this.templates(userId).filter(template => template.ownerBotId === botId);
   }
 
-  createFromForeground(actor: WorkActor, input: { templateId: string; operationId: string; title: string;
+  /** Discover existing peers for this owner's current workspace; never expose private memory. */
+  foregroundCandidates(userId: string, ownerBotId: string, workspacePath: string) {
+    const owner = this.bots.getBot(ownerBotId);
+    if (!owner || owner.userId !== userId || owner.status !== "active"
+      || owner.authorization.expiresAt !== undefined && owner.authorization.expiresAt <= this.now()
+      || owner.authorization.targetWhitelist.length && !owner.authorization.targetWhitelist.includes(workspacePath)) return [];
+    return this.bots.listBots(userId).filter(bot => bot.botId !== ownerBotId && bot.status === "active"
+      && (bot.authorization.expiresAt === undefined || bot.authorization.expiresAt > this.now())
+      && (!bot.authorization.targetWhitelist.length || bot.authorization.targetWhitelist.includes(workspacePath)))
+      .map(bot => ({ botId: bot.botId, displayName: bot.displayName, responsibilitySummary: bot.responsibilitySummary,
+        allowedScopes: (["workspace:read", "workspace:write"] as const).filter(scope =>
+          owner.authorization.allowedScopes.includes(scope) && bot.authorization.allowedScopes.includes(scope)) }))
+      .filter(bot => bot.allowedScopes.includes("workspace:read"));
+  }
+
+  createFromForeground(actor: WorkActor, input: { templateId?: string; operationId: string; title: string;
     goalDescription: string; criteria: string[]; workspacePath: string; conversationId: string; sourceMessageId: string; taskAssignment?: WorkTeamTaskAssignment }): WorkTeamControlResult {
     if (actor.kind !== "bot" || actor.host !== "foreground" || !actor.botId)
       return { ok: false, code: "unauthorized_actor", message: "需要当前前台 Bot 身份" };
     const bot = this.bots.getBot(actor.botId);
-    const template = this.foregroundTemplates(actor.userId, actor.botId).find(item => item.templateId === input.templateId);
-    if (!bot || !template) return { ok: false, code: "not_found", message: "找不到当前 Bot 负责的团队模板，请先在组队界面保存分工" };
-    const { templateId: _id, name: _name, createdAt: _created, ...plan } = template;
+    if (!bot || bot.userId !== actor.userId || bot.status !== "active")
+      return { ok: false, code: "unauthorized_actor", message: "当前负责人不可用" };
+    const source = this.db.prepare(`SELECT r.user_message_id FROM bot_send_receipts r
+      JOIN bot_messages m ON m.message_id=r.user_message_id
+      JOIN bot_messages a ON a.message_id=r.assistant_message_id
+      WHERE r.user_id=? AND r.bot_id=? AND r.conversation_id=? AND r.user_message_id=?
+        AND m.role='user' AND a.status IN ('queued','running','unknown')`)
+      .get(actor.userId, actor.botId, input.conversationId, input.sourceMessageId);
+    if (!source) return { ok: false, code: "unauthorized_actor", message: "组队需要当前对话的真实用户委托" };
+    let plan: WorkTeamPlan;
+    if (input.templateId) {
+      const template = this.foregroundTemplates(actor.userId, actor.botId).find(item => item.templateId === input.templateId);
+      if (!template) return { ok: false, code: "not_found", message: "找不到当前 Bot 负责的团队模板" };
+      const { templateId: _id, name: _name, createdAt: _created, ...saved } = template;
+      plan = saved;
+    } else {
+      const parsed = workTeamTaskAssignmentSchema.safeParse(input.taskAssignment);
+      if (!parsed.success) return { ok: false, code: "invalid_request", message: "自由组队需要本次成员分工" };
+      const candidates = this.foregroundCandidates(actor.userId, actor.botId, input.workspacePath);
+      const selected = parsed.data.members.map(member => {
+        const candidate = candidates.find(item => item.botId === member.botId);
+        return candidate ? { ...member, delegatedScope: candidate.allowedScopes } : undefined;
+      });
+      if (selected.some(member => !member)) return { ok: false, code: "unauthorized_actor", message: "所选成员不可用或现有范围不适合此工作目录，请重新查询候选 Bot" };
+      const adjusted = workTeamPlanSchema.safeParse({ ownerBotId: actor.botId,
+        ownerResponsibility: parsed.data.ownerResponsibility, members: selected, executionPolicy: "parallel", maxConcurrency: 2 });
+      if (!adjusted.success) return { ok: false, code: "invalid_request", message: "本次成员或依赖无效，依赖须指向排在前面的已选成员" };
+      plan = adjusted.data;
+    }
     const { templateId: _template, sourceMessageId, taskAssignment, ...request } = input;
-    if (taskAssignment) {
+    if (taskAssignment && input.templateId) {
       const parsed = workTeamTaskAssignmentSchema.safeParse(taskAssignment);
       if (!parsed.success) return { ok: false, code: "invalid_request", message: "本次团队分工格式无效" };
       const selected = parsed.data.members.map(member => {
@@ -137,8 +178,9 @@ export class WorkTeamService {
       if (!adjusted.success) return { ok: false, code: "invalid_request", message: "本次分工的成员或依赖无效：依赖须指向排在前面的已选成员" };
       Object.assign(plan, adjusted.data);
     }
-    // Reusing the saved user-selected team grants delegation only to this exact plan,
-    // like the desktop team entry; it never edits the Bot's lasting authorization.
+    // The authenticated user commission permits this exact team dispatch, like the
+    // desktop entry. Host-derived scopes stay within every existing Bot grant;
+    // the actor remains the foreground Bot and no lasting authorization is edited.
     return this.control({ ...actor, grants: { ...bot.authorization, allowRedelegation: true } }, { kind: "create", request: { ...request, ...plan } }, sourceMessageId);
   }
 

@@ -35,9 +35,9 @@ const change = z.object({ ...fields, ...timing, watchRule: watchRule.nullable().
 const control = z.object({ workId: text, reason: text.optional(), versionGuard: guard }).strict();
 const memory = z.object({ query: text }).strict();
 const memoryForget = z.object({ ids: z.array(text).min(1).max(20), userEvidence: text }).strict();
-const teamCreate = z.object({ templateId: z.string().min(1).max(200), title: z.string().min(1).max(240),
+const teamCreate = z.object({ templateId: z.string().min(1).max(200).optional(), title: z.string().min(1).max(240),
   goalDescription: z.string().min(1).max(2000), criteria: z.array(z.string().min(1).max(1000)).min(1).max(12),
-  taskAssignment: workTeamTaskAssignmentSchema.optional().describe("按本次任务选择模板内成员并分配具体职责、依赖；负责人汇总。可选成员子集，不能新增成员或权限。依赖成员须排在前面，互不依赖的成员无需填写依赖。省略则沿用模板分工") }).strict();
+  taskAssignment: workTeamTaskAssignmentSchema.optional().describe("按本次任务从候选 Bot 或模板内选成员并分配具体职责、依赖；负责人汇总。不用模板时必须提供。不能新建 Bot 或增加权限。依赖成员须排在前面，互不依赖的成员无需填写依赖。省略则沿用模板分工") }).strict();
 // One source for Function Calling and runtime validation: nested strictness,
 // array bounds and all three positive version guards must not drift apart.
 const parameters = <Schema extends z.ZodType>(schema: Schema) =>
@@ -236,7 +236,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
       const { items, ...queryPage } = page;
       return items.map((item, index) => index === 0 ? { ...item, queryPage } : item);
     })); } }), ...mutations,
-  defineTool({ name: "work_team_templates", description: "查询当前 Bot 负责的已保存团队分工。用户要求多 Bot 协作时先查询，再使用模板创建团队；无模板请如实说明并引导组队界面保存，不能声称已组队。",
+  defineTool({ name: "work_team_templates", description: "查询当前 Bot 负责的已保存团队分工。同时返回当前工作目录可用的现有候选 Bot。需要多人协作时先查成员名字与职责；无模板也可从 availableBots 选择成员直接组队，无需用户先保存模板。",
     parameters: parameters(z.object({}).strict()), replay: "safe",
     execute: async (_args, api, context) => {
       z.object({}).strict().parse(_args);
@@ -246,9 +246,10 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
         members: template.members.map(member => ({ ...member,
           displayName: bots.getBot(member.botId)?.displayName ?? member.botId,
           responsibilitySummary: bots.getBot(member.botId)?.responsibilitySummary ?? "" })) }));
-      return output({ templates, workspacePath: options.botWorkspace?.(botId) ?? null });
+      const workspacePath = options.botWorkspace?.(botId);
+      return output({ templates, availableBots: workspacePath ? works.teams.foregroundCandidates(userId, botId, workspacePath) : [], workspacePath: workspacePath ?? null });
     } }),
-  defineTool({ name: "work_team_create", description: "用 work_team_templates 返回的分工创建并启动团队。负责人保持当前 Bot，可用 taskAssignment 按本次任务选择模板内成员、安排具体职责与依赖，权限与并发上限沿用模板，工作目录来自 Bot 设置。title/goalDescription/criteria 是执行规划，宿主独立保留用户原文与附件。用户要求执行即可开工，无需再次确认。不要另调用 work_create 重复派发。成功后可用 work_query_status 查询成员进度，work_pause/resume/cancel 控制已有团队。",
+  defineTool({ name: "work_team_create", description: "创建并启动团队：先查 work_team_templates；可省略 templateId，提供 taskAssignment 从 availableBots 自主选择适合本次委托的成员和依赖，宿主默认有界并行。也可复用模板内成员和上限。负责人保持当前 Bot，权限仅来自已有范围，目录来自 Bot 设置。title/goalDescription/criteria 是执行规划，宿主独立保留用户原文与附件。用户要求执行即可开工，无需再次确认。不要另调用 work_create 重复派发。成功后可用 work_query_status 查询成员进度，work_pause/resume/cancel 控制已有团队。",
     parameters: parameters(teamCreate), replay: "safe",
     execute: async (args, api, context) => {
       const input = teamCreate.parse(args);
