@@ -1,3 +1,4 @@
+import { emptyUsageEvidence, type ProviderUsageEvidence } from "../../../shared/provider-usage-evidence";
 import type Database from 'better-sqlite3';
 import type { DurableBotSnapshot } from '../../../shared/durable-bot';
 import type { BotForegroundMetrics } from '../../../shared/bot-conversation';
@@ -8,15 +9,17 @@ export class BotForegroundMetricsStore {
     db.exec(`CREATE TABLE IF NOT EXISTS bot_foreground_metrics(message_id TEXT PRIMARY KEY REFERENCES bot_messages(message_id) ON DELETE CASCADE, value_json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS bot_foreground_usage(message_id TEXT NOT NULL REFERENCES bot_messages(message_id) ON DELETE CASCADE, generation_id INTEGER NOT NULL, value_json TEXT NOT NULL, PRIMARY KEY(message_id,generation_id));`);
   }
-  usage(messageId: string, input: {generationTaskId:number;responseTimestamp?:number;reported:boolean;inputTokens:number;outputTokens:number;cacheReadTokens:number;cacheWriteTokens:number}) {
-    // SDKs normalize absent usage to all-zero. A real prompt cannot consume zero input.
-    const counts=[input.inputTokens,input.outputTokens,input.cacheReadTokens,input.cacheWriteTokens];
-    input={...input,reported:input.reported && counts.every(value=>Number.isFinite(value)&&value>=0) && counts.some(value=>value>0)};
-    this.db.prepare('INSERT OR REPLACE INTO bot_foreground_usage VALUES(?,?,?)').run(messageId,input.responseTimestamp===undefined?String(input.generationTaskId):`${input.generationTaskId}:${input.responseTimestamp}`,JSON.stringify(input));
+  usage(messageId: string, input: {generationTaskId:number;responseTimestamp?:number;reported:boolean;inputTokens:number;outputTokens:number;cacheReadTokens:number;cacheWriteTokens:number;usageEvidence?:ProviderUsageEvidence}) {
+    const evidence=input.usageEvidence??emptyUsageEvidence();
+    const record={...input,normalizedUsage:{inputTokens:input.inputTokens,outputTokens:input.outputTokens,cacheReadTokens:input.cacheReadTokens,cacheWriteTokens:input.cacheWriteTokens},...evidence,reported:input.reported && evidence.observed};
+    this.db.prepare('INSERT OR REPLACE INTO bot_foreground_usage VALUES(?,?,?)').run(messageId,input.responseTimestamp===undefined?String(input.generationTaskId):`${input.generationTaskId}:${input.responseTimestamp}`,JSON.stringify(record));
   }
   read(messageId:string): BotForegroundMetrics|undefined {
     const row=this.db.prepare('SELECT value_json FROM bot_foreground_metrics WHERE message_id=?').get(messageId) as {value_json:string}|undefined;
-    return row ? JSON.parse(row.value_json) : undefined;
+    if(!row)return undefined;
+    const value=JSON.parse(row.value_json) as BotForegroundMetrics;
+    // Older records did not distinguish absent raw fields from SDK zero defaults.
+    return value.evidenceVersion===1?value:{...value,inputTokens:null,totalInputTokens:null,outputTokens:null,cacheReadTokens:null,cacheWriteTokens:null,contextTokens:null};
   }
   project(messageId:string,requestId:string,snapshot:DurableBotSnapshot):BotForegroundMetrics|undefined {
     let index=snapshot.messages.length-1;
@@ -34,13 +37,14 @@ export class BotForegroundMetricsStore {
       generation={...generation!,startedAt:settled[0].startedAt,ttftMs:settled[0].ttftMs,
         outputTokens:outputs,tps:measured && seconds>0 && outputs!=null?outputs/seconds:null};
     }
-    const calls=(this.db.prepare('SELECT value_json FROM bot_foreground_usage WHERE message_id=?').all(messageId) as {value_json:string}[]).map(row=>JSON.parse(row.value_json) as {reported:boolean;inputTokens:number;outputTokens:number;cacheReadTokens:number;cacheWriteTokens:number});
-    const complete=calls.length>0 && calls.every(call=>call.reported);
-    const sum=(key:'inputTokens'|'outputTokens'|'cacheReadTokens'|'cacheWriteTokens')=>complete?calls.reduce((total,call)=>total+call[key],0):null;
+    const calls=(this.db.prepare('SELECT value_json FROM bot_foreground_usage WHERE message_id=?').all(messageId) as {value_json:string}[]).map(row=>JSON.parse(row.value_json) as ProviderUsageEvidence & {reported:boolean;responseTimestamp?:number});
+    const sum=(key:'inputTokens'|'totalInputTokens'|'outputTokens'|'cacheReadTokens'|'cacheWriteTokens')=>calls.length && calls.every(call=>call.reported && call[key]!=null)?calls.reduce((total,call)=>total+call[key]!,0):null;
     const context=snapshot.contextUsage;
-    if(!complete && generation?.phase==='complete') generation={...generation,tps:null,outputTokens:null};
-    const value:BotForegroundMetrics={inputTokens:sum('inputTokens'),outputTokens:sum('outputTokens'),cacheReadTokens:sum('cacheReadTokens'),cacheWriteTokens:sum('cacheWriteTokens'),reportedCalls:calls.filter(call=>call.reported).length,
-      contextTokens:context?.usedTokens ? context.usedTokens : null,contextWindow:context?.contextWindow??null,contextEstimated:context?.estimated??true,
+    if(sum('outputTokens')===null && generation?.phase==='complete') generation={...generation,tps:null,outputTokens:null};
+    const last=calls.filter(call=>call.responseTimestamp!==undefined).sort((a,b)=>a.responseTimestamp!-b.responseTimestamp!).at(-1);
+    const used=last?.reported && last.totalInputTokens!=null && last.outputTokens!=null?last.totalInputTokens+last.outputTokens:null;
+    const value:BotForegroundMetrics={evidenceVersion:1,totalInputTokens:sum('totalInputTokens'),inputTokens:sum('inputTokens'),outputTokens:sum('outputTokens'),cacheReadTokens:sum('cacheReadTokens'),cacheWriteTokens:sum('cacheWriteTokens'),reportedCalls:calls.filter(call=>call.reported).length,
+      contextTokens:used,contextWindow:context?.contextWindow??null,contextEstimated:context?.estimated??true,
       generation,modelName:reply?.modelName,durationMs:generation?.phase==='complete'?Math.max(0,generation.updatedAt-generation.startedAt):undefined};
     if(JSON.stringify(this.read(messageId))!==JSON.stringify(value))
       this.db.prepare('INSERT OR REPLACE INTO bot_foreground_metrics VALUES(?,?)').run(messageId,JSON.stringify(value));

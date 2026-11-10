@@ -22,10 +22,12 @@ exports.reconcile=function(report){
   const normalized=raw.map(row=>{const u=row.usage.at(-1);assert(u,'raw provider usage');const cache=u.prompt_tokens_details?.cached_tokens??u.prompt_cache_hit_tokens??u.cached_tokens??0;const write=u.prompt_tokens_details?.cache_write_tokens??0;
    return {inputTokens:Math.max(0,u.prompt_tokens-cache-write),outputTokens:u.completion_tokens,cacheReadTokens:cache,cacheWriteTokens:write};});
   for(const key of ['inputTokens','outputTokens','cacheReadTokens','cacheWriteTokens']){
-   assert.equal(db.reduce((sum,row)=>sum+row[key],0),normalized.reduce((sum,row)=>sum+row[key],0),`${label}: raw → normalized DB ${key}`);
-   assert.equal(reply.metrics[key],normalized.reduce((sum,row)=>sum+row[key],0),`${label}: DB → UI DTO ${key}`);
+   assert.equal(db.reduce((sum,row)=>sum+row.normalizedUsage[key],0),normalized.reduce((sum,row)=>sum+row[key],0),`${label}: raw → normalized DB ${key}`);
+   const expected=db.every(row=>row[key]!=null)?db.reduce((sum,row)=>sum+row[key],0):null;
+   assert.equal(reply.metrics[key],expected,`${label}: raw presence → DB → UI DTO ${key}`);
   }
   const total=raw.reduce((sum,row)=>sum+row.usage.at(-1).prompt_tokens,0), output=raw.reduce((sum,row)=>sum+row.usage.at(-1).completion_tokens,0);
+  assert.equal(reply.metrics.totalInputTokens,total,'raw total input preserved even when cache write missing');
   assert(ui.titles.some(text=>text.startsWith(total.toLocaleString()+' tokens')),'exact input tooltip');
   assert(ui.titles.some(text=>text.startsWith(output.toLocaleString()+' tokens')),'exact output tooltip');
   const rate=normalized.reduce((sum,row)=>sum+row.cacheReadTokens,0)/total;

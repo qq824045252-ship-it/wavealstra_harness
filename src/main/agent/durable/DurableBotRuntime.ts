@@ -1,3 +1,5 @@
+import { emptyUsageEvidence, usagePresence, type ProviderUsageEvidence, type ProviderUsagePresence } from "../../../shared/provider-usage-evidence";
+import { supportsUsageObservation, withUsageEvidence } from "../../usage/provider-usage-evidence";
 import { createDurableArtifactRegistrationTool, withDurableArtifactRegistration } from "./DurableArtifactRegistration";
 import { withNativeNotStarted } from "./DurableToolLifecycle";
 import { canRebindDurableWorkspace, migrateDurableWorkspace, WorkspaceMigrationBusyError } from "./DurableWorkspaceMigration";
@@ -69,13 +71,13 @@ export interface DurableBotOptions {
   instructions: () => string;
   evidence?: (messages: readonly Message[]) => string;
   evidenceProjection?: DurableEvidenceOptions;
-  onResponse?: (message: AssistantMessage, identity: { conversationId: string; generationTaskId: number; sourceKind: "main" | "subagent" }) => void;
+  onResponse?: (message: AssistantMessage, identity: { conversationId: string; generationTaskId: number; sourceKind: "main" | "subagent"; usageEvidence?: ProviderUsageEvidence; usagePresence?: ProviderUsagePresence }) => void;
   onRequest?: (identity: { conversationId: string; generationTaskId: number; sourceKind: "main" | "subagent" }) => void;
   beforeProviderRequest?: () => void;
   /** Authority revocation must be rechecked before every provider attempt. */
   providerAuthorityGuarded?: () => boolean;
   onProviderUsage?: (input: { taskId?: string; conversationId: string; generationTaskId: number;
-    reported: boolean; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }) => void;
+    reported: boolean; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; usageEvidence?: ProviderUsageEvidence; usagePresence?: ProviderUsagePresence }) => void;
   executionIdentity?: { taskId?: string; sourceKind: DiagnosticSource; executionScope: string };
   onTool?: (event: ToolDiagnosticEvent) => void;
   observedUsage?: (conversationId: string) => { inputTokens: number | null; outputTokens: number | null; cacheReadTokens: number | null; cacheHitRate: number | null };
@@ -977,6 +979,7 @@ function codingTools(directory: string, readonlyShell?: () => boolean): ToolRegi
 }
 
 /** Every native generation, including retries and compaction, uses the owning task's settings. */
+const modelUsageEvidence = new WeakMap<Models, WeakMap<AbortSignal, ProviderUsageEvidence>>();
 const modelRequestGuards = new WeakMap<Models, WeakMap<AbortSignal, () => void>>();
 
 /**
@@ -993,6 +996,7 @@ function taskScopedModels(models: Models, cwd: string,
   nextCompactionRequest?: () => Promise<number>, providerAuthorityGuarded?: () => boolean): Models {
   const settings = createAgentSettingsManager(cwd, getMyBuddyDir());
   const guards = new WeakMap<AbortSignal, () => void>();
+  const evidence = new WeakMap<AbortSignal, ProviderUsageEvidence>();
   const scoped = new Proxy(models, { get(target, key) {
     if (key === "getModel") return (provider: string, id: string) => target.getModel(provider === "azure-openai-responses" ? "azure" : provider, id);
     if (key === "streamSimple") return (...args: Parameters<Models["streamSimple"]>) => {
@@ -1003,8 +1007,10 @@ function taskScopedModels(models: Models, cwd: string,
       // Pi deliberately swallows extension-hook errors. Authority checks must live outside that
       // chain, in the provider's awaited payload transform, before any HTTP send.
       const options = args[2];
+      const observed=emptyUsageEvidence();if(signal)evidence.set(signal,observed);
       return withModelInvocationSettings(settings, () => target.streamSimple(args[0], args[1], {
         ...options,
+        ...(supportsUsageObservation(args[0].api)?{fetch:withUsageEvidence(options?.fetch??globalThis.fetch,observed,args[0].api)}:{}),
         ...durableAuthorityRequestOptions(args[0].api, providerAuthorityGuarded?.() ?? false),
         onPayload: async (payload, model) => {
           const replacement = await options?.onPayload?.(payload, model);
@@ -1025,8 +1031,10 @@ function taskScopedModels(models: Models, cwd: string,
       const generationTaskId = -(await nextCompactionRequest!());
       // Separate persisted IDs from legacy per-open negative counters.
       const conversationId = `${String(args[2]?.sessionId ?? "")}:compaction-v2`;
+      const observed=emptyUsageEvidence();
       const result = await withModelInvocationSettings(settings, () => target.completeSimple(args[0], args[1], {
         ...args[2],
+        ...(supportsUsageObservation(args[0].api)?{fetch:withUsageEvidence(args[2]?.fetch??globalThis.fetch,observed,args[0].api)}:{}),
         ...durableAuthorityRequestOptions(args[0].api, providerAuthorityGuarded?.() ?? false),
         onPayload: async (payload, model) => {
           const replacement = await args[2]?.onPayload?.(payload, model);
@@ -1037,7 +1045,7 @@ function taskScopedModels(models: Models, cwd: string,
       }), undefined,
         requestTraceBoundary(signal) ?? (() => ({ operation: "compact" })));
       const message = result as { usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number }; stopReason?: string };
-      if (message.usage) onProviderUsage?.({ taskId, conversationId, generationTaskId,
+      if (message.usage) onProviderUsage?.({ taskId, conversationId, generationTaskId, usageEvidence:{...observed},usagePresence:usagePresence(observed),
         reported: message.stopReason !== "error" && message.stopReason !== "aborted",
         inputTokens: message.usage.input ?? 0, outputTokens: message.usage.output ?? 0,
         cacheReadTokens: message.usage.cacheRead ?? 0, cacheWriteTokens: message.usage.cacheWrite ?? 0 });
@@ -1047,6 +1055,7 @@ function taskScopedModels(models: Models, cwd: string,
     return typeof value === "function" ? (...args: unknown[]) => withModelInvocationSettings(settings, () => value.apply(target, args)) : value;
   } });
   modelRequestGuards.set(scoped, guards);
+  modelUsageEvidence.set(scoped,evidence);
   return scoped;
 }
 
@@ -1146,8 +1155,10 @@ function botExtension(
         executionScope: options.executionIdentity?.executionScope, conversationId: String(api.conversationId), generationTaskId: api.taskId,
         sourceKind: options.executionIdentity?.sourceKind ?? (child ? "subagent" : "main") });
     }, afterResponse: async (message, api, context) => {
+      const observed=context.abortSignal?modelUsageEvidence.get(options.models)?.get(context.abortSignal):undefined;
+      const raw=observed?{...observed}:emptyUsageEvidence();
       try { options.onResponse?.(message, { conversationId: String(api.conversationId), generationTaskId: api.taskId,
-        sourceKind: await childConversation(api, context) ? "subagent" : "main" }); }
+        sourceKind: await childConversation(api, context) ? "subagent" : "main",usageEvidence:raw,usagePresence:usagePresence(raw) }); }
       catch (error) { console.warn("[Durable] Request diagnostics failed", error); }
       await recordResponse(api.taskId, message);
       const codes = message.content.flatMap(content => content.type === "toolCall" && content.name === "codemode"

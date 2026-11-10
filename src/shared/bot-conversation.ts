@@ -47,6 +47,7 @@ export const botActivitySchema = z.object({
 }).strict();
 export type BotActivityDto = z.infer<typeof botActivitySchema>;
 export interface BotForegroundMetrics {
+  totalInputTokens?: number | null; evidenceVersion?: 1;
   inputTokens: number | null; outputTokens: number | null; cacheReadTokens: number | null; cacheWriteTokens: number | null;
   reportedCalls: number; contextTokens: number | null; contextWindow: number | null; contextEstimated: boolean;
   generation?: import("./generation-stats").GenerationStats; modelName?: string; durationMs?: number;

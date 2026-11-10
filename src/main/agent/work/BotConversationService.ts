@@ -394,7 +394,7 @@ ${conversation.team_id ? `当前是独立团队会话（teamId=${conversation.te
       } },
       onProviderUsage: usage => this.messages.metrics.usage(key, usage),
       onResponse: (response, identity) => { if (identity.sourceKind === "main") this.messages.metrics.usage(key, {
-        generationTaskId: identity.generationTaskId, responseTimestamp: response.timestamp, reported: response.stopReason !== "error" && response.stopReason !== "aborted",
+        usageEvidence: identity.usageEvidence, generationTaskId: identity.generationTaskId, responseTimestamp: response.timestamp, reported: response.stopReason !== "error" && response.stopReason !== "aborted",
         inputTokens: response.usage.input, outputTokens: response.usage.output,
         cacheReadTokens: response.usage.cacheRead, cacheWriteTokens: response.usage.cacheWrite,
       }); },

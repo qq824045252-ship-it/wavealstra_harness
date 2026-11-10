@@ -8,8 +8,7 @@ export function BotReplyMetrics({message}:{message:BotMessageDto}) {
   const metrics=message.metrics;
   const count=(value:number|null|undefined)=>value==null?'—':formatTokenCount(value);
   const exact=(value:number|null|undefined)=>value==null?"未报告":value.toLocaleString()+" tokens";
-  const total=metrics?.inputTokens!=null && metrics.cacheReadTokens!=null && metrics.cacheWriteTokens!=null
-    ?metrics.inputTokens+metrics.cacheReadTokens+metrics.cacheWriteTokens:null;
+  const total=metrics?.totalInputTokens??null;
   const rate=total && metrics?.cacheReadTokens!=null ? metrics.cacheReadTokens/total : null;
   const context=metrics?.contextTokens, window=metrics?.contextWindow;
   return <div className="bot-reply-metrics" aria-label="本条回复用量与速度">
