@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { normalizeSearchPolicy, searchPolicyFromConfig, DEFAULT_SEARCH_POLICY } from "../src/shared/web-search";
 import { canonicalSearchUrl, mergeSearchSources, runSearchBatch, probeSearchAvailability } from "../src/main/capabilities/web-access/search-aggregation";
 import { buildResearchArtifact, validateEvidenceResponse, assessClaim } from "../src/main/capabilities/web-access/source-check";
-import { buildWebSearchReport } from "../src/main/capabilities/web-access/search-report";
+import { buildWebSearchReport, formatWebSearchReport } from "../src/main/capabilities/web-access/search-report";
 import { mergeWebSearchReports } from "../src/renderer/src/lib/mergeWebSearchReports";
 import type { ToolCall } from "../src/renderer/src/types";
 
@@ -138,6 +138,37 @@ try {
   const registered = new Map<string, any>(); const entries: unknown[] = [];
   createWebAccessCapabilityExtension({ registerTool: (t: any) => registered.set(t.name, t), registerCommand() {}, registerShortcut() {}, on() {}, appendEntry: (_: string, entry: unknown) => entries.push(entry) } as any);
   const tool = registered.get("web_search");
+  await test("Exa keeps evidence attached to each original URL across MCP text, JSON and API citations", async () => {
+    const { searchWithExa } = await import("../src/main/capabilities/web-access/exa");
+    const oldKey = process.env.EXA_API_KEY; delete process.env.EXA_API_KEY;
+    try {
+      for (const format of ["mcp-text", "mcp-json", "mcp-blocks", "mcp-json-blocks", "mcp-mixed", "api-citations", "api-highlights"]) {
+        if (format.startsWith("api")) process.env.EXA_API_KEY="fixture-exa"; else delete process.env.EXA_API_KEY;
+        writeFileSync(join(profile, "web-search.json"), JSON.stringify({ ...config, ...(format.startsWith("api") ? { exaApiKey: "fixture-exa" } : {}) }));
+        const items = [{ title: "Rotation", url: "https://science.nasa.gov/rotation", text: "Sidereal rotation period: 24.6229 hours." },
+          { title: "Solar day", url: "https://science.nasa.gov/solar", text: "Length of day: 24.6597 hours." }];
+        let calls = 0;
+        globalThis.fetch = (async () => {
+          calls++;
+          if (format === "api-citations") return new Response(JSON.stringify({ answer: "mixed provider summary", citations: [...items,{title:"No excerpt",url:"https://science.nasa.gov/empty"}] }));
+          if (format === "api-highlights") return new Response(JSON.stringify({ results: items.map(x => ({...x, highlights: [x.text], text: "less useful full text"})) }));
+          const text = format === "mcp-json" ? JSON.stringify({results:items}) : items.map(x=>`Title: ${x.title}\nURL: ${x.url}\nText: ${x.text}`).join("\n\n");
+          return new Response(JSON.stringify({result:{content:format === "mcp-mixed" ? [{type:"text",text:JSON.stringify({results:[items[0]]})},{type:"text",text:`Title: ${items[1].title}\nURL: ${items[1].url}\nText: ${items[1].text}`}] : format === "mcp-json-blocks" ? items.map(x=>({type:"text",text:JSON.stringify({results:[x]})})) : format === "mcp-blocks" ? items.map(x=>({type:"text",text:`Title: ${x.title}\nURL: ${x.url}\nText: ${x.text}`})) : [{type:"text",text}]}}));
+        }) as typeof fetch;
+        const result = await searchWithExa("day length", format === "api-highlights" ? {numResults:2} : {});
+        assert.equal(calls, 1, "preserving evidence adds no network or model call");
+        assert.equal(result!.results[0].snippet, items[0].text, format);
+        assert.equal(result!.results[1].snippet, items[1].text, format);
+        if (format === "api-citations") assert.equal(result!.results[2].snippet, "", "citation without text cannot borrow the provider summary");
+        const report = buildWebSearchReport("source-map", ["day length"], [{query:"day length",answer:result!.answer,results:result!.results,error:null,provider:"exa"}]);
+        assert.equal(report.sources[0].url, items[0].url);
+        assert(!report.sources[0].snippet.includes("24.6597"));
+      }
+    } finally {
+      if (oldKey === undefined) delete process.env.EXA_API_KEY; else process.env.EXA_API_KEY = oldKey;
+      globalThis.fetch = fixtureFetch; writeFileSync(join(profile,"web-search.json"), JSON.stringify(config));
+    }
+  });
   await test("native tool honors parallel config, reports actual adapters and persists full per-provider details", async () => {
     const updates: any[] = [];
     const r = await tool.execute("native-test", { query: "仪器精度" }, undefined, (v: unknown) => updates.push(v), { hasUI: false });
@@ -263,6 +294,15 @@ try {
     assert.equal(r.details.webSearch.evidence[0].citations.length, 0);
   });
 } finally { globalThis.fetch = nativeFetch; }
+await test("source excerpts survive provider answer truncation without borrowing evidence", () => {
+  const results = Array.from({length:4},(_,i)=>({title:`Source ${i}`,url:`https://example.com/source-${i}`,snippet:`Quantity ${i}: ${i+10} seconds for population ${i}.`}));
+  results.push({title:"No passage",url:"https://example.com/empty",snippet:""});
+  const report=buildWebSearchReport("long",["quantity"],[{query:"quantity",answer:"provider summary ".repeat(200),results,error:null,provider:"exa"}]);
+  const output=formatWebSearchReport(report);
+  for(const item of results.slice(0,4)) assert(output.includes(`${item.url}\nFound by: exa rank`) && output.includes(item.snippet));
+  assert.equal(report.sources.at(-1)!.snippet, "", "missing evidence stays missing");
+  assert(output.includes("Provider answer preview truncated"));
+});
 await test("reports survive serialization without turning partial coverage into consensus", () => {
   const report = buildWebSearchReport("r", ["q"], [{ query: "q", answer: "", results: [], error: "failure", provider: "tavily" }]);
   assert.equal(JSON.parse(JSON.stringify(report)).status, "error");

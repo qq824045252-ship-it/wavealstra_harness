@@ -153,7 +153,7 @@ function buildAnswerFromSearchResults(results: ExaSearchResponse["results"]): st
 	return parts.join("\n\n");
 }
 
-function mapResults(results: ExaSearchResponse["results"] | ExaAnswerResponse["citations"]): SearchResponse["results"] {
+function mapResults(results: ExaSearchResponse["results"] | ExaAnswerResponse["citations"] | McpParsedResult[]): SearchResponse["results"] {
 	if (!Array.isArray(results)) return [];
 	const mapped: SearchResponse["results"] = [];
 	for (let i = 0; i < results.length; i++) {
@@ -162,7 +162,12 @@ function mapResults(results: ExaSearchResponse["results"] | ExaAnswerResponse["c
 		mapped.push({
 			title: item.title || `Source ${i + 1}`,
 			url: item.url,
-			snippet: "",
+			// Keep each excerpt with its own URL. A combined provider answer can be
+			// truncated and is never a substitute for another source's evidence.
+			snippet: (normalizeHighlights("highlights" in item ? item.highlights : undefined).join(" ")
+				|| ("text" in item && typeof item.text === "string" ? item.text : "")
+				|| ("content" in item && typeof item.content === "string" ? item.content : ""))
+				.replace(/\s+/g, " ").trim().slice(0, 3000),
 		});
 	}
 	return mapped;
@@ -269,9 +274,15 @@ export async function callExaMcp(
 		throw new Error(message || "Exa MCP returned an error");
 	}
 
-	const text = parsed.result?.content
-		?.find(item => item.type === "text" && typeof item.text === "string" && item.text.trim().length > 0)
-		?.text;
+	const textParts = parsed.result?.content
+		?.filter(item => item.type === "text" && typeof item.text === "string" && item.text.trim().length > 0)
+		.map(item => item.text!.trim()) ?? [];
+	const jsonParts = textParts.map(parseJsonMcpResults);
+	// Multiple complete JSON blocks must not become invalid concatenated JSON.
+	const text = jsonParts.some(Boolean)
+		? JSON.stringify({ results: textParts.flatMap((part, i) => jsonParts[i]
+			?? parseMcpResults(part)?.map(result => ({ title: result.title, url: result.url, text: result.content })) ?? []) })
+		: textParts.join("\n\n");
 
 	if (!text) {
 		throw new Error("Exa MCP returned empty content");

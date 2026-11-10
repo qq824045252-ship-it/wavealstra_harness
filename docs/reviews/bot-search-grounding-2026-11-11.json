@@ -1,0 +1,125 @@
+{
+  "checkedAt": "2026-11-10T22:56:13.397Z",
+  "scope": "Numeric/definition comparison against independently retrieved official pages. NOT six complete in-model original-page verifications.",
+  "originals": [
+    {
+      "url": "https://nssdc.gsfc.nasa.gov/planetary/factsheet/marsfact.html",
+      "sha256": "366b0ce9b69cbee370be904956748af954468a41b93dc71a796a986519aa8d74",
+      "quote": " Orbit eccentricity 0.0935 0.0167 5.599 Sidereal rotation period (hrs) 24.6229 23.9345 1.029 Length of day (hrs) 24.6597 24.0000 1.027 Obliquity to orbit (deg) 25.19 23.44 1.075 Inclination of equator (deg) 25.19 23.44 1.075 * Mean value - the tropical orbit period for Mars can vary from this by up to 0.004 days depending on the initial point of the orbit. Mars Observational Parameters Discoverer: Unknown Discovery Date: Prehistoric Distance from Earth Minimum (10 6 km) 54.6 Maximum (10 6 km) 401.4 Apparent diameter from Earth Maximum (seconds of arc) 25.6 Minimum (seconds of arc) 3.5 Mean values at opposition from Earth Distance from Earth (10 6 km) 78.34 Apparent diameter (seconds of arc) 17.8 Apparent visual magnitude -2.0 Maxi"
+    },
+    {
+      "url": "https://europa.eu/youreurope/citizens/consumers/shopping/returns/index_en.htm",
+      "sha256": "d550201c4917dba0ab4e6f5b950ba834c3c80381441d4a67e63fba0f62abdc4f",
+      "quote": "stification (the \"cooling-off period\"). For goods this means 14 days from the date of delivery, for services 14 days after the day the contract was agreed. If the cooling-off period expires on a non-working day, your deadline is extended until the next working day. Some EU countries give you 30 days to cancel a contract concluded during unsolicited doorstep selling or commercial excursions. Cost of returning goods within the cooling-off period If you decide to return the product within the 14-day cooling period, you are responsible for the costs of postage and packaging. The only exceptions: if the seller offers to pay, or if the seller fails to inform you about those costs before you buy. You should always be informed about the c"
+    },
+    {
+      "url": "https://nodejs.org/api/fs.html",
+      "sha256": "21b9178884e065bb15852cd5bf2db2f101a2ac499b6adb0f09efa3dfa6fb4bf3",
+      "quote": "mjs copy The callback is passed two arguments (err, data) , where data is the contents of the file. If no encoding is specified, then the raw buffer is returned. If buffer is provided and no encoding is specified, the returned <Buffer> is a view over the supplied buffer containing only the bytes read. If the supplied buffer is too small to contain the entire file, the callback is called with an error. If options is a string, then it specifies the encoding: import { readFile } from 'node:fs' ; readFile ( '/etc/passwd' , 'utf8' , callback) ; mjs copy When the path is a directory, the behavior of fs.readFile() and fs.readFileSync() is platform-specific. On macOS, Linux, and Windows, an error will be returned. On FreeBSD, a representation of th",
+      "section": "fs.readFile(path[, options], callback)"
+    },
+    {
+      "url": "https://www.rfc-editor.org/rfc/rfc9110.html#section-10.2.3",
+      "sha256": "d431760660ea44e130f6e919dab216df2d0b3a490567a98089267523368fe1e5",
+      "quote": "e response. ¶ Retry-After = HTTP-date / delay-seconds ¶ A delay-seconds value is a non-negative decimal integer, representing time in seconds. ¶ delay-seconds = 1*DIGIT ¶ Two examples of its use are ¶ Retry-After: Fri, 31 Dec 1999 23:59:59 GMT Retry-After: 120 ¶ In the latter example, the delay is 2 minutes. ¶ 10.2.4. Server The \"Server\" header field contains information about the software used by the origin server to handle the request, which is often used by clients to help identify the scope of reported interoperability problems, to work around or tailor requests to avoid particular server limitations, and for analytics regarding server or operating system use. An origin server MAY generate a Server header field in its response"
+    },
+    {
+      "url": "https://www.fda.gov/food/buy-store-serve-safe-food/safe-food-handling",
+      "sha256": "b8db8d6441cab48052a4857d0a4a7cc690246ddf6383c66efd3140023bee431f",
+      "quote": "ermometer to be sure the temperature is consistently 40° F or below and the freezer temperature is 0° F or below. Refrigerate or freeze meat, poultry, eggs, seafood, and other perishables within 2 hours of cooking or purchasing. Refrigerate within 1 hour if the temperature outside is above 90° F. Never thaw food at room temperature, such as on the counter top. There are three safe ways to defrost food: in the refrigerator, in cold water, and in the microwave. Food thawed in cold water or in the microwave should be cooked immediately. Always marinate food in the refrigerator. Divide large amounts of leftovers into shallow containers for quicker cooling in the refrigerator. Safe Minimum Internal Temperatures as measured with a food "
+    },
+    {
+      "url": "https://www.nist.gov/pml/owm/si-units-length",
+      "sha256": "dd4d1ae463d269c02a7b03fd9d7871dbaa942579950165ab40fc5e6481a44b36",
+      "quote": " The meter (m) is defined by taking the fixed numerical value of the speed of light in vacuum c to be 299,792,458 when expressed in the unit m s −1 , where the second is defined in terms of ∆ν Cs . The meter was once defined by a physical artifact - two marks inscribed on a platinum-iridium bar, like these from the NIST Museum . From the meter, several other units of measure are derived such as the: unit of speed is the meter per second (m/s). The speed of light in vacuum is 299 792 458 meters per second. unit of acceleration is the meter per second per second (m/s 2 ). unit of area is the square meter (m 2 ). unit of volume is the cubic meter (m 3 ). The liter (1 cubic decimeter), although not an SI unit, is accepted for use with"
+    }
+  ],
+  "initialCases": [
+    {
+      "label": "astronomy",
+      "elapsedMs": 31927,
+      "answer": "**火星的“一天”要区分两个定义（NASA Mars Fact Sheet 口径）：**\n\n- **恒星自转周期**（相对恒星转一圈）：**24.6229 小时**（表中 “Sidereal rotation period (hrs)”）。[事实表镜像](http://www-k12.atmos.washington.edu/k12/resources/mars_data-information/mars_earth_comp_NSSDC_and.html)\n- **平均太阳日（sol）**（太阳连续两次过同一子午线）：**24.6597 小时**，即 24 小时 39 分 35.244 秒；Fact Sheet 中列为 “Length of day (hrs)”＝24.6597。[Fact Sheet 镜像](https://www.mnealon.eosc.edu/Kepler%27sMars_files/Page786.htm) / [NASA GISS Mars24 技术说明](https://www.giss.nasa.gov/tools/mars24/help/notes.html)\n\n两者相差约 0.037 小时（≈2.2 分钟，由上面两个数值相减得出）。\n\n说明：尝试直接读取 nssdc.gsfc.nasa.gov、GISS 和 web.archive.org 的原页时均被本机网络代理拦截（SSRF 拦截 198.18.0.0/15 段），所以上述数值来自搜索摘要及其转载的 NSSDC 表格副本，未逐字核验原页。",
+      "searchSucceeded": true
+    },
+    {
+      "label": "food-safety",
+      "elapsedMs": 21862,
+      "answer": "**FDA 的说法（华氏度）：**\n\n- **冰箱 40 °F（4 °C）或更低；冰柜 0 °F（−18 °C）或更低**。[FDA《Food Safety Quick Tips: Chill》](https://www.fda.gov/media/115446/download)（原文表述：set fridge to 40 °F or below and freezer at 0 °F or below）\n- **易腐食品在室温下 2 小时内冷藏；若气温高于 90 °F，则缩短为 1 小时**。[FDA《Are You Storing Food Safely?》](https://www.fda.gov/consumers/consumer-updates/are-you-storing-food-safely)（原文：do not let such foods sit at room temperature “more than two hours—one hour if the air temperature is above 90° F”）\n\n说明：三处 FDA 原页（fda.gov 主页面与 PDF）直连均被本机代理的 SSRF 拦截（198.18.0.0/15 段），以上数值取自搜索返回的 FDA 页面摘要，未逐字核验原页正文；如需精确引用建议在原网络环境打开链接核对。",
+      "searchSucceeded": true
+    },
+    {
+      "label": "consumer-rights",
+      "elapsedMs": 15530,
+      "answer": "**欧盟 Your Europe：14 天撤回期（冷静期）起算（商品与服务分别计算）：**\n\n- **网购商品**：自**商品交付之日**（收货日）起 14 天。[Your Europe《Returns and the right of withdrawal》](https://europa.eu/youreurope/citizens/consumers/shopping/returns/index_en.htm)（原文：“For goods this means 14 days from the date of delivery”）\n- **服务**：自**合同订立之日**起 14 天。[同一页](https://europa.eu/youreurope/citizens/consumers/shopping/returns/index_en.htm)（原文：“for services 14 days after the day the contract was agreed”）\n\n补充说明（不是同一指标，勿混用）：若 14 天期限最后一天是休息日，期限顺延到下一个工作日（[同一 Your Europe 页](https://europa.eu/youreurope/citizens/consumers/shopping/returns/index_en.htm)）。另外，商家未告知撤回权时，期限会延长 12 个月（[EUR-Lex 摘要](https://eur-lex.europa.eu/EN/legal-content/summary/consumer-information-right-of-withdrawal-and-other-consumer-rights.html)），这属于另一条规则，与上述起算日不同。以上仅为搜索返回的页面摘要，未读原页正文（本机代理此前拦截了欧盟站点直连）。",
+      "searchSucceeded": true
+    },
+    {
+      "label": "programming",
+      "elapsedMs": 17832,
+      "answer": "**Node.js 官方文档规定（回调式 `fs.readFile`）**\n\n- **不传 encoding**：返回原始字节 **`Buffer`** 对象；文档原文为 “If no encoding is specified, then the raw buffer is returned.” [nodejs.org/api/fs.html](https://nodejs.org/api/fs.html)\n- **传入 `'utf8'`（即指定 encoding）**：返回 **字符串**；Promise 版的 `filehandle.readFile` 文档表述为 “If no encoding is specified (using `options.encoding`), the data is returned as a `Buffer` object. Otherwise, the data will be a string.” [nodejs.org/api/fs.html](https://nodejs.org/api/fs.html)\n\n也就是说，“不传 encoding”得到字节缓冲区，“传 `'utf8'`”得到按 UTF-8 解码的文本字符串，二者返回类型不同。\n\n说明：nodejs.org 原页直连被本机代理的 SSRF 拦截（198.18.0.0/15 段），以上引文来自搜索返回的官方文档页面摘要（版本 v26.13.0 页面），未逐字核验原页；如需精确版本引用请在原网络环境打开链接。",
+      "searchSucceeded": true
+    },
+    {
+      "label": "http-standard",
+      "elapsedMs": 24638,
+      "answer": "**RFC 9110 §10.2.3 `Retry-After`：**\n\n- **`Retry-After: 120` 表示等待 120 秒，单位是秒**（约 2 分钟），取值范围是 `delay-seconds = 1*DIGIT`，即非负十进制整数秒。[ABNF 摘录](https://grammars.wiki/catalog/rfc9110-http/Retry-After.html)；[Microsoft Learn 对同一字段的解释](https://learn.microsoft.com/en-us/microsoft-cloud/dev/dev-proxy/concepts/retry-after-header)（表中给出 `Retry-After: 120` 对应 “Wait 120 seconds (2 minutes)”）\n- **也可以用日期格式**：`HTTP-date`，首选规范形式为 **IMF-fixdate**，例如 `Retry-After: Fri, 31 Dec 1999 23:59:59 GMT`（GMT 时区）；语法上 `HTTP-date = IMF-fixdate / obs-date`，其中 obs-date 还包含 rfc850-date 与 asctime-date 两种过时格式。[ABNF 摘录](https://grammars.wiki/catalog/rfc9110-http/Retry-After.html)；[MDN Retry-After](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Retry-After)\n\n说明：RFC Editor 原页直连被本机代理 SSRF 拦截（198.18.0.0/15 段），上述 ABNF 与示例来自搜索返回的 ABNF 摘录及二手说明页，未逐字核验 RFC 9110 原页；单位“秒”与日期格式这两点各来源一致，但要精确逐字引用仍建议在可直连环境打开 [RFC 9110 §10.2.3](https://www.rfc-editor.org/rfc/rfc9110.html#section-10.2.3)。",
+      "searchSucceeded": true
+    },
+    {
+      "label": "measurement",
+      "elapsedMs": 27889,
+      "answer": "**NIST 给出的 SI 长度单位定义与真空光速：**\n\n- **数值和单位**：真空光速 c = **299 792 458 m/s**（即 299 792 458 米每秒）。[NIST《SI Units – Length》](https://www.nist.gov/pml/owm/si-units-length)（原文为：“The meter (m) is defined by taking the fixed numerical value of the speed of light in vacuum c to be 299,792,458 when expressed in the unit m s⁻¹”；同页也写 “The speed of light in vacuum is 299 792 458 meters per second”）\n- **它是固定值，不是近似值**：这里的数值是“fixed numerical value（固定数值）”，米是由它定义出来的，因此不存在测量不确定度。[NIST CODATA 页面](https://physics.nist.gov/cuu/Constants/Value/c.html) 明确标注 standard uncertainty 为 “(exact)”；[NIST/BIPM 定义](https://www.bipm.org/en/si-base-units/metre) 也写 “This definition implies the exact relation c = 299 792 458 m s⁻¹”。\n\n说明：nist.gov 原页直连被本机代理 SSRF 拦截（198.18.0.0/15 段），上述引文来自搜索返回的 NIST 页面摘要，未逐字核验原页；不过“固定数值/精确”这一点在摘要里直接出现，并与 CODATA 的 exact 标注一致。",
+      "searchSucceeded": true
+    }
+  ],
+  "finalCases": [
+    {
+      "label": "astronomy",
+      "elapsedMs": 29384,
+      "answer": "**火星一天不是单一数值，取决于“自转”还是“太阳日”：**\n\n- **恒星自转周期**（相对恒星自转一圈）：**24.6229 小时** —— NASA Mars Fact Sheet 表格项 “Sidereal rotation period (hrs)”。[原文 Fact Sheet 页](https://nssdc.gsfc.nasa.gov/planetary/factsheet/marsfact.html)（我这边抓取原页被代理地址拦截，该数值取自其表格镜像 [mnealon.eosc.edu](https://www.mnealon.eosc.edu/Kepler%27sMars_files/Page786.htm)，与在同一张表中列出的 “Length of day” 并列）。\n- **平均太阳日**（一个“火星日/sol”，同一表格 “Length of day (hrs)”）：**24.6597 小时** —— [同上表格](https://www.mnealon.eosc.edu/Kepler%27sMars_files/Page786.htm)；NASA GISS 表述为 “24 hours 39 minutes 35.244 seconds”（[Mars24 技术说明](https://www.giss.nasa.gov/tools/mars24/help/notes.html)，据搜索摘要，原页同样未能核验）。\n\n所以：火星自转一圈约 24.6229 小时，但一次日出到下一次日出（平均太阳日）约 24.6597 小时，两者不可混用。",
+      "searchSucceeded": true
+    },
+    {
+      "label": "food-safety",
+      "elapsedMs": 19502,
+      "answer": "**FDA《Safe Food Handling》中的冷藏（CHILL）要点：**\n\n- **冰箱：40 °F 或以下（40°F or below）；冰柜：0 °F 或以下（0°F or below）**，并用冰箱温度计确认。→ [FDA Safe Food Handling](https://www.fda.gov/food/buy-store-serve-safe-food/safe-food-handling)（另见 [FDA 冰箱温度计页](https://www.fda.gov/food/buy-store-serve-safe-food/refrigerator-thermometers-cold-facts-about-food-safety)：冰箱 “40 °F or below”、冰柜 “0 °F”）\n- **易腐食品（肉、禽、蛋、海鲜等）应在烹饪或购买后 2 小时内冷藏或冷冻；若室外温度高于 90 °F，则缩短为 1 小时内**。→ [FDA Safe Food Handling](https://www.fda.gov/food/buy-store-serve-safe-food/safe-food-handling)\n- 另：不要在室温（台面）解冻，安全解冻只有冷藏室、冷水、微波炉三种方式；冷水或微波解冻后应立即烹饪。→ 同上。\n\n说明：以上引自已检索到的该 FDA 页面正文摘要（CHILL 段落）；我尝试直接抓取 fda.gov 原页时被本机代理地址拦截，故未做原页二次核验，但两个 FDA 页及 USDA FSIS 对应表述一致（[FSIS](https://www.fsis.usda.gov/food-safety/safe-food-handling-and-preparation/food-safety-basics/steps-keep-food-safe)：冰箱 40 °F 或以下、冰柜 0 °F 或以下；2 小时，高于 90 °F 时 1 小时）。",
+      "searchSucceeded": true
+    },
+    {
+      "label": "consumer-rights",
+      "elapsedMs": 13973,
+      "answer": "**欧盟 Your Europe 的 14 天撤回权（冷静期），起算点按商品与服务分开：**\n\n- **商品（goods）：从交付之日起 14 天** —— “For goods this means 14 days from the date of delivery”。→ [Your Europe: Returns and the right of withdrawal](https://europa.eu/youreurope/citizens/consumers/shopping/returns/index_en.htm)\n- **服务（services）：从合同达成之日起 14 天** —— “for services 14 days after the day the contract was agreed”。→ 同上\n- 补充：另一 Your Europe 页表述为“收到商品之日（或订立服务合同之日）起 14 天”（[Your rights when shopping in the EU](https://europa.eu/youreurope/citizens/consumers/shopping/shopping-consumer-rights/index_en.htm)）；若截止日为非工作日，期限顺延至下一个工作日（见首个链接）。\n\n说明：以上依据检索到的 Your Europe 页面正文摘要，未再抓取原页（本机对 europa.eu 的直接抓取此前受代理地址限制）；欧盟《消费者权利指令》第 9 条的表述与之相符（商品自消费者或其指定第三方（非承运人）取得实际占有之日起算，服务自合同订立之日起算，见 [Directive 2011/83 序言第40条](https://eur-lex.europa.eu/eli/dir/2011/83/oj/eng)）。",
+      "searchSucceeded": true
+    },
+    {
+      "label": "programming",
+      "elapsedMs": 22166,
+      "answer": "**Node.js `fs.readFile`（以及 `fsPromises.readFile`）：**\n\n- **不传 `encoding`**：返回 **`Buffer` 对象（原始字节）** —— 官方文档：“If no encoding is specified (using `options.encoding`), the data is returned as a `Buffer` object.”；`options.encoding` 的默认值为 `null`。→ [Node.js fs 文档](https://nodejs.org/api/fs.html)\n- **传 `'utf8'`**：返回 **字符串（string）** —— 同一句：“Otherwise, the data will be a string.”；传字符串形式的 options（如 `fs.readFile(path, 'utf8', cb)`）即表示编码。→ [同上](https://nodejs.org/api/fs.html)\n\n说明：以上引自已检索到的 nodejs.org 官方页面正文（含 `fs.readFile(path[, options], callback)` 与 `fsPromises.readFile` 条目）；直接抓取 nodejs.org 原页被本机代理地址拦截，未做原页二次核验。",
+      "searchSucceeded": true
+    },
+    {
+      "label": "http-standard",
+      "elapsedMs": 56900,
+      "answer": "**RFC 9110 §10.2.3 中的 `Retry-After: 120` 表示以“秒”为单位，也就是客户端在收到响应后应等待 120 秒。** 原文写道：“The Retry-After field value can be either an HTTP-date or a number of seconds to delay after receiving the response.”（见 [RFC 9110 PDF](https://www.rfc-editor.org/rfc/rfc9110.pdf)，§10.2.3）\n\n**该字段还可以使用 HTTP-date 表示绝对时间**，其定义为第 5.6.7 节所述的 `HTTP-date = IMF-fixdate / obs-date`：首选的 `IMF-fixdate` 格式形如 `Sun, 06 Nov 1994 08:49:37 GMT`；虽然 RFC 850 格式和 asctime() 格式已过时，但接收方仍必须能够解析它们；发送方必须使用 IMF-fixdate 格式生成该值（时间以 UTC 表示）。→ [RFC 9110 §5.6.7](https://www.rfc-editor.org/rfc/rfc9110.html#section-5.6.7)\n\n另外，`Retry-After` 在 503 响应中表示服务预计不可用的时长，在任何 3xx 响应中表示重定向请求前应等待的最短时间（与上文的 PDF 链接相同）。\n\n说明：我直接抓取 rfc-editor.org、ietf.org、httpwg.org 的原页时，都被本机代理地址（198.18.x.x）拦截，因此以上引文来自搜索返回的 RFC 9110 官方 PDF/HTML 正文片段，未做原页二次核验。",
+      "searchSucceeded": true
+    },
+    {
+      "label": "measurement",
+      "elapsedMs": 17244,
+      "answer": "**NIST《SI Units – Length》中给出的光速：**\n\n- **c = 299 792 458 m/s（也可写作 m s⁻¹）**，数值为 299 792 458，单位是 m/s；该页面还明确写着 “The speed of light in vacuum is 299 792 458 meters per second”。→ [NIST: SI Units – Length](https://www.nist.gov/pml/owm/si-units-length)\n- **这是固定数值（fixed numerical value），不是近似值或测量值**：米的定义正是“取光速在真空中的固定数值 299,792,458（以 m s⁻¹ 表示）”。→ [同上](https://www.nist.gov/pml/owm/si-units-length)；NIST SP 330 也写作 “c = 299 792 458 m/s”，并说明“通过固定精确数值（fixing the exact numerical value），单位由此被定义”。→ [SP 330 Section 2](https://www.nist.gov/pml/special-publication-330/sp-330-section-2)\n\n说明：以上内容引自搜索返回的 nist.gov 官方页面正文摘要；直接抓取 nist.gov 原页时被本机代理地址拦截，因此未进行原页二次核验。该网页没有把 299 792 458 m/s 说成“约”或近似值。",
+      "searchSucceeded": true
+    }
+  ],
+  "additionalOriginal": {
+    "url": "https://www.giss.nasa.gov/tools/mars24/help/notes.html",
+    "sha256": "e227b6f818051fce6648a6438d37ef3089f31a380bcfff29903a7dee240f5ad7",
+    "quotes": [
+      " representing a 24-part division of the planet's solar day, along with the traditional sexagesimal subdivisions of 60 minutes and 60 seconds. A Mars solar day has a mean period of 24 hours 39 minutes 35.244 seconds , and is customarily referred to as a \"sol\" in order to distinguish this from the roughly 3% shorter solar day on Earth. The Mars sidereal day, as measured with respect to the fixed sta"
+    ]
+  },
+  "finalAssessment": {
+    "numericUnitsDefinitions": "6 cases manually compared to retrieved official text",
+    "originalPageTool": "incomplete: fake-IP protection blocks in-app direct fetch; no proxy configuration access was performed",
+    "limit": "not a guarantee of model factual accuracy or future citation fidelity"
+  }
+}
