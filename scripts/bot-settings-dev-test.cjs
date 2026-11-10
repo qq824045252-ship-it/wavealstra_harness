@@ -177,6 +177,13 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     const botId = 'bot-mybuddy-default';
     await evaluate(`document.querySelector('[aria-label="Bot 设置与对话管理"]').click()`);
     await until(() => evaluate(`Boolean(document.querySelector('[aria-label="Bot 工作文件夹"]'))`), "settings form");
+    const switchSection = async label => {
+      await evaluate(`Array.from(document.querySelectorAll('[aria-label="Bot 设置分区"] button')).find(x => x.textContent === ${JSON.stringify(label)}).click()`);
+      await until(() => evaluate(`Array.from(document.querySelectorAll('[aria-label="Bot 设置分区"] button')).some(x => x.textContent === ${JSON.stringify(label)} && x.getAttribute('aria-pressed') === 'true')`), 'settings section ' + label);
+    };
+    assert(await evaluate(`document.querySelector('[aria-label="Bot 工作文件夹"]').getBoundingClientRect().height > 0`), 'workspace is immediately visible');
+    assert(await evaluate(`document.querySelector('.bot-settings-save').getBoundingClientRect().bottom < 900`), 'save is visible without finding the bottom of all settings');
+    await switchSection('模型');
     const choices = await evaluate(`Array.from(document.querySelector('[aria-label="Bot 模型"]').options, option => ({value:option.value, disabled:option.disabled}))`);
     assert.deepEqual(choices.map(item => item.value), ['', modelKey], 'disabled catalog models do not flood the picker');
     assert(await evaluate(`document.querySelector('[aria-label="Bot 模型"]').getBoundingClientRect().height <= 200`), 'model list has bounded height');
@@ -185,9 +192,11 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     await evaluate(`(() => {const el=document.querySelector('[aria-label="搜索 Bot 模型"]'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(el,'fixture'); el.dispatchEvent(new Event('input',{bubbles:true}));})()`);
     await until(() => evaluate(`document.querySelector('[aria-label="Bot 模型"]').options.length === 2`), 'search by provider id');
     report.checks.push('50 disabled catalog models hidden, searchable by provider, bounded native list, empty-state feedback');
+    await switchSection('工作目录');
     const folder = path.join(home, 'chosen-workspace'); fs.mkdirSync(folder);
     const evidence = `BOT_SETTINGS_VERIFIED_${Date.now()}`; fs.writeFileSync(path.join(folder,'settings-evidence.txt'),evidence);
     await evaluate(`(() => { const el = document.querySelector('[aria-label="Bot 工作文件夹"]'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, ${JSON.stringify(folder)}); el.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+    await switchSection('模型');
     await evaluate(`(() => { const el = document.querySelector('[aria-label="Bot 模型"]'); el.value=${JSON.stringify(modelKey)}; el.dispatchEvent(new Event('change', { bubbles:true })); })()`);
     await evaluate(`[...document.querySelectorAll('button')].find(x => x.textContent === '刷新模型列表').click()`);
     await until(() => evaluate(`[...document.querySelectorAll('button')].some(x => x.textContent === '刷新模型列表' && !x.disabled)`), 'catalog refreshed');
@@ -200,9 +209,26 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     await evaluate(`document.querySelector('[aria-label="关闭 Bot 设置"]').click()`);
     await evaluate(`document.querySelector('[aria-label="Bot 设置与对话管理"]').click()`);
     await until(() => evaluate(`document.querySelector('[aria-label="Bot 工作文件夹"]')?.value === ${JSON.stringify(folder)}`), 'reopen retains saved folder');
+    await switchSection('能力挂载');
+    assert(await evaluate(`document.querySelector('[aria-label="Bot 专家"]').getBoundingClientRect().height > 0`), 'expert setting is discoverable in capabilities');
+    assert(await evaluate(`Array.from(document.querySelectorAll('.bot-execution-settings legend')).every(x => x.textContent.includes('已选'))`), 'each mount catalog shows selected count');
+    await switchSection('工作目录');
+    assert.equal(await evaluate(`document.querySelector('[aria-label="Bot 工作文件夹"]').value`), folder, 'repeated section changes retain draft');
+    await switchSection('能力挂载');
     const checkboxLayout = await evaluate(`(() => { const el = document.querySelector('.bot-setting-choice'); const input = el?.querySelector('input'); return !el || (getComputedStyle(el).flexDirection === 'row' && input.getBoundingClientRect().width < 30); })()`);
     assert(checkboxLayout, 'checkbox rows are compact and horizontal');
-    const shot = await rpc('Page.captureScreenshot', {format:'png',captureBeyondViewport:false}); fs.writeFileSync(path.join(out,'bot-settings.png'),Buffer.from(shot.data,'base64'));
+    for (const width of [1280, 760]) {
+      await rpc('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false });
+      for (const label of ['工作目录', '模型', '能力挂载']) {
+        await switchSection(label);
+        assert(await evaluate(`document.querySelector('.bot-settings-sections').scrollWidth <= document.querySelector('.bot-settings-sections').clientWidth + 1`), 'section navigation does not overflow');
+        const image = await rpc('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+        fs.writeFileSync(path.join(out, `settings-${width}-${label}.png`), Buffer.from(image.data, 'base64'));
+      }
+    }
+    await rpc('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
+    report.checks.push('three discoverable setting sections, cross-section draft retention, selected counts, 1280/760 layout');
+    const shot = await rpc('Page.captureScreenshot' , {format:'png',captureBeyondViewport:false}); fs.writeFileSync(path.join(out,'bot-settings.png'),Buffer.from(shot.data,'base64'));
     await evaluate(`document.querySelector('[aria-label="关闭 Bot 设置"]').click()`);
     await send(live ? '请创建一个后台事项，立即执行：用 pwd 确认当前工作目录，再读取该目录下 settings-evidence.txt 的全部内容，准确报告目录和文件原文。不修改任何文件。' : '委托界面验收');
     await until(() => evaluate('window.api.db.listTasks().then(tasks => tasks.length > 0)'), 'background task creation');
@@ -218,6 +244,7 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     report.checks.push(`real Electron UI save, close/reopen, exact model, dedicated space, persisted native cwd; ${live ? 'live local DeepSeek transport' : 'HTTP fixture transport, not live LLM'}`);
     await evaluate(`document.querySelector('[aria-label="Bot 设置与对话管理"]').click()`);
     await until(() => evaluate(`Boolean(document.querySelector('[aria-label="Bot 模型"]'))`), 'reopen settings for navigation');
+    await switchSection('模型');
     await evaluate(`[...document.querySelectorAll('button')].find(x => x.textContent === '管理模型').click()`);
     await until(() => evaluate(`!document.querySelector('.bot-settings-dialog[open]') && document.querySelector('.settings-content-title')?.textContent === '模型'`), 'model manager is not trapped behind Bot modal');
     await evaluate(`document.querySelector('.settings-content-head .icon-btn').click()`);

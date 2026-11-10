@@ -1,8 +1,10 @@
 import { useAppStore } from "@/store/appStore";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import type { BotSettingsDto, BotSettingsView, BotSettingsChoice } from "@shared/bot-settings";
 
 export function BotExecutionSettings({ botId, onManageModels }: { botId: string; onManageModels?: () => void }): React.JSX.Element {
+  const sectionId = useId();
+  const [section, setSection] = useState<"workspace" | "model" | "capabilities">("workspace");
   const [view, setView] = useState<BotSettingsView>();
   const [draft, setDraft] = useState<BotSettingsDto>();
   const [notice, setNotice] = useState("");
@@ -11,7 +13,7 @@ export function BotExecutionSettings({ botId, onManageModels }: { botId: string;
   const [refreshingModels, setRefreshingModels] = useState(false);
   useEffect(() => {
     let alive = true;
-    setView(undefined); setDraft(undefined); setNotice(""); setModelQuery("");
+    setView(undefined); setDraft(undefined); setNotice(""); setModelQuery(""); setSection("workspace");
     if (!window.api?.botWork.getSettings) { setNotice("Bot 设置接口尚未就绪，请重启应用后重试"); return; }
     void window.api.botWork.getSettings(botId).then(value => { if (alive) { setView(value); setDraft(value.settings); } })
       .catch(error => { if (alive) setNotice(String(error)); });
@@ -48,7 +50,7 @@ export function BotExecutionSettings({ botId, onManageModels }: { botId: string;
     finally { setRefreshingModels(false); }
   };
   const choices = (label: string, key: "skillIds" | "mcpIds" | "connectorIds", options: BotSettingsChoice[]) => <fieldset>
-    <legend>{label}</legend>
+    <legend>{label} · 已选 {draft![key].length}</legend>
     {options.length ? options.map(item => <label key={item.id} className="bot-setting-choice">
       <input type="checkbox" checked={draft![key].includes(item.id)} disabled={busy || (!item.available && !draft![key].includes(item.id))}
         onChange={event => setDraft(current => current && ({ ...current, [key]: event.target.checked ? [...current[key], item.id] : current[key].filter(id => id !== item.id) }))} />
@@ -58,10 +60,17 @@ export function BotExecutionSettings({ botId, onManageModels }: { botId: string;
   </fieldset>;
   return <section className="bot-execution-settings" aria-label="Bot 执行设置"><h3>工作空间与能力</h3>
     {view && draft ? <>
+      <nav className="bot-settings-sections" aria-label="Bot 设置分区">
+        {([{ id: "workspace", label: "工作目录" }, { id: "model", label: "模型" }, { id: "capabilities", label: "能力挂载" }] as const).map(item =>
+          <button key={item.id} type="button" aria-pressed={section === item.id} aria-controls={`${sectionId}-${item.id}`} onClick={() => setSection(item.id)}>{item.label}</button>)}
+      </nav>
+      <div id={`${sectionId}-workspace`} hidden={section !== "workspace"} className="bot-settings-section">
       <label>工作文件夹<input aria-label="Bot 工作文件夹" value={draft.workspacePath} placeholder={draft.effectiveWorkspacePath} disabled={busy} onChange={event => setDraft({...draft, workspacePath: event.target.value})} /></label>
       <button type="button" disabled={busy} onClick={() => { void window.api?.pickLocalFolder().then(folder => { if (folder) setDraft(current => current && ({...current, workspacePath: folder.path})); }).catch(error => setNotice(String(error))); }}>选择文件夹</button>
       <p>留空使用 Bot 专用目录。后台任务归入「Bot 名称 · 工作空间」，不再堆在个人任务里。修改目录不移动旧文件或运行中的任务。</p>
-      <div className="bot-model-settings">
+      <p>当前生效目录：<span className="bot-settings-path">{draft.effectiveWorkspacePath}</span></p>
+      </div>
+      <div id={`${sectionId}-model`} hidden={section !== "model"} className="bot-model-settings bot-settings-section">
         <label>搜索模型<input aria-label="搜索 Bot 模型" type="search" value={modelQuery} placeholder="搜索模型名称或供应商" disabled={busy} onChange={event => setModelQuery(event.target.value)} /></label>
         <label>模型<select aria-label="Bot 模型" size={6} disabled={busy} value={draft.modelId} onChange={event => setDraft({...draft, modelId: event.target.value})}>
           <option value="">跟随应用默认模型</option>
@@ -76,10 +85,13 @@ export function BotExecutionSettings({ botId, onManageModels }: { botId: string;
         <div className="bot-model-actions"><button type="button" disabled={busy || refreshingModels} onClick={() => void refreshModels()}>{refreshingModels ? "刷新中…" : "刷新模型列表"}</button>
           <button type="button" disabled={busy} onClick={() => { onManageModels?.(); useAppStore.getState().setSettingsOpen(true, "models"); }}>管理模型</button></div>
       </div>
+      <div id={`${sectionId}-capabilities`} hidden={section !== "capabilities"} className="bot-settings-section">
+      <p>选择此 Bot 要使用的专家与额外能力；切换分区不会丢失未保存的选择。</p>
       <label>专家<select aria-label="Bot 专家" disabled={busy} value={draft.expertId} onChange={event => setDraft({...draft, expertId: event.target.value})}><option value="">使用 Bot 自身职责</option>{view.experts.map(item => <option key={item.id} value={item.id} disabled={!item.available}>{item.name}</option>)}</select></label>
       <p>专家指令用于对话与新任务，专家自带能力一并挂载。下方可额外挂载能力，真实工具在后台任务中执行。</p>
       {choices("Skill", "skillIds", view.skills)}{choices("MCP", "mcpIds", view.mcps)}{choices("连接器", "connectorIds", view.connectors)}
-      <button type="button" disabled={busy} onClick={() => void save()}>{busy ? "保存中…" : "保存 Bot 设置"}</button>
+      </div>
+      <div className="bot-settings-save"><button type="button" disabled={busy} onClick={() => void save()}>{busy ? "保存中…" : "保存 Bot 设置"}</button><span>保存全部分区的修改</span></div>
     </> : !notice && <p>正在读取设置…</p>}
     {notice && <p role="status">{notice}</p>}
   </section>;

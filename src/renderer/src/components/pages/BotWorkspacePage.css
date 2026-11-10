@@ -279,3 +279,14 @@
 .bot-status-badge.attention { color:var(--warning); background:color-mix(in srgb,var(--warning) 10%,transparent); }
 .bot-status-badge.running { color:var(--accent); background:color-mix(in srgb,var(--accent) 10%,transparent); }
 @media (max-width:700px) { .bot-work-toolbar { top:-18px; } .bot-work-search-row { flex-wrap:wrap; } .bot-work-search-row .bot-work-search { flex-basis:calc(100% - 64px); } .bot-work-filters { gap:5px; } .bot-work-filters button { padding:6px; } }
+
+/* Keep setup discoverable without scrolling through every capability catalog. */
+.bot-settings-sections { display:flex; flex-wrap:wrap; gap:8px; }
+.bot-settings-sections button { flex:1; min-width:90px; }
+.bot-settings-sections button[aria-pressed="true"] { border-color:var(--accent, #568dff); background:color-mix(in srgb, var(--accent, #568dff) 16%, transparent); }
+.bot-settings-section { display:grid; gap:10px; min-width:0; }
+.bot-settings-section[hidden] { display:none; }
+.bot-settings-section > label { display:grid; gap:6px; }
+.bot-settings-path { overflow-wrap:anywhere; }
+.bot-settings-save { display:flex; align-items:center; flex-wrap:wrap; gap:10px; padding-block:10px; border-top:1px solid var(--border-color, #8885); }
+.bot-settings-save span { font-size:12px; opacity:.7; }
