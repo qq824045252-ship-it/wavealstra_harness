@@ -15,8 +15,9 @@ export function BotActivityMonitor({ onOpenBotMessage, onOpenWork }: { onOpenBot
   const activeBotId = useAppStore(s => s.activeBotId);
   const activeTeam = useAppStore(s => s.activeTeam);
   const [globalBotId, setGlobalBotId] = useState<string | null>(null);
-  const globalScope = globalBotId !== null && globalBotId === activeBotId;
-  const setGlobalScope = (global: boolean) => setGlobalBotId(global ? activeBotId : null);
+  const contextKey = activeTeam ? "team:" + activeTeam.templateId : activeBotId;
+  const globalScope = globalBotId !== null && globalBotId === contextKey;
+  const setGlobalScope = (global: boolean) => setGlobalBotId(global ? contextKey : null);
   return <><button type="button" className="bot-quiet-button" aria-haspopup="dialog" onClick={() => { setGlobalScope(false); setOpen(true); }}>所有消息</button>
     {open && <ActivityWindow key={(activeTeam?.templateId ?? activeBotId ?? "") + ":" + globalScope} scopeTeamId={globalScope ? undefined : activeTeam?.templateId} scopeBotId={globalScope ? null : activeBotId ?? ""} onScopeChange={setGlobalScope} onClose={() => setOpen(false)} onOpenBotMessage={onOpenBotMessage} onOpenWork={onOpenWork} />}</>;
 }
@@ -149,7 +150,7 @@ export function ActivityWindow({ scopeTeamId, scopeBotId, onScopeChange, onClose
       <select aria-label="任务类型" value={kind} onChange={event => { setKind(event.target.value as ActivityKind | "all"); setLimit(PAGE_SIZE); }}><option value="all">所有类型</option>{Object.entries(activityKindLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>
       <label><input type="checkbox" checked={includeEnded} onChange={event => { setIncludeEnded(event.target.checked); setLimit(PAGE_SIZE); }} />包含已结束</label>
     </div>
-    <p className="bot-activity-summary" role="status">{loading ? "正在核对最新进度…" : `执行中 ${rows.filter(row => row.running).length} · 未结束 ${rows.filter(row => !row.ended).length} · ${filtered.length} 条`}{checkedAt > 0 && <span>更新于 {new Date(checkedAt).toLocaleTimeString("zh-CN", { hour12: false })}</span>}</p>
+    <p className="bot-activity-summary" role="status">{loading ? "正在核对最新进度…" : `执行中 ${rows.filter(row => row.running).length} · 未结束 ${rows.filter(row => !row.ended).length} · ${filtered.length} 条`}</p>
     {(loadError || workError || failedSources > 0) && <p role="alert" className="bot-activity-error">部分状态暂时无法刷新，已显示内容可能不是最新：{loadError || workError || `${failedSources} 个 Bot 对话读取失败`}。不会把读取失败当作任务完成。</p>}
     {inspected?.sourceRequest ? <div className="bot-activity-list bot-activity-request">
       <button type="button" onClick={() => setInspected(null)}>← 返回任务列表</button>
@@ -160,13 +161,9 @@ export function ActivityWindow({ scopeTeamId, scopeBotId, onScopeChange, onClose
       <h4>回复与进展</h4><div>{inspected.sourceRequest.message.text || inspected.sourceRequest.message.error || inspected.label}</div>
     </div> : <div className="bot-activity-list">
       {!loading && !filtered.length && <p className="bot-activity-empty">{query || kind !== "all" ? "没有匹配的任务或消息。" : "当前没有未结束的任务。勾选「包含已结束」查看已有消息与结果。"}</p>}
-      {filtered.slice(0, limit).map(row => <button type="button" className="bot-activity-row" key={row.id} data-activity-id={row.id} onClick={() => openRow(row)}>
+      {filtered.slice(0, limit).map(row => <button type="button" className="bot-activity-row" key={row.id} data-activity-id={row.id} title={row.owner + " · " + activityKindLabels[row.kind]} onClick={() => openRow(row)}>
         <strong className="bot-activity-title" title={row.title}>{row.title}</strong>
         <span className={`bot-activity-status${row.running ? " is-running" : ""}`} title={row.label}>{row.label}</span>
-        <span className="bot-activity-detail" title={row.detail}>{row.detail || "尚无新的进展，点击查看来源"}</span>
-        <span className="bot-activity-meta"><span title={row.owner}>{row.owner} · {activityKindLabels[row.kind]}</span>
-          <time dateTime={new Date(row.updatedAt).toISOString()} title={new Date(row.updatedAt).toLocaleString("zh-CN", { hour12: false })}>{new Date(row.updatedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })} ↗</time>
-        </span>
       </button>)}
       {filtered.length > limit && <button type="button" className="bot-activity-load" onClick={() => setLimit(value => value + PAGE_SIZE)}>再显示 {Math.min(PAGE_SIZE, filtered.length - limit)} 条（还有 {filtered.length - limit} 条）</button>}
     </div>}

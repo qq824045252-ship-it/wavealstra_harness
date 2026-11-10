@@ -281,7 +281,7 @@ for (const closureConclusion of ["succeeded", "cancelled", "ended_unsuccessfully
   const closedDetails = renderDetails({ closureConclusion, deliverables: [proposedOutput] });
   assert.doesNotMatch(closedDetails, /class="bot-work-decision-hint"|<h3>需要你决定<\/h3>|<button[^>]*>采纳成果<\/button>/,
     "closed matters must not solicit review decisions that cannot be acted on");
-  assert.match(closedDetails, /未采纳（已结束）/);
+  assert.match(closedDetails, /已生成，尚未登记采纳/);
   assert.match(closedDetails, /成果记录与验收/);
 }
 const emptyExecution: NonNullable<WorkProjectionDto["phase3"]> = { subitems: [], continuations: [], gaps: [],
