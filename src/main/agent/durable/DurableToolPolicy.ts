@@ -130,8 +130,9 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
         // Code Mode and subagent containers grant nothing: each child reaches this hook itself.
         const needsApproval = sideEffect || dangerous || Boolean(mcp?.decision.requiresApproval) || Boolean(externalPath);
         const operationId = `tool:${api.conversationId}:${api.taskId}:${call.id}`;
-        const actionKind = ["subagent", "subagent_steer"].includes(call.name) ? "delegate"
-          : sideEffect || dangerous ? "workspace:write" : "workspace:read";
+        // Native children retain this task identity and re-enter this hook for every leaf tool.
+        // Starting/steering a local child grants no separate business authority.
+        const actionKind = sideEffect || dangerous ? "workspace:write" : "workspace:read";
         if (mode !== "auto" && needsApproval) {
           const summary = summarizeToolInput(call.name, call.arguments);
           const allowed = await approve({ toolCallId: call.id, toolName: call.name, dangerous,

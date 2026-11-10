@@ -219,7 +219,7 @@ console.log("== 子代理头部用量：同一快照 / 缺失不补零 ==");
   assert(metrics({input:0,output:0,cacheRead:0,cacheWrite:0,turns:0}).input.value === "—", "未启动的占位 0 不冒充实测");
   assert(metrics({input:0,output:0,cacheRead:0,cacheWrite:0,turns:1}).input.value === "—", "失败响应的全零归一化占位不冒充计量");
   const zero = metrics({input:1000,output:0,cacheRead:0,cacheWrite:0,turns:1});
-  assert(zero.hit.value === "0%" && zero.cacheRead.value === "0M", "明确测量的 0 命中与缺失区分");
+  assert(zero.hit.value === "0%" && zero.cacheRead.value === "0.000M", "明确测量的 0 命中与缺失区分");
   assert(metrics({input:0,output:100,cacheRead:0,cacheWrite:0,turns:1}).hit.value === "—", "零分母不伪造命中率");
   assert(metrics({input:Number.MAX_VALUE,cacheRead:Number.MAX_VALUE,cacheWrite:0}).hit.value === "—", "溢出分母不伪造有效百分比");
 }

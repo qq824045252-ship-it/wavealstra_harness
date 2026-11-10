@@ -4,14 +4,13 @@
  * 设计原则：
  * - 工具名单在创建 Durable 子会话时固化；宿主工具 hook 继续执行当前权限与路径检查。
  * - 角色 frontmatter 显式 tools = 显式授权（与已有角色配置兼容）。
- * - 无 tools frontmatter 时不再默认「全部工具」：默认是**只读分析集**（最小权限）；
- *   bash/write/edit 均需显式授权。
+ * - 无 tools frontmatter 时继承宿主可调用工具；每次调用仍执行宿主权限、工作区与 Work 范围检查。
  * - 递归工具恒排除；Durable 分派器还验证调用方不是子代理。
  * - tightenPolicy：策略永不自动变宽；宿主 permissionMode 变更（auto→default/readonly）
  *   时按更严模式收敛（详见 P1-2）。
  */
 
-/** 无 tools frontmatter 时的最小权限默认集（只读分析，无执行/写入）。bash 需显式授权。 */
+/** readonly 模式的回退工具集；default/auto 无显式角色名单时继承宿主工具。 */
 export const DEFAULT_SUBAGENT_TOOLS = ["read", "ls", "find", "grep"] as const;
 
 /** 宿主 readonly 模式下的只读核心（与 MyBuddy permission-extension readonly 一致：禁 write/edit/bash）。 */
@@ -40,7 +39,7 @@ export function permissionStrictness(mode: PermissionMode | string | undefined):
  * 收紧策略（P1-2）：策略永不自动变宽；按当前 hostPermissionMode 收敛。
  * - current=auto：不改（auto 不收紧；也不允许把更严策略放宽）→ 返回原策略。
  * - current=readonly：白名单收敛到只读集（null → READONLY_TOOLS）。
- * - current=default：null（原 auto 无白名单）→ DEFAULT_SUBAGENT_TOOLS；已有白名单不变。
+ * - current=default：工具集合不变，实际调用由宿主 default 策略决定。
  */
 export function tightenPolicy(
   policy: { tools: string[] | null; excludeTools: string[] },
@@ -58,9 +57,6 @@ export function tightenPolicy(
     return { tools, excludeTools, changed: true };
   }
   // default
-  if (policy.tools === null) {
-    return { tools: [...DEFAULT_SUBAGENT_TOOLS], excludeTools, changed: true };
-  }
   return { tools: policy.tools, excludeTools, changed: false };
 }
 
@@ -73,13 +69,13 @@ export interface ToolPolicyInput {
   allowTools?: string[];
   /** subagent.json denyTools：硬排除（优先级最高） */
   denyTools?: string[];
-  /** subagent.json confirmTools：默认集内需要宿主确认的工具（默认集不含时自动剔除） */
+  /** subagent.json confirmTools：保留既有 default 隐藏规则；无配置时继承宿主工具 */
   confirmTools?: string[];
 }
 
 export interface ToolPolicyResult {
   /**
-   * 子会话工具白名单；null = 继承宿主可调用工具（仅 auto 模式，仍排除 excludeTools）。
+   * 子会话工具白名单；null = 继承宿主可调用工具（default/auto 模式，仍排除 excludeTools）。
    */
   tools: string[] | null;
   /** 恒含 recursion 工具 + denyTools。 */
@@ -97,26 +93,24 @@ export function computeChildTools(input: ToolPolicyInput): ToolPolicyResult {
   const mode: PermissionMode = input.permissionMode ?? "default";
   const roleTools = unique(input.roleTools ?? []);
   const allow = unique(input.allowTools ?? []);
-  const confirm = new Set(unique(input.confirmTools ?? []));
   const explicit = roleTools.length > 0;
+  // Preserve an explicitly saved default-mode restriction; it is not a new default.
+  const withheld = mode === "default" && !explicit ? unique(input.confirmTools ?? []) : [];
 
   let base: string[];
   if (explicit) {
     // 显式 frontmatter = 显式授权（含 write/edit，即使宿主 default 模式需确认）
     base = roleTools;
-  } else if (mode === "auto") {
-    // auto = 用户已完全授权 → 不设白名单
+  } else if (mode !== "readonly") {
+    // Inherit tools, not authority: the host hook still decides each actual action.
     return {
       tools: null,
-      excludeTools: unique([...RECURSION_TOOLS, ...(input.denyTools ?? [])]),
-      denied: [...deny],
+      excludeTools: unique([...RECURSION_TOOLS, ...(input.denyTools ?? []), ...withheld]),
+      denied: unique([...deny, ...withheld]),
       explicit: false,
     };
   } else {
     base = [...DEFAULT_SUBAGENT_TOOLS, ...allow];
-    if (mode === "default") {
-      base = base.filter((t) => !confirm.has(t));
-    }
   }
 
   if (mode === "readonly") {

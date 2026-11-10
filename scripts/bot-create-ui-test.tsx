@@ -22,6 +22,8 @@ const storage = {
 };
 Object.assign(globalThis, { window: testWindow, document: testDocument,
   localStorage: storage, IS_REACT_ACT_ENVIRONMENT: true,
+  // linkedom has no layout; mounted sidebar sizing is exercised separately in Electron.
+  ResizeObserver: class { observe() {} unobserve() {} disconnect() {} },
   requestAnimationFrame: (fn: () => void) => setTimeout(fn, 0), cancelAnimationFrame: clearTimeout });
 Object.defineProperty(testWindow, "localStorage", { configurable: true, value: storage });
 // Install the browser input capability before importing react-dom. Bypassing
@@ -437,12 +439,34 @@ async function testWorkspaceGrant() {
   await check("explicit creation grant is saved with the immutable retry request", async () => {
     await reset(); await fill("Writable helper");
     const checkbox = container.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
-    assert.equal(Boolean(checkbox.checked), false);
-    await toggleCheckbox(checkbox, true);
+    assert.equal(Boolean(checkbox.checked), true);
     await submit();
     assert.equal(requests[0].allowWorkspaceFiles, true);
     assert.equal(checkbox.disabled, true);
     assert.equal(JSON.parse(storage.getItem("mybuddy.pending-bot-creation")!).allowWorkspaceFiles, true);
+    await succeed();
+  });
+  await check("successful creation then reopening defaults the next new Bot to workspace write", async () => {
+    await reset(); await fill("First writable helper"); await submit(); await succeed();
+    await act(async () => openDialog!());
+    const checkbox = container.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    assert.equal(Boolean(checkbox.checked), true);
+    reply = deferred<BotCreateResult>();
+    await fill("Second writable helper"); await submit();
+    assert.equal(requests.at(-1)!.allowWorkspaceFiles, true);
+    await succeed();
+  });
+  await check("legacy pending creation without a workspace grant retains read-only on retry", async () => {
+    await reset(); await unmount();
+    const pending = { requestId: crypto.randomUUID(), displayName: "Legacy pending helper", responsibilitySummary: "Original read-only request" };
+    storage.setItem("mybuddy.pending-bot-creation", JSON.stringify(pending));
+    await mount();
+    const checkbox = container.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    assert.equal(Boolean(checkbox.checked), false);
+    assert.equal(checkbox.disabled, true);
+    await submit();
+    assert.deepEqual(requests[0], { ...pending, allowWorkspaceFiles: false });
+    assert.equal(JSON.parse(storage.getItem("mybuddy.pending-bot-creation")!).allowWorkspaceFiles, false);
     await succeed();
   });
   await check("settings grant requires confirmation, uses version guard and never mutates old Work", async () => {

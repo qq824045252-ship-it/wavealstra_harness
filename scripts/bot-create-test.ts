@@ -22,7 +22,7 @@ function error(result: BotCreateResult, code: string) {
   assert.equal(result.code, code);
 }
 function request(displayName: string, responsibilitySummary?: string): BotCreateRequest {
-  return { requestId: randomUUID(), displayName, responsibilitySummary };
+  return { requestId: randomUUID(), displayName, responsibilitySummary, allowWorkspaceFiles: false };
 }
 
 if (!isMainThread) {
@@ -248,6 +248,9 @@ if (!isMainThread) {
     error(service().updateWorkspaceAuthorization({ ...edit, expectedUpdatedAt: again.updatedAt }), "storage_error");
     assert.deepEqual(bots.getBot(again.botId), again, "audit failure rolls back the authorization and version");
     db.connection.exec("DROP TRIGGER fail_grant_audit");
+    const defaultWritable = ok(service().createBot({ requestId: randomUUID(), displayName: "默认可写助理" })).bot;
+    assert.deepEqual(defaultWritable.authorization.allowedScopes, ["workspace:read", "workspace:write"]);
+    assert.deepEqual(bots.getBot(created.bot.botId)?.authorization, minimumAuthorization(), "existing explicit read-only Bot is unchanged");
     // Grant changes do not mutate any existing Work, execution, approval or task.
     const afterGrant = unaffectedCounts();
     delete afterGrant.bot_workspace_authorization_events;

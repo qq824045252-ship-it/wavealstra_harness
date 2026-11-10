@@ -8,7 +8,13 @@ const pendingKey = "mybuddy.pending-bot-creation";
 
 function readPending(): BotCreateRequest | null {
   try {
-    const result = botCreateRequestSchema.safeParse(JSON.parse(localStorage.getItem(pendingKey) ?? "null"));
+    const saved: unknown = JSON.parse(localStorage.getItem(pendingKey) ?? "null");
+    // Older persisted requests omitted this field and meant read-only. Never reinterpret
+    // an uncertain request under the newer writable default during recovery.
+    const request = saved && typeof saved === "object" && !Array.isArray(saved)
+      && !Object.prototype.hasOwnProperty.call(saved, "allowWorkspaceFiles")
+      ? { ...saved, allowWorkspaceFiles: false } : saved;
+    const result = botCreateRequestSchema.safeParse(request);
     return result.success ? result.data : null;
   } catch { return null; }
 }
@@ -24,7 +30,7 @@ export function BotCreateDialog({ open, onClose }: { open: boolean; onClose: () 
   const [pending, setPending] = useState(readPending);
   const [name, setName] = useState(() => pending?.displayName ?? "");
   const [responsibility, setResponsibility] = useState(() => pending?.responsibilitySummary ?? "");
-  const [allowWorkspaceFiles, setAllowWorkspaceFiles] = useState(pending?.allowWorkspaceFiles ?? false);
+  const [allowWorkspaceFiles, setAllowWorkspaceFiles] = useState(pending?.allowWorkspaceFiles ?? true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [created, setCreated] = useState<BotDto | null>(null);
@@ -56,7 +62,7 @@ export function BotCreateDialog({ open, onClose }: { open: boolean; onClose: () 
   }, [open]);
 
   const close = () => { intentEpoch.current += 1; openRef.current = false; onClose(); };
-  const reset = () => { setPending(null); setName(""); setResponsibility(""); setAllowWorkspaceFiles(false); setCreated(null); setError(""); };
+  const reset = () => { setPending(null); setName(""); setResponsibility(""); setAllowWorkspaceFiles(true); setCreated(null); setError(""); };
   const openBot = (bot: BotDto) => {
     const state = useAppStore.getState();
     state.setActiveBotId(bot.botId);
