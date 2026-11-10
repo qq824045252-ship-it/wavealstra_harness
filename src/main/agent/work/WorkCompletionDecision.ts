@@ -33,12 +33,14 @@ export function applyCompletionDecision(options: WorkCompletionOptions, binding:
         nativeStatus:"result_review",outcome:"completed",artifactRefs:[],writeConflicts:[],summary:`前台对照本次补做结果完成核对：${decision.reply}`})));
   }
   const facts = kind === "deliver" ? works.automaticCompletion.outcome(binding.bindingId) : undefined;
-  const notices = [...notice ? [notice] : [], ...facts?.conclusion === "ended_unsuccessfully" ? [facts.summary] : []];
+  const notices = [...notice ? [notice] : [], ...facts && !facts.executionDelivered ? [facts.summary] : []];
   const delivered = options.deliver({ bindingId: binding.bindingId, eventId, text: decision.reply,
     category: kind === "ask" ? "decision" : "result", notices });
   if (!delivered) throw Error("结果尚未送达明确的回报位置");
   if (kind === "deliver") {
-    works.automaticCompletion.recordDelivery(binding.bindingId, decision.reply, decision.decision === "continue" ? "partial" : decision.outcome);
+    const outcome = decision.decision === "continue" || (decision.outcome === "completed" && !facts?.executionDelivered) ? "partial" : decision.outcome;
+    const summary = facts && !facts.executionDelivered ? `${decision.reply}\n${facts.summary}` : decision.reply;
+    works.automaticCompletion.recordDelivery(binding.bindingId, summary, outcome, true);
     works.automaticCompletion.drain();
   } else works.automaticCompletion.consume(binding.bindingId);
   db.prepare("UPDATE work_completion_turns SET state=? WHERE binding_id=?").run(kind === "deliver" ? "delivered" : kind === "ask" ? "asking" : "continued", binding.bindingId);

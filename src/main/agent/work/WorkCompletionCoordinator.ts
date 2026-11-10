@@ -59,18 +59,20 @@ export class WorkCompletionCoordinator {
         previousResults: works.repo.listDeliverables(binding.workId).filter(item => item.executionId !== bindingId
           && item.intentRevision === binding.intentRevision && item.inputSnapshotId === binding.inputSnapshotId && item.status !== "superseded")
           .map(item => ({ executionId:item.executionId, summary:item.summary, artifactRefs:item.artifactRefs, uncoveredScope:item.uncoveredScope, status:item.status })),
-        actualMissing: candidate.conclusion === "succeeded" ? [] : [candidate.summary],
+        // These are observations, not a verdict that the original request failed.
+        executionFacts: { status: binding.status, outputReceived: candidate.executionDelivered,
+          diagnosticSummary: candidate.summary },
+        criteria: candidate.work.criteria,
+        actualMissing: works.partialResults.gaps(binding.workId).map(item => ({task:item.task, summary:item.summary, outcome:item.outcome})),
         unknownEffects: works.repo.listAdmissions(binding.workId).filter(item => item.state === "unknown").map(item => item.operationId),
       }));
     }
     const row = this.row(bindingId)!;
-    const ownerSummary = works.teams.get(binding.workId)?.executions.some(item => item.role === "owner_summary" && item.bindingId === bindingId);
     try {
       let decision: WorkResultDecision;
       const question = works.repo.listOpenBlockers(binding.workId).filter(item => item.waitingForUserInput && item.kind === "operational" && !item.unknownExternalEffectRef);
       if (question.length) decision = {decision:"ask",outcome:"partial",reply:`${raw || "本次没有返回可用成果。"}\n\n还需要你补充：${question.map(item => item.reason).join("；")}`,missing:[]};
       else if (row.decision_json) decision = JSON.parse(row.decision_json);
-      else if (ownerSummary) decision = { decision: "deliver", outcome: candidate.conclusion === "succeeded" ? "completed" : "partial", reply: raw || "本次没有返回可用成果。", missing: [] };
       else {
         this.options.deliver({ bindingId, eventId: `${eventId}:progress`, category: "progress", text: "后台结果已返回，我正在对照你的委托整理结论。你可以继续交代其他事情。" });
         const attempt = row.state === "running" ? Math.max(1,row.attempts) : row.attempts + 1;

@@ -46,7 +46,7 @@ const coordinator = new WorkCompletionCoordinator({ db: db.connection, works, is
   review: async input => { reviewed.push(input.eventId); if (failReview) throw Error("model unavailable");
     if (lateResultWork) { db.connection.prepare("UPDATE work_deliverables SET summary=summary || ' 后到证据' WHERE work_id=?").run(lateResultWork); lateResultWork=undefined; }
     if (reviewContinue) { reviewContinue=false; return {decision:"continue",outcome:"partial",reply:"已完成第一部分，补充剩余内容",missing:[{task:"补充剩余内容",requestExcerpt:String(input.context.title)}]}; }
-    return { decision: "deliver", outcome: reviewPartial ? "partial" : "completed", reply: `已整理：${input.context.title}。结果依据原始执行记录。`, missing: [] }; },
+    return { decision: "deliver", outcome: reviewPartial || ["explicit", "uncertain"].includes(String(input.context.title)) ? "partial" : "completed", reply: `已整理：${input.context.title}。结果依据原始执行记录。`, missing: [] }; },
   deliver: input => { assert.notEqual(works.getWork(works.repo.getBinding(input.bindingId)!.workId)?.lifecycle, "closed", "delivery precedes closure");
     return deliveryAvailable && feedback.deliverCompletion(input); }, wake: () => {} });
 async function flush() { await queue.flush(); coordinator.wake(); await new Promise(resolve => setImmediate(resolve)); }
@@ -76,7 +76,7 @@ try {
   await flush(); states.set(explicit, "completed"); await flush();
   assert.equal(works.getWork(explicit)?.lifecycle, "closed", "missing evidence does not demand manual closure");
   assert.equal(works.getWork(explicit)?.closureConclusion, "ended_unsuccessfully", "unverified explicit requirement is not fabricated success");
-  assert.match(works.getWork(explicit)?.closureSummary ?? "", /尚未核实/);
+  assert(reviewed.some(event => event.includes(works.repo.listBindings(explicit)[0].bindingId)), "explicit criteria are assessed by the goal review");
   assert.equal(works.getWork(explicit)?.criteria[0].status, "pending");
 
   const historical = create("historical"); await flush();
@@ -92,7 +92,18 @@ try {
   states.set(uncertain, "completed"); await flush();
   assert.equal(works.getWork(uncertain)?.lifecycle, "closed");
   assert.equal(works.getWork(uncertain)?.closureConclusion, "ended_unsuccessfully");
-  assert.match(works.getWork(uncertain)?.closureSummary ?? "", /尚未核实/);
+  assert.equal(works.repo.listAdmissions(uncertain)[0].state, "unknown", "goal review never rewrites tool receipts");
+
+  const audit = create("audit-report", false, ["测试项目的bug，罗列出来，不需要修改代码"]);
+  await flush();
+  const auditBinding = works.repo.listBindings(audit)[0];
+  works.admitTaskAction(auditBinding.taskId, {operationId:"audit-old-tool-error",actionKind:"workspace:write"});
+  works.settleTaskAction(auditBinding.taskId,"audit-old-tool-error","unknown");
+  states.set(audit,"completed"); await flush();
+  assert.equal(works.getWork(audit)?.closureConclusion,"succeeded","reviewed user goal is not vetoed by untouched attestation or unrelated historic tool uncertainty");
+  assert.equal(works.getWork(audit)?.criteria[0].status,"pending","goal delivery does not forge manual attestation");
+  assert.equal(works.repo.listAdmissions(audit)[0].state,"unknown","no fabricated effect receipt");
+  assert.equal(works.repo.listBindings(audit).length,1,"no replay of the uncertain action");
 
   const empty = create("empty-result"); await flush(); states.set(empty, "completed"); await flush();
   assert.equal(works.getWork(empty)?.closureConclusion, "ended_unsuccessfully", "completed without real output must not appear successful");

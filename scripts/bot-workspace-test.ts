@@ -353,6 +353,8 @@ Object.assign(snapshot, {
 snapshot.botHistories = {};
 const emptyConversation = renderToStaticMarkup(createElement(BotWorkspacePage));
 assert.match(emptyConversation, /有什么想一起推进的？/);
+const emptyNewConversationButton = emptyConversation.match(/<button[^>]*class="[^"]*bot-new-conversation[^"]*"[^>]*>/)?.[0];
+assert(emptyNewConversationButton && !emptyNewConversationButton.includes("disabled"), "empty history still lets New Conversation navigate to and focus the composer");
 for (const title of ["梳理今天的重点", "持续跟进一件事", "一起推进一个目标"]) {
   assert.match(emptyConversation, new RegExp(`<button type="button"[^>]*><span>${title}</span>`),
     "welcome examples only draft a message, never submit the composer");

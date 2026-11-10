@@ -11,9 +11,11 @@ export class WorkAutomaticCompletion {
     private readonly isAuthority: () => boolean) {
     db.exec(`CREATE TABLE IF NOT EXISTS work_automatic_completion (
       binding_id TEXT PRIMARY KEY, work_id TEXT NOT NULL, consumed_at INTEGER);
-      CREATE TABLE IF NOT EXISTS work_automatic_completion_deliveries (binding_id TEXT PRIMARY KEY, summary TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT 'completed')`);
+      CREATE TABLE IF NOT EXISTS work_automatic_completion_deliveries (binding_id TEXT PRIMARY KEY, summary TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT 'completed', goal_reviewed INTEGER NOT NULL DEFAULT 0)`);
     if (!(db.prepare("PRAGMA table_info(work_automatic_completion_deliveries)").all() as Array<{name:string}>).some(row => row.name === "outcome"))
       db.exec("ALTER TABLE work_automatic_completion_deliveries ADD COLUMN outcome TEXT NOT NULL DEFAULT 'unknown'");
+    if (!(db.prepare("PRAGMA table_info(work_automatic_completion_deliveries)").all() as Array<{name:string}>).some(row => row.name === "goal_reviewed"))
+      db.exec("ALTER TABLE work_automatic_completion_deliveries ADD COLUMN goal_reviewed INTEGER NOT NULL DEFAULT 0");
   }
 
   observe(binding: WorkExecutionBindingDto, status: string): void {
@@ -30,28 +32,34 @@ export class WorkAutomaticCompletion {
   pending(): string[] {
     return (this.db.prepare("SELECT binding_id FROM work_automatic_completion WHERE consumed_at IS NULL").all() as Array<{ binding_id: string }>).map(row => row.binding_id);
   }
-  recordDelivery(bindingId: string, summary: string, outcome: "completed" | "partial" | "unknown" = "completed"): void {
-    this.db.prepare("INSERT OR IGNORE INTO work_automatic_completion_deliveries(binding_id,summary,outcome) VALUES (?,?,?)").run(bindingId, summary, outcome);
+  recordDelivery(bindingId: string, summary: string, outcome: "completed" | "partial" | "unknown" = "completed", goalReviewed = false): void {
+    this.db.prepare("INSERT OR IGNORE INTO work_automatic_completion_deliveries(binding_id,summary,outcome,goal_reviewed) VALUES (?,?,?,?)").run(bindingId, summary, outcome, Number(goalReviewed));
   }
   drain(): void {
     for (const bindingId of this.pending()) {
       const row = { binding_id: bindingId };
-      const delivered = this.db.prepare("SELECT summary,outcome FROM work_automatic_completion_deliveries WHERE binding_id=?").get(bindingId) as { summary: string; outcome: string } | undefined;
+      const delivered = this.db.prepare("SELECT summary,outcome,goal_reviewed FROM work_automatic_completion_deliveries WHERE binding_id=?").get(bindingId) as { summary: string; outcome: string; goal_reviewed: number } | undefined;
       if (!delivered) continue;
       if (!this.isAuthority()) return;
       this.works.transaction(() => {
         if (!this.isAuthority()) return;
         const outcome = this.outcome(row.binding_id);
         if (!outcome || this.works.repo.listOpenBlockers(outcome.work.workId).some(item => item.waitingForUserInput && item.kind === "operational" && !item.unknownExternalEffectRef)) return;
-        const conclusion = delivered.outcome === "completed" ? outcome.conclusion : "ended_unsuccessfully";
-        this.finish(outcome.work, conclusion, outcome.conclusion === "succeeded" ? delivered.summary : `${delivered.summary}\n${outcome.summary}`, row.binding_id);
+        // The goal review, not untouched manual-attestation rows or a past tool error,
+        // determines whether the user's requested deliverable was achieved.
+        // Native delivery failures still cannot be promoted to success.
+        const conclusion = delivered.outcome === "completed"
+          ? delivered.goal_reviewed && outcome.executionDelivered ? "succeeded" : outcome.conclusion
+          : "ended_unsuccessfully";
+        this.finish(outcome.work, conclusion, delivered.goal_reviewed ? delivered.summary
+          : outcome.conclusion === "succeeded" ? delivered.summary : `${delivered.summary}\n${outcome.summary}`, row.binding_id);
         this.consume(row.binding_id);
         this.works.emitCurrentProjection(outcome.work.workId);
       });
     }
   }
 
-  outcome(bindingId: string): { work: WorkDto; conclusion: "succeeded" | "ended_unsuccessfully"; summary: string } | undefined {
+  outcome(bindingId: string): { work: WorkDto; conclusion: "succeeded" | "ended_unsuccessfully"; summary: string; executionDelivered: boolean } | undefined {
     if (!this.db.prepare("SELECT 1 FROM work_automatic_completion WHERE binding_id=? AND consumed_at IS NULL").get(bindingId)) return;
     const binding = this.works.repo.getBinding(bindingId);
     const work = binding && this.works.getWork(binding.workId);
@@ -97,7 +105,8 @@ export class WorkAutomaticCompletion {
       ...(team?.executions.filter(item => !["completed", "recovered"].includes(item.status)).map(item => `${item.responsibility}：${item.error || item.notStartedReason || item.status}`) ?? []),
     ];
     const reasons = [...new Set(missing)];
-    return { work, conclusion: reasons.length ? "ended_unsuccessfully" : "succeeded",
+    return { work, executionDelivered: Boolean(receivedOutput) && binding.status === "completed"
+      && !results.some(item => item.hasWriteConflicts || item.status === "rejected"), conclusion: reasons.length ? "ended_unsuccessfully" : "succeeded",
       summary: reasons.length
         ? `本次执行已结束，已有成果已返回；仍有未完成或未核实部分：${reasons.join("；")}`
         : "本次执行已完成，成果已返回，已自动移入已结束。这是执行交付状态，不代表用户已验收或全部结论经过独立验证。" };

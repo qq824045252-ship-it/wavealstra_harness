@@ -243,7 +243,15 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
         <span className="bot-avatar bot-header-avatar" aria-hidden="true"><IconBot size={21} /></span>
         <div className="bot-heading"><h1>{activeTeam?.name ?? activeBot?.displayName ?? "Bot 模式"}</h1><p><span className={`bot-presence ${hostStatus?.online && activeBot?.status === "active" ? "is-online" : ""}`} />{activeBot ? presenceLabel(activeBot, hostStatus) : "你的长期个人助理"}<span className="bot-heading-description"> · {activeTeam ? `团队工作台 · ${activeTeam.members.length + 1} 位成员` : "对话有延续，事项有着落"}</span></p></div>
         <div className="bot-workspace-actions">
-          <button type="button" className="bot-quiet-button bot-new-conversation" disabled={!activeBot || messages.length === 0} onClick={() => { setArchiveError(""); setNewConversationOpen(true); }}>新对话</button>
+          <button type="button" className="bot-quiet-button bot-new-conversation" disabled={!activeBot} onClick={() => {
+            setArchiveError("");
+            if (messages.length === 0) {
+              setView("conversation"); setSelectedWorkId(null); setInspectorOpen(false);
+              requestAnimationFrame(() => composerRef.current?.focus());
+              return;
+            }
+            setNewConversationOpen(true);
+          }}>新对话</button>
           <BotActivityMonitor onOpenWork={() => { setIncludeClosed(true); setInspectorOpen(true); }} onOpenBotMessage={messageId => {
             setView("conversation"); setInspectorOpen(false);
             requestAnimationFrame(() => requestAnimationFrame(() => {
