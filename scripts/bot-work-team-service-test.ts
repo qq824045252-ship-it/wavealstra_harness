@@ -100,6 +100,24 @@ try {
   assert.equal(works.teams.get(owned.work!.workId)?.teamName, "Audit", "historical team ownership survives template deletion");
   reject(works.teams.handle(user, { kind: "save_template", request: { operationId: "template-one", name: "Audit", plan: initial.plan } }), "not_found");
 
+  assert.ok(ok(works.teams.handle(user, { kind: "list_templates", includeDeleted: true })).templates?.find(item => item.templateId === template.templateId)?.deletedAt);
+  const restored = ok(works.teams.handle(user, { kind: "restore_template", templateId: template.templateId })).template!;
+  assert.equal(restored.templateId, template.templateId); assert.equal(restored.deletedAt, undefined);
+  const target = ok(works.teams.handle(user, { kind: "save_template", request: { operationId: "move-target", name: "Moved team", plan: initial.plan } })).template!;
+  const oldExecutions = works.teams.get(owned.work!.workId)!.executions.map(item => item.taskId);
+  const moved = ok(works.teams.handle(user, { kind: "set_work_team", workId: owned.work!.workId, templateId: target.templateId }));
+  assert.equal(moved.team?.teamId, target.templateId); assert.deepEqual(moved.team?.executions.map(item => item.taskId), oldExecutions);
+  reject(works.teams.handle({ kind: "user", userId: "foreign-user", grants }, { kind: "set_work_team", workId: owned.work!.workId, templateId: target.templateId }), "not_found");
+  reject(works.teams.handle(user, { kind: "remove_work", workId: owned.work!.workId }), "work_not_ended");
+  assert.equal(works.closeWork(user, { operationId: "end-management-fixture", workId: owned.work!.workId, conclusion: "cancelled", versionGuard: guard(works.getWork(owned.work!.workId)!) }).ok, true);
+  assert.equal(works.getWork(owned.work!.workId)?.lifecycle, "closed");
+  assert.ok(ok(works.teams.handle(user, { kind: "remove_work", workId: owned.work!.workId })).team?.removedAt);
+  assert.ok(works.getWork(owned.work!.workId), "recoverable removal never destroys Work");
+  assert.equal(ok(works.teams.handle(user, { kind: "restore_work", workId: owned.work!.workId })).team?.removedAt, undefined);
+  assert.deepEqual(works.teams.get(owned.work!.workId)!.executions.map(item => item.taskId), oldExecutions);
+  ok(works.teams.handle(user, { kind: "delete_template", templateId: target.templateId }));
+  ok(works.teams.handle(user, { kind: "delete_template", templateId: template.templateId }));
+
   // Frozen member inputs, sequential real adapter dispatch and a genuine owner stage.
   const created = ok(works.teams.handle(user, { kind: "create", request: initial.request }));
   const workId = created.work!.workId;

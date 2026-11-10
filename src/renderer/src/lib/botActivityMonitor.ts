@@ -89,6 +89,7 @@ export function buildActivityRows(input: {
       botId: message.botId, messageId: message.messageId, sourceRequest: inCurrentWindow ? undefined : request });
   }
   for (const work of input.works) {
+    if (work.team?.removedAt) continue;
     const status = workStatus(work);
     const latest = [...work.deliverables].reverse().find(item => item.status === "accepted" || item.status === "proposed");
     const completed = work.criteria.filter(item => item.status === "satisfied" || item.status === "waived").length;

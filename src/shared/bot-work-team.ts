@@ -55,12 +55,16 @@ export const workTeamControlSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("get_by_operation"), operationId: id }).strict(),
   z.object({ kind: z.literal("retry"), workId: id, versionGuard, confirmNotStarted: z.literal(true) }).strict(),
   z.object({ kind: z.literal("replan"), workId: id, versionGuard, plan: workTeamPlanSchema }).strict(),
-  z.object({ kind: z.literal("list_templates") }).strict(),
+  z.object({ kind: z.literal("list_templates"), includeDeleted: z.boolean().optional() }).strict(),
   z.object({ kind: z.literal("save_template"), request: z.object({ operationId: id,
     name: z.string().trim().min(1).max(120), plan: workTeamPlanSchema }).strict() }).strict(),
   z.object({ kind: z.literal("update_template"), templateId: id,
     name: z.string().trim().min(1).max(120), plan: workTeamPlanSchema,
     expected: z.object({ name: z.string(), plan: workTeamPlanSchema }).strict() }).strict(),
+  z.object({ kind: z.literal("set_work_team"), workId: id, templateId: id }).strict(),
+  z.object({ kind: z.literal("remove_work"), workId: id }).strict(),
+  z.object({ kind: z.literal("restore_work"), workId: id }).strict(),
+  z.object({ kind: z.literal("restore_template"), templateId: id }).strict(),
   z.object({ kind: z.literal("delete_template"), templateId: id }).strict(),
 ]);
 export type WorkTeamMember = z.infer<typeof workTeamMemberSchema>;
@@ -88,6 +92,8 @@ export interface WorkTeamDto extends WorkTeamPlan {
   /** Stable owning team; absent for historical/ad-hoc commissions. */
   teamId?: string;
   teamName?: string;
+  /** Recoverable removal from normal team/task lists; execution and artifacts remain intact. */
+  removedAt?: number;
   workId: string;
   intentRevision: number;
   inputSnapshotId: string;
@@ -97,6 +103,7 @@ export interface WorkTeamDto extends WorkTeamPlan {
   createdAt: number;
 }
 export interface WorkTeamTemplateDto extends WorkTeamPlan {
+  deletedAt?: number;
   templateId: string;
   name: string;
   createdAt: number;

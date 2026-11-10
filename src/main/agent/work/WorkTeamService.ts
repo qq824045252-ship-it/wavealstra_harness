@@ -53,6 +53,8 @@ export function ensureWorkTeamSchema(db: Database.Database): void {
     UNIQUE(user_id,operation_id));
     CREATE TABLE IF NOT EXISTS work_team_ownership (
       work_id TEXT PRIMARY KEY REFERENCES work_teams(work_id), team_id TEXT NOT NULL, team_name TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS work_team_record_visibility (
+      work_id TEXT PRIMARY KEY REFERENCES work_teams(work_id), removed_at INTEGER);
     CREATE INDEX IF NOT EXISTS idx_work_team_ownership_team ON work_team_ownership(team_id);
     CREATE TABLE IF NOT EXISTS work_team_executions (
       work_id TEXT NOT NULL REFERENCES work_teams(work_id), ordinal INTEGER NOT NULL,
@@ -210,7 +212,7 @@ export class WorkTeamService {
         if (!work || work.userId !== actor.userId) throw new TeamError("not_found", "找不到事项");
         return { ok: true, team: this.get(work.workId) };
       }
-      if (request.kind === "list_templates") return { ok: true, templates: this.templates(actor.userId) };
+      if (request.kind === "list_templates") return { ok: true, templates: this.templates(actor.userId, request.includeDeleted) };
       return this.works.transaction(() => {
         this.works.collaboration.assertAuthority();
         if (request.kind === "replan") {
@@ -273,6 +275,28 @@ export class WorkTeamService {
           this.works.repo.updateWork({ ...work, stateVersion: work.stateVersion + 1, updatedAt: this.now() });
           this.works.emitCurrentProjection(work.workId);
           return { ok: true, work: this.works.getWork(work.workId), team: this.get(work.workId) };
+        }
+        if (request.kind === "set_work_team" || request.kind === "remove_work" || request.kind === "restore_work") {
+          const work = this.works.getWork(request.workId);
+          if (!work || work.userId !== actor.userId || !this.row(work.workId)) throw new TeamError("not_found", "找不到团队事项");
+          if (request.kind === "set_work_team") {
+            const target = this.templates(actor.userId).find(team => team.templateId === request.templateId);
+            if (!target) throw new TeamError("not_found", "目标团队不存在或已删除");
+            this.db.prepare("INSERT INTO work_team_ownership(work_id,team_id,team_name) VALUES (?,?,?) ON CONFLICT(work_id) DO UPDATE SET team_id=excluded.team_id,team_name=excluded.team_name")
+              .run(work.workId, target.templateId, target.name);
+          } else if (request.kind === "remove_work") {
+            if (work.lifecycle !== "closed") throw new TeamError("work_not_ended", "此事项仍未结束，请先停止或结束事项，再移入回收站；删除不会暗中停止执行");
+            this.db.prepare("INSERT INTO work_team_record_visibility(work_id,removed_at) VALUES (?,?) ON CONFLICT(work_id) DO UPDATE SET removed_at=COALESCE(removed_at,excluded.removed_at)").run(work.workId, this.now());
+          } else this.db.prepare("UPDATE work_team_record_visibility SET removed_at=NULL WHERE work_id=?").run(work.workId);
+          this.works.emitCurrentProjection(work.workId);
+          return { ok: true, work: this.works.getWork(work.workId), team: this.get(work.workId) };
+        }
+        if (request.kind === "restore_template") {
+          const current = this.templates(actor.userId, true).find(team => team.templateId === request.templateId);
+          if (!current) throw new TeamError("not_found", "找不到已删除团队");
+          if (this.templates(actor.userId).some(team => team.templateId !== current.templateId && team.name === current.name)) throw new TeamError("name_conflict", "已有同名团队，请先为现有团队改名后恢复");
+          this.db.prepare("UPDATE work_team_templates SET deleted_at=NULL WHERE template_id=? AND user_id=?").run(current.templateId, actor.userId);
+          return { ok: true, template: this.templates(actor.userId).find(team => team.templateId === current.templateId) };
         }
         if (request.kind === "update_template") {
           const current = this.templates(actor.userId).find(item => item.templateId === request.templateId);
@@ -421,7 +445,8 @@ export class WorkTeamService {
         : executions.at(-1)?.status === "completed" || executions.at(-1)?.status === "recovered" ? "awaiting_review"
           : executions.some(item => item.status !== "queued") ? "running" : "queued";
     const ownership = this.db.prepare("SELECT team_id,team_name FROM work_team_ownership WHERE work_id=?").get(workId) as { team_id: string; team_name: string } | undefined;
-    return { ...plan, ...(ownership ? { teamId: ownership.team_id, teamName: ownership.team_name } : {}), ownerBotId: work.ownerBotId, workId, intentRevision: row.intent_revision, inputSnapshotId: row.input_snapshot_id,
+    const visibility = this.db.prepare("SELECT removed_at FROM work_team_record_visibility WHERE work_id=?").get(workId) as { removed_at: number | null } | undefined;
+    return { ...plan, ...(visibility?.removed_at ? { removedAt: visibility.removed_at } : {}), ...(ownership ? { teamId: ownership.team_id, teamName: ownership.team_name } : {}), ownerBotId: work.ownerBotId, workId, intentRevision: row.intent_revision, inputSnapshotId: row.input_snapshot_id,
       ownerEpoch: work.ownerEpoch, state, executions, createdAt: row.created_at };
   }
 
@@ -966,10 +991,10 @@ export class WorkTeamService {
       if (bot.authorization.expiresAt !== undefined && bot.authorization.expiresAt <= this.now()) throw new TeamError("unauthorized_actor", `${bot.displayName} 授权已过期`);
     }
   }
-  private templates(userId: string): WorkTeamTemplateDto[] {
-    return this.db.prepare("SELECT * FROM work_team_templates WHERE user_id=? AND deleted_at IS NULL ORDER BY created_at,template_id").all(userId).map(raw => {
-      const row = z.object({ template_id: z.string(), name: z.string(), plan_json: z.string(), created_at: z.number() }).parse(raw);
-      return { ...workTeamPlanSchema.parse(JSON.parse(row.plan_json)), templateId: row.template_id, name: row.name, createdAt: row.created_at };
+  private templates(userId: string, includeDeleted = false): WorkTeamTemplateDto[] {
+    return this.db.prepare("SELECT * FROM work_team_templates WHERE user_id=? " + (includeDeleted ? "" : "AND deleted_at IS NULL ") + "ORDER BY created_at,template_id").all(userId).map(raw => {
+      const row = z.object({ template_id: z.string(), name: z.string(), plan_json: z.string(), created_at: z.number(), deleted_at: z.number().nullable() }).parse(raw);
+      return { ...workTeamPlanSchema.parse(JSON.parse(row.plan_json)), templateId: row.template_id, name: row.name, createdAt: row.created_at, ...(row.deleted_at !== null ? { deletedAt: row.deleted_at } : {}) };
     });
   }
   private row(workId: string): TeamRow | undefined { return teamRowSchema.optional().parse(this.db.prepare("SELECT * FROM work_teams WHERE work_id=?").get(workId)); }

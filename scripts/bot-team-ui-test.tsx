@@ -88,8 +88,10 @@ let BotTeamDialog: typeof import("../src/renderer/src/components/pages/BotTeamDi
 const api = { pickLocalFolder: () => folderReply.promise, botWork: {
   teamControl: async (request: WorkTeamControlRequest) => { if (request.kind === "get_by_operation") { lookupRequests.push(request.operationId); return lookupReply.promise; } if (request.kind === "list_templates") return { ok: true, templates: hostTemplates };
     if (request.kind === "save_template") { templateCalls.push(request); const template = { ...request.request.plan, templateId: "template-a", name: request.request.name, createdAt: 1 }; hostTemplates = [template]; return { ok: true, template }; }
+    if (request.kind === "set_work_team" || request.kind === "remove_work" || request.kind === "restore_work" || request.kind === "restore_template") { templateCalls.push(request); return { ok: true }; }
     if (request.kind === "update_template") { templateCalls.push(request); const template = { ...request.plan, templateId: request.templateId, name: request.name, createdAt: 1 }; hostTemplates = [template]; return { ok: true, template }; }
     if (request.kind === "delete_template") { templateCalls.push(request); hostTemplates = hostTemplates.filter(item => item.templateId !== request.templateId); return { ok: true }; } if (request.kind === "create") { requests.push(structuredClone(request.request)); return reply.promise; } throw new Error("unexpected template operation"); },
+  listWorks: async () => [],
   listBots: async () => hostBots,
   syncWorks: async (): Promise<WorkListUpdate> => ({ kind: "snapshot", cursor: { epoch: "create-ui", sequence: 0, scope: "open" }, works: [work] }),
   hostStatus: async () => ({ online: true, isAuthority: true, authorityId: "ui-test" }),
@@ -402,6 +404,23 @@ async function main() {
       folderReply = deferred(); await act(async () => nativeClick(choose())); await close();
       await act(async () => folderReply.resolve({ path: "/late", name: "late" })); await act(async () => openDialog!());
       assert.equal(container.querySelector<HTMLInputElement>("#team-workspace")!.value, "/home/test/项目目录"); assert.equal(requests.length, 0);
+    });
+    await check("management moves only on explicit choice and distinguishes team deletion from work deletion", async () => {
+      await reset(); await unmount();
+      const { BotTeamManagement } = await import("../src/renderer/src/components/pages/BotTeamManagement");
+      hostTemplates = [{ templateId: "target", name: "Target team", createdAt: 1, ownerBotId: mybuddy.botId, ownerResponsibility: "Coordinate", members: [{ botId: other.botId, responsibility: "Read", delegatedScope: ["workspace:read"] }] }];
+      container = testDocument.body.appendChild(testDocument.createElement("div")); root = createRoot(container);
+      let changes = 0;
+      await act(async () => root!.render(<BotTeamManagement work={{ ...work, lifecycle: "closed" }} onChanged={() => changes++} />));
+      const button = (text: string) => [...container.querySelectorAll<HTMLButtonElement>("button")].find(item => item.textContent === text)!;
+      assert.equal(button("移动此事项").disabled, true);
+      const select = container.querySelector<HTMLSelectElement>("select")!;
+      await act(async () => { Object.defineProperty(select, "value", { configurable: true, value: "target" }); select.dispatchEvent(new testWindow.Event("change", { bubbles: true })); });
+      await act(async () => nativeClick(button("移动此事项"))); assert.equal(templateCalls[0].kind, "set_work_team"); assert.equal(changes, 1);
+      await act(async () => nativeClick(button("删除此事项"))); assert.equal(templateCalls.length, 1);
+      assert.match(container.textContent!, /不会删除磁盘成果文件/);
+      await act(async () => nativeClick(button("确认移到回收站"))); assert.equal(templateCalls[1].kind, "remove_work");
+      assert.equal(requests.length, 0);
     });
     await testRecoveryControls();
     console.log(`PASS ${count} team UI behaviour checks`);
