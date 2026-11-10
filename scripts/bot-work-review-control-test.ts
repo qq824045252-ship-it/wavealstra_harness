@@ -1,3 +1,5 @@
+import { reviewWork } from "../src/main/agent/work/WorkReviewControl";
+import { canArchiveWork } from "../src/shared/bot-work-archive";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -52,6 +54,41 @@ function check(name: string, fn: () => void): void {
 }
 
 try {
+  check("archive/deletion retains evidence, persists, rejects running work and never claims success", () => {
+    const manage = (workId: string, action: "archive" | "delete" | "restore", actor = user) => reviewWork(service, actor, { kind: "manage_archive", request: { workId, action, operationId: operation() } });
+    const active = create(); const binding = dispatch(active.workId);
+    assert.equal(manage(active.workId, "archive").ok, false, "pending execution cannot be archived");
+    assert.equal(service.getWork(active.workId)!.lifecycle, "active");
+    assert.equal(manage(active.workId, "delete").ok, false, "only archive supports deletion");
+    unwrap(service.reconcileExecution(user, { bindingId: binding.bindingId, outcome: "failed" }));
+    assert(canArchiveWork(service.getProjection(active.workId)!));
+    assert.equal(manage(active.workId, "archive", { ...user, userId: "other-user" }).ok, false);
+    unwrap(manage(active.workId, "archive"));
+    assert.equal(service.getWork(active.workId)!.lifecycle, "paused", "archiving failure prevents automatic retries");
+    assert.equal(service.getWork(active.workId)!.closureConclusion, undefined, "archive never claims success");
+    const archived = service.getProjection(active.workId)!;
+    assert(archived.archive?.archivedAt);
+    unwrap(manage(active.workId, "archive"));
+    assert.equal(service.getProjection(active.workId)!.stateVersion, archived.stateVersion, "repeat archive is idempotent");
+    unwrap(manage(active.workId, "delete"));
+    assert(service.getProjection(active.workId)!.archive?.deletedAt);
+    assert(service.repo.getBinding(binding.bindingId), "deletion retains original execution evidence");
+    const reopenedService = new WorkService(db.connection, { bots });
+    assert(reopenedService.getProjection(active.workId)!.archive?.deletedAt, "deleted state survives a new service instance");
+    unwrap(manage(active.workId, "restore"));
+    assert.equal(service.getProjection(active.workId)!.archive?.deletedAt, undefined);
+    assert.equal(service.getWork(active.workId)!.lifecycle, "paused", "restore does not rerun a failed task");
+    unwrap(service.resumeWork(user, { workId: active.workId, operationId: operation() }));
+    assert.equal(service.getProjection(active.workId)!.archive, undefined, "explicit resume returns the task to its normal list");
+    const done = create();
+    service.repo.updateWork({ ...done, lifecycle: "closed", closureConclusion: "succeeded" });
+    unwrap(manage(done.workId, "archive"));
+    assert.equal(service.getWork(done.workId)!.closureConclusion, "succeeded");
+    const cancelled = create();
+    unwrap(service.cancelWork(user, { workId: cancelled.workId, operationId: operation(), reason: "fixture cancellation" }));
+    unwrap(manage(cancelled.workId, "delete"));
+    assert(service.getProjection(cancelled.workId)!.archive?.deletedAt, "old non-successful closed records belong to archive");
+  });
   for (const change of ["source", "intent"] as const) {
     check(`an accepted ${change === "source" ? "old-input" : "old-requirement"} result stays historical`, () => {
       const work = create();

@@ -11,6 +11,7 @@ const versionGuard = z.object({
 const decision = { operationId: text, workId: text, versionGuard };
 
 export const workReviewControlSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("manage_archive"), request: z.object({ workId: text, operationId: text, action: z.enum(["archive", "delete", "restore"]) }).strict() }).strict(),
   z.object({ kind: z.literal("accept_deliverable"), request: z.object({
     ...decision, deliverableId: text,
   }).strict() }).strict(),

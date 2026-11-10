@@ -49,7 +49,7 @@ const botSidebar = renderToStaticMarkup(createElement(Sidebar));
 initial.page = originalPage;
 assert.match(chatSidebar, /独立任务/);
 assert.doesNotMatch(botSidebar, /独立任务|新建任务/);
-assert.match(botSidebar, /还没有 Bot/);
+assert.match(botSidebar, /未分组/);
 const botPage = renderToStaticMarkup(createElement(BotWorkspacePage));
 assert.match(botPage, /所有消息/);
 assert.doesNotMatch(botPage, /更多 Bot 操作|组队开工|返回普通模式/);
@@ -68,7 +68,7 @@ assert.match(botPage, /创建一个 Bot，给它名称和职责/);
 const navigation = botPage.match(/<nav class="bot-view-tabs"[^>]*>([\s\S]*?)<\/nav>/)?.[1];
 assert.ok(navigation);
 assert.equal((navigation.match(/<button /g) ?? []).length, 4, "navigation separates completed outcomes from other closed records");
-for (const title of ["对话", "进行中", "已完成", "其他记录"]) assert.match(navigation, new RegExp(`<span>${title}</span>`));
+for (const title of ["对话", "进行中", "已完成", "归档"]) assert.match(navigation, new RegExp(`<span>${title}</span>`));
 assert.match(navigation, /aria-current="page"/);
 assert.doesNotMatch(navigation + botSidebar, /待你决定/, "retired decision navigation is not exposed anywhere");
 assert.match(botPage, /还没有 Bot/);
@@ -312,6 +312,17 @@ assert.match(unknownNotification, /确认风险后重发/);
 assert.ok(unknownNotification.indexOf("确认风险后重发") < unknownNotification.indexOf("高级诊断与证据"),
   "uncertain delivery risk and confirmation remain outside the diagnostic fold");
 
+const archivedSuccess = work({ workId: "archived-success", title: "归档成功事项", lifecycle: "closed", closureConclusion: "succeeded", archive: { archivedAt: 2 } });
+assert.equal(workMatchesView(archivedSuccess, "completed"), false);
+assert.equal(workMatchesView(archivedSuccess, "closed"), true);
+const deletedArchive = { ...archivedSuccess, archive: { archivedAt: 2, deletedAt: 3 } };
+assert.equal(workMatchesView(deletedArchive, "closed"), false);
+assert.equal(workMatchesView(deletedArchive, "active"), false);
+const archivedHtml = renderToStaticMarkup(createElement(BotWorkBrowser, { works: [archivedSuccess, deletedArchive], view: "closed", loading: false, onOpenWork() {}, onConversation() {} }));
+assert.match(archivedHtml, /删除记录/);
+assert.match(archivedHtml, /已删除记录（1）/);
+assert.doesNotMatch(archivedHtml, /其他记录/);
+
 const night = work({ workId: "work-night", title: "夜间巡检", intentRevision: 2 });
 const handoff = work({
   workId: "work-handoff",
@@ -451,7 +462,7 @@ assert.match(handoffPage, /交接说明已读/);
 assert.doesNotMatch(handoffPage, /要求 r2/);
 snapshot.botSubmissionNotice = true;
 const noticePage = renderToStaticMarkup(createElement(BotWorkspacePage));
-assert.match(noticePage, /消息已发送/);
+assert.doesNotMatch(noticePage, /消息已发送/, "send status belongs to its message, not an extra duplicate banner");
 Object.assign(snapshot, savedSnapshot);
 
 useAppStore.setState({

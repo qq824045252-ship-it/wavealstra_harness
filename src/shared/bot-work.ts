@@ -434,6 +434,7 @@ export interface WorkDto {
 
 /** Reconnect/UI projection. Derived from persisted facts only. */
 export interface WorkProjectionDto {
+  archive?: { archivedAt: number; deletedAt?: number };
   team?: import("./bot-work-team").WorkTeamDto;
   phase4?: import("./bot-work-phase4").WorkPhase4Projection;
   phase3?: {

@@ -113,8 +113,8 @@ export function BotTeamsNavigation({ onSelect }: { onSelect?: () => void } = {})
     } catch { setError("保存结果尚未确认，请重试核对原请求，不会重复创建。"); }
     finally { saveFlight.current = false; setSaving(false); }
   };
-  const tasks = selected ? works.filter(work => work.team?.teamId === selected.templateId) : [];
-  const adHoc = works.filter(work => work.team && !work.team.removedAt && (!work.team.teamId || !teams.some(team => team.templateId === work.team?.teamId)));
+  const tasks = selected ? works.filter(work => !work.archive?.deletedAt && work.team?.teamId === selected.templateId) : [];
+  const adHoc = works.filter(work => work.team && !work.team.removedAt && !work.archive?.deletedAt && (!work.team.teamId || !teams.some(team => team.templateId === work.team?.teamId)));
   return <section className="bot-teams-navigation" aria-label="我的 Bot 团队">
     <div className="sidebar-tree-header"><span className="section-title">我的 Bot 团队</span><span className="sidebar-section-count">{teams.length}</span>
       <button type="button" className="sidebar-bot-create" onClick={() => { viewEpoch.current++; setError(""); setCreating(true); if (!saveRequest.current) { setName(""); setOwner(candidates[0]?.botId ?? ""); setMembers([]); } }}><IconPlus size={12} />新建团队</button>

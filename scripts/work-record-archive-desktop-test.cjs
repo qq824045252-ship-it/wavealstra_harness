@@ -1,0 +1,43 @@
+const { app, BrowserWindow, ipcMain } = require("electron");
+const { spawn } = require("node:child_process");
+const { createInterface } = require("node:readline");
+const fs = require("node:fs"), path = require("node:path"), os = require("node:os"), assert = require("node:assert/strict");
+const { pathToFileURL } = require("node:url");
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), "work-archive-ui-"));
+app.setPath("userData", path.join(dir, "profile"));
+let child, win, serial = 0; const pending = new Map();
+const call = (method, request) => new Promise((resolve, reject) => { const id = ++serial; pending.set(id, { resolve, reject }); child.stdin.write(JSON.stringify({ id, method, request }) + "\n"); });
+const startBackend = () => {
+  child = spawn("node", [path.resolve("out/tests/work-record-archive-backend.mjs"), path.join(dir, "work.db"), dir], { stdio: ["pipe", "pipe", "inherit"] });
+  createInterface({ input: child.stdout }).on("line", line => { if (!line.startsWith("{")) return; const reply = JSON.parse(line), item = pending.get(reply.id); if (!item) return; pending.delete(reply.id); reply.error ? item.reject(Error(reply.error)) : item.resolve(reply.result); });
+  child.on("exit", code => { for (const item of pending.values()) item.reject(Error("backend ended " + code)); pending.clear(); });
+};
+app.whenReady().then(async () => { try {
+  startBackend(); ipcMain.handle("archive-fixture", (_e, method, request) => call(method, request));
+  const out = path.resolve("out/tests"); const url = name => pathToFileURL(path.join(out, name)).href;
+  fs.writeFileSync(path.join(dir, "preload.cjs"), `const {contextBridge,ipcRenderer}=require('electron');contextBridge.exposeInMainWorld('archiveFixture',{call:(method,request)=>ipcRenderer.invoke('archive-fixture',method,request)});`);
+  fs.writeFileSync(path.join(dir, "index.html"), `<html><head><link rel="stylesheet" href="${url("work-record-archive-fixture.css")}"><style>body{margin:0;font:14px system-ui;background:#fafafa;color:#222}*{box-sizing:border-box}:root{--surface-right:#fff;--fg:#222;--fg-secondary:#555;--border-default:#ddd;--border-subtle:#eee;--border-color:#ddd;--text-secondary:#555;--text-primary:#222;--bg-hover:#eee}#root{height:100vh;padding:16px}.bot-workspace{display:flex;flex-direction:column;height:100%}</style></head><body><div id="root"></div><script src="${url("work-record-archive-fixture.js")}"></script></body></html>`);
+  win = new BrowserWindow({ width: 1040, height: 820, show: true, webPreferences: { preload: path.join(dir, "preload.cjs"), contextIsolation: true } });
+  await win.loadFile(path.join(dir, "index.html")); const ev = text => win.webContents.executeJavaScript(text);
+  const until = async expression => { for(let i=0;i<100;i++){if(await ev(expression))return;await new Promise(r=>setTimeout(r,60));}throw Error("timeout: " + expression); };
+  const click = label => ev(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()===${JSON.stringify(label)}).click()`);
+  const tab = label => ev(`Array.from(document.querySelectorAll('.bot-view-tabs button')).find(b=>b.querySelector('span').textContent===${JSON.stringify(label)}).click()`);
+  await until(`document.querySelector('.bot-work-card strong')?.textContent==='已完成的文档'`);
+  await click("归档"); await until(`!document.querySelector('.bot-work-card')`);
+  await tab("归档"); await until(`document.querySelector('.bot-work-card strong')?.textContent==='已完成的文档'`);
+  await click("删除记录"); await until(`!document.querySelector('.bot-work-card') && !!document.querySelector('.bot-archive-deleted')`);
+  await ev(`document.querySelector('.bot-archive-deleted input').click()`); await until(`document.querySelector('.bot-work-archive-actions button')?.textContent==='恢复到归档'`);
+  await click("恢复到归档"); await until(`!document.querySelector('.bot-work-card')`);
+  assert(await ev(`!!document.querySelector(".bot-archive-deleted input")`), "restoring the last deleted record keeps an exit from deleted view");
+  await ev(`document.querySelector(".bot-archive-deleted input").click()`); await until(`document.querySelectorAll(".bot-work-card").length===1`);
+  await tab("进行中"); await until(`document.querySelectorAll('.bot-work-card').length===2`);
+  assert(await ev(`Array.from(document.querySelectorAll('.bot-work-card-container')).find(x=>x.textContent.includes('正在执行的任务')).querySelector('.bot-work-archive-actions')===null`), "running task has no archive/delete control");
+  await click("归档"); await until(`document.querySelectorAll('.bot-work-card').length===1`);
+  const rows = await call("list"), failed = rows.find(x=>x.title==='执行失败的查询');
+  assert.equal(failed.lifecycle, "paused"); assert(failed.archive.archivedAt); assert.equal(failed.closureConclusion, undefined);
+  assert.equal(rows.find(x=>x.title==='正在执行的任务').lifecycle,"active");
+  await tab("归档"); await until(`document.querySelectorAll('.bot-work-card').length===2`);
+  await win.reload(); await until(`document.querySelector('.bot-view-tabs')`); await tab("归档"); await until(`document.querySelectorAll('.bot-work-card').length===2`);
+  for(const width of [390,1040]){win.setSize(width,820);await new Promise(r=>setTimeout(r,150));assert(await ev('document.documentElement.scrollWidth<=innerWidth'),"no horizontal overflow");fs.writeFileSync(path.join(out,`work-archive-${width}.png`),(await win.webContents.capturePage()).toPNG());}
+  console.log("PASS actual Electron UI + IPC + SQLite: archive completed/failed, preserve running task, delete, restore, refresh, 390/1040 layouts");
+} catch(e) { console.error(e); process.exitCode=1; } finally { if(win&&!win.isDestroyed())win.close();if(child)child.stdin.end();app.quit(); } });

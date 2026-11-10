@@ -5,7 +5,7 @@ const views: Array<{ id: BotWorkspaceView; label: string; icon: typeof IconBot }
   { id: "conversation", label: "对话", icon: IconMessageDashed },
   { id: "active", label: "进行中", icon: IconClock },
   { id: "completed", label: "已完成", icon: IconCheck },
-  { id: "closed", label: "其他记录", icon: IconArchive },
+  { id: "closed", label: "归档", icon: IconArchive },
 ];
 export function BotWorkNavigation({ works, view, allWorksLoaded, onChange }: {
   works: WorkProjectionDto[]; view: BotWorkspaceView; allWorksLoaded: boolean; onChange: (view: BotWorkspaceView) => void;

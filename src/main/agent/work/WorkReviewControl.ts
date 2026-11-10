@@ -14,6 +14,7 @@ export function reviewWork(works: WorkService, actor: WorkActor, request: unknow
   const input = parsed.data;
   const work = works.getWork(input.request.workId);
   if (!work || work.userId !== actor.userId) return { ok: false, code: "not_found", message: "找不到事项" };
+  if (input.kind === "manage_archive") return works.recordArchive.control(actor, input.request);
   if (input.kind === "accept_deliverable") return works.acceptDeliverable(actor, input.request);
   if (input.kind === "reject_deliverable") return works.rejectDeliverable(actor, input.request);
   if (input.kind === "attest_criteria") return works.attestCriteria(actor, input.request);

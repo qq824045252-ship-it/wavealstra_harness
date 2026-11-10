@@ -1,3 +1,4 @@
+import { isWorkArchived } from "@shared/bot-work-archive";
 import { getMarkdown } from "stream-markdown-parser";
 import type { BotMessageDto } from "@shared/bot-conversation";
 import type { WorkProjectionDto } from "@shared/bot-work";
@@ -25,6 +26,7 @@ export function workStatus(work: WorkProjectionDto): { label: string; group: Wor
     if (work.closureConclusion === "ended_unsuccessfully") return { label: "已结束 · 未完成", group: "unsuccessful" };
     return { label: "已结束", group: "ended" };
   }
+  if (work.archive?.archivedAt) return { label: "已归档 · 未完成", group: "unsuccessful" };
   if (work.lifecycle === "paused") return { label: "已暂停", group: "paused" };
   if (work.lifecycle === "closing") return { label: "正在结算", group: "running" };
   if (work.mode === "watch") {
@@ -67,8 +69,10 @@ export function workMatchesSearch(text: string, query: string): boolean {
 }
 
 export function workMatchesView(work: WorkProjectionDto, view: BotWorkspaceView): boolean {
+  if (work.archive?.deletedAt) return false;
+  if (view === "closed") return isWorkArchived(work);
+  if (isWorkArchived(work)) return false;
   if (view === "completed") return work.lifecycle === "closed" && work.closureConclusion === "succeeded";
-  if (view === "closed") return work.lifecycle === "closed" && work.closureConclusion !== "succeeded";
   return work.lifecycle !== "closed";
 }
 

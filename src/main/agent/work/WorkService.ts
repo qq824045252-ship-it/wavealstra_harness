@@ -1,3 +1,4 @@
+import { WorkRecordArchive } from "./WorkRecordArchive";
 import { projectDeliverableReport } from "./WorkReportPresentation";
 import { recordWorkDelivery } from "./WorkDeliveryTargets";
 import { WorkAutomaticCompletion } from "./WorkAutomaticCompletion";
@@ -95,7 +96,6 @@ import { WorkWatchIngress } from "./WorkWatchIngress";
 import { WorkCausalGuard } from "./WorkCausalGuard";
 import { WorkWatchScheduler } from "./WorkWatchScheduler";
 import { continuationWorkSchema, type ContinuationWorkParams } from "../../../shared/bot-work-phase3";
-
 /** Local desktop entry envelope. It never creates branch/worktree implicitly. */
 export const DESKTOP_USER_GRANTS: WorkAuthorizationDto = {
   allowedScopes: ["workspace:read", "workspace:write"],
@@ -103,7 +103,6 @@ export const DESKTOP_USER_GRANTS: WorkAuthorizationDto = {
   allowGitBranchOrWorktree: false,
   allowRedelegation: false,
 };
-
 export interface WorkServiceOptions {
   bots: BotRegistry;
   requestExpert?: (work: WorkDto, botId: string) => import("../../../shared/bot-work").ExpertConfigSnapshotDto | undefined;
@@ -113,10 +112,8 @@ export interface WorkServiceOptions {
   /** Only the authoritative host may create control instructions (F14 / BW-A13). */
   isAuthority?: () => boolean;
 }
-
 type Fail = { ok: false; code: WorkControlErrorCode; message: string; latestWorkSnapshot?: WorkDto };
 type Mutation = { ok: true; outboxEventId?: string } | Fail;
-
 interface ResolvedActor {
   userId: string;
   kind: WorkActor["kind"];
@@ -124,11 +121,9 @@ interface ResolvedActor {
   grants: WorkAuthorizationDto;
   binding?: WorkExecutionBindingDto;
 }
-
 const TERMINAL_BINDING_STATUSES = new Set<WorkExecutionStatus>(["completed", "failed", "stopped", "invalidated"]);
 const UNSETTLED_BINDING_STATUSES = new Set<WorkExecutionStatus>(["pending", "submitted", "running", "unknown"]);
 const EXECUTION_EVIDENCE_KINDS = new Set<WorkEvidenceKind>(["automated_test", "tool_receipt", "inspection", "artifact"]);
-
 export class WorkService {
   readonly automaticCompletion: WorkAutomaticCompletion;
   readonly teams: WorkTeamService;
@@ -147,6 +142,7 @@ export class WorkService {
   readonly cards: WorkResultCards;
   readonly phase5: WorkPhase5Facts;
   private readonly bots: BotRegistry;
+  readonly recordArchive: WorkRecordArchive;
   private readonly requestExpert?: WorkServiceOptions["requestExpert"];
   private readonly now: () => number;
   private readonly emit?: (projection: WorkProjectionDto) => void;
@@ -179,6 +175,7 @@ export class WorkService {
     this.phase5 = new WorkPhase5Facts(this, this.now, db);
     this.pausedBacklog = new WorkPausedBacklog(db, this);
     this.teams = new WorkTeamService(db, this, this.bots, this.now);
+    this.recordArchive = new WorkRecordArchive(db, this, this.now, () => !this.authorityError());
     this.automaticCompletion = new WorkAutomaticCompletion(db, this, (work, conclusion, summary, bindingId) => {
       this.closeWithConclusion(work, conclusion, { operationId: `automatic-completion:${bindingId}`, closureSummary: summary }, this.now());
     }, () => !this.authorityError());
@@ -302,6 +299,7 @@ export class WorkService {
       closureSummary: work.closureSummary,
       ownerBotId: work.ownerBotId,
       team: this.teams?.get(work.workId),
+      archive: this.recordArchive?.get(work.workId),
       ownerEpoch: work.ownerEpoch,
       intentRevision: work.intentRevision,
       sourceVersion: work.sourceVersion,
@@ -683,6 +681,7 @@ export class WorkService {
         if (work.authorization.expiresAt !== undefined && work.authorization.expiresAt <= now) {
           return { ok: false, code: "unauthorized_actor", message: "Work 授权已过期，恢复前需要重新授权" };
         }
+        this.recordArchive.clearOnExplicitResume(work.workId);
         const next: WorkDto = {
           ...work, lifecycle: "active", stateVersion: work.stateVersion + 1, updatedAt: now,
         };

@@ -1,3 +1,4 @@
+import { BotWorkArchiveActions } from "./BotWorkArchiveActions";
 import { BotCollaborationLog } from "./BotCollaborationLog";
 import { userInputBlockerSnapshot } from "@shared/bot-work-review";
 import { isWorkEffectDiagnostic, WORK_EFFECT_DISPOSITION } from "@shared/work-effect-policy";
@@ -96,11 +97,12 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
         <h2>{work.title}</h2>
         <p>{ownerName} · {work.mode === "watch" ? "持续关注" : "一次性事项"}</p>
       </header>
+      <BotWorkArchiveActions key={work.workId} work={work} />
       <section className="bot-detail-section" aria-label="目标与进度">
         <h3>目标</h3>
         <p>{work.title}</p>
         <h3>进度</h3>
-        <p>{workStatusLabel(work)}。{work.lifecycle === "closed" ? "处理结论已返回对话，原始结果保留在下方。" : "助理会对照原委托核对实际结果，自动补缺并返回结论。"}</p>
+        <p>{workStatusLabel(work)}。{work.archive?.archivedAt ? "此事项已归档，不会自动重试；记录与已有成果保留。" : work.lifecycle === "closed" ? "处理结论已返回对话，原始结果保留在下方。" : "助理会对照原委托核对实际结果，自动补缺并返回结论。"}</p>
         {work.closureSummary && <details className="bot-original-report"><summary>结束说明原文</summary><WorkResultText text={work.closureSummary} /></details>}
       </section>
       {work.mode === "watch" && work.phase4 && <section className="bot-detail-section" aria-label="持续跟踪安排">

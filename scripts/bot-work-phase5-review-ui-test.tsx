@@ -16,10 +16,11 @@ import type { BotDto } from "../src/shared/bot-work";
 import { useAppStore } from "../src/renderer/src/store/appStore";
 
 const { window: testWindow, document: testDocument } = parseHTML("<html><body></body></html>");
-Object.assign(globalThis, { window: testWindow, document: testDocument, IS_REACT_ACT_ENVIRONMENT: true });
+Object.assign(globalThis, { window: testWindow, document: testDocument, HTMLElement: testWindow.HTMLElement, IS_REACT_ACT_ENVIRONMENT: true });
 // linkedom has no layout engine, matchMedia or native dialog methods. Supply only
 // those browser contracts here; actual modal focus/resize is verified in Electron.
 Object.defineProperty(testWindow, "matchMedia", { configurable: true, value: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }) });
+Object.assign(globalThis, { ResizeObserver: class { observe() {} unobserve() {} disconnect() {} } });
 Object.assign(globalThis, { requestAnimationFrame: (fn: () => void) => setTimeout(fn, 0), cancelAnimationFrame: clearTimeout });
 Object.assign(testWindow.HTMLElement.prototype, {
   show() { this.setAttribute("open", ""); }, showModal() { this.setAttribute("open", ""); }, close() { this.removeAttribute("open"); },
@@ -199,7 +200,7 @@ async function main() {
         blockers: [{ blockerId: "legacy-question", workId: work.workId, reason: "Please clarify the expected date", kind: "operational" as const,
           waitingForUserInput: true, status: "open" as const, createdAt: 1 }] };
       try {
-        useAppStore.setState({ activeBotId: "owner", activeTeam: null, botIdentities: [owner, member], selectedWorkId: legacy.workId,
+        useAppStore.setState({ activeBotId: "owner", activeTeam: null, botIdentities: [owner, member], selectedWorkId: null,
           botWorks: [legacy], botDraft: "Owner unfinished draft", botDrafts: { member: "Member unfinished draft", owner: "Owner unfinished draft" },
           refreshBotHistory: async () => {}, refreshBotWork: async () => {}, submitBotDraft: async () => { sends += 1; } });
         const { createRoot } = await import("react-dom/client");
@@ -207,13 +208,15 @@ async function main() {
         await act(async () => root!.render(<StrictMode><BotWorkspacePage /></StrictMode>));
         const tabs = [...container.querySelectorAll<HTMLButtonElement>(".bot-view-tabs button")];
         assert.equal(tabs.length, 4);
-        assert.deepEqual(tabs.map(tab => tab.querySelector("span")?.textContent), ["对话", "进行中", "已完成", "其他记录"]);
+        assert.deepEqual(tabs.map(tab => tab.querySelector("span")?.textContent), ["对话", "进行中", "已完成", "归档"]);
         assert.doesNotMatch(container.textContent!, /待你决定/);
         await act(async () => tabs[1].dispatchEvent(new testWindow.Event("click", { bubbles: true })));
         assert.match(container.querySelector(".bot-work-browser")!.textContent!, /Review current output/,
           "a task needing real input remains reachable in the active view");
         await act(async () => tabs[2].dispatchEvent(new testWindow.Event("click", { bubbles: true })));
         await act(async () => tabs[0].dispatchEvent(new testWindow.Event("click", { bubbles: true })));
+        await act(async () => tabs[1].dispatchEvent(new testWindow.Event("click", { bubbles: true })));
+        await act(async () => container.querySelector<HTMLButtonElement>(".bot-work-card")!.dispatchEvent(new testWindow.Event("click", { bubbles: true })));
         await click("向负责人回复此问题");
         const after = useAppStore.getState();
         assert.equal(after.activeBotId, "owner"); assert.equal(after.selectedWorkId, legacy.workId);
