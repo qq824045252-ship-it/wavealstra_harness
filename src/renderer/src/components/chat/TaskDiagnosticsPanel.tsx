@@ -25,10 +25,6 @@ const money = (value: number | null, complete: boolean) => value === null ? "未
 const time = (value: number) => new Date(value).toLocaleTimeString();
 const changedLabels: Record<string, string> = { model: "模型", tools: "工具声明", instructions: "指令", system: "系统指令", reasoning: "推理设置", thinking: "思考设置" };
 
-/** 每组默认只渲染最近这么多轮；长任务上千轮全渲染会卡，也不利于阅读 */
-const GROUP_WINDOW = 30;
-const GROUP_STEP = 50;
-
 function VerdictBadge({ verdict, small = false }: { verdict: Verdict; small?: boolean }): React.JSX.Element {
   return (
     <span className={`td-verdict td-verdict--${verdict}${small ? " td-verdict--small" : ""}`} data-verdict={verdict}>
@@ -211,12 +207,10 @@ function CacheTrend({ points, label }: { points: CacheTrendPoint[]; label: strin
 type Filter = "all" | Verdict;
 
 function TabBody({ tab, filter, now }: { tab: DiagnosticsTab; filter: Filter; now: number }): React.JSX.Element {
-  const [size, setSize] = useState(GROUP_WINDOW);
-  useEffect(() => setSize(GROUP_WINDOW), [tab.key]);
+  // 全部轮次、按时间升序（用户口径：从第 1 轮往下读，不做倒序、也不分窗）
   const rows = [...tab.turns]
     .filter((turn) => filter === "all" || turn.verdict === filter)
-    .sort((a, b) => b.startedAt - a.startedAt);
-  const visible = rows.slice(0, size);
+    .sort((a, b) => a.startedAt - b.startedAt);
   return <div className="td-tab-body">
     <div className="td-summary-counts td-summary-counts--tab">
       {(["error", "warn", "unknown", "waiting"] as const).map((key) => (
@@ -227,17 +221,7 @@ function TabBody({ tab, filter, now }: { tab: DiagnosticsTab; filter: Filter; no
     <CacheTrend points={sampleCacheTrend(tab.cacheTrend)} label={tab.label} />
     {rows.length === 0
       ? <p className="task-diagnostic-note">{tab.turns.length === 0 ? "此页没有观测记录。" : `没有「${verdictLabels[filter as Verdict] ?? "该判定"}」的轮次。`}</p>
-      : <>
-        {visible.map((turn) => <TurnCard turn={turn} key={turn.key} />)}
-        {rows.length > visible.length && (
-          <div className="td-more">
-            <span>已显示最近 {visible.length} / {rows.length} 轮</span>
-            <button type="button" className="td-more-btn" onClick={() => setSize((value) => value + GROUP_STEP)}>
-              再看 {Math.min(GROUP_STEP, rows.length - visible.length)} 轮
-            </button>
-          </div>
-        )}
-      </>}
+      : rows.map((turn) => <TurnCard turn={turn} key={turn.key} />)}
   </div>;
 }
 
