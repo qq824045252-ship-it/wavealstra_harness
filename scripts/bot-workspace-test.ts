@@ -10,7 +10,7 @@ import ChatMarkdown from "../src/renderer/src/components/chat/ChatMarkdown";
 import BotWorkspacePage, { BotMessage } from "../src/renderer/src/components/pages/BotWorkspacePage";
 import { BotWorkBrowser } from "../src/renderer/src/components/pages/BotWorkBrowser";
 import { BotWorkDetails } from "../src/renderer/src/components/pages/BotWorkDetails";
-import { WorkFiles, workFiles, generatedWorkFiles } from "../src/renderer/src/components/pages/BotWorkResult";
+import { WorkFiles, workFiles, generatedWorkFiles, additionalReportRecord } from "../src/renderer/src/components/pages/BotWorkResult";
 import { WorkCardsPanel } from "../src/renderer/src/components/pages/BotWorkCardsPanel";
 import { WorkReviewPanel } from "../src/renderer/src/components/pages/BotWorkReviewPanel";
 import { useAppStore } from "../src/renderer/src/store/appStore";
@@ -282,7 +282,7 @@ for (const closureConclusion of ["succeeded", "cancelled", "ended_unsuccessfully
   const closedDetails = renderDetails({ closureConclusion, deliverables: [proposedOutput] });
   assert.doesNotMatch(closedDetails, /class="bot-work-decision-hint"|<h3>需要你决定<\/h3>|<button[^>]*>采纳成果<\/button>/,
     "closed matters must not solicit review decisions that cannot be acted on");
-  assert.match(closedDetails, /已生成，尚未登记采纳/, "completion does not fabricate acceptance of a proposed result");
+  assert.match(closedDetails, /结果已返回/, "completion does not fabricate acceptance of a proposed result");
   assert.match(closedDetails, /成果记录与验收/);
 }
 const emptyExecution: NonNullable<WorkProjectionDto["phase3"]> = { subitems: [], continuations: [], gaps: [],
@@ -552,8 +552,21 @@ for (const [reviewStatus, label] of [["rejected", "未通过核验"], ["accepted
 }
 
 assert.match(reportHtml, /尚未覆盖：现场验收/);
-assert.match(reportHtml, /<details class="bot-original-report"><summary>原始消息与完整记录/);
+assert.match(reportHtml, /<details class="bot-original-report"><summary>补充原始记录/);
 assert(reportHtml.indexOf("合计 42 元") < reportHtml.indexOf("完整原始消息"));
+// Report text has one reading surface, even when the host wraps it in metadata.
+const dedupReport = structuredResult.workFeedback!.report!;
+assert.equal(additionalReportRecord(dedupReport, dedupReport.summary), "");
+assert.equal(additionalReportRecord(dedupReport, `后台成果，结果已返回\n${dedupReport.summary}\n成果：/snap/hash-report\n尚未覆盖：现场验收`), "");
+assert.equal(additionalReportRecord(dedupReport, `后台成果，结果已返回\n${dedupReport.summary}\n额外证据：磁盘回读已完成`), "额外证据：磁盘回读已完成");
+assert.equal(additionalReportRecord(dedupReport, "另一份完整原文"), "另一份完整原文");
+assert.equal(additionalReportRecord(dedupReport, `不是报告正文：${dedupReport.summary}仍需另行处理`), `不是报告正文：${dedupReport.summary}仍需另行处理`, "substring overlap is not equivalence");
+const duplicateMessage = { ...structuredResult, text: `后台成果，结果已返回\n${dedupReport.summary}\n成果：/snap/hash-report\n尚未覆盖：现场验收` };
+const duplicateHtml = renderToStaticMarkup(createElement(BotMessage, { message: duplicateMessage, botName: "Bot", works: [], onOpenWork() {}, onCancel() {} }));
+assert.equal(duplicateHtml.split("合计 42 元").length - 1, 1);
+assert.doesNotMatch(duplicateHtml, /bot-original-report/);
+assert.equal(duplicateMessage.text.includes("合计 42 元"), true, "rendering never deletes persisted source text");
+
 const partitionedResult: BotMessageDto = { ...structuredResult, workFeedback: { ...structuredResult.workFeedback!, report: { ...structuredResult.workFeedback!.report!,
   teamFacts: [{ displayName: "甲", responsibility: "读取文件", executionStatus: "failed", failureReason: "ENOENT", sourceRefs: ["binding-exact"] }],
   structured: { version: 1, conclusions: [{ text: "文件没有读到", requestMessageId: "request-exact", requestText: "读取文件", sources: [{ ref: "binding-exact", label: "甲 · 读取文件" }] }], observations: ["可选编码建议"] },

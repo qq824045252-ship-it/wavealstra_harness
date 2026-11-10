@@ -63,6 +63,28 @@ export function BotResultReport({ message, work, renderMarkdown }: { message: Bo
   return <WorkReport report={message.workFeedback!.report!} originalText={message.text} executionId={message.workFeedback?.executionId} work={work} renderMarkdown={renderMarkdown} />;
 }
 
+/** Presentation-only subtraction: never rewrite the persisted message or infer semantic equivalence. */
+export function additionalReportRecord(report: NonNullable<WorkFeedbackDto["report"]>, originalText: string): string {
+  const original = originalText.replace(/\r\n/g, "\n").trim();
+  const displayed = (report.structured?.conclusions.map(item => item.text).join("\n") ?? report.summary).replace(/\r\n/g, "\n").trim();
+  if (!original || original === displayed) return "";
+  // Structured projections may omit JSON fields; keep their source intact.
+  if (report.structured || !displayed) return original;
+  const at = original.indexOf(displayed);
+  if (at < 0 || (at > 0 && original[at - 1] !== "\n")
+    || (at + displayed.length < original.length && original[at + displayed.length] !== "\n")) return original;
+  let remainder = original.slice(0, at) + original.slice(at + displayed.length);
+  // These are host-generated wrappers already represented by the card's badge,
+  // notices and attachments. Unknown prefixes/suffixes always remain accessible.
+  remainder = remainder.replace(/^(?:后台成果|历史执行成果（不代表当前要求已完成）)，(?:结果已返回|已采纳|未采纳|已被后续成果替代)\n/, "");
+  const representedLines = new Set(report.notices);
+  if (report.artifactRefs.length) {
+    representedLines.add(`成果：${report.artifactRefs[0]}`);
+    for (const ref of report.artifactRefs.slice(1)) representedLines.add(ref);
+  }
+  return remainder.split("\n").filter(line => !representedLines.has(line)).join("\n").trim();
+}
+
 export function WorkReport({ report, originalText, executionId, work, renderMarkdown }: {
   report: NonNullable<WorkFeedbackDto["report"]>; originalText: string; executionId?: string; work?: WorkProjectionDto;
   renderMarkdown: (text: string) => React.JSX.Element;
@@ -70,7 +92,10 @@ export function WorkReport({ report, originalText, executionId, work, renderMark
   const [expanded, setExpanded] = useState(false);
   const unprojectedJson = !report.structured && /^(?:```(?:json)?\s*)?[{[]/.test(report.summary.trim());
   const bodyText = report.structured?.conclusions.map(item => item.text).join("\n") ?? report.summary;
-  const long = bodyText.length > 1600 || bodyText.split("\n").length > 20;
+  const long = !unprojectedJson && (bodyText.length > 1600 || bodyText.split("\n").length > 20);
+  const additionalRecord = unprojectedJson
+    ? (originalText.includes(report.summary) ? originalText : [report.summary, originalText].filter(Boolean).join("\n\n"))
+    : additionalReportRecord(report, originalText);
   const files = workFiles(report.artifactRefs, work, executionId).map(file => ({ ...file,
     name: report.files?.find(item => item.ref === file.ref)?.name ?? file.name,
     openPath: report.files?.find(item => item.ref === file.ref)?.openPath }));
@@ -82,7 +107,7 @@ export function WorkReport({ report, originalText, executionId, work, renderMark
       {report.structured ? <section aria-label="本次请求的结论"><h4>本次请求的结论</h4>{report.structured.conclusions.map((item, index) => <article key={index}>
         {renderMarkdown(item.text)}<details><summary>关联请求与来源</summary><p>{item.requestText}</p>
         <p>引用关联不代表结论已自动证实。</p><ul>{item.sources.map(source => <li key={source.ref}>{source.label}<details><summary>来源标识</summary><code>{source.ref}</code></details></li>)}</ul>
-        </details></article>)}</section> : unprojectedJson ? <p>报告已返回；此记录未生成可读投影，请展开原始消息查看完整内容。</p> : renderMarkdown(report.summary)}
+        </details></article>)}</section> : unprojectedJson ? <p>报告已返回；此记录未生成可读投影，请展开下方完整报告查看原始内容。</p> : renderMarkdown(report.summary)}
     </div>
     {report.teamFacts && <section aria-label="汇总时的执行事实"><h4>汇总时的执行事实</h4><ul>{report.teamFacts.map((fact, index) => <li key={index}>
       <strong>{fact.displayName}</strong>：{{ completed: "执行结束", failed: "执行失败", stopped: "执行停止", invalidated: "执行已失效", unknown: "执行结果未知", not_started: "未启动", running: "执行中", submitted: "已派发", pending: "准备中" }[fact.executionStatus] ?? fact.executionStatus}
@@ -95,7 +120,7 @@ export function WorkReport({ report, originalText, executionId, work, renderMark
     {long && <button className="bot-result-expand" type="button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? "收起长报告" : "展开完整报告"}</button>}
     {report.notices.length > 0 && <ul className="bot-result-notices">{report.notices.map((notice, i) => <li key={i}>{notice}</li>)}</ul>}
     <WorkFiles files={files} />
-    <details className="bot-original-report"><summary>原始消息与完整记录</summary><p>成果记录：{{ proposed: "已生成，尚未登记采纳", accepted: "已采纳", rejected: "未采纳", superseded: "已被后续成果替代" }[report.reviewStatus]}。这是成果记录状态，不是新的操作授权请求。</p>{renderMarkdown(originalText)}</details>
+    {additionalRecord && <details className="bot-original-report"><summary>{unprojectedJson ? "完整报告（原始格式）" : "补充原始记录"}</summary><p>成果记录：{{ proposed: "已生成，尚未登记采纳", accepted: "已采纳", rejected: "未采纳", superseded: "已被后续成果替代" }[report.reviewStatus]}。这是成果记录状态，不是新的操作授权请求。</p>{renderMarkdown(additionalRecord)}</details>}
   </section>;
 }
 
