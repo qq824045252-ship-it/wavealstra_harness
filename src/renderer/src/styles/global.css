@@ -18414,12 +18414,10 @@ html[data-theme="dark"] .input-expert-chip {
 }
 
 .subagent-popover {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  z-index: 60;
-  width: min(380px, 78vw);
-  max-height: 60vh;
+  position: fixed;
+  box-sizing: border-box;
+  z-index: 1000;
+  overscroll-behavior: contain;
   overflow: auto;
   padding: 6px;
   border-radius: var(--radius-md, 10px);
@@ -18430,6 +18428,7 @@ html[data-theme="dark"] .input-expert-chip {
 
 .subagent-popover-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   padding: 2px 4px 6px;
@@ -18503,6 +18502,7 @@ html[data-theme="dark"] .input-expert-chip {
 
 .subagent-popover-line {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   gap: 8px;
   min-width: 0;
@@ -18515,7 +18515,7 @@ html[data-theme="dark"] .input-expert-chip {
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
-  flex: 1;
+  flex: 1 0 90px;
 }
 
 .subagent-popover-metrics {
