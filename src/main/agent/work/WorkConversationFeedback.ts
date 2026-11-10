@@ -1,3 +1,4 @@
+import { watchObservationDelivery, watchReadEvidence } from "./WorkWatchObservation";
 import type { WorkCompletionDelivery } from "./WorkCompletionCoordinator";
 import type Database from "better-sqlite3";
 import type { WorkFeedbackDto } from "../../../shared/bot-conversation";
@@ -108,11 +109,20 @@ export class WorkConversationFeedback {
         };
         const results = works.repo.listDeliverables(work.workId);
         const generated = works.generatedArtifacts.list(work.workId, true);
+        const completed = new Set(works.repo.listBindings(work.workId).filter(b => b.status === "completed").map(b => b.bindingId));
+        const watchResults = results.filter(r => completed.has(r.executionId));
+        const delivery = (result: typeof results[number]) => completed.has(result.executionId)
+          ? watchObservationDelivery(work, result, watchResults, item => watchReadEvidence(this.options.db, works.repo.getBinding(item.executionId), item)) : { silent: false, summary: result.summary };
         const memberBindings = new Set((this.options.db.prepare(`SELECT b.binding_id FROM work_team_executions e
           JOIN work_execution_bindings b ON b.work_id=e.work_id AND b.task_id=e.task_id
           WHERE e.work_id=? AND e.role='member'`).all(work.workId) as Array<{ binding_id: string }>).map(row => row.binding_id));
         for (const binding of works.repo.listBindings(work.workId)) {
           if (!["completed", "failed", "stopped", "invalidated", "unknown"].includes(binding.status) || managed(binding.bindingId)) continue;
+          const watchResult = results.find(r => r.deliverableId === `result:${binding.bindingId}`);
+          // A scheduled observation has one user-facing result, not a separate
+          // "result returned" progress bubble. Quiet checks have neither.
+          if (watchResult && binding.status === "completed" && work.mode === "watch"
+            && work.watchRule?.notificationMode === "changes_only") continue;
           const labels: Record<string, string> = { completed: "后台结果已返回。",
             failed: "后台执行失败，事项尚未因此完成。", stopped: "后台执行已停止。",
             invalidated: "该后台执行已失效，其结果不能作为当前事项完成的依据。", unknown: "后台执行结果暂不确定，需要核对。" };
@@ -131,6 +141,8 @@ export class WorkConversationFeedback {
         }
         for (const result of results) {
           if (managed(result.executionId)) continue;
+          const presentationResult = delivery(result);
+          if (presentationResult.silent) continue;
           const current = result.intentRevision === work.intentRevision && result.inputSnapshotId === work.inputSnapshotId;
           let presentation: ReturnType<typeof projectTeamReport> = {};
           try {
@@ -143,14 +155,14 @@ export class WorkConversationFeedback {
           const review = { proposed: "结果已返回", accepted: "已采纳", rejected: "未采纳", superseded: "已被后续成果替代" }[result.status];
           const label = !current ? "历史执行成果（不代表当前要求已完成）" : "后台成果";
           emit(`result:${result.deliverableId}`, [result, current],
-            `${label}，${review}\n${result.summary}${result.artifactRefs.length ? `\n成果：${result.artifactRefs.join("\n")}` : ""}`
+            `${label}，${review}\n${presentationResult.summary}${result.artifactRefs.length ? `\n成果：${result.artifactRefs.join("\n")}` : ""}`
             + `${result.uncoveredScope.length ? `\n尚未覆盖：${result.uncoveredScope.join("；")}` : ""}`
             + `${result.isSpeculation ? "\n该成果包含推测，仍需验证。" : ""}`
             + `${result.hasWriteConflicts ? "\n存在写入冲突，仍需处理。" : ""}`
             + `${result.rejectedReason ? `\n未通过核验：${result.rejectedReason}` : ""}`,
             { kind: "result", category: memberBindings.has(result.executionId) ? "progress" : "result", executionId: result.executionId,
               intentRevision: result.intentRevision, inputSnapshotId: result.inputSnapshotId,
-              report: { title: work.title, summary: result.summary, artifactRefs: result.artifactRefs, ...presentation,
+              report: { title: work.title, summary: presentationResult.summary, artifactRefs: result.artifactRefs, ...presentation,
                 files: result.artifactRefs.map(ref => {
                   const candidates = generated.filter(item => item.bindingId === result.executionId);
                   const sources = candidates.filter(item => item.path === ref);

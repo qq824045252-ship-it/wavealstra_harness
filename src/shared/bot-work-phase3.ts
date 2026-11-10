@@ -27,11 +27,15 @@ export type GeneratedArtifact = z.infer<typeof generatedArtifactSchema>;
 export const workRuntimeStateSchema = z.enum(["recovering", "running", "waiting", "interrupted"]);
 export type WorkRuntimeState = z.infer<typeof workRuntimeStateSchema>;
 export interface WorkRuntimeObservationDto { bindingId: string; state: WorkRuntimeState; reason: string; observedAt?: number }
+export const workReadEvidenceSchema = z.object({
+  toolCallId: z.string(), toolName: z.string(), at: z.number(), kind: z.string(), target: z.string(),
+  outputHash: z.string(), partial: z.boolean(),
+}).strict();
 export const workExecutionObservationSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("running"), runtimeState: workRuntimeStateSchema.optional(), runtimeReason: z.string().optional(), generatedArtifacts: z.array(generatedArtifactSchema).optional(), subitems: z.array(workSubitemSchema).optional() }).strict(),
   z.object({ status: z.enum(["completed", "failed", "stopped"]), summary: z.string(), failureReason: z.string().optional(), hasWriteConflicts: z.boolean(),
     generatedArtifacts: z.array(generatedArtifactSchema).optional(), artifactRefs: z.array(z.string()), sourceEntryId: z.number().optional(), usageTokens: z.number().nonnegative().optional(),
-    subitems: z.array(workSubitemSchema).optional(),readPaths:z.array(z.string()).optional() }).strict(),
+    readEvidence: z.array(workReadEvidenceSchema).optional(), subitems: z.array(workSubitemSchema).optional(),readPaths:z.array(z.string()).optional() }).strict(),
 ]);
 
 const guard = z.object({ expectedStateVersion: z.number().int().positive(), expectedIntentRevision: z.number().int().positive(), expectedOwnerEpoch: z.number().int().positive() }).strict();

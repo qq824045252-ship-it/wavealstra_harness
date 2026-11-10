@@ -1,3 +1,4 @@
+import { collectRuntimeMaterialEvidence } from "../RuntimeMaterialEvidence";
 import { durableRegisteredArtifact } from "./DurableArtifactRegistration";
 import type { GeneratedArtifact } from "../../../shared/bot-work-phase3";
 import { z } from "zod";
@@ -40,6 +41,7 @@ export async function readDurableWorkExecution(
     hasWriteConflicts: evidence.projection.messages.some(message => message.tools?.some(tool => nativeWriteConflicts(tool.detail))),
     artifactRefs: [...new Set([...evidence.artifacts, ...subitems.flatMap(item => item.artifactRefs)])],
     ...(subitems.length ? { subitems } : {}),
+    ...(evidence.readEvidence.length ? { readEvidence: evidence.readEvidence } : {}),
     ...(evidence.readPaths.size ? { readPaths: [...evidence.readPaths] } : {}),
   };
 }
@@ -48,6 +50,8 @@ export async function readDurableWorkExecution(
 async function scanExecutionEvidence(tx: Pick<Tx, "scanEntries">,
   record: Extract<SubmissionRecord, { type: "input" }>, workspaceBinding?: string, durableStoreKey?: string) {
   const projection = new DurableHistoryProjection();
+  const readCalls = new Map<string, { name: string; args: unknown }>();
+  const readEvidence: Array<{ toolCallId: string; toolName: string; at: number; kind: string; target: string; outputHash: string; partial: boolean }> = [];
   const fileCalls = new Map<string, { name: string; path: string }>();
   const readPaths = new Set<string>(), artifacts = new Set<string>();
   const responses: Array<{ text: string }> = [];
@@ -80,12 +84,34 @@ async function scanExecutionEvidence(tx: Pick<Tx, "scanEntries">,
         const text = durableContentText(message.content).trim();
         if (text && message.stopReason !== "toolUse" && text !== message.errorMessage?.trim()) responses.push({ text });
         for (const block of message.content) {
+          if (block.type === "toolCall" && ["read", "project_knowledge_read"].includes(block.name))
+            readCalls.set(block.id, { name: block.name, args: block.arguments });
           if (block.type === "toolCall" && ["read", "write", "edit"].includes(block.name)
             && typeof block.arguments.path === "string" && (workspaceBinding || isAbsolute(block.arguments.path)))
             fileCalls.set(block.id, { name: block.name, path: resolve(workspaceBinding ?? "", block.arguments.path) });
         }
       }
       if (message.role === "toolResult") {
+        const readCall = readCalls.get(message.toolCallId);
+        if (readCall) {
+          const materials = readCall.name === message.toolName ? collectRuntimeMaterialEvidence({
+            toolCallId: message.toolCallId, toolName: message.toolName, args: readCall.args,
+            result: message, isError: message.isError }, message.timestamp) : [];
+          for (const item of materials) {
+            const { toolCallId, toolName, at, kind, target, outputHash, partial } = item;
+            readEvidence.push({ toolCallId, toolName, at, kind, target, outputHash, partial });
+          }
+          // A later failed/empty/malformed read invalidates an earlier successful
+          // read of the same source. Do not erase the last attempt from evidence.
+          if (!materials.length) {
+            const args = readCall.args as Record<string, unknown>;
+            const target = args && (readCall.name === "read" ? args.path : args.id);
+            if (typeof target === "string" && target) readEvidence.push({ toolCallId: message.toolCallId,
+              toolName: readCall.name, at: message.timestamp, kind: readCall.name === "read" ? "file-content" : "knowledge-content",
+              target, outputHash: "", partial: true });
+          }
+        }
+        readCalls.delete(message.toolCallId);
         const call = fileCalls.get(message.toolCallId);
         if (call && message.toolName === call.name && !message.isError) {
           if (call.name === "read") readPaths.add(call.path); else artifacts.add(call.path);
@@ -105,7 +131,7 @@ async function scanExecutionEvidence(tx: Pick<Tx, "scanEntries">,
   } while (cursor);
   // A registered immutable version replaces the mutable source path in delivery.
   for (const artifact of generatedArtifacts) if (artifact.snapshotPath) artifacts.delete(artifact.path);
-  return { projection, readPaths, artifacts, generatedArtifacts, responses, answer, lastEntryId, usageTokens, reported };
+  return { projection, readEvidence, readPaths, artifacts, generatedArtifacts, responses, answer, lastEntryId, usageTokens, reported };
 }
 
 const nativePlanSchema = z.object({ itemId: z.string(), task: z.string(), required: z.boolean().optional(), dependencies: z.array(z.string()).optional(),

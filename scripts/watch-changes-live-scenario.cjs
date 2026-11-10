@@ -1,0 +1,46 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
+exports.run=async({send,foregroundDone,until,evaluate,history,rpc,report,requests,out,home,modelKey,botId,restart})=>{
+ const workspace=path.join(home,'watch-source');fs.mkdirSync(workspace,{recursive:true});
+ const file=path.join(workspace,'progress.txt'),seed=crypto.randomBytes(6).toString('hex'),a='WAITING_'+seed,b='READY_'+seed;
+ fs.writeFileSync(file,a+'\n');
+ const settings=(await evaluate(`window.api.botWork.getSettings('${botId}')`)).settings;
+ assert((await evaluate(`window.api.botWork.saveSettings(${JSON.stringify({botId,expectedRevision:settings.revision,workspacePath:workspace,modelId:modelKey,expertId:'',skillIds:[],mcpIds:[],connectorIds:[]})})`)).ok);
+ const detail=id=>evaluate(`window.api.botWork.getWork(${JSON.stringify(id)})`);
+ await send(`创建持续跟踪事项，标题“仅变化跟踪-${seed}”。每分钟整点（UTC）检查一次现有文件 ${file}，现在不要提前检查。每轮用真实read读取。首轮仅建立基线、不通知；之后只有文件内容变化才向我通知一次，内容未变必须静默，不要发送任何“无变化”消息。变化时简短返回真实文件完整原文。不要写文件、不要联网，持续执行直到我暂停或取消，不要在第一轮后结束事项。`);
+ await foregroundDone();
+ const works=await evaluate('window.api.botWork.listWorks(true)');assert.equal(works.length,1);const id=works[0].workId;
+ let w=await detail(id);assert.equal(w.mode,'watch');assert.equal(w.lifecycle,'active');
+ const sub=w.phase4.subscriptions.find(s=>s.status==='online');assert(Number.isFinite(sub.nextWakeAt));assert.equal(sub.cronExpression,'* * * * *');
+ report.schedule={workId:id,nextWakeAt:sub.nextWakeAt,cronExpression:sub.cronExpression,timezone:sub.timezone};
+ const completed=async()=> (await detail(id)).executions.filter(e=>e.inboxEventId&&e.status==='completed');
+ const observe=async(n,expected,silent)=>{
+  await until(async()=>{w=await detail(id);report.latestWork=w;return (await completed()).length>=n;},'actual changes-only tick #'+n);
+  const rows=await completed();assert.equal(rows.length,n);const e=rows[n-1];
+  await new Promise(r=>setTimeout(r,5000));
+  w=await detail(id);assert.equal(w.lifecycle,'active');
+  const h=await history();report.history=h;
+  const messages=h.messages.filter(m=>m.workFeedback?.executionId===e.bindingId);
+  assert(messages.every(m=>m.workFeedback.kind==='result'),'no duplicate progress bubble for watch observation');
+  report.rounds.push({executionId:e.bindingId,silent,messages,observedAt:Date.now()});
+  assert.equal(messages.length,silent?0:1,'changes-only delivery count #'+n);
+  if(!silent)assert(messages[0].text.includes(expected));
+ };
+ report.rounds=[];
+ await observe(1,a,true);
+ await observe(2,a,true);
+ const conversationId=(await history()).conversationId;
+ report.restartAt=Date.now(); await restart();
+ assert.equal((await history()).conversationId,conversationId,'same source conversation after normal restart');
+ fs.writeFileSync(file,b+'\n');
+ await observe(3,b,false);
+ await observe(4,b,true);
+ const beforePause=(await detail(id)).executions.length;
+ await send(`暂停 ${id} 的持续跟踪，不要取消、不要立即再检查。`);await foregroundDone();
+ w=await detail(id);assert.equal(w.lifecycle,'paused');
+ report.pauseAt=Date.now();await new Promise(r=>setTimeout(r,70000));
+ w=await detail(id);assert.equal(w.executions.length,beforePause,'pause prevents next actual clock slot');assert.equal(w.lifecycle,'paused');assert.equal(fs.readFileSync(file,'utf8'),b+'\n','watch never changes source');
+ report.finalWork=w;report.history=await history();
+ await evaluate(`[...document.querySelectorAll('.bot-thread details')].forEach(d=>{if(!d.open)d.querySelector('summary')?.click()})`);
+ for(const width of [1280,390]){await rpc('Emulation.setDeviceMetricsOverride',{width,height:900,deviceScaleFactor:1,mobile:false});await new Promise(r=>setTimeout(r,200));assert(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'));const shot=await rpc('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,'watch-followup-'+width+'.png'),Buffer.from(shot.data,'base64'));}
+ report.checks.push('four real-clock reads: initial and unchanged silent; normal Browser.close/relaunch preserves source conversation and baseline; changed content delivered exactly once; next unchanged silent; paused 70s no dispatch');
+};

@@ -28,6 +28,8 @@ export function normalizeWatchRule(input: Partial<WorkWatchRuleDto> | undefined)
     scheduleRationale: input.scheduleRationale?.trim().slice(0, 1000) || undefined,
     timezone: input.timezone?.trim() || undefined,
     catchUpPolicy,
+    notificationMode: input.notificationMode,
+    notifyInitial: input.notifyInitial,
     maxMergeWaitMs: input.maxMergeWaitMs && input.maxMergeWaitMs > 0 ? input.maxMergeWaitMs : 60_000,
     maxQueueDepth: input.maxQueueDepth && input.maxQueueDepth > 0 ? input.maxQueueDepth : 100,
     stopConditionText: input.stopConditionText?.trim() || undefined,

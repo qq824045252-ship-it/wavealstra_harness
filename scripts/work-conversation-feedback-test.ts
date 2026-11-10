@@ -1,3 +1,5 @@
+import { collectRuntimeMaterialEvidence } from "../src/main/agent/RuntimeMaterialEvidence";
+import { watchObservationDelivery as evaluateWatchDelivery, parseWatchObservation, watchReadEvidence } from "../src/main/agent/work/WorkWatchObservation";
 import assert from "node:assert/strict";
 import { ensureBotInbox } from "../src/main/agent/work/WorkDeliveryTargets";
 import { projectTeamReport } from "../src/main/agent/work/WorkReportPresentation";
@@ -380,5 +382,75 @@ try {
     workId: independent.workId, eventId: "blocker:spoof", kind: "blocker", category: "decision",
   }), true, "a user-controlled request ID cannot suppress host feedback");
   assert.equal(messages.message("bot-message-spoof")?.workFeedback, undefined, "ordinary model reply cannot be relabeled by a forged event key");
+  // Structured watch facts: prose changes cannot create notifications; incomplete facts cannot hide failures.
+  const watchObservationDelivery = (...args: Parameters<typeof evaluateWatchDelivery>) => evaluateWatchDelivery(args[0], args[1], args[2],
+    args[3] ?? (item => { const value = parseWatchObservation(item.summary); return value?.status === "observed" ? JSON.stringify(value.facts) : undefined; }));
+  const watch = { ...work, mode: "watch" as const, watchRule: { subscriptions: ["cron"], catchUpPolicy: "latest" as const,
+    maxMergeWaitMs: 60000, maxQueueDepth: 100, notificationMode: "changes_only" as const } };
+  const observationText = (value: string, summary = "报告", status = "observed") => JSON.stringify({
+    protocol: "watch-observation-v1", status, facts: [{ source: "/watch/source", key: "file_content", value }], summary });
+  const baseline = { ...works.repo.getDeliverable("result:binding-1")!, deliverableId: "watch-first", executionId: "watch-first",
+    createdAt: 1, summary: observationText("A"), uncoveredScope: [], hasWriteConflicts: false, isSpeculation: false };
+  const next = { ...baseline, deliverableId: "watch-next", executionId: "watch-next", createdAt: 2 };
+  assert.equal(watchObservationDelivery(watch, baseline, []).silent, true, "initial baseline is quiet");
+  assert.equal(watchObservationDelivery({ ...watch, watchRule: { ...watch.watchRule, notifyInitial: true } }, baseline, []).silent, false);
+  assert.equal(watchObservationDelivery(watch, { ...next, summary: observationText("A", "完全不同的措辞") }, [baseline]).silent, true);
+  assert.equal(watchObservationDelivery(watch, { ...next, summary: observationText("B", "报告") }, [baseline]).silent, false);
+  assert.equal(watchObservationDelivery(watch, { ...next, summary: observationText("A", "读失败", "unavailable") }, [baseline]).silent, false);
+  assert.equal(watchObservationDelivery(watch, { ...next, summary: "无变化，不要通知" }, [baseline]).silent, false);
+  assert.equal(watchObservationDelivery(watch, { ...next, uncoveredScope: ["来源未完整读取"] }, [baseline]).silent, false);
+  assert.equal(watchObservationDelivery(watch, { ...next, isSpeculation: true }, [baseline]).silent, false);
+  assert.equal(watchObservationDelivery({ ...watch, watchRule: undefined }, next, [baseline]).silent, false, "legacy watches retain delivery");
+  assert.equal(parseWatchObservation(observationText("A"))?.facts[0].value, "A");
+  assert.equal(parseWatchObservation('{"protocol":"watch-observation-v1","status":"observed","facts":[],"summary":"无变化"}'), undefined);
+  assert.equal(watchObservationDelivery(watch, next, [{ ...baseline, inputSnapshotId: "different" }]).silent, true, "new input establishes its own baseline");
+  assert.equal(watchObservationDelivery(watch, next, [{ ...baseline, createdAt: 3, summary: observationText("B") }]).silent, true, "future observation cannot rewrite earlier decision");
+
+  assert.equal(evaluateWatchDelivery(watch, next, [baseline]).silent, false, "no real read evidence cannot silently compare model claims");
+  assert.equal(watchObservationDelivery(watch, { ...next, status: "rejected" }, [baseline]).silent, false);
+  const sameTime = { ...next, createdAt: baseline.createdAt, summary: observationText("B") };
+  assert.equal(watchObservationDelivery(watch, sameTime, [baseline, sameTime]).silent, false, "same timestamp uses durable list order");
+  const persistentWatch = create("watch-feedback");
+  works.repo.updateWork({ ...persistentWatch, mode: "watch", watchRule: watch.watchRule });
+  messages.linkWork(messages.receipt(LOCAL_USER_ID, DEFAULT_BOT_ID, "source")!, persistentWatch.workId);
+  for (const [index, value] of ["A", "A", "B", "B"].entries()) {
+    await delay(3);
+    const bindingId = `watch-binding-${index}`;
+    const summary = observationText(value, `本轮读取：${value}；文案轮次${index}`);
+    db.upsertTask({ id: bindingId, title: "watch receipt", updatedAt: Date.now() });
+    const readEvidence = collectRuntimeMaterialEvidence({ toolCallId: bindingId, toolName: "read", args: { path: "/watch/source" },
+      result: { content: [{ type: "text", text: value + "\n" }] }, isError: false });
+    works.repo.insertBinding({ ...reportBinding, bindingId, workId: persistentWatch.workId, operationId: bindingId,
+      taskId: bindingId, intentRevision: persistentWatch.intentRevision, inputSnapshotId: persistentWatch.inputSnapshotId,
+      ownerEpoch: persistentWatch.ownerEpoch, status: "completed", settlementNote: summary });
+    assert(works.submitDeliverable({ kind: "worker", botId: DEFAULT_BOT_ID, bindingId }, {
+      operationId: `result:${bindingId}`, deliverableId: `result:${bindingId}`, workId: persistentWatch.workId,
+      bindingId, summary, artifactRefs: [], uncoveredScope: [], isSpeculation: false, hasWriteConflicts: false }).ok);
+    db.connection.prepare(`INSERT INTO work_native_inbox(fact_id,binding_id,namespace_hash,payload_json,received_at)
+      VALUES (?,?,?,?,?)`).run(bindingId,bindingId,"test",JSON.stringify({status:"completed",summary,readEvidence}),Date.now());
+    const saved = works.repo.getDeliverable(`result:${bindingId}`)!;
+    assert(watchReadEvidence(db.connection, works.repo.getBinding(bindingId), saved));
+    const originalPayload = JSON.stringify({status:"completed",summary,readEvidence});
+    for (const last of [{ ...readEvidence[0], partial: true }, { ...readEvidence[0], outputHash: "", partial: true }]) {
+      db.connection.prepare("UPDATE work_native_inbox SET payload_json=? WHERE fact_id=?")
+        .run(JSON.stringify({status:"completed",summary,readEvidence:[...readEvidence,last]}),bindingId);
+      assert.equal(watchReadEvidence(db.connection, works.repo.getBinding(bindingId), saved),undefined,
+        "latest partial/failed attempt cannot fall back to older full read even at same timestamp");
+    }
+    db.connection.prepare("UPDATE work_native_inbox SET payload_json=? WHERE fact_id=?").run(originalPayload,bindingId);
+    feedback.drain(persistentWatch.workId);
+    const rows = history().messages.filter(m => m.workFeedback?.workId === persistentWatch.workId);
+    assert.equal(rows.filter(m => m.workFeedback?.kind === "result").length, index < 2 ? 0 : 1);
+    assert.equal(rows.length, index < 2 ? 0 : 1, "one changed observation has no duplicate status bubble");
+    assert(!rows.some(m => ["watch-binding-0", "watch-binding-1", "watch-binding-3"].includes(m.workFeedback?.executionId ?? "")),
+      "quiet observations must not leak a binding progress notice");
+    assert.equal(works.repo.listDeliverables(persistentWatch.workId).length, index + 1, "all quiet observations remain durable");
+    if (index === 1) {
+      db.close(); db = new AppDatabase(path); ({ bots, works, messages, feedback } = open());
+      feedback.recover();
+      assert.equal(history().messages.filter(m => m.workFeedback?.workId === persistentWatch.workId).length, 0,
+        "recovery must not replay silent baseline or unchanged results");
+    }
+  }
   console.log("PASS durable Work feedback: origin, archive, handoff, result/blocker versions, restart, rollback, authority, no model turns, retry lifecycle");
 } finally { db.close(); rmSync(root, { recursive: true, force: true }); }

@@ -1,3 +1,4 @@
+import { WATCH_OBSERVATION_INSTRUCTIONS } from "./WorkWatchObservation";
 import { WorkExecutionMetricsStore } from "./WorkExecutionMetrics";
 import { botAttachmentSchema } from "../../../shared/bot-conversation";
 import { nonBlockingEffect, workAdmissionInFlight } from "../../../shared/work-effect-policy";
@@ -546,6 +547,7 @@ export class WorkRepository {
         receivedAt: sourceEvent.received_at, payload: json<Record<string, unknown>>(sourceEvent.payload_json, {}) } } : {}),
       ...(sourceEvent?.event_type === "work.tick" ? { watchFollowUp: {
         readOnly: true,
+        ...(this.getWork(binding.workId)?.watchRule?.notificationMode === "changes_only" ? { observationContract: WATCH_OBSERVATION_INSTRUCTIONS } : {}),
         watchRule: this.getWork(binding.workId)?.watchRule,
         previousReports: this.db.prepare(`SELECT deliverable_id AS deliverableId,substr(summary,1,2000) AS summary
           FROM work_deliverables WHERE work_id=? AND execution_id!=? ORDER BY created_at DESC LIMIT 3`)
@@ -752,7 +754,7 @@ export class WorkRepository {
   }
 
   listDeliverables(workId: string): WorkDeliverableDto[] {
-    return (this.db.prepare("SELECT * FROM work_deliverables WHERE work_id=? ORDER BY created_at ASC")
+    return (this.db.prepare("SELECT * FROM work_deliverables WHERE work_id=? ORDER BY created_at ASC,rowid ASC")
       .all(workId) as DeliverableRow[]).map(mapDeliverable);
   }
 

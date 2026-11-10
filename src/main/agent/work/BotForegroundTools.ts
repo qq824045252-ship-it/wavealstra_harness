@@ -20,6 +20,8 @@ const guard = z.object({ expectedStateVersion: z.number().int().positive(), expe
   expectedOwnerEpoch: z.number().int().positive() }).strict();
 const query = botWorkQuerySchema;
 const watchRule = z.object({
+  notificationMode: z.enum(["every_check", "changes_only"]).optional().describe("用户要求仅变化时通知必须设changes_only；每轮汇报用every_check。旧任务未配置时保持每轮汇报"),
+  notifyInitial: z.boolean().optional().describe("changes_only首轮是否通知；默认false只建立基线，用户要求首次也汇报才设true"),
   cronExpression: z.string().min(1).max(200).regex(/^\S+(?:\s+\S+){4}$/, "请使用五字段分钟级 Cron 时间表").optional().describe("五字段分钟级 Cron 时间表，按用户指定频率；不支持秒级轮询，不擅自提高检查频率"),
   timezone: z.string().min(1).max(100).optional().describe("IANA 时区，如 Asia/Shanghai；未指定时使用当前宿主时区"),
   nextWakeAt: z.number().int().nonnegative().optional().describe("一次性跟进或首次检查的 Unix 毫秒时间戳"),

@@ -180,6 +180,8 @@ export interface WorkGoalSourceDto {
 }
 
 export interface WorkWatchRuleDto {
+  notificationMode?: "every_check" | "changes_only";
+  notifyInitial?: boolean;
   scheduleBasis?: "user_specified" | "recommended";
   scheduleRationale?: string;
   subscriptions: string[];

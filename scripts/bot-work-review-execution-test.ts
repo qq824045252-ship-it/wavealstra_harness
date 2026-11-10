@@ -215,6 +215,34 @@ try {
     entry(id + 1, 1, [{ role: "toolResult", toolCallId: `file-${id}`, toolName: name,
       content: [{ type: "text", text: isError ? "operation failed" : "operation succeeded" }], isError, timestamp: id + 1 }]),
   ];
+  await check("watch read receipts preserve exact output and failed attempts, excluding other inputs and partial equality", async () => {
+    const read = fileEntries(3001, "read", "watch.txt");
+    const output = read[1].model?.[0];
+    assert(output?.role === "toolResult"); output.content = [{ type: "text", text: "A\n" }];
+    const entries = [inputEntry(3000), ...read, ...fileEntries(3003, "read", "failed.txt", true),
+      entry(3005, 1, [assistant([{ type: "text", text: "observation" }])]),
+      inputEntry(3006), ...fileEntries(3007, "read", "foreign.txt")];
+    const first = await readDurableWorkExecution(persisted(entries), completed(3000,3005), root);
+    assert(first.status === "completed");
+    assert.equal(first.readEvidence?.length, 2);
+    assert.equal(first.readEvidence?.[1].outputHash, "", "failed read is retained as non-comparable");
+    assert.equal(first.readEvidence?.[0].target, "watch.txt");
+    assert.equal(first.readEvidence?.[0].partial, false);
+    output.content = [{ type: "text", text: "A" }];
+    const second = await readDurableWorkExecution(persisted(entries), completed(3000,3005), root);
+    assert(second.status === "completed");
+    assert.notEqual(first.readEvidence?.[0].outputHash, second.readEvidence?.[0].outputHash, "trailing newline is a tool-output change");
+    output.details = { truncation: { truncated: true } };
+    const partial = await readDurableWorkExecution(persisted(entries), completed(3000,3005), root);
+    assert(partial.status === "completed"); assert.equal(partial.readEvidence?.[0].partial, true);
+    output.details = undefined;
+    const failedLater = [inputEntry(3100), ...fileEntries(3101,"read","same.txt"), ...fileEntries(3103,"read","same.txt",true),
+      entry(3105,1,[assistant([{type:"text",text:"still observed"}])])];
+    const failed = await readDurableWorkExecution(persisted(failedLater), completed(3100,3105),root);
+    assert(failed.status === "completed"); assert.equal(failed.readEvidence?.length,2);
+    assert.equal(failed.readEvidence?.at(-1)?.outputHash, "", "failed latest attempt remains in ordered receipt");
+    assert.equal(failed.readEvidence?.at(-1)?.partial,true);
+  });
   await check("failed and stopped inputs retain only successful artifacts and distinct response content before the next input", async () => {
     const entries = [inputEntry(30), ...fileEntries(31, "write", "saved.txt"), ...fileEntries(33, "edit", "rejected.txt", true),
       ...fileEntries(35, "read", "source.txt"),
