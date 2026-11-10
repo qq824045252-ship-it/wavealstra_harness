@@ -29,10 +29,11 @@ const selectedModel = process.env.BOT_FRONTDOOR_MODEL || 'opendesign/deepseek-v4
 const modelKey = `fixture/${selectedModel}`;
 const headless = process.env.BOT_WORK_DEV_HEADLESS === '1';
 const trackingScenario = process.argv.includes('--tracking');
+const watchStatusScenario = process.argv.includes('--watch-status');
 const watchScenario = process.argv.includes('--watch');
 const watchIntentScenario = process.argv.includes('--watch-intent');
 if (headless && process.platform !== 'linux') throw Error('Headless dev page validation requires Linux; it does not validate desktop input.');
-const out = path.join(root, teamDefaultWorkspaceScenario ? 'out/diagnostics/bot-team-default-workspace/live' : watchIntentScenario ? 'out/diagnostics/bot-watch-intent/live' : displayGroupsScenario ? 'out/diagnostics/bot-display-groups/live' : composerScenario ? 'out/diagnostics/bot-composer/live' : workspaceNavigationScenario ? 'out/diagnostics/bot-workspace-navigation/live' : searchScenario ? 'out/diagnostics/bot-search/live' : teamWorkspaceScenario ? 'out/diagnostics/bot-team-workspace/live' : concurrentScenario ? 'out/diagnostics/bot-concurrent/live' : completionScenario ? 'out/diagnostics/bot-completion/live' : trackingScenario ? 'out/diagnostics/bot-tracking/live' : teamTransientFailure ? 'out/diagnostics/bot-team-transient-failure/live' : teamTransportFailure ? 'out/diagnostics/bot-team-transport-failure/live' : teamFailureScenario ? 'out/diagnostics/bot-team-failure/live' : teamFreeScenario ? 'out/diagnostics/bot-team-free/live' : teamPlanningScenario ? 'out/diagnostics/bot-team-planning/live' : teamScenario ? 'out/diagnostics/bot-team-frontdoor/live' : cacheScenario ? 'out/diagnostics/bot-cache/live' : memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
+const out = path.join(root, watchStatusScenario ? 'out/diagnostics/bot-watch-status/live' : teamDefaultWorkspaceScenario ? 'out/diagnostics/bot-team-default-workspace/live' : watchIntentScenario ? 'out/diagnostics/bot-watch-intent/live' : displayGroupsScenario ? 'out/diagnostics/bot-display-groups/live' : composerScenario ? 'out/diagnostics/bot-composer/live' : workspaceNavigationScenario ? 'out/diagnostics/bot-workspace-navigation/live' : searchScenario ? 'out/diagnostics/bot-search/live' : teamWorkspaceScenario ? 'out/diagnostics/bot-team-workspace/live' : concurrentScenario ? 'out/diagnostics/bot-concurrent/live' : completionScenario ? 'out/diagnostics/bot-completion/live' : trackingScenario ? 'out/diagnostics/bot-tracking/live' : teamTransientFailure ? 'out/diagnostics/bot-team-transient-failure/live' : teamTransportFailure ? 'out/diagnostics/bot-team-transport-failure/live' : teamFailureScenario ? 'out/diagnostics/bot-team-failure/live' : teamFreeScenario ? 'out/diagnostics/bot-team-free/live' : teamPlanningScenario ? 'out/diagnostics/bot-team-planning/live' : teamScenario ? 'out/diagnostics/bot-team-frontdoor/live' : cacheScenario ? 'out/diagnostics/bot-cache/live' : memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-frontdoor-live-'));
 const agentDir = path.join(home, '.mybuddy'); fs.mkdirSync(agentDir, { recursive: true });
 for (const directory of ['AppData/Roaming', 'AppData/Local', 'Temp']) fs.mkdirSync(path.join(home, directory), { recursive: true });
@@ -332,6 +333,30 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       await evaluate(`document.querySelector('[aria-label="恢复原文"]').click()`);
       assert.equal(await evaluate(`document.querySelector('#bot-draft').value`),'帮我写一句邀请同事喝咖啡的话');
       report.checks.push('real dev UI selects model/skill/MCP; real model reads selected SKILL.md and calls native stdio MCP in foreground; no Work; real enhancement and undo');
+    } else if (watchStatusScenario) {
+      const tab = async name => evaluate(`[...document.querySelectorAll('.bot-view-tabs button')].find(b=>b.querySelector('span')?.textContent===${JSON.stringify(name)}).click()`);
+      await send('创建一个持续跟踪事项：每天上海时间上午9点，只读检查这项测试委托的进展并简短报告。现在不要检查，不访问网络，不修改文件。'); await foregroundDone();
+      const all = await evaluate('window.api.botWork.listWorks(true)'); assert.equal(all.length,1);
+      const workId=all[0].workId;
+      assert.equal(all[0].mode,'watch'); assert.equal(all[0].executions.length,0);
+      const sub=all[0].phase4.subscriptions.find(s=>s.status==='online'); assert(sub.nextWakeAt>Date.now());
+      await tab('进行中');
+      await until(()=>evaluate(`document.querySelector('.bot-work-card')?.innerText.includes('等待下次检查')`),'scheduled, not falsely executing');
+      assert.equal(await evaluate(`document.querySelector('.bot-work-card time').dateTime`),new Date(sub.nextWakeAt).toISOString());
+      assert(await evaluate(`document.querySelector('.bot-work-card').innerText.includes('应用需保持运行')`));
+      const shot=await rpc('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});fs.writeFileSync(path.join(out,'scheduled.png'),Buffer.from(shot.data,'base64'));
+      await rpc('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:false}); await wait(250);
+      assert(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'),'watch card has no horizontal overflow');
+      const narrow=await rpc('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});fs.writeFileSync(path.join(out,'scheduled-390.png'),Buffer.from(narrow.data,'base64'));
+      await rpc('Emulation.clearDeviceMetricsOverride');
+      await tab('对话'); await send(`暂停 ${workId} 的持续跟踪。`); await foregroundDone();
+      await tab('进行中'); await until(()=>evaluate(`document.querySelector('.bot-work-card')?.innerText.includes('已暂停')`),'paused badge');
+      assert(!await evaluate(`!!document.querySelector('.bot-work-card time')`),'paused does not promise next check');
+      await tab('对话'); await send(`恢复 ${workId} 的持续跟踪，仍不要立即检查。`); await foregroundDone();
+      await tab('进行中'); await until(()=>evaluate(`document.querySelector('.bot-work-card')?.innerText.includes('等待下次检查')`),'resumed schedule badge');
+      report.checks.push('real model creates watch; UI shows persisted next check, pause hides next check, resume restores schedule; no premature execution');
+      report.work=await evaluate(`window.api.botWork.getWork(${JSON.stringify(workId)})`);
+      await tab('对话'); await send(`取消 ${workId} 的测试跟踪。`); await foregroundDone();
     } else if (watchIntentScenario) {
       const allWorks = () => evaluate('window.api.botWork.listWorks(true)');
       const detail = id => evaluate(`window.api.botWork.getWork(${JSON.stringify(id)})`);

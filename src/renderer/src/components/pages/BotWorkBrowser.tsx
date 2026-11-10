@@ -1,3 +1,4 @@
+import { nextWatchCheckAt } from "@/lib/botWatchPresentation";
 import { BotWorkArchiveActions } from "./BotWorkArchiveActions";
 import { isWorkArchived } from "@shared/bot-work-archive";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -66,12 +67,14 @@ export function BotWorkBrowser({ works, view, loading, selectedWorkId, onOpenWor
 }
 
 function WorkCard({ work, status, selected, onSelect }: { work: WorkProjectionDto; status: ReturnType<typeof workStatus>; selected: boolean; onSelect: () => void }): React.JSX.Element {
+  const nextCheck = nextWatchCheckAt(work);
   const latest = [...work.deliverables].reverse().find(item => item.status === "accepted" || item.status === "proposed");
   const ended = work.lifecycle === "closed" || isWorkArchived(work);
   const excerpt = ended ? work.closureSummary || latest?.summary || (work.archive?.archivedAt && work.lifecycle !== "closed" ? "执行未完成，已归档，不再自动重试。打开可查看已有记录。" : work.closureConclusion === "succeeded" ? "委托已完成，打开查看最终记录。" : work.closureConclusion === "cancelled" ? "此委托已取消，已有记录仍可查看。" : "打开查看结束原因与已有记录。") : latest?.summary ?? work.nextSteps[0] ?? "打开查看目标、进展与成果。";
   return <article className="bot-work-card-container"><button type="button" className="bot-work-card" data-work-id={work.workId} aria-pressed={selected} onClick={onSelect}>
     <div className="bot-work-card-top"><span className={`bot-status-badge ${status.group === "succeeded" ? "success" : status.group}`}>{status.label}</span><span>{work.team ? `${work.team.members.length + 1} 位 Bot 组队` : work.mode === "watch" ? "持续关注" : "单次委托"}</span></div>
     <strong>{work.title}</strong><p className="bot-work-excerpt"><span>{ended ? "结果：" : latest ? "成果摘录：" : "下一步："}</span>{workCardExcerpt(excerpt, work.title)}</p>
+    {nextCheck !== undefined && <p className="bot-work-excerpt"><span>下次计划检查：</span><time dateTime={new Date(nextCheck).toISOString()}>{new Date(nextCheck).toLocaleString("zh-CN")}</time> · 应用需保持运行</p>}
     <div className="bot-work-card-bottom"><span>{work.deliverables.length ? `${work.deliverables.length} 项成果` : ended ? "查看结束记录" : "等待成果"} · {new Date(work.updatedAt).toLocaleDateString("zh-CN", { month: "short", day: "numeric" })}</span><span className="bot-work-card-open">查看完整内容<IconChevronRight size={16} /></span></div>
   </button><BotWorkArchiveActions work={work} /></article>;
 }

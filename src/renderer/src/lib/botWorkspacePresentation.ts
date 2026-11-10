@@ -1,3 +1,4 @@
+import { watchPresentation } from "./botWatchPresentation";
 import { isWorkArchived } from "@shared/bot-work-archive";
 import { getMarkdown } from "stream-markdown-parser";
 import type { BotMessageDto } from "@shared/bot-conversation";
@@ -29,12 +30,7 @@ export function workStatus(work: WorkProjectionDto): { label: string; group: Wor
   if (work.archive?.archivedAt) return { label: "已归档 · 未完成", group: "unsuccessful" };
   if (work.lifecycle === "paused") return { label: "已暂停", group: "paused" };
   if (work.lifecycle === "closing") return { label: "正在结算", group: "running" };
-  if (work.mode === "watch") {
-    if (work.phase4 && !work.phase4.subscriptions.some(item => item.status !== "stopped" && item.nextWakeAt !== undefined)
-      && !work.executions.some(item => ["pending", "submitted", "running", "unknown"].includes(item.status))) return { label: "暂无后续检查", group: "waiting" };
-    if (work.phase4 && !work.phase4.host.online) return { label: "等待宿主恢复", group: "waiting" };
-    return { label: "持续关注中", group: "watching" };
-  }
+  if (work.mode === "watch") return watchPresentation(work);
   const blockers = work.blockers.filter(item => item.status === "open" && item.kind !== "external_effect" && !item.unknownExternalEffectRef);
   if (blockers.some(item => item.waitingForUserInput)) return { label: "等待补充信息", group: "attention" };
   if (blockers.length) return { label: "需要处理", group: "attention" };

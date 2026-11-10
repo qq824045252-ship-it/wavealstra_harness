@@ -171,7 +171,7 @@ const executed = { ...plain, executions: [completeBinding] };
 assert.equal(workExecutionComplete(executed), true);
 assert.equal(workStatusLabel(executed), "正在核对结果");
 assert.equal(workMatchesView(executed, "closed"), false, "execution success never fabricates Work acceptance or closure");
-assert.equal(workStatusLabel({ ...executed, mode: "watch" }), "持续关注中");
+assert.equal(workStatusLabel({ ...executed, mode: "watch" }), "跟踪状态待读取");
 assert.equal(workStatusLabel({ ...executed, blockers: [blocker] }), "等待补充信息");
 for (const status of ["pending", "submitted", "running", "unknown", "failed", "stopped", "invalidated"] as const) {
   assert.equal(workExecutionComplete({ ...plain, executions: [{ ...completeBinding, status }] }), false);
@@ -188,6 +188,24 @@ assert.equal(workStatus({ ...executed, intentRevision: 99 }).group, "waiting");
 assert.equal(workStatus({ ...plain, lifecycle: "closed", closureConclusion: "succeeded" }).group, "succeeded");
 assert.equal(workStatus({ ...plain, lifecycle: "closed" }).group, "ended");
 assert.equal(workStatus({ ...executed, executions: [{ ...completeBinding, status: "unknown" }] }).group, "attention");
+// Watch badges use actual current execution/subscription facts rather than mode alone.
+const onlineSubscription = { subscriptionId: "watch-sub", workId: plain.workId, source: "cron", status: "online", nextWakeAt: 1890000000000,
+  queue: { ready: 0, frozen: 0, blocked: 0 }, cronExpression: "0 9 * * *" } as NonNullable<WorkProjectionDto["phase4"]>["subscriptions"][number];
+const watching: WorkProjectionDto = { ...plain, mode: "watch", phase4: { subscriptions: [onlineSubscription], host: { online: true }, offlineGaps: [], causal: [], deadlineRevision: 0 } };
+assert.equal(workStatusLabel(watching), "等待下次检查");
+assert.equal(workStatusLabel({ ...watching, blockers: [blocker] }), "等待补充信息");
+assert.equal(workStatusLabel({ ...watching, blockers: [{ ...blocker, waitingForUserInput: false }] }), "检查受阻");
+for (const [status, label] of [["running", "正在检查"], ["pending", "等待检查执行"], ["submitted", "等待检查执行"], ["unknown", "检查结果待核对"], ["failed", "上次检查未完成"], ["stopped", "上次检查未完成"], ["completed", "等待下次检查"]] as const)
+  assert.equal(workStatusLabel({ ...watching, executions: [{ ...completeBinding, taskId: "current", admittedAt: 1, status }] }), label);
+assert.equal(workStatusLabel({ ...watching, executions: [{ ...completeBinding, taskId: "current", admittedAt: 1, status: "failed" }, { ...completeBinding, taskId: "current", admittedAt: 2 }] }), "等待下次检查", "successful retry replaces stale failure");
+for (const override of [{ intentRevision: 0 }, { inputSnapshotId: "old" }, { ownerEpoch: 0 }, { invalidatedAt: 5 }])
+  assert.equal(workStatusLabel({ ...watching, executions: [{ ...completeBinding, status: "running", ...override }] }), "等待下次检查", "old or invalidated execution is not current checking");
+assert.equal(workStatusLabel({ ...watching, phase4: { ...watching.phase4!, host: { online: false } } }), "等待宿主恢复");
+for (const [patch, label] of [[{ status: "paused" }, "检查订阅已暂停"], [{ status: "offline" }, "等待检查源恢复"], [{ status: "stopped" }, "暂无后续检查"], [{ source: "file", cronExpression: undefined, nextWakeAt: undefined }, "等待来源变化"], [{ nextWakeAt: undefined }, "暂无后续检查"], [{ queue: { ...onlineSubscription.queue, blocked: 1 } }, "检查事件受阻"]] as const)
+  assert.equal(workStatusLabel({ ...watching, phase4: { ...watching.phase4!, subscriptions: [{ ...onlineSubscription, ...patch }] } }), label);
+const watchHtml = renderToStaticMarkup(createElement(BotWorkBrowser, { works: [watching], view: "active", loading: false, onOpenWork: () => {}, onConversation: () => {} }));
+assert.match(watchHtml, /等待下次检查/); assert.match(watchHtml, /下次计划检查/); assert.match(watchHtml, /应用需保持运行/);
+
 const indexed = workSearchText({ ...plain, title: "器件价格核对", nextSteps: ["联系供应商 ACME"], criteria: [{ ...plain.criteria[0], text: "比较贴片电容" }],
   deliverables: [{ summary: "完整报告含 47uF", artifactRefs: ["报价结果.xlsx"] } as WorkProjectionDto["deliverables"][number]] });
 assert.ok(workMatchesSearch(indexed, "ACME   电容"));
