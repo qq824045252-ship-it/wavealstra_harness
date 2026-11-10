@@ -18,7 +18,7 @@ export function createBotConversationState(): BotConversationUiState {
   let saved: z.infer<typeof savedSchema> = { drafts: {}, requests: {}, attachments: {} };
   try { saved = savedSchema.parse(JSON.parse(localStorage.getItem(storageKey) ?? "{}")); } catch { /* An absent/invalid cache is not an accepted send. */ }
   return { botDrafts: saved.drafts, botAttachmentDrafts: saved.attachments, botHistories: {}, botConversationErrors: {},
-    botPendingSends: Object.fromEntries(Object.entries(saved.requests).map(([botId, request]) => [botId, { request, sending: false, error: "发送结果未确认，请按原请求重试" }])) };
+    botPendingSends: Object.fromEntries(Object.entries(saved.requests).map(([, request]) => [request.requestId, { request, sending: false, error: "发送结果未确认，请按原请求重试" }])) };
 }
 
 export function createBotConversationActions({ get, set, getApi }: AppContext): Pick<AppActions,
@@ -33,7 +33,7 @@ export function createBotConversationActions({ get, set, getApi }: AppContext): 
       histories.set(botId, (histories.get(botId) ?? 0) + 1);
       const omit = <T,>(values: Record<string, T>) => { const next = { ...values }; delete next[botId]; return next; };
       set(state => ({ botDrafts: omit(state.botDrafts), botAttachmentDrafts: omit(state.botAttachmentDrafts),
-        botHistories: omit(state.botHistories), botPendingSends: omit(state.botPendingSends),
+        botHistories: omit(state.botHistories), botPendingSends: Object.fromEntries(Object.entries(state.botPendingSends).filter(([, item]) => item.request.botId !== botId)),
         botConversationErrors: omit(state.botConversationErrors),
         ...(state.activeBotId === botId ? { botDraft: "", activeBotId: null, selectedWorkId: null } : {}) }));
       persist();
@@ -51,33 +51,44 @@ export function createBotConversationActions({ get, set, getApi }: AppContext): 
       set(state => ({ activeBotId: botId, selectedWorkId: null, botDraft: botId ? state.botDrafts[botId] ?? "" : "", botSubmissionNotice: false }));
       if (botId) void get().refreshBotHistory(botId);
     },
-    submitBotDraft: async () => {
+    submitBotDraft: async (options = {}) => {
       const { activeBotId: botId, botDraft, selectedWorkId } = get();
       if (!botId) return;
+      if (options.editRejectedRequestId) {
+        const item = get().botPendingSends[options.editRejectedRequestId];
+        if (!item || item.request.botId !== botId || !item.error?.includes("BOT_ATTACHMENT_REJECTED:")) return;
+        if (botDraft.trim() || get().botAttachmentDrafts[botId]?.length) return;
+        set(state => {
+          const pending = { ...state.botPendingSends }; delete pending[item.request.requestId];
+          return { botPendingSends: pending, botDraft: item.request.text,
+            botDrafts: { ...state.botDrafts, [botId]: item.request.text },
+            botAttachmentDrafts: { ...state.botAttachmentDrafts, [botId]: item.request.attachments ?? [] } };
+        });
+        persist(); return;
+      }
       const attachments = get().botAttachmentDrafts[botId] ?? [];
-      if (!botDraft.trim() && !attachments.length && !get().botPendingSends[botId]) return;
-      const previous = get().botPendingSends[botId];
-      if (previous?.sending) return;
-      // A lost acknowledgement must first resolve its original request. Editing the
-      // draft does not silently allocate a second business identity.
-      const request = previous?.request ?? { botId, requestId: crypto.randomUUID(), text: botDraft.trim(), attachments: attachments.map(item => ({ name: item.name, path: item.path ?? "" })),
-        conversationId: get().botHistories[botId]?.conversationId || undefined, selectedWorkId: selectedWorkId ?? undefined };
-      set(state => ({ botPendingSends: { ...state.botPendingSends, [botId]: { request, sending: true } } }));
+      const previous = options.retryRequestId ? get().botPendingSends[options.retryRequestId] : undefined;
+      if (options.retryRequestId && (!previous || previous.request.botId !== botId || previous.sending)) return;
+      if (!previous && !botDraft.trim() && !attachments.length) return;
+      // Each send owns its identity. A missing receipt can be retried independently
+      // without hijacking a newer draft or blocking unrelated messages.
+      const request = previous?.request ?? { botId, requestId: crypto.randomUUID(), text: botDraft.trim(),
+        attachments: attachments.map(item => ({ name: item.name, path: item.path ?? "" })),
+        conversationId: get().botHistories[botId]?.conversationId || undefined,
+        selectedWorkId: selectedWorkId ?? undefined, referenceMessageId: options.referenceMessageId };
+      set(state => ({ botPendingSends: { ...state.botPendingSends, [request.requestId]: { request, sending: true } },
+        ...(!previous ? { botDraft: "", botDrafts: { ...state.botDrafts, [botId]: "" },
+          botAttachmentDrafts: { ...state.botAttachmentDrafts, [botId]: [] } } : {}) }));
       persist();
       try {
         const api = getApi();
-        if (!api) throw new Error("主机离线，草稿与请求身份已保留");
+        if (!api) throw new Error("主机离线，请求已保留，可单独重试");
         const receipt = await api.botWork.sendMessage(request);
         if (receipt.botId !== botId || receipt.requestId !== request.requestId) throw new Error("发送回执身份不匹配");
+        if (!get().botPendingSends[request.requestId]) return; // Bot deleted while the receipt was in flight.
         set(state => {
-          if (state.botPendingSends[botId]?.request.requestId !== request.requestId) return {};
-          const pending = { ...state.botPendingSends }; delete pending[botId];
-          const errors = { ...state.botConversationErrors }; delete errors[botId];
-          const matches = (state.botDrafts[botId] ?? (state.activeBotId === botId ? state.botDraft : "")).trim() === request.text && JSON.stringify(state.botAttachmentDrafts[botId] ?? []) === JSON.stringify(request.attachments ?? []);
-          return { botPendingSends: pending, botConversationErrors: errors,
-            botAttachmentDrafts: matches ? { ...state.botAttachmentDrafts, [botId]: [] } : state.botAttachmentDrafts,
-            botDrafts: matches ? { ...state.botDrafts, [botId]: "" } : state.botDrafts,
-            ...(matches && state.activeBotId === botId ? { botDraft: "", botSubmissionNotice: true } : {}) };
+          const pending = { ...state.botPendingSends }; delete pending[request.requestId];
+          return { botPendingSends: pending, ...(state.activeBotId === botId ? { botSubmissionNotice: true } : {}) };
         });
         persist();
         await get().refreshBotHistory(botId);
@@ -85,13 +96,9 @@ export function createBotConversationActions({ get, set, getApi }: AppContext): 
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         set(state => {
-          // This host marker means validation rejected the request before receipt
-          // creation. Unlike a network error, editing and resending is safe.
-          const pending = { ...state.botPendingSends };
-          if (message.includes("BOT_ATTACHMENT_REJECTED:")) delete pending[botId];
-          else pending[botId] = { request, sending: false, error: message };
-          return { botPendingSends: pending,
-            botConversationErrors: { ...state.botConversationErrors, [botId]: message.replace("BOT_ATTACHMENT_REJECTED:", "").trim() } };
+          if (!state.botPendingSends[request.requestId]) return {};
+          return { botPendingSends: { ...state.botPendingSends,
+            [request.requestId]: { request, sending: false, error: message } } };
         });
         persist();
       }

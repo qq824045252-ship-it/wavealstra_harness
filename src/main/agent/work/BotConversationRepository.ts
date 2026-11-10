@@ -140,11 +140,16 @@ export class BotConversationRepository {
     const boundary = this.db.prepare(`SELECT MAX(ordinal) AS ordinal FROM bot_messages
       WHERE conversation_id=? AND role='user' AND ordinal<? AND json_array_length(work_ids_json)>0`)
       .get(receipt.conversation_id, current.ordinal) as { ordinal: number | null };
+    const run = this.db.prepare('SELECT context_json FROM bot_request_runs WHERE message_id=?').get(receipt.assistant_message_id) as { context_json: string } | undefined;
+    // New concurrent requests have no implicit adjacency relationship. Only the
+    // current input is delegated; explicit reply references are retained separately.
+    const sourceIds = run ? new Set<string>() : undefined;
     const dialogue = this.db.prepare(`SELECT m.* FROM bot_messages m
       JOIN bot_send_receipts r ON r.conversation_id=m.conversation_id AND r.bot_id=m.bot_id AND r.request_id=m.request_id
         AND r.user_id=? AND (r.user_message_id=m.message_id OR r.assistant_message_id=m.message_id)
       WHERE m.conversation_id=? AND m.ordinal>? AND m.ordinal<=? ORDER BY m.ordinal`)
-      .all(receipt.user_id, receipt.conversation_id, boundary.ordinal ?? 0, current.ordinal).map(row => this.mapMessage(row));
+      .all(receipt.user_id, receipt.conversation_id, boundary.ordinal ?? 0, current.ordinal).map(row => this.mapMessage(row))
+      .filter(message => !sourceIds || message.messageId === current.messageId || sourceIds.has(message.messageId));
     const compact = (message: BotMessageDto) => ({ messageId: message.messageId, conversationId: message.conversationId,
       role: message.role, text: message.text, ordinal: message.ordinal,
       intentRevision: work.intentRevision, sourceVersion: work.sourceVersion,
@@ -152,6 +157,11 @@ export class BotConversationRepository {
     const reference = receipt.reference_message_id ? this.message(receipt.reference_message_id) : undefined;
     const references = reference?.botId === receipt.bot_id && reference.conversationId === receipt.conversation_id
       && reference.ordinal < current.ordinal ? [compact(reference)] : [];
+    if (references.length && reference?.role === 'assistant') {
+      const original = this.receipt(receipt.user_id, receipt.bot_id, reference.requestId);
+      const originalUser = original && this.message(original.user_message_id);
+      if (originalUser && originalUser.ordinal < current.ordinal) references.unshift(compact(originalUser));
+    }
     this.db.prepare(`INSERT OR IGNORE INTO bot_work_user_inputs(work_id,source_message_id,intent_revision,source_version,messages_json,references_json)
       VALUES (?,?,?,?,?,?)`).run(work.workId, current.messageId, work.intentRevision, work.sourceVersion,
         JSON.stringify(dialogue.map(compact)), JSON.stringify(references));
@@ -281,6 +291,7 @@ export class BotConversationRepository {
 
   private mapMessage(value: unknown): BotMessageDto {
     const row = messageRow.parse(value);
+    const version = this.db.prepare('SELECT revision FROM bot_message_revisions WHERE message_id=?').get(row.message_id) as { revision: number } | undefined;
     const attachmentRow = this.db.prepare("SELECT attachments_json FROM bot_message_attachments WHERE message_id=?").get(row.message_id) as { attachments_json: string } | undefined;
     const attachments = attachmentRow ? z.array(botAttachmentSchema).parse(JSON.parse(attachmentRow.attachments_json)) : undefined;
     const metadata = this.db.prepare("SELECT metadata_json FROM bot_work_feedback WHERE message_id=?").get(row.message_id) as { metadata_json: string } | undefined;
@@ -288,7 +299,7 @@ export class BotConversationRepository {
     const activityRow = row.status === "running" ? this.db.prepare("SELECT activity_json FROM bot_message_activity WHERE message_id=?")
       .get(row.message_id) as { activity_json: string } | undefined : undefined;
     const activity = activityRow ? botActivitySchema.safeParse(JSON.parse(activityRow.activity_json)) : undefined;
-    return { messageId: row.message_id, conversationId: row.conversation_id, botId: row.bot_id, requestId: row.request_id,
+    return { messageRevision: version?.revision ?? 0, messageId: row.message_id, conversationId: row.conversation_id, botId: row.bot_id, requestId: row.request_id,
       workFeedback: parsed?.success ? parsed.data : undefined, attachments, activity: activity?.success ? activity.data : undefined,
       ordinal: row.ordinal, role: row.role, text: row.text, status: row.status,
       workIds: z.array(z.string()).parse(JSON.parse(row.work_ids_json)), error: row.error ?? undefined,

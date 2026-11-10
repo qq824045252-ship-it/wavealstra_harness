@@ -53,6 +53,21 @@ async function main() {
   assert.equal(mergeBotMessageEvent({ ...initial, archived: true }, event)?.archived, true);
   console.log("PASS Bot stream identity, revision ordering, duplicate, archive and cancellation fences");
 
+  const parallelHistory = { ...initial, revision: 10, messages: [
+    { ...message, messageRevision: 1 },
+    { ...message, messageId: "answer-b", requestId: "request-b", ordinal: 4, messageRevision: 1 },
+  ] };
+  const bFirst = mergeBotMessageEvent(parallelHistory, { ...event, revision: 12,
+    message: { ...parallelHistory.messages[1], text: "B completed first", status: "completed", messageRevision: 2 } })!;
+  const aLater = mergeBotMessageEvent(bFirst, { ...event, revision: 11,
+    message: { ...parallelHistory.messages[0], text: "A delayed frame", messageRevision: 2 } })!;
+  assert.equal(aLater.messages[0].text, "A delayed frame");
+  assert.equal(aLater.messages[1].text, "B completed first");
+  assert.equal(aLater.revision, 12);
+  assert.deepEqual(aLater.messages.map(item => item.messageId), ["answer", "answer-b"]);
+  assert.equal(mergeBotMessageEvent(aLater, { ...event, revision: 13,
+    message: { ...parallelHistory.messages[0], text: "stale A", messageRevision: 1 } }), aLater);
+
   const f = fixture();
   const taskDraft = { title: "普通 Task 草稿" };
   f.store.setState({ activeBotId: "a", activeTaskId: "ordinary-task", draft: taskDraft, botDraft: "", selectedWorkId: "work-a" });
@@ -61,7 +76,7 @@ async function main() {
   const first = f.store.getState().submitBotDraft();
   await f.store.getState().submitBotDraft();
   assert.equal(f.calls.length, 1, "repeat click does not allocate another request");
-  assert.equal(f.store.getState().botDraft, "给 A 的消息", "draft clears only after host accepts");
+  assert.equal(f.store.getState().botDraft, "", "draft transfers to independent pending request immediately");
   f.store.getState().setActiveBotId("b");
   f.store.getState().setBotDraft("给 B 的草稿");
   const request = f.calls[0];
@@ -88,14 +103,32 @@ async function main() {
   });
   lost.store.getState().setBotDraft("原始消息");
   await lost.store.getState().submitBotDraft();
-  assert.equal(lost.store.getState().botDraft, "原始消息");
+  assert.equal(lost.store.getState().botDraft, "");
   const originalId = lost.calls[0].requestId;
   lost.store.getState().setBotDraft("在等待时修改的草稿");
-  await lost.store.getState().submitBotDraft();
+  await lost.store.getState().submitBotDraft({ retryRequestId: originalId });
   assert.equal(lost.calls[1].requestId, originalId);
   assert.equal(lost.calls[1].text, "原始消息");
   assert.equal(lost.durable.size, 1);
   assert.equal(lost.store.getState().botDraft, "在等待时修改的草稿", "accepting original request must preserve edited text");
+
+  const concurrent = fixture(); concurrent.store.setState({ activeBotId: "a" });
+  const replies = [deferred<BotSendReceipt>(), deferred<BotSendReceipt>()];
+  concurrent.sender(request => replies[concurrent.calls.findIndex(item => item.requestId === request.requestId)].promise);
+  concurrent.store.getState().setBotDraft("慢请求 A"); const pa = concurrent.store.getState().submitBotDraft();
+  concurrent.store.getState().setBotDraft("快速请求 B"); const pb = concurrent.store.getState().submitBotDraft({ referenceMessageId: "original-question" });
+  assert.equal(concurrent.calls.length, 2, "second request submits before first acknowledgement");
+  assert.equal(Object.keys(concurrent.store.getState().botPendingSends).length, 2);
+  assert.equal(concurrent.calls[1].referenceMessageId, "original-question");
+  concurrent.store.getState().setBotDraft("第三条尚未发送");
+  const ack = (i: number): BotSendReceipt => ({ botId: "a", conversationId: "conversation-a", requestId: concurrent.calls[i].requestId,
+    userMessageId: `u${i}`, assistantMessageId: `a${i}`, replayed: false });
+  replies[1].resolve(ack(1)); await pb;
+  assert.deepEqual(Object.keys(concurrent.store.getState().botPendingSends), [concurrent.calls[0].requestId]);
+  replies[0].resolve(ack(0)); await pa;
+  assert.equal(concurrent.store.getState().botDraft, "第三条尚未发送");
+  assert.equal(Object.keys(concurrent.store.getState().botPendingSends).length, 0);
+  console.log("PASS concurrent sends, reverse acknowledgement order and independent reference");
 
   const files = fixture(); files.store.setState({ activeBotId: "a" });
   files.store.getState().setBotAttachments("a", [{ name: "report.txt", path: "/tmp/report.txt" }]);
@@ -119,9 +152,10 @@ async function main() {
   rejected.store.getState().setBotAttachments("a", [{ name: "missing.txt", path: "/tmp/missing.txt" }]);
   rejected.sender(async () => { throw new Error("BOT_ATTACHMENT_REJECTED: 附件不存在"); });
   await rejected.store.getState().submitBotDraft();
-  assert.equal(rejected.store.getState().botPendingSends.a, undefined, "definite pre-accept rejection permits correction");
+  await rejected.store.getState().submitBotDraft({ editRejectedRequestId: rejected.calls[0].requestId });
+  assert.equal(Object.keys(rejected.store.getState().botPendingSends).length, 0, "definite rejection can be edited without duplicating an accepted request");
   assert.equal(rejected.store.getState().botAttachmentDrafts.a[0].name, "missing.txt", "rejection preserves editable draft");
-  assert.equal(rejected.store.getState().botConversationErrors.a, "附件不存在");
+
   const rejectedId = rejected.calls[0].requestId;
   rejected.store.getState().setBotAttachments("a", [{ name: "present.txt", path: "/tmp/present.txt" }]);
   await rejected.store.getState().submitBotDraft();

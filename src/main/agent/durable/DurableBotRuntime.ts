@@ -102,6 +102,9 @@ export interface DurableBotOptions {
 }
 
 /** A product adapter, with no scheduler, retry loop, continuation prompt or in-memory execution queue. */
+/** Native submission has conclusively ended without a usable answer; not an unknown effect. */
+export class DurableReplyError extends Error {}
+
 export class DurableBotRuntime {
   private watch!: ConversationWatch;
   private revision = 0;
@@ -614,7 +617,7 @@ export class DurableBotRuntime {
     try {
       const settled = await submission.wait(ctx);
       if (settled.status === "unanswered") {
-        throw new Error(settled.reason === "aborted" ? "任务已取消" : `Durable 未完成回复：${typeof settled.detail === "string" ? settled.detail : settled.reason}`);
+        throw new DurableReplyError(settled.reason === "aborted" ? "任务已取消" : `Durable 未完成回复：${typeof settled.detail === "string" ? settled.detail : settled.reason}`);
       }
       if (settled.type !== "input") throw new Error("Gateway 需要用户输入回执");
       const record = await this.storage.entry(this.conversation.id, settled.answer, ctx);

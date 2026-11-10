@@ -573,7 +573,8 @@
     "test:bot-memory-live": "node scripts/test-guard.mjs scripts/bot-frontdoor-live-test.cjs --memory",
     "test:bot-watch-scheduler": "esbuild scripts/bot-watch-scheduler-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/bot-watch-scheduler-test.mjs && node scripts/test-guard.mjs out/tests/bot-watch-scheduler-test.mjs",
     "test:bot-watch-creation": "esbuild scripts/bot-watch-creation-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/bot-watch-creation-test.mjs && node scripts/test-guard.mjs out/tests/bot-watch-creation-test.mjs",
-    "test:bot-watch:live": "node scripts/bot-frontdoor-live-test.cjs --watch"
+    "test:bot-watch:live": "node scripts/bot-frontdoor-live-test.cjs --watch",
+    "test:bot-conversation-concurrent-desktop": "esbuild scripts/bot-conversation-concurrent-desktop-fixture.tsx --bundle --platform=browser --format=iife --external:@terrastruct/d2 --jsx=automatic --alias:@=./src/renderer/src --alias:@shared=./src/shared --loader:.woff=file --loader:.woff2=file --loader:.ttf=file --outfile=out/tests/bot-conversation-concurrent-desktop-fixture.js && electron scripts/bot-conversation-concurrent-desktop-test.cjs"
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.85.0",

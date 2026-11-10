@@ -290,3 +290,9 @@
 .bot-settings-path { overflow-wrap:anywhere; }
 .bot-settings-save { display:flex; align-items:center; flex-wrap:wrap; gap:10px; padding-block:10px; border-top:1px solid var(--border-color, #8885); }
 .bot-settings-save span { font-size:12px; opacity:.7; }
+
+.bot-reply-reference { color: var(--fg-secondary); font-size: 12px; border-left: 2px solid var(--border-default); padding: 4px 10px; margin-bottom: 8px; white-space: pre-wrap; max-height: 64px; overflow: auto; }
+.bot-pending-requests { max-height: 140px; overflow: auto; }
+.bot-pending-request { display: flex; gap: 8px; align-items: center; padding: 6px 8px; font-size: 12px; }
+.bot-pending-request span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bot-pending-request small { max-width: 40%; overflow-wrap: anywhere; }

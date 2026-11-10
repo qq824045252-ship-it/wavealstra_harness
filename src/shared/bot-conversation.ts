@@ -41,6 +41,7 @@ export const botActivitySchema = z.object({
 export type BotActivityDto = z.infer<typeof botActivitySchema>;
 export const botMessageSchema = z.object({
   messageId: id, conversationId: id, botId: id, requestId: id, ordinal: z.number().int().positive(),
+  messageRevision: z.number().int().nonnegative().optional(),
   role: z.enum(["user", "assistant"]), text: z.string(), attachments: z.array(botAttachmentSchema).optional(),
   status: z.enum(["queued", "running", "completed", "cancelled", "unknown", "failed"]),
   workIds: z.array(id), workFeedback: workFeedbackSchema.optional(), activity: botActivitySchema.optional(), error: z.string().optional(), createdAt: z.number(), updatedAt: z.number(),

@@ -148,7 +148,7 @@ export interface AppActions {
   forgetDeletedBot: (botId: string) => void;
   setBotDraft: (text: string) => void;
   setBotAttachments: (botId: string, attachments: import("@/types").Attachment[]) => void;
-  submitBotDraft: () => Promise<void>;
+  submitBotDraft: (options?: { retryRequestId?: string; editRejectedRequestId?: string; referenceMessageId?: string }) => Promise<void>;
   refreshBotHistory: (botId: string) => Promise<void>;
   cancelBotSend: (botId: string, requestId: string) => Promise<void>;
   archiveBotConversation: (botId: string) => Promise<void>;

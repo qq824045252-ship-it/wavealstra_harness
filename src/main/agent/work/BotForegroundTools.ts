@@ -53,6 +53,7 @@ export interface BotForegroundToolOptions {
   bots: BotRegistry;
   messages: BotConversationRepository;
   works: WorkService;
+  requestNamespace?: string;
   schedule: (work: WorkDto, operationId: string, retryBlocked?: boolean) => void;
   wake: (workId?: string) => void;
   memorySearch: (query: string) => unknown;
@@ -120,7 +121,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
         if (["work_create", "work_amend", "work_resume"].includes(name)
           && bot.authorization.expiresAt !== undefined && bot.authorization.expiresAt <= Date.now()) throw new Error("Bot 授权已过期，需由用户明确续权");
         const source = receipt(requestId);
-        const operationId = `bot:${conversationId}:tool:${api.taskId}`;
+        const operationId = `bot:${conversationId}:${options.requestNamespace ? `request:${options.requestNamespace}:` : ""}tool:${api.taskId}`;
         let result: WorkControlResult;
         let previousSnapshotId: string | undefined;
         let shouldSchedule = false;
@@ -260,7 +261,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
         const workspacePath = options.botWorkspace?.(botId);
         if (!workspacePath) throw new Error("当前 Bot 没有可用工作目录，请在 Bot 设置中指定文件夹");
         const result = works.teams.createFromForeground(actor(), { ...input,
-          operationId: `bot:${conversationId}:team:${api.taskId}`, workspacePath, conversationId, sourceMessageId: source.user_message_id });
+          operationId: `bot:${conversationId}:${options.requestNamespace ? `request:${options.requestNamespace}:` : ""}team:${api.taskId}`, workspacePath, conversationId, sourceMessageId: source.user_message_id });
         if (result.ok && result.work) {
           messages.linkWorkUserInput(source, result.work);
           messages.linkWorkAttachments(source, result.work.workId, result.work.inputSnapshotId);

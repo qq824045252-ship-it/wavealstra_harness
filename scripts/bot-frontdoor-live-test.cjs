@@ -14,6 +14,7 @@ const teamFreeScenario = process.argv.includes('--team-free');
 const structuredReportScenario = process.argv.includes('--structured-report');
 const teamPlanningScenario = process.argv.includes('--team-planning') || teamFreeScenario;
 const teamScenario = process.argv.includes('--team') || teamFailureScenario || teamPlanningScenario;
+const concurrentScenario = process.argv.includes('--concurrent');
 const cacheScenario = process.argv.includes('--cache');
 const memoryScenario = process.argv.includes('--memory');
 const windows = process.platform === 'win32';
@@ -23,7 +24,7 @@ const headless = process.env.BOT_WORK_DEV_HEADLESS === '1';
 const trackingScenario = process.argv.includes('--tracking');
 const watchScenario = process.argv.includes('--watch');
 if (headless && process.platform !== 'linux') throw Error('Headless dev page validation requires Linux; it does not validate desktop input.');
-const out = path.join(root, trackingScenario ? 'out/diagnostics/bot-tracking/live' : teamTransientFailure ? 'out/diagnostics/bot-team-transient-failure/live' : teamTransportFailure ? 'out/diagnostics/bot-team-transport-failure/live' : teamFailureScenario ? 'out/diagnostics/bot-team-failure/live' : teamFreeScenario ? 'out/diagnostics/bot-team-free/live' : teamPlanningScenario ? 'out/diagnostics/bot-team-planning/live' : teamScenario ? 'out/diagnostics/bot-team-frontdoor/live' : cacheScenario ? 'out/diagnostics/bot-cache/live' : memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
+const out = path.join(root, concurrentScenario ? 'out/diagnostics/bot-concurrent/live' : trackingScenario ? 'out/diagnostics/bot-tracking/live' : teamTransientFailure ? 'out/diagnostics/bot-team-transient-failure/live' : teamTransportFailure ? 'out/diagnostics/bot-team-transport-failure/live' : teamFailureScenario ? 'out/diagnostics/bot-team-failure/live' : teamFreeScenario ? 'out/diagnostics/bot-team-free/live' : teamPlanningScenario ? 'out/diagnostics/bot-team-planning/live' : teamScenario ? 'out/diagnostics/bot-team-frontdoor/live' : cacheScenario ? 'out/diagnostics/bot-cache/live' : memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-frontdoor-live-'));
 const agentDir = path.join(home, '.mybuddy'); fs.mkdirSync(agentDir, { recursive: true });
 for (const directory of ['AppData/Roaming', 'AppData/Local', 'Temp']) fs.mkdirSync(path.join(home, directory), { recursive: true });
@@ -103,12 +104,19 @@ const provider = http.createServer(async (req,res) => {
   try {
     let raw=''; for await(const chunk of req) raw+=chunk;
     const body = JSON.parse(raw); requests.push(body);
+    const lastUser = [...body.messages].reverse().find(message => message.role === 'user');
+    const currentText = typeof lastUser?.content === 'string' ? lastUser.content : JSON.stringify(lastUser?.content);
+    if (concurrentScenario && currentText?.includes('CONCURRENT_FAIL')) {
+      res.writeHead(503, {'content-type':'application/json'});
+      res.end(JSON.stringify({error:{message:'Controlled transport failure for one foreground request',type:'service_unavailable'}})); return;
+    }
     if (teamTransportFailure && body.model === 'controlled-unavailable' && (!teamTransientFailure || requests.filter(r=>r.model==='controlled-unavailable').length<=4)) {
       res.writeHead(503, {'content-type':'application/json'});
       res.end(JSON.stringify({error:{message:'Controlled ordinary unavailable provider; no execution or process crash',type:'service_unavailable'}})); return;
     }
     const response=await fetch((process.env.BOT_FRONTDOOR_BASE_URL || 'http://127.0.0.1:3425/v1')+'/chat/completions', {
       method:'POST',headers:{'content-type':'application/json'},body:teamTransientFailure&&body.model==='controlled-unavailable'?JSON.stringify({...body,model:selectedModel}):raw});
+    if (concurrentScenario && currentText?.includes('CONCURRENT_SLOW')) await wait(40000);
     res.writeHead(response.status,{'content-type':response.headers.get('content-type')||'text/event-stream'});
     for await(const chunk of response.body) res.write(chunk);
     res.end();
@@ -183,7 +191,37 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       assert(requestId, 'accepted user request identity');
       await until(async () => (await history()).messages.some(m=>m.role==='assistant'&&m.requestId===requestId&&m.status==='completed'), 'matching foreground request completed');
     };
-    if (trackingScenario) {
+    if (concurrentScenario) {
+      const latestUser = async () => (await history()).messages.filter(m=>m.role==='user').at(-1);
+      const assistant = async requestId => (await history()).messages.find(m=>m.role==='assistant'&&m.requestId===requestId);
+      await send('CONCURRENT_SLOW 只回复“慢请求原答案”，不要用工具。');
+      const slow = await latestUser();
+      await until(async () => (await assistant(slow.requestId))?.status === 'running', 'slow live request running');
+      await send('独立问题：23+19等于多少？只答数字。不要等待其他请求。');
+      const fast = await latestUser();
+      await until(async () => (await assistant(fast.requestId))?.status === 'completed', 'fast live response while slow pending');
+      assert.match((await assistant(fast.requestId)).text, /42/);
+      assert.equal((await assistant(slow.requestId)).status, 'running', 'slow response must still be running');
+      const slowMessage = await assistant(slow.requestId);
+      await evaluate(`[...document.querySelectorAll('[data-message-id="${slowMessage.messageId}"] .bot-message-meta button')].find(button => button.textContent.includes("停止回复")).click()`);
+      await until(async () => (await assistant(slow.requestId))?.status === 'cancelled', 'stop only selected slow request');
+      assert.equal((await assistant(fast.requestId)).status, 'completed');
+      await send('第三条独立问题：只回复“第三条正常”。');
+      const third = await latestUser();
+      await until(async () => (await assistant(third.requestId))?.status === 'completed', 'subsequent live request');
+      assert.match((await assistant(third.requestId)).text, /第三条正常/);
+      await send('CONCURRENT_FAIL 这是单条传输失败验收请求。');
+      const failed = await latestUser();
+      await until(async () => ['failed','unknown'].includes((await assistant(failed.requestId))?.status), 'single failed provider request');
+      await send('失败之后的新问题：17+8等于多少？只答数字。');
+      const afterFailure = await latestUser();
+      await until(async () => (await assistant(afterFailure.requestId))?.status === 'completed', 'failed request does not block next live model');
+      assert.match((await assistant(afterFailure.requestId)).text, /25/);
+      assert.equal((await assistant(slow.requestId)).status, 'cancelled', 'late cancelled stream cannot revive original request');
+      report.checks.push('real model slow response overlapped by independent arithmetic; request-specific UI stop; third request completes; controlled 503 isolated; subsequent real model completes');
+      report.messages = (await history()).messages;
+      report.visibleText = await evaluate('document.body.innerText');
+    } else if (trackingScenario) {
       await send('请建立持续跟踪事项，标题“明日检查”：每天 Asia/Shanghai 时区上午9点只读检查委托进展。现在不用执行，不修改任何文件。');
       await foregroundDone(0);
       const works = await evaluate('window.api.botWork.listWorks(true)');

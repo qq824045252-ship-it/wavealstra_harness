@@ -75,7 +75,9 @@ models.registerProvider("fixture", { api: "openai-completions", apiKey: "fixture
   streamSimple: (model, request, options) => {
     if (model.id === "front") foregroundRequests.push(structuredClone(request));
     const stream = createAssistantMessageEventStream();
-    if (model.id === "front" && holdForeground) {
+    const currentInput = [...request.messages].reverse().find(message => message.role === 'user');
+    const isHeldRequest = currentInput && contentText(currentInput.content).startsWith('并发慢请求');
+    if (model.id === "front" && (holdForeground || isHeldRequest)) {
       foregroundHeld = true;
       const abort = () => {
         stream.push({ type: "error", reason: "aborted", error: { role: "assistant", content: [], stopReason: "aborted",
@@ -179,10 +181,19 @@ try {
   const frameCount = activityFrames();
   await delay(250);
   assert.equal(activityFrames(), frameCount, "waiting for a tool must not spam status messages");
+  const overlapping = await send("frontend-overlap", "搜索等待期间的独立问题");
+  assert.equal(foreground.messages.message(overlapping.assistantMessageId)?.text, "前台普通答复");
+  assert.equal(foreground.messages.message(weatherActivity.messageId)?.status, "running", "independent foreground answer finishes while original search is still running");
+  const runtimeKeys = db.connection.prepare("SELECT runtime_key FROM bot_request_runs WHERE message_id IN (?,?)").all(weatherActivity.messageId, overlapping.assistantMessageId) as { runtime_key: string }[];
+  assert.equal(new Set(runtimeKeys.map(row => row.runtime_key)).size, 2, "overlapping requests own independent native runtimes");
   releaseSearch();
   const weather = await weatherDone;
   assert.equal(foreground.messages.message(weather.assistantMessageId)?.text, "dated source fixture");
   assert.equal(foreground.messages.message(weather.assistantMessageId)?.activity, undefined, "final reconciliation removes transient activity");
+  const afterOutOfOrder = await send("after-out-of-order", "乱序完成后的后续问题");
+  const contextRow = db.connection.prepare('SELECT context_json FROM bot_request_runs WHERE message_id=?').get(afterOutOfOrder.assistantMessageId) as { context_json: string };
+  const frozen = JSON.parse(contextRow.context_json);
+  assert(frozen.history.some((message: { messageId: string; text: string }) => message.messageId === weather.assistantMessageId && message.text === 'dated source fixture'), 'late completed earlier result must supplement the newer native prefix');
   nativeSnapshot.messages[0].botRequestId = "frontend-weather";
   const completedWeather = foreground.messages.message(weather.assistantMessageId);
   applySnapshot();
@@ -290,6 +301,19 @@ try {
     assert(["closing", "closed"].includes(works.getWork(b.workId)?.lifecycle ?? ""),
       "cancelled Work settles through its real in-flight execution instead of disappearing as an unstarted binding");
   }
+  const slowRequests = [1,2,3].map(index => foreground.send({ botId: DEFAULT_BOT_ID, requestId: `slow-${index}`, text: `并发慢请求${index}` }));
+  await wait(() => slowRequests.every(receipt => foreground.messages.message(receipt.assistantMessageId)?.status === 'running'), 'three independent slow requests admitted');
+  const overflow = foreground.send({ botId: DEFAULT_BOT_ID, requestId: 'overflow', text: '普通容量队列' });
+  await delay(150);
+  assert.equal(foreground.messages.message(overflow.assistantMessageId)?.status, 'queued');
+  const urgent = await send('priority-status', '当前进度状态');
+  assert.equal(foreground.messages.message(urgent.assistantMessageId)?.status, 'completed', 'reserved capacity handles progress while normal slots are occupied');
+  await foreground.cancel(DEFAULT_BOT_ID, 'slow-2');
+  assert.equal(foreground.messages.message(slowRequests[1].assistantMessageId)?.status, 'cancelled');
+  assert.equal(foreground.messages.message(slowRequests[0].assistantMessageId)?.status, 'running', 'cancel one must not abort sibling runtime');
+  await wait(() => foreground.messages.message(overflow.assistantMessageId)?.status === 'completed', 'free slot drains ordinary queued request');
+  await Promise.all([foreground.cancel(DEFAULT_BOT_ID, 'slow-1'), foreground.cancel(DEFAULT_BOT_ID, 'slow-3')]);
+  console.log('PASS bounded foreground overlap, reserved control capacity, request-specific cancellation and queue progress');
   holdForeground = true;
   const beforeClose = foreground.send({ botId: DEFAULT_BOT_ID, requestId: "normal-close", text: "关闭前的普通消息" });
   await wait(() => foregroundHeld, "foreground model starts before normal close");

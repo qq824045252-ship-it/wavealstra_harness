@@ -22,6 +22,24 @@ export function ensureBotWorkPhase2Tables(db: Database.Database): void {
       UNIQUE(conversation_id,request_id,role)
     );
     -- Additive metadata only: never reset existing Work or rewrite message history.
+    CREATE TABLE IF NOT EXISTS bot_message_revisions (
+      message_id TEXT PRIMARY KEY REFERENCES bot_messages(message_id) ON DELETE CASCADE,
+      revision INTEGER NOT NULL
+    );
+    CREATE TRIGGER IF NOT EXISTS bot_message_insert_revision AFTER INSERT ON bot_messages BEGIN
+      INSERT INTO bot_message_revisions(message_id,revision) VALUES (NEW.message_id,1)
+      ON CONFLICT(message_id) DO UPDATE SET revision=revision+1;
+    END;
+    CREATE TRIGGER IF NOT EXISTS bot_message_update_revision AFTER UPDATE ON bot_messages BEGIN
+      INSERT INTO bot_message_revisions(message_id,revision) VALUES (NEW.message_id,1)
+      ON CONFLICT(message_id) DO UPDATE SET revision=revision+1;
+    END;
+    CREATE TABLE IF NOT EXISTS bot_request_runs (
+      message_id TEXT PRIMARY KEY REFERENCES bot_messages(message_id) ON DELETE CASCADE,
+      runtime_key TEXT NOT NULL UNIQUE, context_json TEXT NOT NULL CHECK(json_valid(context_json)),
+      transcript_json TEXT CHECK(transcript_json IS NULL OR json_valid(transcript_json)),
+      created_at INTEGER NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS bot_message_activity (
       message_id TEXT PRIMARY KEY REFERENCES bot_messages(message_id) ON DELETE CASCADE,
       activity_json TEXT NOT NULL CHECK(json_valid(activity_json))
@@ -46,6 +64,14 @@ export function ensureBotWorkPhase2Tables(db: Database.Database): void {
       message_id TEXT PRIMARY KEY REFERENCES bot_messages(message_id) ON DELETE CASCADE,
       metadata_json TEXT NOT NULL CHECK(json_valid(metadata_json))
     );
+    CREATE TRIGGER IF NOT EXISTS bot_feedback_update_revision AFTER UPDATE ON bot_work_feedback BEGIN
+      INSERT INTO bot_message_revisions(message_id,revision) VALUES (NEW.message_id,1)
+      ON CONFLICT(message_id) DO UPDATE SET revision=revision+1;
+    END;
+    CREATE TRIGGER IF NOT EXISTS bot_feedback_insert_revision AFTER INSERT ON bot_work_feedback BEGIN
+      INSERT INTO bot_message_revisions(message_id,revision) VALUES (NEW.message_id,1)
+      ON CONFLICT(message_id) DO UPDATE SET revision=revision+1;
+    END;
     CREATE TABLE IF NOT EXISTS bot_send_receipts (
       user_id TEXT NOT NULL, bot_id TEXT NOT NULL, request_id TEXT NOT NULL, payload_hash TEXT NOT NULL,
       conversation_id TEXT NOT NULL REFERENCES bot_conversations(conversation_id),
