@@ -22,8 +22,19 @@ function taskText(task: Task): string {
 export function buildActivityRows(input: {
   tasks: Task[]; works: WorkProjectionDto[]; bots: BotDto[];
   histories: Record<string, BotHistoryDto>; subagents: Record<string, SubagentSummaryDto[]>;
-  now: number; activeRequests?: BotActiveRequestDto[];
+  now: number; activeRequests?: BotActiveRequestDto[]; scopeBotId?: string | null;
 }): ActivityRow[] {
+  // Default UI scope is one Bot. Team work never belongs to a member's
+  // personal inbox; unbound ordinary tasks appear only in explicit global view.
+  if (input.scopeBotId !== undefined && input.scopeBotId !== null) {
+    const botId = input.scopeBotId;
+    const works = input.works.filter(work => work.ownerBotId === botId && !work.team);
+    const taskIds = new Set(works.flatMap(work => work.executions.map(binding => binding.taskId)));
+    input = { ...input, works, tasks: input.tasks.filter(task => taskIds.has(task.id)),
+      bots: input.bots.filter(bot => bot.botId === botId),
+      histories: Object.fromEntries(Object.entries(input.histories).filter(([, history]) => history.botId === botId)),
+      activeRequests: input.activeRequests?.filter(request => request.message.botId === botId) };
+  }
   const rows: ActivityRow[] = [];
   // A current stream may have advanced after the active-request query.
   // Prefer its newer terminal observation rather than reviving a finished reply.

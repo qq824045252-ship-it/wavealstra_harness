@@ -12,14 +12,19 @@ const PAGE_SIZE = 40;
 /** Mounted only while open: no background polling or global mutation of execution state. */
 export function BotActivityMonitor({ onOpenBotMessage, onOpenWork }: { onOpenBotMessage: (messageId: string) => void; onOpenWork?: () => void }): React.JSX.Element {
   const [open, setOpen] = useState(false);
-  return <><button type="button" className="bot-quiet-button" aria-haspopup="dialog" onClick={() => setOpen(true)}>所有消息</button>
-    {open && <ActivityWindow onClose={() => setOpen(false)} onOpenBotMessage={onOpenBotMessage} onOpenWork={onOpenWork} />}</>;
+  const activeBotId = useAppStore(s => s.activeBotId);
+  const [globalBotId, setGlobalBotId] = useState<string | null>(null);
+  const globalScope = globalBotId !== null && globalBotId === activeBotId;
+  const setGlobalScope = (global: boolean) => setGlobalBotId(global ? activeBotId : null);
+  return <><button type="button" className="bot-quiet-button" aria-haspopup="dialog" onClick={() => { setGlobalScope(false); setOpen(true); }}>所有消息</button>
+    {open && <ActivityWindow key={(activeBotId ?? "") + ":" + globalScope} scopeBotId={globalScope ? null : activeBotId ?? ""} onScopeChange={setGlobalScope} onClose={() => setOpen(false)} onOpenBotMessage={onOpenBotMessage} onOpenWork={onOpenWork} />}</>;
 }
-export function ActivityWindow({ onClose, onOpenBotMessage, onOpenWork }: { onClose: () => void; onOpenBotMessage: (messageId: string) => void; onOpenWork?: () => void }): React.JSX.Element {
+export function ActivityWindow({ scopeBotId, onScopeChange, onClose, onOpenBotMessage, onOpenWork }: { scopeBotId: string | null; onScopeChange: (global: boolean) => void; onClose: () => void; onOpenBotMessage: (messageId: string) => void; onOpenWork?: () => void }): React.JSX.Element {
   const tasks = useAppStore(s => s.tasks);
   const works = useAppStore(s => s.botWorks);
   const [monitorWorks, setMonitorWorks] = useState<WorkProjectionDto[]>(works);
-  const bots = useAppStore(s => s.botIdentities);
+  const allBots = useAppStore(s => s.botIdentities);
+  const bots = useMemo(() => scopeBotId === null ? allBots : allBots.filter(bot => bot.botId === scopeBotId), [allBots, scopeBotId]);
   const histories = useAppStore(s => s.botHistories);
   const errors = useAppStore(s => s.botConversationErrors);
   const workError = useAppStore(s => s.botWorkError);
@@ -36,7 +41,7 @@ export function ActivityWindow({ onClose, onOpenBotMessage, onOpenWork }: { onCl
   const [limit, setLimit] = useState(PAGE_SIZE);
   const dialog = useRef<HTMLDialogElement>(null);
   const refreshing = useRef(false);
-  const scope = bots.map(bot => bot.userId + ":" + bot.botId).sort().join("|");
+  const scope = String(scopeBotId) + ":" + bots.map(bot => bot.userId + ":" + bot.botId).sort().join("|");
   useEffect(() => { dialog.current?.showModal(); return () => dialog.current?.close(); }, []);
   useEffect(() => {
     setSubagents({}); setActiveRequests([]); setLoading(true);
@@ -51,15 +56,16 @@ export function ActivityWindow({ onClose, onOpenBotMessage, onOpenWork }: { onCl
         const requestRead = window.api?.botWork.activeRequests();
         if (!requestRead) throw new Error("Bot 活跃请求接口不可用，请更新并重启应用");
         const requests = await requestRead;
-        if (live) setActiveRequests(requests);
+        if (live) setActiveRequests(scopeBotId === null ? requests : requests.filter(request => request.message.botId === scopeBotId));
         const [workSnapshot] = await Promise.all([window.api!.botWork.listWorks(true),
-          ...state.botIdentities.map(bot => state.refreshBotHistory(bot.botId))]);
+          ...state.botIdentities.filter(bot => scopeBotId === null || bot.botId === scopeBotId).map(bot => state.refreshBotHistory(bot.botId))]);
         if (live) setMonitorWorks(workSnapshot);
         // Keep this all-Work view local: the main page may independently sync
         // an open-only cursor and must not erase closed rows in this reader.
         // Task-scoped API preserves existing access checks. Bound concurrency prevents
         // a large history from flooding IPC; snapshots never open/restart a task.
-        const candidates = state.tasks.filter(task => !task.archived && (!scanned.has(task.id) || activeTasks.has(task.id) || task.status === "in_progress" || task.durable?.busy));
+        const boundTasks = new Set(workSnapshot.filter(work => work.ownerBotId === scopeBotId && !work.team).flatMap(work => work.executions.map(binding => binding.taskId)));
+        const candidates = state.tasks.filter(task => (scopeBotId === null || boundTasks.has(task.id)) && !task.archived && (!scanned.has(task.id) || activeTasks.has(task.id) || task.status === "in_progress" || task.durable?.busy));
         const next: Record<string, SubagentSummaryDto[]> = {};
         let cursor = 0;
         await Promise.all(Array.from({ length: Math.min(4, candidates.length) }, async () => {
@@ -81,7 +87,7 @@ export function ActivityWindow({ onClose, onOpenBotMessage, onOpenWork }: { onCl
     const unsubscribe = window.api?.subagent?.onEvent?.(() => void refresh());
     return () => { live = false; clearInterval(timer); unsubscribe?.(); };
   }, [scope]);
-  const rows = useMemo(() => buildActivityRows({ tasks, works: monitorWorks, bots, histories, subagents, now: checkedAt, activeRequests }), [tasks, monitorWorks, bots, histories, subagents, checkedAt, activeRequests]);
+  const rows = useMemo(() => buildActivityRows({ tasks, works: monitorWorks, bots, histories, subagents, now: checkedAt, activeRequests, scopeBotId }), [tasks, monitorWorks, bots, histories, subagents, checkedAt, activeRequests, scopeBotId]);
   const filtered = rows.filter(row => (includeEnded || !row.ended) && (kind === "all" || row.kind === kind)
     && [row.title, row.owner, row.label, row.detail].join(" ").toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
   useEffect(() => {
@@ -121,16 +127,17 @@ export function ActivityWindow({ onClose, onOpenBotMessage, onOpenWork }: { onCl
     }
     onClose();
   };
-  const failedSources = Object.keys(errors).length;
+  const failedSources = Object.keys(errors).filter(id => scopeBotId === null || id === scopeBotId).length;
   return <dialog ref={dialog} className="bot-activity-window" aria-label="所有消息与任务进度" onCancel={event => { event.preventDefault(); onClose(); }}>
-    <header><div><h2>所有消息与任务</h2><p>查看当前 Bot 对话、普通任务、子代理和 Bot Work 的进度；完整记录可打开来源查看。</p></div>
+    <header><h2>{scopeBotId === null ? "全部任务与消息" : (bots[0]?.displayName ?? "当前 Bot") + " · 所有消息"}</h2>
       <button type="button" aria-label="关闭所有消息" onClick={onClose}><IconX size={20} /></button></header>
     <div className="bot-activity-controls">
-      <input autoFocus type="search" aria-label="搜索所有任务与消息" placeholder="搜索问题、任务、Bot 或进展" value={query} onChange={event => { setQuery(event.target.value); setLimit(PAGE_SIZE); }} />
+      <select aria-label="消息范围" value={scopeBotId === null ? "all" : "bot"} onChange={event => onScopeChange(event.target.value === "all")}><option value="bot">当前 Bot</option><option value="all">全局总览</option></select>
+      <input autoFocus type="search" aria-label="搜索所有任务与消息" placeholder="搜索任务或消息" value={query} onChange={event => { setQuery(event.target.value); setLimit(PAGE_SIZE); }} />
       <select aria-label="任务类型" value={kind} onChange={event => { setKind(event.target.value as ActivityKind | "all"); setLimit(PAGE_SIZE); }}><option value="all">所有类型</option>{Object.entries(activityKindLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>
       <label><input type="checkbox" checked={includeEnded} onChange={event => { setIncludeEnded(event.target.checked); setLimit(PAGE_SIZE); }} />包含已结束</label>
     </div>
-    <p className="bot-activity-summary" role="status">{loading ? "正在核对最新进度…" : `执行中 ${rows.filter(row => row.running).length} · 未结束 ${rows.filter(row => !row.ended).length} · 当前显示 ${filtered.length} 条`}{checkedAt > 0 && <span>更新于 {new Date(checkedAt).toLocaleTimeString("zh-CN", { hour12: false })} · 每 5 秒刷新</span>}</p>
+    <p className="bot-activity-summary" role="status">{loading ? "正在核对最新进度…" : `执行中 ${rows.filter(row => row.running).length} · 未结束 ${rows.filter(row => !row.ended).length} · ${filtered.length} 条`}{checkedAt > 0 && <span>更新于 {new Date(checkedAt).toLocaleTimeString("zh-CN", { hour12: false })}</span>}</p>
     {(loadError || workError || failedSources > 0) && <p role="alert" className="bot-activity-error">部分状态暂时无法刷新，已显示内容可能不是最新：{loadError || workError || `${failedSources} 个 Bot 对话读取失败`}。不会把读取失败当作任务完成。</p>}
     {inspected?.sourceRequest ? <div className="bot-activity-list bot-activity-request">
       <button type="button" onClick={() => setInspected(null)}>← 返回任务列表</button>
@@ -142,9 +149,12 @@ export function ActivityWindow({ onClose, onOpenBotMessage, onOpenWork }: { onCl
     </div> : <div className="bot-activity-list">
       {!loading && !filtered.length && <p className="bot-activity-empty">{query || kind !== "all" ? "没有匹配的任务或消息。" : "当前没有未结束的任务。勾选「包含已结束」查看已有消息与结果。"}</p>}
       {filtered.slice(0, limit).map(row => <button type="button" className="bot-activity-row" key={row.id} data-activity-id={row.id} onClick={() => openRow(row)}>
-        <div className="bot-activity-meta"><span>{activityKindLabels[row.kind]} · {row.owner}</span><span className={row.running ? "is-running" : ""}>{row.label}</span></div>
-        <strong>{row.title}</strong><p>{row.detail || "尚无新的进展记录，打开来源查看详情。"}</p>
-        <small>{new Date(row.updatedAt).toLocaleString("zh-CN", { hour12: false })} · {row.sourceRequest ? "查看原请求" : "打开原对话 / 事项"} →</small>
+        <strong className="bot-activity-title" title={row.title}>{row.title}</strong>
+        <span className={`bot-activity-status${row.running ? " is-running" : ""}`} title={row.label}>{row.label}</span>
+        <span className="bot-activity-detail" title={row.detail}>{row.detail || "尚无新的进展，点击查看来源"}</span>
+        <span className="bot-activity-meta"><span title={row.owner}>{row.owner} · {activityKindLabels[row.kind]}</span>
+          <time dateTime={new Date(row.updatedAt).toISOString()} title={new Date(row.updatedAt).toLocaleString("zh-CN", { hour12: false })}>{new Date(row.updatedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })} ↗</time>
+        </span>
       </button>)}
       {filtered.length > limit && <button type="button" className="bot-activity-load" onClick={() => setLimit(value => value + PAGE_SIZE)}>再显示 {Math.min(PAGE_SIZE, filtered.length - limit)} 条（还有 {filtered.length - limit} 条）</button>}
     </div>}

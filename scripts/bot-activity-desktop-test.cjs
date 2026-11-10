@@ -6,13 +6,15 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), "activity-ui-")); app.setP
 app.whenReady().then(async () => {
  let win; try {
  const out=path.resolve("out/tests"); const html=path.join(profile,"index.html");
- fs.writeFileSync(html, `<html><head><meta charset="utf-8"><link rel="stylesheet" href="${pathToFileURL(path.join(out,"bot-activity-desktop-fixture.css"))}"><style>:root{--bg-panel:#fff;--bg-app:#fafafa;--fg-primary:#222;--fg-secondary:#666;--border-default:#ddd;--bg-hover:#eee}*{box-sizing:border-box}body{font:14px system-ui;margin:20px}button,input,select{font:inherit}</style></head><body><div id="root"></div><script src="${pathToFileURL(path.join(out,"bot-activity-desktop-fixture.js"))}"></script></body></html>`);
+ fs.writeFileSync(html, `<html><head><meta charset="utf-8"><link rel="stylesheet" href="${pathToFileURL(path.join(out,"bot-activity-desktop-fixture.css"))}"><style>:root{--bg-panel:#fff;--bg-app:#fafafa;--fg:#222;--accent:#2563eb;--fg-primary:#222;--fg-secondary:#666;--border-default:#ddd;--bg-hover:#eee}*{box-sizing:border-box}body{font:14px system-ui;margin:20px}button,input,select{font:inherit}</style></head><body><div id="root"></div><script src="${pathToFileURL(path.join(out,"bot-activity-desktop-fixture.js"))}"></script></body></html>`);
  win=new BrowserWindow({width:1050,height:850,show:true,webPreferences:{contextIsolation:true,backgroundThrottling:false}});
  const errors=[]; win.webContents.on("console-message",(_e,level,message)=>{if(level>=3)errors.push(message)});
  await win.loadFile(html); win.webContents.debugger.attach("1.3");
  const ev=s=>win.webContents.executeJavaScript(s);
  const wait=async(s)=>{const end=Date.now()+10000;while(!await ev(s)){if(Date.now()>end)throw Error("Timeout "+s);await new Promise(r=>setTimeout(r,30));}};
- const open=async()=>{await ev("document.querySelector('#root button').click()");await wait("document.querySelectorAll('.bot-activity-row').length === 4");};
+ const open=async()=>{await ev("document.querySelector('#root button').click()");await wait("!!document.querySelector('select[aria-label=\"消息范围\"]')");
+ await ev("(()=>{const s=document.querySelector('select[aria-label=\"消息范围\"]');s.value='all';s.dispatchEvent(new Event('change',{bubbles:true}))})()");
+ await wait("document.querySelectorAll('.bot-activity-row').length === 4");};
  await wait("document.querySelector('#root button')"); await open();
  assert(await ev("document.querySelector('.bot-activity-summary').textContent.includes('执行中 3')"));
  assert(!await ev("document.querySelector('[data-activity-id=\"task:failed\"]')"));
@@ -23,6 +25,7 @@ app.whenReady().then(async () => {
  await win.webContents.debugger.sendCommand("Emulation.setDeviceMetricsOverride",{width,height:850,deviceScaleFactor:1,mobile:false});
  await new Promise(r=>setTimeout(r,100));
  assert(await ev("(()=>{const d=document.querySelector('dialog');const r=d.getBoundingClientRect();return r.left>=0 && r.right<=innerWidth && d.scrollWidth<=d.clientWidth+1})()"),"no overflow "+width);
+ assert(await ev("(()=>{const d=document.querySelector('dialog').getBoundingClientRect();const r=document.querySelector('.bot-activity-row');const t=r.querySelector('.bot-activity-title').getBoundingClientRect();return getComputedStyle(r).display==='grid' && t.width>=r.clientWidth*.5 && r.getBoundingClientRect().height<=110 && d.height<780 && Math.abs(d.left-(innerWidth-d.width)/2)<2})()"),"compact, centered, title-first layout under real Bot workspace CSS "+width);
  const shot=await win.webContents.debugger.sendCommand("Page.captureScreenshot",{format:"png",captureBeyondViewport:false});
  fs.writeFileSync(path.join(out,"bot-activity-"+width+".png"),Buffer.from(shot.data,"base64"));
  }
@@ -63,6 +66,21 @@ app.whenReady().then(async () => {
  await ev("(()=>{const i=document.querySelector('input[type=search]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(i,'编号 999');i.dispatchEvent(new Event('input',{bubbles:true}))})()");
  await wait("document.querySelectorAll('.bot-activity-row').length === 1");
  assert(await ev(`document.querySelector('[data-activity-id="work:scale-999"]') !== null`));
+ await ev("document.querySelector('[aria-label=\"关闭所有消息\"]').click()");
+ await wait("!document.querySelector('dialog')");
+ await ev(`(()=>{const s=window.monitorGetState();window.monitorSetState({botIdentities:[...s.botIdentities,{botId:"other",userId:"user",displayName:"学习搭子"}],botHistories:{...s.botHistories,other:{...s.botHistories.owner,botId:"other",conversationId:"other-c",messages:s.botHistories.owner.messages.map(m=>({...m,botId:"other",messageId:"other-"+m.messageId,text:m.role==="user"?"我的独立学习计划":"正在整理学习内容"}))}},activeBotId:"other"})})()`);
+ await ev("document.querySelector('#root button').click()");
+ await wait("document.querySelectorAll('.bot-activity-row').length === 1");
+ assert(await ev("document.querySelector('h2').textContent.includes('学习搭子')"));
+ assert(await ev("document.querySelector('.bot-activity-row').textContent.includes('我的独立学习计划')"));
+ assert(!await ev("document.querySelector('.bot-activity-list').textContent.includes('MyBuddy')"));
+ assert(await ev("document.querySelector('dialog').getBoundingClientRect().height<400"), "one personal request must not leave a tall empty window");
+ const personalShot=await win.webContents.debugger.sendCommand("Page.captureScreenshot",{format:"png",captureBeyondViewport:false});
+ fs.writeFileSync(path.join(out,"bot-activity-personal-440.png"),Buffer.from(personalShot.data,"base64"));
+ await ev("window.monitorSetState({activeBotId:'owner'})");
+ await wait("document.querySelector('h2').textContent.includes('MyBuddy')");
+ assert(!await ev("document.querySelector('.bot-activity-list').textContent.includes('我的独立学习计划')"));
+ assert.equal(await ev("document.querySelector('select[aria-label=\"消息范围\"]').value"),"bot");
  assert.deepEqual(errors,[]);
  verified = true;
  console.log("PASS real Electron activity window: default/current + ended filter, search, three source navigations, reopen, Escape, 1050/760/440px layouts.");

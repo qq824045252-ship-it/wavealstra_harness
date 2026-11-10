@@ -45,3 +45,12 @@ assert(!staleStream.find(row => row.kind === "task")?.running, "failed task is n
 const idleChild = buildActivityRows({ ...input, subagents: { ordinary: [{ ...subagents.ordinary[0], status: "idle", workerAlive: true }] } });
 assert.equal(idleChild.find(row => row.kind === "subagent")?.label, "等待工具调用");
 assert(!idleChild.find(row => row.kind === "subagent")?.running);
+
+const personal = buildActivityRows({ ...input, scopeBotId: "owner" });
+assert.deepEqual(personal.map(row => row.id).sort(), ["bot:reply", "work:work"]);
+assert.equal(buildActivityRows({ ...input, scopeBotId: "other" }).length, 0);
+assert.equal(buildActivityRows({ ...input, scopeBotId: "" }).length, 0);
+const teamOnly = buildActivityRows({ ...input, scopeBotId: "owner", works: [{ ...works[0], team: { teamId: "team", teamName: "团队", members: [], workId: "work", intentRevision: 1, inputSnapshotId: "input", ownerEpoch: 1, state: "running", executions: [], createdAt: 1, ownerBotId: "owner", ownerResponsibility: "汇总" } }] });
+assert(!teamOnly.some(row => row.kind === "work"), "team Work is not personal Bot context");
+assert.equal(buildActivityRows({ ...input, scopeBotId: null }).length, rows.length, "explicit global view preserves all sources");
+console.log("PASS personal Bot scope, team exclusion and explicit global view");
