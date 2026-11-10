@@ -15,6 +15,8 @@ import ConversationGoalChip from "./ConversationGoalChip";
 import ConversationBranchChip from "./ConversationBranchChip";
 import ChatProjectCrumb from "./ChatProjectCrumb";
 import WorkspaceCrumb from "./WorkspaceCrumb";
+import SubagentRunsChip from "./SubagentRunsChip";
+import SubagentChatView from "./SubagentChatView";
 import RuntimeStatusChips from "./RuntimeStatusChips";
 import TaskWriteGrantsMenu from "./TaskWriteGrantsMenu";
 import TaskDiagnosticsDialog from "./TaskDiagnosticsDialog";
@@ -854,8 +856,15 @@ export default function ChatView(): React.JSX.Element {
   // 无选中任务，或新建空任务（尚无 session）→ 首页 Hero
   // 有 sessionFile 但 messages 暂空 → 恢复中，进聊天区（避免被当成「打不开」）
   const boundProjectId = task?.projectId ?? draftProjectId;
+  const subagentView = useAppStore((s) => s.subagentView);
   const sidePanelButton = <button className={`icon-btn ${panelOpen ? "toggled" : ""}`} title={panelOpen ? "关闭侧栏" : "打开概览"}
     onClick={() => (panelOpen ? closePanel() : openSidePanel())}><IconPanel size={15} /></button>;
+
+  // 子代理对话页：共用同一个聊天外壳（同一批消息组件/输入外壳），只是数据源换成子会话。
+  // 放在所有 hook 之后，避免条件返回改变 hook 顺序。
+  if (task && subagentView && subagentView.taskId === task.id) {
+    return <SubagentChatView taskId={task.id} subagentId={subagentView.subagentId} />;
+  }
 
   // Admission and errors remain visible before the first native message arrives.
   if (!task || (task.welcomeMode !== "general" && task.messages.length === 0 && !task.sessionFile && !task.durable && !task.botPendingSubmission && !task.botInputError)) {
@@ -891,12 +900,8 @@ export default function ChatView(): React.JSX.Element {
           <div className="chat-header-title">{task.title || "任务"}</div>
           {task.welcomeMode !== "general" && <ConversationGoalChip taskId={task.id} goal={task.activeGoal} />}
           <ConversationBranchChip />
-          <span
-            className="chat-mode-chip"
-            title={`场景：${WELCOME_MODE_LABELS[task.welcomeMode ?? DEFAULT_WELCOME_MODE]}（已锁定，换场景请复制为新任务）`}
-          >
-            <WelcomeModeIcon mode={task.welcomeMode} size={13} showLabel />
-          </span>
+          {/* 子代理查看（数据源与侧栏概览同一个 hook）：取代原来的场景 chip */}
+          <SubagentRunsChip taskId={task.id} />
           {taskExpert && (
             <span className="chat-expert-chip" title={`专家：${taskExpert.name}`}>
               <span className="chat-expert-chip-symbol" aria-hidden="true">
@@ -941,8 +946,6 @@ export default function ChatView(): React.JSX.Element {
     setEditingTitle(false);
   };
 
-  const modeLocked = task.messages.length > 0 || Boolean(task.sessionFile);
-
   return (
     <div className="chat-column task-ambient" data-mode={taskMode}>
       <div className="chat-header task-chat-header">
@@ -973,16 +976,8 @@ export default function ChatView(): React.JSX.Element {
         <div className="chat-header-sub" />
         {task.welcomeMode !== "general" && <ConversationGoalChip taskId={task.id} goal={task.activeGoal} />}
         <ConversationBranchChip />
-        <span
-          className="chat-mode-chip"
-          title={
-            modeLocked
-              ? `场景：${WELCOME_MODE_LABELS[task.welcomeMode ?? DEFAULT_WELCOME_MODE]}（已锁定）。换场景：任务菜单「复制为…任务」`
-              : `场景：${WELCOME_MODE_LABELS[task.welcomeMode ?? DEFAULT_WELCOME_MODE]}`
-          }
-        >
-          <WelcomeModeIcon mode={task.welcomeMode} size={13} showLabel />
-        </span>
+        {/* 子代理查看（数据源与侧栏概览同一个 hook）：取代原来的场景 chip */}
+        <SubagentRunsChip taskId={task.id} />
         {taskExpert && (
           <span className="chat-expert-chip" title={`专家：${taskExpert.name}`}>
             <span className="chat-expert-chip-symbol" aria-hidden="true">

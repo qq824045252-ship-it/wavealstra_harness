@@ -59,6 +59,9 @@ export interface AppActions {
   closeWorkspaceDetail: () => void;
   openSubagentDrawer: (instanceId: string) => void;
   closeSubagentDrawer: () => void;
+  /** 进入子代理对话页（共用聊天外壳；导航回父任务用 closeSubagentView） */
+  openSubagentView: (taskId: string, subagentId: string) => void;
+  closeSubagentView: () => void;
   openUsageStats: () => void;
   closeUsageStats: () => void;
   openApiAggregation: () => void;

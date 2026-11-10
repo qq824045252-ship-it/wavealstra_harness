@@ -198,9 +198,9 @@ export function createDurableSubagentTools(options: DurableSubagentOptions): Too
         concurrency: { workers, queued, maxConcurrency: dispatch.concurrency,
           ...(dispatch.serializedReason ? { serializedReason: dispatch.serializedReason } : {}) },
         // 面板的“排队中”行从这里派生：plan 是入参快照，results 是本派发已完结项，
-        // 差集即尚未建子会话的项。名字与 agent 一并给出，UI 不必从任务正文里猜谁在排队。
+        // 差集即尚未建子会话的项。名字、agent 与工作目录一并给出，UI 不必从任务正文里猜谁在排队。
         plan: items.map(item => ({ itemId: item.id, index: item.index, agent: item.agentName, displayName: item.displayName,
-          task: item.task, required: true,
+          task: item.task, cwd: item.sourceCwd, required: true,
           dependencies: dispatch.mode === "chain" && item.index > 0 && items[item.index - 1] ? [items[item.index - 1]!.id] : [],
           isolation: item.kind === "run" ? item.workspace.kind : null })), results: results.filter(Boolean) });
       const publish = async () => api.details(detailsOf(), context);

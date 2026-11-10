@@ -18,6 +18,8 @@ export interface AppUiState {
   searchOpen: boolean;
   activeWorkspaceId: string | null;
   subagentDrawer?: { instanceId: string };
+  /** 子代理对话页：进入某个子会话（与主聊天共用同一个外壳，可导航回父任务） */
+  subagentView?: { taskId: string; subagentId: string };
   usageStatsOpen: boolean;
   apiAggregationOpen: boolean;
   extensionSoftwareOpen: boolean;
@@ -35,6 +37,7 @@ export function createAppUiState(): AppUiState {
     searchOpen: false,
     activeWorkspaceId: null,
     subagentDrawer: undefined as { instanceId: string } | undefined,
+    subagentView: undefined as { taskId: string; subagentId: string } | undefined,
     usageStatsOpen: false,
     apiAggregationOpen: false,
     extensionSoftwareOpen: false,
@@ -50,6 +53,8 @@ export function createAppUiActions(
   | "closeWorkspaceDetail"
   | "openSubagentDrawer"
   | "closeSubagentDrawer"
+  | "openSubagentView"
+  | "closeSubagentView"
   | "openUsageStats"
   | "closeUsageStats"
   | "openApiAggregation"
@@ -71,6 +76,11 @@ export function createAppUiActions(
     openSubagentDrawer: (instanceId) => set({ subagentDrawer: { instanceId } }),
 
     closeSubagentDrawer: () => set({ subagentDrawer: undefined }),
+
+    openSubagentView: (taskId, subagentId) =>
+      set({ subagentView: { taskId, subagentId }, subagentDrawer: undefined }),
+
+    closeSubagentView: () => set({ subagentView: undefined }),
 
     openUsageStats: () => set({ usageStatsOpen: true }),
 

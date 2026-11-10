@@ -21,9 +21,9 @@ import type { TerminalSessionInfo } from "@shared/terminal-ipc";
 import {
   extractSubagentDisplayNameFromToolResult,
   extractSubagentIdFromToolResult,
-  parseSubagentResultDetails,
   type SubagentUsage,
 } from "@shared/subagent-model-config";
+import { parseSubagentDetails, parseSubagentResultRecords } from "@/lib/subagentDetails";
 import { formatCount, formatRateDash, formatTokenCount } from "@shared/token-format";
 import {
   buildModelBadge,
@@ -49,9 +49,16 @@ export interface MainAgentVm {
 export interface RunningSubagentVm {
   id: string;
   role: string;
+  /**
+   * 统一显示名（displayName → role → id 短形式）。侧栏、顶栏与对话页只读这个字段，
+   * 避免同一实例在不同位置叫不同名字。
+   */
+  name: string;
   /** 可选显示名（允许中文）；有则优先展示，id 仍用于操作 */
   displayName?: string;
   work: string;
+  /** 实际工作目录（DTO.project）；拿不到则不显示 */
+  cwd?: string;
   elapsedMs: number;
   /** 该实例真正使用的模型（actual/resolved 记录值；拿不到则不显示） */
   model?: ModelBadge;
@@ -59,11 +66,17 @@ export interface RunningSubagentVm {
   usage?: SubagentUsage;
 }
 
-export type DoneSubagentState = "completed" | "failed" | "cancelled";
+/**
+ * 完成态状态。"unknown" 只用于「曾经存在、但结果里没有终态」的条目（窗口驱逐/派发被取消），
+ * 界面写「已结束」而不写成「已完成」—— 不伪造成功。
+ */
+export type DoneSubagentState = "completed" | "failed" | "cancelled" | "unknown";
 
 export interface DoneSubagentVm {
   id: string;
   state: DoneSubagentState;
+  /** 统一显示名（displayName → role → id 短形式）：与侧栏/顶栏/对话页同一个字段 */
+  name: string;
   /** 可选显示名（从工具结果文本解析；允许中文） */
   displayName?: string;
   /** 结果摘要（finalText/错误首行截断） */
@@ -74,6 +87,10 @@ export interface DoneSubagentVm {
   task?: string;
   /** 完整输出详情结果 */
   detail?: string;
+  /** 实际工作目录（结构化结果的 workspace.cwd）；拿不到则不显示 */
+  cwd?: string;
+  /** 首条到末条消息的真实时间跨度；无时间戳则不提供（不伪造） */
+  durationMs?: number;
   /** 工具结果证据行解析出的模型（无证据则不显示） */
   model?: ModelBadge;
   /** 该实例累计用量（旧消息的 details 无 usage 时不提供） */
@@ -87,9 +104,13 @@ export interface QueuedSubagentVm {
   /** 计划里的 itemId（子会话尚不存在，不能用来打开抽屉） */
   id: string;
   role: string;
+  /** 统一显示名（displayName → agent → id 短形式）：顶栏与侧栏同一个字段 */
+  name: string;
   displayName?: string;
   /** 任务首行（截断）；计划里一定有任务正文 */
   task: string;
+  /** 计划里的工作目录（尚未创建子会话，不可能有运行时 cwd） */
+  cwd?: string;
 }
 
 /** 运行中 parallel 派发的真实并发口径（来自工具 details 的 concurrency）。 */
@@ -157,6 +178,22 @@ export function readableRole(id: string, role?: string | null): string {
   if (r) return r;
   if (id && id.length > 12) return `${id.slice(0, 12)}…`;
   return id || "subagent";
+}
+
+/**
+ * 子代理实例的显示名（唯一入口）：displayName → role / agent → id 短形式。
+ * 侧栏、顶栏子代理查看器与子代理对话页都只能经这里取名，
+ * 否则同一个实例在三个位置会出现三种叫法。
+ */
+export function subagentRunName(input: {
+  displayName?: string | null;
+  role?: string | null;
+  agent?: string | null;
+  id: string;
+}): string {
+  const display = (input.displayName ?? "").trim();
+  if (display) return display;
+  return readableRole(input.id, input.role ?? input.agent ?? undefined);
 }
 
 /** 单行截断（保留换行仅取首行 + 限长）。 */
@@ -274,15 +311,21 @@ export function buildRunningSubagents(
 ): RunningSubagentVm[] {
   return (dtos ?? [])
     .filter(isActiveInstance)
-    .map((d) => ({
-      id: d.subagentId,
-      role: readableRole(d.subagentId, d.role),
-      displayName: typeof d.displayName === "string" && d.displayName.trim() ? d.displayName.trim() : undefined,
-      work: oneLine(d.lastTask || (d.status === "running" ? "运行中" : "等待工具调用"), 56) || "运行中",
-      elapsedMs: now - (d.lastPromptAt ?? d.createdAt ?? now),
-      model: subagentModelBadge(d, modelNames),
-      usage: usableUsage(d.usage),
-    }));
+    .map((d) => {
+      const role = readableRole(d.subagentId, d.role);
+      const displayName = typeof d.displayName === "string" && d.displayName.trim() ? d.displayName.trim() : undefined;
+      return {
+        id: d.subagentId,
+        role,
+        name: subagentRunName({ displayName, role, id: d.subagentId }),
+        displayName,
+        work: oneLine(d.lastTask || (d.status === "running" ? "运行中" : "等待工具调用"), 56) || "运行中",
+        cwd: typeof d.project === "string" && d.project.trim() ? d.project.trim() : undefined,
+        elapsedMs: now - (d.lastPromptAt ?? d.createdAt ?? now),
+        model: subagentModelBadge(d, modelNames),
+        usage: usableUsage(d.usage),
+      };
+    });
 }
 
 /**
@@ -319,8 +362,11 @@ export function buildDoneSubagents(
       count: number;
       task?: string;
       detail?: string;
+      cwd?: string;
+      durationMs?: number;
       model?: ModelBadge;
       displayName?: string;
+      role?: string;
       usage?: SubagentUsage;
     }
   >();
@@ -328,10 +374,15 @@ export function buildDoneSubagents(
     for (const block of msg.blocks ?? []) {
       if (block.type !== "tool" || block.toolCall.tool !== "subagent") continue;
       const tc = block.toolCall;
-      if (tc.status === "pending_approval" || tc.status === "running") continue; // 未终结：运行中由 IPC 侧覆盖
+      // 未开始的不算完成；**运行中的派发必须算**：rolling pool 里已跑完的 child 会立刻从
+      // IPC 索引移除，只有 details.results[] 还留着它们——以前在这里一律 skip，“完成态”
+      // 就会在整批派发结束前集体消失。
+      if (tc.status === "pending_approval") continue;
       // Durable 架构：完成态工具的 detail 是结构化结果（details.results[]），优先按它建条目；
       // 旧消息没有结构化结果时回退到文本标记解析。
-      const structured = parseSubagentResultDetails("subagent", tc.detail);
+      const structured = parseSubagentResultRecords(tc.detail);
+      // 工作目录与真实时长只在结构化结果的原始 messages / workspace 里；共用同一份缓存解析。
+      const runs = parseSubagentDetails(tc.detail)?.results ?? [];
       if (structured.length > 0) {
         for (const item of structured) {
           const state: DoneSubagentState =
@@ -339,6 +390,7 @@ export function buildDoneSubagents(
               : item.status === "failed" || item.status === "timedout" || item.status === "error" ? "failed"
                 : (item.exitCode ?? 0) === 0 ? "completed" : "failed";
           const prev = map.get(item.subagentId);
+          const run = runs.find((r) => r.subagentId === item.subagentId);
           const summary = oneLine(
             item.finalText || item.errorMessage
               || (state === "completed" ? "已完成" : state === "failed" ? "执行失败" : "已取消"),
@@ -353,14 +405,19 @@ export function buildDoneSubagents(
             count: (prev?.count ?? 0) + 1,
             task: item.task || prev?.task,
             detail: item.finalText || item.errorMessage || tc.output || prev?.detail,
+            cwd: run?.cwd ?? prev?.cwd,
+            durationMs: run?.durationMs ?? prev?.durationMs,
             model,
             displayName: item.displayName ?? prev?.displayName,
+            role: run?.agent ?? prev?.role,
             // results[].usage 已是该实例的累计值：后一次结果直接覆盖，不重复累加
             usage: item.usage ?? prev?.usage,
           });
         }
         continue;
       }
+      // 运行中的派发没有 legacy 文本结果可解析；等它真正终结后再走回退路径。
+      if (tc.status === "running") continue;
       const id = extractSubagentId(tc.output, tc.detail);
       if (!id) continue;
       const displayName = extractSubagentDisplayNameFromToolResult("subagent", tc.output, tc.detail);
@@ -382,19 +439,25 @@ export function buildDoneSubagents(
         count: (prev?.count ?? 0) + 1,
         task: task || prev?.task,
         detail: detail || prev?.detail,
+        cwd: prev?.cwd,
+        durationMs: prev?.durationMs,
         model,
         displayName: displayName ?? prev?.displayName,
+        role: prev?.role,
       });
     }
   }
   return [...map.entries()].map(([id, v]) => ({
     id,
     state: v.state,
+    name: subagentRunName({ displayName: v.displayName, role: v.role, id }),
     displayName: v.displayName,
     summary: v.summary,
     count: v.count,
     task: v.task,
     detail: v.detail,
+    cwd: v.cwd,
+    durationMs: v.durationMs,
     model: v.model,
     usage: usableUsage(v.usage),
   }));
@@ -488,81 +551,17 @@ function toCount(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : undefined;
 }
 
-function parseConcurrency(value: unknown): SubagentConcurrencyVm | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const raw = value as Record<string, unknown>;
-  const workers = toCount(raw.workers);
-  const queued = toCount(raw.queued);
-  const maxConcurrency = toCount(raw.maxConcurrency);
+/** concurrency 只在三个计数都合法时才成立（宁缺不伪造）。 */
+function toConcurrency(
+  raw: ReturnType<typeof parseSubagentDetails>,
+): SubagentConcurrencyVm | undefined {
+  const source = raw?.concurrency;
+  if (!source) return undefined;
+  const workers = toCount(source.workers);
+  const queued = toCount(source.queued);
+  const maxConcurrency = toCount(source.maxConcurrency);
   if (workers === undefined || queued === undefined || maxConcurrency === undefined) return undefined;
-  const reason = typeof raw.serializedReason === "string" ? raw.serializedReason.trim() : "";
-  return { workers, queued, maxConcurrency, ...(reason ? { serializedReason: reason } : {}) };
-}
-
-interface ParsedDispatchDetail {
-  pending: QueuedSubagentVm[];
-  concurrency?: SubagentConcurrencyVm;
-}
-
-/**
- * details 字符串 → 解析结果。流式刷新会反复传入同一份大 JSON（含 children 的 messages），
- * 每秒 tick 再解析一次纯属浪费；按字符串作键缓存（同一实例为 O(1) 命中），LRU 限 8 条。
- */
-const dispatchDetailCache = new Map<string, ParsedDispatchDetail | null>();
-const DISPATCH_DETAIL_CACHE_LIMIT = 8;
-
-function parseDispatchDetailCached(detail: string | undefined): ParsedDispatchDetail | null {
-  const text = (detail ?? "").trim();
-  if (!text) return null;
-  const cached = dispatchDetailCache.get(text);
-  if (cached !== undefined) {
-    dispatchDetailCache.delete(text);
-    dispatchDetailCache.set(text, cached);
-    return cached;
-  }
-  const parsed = parseParallelDispatchDetail(text);
-  dispatchDetailCache.set(text, parsed);
-  if (dispatchDetailCache.size > DISPATCH_DETAIL_CACHE_LIMIT) {
-    const oldest = dispatchDetailCache.keys().next();
-    if (!oldest.done) dispatchDetailCache.delete(oldest.value);
-  }
-  return parsed;
-}
-
-/**
- * 解析运行中工具调用的 details（主进程 api.details 的投影）。
- * 只认 mode=parallel：chain 的未执行项是「等上一步」，不是并发排队。
- * 防御性：detail 可能是旧格式/半截 JSON/普通字符串，解析不了就当作无排队信息。
- */
-function parseParallelDispatchDetail(detail: string | undefined): ParsedDispatchDetail | null {
-  const text = (detail ?? "").trim();
-  if (!text.startsWith("{")) return null;
-  let obj: Record<string, unknown>;
-  try {
-    const parsed: unknown = JSON.parse(text);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    obj = parsed as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-  if (obj.mode !== "parallel") return null;
-  // 本派发已完结的项：它们有真实 subagentId，不能再算排队
-  const finished = new Set<string>();
-  for (const result of Array.isArray(obj.results) ? obj.results : []) {
-    const id = result && typeof result === "object" ? (result as Record<string, unknown>).subagentId : undefined;
-    if (typeof id === "string" && id) finished.add(id);
-  }
-  const pending: QueuedSubagentVm[] = [];
-  for (const entry of Array.isArray(obj.plan) ? obj.plan : []) {
-    if (!entry || typeof entry !== "object") continue;
-    const item = entry as Record<string, unknown>;
-    const id = typeof item.itemId === "string" ? item.itemId.trim() : "";
-    if (!id || finished.has(id)) continue;
-    const agent = typeof item.agent === "string" ? item.agent.trim() : "";
-    const displayName = typeof item.displayName === "string" && item.displayName.trim() ? item.displayName.trim() : undefined;
-    pending.push({ id, role: readableRole(id, agent), displayName, task: oneLine(typeof item.task === "string" ? item.task : "", 56) });
-  }
-  return { pending, concurrency: parseConcurrency(obj.concurrency) };
+  return { workers, queued, maxConcurrency, ...(source.serializedReason ? { serializedReason: source.serializedReason } : {}) };
 }
 
 /**
@@ -571,6 +570,9 @@ function parseParallelDispatchDetail(detail: string | undefined): ParsedDispatch
  * 数据源是运行中 subagent 工具调用的 details：`plan` 是入参快照，`results` 是本派发已完结项，
  * `runningIds` 是真正建好子会话的项，三者差集即「已计划、尚未启动」——主进程 rolling pool 里的
  * queued。这样面板不必猜，也不需要 IPC 新增状态；派发一结束调用不再 running，排队行自然消失。
+ *
+ * 只认 mode=parallel：chain 的未执行项是「等上一步」，不是并发排队。
+ * 旧格式（无 mode / 无 concurrency）仍能列出排队项，只是不显示并发口径。
  */
 export function buildQueuedSubagents(
   messages: ChatMessage[],
@@ -583,14 +585,28 @@ export function buildQueuedSubagents(
     for (const block of msg.blocks ?? []) {
       if (block.type !== "tool" || block.toolCall.tool !== "subagent") continue;
       if (block.toolCall.status !== "running") continue;
-      const parsed = parseDispatchDetailCached(block.toolCall.detail);
-      if (!parsed) continue;
+      const details = parseSubagentDetails(block.toolCall.detail);
+      if (!details) continue;
+      // 只认 parallel：chain 的未执行项是「等上一步」，不是并发排队。
+      // 旧 details 可能没有 mode，此时才用 concurrency 当作 parallel 线索。
+      const isParallel = details.mode === "parallel" || (details.mode === undefined && details.concurrency !== undefined);
+      if (!isParallel) continue;
       // 多个并行派发同时运行时以第一个为准：面板只显示一行并发口径，宁少不猜
-      concurrency ??= parsed.concurrency;
-      for (const item of parsed.pending) {
-        if (runningIds.has(item.id) || seen.has(item.id)) continue;
-        seen.add(item.id);
-        queued.push(item);
+      concurrency ??= toConcurrency(details);
+      const finished = new Set(details.results.map((run) => run.subagentId));
+      for (const item of details.plan) {
+        if (finished.has(item.itemId) || runningIds.has(item.itemId) || seen.has(item.itemId)) continue;
+        seen.add(item.itemId);
+        const displayName = item.displayName;
+        const role = readableRole(item.itemId, item.agent);
+        queued.push({
+          id: item.itemId,
+          role,
+          name: subagentRunName({ displayName, role, id: item.itemId }),
+          displayName,
+          task: oneLine(item.task ?? "", 56),
+          cwd: item.cwd,
+        });
       }
     }
   }

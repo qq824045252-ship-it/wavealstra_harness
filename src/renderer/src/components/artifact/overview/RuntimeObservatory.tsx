@@ -2,25 +2,23 @@
  * RuntimeObservatory — 「概览」顶部的当前任务 Runtime Observatory。
  *
  * 三个紧凑 section：当前任务（主 Agent）/ 子代理 / 后台任务。
- * - 运行中子代理点击 → 复用现有 SubagentDrawer（openSubagentDrawer），不造第二套 chat；
- * - 完成态子代理是当前 task 聊天时间线的短暂派生（Subagent 本体仍 disposable）；
+ * - 子代理数据源与顶栏「子代理查看器」同一个 hook（useSubagentRuns）：名字/用量/状态不允许两处不一致；
+ * - 点击已运行/已完成条目 → 复用现有 SubagentDrawer（openSubagentDrawer），不造第二套 chat；
+ * - 已完成的子代理不会因为消息窗口驱逐而消失（见 lib/subagentRunsAccumulator）；
  * - 事件驱动：subagent.onEvent 刷新 active 列表；elapsed 文本用本地 1s tick；
  *   组件卸载/任务切换必须清理 timer 与订阅（taskId ref 防旧任务响应污染）。
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { currentTerminalOwnerKey, useAppStore } from "@/store/appStore";
-import type { SubagentSummaryDto } from "@shared/agent-ipc";
 import type { SubagentUsage } from "@shared/subagent-model-config";
 import type { ExternalAgentRunDto } from "@shared/external-agent";
 import { modelBadgeTitle, type ModelBadge } from "@/lib/modelBadge";
+import { useSubagentRuns } from "@/hooks/useSubagentRuns";
 import {
-  buildRuntimeOverview,
   formatElapsed,
-  readableRole,
   subagentUsageFields,
   subagentUsageTitle,
   oneLine,
-  type RuntimeOverviewVm,
 } from "./overviewRuntime";
 import { IconUsers, IconBot } from "@/components/common/icons";
 
@@ -66,59 +64,18 @@ function ModelChip({ badge }: { badge?: ModelBadge }): React.JSX.Element | null 
 
 export default function RuntimeObservatory(): React.JSX.Element | null {
   const activeTaskId = useAppStore((s) => s.activeTaskId);
-  const tasks = useAppStore((s) => s.tasks);
-  const terminalSessions = useAppStore((s) => s.terminalSessions);
-  const activeModelId = useAppStore((s) => s.activeModelId);
-  const models = useAppStore((s) => s.models);
   const openSubagentDrawer = useAppStore((s) => s.openSubagentDrawer);
   const [expandedDoneId, setExpandedDoneId] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
-
-  const currentTask = useMemo(() => tasks.find((t) => t.id === activeTaskId) ?? null, [tasks, activeTaskId]);
-  const messages = currentTask?.messages ?? [];
-  // 模型目录 id → 展示名：只用于把 provider/model 显示成用户认识的名字
-  const modelNames = useMemo(() => {
-    const map: Record<string, string> = {};
-    for (const model of models ?? []) {
-      const id = (model?.id ?? "").trim();
-      if (id) map[id] = model.name;
-    }
-    return map;
-  }, [models]);
-  const mainModel = useMemo(
-    () => ({ id: activeModelId, name: activeModelId ? modelNames[activeModelId] : undefined }),
-    [activeModelId, modelNames],
-  );
-
-  // 运行中子代理（按 taskId 作用域过滤；事件驱动刷新）
-  const [activeSubagents, setActiveSubagents] = useState<SubagentSummaryDto[]>([]);
   const [activeExternalAgents, setActiveExternalAgents] = useState<ExternalAgentRunDto[]>([]);
   const taskIdRef = useRef<string | null>(null);
   taskIdRef.current = activeTaskId;
 
-  useEffect(() => {
-    if (!activeTaskId) {
-      setActiveSubagents([]);
-      return;
-    }
-    let disposed = false;
-    const fetchActive = async (): Promise<void> => {
-      try {
-        const list = await window.api?.subagent?.active?.(activeTaskId);
-        // 竞态防御：旧任务的事件/响应不得污染新任务
-        // （列表本身已按 taskId 过滤，这里再加一道 taskId 校验）
-        if (!disposed && taskIdRef.current === activeTaskId) setActiveSubagents(list ?? []);
-      } catch {
-        if (!disposed && taskIdRef.current === activeTaskId) setActiveSubagents([]);
-      }
-    };
-    void fetchActive();
-    const unsub = window.api?.subagent?.onEvent?.(() => void fetchActive());
-    return () => {
-      disposed = true;
-      unsub?.();
-    };
-  }, [activeTaskId]);
+  // elapsed 文本本地 tick：仅当存在运行中条目（有 elapsed 需要自然更新）才启动，
+  // 空闲概览不产生无意义重渲染；组件销毁/无运行项时清理（不触发 IPC/重 fetch）
+  const [now, setNow] = useState(() => Date.now());
+  // 子代理运行态与顶栏子代理查看器共用同一个数据源（名字/用量/状态不允许两处不一样）
+  const { vm } = useSubagentRuns(activeTaskId, now);
 
   useEffect(() => {
     if (!activeTaskId) {
@@ -143,23 +100,7 @@ export default function RuntimeObservatory(): React.JSX.Element | null {
       unsub?.();
     };
   }, [activeTaskId]);
-  // elapsed 文本本地 tick：仅当存在运行中条目（有 elapsed 需要自然更新）才启动，
-  // 空闲概览不产生无意义重渲染；组件销毁/无运行项时清理（不触发 IPC/重 fetch）
-  const [now, setNow] = useState(() => Date.now());
-  const vm: RuntimeOverviewVm = useMemo(
-    () =>
-      buildRuntimeOverview({
-        taskId: activeTaskId ?? "",
-        workspaceId: currentTask?.spaceId,
-        messages,
-        activeSubagents,
-        terminalSessions,
-        now,
-        mainModel,
-        modelNames,
-      }),
-    [activeTaskId, currentTask?.spaceId, messages, activeSubagents, terminalSessions, now, mainModel, modelNames],
-  );
+
   const hasRunning =
     vm.runningSubagents.length > 0 || activeExternalAgents.length > 0 || vm.backgroundTasks.some((t) => t.state === "running");
   useEffect(() => {
@@ -219,7 +160,7 @@ export default function RuntimeObservatory(): React.JSX.Element | null {
                 >
                   <span className="ro-item-head">
                     <span className="ro-name" title={s.displayName ? `id: ${s.id}` : undefined}>
-                      <IconUsers size={12} /> {s.displayName || s.role}
+                      <IconUsers size={12} /> {s.name}
                     </span>
                     {s.elapsedMs >= 0 && <span className="ro-elapsed">{formatElapsed(s.elapsedMs)}</span>}
                   </span>
@@ -237,7 +178,7 @@ export default function RuntimeObservatory(): React.JSX.Element | null {
                 <div className="ro-row-main" title="已计划，等待并发名额；子会话创建后才可打开临时 Chat">
                   <span className="ro-item-head">
                     <span className="ro-name" title={`id: ${q.id}`}>
-                      <IconUsers size={12} /> {q.displayName || q.role}
+                      <IconUsers size={12} /> {q.name}
                     </span>
                     <span className="ro-label ro-label--queued">排队中</span>
                   </span>
@@ -267,10 +208,13 @@ export default function RuntimeObservatory(): React.JSX.Element | null {
                   >
                     <div className="ro-done-header">
                       <span className="ro-name" title={d.displayName ? `id: ${d.id}` : undefined}>
-                        {d.displayName || readableRole(d.id)} {d.count > 1 && <span className="ro-count">×{d.count}</span>}
+                        {d.name} {d.count > 1 && <span className="ro-count">×{d.count}</span>}
                       </span>
                       <span className={`ro-label ro-label--${d.state}`}>
-                        {d.state === "completed" ? "已完成" : d.state === "failed" ? "失败" : "已取消"}
+                        {d.state === "completed" ? "已完成"
+                          : d.state === "failed" ? "失败"
+                            : d.state === "unknown" ? "已结束"
+                              : "已取消"}
                       </span>
                     </div>
                     <ModelChip badge={d.model} />

@@ -18384,6 +18384,242 @@ html[data-theme="dark"] .input-expert-chip {
   max-width: 140px;
 }
 
+/* ---------- 顶栏子代理查看器（数据源与侧栏概览一致） ---------- */
+.subagent-chip-anchor {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.subagent-chip {
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  border-color: transparent;
+  max-width: none;
+}
+
+.subagent-chip:hover {
+  background: var(--surface-hover, var(--bg-hover));
+  color: var(--fg);
+}
+
+/* 有实例在跑：用与概览 running 点同色的提示，不再另造一套语义 */
+.subagent-chip.is-running {
+  color: var(--fg);
+}
+
+.subagent-chip.is-running svg:first-child {
+  color: var(--warning);
+}
+
+.subagent-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 60;
+  width: min(380px, 78vw);
+  max-height: 60vh;
+  overflow: auto;
+  padding: 6px;
+  border-radius: var(--radius-md, 10px);
+  border: 1px solid var(--border-strong, var(--border));
+  background: var(--bg-panel);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+}
+
+.subagent-popover-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 4px 6px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.subagent-popover-title {
+  font-weight: 600;
+  color: var(--fg);
+  white-space: nowrap;
+}
+
+.subagent-popover-concurrency {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.subagent-popover-head .icon-btn {
+  margin-left: auto;
+}
+
+.subagent-popover-reason {
+  padding: 0 4px 6px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--fg-muted);
+  word-break: break-word;
+}
+
+.subagent-popover-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.subagent-popover-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  border: none;
+  border-radius: var(--radius-sm, 6px);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.subagent-popover-row:hover:not(:disabled) {
+  background: var(--surface-hover, var(--bg-hover));
+}
+
+.subagent-popover-row:disabled {
+  cursor: default;
+  opacity: 0.85;
+}
+
+.subagent-popover-main {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+
+.subagent-popover-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.subagent-popover-name {
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1;
+}
+
+.subagent-popover-metrics {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.subagent-popover-state {
+  white-space: nowrap;
+}
+
+.subagent-popover-sub {
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.subagent-popover-chevron {
+  flex-shrink: 0;
+  margin-top: 3px;
+  color: var(--fg-muted);
+}
+
+/* ---------- 子代理对话页（与主聊天同宽同 gutter） ---------- */
+.subagent-chat-header {
+  gap: 6px;
+}
+
+.subagent-chat-crumb {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg-muted);
+  max-width: 220px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.subagent-chat-crumb:hover {
+  color: var(--fg);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.subagent-chat-sep {
+  color: var(--fg-muted);
+  opacity: 0.6;
+}
+
+.subagent-chat-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subagent-chat-meta {
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.subagent-chat-sub {
+  padding: 0 max(16px, var(--chat-gutter, 24px)) 4px;
+  max-width: calc(var(--chat-content-max, 832px) + 2 * var(--chat-gutter, 24px));
+  margin: 0 auto;
+  width: 100%;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-sizing: border-box;
+}
+
+.subagent-chat-column .subagent-chat-scroll {
+  padding-bottom: 12px;
+}
+
+.subagent-chat-input .input-box.is-readonly {
+  opacity: 0.75;
+}
+
+.subagent-chat-hint {
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* 聊天顶栏 runtime 状态：单行、与 mode chip 成组，不打断右侧图标簇 */
 .runtime-status-chips {
   display: inline-flex;

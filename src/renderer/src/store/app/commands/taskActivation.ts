@@ -38,6 +38,8 @@ export function createTaskActivationActions(
         terminalContext: null,
         // 子代理临时 Chat 不跨任务：切任务即关闭（实例为 task-scoped disposable）
         subagentDrawer: undefined,
+        // 子代理对话页同理：它属于父任务的某个子会话，不能跟到别的任务上
+        subagentView: undefined,
         // 产物「发送到对话」挂起项不跨任务
         pendingRefFile: null,
         // 分享任务挂起项不跨任务（shareTaskToConversation 在 setActiveTask 之后再写入）
