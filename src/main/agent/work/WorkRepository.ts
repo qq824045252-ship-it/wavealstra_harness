@@ -542,6 +542,7 @@ export class WorkRepository {
       ...(userRequest ? { userRequest, ...userDefinition, delegationPlan: { provenance: "assistant_generated", ...planDefinition } }
         : definition),
       delegatedScope: binding.delegatedScope,
+      ...(this.getWork(binding.workId)?.mode === "watch" ? { watchLifetimeControl: "你只执行本轮观察（团队成员也相同），交付实际结果和用户停止条件对应的证据；本轮回复结束后由前台自主判断持续委托是否应结束。不调用 conversation_goal_propose_complete，不请求用户确认结束，也不使用 automation_exec 修改或取消 Work 订阅。不要等待下一轮或尝试自行关闭长期委托。" } : {}),
       ...(sourceEvent ? { sourceEvent: { source: sourceEvent.source, eventId: sourceEvent.source_event_id,
         eventType: sourceEvent.event_type, sourceVersion: sourceEvent.source_version ?? undefined,
         receivedAt: sourceEvent.received_at, payload: json<Record<string, unknown>>(sourceEvent.payload_json, {}) } } : {}),

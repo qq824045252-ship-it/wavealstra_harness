@@ -97,6 +97,12 @@ export class ConversationInteractionService {
     return { ok: true, interaction };
   }
 
+  /** Retire one obsolete native tool question on replay, without touching other
+   * questions in the same execution or changing any saved user answer. */
+  cancelDurable(ctx: ConversationExecutionContext, key: string, reason?: string): ConversationInteractionMutationResult {
+    return this.cancel(durableInteractionId(ctx, key), reason);
+  }
+
   cancelExecution(executionId: string, reason?: string): void {
     for (const pending of this.repo.listPendingByExecution(executionId)) this.cancel(pending.id, reason ?? "当前执行已中止");
   }

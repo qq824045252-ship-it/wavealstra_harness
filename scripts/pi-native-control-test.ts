@@ -171,6 +171,34 @@ try {
   results.push({ name: "registered progress tool", passed: false, error: String(error) });
   console.error(error);
 }
+try {
+  const registered = new Map<string, any>();
+  let mode = "watch", interactions = 0, updates = 0;
+  const bridge: any = { resolveContext: () => ({ taskId: "watch-task" }),
+    interaction: { cancelDurable: () => ({ ok: false, code: "not_found" }) },
+    requestInteraction: async () => { interactions++; return true; },
+    goal: { getLive: () => ({ id: "watch", title: "发布准备" }),
+      workService: { getWork: () => ({ mode }) }, modelActor: () => ({ kind: "worker" }),
+      update: () => { updates++; return { ok: true, goal: { id: "watch" } }; } } };
+  createConversationRuntimeExtension(bridge)({ on: () => {}, registerTool: (tool: any) => registered.set(tool.name, tool) } as any);
+  const params = { summary: "已读取 READY", expectedStateVersion: 1, expectedIntentRevision: 1, expectedOwnerEpoch: 1 };
+  const tool = registered.get("conversation_goal_propose_complete");
+  for (let call = 0; call < 2; call++) {
+    const receipt = await tool.execute(`watch-${call}`, params, new AbortController().signal);
+    assert(!receipt.isError); assert.equal(receipt.details.handledBy, "watch_supervision");
+    assert.equal(receipt.details.confirmed, false); assert.equal(receipt.details.observationRequired, true);
+    assert.match(receipt.content[0].text, /没有宣布目标达成/);
+    assert.equal(interactions, 0); assert.equal(updates, 0);
+  }
+  mode = "once";
+  const ordinary = await tool.execute("once", params, new AbortController().signal);
+  assert(!ordinary.isError); assert.equal(ordinary.details.confirmed, true);
+  assert.equal(interactions, 1); assert.equal(updates, 1, "finite goal behavior remains unchanged");
+  results.push({ name: "watch goal completion never waits for a person or changes lifetime state; once unchanged", passed: true });
+} catch (error) {
+  results.push({ name: "watch goal completion routing", passed: false, error: String(error) });
+  console.error(error);
+}
 mkdirSync("artifacts/pi-native-control", { recursive: true });
 writeFileSync("artifacts/pi-native-control/contract-results.json", JSON.stringify({ at: new Date().toISOString(), results, passed: results.every(r => r.passed) }, null, 2));
 process.exitCode = results.every(r => r.passed) ? 0 : 1;

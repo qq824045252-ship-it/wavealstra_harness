@@ -446,6 +446,35 @@ export class WorkService {
     this.transaction(() => expireWatchTime(this, workId, now, reviewDelivered, params => this.outbox(params)));
   }
 
+  /** Host-only result lane: stop new rounds, settle native work, never ask for acceptance. */
+  beginReviewedWatchCompletion(workId: string, bindingId: string, summary: string): void {
+    if (this.authorityError()) return;
+    const work = this.repo.getWork(workId);
+    if (!work || work.mode !== "watch" || work.lifecycle !== "active") return;
+    const now = this.now();
+    const next: WorkDto = { ...work, lifecycle: "closing", pendingConclusion: undefined,
+      closureSummary: summary, stateVersion: work.stateVersion + 1, updatedAt: now };
+    this.repo.updateWork(next);
+    this.repo.stopSubscriptionsForWork(workId, now);
+    for (const binding of this.repo.listBindings(workId)) if (["pending","submitted","running","unknown"].includes(binding.status))
+      this.outbox({work:next,eventType:"work.execution.stop_requested",operationId:`watch-goal:${bindingId}`,bindingId:binding.bindingId,
+        payload:{bindingId:binding.bindingId,reason:"watch_goal_met"}});
+    this.emitCurrentProjection(workId);
+  }
+  settleReviewedWatchCompletion(workId: string, bindingId: string, summary: string): boolean {
+    if (this.authorityError()) return false;
+    const work = this.repo.getWork(workId);
+    const binding = this.repo.getBinding(bindingId);
+    if (!work || !binding || work.mode !== "watch" || work.lifecycle !== "closing" || work.pendingConclusion
+      || work.watchRule?.termination || binding.invalidatedAt || binding.ownerEpoch !== work.ownerEpoch
+      || binding.intentRevision !== work.intentRevision || binding.inputSnapshotId !== work.inputSnapshotId) return false;
+    if (this.repo.listBindings(workId).some(b=>["pending","submitted","running","unknown"].includes(b.status))
+      || this.repo.listAdmissions(workId).some(a=>a.state === "admitted")) return false;
+    this.closeWithConclusion(work,"succeeded",{operationId:`watch-goal:${bindingId}`,closureSummary:summary},this.now());
+    this.emitCurrentProjection(workId);
+    return true;
+  }
+
   // ============================================================ delegation
 
   private delegationMutationDeps() {

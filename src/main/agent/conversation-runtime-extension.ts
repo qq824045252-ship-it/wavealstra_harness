@@ -214,6 +214,15 @@ export function createConversationRuntimeExtension(bridge: ConversationRuntimeBr
           const goal = bridge.goal.getLive(context.taskId, params.workId);
           if (!goal) throw new Error("当前对话没有进行中的 Work");
           if (signal?.aborted) throw new Error("当前执行已中止");
+          // Watch executors report observations, not lifetime control. Waiting for
+          // confirmation here prevents the terminal receipt the owner needs to
+          // evaluate the user's stop condition, so return without an interaction.
+          if (bridge.goal.workService.getWork(goal.id)?.mode === "watch") {
+            bridge.interaction.cancelDurable(context, id, "持续委托由前台核对结束，不再等待旧版完成确认");
+            return result("这是持续委托的一轮观察，不需要用户确认完成。请直接交付本轮实际观察、停止条件及对应证据后结束本轮回复；前台会依据原委托核对并自动处理持续委托的结束。不要调用 automation_exec 取消订阅，Work 的调度不是普通 automation。此回执没有宣布目标达成，也没有停止后续检查。", {
+              confirmed: false, handledBy: "watch_supervision", observationRequired: true,
+            });
+          }
           const answer = await requestInteraction(bridge, context, {
             kind: "confirm",
             title: `确认完成 Work「${goal.title}」？`,

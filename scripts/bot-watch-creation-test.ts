@@ -246,6 +246,9 @@ try {
   assert.deepEqual(bindings[0].delegatedScope, ["workspace:read"]);
   const input = JSON.parse(works.repo.executionInput(bindings[0]));
   assert.equal(input.watchFollowUp.readOnly, true);
+  assert.match(input.watchLifetimeControl, /由前台自主判断/);
+  assert.match(input.watchLifetimeControl, /不调用 conversation_goal_propose_complete/);
+  assert.match(input.watchLifetimeControl, /不使用 automation_exec/);
   assert.equal(input.watchFollowUp.watchRule.stopConditionText, "发布成功");
   assert.match(input.watchFollowUp.instructions, /不自行循环/);
   settle(work.workId);

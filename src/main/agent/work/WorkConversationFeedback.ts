@@ -211,7 +211,7 @@ export class WorkConversationFeedback {
         }
         if (work.lifecycle === "closed" && (work.mode === "watch" || !works.repo.listBindings(work.workId).some(binding => managed(binding.bindingId)))) {
           emit("closure", [work.closedAt, work.closureConclusion, work.closureSummary],
-            `事项已关闭（${watchEndedByTime(work) ? "到期结束" : work.closureConclusion ?? "已结束"}）。${work.closureSummary ? `\n${work.closureSummary}` : ""}\n关闭状态不等同于用户验收。`, { kind: "closure", category: "result" });
+            work.closeOperationId?.startsWith("watch-goal:") ? work.closureSummary || "持续委托已完成，后续不再检查。" : `事项已关闭（${watchEndedByTime(work) ? "到期结束" : work.closureConclusion ?? "已结束"}）。${work.closureSummary ? `\n${work.closureSummary}` : ""}\n关闭状态不等同于用户验收。`, { kind: "closure", category: "result" });
         }
         return count;
       });

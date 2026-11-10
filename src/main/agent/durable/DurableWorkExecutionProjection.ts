@@ -51,7 +51,7 @@ async function scanExecutionEvidence(tx: Pick<Tx, "scanEntries">,
   record: Extract<SubmissionRecord, { type: "input" }>, workspaceBinding?: string, durableStoreKey?: string) {
   const projection = new DurableHistoryProjection();
   const readCalls = new Map<string, { name: string; args: unknown }>();
-  const readEvidence: Array<{ toolCallId: string; toolName: string; at: number; kind: string; target: string; outputHash: string; partial: boolean }> = [];
+  const readEvidence: Array<{ toolCallId: string; toolName: string; at: number; kind: string; target: string; outputHash: string; partial: boolean; outputText?: string }> = [];
   const fileCalls = new Map<string, { name: string; path: string }>();
   const readPaths = new Set<string>(), artifacts = new Set<string>();
   const responses: Array<{ text: string }> = [];
@@ -99,7 +99,9 @@ async function scanExecutionEvidence(tx: Pick<Tx, "scanEntries">,
             result: message, isError: message.isError }, message.timestamp) : [];
           for (const item of materials) {
             const { toolCallId, toolName, at, kind, target, outputHash, partial } = item;
-            readEvidence.push({ toolCallId, toolName, at, kind, target, outputHash, partial });
+            const text = durableContentText(message.content);
+            readEvidence.push({ toolCallId, toolName, at, kind, target, outputHash, partial,
+              ...(text.length <= 16000 ? { outputText: text } : {}) });
           }
           // A later failed/empty/malformed read invalidates an earlier successful
           // read of the same source. Do not erase the last attempt from evidence.

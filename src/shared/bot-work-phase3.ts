@@ -29,7 +29,7 @@ export type WorkRuntimeState = z.infer<typeof workRuntimeStateSchema>;
 export interface WorkRuntimeObservationDto { bindingId: string; state: WorkRuntimeState; reason: string; observedAt?: number }
 export const workReadEvidenceSchema = z.object({
   toolCallId: z.string(), toolName: z.string(), at: z.number(), kind: z.string(), target: z.string(),
-  outputHash: z.string(), partial: z.boolean(),
+  outputHash: z.string(), partial: z.boolean(), outputText: z.string().max(16000).optional(),
 }).strict();
 export const workExecutionObservationSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("running"), runtimeState: workRuntimeStateSchema.optional(), runtimeReason: z.string().optional(), generatedArtifacts: z.array(generatedArtifactSchema).optional(), subitems: z.array(workSubitemSchema).optional() }).strict(),

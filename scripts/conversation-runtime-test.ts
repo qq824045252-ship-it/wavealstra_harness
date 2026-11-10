@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createConversationRuntimeExtension } from "../src/main/agent/conversation-runtime-extension";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -59,6 +60,26 @@ try {
   const messageIdMap = new Map([["assistant-a", "assistant-child"]]);
   assert.equal(interactions.cloneTerminal("task-a", "task-b", messageIdMap), 2);
   assert.equal(interactions.listByTask("task-b")[0]?.status, "resolved");
+
+  // Upgrade replay retires only the old completion tool's durable question.
+  db.upsertTask({ id: "task-watch-upgrade", title: "Upgrade watch", updatedAt: Date.now() });
+  const upgradeCtx = { taskId: "task-watch-upgrade", executionId: "watch-execution", assistantMessageId: "watch-assistant" };
+  const oldObserver = new AbortController();
+  const obsolete = interactions.requestDurable(upgradeCtx, { kind: "confirm", title: "确认完成 Work？" }, { key: "complete-call", signal: oldObserver.signal });
+  const unrelated = interactions.requestDurable({ ...upgradeCtx, executionId:'other-tool-execution' }, { kind: "short_text", title: "请补充目标来源" }, { key: "other-call", signal: oldObserver.signal });
+  const detachedOld = assert.rejects(obsolete, /交互观察已结束/), detachedOther = assert.rejects(unrelated, /交互观察已结束/);
+  oldObserver.abort(); await Promise.all([detachedOld,detachedOther]);
+  const replayService = new ConversationInteractionService(new ConversationInteractionRepository(db.connection), emit);
+  const replayTools = new Map<string,any>();
+  createConversationRuntimeExtension({ resolveContext: () => upgradeCtx, interaction: replayService,
+    goal: { getLive: () => ({ id: "watch-work", title: "发布准备" }), workService: { getWork: () => ({ mode: "watch" }) } } as any,
+  })({ on: () => {}, registerTool: (tool:any) => replayTools.set(tool.name,tool) } as any);
+  const resumedResult = await replayTools.get("conversation_goal_propose_complete").execute("complete-call", { summary:"READY", expectedStateVersion:1, expectedIntentRevision:1, expectedOwnerEpoch:1 },new AbortController().signal);
+  assert.equal(resumedResult.details.handledBy,"watch_supervision");
+  const upgraded = replayService.listByTask(upgradeCtx.taskId);
+  assert.equal(upgraded.find(item=>item.title==='确认完成 Work？')!.status,'cancelled');
+  assert.equal(upgraded.find(item=>item.title==='请补充目标来源')!.status,'pending','unrelated same-task question remains intact');
+  assert.equal(replayService.cancelDurable(upgradeCtx,'not-this-call').ok,false);
 
   const created = goals.create({ taskId: "task-a", title: "交付", criteria: [{ text: "类型检查通过" }] });
   assert.equal(created.ok, true);

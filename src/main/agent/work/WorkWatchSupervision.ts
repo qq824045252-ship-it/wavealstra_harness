@@ -1,3 +1,4 @@
+import { watchGoalEvidence, watchGoalMet, watchGoalClosureSummary } from "./WorkWatchGoal";
 import type { WorkCompletionOptions } from "./WorkCompletionCoordinator";
 import type { WorkResultDecision } from "./BotWorkResultTurn";
 import { watchObservationDelivery, watchTeamReadEvidence } from "./WorkWatchObservation";
@@ -18,6 +19,17 @@ export class WorkWatchSupervision {
   close(): void { this.closed = true; if (this.timer) clearInterval(this.timer); }
   wake(): void {
     if (this.closed || !this.options.isAuthority()) return;
+    for (const row of this.options.db.prepare("SELECT r.binding_id,b.work_id,r.decision_json FROM work_watch_reviews r JOIN work_execution_bindings b ON b.binding_id=r.binding_id WHERE r.state='finishing'").all() as {binding_id:string;work_id:string;decision_json:string}[]) {
+      this.options.works.transaction(()=>{
+        const work=this.options.works.getWork(row.work_id),binding=this.options.works.repo.getBinding(row.binding_id);
+        if (!work || !binding || work.lifecycle !== 'closing' || work.pendingConclusion || work.watchRule?.termination
+          || binding.invalidatedAt || binding.intentRevision!==work.intentRevision || binding.inputSnapshotId!==work.inputSnapshotId || binding.ownerEpoch!==work.ownerEpoch) {
+          this.options.db.prepare("UPDATE work_watch_reviews SET state='superseded' WHERE binding_id=?").run(row.binding_id); return;
+        }
+        if (!this.hasPending(row.work_id) && this.options.works.settleReviewedWatchCompletion(row.work_id,row.binding_id,watchGoalClosureSummary(JSON.parse(row.decision_json))))
+          this.options.db.prepare("UPDATE work_watch_reviews SET state='delivered' WHERE binding_id=?").run(row.binding_id);
+      });
+    }
     const rows = this.options.db.prepare(`WITH pending AS (SELECT b.binding_id,b.work_id,b.admitted_at,r.retry_at,
         ROW_NUMBER() OVER (PARTITION BY b.work_id ORDER BY b.admitted_at,b.rowid) ordinal FROM work_execution_bindings b
       JOIN works w ON w.work_id=b.work_id LEFT JOIN work_watch_reviews r ON r.binding_id=b.binding_id
@@ -81,13 +93,23 @@ export class WorkWatchSupervision {
       || binding.invalidatedAt || binding.ownerEpoch !== work.ownerEpoch || binding.intentRevision !== work.intentRevision
       || binding.inputSnapshotId !== work.inputSnapshotId) return;
     const results = works.repo.listDeliverables(work.workId).filter(r => r.executionId === id && r.status !== 'superseded');
-    const evidence = JSON.stringify(results.map(r => [r.deliverableId,r.summary,r.status,r.uncoveredScope,r.artifactRefs,r.isSpeculation,r.hasWriteConflicts]));
-    return {binding,work,results,evidence};
+    const rawEvidence = watchGoalEvidence(this.options.db,works,binding);
+    const evidence = JSON.stringify([work.watchRule,rawEvidence,results.map(r => [r.deliverableId,r.summary,r.status,r.uncoveredScope,r.artifactRefs,r.isSpeculation,r.hasWriteConflicts])]);
+    return {binding,work,results,evidence,rawEvidence};
   }
   private async process(id: string): Promise<void> {
     const {works,db} = this.options;
     const current = this.snapshot(id); if (!current) return;
-    const {binding,work,results,evidence} = current;
+    const {binding,work,results,evidence,rawEvidence} = current;
+    // A later observation stopped because the goal was already proven is not a
+    // new failed goal. Keep its native receipt in details without another model
+    // verdict/message contradicting the accepted round.
+    if (work.lifecycle === 'closing' && binding.status === 'stopped'
+      && db.prepare("SELECT 1 FROM work_watch_reviews r JOIN work_execution_bindings b ON b.binding_id=r.binding_id WHERE b.work_id=? AND r.state='finishing'").get(work.workId)) {
+      db.prepare("INSERT INTO work_watch_reviews(binding_id,context_json,state,reviewed_at) VALUES (?,?,'silent',?) ON CONFLICT(binding_id) DO UPDATE SET state='silent',reviewed_at=excluded.reviewed_at")
+        .run(id,JSON.stringify({reason:'later_observation_stopped_after_goal_met',evidence}),Date.now());
+      return;
+    }
     // Native receipt consumption and its aggregate result commit together.
     if (binding.status === 'completed' && !db.prepare('SELECT 1 FROM work_native_inbox WHERE binding_id=? AND consumed_at IS NOT NULL').get(id)) return;
     const allResults = works.repo.listDeliverables(work.workId);
@@ -104,12 +126,13 @@ export class WorkWatchSupervision {
       nextWakeAt:works.repo.listSubscriptions(work.workId).filter(s => !s.stoppedAt).map(s => s.nextWakeAt).filter(Boolean),
       observedAt:binding.settledAt, reviewAt:Date.now(), executionStatus:binding.status,
       results:results.map(r=>({summary:r.summary,artifactRefs:r.artifactRefs,uncoveredScope:r.uncoveredScope})),
+      verifiedObservations:rawEvidence,
       teamPartialResults: source.teamAssignment?.role === 'owner_summary' && (binding.status !== 'completed' || !results.length)
         ? {notice:'负责人本轮未完成，下列仅为本轮成员已结算的部分依据，不代表全队完成', results:source.teamAssignment.previousResults ?? []} : undefined,
       previousResults:prior.map(r=>({summary:r.summary,createdAt:r.createdAt})),
       observationSummary:presentation.summary, hostProvenUnchanged:presentation.silent,
       notificationMode:work.watchRule?.notificationMode ?? 'every_check',
-      nextAction:work.lifecycle==='active' ? '按已保存的周期继续下一轮；本回合不执行工具、不改变周期、不自动结束长期职责' : work.lifecycle==='closing' ? '已停止新轮，整理末轮结果，说明正在收尾；不承诺下一轮' : '已暂停，只整理已发生的本轮观察，不承诺下一轮', evidence};
+      nextAction:work.lifecycle==='active' ? '按已保存的周期继续下一轮；本回合不执行工具、不改变周期；如用户明确的可观察停止条件已由本轮真实证据满足，提交 stopAssessment 由宿主结束，否则继续' : work.lifecycle==='closing' ? '已停止新轮，整理末轮结果，说明正在收尾；不承诺下一轮' : '已暂停，只整理已发生的本轮观察，不承诺下一轮', evidence};
     db.prepare('INSERT OR IGNORE INTO work_watch_reviews(binding_id,context_json) VALUES (?,?)').run(id,JSON.stringify(context));
     db.prepare("UPDATE work_watch_reviews SET context_json=?,decision_json=NULL WHERE binding_id=? AND json_extract(context_json,'$.evidence')<>?").run(JSON.stringify(context),id,evidence);
     const row = db.prepare('SELECT * FROM work_watch_reviews WHERE binding_id=?').get(id) as {context_json:string;decision_json:string|null;attempts:number;error:string|null};
@@ -142,10 +165,18 @@ export class WorkWatchSupervision {
       }
       db.prepare('UPDATE work_watch_reviews SET decision_json=?,error=? WHERE binding_id=?').run(JSON.stringify(decision),error??null,id);
       // Silence only with host-verified unchanged evidence, never an LLM assertion.
-      const silent = presentation.silent && decision.outcome === 'completed' && decision.decision !== 'ask' && !error;
-      if (!silent && !this.options.deliver({bindingId:id,eventId:`watch-supervision:${id}`,text:decision.reply,category:'result',
-        notices:[...(source.teamAssignment?.watchRound?.sequence ? [`团队观察轮次：第 ${source.teamAssignment.watchRound.sequence} 轮（持久调度记录）`] : []),`本轮执行回执时间：${binding.settledAt ? new Date(binding.settledAt).toISOString() : '未记录'}（不是来源内容发布时间）`,...(error ? [`前台整理错误：${error}`] : []), work.lifecycle!=='active' ? '持续委托已暂停或正在结束，不会安排新检查。' : '本轮结束不结束持续委托，后续按已保存计划运行。']})) throw Error('持续委托结果尚未送达原会话');
-      db.prepare('UPDATE work_watch_reviews SET state=?,reviewed_at=?,retry_at=0 WHERE binding_id=?').run(silent?'silent':'delivered',Date.now(),id);
+      const met = !error && watchGoalMet(latest.work,latest.binding,decision,originalRequest,latest.rawEvidence);
+      const requestedStop = decision.stopAssessment?.status === "met";
+      const reply = requestedStop && !met ? `${presentation.summary}\n\n停止条件尚未由本轮有效证据完成核对，未将持续委托标记完成。` : decision.reply;
+      const silent = !requestedStop && decision.stopAssessment?.status !== 'unknown' && presentation.silent && decision.outcome === 'completed' && decision.decision !== 'ask' && !error;
+      if (!silent && !this.options.deliver({bindingId:id,eventId:`watch-supervision:${id}`,text:reply,category:'result',
+        notices:[...(source.teamAssignment?.watchRound?.sequence ? [`团队观察轮次：第 ${source.teamAssignment.watchRound.sequence} 轮（持久调度记录）`] : []),`本轮执行回执时间：${binding.settledAt ? new Date(binding.settledAt).toISOString() : '未记录'}（不是来源内容发布时间）`,...(error ? [`前台整理错误：${error}`] : []), met ? '已依据本轮实际观察核对停止条件，停止新检查并结算在途轮次，无须人工确认。' : work.lifecycle!=='active' ? '持续委托已暂停或正在结束，不会安排新检查。' : '本轮结束不结束持续委托，后续按已保存计划运行。']})) throw Error('持续委托结果尚未送达原会话');
+      db.prepare('UPDATE work_watch_reviews SET state=?,reviewed_at=?,retry_at=0 WHERE binding_id=?').run(met?'finishing':silent?'silent':'delivered',Date.now(),id);
+      if (met) {
+        works.beginReviewedWatchCompletion(work.workId,id,watchGoalClosureSummary(decision));
+        if (!this.hasPending(work.workId) && works.settleReviewedWatchCompletion(work.workId,id,watchGoalClosureSummary(decision)))
+          db.prepare("UPDATE work_watch_reviews SET state='delivered' WHERE binding_id=?").run(id);
+      }
     });
   }
 }
