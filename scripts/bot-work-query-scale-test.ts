@@ -137,6 +137,40 @@ try {
   assert.equal(watch.openBlockerCount, 1); assert.equal(watch.needsUserInput, true);
   assert.equal(watch.nextWakeAt, 999); assert.equal(watch.activeSubscriptionCount, 1); assert.equal(watch.stoppedSubscriptionCount, 1);
   assert.equal(watch.deadlineAt, 12345); assert.equal(watch.watchRule?.stopConditionText, "达到目标后停止");
+  assert.equal(watch.tracking.state, "waiting_input");
+  assert.equal(watch.tracking.reason, "请确认范围");
+  db.connection.prepare("UPDATE work_blockers SET status='cleared' WHERE work_id=?").run(watchId);
+  assert.equal(query.page({ workId: watchId }).items[0]!.tracking.state, "scheduled");
+  db.connection.prepare("UPDATE work_subscriptions SET next_wake_at=NULL WHERE work_id=? AND stopped_at IS NULL").run(watchId);
+  assert.equal(query.page({ workId: watchId }).items[0]!.tracking.state, "waiting_event");
+  db.connection.prepare("UPDATE work_subscriptions SET stopped_at=10 WHERE work_id=?").run(watchId);
+  assert.equal(query.page({ workId: watchId }).items[0]!.tracking.state, "not_running");
+  const insertBinding = db.connection.prepare(`INSERT INTO work_execution_bindings
+    (binding_id,work_id,operation_id,bot_id,task_id,durable_store_key,conversation_id,intent_revision,owner_epoch,
+     input_snapshot_id,expert_snapshot_json,workspace_binding,status,admitted_at,settlement_note)
+    VALUES (@id,@workId,@id,'owner',@task,'store','conversation',@revision,1,@snapshot,'{}','/test',@status,@time,@note)`);
+  const bind = (id: string, task: string, status: string, time: number, revision = 1, note: string | null = null) =>
+    insertBinding.run({ id, task, status, time, revision, note, workId: watchId, snapshot: base.inputSnapshotId });
+  bind("old-intent", "old-task", "running", 1, 0);
+  assert.equal(query.page({ workId: watchId }).items[0]!.tracking.state, "not_running", "old intent is not current execution");
+  bind("attempt-1", "task-a", "failed", 2, 1, "服务返回503");
+  assert.equal(query.page({ workId: watchId }).items[0]!.tracking.state, "failed");
+  assert.equal(query.page({ workId: watchId }).items[0]!.tracking.reason, "服务返回503");
+  bind("attempt-2", "task-a", "pending", 2);
+  assert.equal(query.page({ workId: watchId }).items[0]!.tracking.state, "queued");
+  assert.equal(query.page({ workId: watchId }).items[0]!.tracking.execution.failed, 0, "superseded retry is not a current failure");
+  db.connection.prepare("UPDATE work_execution_bindings SET status='running' WHERE binding_id='attempt-2'").run();
+  const running = query.page({ workId: watchId }).items[0]!;
+  assert.equal(running.tracking.state, "running");
+  assert.equal(running.tracking.execution.running, 1);
+  assert.equal(running.versionGuard.expectedStateVersion, watch.versionGuard.expectedStateVersion, "binding changes observed without control-version changes");
+  db.connection.prepare("UPDATE work_execution_bindings SET status='completed' WHERE binding_id='attempt-2'").run();
+  assert.equal(query.page({ workId: watchId }).items[0]!.tracking.state, "result_ready");
+  bind("member-b", "task-b", "unknown", 4, 1, "回执未核实");
+  assert.equal(query.page({ workId: watchId }).items[0]!.tracking.state, "unverified", "one completed member does not hide unknown member");
+  db.connection.prepare("UPDATE works SET lifecycle='paused' WHERE work_id=?").run(watchId);
+  assert.equal(query.page({ workId: watchId }).items[0]!.tracking.state, "paused");
+  db.connection.prepare("UPDATE works SET lifecycle='active' WHERE work_id=?").run(watchId);
   works.getProjection = getProjection; works.getWork = getWork; works.listWorks = listWorks;
   const fullReport = "完整成果".repeat(12000);
   db.connection.prepare(`INSERT INTO work_deliverables(deliverable_id,work_id,producer_bot_id,execution_id,intent_revision,owner_epoch,

@@ -17,9 +17,10 @@ const windows = process.platform === 'win32';
 const selectedModel = process.env.BOT_FRONTDOOR_MODEL || 'opendesign/deepseek-v4.1-flash';
 const modelKey = `fixture/${selectedModel}`;
 const headless = process.env.BOT_WORK_DEV_HEADLESS === '1';
+const trackingScenario = process.argv.includes('--tracking');
 const watchScenario = process.argv.includes('--watch');
 if (headless && process.platform !== 'linux') throw Error('Headless dev page validation requires Linux; it does not validate desktop input.');
-const out = path.join(root, teamTransientFailure ? 'out/diagnostics/bot-team-transient-failure/live' : teamTransportFailure ? 'out/diagnostics/bot-team-transport-failure/live' : teamFailureScenario ? 'out/diagnostics/bot-team-failure/live' : teamScenario ? 'out/diagnostics/bot-team-frontdoor/live' : cacheScenario ? 'out/diagnostics/bot-cache/live' : memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
+const out = path.join(root, trackingScenario ? 'out/diagnostics/bot-tracking/live' : teamTransientFailure ? 'out/diagnostics/bot-team-transient-failure/live' : teamTransportFailure ? 'out/diagnostics/bot-team-transport-failure/live' : teamFailureScenario ? 'out/diagnostics/bot-team-failure/live' : teamScenario ? 'out/diagnostics/bot-team-frontdoor/live' : cacheScenario ? 'out/diagnostics/bot-cache/live' : memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-frontdoor-live-'));
 const agentDir = path.join(home, '.mybuddy'); fs.mkdirSync(agentDir, { recursive: true });
 for (const directory of ['AppData/Roaming', 'AppData/Local', 'Temp']) fs.mkdirSync(path.join(home, directory), { recursive: true });
@@ -171,7 +172,33 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       assert(requestId, 'accepted user request identity');
       await until(async () => (await history()).messages.some(m=>m.role==='assistant'&&m.requestId===requestId&&m.status==='completed'), 'matching foreground request completed');
     };
-    if (teamScenario) {
+    if (trackingScenario) {
+      await send('请建立持续跟踪事项，标题“明日检查”：每天 Asia/Shanghai 时区上午9点只读检查委托进展。现在不用执行，不修改任何文件。');
+      await foregroundDone(0);
+      const works = await evaluate('window.api.botWork.listWorks(true)');
+      assert.equal(works.length, 1);
+      const workId = works[0].workId;
+      const detail = await evaluate(`window.api.botWork.getWork(${JSON.stringify(workId)})`);
+      assert.equal(detail.executions.length, 0, 'future schedule must not be reported as running');
+      await send('查看目前委托进度：是否真的正在执行？下一步什么时候做？不要新建任务。');
+      await foregroundDone(0);
+      const latest = (await history()).messages.filter(m=>m.role==='assistant'&&m.status==='completed').at(-1).text;
+      const toolFacts = requests.flatMap(r=>r.messages.filter(m=>m.role==='tool')).map(m=>typeof m.content==='string'?m.content:JSON.stringify(m.content));
+      assert(toolFacts.some(t=>t.includes('"state":"scheduled"')&&t.includes('nextStep')), 'real provider receives factual scheduled next step');
+      assert(/等待|未.*执行|还没|尚未|已安排|未到|没有.*执行/.test(latest), latest);
+      assert(/9|九|09:00/.test(latest), latest);
+      await send(`暂停 ${workId}，然后告诉我这项任务现在是否在执行。`);
+      await foregroundDone(0);
+      await send('再查一次当前所有委托的真实进度和下一步，不要恢复。');
+      await foregroundDone(0);
+      const paused = (await history()).messages.filter(m=>m.role==='assistant'&&m.status==='completed').at(-1).text;
+      assert(/暂停/.test(paused), paused);
+      assert(!/stateVersion|openBlockerCount|tracking\.state/.test(paused), 'user reply must not expose internal field names: '+paused);
+      assert.equal((await evaluate(`window.api.botWork.getWork(${JSON.stringify(workId)})`)).lifecycle, 'paused');
+      assert.equal((await evaluate('window.api.botWork.listWorks(true)')).length, 1, 'status checks do not duplicate delegation');
+      report.history=await history(); report.scheduledReply=latest; report.pausedReply=paused;
+      report.checks.push('real desktop renderer + DeepSeek: natural schedule creation, actual status tool facts, next check time, pause state, no duplicate Work');
+    } else if (teamScenario) {
       const workspace = path.join(home, 'team-workspace'); fs.mkdirSync(workspace);
       fs.writeFileSync(path.join(workspace, 'alpha.txt'), 'ALPHA-31415\n');
       if (!teamFailureScenario || teamTransientFailure) fs.writeFileSync(path.join(workspace, 'beta.txt'), 'BETA-27182\n');
@@ -414,7 +441,7 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     }
     report.checks.push('criticism does not cancel; explicit stop does not restart query; no Work created');
     }
-    const shot=await rpc('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});fs.writeFileSync(path.join(out,teamScenario?'team.png':cacheScenario?'cache.png':memoryScenario?'memory.png':watchScenario?'watch.png':'weather.png'),Buffer.from(shot.data,'base64'));
+    const shot=await rpc('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});fs.writeFileSync(path.join(out,trackingScenario?'tracking.png':teamScenario?'team.png':cacheScenario?'cache.png':memoryScenario?'memory.png':watchScenario?'watch.png':'weather.png'),Buffer.from(shot.data,'base64'));
     report.status='passed';
   } catch (error) {
     report.status = 'failed'; report.error = String(error.stack || error); console.error(error); process.exitCode = 1;

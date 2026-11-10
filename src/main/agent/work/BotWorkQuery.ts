@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import { z } from "zod";
+import { workTrackingReader, type BotWorkTracking } from "./BotWorkTracking";
 import type { WorkLifecycle, WorkMode, WorkClosureConclusion, DeliverableStatus } from "../../../shared/bot-work";
 
 export const botWorkQuerySchema = z.object({
@@ -39,6 +40,7 @@ export interface BotWorkSummary {
   versionGuard: { expectedStateVersion: number; expectedIntentRevision: number; expectedOwnerEpoch: number };
   /** Summaries omit long reports, history and evidence. Read workId for originals. */
   detailAvailable: true;
+  tracking: BotWorkTracking;
 }
 
 /** SQL-only catalogue. Never hydrate every Work or build projections to list it. */
@@ -114,16 +116,19 @@ export class BotWorkQuery {
       (SELECT COUNT(*) FROM work_subscriptions s WHERE s.work_id=w.work_id AND s.stopped_at IS NULL) activeSubscriptionCount,
       (SELECT COUNT(*) FROM work_subscriptions s WHERE s.work_id=w.work_id AND s.stopped_at IS NOT NULL) stoppedSubscriptionCount
       FROM works w WHERE ${predicates.join(" AND ")} ORDER BY w.created_at DESC,w.work_id DESC LIMIT @take`)
-      .all(params) as Array<Omit<BotWorkSummary, "watchRule" | "versionGuard" | "detailAvailable" | "needsUserInput"> & {
+      .all(params) as Array<Omit<BotWorkSummary, "watchRule" | "versionGuard" | "detailAvailable" | "needsUserInput" | "tracking"> & {
         cronExpression: string | null; timezone: string | null; stopConditionText: string | null; needsUserInput: number;
         stateVersion: number; intentRevision: number; ownerEpoch: number;
       }>;
     const hasMore = rows.length > limit;
-    const items: BotWorkSummary[] = rows.slice(0, limit).map(({ stateVersion, intentRevision, ownerEpoch,
+    const tracking = workTrackingReader(this.db);
+    const observedAt = Date.now();
+    const summaries: Array<Omit<BotWorkSummary, "tracking">> = rows.slice(0, limit).map(({ stateVersion, intentRevision, ownerEpoch,
       cronExpression, timezone, stopConditionText, needsUserInput, ...row }) => ({ ...row, needsUserInput: !!needsUserInput,
       watchRule: row.mode === "watch" ? { cronExpression, timezone, stopConditionText } : null,
       versionGuard: { expectedStateVersion: stateVersion, expectedIntentRevision: intentRevision, expectedOwnerEpoch: ownerEpoch },
       detailAvailable: true }));
+    const items: BotWorkSummary[] = summaries.map(item => ({ ...item, tracking: tracking(item, observedAt) }));
     const last = items.at(-1);
     const nextCursor = hasMore && last ? Buffer.from(JSON.stringify({ v: 1, scope, createdAt: last.createdAt, workId: last.workId })).toString("base64url") : null;
     const nextQuery: BotWorkQueryInput | null = nextCursor ? { view: "summary", status, limit, cursor: nextCursor,
