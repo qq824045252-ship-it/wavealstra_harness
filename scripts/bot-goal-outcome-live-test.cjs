@@ -9,7 +9,6 @@ const cp = require('node:child_process');
 const root = path.resolve(__dirname, '..');
 const teamWorkspaceScenario = true;
 if (process.platform !== 'linux') throw Error('This isolated desktop acceptance runs on Omarchy/Linux only.');
-const windows = false;
 const selectedModel = process.env.BOT_FRONTDOOR_MODEL || 'opendesign/deepseek-v4.1-flash';
 const modelKey = `fixture/${selectedModel}`;
 const headless = process.env.BOT_WORK_DEV_HEADLESS === '1';
@@ -242,8 +241,7 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     if (socket) { try { await rpc('Browser.close'); } catch {} socket.close(); }
     await stopTestElectronMains();
     if (processDev) { await wait(1000); if (processDev.exitCode === null) {
-      if (windows) cp.execFileSync('taskkill.exe', ['/PID', String(processDev.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
-      else processDev.kill('SIGTERM');
+      processDev.kill('SIGTERM');
     } }
     if (log !== undefined) fs.closeSync(log); await new Promise(resolve=>provider.close(resolve));
     console.log(`Bot frontdoor pnpm dev UI: ${report.status}; ${path.join(out, 'report.json')}`);
