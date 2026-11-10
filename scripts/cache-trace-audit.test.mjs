@@ -189,3 +189,15 @@ test('ordering and CLI log input preserve the same corrected classification', ()
     assert.deepEqual(JSON.parse(output), JSON.parse(JSON.stringify(expected)));
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('Chat Completions raw usage supports history only with a successful result', () => {
+  const raw = { ...rawUsage(10000, 8000), terminal: 'chat-completions.usage', responseStatus: 'unknown' };
+  const ok = second({ previous: { raw } });
+  assert.equal(ok.previousPromptTokens, 10000);
+  assert.equal(ok.previousUsageState, 'available');
+  for (const outcome of ['error', 'aborted']) {
+    const failed = second({ previous: { raw, result: { outcome } } });
+    assert.equal(failed.previousPromptTokens, null);
+    assert.equal(failed.previousUsageState, 'request-failed');
+  }
+});

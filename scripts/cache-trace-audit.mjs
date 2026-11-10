@@ -27,7 +27,7 @@ function predecessorUsage(result, raw) {
   if (!result) return { previousUsageState: 'missing-result', previousPromptTokens: null };
   if (requestFailed(result, raw)) return { previousUsageState: 'request-failed', previousPromptTokens: null };
   if (!['stop', 'length', 'toolUse'].includes(result.outcome)
-    || !['response.completed', 'response.incomplete'].includes(raw?.terminal)) {
+    || !['response.completed', 'response.incomplete', 'chat-completions.usage'].includes(raw?.terminal)) {
     return { previousUsageState: 'unobserved-success', previousPromptTokens: null };
   }
   const evidence = rawUsageEvidence(raw);

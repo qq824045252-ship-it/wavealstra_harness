@@ -413,3 +413,18 @@ try {
   rmSync(durableRoot,{recursive:true,force:true});
 }
 console.log('PASS cache request tracing; all provider responses simulated; no network');
+
+// The live Magpie/DeepSeek Chat Completions path must expose raw usage too.
+for (const [cached, state] of [[256, 'positive'], [0, 'explicit-zero'], [undefined, 'missing'], [20001, 'invalid']] as const) {
+  const rows: any[] = [];
+  const chatTracer = new CacheRequestTracer(row => rows.push(row));
+  const call = chatTracer.start({ ...model, api: 'openai-completions' }, 'chat-usage');
+  call.providerEvent({ choices: [], privatePayload: secret, usage: { prompt_tokens: 20000, completion_tokens: 3,
+    ...(cached === undefined ? {} : { prompt_tokens_details: { cached_tokens: cached } }) } });
+  call.result({ stopReason: 'stop', usage: { input: 0, output: 3, cacheRead: 0, cacheWrite: 0 } });
+  const report = summarizeCacheTraces(rows).requests[0];
+  assert.equal(report.cacheReadState, state);
+  assert.equal(report.rawUsage.usage.inputTokens, 20000);
+  assert.equal(report.rawHitRate, state === 'missing' || state === 'invalid' ? null : cached! / 20000);
+  assert(!JSON.stringify(rows).includes(secret));
+}

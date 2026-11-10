@@ -190,6 +190,18 @@ export class CacheRequestTracer {
           if (observed) { reported = { ...reported, ...observed.values }; usageSource = observed.source; }
           const event = object(data);
           providerCost = reportedCostTotal(event?.response ?? event?.message ?? data) ?? providerCost;
+          // Chat Completions reports usage in its final chunk, not a Responses terminal.
+          // Keep raw counters (including invalid values) instead of reconstructing them
+          // from SDK-normalized input/cache counts, which may have been clamped.
+          const chatUsage = object(event?.usage);
+          if (model.api === 'openai-completions' && chatUsage) {
+            const details = object(chatUsage.prompt_tokens_details);
+            emit({ ...base, event: 'provider-usage', terminal: 'chat-completions.usage',
+              responseStatus: 'unknown', usagePresent: true,
+              cachedTokensPresent: details !== undefined && Object.hasOwn(details, 'cached_tokens'),
+              usage: { inputTokens: finiteNumber(chatUsage.prompt_tokens), outputTokens: finiteNumber(chatUsage.completion_tokens),
+                totalTokens: finiteNumber(chatUsage.total_tokens), cachedTokens: finiteNumber(details?.cached_tokens) } });
+          }
           if (typeof event?.type !== 'string' || !RESPONSE_TERMINALS.has(event.type)) return;
           const response = object(event.response);
           const usage = object(response?.usage);
