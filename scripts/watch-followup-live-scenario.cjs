@@ -19,6 +19,8 @@ exports.run=async({send,foregroundDone,until,evaluate,history,rpc,report,request
   await until(async()=>{const h=await history();report.history=h;return h.messages.some(m=>m.workFeedback?.executionId===e.bindingId&&m.workFeedback?.kind==='result'&&m.text.includes(expected));},'actual check #'+n+' result returns to original conversation');
   w=await detail(id);assert.equal(w.lifecycle,'active','watch stays active after completed round');
   const messages=(await history()).messages.filter(m=>m.workFeedback?.executionId===e.bindingId&&m.workFeedback?.kind==='result');assert.equal(messages.length,1,'one result per execution');
+  assert(messages[0].workFeedback.eventId.startsWith('watch-supervision:'),'result passes through independent owner supervision');
+  assert(!messages[0].text.includes('本轮前台整理失败'),'real model supervision succeeds, not fallback');
   report.rounds.push({executionId:e.bindingId,inboxEventId:e.inboxEventId,expected,result:messages[0].text,observedAt:Date.now(),nextWakeAt:w.phase4.subscriptions.find(s=>s.status==='online')?.nextWakeAt});
   assert(report.rounds.at(-1).nextWakeAt>Date.now(),'next scheduled check persists');
  };

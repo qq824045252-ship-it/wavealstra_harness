@@ -13,6 +13,7 @@ export interface WorkConversationFeedbackOptions {
   works: WorkService;
   isAuthority: () => boolean;
   pollIntervalMs?: number;
+  superviseWatch?: boolean;
   prepareImages?: (workId: string) => Promise<void>;
 }
 
@@ -99,7 +100,16 @@ export class WorkConversationFeedback {
         if (!work || work.userId !== userId) return 0;
         const origin = this.messages.resolveWorkDelivery(userId, work.workId);
         if (!origin) return 0; // Never guess an active conversation as a fallback.
-        const managed = (bindingId: string) => work.mode === "once"
+        const managed = (bindingId: string) => (this.options.superviseWatch && work.mode === "watch"
+          && (() => {
+            const binding = works.repo.getBinding(bindingId);
+            if (!binding || binding.botId !== work.ownerBotId || !["completed", "failed", "stopped"].includes(binding.status)) return false;
+            const table = this.options.db.prepare("SELECT 1 FROM sqlite_master WHERE name='work_watch_reviews'").get();
+            if (table && this.options.db.prepare("SELECT 1 FROM work_watch_reviews WHERE binding_id=? AND state IN ('delivered','silent')").get(bindingId)) return true;
+            return ["active", "paused", "closing"].includes(work.lifecycle) && !binding.invalidatedAt
+              && binding.intentRevision === work.intentRevision && binding.inputSnapshotId === work.inputSnapshotId
+              && binding.ownerEpoch === work.ownerEpoch;
+          })()) || work.mode === "once"
           && (work.lifecycle === "active" || work.closeOperationId?.startsWith("automatic-completion:"))
           && works.automaticCompletion.tracked(bindingId)
           && works.repo.getBinding(bindingId)?.botId === work.ownerBotId;
@@ -191,7 +201,7 @@ export class WorkConversationFeedback {
               : `阻塞已解除：${blocker.reason}`,
             { kind: "blocker", category: blocker.status === "open" && needsInput ? "decision" : "progress" });
         }
-        if (work.lifecycle === "closed" && !works.repo.listBindings(work.workId).some(binding => managed(binding.bindingId))) {
+        if (work.lifecycle === "closed" && (work.mode === "watch" || !works.repo.listBindings(work.workId).some(binding => managed(binding.bindingId)))) {
           emit("closure", [work.closedAt, work.closureConclusion, work.closureSummary],
             `事项已关闭（${work.closureConclusion ?? "已结束"}）。${work.closureSummary ? `\n${work.closureSummary}` : ""}\n关闭状态不等同于用户验收。`, { kind: "closure", category: "result" });
         }

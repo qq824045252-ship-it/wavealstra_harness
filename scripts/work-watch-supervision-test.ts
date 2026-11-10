@@ -1,0 +1,42 @@
+import assert from 'node:assert/strict';
+import {mkdtempSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {setTimeout as delay} from 'node:timers/promises';
+import {AppDatabase} from '../src/main/db/AppDatabase';
+import {BotRegistry} from '../src/main/agent/work/BotRegistry';
+import {WorkService,DESKTOP_USER_GRANTS} from '../src/main/agent/work/WorkService';
+import {BotConversationRepository} from '../src/main/agent/work/BotConversationRepository';
+import {WorkConversationFeedback} from '../src/main/agent/work/WorkConversationFeedback';
+import {WorkWatchSupervision} from '../src/main/agent/work/WorkWatchSupervision';
+import {LOCAL_USER_ID,DEFAULT_BOT_ID} from '../src/shared/bot-work';
+const root=mkdtempSync(join(tmpdir(),'watch-supervisor-')),db=new AppDatabase(join(root,'test.db'));
+const bots=new BotRegistry(db.connection);bots.ensureDefaultBot(LOCAL_USER_ID);
+const works=new WorkService(db.connection,{bots}),messages=new BotConversationRepository(db.connection);
+const source=messages.accept(LOCAL_USER_ID,{botId:DEFAULT_BOT_ID,requestId:'source',text:'每分钟持续观察，不要结束'});
+const created=works.createWork({kind:'user',userId:LOCAL_USER_ID,entry:'desktop',grants:DESKTOP_USER_GRANTS},{operationId:'create',title:'持续观察',mode:'watch',ownerBotId:DEFAULT_BOT_ID,inputSnapshotId:'input',authorization:DESKTOP_USER_GRANTS,conversationId:source.conversationId,sourceMessageId:source.userMessageId,watchRule:{cronExpression:'* * * * *',timezone:'UTC'}});assert(created.ok);const work=created.work;
+const feedback=new WorkConversationFeedback({db:db.connection,userId:LOCAL_USER_ID,works,isAuthority:()=>true,superviseWatch:true});
+function receipt(id:string){
+ works.repo.insertBinding({bindingId:id,workId:work.workId,operationId:id,botId:DEFAULT_BOT_ID,taskId:id,durableStoreKey:'store',conversationId:'native',intentRevision:work.intentRevision,ownerEpoch:work.ownerEpoch,inputSnapshotId:work.inputSnapshotId,expertSnapshot:bots.activeSnapshot(DEFAULT_BOT_ID)!,delegatedScope:[],workspaceBinding:root,status:'completed',admittedAt:Date.now(),settledAt:Date.now(),settlementNote:id});
+ works.repo.insertDeliverable({deliverableId:`result:${id}`,workId:work.workId,executionId:id,producerBotId:DEFAULT_BOT_ID,intentRevision:work.intentRevision,ownerEpoch:work.ownerEpoch,inputSnapshotId:work.inputSnapshotId,status:'proposed',summary:id,artifactRefs:[],evidenceRefs:[],uncoveredScope:[],uncoveredCriterionIds:[],isSpeculation:false,hasWriteConflicts:false,createdAt:Date.now()});
+ db.connection.prepare('INSERT INTO work_native_inbox(fact_id,binding_id,namespace_hash,payload_json,received_at,consumed_at) VALUES (?,?,?,?,?,?)').run(id,id,id,'{}',Date.now(),Date.now());
+}
+let calls=0,fail=false,deliveryBlocked=false;
+const options={db:db.connection,works,isAuthority:()=>true,wake:()=>{},deliver:(input:any)=>deliveryBlocked?false:feedback.deliverCompletion(input),review:async(input:any)=>{calls++;assert(input.context.watchSupervision);await delay(20);if(fail)throw Error('temporary provider unavailable');return {decision:'deliver' as const,outcome:'completed' as const,reply:'已对照目标核对：'+input.context.observationSummary,missing:[]};}};
+let supervisor=new WorkWatchSupervision(options);
+async function flush(){supervisor.wake();supervisor.wake();await delay(60);}
+receipt('round1');feedback.drain();assert.equal((db.connection.prepare("SELECT count(*) n FROM bot_work_feedback WHERE json_extract(metadata_json,'$.executionId')='round1'").get() as {n:number}).n,0,'raw result waits for independent owner review');
+await flush();assert.equal(calls,1);assert.equal(works.getWork(work.workId)!.lifecycle,'active');
+await flush();assert.equal(calls,1,'one review per round');
+supervisor.close();supervisor=new WorkWatchSupervision(options);await flush();assert.equal(calls,1,'normal restart does not repeat delivered review');
+receipt('round2');await flush();assert.equal(calls,2);assert.equal(works.getWork(work.workId)!.lifecycle,'active');
+receipt('error');fail=true;await flush();db.connection.prepare('UPDATE work_watch_reviews SET retry_at=0 WHERE binding_id=?').run('error');await flush();
+const failed=db.connection.prepare('SELECT state,error FROM work_watch_reviews WHERE binding_id=?').get('error') as any;assert.equal(failed.state,'delivered');assert.match(failed.error,/unavailable/);
+assert.equal((db.connection.prepare("SELECT count(*) n FROM work_watch_reviews WHERE state='delivered'").get() as any).n,3);
+fail=false;deliveryBlocked=true;receipt('delivery-retry');await flush();const countBeforeRetry=calls;
+db.connection.prepare('UPDATE work_watch_reviews SET retry_at=0 WHERE binding_id=?').run('delivery-retry');deliveryBlocked=false;await flush();assert.equal(calls,countBeforeRetry,'delivery retry reuses persisted model verdict');
+const input=works.repo.executionInput.bind(works.repo);works.repo.executionInput=()=>{throw Error('missing execution context');};receipt('context-error');await flush();
+db.connection.prepare('UPDATE work_watch_reviews SET retry_at=0 WHERE binding_id=?').run('context-error');await flush();assert.equal((db.connection.prepare('SELECT state FROM work_watch_reviews WHERE binding_id=?').get('context-error') as {state:string}).state,'delivered','context preparation failure has bounded visible fallback');works.repo.executionInput=input;
+const latest=works.getWork(work.workId)!;works.repo.updateWork({...latest,lifecycle:'closed',closureConclusion:'cancelled',updatedAt:Date.now()});
+feedback.drain();assert((db.connection.prepare("SELECT count(*) n FROM bot_work_feedback WHERE json_extract(metadata_json,'$.kind')='closure'").get() as {n:number}).n>0,'watch closure feedback is not suppressed by reviewed round');
+supervisor.close();feedback.close();db.close();console.log('PASS: multi-round owner review, nonblocking queue, no duplicate raw results, restart receipts, visible model failure fallback; standing work remains active');

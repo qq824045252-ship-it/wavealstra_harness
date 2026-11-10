@@ -1,3 +1,4 @@
+import { WorkWatchSupervision } from "./work/WorkWatchSupervision";
 import { botExecutionDiagnostics } from "./work/BotExecutionDiagnostics";
 import { BotDisplayGroupsService } from "./work/BotDisplayGroupsService";
 import { BotWorkspaceNavigationService } from "./work/BotWorkspaceNavigationService";
@@ -634,6 +635,7 @@ export class AgentService {
   private workDispatchQueue?: WorkDispatchQueue;
   private workConversationFeedback?: WorkConversationFeedback;
   private workCompletion?: WorkCompletionCoordinator;
+  private workWatchSupervision?: WorkWatchSupervision;
   private botResultTurns?: BotWorkResultTurn;
   private botReportImages?: BotReportImageService;
   private readonly executionFailures: ExecutionFailureRepository;
@@ -847,7 +849,7 @@ export class AgentService {
       isAuthority: () => this.workHostAuthority.isAuthority(),
     });
     this.botReportImages = new BotReportImageService(db.connection, LOCAL_USER_ID, this.workService, () => this.artifactService);
-    this.workConversationFeedback = new WorkConversationFeedback({ db: db.connection, userId: LOCAL_USER_ID, works: this.workService,
+    this.workConversationFeedback = new WorkConversationFeedback({ db: db.connection, userId: LOCAL_USER_ID, works: this.workService, superviseWatch: true,
       isAuthority: () => this.workHostAuthority.isAuthority(), prepareImages: workId => this.botReportImages!.captureWork(workId) });
     this.workConversationFeedback.start();
     this.workService.scheduler.beginHostSession(previousWorkLease);
@@ -1731,6 +1733,10 @@ export class AgentService {
       isAuthority: () => this.workHostAuthority.isAuthority(), review: input => this.botResultTurns!.review(input),
       deliver: input => this.workConversationFeedback!.deliverCompletion(input),
       wake: () => queueMicrotask(() => this.workDispatchQueue?.wake()) });
+    this.workWatchSupervision ??= new WorkWatchSupervision({ db: this.db.connection, works: this.workService,
+      isAuthority: () => this.workHostAuthority.isAuthority(), review: input => this.botResultTurns!.review(input),
+      deliver: input => this.workConversationFeedback!.deliverCompletion(input), wake: () => {} });
+    this.workWatchSupervision.start();
     this.workCompletion.start();
     this.workDispatchQueue.start();
     this.workService.scheduler.start();
@@ -1961,6 +1967,7 @@ export class AgentService {
     this.expertBindings.purge(taskId);
   }
   async closeDurableBots(): Promise<void> {
+    this.workWatchSupervision?.close();
     this.workCompletion?.close(); await this.botResultTurns?.close();
     this.workConversationFeedback?.close();
     await this.botConversations?.close(); await this.workDispatchQueue?.close();
