@@ -10,7 +10,8 @@ const root = path.resolve(__dirname, '..');
 const displayGroupsScenario = process.argv.includes('--display-groups');
 const workspaceNavigationScenario = process.argv.includes('--workspace-navigation');
 const modelPreferenceScenario = process.argv.includes('--model-preference');
-const composerScenario = process.argv.includes('--composer');
+const metricsAuditScenario = process.argv.includes('--metrics-audit');
+const composerScenario = process.argv.includes('--composer') || metricsAuditScenario;
 const searchScenario = process.argv.includes('--search');
 const teamWorkspaceScenario = process.argv.includes('--team-workspace');
 const teamTransientFailure = process.argv.includes('--team-transient-failure');
@@ -41,7 +42,7 @@ for (const directory of ['AppData/Roaming', 'AppData/Local', 'Temp']) fs.mkdirSy
 let processDev, socket, sequence = 0, log;
 let electronExecutable, devDebugPort, launcherIdentity, electronWatch;
 const ownedElectronMains = new Map();
-const pending = new Map(), requests = [];
+const pending = new Map(), requests = [], rawUsageAudit = [];
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 const until = async (fn, label) => { const end = Date.now() + 240000; while (!await fn()) { if (Date.now() > end) throw Error('timeout: ' + label); await wait(100); } };
 const freePort = () => new Promise((resolve, reject) => { const server = net.createServer(); server.on('error', reject); server.listen(0, '127.0.0.1', () => { const port = server.address().port; server.close(() => resolve(port)); }); });
@@ -114,6 +115,7 @@ const provider = http.createServer(async (req,res) => {
   try {
     let raw=''; for await(const chunk of req) raw+=chunk;
     const body = JSON.parse(raw); requests.push(body);
+    const requestIndex=requests.length-1, requestStartedAt=Date.now();
     const lastUser = [...body.messages].reverse().find(message => message.role === 'user');
     const currentText = typeof lastUser?.content === 'string' ? lastUser.content : JSON.stringify(lastUser?.content);
     if (concurrentScenario && currentText?.includes('CONCURRENT_FAIL')) {
@@ -128,8 +130,23 @@ const provider = http.createServer(async (req,res) => {
       method:'POST',headers:{'content-type':'application/json'},body:teamTransientFailure&&body.model==='controlled-unavailable'?JSON.stringify({...body,model:selectedModel}):raw});
     if (concurrentScenario && currentText?.includes('CONCURRENT_SLOW')) await wait(40000);
     res.writeHead(response.status,{'content-type':response.headers.get('content-type')||'text/event-stream'});
-    for await(const chunk of response.body) res.write(chunk);
-    res.end();
+    const audit={requestIndex,requestStartedAt,firstDeltaAt:null,endedAt:null,usage:[],label:/AUDIT_[ABM]/.exec(currentText||'')?.[0]||'composer',usageOmitted:metricsAuditScenario && (currentText||'').includes('AUDIT_M')};
+    rawUsageAudit.push(audit);
+    let pendingFrame=''; const decoder=new TextDecoder();
+    const inspect=(line)=>{if(!line.startsWith('data: ') || line==='data: [DONE]') return line;
+      let item;try{item=JSON.parse(line.slice(6));}catch{return line;}
+      if(item.usage) audit.usage.push(item.usage);
+      if(item.choices?.some(choice=>choice.delta && [choice.delta.content,choice.delta.reasoning_content,choice.delta.reasoning,choice.delta.tool_calls].some(Boolean)) && !audit.firstDeltaAt) audit.firstDeltaAt=Date.now();
+      if(audit.usageOmitted && item.usage){delete item.usage;return 'data: '+JSON.stringify(item);}
+      return line;
+    };
+    for await(const chunk of response.body) {
+      if(!metricsAuditScenario) {res.write(chunk);continue;}
+      pendingFrame+=decoder.decode(chunk,{stream:true});
+      let newline;while((newline=pendingFrame.indexOf('\n'))>=0){res.write(inspect(pendingFrame.slice(0,newline))+'\n');pendingFrame=pendingFrame.slice(newline+1);}
+    }
+    if(metricsAuditScenario && pendingFrame) res.write(inspect(pendingFrame));
+    audit.endedAt=Date.now();res.end();
   } catch(error) { res.writeHead(502);res.end(String(error)); }
 });
 async function send(text) {
@@ -342,6 +359,19 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       assert(answer.text.includes('COMPOSER_SKILL_20261110'),'selected skill content reached the real model');
       assert(fs.readFileSync(path.join(out,'mcp-audit.jsonl'),'utf8').includes('composer-live'),'real MCP stdio call occurred');
       assert.equal((await evaluate('window.api.botWork.listWorks(true)')).length,0,'selection works in foreground, not an empty button/background-only');
+      if(metricsAuditScenario) {
+        await send('AUDIT_A 不使用工具，只回复数字：123+456是多少？');
+        await send('AUDIT_B 不使用工具，只回复数字：27乘以38是多少？');
+        await until(async()=>{const h=await history();return h.messages.filter(m=>m.role==='assistant'&&m.status==='completed').length===3;},'both concurrent audit replies completed');
+        await send('AUDIT_M 不使用工具，只回复一句短话：你收到了这条测试消息。');
+        await until(async()=>{const h=await history();return h.messages.filter(m=>m.role==='assistant'&&m.status==='completed').length===4;},'missing usage real model reply completed');
+        report.metricsAuditHistory=await history();
+        report.metricsAuditUi=await evaluate(`[...document.querySelectorAll('.bot-message.assistant')].map(row=>({id:row.dataset.messageId,text:row.querySelector('.bot-reply-metrics')?.textContent,titles:[...row.querySelectorAll('.bot-reply-metrics [title]')].map(item=>item.title)}))`);
+        const db=new (require('better-sqlite3'))(path.join(agentDir,'app.db'),{readonly:true});
+        report.metricsAuditDb={calls:db.prepare('SELECT message_id,generation_id,value_json FROM bot_foreground_usage').all(),metrics:db.prepare('SELECT message_id,value_json FROM bot_foreground_metrics').all()};db.close();
+        report.rawUsageAudit=structuredClone(rawUsageAudit);
+        report.metricsReconciliation=require('./bot-metrics-reconcile.cjs').reconcile(report);
+      }
       await evaluate(`document.querySelector('#bot-draft').focus()`);await rpc('Input.insertText',{text:'帮我写一句邀请同事喝咖啡的话'});
       await until(()=>evaluate(`!!document.querySelector('[aria-label="增强提示词"]')`),'enhance visible only for text');
       await evaluate(`document.querySelector('[aria-label="增强提示词"]').click()`);
@@ -951,6 +981,7 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     if (electronWatch) clearInterval(electronWatch);
     fs.writeFileSync(path.join(out, 'report.json'), JSON.stringify(report, null, 2));
     fs.writeFileSync(path.join(out, 'provider-requests.json'), JSON.stringify(requests, null, 2));
+    if(metricsAuditScenario) fs.writeFileSync(path.join(out,'raw-usage-audit.json'),JSON.stringify(rawUsageAudit,null,2));
     if (socket) { try { await rpc('Browser.close'); } catch {} socket.close(); }
     await stopTestElectronMains();
     if (processDev) { await wait(1000); if (processDev.exitCode === null) {

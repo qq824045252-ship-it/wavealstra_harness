@@ -22,4 +22,7 @@ assert.equal(store.project('a','ra',snapshot)?.outputTokens,null,'incomplete usa
 store.usage('b',{generationTaskId:2,responseTimestamp:10,reported:false,inputTokens:0,outputTokens:0,cacheReadTokens:0,cacheWriteTokens:0});
 store.usage('b',{generationTaskId:2,responseTimestamp:11,reported:true,inputTokens:1,outputTokens:1,cacheReadTokens:0,cacheWriteTokens:0});
 assert.equal(store.project('b','ra',snapshot)?.inputTokens,null,'successful retry does not erase an unreported earlier attempt');
+store.usage('b',{generationTaskId:3,reported:true,inputTokens:0,outputTokens:0,cacheReadTokens:0,cacheWriteTokens:0});
+assert.equal(store.project('b','ra',{...snapshot,contextUsage:{...snapshot.contextUsage!,usedTokens:0}})?.contextTokens,null);
+assert.equal(store.read('b')?.generation?.outputTokens,null,'SDK zero defaults are not reported usage');
 db.close();console.log('PASS foreground metrics: identity, replay, concurrency, history, missing usage, native speed/context');

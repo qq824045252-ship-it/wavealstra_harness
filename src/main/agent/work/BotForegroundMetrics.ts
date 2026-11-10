@@ -9,6 +9,9 @@ export class BotForegroundMetricsStore {
       CREATE TABLE IF NOT EXISTS bot_foreground_usage(message_id TEXT NOT NULL REFERENCES bot_messages(message_id) ON DELETE CASCADE, generation_id INTEGER NOT NULL, value_json TEXT NOT NULL, PRIMARY KEY(message_id,generation_id));`);
   }
   usage(messageId: string, input: {generationTaskId:number;responseTimestamp?:number;reported:boolean;inputTokens:number;outputTokens:number;cacheReadTokens:number;cacheWriteTokens:number}) {
+    // SDKs normalize absent usage to all-zero. A real prompt cannot consume zero input.
+    const counts=[input.inputTokens,input.outputTokens,input.cacheReadTokens,input.cacheWriteTokens];
+    input={...input,reported:input.reported && counts.every(value=>Number.isFinite(value)&&value>=0) && counts.some(value=>value>0)};
     this.db.prepare('INSERT OR REPLACE INTO bot_foreground_usage VALUES(?,?,?)').run(messageId,input.responseTimestamp===undefined?String(input.generationTaskId):`${input.generationTaskId}:${input.responseTimestamp}`,JSON.stringify(input));
   }
   read(messageId:string): BotForegroundMetrics|undefined {
@@ -35,8 +38,9 @@ export class BotForegroundMetricsStore {
     const complete=calls.length>0 && calls.every(call=>call.reported);
     const sum=(key:'inputTokens'|'outputTokens'|'cacheReadTokens'|'cacheWriteTokens')=>complete?calls.reduce((total,call)=>total+call[key],0):null;
     const context=snapshot.contextUsage;
+    if(!complete && generation?.phase==='complete') generation={...generation,tps:null,outputTokens:null};
     const value:BotForegroundMetrics={inputTokens:sum('inputTokens'),outputTokens:sum('outputTokens'),cacheReadTokens:sum('cacheReadTokens'),cacheWriteTokens:sum('cacheWriteTokens'),reportedCalls:calls.filter(call=>call.reported).length,
-      contextTokens:context?.usedTokens??null,contextWindow:context?.contextWindow??null,contextEstimated:context?.estimated??true,
+      contextTokens:context?.usedTokens ? context.usedTokens : null,contextWindow:context?.contextWindow??null,contextEstimated:context?.estimated??true,
       generation,modelName:reply?.modelName,durationMs:generation?.phase==='complete'?Math.max(0,generation.updatedAt-generation.startedAt):undefined};
     if(JSON.stringify(this.read(messageId))!==JSON.stringify(value))
       this.db.prepare('INSERT OR REPLACE INTO bot_foreground_metrics VALUES(?,?)').run(messageId,JSON.stringify(value));

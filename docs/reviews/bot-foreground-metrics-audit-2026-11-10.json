@@ -1,0 +1,317 @@
+{
+  "scenario": "real DeepSeek foreground skill + stdio MCP; two concurrent replies; controlled omitted-usage response",
+  "sourceCommit": "0a2546c plus this fix",
+  "checks": {
+    "status": "passed",
+    "concurrentIntervalsOverlap": true,
+    "results": [
+      {
+        "label": "composer",
+        "calls": 3,
+        "input": 26516,
+        "output": 274,
+        "cacheHitRate": 0.9654548197314828,
+        "contextTokens": 9183,
+        "nativeTimingSamples": [
+          {
+            "output": 77,
+            "tps": 693.6936936936937,
+            "ttftMs": 1860
+          },
+          {
+            "output": 86
+          },
+          {
+            "output": 111,
+            "tps": 185.30884808013357,
+            "ttftMs": 2258
+          }
+        ],
+        "hostObservedTps": null,
+        "proxyDecodeMs": [
+          307,
+          10,
+          703
+        ]
+      },
+      {
+        "label": "AUDIT_A",
+        "calls": 1,
+        "input": 9241,
+        "output": 2,
+        "cacheHitRate": 0.9695920354939942,
+        "contextTokens": 9243,
+        "nativeTimingSamples": [
+          {
+            "output": 2
+          }
+        ],
+        "hostObservedTps": null,
+        "proxyDecodeMs": [
+          0
+        ]
+      },
+      {
+        "label": "AUDIT_B",
+        "calls": 1,
+        "input": 8748,
+        "output": 235,
+        "cacheHitRate": 0.9364426154549611,
+        "contextTokens": 8983,
+        "nativeTimingSamples": [
+          {
+            "output": 235,
+            "tps": 265.2370203160271,
+            "ttftMs": 2273
+          }
+        ],
+        "hostObservedTps": 265.2370203160271,
+        "proxyDecodeMs": [
+          990
+        ]
+      },
+      {
+        "label": "AUDIT_M",
+        "missingUsage": "passed"
+      }
+    ],
+    "speedNote": "Host snapshot observation and proxy receive clocks differ; no claim of provider-internal decode speed."
+  },
+  "rawProviderUsage": [
+    {
+      "requestIndex": 0,
+      "requestStartedAt": 1794305558593,
+      "firstDeltaAt": 1794305560277,
+      "endedAt": 1794305560584,
+      "usage": [
+        {
+          "prompt_tokens": 8583,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 8192,
+            "cached_tokens": 8192
+          },
+          "completion_tokens": 77,
+          "completion_tokens_details": {},
+          "total_tokens": 8660
+        }
+      ],
+      "label": "composer",
+      "usageOmitted": false
+    },
+    {
+      "requestIndex": 1,
+      "requestStartedAt": 1794305560921,
+      "firstDeltaAt": 1794305563620,
+      "endedAt": 1794305563630,
+      "usage": [
+        {
+          "prompt_tokens": 8861,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 8576,
+            "cached_tokens": 8576
+          },
+          "completion_tokens": 86,
+          "completion_tokens_details": {},
+          "total_tokens": 8947
+        }
+      ],
+      "label": "composer",
+      "usageOmitted": false
+    },
+    {
+      "requestIndex": 2,
+      "requestStartedAt": 1794305563815,
+      "firstDeltaAt": 1794305565939,
+      "endedAt": 1794305566642,
+      "usage": [
+        {
+          "prompt_tokens": 9072,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 8832,
+            "cached_tokens": 8832
+          },
+          "completion_tokens": 111,
+          "completion_tokens_details": {},
+          "total_tokens": 9183
+        }
+      ],
+      "label": "composer",
+      "usageOmitted": false
+    },
+    {
+      "requestIndex": 3,
+      "requestStartedAt": 1794305567141,
+      "firstDeltaAt": 1794305568867,
+      "endedAt": 1794305568867,
+      "usage": [
+        {
+          "prompt_tokens": 9241,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 8960,
+            "cached_tokens": 8960
+          },
+          "completion_tokens": 2,
+          "completion_tokens_details": {},
+          "total_tokens": 9243
+        }
+      ],
+      "label": "AUDIT_A",
+      "usageOmitted": false
+    },
+    {
+      "requestIndex": 4,
+      "requestStartedAt": 1794305567376,
+      "firstDeltaAt": 1794305569522,
+      "endedAt": 1794305570512,
+      "usage": [
+        {
+          "prompt_tokens": 8748,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 8192,
+            "cached_tokens": 8192
+          },
+          "completion_tokens": 235,
+          "completion_tokens_details": {
+            "reasoning_tokens": 232
+          },
+          "total_tokens": 8983
+        }
+      ],
+      "label": "AUDIT_B",
+      "usageOmitted": false
+    },
+    {
+      "requestIndex": 5,
+      "requestStartedAt": 1794305570988,
+      "firstDeltaAt": 1794305572827,
+      "endedAt": 1794305573078,
+      "usage": [
+        {
+          "prompt_tokens": 8658,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 8192,
+            "cached_tokens": 8192
+          },
+          "completion_tokens": 5,
+          "completion_tokens_details": {},
+          "total_tokens": 8663
+        }
+      ],
+      "label": "AUDIT_M",
+      "usageOmitted": true
+    }
+  ],
+  "normalizedUsage": [
+    {
+      "messageId": "bot-message-84221ad3-157c-4f42-a3fb-b9bf026688f6",
+      "generationTaskId": 9,
+      "responseTimestamp": 1794305558563,
+      "reported": true,
+      "inputTokens": 391,
+      "outputTokens": 77,
+      "cacheReadTokens": 8192,
+      "cacheWriteTokens": 0
+    },
+    {
+      "messageId": "bot-message-84221ad3-157c-4f42-a3fb-b9bf026688f6",
+      "generationTaskId": 17,
+      "responseTimestamp": 1794305560904,
+      "reported": true,
+      "inputTokens": 285,
+      "outputTokens": 86,
+      "cacheReadTokens": 8576,
+      "cacheWriteTokens": 0
+    },
+    {
+      "messageId": "bot-message-84221ad3-157c-4f42-a3fb-b9bf026688f6",
+      "generationTaskId": 21,
+      "responseTimestamp": 1794305563793,
+      "reported": true,
+      "inputTokens": 240,
+      "outputTokens": 111,
+      "cacheReadTokens": 8832,
+      "cacheWriteTokens": 0
+    },
+    {
+      "messageId": "bot-message-73638cdc-4d57-45df-bf1b-5730895e4c7e",
+      "generationTaskId": 17,
+      "responseTimestamp": 1794305567130,
+      "reported": true,
+      "inputTokens": 281,
+      "outputTokens": 2,
+      "cacheReadTokens": 8960,
+      "cacheWriteTokens": 0
+    },
+    {
+      "messageId": "bot-message-2b919aef-6a24-45c5-ac56-143319848213",
+      "generationTaskId": 18,
+      "responseTimestamp": 1794305567361,
+      "reported": true,
+      "inputTokens": 556,
+      "outputTokens": 235,
+      "cacheReadTokens": 8192,
+      "cacheWriteTokens": 0
+    },
+    {
+      "messageId": "bot-message-b686ff44-5e57-4ba4-b2fc-c803a6f53225",
+      "generationTaskId": 22,
+      "responseTimestamp": 1794305570978,
+      "reported": false,
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0
+    }
+  ],
+  "ui": [
+    {
+      "id": "bot-message-84221ad3-157c-4f42-a3fb-b9bf026688f6",
+      "text": "输入 0.027M输出 <0.001M缓存 96.5%速度 —上下文 ≈0.009M / 0.128M (7.2%)耗时 8.2s",
+      "titles": [
+        "26,516 tokens；本条前台回复所有已报告模型调用的输入，包括缓存读写；不是整个会话累计。",
+        "274 tokens；供应商已报告输出，缺失显示 —。",
+        "缓存读取 0.026M · 缓存写入 0M · 未缓存 0.001M",
+        "未取得完整生成时序，不以文字长度或总耗时猜测速度",
+        "本请求最近一次模型上下文占用，不是整个 Bot 历史之和；≈ 表示快照估算，— 表示未取得。"
+      ]
+    },
+    {
+      "id": "bot-message-73638cdc-4d57-45df-bf1b-5730895e4c7e",
+      "text": "输入 0.009M输出 <0.001M缓存 97.0%速度 —上下文 ≈0.009M / 0.128M (7.2%)耗时 1.8s",
+      "titles": [
+        "9,241 tokens；本条前台回复所有已报告模型调用的输入，包括缓存读写；不是整个会话累计。",
+        "2 tokens；供应商已报告输出，缺失显示 —。",
+        "缓存读取 0.009M · 缓存写入 0M · 未缓存 <0.001M",
+        "未取得完整生成时序，不以文字长度或总耗时猜测速度",
+        "本请求最近一次模型上下文占用，不是整个 Bot 历史之和；≈ 表示快照估算，— 表示未取得。"
+      ]
+    },
+    {
+      "id": "bot-message-2b919aef-6a24-45c5-ac56-143319848213",
+      "text": "输入 0.009M输出 <0.001M缓存 93.6%观测 平均 265.2 tok/s平均生成速度 265.2 tok/s\n按本条回复的模型生成时长加权，排除首响应等待、工具执行和审批耗时。\n输出 235 tokens\n首响应 2.3s（含思考或工具参数）上下文 ≈0.009M / 0.128M (7.0%)耗时 3.2s",
+      "titles": [
+        "8,748 tokens；本条前台回复所有已报告模型调用的输入，包括缓存读写；不是整个会话累计。",
+        "235 tokens；供应商已报告输出，缺失显示 —。",
+        "缓存读取 0.008M · 缓存写入 0M · 未缓存 0.001M",
+        "速度来自主机接收到流式快照的观测时钟，受传输与采样延迟影响；不是供应商内部计时。",
+        "本请求最近一次模型上下文占用，不是整个 Bot 历史之和；≈ 表示快照估算，— 表示未取得。"
+      ]
+    },
+    {
+      "id": "bot-message-b686ff44-5e57-4ba4-b2fc-c803a6f53225",
+      "text": "输入 —输出 —缓存 —速度 —上下文 — / 0.128M耗时 2.1s",
+      "titles": [
+        "未报告；本条前台回复所有已报告模型调用的输入，包括缓存读写；不是整个会话累计。",
+        "未报告；供应商已报告输出，缺失显示 —。",
+        "缓存读取 — · 缓存写入 — · 未缓存 —",
+        "未取得完整生成时序，不以文字长度或总耗时猜测速度",
+        "本请求最近一次模型上下文占用，不是整个 Bot 历史之和；≈ 表示快照估算，— 表示未取得。"
+      ]
+    }
+  ],
+  "notes": [
+    "No response text, prompts, credentials or authorization headers in this evidence.",
+    "AUDIT_M was a real upstream response with usage deliberately stripped before SDK parsing; upstream raw usage is retained to prove omission.",
+    "Host-observed speed is not provider-internal decode speed. Missing per-call timing means aggregate speed is unknown."
+  ]
+}
