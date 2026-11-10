@@ -3467,7 +3467,7 @@ export class AgentService {
     return this.runtimeSnapshots.list(taskId, limit);
   }
 
-  getTaskDiagnostics(taskId: string, limit = 200, offset = 0): TaskDiagnosticsDto {
+  getTaskDiagnostics(taskId: string, limit?: number, offset = 0): TaskDiagnosticsDto {
     if (!this.db.getTask(taskId)) throw new Error(`任务不存在：${taskId}`);
     return this.taskDiagnostics.list(taskId, limit, offset);
   }

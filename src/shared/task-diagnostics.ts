@@ -11,6 +11,12 @@ export interface ModelRequestDiagnostic {
   executionScope: string;
   conversationId: string;
   generationTaskId: number;
+  /**
+   * 该请求所属的「轮」身份，与 ToolDiagnostic.executionId / WaitDiagnostic.executionId 同一个口径：
+   * Durable 下为 `durable:${taskId}:${conversationId}:${turnTaskId}`（turnTaskId 即 generationTaskId）。
+   * 由主进程在读取时派生，旧记录也能得到（无需迁移）。
+   */
+  executionId: string;
   sourceKind: DiagnosticSource;
   provider: string;
   model: string;

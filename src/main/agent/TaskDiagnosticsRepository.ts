@@ -10,6 +10,7 @@ const usageSchema = z.object({ input: nullableNumber, output: nullableNumber, ca
 const sourceSchema = z.enum(["main", "subagent", "auxiliary"]);
 const requestSchema = z.object({
   id: z.string(), taskId: z.string().nullable(), executionScope: z.string(), conversationId: z.string(), generationTaskId: z.number(),
+  executionId: z.string().optional(),
   sourceKind: sourceSchema, provider: z.string(), model: z.string(), startedAt: z.number(), firstResponseAt: nullableNumber,
   finishedAt: nullableNumber, modelMs: nullableNumber, status: z.enum(["running", "completed", "failed", "aborted", "interrupted"]),
   outcome: z.string().nullable(), error: z.string().nullable(), usage: usageSchema, usageSource: z.string().nullable(),
@@ -60,8 +61,19 @@ function addUsage(target: ConversationUsage, usage: ModelRequestDiagnostic["usag
 }
 const waitRow = z.object({ id: z.string(), execution_id: z.string(), title: z.string(), created_at: z.number(), resolved_at: nullableNumber, status: z.string() });
 
-function intervalMs(intervals: Interval[]): number {
-  let end = -Infinity;
+/**
+ * 一轮的身份：模型请求、工具、等待共用同一个 executionId 口径，
+ * 这样「第 N 轮」才能把三类记录真的归到一起，不用时间窗口猜。
+ * 旧记录没有该字段时在读时派生（Durable 下 = durable:task:conversation:turnTaskId）。
+ */
+function requestExecutionId(value: { taskId: string | null; executionScope: string; conversationId: string; generationTaskId: number }): string {
+  if (value.taskId && (!value.executionScope || value.executionScope === value.taskId)) {
+    return `durable:${value.taskId}:${value.conversationId}:${value.generationTaskId}`;
+  }
+  return `${value.executionScope || "global"}:${value.conversationId}:${value.generationTaskId}`;
+}
+
+function intervalMs(intervals: Interval[]): number {  let end = -Infinity;
   let total = 0;
   for (const interval of [...intervals].sort((a, b) => a.start - b.start)) {
     total += Math.max(0, interval.end - Math.max(end, interval.start));
@@ -109,16 +121,19 @@ export class TaskDiagnosticsRepository {
     const parsed = traceSchema.safeParse(record);
     if (!parsed.success) return;
     const event = parsed.data;
-    let value = this.pending.get(event.request);
+    let value: ModelRequestDiagnostic | undefined = this.pending.get(event.request);
     if (!value) {
       const row = recordRow.optional().parse(this.db.prepare("SELECT record_json FROM task_request_diagnostics WHERE request_id=?").get(event.request));
-      value = row ? requestSchema.parse(JSON.parse(row.record_json)) : {
-        id: event.request, taskId: null, executionScope: "", conversationId: "", generationTaskId: 0, sourceKind: "main",
-        provider: model.provider, model: model.id, startedAt: event.startedAt ?? event.at, firstResponseAt: null, finishedAt: null,
-        modelMs: null, status: "running", outcome: null, error: null, usage: unknownTokenUsage(), usageSource: null,
-        knownCostUsd: null, costComplete: false, costSource: null, attempts: [],
-        cacheContext: { previousRequestId: null, prefixStable: null, changedFields: [], coverage: "unobserved" },
-      };
+      const stored = row ? requestSchema.parse(JSON.parse(row.record_json)) : null;
+      value = stored
+        ? { ...stored, executionId: stored.executionId ?? requestExecutionId(stored) }
+        : {
+          id: event.request, taskId: null, executionScope: "", conversationId: "", generationTaskId: 0, executionId: "", sourceKind: "main",
+          provider: model.provider, model: model.id, startedAt: event.startedAt ?? event.at, firstResponseAt: null, finishedAt: null,
+          modelMs: null, status: "running", outcome: null, error: null, usage: unknownTokenUsage(), usageSource: null,
+          knownCostUsd: null, costComplete: false, costSource: null, attempts: [],
+          cacheContext: { previousRequestId: null, prefixStable: null, changedFields: [], coverage: "unobserved" },
+        };
     }
     if (event.event === "execution" && event.conversationId && event.generationTaskId !== undefined) {
       value.taskId = event.taskId && this.db.prepare("SELECT 1 FROM tasks WHERE id=?").get(event.taskId) ? event.taskId : null;
@@ -126,6 +141,8 @@ export class TaskDiagnosticsRepository {
       value.conversationId = event.conversationId; value.generationTaskId = event.generationTaskId;
       value.sourceKind = event.sourceKind ?? "main";
     }
+    // 写入时就带上轮身份：读取时只对旧记录（没有该字段）派生
+    value.executionId = requestExecutionId(value);
     if (event.event === "first-response") value.firstResponseAt ??= event.at;
     if (event.event === "request") {
       if (event.stage === "http" && event.attempt && !value.attempts.some(item => item.number === event.attempt)) {
@@ -228,7 +245,8 @@ export class TaskDiagnosticsRepository {
     } catch { return { ...unknownTokenUsage(), costTotal: null }; }
   }
 
-  list(taskId: string, limit = 200, offset = 0): TaskDiagnosticsDto {
+  /** `limit` 缺省 = 不截断：规则与基线需要该任务的全部观测，不再按 200 条截断。 */
+  list(taskId: string, limit?: number, offset = 0): TaskDiagnosticsDto {
     try { return this.readList(taskId, limit, offset); }
     catch { return this.emptyList(taskId, "诊断记录暂时无法读取，执行功能仍可使用"); }
   }
@@ -238,21 +256,35 @@ export class TaskDiagnosticsRepository {
       totals: { modelMs: null, toolMs: null, waitingMs: 0, knownCostUsd: null, costComplete: false, unknownUsageRequests: 0 } };
   }
 
-  private readList(taskId: string, limit: number, offset: number): TaskDiagnosticsDto {
-    const bound = Math.max(1, Math.min(500, Math.floor(limit) || 200)); const now = Date.now();
+  private readList(taskId: string, limit: number | undefined, offset: number): TaskDiagnosticsDto {
+    const now = Date.now();
     const skip = Number.isSafeInteger(offset) && offset >= 0 ? offset : 0;
     if (this.unavailable) return this.emptyList(taskId, this.unavailable);
-    const requestRows = this.db.prepare("SELECT record_json FROM task_request_diagnostics WHERE task_id=? ORDER BY started_at DESC,request_id DESC LIMIT ? OFFSET ?").all(taskId, bound + 1, skip);
-    const requests = requestRows.slice(0, bound).flatMap(row => {
-      const result = requestSchema.safeParse(JSON.parse(recordRow.parse(row).record_json)); return result.success ? [result.data] : [];
+    const bounded = typeof limit === "number" && Number.isFinite(limit) && limit > 0;
+    const bound = bounded ? Math.max(1, Math.min(500, Math.floor(limit))) : undefined;
+    const pageSql = (order: string) => bound === undefined ? `ORDER BY ${order}` : `ORDER BY ${order} LIMIT ? OFFSET ?`;
+    const read = <T>(statement: string, order: string, parse: (row: unknown) => T[]): { rows: T[]; truncated: boolean } => {
+      const sql = `SELECT record_json FROM ${statement} WHERE task_id=? ${pageSql(order)}`;
+      const raw = bound === undefined
+        ? this.db.prepare(sql).all(taskId)
+        : this.db.prepare(sql).all(taskId, bound + 1, skip);
+      const truncated = bound !== undefined && raw.length > bound;
+      return { rows: raw.slice(0, bound ?? raw.length).flatMap(row => parse(row)), truncated };
+    };
+    const requestPage = read("task_request_diagnostics", "started_at DESC,request_id DESC", row => {
+      const result = requestSchema.safeParse(JSON.parse(recordRow.parse(row).record_json));
+      return result.success ? [{ ...result.data, executionId: result.data.executionId ?? requestExecutionId(result.data) }] : [];
     });
-    const waitRows = this.db.prepare("SELECT id,execution_id,title,created_at,resolved_at,status FROM conversation_interactions WHERE task_id=? ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?").all(taskId, bound + 1, skip);
-    const waits: WaitDiagnostic[] = waitRows.slice(0, bound).map(row => { const item = waitRow.parse(row); return { id: item.id, executionId: item.execution_id, title: item.title,
+    const requests = requestPage.rows;
+    const waitRows = bound === undefined
+      ? this.db.prepare(`SELECT id,execution_id,title,created_at,resolved_at,status FROM conversation_interactions WHERE task_id=? ORDER BY created_at DESC,id DESC`).all(taskId)
+      : this.db.prepare(`SELECT id,execution_id,title,created_at,resolved_at,status FROM conversation_interactions WHERE task_id=? ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?`).all(taskId, bound + 1, skip);
+    const waits: WaitDiagnostic[] = waitRows.slice(0, bound ?? waitRows.length).map(row => { const item = waitRow.parse(row); return { id: item.id, executionId: item.execution_id, title: item.title,
         startedAt: item.created_at, finishedAt: item.resolved_at, status: item.status }; });
-    const stored = this.db.prepare("SELECT record_json FROM task_tool_diagnostics WHERE task_id=? ORDER BY started_at DESC,id DESC LIMIT ? OFFSET ?").all(taskId, bound + 1, skip)
-      .map(row => toolSchema.parse(JSON.parse(recordRow.parse(row).record_json)));
+    const storedPage = read("task_tool_diagnostics", "started_at DESC,id DESC", row => [toolSchema.parse(JSON.parse(recordRow.parse(row).record_json))]);
+    const stored = storedPage.rows.slice(0, bound ?? storedPage.rows.length);
     const toolWaiting = new Map<string, Interval[]>();
-    const executionIds = stored.slice(0, bound).map(value => value.executionId);
+    const executionIds = [...new Set(stored.map(value => value.executionId))];
     if (executionIds.length) {
       const rows = this.db.prepare(`SELECT execution_id,created_at AS start,COALESCE(resolved_at,?) AS end
         FROM conversation_interactions WHERE task_id=? AND execution_id IN (${executionIds.map(() => "?").join(",")})`).all(now, taskId, ...executionIds);
@@ -262,7 +294,7 @@ export class TaskDiagnosticsRepository {
         existing.push(interval); toolWaiting.set(interval.execution_id, existing);
       }
     }
-    const tools = stored.slice(0, bound).map(value => {
+    const tools = stored.map(value => {
       const intervals = [...value.intervals, ...(value.segmentStartedAt !== null ? [{ start: value.segmentStartedAt, end: now }] : [])];
       const observedMs = intervalMs(intervals);
       const waitingMs = overlapMs(intervals, toolWaiting.get(value.executionId) ?? []);
@@ -270,7 +302,8 @@ export class TaskDiagnosticsRepository {
         name: value.name, callId: value.callId, startedAt: value.startedAt, finishedAt: value.finishedAt, status: value.status,
         observedMs, activeMs: Math.max(0, observedMs - waitingMs), waitingMs, complete: value.complete, diagnostics: value.diagnostics };
     });
-    return { taskId, capturedAt: now, offset: skip, requests, tools, waits, truncated: requestRows.length > bound || stored.length > bound || waitRows.length > bound,
+    return { taskId, capturedAt: now, offset: skip, requests, tools, waits,
+      truncated: requestPage.truncated || storedPage.truncated || waitRows.length > (bound ?? waitRows.length),
       totals: { modelMs: requests.some(value => value.modelMs !== null) ? requests.reduce((sum, value) => sum + (value.modelMs ?? 0), 0) : null,
         toolMs: tools.some(value => value.complete || value.observedMs > 0) ? tools.reduce((sum, value) => sum + value.activeMs, 0) : null,
         waitingMs: intervalMs(waits.map(wait => ({ start: wait.startedAt, end: wait.finishedAt ?? now }))),

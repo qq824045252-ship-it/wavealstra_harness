@@ -88,6 +88,26 @@ try {
   // 分母 = input + cacheRead + cacheWrite = 10 + 20 + 0，命中率不能因为上报缺失退回 null。
   assert.equal(statistics.dashboard(1).cacheHitRate, 20 / 30, "命中率按已知分量计算，不再整窗 null");
   assert.equal(diagnostics.list("task", 1, 1).requests.length, 1);
+  // 轮次身份：请求与工具/等待共用同一个 executionId 口径（不靠时间窗口猜归属）。
+  const turnRow = diagnostics.list("task").requests.find(row => row.generationTaskId === 11)!;
+  assert.equal(turnRow.executionId, "durable:task:7:11", `请求带轮次身份（${turnRow.executionId}）`);
+  assert.equal(diagnostics.list("task").tools.find(row => row.id.endsWith(":30"))?.executionId, "durable:task:7:30",
+    "工具用同一口径（durable:task:conversation:turnTaskId）");
+  // 默认不再按 200 条截断：规则与基线需要整段观测。
+  const insert = db.connection.prepare("INSERT INTO task_request_diagnostics VALUES(?,?,?,?)");
+  for (let index = 0; index < 260; index += 1) {
+    insert.run(`bulk-${index}`, "task", 1000 + index, JSON.stringify({
+      id: `bulk-${index}`, taskId: "task", executionScope: "task", conversationId: "bulk", generationTaskId: index,
+      sourceKind: "main", provider: "fixture", model: "model", startedAt: 1000 + index, firstResponseAt: null,
+      finishedAt: null, modelMs: null, status: "completed", outcome: "stop", error: null,
+      usage: { input: 1, output: 1, cacheRead: 1, cacheWrite: 0 }, usageSource: "provider",
+      knownCostUsd: 0, costComplete: true, costSource: "provider-reported", attempts: [],
+      cacheContext: { previousRequestId: null, prefixStable: true, changedFields: [], coverage: "complete" },
+    }));
+  }
+  const all = diagnostics.list("task");
+  assert(all.requests.length >= 260, `默认读取不截断（${all.requests.length} 条）`);
+  assert.equal(all.truncated, false, "不截断时 truncated=false");
   const zero = tracer.start(model, "zero", undefined, event => diagnostics.observeTrace(event, model));
   zero.identify({ taskId: "task", conversationId: "zero", generationTaskId: 13, sourceKind: "main" });
   zero.providerEvent({ usage: { cost: 0 } });
