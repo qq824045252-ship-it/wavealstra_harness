@@ -28,7 +28,6 @@ export function BotTeamsNavigation({ onSelect }: { onSelect?: () => void } = {})
   const [detailId, setDetailId] = useState<string | null>(null);
   const [settings, setSettings] = useState(false);
   const [savedNotice, setSavedNotice] = useState("");
-  const [managing, setManaging] = useState(false);
   const [creating, setCreating] = useState(false);
   const [delegating, setDelegating] = useState<WorkTeamTemplateDto | null>(null);
   const [pending] = useState(pendingTeam);
@@ -57,10 +56,10 @@ export function BotTeamsNavigation({ onSelect }: { onSelect?: () => void } = {})
     return () => { live = false; window.removeEventListener("mybuddy:teams-refresh", refresh); };
   }, []);
   useEffect(() => {
-    if (creating || managing || selected || detailId) { if (!dialog.current?.open) dialog.current?.showModal(); }
+    if (creating || selected || detailId) { if (!dialog.current?.open) dialog.current?.showModal(); }
     else dialog.current?.close();
-  }, [creating, managing, selected, detailId]);
-  const close = () => { viewEpoch.current++; setManaging(false); setCreating(false); setSelected(null); setSettings(false); setDetailId(null); setDetailSnapshot(null); };
+  }, [creating, selected, detailId]);
+  const close = () => { viewEpoch.current++; setCreating(false); setSelected(null); setSettings(false); setDetailId(null); setDetailSnapshot(null); };
   const openTeam = (team: WorkTeamTemplateDto) => {
     close(); setError(""); setSavedNotice("");
     useAppStore.getState().setActiveTeam(team); onSelect?.();
@@ -125,11 +124,10 @@ export function BotTeamsNavigation({ onSelect }: { onSelect?: () => void } = {})
       <span className="sidebar-bot-avatar"><IconBot size={18} /></span><span><strong>{team.name}</strong><small>{team.members.length + 1} 位 Bot · 队长 {botName(team.ownerBotId)}</small></span>
     </button>)}
     {adHoc.length > 0 && <details className="bot-team-history"><summary>临时与历史团队事项（{adHoc.length}）</summary>{adHoc.map(work => <button type="button" key={work.workId} onClick={() => openWork(work)}>{work.title}</button>)}</details>}
-    <button type="button" className="bot-quiet-button" onClick={() => setManaging(true)}>团队管理与回收站</button>
     {error && !creating && !selected && <p role="status">{error}</p>}
     <dialog ref={dialog} className="bot-team-directory-dialog" aria-label={creating ? "新建 Bot 团队" : detail ? "团队任务详情" : "团队工作空间"} onCancel={event => { event.preventDefault(); close(); }} onClose={close}>
       <header><h2>{creating ? "新建 Bot 团队" : detail ? `${detail.team?.teamName ?? "临时团队"} · ${detail.title}` : settings ? `${selected?.name} · 团队设置` : selected?.name}</h2><button type="button" aria-label="关闭团队面板" onClick={close}><IconX size={18} /></button></header>
-      {managing ? <BotTeamManagement onChanged={() => window.dispatchEvent(new Event("mybuddy:teams-refresh"))} /> : detail ? <><BotTeamManagement work={detail} onChanged={() => { void useAppStore.getState().refreshBotWork(true); }} /><button type="button" onClick={() => { if (selected) setDetailId(null); else close(); }}>返回团队</button><BotWorkDetails work={detail} ownerName={detail.team?.teamName ?? "临时团队"} includeClosed /></> : selected && settings ? <BotTeamSettings key={selected.templateId} team={selected} onCancel={() => { viewEpoch.current++; setSettings(false); }} onSaved={team => { setTeams(current => current.map(item => item.templateId === team.templateId ? team : item)); if (viewEpoch.current !== settingsEpoch.current) return; setSelected(team); setSettings(false); setSavedNotice("团队设置已保存，用于后续新任务。"); }} /> : creating ? <form onSubmit={event => { event.preventDefault(); void save(); }}>
+      {detail ? <><BotTeamManagement work={detail} onChanged={() => { void useAppStore.getState().refreshBotWork(true); }} /><button type="button" onClick={() => { if (selected) setDetailId(null); else close(); }}>返回团队</button><BotWorkDetails work={detail} ownerName={detail.team?.teamName ?? "临时团队"} includeClosed /></> : selected && settings ? <BotTeamSettings key={selected.templateId} team={selected} onCancel={() => { viewEpoch.current++; setSettings(false); }} onSaved={team => { setTeams(current => current.map(item => item.templateId === team.templateId ? team : item)); if (viewEpoch.current !== settingsEpoch.current) return; setSelected(team); setSettings(false); setSavedNotice("团队设置已保存，用于后续新任务。"); }} /> : creating ? <form onSubmit={event => { event.preventDefault(); void save(); }}>
         <p>先建立团队。之后交给这个团队的任务、进度和成果会归在一起；队长负责协调与汇报。</p>
         <fieldset disabled={saving || Boolean(saveRequest.current)}>
           <label>团队名称<input required maxLength={120} value={name} onChange={e => setName(e.target.value)} placeholder="例如：产品研发团队" /></label>

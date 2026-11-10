@@ -368,6 +368,8 @@ async function main() {
       container = testDocument.body.appendChild(testDocument.createElement("div")); root = createRoot(container);
       await act(async () => root!.render(<BotTeamsNavigation />));
       assert(container.textContent?.includes("我的 Bot 团队")); assert(!container.textContent?.includes("事项始终在手边"));
+      assert(!container.textContent?.includes("团队管理与回收站"), "sidebar omits the removed management entry; team settings retain management");
+      assert([...container.querySelectorAll("button")].some(button => button.textContent?.includes("新建团队")), "team creation remains available");
       const teamButton = [...container.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent?.includes("Research team"))!;
       await act(async () => nativeClick(teamButton));
       assert(!container.querySelector(".bot-team-task-row"), "ordinary owner Work is not guessed to belong to a saved team");
