@@ -1,3 +1,4 @@
+import { BotWorkConversationDetail } from "./BotWorkConversationDetail";
 import { BotMessageActions } from "./BotMessageActions";
 import { BotRename } from "./BotRename";
 import { BotTeamManagement } from "./BotTeamManagement";
@@ -18,7 +19,7 @@ import ChatComposer from "@/components/chat/ChatComposer";
 import ChatMarkdown from "@/components/chat/ChatMarkdown";
 import { IconPlus, IconArchive, IconChevronDown, IconArrowUp, IconBot, IconChevronRight, IconListTodo, IconPanel, IconSettings, IconX } from "@/components/common/icons";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
-import { activeBotReply, personalBotWork, botParticipatesInWork, botMessageStatus, botWorkTimeline, shouldSendBotComposer, type BotWorkspaceView } from "@/lib/botWorkspacePresentation";
+import { activeBotReply, personalBotWork, botMessageStatus, botWorkTimeline, shouldSendBotComposer, type BotWorkspaceView } from "@/lib/botWorkspacePresentation";
 import { BotWorkBrowser } from "./BotWorkBrowser";
 import { BotWorkDetails } from "./BotWorkDetails";
 import { BotResultReport } from "./BotWorkResult";
@@ -68,6 +69,9 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   const [view, setView] = useState<BotWorkspaceView>("conversation");
   const compact = useMediaQuery("(max-width: 1180px)");
   const [inspectorOpen, setInspectorOpen] = useState(Boolean(selectedWorkId));
+  const suppressAutoInline = useRef(false);
+  const [inlineWorkId, setInlineWorkId] = useState<string | null>(null);
+  const returnTarget = useRef<{ scope: string; conversationId?: string; scrollTop: number; follow: boolean; trigger: HTMLElement | null } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [archiveConfirm, setArchiveConfirm] = useState(false);
   const [newConversationOpen, setNewConversationOpen] = useState(false);
@@ -75,6 +79,8 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   const [archiveError, setArchiveError] = useState("");
   const [navigationNotice, setNavigationNotice] = useState("");
   const requestedWork = useRef<string | null>(null);
+  const [pendingWorkId, setPendingWorkId] = useState<string | null>(null);
+  const pendingWorkOpen = useRef<{ workId: string; scope: string; conversationId?: string; show: () => void } | null>(null);
   const [awayFromBottom, setAwayFromBottom] = useState(false);
   const threadRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
@@ -92,6 +98,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   const activeBot = identities.find(bot => bot.botId === activeBotId) ?? null;
   const botWorks = useMemo(() => works.filter(work => !work.team?.removedAt && (teamId ? work.team?.teamId === teamId : personalBotWork(work, activeBotId))), [works, activeBotId, teamId]);
   const displayName = activeTeam?.name ?? activeBot?.displayName ?? "Bot";
+  const inlineWork = botWorks.find(work => work.workId === inlineWorkId) ?? null;
   const selected = botWorks.find(work => work.workId === selectedWorkId) ?? null;
   const messages = activeBotId ? histories[scopeKey]?.messages ?? [] : [];
   const questionsByRequest = useMemo(() => new Map(messages.filter(item => item.role === "user").map(item => [item.requestId, item])), [messages]);
@@ -129,20 +136,32 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   useEffect(() => {
     if (lastBot.current === scopeKey) return;
     lastBot.current = scopeKey; setReplyReference(null); setAttachmentError("");
-    requestedWork.current = null; setNavigationNotice("");
+    requestedWork.current = null; pendingWorkOpen.current = null; setNavigationNotice(""); setInlineWorkId(null); returnTarget.current = null;
     setView("conversation"); closeSettings(); setArchiveConfirm(false); setNewConversationOpen(false); setInspectorOpen(false);
     followLatest.current = true; followReplyTail.current = false; previousScrollTop.current = 0;
   }, [scopeKey]);
-  useEffect(() => { if (selectedWorkId) setInspectorOpen(true); }, [selectedWorkId]);
+  useEffect(() => {
+    if (suppressAutoInline.current) { suppressAutoInline.current = false; return; }
+    if (!selected || inlineWorkId === selected.workId) return;
+    if (view !== "conversation") { setInspectorOpen(true); return; }
+    // Menu and cross-Bot/team navigation set selection in the store. Consume it
+    // only after this render has resolved the target scope, not in a stale callback.
+    returnTarget.current = { scope: scopeKey, conversationId: histories[scopeKey]?.conversationId,
+      scrollTop: threadRef.current?.scrollTop ?? 0, follow: followLatest.current,
+      trigger: document.activeElement instanceof HTMLElement ? document.activeElement : null };
+    setNavigationNotice("");
+    followLatest.current = false; setIncludeClosed(true);
+    setInlineWorkId(selected.workId); setInspectorOpen(false);
+  }, [selected?.workId, scopeKey, view]);
   useEffect(() => {
     const dialog = inspectorRef.current;
     if (!dialog) return;
-    if (!inspectorOpen || !selected) { if (dialog.open) dialog.close(); return; }
+    if (inlineWorkId || !inspectorOpen || !selected) { if (dialog.open) dialog.close(); return; }
     // The same mounted details tree survives resizing. Only the native dialog mode changes.
     if (dialog.open) dialog.close();
     if (compact) dialog.showModal(); else dialog.show();
     return () => { if (dialog.open) dialog.close(); };
-  }, [inspectorOpen, Boolean(selected), compact]);
+  }, [inspectorOpen, Boolean(selected), compact, inlineWorkId]);
   useEffect(() => {
     const dialog = settingsRef.current;
     if (settingsOpen) dialog?.showModal(); else if (dialog?.open) dialog.close();
@@ -152,7 +171,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
     if (newConversationOpen) dialog?.showModal(); else if (dialog?.open) dialog.close();
   }, [newConversationOpen]);
   useEffect(() => {
-    if (view !== "conversation" || !followLatest.current) return;
+    if (inlineWorkId || view !== "conversation" || !followLatest.current) return;
     const frame = requestAnimationFrame(() => {
       const el = threadRef.current;
       if (!el) return;
@@ -177,7 +196,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
     // Markdown can grow after the text frame commits (tables, code and fonts).
     // Only explicit tail-following tracks those layout changes; readers stay put.
     const observer = new ResizeObserver(() => {
-      if (!followLatest.current || !followReplyTail.current) return;
+      if (inlineWorkId || !followLatest.current || !followReplyTail.current) return;
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
         if (followLatest.current && followReplyTail.current) thread.scrollTop = thread.scrollHeight;
@@ -185,35 +204,66 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
     });
     observer.observe(list);
     return () => { observer.disconnect(); cancelAnimationFrame(frame); };
-  }, [activeBotId, view, messages.length]);
+  }, [activeBotId, view, messages.length, inlineWorkId]);
   useEffect(() => {
     const body = inspectorRef.current?.querySelector(".bot-inspector-body");
     if (body) body.scrollTop = 0;
   }, [selected?.workId]);
 
 
-  const openWork = (workId: string) => {
-    if (works.some(work => work.workId === workId && work.team && work.team.teamId !== teamId)) { window.dispatchEvent(new CustomEvent("mybuddy:open-team-work", { detail: { workId } })); return; }
-    requestedWork.current = workId;
+  const returnToConversation = () => {
+    const target = returnTarget.current;
+    requestedWork.current = null; pendingWorkOpen.current = null;
+    setInlineWorkId(null); setInspectorOpen(false); setSelectedWorkId(null);
     setNavigationNotice("");
-    if (botWorks.some(work => work.workId === workId)) { setSelectedWorkId(workId); setInspectorOpen(true); return; }
-    // A historic message can point to an ended work outside the open-only projection.
-    // Resolve it before changing selection, and ignore a late lookup after switching Bot.
-    const botId = activeBotId;
-    setIncludeClosed(true);
-    setNavigationNotice("正在读取关联事项…");
-    void useAppStore.getState().refreshBotWork(true).then(() => {
-      const state = useAppStore.getState();
-      if (requestedWork.current !== workId || state.activeBotId !== botId) return;
-      if (state.botWorks.some(work => work.workId === workId && work.team && work.team.teamId !== teamId)) {
-        window.dispatchEvent(new CustomEvent("mybuddy:open-team-work", { detail: { workId } })); setNavigationNotice("");
-      } else if (state.botWorks.some(work => work.workId === workId && (teamId ? work.team?.teamId === teamId : !work.team && botParticipatesInWork(work, botId)))) {
-        state.setSelectedWorkId(workId); setInspectorOpen(true); setNavigationNotice("");
-      } else setNavigationNotice("暂时无法打开此事项，请在已结束列表中核对或稍后重试。");
+    requestAnimationFrame(() => {
+      if (target?.scope !== currentScope.current || target.conversationId !== useAppStore.getState().botHistories[target.scope]?.conversationId) return;
+      if (threadRef.current) threadRef.current.scrollTop = target.scrollTop;
+      previousScrollTop.current = target.scrollTop;
+      followLatest.current = target.follow;
+      if (target.trigger?.isConnected) target.trigger.focus({ preventScroll: true });
     });
   };
+  const openWork = (workId: string) => {
+    suppressAutoInline.current = false;
+    const sourceScope = scopeKey;
+    const sourceConversation = histories[sourceScope]?.conversationId;
+    const inline = view === "conversation";
+    const target = { scope: sourceScope, conversationId: sourceConversation,
+      scrollTop: threadRef.current?.scrollTop ?? 0, follow: followLatest.current,
+      trigger: document.activeElement instanceof HTMLElement ? document.activeElement : null };
+    const show = () => {
+      setSelectedWorkId(workId);
+      if (inline) {
+        setIncludeClosed(true); // Keep a selected Work visible when it finishes during reading.
+        returnTarget.current = target; followLatest.current = false;
+        setInlineWorkId(workId); setInspectorOpen(false);
+      } else { setInlineWorkId(null); setInspectorOpen(true); }
+      setNavigationNotice("");
+    };
+    // Resolve only within the current Bot/team. Never let a late history fetch
+    // open another team's work after navigation or a new conversation.
+    requestedWork.current = workId; pendingWorkOpen.current = null;
+    if (botWorks.some(work => work.workId === workId)) { show(); return; }
+    pendingWorkOpen.current = { workId, scope: sourceScope, conversationId: sourceConversation, show };
+    setPendingWorkId(workId);
+    setIncludeClosed(true); setNavigationNotice("正在读取关联事项…");
+    // A refresh promise may resolve before its replacement snapshot is installed.
+    // Navigate from the actual all-scope projection, not a superseded response.
+    void useAppStore.getState().refreshBotWork(true);
+  };
+  useEffect(() => {
+    const pending = pendingWorkOpen.current;
+    if (!pending || !allWorksLoaded) return;
+    if (requestedWork.current !== pending.workId || pending.scope !== scopeKey ||
+      histories[scopeKey]?.conversationId !== pending.conversationId) { pendingWorkOpen.current = null; return; }
+    pendingWorkOpen.current = null; setPendingWorkId(null);
+    if (botWorks.some(work => work.workId === pending.workId)) pending.show();
+    else setNavigationNotice("暂时无法打开此事项，可能已删除或不属于当前对话。");
+  }, [botWorks, allWorksLoaded, scopeKey, histories[scopeKey]?.conversationId, pendingWorkId]);
   const changeView = (next: BotWorkspaceView) => {
     requestedWork.current = null; setNavigationNotice("");
+    setInlineWorkId(null); setInspectorOpen(false);
     setView(next);
     if (next === "closed" || next === "completed") setIncludeClosed(true);
   };
@@ -233,6 +283,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
     if (draft.length > 32000) { setNavigationNotice("现有草稿较长，请先整理后再引用问题。没有覆盖或发送任何内容。"); return; }
     // setActiveBotId retains the previous Bot's draft and restores the owner's.
     if (state.activeBotId !== owner.botId) state.setActiveBotId(owner.botId);
+    suppressAutoInline.current = true;
     state.setSelectedWorkId(work.workId); state.setBotDraft(draft);
     setView("conversation"); setInspectorOpen(false);
     requestAnimationFrame(() => { setInspectorOpen(false); composerRef.current?.focus(); });
@@ -240,7 +291,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
 
   return <div className="bot-workspace" onKeyDownCapture={event => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { setInspectorOpen(false); closeSettings(); } }}>
     <section className="bot-conversation" aria-label="Bot 对话">
-      <header className="bot-workspace-header">
+      <header className="bot-workspace-header" hidden={Boolean(inlineWorkId)}>
         {props.onToggleNavigation && <button type="button" className="bot-icon-button" aria-label={props.navigationVisible ? "收起导航" : "展开导航"} aria-expanded={props.navigationVisible} onClick={props.onToggleNavigation}><IconPanel size={18} /></button>}
         <span className="bot-avatar bot-header-avatar" aria-hidden="true"><IconBot size={21} /></span>
         <div className="bot-heading"><h1>{activeTeam?.name ?? activeBot?.displayName ?? "Bot 模式"}</h1><p><span className={`bot-presence ${hostStatus?.online && activeBot?.status === "active" ? "is-online" : ""}`} />{activeBot ? presenceLabel(activeBot, hostStatus) : "你的长期个人助理"}<span className="bot-heading-description"> · {activeTeam ? `团队工作台 · ${activeTeam.members.length + 1} 位成员` : "对话有延续，事项有着落"}</span></p></div>
@@ -254,7 +305,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
             }
             setNewConversationOpen(true);
           }}>新对话</button>
-          <BotActivityMonitor onOpenWork={() => { setIncludeClosed(true); setInspectorOpen(true); }} onOpenBotMessage={messageId => {
+          <BotActivityMonitor onOpenWork={() => { suppressAutoInline.current = false; setIncludeClosed(true); setInspectorOpen(true); }} onOpenBotMessage={messageId => {
             setView("conversation"); setInspectorOpen(false);
             requestAnimationFrame(() => requestAnimationFrame(() => {
               const node = Array.from(threadRef.current?.querySelectorAll<HTMLElement>("[data-message-id]") ?? []).find(item => item.dataset.messageId === messageId);
@@ -264,11 +315,15 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
           <button type="button" className="bot-icon-button" aria-label={activeTeam ? "团队设置与管理" : "Bot 设置与对话管理"} onClick={() => { settingsEpoch.current++; setSettingsOpen(true); }}><IconSettings size={18} /></button>
         </div>
       </header>
-      <BotWorkNavigation works={botWorks} view={view} allWorksLoaded={allWorksLoaded} onChange={changeView} />
+      {!inlineWorkId && <BotWorkNavigation works={botWorks} view={view} allWorksLoaded={allWorksLoaded} onChange={changeView} />}
       {workError && <p className="bot-alert" role="alert">{workError}</p>}
       {navigationNotice && <p className="bot-navigation-notice" role="status">{navigationNotice}</p>}
+      {inlineWorkId && <BotWorkConversationDetail work={inlineWork} conversationName={displayName}
+        ownerName={inlineWork?.team?.teamId ? displayName : identities.find(bot => bot.botId === inlineWork?.ownerBotId)?.displayName ?? displayName}
+        includeClosed={includeClosed} onBack={returnToConversation}
+        onReplyToBlocker={blocker => { if (inlineWork) { returnToConversation(); replyToBlocker(inlineWork, blocker); } }} />}
       {view === "conversation" ? <>
-        <div className="bot-thread" ref={threadRef} role="log" aria-label="对话记录" aria-live="off" onScroll={() => {
+        <div className="bot-thread" hidden={Boolean(inlineWorkId)} ref={threadRef} role="log" aria-label="对话记录" aria-live="off" onScroll={() => {
           const el = threadRef.current; if (!el) return;
           const movedUp = el.scrollTop < previousScrollTop.current - 1;
           previousScrollTop.current = el.scrollTop;
@@ -290,17 +345,17 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
             </details>)}</div>}
         </div>
       </> : <BotWorkBrowser key={`${activeBotId}-${view}`} works={botWorks} view={view} loading={(view === "closed" || view === "completed") && !allWorksLoaded} selectedWorkId={selected?.workId} onOpenWork={openWork} onConversation={() => { setView("conversation"); requestAnimationFrame(() => composerRef.current?.focus()); }} />}
-      <form className="bot-composer input-area" onDragOver={event => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; } }} onDrop={event => { if (event.dataTransfer.files.length) { event.preventDefault(); void addAttachments(Array.from(event.dataTransfer.files)); } }} onSubmit={event => { event.preventDefault(); send(); }}>
+      <form hidden={Boolean(inlineWorkId)} className="bot-composer input-area" onDragOver={event => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; } }} onDrop={event => { if (event.dataTransfer.files.length) { event.preventDefault(); void addAttachments(Array.from(event.dataTransfer.files)); } }} onSubmit={event => { event.preventDefault(); send(); }}>
         {view === "conversation" && awayFromBottom && <button type="button" className="bot-latest-button" onClick={() => { const el = threadRef.current; if (el) el.scrollTop = el.scrollHeight; followLatest.current = true; followReplyTail.current = true; setAwayFromBottom(false); }}><IconChevronDown size={14} />回到最新消息</button>}
         {activeBotId && sendErrors[scopeKey] && <p className="bot-send-error" role="alert">{sendErrors[scopeKey]}</p>}
-        {selected && <div className="bot-composer-context"><button type="button" onClick={() => setInspectorOpen(true)}><IconListTodo size={14} /><span>当前事项：{selected.title}</span><IconChevronRight size={14} /></button><button type="button" className="bot-icon-button" aria-label="取消关联事项，返回普通对话" onClick={() => { requestedWork.current = null; setNavigationNotice(""); setSelectedWorkId(null); setInspectorOpen(false); }}><IconX size={14} /></button></div>}
+        {selected && <div className="bot-composer-context"><button type="button" onClick={() => openWork(selected.workId)}><IconListTodo size={14} /><span>当前事项：{selected.title}</span><IconChevronRight size={14} /></button><button type="button" className="bot-icon-button" aria-label="取消关联事项，返回普通对话" onClick={() => { requestedWork.current = null; setNavigationNotice(""); setSelectedWorkId(null); setInspectorOpen(false); }}><IconX size={14} /></button></div>}
         {reference && <div className="bot-composer-context"><span>回复：{reference.text.slice(0, 100) || "附件消息"}</span><button type="button" aria-label="取消引用" onClick={() => setReplyReference(null)}><IconX size={14} /></button></div>}
         {pending.length > 0 && <div className="bot-pending-requests" aria-label="待确认发送的消息">{pending.map(item => <div key={item.request.requestId} className="bot-pending-request"><span>{item.request.text.slice(0, 100) || item.request.attachments?.map(file => file.name).join("、")}</span><small>{item.sending ? "正在发送" : item.error}</small>{!item.sending && (item.error?.includes("BOT_ATTACHMENT_REJECTED:") ? <button type="button" disabled={Boolean(botDraft.trim() || attachments.length)} title="先发送或清空当前草稿，再编辑这条消息" onClick={() => void submitBotDraft({ editRejectedRequestId: item.request.requestId })}>编辑重发</button> : <button type="button" onClick={() => void submitBotDraft({ retryRequestId: item.request.requestId })}>重试此消息</button>)}</div>)}</div>}
         {attachmentError && <p className="bot-send-error" role="alert">{attachmentError}</p>}
         <div className="bot-composer-box input-box">{attachments.length > 0 && <div className="input-attach-chips"><ComposerAttachmentChips attachments={attachments} onRemove={item => { if (activeBotId) useAppStore.getState().setBotAttachments(scopeKey, attachments.filter(value => value.path !== item.path)); }} /></div>}<label htmlFor="bot-draft" className="bot-sr-only">给 Bot 发消息</label><ChatComposer ref={composerRef} aria-label="给 Bot 发消息" id="bot-draft" onPaste={event => { const files = pastedComposerFiles(event.clipboardData); if (files.length) { event.preventDefault(); void addAttachments(files); } }} value={botDraft} maxLength={32000} onChange={event => setBotDraft(event.target.value)} onKeyDown={event => { if (shouldSendBotComposer({ key: event.key, shiftKey: event.shiftKey, isComposing: event.nativeEvent.isComposing, keyCode: event.keyCode })) { event.preventDefault(); send(); } }} placeholder={selected ? "补充要求，或问问这件事的进展…" : "说说你想做什么…"} rows={2} toolbarClassName="bot-composer-toolbar input-toolbar" toolbar={<><button type="button" className="input-tool-btn" aria-label="添加附件" title="添加附件" disabled={!activeBotId || attachmentBusy} onClick={() => void addAttachments("pick")}><IconPlus size={16} /></button><span className="bot-composer-status" role="status">{runningReplies.length || queuedReplies.length ? `${runningReplies.length} 条正在回复 · ${queuedReplies.length} 条等待 · 可继续发送` : notice ? "消息已发送 · 可继续发送" : "Enter 发送 · Shift + Enter 换行"}</span><span className="bot-composer-send-actions"><button type="submit" className="bot-send-button send-btn" disabled={!canSend} aria-label="发送消息"><IconArrowUp size={17} /></button></span></>} /></div>
       </form>
     </section>
-    {selected && <dialog ref={inspectorRef} className={`bot-inspector ${compact ? "is-drawer" : view === "conversation" ? "is-overlay" : ""}`} aria-label="事项详情" onCancel={event => { event.preventDefault(); setInspectorOpen(false); }} onClick={event => { if (event.target === event.currentTarget) { const r = event.currentTarget.getBoundingClientRect(); if (event.clientX < r.left || event.clientX > r.right) setInspectorOpen(false); } }}>
+    {selected && !inlineWorkId && <dialog ref={inspectorRef} className={`bot-inspector ${compact ? "is-drawer" : view === "conversation" ? "is-overlay" : ""}`} aria-label="事项详情" onCancel={event => { event.preventDefault(); setInspectorOpen(false); }} onClick={event => { if (event.target === event.currentTarget) { const r = event.currentTarget.getBoundingClientRect(); if (event.clientX < r.left || event.clientX > r.right) setInspectorOpen(false); } }}>
       <header className="bot-inspector-header"><span>事项详情</span><button type="button" className="bot-icon-button" aria-label="关闭详情" onClick={() => setInspectorOpen(false)}><IconX size={18} /></button></header>
       <div className="bot-inspector-body"><BotWorkDetails key={selected.workId} work={selected} ownerName={activeTeam?.name ?? identities.find(bot => bot.botId === selected.ownerBotId)?.displayName ?? selected.ownerBotId} includeClosed={includeClosed} onReplyToBlocker={blocker => replyToBlocker(selected, blocker)} /></div>
     </dialog>}

@@ -200,13 +200,27 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       assert(!await evaluate("[...document.querySelectorAll('.bot-work-details button')].some(b=>/采纳成果|拒绝成果|确认结束/.test(b.textContent))"),'no acceptance ceremony in actual UI');
       const detailShot=await rpc('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});
       fs.writeFileSync(path.join(out,'automatic-review-details.png'),Buffer.from(detailShot.data,'base64'));
-      await evaluate("document.querySelector('dialog[aria-label=\"事项详情\"] button[aria-label=\"关闭详情\"]')?.click()");
+      await evaluate("document.querySelector('.bot-work-conversation-breadcrumb button').click()");
 
       await until(async()=> (await history()).messages.some(m=>m.role==='assistant'&&m.status==='completed'&&/25/.test(m.text)), 'team concurrent arithmetic');
       await until(async()=> { const list=await evaluate('window.api.botWork.listWorks(true)'); const h=await history(); if (!list.length && h.messages.filter(m=>m.role==='assistant'&&!m.workFeedback).length>=2 && h.messages.filter(m=>m.role==='assistant'&&!m.workFeedback).every(m=>['completed','failed'].includes(m.status))) throw Error('Team delegation produced no Work: '+h.messages.filter(m=>m.role==='assistant').map(m=>m.text).join(' | ')); return list.some(w=>w.team?.teamId===teamId&&w.lifecycle==='closed'); }, 'team real Work auto finishes');
       const works=await evaluate('window.api.botWork.listWorks(true)');
       assert.equal(works.length,1); assert.equal(works[0].team.teamId,teamId); assert.equal(works[0].closureConclusion,'succeeded',JSON.stringify(works[0]));
       await until(async()=> (await history()).messages.some(m=>m.workFeedback?.kind==='result'&&/579/.test(m.text)), 'result delivered to team conversation');
+      // A real model-created Work opens in the conversation viewport, then returns
+      // to its originating team rather than a sidebar overlay or personal Bot.
+      await until(()=>evaluate(`!!document.querySelector('.bot-message-work-links button')`),'real Work link');
+      await evaluate(`document.querySelector('.bot-message-work-links button').click()`);
+      await until(()=>evaluate(`!!document.querySelector('.bot-work-conversation-detail')`),'inline Work details');
+      assert(await evaluate(`document.querySelector('.bot-thread').hidden`));
+      assert(!await evaluate(`!!document.querySelector('.bot-inspector[open]')`));
+      assert(await evaluate(`document.querySelector('.bot-work-conversation-body').innerText.includes('579')`),'real result is readable in details');
+      const inlineDetailShot=await rpc('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});
+      fs.writeFileSync(path.join(out,'team-inline-detail.png'),Buffer.from(inlineDetailShot.data,'base64'));
+      await evaluate(`document.querySelector('.bot-work-conversation-breadcrumb button').click()`);
+      await until(()=>evaluate(`!document.querySelector('.bot-work-conversation-detail') && !document.querySelector('.bot-thread').hidden`),'back to originating team');
+      assert(await evaluate(`document.querySelector('.bot-heading h1').textContent==='真实团队 A'`));
+      report.checks.push('Real model Work result -> full-width inline detail -> originating team conversation');
       const teamA=teamId; report.teamAHistory=await history(); report.works=works; assert(requests.some(request=>request.messages.some(message=>JSON.stringify(message.content).includes('个人助理的结果处理回合'))),'real team goal review must run');
       await until(()=>evaluate(`document.body.innerText.includes('579')`),'team result is visible');
       const image=await rpc('Page.captureScreenshot',{format:'png',captureBeyondViewport:false}); fs.writeFileSync(path.join(out,'team-result.png'),Buffer.from(image.data,'base64'));

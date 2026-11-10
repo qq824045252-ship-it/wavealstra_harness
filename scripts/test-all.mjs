@@ -83,6 +83,7 @@ const GUI_TESTS = new Set([
   "test:bot-work-browser-desktop",
   "test:bot-team-removal-desktop",
   "test:bot-work-detail-desktop",
+  "test:bot-work-conversation-desktop",
   "test:bot-work-delivery-desktop",
   "test:bot-work-browser-dev",
   "test:work-artifact-desktop",
