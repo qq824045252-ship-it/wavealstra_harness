@@ -295,6 +295,7 @@ export interface WorkBlockerDto {
 }
 
 export type WorkExecutionMetrics = import("./bot-conversation").BotForegroundMetrics & {
+  totalInputTokens?: number | null;
   observedAt: number; complete: boolean; calls: number;
 };
 

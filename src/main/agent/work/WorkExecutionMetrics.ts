@@ -3,6 +3,9 @@ import type { AssistantMessage } from '@earendil-works/pi-ai';
 import type { DurableBotSnapshot } from '../../../shared/durable-bot';
 import type { WorkExecutionBindingDto, WorkExecutionMetrics } from '../../../shared/bot-work';
 
+type UsagePresence = {input:boolean;output:boolean;cacheRead:boolean;cacheWrite:boolean;totalInput?:boolean};
+type UsageEvidence = {inputTokens:number|null;outputTokens:number|null;cacheReadTokens:number|null;cacheWriteTokens:number|null;totalInputTokens:number|null;observed:boolean};
+
 /** Measurement only. Never governs execution, budget, or task completion. */
 export class WorkExecutionMetricsStore {
   constructor(private db: Database.Database) {
@@ -25,16 +28,17 @@ export class WorkExecutionMetricsStore {
     return this.db.prepare('SELECT binding_id,conversation_id,started_at FROM work_execution_metrics WHERE task_id=?').get(taskId) as
       {binding_id:string;conversation_id:string;started_at:number}|undefined;
   }
-  response(taskId:string,message:AssistantMessage,identity:{conversationId:string;generationTaskId:number}):void {
+  response(taskId:string,message:AssistantMessage,identity:{conversationId:string;generationTaskId:number;usagePresence?:UsagePresence;usageEvidence?:UsageEvidence}):void {
     this.usage(taskId,{...identity,responseTimestamp:message.timestamp,
       reported:!['error','aborted'].includes(message.stopReason) && Boolean(message.usage),
       inputTokens:message.usage?.input,outputTokens:message.usage?.output,
       cacheReadTokens:message.usage?.cacheRead,cacheWriteTokens:message.usage?.cacheWrite});
   }
-  usage(taskId:string,input:{conversationId:string;generationTaskId:number;responseTimestamp?:number;reported:boolean;
-    inputTokens?:number;outputTokens?:number;cacheReadTokens?:number;cacheWriteTokens?:number}):void {
+  usage(taskId:string,input:{conversationId:string;generationTaskId:number;responseTimestamp?:number;reported:boolean;usagePresence?:UsagePresence;usageEvidence?:UsageEvidence;
+    inputTokens?:number|null;outputTokens?:number|null;cacheReadTokens?:number|null;cacheWriteTokens?:number|null;totalInputTokens?:number|null}):void {
     const owner=this.owner(taskId); if(!owner)return;
-    input={...input,reported:input.reported && [input.inputTokens,input.outputTokens,input.cacheReadTokens,input.cacheWriteTokens].every(value=>Number.isFinite(value)&&value!>=0) && [input.inputTokens,input.outputTokens,input.cacheReadTokens,input.cacheWriteTokens].some(value=>value!>0)};
+    input={...input,...(input.usageEvidence??{})};
+    input={...input,reported:input.reported && [input.inputTokens,input.outputTokens,input.cacheReadTokens,input.cacheWriteTokens].some(value=>value!>0)};
     // Conversation + task + response timestamp distinguish child generations and retries.
     const key=JSON.stringify([input.conversationId,input.generationTaskId,input.responseTimestamp??null]);
     this.db.prepare('INSERT OR REPLACE INTO work_execution_usage VALUES(?,?,?)').run(owner.binding_id,key,JSON.stringify(input));
@@ -49,9 +53,9 @@ export class WorkExecutionMetricsStore {
   project(taskId:string,snapshot:DurableBotSnapshot):void {
     const owner=this.owner(taskId); if(!owner || String(snapshot.conversationId)!==owner.conversation_id)return;
     const calls=(this.db.prepare('SELECT value_json FROM work_execution_usage WHERE binding_id=?').all(owner.binding_id) as {value_json:string}[])
-      .map(row=>JSON.parse(row.value_json) as {reported:boolean;inputTokens?:number;outputTokens?:number;cacheReadTokens?:number;cacheWriteTokens?:number});
-    const usable=(key:'inputTokens'|'outputTokens'|'cacheReadTokens'|'cacheWriteTokens')=>calls.length>0 && calls.every(call=>call.reported && Number.isFinite(call[key]) && call[key]!>=0);
-    const sum=(key:'inputTokens'|'outputTokens'|'cacheReadTokens'|'cacheWriteTokens')=>usable(key)?calls.reduce((n,call)=>n+call[key]!,0):null;
+      .map(row=>JSON.parse(row.value_json) as {reported:boolean;usagePresence?:UsagePresence;usageEvidence?:UsageEvidence;inputTokens?:number|null;outputTokens?:number|null;cacheReadTokens?:number|null;cacheWriteTokens?:number|null;totalInputTokens?:number|null});
+    const usable=(key:'inputTokens'|'outputTokens'|'cacheReadTokens'|'cacheWriteTokens'|'totalInputTokens')=>calls.length>0 && calls.every(call=>call.reported && call.usagePresence?.[key.replace('Tokens','') as keyof UsagePresence]===true && Number.isFinite(call[key]) && call[key]!>=0);
+    const sum=(key:'inputTokens'|'outputTokens'|'cacheReadTokens'|'cacheWriteTokens'|'totalInputTokens')=>usable(key)?calls.reduce((n,call)=>n+call[key]!,0):null;
     const replies=snapshot.messages.filter(row=>row.role==='assistant');
     for(const reply of replies) if(reply.generationStats) this.db.prepare('INSERT OR REPLACE INTO work_execution_timings VALUES(?,?,?)').run(owner.binding_id,reply.id,JSON.stringify(reply.generationStats));
     const last=replies.at(-1);
@@ -66,7 +70,7 @@ export class WorkExecutionMetricsStore {
     }
     const context=snapshot.contextUsage;
     if(!usable('outputTokens') && generation?.phase==='complete') generation={...generation,outputTokens:null,tps:null};
-    const value:WorkExecutionMetrics={inputTokens:sum('inputTokens'),outputTokens:sum('outputTokens'),cacheReadTokens:sum('cacheReadTokens'),cacheWriteTokens:sum('cacheWriteTokens'),
+    const value:WorkExecutionMetrics={inputTokens:sum('inputTokens'),outputTokens:sum('outputTokens'),totalInputTokens:sum('totalInputTokens'),cacheReadTokens:sum('cacheReadTokens'),cacheWriteTokens:sum('cacheWriteTokens'),
       reportedCalls:calls.filter(call=>call.reported).length,calls:calls.length,
       complete:!snapshot.busy && snapshot.outcome==='completed' && usable('inputTokens') && usable('outputTokens'),
       contextTokens:context?.usedTokens?context.usedTokens:null,contextWindow:context?.contextWindow??null,contextEstimated:context?.estimated??true,

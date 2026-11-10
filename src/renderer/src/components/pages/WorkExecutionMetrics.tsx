@@ -14,7 +14,7 @@ export function WorkExecutionMetrics({work}:{work:WorkProjectionDto}) {
     {work.executions.map((execution,index)=>{
       const name=identities.find(bot=>bot.botId===execution.botId)?.displayName??'执行成员';
       const metrics=execution.metrics;
-      const usage=metrics?{input:metrics.inputTokens??undefined,output:metrics.outputTokens??undefined,cacheRead:metrics.cacheReadTokens??undefined,cacheWrite:metrics.cacheWriteTokens??undefined}:undefined;
+      const usage=metrics?{totalInput:metrics.totalInputTokens??undefined,input:metrics.inputTokens??undefined,output:metrics.outputTokens??undefined,cacheRead:metrics.cacheReadTokens??undefined,cacheWrite:metrics.cacheWriteTokens??undefined}:undefined;
       const active=['pending','submitted','running'].includes(execution.status);
       return <details key={execution.bindingId} className="work-execution-metrics-row" open={index===work.executions.length-1}>
         <summary>{name} · 第 {index+1} 次执行 <span>{active?'进行中':execution.status==='completed'?'执行结束':execution.status==='failed'?'执行失败':'已停止'}</span></summary>

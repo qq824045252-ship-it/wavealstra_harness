@@ -10,6 +10,7 @@ const root = path.resolve(__dirname, '..');
 const displayGroupsScenario = process.argv.includes('--display-groups');
 const workspaceNavigationScenario = process.argv.includes('--workspace-navigation');
 const modelPreferenceScenario = process.argv.includes('--model-preference');
+const workMetricsScenario = process.argv.includes('--work-metrics');
 const metricsAuditScenario = process.argv.includes('--metrics-audit');
 const composerScenario = process.argv.includes('--composer') || metricsAuditScenario;
 const searchScenario = process.argv.includes('--search');
@@ -35,7 +36,7 @@ const watchStatusScenario = process.argv.includes('--watch-status');
 const watchScenario = process.argv.includes('--watch');
 const watchIntentScenario = process.argv.includes('--watch-intent');
 if (headless && process.platform !== 'linux') throw Error('Headless dev page validation requires Linux; it does not validate desktop input.');
-const out = path.join(root, modelPreferenceScenario ? 'out/diagnostics/bot-model-preference/live' : watchStatusScenario ? 'out/diagnostics/bot-watch-status/live' : teamDefaultWorkspaceScenario ? 'out/diagnostics/bot-team-default-workspace/live' : watchIntentScenario ? 'out/diagnostics/bot-watch-intent/live' : displayGroupsScenario ? 'out/diagnostics/bot-display-groups/live' : composerScenario ? 'out/diagnostics/bot-composer/live' : workspaceNavigationScenario ? 'out/diagnostics/bot-workspace-navigation/live' : searchScenario ? 'out/diagnostics/bot-search/live' : teamWorkspaceScenario ? 'out/diagnostics/bot-team-workspace/live' : concurrentScenario ? 'out/diagnostics/bot-concurrent/live' : completionScenario ? 'out/diagnostics/bot-completion/live' : trackingScenario ? 'out/diagnostics/bot-tracking/live' : teamTransientFailure ? 'out/diagnostics/bot-team-transient-failure/live' : teamTransportFailure ? 'out/diagnostics/bot-team-transport-failure/live' : teamFailureScenario ? 'out/diagnostics/bot-team-failure/live' : teamFreeScenario ? 'out/diagnostics/bot-team-free/live' : teamPlanningScenario ? 'out/diagnostics/bot-team-planning/live' : teamScenario ? 'out/diagnostics/bot-team-frontdoor/live' : cacheScenario ? 'out/diagnostics/bot-cache/live' : memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
+const out = path.join(root, workMetricsScenario ? 'out/diagnostics/work-execution-metrics/live' : modelPreferenceScenario ? 'out/diagnostics/bot-model-preference/live' : watchStatusScenario ? 'out/diagnostics/bot-watch-status/live' : teamDefaultWorkspaceScenario ? 'out/diagnostics/bot-team-default-workspace/live' : watchIntentScenario ? 'out/diagnostics/bot-watch-intent/live' : displayGroupsScenario ? 'out/diagnostics/bot-display-groups/live' : composerScenario ? 'out/diagnostics/bot-composer/live' : workspaceNavigationScenario ? 'out/diagnostics/bot-workspace-navigation/live' : searchScenario ? 'out/diagnostics/bot-search/live' : teamWorkspaceScenario ? 'out/diagnostics/bot-team-workspace/live' : concurrentScenario ? 'out/diagnostics/bot-concurrent/live' : completionScenario ? 'out/diagnostics/bot-completion/live' : trackingScenario ? 'out/diagnostics/bot-tracking/live' : teamTransientFailure ? 'out/diagnostics/bot-team-transient-failure/live' : teamTransportFailure ? 'out/diagnostics/bot-team-transport-failure/live' : teamFailureScenario ? 'out/diagnostics/bot-team-failure/live' : teamFreeScenario ? 'out/diagnostics/bot-team-free/live' : teamPlanningScenario ? 'out/diagnostics/bot-team-planning/live' : teamScenario ? 'out/diagnostics/bot-team-frontdoor/live' : cacheScenario ? 'out/diagnostics/bot-cache/live' : memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-frontdoor-live-'));
 const agentDir = path.join(home, '.mybuddy'); fs.mkdirSync(agentDir, { recursive: true });
 for (const directory of ['AppData/Roaming', 'AppData/Local', 'Temp']) fs.mkdirSync(path.join(home, directory), { recursive: true });
@@ -141,11 +142,11 @@ const provider = http.createServer(async (req,res) => {
       return line;
     };
     for await(const chunk of response.body) {
-      if(!metricsAuditScenario) {res.write(chunk);continue;}
+      if(!metricsAuditScenario && !workMetricsScenario) {res.write(chunk);continue;}
       pendingFrame+=decoder.decode(chunk,{stream:true});
       let newline;while((newline=pendingFrame.indexOf('\n'))>=0){res.write(inspect(pendingFrame.slice(0,newline))+'\n');pendingFrame=pendingFrame.slice(newline+1);}
     }
-    if(metricsAuditScenario && pendingFrame) res.write(inspect(pendingFrame));
+    if((metricsAuditScenario || workMetricsScenario) && pendingFrame) res.write(inspect(pendingFrame));
     audit.endedAt=Date.now();res.end();
   } catch(error) { res.writeHead(502);res.end(String(error)); }
 });
@@ -235,7 +236,9 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       assert(requestId, 'accepted user request identity');
       await until(async () => (await history()).messages.some(m=>m.role==='assistant'&&m.requestId===requestId&&m.status==='completed'), 'matching foreground request completed');
     };
-    if (modelPreferenceScenario) {
+    if (workMetricsScenario) {
+      await require('./work-metrics-live-scenario.cjs').run({send,foregroundDone,until,evaluate,history,rpc,report,requests,rawUsageAudit,agentDir,out});
+    } else if (modelPreferenceScenario) {
       await until(()=>evaluate(`!document.querySelector('[aria-label="选择 Bot 模型"]').disabled`),'model catalog ready');
       await evaluate(`document.querySelector('[aria-label="选择 Bot 模型"]').click()`);
       await until(()=>evaluate(`!!document.querySelector('[aria-label="Bot 模型列表"]')`),'shared menu');

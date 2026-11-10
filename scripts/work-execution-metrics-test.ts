@@ -10,7 +10,7 @@ const binding=(taskId:string)=>({bindingId:taskId,taskId,conversationId:taskId,w
 store.begin(binding('a'));store.begin(binding('b'));store.begin(binding('shared'));
 const timing={phase:'complete',estimated:false,tps:40,outputTokens:20,startedAt:1,updatedAt:1000,ttftMs:10};
 const snapshot={conversationId:'a',busy:false,outcome:'completed',messages:[{id:'r1',role:'assistant',modelName:'real-model',generationStats:timing}],contextUsage:{usedTokens:120,contextWindow:1000,estimated:true}} as unknown as DurableBotSnapshot;
-const call={conversationId:'a',generationTaskId:1,responseTimestamp:10,reported:true,inputTokens:100,outputTokens:20,cacheReadTokens:30,cacheWriteTokens:5};
+const call={conversationId:'a',generationTaskId:1,responseTimestamp:10,reported:true,usagePresence:{input:true,output:true,cacheRead:true,cacheWrite:true},inputTokens:100,outputTokens:20,cacheReadTokens:30,cacheWriteTokens:5};
 store.usage('a',call);store.usage('a',call);store.usage('b',{...call,inputTokens:900});
 store.project('a',{...snapshot,conversationId:'wrong'});assert.equal(store.read('a'),undefined);
 store.project('a',snapshot);assert.equal(store.read('a')?.inputTokens,100);assert.equal(store.read('a')?.complete,true);assert.equal(store.read('a')?.calls,1);
@@ -21,10 +21,14 @@ assert.equal(store.read('a')?.inputTokens,150,'child identity separate even same
 const windowed={...snapshot,messages:[{...snapshot.messages[0],id:'r2',generationStats:{...timing,startedAt:1001,outputTokens:60,tps:20}}]} as DurableBotSnapshot;
 store.project('a',windowed);assert.equal(store.read('a')?.generation?.outputTokens,80,'older timings survive history window');
 assert(Math.abs(store.read('a')!.generation!.tps!-80/3.5)<0.0001);
+store.usage('b',{...call,usagePresence:{input:true,output:true,cacheRead:false,cacheWrite:false}});store.project('b',{...snapshot,conversationId:'b'});
+assert.equal(store.read('b')?.inputTokens,100);assert.equal(store.read('b')?.cacheReadTokens,null,'absent raw cache field is unknown, not SDK default zero');assert.equal(store.read('b')?.cacheWriteTokens,null);
 store.usage('a',{...call,responseTimestamp:11,reported:false});store.project('a',snapshot);
 assert.equal(store.read('a')?.inputTokens,null,'retry preserves missing prior usage');assert.equal(store.read('a')?.complete,false);
 store.usage('b',{...call,inputTokens:0,outputTokens:0,cacheReadTokens:0,cacheWriteTokens:0});store.project('b',{...snapshot,conversationId:'b'});
 assert.equal(store.read('b')?.inputTokens,null,'SDK default zero is not a reported free request');
 assert.equal(new WorkExecutionMetricsStore(db).read('a')?.calls,3,'persistent across store reopen');
 assert.equal(store.read('historical'),undefined,'old unmeasured Work never zero');
+store.usage('b',{...call,usagePresence:{input:false,output:true,cacheRead:true,cacheWrite:false,totalInput:true},usageEvidence:{inputTokens:null,outputTokens:20,cacheReadTokens:90,cacheWriteTokens:null,totalInputTokens:100,observed:true}});store.project('b',{...snapshot,conversationId:'b'});
+assert.equal(store.read('b')?.inputTokens,null);assert.equal(store.read('b')?.cacheWriteTokens,null);assert.equal(store.read('b')?.totalInputTokens,100);assert.equal(store.read('b')?.cacheReadTokens,90,'raw evidence overrides normalized defaults');
 db.close();console.log('PASS Work execution metrics: native calls, dedup, children, independent retries, history, missing, weighted speed');

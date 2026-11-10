@@ -1,0 +1,30 @@
+{
+  "status": "real-native-work-audit-passed",
+  "scope": "Isolated Electron dev profile; production unchanged; no crash injection",
+  "checks": [
+    "native usage -> per-call ledger -> Work DTO -> exact UI tooltips",
+    "native persisted timing -> observed generation speed",
+    "latest raw prompt+completion -> estimated root context",
+    "1040/390 widths: no overflow; screenshots visually inspected"
+  ],
+  "cold": {
+    "input": 19103,
+    "output": 737,
+    "cacheRead": 0,
+    "hostObservedTps": 109.47712418300654,
+    "contextTokens": 19840
+  },
+  "tests": [
+    "typecheck",
+    "test:work-execution-metrics",
+    "test:bot-work-execution",
+    "test:bot-workspace",
+    "test:subagent-header-ui",
+    "test-all --audit"
+  ],
+  "limits": [
+    "No full crash-injection suite run, per user instruction",
+    "Provider SDK normalizes absent individual cache fields to zero; explicit raw per-field provenance is follow-up work. Whole missing/all-zero usage is unknown.",
+    "Historical untracked/shared executions show unknown; root speed/context exclude child generation clocks; totals include native child and compaction calls."
+  ]
+}
