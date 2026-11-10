@@ -52,6 +52,11 @@ app.whenReady().then(async () => {
     await wait('!document.querySelector(".bot-pending-request")');
     await evaluate('window.concurrentFixture.answer(1,"B = 4",12,"completed");window.concurrentFixture.answer(0,"A 正在查",11,"running")');
     await wait('document.body.textContent.includes("B = 4") && document.body.textContent.includes("A 正在查")');
+    await evaluate('window.concurrentFixture.setMetrics(0,100000);window.concurrentFixture.setMetrics(1,900000)');
+    await wait(`document.querySelectorAll('.bot-reply-metrics')[0].textContent.includes('输入 0.1M')`);
+    assert(await evaluate(`document.querySelectorAll('.bot-reply-metrics')[1].textContent.includes('输入 0.9M')`));
+    assert(await evaluate(`document.querySelectorAll('.bot-reply-metrics')[1].textContent.includes('平均 40.0 tok/s')`));
+    assert(await evaluate(`document.querySelectorAll('.bot-reply-metrics')[2].textContent.includes('输入 —')`));
     const refs = await evaluate(`[...document.querySelectorAll('.bot-reply-reference')].map(e=>e.textContent)`);
     assert.deepEqual(refs, ['回复：A 查天气','回复：B 算术','回复：C 写文档']);
     await evaluate(`[...document.querySelectorAll('.bot-message.assistant')][2].querySelector('.bot-message-meta button:last-child').click()`);

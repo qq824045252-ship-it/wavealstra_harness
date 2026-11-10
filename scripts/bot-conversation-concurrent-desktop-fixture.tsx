@@ -64,6 +64,12 @@ Object.assign(window, { concurrentFixture: {
     useAppStore.setState({activeBotId: "bot-2", botIdentities: [bot, {...bot, botId: "bot-2", displayName: "第二位助理"}]}); publish();
   },
   newScrollConversation: () => { history = {...history, conversationId: "new-chat", messages: [], revision: history.revision + 1}; publish(); },
+  setMetrics: (index: number, input: number) => {
+    const message=history.messages.find(item=>item.requestId===requests[index].requestId && item.role==='assistant')!;
+    message.metrics={inputTokens:input,outputTokens:20,cacheReadTokens:30,cacheWriteTokens:0,reportedCalls:1,contextTokens:120,contextWindow:1000,contextEstimated:true,
+      generation:{phase:'complete',estimated:false,tps:40,outputTokens:20,startedAt:1,updatedAt:2,ttftMs:10,outcome:'completed'}};
+    publish();
+  },
   requests, cancellations, resolveEnhance:(text:string)=>enhanceResolve?.({text}), draft: (text: string) => useAppStore.getState().setBotDraft(text),
   acknowledge: (index: number) => { const request = requests[index]; receipts.get(request.requestId)!({ botId: "bot", conversationId: "chat", requestId: request.requestId,
     userMessageId: `u-${request.requestId}`, assistantMessageId: `a-${request.requestId}`, replayed: false }); },

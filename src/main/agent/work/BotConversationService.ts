@@ -222,6 +222,17 @@ export class BotConversationService {
           try { submission = await pending; } finally { this.submissions.delete(next.messageId); }
         }
         const reply = await this.untilClose(runtime.reply(submission));
+        try {
+          // Answer receipts precede the watch's final commit. Allow its bounded
+          // presentation lag, never manufacture a completed speed from wall time.
+          let snapshot = await runtime.refresh();
+          for (let attempt = 0; snapshot.busy && attempt < 20; attempt++) {
+            await new Promise(resolve => setTimeout(resolve, 25));
+            snapshot = await runtime.refresh();
+          }
+          this.messages.metrics.project(next.messageId, next.requestId, snapshot);
+        }
+        catch (error) { console.warn("[Bot] 最终用量快照暂不可用", error); }
 
         if (this.messages.message(next.messageId)?.status !== "cancelled") {
           const transcript: Message[] = [];
@@ -380,6 +391,12 @@ ${conversation.team_id ? `当前是独立团队会话（teamId=${conversation.te
           message.botId !== receipt.bot_id || message.requestId !== requestId ||
           !["queued", "running", "unknown"].includes(message.status)) return { block: "原始消息已结束或身份不可核对" };
       } },
+      onProviderUsage: usage => this.messages.metrics.usage(key, usage),
+      onResponse: (response, identity) => { if (identity.sourceKind === "main") this.messages.metrics.usage(key, {
+        generationTaskId: identity.generationTaskId, responseTimestamp: response.timestamp, reported: response.stopReason !== "error" && response.stopReason !== "aborted",
+        inputTokens: response.usage.input, outputTokens: response.usage.output,
+        cacheReadTokens: response.usage.cacheRead, cacheWriteTokens: response.usage.cacheWrite,
+      }); },
       onSnapshot: snapshot => this.stream(conversation, snapshot, requestId),
     });
     return runtime;
@@ -407,7 +424,9 @@ ${conversation.team_id ? `当前是独立团队会话（teamId=${conversation.te
     const tool = [...tools].reverse().find(item => item.status === "running") ?? tools.at(-1);
     const activity = tool ? { tool: tool.tool, status: tool.status } : undefined;
     const activityChanged = activity?.tool !== message.activity?.tool || activity?.status !== message.activity?.status;
-    if (text === message.text && !activityChanged) return;
+    const metrics = this.messages.metrics.project(message.messageId, activeRequest, snapshot);
+    const metricsChanged = JSON.stringify(metrics) !== JSON.stringify(message.metrics);
+    if (text === message.text && !activityChanged && !metricsChanged) return;
     const now = Date.now();
     // Phase transitions must not be lost behind a text frame's throttle. Unchanged
     // snapshots do nothing, so a long tool call produces one quiet status line.

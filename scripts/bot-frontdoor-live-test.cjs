@@ -322,6 +322,9 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       await foregroundDone(0);
       report.composerHistory=await history();
       const answer=report.composerHistory.messages.filter(m=>m.role==='assistant').at(-1);
+      assert(answer.metrics?.inputTokens > 0 && answer.metrics?.outputTokens > 0, 'real provider usage persisted');
+      assert.equal(answer.metrics?.generation?.phase, 'complete', 'final native timing settled before completed reply');
+      assert(await evaluate(`document.querySelector('.bot-reply-metrics').textContent.includes('输入')`), 'metrics visible in real UI');
       assert(answer.text.includes('COMPOSER_SKILL_20261110'),'selected skill content reached the real model');
       assert(fs.readFileSync(path.join(out,'mcp-audit.jsonl'),'utf8').includes('composer-live'),'real MCP stdio call occurred');
       assert.equal((await evaluate('window.api.botWork.listWorks(true)')).length,0,'selection works in foreground, not an empty button/background-only');

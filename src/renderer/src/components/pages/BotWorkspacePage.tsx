@@ -1,3 +1,4 @@
+import { BotReplyMetrics } from "./BotReplyMetrics";
 import { useBotThreadScroll } from "@/hooks/useBotThreadScroll";
 import { BotComposerCapabilities } from "./BotComposerCapabilities";
 import { BotWorkConversationDetail } from "./BotWorkConversationDetail";
@@ -351,6 +352,7 @@ export function BotMessage({ message, botName, works, onOpenWork, onCancel, sour
     {message.role === "assistant" && sourceQuestion && !message.workFeedback && <div className="bot-reply-reference" aria-label="回复对应问题">回复：{sourceQuestion.text || sourceQuestion.attachments?.map(item => item.name).join("、")}</div>}
     {message.role === "user" ? <div className="user-bubble">{Boolean(message.attachments?.length) && <div className="input-attach-chips"><ComposerAttachmentChips attachments={message.attachments ?? []} /></div>}{message.text && <div className="user-bubble-text">{message.text}</div>}</div> : <div className="bot-assistant-content">{message.text ? <>{result ? <BotResultReport message={message} work={works.find(work => work.workId === message.workFeedback?.workId)} renderMarkdown={renderMarkdown} /> : renderMarkdown(message.text)}</> : <p className="bot-reply-placeholder" role={running ? "status" : undefined}>{message.status === "completed" ? "没有文本回复" : botMessageStatus(message)}{running && <span className="bot-typing-dots" aria-hidden="true">···</span>}</p>}</div>}
     {message.workIds.length > 0 && <div className="bot-message-work-links">{message.workIds.map(workId => <button type="button" key={workId} onClick={() => onOpenWork(workId)}><IconListTodo size={14} /><span>{works.find(work => work.workId === workId)?.title ?? (message.workFeedback?.workId === workId ? message.workFeedback.report?.title : undefined) ?? "查看关联事项"}</span><IconChevronRight size={14} /></button>)}</div>}
+    <BotReplyMetrics message={message} />
     <BotMessageActions message={message} onReply={onReply} onCancel={onCancel} />
     {message.error && <p className="bot-alert" role="alert">{message.error}</p>}
   </article>;

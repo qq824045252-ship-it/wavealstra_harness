@@ -1,3 +1,4 @@
+import { BotForegroundMetricsStore } from "./BotForegroundMetrics";
 import { botInboxId, ensurePersonalConversation, ensureTeamConversation } from "./WorkDeliveryTargets";
 import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
@@ -18,7 +19,8 @@ const messageRow = z.object({ message_id: z.string(), conversation_id: z.string(
   work_ids_json: z.string(), error: z.string().nullable(), created_at: z.number(), updated_at: z.number() });
 
 export class BotConversationRepository {
-  constructor(readonly db: Database.Database) {}
+  readonly metrics: BotForegroundMetricsStore;
+  constructor(readonly db: Database.Database) { this.metrics = new BotForegroundMetricsStore(db); }
 
   conversation(userId: string, botId: string, conversationId?: string, teamId?: string): BotConversation | undefined {
     // Explicit IDs are internal receipt identities. External send/history validate
@@ -378,7 +380,7 @@ export class BotConversationRepository {
       .get(row.message_id) as { activity_json: string } | undefined : undefined;
     const activity = activityRow ? botActivitySchema.safeParse(JSON.parse(activityRow.activity_json)) : undefined;
     return { teamId: scope?.team_id ?? undefined, messageRevision: version?.revision ?? 0, messageId: row.message_id, conversationId: row.conversation_id, botId: row.bot_id, requestId: row.request_id,
-      workFeedback: parsed?.success ? parsed.data : undefined, attachments, activity: activity?.success ? activity.data : undefined,
+      metrics: this.metrics.read(row.message_id), workFeedback: parsed?.success ? parsed.data : undefined, attachments, activity: activity?.success ? activity.data : undefined,
       ordinal: row.ordinal, role: row.role, text: row.text, status: row.status,
       workIds: z.array(z.string()).parse(JSON.parse(row.work_ids_json)), error: row.error ?? undefined,
       createdAt: row.created_at, updatedAt: row.updated_at };

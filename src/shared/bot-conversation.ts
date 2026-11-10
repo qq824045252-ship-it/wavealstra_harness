@@ -45,9 +45,15 @@ export const botActivitySchema = z.object({
   tool: z.string().min(1).max(200), status: z.enum(["running", "success", "error"]),
 }).strict();
 export type BotActivityDto = z.infer<typeof botActivitySchema>;
+export interface BotForegroundMetrics {
+  inputTokens: number | null; outputTokens: number | null; cacheReadTokens: number | null; cacheWriteTokens: number | null;
+  reportedCalls: number; contextTokens: number | null; contextWindow: number | null; contextEstimated: boolean;
+  generation?: import("./generation-stats").GenerationStats; modelName?: string; durationMs?: number;
+}
 export const botMessageSchema = z.object({
   messageId: id, conversationId: id, botId: id, teamId: id.optional(), requestId: id, ordinal: z.number().int().positive(),
   messageRevision: z.number().int().nonnegative().optional(),
+  metrics: z.custom<BotForegroundMetrics>().optional(),
   role: z.enum(["user", "assistant"]), text: z.string(), attachments: z.array(botAttachmentSchema).optional(),
   status: z.enum(["queued", "running", "completed", "cancelled", "unknown", "failed"]),
   workIds: z.array(id), workFeedback: workFeedbackSchema.optional(), activity: botActivitySchema.optional(), error: z.string().optional(), createdAt: z.number(), updatedAt: z.number(),
