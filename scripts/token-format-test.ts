@@ -1,5 +1,5 @@
 /**
- * token-format-test.ts — token 显示口径的行为断言（产品口径：一律 M，最多 3 位小数）。
+ * token-format-test.ts — token 显示口径的行为断言（产品口径：一律 M，固定 3 位小数）。
  *
  * 口径来源：用户 2026-11-06 明确要求「单位改成 M、不要用万」，且「一律用 M 且保留 3 位小数」。
  * 断言的是渲染后的字符串（用户看到的东西），不是实现细节。
@@ -21,7 +21,7 @@ function eq(actual: string, expected: string, label: string): void {
   assert(actual === expected, `${label}：期望 ${expected}，实际 ${actual}`);
 }
 
-console.log("== formatTokenCount：一律 M，最多 3 位小数 ==");
+console.log("== formatTokenCount：一律 M，固定 3 位小数 ==");
 {
   eq(formatTokenCount(64_900), "0.065M", "64.9K → 0.065M（截图里「已使用 约 64.9K」）");
   eq(formatTokenCount(1_048_000), "1.048M", "1048.0K → 1.048M（上下文窗口）");
@@ -29,12 +29,14 @@ console.log("== formatTokenCount：一律 M，最多 3 位小数 ==");
   eq(formatTokenCount(42_100), "0.042M", "42.1K → 0.042M（输入）");
   eq(formatTokenCount(26_800), "0.027M", "26.8K → 0.027M（输出）");
   eq(formatTokenCount(3_523_000), "3.523M", "352.3万 → 3.523M（累计 tokens）");
-  eq(formatTokenCount(1_000_000), "1M", "恰好 1M 去尾零");
-  eq(formatTokenCount(1_500_000), "1.5M", "1.5M 去尾零");
-  eq(formatTokenCount(10_000_000), "10M", "10M 整数不带小数点");
+  eq(formatTokenCount(1_000_000), "1.000M", "整数仍保留三位");
+  eq(formatTokenCount(1_500_000), "1.500M", "尾零保留");
+  eq(formatTokenCount(10_000_000), "10.000M", "大数保留三位");
   eq(formatTokenCount(123_456_789), "123.457M", "9 位数保留 3 位小数");
-  eq(formatTokenCount(0), "0M", "0 显示 0M");
-  eq(formatTokenCount(400), "<0.001M", "四舍五入为 0 的正数显示 <0.001M，不伪装成 0");
+  eq(formatTokenCount(0), "0.000M", "明确零保留三位");
+  eq(formatTokenCount(400), "0.000M", "小量按用户要求四舍五入");
+  eq(formatTokenCount(499), "0.000M", "舍入下界");
+  eq(formatTokenCount(500), "0.001M", "舍入上界");
   eq(formatTokenCount(null), "—", "null → 破折号（未知）");
   eq(formatTokenCount(undefined), "—", "undefined → 破折号");
   eq(formatTokenCount(Number.NaN), "—", "NaN → 破折号");
