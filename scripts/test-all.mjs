@@ -79,6 +79,7 @@ const GUI_TESTS = new Set([
   "test:bot-activity-desktop",
   "test:bot-rename-desktop",
   "test:bot-report-dedup-desktop",
+  "test:bot-message-actions-desktop",
   "test:bot-work-browser-desktop",
   "test:bot-team-removal-desktop",
   "test:bot-work-detail-desktop",

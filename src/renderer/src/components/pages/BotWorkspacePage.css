@@ -35,9 +35,19 @@
 .bot-assistant-content { padding-left:36px; min-width:0; }
 .bot-assistant-content .md { font-size:14px; line-height:1.8; }
 .bot-message.user .user-bubble { max-width:min(85%,600px); padding:12px 17px; }
-.bot-message-meta { display:flex; align-items:center; gap:9px; padding-left:36px; color:var(--fg-secondary); font-size:10px; }
+.bot-message-meta { display:flex; align-items:center; flex-wrap:wrap; column-gap:14px; row-gap:2px; padding-left:36px; min-width:0; color:var(--fg-secondary); font-size:11px; }
 .bot-message.user .bot-message-meta { padding-left:0; }
-.bot-message-meta button { padding:3px 7px; font-size:10px; background:transparent; }
+/* Actions form one quiet, predictable group; timestamps never split the controls. */
+.bot-message-actions, .bot-message-stamp { display:flex; align-items:center; flex-wrap:wrap; gap:4px; min-width:0; }
+.bot-message-actions:empty { display:none; }
+.bot-message-stamp { gap:8px; font-size:11px; line-height:1.5; color:var(--fg-secondary); font-variant-numeric:tabular-nums; }
+.bot-message-stamp time { white-space:nowrap; }
+.bot-message-stamp > span:not(:empty) + time::before { content:"·"; margin-right:8px; opacity:.55; }
+.bot-workspace .bot-message-actions button { min-height:30px; padding:4px 7px; border:1px solid transparent; border-radius:6px; background:transparent; color:var(--fg-secondary); font-size:12px; line-height:20px; white-space:nowrap; }
+.bot-workspace .bot-message-actions button:hover:not(:disabled) { background:var(--bg-hover); border-color:transparent; color:var(--fg); }
+.bot-workspace .bot-message-actions .bot-message-stop { background:var(--bg-sidebar); color:var(--fg); }
+.bot-message-actions svg { flex-shrink:0; }
+@media (pointer:coarse) { .bot-workspace .bot-message-actions button { min-height:40px; } }
 .bot-reply-placeholder { color:var(--fg-secondary); font-size:13px; }
 .bot-typing-dots { letter-spacing:3px; animation:bot-reply-pulse 1.3s ease-in-out infinite; }
 @keyframes bot-reply-pulse { 50% { opacity:.35; } }
@@ -204,7 +214,7 @@
 .bot-work-progress .bot-message { margin-top: 12px; }
 
 /* Keep the Bot identity and primary conversation actions visible at narrow widths. */
-.bot-workspace .bot-message-meta button { min-height:30px; padding:5px 9px; font-size:11px; }
+
 @media (max-width:640px) {
   .bot-workspace-header { gap:7px; padding:12px; }
   .bot-header-avatar { display:none; }

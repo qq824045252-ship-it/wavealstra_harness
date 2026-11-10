@@ -1,3 +1,4 @@
+import { BotMessageActions } from "./BotMessageActions";
 import { BotRename } from "./BotRename";
 import { BotTeamManagement } from "./BotTeamManagement";
 import { BotTeamSettings } from "./BotTeamSettings";
@@ -15,7 +16,7 @@ import { artifactImageUrl } from "@shared/artifact-ipc";
 import { ChatImageScope } from "@/components/chat/ChatImage";
 import ChatComposer from "@/components/chat/ChatComposer";
 import ChatMarkdown from "@/components/chat/ChatMarkdown";
-import { IconPlus, IconArchive, IconChevronDown, IconArrowUp, IconBot, IconChevronRight, IconListTodo, IconPanel, IconSettings, IconStop, IconX } from "@/components/common/icons";
+import { IconPlus, IconArchive, IconChevronDown, IconArrowUp, IconBot, IconChevronRight, IconListTodo, IconPanel, IconSettings, IconX } from "@/components/common/icons";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { activeBotReply, personalBotWork, botParticipatesInWork, botMessageStatus, botWorkTimeline, shouldSendBotComposer, type BotWorkspaceView } from "@/lib/botWorkspacePresentation";
 import { BotWorkBrowser } from "./BotWorkBrowser";
@@ -337,7 +338,7 @@ export function BotMessage({ message, botName, works, onOpenWork, onCancel, sour
     {message.role === "assistant" && sourceQuestion && !message.workFeedback && <div className="bot-reply-reference" aria-label="回复对应问题">回复：{sourceQuestion.text || sourceQuestion.attachments?.map(item => item.name).join("、")}</div>}
     {message.role === "user" ? <div className="user-bubble">{Boolean(message.attachments?.length) && <div className="input-attach-chips"><ComposerAttachmentChips attachments={message.attachments ?? []} /></div>}{message.text && <div className="user-bubble-text">{message.text}</div>}</div> : <div className="bot-assistant-content">{message.text ? <>{result ? <BotResultReport message={message} work={works.find(work => work.workId === message.workFeedback?.workId)} renderMarkdown={renderMarkdown} /> : renderMarkdown(message.text)}</> : <p className="bot-reply-placeholder" role={running ? "status" : undefined}>{message.status === "completed" ? "没有文本回复" : botMessageStatus(message)}{running && <span className="bot-typing-dots" aria-hidden="true">···</span>}</p>}</div>}
     {message.workIds.length > 0 && <div className="bot-message-work-links">{message.workIds.map(workId => <button type="button" key={workId} onClick={() => onOpenWork(workId)}><IconListTodo size={14} /><span>{works.find(work => work.workId === workId)?.title ?? (message.workFeedback?.workId === workId ? message.workFeedback.report?.title : undefined) ?? "查看关联事项"}</span><IconChevronRight size={14} /></button>)}</div>}
-    <div className="bot-message-meta">{onReply && <button type="button" onClick={onReply}>回复 / 补充</button>}{(message.text || !running) && <span role={running ? "status" : undefined}>{botMessageStatus(message)}</span>}<time dateTime={new Date(message.createdAt).toISOString()}>{new Date(message.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time>{running && <button type="button" onClick={onCancel}><IconStop size={14} />停止回复</button>}</div>
+    <BotMessageActions message={message} onReply={onReply} onCancel={onCancel} />
     {message.error && <p className="bot-alert" role="alert">{message.error}</p>}
   </article>;
 }
