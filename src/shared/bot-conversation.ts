@@ -26,6 +26,11 @@ export const workFeedbackSchema = z.object({
     files: z.array(z.object({ ref: z.string(), name: z.string(), openPath: z.string().optional() }).strict()).optional(),
     reviewStatus: z.enum(["proposed", "accepted", "rejected", "superseded"]),
     current: z.boolean(), notices: z.array(z.string()),
+    teamFacts: z.array(z.object({ displayName: z.string(), responsibility: z.string(), executionStatus: z.string(),
+      failureReason: z.string().optional(), failureSummary: z.string().optional(), sourceRefs: z.array(z.string()) }).strict()).optional(),
+    structured: z.object({ version: z.literal(1), conclusions: z.array(z.object({ text: z.string(), requestMessageId: z.string(),
+      requestText: z.string(), sources: z.array(z.object({ ref: z.string(), label: z.string() }).strict()) }).strict()),
+      observations: z.array(z.string()) }).strict().optional(),
   }).strict().optional(),
 }).strict();
 export type WorkFeedbackDto = z.infer<typeof workFeedbackSchema>;

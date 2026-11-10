@@ -62,7 +62,8 @@ export function BotResultReport({ message, work, renderMarkdown }: { message: Bo
   renderMarkdown: (text: string) => React.JSX.Element }): React.JSX.Element {
   const [expanded, setExpanded] = useState(false);
   const report = message.workFeedback!.report!;
-  const long = report.summary.length > 1600 || report.summary.split("\n").length > 20;
+  const bodyText = report.structured?.conclusions.map(item => item.text).join("\n") ?? report.summary;
+  const long = bodyText.length > 1600 || bodyText.split("\n").length > 20;
   const files = workFiles(report.artifactRefs, work, message.workFeedback?.executionId).map(file => ({ ...file,
     name: report.files?.find(item => item.ref === file.ref)?.name ?? file.name,
     openPath: report.files?.find(item => item.ref === file.ref)?.openPath }));
@@ -70,7 +71,20 @@ export function BotResultReport({ message, work, renderMarkdown }: { message: Bo
     <header><h3>{report.title}</h3><span className="bot-status-badge">{!report.current ? "历史成果" : {
       proposed: "结果已返回", accepted: "负责人已核验", rejected: "未通过核验", superseded: "已被新成果替代",
     }[report.reviewStatus]}</span></header>
-    <div className={`bot-result-body ${long && !expanded ? "is-collapsed" : ""}`}>{renderMarkdown(report.summary)}</div>
+    <div className={`bot-result-body ${long && !expanded ? "is-collapsed" : ""}`}>
+      {report.structured ? <section aria-label="本次请求的结论"><h4>本次请求的结论</h4>{report.structured.conclusions.map((item, index) => <article key={index}>
+        {renderMarkdown(item.text)}<details><summary>关联请求与来源</summary><p>{item.requestText}</p>
+        <p>引用关联不代表结论已自动证实。</p><ul>{item.sources.map(source => <li key={source.ref}>{source.label}<details><summary>来源标识</summary><code>{source.ref}</code></details></li>)}</ul>
+        </details></article>)}</section> : renderMarkdown(report.summary)}
+    </div>
+    {report.teamFacts && <section aria-label="汇总时的执行事实"><h4>汇总时的执行事实</h4><ul>{report.teamFacts.map((fact, index) => <li key={index}>
+      <strong>{fact.displayName}</strong>：{{ completed: "执行结束", failed: "执行失败", stopped: "执行停止", invalidated: "执行已失效", unknown: "执行结果未知", not_started: "未启动", running: "执行中", submitted: "已派发", pending: "准备中" }[fact.executionStatus] ?? fact.executionStatus}
+      {fact.failureReason && <p role="status">{fact.failureSummary ?? fact.failureReason}</p>}
+      <details><summary>分工与执行来源</summary><p>{fact.responsibility}</p>{fact.failureReason && <p>{fact.failureReason}</p>}{fact.sourceRefs.map(ref => <p key={ref}><code>{ref}</code></p>)}</details>
+    </li>)}</ul></section>}
+    {report.structured?.observations.length ? <details aria-label="额外观察"><summary>额外观察（不增加任务要求）· {report.structured.observations.length}</summary>
+      {report.structured.observations.map((text, index) => <div key={index}>{renderMarkdown(text)}</div>)}
+    </details> : null}
     {long && <button className="bot-result-expand" type="button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? "收起长报告" : "展开完整报告"}</button>}
     {report.notices.length > 0 && <ul className="bot-result-notices">{report.notices.map((notice, i) => <li key={i}>{notice}</li>)}</ul>}
     <WorkFiles files={files} />

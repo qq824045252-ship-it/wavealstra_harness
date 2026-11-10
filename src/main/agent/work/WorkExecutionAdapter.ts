@@ -126,7 +126,9 @@ export class WorkExecutionAdapter {
         return;
       }
       this.service.markDispatchAttempt(current.bindingId, current.attemptId ?? `attempt:${current.bindingId}`);
-      receipt = await this.native.submit(current, (this.service.partialResults.executionInput(current) ?? this.service.repo.executionInput(current)) + this.service.repo.attachmentInput(current));
+      const input = this.service.partialResults.executionInput(current) ?? this.service.repo.executionInput(current);
+      this.service.repo.captureReportContext(current, input);
+      receipt = await this.native.submit(current, input + this.service.repo.attachmentInput(current));
     }
     if (!this.isAuthority()) return;
     this.service.recordSubmissionReceipt(current.bindingId, JSON.stringify(receipt));

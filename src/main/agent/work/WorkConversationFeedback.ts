@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import type { WorkFeedbackDto } from "../../../shared/bot-conversation";
 import type { WorkDto } from "../../../shared/bot-work";
 import { BotConversationRepository } from "./BotConversationRepository";
+import { projectTeamReport } from "./WorkReportPresentation";
 import type { WorkService } from "./WorkService";
 
 export interface WorkConversationFeedbackOptions {
@@ -89,6 +90,14 @@ export class WorkConversationFeedback {
         }
         for (const result of results) {
           const current = result.intentRevision === work.intentRevision && result.inputSnapshotId === work.inputSnapshotId;
+          let presentation: ReturnType<typeof projectTeamReport> = {};
+          try {
+            const binding = works.repo.getBinding(result.executionId);
+            if (binding && binding.botId === result.producerBotId && binding.workId === work.workId && binding.intentRevision === result.intentRevision
+              && binding.inputSnapshotId === result.inputSnapshotId && binding.ownerEpoch === result.ownerEpoch)
+              presentation = projectTeamReport(result.summary, works.repo.reportContext(binding));
+          } catch { /* Missing historical context falls back to the unchanged report. */ }
+
           const review = { proposed: "待负责人核验", accepted: "负责人核验通过", rejected: "未通过负责人核验", superseded: "已被后续成果替代" }[result.status];
           const label = !current ? "历史执行成果（不代表当前要求已完成）" : "后台成果（不代表用户已验收）";
           emit(`result:${result.deliverableId}`, [result, current],
@@ -99,7 +108,7 @@ export class WorkConversationFeedback {
             + `${result.rejectedReason ? `\n未通过核验：${result.rejectedReason}` : ""}`,
             { kind: "result", category: "result", executionId: result.executionId,
               intentRevision: result.intentRevision, inputSnapshotId: result.inputSnapshotId,
-              report: { title: work.title, summary: result.summary, artifactRefs: result.artifactRefs,
+              report: { title: work.title, summary: result.summary, artifactRefs: result.artifactRefs, ...presentation,
                 files: result.artifactRefs.map(ref => {
                   const candidates = generated.filter(item => item.bindingId === result.executionId);
                   const sources = candidates.filter(item => item.path === ref);

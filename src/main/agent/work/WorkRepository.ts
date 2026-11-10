@@ -20,6 +20,7 @@ import type {
   WorkWatchRuleDto,
 } from "../../../shared/bot-work";
 import type { ExpertConfigSnapshotDto, WorkAuthorizationDto } from "../../../shared/bot-work";
+import { captureTeamReportContext, capturedTeamReportContext } from "./WorkReportPresentation";
 import { botDelegationInput, BOT_DELEGATION_INSTRUCTIONS } from "./BotDelegationInput";
 
 function json<T>(value: string | null | undefined, fallback: T): T {
@@ -490,6 +491,9 @@ export class WorkRepository {
   }
 
   // ----------------------------------------------------------- participants
+
+  captureReportContext(binding: WorkExecutionBindingDto, input: string): void { captureTeamReportContext(this.db, binding, input); }
+  reportContext(binding: WorkExecutionBindingDto): unknown { return capturedTeamReportContext(this.db, binding); }
 
   attachmentInput(binding: WorkExecutionBindingDto): string {
     const row = this.db.prepare("SELECT attachments_json FROM bot_work_attachments WHERE work_id=? AND input_snapshot_id=?")

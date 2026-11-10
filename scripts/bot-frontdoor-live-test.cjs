@@ -11,6 +11,7 @@ const teamTransientFailure = process.argv.includes('--team-transient-failure');
 const teamTransportFailure = process.argv.includes('--team-transport-failure') || teamTransientFailure;
 const teamFailureScenario = process.argv.includes('--team-failure') || teamTransportFailure;
 const teamFreeScenario = process.argv.includes('--team-free');
+const structuredReportScenario = process.argv.includes('--structured-report');
 const teamPlanningScenario = process.argv.includes('--team-planning') || teamFreeScenario;
 const teamScenario = process.argv.includes('--team') || teamFailureScenario || teamPlanningScenario;
 const cacheScenario = process.argv.includes('--cache');
@@ -252,9 +253,19 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
         report.checks.push('real model selected current-task responsibilities and dependency; saved template unchanged');
       }
 
-      const summary=team.executions.find(e=>e.role==='owner_summary').resultSummary;
+      const ownerExecution = team.executions.find(e=>e.role==='owner_summary');
+      await until(async()=> (await history()).messages.some(m=>m.workFeedback?.executionId===ownerExecution.bindingId && m.workFeedback?.report), 'owner result feedback persisted');
+      report.history = await history();
+      const ownerReport = report.history.messages.filter(m=>m.workFeedback?.executionId===ownerExecution.bindingId && m.workFeedback?.report).at(-1).workFeedback.report;
+      const summary = ownerReport.structured ? ownerReport.structured.conclusions.map(item=>item.text).join('\n') : ownerExecution.resultSummary;
+      if (structuredReportScenario) {
+        assert(ownerReport.structured, 'real owner output must produce validated structured feedback, not silently pass through fallback');
+        assert(ownerReport.teamFacts?.length, 'host execution facts are present independently');
+        assert.equal(ownerReport.summary, ownerExecution.resultSummary, 'raw model output is unchanged');
+        report.checks.push('real model structured report: request-linked conclusions, host execution facts, optional observations and unchanged original');
+      }
       const memberNames = teamFreeScenario ? ['文件读取员', '交叉核对员'] : teamFailureScenario ? ['甲读取员', '乙读取员', '依赖核对员'] : ['甲读取员', '乙读取员'];
-      for (const name of memberNames) assert(summary.includes(name), `owner summary must identify ${name} by host display name`);
+      for (const name of memberNames) assert((summary + JSON.stringify(ownerReport.teamFacts ?? [])).includes(name), `owner summary must identify ${name} by host display name`);
       assert(!/bot-created-[a-f0-9]+|binding-[a-f0-9]+/.test(summary),
         'main owner report uses member names, not internal identity/binding IDs');
       report.checks.push('owner result identifies every member by host display name; technical IDs stay out of the main report');
@@ -264,6 +275,12 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       assert(requests.some(r=>r.messages?.some(m=>m.tool_calls?.some(c=>c.function?.name==='work_team_create'))));
       const ownerReportSelector = `[...document.querySelectorAll('.bot-result-report')].filter(el=>${JSON.stringify(memberNames)}.every(name=>el.textContent.includes(name))).at(-1)`;
       await until(()=>evaluate(`Boolean(${ownerReportSelector})`),'named owner summary rendered in original conversation');
+      if (structuredReportScenario) {
+        assert(await evaluate(`Boolean(${ownerReportSelector}.querySelector('[aria-label="本次请求的结论"]'))`));
+        assert(await evaluate(`Boolean(${ownerReportSelector}.querySelector('[aria-label="汇总时的执行事实"]'))`));
+        assert(await evaluate(`![...${ownerReportSelector}.querySelectorAll('details[aria-label="额外观察"]')].some(el=>el.open)`));
+      }
+
       await evaluate(`${ownerReportSelector}.scrollIntoView({block:'start'})`); await wait(150);
       const readableShot = await rpc('Page.captureScreenshot', {format:'png',captureBeyondViewport:false});
       fs.writeFileSync(path.join(out,'team-result.png'),Buffer.from(readableShot.data,'base64'));

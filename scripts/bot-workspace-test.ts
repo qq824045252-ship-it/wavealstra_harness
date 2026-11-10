@@ -550,6 +550,22 @@ for (const [reviewStatus, label] of [["rejected", "未通过核验"], ["accepted
 assert.match(reportHtml, /尚未覆盖：现场验收/);
 assert.match(reportHtml, /<details class="bot-original-report"><summary>原始消息与完整记录/);
 assert(reportHtml.indexOf("合计 42 元") < reportHtml.indexOf("完整原始消息"));
+const partitionedResult: BotMessageDto = { ...structuredResult, workFeedback: { ...structuredResult.workFeedback!, report: { ...structuredResult.workFeedback!.report!,
+  teamFacts: [{ displayName: "甲", responsibility: "读取文件", executionStatus: "failed", failureReason: "ENOENT", sourceRefs: ["binding-exact"] }],
+  structured: { version: 1, conclusions: [{ text: "文件没有读到", requestMessageId: "request-exact", requestText: "读取文件", sources: [{ ref: "binding-exact", label: "甲 · 读取文件" }] }], observations: ["可选编码建议"] },
+} } };
+const partitionedHtml = renderToStaticMarkup(createElement(BotMessage, { message: partitionedResult, botName: "Bot", works: [], onOpenWork() {}, onCancel() {} }));
+assert.match(partitionedHtml, /本次请求的结论/); assert.match(partitionedHtml, /执行失败/); assert.match(partitionedHtml, /ENOENT/);
+assert.match(partitionedHtml, /<details aria-label="额外观察"><summary>额外观察（不增加任务要求）/);
+assert.match(partitionedHtml, /引用关联不代表结论已自动证实/);
+assert.match(partitionedHtml, /完整原始消息/, "original message remains available");
+assert(!partitionedHtml.includes('aria-label="额外观察" open'), "optional observations are collapsed, not new required work");
+const longPartitioned = structuredClone(partitionedResult);
+longPartitioned.workFeedback!.report!.structured!.conclusions[0].text = "真实结果正文".repeat(400);
+const longPartitionedHtml = renderToStaticMarkup(createElement(BotMessage, { message: longPartitioned, botName: "Bot", works: [], onOpenWork() {}, onCancel() {} }));
+assert.match(longPartitionedHtml, /bot-result-body is-collapsed/);
+assert.match(longPartitionedHtml, /展开完整报告/, "long structured reports retain the existing expansion control");
+
 assert.match(renderToStaticMarkup(createElement(BotMessage, { message: structuredResult, botName: "Bot", works: [], onOpenWork() {}, onCancel() {} })), /report.csv/, "persisted filename survives missing/closed Work projections");
 
 assert.doesNotMatch(renderToStaticMarkup(createElement(WorkFiles, { files: [{ ref: "/unregistered/private.txt", name: "private.txt" }] })), /打开文件|打开保存版本/, "unregistered model file references remain text, not privileged file-open actions");

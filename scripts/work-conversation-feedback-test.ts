@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { projectTeamReport } from "../src/main/agent/work/WorkReportPresentation";
 import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -24,6 +25,43 @@ const open = () => {
   return { bots, works, messages, feedback };
 };
 try {
+  const reportInput = { userRequest: { messages: [{ messageId: "request-local", role: "user", text: "读取并对比两份文件" }] },
+    teamAssignment: { role: "owner_summary", previousResults: [
+      { botId: "a", displayName: "甲", responsibility: "读取甲文件", executionStatus: "completed", bindingId: "binding-a", deliverableId: "result-a" },
+      { botId: "b", displayName: "乙", responsibility: "读取乙文件", executionStatus: "failed", bindingId: "binding-b", failureReason: "ENOENT" },
+      { botId: "c", displayName: "丙", responsibility: "核对乙文件", executionStatus: "not_started", summary: "前置失败，未启动" },
+    ] } };
+  const draft = { format: "bot-team-report-v1", requestMessageId: "request-local", conclusions: [{ text: "甲已读取；乙失败", evidenceRefs: ["result-a", "binding-b"] }], observations: ["可选建议"] };
+  const nativePresentation = projectTeamReport(JSON.stringify(draft), reportInput);
+  assert.equal(nativePresentation.structured?.conclusions[0].requestText, "读取并对比两份文件");
+  assert.equal(nativePresentation.teamFacts?.[1].failureReason, "ENOENT", "native failure is independent of model prose");
+  assert.equal(nativePresentation.teamFacts?.[2].executionStatus, "not_started");
+  assert.equal(nativePresentation.teamFacts?.[2].failureReason, "前置失败，未启动");
+  const withInternalReason = { ...reportInput, teamAssignment: { ...reportInput.teamAssignment, previousResults: reportInput.teamAssignment.previousResults.map(item => item.botId === "c" ? { ...item, summary: "前置 binding-b 失败，未启动" } : item) } };
+  const readable = projectTeamReport("plain fallback", withInternalReason).teamFacts![2];
+  assert.equal(readable.failureSummary, "前置 乙 失败，未启动");
+  assert.equal(readable.failureReason, "前置 binding-b 失败，未启动", "original diagnostic remains exact");
+  const boundaryInput = { ...reportInput, teamAssignment: { ...reportInput.teamAssignment, previousResults: [
+    { ...reportInput.teamAssignment.previousResults[0], bindingId: "binding.[x]" },
+    { ...reportInput.teamAssignment.previousResults[2], summary: "binding.[x] binding.[x]-unknown" },
+  ] } };
+  assert.equal(projectTeamReport("plain", boundaryInput).teamFacts![1].failureSummary, "甲 binding.[x]-unknown", "exact escaping and boundaries keep unknown identifiers intact");
+  assert.deepEqual(projectTeamReport("```json\n" + JSON.stringify(draft) + "\n```", reportInput), nativePresentation);
+  for (const invalid of ["原有普通报告", "{bad-json", JSON.stringify({ ...draft, untrustedHostFacts: [] }),
+    JSON.stringify({ ...draft, requestMessageId: "foreign-request" }),
+    JSON.stringify({ ...draft, conclusions: [{ ...draft.conclusions[0], evidenceRefs: ["foreign-or-old-binding"] }] })]) {
+    const fallback = projectTeamReport(invalid, reportInput);
+    assert.equal(fallback.structured, undefined, "unparseable/foreign references fall back, never repair or rerun");
+    assert.equal(fallback.teamFacts?.[1].failureReason, "ENOENT", "fallback cannot hide native failure");
+  }
+  assert.deepEqual(projectTeamReport(JSON.stringify(draft), {}), {}, "missing historical context returns raw-only presentation");
+  const repeatedBot = { ...reportInput, teamAssignment: { ...reportInput.teamAssignment,
+    previousResults: [...reportInput.teamAssignment.previousResults, { ...reportInput.teamAssignment.previousResults[0], responsibility: "另一个分工", bindingId: "binding-a-2", deliverableId: "result-a-2" }] } };
+  assert.equal(projectTeamReport(JSON.stringify({ ...draft, conclusions: [{ ...draft.conclusions[0], evidenceRefs: ["a"] }] }), repeatedBot).structured,
+    undefined, "ambiguous bot identity cannot misattribute two different assignments");
+  assert(projectTeamReport(JSON.stringify(draft), repeatedBot).structured, "exact binding/result references remain usable");
+  const unsupportedClaim = projectTeamReport(JSON.stringify({ ...draft, conclusions: [{ ...draft.conclusions[0], text: "未经证明的比较" }] }), reportInput);
+  assert.equal(unsupportedClaim.structured?.conclusions[0].text, "未经证明的比较", "reference validation is not a semantic truth claim or silent rewriting");
   let { bots, works, messages, feedback } = open();
   const source = messages.accept(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID, requestId: "source", text: "完成后台任务" });
   messages.update(source.assistantMessageId, "completed", "已开始处理");
@@ -42,6 +80,20 @@ try {
     taskId: "background-task", durableStoreKey: "store", conversationId: "background-native-conversation", intentRevision: work.intentRevision,
     ownerEpoch: work.ownerEpoch, inputSnapshotId: work.inputSnapshotId, expertSnapshot: bots.activeSnapshot(DEFAULT_BOT_ID)!,
     delegatedScope: [], workspaceBinding: root, status: "completed", admittedAt: 1, settledAt: 2, settlementNote: fullResult });
+  const reportBinding = works.repo.getBinding("binding-1")!;
+  assert.equal(works.repo.reportContext(reportBinding), undefined, "legacy binding has no fabricated context");
+  works.repo.captureReportContext(reportBinding, JSON.stringify(reportInput));
+  assert.deepEqual(works.repo.reportContext(reportBinding), reportInput);
+  works.repo.captureReportContext(reportBinding, JSON.stringify({ ...reportInput, userRequest: { messages: [] } }));
+  assert.deepEqual(works.repo.reportContext(reportBinding), reportInput, "recovery/task-input mutation cannot replace an earlier binding context");
+  for (const mismatch of [{ ownerEpoch: reportBinding.ownerEpoch + 1 }, { intentRevision: reportBinding.intentRevision + 1 },
+    { taskId: "other-task" }, { workId: "other-work" }, { inputSnapshotId: "other-input" }]) {
+    assert.equal(works.repo.reportContext({ ...reportBinding, ...mismatch }), undefined, "context cannot cross binding identity/version");
+  }
+  db.connection.exec("CREATE TRIGGER fail_report_context BEFORE INSERT ON work_report_contexts BEGIN SELECT RAISE(ABORT,'presentation unavailable'); END");
+  assert.doesNotThrow(() => works.repo.captureReportContext({ ...reportBinding, bindingId: "storage-failed" }, JSON.stringify(reportInput)));
+  assert.equal(works.repo.reportContext({ ...reportBinding, bindingId: "storage-failed" }), undefined, "optional storage failure only loses presentation, not task execution");
+  db.connection.exec("DROP TRIGGER fail_report_context");
   const savedPath = join(root, "artifacts", "0123456789.csv");
   db.connection.transaction(() => works.generatedArtifacts.record(works.repo.getBinding("binding-1")!, [{
     path: join(root, "report.csv"), snapshotPath: savedPath, digest: "saved-digest", sizeBytes: 42, registeredAt: 2, sourceEntryId: 1,
@@ -73,6 +125,8 @@ try {
   assert(initialFeedback[1].text.includes(fullResult), "Bot feedback retains the complete result, trailing caveat, source and Markdown image");
   const report = initialFeedback[1].workFeedback?.report;
   assert.equal(report?.title, work.title);
+  assert.equal(report?.teamFacts?.[1].failureReason, "ENOENT", "plain-text fallback still delivers native facts");
+  assert.equal(report?.structured, undefined);
   assert.equal(report?.summary, fullResult);
   assert.deepEqual(report?.artifactRefs, ["artifact:report", savedPath]);
   assert.deepEqual(report?.files?.find(file => file.ref === savedPath), { ref: savedPath, name: "report.csv", openPath: savedPath });
@@ -158,6 +212,7 @@ try {
   db.close(); db = new AppDatabase(path);
   ({ bots, works, messages, feedback } = open());
   assert.equal(works.repo.getDeliverable("result:binding-1")?.summary, fullResult, "reopening preserves the full result");
+  assert.deepEqual(works.repo.reportContext(reportBinding), reportInput, "source snapshot survives normal restart unchanged");
   assert(messages.history(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID, conversationId: source.conversationId }).messages
     .some(message => message.messageId === initialFeedback[1].messageId && message.text.includes(fullResult)), "reopened originating history retains the whole report");
   assert.equal(feedback.recover(), 1, "recovery discovers closure after restart");
