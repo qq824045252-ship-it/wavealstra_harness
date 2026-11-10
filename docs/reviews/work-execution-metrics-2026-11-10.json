@@ -5,7 +5,9 @@
     "native usage -> per-call ledger -> Work DTO -> exact UI tooltips",
     "native persisted timing -> observed generation speed",
     "latest raw prompt+completion -> estimated root context",
-    "1040/390 widths: no overflow; screenshots visually inspected"
+    "1040/390 widths: no overflow; screenshots visually inspected",
+    "Real three-round native pwd -> ls -> final reply: raw cache hit, unknown write, total-input cache denominator, weighted speed and UI exact tooltip reconciled",
+    "Fixed stale generating placeholders discovered by real multi-round speed audit"
   ],
   "cold": {
     "input": 19103,
@@ -24,7 +26,63 @@
   ],
   "limits": [
     "No full crash-injection suite run, per user instruction",
-    "Provider SDK normalizes absent individual cache fields to zero; explicit raw per-field provenance is follow-up work. Whole missing/all-zero usage is unknown.",
     "Historical untracked/shared executions show unknown; root speed/context exclude child generation clocks; totals include native child and compaction calls."
-  ]
+  ],
+  "rawFieldProvenance": "Integrated provider-http evidence: absent individual fields remain null; replay preserves prior evidence",
+  "warm": {
+    "calls": 3,
+    "totalInput": 58436,
+    "output": 896,
+    "cacheRead": 38656,
+    "cacheWrite": null,
+    "cacheHitRate": 0.6615100280648915,
+    "metrics": {
+      "inputTokens": null,
+      "outputTokens": 896,
+      "totalInputTokens": 58436,
+      "cacheReadTokens": 38656,
+      "cacheWriteTokens": null,
+      "reportedCalls": 3,
+      "calls": 3,
+      "complete": false,
+      "contextTokens": 20382,
+      "contextWindow": 128000,
+      "contextEstimated": true,
+      "generation": {
+        "phase": "complete",
+        "startedAt": 1794306942417,
+        "updatedAt": 1794306958558,
+        "tps": 106.78107496126802,
+        "estimated": false,
+        "outputTokens": 896,
+        "ttftMs": 2765,
+        "outcome": "completed"
+      },
+      "modelName": "opendesign/deepseek-v4.1-flash",
+      "observedAt": 1794306958653,
+      "durationMs": 16230
+    },
+    "timingAudit": {
+      "status": "passed",
+      "nativeTimings": [
+        {
+          "output": 92,
+          "tps": 195.3290870488323,
+          "ttftMs": 2193
+        },
+        {
+          "output": 700,
+          "tps": 89.69759097898513,
+          "ttftMs": 2283
+        },
+        {
+          "output": 104,
+          "tps": 896.5517241379309,
+          "ttftMs": 2765
+        }
+      ],
+      "contextTokens": 20382,
+      "note": "Host-observed generation speed, not provider-internal decode speed; context is an estimated latest-root snapshot."
+    }
+  }
 }

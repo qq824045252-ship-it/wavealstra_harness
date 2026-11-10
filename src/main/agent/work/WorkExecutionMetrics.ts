@@ -38,7 +38,7 @@ export class WorkExecutionMetricsStore {
     inputTokens?:number|null;outputTokens?:number|null;cacheReadTokens?:number|null;cacheWriteTokens?:number|null;totalInputTokens?:number|null}):void {
     const owner=this.owner(taskId); if(!owner)return;
     input={...input,...(input.usageEvidence??{})};
-    input={...input,reported:input.reported && [input.inputTokens,input.outputTokens,input.cacheReadTokens,input.cacheWriteTokens].some(value=>value!>0)};
+    input={...input,reported:input.reported && [input.totalInputTokens,input.inputTokens,input.outputTokens,input.cacheReadTokens,input.cacheWriteTokens].some(value=>value!>0)};
     // Conversation + task + response timestamp distinguish child generations and retries.
     const key=JSON.stringify([input.conversationId,input.generationTaskId,input.responseTimestamp??null]);
     const previous=this.db.prepare('SELECT value_json FROM work_execution_usage WHERE binding_id=? AND call_key=?').get(owner.binding_id,key) as {value_json:string}|undefined;
