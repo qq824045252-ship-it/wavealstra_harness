@@ -71,6 +71,7 @@ interface FormState {
   everyN: number;
   everyUnit: EveryUnit;
   onceAt: string;
+  originalOnce?: { value: string; expression: string };
   dateStart: string;
   dateEnd: string;
 }
@@ -155,6 +156,7 @@ function formToSchedule(form: FormState): {
     return { scheduleType: "every", scheduleExpr: `${n}${form.everyUnit}` };
   }
   if (form.freqMode === "once") {
+    if (form.originalOnce?.value === form.onceAt) return { scheduleType: "at", scheduleExpr: form.originalOnce.expression };
     const d = new Date(form.onceAt);
     return {
       scheduleType: "at",
@@ -201,7 +203,10 @@ function jobToForm(job: CronJobDto, defaultModelId?: string | null): FormState {
   } else if (job.scheduleType === "at") {
     base.freqMode = "once";
     const d = new Date(job.scheduleExpr);
-    if (!Number.isNaN(d.getTime())) base.onceAt = toLocalDatetimeValue(d);
+    if (!Number.isNaN(d.getTime())) {
+      base.onceAt = toLocalDatetimeValue(d);
+      base.originalOnce = { value: base.onceAt, expression: job.scheduleExpr };
+    }
   } else {
     base.freqMode = "period";
     const parts = job.scheduleExpr.trim().split(/\s+/);
@@ -273,7 +278,8 @@ function formatScheduleLabel(job: CronJobDto): string {
     return `单次 ${d.toLocaleString()}`;
   }
   const parts = job.scheduleExpr.trim().split(/\s+/);
-  if (parts.length >= 3) {
+  if (parts.length === 5) parts.unshift("0");
+  if (parts.length === 6 && parts[0] === "0" && /^\d+$/.test(parts[1]) && /^\d+$/.test(parts[2]) && parts[4] === "*") {
     const minute = pad2(Number(parts[1]) || 0);
     const hour = pad2(Number(parts[2]) || 0);
     const dow = parts[5];
@@ -634,7 +640,7 @@ export default function AutomationPage({
       setFormError("请填写提示词");
       return;
     }
-    if (form.freqMode === "once") {
+    if (form.freqMode === "once" && form.originalOnce?.value !== form.onceAt) {
       const at = new Date(form.onceAt);
       if (Number.isNaN(at.getTime()) || at.getTime() <= Date.now()) {
         setFormError("单次执行时间需晚于当前时间");
@@ -903,7 +909,7 @@ export default function AutomationPage({
           <span className="auto-row-id" title={job.id}>
             {job.id}
           </span>
-          <span className="auto-row-schedule">{formatScheduleLabel(job)}</span>
+          <span className="auto-row-schedule">{formatScheduleLabel(job)}{job.reminder ? ` · ${job.timezone}` : ""}</span>
           {job.sourceTaskId && <span className="auto-row-id" title={`Source task: ${job.sourceTaskId}`}>
             {job.target?.kind === "task" ? "Continue task" : "New task"} · {job.sourceTaskId}
           </span>}
