@@ -41,6 +41,8 @@ export class WorkExecutionMetricsStore {
     input={...input,reported:input.reported && [input.inputTokens,input.outputTokens,input.cacheReadTokens,input.cacheWriteTokens].some(value=>value!>0)};
     // Conversation + task + response timestamp distinguish child generations and retries.
     const key=JSON.stringify([input.conversationId,input.generationTaskId,input.responseTimestamp??null]);
+    const previous=this.db.prepare('SELECT value_json FROM work_execution_usage WHERE binding_id=? AND call_key=?').get(owner.binding_id,key) as {value_json:string}|undefined;
+    if(previous && JSON.parse(previous.value_json).usageEvidence?.observed && !input.usageEvidence?.observed)return;
     this.db.prepare('INSERT OR REPLACE INTO work_execution_usage VALUES(?,?,?)').run(owner.binding_id,key,JSON.stringify(input));
   }
   consumeChange(bindingId:string):boolean {
@@ -53,17 +55,17 @@ export class WorkExecutionMetricsStore {
   project(taskId:string,snapshot:DurableBotSnapshot):void {
     const owner=this.owner(taskId); if(!owner || String(snapshot.conversationId)!==owner.conversation_id)return;
     const calls=(this.db.prepare('SELECT value_json FROM work_execution_usage WHERE binding_id=?').all(owner.binding_id) as {value_json:string}[])
-      .map(row=>JSON.parse(row.value_json) as {reported:boolean;usagePresence?:UsagePresence;usageEvidence?:UsageEvidence;inputTokens?:number|null;outputTokens?:number|null;cacheReadTokens?:number|null;cacheWriteTokens?:number|null;totalInputTokens?:number|null});
+      .map(row=>JSON.parse(row.value_json) as {conversationId:string;reported:boolean;usagePresence?:UsagePresence;usageEvidence?:UsageEvidence;inputTokens?:number|null;outputTokens?:number|null;cacheReadTokens?:number|null;cacheWriteTokens?:number|null;totalInputTokens?:number|null});
     const usable=(key:'inputTokens'|'outputTokens'|'cacheReadTokens'|'cacheWriteTokens'|'totalInputTokens')=>calls.length>0 && calls.every(call=>call.reported && call.usagePresence?.[key.replace('Tokens','') as keyof UsagePresence]===true && Number.isFinite(call[key]) && call[key]!>=0);
     const sum=(key:'inputTokens'|'outputTokens'|'cacheReadTokens'|'cacheWriteTokens'|'totalInputTokens')=>usable(key)?calls.reduce((n,call)=>n+call[key]!,0):null;
     const replies=snapshot.messages.filter(row=>row.role==='assistant');
-    for(const reply of replies) if(reply.generationStats) this.db.prepare('INSERT OR REPLACE INTO work_execution_timings VALUES(?,?,?)').run(owner.binding_id,reply.id,JSON.stringify(reply.generationStats));
+    for(const reply of replies) if(reply.generationStats?.phase==='complete') this.db.prepare('INSERT OR REPLACE INTO work_execution_timings VALUES(?,?,?)').run(owner.binding_id,reply.id,JSON.stringify(reply.generationStats));
     const last=replies.at(-1);
-    const timings=(this.db.prepare('SELECT value_json FROM work_execution_timings WHERE binding_id=?').all(owner.binding_id) as {value_json:string}[]).map(row=>JSON.parse(row.value_json) as NonNullable<WorkExecutionMetrics['generation']>).sort((a,b)=>a.startedAt-b.startedAt);
+    const timings=(this.db.prepare('SELECT value_json FROM work_execution_timings WHERE binding_id=?').all(owner.binding_id) as {value_json:string}[]).map(row=>JSON.parse(row.value_json) as NonNullable<WorkExecutionMetrics['generation']>).filter(timing=>timing.phase==='complete').sort((a,b)=>a.startedAt-b.startedAt);
     let generation=last?.generationStats;
-    if(timings.length && timings.every(timing=>timing?.phase==='complete')) {
+    if(!snapshot.busy && timings.length && timings.every(timing=>timing?.phase==='complete')) {
       const settled=timings.map(timing=>timing!);
-      const measured=settled.every(timing=>timing.outputTokens!=null && (timing.outputTokens===0 || (timing.tps!=null && timing.tps>0)));
+      const measured=settled.length===calls.filter(call=>call.conversationId===owner.conversation_id).length && settled.every(timing=>timing.outputTokens!=null && (timing.outputTokens===0 || (timing.tps!=null && timing.tps>0)));
       const outputs=settled.every(timing=>timing.outputTokens!=null)?settled.reduce((n,t)=>n+t.outputTokens!,0):null;
       const seconds=measured?settled.reduce((n,t)=>n+(t.outputTokens?t.outputTokens/t.tps!:0),0):0;
       generation={...generation!,startedAt:settled[0].startedAt,ttftMs:settled[0].ttftMs,outputTokens:outputs,tps:measured&&seconds>0&&outputs!=null?outputs/seconds:null};

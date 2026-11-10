@@ -19,6 +19,8 @@ assert.equal(store.read('b'),undefined);assert.equal(store.read('shared'),undefi
 store.usage('a',{...call,conversationId:'child',inputTokens:50});store.project('a',snapshot);
 assert.equal(store.read('a')?.inputTokens,150,'child identity separate even same generation id');
 const windowed={...snapshot,messages:[{...snapshot.messages[0],id:'r2',generationStats:{...timing,startedAt:1001,outputTokens:60,tps:20}}]} as DurableBotSnapshot;
+store.usage('a',{...call,generationTaskId:2,responseTimestamp:12,outputTokens:60});
+store.project('a',{...snapshot,messages:[{...snapshot.messages[0],id:'stream-placeholder',generationStats:{...timing,phase:'generating',outputTokens:null}}]} as unknown as DurableBotSnapshot);
 store.project('a',windowed);assert.equal(store.read('a')?.generation?.outputTokens,80,'older timings survive history window');
 assert(Math.abs(store.read('a')!.generation!.tps!-80/3.5)<0.0001);
 store.usage('b',{...call,usagePresence:{input:true,output:true,cacheRead:false,cacheWrite:false}});store.project('b',{...snapshot,conversationId:'b'});
@@ -27,8 +29,9 @@ store.usage('a',{...call,responseTimestamp:11,reported:false});store.project('a'
 assert.equal(store.read('a')?.inputTokens,null,'retry preserves missing prior usage');assert.equal(store.read('a')?.complete,false);
 store.usage('b',{...call,inputTokens:0,outputTokens:0,cacheReadTokens:0,cacheWriteTokens:0});store.project('b',{...snapshot,conversationId:'b'});
 assert.equal(store.read('b')?.inputTokens,null,'SDK default zero is not a reported free request');
-assert.equal(new WorkExecutionMetricsStore(db).read('a')?.calls,3,'persistent across store reopen');
+assert.equal(new WorkExecutionMetricsStore(db).read('a')?.calls,4,'persistent across store reopen');
 assert.equal(store.read('historical'),undefined,'old unmeasured Work never zero');
 store.usage('b',{...call,usagePresence:{input:false,output:true,cacheRead:true,cacheWrite:false,totalInput:true},usageEvidence:{inputTokens:null,outputTokens:20,cacheReadTokens:90,cacheWriteTokens:null,totalInputTokens:100,observed:true}});store.project('b',{...snapshot,conversationId:'b'});
 assert.equal(store.read('b')?.inputTokens,null);assert.equal(store.read('b')?.cacheWriteTokens,null);assert.equal(store.read('b')?.totalInputTokens,100);assert.equal(store.read('b')?.cacheReadTokens,90,'raw evidence overrides normalized defaults');
+store.usage('b',{...call,usagePresence:undefined});store.project('b',{...snapshot,conversationId:'b'});assert.equal(store.read('b')?.cacheReadTokens,90,'replay without HTTP cannot erase prior raw evidence');
 db.close();console.log('PASS Work execution metrics: native calls, dedup, children, independent retries, history, missing, weighted speed');
