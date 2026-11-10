@@ -34,3 +34,5 @@ Bot 用 `reminder_manage` 保存语义明确的提醒；相对秒数由宿主以
 - 两次非故障全门禁 413 passed / 0 failed / 0 known / 0 regression；类型检查通过。最终 rebase 后复验见提交记录。
 - 证据在本机 `out/diagnostics/bot-reminders/live/` 与 `out/diagnostics/bot-reminders/ui/`，非源码，不提交含完整测试对话的原始记录。
 - 窄屏 Bot 对话无页面横向溢出；既有自动化管理页在390px且侧栏展开时仍不适合窄屏使用，本轮不声称移动管理布局已验收通过。1280px管理/编辑验收通过。
+
+最终发布前实现基线 `aecb6db`（在 `f53119f` 上 rebase，无冲突）：类型检查通过；同一非故障入口再次 **413 / 0 / 0 / 0，3.7分钟**。`688d2ca` 为提醒实现，`aecb6db` 为管理编辑精度与UI回归。本机隔离验收进程均正常结束，未重启生产 MyBuddy 或修改生产数据。
