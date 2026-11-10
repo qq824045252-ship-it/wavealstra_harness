@@ -7,7 +7,10 @@ const net = require('node:net');
 const http = require('node:http');
 const cp = require('node:child_process');
 const root = path.resolve(__dirname, '..');
-const teamScenario = process.argv.includes('--team');
+const teamTransientFailure = process.argv.includes('--team-transient-failure');
+const teamTransportFailure = process.argv.includes('--team-transport-failure') || teamTransientFailure;
+const teamFailureScenario = process.argv.includes('--team-failure') || teamTransportFailure;
+const teamScenario = process.argv.includes('--team') || teamFailureScenario;
 const cacheScenario = process.argv.includes('--cache');
 const memoryScenario = process.argv.includes('--memory');
 const windows = process.platform === 'win32';
@@ -16,7 +19,7 @@ const modelKey = `fixture/${selectedModel}`;
 const headless = process.env.BOT_WORK_DEV_HEADLESS === '1';
 const watchScenario = process.argv.includes('--watch');
 if (headless && process.platform !== 'linux') throw Error('Headless dev page validation requires Linux; it does not validate desktop input.');
-const out = path.join(root, teamScenario ? 'out/diagnostics/bot-team-frontdoor/live' : cacheScenario ? 'out/diagnostics/bot-cache/live' : memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
+const out = path.join(root, teamTransientFailure ? 'out/diagnostics/bot-team-transient-failure/live' : teamTransportFailure ? 'out/diagnostics/bot-team-transport-failure/live' : teamFailureScenario ? 'out/diagnostics/bot-team-failure/live' : teamScenario ? 'out/diagnostics/bot-team-frontdoor/live' : cacheScenario ? 'out/diagnostics/bot-cache/live' : memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-frontdoor-live-'));
 const agentDir = path.join(home, '.mybuddy'); fs.mkdirSync(agentDir, { recursive: true });
 for (const directory of ['AppData/Roaming', 'AppData/Local', 'Temp']) fs.mkdirSync(path.join(home, directory), { recursive: true });
@@ -95,9 +98,13 @@ async function evaluate(expression) {
 const provider = http.createServer(async (req,res) => {
   try {
     let raw=''; for await(const chunk of req) raw+=chunk;
-    requests.push(JSON.parse(raw));
+    const body = JSON.parse(raw); requests.push(body);
+    if (teamTransportFailure && body.model === 'controlled-unavailable' && (!teamTransientFailure || requests.filter(r=>r.model==='controlled-unavailable').length<=4)) {
+      res.writeHead(503, {'content-type':'application/json'});
+      res.end(JSON.stringify({error:{message:'Controlled ordinary unavailable provider; no execution or process crash',type:'service_unavailable'}})); return;
+    }
     const response=await fetch((process.env.BOT_FRONTDOOR_BASE_URL || 'http://127.0.0.1:3425/v1')+'/chat/completions', {
-      method:'POST',headers:{'content-type':'application/json'},body:raw});
+      method:'POST',headers:{'content-type':'application/json'},body:teamTransientFailure&&body.model==='controlled-unavailable'?JSON.stringify({...body,model:selectedModel}):raw});
     res.writeHead(response.status,{'content-type':response.headers.get('content-type')||'text/event-stream'});
     for await(const chunk of response.body) res.write(chunk);
     res.end();
@@ -117,8 +124,8 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     await new Promise(resolve=>provider.listen(0,"127.0.0.1",resolve));
     const model = { id: selectedModel, name: 'Frontdoor live verification', reasoning: false, input: ['text'], contextWindow: 128000, maxTokens: 4096,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
-    fs.writeFileSync(path.join(agentDir, 'models.json'), JSON.stringify({ providers: { fixture: { api: 'openai-completions', apiKey: 'fixture-only', baseUrl: `http://127.0.0.1:${provider.address().port}/v1`, models: [model] } } }));
-    fs.writeFileSync(path.join(agentDir, 'settings.json'), JSON.stringify({ defaultProvider: 'fixture', defaultModel: selectedModel, enabledModels: [modelKey],
+    fs.writeFileSync(path.join(agentDir, 'models.json'), JSON.stringify({ providers: { fixture: { api: 'openai-completions', apiKey: 'fixture-only', baseUrl: `http://127.0.0.1:${provider.address().port}/v1`, models: [model, ...(teamTransportFailure?[{...model,id:'controlled-unavailable',name:'Controlled unavailable member'}]:[])] } } }));
+    fs.writeFileSync(path.join(agentDir, 'settings.json'), JSON.stringify({ defaultProvider: 'fixture', defaultModel: selectedModel, enabledModels: [modelKey, ...(teamTransportFailure?['fixture/controlled-unavailable']:[])],
       memoryEnabled: memoryScenario, memoryGatewayEnabled: false, remoteAccessEnabled: false, closeToTray: false, theme: 'light', permissionMode: 'readonly' }));
     const launch = async () => {
     const port = await freePort();
@@ -159,38 +166,72 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     await until(() => evaluate('window.api.botWork.hostStatus().then(value => value.isAuthority)'), 'authoritative Bot host');
     const botId = 'bot-mybuddy-default';
     const history = () => evaluate(`window.api.botWork.history({botId:'${botId}'})`);
-    const foregroundDone = async before => until(async () => (await history()).messages.filter(m => m.role==='assistant' && m.status==='completed').length > before, 'foreground completed');
+    const foregroundDone = async _before => {
+      const requestId=(await history()).messages.filter(m=>m.role==='user').at(-1)?.requestId;
+      assert(requestId, 'accepted user request identity');
+      await until(async () => (await history()).messages.some(m=>m.role==='assistant'&&m.requestId===requestId&&m.status==='completed'), 'matching foreground request completed');
+    };
     if (teamScenario) {
       const workspace = path.join(home, 'team-workspace'); fs.mkdirSync(workspace);
       fs.writeFileSync(path.join(workspace, 'alpha.txt'), 'ALPHA-31415\n');
-      fs.writeFileSync(path.join(workspace, 'beta.txt'), 'BETA-27182\n');
+      if (!teamFailureScenario || teamTransientFailure) fs.writeFileSync(path.join(workspace, 'beta.txt'), 'BETA-27182\n');
       const members = [];
-      for (const label of ['甲读取员','乙读取员']) {
+      for (const label of (teamFailureScenario ? ['甲读取员','乙读取员','依赖核对员'] : ['甲读取员','乙读取员'])) {
         const created = await evaluate(`window.api.botWork.createBot({requestId:crypto.randomUUID(),displayName:${JSON.stringify(label)},responsibilitySummary:'按团队分工读取指定文件并报告原文'})`);
         assert(created.ok, JSON.stringify(created)); members.push(created.bot.botId);
       }
       const settings = (await evaluate(`window.api.botWork.getSettings('${botId}')`)).settings;
       const saved = await evaluate(`window.api.botWork.saveSettings(${JSON.stringify({botId,expectedRevision:settings.revision,workspacePath:workspace,modelId:modelKey,expertId:'',skillIds:[],mcpIds:[],connectorIds:[]})})`);
       assert(saved.ok, JSON.stringify(saved));
-      const template = await evaluate(`window.api.botWork.teamControl(${JSON.stringify({kind:'save_template',request:{operationId:'live-template',name:'文件双人核对',plan:{ownerBotId:botId,ownerResponsibility:'汇总两位成员各自读到的文件原文，清楚标明文件名，不推算内容',executionPolicy:'parallel',maxConcurrency:2,members:members.map((id,index)=>({botId:id,responsibility:`使用真实 read 工具读取 ${path.join(workspace,index===0?'alpha.txt':'beta.txt')}，只报告该文件原文，不写盘`,delegatedScope:['workspace:read']}))}}})})`);
+      if (teamTransportFailure) {
+        const memberSettings=(await evaluate(`window.api.botWork.getSettings('${members[1]}')`)).settings;
+        const unavailable=await evaluate(`window.api.botWork.saveSettings(${JSON.stringify({botId:members[1],expectedRevision:memberSettings.revision,workspacePath:workspace,modelId:'fixture/controlled-unavailable',expertId:'',skillIds:[],mcpIds:[],connectorIds:[]})})`);
+        assert(unavailable.ok,JSON.stringify(unavailable));
+      }
+      const template = await evaluate(`window.api.botWork.teamControl(${JSON.stringify({kind:'save_template',request:{operationId:'live-template',name:'文件双人核对',plan:{ownerBotId:botId,ownerResponsibility:'汇总两位成员各自读到的文件原文，清楚标明文件名，不推算内容',executionPolicy:'parallel',maxConcurrency:2,members:members.map((id,index)=>({botId:id,responsibility:index===2?'仅核对乙读取员的真实 beta.txt 结果，若前置失败或缺失就如实说明无法核对，不推算、不造文件、不写盘':`使用真实 read 工具读取 ${path.join(workspace,index===0?'alpha.txt':'beta.txt')}，只报告该文件原文；不存在必须报告失败，不替代、不创建文件、不写盘`,delegatedScope:['workspace:read'],...(index===2?{dependsOnBotIds:[members[1]]}:{})}))}}})})`);
       assert(template.ok, JSON.stringify(template));
-      await send('请使用已保存的“文件双人核对”团队，现在并行读取 alpha.txt、beta.txt，分别报告真实文件内容并汇总。不要创建普通独立 Work，不需要再次确认，不能猜测文件内容。');
+      await send('请使用已保存的“文件双人核对”团队，现在读取 alpha.txt、beta.txt，分别报告真实文件内容并汇总。不存在的文件必须标明失败，不能替代或创建；依赖缺失文件的分工说明无法完成。不要创建普通独立 Work，不需要再次确认，不能猜测文件内容。');
       await foregroundDone(0);
       await until(async () => {
         const works=await evaluate('window.api.botWork.listWorks(true)');
-        return works.length===1 && works[0].team?.executions.every(e=>['completed','recovered'].includes(e.status));
+        return works.length===1 && works[0].team?.executions.every(e=>['completed','recovered','failed','stopped','blocked'].includes(e.status)) && works[0].team.executions.some(e=>e.role==='owner_summary'&&['completed','recovered'].includes(e.status));
       }, 'real model team members and owner summary complete');
       report.works=await evaluate('window.api.botWork.listWorks(true)');
       report.history=await history();
       const team=report.works[0].team;
-      assert.equal(team.executions.length,3);
+      assert.equal(team.executions.length,teamFailureScenario?4:3);
       assert.equal(team.executions.filter(e=>e.role==='owner_summary').length,1);
       const summary=team.executions.find(e=>e.role==='owner_summary').resultSummary;
-      assert(summary.includes('ALPHA-31415')&&summary.includes('BETA-27182'), summary);
-      await until(()=>evaluate(`document.querySelector('.bot-thread').textContent.includes('ALPHA-31415') && document.querySelector('.bot-thread').textContent.includes('BETA-27182')`),'team results visibly returned to original Bot conversation');
+      assert(summary.includes('ALPHA-31415')&&(teamFailureScenario && !teamTransientFailure ? /不存在|缺失|失败|未找到/.test(summary) && !summary.includes('BETA-27182') : summary.includes('BETA-27182')), summary);
+      await until(()=>evaluate(`document.querySelector('.bot-thread').textContent.includes('ALPHA-31415') && document.querySelector('.bot-thread').textContent.includes(${JSON.stringify(teamFailureScenario?'beta.txt':'BETA-27182')})`),'team results visibly returned to original Bot conversation');
       assert(requests.some(r=>r.messages?.some(m=>m.tool_calls?.some(c=>c.function?.name==='work_team_create'))));
-      report.checks.push('real Bot composer -> real online model template selection -> two durable team members -> owner summary -> original conversation');
-      report.checks.push('exact file values verified, one Work, three executions, no fabricated tool results');
+      report.checks.push('real Bot composer -> real online model template selection -> durable team members -> owner summary -> original conversation');
+      report.checks.push(teamTransportFailure&&!teamTransientFailure?'one successful read, one controlled provider failure, dependent scope accounted for, truthful owner summary':teamFailureScenario&&!teamTransientFailure?'one successful read, one real missing-file failure, dependent scope accounted for, truthful owner summary':`exact file values verified, one Work, ${team.executions.length} team executions, no fabricated tool results`);
+      assert.equal(report.works[0].executions.filter(e=>e.taskId===team.executions[0].taskId).length,1,'successful member is never redispatched by sibling recovery');
+      if (teamTransportFailure && !teamTransientFailure) {
+        assert(team.executions.some(e=>e.role==='member'&&['failed','stopped','blocked'].includes(e.status)), 'provider unavailable must remain explicitly failed');
+        assert(!JSON.stringify(report.works).includes('历史协作资料已离开'), 'same-task recovery must retain its collaboration sources');
+        assert(team.executions.some(e=>e.notStartedReason), 'dependent member must have an explicit unstarted reason');
+        report.checks.push('controlled member HTTP 503 exhausts bounded recovery; dependent member marked not started; owner still summarizes real success and failure');
+      }
+      if (teamTransientFailure) {
+        assert(team.executions.some(e=>e.status==='recovered'), 'failed member recovers in its original task');
+        assert(team.executions.every(e=>['completed','recovered'].includes(e.status)), 'dependency and owner complete after recovery');
+        assert(!JSON.stringify(report.works).includes('历史协作资料已离开'));
+        report.checks.push('transient 503 followed by real provider recovery, original member recovered, dependent member and owner finish');
+      }
+      if (teamFailureScenario) {
+        if (!teamTransientFailure) assert(!fs.existsSync(path.join(workspace,'beta.txt')), 'missing input must not be fabricated');
+        const before=(await history()).messages.filter(m=>m.role==='assistant'&&m.status==='completed').length;
+        await send('现在只回答普通问题：19乘以23是多少？不需要团队或后台任务。');
+        await foregroundDone(before);
+        const messages=(await history()).messages;
+        const requestId=messages.filter(m=>m.role==='user').at(-1).requestId;
+        assert(messages.find(m=>m.role==='assistant'&&m.requestId===requestId).text.includes('437'));
+        await until(()=>evaluate("document.querySelector('.bot-thread').textContent.includes('437')"),'ordinary answer rendered after background results');
+        assert.equal((await evaluate('window.api.botWork.listWorks(true)')).length,1,'ordinary response after failure must not create another Work');
+        report.checks.push('ordinary frontend conversation still responds 437 after failed team member, no extra Work');
+      }
     } else if (cacheScenario) {
       const csv=['id,region,units,price',...Array.from({length:1200},(_,i)=>`${i+1},${['east','west','north'][i%3]},${i%9+1},${10+i%7}`)].join('\n');
       const prompts=[

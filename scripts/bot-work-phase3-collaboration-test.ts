@@ -79,6 +79,19 @@ try {
   assert.throws(() => collaborationContext.validate("collaborator-root", witness), /授权范围/);
   assert.deepEqual(collaborationContext.sources("collaborator-root"), []);
   works.transaction(() => works.repo.updateBinding(savedBinding));
+  const resumed = { ...savedBinding, bindingId: "same-task-recovery", operationId: "recovery-op", admittedAt: savedBinding.admittedAt + 1 };
+  works.transaction(() => works.repo.insertBinding(resumed));
+  collaborationContext.validate("collaborator-root", witness);
+  assert.equal(collaborationContext.sources("collaborator-root")[0]!.access?.kind, "work-collaboration");
+  for (const patch of [{ botId: "uninvolved" }, { workspaceBinding: root + "-other" }, { durableStoreKey: "foreign-store" },
+    { conversationId: "foreign-conversation" }, { intentRevision: savedBinding.intentRevision + 1 }]) {
+    works.transaction(() => {
+      db.connection.prepare("DELETE FROM work_execution_bindings WHERE binding_id=?").run(resumed.bindingId);
+      works.repo.insertBinding({ ...resumed, ...patch });
+    });
+    assert.throws(() => collaborationContext.validate("collaborator-root", witness), /授权范围/);
+  }
+  works.transaction(() => db.connection.prepare("DELETE FROM work_execution_bindings WHERE binding_id=?").run(resumed.bindingId));
   const memory = new MemoryService(db, { semantic: false });
   const own = memory.create({ kind: "fact", title: "collaborator own private", content: "worker-own-memory", scopeType: "bot", scopeId: "collaborator", sourceType: "user" });
   const other = memory.create({ kind: "fact", title: "owner private", content: "owner-style-detail", scopeType: "bot", scopeId: DEFAULT_BOT_ID, sourceType: "user" });

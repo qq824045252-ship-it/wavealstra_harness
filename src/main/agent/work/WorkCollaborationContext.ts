@@ -23,8 +23,16 @@ export class WorkCollaborationContext {
   validate(taskId: string, access: Extract<EvidenceAccess, { kind: "work-collaboration" }>): void {
     const binding = this.works.repo.bindingForTask(taskId);
     const work = binding && this.works.getWork(binding.workId);
-    if (!binding || !work || binding.bindingId !== access.bindingId || binding.botId !== access.botId
-      || binding.workId !== access.workId || !this.works.collaboration.isDelegationAdopted(binding, work))
+    // Recovery keeps the native task/history but admits a new execution binding.
+    // The old source is still valid for that same producer and same input, not for
+    // another task, another workspace or a superseded/revoked delegation.
+    const source = this.works.repo.getBinding(access.bindingId);
+    if (!binding || !work || !source || source.taskId !== taskId || source.botId !== access.botId
+      || source.workId !== access.workId || binding.botId !== access.botId || binding.workId !== access.workId
+      || source.durableStoreKey !== binding.durableStoreKey || source.conversationId !== binding.conversationId
+      || source.workspaceBinding !== binding.workspaceBinding
+      || !this.works.collaboration.isDelegationAdopted(source, work)
+      || !this.works.collaboration.isDelegationAdopted(binding, work))
       throw new Error("历史协作资料已离开当前执行的授权范围");
     const visible = new Set(this.works.collaboration.list({ kind: "worker", botId: binding.botId, bindingId: binding.bindingId }, work.workId)
       .map(message => message.messageId));
