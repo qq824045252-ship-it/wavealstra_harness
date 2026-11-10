@@ -24,6 +24,11 @@ exports.run=async({send,foregroundDone,until,evaluate,history,rpc,report,out,hom
   const web=c.name!=='网页资料核查'||observations.some(o=>o.source?.includes('example.com')&&o.text.includes('Example Domain'));
   return source&&extra&&web ? observations : undefined;
  };
+ // Initialize the isolated profile's existing resolver/proxy projection before any real fetch.
+   const existingPath=process.env.BOT_WEB_EXISTING_PROXY_CONFIG;
+   if(existingPath){const {parse,stringify}=require('yaml'),e=parse(fs.readFileSync(existingPath,'utf8'));
+    const compatible={tun:{enable:e.tun?.enable},dns:{enable:e.dns?.enable,'enhanced-mode':e.dns?.['enhanced-mode'],'fake-ip-range':e.dns?.['fake-ip-range'],nameserver:e.dns?.nameserver},'mixed-port':e['mixed-port'],'allow-lan':e['allow-lan'],authentication:e.authentication?.length?['unsupported-authentication']:[],'bind-address':e['bind-address']};
+    const dest=path.join(home,'.local/share/com.follow.clash/config.yaml');fs.mkdirSync(path.dirname(dest),{recursive:true});fs.writeFileSync(dest,stringify(compatible));report.existingProxyConfigurationCopied=true;}
  for(let index=0;index<cases.length;index++){
   const c=cases[index],target=path.join(workspace,c.file),brief=path.join(workspace,`brief-${index}.txt`);
   if(process.env.BOT_WATCH_SOURCES_READY==='1')fs.writeFileSync(target,c.content);
@@ -39,12 +44,6 @@ exports.run=async({send,foregroundDone,until,evaluate,history,rpc,report,out,hom
   // Real source publication after the first observation, not a mocked tool/model response.
   await until(async()=>{w=await details(id);return executions(id).some(e=>['completed','failed'].includes(e.status));},'initial unpublished source observation '+c.name);
   fs.writeFileSync(target,c.content);
-  if(c.name==='网页资料核查'){
-   const existingPath=process.env.BOT_WEB_EXISTING_PROXY_CONFIG;
-   if(existingPath){const {parse,stringify}=require('yaml'),e=parse(fs.readFileSync(existingPath,'utf8'));
-    const compatible={tun:{enable:e.tun?.enable},dns:{enable:e.dns?.enable,'enhanced-mode':e.dns?.['enhanced-mode'],'fake-ip-range':e.dns?.['fake-ip-range'],nameserver:e.dns?.nameserver},'mixed-port':e['mixed-port'],'allow-lan':e['allow-lan'],authentication:e.authentication?.length?['unsupported-authentication']:[],'bind-address':e['bind-address']};
-    const dest=path.join(home,'.local/share/com.follow.clash/config.yaml');fs.mkdirSync(path.dirname(dest),{recursive:true});fs.writeFileSync(dest,stringify(compatible));report.existingProxyConfigurationCopied=true;}
-  }
   await until(async()=>{
    w=await details(id);report.latestWork=w;
    const h=await history();report.history=h;

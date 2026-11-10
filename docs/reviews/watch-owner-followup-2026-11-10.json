@@ -1,0 +1,188 @@
+{
+  "testedCommit": "f9a4536",
+  "model": "opendesign/deepseek-v4.1-flash-eco",
+  "mode": "actual Electron renderer/CDP and real model/tools; not physical keyboard/mouse",
+  "sourcesInitiallyReady": true,
+  "status": "passed",
+  "gate": {
+    "passed": 412,
+    "failed": 0,
+    "deferredFaultRecovery": 20
+  },
+  "scenarios": [
+    {
+      "name": "发布状态",
+      "workId": "work-c2c00f45-bc5f-40fe-b01e-9b723f726c58",
+      "executionId": "binding-96bb2eba-cd84-489e-9daf-2ea525458db5",
+      "expected": "RELEASE_279552b4=READY",
+      "autonomousSupplement": false,
+      "paused": true,
+      "reply": "【补查-发布状态-279552b4】\n本轮索引文件可读，其原文明确指向 release.txt；实际读取到「RELEASE_279552b4=READY」，说明当前发布状态为就绪（READY），尚未取得“已发布”标记，且目标资料文件完整可读。局限是上级目录未能列出，无法排除其他位置另有发布记录，但本目标文件本身没有缺口。用户“暂停”条件尚未出现，持续委托按已保存的每分钟 UTC 周期继续，下一轮再核对原文是否变化。\n\n",
+      "evidence": [
+        {
+          "resultId": "binding-96bb2eba-cd84-489e-9daf-2ea525458db5:call_00_2gdwm5ffzri6yhi84vfetedj",
+          "source": "<isolated-profile>/supplement-source/brief-0.txt",
+          "text": "待核查资料路径：<isolated-profile>/supplement-source/release.txt。本线索文件没有具体结果，必须读取目标资料才能回答。\n",
+          "sha256": "665eac3c86286781e317e9ba38546bb3d83a47abbbed014cebecea04c5935082"
+        },
+        {
+          "resultId": "binding-96bb2eba-cd84-489e-9daf-2ea525458db5:call_01_vwyarif6bv1yttg7sio5n7u4",
+          "source": "<isolated-profile>/supplement-source/release.txt",
+          "text": "RELEASE_279552b4=READY\n",
+          "sha256": "d27a4f295b1f67b56df37bb85e7ffb605ab9025543ef2bb1634f947c6d8aea20"
+        }
+      ]
+    },
+    {
+      "name": "库存汇总",
+      "workId": "work-cd7d17b8-99ee-4927-8759-e57cc1aabcb6",
+      "executionId": "binding-9442425c-4e9f-4fc1-9c6d-f3cf2d01eae9",
+      "expected": "46",
+      "autonomousSupplement": false,
+      "paused": true,
+      "reply": "【补查-库存汇总-279552b4】\n本轮已按索引读取 `brief-1.txt`，其原文指向 `<isolated-profile>/supplement-source/stock.csv`；该文件全文为 `sku,quantity`、`A,17`、`B,29`，据此库存数量合计为 46，文件共 3 行且无截断。未发现需要同轮补查的缺失项。持续委托仍有效，将按 UTC 每分钟整点继续；用户尚未暂停或取消，因此本轮不提前结束。\n\n",
+      "evidence": [
+        {
+          "resultId": "binding-9442425c-4e9f-4fc1-9c6d-f3cf2d01eae9:call_00_4ymlfphd84grod155jinzhf6",
+          "source": "<isolated-profile>/supplement-source/brief-1.txt",
+          "text": "待核查资料路径：<isolated-profile>/supplement-source/stock.csv。本线索文件没有具体结果，必须读取目标资料才能回答。\n",
+          "sha256": "581a6c88dcb60369adff3f4c6a60a15a18a5872fbe815a064244614dcfd79672"
+        },
+        {
+          "resultId": "binding-9442425c-4e9f-4fc1-9c6d-f3cf2d01eae9:call_00_vijhndhy6zvj13hcwfma3x98",
+          "source": "<isolated-profile>/supplement-source/stock.csv",
+          "text": "sku,quantity\nA,17\nB,29\n",
+          "sha256": "6030c02572899a888cc814b630c022f13787cd2bc36c9d5766781863ae9f153a"
+        },
+        {
+          "resultId": "binding-9442425c-4e9f-4fc1-9c6d-f3cf2d01eae9:call_01_0jvxtn6ysykwn3fjifbt1mfm",
+          "source": "<isolated-profile>/supplement-source/release.txt",
+          "text": "RELEASE_279552b4=READY\n",
+          "sha256": "d27a4f295b1f67b56df37bb85e7ffb605ab9025543ef2bb1634f947c6d8aea20"
+        },
+        {
+          "resultId": "binding-9442425c-4e9f-4fc1-9c6d-f3cf2d01eae9:call_02_25lpzs09gm7u637sjf8l77jb",
+          "source": "<isolated-profile>/supplement-source/brief-0.txt",
+          "text": "待核查资料路径：<isolated-profile>/supplement-source/release.txt。本线索文件没有具体结果，必须读取目标资料才能回答。\n",
+          "sha256": "665eac3c86286781e317e9ba38546bb3d83a47abbbed014cebecea04c5935082"
+        }
+      ]
+    },
+    {
+      "name": "日志排障",
+      "workId": "work-33963a65-20e0-483f-ae3c-6fa033d3f5d7",
+      "executionId": "binding-6303ffa5-98c9-4e7e-8ebd-b46bd4fb16ba",
+      "expected": "E742",
+      "autonomousSupplement": true,
+      "paused": true,
+      "reply": "【补查-日志排障-279552b4】\n本轮已实际读取到 `brief-2.txt` 指向 `app.log`，并完整读取该日志（3 行、59 字节，无截断）；其中唯一错误为 `ERROR E742 database offline`，即错误代码 E742，原因为“数据库不可用”，随后只记录 `retry queued`。该日志未含时间戳、堆栈或数据库地址等扩展信息，这些内容并非本轮漏读。委托没有可观察的自动结束条件，仍按已保存的 UTC 每分钟周期继续；本轮无需补查。\n\n",
+      "evidence": [
+        {
+          "resultId": "binding-6303ffa5-98c9-4e7e-8ebd-b46bd4fb16ba:call_00_v1ltwu4uyieuw8ovkha3if0h",
+          "source": "<isolated-profile>/supplement-source/brief-2.txt",
+          "text": "待核查资料路径：<isolated-profile>/supplement-source/app.log。本线索文件没有具体结果，必须读取目标资料才能回答。\n",
+          "sha256": "19c28dabb3719b882c59b5c92617c0f8071caf0e0f5c96e7a64da4c6468ee26f"
+        },
+        {
+          "resultId": "binding-6303ffa5-98c9-4e7e-8ebd-b46bd4fb16ba:call_00_nhv36dlykisjtozvwsmg6850",
+          "source": "<isolated-profile>/supplement-source/app.log",
+          "text": "INFO startup\nERROR E742 database offline\nINFO retry queued\n",
+          "sha256": "6f9a9f216a5441d9f8c1fee2a52a8f424aa8e24301a6c0f896ad78d6175c808f"
+        }
+      ]
+    },
+    {
+      "name": "配置核查",
+      "workId": "work-55312a80-6388-4a5e-ad22-a18a39470b2c",
+      "executionId": "binding-10a0f48d-bc65-4c83-a838-e9a34baa7e95",
+      "expected": "48317",
+      "autonomousSupplement": false,
+      "paused": true,
+      "reply": "【补查-配置核查-279552b4】\n本轮只读检查中，索引 brief-3.txt 仅指向 config.json；实际读取到的 config.json 原文为 {\"environment\":\"staging\",\"service\":{\"port\":48317,\"enabled\":true}}，因此 service.port 的实际值是 48317，并非推断。该文件为单行且读取完整、无截断，目录内仅一处 port 命中，无并列或冲突取值。用户未给出可观察的自动结束条件，委托按已保存的 UTC 每分钟整点周期继续，直至用户明确暂停或取消。\n\n",
+      "evidence": [
+        {
+          "resultId": "binding-10a0f48d-bc65-4c83-a838-e9a34baa7e95:call_00_7adlgwwtvemg1uxb2mk66i7o",
+          "source": "<isolated-profile>/supplement-source/brief-3.txt",
+          "text": "待核查资料路径：<isolated-profile>/supplement-source/config.json。本线索文件没有具体结果，必须读取目标资料才能回答。\n",
+          "sha256": "a63e561b771a360c4c14a7420d8ccb7ec6dc01bc56d6a59d9bd2ad69c3659038"
+        },
+        {
+          "resultId": "binding-10a0f48d-bc65-4c83-a838-e9a34baa7e95:call_01_vmoeioh5vxfpfk0p62zev033",
+          "source": "<isolated-profile>/supplement-source/config.json",
+          "text": "{\"environment\":\"staging\",\"service\":{\"port\":48317,\"enabled\":true}}",
+          "sha256": "35d59d776e6fa3adfd177db2b7086dd53587ad891fe3ea86b3f3b4f3404f4e6e"
+        },
+        {
+          "resultId": "binding-10a0f48d-bc65-4c83-a838-e9a34baa7e95:call_01_myu40jyvvmx8rgloeu1wrprb",
+          "source": "<isolated-profile>/supplement-source/brief-0.txt",
+          "text": "待核查资料路径：<isolated-profile>/supplement-source/release.txt。本线索文件没有具体结果，必须读取目标资料才能回答。\n",
+          "sha256": "665eac3c86286781e317e9ba38546bb3d83a47abbbed014cebecea04c5935082"
+        }
+      ]
+    },
+    {
+      "name": "文档对比",
+      "workId": "work-71fa0f65-a02d-46c3-8767-c2240d080888",
+      "executionId": "binding-2122c189-49a1-45c3-9720-d196bc38ec28",
+      "expected": "36",
+      "autonomousSupplement": false,
+      "paused": true,
+      "reply": "【补查-文档对比-279552b4】\n本轮 21:46 UTC 检查已读到索引及两份目标原文：A 文档为“版本A：保修12个月”，B 文档为“版本B：保修36个月”，确实呈现由 12 个月到 36 个月的变化。两份文件均为单行 25 字节并已完整读取，未见截断；原文未提供型号、生效日期等上下文，故只能按 A/B 文件名指代，但不影响期限对比。下一步按已保存的 UTC 每分钟周期继续观察，直到你明确暂停或取消；本轮完成不代表持续委托结束。\n\n",
+      "evidence": [
+        {
+          "resultId": "binding-2122c189-49a1-45c3-9720-d196bc38ec28:call_01_tysfl27m72jkkgijvelb6d3v",
+          "source": "<isolated-profile>/supplement-source/brief-4.txt",
+          "text": "待核查资料路径：<isolated-profile>/supplement-source/version-b.txt 和 <isolated-profile>/supplement-source/version-a.txt。本线索文件没有具体结果，必须读取目标资料才能回答。\n",
+          "sha256": "94dbd5e31bffeb5826a8eeec5d53653a0e5ca0117632619a9863a5543c9f0a3a"
+        },
+        {
+          "resultId": "binding-2122c189-49a1-45c3-9720-d196bc38ec28:call_01_n8nrzwhpjji9ikyhbr6p87jz",
+          "source": "<isolated-profile>/supplement-source/version-b.txt",
+          "text": "版本B：保修36个月\n",
+          "sha256": "5f4e514126677ceb80f47caf62bd167a880ccffaf3208a7883bd460adb956ddc"
+        },
+        {
+          "resultId": "binding-2122c189-49a1-45c3-9720-d196bc38ec28:call_00_racifi0p24gaethyu2br4tda",
+          "source": "<isolated-profile>/supplement-source/version-a.txt",
+          "text": "版本A：保修12个月\n",
+          "sha256": "f4a263ccb9d2b138ee27725bc7f1fdbdc28e74cb651022df0b488ead40f3849b"
+        }
+      ]
+    },
+    {
+      "name": "网页资料核查",
+      "workId": "work-abae1c13-50fd-478a-82e7-715c547a1fd6",
+      "executionId": "binding-a02d5200-0512-41da-9a11-a283c446a524",
+      "expected": "Example Domain",
+      "autonomousSupplement": false,
+      "paused": true,
+      "reply": "【补查-网页资料核查-279552b4】\n本轮已读全索引与目标文件，`web-target.txt` 实际发布的 URL 为 `https://example.com/`；直连抓取的完整 HTML 标题为 `<title>Example Domain</title>`，正文说明该域名仅用于文档示例、无需许可且“不是一项服务”，用途是占位说明页。本轮完整 HTML 显示为单段英文、正文无外链，与上一轮“多语言并列”的描述不一致，应以本轮直连原文为准。`/s.js` 脚本未读取，但不影响标题与用途结论；本轮所需信息已齐全，无需补查，将按已保存的每分钟周期继续，直至你明确暂停。\n\n",
+      "evidence": [
+        {
+          "resultId": "binding-a02d5200-0512-41da-9a11-a283c446a524:call_01_ts6s5lf6botdipxi9diqcv0d",
+          "source": "<isolated-profile>/supplement-source/brief-5.txt",
+          "text": "待核查资料路径：<isolated-profile>/supplement-source/web-target.txt。本线索文件没有具体结果，必须读取目标资料才能回答。\n",
+          "sha256": "2971da5327cd17aa18d0030c32d3eb5dbd00255c4f060e7490045633825836b6"
+        },
+        {
+          "resultId": "binding-a02d5200-0512-41da-9a11-a283c446a524:call_02_edc4numvqpw7mzz0lly12di8",
+          "source": "<isolated-profile>/supplement-source/web-target.txt",
+          "text": "https://example.com/\n",
+          "sha256": "0f75cb1cf3445432b4fd260c155db5fb67fddf77d0dc40b424c7cb3819d9650f"
+        },
+        {
+          "resultId": "binding-a02d5200-0512-41da-9a11-a283c446a524:call_00_1bymwvfgtc763wnxlfqk6ytl",
+          "source": "https://example.com/",
+          "text": "<!doctype html><html lang=en><head><meta charset=utf-8><link rel=icon href=data:,><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Example Domain</title><style>html{color-scheme:light dark;background:light-dark(#eee,#222)}body{font:16px/1.6 system-ui,sans-serif;max-width:26em;margin:auto;padding:25vh 2em 2em;text-align:center}</style></head><body><p>This domain is for use in documentation examples without needing permission. This is not a service; avoid relying on it for testing and monitoring purposes.</p><script src=/s.js></script></body></html>\n",
+          "sha256": "25ddf2c883e0d1958ea971d279a7e4f0fd446724ee3db7db19dadabd4a62e484"
+        },
+        {
+          "resultId": "binding-a02d5200-0512-41da-9a11-a283c446a524:call_01_kj7vup5sz8rsbamyo8bt16bm",
+          "source": "https://www.example.com/",
+          "text": "<!doctype html><html lang=en><head><meta charset=utf-8><link rel=icon href=data:,><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Example Domain</title><style>html{color-scheme:light dark;background:light-dark(#eee,#222)}body{font:16px/1.6 system-ui,sans-serif;max-width:26em;margin:auto;padding:25vh 2em 2em;text-align:center}</style></head><body><p>This domain is for use in documentation examples without needing permission. This is not a service; avoid relying on it for testing and monitoring purposes.</p><script src=/s.js></script></body></html>\n",
+          "sha256": "25ddf2c883e0d1958ea971d279a7e4f0fd446724ee3db7db19dadabd4a62e484"
+        }
+      ]
+    }
+  ]
+}
