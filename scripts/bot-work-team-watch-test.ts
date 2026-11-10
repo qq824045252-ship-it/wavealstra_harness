@@ -101,6 +101,11 @@ try {
   works.teams.requestImmediateWatch(changed);
   await flush(2); // one member has settled, others/owner have not started
   assert(works.teams.watchCycles.pending(changed.workId));
+  const beforeScheduleChange=works.getWork(changed.workId)!;
+  const mixed=works.amendWork(user,{workId:changed.workId,operationId:"mixed-title-cadence",versionGuard:guard(beforeScheduleChange),title:"title with changed end time",watchRule:{endsAt:Date.now()+60000}});
+  assert(!mixed.ok && mixed.code==="invalid_request");
+  assert.equal(works.getWork(changed.workId)!.intentRevision,beforeScheduleChange.intentRevision);
+  assert.equal(works.getWork(changed.workId)!.inputSnapshotId,beforeScheduleChange.inputSnapshotId);
   const change=works.amendWork(user,{workId:changed.workId,operationId:"change-team-cadence",versionGuard:guard(works.getWork(changed.workId)!),watchRule:{cronExpression:"*/2 * * * *",timezone:"UTC"}});
   assert(change.ok,JSON.stringify(change));
   await flush(2);

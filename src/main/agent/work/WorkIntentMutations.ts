@@ -102,6 +102,12 @@ export class WorkIntentMutations {
   applyAmend(work: WorkDto, resolved: ResolvedActor, params: AmendWorkParams, now: number): Mutation {
     const progressError = resolved.kind === "worker" ? checkWorkerProgress(work, params, resolved.binding) : undefined;
     if (progressError) return progressError;
+    // Rescheduling is not a new team commission. Mixing cosmetic/goal edits
+    // here would silently supersede the frozen member plan and stop later rounds.
+    if (work.mode === "watch" && this.deps.teams.get(work.workId)
+      && (params.watchRule !== undefined || params.deadlineAt !== undefined)
+      && [params.title,params.goalDescription,params.constraints,params.criteria,params.inputSnapshotId,params.goalSources,params.authorization].some(value=>value !== undefined))
+      return {ok:false,code:"invalid_request",message:"调整团队持续任务时间表时只传 watchRule/deadlineAt 和 workId/versionGuard，不要同时改标题、目标、验收或输入快照；请保留原分工重试时间字段。确需改变团队目标时另行重新规划。"};
     const nextTitle = params.title?.trim().slice(0, 240) ?? work.title;
     const nextDescription = params.goalDescription === undefined
       ? work.goalDescription

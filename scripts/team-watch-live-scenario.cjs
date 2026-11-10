@@ -1,5 +1,6 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
 exports.run=async({send,foregroundDone,until,evaluate,history,rpc,report,out,home,modelKey,botId})=>{
+ const rescheduleOnly=process.argv.includes('--team-watch-reschedule');
  const workspace=path.join(home,'team-watch-source');fs.mkdirSync(workspace);
  const seed=crypto.randomBytes(6).toString('hex'),file=path.join(workspace,'progress.txt');fs.writeFileSync(file,'ROUND_A_'+seed+'\n');
  const settings=(await evaluate(`window.api.botWork.getSettings('${botId}')`)).settings;
@@ -13,6 +14,7 @@ exports.run=async({send,foregroundDone,until,evaluate,history,rpc,report,out,hom
  const detail=()=>evaluate(`window.api.botWork.getWork(${JSON.stringify(id)})`);
  let work=await detail();assert.equal(work.mode,'watch');assert.equal(work.watchPlan.endsAt,endsAt);assert.equal(work.phase4.subscriptions.find(s=>s.source==='cron'&&s.status!=='stopped')?.cronExpression,'* * * * *','every-minute cadence remains exact');
  await until(async()=>{const h=await history();report.history=h;return h.messages.some(m=>m.workFeedback?.kind==='result'&&m.workFeedback?.category==='result'&&m.text.includes('ROUND_A_'+seed));},'team round A foreground delivery');
+ if(!rescheduleOnly) {
  fs.writeFileSync(file,'ROUND_B_'+seed+'\n');
  await until(async()=>{const h=await history();report.history=h;return h.messages.some(m=>m.workFeedback?.kind==='result'&&m.workFeedback?.category==='result'&&m.text.includes('ROUND_B_'+seed));},'team round B re-reads changed source and returns');
  work=await detail();assert.equal(work.lifecycle,'active');assert(work.executions.length>=4);report.beforePause=work;
@@ -21,14 +23,16 @@ exports.run=async({send,foregroundDone,until,evaluate,history,rpc,report,out,hom
  await new Promise(r=>setTimeout(r,65000));assert.equal((await detail()).executions.length,count,'pause no new member or owner dispatch');
  await send('恢复刚才暂停的团队持续观察，继续原来的每分钟安排和原终止时间。');await foregroundDone();
  work=await detail();assert.equal(work.lifecycle,'active','resume succeeds before expiry');
+ }
+ work=await detail();const originalIntent=work.intentRevision,originalSnapshot=work.inputSnapshotId;
  const finalEndsAt=Date.now()+60000;
  await send(`把该团队追踪终止时刻调整为 ${new Date(finalEndsAt).toISOString()}，Unix毫秒 ${finalEndsAt}，其他安排不变。`);await foregroundDone();
- assert.equal((await detail()).watchPlan.endsAt,finalEndsAt);
+ const adjusted=await detail();assert.equal(adjusted.watchPlan.endsAt,finalEndsAt);assert.equal(adjusted.intentRevision,originalIntent,'time change must not supersede team');assert.equal(adjusted.inputSnapshotId,originalSnapshot,'time change keeps original team inputs');assert.notEqual(adjusted.team.state,'superseded');
  await until(async()=>{work=await detail();report.latestWork=work;return work.lifecycle==='closed';},'team explicit expiry');
  assert.equal(work.watchPlan.termination.reason,'schedule_expired');assert.equal(work.closureConclusion,undefined);
  await until(async()=>{const h=await history();report.history=h;return h.messages.some(m=>m.workFeedback?.kind==='closure'&&m.text.includes('到期结束'));},'team expiry feedback');
  const finalCount=work.executions.length;await new Promise(r=>setTimeout(r,65000));assert.equal((await detail()).executions.length,finalCount,'expiry no later dispatch');
  report.finalWork=await detail();report.diagnostics=await evaluate(`window.api.botWork.executionDiagnostics({kind:'work',workId:${JSON.stringify(id)}})`);
  for(const width of [1280,390]){await rpc('Emulation.setDeviceMetricsOverride',{width,height:900,deviceScaleFactor:1,mobile:false});await new Promise(r=>setTimeout(r,200));assert(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'));const shot=await rpc('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,'team-watch-'+width+'.png'),Buffer.from(shot.data,'base64'));}
- report.checks.push('real natural-language team watch admission; two changed-source rounds with member + owner + foreground return; pause for 65s; resume; absolute expiry; 65s no post-expiry dispatch');
+ report.checks.push(rescheduleOnly ? 'real team first round, pure deadline amendment preserves intent/snapshot/team plan, expiry and 65s no subsequent dispatch' : 'real natural-language team watch admission; two changed-source rounds with member + owner + foreground return; pause for 65s; resume; absolute expiry; 65s no post-expiry dispatch');
 };

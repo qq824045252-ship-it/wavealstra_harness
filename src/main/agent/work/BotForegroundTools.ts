@@ -123,7 +123,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
   const mutations = (["work_create", "work_amend", "work_pause", "work_resume", "work_cancel"] as const).map(name => defineTool({
     name, description: name === "work_create"
       ? "受理长耗时、多步骤或文件/代码/桌面操作并派发后台。goalDescription、constraints、criteria 是你的规划，宿主会独立附上用户原文；忠实传达要求，计算结果和未验证假设不得写成用户约束。日常天气、新闻等实时查询直接使用前台 web_search/fetch_content，不创建 Work。用户已经提出的执行请求无需再确认创建任务。同一调用用requestedOutcome记录对用户目标的一次性/持续性理解，用mode和watchRule记录实际计划，不能省略mode后默认一次性。持续跟踪使用 mode=watch 与 watchRule.cronExpression，一次未来检查可使用nextWakeAt，不得只在文字中承诺；按用户指定频率和时区，未指定时明确区分建议安排。deadlineAt 是到期跟进，不是授权到期。创建无需先查询版本；已有相同事项则查询进度，避免重复创建。返回成功才可声称已受理或已安排；未来检查不得声称正在执行。"
-      : `${name}: 操作用户明确指定的已有事项，先查询并携带返回的 versionGuard；冲突重新查询。work_amend 可改 watchRule/期限，watchRule=null 停止后续跟踪而保留事项；work_pause/resume 暂停/恢复，work_cancel 取消整个事项。仅改时间表不会立即重跑原任务。批评、催促、抱怨不是暂停或取消意图；仅明确要求停止/取消时调用对应控制。`,
+      : `${name}: 操作用户明确指定的已有事项，先查询并携带返回的 versionGuard；冲突重新查询。work_amend 可改 watchRule/期限，watchRule=null 停止后续跟踪而保留事项；work_pause/resume 暂停/恢复，work_cancel 取消整个事项。仅改时间表不会立即重跑原任务。团队watch调整时间只传watchRule/deadlineAt及身份/版本，不要顺手改标题或目标，否则会使成员分工失效；真正改目标需另行重新规划。批评、催促、抱怨不是暂停或取消意图；仅明确要求停止/取消时调用对应控制。`,
     parameters: name === "work_create" ? inputParameters.create
       : name === "work_amend" ? inputParameters.change : inputParameters.control,
     replay: "safe",
