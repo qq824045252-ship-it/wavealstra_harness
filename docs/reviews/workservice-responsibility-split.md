@@ -89,3 +89,17 @@ completed-list visibility. Screenshot was inspected; it is not a physical-input 
   the facade for now; existing `WorkExecutionSettlement` is reused, not duplicated.
 
 Final real-model UI completion was rerun after the Intent/Dispatch extraction and passed.
+
+## Batch 6: subscription extraction after watch integration
+
+Rebased onto watch fix `827b46e`. Subscription configuration, schedule/deadline
+synchronization and Phase 4 mutations now live in `WorkSubscriptionMutations` (253
+lines), with three explicit SQL operations in `WorkSubscriptionStore` (23 lines).
+Facade remains 1,265 lines and retains identity, transactions, schema validation and
+receipt/replay handling. Eight method bodies were mechanically compared; typecheck,
+control, watch scheduler and architecture checks pass.
+
+A separate interleaved A/B configuration replay regression reproduced a pre-existing
+bug: replay of A returned B's generated subscription ID. This extraction deliberately
+preserves it; the next independent fix will persist the exact operation result rather
+than using service-wide scratch state.
