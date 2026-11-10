@@ -103,3 +103,17 @@ A separate interleaved A/B configuration replay regression reproduced a pre-exis
 bug: replay of A returned B's generated subscription ID. This extraction deliberately
 preserves it; the next independent fix will persist the exact operation result rather
 than using service-wide scratch state.
+
+## Independent fix: stable subscription identity on control replay
+
+The A/B/replay-A regression was red before the fix. Configure now stores its generated
+subscription ID inside the original operation receipt's private `_controlResult` JSON,
+atomically with the subscription and Work mutation. Reply and replay read that exact
+receipt, including after a normal database reopen; Work DTO parsing strips the internal
+metadata. There is no new table/schema or control/approval path.
+
+Legacy receipts without result metadata use an explicitly supplied ID only. An old
+receipt whose generated ID was never stored returns no ID rather than another call's
+ID; replay does not rerun the mutation or create a replacement subscription.
+Interleaving, reopen, old-receipt non-guessing and no DTO metadata leakage now pass.
+WorkService is 1,270 lines after this independent correction.

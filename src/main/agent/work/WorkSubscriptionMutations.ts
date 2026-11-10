@@ -14,7 +14,6 @@ interface SubscriptionMutationDeps {
   storage: Pick<WorkSubscriptionStore, "discardPendingSchedule" | "rearmDeadline" | "discardRejectedRoutes">;
   now: () => number;
   computeNextWake: WorkNextWake;
-  setLastSubscriptionId: (subscriptionId: string) => void;
 }
 
 /** Subscription facts use the facade's transaction; scheduling and replay semantics are unchanged. */
@@ -204,7 +203,6 @@ export class WorkSubscriptionMutations {
         createdAt: existing?.createdAt ?? now, updatedAt: now, stoppedAt: existing?.stoppedAt,
       };
       if (existing && scheduleChanged) this.discardPendingSchedule(existing.subscriptionId, now);
-      this.deps.setLastSubscriptionId(subscription.subscriptionId);
       if (existing) this.deps.repo.updateSubscription(subscription);
       else {
         this.deps.repo.insertSubscription(subscription);
@@ -218,7 +216,7 @@ export class WorkSubscriptionMutations {
         nextWakeAt: subscription.nextWakeAt ?? work.watchRule?.nextWakeAt,
         ...(timingChanged ? { scheduleBasis: undefined, scheduleRationale: undefined } : {}),
       }, stateVersion: work.stateVersion + 1, updatedAt: now });
-      return { ok: true };
+      return { ok: true, receiptMetadata: { subscriptionId: subscription.subscriptionId } };
     }
     if (input.kind === "stop-subscription") {
       const subscription = this.deps.repo.getSubscription(input.subscriptionId);

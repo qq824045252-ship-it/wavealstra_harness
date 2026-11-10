@@ -134,7 +134,6 @@ export class WorkService {
   private readonly computeNextWake: WorkNextWake;
   private readonly authority?: () => boolean;
   private readonly lastEmitted = new Map<string, number>();
-  private lastPhase4SubscriptionId?: string;
   private transactionDepth = 0;
   private readonly pendingProjections = new Set<string>();
 
@@ -879,7 +878,6 @@ export class WorkService {
       repo: this.repo, teams: this.teams, ingress: this.ingress,
       storage: new WorkSubscriptionStore(this.db), now: () => this.now(),
       computeNextWake: (...args) => this.computeNextWake(...args),
-      setLastSubscriptionId: subscriptionId => { this.lastPhase4SubscriptionId = subscriptionId; },
     });
   }
 
@@ -1009,7 +1007,14 @@ export class WorkService {
       allowLifecycles: ["active", "paused"],
     }, (work, resolved, now) => this.applyPhase4Control(work, input, resolved, now));
     if (!result.ok) return { ok: false, code: result.code, message: result.message };
-    if (input.kind === "configure-subscription") subscriptionId = this.lastPhase4SubscriptionId ?? input.subscriptionId;
+    if (input.kind === "configure-subscription") {
+      // Read the original operation's durable result, never another call's scratch state.
+      // Legacy receipts without this metadata can only identify explicitly supplied IDs.
+      const receipt = this.repo.getReceipt(result.work.userId, input.operationId);
+      let recordedId: unknown;
+      try { recordedId = receipt && JSON.parse(receipt.result_snapshot_json)._controlResult?.subscriptionId; } catch { /* historical receipt */ }
+      subscriptionId = typeof recordedId === "string" ? recordedId : input.subscriptionId;
+    }
     if (input.kind === "retry-backlog") subscriptionId = input.subscriptionId;
     return { ok: true, replayed: result.replayed, operationId: input.operationId, workId: result.work.workId,
       subscriptionId, deadlineAt: result.work.deadlineAt };
@@ -1115,7 +1120,7 @@ export class WorkService {
         operationType,
         payloadHash,
         workSnapshot: updated,
-        outboxEventId: mutation.outboxEventId,
+        outboxEventId: mutation.outboxEventId, receiptMetadata: mutation.receiptMetadata,
         now,
       });
       return { ok: true, replayed: false, operationId: params.operationId, work: updated, outboxEventId: mutation.outboxEventId };
@@ -1252,9 +1257,9 @@ export class WorkService {
 
 function parseWork(value: string): WorkDto | undefined {
   try {
-    const snapshot = JSON.parse(value) as WorkDto & { budget?: unknown; budgetPolicy?: unknown };
+    const snapshot = JSON.parse(value) as WorkDto & { budget?: unknown; budgetPolicy?: unknown; _controlResult?: unknown };
     // Historical receipts stay unchanged on disk, but replay uses today's DTO.
-    delete snapshot.budget; delete snapshot.budgetPolicy;
+    delete snapshot.budget; delete snapshot.budgetPolicy; delete snapshot._controlResult;
     if (snapshot.authorization) {
       const authorization = { ...snapshot.authorization } as WorkDto["authorization"] & { budgetLimitTokens?: unknown };
       delete authorization.budgetLimitTokens;

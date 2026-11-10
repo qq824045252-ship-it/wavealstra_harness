@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { phase4ControlRequestSchema } from "../src/shared/bot-work-phase4";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -36,6 +37,30 @@ function cron(work: WorkDto, id: string, expression: string, timezone: string, p
 }
 
 try {
+  // A receipt must return its own generated subscription, not another call's scratch state.
+  const replayA = create("replay-a"), replayB = create("replay-b");
+  const requestA = { kind: "configure-subscription", operationId: "configure-replay-a", workId: replayA.workId,
+    source: "cron", catchUpPolicy: "each", cronExpression: "0 3 * * *", timezone: "Asia/Shanghai",
+    versionGuard: guard(replayA) };
+  const resultA = works.phase4Control(user, requestA); assert(resultA.ok && resultA.subscriptionId);
+  const resultB = works.phase4Control(user, { ...requestA, operationId: "configure-replay-b", workId: replayB.workId, versionGuard: guard(replayB) });
+  assert(resultB.ok && resultB.subscriptionId && resultB.subscriptionId !== resultA.subscriptionId);
+  const replay = works.phase4Control(user, requestA); assert(replay.ok && replay.replayed);
+  assert.equal(replay.subscriptionId, resultA.subscriptionId, "interleaved replay returns its own persisted subscription ID");
+  const replayControl = works.runCardControl(user, "phase4:configure-subscription",
+    phase4ControlRequestSchema.parse(requestA), { guard: "full", ownerOnly: true, allowLifecycles: ["active", "paused"] },
+    () => { throw Error("replay must not invoke mutation"); });
+  assert(replayControl.ok && replayControl.replayed);
+  assert.equal("_controlResult" in replayControl.work, false, "internal receipt metadata never leaks into replayed Work DTO");
+  const savedReceipt = works.repo.getReceipt(LOCAL_USER_ID, requestA.operationId)!;
+  const legacySnapshot = JSON.parse(savedReceipt.result_snapshot_json); delete legacySnapshot._controlResult;
+  db.connection.prepare("UPDATE work_operation_receipts SET result_snapshot_json=? WHERE user_id=? AND operation_id=?")
+    .run(JSON.stringify(legacySnapshot), LOCAL_USER_ID, requestA.operationId);
+  const legacyReplay = works.phase4Control(user, requestA); assert(legacyReplay.ok && legacyReplay.replayed);
+  assert.equal(legacyReplay.subscriptionId, undefined, "legacy generated ID must not be guessed from another subscription");
+  db.connection.prepare("UPDATE work_operation_receipts SET result_snapshot_json=? WHERE user_id=? AND operation_id=?")
+    .run(savedReceipt.result_snapshot_json, LOCAL_USER_ID, requestA.operationId);
+
   // Spring forward: 02:30 does not exist in Los Angeles on 2026-03-08.
   const spring = create("spring");
   const springSub = cron(spring, "spring-cron", "30 2 * * *", "America/Los_Angeles");
@@ -170,6 +195,8 @@ try {
   db.close(); db = new AppDatabase(path); bots = new BotRegistry(db.connection);
   bots.registerBot({ userId: LOCAL_USER_ID, botId: DEFAULT_BOT_ID, displayName: "fixture", authorization: DESKTOP_USER_GRANTS });
   works = new WorkService(db.connection, { bots, now: () => clock.at });
+  const restartedReplay = works.phase4Control(user, requestA); assert(restartedReplay.ok && restartedReplay.replayed);
+  assert.equal(restartedReplay.subscriptionId, resultA.subscriptionId, "replay keeps generated subscription identity after restart");
   works.tick(clock.at);
   assert.equal(ticks(spring.workId).length, springTicksBefore);
   console.log("Phase 4 BW-A38 schedule: IANA spring/fall normalization, unique logical ticks, rollback/jump bounds, rule revision, deadline-only wakeup and read-only follow-up passed");

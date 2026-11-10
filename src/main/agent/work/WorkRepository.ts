@@ -606,12 +606,14 @@ export class WorkRepository {
   saveReceipt(params: {
     userId: string; operationId: string; workId?: string; operationType: string;
     payloadHash: string; workSnapshot: WorkDto; outboxEventId?: string; now: number;
+    receiptMetadata?: { subscriptionId: string };
   }): void {
     this.db.prepare(`INSERT INTO work_operation_receipts
       (user_id,operation_id,work_id,operation_type,payload_hash,result_snapshot_json,outbox_event_id,created_at)
       VALUES (?,?,?,?,?,?,?,?)`).run(
       params.userId, params.operationId, params.workId ?? null, params.operationType,
-      params.payloadHash, jsonText(params.workSnapshot), params.outboxEventId ?? null, params.now,
+      params.payloadHash, jsonText(params.receiptMetadata
+        ? { ...params.workSnapshot, _controlResult: params.receiptMetadata } : params.workSnapshot), params.outboxEventId ?? null, params.now,
     );
   }
 
