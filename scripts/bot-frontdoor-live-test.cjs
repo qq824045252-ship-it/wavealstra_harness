@@ -10,7 +10,8 @@ const root = path.resolve(__dirname, '..');
 const teamTransientFailure = process.argv.includes('--team-transient-failure');
 const teamTransportFailure = process.argv.includes('--team-transport-failure') || teamTransientFailure;
 const teamFailureScenario = process.argv.includes('--team-failure') || teamTransportFailure;
-const teamScenario = process.argv.includes('--team') || teamFailureScenario;
+const teamPlanningScenario = process.argv.includes('--team-planning');
+const teamScenario = process.argv.includes('--team') || teamFailureScenario || teamPlanningScenario;
 const cacheScenario = process.argv.includes('--cache');
 const memoryScenario = process.argv.includes('--memory');
 const windows = process.platform === 'win32';
@@ -20,7 +21,7 @@ const headless = process.env.BOT_WORK_DEV_HEADLESS === '1';
 const trackingScenario = process.argv.includes('--tracking');
 const watchScenario = process.argv.includes('--watch');
 if (headless && process.platform !== 'linux') throw Error('Headless dev page validation requires Linux; it does not validate desktop input.');
-const out = path.join(root, trackingScenario ? 'out/diagnostics/bot-tracking/live' : teamTransientFailure ? 'out/diagnostics/bot-team-transient-failure/live' : teamTransportFailure ? 'out/diagnostics/bot-team-transport-failure/live' : teamFailureScenario ? 'out/diagnostics/bot-team-failure/live' : teamScenario ? 'out/diagnostics/bot-team-frontdoor/live' : cacheScenario ? 'out/diagnostics/bot-cache/live' : memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
+const out = path.join(root, trackingScenario ? 'out/diagnostics/bot-tracking/live' : teamTransientFailure ? 'out/diagnostics/bot-team-transient-failure/live' : teamTransportFailure ? 'out/diagnostics/bot-team-transport-failure/live' : teamFailureScenario ? 'out/diagnostics/bot-team-failure/live' : teamPlanningScenario ? 'out/diagnostics/bot-team-planning/live' : teamScenario ? 'out/diagnostics/bot-team-frontdoor/live' : cacheScenario ? 'out/diagnostics/bot-cache/live' : memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-frontdoor-live-'));
 const agentDir = path.join(home, '.mybuddy'); fs.mkdirSync(agentDir, { recursive: true });
 for (const directory of ['AppData/Roaming', 'AppData/Local', 'Temp']) fs.mkdirSync(path.join(home, directory), { recursive: true });
@@ -223,9 +224,9 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
         const unavailable=await evaluate(`window.api.botWork.saveSettings(${JSON.stringify({botId:members[1],expectedRevision:memberSettings.revision,workspacePath:workspace,modelId:'fixture/controlled-unavailable',expertId:'',skillIds:[],mcpIds:[],connectorIds:[]})})`);
         assert(unavailable.ok,JSON.stringify(unavailable));
       }
-      const template = await evaluate(`window.api.botWork.teamControl(${JSON.stringify({kind:'save_template',request:{operationId:'live-template',name:'文件双人核对',plan:{ownerBotId:botId,ownerResponsibility:'汇总两位成员各自读到的文件原文，清楚标明文件名，不推算内容',executionPolicy:'parallel',maxConcurrency:2,members:members.map((id,index)=>({botId:id,responsibility:index===2?'仅核对乙读取员的真实 beta.txt 结果，若前置失败或缺失就如实说明无法核对，不推算、不造文件、不写盘':`使用真实 read 工具读取 ${path.join(workspace,index===0?'alpha.txt':'beta.txt')}，只报告该文件原文；不存在必须报告失败，不替代、不创建文件、不写盘`,delegatedScope:['workspace:read'],...(index===2?{dependsOnBotIds:[members[1]]}:{})}))}}})})`);
+      const template = await evaluate(`window.api.botWork.teamControl(${JSON.stringify({kind:'save_template',request:{operationId:'live-template',name:'文件双人核对',plan:{ownerBotId:botId,ownerResponsibility:'汇总两位成员各自读到的文件原文，清楚标明文件名，不推算内容',executionPolicy:'parallel',maxConcurrency:2,members:members.map((id,index)=>({botId:id,responsibility:teamPlanningScenario?'通用文件整理，等待本次任务分工':index===2?'仅核对乙读取员的真实 beta.txt 结果，若前置失败或缺失就如实说明无法核对，不推算、不造文件、不写盘':`使用真实 read 工具读取 ${path.join(workspace,index===0?'alpha.txt':'beta.txt')}，只报告该文件原文；不存在必须报告失败，不替代、不创建文件、不写盘`,delegatedScope:['workspace:read'],...(index===2?{dependsOnBotIds:[members[1]]}:{})}))}}})})`);
       assert(template.ok, JSON.stringify(template));
-      await send('请使用已保存的“文件双人核对”团队，现在读取 alpha.txt、beta.txt，分别报告真实文件内容并汇总。不存在的文件必须标明失败，不能替代或创建；依赖缺失文件的分工说明无法完成。不要创建普通独立 Work，不需要再次确认，不能猜测文件内容。');
+      await send((teamPlanningScenario ? '本次请重新安排分工：甲读取员读取 beta.txt，乙读取员等甲完成后读取 alpha.txt 并核对甲的 beta 原文；负责人汇总两者。本次分工不要保存覆盖模板。' : '')+'请使用已保存的“文件双人核对”团队，现在读取 alpha.txt、beta.txt，分别报告真实文件内容并汇总。不存在的文件必须标明失败，不能替代或创建；依赖缺失文件的分工说明无法完成。不要创建普通独立 Work，不需要再次确认，不能猜测文件内容。');
       await foregroundDone(0);
       await until(async () => {
         const works=await evaluate('window.api.botWork.listWorks(true)');
@@ -236,6 +237,19 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       const team=report.works[0].team;
       assert.equal(team.executions.length,teamFailureScenario?4:3);
       assert.equal(team.executions.filter(e=>e.role==='owner_summary').length,1);
+      if (teamPlanningScenario) {
+        const createCall=requests.flatMap(r=>r.messages||[]).flatMap(m=>m.tool_calls||[]).find(c=>c.function?.name==='work_team_create');
+        assert(createCall, 'real model selected the existing team tool');
+        const planned=JSON.parse(createCall.function.arguments).taskAssignment;
+        assert(planned, 'real model supplied a per-commission assignment');
+        assert(team.members.find(m=>m.botId===members[0]).responsibility.includes('beta'));
+        assert(team.members.find(m=>m.botId===members[1]).responsibility.includes('alpha'));
+        assert.deepEqual(team.members.find(m=>m.botId===members[1]).dependsOnBotIds,[members[0]]);
+        const preserved=await evaluate(`window.api.botWork.teamControl({kind:'list_templates'})`);
+        assert(preserved.templates[0].members.every(m=>m.responsibility==='通用文件整理，等待本次任务分工'));
+        report.checks.push('real model selected current-task responsibilities and dependency; saved template unchanged');
+      }
+
       const summary=team.executions.find(e=>e.role==='owner_summary').resultSummary;
       const memberNames = teamFailureScenario ? ['甲读取员', '乙读取员', '依赖核对员'] : ['甲读取员', '乙读取员'];
       for (const name of memberNames) assert(summary.includes(name), `owner summary must identify ${name} by host display name`);
@@ -246,7 +260,7 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       assert(summary.includes('ALPHA-31415')&&(teamFailureScenario && !teamTransientFailure ? /不存在|缺失|失败|未找到/.test(summary) && !summary.includes('BETA-27182') : summary.includes('BETA-27182')), summary);
       await until(()=>evaluate(`document.querySelector('.bot-thread').textContent.includes('ALPHA-31415') && document.querySelector('.bot-thread').textContent.includes(${JSON.stringify(teamFailureScenario?'beta.txt':'BETA-27182')})`),'team results visibly returned to original Bot conversation');
       assert(requests.some(r=>r.messages?.some(m=>m.tool_calls?.some(c=>c.function?.name==='work_team_create'))));
-      const ownerReportSelector = `[...document.querySelectorAll('.bot-result-report')].find(el=>${JSON.stringify(memberNames)}.every(name=>el.textContent.includes(name)))`;
+      const ownerReportSelector = `[...document.querySelectorAll('.bot-result-report')].filter(el=>${JSON.stringify(memberNames)}.every(name=>el.textContent.includes(name))).at(-1)`;
       await until(()=>evaluate(`Boolean(${ownerReportSelector})`),'named owner summary rendered in original conversation');
       await evaluate(`${ownerReportSelector}.scrollIntoView({block:'start'})`); await wait(150);
       const readableShot = await rpc('Page.captureScreenshot', {format:'png',captureBeyondViewport:false});

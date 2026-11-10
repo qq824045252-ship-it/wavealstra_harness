@@ -63,7 +63,9 @@ try {
     const result = await ownerTools.find(tool => tool.name === name)!.execute(args as never, api, BACKGROUND_CONTEXT);
     const content = result.output?.find(item => item.type === "text"); assert(content?.type === "text"); return JSON.parse(content.text);
   };
-  assert.equal((await invokeOwner("work_team_templates", {})).templates.length, 1);
+  const catalogue = await invokeOwner("work_team_templates", {});
+  assert.equal(catalogue.templates.length, 1);
+  assert.equal(catalogue.templates[0].members[0].displayName, "member");
   assert.equal((await invoke("work_team_templates", {})).templates.length, 0, "members cannot adopt owner's templates");
   const request = { templateId: template.template.templateId, title: "团队盘点", goalDescription: "模型规划", criteria: ["核对文件"] };
   const started = await invokeOwner("work_team_create", request);
@@ -79,6 +81,43 @@ try {
   assert.deepEqual(bots.getBot("owner")?.authorization, minimumAuthorization(), "no permanent grant expansion");
   assert.equal((await invoke("work_team_create", request)).ok, false);
   await assert.rejects(invokeOwner("work_team_create", { ...request, workspacePath: "/" }), /unrecognized|Unrecognized/);
+  const taskAssignment = { ownerResponsibility: "汇总本次盘点并核验总数", members: [
+    { botId: "member", responsibility: "只读取本次文件甲，报告标记和字节数", dependsOnBotIds: [] }] };
+  const assigned = await invokeOwner("work_team_create", { ...request, taskAssignment }, "assigned-team");
+  assert(assigned.ok, JSON.stringify(assigned));
+  assert.equal(assigned.team.ownerResponsibility, taskAssignment.ownerResponsibility);
+  assert.equal(assigned.team.members[0].responsibility, taskAssignment.members[0].responsibility);
+  assert.deepEqual(assigned.team.members[0].delegatedScope, ["workspace:read"]);
+  assert.equal((await invokeOwner("work_team_create", { ...request, taskAssignment }, "assigned-team")).work.workId, assigned.work.workId);
+  assert.equal((await invokeOwner("work_team_templates", {})).templates[0].members[0].responsibility, "检查文件", "task plan never mutates saved template");
+  const flexibleTemplate = works.teams.handle(user, { kind: "save_template", request: { operationId: "flexible-team", name: "多人目录团队",
+    plan: { ownerBotId: "owner", ownerResponsibility: "汇总", executionPolicy: "parallel", maxConcurrency: 2,
+      members: [{ botId: "member", responsibility: "通用读取", delegatedScope: ["workspace:read"] },
+        { botId: "outsider", responsibility: "通用核对", delegatedScope: ["workspace:read"] }] } } });
+  assert(flexibleTemplate.ok && flexibleTemplate.template);
+  const flexibleRequest = { ...request, templateId: flexibleTemplate.template.templateId };
+  const subset = await invokeOwner("work_team_create", { ...flexibleRequest, taskAssignment }, "subset-team");
+  assert(subset.ok && subset.team.members.length === 1);
+  assert.equal(subset.team.executionPolicy, "parallel");
+  assert.equal(subset.team.maxConcurrency, 2);
+  const ordered = await invokeOwner("work_team_create", { ...flexibleRequest, taskAssignment: {
+    ownerResponsibility: "核验并汇总", members: [
+      { botId: "outsider", responsibility: "先读取乙文件" },
+      { botId: "member", responsibility: "再核验乙文件", dependsOnBotIds: ["outsider"] }] } }, "ordered-team");
+  assert(ordered.ok, JSON.stringify(ordered));
+  assert.deepEqual(ordered.team.members.map((member: { botId: string }) => member.botId), ["outsider", "member"]);
+  assert.deepEqual(ordered.team.members[1].dependsOnBotIds, ["outsider"]);
+  const countBeforeInvalid = db.connection.prepare("SELECT COUNT(*) AS n FROM work_teams").get();
+  for (const members of [
+    [{ botId: "outsider", responsibility: "读取" }],
+    [{ botId: "member", responsibility: "读取", dependsOnBotIds: ["member"] }],
+    [{ botId: "member", responsibility: "读取", dependsOnBotIds: ["outsider"] }],
+    [{ botId: "member", responsibility: "读取" }, { botId: "member", responsibility: "重复" }],
+  ]) assert.equal((await invokeOwner("work_team_create", { ...request, taskAssignment: { ...taskAssignment, members } }, `invalid-${++call}`)).ok, false);
+  await assert.rejects(invokeOwner("work_team_create", { ...request, taskAssignment: { ...taskAssignment,
+    members: [{ ...taskAssignment.members[0], delegatedScope: ["workspace:write"] }] } }, "expanded-scope"), /unrecognized|Unrecognized/);
+  assert.deepEqual(db.connection.prepare("SELECT COUNT(*) AS n FROM work_teams").get(), countBeforeInvalid);
+  assert.deepEqual(bots.getBot("owner")?.authorization, minimumAuthorization());
   const details = await invokeOwner("work_query_status", { workId: started.work.workId });
   assert.equal(details[0].team.executions.length, 2);
   const paused = await invokeOwner("work_pause", { workId: started.work.workId, versionGuard: details[0].versionGuard }, "pause-team");

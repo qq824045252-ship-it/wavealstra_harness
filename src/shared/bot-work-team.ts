@@ -10,6 +10,16 @@ export const workTeamMemberSchema = z.object({
   delegatedScope: z.array(z.enum(["workspace:read", "workspace:write"])).min(1).max(2)
     .refine(scopes => new Set(scopes).size === scopes.length, "范围不能重复"),
 }).strict();
+/** Per-commission planning over an existing user-selected team, not new grants. */
+export const workTeamTaskAssignmentSchema = z.object({
+  ownerResponsibility: responsibility,
+  members: z.array(z.object({
+    botId: id,
+    responsibility,
+    dependsOnBotIds: z.array(id).max(24).optional(),
+  }).strict()).min(1).max(24),
+}).strict();
+export type WorkTeamTaskAssignment = z.infer<typeof workTeamTaskAssignmentSchema>;
 export const workTeamPlanSchema = z.object({
   ownerBotId: id,
   ownerResponsibility: responsibility,

@@ -11,7 +11,7 @@ import type { WorkService } from "./WorkService";
 import type { WorkExecutionAdapter } from "./WorkExecutionAdapter";
 import type { WorkActor, WorkDto, WorkExecutionBindingDto } from "../../../shared/bot-work";
 import { workAdmissionInFlight, workExecutionInFlight } from "../../../shared/work-effect-policy";
-import { workTeamControlSchema, workTeamPlanSchema, type WorkTeamControlResult,
+import { workTeamControlSchema, workTeamPlanSchema, workTeamTaskAssignmentSchema, type WorkTeamTaskAssignment, type WorkTeamControlResult,
   type WorkTeamDto, type WorkTeamExecution, type WorkTeamTemplateDto, type WorkTeamPlan } from "../../../shared/bot-work-team";
 
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -115,14 +115,28 @@ export class WorkTeamService {
   }
 
   createFromForeground(actor: WorkActor, input: { templateId: string; operationId: string; title: string;
-    goalDescription: string; criteria: string[]; workspacePath: string; conversationId: string; sourceMessageId: string }): WorkTeamControlResult {
+    goalDescription: string; criteria: string[]; workspacePath: string; conversationId: string; sourceMessageId: string; taskAssignment?: WorkTeamTaskAssignment }): WorkTeamControlResult {
     if (actor.kind !== "bot" || actor.host !== "foreground" || !actor.botId)
       return { ok: false, code: "unauthorized_actor", message: "需要当前前台 Bot 身份" };
     const bot = this.bots.getBot(actor.botId);
     const template = this.foregroundTemplates(actor.userId, actor.botId).find(item => item.templateId === input.templateId);
     if (!bot || !template) return { ok: false, code: "not_found", message: "找不到当前 Bot 负责的团队模板，请先在组队界面保存分工" };
     const { templateId: _id, name: _name, createdAt: _created, ...plan } = template;
-    const { templateId: _template, sourceMessageId, ...request } = input;
+    const { templateId: _template, sourceMessageId, taskAssignment, ...request } = input;
+    if (taskAssignment) {
+      const parsed = workTeamTaskAssignmentSchema.safeParse(taskAssignment);
+      if (!parsed.success) return { ok: false, code: "invalid_request", message: "本次团队分工格式无效" };
+      const selected = parsed.data.members.map(member => {
+        const saved = plan.members.find(item => item.botId === member.botId);
+        return saved ? { ...member, delegatedScope: [...saved.delegatedScope] } : undefined;
+      });
+      if (selected.some(member => !member))
+        return { ok: false, code: "unauthorized_actor", message: "本次分工只能选择该模板已有成员，不会增加成员或权限" };
+      const adjusted = workTeamPlanSchema.safeParse({ ...plan,
+        ownerResponsibility: parsed.data.ownerResponsibility, members: selected });
+      if (!adjusted.success) return { ok: false, code: "invalid_request", message: "本次分工的成员或依赖无效：依赖须指向排在前面的已选成员" };
+      Object.assign(plan, adjusted.data);
+    }
     // Reusing the saved user-selected team grants delegation only to this exact plan,
     // like the desktop team entry; it never edits the Bot's lasting authorization.
     return this.control({ ...actor, grants: { ...bot.authorization, allowRedelegation: true } }, { kind: "create", request: { ...request, ...plan } }, sourceMessageId);
