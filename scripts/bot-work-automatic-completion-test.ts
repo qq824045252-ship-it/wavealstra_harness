@@ -44,7 +44,7 @@ let reviewContinue = false;
 let lateResultWork: string | undefined;
 let lateQuestionWork: string | undefined;
 const coordinator = new WorkCompletionCoordinator({ db: db.connection, works, isAuthority: () => authority,
-  review: async input => { reviewed.push(input.eventId); if (failReview) throw Error("model unavailable");
+  review: async input => { assert(!("teamAssignment" in (input.context.originalRequest as object)),"review input must not contain executor report-format instructions"); reviewed.push(input.eventId); if (failReview) throw Error("model unavailable");
     if (lateQuestionWork) { works.repo.insertBlocker({blockerId:"late-question",workId:lateQuestionWork,kind:"operational",reason:"必须提供收件人",waitingForUserInput:true,status:"open",createdAt:Date.now()}); lateQuestionWork=undefined; }
     if ((input.context.pendingQuestions as Array<{blockerId:string}>|undefined)?.some(item=>item.blockerId === "late-question")) return {decision:"ask",outcome:"partial",reply:"必须提供收件人",missing:[]};
     if (input.context.title === "waiting-input") return {decision:"ask",outcome:"partial",reply:"已交付请求的文字方案；收件人是谁？",missing:[]};

@@ -63,8 +63,11 @@ export class WorkCompletionCoordinator {
     const eventId = `completion:${bindingId}`;
     if (!this.row(bindingId)) {
       const source = JSON.parse(works.repo.executionInput(binding));
+      // Execution recipes (including team report JSON instructions) are not the
+      // user's request. Feeding them back to the judge can override its schema.
+      const { teamAssignment: _teamAssignment, instructions: _instructions, ...originalRequest } = source;
       db.prepare("INSERT OR IGNORE INTO work_completion_turns(binding_id,context_json) VALUES (?,?)").run(bindingId, JSON.stringify({
-        originalRequest: source, title: candidate.work.title, goal: candidate.work.goalDescription,
+        originalRequest, title: candidate.work.title, goal: candidate.work.goalDescription,
         results: results.map(item => ({ summary: item.summary, artifactRefs: item.artifactRefs, uncoveredScope: item.uncoveredScope })),
         previousResults: works.repo.listDeliverables(binding.workId).filter(item => item.executionId !== bindingId
           && item.intentRevision === binding.intentRevision && item.inputSnapshotId === binding.inputSnapshotId && item.status !== "superseded")
@@ -87,7 +90,10 @@ export class WorkCompletionCoordinator {
         this.options.deliver({ bindingId, eventId: `${eventId}:progress`, category: "progress", text: "后台结果已返回，我正在对照你的委托整理结论。你可以继续交代其他事情。" });
         const attempt = row.state === "running" ? Math.max(1,row.attempts) : row.attempts + 1;
         db.prepare("UPDATE work_completion_turns SET state='running',attempts=? WHERE binding_id=?").run(attempt,bindingId);
-        decision = await this.options.review({ eventId: `${eventId}:review:${attempt}`, botId: binding.botId, context: JSON.parse(row.context_json) });
+        const reviewContext = JSON.parse(row.context_json);
+        // Also sanitize persisted turns written by an older host.
+        const { teamAssignment: _teamAssignment, instructions: _instructions, ...originalRequest } = reviewContext.originalRequest ?? {};
+        decision = await this.options.review({ eventId: `${eventId}:review:${attempt}`, botId: binding.botId, context: {...reviewContext, originalRequest} });
       }
       if (this.closed || !this.options.isAuthority()) return;
       works.transaction(() => {
