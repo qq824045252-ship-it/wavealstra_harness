@@ -55,7 +55,23 @@ models.registerProvider("teamfixture", { api: "openai-completions", apiKey: "loc
       if (holdAlpha && assignment.responsibility === "READ_ALPHA_ASSIGNMENT" && last?.role !== "toolResult")
         await new Promise<void>(resolve => { releaseAlpha = resolve; });
       let content: AssistantMessage["content"];
-      if (assignment.role === "owner_summary") {
+      let failureReason: string | undefined;
+      if (assignment.responsibility === "RECOVERY_SUMMARY_ASSIGNMENT") {
+        assert(input.includes("RETAINED_NATIVE_SOURCE_17"), "owner receives the earlier native partial finding");
+        assert(input.includes("native provider failure 2"), "latest failure is separate from retained findings");
+        assert(assignment.previousResults.some((item: any) => item.executionStatus === "not_started" && !item.bindingId),
+          "unstarted dependent has no fabricated native receipt");
+        content = text("PARTIAL_NATIVE_SUMMARY: 保留已核实来源，原生提供方失败，后置分工未启动；目标未完成，未验收。");
+      } else if (assignment.responsibility === "FAIL_AFTER_SOURCE_ASSIGNMENT") {
+        if (assignment.recovery) { failureReason = "400: native provider failure 2"; content = []; }
+        else if (last?.role !== "toolResult") content = tool("read", { path: join(cwd, "alpha.txt") });
+        else {
+          assert(body(last.content).includes("ALPHA_REAL_SOURCE_17"), "partial finding follows a real native file read");
+          failureReason = "400: native provider failure 1"; content = text("RETAINED_NATIVE_SOURCE_17: ALPHA_REAL_SOURCE_17");
+        }
+      } else if (assignment.responsibility === "MUST_NOT_START_ASSIGNMENT") {
+        throw Error("dependent member must not run after terminal prerequisite failure");
+      } else if (assignment.role === "owner_summary") {
         assert(input.includes("ALPHA_REAL_SOURCE_17") && input.includes("BETA_REAL_SOURCE_29"), "owner must receive actual member results");
         assert(input.includes("proposed"), "owner input preserves pending acceptance");
         content = text("TEAM_NATIVE_SUMMARY: ALPHA_REAL_SOURCE_17 + BETA_REAL_SOURCE_29；成员写入/越界读取已拒绝，等待用户验收。");
@@ -92,10 +108,12 @@ models.registerProvider("teamfixture", { api: "openai-completions", apiKey: "loc
           content = text("BETA_REAL_SOURCE_29；越界读取已拒绝，只读核查结束，待验收。");
         }
       }
-      const stopReason = content.some(item => item.type === "toolCall") ? "toolUse" : "stop";
+      const stopReason = failureReason ? "error" : content.some(item => item.type === "toolCall") ? "toolUse" : "stop";
       const message: AssistantMessage = { role: "assistant", content, stopReason, api: model.api, model: model.id, provider: model.provider,
-        timestamp: Date.now(), usage: { input: 3, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 5, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
-      stream.push({ type: "done", reason: stopReason, message }); stream.end();
+        ...(failureReason ? { errorMessage: failureReason } : {}), timestamp: Date.now(), usage: { input: 3, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 5, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+      if (stopReason === "error") stream.push({ type: "error", reason: "error", error: message });
+      else stream.push({ type: "done", reason: stopReason, message });
+      stream.end();
     }); return stream;
   },
 });
@@ -207,6 +225,30 @@ try {
   assert.equal(modelCalls.length, parallelCalls, "parallel reopening does not replay effects");
   assert.equal(works.repo.listBindings(parallelId).length, 3);
   console.log("PASS native parallel team: real overlapping roots, real file verification, owner barrier and reopened idempotency");
+  // Real Durable failure/recovery receipts, not a FakeHost projection: a prior
+  // member's actual read succeeds, the next retains a finding then fails twice,
+  // and the owner summarizes without ever starting the blocked dependency.
+  const failedChain = works.teams.handle(actor, { kind: "create", request: { ...request, operationId: randomUUID(),
+    title: "Native exhausted chain", ownerBotId: ids[3]!, ownerResponsibility: "RECOVERY_SUMMARY_ASSIGNMENT",
+    members: [request.members[0]!, { botId: ids[2]!, responsibility: "FAIL_AFTER_SOURCE_ASSIGNMENT", delegatedScope: ["workspace:read"] },
+      { botId: ids[0]!, responsibility: "MUST_NOT_START_ASSIGNMENT", delegatedScope: ["workspace:read"] }] } });
+  assert(failedChain.ok && failedChain.work, JSON.stringify(failedChain));
+  const failedId = failedChain.work.workId;
+  await until(() => works.teams.get(failedId)?.executions.at(-1)?.status === "completed", "native owner accounts for terminal failed chain");
+  const failedTeam = works.teams.get(failedId)!;
+  assert.equal(failedTeam.state, "blocked");
+  assert.equal(failedTeam.executions[2]!.status, "blocked");
+  assert(failedTeam.executions[2]!.notStartedReason);
+  assert.equal(works.repo.listBindings(failedId).length, 4, "one success, two failed attempts, one owner summary");
+  assert.equal(works.repo.listBindings(failedId).filter(binding => binding.taskId === failedTeam.executions[0]!.taskId).length, 1);
+  assert.equal(works.repo.listBindings(failedId).some(binding => binding.taskId === failedTeam.executions[2]!.taskId), false);
+  assert(works.repo.listDeliverables(failedId).some(item => item.summary.includes("PARTIAL_NATIVE_SUMMARY")));
+  assert.equal(works.getWork(failedId)!.acceptedDeliverableIds.length, 0);
+  const finalCalls = modelCalls.length;
+  await close(); open();
+  for (let pass = 0; pass < 4; pass++) { await queue.flush(); await delay(20); }
+  assert.equal(modelCalls.length, finalCalls, "native summary is not repeated after restart");
+  console.log("PASS native failed chain: retained real-read finding, distinct failures, unstarted dependency, truthful owner summary and restart dedupe");
   assert.deepEqual(errors, []);
   console.log("PASS real native team: separate identities/namespaces, actual file reads, denied write/outside read, sequential results, owner synthesis, proposed acceptance and reopened idempotency");
 } finally { await close(); rmSync(root, { recursive: true, force: true }); }

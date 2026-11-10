@@ -440,6 +440,17 @@ async function testRecoveryControls() {
       assert.match(container.textContent!, /仍需负责人核对与用户验收/);
       assert.match(container.textContent!, /原失败：temporary provider failure/);
     });
+    await check("terminal dependency failure is shown as unstarted without a retry approval", async () => {
+      const value = projection("blocked");
+      value.team!.executions[0] = { ...value.team!.executions[0], status: "blocked", error: undefined,
+        notStartedReason: "未启动：前置成员自动恢复已停止", waitingReason: "未启动：前置成员自动恢复已停止" };
+      await start(value);
+      assert.match(container.textContent!, /未启动/);
+      assert.match(container.textContent!, /前置成员自动恢复已停止/);
+      assert.doesNotMatch(container.textContent!, /排队中/);
+      assert.equal([...container.querySelectorAll("button")].some(item => item.textContent === "重试未启动的准备"), false);
+      assert.deepEqual(calls, []);
+    });
     await check("already-bound unknown execution does not expose a preparation retry", async () => {
       const value = projection("blocked"); value.team!.executions[0].bindingId = "original-binding"; value.team!.executions[0].status = "unknown";
       await start(value); assert.equal([...container.querySelectorAll("button")].some(item => item.textContent === "重试未启动的准备"), false); assert.deepEqual(calls, []);

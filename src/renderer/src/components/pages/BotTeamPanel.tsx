@@ -43,9 +43,9 @@ export function BotTeamPanel({ work, identities }: { work: WorkProjectionDto; id
     <div className="bot-team-progress"><h3>团队协作</h3><span className="bot-status-badge">{stateLabels[team.state]}</span></div>
     <p>{team.members.length + 1} 位 Bot · {team.executionPolicy === "parallel" ? `按依赖并行（最多 ${team.maxConcurrency ?? 2} 位成员）` : "成员依次执行"} · 负责人统一汇总</p>
     <p>执行结束不代表目标已经验收。请在成果评审中核对证据和验收条件。</p>
-    <article><strong>{name(work.ownerBotId)} · 当前负责人</strong><p>{team.ownerResponsibility}</p><p>负责核对与只读汇总，成员全部返回后开始。</p></article>
+    <article><strong>{name(work.ownerBotId)} · 当前负责人</strong><p>{team.ownerResponsibility}</p><p>负责核对与只读汇总，成员已结算或确认因前置失败无法启动后开始。</p></article>
     {team.executions.map(execution => <article key={execution.taskId} aria-label={`${name(execution.botId)}的团队任务`}>
-      <div className="bot-team-progress"><strong>{name(execution.botId)} · {execution.role === "owner_summary" ? "负责人汇总" : "成员"}</strong><span>{executionLabels[execution.status]}</span></div>
+      <div className="bot-team-progress"><strong>{name(execution.botId)} · {execution.role === "owner_summary" ? "负责人汇总" : "成员"}</strong><span>{execution.notStartedReason ? "未启动" : executionLabels[execution.status]}</span></div>
       <p>{execution.responsibility}</p><p>范围：{execution.delegatedScope.includes("workspace:write") ? "指定工作区读写" : "指定工作区只读"}</p>
       {execution.dependsOnBotIds?.length ? <p>前置成员：{execution.dependsOnBotIds.map(name).join("、")}</p> : null}
       {execution.waitingReason && <p role="status">{execution.waitingReason}</p>}

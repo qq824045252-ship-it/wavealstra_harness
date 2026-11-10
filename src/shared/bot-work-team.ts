@@ -61,6 +61,8 @@ export interface WorkTeamExecution extends WorkTeamMember {
   error?: string;
   resultSummary?: string;
   waitingReason?: string;
+  /** A terminal dependency prevented this member from starting; no native receipt exists. */
+  notStartedReason?: string;
   /** Durable automatic-recovery progress; the original task/member identity is unchanged. */
   recoveryState?: "pending" | "claimed" | "dispatched" | "completed" | "stopped";
   recoveryGeneration?: number;

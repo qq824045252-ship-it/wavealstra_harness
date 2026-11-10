@@ -137,6 +137,15 @@ export function collectOwnerSummaryFacts(works: WorkService, work: WorkDto, now:
     [`binding:${binding.bindingId}`], binding.settledAt ?? binding.admittedAt, true);
   }
 
+  // Terminal dependency failures are a known outcome, not a member who is still
+  // expected to return. Include them even if the model-based owner summary fails.
+  for (const execution of team?.executions ?? []) {
+    if (!execution.notStartedReason || execution.bindingId) continue;
+    add({ ...empty, kind: "blocked", botId: execution.botId,
+      text: `${execution.responsibility}：${execution.notStartedReason}`, isError: true },
+    [`team-task:${execution.taskId}`], team!.createdAt);
+  }
+
   for (const blocker of pendingDecisionBlockers(works.repo.listBlockers(work.workId))) {
     add({ ...empty, kind: "blocked", text: blocker.reason, isError: true },
       [`blocker:${blocker.blockerId}`], blocker.createdAt, true, true);

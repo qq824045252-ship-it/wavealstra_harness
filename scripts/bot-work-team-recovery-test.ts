@@ -8,6 +8,7 @@ import { BotRegistry } from "../src/main/agent/work/BotRegistry";
 import { WorkService, DESKTOP_USER_GRANTS } from "../src/main/agent/work/WorkService";
 import { WorkExecutionAdapter, type WorkExecutionObservation, type WorkExecutionPort } from "../src/main/agent/work/WorkExecutionAdapter";
 import { WorkDispatchQueue } from "../src/main/agent/work/WorkDispatchQueue";
+import { collectOwnerSummaryFacts } from "../src/main/agent/work/WorkOwnerSummaryFacts";
 import { DEFAULT_BOT_ID, LOCAL_USER_ID, type WorkActor, type WorkDto } from "../src/shared/bot-work";
 import type { WorkTeamControlResult, WorkTeamDto } from "../src/shared/bot-work-team";
 
@@ -334,6 +335,113 @@ try {
     } finally { await f.close(); }
   }
 
+  // A terminal failed prerequisite prevents dependent business work, not the
+  // owner's read-only final accounting. Preserve older partial outputs too.
+  {
+    const f = fixture();
+    try {
+      f.host.observations.set("recovery-c", attempt => ({ status: "failed", summary: `failure ${attempt}`,
+        failureReason: `provider unavailable ${attempt}`, artifactRefs: [], hasWriteConflicts: false,
+        subitems: attempt === 1 ? [{ itemId: "retained-step", childId: "retained-child", task: "verified partial finding",
+          required: true, dependencies: [], criterionIds: [], nativeStatus: "completed", outcome: "completed",
+          artifactRefs: [f.artifact], writeConflicts: [], summary: "RETAINED_PARTIAL_FINDING" },
+          { itemId: "remaining-step", task: "unfinished responsibility", required: true, dependencies: [], criterionIds: [],
+            nativeStatus: "failed", outcome: "failed", artifactRefs: [], writeConflicts: [], summary: "unfinished" }] : [] }));
+      const created = f.create("failed-chain-summary", [{ botId: "recovery-a" }, { botId: "recovery-c" }, { botId: "recovery-b" }]);
+      assert(created.ok && created.work && created.team);
+      const workId = created.work.workId;
+      await wait(() => f.team(workId).executions.at(-1)?.status === "completed", "owner summarizes exhausted chain", () => f.flush(4));
+      const summary = f.host.submissions.find(item => item.botId === "recovery-owner")!.input.teamAssignment;
+      assert(summary.previousResults.some((item: any) => item.botId === "recovery-a" && item.executionStatus === "completed"));
+      assert(summary.previousResults.some((item: any) => item.botId === "recovery-c" && item.summary.includes("RETAINED_PARTIAL_FINDING")
+        && item.artifactRefs.includes(f.artifact)), "retain useful output from the original failed attempt");
+      assert(summary.previousResults.some((item: any) => item.botId === "recovery-c" && item.failureReason?.includes("provider unavailable 2")),
+        "summary carries the latest failure separately from partial result content");
+      const unstarted = summary.previousResults.find((item: any) => item.botId === "recovery-b");
+      assert.equal(unstarted.executionStatus, "not_started");
+      assert.equal(unstarted.bindingId, undefined, "do not invent a native receipt for an unstarted member");
+      assert.match(unstarted.summary, /未启动/);
+      assert.equal(f.host.submissions.filter(item => item.botId === "recovery-a").length, 1, "successful member is not replayed");
+      assert.equal(f.host.submissions.filter(item => item.botId === "recovery-b").length, 0, "dependent business work stays unstarted");
+      assert.equal(f.team(workId).executions[2]!.status, "blocked", "unstartable member no longer appears queued forever");
+      assert.equal(f.team(workId).state, "blocked", "a completed summary is not team success");
+      assert.equal(f.works.getWork(workId)!.acceptedDeliverableIds.length, 0);
+      const facts = collectOwnerSummaryFacts(f.works, f.works.getWork(workId)!, Date.now());
+      assert(!facts.payload.waitingForBotIds.includes("recovery-b"), "host summary does not wait for an impossible execution");
+      assert(facts.payload.items.some(item => item.botId === "recovery-b" && item.kind === "blocked" && item.text.includes("未启动")));
+      const before = f.host.submissions.length;
+      await f.queue.close(); await f.adapter.close(); f.reopen(); await f.flush(8);
+      assert.equal(f.host.submissions.length, before, "restart does not duplicate the final summary or successful effects");
+      assert.equal(f.host.writes, 1);
+    } finally { await f.close(); }
+  }
+
+  // Parallel transitive dependents remain unstarted, while independent work
+  // finishes. Unknown native liveness or an in-flight tool still fences summary.
+  for (const unsettled of ["native", "tool"] as const) {
+    const f = fixture();
+    try {
+      let independentRunning = true;
+      f.host.failAlways.add("recovery-c");
+      f.host.observations.set("recovery-d", () => independentRunning ? { status: "running" }
+        : { status: "completed", summary: "independent result", artifactRefs: [], hasWriteConflicts: false });
+      const created = f.create(`transitive-summary-${unsettled}`, [
+        { botId: "recovery-c" }, { botId: "recovery-b", dependsOnBotIds: ["recovery-c"] },
+        { botId: "recovery-a", dependsOnBotIds: ["recovery-b"] }, { botId: "recovery-d" },
+      ], true);
+      assert(created.ok && created.work && created.team);
+      const workId = created.work.workId;
+      await wait(() => f.team(workId).executions[0]!.recoveryOutcome === "no_progress", "recovery is exhausted", () => f.flush(3));
+      assert(f.team(workId).executions.slice(1, 3).every(item => item.status === "blocked" && item.notStartedReason));
+      assert.equal(f.host.submissions.some(item => item.botId === "recovery-owner"), false, "summary waits for independent live work");
+      const source = f.works.repo.bindingForTask(created.team.executions[0]!.taskId)!;
+      if (unsettled === "native") {
+        f.works.repo.updateBinding({ ...source, status: "unknown" }); f.host.unreadable.add(source.taskId);
+      } else f.works.repo.insertAdmission({ admissionId: `late:${workId}`, workId, bindingId: source.bindingId,
+        operationId: "still-running-tool", actionKind: "workspace:write", state: "admitted",
+        intentRevision: source.intentRevision, ownerEpoch: source.ownerEpoch, admittedAt: Date.now() });
+      independentRunning = false;
+      await f.flush(4);
+      assert(f.team(workId).executions.slice(1, 3).every(item => !item.notStartedReason), "uncertain execution is not a terminal dependency outcome");
+      assert.equal(f.host.submissions.some(item => item.botId === "recovery-owner"), false, "summary cannot bypass native/tool settlement");
+      if (unsettled === "native") { f.host.unreadable.delete(source.taskId); f.works.repo.updateBinding(source); }
+      else f.works.repo.updateAdmissionState(`late:${workId}`, "unknown", Date.now());
+      await wait(() => f.team(workId).executions.at(-1)?.status === "completed", "summary after all real execution settled", () => f.flush(4));
+      assert.equal(f.host.submissions.some(item => ["recovery-a", "recovery-b"].includes(item.botId)), false);
+      const results = f.host.submissions.find(item => item.botId === "recovery-owner")!.input.teamAssignment.previousResults;
+      assert.equal(results.filter((item: any) => item.executionStatus === "not_started").length, 2);
+      assert(results.some((item: any) => item.botId === "recovery-d" && item.executionStatus === "completed"));
+    } finally { await f.close(); }
+  }
+
+  // A dependency can be unstartable because C stopped while another stopped
+  // predecessor A still has an admitted tool. The owner must wait for A directly.
+  {
+    const f = fixture();
+    try {
+      let independentRunning = true;
+      f.host.failAlways.add("recovery-a"); f.host.failAlways.add("recovery-c");
+      f.host.observations.set("recovery-d", () => independentRunning ? { status: "running" }
+        : { status: "completed", summary: "independent result", artifactRefs: [], hasWriteConflicts: false });
+      const created = f.create("multi-prerequisite-live-tool", [{ botId: "recovery-a" }, { botId: "recovery-c" },
+        { botId: "recovery-b", dependsOnBotIds: ["recovery-a", "recovery-c"] }, { botId: "recovery-d" }], true);
+      assert(created.ok && created.work && created.team);
+      const workId = created.work.workId;
+      await wait(() => f.team(workId).executions.slice(0, 2).every(item => item.recoveryOutcome === "no_progress"),
+        "both prerequisites exhausted", () => f.flush(3));
+      const source = f.works.repo.bindingForTask(created.team.executions[0]!.taskId)!;
+      f.works.repo.insertAdmission({ admissionId: `multi:${workId}`, workId, bindingId: source.bindingId,
+        operationId: "late-admitted-tool", actionKind: "workspace:write", state: "admitted",
+        intentRevision: source.intentRevision, ownerEpoch: source.ownerEpoch, admittedAt: Date.now() });
+      assert(f.team(workId).executions[2]!.notStartedReason, "the other terminal predecessor still prevents dependent execution");
+      independentRunning = false; await f.flush(5);
+      assert.equal(f.host.submissions.some(item => item.botId === "recovery-owner"), false,
+        "owner waits for every predecessor's effects, regardless of the chosen dependency reason");
+      f.works.repo.updateAdmissionState(`multi:${workId}`, "unknown", Date.now());
+      await wait(() => f.team(workId).executions.at(-1)?.status === "completed", "summary after late tool settles", () => f.flush(4));
+    } finally { await f.close(); }
+  }
+
   // Pre-upgrade pending/claimed continuations cannot race an unknown native
   // source, or a terminal source with a still-admitted tool invocation.
   for (const persistedState of ["pending", "claimed"] as const) {
@@ -415,7 +523,7 @@ try {
       assert.equal(attempts.n, 1, "duplicate delivery/restart does not create another recovery generation");
     } finally { await f.close(); }
   }
-  console.log("PASS team recovery: same identity continuation, single write, dependency advancement, independent members, nonblocking unknown effects, stop cancellation, verified byte/native-item progress, wording-independent stagnation, partial-result dependency barrier and restart dedup");
+  console.log("PASS team recovery: same identity continuation, single write, dependency advancement, independent members, nonblocking unknown effects, stop cancellation, verified byte/native-item progress, wording-independent stagnation, partial-result dependency barrier, exhausted-chain summaries and restart dedup");
 } catch (error) {
   console.error(error);
   process.exitCode = 1;
