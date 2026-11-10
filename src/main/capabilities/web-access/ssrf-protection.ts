@@ -3,6 +3,13 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import net from "node:net";
 import { getWebSearchConfigPath } from "./utils.ts";
 
+import { existingProxyForFakeAddresses, fetchThroughExistingPublicProxy, type ExistingProxy } from "./pinned-public-proxy";
+
+class FakeIpAddressError extends Error { constructor(readonly addresses: LookupAddress[], message:string) { super(message); } }
+
+export const PINNED_PUBLIC_PROXY = Symbol("verified-pinned-public-proxy");
+export function configuredPinnedProxy(error:unknown):ExistingProxy|undefined { return error instanceof FakeIpAddressError ? existingProxyForFakeAddresses(error.addresses) : undefined; }
+
 const DEFAULT_MAX_REDIRECTS = 5;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
@@ -174,6 +181,7 @@ interface RedirectRequestInitArgs {
 }
 
 interface FetchRemoteOptions extends ValidationOptions {
+  [PINNED_PUBLIC_PROXY]?: ExistingProxy;
 	fetch?: Fetch;
 	maxRedirects?: number;
 	onRedirect?: (args: RedirectRequestInitArgs) => RequestInit;
@@ -216,8 +224,12 @@ export async function validateRemoteUrl(rawUrl: string | URL, options: Validatio
 
 	if (addresses.length === 0) throw new Error(`Failed to resolve ${hostname}: no addresses returned`);
 	for (const { address } of addresses) {
-		assertPublicAddress(address, hostname, allowRanges);
-	}
+    try { assertPublicAddress(address, hostname, allowRanges); }
+    catch(error) {
+      if (addresses.every(a=>isFakeIpProxyAddress(a.address))) throw new FakeIpAddressError(addresses,(error as Error).message);
+      throw error;
+    }
+  }
 	return url;
 }
 
@@ -228,11 +240,23 @@ export async function fetchRemoteUrl(
 ): Promise<Response> {
 	const fetchImpl = options.fetch ?? fetch;
 	const maxRedirects = options.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
-	let current = await validateRemoteUrl(url, options);
+	let current = url instanceof URL ? url : new URL(url);
+  let pinnedProxy: ExistingProxy | undefined = options[PINNED_PUBLIC_PROXY];
 	let requestInit = init;
 
 	for (let redirects = 0; redirects <= maxRedirects; redirects++) {
-		const response = await fetchImpl(current, { ...requestInit, redirect: "manual" });
+		let response:Response;
+    if (!pinnedProxy) {
+      try { await validateRemoteUrl(current,options); }
+      catch(error) {
+        if (!(error instanceof FakeIpAddressError) || options.fetch || options.lookup || options.enabled===false) throw error;
+        pinnedProxy=existingProxyForFakeAddresses(error.addresses);
+        if (!pinnedProxy) throw error;
+      }
+    }
+    assertDomainPolicy(normalizeHostname(current.hostname),options.domainPolicy);
+    response = pinnedProxy ? await fetchThroughExistingPublicProxy(current,requestInit,pinnedProxy)
+      : await fetchImpl(current, { ...requestInit, redirect: "manual" });
 		if (!REDIRECT_STATUSES.has(response.status)) return response;
 
 		const location = response.headers.get("location");
@@ -240,7 +264,14 @@ export async function fetchRemoteUrl(
 		if (redirects === maxRedirects) throw new Error(`Too many redirects fetching ${current.toString()}`);
 
 		const from = current;
-		current = await validateRemoteUrl(new URL(location, current), options);
+		current = new URL(location,current);
+    await response.body?.cancel();
+    if (pinnedProxy && current.protocol!=="https:") throw Error("Pinned public proxy refuses HTTPS downgrade");
+    if (current.origin!==from.origin) {
+      const headers=new Headers(requestInit.headers);
+      for(const name of ["authorization","cookie","proxy-authorization","host"])headers.delete(name);
+      requestInit={...requestInit,headers};
+    }
 		if (response.status === 303 || ((response.status === 301 || response.status === 302) && requestInit.method?.toUpperCase() === "POST")) {
 			const { body: _body, ...nextInit } = requestInit;
 			requestInit = { ...nextInit, method: "GET" };

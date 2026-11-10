@@ -22,7 +22,7 @@ import { extractWithFirecrawl, isFirecrawlAvailable } from "./firecrawl.ts";
 import { extractWithBrightDataUnlocker, isBrightDataUnlockerAvailable } from "./brightdata-unlocker.ts";
 import { isVideoFile, extractVideo, extractVideoFrame, getLocalVideoDuration } from "./video-extract.ts";
 import { appendDeclaredWebLinks, discoverDeclaredWebLinks, type DeclaredWebLink } from "./declared-web-links.ts";
-import { fetchRemoteUrl, loadFetchContentDomainPolicy, loadSsrfConfig, validateRemoteUrl, type Lookup } from "./ssrf-protection.ts";
+import { fetchRemoteUrl, configuredPinnedProxy, PINNED_PUBLIC_PROXY, loadFetchContentDomainPolicy, loadSsrfConfig, validateRemoteUrl, type Lookup } from "./ssrf-protection.ts";
 import { formatSeconds, getWebSearchConfigPath } from "./utils.ts";
 
 const DEFAULT_TIMEOUT_MS = 30000;
@@ -94,6 +94,7 @@ export interface ExtractedContent {
 type HttpExtractedContent = ExtractedContent & { declaredLinks?: DeclaredWebLink[] };
 
 export interface ExtractOptions {
+  [PINNED_PUBLIC_PROXY]?: import("./pinned-public-proxy").ExistingProxy;
 	timeoutMs?: number;
 	forceClone?: boolean;
 	prompt?: string;
@@ -276,6 +277,11 @@ export async function extractContent(
 				...(options?.lookup ? { lookup: options.lookup } : {}),
 			});
 		} catch (err) {
+      // Keep fake-IP compatibility inside the validated, pinned HTTP path only.
+      // Do not let specialised extractors or third-party readers bypass preflight.
+      const ticket=configuredPinnedProxy(err);
+      if (!options?.lookup && (!options?.mode || ["raw","readable"].includes(options.mode)) && ticket)
+        return extractViaHttp(url,signal,{...options,[PINNED_PUBLIC_PROXY]:ticket});
 			return { url, title: "", content: "", error: errorMessage(err) };
 		}
 	}
@@ -806,6 +812,7 @@ async function extractViaHttp(
 			{
 				...ssrf,
 				domainPolicy,
+                ...(options?.[PINNED_PUBLIC_PROXY] ? {[PINNED_PUBLIC_PROXY]:options[PINNED_PUBLIC_PROXY]} : {}),
 				...(options?.lookup ? { lookup: options.lookup } : {}),
 			},
 		);

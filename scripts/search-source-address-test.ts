@@ -54,6 +54,15 @@ try {
   writeFileSync(configPath, JSON.stringify({ ssrf: { enabled: "false" } }));
   assert.throws(loadSsrfConfig, /ssrf.enabled.*boolean/);
   passed++;
+  const redirectVisits: Array<{url:string;headers:Headers}> = [];
+  await fetchRemoteUrl('https://one.example/start',{headers:{Authorization:'test-secret',Cookie:'test-cookie',Host:'wrong-host'}},{enabled:true,lookup:async()=>[{address:'8.8.8.8',family:4}],fetch:async(url,init)=>{
+    redirectVisits.push({url:String(url),headers:new Headers(init?.headers)});
+    return redirectVisits.length===1?new Response(null,{status:302,headers:{location:'https://two.example/final'}}):new Response('ok');
+  }});
+  assert.equal(redirectVisits.length,2);for(const name of ['authorization','cookie','host'])assert.equal(redirectVisits[1].headers.has(name),false,'cross-origin '+name+' removed');passed++;
+  let privateVisits=0;
+  await assert.rejects(fetchRemoteUrl('https://one.example/start',{}, {enabled:true,lookup:async()=>[{address:'8.8.8.8',family:4}],fetch:async()=>{privateVisits++;return new Response(null,{status:302,headers:{location:'https://127.0.0.1/private'}});}}),/Blocked internal/);
+  assert.equal(privateVisits,1,'redirect target private IP is rejected before request');passed++;
   console.log(JSON.stringify({ status: "passed", tests: passed, addresses: urls.length }));
 } finally {
   unlinkSync(configPath);

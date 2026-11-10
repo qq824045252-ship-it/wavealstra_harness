@@ -192,6 +192,13 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       fs.mkdirSync(path.join(agentDir,'agents'),{recursive:true});
       fs.writeFileSync(path.join(agentDir,'agents','reader.md'),'---\nname: reader\ndescription: Read one file and report exact content.\n---\nRead the requested file, create the requested output using write, read it back, and report exact evidence. Never guess file contents.\n');
     }
+    if (webWatchScenario && process.env.BOT_WEB_EXISTING_PROXY_CONFIG) {
+      const {parse,stringify}=require('yaml');
+      const existing=parse(fs.readFileSync(process.env.BOT_WEB_EXISTING_PROXY_CONFIG,'utf8'));
+      const compatible={tun:{enable:existing.tun?.enable},dns:{enable:existing.dns?.enable,'enhanced-mode':existing.dns?.['enhanced-mode'],'fake-ip-range':existing.dns?.['fake-ip-range'],nameserver:existing.dns?.nameserver},'mixed-port':existing['mixed-port'],'allow-lan':existing['allow-lan'],authentication:existing.authentication?.length?["unsupported-authentication"]:[],'bind-address':existing['bind-address']};
+      const destination=path.join(home,'.local/share/com.follow.clash/config.yaml');fs.mkdirSync(path.dirname(destination),{recursive:true});fs.writeFileSync(destination,stringify(compatible));
+      report.existingProxyConfigurationCopied=true;
+    }
     if (searchScenario) {
       const searchPath = process.env.BOT_SEARCH_CONFIG_PATH || path.join(os.homedir(), '.mybuddy/web-search.json');
       const liveSearch = fs.existsSync(searchPath) ? JSON.parse(fs.readFileSync(searchPath, 'utf8')) : {};
