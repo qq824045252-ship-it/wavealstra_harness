@@ -64,7 +64,7 @@ export interface BotForegroundToolOptions {
   memorySearch: (query: string) => unknown;
   memoryForget?: (ids: string[], userText: string, evidence: string) => unknown;
   isAuthority: () => boolean;
-  botWorkspace?: (botId: string) => string;
+  botWorkspace?: (botId: string, prepareDefault?: boolean) => string;
 }
 
 /** Foreground Work/memory controls. Read-only web tools are mounted separately by the host. */
@@ -288,7 +288,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
       const result = works.transaction(() => {
         assertActive();
         const source = receipt(requestId);
-        const workspacePath = input.templateId ? works.teams.resolveWorkspace(userId, input.templateId) : options.botWorkspace?.(botId);
+        const workspacePath = input.templateId ? works.teams.resolveWorkspace(userId, input.templateId) : options.botWorkspace?.(botId, true);
         if (!workspacePath) throw new Error("当前 Bot 没有可用工作目录，请在 Bot 设置中指定文件夹");
         const result = works.teams.createFromForeground(actor(), { ...input,
           operationId: `bot:${conversationId}:${options.requestNamespace ? `request:${options.requestNamespace}:` : ""}team:${api.taskId}`, workspacePath, conversationId, sourceMessageId: source.user_message_id });

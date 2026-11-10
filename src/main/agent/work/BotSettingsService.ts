@@ -34,6 +34,19 @@ export class BotSettingsService {
       mcpIds: profile.configuration?.sourceExpertId ? [] : profile.allowedMcpIds,
       connectorIds: profile.configuration?.sourceExpertId ? [] : profile.allowedConnectorIds };
   }
+  /** Resolve settings without side effects for discovery; prepare only an actual dispatch. */
+  resolveWorkspace(botId: string, prepareDefault = false): string {
+    const settings = this.get(botId);
+    if (!prepareDefault) return settings.effectiveWorkspacePath;
+    if (!settings.workspacePath) mkdirSync(settings.effectiveWorkspacePath, { recursive: true });
+    try {
+      const directory = realpathSync(settings.effectiveWorkspacePath);
+      if (!statSync(directory).isDirectory()) throw new Error("not a directory");
+      return directory;
+    } catch {
+      throw new Error("Bot 工作文件夹已不存在或无法访问，请在 Bot 设置中重新选择文件夹；未创建团队或派发任务");
+    }
+  }
   async view(botId: string): Promise<BotSettingsView> { return { settings: this.get(botId), ...await this.catalog() }; }
   async prepareMessage(botId: string, selection?: import("../../../shared/bot-conversation").BotComposerSelection) {
     const base = this.get(botId);

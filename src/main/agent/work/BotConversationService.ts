@@ -34,7 +34,7 @@ export interface BotConversationServiceOptions {
   captureSettings?: (messageId: string, botId: string, frozen: Awaited<ReturnType<import("./BotSettingsService").BotSettingsService["prepareMessage"]>>) => void;
   composerTools?: (profile: import("../../../shared/bot-work").ExpertConfigSnapshotDto, cwd: string) => Promise<import("./BotComposerRuntime").BotComposerRuntime>;
   botModel?: (botId: string) => string | undefined;
-  botWorkspace?: (botId: string) => string;
+  botWorkspace?: (botId: string, prepareDefault?: boolean) => string;
   isAuthority: () => boolean;
   memorySearch: (botId: string, query: string) => unknown;
   schedule: (work: WorkDto, operationId: string, retryBlocked?: boolean) => void;

@@ -1686,7 +1686,7 @@ export class AgentService {
       botModel: botId => this.botSettings.get(botId).modelId || undefined,
       messageSettings: (messageId, botId) => this.botSettings.messageSettings(messageId, botId),
       captureSettings: (messageId, botId, frozen) => this.botSettings.captureMessage(messageId, botId, frozen),
-      botWorkspace: botId => this.botSettings.get(botId).effectiveWorkspacePath,
+      botWorkspace: (botId, prepareDefault) => this.botSettings.resolveWorkspace(botId, prepareDefault),
       composerTools: async (profile, cwd) => {
         const { openBotComposerRuntime } = await import("./work/BotComposerRuntime");
         return openBotComposerRuntime({ profile, cwd, models: this.durableModels!,

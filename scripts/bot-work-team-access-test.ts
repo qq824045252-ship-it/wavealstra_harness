@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import { AppDatabase } from "../src/main/db/AppDatabase";
+import { BotSettingsService } from "../src/main/agent/work/BotSettingsService";
 import { BotRegistry } from "../src/main/agent/work/BotRegistry";
 import { BotConversationRepository } from "../src/main/agent/work/BotConversationRepository";
 import { botForegroundTools } from "../src/main/agent/work/BotForegroundTools";
@@ -22,6 +23,9 @@ const works = new WorkService(db.connection, { bots });
 const user: WorkActor = { kind: "user", userId: LOCAL_USER_ID, grants };
 const unwrap = (result: WorkControlResult) => { assert(result.ok, JSON.stringify(result)); return result.work; };
 const messages = new BotConversationRepository(db.connection);
+const settings = new BotSettingsService(db, bots, LOCAL_USER_ID, join(root, "bot-workspaces"),
+  async () => ({ models: [], experts: [], skills: [], mcps: [], connectors: [] }),
+  () => { throw Error("Settings changes are not part of this test"); });
 try {
   let work = unwrap(works.createWork(user, { operationId: "create", title: "Shared team facts", ownerBotId: "owner", authorization: grants }));
   work = unwrap(works.addParticipant(user, { operationId: "add-member", workId: work.workId, botId: "member", delegatedScope: ["workspace:read"] }));
@@ -56,7 +60,7 @@ try {
   const ownerInput = messages.accept(LOCAL_USER_ID, { botId: "owner", requestId: "owner-team", text: "请用盘点团队核对两个文件，保留我这句话" });
   const ownerTools = botForegroundTools({ db: db.connection, userId: LOCAL_USER_ID, botId: "owner",
     conversationId: ownerInput.conversationId, bots, messages, works, isAuthority: () => true,
-    botWorkspace: () => root, schedule: () => { throw Error("Team must use WorkTeamService, not an ordinary dispatch"); },
+    botWorkspace: (id, prepare) => settings.resolveWorkspace(id, prepare), schedule: () => { throw Error("Team must use WorkTeamService, not an ordinary dispatch"); },
     wake: () => {}, memorySearch: () => [] });
   const invokeOwner = async (name: string, args: unknown, taskId = "saved-team-create") => {
     const api = { callId: `owner-${++call}`, taskId, memo: async () => ownerInput.requestId } as unknown as ToolExecutionApi;
@@ -95,8 +99,12 @@ try {
   const freeRequest = { title: "自然组队", goalDescription: "当前委托分工", criteria: ["核对两个文件"], taskAssignment: {
     ownerResponsibility: "汇总", members: [{ botId: "outsider", responsibility: "读取乙" },
       { botId: "member", responsibility: "核对乙", dependsOnBotIds: ["outsider"] }] } };
+  const defaultWorkspace = settings.get("owner").effectiveWorkspacePath;
+  assert(!existsSync(defaultWorkspace), "listing templates/candidates must not create the unused Bot directory");
   const free = await invokeOwner("work_team_create", freeRequest, "free-team");
   assert(free.ok, JSON.stringify(free));
+  assert(existsSync(defaultWorkspace), "first free team dispatch creates the host-owned default directory");
+  assert.equal(free.work.workspacePath, defaultWorkspace);
   assert.equal(free.work.sourceMessageId, ownerInput.userMessageId);
   assert.equal(free.team.ownerBotId, "owner");
   assert.deepEqual(free.team.members.map((member: { delegatedScope: string[] }) => member.delegatedScope), [["workspace:read"], ["workspace:read"]]);
@@ -136,6 +144,16 @@ try {
     members: [{ ...taskAssignment.members[0], delegatedScope: ["workspace:write"] }] } }, "expanded-scope"), /unrecognized|Unrecognized/);
   assert.deepEqual(db.connection.prepare("SELECT COUNT(*) AS n FROM work_teams").get(), countBeforeInvalid);
   assert.deepEqual(bots.getBot("owner")?.authorization, minimumAuthorization());
+  // A user-selected directory must not silently fall back to the managed default.
+  const missingCustom = join(root, "removed-user-folder");
+  const beforeMissing = db.connection.prepare("SELECT COUNT(*) AS n FROM work_teams").get();
+  const beforeSettings = settings.get("owner");
+  db.connection.prepare("INSERT INTO bot_execution_settings VALUES (?,?,?)").run("owner", 1,
+    JSON.stringify({ ...beforeSettings, revision: 1, workspacePath: missingCustom, effectiveWorkspacePath: missingCustom }));
+  await assert.rejects(invokeOwner("work_team_create", freeRequest, "missing-folder-team"), /重新选择文件夹.*未创建团队/);
+  assert(!existsSync(missingCustom), "missing custom directories are never recreated or replaced");
+  assert.deepEqual(db.connection.prepare("SELECT COUNT(*) AS n FROM work_teams").get(), beforeMissing);
+  db.connection.prepare("DELETE FROM bot_execution_settings WHERE bot_id=?").run("owner");
   const details = await invokeOwner("work_query_status", { workId: started.work.workId });
   assert.equal(details[0].team.executions.length, 2);
   const paused = await invokeOwner("work_pause", { workId: started.work.workId, versionGuard: details[0].versionGuard }, "pause-team");
