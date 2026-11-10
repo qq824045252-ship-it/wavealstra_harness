@@ -100,6 +100,10 @@ async function main() {
     assert.equal(memory.listExactScope("bot", "alice").filter(atom => atom.status === "active").length, 0);
     assert(bridge.context("bob", other.source).includes("日文简短"), "forget cannot delete another Bot's same-title fact");
     const bobAtom = memory.listExactScope("bot", "bob")[0];
+    const bobBrowse = memory.list({ scopeType: "bot", scopeId: "bob", limit: 1 });
+    assert.equal(bobBrowse.length, 1);
+    assert(bobBrowse.every(atom => atom.scopes.some(scope => scope.scopeType === "bot" && scope.scopeId === "bob")), "settings exact Bot filter applies before limit");
+    assert.equal(memory.list({ scopeType: "bot", scopeId: "absent-bot" }).length, 0, "unknown Bot does not fall back to all memories");
     assert.throws(() => bridge.forget("alice", [bobAtom.id], "忘记回复语言", "忘记回复语言"), /其他范围/);
     assert.throws(() => bridge.forget("bob", [bobAtom.id], "今天聊什么", "忘记回复语言"), /当前用户/);
     assert.throws(() => bridge.forget("bob", [bobAtom.id], "不要忘记回复语言", "忘记回复语言"), /当前用户/);

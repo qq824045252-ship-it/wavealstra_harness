@@ -37,6 +37,7 @@ const SCOPE_LABEL: Record<string, string> = {
   workspace: "工作空间",
   project: "项目",
   task: "任务",
+  bot: "Bot 私人记忆",
 };
 const STATUS_LABEL: Record<string, string> = {
   active: "有效",
@@ -82,6 +83,7 @@ export default function MemoryKernelExplorer({ focusMemoryId }: { focusMemoryId?
   const spaces = useAppStore((s) => s.spaces);
   const projects = useAppStore((s) => s.projects);
   const tasks = useAppStore((s) => s.tasks);
+  const bots = useAppStore((s) => s.botIdentities);
   const [layer, setLayer] = useState<MemoryLayer>("l1");
   const [l0FocusId, setL0FocusId] = useState<string | null>(null);
   const [l0ResetVersion, setL0ResetVersion] = useState(0);
@@ -96,6 +98,7 @@ export default function MemoryKernelExplorer({ focusMemoryId }: { focusMemoryId?
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [scope, setScope] = useState("all");
+  const [botScopeId, setBotScopeId] = useState("");
   const [kind, setKind] = useState("all");
   const [lifecycle, setLifecycle] = useState("active");
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -136,6 +139,7 @@ export default function MemoryKernelExplorer({ focusMemoryId }: { focusMemoryId?
     const items = await api.list({
       query: debouncedQuery || undefined,
       scopeType: scope === "all" ? undefined : (scope as MemoryScopeType),
+      scopeId: scope === "bot" && botScopeId ? botScopeId : undefined,
       kind: kind === "all" ? undefined : (kind as MemoryKind),
       status: lifecycle === "all" ? undefined : (lifecycle as MemoryStatus),
       limit: 500,
@@ -145,7 +149,7 @@ export default function MemoryKernelExplorer({ focusMemoryId }: { focusMemoryId?
       if (source) return [source, ...items];
     }
     return items;
-  }, [debouncedQuery, scope, kind, lifecycle]);
+  }, [debouncedQuery, scope, botScopeId, kind, lifecycle]);
 
   const fetchRecordsRef = useRef(fetchRecords);
   useEffect(() => { fetchRecordsRef.current = fetchRecords; }, [fetchRecords]);
@@ -492,6 +496,7 @@ export default function MemoryKernelExplorer({ focusMemoryId }: { focusMemoryId?
     if (s.scopeType === "workspace") return spaces.find((item) => item.id === s.scopeId)?.name ?? s.scopeId;
     if (s.scopeType === "project") return projects.find((item) => item.id === s.scopeId)?.name ?? s.scopeId;
     if (s.scopeType === "task") return tasks.find((item) => item.id === s.scopeId)?.title ?? s.scopeId;
+    if (s.scopeType === "bot") return bots.find((item) => item.botId === s.scopeId)?.displayName ?? s.scopeId;
     return s.scopeId;
   };
 
@@ -761,7 +766,12 @@ export default function MemoryKernelExplorer({ focusMemoryId }: { focusMemoryId?
               <option value="project">项目 · {stats?.byScope?.project ?? 0}</option>
               <option value="workspace">工作空间 · {stats?.byScope?.workspace ?? 0}</option>
               <option value="task">任务级 · {stats?.byScope?.task ?? 0}</option>
+              <option value="bot">Bot 私人记忆 · {stats?.byScope?.bot ?? 0}</option>
             </select>
+            {scope === "bot" && <select className="new-project-input" aria-label="筛选 Bot 记忆" value={botScopeId} onChange={(event) => setBotScopeId(event.target.value)}>
+              <option value="">全部 Bot</option>
+              {bots.map((bot) => <option key={bot.botId} value={bot.botId}>{bot.displayName}</option>)}
+            </select>}
             <span>仅筛选列表，AI 整理始终覆盖全部范围</span>
           </div>
           <div className="memory-filters">
@@ -769,7 +779,7 @@ export default function MemoryKernelExplorer({ focusMemoryId }: { focusMemoryId?
               className="new-project-input"
               aria-label="搜索记忆条目"
               value={query}
-              placeholder={scope === "all" ? "搜索全部记忆条目" : `搜索${scope === "global" ? "全局" : scope === "project" ? "项目" : scope === "workspace" ? "工作空间" : "任务级"}记忆`}
+              placeholder={scope === "all" ? "搜索全部记忆条目" : scope === "bot" ? "搜索 Bot 私人记忆" : `搜索${SCOPE_LABEL[scope] ?? scope}记忆`}
               onChange={(event) => setQuery(event.target.value)}
             />
             <select className="new-project-input" aria-label="筛选记忆类型" value={kind} onChange={(event) => setKind(event.target.value)}>

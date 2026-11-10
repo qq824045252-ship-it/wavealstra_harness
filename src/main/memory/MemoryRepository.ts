@@ -104,8 +104,9 @@ export class MemoryRepository {
     if (input.kind) { where.push("m.kind = ?"); args.push(input.kind); }
     if (input.status) { where.push("m.status = ?"); args.push(input.status); }
     if (input.scopeType) {
-      where.push("EXISTS (SELECT 1 FROM memory_scopes s WHERE s.memory_id = m.id AND s.scope_type = ?)");
+      where.push(`EXISTS (SELECT 1 FROM memory_scopes s WHERE s.memory_id = m.id AND s.scope_type = ?${input.scopeId !== undefined ? " AND s.scope_id = ?" : ""})`);
       args.push(input.scopeType);
+      if (input.scopeId !== undefined) args.push(input.scopeId);
     }
     const q = input.query?.trim();
     if (q) {

@@ -82,7 +82,23 @@ function fixtures(): void {
     memoryGateway: { status: async () => ({ enabled: false, running: false, writeEnabled: false, port: 3351 }), listGrants: async () => [] },
   };
   (window as any).api = api;
-  useAppStore.setState({ spaces: [{ id: "ws", name: "研发工作空间" } as any], projects: [], tasks: [] });
+  useAppStore.setState({ spaces: [{ id: "ws", name: "研发工作空间" } as any], projects: [], tasks: [], botIdentities: [] });
+}
+
+function botMemoryFixtures() {
+  fixtures();
+  useAppStore.setState({ botIdentities: [{ botId: "bot-study", displayName: "学习搭子" }, { botId: "bot-travel", displayName: "旅行助理" }] as any });
+  const records = [
+    { ...atom, id: "study-memory", title: "学习时偏好简短中文", scopes: [{ scopeType: "bot", scopeId: "bot-study", binding: "primary" }] },
+    { ...atom, id: "travel-memory", title: "旅行偏好步行路线", scopes: [{ scopeType: "bot", scopeId: "bot-travel", binding: "primary" }] },
+  ];
+  const requests: any[] = [];
+  api.memory.stats = async () => ({ ...stats, total: 2, byScope: { bot: 2 } });
+  api.memory.list = async (request: any) => {
+    requests.push(request);
+    return records.filter(r => !request.scopeId || r.scopes[0].scopeId === request.scopeId);
+  };
+  return requests;
 }
 
 function skillHistoryFixtures() {
@@ -180,6 +196,20 @@ function organizationFixtures() {
 
 export async function run(): Promise<string[]> {
   const results: string[] = [];
+  const botRequests = botMemoryFixtures();
+  mount(<MemoryTab />);
+  await until(() => host.textContent?.includes("学习时偏好简短中文"), "Bot memories loaded");
+  await filter("筛选记忆范围", "bot");
+  await filter("筛选 Bot 记忆", "bot-study");
+  await until(() => !host.textContent?.includes("旅行偏好步行路线"), "only selected Bot memory");
+  check(botRequests.at(-1)?.scopeType === "bot" && botRequests.at(-1)?.scopeId === "bot-study", "Bot filter reaches memory API");
+  check(host.textContent?.includes("学习搭子"), "readable Bot name");
+  await filter("筛选 Bot 记忆", "bot-travel");
+  await until(() => host.textContent?.includes("旅行偏好步行路线") && !host.textContent?.includes("学习时偏好简短中文"), "switch Bot");
+  await filter("筛选记忆范围", "all");
+  await until(() => host.textContent?.includes("学习时偏好简短中文"), "all restores both Bots");
+  check(botRequests.at(-1)?.scopeId === undefined, "Bot scope never leaks into all filter");
+  results.push("Bot-private memory browsing uses readable names and exact scope; switching and all filter remain independent");
   fixtures();
   const a = deferred(), b = deferred();
   const requested: string[] = [];
@@ -662,15 +692,17 @@ export async function run(): Promise<string[]> {
   return results;
 }
 
-export async function preview(page: "organization" | "organization-narrow" | "memory" | "delete" | "select" | "select-delete" | "scenarios" | "scene-delete" | "scenario-select" | "scenario-select-delete" | "skills" | "skill-history" | "skill-history-delete" | "skill-queue" | "skill-queue-modal" | "settings", dark = false): Promise<void> {
-  if (page === "organization" || page === "organization-narrow") { const fixture = organizationFixtures(); fixture.data.run = fixture.ready(); }
+export async function preview(page: "bot-memory" | "organization" | "organization-narrow" | "memory" | "delete" | "select" | "select-delete" | "scenarios" | "scene-delete" | "scenario-select" | "scenario-select-delete" | "skills" | "skill-history" | "skill-history-delete" | "skill-queue" | "skill-queue-modal" | "settings", dark = false): Promise<void> {
+  if (page === "bot-memory") botMemoryFixtures();
+  else if (page === "organization" || page === "organization-narrow") { const fixture = organizationFixtures(); fixture.data.run = fixture.ready(); }
   else if (page === "skill-queue" || page === "skill-queue-modal") learningFixtures();
   else if (page === "scenarios" || page === "scene-delete" || page === "scenario-select" || page === "scenario-select-delete") projectionFixtures();
   else if (page === "skill-history" || page === "skill-history-delete") skillHistoryFixtures(); else fixtures();
   document.documentElement.dataset.theme = dark ? "dark" : "light";
   mount(<MemoryTab />);
   await until(() => buttons().some((b) => b.textContent === "刷新" && !b.disabled), "preview load");
-  if (page === "organization" || page === "organization-narrow") {
+  if (page === "bot-memory") { await filter("筛选记忆范围", "bot"); }
+  else if (page === "organization" || page === "organization-narrow") {
     await until(() => buttons().some(b => b.textContent === "查看 3 项变更与冲突"), "organization preview loaded");
     await click("查看 3 项变更与冲突");
     host.querySelector<HTMLDetailsElement>(".memory-organization-proposal")!.open = true;

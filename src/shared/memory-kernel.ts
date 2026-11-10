@@ -190,6 +190,8 @@ export interface MemorySearchRequest {
 /** Cross-scope browse filter for the settings Memory explorer (not task-relative like search). */
 export interface MemoryListRequest {
   query?: string;
+  /** Optional exact identity within scopeType, applied before pagination. */
+  scopeId?: string;
   scopeType?: MemoryScopeType;
   kind?: MemoryKind;
   status?: MemoryStatus;
