@@ -235,7 +235,18 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       await until(()=>evaluate(`document.querySelector('.bot-thread').innerText.includes('579')`),'return restores team A conversation');
       await evaluate(`document.querySelector('[aria-label="团队设置与管理"]').click()`);
       await until(()=>evaluate(`!!document.querySelector('form[aria-label="团队设置"]')`),'team-specific settings reachable');
-      report.checks.push('real UI team creation enters shared full workspace; real concurrent model reply; actual team Work returns 579 and closes; personal and second team histories isolated; settings reachable');
+      const customWorkspace = path.join(home, 'custom-team-folder'); fs.mkdirSync(customWorkspace);
+      await evaluate(`document.querySelector('form[aria-label="团队设置"] input[placeholder="留空使用团队自己的默认文件夹"]').focus()`);
+      await rpc('Input.insertText', {text:customWorkspace});
+      await evaluate(`document.querySelector('form[aria-label="团队设置"] button[type=submit]').click()`);
+      await until(()=>evaluate(`!document.querySelector('dialog[open]')`),'team folder setting saved');
+      const savedTeam=(await evaluate(`window.api.botWork.teamControl({kind:'list_templates'})`)).templates.find(t=>t.templateId===teamId);
+      assert.equal(savedTeam.workspacePath,customWorkspace);
+      const oldWork=await evaluate(`window.api.botWork.getWork(${JSON.stringify(works[0].workId)})`);
+      assert.equal(oldWork.workspacePath,works[0].workspacePath,'changing team folder does not migrate prior Work');
+      await evaluate(`document.querySelector('[aria-label="团队设置与管理"]').click()`);
+      await until(()=>evaluate(`document.querySelector('form[aria-label="团队设置"] input[placeholder="留空使用团队自己的默认文件夹"]').value===${JSON.stringify(customWorkspace)}`),'saved folder visible on reopen');
+      report.checks.push('real UI team creation enters shared full workspace; real concurrent model reply; actual team Work returns 579 and closes; personal and second team histories isolated; team custom-folder save and reopen preserve prior Work');
     } else if (concurrentScenario) {
       const latestUser = async () => (await history()).messages.filter(m=>m.role==='user').at(-1);
       const assistant = async requestId => (await history()).messages.find(m=>m.role==='assistant'&&m.requestId===requestId);
@@ -623,7 +634,7 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     }
     report.checks.push('criticism does not cancel; explicit stop does not restart query; no Work created');
     }
-    const shot=await rpc('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});fs.writeFileSync(path.join(out,completionScenario?'completion.png':trackingScenario?'tracking.png':teamScenario?'team.png':cacheScenario?'cache.png':memoryScenario?'memory.png':watchScenario?'watch.png':'weather.png'),Buffer.from(shot.data,'base64'));
+    const shot=await rpc('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});fs.writeFileSync(path.join(out,teamWorkspaceScenario?'team-workspace.png':completionScenario?'completion.png':trackingScenario?'tracking.png':teamScenario?'team.png':cacheScenario?'cache.png':memoryScenario?'memory.png':watchScenario?'watch.png':'weather.png'),Buffer.from(shot.data,'base64'));
     report.status='passed';
   } catch (error) {
     report.status = 'failed'; report.error = String(error.stack || error); console.error(error); process.exitCode = 1;
