@@ -1,9 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ModelRequestDiagnostic, TaskDiagnosticsDto, ToolDiagnostic } from "@shared/task-diagnostics";
-import { buildDiagnosticsReport, cacheLine, type Finding, type TurnDiagnostics, type Verdict } from "@/lib/diagnosticsRules";
+import {
+  buildDiagnosticsReport,
+  cacheLine,
+  type CacheTrendPoint,
+  type Finding,
+  type TurnDiagnostics,
+  type Verdict,
+} from "@/lib/diagnosticsRules";
 import "./TaskDiagnosticsPanel.css";
 
 const sourceLabels = { main: "主代理", subagent: "子代理／会诊", auxiliary: "辅助任务" };
+const groupLabels = { main: "主任务", subagent: "子代理", auxiliary: "辅助任务" };
 const costLabels = { "provider-reported": "供应商报告", "pi-native": "Pi 原生计价", "sdk-default": "未取得费用（SDK 初始值）" };
 const statusLabels = { running: "执行中", completed: "完成", failed: "失败", aborted: "已停止", interrupted: "观测中断" };
 const verdictLabels: Record<Verdict, string> = { ok: "正常", warn: "需注意", error: "异常", unknown: "无法判断", waiting: "在等人" };
@@ -13,6 +21,7 @@ const duration = (value: number | null) => value === null ? "未知" : value < 1
 const money = (value: number | null, complete: boolean) => value === null ? "未知" : `${complete ? "" : "已知部分 "}$${value.toFixed(6)}`;
 const time = (value: number) => new Date(value).toLocaleTimeString();
 const changedLabels: Record<string, string> = { model: "模型", tools: "工具声明", instructions: "指令", system: "系统指令", reasoning: "推理设置", thinking: "思考设置" };
+type SourceKind = "main" | "subagent" | "auxiliary";
 
 function VerdictBadge({ verdict, small = false }: { verdict: Verdict; small?: boolean }): React.JSX.Element {
   return (
@@ -49,7 +58,7 @@ function RequestDetails({ request }: { request: ModelRequestDiagnostic }) {
         <dt>请求 ID</dt><dd><code>{request.id}</code></dd>
         <dt>轮次身份</dt><dd><code>{request.executionId}</code></dd>
         <dt>执行身份</dt><dd><code>{request.executionScope} / 会话 {request.conversationId} / 调用 {request.generationTaskId}</code></dd>
-        <dt>首个输出等待</dt><dd>{duration(request.firstResponseAt === null ? null : Math.max(0, request.firstResponseAt - request.startedAt))}</dd>
+        <dt>首个输出等待</dt><dd>{duration(request.firstResponseAt === null ? null : Math.max(0, request.firstResponseAt - request.startedAt))}（参考指标，不参与判定）</dd>
         <dt>结果</dt><dd>{request.outcome ?? "尚未完成"}{request.error ? `：${request.error}` : ""}</dd>
       </dl>
       <div className="task-diagnostic-table-wrap"><table><thead><tr><th>新输入 token</th><th>输出 token</th><th>缓存读取</th><th>缓存写入</th><th>费用</th></tr></thead>
@@ -78,24 +87,25 @@ function TurnCard({ turn }: { turn: TurnDiagnostics }): React.JSX.Element {
   const retries = turn.requests.reduce((sum, request) => sum + Math.max(0, request.attempts.length - 1), 0);
   const failedTools = turn.tools.filter((tool) => tool.status === "failed").length;
   const delta = turn.hitRateDeltaPct;
+  // 只有真的掉到 0% 才是问题；正常波动不上红
+  const cacheAlert = turn.cache.hitRate === 0;
   return <section className={`td-turn td-turn--${turn.verdict}`} data-turn-key={turn.key} data-verdict={turn.verdict}>
     <header className="td-turn-head">
       <VerdictBadge verdict={turn.verdict} />
       <span className="td-turn-label">{turn.label}</span>
       <span className="td-turn-time">{time(turn.startedAt)}</span>
-      <span className="td-turn-source">{sourceLabels[turn.sourceKind]}</span>
       <span className="td-turn-duration">{duration(turn.endedAt === null ? null : Math.max(0, turn.endedAt - turn.startedAt))}</span>
       <button type="button" className="td-turn-toggle" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
         {open ? "收起详情" : "展开详情"}
       </button>
     </header>
 
-    {/* 缓存：用户最关心的口径，单独一行，永远是加权计算 */}
-    <div className="td-cache" data-testid="turn-cache">
+    {/* 缓存：用户最关心的口径，单独一行，按已知分量加权 */}
+    <div className={`td-cache${cacheAlert ? " td-cache--alert" : ""}`} data-testid="turn-cache">
       <span className="td-cache-rate">{turn.cache.hitRate === null ? "缓存命中 —" : `缓存命中 ${Math.round(turn.cache.hitRate * 100)}%`}</span>
       <span className="td-cache-detail">{cacheLine(turn.cache).replace(/^缓存命中 [^·]+ · /, "")}</span>
-      {delta !== null && (
-        <span className={`td-cache-delta ${delta < 0 ? "is-down" : delta > 0 ? "is-up" : ""}`} title={`上一轮 ${turn.previousHitRate === null ? "未知" : `${Math.round(turn.previousHitRate * 100)}%`}`}>
+      {delta !== null && delta !== 0 && (
+        <span className={`td-cache-delta${cacheAlert ? " is-down" : ""}`} title={turn.previousHitRate === null ? "" : `上一轮 ${Math.round(turn.previousHitRate * 100)}%`}>
           {delta > 0 ? "+" : ""}{delta}pp
         </span>
       )}
@@ -104,7 +114,7 @@ function TurnCard({ turn }: { turn: TurnDiagnostics }): React.JSX.Element {
     <div className="td-metrics">
       <span>模型 {turn.requests.length} 次{retries > 0 ? `（重试 ${retries}）` : ""}</span>
       <span>工具 {turn.tools.length} 个{failedTools > 0 ? `（失败 ${failedTools}）` : ""}</span>
-      <span>首字 {duration(turn.firstTokenMs)}</span>
+      <span title="参考指标，不参与判定">首字 {duration(turn.firstTokenMs)}</span>
       <span>{turn.outputTps === null ? "速率 未知" : `${turn.outputTps.toFixed(1)} tok/s`}</span>
       <span>{turn.costUsd === null ? "费用 未知" : `费用 ${money(turn.costUsd, turn.costComplete)}`}</span>
       <span>模型耗时 {duration(turn.modelMs)}</span>
@@ -139,6 +149,71 @@ function TurnCard({ turn }: { turn: TurnDiagnostics }): React.JSX.Element {
   </section>;
 }
 
+const trendStyles: Array<{ sourceKind: SourceKind; color: string; dash?: string }> = [
+  { sourceKind: "main", color: "var(--fg, #e6e6e6)" },
+  { sourceKind: "subagent", color: "var(--warning, #f5a623)", dash: "6 4" },
+  { sourceKind: "auxiliary", color: "var(--fg-muted, #888)", dash: "2 3" },
+];
+
+/** 缓存命中率随轮次的走势：主任务/子代理分色，未知值断开，0% 用异常色标出。 */
+function CacheTrend({ points }: { points: CacheTrendPoint[] }): React.JSX.Element {
+  const known = points.filter((point) => point.hitRate !== null);
+  const width = 600;
+  const height = 132;
+  const left = 32;
+  const right = 12;
+  const top = 8;
+  const bottom = 22;
+  const x = (index: number) => points.length <= 1
+    ? left + (width - left - right) / 2
+    : left + ((width - left - right) * index) / (points.length - 1);
+  const y = (rate: number) => top + (height - top - bottom) * (1 - rate);
+  const lastRate = [...points].reverse().find((point) => point.hitRate !== null)?.hitRate ?? null;
+  const average = known.length > 0 ? known.reduce((sum, point) => sum + (point.hitRate ?? 0), 0) / known.length : null;
+  return <section className="td-trend" data-testid="cache-trend">
+    <header className="td-trend-head">
+      <span className="td-trend-title">缓存命中率趋势</span>
+      <span className="td-trend-meta">
+        最近 {lastRate === null ? "—" : `${Math.round(lastRate * 100)}%`} · 均值 {average === null ? "—" : `${Math.round(average * 100)}%`} · {points.length} 轮
+      </span>
+      <div className="td-trend-legend">
+        {trendStyles.map((style) => (
+          <span key={style.sourceKind} className="td-trend-legend-item">
+            <svg width="18" height="8" aria-hidden><line x1="0" y1="4" x2="18" y2="4" stroke={style.color} strokeWidth="2" strokeDasharray={style.dash} /></svg>
+            {groupLabels[style.sourceKind]}
+          </span>
+        ))}
+      </div>
+    </header>
+    <svg className="td-trend-svg" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="缓存命中率趋势">
+      {[0, 0.25, 0.5, 0.75, 1].map((tick) => (
+        <g key={tick}>
+          <line x1={left} y1={y(tick)} x2={width - right} y2={y(tick)} className="td-trend-grid" />
+          <text x={left - 6} y={y(tick) + 3} textAnchor="end" className="td-trend-axis">{Math.round(tick * 100)}%</text>
+        </g>
+      ))}
+      {trendStyles.map((style) => {
+        const own = points
+          .map((point, index) => ({ point, index }))
+          .filter((item) => item.point.sourceKind === style.sourceKind && item.point.hitRate !== null);
+        if (own.length === 0) return null;
+        const polygon = own.map((item) => `${x(item.index)},${y(item.point.hitRate ?? 0)}`).join(" ");
+        return <polyline key={style.sourceKind} points={polygon} fill="none" stroke={style.color} strokeWidth="2"
+          strokeDasharray={style.dash} strokeLinejoin="round" strokeLinecap="round" />;
+      })}
+      {points.map((point, index) => point.hitRate === null ? null : (
+        <circle key={point.key} cx={x(index)} cy={y(point.hitRate)} r={point.hitRate === 0 ? 4 : 2.6}
+          fill={point.hitRate === 0 ? "var(--danger, #ff3b30)" : trendStyles.find((style) => style.sourceKind === point.sourceKind)?.color}
+          className="td-trend-dot">
+          <title>{`${groupLabels[point.sourceKind]} ${point.label} · 命中 ${Math.round(point.hitRate * 100)}%`}</title>
+        </circle>
+      ))}
+    </svg>
+    {points.length < 2 && <p className="task-diagnostic-note">只有一轮观测，还不足以形成趋势。</p>}
+    {known.length < points.length && <p className="task-diagnostic-note">{points.length - known.length} 轮的命中率未知（用量缺失），趋势里留空而不补 0。</p>}
+  </section>;
+}
+
 type Filter = "all" | Verdict;
 
 /** Pure view is exported so a desktop fixture can inspect the same product component. */
@@ -146,8 +221,15 @@ export function TaskDiagnosticsView({ value, now = Date.now() }: { value: TaskDi
   const report = useMemo(() => buildDiagnosticsReport(value, now), [value, now]);
   const [filter, setFilter] = useState<Filter>("all");
   const [showRules, setShowRules] = useState(false);
-  const turns = filter === "all" ? report.turns : report.turns.filter((turn) => turn.verdict === filter);
-  const visible = [...turns].sort((a, b) => b.startedAt - a.startedAt);
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const groupOrder: Array<{ key: SourceKind; title: string }> = [
+    { key: "main", title: groupLabels.main },
+    { key: "subagent", title: groupLabels.subagent },
+    { key: "auxiliary", title: groupLabels.auxiliary },
+  ];
+  const rowsIn = (sourceKind: SourceKind) => [...report.groups[sourceKind]]
+    .filter((turn) => filter === "all" || turn.verdict === filter)
+    .sort((a, b) => b.startedAt - a.startedAt);
   const filterOrder: Array<{ key: Filter; label: string; count: number }> = [
     { key: "all", label: "全部", count: report.turns.length },
     { key: "error", label: "异常", count: report.summary.error },
@@ -170,9 +252,19 @@ export function TaskDiagnosticsView({ value, now = Date.now() }: { value: TaskDi
         ))}
         <span className="td-count">共 {report.turns.length} 轮 · {report.totals.requests} 请求 · {report.totals.tools} 工具</span>
       </div>
+      <div className="td-summary-groups">
+        {groupOrder.map((group) => (
+          <span key={group.key} className="td-group-count" data-group-count={group.key}>
+            {group.title} {report.groups[group.key].length} 轮
+            {report.groups[group.key].length > 0
+              && `（异常 ${report.groupSummary[group.key].error} · 需注意 ${report.groupSummary[group.key].warn} · 无法判断 ${report.groupSummary[group.key].unknown}）`}
+          </span>
+        ))}
+      </div>
       <p className="task-diagnostic-note">
-        判定只基于观测到的事实：失败/重试/HTTP 错误/工具失败为硬规则；首字与速率的阈值是同任务同模型的历史分位（首字 {report.baseline.firstToken.p90 === null ? "样本不足" : `p90 ${duration(report.baseline.firstToken.p90)}`} · 速率 {report.baseline.tps.p10 === null ? "样本不足" : `p10 ${report.baseline.tps.p10.toFixed(1)} tok/s`}）。
-        缺数据一律标「无法判断」，不按 0 补。累计只含本任务全量观测（不再按 200 条截断）。
+        判定只基于观测到的事实：失败/重试/HTTP 错误/工具失败为硬规则；缓存只在命中率掉到 0% 时才判回源，正常波动不报警。
+        首字延迟只作为参考指标显示，不参与判定；输出速率对比同任务同模型历史 p10（{report.baseline.tps.p10 === null ? "样本不足，不判定" : `p10 ${report.baseline.tps.p10.toFixed(1)} tok/s`}）。
+        缺数据一律标「无法判断」，不按 0 补。
       </p>
     </div>
 
@@ -192,9 +284,30 @@ export function TaskDiagnosticsView({ value, now = Date.now() }: { value: TaskDi
       {report.rules.map((rule) => <li key={rule.ruleId}><span className="td-rule">{rule.ruleId}</span>{rule.text}</li>)}
     </ul>}
 
-    {visible.length > 0
-      ? visible.map((turn) => <TurnCard turn={turn} key={turn.key} />)
-      : <p className="task-diagnostic-note">{report.turns.length === 0 ? "尚无观测记录。历史回放不会伪造新的请求。" : `没有「${verdictLabels[filter as Verdict] ?? "该判定"}」的轮次。`}</p>}
+    <CacheTrend points={report.cacheTrend} />
+
+    {report.turns.length === 0 && <p className="task-diagnostic-note">尚无观测记录。历史回放不会伪造新的请求。</p>}
+
+    {groupOrder.map((group) => {
+      const total = report.groups[group.key].length;
+      if (total === 0) return null;
+      const rows = rowsIn(group.key);
+      // 主任务默认展开；子代理/辅助任务轮次多时收起，避免一屏全是子代理
+      const isCollapsed = collapsed[group.key] ?? (group.key !== "main" && total > 3);
+      return <section className="td-group" key={group.key} data-group={group.key}>
+        <button type="button" className="td-group-head" aria-expanded={!isCollapsed}
+          onClick={() => setCollapsed((current) => ({ ...current, [group.key]: !isCollapsed }))}>
+          <span className="td-group-title">{group.title}</span>
+          <span className="td-group-meta">
+            {total} 轮 · 异常 {report.groupSummary[group.key].error} · 需注意 {report.groupSummary[group.key].warn} · 无法判断 {report.groupSummary[group.key].unknown}
+          </span>
+          <span className="td-group-toggle">{isCollapsed ? "展开" : "收起"}</span>
+        </button>
+        {!isCollapsed && (rows.length > 0
+          ? rows.map((turn) => <TurnCard turn={turn} key={turn.key} />)
+          : <p className="task-diagnostic-note">{filter === "all" ? "没有记录。" : `没有「${verdictLabels[filter as Verdict] ?? "该判定"}」的轮次。`}</p>)}
+      </section>;
+    })}
   </div>;
 }
 
@@ -227,7 +340,7 @@ export default function TaskDiagnosticsPanel({ taskId }: { taskId: string | null
   return <section className="runtime-inspector-section task-diagnostics-panel" data-testid="task-diagnostics-panel">
     <div className="runtime-inspector-section-head">
       <h3>任务执行诊断</h3>
-      <span>只读{value && (value.requests.some((row) => row.status === "running") || value.waits.some((row) => row.status === "pending")) ? " · 每 3 秒更新" : ""}</span>
+      <span>只读{live ? " · 每 3 秒更新" : ""}</span>
       <button type="button" className="td-refresh" onClick={() => setTick((value) => value + 1)}>刷新</button>
     </div>
     {error && <p role="alert">{error}</p>}

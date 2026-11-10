@@ -149,7 +149,8 @@ console.log("== 硬规则 ==");
   assert(waiting.summary.waiting === 1, "汇总计数把 waiting 单独计");
 
   const slowFirst = buildDiagnosticsReport(dto({ requests: [request({ id: "r1", executionId: "t1", firstResponseAt: NOW - 60_000 + 45_000 })] }), NOW);
-  assert(slowFirst.turns[0]?.verdict === "warn", "首字 45s → 需注意");
+  assert(slowFirst.turns[0]?.verdict === "ok", "首字慢不参与判定（仍为正常）");
+  assert(!slowFirst.turns[0]?.findings.some((finding) => finding.ruleId === "A5"), "不再有 A5 首字规则");
 }
 
 console.log("== 观测质量规则 ==");
@@ -174,28 +175,50 @@ console.log("== 观测质量规则 ==");
 console.log("== 相对规则（基线不足不编造） ==");
 {
   const few = buildBaseline([request({ id: "r1", executionId: "t1" }), request({ id: "r2", executionId: "t2" })]);
-  assert(few.firstToken.p90 === null && few.firstToken.samples === 2, "样本不足 → 无 p90");
-  const fewReport = buildDiagnosticsReport(dto({ requests: [request({ id: "r1", executionId: "t1", firstResponseAt: NOW - 60_000 + 25_000 })] }), NOW);
-  assert(!fewReport.turns[0]?.findings.some((finding) => finding.ruleId === "C1"), "样本不足不触发 C1");
+  assert(few.tps.p10 === null && few.tps.samples === 2, "样本不足 → 无 p10");
 
-  const base = Array.from({ length: 6 }, (_, index) => request({
-    id: `b${index}`, executionId: `t${index}`,
-    startedAt: NOW - 600_000 + index * 10_000, firstResponseAt: NOW - 600_000 + index * 10_000 + 2_000,
-    finishedAt: NOW - 600_000 + index * 10_000 + 12_000,
-  }));
-  const withBaseline = buildDiagnosticsReport(dto({ requests: [
-    ...base,
-    request({ id: "slow", executionId: "t99", startedAt: NOW - 40_000, firstResponseAt: NOW - 40_000 + 20_000, finishedAt: NOW - 30_000 }),
-  ] }), NOW);
-  const slowTurn = withBaseline.turns.find((turn) => turn.key === "t99");
-  assert(Boolean(slowTurn?.findings.some((finding) => finding.ruleId === "C1")), "首字显著慢于历史 p90 → C1");
-
-  const dropTurn = buildDiagnosticsReport(dto({ requests: [
+  // 缓存：只有掉到 0% 才判定，普通波动不报警
+  const mildDrop = buildDiagnosticsReport(dto({ requests: [
     request({ id: "a", executionId: "t1", usage: { input: 1_000, output: 1, cacheRead: 9_000, cacheWrite: 0 } }),
-    request({ id: "b", executionId: "t2", usage: { input: 9_000, output: 1, cacheRead: 1_000, cacheWrite: 0 }, startedAt: NOW - 30_000, finishedAt: NOW - 20_000 }),
+    request({ id: "b", executionId: "t2", usage: { input: 3_000, output: 1, cacheRead: 7_000, cacheWrite: 0 }, startedAt: NOW - 30_000, finishedAt: NOW - 20_000 }),
   ] }), NOW).turns.find((turn) => turn.key === "t2");
-  assert(dropTurn?.hitRateDeltaPct !== null && (dropTurn?.hitRateDeltaPct ?? 0) <= -30, `命中率下降超过 30pp（${dropTurn?.hitRateDeltaPct}）`);
-  assert(Boolean(dropTurn?.findings.some((finding) => finding.ruleId === "C3")), "C3 缓存回源被标出");
+  assert(!mildDrop?.findings.some((finding) => finding.ruleId === "C3"), "命中率 90%→70% 不算回源");
+
+  const zeroTurn = buildDiagnosticsReport(dto({ requests: [
+    request({ id: "a", executionId: "t1", usage: { input: 1_000, output: 1, cacheRead: 9_000, cacheWrite: 0 } }),
+    request({ id: "b", executionId: "t2", usage: { input: 10_000, output: 1, cacheRead: 0, cacheWrite: 0 }, startedAt: NOW - 30_000, finishedAt: NOW - 20_000 }),
+  ] }), NOW);
+  const zero = zeroTurn.turns.find((turn) => turn.key === "t2");
+  assert(zero?.cache.hitRate === 0, "该轮命中率就是 0%");
+  assert(Boolean(zero?.findings.some((finding) => finding.ruleId === "C3")), "掉到 0% → C3");
+  assert(zero?.verdict === "warn", "0% 命中 → 需注意（不是异常）");
+
+  const zeroFromStart = buildDiagnosticsReport(dto({ requests: [
+    request({ id: "c", executionId: "t9", usage: { input: 5_000, output: 1, cacheRead: 0, cacheWrite: 0 } }),
+  ] }), NOW).turns[0];
+  assert(Boolean(zeroFromStart?.findings.some((finding) => finding.title.includes("命中 0%"))), "首轮 0% 也提示");
+}
+
+console.log("== 主任务 / 子代理 分组 + 缓存趋势 ==");
+{
+  const value = dto({
+    requests: [
+      request({ id: "m1", executionId: "t-main-1", sourceKind: "main" }),
+      request({ id: "m2", executionId: "t-main-2", sourceKind: "main", startedAt: NOW - 30_000, finishedAt: NOW - 20_000 }),
+      request({ id: "s1", executionId: "t-sub-1", sourceKind: "subagent", startedAt: NOW - 40_000, finishedAt: NOW - 30_000 }),
+      request({ id: "a1", executionId: "t-aux-1", sourceKind: "auxiliary", startedAt: NOW - 50_000, finishedAt: NOW - 45_000 }),
+    ],
+  });
+  const report = buildDiagnosticsReport(value, NOW);
+  assert(report.groups.main.length === 2, `主任务单独成组（${report.groups.main.length}）`);
+  assert(report.groups.subagent.length === 1 && report.groups.auxiliary.length === 1, "子代理/辅助任务各自成组");
+  assert(report.groups.main[0]?.label === "第 1 轮" && report.groups.main[1]?.label === "第 2 轮", "主任务独立编号");
+  assert(report.groups.subagent[0]?.label === "第 1 轮", "子代理独立编号，不与主任务混编");
+  assert(report.cacheTrend.length === 4, `趋势覆盖每一轮（${report.cacheTrend.length}）`);
+  assert(report.cacheTrend.map((point) => point.sourceKind).join(",") === "main,auxiliary,subagent,main",
+    `趋势按时间排序并带来源（${report.cacheTrend.map((point) => point.sourceKind).join(",")}）`);
+  assert(report.cacheTrend.every((point) => point.hitRate !== null), "每轮都有命中率点位");
+  assert(report.groupSummary.main.ok + report.groupSummary.subagent.ok + report.groupSummary.auxiliary.ok === 4, "分组汇总分别计数");
 }
 
 console.log("== 判定优先级 + 无 200 条截断 ==");

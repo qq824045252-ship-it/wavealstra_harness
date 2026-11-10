@@ -73,10 +73,19 @@ export interface TurnDiagnostics {
 }
 
 export interface Baseline {
-  /** 首字延迟 p90（同任务同模型，含样本数） */
-  firstToken: { p90: number | null; samples: number };
-  /** 输出速率 p10 */
+  /** 输出速率 p10（同任务同模型，含样本数）。首字延迟仅作参考数据，不参与判定。 */
   tps: { p10: number | null; samples: number };
+}
+
+export interface CacheTrendPoint {
+  key: string;
+  /** 该轮在自己分组里的名字（主任务第 2 轮 / 子代理第 5 轮） */
+  label: string;
+  sourceKind: DiagnosticSource;
+  /** 全局时序序号（1..N），趋势图横轴 */
+  order: number;
+  hitRate: number | null;
+  startedAt: number;
 }
 
 export interface DiagnosticsReport {
@@ -85,17 +94,19 @@ export interface DiagnosticsReport {
   headline: string;
   baseline: Baseline;
   totals: { requests: number; tools: number; waits: number };
+  /** 主任务 / 子代理 / 辅助任务分开列：三者混在一个列表里人无法判断 */
+  groups: Record<DiagnosticSource, TurnDiagnostics[]>;
+  groupSummary: Record<DiagnosticSource, Record<Verdict, number>>;
+  /** 缓存命中率随轮次的走势（全局时序，按来源着色） */
+  cacheTrend: CacheTrendPoint[];
   /** 判定用到的全部规则标题（UI「规则说明」用） */
   rules: Array<{ ruleId: string; text: string }>;
 }
 
-/** 首字等待超过该值才算异常（流式首 token 30s 已属异常） */
-const FIRST_TOKEN_SLOW_MS = 30_000;
-/** 缓存命中率相对上一轮下降超过 30 个百分点 → 回源 */
-const CACHE_DROP_PP = 30;
-/** 基线最少样本数（不足一律「样本不足」） */
-const MIN_BASELINE_SAMPLES = 5;
-/** 输出速率下限样本 */
+/**
+ * 输出速率下限样本数。首字延迟**不参与判定**（用户口径：首字慢是网络与排队噪声，
+ * 不作为异常依据），只在指标行里如实显示。
+ */
 const MIN_TPS = 5;
 
 export const RULE_TEXTS: Array<{ ruleId: string; text: string }> = [
@@ -103,7 +114,6 @@ export const RULE_TEXTS: Array<{ ruleId: string; text: string }> = [
   { ruleId: "A2", text: "请求被进程退出打断（interrupted）→ 观测缺口，不算失败" },
   { ruleId: "A3", text: "同一请求发生重试 → 需注意" },
   { ruleId: "A4", text: "HTTP 429/5xx → 异常" },
-  { ruleId: "A5", text: `流式请求 ${FIRST_TOKEN_SLOW_MS / 1000}s 内没有任何输出 → 需注意` },
   { ruleId: "A6", text: "工具失败；同名工具连续失败 → 异常（疑似循环）" },
   { ruleId: "A7", text: "工具诊断非空（写冲突/降级/模型回退）→ 需注意" },
   { ruleId: "A8", text: "工具观测不完整（complete=false）→ 观测缺口" },
@@ -111,9 +121,8 @@ export const RULE_TEXTS: Array<{ ruleId: string; text: string }> = [
   { ruleId: "B1", text: "用量字段缺失 → 观测缺口（不按 0 计）" },
   { ruleId: "B2", text: "费用来自 SDK 默认值 → 不是真实账单" },
   { ruleId: "B3", text: "缓存前缀被打断且配置没变 → 需注意" },
-  { ruleId: "C1", text: `首字延迟 > 同任务同模型历史 p90（样本 ≥ ${MIN_BASELINE_SAMPLES}）→ 需注意` },
   { ruleId: "C2", text: `输出速率 < 同任务同模型历史 p10（样本 ≥ ${MIN_TPS}）→ 需注意` },
-  { ruleId: "C3", text: `缓存命中率比上一轮低 ${CACHE_DROP_PP}pp 以上且输入未缩小 → 需注意（大量回源）` },
+  { ruleId: "C3", text: "缓存命中率掉到 0% → 需注意（真的回源）；只是波动不算" },
 ];
 
 const VERDICT_RANK: Record<Verdict, number> = { ok: 0, unknown: 1, waiting: 2, warn: 3, error: 4 };
@@ -187,12 +196,8 @@ function tpsOf(request: ModelRequestDiagnostic): number | null {
 /** 基线：完成态的请求，按 provider/model 分桶，取 p90 首字与 p10 速率。 */
 export function buildBaseline(requests: ModelRequestDiagnostic[]): Baseline {
   const completed = requests.filter((request) => request.status === "completed" && request.sourceKind !== "auxiliary");
-  const first = completed.map(firstTokenOf).filter((value): value is number => value !== null).sort((a, b) => a - b);
   const tps = completed.map(tpsOf).filter((value): value is number => value !== null).sort((a, b) => a - b);
-  return {
-    firstToken: { p90: first.length >= MIN_BASELINE_SAMPLES ? percentile(first, 0.9) : null, samples: first.length },
-    tps: { p10: tps.length >= MIN_TPS ? percentile(tps, 0.1) : null, samples: tps.length },
-  };
+  return { tps: { p10: tps.length >= MIN_TPS ? percentile(tps, 0.1) : null, samples: tps.length } };
 }
 
 function requestFindings(
@@ -244,33 +249,7 @@ function requestFindings(
         basis: "限流或服务端错误。",
       });
     }
-    const first = firstTokenOf(request);
-    if (first !== null && first > FIRST_TOKEN_SLOW_MS) {
-      findings.push({
-        ruleId: "A5", verdict: "warn",
-        title: "首字等待过长",
-        evidence: `${ms(first)} 没有任何输出`,
-        basis: `阈值 ${FIRST_TOKEN_SLOW_MS / 1000}s（流式首 token 的硬上限）。`,
-      });
-    } else if (request.status === "running" && first === null) {
-      const age = Date.now() - request.startedAt;
-      if (age > FIRST_TOKEN_SLOW_MS) {
-        findings.push({
-          ruleId: "A5", verdict: "warn",
-          title: "仍在等待首字",
-          evidence: `已等待 ${ms(age)}`,
-          basis: `阈值 ${FIRST_TOKEN_SLOW_MS / 1000}s。`,
-        });
-      }
-    }
-    if (baseline.firstToken.p90 !== null && first !== null && first > baseline.firstToken.p90) {
-      findings.push({
-        ruleId: "C1", verdict: "warn",
-        title: "首字比历史慢",
-        evidence: `${ms(first)} > p90 ${ms(baseline.firstToken.p90)}`,
-        basis: `同任务同模型完成态请求 p90（样本 ${baseline.firstToken.samples}）。`,
-      });
-    }
+    // 首字延迟只作为指标展示，不参与判定（用户口径：首字慢是网络/排队噪声）。
     const tps = tpsOf(request);
     if (baseline.tps.p10 !== null && tps !== null && tps < baseline.tps.p10) {
       findings.push({
@@ -431,6 +410,8 @@ export function buildDiagnosticsReport(value: TaskDiagnosticsDto, now = Date.now
   const buckets = bucketTurns(value);
   const turns: TurnDiagnostics[] = [];
   let previousHitRate: number | null = null;
+  /** 每组各自编号：主任务第 3 轮 与 子代理第 3 轮 是两件不同的事，混编只会更乱 */
+  const groupCounters: Record<DiagnosticSource, number> = { main: 0, subagent: 0, auxiliary: 0 };
   buckets.forEach((bucket, index) => {
     const requests = [...bucket.requests].sort((a, b) => a.startedAt - b.startedAt);
     const cache = summarizeCache(requests);
@@ -443,22 +424,26 @@ export function buildDiagnosticsReport(value: TaskDiagnosticsDto, now = Date.now
       findings.push({ ruleId: "B0", verdict: "unknown", title: "没有观测记录", evidence: "该轮只有身份没有读数", basis: "诊断库只保存观测到的事件。" });
     }
     const hitRateDeltaPct = cache.hitRate !== null && previousHitRate !== null ? Math.round((cache.hitRate - previousHitRate) * 100) : null;
-    if (cache.hitRate !== null && previousHitRate !== null && hitRateDeltaPct !== null && hitRateDeltaPct <= -CACHE_DROP_PP) {
-      const inputGrew = (cache.input ?? 0) >= (turns[turns.length - 1]?.cache.input ?? 0);
+    const cacheUsed = (cache.input ?? 0) + (cache.cacheRead ?? 0) + (cache.cacheWrite ?? 0) > 0;
+    if (cache.hitRate !== null && cacheUsed && cache.hitRate === 0) {
+      // 只有真的掉到 0%（全部回源）才判定；正常波动不报警。
       findings.push({
-        ruleId: "C3", verdict: inputGrew ? "warn" : "ok",
-        title: inputGrew ? "缓存大量回源" : "缓存率下降但输入缩小",
-        evidence: `${pct(previousHitRate)} → ${pct(cache.hitRate)}（${hitRateDeltaPct}pp）`,
-        basis: `同会话上一轮命中率对比；阈值 ${CACHE_DROP_PP}pp。输入缩小通常意味着上下文被裁剪，不是回源。`,
+        ruleId: "C3", verdict: "warn",
+        title: previousHitRate !== null && previousHitRate > 0 ? "缓存掉到 0%（全部回源）" : "本轮缓存命中 0%",
+        evidence: previousHitRate === null
+          ? `命中 0% · 新输入 ${formatTokenCount(cache.input ?? 0)} · 缓存读 0`
+          : `${pct(previousHitRate)} → 0%（${hitRateDeltaPct}pp）`,
+        basis: "缓存命中率只有归零才作为回源证据；其余波动不判异常。",
       });
     }
     const startedAt = Math.min(...[...requests.map((r) => r.startedAt), ...bucket.tools.map((t) => t.startedAt), ...bucket.waits.map((w) => w.startedAt)]);
     const ends = [...requests.map((r) => r.finishedAt), ...bucket.tools.map((t) => t.finishedAt), ...bucket.waits.map((w) => w.finishedAt)];
     const firstTokenMs = requests.map(firstTokenOf).filter((v): v is number => v !== null)[0] ?? null;
     const tpsValues = requests.map(tpsOf).filter((v): v is number => v !== null);
+    groupCounters[bucket.sourceKind] += 1;
     turns.push({
       key: bucket.key,
-      label: `第 ${index + 1} 轮`,
+      label: `第 ${groupCounters[bucket.sourceKind]} 轮`,
       index,
       sourceKind: bucket.sourceKind,
       startedAt: Number.isFinite(startedAt) ? startedAt : now,
@@ -483,12 +468,18 @@ export function buildDiagnosticsReport(value: TaskDiagnosticsDto, now = Date.now
     previousHitRate = cache.hitRate ?? previousHitRate;
   });
 
-  const summary: Record<Verdict, number> = { ok: 0, warn: 0, error: 0, unknown: 0, waiting: 0 };
-  for (const turn of turns) summary[turn.verdict] += 1;
+  const emptySummary = (): Record<Verdict, number> => ({ ok: 0, warn: 0, error: 0, unknown: 0, waiting: 0 });
+  const summary = emptySummary();
+  const groupSummary: Record<DiagnosticSource, Record<Verdict, number>> = { main: emptySummary(), subagent: emptySummary(), auxiliary: emptySummary() };
+  for (const turn of turns) { summary[turn.verdict] += 1; groupSummary[turn.sourceKind][turn.verdict] += 1; }
+  const groups: Record<DiagnosticSource, TurnDiagnostics[]> = { main: [], subagent: [], auxiliary: [] };
+  for (const turn of turns) groups[turn.sourceKind].push(turn);
+
+  const sourceLabel: Record<DiagnosticSource, string> = { main: "主任务", subagent: "子代理", auxiliary: "辅助任务" };
   const priority = (verdict: Verdict) => VERDICT_RANK[verdict];
   const worstTurn = [...turns].sort((a, b) => priority(b.verdict) - priority(a.verdict)).find((turn) => turn.findings.length > 0);
   const headline = worstTurn && worstTurn.verdict !== "ok"
-    ? `${worstTurn.label}：${worstTurn.findings.slice().sort((a, b) => priority(b.verdict) - priority(a.verdict))[0]?.title ?? ""}`
+    ? `${sourceLabel[worstTurn.sourceKind]} ${worstTurn.label}：${worstTurn.findings.slice().sort((a, b) => priority(b.verdict) - priority(a.verdict))[0]?.title ?? ""}`
     : turns.length > 0 ? "本任务没有发现异常" : "还没有可判定的观测记录";
 
   return {
@@ -497,6 +488,16 @@ export function buildDiagnosticsReport(value: TaskDiagnosticsDto, now = Date.now
     headline,
     baseline,
     totals: { requests: value.requests.length, tools: value.tools.length, waits: value.waits.length },
+    groups,
+    groupSummary,
+    cacheTrend: turns.map((turn, order) => ({
+      key: turn.key,
+      label: turn.label,
+      sourceKind: turn.sourceKind,
+      order: order + 1,
+      hitRate: turn.cache.hitRate,
+      startedAt: turn.startedAt,
+    })),
     rules: RULE_TEXTS,
   };
 }
