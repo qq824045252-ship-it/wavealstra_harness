@@ -2,6 +2,7 @@
 
 - 多机（Windows/Linux）同步与 push 前门禁：以本文件 Default workflow、Explicit release workflow 与 git 状态为准；旧 docs/git-sync.md 已删除。
 - Git workflow: use `main` as the only active local branch. When a commit is explicitly requested, commit directly to it. Do not create additional branches or worktrees unless the user explicitly requests them. Commit and push only when explicitly requested; there is no standing release authorization.
+- **推送 GitHub 默认合入 main**（用户 2026-11-10 明确要求）：用户说「提交并推送」时，不要只推临时分支，而是先 `git fetch` 并 rebase 到 `origin/main`，再在主仓库 `git merge --ff-only <branch>` 后 `git push origin main`；临时分支内容进 main 后删除远端同名分支。只在用户明确要求 PR/分支评审时才推分支。
 - Typecheck: `pnpm -s typecheck`
 - Focused tests are `pnpm -s test:<name>` scripts in package.json (e.g. `test:memory`, `test:project-memory-extraction`, `test:pi-native-control`, `test:project-materials-ui`).
 - **只支持当前 Pi 版本（1.5.0）**：旧版本（0.99.x / 0.99.2 / 1.0.x）的迁移与兼容测试已删除，不要为旧版本重新引入兼容层或迁移用例。版本 pin 在 `src/main/capabilities/subagent/worker-launcher.mjs` 的 `EXPECTED_PI_VERSION`，测试从那里读取，不要硬编码。
