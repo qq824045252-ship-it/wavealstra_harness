@@ -200,26 +200,38 @@ console.log("== 相对规则（基线不足不编造） ==");
   assert(Boolean(zeroFromStart?.findings.some((finding) => finding.title.includes("命中 0%"))), "首轮 0% 也提示");
 }
 
-console.log("== 主任务 / 子代理 分组 + 缓存趋势 ==");
+console.log("== 标签页：主任务 + 每个子代理各一页，各带自己的缓存趋势 ==");
 {
   const value = dto({
     requests: [
       request({ id: "m1", executionId: "t-main-1", sourceKind: "main" }),
       request({ id: "m2", executionId: "t-main-2", sourceKind: "main", startedAt: NOW - 30_000, finishedAt: NOW - 20_000 }),
-      request({ id: "s1", executionId: "t-sub-1", sourceKind: "subagent", startedAt: NOW - 40_000, finishedAt: NOW - 30_000 }),
-      request({ id: "a1", executionId: "t-aux-1", sourceKind: "auxiliary", startedAt: NOW - 50_000, finishedAt: NOW - 45_000 }),
+      request({ id: "s1", executionId: "t-sub-1", sourceKind: "subagent", conversationId: "sub-a", startedAt: NOW - 40_000, finishedAt: NOW - 30_000 }),
+      request({ id: "s2", executionId: "t-sub-2", sourceKind: "subagent", conversationId: "sub-a", startedAt: NOW - 35_000, finishedAt: NOW - 25_000 }),
+      request({ id: "s3", executionId: "t-sub-3", sourceKind: "subagent", conversationId: "sub-b", startedAt: NOW - 25_000, finishedAt: NOW - 15_000 }),
+      request({ id: "s4", executionId: "t-sub-4", sourceKind: "subagent", conversationId: "sub-b", status: "failed", error: "boom", startedAt: NOW - 20_000, finishedAt: NOW - 10_000 }),
+      request({ id: "a1", executionId: "t-aux-1", sourceKind: "auxiliary", conversationId: "aux-1", startedAt: NOW - 50_000, finishedAt: NOW - 45_000 }),
     ],
   });
-  const report = buildDiagnosticsReport(value, NOW);
-  assert(report.groups.main.length === 2, `主任务单独成组（${report.groups.main.length}）`);
-  assert(report.groups.subagent.length === 1 && report.groups.auxiliary.length === 1, "子代理/辅助任务各自成组");
-  assert(report.groups.main[0]?.label === "第 1 轮" && report.groups.main[1]?.label === "第 2 轮", "主任务独立编号");
-  assert(report.groups.subagent[0]?.label === "第 1 轮", "子代理独立编号，不与主任务混编");
-  assert(report.cacheTrend.length === 4, `趋势覆盖每一轮（${report.cacheTrend.length}）`);
-  assert(report.cacheTrend.map((point) => point.sourceKind).join(",") === "main,auxiliary,subagent,main",
-    `趋势按时间排序并带来源（${report.cacheTrend.map((point) => point.sourceKind).join(",")}）`);
-  assert(report.cacheTrend.every((point) => point.hitRate !== null), "每轮都有命中率点位");
-  assert(report.groupSummary.main.ok + report.groupSummary.subagent.ok + report.groupSummary.auxiliary.ok === 4, "分组汇总分别计数");
+  const report = buildDiagnosticsReport(value, NOW, { "sub-a": "妙蛙种子" });
+  assert(report.tabs.length === 4, `主任务 + 2 个子代理 + 辅助 = 4 页（${report.tabs.length}）`);
+  assert(report.tabs[0]?.key === "main" && report.tabs[0]?.label === "主任务", "主任务排第一");
+  const subA = report.tabs.find((tab) => tab.key === "sub:sub-a");
+  const subB = report.tabs.find((tab) => tab.key === "sub:sub-b");
+  assert(subA?.label === "妙蛙种子", `子代理标签用 displayName（${subA?.label}）`);
+  assert(subB?.label === "子代理 2", `没有名字时按顺序编号（${subB?.label}）`);
+  assert(subA?.turns.length === 2 && subB?.turns.length === 2, "每个子代理各自分页，不混在一起");
+  assert(report.tabs[0]?.turns.length === 2, "主任务页只含主任务轮次");
+  assert(subA?.turns.map((turn) => turn.label).join(",") === "第 1 轮,第 2 轮", "子代理独立编号");
+  assert(subA?.cacheTrend.length === 2 && subB?.cacheTrend.length === 2, "每页各有自己的趋势数据");
+  assert(report.tabs[0]?.cacheTrend.length === 2, "主任务趋势不含子代理轮次");
+  assert(report.tabs.every((tab) => tab.cacheTrend.every((point) => point.hitRate !== null)), "每轮都有命中率点位");
+  assert(report.tabs.reduce((sum, tab) => sum + tab.summary.ok, 0) === report.summary.ok, "页内汇总与全局汇总一致");
+  assert(report.headline.startsWith("子代理 2") && report.headline.includes("："), `结论条带页名与原因（${report.headline}）`);
+
+  // 每页的 Δpp 只跟自己上一轮比
+  const deltaTurn = subA?.turns[1];
+  assert(deltaTurn?.previousHitRate === subA?.turns[0]?.cache.hitRate, "Δpp 与同页上一轮比较");
 }
 
 console.log("== 趋势降采样（长任务不卡、关键点不丢） ==");

@@ -48,6 +48,8 @@ export interface SubagentPlanItem {
 
 export interface SubagentResultRun {
   subagentId: string;
+  /** 子会话 id：诊断里的 conversationId 就是它，用来把子代理的名字挂到对应标签页上 */
+  nativeConversationId?: string;
   displayName?: string;
   agent?: string;
   task?: string;
@@ -133,6 +135,7 @@ function resultRun(raw: unknown): SubagentResultRun | null {
   const workspace = record(item.workspace);
   return {
     subagentId,
+    nativeConversationId: num(item.nativeConversationId) === undefined ? undefined : String(item.nativeConversationId),
     displayName: str(item.displayName),
     agent: str(item.agent),
     task: str(item.task),

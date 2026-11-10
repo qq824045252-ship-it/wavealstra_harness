@@ -140,3 +140,27 @@
   border: 1px solid var(--border-color, #4444); background: transparent; color: var(--fg-muted, inherit);
 }
 .td-more-btn:hover { background: var(--bg-hover, #8881); }
+
+/* ---------- 标签页（主任务 + 每个子代理各一页） ---------- */
+.td-tabs {
+  display: flex; gap: 6px; overflow-x: auto; padding: 4px 2px 0; margin: 10px 0 8px;
+  border-bottom: 1px solid var(--border-color, #4444); scrollbar-width: thin;
+}
+.td-tab {
+  display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
+  padding: 6px 12px; border: 1px solid transparent; border-bottom: none;
+  border-radius: 8px 8px 0 0; background: none; font: inherit; font-size: 12.5px; cursor: pointer;
+  color: var(--fg-muted, inherit); margin-bottom: -1px;
+}
+.td-tab:hover { background: var(--bg-hover, #8881); }
+.td-tab.is-active {
+  border-color: var(--border-color, #4444); background: var(--bg-panel, transparent);
+  color: var(--fg, inherit); font-weight: 600;
+}
+.td-tab-count { font-size: 11px; opacity: .65; font-variant-numeric: tabular-nums; }
+.td-tab-badge {
+  font-size: 10.5px; line-height: 15px; padding: 0 5px; border-radius: 999px;
+  background: color-mix(in srgb, var(--danger, #ff3b30) 16%, transparent); color: var(--danger, #ff3b30);
+}
+.td-tab-body { display: flex; flex-direction: column; gap: 10px; }
+.td-summary-counts--tab { margin-top: 2px; }

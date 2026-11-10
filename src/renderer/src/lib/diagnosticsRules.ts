@@ -88,17 +88,28 @@ export interface CacheTrendPoint {
   startedAt: number;
 }
 
+/** 一个标签页：主任务一个、每个子代理一个（各有一条自己的缓存趋势）。 */
+export interface DiagnosticsTab {
+  /** "main" | `sub:${conversationId}` | `aux:${conversationId}` */
+  key: string;
+  kind: DiagnosticSource;
+  conversationId: string | null;
+  /** 标签名：主任务 / 子代理显示名（来自父任务里的 displayName）/ 辅助任务 */
+  label: string;
+  turns: TurnDiagnostics[];
+  summary: Record<Verdict, number>;
+  /** 该标签自己的缓存命中率走势（横轴是它自己的轮次） */
+  cacheTrend: CacheTrendPoint[];
+}
+
 export interface DiagnosticsReport {
+  /** 主任务 + 每个子代理各一页；不再把上千轮混在一个列表里 */
+  tabs: DiagnosticsTab[];
   turns: TurnDiagnostics[];
   summary: Record<Verdict, number>;
   headline: string;
   baseline: Baseline;
   totals: { requests: number; tools: number; waits: number };
-  /** 主任务 / 子代理 / 辅助任务分开列：三者混在一个列表里人无法判断 */
-  groups: Record<DiagnosticSource, TurnDiagnostics[]>;
-  groupSummary: Record<DiagnosticSource, Record<Verdict, number>>;
-  /** 缓存命中率随轮次的走势（全局时序，按来源着色） */
-  cacheTrend: CacheTrendPoint[];
   /** 判定用到的全部规则标题（UI「规则说明」用） */
   rules: Array<{ ruleId: string; text: string }>;
 }
@@ -404,100 +415,156 @@ export function bucketTurns(value: TaskDiagnosticsDto): Bucket[] {
   });
 }
 
-/** 诊断报告：按轮次给出判定、缓存、基线。 */
-export function buildDiagnosticsReport(value: TaskDiagnosticsDto, now = Date.now()): DiagnosticsReport {
+/**
+ * 诊断报告：主任务 / 每个子代理 各成一页，每页自带按轮次的判定与缓存趋势。
+ *
+ * `subagentLabels` 是 conversationId → 显示名（来自父任务里 subagent 结果的 displayName），
+ * 拿不到就给「子代理 N」——名字只影响标签，不影响判定。
+ */
+export function buildDiagnosticsReport(
+  value: TaskDiagnosticsDto,
+  now = Date.now(),
+  subagentLabels: Record<string, string> = {},
+): DiagnosticsReport {
   const baseline = buildBaseline(value.requests);
   const buckets = bucketTurns(value);
-  const turns: TurnDiagnostics[] = [];
-  let previousHitRate: number | null = null;
-  /** 每组各自编号：主任务第 3 轮 与 子代理第 3 轮 是两件不同的事，混编只会更乱 */
-  const groupCounters: Record<DiagnosticSource, number> = { main: 0, subagent: 0, auxiliary: 0 };
-  buckets.forEach((bucket, index) => {
-    const requests = [...bucket.requests].sort((a, b) => a.startedAt - b.startedAt);
-    const cache = summarizeCache(requests);
-    const findings = [
-      ...requestFindings(requests, baseline, cache),
-      ...toolFindings(bucket.tools),
-      ...waitFindings(bucket.waits, now),
-    ];
-    if (requests.length === 0 && bucket.tools.length === 0 && bucket.waits.length === 0) {
-      findings.push({ ruleId: "B0", verdict: "unknown", title: "没有观测记录", evidence: "该轮只有身份没有读数", basis: "诊断库只保存观测到的事件。" });
+  const tabKeyOf = (bucket: Bucket): string => {
+    if (bucket.sourceKind === "main") return "main";
+    const prefix = bucket.sourceKind === "subagent" ? "sub" : "aux";
+    const conversationId = bucket.requests[0]?.conversationId ?? bucket.tools[0]?.conversationId ?? "unknown";
+    return `${prefix}:${conversationId}`;
+  };
+  const order: string[] = [];
+  const tabBuckets = new Map<string, { kind: DiagnosticSource; conversationId: string | null; buckets: Bucket[] }>();
+  for (const bucket of buckets) {
+    const key = tabKeyOf(bucket);
+    let tab = tabBuckets.get(key);
+    if (!tab) {
+      tab = {
+        kind: bucket.sourceKind,
+        conversationId: bucket.requests[0]?.conversationId ?? bucket.tools[0]?.conversationId ?? null,
+        buckets: [],
+      };
+      tabBuckets.set(key, tab);
+      order.push(key);
     }
-    const hitRateDeltaPct = cache.hitRate !== null && previousHitRate !== null ? Math.round((cache.hitRate - previousHitRate) * 100) : null;
-    const cacheUsed = (cache.input ?? 0) + (cache.cacheRead ?? 0) + (cache.cacheWrite ?? 0) > 0;
-    if (cache.hitRate !== null && cacheUsed && cache.hitRate === 0) {
-      // 只有真的掉到 0%（全部回源）才判定；正常波动不报警。
-      findings.push({
-        ruleId: "C3", verdict: "warn",
-        title: previousHitRate !== null && previousHitRate > 0 ? "缓存掉到 0%（全部回源）" : "本轮缓存命中 0%",
-        evidence: previousHitRate === null
-          ? `命中 0% · 新输入 ${formatTokenCount(cache.input ?? 0)} · 缓存读 0`
-          : `${pct(previousHitRate)} → 0%（${hitRateDeltaPct}pp）`,
-        basis: "缓存命中率只有归零才作为回源证据；其余波动不判异常。",
-      });
-    }
-    const startedAt = Math.min(...[...requests.map((r) => r.startedAt), ...bucket.tools.map((t) => t.startedAt), ...bucket.waits.map((w) => w.startedAt)]);
-    const ends = [...requests.map((r) => r.finishedAt), ...bucket.tools.map((t) => t.finishedAt), ...bucket.waits.map((w) => w.finishedAt)];
-    const firstTokenMs = requests.map(firstTokenOf).filter((v): v is number => v !== null)[0] ?? null;
-    const tpsValues = requests.map(tpsOf).filter((v): v is number => v !== null);
-    groupCounters[bucket.sourceKind] += 1;
-    turns.push({
-      key: bucket.key,
-      label: `第 ${groupCounters[bucket.sourceKind]} 轮`,
-      index,
-      sourceKind: bucket.sourceKind,
-      startedAt: Number.isFinite(startedAt) ? startedAt : now,
-      endedAt: ends.every((end) => end === null) ? null : Math.max(...ends.filter((end): end is number => end !== null)),
-      requests,
-      tools: bucket.tools,
-      waits: bucket.waits,
-      verdict: worst(findings),
-      findings,
-      cache,
-      previousHitRate,
-      hitRateDeltaPct,
-      modelMs: requests.some((r) => r.modelMs !== null) ? requests.reduce((sum, r) => sum + (r.modelMs ?? 0), 0) : null,
-      toolMs: bucket.tools.reduce((sum, tool) => sum + tool.activeMs, 0),
-      waitingMs: bucket.waits.reduce((sum, wait) => sum + Math.max(0, (wait.finishedAt ?? now) - wait.startedAt), 0),
-      costUsd: requests.some((r) => r.knownCostUsd !== null) ? requests.reduce((sum, r) => sum + (r.knownCostUsd ?? 0), 0) : null,
-      costComplete: requests.length > 0 && requests.every((r) => r.costComplete),
-      firstTokenMs,
-      outputTps: tpsValues.length > 0 ? tpsValues[tpsValues.length - 1]! : null,
-      approximateWaits: bucket.approximateWaits,
-    });
-    previousHitRate = cache.hitRate ?? previousHitRate;
-  });
-
+    tab.buckets.push(bucket);
+  }
   const emptySummary = (): Record<Verdict, number> => ({ ok: 0, warn: 0, error: 0, unknown: 0, waiting: 0 });
   const summary = emptySummary();
-  const groupSummary: Record<DiagnosticSource, Record<Verdict, number>> = { main: emptySummary(), subagent: emptySummary(), auxiliary: emptySummary() };
-  for (const turn of turns) { summary[turn.verdict] += 1; groupSummary[turn.sourceKind][turn.verdict] += 1; }
-  const groups: Record<DiagnosticSource, TurnDiagnostics[]> = { main: [], subagent: [], auxiliary: [] };
-  for (const turn of turns) groups[turn.sourceKind].push(turn);
+  const tabs: DiagnosticsTab[] = [];
+  const allTurns: TurnDiagnostics[] = [];
+  let subagentIndex = 0;
 
-  const sourceLabel: Record<DiagnosticSource, string> = { main: "主任务", subagent: "子代理", auxiliary: "辅助任务" };
+  for (const key of order) {
+    const tab = tabBuckets.get(key)!;
+    const turns: TurnDiagnostics[] = [];
+    let previousHitRate: number | null = null;
+    let counter = 0;
+    for (const bucket of tab.buckets) {
+      const requests = [...bucket.requests].sort((a, b) => a.startedAt - b.startedAt);
+      const cache = summarizeCache(requests);
+      const findings = [
+        ...requestFindings(requests, baseline, cache),
+        ...toolFindings(bucket.tools),
+        ...waitFindings(bucket.waits, now),
+      ];
+      if (requests.length === 0 && bucket.tools.length === 0 && bucket.waits.length === 0) {
+        findings.push({ ruleId: "B0", verdict: "unknown", title: "没有观测记录", evidence: "该轮只有身份没有读数", basis: "诊断库只保存观测到的事件。" });
+      }
+      const hitRateDeltaPct = cache.hitRate !== null && previousHitRate !== null ? Math.round((cache.hitRate - previousHitRate) * 100) : null;
+      const cacheUsed = (cache.input ?? 0) + (cache.cacheRead ?? 0) + (cache.cacheWrite ?? 0) > 0;
+      if (cache.hitRate !== null && cacheUsed && cache.hitRate === 0) {
+        // 只有真的掉到 0%（全部回源）才判定；正常波动不报警。
+        findings.push({
+          ruleId: "C3", verdict: "warn",
+          title: previousHitRate !== null && previousHitRate > 0 ? "缓存掉到 0%（全部回源）" : "本轮缓存命中 0%",
+          evidence: previousHitRate === null
+            ? `命中 0% · 新输入 ${formatTokenCount(cache.input ?? 0)} · 缓存读 0`
+            : `${pct(previousHitRate)} → 0%（${hitRateDeltaPct}pp）`,
+          basis: "缓存命中率只有归零才作为回源证据；其余波动不判异常。",
+        });
+      }
+      const startedAt = Math.min(...[...requests.map((r) => r.startedAt), ...bucket.tools.map((t) => t.startedAt), ...bucket.waits.map((w) => w.startedAt)]);
+      const ends = [...requests.map((r) => r.finishedAt), ...bucket.tools.map((t) => t.finishedAt), ...bucket.waits.map((w) => w.finishedAt)];
+      const firstTokenMs = requests.map(firstTokenOf).filter((v): v is number => v !== null)[0] ?? null;
+      const tpsValues = requests.map(tpsOf).filter((v): v is number => v !== null);
+      counter += 1;
+      const turn: TurnDiagnostics = {
+        key: bucket.key,
+        label: `第 ${counter} 轮`,
+        index: counter - 1,
+        sourceKind: bucket.sourceKind,
+        startedAt: Number.isFinite(startedAt) ? startedAt : now,
+        endedAt: ends.every((end) => end === null) ? null : Math.max(...ends.filter((end): end is number => end !== null)),
+        requests,
+        tools: bucket.tools,
+        waits: bucket.waits,
+        verdict: worst(findings),
+        findings,
+        cache,
+        previousHitRate,
+        hitRateDeltaPct,
+        modelMs: requests.some((r) => r.modelMs !== null) ? requests.reduce((sum, r) => sum + (r.modelMs ?? 0), 0) : null,
+        toolMs: bucket.tools.reduce((sum, tool) => sum + tool.activeMs, 0),
+        waitingMs: bucket.waits.reduce((sum, wait) => sum + Math.max(0, (wait.finishedAt ?? now) - wait.startedAt), 0),
+        costUsd: requests.some((r) => r.knownCostUsd !== null) ? requests.reduce((sum, r) => sum + (r.knownCostUsd ?? 0), 0) : null,
+        costComplete: requests.length > 0 && requests.every((r) => r.costComplete),
+        firstTokenMs,
+        outputTps: tpsValues.length > 0 ? tpsValues[tpsValues.length - 1]! : null,
+        approximateWaits: bucket.approximateWaits,
+      };
+      turns.push(turn);
+      previousHitRate = cache.hitRate ?? previousHitRate;
+    }
+
+    const tabSummary = emptySummary();
+    for (const turn of turns) { tabSummary[turn.verdict] += 1; summary[turn.verdict] += 1; }
+    let label: string;
+    if (key === "main") label = "主任务";
+    else if (tab.kind === "auxiliary") label = "辅助任务";
+    else {
+      const named = tab.conversationId ? subagentLabels[tab.conversationId] : undefined;
+      subagentIndex += 1;
+      label = named || `子代理 ${subagentIndex}`;
+    }
+    tabs.push({
+      key,
+      kind: tab.kind,
+      conversationId: tab.conversationId,
+      label,
+      turns,
+      summary: tabSummary,
+      cacheTrend: turns.map((turn, index) => ({
+        key: turn.key,
+        label: turn.label,
+        sourceKind: turn.sourceKind,
+        order: index + 1,
+        hitRate: turn.cache.hitRate,
+        startedAt: turn.startedAt,
+      })),
+    });
+    allTurns.push(...turns);
+  }
+
   const priority = (verdict: Verdict) => VERDICT_RANK[verdict];
-  const worstTurn = [...turns].sort((a, b) => priority(b.verdict) - priority(a.verdict)).find((turn) => turn.findings.length > 0);
+  const tabLabelOf = (turn: TurnDiagnostics) => tabs.find((tab) => tab.turns.some((row) => row.key === turn.key))?.label ?? "";
+  const worstTurn = [...allTurns].sort((a, b) => priority(b.verdict) - priority(a.verdict)).find((turn) => turn.findings.length > 0);
   const headline = worstTurn && worstTurn.verdict !== "ok"
-    ? `${sourceLabel[worstTurn.sourceKind]} ${worstTurn.label}：${worstTurn.findings.slice().sort((a, b) => priority(b.verdict) - priority(a.verdict))[0]?.title ?? ""}`
-    : turns.length > 0 ? "本任务没有发现异常" : "还没有可判定的观测记录";
+    ? `${tabLabelOf(worstTurn)} ${worstTurn.label}：${worstTurn.findings.slice().sort((a, b) => priority(b.verdict) - priority(a.verdict))[0]?.title ?? ""}`
+    : allTurns.length > 0 ? "本任务没有发现异常" : "还没有可判定的观测记录";
+
+  // 主任务排第一，其余保持首次出现顺序
+  const mainIndex = tabs.findIndex((tab) => tab.key === "main");
+  if (mainIndex > 0) tabs.unshift(tabs.splice(mainIndex, 1)[0]!);
 
   return {
-    turns,
+    tabs,
+    turns: allTurns,
     summary,
     headline,
     baseline,
     totals: { requests: value.requests.length, tools: value.tools.length, waits: value.waits.length },
-    groups,
-    groupSummary,
-    cacheTrend: turns.map((turn, order) => ({
-      key: turn.key,
-      label: turn.label,
-      sourceKind: turn.sourceKind,
-      order: order + 1,
-      hitRate: turn.cache.hitRate,
-      startedAt: turn.startedAt,
-    })),
     rules: RULE_TEXTS,
   };
 }

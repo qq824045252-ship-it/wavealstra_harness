@@ -31,9 +31,7 @@ export interface TaskWriteGrantsMenuProps {
 
 const REVOKE_FAILED_NOTICE = "撤销失败，请重试";
 const LOAD_FAILED_NOTICE = "授权列表加载失败，请重试";
-const EMPTY_HINT = "当前任务还没有授权写入任务工作目录之外的文件夹。";
-const SECTION_HINT =
-  "Agent 写入任务工作目录之外的位置前会先请求授权；「始终允许此文件夹」的授权可在此撤销。撤销后立即生效。";
+const EMPTY_HINT = "暂无授权文件夹";
 
 function formatTime(ts: number): string {
   if (!Number.isFinite(ts) || ts <= 0) return "";
@@ -118,7 +116,6 @@ export default function TaskWriteGrantsMenu({
       </div>
       <div className="task-menu-sep" />
       <div className="task-grants-title">外部写入授权</div>
-      <div className="task-grants-hint">{SECTION_HINT}</div>
       {error && (
         <div className="task-grants-error" role="status">
           {error}
