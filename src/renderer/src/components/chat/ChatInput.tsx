@@ -1,3 +1,4 @@
+import { ModelOptionButton } from "./ModelOptionButton";
 import { ComposerAttachmentChips } from "./ComposerAttachmentChips";
 import { composerFiles, mergeComposerAttachments, pickComposerAttachment } from "./composerAttachments";
 import ChatComposer from "./ChatComposer";
@@ -1873,19 +1874,9 @@ export default function ChatInput({
                         }}
                         onMouseLeave={scheduleCloseThinkingFlyout}
                       >
-                        <button
-                          type="button"
-                          className={`model-option ${selected ? "active" : ""}`}
-                          onClick={() => {
-                            setActiveModel(m.id);
-                            // 有思考档：保持面板打开，便于接着调强度；无思考档：选完即收
-                            if (!canThink) closeAllPopups();
-                          }}
-                        >
-                          <ModelBrandIcon modelName={m.name} vendor={m.vendor} size={16} />
-                          <span className="model-option-name">{m.name}</span>
-                          {selected && <IconCheck size={14} className="model-option-check" />}
-                        </button>
+                        <ModelOptionButton name={m.name} selected={selected}
+                          icon={<ModelBrandIcon modelName={m.name} vendor={m.vendor} size={16} />}
+                          onClick={() => { setActiveModel(m.id); if (!canThink) closeAllPopups(); }} />
                       </div>
                     );
                   })}

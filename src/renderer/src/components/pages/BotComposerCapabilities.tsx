@@ -1,10 +1,11 @@
+import { ModelOptionButton } from "@/components/chat/ModelOptionButton";
 import { useEffect, useRef, useState } from "react";
 import { useAppStore } from "@/store/appStore";
 import type { BotSettingsView } from "@shared/bot-settings";
 import type { BotComposerSelection } from "@shared/bot-conversation";
 import InputAddMenu from "@/components/chat/InputAddMenu";
 import ModelBrandIcon from "@/components/common/ModelBrandIcon";
-import { IconPlus, IconX, IconChevronDown, IconCheck } from "@/components/common/icons";
+import { IconPlus, IconX, IconChevronDown, IconPencil } from "@/components/common/icons";
 import { useDismissOnClickOutside } from "@/hooks/useDismissOnClickOutside";
 import { usePromptEnhance } from "@/features/prompt-enhance/usePromptEnhance";
 import { PromptEnhanceControl } from "@/features/prompt-enhance/PromptEnhanceControl";
@@ -89,12 +90,14 @@ export function BotComposerCapabilities({ botId, scope, text, attach, attachment
         disabled={!selection} onClick={() => { void refresh(); setAddOpen(false); setModelOpen(!modelOpen); }}>
         {selectedModel && <ModelBrandIcon modelName={selectedModel.name} size={16} />}<span className="model-trigger-label">{selectedModel?.name ?? (selection?.modelId || "跟随默认模型")}</span><IconChevronDown size={12} /></button>
       {modelOpen && <div className="input-popup model-popup" role="listbox" aria-label="Bot 模型列表">
-        <input type="search" aria-label="搜索模型" placeholder="搜索模型" value={modelQuery} onChange={event => setModelQuery(event.target.value)} />
-        <button type="button" className="model-option" role="option" aria-selected={!selection?.modelId} onClick={() => {update({modelId:""});setModelOpen(false);}}>跟随默认模型{!selection?.modelId && <IconCheck size={14} />}</button>
-        <div className="model-options">{catalog?.models.filter(item => item.available && `${item.name} ${item.id}`.toLowerCase().includes(modelQuery.toLowerCase())).map(model =>
-          <button key={model.id} type="button" role="option" aria-selected={selection?.modelId === model.id} className="model-option" onClick={() => {update({modelId:model.id});setModelOpen(false);}}>
-            <ModelBrandIcon modelName={model.name} size={16} /><span>{model.name}</span>{selection?.modelId === model.id && <IconCheck size={14} />}</button>)}</div>
-        <button type="button" className="model-option" onClick={() => {setModelOpen(false);useAppStore.getState().setSettingsOpen(true,"models");}}>管理模型</button>
+        <input className="bot-model-search" type="search" aria-label="搜索模型" placeholder="搜索模型" value={modelQuery} onChange={event => setModelQuery(event.target.value)} />
+        <div className="model-options"><ModelOptionButton role="option" name="跟随默认模型" selected={!selection?.modelId}
+          onClick={() => {update({modelId:""});setModelOpen(false);}} />
+          {catalog?.models.filter(item => item.available && `${item.name} ${item.id}`.toLowerCase().includes(modelQuery.toLowerCase())).map(model =>
+          <ModelOptionButton key={model.id} role="option" name={model.name} selected={selection?.modelId === model.id}
+            icon={<ModelBrandIcon modelName={model.name} size={16} />} title={model.name}
+            onClick={() => {update({modelId:model.id});setModelOpen(false);}} />)}</div>
+        <button type="button" className="input-popup-config" onClick={() => {setModelOpen(false);useAppStore.getState().setSettingsOpen(true,"models");}}><IconPencil size={14} /> 管理模型</button>
       </div>}
     </div>
     <PromptEnhanceControl surface="new-task" status={enhance.status} notice={enhance.notice} empty={!text.trim()}

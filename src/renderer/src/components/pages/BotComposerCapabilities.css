@@ -4,9 +4,9 @@
 .bot-composer-model { margin-left:auto; max-width:260px; min-width:120px; }
 .bot-composer-model .model-trigger { max-width:100%; }
 .bot-composer-model .model-popup { bottom:calc(100% + 12px); right:0; left:auto; width:min(360px,calc(100vw - 40px)); }
-.bot-composer-model .model-popup input { width:100%; padding:8px; box-sizing:border-box; }
-.bot-composer-model .model-options { max-height:300px; overflow:auto; }
-.bot-composer-model .model-option { display:flex; gap:8px; align-items:center; width:100%; text-align:left; }
-.bot-composer-model .model-option span { flex:1; }
+.bot-model-search { width:calc(100% - 20px); margin:10px; padding:8px 10px; box-sizing:border-box; border:1px solid var(--border); border-radius:8px; background:var(--bg-input); color:var(--fg); font:inherit; font-size:13px; flex-shrink:0; }
+.bot-composer-capabilities .bot-composer-model .model-option { justify-content:flex-start; color:var(--fg); }
+.bot-composer-model .model-option .model-brand-icon { flex-shrink:0; }
+.bot-composer-model .model-option-name { flex:1; }
 .bot-composer-capability-error { position:absolute; bottom:100%; left:0; padding:8px; background:var(--bg-elevated); color:var(--danger); }
 @media(max-width:700px) { .bot-composer-model { max-width:160px; min-width:80px; } .bot-composer-capabilities { gap:4px; } }

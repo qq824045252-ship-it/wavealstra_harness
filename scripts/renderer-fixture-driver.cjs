@@ -15,7 +15,7 @@ const { join, dirname, basename, extname } = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { writeScreenshot } = require('./ui-capture.cjs');
 
-function runRendererFixture({ name, width, height, timeoutMs = 60000 }, test) {
+function runRendererFixture({ name, width, height, show = false, timeoutMs = 60000 }, test) {
   const backend = process.argv.includes('--dom') ? 'dom' : process.argv.includes('--chromium') ? 'chromium' : 'electron';
   const output = join(__dirname, '../out/tests');
   const screenshots = [];
@@ -80,7 +80,7 @@ function runRendererFixture({ name, width, height, timeoutMs = 60000 }, test) {
         await app.whenReady();
         browserVersion = `Electron ${process.versions.electron} / Chromium ${process.versions.chrome}`;
         const win = new electron.BrowserWindow({
-          show: false, width, height,
+          show, width, height,
           webPreferences: { sandbox: true, contextIsolation: true, backgroundThrottling: false },
         });
         close = async () => { if (!win.isDestroyed()) win.destroy(); };

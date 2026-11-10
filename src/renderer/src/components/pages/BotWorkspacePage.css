@@ -8,9 +8,9 @@
 .bot-workspace h4 { font-size:13px; }
 .bot-workspace p { line-height:1.65; }
 .bot-workspace button:not(.table-node__resize-handle), .bot-navigation-drawer button { font:inherit; cursor:pointer; }
-.bot-workspace button:where(:not(.send-btn, .table-node__resize-handle)) { display:inline-flex; align-items:center; justify-content:center; gap:6px; padding:8px 11px; border:1px solid var(--border-default); border-radius:9px; color:var(--fg); background:var(--bg-elevated); font-size:12px; transition:background var(--motion-fast),border-color var(--motion-fast); }
-.bot-workspace button:where(:not(.send-btn, .table-node__resize-handle)):hover:not(:disabled) { background:var(--bg-hover); border-color:var(--border-strong); }
-.bot-workspace button:where(:not(.send-btn, .table-node__resize-handle)):disabled { opacity:.45; cursor:not-allowed; }
+.bot-workspace button:where(:not(.send-btn, .table-node__resize-handle, .bot-composer-capabilities button)) { display:inline-flex; align-items:center; justify-content:center; gap:6px; padding:8px 11px; border:1px solid var(--border-default); border-radius:9px; color:var(--fg); background:var(--bg-elevated); font-size:12px; transition:background var(--motion-fast),border-color var(--motion-fast); }
+.bot-workspace button:where(:not(.send-btn, .table-node__resize-handle, .bot-composer-capabilities button)):hover:not(:disabled) { background:var(--bg-hover); border-color:var(--border-strong); }
+.bot-workspace button:where(:not(.send-btn, .table-node__resize-handle, .bot-composer-capabilities button)):disabled { opacity:.45; cursor:not-allowed; }
 .bot-workspace :is(button,a,input,textarea,select,summary):focus-visible, .sidebar-mode-nav button:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
 .bot-workspace .bot-icon-button { flex:0 0 auto; width:34px; height:34px; padding:6px; border:0; background:transparent; }
 .bot-workspace .bot-quiet-button { border-color:transparent; background:transparent; color:var(--fg-secondary); }

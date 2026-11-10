@@ -24798,3 +24798,5 @@ html[data-theme="dark"] .chat-column.task-ambient[data-mode="general"] {
   border-radius: 6px;
   cursor: pointer;
 }
+
+.text-prompt-description { margin: -6px 0 18px; color: var(--fg-secondary); font-size: 12px; line-height: 1.6; }

@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 
 interface TextPromptOptions {
   title: string;
+  description?: string;
   label?: string;
   initialValue?: string;
   placeholder?: string;
@@ -109,6 +110,7 @@ export function useTextPrompt(): TextPromptController {
           {options.label && <span>{options.label}</span>}
           {field}
         </label>
+        {options.description && <p className="text-prompt-description">{options.description}</p>}
         <div className="full-access-dialog-actions">
           <button type="button" className="btn" onClick={() => finish(null)}>取消</button>
           <button type="submit" className="btn primary" disabled={confirmDisabled}>
