@@ -23,7 +23,7 @@ function criterionLabel(criterion: WorkCriterionDto): string {
   if (criterion.status === "failed") return "未满足";
   if (criterion.status === "waived") return "已豁免";
   if (criterion.status === "blocked") return "受阻";
-  return "待验收";
+  return "未单独登记检查";
 }
 
 export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: string; includeClosed: boolean;
@@ -87,7 +87,6 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
 
   const requiredCriteria = work.criteria.filter(item => item.origin !== "assistant_proposal");
   const suggestedCriteria = work.criteria.filter(item => item.origin === "assistant_proposal");
-  const satisfied = requiredCriteria.filter(item => item.status === "satisfied").length;
 
   return (
     <div className="bot-work-details">
@@ -99,15 +98,8 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
       <section className="bot-detail-section" aria-label="目标与进度">
         <h3>目标</h3>
         <p>{work.title}</p>
-        {requiredCriteria.length > 0 && <p className="bot-work-goal-note">以以下验收条件确认目标是否达成。</p>}
         <h3>进度</h3>
-        {requiredCriteria.length > 0 ? <>
-          <p>已通过 {satisfied} / {requiredCriteria.length} 项验收{requiredCriteria.some(item => item.status === "waived") ? "（另有已豁免项）" : ""}</p>
-          <progress value={satisfied} max={requiredCriteria.length} aria-label="已通过的验收项" />
-        </> : <p>{work.lifecycle === "closed"
-          ? `${workStatusLabel(work)}。本事项未设置用户验收条件，不显示验收通过率。`
-          : "本事项未设置用户验收条件，执行进展见下方。"}</p>}
-        {work.lifecycle === "closed" && requiredCriteria.length > 0 && <p>结束状态：{workStatusLabel(work)}。验收记录按实际结果保留。</p>}
+        <p>{workStatusLabel(work)}。{work.lifecycle === "closed" ? "处理结论已返回对话，原始结果保留在下方。" : "助理会对照原委托核对实际结果，自动补缺并返回结论。"}</p>
         {work.closureSummary && <details className="bot-original-report"><summary>结束说明原文</summary><WorkResultText text={work.closureSummary} /></details>}
       </section>
       {work.mode === "watch" && work.phase4 && <section className="bot-detail-section" aria-label="持续跟踪安排">
@@ -200,23 +192,21 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
       </article>)}
       {!!work.generatedArtifacts?.length && <details className="bot-advanced" aria-label="全部生成文件">
         <summary>全部生成文件 · {work.generatedArtifacts.length}</summary>
-        <p>文件生成不代表验收通过。保存版本与原始路径均保留。</p>
+        <p>保存版本与原始路径均保留；是否完成由助理结合原委托与实际结果判断。</p>
         <WorkFiles files={generatedWorkFiles(work)} />
       </details>}
-      <h3>成果记录与验收</h3>
+      <h3>原始执行记录</h3>
       {/* Review drafts retain their reviewed snapshot across background updates. */}
       <WorkReviewPanel key={`review:${work.workId}`} work={work} includeClosed={includeClosed} />
       <details className="bot-advanced"><summary>投递与版本记录</summary>
         <WorkCardsPanel key={JSON.stringify(["cards", work.workId, work.intentRevision, work.inputSnapshotId,
           work.ownerEpoch, work.stateVersion, work.phase3?.artifactSnapshotId])} work={work} includeClosed={includeClosed} />
       </details>
-      {requiredCriteria.length === 0 ? <p>没有用户设置的验收条件。</p> : (
-        <ul>{requiredCriteria.map((criterion) => <li key={criterion.id}>{criterion.text} · {criterionLabel(criterion)}</li>)}</ul>
-      )}
-      {suggestedCriteria.length > 0 && <section aria-label="助理建议检查">
-        <h4>建议检查</h4><p>助理提出的质量检查，不是额外的用户验收门槛。</p>
-        <ul>{suggestedCriteria.map(criterion => <li key={criterion.id}>{criterion.text} · {criterionLabel(criterion)}</li>)}</ul>
-      </section>}
+      {(requiredCriteria.length > 0 || suggestedCriteria.length > 0) && <details className="bot-advanced">
+        <summary>历史检查记录</summary>
+        <p>保留执行时的检查记录，不要求你逐项验收；最终结论见助理回复。</p>
+        <ul>{work.criteria.map(criterion => <li key={criterion.id}>{criterion.text} · {criterionLabel(criterion)}</li>)}</ul>
+      </details>}
       <details className="bot-advanced">
         <summary>高级设置与诊断</summary>
         <p>交接、关注规则与版本记录。这里的操作可能影响后续运行。</p>

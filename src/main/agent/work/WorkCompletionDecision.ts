@@ -22,6 +22,12 @@ export function applyCompletionDecision(options: WorkCompletionOptions, binding:
     });
     if (!response.ok) throw Error(response.message);
   }
+  // A legacy "please accept" marker is not a user-information requirement.
+  // Only a real result review may decide it is unnecessary; never clear unknown effects here.
+  if (decision.decision !== "ask") for (const blocker of works.repo.listOpenBlockers(work.workId)) {
+    if (blocker.kind === "operational" && blocker.waitingForUserInput && !blocker.unknownExternalEffectRef)
+      works.repo.clearBlocker(blocker.blockerId, work.workId, Date.now());
+  }
   // Semantic follow-up items are resolved by this exact follow-up result review,
   // never by a bare native completed status or by unrelated evidence.
   if (kind === "deliver" && decision.outcome === "completed") {
@@ -47,7 +53,7 @@ export function applyCompletionDecision(options: WorkCompletionOptions, binding:
   options.wake();
 }
 function continueMissing({ works, db }: WorkCompletionOptions, binding: WorkExecutionBindingDto, work: WorkDto, decision: WorkResultDecision): boolean {
-  if (!decision.missing.length || works.teams.get(work.workId)
+  if (!decision.missing.length
     || works.repo.listAdmissions(work.workId).some(item => item.state === "unknown")) return false;
   const row = db.prepare("SELECT * FROM work_completion_turns WHERE binding_id=?").get(binding.bindingId) as CompletionTurn;
   const context = JSON.parse(row.context_json);

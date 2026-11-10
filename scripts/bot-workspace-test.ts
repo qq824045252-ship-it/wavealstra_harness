@@ -265,14 +265,10 @@ const renderReview = (changes: Partial<WorkProjectionDto> = {}) => renderToStati
   work: { ...completedWork, lifecycle: "active", deliverables: [proposedOutput], ...changes }, includeClosed: true,
 }));
 const reviewPanel = renderReview();
-assert.match(reviewPanel, /采纳成果/);
-assert.match(reviewPanel, /拒绝成果/);
-assert.match(reviewPanel, /<button[^>]*disabled[^>]*>记录实测通过<\/button>/, "feedback needs actual user input");
-assert.match(reviewPanel, /<button[^>]*disabled[^>]*>确认结束事项<\/button>/, "closure needs evidence and confirmation");
+assert.equal(reviewPanel, "", "result review is automatic, not a manual acceptance form");
 for (const flags of [{ hasWriteConflicts: true }, { isSpeculation: true }]) {
-  assert.match(renderReview({ deliverables: [{ ...proposedOutput, ...flags }] }), /<button[^>]*disabled[^>]*>采纳成果<\/button>/);
+  assert.doesNotMatch(renderReview({ deliverables: [{ ...proposedOutput, ...flags }] }), /采纳成果|拒绝成果|确认结束/);
 }
-assert.doesNotMatch(renderReview({ deliverables: [{ ...proposedOutput, intentRevision: 1 }] }), /<button[^>]*>采纳成果<\/button>/, "stale proposals have no accept action");
 assert.equal(renderReview({ lifecycle: "closed" }), "", "closed Work has no additional review controls");
 
 const renderDetails = (changes: Partial<WorkProjectionDto>) => renderToStaticMarkup(createElement(BotWorkDetails, {
@@ -283,7 +279,7 @@ for (const closureConclusion of ["succeeded", "cancelled", "ended_unsuccessfully
   assert.doesNotMatch(closedDetails, /class="bot-work-decision-hint"|<h3>需要你决定<\/h3>|<button[^>]*>采纳成果<\/button>/,
     "closed matters must not solicit review decisions that cannot be acted on");
   assert.match(closedDetails, /结果已返回/, "completion does not fabricate acceptance of a proposed result");
-  assert.match(closedDetails, /成果记录与验收/);
+  assert.match(closedDetails, /原始执行记录/);
 }
 const emptyExecution: NonNullable<WorkProjectionDto["phase3"]> = { subitems: [], continuations: [], gaps: [],
   settlingActions: 0, pausedEventCount: 0, handoffs: [], collaborationMessages: [] };
@@ -295,10 +291,9 @@ assert.match(renderDetails({ lifecycle: "active", phase3: { ...emptyExecution, s
 const proposalCriterion = { id: "suggested", text: "模型建议核算总数", origin: "assistant_proposal" as const,
   status: "pending" as const, requiredIntentRevision: completedWork.intentRevision, requiresRealEnvironmentCheck: false, evidenceRefs: [] };
 const proposalDetails = renderDetails({ lifecycle: "active", criteria: [proposalCriterion] });
-assert.match(proposalDetails, /助理建议检查/); assert.match(proposalDetails, /不是额外的用户验收门槛/);
+assert.match(proposalDetails, /历史检查记录/); assert.match(proposalDetails, /不要求你逐项验收/);
 assert.doesNotMatch(proposalDetails, /aria-label="已通过的验收项"/, "model suggestions do not inflate mandatory user acceptance progress");
-assert.match(renderReview({ criteria: [proposalCriterion] }), /建议检查：模型建议核算总数/);
-assert.match(renderReview({ criteria: [proposalCriterion] }), /若你主动记录通过、未通过或待核验/);
+assert.equal(renderReview({ criteria: [proposalCriterion] }), "");
 
 const actionableDetails = renderDetails({ lifecycle: "active", deliverables: [proposedOutput], cards: [acceptedCard] });
 assert.ok(actionableDetails.indexOf('aria-label="成果评审与结束"') < actionableDetails.indexOf('aria-label="结果卡片与证据"'),
@@ -401,7 +396,7 @@ assert.match(populatedPage, /<dialog[^>]*aria-label="事项详情"/);
 assert.match(populatedPage, /<details class="bot-advanced"><summary>高级设置与诊断<\/summary>/, "advanced settings start collapsed");
 const detailsStart = populatedPage.indexOf('class="bot-work-details"');
 const overview = populatedPage.slice(detailsStart);
-const orderedHeadings = ["目标", "进度", "下一步", "成果与证据", "成果记录与验收"];
+const orderedHeadings = ["目标", "进度", "下一步", "成果与证据", "原始执行记录"];
 for (let index = 1; index < orderedHeadings.length; index++) {
   assert.ok(overview.indexOf(`<h3>${orderedHeadings[index - 1]}</h3>`) < overview.indexOf(`<h3>${orderedHeadings[index]}</h3>`), "details prioritize actionable information");
 }

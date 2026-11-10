@@ -19,11 +19,27 @@ export class WorkAutomaticCompletion {
   }
 
   observe(binding: WorkExecutionBindingDto, status: string): void {
-    // Never sweep pre-upgrade terminal history. Enrol only a newly observed
-    // completion of a live execution, atomically with its native inbox receipt.
+    // Enrol new terminal receipts atomically; recoverUnreviewed handles older open work.
     if (!["completed", "failed", "stopped"].includes(status) || ["completed", "failed", "stopped", "invalidated"].includes(binding.status)) return;
     this.db.prepare("INSERT OR IGNORE INTO work_automatic_completion(binding_id,work_id) VALUES (?,?)")
       .run(binding.bindingId, binding.workId);
+  }
+
+  /** Reconcile still-open work missed by an older host, never closed history.
+   * Enrolment requests a model review; it neither reruns effects nor declares success. */
+  recoverUnreviewed(): void {
+    if (!this.isAuthority()) return;
+    this.db.prepare(`INSERT OR IGNORE INTO work_automatic_completion(binding_id,work_id)
+      SELECT b.binding_id,w.work_id FROM works w JOIN work_execution_bindings b ON b.work_id=w.work_id
+      WHERE w.lifecycle='active' AND w.mode='once' AND w.cancel_requested_at IS NULL
+        AND b.bot_id=w.owner_bot_id AND b.owner_epoch=w.owner_epoch
+        AND b.intent_revision=w.intent_revision AND b.input_snapshot_id=w.input_snapshot_id
+        AND b.invalidated_at IS NULL AND b.status='completed'
+        AND EXISTS (SELECT 1 FROM work_native_inbox n WHERE n.binding_id=b.binding_id AND n.consumed_at IS NOT NULL)
+        AND NOT EXISTS (SELECT 1 FROM work_execution_bindings newer WHERE newer.work_id=w.work_id
+          AND newer.bot_id=w.owner_bot_id AND newer.intent_revision=w.intent_revision
+          AND newer.input_snapshot_id=w.input_snapshot_id AND newer.invalidated_at IS NULL
+          AND newer.admitted_at>b.admitted_at)`).run();
   }
 
   tracked(bindingId: string): boolean {
@@ -80,9 +96,12 @@ export class WorkAutomaticCompletion {
       || this.works.partialResults.plans(work.workId).some(item => ["pending", "dispatched"].includes(item.state))
       || this.db.prepare("SELECT 1 FROM work_dispatch_requests WHERE work_id=? AND state IN ('pending','blocked')").get(work.workId)) return;
     const team = this.works.teams.get(work.workId);
-    if (team && !team.executions.some(item => item.role === "owner_summary" && item.bindingId === bindingId)) return;
+    const continuation = this.db.prepare("SELECT continuation_plan_id FROM work_dispatch_requests WHERE task_id=?").get(binding.taskId) as { continuation_plan_id: string | null } | undefined;
+    const ownerContinuation = continuation?.continuation_plan_id && this.works.partialResults.plans(work.workId)
+      .some(plan => plan.planId === continuation.continuation_plan_id && plan.ownerBotId === work.ownerBotId);
+    if (team && !ownerContinuation && !team.executions.some(item => item.role === "owner_summary" && item.bindingId === bindingId)) return;
     // Finish the existing owner report delivery before making the team immutable.
-    if (team && !this.db.prepare("SELECT 1 FROM work_team_executions WHERE work_id=? AND role='owner_summary' AND reported_binding_id=? AND reported=1").get(work.workId, bindingId)) return;
+    if (team && !ownerContinuation && !this.db.prepare("SELECT 1 FROM work_team_executions WHERE work_id=? AND role='owner_summary' AND reported_binding_id=? AND reported=1").get(work.workId, bindingId)) return;
     if (team?.executions.some(item => ["queued", "recovering", "pending", "submitted", "running", "unknown"].includes(item.status))) return;
     const results = this.works.repo.listDeliverables(work.workId).filter(item => item.executionId === bindingId
       && item.intentRevision === work.intentRevision && item.inputSnapshotId === work.inputSnapshotId && item.status !== "superseded");

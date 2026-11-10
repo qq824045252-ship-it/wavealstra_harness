@@ -192,8 +192,16 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       await evaluate("document.querySelector('.bot-new-conversation').click()");
       await until(()=>evaluate("document.activeElement?.tagName === 'TEXTAREA'"),'empty team new conversation focuses composer');
       assert(!await evaluate("!!document.querySelector('dialog[open]')"),'empty context needs no archive ceremony');
-      await send('请立即交给本团队一次性后台任务：只审查这段代码并列出bug，不需要修改代码：function add(a,b){ return a-b; }。要求列出1个具体错误输入输出例子，如123与456，写出实际输出和应有输出。报告发现bug即完成委托，不需要项目无bug。不要联网，不写文件，不要求人工验收。');
+      await send('请立即交给本团队一次性后台任务：只审查这段代码并列出bug，不需要修改代码：function add(a,b){ return a-b; }。要求列出1个具体错误输入输出例子，如123与456，写出实际输出和应有输出。报告发现bug即完成委托，不需要项目无bug。不要联网，不写文件。');
       await send('独立插话：17+8，只答数字，不创建任务。');
+      await until(()=>evaluate("!!document.querySelector('.bot-message-work-links button')"),'actual Work link appears');
+      await evaluate("document.querySelector('.bot-message-work-links button').click()");
+      await until(()=>evaluate("!!document.querySelector('.bot-work-details')"),'actual running Work details');
+      assert(!await evaluate("[...document.querySelectorAll('.bot-work-details button')].some(b=>/采纳成果|拒绝成果|确认结束/.test(b.textContent))"),'no acceptance ceremony in actual UI');
+      const detailShot=await rpc('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});
+      fs.writeFileSync(path.join(out,'automatic-review-details.png'),Buffer.from(detailShot.data,'base64'));
+      await evaluate("document.querySelector('dialog[aria-label=\"事项详情\"] button[aria-label=\"关闭详情\"]')?.click()");
+
       await until(async()=> (await history()).messages.some(m=>m.role==='assistant'&&m.status==='completed'&&/25/.test(m.text)), 'team concurrent arithmetic');
       await until(async()=> { const list=await evaluate('window.api.botWork.listWorks(true)'); const h=await history(); if (!list.length && h.messages.filter(m=>m.role==='assistant'&&!m.workFeedback).length>=2 && h.messages.filter(m=>m.role==='assistant'&&!m.workFeedback).every(m=>['completed','failed'].includes(m.status))) throw Error('Team delegation produced no Work: '+h.messages.filter(m=>m.role==='assistant').map(m=>m.text).join(' | ')); return list.some(w=>w.team?.teamId===teamId&&w.lifecycle==='closed'); }, 'team real Work auto finishes');
       const works=await evaluate('window.api.botWork.listWorks(true)');

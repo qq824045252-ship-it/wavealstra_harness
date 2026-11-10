@@ -44,8 +44,9 @@ let reviewContinue = false;
 let lateResultWork: string | undefined;
 const coordinator = new WorkCompletionCoordinator({ db: db.connection, works, isAuthority: () => authority,
   review: async input => { reviewed.push(input.eventId); if (failReview) throw Error("model unavailable");
+    if (input.context.title === "waiting-input") return {decision:"ask",outcome:"partial",reply:"已交付请求的文字方案；收件人是谁？",missing:[]};
     if (lateResultWork) { db.connection.prepare("UPDATE work_deliverables SET summary=summary || ' 后到证据' WHERE work_id=?").run(lateResultWork); lateResultWork=undefined; }
-    if (reviewContinue) { reviewContinue=false; return {decision:"continue",outcome:"partial",reply:"已完成第一部分，补充剩余内容",missing:[{task:"补充剩余内容",requestExcerpt:String(input.context.title)}]}; }
+    if (reviewContinue && ["continue-required","team-review-followup"].includes(String(input.context.title))) { reviewContinue=false; return {decision:"continue",outcome:"partial",reply:"已完成第一部分，补充剩余内容",missing:[{task:"补充剩余内容",requestExcerpt:String(input.context.title)}]}; }
     return { decision: "deliver", outcome: reviewPartial || ["explicit", "uncertain"].includes(String(input.context.title)) ? "partial" : "completed", reply: `已整理：${input.context.title}。结果依据原始执行记录。`, missing: [] }; },
   deliver: input => { assert.notEqual(works.getWork(works.repo.getBinding(input.bindingId)!.workId)?.lifecycle, "closed", "delivery precedes closure");
     return deliveryAvailable && feedback.deliverCompletion(input); }, wake: () => {} });
@@ -68,6 +69,19 @@ try {
   assert.equal(works.repo.listDeliverables(healthy)[0]?.status, "proposed", "automatic end is not forged acceptance");
   const version = works.getWork(healthy)?.stateVersion;
   await flush(); assert.equal(works.getWork(healthy)?.stateVersion, version, "replay does not reclose");
+
+  const legacy = create("legacy-unreviewed"); await flush(); states.set(legacy,"completed");
+  await queue.flush();
+  const legacyBinding = works.repo.listBindings(legacy)[0];
+  db.connection.prepare("DELETE FROM work_automatic_completion WHERE binding_id=?").run(legacyBinding.bindingId);
+  works.repo.insertBlocker({blockerId:"legacy-acceptance",workId:legacy,kind:"operational",reason:"请老板采纳成果",waitingForUserInput:true,status:"open",createdAt:Date.now()});
+  works.transaction(() => works.automaticCompletion.recoverUnreviewed());
+  await flush();
+  assert.equal(works.getWork(legacy)?.closureConclusion,"succeeded","old open result is reviewed without acceptance clicks");
+  assert.equal(works.repo.listOpenBlockers(legacy).length,0,"obsolete acceptance question is not a real user information requirement");
+  const legacyVersion=works.getWork(legacy)!.stateVersion;
+  works.transaction(() => works.automaticCompletion.recoverUnreviewed()); await flush();
+  assert.equal(works.getWork(legacy)!.stateVersion,legacyVersion,"closed history never reopens or reexecutes");
 
   const watch = create("watch", true); await flush(); states.set(watch, "completed"); await flush();
   assert.equal(works.getWork(watch)?.lifecycle, "active", "one watch tick is not end of the watch");
@@ -143,6 +157,24 @@ try {
   await flush(); await flush();
   assert.equal(works.getWork(continuation)?.closureConclusion,"succeeded","reviewed continuation resolves only its semantic gap");
   assert.equal(works.repo.listBindings(continuation).length,2,"one exact missing-part execution, not original task replay");
+  bots.registerBot({botId:"team-review-member",userId:LOCAL_USER_ID,displayName:"成员",authorization:DESKTOP_USER_GRANTS});
+  const teamResult=works.teams.handle({...user,grants:{...DESKTOP_USER_GRANTS,allowRedelegation:true}}, {kind:"create",request:{
+    operationId:"team-review-followup",title:"team-review-followup",goalDescription:"补充剩余内容",workspacePath:root,
+    ownerBotId:DEFAULT_BOT_ID,ownerResponsibility:"汇总真实成果",members:[{botId:"team-review-member",responsibility:"分析资料",delegatedScope:["workspace:read"]}],criteria:["补充剩余内容"]}});
+  assert(teamResult.ok,JSON.stringify(teamResult));
+  const teamId=teamResult.work!.workId;
+  for(let i=0;i<5;i++) await queue.flush();
+  const originalTeamBindings=works.repo.listBindings(teamId);
+  assert.equal(originalTeamBindings.length,2);
+  db.connection.prepare("DELETE FROM work_automatic_completion WHERE work_id=?").run(teamId);
+  works.transaction(()=>works.automaticCompletion.recoverUnreviewed());
+  reviewContinue=true;
+  coordinator.wake(); await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(works.getWork(teamId)?.lifecycle,"active","team review schedules missing part without user acceptance");
+  for(let i=0;i<5;i++) await flush();
+  assert.equal(works.getWork(teamId)?.closureConclusion,"succeeded","team owner continuation returns to automatic review and closes");
+  assert.equal(works.repo.listBindings(teamId).length,3,"only one missing-part execution; members are not rerun");
+
   const failed = create("review-fails"); await flush(); failReview = true; states.set(failed,"completed"); await flush();
   assert.equal(works.getWork(failed)?.lifecycle,"active");
   db.connection.prepare("UPDATE work_completion_turns SET retry_at=0 WHERE binding_id IN (SELECT binding_id FROM work_execution_bindings WHERE work_id=?)").run(failed);

@@ -17,6 +17,7 @@ export class WorkCompletionCoordinator {
   private readonly active = new Set<string>();
   private timer?: ReturnType<typeof setInterval>;
   private closed = false;
+  private recoveredAt = 0;
   constructor(private readonly options: WorkCompletionOptions) {
     options.db.exec(`CREATE TABLE IF NOT EXISTS work_completion_turns (
       binding_id TEXT PRIMARY KEY, context_json TEXT NOT NULL, decision_json TEXT,
@@ -27,6 +28,10 @@ export class WorkCompletionCoordinator {
   close(): void { this.closed = true; if (this.timer) clearInterval(this.timer); this.timer = undefined; }
   wake(): void {
     if (this.closed || !this.options.isAuthority()) return;
+    if (Date.now() - this.recoveredAt > 30000) {
+      this.options.works.transaction(() => this.options.works.automaticCompletion.recoverUnreviewed());
+      this.recoveredAt = Date.now();
+    }
     for (const bindingId of this.options.works.automaticCompletion.pending()) {
       if (this.active.size >= 2) break;
       if (this.active.has(bindingId)) continue;
@@ -63,6 +68,7 @@ export class WorkCompletionCoordinator {
         executionFacts: { status: binding.status, outputReceived: candidate.executionDelivered,
           diagnosticSummary: candidate.summary },
         criteria: candidate.work.criteria,
+        pendingQuestions: works.repo.listOpenBlockers(binding.workId).filter(item => item.waitingForUserInput).map(item => item.reason),
         actualMissing: works.partialResults.gaps(binding.workId).map(item => ({task:item.task, summary:item.summary, outcome:item.outcome})),
         unknownEffects: works.repo.listAdmissions(binding.workId).filter(item => item.state === "unknown").map(item => item.operationId),
       }));
@@ -70,9 +76,7 @@ export class WorkCompletionCoordinator {
     const row = this.row(bindingId)!;
     try {
       let decision: WorkResultDecision;
-      const question = works.repo.listOpenBlockers(binding.workId).filter(item => item.waitingForUserInput && item.kind === "operational" && !item.unknownExternalEffectRef);
-      if (question.length) decision = {decision:"ask",outcome:"partial",reply:`${raw || "本次没有返回可用成果。"}\n\n还需要你补充：${question.map(item => item.reason).join("；")}`,missing:[]};
-      else if (row.decision_json) decision = JSON.parse(row.decision_json);
+      if (row.decision_json) decision = JSON.parse(row.decision_json);
       else {
         this.options.deliver({ bindingId, eventId: `${eventId}:progress`, category: "progress", text: "后台结果已返回，我正在对照你的委托整理结论。你可以继续交代其他事情。" });
         const attempt = row.state === "running" ? Math.max(1,row.attempts) : row.attempts + 1;
