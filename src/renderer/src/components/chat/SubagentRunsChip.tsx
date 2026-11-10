@@ -12,8 +12,12 @@ import { createPortal } from "react-dom";
 import { useAppStore } from "@/store/appStore";
 import { useDismissOnClickOutside } from "@/hooks/useDismissOnClickOutside";
 import { useSubagentRuns } from "@/hooks/useSubagentRuns";
-import { formatElapsed } from "@/components/artifact/overview/overviewRuntime";
-import { formatTokenCount } from "@shared/token-format";
+import {
+  formatElapsed,
+  subagentUsageFields,
+  subagentUsageTitle,
+} from "@/components/artifact/overview/overviewRuntime";
+import type { SubagentUsage } from "@shared/subagent-model-config";
 import { childDurationLabel } from "@/lib/subagentDetails";
 import { IconChevronDown, IconChevronRight, IconUsers } from "@/components/common/icons";
 
@@ -26,7 +30,8 @@ type PopoverRow = {
   cwd?: string;
   /** 没有 cwd 时的副行文案（任务首行/结果摘要） */
   text?: string;
-  tokens?: number;
+  /** 与侧栏概览同一份用量：输入 / 缓存读 / 输出 / 命中率 */
+  usage?: SubagentUsage;
   duration?: string;
   openable: boolean;
 };
@@ -87,7 +92,7 @@ export default function SubagentRunsChip({ taskId }: { taskId: string }): React.
       stateLabel: "运行中",
       cwd: row.cwd,
       text: row.work,
-      tokens: row.usage?.contextTokens,
+      usage: row.usage,
       duration: formatElapsed(row.elapsedMs),
       openable: true,
     })),
@@ -107,7 +112,7 @@ export default function SubagentRunsChip({ taskId }: { taskId: string }): React.
       stateLabel: row.state === "completed" ? "已完成" : row.state === "failed" ? "失败" : row.state === "unknown" ? "已结束" : "已取消",
       cwd: row.cwd,
       text: row.summary,
-      tokens: row.usage?.contextTokens,
+      usage: row.usage,
       duration: childDurationLabel(row.durationMs),
       openable: true,
     })),
@@ -174,13 +179,20 @@ export default function SubagentRunsChip({ taskId }: { taskId: string }): React.
                     <span className="subagent-popover-line">
                       <span className="subagent-popover-name">{row.name}</span>
                       <span className="subagent-popover-metrics">
-                        {row.tokens !== undefined && row.tokens > 0 && (
-                          <span title="上下文用量">{formatTokenCount(row.tokens)}</span>
-                        )}
                         {row.duration && <span title="耗时">{row.duration}</span>}
                         <span className="subagent-popover-state">{row.stateLabel}</span>
                       </span>
                     </span>
+                    {/* 用量与侧栏概览同一套字段：输入 / 缓存读 / 输出 / 命中率 */}
+                    {row.usage && (
+                      <span className="ro-usage subagent-popover-usage" title={subagentUsageTitle(row.usage)}>
+                        {subagentUsageFields(row.usage).map((field) => (
+                          <span key={field.key} className={`ro-usage-item${field.tone && field.tone !== "normal" ? ` ro-usage-item--${field.tone}` : ""}`}>
+                            {field.label} <b>{field.value}</b>
+                          </span>
+                        ))}
+                      </span>
+                    )}
                     <span className="subagent-popover-sub" title={row.cwd ?? row.text}>
                       {row.cwd ? `工作目录: ${row.cwd}${row.kind === "running" ? " · 可继续" : ""}` : row.text}
                     </span>

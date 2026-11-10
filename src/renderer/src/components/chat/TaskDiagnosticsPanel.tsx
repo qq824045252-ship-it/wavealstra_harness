@@ -270,21 +270,6 @@ export function TaskDiagnosticsView({
   return <div data-testid="task-diagnostics-view">
     {value.unavailable && <p role="alert">{value.unavailable}</p>}
 
-    <div className={`td-summary td-summary--${report.summary.error > 0 ? "error" : report.summary.warn > 0 ? "warn" : report.summary.unknown > 0 ? "unknown" : "ok"}`}>
-      <div className="td-summary-headline" data-testid="diagnostics-headline">{report.headline}</div>
-      <div className="td-summary-counts">
-        {(["error", "warn", "unknown", "waiting"] as const).map((key) => (
-          <span key={key} className={`td-count td-count--${key}`}>{verdictLabels[key]} {report.summary[key]}</span>
-        ))}
-        <span className="td-count">共 {report.turns.length} 轮 · {report.totals.requests} 请求 · {report.totals.tools} 工具</span>
-      </div>
-      <p className="task-diagnostic-note">
-        判定只基于观测到的事实：失败/重试/HTTP 错误/工具失败为硬规则；缓存只在命中率掉到 0% 时才判回源，正常波动不报警。
-        首字延迟只作为参考指标显示，不参与判定；输出速率对比同任务同模型历史 p10（{report.baseline.tps.p10 === null ? "样本不足，不判定" : `p10 ${report.baseline.tps.p10.toFixed(1)} tok/s`}）。
-        缺数据一律标「无法判断」，不按 0 补。
-      </p>
-    </div>
-
     {/* 主任务一页；有几个子代理就几页，各自一条缓存趋势 */}
     <div className="td-tabs" role="tablist" aria-label="按会话查看诊断">
       {report.tabs.map((tab) => (
@@ -323,7 +308,6 @@ export function TaskDiagnosticsView({
 export default function TaskDiagnosticsPanel({ taskId }: { taskId: string | null }) {
   const [value, setValue] = useState<TaskDiagnosticsDto | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [tick, setTick] = useState(0);
   const task = useAppStore((s) => s.tasks.find((item) => item.id === taskId) ?? null);
   // 子代理标签页的名字：从父任务的 subagent 结果里取 displayName（conversationId → 名字）
   const subagentLabels = useMemo(() => {
@@ -359,13 +343,8 @@ export default function TaskDiagnosticsPanel({ taskId }: { taskId: string | null
     void refresh();
     const timer = live ? setInterval(() => void refresh(), 3000) : undefined;
     return () => { alive = false; if (timer) clearInterval(timer); };
-  }, [taskId, tick, live]);
+  }, [taskId, live]);
   return <section className="runtime-inspector-section task-diagnostics-panel" data-testid="task-diagnostics-panel">
-    <div className="runtime-inspector-section-head">
-      <h3>任务执行诊断</h3>
-      <span>只读{live ? " · 每 3 秒更新" : ""}</span>
-      <button type="button" className="td-refresh" onClick={() => setTick((value) => value + 1)}>刷新</button>
-    </div>
     {error && <p role="alert">{error}</p>}
     {value
       ? <TaskDiagnosticsView value={value} subagentLabels={subagentLabels} />

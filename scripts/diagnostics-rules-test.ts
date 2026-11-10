@@ -10,7 +10,6 @@
 import type { ModelRequestDiagnostic, TaskDiagnosticsDto, ToolDiagnostic, WaitDiagnostic } from "@shared/task-diagnostics";
 import {
   buildDiagnosticsReport,
-  buildBaseline,
   bucketTurns,
   cacheLine,
   percentile,
@@ -173,10 +172,18 @@ console.log("== 观测质量规则 ==");
   assert(prefixExplained.turns[0]?.verdict === "ok", "前缀失效但配置变了 → 正常");
 }
 
-console.log("== 相对规则（基线不足不编造） ==");
+console.log("== 性能指标只展示、不判定 ==");
 {
-  const few = buildBaseline([request({ id: "r1", executionId: "t1" }), request({ id: "r2", executionId: "t2" })]);
-  assert(few.tps.p10 === null && few.tps.samples === 2, "样本不足 → 无 p10");
+  // 极慢的首字 + 极低的输出速率：都不该产生判定
+  const slow = buildDiagnosticsReport(dto({ requests: [
+    request({ id: "slow", executionId: "t1", startedAt: NOW - 60_000, firstResponseAt: NOW - 5_000, finishedAt: NOW - 1_000, modelMs: 59_000,
+      usage: { input: 1_000, output: 3, cacheRead: 9_000, cacheWrite: 0 } }),
+  ] }), NOW).turns[0];
+  assert(slow?.verdict === "ok", `慢首字 + 低速率仍是正常（${slow?.verdict}）`);
+  assert(!slow?.findings.some((finding) => finding.ruleId === "A5" || finding.ruleId === "C1" || finding.ruleId === "C2"),
+    "首字/速率规则都不存在");
+  assert(slow?.firstTokenMs === 55_000, "首字仍是可见指标");
+  assert(slow?.outputTps !== null && (slow?.outputTps ?? 0) < 1, "速率仍是可见指标");
 
   // 缓存：只有掉到 0% 才判定，普通波动不报警
   const mildDrop = buildDiagnosticsReport(dto({ requests: [

@@ -72,11 +72,6 @@ export interface TurnDiagnostics {
   approximateWaits: boolean;
 }
 
-export interface Baseline {
-  /** 输出速率 p10（同任务同模型，含样本数）。首字延迟仅作参考数据，不参与判定。 */
-  tps: { p10: number | null; samples: number };
-}
-
 export interface CacheTrendPoint {
   key: string;
   /** 该轮在自己分组里的名字（主任务第 2 轮 / 子代理第 5 轮） */
@@ -108,17 +103,15 @@ export interface DiagnosticsReport {
   turns: TurnDiagnostics[];
   summary: Record<Verdict, number>;
   headline: string;
-  baseline: Baseline;
   totals: { requests: number; tools: number; waits: number };
   /** 判定用到的全部规则标题（UI「规则说明」用） */
   rules: Array<{ ruleId: string; text: string }>;
 }
 
-/**
- * 输出速率下限样本数。首字延迟**不参与判定**（用户口径：首字慢是网络与排队噪声，
- * 不作为异常依据），只在指标行里如实显示。
+/*
+ * 性能指标（首字延迟、输出速率）**都不参与判定**：它们受网络、排队、供应商负载影响，
+ * 用它们判异常只会制造噪声。两者仍作为指标行如实展示，供人自己判断。
  */
-const MIN_TPS = 5;
 
 export const RULE_TEXTS: Array<{ ruleId: string; text: string }> = [
   { ruleId: "A1", text: "模型请求失败或带错误 → 异常" },
@@ -132,7 +125,6 @@ export const RULE_TEXTS: Array<{ ruleId: string; text: string }> = [
   { ruleId: "B1", text: "用量字段缺失 → 观测缺口（不按 0 计）" },
   { ruleId: "B2", text: "费用来自 SDK 默认值 → 不是真实账单" },
   { ruleId: "B3", text: "缓存前缀被打断且配置没变 → 需注意" },
-  { ruleId: "C2", text: `输出速率 < 同任务同模型历史 p10（样本 ≥ ${MIN_TPS}）→ 需注意` },
   { ruleId: "C3", text: "缓存命中率掉到 0% → 需注意（真的回源）；只是波动不算" },
 ];
 
@@ -204,18 +196,7 @@ function tpsOf(request: ModelRequestDiagnostic): number | null {
   return output / (request.modelMs / 1000);
 }
 
-/** 基线：完成态的请求，按 provider/model 分桶，取 p90 首字与 p10 速率。 */
-export function buildBaseline(requests: ModelRequestDiagnostic[]): Baseline {
-  const completed = requests.filter((request) => request.status === "completed" && request.sourceKind !== "auxiliary");
-  const tps = completed.map(tpsOf).filter((value): value is number => value !== null).sort((a, b) => a - b);
-  return { tps: { p10: tps.length >= MIN_TPS ? percentile(tps, 0.1) : null, samples: tps.length } };
-}
-
-function requestFindings(
-  requests: ModelRequestDiagnostic[],
-  baseline: Baseline,
-  cache: CacheSummary,
-): Finding[] {
+function requestFindings(requests: ModelRequestDiagnostic[], cache: CacheSummary): Finding[] {
   const findings: Finding[] = [];
   for (const request of requests) {
     const label = `${request.provider}/${request.model}`;
@@ -261,15 +242,6 @@ function requestFindings(
       });
     }
     // 首字延迟只作为指标展示，不参与判定（用户口径：首字慢是网络/排队噪声）。
-    const tps = tpsOf(request);
-    if (baseline.tps.p10 !== null && tps !== null && tps < baseline.tps.p10) {
-      findings.push({
-        ruleId: "C2", verdict: "warn",
-        title: "输出速率低于历史",
-        evidence: `${tps.toFixed(1)} tok/s < p10 ${baseline.tps.p10.toFixed(1)} tok/s`,
-        basis: `同任务同模型完成态请求 p10（样本 ${baseline.tps.samples}）。`,
-      });
-    }
     if (cache.hitRate === null && (request.usage.input === null || request.usage.cacheRead === null)) {
       findings.push({
         ruleId: "B1", verdict: "unknown",
@@ -426,7 +398,6 @@ export function buildDiagnosticsReport(
   now = Date.now(),
   subagentLabels: Record<string, string> = {},
 ): DiagnosticsReport {
-  const baseline = buildBaseline(value.requests);
   const buckets = bucketTurns(value);
   const tabKeyOf = (bucket: Bucket): string => {
     if (bucket.sourceKind === "main") return "main";
@@ -465,7 +436,7 @@ export function buildDiagnosticsReport(
       const requests = [...bucket.requests].sort((a, b) => a.startedAt - b.startedAt);
       const cache = summarizeCache(requests);
       const findings = [
-        ...requestFindings(requests, baseline, cache),
+        ...requestFindings(requests, cache),
         ...toolFindings(bucket.tools),
         ...waitFindings(bucket.waits, now),
       ];
@@ -563,7 +534,6 @@ export function buildDiagnosticsReport(
     turns: allTurns,
     summary,
     headline,
-    baseline,
     totals: { requests: value.requests.length, tools: value.tools.length, waits: value.waits.length },
     rules: RULE_TEXTS,
   };

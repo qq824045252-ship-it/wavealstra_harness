@@ -31,7 +31,6 @@ export interface TaskWriteGrantsMenuProps {
 
 const REVOKE_FAILED_NOTICE = "撤销失败，请重试";
 const LOAD_FAILED_NOTICE = "授权列表加载失败，请重试";
-const EMPTY_HINT = "暂无授权文件夹";
 
 function formatTime(ts: number): string {
   if (!Number.isFinite(ts) || ts <= 0) return "";
@@ -51,7 +50,6 @@ export default function TaskWriteGrantsMenu({
   const revokeTaskWriteGrant = useAppStore((s) => s.revokeTaskWriteGrant);
 
   const [grants, setGrants] = useState<TaskWriteGrantRow[]>([]);
-  const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [revokingPath, setRevokingPath] = useState<string | null>(null);
   /** 代际：taskId 变化或重载时使在途撤销/加载结果失效（防跨任务污染） */
@@ -64,10 +62,8 @@ export default function TaskWriteGrantsMenu({
       const rows = await listTaskWriteGrants();
       if (gen !== generationRef.current) return;
       setGrants(rows);
-      setLoaded(true);
     } catch {
       if (gen !== generationRef.current) return;
-      setLoaded(true);
       setError(LOAD_FAILED_NOTICE);
     }
   }, [listTaskWriteGrants]);
@@ -114,44 +110,43 @@ export default function TaskWriteGrantsMenu({
           <span className="task-menu-item-hint">模型 / 工具 / 等待 / 缓存记录</span>
         </button>
       </div>
-      <div className="task-menu-sep" />
-      <div className="task-grants-title">外部写入授权</div>
-      {error && (
-        <div className="task-grants-error" role="status">
-          {error}
-        </div>
-      )}
-      <div className="task-grants-list">
-        {!loaded ? (
-          <div className="task-grants-empty">加载中…</div>
-        ) : grants.length === 0 ? (
-          <div className="task-grants-empty">{EMPTY_HINT}</div>
-        ) : (
-          grants.map((g) => (
-            <div className="task-grants-item" key={g.path}>
-              <div className="task-grants-item-main">
-                <span className="task-grants-path" title={g.path}>
-                  {g.path}
-                </span>
-                {formatTime(g.createdAt) && (
-                  <span className="task-grants-time">授权于 {formatTime(g.createdAt)}</span>
-                )}
-              </div>
-              <button
-                type="button"
-                className="task-grants-revoke"
-                disabled={revokingPath != null}
-                title="撤销此文件夹授权"
-                aria-label={`撤销授权：${g.path}`}
-                onClick={() => void revoke(g.path)}
-              >
-                <IconTrash size={13} />
-                <span>{revokingPath === g.path ? "撤销中…" : "移除"}</span>
-              </button>
+      {/* 没有授权目录时整块不出现：空状态只是噪声。有授权（或加载失败）才显示管理区。 */}
+      {(grants.length > 0 || error) && (
+        <>
+          <div className="task-menu-sep" />
+          <div className="task-grants-title">外部写入授权</div>
+          {error && (
+            <div className="task-grants-error" role="status">
+              {error}
             </div>
-          ))
-        )}
-      </div>
+          )}
+          <div className="task-grants-list">
+            {grants.map((g) => (
+              <div className="task-grants-item" key={g.path}>
+                <div className="task-grants-item-main">
+                  <span className="task-grants-path" title={g.path}>
+                    {g.path}
+                  </span>
+                  {formatTime(g.createdAt) && (
+                    <span className="task-grants-time">授权于 {formatTime(g.createdAt)}</span>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  className="task-grants-revoke"
+                  disabled={revokingPath != null}
+                  title="撤销此文件夹授权"
+                  aria-label={`撤销授权：${g.path}`}
+                  onClick={() => void revoke(g.path)}
+                >
+                  <IconTrash size={13} />
+                  <span>{revokingPath === g.path ? "撤销中…" : "移除"}</span>
+                </button>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
       <button type="button" className="task-grants-close" onClick={onClose}>
         关闭
       </button>

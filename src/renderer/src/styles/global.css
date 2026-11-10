@@ -18541,6 +18541,12 @@ html[data-theme="dark"] .input-expert-chip {
   max-width: 100%;
 }
 
+.subagent-popover-usage {
+  margin-top: 1px;
+  font-size: 11px;
+  gap: 2px 8px;
+}
+
 .subagent-popover-chevron {
   flex-shrink: 0;
   margin-top: 3px;
