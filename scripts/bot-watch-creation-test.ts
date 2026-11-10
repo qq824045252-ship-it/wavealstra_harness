@@ -80,7 +80,7 @@ async function checkPendingNativeBinding(change: "stop" | "revise" | "skip", has
   const actor: WorkActor = { kind: "user", userId: LOCAL_USER_ID, grants: DESKTOP_USER_GRANTS };
   const watch = unwrap(service.createWork(actor, { operationId: `create-${key}`, title: key, mode: "watch",
     workspacePath: root, inputSnapshotId: `input-${key}`, authorization: DESKTOP_USER_GRANTS,
-    watchRule: { subscriptions: ["cron"], cronExpression: "* * * * *", timezone: "UTC",
+    watchRule: { scheduleBasis: "user_specified", subscriptions: ["cron"], cronExpression: "* * * * *", timezone: "UTC",
       catchUpPolicy: change === "skip" ? "each" : "latest", maxMergeWaitMs: 1_000, maxQueueDepth: 8 } }));
   nativeNow = service.repo.listSubscriptions(watch.workId)[0].nextWakeAt!;
   if (change === "skip") nativeNow += 5 * 60_000;
@@ -143,8 +143,8 @@ const testActor: WorkActor = { kind: "user", userId: LOCAL_USER_ID, grants: DESK
 const receiptFor = (binding: WorkExecutionBindingDto): AgentSubmissionReceipt => ({ taskId: binding.taskId,
   operationId: binding.operationId, submissionId: 1, status: "done" });
 async function newImmediateWatch(title: string) {
-  const work = unwrap(await invoke("work_create", { title, mode: "watch", startImmediately: true,
-    watchRule: { nextWakeAt: clock.at + 24 * 60 * 60_000 } }));
+  const work = unwrap(await invoke("work_create", { requestedOutcome: "one_time", title, mode: "watch", startImmediately: true,
+    watchRule: { scheduleBasis: "user_specified", nextWakeAt: clock.at + 24 * 60 * 60_000 } }));
   await queue.flush();
   const binding = works.repo.listBindings(work.workId)[0]; assert(binding);
   return { work, binding };
@@ -221,8 +221,8 @@ async function checkStoppedWatchReadback(outcome: "completed" | "failed" | "pend
 
 try {
   const deadline = start + 24 * 60 * 60_000;
-  const created = await invoke("work_create", { title: "跟进进展", mode: "watch",
-    watchRule: { cronExpression: "0 * * * *", timezone: "Asia/Shanghai", catchUpPolicy: "latest", stopConditionText: "发布成功" }, deadlineAt: deadline });
+  const created = await invoke("work_create", { requestedOutcome: "ongoing", title: "跟进进展", mode: "watch",
+    watchRule: { scheduleBasis: "user_specified", cronExpression: "0 * * * *", timezone: "Asia/Shanghai", catchUpPolicy: "latest", stopConditionText: "发布成功" }, deadlineAt: deadline });
   let work = unwrap(created);
   assert(created.tracking.nextWakeAt > start, "the tool returns the actual first wake, not only the Cron input");
   assert.equal(created.tracking.timezone, "Asia/Shanghai");
@@ -261,7 +261,7 @@ try {
 
   request("改成每天上海时间早上9点", work.workId);
   work = unwrap(await invoke("work_amend", { workId: work.workId, versionGuard: await read(work.workId),
-    watchRule: { cronExpression: "0 9 * * *", timezone: "Asia/Shanghai" } }));
+    watchRule: { scheduleBasis: "user_specified", cronExpression: "0 9 * * *", timezone: "Asia/Shanghai" } }));
   const changed = works.repo.listSubscriptions(work.workId)[0];
   assert.equal(changed.subscriptionId, subscription.subscriptionId);
   assert.equal(changed.cronExpression, "0 9 * * *"); assert.equal(changed.scheduleRevision, 2);
@@ -291,7 +291,7 @@ try {
 
   request("明天安排一次跟进", work.workId);
   work = unwrap(await invoke("work_amend", { workId: work.workId, versionGuard: await read(work.workId),
-    watchRule: { nextWakeAt: clock.at + 60_000 }, deadlineAt: clock.at + 120_000 }));
+    watchRule: { scheduleBasis: "user_specified", nextWakeAt: clock.at + 60_000 }, deadlineAt: clock.at + 120_000 }));
   assert.equal(work.mode, "watch"); assert(work.deadlineRevision > 1);
   clock.at += 60_000; works.tick(clock.at); await queue.flush(); settle(work.workId);
   const onceCount = works.repo.listBindings(work.workId).length;
@@ -306,10 +306,10 @@ try {
   assert.equal(works.repo.listBindings(work.workId).length, onceCount + 1, "deadline instance survives restart without duplicate follow-up");
 
   const before = works.listWorks(LOCAL_USER_ID, { includeClosed: true }).length;
-  await assert.rejects(() => invoke("work_create", { title: "missing timing", mode: "watch" }), /时间或频率/);
-  const invalidZone = await invoke("work_create", { title: "bad zone", mode: "watch", watchRule: { cronExpression: "0 9 * * *", timezone: "Not/AZone" } });
+  await assert.rejects(() => invoke("work_create", { requestedOutcome: "one_time", title: "missing timing", mode: "watch" }), /时间或频率/);
+  const invalidZone = await invoke("work_create", { requestedOutcome: "ongoing", title: "bad zone", mode: "watch", watchRule: { scheduleBasis: "user_specified", cronExpression: "0 9 * * *", timezone: "Not/AZone" } });
   assert.equal(invalidZone.ok, false);
-  const invalidCron = await invoke("work_create", { title: "bad schedule", mode: "watch", watchRule: { cronExpression: "bad bad bad bad bad" } });
+  const invalidCron = await invoke("work_create", { requestedOutcome: "ongoing", title: "bad schedule", mode: "watch", watchRule: { scheduleBasis: "user_specified", cronExpression: "bad bad bad bad bad" } });
   assert.equal(invalidCron.ok, false);
   assert.equal(works.listWorks(LOCAL_USER_ID, { includeClosed: true }).length, before, "bad schedules leave no partially-created Work");
   request("取消这个跟踪事项", work.workId);
@@ -319,8 +319,8 @@ try {
   // An explicitly requested first check must still use the read-only timer path,
   // including when a separate one-shot future check is also requested.
   clock.at = Date.now();
-  const immediate = unwrap(await invoke("work_create", { title: "现在和明天各检查一次", mode: "watch", startImmediately: true,
-    watchRule: { nextWakeAt: clock.at + 24 * 60 * 60_000 } }));
+  const immediate = unwrap(await invoke("work_create", { requestedOutcome: "one_time", title: "现在和明天各检查一次", mode: "watch", startImmediately: true,
+    watchRule: { scheduleBasis: "user_specified", nextWakeAt: clock.at + 24 * 60 * 60_000 } }));
   assert.equal(scheduled.length, 0);
   await queue.flush();
   const firstCheck = works.repo.listBindings(immediate.workId)[0];
@@ -338,8 +338,8 @@ try {
   assert(works.partialResults.recovery.ancestry(recovery).some(item => item.bindingId === firstCheck.bindingId));
   assertReadOnlyAdmission(recovery.taskId, "watch-recovery-ancestry");
   settle(immediate.workId);
-  const expiredPause = unwrap(await invoke("work_create", { title: "暂停期间到期后仍可取消", mode: "watch",
-    watchRule: { nextWakeAt: clock.at + 60_000 }, deadlineAt: clock.at + 1000 }));
+  const expiredPause = unwrap(await invoke("work_create", { requestedOutcome: "one_time", title: "暂停期间到期后仍可取消", mode: "watch",
+    watchRule: { scheduleBasis: "user_specified", nextWakeAt: clock.at + 60_000 }, deadlineAt: clock.at + 1000 }));
   request("暂停", expiredPause.workId);
   unwrap(await invoke("work_pause", { workId: expiredPause.workId, versionGuard: await read(expiredPause.workId) }));
   clock.at += 2000; works.tick(clock.at);
@@ -349,14 +349,14 @@ try {
   assert.equal(works.getWork(expiredPause.workId)?.lifecycle, "closed", "past scheduling diagnostics cannot indefinitely prevent explicit cancellation");
   // Converting an ordinary item and changing its goal in the same request must
   // not schedule an unrestricted immediate run before the future read-only check.
-  const ordinary = unwrap(await invoke("work_create", { title: "普通事项", goalDescription: "原目标", mode: "once" }));
+  const ordinary = unwrap(await invoke("work_create", { requestedOutcome: "one_time", title: "普通事项", goalDescription: "原目标", mode: "once" }));
   await queue.flush(); settle(ordinary.workId);
   const schedulesBeforeConversion = scheduled.length;
   const bindingsBeforeConversion = works.repo.listBindings(ordinary.workId).length;
   request("改目标并从明天开始持续检查", ordinary.workId);
   const converted = unwrap(await invoke("work_amend", { workId: ordinary.workId,
     versionGuard: await read(ordinary.workId), goalDescription: "只在计划时间读取新目标进展",
-    watchRule: { nextWakeAt: clock.at + 24 * 60 * 60_000 } }));
+    watchRule: { scheduleBasis: "user_specified", nextWakeAt: clock.at + 24 * 60 * 60_000 } }));
   assert.equal(converted.mode, "watch");
   assert.equal(scheduled.length, schedulesBeforeConversion, "once-to-watch plus new content must not enqueue ordinary execution");
   await queue.flush();
@@ -386,7 +386,7 @@ try {
     assert.equal(result.ok, false); assert.match(result.message ?? "", /团队/);
   };
   rejectTeam(works.amendWork(teamActor, { operationId: "team-amend-watch", workId: teamWork.workId,
-    versionGuard: guard(works.getWork(teamWork.workId)!), watchRule: { nextWakeAt: clock.at + 60_000 } }));
+    versionGuard: guard(works.getWork(teamWork.workId)!), watchRule: { scheduleBasis: "user_specified", nextWakeAt: clock.at + 60_000 } }));
   rejectTeam(works.amendWork(teamActor, { operationId: "team-amend-deadline", workId: teamWork.workId,
     versionGuard: guard(works.getWork(teamWork.workId)!), deadlineAt: clock.at + 60_000 }));
   rejectTeam(works.phase4Control(teamActor, { kind: "configure-subscription", operationId: "team-configure-watch",

@@ -62,7 +62,7 @@ const user: WorkActor = { kind: "user", userId: LOCAL_USER_ID, grants: DESKTOP_U
 try {
   assert.deepEqual(new Set(tools.map(tool => tool.name)), BOT_FOREGROUND_TOOLS);
   assert(accepts("work_query_status", {}), "query without an id lists this Bot's known Work");
-  const createArgs = { title: "  Schema contract  ", goalDescription: "  Preserve acceptance evidence  ",
+  const createArgs = { requestedOutcome: "one_time", mode: "once", title: "  Schema contract  ", goalDescription: "  Preserve acceptance evidence  ",
     constraints: ["  stay inside the delegated workspace  "],
     criteria: [{ text: "  verified result  ", requiresRealEnvironmentCheck: true, requiredEnvironment: "  Linux fixture  " }] };
   let work = unwrap(await validInvoke("work_create", createArgs));
@@ -113,7 +113,7 @@ try {
   }
   assert.equal(works.listWorks(LOCAL_USER_ID, { includeClosed: true }).length, 1);
   assert.equal(scheduled.length, 1, "invalid arguments cannot schedule work");
-  assert(accepts("work_create", { title: "x".repeat(32000), constraints: Array(30).fill("constraint"),
+  assert(accepts("work_create", { requestedOutcome: "one_time", mode: "once", title: "x".repeat(32000), constraints: Array(30).fill("constraint"),
     criteria: Array(12).fill({ text: "criterion", requiresRealEnvironmentCheck: false }) }), "documented limits are inclusive");
   await validInvoke("memory_search", { query: "  remembered constraint  " });
   assert.deepEqual(memoryQueries, ["remembered constraint"]);
@@ -266,7 +266,7 @@ try {
   // A newly created Work is linked during this request and remains controllable
   // despite stale selection; repeat execution keeps the same operation identity.
   const createRequest = requestFor("创建一个新事项，然后暂停它", targetA.workId);
-  const created = unwrap(await validInvoke("work_create", { title: "Created in request" }, createRequest.requestId));
+  const created = unwrap(await validInvoke("work_create", { requestedOutcome: "one_time", mode: "once", title: "Created in request" }, createRequest.requestId));
   const createdArgs = { workId: created.workId, versionGuard: await queryGuard(created.workId, createRequest.requestId) };
   assert.equal(unwrap(await invoke("work_pause", createdArgs, createRequest.requestId, "created-replay")).lifecycle, "paused");
   const createdReplay = await invoke("work_pause", createdArgs, createRequest.requestId, "created-replay") as WorkControlResult;

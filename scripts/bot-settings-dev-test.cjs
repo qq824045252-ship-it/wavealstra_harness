@@ -100,7 +100,7 @@ const provider = http.createServer(async (req, res) => {
   const input = JSON.stringify(body.messages[userIndex]?.content);
   const delegate = foreground && input.includes('委托界面验收') && !recent.some(message => message.role === 'tool');
   const query = foreground && input.includes('查询界面事项') && !recent.some(message => message.role === 'tool');
-  const tool = delegate ? { name: 'work_create', arguments: JSON.stringify({ title: '界面验收事项', criteria: [{ text: 'fixture 成果待验收' }] }) }
+  const tool = delegate ? { name: 'work_create', arguments: JSON.stringify({ requestedOutcome: 'one_time', mode: 'once', title: '界面验收事项', criteria: [{ text: 'fixture 成果待验收' }] }) }
     : query ? { name: 'work_query_status', arguments: '{}' } : undefined;
   const delta = tool ? { role: 'assistant', tool_calls: [{ index: 0, id: `call-${requests.length}`, type: 'function', function: tool }] }
     : { role: 'assistant', content: foreground ? '前台界面真实回复' : '后台原生界面成果' };

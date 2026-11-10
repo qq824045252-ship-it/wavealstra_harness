@@ -158,6 +158,7 @@ const GUI_TESTS = new Set([
 const NETWORK_TESTS = new Set([
   "test:bot-memory-live", // isolated pnpm dev desktop + configured live model
   "test:bot-watch:live",
+  "test:bot-watch-intent:live",
   "test:gadget-agent-live",
   // 真实 Magpie 网关的缓存边界实验：要真凭据/网络/花费，缺 MYBUDDY_CACHE_LIVE=1 会自己 SKIP。
   "test:cache-live",

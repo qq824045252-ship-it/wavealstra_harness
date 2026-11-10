@@ -24,6 +24,8 @@ export function normalizeWatchRule(input: Partial<WorkWatchRuleDto> | undefined)
   return {
     subscriptions: normalizeTexts(input.subscriptions ?? (input.cronExpression || input.nextWakeAt !== undefined ? ["cron"] : [])),
     cronExpression: input.cronExpression?.trim() || undefined,
+    scheduleBasis: input.scheduleBasis,
+    scheduleRationale: input.scheduleRationale?.trim().slice(0, 1000) || undefined,
     timezone: input.timezone?.trim() || undefined,
     catchUpPolicy,
     maxMergeWaitMs: input.maxMergeWaitMs && input.maxMergeWaitMs > 0 ? input.maxMergeWaitMs : 60_000,

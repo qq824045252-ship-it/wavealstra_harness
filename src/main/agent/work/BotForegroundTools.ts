@@ -24,11 +24,15 @@ const watchRule = z.object({
   timezone: z.string().min(1).max(100).optional().describe("IANA 时区，如 Asia/Shanghai；未指定时使用当前宿主时区"),
   nextWakeAt: z.number().int().nonnegative().optional().describe("一次性跟进或首次检查的 Unix 毫秒时间戳"),
   catchUpPolicy: z.enum(["latest", "each", "skip"]).optional().describe("离线后补最新一次、逐次补查或跳过；默认 latest"),
+  scheduleBasis: z.enum(["user_specified", "recommended"]).optional().describe("区分用户指定时间与助理建议安排；创建watch必填。没有指定频率时可按任务建议合理低频，不冒充用户原话"),
+  scheduleRationale: z.string().min(1).max(1000).optional().describe("建议安排的理由及可更改说明；scheduleBasis=recommended时必填"),
   stopConditionText: z.string().min(1).max(1000).optional().describe("保留用户给出的停止条件；检查后汇报是否满足，不自行宣称已完成"),
 }).strict();
 const timing = { mode: z.enum(["once", "watch"]).optional(), watchRule: watchRule.optional(),
   deadlineAt: z.number().int().nonnegative().optional().describe("承诺期限 Unix 毫秒时间戳，到期只读跟进，不等同于自动取消") };
 const create = z.object({ ...fields, ...timing, title: text,
+  requestedOutcome: z.enum(["one_time", "ongoing"]).describe("你对用户本次目标的语义理解，结合上下文而非关键词：one_time是交付一次结果，ongoing是之后仍须继续观察/跟进。实现监控功能、总结历史周期数据不等于要求Bot持续监控。这是你的理解，不替代宿主保存的用户原文"),
+  mode: z.enum(["once", "watch"]).describe("实际执行计划：立即一次执行用once；未来检查或持续关注用watch。ongoing不能降为once，一次性未来跟进也可用watch"),
   startImmediately: z.boolean().optional().describe("持续跟踪默认等到首次检查；仅用户要求现在也检查时设 true") }).strict();
 const change = z.object({ ...fields, ...timing, watchRule: watchRule.nullable().optional(),
   deadlineAt: timing.deadlineAt.nullable().optional(), workId: text, versionGuard: guard }).strict();
@@ -109,7 +113,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
   const output = (value: unknown) => ({ output: [{ type: "text" as const, text: JSON.stringify(value) }] });
   const mutations = (["work_create", "work_amend", "work_pause", "work_resume", "work_cancel"] as const).map(name => defineTool({
     name, description: name === "work_create"
-      ? "受理长耗时、多步骤或文件/代码/桌面操作并派发后台。goalDescription、constraints、criteria 是你的规划，宿主会独立附上用户原文；忠实传达要求，计算结果和未验证假设不得写成用户约束。日常天气、新闻等实时查询直接使用前台 web_search/fetch_content，不创建 Work。用户已经提出的执行请求无需再确认创建任务。持续跟踪使用 mode=watch 与 watchRule（cronExpression 或 nextWakeAt），不得只在文字中承诺；按用户指定频率和时区。deadlineAt 是到期跟进，不是授权到期。创建无需先查询版本；已有相同事项则查询进度，避免重复创建。返回成功才可声称已受理或已安排；未来检查不得声称正在执行。"
+      ? "受理长耗时、多步骤或文件/代码/桌面操作并派发后台。goalDescription、constraints、criteria 是你的规划，宿主会独立附上用户原文；忠实传达要求，计算结果和未验证假设不得写成用户约束。日常天气、新闻等实时查询直接使用前台 web_search/fetch_content，不创建 Work。用户已经提出的执行请求无需再确认创建任务。同一调用用requestedOutcome记录对用户目标的一次性/持续性理解，用mode和watchRule记录实际计划，不能省略mode后默认一次性。持续跟踪使用 mode=watch 与 watchRule.cronExpression，一次未来检查可使用nextWakeAt，不得只在文字中承诺；按用户指定频率和时区，未指定时明确区分建议安排。deadlineAt 是到期跟进，不是授权到期。创建无需先查询版本；已有相同事项则查询进度，避免重复创建。返回成功才可声称已受理或已安排；未来检查不得声称正在执行。"
       : `${name}: 操作用户明确指定的已有事项，先查询并携带返回的 versionGuard；冲突重新查询。work_amend 可改 watchRule/期限，watchRule=null 停止后续跟踪而保留事项；work_pause/resume 暂停/恢复，work_cancel 取消整个事项。仅改时间表不会立即重跑原任务。批评、催促、抱怨不是暂停或取消意图；仅明确要求停止/取消时调用对应控制。`,
     parameters: name === "work_create" ? inputParameters.create
       : name === "work_amend" ? inputParameters.change : inputParameters.control,
@@ -128,12 +132,24 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
         let shouldSchedule = false;
         let startWatchImmediately = false;
         if (name === "work_create") {
-          const { startImmediately, ...input } = create.parse(args);
+          const { startImmediately, requestedOutcome, ...input } = create.parse(args);
           if (options.teamId) throw new Error("当前是团队会话，请用 work_team_create 为当前团队派发，不创建个人事项");
-          const mode = input.mode ?? (input.watchRule ? "watch" : "once");
+          const mode = input.mode;
+          // Enforce the model's structured distinction, not a host-language
+          // heuristic that claims to understand arbitrary natural-language intent.
+          if (requestedOutcome === "ongoing" && mode !== "watch")
+            throw new Error("持续目标不能按一次性计划受理；请保留ongoing理解并提供watch安排，不能只在目标文字里承诺持续");
+          if (requestedOutcome === "one_time" && input.watchRule?.cronExpression)
+            throw new Error("一次性目标不能创建无限周期；未来只检查一次请使用nextWakeAt，不设置cronExpression");
+          if (requestedOutcome === "ongoing" && !input.watchRule?.cronExpression)
+            throw new Error("持续目标需要后续周期安排；只有一次nextWakeAt不能满足持续跟进。可按任务建议合理频率并明确说明，也可询问必要偏好");
           if (mode === "watch" && !input.watchRule?.cronExpression && input.watchRule?.nextWakeAt === undefined)
-            throw new Error("持续跟踪需要用户指定的检查时间或频率，不能仅保存一句承诺");
+            throw new Error("未来跟进需要有效检查时间或频率；可按任务建议合理安排并明确说明，不能仅保存一句承诺");
           if (input.watchRule && mode !== "watch") throw new Error("持续跟踪规则必须使用 watch 模式");
+          if (mode === "watch" && !input.watchRule?.scheduleBasis)
+            throw new Error("检查安排须区分用户指定与助理建议；建议频率必须明确说明，不能冒充用户已指定");
+          if (input.watchRule?.scheduleBasis === "recommended" && !input.watchRule.scheduleRationale?.trim())
+            throw new Error("建议检查频率须给出简短理由和可更改说明");
           shouldSchedule = mode !== "watch";
           startWatchImmediately = mode === "watch" && startImmediately === true;
           result = works.createWork(actor(), { ...input, mode,
@@ -154,6 +170,8 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
           if (!readGuard.success || readGuard.data.guard_json !== JSON.stringify(input.versionGuard)) throw new Error("必须先查询 Work，并使用本回合读取的完整版本守卫");
           if (name === "work_amend") {
             const amended = change.parse(args);
+            if (amended.watchRule?.scheduleBasis === "recommended" && !amended.watchRule.scheduleRationale?.trim())
+              throw new Error("新的建议检查安排须给出对应的简短理由和可更改说明");
             if (amended.watchRule && !amended.watchRule.cronExpression && amended.watchRule.nextWakeAt === undefined
               && !target.watchRule?.cronExpression && target.watchRule?.nextWakeAt === undefined)
               throw new Error("持续跟踪需要检查时间或频率，不能保存空时间表");
@@ -196,12 +214,20 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
       });
       options.wake(result.ok ? result.work.workId : undefined);
       if (!result.ok) return output(result);
+      // Operation receipts deliberately preserve historical snapshots; tracking
+      // reports current scheduling facts even when the operation is replayed.
+      const current = works.getWork(result.work.workId)!;
       const active = works.repo.listSubscriptions(result.work.workId).filter(item => !item.stoppedAt);
       const next = active.filter(item => item.nextWakeAt !== undefined).sort((a, b) => a.nextWakeAt! - b.nextWakeAt!)[0];
       return output({ ...result, ...(preservedUserCriteria.length ? { preservedUserCriteria,
         amendmentNotice: "用户直接设置或确认的验收条件仍然保留；criteria 只更新助理建议检查。本次没有删除或改写这些用户验收条件，不得声称已经撤销。修改用户验收条件请使用现有用户编辑入口。" } : {}), tracking: { activeSubscriptions: active.length,
+        scheduleStatus: current.lifecycle !== "active" ? "inactive" : next?.nextWakeAt !== undefined
+          ? next.nextWakeAt > Date.now() ? "scheduled" : "due" : "not_scheduled",
+        scheduleBasis: current.watchRule?.scheduleBasis ?? null,
+        scheduleRationale: current.watchRule?.scheduleRationale ?? null,
+        ...(current.watchRule?.scheduleBasis === "recommended" ? { notice: "这是助理按任务建议的检查安排，不是用户明确指定的频率。请告知实际首次时间、时区、建议理由以及可随时更改。" } : {}),
         nextWakeAt: next?.nextWakeAt ?? null, timezone: next?.timezone ?? null,
-        cronExpression: next?.cronExpression ?? null, deadlineAt: result.work.deadlineAt ?? null,
+        cronExpression: next?.cronExpression ?? null, deadlineAt: current.deadlineAt ?? null,
         hostMustBeRunning: true } });
     },
   }));

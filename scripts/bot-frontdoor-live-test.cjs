@@ -29,8 +29,9 @@ const modelKey = `fixture/${selectedModel}`;
 const headless = process.env.BOT_WORK_DEV_HEADLESS === '1';
 const trackingScenario = process.argv.includes('--tracking');
 const watchScenario = process.argv.includes('--watch');
+const watchIntentScenario = process.argv.includes('--watch-intent');
 if (headless && process.platform !== 'linux') throw Error('Headless dev page validation requires Linux; it does not validate desktop input.');
-const out = path.join(root, displayGroupsScenario ? 'out/diagnostics/bot-display-groups/live' : composerScenario ? 'out/diagnostics/bot-composer/live' : workspaceNavigationScenario ? 'out/diagnostics/bot-workspace-navigation/live' : searchScenario ? 'out/diagnostics/bot-search/live' : teamWorkspaceScenario ? 'out/diagnostics/bot-team-workspace/live' : concurrentScenario ? 'out/diagnostics/bot-concurrent/live' : completionScenario ? 'out/diagnostics/bot-completion/live' : trackingScenario ? 'out/diagnostics/bot-tracking/live' : teamTransientFailure ? 'out/diagnostics/bot-team-transient-failure/live' : teamTransportFailure ? 'out/diagnostics/bot-team-transport-failure/live' : teamFailureScenario ? 'out/diagnostics/bot-team-failure/live' : teamFreeScenario ? 'out/diagnostics/bot-team-free/live' : teamPlanningScenario ? 'out/diagnostics/bot-team-planning/live' : teamScenario ? 'out/diagnostics/bot-team-frontdoor/live' : cacheScenario ? 'out/diagnostics/bot-cache/live' : memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
+const out = path.join(root, watchIntentScenario ? 'out/diagnostics/bot-watch-intent/live' : displayGroupsScenario ? 'out/diagnostics/bot-display-groups/live' : composerScenario ? 'out/diagnostics/bot-composer/live' : workspaceNavigationScenario ? 'out/diagnostics/bot-workspace-navigation/live' : searchScenario ? 'out/diagnostics/bot-search/live' : teamWorkspaceScenario ? 'out/diagnostics/bot-team-workspace/live' : concurrentScenario ? 'out/diagnostics/bot-concurrent/live' : completionScenario ? 'out/diagnostics/bot-completion/live' : trackingScenario ? 'out/diagnostics/bot-tracking/live' : teamTransientFailure ? 'out/diagnostics/bot-team-transient-failure/live' : teamTransportFailure ? 'out/diagnostics/bot-team-transport-failure/live' : teamFailureScenario ? 'out/diagnostics/bot-team-failure/live' : teamFreeScenario ? 'out/diagnostics/bot-team-free/live' : teamPlanningScenario ? 'out/diagnostics/bot-team-planning/live' : teamScenario ? 'out/diagnostics/bot-team-frontdoor/live' : cacheScenario ? 'out/diagnostics/bot-cache/live' : memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-frontdoor-live-'));
 const agentDir = path.join(home, '.mybuddy'); fs.mkdirSync(agentDir, { recursive: true });
 for (const directory of ['AppData/Roaming', 'AppData/Local', 'Temp']) fs.mkdirSync(path.join(home, directory), { recursive: true });
@@ -298,6 +299,74 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       await evaluate(`document.querySelector('[aria-label="恢复原文"]').click()`);
       assert.equal(await evaluate(`document.querySelector('#bot-draft').value`),'帮我写一句邀请同事喝咖啡的话');
       report.checks.push('real dev UI selects model/skill/MCP; real model reads selected SKILL.md and calls native stdio MCP in foreground; no Work; real enhancement and undo');
+    } else if (watchIntentScenario) {
+      const allWorks = () => evaluate('window.api.botWork.listWorks(true)');
+      const detail = id => evaluate(`window.api.botWork.getWork(${JSON.stringify(id)})`);
+      const newChat = async () => {
+        await evaluate('document.querySelector(".bot-new-conversation").click()');
+        await until(() => evaluate('[...document.querySelectorAll("button")].some(button => button.textContent === "归档并开始新对话")'), 'new conversation confirmation');
+        await evaluate('[...document.querySelectorAll("button")].find(button => button.textContent === "归档并开始新对话").click()');
+        await until(async () => (await history()).messages.length === 0 && await evaluate('!document.querySelector("dialog[open]")'), 'fresh conversation');
+      };
+      report.cases = [];
+      const watchTarget = path.join(home, "watch-progress.txt");
+      fs.writeFileSync(watchTarget, "Synthetic progress: waiting for the next test update.\n");
+      const cases = [
+        { label: 'contextual-ongoing-no-frequency', setup: `我想关注测试文件 ${watchTarget} 的进展，事项名称是“跟踪验收A”。文件已经存在，检查时只读这个文件并给简短进度简报，不访问网络、不修改文件。先问我只要一次快照还是持续追踪，暂时不要建单。`,
+          prompt: '2，持续追踪，给我简短进度简报。', mode: 'watch', basis: 'recommended' },
+        { label: 'english-explicit-cadence', prompt: `Create an ongoing monitoring assignment named English Watch: keep an eye on the existing test file ${watchTarget} at 09:00 every Monday in Asia/Shanghai. Only read its progress and report it. No external actions, and do not check immediately.`, mode: 'watch', basis: 'user_specified' },
+        { label: 'historical-daily-data-once', prompt: '创建一个一次性后台委托：用一句话总结这段虚构记录：过去三天每天都完成了一项整理。只总结已有记录，不关注未来，也不设定时检查。', mode: 'once' },
+        { label: 'describe-monitoring-feature-once', prompt: '创建一个一次性后台委托：用三句话说明如何实现持续追踪功能。不改代码，不监控任何真实目标，交付说明文字即可。', mode: 'once' },
+        { label: 'explicit-negation-once', prompt: '不要持续跟踪，只为这一次写一句“测试说明已完成”，作为一次性后台委托处理。不要建立后续计划。', mode: 'once' },
+        { label: 'one-future-observation', prompt: `请建立一个未来跟进事项，在 ${new Date(Date.now()+86400000).toISOString()} 只读检查一次现有测试文件 ${watchTarget} 的进展并报告，事项名称叫一次跟进。只检查一次，不设周期，现在不用检查。`, mode: 'watch', basis: 'user_specified', oneShot: true },
+      ];
+      for (const scenario of cases) {
+        if (report.cases.length) await newChat();
+        const old = new Set((await allWorks()).map(work => work.workId));
+        const requestStart = requests.length, startedAt = Date.now();
+        const item = {label:scenario.label, prompt:scenario.prompt}; report.cases.push(item);
+        if (scenario.setup) { await send(scenario.setup); await foregroundDone(); assert.equal((await allWorks()).filter(work=>!old.has(work.workId)).length,0); }
+        await send(scenario.prompt); await foregroundDone();
+        item.initialHistory = await history();
+        let created = (await allWorks()).filter(work => !old.has(work.workId));
+        if (!created.length && scenario.basis === 'recommended') {
+          item.askedBeforeRecommendation = true;
+          await send('请按这类低频进展跟踪给出合理的默认安排并说明理由，频率之后可以更改，不需要再让我选择。现在不用检查。');
+          await foregroundDone(); created = (await allWorks()).filter(work => !old.has(work.workId));
+        }
+        assert.equal(created.length,1, scenario.label+': exactly one accepted assignment');
+        const work = await detail(created[0].workId); item.work=work; item.history=await history();
+        assert.equal(work.mode,scenario.mode,scenario.label+': actual persisted mode matches goal');
+        const calls = new Map();
+        for(const request of requests.slice(requestStart)) for(const message of request.messages) for(const call of message.tool_calls||[])
+          if(call.function.name==='work_create') calls.set(call.id,JSON.parse(call.function.arguments));
+        item.createAttempts=[...calls.values()];
+        assert(item.createAttempts.length, scenario.label+': real foreground tool call');
+        const accepted = item.createAttempts.at(-1);
+        assert.equal(accepted.requestedOutcome,scenario.mode==='watch'&&!scenario.oneShot?'ongoing':'one_time');
+        if (scenario.mode==='watch') {
+          assert.equal(work.watchPlan.scheduleBasis,scenario.basis);
+          const active=work.phase4.subscriptions.filter(sub=>sub.status!=='stopped');
+          assert.equal(active.length,1); assert(active[0].nextWakeAt>Date.now(), 'real future check persisted');
+          if(scenario.oneShot) assert.equal(active[0].cronExpression,undefined); else assert(active[0].cronExpression);
+          if(scenario.basis==='recommended') assert(work.watchPlan.scheduleRationale?.trim());
+          assert.equal(work.executions.length,0,'future watch does not run the original work early');
+          await send('停止刚才创建的跟踪，取消该事项，保留已有记录。'); await foregroundDone();
+          await until(async()=>['closing','closed'].includes((await detail(work.workId)).lifecycle),'synthetic watch cancelled');
+        } else {
+          assert.equal(work.phase4.subscriptions.filter(sub=>sub.status!=='stopped').length,0);
+          await until(async()=>{
+            const value=await detail(work.workId);
+            return value.executions.some(execution=>['completed','failed','stopped'].includes(execution.status));
+          },'one-time text execution settles');
+          item.settledWork=await detail(work.workId);
+          assert(item.settledWork.executions.some(execution=>execution.status==='completed'),scenario.label+': real one-time execution completes');
+        }
+        item.elapsedMs=Date.now()-startedAt; item.providerRequests=requests.length-requestStart;
+        console.log(JSON.stringify({label:item.label,mode:work.mode,basis:work.watchPlan?.scheduleBasis,elapsedMs:item.elapsedMs,providerRequests:item.providerRequests}));
+      }
+      report.checks.push('real UI and real model: contextual ongoing intent, English cadence, one-time history, feature implementation, explicit negation, and one future observation');
+      report.checks.push('actual persisted mode and future wake checked; proposed cadence distinguished; no keyword classifier, additional intake model, production task edit, or crash injection');
     } else if (searchScenario) {
       report.cases = [];
       for (const [label, prompt] of [
@@ -763,7 +832,7 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     }
     report.checks.push('criticism does not cancel; explicit stop does not restart query; no Work created');
     }
-    const shot=await rpc('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});fs.writeFileSync(path.join(out,teamWorkspaceScenario?'team-workspace.png':completionScenario?'completion.png':trackingScenario?'tracking.png':teamScenario?'team.png':cacheScenario?'cache.png':memoryScenario?'memory.png':watchScenario?'watch.png':'weather.png'),Buffer.from(shot.data,'base64'));
+    const shot=await rpc('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});fs.writeFileSync(path.join(out,watchIntentScenario?'watch-intent.png':teamWorkspaceScenario?'team-workspace.png':completionScenario?'completion.png':trackingScenario?'tracking.png':teamScenario?'team.png':cacheScenario?'cache.png':memoryScenario?'memory.png':watchScenario?'watch.png':'weather.png'),Buffer.from(shot.data,'base64'));
     report.status='passed';
   } catch (error) {
     report.status = 'failed'; report.error = String(error.stack || error); console.error(error); process.exitCode = 1;

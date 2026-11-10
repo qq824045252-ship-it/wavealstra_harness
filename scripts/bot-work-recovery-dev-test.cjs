@@ -97,7 +97,7 @@ const provider = http.createServer(async (req, res) => {
   const input = JSON.stringify(body.messages[userIndex]?.content);
   const delegate = foreground && input.includes('委托自动恢复验收') && !recent.some(message => message.role === 'tool');
   const query = foreground && input.includes('查询界面事项') && !recent.some(message => message.role === 'tool');
-  let tool = delegate ? { name: 'work_create', arguments: JSON.stringify({ title: '自动恢复验收事项', criteria: [{ text: 'fixture 成果待验收' }] }) }
+  let tool = delegate ? { name: 'work_create', arguments: JSON.stringify({ requestedOutcome: 'one_time', mode: 'once', title: '自动恢复验收事项', criteria: [{ text: 'fixture 成果待验收' }] }) }
     : query ? { name: 'work_query_status', arguments: '{}' } : undefined;
   const recovery = !foreground && JSON.stringify(body.messages).includes('这是原事项的定向恢复');
   const toolResults = recent.filter(message => message.role === 'tool');

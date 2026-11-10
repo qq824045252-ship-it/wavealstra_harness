@@ -180,6 +180,8 @@ export interface WorkGoalSourceDto {
 }
 
 export interface WorkWatchRuleDto {
+  scheduleBasis?: "user_specified" | "recommended";
+  scheduleRationale?: string;
   subscriptions: string[];
   cronExpression?: string;
   timezone?: string;
@@ -452,6 +454,7 @@ export interface WorkProjectionDto {
   workId: string;
   title: string;
   mode: WorkMode;
+  watchPlan?: Pick<WorkWatchRuleDto, "scheduleBasis" | "scheduleRationale">;
   lifecycle: WorkLifecycle;
   pendingConclusion?: WorkClosureConclusion;
   closureConclusion?: WorkClosureConclusion;

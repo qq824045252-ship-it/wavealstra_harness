@@ -45,7 +45,7 @@ const sales = "A,3,12.50\nB,2,8.00\nA,4,12.50\nC,5,3.20\nB,1,8.00\nC,10,3.20";
 const original = `用真实脚本汇总以下销售数据的数量和金额，交付 sales.csv、summary.json 和 report.html：\n${sales}\n只在所选工作区写文件，不发送、不发布。`;
 try {
   const request = receive(original);
-  const args = { title: "销售汇总", goalDescription: "执行核算，产品数量合计必须=27件。",
+  const args = { requestedOutcome: "one_time", mode: "once", title: "销售汇总", goalDescription: "执行核算，产品数量合计必须=27件。",
     constraints: ["总量必须为27，不同就让用户决策"], criteria: [{ text: "合计27件", requiresRealEnvironmentCheck: true, requiredEnvironment: "模型假定环境" }] };
   const work = unwrap(await invoke(request, "work_create", args, "replay-create"));
   assert.equal(unwrap(await invoke(request, "work_create", args, "replay-create")).workId, work.workId);
@@ -106,7 +106,7 @@ try {
   messages.update(context.assistantMessageId, "completed", "助理建议：日期可能为2031-01-01，尚未核验。");
   const longText = `${"完整用户材料。".repeat(1200)}\n最后要求：以原始日期2029-02-03为准，不得对外发送。`;
   const longRequest = receive(longText, undefined, context.assistantMessageId);
-  const longWork = unwrap(await invoke(longRequest, "work_create", { title: "长材料", goalDescription: "短摘要" }));
+  const longWork = unwrap(await invoke(longRequest, "work_create", { requestedOutcome: "one_time", mode: "once", title: "长材料", goalDescription: "短摘要" }));
   const longBinding = bind(longWork), longInput = JSON.parse(works.repo.executionInput(longBinding));
   assert.equal(longInput.userRequest.messages[0].text, longText);
   assert.deepEqual(longInput.userRequest.referencedContext.map((row: { role: string; text: string }) => [row.role, row.text]),
@@ -128,7 +128,7 @@ try {
   assert.equal(directInput.criteria[0].id, "required");
   assert.deepEqual(directInput.userRequest.structuredUserRequirements[0].changes.constraints, ["禁止发布"]);
   const adviceRequest = receive("只需计算结果，不设置其他验收门槛。");
-  const advice = unwrap(await invoke(adviceRequest, "work_create", { title: "独立建议检查", criteria: [{ text: "模型虚构数值必须为123456" }] }));
+  const advice = unwrap(await invoke(adviceRequest, "work_create", { requestedOutcome: "one_time", mode: "once", title: "独立建议检查", criteria: [{ text: "模型虚构数值必须为123456" }] }));
   assert.equal(works.closeWork(user, { operationId: "advice-not-gate", workId: advice.workId, conclusion: "succeeded", versionGuard: guard(advice) }).ok, true,
     "pending assistant criteria are not a fabricated mandatory gate; explicit user closing remains supported");
 
@@ -146,7 +146,7 @@ try {
     text: "A=3，B=2。帮我做报告，不得发布。", attachments: [{ name: "clarification-data.csv", path: dataFile }] });
   messages.update(dataTurn.assistantMessageId, "completed", "报告用什么格式？");
   const formatTurn = receive("HTML。");
-  const clarified = unwrap(await invoke(formatTurn, "work_create", { title: "澄清后的报告", goalDescription: "HTML报告" }));
+  const clarified = unwrap(await invoke(formatTurn, "work_create", { requestedOutcome: "one_time", mode: "once", title: "澄清后的报告", goalDescription: "HTML报告" }));
   const clarifiedBinding = bind(clarified);
   const clarifiedInput = JSON.parse(works.repo.executionInput(clarifiedBinding));
   assert(works.repo.attachmentInput(clarifiedBinding).includes(dataFile), "clarification preserves the earlier uploaded input as well as its text");
@@ -156,14 +156,14 @@ try {
 
   // Explicit negative feedback must make a model-suggested check binding.
   const feedbackRequest = receive("生成报告并检查。");
-  const feedbackWork = unwrap(await invoke(feedbackRequest, "work_create", { title: "报告反馈", criteria: [{ text: "报告正确" }] }));
+  const feedbackWork = unwrap(await invoke(feedbackRequest, "work_create", { requestedOutcome: "one_time", mode: "once", title: "报告反馈", criteria: [{ text: "报告正确" }] }));
   const failed = unwrap(works.attestCriteria(user, { operationId: "negative-feedback", workId: feedbackWork.workId,
     inputSnapshotId: feedbackWork.inputSnapshotId, versionGuard: guard(feedbackWork),
     criterionUpdates: [{ criterionId: feedbackWork.criteria[0].id, status: "not_met", evidence: "报告总数错误，请修复" }] }));
   assert.equal(failed.criteria[0].origin, undefined); assert.equal(failed.criteria[0].status, "failed");
   assert.equal(works.closeWork(user, { operationId: "cannot-ignore-feedback", workId: failed.workId, conclusion: "succeeded", versionGuard: guard(failed) }).ok, false);
   const environmentRequest = receive("生成并检查另一份报告。");
-  const environmentWork = unwrap(await invoke(environmentRequest, "work_create", { title: "环境反馈", criteria: [{ text: "真机运行", requiresRealEnvironmentCheck: true }] }));
+  const environmentWork = unwrap(await invoke(environmentRequest, "work_create", { requestedOutcome: "one_time", mode: "once", title: "环境反馈", criteria: [{ text: "真机运行", requiresRealEnvironmentCheck: true }] }));
   const environmentFailed = unwrap(works.recordUserFeedback(user, { operationId: "negative-environment-feedback", workId: environmentWork.workId,
     inputSnapshotId: environmentWork.inputSnapshotId, versionGuard: guard(environmentWork), environment: "fixture", sourceRef: "fixture-version",
     failed: true, criterionIds: [environmentWork.criteria[0].id] }));
@@ -189,10 +189,10 @@ try {
   bots.registerBot({ userId: "foreign", botId: "foreign-bot", displayName: "foreign", authorization: DESKTOP_USER_GRANTS });
   const foreign = messages.accept("foreign", { botId: "foreign-bot", requestId: "private", text: "foreign private data" });
   const badReference = receive("处理当前输入", undefined, foreign.userMessageId);
-  const isolated = unwrap(await invoke(badReference, "work_create", { title: "隔离" }));
+  const isolated = unwrap(await invoke(badReference, "work_create", { requestedOutcome: "one_time", mode: "once", title: "隔离" }));
   assert.deepEqual(JSON.parse(works.repo.executionInput(bind(isolated))).userRequest.referencedContext, []);
   db.connection.prepare("UPDATE bot_messages SET request_id='corrupt' WHERE message_id=?").run(longRequest.userMessageId);
   assert.equal(JSON.parse(works.repo.executionInput(longBinding)).userRequest.messages[0].text, longText, "frozen original input survives changes to mutable chat rows");
-  await assert.rejects(() => invoke(longRequest, "work_create", { title: "不能使用损坏身份" }), /已结束或不属于当前对话/);
+  await assert.rejects(() => invoke(longRequest, "work_create", { requestedOutcome: "one_time", mode: "once", title: "不能使用损坏身份" }), /已结束或不属于当前对话/);
   console.log("PASS delegation fidelity: exact user data, advisory model calculations/criteria, persistent adapter delivery, gap continuation, bounded amendments, long input, role/tenant isolation and direct-user acceptance gates");
 } finally { db.close(); rmSync(root, { recursive: true, force: true }); }

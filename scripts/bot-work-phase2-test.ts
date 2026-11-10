@@ -64,7 +64,7 @@ const reply = (modelId: string, request: TranscriptContext): AssistantMessage["c
   if (input === "前台天气") return tool("web_search", {});
   if (input === "前台抓取失败") return tool("fetch_content", {});
   if (input === "扩展写入越权") return tool("unrelated_extension_write", {});
-  if (input.startsWith("委托")) return tool("work_create", { title: input, criteria: [{ text: "核验实际成果" }] });
+  if (input.startsWith("委托")) return tool("work_create", { requestedOutcome: "one_time", mode: "once", title: input, criteria: [{ text: "核验实际成果" }] });
   if (/查询|暂停|修订|取消/.test(input)) return tool("work_query_status", {});
   if (input === "越权写文件") return tool("write", { path: join(cwd, "forbidden.txt"), content: "forbidden" });
   return text("前台普通答复");

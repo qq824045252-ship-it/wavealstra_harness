@@ -293,6 +293,7 @@ export class WorkService {
       workId: work.workId,
       title: work.title,
       mode: work.mode,
+      watchPlan: work.watchRule ? { scheduleBasis: work.watchRule.scheduleBasis, scheduleRationale: work.watchRule.scheduleRationale } : undefined,
       lifecycle: work.lifecycle,
       pendingConclusion: work.pendingConclusion,
       closureConclusion: work.closureConclusion,
@@ -524,6 +525,19 @@ export class WorkService {
       : normalizeWatchRule({ ...work.watchRule, ...params.watchRule,
         ...(params.watchRule.cronExpression !== undefined && params.watchRule.nextWakeAt === undefined ? { nextWakeAt: undefined } : {}),
         ...(params.watchRule.nextWakeAt !== undefined && params.watchRule.cronExpression === undefined ? { cronExpression: undefined } : {}) });
+    if (params.watchRule && nextWatchRule) {
+      const timingChanged = nextWatchRule.cronExpression !== work.watchRule?.cronExpression
+        || nextWatchRule.timezone !== work.watchRule?.timezone
+        || nextWatchRule.nextWakeAt !== work.watchRule?.nextWakeAt;
+      // Provenance describes a particular schedule, not the Work forever.
+      if (timingChanged && params.watchRule.scheduleBasis === undefined) {
+        delete nextWatchRule.scheduleBasis;
+        delete nextWatchRule.scheduleRationale;
+      } else if (params.watchRule.scheduleBasis === "user_specified"
+        || timingChanged && params.watchRule.scheduleRationale === undefined) {
+        delete nextWatchRule.scheduleRationale;
+      }
+    }
     const nextMode = params.mode ?? (params.watchRule === null ? "once" : params.watchRule ? "watch" : work.mode);
     if (params.mode === "once" && nextWatchRule) return { ok: false, code: "invalid_request", message: "清除持续跟踪规则后才可改为一次性事项" };
     const scheduleProblem = params.watchRule ? watchRuleProblem({ ...nextWatchRule!,
@@ -2076,8 +2090,9 @@ export class WorkService {
       const timezone = input.timezone ?? existing?.timezone;
       const cronExpression = input.cronExpression ?? existing?.cronExpression;
       if (timezone !== undefined && !validTimezone(timezone)) return { ok: false, code: "invalid_request", message: "时区必须是可以解析的 IANA 名称" };
-      const scheduleChanged = cronExpression !== existing?.cronExpression || timezone !== existing?.timezone
-        || input.nextWakeAt !== undefined && input.nextWakeAt !== existing?.nextWakeAt
+      const timingChanged = cronExpression !== existing?.cronExpression || timezone !== existing?.timezone
+        || input.nextWakeAt !== undefined && input.nextWakeAt !== existing?.nextWakeAt;
+      const scheduleChanged = timingChanged
         || existing !== undefined && input.catchUpPolicy !== existing.catchUpPolicy;
       let nextWakeAt: number | undefined;
       try { nextWakeAt = input.nextWakeAt ?? this.computeNextWake({ cronExpression, timezone }, now); }
@@ -2113,6 +2128,7 @@ export class WorkService {
           maxMergeWaitMs: subscription.maxMergeWaitMs, maxQueueDepth: subscription.maxQueueDepth }),
         subscriptions: [...new Set([...(work.watchRule?.subscriptions ?? []), subscription.source])],
         nextWakeAt: subscription.nextWakeAt ?? work.watchRule?.nextWakeAt,
+        ...(timingChanged ? { scheduleBasis: undefined, scheduleRationale: undefined } : {}),
       }, stateVersion: work.stateVersion + 1, updatedAt: now });
       return { ok: true };
     }

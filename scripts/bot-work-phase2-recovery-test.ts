@@ -93,7 +93,7 @@ async function open(root: string, scenario: string, worker: boolean) {
         const latestUser = [...request.messages].reverse().find(message => message.role === "user");
         const original = latestUser && JSON.stringify(latestUser.content).includes("original delegate");
         const content: AssistantMessage["content"] = model.id === "front"
-          ? original && last?.role !== "toolResult" ? [{ type: "toolCall", id: "cancelled-control", name: "work_create", arguments: { title: "must not be created" } }] : text("front reply")
+          ? original && last?.role !== "toolResult" ? [{ type: "toolCall", id: "cancelled-control", name: "work_create", arguments: { requestedOutcome: "one_time", mode: "once", title: "must not be created" } }] : text("front reply")
           : last?.role === "toolResult" ? text("可核对的原始执行结果")
           : [{ type: "toolCall", id: "external-effect", name: "ui_exec", arguments: { action: "click" } }];
         const stopReason = content.some(block => block.type === "toolCall") ? "toolUse" : "stop";
