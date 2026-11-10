@@ -12,7 +12,11 @@ export class BotForegroundMetricsStore {
   usage(messageId: string, input: {generationTaskId:number;responseTimestamp?:number;reported:boolean;inputTokens:number;outputTokens:number;cacheReadTokens:number;cacheWriteTokens:number;usageEvidence?:ProviderUsageEvidence}) {
     const evidence=input.usageEvidence??emptyUsageEvidence();
     const record={...input,normalizedUsage:{inputTokens:input.inputTokens,outputTokens:input.outputTokens,cacheReadTokens:input.cacheReadTokens,cacheWriteTokens:input.cacheWriteTokens},...evidence,reported:input.reported && evidence.observed};
-    this.db.prepare('INSERT OR REPLACE INTO bot_foreground_usage VALUES(?,?,?)').run(messageId,input.responseTimestamp===undefined?String(input.generationTaskId):`${input.generationTaskId}:${input.responseTimestamp}`,JSON.stringify(record));
+    const key=input.responseTimestamp===undefined?String(input.generationTaskId):`${input.generationTaskId}:${input.responseTimestamp}`;
+    const prior=this.db.prepare('SELECT value_json FROM bot_foreground_usage WHERE message_id=? AND generation_id=?').get(messageId,key) as {value_json:string}|undefined;
+    // Durable replay has no fresh HTTP stream; never erase the original receipt.
+    if(prior && JSON.parse(prior.value_json).observed)return;
+    this.db.prepare('INSERT OR REPLACE INTO bot_foreground_usage VALUES(?,?,?)').run(messageId,key,JSON.stringify(record));
   }
   read(messageId:string): BotForegroundMetrics|undefined {
     const row=this.db.prepare('SELECT value_json FROM bot_foreground_metrics WHERE message_id=?').get(messageId) as {value_json:string}|undefined;

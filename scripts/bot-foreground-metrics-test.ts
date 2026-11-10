@@ -11,7 +11,7 @@ assert.equal(store.project('a','wrong',snapshot),undefined);assert.equal(store.p
 const evidence=emptyUsageEvidence();observeRawUsage(evidence,{usage:{prompt_tokens:135,completion_tokens:20,prompt_tokens_details:{cached_tokens:30}}},'openai-completions');
 assert.equal(evidence.totalInputTokens,135);assert.equal(evidence.cacheReadTokens,30);assert.equal(evidence.cacheWriteTokens,null);assert.equal(evidence.inputTokens,null);
 const call={generationTaskId:1,responseTimestamp:1,reported:true,inputTokens:105,outputTokens:20,cacheReadTokens:30,cacheWriteTokens:0,usageEvidence:evidence};
-store.usage('a',call);store.usage('a',call);
+store.usage('a',call);store.usage('a',call);store.usage('a',{...call,usageEvidence:undefined});
 store.usage('b',{...call,usageEvidence:{...evidence,totalInputTokens:999}});
 assert.equal(store.project('a','ra',snapshot)?.totalInputTokens,135,'replay dedup and concurrent request isolation');
 assert.equal(store.read('a')?.inputTokens,null,'cannot infer uncached input while write count absent');
