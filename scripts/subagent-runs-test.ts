@@ -1,3 +1,4 @@
+import { subagentHeaderMetrics } from "../src/renderer/src/lib/subagentHeaderMetrics";
 /**
  * subagent-runs-test.ts — 子代理运行态的纯逻辑验收。
  *
@@ -199,6 +200,28 @@ console.log("== 子会话消息 → 主聊天 ChatMessage ==");
   const found = findSubagentResultRun(runningDispatch(), "item-0");
   assert(found?.displayName === "耿鬼" && found.messages.length === 3, "完成态能按 id 找到完整子会话");
   assert(findSubagentResultRun(runningDispatch(), "nope") === null, "找不到就返回 null，不伪造");
+}
+
+
+console.log("== 子代理头部用量：同一快照 / 缺失不补零 ==");
+{
+  const metrics = (usage?: Parameters<typeof subagentHeaderMetrics>[0]) => Object.fromEntries(subagentHeaderMetrics(usage).map(m => [m.key, m]));
+  const measured = metrics({ input: 1000, output: 2000, cacheRead: 8000, cacheWrite: 1000, turns: 2 });
+  assert(measured.input.value === "0.001M" && measured.output.value === "0.002M", "输入/输出取当前子代理累计值，不把 contextTokens 当用量");
+  assert(measured.hit.value === "80%", "命中率以缓存读/(新输入+缓存读+缓存写)计算");
+  assert(measured.cacheWrite.value === "0.001M", "缓存写独立显示，不吞进输入或缓存读取");
+  assert(measured.cacheRead.title.includes("8,000 tokens"), "悬停显示精确 token 数");
+  const partial = metrics({ input: 1000, output: 300 });
+  assert(partial.input.value === "0.001M" && partial.cacheRead.value === "—" && partial.hit.value === "—", "部分缺失保留已知值，未知缓存不伪造 0%");
+  const invalid = metrics({ input: -1, output: NaN, cacheRead: Infinity, cacheWrite: 0 });
+  assert(invalid.input.value === "—" && invalid.output.value === "—" && invalid.hit.value === "—", "负数/NaN/Infinity 不可作为计量");
+  assert(metrics().hit.value === "—" && metrics().input.value === "—", "无用量时保持未知");
+  assert(metrics({input:0,output:0,cacheRead:0,cacheWrite:0,turns:0}).input.value === "—", "未启动的占位 0 不冒充实测");
+  assert(metrics({input:0,output:0,cacheRead:0,cacheWrite:0,turns:1}).input.value === "—", "失败响应的全零归一化占位不冒充计量");
+  const zero = metrics({input:1000,output:0,cacheRead:0,cacheWrite:0,turns:1});
+  assert(zero.hit.value === "0%" && zero.cacheRead.value === "0M", "明确测量的 0 命中与缺失区分");
+  assert(metrics({input:0,output:100,cacheRead:0,cacheWrite:0,turns:1}).hit.value === "—", "零分母不伪造命中率");
+  assert(metrics({input:Number.MAX_VALUE,cacheRead:Number.MAX_VALUE,cacheWrite:0}).hit.value === "—", "溢出分母不伪造有效百分比");
 }
 
 console.log(`\n结果: passed=${passed} failed=${failed}`);

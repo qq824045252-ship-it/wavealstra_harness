@@ -17,8 +17,7 @@ import { useAppStore } from "@/store/appStore";
 import { useSubagentRuns } from "@/hooks/useSubagentRuns";
 import MessageItem from "./MessageItem";
 import ChatComposer from "./ChatComposer";
-import { modelBadgeTitle } from "@/lib/modelBadge";
-import { formatTokenCount } from "@shared/token-format";
+import SubagentChatHeader from "./SubagentChatHeader";
 import { childDurationLabel } from "@/lib/subagentDetails";
 import {
   childMessagesToChatMessages,
@@ -28,7 +27,7 @@ import {
 } from "@/lib/subagentChat";
 import type { ChildMessage } from "@/lib/subagentDetails";
 import { formatElapsed } from "@/components/artifact/overview/overviewRuntime";
-import { IconArrowUp, IconChevronLeft, IconStop } from "@/components/common/icons";
+import { IconArrowUp, IconStop } from "@/components/common/icons";
 
 export default function SubagentChatView({
   taskId,
@@ -113,9 +112,9 @@ export default function SubagentChatView({
               ? "已结束"
               : "已取消";
   const model = entry?.kind === "running" || entry?.kind === "done" ? entry.row.model : undefined;
-  const usage = entry?.kind === "running" || entry?.kind === "done" ? entry.row.usage : undefined;
+  const usage = entry?.kind === "running" ? entry.row.usage : resultRun?.usage ?? (entry?.kind === "done" ? entry.row.usage : undefined);
   const cwd = entry?.kind === "running" || entry?.kind === "done" || entry?.kind === "queued" ? entry.row.cwd : undefined;
-  const elapsed = entry?.kind === "running" ? formatElapsed(entry.row.elapsedMs) : childDurationLabel(resultRun?.durationMs);
+  const elapsed = entry?.kind === "running" ? formatElapsed(entry.row.elapsedMs) : childDurationLabel(resultRun?.durationMs ?? (entry?.kind === "done" ? entry.row.durationMs : undefined));
 
   const send = async (): Promise<void> => {
     const text = draft.trim();
@@ -145,47 +144,18 @@ export default function SubagentChatView({
 
   return (
     <div className="chat-column subagent-chat-column" data-mode="subagent">
-      <div className="chat-header task-chat-header subagent-chat-header">
-        <button
-          type="button"
-          className="icon-btn"
-          title="返回任务对话"
-          aria-label="返回任务对话"
-          onClick={closeSubagentView}
-        >
-          <IconChevronLeft size={15} />
-        </button>
-        <button
-          type="button"
-          className="subagent-chat-crumb"
-          title="返回任务对话"
-          onClick={closeSubagentView}
-        >
-          {task?.title || "任务"}
-        </button>
-        <span className="subagent-chat-sep" aria-hidden>/</span>
-        <div className="chat-header-title subagent-chat-title" title={`id: ${subagentId}`}>{name}</div>
-        <span className={`ro-label ro-label--${entry?.kind === "running" ? "running" : entry?.kind === "queued" ? "queued" : entry?.kind === "done" && entry.row.state === "completed" ? "completed" : entry?.kind === "done" && entry.row.state === "failed" ? "failed" : "cancelled"}`}>
-          {stateLabel}
-        </span>
-        {model && (
-          <span className="ro-model" title={modelBadgeTitle(model)}>{model.label}</span>
-        )}
-        {usage && usage.contextTokens > 0 && (
-          <span className="subagent-chat-meta" title="上下文用量">{formatTokenCount(usage.contextTokens)}</span>
-        )}
-        {elapsed && <span className="subagent-chat-meta" title="耗时">{elapsed}</span>}
-        <div className="input-spacer" />
-        <button
-          type="button"
-          className="icon-btn"
-          title="关闭子代理对话"
-          aria-label="关闭子代理对话"
-          onClick={closeSubagentView}
-        >
-          ✕
-        </button>
-      </div>
+      <SubagentChatHeader
+        taskTitle={task?.title || "任务"}
+        name={name}
+        subagentId={subagentId}
+        stateLabel={stateLabel}
+        stateTone={entry?.kind === "running" ? "running" : entry?.kind === "queued" ? "queued" : entry?.kind === "done" && entry.row.state === "completed" ? "completed" : entry?.kind === "done" && entry.row.state === "failed" ? "failed" : "cancelled"}
+        model={model}
+        usage={usage}
+        elapsed={elapsed}
+        elapsedTitle={running ? "本子代理本轮从派发至今的时间，包含工具执行与等待" : resultRun?.durationMs !== undefined ? "本子代理首末消息的时间跨度，非纯模型生成耗时" : "最后观测到的运行时长；没有记录时显示 —，不继续计时"}
+        onBack={closeSubagentView}
+      />
 
       {cwd && <div className="subagent-chat-sub" title={cwd}>工作目录: {cwd}</div>}
 

@@ -99,6 +99,7 @@ const GUI_TESTS = new Set([
   "test:project-activity-ui",
   "test:consult-card-ui",
   "test:overview-model-ui",
+  "test:subagent-header-ui",
   "test:settings-records-ui",
   "test:svg-preview-resize",
   "test:consult-selection",

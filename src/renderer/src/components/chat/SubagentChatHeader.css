@@ -1,0 +1,40 @@
+/* The header uses its own grid, not the main chat title's expanding flex slot.
+   Metrics wrap by available column width (sidebar/right panel included), not viewport width. */
+.subagent-detail-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 20px;
+  position: relative;
+  flex-shrink: 0;
+  min-width: 0;
+  padding: 12px 46px 12px max(12px, var(--chat-gutter, 24px));
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
+  color: var(--fg);
+  box-sizing: border-box;
+}
+.subagent-detail-identity { flex: 1 1 280px; min-width: 0; max-width: 100%; }
+.subagent-detail-heading { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.subagent-detail-heading > .icon-btn { flex-shrink: 0; }
+.subagent-detail-heading .subagent-chat-crumb { flex: 0 1 220px; min-width: 0; }
+.subagent-detail-name { flex: 1 1 auto; min-width: 0; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.subagent-detail-status { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 4px 0 0 28px; min-width: 0; }
+.subagent-detail-status .ro-model { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; box-sizing: border-box; }
+.subagent-detail-status .ro-label { flex-shrink: 0; }
+.subagent-detail-metrics {
+  flex: 1.6 1 540px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(90px, 100%), 1fr));
+  gap: 10px 12px;
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+}
+.subagent-detail-metrics > div { min-width: 0; }
+.subagent-detail-metrics dt { margin: 0 0 3px; color: var(--fg-muted); font-size: 11px; white-space: nowrap; }
+.subagent-detail-metrics dd { margin: 0; color: var(--fg); font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.subagent-detail-close { position: absolute; right: 12px; top: 12px; }
+
+.subagent-detail-scope { color: var(--fg-muted); font-size: 10px; overflow-wrap: anywhere; }
