@@ -83,6 +83,7 @@ export interface DurableBotOptions {
   initialBranch?: DurableBranchSeed;
   toolHooks?: Partial<ToolHooks>;
   toolAllowed?: (name: string) => boolean;
+  readonlyShell?: () => boolean;
   waitingForInput?: () => boolean;
   onTurns?: (turns: ReturnType<typeof durableCompletedTurns>) => void;
   onEntries?: (entries: readonly EntryRecord[], identity: { conversationId: string; sourceKind: "main" | "subagent" }) => void;
@@ -205,7 +206,7 @@ export class DurableBotRuntime {
     const handle = options.storage ? undefined : await openDurableStorage(options.directory, ctx, { readOnly: options.readOnly });
     const storage = options.storage ?? handle!.storage;
     const registry = createRegistry();
-    const native = [...codingTools(options.directory), ...(options.tools ?? [])];
+    const native = [...codingTools(options.directory, options.readonlyShell), ...(options.tools ?? [])];
     let compatibility: ToolRegistration[] = [];
     try {
       if (options.restoreTools) {
@@ -310,7 +311,7 @@ export class DurableBotRuntime {
     if (contextHooks) this.options.contextHooks = [...contextHooks];
     if (toolHooks) this.options.toolHooks = toolHooks;
     if (extensions || contextHooks) {
-      if (extensions) this.nativeTools = [...codingTools(this.options.directory), ...extensions];
+      if (extensions) this.nativeTools = [...codingTools(this.options.directory, this.options.readonlyShell), ...extensions];
       const available = this.nativeTools;
       this.codemode = createDurableCodeMode(() => available.filter(tool => this.options.toolAllowed?.(tool.name) !== false), this.options.assets, join(this.options.directory, "images"), async (code, context) => {
         const tools = await this.options.prepareCodeMode?.(code, context) ?? [];
@@ -967,9 +968,9 @@ export class DurableBotRuntime {
  * （两个 Tag 都生效），Linux/macOS 复用 CodingTools 自带的 bash。
  * 平台判定见 `platform/shell-tools.ts`（业务侧不再直接判断 process.platform）。
  */
-function codingTools(directory: string): ToolRegistration[] {
+function codingTools(directory: string, readonlyShell?: () => boolean): ToolRegistration[] {
   return [
-    ...(CodingTools.tools ?? []).map(tool => tool.name === "read" ? withDurableImageRead(tool) : withDurableArtifactRegistration(withWorkShellRead(tool), directory)),
+    ...(CodingTools.tools ?? []).map(tool => tool.name === "read" ? withDurableImageRead(tool) : withDurableArtifactRegistration(withWorkShellRead(tool, readonlyShell), directory)),
     ...createPlatformShellTools(),
     createDurableArtifactRegistrationTool(directory),
   ];

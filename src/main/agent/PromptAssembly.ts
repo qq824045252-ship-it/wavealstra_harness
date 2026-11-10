@@ -599,6 +599,16 @@ export function resolveSessionToolSelection(
   return capabilityExclusions.length ? { excludeTools: capabilityExclusions } : {};
 }
 
+/** Durable enforces literal-only reads inside its executor; legacy bash stays excluded. */
+export function resolveDurableToolSelection(
+  permissionMode: string, toolPolicy: ModeToolPolicy, capabilities?: BuiltinCapabilitiesConfigDto,
+): SessionToolSelection {
+  const selection = resolveSessionToolSelection(permissionMode, toolPolicy, capabilities);
+  const denied = toolPolicy.mode === "hard" && toolPolicy.deny?.some(name => name.toLowerCase() === "bash");
+  if (permissionMode !== "readonly" || capabilities?.execution.terminalEnabled === false || denied) return selection;
+  return { ...selection, excludeTools: selection.excludeTools?.filter(name => name !== "bash") };
+}
+
 export function activateResolvedSessionTools(
   session: {
     getActiveToolNames(): string[];

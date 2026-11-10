@@ -1,3 +1,7 @@
+import { withWorkShellRead } from "../src/main/agent/work/WorkShellRead";
+import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
+import type { ToolRegistration } from "@earendil-works/pi-durable";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ensureWhisperRuntime } from "../src/main/voice/whisperAsr";
 import { venvPythonRelativePath } from "../src/main/platform/runtime";
 import assert from "node:assert/strict";
@@ -7,7 +11,7 @@ import { join } from "node:path";
 import { DEFAULT_BUILTIN_CAPABILITIES_CONFIG } from "../src/shared/builtin-capabilities";
 import { BuiltinCapabilityRuntime } from "../src/main/capabilities/BuiltinCapabilityRuntime";
 import { BuiltinCapabilityStore } from "../src/main/capabilities/BuiltinCapabilityStore";
-import { activateResolvedSessionTools, resolveSessionToolSelection } from "../src/main/agent/PromptAssembly";
+import { activateResolvedSessionTools, resolveDurableToolSelection, resolveSessionToolSelection } from "../src/main/agent/PromptAssembly";
 import { checkLocalExecution } from "../src/main/capabilities/LocalCapabilityChecks";
 import type { PythonRuntimeService } from "../src/main/runtime/PythonRuntimeService";
 import { createBuiltinCapabilityExtension } from "../src/main/capabilities/builtin-capability-extension";
@@ -15,6 +19,19 @@ import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsMana
 
 const root = await mkdtemp(join(tmpdir(), "mybuddy-local-capabilities-test-"));
 try {
+  let shellFallbacks = 0, readOnlyShell = true;
+  const shell = withWorkShellRead({ name: "bash", execute: async () => { shellFallbacks++; return {}; } } as unknown as ToolRegistration, () => readOnlyShell);
+  let output = "";
+  const readApi = { env: new NodeExecutionEnv({ cwd: root }), output: (value: string) => { output += value; } } as unknown as Parameters<ToolRegistration["execute"]>[1];
+  await shell.execute({ command: "pwd" }, readApi, BACKGROUND_CONTEXT);
+  assert.equal(output.trim(), root);
+  for (const command of ["touch forbidden", "echo x > forbidden", "pwd\ntouch forbidden", "ls; touch forbidden", "find . -exec touch forbidden ;", "pwd $(touch forbidden)"]) {
+    await assert.rejects(() => shell.execute({ command }, readApi, BACKGROUND_CONTEXT), /只读任务仅支持/);
+  }
+  assert.equal(shellFallbacks, 0, "readonly executor must never enter shell even without policy hooks");
+  readOnlyShell = false;
+  await shell.execute({ command: "unclassified" }, readApi, BACKGROUND_CONTEXT);
+  assert.equal(shellFallbacks, 1, "non-readonly behavior is unchanged");
   assert.equal(venvPythonRelativePath("linux"), join("bin", "python"));
   assert.equal(venvPythonRelativePath("win32"), join("Scripts", "python.exe"));
   const previousWhisper = process.env.MYBUDDY_WHISPER_DIR;
@@ -71,6 +88,13 @@ try {
   assert(readonly.excludeTools?.includes("bash"));
   assert(readonly.excludeTools?.includes("execute_code"));
 
+  const soft = { mode: "soft" as const, prefer: [], demote: [], deny: [] };
+  const durableReadonly = resolveDurableToolSelection("readonly", soft);
+  assert(!durableReadonly.excludeTools?.includes("bash"));
+  for (const name of ["write", "edit", "powershell", "execute_code"]) assert(durableReadonly.excludeTools?.includes(name));
+  assert(resolveSessionToolSelection("readonly", soft).excludeTools?.includes("bash"));
+  assert(resolveDurableToolSelection("readonly", soft, config).excludeTools?.includes("bash"));
+  assert(resolveDurableToolSelection("readonly", { ...soft, mode: "hard", deny: ["BASH"] }).excludeTools?.includes("bash"));
   const path = join(root, "capabilities.json");
   const store = new BuiltinCapabilityStore(path);
   await writeFile(path, JSON.stringify({ schemaVersion: 1, browser: { enabled: false } }));

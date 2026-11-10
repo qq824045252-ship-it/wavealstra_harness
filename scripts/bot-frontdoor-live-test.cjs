@@ -564,7 +564,7 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       const settings = (await evaluate(`window.api.botWork.getSettings('${botId}')`)).settings;
       assert.equal(settings.workspacePath, '');
       assert(!fs.existsSync(settings.effectiveWorkspacePath), 'fresh Bot managed directory must not exist before dispatch');
-      await send('给学习搭子派一个任务：用内置 ls 工具列出实际工作目录的内容，报告目录绝对路径以及实际列表，空目录如实报告。请从现有 Bot 自由组队，只让学习搭子执行，你负责汇总；不要保存团队模板，不要创建普通独立 Work。现在执行，不修改文件，不使用终端命令。');
+      await send('给学习搭子派一个任务：执行 pwd 查询实际工作目录，报告真实工具返回的绝对路径。请从现有 Bot 自由组队，只让学习搭子执行，你负责汇总；不要保存团队模板，不要创建普通独立 Work。现在执行，权限只读，不修改文件。');
       await foregroundDone(0);
       await until(async () => {
         const works = await evaluate('window.api.botWork.listWorks(true)');
@@ -584,7 +584,7 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       assert.equal(work.team.executions.length, 2);
       assert.equal((await evaluate(`window.api.botWork.teamControl({kind:'list_templates'})`)).templates.length, 0);
       assert(requests.some(r => r.messages?.some(m => m.tool_calls?.some(c => c.function?.name === 'work_team_create'))));
-      assert(requests.some(r => r.messages?.some(m => m.tool_calls?.some(c => c.function?.name === 'ls'))), 'member invokes a real native directory read');
+      assert(requests.some(r => r.messages?.some(m => m.tool_calls?.some(c => c.function?.name === 'bash' && JSON.parse(c.function.arguments).command === 'pwd'))), 'member invokes real host-backed readonly pwd');
       await until(async () => (await history()).messages.some(m => m.workFeedback?.workId === work.workId && m.workFeedback?.report), 'team result returns to original Bot conversation');
       report.history = await history();
       assert(!report.history.messages.some(m => m.role === 'assistant' && m.text.includes('工作区必须是当前可访问')));

@@ -271,7 +271,7 @@ import {
   activateResolvedSessionTools,
   assembleProjectContextSegments,
   assemblePrompt,
-  resolveSessionToolSelection,
+  resolveDurableToolSelection,
   type SessionToolSelection,
 } from "./PromptAssembly";
 import { derivePromptContextCharBudget } from "./PromptContextBudget";
@@ -1893,7 +1893,7 @@ export class AgentService {
     if (!selections) { selections = new Map(); this.toolSelectionMemo.set(assembly, selections); }
     let selection = selections.get(permissionMode);
     if (!selection) {
-      selection = resolveSessionToolSelection(permissionMode, assembly.toolPolicy, this.builtinCapabilities.config());
+      selection = resolveDurableToolSelection(permissionMode, assembly.toolPolicy, this.builtinCapabilities.config());
       selections.set(permissionMode, selection);
     }
     if (["subagent", "subagent_list", "subagent_steer"].includes(name) && !this.builtinCapabilities.config().subagent.enabled) return false;

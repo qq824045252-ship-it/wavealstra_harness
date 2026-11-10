@@ -86,11 +86,14 @@ export function presentWorkReadResult(result: Awaited<ReturnType<typeof executeW
 
 /** The read allowance is backed by host file APIs, never shell -c/PATH/startup
  * scripts or exported functions. Every other command retains the native shell. */
-export function withWorkShellRead(tool: ToolRegistration): ToolRegistration {
+export function withWorkShellRead(tool: ToolRegistration, readonly: () => boolean = () => false): ToolRegistration {
   if (tool.name !== "bash") return tool;
-  return { ...tool, execute: async (args, api, context): Promise<Awaited<ReturnType<ToolRegistration["execute"]>>> => {
+  return { ...tool, description: `${tool.description}\n只读任务可使用本工具执行 pwd、ls、cat、wc、stat 等受支持的字面只读命令，由宿主直接读取，不启动交互终端。只读模式仍禁止写入和任意脚本。`, execute: async (args, api, context): Promise<Awaited<ReturnType<ToolRegistration["execute"]>>> => {
     const read = workShellRead(tool.name, args);
-    if (!read) return tool.execute(args, api, context);
+    if (!read) {
+      if (readonly()) throw new Error("只读任务仅支持宿主字面读取，不能执行 Shell 或写入命令");
+      return tool.execute(args, api, context);
+    }
     const timeout = (args as { timeout?: number }).timeout;
     if (timeout !== undefined && (!Number.isFinite(timeout) || timeout <= 0 || timeout > 2_147_483_647 / 1000)) throw new Error("Invalid timeout: must be a finite positive number within the native limit");
     if (!api.env) throw new Error("读取缺少当前原生执行环境");
@@ -106,7 +109,7 @@ export function withWorkShellRead(tool: ToolRegistration): ToolRegistration {
       for (const step of read.steps) {
         context.abortSignal?.throwIfAborted();
         if ("echo" in step) { api.output(`${step.echo}\n`);  }
-        else await withWorkShellRead(tool).execute({ ...(args as Record<string, unknown>), command: step.command }, api, context);
+        else await withWorkShellRead(tool, readonly).execute({ ...(args as Record<string, unknown>), command: step.command }, api, context);
         completedSteps++;
       }
       return { structuredOutput: { completedSteps, evidenceSource: "host-interpreted-scoped-read-sequence" } };

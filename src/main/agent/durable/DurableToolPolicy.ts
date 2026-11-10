@@ -102,7 +102,7 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
         const shellRead = workShellRead(call.name, call.arguments);
         const sideEffect = !shellRead && (mcp?.sideEffect ?? isSideEffectTool(call.name, call.arguments));
         const dangerous = mcp?.dangerous ?? isDangerousTool(call.name, call.arguments);
-        if (mode === "readonly" && (sideEffect || dangerous)) return refuse("当前为只读/计划/仅问答模式，已阻止写操作与命令执行");
+        if (mode === "readonly" && (sideEffect || dangerous)) return refuse(call.name === "terminal_exec" ? "只读任务不能打开或输入交互终端；请使用 bash 执行 pwd、ls 等受支持的只读核验，不要重试 terminal_exec open" : "当前为只读模式，不能执行写入或未经证明的命令；可使用文件读取工具或 bash 的受支持只读核验");
         if (mcp && !mcp.decision.allowed && !mcp.decision.requiresApproval) return refuse(mcp.decision.reason);
 
         if (mcp && options.ensureRuntimeReady && isManagedToolProvider(mcp.identity.providerId)) {
