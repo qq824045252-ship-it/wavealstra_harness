@@ -1685,7 +1685,7 @@ export class AgentService {
       extract: id => this.queuePendingMemoryExtraction([id]),
       changed: () => this.notifyMemoryChanged({ scope: "settings" }),
     });
-    this.botConversations ??= new BotConversationService({ onTool: event => this.taskDiagnostics.observeTool(event), db: this.db.connection, userId: LOCAL_USER_ID,
+    this.botConversations ??= new BotConversationService({ reminders: () => this.localWorkflow?.cron, onTool: event => this.taskDiagnostics.observeTool(event), db: this.db.connection, userId: LOCAL_USER_ID,
       bots: this.botRegistry, works: this.workService, models: this.durableModels, directory: join(getMyBuddyDir(), "bot-conversations"),
       botModel: botId => this.botSettings.get(botId).modelId || undefined,
       thinking: (id, preference) => {

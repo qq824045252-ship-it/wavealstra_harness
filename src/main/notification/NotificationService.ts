@@ -145,7 +145,7 @@ export class NotificationService {
 
   private shouldDeliverDesktop(notification: NotificationDto, backgroundOnly: boolean): boolean {
     if (!this.desktopPresenter) return false;
-    const urgent = notification.level === "error" || notification.type === "task.action_required";
+    const urgent = notification.type === "reminder.due" || notification.level === "error" || notification.type === "task.action_required";
     if (urgent) return true;
     if (!backgroundOnly) return true;
     try {

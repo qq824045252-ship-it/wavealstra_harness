@@ -3634,6 +3634,7 @@ export class AppDatabase {
 
   upsertCronJob(job: CronJobDto): void {
     const executionJson = JSON.stringify({
+      reminder: job.reminder,
       sourceTaskId: job.sourceTaskId,
       target: job.target,
       maxRuns: job.maxRuns,

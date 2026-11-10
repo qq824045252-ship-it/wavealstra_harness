@@ -44,14 +44,15 @@ import {
 } from "@/components/common/icons";
 
 type Tab = "tasks" | "history";
-type FreqMode = "period" | "every" | "once";
+type FreqMode = "period" | "every" | "once" | "cron";
 type PeriodUnit = "day" | "week" | "month";
-type EveryUnit = "m" | "h" | "d";
+type EveryUnit = "s" | "m" | "h" | "d";
 type PromptMenu = "model" | "skill" | "expert" | "perm" | null;
 type ListView = "list" | "form" | "templates";
 
 interface FormState {
   id?: string;
+  reminder?: CronJobDto["reminder"];
   name: string;
   prompt: string;
   spaceId: string | null;
@@ -63,6 +64,7 @@ interface FormState {
   /** 任务类型：办公 / 代码 / 设计 */
   welcomeMode: WelcomeMode;
   freqMode: FreqMode;
+  cronExpr: string;
   periodUnit: PeriodUnit;
   periodTime: string;
   periodDow: number;
@@ -124,6 +126,7 @@ function emptyForm(defaultModelId?: string | null): FormState {
     permissionMode: "auto",
     welcomeMode: "working",
     freqMode: "period",
+    cronExpr: "",
     periodUnit: "day",
     periodTime: nowTimeHHMM(),
     periodDow: 1,
@@ -146,6 +149,7 @@ function formToSchedule(form: FormState): {
   scheduleType: CronJobDto["scheduleType"];
   scheduleExpr: string;
 } {
+  if (form.freqMode === "cron") return { scheduleType: "cron", scheduleExpr: form.cronExpr };
   if (form.freqMode === "every") {
     const n = Math.max(1, form.everyN || 1);
     return { scheduleType: "every", scheduleExpr: `${n}${form.everyUnit}` };
@@ -171,6 +175,7 @@ function formToSchedule(form: FormState): {
 function jobToForm(job: CronJobDto, defaultModelId?: string | null): FormState {
   const base = emptyForm(defaultModelId);
   base.id = job.id;
+  base.reminder = job.reminder;
   base.name = job.name;
   base.prompt = job.prompt;
   base.spaceId = job.spaceId ?? null;
@@ -188,7 +193,7 @@ function jobToForm(job: CronJobDto, defaultModelId?: string | null): FormState {
 
   if (job.scheduleType === "every") {
     base.freqMode = "every";
-    const m = /^(\d+)([mhd])$/i.exec(job.scheduleExpr.trim());
+    const m = /^(\d+)([smhd])$/i.exec(job.scheduleExpr.trim());
     if (m) {
       base.everyN = Number(m[1]) || 1;
       base.everyUnit = m[2].toLowerCase() as EveryUnit;
@@ -200,6 +205,7 @@ function jobToForm(job: CronJobDto, defaultModelId?: string | null): FormState {
   } else {
     base.freqMode = "period";
     const parts = job.scheduleExpr.trim().split(/\s+/);
+    if (parts.length === 5) parts.unshift("0");
     if (parts.length >= 3) {
       const minute = Number(parts[1]);
       const hour = Number(parts[2]);
@@ -219,6 +225,9 @@ function jobToForm(job: CronJobDto, defaultModelId?: string | null): FormState {
         base.periodUnit = "day";
       }
     }
+  }
+  if (job.scheduleType === "cron" && formToSchedule(base).scheduleExpr !== (job.scheduleExpr.trim().split(/\s+/).length === 5 ? `0 ${job.scheduleExpr.trim()}` : job.scheduleExpr.trim())) {
+    base.freqMode = "cron"; base.cronExpr = job.scheduleExpr;
   }
   return base;
 }
@@ -552,12 +561,16 @@ export default function AutomationPage({
     const running: CronJobDto[] = [];
     const current: CronJobDto[] = [];
     const paused: CronJobDto[] = [];
+    const delivered: CronJobDto[] = [];
+    const cancelled: CronJobDto[] = [];
     for (const j of filteredJobs) {
       if (runningJobIds.has(j.id)) running.push(j);
       else if (j.enabled) current.push(j);
+      else if (j.reminder?.state === "delivered") delivered.push(j);
+      else if (j.reminder?.state === "cancelled") cancelled.push(j);
       else paused.push(j);
     }
-    return { running, current, paused };
+    return { running, current, paused, delivered, cancelled };
   }, [filteredJobs, runningJobIds]);
 
   const selectedSpace = spaces.find((s) => s.id === form.spaceId);
@@ -650,10 +663,11 @@ export default function AutomationPage({
         prompt,
         scheduleType,
         scheduleExpr,
-        timezone: "Asia/Shanghai",
+        timezone: existing?.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
         spaceId: form.spaceId ?? undefined,
         cwd: space?.path,
         enabled: existing?.enabled ?? true,
+        reminder: existing?.reminder,
         sourceTaskId: existing?.sourceTaskId,
         target: existing?.target,
         maxRuns: existing?.maxRuns,
@@ -873,7 +887,7 @@ export default function AutomationPage({
           </label>
         )}
         <button type="button" className="auto-row-main" onClick={() => onJobRowClick(job)}>
-          <span className="auto-row-name">{job.name}</span>
+          <span className="auto-row-name">{job.reminder ? "⏰ " : ""}{job.name}</span>
           <span
             className="auto-row-mode"
             title={WELCOME_MODE_LABELS[job.welcomeMode === "coding" || job.welcomeMode === "general" ? job.welcomeMode : "working"]}
@@ -883,7 +897,7 @@ export default function AutomationPage({
               size={13}
             />
             <span>
-              {WELCOME_MODE_LABELS[job.welcomeMode === "coding" || job.welcomeMode === "general" ? job.welcomeMode : "working"]}
+              {job.reminder ? "纯提醒 · 不调用模型" : WELCOME_MODE_LABELS[job.welcomeMode === "coding" || job.welcomeMode === "general" ? job.welcomeMode : "working"]}
             </span>
           </span>
           <span className="auto-row-id" title={job.id}>
@@ -893,8 +907,8 @@ export default function AutomationPage({
           {job.sourceTaskId && <span className="auto-row-id" title={`Source task: ${job.sourceTaskId}`}>
             {job.target?.kind === "task" ? "Continue task" : "New task"} · {job.sourceTaskId}
           </span>}
-          <span className="auto-row-id" title="Runs only while MyBuddy is open. Missed runs are skipped.">
-            {job.restartPolicy === "pause" ? "Pause on restart" : "Resume future runs"}
+          <span className="auto-row-id" title={job.reminder ? "本机到时提醒；关闭或休眠后恢复会合并补发" : "Runs only while MyBuddy is open. Missed runs are skipped."}>
+            {job.reminder ? "离线后补发" : job.restartPolicy === "pause" ? "Pause on restart" : "Resume future runs"}
             {job.maxRuns != null ? ` · ${job.runCount ?? 0}/${job.maxRuns} runs` : ""}
           </span>
         </button>
@@ -1041,7 +1055,7 @@ export default function AutomationPage({
               <div className="auto-tip-banner">
                 <IconAlert size={15} />
                 <span>
-                  自动化任务执行时，请勿关闭电脑或退出客户端，否则任务将无法正常执行
+                  {form.reminder ? "提醒在本机运行；关闭或休眠期间无法准时弹出，恢复后会合并补发错过的提醒。" : "自动化任务执行时，请勿关闭电脑或退出客户端，否则任务将无法正常执行"}
                 </span>
                 <button
                   type="button"
@@ -1068,7 +1082,7 @@ export default function AutomationPage({
               />
             </label>
 
-            <div className="auto-field">
+            <div className="auto-field" style={form.reminder ? { display: "none" } : undefined}>
               <span className="auto-field-label">任务类型</span>
               <div className="auto-seg auto-mode-seg">
                 {WELCOME_MODES.map((mode) => (
@@ -1088,7 +1102,7 @@ export default function AutomationPage({
               </div>
             </div>
 
-            <div className="auto-field">
+            <div className="auto-field" style={form.reminder ? { display: "none" } : undefined}>
               <span className="auto-field-label">
                 工作空间<span className="auto-optional">（可选）</span>
               </span>
@@ -1185,7 +1199,7 @@ export default function AutomationPage({
             </div>
 
             <div className="auto-field">
-              <span className="auto-field-label">提示词</span>
+              <span className="auto-field-label">{form.reminder ? "提醒内容（到时直接发送）" : "提示词"}</span>
               <div className="auto-prompt-shell">
                 <div className="auto-prompt-box">
                   <textarea
@@ -1196,7 +1210,7 @@ export default function AutomationPage({
                     rows={8}
                   />
                 </div>
-                <div className="auto-prompt-toolbar">
+                <div className="auto-prompt-toolbar" style={form.reminder ? { display: "none" } : undefined}>
                   <div className={`auto-prompt-pill-wrap ${promptMenu === "model" ? "is-open" : ""}`}>
                     <button
                       type="button"
@@ -1395,7 +1409,7 @@ export default function AutomationPage({
               </div>
             </div>
 
-            <div className="auto-field">
+            <div className="auto-field" style={form.reminder ? { display: "none" } : undefined}>
               <span className="auto-field-label">
                 连接器
                 <span className="auto-optional">（勾选即授权该连接器在任务中免确认使用）</span>
@@ -1467,7 +1481,7 @@ export default function AutomationPage({
               <span className="auto-field-label">
                 执行频率
                 <span className="auto-optional">
-                  （建议避开上午高峰时段，高峰期容易排队等待；选择非高峰执行更稳定）
+                  {form.reminder ? "（纯提醒不调用模型；本机离线后恢复补发）" : "（建议避开上午高峰时段，高峰期容易排队等待；选择非高峰执行更稳定）"}
                 </span>
               </span>
               <div className="auto-seg">
@@ -1489,6 +1503,7 @@ export default function AutomationPage({
                 ))}
               </div>
 
+              {form.freqMode === "cron" && <label className="auto-freq-row">自定义周期<input className="auto-input" aria-label="Cron表达式" value={form.cronExpr} onChange={event => patchForm("cronExpr", event.target.value)} /></label>}
               {form.freqMode === "period" && (
                 <div className="auto-freq-row">
                   <select
@@ -1538,6 +1553,7 @@ export default function AutomationPage({
                     value={form.everyUnit}
                     onChange={(e) => patchForm("everyUnit", e.target.value as EveryUnit)}
                   >
+                    <option value="s">秒</option>
                     <option value="m">分钟</option>
                     <option value="h">小时</option>
                     <option value="d">天</option>
@@ -1820,6 +1836,8 @@ export default function AutomationPage({
                 {renderSection("运行中", grouped.running)}
                 {renderSection("当前", grouped.current)}
                 {renderSection("已暂停", grouped.paused)}
+                {renderSection("已提醒", grouped.delivered)}
+                {renderSection("已取消", grouped.cancelled)}
               </>
             )
           ) : visibleRuns.length === 0 ? (

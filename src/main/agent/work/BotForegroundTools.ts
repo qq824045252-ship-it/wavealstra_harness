@@ -1,3 +1,4 @@
+import { botReminderTool } from "./BotReminderTools";
 import { workWatchIntentSchema } from "../../../shared/work-watch-intent";
 import type Database from "better-sqlite3";
 import { workTeamTaskAssignmentSchema } from "../../../shared/bot-work-team";
@@ -59,6 +60,7 @@ const inputParameters = { query: parameters(query), create: parameters(create), 
   control: parameters(control), memory: parameters(memory) };
 
 export interface BotForegroundToolOptions {
+  reminders?: () => import("../../cron/CronService").CronService | undefined;
   db: Database.Database;
   userId: string;
   botId: string;
@@ -77,7 +79,7 @@ export interface BotForegroundToolOptions {
 }
 
 /** Foreground Work/memory controls. Read-only web tools are mounted separately by the host. */
-export const BOT_FOREGROUND_TOOLS = new Set(["work_query_status", "work_create", "work_amend", "work_pause", "work_resume", "work_cancel", "memory_search", "memory_forget", "work_team_templates", "work_team_create"]);
+export const BOT_FOREGROUND_TOOLS = new Set(["reminder_manage", "work_query_status", "work_create", "work_amend", "work_pause", "work_resume", "work_cancel", "memory_search", "memory_forget", "work_team_templates", "work_team_create"]);
 
 export function botForegroundTools(options: BotForegroundToolOptions) {
   const { db, works, bots, messages, userId, botId, conversationId } = options;
@@ -228,7 +230,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
         hostMustBeRunning: true } });
     },
   }));
-  return [defineTool({ name: "work_query_status", description: "查询当前 Bot 的事项。概览用 view:summary，默认仅未结束事项、每页20项；支持 status、search、limit、cursor，返回准确总数与nextQuery续页参数。只展示摘要，不能把本页数当总数；用 workId 按需读取完整成果和版本守卫。detail 必须指定 workId。不会启动业务工具。",
+  return [botReminderTool(options),defineTool({ name: "work_query_status", description: "查询当前 Bot 的事项。概览用 view:summary，默认仅未结束事项、每页20项；支持 status、search、limit、cursor，返回准确总数与nextQuery续页参数。只展示摘要，不能把本页数当总数；用 workId 按需读取完整成果和版本守卫。detail 必须指定 workId。不会启动业务工具。",
     parameters: inputParameters.query, replay: "safe",
     execute: async (args, api, context) => {
       const requestId = await botForegroundRequest(api, api.callId, context);

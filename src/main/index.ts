@@ -3329,6 +3329,12 @@ app.whenReady().then(async () => {
         dedupeKey: `automation:${summary.jobId}:run:${summary.runId}:terminal`,
       });
     },
+    delivery => {
+      broadcastToWindows(BotWorkIpc.messageChanged, delivery.event);
+      notificationService.publish({ type: "reminder.due", level: "info", title: `⏰ ${delivery.title}`,
+        body: delivery.body, sourceType: "automation", sourceId: delivery.jobId,
+        dedupeKey: delivery.deliveryId });
+    },
   );
   // 外部输入适配器（首个：IM/Gateway 投递指令 `@项目 <名>：内容` → 项目事件；fail-open）
   gatewayService = new GatewayService(db, agentService, (msg) => {

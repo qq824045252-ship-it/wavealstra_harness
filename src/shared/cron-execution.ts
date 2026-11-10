@@ -2,6 +2,12 @@ import { Type, type Static } from "typebox";
 import { Check } from "typebox/value";
 
 export const CronExecutionSchema = Type.Object({
+  reminder: Type.Optional(Type.Object({
+    state: Type.Optional(Type.Union([Type.Literal("scheduled"), Type.Literal("paused"), Type.Literal("cancelled"), Type.Literal("delivered")])),
+    kind: Type.Literal("bot-reminder"), userId: Type.String({ minLength: 1 }),
+    botId: Type.String({ minLength: 1 }), conversationId: Type.String({ minLength: 1 }),
+    teamId: Type.Optional(Type.String({ minLength: 1 })),
+  }, { additionalProperties: false })),
   sourceTaskId: Type.Optional(Type.String({ minLength: 1 })),
   target: Type.Optional(Type.Union([
     Type.Object({ kind: Type.Literal("new-task") }, { additionalProperties: false }),

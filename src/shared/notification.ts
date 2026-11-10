@@ -12,6 +12,7 @@ export type NotificationType =
   | "task.completed"
   | "task.failed"
   | "task.action_required"
+  | "reminder.due"
   | "automation.completed"
   | "automation.failed"
   | "project.attention"
@@ -94,6 +95,7 @@ export function notificationPreferenceEnabled(
     case "task.completed": return preferences.taskCompleted;
     case "task.failed": return preferences.taskFailed;
     case "task.action_required": return preferences.actionRequired;
+    case "reminder.due": return preferences.automationCompleted;
     case "automation.completed": return preferences.automationCompleted;
     case "automation.failed": return preferences.automationFailed;
     case "project.attention": return preferences.projectAttention;

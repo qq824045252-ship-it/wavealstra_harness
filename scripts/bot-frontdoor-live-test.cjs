@@ -10,12 +10,13 @@ const root = path.resolve(__dirname, '..');
 const teamWatchGoalScenario = process.argv.includes('--team-watch-goal');
 const teamWatchChangesScenario = process.argv.includes('--team-watch-changes');
 const teamWatchScenario = teamWatchChangesScenario || teamWatchGoalScenario || process.argv.includes('--team-watch');
+const remindersScenario = process.argv.includes('--reminders');
 const watchSupplementScenario = process.argv.includes('--watch-supplement');
 const webWatchScenario = process.argv.includes('--web-watch');
 const watchGoalScenario = webWatchScenario || process.argv.includes('--watch-goal');
 const watchExpiryScenario = process.argv.includes('--watch-expiry');
 const watchChangesScenario = process.argv.includes('--watch-changes');
-const watchFollowupScenario = watchSupplementScenario || watchGoalScenario || process.argv.includes('--watch-followup') || watchChangesScenario || watchExpiryScenario;
+const watchFollowupScenario = remindersScenario || watchSupplementScenario || watchGoalScenario || process.argv.includes('--watch-followup') || watchChangesScenario || watchExpiryScenario;
 const multiDelegationScenario = process.argv.includes('--multi-delegation');
 const teamSubagentScenario = process.argv.includes('--team-subagent');
 const displayGroupsScenario = process.argv.includes('--display-groups');
@@ -49,7 +50,7 @@ const watchStatusScenario = process.argv.includes('--watch-status');
 const watchScenario = process.argv.includes('--watch');
 const watchIntentScenario = process.argv.includes('--watch-intent');
 if (headless && process.platform !== 'linux') throw Error('Headless dev page validation requires Linux; it does not validate desktop input.');
-const out = path.join(root, watchSupplementScenario ? 'out/diagnostics/bot-watch-supplement/live' : teamWatchChangesScenario ? 'out/diagnostics/bot-team-watch-changes/live' : webWatchScenario ? 'out/diagnostics/bot-web-watch/live' : teamWatchGoalScenario ? 'out/diagnostics/bot-team-watch-goal/live' : watchGoalScenario ? 'out/diagnostics/bot-watch-goal/live' : teamWatchScenario ? 'out/diagnostics/bot-team-watch/live' : watchExpiryScenario ? 'out/diagnostics/bot-watch-expiry/live' : watchChangesScenario ? 'out/diagnostics/bot-watch-changes/live' : watchFollowupScenario ? 'out/diagnostics/bot-watch-followup/live' : multiDelegationScenario ? 'out/diagnostics/bot-multi-delegation/live' : teamSubagentScenario ? 'out/diagnostics/bot-team-subagent/live' : workMetricsScenario ? 'out/diagnostics/work-execution-metrics/live' : modelPreferenceScenario ? 'out/diagnostics/bot-model-preference/live' : watchStatusScenario ? 'out/diagnostics/bot-watch-status/live' : teamDefaultWorkspaceScenario ? 'out/diagnostics/bot-team-default-workspace/live' : watchIntentScenario ? 'out/diagnostics/bot-watch-intent/live' : displayGroupsScenario ? 'out/diagnostics/bot-display-groups/live' : composerScenario ? 'out/diagnostics/bot-composer/live' : workspaceNavigationScenario ? 'out/diagnostics/bot-workspace-navigation/live' : searchScenario ? 'out/diagnostics/bot-search/live' : teamWorkspaceScenario ? 'out/diagnostics/bot-team-workspace/live' : concurrentScenario ? 'out/diagnostics/bot-concurrent/live' : completionScenario ? 'out/diagnostics/bot-completion/live' : trackingScenario ? 'out/diagnostics/bot-tracking/live' : teamTransientFailure ? 'out/diagnostics/bot-team-transient-failure/live' : teamTransportFailure ? 'out/diagnostics/bot-team-transport-failure/live' : teamFailureScenario ? 'out/diagnostics/bot-team-failure/live' : teamFreeScenario ? 'out/diagnostics/bot-team-free/live' : teamPlanningScenario ? 'out/diagnostics/bot-team-planning/live' : teamScenario ? 'out/diagnostics/bot-team-frontdoor/live' : cacheScenario ? 'out/diagnostics/bot-cache/live' : memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
+const out = path.join(root, remindersScenario ? 'out/diagnostics/bot-reminders/live' : watchSupplementScenario ? 'out/diagnostics/bot-watch-supplement/live' : teamWatchChangesScenario ? 'out/diagnostics/bot-team-watch-changes/live' : webWatchScenario ? 'out/diagnostics/bot-web-watch/live' : teamWatchGoalScenario ? 'out/diagnostics/bot-team-watch-goal/live' : watchGoalScenario ? 'out/diagnostics/bot-watch-goal/live' : teamWatchScenario ? 'out/diagnostics/bot-team-watch/live' : watchExpiryScenario ? 'out/diagnostics/bot-watch-expiry/live' : watchChangesScenario ? 'out/diagnostics/bot-watch-changes/live' : watchFollowupScenario ? 'out/diagnostics/bot-watch-followup/live' : multiDelegationScenario ? 'out/diagnostics/bot-multi-delegation/live' : teamSubagentScenario ? 'out/diagnostics/bot-team-subagent/live' : workMetricsScenario ? 'out/diagnostics/work-execution-metrics/live' : modelPreferenceScenario ? 'out/diagnostics/bot-model-preference/live' : watchStatusScenario ? 'out/diagnostics/bot-watch-status/live' : teamDefaultWorkspaceScenario ? 'out/diagnostics/bot-team-default-workspace/live' : watchIntentScenario ? 'out/diagnostics/bot-watch-intent/live' : displayGroupsScenario ? 'out/diagnostics/bot-display-groups/live' : composerScenario ? 'out/diagnostics/bot-composer/live' : workspaceNavigationScenario ? 'out/diagnostics/bot-workspace-navigation/live' : searchScenario ? 'out/diagnostics/bot-search/live' : teamWorkspaceScenario ? 'out/diagnostics/bot-team-workspace/live' : concurrentScenario ? 'out/diagnostics/bot-concurrent/live' : completionScenario ? 'out/diagnostics/bot-completion/live' : trackingScenario ? 'out/diagnostics/bot-tracking/live' : teamTransientFailure ? 'out/diagnostics/bot-team-transient-failure/live' : teamTransportFailure ? 'out/diagnostics/bot-team-transport-failure/live' : teamFailureScenario ? 'out/diagnostics/bot-team-failure/live' : teamFreeScenario ? 'out/diagnostics/bot-team-free/live' : teamPlanningScenario ? 'out/diagnostics/bot-team-planning/live' : teamScenario ? 'out/diagnostics/bot-team-frontdoor/live' : cacheScenario ? 'out/diagnostics/bot-cache/live' : memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-frontdoor-live-'));
 const agentDir = path.join(home, '.mybuddy'); fs.mkdirSync(agentDir, { recursive: true });
 for (const directory of ['AppData/Roaming', 'AppData/Local', 'Temp']) fs.mkdirSync(path.join(home, directory), { recursive: true });
@@ -185,7 +186,7 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
 (async () => {
   try {
     await new Promise(resolve=>provider.listen(0,"127.0.0.1",resolve));
-    const model = { id: selectedModel, name: 'Frontdoor live verification', reasoning: modelPreferenceScenario, input: ['text'], contextWindow: 128000, maxTokens: watchSupplementScenario ? 16384 : 4096,
+    const model = { id: selectedModel, name: 'Frontdoor live verification', reasoning: modelPreferenceScenario, input: ['text'], contextWindow: 128000, maxTokens: remindersScenario || watchSupplementScenario ? 16384 : 4096,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
     fs.writeFileSync(path.join(agentDir, 'models.json'), JSON.stringify({ providers: { fixture: { api: 'openai-completions', apiKey: 'fixture-only', baseUrl: `http://127.0.0.1:${provider.address().port}/v1`, models: [model, ...(teamTransportFailure?[{...model,id:'controlled-unavailable',name:'Controlled unavailable member'}]:[])] } } }));
     fs.writeFileSync(path.join(agentDir, 'settings.json'), JSON.stringify({ defaultProvider: 'fixture', defaultModel: selectedModel, enabledModels: [modelKey, ...(teamTransportFailure?['fixture/controlled-unavailable']:[])],
@@ -263,11 +264,12 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       await until(async () => (await history()).messages.some(m=>m.role==='assistant'&&m.requestId===requestId&&m.status==='completed'), 'matching foreground request completed');
     };
     if (watchFollowupScenario) {
-      const restart = async () => {
+      const restart = async (offlineMs = 0) => {
         if (electronWatch) { clearInterval(electronWatch); electronWatch = undefined; }
         await rpc('Browser.close').catch(() => {}); socket.close(); socket = undefined;
         await until(async () => { trackTestElectronMains(); return ![...ownedElectronMains].some(([pid, started]) => linuxProcessState(pid)?.startedAt === started); }, 'normal isolated Electron exit');
         if (processDev.exitCode === null) processDev.kill('SIGTERM');
+        if (offlineMs) await wait(offlineMs);
         await launch();
         await until(() => evaluate('Boolean(window.api?.botWork?.history && document.querySelector(".sidebar-user-main"))'), 'normal restart preload');
         if (!await evaluate('Boolean(document.querySelector("#bot-draft"))')) {
@@ -277,7 +279,7 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
         }
         await until(() => evaluate('Boolean(document.querySelector("#bot-draft"))'), 'normal restart Bot');
       };
-      await require(watchSupplementScenario ? './watch-supplement-live-scenario.cjs' : webWatchScenario ? './web-watch-live-scenario.cjs' : watchGoalScenario ? './watch-goal-live-scenario.cjs' : watchExpiryScenario ? './watch-expiry-live-scenario.cjs' : watchChangesScenario ? './watch-changes-live-scenario.cjs' : './watch-followup-live-scenario.cjs').run({send,foregroundDone,until,evaluate,history,rpc,report,requests,agentDir,out,home,modelKey,botId,restart});
+      await require(remindersScenario ? './reminders-live-scenario.cjs' : watchSupplementScenario ? './watch-supplement-live-scenario.cjs' : webWatchScenario ? './web-watch-live-scenario.cjs' : watchGoalScenario ? './watch-goal-live-scenario.cjs' : watchExpiryScenario ? './watch-expiry-live-scenario.cjs' : watchChangesScenario ? './watch-changes-live-scenario.cjs' : './watch-followup-live-scenario.cjs').run({send,foregroundDone,until,evaluate,history,rpc,report,requests,agentDir,out,home,modelKey,botId,restart});
     } else if (multiDelegationScenario) {
       await require('./multi-delegation-live-scenario.cjs').run({send,until,evaluate,history,rpc,report,requests,rawUsageAudit,agentDir,out,home,modelKey,botId});
     } else if (teamWatchScenario) {

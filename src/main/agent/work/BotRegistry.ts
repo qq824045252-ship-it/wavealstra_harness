@@ -142,7 +142,7 @@ export class BotRegistry {
       }),
       authorizationJson: JSON.stringify(authorization),
       foregroundAllowedToolsJson: JSON.stringify(input.foregroundAllowedTools ?? [
-        "work_query_status", "work_create", "work_amend", "work_pause", "work_resume", "work_cancel", "memory_search", "memory_forget",
+        "reminder_manage", "work_query_status", "work_create", "work_amend", "work_pause", "work_resume", "work_cancel", "memory_search", "memory_forget",
       ]),
       notificationPolicyJson: input.notificationPolicyJson ?? JSON.stringify({ inAppCard: true }),
       status: input.status ?? "active",
@@ -387,7 +387,7 @@ export class BotRegistry {
         // Existing memory-enabled Bots must expose the user's own forget control too.
         // Its execution still requires this turn's explicit forget request and private scope.
         return [...new Set([...tools,
-          ...(tools.includes("work_create") ? ["work_team_templates", "work_team_create"] : []),
+          ...(tools.includes("work_create") ? ["reminder_manage", "work_team_templates", "work_team_create"] : []),
           ...(tools.includes("memory_search") ? ["memory_forget"] : []),
         ])];
       })(),
