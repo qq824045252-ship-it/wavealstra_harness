@@ -94,7 +94,7 @@ function parseMaterialUsage(json: string | null): RuntimeContextSnapshotDto["mat
     const value = JSON.parse(json);
     if (!value || !Array.isArray(value.items) || !Number.isSafeInteger(value.omitted) || value.omitted < 0) return undefined;
     if (value.items.length > 100 || !value.items.every((item: RuntimeMaterialUseDto) => item &&
-      ["file-content", "knowledge-content", "search-snippet", "metadata"].includes(item.kind) &&
+      ["file-content", "knowledge-content", "web-content", "search-snippet", "metadata"].includes(item.kind) &&
       [item.toolCallId, item.toolName, item.title, item.target, item.outputHash].every((text) => typeof text === "string") &&
       [item.at, item.returnedChars, item.images].every((number) => Number.isFinite(number) && number >= 0))) return undefined;
     return value;

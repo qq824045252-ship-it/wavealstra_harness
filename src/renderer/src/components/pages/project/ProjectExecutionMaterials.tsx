@@ -6,7 +6,7 @@ import type { RuntimeContextSnapshotDto } from "@shared/agent-ipc";
 import { projectExecutionMaterialStatus, type ProjectMaterialExecutionStatus } from "@/lib/projectMaterials";
 
 const statusLabels = { running: "执行中", completed: "已结束", failed: "失败", aborted: "已中止" };
-const materialLabels = { "file-content": "文件返回内容", "knowledge-content": "资料正文", "search-snippet": "检索片段", metadata: "仅元数据／链接" };
+const materialLabels = { "file-content": "文件返回内容", "knowledge-content": "资料正文", "web-content": "网页工具原文", "search-snippet": "检索片段", metadata: "仅元数据／链接" };
 
 export function ProjectWorkFolder({ project, onRefresh }: {
   project: ProjectDetailsDto;

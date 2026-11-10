@@ -920,7 +920,7 @@ async function extractViaHttp(
 		if (!isHTML) {
 			activityMonitor.logComplete(activityId, response.status);
 			const title = extractTextTitle(text, url);
-			return { url, title, content: text, error: null };
+			return { url, title, content: text, error: null, mimeType, status: response.status };
 		}
 
 		const { document } = parseHTML(text);
@@ -941,6 +941,7 @@ async function extractViaHttp(
 					url,
 					title: rscResult.title,
 					content: appendDeclaredWebLinks(rscResult.content, declaredLinks),
+                    mimeType, status: response.status,
 					error: null,
 					declaredLinks,
 				};
@@ -983,6 +984,7 @@ async function extractViaHttp(
 			url,
 			title: article.title || documentTitle,
 			content: appendDeclaredWebLinks(markdown, declaredLinks),
+            mimeType, status: response.status,
 			error: null,
 			declaredLinks,
 		};

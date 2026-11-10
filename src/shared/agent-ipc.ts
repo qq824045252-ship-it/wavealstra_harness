@@ -975,7 +975,7 @@ export interface RuntimeMaterialUseDto {
   toolCallId: string;
   toolName: string;
   at: number;
-  kind: "file-content" | "knowledge-content" | "search-snippet" | "metadata";
+  kind: "file-content" | "knowledge-content" | "web-content" | "search-snippet" | "metadata";
   target: string;
   title: string;
   outputHash: string;

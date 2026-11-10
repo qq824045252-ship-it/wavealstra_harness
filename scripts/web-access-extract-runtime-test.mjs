@@ -45,6 +45,7 @@ try {
   const lookup = async () => [{ address: '93.184.216.34', family: 4 }];
   const content = await extractContent('https://example.com/weather', undefined, { lookup });
   assert.equal(content.error, null);
+  assert.equal(content.status, 200, "readable transport status is retained for trustworthy watch receipts");
   assert.match(content.title, /杭州天气/);
   assert.match(content.content, /十六至二十二/);
   assert(content.content.length > 500);

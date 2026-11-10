@@ -9,7 +9,7 @@ const positive = (value: unknown): number | undefined => typeof value === "numbe
 export function collectRuntimeMaterialEvidence(event: {
   toolCallId: string; toolName: string; args: unknown; result: unknown; isError: boolean;
 }, at = Date.now()): RuntimeMaterialUseDto[] {
-  if (event.isError || !["read", "project_knowledge_read", "project_knowledge_search"].includes(event.toolName)) return [];
+  if (event.isError || !["read", "project_knowledge_read", "project_knowledge_search", "fetch_content"].includes(event.toolName)) return [];
   const result = object(event.result);
   const details = object(result.details);
   if (result.isError === true || details.error) return [];
@@ -32,6 +32,17 @@ export function collectRuntimeMaterialEvidence(event: {
   const base = { toolCallId: event.toolCallId, toolName: event.toolName, at,
     outputHash: digest.digest("hex"), returnedChars, images };
   const args = object(event.args);
+  if (event.toolName === "fetch_content") {
+    const urls = Array.isArray(details.urls) ? details.urls : [];
+    const target = typeof args.url === "string" ? args.url : Array.isArray(args.urls) && args.urls.length === 1 ? args.urls[0] : undefined;
+    if (typeof target !== "string" || urls.length !== 1 || urls[0] !== target) return [];
+    try { const url = new URL(target); if (!["https:", "http:"].includes(url.protocol) || url.username || url.password) return []; } catch { return []; }
+    const complete = details.materialKind === "web-content" && details.successful === 1 && details.urlCount === 1
+      && typeof details.status === "number" && details.status >= 200 && details.status < 300 && details.status !== 206
+      && details.truncated === false && ["raw", "readable"].includes(String(details.mode))
+      && !args.prompt && images === 0 && returnedChars > 0 && details.totalChars === returnedChars;
+    return [{ ...base, target, title: string(details.title, 256) || target, kind: "web-content", partial: !complete }];
+  }
   if (event.toolName === "read") {
     const target = string(args.path);
     return target ? [{ ...base, target, title: target, kind: "file-content",

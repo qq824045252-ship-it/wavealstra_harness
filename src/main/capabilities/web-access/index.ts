@@ -2375,6 +2375,7 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 						urlCount: 1,
 						successful: 1,
 						totalChars: fullLength,
+                        materialKind: (mode === "raw" || mode === "readable") && typeof result.status === "number" && result.status >= 200 && result.status < 300 && result.status !== 206 && !truncated && imageCount === 0 && !params.prompt ? "web-content" : "metadata",
 						title: result.title,
 						responseId,
 						truncated,

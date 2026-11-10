@@ -60,7 +60,7 @@ export function watchObservationDelivery(work: WorkDto, result: WorkDeliverableD
 
 /** Host-recorded successful tool output, never a model-provided digest or a
  * post-hoc filesystem reread. Missing/partial/pruned/unsupported sources cannot
- * establish an equality proof. Currently supports complete file/knowledge reads.
+ * establish an equality proof. Supports complete file/knowledge reads and single-URL raw/readable web tool content.
  */
 export function watchReadEvidence(db: Database.Database, binding: WorkExecutionBindingDto | undefined,
   result: WorkDeliverableDto): string | undefined {
@@ -82,9 +82,9 @@ export function watchReadEvidence(db: Database.Database, binding: WorkExecutionB
       const matching = items.filter(item => item &&
         (item.kind === "file-content" && item.toolName === "read"
           && resolve(binding.workspaceBinding, item.target) === resolve(binding.workspaceBinding, fact.source)
-          || item.toolName === "project_knowledge_read" && item.target === fact.source));
+          || ["project_knowledge_read", "fetch_content"].includes(item.toolName) && item.target === fact.source));
       const latest = matching.at(-1);
-      const item = latest && !latest.partial && ["file-content", "knowledge-content"].includes(latest.kind)
+      const item = latest && !latest.partial && ["file-content", "knowledge-content", "web-content"].includes(latest.kind)
         && /^[a-f0-9]{64}$/.test(latest.outputHash) ? latest : undefined;
       return item ? { source: item.kind === "file-content" ? resolve(binding.workspaceBinding,item.target) : item.target,
         key: fact.key, outputHash: item.outputHash } : undefined;

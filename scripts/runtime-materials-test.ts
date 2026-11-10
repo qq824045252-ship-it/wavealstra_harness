@@ -10,6 +10,18 @@ import { SessionEventCoordinator } from "../src/main/agent/SessionEventCoordinat
 import { createProjectKnowledgeExtension } from "../src/main/project/project-knowledge-extension";
 
 async function main() {
+  const web = { toolCallId: "web", toolName: "fetch_content", args: {url:"https://example.com/"}, isError:false,
+    result: {content:[{type:"text",text:"Example Domain"}],details:{urls:["https://example.com/"],urlCount:1,successful:1,
+      materialKind:"web-content",status:200,mode:"readable",truncated:false,totalChars:14}}};
+  assert.equal(collect(web)[0].partial,false);
+  assert.equal(collect(web)[0].kind,"web-content");
+  for (const patch of [{status:403},{status:206},{status:undefined},{truncated:true},{mode:"answer"},{materialKind:"metadata"},{successful:0},{totalChars:15}])
+    assert.equal(collect({...web,result:{...web.result,details:{...web.result.details,...patch}}})[0].partial,true);
+  assert.deepEqual(collect({...web,isError:true}),[]);
+  assert.deepEqual(collect({...web,toolName:"web_search"}),[]);
+  assert.deepEqual(collect({...web,args:{url:"https://wrong.example/"}}),[]);
+  assert.equal(collect({...web,args:{...web.args,prompt:"summarize"}})[0].partial,true);
+
   const root = mkdtempSync(join(tmpdir(), "mybuddy-materials-"));
   const dbPath = join(root, "app.db");
   let db = new AppDatabase(dbPath);

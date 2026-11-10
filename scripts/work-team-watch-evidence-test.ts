@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
-import { watchTeamReadEvidence } from "../src/main/agent/work/WorkWatchObservation";
+import { watchReadEvidence, watchTeamReadEvidence } from "../src/main/agent/work/WorkWatchObservation";
 import type { WorkRepository } from "../src/main/agent/work/WorkRepository";
 import type { WorkDeliverableDto, WorkExecutionBindingDto } from "../src/shared/bot-work";
 const db=new Database(":memory:");
@@ -27,5 +27,13 @@ try {
  db.prepare('INSERT INTO work_native_inbox VALUES (?,?,2)').run('member2',JSON.stringify({status:'completed',summary:second.summary,readEvidence:[{target:'/workspace/second.txt',kind:'file-content',toolName:'read',outputHash:'b'.repeat(64),partial:false,at:2}]}));
  const aliased=JSON.parse(summary);aliased.facts.push({...aliased.facts[0],source:'./source.txt'});
  assert.equal(watchTeamReadEvidence(db,aliasRepo,owner,{...ownerResult,summary:JSON.stringify(aliased)}),undefined,'two aliases cannot cover another member source');
+ const webSummary=JSON.stringify({protocol:"watch-observation-v1",status:"observed",facts:[{source:"https://example.com/",key:"page_content",value:"Example Domain"}],summary:"web"});
+ const webResult={...result,summary:webSummary};
+ const webRead={target:"https://example.com/",kind:"web-content",toolName:"fetch_content",outputHash:"c".repeat(64),partial:false,at:3};
+ const webRecord=(reads:unknown[])=>{db.prepare('DELETE FROM work_native_inbox').run();db.prepare('INSERT INTO work_native_inbox VALUES (?,?,3)').run("member",JSON.stringify({status:"completed",summary:webSummary,readEvidence:reads}));};
+ webRecord([webRead]);assert(watchReadEvidence(db,member,webResult));
+ webRecord([webRead,{...webRead,outputHash:"",partial:true,at:4}]);assert.equal(watchReadEvidence(db,member,webResult),undefined,"latest fetch failure invalidates earlier full webpage");
+ webRecord([{...webRead,partial:true}]);assert.equal(watchReadEvidence(db,member,webResult),undefined,"partial webpage cannot establish equality");
+ webRecord([{...webRead,toolName:"web_search"}]);assert.equal(watchReadEvidence(db,member,webResult),undefined,"search is not a full-page proof");
  console.log('PASS team observation proof: exact member raw read, prose independent, no partial/missing/cross-round/other-source equality');
 } finally { db.close(); }

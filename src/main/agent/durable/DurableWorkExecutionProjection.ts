@@ -84,7 +84,7 @@ async function scanExecutionEvidence(tx: Pick<Tx, "scanEntries">,
         const text = durableContentText(message.content).trim();
         if (text && message.stopReason !== "toolUse" && text !== message.errorMessage?.trim()) responses.push({ text });
         for (const block of message.content) {
-          if (block.type === "toolCall" && ["read", "project_knowledge_read"].includes(block.name))
+          if (block.type === "toolCall" && ["read", "project_knowledge_read", "fetch_content"].includes(block.name))
             readCalls.set(block.id, { name: block.name, args: block.arguments });
           if (block.type === "toolCall" && ["read", "write", "edit"].includes(block.name)
             && typeof block.arguments.path === "string" && (workspaceBinding || isAbsolute(block.arguments.path)))
@@ -107,9 +107,9 @@ async function scanExecutionEvidence(tx: Pick<Tx, "scanEntries">,
           // read of the same source. Do not erase the last attempt from evidence.
           if (!materials.length) {
             const args = readCall.args as Record<string, unknown>;
-            const target = args && (readCall.name === "read" ? args.path : args.id);
+            const target = args && (readCall.name === "read" ? args.path : readCall.name === "fetch_content" ? (args.url ?? (Array.isArray(args.urls) && args.urls.length === 1 ? args.urls[0] : undefined)) : args.id);
             if (typeof target === "string" && target) readEvidence.push({ toolCallId: message.toolCallId,
-              toolName: readCall.name, at: message.timestamp, kind: readCall.name === "read" ? "file-content" : "knowledge-content",
+              toolName: readCall.name, at: message.timestamp, kind: readCall.name === "read" ? "file-content" : readCall.name === "fetch_content" ? "web-content" : "knowledge-content",
               target, outputHash: "", partial: true });
           }
         }
