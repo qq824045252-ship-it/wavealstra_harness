@@ -1,0 +1,11 @@
+.bot-collaboration-log { min-width: 0; display: grid; gap: 18px; }
+.bot-collaboration-entry { min-width: 0; padding: 14px 16px; border: 1px solid var(--border-default); border-radius: 10px; }
+.bot-collaboration-entry > header { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 12px; margin-bottom: 12px; font-size: 12px; color: var(--fg-secondary); }
+.bot-collaboration-entry > header strong { color: var(--fg); font-size: 14px; }
+.bot-collaboration-entry > header time { margin-left: auto; }
+.bot-collaboration-body { min-width: 0; overflow-wrap: anywhere; }
+.bot-collaboration-body .md { min-width: 0; }
+.bot-collaboration-body pre { max-width: 100%; overflow-x: auto; }
+.bot-collaboration-body table { display: block; max-width: 100%; overflow-x: auto; }
+.bot-collaboration-repeats { margin-top: 12px; font-size: 12px; color: var(--fg-secondary); overflow-wrap: anywhere; }
+@media (max-width: 600px) { .bot-collaboration-entry { padding: 12px; } .bot-collaboration-entry > header time { margin-left: 0; } }

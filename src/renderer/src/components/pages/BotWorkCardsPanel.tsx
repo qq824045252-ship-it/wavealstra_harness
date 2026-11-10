@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { WorkProjectionDto } from "@shared/bot-work";
 import type { WorkDiagnosticsSection, WorkExpandedDiagnosticsDto } from "@shared/bot-work-phase5";
 import { useAppStore } from "@/store/appStore";
+import { WorkResultText } from "./BotWorkResult";
 
 /**
  * Result cards, their read state, delivery state and the on-demand evidence view.
@@ -72,17 +73,27 @@ export function WorkCardsPanel(props: { work: WorkProjectionDto; includeClosed: 
 
   return <section className="bot-detail-section bot-result-cards" aria-label="结果卡片与证据">
     {cards.length > 0 && <h3>结果卡片</h3>}
-    {cards.map(card => <article key={card.cardKey} id={`work-card-${card.cardKey}`} aria-label="结果卡片">
+    {cards.map((card, cardIndex) => <article key={card.cardKey} id={`work-card-${card.cardKey}`} aria-label="结果卡片">
       <p><strong>{card.title}</strong>{card.currency === "current" ? "" : ` · ${card.currency === "superseded" ? "已失效" : "历史"}`}</p>
       {card.kind === "owner_summary" && <p>主负责人汇总{card.previousCardKey
         && <> · <a href={`#work-card-${card.previousCardKey}`}>查看上次汇总</a></>}</p>}
       {work.lifecycle === "closed" && work.closureConclusion === "succeeded"
         && card.currency === "current" && (card.kind === "accepted_result" || card.kind === "closure_succeeded")
         && <p role="status">已完成并关闭</p>}
-      <p>{card.summary}</p>
+      {card.currency !== "current" || card.summary.length > 1600
+        || cards.slice(0, cardIndex).some(prior => prior.summary === card.summary)
+        ? <details className="bot-original-report"><summary>{cards.slice(0, cardIndex).some(prior => prior.summary === card.summary)
+          ? "正文与前面卡片相同 · 展开本卡记录" : card.currency !== "current" ? "查看历史卡片正文" : "展开完整卡片正文"}</summary>
+          <WorkResultText text={card.summary} />
+        </details> : <WorkResultText text={card.summary} />}
       <p>包含 {card.deliverableIds.length} 项成果</p>
-      <details><summary>卡片版本记录</summary><p>要求 r{card.intentRevision} · 阅读版本 {card.readVersion}</p></details>
-      {card.unverifiedScope.length > 0 && <p>生成此卡时尚未验证：{card.unverifiedScope.join("、")}。当前验收状态请查看上方进度。</p>}
+      <details><summary>卡片版本记录</summary><p>要求 r{card.intentRevision} · 阅读版本 {card.readVersion}</p>
+        <p>生成时间 {Number.isFinite(card.createdAt) ? <time dateTime={new Date(card.createdAt).toISOString()}>{new Date(card.createdAt).toLocaleString()}</time> : "未记录"}</p></details>
+      {card.unverifiedScope.length > 0 && <details className="bot-original-report">
+        <summary>生成此卡时尚未验证 · {card.unverifiedScope.length} 条历史记录</summary>
+        <p>这是卡片生成时的快照，不代表当前仍有缺口；当前状态见上方进度。</p>
+        <DiagnosticTextList items={card.unverifiedScope} />
+      </details>}
       {card.readAt
         ? <p role="status">已读 {new Date(card.readAt).toLocaleString()}</p>
         : <button type="button" disabled={busy} onClick={() => { void read(card.semanticCardKey); }}>标记已读</button>}
@@ -121,10 +132,21 @@ function Section(props: { title: string; section: WorkDiagnosticsSection<string>
   return <div>
     <h4>{props.title}</h4>
     {props.section.items.length === 0 && <p>没有记录。</p>}
-    <ul>{props.section.items.map(item => <li key={item}>{item}</li>)}</ul>
+    <DiagnosticTextList items={props.section.items} />
     {props.section.truncated && <p>记录已截断，可缩小范围后重新读取。</p>}
-    {props.section.missing?.map(item => <p role="status" key={item}>缺口：{item}</p>)}
+    {props.section.missing?.map((item, index) => <div role="status" key={index}><p>缺口：</p><WorkResultText text={item} /></div>)}
   </div>;
+}
+
+/** Exact repeats only; retain their count and never infer equivalence between reports. */
+function DiagnosticTextList({ items }: { items: string[] }): React.JSX.Element {
+  const counts = new Map<string, number>();
+  for (const item of items) counts.set(item, (counts.get(item) ?? 0) + 1);
+  return <ul>{[...counts].map(([item, count], index) => <li key={index}>
+    {count > 1 && <p>相同原文共 {count} 条</p>}
+    {item.length > 600 ? <details><summary>展开记录正文</summary><WorkResultText text={item} /></details>
+      : <WorkResultText text={item} />}
+  </li>)}</ul>;
 }
 
 function deliveryText(delivery: WorkProjectionDto["notifications"][number]["delivery"]): string {

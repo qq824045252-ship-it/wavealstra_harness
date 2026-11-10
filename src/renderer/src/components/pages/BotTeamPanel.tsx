@@ -1,10 +1,11 @@
+import { BotCollaborationLog } from "./BotCollaborationLog";
+import { WorkResultText } from "./BotWorkResult";
 import { useEffect, useRef, useState } from "react";
 import { useAppStore } from "@/store/appStore";
 import type { BotDto, WorkProjectionDto } from "@shared/bot-work";
 import type { WorkTeamControlRequest, WorkTeamDto, WorkTeamExecution } from "@shared/bot-work-team";
 const stateLabels: Record<WorkTeamDto["state"], string> = { closing: "收尾结算中", completed: "已验收完成", ended_unsuccessfully: "已结束，目标未达成", queued: "等待开工", running: "执行中", blocked: "执行受阻", awaiting_review: "团队汇总已返回", paused: "已暂停", cancelled: "已取消", superseded: "原计划已失效，等待重新安排" };
 const executionLabels: Record<WorkTeamExecution["status"], string> = { queued: "排队中", pending: "准备中", submitted: "已派发", running: "执行中", recovering: "自动恢复中", recovered: "已自动恢复", completed: "执行结束", failed: "执行失败", stopped: "已停止", unknown: "结果未知，待核对", invalidated: "已失效", blocked: "受阻", cancelled: "已取消" };
-const messageLabels: Record<string, string> = { delegate: "分工", accepted: "接手", question: "问题", result: "成果", blocked: "阻碍", change: "变更", cancel: "取消", handoff: "交接" };
 export function BotTeamPanel({ work, identities }: { work: WorkProjectionDto; identities: BotDto[] }): React.JSX.Element | null {
   const projectionKey = `${work.workId}:${work.intentRevision}:${work.ownerEpoch}:${work.stateVersion}`;
   const view = useRef({ key: projectionKey, epoch: 0 });
@@ -53,7 +54,7 @@ export function BotTeamPanel({ work, identities }: { work: WorkProjectionDto; id
       {execution.status === "recovered" && <p role="status">已自动恢复，原成员身份与依赖保持不变；恢复结果与来源保留在下方，是否达成目标以报告证据和真实缺口为准。</p>}
       {execution.failureReason && <p role="status">原失败：{execution.failureReason}</p>}
       {execution.error && <p role="status" className="bot-create-error">{execution.error}</p>}
-      {execution.resultSummary && <details><summary>执行结果</summary><p>{execution.resultSummary}</p></details>}
+      {execution.resultSummary && <details><summary>执行结果</summary><WorkResultText text={execution.resultSummary} /></details>}
       <details aria-label={`${name(execution.botId)}的执行来源`}><summary>执行来源与标识</summary>
         <p>成员：{name(execution.botId)} · {execution.responsibility}</p>
         <p>Bot：<code>{execution.botId}</code></p><p>任务：<code>{execution.taskId}</code></p>
@@ -85,7 +86,7 @@ export function BotTeamPanel({ work, identities }: { work: WorkProjectionDto; id
     </details>}
     <h3>协作记录</h3>
     {!current.length && <p>暂无当前版本的协作消息，执行状态以以上记录为准。</p>}
-    {current.map(message => <div key={message.messageId} className="bot-team-log"><small>{message.senderBotId ? name(message.senderBotId) : "你"} · {messageLabels[message.kind] ?? message.kind} · {new Date(message.createdAt).toLocaleString()}</small><p>{message.body}</p></div>)}
+    <BotCollaborationLog messages={current} identities={identities} />
     {(work.phase3?.collaborationMessages.length ?? 0) > current.length && <p>较早版本的记录保留在高级诊断中，不作为当前结论。</p>}
   </section>;
 }

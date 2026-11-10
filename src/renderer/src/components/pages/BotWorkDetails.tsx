@@ -1,3 +1,4 @@
+import { BotCollaborationLog } from "./BotCollaborationLog";
 import { userInputBlockerSnapshot } from "@shared/bot-work-review";
 import { isWorkEffectDiagnostic, WORK_EFFECT_DISPOSITION } from "@shared/work-effect-policy";
 import { useRef, useState } from "react";
@@ -230,8 +231,10 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
             targetBotId, preparationId: prepared.preparation.preparationId, versionGuard: { expectedStateVersion: snapshot.stateVersion,
               expectedIntentRevision: snapshot.intentRevision, expectedOwnerEpoch: snapshot.ownerEpoch } } });
         })(); }}>核对并交接</button>
-        <h3>协作记录</h3>
-        {work.phase3.collaborationMessages.map(message => <p key={message.messageId}>{message.body}</p>)}
+        <h3>{work.team ? "历史版本协作记录" : "协作记录"}</h3>
+        {work.team && <p>当前版本的协作内容见上方团队协作，此处仅保留较早版本，不重复展开。</p>}
+        <BotCollaborationLog messages={work.phase3.collaborationMessages.filter(message => !work.team
+          || message.intentRevision !== work.intentRevision || message.inputSnapshotId !== work.inputSnapshotId)} identities={identities} />
         <label>向负责人提问<input aria-label="协作问题" value={question} onChange={event => setQuestion(event.target.value)} maxLength={8000} /></label>
         <button type="button" disabled={busy || !question.trim()} onClick={() => { void control({ kind: "collaborate", request: { messageId: operation(`question:${question}`),
           workId: work.workId, kind: "question", recipientBotIds: [work.ownerBotId], body: question, versionGuard } }); }}>保存问题</button>

@@ -12,7 +12,22 @@ assert(await ev(`document.querySelector('.bot-result-body').textContent.includes
 assert(await ev(`document.querySelector('.bot-result-report').textContent.includes('执行失败')`));
 assert(await ev(`!document.querySelector('.bot-result-body').textContent.includes('bot-team-report-v1')`));
 assert(await ev(`!document.querySelector('.bot-original-report').open`));
-for(const width of [390,760,1440]){await win.webContents.debugger.sendCommand('Emulation.setDeviceMetricsOverride',{width,height:900,deviceScaleFactor:1,mobile:false});await new Promise(r=>setTimeout(r,100));assert(await ev('document.documentElement.scrollWidth<=innerWidth'),'no overflow at '+width);const shot=await win.webContents.debugger.sendCommand('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,'bot-work-detail-'+width+'.png'),Buffer.from(shot.data,'base64'));}
+await ev(`Array.from(document.querySelectorAll('details > summary')).find(el=>el.textContent==='高级设置与诊断').click()`);
+assert(await ev(`document.querySelectorAll('.bot-collaboration-entry').length===2`),'only exact repeats grouped');
+assert(await ev(`document.querySelector('.bot-collaboration-body h2')?.textContent==='核对结论'`),'heading rendered');
+assert(await ev(`document.querySelector('.bot-collaboration-body strong')?.textContent==='实际完成'`),'strong rendered');
+assert(await ev(`!!document.querySelector('.bot-collaboration-body table')`),'table rendered');
+assert(await ev(`!!document.querySelector('.bot-collaboration-body pre')`),'code rendered');
+assert(await ev(`!window.collabInjected && !document.querySelector('.bot-collaboration-body script') && !document.querySelector('.bot-collaboration-body a[href^="javascript:"]')`),'no injected script/URL');
+assert(await ev(`document.querySelector('.bot-collaboration-log').textContent.includes('独有的后续发现不可丢失')`));
+await ev(`document.querySelector('.bot-collaboration-repeats summary').click()`);
+assert(await ev(`document.querySelector('.bot-collaboration-repeats').open && document.querySelector('.bot-collaboration-repeats').textContent.includes('collab-2')`),'repeat metadata retained');
+await ev(`Array.from(document.querySelectorAll('details > summary')).find(el=>el.textContent==='投递与版本记录').click()`);
+assert(await ev(`!document.querySelector('#work-card-card-history .bot-original-report').open`),'historical report collapsed');
+await ev(`document.querySelector('#work-card-card-history .bot-original-report summary').click()`);
+assert(await ev(`!!document.querySelector('#work-card-card-history table')`),'card markdown table');
+assert(await ev(`document.querySelector('#work-card-card-history').textContent.includes('相同原文共 2 条')`),'duplicate diagnostic count preserved');
+for(const width of [390,760,1440]){await win.webContents.debugger.sendCommand('Emulation.setDeviceMetricsOverride',{width,height:900,deviceScaleFactor:1,mobile:false});await new Promise(r=>setTimeout(r,100));assert(await ev('document.documentElement.scrollWidth<=innerWidth'),'no overflow at '+width);await ev(`document.querySelector('.bot-collaboration-log').scrollIntoView()`);const shot=await win.webContents.debugger.sendCommand('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,'bot-work-detail-'+width+'.png'),Buffer.from(shot.data,'base64'));}
 await ev(`document.querySelector('.bot-original-report summary').click()`);assert(await ev(`document.querySelector('.bot-original-report').open`));
 await ev(`window.renderDetailFixture({closureConclusion:'ended_unsuccessfully'})`);await new Promise(r=>setTimeout(r,100));assert(await ev(`document.querySelector('[aria-label="目标与进度"]').textContent.includes('未完成')`));
 await ev(`window.renderDetailFixture({closureConclusion:'cancelled'})`);await new Promise(r=>setTimeout(r,100));assert(await ev(`document.querySelector('[aria-label="目标与进度"]').textContent.includes('已取消')`));
