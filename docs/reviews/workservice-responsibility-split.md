@@ -117,3 +117,14 @@ receipt whose generated ID was never stored returns no ID rather than another ca
 ID; replay does not rerun the mutation or create a replacement subscription.
 Interleaving, reopen, old-receipt non-guessing and no DTO metadata leakage now pass.
 WorkService is 1,270 lines after this independent correction.
+
+## Final subscription live acceptance
+
+Latest split plus replay fix ran in isolated Electron dev with the real DeepSeek model
+and real minute ticks. Four actual reads produced delivery counts **0 / 0 / 1 / 0**:
+first baseline silent, unchanged silent, changed content once, next unchanged silent.
+A normal Browser.close/relaunch preserved the conversation and comparison baseline.
+Pause then waited 70 seconds across the next slot with no additional execution.
+The source file remained unchanged by the assistant. Both 1280 and 390 pixel layouts
+had no horizontal overflow; the mobile screenshot was inspected. The live process
+exited 0. No production profile/restart or crash injection was used.
