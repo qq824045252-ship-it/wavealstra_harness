@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import { readFileSync, existsSync } from 'node:fs';
 import { renderToStaticMarkup } from 'react-dom/server';
-import TaskWriteGrantsMenu from '../src/renderer/src/components/chat/TaskWriteGrantsMenu';
+import TaskDiagnosticsButton from '../src/renderer/src/components/chat/TaskDiagnosticsButton';
 import ToolCallCard from '../src/renderer/src/components/chat/ToolCallCard';
 import type { ToolCall } from '../src/renderer/src/types';
-const menu = renderToStaticMarkup(<TaskWriteGrantsMenu taskId="test" onClose={() => {}} onOpenDiagnostics={() => {}} />);
-assert.match(menu, /执行诊断/);
-assert.doesNotMatch(menu, /授权|撤销|外部写入/);
+// The task header exposes 执行诊断 directly; the retired "more" menu held no
+// other action and must not come back as an authorization entry point.
+const header = renderToStaticMarkup(<TaskDiagnosticsButton open={false} onClick={() => {}} />);
+assert.match(header, /执行诊断/);
+assert.doesNotMatch(header, /任务菜单|授权|撤销|外部写入/);
 for (const approvalKind of [undefined, 'external-write'] as const) {
   const tool = { id: 'legacy', tool: 'write', summary: '需要授权', status: 'pending_approval', approvalKind, detail: 'legacy request', targetPath: '/tmp/example', canonicalDir: '/tmp' } as ToolCall;
   const html = renderToStaticMarkup(<ToolCallCard messageId="test" toolCall={tool} />);
@@ -21,5 +23,5 @@ assert.doesNotMatch(composer, /HomePermissionPicker|FullAccessConfirmModal|exec-
 const settings = readFileSync('src/renderer/src/components/settings/SettingsModal.tsx','utf8');
 assert.doesNotMatch(settings, /系统操作策略|setPolicy\(/);
 assert.match(settings, /本机代码执行环境/);
-for (const path of ['chat/HomePermissionPicker.tsx','chat/FullAccessConfirmModal.tsx','pages/BotWorkspaceAuthorization.tsx']) assert.equal(existsSync(`src/renderer/src/components/${path}`), false);
-console.log('PASS app permission UI removal: composer, settings, task menu, legacy ordinary/external-write records, third-party protocol boundary');
+for (const path of ['chat/HomePermissionPicker.tsx','chat/FullAccessConfirmModal.tsx','chat/TaskWriteGrantsMenu.tsx','pages/BotWorkspaceAuthorization.tsx']) assert.equal(existsSync(`src/renderer/src/components/${path}`), false);
+console.log('PASS app permission UI removal: composer, settings, direct task-header diagnostics entry, legacy ordinary/external-write records, third-party protocol boundary');

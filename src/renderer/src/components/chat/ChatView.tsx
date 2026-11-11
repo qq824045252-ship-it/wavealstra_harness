@@ -18,14 +18,13 @@ import WorkspaceCrumb from "./WorkspaceCrumb";
 import SubagentRunsChip from "./SubagentRunsChip";
 import SubagentChatView from "./SubagentChatView";
 import RuntimeStatusChips from "./RuntimeStatusChips";
-import TaskWriteGrantsMenu from "./TaskWriteGrantsMenu";
+import TaskDiagnosticsButton from "./TaskDiagnosticsButton";
 import TaskDiagnosticsDialog from "./TaskDiagnosticsDialog";
 import WelcomeModeIcon from "@/components/common/WelcomeModeIcon";
 import {
   IconChevronDown,
   IconClock,
   IconAlert,
-  IconMore,
   IconPanel,
   IconX,
 } from "@/components/common/icons";
@@ -543,11 +542,9 @@ export default function ChatView(): React.JSX.Element {
   const beforeHistory = visibleWindow ? visibleWindow.before : task?.durable?.historyBefore;
   /** 上一帧的消息列表：用来判定本轮渲染是「前插」还是真的出现了新消息 */
   const previousDisplayMessagesRef = useRef<ChatMessage[]>([]);
-  const [taskMenuOpen, setTaskMenuOpen] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const historyAnchorRef = useRef<HTMLDivElement>(null);
-  const taskMenuAnchorRef = useRef<HTMLDivElement>(null);
   const previousTaskIdRef = useRef<string | undefined>(undefined);
   const previousMessageCountRef = useRef(0);
   /** 仅记录本地 composer 的显式发送；后台追加消息不能借此抢走历史阅读位置。 */
@@ -558,7 +555,6 @@ export default function ChatView(): React.JSX.Element {
   } | null>(null);
 
   useDismissOnClickOutside(historyOpen, () => setHistoryOpen(false), historyAnchorRef);
-  useDismissOnClickOutside(taskMenuOpen, () => setTaskMenuOpen(false), taskMenuAnchorRef);
   /** 诊断弹窗绑定当前任务：切换任务即关闭，避免仍显示上一个任务的记录 */
   useEffect(() => setDiagnosticsOpen(false), [task?.id]);
 
@@ -1006,27 +1002,7 @@ export default function ChatView(): React.JSX.Element {
             />
           )}
         </div>
-        <div className="history-anchor" ref={taskMenuAnchorRef}>
-          <button
-            className={`icon-btn ${taskMenuOpen ? "toggled" : ""}`}
-            title="任务菜单"
-            aria-haspopup="dialog"
-            aria-expanded={taskMenuOpen}
-            onClick={() => setTaskMenuOpen(!taskMenuOpen)}
-          >
-            <IconMore size={15} />
-          </button>
-          {taskMenuOpen && (
-            <TaskWriteGrantsMenu
-              taskId={task.id}
-              onClose={() => setTaskMenuOpen(false)}
-              onOpenDiagnostics={() => {
-                setTaskMenuOpen(false);
-                setDiagnosticsOpen(true);
-              }}
-            />
-          )}
-        </div>
+        <TaskDiagnosticsButton open={diagnosticsOpen} onClick={() => setDiagnosticsOpen(true)} />
         {sidePanelButton}
       </div>
       {diagnosticsOpen && (
