@@ -57,6 +57,11 @@ exports.run = async ({send, foregroundDone, until, evaluate, history, rpc, repor
     await send(c.prompt); const message = await waitAnswer(c.prompt);
     assert(c.check(message.botCalls.map(x=>x.replyText).join('\n')), c.type+' must verify recipient output, not only owner text');
     report.peerCalls.cases.push({type:c.type,requestId:message.requestId,calls:message.botCalls,modelCalls:requests.length-offset});
+    if (c.type === '数学计算') {
+      await evaluate(`(()=>{const e=document.querySelector('[data-call-id="${message.botCalls[0].callId}"]').closest('details');e.open=true;e.scrollIntoView({block:'center'});})()`);
+      const shot = await rpc('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});
+      fs.writeFileSync(path.join(out,'peer-math-reply.png'),Buffer.from(shot.data,'base64'));
+    }
   }
   const offset = requests.length;
   await send(cases[4].prompt); await send(cases[5].prompt);

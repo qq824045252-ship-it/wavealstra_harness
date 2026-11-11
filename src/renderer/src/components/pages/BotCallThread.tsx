@@ -15,7 +15,7 @@ function callStatus(call: BotCallDto): string {
 }
 
 /** Only host-persisted exchanges belong here, never mentions parsed from model prose. */
-export function BotCallThread({ calls }: { calls?: BotCallDto[] }): React.JSX.Element | null {
+export function BotCallThread({ calls, renderReply }: { calls?: BotCallDto[]; renderReply?: (text: string, streaming: boolean) => React.ReactNode }): React.JSX.Element | null {
   if (!calls?.length) return null;
   const targets = new Map(calls.map(call => [call.targetBotId, call.targetDisplayName]));
   const count = calls.reduce((total, call) => total + Number(Boolean(call.requestText.trim())) + Number(Boolean(call.replyText?.trim())), 0);
@@ -34,7 +34,7 @@ export function BotCallThread({ calls }: { calls?: BotCallDto[] }): React.JSX.El
         </div>}
         {call.replyText?.trim() && <div className="bot-call-reply">
           <div className="bot-call-author"><span className="bot-avatar" aria-hidden="true"><IconBot size={14} /></span><strong>{call.targetDisplayName}</strong><span>回复 {call.sourceDisplayName}</span></div>
-          <p className="bot-call-text">{call.replyText}</p>
+          <div className="bot-call-text bot-call-markdown">{renderReply ? renderReply(call.replyText, call.status === "running") : call.replyText}</div>
         </div>}
         <p className="bot-call-state">{callStatus(call)}</p>
       </li>)}

@@ -16,3 +16,5 @@
 .bot-call-exchange[data-call-status="failed"] .bot-call-state { color:var(--danger, #ef7373); }
 @media (max-width:700px) { .bot-call-thread { margin-left:0; } .bot-call-reply { padding-left:7px; } }
 @media (pointer:coarse) { .bot-call-thread > summary { min-height:44px; box-sizing:border-box; } }
+
+.bot-call-markdown { white-space:normal; }

@@ -400,7 +400,7 @@ export function BotMessage({ message, botName, works, onOpenWork, onCancel, sour
     </div>}
     {linkedWorkIds.length > 0 && <div className="bot-message-work-links">{linkedWorkIds.map(workId => <button type="button" key={workId} onClick={() => onOpenWork(workId)}><IconListTodo size={14} /><span>{works.find(work => work.workId === workId)?.title ?? (message.workFeedback?.workId === workId ? message.workFeedback.report?.title : undefined) ?? "查看关联事项"}</span><IconChevronRight size={14} /></button>)}</div>}
     {externalTask && <div className="bot-message-work-links"><button type="button" onClick={() => useAppStore.getState().setActiveTask(externalTask.id)}><IconBot size={14} /><span>打开外部 Agent 任务</span><IconChevronRight size={14} /></button></div>}
-    {message.role === "assistant" && <BotCallThread calls={message.botCalls} />}
+    {message.role === "assistant" && <BotCallThread calls={message.botCalls} renderReply={renderMarkdown} />}
     <BotReplyMetrics message={message} />
     <BotMessageActions message={message} onReply={onReply} onCancel={onCancel} statusAlreadyVisible={message.role === "assistant" && (showActivity || !hasContent) && message.status !== "completed"} />
     {message.error && <p className="bot-alert" role="alert">{message.error}</p>}

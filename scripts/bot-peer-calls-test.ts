@@ -26,8 +26,10 @@ try {
   const a = make("a"), b = make("b");
   const team = messages.accept("u", { botId: "source", teamId: "team-unit", requestId: "team", text: "team question" });
   let authority = true;
+  const memoryContexts: unknown[][] = [];
   const options = { db, userId: "u", bots, works, directory: root,
     models: { getModel: () => ({ provider: "test", id: "model" }), getModels: () => [{ provider: "test", id: "model" }], getAvailable: async () => [{ provider: "test", id: "model" }] },
+    memory: { enabled: () => true, context: (...args: unknown[]) => { memoryContexts.push(args); return "own Bot facts"; }, search: () => [] },
     defaultModel: () => "test/model", isAuthority: () => authority, memorySearch: () => [], schedule: () => {}, wake: () => {},
   } as unknown as BotConversationServiceOptions;
   const emptyRuntime = { assertSessionHealthy: () => {}, conversation: { id: "empty" },
@@ -60,6 +62,8 @@ try {
   assert.notEqual(receivers[0].options.directory, receivers[1].options.directory);
   assert.equal(receivers[0].options.toolAllowed?.("bot_ask"), false, "no recursive loops");
   assert.equal(receivers[0].options.toolAllowed?.("write"), false, "recipient cannot write on forwarded authority");
+  receivers[0].options.evidence?.([]);
+  assert.deepEqual(memoryContexts.at(-1), ["target", ""], "peer context excludes personal conversation-only memory");
   assert(receivers[0].options.instructions().includes('"target"'));
   receivers[1].resolve("B original answer");
   assert.equal((await second).replyText, "B original answer");
