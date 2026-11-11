@@ -5,9 +5,13 @@
 - 概览：`{ "view": "summary" }`，默认 `status: "open"`（active / paused / closing），每页 20 项，最大 50 项。
 - 历史：`status: "all"` 或 `"closed"`；也可直接指定生命周期。
 - 搜索：`search` 在标题和目标中做字面子串匹配，`%` / `_` 不是通配符。
-- 返回 `items`、匹配总数 `total`、相同搜索条件下各生命周期 `statusCounts`、`hasMore`、`nextCursor`、完整续页参数 `nextQuery`。
-- 续页直接回传 `nextQuery`。游标绑定用户、Bot、status/search/workId，变更筛选须重新查询第一页。
-- 固定按 `createdAt DESC, workId DESC` 排序。修改进展不会让旧事项在分页途中重复或漏失。新增、删除、权限和生命周期变化仍可改变后续查询的当前结果和总数；这不是跨多次调用的历史快照。
+- 日常承诺：`deadlineFrom`（含）/`deadlineBefore`（不含）是 Unix 毫秒承诺期限窗口，未设期限的记录不匹配。今日使用用户时区的当地零点到次日零点，过期使用当前请求时刻作为上界；不是 `nextWakeAt` 检查时间。
+- 等用户回复：`needsUserInput: true` 只匹配当前仍开放且需要用户输入的阻碍；`false` 排除这类事项。已清除和纯系统故障不会误算成等用户。
+- 期限优先：`sort: "deadline_asc"` 按期限升序，未设期限放最后；相同期限继续按创建时间降序、ID降序。默认 `created_desc` 保持原顺序，不影响既有调用。
+- 所有条件在 SQL 筛选后再分页，不能只取最新20条后过滤；`statusCounts` 同样应用期限、搜索和等待条件，再分别统计生命周期。
+- 返回 `items`、匹配总数 `total`、相同筛选条件下各生命周期 `statusCounts`、`hasMore`、`nextCursor`、完整续页参数 `nextQuery`。
+- 续页直接回传 `nextQuery`。游标绑定用户、Bot、团队、status/search/workId、期限范围、等待条件和排序，变更筛选须重新查询第一页。
+- 默认按 `createdAt DESC, workId DESC` 排序。修改进展不会让旧事项在分页途中重复或漏失。新增、删除、权限和生命周期变化仍可改变后续查询的当前结果和总数；这不是跨多次调用的历史快照。期限排序下改期也可能让记录跨越游标；改期后需重新查询第一页。
 - 列表包含当前输入版本的最新 proposed/accepted 提交摘要及其原始状态，提交记录不是整项完成证明。列表文本在 SQLite 截短为摘要，不拉取完整目标、成果、证据、执行历史或协作消息。`workId` 精确查询保留原始详情数组及全文。
 - watch 摘要包含 deadline、规则、当前未停止订阅的最早 nextWakeAt 与活动/停止订阅数量，不能把 watchRule 里的旧 nextWakeAt 当当前计划。
 - 每页只为实际返回事项记录版本守卫。查看、计数和游标都不能越过用户与 Bot 的 owner/participant 边界。
@@ -20,12 +24,13 @@
 
 ## 验证
 
-`pnpm -s test:bot-work-query-scale` 使用真实文件 SQLite，12,001 条 Work、约 398MB（长目标/历史原文）、多用户与成员关系，覆盖：
+`pnpm -s test:bot-work-query-scale` 使用真实文件 SQLite，12,076 条 Work、约 399MB（长目标/历史原文）、多用户与成员关系，覆盖：
 
 - 列表禁用 Work hydration / projection 后仍可查询；有限响应、准确计数、状态与字面搜索。
 - 时间戳相同的 1,500 条历史跨 30 页无重无漏，修改进展不打乱游标。
 - 旧调用完整续页参数、筛选绑定、无效游标、跨用户游标、超出页大小限制。
 - 稀疏成员查询和长目标搜索耗时；计数与子串搜索仍需扫描匹配库存，不声称严格常数时间。
 - 当前阻塞 / 待用户输入、watch 当前订阅、按需完整长报告、归属隔离与守卫范围。
+- 75条日常承诺夹具复现紧急老事项被最新列表埋没；期限窗口边界、同期限/创建时间的ID排序、无期限尾页、待输入清理和组合条件、每个新增条件的游标绑定与详情拒绝。
 
 GUI、真实联网模型与 Omarchy 真机是独立验收；headless 回归不能冒充这些阶段。

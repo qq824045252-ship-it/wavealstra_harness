@@ -186,6 +186,72 @@ try {
   // Only returned rows acquire request-scoped control guards, not all 6002 rows.
   const readCount = db.connection.prepare("SELECT COUNT(*) n FROM bot_work_reads").get() as { n: number };
   assert(readCount.n < 80);
+  // Daily review must find old commitments without loading every recent Work.
+  for (let i = 0; i < 75; i++) works.repo.insertWork({ ...base,
+    workId: `daily-${String(i).padStart(3, "0")}`, title: `Daily commitment ${i}`,
+    createdAt: 900000 + Math.floor(i / 2), updatedAt: 900000 + i,
+    deadlineAt: i < 10 ? 5000 + Math.floor(i / 2) : i < 70 ? 10000 : undefined });
+  assert(!query.page({ search: "Daily commitment" }).items.some(item => item.deadlineAt !== null && item.deadlineAt < 6000),
+    "baseline reproduction: latest-created default hides every old urgent commitment");
+  const dueInput = { view: "summary", search: "Daily commitment", deadlineBefore: 6000, sort: "deadline_asc", limit: 3 };
+  assert(Value.Check(schema, dueInput), "daily review schema must support deadline filtering and priority sorting");
+  const duePage = await invoke(dueInput);
+  assert.equal(duePage.total, 10, "old due commitments are counted independently of the latest page");
+  assert.deepEqual(duePage.items.map((item: { workId: string }) => item.workId), ["daily-001", "daily-000", "daily-003"]);
+  const dueIds = new Set<string>();
+  let due = duePage;
+  do {
+    for (const item of due.items) { assert(!dueIds.has(item.workId)); dueIds.add(item.workId); }
+    if (!due.nextQuery) break;
+    assert.equal(due.nextQuery.deadlineBefore, 6000); assert.equal(due.nextQuery.sort, "deadline_asc");
+    due = await invoke(due.nextQuery);
+  } while (true);
+  assert.equal(dueIds.size, 10, "equal-deadline pagination has no skips or duplicates");
+  const allDailyIds = new Set<string>();
+  let daily = await invoke({ view: "summary", search: "Daily commitment", sort: "deadline_asc", limit: 3 });
+  let lastDeadline = -1, sawNull = false;
+  do {
+    for (const item of daily.items) {
+      assert(!allDailyIds.has(item.workId)); allDailyIds.add(item.workId);
+      if (item.deadlineAt === null) sawNull = true;
+      else { assert(!sawNull, "no-deadline rows sort last"); assert(item.deadlineAt >= lastDeadline); lastDeadline = item.deadlineAt; }
+    }
+    if (!daily.nextQuery) break;
+    daily = await invoke(daily.nextQuery);
+  } while (true);
+  assert.equal(allDailyIds.size, 75); assert(sawNull);
+  assert.equal((await invoke({ view: "summary", search: "Daily commitment", deadlineFrom: 5001, deadlineBefore: 5003 })).total, 4);
+  assert.equal((await invoke({ view: "summary", search: "Daily commitment", deadlineBefore: 5000 })).total, 0);
+  assert.equal((await invoke({ view: "summary", search: "Daily commitment", deadlineFrom: 10000 })).total, 60);
+  db.connection.prepare(`INSERT INTO work_blockers(blocker_id,work_id,reason,kind,waiting_for_user_input,status,created_at)
+    VALUES ('daily-input-1','daily-000','确认交付范围','operational',1,'open',1),
+      ('daily-input-2','daily-002','确认预算','operational',1,'open',1),
+      ('daily-cleared','daily-003','已确认','operational',1,'cleared',1),
+      ('daily-machine','daily-004','服务维护','operational',0,'open',1)`).run();
+  const waiting = await invoke({ view: "summary", search: "Daily commitment", needsUserInput: true, deadlineBefore: 6000, sort: "deadline_asc", limit: 1 });
+  assert.equal(waiting.total, 2); assert.equal(waiting.items[0].workId, "daily-000");
+  assert.equal(waiting.items[0].tracking.reason, "确认交付范围");
+  assert.equal(waiting.nextQuery.needsUserInput, true);
+  assert.equal((await invoke(waiting.nextQuery)).items[0].workId, "daily-002");
+  const noInput = await invoke({ view: "summary", search: "Daily commitment", needsUserInput: false, limit: 1 });
+  assert.equal(noInput.total, 73); assert.equal(noInput.nextQuery.needsUserInput, false);
+  for (const change of [{ deadlineBefore: 5009 }, { deadlineFrom: 5001 }, { needsUserInput: true }, { sort: "created_desc" }])
+    await assert.rejects(invoke({ ...duePage.nextQuery, ...change }), /不匹配/);
+  for (const invalid of [{ deadlineFrom: -1 }, { deadlineBefore: 2.5 }, { deadlineBefore: Number.MAX_SAFE_INTEGER + 1 },
+    { needsUserInput: "true" }, { sort: "deadline_desc" }]) assert.equal(Value.Check(schema, invalid), false);
+  await assert.rejects(invoke({ deadlineFrom: 5, deadlineBefore: 5 }), /窗口无效/);
+  await assert.rejects(invoke({ deadlineFrom: 6, deadlineBefore: 5 }), /窗口无效/);
+  for (const extra of [{ deadlineFrom: 0 }, { deadlineBefore: 0 }, { needsUserInput: false }, { sort: "deadline_asc" }])
+    await assert.rejects(invoke({ workId: watchId, ...extra }), /列表筛选/);
+  assert.equal(new BotWorkQuery(db.connection, LOCAL_USER_ID, "outsider").page({ search: "Daily commitment", deadlineBefore: 6000 }).total, 0);
+  assert.equal(new BotWorkQuery(db.connection, "another-user", "owner").page({ search: "Daily commitment", needsUserInput: true }).total, 0);
+  db.connection.prepare("UPDATE works SET lifecycle='closed' WHERE work_id='daily-000'").run();
+  const openWaiting = await invoke({ view: "summary", search: "Daily commitment", needsUserInput: true });
+  assert.equal(openWaiting.total, 1); assert.equal(openWaiting.statusCounts.closed, 1);
+  assert.equal((await invoke({ view: "summary", search: "Daily commitment", needsUserInput: true, status: "closed" })).total, 1);
+  db.connection.prepare("UPDATE work_blockers SET status='cleared' WHERE blocker_id='daily-input-2'").run();
+  assert.equal((await invoke({ view: "summary", search: "Daily commitment", needsUserInput: true })).total, 0,
+    "resolved user inputs disappear immediately without changing unrelated Work state");
   db.connection.pragma("wal_checkpoint(TRUNCATE)");
-  console.log(`PASS real SQLite 12001 Work, ${Math.round(statSync(join(root, "app.db")).size / 1024 / 1024)}MB: ${elapsed.toFixed(1)}ms first page, ${searchElapsed.toFixed(1)}ms search, ${sparseElapsed.toFixed(1)}ms sparse-member, ${JSON.stringify(page).length} chars, no hydration/projections, exact counts, stable traversal, cross-user isolation, original detail and watch schedule`);
+  console.log(`PASS real SQLite 12076 Work, ${Math.round(statSync(join(root, "app.db")).size / 1024 / 1024)}MB: ${elapsed.toFixed(1)}ms first page, ${searchElapsed.toFixed(1)}ms search, ${sparseElapsed.toFixed(1)}ms sparse-member, ${JSON.stringify(page).length} chars, no hydration/projections, exact counts, stable traversal, cross-user isolation, original detail and watch schedule`);
 } finally { db.close(); rmSync(root, { recursive: true, force: true }); }

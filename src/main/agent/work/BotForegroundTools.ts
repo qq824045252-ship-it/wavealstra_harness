@@ -232,7 +232,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
         hostMustBeRunning: true } });
     },
   }));
-  return [botReminderTool(options),defineTool({ name: "work_query_status", description: "查询当前 Bot 的事项。概览用 view:summary，默认仅未结束事项、每页20项；支持 status、search、limit、cursor，返回准确总数与nextQuery续页参数。只展示摘要，不能把本页数当总数；用 workId 按需读取完整成果和版本守卫。detail 必须指定 workId。不会启动业务工具。",
+  return [botReminderTool(options),defineTool({ name: "work_query_status", description: "查询当前 Bot 的事项。概览用 view:summary，默认仅未结束事项、每页20项；支持 status、search、期限窗口deadlineFrom（含）/deadlineBefore（不含）、needsUserInput、sort、limit、cursor。到期/逾期查询使用期限窗口和sort:deadline_asc；等用户回复用needsUserInput:true，不以最新20项代替筛选。期限窗口用请求时间及指定时区计算的Unix毫秒，不是下次检查时间。返回准确总数与nextQuery续页参数。只展示摘要，不能把本页数当总数；用 workId 按需读取完整成果和版本守卫。detail 必须指定 workId。不会启动业务工具。",
     parameters: inputParameters.query, replay: "safe",
     execute: async (args, api, context) => {
       const requestId = await botForegroundRequest(api, api.callId, context);
@@ -242,7 +242,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
       const input = query.parse(args);
       if (input.view === "detail" && !input.workId) throw new Error("完整详情必须指定 workId；概览请用 view:summary");
       if (input.workId && input.view !== "summary") {
-        if (input.cursor || input.search || input.status || input.limit) throw new Error("按 workId 读取详情时不要携带列表筛选或游标");
+        if (input.cursor || input.search || input.status || input.limit || input.deadlineFrom !== undefined || input.deadlineBefore !== undefined || input.needsUserInput !== undefined || input.sort) throw new Error("按 workId 读取详情时不要携带列表筛选或游标");
         if (!catalogue.canRead(input.workId)) return [];
         const work = works.getWork(input.workId)!;
         const versionGuard = { expectedStateVersion: work.stateVersion, expectedIntentRevision: work.intentRevision, expectedOwnerEpoch: work.ownerEpoch };
