@@ -32,6 +32,48 @@ try {
             assert.equal((matches.get(full,term) as {matches:number}).matches,expected,'interleaved Unicode queries preserve matcher semantics');
         }
     }
+    // Observe the complete SQL search document, including separators and embedded NULs.
+    // Roll the isolated data back so the later scale/status fixture is unchanged.
+    db.connection.exec('SAVEPOINT search_document_fixture');
+    try {
+        const id = 'search-document-fixture', title = 'title ＡＢＣ\0Σ', goal = 'goal cafe\u0301\nedge', closure = 'closure 😀';
+        const criterion = 'criteria K', blocker = 'blocker\0tail', report = 'x'.repeat(12000) + '\0report-tail';
+        const artifact = '/path/ref\n😀', generated = '/gen/ﬃ\0bin', snapshot = 'snap\npath';
+        db.connection.prepare(`INSERT INTO works(work_id,user_id,owner_bot_id,title,goal_description,closure_summary,lifecycle,
+            criteria_json,authorization_json,active_intent_snapshot_id,input_snapshot_id,created_by,created_at,updated_at)
+            VALUES (?,?,?,?,?,?,'closed',?,'[]','fixture','snapshot:unbound','user',1,1)`)
+            .run(id,LOCAL_USER_ID,DEFAULT_BOT_ID,title,goal,closure,JSON.stringify([{text:null},{text:criterion}]));
+        db.connection.prepare(`INSERT INTO work_blockers(blocker_id,work_id,reason,kind,waiting_for_user_input,status,created_at)
+            VALUES ('document-blocker',?,?,'operational',0,'open',1)`).run(id,blocker);
+        db.connection.prepare(`INSERT INTO work_execution_bindings(binding_id,work_id,operation_id,bot_id,task_id,durable_store_key,
+            conversation_id,intent_revision,owner_epoch,input_snapshot_id,expert_snapshot_json,workspace_binding,status,admitted_at)
+            VALUES ('document-binding',?,'document-op',?,'document-task','document-store','document-chat',1,1,
+            'snapshot:unbound','{}','test','completed',1)`).run(id,DEFAULT_BOT_ID);
+        db.connection.prepare(`INSERT INTO work_deliverables(deliverable_id,work_id,producer_bot_id,execution_id,intent_revision,
+            owner_epoch,input_snapshot_id,status,summary,artifact_refs_json,created_at)
+            VALUES ('document-report',?,?,'document-binding',1,1,'snapshot:unbound','proposed',?,?,1)`)
+            .run(id,DEFAULT_BOT_ID,report,JSON.stringify([null,artifact]));
+        db.connection.prepare(`INSERT INTO work_generated_artifacts(binding_id,path,digest,payload_json)
+            VALUES ('document-binding',?,'document-digest',?)`).run(generated,JSON.stringify({snapshotPath:snapshot}));
+        let observed: unknown[] = [];
+        db.connection.function('work_list_matches',{deterministic:true},(text: unknown,_term: unknown)=>{observed.push(text);return 0;});
+        const observe = () => {observed=[];query.query(LOCAL_USER_ID,{scope:{kind:'all'},view:'all',query:'observe-document'});};
+        observe();
+        assert.deepEqual(observed,[
+            [id,title,goal,closure,''].join('\n'),
+            [id,title,goal,closure,criterion,blocker,report+'\n'+artifact,generated+'\n'+snapshot,'\n\n\n'].join('\n'),
+        ],'full document preserves exact field order, Unicode, embedded NULs, JSON null omission and every newline');
+        db.connection.prepare("UPDATE works SET goal_description=NULL,closure_summary=NULL,criteria_json='[]' WHERE work_id=?").run(id);
+        db.connection.prepare('DELETE FROM work_blockers WHERE work_id=?').run(id);
+        db.connection.prepare('DELETE FROM work_deliverables WHERE work_id=?').run(id);
+        db.connection.prepare("DELETE FROM work_generated_artifacts WHERE binding_id='document-binding'").run();
+        observe();
+        assert.deepEqual(observed,[[id,title,'','',''].join('\n'),[id,title,'','','','','','','\n\n\n'].join('\n')],
+            'empty optional components retain their original separators');
+    } finally {
+        db.connection.exec('ROLLBACK TO search_document_fixture; RELEASE search_document_fixture');
+        new WorkListQuery(db.connection, () => works.scheduler.hostState().online);
+    }
     const first = create('seed');
     const columns = (db.connection.prepare('PRAGMA table_info(works)').all() as {
         name: string;

@@ -1,0 +1,820 @@
+{
+  "baseline": "9f93c0263c28a443e5ed9964f4cecd7c0cb3586e",
+  "sourceHashes": {
+    "baseline": "1a7158412faad643da7895eed013855f81c6d1a5a54bcc1353434338c8dbdcfa",
+    "candidate": "30a8e15cfe7247e0b4b85f607b38644a05b17cc56a1136a0bd1b7f66d48bcf0e"
+  },
+  "node": "v26.13.0",
+  "sqlite": "3.53.4",
+  "fixtureRows": 50000,
+  "reportRows": 250,
+  "samplesPerCase": 5,
+  "method": "Interleaved alternating order, same database; result cache bypassed; prepared plans/SQLite/OS caches warm; first invocation separate, not process-cold.",
+  "results": [
+    {
+      "reportBytes": 21014,
+      "term": "DeepReportTail",
+      "first": {
+        "baseline": 375.010706,
+        "candidate": 351.2410639999998
+      },
+      "samples": {
+        "baseline": [
+          352.3296990000008,
+          348.13090700000066,
+          354.95717400000103,
+          358.28712599999926,
+          351.6494329999987
+        ],
+        "candidate": [
+          345.41640800000005,
+          340.738077,
+          349.15647400000125,
+          343.47143400000095,
+          337.89031899999827
+        ]
+      },
+      "medians": {
+        "baseline": 352.3296990000008,
+        "candidate": 343.47143400000095
+      },
+      "digest": "279e51bb9a62f9d046fde8776c6a9e71a9e142a9e1acddc314ca2a3d70589a80",
+      "exactParity": true
+    },
+    {
+      "reportBytes": 21014,
+      "term": "NoSuchTerm_测试",
+      "first": {
+        "baseline": 355.18444199999976,
+        "candidate": 347.35006800000156
+      },
+      "samples": {
+        "baseline": [
+          352.6416850000005,
+          354.2570030000006,
+          357.4522989999987,
+          354.7438060000004,
+          353.4550710000003
+        ],
+        "candidate": [
+          346.6045689999992,
+          342.54734800000006,
+          359.9616700000006,
+          357.98351999999977,
+          347.55037599999923
+        ]
+      },
+      "medians": {
+        "baseline": 354.2570030000006,
+        "candidate": 347.55037599999923
+      },
+      "digest": "62defa76930911829037b20485d64e4b27932db40313a2c1a00fe0f979dfc9d7",
+      "exactParity": true
+    },
+    {
+      "reportBytes": 21014,
+      "term": "Synthetic 49999",
+      "first": {
+        "baseline": 392.7631359999996,
+        "candidate": 380.2811610000008
+      },
+      "samples": {
+        "baseline": [
+          391.00610700000107,
+          384.6477849999974,
+          391.6658400000015,
+          388.6691069999979,
+          386.9305170000007
+        ],
+        "candidate": [
+          379.00856099999874,
+          374.8365879999983,
+          380.98531300000104,
+          383.81568199999674,
+          378.669754999999
+        ]
+      },
+      "medians": {
+        "baseline": 388.6691069999979,
+        "candidate": 379.00856099999874
+      },
+      "digest": "b53d66869008395e21ea54f8be3e9997af91af64f5854acbea8c4c3921d4389f",
+      "exactParity": true
+    },
+    {
+      "reportBytes": 126014,
+      "term": "DeepReportTail",
+      "first": {
+        "baseline": 467.1093010000004,
+        "candidate": 440.672724
+      },
+      "samples": {
+        "baseline": [
+          459.8269629999995,
+          461.08461700000043,
+          469.81241699999737,
+          464.45996599999853,
+          472.78749799999787
+        ],
+        "candidate": [
+          435.0668149999983,
+          473.9308200000014,
+          461.3873840000015,
+          477.0481010000003,
+          442.6355079999994
+        ]
+      },
+      "medians": {
+        "baseline": 464.45996599999853,
+        "candidate": 461.3873840000015
+      },
+      "digest": "279e51bb9a62f9d046fde8776c6a9e71a9e142a9e1acddc314ca2a3d70589a80",
+      "exactParity": true
+    },
+    {
+      "reportBytes": 126014,
+      "term": "NoSuchTerm_测试",
+      "first": {
+        "baseline": 474.4795030000023,
+        "candidate": 450.4892980000004
+      },
+      "samples": {
+        "baseline": [
+          461.00897800000166,
+          464.86058200000116,
+          459.2330920000022,
+          457.4254980000005,
+          469.05706999999893
+        ],
+        "candidate": [
+          448.09963699999935,
+          449.93705300000147,
+          445.70292100000006,
+          443.4434459999975,
+          448.2416269999994
+        ]
+      },
+      "medians": {
+        "baseline": 461.00897800000166,
+        "candidate": 448.09963699999935
+      },
+      "digest": "62defa76930911829037b20485d64e4b27932db40313a2c1a00fe0f979dfc9d7",
+      "exactParity": true
+    },
+    {
+      "reportBytes": 126014,
+      "term": "Synthetic 49999",
+      "first": {
+        "baseline": 488.9586229999986,
+        "candidate": 472.1177779999998
+      },
+      "samples": {
+        "baseline": [
+          489.91330100000414,
+          488.13182799999777,
+          492.9335009999995,
+          483.8381900000022,
+          490.9976059999972
+        ],
+        "candidate": [
+          469.926958,
+          471.4766940000045,
+          470.33888899999874,
+          472.86250900000596,
+          477.5687770000004
+        ]
+      },
+      "medians": {
+        "baseline": 489.91330100000414,
+        "candidate": 471.4766940000045
+      },
+      "digest": "b53d66869008395e21ea54f8be3e9997af91af64f5854acbea8c4c3921d4389f",
+      "exactParity": true
+    },
+    {
+      "reportBytes": 630014,
+      "term": "DeepReportTail",
+      "first": {
+        "baseline": 1243.0516439999992,
+        "candidate": 1225.1493320000009
+      },
+      "samples": {
+        "baseline": [
+          1296.6857339999988,
+          1273.782978000003,
+          1270.0901939999967,
+          1200.717583000005,
+          1086.060903000005
+        ],
+        "candidate": [
+          1219.0284739999988,
+          1234.7375909999973,
+          1226.4859080000024,
+          1042.2895540000027,
+          1021.1112090000024
+        ]
+      },
+      "medians": {
+        "baseline": 1270.0901939999967,
+        "candidate": 1219.0284739999988
+      },
+      "digest": "279e51bb9a62f9d046fde8776c6a9e71a9e142a9e1acddc314ca2a3d70589a80",
+      "exactParity": true
+    },
+    {
+      "reportBytes": 630014,
+      "term": "NoSuchTerm_测试",
+      "first": {
+        "baseline": 1132.638595999997,
+        "candidate": 1061.4733360000027
+      },
+      "samples": {
+        "baseline": [
+          1151.0891709999996,
+          1118.6334960000022,
+          1138.9703080000036,
+          1129.2540270000027,
+          1147.123163999997
+        ],
+        "candidate": [
+          1085.605810000001,
+          1065.8210330000002,
+          1082.278932000001,
+          1116.7059820000068,
+          1086.203453000002
+        ]
+      },
+      "medians": {
+        "baseline": 1138.9703080000036,
+        "candidate": 1085.605810000001
+      },
+      "digest": "62defa76930911829037b20485d64e4b27932db40313a2c1a00fe0f979dfc9d7",
+      "exactParity": true
+    },
+    {
+      "reportBytes": 630014,
+      "term": "Synthetic 49999",
+      "first": {
+        "baseline": 1132.220239000002,
+        "candidate": 1050.8411409999972
+      },
+      "samples": {
+        "baseline": [
+          1128.0078970000031,
+          1112.2824370000017,
+          1123.4744199999986,
+          1114.7820309999952,
+          1092.2425250000088
+        ],
+        "candidate": [
+          1055.7677619999886,
+          1050.6749160000036,
+          1067.0483060000115,
+          1064.11967,
+          1053.4248960000114
+        ]
+      },
+      "medians": {
+        "baseline": 1114.7820309999952,
+        "candidate": 1055.7677619999886
+      },
+      "digest": "b53d66869008395e21ea54f8be3e9997af91af64f5854acbea8c4c3921d4389f",
+      "exactParity": true
+    }
+  ],
+  "general": {
+    "purpose": "Equivalence and broad regression checks. Sequential runs had visible machine-load drift; use the interleaved results above for speedup claims, not these larger apparent improvements.",
+    "comparison": [
+      {
+        "name": "unfiltered",
+        "beforeMs": 132.98021199999948,
+        "afterMs": 133.78437799999938,
+        "changePercent": 0.6047260625512418,
+        "exactResultParity": true
+      },
+      {
+        "name": "title-all",
+        "beforeMs": 194.54652600000009,
+        "afterMs": 195.0352839999996,
+        "changePercent": 0.251229364023442,
+        "exactResultParity": true
+      },
+      {
+        "name": "title-rare",
+        "beforeMs": 463.2537169999996,
+        "afterMs": 377.8534359999994,
+        "changePercent": -18.43488305998854,
+        "exactResultParity": true
+      },
+      {
+        "name": "goal-unicode",
+        "beforeMs": 438.7887920000012,
+        "afterMs": 343.52926300000036,
+        "changePercent": -21.7096541062062,
+        "exactResultParity": true
+      },
+      {
+        "name": "detail-tail",
+        "beforeMs": 437.4470479999982,
+        "afterMs": 341.5574000000015,
+        "changePercent": -21.920286909787777,
+        "exactResultParity": true
+      },
+      {
+        "name": "mixed-title-detail",
+        "beforeMs": 416.4805359999991,
+        "afterMs": 347.6441049999994,
+        "changePercent": -16.528126779014674,
+        "exactResultParity": true
+      },
+      {
+        "name": "derived-guidance",
+        "beforeMs": 584.8522530000009,
+        "afterMs": 481.7411690000008,
+        "changePercent": -17.63027900997074,
+        "exactResultParity": true
+      },
+      {
+        "name": "no-match",
+        "beforeMs": 361.0705599999965,
+        "afterMs": 342.13876900000105,
+        "changePercent": -5.243238606879386,
+        "exactResultParity": true
+      },
+      {
+        "name": "paused-page3",
+        "beforeMs": 196.72679900000367,
+        "afterMs": 195.55309599999964,
+        "changePercent": -0.5966157157896945,
+        "exactResultParity": true
+      },
+      {
+        "name": "closed-page-clamp",
+        "beforeMs": 216.151887,
+        "afterMs": 215.9445259999993,
+        "changePercent": -0.09593300473970112,
+        "exactResultParity": true
+      },
+      {
+        "name": "long-report-tail",
+        "beforeMs": 456.7327299999961,
+        "afterMs": 445.59620300000097,
+        "changePercent": -2.438302812236648,
+        "exactResultParity": true
+      }
+    ],
+    "pagination": "250 distinct full-text matches, every page, both sorts"
+  },
+  "scale": {
+    "samplesPerCase": 8,
+    "comparison": [
+      {
+        "n": 1,
+        "name": "title-all",
+        "firstBeforeMs": 11.419040999999993,
+        "firstAfterMs": 9.95954200000051,
+        "medianBeforeMs": 2.939600999999982,
+        "medianAfterMs": 3.0591020000001663,
+        "exactParity": true
+      },
+      {
+        "n": 1,
+        "name": "title-rare",
+        "firstBeforeMs": 3.130899999999997,
+        "firstAfterMs": 3.057076999999481,
+        "medianBeforeMs": 2.8147930000000088,
+        "medianAfterMs": 2.958318999999392,
+        "exactParity": true
+      },
+      {
+        "n": 1,
+        "name": "no-match",
+        "firstBeforeMs": 2.1473780000000033,
+        "firstAfterMs": 2.1341769999999087,
+        "medianBeforeMs": 0.25429600000001074,
+        "medianAfterMs": 0.22608000000036554,
+        "exactParity": true
+      },
+      {
+        "n": 100,
+        "name": "title-all",
+        "firstBeforeMs": 8.623384999999985,
+        "firstAfterMs": 9.17989099999977,
+        "medianBeforeMs": 3.5128690000000233,
+        "medianAfterMs": 3.8895990000000893,
+        "exactParity": true
+      },
+      {
+        "n": 100,
+        "name": "title-rare",
+        "firstBeforeMs": 8.866577000000007,
+        "firstAfterMs": 9.793527000000722,
+        "medianBeforeMs": 4.637194000000022,
+        "medianAfterMs": 4.928577000000587,
+        "exactParity": true
+      },
+      {
+        "n": 100,
+        "name": "no-match",
+        "firstBeforeMs": 1.00119200000006,
+        "firstAfterMs": 1.1264899999996487,
+        "medianBeforeMs": 0.9023650000000316,
+        "medianAfterMs": 1.0276630000007572,
+        "exactParity": true
+      },
+      {
+        "n": 999,
+        "name": "title-all",
+        "firstBeforeMs": 12.155809999999974,
+        "firstAfterMs": 12.315050000000156,
+        "medianBeforeMs": 7.112482,
+        "medianAfterMs": 6.8889160000007905,
+        "exactParity": true
+      },
+      {
+        "n": 999,
+        "name": "title-rare",
+        "firstBeforeMs": 24.15621999999985,
+        "firstAfterMs": 22.917773000000125,
+        "medianBeforeMs": 19.254672000000028,
+        "medianAfterMs": 18.03913300000022,
+        "exactParity": true
+      },
+      {
+        "n": 999,
+        "name": "no-match",
+        "firstBeforeMs": 7.7238139999999476,
+        "firstAfterMs": 6.5855209999999715,
+        "medianBeforeMs": 6.7550280000000384,
+        "medianAfterMs": 6.661019999999553,
+        "exactParity": true
+      },
+      {
+        "n": 1000,
+        "name": "title-all",
+        "firstBeforeMs": 11.971635000000106,
+        "firstAfterMs": 12.240109999999731,
+        "medianBeforeMs": 6.75935800000002,
+        "medianAfterMs": 6.998498999999356,
+        "exactParity": true
+      },
+      {
+        "n": 1000,
+        "name": "title-rare",
+        "firstBeforeMs": 16.93247899999983,
+        "firstAfterMs": 16.024946000000455,
+        "medianBeforeMs": 12.049580000000105,
+        "medianAfterMs": 11.899417999999969,
+        "exactParity": true
+      },
+      {
+        "n": 1000,
+        "name": "no-match",
+        "firstBeforeMs": 11.128357000000051,
+        "firstAfterMs": 11.947329999999965,
+        "medianBeforeMs": 11.265806999999995,
+        "medianAfterMs": 11.157340999999178,
+        "exactParity": true
+      },
+      {
+        "n": 10000,
+        "name": "title-all",
+        "firstBeforeMs": 46.52335399999993,
+        "firstAfterMs": 47.555207999999766,
+        "medianBeforeMs": 40.000482999999804,
+        "medianAfterMs": 40.40955000000031,
+        "exactParity": true
+      },
+      {
+        "n": 10000,
+        "name": "title-rare",
+        "firstBeforeMs": 85.45594500000016,
+        "firstAfterMs": 82.80800499999987,
+        "medianBeforeMs": 79.08100000000013,
+        "medianAfterMs": 77.80357999999978,
+        "exactParity": true
+      },
+      {
+        "n": 10000,
+        "name": "no-match",
+        "firstBeforeMs": 72.49149899999975,
+        "firstAfterMs": 70.74606399999993,
+        "medianBeforeMs": 72.8624319999999,
+        "medianAfterMs": 70.8343449999993,
+        "exactParity": true
+      }
+    ]
+  },
+  "privateProfile": {
+    "cases": 23,
+    "allEquivalent": true,
+    "readonlySource": true,
+    "snapshotBootstrappedMissingTables": true,
+    "originalWorkRecordsPreserved": true,
+    "rawRowsOrQueriesExported": false
+  },
+  "ui": {
+    "baseline": {
+      "label": "baseline",
+      "rows": 50000,
+      "activeRows": 30000,
+      "reportRepeats": 30000,
+      "contract": "Actual BotWorkBrowser + useWorkQueryPage + IPC + synchronous main SQLite; isolated synthetic fixture; 250ms production debounce; forced cold queries; not full product pnpm dev",
+      "samples": [
+        {
+          "term": "Synthetic",
+          "filtered": 30000,
+          "inputToResultsMs": 562.8899970000002,
+          "renderer": {
+            "frames": 34,
+            "maxFrameGapMs": 16.700000000000045,
+            "last": 1152.8
+          },
+          "ipcCalls": [
+            {
+              "request": {
+                "scope": {
+                  "kind": "all"
+                },
+                "view": "active",
+                "query": "Synthetic",
+                "status": "all",
+                "sort": "recent",
+                "page": 1,
+                "pageSize": 24,
+                "showDeleted": false
+              },
+              "queryMs": 261.20680399999947,
+              "filtered": 30000,
+              "page": 1
+            }
+          ]
+        },
+        {
+          "term": "Synthetic 49999",
+          "filtered": 1,
+          "inputToResultsMs": 1714.5017310000003,
+          "renderer": {
+            "frames": 103,
+            "maxFrameGapMs": 16.800000000000182,
+            "last": 2869.4
+          },
+          "ipcCalls": [
+            {
+              "request": {
+                "scope": {
+                  "kind": "all"
+                },
+                "view": "active",
+                "query": "Synthetic 49999",
+                "status": "all",
+                "sort": "recent",
+                "page": 1,
+                "pageSize": 24,
+                "showDeleted": false
+              },
+              "queryMs": 1451.3728609999998,
+              "filtered": 1,
+              "page": 1
+            }
+          ]
+        },
+        {
+          "term": "Synthetic DeepReportTail",
+          "filtered": 250,
+          "inputToResultsMs": 1740.7885670000014,
+          "renderer": {
+            "frames": 104,
+            "maxFrameGapMs": 33.29999999999927,
+            "last": 4619.4
+          },
+          "ipcCalls": [
+            {
+              "request": {
+                "scope": {
+                  "kind": "all"
+                },
+                "view": "active",
+                "query": "Synthetic DeepReportTail",
+                "status": "all",
+                "sort": "recent",
+                "page": 1,
+                "pageSize": 24,
+                "showDeleted": false
+              },
+              "queryMs": 1432.0725119999988,
+              "filtered": 250,
+              "page": 1
+            }
+          ]
+        },
+        {
+          "term": "NoSuchTerm_测试",
+          "filtered": 0,
+          "inputToResultsMs": 1857.8641719999996,
+          "renderer": {
+            "frames": 111,
+            "maxFrameGapMs": 16.800000000000182,
+            "last": 6469.4
+          },
+          "ipcCalls": [
+            {
+              "request": {
+                "scope": {
+                  "kind": "all"
+                },
+                "view": "active",
+                "query": "NoSuchTerm_测试",
+                "status": "all",
+                "sort": "recent",
+                "page": 1,
+                "pageSize": 24,
+                "showDeleted": false
+              },
+              "queryMs": 1452.751902,
+              "filtered": 0,
+              "page": 1
+            },
+            {
+              "request": {
+                "scope": {
+                  "kind": "all"
+                },
+                "view": "all",
+                "page": 1,
+                "pageSize": 1
+              },
+              "queryMs": 148.4478139999992,
+              "filtered": 50000,
+              "page": 1
+            }
+          ]
+        }
+      ],
+      "checks": [
+        "24-card initial page",
+        "status counts and page2",
+        "deep report search",
+        "no match and clear",
+        "rapid replacement keeps latest query",
+        "no renderer console errors"
+      ]
+    },
+    "candidate": {
+      "label": "candidate",
+      "rows": 50000,
+      "activeRows": 30000,
+      "reportRepeats": 30000,
+      "contract": "Actual BotWorkBrowser + useWorkQueryPage + IPC + synchronous main SQLite; isolated synthetic fixture; 250ms production debounce; forced cold queries; not full product pnpm dev",
+      "samples": [
+        {
+          "term": "Synthetic",
+          "filtered": 30000,
+          "inputToResultsMs": 529.6679390000008,
+          "renderer": {
+            "frames": 32,
+            "maxFrameGapMs": 16.700000000000045,
+            "last": 1233.3
+          },
+          "ipcCalls": [
+            {
+              "request": {
+                "scope": {
+                  "kind": "all"
+                },
+                "view": "active",
+                "query": "Synthetic",
+                "status": "all",
+                "sort": "recent",
+                "page": 1,
+                "pageSize": 24,
+                "showDeleted": false
+              },
+              "queryMs": 229.14420099999916,
+              "filtered": 30000,
+              "page": 1
+            }
+          ]
+        },
+        {
+          "term": "Synthetic 49999",
+          "filtered": 1,
+          "inputToResultsMs": 1700.544613,
+          "renderer": {
+            "frames": 102,
+            "maxFrameGapMs": 16.800000000000182,
+            "last": 2933.3
+          },
+          "ipcCalls": [
+            {
+              "request": {
+                "scope": {
+                  "kind": "all"
+                },
+                "view": "active",
+                "query": "Synthetic 49999",
+                "status": "all",
+                "sort": "recent",
+                "page": 1,
+                "pageSize": 24,
+                "showDeleted": false
+              },
+              "queryMs": 1420.4922749999987,
+              "filtered": 1,
+              "page": 1
+            }
+          ]
+        },
+        {
+          "term": "Synthetic DeepReportTail",
+          "filtered": 250,
+          "inputToResultsMs": 1651.3968569999997,
+          "renderer": {
+            "frames": 99,
+            "maxFrameGapMs": 16.800000000000182,
+            "last": 4583.2
+          },
+          "ipcCalls": [
+            {
+              "request": {
+                "scope": {
+                  "kind": "all"
+                },
+                "view": "active",
+                "query": "Synthetic DeepReportTail",
+                "status": "all",
+                "sort": "recent",
+                "page": 1,
+                "pageSize": 24,
+                "showDeleted": false
+              },
+              "queryMs": 1363.2754029999996,
+              "filtered": 250,
+              "page": 1
+            }
+          ]
+        },
+        {
+          "term": "NoSuchTerm_测试",
+          "filtered": 0,
+          "inputToResultsMs": 1836.4982999999993,
+          "renderer": {
+            "frames": 106,
+            "maxFrameGapMs": 100,
+            "last": 6433.3
+          },
+          "ipcCalls": [
+            {
+              "request": {
+                "scope": {
+                  "kind": "all"
+                },
+                "view": "active",
+                "query": "NoSuchTerm_测试",
+                "status": "all",
+                "sort": "recent",
+                "page": 1,
+                "pageSize": 24,
+                "showDeleted": false
+              },
+              "queryMs": 1413.1078260000013,
+              "filtered": 0,
+              "page": 1
+            },
+            {
+              "request": {
+                "scope": {
+                  "kind": "all"
+                },
+                "view": "all",
+                "page": 1,
+                "pageSize": 1
+              },
+              "queryMs": 144.372922999999,
+              "filtered": 50000,
+              "page": 1
+            }
+          ]
+        }
+      ],
+      "checks": [
+        "24-card initial page",
+        "status counts and page2",
+        "deep report search",
+        "no match and clear",
+        "rapid replacement keeps latest query",
+        "no renderer console errors"
+      ]
+    }
+  },
+  "screenshots": {
+    "baseline": "c3d1d421b83d08ac3092fe52a52a869209e721587b4517e7e05a39a9cb9056b9",
+    "candidate": "c3d1d421b83d08ac3092fe52a52a869209e721587b4517e7e05a39a9cb9056b9"
+  },
+  "validation": {
+    "focused": true,
+    "typecheck": true,
+    "independentStaticReview": true,
+    "fullDefault": "pending for this commit; 476/476 passed on its unchanged parent 9f93c026"
+  }
+}

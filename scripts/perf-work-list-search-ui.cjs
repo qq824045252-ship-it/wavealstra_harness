@@ -16,6 +16,9 @@ const {fixture}=require(path.join(out,`${label}.cjs`));
 let win,f;
 app.whenReady().then(async()=>{try{
   f=fixture(path.join(profile,'fixture.db'));
+  const reportRepeats=Number(process.env.WORK_SEARCH_REPORT_REPEATS||1000);
+  assert(Number.isInteger(reportRepeats)&&reportRepeats>=1&&reportRepeats<=30000);
+  if(reportRepeats!==1000)f.db.prepare('UPDATE work_deliverables SET summary=?').run('Long report content. '.repeat(reportRepeats)+'DeepReportTail');
   const calls=[];
   ipcMain.handle('work-search-query',(_event,request)=>{
     const start=performance.now();
@@ -65,7 +68,7 @@ app.whenReady().then(async()=>{try{
   assert(calls.every(call=>(call.request.pageSize??24)<=24),'bounded renderer page requests');
   assert.equal(errors.length,0,errors.join('\n'));
   fs.writeFileSync(path.join(out,`ui-${label}.png`),(await win.webContents.capturePage()).toPNG());
-  const report={label,rows:50000,activeRows:30000,contract:'Actual BotWorkBrowser + useWorkQueryPage + IPC + synchronous main SQLite; isolated synthetic fixture; 250ms production debounce; forced cold queries; not full product pnpm dev',samples,
+  const report={label,rows:50000,activeRows:30000,reportRepeats,contract:'Actual BotWorkBrowser + useWorkQueryPage + IPC + synchronous main SQLite; isolated synthetic fixture; 250ms production debounce; forced cold queries; not full product pnpm dev',samples,
     checks:['24-card initial page','status counts and page2','deep report search','no match and clear','rapid replacement keeps latest query','no renderer console errors'],calls};
   fs.writeFileSync(path.join(out,`ui-${label}.json`),JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));
 }catch(error){console.error(error);process.exitCode=1;}finally{if(win&&!win.isDestroyed())win.destroy();f?.app.close();app.exit(process.exitCode||0);}});

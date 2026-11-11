@@ -92,11 +92,13 @@ const statusSql = `CASE
 // This prefix is also part of the full search document. A positive match can skip
 // the correlated detail/guidance reads; a negative match still searches everything.
 const searchPrefixSql = `w.work_id||char(10)||w.title||char(10)||coalesce(w.goal_description,'')||char(10)||coalesce(w.closure_summary,'')||char(10)`;
-const searchSql = `${searchPrefixSql}
- ||coalesce((SELECT group_concat(json_extract(value,'$.text'),char(10)) FROM json_each(w.criteria_json)),'')||char(10)
- ||coalesce((SELECT group_concat(k.reason,char(10)) FROM work_blockers k WHERE k.work_id=w.work_id AND k.status='open'),'')||char(10)
- ||coalesce((SELECT group_concat(d.summary||char(10)||coalesce((SELECT group_concat(value,char(10)) FROM json_each(d.artifact_refs_json)),''),char(10)) FROM work_deliverables d WHERE d.work_id=w.work_id),'')||char(10)
- ||coalesce((SELECT group_concat(g.path||char(10)||coalesce(json_extract(g.payload_json,'$.snapshotPath'),''),char(10)) FROM work_generated_artifacts g JOIN work_execution_bindings b ON b.binding_id=g.binding_id WHERE b.work_id=w.work_id AND b.intent_revision=w.intent_revision AND b.input_snapshot_id=w.input_snapshot_id),'') || char(10) || (${workNextStepsSearchSql({ gaps, currentBinding: current })})`;
+// The suffix parts are non-NULL. Join them in one allocation instead of copying
+// every long report at each separator; retain || for the prefix's NULL propagation.
+const searchSql = `${searchPrefixSql} || concat(
+ coalesce((SELECT group_concat(json_extract(value,'$.text'),char(10)) FROM json_each(w.criteria_json)),''),char(10),
+ coalesce((SELECT group_concat(k.reason,char(10)) FROM work_blockers k WHERE k.work_id=w.work_id AND k.status='open'),''),char(10),
+ coalesce((SELECT group_concat(d.summary||char(10)||coalesce((SELECT group_concat(value,char(10)) FROM json_each(d.artifact_refs_json)),''),char(10)) FROM work_deliverables d WHERE d.work_id=w.work_id),''),char(10),
+ coalesce((SELECT group_concat(g.path||char(10)||coalesce(json_extract(g.payload_json,'$.snapshotPath'),''),char(10)) FROM work_generated_artifacts g JOIN work_execution_bindings b ON b.binding_id=g.binding_id WHERE b.work_id=w.work_id AND b.intent_revision=w.intent_revision AND b.input_snapshot_id=w.input_snapshot_id),''),char(10),(${workNextStepsSearchSql({ gaps, currentBinding: current })}))`;
 type Row = {
     work_id: string;
     project_id: string | null;
