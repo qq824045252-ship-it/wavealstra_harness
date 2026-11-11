@@ -210,7 +210,7 @@ try {
     const memberWrite = service.admitNewAction(worker(member), {
       admissionId: operation(), operationId: operation(), workId: work.workId, actionKind: "workspace:write",
     });
-    assert.equal(memberWrite.ok, false, "a read-only member bot stays read-only");
+    assert.equal(memberWrite.ok, true, "legacy read-only member metadata no longer blocks tools");
     unwrap(service.amendWork(user, { operationId: operation(), workId: work.workId, inputSnapshotId: "input-B" }));
     const stale = service.admitNewAction(worker(binding), {
       admissionId: operation(), operationId: operation(), workId: work.workId, actionKind: "workspace:read",
@@ -323,53 +323,23 @@ try {
     }
   });
 
-  check("expired authorization can only be renewed by an explicit current user grant", () => {
+  check("legacy authorization expiry neither blocks controls nor requires renewal", () => {
     let now = 10_000;
     const timed = new WorkService(db.connection, { bots, now: () => now });
-    const created = unwrap(timed.createWork(user, {
-      operationId: operation(), title: "需要续权的事项", inputSnapshotId: "input-A",
-      authorization: { ...user.grants, expiresAt: now + 100 },
-    }));
-    const dispatchId = operation();
-    const dispatched = unwrap(timed.dispatchExecution(user, {
-      operationId: dispatchId, workId: created.workId, botId: DEFAULT_BOT_ID, taskId: dispatchId,
-      durableStoreKey: dispatchId, conversationId: dispatchId, workspaceBinding: root,
-    }));
-    const execution = timed.repo.getBinding(dispatched.activeExecutionIds[0])!;
+    const created = unwrap(timed.createWork(user, { operationId: operation(), title: "旧授权事项", inputSnapshotId: "input-A", authorization: { ...user.grants, expiresAt: 1 } }));
     unwrap(timed.pauseWork(user, { operationId: operation(), workId: created.workId }));
     now += 200;
     const before = timed.getWork(created.workId)!;
-    assert.equal(timed.amendWork(user, { operationId: operation(), workId: created.workId, title: "不能隐式续权" }).ok, false);
-    const model: WorkActor = { kind: "bot", botId: DEFAULT_BOT_ID, userId: LOCAL_USER_ID, host: "foreground", grants: user.grants };
-    assert.equal(timed.amendWork(model, {
-      operationId: operation(), workId: created.workId, authorization: { expiresAt: now + 1_000 },
-      versionGuard: { expectedStateVersion: before.stateVersion, expectedIntentRevision: before.intentRevision, expectedOwnerEpoch: before.ownerEpoch },
-    }).ok, false, "a model cannot prolong its own delegation");
-    assert.equal(timed.amendWork(worker(execution), {
-      operationId: operation(), workId: created.workId, authorization: { expiresAt: now + 1_000 },
-    }).ok, false, "a worker cannot prolong its own execution authorization");
-    assert.equal(timed.amendWork(user, {
-      operationId: operation(), workId: created.workId, authorization: { allowedScopes: ["workspace:read"] },
-    }).ok, false, "changing a scope without renewing the deadline is insufficient");
-    const expiredGrant: WorkActor = { kind: "user", userId: LOCAL_USER_ID, grants: { ...user.grants!, expiresAt: now - 1 } };
-    assert.equal(timed.amendWork(expiredGrant, {
-      operationId: operation(), workId: created.workId, authorization: { expiresAt: now + 1_000 },
-    }).ok, false, "an expired host grant cannot authorize a fresh Work deadline");
-    assert.deepEqual(timed.getWork(created.workId), before, "denied renewal paths leave control facts untouched");
-    const currentGrant: WorkActor = { kind: "user", userId: LOCAL_USER_ID, grants: {
-      ...user.grants!, allowedScopes: ["workspace:read"], expiresAt: now + 500,
-    } };
     const operationId = operation();
-    const authorization = { expiresAt: now + 1_000, allowedScopes: ["workspace:read", "workspace:write"], allowGitBranchOrWorktree: true };
-    const renewed = unwrap(timed.amendWork(currentGrant, { operationId, workId: created.workId, authorization }));
-    assert.equal(renewed.authorization.expiresAt, now + 500, "renewal is capped by the current authenticated grant");
-    assert.deepEqual(renewed.authorization.allowedScopes, ["workspace:read"]);
-    assert.equal(renewed.authorization.allowGitBranchOrWorktree, false);
-    assert.equal(renewed.intentRevision, before.intentRevision + 1, "renewal is a recorded intent/authorization revision");
-    const replay = timed.amendWork(currentGrant, { operationId, workId: created.workId, authorization });
+    const authorization = { expiresAt: 1, allowedScopes: [], allowGitBranchOrWorktree: false };
+    const changed = unwrap(timed.amendWork(user, { operationId, workId: created.workId, authorization }));
+    assert.equal(changed.authorization.expiresAt, undefined);
+    assert.equal(changed.intentRevision, before.intentRevision, "retired permission-only payload does not change intent");
+    const replay = timed.amendWork(user, { operationId, workId: created.workId, authorization });
     assert.equal(replay.ok && replay.replayed, true);
-    assert.equal(unwrap(timed.resumeWork(currentGrant, { operationId: operation(), workId: created.workId })).lifecycle, "active");
+    assert.equal(unwrap(timed.resumeWork(user, { operationId: operation(), workId: created.workId })).lifecycle, "active");
   });
+
 } finally {
   db.close();
   rmSync(root, { recursive: true, force: true });

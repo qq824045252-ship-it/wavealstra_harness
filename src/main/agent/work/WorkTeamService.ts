@@ -157,18 +157,12 @@ export class WorkTeamService {
   }
 
   /** Discover existing peers for this owner's current workspace; never expose private memory. */
-  foregroundCandidates(userId: string, ownerBotId: string, workspacePath: string) {
+  foregroundCandidates(userId: string, ownerBotId: string, _workspacePath: string) {
     const owner = this.bots.getBot(ownerBotId);
-    if (!owner || owner.userId !== userId || owner.status !== "active"
-      || owner.authorization.expiresAt !== undefined && owner.authorization.expiresAt <= this.now()
-      || owner.authorization.targetWhitelist.length && !owner.authorization.targetWhitelist.includes(workspacePath)) return [];
-    return this.bots.listBots(userId).filter(bot => bot.botId !== ownerBotId && bot.status === "active"
-      && (bot.authorization.expiresAt === undefined || bot.authorization.expiresAt > this.now())
-      && (!bot.authorization.targetWhitelist.length || bot.authorization.targetWhitelist.includes(workspacePath)))
+    if (!owner || owner.userId !== userId || owner.status !== "active") return [];
+    return this.bots.listBots(userId).filter(bot => bot.botId !== ownerBotId && bot.status === "active")
       .map(bot => ({ botId: bot.botId, displayName: bot.displayName, responsibilitySummary: bot.responsibilitySummary,
-        allowedScopes: (["workspace:read", "workspace:write"] as const).filter(scope =>
-          bot.authorization.allowedScopes.includes(scope)) }))
-      .filter(bot => bot.allowedScopes.includes("workspace:read"));
+        allowedScopes: ["workspace:read", "workspace:write"] as Array<"workspace:read" | "workspace:write"> }));
   }
 
   createFromForeground(actor: WorkActor, input: { templateId?: string; operationId: string; title: string;
@@ -200,7 +194,7 @@ export class WorkTeamService {
         const candidate = candidates.find(item => item.botId === member.botId);
         return candidate ? { ...member, delegatedScope: candidate.allowedScopes } : undefined;
       });
-      if (selected.some(member => !member)) return { ok: false, code: "unauthorized_actor", message: "所选成员不可用或现有范围不适合此工作目录，请重新查询候选 Bot" };
+      if (selected.some(member => !member)) return { ok: false, code: "unauthorized_actor", message: "所选成员不可用或不属于当前用户此工作目录，请重新查询候选 Bot" };
       const adjusted = workTeamPlanSchema.safeParse({ ownerBotId: actor.botId,
         ownerResponsibility: parsed.data.ownerResponsibility, members: selected, executionPolicy: "parallel", maxConcurrency: 2 });
       if (!adjusted.success) return { ok: false, code: "invalid_request", message: "本次成员或依赖无效，依赖须指向排在前面的已选成员" };
@@ -215,23 +209,18 @@ export class WorkTeamService {
         return saved ? { ...member, delegatedScope: [...saved.delegatedScope] } : undefined;
       });
       if (selected.some(member => !member))
-        return { ok: false, code: "unauthorized_actor", message: "本次分工只能选择该模板已有成员，不会增加成员或权限" };
+        return { ok: false, code: "unauthorized_actor", message: "本次分工只能选择该模板已有成员，不会增加成员" };
       const adjusted = workTeamPlanSchema.safeParse({ ...plan,
         ownerResponsibility: parsed.data.ownerResponsibility, members: selected });
       if (!adjusted.success) return { ok: false, code: "invalid_request", message: "本次分工的成员或依赖无效：依赖须指向排在前面的已选成员" };
       Object.assign(plan, adjusted.data);
     }
-    // The authenticated user commission permits this exact team dispatch, like the
-    // desktop entry. Each member executes its own saved scope; the coordinator
-    // does not need the union of its specialists' capabilities. validatePlan and
-    // dispatch still check each actual executor. Never persist broader Bot grants.
-    const allowedScopes = [...new Set(["workspace:read", ...plan.members.flatMap(member => member.delegatedScope)])];
-    return this.control({ ...actor, grants: { ...bot.authorization, allowedScopes, allowRedelegation: true } }, { kind: "create", request: { ...request, ...plan, templateId: input.templateId } }, sourceMessageId);
+    return this.control(actor, { kind: "create", request: { ...request, ...plan, templateId: input.templateId } }, sourceMessageId);
   }
 
   handle(actor: WorkActor, raw: unknown): WorkTeamControlResult {
     if (actor.kind !== "user" || !actor.userId.trim())
-      return { ok: false, code: "unauthorized_actor", message: "组队操作需要已认证用户，模型不能代替用户授权" };
+      return { ok: false, code: "unauthorized_actor", message: "组队操作需要已认证用户，不能跨用户管理团队" };
     return this.control(actor, raw);
   }
 
@@ -258,7 +247,6 @@ export class WorkTeamService {
           const work = this.works.getWork(request.workId), team = this.row(request.workId);
           if (!work || !team || work.userId !== actor.userId) throw new TeamError("not_found", "找不到团队事项");
           this.checkGuard(work, request.versionGuard);
-          if (!actor.grants?.allowRedelegation || !work.authorization.allowRedelegation) throw new TeamError("unauthorized_actor", "当前入口或事项未授权团队委派");
           if (work.lifecycle !== "active" || team.intent_revision === work.intentRevision && team.input_snapshot_id === work.inputSnapshotId)
             throw new TeamError("invalid_request", "只能为已变更的当前要求重新安排团队，不能重跑原要求");
           const unsettled = this.works.repo.listBindings(work.workId).some(binding => workExecutionInFlight(binding.status)
@@ -269,13 +257,9 @@ export class WorkTeamService {
           if (request.plan.ownerBotId !== work.ownerBotId) throw new TeamError("unauthorized_actor", "重新安排不能更换负责人，请先使用负责人交接");
           this.validatePlan(actor.userId, request.plan);
           if (request.plan.workspacePath) this.validateWorkspace(request.plan.workspacePath);
-          if (request.plan.members.some(member => member.delegatedScope.some(scope => scope !== "workspace:read")))
-            throw new TeamError("unauthorized_actor", "变更要求后的重新安排仅允许只读复核；写入补做必须先明确未完成步骤，不能重复旧效果");
           const workspace = this.db.prepare("SELECT canonical_path,entity FROM work_team_workspaces WHERE work_id=?").get(work.workId) as { canonical_path: string; entity: string } | undefined;
           if (!workspace || workspace.canonical_path !== work.workspacePath || fileResourceIdentity(workspace.canonical_path).entity !== workspace.entity)
             throw new TeamError("invalid_workspace", "原工作区身份已变化，不能静默接管新目录");
-          if (request.plan.members.some(member => member.delegatedScope.some(scope => !work.authorization.allowedScopes.includes(scope))))
-            throw new TeamError("unauthorized_actor", "重新安排不能扩大当前 Work 授权");
           for (const row of this.rows(work.workId)) this.db.prepare("INSERT INTO work_team_execution_history(task_id,work_id,input_json,execution_json,archived_at) VALUES (?,?,?,?,?)")
             .run(row.task_id, work.workId, row.input_json, JSON.stringify(row), this.now());
           this.db.prepare("DELETE FROM work_team_recovery_attempts WHERE work_id=?").run(work.workId);
@@ -393,7 +377,6 @@ export class WorkTeamService {
           if (previous.request_hash !== digest) throw new TeamError("idempotency_conflict", "操作标识已绑定不同的组队要求");
           return { ok: true, operationId: input.operationId, work: this.works.getWork(previous.work_id), team: this.get(previous.work_id), replayed: true };
         }
-        if (!actor.grants?.allowRedelegation) throw new TeamError("unauthorized_actor", "当前用户入口未授权选定成员协作");
         const plan = workTeamPlanSchema.parse({ ownerBotId: input.ownerBotId, ownerResponsibility: input.ownerResponsibility, members: input.members, executionPolicy: input.executionPolicy, maxConcurrency: input.maxConcurrency });
         const owningTeam = input.templateId ? this.templates(actor.userId).find(team => team.templateId === input.templateId) : undefined;
         if (input.templateId && !owningTeam) throw new TeamError("not_found", "该团队不存在或已删除");
@@ -404,14 +387,6 @@ export class WorkTeamService {
         let workspacePath: string;
         try { workspacePath = realpathSync(input.workspacePath); if (!statSync(workspacePath).isDirectory()) throw Error(); }
         catch { throw new TeamError("invalid_workspace", "工作区必须是当前可访问的目录"); }
-        const scopes = [...new Set(["workspace:read", ...plan.members.flatMap(item => item.delegatedScope)])];
-        if (scopes.some(scope => !actor.grants!.allowedScopes.includes(scope))) throw new TeamError("unauthorized_actor", "用户入口没有所选工作范围授权");
-        if (actor.grants.targetWhitelist.length && !actor.grants.targetWhitelist.includes(workspacePath)) throw new TeamError("unauthorized_actor", "工作区不在用户入口授权范围内");
-        for (const botId of [plan.ownerBotId, ...plan.members.map(member => member.botId)]) {
-          const bot = this.bots.getBot(botId)!;
-          if (bot.authorization.targetWhitelist.length && !bot.authorization.targetWhitelist.includes(workspacePath))
-            throw new TeamError("unauthorized_actor", `${bot.displayName} 未被授权访问所选工作区`);
-        }
         const conversationId = !sourceMessageId && owningTeam
           ? ensureTeamConversation(this.db, actor.userId, input.ownerBotId, owningTeam.templateId) : input.conversationId;
         const now = this.now();
@@ -422,8 +397,7 @@ export class WorkTeamService {
           conversationId, sourceMessageId,
           criteria: input.criteria.map(text => ({ text, ...(sourceMessageId ? { origin: "assistant_proposal" as const } : {}) })),
           inputSnapshotId: `team-input:${hash([input, workspacePath])}`,
-          authorization: { allowedScopes: scopes, targetWhitelist: [workspacePath], allowGitBranchOrWorktree: false,
-            allowRedelegation: true, expiresAt: actor.grants.expiresAt },
+          authorization: this.bots.getBot(plan.ownerBotId)!.authorization,
           constraints: ["仅在用户选择的工作区内执行分配职责，不共享其他 Bot 私人记忆。", plan.executionPolicy === "parallel" ? "成员按明确依赖有界并行，文件写入仍通过资源互斥；负责人等待所有成员结算后核对原委托与真实成果，交由前台自动判断交付或补缺，不要求用户采纳或确认结束。" : "成员按顺序执行，禁止重复其他成员已确认效果。负责人核对原委托与真实成果，交由前台自动判断交付或补缺，不要求用户采纳或确认结束。"] });
         if (!created.ok) throw new TeamError(created.code, created.message);
         const workId = created.work.workId;
@@ -474,7 +448,7 @@ export class WorkTeamService {
       const stopped = recovery?.state === "stopped";
       const stopMessage = stopped ? `${recovery.outcome === "no_progress" ? "自动恢复已停止：连续没有新进展"
         : recovery.outcome === "recovery_limit" ? "自动恢复已停止：已达恢复上限"
-          : recovery.outcome === "authorization_lost" ? "自动恢复已停止：执行成员授权已失效"
+          : recovery.outcome === "authorization_lost" ? "自动恢复已停止：执行成员已停用或不再属于该事项"
             : "自动恢复已停止"}（${recovery.failure_message}）` : undefined;
       return { botId: item.bot_id, responsibility: item.responsibility, delegatedScope: JSON.parse(item.scopes_json), role: item.role,
         dependsOnBotIds: plan.members.find(member => member.botId === item.bot_id)?.dependsOnBotIds,
@@ -567,13 +541,8 @@ export class WorkTeamService {
           const bot = this.bots.getBot(identity);
           if (!bot || bot.userId !== work.userId || bot.status !== "active")
             throw new TeamError("unauthorized_actor", "执行 Bot 已停用或不再属于该事项");
-          if (bot.authorization.expiresAt !== undefined && bot.authorization.expiresAt <= this.now()) throw new TeamError("unauthorized_actor", "执行 Bot 授权已过期");
-          if (bot.authorization.targetWhitelist.length && !bot.authorization.targetWhitelist.includes(work.workspacePath ?? ""))
-            throw new TeamError("unauthorized_actor", "工作区不在执行 Bot 授权范围内");
           const rowScopes = z.array(z.string()).parse(JSON.parse(row.scopes_json));
           const scopes = rowScopes;
-          if (scopes.some(scope => !bot.authorization.allowedScopes.includes(scope)))
-            throw new TeamError("unauthorized_actor", "执行 Bot 已失去所需范围授权");
           const operationId = recovery?.operation_id ?? `team-dispatch:${row.task_id}`;
           if (!recovery && row.role === "owner_summary" && identity !== row.bot_id && !this.works.repo.bindingForTask(row.task_id)) {
             const currentWorkId = work.workId;
@@ -783,7 +752,7 @@ export class WorkTeamService {
     this.db.prepare("UPDATE work_team_executions SET input_json=? WHERE work_id=? AND ordinal=? AND input_json IS NULL")
       .run(JSON.stringify(input), work.workId, row.ordinal);
   }
-  private prepareRecoveryInput(work: WorkDto, plan: WorkTeamPlan, row: ExecutionRow, recovery: RecoveryRow, scopes: string[]): void {
+  private prepareRecoveryInput(work: WorkDto, plan: WorkTeamPlan, row: ExecutionRow, recovery: RecoveryRow, _scopes: string[]): void {
     const identity = row.role === "owner_summary" ? work.ownerBotId : recovery.bot_id;
     const rows = this.rows(work.workId);
     const history = this.recoveryRows(work.workId, row.task_id);
@@ -796,7 +765,7 @@ export class WorkTeamService {
     const input = { ...base, role: row.role, botId: identity, displayName: this.memberDisplayName(work, identity), responsibility: row.responsibility,
       previousResults: previous, executionPolicy: plan.executionPolicy ?? "sequential",
       dependsOnBotIds: plan.members.find(member => member.botId === row.bot_id)?.dependsOnBotIds ?? [],
-      readOnly: scopes.length === 1 && scopes[0] === "workspace:read",
+      readOnly: false,
       recovery: { generation: recovery.generation, failureClass: recovery.failure_class,
         failureMessage: recovery.failure_message, sourceBindingId: recovery.source_binding_id,
         pendingSteps: [...new Set(own.flatMap(item => item.uncoveredScope))], priorDeliverables: own,
@@ -805,7 +774,7 @@ export class WorkTeamService {
       uncertainOperations: this.works.repo.listAdmissions(work.workId)
         .filter(item => item.state === "unknown" && item.bindingId === recovery.source_binding_id)
         .map(item => ({ operationId: item.operationId, actionKind: item.actionKind })),
-      instructions: this.instructionsFor(row, identity, scopes.length === 1 && scopes[0] === "workspace:read")
+      instructions: this.instructionsFor(row, identity, false)
         + " 未知效果只保留为诊断，不阻止独立步骤；它不代表原动作未发生。先回读或核对幂等回执，不盲目重发同一未知操作，不把失败或未知报告为成功。" };
     this.works.transaction(() => {
       this.works.collaboration.assertAuthority();
@@ -1031,7 +1000,7 @@ export class WorkTeamService {
       && (occupied.operationId === operationId || ["failed", "stopped", "invalidated"].includes(occupied.status)));
   }
 
-  dispatchError(workId: string, taskId: string, botId: string, scopes: string[] | undefined, operationId?: string): string | undefined {
+  dispatchError(workId: string, taskId: string, botId: string, _scopes: string[] | undefined, operationId?: string): string | undefined {
     if (!this.row(workId)) return undefined;
     // A foreground result review may persist an exact missing-part plan for the
     // team owner. It is not an arbitrary additional team member or a root replay.
@@ -1045,22 +1014,18 @@ export class WorkTeamService {
       && plan.inputSnapshotId === work.inputSnapshotId && ["pending","dispatched"].includes(plan.state)
       && operationId === `dispatch:${request!.operation_id}`
       && this.works.collaboration.isDelegationAdopted(source,work)
-      && ["completed","failed","stopped"].includes(source.status)
-      && scopes?.every(scope => source.delegatedScope.includes(scope) && work.authorization.allowedScopes.includes(scope))) return undefined;
+      && ["completed","failed","stopped"].includes(source.status)) return undefined;
     const row = this.rows(workId).find(item => item.task_id === taskId);
-    if (!row || row.bot_id !== botId || row.cancelled) return "团队执行必须使用持久分工与原任务身份，不能追加未授权执行";
+    if (!row || row.bot_id !== botId || row.cancelled) return "团队执行必须使用持久分工与原任务身份，不能追加未登记执行";
     const recovery = operationId ? this.recoveryForOperation(operationId) : undefined;
     if (recovery) {
       if (recovery.task_id !== taskId || recovery.bot_id !== botId || !["pending", "claimed"].includes(recovery.state))
         return "自动恢复必须使用原成员身份与当前代次";
       if (recovery.work_id !== workId || !this.recoverySourceSettled(recovery))
         return "原生执行尚未确认结束或仍有在途操作，不能启动恢复";
-      const expected = JSON.parse(row.scopes_json) as string[];
-      if (hash(scopes) !== hash(expected)) return "自动恢复不能扩大或改变原成员的工作范围";
       return undefined;
     }
-    if (!row.input_json || row.error) return "团队执行必须使用持久分工与原任务身份，不能追加未授权执行";
-    if (hash(scopes) !== hash(JSON.parse(row.scopes_json))) return "团队执行不能改变用户批准的委派范围";
+    if (!row.input_json || row.error) return "团队执行必须使用持久分工与原任务身份，不能追加未登记执行";
     return undefined;
   }
 
@@ -1072,8 +1037,6 @@ export class WorkTeamService {
     for (const member of [{ botId: plan.ownerBotId, delegatedScope: ["workspace:read"] }, ...plan.members]) {
       const bot = this.bots.getBot(member.botId);
       if (!bot || bot.userId !== userId || bot.status !== "active") throw new TeamError("unauthorized_actor", "团队只能选择当前用户的启用 Bot");
-      if (member.delegatedScope.some(scope => !bot.authorization.allowedScopes.includes(scope))) throw new TeamError("unauthorized_actor", `${bot.displayName} 没有所选范围授权，组队不会扩大 Bot 权限`);
-      if (bot.authorization.expiresAt !== undefined && bot.authorization.expiresAt <= this.now()) throw new TeamError("unauthorized_actor", `${bot.displayName} 授权已过期`);
     }
   }
   private templates(userId: string, includeDeleted = false): WorkTeamTemplateDto[] {

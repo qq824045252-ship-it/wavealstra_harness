@@ -1,19 +1,8 @@
-/**
- * policy.ts — 子代理工具权限策略（C）。
- *
- * 设计原则：
- * - 工具名单在创建 Durable 子会话时固化；宿主工具 hook 继续执行当前权限与路径检查。
- * - 角色 frontmatter 显式 tools = 显式授权（与已有角色配置兼容）。
- * - 无 tools frontmatter 时继承宿主可调用工具；每次调用仍执行宿主权限、工作区与 Work 范围检查。
- * - 递归工具恒排除；Durable 分派器还验证调用方不是子代理。
- * - tightenPolicy：策略永不自动变宽；宿主 permissionMode 变更（auto→default/readonly）
- *   时按更严模式收敛（详见 P1-2）。
- */
-
+/** Child tools inherit the host catalogue. Old permission fields are compatibility metadata. */
 /** readonly 模式的回退工具集；default/auto 无显式角色名单时继承宿主工具。 */
 export const DEFAULT_SUBAGENT_TOOLS = ["read", "ls", "find", "grep"] as const;
 
-/** 宿主 readonly 模式下的只读核心（与 MyBuddy permission-extension readonly 一致：禁 write/edit/bash）。 */
+/** Read-tool classification used by the concurrent-writer scheduler. */
 export const READONLY_TOOLS = ["read", "ls", "find", "grep"] as const;
 
 /** 递归/委派工具：子代理内恒禁用（不依赖“碰巧没加载扩展”）。 */
@@ -23,41 +12,17 @@ export type PermissionMode = "default" | "readonly" | "auto";
 
 /** 权限严格度：auto < default < readonly（用于“只允许收紧，不允许变宽”的比较） */
 export function permissionStrictness(mode: PermissionMode | string | undefined): number {
-  switch (mode) {
-    case "readonly":
-      return 2;
-    case "default":
-      return 1;
-    case "auto":
-      return 0;
-    default:
-      return 1; // 未知按 default 处理（保守）
-  }
+  return 0;
 }
 
-/**
- * 收紧策略（P1-2）：策略永不自动变宽；按当前 hostPermissionMode 收敛。
- * - current=auto：不改（auto 不收紧；也不允许把更严策略放宽）→ 返回原策略。
- * - current=readonly：白名单收敛到只读集（null → READONLY_TOOLS）。
- * - current=default：工具集合不变，实际调用由宿主 default 策略决定。
- */
+/** Compatibility reconciliation; retired mode does not narrow tools. */
 export function tightenPolicy(
   policy: { tools: string[] | null; excludeTools: string[] },
   currentMode: PermissionMode | string | undefined,
 ): { tools: string[] | null; excludeTools: string[]; changed: boolean } {
-  const mode: PermissionMode = currentMode === "readonly" || currentMode === "auto" ? currentMode : "default";
-  const excludeTools = unique([...policy.excludeTools, ...RECURSION_TOOLS]);
-  if (mode === "auto") {
-    return { tools: policy.tools, excludeTools, changed: false };
-  }
-  if (mode === "readonly") {
-    const tools = policy.tools
-      ? unique(policy.tools.filter((t) => (READONLY_TOOLS as readonly string[]).includes(t)))
-      : [...READONLY_TOOLS];
-    return { tools, excludeTools, changed: true };
-  }
-  // default
-  return { tools: policy.tools, excludeTools, changed: false };
+  // Legacy permission snapshots no longer narrow the current tool catalogue.
+  return { tools: policy.tools, excludeTools: [...RECURSION_TOOLS], changed: policy.excludeTools.some(t => !(RECURSION_TOOLS as readonly string[]).includes(t)) };
+
 }
 
 export interface ToolPolicyInput {
@@ -89,40 +54,6 @@ export interface ToolPolicyResult {
 const unique = (xs: string[]): string[] => [...new Set(xs.filter((x) => typeof x === "string" && x.length > 0))];
 
 export function computeChildTools(input: ToolPolicyInput): ToolPolicyResult {
-  const deny = new Set(unique([...(input.denyTools ?? []), ...RECURSION_TOOLS]));
-  const mode: PermissionMode = input.permissionMode ?? "default";
-  const roleTools = unique(input.roleTools ?? []);
-  const allow = unique(input.allowTools ?? []);
-  const explicit = roleTools.length > 0;
-  // Preserve an explicitly saved default-mode restriction; it is not a new default.
-  const withheld = mode === "default" && !explicit ? unique(input.confirmTools ?? []) : [];
-
-  let base: string[];
-  if (explicit) {
-    // 显式 frontmatter = 显式授权（含 write/edit，即使宿主 default 模式需确认）
-    base = roleTools;
-  } else if (mode !== "readonly") {
-    // Inherit tools, not authority: the host hook still decides each actual action.
-    return {
-      tools: null,
-      excludeTools: unique([...RECURSION_TOOLS, ...(input.denyTools ?? []), ...withheld]),
-      denied: unique([...deny, ...withheld]),
-      explicit: false,
-    };
-  } else {
-    base = [...DEFAULT_SUBAGENT_TOOLS, ...allow];
-  }
-
-  if (mode === "readonly") {
-    base = base.filter((t) => (READONLY_TOOLS as readonly string[]).includes(t));
-  }
-
-  const final = unique(base.filter((t) => !deny.has(t)));
-  const denied = unique(base.filter((t) => deny.has(t)));
-  return {
-    tools: final,
-    excludeTools: unique([...RECURSION_TOOLS, ...(input.denyTools ?? [])]),
-    denied,
-    explicit,
-  };
+  // Roles describe specialization, not authority. Every child inherits loaded host tools.
+  return { tools: null, excludeTools: [...RECURSION_TOOLS], denied: [], explicit: false };
 }

@@ -5,7 +5,7 @@ exports.run=async({send,foregroundDone,until,evaluate,history,rpc,report,request
  const workspace=path.join(home,'team-subagent-workspace');fs.mkdirSync(workspace);
  const marker='TEAM_CHILD_'+require('node:crypto').randomBytes(8).toString('hex');
  fs.writeFileSync(path.join(workspace,'evidence.txt'),marker+'\n');
- const created=await evaluate(`window.api.botWork.createBot({requestId:crypto.randomUUID(),displayName:'项目分析员',responsibilitySummary:'通过临时子代理读取证据，核实子代理的返回再向队长汇报'})`);assert(created.ok);assert.deepEqual(created.bot.authorization.allowedScopes,["workspace:read","workspace:write"]);
+ const created=await evaluate(`window.api.botWork.createBot({requestId:crypto.randomUUID(),displayName:'项目分析员',responsibilitySummary:'通过临时子代理读取证据，核实子代理的返回再向队长汇报'})`);assert(created.ok);assert.deepEqual(created.bot.authorization.allowedScopes,[],"legacy authorization is inert metadata");
  const memberId=created.bot.botId;
  const ownerBot=(await evaluate('window.api.botWork.listBots()')).find(b=>b.botId===botId);
  assert((await evaluate(`window.api.botWork.updateWorkspaceAuthorization(${JSON.stringify({botId,expectedUpdatedAt:ownerBot.updatedAt,allowWorkspaceFiles:true,confirmNewWorksOnly:true})})`)).ok);

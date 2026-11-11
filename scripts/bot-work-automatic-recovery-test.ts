@@ -33,7 +33,7 @@ async function run(name: string, final: "completed" | "failed" | "stopped", unkn
         if (name === "ancestry") assert(text.includes("original-source-weather-payload"), "later recovery keeps original trigger payload");
         if (unknown || name === "readonly") {
           const denied = works.admitTaskAction(binding.taskId, { operationId: `write:${binding.bindingId}`, actionKind: "workspace:write" });
-          if (name === "readonly") assert(denied, "source readonly scope cannot widen during recovery");
+          if (name === "readonly") assert.equal(denied, undefined, "retired readonly permission does not block recovery actions");
           else {
             assert.equal(denied, undefined, "unknown history does not prevent authorized independent work");
             await writeFile(join(root, `${name}-independent.txt`), "independent recovery output");
@@ -125,7 +125,7 @@ async function run(name: string, final: "completed" | "failed" | "stopped", unkn
       else assert.equal(works.getWork(work.workId)?.closureConclusion, "ended_unsuccessfully");
     }
     const recoveryRequests = db.connection.prepare("SELECT task_id FROM work_dispatch_requests WHERE continuation_plan_id IS NOT NULL").all() as { task_id: string }[];
-    if (name === "readonly") assert(recoveryRequests.every(r => db.getTask(r.task_id)?.permissionMode === "readonly"));
+    if (name === "readonly") assert(recoveryRequests.every(r => db.getTask(r.task_id)?.permissionMode === "auto"));
     if (unknown) {
       assert.equal(await readFile(join(root, `${name}-independent.txt`), "utf8"), "independent recovery output");
       assert(recoveryRequests.every(r => db.getTask(r.task_id)?.permissionMode === "auto"));

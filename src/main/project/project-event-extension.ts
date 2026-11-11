@@ -4,7 +4,7 @@
  * 隔离规则（与 memory/plan 工具一致，冻结）：
  * - 作用域 = 当前任务绑定的项目（未绑定 → 受控错误；不接受 projectId 参数，杜绝越权）；
  * - 事件读取（list/read）为只读；提升（promote_*）为显式写，走 ProjectEventPromoter →
- *   既有 service；readonly 权限模式 / 归档项目 → 拒绝写；
+ *   既有 service；归档项目 → 拒绝写；
  * - 输出稳定 ID（event/target id），不泄露绝对路径；
  * - 提升内容全部由 Agent 显式给出（kind/title/content），service 只校验落真源。
  */
@@ -27,7 +27,7 @@ import type { ProjectService } from "./ProjectService";
 export interface ProjectEventExtensionBridge {
   service: ProjectService;
   promoter: ProjectEventPromoter;
-  /** 文档/纪要文本输入（source=document 审计层；readonly 拦截由工具层执行） */
+  /** 文档/纪要文本输入（source=document 审计层） */
   ingestor?: ProjectEventIngestor;
   /** 文件级文档导入（Library-first：先入项目资料库真源，事件引用+截取摘要） */
   importer?: ProjectDocumentImporter;
@@ -35,7 +35,7 @@ export interface ProjectEventExtensionBridge {
   taskId?: string;
   /** 当前任务绑定的 projectId（动态解析；null = 未绑定） */
   resolveProjectId?: () => string | null;
-  /** 当前权限模式（readonly 禁止 promote 等写操作；缺省视为非 readonly） */
+  /** 旧调用方兼容字段，不再限制执行 */
   getPermissionMode?: () => PermissionMode;
 }
 
@@ -161,11 +161,8 @@ export function createProjectEventExtension(bridge: ProjectEventExtensionBridge)
     return { eventId, projectId };
   };
 
-  /** 写操作门禁：readonly 权限 / 归档项目 一律拒绝（与既有项目写工具一致），读操作不受影响 */
+  /** 写操作门禁：归档项目拒绝写入（与既有项目写工具一致），读操作不受影响 */
   const guardWritable = (projectId: string): void => {
-    if (bridge.getPermissionMode?.() === "readonly") {
-      throw new ProjectEventToolError("当前为只读权限模式，不能提升事件（只可读取）。");
-    }
     const project = bridge.service.get(projectId);
     if (project?.archived) {
       throw new ProjectEventToolError(ARCHIVED_PROJECT_WRITE_GUIDANCE);
@@ -193,15 +190,12 @@ export function createProjectEventExtension(bridge: ProjectEventExtensionBridge)
         "把一份本地文件（md/txt/docx/pptx/xlsx/pdf 等）导入当前项目：文件先成为项目资料库真源条目" +
         "（受管副本+内容抽取+FTS，复用既有资料库能力），随后记录一条 source=document 的项目输入事件" +
         "（引用资料条目 + 机械截取正文摘要，绝不自动总结/OCR）。同文件重复导入幂等（返回既有事件）。" +
-        "readonly 权限或归档项目下不可用（会写入项目真源）；文件大小/安全边界由资料库既有守卫执行。",
+        "归档项目下不可用（会写入项目真源）；文件大小/安全边界由资料库既有守卫执行。",
       promptSnippet: "project_event_import_file(filePath) — 文件入项目资料库并记录输入事件",
       parameters: importFileParamsSchema,
       execute: async (_toolCallId: string, params: { filePath: string }) => {
         try {
           const projectId = requireProject();
-          if (bridge.getPermissionMode?.() === "readonly") {
-            throw new ProjectEventToolError("当前为只读权限模式，不能导入文件（会写入项目资料库）。");
-          }
           if (!bridge.importer) {
             throw new ProjectEventToolError("文件导入入口未就绪（importer 未注入）。");
           }
@@ -224,7 +218,7 @@ export function createProjectEventExtension(bridge: ProjectEventExtensionBridge)
       description:
         "把一份会议纪要/文档文本记录为当前项目的输入事件（source=document，审计/输入层，不写真源、不触发任何派生）。" +
         "正文必须由你显式给出（可先提炼再传入，服务绝不自动总结/截断；超限拒绝）。同内容重复导入幂等（返回既有事件）。" +
-        "readonly 权限模式下不可用；归档项目允许记录（与外部输入审计语义一致）。",
+        "归档项目允许记录（与外部输入审计语义一致）。",
       promptSnippet: "project_event_ingest_document(title, body, ref?) — 记录一份纪要/文档为项目输入事件",
       parameters: ingestDocumentParamsSchema,
       execute: async (
@@ -233,10 +227,6 @@ export function createProjectEventExtension(bridge: ProjectEventExtensionBridge)
       ) => {
         try {
           const projectId = requireProject();
-          // 只读权限拦截（审计层写入也是写）；归档项目允许（与 gateway/cron 落库语义一致）
-          if (bridge.getPermissionMode?.() === "readonly") {
-            throw new ProjectEventToolError("当前为只读权限模式，不能导入文档事件（只可读取）。");
-          }
           if (!bridge.ingestor) {
             throw new ProjectEventToolError("文档事件入口未就绪（ingestor 未注入）。");
           }
@@ -320,7 +310,7 @@ export function createProjectEventExtension(bridge: ProjectEventExtensionBridge)
       },
     });
 
-    // triage 状态（工作流元数据，绝不参与派生）：dismiss/reopen 幂等；readonly 拒绝；归档项目允许
+    // triage 状态（工作流元数据，绝不参与派生）：dismiss/reopen 幂等；归档项目允许
     const triage = async (
       eventId: string,
       status: "dismissed" | "open",
@@ -329,9 +319,6 @@ export function createProjectEventExtension(bridge: ProjectEventExtensionBridge)
       try {
         const projectId = requireProject();
         requireScopedEvent(projectId, eventId);
-        if (bridge.getPermissionMode?.() === "readonly") {
-          throw new ProjectEventToolError("当前为只读权限模式，不能修改事件 triage 状态（只可读取）。");
-        }
         const updated =
           status === "dismissed"
             ? bridge.service.dismissProjectEvent(projectId, eventId)
@@ -351,7 +338,7 @@ export function createProjectEventExtension(bridge: ProjectEventExtensionBridge)
       description:
         "把当前项目的一条外部输入事件标记为已处理/无需动作（triage 工作流元数据，不写真源、不影响项目健康度）。" +
         "适合：已读且无需提升的事件（高量 gateway/cron 消息收敛）。重复调用幂等。" +
-        "readonly 权限模式下不可用；归档项目允许（审计层工作流元数据）。",
+        "归档项目允许（审计层工作流元数据）。",
       promptSnippet: "project_event_dismiss(eventId) — 标记事件已处理",
       parameters: readParamsSchema,
       execute: async (_toolCallId: string, params: { eventId: string }) =>
@@ -363,7 +350,7 @@ export function createProjectEventExtension(bridge: ProjectEventExtensionBridge)
       label: "项目事件 · 恢复待判断",
       description:
         "把当前项目一条已忽略（dismissed）的事件恢复为待判断（triage=open）。幂等；" +
-        "readonly 权限模式下不可用；归档项目允许。",
+        "归档项目允许。",
       promptSnippet: "project_event_reopen(eventId) — 恢复事件待判断",
       parameters: readParamsSchema,
       execute: async (_toolCallId: string, params: { eventId: string }) =>
@@ -376,7 +363,7 @@ export function createProjectEventExtension(bridge: ProjectEventExtensionBridge)
       description:
         "把当前项目的一条外部输入事件显式提升为项目共享长期记忆（fact/decision/constraint/risk/open_question）。" +
         "kind 与 title 必须由你明确给出（不允许让系统猜测）；content 可选。提升后事件与记忆建立溯源链接，" +
-        "记忆走既有派生（risk/待确认影响项目健康度）。readonly 权限或归档项目下不可用；同一事件同一类型只能提升一次（重复调用幂等返回既有目标）。",
+        "记忆走既有派生（risk/待确认影响项目健康度）。归档项目下不可用；同一事件同一类型只能提升一次（重复调用幂等返回既有目标）。",
       promptSnippet: "project_event_promote_to_memory(eventId, kind, title, content?, importance?) — 事件提升为项目记忆",
       parameters: promoteMemoryParamsSchema,
       execute: async (
@@ -411,7 +398,7 @@ export function createProjectEventExtension(bridge: ProjectEventExtensionBridge)
       description:
         "把当前项目的一条外部输入事件显式提升为项目计划待办（Plan/Todo）。标题必须由你明确给出；" +
         "可附描述、截止时间（epoch ms）与优先级。提升走既有计划 service（逾期/临期进入派生健康度）。" +
-        "readonly 权限或归档项目下不可用；同一事件同一类型只能提升一次（重复调用幂等返回既有目标）。",
+        "归档项目下不可用；同一事件同一类型只能提升一次（重复调用幂等返回既有目标）。",
       promptSnippet: "project_event_promote_to_todo(eventId, title, description?, dueAt?, priority?) — 事件提升为计划项",
       parameters: promoteTodoParamsSchema,
       execute: async (
@@ -446,7 +433,7 @@ export function createProjectEventExtension(bridge: ProjectEventExtensionBridge)
       description:
         "把当前项目的一条外部输入事件显式保存为项目资料库 markdown 条目（正文必须由你明确给出；" +
         "需要总结/提炼时请你在调用前完成）。条目落在项目资料空间（无则自动创建）。" +
-        "readonly 权限或归档项目下不可用；同一事件同一类型只能提升一次（重复调用幂等返回既有目标）。",
+        "归档项目下不可用；同一事件同一类型只能提升一次（重复调用幂等返回既有目标）。",
       promptSnippet: "project_event_promote_to_library(eventId, title, content) — 事件保存为项目资料",
       parameters: promoteLibraryParamsSchema,
       execute: async (_toolCallId: string, params: { eventId: string; title: string; content: string }) => {

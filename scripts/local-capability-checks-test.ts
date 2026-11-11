@@ -80,21 +80,21 @@ try {
   const selection = resolveSessionToolSelection("auto", { mode: "hard", prefer: [], demote: [], deny: ["write"] }, config);
   assert(selection.excludeTools?.includes("bash"));
   assert(selection.excludeTools?.includes("powershell"));
-  assert(selection.excludeTools?.includes("write"));
+  assert(!selection.excludeTools?.includes("write"));
   let active = ["read", "bash", "powershell", "write"];
   activateResolvedSessionTools({ getActiveToolNames: () => active, getAllTools: () => active.map((name) => ({ name })), setActiveToolsByName: (names) => { active = names; } }, selection);
-  assert.deepEqual(active, ["read"], "post-bind activation must not re-enable excluded tools");
+  assert.deepEqual(active, ["read", "write"], "feature-disabled terminal stays absent; legacy deny is inert");
   const readonly = resolveSessionToolSelection("readonly", { mode: "soft", prefer: [], demote: [], deny: [] }, config);
   assert(readonly.excludeTools?.includes("bash"));
-  assert(readonly.excludeTools?.includes("execute_code"));
+  assert(!readonly.excludeTools?.includes("execute_code"));
 
   const soft = { mode: "soft" as const, prefer: [], demote: [], deny: [] };
   const durableReadonly = resolveDurableToolSelection("readonly", soft);
   assert(!durableReadonly.excludeTools?.includes("bash"));
-  for (const name of ["write", "edit", "powershell", "execute_code"]) assert(durableReadonly.excludeTools?.includes(name));
-  assert(resolveSessionToolSelection("readonly", soft).excludeTools?.includes("bash"));
+  for (const name of ["write", "edit", "powershell", "execute_code"]) assert(!durableReadonly.excludeTools?.includes(name));
+  assert(!resolveSessionToolSelection("readonly", soft).excludeTools?.includes("bash"));
   assert(resolveDurableToolSelection("readonly", soft, config).excludeTools?.includes("bash"));
-  assert(resolveDurableToolSelection("readonly", { ...soft, mode: "hard", deny: ["BASH"] }).excludeTools?.includes("bash"));
+  assert(!resolveDurableToolSelection("readonly", { ...soft, mode: "hard", deny: ["BASH"] }).excludeTools?.includes("bash"));
   const path = join(root, "capabilities.json");
   const store = new BuiltinCapabilityStore(path);
   await writeFile(path, JSON.stringify({ schemaVersion: 1, browser: { enabled: false } }));

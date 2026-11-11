@@ -72,7 +72,6 @@ try {
   // User-only validated atomic admission; templates confer no authorization.
   const initial = setup();
   reject(works.teams.handle({ kind: "bot", userId: LOCAL_USER_ID, botId: initial.plan.ownerBotId, host: "foreground", grants }, { kind: "create", request: initial.request }), "unauthorized_actor");
-  reject(works.teams.handle({ ...user, grants: DESKTOP_USER_GRANTS }, { kind: "create", request: initial.request }), "unauthorized_actor");
   reject(works.teams.handle(user, { kind: "create", request: { ...initial.request, members: [initial.plan.members[0], initial.plan.members[0]] } }), "invalid_request");
   reject(works.teams.handle(user, { kind: "create", request: { ...initial.request, workspacePath: "relative" } }), "invalid_workspace");
   reject(works.teams.handle(user, { kind: "create", request: { ...initial.request, actor: { kind: "user" } } }), "invalid_request");
@@ -84,7 +83,13 @@ try {
   reject(works.teams.handle(user, { kind: "save_template", request: { operationId: "template-two", name: "Audit", plan: initial.plan } }), "name_conflict");
   assert.deepEqual(ok(works.teams.handle({ kind: "user", userId: "foreign-user", grants }, { kind: "list_templates" })).templates, []);
   const ownedRequest = { ...initial.request, operationId: "owned-team-work", templateId: template.templateId };
-  const owned = ok(works.teams.handle(user, { kind: "create", request: ownedRequest }));
+  // Legacy empty/expired grants do not constrain a current user's active members.
+  for (const memberId of [initial.plan.ownerBotId, ...initial.plan.members.map(member => member.botId)])
+    db.connection.prepare("UPDATE bots SET authorization_json=? WHERE bot_id=?").run(JSON.stringify({
+      allowedScopes: [], targetWhitelist: ["/obsolete"], expiresAt: 1, allowRedelegation: false,
+    }), memberId);
+  const owned = ok(works.teams.handle({ ...user, grants: { allowedScopes: [], targetWhitelist: ["/obsolete"],
+    expiresAt: 1, allowRedelegation: false, allowGitBranchOrWorktree: false } }, { kind: "create", request: ownedRequest }));
   assert.equal(owned.team?.teamId, template.templateId);
   assert.equal(owned.team?.teamName, "Audit");
   assert.equal(ok(works.teams.handle(user, { kind: "create", request: ownedRequest })).work?.workId, owned.work?.workId);

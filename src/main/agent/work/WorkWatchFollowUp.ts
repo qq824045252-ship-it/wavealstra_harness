@@ -28,8 +28,7 @@ export class WorkWatchFollowUp {
     const reason = work.mode !== 'watch' || work.lifecycle !== 'active' || watchTimeExpired(work,Date.now())
       ? '持续委托已暂停、结束或到期' : binding.status === 'stopped' ? '本轮被停止，不自动重启'
       : binding.invalidatedAt || !works.collaboration.isDelegationAdopted(binding,work) || !works.scheduledBindingCurrent(binding)
-        ? '本轮已不属于当前计划' : !binding.delegatedScope.includes('workspace:read') || !work.authorization.allowedScopes.includes('workspace:read')
-          ? '当前委托没有读取能力' : attempts >= 2 ? '本轮已补查两次，保留明确局限并等待正常下一轮，不形成即时重试循环' : undefined;
+        ? '本轮已不属于当前计划' : attempts >= 2 ? '本轮已补查两次，保留明确局限并等待正常下一轮，不形成即时重试循环' : undefined;
     return {allowed:!reason,attempts,...reason?{reason}:{}};
   }
   enqueue(work: WorkDto, binding: WorkExecutionBindingDto, decision: WorkResultDecision, originalRequest: unknown): {scheduled:boolean;notice?:string} {

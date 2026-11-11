@@ -34,17 +34,13 @@ export class WorkAutomaticRecovery {
     return chain;
   }
   sourceReadOnly(binding: WorkExecutionBindingDto): boolean {
-    const work = this.works.getWork(binding.workId);
+    // Readback is an execution goal, not an inherited permission restriction.
     return this.ancestry(binding).some(source => {
-      const task = this.db.prepare("SELECT permission_mode FROM tasks WHERE id=?").get(source.taskId) as { permission_mode?: string } | undefined;
       const event = source.inboxEventId ? this.works.repo.getInbox(source.inboxEventId) : undefined;
-      const handoff = this.works.repo.listOutbox(source.workId).find(event => event.eventType === "work.owner_handed_off" && event.payload.previousEpoch === source.ownerEpoch);
-      const originalOwner = handoff?.payload.previousOwnerBotId ?? (source.ownerEpoch === work?.ownerEpoch ? work.ownerBotId : undefined);
-      return task?.permission_mode === "readonly"
-        || isScheduledFollowUp(event)
-        || (source.botId !== originalOwner && source.delegatedScope.length > 0 && !source.delegatedScope.includes("workspace:write"));
+      return isScheduledFollowUp(event);
     });
   }
+
   evidenceRead(bindingId: string): boolean {
     return !!this.db.prepare("SELECT 1 FROM work_terminal_evidence_reads WHERE binding_id=? AND version=1").get(bindingId);
   }

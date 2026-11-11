@@ -83,13 +83,13 @@ function cleanup(): void {
   ok(policy.decide("write", "in.md").allowed, "A1 taskRoot 内相对路径可写");
   ok(policy.decide("write", join(inside, "a.md")).allowed, "A2 taskRoot 子目录可写");
   const external = policy.decide("write", join(outside, "out.md"));
-  ok(!external.allowed && external.scope === "external", "A3 外部无 grant 拒绝");
-  ok(policy.decide("write", join(taskRoot, "..", "sibling", "x.md")).allowed === false, "A4 ../ 穿越拒绝");
+  ok(external.allowed && external.scope === "external", "A3 外部路径不再要求 grant");
+  ok(policy.decide("write", join(taskRoot, "..", "sibling", "x.md")).allowed === true, "A4 相对外部路径正常解析");
   policy.addWriteGrant({ path: outside, source: "user-approval" });
   ok(policy.decide("write", join(outside, "out.md")).allowed, "A5 目录 grant 命中 → 可写");
   ok(policy.decide("write", join(outsideSub, "deep.md")).allowed, "A6 grant 子目录可写（词法+realpath）");
   const siblingDecision = policy.decide("write", join(sibling, "x.md"));
-  ok(!siblingDecision.allowed, "A7 兄弟目录仍拒绝");
+  ok(siblingDecision.allowed, "A7 兄弟目录不要求授权");
   ok(policy.decide("edit", join(outside, "out.md")).allowed, "A8 edit 同样命中 grant");
   ok(policy.decide("read", join(outside, "out.md")).allowed, "A9 grant 目录内 read 允许");
   ok(!policy.hasWriteGrantFor(join(sibling, "x.md")), "A10 hasWriteGrantFor 兄弟目录 false");
@@ -159,7 +159,7 @@ async function main(): Promise<void> {
       input: { path: join(outside, "out.md"), content: "x" },
     });
     ok(r === undefined, "D1 MCP 外部写 allow-once 放行");
-    ok(approvalCalls === 1, "D1b 外部写授权弹窗一次");
+    ok(approvalCalls === 0, "D1b 不创建外部写授权弹窗");
   }
   // D2 MCP 绝对路径在 taskRoot 内 → 不弹外部授权
   {
@@ -168,7 +168,7 @@ async function main(): Promise<void> {
       input: { path: join(taskRoot, "in.md"), content: "x" },
     });
     ok(r === undefined, "D2 taskRoot 内 MCP 写放行");
-    ok(approvalCalls === 1, "D2b 未触发外部授权");
+    ok(approvalCalls === 0, "D2b 未触发外部授权");
   }
   // D3 MCP 相对路径 → 不触发外部授权（交给 server / roots）
   {
@@ -177,7 +177,7 @@ async function main(): Promise<void> {
       input: { path: "relative.md", content: "x" },
     });
     ok(r === undefined, "D3 相对路径放行（server 侧解析）");
-    ok(approvalCalls === 1, "D3b 未触发外部授权");
+    ok(approvalCalls === 0, "D3b 未触发外部授权");
   }
   // D4 MCP 外部写 + deny → block
   {
@@ -194,7 +194,7 @@ async function main(): Promise<void> {
       toolName: "mcp__github_write_file",
       input: { path: join(outside, "out.md"), content: "x" },
     });
-    ok(r && (r as { block: boolean }).block, "D4 MCP 外部写拒绝 → block");
+    ok(r === undefined, "D4 旧授权回调不再调用");
   }
   // D5 unknown side effect 保持旧策略（requiresApproval 走 requestApproval，不新开外部授权）
   {
@@ -221,7 +221,7 @@ async function main(): Promise<void> {
     });
     ok(r === undefined, "D5 unknown MCP 放行（mock 审批通过）");
     ok(externalCalls === 0, "D5b unknown 不触发外部写授权");
-    ok(normalApprovalCalls >= 1, "D5c unknown 走原有审批通道");
+    ok(normalApprovalCalls === 0, "D5c unknown 不创建审批");
   }
 }
 
@@ -256,8 +256,8 @@ async function main(): Promise<void> {
   ok(policy.removeWriteGrant(outside) === true, "F2 removeWriteGrant 命中返回 true");
   ok(!policy.hasWriteGrantFor(join(outside, "out.md")), "F3 移除后同 policy 实例不再放行");
   ok(
-    !policy.decide("write", join(outside, "out.md")).allowed,
-    "F4 移除后 decide 回到 external 拒绝",
+    policy.decide("write", join(outside, "out.md")).allowed,
+    "F4 授权记录移除不改变执行",
   );
   ok(policy.removeWriteGrant(outside) === false, "F5 重复移除返回 false（幂等安全）");
 

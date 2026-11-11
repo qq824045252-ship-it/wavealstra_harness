@@ -19,7 +19,7 @@ import type { ExternalAgentDescriptorDto } from "@shared/external-agent";
 import { isSkillVisibleForMode, sortSkillsByModePolicy } from "@shared/mode-access-filter";
 import { emptyModePolicy } from "@shared/mode-profile";
 import { activeConnectorChips } from "@/lib/connectorChips";
-import { activeExecutionLabel, taskHasActiveExecution } from "@/utils/taskFilters";
+import { taskHasActiveExecution } from "@/utils/taskFilters";
 import { canTriggerEnhance } from "@/features/prompt-enhance/policy";
 import { PromptEnhanceControl } from "@/features/prompt-enhance/PromptEnhanceControl";
 import type { PromptEnhanceContext } from "@/features/prompt-enhance/types";
@@ -35,8 +35,6 @@ import WorkspacePicker from "./WorkspacePicker";
 import ProjectPicker from "./ProjectPicker";
 import ModePicker from "./ModePicker";
 import TagPicker from "./TagPicker";
-import HomePermissionPicker from "./HomePermissionPicker";
-import FullAccessConfirmModal from "./FullAccessConfirmModal";
 import ContextUsageControl from "./ContextUsageControl";
 import { isManualCompactionRunning } from "@shared/compaction";
 import GenerationSpeed from "./GenerationSpeed";
@@ -284,7 +282,6 @@ export default function ChatInput({
   const models = useAppStore((s) => s.models);
   const activeModelId = useAppStore((s) => s.activeModelId);
   const modelPreferences = useAppStore((s) => s.modelPreferences);
-  const permissionMode = useAppStore((s) => s.permissionMode);
   const welcomeMode = useAppStore((s) => s.welcomeMode);
   const modePresetId = useAppStore((s) => s.modePresetId);
   const resolvedPresetId = scenePresetId ?? modePresetId;
@@ -316,7 +313,6 @@ export default function ChatInput({
     [connectors, activeConnectorIds],
   );
   const setModelReasoningPreference = useAppStore((s) => s.setModelReasoningPreference);
-  const setPermissionMode = useAppStore((s) => s.setPermissionMode);
   const setSettingsOpen = useAppStore((s) => s.setSettingsOpen);
   const settingsOpen = useAppStore((state) => state.settingsOpen);
   const {
@@ -377,11 +373,6 @@ export default function ChatInput({
   useEffect(() => {
     setExternalAgent(null);
   }, [activeTaskId]);
-  const execLabel = useAppStore((s) => {
-    if (variant === "home") return null;
-    const activeTask = s.tasks.find((candidate) => candidate.id === s.activeTaskId) ?? null;
-    return activeExecutionLabel(activeTask);
-  });
   const hasStreamingDraft =
     Boolean(text.trim()) ||
     attachments.length > 0 ||
@@ -404,17 +395,12 @@ export default function ChatInput({
   const showStreamingMode = executing && hasStreamingDraft && !btwActive;
 
   const [addOpen, setAddOpen] = useState(false);
-  const [permOpen, setPermOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [projectOpen, setProjectOpen] = useState(false);
   const [modeOpen, setModeOpen] = useState(false);
   const [tagOpen, setTagOpen] = useState(false);
-  const [homePermOpen, setHomePermOpen] = useState(false);
   const [streamingModeOpen, setStreamingModeOpen] = useState(false);
-  /** 本轮执行中用户已选过权限后收起条，避免持续占位 */
-  const [execPermDismissed, setExecPermDismissed] = useState(false);
-  const [fullAccessConfirmOpen, setFullAccessConfirmOpen] = useState(false);
 
   // 抓取元素「加入聊天」后：切回聊天输入框（attachSelectionToChat 递增 tick）
   useEffect(() => {
@@ -513,14 +499,12 @@ export default function ChatInput({
   };
 
   const closeAllPopups = (): void => {
-    setPermOpen(false);
     setModelOpen(false);
     setAddOpen(false);
     setWorkspaceOpen(false);
     setProjectOpen(false);
     setModeOpen(false);
     setTagOpen(false);
-    setHomePermOpen(false);
   };
 
   const availableModels = useMemo(() => {
@@ -536,14 +520,6 @@ export default function ChatInput({
   }, [models]);
 
   const activeModel = availableModels.find((m) => m.id === activeModelId);
-  const fullAccess = permissionMode === "auto";
-  // 已允许完全访问时，无需在执行过程中重复显示开关条
-  const showExecPermBar =
-    welcomeMode !== "general" && executing && Boolean(execLabel) && !fullAccess && !execPermDismissed;
-
-  useEffect(() => {
-    if (!executing) setExecPermDismissed(false);
-  }, [executing, activeTaskId]);
 
   const slashQuery =
     btwActive || !text.startsWith("/") || text.includes(" ") ? null : text.slice(1);
@@ -987,15 +963,12 @@ export default function ChatInput({
   /** 是否有更高层弹层打开：BTW 的 Esc 不得与这些弹层抢（统一 dismiss 语义） */
   const btwOverlayOpen =
     addOpen ||
-    permOpen ||
     modelOpen ||
     workspaceOpen ||
     projectOpen ||
     modeOpen ||
     tagOpen ||
-    homePermOpen ||
     streamingModeOpen ||
-    fullAccessConfirmOpen ||
     slashMatches.length > 0;
 
   /** Prompt Enhance 触发门控（与公共核心 policy 共用同一纯函数） */
@@ -1102,30 +1075,6 @@ export default function ChatInput({
       }}
     >
       {attachmentError && <p role="alert">{attachmentError}</p>}
-      {showExecPermBar && (
-        <div className="exec-perm-bar">
-          <div className="exec-perm-title">{execLabel}</div>
-          <div className="exec-perm-row">
-            <span>允许完全访问</span>
-            <button
-              type="button"
-              className={`switch ${fullAccess ? "on danger" : ""}`}
-              onClick={() => {
-                if (fullAccess) {
-                  setPermissionMode("default");
-                  setExecPermDismissed(true);
-                } else {
-                  setFullAccessConfirmOpen(true);
-                }
-              }}
-              title={fullAccess ? "关闭后恢复默认权限" : "开启允许完全访问"}
-              role="switch"
-              aria-checked={fullAccess}
-              aria-label="允许完全访问"
-            />
-          </div>
-        </div>
-      )}
 
       {slashMatches.length > 0 && (
         <div className="slash-menu">
@@ -1420,11 +1369,9 @@ export default function ChatInput({
                 aria-expanded={streamingModeOpen}
                 aria-haspopup="menu"
                 onClick={() => {
-                  setPermOpen(false);
                   setModelOpen(false);
                   setAddOpen(false);
                   setWorkspaceOpen(false);
-                  setHomePermOpen(false);
                   setStreamingModeOpen((v) => !v);
                 }}
                 title={STREAMING_SEND_MODE_DESCRIPTIONS[streamingSendMode]}
@@ -1519,10 +1466,8 @@ export default function ChatInput({
               aria-expanded={addOpen}
               aria-haspopup="menu"
               onClick={() => {
-                setPermOpen(false);
                 setModelOpen(false);
                 setWorkspaceOpen(false);
-                setHomePermOpen(false);
                 setStreamingModeOpen(false);
                 setAddOpen(!addOpen);
               }}
@@ -1610,7 +1555,6 @@ export default function ChatInput({
                   // 并清增强态（reset：在途结果失效 + 清 undo/notice）——增强结果
                   // 不得写入 BTW 模式下被隐藏的主草稿
                   setAddOpen(false);
-                  setPermOpen(false);
                   setModelOpen(false);
                   setStreamingModeOpen(false);
                   enhance.reset();
@@ -1643,25 +1587,6 @@ export default function ChatInput({
               </button>
             </span>
           )}
-          {variant !== "home" && welcomeMode !== "general" && (
-            <HomePermissionPicker
-              compact
-              quiet
-              open={permOpen}
-              onToggle={() => {
-                setModelOpen(false);
-                setAddOpen(false);
-                setWorkspaceOpen(false);
-                setHomePermOpen(false);
-                setStreamingModeOpen(false);
-                setPermOpen(!permOpen);
-              }}
-              onClose={() => setPermOpen(false)}
-              onAfterChange={() => {
-                if (executing) setExecPermDismissed(true);
-              }}
-            />
-          )}
           <div className="input-spacer" />
           {variant !== "home" && activeTaskId && (
             <GenerationSpeed taskId={activeTaskId} btw={btwActive} />
@@ -1678,10 +1603,8 @@ export default function ChatInput({
               aria-haspopup="listbox"
               onClick={() => {
                 void useAppStore.getState().refreshModelConfiguration();
-                setPermOpen(false);
                 setAddOpen(false);
                 setWorkspaceOpen(false);
-                setHomePermOpen(false);
                 setStreamingModeOpen(false);
                 setModelOpen(!modelOpen);
               }}
@@ -1771,7 +1694,6 @@ export default function ChatInput({
               onToggle={() => {
                 setWorkspaceOpen(!workspaceOpen);
                 setProjectOpen(false);
-                setHomePermOpen(false);
               }}
               onClose={() => setWorkspaceOpen(false)}
             />
@@ -1780,20 +1702,9 @@ export default function ChatInput({
               onToggle={() => {
                 setProjectOpen(!projectOpen);
                 setWorkspaceOpen(false);
-                setHomePermOpen(false);
               }}
               onClose={() => setProjectOpen(false)}
             />
-            {welcomeMode !== "general" && <HomePermissionPicker
-              quiet
-              open={homePermOpen}
-              onToggle={() => {
-                setHomePermOpen(!homePermOpen);
-                setWorkspaceOpen(false);
-                setProjectOpen(false);
-              }}
-              onClose={() => setHomePermOpen(false)}
-            />}
           </div>
         )}
       </div>
@@ -1832,19 +1743,10 @@ export default function ChatInput({
       ) : null}
 
       {/* 添加菜单已有 window capture click-outside；不要再用全屏透明层阻断输入。 */}
-      {(permOpen || modelOpen || workspaceOpen || projectOpen || modeOpen || tagOpen || homePermOpen) && (
+      {(modelOpen || workspaceOpen || projectOpen || modeOpen || tagOpen) && (
         <div className="input-popup-backdrop" onClick={closeAllPopups} />
       )}
 
-      <FullAccessConfirmModal
-        open={fullAccessConfirmOpen}
-        onCancel={() => setFullAccessConfirmOpen(false)}
-        onConfirm={() => {
-          setPermissionMode("auto");
-          setFullAccessConfirmOpen(false);
-          setExecPermDismissed(true);
-        }}
-      />
       {expertError && <div className="mcp-auth-error" role="alert">{expertError}</div>}
       {expertManagerTaskId && <ExpertBindingModal taskId={expertManagerTaskId} onClose={() => setExpertManagerTaskId(null)} />}
     </div>

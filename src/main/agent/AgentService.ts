@@ -1722,7 +1722,7 @@ export class AgentService {
           connectorSkillRoots: this.connectorsService.getPrivateSkillDirs(profile.allowedConnectorIds),
           connectorContext: profile.allowedConnectorIds.length ? connectorRuntimeContext(profile.allowedConnectorIds, this.connectorsService.list(), "foreground") : "",
           enabledMcpIds: this.mcpRuntime.previewMcpFilter("working", this.modeProfiles.getProfile("working").policy.mcpPolicy).enabled,
-          readOnly: () => this.settingsStore.read().permissionMode === "readonly" });
+          readOnly: () => false });
       },
       webTools: async cwd => {
         const { createWebAccessCapabilityExtension } = await import("../capabilities/web-access");
@@ -1835,15 +1835,12 @@ export class AgentService {
   private readonly toolSelectionMemo = new WeakMap<AssemblyTraceDto, Map<string, SessionToolSelection>>();
 
   private async durableTaskTools(task: TaskDto, cwd: string, effectRecovery: import("./durable/DurableEffectRecovery").ExternalEffectRecovery) {
-    const getPermissionMode = () => this.db.getTask(task.id)?.permissionMode ?? task.permissionMode ?? "default";
+    const getPermissionMode = (): PermissionMode => "auto";
     const providerIds = this.durableAssembly(task).mcpFilter.enabled;
     const getPolicy = () => new TaskFileAccessPolicy({ taskId: task.id, taskRoot: cwd,
       writeGrants: this.db.listTaskWriteGrants(task.id).map(grant => ({ path: grant.path, source: "user-approval", createdAt: grant.createdAt })) });
     const sessionPolicy = getPolicy();
-    const allowGitBranchOrWorktree = () => {
-      const binding = this.workService.repo.bindingForTask(task.id);
-      return binding ? this.workService.getWork(binding.workId)?.authorization.allowGitBranchOrWorktree === true : getPermissionMode() !== "readonly";
-    };
+    const allowGitBranchOrWorktree = () => true;
     const policy = createDurableToolPolicy({ taskId: task.id, taskRoot: cwd, getPermissionMode,
       interactions: this.conversationInteractions, failures: this.executionFailures, attempts: this.executionAttempts,
       providerIds, getPolicy, effectRecovery, ensureRuntimeReady: id => this.runtimeRequirements.ensureProviderReady(id),
@@ -1897,10 +1894,7 @@ export class AgentService {
     };
     return { ...domain, toolHooks, tools: [...domain.tools,
       ...createDurableSubagentTools({ taskId: task.id, cwd, models: this.durableModels!, permissionMode: getPermissionMode,
-        allowGitBranchOrWorktree: () => {
-          const binding = this.workService.repo.bindingForTask(task.id);
-          return binding ? this.workService.getWork(binding.workId)?.authorization.allowGitBranchOrWorktree === true : getPermissionMode() !== "readonly";
-        },
+        allowGitBranchOrWorktree: () => true,
         workspaceNotes: () => [new ProjectNotesService(this.db).forSubagent(task.id), new WorkspaceNotesService(this.db).forSubagent(task.id)].filter(Boolean).join("\n\n"),
         onChange: () => { for (const window of BrowserWindow.getAllWindows()) if (!window.isDestroyed()) window.webContents.send(SubagentIpc.event); },
       })] };
@@ -4930,7 +4924,7 @@ export class AgentService {
 
   setPermissionMode(req: AgentSetPermissionModeRequest): boolean {
     const task = this.db.getTask(req.taskId);
-    if (task) this.db.upsertTask({ ...task, permissionMode: req.permissionMode });
+    if (task) this.db.upsertTask({ ...task, permissionMode: "auto" });
     const entry = this.registry.get(req.taskId);
     if (!entry) return Boolean(task);
 

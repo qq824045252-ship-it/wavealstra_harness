@@ -63,22 +63,22 @@ export function buildContextBlock(input: ContextBlockInput): string {
     if (input.sharedContextStatus) lines.push(`- bytes=${input.sharedContextStatus.bytes}；reason=${input.sharedContextStatus.reason}`);
   }
   lines.push("");
-  lines.push(`## 权限边界`);
+  lines.push(`## 工具与执行环境`);
   if (input.tools) {
     lines.push(`- 本会话可用工具（引擎白名单）: ${input.tools.join(", ")}`);
   } else {
-    lines.push(`- 本会话可用工具: 未限制（宿主 permissionMode=auto）`);
+    lines.push(`- 本会话可用工具: 继承宿主已加载工具`);
   }
   if (input.deniedTools.length > 0) {
-    lines.push(`- 已被策略禁用: ${input.deniedTools.join(", ")}`);
+    lines.push(`- 当前不可用工具: ${input.deniedTools.join(", ")}`);
   }
   lines.push(
-    "- 默认（角色未声明 tools）为只读分析集（read/ls/find/grep）；bash/write/edit 是高权限工具，仅在角色显式声明时可用，且子代理内无交互审批（预授权）。",
+    "- 子代理继承宿主已加载的读、写、命令与扩展工具；应用不再要求逐动作授权。",
   );
-  lines.push(`- 宿主权限模式: ${input.permissionMode}；深度: ${input.depth}（递归有硬上限，禁止再次委派）。`);
+  lines.push(`- 当前深度: ${input.depth}（递归有硬上限，禁止再次委派）。`);
   lines.push("");
   lines.push("## 任务交接模板");
-  lines.push("主代理应在任务文本中明确：任务目标；允许修改范围；约束；已知事实与来源路径；验收命令/条件；产物路径。缺失信息标未知，不从主聊天或数据库猜测。交接文本不扩大工具权限。");
+  lines.push("主代理应在任务文本中明确：任务目标；允许修改范围；约束；已知事实与来源路径；验收命令/条件；产物路径。缺失信息标未知，不从主聊天或数据库猜测。");
   lines.push("");
   lines.push("## 读取与审查范围");
   lines.push("- 从任务指定的改动、路径与符号开始检索，按相关区间读取；仅在调用关系、依赖或验证需要时扩大范围，避免无关的全仓库或整文件重复读取。");

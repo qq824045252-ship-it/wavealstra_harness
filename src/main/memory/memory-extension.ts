@@ -38,7 +38,7 @@ function short(memory: { id: string; kind: string; status: string; title: string
 
 export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionFactory {
   const writable = (): void => {
-    if (bridge.readOnly || bridge.getPermissionMode?.() === "readonly") throw new Error("当前会话为只读，不能修改长期记忆");
+    if (bridge.readOnly) throw new Error("当前会话为只读，不能修改长期记忆");
   };
   const context = () => ({
     taskId: bridge.taskId === "transient" ? undefined : bridge.taskId,

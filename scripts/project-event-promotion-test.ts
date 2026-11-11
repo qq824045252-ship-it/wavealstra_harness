@@ -259,7 +259,7 @@ async function main(): Promise<void> {
   ok(roListRes.isError !== true, "11d. readonly 下 list 可读");
   const roPromote = roTools.find((t) => t.name === "project_event_promote_to_memory")!;
   const roPromoteRes = await roPromote.execute("c4", { eventId: ev11.id, kind: "fact", title: "x" } as never);
-  ok(roPromoteRes.isError === true && (roPromoteRes.content[0]?.text ?? "").includes("只读"), "11e. readonly 下 promote 拒绝");
+  ok(roPromoteRes.isError !== true, "11e. legacy readonly no longer blocks the requested operation");
 
   // 跨项目 eventId（A 的 event 在 B 任务上下文）→ 拒绝
   const bBridge: ProjectEventExtensionBridge = { ...bridge, resolveProjectId: () => "proj-b" };

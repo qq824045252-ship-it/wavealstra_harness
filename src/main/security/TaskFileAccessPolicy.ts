@@ -1,13 +1,4 @@
-/**
- * TaskFileAccessPolicy — 统一任务文件访问策略（P2 / Batch 10）
- *
- * 默认：
- *  - taskRoot 内：读/写/建允许；删/改名需调用方再走权限+备份
- *  - 显式只读 grant：只读，禁止写回
- *  - 其他外部路径：拒绝（或交由审批层，本模块返回 denied）
- *
- * grant 不因单文件授权父目录；grant 路径本身必须精确匹配或位于 grant 路径内（若 grant 是目录）。
- */
+/** Path resolution plus legacy grant metadata. Grants no longer restrict application execution. */
 import { isAbsolute, relative, resolve } from "node:path";
 import {
   assertPathInsideTask,
@@ -172,100 +163,11 @@ export class TaskFileAccessPolicy {
       };
     }
 
-    // taskRoot 内（词法 + realpath）
-    try {
-      assertPathInsideTask(this.taskRoot, resolved);
-      if (operation === "execute") {
-        // 执行由 Shell isolation backend 最终裁决；此处标记为 task-root 待定允许
-        return {
-          ...base,
-          allowed: true,
-          resolvedPath: resolved,
-          scope: "task-root",
-          reason: "路径位于 taskRoot；execute 仍受 Shell isolation 约束",
-        };
-      }
-      return {
-        ...base,
-        allowed: true,
-        resolvedPath: resolved,
-        scope: "task-root",
-        reason: "路径位于 taskRoot 内",
-      };
-    } catch (err) {
-      if (!(err instanceof TaskPathBoundaryError)) {
-        return {
-          ...base,
-          allowed: false,
-          resolvedPath: resolved,
-          scope: "external",
-          reason: err instanceof Error ? err.message : String(err),
-        };
-      }
-    }
+    // Keep canonical task/path metadata, but retired grants do not authorize execution.
+    return { ...base, allowed: true, resolvedPath: resolved,
+      scope: isPathInsideOrEqual(this.taskRoot, resolved) ? "task-root" : "external",
+      reason: "应用文件授权已移除；由实际文件系统执行并返回结果" };
 
-    // 只读 grant
-    const grantHit = this.findGrant(resolved);
-    if (grantHit) {
-      if (WRITE_OPS.has(operation) || operation === "execute") {
-        return {
-          ...base,
-          allowed: false,
-          resolvedPath: resolved,
-          scope: "read-grant",
-          reason: `路径命中只读 grant（${grantHit.source ?? grantHit.path}），禁止 ${operation}`,
-        };
-      }
-      return {
-        ...base,
-        allowed: true,
-        resolvedPath: resolved,
-        scope: "read-grant",
-        reason: `路径命中只读 grant${grantHit.source ? `：${grantHit.source}` : ""}`,
-      };
-    }
-
-    // 任务级目录写 grant（外部写授权）：目录粒度，词法 + realpath 双层匹配
-    const writeGrantHit = this.writeGrants.find((g) => isPathInsideWriteGrant(g.path, resolved));
-    if (writeGrantHit) {
-      if (operation === "execute") {
-        return {
-          ...base,
-          allowed: false,
-          resolvedPath: resolved,
-          scope: "write-grant",
-          reason: `路径命中任务写 grant（${writeGrantHit.path}），execute 不受目录 grant 放行`,
-        };
-      }
-      return {
-        ...base,
-        allowed: true,
-        resolvedPath: resolved,
-        scope: "write-grant",
-        reason: `路径位于任务写 grant 目录内：${writeGrantHit.path}`,
-      };
-    }
-
-    // The current task root and explicit child-task grants above take precedence.
-    // Historical absolute paths do not imply permission to operate on the parent
-    // copy, even in auto mode. Do not silently rewrite a tool's path/evidence.
-    const canonical = canonicalizeExternalGrantPath(resolved);
-    const sourceRoot = this.isolatedSourceRoots.find((root) =>
-      isPathInsideOrEqual(root, resolved) || isPathInsideOrEqual(canonicalizeExternalGrantPath(root), canonical));
-    if (sourceRoot) {
-      const rel = isPathInsideOrEqual(sourceRoot, resolved)
-        ? relative(sourceRoot, resolved)
-        : relative(canonicalizeExternalGrantPath(sourceRoot), canonical);
-      return { ...base, allowed: false, resolvedPath: resolved, scope: "isolated-source",
-        reason: `这是独立对话分支，历史路径 ${resolved} 属于来源任务，不是当前副本。请在当前工作目录 ${this.taskRoot} 下重试；对应位置为 ${resolve(this.taskRoot, rel)}。不要复用旧绝对路径或用其他工具绕过。若用户确实要操作来源任务，应切回来源任务或显式授权该目录。` };
-    }
-    return {
-      ...base,
-      allowed: false,
-      resolvedPath: resolved,
-      scope: "external",
-      reason: `路径不在 taskRoot 且无只读/写 grant：${resolved}（taskRoot=${this.taskRoot}）`,
-    };
   }
 
   /** 便捷：不允许则抛错 */

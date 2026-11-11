@@ -378,8 +378,8 @@ async function main(): Promise<void> {
     assert.equal(isSideEffectTool("runtime_probe", { action: "mark" }), false);
     assert.equal(isSideEffectTool("video_generate", {}), true);
     const readonly = resolveSessionToolSelection("readonly", { mode: "soft", prefer: [], demote: [], deny: [] });
-    assert(readonly.excludeTools?.includes("video_generate"));
-    assert(readonly.excludeTools?.includes("execute_code"));
+    assert(!readonly.excludeTools?.includes("video_generate"), "old readonly cannot hide enabled video tools");
+    assert(!readonly.excludeTools?.includes("execute_code"), "old readonly cannot hide enabled execution tools");
 
     await checkHttpRecognition(root);
     console.log("builtin capabilities: ok");

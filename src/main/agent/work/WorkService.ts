@@ -72,7 +72,6 @@ import type {
 import {
   assertNoActorField,
   canonicalControlInput,
-  intersectAuthorization,
   minimumAuthorization,
 } from "../../../shared/bot-work";
 import type { BotDto } from "../../../shared/bot-work";
@@ -507,8 +506,7 @@ export class WorkService {
       || !this.scheduledBindingCurrent(binding)
       || binding.operationId !== operationId || binding.intentRevision !== work.intentRevision
       || binding.inputSnapshotId !== work.inputSnapshotId || this.bots.getBot(binding.botId)?.status !== "active"
-      || this.bots.getBot(work.ownerBotId)?.status !== "active"
-      || (work.authorization.expiresAt !== undefined && work.authorization.expiresAt <= this.now())) {
+      || this.bots.getBot(work.ownerBotId)?.status !== "active") {
       return "Work 当前状态不允许新的业务输入；原提交仍可查回和停止";
     }
     return undefined;
@@ -554,7 +552,6 @@ export class WorkService {
       guard: "full", ownerOnly: true, allowLifecycles: ["active"],
     }, (work, _resolved, now) => dispatchExecutionMutation({
       repo: this.repo, bots: this.bots, teams: this.teams, causal: this.causal,
-      authorizedFor: (source, kind) => this.authorizedFor(source, kind),
       recoveryRequest: taskId => this.db.prepare(`SELECT plan.source_binding_id FROM work_dispatch_requests request
         JOIN work_continuation_plans plan ON plan.plan_id=request.continuation_plan_id
         JOIN work_automatic_recovery recovery ON recovery.plan_id=plan.plan_id WHERE request.task_id=?`).get(taskId) as { source_binding_id: string } | undefined,
@@ -618,7 +615,6 @@ export class WorkService {
         repo: this.repo, bots: this.bots, now: this.now,
         isDelegationAdopted: (binding, source) => this.collaboration.isDelegationAdopted(binding, source),
         scheduledBindingCurrent: binding => this.scheduledBindingCurrent(binding),
-        sourceReadOnly: binding => this.partialResults.recovery.sourceReadOnly(binding),
       }, work, resolved, params);
     });
   }
@@ -1020,21 +1016,6 @@ export class WorkService {
         };
       }
       const now = this.now();
-      if (work.authorization.expiresAt !== undefined && work.authorization.expiresAt <= now
-        && !(operationType === "cancelWork" || operationType === "closeWork")) {
-        // Renewing an expired delegation is a user authorization change, not new
-        // business execution. Models cannot renew themselves, and the new deadline
-        // and capabilities still intersect the current authenticated host grant.
-        const requested = operationType === "amendWork" && resolved.kind === "user"
-          ? (params as AmendWorkParams).authorization
-          : undefined;
-        const renewed = requested?.expiresAt !== undefined && Number.isFinite(requested.expiresAt)
-          ? intersectAuthorization({ ...work.authorization, ...requested }, resolved.grants)
-          : undefined;
-        if (renewed?.expiresAt === undefined || renewed.expiresAt <= now) {
-          return { ok: false, code: "unauthorized_actor", message: "事项授权已过期，需要用户在当前授权范围内明确续权" };
-        }
-      }
       const guardError = this.checkGuard(work, resolved, params.versionGuard, options.guard);
       if (guardError) return guardError;
       const mutation = mutate(work, resolved, now);
@@ -1143,12 +1124,6 @@ export class WorkService {
 
   private hash(operationType: string, params: unknown): string {
     return createHash("sha256").update(canonicalControlInput(operationType, params)).digest("hex");
-  }
-
-  private authorizedFor(work: WorkDto, actionKind: string): boolean {
-    if (actionKind === "git:branch" || actionKind === "git:worktree") return work.authorization.allowGitBranchOrWorktree;
-    if (actionKind === "delegate") return work.authorization.allowRedelegation;
-    return work.authorization.allowedScopes.includes(actionKind);
   }
 
   private snapshotOf(bot: BotDto) {

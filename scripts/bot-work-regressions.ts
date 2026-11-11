@@ -8,7 +8,7 @@ import { BotRegistry } from "../src/main/agent/work/BotRegistry";
 import { WorkHostAuthority } from "../src/main/agent/work/WorkHostAuthority";
 import { WorkService } from "../src/main/agent/work/WorkService";
 import { ConversationGoalService, defaultBotActor } from "../src/main/agent/ConversationGoalService";
-import { DEFAULT_BOT_ID, LOCAL_USER_ID, type CreateWorkParams, type WorkControlResult, type WorkActor, type WorkNotificationChannel } from "../src/shared/bot-work";
+import { DEFAULT_BOT_ID, LOCAL_USER_ID, minimumAuthorization, intersectAuthorization, type CreateWorkParams, type WorkControlResult, type WorkActor, type WorkNotificationChannel } from "../src/shared/bot-work";
 
 export function runWorkRegressions(): void {
   const root = mkdtempSync(join(tmpdir(), "bot-work-regressions-"));
@@ -45,6 +45,9 @@ export function runWorkRegressions(): void {
     return bindingId;
   };
   try {
+    assert.deepEqual(intersectAuthorization({ allowedScopes: ["workspace:write"] }, {
+      allowedScopes: [], targetWhitelist: ["/retired"], expiresAt: 1, allowGitBranchOrWorktree: false, allowRedelegation: false,
+    }), minimumAuthorization(), "legacy expired grants do not survive compatibility projection");
     let now = 1_000;
     const authority = new WorkHostAuthority(db.connection, "primary", 60_000, () => now);
     const contender = new WorkHostAuthority(db.connection, "contender", 60_000, () => now);

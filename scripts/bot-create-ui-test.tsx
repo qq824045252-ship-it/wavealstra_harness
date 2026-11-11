@@ -436,60 +436,35 @@ async function toggleCheckbox(input: HTMLInputElement, checked: boolean) {
   });
 }
 async function testWorkspaceGrant() {
-  await check("explicit creation grant is saved with the immutable retry request", async () => {
+  await check("creation has no permission checkbox and preserves immutable retry payload", async () => {
     await reset(); await fill("Writable helper");
-    const checkbox = container.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
-    assert.equal(Boolean(checkbox.checked), true);
+    assert.equal(container.querySelector('input[type="checkbox"]'), null, "creation has no authorization gate");
     await submit();
     assert.equal(requests[0].allowWorkspaceFiles, true);
-    assert.equal(checkbox.disabled, true);
     assert.equal(JSON.parse(storage.getItem("mybuddy.pending-bot-creation")!).allowWorkspaceFiles, true);
     await succeed();
   });
   await check("successful creation then reopening defaults the next new Bot to workspace write", async () => {
     await reset(); await fill("First writable helper"); await submit(); await succeed();
     await act(async () => openDialog!());
-    const checkbox = container.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
-    assert.equal(Boolean(checkbox.checked), true);
+    assert.equal(container.querySelector('input[type="checkbox"]'), null, "creation has no authorization gate");
     reply = deferred<BotCreateResult>();
     await fill("Second writable helper"); await submit();
     assert.equal(requests.at(-1)!.allowWorkspaceFiles, true);
     await succeed();
   });
-  await check("legacy pending creation without a workspace grant retains read-only on retry", async () => {
+  await check("legacy pending creation retains original compatibility payload on retry", async () => {
     await reset(); await unmount();
     const pending = { requestId: crypto.randomUUID(), displayName: "Legacy pending helper", responsibilitySummary: "Original read-only request" };
     storage.setItem("mybuddy.pending-bot-creation", JSON.stringify(pending));
     await mount();
-    const checkbox = container.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
-    assert.equal(Boolean(checkbox.checked), false);
-    assert.equal(checkbox.disabled, true);
+    assert.equal(container.querySelector('input[type="checkbox"]'), null, "creation has no authorization gate");
     await submit();
     assert.deepEqual(requests[0], { ...pending, allowWorkspaceFiles: false });
     assert.equal(JSON.parse(storage.getItem("mybuddy.pending-bot-creation")!).allowWorkspaceFiles, false);
     await succeed();
   });
-  await check("settings grant requires confirmation, uses version guard and never mutates old Work", async () => {
-    await reset(); await unmount();
-    const { BotWorkspaceAuthorization } = await import("../src/renderer/src/components/pages/BotWorkspaceAuthorization");
-    const saved: unknown[] = [];
-    api!.botWork.updateWorkspaceAuthorization = async request => {
-      saved.push(request); return { ok: true, bot: mybuddy, replayed: false };
-    };
-    container = testDocument.body.appendChild(testDocument.createElement("div")); root = createRoot(container);
-    await act(async () => root!.render(<BotWorkspaceAuthorization bot={mybuddy} />));
-    assert.match(container.textContent!, /已有事项/);
-    await toggleCheckbox(container.querySelector<HTMLInputElement>('input[type="checkbox"]')!, true);
-    const button = container.querySelector<HTMLButtonElement>("button")!;
-    assert.equal(button.disabled, true);
-    await toggleCheckbox(container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')[1], true);
-    assert.equal(button.disabled, false);
-    await act(async () => nativeClick(button));
-    assert.deepEqual(saved, [{ botId: mybuddy.botId, expectedUpdatedAt: mybuddy.updatedAt,
-      allowWorkspaceFiles: true, confirmNewWorksOnly: true }]);
-    assert.deepEqual(store.getState().botWorks, [work]);
-    assert.deepEqual(forbiddenCalls, []);
-  });
+
 }
 
 async function testEntries() {

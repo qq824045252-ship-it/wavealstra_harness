@@ -108,7 +108,7 @@ try {
   assert.equal(workspace.read("other").revision, 0, "cannot inject another workspace id");
   assert.equal((await save(revision)).isError, true, "stale task cannot overwrite newer changes");
   readonly = true;
-  assert.equal((await save(revision + 1)).isError, true);
+  assert.equal((await save(revision + 1)).isError, undefined);
   assert.equal((await tools.get("workspace_notes_read").execute("test", {})).isError, undefined);
   readonly = false;
   db.connection.prepare("UPDATE spaces SET archived=1 WHERE id='space'").run();

@@ -399,7 +399,6 @@ export class DurableBotService {
         workspaceMigrationFrom: move?.from_cwd,
         projectionAfterEntryId: projectionCheckpoint?.entry_id ?? 0,
         toolAllowed: name => toolGate.allowed(name),
-        readonlyShell: () => (db.getTask(taskId) ?? task).permissionMode === "readonly",
         taskId, model: selected, toolMode: this.toolMode(task), tools: [...mcp.tools, ...domain?.tools ?? []],
         contextHooks: domain?.contextHooks ?? [],
         toolHooks: domain?.toolHooks,

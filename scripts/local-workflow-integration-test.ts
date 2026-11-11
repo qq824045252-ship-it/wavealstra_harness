@@ -96,9 +96,6 @@ try {
   db.upsertTask({ id: "scheduled", title: "Preserved task", cwd: taskRoot, modelId: "fixture/cron", permissionMode: "auto", welcomeMode: "working", updatedAt: 1 });
   const create = { action: "create", name: "Actual AgentService", prompt: "CRON_INTEGRATION_REQUEST", schedule_type: "at", schedule_expr: new Date(Date.now() + 800).toISOString(), target: "current-task", max_runs: 1 };
   permission = "readonly";
-  assert.equal((await invoke(create)).isError, true);
-  assert.equal(db.listCronJobs().length, 0);
-  permission = "auto";
   const created = await invoke(create);
   assert.notEqual(created.isError, true, JSON.stringify(created));
   const deadline = Date.now() + 25000;

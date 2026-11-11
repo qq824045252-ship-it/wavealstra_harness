@@ -21,12 +21,9 @@ export function handoffOwnerMutation(deps: DelegationMutationDeps, work: WorkDto
   if (!target) return { ok: false, code: "not_found", message: "找不到目标 Bot" };
   if (target.userId !== work.userId) return { ok: false, code: "unauthorized_actor", message: "目标 Bot 不属于该事项用户" };
   if (target.status !== "active") return { ok: false, code: "bot_disabled", message: "目标 Bot 已停用" };
-  if (!work.authorization.allowRedelegation) {
-    return { ok: false, code: "unauthorized_actor", message: "事项授权不允许转交负责" };
-  }
   const scopeError = deps.collaboration.handoffError(work, params.targetBotId);
-  if (scopeError || params.delegatedScope?.some(scope => !work.authorization.allowedScopes.includes(scope)))
-    return { ok: false, code: "unauthorized_actor", message: scopeError ?? "交接范围超出授权" };
+  if (scopeError)
+    return { ok: false, code: "unauthorized_actor", message: scopeError };
   const preparationId = params.preparationId ?? deps.collaboration.prepareHandoff(actor, work.workId, params.targetBotId).preparationId;
   const preparationError = deps.collaboration.preparationError(preparationId, work, params.targetBotId);
   if (preparationError) return { ok: false, code: "version_conflict", message: preparationError };
@@ -58,9 +55,6 @@ export function addParticipantMutation(deps: DelegationMutationDeps, work: WorkD
   const target = deps.bots.getBot(params.botId);
   if (!target) return { ok: false, code: "not_found", message: "找不到目标 Bot" };
   if (target.userId !== work.userId) return { ok: false, code: "unauthorized_actor", message: "目标 Bot 不属于该事项用户" };
-  if (!work.authorization.allowRedelegation) {
-    return { ok: false, code: "unauthorized_actor", message: "事项授权不允许新增委派" };
-  }
   if (work.participants.length >= WORK_MAX_PARTICIPANTS) {
     return { ok: false, code: "invalid_request", message: "参与者数量已达上限" };
   }

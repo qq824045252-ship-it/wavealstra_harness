@@ -79,7 +79,6 @@ export class WorkCollaborationService {
         if (stored.payload_hash !== hash) throw new Error("idempotency_conflict: 协作消息标识已用于另一请求");
         return { replayed: true, message: this.decode(stored) };
       }
-      if (work.authorization.expiresAt !== undefined && work.authorization.expiresAt <= (this.options.now?.() ?? Date.now())) throw new Error("事项授权已过期，不能接纳新的协作决定");
       if (parsed.versionGuard.expectedOwnerEpoch !== work.ownerEpoch) throw new Error("epoch_mismatch: 协作决定来自旧负责人代次");
       if (parsed.versionGuard.expectedStateVersion !== work.stateVersion || parsed.versionGuard.expectedIntentRevision !== work.intentRevision) {
         throw new Error("version_conflict: 协作决定必须重新读取当前事项");
@@ -87,7 +86,6 @@ export class WorkCollaborationService {
       if (work.lifecycle !== "active" && !["result", "blocked", "question", "accepted"].includes(parsed.kind)) throw new Error("事项当前不接纳新的协作动作");
       const owner = sender.kind === "user" || sender.botId === work.ownerBotId && sender.kind === "bot";
       if (["delegate", "change", "cancel", "handoff"].includes(parsed.kind) && !owner) throw new Error("只有当前负责人或用户可以提出团队控制请求");
-      if (parsed.kind === "delegate" && (!work.authorization.allowRedelegation || sender.kind === "worker")) throw new Error("当前授权不允许转委派");
       if (parsed.kind === "delegate") {
         // Collaboration is a causal edge too; a new message id cannot hide a same-state loop.
         const admission = this.works.causal.admit({ workId: work.workId, source: "collaboration",
@@ -174,9 +172,6 @@ export class WorkCollaborationService {
     const target = this.bots.getBot(targetBotId);
     if (!target || target.userId !== work.userId || target.status !== "active") return "目标负责人不可用或不属于该事项用户";
     if (targetBotId === work.ownerBotId) return "新负责人必须与当前负责人不同";
-    if (!work.authorization.allowRedelegation) return "事项授权不允许交接";
-    if (delegatedScope.some(scope => !work.authorization.allowedScopes.includes(scope)
-      || !target.authorization.allowedScopes.includes(scope))) return "交接范围超出当前事项或目标 Bot 的授权";
     return undefined;
   }
 
@@ -197,7 +192,7 @@ export class WorkCollaborationService {
     if (error) throw new Error(error);
     for (const binding of this.works.repo.listBindings(before.workId)) {
       if (!currentDelegation(binding, next)) continue;
-      const scope = binding.delegatedScope.filter(item => next.authorization.allowedScopes.includes(item));
+      const scope = binding.delegatedScope;
       this.db.prepare(`INSERT INTO work_delegation_adoptions(binding_id,owner_epoch,adopted_by_bot_id,intent_revision,
         input_snapshot_id,delegated_scope_json,operation_id,created_at) VALUES (?,?,?,?,?,?,?,?)`)
         .run(binding.bindingId, next.ownerEpoch, next.ownerBotId, next.intentRevision, next.inputSnapshotId, JSON.stringify(scope), operationId, now);

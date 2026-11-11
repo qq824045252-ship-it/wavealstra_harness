@@ -51,101 +51,20 @@ async function main(): Promise<void> {
   mkdirSync(initialGrant, { recursive: true });
   db.addTaskWriteGrant("approval-task", initialGrant);
 
-  const binding = bridge.create("approval-task", taskRoot, "readonly");
-  assert.equal(binding.getPermissionMode(), "readonly", "without live session, fallback permission is authoritative");
-  assert(binding.sessionPolicy.hasWriteGrantFor(join(initialGrant, "existing.txt")), "policy loads persistent task write grants");
-
-  const live = entry("default");
-  registry.set(live);
-  assert.equal(binding.getPermissionMode(), "default", "live session permission overrides create-time fallback");
-
-  const externalPromise = binding.requestExternalWriteApproval({ taskId: "approval-task",
-    toolCallId: "ext-1",
-    toolName: "write",
-    summary: "Write outside task root",
-    targetPath: join(outside, "result.txt"),
-    taskRoot,
-    canonicalDir: outside,
-  });
-  await Promise.resolve();
-  assert(live.pendingExternalWrites.has("ext-1"), "default mode registers pending external-write resolver");
-  assert.equal(pendingActions.get("approval-task", "ext-1")?.approvalKind, "external-write");
-  assert(patches.some((patch) => patch.type === "tool_start" && patch.toolCallId === "ext-1" && patch.status === "pending_approval"));
-  assert(lifecycle.some((event) => event.toolCallId === "ext-1"));
-  assert(registry.resolveExternalWrite("approval-task", "ext-1", { kind: "allow-once" }));
-  assert.deepEqual(await externalPromise, { kind: "allow-once" });
-  assert(live.grantedExternalWriteToolCalls.has("ext-1"));
-
-  const actionCountBeforeDedup = pendingActions.list("approval-task").length;
-  assert.equal(
-    await binding.requestApproval({
-      toolCallId: "ext-1",
-      toolName: "write",
-      summary: "Second-stage permission",
-      dangerous: true,
-    }),
-    true,
-    "external-write approval suppresses duplicate tool approval for the same tool call",
-  );
-  assert.equal(live.pendingApprovals.size, 0);
-  assert.equal(pendingActions.list("approval-task").length, actionCountBeforeDedup);
-
-  const toolPromise = binding.requestApproval({
-    toolCallId: "tool-1",
-    toolName: "bash",
-    summary: "Run command",
-    dangerous: true,
-  });
-  await Promise.resolve();
-  assert(live.pendingApprovals.has("tool-1"), "default mode registers pending tool approval");
-  assert.equal(pendingActions.get("approval-task", "tool-1")?.approvalKind, "tool");
-  assert(registry.resolveApproval("approval-task", "tool-1", true));
-  assert.equal(await toolPromise, true);
-
-  live.permissionMode = "auto";
-  assert.deepEqual(
-    await binding.requestExternalWriteApproval({ taskId: "approval-task",
-      toolCallId: "ext-auto",
-      toolName: "write",
-      summary: "Auto external",
-      targetPath: join(outside, "auto.txt"),
-      taskRoot,
-      canonicalDir: outside,
-    }),
-    { kind: "allow-once" },
-    "auto permission bypasses external-write prompt",
-  );
-  assert.equal(
-    await binding.requestApproval({ toolCallId: "tool-auto", toolName: "bash", summary: "Auto tool", dangerous: true }),
-    true,
-    "auto permission bypasses tool prompt",
-  );
-
-  live.permissionMode = "readonly";
-  assert.deepEqual(
-    await binding.requestExternalWriteApproval({ taskId: "approval-task",
-      toolCallId: "ext-ro",
-      toolName: "write",
-      summary: "Readonly external",
-      targetPath: join(outside, "readonly.txt"),
-      taskRoot,
-      canonicalDir: outside,
-    }),
-    { kind: "deny" },
-    "readonly permission denies external writes without prompting",
-  );
-
-  const dynamicGrant = join(root, "dynamic-grant");
-  mkdirSync(dynamicGrant, { recursive: true });
-  assert.equal(binding.sessionPolicy.hasWriteGrantFor(join(dynamicGrant, "x.txt")), false);
-  bridge.addWriteGrant("approval-task", dynamicGrant);
-  assert.equal(binding.sessionPolicy.hasWriteGrantFor(join(dynamicGrant, "x.txt")), true, "new persistent grant updates live policy immediately");
-  bridge.removeWriteGrant("approval-task", dynamicGrant);
-  assert.equal(binding.sessionPolicy.hasWriteGrantFor(join(dynamicGrant, "x.txt")), false, "revoke removes live grant immediately");
-
+  for (const mode of ["default", "readonly", "auto"] as const) {
+    const binding = bridge.create("approval-task", taskRoot, mode);
+    registry.set(entry(mode));
+    assert.equal(binding.getPermissionMode(), "auto");
+    assert.equal(await binding.requestApproval({ toolCallId: `tool-${mode}`, toolName: "bash", summary: "command", dangerous: true }), true);
+    assert.deepEqual(await binding.requestExternalWriteApproval({ taskId: "approval-task", toolCallId: `write-${mode}`, toolName: "write", targetPath: join(outside, "file.txt"), taskRoot, canonicalDir: outside, summary: "write" }), { kind: "allow-once" });
+    assert(binding.sessionPolicy.decide("write", join(outside, "file.txt")).allowed);
+    assert.equal(patches.length, 0);
+    assert.equal(lifecycle.length, 0);
+    assert.equal(registry.get("approval-task")!.pendingApprovals.size, 0);
+    assert.equal(registry.get("approval-task")!.pendingExternalWrites.size, 0);
+  }
+  assert.equal(db.listTaskWriteGrants("approval-task").length, 1, "historical grants are preserved but inert");
   bridge.release("approval-task");
-  bridge.addWriteGrant("approval-task", dynamicGrant);
-  assert.equal(binding.sessionPolicy.hasWriteGrantFor(join(dynamicGrant, "x.txt")), false, "released session policy no longer receives grant updates");
 
   console.log("session approval bridge: PASS");
 }

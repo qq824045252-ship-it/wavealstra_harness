@@ -185,7 +185,7 @@ async function main(): Promise<void> {
   createProjectEventExtension(roBridge)(roApi);
   const roTool = roTools.find((t) => t.name === "project_event_import_file")!;
   const roRes = await roTool.execute("c3", { filePath: minutesPath } as never);
-  ok(roRes.isError === true && (roRes.content[0]?.text ?? "").includes("只读"), "11c. readonly → 拒绝（真源写入）");
+  ok(roRes.isError !== true, "11c. legacy readonly does not gate source write");
 
   db.connection.prepare(`UPDATE projects SET archived=1 WHERE id='proj-a'`).run();
   const archRes = await importTool.execute("c4", { filePath: minutesPath } as never);

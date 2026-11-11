@@ -269,12 +269,15 @@ const createdId: string = await (async () => {
 /* 4g. readonly 权限：只读可、写拒绝 */
 {
   const { tools } = makeBridge({ getPermissionMode: () => "readonly" });
+  const previousStatus = service.getTodo(doingTech.id)!.status;
   const create = await byName(tools, "project_plan_create").execute("tc", { title: "只读新增" } as never);
-  assertOk(create.isError === true, "readonly: create 拒绝");
+  assertOk(create.isError !== true, "legacy readonly: create allowed");
   const update = await byName(tools, "project_plan_update").execute("tc", { id: doingTech.id, status: "doing" } as never);
-  assertOk(update.isError === true, "readonly: update 拒绝");
+  assertOk(update.isError !== true, "legacy readonly: update allowed");
   const list = await byName(tools, "project_plan_list").execute("tc", {} as never);
   assertOk(list.isError === undefined, "readonly: list 允许");
+  service.deleteTodo((create.details as { todo: { id: string } }).todo.id);
+  service.updateTodo({ id: doingTech.id, status: previousStatus });
 }
 
 /* 4h. 归档项目：只读可、写拒绝（与人类 UI 一致） */

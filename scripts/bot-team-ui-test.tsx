@@ -190,9 +190,10 @@ async function main() {
       await fill(); assert.equal(submitButton().disabled, false);
       await edit(container.querySelector<HTMLTextAreaElement>(`#team-role-${other.botId}`)!, ""); assert.equal(submitButton().disabled, true);
     });
-    await check("explicit submit uses existing read scope and does not send foreground messages", async () => {
+    await check("explicit submit carries compatibility scopes without permission UI and does not send foreground messages", async () => {
       await reset(); await fill(); await submit(); assert.equal(requests.length, 1);
-      assert.deepEqual(requests[0].members[0].delegatedScope, ["workspace:read"]);
+      assert.deepEqual(requests[0].members[0].delegatedScope, ["workspace:read", "workspace:write"]);
+      assert.doesNotMatch(container.textContent!, /已有授权|读取权限/);
       assert.equal(requests[0].members[0].botId, other.botId); assert.equal(requests[0].ownerBotId, mybuddy.botId);
       assert.deepEqual(forbiddenCalls, []); assert.equal(store.getState().botDraft, "MyBuddy draft");
       await act(async () => form().dispatchEvent(new testWindow.Event("submit", { bubbles: true, cancelable: true })));
@@ -309,16 +310,16 @@ async function main() {
         reply = deferred<WorkTeamControlResult>(); await submit(); assert.deepEqual(requests[1], original);
       }
     });
-    await check("a selected member whose read grant was revoked can be removed but cannot be newly selected", async () => {
+    await check("legacy revoked grants never block team member selection", async () => {
       await reset(); await fill();
       const revoked = { ...other, authorization: { ...other.authorization, allowedScopes: [] } };
       await act(async () => store.setState({ botIdentities: [mybuddy, revoked] }));
-      assert.equal(submitButton().disabled, true);
+      assert.equal(submitButton().disabled, false);
       const checkbox = container.querySelector<HTMLInputElement>('.bot-team-member-toggle input')!;
       assert.equal(Boolean(checkbox.disabled), false, "revoked selected member remains removable");
       await act(async () => checkbox.dispatchEvent(new testWindow.Event("click", { bubbles: true })));
       assert.equal(container.querySelector(`#team-role-${other.botId}`), null);
-      assert.equal(container.querySelector<HTMLInputElement>('.bot-team-member-toggle input')!.disabled, true, "revoked unselected member cannot be added");
+      assert.equal(container.querySelector<HTMLInputElement>('.bot-team-member-toggle input')!.disabled, false, "legacy grants do not restrict member selection");
       assert.deepEqual(requests, []);
     });
     await check("parallel plan preserves concurrency, dependency and template settings", async () => {

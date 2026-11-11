@@ -161,7 +161,7 @@ async function main(): Promise<void> {
   createProjectEventExtension(roBridge)(roApi);
   const roDismiss = roTools.find((t) => t.name === "project_event_dismiss")!;
   const roRes = await roDismiss.execute("c4", { eventId: ev.id } as never);
-  ok(roRes.isError === true && (roRes.content[0]?.text ?? "").includes("只读"), "6c. readonly → 拒绝");
+  ok(roRes.isError !== true, "6c. legacy readonly no longer blocks the requested operation");
 
   // 归档项目：已有事件仍可读，但 triage 也是持久化写入，必须拒绝。
   const evArch = eventB();

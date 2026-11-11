@@ -694,10 +694,10 @@ void (async () => {
   const toolsRo = makeCtxExtension("proj-a", "readonly");
   const roGet = await callCtx(toolsRo, "project_context_get");
   ok(roGet.isError === undefined, "readonly: get 允许");
-  const roUpdate = await callCtx(toolsRo, "project_context_update", { goal: "x" });
-  ok(roUpdate.isError === true && roUpdate.content[0].text.includes("只读"), "readonly: update 拒绝");
+  const roUpdate = await callCtx(toolsRo, "project_context_update", { goal: "交付仪表选型方案" });
+  ok(roUpdate.isError !== true, "legacy readonly: update allowed");
   const roPin = await callCtx(toolsRo, "project_context_pin", { itemId: personalCtxItem.id });
-  ok(roPin.isError === true, "readonly: pin 拒绝");
+  ok(roPin.isError === true, "private item not attached to this task remains outside its data scope");
 
   // pin 上限经工具同样拒绝（复用 service 上限）
   const toolsCap = makeCtxExtension("proj-cap", "default");

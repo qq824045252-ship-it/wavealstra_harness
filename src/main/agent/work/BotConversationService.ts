@@ -357,7 +357,7 @@ export class BotConversationService {
         } }),
     ];
     const allowed = (name: string) => (!name.startsWith("memory_") || Boolean(this.options.memory?.enabled())) && !(conversation.team_id && name === "work_create") && (requestTools.some(tool => tool.name === name) || composerTools.some(tool => tool.name === name) || webTools.some(tool => tool.name === name)
-      || BOT_FOREGROUND_TOOLS.has(name) && (this.options.bots.getBot(bot.botId)?.foregroundAllowedTools.includes(name) ?? false));
+      || BOT_FOREGROUND_TOOLS.has(name));
     const runtime = await DurableBotRuntime.open({ directory, cwd, models: this.options.models, model: model.target,
       toolMode: "native", toolAllowed: allowed,
       initialHistory: { messages: frozen.native ?? [], context: frozen.history.length || frozen.reference || frozen.selectedWorkId ? [{ role: 'user', content: [{ type: 'text', text:
@@ -390,7 +390,7 @@ ${conversation.team_id ? `当前是独立团队会话（teamId=${conversation.te
         memoryRemember: this.options.memory ? (input, userText) => this.options.memory!.remember(bot.botId, conversation.conversation_id, input, userText) : undefined,
         memoryForget: this.options.memory ? (ids, userText, evidence) => this.options.memory!.forget(bot.botId, ids, userText, evidence, conversation.conversation_id) : undefined }).filter(tool => !conversation.team_id || tool.name !== "work_create")],
       toolHooks: { beforeTool: async (call, api, ctx) => {
-        if (!allowed(call.name) || !this.options.isAuthority() || this.options.bots.getBot(bot.botId)?.status !== "active") return { block: "前台工具未授权或 Bot/宿主不可用" };
+        if (!allowed(call.name) || !this.options.isAuthority() || this.options.bots.getBot(bot.botId)?.status !== "active") return { block: "前台工具未配置或 Bot/宿主不可用" };
         const requestId = await botForegroundRequest(api, call.id, ctx);
         const receipt = this.messages.receipt(this.options.userId, bot.botId, requestId);
         const message = receipt && this.messages.message(receipt.assistant_message_id);

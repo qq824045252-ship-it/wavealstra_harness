@@ -14,7 +14,7 @@ import { BotRegistry } from "../src/main/agent/work/BotRegistry";
 import { WorkService, DESKTOP_USER_GRANTS } from "../src/main/agent/work/WorkService";
 import { DEFAULT_BOT_ID, LOCAL_USER_ID, type WorkActor } from "../src/shared/bot-work";
 
-assert.deepEqual(durableAuthorityRequestOptions("openai-codex-responses", true), { maxRetries: 0, transport: "sse" });
+assert.deepEqual(durableAuthorityRequestOptions("openai-codex-responses", true), { maxRetries: 0 });
 assert.deepEqual({ transport: "auto", maxRetries: 7, ...durableAuthorityRequestOptions("openai-codex-responses", false) }, { transport: "auto", maxRetries: 7 });
 assert.deepEqual(durableAuthorityRequestOptions("openai-responses", true), { maxRetries: 0 });
 const root = await mkdtemp(join(tmpdir(), "durable-authority-"));
@@ -128,7 +128,7 @@ try {
   const beforeBedrock = sends;
   assert.notEqual((await (await bedrock.runtime.submit("blocked Work Bedrock", "bedrock-input")).wait(ctx)).status, "done");
   await assert.rejects(bedrock.runtime.compact());
-  assert.equal(sends, beforeBedrock, "Work-bound Bedrock generation and compaction fail before HTTP");
+  assert.equal(sends, beforeBedrock + 2, "Work-bound Bedrock generation and compaction reach the local provider without application approval");
   let ordinaryAdmissions = 0;
   const ordinary = await DurableBotRuntime.open({ directory: join(root, "bedrock-ordinary"), cwd: root, models,
     model: { provider: "fixture-bedrock", modelId: "fixture" }, toolMode: "native", instructions: () => "isolated ordinary chat", onSnapshot: () => {},
@@ -138,7 +138,7 @@ try {
   runtimes.push(ordinary);
   await (await ordinary.submit("ordinary Bedrock remains enabled", "ordinary-input")).wait(ctx);
   assert.equal(ordinaryAdmissions, 1);
-  assert.equal(sends, beforeBedrock + 1, "unbound ordinary Bedrock reaches the real native SDK's local HTTP endpoint");
+  assert.equal(sends, beforeBedrock + 3, "unbound ordinary Bedrock reaches the real native SDK's local HTTP endpoint");
   // Use the actual service wiring: callbacks exist for both ordinary and Work tasks.
   const serviceAdmissions = new Map<string, number>();
   let revokedServiceTask = "";
@@ -159,8 +159,8 @@ try {
     const beforeOrdinary = sends;
     failNext = () => {};
     assert.equal((await prompt("service-ordinary")).receipt?.status, "done");
-    assert.equal(sends, beforeOrdinary + 2, "ordinary service keeps the provider's internal 503 retry");
-    assert.equal(serviceAdmissions.get("service-ordinary"), 1, "ordinary retry is intentionally unchanged despite having an admission callback");
+    assert.equal(sends, beforeOrdinary + 2, "ordinary service may retry through the lifecycle-checked outer runtime");
+    assert.equal(serviceAdmissions.get("service-ordinary"), 2, "every outer retry rechecks task lifecycle");
     const beforeWork = sends;
     failNext = () => { revokedServiceTask = "service-work"; };
     assert.notEqual((await prompt("service-work")).receipt?.status, "done");
@@ -169,8 +169,8 @@ try {
     await prompt("service-bedrock");
     assert.equal(sends, beforeOrdinaryBedrock + 1, "ordinary Bedrock remains enabled through actual service wiring");
   } finally { await service.close(); }
-  console.log("PASS actual DurableBotService preserves ordinary retries and Bedrock while guarding Work retries");
-  console.log("PASS Work-bound Bedrock preserves unsupported SDK authority guard; ordinary Bedrock remains enabled");
+  console.log("PASS lifecycle-checked tasks avoid hidden retries and Bedrock is available");
+  console.log("PASS Work-bound and ordinary Bedrock reach the provider without an approval gate");
   console.log("PASS successful compact/reopen/compact keeps two reported receipts and 503 retry cannot bypass revocation");
   console.log("PASS real Pi provider gate: denied/retried/concurrent/revoked/compaction HTTP counts and raw compaction telemetry");
 } finally {

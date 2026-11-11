@@ -240,7 +240,7 @@ async function main(): Promise<void> {
     assert(
       resolveEffectiveModelId(undefined, undefined, () => true, "opencode-go/gpt-5.6-luna") ===
         "opencode-go/gpt-5.6-luna",
-      "无显式无建议 → 系统默认（UI defaultModelId）",
+      "无显式无建议也不启用旧默认审批（UI defaultModelId）",
     );
     assert(
       resolveEffectiveModelId(undefined, "bad-model", () => false, "opencode-go/gpt-5.6-luna") ===
@@ -263,15 +263,15 @@ async function main(): Promise<void> {
   }
 
   /* ================= C. permission precedence + readonly ================= */
-  console.log("\nC. 权限优先级与 readonly 强制");
+  console.log("\nC. 旧权限配置兼容且不再限制执行");
   {
-    assert(resolveEffectivePermission(undefined, "readonly", "default") === "readonly", "无显式 → preset 建议 readonly");
+    assert(resolveEffectivePermission(undefined, "readonly", "default") === "auto", "旧 preset readonly 不再限制执行");
     assert(resolveEffectivePermission("auto", "readonly", "default") === "auto", "显式 auto 不被 preset 覆盖");
-    assert(resolveEffectivePermission(undefined, null, "default") === "default", "无建议 → 系统默认");
+    assert(resolveEffectivePermission(undefined, null, "default") === "auto", "无建议也不启用旧默认审批");
     const tools = resolveSessionTools("readonly", emptyModePolicy().toolPolicy);
     assert(
-      JSON.stringify(tools) === JSON.stringify(["read", "grep", "find", "ls"]),
-      "readonly → 工具裁剪为只读四件套",
+      tools === undefined,
+      "legacy readonly does not narrow tool availability",
     );
     // Tool availability is selected through Pi; native execution bypasses product permission hooks.
     const pi = makeFakePi();
@@ -626,13 +626,13 @@ async function main(): Promise<void> {
       "readonly",
       "default",
     );
-    assert(perm1 === "readonly", "主路径：未显式 → Tag readonly 生效（不再被 default 遮蔽）");
+    assert(perm1 === "auto", "主路径：旧 Tag readonly 不再限制执行");
     const perm2 = resolveEffectivePermission(
       toRequestPermissionMode({ explicit: true, value: "default" }),
       "readonly",
       "default",
     );
-    assert(perm2 === "default", "主路径：显式 default → 用户优先（覆盖 Tag 建议）");
+    assert(perm2 === "auto", "主路径：旧显式 default 不再启用审批");
     const model1 = resolveEffectiveModelId(
       toRequestModelId({ explicit: false, value: "boot-default-model" }),
       "review-model",
@@ -1406,9 +1406,9 @@ async function main(): Promise<void> {
       "N1：重启任务兜底压制建议（UI/DB 显示值一致）",
     );
     assert(
-      resolveEffectivePermission(fbUnlocked.permissionMode, "readonly", "default") === "readonly" &&
+      resolveEffectivePermission(fbUnlocked.permissionMode, "readonly", "default") === "auto" &&
         resolveEffectivePermission(fbLocked.permissionMode, "readonly", "default") === "auto",
-      "N1：权限链同语义（未锁定走建议、重启沿用上次生效）",
+      "N1：旧权限配置不因新建或重启重新启用审批",
     );
     // 真实 DB 行：重启恢复路径从 DB 取值（模拟 renderer flag 丢失后主进程仍用上次生效值）
     const nDb = new AppDatabase(join(sandbox, "n1.db"));

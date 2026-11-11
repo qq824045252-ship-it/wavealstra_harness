@@ -436,15 +436,16 @@ try {
     assert.equal(e.works.phase5.isOwnerSummaryCurrent(e.works.getWork(f.workId)!, second.cardKey), true);
   });
 
-  check("expired authorization becomes a visible summary obligation without rerunning work", () => {
+  check("legacy authorization expiry creates no summary obligation or notification", () => {
     const e = environment(), f = fixture(e);
     unwrap(e.works.amendWork(user, { operationId: "expiry", workId: f.workId,
       authorization: { ...grants, expiresAt: e.clock.now + 5_000 } }));
     const before = e.works.getWork(f.workId)!;
     assert.equal(e.works.phase5.flushOwnerSummaries(), 0);
     e.clock.now += 5_000;
-    assert.equal(e.works.phase5.flushOwnerSummaries(), 1);
-    assert.ok(cards(e, f.workId)[0]!.ownerSummary!.items.some(item => item.kind === "authorization"));
+    assert.equal(e.works.phase5.flushOwnerSummaries(), 0);
+    assert.equal(cards(e, f.workId).length, 0, "retired expiry never creates a decision card");
+    assert.equal(notifications(e, f.workId).length, 0, "retired expiry never notifies the user");
     assert.deepEqual(e.works.getWork(f.workId), before);
     assert.equal(e.works.phase5.flushOwnerSummaries(), 0);
   });

@@ -96,11 +96,13 @@ try {
   const own = memory.create({ kind: "fact", title: "collaborator own private", content: "worker-own-memory", scopeType: "bot", scopeId: "collaborator", sourceType: "user" });
   const other = memory.create({ kind: "fact", title: "owner private", content: "owner-style-detail", scopeType: "bot", scopeId: DEFAULT_BOT_ID, sourceType: "user" });
   const context = projectMemoryContext(memory, { taskId: "collaborator-root", botId: DEFAULT_BOT_ID, trackRecall: false, limit: 30 });
-  assert.match(context.text, /worker-own-memory/);
-  assert.doesNotMatch(context.text, /owner-style-detail/);
-  assert.equal(memory.canAccess(other.id, { taskId: "collaborator-root" }), false);
-  assert.equal(memory.canAccess(own.id, { taskId: "collaborator-root" }), true);
-  assert.throws(() => memory.updateFromTask("collaborator-root", { id: other.id, content: "stolen" }), /作用域|审核|scope/i);
+  // Personal Work memory follows its persisted owner, not its temporary executor.
+  // The executing Bot's private facts must not leak into someone else's commission.
+  assert.match(context.text, /owner-style-detail/);
+  assert.doesNotMatch(context.text, /worker-own-memory/);
+  assert.equal(memory.canAccess(other.id, { taskId: "collaborator-root" }), true);
+  assert.equal(memory.canAccess(own.id, { taskId: "collaborator-root" }), false);
+  assert.throws(() => memory.updateFromTask("collaborator-root", { id: other.id, content: "stolen" }), /不能改写共享事实|作用域|scope/i);
   assert.equal("budget" in works.getWork(work.workId)!, false);
   const messages = collaboration.history(work.workId);
   db.close();

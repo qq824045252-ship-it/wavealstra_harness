@@ -55,7 +55,7 @@ export class WorkDispatchQueue {
     const taskId = `work-execution-${randomUUID()}`;
     const settings = this.botSettings?.(work);
     this.db.upsertTask({ id: taskId, title: work.title, updatedAt: Date.now(), cwd: work.workspacePath ?? settings?.effectiveWorkspacePath, spaceId: settings?.spaceId,
-      projectId: work.projectId, modelId: settings?.modelId || this.defaultModel(), permissionMode: readOnlyFollowUp ? "readonly" : this.permissionMode(), modePresetId: "native" });
+      projectId: work.projectId, modelId: settings?.modelId || this.defaultModel(), permissionMode: "auto", modePresetId: "native" });
     this.db.connection.prepare(`INSERT INTO work_dispatch_requests(operation_id,work_id,task_id,bot_id,intent_revision,input_snapshot_id,state,created_at,inbox_event_id)
       VALUES (?,?,?,?,?,?,'pending',?,?)`).run(operationId, work.workId, taskId, work.ownerBotId, work.intentRevision, work.inputSnapshotId, Date.now(), inboxEventId ?? null);
   }
@@ -293,10 +293,6 @@ export class WorkDispatchQueue {
       if (work.lifecycle !== "active") continue;
       const request=z.object({operation_id:z.string(),task_id:z.string(),state:z.string()}).optional().parse(this.db.connection.prepare("SELECT operation_id,task_id,state FROM work_dispatch_requests WHERE continuation_plan_id=?").get(plan.planId));
       if(request) {
-        if (!this.works.repo.bindingForTask(request.task_id) && this.works.partialResults.isReadOnlyPlan(plan)) {
-          const task = this.db.getTask(request.task_id);
-          if (task && task.permissionMode !== "readonly") this.db.upsertTask({ ...task, permissionMode: "readonly", updatedAt: Date.now() });
-        }
         if(request.state==="cancelled" && !this.works.repo.bindingForTask(request.task_id)
           && !this.db.connection.prepare("SELECT 1 FROM work_dispatch_requests WHERE work_id=? AND state='pending' AND operation_id!=?").get(work.workId,request.operation_id))
           this.db.connection.prepare("UPDATE work_dispatch_requests SET state='pending',bot_id=?,error=NULL WHERE operation_id=?").run(work.ownerBotId,request.operation_id);
@@ -307,7 +303,7 @@ export class WorkDispatchQueue {
       const taskId = `work-execution-${randomUUID()}`;
       const sourceBinding = this.works.repo.getBinding(plan.sourceBindingId);
       const sourceTask = sourceBinding && this.db.getTask(sourceBinding.taskId);
-      this.db.upsertTask({id:taskId,title:`补齐：${work.title}`,updatedAt:Date.now(),cwd:sourceBinding?.workspaceBinding ?? work.workspacePath,spaceId:sourceTask?.spaceId,projectId:work.projectId,modelId:sourceTask?.modelId ?? this.defaultModel(),permissionMode:this.works.partialResults.isReadOnlyPlan(plan) || sourceTask?.permissionMode === "readonly" || this.permissionMode() === "readonly" ? "readonly" : sourceTask?.permissionMode ?? this.permissionMode(),modePresetId:"native"});
+      this.db.upsertTask({id:taskId,title:`补齐：${work.title}`,updatedAt:Date.now(),cwd:sourceBinding?.workspaceBinding ?? work.workspacePath,spaceId:sourceTask?.spaceId,projectId:work.projectId,modelId:sourceTask?.modelId ?? this.defaultModel(),permissionMode:"auto",modePresetId:"native"});
       this.db.connection.prepare(`INSERT INTO work_dispatch_requests(operation_id,work_id,task_id,bot_id,intent_revision,input_snapshot_id,state,created_at,continuation_plan_id)
         VALUES (?,?,?,?,?,?,'pending',?,?)`).run(plan.planId,work.workId,taskId,work.ownerBotId,work.intentRevision,work.inputSnapshotId,Date.now(),plan.planId);
       this.works.repo.markOutboxStatus(`continuation-approved:${plan.planId}:${plan.ownerEpoch}`,"delivered");

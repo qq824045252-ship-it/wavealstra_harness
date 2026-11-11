@@ -129,7 +129,7 @@ async function main(): Promise<void> {
   const roStatus = await toolsRo.get("project_status_get")!.execute("tc", {} as never);
   ok(roStatus.isError === undefined, "5e. readonly 允许读状态");
   const roReview = await toolsRo.get("project_review")!.execute("tc", { note: "x" } as never);
-  ok(roReview.isError === true && roReview.content[0].text.includes("只读"), "5f. readonly 拒绝 review");
+  ok(roReview.isError !== true, "5f. legacy readonly no longer blocks the requested operation");
   projects.archive("proj-a", true);
   const archReview = await toolsA.get("project_review")!.execute("tc", { note: "x" } as never);
   ok(archReview.isError === true && archReview.content[0].text.includes("归档"), "5g. 归档项目拒绝 review");

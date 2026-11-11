@@ -42,20 +42,20 @@ function check(name: string, fn: () => void | Promise<void>): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  await check("policy: taskRoot 写允许，外部写拒绝", () => {
+  await check("policy: canonical paths remain available without app write grants", () => {
     const p = new TaskFileAccessPolicy({ taskId: "t1", taskRoot });
     assert.equal(p.decide("write", "in.md").allowed, true);
-    assert.equal(p.decide("write", outside).allowed, false);
+    assert.equal(p.decide("write", outside).allowed, true);
   });
 
-  await check("policy: 只读 grant 可读不可写", () => {
+  await check("policy: legacy read grant does not restrict writes", () => {
     const p = new TaskFileAccessPolicy({ taskId: "t1", taskRoot });
     p.addReadGrant({ path: outside, source: "attachment" });
     assert.equal(p.decide("read", outside).allowed, true);
-    assert.equal(p.decide("write", outside).allowed, false);
+    assert.equal(p.decide("write", outside).allowed, true);
   });
 
-  await check("MCP: unknown 本地写需审批；none 硬拒", () => {
+  await check("MCP: historical classification metadata remains readable, not an execution gate", () => {
     const reg = new McpSideEffectRegistry();
     reg.registerAdapter({
       providerId: "fs-tool",
@@ -99,7 +99,7 @@ async function main(): Promise<void> {
     assert.equal(generic.requiresApproval, true);
   });
 
-  await check("MCP: 解析工具名 + tool_call 门禁接线", async () => {
+  await check("MCP: tool identity and dispatch remain available without approval", async () => {
     assert.equal(parseMcpToolIdentity("write"), null);
     const id = parseMcpToolIdentity("mcp__github_write_file");
     assert.ok(id);
@@ -145,10 +145,10 @@ async function main(): Promise<void> {
       toolName: "mcp__github_write_file",
       input: { path: join(taskRoot, "a.md") },
     })) as { block?: boolean } | undefined;
-    assert.equal(denied?.block, true, "拒绝审批应 block");
-    assert.equal(approvals.length, 1);
+    assert.equal(denied, undefined, "legacy callback cannot block MCP dispatch");
+    assert.equal(approvals.length, 0, "no app approval callback is invoked");
 
-    // 绝对路径越出 taskRoot → 硬拒绝（不弹审批）
+    // Outside paths are passed to the configured provider without app authorization.
     approvals.length = 0;
     const outsideAbs = (await handler?.({
       type: "tool_call",
@@ -156,8 +156,8 @@ async function main(): Promise<void> {
       toolName: "mcp__github_write_file",
       input: { path: outside },
     })) as { block?: boolean; reason?: string } | undefined;
-    assert.equal(outsideAbs?.block, true);
-    assert.equal(approvals.length, 0, "越界硬拒绝不走审批");
+    assert.equal(outsideAbs, undefined);
+    assert.equal(approvals.length, 0, "external paths do not invoke removed approval gates");
   });
 
   await check("默认 guarded；非法设置回退 guarded", () => {
@@ -171,7 +171,7 @@ async function main(): Promise<void> {
     assert.equal(cap.isDefault, false);
   });
 
-  await check("os-sandbox: 外部 writePaths 拒绝；任务内可执行", async () => {
+  await check("os-sandbox: app writePaths approval retired; process execution still works", async () => {
     const backend = createExecutionBackend("os-sandbox");
     assert.equal(backend.level, "os-sandbox");
 
@@ -183,7 +183,9 @@ async function main(): Promise<void> {
       writePaths: [outside],
       timeoutMs: 5000,
     });
-    assert.equal(blocked.blocked, true);
+    assert.equal(blocked.blocked, false);
+    assert.equal(blocked.exitCode, 0);
+    assert.equal(blocked.stdout.trim(), "1");
     assert.equal(blocked.experimental, true);
 
     const ok = await backend.run({

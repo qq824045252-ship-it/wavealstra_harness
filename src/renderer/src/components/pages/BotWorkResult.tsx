@@ -125,7 +125,7 @@ export function WorkReport({ report, originalText, executionId, work, renderMark
     {long && <button className="bot-result-expand" type="button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? "收起长报告" : "展开完整报告"}</button>}
     {report.notices.length > 0 && <ul className="bot-result-notices">{report.notices.map((notice, i) => <li key={i}>{notice}</li>)}</ul>}
     <WorkFiles files={files} />
-    {additionalRecord && <details className="bot-original-report"><summary>{unprojectedJson ? "完整报告（原始格式）" : "补充原始记录"}</summary><p>成果记录：{{ proposed: "已生成，尚未登记采纳", accepted: "已采纳", rejected: "未采纳", superseded: "已被后续成果替代" }[report.reviewStatus]}。这是成果记录状态，不是新的操作授权请求。</p>{renderMarkdown(additionalRecord)}</details>}
+    {additionalRecord && <details className="bot-original-report"><summary>{unprojectedJson ? "完整报告（原始格式）" : "补充原始记录"}</summary><p>成果记录：{{ proposed: "已生成，尚未登记采纳", accepted: "已采纳", rejected: "未采纳", superseded: "已被后续成果替代" }[report.reviewStatus]}。</p>{renderMarkdown(additionalRecord)}</details>}
   </section>;
 }
 

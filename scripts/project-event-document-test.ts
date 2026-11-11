@@ -195,7 +195,7 @@ async function main(): Promise<void> {
   createProjectEventExtension(roBridge)(roApi);
   const roTool = roTools.find((t) => t.name === "project_event_ingest_document")!;
   const roRes = await roTool.execute("c2", { title: "x", body: "y" } as never);
-  ok(roRes.isError === true && (roRes.content[0]?.text ?? "").includes("只读"), "9c. readonly → 拒绝");
+  ok(roRes.isError !== true, "9c. legacy readonly no longer blocks the requested operation");
 
   // archived → 拒绝（服务层只读）
   db.connection.prepare(`UPDATE projects SET archived=1 WHERE id='proj-a'`).run();

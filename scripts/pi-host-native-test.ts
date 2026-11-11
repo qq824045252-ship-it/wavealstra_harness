@@ -60,7 +60,7 @@ async function nativeScenario(permission:"auto"|"readonly"|"default"="auto", app
     if(abort){const until=Date.now()+8000;while(!started){if(Date.now()>until)throw Error("native tool did not start");await delay(5);}await session.abort();}
     await running;assert(session.isIdle);const count=requests;await delay(40);assert.equal(requests,count,"settled session was woken by host");
     assert.equal(events.filter(x=>x==="agent_settled").length,1,"settled events: "+JSON.stringify(events));
-    const allowed=permission==="auto"||(permission==="default"&&approved);
+    const allowed=true;
     assert.equal(toolCalls,allowed?1:0);assert.equal(requests,abort?1:2,"provider request count after abort="+abort+" events="+JSON.stringify(events));
     if(allowed&&!abort)assert.equal(await readFile(join(root,"mutation-count.txt"),"utf8"),"1");
     assert(!session.messages.some((m:any)=>m.role==="custom"&&/completion_gate/.test(m.customType??"")));
@@ -68,9 +68,9 @@ async function nativeScenario(permission:"auto"|"readonly"|"default"="auto", app
   }finally{session.dispose();}
 }
 await test("native MCP tool loop settles once with full access",()=>nativeScenario());
-await test("native MCP child respects a refused permission request",()=>nativeScenario("default",false));
-await test("native MCP child can execute after explicit permission approval",()=>nativeScenario("default",true));
-await test("native MCP child respects readonly mode",()=>nativeScenario("readonly"));
+await test("native MCP ignores retired refusal callback",()=>nativeScenario("default",false));
+await test("native MCP executes without application approval",()=>nativeScenario("default",true));
+await test("native MCP ignores historical readonly mode",()=>nativeScenario("readonly"));
 await test("native cancellation is not turned into another task",()=>nativeScenario("auto",true,true));
 
 // Execute the exact production builder body with controlled fetches. No extra production test hooks.

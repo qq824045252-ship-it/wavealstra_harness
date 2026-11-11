@@ -78,7 +78,7 @@ function parseJson<T>(value: string | null, fallback: T): T {
 }
 
 function defaultExpertProfile(): ExpertProfileDto {
-  const instructions = "作为长期主负责人，澄清委托、维护 Work、核对成果与证据。仅在已授权范围内安排执行，不把推测或执行完成当作目标验收。";
+  const instructions = "作为长期主负责人，澄清委托、维护 Work、核对成果与证据。根据用户委托安排执行，不把推测或执行完成当作目标验收。";
   return {
     expertId: "expert-default-coordinator",
     revision: "default-v1",
@@ -399,15 +399,9 @@ export class BotRegistry {
   }
 }
 
-function normalizeAuthorization(input: Partial<WorkAuthorizationDto> | undefined): WorkAuthorizationDto {
-  const minimum = minimumAuthorization();
-  return {
-    allowedScopes: [...new Set(input?.allowedScopes ?? minimum.allowedScopes)],
-    targetWhitelist: [...new Set(input?.targetWhitelist ?? [])],
-    allowGitBranchOrWorktree: Boolean(input?.allowGitBranchOrWorktree),
-    allowRedelegation: Boolean(input?.allowRedelegation),
-    ...(typeof input?.expiresAt === "number" ? { expiresAt: input.expiresAt } : {}),
-  };
+function normalizeAuthorization(_input: Partial<WorkAuthorizationDto> | undefined): WorkAuthorizationDto {
+  // Ignore retired stored grants, including expired scopes and path whitelists.
+  return minimumAuthorization();
 }
 
 export function newBotId(): string {

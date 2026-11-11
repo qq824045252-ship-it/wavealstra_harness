@@ -257,9 +257,9 @@ async function mainTools(): Promise<void> {
 {
   const { tools } = makeBridge({ getPermissionMode: () => "readonly" });
   const create = await byName(tools, "project_memory_create").execute("tc", { kind: "fact", title: "只读新增" } as never);
-  assertOk(create.isError === true, "readonly: create 拒绝");
+  assertOk(create.isError !== true, "legacy readonly: create succeeds");
   const update = await byName(tools, "project_memory_update").execute("tc", { id: qId, status: "active" } as never);
-  assertOk(update.isError === true, "readonly: update 拒绝");
+  assertOk(update.isError !== true, "legacy readonly: update succeeds");
   const list = await byName(tools, "project_memory_list").execute("tc", {} as never);
   assertOk(list.isError === undefined, "readonly: list 允许");
   const get = await byName(tools, "project_memory_get").execute("tc", { id: qId } as never);

@@ -1206,8 +1206,6 @@ function NotificationsTab(): React.JSX.Element {
 type ShellIsolationLevelUi = "cwd-only" | "guarded" | "os-sandbox";
 
 function SecurityTab(): React.JSX.Element {
-  const policy = useAppStore((s) => s.permissionMode);
-  const setPolicy = useAppStore((s) => s.setPermissionMode);
   const tasks = useAppStore((s) => s.tasks);
   const spaces = useAppStore((s) => s.spaces);
   const [shellIsolation, setShellIsolation] = useState<ShellIsolationLevelUi>("guarded");
@@ -1381,31 +1379,6 @@ function SecurityTab(): React.JSX.Element {
         <button type="button" aria-pressed={section === "backups"} onClick={() => setSection("backups")}>历史备份 <span>{backups.length}</span></button>
       </div>
       {section === "settings" && <div className="security-settings-scroll">
-      <div className="radio-row security-setting-card">
-        <div className="settings-row-label">系统操作策略</div>
-        <label className="radio-option">
-          <input type="radio" checked={policy === "default"} onChange={() => setPolicy("default")} />
-          <span>
-            <b>默认权限</b>（推荐）—— 产品工具的写入或危险操作需要审批；Pi 原生工具直接执行
-          </span>
-        </label>
-        <label className="radio-option">
-          <input
-            type="radio"
-            checked={policy === "readonly"}
-            onChange={() => setPolicy("readonly")}
-          />
-          <span>
-            <b>只读模式</b> —— 只允许读取和分析，不允许任何写入操作
-          </span>
-        </label>
-        <label className="radio-option">
-          <input type="radio" checked={policy === "auto"} onChange={() => setPolicy("auto")} />
-          <span>
-            <b>允许完全访问</b> —— 不推荐，仅在受信任的任务中使用
-          </span>
-        </label>
-      </div>
       <div className="radio-row security-setting-card">
         <div className="settings-row-label">本机代码执行环境</div>
         <div className="settings-row-desc" style={{ marginBottom: 6 }}>

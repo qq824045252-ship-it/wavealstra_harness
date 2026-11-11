@@ -245,11 +245,12 @@ async function main(): Promise<void> {
     const tools = makeReadonlyExtension("proj-a", "task-ro");
     service.attachToTask({ itemId: personalItem.id, taskId: "task-ro" });
     const attach = await call(tools, "library_attach_to_task", { id: personalItem.id });
-    ok(attach.isError === true && attach.content[0].text.includes("只读"), "readonly: attach 拒绝");
+    ok(attach.isError !== true, "legacy readonly: attach succeeds");
     const detach = await call(tools, "library_detach_from_task", { id: personalItem.id });
-    ok(detach.isError === true && detach.content[0].text.includes("只读"), "readonly: detach 拒绝");
+    ok(detach.isError !== true, "legacy readonly: detach succeeds");
     const list = await call(tools, "library_list", {});
     ok(list.isError === undefined, "readonly: list 允许");
+    service.attachToTask({ itemId: personalItem.id, taskId: "task-ro" });
     const read = await call(tools, "library_read", { id: personalItem.id });
     ok(read.isError === undefined, "readonly: read 允许");
     // 非 readonly 会话 attach/detach 正常（回归）
@@ -359,15 +360,16 @@ async function main(): Promise<void> {
     // readonly：全部写工具拒绝
     const toolsRo = makeReadonlyExtension("proj-a");
     const roCreate = await call(toolsRo, "library_create_text", { kind: "markdown", title: "x" });
-    ok(roCreate.isError === true && roCreate.content[0].text.includes("只读"), "readonly: create_text 拒绝");
+    ok(roCreate.isError !== true, "legacy readonly: create_text succeeds");
     const roSave = await call(toolsRo, "library_save_artifact", { artifactId: "art-own" });
-    ok(roSave.isError === true, "readonly: save_artifact 拒绝");
+    ok(roSave.isError !== true, "legacy readonly: save_artifact succeeds");
     const roColl = await call(toolsRo, "library_create_collection", { name: "x" });
-    ok(roColl.isError === true, "readonly: create_collection 拒绝");
+    ok(roColl.isError !== true, "legacy readonly: create_collection succeeds");
     const roMove = await call(toolsRo, "library_move", { type: "item", id: savedId, collectionId: aColl.id });
-    ok(roMove.isError === true, "readonly: move 拒绝");
-    const roUpdate = await call(toolsRo, "library_update_text", { id: savedId, content: "x" });
-    ok(roUpdate.isError === true, "readonly: update_text 拒绝");
+    ok(roMove.isError !== true, "legacy readonly: move succeeds");
+    const roCreatedId = (roCreate.details as { item: { id: string } }).item.id;
+    const roUpdate = await call(toolsRo, "library_update_text", { id: roCreatedId, content: "x" });
+    ok(roUpdate.isError !== true, "legacy readonly: update_text succeeds");
 
     // 归档项目：默认目标仍是该项目并拒绝写入，不偷偷降级写入个人库；读取保留
     projectService.archive("proj-a", true);
@@ -390,8 +392,8 @@ async function main(): Promise<void> {
     db.connection.prepare("INSERT INTO projects(id, name, created_at, updated_at) VALUES ('empty-readonly-project', 'Readonly', 1, 1)").run();
     const readonly = makeReadonlyExtension("empty-readonly-project", "readonly-empty-task");
     const beforeSpaces = service.listSpaces().length;
-    ok((await call(readonly, "library_create_text", { kind: "markdown", title: "不应创建" })).isError === true, "只读任务拒绝首次创建资料");
-    ok(service.listSpaces().length === beforeSpaces, "只读请求不会为了选择默认目标偷偷创建资料位置");
+    ok((await call(readonly, "library_create_text", { kind: "markdown", title: "首次创建" })).isError !== true, "旧只读配置不阻止首次创建资料");
+    ok(service.listSpaces().length === beforeSpaces + 1, "首次创建资料持久化当前项目所属空间");
     db.createSpace({ id: "materials-parent", name: "父空间" });
     db.createSpace({ id: "materials-child", name: "当前空间", parentId: "materials-parent" });
     db.createSpace({ id: "materials-sibling", name: "兄弟空间", parentId: "materials-parent" });

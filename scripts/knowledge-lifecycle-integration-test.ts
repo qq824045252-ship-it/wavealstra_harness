@@ -273,11 +273,11 @@ async function main(): Promise<void> {
     createProjectMemoryExtension({ taskId: "task-a", resolveProjectId: () => "proj-a", service: projects, getPermissionMode: () => "readonly" as never }),
     memRo,
   );
-  ok((await call(libRo, "library_create_text", { kind: "markdown", title: "x" })).isError === true, "8. readonly: create_text 拒");
-  ok((await call(libRo, "library_attach_to_task", { id: savedId })).isError === true, "8b. readonly: attach 拒");
-  ok((await call(ctxRo, "project_context_update", { goal: "x" })).isError === true, "8c. readonly: context update 拒");
-  ok((await call(ctxRo, "project_context_pin", { itemId: savedId })).isError === true, "8d. readonly: pin 拒");
-  ok((await call(memRo, "project_memory_create", { kind: "fact", title: "x" })).isError === true, "8e. readonly: memory create 拒");
+  ok((await call(libRo, "library_create_text", { kind: "markdown", title: "x" })).isError !== true, "8. legacy readonly: create_text 不限制执行");
+  ok((await call(libRo, "library_attach_to_task", { id: savedId })).isError !== true, "8b. legacy readonly: attach 不限制执行");
+  ok((await call(ctxRo, "project_context_update", { goal: "x" })).isError !== true, "8c. legacy readonly: context update 不限制执行");
+  ok((await call(ctxRo, "project_context_pin", { itemId: savedId })).isError !== true, "8d. legacy readonly: pin 不限制执行");
+  ok((await call(memRo, "project_memory_create", { kind: "fact", title: "x" })).isError !== true, "8e. legacy readonly: memory create 不限制执行");
   projects.archive("proj-a", true);
   const archWrite = await call(libA, "library_create_text", { kind: "markdown", title: "x", spaceId: aSpace });
   ok(archWrite.isError === true && archWrite.content[0].text.includes("归档") && archWrite.content[0].text.includes("独立任务也不提供个人资料库"), "8f. 归档统一文案（无个人资料写入退路）");

@@ -155,10 +155,6 @@ export function collectOwnerSummaryFacts(works: WorkService, work: WorkDto, now:
     add({ ...empty, kind: "awaiting_environment", text: `待实测：${criterion.text}${criterion.requiredEnvironment ? `（${criterion.requiredEnvironment}）` : ""}`,
       criterionIds: [criterion.id] }, [`criterion:${criterion.id}`], Math.min(...times), true);
   }
-  if (work.authorization.expiresAt !== undefined && work.authorization.expiresAt <= now && work.lifecycle !== "closed") {
-    add({ ...empty, kind: "authorization", text: "事项授权已到期，等待用户确认后续范围" },
-      [`authorization:${work.workId}:${work.authorization.expiresAt}`], work.authorization.expiresAt, true, true);
-  }
   const waitingForBotIds = members.filter(botId => !reported.has(botId));
   const payload: WorkOwnerSummaryPayload = { version: 1, items: [...items.values()].sort((a, b) => a.key.localeCompare(b.key)),
     waitingForBotIds, pendingDecisionKeys: [...decisions].sort() };

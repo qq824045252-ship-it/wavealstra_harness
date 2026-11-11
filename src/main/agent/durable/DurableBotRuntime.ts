@@ -3,7 +3,6 @@ import { supportsUsageObservation, withUsageEvidence } from "../../usage/provide
 import { createDurableArtifactRegistrationTool, withDurableArtifactRegistration } from "./DurableArtifactRegistration";
 import { withNativeNotStarted } from "./DurableToolLifecycle";
 import { canRebindDurableWorkspace, migrateDurableWorkspace, WorkspaceMigrationBusyError } from "./DurableWorkspaceMigration";
-import { withWorkShellRead } from "../work/WorkShellRead";
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -972,7 +971,7 @@ export class DurableBotRuntime {
  */
 function codingTools(directory: string, readonlyShell?: () => boolean): ToolRegistration[] {
   return [
-    ...(CodingTools.tools ?? []).map(tool => tool.name === "read" ? withDurableImageRead(tool) : withDurableArtifactRegistration(withWorkShellRead(tool, readonlyShell), directory)),
+    ...(CodingTools.tools ?? []).map(tool => tool.name === "read" ? withDurableImageRead(tool) : withDurableArtifactRegistration(tool, directory)),
     ...createPlatformShellTools(),
     createDurableArtifactRegistrationTool(directory),
   ];
@@ -1011,7 +1010,7 @@ function taskScopedModels(models: Models, cwd: string,
       return withModelInvocationSettings(settings, () => target.streamSimple(args[0], args[1], {
         ...options,
         ...(supportsUsageObservation(args[0].api)?{fetch:withUsageEvidence(options?.fetch??globalThis.fetch,observed,args[0].api)}:{}),
-        ...durableAuthorityRequestOptions(args[0].api, providerAuthorityGuarded?.() ?? false),
+        ...durableAuthorityRequestOptions(args[0].api, Boolean(beforeProviderRequest)),
         onPayload: async (payload, model) => {
           const replacement = await options?.onPayload?.(payload, model);
           signal?.throwIfAborted();
@@ -1035,7 +1034,7 @@ function taskScopedModels(models: Models, cwd: string,
       const result = await withModelInvocationSettings(settings, () => target.completeSimple(args[0], args[1], {
         ...args[2],
         ...(supportsUsageObservation(args[0].api)?{fetch:withUsageEvidence(args[2]?.fetch??globalThis.fetch,observed,args[0].api)}:{}),
-        ...durableAuthorityRequestOptions(args[0].api, providerAuthorityGuarded?.() ?? false),
+        ...durableAuthorityRequestOptions(args[0].api, Boolean(beforeProviderRequest)),
         onPayload: async (payload, model) => {
           const replacement = await args[2]?.onPayload?.(payload, model);
           signal?.throwIfAborted();
@@ -1059,11 +1058,11 @@ function taskScopedModels(models: Models, cwd: string,
   return scoped;
 }
 
-/** Hidden transport retries cannot outlive a Work authority check. No usage limit applies. */
-export function durableAuthorityRequestOptions(api: string, guarded: boolean) {
-  if (!guarded) return {};
-  if (api === "bedrock-converse-stream") throw new Error("当前供应商 SDK 的重试不支持逐次权限检查，无法执行受 Work 授权约束的请求");
-  return { maxRetries: 0, ...(api === "openai-codex-responses" ? { transport: "sse" as const } : {}) };
+/** Hidden transport retries must not outlive task lifecycle checks. */
+export function durableAuthorityRequestOptions(_api: string, lifecycleChecked: boolean) {
+  // Keep each retry visible to task cancellation/stop checks. This is not approval.
+  return lifecycleChecked ? { maxRetries: 0 } : {};
+
 }
 
 function botExtension(

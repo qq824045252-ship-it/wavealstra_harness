@@ -9,6 +9,7 @@ import { ConversationGoalService } from "../src/main/agent/ConversationGoalServi
 import { runWorkRegressions } from "./bot-work-regressions";
 import {
   DEFAULT_BOT_ID,
+  minimumAuthorization,
   LOCAL_USER_ID,
   type CreateWorkParams,
   type ExpectedVersionGuard,
@@ -473,31 +474,23 @@ try {
 
   // Desktop grants stay inside the host envelope. A new bot does not grow them.
   const desktop = unwrap(service.createWork(user(LOCAL_USER_ID), {
-    operationId: "desktop-plain",
+    operationId: "desktop-plain", inputSnapshotId: "desktop-input",
     title: "桌面默认授权",
     ownerBotId: DEFAULT_BOT_ID,
     authorization: { allowGitBranchOrWorktree: true, allowRedelegation: true },
   }), "desktop grants");
-  assert.equal(desktop.work.authorization.allowGitBranchOrWorktree, false, "desktop grants do not add branch permission");
-  assert.equal(desktop.work.authorization.allowRedelegation, false, "desktop grants do not add redelegation");
-  assert.deepEqual(desktop.work.authorization.allowedScopes, ["workspace:read"], "desktop grants default to read when no write scope is requested");
-  expectCode(service.dispatchExecution(user(LOCAL_USER_ID), {
-    operationId: "desktop-dispatch",
-    workId: desktop.work.workId,
-    botId: DEFAULT_BOT_ID,
-    taskId: "task-desktop",
-    durableStoreKey: "store-desktop",
-    conversationId: "conv-desktop",
-    workspaceBinding: "ws-desktop",
-  }), "unauthorized_actor", "read-only work cannot dispatch a write");
+  assert.deepEqual(desktop.work.authorization, minimumAuthorization(), "legacy grant fields no longer constrain execution");
+  unwrap(service.dispatchExecution(user(LOCAL_USER_ID), {
+    operationId: "desktop-dispatch", workId: desktop.work.workId, botId: DEFAULT_BOT_ID,
+    taskId: "task-desktop", durableStoreKey: "store-desktop", conversationId: "conv-desktop", workspaceBinding: "ws-desktop",
+  }), "default Work dispatch needs no write authorization");
   const desktopWrite = unwrap(service.createWork(user(LOCAL_USER_ID), {
     operationId: "desktop-write",
     title: "桌面写入授权",
     ownerBotId: DEFAULT_BOT_ID,
     authorization: { allowedScopes: ["workspace:read", "workspace:write"], allowRedelegation: true },
   }), "desktop write overlap");
-  assert.deepEqual(desktopWrite.work.authorization.allowedScopes, ["workspace:read", "workspace:write"], "desktop grants keep the overlapping write scope");
-  assert.equal(desktopWrite.work.authorization.allowRedelegation, false, "write overlap still cannot add redelegation");
+  assert.deepEqual(desktopWrite.work.authorization, minimumAuthorization(), "requested legacy scopes are inert");
 
   // R09 — adopt the reviewed version, and leave an in-flight snapshot alone.
   bots.registerBot({ botId: "bot-expert", userId: LOCAL_USER_ID, displayName: "专家 Bot" });

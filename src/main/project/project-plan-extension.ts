@@ -9,7 +9,7 @@
  * 设计约束（与产品约定一致）：
  * - 只提供 list/get/create/update，不暴露 delete（避免 Agent 误删人工计划项）；
  * - 全部为结构化单项操作，复用 ProjectService 现有 CRUD（内部事务），绝无整表覆盖；
- * - readonly 权限模式禁止一切写入；归档项目禁止写入（与人类 UI 行为一致）；
+ * - 归档项目禁止写入（与人类 UI 行为一致）；
  * - 不建立 Todo↔Task 绑定：本扩展不读不写任何 taskId/todoId 关联；
  * - 日期入参接受毫秒时间戳或 "YYYY-MM-DD"（当地 0 点），见 parsePlanDateValue；
  * - 计划项属于 Project 的共享数据。
@@ -34,7 +34,7 @@ export interface ProjectPlanExtensionBridge {
   /** 工具调用时解析当前任务绑定的 projectId（动态：任务改绑/解绑即时生效；null = 未绑定） */
   resolveProjectId: () => string | null;
   service: ProjectService;
-  /** 当前权限模式（readonly 禁止写入；缺省视为非 readonly） */
+  /** 旧调用方兼容字段，不再限制执行 */
   getPermissionMode?: () => PermissionMode;
 }
 
@@ -168,11 +168,8 @@ export function createProjectPlanExtension(bridge: ProjectPlanExtensionBridge): 
     return projectId;
   };
 
-  /** 写操作门禁：readonly 权限 / 归档项目 一律拒绝（与人类 UI 一致），读操作不受影响 */
+  /** 写操作门禁：归档项目拒绝写入（与人类 UI 一致），读操作不受影响 */
   const guardWritable = (projectId: string): void => {
-    if (bridge.getPermissionMode?.() === "readonly") {
-      throw new ProjectPlanToolError("当前为只读权限模式，不能修改项目共享计划（只可读取）。");
-    }
     const project = bridge.service.get(projectId);
     if (project?.archived) {
       throw new ProjectPlanToolError("项目已归档，不能修改其共享计划（只可读取）。");
@@ -255,7 +252,7 @@ export function createProjectPlanExtension(bridge: ProjectPlanExtensionBridge): 
       name: "project_plan_create",
       label: "项目共享计划 · 新增事项",
       description:
-        "在当前任务所属项目的共享计划中新增一个结构化计划项（人维护的项目级状态；所有绑定本项目的任务可见）。作用域自动取当前任务绑定的项目。只改本项目计划，不影响其它项目；readonly 权限模式或归档项目下不可用。日期接受毫秒时间戳或 YYYY-MM-DD（当地 0 点）。新增后请通过返回的 id 在后续更新中引用。",
+        "在当前任务所属项目的共享计划中新增一个结构化计划项（人维护的项目级状态；所有绑定本项目的任务可见）。作用域自动取当前任务绑定的项目。只改本项目计划，不影响其它项目；归档项目下不可用。日期接受毫秒时间戳或 YYYY-MM-DD（当地 0 点）。新增后请通过返回的 id 在后续更新中引用。",
       promptSnippet: "project_plan_create(title, status?, priority?, ...) — 在当前项目共享计划中新增一项（结构化）",
       parameters: createParamsSchema,
       execute: async (_toolCallId: string, params: PlanCreateParams) => {
@@ -289,7 +286,7 @@ export function createProjectPlanExtension(bridge: ProjectPlanExtensionBridge): 
       name: "project_plan_update",
       label: "项目共享计划 · 单项更新",
       description:
-        "结构化单项更新当前任务所属项目共享计划中的一个计划项（状态/标题/描述/负责人/优先级/标签/起止日期）。作用域自动取当前任务绑定的项目；不属于当前项目的 id 返回受控错误。只 patch 传入的字段，其余字段保持不变；传 null 可清除 description/assignee/priority/startAt/dueAt。readonly 权限模式或归档项目下不可用。请勿整段重写计划或删除计划项（本会话无删除权限）。",
+        "结构化单项更新当前任务所属项目共享计划中的一个计划项（状态/标题/描述/负责人/优先级/标签/起止日期）。作用域自动取当前任务绑定的项目；不属于当前项目的 id 返回受控错误。只 patch 传入的字段，其余字段保持不变；传 null 可清除 description/assignee/priority/startAt/dueAt。归档项目下不可用。请勿整段重写计划或删除计划项（本工具不提供删除操作）。",
       promptSnippet: "project_plan_update(id, status?, title?, ...) — 单项 patch 项目计划项（结构化，不清除其它字段）",
       parameters: updateParamsSchema,
       execute: async (_toolCallId: string, params: PlanUpdateParams) => {

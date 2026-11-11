@@ -256,14 +256,14 @@ async function main(): Promise<void> {
   );
 
   const toolsReadonly = resolveSessionTools("readonly", profile.policy.toolPolicy);
-  assert(toolsReadonly?.includes("read") && !toolsReadonly?.includes("write"), "readonly 工具");
+  assert(toolsReadonly === undefined, "旧readonly不裁剪默认工具");
   const hardTools = resolveSessionTools("default", {
     mode: "hard",
     prefer: [],
     demote: [],
     deny: ["bash"],
   });
-  assert(hardTools && !hardTools.includes("bash"), "hard deny bash");
+  assert(hardTools === undefined, "旧hard deny不裁剪默认工具");
 
   const filt = filterSkillsForMode(
     [{ id: "x", name: "foo", description: "周报" }],

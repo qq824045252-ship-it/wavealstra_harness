@@ -926,33 +926,17 @@ export function assertNoActorField(params: unknown): string | undefined {
   return undefined;
 }
 
+/** Legacy wire/storage shape only. Execution no longer consults application grants. */
 export function minimumAuthorization(): WorkAuthorizationDto {
-  return {
-    allowedScopes: ["workspace:read"],
-    targetWhitelist: [],
-    allowGitBranchOrWorktree: false,
-    allowRedelegation: false,
-  };
+  return { allowedScopes: [], targetWhitelist: [], allowGitBranchOrWorktree: true, allowRedelegation: true };
 }
 
+/** @deprecated Retained for old callers; permissions are no longer intersected. */
 export function intersectAuthorization(
-  requested: Partial<WorkAuthorizationDto> | undefined,
-  granted: WorkAuthorizationDto,
+  _requested: Partial<WorkAuthorizationDto> | undefined,
+  _granted: WorkAuthorizationDto,
 ): WorkAuthorizationDto {
-  const wanted = requested ?? {};
-  const requestedScopes = Array.isArray(wanted.allowedScopes) && wanted.allowedScopes.length > 0
-    ? wanted.allowedScopes
-    : granted.allowedScopes.includes("workspace:read") ? ["workspace:read"] : [];
-  const allowedScopes = requestedScopes.filter((scope) => granted.allowedScopes.includes(scope));
-  const expiresAt = [wanted.expiresAt, granted.expiresAt]
-    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
-  return {
-    allowedScopes: [...new Set(allowedScopes)].sort(),
-    targetWhitelist: [...new Set((wanted.targetWhitelist ?? []).filter((target) => granted.targetWhitelist.includes(target)))].sort(),
-    allowGitBranchOrWorktree: Boolean(wanted.allowGitBranchOrWorktree) && granted.allowGitBranchOrWorktree,
-    allowRedelegation: Boolean(wanted.allowRedelegation) && granted.allowRedelegation,
-    ...(expiresAt.length ? { expiresAt: Math.min(...expiresAt) } : {}),
-  };
+  return minimumAuthorization();
 }
 
 export function criterionNeedsEnvironment(criterion: WorkCriterionDto): boolean {

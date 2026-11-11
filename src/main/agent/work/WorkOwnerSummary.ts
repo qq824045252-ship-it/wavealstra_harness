@@ -143,7 +143,7 @@ export class WorkOwnerSummary {
       publishedCardKey: previous?.publishedCardKey, publishedDigest: sameInput ? previous?.publishedDigest : undefined,
       handledKeys: sameInput ? previous?.handledKeys ?? [] : [],
       handledDecisionKeys: sameInput ? previous?.handledDecisionKeys ?? [] : [],
-      authorizationExpired: work.authorization.expiresAt !== undefined && work.authorization.expiresAt <= now,
+      authorizationExpired: false,
       publishReady: facts.ready || facts.urgentDecisionKeys.some(key => !previous?.handledDecisionKeys.includes(key)),
     };
     if (facts.hasSubstance && facts.digest !== state.publishedDigest

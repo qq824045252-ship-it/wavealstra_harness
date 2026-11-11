@@ -342,9 +342,9 @@ try {
   bots.registerBot({ botId: "expired-bot", userId: LOCAL_USER_ID, displayName: "expired", authorization: { ...DESKTOP_USER_GRANTS, expiresAt: Date.now() - 1000 } });
   const beforeExpired = works.listWorks(LOCAL_USER_ID, { includeClosed: true }).length;
   const expired = foreground.send({ botId: "expired-bot", requestId: "expired-create", text: "委托 expired" });
-  await wait(() => foreground.messages.message(expired.assistantMessageId)?.status === "completed", "expired authorization remains queryable but cannot delegate");
-  assert.equal(works.listWorks(LOCAL_USER_ID, { includeClosed: true }).length, beforeExpired);
-  assert.match(foreground.messages.message(expired.assistantMessageId)?.text ?? "", /过期/);
+  await wait(() => foreground.messages.message(expired.assistantMessageId)?.status === "completed", "legacy authorization expiry does not block delegation");
+  assert.equal(works.listWorks(LOCAL_USER_ID, { includeClosed: true }).length, beforeExpired + 1);
+  assert.doesNotMatch(foreground.messages.message(expired.assistantMessageId)?.text ?? "", /授权已过期/);
   db.connection.prepare("UPDATE bots SET status='disabled' WHERE bot_id=?").run(DEFAULT_BOT_ID);
   assert.throws(() => foreground.send({ botId: DEFAULT_BOT_ID, requestId: "disabled-new", text: "委托 disabled" }));
   assert.equal(foreground.send({ botId: DEFAULT_BOT_ID, requestId: "after-normal-close", text: "重新打开后的下一条消息" }).replayed, true, "disabled Bot may still return an already accepted receipt");

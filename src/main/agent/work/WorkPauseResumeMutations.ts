@@ -25,9 +25,6 @@ export function pauseWorkMutation(deps: PauseResumeMutationDeps, work: WorkDto, 
 }
 
 export function resumeWorkMutation(deps: PauseResumeMutationDeps, work: WorkDto, params: ResumeWorkParams, now: number): Mutation {
-  if (work.authorization.expiresAt !== undefined && work.authorization.expiresAt <= now) {
-    return { ok: false, code: "unauthorized_actor", message: "Work 授权已过期，恢复前需要重新授权" };
-  }
   deps.recordArchive.clearOnExplicitResume(work.workId);
   const next: WorkDto = {
     ...work, lifecycle: "active", stateVersion: work.stateVersion + 1, updatedAt: now,

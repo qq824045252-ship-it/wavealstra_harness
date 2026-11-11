@@ -26,10 +26,8 @@ import {
 import { applyPromptContextBudget } from "./PromptContextBudget";
 import { isEvidenceSegment } from "./EvidenceBudget";
 import {
-  MUTATING_BUILTIN_TOOLS,
   MYBUDDY_NATIVE_EXTENSION_TOOL_NAMES,
   NATIVE_CAPABILITY_TOOL_NAMES,
-  READONLY_EXTRA_ACTIVE,
   WEB_ACCESS_TOOL_NAMES,
 } from "../../shared/native-tools";
 
@@ -546,18 +544,7 @@ export function resolveSessionTools(
   toolPolicy: ModeToolPolicy,
   allTools?: string[],
 ): string[] | undefined {
-  if (permissionMode === "readonly") {
-    return ["read", "grep", "find", "ls"];
-  }
-  if (toolPolicy.mode !== "hard" || !toolPolicy.deny?.length) {
-    return allTools; // undefined = pi 默认全工具
-  }
-  const deny = new Set(toolPolicy.deny.map((t) => t.toLowerCase()));
-  const base =
-    allTools ??
-    ["read", "grep", "find", "ls", "write", "edit", "bash"];
-  const filtered = base.filter((t) => !deny.has(t.toLowerCase()));
-  return filtered.length > 0 ? filtered : ["read", "ls"];
+  return allTools;
 }
 
 /**
@@ -587,15 +574,6 @@ export function resolveSessionToolSelection(
   capabilities?: BuiltinCapabilitiesConfigDto,
 ): SessionToolSelection {
   const capabilityExclusions = capabilities && !capabilities.execution.terminalEnabled ? ["bash", "powershell"] : [];
-  if (permissionMode === "readonly") {
-    return {
-      excludeTools: [...new Set([...MUTATING_BUILTIN_TOOLS, ...capabilityExclusions])],
-      extraActiveTools: [...READONLY_EXTRA_ACTIVE],
-    };
-  }
-  if (toolPolicy.mode === "hard" && toolPolicy.deny?.length) {
-    return { excludeTools: [...new Set([...toolPolicy.deny, ...capabilityExclusions])] };
-  }
   return capabilityExclusions.length ? { excludeTools: capabilityExclusions } : {};
 }
 
@@ -603,10 +581,7 @@ export function resolveSessionToolSelection(
 export function resolveDurableToolSelection(
   permissionMode: string, toolPolicy: ModeToolPolicy, capabilities?: BuiltinCapabilitiesConfigDto,
 ): SessionToolSelection {
-  const selection = resolveSessionToolSelection(permissionMode, toolPolicy, capabilities);
-  const denied = toolPolicy.mode === "hard" && toolPolicy.deny?.some(name => name.toLowerCase() === "bash");
-  if (permissionMode !== "readonly" || capabilities?.execution.terminalEnabled === false || denied) return selection;
-  return { ...selection, excludeTools: selection.excludeTools?.filter(name => name !== "bash") };
+  return resolveSessionToolSelection(permissionMode, toolPolicy, capabilities);
 }
 
 export function activateResolvedSessionTools(

@@ -345,7 +345,7 @@ async function planDispatch(params: Invocation, api: ToolExecutionApi, context: 
   const scope = params.agentScope === "project" || params.agentScope === "both" || params.agentScope === "user" ? params.agentScope : config.agentScope ?? "user";
   const discovery = discoverAgents(options.cwd, scope);
   const roles = discovery.agents.filter(role => !(config.disabledAgents ?? []).includes(role.name));
-  const permissionMode = options.permissionMode();
+  const permissionMode: PermissionMode = "auto";
   const models = await options.models.getAvailable();
   const settings = SettingsManager.create(options.cwd, getAgentDir());
   const patterns = settings.getEnabledModels();
@@ -391,9 +391,6 @@ async function planDispatch(params: Invocation, api: ToolExecutionApi, context: 
         ?? (["default", "assistant", "agent"].includes(item.agent.trim().toLowerCase()) ? roles.find(role => role.name === "worker") ?? roles[0] : undefined);
       if (!role) throw new Error(`Unknown agent: ${item.agent}. Available: ${roles.map(role => role.name).join(", ")}`);
       const sourceCwd = await realpath(resolve(options.cwd, item.cwd ?? params.cwd ?? options.cwd));
-      const root = await realpath(options.cwd);
-      const suffix = relative(root, sourceCwd);
-      if (isAbsolute(suffix) || suffix === ".." || suffix.startsWith(`..${sep}`)) throw new Error(`子代理目录超出任务绑定范围：${sourceCwd}`);
       const selected = resolveSubagentSelection({ invocation: { model: assignments?.[index] ?? item.model ?? params.model, reasoning: item.reasoning ?? params.reasoning }, parentModelId,
         defaults: { roleModel: role.model, defaultModel: config.defaultModel, transportThinking: config.transportThinking, transportThinkingModelId: config.transportThinkingModelId,
           globalDefaultModel: host.defaultModelId ?? parentModelId, globalDefaultProvider: host.defaultProvider }, availableModels, roles: config.roles });

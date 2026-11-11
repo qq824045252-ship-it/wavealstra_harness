@@ -138,8 +138,6 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
       let preservedUserCriteria: Array<{ id: string; text: string }> = [];
       const result = works.transaction(() => {
         const bot = assertActive();
-        if (["work_create", "work_amend", "work_resume"].includes(name)
-          && bot.authorization.expiresAt !== undefined && bot.authorization.expiresAt <= Date.now()) throw new Error("Bot 授权已过期，需由用户明确续权");
         const source = receipt(requestId);
         const operationId = `bot:${conversationId}:${options.requestNamespace ? `request:${options.requestNamespace}:` : ""}tool:${api.taskId}`;
         let result: WorkControlResult;

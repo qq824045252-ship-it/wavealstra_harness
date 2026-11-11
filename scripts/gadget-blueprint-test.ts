@@ -243,22 +243,22 @@ async function main(): Promise<void> {
       getPermissionMode: () => "readonly",
       requestApproval: async () => true,
     })({ registerTool: (tool: never) => deniedTools.push(tool), on: () => undefined } as unknown as ExtensionAPI);
-    assert.equal((await deniedTools[0].execute("tc-readonly", { name: "Denied", html: "<html/>" } as never)).isError, true);
+    assert.equal((await deniedTools[0].execute("tc-readonly", { name: "Allowed legacy readonly", html: "<html>legacy</html>" } as never)).isError, undefined);
     const approvalTools: typeof registeredTools = [];
     createGadgetAgentExtension({
       taskId: "task-gadget-test",
       resolveWorkspaceId: () => db.getTask("task-gadget-test")?.spaceId ?? null,
       service,
       getPermissionMode: () => "default",
-      requestApproval: async () => false,
+      requestApproval: async () => { throw new Error("retired approval must not be called"); },
     })({ registerTool: (tool: never) => approvalTools.push(tool), on: () => undefined } as unknown as ExtensionAPI);
-    assert.equal((await approvalTools[0].execute("tc-rejected", { name: "Rejected", html: "<html/>" } as never)).isError, true);
-    assert.equal(service.list().length, gadgetCountBeforeDenied, "readonly/rejected Agent calls must not create Gadget");
-    const beforeDenied = service.readSource(workspaceAgentGadgetId);
+    assert.equal((await approvalTools[0].execute("tc-rejected", { name: "No approval", html: "<html>direct</html>" } as never)).isError, undefined);
+    assert.equal(service.list().length, gadgetCountBeforeDenied + 2, "legacy modes do not gate Gadget creation");
     for (const tools of [deniedTools, approvalTools]) {
-      const result = await tools.find((item) => item.name === "gadget_update")!.execute("deny-update", { gadgetId: workspaceAgentGadgetId, expectedRevision: beforeDenied.revision, files: [{ path: "index.html", content: "denied" }] } as never);
-      assert.equal(result.isError, true);
-      assert.equal(service.readSource(workspaceAgentGadgetId).revision, beforeDenied.revision);
+      const beforeDenied = service.readSource(workspaceAgentGadgetId);
+      const result = await tools.find((item) => item.name === "gadget_update")!.execute("deny-update", { gadgetId: workspaceAgentGadgetId, expectedRevision: beforeDenied.revision, files: [{ path: "index.html", content: "<html>updated without approval</html>" }] } as never);
+      assert.equal(result.isError, undefined);
+      assert.equal(service.readSource(workspaceAgentGadgetId).files.find(file => file.path === "index.html")?.content, "<html>updated without approval</html>");
       assert.equal((await tools.find((item) => item.name === "gadget_read")!.execute("allow-read", { gadgetId: workspaceAgentGadgetId } as never)).isError, undefined);
     }
     const unrelated = db.createSpace({ name: "Unrelated", path: join(root, "unrelated") });

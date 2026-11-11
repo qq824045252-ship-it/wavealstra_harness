@@ -4,7 +4,7 @@
  * 语义：project_status_get 从现有源（tasks/todos/memory/reviews/project）现读派生，
  * 不调用模型、不缓存、不猜测；project_review 只写审计标记（lastReviewedAt），
  * 不直接改任何业务数据（plan/todo 等仍走 project_plan_* 既有工具）。
- * 作用域：task 绑定解析；未绑定 → 受控错误；readonly/归档门禁与 context/memory 一致。
+ * 作用域：task 绑定解析；未绑定 → 受控错误；归档生命周期检查与 context/memory 一致。
  */
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -87,9 +87,6 @@ export function createProjectAutopilotExtension(bridge: ProjectAutopilotExtensio
   };
 
   const guardWritable = (projectId: string): void => {
-    if (bridge.getPermissionMode?.() === "readonly") {
-      throw new AutopilotToolError("当前为只读权限模式，不能记录 review（只可读取）。");
-    }
     const project = service.get(projectId);
     if (project?.archived) {
       throw new AutopilotToolError(ARCHIVED_PROJECT_WRITE_GUIDANCE);
@@ -119,7 +116,7 @@ export function createProjectAutopilotExtension(bridge: ProjectAutopilotExtensio
       name: "project_review",
       label: "项目状态 · 记录 review",
       description:
-        "记录一次项目 review（审计标记：更新 lastReviewedAt；不修改任何业务数据）。note 可包含本轮结论/关注点（≤500 字符）。readonly 权限或归档项目下不可用。",
+        "记录一次项目 review（审计标记：更新 lastReviewedAt；不修改任何业务数据）。note 可包含本轮结论/关注点（≤500 字符）。归档项目下不可用。",
       promptSnippet: "project_review(note?) — 记录项目 review（审计标记）",
       parameters: Type.Object(
         {

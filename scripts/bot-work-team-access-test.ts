@@ -110,7 +110,7 @@ try {
   assert.equal(free.work.workspacePath, defaultWorkspace);
   assert.equal(free.work.sourceMessageId, ownerInput.userMessageId);
   assert.equal(free.team.ownerBotId, "owner");
-  assert.deepEqual(free.team.members.map((member: { delegatedScope: string[] }) => member.delegatedScope), [["workspace:read"], ["workspace:read"]]);
+  assert.deepEqual(free.team.members.map((member: { delegatedScope: string[] }) => member.delegatedScope), [["workspace:read", "workspace:write"], ["workspace:read", "workspace:write"]]);
   assert.equal((await invokeOwner("work_team_templates", {})).templates.length, 1, "free team does not save a template");
   assert.equal((await invokeOwner("work_team_create", freeRequest, "free-team")).work.workId, free.work.workId);
   assert.equal((await invokeOwner("work_team_create", { mode: "once", requestedOutcome: "one_time", title: "missing", goalDescription: "missing", criteria: ["check"] }, "missing-plan")).ok, false);
@@ -179,7 +179,7 @@ try {
   const foregroundActor: WorkActor = { kind: "bot", host: "foreground", userId: LOCAL_USER_ID, botId: "owner", grants: minimumAuthorization() };
   const writable = works.teams.createFromForeground(foregroundActor, writeRequest);
   assert(writable.ok && writable.work && writable.team, JSON.stringify(writable));
-  assert.deepEqual(writable.work.authorization.allowedScopes, ["workspace:read", "workspace:write"]);
+  assert.deepEqual(writable.work.authorization, minimumAuthorization());
   assert.deepEqual(writable.team.executions.find(row => row.botId === "writer")?.delegatedScope, ["workspace:read", "workspace:write"]);
   assert.deepEqual(bots.getBot("owner")?.authorization, minimumAuthorization(), "coordinator remains read-only outside this team dispatch");
   assert(works.teams.createFromForeground(foregroundActor, writeRequest).ok, "team retry stays idempotent");

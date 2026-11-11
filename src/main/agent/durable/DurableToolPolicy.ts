@@ -1,7 +1,6 @@
 import { TOOL_NOT_STARTED_MEMO } from "./DurableToolOutcome";
 import { isNativeNotStarted } from "./DurableToolLifecycle";
 import { workShellRead } from "../work/WorkShellRead";
-import { resolve } from "node:path";
 import { z } from "zod";
 import type { Context } from "@earendil-works/chord/context";
 import type { HookApi, ToolExecutionResult, ToolHookCall, ToolHooks } from "@earendil-works/pi-durable";
@@ -14,7 +13,7 @@ import type { ConversationInteractionService } from "../ConversationInteractionS
 import type { ExecutionFailureRepository } from "../ExecutionFailureRepository";
 import type { ExecutionAttemptRepository } from "../ExecutionAttemptRepository";
 import type { SessionToolApprovalRequest } from "../SessionApprovalBridge";
-import { currentDurableInvocation, durableExecutionContext } from "./DurableExecutionContext";
+import { durableExecutionContext } from "./DurableExecutionContext";
 import { DurableSubagentIdentity } from "./DurableSubagents";
 import { durableMcpToolName } from "./DurableMcp";
 import { effectIntentSchema, effectOperationId, prepareFileEffect, verifyFileEffect, type EffectEvidence, type ExternalEffectRecovery } from "./DurableEffectRecovery";
@@ -64,25 +63,8 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
       && message.content.some(block => block.type === "toolCall" && block.id === rootCallId)));
     return durableExecutionContext(options.taskId, api, context, owner ? `durable-${owner.id}` : undefined);
   };
-  const approve = async (request: SessionToolApprovalRequest, api: Pick<HookApi, "memo" | "taskId" | "conversationId">, context: Context) => {
-    const mode = options.getPermissionMode();
-    if (mode === "auto") return true;
-    if (mode === "readonly") return false;
-    const execution = await durableExecutionContext(options.taskId, api, context);
-    const answer = await options.interactions.requestDurable(execution, {
-      kind: "confirm", title: `允许执行 ${request.toolName}？`,
-      description: [request.summary, request.detail].filter(Boolean).join("\n"),
-    }, { key: `approval:${request.toolCallId}`, signal: context.abortSignal });
-    return answer === true;
-  };
   return {
-    requestApproval: async request => {
-      const active = currentDurableInvocation();
-      if (!active || active.execution.taskId !== options.taskId) throw new Error("审批缺少当前任务的持久执行身份");
-      if (options.getPermissionMode() === "readonly") return false;
-      if (request.toolCallId !== active.native.callId) throw new Error("工具内部审批身份与当前原生动作不匹配");
-      return approve(request, active.native, active.context);
-    },
+    requestApproval: async _request => true,
     hooks: {
       beforeTool: async (call, api, context) => {
         const originalCall = call;
@@ -90,21 +72,20 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
           const summary = summarizeToolInput(call.name, call.arguments);
           return { block: `${reason}${summary.summary ? `（${summary.summary}）` : ""}` };
         };
-        if (options.toolAllowed && !options.toolAllowed(call.name)) return refuse(`当前任务未授权工具：${call.name}`);
+        if (options.toolAllowed && !options.toolAllowed(call.name)) return refuse(`当前任务工具不可用：${call.name}`);
         call = policyCall(call);
-        if (options.toolAllowed && !options.toolAllowed(call.name)) return refuse(`当前任务未授权工具：${call.name}`);
-        await identity(api, context, call);
+        if (options.toolAllowed && !options.toolAllowed(call.name)) return refuse(`当前任务工具不可用：${call.name}`);
+        const executionIdentity = await identity(api, context, call);
+        // Retire only the old approval identity for this exact native call. Normal
+        // request_user_input questions (even with the same title) are untouched.
+        options.interactions.cancelDurable(executionIdentity, `approval:${call.id}`, "应用工具审批已退役，继续原执行");
         // The built-in Code Mode VM has no ambient filesystem/network access. Its
         // executeTool leaves each enter this hook with their own exact identity.
         if (originalCall.name === "codemode") return undefined;
-        const mode = options.getPermissionMode();
         const mcp = mcpReadTools.has(call.name) ? null : classifyMcpToolCall(call.name, call.arguments, options.providerIds);
         const shellRead = workShellRead(call.name, call.arguments);
         const sideEffect = !shellRead && (mcp?.sideEffect ?? isSideEffectTool(call.name, call.arguments));
         const dangerous = mcp?.dangerous ?? isDangerousTool(call.name, call.arguments);
-        if (mode === "readonly" && (sideEffect || dangerous)) return refuse(call.name === "terminal_exec" ? "只读任务不能打开或输入交互终端；请使用 bash 执行 pwd、ls 等受支持的只读核验，不要重试 terminal_exec open" : "当前为只读模式，不能执行写入或未经证明的命令；可使用文件读取工具或 bash 的受支持只读核验");
-        if (mcp && !mcp.decision.allowed && !mcp.decision.requiresApproval) return refuse(mcp.decision.reason);
-
         if (mcp && options.ensureRuntimeReady && isManagedToolProvider(mcp.identity.providerId)) {
           await options.ensureRuntimeReady(mcp.identity.providerId);
         }
@@ -115,31 +96,10 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
         const child = (await api.snapshot(DurableSubagentIdentity, api.conversationId, context))?.value;
         if (child && child.taskId !== options.taskId) return { block: "子代理身份与宿主任务不一致" };
         const taskRoot = child?.workspace.cwd ?? options.taskRoot;
-        const parentPolicy = options.getPolicy?.() ?? new TaskFileAccessPolicy({ taskId: options.taskId, taskRoot: options.taskRoot });
-        const filePolicy = resolve(taskRoot) === resolve(options.taskRoot) ? parentPolicy : new TaskFileAccessPolicy({
-          taskId: options.taskId, taskRoot, isolatedSourceRoots: [options.taskRoot],
-          writeGrants: [...parentPolicy?.listWriteGrants() ?? []],
-        });
-        let externalPath: string | undefined;
-        for (const path of paths) {
-          const absolute = resolve(taskRoot, path);
-          const access = filePolicy?.decide("write", absolute);
-          if (access?.scope === "isolated-source") return refuse(access.reason);
-          if (access && !access.allowed) externalPath = absolute;
-        }
-        // Code Mode and subagent containers grant nothing: each child reaches this hook itself.
-        const needsApproval = sideEffect || dangerous || Boolean(mcp?.decision.requiresApproval) || Boolean(externalPath);
         const operationId = `tool:${api.conversationId}:${api.taskId}:${call.id}`;
         // Native children retain this task identity and re-enter this hook for every leaf tool.
         // Starting/steering a local child grants no separate business authority.
         const actionKind = sideEffect || dangerous ? "workspace:write" : "workspace:read";
-        if (mode !== "auto" && needsApproval) {
-          const summary = summarizeToolInput(call.name, call.arguments);
-          const allowed = await approve({ toolCallId: call.id, toolName: call.name, dangerous,
-            summary: summary.summary, detail: [summary.detail, externalPath ? `工作目录之外的写入：${externalPath}` : undefined].filter(Boolean).join("\n"),
-          }, api, context);
-          if (!allowed) return { block: "用户已拒绝该操作" };
-        }
         const admitWork = async () => {
           const denied = options.admitWorkAction?.({ operationId, actionKind, paths });
           if (denied) return denied;

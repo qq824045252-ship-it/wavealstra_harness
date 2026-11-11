@@ -4,7 +4,7 @@
  * 语义（冻结）：Shared Context = 项目长期显式配置（goal/currentStage）+ 高优先级资料引用
  * （pinned library refs，只引用不复制）；Memory = 提炼认知；Library = evidence 真源。
  * 作用域一律由当前 task 的统一资料范围解析，拒绝跨项目直接 id 访问；
- * readonly 权限模式/归档项目禁止写入（与 project_memory_* 同门禁）。
+ * 归档项目禁止写入（与 project_memory_* 同门禁）。
  *
  * 工具：project_context_get / project_context_update / project_context_pin /
  * project_context_unpin。instructions 不在 Agent 写面（由用户项目设置维护）。
@@ -25,7 +25,7 @@ export interface ProjectContextExtensionBridge {
   projectService: ProjectService;
   libraryService: LibraryService;
   taskId: string;
-  /** 当前权限模式（readonly 禁止写入；缺省视为非 readonly） */
+  /** 旧调用方兼容字段，不再限制执行 */
   getPermissionMode?: () => PermissionMode;
 }
 
@@ -105,11 +105,8 @@ export function createProjectContextExtension(bridge: ProjectContextExtensionBri
     };
   };
 
-  /** 写操作门禁：readonly 权限 / 归档项目 一律拒绝（与 project_memory_* 一致） */
+  /** 写操作门禁：归档项目拒绝写入（与 project_memory_* 一致） */
   const guardWritable = (projectId: string): void => {
-    if (bridge.getPermissionMode?.() === "readonly") {
-      throw new ContextToolError("当前为只读权限模式，不能修改项目上下文（只可读取）。");
-    }
     const project = service.get(projectId);
     if (project?.archived) {
       throw new ContextToolError(ARCHIVED_PROJECT_WRITE_GUIDANCE);
@@ -139,7 +136,7 @@ export function createProjectContextExtension(bridge: ProjectContextExtensionBri
       name: "project_context_update",
       label: "项目上下文 · 更新目标/阶段",
       description:
-        `局部更新当前项目上下文的「项目目标」（≤${PROJECT_CONTEXT_GOAL_MAX_CHARS} 字符）与「当前阶段」（≤${PROJECT_CONTEXT_STAGE_MAX_CHARS} 字符）。传 null 清空对应字段；不传的字段保持不变。长期指令（instructions）由用户项目设置维护，不在本工具写面。readonly 权限或归档项目下不可用。`,
+        `局部更新当前项目上下文的「项目目标」（≤${PROJECT_CONTEXT_GOAL_MAX_CHARS} 字符）与「当前阶段」（≤${PROJECT_CONTEXT_STAGE_MAX_CHARS} 字符）。传 null 清空对应字段；不传的字段保持不变。长期指令（instructions）由用户项目设置维护，不在本工具写面。归档项目下不可用。`,
       promptSnippet: "project_context_update(goal?, currentStage?) — 更新项目目标/当前阶段（显式长期配置）",
       parameters: Type.Object(
         {
@@ -167,7 +164,7 @@ export function createProjectContextExtension(bridge: ProjectContextExtensionBri
       name: "project_context_pin",
       label: "项目上下文 · 固定资料",
       description:
-        `把当前项目可见的资料条目固定到项目上下文（pinned ref，只引用不复制文件/全文）。只接受当前任务已可见的条目；个人或其他工作空间的资料须先由用户显式引用，不能用此工具自行扩大资料范围。跨项目条目拒绝。readonly 权限或归档项目下不可用。`,
+        `把当前项目可见的资料条目固定到项目上下文（pinned ref，只引用不复制文件/全文）。只接受当前任务已可见的条目；个人或其他工作空间的资料须先由用户显式引用，不能用此工具自行扩大资料范围。跨项目条目拒绝。归档项目下不可用。`,
       promptSnippet: "project_context_pin(itemId) — 固定资料到项目上下文（引用元数据）",
       parameters: Type.Object(
         { itemId: Type.String({ minLength: 1, maxLength: 100 }) },

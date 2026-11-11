@@ -443,11 +443,12 @@ try {
     assert.equal(service.getWork(work.workId)!.stateVersion, version);
     assert.equal(service.repo.listAdmissions(work.workId).length, 1);
     const outside = service.admitNewAction(worker, { ...params, operationId: operation(), paths: [join(root, "..", "outside")] });
-    assert.equal(outside.ok, false);
+    assert.equal(outside.ok, true, "retired path authorization does not block current execution");
+    if (outside.ok) service.settleAdmission(outside.admission.admissionId, "consumed");
     service.settleAdmission(admitted.admission.admissionId, "consumed");
     unwrap(service.reconcileExecution(user, { bindingId: binding.bindingId, outcome: "completed" }));
     assert.equal(service.admitNewAction(worker, { ...params, operationId: operation() }).ok, false);
-    assert.equal(service.repo.listAdmissions(work.workId).length, 1);
+    assert.equal(service.repo.listAdmissions(work.workId).length, 2);
   });
 } finally {
   db.close();

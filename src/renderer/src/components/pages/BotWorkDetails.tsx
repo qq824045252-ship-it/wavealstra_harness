@@ -143,7 +143,7 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
             && (!blocker.reasonCode || blocker.reasonCode === "user-input") && !blocker.blockerId.startsWith("continuation:")
             && !userInputBlockerSnapshot(blocker) && !blocker.legacyUserInput && props.onReplyToBlocker && work.lifecycle !== "closed" && <>
             <button type="button" onClick={() => props.onReplyToBlocker?.(blocker)}>向负责人回复此问题</button>
-            <p>打开关联事项的对话草稿，由你填写并发送。回复供负责人核对，原阻碍暂保留；权限和未知效果仍需单独核对。</p>
+            <p>打开关联事项的对话草稿，由你填写并发送。回复供负责人核对，原阻碍暂保留。</p>
           </>}
         </article>)}
         {work.uncoveredScope.length > 0 && <p>尚未覆盖：{work.uncoveredScope.join("、")}</p>}

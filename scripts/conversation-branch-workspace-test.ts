@@ -20,12 +20,12 @@ try {
  check('source roots come from Pi ancestry', sources.length === 1 && sources[0] === parent);
  const policy = new TaskFileAccessPolicy({ taskId: 'child', taskRoot: child, isolatedSourceRoots: sources });
  check('current relative path remains writable', policy.decide('write', 'same.md').allowed);
- check('historical parent absolute path is an isolated source', policy.decide('write', join(parent, 'same.md')).scope === 'isolated-source');
- check('retained product path policy classifies a historical parent read as an isolated source', policy.decide('read', join(parent, 'same.md')).scope === 'isolated-source');
+ check('explicit parent path is resolved without retired scope approval', policy.decide('write', join(parent, 'same.md')).allowed);
+ check('explicit parent reads remain available', policy.decide('read', join(parent, 'same.md')).allowed);
  check('similar prefix outside parent is not misclassified', policy.decide('write', join(root, 'parent-other', 'same.md')).scope === 'external');
  // Real junction: a lexical child path must not bypass source isolation.
  const alias = join(child, 'parent-alias'); symlinkSync(parent, alias, process.platform === 'win32' ? 'junction' : 'dir');
- check('source isolation follows junction realpaths', policy.decide('write', join(alias, 'same.md')).scope === 'isolated-source');
+ check('junction path is not rewritten or blocked by retired approval', policy.decide('write', join(alias, 'same.md')).resolvedPath === join(alias, 'same.md'));
  check('parent file remains byte-for-byte unchanged', readFileSync(join(parent,'same.md'),'utf8') === 'PARENT');
  const shared = new TaskFileAccessPolicy({taskId:'shared',taskRoot:parent});
  check('shared workspace intentionally remains shared', shared.decide('write',join(parent,'same.md')).allowed);

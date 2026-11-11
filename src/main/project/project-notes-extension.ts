@@ -35,7 +35,6 @@ export function createProjectNotesExtension(bridge: {
       description: "保存当前项目共享便签。传入完整 Markdown content 和读取所得 expectedRevision；保留无关内容。冲突时重新读取并合并，不得盲目覆盖。空字符串清空。只读模式或归档项目不可修改。",
       parameters: Type.Object({ content: Type.String({ maxLength: PROJECT_NOTE_MAX_CHARS }), expectedRevision: Type.Integer({ minimum: 0 }) }, { additionalProperties: false }),
       execute: async (_id: string, params: { content: string; expectedRevision: number }) => result(() => {
-        if (bridge.getPermissionMode() === "readonly") throw new Error("当前为只读权限模式，不能修改项目便签");
         return bridge.service.save({ projectId: projectId(), content: params.content, expectedRevision: params.expectedRevision });
       }),
     });

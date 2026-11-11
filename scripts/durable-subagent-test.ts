@@ -206,7 +206,7 @@ const server = createServer(async (request, response) => {
       if (text.includes("POOL_SLOW")) await new Promise(done => setTimeout(done, 800));
       // D-4: hold the request open past the per-call 1s limit so the timeout path is exercised.
       if (text.includes("TIMEOUT_SLOW")) await new Promise(done => setTimeout(done, 3_000));
-      sse(response, [model === "child" && !returned && tools.includes("proof")
+      sse(response, [model === "child" && !returned && tools.includes("proof") && !/WRITE_/.test(text)
         ? { type: "function_call", id: "fc_proof", call_id: "proof_call", name: "proof", arguments: "{}" }
         // D-2: the writer shards all target the same relative path, so only the guard separates them.
         : model === "child" && !returned && tools.includes("write")
@@ -386,8 +386,8 @@ try {
   harness = await open(join(root, "readonly-state"));
   conversation = await harness.root(ctx, { agent: { cwd, model: { provider: "fixture", modelId: "parent" } } });
   assert.equal((await (await conversation.submit({ type: "input", content: "Readonly delegate", requestId: "readonly" }, ctx)).wait(ctx)).status, "done");
-  assert.deepEqual(seenChildTools.at(-1), [], "an empty permission intersection must stay empty");
-  assert.equal(writes, 1);
+  assert(seenChildTools.at(-1)?.includes("proof"), "legacy readonly no longer removes inherited tools");
+  assert.equal(writes, 2);
   assert.equal(serverError, undefined);
   await harness.close(ctx);
   harness = undefined;
@@ -655,7 +655,7 @@ try {
     "the dispatch total is the sum of the per-child cacheRead values");
 
   assert.equal(serverError, undefined);
-  console.log("PASS durable child identity, model, display name, bound cwd, persisted receipt, restart, completed effect reuse, recursion and readonly restrictions");
+  console.log("PASS durable child identity, model, display name, bound cwd, persisted receipt, restart, completed effect reuse, recursion limits and retired readonly mode");
   console.log("PASS durable parallel text projection (header/status/id/truncation), rolling pool, concurrency line, timeout diagnostic, shared workspace visibility, dispatch preflight and chain steps");
   console.log("PASS D-1 provider quota rejections retried once serially under a fresh requestId, visible as recovered; plain 400s keep their failure");
   console.log("PASS D-2/N-2 parallel same-file writes blocked with a visible conflict and a blocked shard status (chain writes stay allowed); no silent overwrite");

@@ -129,14 +129,13 @@ async function checkPendingNativeBinding(change: "stop" | "revise" | "skip", has
   } finally { await adapter.close(); nativeDb.close(); }
 }
 
-function assertReadOnlyAdmission(taskId: string, label: string) {
-  for (const actionKind of ["workspace:write", "send", "delegate"]) {
-    assert(works.admitTaskAction(taskId, { operationId: `${label}:${actionKind}`, actionKind }),
-      `${label}: owner identity must not bypass the read-only follow-up boundary for ${actionKind}`);
+function assertUnrestrictedAdmission(taskId: string, label: string) {
+  for (const actionKind of ["workspace:write", "send", "delegate", "workspace:read"]) {
+    const operationId = `${label}:${actionKind}`;
+    assert.equal(works.admitTaskAction(taskId, { operationId, actionKind }), undefined,
+      `${label}: legacy follow-up scopes do not impose application permissions for ${actionKind}`);
+    works.settleTaskAction(taskId, operationId, "consumed");
   }
-  const operationId = `${label}:workspace:read`;
-  assert.equal(works.admitTaskAction(taskId, { operationId, actionKind: "workspace:read" }), undefined);
-  works.settleTaskAction(taskId, operationId, "consumed");
 }
 
 const testActor: WorkActor = { kind: "user", userId: LOCAL_USER_ID, grants: DESKTOP_USER_GRANTS };
@@ -332,7 +331,7 @@ try {
   const firstCheck = works.repo.listBindings(immediate.workId)[0];
   assert(firstCheck); assert.deepEqual(firstCheck.delegatedScope, ["workspace:read"]);
   assert(works.repo.listSubscriptions(immediate.workId)[0].nextWakeAt! > clock.at);
-  assertReadOnlyAdmission(firstCheck.taskId, "watch-owner");
+  assertUnrestrictedAdmission(firstCheck.taskId, "watch-owner");
   unwrap(works.reconcileExecution({ kind: "system", reason: "test interrupted check" }, {
     bindingId: firstCheck.bindingId, outcome: "failed", note: "read interrupted before producing a result" }));
   works.partialResults.recovery.markEvidenceRead(firstCheck.bindingId);
@@ -342,7 +341,11 @@ try {
   const recovery = works.repo.listBindings(immediate.workId).find(item => item.bindingId !== firstCheck.bindingId)!;
   assert(recovery, "the interrupted check creates a real continuation binding");
   assert(works.partialResults.recovery.ancestry(recovery).some(item => item.bindingId === firstCheck.bindingId));
-  assertReadOnlyAdmission(recovery.taskId, "watch-recovery-ancestry");
+  for (const actionKind of ["workspace:write", "send", "delegate"])
+    assert(works.admitTaskAction(recovery.taskId, { operationId: `readback:${actionKind}`, actionKind }),
+      "dedicated result-readback recovery must not replay original business actions");
+  assert.equal(works.admitTaskAction(recovery.taskId, { operationId: "readback:read", actionKind: "workspace:read" }), undefined);
+  works.settleTaskAction(recovery.taskId, "readback:read", "consumed");
   settle(immediate.workId);
   const expiredPause = unwrap(await invoke("work_create", { requestedOutcome: "one_time", title: "暂停期间到期后仍可取消", mode: "watch",
     watchRule: { scheduleBasis: "user_specified", nextWakeAt: clock.at + 60_000 }, deadlineAt: clock.at + 1000 }));

@@ -9,7 +9,7 @@
  * 设计约束（与 Project Plan 工具一致）：
  * - 只提供 list/get/create/update，不暴露 delete（废弃用 status=superseded/resolved 表达）；
  * - 全部为结构化单项操作（复用 ProjectService 校验与事务），绝无整表覆盖；
- * - readonly 权限模式/归档项目禁止写入（与人类 UI 一致）；
+ * - 归档项目禁止写入（与人类 UI 一致）；
  * - 来源自动注入：Agent 写入自动带 sourceType=agent + 当前 taskId，不接受 Agent 伪造；
  * - 与聊天摘要/Plan/Resources 分工由 prompt 段明确，本工具只做结构化条目操作。
  */
@@ -38,7 +38,7 @@ export interface ProjectMemoryExtensionBridge {
   /** 工具调用时解析当前任务绑定的 projectId（动态；null = 未绑定项目） */
   resolveProjectId: () => string | null;
   service: ProjectService;
-  /** 当前权限模式（readonly 禁止写入；缺省视为非 readonly） */
+  /** 旧调用方兼容字段，不再限制执行 */
   getPermissionMode?: () => PermissionMode;
 }
 
@@ -183,11 +183,8 @@ export function createProjectMemoryExtension(bridge: ProjectMemoryExtensionBridg
     return projectId;
   };
 
-  /** 写操作门禁：readonly 权限 / 归档项目 一律拒绝（与人类 UI 一致），读操作不受影响 */
+  /** 写操作门禁：归档项目拒绝写入（与人类 UI 一致），读操作不受影响 */
   const guardWritable = (projectId: string): void => {
-    if (bridge.getPermissionMode?.() === "readonly") {
-      throw new ProjectMemoryToolError("当前为只读权限模式，不能修改项目共享记忆（只可读取）。");
-    }
     const project = bridge.service.get(projectId);
     if (project?.archived) {
       throw new ProjectMemoryToolError(ARCHIVED_PROJECT_WRITE_GUIDANCE);
@@ -278,7 +275,7 @@ export function createProjectMemoryExtension(bridge: ProjectMemoryExtensionBridg
       name: "project_memory_create",
       label: "项目共享记忆 · 沉淀新条目",
       description:
-        "在当前任务所属项目的共享长期记忆中新增一个结构化条目（事实/决策/约束/风险/待确认；所有绑定本项目的任务可见）。作用域自动取当前任务绑定的项目。来源自动记录为当前 Agent 任务，不接受伪造。readonly 权限模式或归档项目下不可用。只写长期有价值的信息：不要把每轮聊天总结、瞬时进度、执行步骤、原始文件全文塞进 Memory。",
+        "在当前任务所属项目的共享长期记忆中新增一个结构化条目（事实/决策/约束/风险/待确认；所有绑定本项目的任务可见）。作用域自动取当前任务绑定的项目。来源自动记录为当前 Agent 任务，不接受伪造。归档项目下不可用。只写长期有价值的信息：不要把每轮聊天总结、瞬时进度、执行步骤、原始文件全文塞进 Memory。",
       promptSnippet: "project_memory_create(kind, title, content?, status?, tags?) — 沉淀项目长期事实/决策/约束/风险/待确认",
       parameters: createParamsSchema,
       execute: async (_toolCallId: string, params: PlanCreateParams) => {
@@ -347,7 +344,7 @@ export function createProjectMemoryExtension(bridge: ProjectMemoryExtensionBridg
       name: "project_memory_update",
       label: "项目共享记忆 · 单项更新",
       description:
-        "结构化单项更新当前任务所属项目共享记忆中的一个条目（类型/标题/内容/状态/标签）。作用域自动取当前任务绑定的项目；不属于当前项目的 id 返回受控错误。只 patch 传入的字段，其余字段保持不变；传 null 可清除 content。状态变更语义：信息已过时/被取代 → superseded；问题已解决 → resolved；不要硬删（本会话无删除权限）。readonly 权限模式或归档项目下不可用。",
+        "结构化单项更新当前任务所属项目共享记忆中的一个条目（类型/标题/内容/状态/标签）。作用域自动取当前任务绑定的项目；不属于当前项目的 id 返回受控错误。只 patch 传入的字段，其余字段保持不变；传 null 可清除 content。状态变更语义：信息已过时/被取代 → superseded；问题已解决 → resolved；不要硬删（本工具不提供删除操作）。归档项目下不可用。",
       promptSnippet: "project_memory_update(id, status?, kind?, title?, content?, tags?) — 单项 patch 项目记忆（保留可追溯变化）",
       parameters: updateParamsSchema,
       execute: async (_toolCallId: string, params: PlanUpdateParams) => {

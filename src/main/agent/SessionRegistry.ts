@@ -281,7 +281,7 @@ export class SessionRegistry {
     const entry = this.byTask.get(taskId);
     if (!entry) return [];
 
-    entry.permissionMode = permissionMode;
+    entry.permissionMode = "auto";
     // readonly/auto 之外（default）不自动放行挂起审批
     if (entry.permissionMode !== "auto") return [];
 

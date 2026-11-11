@@ -20,7 +20,7 @@ export interface LibraryExtensionBridge {
   taskId?: string;
   /** 无 taskId 的受信任会话使用的项目范围；有 taskId 时以数据库绑定为准 */
   resolveProjectId?: () => string | null;
-  /** 当前权限模式（readonly 禁止 attach/detach 等写操作；缺省视为非 readonly） */
+  /** 旧调用方兼容字段，不再限制执行 */
   getPermissionMode?: () => import("../../shared/agent-ipc").PermissionMode;
 }
 
@@ -129,20 +129,14 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
     return assertItemVisible(id, explicitDirectChildSpaceId);
   };
 
-  /** 写门禁：readonly 权限模式拒绝 attach/detach（与 project_memory_* / project_context_* 一致） */
+  /** 检查目标项目生命周期 */
   const guardWritable = (): void => {
-    if (bridge.getPermissionMode?.() === "readonly") {
-      throw new LibraryToolError("当前为只读权限模式，不能修改资料或任务引用（只可读取）。");
-    }
     if (!taskScope().defaultOwner) throw new LibraryToolError("当前任务没有可写的长期资料归属；独立任务不创建个人资料库，请在项目或工作空间管理长期资料");
   };
 
-  /** 写门禁（空间级）：readonly 拒绝；目标空间所属项目归档拒绝；作用域必须对任务可见 */
+  /** 写门禁（空间级）：目标空间所属项目归档拒绝；作用域必须对任务可见 */
   const guardWritableForSpace = (spaceId: string): LibrarySpaceDto => {
     const space = assertSpaceVisible(spaceId);
-    if (bridge.getPermissionMode?.() === "readonly") {
-      throw new LibraryToolError("当前为只读权限模式，不能修改资料库（只可读取）。");
-    }
     if (space.projectId && service.isProjectArchived(space.projectId)) {
       throw new LibraryToolError(ARCHIVED_PROJECT_WRITE_GUIDANCE);
     }
@@ -152,14 +146,14 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
     return space;
   };
 
-  /** 写门禁（条目级）：readonly/归档拒绝；条目必须对任务可见 */
+  /** 写门禁（条目级）：归档项目拒绝；条目必须对任务可见 */
   const guardWritableForItem = (item: LibraryItemDto): void => {
     assertItemVisible(item.id);
     guardWritableForSpace(item.spaceId);
   };
 
   const defaultSpaceId = (): string => {
-    // Guard before ensuring a destination: readonly calls must not create a library container.
+    // Check project lifecycle before creating a destination container.
     guardWritable();
     return service.defaultSpaceForTask(bridge.taskId, projectFallback()).id;
   };
@@ -339,7 +333,7 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
       description:
         "在当前任务自有资料位置新建文本类资料（markdown/html/csv）。" +
         "spaceId 缺省按当前项目、当前工作空间的顺序确定；独立任务没有长期资料写入位置；collectionId 必须属于同一位置。创建后可带 content 正文。" +
-        "readonly 权限或归档项目下不可用；跨项目 space/collection 拒绝。",
+        "归档项目下不可用；跨项目 space/collection 拒绝。",
       promptSnippet: "library_create_text(kind, title, content?, spaceId?, collectionId?) — 新建文本资料（md/html/csv）",
       parameters: Type.Object(
         {
@@ -400,7 +394,7 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
       description:
         "更新当前任务可见范围内文本类资料（markdown/html/csv）的正文与标题。正文更新记录 LibraryVersion（旧内容 hash）、" +
         "原子写盘并刷新检索索引；二进制/Office/PDF 拒绝字符串写入。title 缺省保持不变；content 缺省保持不变。" +
-        "readonly 权限或归档项目下不可用；跨项目条目拒绝。",
+        "归档项目下不可用；跨项目条目拒绝。",
       promptSnippet: "library_update_text(id, content?, title?) — 更新文本资料（版本快照 + FTS 刷新）",
       parameters: Type.Object(
         {
@@ -437,7 +431,7 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
       description:
         "把当前任务（或同项目任务）的产物 COPY 到资料库受管存储并晋升为长期资料（provenance 记录来源任务/产物；" +
         "同产物同空间幂等：内容变化时更新副本并记版本）。只复制不移动/删除原始产物。" +
-        "spaceId 缺省为当前项目，其次当前工作空间，独立任务没有长期资料写入位置；readonly/归档拒绝；其他项目任务的产物拒绝。",
+        "spaceId 缺省为当前项目，其次当前工作空间，独立任务没有长期资料写入位置；归档项目拒绝；其他项目任务的产物拒绝。",
       promptSnippet: "library_save_artifact(artifactId, spaceId?, collectionId?) — 产物晋升为长期资料（COPY + provenance）",
       parameters: Type.Object(
         {
@@ -484,7 +478,7 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
       label: "资料库 · 新建集合",
       description:
         "在当前任务自有资料位置新建集合（文件夹）。默认当前项目，其次当前工作空间，独立任务没有长期资料写入位置；parentId 必须属于同一位置。" +
-        "readonly/归档拒绝；跨项目空间拒绝。",
+        "归档项目拒绝；跨项目空间拒绝。",
       promptSnippet: "library_create_collection(name, spaceId?, parentId?) — 新建资料集合（项目内组织）",
       parameters: Type.Object(
         {
@@ -521,7 +515,7 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
       description:
         "在同一空间内移动条目（type=item，collectionId 为目标集合，传 null 移到空间根）或集合（type=collection，" +
         "collectionId 为目标父集合，传 null 移到空间根）。跨空间/跨项目移动拒绝；移入自身/后代（环）拒绝。" +
-        "移动不改变项目作用域；readonly/归档拒绝。",
+        "移动不改变项目作用域；归档项目拒绝。",
       promptSnippet: "library_move(type, id, collectionId?) — 同空间移动条目或集合",
       parameters: Type.Object(
         {

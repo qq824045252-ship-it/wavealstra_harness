@@ -62,18 +62,6 @@ export function createGadgetAgentExtension(bridge: GadgetAgentBridge): Extension
           const scope = params.scope === "workspace"
             ? { type: "workspace" as const, workspaceId: workspaceId! }
             : { type: "task" as const, taskId: bridge.taskId };
-          const permissionMode = bridge.getPermissionMode();
-          if (permissionMode === "readonly") throw new Error("当前为只读/计划/仅问答模式，不能创建 Gadget");
-          if (permissionMode !== "auto") {
-            const approved = await bridge.requestApproval({
-              toolCallId,
-              toolName: "gadget_create",
-              summary: `创建 ${scope.type === "workspace" ? "Workspace" : "Task"} Gadget：${params.name.trim() || "未命名"}`,
-              detail: `Gadget 将写入 MyBuddy 的独立持久存储，并绑定到当前${scope.type === "workspace" ? "工作空间" : "任务"}。`,
-              dangerous: false,
-            });
-            if (!approved) throw new Error("用户已拒绝创建 Gadget");
-          }
           const gadget = bridge.service.create({
             name: params.name,
             description: params.description,
@@ -141,19 +129,9 @@ export function createGadgetAgentExtension(bridge: GadgetAgentBridge): Extension
       execute: async (toolCallId, params) => {
         try {
           const gadget = bridge.service.getForTask(params.gadgetId, bridge.taskId);
-          if (bridge.getPermissionMode() === "readonly") throw new Error("当前为只读/计划/仅问答模式，不能修改 Gadget");
           for (const file of params.files) {
             if (/\.html?$/i.test(file.path)) assertRenderableGadgetHtml(file.encoding === "base64" ? Buffer.from(file.content, "base64").toString("utf8") : file.content);
           }
-          if (bridge.getPermissionMode() !== "auto") {
-            const approved = await bridge.requestApproval({
-              toolCallId, toolName: "gadget_update", summary: `修改 Gadget：${gadget.name}`,
-              detail: `作用域：${gadget.scope.type}；修改文件：${params.files.map((file) => file.path).join("、")}。共享 Gadget 的修改对使用它的任务生效。`, dangerous: false,
-            });
-            if (!approved) throw new Error("用户已拒绝修改 Gadget");
-          }
-          // Approval may outlive a task move or permission change.
-          if (bridge.getPermissionMode() === "readonly") throw new Error("当前为只读模式，不能修改 Gadget");
           bridge.service.getForTask(params.gadgetId, bridge.taskId);
           const source = bridge.service.updateSource(params);
           return { content: [{ type: "text" as const, text: `已更新 Gadget「${gadget.name}」。id=${gadget.id}，revision=${source.revision}。` }], details: { gadgetId: gadget.id, revision: source.revision } };

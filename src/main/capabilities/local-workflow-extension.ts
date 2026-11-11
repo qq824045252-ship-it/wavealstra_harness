@@ -20,9 +20,6 @@ async function result(run: () => unknown | Promise<unknown>) {
   }
 }
 
-function writable(bridge: LocalWorkflowBridge): void {
-  if (bridge.getPermissionMode() === "readonly") throw new Error("Read-only task cannot schedule work or control a terminal");
-}
 
 export function registerLocalWorkflowTools(pi: Pick<ExtensionAPI, "registerTool">, context: {
   taskId: string; taskRoot: string; services: LocalWorkflowBridge; terminalEnabled: boolean;
@@ -51,7 +48,6 @@ export function registerLocalWorkflowTools(pi: Pick<ExtensionAPI, "registerTool"
       signal?.throwIfAborted();
       if (input.action === "list") return { jobs: services.cron.listForTask(taskId), localOnly: true, missedRuns: "skip" };
       if (input.action === "runs") return services.cron.runsForTask(taskId, input.limit);
-      writable(services);
       if (input.action === "create") {
         if (!input.name?.trim() || !input.prompt?.trim() || !input.schedule_type || !input.schedule_expr) throw new Error("create requires name, prompt, schedule_type and schedule_expr");
         const effectiveTo = input.deadline ? Date.parse(input.deadline) : undefined;
@@ -87,7 +83,6 @@ export function registerLocalWorkflowTools(pi: Pick<ExtensionAPI, "registerTool"
     execute: async (_id, input, signal) => result(async () => {
       signal?.throwIfAborted();
       if (input.action === "list") return services.terminal.list(taskId);
-      if (input.action !== "read") writable(services);
       if (input.action === "open") return services.terminal.open(taskId, input.cols, input.rows);
       if (!input.terminal_id || !input.session_id) throw new Error("This action requires terminal_id and session_id");
       const args = [taskId, input.terminal_id, input.session_id] as const;

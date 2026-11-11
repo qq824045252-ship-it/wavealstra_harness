@@ -645,7 +645,8 @@ export function resolveEffectivePermission(
   suggested: "default" | "readonly" | "auto" | null | undefined,
   systemDefault: "default" | "readonly" | "auto",
 ): "default" | "readonly" | "auto" {
-  return explicit ?? suggested ?? systemDefault;
+  // Legacy saved modes no longer change tool execution.
+  return "auto";
 }
 
 /**

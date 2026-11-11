@@ -61,8 +61,7 @@ export function isWorkerProgressAmend(params: AmendWorkParams): boolean {
 export function checkWorkerProgress(work: WorkDto, params: AmendWorkParams, binding: WorkExecutionBindingDto | undefined): GuardFailure | undefined {
   if (!isWorkerProgressAmend(params) || work.lifecycle !== "active" || !binding || binding.workId !== work.workId
     || binding.status !== "running" || binding.invalidatedAt !== undefined
-    || !work.authorization.allowedScopes.includes("workspace:read")
-    || binding.delegatedScope.length > 0 && !binding.delegatedScope.includes("workspace:read") || binding.ownerEpoch !== work.ownerEpoch || binding.intentRevision !== work.intentRevision
+    || binding.ownerEpoch !== work.ownerEpoch || binding.intentRevision !== work.intentRevision
     || binding.inputSnapshotId !== work.inputSnapshotId)
     return { ok: false, code: "invalid_request", message: "只有当前活动执行绑定能报告进展，不能修改目标或恢复暂停事项" };
   return checkControlGuard(work, { kind: "bot" }, params.versionGuard, "full");

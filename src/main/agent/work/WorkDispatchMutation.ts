@@ -12,7 +12,6 @@ interface DispatchMutationDeps {
   bots: Pick<BotRegistry, "getBot">;
   teams: Pick<WorkTeamService, "dispatchError" | "allowsRecoveryBinding">;
   causal: Pick<WorkCausalGuard, "admit">;
-  authorizedFor: (work: WorkDto, actionKind: string) => boolean;
   recoveryRequest: (taskId: string) => { source_binding_id: string } | undefined;
   requestExpert?: (work: WorkDto, botId: string) => ExpertConfigSnapshotDto | undefined;
   snapshotOf: (bot: BotDto) => ExpertConfigSnapshotDto;
@@ -46,9 +45,6 @@ export function dispatchExecutionMutation(deps: DispatchMutationDeps, work: Work
   if (occupied && UNSETTLED_BINDING_STATUSES.has(occupied.status)
     && !deps.teams.allowsRecoveryBinding(work.workId, params.taskId, params.operationId, occupied)) {
     return { ok: false, code: "unsettled_effects", message: "该 task 已绑定未结算执行，不能同时承接另一次派发" };
-  }
-  if (!deps.authorizedFor(work, params.delegatedScope?.every(scope => scope === "workspace:read") ? "workspace:read" : "workspace:write")) {
-    return { ok: false, code: "unauthorized_actor", message: "事项授权未包含工作区写入范围" };
   }
   const target = deps.bots.getBot(params.botId);
   if (!target) return { ok: false, code: "not_found", message: "找不到执行 Bot" };

@@ -45,8 +45,12 @@ try {
  assert.equal(works.getWork(closed.workId)?.ownerBotId, DEFAULT_BOT_ID);
  register("rollback-bot"); const fail = create("rollback-bot");
  db.connection.prepare("UPDATE works SET authorization_json=json_set(authorization_json,'$.allowRedelegation',json('false')) WHERE work_id=?").run(fail.workId);
+ db.connection.exec("CREATE TEMP TRIGGER fail_bot_delete BEFORE DELETE ON bots WHEN OLD.bot_id='rollback-bot' BEGIN SELECT RAISE(ABORT,'fixture failure'); END");
  assert.equal(remove("rollback-bot").ok, false); assert(bots.getBot("rollback-bot"));
  assert.equal(works.getWork(fail.workId)?.ownerBotId, "rollback-bot");
+ db.connection.exec("DROP TRIGGER fail_bot_delete");
+ assert(remove("rollback-bot").ok, "retired redelegation flag must not prevent normal handoff and deletion");
+ assert.equal(works.getWork(fail.workId)?.ownerBotId, DEFAULT_BOT_ID);
  assert.deepEqual(db.connection.pragma("foreign_key_check"), []);
  console.log("PASS Bot deletion: live handoff, closed history, conversation deletion, atomic failure, default/foreign/host protection");
 } finally { db.close(); rmSync(root, { recursive: true, force: true }); }

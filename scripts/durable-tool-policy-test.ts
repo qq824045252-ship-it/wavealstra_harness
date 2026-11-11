@@ -76,7 +76,7 @@ async function fixture(taskId: string, respond: (request: TranscriptContext) => 
       return stream;
     },
   });
-  const state: { permission: PermissionMode; allowed: boolean; deniedTools: Set<string>;
+  const state: { permission: PermissionMode; allowed: boolean; deniedTools: Set<string>; legacyApproval?: boolean;
     admit?: (input: { operationId: string; actionKind: string }) => string | undefined;
     settle?: (operationId: string, outcome: "consumed" | "released" | "unknown") => void } = { permission: "auto", allowed: true, deniedTools: new Set<string>() };
   const open = async () => {
@@ -92,7 +92,14 @@ async function fixture(taskId: string, respond: (request: TranscriptContext) => 
     })], { taskId, cwd, models });
     return DurableBotRuntime.open({ taskId, cwd, directory: join(cwd, "state"), models,
       model: { provider: "fixture", modelId: "model" }, toolMode: mode, tools: [...domain.tools, ...extraTools, ...(withSubagents ? createDurableSubagentTools({ taskId, cwd, models, permissionMode: () => state.permission }) : [])],
-      contextHooks: domain.contextHooks, toolHooks: policy.hooks, instructions: () => "fixture", onSnapshot: () => {},
+      contextHooks: domain.contextHooks, toolHooks: { ...policy.hooks, beforeTool: async (call, api, context) => {
+        if (state.legacyApproval && call.name === "write") {
+          const execution = await durableExecutionContext(taskId, api, context);
+          await interactions.requestDurable(execution, { kind: "confirm", title: "允许执行 write？" }, { key: `approval:${call.id}`, signal: context.abortSignal });
+          return;
+        }
+        return policy.hooks.beforeTool?.(call, api, context);
+      } }, instructions: () => "fixture", onSnapshot: () => {},
     });
   };
   return { taskId, cwd, state, open };
@@ -202,25 +209,42 @@ try {
   } finally { await runtime.close(); }
   console.log("PASS native question survives close/reopen, resumes the original input and records one completed write");
 
+  const legacyApproval = await fixture("old-pending-approval", request => request.messages.at(-1)?.role === "toolResult"
+    ? text("done") : call("write", { path: "recovered.txt", content: "recovered" }, "legacy-write"));
+  legacyApproval.state.legacyApproval = true;
+  let upgrading = await legacyApproval.open();
+  const oldSubmission = await upgrading.submit("write", "old-approval-input");
+  await waitUntil(() => interactions.listByTask(legacyApproval.taskId).some(item => item.status === "pending"));
+  const oldQuestion = interactions.listByTask(legacyApproval.taskId)[0]!;
+  await upgrading.close();
+  legacyApproval.state.legacyApproval = false;
+  upgrading = await legacyApproval.open();
+  try {
+    const recovered = await upgrading.harness.submission(oldSubmission.id, ctx); assert(recovered);
+    assert.equal((await recovered.wait(ctx)).status, "done");
+    assert.equal(await readFile(join(legacyApproval.cwd, "recovered.txt"), "utf8"), "recovered");
+    assert.equal(interactions.listByTask(legacyApproval.taskId).find(item => item.id === oldQuestion.id)?.status, "cancelled");
+    const followup = interactions.requestDurable(oldQuestion, { kind: "confirm", title: "允许执行 write？" }, { key: "user-clarification" });
+    const actualQuestion = interactions.listByTask(legacyApproval.taskId).find(item => item.status === "pending")!;
+    assert(actualQuestion && actualQuestion.id !== oldQuestion.id);
+    assert.equal(interactions.cancelDurable(oldQuestion, "approval:legacy-write").ok, false);
+    assert.equal(interactions.listByTask(legacyApproval.taskId).find(item => item.id === actualQuestion.id)?.status, "pending", "same text is not an approval identity");
+    assert.equal(interactions.respond(actualQuestion.id, true).ok, true);
+    assert.equal(await followup, true);
+  } finally { await upgrading.close(); }
+  console.log("PASS persisted old approval resumes after upgrade; same-title clarification survives and can be answered");
+
   const permission = await fixture("approval", request => request.messages.at(-1)?.role === "toolResult"
     ? text("done") : call("write", { path: "approved.txt", content: "approved" }));
   permission.state.permission = "default";
   runtime = await permission.open();
   try {
     const submitted = await runtime.submit("write", "approval-input");
-    await waitUntil(() => interactions.listByTask(permission.taskId).some(item => item.status === "pending"));
-    await assert.rejects(access(join(permission.cwd, "approved.txt")));
-    const question = interactions.listByTask(permission.taskId)[0]!;
-    await runtime.close();
-    runtime = await permission.open();
-    const resumed = await runtime.harness.submission(submitted.id, ctx); assert(resumed);
-    const completed = resumed.wait(ctx);
-    assert.equal(interactions.respond(question.id, true).ok, true);
-    assert.equal((await completed).status, "done");
+    assert.equal((await submitted.wait(ctx)).status, "done");
     assert.equal(await readFile(join(permission.cwd, "approved.txt"), "utf8"), "approved");
-    assert.equal(interactions.listByTask(permission.taskId).length, 1);
+    assert.equal(interactions.listByTask(permission.taskId).length, 0);
   } finally { await runtime.close(); }
-  console.log("PASS default permission waits for saved approval before native execution and survives reopen");
+  console.log("PASS legacy default executes directly without creating an approval");
 
   for (const mode of ["native", "codemode"] as const) for (const restriction of ["readonly", "loadout"] as const) {
     const denied = await fixture(`${mode}-${restriction}`, request => request.messages.at(-1)?.role === "toolResult"
@@ -232,12 +256,13 @@ try {
     try {
       const submitted = await runtime.submit("write", `denied-${mode}-${restriction}`);
       assert.equal((await submitted.wait(ctx)).status, "done");
-      await assert.rejects(access(join(denied.cwd, "denied.txt")));
+      if (restriction === "loadout") await assert.rejects(access(join(denied.cwd, "denied.txt")));
+      else assert.equal(await readFile(join(denied.cwd, "denied.txt"), "utf8"), "forbidden");
       assert.equal(interactions.listByTask(denied.taskId).length, 0);
-      assert.equal(attemptCount(denied.taskId), 0, "blocked operations never start an execution attempt");
+      assert.equal(attemptCount(denied.taskId), restriction === "loadout" ? 0 : 1);
     } finally { await runtime.close(); }
   }
-  console.log("PASS readonly and host tool policy apply to native writes and Code Mode nested writes");
+  console.log("PASS native and Code Mode ignore legacy readonly while unavailable tools stay unavailable");
 
   const protectedRoot = join(root, "source-repository");
   await mkdir(protectedRoot);
@@ -254,12 +279,12 @@ try {
     runtime = await wrapped.open();
     try {
       assert.equal((await (await runtime.submit("write", `wrapper-${restriction}`)).wait(ctx)).status, "done");
-      assert.equal(calls, 0, "wrapped MCP writes obey actual tool authorization and isolated source paths");
+      assert.equal(calls, restriction === "loadout" ? 0 : 1, "MCP retains availability without legacy permissions or path grants");
       assert.equal(interactions.listByTask(wrapped.taskId).length, 0, "isolated source denial cannot be overridden by approval");
-      assert.equal(attemptCount(wrapped.taskId), 0);
+      assert.equal(attemptCount(wrapped.taskId), restriction === "loadout" ? 0 : 1);
     } finally { await runtime.close(); }
   }
-  console.log("PASS MCP wrapper enforces actual tool identity, readonly and non-overridable source isolation");
+  console.log("PASS MCP wrapper keeps actual tool identity and availability, not retired mode/path grants");
 
   let malformedCalls = 0;
   const malformed = await fixture("malformed-wrapper", request => request.messages.at(-1)?.role === "toolResult"

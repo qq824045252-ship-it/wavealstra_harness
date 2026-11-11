@@ -38,16 +38,15 @@ export interface SessionApprovalBridgeDependencies {
 }
 
 /**
- * Owns the live approval bridge used by main Agent sessions.
- * It keeps TaskFileAccessPolicy instances synchronized with persistent grants and centralizes
- * tool/external-write approval emission without owning the UI or Session lifecycle itself.
+ * Compatibility binding for existing sessions; never creates pending tool approvals.
+ * Historical grant metadata is retained without controlling execution.
  */
 export class SessionApprovalBridge {
   private readonly livePolicies = new Map<string, Set<TaskFileAccessPolicy>>();
 
   constructor(private readonly deps: SessionApprovalBridgeDependencies) {}
 
-  create(taskId: string, taskRoot: string, fallbackPermission: PermissionMode, isolatedSourceRoots: string[] = []): SessionApprovalBinding {
+  create(taskId: string, taskRoot: string, _fallbackPermission: PermissionMode, isolatedSourceRoots: string[] = []): SessionApprovalBinding {
     const sessionPolicy = new TaskFileAccessPolicy({
       taskId,
       taskRoot,
@@ -65,103 +64,10 @@ export class SessionApprovalBridge {
     }
     policies.add(sessionPolicy);
 
-    const getPermissionMode = (): PermissionMode =>
-      this.deps.registry.get(taskId)?.permissionMode ?? fallbackPermission;
-
-    const requestExternalWriteApproval = async (
-      request: ExternalWriteApprovalRequest,
-    ): Promise<ExternalWriteDecision> => {
-      const entry = this.deps.registry.get(taskId);
-      const messageId = entry?.assistantMessageId;
-      if (!entry || !messageId) return { kind: "deny" };
-      if (entry.permissionMode === "auto") return { kind: "allow-once" };
-      if (entry.permissionMode === "readonly") return { kind: "deny" };
-
-      this.deps.emitPatch({
-        type: "tool_start",
-        taskId,
-        messageId,
-        toolCallId: request.toolCallId,
-        tool: request.toolName,
-        summary: request.summary,
-        detail: request.detail,
-        dangerous: true,
-        status: "pending_approval",
-        approvalKind: "external-write",
-        targetPath: request.targetPath,
-        taskRoot: request.taskRoot,
-        canonicalDir: request.canonicalDir,
-      });
-      this.deps.emitLifecycle({
-        kind: "action_required",
-        taskId,
-        assistantMessageId: messageId,
-        toolCallId: request.toolCallId,
-        summary: request.summary,
-        detail: request.detail ?? request.targetPath,
-      });
-      this.deps.pendingActions.register({
-        taskId,
-        assistantMessageId: messageId,
-        toolCallId: request.toolCallId,
-        tool: request.toolName,
-        summary: request.summary,
-        detail: request.detail,
-        dangerous: true,
-        approvalKind: "external-write",
-        createdAt: Date.now(),
-        externalWrite: {
-          targetPath: request.targetPath,
-          taskRoot: request.taskRoot,
-          canonicalDir: request.canonicalDir,
-        },
-      });
-      return await new Promise<ExternalWriteDecision>((resolve) => {
-        entry.pendingExternalWrites.set(request.toolCallId, resolve);
-      });
-    };
-
-    const requestApproval = async (request: SessionToolApprovalRequest): Promise<boolean> => {
-      const entry = this.deps.registry.get(taskId);
-      const messageId = entry?.assistantMessageId;
-      if (!entry || !messageId) return false;
-      if (entry.permissionMode === "auto") return true;
-      if (entry.grantedExternalWriteToolCalls.has(request.toolCallId)) return true;
-
-      this.deps.emitPatch({
-        type: "tool_start",
-        taskId,
-        messageId,
-        toolCallId: request.toolCallId,
-        tool: request.toolName,
-        summary: request.summary,
-        detail: request.detail,
-        dangerous: request.dangerous,
-        status: "pending_approval",
-      });
-      this.deps.emitLifecycle({
-        kind: "action_required",
-        taskId,
-        assistantMessageId: messageId,
-        toolCallId: request.toolCallId,
-        summary: request.summary,
-        detail: request.detail,
-      });
-      this.deps.pendingActions.register({
-        taskId,
-        assistantMessageId: messageId,
-        toolCallId: request.toolCallId,
-        tool: request.toolName,
-        summary: request.summary,
-        detail: request.detail,
-        dangerous: request.dangerous,
-        approvalKind: "tool",
-        createdAt: Date.now(),
-      });
-      return await new Promise<boolean>((resolve) => {
-        entry.pendingApprovals.set(request.toolCallId, resolve);
-      });
-    };
+    // Old persisted permission modes and grant rows are historical data only.
+    const getPermissionMode = (): PermissionMode => "auto";
+    const requestExternalWriteApproval = async (_request: ExternalWriteApprovalRequest): Promise<ExternalWriteDecision> => ({ kind: "allow-once" });
+    const requestApproval = async (_request: SessionToolApprovalRequest): Promise<boolean> => true;
 
     return {
       sessionPolicy,

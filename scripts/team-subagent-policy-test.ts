@@ -87,16 +87,13 @@ async function fixture(taskId: string, respond: (request: TranscriptContext) => 
 }
 
 try {
-  assert.equal(computeChildTools({ permissionMode: "default" }).tools, null);
-  assert.equal(computeChildTools({ permissionMode: "auto" }).tools, null);
-  assert(computeChildTools({ permissionMode: "default", confirmTools: ["read"] }).excludeTools.includes("read"), "saved explicit default restriction remains effective");
-  assert.deepEqual(computeChildTools({ permissionMode: "readonly" }).tools, [...READONLY_TOOLS]);
-  assert.deepEqual(computeChildTools({ permissionMode: "default", roleTools: ["read"] }).tools, ["read"]);
-  assert(computeChildTools({ permissionMode: "default", denyTools: ["write"] }).excludeTools.includes("write"));
-  assert(RECURSION_TOOLS.every(tool => computeChildTools({}).excludeTools.includes(tool)));
-  assert.equal(tightenPolicy({ tools: null, excludeTools: [] }, "default").tools, null);
-  assert.deepEqual(tightenPolicy({ tools: ["read", "write"], excludeTools: [] }, "readonly").tools, ["read"]);
-  console.log("PASS default inherits tools, explicit role and deny rules persist, readonly narrows and recursion stays excluded");
+  for (const permissionMode of ["default", "readonly", "auto"] as const) {
+    const policy = computeChildTools({ permissionMode, roleTools: ["read"], denyTools: ["write"], confirmTools: ["bash"] });
+    assert.equal(policy.tools, null);
+    assert.deepEqual(policy.excludeTools, [...RECURSION_TOOLS]);
+  }
+  assert.deepEqual(tightenPolicy({ tools: ["read", "write"], excludeTools: ["write"] }, "readonly").excludeTools, [...RECURSION_TOOLS]);
+  console.log("PASS children inherit loaded tools regardless of legacy policy; recursion remains structural");
 
   const run = async (name: string, scopeWrite: boolean, permission: PermissionMode = "auto", outside = false) => {
     const seen: Array<{ operationId: string; actionKind: string }> = [];
@@ -107,7 +104,7 @@ try {
       const results = request.messages.filter(message => message.role === "toolResult");
       if (parent) {
         if (results.length) { parentResult = JSON.stringify(results); return text("Collected exact child result; no inferred success."); }
-        return call("subagent", { agent: "worker", task: "read seed.txt then write output.txt with content verified", model: "fixture/model", agentScope: "project", confirmProjectAgents: false, isolation: "shared", ...(outside ? { cwd: ".." } : {}) });
+        return call("subagent", { agent: "worker", task: "read seed.txt then write output.txt with content verified", model: "fixture/model", agentScope: "project", confirmProjectAgents: false, isolation: "shared", ...(outside ? { cwd: join(root, `${name}-external`) } : {}) });
       }
       if (!results.length) return call("read", { path: "seed.txt" }, "child-read");
       if (results.length === 1) return call("write", { path: "output.txt", content: "verified" }, "child-write");
@@ -118,26 +115,25 @@ try {
     f.state.admit = input => { seen.push(input); return !scopeWrite && input.actionKind === "workspace:write" ? "fixture parent scope is read-only" : undefined; };
     await mkdir(join(f.cwd, CONFIG_DIR_NAME, "agents"), { recursive: true });
     await writeFile(join(f.cwd, CONFIG_DIR_NAME, "agents", "worker.md"), "---\nname: worker\ndescription: Inherit parent tools\n---\nRead and write only the requested local evidence.\n");
-    await writeFile(join(f.cwd, "seed.txt"), `identity:${name}`);
+    const executionDir = outside ? join(root, `${name}-external`) : f.cwd;
+    await mkdir(executionDir, { recursive: true });
+    await writeFile(join(executionDir, "seed.txt"), `identity:${name}`);
     const r = await f.open();
     try {
       assert.equal((await (await r.submit("dispatch native child", name)).wait(ctx)).status, "done");
       assert(!seen.some(item => item.actionKind === "delegate"), "local child container does not request unrelated business delegation authority");
-      if (outside) {
-        assert(parentResult.includes("超出任务绑定范围"));
-        assert.equal(leafResults.length, 0);
-      } else {
+      {
         assert(leafResults.some(result => result.includes(`identity:${name}`)), "child reads this task identity, not another task");
         for (const other of ["team-a-writable", "team-b-writable", "team-c-scope-denied", "team-d-readonly", "team-e-outside"].filter(other => other !== name)) assert(!leafResults.some(result => result.includes(`identity:${other}`)), "child never receives another task evidence");
-        if (permission !== "readonly") assert(seen.some(item => item.actionKind === "workspace:write"), "child write reaches parent admission");
+        assert(seen.some(item => item.actionKind === "workspace:write"), "child write reaches parent admission");
         if (!scopeWrite) assert(parentResult.includes("FAILED: child tool rejected"), "scope failure returns to parent, not a fabricated successful write");
       }
-      if (scopeWrite && permission !== "readonly" && !outside) assert.equal(await readFile(join(f.cwd, "output.txt"), "utf8"), "verified");
+      if (scopeWrite) assert.equal(await readFile(join(executionDir, "output.txt"), "utf8"), "verified");
       else await assert.rejects(access(join(f.cwd, "output.txt")));
       assert.equal(interactions.listByTask(name).filter(item => item.status === "pending").length, 0);
     } finally { await r.close(); }
     return { seen, parentResult };
   };
-  await Promise.all([run("team-a-writable", true), run("team-b-writable", true), run("team-c-scope-denied", false), run("team-d-readonly", false, "readonly"), run("team-e-outside", true, "auto", true)]);
-  console.log("PASS five concurrent native task runtimes: child read/write, parent scope denial, explicit readonly, identity-local evidence, outside-workspace rejection, and truthful failure return");
+  await Promise.all([run("team-a-writable", true), run("team-b-writable", true), run("team-c-scope-denied", false), run("team-d-readonly", true, "readonly"), run("team-e-outside", true, "auto", true)]);
+  console.log("PASS five native runtimes: inherited read/write under old modes, explicit external cwd, identity evidence, and operational failure reporting");
 } finally { db.close(); }

@@ -47,7 +47,7 @@ export function BotTeamPanel({ work, identities }: { work: WorkProjectionDto; id
     <article><strong>{name(work.ownerBotId)} · 队长 / 执行协调</strong><p>{team.ownerResponsibility}</p><p>负责核对与只读汇总，成员已结算或确认因前置失败无法启动后开始。</p></article>
     {team.executions.map(execution => <article key={execution.taskId} aria-label={`${name(execution.botId)}的团队任务`}>
       <div className="bot-team-progress"><strong>{name(execution.botId)} · {execution.role === "owner_summary" ? "负责人汇总" : "成员"}</strong><span>{execution.notStartedReason ? "未启动" : executionLabels[execution.status]}</span></div>
-      <p>{execution.responsibility}</p><p>范围：{execution.delegatedScope.includes("workspace:write") ? "指定工作区读写" : "指定工作区只读"}</p>
+      <p>{execution.responsibility}</p>
       {execution.dependsOnBotIds?.length ? <p>前置成员：{execution.dependsOnBotIds.map(name).join("、")}</p> : null}
       {execution.waitingReason && <p role="status">{execution.waitingReason}</p>}
       {execution.status === "recovering" && <p role="status">原成员身份不变，正在自动恢复第 {execution.recoveryGeneration ?? 1} 次；已完成的成果会先读回复用，不重复已确认效果。</p>}

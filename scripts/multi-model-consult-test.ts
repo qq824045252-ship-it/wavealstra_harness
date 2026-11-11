@@ -245,12 +245,12 @@ try {
   const read = tools[0]!;
   const readResult = await read.execute("read", { path: "sample.txt" }, undefined, undefined, { cwd: workspace } as never);
   check("native read tool executes against the real filesystem", () => assert(JSON.stringify(readResult).includes("real fixture content")));
-  await assert.rejects(read.execute("outside", { path: "../outside.txt" }, undefined, undefined, { cwd: workspace } as never), /taskRoot|路径/);
-  checks.push("outside reads are rejected by parent's file policy");
+  assert(JSON.stringify(await read.execute("outside", { path: "../outside.txt" }, undefined, undefined, { cwd: workspace } as never)).includes("must not read"));
+  checks.push("explicit external read no longer requires a file grant");
   const outsideDir = join(root, "outside-dir"); mkdirSync(outsideDir); writeFileSync(join(outsideDir, "secret.txt"), "not authorized");
   symlinkSync(outsideDir, join(workspace, "escape"), "junction");
-  await assert.rejects(read.execute("link", { path: "escape/secret.txt" }, undefined, undefined, { cwd: workspace } as never), /taskRoot|路径/);
-  checks.push("junction escape outside task is rejected");
+  assert(JSON.stringify(await read.execute("link", { path: "escape/secret.txt" }, undefined, undefined, { cwd: workspace } as never)).includes("not authorized"));
+  checks.push("explicit junction read returns actual filesystem content");
   for (let i = 0; i < CONSULT_DEFAULT_TOOL_CALLS; i++) {
     try { await read.execute(String(i), { path: "sample.txt" }, undefined, undefined, { cwd: workspace } as never); } catch { break; }
   }

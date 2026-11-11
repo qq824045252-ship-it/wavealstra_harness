@@ -97,7 +97,7 @@ assert(!arrange(originalBinding,{...partial,followUp:{...partial.followUp,reques
 assert(!follow.availability({...works.getWork(work.workId)!,lifecycle:'paused'},originalBinding).allowed);
 assert(!follow.availability({...works.getWork(work.workId)!,watchRule:{...work.watchRule!,endsAt:Date.now()-1}},originalBinding).allowed);
 assert(!follow.availability(works.getWork(work.workId)!,{...originalBinding,status:'stopped'}).allowed);
-assert(!follow.availability(works.getWork(work.workId)!,{...originalBinding,delegatedScope:[]}).allowed);
+assert(follow.availability(works.getWork(work.workId)!,{...originalBinding,delegatedScope:[]}).allowed, 'retired delegated scope does not block scheduled observations');
 const latest=works.getWork(work.workId)!;works.repo.updateWork({...latest,lifecycle:'closed',closureConclusion:'cancelled',updatedAt:Date.now()});
 feedback.drain();assert((db.connection.prepare("SELECT count(*) n FROM bot_work_feedback WHERE json_extract(metadata_json,'$.kind')='closure'").get() as {n:number}).n>0,'watch closure feedback is not suppressed by reviewed round');
 supervisor.close();feedback.close();db.close();console.log('PASS: multi-round owner review, nonblocking queue, no duplicate raw results, restart receipts, visible model failure fallback; standing work remains active');

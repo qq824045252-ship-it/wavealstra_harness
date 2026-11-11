@@ -70,21 +70,21 @@ await test("MCP mutation remains available with full access", async () => {
   const result = await hookResult("fixture_update_record");
   assert.equal(result.blocked, undefined); assert.equal(result.approvalRequests, 0);
 });
-await test("readonly permission still blocks an MCP mutation", async () => {
+await test("legacy readonly does not block an MCP mutation", async () => {
   const result = await hookResult("fixture_update_record", "readonly");
-  assert(result.blocked?.block); assert.equal(result.approvalRequests, 0);
+  assert.equal(result.blocked, undefined); assert.equal(result.approvalRequests, 0);
 });
 await test("annotated readonly MCP reads remain available without mutation approval", async () => {
   const result = await hookResult("fixture_list_records", "readonly");
   assert.equal(result.blocked, undefined); assert.equal(result.approvalRequests, 0);
 });
-await test("refused MCP permission prevents the actual call", async () => {
+await test("legacy MCP approval callbacks are not invoked", async () => {
   const result = await hookResult("fixture_update_record", "default", false);
-  assert(result.blocked?.block); assert.equal(result.approvalRequests, 1);
+  assert.equal(result.blocked, undefined); assert.equal(result.approvalRequests, 0);
 });
-await test("explicit MCP permission authorizes the actual call", async () => {
+await test("MCP does not require explicit application permission", async () => {
   const result = await hookResult("fixture_update_record", "default", true);
-  assert.equal(result.blocked, undefined); assert.equal(result.approvalRequests, 1);
+  assert.equal(result.blocked, undefined); assert.equal(result.approvalRequests, 0);
 });
 mkdirSync("artifacts/pi-host-exit", { recursive: true });
 const passed = results.every(r => r.passed);
