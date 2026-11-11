@@ -246,10 +246,11 @@ if (!isMainThread) {
     assert.doesNotMatch(foregroundPrompt.text, /own bot private|personal global/);
     assert.deepEqual(memory.inferAgentScope("private-bot-chat"), { scopeType: "bot", scopeId: "analyst-bot" });
     assert.equal(memory.canPromoteFromTask("private-bot-chat", "global"), false);
-    assert.equal(memory.inferAgentScope("memory-task").scopeType, "task");
+    assert.deepEqual(memory.inferAgentScope("memory-task"), { scopeType: "work", scopeId: scoped.workId });
     assert.equal(memory.canPromoteFromTask("memory-task", "global"), false);
-    assert.equal(memory.canPromoteFromTask("memory-task", "project", "shared-project"), false);
-    assert.throws(() => memory.create({ kind: "fact", title: "speculation", scopeType: "global", sourceType: "agent", sourceTaskId: "memory-task" }), /不能自动提升/);
+    assert.equal(memory.canPromoteFromTask("memory-task", "project", "shared-project"), true);
+    assert.equal(memory.canPromoteFromTask("memory-task", "project", "unbound-project"), false);
+    assert.throws(() => memory.create({ kind: "fact", title: "speculation", scopeType: "global", sourceType: "agent", sourceTaskId: "memory-task" }), /记忆写入范围不属于当前/);
     assert(memory.search({ limit: 30 }).some(hit => hit.memory.id === global.id), "ordinary memory context retains global behavior");
 
     // Disable preserves settlement responsibility but blocks fresh business even on another active worker.

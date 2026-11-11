@@ -12,7 +12,8 @@ import type {
 } from "@shared/memory-gateway";
 
 const MEMORY_SUBTABS = [
-  { id: "browse", label: "记忆" },
+  { id: "browse", label: "全部记忆" },
+  { id: "public", label: "公共记忆" },
   { id: "skills", label: "技能学习" },
   { id: "settings", label: "设置" },
   { id: "access", label: "外部访问" },
@@ -312,6 +313,7 @@ export default function MemoryTab(): React.JSX.Element {
       {status && subTab !== "browse" && subTab !== "skills" ? <div className="memory-status" role="status">{status}</div> : null}
 
       {subTab === "browse" && <MemoryKernelExplorer focusMemoryId={focusMemoryId} />}
+      {subTab === "public" && <MemoryKernelExplorer fixedScope={{ scopeType: "global" }} />}
 
       {subTab === "skills" && <MemorySkillPanel onOpenMemory={(id) => { setFocusMemoryId(id); setSubTab("browse"); }} />}
 

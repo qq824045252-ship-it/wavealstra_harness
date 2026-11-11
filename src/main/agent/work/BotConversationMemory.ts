@@ -1,4 +1,5 @@
 import type { AppDatabase } from "../../db/AppDatabase";
+import type { MemoryCreateRequest, MemoryScopeType } from "../../../shared/memory-kernel";
 import type { MemoryService } from "../../memory/MemoryService";
 import type { MemoryPipelineManager } from "../../memory/MemoryPipelineManager";
 import { botMemorySource, botMemoryTextEligible } from "../../memory/BotMemorySource";
@@ -16,13 +17,52 @@ export class BotConversationMemory {
 
   enabled(): boolean { return this.options.enabled(); }
 
-  search(botId: string, query: string) {
-    if (!this.allowedBot(botId)) return [];
-    return this.options.memory.search({ botId, query, scopeTypes: ["bot"], includeInherited: false, statuses: ["active"], limit: 20 });
+  search(botId: string, query: string, conversationId?: string) {
+    const context = this.scopeContext(botId, conversationId);
+    if (!context) return [];
+    return this.options.memory.search({ ...context, query, statuses: ["active"], limit: 20 });
+  }
+
+  /** A user-owned scope is selected from the real conversation, never from a model-supplied entity ID. */
+  private scopeContext(botId: string, conversationId?: string): { botId: string; conversationId?: string; teamId?: string; scopeTypes: MemoryScopeType[]; includeInherited: boolean } | undefined {
+    if (!this.allowedBot(botId)) return;
+    if (!conversationId) return { botId, scopeTypes: ["bot"] as MemoryScopeType[], includeInherited: false };
+    const conversation = this.messages.conversation(this.options.userId, botId, conversationId);
+    if (!conversation) return;
+    return { botId, conversationId, teamId: conversation.team_id ?? undefined,
+      scopeTypes: ["global", "conversation", conversation.team_id ? "team" : "bot"] as MemoryScopeType[], includeInherited: true };
+  }
+
+  remember(botId: string, conversationId: string, input: {
+    scope: "current" | "conversation" | "public"; kind: "identity" | "preference" | "fact" | "decision" | "constraint";
+    title: string; content: string; userEvidence: string;
+  }, userText: string) {
+    const context = this.scopeContext(botId, conversationId);
+    if (!context) throw new Error("当前 Bot 记忆未启用或不可用，不能保存记忆；不要反复改写证据重试");
+    if (!input.userEvidence.trim() || !userText.includes(input.userEvidence)) throw new Error("记忆证据必须逐字引用本次用户原话，不能使用历史消息或模型推测");
+    if (!botMemoryTextEligible(`${userText} ${input.title} ${input.content}`)) throw new Error("记忆内容含敏感秘密或用户明确要求不保存，本次未写入");
+    if (input.scope === "public" && !publicScopeRequested(userText)) throw new Error("公共记忆需要用户明确要求所有 Bot 共享；否则使用 current 范围");
+    const temporary = /(?:仅|只)(?:限)?(?:在|对|用于)?(?:本次|这次|当前)(?:对话|会话)|(?:this conversation|this chat) only|only (?:for |in )?(?:this conversation|this chat)/i.test(userText);
+    const scopeType: MemoryScopeType = temporary || input.scope === "conversation" ? "conversation"
+      : publicScopeRequested(userText) ? "global" : context.teamId ? "team" : "bot";
+    const scopeId = scopeType === "global" ? undefined : scopeType === "conversation" ? conversationId : scopeType === "team" ? context.teamId : botId;
+    const record = this.options.db.connection.transaction(() => {
+      const prior = this.options.memory.listExactScope(scopeType, scopeId).find(item => item.status === "active"
+        && item.kind === input.kind && item.title === input.title && item.content === input.content
+        && (scopeType !== "global" || item.metadata.publicShared === true));
+      if (prior) return prior;
+      const request: MemoryCreateRequest = { kind: input.kind, title: input.title, content: input.content,
+        scopeType, scopeId, sourceType: "user", sourceId: conversationId, explicit: true, confidence: 1,
+        metadata: { ...(scopeType === "global" ? { publicShared: true } : {}), foregroundConversationId: conversationId },
+        evidence: [{ evidenceKind: "conversation", refId: conversationId, excerpt: input.userEvidence }] };
+      return this.options.memory.create(request);
+    })();
+    this.options.changed();
+    return { memoryId: record.id, scopeType, scopeId, title: record.title, saved: true };
   }
 
   /** Exact records selected by the foreground model, anchored to the current user's request. */
-  forget(botId: string, ids: string[], userText: string, evidence: string) {
+  forget(botId: string, ids: string[], userText: string, evidence: string, conversationId?: string) {
     if (!this.allowedBot(botId)) throw new Error("当前 Bot 记忆未启用或不可用");
     if (!evidence.trim() || !userText.includes(evidence)
       || !/(?:忘记|删除.*记忆|forget|delete.*memor)/i.test(evidence)
@@ -31,11 +71,21 @@ export class BotConversationMemory {
     }
     const result = this.options.db.connection.transaction(() => {
       const records = [...new Set(ids)].map(id => this.options.memory.get(id));
-      if (records.some(record => record && (!record.scopes.length || record.scopes.some(scope => scope.scopeType !== "bot" || scope.scopeId !== botId)))) {
-        throw new Error("只能删除当前 Bot 的私人记忆，不能删除其他范围");
+      const context = this.scopeContext(botId, conversationId);
+      if (!context) throw new Error("当前对话记忆范围不可用");
+      const allowPublic = publicScopeRequested(userText);
+      const scopeMatches = (scope: { scopeType: MemoryScopeType; scopeId?: string }) =>
+        scope.scopeType === (context.teamId ? "team" : "bot") && scope.scopeId === (context.teamId ?? botId)
+        || scope.scopeType === "conversation" && Boolean(conversationId) && scope.scopeId === conversationId
+        || scope.scopeType === "global" && allowPublic;
+      if (records.some(record => record && !record.scopes.some(scope => scopeMatches(scope)
+        && (scope.scopeType !== "global" || record.metadata.publicShared === true)))) {
+        throw new Error("只能移除当前 Bot、团队或本次对话的记忆；其他范围或公共记忆需要相应明确要求");
       }
       const present = records.filter(record => record !== undefined);
-      for (const record of present) this.options.memory.forget(record.id);
+      for (const record of present) {
+        for (const scope of record.scopes.filter(scope => scopeMatches(scope) && (scope.scopeType !== "global" || record.metadata.publicShared === true))) this.options.memory.detachScope(record.id, scope.scopeType, scope.scopeId);
+      }
       return { forgottenCount: present.length, alreadyAbsentCount: records.length - present.length, titles: present.map(record => record.title) };
     })();
     this.options.changed();
@@ -43,12 +93,11 @@ export class BotConversationMemory {
   }
 
   context(botId: string, conversationId: string): string {
-    if (!this.allowedBot(botId)) return "";
-    const conversation = this.messages.conversation(this.options.userId, botId, conversationId);
-    if (!conversation || conversation.team_id) return "";
+    const context = this.scopeContext(botId, conversationId);
+    if (!context) return "";
     // Stable preferences should also influence unrelated requests. Bounded active L1,
     // read afresh at every provider request: no stale in-memory copy after deletion.
-    return this.options.memory.resolveContext({ botId, scopeTypes: ["bot"], includeInherited: false,
+    return this.options.memory.resolveContext({ ...context,
       statuses: ["active"], budgetChars: 6000, limit: 12 }).text;
   }
 
@@ -56,8 +105,8 @@ export class BotConversationMemory {
   capture(botId: string, requestId: string): string | undefined {
     if (!this.allowedBot(botId)) return;
     const receipt = this.messages.receipt(this.options.userId, botId, requestId);
-    if (receipt && this.messages.conversation(this.options.userId, botId, receipt.conversation_id)?.team_id) return;
-    if (!receipt || botMemorySource(this.options.db, receipt.conversation_id, this.options.userId)?.bot_id !== botId) return;
+    const source = receipt && botMemorySource(this.options.db, receipt.conversation_id, this.options.userId);
+    if (!receipt || !source || (!source.team_id && source.bot_id !== botId)) return;
     const user = this.messages.message(receipt.user_message_id);
     const assistant = this.messages.message(receipt.assistant_message_id);
     if (!user || !assistant || user.role !== "user" || assistant.role !== "assistant"
@@ -68,7 +117,7 @@ export class BotConversationMemory {
       userMessageId: user.messageId, assistantMessageId: assistant.messageId, userText: "",
       // L0 is a source pointer. Do not duplicate raw conversations (including mixed
       // sensitive content) into long-term memory. Extraction reads the original transiently.
-      assistantText: "", metadata: { source: "bot_conversation", botId, userId: this.options.userId } });
+      assistantText: "", metadata: { source: "bot_conversation", botId, teamId: source.team_id ?? undefined, userId: this.options.userId } });
     return decision.shouldExtractL1 ? receipt.conversation_id : undefined;
   }
 
@@ -91,4 +140,10 @@ export class BotConversationMemory {
       "SELECT 1 FROM bots WHERE bot_id=? AND user_id=? AND status='active'",
     ).get(botId, this.options.userId));
   }
+}
+
+/** Only the user's explicit sharing/removal wording grants public scope, not a model-selected ID. */
+function publicScopeRequested(text: string): boolean {
+  return /(?:所有|全部|每个).{0,12}(?:bot|助理)|(?:公共|共享)记忆|(?:all|every)\s+(?:bots?|assistants?)|public\s+memor/i.test(text)
+    && !/(?:不要|别|不必|不能|勿).{0,8}(?:共享|公开|所有|全部)|(?:do not|don['’]?t|never).{0,12}(?:share|public|all bots)/i.test(text);
 }

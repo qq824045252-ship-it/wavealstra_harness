@@ -464,6 +464,8 @@ export interface WorkProjectionDto {
   };
 
   workId: string;
+  /** Explicit project binding, never inferred from a filesystem path. */
+  projectId?: string;
   title: string;
   mode: WorkMode;
   watchPlan?: Pick<WorkWatchRuleDto, "scheduleBasis" | "scheduleRationale" | "endsAt" | "termination">;

@@ -263,6 +263,7 @@ import type { ArtifactRefreshCoordinator } from "../artifact/ArtifactRefreshCoor
 import type { ArtifactKind } from "../../shared/artifact-types";
 import type { GadgetService } from "../gadget/GadgetService";
 import { MemoryService } from "../memory/MemoryService";
+import { WorkMemoryCapture } from "../memory/WorkMemoryCapture";
 import { MemoryOrganizationService } from "../memory/MemoryOrganizationService";
 import { MemoryPipelineManager } from "../memory/MemoryPipelineManager";
 import { MemorySkillEffectivenessService } from "../memory/MemorySkillEffectivenessService";
@@ -661,6 +662,7 @@ export class AgentService {
   readonly pythonRuntime = getPythonRuntimeService();
   private readonly backups = new FileBackupService();
   private readonly memoryService: MemoryService;
+  private readonly workMemoryCapture: WorkMemoryCapture;
   private readonly memoryOrganization: MemoryOrganizationService;
   private readonly memoryPipeline: MemoryPipelineManager;
   private readonly skillEffectiveness: MemorySkillEffectivenessService;
@@ -794,6 +796,7 @@ export class AgentService {
     // Project 域：resolver（上下文装配）与 service（计划工具 CRUD）共享同一 repository
     const projectRepository = new ProjectRepository(db.connection);
     this.memoryService = new MemoryService(db);
+    this.workMemoryCapture = new WorkMemoryCapture(db, this.memoryService);
     this.memoryOrganization = new MemoryOrganizationService(db, this.memoryService, () => {
       if (!this.memoryDisposed) this.notifyMemoryChanged({ scope: "settings" });
     });
@@ -842,12 +845,21 @@ export class AgentService {
       requestExpert: (work, botId) => botId === work.ownerBotId ? this.botSettings.messageSettings(work.sourceMessageId, botId)?.profile : undefined,
       emitProjection: (projection) => {
         this.emitPatch({ type: "work_projection_snapshot", projection });
+        if (this.settingsStore.read().memoryEnabled) {
+          try { this.workMemoryCapture.capture(projection.workId); } catch (error) { console.warn("[Work] memory capture deferred", error); }
+        }
         // Delivery is a background obligation: a new card wakes the host drain.
         this.workNotificationWake?.();
         this.workCompletion?.wake();
         try { this.workConversationFeedback?.drain(projection.workId); } catch (error) { console.warn("[Work] Bot 回写等待恢复", error); }
       },
       isAuthority: () => this.workHostAuthority.isAuthority(),
+    });
+    setImmediate(() => {
+      if (this.memoryDisposed || !this.db.connection.open || !this.settingsStore.read().memoryEnabled || !this.workHostAuthority.isAuthority()) return;
+      for (const work of this.workService.repo.listWorks(LOCAL_USER_ID, { includeClosed: true })) {
+        try { this.workMemoryCapture.capture(work.workId); } catch (error) { console.warn("[Work] memory catch-up deferred", error); }
+      }
     });
     this.botReportImages = new BotReportImageService(db.connection, LOCAL_USER_ID, this.workService, () => this.artifactService);
     this.workConversationFeedback = new WorkConversationFeedback({ db: db.connection, userId: LOCAL_USER_ID, works: this.workService, superviseWatch: true,

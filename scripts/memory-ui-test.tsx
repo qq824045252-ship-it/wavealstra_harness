@@ -243,6 +243,52 @@ export async function run(): Promise<string[]> {
   check(JSON.stringify(detached) === JSON.stringify([shared.id, "bot", "bot-study"]) && forgotten === 0, "deletion removes only current Bot binding");
   results.push("Legacy shared memory is read-only in Bot settings; deletion detaches only current Bot scope");
 
+  for (const scopeType of ["team", "conversation", "work", "project"] as const) {
+    fixtures();
+    const scoped = { ...atom, id: scopeType + "-memory", title: scopeType + " 专属事实",
+      scopes: [{ scopeType, scopeId: "current", binding: "primary" }] };
+    const requests: any[] = [];
+    api.memory.list = async (request: any) => { requests.push(request); return [scoped, { ...atom, id: "foreign" }]; };
+    mount(<MemoryKernelExplorer fixedScope={{ scopeType, scopeId: "current" }} />);
+    await until(() => host.textContent?.includes(scoped.title), scopeType + " loads");
+    check(requests.every(r => r.scopeType === scopeType && r.scopeId === "current"), scopeType + " exact API scope");
+    check(!host.textContent?.includes(atom.title), scopeType + " filters foreign records");
+    check(!host.querySelector('[aria-label="筛选记忆范围"]'), scopeType + " cannot broaden scope");
+  }
+  results.push("Team/conversation/Work/project reuse the editor with exact, non-broadenable scope");
+
+  fixtures();
+  let publicMemory = { ...atom, id: "legacy-global", title: "旧全局偏好", metadata: {},
+    scopes: [{ scopeType: "global", binding: "primary" }] };
+  const publicWrites: any[] = [];
+  api.memory.list = async () => [publicMemory];
+  api.memory.update = async (request: any) => { publicWrites.push(request); publicMemory = { ...publicMemory, metadata: request.metadata }; return publicMemory; };
+  mount(<MemoryKernelExplorer fixedScope={{ scopeType: "global" }} />);
+  await until(() => host.textContent?.includes(publicMemory.title), "global loads");
+  await click(/旧全局偏好/);
+  check(host.textContent?.includes("未共享"), "legacy global not implicitly public");
+  await click("共享为公共记忆");
+  await until(() => host.textContent?.includes("已明确共享"), "explicit sharing saved");
+  check(publicWrites[0].metadata.publicShared === true, "public marker explicit");
+  await click("撤回共享");
+  await until(() => publicWrites.length === 2, "revocation saved");
+  check(publicWrites[1].metadata.publicShared === false, "public sharing revoked");
+  results.push("Legacy global memory stays private until explicitly shared; sharing can be revoked");
+  const created: any[] = [];
+  api.memory.create = async (request: any) => { created.push(request); return { ...publicMemory, ...request }; };
+  await click("新增记忆");
+  await until(() => document.querySelector('[role="dialog"] textarea'), "public creation prompt");
+  const textarea = document.querySelector<HTMLTextAreaElement>('[role="dialog"] textarea')!;
+  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+  flushSync(() => { setter.call(textarea, "公共团队工作约定"); textarea.dispatchEvent(new Event("input", { bubbles: true })); });
+  const saveMemory = [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(b => b.textContent === "保存")!;
+  check(saveMemory && !saveMemory.disabled, "public creation can save");
+  flushSync(() => saveMemory.click());
+  await until(() => created.length === 1, "public creation persisted");
+  check(created[0].scopeType === "global" && created[0].metadata.publicShared === true, "public new memory explicitly shared");
+  results.push("Public creation uses current scope and explicit sharing, with existing text prompt");
+
+
   fixtures();
   const a = deferred(), b = deferred();
   const requested: string[] = [];

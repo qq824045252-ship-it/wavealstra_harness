@@ -304,7 +304,7 @@ export class MemoryProjectionRepository {
   ): { scenarios: number; profiles: number } {
     const unique = new Map<string, MemoryProjectionScope>();
     for (const scope of scopes) {
-      if (scope.scopeType === "task" || scope.scopeType === "bot") continue;
+      if (scope.scopeType !== "global" && scope.scopeType !== "workspace" && scope.scopeType !== "project") continue;
       const normalized: MemoryProjectionScope = { scopeType: scope.scopeType, scopeId: scope.scopeId };
       unique.set(`${scope.scopeType}:${scope.scopeId ?? ""}`, normalized);
     }

@@ -53,12 +53,12 @@ async function toolsFor(memory: MemoryService, taskId: string) {
   await createMemoryExtension({ taskId, service: memory })({ registerTool: (tool: Tool) => tools.set(tool.name, tool) } as unknown as ExtensionAPI);
   return (name: string, params: object) => tools.get(name)!.execute("review", params as never);
 }
-async function extract(f: Fixture, operationHint: string, title: string, content: string) {
+async function extract(f: Fixture, operationHint: string, title: string, content: string, scopeType = "project") {
   const userText = `记住这项修订：${content}`;
   return f.memory.extractAndStore({ taskId: "worker", userText, assistantText: "", isEnabled: () => true,
     model: { maxTokens: 4096 } as MemoryExtractionInput["model"],
     modelRuntime: { completeSimple: async () => ({ content: [{ type: "text", text: JSON.stringify({ candidates: [{
-      kind: "fact", title, content, replaces: title, scopeType: "project", operationHint,
+      kind: "fact", title, content, replaces: title, scopeType, operationHint,
       explicit: true, confidence: 1, importance: 1, userEvidence: userText,
     }] }) }], stopReason: "stop" }) } as unknown as MemoryExtractionInput["modelRuntime"],
   });
@@ -89,6 +89,18 @@ const cases: Array<[string, (f: Fixture) => Promise<void> | void]> = [
       .run(work.work_id,LOCAL_USER_ID,"team-test",Date.now());
     assert(!projectMemoryContext(f.memory,{taskId:"worker",query:"统计季度库存数量",trackRecall:false}).items.some(x=>x.id===f.own.id));
   }],
+  ["scope hints cannot override execution identity or resurrect legacy team owner memory", f => {
+    const workId = f.memory.inferAgentScope("worker").scopeId!;
+    const chain = f.memory.resolveScopeChain({ taskId: "worker", conversationId: "untrusted-conversation", botId: "other-bot", projectId: "unrelated-project", teamId: "other-team" });
+    assert(!chain.some(scope => scope.scopeId === "other-bot" || scope.scopeId === "unrelated-project" || scope.scopeId === "other-team"));
+    const ordinary = f.memory.resolveScopeChain({ taskId: "ordinary", projectId: "unrelated-project", workspaceId: "foreign-space" });
+    assert(ordinary.some(scope => scope.scopeType === "project" && scope.scopeId === "shared-project"));
+    assert(!ordinary.some(scope => scope.scopeId === "unrelated-project" || scope.scopeId === "foreign-space"));
+    f.db.connection.prepare("INSERT INTO work_teams(work_id,user_id,operation_id,request_hash,plan_json,intent_revision,input_snapshot_id,created_at) VALUES (?,?,?,'test','{}',1,'test',?)")
+      .run(workId, LOCAL_USER_ID, "legacy-team", Date.now());
+    assert(!f.memory.resolveScopeChain({ workId }).some(scope => scope.scopeType === "bot"), "legacy team without ownership must not inherit owner private scope");
+    assert(!f.memory.canAccess(f.own.id, { workId }));
+  }],
   ["worker reads authorized facts but cannot update or rebind them", async f => {
     const tool = await toolsFor(f.memory, "worker");
     for (const record of [f.own, f.shared]) {
@@ -106,7 +118,7 @@ const cases: Array<[string, (f: Fixture) => Promise<void> | void]> = [
     assert.equal((await tool("memory_create", { kind: "preference", title: "worker global guess", scopeType: "global" })).isError, true);
     assert(!((await tool("memory_create", { kind: "fact", title: "worker checkpoint", content: "pending validation" })).isError));
     const local = f.memory.search({ taskId: "worker", query: "worker checkpoint" }).find(hit => hit.memory.title === "worker checkpoint")!.memory;
-    assert.deepEqual(local.scopes.map(({ scopeType, scopeId }) => ({ scopeType, scopeId })), [{ scopeType: "task", scopeId: "worker" }]);
+    assert.deepEqual(local.scopes.map(({ scopeType, scopeId }) => ({ scopeType, scopeId })), [{ scopeType: "work", scopeId: f.memory.inferAgentScope("worker").scopeId }]);
     assert(!((await tool("memory_update", { id: local.id, content: "revised local hypothesis" })).isError));
     f.memory.promote(local.id, "project", "shared-project");
     assert.equal((await tool("memory_update", { id: local.id, content: "overwrite confirmed fact via retained task scope" })).isError, true);
@@ -135,10 +147,10 @@ const cases: Array<[string, (f: Fixture) => Promise<void> | void]> = [
       assert.deepEqual(f.memory.get(local.id), before, "shared content/status/evidence remain unchanged");
       assert.deepEqual(f.memory.history(local.id), history);
     }
-    const result = await extract(f, "create", "new worker-local finding", "a new unconfirmed checkpoint");
+    const result = await extract(f, "create", "new worker-local finding", "a new unconfirmed checkpoint", "task");
     assert.equal(result.committedCount, 1, "new extraction remains in the execution scope");
     const local = f.memory.search({ taskId: "worker", query: "new worker-local finding" }).find(hit => hit.memory.title === "new worker-local finding")!.memory;
-    assert(local.scopes.every(scope => scope.scopeType === "task" && scope.scopeId === "worker"));
+    assert(local.scopes.every(scope => scope.scopeType === "work" && scope.scopeId === f.memory.inferAgentScope("worker").scopeId));
   }],
   ["Work prompt loads approved derived evidence using the authoritative project", f => {
     const scope = { scopeType: "project" as const, scopeId: "shared-project" };

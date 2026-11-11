@@ -106,7 +106,15 @@ export function projectMemoryContext(
     ? memory.search({ ...input, query: undefined, scopeTypes: ["bot"], kinds: allowedBaselineKinds,
       statuses: ["active"], limit: BOT_PREFERENCE_BASELINE_LIMIT }).filter(hit => visible(hit.memory.id))
     : [];
-  const hits = [...botBaseline, ...queried, ...projectBaseline];
+  // Stable shared preferences and the current episode survive unrelated follow-up wording.
+  // Scope-chain filtering still owns visibility; this does not expand ownership.
+  const sharedBaseline = input.query?.trim() && allowedBaselineKinds.length
+    ? memory.search({ ...input, query: undefined, scopeTypes: ["team", "global"], kinds: allowedBaselineKinds,
+      statuses: ["active"], limit: BOT_PREFERENCE_BASELINE_LIMIT }).filter(hit => visible(hit.memory.id)) : [];
+  const episodeBaseline = input.query?.trim()
+    ? memory.search({ ...input, query: undefined, scopeTypes: ["conversation", "work"],
+      statuses: ["active"], limit: 6 }).filter(hit => visible(hit.memory.id)) : [];
+  const hits = [...botBaseline, ...sharedBaseline, ...episodeBaseline, ...queried, ...projectBaseline];
   const relevantIds = queriedIds;
   for (const scenario of scenarios) {
     if (coveredScenarios.has(scenario.id)) continue;

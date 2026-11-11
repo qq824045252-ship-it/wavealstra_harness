@@ -47,10 +47,12 @@ const messages = new BotConversationRepository(db.connection);
 const scheduled: { workId: string; retryBlocked: boolean | undefined }[] = [];
 const memoryQueries: string[] = [];
 const forgetInputs: unknown[] = [];
+const rememberInputs: unknown[] = [];
 const first = messages.accept(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID, requestId: "contract-first", text: "创建并管理这项委托" });
 const tools: ToolRegistration[] = botForegroundTools({ db: db.connection, userId: LOCAL_USER_ID, botId: DEFAULT_BOT_ID,
   conversationId: first.conversationId, bots, messages, works, isAuthority: () => true,
   schedule: (work, _operation, retryBlocked) => scheduled.push({ workId: work.workId, retryBlocked }), wake: () => {},
+  memoryRemember: (input, userText) => { rememberInputs.push({ input, userText }); return { saved: true }; },
   memorySearch: query => { memoryQueries.push(query); return []; },
   memoryForget: (ids, userText, evidence) => { forgetInputs.push({ ids, userText, evidence }); return { forgottenCount: ids.length }; } });
 const findTool = (name: string) => { const tool = tools.find(item => item.name === name); assert(tool, name); return tool; };
@@ -118,6 +120,8 @@ try {
     ["work_query_status", { workId: " \n " }], ["work_query_status", { workId: work.workId, actor: "system" }],
     ["memory_forget", { ids: [], userEvidence: "忘记" }], ["memory_forget", { ids: ["x"], userEvidence: " " }],
     ["memory_forget", { ids: ["x"], userEvidence: "忘记", botId: "foreign" }],
+    ["memory_remember", { scope: "bot", kind: "fact", title: "x", content: "x", userEvidence: "x" }],
+    ["memory_remember", { scope: "current", kind: "fact", title: "x", content: "x", userEvidence: "x", botId: "foreign" }],
     ["memory_search", {}], ["memory_search", { query: " \t " }], ["memory_search", { query: "q".repeat(32001) }],
     ["memory_search", { query: "valid", botId: "another-bot" }],
     ["work_amend", { workId: work.workId, versionGuard: guard, constraints: Array(31).fill("constraint") }],
@@ -141,6 +145,12 @@ try {
     criteria: Array(12).fill({ text: "criterion", requiresRealEnvironmentCheck: false }) }), "documented limits are inclusive");
   await validInvoke("memory_search", { query: "  remembered constraint  " });
   assert.deepEqual(memoryQueries, ["remembered constraint"]);
+  const rememberRequest = messages.accept(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID, requestId: "remember-request", text: "仅本次对话记住蓝莓" });
+  const rememberInput = { scope: "conversation", kind: "preference", title: "口味", content: "蓝莓", userEvidence: "记住蓝莓" };
+  await validInvoke("memory_remember", rememberInput, rememberRequest.requestId);
+  assert.deepEqual(rememberInputs, [{ input: rememberInput, userText: "仅本次对话记住蓝莓" }]);
+  messages.update(rememberRequest.assistantMessageId, "completed", "done");
+  await assert.rejects(() => validInvoke("memory_remember", rememberInput, rememberRequest.requestId), /原始用户消息已结束/);
   const forgetRequest = messages.accept(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID, requestId: "forget-request", text: "忘记测试代号" });
   await validInvoke("memory_forget", { ids: ["memory-fixture"], userEvidence: "忘记测试代号" }, forgetRequest.requestId);
   assert.deepEqual(forgetInputs, [{ ids: ["memory-fixture"], userText: "忘记测试代号", evidence: "忘记测试代号" }]);

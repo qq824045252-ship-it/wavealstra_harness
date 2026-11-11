@@ -1,3 +1,4 @@
+import ScopedMemoryPanel from "../settings/ScopedMemoryPanel";
 import { WorkExecutionMetrics } from "./WorkExecutionMetrics";
 import { BotExecutionDiagnosticsButton } from "./BotExecutionDiagnostics";
 import { BotWorkArchiveActions } from "./BotWorkArchiveActions";
@@ -102,6 +103,8 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
       <BotExecutionDiagnosticsButton request={{kind:"work",workId:work.workId}} />
       <BotWorkArchiveActions key={work.workId} work={work} />
       <WorkExecutionMetrics work={work} />
+      <ScopedMemoryPanel key={"memory:work:" + work.workId} scopeType="work" scopeId={work.workId} title="事项记忆（跨执行轮次保留）" />
+      {work.projectId && <ScopedMemoryPanel key={"project:" + work.projectId} scopeType="project" scopeId={work.projectId} title="项目记忆（同项目事项共享）" />}
       <section className="bot-detail-section" aria-label="目标与进度">
         <h3>目标</h3>
         <p>{work.title}</p>

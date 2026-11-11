@@ -3,10 +3,10 @@ import { LOCAL_USER_ID } from "../../shared/bot-work";
 
 /** A foreground conversation is a real memory source, never a fabricated Task row. */
 export function botMemorySource(db: AppDatabase, conversationId: string, userId = LOCAL_USER_ID) {
-  return db.connection.prepare(`SELECT c.conversation_id,c.bot_id,c.user_id,b.status
+  return db.connection.prepare(`SELECT c.conversation_id,c.bot_id,c.team_id,c.user_id,b.status
     FROM bot_conversations c JOIN bots b ON b.bot_id=c.bot_id AND b.user_id=c.user_id
-    WHERE c.conversation_id=? AND c.user_id=? AND c.team_id IS NULL`).get(conversationId, userId) as {
-      conversation_id: string; bot_id: string; user_id: string; status: string;
+    WHERE c.conversation_id=? AND c.user_id=?`).get(conversationId, userId) as {
+      conversation_id: string; bot_id: string; team_id: string | null; user_id: string; status: string;
     } | undefined;
 }
 

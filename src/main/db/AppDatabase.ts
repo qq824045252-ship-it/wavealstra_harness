@@ -5,6 +5,7 @@ import { ensureBotWorkPhase3Tables } from "./bot-work-phase3-schema";
 import { ensureBotWorkPhase4Tables } from "./bot-work-phase4-schema";
 import { ensureBotWorkPhase5Tables } from "./bot-work-phase5-schema";
 import { ensureGatewayDeliveryTables } from "./gateway-delivery-schema";
+import { ensureExtendedMemoryScopes } from "./memory-scope-schema";
 import { retireWorkIsolation } from "./work-isolation-retirement";
 import { retireWorkBudget } from "./work-budget-retirement";
 import { retireWorkEffectBlockers } from "./work-effect-retirement";
@@ -623,7 +624,7 @@ export class AppDatabase {
       END;
       CREATE TABLE IF NOT EXISTS memory_scopes (
         id TEXT PRIMARY KEY, memory_id TEXT NOT NULL,
-        scope_type TEXT NOT NULL CHECK (scope_type IN ('global','workspace','project','task','bot')),
+        scope_type TEXT NOT NULL CHECK (scope_type IN ('global','workspace','project','task','bot','team','conversation','work')),
         scope_id TEXT, binding TEXT NOT NULL DEFAULT 'owned' CHECK (binding IN ('owned','promoted')), created_at INTEGER NOT NULL,
         CHECK ((scope_type='global' AND scope_id IS NULL) OR (scope_type!='global' AND scope_id IS NOT NULL AND length(trim(scope_id)) > 0)),
         FOREIGN KEY (memory_id) REFERENCES memory_records(id) ON DELETE CASCADE
@@ -846,6 +847,7 @@ export class AppDatabase {
       CREATE INDEX IF NOT EXISTS idx_memory_skill_revision_status ON memory_skill_revision_candidates(status, updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_memory_skill_revision_skill ON memory_skill_revision_candidates(skill_id, base_candidate_id, updated_at DESC);
     `);
+    ensureExtendedMemoryScopes(this.db);
     // Crash/exit recovery: a process can disappear after marking an L0 batch processing but before commit.
     // No live extraction exists while AppDatabase is constructing, so these rows are safe to retry.
     this.db.prepare(

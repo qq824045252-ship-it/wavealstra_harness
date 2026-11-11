@@ -32,6 +32,9 @@ const change = z.object({ ...fields, ...timing, watchRule: watchRule.nullable().
   deadlineAt: timing.deadlineAt.nullable().optional(), workId: text, versionGuard: guard }).strict();
 const control = z.object({ workId: text, reason: text.optional(), versionGuard: guard }).strict();
 const memory = z.object({ query: text }).strict();
+const memoryRemember = z.object({ scope: z.enum(["current", "conversation", "public"]).default("current"),
+  kind: z.enum(["identity", "preference", "fact", "decision", "constraint"]),
+  title: z.string().min(1).max(200), content: z.string().min(1).max(4000), userEvidence: text }).strict();
 const memoryForget = z.object({ ids: z.array(text).min(1).max(20), userEvidence: text }).strict();
 const teamCreate = z.object({ ...timing, requestedOutcome: create.shape.requestedOutcome, mode: create.shape.mode, startImmediately: create.shape.startImmediately, templateId: z.string().min(1).max(200).optional(), title: z.string().min(1).max(240),
   goalDescription: z.string().min(1).max(2000), criteria: z.array(z.string().min(1).max(1000)).min(1).max(12),
@@ -73,13 +76,14 @@ export interface BotForegroundToolOptions {
   schedule: (work: WorkDto, operationId: string, retryBlocked?: boolean) => void;
   wake: (workId?: string) => void;
   memorySearch: (query: string) => unknown;
+  memoryRemember?: (input: z.infer<typeof memoryRemember>, userText: string) => unknown;
   memoryForget?: (ids: string[], userText: string, evidence: string) => unknown;
   isAuthority: () => boolean;
   botWorkspace?: (botId: string, prepareDefault?: boolean) => string;
 }
 
 /** Foreground Work/memory controls. Read-only web tools are mounted separately by the host. */
-export const BOT_FOREGROUND_TOOLS = new Set(["reminder_manage", "work_query_status", "work_create", "work_amend", "work_pause", "work_resume", "work_cancel", "memory_search", "memory_forget", "work_team_templates", "work_team_create"]);
+export const BOT_FOREGROUND_TOOLS = new Set(["reminder_manage", "work_query_status", "work_create", "work_amend", "work_pause", "work_resume", "work_cancel", "memory_search", "memory_forget", "memory_remember", "work_team_templates", "work_team_create"]);
 
 export function botForegroundTools(options: BotForegroundToolOptions) {
   const { db, works, bots, messages, userId, botId, conversationId } = options;
@@ -306,14 +310,23 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
       if (result.ok && result.work) options.wake(result.work.workId);
       return output(result);
     } }),
-  defineTool({ name: "memory_search", description: "查询当前 Bot 私有记忆，不访问其他 Bot 或项目。",
+  defineTool({ name: "memory_search", description: "查询当前对话可见记忆：本 Bot 或团队、本次会话，以及用户明确共享的公共记忆；不读其他 Bot 私人记忆。",
     parameters: inputParameters.memory, replay: "safe",
-    execute: async args => { assertActive(); if (options.teamId) throw new Error("团队会话不读取私人记忆"); return output(options.memorySearch(memory.parse(args).query)); } }),
-  defineTool({ name: "memory_forget", description: "用户明确要求忘记时，先 memory_search 找到对应记录，再删除当前 Bot 的这些私人记忆。必须提供当前用户要求忘记的原话。只在工具成功后说已忘记；不删除聊天历史，不创建 Work。",
+    execute: async args => { assertActive(); return output(options.memorySearch(memory.parse(args).query)); } }),
+  defineTool({ name: "memory_remember", description: "用户明确要求记住或更正一条事实/偏好时保存到宿主绑定范围。current是当前Bot专属或当前团队；仅本次对话的约束用conversation；只有用户明确说所有Bot共享时才用public。引用当前用户原话，成功后才能说已记住。不把临时要求保存为长期规则。",
+    parameters: parameters(memoryRemember), replay: "safe",
+    execute: async (args, api, context) => {
+      assertActive();
+      const input = memoryRemember.parse(args);
+      const requestId = await botForegroundRequest(api, api.callId, context);
+      const source = receipt(requestId);
+      if (!options.memoryRemember) throw new Error("当前记忆保存服务不可用");
+      return output(options.memoryRemember(input, messages.message(source.user_message_id)!.text));
+    } }),
+  defineTool({ name: "memory_forget", description: "用户明确要求忘记时，先 memory_search 找到对应记录，再从当前Bot、团队或本次会话移除记忆；公共范围必须由用户明确说公共或所有Bot。必须提供当前用户要求忘记的原话。只在工具成功后说已忘记；不删除聊天历史，不创建 Work。",
     parameters: parameters(memoryForget), replay: "safe",
     execute: async (args, api, context) => {
       assertActive();
-      if (options.teamId) throw new Error("团队会话不修改私人记忆");
       const input = memoryForget.parse(args);
       const requestId = await botForegroundRequest(api, api.callId, context);
       const source = receipt(requestId);

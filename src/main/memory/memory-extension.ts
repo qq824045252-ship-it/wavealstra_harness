@@ -21,7 +21,7 @@ export interface MemoryExtensionBridge {
 
 const kindSchema = Type.Union(MEMORY_KINDS.map((x) => Type.Literal(x)));
 const statusSchema = Type.Union(MEMORY_STATUSES.map((x) => Type.Literal(x)));
-const scopeSchema = Type.Union([Type.Literal("global"), Type.Literal("workspace"), Type.Literal("project"), Type.Literal("task")]);
+const scopeSchema = Type.Union([Type.Literal("global"), Type.Literal("workspace"), Type.Literal("project"), Type.Literal("task"), Type.Literal("bot"), Type.Literal("team"), Type.Literal("conversation"), Type.Literal("work")]);
 
 function textResult(text: string, details?: unknown) {
   return { content: [{ type: "text" as const, text }], details: details ?? { text } };
@@ -106,7 +106,7 @@ export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionF
     pi.registerTool({
       name: "memory_create",
       label: "长期记忆 · 沉淀",
-      description: "沉淀长期有价值的认知。默认 scope 自动选择 Project > Workspace > Task；不要保存瞬时步骤/聊天摘要。Global 只应保存跨项目稳定身份、偏好、约束或通用 procedure。",
+      description: "沉淀长期有价值的认知。默认 scope 由宿主绑定：后台委托使用持久 Work，团队使用 Team，个人 Bot 使用 Bot；普通任务选择 Project > Workspace > Task。Work 可记录跨轮需要的进展、决策与未决项，不保存冗长工具日志。Global 只应保存跨项目稳定身份、偏好、约束或通用 procedure。",
       promptSnippet: "memory_create(kind,title,content?,importance?,confidence?,scopeType?) — 沉淀长期认知",
       parameters: Type.Object({
         kind: kindSchema,
@@ -124,6 +124,10 @@ export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionF
           if (params.scopeType === "global") {
             if (!["identity", "preference", "constraint", "procedure"].includes(params.kind)) throw new Error("Agent 不应把项目事实/决策直接提升为 Global；请使用当前项目/工作空间 scope");
             scope = { scopeType: "global" };
+          } else if (params.scopeType === "project" && inferred.scopeType === "work") {
+            const project = bridge.service.resolveScopeChain({ taskId: bridge.taskId }).find(item => item.scopeType === "project");
+            if (!project || !bridge.service.canPromoteFromTask(bridge.taskId, "project", project.scopeId)) throw new Error("当前 Work 没有绑定项目");
+            scope = { scopeType: "project", scopeId: project.scopeId };
           } else if (params.scopeType && params.scopeType !== inferred.scopeType) {
             // Explicit promotion is a separate auditable operation; create cannot silently jump scope.
             throw new Error(`当前默认写入 scope=${inferred.scopeType}；跨 scope 请先创建，再用 memory_promote 显式提升`);
@@ -148,7 +152,7 @@ export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionF
     pi.registerTool({
       name: "memory_update",
       label: "长期记忆 · 更新",
-      description: "更新当前身份可写的一条长期记忆。Work 执行者只可修改本次任务独占记忆，Bot 前台只可修改自己的私人或当前对话独占记忆；共享事实需要显式审核。更新会自动生成 revision；信息被新事实取代时不要直接覆盖，请使用 supersedeId 创建替代关系。",
+      description: "更新当前身份可写的一条长期记忆。Work 执行者可修改本 Work 与绑定项目的记忆；Bot/团队仅修改自己的范围。其他主体的私人记忆不可修改。更新会自动生成 revision；信息被新事实取代时不要直接覆盖，请使用 supersedeId 创建替代关系。",
       promptSnippet: "memory_update(id,title?,content?,status?,importance?,confidence?,supersedeId?) — revision-safe 更新",
       parameters: Type.Object({
         id: Type.String({ minLength: 1, maxLength: 120 }),

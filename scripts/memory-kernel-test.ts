@@ -1,3 +1,4 @@
+import { testExtendedMemoryScopes } from "./memory-scope-schema-test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -10,6 +11,8 @@ import { MemoryPipelineManager } from "../src/main/memory/MemoryPipelineManager"
 function ids<T extends { memory: { id: string } }>(hits: T[]): Set<string> {
   return new Set(hits.map((hit) => hit.memory.id));
 }
+
+testExtendedMemoryScopes();
 
 const db = new AppDatabase(":memory:");
 try {

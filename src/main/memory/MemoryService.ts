@@ -1,3 +1,4 @@
+import { resolveAssistantScopeChain, resolveWorkMemoryScope } from "./AssistantMemoryScopes";
 import { botMemorySource, botMemoryTextEligible } from "./BotMemorySource";
 import { projectMemoryContext } from "../agent/MemoryContextProjection";
 import { createHash, randomUUID } from "node:crypto";
@@ -48,7 +49,11 @@ const EXTRACTION_SYSTEM_PROMPT = `你是 MyBuddy Memory Kernel 的候选记忆�
 普通事实、偏好、决定尽量用一两句话直接记录结论，去掉“用户指出/本轮讨论”等叙述；不得为缩短丢失条件、否定、数值或不确定性。
 
 kind 只能是：identity, preference, fact, decision, constraint, risk, open_question, progress, procedure。
-scopeType 只能是：global, workspace, project, task。
+scopeType 只能是：global, workspace, project, task, bot, team, conversation, work。
+- work：当前持久委托的进度、已验证结论、失败原因与下一步，跨执行持续。
+- team：当前团队的共同约定；不把成员私人信息写入团队。
+- conversation：用户明确仅本次对话有效的临时要求。
+- bot：当前个人 Bot 的长期偏好；global 共享必须由用户明确要求所有 Bot 知道。
 - global：跨项目长期身份、偏好、固定工作方式、通用 procedure。
 - project：当前项目长期事实、决策、约束、风险、问题、项目 procedure。只要任务绑定 project，项目专属信息优先 project。
 - workspace：没有项目绑定时，当前工作空间长期上下文。
@@ -180,7 +185,7 @@ function isKind(value: unknown): value is MemoryKind {
   return ["identity", "preference", "fact", "decision", "constraint", "risk", "open_question", "progress", "procedure"].includes(String(value));
 }
 function isScope(value: unknown): value is MemoryScopeType {
-  return ["global", "workspace", "project", "task", "bot"].includes(String(value));
+  return ["global", "workspace", "project", "task", "bot", "team", "conversation", "work"].includes(String(value));
 }
 function isOperation(value: unknown): value is MemoryCandidateDto["operationHint"] {
   return ["create", "update", "supersede", "resolve", "forget"].includes(String(value));
@@ -270,11 +275,11 @@ export class MemoryService {
   get(id: string): MemoryRecordDto | undefined { return this.repository.get(id); }
 
   /** Scope-safe visibility check used by Agent/MCP surfaces; guessed ids must not cross scope boundaries. */
-  canAccess(id: string, request: Pick<MemorySearchRequest, "taskId" | "projectId" | "workspaceId" | "botId" | "includeInherited">): boolean {
+  canAccess(id: string, request: MemorySearchRequest): boolean {
     const memory = this.repository.get(id);
     if (!memory) return false;
     const chain = this.resolveScopeChain({ ...request, includeInherited: request.includeInherited ?? true });
-    return memory.scopes.some((scope) => chain.some((c) => c.scopeType === scope.scopeType && (c.scopeId ?? "") === (scope.scopeId ?? "")));
+    return this.visibleInChain(memory, chain, request);
   }
 
   /**
@@ -316,7 +321,10 @@ export class MemoryService {
 
   /** Default durable scope for an Agent write: Project > Workspace > Task. Global requires explicit selection. */
   inferAgentScope(taskId: string): { scopeType: MemoryScopeType; scopeId?: string } {
-    if (this.workMemoryScope(taskId)) return { scopeType: "task", scopeId: taskId };
+    const work = this.workMemoryScope(taskId);
+    if (work) return { scopeType: "work", scopeId: work.work_id };
+    const conversation = botMemorySource(this.db, taskId);
+    if (conversation?.team_id) return { scopeType: "team", scopeId: conversation.team_id };
     const botId = this.channelBotId(taskId);
     if (botId) return { scopeType: "bot", scopeId: botId };
     const task = this.db.getTask(taskId);
@@ -457,16 +465,10 @@ export class MemoryService {
   }
 
   create(request: MemoryCreateRequest): MemoryRecordDto {
-    if (request.sourceTaskId && this.workMemoryScope(request.sourceTaskId)
-      && request.sourceType === "agent"
-      && (request.scopeType !== "task" || request.scopeId !== request.sourceTaskId)) {
-      throw new Error("Work 执行者只能写本次任务记忆，不能自动提升为 Bot 或团队事实");
-    }
-    const channelBotId = request.sourceTaskId ? this.channelBotId(request.sourceTaskId) : undefined;
-    if (channelBotId && request.sourceType === "agent" && !(
-      (request.scopeType === "bot" && request.scopeId === channelBotId)
-      || (request.scopeType === "task" && request.scopeId === request.sourceTaskId))) {
-      throw new Error("Bot 只能写自己的私人记忆或当前对话记忆");
+    if (request.sourceTaskId && request.sourceType === "agent"
+      && (this.workMemoryScope(request.sourceTaskId) || this.channelBotId(request.sourceTaskId))
+      && !this.canPromoteFromTask(request.sourceTaskId, request.scopeType, request.scopeId)) {
+      throw new Error("记忆写入范围不属于当前 Bot、团队、项目或 Work");
     }
     const record = this.buildRecord(request);
     const saved = this.db.connection.transaction(() => {
@@ -664,11 +666,16 @@ export class MemoryService {
 
   canPromoteFromTask(taskId: string, targetScopeType: MemoryScopeType, targetScopeId?: string): boolean {
     const work = this.workMemoryScope(taskId);
-    if (work) return targetScopeType === "task" && targetScopeId === taskId;
+    if (work) return (targetScopeType === "task" && targetScopeId === taskId)
+      || (targetScopeType === "work" && targetScopeId === work.work_id)
+      || (targetScopeType === "project" && Boolean(work.project_id) && targetScopeId === work.project_id);
+    const conversation = botMemorySource(this.db, taskId);
+    if (conversation) return (targetScopeType === "conversation" && targetScopeId === taskId)
+      || (targetScopeType === (conversation.team_id ? "team" : "bot") && targetScopeId === (conversation.team_id ?? conversation.bot_id));
     const channelBotId = this.channelBotId(taskId);
     if (channelBotId) return (targetScopeType === "bot" && targetScopeId === channelBotId)
       || (targetScopeType === "task" && targetScopeId === taskId);
-    if (targetScopeType === "bot") return false;
+    if (["bot", "team", "conversation", "work"].includes(targetScopeType)) return false;
     const task = this.db.getTask(taskId);
     if (!task) return false;
     if (targetScopeType === "global") return targetScopeId == null;
@@ -727,6 +734,7 @@ export class MemoryService {
     for (const item of scoped) {
       const distance = scopes.find((scope) => scope.scopeType === item.scopeType && (scope.scopeId ?? "") === (item.scopeId ?? ""))?.distance ?? 10;
       const memory = item.memory;
+      if (!this.visibleInChain(memory, scopes, request)) continue;
       if (memory.status === "active" && ((memory.validFrom !== undefined && memory.validFrom > now)
         || (memory.validUntil !== undefined && memory.validUntil <= now))) continue;
       const reasons: string[] = [];
@@ -788,7 +796,7 @@ export class MemoryService {
     const scopes = this.resolveScopeChain(request);
     const visible = this.repository.listByScopes({ scopes,
       statuses: request.statuses?.length ? request.statuses : ["active"], kinds: request.kinds, limit: 1600 });
-    const allowedHashes = new Map(visible.map(({ memory }) => [memory.id, memory.contentHash]));
+    const allowedHashes = new Map(visible.filter(({ memory }) => this.visibleInChain(memory, scopes, request)).map(({ memory }) => [memory.id, memory.contentHash]));
     try {
       const semantic = await this.semantic.search(query, [...allowedHashes.keys()], Math.max(requestedLimit * 3, 40));
       if (!this.db.connection.open || this.recallScopeStamp(request) !== initialScopeStamp) return [];
@@ -806,7 +814,7 @@ export class MemoryService {
           || (request.kinds?.length && !request.kinds.includes(memory.kind))
           || (memory.status === "active" && ((memory.validFrom !== undefined && memory.validFrom > now)
             || (memory.validUntil !== undefined && memory.validUntil <= now)))
-          || !memory.scopes.some(s => currentScopes.some(c => c.scopeType === s.scopeType && (c.scopeId ?? "") === (s.scopeId ?? "")))) return;
+          || !this.visibleInChain(memory, currentScopes, request)) return;
         fused.set(hit.memoryId, { ...fused.get(hit.memoryId), semanticRank: index + 1, memory });
       });
       const RRF_K = 60;
@@ -865,7 +873,7 @@ export class MemoryService {
         WHERE r.user_id=? AND r.bot_id=? AND r.conversation_id=? AND r.user_message_id=? AND r.assistant_message_id=?
           AND u.conversation_id=r.conversation_id AND a.conversation_id=r.conversation_id
           AND u.bot_id=r.bot_id AND a.bot_id=r.bot_id AND u.request_id=r.request_id AND a.request_id=r.request_id`)
-        .get(botSource.user_id, botSource.bot_id, input.taskId, turn.userMessageId ?? null, turn.assistantMessageId ?? null) as { text: string } | undefined;
+        .get(botSource.user_id, String(turn.metadata.botId ?? botSource.bot_id), input.taskId, turn.userMessageId ?? null, turn.assistantMessageId ?? null) as { text: string } | undefined;
       return row && botMemoryTextEligible(row.text) ? { ...turn, userText: row.text, assistantText: "" } : undefined;
     }).filter((turn): turn is MemoryTurnDto => Boolean(turn)) : input.sourceTurns;
     const userText = botSource ? rawTurns?.at(-1)?.userText ?? "" : input.userText.trim();
@@ -929,7 +937,7 @@ export class MemoryService {
     };
     const response = await input.modelRuntime.completeSimple(
       input.model,
-      { systemPrompt: EXTRACTION_SYSTEM_PROMPT + (botSource ? "\n当前来源是用户与私人 Bot 的直接对话。只提取有用户原话支持的稳定身份、偏好、长期事实、决定或约束。一次性请求、当前查询、临时日期/地点、健康/财务/身份等敏感细节、权限授予不得成为长期记忆。不要将问题当成事实。本模式的 scopeType 使用 bot；所有候选由宿主绑定到该 Bot 私有范围，不写全局或其他 Bot。每条额外输出 retention=stable、sensitivity=none，仅在确实长期且非敏感时使用；否则不要输出候选。userEvidence 仅引用支持该事实的最短原话，不附带其他信息。" : ""), messages: [{ role: "user", content: JSON.stringify(payload), timestamp: Date.now() }] },
+      { systemPrompt: EXTRACTION_SYSTEM_PROMPT + (botSource ? "\n当前来源是用户与 Bot 或团队的直接对话。只提取有用户原话支持的身份、偏好、事实、决定或约束。默认保存到当前Bot或团队专属范围，不读写成员私有记忆。用户明确要求所有Bot共享时scopeType=global；明确仅本次对话时scopeType=conversation、retention=temporary；否则稳定信息retention=stable。一次性查询与任务本身、敏感细节和权限授予不得成为记忆。scope最终由宿主根据原话决定。sensitivity=none仅用于非敏感内容。userEvidence仅引用支持事实的最短原话。不重复输出已保存的相同事实。" : ""), messages: [{ role: "user", content: JSON.stringify(payload), timestamp: Date.now() }] },
       // Reasoning shares the response ceiling on Responses-compatible providers.
       // Leave room for both low-effort reasoning and the complete candidate JSON.
       { maxTokens: Math.min(input.model.maxTokens || 8192, input.model.reasoning ? 8192 : 4096), reasoning: "low", cacheRetention: "none" },
@@ -945,17 +953,24 @@ export class MemoryService {
     for (const candidate of extracted) {
       if (!input.isEnabled()) break;
       assertExtractionScope();
+      const supportingTurns = sourceTurns.filter(turn => candidate.userEvidence && turn.userText.includes(candidate.userEvidence));
+      const scopeWording = supportingTurns.map(turn => turn.userText).join("\n");
+      const temporary = Boolean(botSource) && /(?:仅|只)(?:限)?(?:在|对|用于)?(?:本次|这次|当前)(?:对话|会话)|(?:this conversation|this chat) only|only (?:for |in )?(?:this conversation|this chat)/i.test(scopeWording);
+      const publicShared = Boolean(botSource) && !temporary
+        && /(?:所有|全部|每个).{0,12}(?:bot|助理)|(?:公共|共享)记忆|(?:all|every)\s+(?:bots?|assistants?)|public\s+memor/i.test(scopeWording)
+        && !/(?:不要|别|不必|不能|勿).{0,8}(?:共享|公开|所有|全部)|(?:do not|don['’]?t|never).{0,12}(?:share|public|all bots)/i.test(scopeWording);
       // Private Bot learning never escalates uncertain facts to a new review workflow.
       // Ignore unsupported/short-lived material; direct user quotes remain mandatory.
       if (botSource && (!candidate.userEvidence || candidate.userEvidence.trim().length < 2
         || !sourceTurns.some(turn => turn.userText.includes(candidate.userEvidence!))
-        || candidate.retention !== "stable" || candidate.sensitivity !== "none" || !botMemoryTextEligible(`${candidate.title} ${candidate.content} ${candidate.userEvidence ?? ""} ${candidate.replaces ?? ""}`)
+        || (candidate.retention !== "stable" && !(temporary && candidate.retention === "temporary")) || candidate.sensitivity !== "none" || !botMemoryTextEligible(`${candidate.title} ${candidate.content} ${candidate.userEvidence ?? ""} ${candidate.replaces ?? ""}`)
         || candidate.executionEvidence || ["progress", "open_question", "risk", "procedure"].includes(candidate.kind)
         // Foreground forget has an exact tool receipt. Never run the same deletion
         // again through fuzzy reconciliation after that reply. Other scopes retain their existing path.
         || candidate.operationHint === "forget"
         || (!candidate.explicit && candidate.confidence < 0.85))) continue;
-      const scope = this.normalizeCandidateScope(candidate.scopeType, { projectId, workspaceId, taskId: input.taskId });
+      const scope = publicShared ? { scopeType: "global" as const, scopeId: undefined }
+        : this.normalizeCandidateScope(botSource ? temporary ? "conversation" : "bot" : candidate.scopeType, { projectId, workspaceId, taskId: input.taskId });
       if (!scope) continue;
       const dto: MemoryCandidateDto = {
         id: `mcand_${randomUUID()}`,
@@ -971,7 +986,7 @@ export class MemoryService {
         operationHint: candidate.operationHint,
         replaces: candidate.replaces,
         status: "pending",
-        rawJson: JSON.stringify({ ...candidate, sourceTurnIds: sourceTurns.map((turn) => turn.id) }),
+        rawJson: JSON.stringify({ ...candidate, publicShared, sourceTurnIds: sourceTurns.map((turn) => turn.id) }),
         createdAt: Date.now(),
       };
       // A single bad candidate (e.g. scope deleted between capture and extraction) must not
@@ -1071,12 +1086,19 @@ export class MemoryService {
         }
       }
     }
+    const botSource = botMemorySource(this.db, candidate.taskId);
+    let publicShared = false;
+    try { publicShared = Boolean(botSource) && JSON.parse(candidate.rawJson ?? "{}").publicShared === true; } catch { /* legacy candidate */ }
+    const inCandidateScope = (scope: { scopeType: MemoryScopeType; scopeId?: string }) => scope.scopeType === candidate.scopeType && scope.scopeId === candidate.scopeId;
     const deferSharedMutation = (record: MemoryRecordDto): boolean => {
-      if (force || this.canMutateFromTask(candidate.taskId, record)) return false;
+      if (force || (botSource && record.scopes.some(inCandidateScope)
+        && (candidate.scopeType !== "global" || publicShared && record.metadata.publicShared === true))
+        || this.canMutateFromTask(candidate.taskId, record)) return false;
       this.repository.resolveCandidate(candidate.id, "needs_review");
       return true;
     };
-    const matches = this.repository.listScopeRecords(candidate.scopeType, candidate.scopeId);
+    const matches = this.repository.listScopeRecords(candidate.scopeType, candidate.scopeId)
+      .filter(record => !botSource || candidate.scopeType !== "global" || publicShared && record.metadata.publicShared === true);
     const targetText = candidate.replaces || candidate.title;
     const best = matches
       .map((m) => ({ m, score: Math.max(tokenSimilarity(targetText, m.title), tokenSimilarity(targetText, m.content), tokenSimilarity(candidate.title, m.title)) }))
@@ -1119,6 +1141,7 @@ export class MemoryService {
       sourceId: botMemorySource(this.db, candidate.taskId) ? candidate.taskId : undefined,
       scopeType: candidate.scopeType,
       scopeId: candidate.scopeId,
+      metadata: publicShared ? { publicShared: true } : undefined,
       evidence: [
         { evidenceKind: botMemorySource(this.db, candidate.taskId) ? "conversation" : "task", refId: candidate.taskId },
         ...sourceTurns.map((turn) => ({ evidenceKind: "conversation" as const, refId: turn.id, refTitle: "L0 conversation turn", excerpt: this.l0EvidenceExcerpt(turn) })),
@@ -1131,6 +1154,15 @@ export class MemoryService {
       if (candidate.kind === "procedure" && tool) createReq.evidence!.push({ evidenceKind: "agent_run", refId: tool.toolCallId,
         refTitle: `成功工具检查：${tool.name}`, excerpt: `${tool.name}\n${tool.arguments}\n${tool.result}`.slice(0, 2400) });
     } catch { /* User-approved candidates may have legacy provenance. */ }
+    if (botSource && best && best.m.scopes.some(scope => !inCandidateScope(scope))
+      && ((candidate.operationHint === "update" && best.score >= 0.52)
+        || (candidate.operationHint === "supersede" && best.score >= 0.45))) {
+      if (deferSharedMutation(best.m)) return { status: "needs_review" };
+      this.detachScope(best.m.id, candidate.scopeType, candidate.scopeId);
+      const created = this.create(createReq);
+      this.repository.resolveCandidate(candidate.id, "committed", created.id);
+      return { status: "committed", memoryId: created.id };
+    }
     if (candidate.operationHint === "resolve" && best && best.score >= 0.5) {
       if (deferSharedMutation(best.m)) return { status: "needs_review" };
       const resolved = this.resolve(best.m.id, candidate.explicit ? "user" : "agent");
@@ -1192,13 +1224,20 @@ export class MemoryService {
 
   private canMutateFromTask(taskId: string, memory: MemoryRecordDto): boolean {
     const work = this.workMemoryScope(taskId);
-    const botId = work ? undefined : this.channelBotId(taskId);
-    if (!work && !botId) return true;
+    const conversation = botMemorySource(this.db, taskId);
+    const botId = work || conversation?.team_id ? undefined : this.channelBotId(taskId);
+    if (!work && !botId && !conversation) return true;
     // A retained local scope does not grant permission to rewrite the same atom
     // after it has been promoted to shared/project/global memory.
     return memory.scopes.length > 0 && memory.scopes.every(scope =>
       (scope.scopeType === "task" && scope.scopeId === taskId)
-      || (!work && scope.scopeType === "bot" && scope.scopeId === botId));
+      || (work && scope.scopeType === "work" && scope.scopeId === work.work_id)
+      || (work && memory.scopes.length === 1 && memory.sourceType === "agent" && Boolean(memory.sourceTaskId)
+        && this.workMemoryScope(memory.sourceTaskId!)?.work_id === work.work_id
+        && scope.scopeType === "project" && Boolean(work.project_id) && scope.scopeId === work.project_id)
+      || (!work && scope.scopeType === "bot" && scope.scopeId === botId)
+      || (conversation && scope.scopeType === "conversation" && scope.scopeId === taskId)
+      || (conversation?.team_id && scope.scopeType === "team" && scope.scopeId === conversation.team_id));
   }
 
   private assertTaskMemoryWritable(taskId: string, id: string): void {
@@ -1207,7 +1246,7 @@ export class MemoryService {
       throw new Error("记忆不存在或不属于当前任务可见作用域");
     }
     if (!this.canMutateFromTask(taskId, memory)) {
-      throw new Error("当前 Bot / Work 执行者不能改写共享事实或其他身份的记忆，需要显式审核");
+      throw new Error("当前 Bot / Work 执行者不能改写共享事实或其他身份的记忆，请修改原属范围或仅移除当前绑定");
     }
   }
 
@@ -1217,10 +1256,13 @@ export class MemoryService {
     return row?.bot_id ?? botMemorySource(this.db, taskId)?.bot_id;
   }
 
-  private workMemoryScope(taskId: string): { bot_id: string; project_id: string | null } | undefined {
-    return this.db.connection.prepare(`SELECT b.bot_id,w.project_id FROM work_execution_bindings b
-      JOIN works w ON w.work_id=b.work_id WHERE b.task_id=? ORDER BY b.admitted_at DESC, b.rowid DESC LIMIT 1`)
-      .get(taskId) as { bot_id: string; project_id: string | null } | undefined;
+  private workMemoryScope(taskId: string) { return resolveWorkMemoryScope(this.db, taskId); }
+
+  private visibleInChain(memory: MemoryRecordDto, chain: Array<{ scopeType: MemoryScopeType; scopeId?: string }>, request: MemorySearchRequest): boolean {
+    const assistantContext = Boolean(request.botId || request.teamId || request.conversationId || request.workId
+      || (request.taskId && (this.workMemoryScope(request.taskId) || this.channelBotId(request.taskId))));
+    return memory.scopes.some(scope => chain.some(c => c.scopeType === scope.scopeType && (c.scopeId ?? "") === (scope.scopeId ?? ""))
+      && (scope.scopeType !== "global" || !assistantContext || memory.metadata.publicShared === true));
   }
 
   /** Stable private preferences are automatic only in personal Bot contexts.
@@ -1235,36 +1277,8 @@ export class MemoryService {
     return !this.db.connection.prepare("SELECT 1 FROM bot_conversations WHERE conversation_id=? AND team_id IS NOT NULL").get(request.taskId);
   }
 
-  resolveScopeChain(request: MemorySearchRequest): Array<{ scopeType: MemoryScopeType; scopeId?: string; distance: number }> {
-    const task = request.taskId ? this.db.getTask(request.taskId) : undefined;
-    const work = request.taskId ? this.workMemoryScope(request.taskId) : undefined;
-    const taskId = request.taskId ?? task?.id;
-    const projectId = work ? work.project_id ?? undefined : request.projectId ?? task?.projectId ?? undefined;
-    const workspaceId = work ? undefined : request.workspaceId ?? task?.spaceId ?? undefined;
-    const out: Array<{ scopeType: MemoryScopeType; scopeId?: string; distance: number }> = [];
-    const botId = work?.bot_id ?? (taskId ? this.channelBotId(taskId) : undefined) ?? request.botId;
-    if (botId) out.push({ scopeType: "bot", scopeId: botId, distance: 0 });
-    if (taskId) out.push({ scopeType: "task", scopeId: taskId, distance: 0 });
-    if (projectId) out.push({ scopeType: "project", scopeId: projectId, distance: 1 });
-    if (workspaceId) {
-      out.push({ scopeType: "workspace", scopeId: workspaceId, distance: 2 });
-      if (request.includeInherited !== false) {
-        const ancestors = this.db.getSpaceAncestors(workspaceId);
-        ancestors.forEach((space, index) => {
-          if (!space.effectiveArchived) out.push({ scopeType: "workspace", scopeId: space.id, distance: 3 + index });
-        });
-      }
-    }
-    if (!work && !botId) out.push({ scopeType: "global", distance: 10 });
-    const allowed = request.scopeTypes?.length ? new Set(request.scopeTypes) : null;
-    const seen = new Set<string>();
-    return out.filter((scope) => {
-      if (allowed && !allowed.has(scope.scopeType)) return false;
-      const key = `${scope.scopeType}:${scope.scopeId ?? ""}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
+  resolveScopeChain(request: MemorySearchRequest) {
+    return resolveAssistantScopeChain(this.db, request, taskId => this.channelBotId(taskId));
   }
 
   bestMatchedScope(memory: MemoryRecordDto, chain: Array<{ scopeType: MemoryScopeType; scopeId?: string; distance: number }>) {
@@ -1278,8 +1292,11 @@ export class MemoryService {
 
   private normalizeCandidateScope(scopeType: MemoryScopeType, ctx: { projectId?: string; workspaceId?: string; taskId: string }): { scopeType: MemoryScopeType; scopeId?: string } | null {
     const conversation = botMemorySource(this.db, ctx.taskId);
-    if (conversation) return { scopeType: "bot", scopeId: conversation.bot_id };
-    if (this.workMemoryScope(ctx.taskId)) return { scopeType: "task", scopeId: ctx.taskId };
+    if (conversation) return scopeType === "conversation" ? { scopeType: "conversation", scopeId: ctx.taskId }
+      : { scopeType: conversation.team_id ? "team" : "bot", scopeId: conversation.team_id ?? conversation.bot_id };
+    const work = this.workMemoryScope(ctx.taskId);
+    if (work) return scopeType === "project" && work.project_id ? { scopeType: "project", scopeId: work.project_id }
+      : { scopeType: "work", scopeId: work.work_id };
     if (this.channelBotId(ctx.taskId)) return { scopeType: "task", scopeId: ctx.taskId };
     if (scopeType === "global") return { scopeType: "global" };
     if (scopeType === "project") {
@@ -1309,6 +1326,9 @@ export class MemoryService {
     }
     if (!scopeId?.trim()) throw new Error(`${scopeType} 记忆必须携带 scopeId`);
     if (scopeType === "bot" && !this.db.connection.prepare("SELECT 1 FROM bots WHERE bot_id=?").get(scopeId)) throw new Error("Bot 不存在");
+    if (scopeType === "conversation" && !botMemorySource(this.db, scopeId)) throw new Error("对话不存在");
+    if (scopeType === "work" && !this.db.connection.prepare("SELECT 1 FROM works WHERE work_id=? AND user_id=?").get(scopeId, LOCAL_USER_ID)) throw new Error("Work 不存在");
+    if (scopeType === "team" && !this.db.connection.prepare("SELECT 1 FROM work_team_templates WHERE template_id=? AND user_id=?").get(scopeId, LOCAL_USER_ID)) throw new Error("团队不存在");
     if (scopeType === "workspace" && !this.db.getSpace(scopeId)) throw new Error(`工作空间不存在：${scopeId}`);
     if (scopeType === "task" && !this.db.getTask(scopeId)) throw new Error(`任务不存在：${scopeId}`);
     if (scopeType === "project") {
