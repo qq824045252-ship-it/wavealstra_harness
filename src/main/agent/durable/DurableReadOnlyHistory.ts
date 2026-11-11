@@ -30,3 +30,15 @@ export async function readDurableUserQuestions(input: {
     return await runtime.loadUserQuestions();
   } finally { await runtime.close(); }
 }
+
+/** Read-only snapshot of the first N tokens of the conversation (AI naming). */
+export async function readDurableConversationHead(input: {
+  directory: string; cwd: string; models: ModelRuntime; maxTokens?: number;
+}): Promise<string> {
+  if (!existsSync(join(input.directory, "main.jsonl"))) return "";
+  const runtime = await DurableBotRuntime.open({ directory: input.directory, cwd: input.cwd,
+    models: input.models, readOnly: true, toolMode: "native", instructions: () => "", onSnapshot: () => {} });
+  try {
+    return await runtime.loadHistoryHead(input.maxTokens ?? 1024);
+  } finally { await runtime.close(); }
+}

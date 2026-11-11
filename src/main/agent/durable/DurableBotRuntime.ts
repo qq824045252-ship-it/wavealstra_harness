@@ -31,6 +31,7 @@ import { createAgentSettingsManager, getAgentBashShellPath } from "../../agent-s
 import { getMyBuddyDir } from "../../paths";
 import { createPlatformShellTools } from "../../platform/shell-tools";
 import { DurableHistoryProjection, assistantRow, nestedToolRow, durableContentText as contentText, type NestedCallDetail, type DurableInputMetadata } from "./DurableHistoryProjection";
+import { estimateTextTokens } from "../../../shared/token-format";
 import { identifyModelInvocation, requestTraceBoundary, setRequestTraceBoundary, withModelInvocationSettings } from "../ModelInvocationAdmission";
 import type { CacheTraceBoundary, CacheTraceOperation } from "../CacheRequestTracer";
 import { DurableSubagentIdentity, resolveDurableExecutionCwd } from "./DurableSubagents";
@@ -549,6 +550,35 @@ export class DurableBotRuntime {
       scanned += page.items.length;
     } while (cursor && scanned < 20_000);
     return questions;
+  }
+
+  /**
+   * 会话开头的前 N token（用户/助手文本），供 AI 命名等一次性任务读取。
+   * 只读扫描 committed entries，按最老 entry 开始累计；工具/上下文导入不参与。
+   */
+  async loadHistoryHead(maxTokens = 1024): Promise<string> {
+    await this.projection;
+    const parts: string[] = [];
+    let estimated = 0;
+    let cursor: Cursor | undefined;
+    let scanned = 0;
+    do {
+      const page = await this.conversation.entries({ order: "ascending" }, 200, cursor, ctx);
+      for (const entry of page.items) {
+        if (entry.kind !== "pi.user" && entry.kind !== "mybuddy.user" && entry.kind !== "pi.assistant") continue;
+        for (const message of entry.model ?? []) {
+          if (message.role !== "user" && message.role !== "assistant") continue;
+          const text = contentText(message.content).trim();
+          if (!text) continue;
+          parts.push(`${message.role === "user" ? "用户" : "助手"}：${text}`);
+          estimated += estimateTextTokens(text);
+          if (estimated >= maxTokens) return parts.join("\n\n");
+        }
+      }
+      cursor = page.next;
+      scanned += page.items.length;
+    } while (cursor && scanned < 4000);
+    return parts.join("\n\n");
   }
 
   /** The service releases and reopens after this atomic branch switch. */

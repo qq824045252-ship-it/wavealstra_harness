@@ -107,6 +107,7 @@ import type {
   SpaceDto,
   TaskDto,
   TaskHistoryDto,
+  TaskTitleSuggestionDto,
   TaskUserQuestionsDto,
   WorkspaceFileNodeDto,
   WorkspaceFilePreviewDto,
@@ -346,6 +347,7 @@ export interface PreloadApi {
     getContextUsage: (taskId: string) => Promise<ContextUsageDto | null>;
     loadTaskHistory: (taskId: string, beforeEntryId?: number) => Promise<TaskHistoryDto>;
     listTaskUserQuestions: (taskId: string) => Promise<TaskUserQuestionsDto>;
+    generateTaskTitle: (taskId: string) => Promise<TaskTitleSuggestionDto>;
     listLoginProviders: () => Promise<import("../shared/agent-ipc").LoginProviderDto[]>;
     setProviderEnabled: (providerId: string, enabled: boolean) => Promise<ModelInfoDto[]>;
     listCredentials: () => Promise<import("../shared/agent-ipc").CredentialInfoDto[]>;

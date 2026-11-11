@@ -23,7 +23,7 @@ import { DurableTaskProjection } from "./DurableTaskProjection";
 import { ToolGate } from "./ToolGate";
 import { DEFAULT_DURABLE_RESUME_CONCURRENCY, ResumeAdmission, type ResumeAdmissionReport } from "./ResumeAdmission";
 import { WorkspaceMigrationBusyError } from "./DurableWorkspaceMigration";
-import { readDurableReadOnlyHistory, readDurableUserQuestions } from "./DurableReadOnlyHistory";
+import { readDurableConversationHead, readDurableReadOnlyHistory, readDurableUserQuestions } from "./DurableReadOnlyHistory";
 import { modelKey, resolveBotModel, type BotModelResolution } from "./BotModelCatalog";
 import type { DurableDomainTools } from "./DurableDomainTools";
 import type { DurableEvidenceOptions } from "./DurableEvidenceProjection";
@@ -880,6 +880,21 @@ export class DurableBotService {
     } catch (error) {
       console.warn("[Durable] Cannot read the complete user-question index", taskId, error);
       return [];
+    }
+  }
+
+  /** 会话开头的前 N token（AI 命名用）；只读，不改变实时窗口。 */
+  async historyHead(taskId: string, maxTokens = 1024): Promise<string> {
+    const binding = this.binding(taskId);
+    if (!binding) return "";
+    try {
+      const opening = this.opening.get(taskId);
+      const live = this.opened.get(taskId)?.runtime ?? (opening ? (await opening).runtime : undefined);
+      if (live) return await live.loadHistoryHead(maxTokens);
+      return await readDurableConversationHead({ directory: binding.directory, cwd: binding.cwd, models: this.options.models, maxTokens });
+    } catch (error) {
+      console.warn("[Durable] Cannot read the conversation head", taskId, error);
+      return "";
     }
   }
 

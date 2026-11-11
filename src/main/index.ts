@@ -1435,6 +1435,9 @@ function registerIpc(): void {
   ipcMain.handle(AgentIpc.listTaskUserQuestions, async (_e, taskId: string) =>
     ({ questions: await agentService.listTaskUserQuestions(taskId) }),
   );
+  ipcMain.handle(AgentIpc.generateTaskTitle, async (_e, taskId: string) =>
+    agentService.generateTaskTitle(taskId),
+  );
   ipcMain.handle(AgentIpc.listLoginProviders, () => agentService.listLoginProviders());
   ipcMain.handle(AgentIpc.setProviderEnabled, (_e, providerId: string, enabled: boolean) =>
     agentService.setProviderEnabled(providerId, enabled),

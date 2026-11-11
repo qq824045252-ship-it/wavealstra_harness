@@ -58,7 +58,13 @@ try {
   assert.equal(questions.length, 240);
   assert.deepEqual(questions.map(question => question.text), Array.from({ length: 240 }, (_, n) => `question ${n}`));
   assert.deepEqual(questions.map(question => question.id), messages.filter(message => message.role === "user").map(message => message.id));
+  // AI 命名读取的对话开头：从最老 entry 开始、按约 1024 token 预算截断。
+  const head = await runtime.loadHistoryHead(1024);
+  assert(head.startsWith("用户：question 0"));
+  assert(head.includes("助手：answer 0"));
+  assert(!head.includes("question 239"), "head keeps only the beginning, not the whole transcript");
   console.log(`PASS ${questions.length} user questions across ${blocks} history blocks (live window holds ${snapshot.messages.filter(message => message.role === "user").length})`);
+  console.log(`PASS AI naming head is ${head.length} chars from the oldest entries`);
   assert.equal(runtime.snapshot, snapshot);
   console.log(`PASS ${blocks} history blocks, complete ordered transcript, tool results and live snapshot isolation`);
   const target = join(directory, "moved"); await mkdir(target);

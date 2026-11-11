@@ -34,3 +34,12 @@ export function formatRateDash(rate: number | null | undefined): string {
   if (pct > 0 && pct < 1) return `${pct.toFixed(1)}%`;
   return `${Math.round(pct)}%`;
 }
+
+/**
+ * 粗略 token 预算（不是精确分词）：CJK 按 1 token/字，其余按 4 字符/token。
+ * 只用于「读取前 N token」的输入截断，不参与计费或上下文窗口计算。
+ */
+export function estimateTextTokens(text: string): number {
+  const cjk = (text.match(/[\u3400-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]/g) ?? []).length;
+  return cjk + Math.ceil((text.length - cjk) / 4);
+}

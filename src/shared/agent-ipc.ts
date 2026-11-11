@@ -206,6 +206,8 @@ export const AgentIpc = {
   loadTaskHistory: "agent:loadTaskHistory",
   /** 任务的全部用户提问（跨实时窗口，历史提问弹窗用） */
   listTaskUserQuestions: "agent:listTaskUserQuestions",
+  /** AI 命名：读对话开头约 1024 token 生成任务名建议 */
+  generateTaskTitle: "agent:generateTaskTitle",
   /** pi /login 等价：列出可登录 provider、凭证、登录/登出 */
   listLoginProviders: "agent:listLoginProviders",
   setProviderEnabled: "agent:setProviderEnabled",
@@ -2167,6 +2169,11 @@ export interface TaskUserQuestionDto {
 
 export interface TaskUserQuestionsDto {
   questions: TaskUserQuestionDto[];
+}
+
+/** AI 命名建议；调用方负责让用户确认后再写回任务标题。 */
+export interface TaskTitleSuggestionDto {
+  title: string;
 }
 
 /* ------------------------------ MCP 配置 ------------------------------ */
