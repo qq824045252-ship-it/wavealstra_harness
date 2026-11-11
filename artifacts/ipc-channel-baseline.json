@@ -284,6 +284,7 @@
     "external-agent:setEnabled",
     "external-agent:test",
     "gadget:convertFromArtifact",
+    "gadget:copyScope",
     "gadget:create",
     "gadget:delete",
     "gadget:exportArtifact",
