@@ -163,4 +163,23 @@ control admission; create/observed-source compare-and-swap; host-only evidence c
 and small public delegation methods. These are not declared permanently finished:
 future splits should follow concrete responsibility growth, not an arbitrary line target.
 No new persistent state, UI, model invocation, approval path or production restart.
-Final validation is recorded below after running the current code.
+Validation on the rebase over `0dc1f9c`:
+
+- Typecheck, including scripts: zero errors.
+- Execution review: 19 regressions pass, including the two new extraction checks.
+- Architecture graph: 5/5 pass, unchanged baseline.
+- Independent read-only review mechanically compared admission/reconciliation bodies
+  and checked receipt ordering; no product behaviour change found.
+- Non-fault gate: 413 checks pass, zero failures/known failures/regressions. The 20
+  previously deferred crash/recovery checks remain deferred per the user's order;
+  this is not described as the entire default suite.
+- Final rebased gate was run again: 413/413 pass in 2.3 minutes.
+- Real model (`opendesign/deepseek-v4.1-flash-eco`) in isolated Electron dev/CDP:
+  six distinct native Work tasks all closed `succeeded`: inventory calculation,
+  meeting agenda, non-live walking plan, customer-service rewrite, unit conversion,
+  and departure checklist. This also exercised memory learning across a new
+  conversation, correction and forgetting. Actual deliverables and native request
+  evidence were checked, not mocked model responses.
+- Screenshot inspected: normal Bot conversation and input remain visible. This is
+  headless Electron UI/runtime evidence, not physical desktop input or an exhaustive
+  UI redesign acceptance. No production profile was touched.
