@@ -34,10 +34,16 @@ export class WorkCompletionCoordinator {
       this.options.works.transaction(() => this.options.works.automaticCompletion.recoverUnreviewed());
       this.recoveredAt = Date.now();
     }
+    // Older hosts left reviews running after recovery superseded their binding.
+    // Reconcile only consumed reviews, never a paused or temporarily blocked one.
+    this.options.db.prepare(`UPDATE work_completion_turns SET state='superseded',retry_at=0,error=NULL
+      WHERE state IN ('queued','running') AND EXISTS (
+        SELECT 1 FROM work_automatic_completion completion
+        WHERE completion.binding_id=work_completion_turns.binding_id AND completion.consumed_at IS NOT NULL)`).run();
     for (const bindingId of this.options.works.automaticCompletion.pending()) {
       if (this.active.size >= 2) break;
       if (this.active.has(bindingId)) continue;
-      const candidate = this.options.works.transaction(() => this.options.works.automaticCompletion.outcome(bindingId));
+      const candidate = this.options.works.transaction(() => this.current(bindingId));
       if (!candidate) continue;
       const old = this.row(bindingId);
       if (old && (["delivered", "continued", "asking"].includes(old.state) || old.retry_at > Date.now())) continue;
@@ -62,7 +68,18 @@ export class WorkCompletionCoordinator {
       observedAtMeaning: "host_received_execution_receipt_not_source_measurement_time", historicalRecovery: Boolean(tracked?.recovered),
       freshExecution: false };
   }
-  private current(bindingId: string) { return this.options.works.automaticCompletion.outcome(bindingId); }
+  private current(bindingId: string) {
+    const candidate = this.options.works.automaticCompletion.outcome(bindingId);
+    if (!candidate) {
+      const completion = this.options.db.prepare("SELECT consumed_at FROM work_automatic_completion WHERE binding_id=?")
+        .get(bindingId) as { consumed_at: number | null } | undefined;
+      const consumed = completion?.consumed_at != null;
+      this.options.db.prepare(`UPDATE work_completion_turns SET state=?,retry_at=0,error=NULL
+        WHERE binding_id=? AND (state='running' OR (? AND state='queued'))`)
+        .run(consumed ? "superseded" : "queued", bindingId, Number(consumed));
+    }
+    return candidate;
+  }
   private async process(bindingId: string): Promise<void> {
     const { works, db } = this.options;
     const candidate = works.transaction(() => this.current(bindingId));

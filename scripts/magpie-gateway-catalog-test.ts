@@ -3,6 +3,7 @@
  * Offline: the gateway is a stubbed globalThis.fetch, as in the Command Code
  * catalog regression; no socket, no real gateway, no model calls. */
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -84,6 +85,21 @@ async function createRuntime(dir: string, models: Record<string, unknown>): Prom
 }
 
 try {
+  const {liveModelFromCatalog} = createRequire(import.meta.url)(join(process.cwd(), "scripts/bot-live-model-config.cjs"));
+  const live = liveModelFromCatalog({data:liveRows}, "vendor/new-chat");
+  assert.equal(live.model.maxTokens,32768,"ordinary live tests use the selected gateway model limit, not 4096");
+  assert.equal(live.model.contextWindow,262144);
+  assert.equal(live.model.reasoning,true);
+  assert.equal(live.model.thinkingLevelMap.high,"high");
+  assert.equal(live.model.thinkingLevelMap.off,"none");
+  assert.equal(live.evidence.mode,"gateway-model-configuration");
+  const pressure=liveModelFromCatalog({data:liveRows}, "vendor/new-chat",true);
+  assert.equal(pressure.model.maxTokens,4096);
+  assert.equal(pressure.evidence.declaredMaxOutputTokens,32768);
+  assert.equal(pressure.evidence.mode,"explicit-output-pressure");
+  assert.throws(()=>liveModelFromCatalog({data:[]},"missing"),/missing/);
+  assert.throws(()=>liveModelFromCatalog({data:[{id:"unknown"}]},"unknown"),/refusing to invent/);
+  pass("live fixture follows declared model configuration; output pressure is explicit and separate");
   // The gateway address only has to be a URL the stub answers for.
   const gatewayV1 = "http://127.0.0.1:3425/v1";
   const gatewayRoot = "http://127.0.0.1:3425";

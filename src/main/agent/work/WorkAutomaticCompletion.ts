@@ -93,6 +93,14 @@ export class WorkAutomaticCompletion {
     if (bindings.some(item => item.botId === binding.botId && item.bindingId !== bindingId
       && item.intentRevision === work.intentRevision && item.inputSnapshotId === work.inputSnapshotId
       && item.admittedAt > binding.admittedAt && !item.invalidatedAt)) { this.consume(bindingId); return; }
+    // The receiver publishes a failed receipt before the dispatch lane has made
+    // its recovery decision. Do not race that decision with a final goal review:
+    // a review can otherwise close the Work before its continuation is planned.
+    // Original team bindings use their separate team recovery lane; only queue-
+    // managed executions (including team continuations) wait for this decision.
+    if (binding.status === "failed"
+      && this.db.prepare("SELECT 1 FROM work_dispatch_requests WHERE task_id=?").get(binding.taskId)
+      && !this.db.prepare("SELECT 1 FROM work_automatic_recovery WHERE source_binding_id=?").get(bindingId)) return;
     if (bindings.some(item => ["pending", "submitted", "running", "unknown"].includes(item.status))
       || this.works.repo.listAdmissions(work.workId).some(item => item.state === "admitted")
       || this.works.partialResults.plans(work.workId).some(item => ["pending", "dispatched"].includes(item.state))

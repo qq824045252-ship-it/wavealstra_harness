@@ -20,17 +20,29 @@ let authority = true;
 const works = new WorkService(db.connection, { bots, isAuthority: () => authority });
 const user: WorkActor = { kind: "user", userId: LOCAL_USER_ID, grants: DESKTOP_USER_GRANTS };
 const receipts = new Map<string, AgentSubmissionReceipt>();
-const states = new Map<string, "running" | "completed">();
+const states = new Map<string, "running" | "completed" | "failed">();
 const errors: unknown[] = [];
 const port: WorkExecutionPort = {
   prepare: async taskId => ({ taskId, durableStoreKey: taskId, conversationId: "1", workspaceBinding: root }),
   find: async binding => receipts.get(binding.bindingId),
   submit: async binding => {
     const receipt: AgentSubmissionReceipt = { taskId: binding.taskId, operationId: binding.operationId, submissionId: 1, status: "done" };
+    if (works.getWork(binding.workId)?.title === "team-owner-failure-reusable" && binding.botId === DEFAULT_BOT_ID) {
+      const result = works.submitDeliverable({kind:"worker",botId:binding.botId,bindingId:binding.bindingId}, {
+        operationId:`retained:${binding.bindingId}`,workId:binding.workId,bindingId:binding.bindingId,
+        summary:"已保存可复用成果，后续生成失败不撤销此成果",uncoveredScope:[],artifactRefs:[],evidence:[{kind:"tool_receipt",sourceRef:"fixture:retained-result"}]});
+      assert(result.ok,JSON.stringify(result));
+    }
     receipts.set(binding.bindingId, receipt); return receipt;
   },
-  inspect: async binding => states.get(binding.workId) === "running" ? { status: "running" }
-    : { status: "completed", summary: works.getWork(binding.workId)?.title === "empty-result" ? "" : "已交付请求的文字方案", artifactRefs: [], hasWriteConflicts: false },
+  inspect: async binding => {
+    if (states.get(binding.workId) === "running") return { status: "running" };
+    const title = works.getWork(binding.workId)?.title;
+    const failedOwner = title?.startsWith("team-owner-failure-") && binding.botId === DEFAULT_BOT_ID;
+    return { status: failedOwner || states.get(binding.workId) === "failed" ? "failed" : "completed",
+      summary: title === "empty-result" || title === "team-owner-failure-empty" && failedOwner ? "" : "已交付请求的文字方案",
+      artifactRefs: [], hasWriteConflicts: false };
+  },
   stop: async () => {},
 };
 const adapter = new WorkExecutionAdapter(works, port, LOCAL_USER_ID, () => authority, (_id, error) => errors.push(error));
@@ -46,6 +58,7 @@ let reviewPartial = false;
 let reviewContinue = false;
 let lateResultWork: string | undefined;
 let lateQuestionWork: string | undefined;
+let pauseReviewWork: string | undefined;
 const coordinator = new WorkCompletionCoordinator({ db: db.connection, works, isAuthority: () => authority, preferences: () => currentPreferences,
   review: async input => { assert(!("teamAssignment" in (input.context.originalRequest as object)),"review input must not contain executor report-format instructions"); const temporal = input.context.temporalContext as {reviewAt:string;observedAt:string|null;historicalRecovery:boolean;freshExecution:boolean};
     assert(Number.isFinite(Date.parse(temporal.reviewAt))); assert(temporal.observedAt && Number.isFinite(Date.parse(temporal.observedAt)));
@@ -54,6 +67,10 @@ const coordinator = new WorkCompletionCoordinator({ db: db.connection, works, is
     if (input.context.title === "legacy-unreviewed") assert.equal(temporal.observedAt,new Date(historicalReceiptAt).toISOString(),"historical receipt time is not replaced with review time");
     reviewed.push(input.eventId); reviewedPreferences.push(input.personalPreferences ?? "");
     if(changePreferencesDuringReview!==undefined){currentPreferences=changePreferencesDuringReview;changePreferencesDuringReview=undefined;}
+    if (pauseReviewWork) {
+      assert(works.pauseWork(user,{operationId:"pause-during-review",workId:pauseReviewWork}).ok);
+      pauseReviewWork=undefined;
+    }
     if (failReview) throw Error("model unavailable");
     if (lateQuestionWork) { works.repo.insertBlocker({blockerId:"late-question",workId:lateQuestionWork,kind:"operational",reason:"必须提供收件人",waitingForUserInput:true,status:"open",createdAt:Date.now()}); lateQuestionWork=undefined; }
     if ((input.context.pendingQuestions as Array<{blockerId:string}>|undefined)?.some(item=>item.blockerId === "late-question")) return {decision:"ask",outcome:"partial",reply:"必须提供收件人",missing:[]};
@@ -74,6 +91,44 @@ function create(name: string, watch = false, criteria?: string[]) {
   return result.work.workId;
 }
 try {
+  // Reproduce the live race: the native terminal receipt becomes visible before
+  // the dispatch loop has atomically chosen recovery vs final readback.
+  const recoveryRace = create("recovery-review-race"); await flush();
+  const failedBinding = works.repo.listBindings(recoveryRace)[0]!;
+  states.set(recoveryRace, "failed");
+  await adapter.flush();
+  coordinator.wake(); await new Promise(resolve => setImmediate(resolve));
+  assert(!reviewed.some(event => event.startsWith(`completion:${failedBinding.bindingId}:`)), "failed receipt must not race recovery with a premature model review");
+  assert.equal(works.getWork(recoveryRace)?.lifecycle, "active", "failure receipt cannot close before recovery dispatch");
+  await queue.flush();
+  states.set(recoveryRace, "completed");
+  for (let i=0;i<4;i++) await flush();
+  assert.equal(works.getWork(recoveryRace)?.closureConclusion, "succeeded", "recovered real output still receives the final goal review");
+  assert(!reviewed.some(event => event.startsWith(`completion:${failedBinding.bindingId}:`)), "superseded failure is never reviewed");
+  // A prior host may already have launched an obsolete review. Repair its state
+  // without another model call, and never turn it into a delivered result.
+  db.connection.prepare("INSERT INTO work_completion_turns(binding_id,context_json,state,attempts) VALUES (?,?,'running',1)")
+    .run(failedBinding.bindingId, "{}");
+  coordinator.wake();
+  assert.equal((db.connection.prepare("SELECT state FROM work_completion_turns WHERE binding_id=?").get(failedBinding.bindingId) as {state:string}).state, "superseded");
+
+  const pausedReview=create("paused-review"); await flush();
+  pauseReviewWork=pausedReview; states.set(pausedReview,"completed"); await flush();
+  const pausedBinding=works.repo.listBindings(pausedReview)[0]!;
+  assert.equal(works.getWork(pausedReview)?.lifecycle,"paused");
+  db.connection.prepare("UPDATE work_completion_turns SET state='running' WHERE binding_id=?").run(pausedBinding.bindingId);
+  coordinator.wake();
+  const pausedRow=()=>db.connection.prepare("SELECT state,retry_at,error FROM work_completion_turns WHERE binding_id=?").get(pausedBinding.bindingId) as {state:string;retry_at:number;error:string|null};
+  assert.equal(pausedRow().state,"queued","an orphan running review is queued while paused, not marked superseded");
+  const retryAt=Date.now()+60000;
+  db.connection.prepare("UPDATE work_completion_turns SET retry_at=?,error='existing retry reason' WHERE binding_id=?").run(retryAt,pausedBinding.bindingId);
+  coordinator.wake();
+  assert.deepEqual(pausedRow(),{state:"queued",retry_at:retryAt,error:"existing retry reason"},"paused queued review retains its retry schedule and evidence");
+  assert(works.resumeWork(user,{operationId:"resume-after-review",workId:pausedReview}).ok);
+  db.connection.prepare("UPDATE work_completion_turns SET retry_at=0 WHERE binding_id=?").run(pausedBinding.bindingId);
+  await flush();
+  assert.equal(works.getWork(pausedReview)?.closureConclusion,"succeeded","paused review can resume normally");
+
   currentPreferences="old-completion-marker";
   const memoryRace=create("memory-race");await flush();states.set(memoryRace,"completed");changePreferencesDuringReview="";await flush();
   assert.notEqual(works.getWork(memoryRace)?.lifecycle,"closed","preference deletion during review prevents stale closure delivery");
@@ -199,6 +254,29 @@ try {
   for(let i=0;i<5;i++) await flush();
   assert.equal(works.getWork(teamId)?.closureConclusion,"succeeded","team owner continuation returns to automatic review and closes");
   assert.equal(works.repo.listBindings(teamId).length,3,"only one missing-part execution; members are not rerun");
+
+  for (const variant of ["empty", "reusable"]) {
+    const teamFailure = works.teams.handle({...user,grants:{...DESKTOP_USER_GRANTS,allowRedelegation:true}}, {kind:"create",request:{
+      operationId:`team-owner-failure-${variant}`,title:`team-owner-failure-${variant}`,goalDescription:"交付团队成果并说明实际缺项",workspacePath:root,
+      ownerBotId:DEFAULT_BOT_ID,ownerResponsibility:"汇总真实成果",members:[{botId:"team-review-member",responsibility:"分析资料",delegatedScope:["workspace:read"]}],criteria:["有真实成果与明确缺项"]}});
+    assert(teamFailure.ok,JSON.stringify(teamFailure));
+    const id = teamFailure.work!.workId;
+    for (let i=0;i<10;i++) {
+      await flush();
+      const owner = works.teams.get(id)!.executions.find(item => item.role === "owner_summary")!;
+      if (owner.status === "recovering") {
+        assert.equal(works.getWork(id)?.lifecycle,"active","pending team recovery cannot be closed");
+        assert(!reviewed.some(event => works.repo.listBindings(id).filter(b=>b.botId===DEFAULT_BOT_ID).some(b=>event.startsWith(`completion:${b.bindingId}:`))),"team recovery must settle before review");
+      }
+    }
+    const ownerBindings = works.repo.listBindings(id).filter(item => item.botId === DEFAULT_BOT_ID);
+    assert.equal(ownerBindings.length,variant === "empty" ? 2 : 1);
+    const finalOwner = ownerBindings.at(-1)!;
+    assert(!db.connection.prepare("SELECT 1 FROM work_dispatch_requests WHERE task_id=?").get(finalOwner.taskId));
+    assert(!db.connection.prepare("SELECT 1 FROM work_automatic_recovery WHERE source_binding_id=?").get(finalOwner.bindingId));
+    assert(reviewed.some(event => event.startsWith(`completion:${finalOwner.bindingId}:`)),"settled team failure still gets a final review");
+    assert.equal(works.getWork(id)?.closureConclusion,"ended_unsuccessfully","team failure closes honestly without waiting for the unrelated queue recovery lane");
+  }
 
   const failed = create("review-fails"); await flush(); failReview = true; states.set(failed,"completed"); await flush();
   assert.equal(works.getWork(failed)?.lifecycle,"active");

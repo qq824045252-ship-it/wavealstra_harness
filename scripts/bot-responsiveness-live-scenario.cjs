@@ -108,8 +108,29 @@ exports.run = async ({send, until, evaluate, history, rpc, report, requests, raw
   report.workIds=work.answer?.workIds||[];
   try {
     await until(async()=>{const rows=await evaluate('window.api.botWork.listWorks(true)');report.works=rows;report.workObservedAt=Date.now();return report.workIds.length>0&&report.workIds.every(id=>rows.some(w=>w.workId===id&&w.lifecycle==='closed'));},'delegated Work completion');
-    if(report.works.some(w=>report.workIds.includes(w.workId)&&w.closureConclusion!=='succeeded'))allErrors.push('Work did not succeed');
+    if(report.modelConfiguration?.mode!=='explicit-output-pressure' && report.works.some(w=>report.workIds.includes(w.workId)&&w.closureConclusion!=='succeeded'))allErrors.push('Work did not succeed');
   }catch(e){allErrors.push('Work result: '+String(e));}
+  // Inspect only this isolated test profile. Review state is separate from the
+  // public answer: a compressed rewrite must not hide failed native executions.
+  try {
+    const db = require('better-sqlite3')(path.join(home,'.mybuddy','app.db'),{readonly:true,fileMustExist:true});
+    try {
+      report.workReviewAudit = report.workIds.map(workId=>({workId,
+        turns:db.prepare('SELECT t.binding_id,t.state,t.attempts,t.error FROM work_completion_turns t JOIN work_execution_bindings b ON b.binding_id=t.binding_id WHERE b.work_id=?').all(workId),
+        recovery:db.prepare('SELECT r.source_binding_id,r.mode FROM work_automatic_recovery r JOIN work_execution_bindings b ON b.binding_id=r.source_binding_id WHERE b.work_id=?').all(workId),
+        executions:db.prepare('SELECT binding_id,status,settlement_note FROM work_execution_bindings WHERE work_id=? ORDER BY admitted_at').all(workId)}));
+    } finally {db.close();}
+    for(const audit of report.workReviewAudit) {
+      if(audit.turns.some(t=>t.state==='running'))allErrors.push('closed Work retains running result review');
+      const superseded=new Set(audit.recovery.filter(r=>r.mode==='recover'||r.mode==='readback').map(r=>r.source_binding_id));
+      if(audit.turns.some(t=>superseded.has(t.binding_id)))allErrors.push('result review raced an automatic recovery decision');
+    }
+    if(report.modelConfiguration?.mode==='explicit-output-pressure') {
+      const executions=report.workReviewAudit.flatMap(row=>row.executions);
+      if(!executions.some(e=>e.status==='failed'&&/length|长度|empty reply/i.test(e.settlement_note||'')))allErrors.push('output-pressure run did not exercise truncation or empty-output recovery');
+      if(executions.length<2)allErrors.push('output-pressure failure did not receive an automatic continuation');
+    }
+  } catch(e){allErrors.push('Work review audit: '+String(e));}
   // Reload reconstructs persistent segments; compare exact DTOs as well as DOM prose.
   const before=(await history()).messages.filter(m=>m.role==='assistant').map(m=>({messageId:m.messageId,text:m.text,segments:m.segments}));
   await rpc('Page.reload');
@@ -141,5 +162,5 @@ exports.run = async ({send, until, evaluate, history, rpc, report, requests, raw
   report.totalModelCalls=requests.length;report.providerCalls=requests.map((r,i)=>({requestIndex:i,kind:r.tools?.some(t=>t.function?.name==='work_create')?'foreground':String(r.messages.find(m=>m.role==='system')?.content).includes('Memory Kernel')?'memory-extraction':r.tools?.length?'worker':'background-review',timing:rawUsageAudit.find(a=>a.requestIndex===i)}));report.responsivenessErrors=allErrors;checkpoint();
   assert.equal(report.requiredClassCount,6);
   assert.equal(allErrors.length,0,allErrors.join('\n'));
-  report.checks.push('Six natural real-model task classes, actual visible prose timings, host receipts, commentary/tool order, Work completion, persistent reload, and concurrent request cancellation');
+  report.checks.push('Six natural real-model task classes, actual visible prose timings, host receipts, commentary/tool order, audited Work closure, persistent reload, and concurrent request cancellation');
 };
