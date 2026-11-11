@@ -1,3 +1,4 @@
+import type { GoogleWorkspaceWriteApi } from "../shared/google-workspace-write";
 import type { GoogleWorkspaceApi } from "../shared/google-workspace";
 import type { BrowserOpenOptions, BrowserTabInfo, BrowserTabsState } from "../shared/browser-tabs";
 import type { BrowserConsoleEventDto, BrowserConsoleSnapshotDto, BrowserConsoleTarget } from "../shared/browser-console";
@@ -185,6 +186,7 @@ import type {
 import type { ConversationRuntimeApi } from "../shared/conversation-runtime";
 
 export interface PreloadApi {
+  googleWorkspaceWrite: GoogleWorkspaceWriteApi;
   googleWorkspace: GoogleWorkspaceApi;
   plugins: {
     paths: () => Promise<import("../shared/plugin-storage").PluginStoragePathsDto>;

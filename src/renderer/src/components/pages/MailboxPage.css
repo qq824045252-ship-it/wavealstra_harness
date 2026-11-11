@@ -20,3 +20,11 @@
 .workspace-event-description { white-space: pre-wrap; font-size: 13px; }
 .workspace-footer { margin-top: 28px; }
 @media (max-width: 850px) { .workspace-mail-grid { grid-template-columns: minmax(0, 1fr); } }
+.workspace-compose fieldset { border: 0; padding: 0; margin: 0 0 16px; display: grid; gap: 12px; }
+.workspace-compose label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.workspace-compose input, .workspace-compose textarea { border: 1px solid var(--border); border-radius: 8px; padding: 9px 12px; color: var(--fg); background: var(--bg-secondary); font: inherit; min-width: 0; }
+.workspace-compose textarea { min-height: 120px; resize: vertical; }
+.workspace-compose .workspace-checkbox { flex-direction: row; align-items: center; }
+
+.workspace-compose button:disabled, .workspace-compose fieldset:disabled { opacity: 0.6; }
+.workspace-compose button:disabled { cursor: not-allowed; }

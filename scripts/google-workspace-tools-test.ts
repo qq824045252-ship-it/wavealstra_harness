@@ -62,8 +62,8 @@ assert.equal(commands.length, count + 1, 'failure does not cause probes or retri
 assert(commands.every(args => args[0] === 'gmail' || args[0] === 'cal'));
 // Foreground registration works without selected/installed skills or MCP servers.
 const runtime = await openBotComposerRuntime({ profile: { expertId: '', revision: '', version: 1, systemPromptHash: '', allowedMcpIds: [], allowedSkillIds: [], allowedConnectorIds: [], capturedAt: 0 }, cwd: process.cwd(), models: {} as ModelRuntime, connectorSkillRoots: [], enabledMcpIds: [], readOnly: () => true });
-assert.deepEqual(runtime.tools.map(t => t.name), tools.map(t => t.name));
-assert.match(runtime.instructions, /不支持 gmail send/);
+assert.deepEqual(runtime.tools.map(t => t.name), [...tools.map(t => t.name), 'calendar_get', 'gmail_send', 'calendar_create', 'calendar_update']);
+assert.match(runtime.instructions, /仅.*写.*起草邮件/);
 assert.match(runtime.instructions, /不可信资料/);
 await runtime.close();
 console.log('PASS Google Workspace native tool registration, foreground without skills, read receipts, bounded inputs, cancellation, authentication failure and no implicit probes/writes');

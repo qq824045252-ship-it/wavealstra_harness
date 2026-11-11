@@ -1,3 +1,5 @@
+import { durableWorkspaceScope, workWorkspaceScope } from "./work/GoogleWorkspaceRequestScope";
+import { createGoogleWorkspaceWriteTools, GOOGLE_WORKSPACE_WRITE_INSTRUCTIONS } from "../connectors/GoogleWorkspaceWriteTools";
 import { connectorRuntimeContext } from "../connectors/ConnectorRuntimeContext";
 import { createGoogleWorkspaceTools, GOOGLE_WORKSPACE_INSTRUCTIONS } from "../connectors/GoogleWorkspaceTools";
 import { WorkWatchSupervision } from "./work/WorkWatchSupervision";
@@ -1718,13 +1720,13 @@ export class AgentService {
       messageSettings: (messageId, botId) => this.botSettings.messageSettings(messageId, botId),
       captureSettings: (messageId, botId, frozen) => this.botSettings.captureMessage(messageId, botId, frozen),
       botWorkspace: (botId, prepareDefault) => this.botSettings.resolveWorkspace(botId, prepareDefault),
-      composerTools: async (profile, cwd) => {
+      composerTools: async (profile, cwd, resolveRequestScope) => {
         const { openBotComposerRuntime } = await import("./work/BotComposerRuntime");
         return openBotComposerRuntime({ profile, cwd, models: this.durableModels!,
           connectorSkillRoots: this.connectorsService.getPrivateSkillDirs(profile.allowedConnectorIds),
           connectorContext: profile.allowedConnectorIds.length ? connectorRuntimeContext(profile.allowedConnectorIds, this.connectorsService.list(), "foreground") : "",
           enabledMcpIds: this.mcpRuntime.previewMcpFilter("working", this.modeProfiles.getProfile("working").policy.mcpPolicy).enabled,
-          readOnly: () => false });
+          readOnly: () => false, resolveRequestScope });
       },
       selectedTools: async (selection, cwd, identity, onStatus) => {
         const { selectedExternalAgentTool } = await import("./work/BotSelectedTools");
@@ -1830,6 +1832,7 @@ export class AgentService {
     return [
       ...assembly.appendParts,
       GOOGLE_WORKSPACE_INSTRUCTIONS,
+      GOOGLE_WORKSPACE_WRITE_INSTRUCTIONS,
       connectors.length ? connectorRuntimeContext(connectors, this.connectorsService.list(), "execution") : "",
       "## Skills\nRead the relevant SKILL.md before using a skill.\n" + skills.filter(s => s.enabled && s.filePath)
         .filter(s => assembly.skillFilter.visible.includes(s.name))
@@ -1940,7 +1943,13 @@ export class AgentService {
         return await consultHooks.afterTool?.(call, observed ?? result, api, context) ?? observed;
       },
     };
-    return { ...domain, toolHooks, tools: [...domain.tools, ...createGoogleWorkspaceTools(),
+    return { ...domain, toolHooks, tools: [...domain.tools, ...createGoogleWorkspaceTools(), ...createGoogleWorkspaceWriteTools(undefined, { resolveRequestScope: async (api, context) => {
+        const binding = this.workService.repo.bindingForTask(task.id);
+        if (binding) return workWorkspaceScope(this.db.connection, LOCAL_USER_ID, task.id, binding, this.workService.getWork(binding.workId));
+        if (this.db.connection.prepare("SELECT 1 FROM work_dispatch_requests WHERE task_id=?").get(task.id) || task.id.startsWith("work-execution-"))
+          throw new Error("Google 写操作缺少已绑定的 Work 来源；未执行。");
+        return durableWorkspaceScope(LOCAL_USER_ID)(api, context);
+      } }),
       ...createDurableSubagentTools({ taskId: task.id, cwd, models: this.durableModels!, permissionMode: getPermissionMode,
         allowGitBranchOrWorktree: () => true,
         workspaceNotes: () => [new ProjectNotesService(this.db).forSubagent(task.id), new WorkspaceNotesService(this.db).forSubagent(task.id)].filter(Boolean).join("\n\n"),

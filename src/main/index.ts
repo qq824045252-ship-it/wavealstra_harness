@@ -1,3 +1,5 @@
+import { GoogleWorkspaceWriteIpc } from "../shared/google-workspace-write";
+import { googleWorkspaceWriteService } from "./connectors/GoogleWorkspaceWriteService";
 import { GoogleWorkspaceIpc } from "../shared/google-workspace";
 import { googleWorkspaceService } from "./connectors/GoogleWorkspaceService";
 import "./platform/credentials";
@@ -1261,6 +1263,10 @@ function registerIpc(): void {
   ipcMain.handle(AgentIpc.switchExpert, async (_e, req: AgentSwitchExpertRequest) => {
     await agentService.switchExpert(req);
   });
+  ipcMain.handle(GoogleWorkspaceWriteIpc.sendMail, (_event, request) => googleWorkspaceWriteService.sendMail(request));
+  ipcMain.handle(GoogleWorkspaceWriteIpc.createEvent, (_event, request) => googleWorkspaceWriteService.createEvent(request));
+  ipcMain.handle(GoogleWorkspaceWriteIpc.updateEvent, (_event, request) => googleWorkspaceWriteService.updateEvent(request));
+  ipcMain.handle(GoogleWorkspaceWriteIpc.getEvent, (_event, request) => googleWorkspaceWriteService.getEvent(request));
   ipcMain.handle(GoogleWorkspaceIpc.status, () => googleWorkspaceService.status());
   ipcMain.handle(GoogleWorkspaceIpc.searchMail, (_event, request) => googleWorkspaceService.searchMail(request));
   ipcMain.handle(GoogleWorkspaceIpc.readMail, (_event, request) => googleWorkspaceService.readMail(request));

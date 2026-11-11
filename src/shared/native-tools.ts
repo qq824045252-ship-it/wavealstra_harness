@@ -114,6 +114,9 @@ export const MYBUDDY_NATIVE_EXTENSION_TOOL_NAMES = [
   "project_plan_get",
   "project_plan_create",
   "project_plan_update",
+  // Google Workspace native tools (not MCP provider-prefixed commands)
+  "google_workspace_status", "gmail_search", "gmail_read", "calendar_agenda", "calendar_get",
+  "gmail_send", "calendar_create", "calendar_update",
   // Other product-owned extensions
   "gadget_create",
   "gadget_list",
@@ -135,6 +138,7 @@ export function isMyBuddyNativeExtensionToolName(toolName: string): boolean {
 
 /** Mutating tools used for explicit readonly loadout and observation metadata. */
 export const MUTATING_BUILTIN_TOOLS = [
+  "gmail_send", "calendar_create", "calendar_update",
   "write",
   "edit",
   "bash",

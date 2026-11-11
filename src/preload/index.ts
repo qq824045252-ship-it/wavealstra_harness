@@ -1,3 +1,4 @@
+import { GoogleWorkspaceWriteIpc, type GoogleWorkspaceWriteApi } from "../shared/google-workspace-write";
 import { GoogleWorkspaceIpc, type GoogleWorkspaceApi } from "../shared/google-workspace";
 import type { BrowserOpenOptions, BrowserTabInfo, BrowserTabsState } from "../shared/browser-tabs";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
@@ -1437,6 +1438,13 @@ const api = {
     listTaskReferences: (taskId: string): Promise<{ ok: true; value: import("../shared/library-ipc").LibraryTaskReferencesDto } | { ok: false; error: string }> =>
       ipcRenderer.invoke(LibraryIpc.listTaskReferences, taskId),
   },
+
+  googleWorkspaceWrite: {
+    sendMail: request => ipcRenderer.invoke(GoogleWorkspaceWriteIpc.sendMail, request),
+    createEvent: request => ipcRenderer.invoke(GoogleWorkspaceWriteIpc.createEvent, request),
+    updateEvent: request => ipcRenderer.invoke(GoogleWorkspaceWriteIpc.updateEvent, request),
+    getEvent: request => ipcRenderer.invoke(GoogleWorkspaceWriteIpc.getEvent, request),
+  } satisfies GoogleWorkspaceWriteApi,
 
   googleWorkspace: {
     status: () => ipcRenderer.invoke(GoogleWorkspaceIpc.status),

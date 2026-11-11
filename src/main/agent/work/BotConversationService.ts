@@ -1,3 +1,4 @@
+import { foregroundWorkspaceScope, type WorkspaceRequestScopeResolver } from "./GoogleWorkspaceRequestScope";
 import { defineTool } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import type { Message } from "@earendil-works/pi-ai";
@@ -40,7 +41,7 @@ export interface BotConversationServiceOptions {
   webTools?: (cwd: string) => Promise<import("../durable/DurableDomainTools").DurableDomainTools>;
   messageSettings?: (messageId: string, botId: string) => { settings: import("../../../shared/bot-settings").BotSettingsDto; profile: import("../../../shared/bot-work").ExpertConfigSnapshotDto } | undefined;
   captureSettings?: (messageId: string, botId: string, frozen: Awaited<ReturnType<import("./BotSettingsService").BotSettingsService["prepareMessage"]>>) => void;
-  composerTools?: (profile: import("../../../shared/bot-work").ExpertConfigSnapshotDto, cwd: string) => Promise<import("./BotComposerRuntime").BotComposerRuntime>;
+  composerTools?: (profile: import("../../../shared/bot-work").ExpertConfigSnapshotDto, cwd: string, resolveRequestScope: WorkspaceRequestScopeResolver) => Promise<import("./BotComposerRuntime").BotComposerRuntime>;
   selectedTools?: (settings: import("./BotSelectedTools").BotSelectedToolOptions, cwd: string, identity: string, onStatus: (text: string) => void) => Promise<import("@earendil-works/pi-durable").ToolRegistration[]>;
   thinking?: (modelId: string, preference?: import("../../../shared/model-metadata").ModelReasoningPreferenceDto) => import("@earendil-works/pi-ai").ModelThinkingLevel | undefined;
   botModel?: (botId: string) => string | undefined;
@@ -393,7 +394,13 @@ export class BotConversationService {
       this.publish(key);
     }) : [];
     if (requiredTool && !selectedTools?.some(tool => tool.name === requiredTool)) throw new Error("所选执行能力未配置，未回退为普通回答");
-    const composer = selected && await this.options.composerTools?.(selected.profile, cwd);
+    const composer = selected && await this.options.composerTools?.(selected.profile, cwd, async (api, context) => {
+      const requestId = await botForegroundRequest(api, api.callId, context);
+      const receipt = this.messages.receipt(this.options.userId, bot.botId, requestId);
+      return foregroundWorkspaceScope(this.options.userId, bot.botId, conversation.conversation_id, requestId, receipt,
+        receipt ? this.messages.message(receipt.user_message_id) : undefined,
+        receipt ? this.messages.message(receipt.assistant_message_id) : undefined);
+    });
     if (composer) this.composerRuntimes.set(key, composer);
     const composerTools = composer?.tools ?? [];
     const web = await this.options.webTools?.(cwd);

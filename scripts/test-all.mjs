@@ -168,6 +168,7 @@ const GUI_TESTS = new Set([
 ]);
 
 const NETWORK_TESTS = new Set([
+  "test:google-workspace-write:live", // Real model/Electron with isolated local SDK fixture only.
   "test:google-workspace:live", // Real Electron/model; isolated synthetic gws process, no real account.
   "test:gadget-browser-recovery-live",
   "test:bot-history-context:live",
@@ -207,6 +208,7 @@ const NETWORK_TESTS = new Set([
 ]);
 
 const DATASET_TESTS = new Set([
+  "test:google-workspace-write", // Existing POSIX Python runtime required for isolated SDK subprocess fixtures.
   // node-pty 原生模块 + 真实 pty。
   "test:terminal",
   "test:task-terminal:live",
