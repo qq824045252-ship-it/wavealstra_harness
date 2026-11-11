@@ -1,0 +1,662 @@
+{
+  "testedBase": "11576a703f998c96cd3c2f7835a4e8096a41c46b",
+  "date": "2026-11-11",
+  "model": {
+    "modelId": "opendesign/deepseek-v4.1-flash",
+    "declaredContextWindow": 1048000,
+    "declaredMaxOutputTokens": 328000,
+    "effectiveMaxOutputTokens": 328000,
+    "reasoning": true,
+    "thinkingLevelMap": {
+      "off": null,
+      "minimal": null,
+      "low": "low",
+      "medium": null,
+      "high": "high",
+      "xhigh": null,
+      "max": "max"
+    },
+    "mode": "gateway-model-configuration",
+    "pricing": "not-measured",
+    "source": "http://127.0.0.1:3425/v1/models",
+    "capturedAt": "2026-11-11T13:32:17.125Z"
+  },
+  "history": {
+    "assertions": 212,
+    "results": [
+      {
+        "label": "mixed-small",
+        "rows": 532,
+        "feedbackRows": {
+          "n": 172
+        },
+        "old": {
+          "medianMs": 11.1745820000001,
+          "p95Ms": 23.715912000000117
+        },
+        "optimized": {
+          "medianMs": 11.258812000000034,
+          "p95Ms": 37.15010600000005
+        }
+      },
+      {
+        "label": "50k-messages-sparse-feedback",
+        "rows": 50000,
+        "feedbackRows": {
+          "n": 172
+        },
+        "old": {
+          "medianMs": 19.312974000000395,
+          "p95Ms": 24.318930999999793
+        },
+        "optimized": {
+          "medianMs": 11.142385000000104,
+          "p95Ms": 20.306552999999894
+        }
+      },
+      {
+        "label": "60k-messages-10k-feedback",
+        "rows": 60000,
+        "feedbackRows": {
+          "n": 10172
+        },
+        "old": {
+          "medianMs": 10.907994000000144,
+          "p95Ms": 21.54723400000057
+        },
+        "optimized": {
+          "medianMs": 12.434260999999424,
+          "p95Ms": 26.027626999999484
+        }
+      },
+      {
+        "label": "60k-messages-100-extra-inboxes",
+        "rows": 60300,
+        "feedbackRows": {
+          "n": 10472
+        },
+        "old": {
+          "medianMs": 11.110396999999466,
+          "p95Ms": 12.793319999999767
+        },
+        "optimized": {
+          "medianMs": 12.542446999999811,
+          "p95Ms": 24.332621000000472
+        }
+      },
+      {
+        "label": "dense-inbox-only-10-related",
+        "rows": 60310,
+        "feedbackRows": {
+          "n": 10482
+        },
+        "old": {
+          "medianMs": 18.594504000000597,
+          "p95Ms": 20.218410999999833
+        },
+        "optimized": {
+          "medianMs": 11.74261099999967,
+          "p95Ms": 12.252112000000125
+        }
+      },
+      {
+        "label": "dense-inbox-zero-related",
+        "rows": 60310,
+        "feedbackRows": {
+          "n": 10482
+        },
+        "old": {
+          "medianMs": 17.986735000000408,
+          "p95Ms": 20.413061999999627
+        },
+        "optimized": {
+          "medianMs": 14.501248000000487,
+          "p95Ms": 20.669245000000046
+        }
+      },
+      {
+        "label": "latest-101-direct-old-dense-inboxes",
+        "rows": 60430,
+        "feedbackRows": {
+          "n": 10482
+        },
+        "old": {
+          "medianMs": 10.894094999999652,
+          "p95Ms": 23.243915999999444
+        },
+        "optimized": {
+          "medianMs": 10.831586000000243,
+          "p95Ms": 27.31356599999981
+        }
+      },
+      {
+        "label": "earliest-101-direct-later-dense-inboxes",
+        "rows": 60430,
+        "feedbackRows": {
+          "n": 10482
+        },
+        "old": {
+          "medianMs": 10.57442600000013,
+          "p95Ms": 22.086278000000675
+        },
+        "optimized": {
+          "medianMs": 11.172069000000192,
+          "p95Ms": 25.570088999999825
+        }
+      },
+      {
+        "label": "first-constructor-index-build",
+        "rows": 60430,
+        "firstIndexBuildMs": 54.901474000000235
+      },
+      {
+        "label": "first-constructor-disk-index-build",
+        "rows": 60430,
+        "firstDiskIndexBuildMs": 40.88165000000117
+      },
+      {
+        "label": "60k-messages-no-feedback",
+        "rows": 60430,
+        "feedbackRows": {
+          "n": 0
+        },
+        "old": {
+          "medianMs": 12.453048999999737,
+          "p95Ms": 26.606691000000865
+        },
+        "optimized": {
+          "medianMs": 10.511497999999847,
+          "p95Ms": 11.045583999999508
+        }
+      }
+    ]
+  },
+  "growth": {
+    "gitHead": "11576a703f998c96cd3c2f7835a4e8096a41c46b",
+    "sourceWorkingChanges": [
+      "src/main/agent/work/BotConversationRepository.ts"
+    ],
+    "node": "v26.13.0",
+    "synthetic": true,
+    "results": [
+      {
+        "n": 1000,
+        "messageBytes": 2920448,
+        "withWorksBytes": 3354624,
+        "historyOldConversation": {
+          "medianMs": 10.63232800000003,
+          "p95Ms": 16.600926000000072
+        },
+        "historyRecentConversation": {
+          "medianMs": 9.582386000000042,
+          "p95Ms": 14.410875000000033
+        },
+        "summaryCached": {
+          "medianMs": 0.29522400000007565,
+          "p95Ms": 0.41311800000005405
+        },
+        "summaryUncached": {
+          "medianMs": 9.889833000000067,
+          "p95Ms": 10.224796999999967
+        },
+        "summarySearch": {
+          "medianMs": 21.636846000000105,
+          "p95Ms": 26.804141000000072
+        }
+      },
+      {
+        "n": 10000,
+        "messageBytes": 9166848,
+        "withWorksBytes": 13815808,
+        "historyOldConversation": {
+          "medianMs": 9.622686000000158,
+          "p95Ms": 13.410592000000179
+        },
+        "historyRecentConversation": {
+          "medianMs": 8.546552000000247,
+          "p95Ms": 13.948447999999644
+        },
+        "summaryCached": {
+          "medianMs": 0.25974500000029366,
+          "p95Ms": 0.31896999999980835
+        },
+        "summaryUncached": {
+          "medianMs": 40.34519799999998,
+          "p95Ms": 41.01393999999982
+        },
+        "summarySearch": {
+          "medianMs": 127.65365699999984,
+          "p95Ms": 130.0839649999998
+        }
+      },
+      {
+        "n": 50000,
+        "messageBytes": 37289984,
+        "withWorksBytes": 58261504,
+        "historyOldConversation": {
+          "medianMs": 9.618076000000656,
+          "p95Ms": 10.84045800000058
+        },
+        "historyRecentConversation": {
+          "medianMs": 8.29917099999875,
+          "p95Ms": 16.806612000000314
+        },
+        "summaryCached": {
+          "medianMs": 0.22328700000070967,
+          "p95Ms": 0.3482339999991382
+        },
+        "summaryUncached": {
+          "medianMs": 177.11036500000046,
+          "p95Ms": 180.1473249999999
+        },
+        "summarySearch": {
+          "medianMs": 573.0578490000007,
+          "p95Ms": 585.511601000002
+        }
+      }
+    ]
+  },
+  "cache": [
+    {
+      "kind": "extraction",
+      "wallMs": 6979,
+      "exactPrefix": null,
+      "promptTokens": 24654,
+      "cachedTokens": 24576,
+      "cachePercent": 99.68362131905573
+    },
+    {
+      "kind": "calculation",
+      "wallMs": 3739,
+      "exactPrefix": true,
+      "promptTokens": 24772,
+      "cachedTokens": 24576,
+      "cachePercent": 99.20878411109317
+    },
+    {
+      "kind": "translation",
+      "wallMs": 4952,
+      "exactPrefix": true,
+      "promptTokens": 24860,
+      "cachedTokens": 24704,
+      "cachePercent": 99.37248592115849
+    },
+    {
+      "kind": "classification",
+      "wallMs": 5069,
+      "exactPrefix": true,
+      "promptTokens": 24953,
+      "cachedTokens": 24832,
+      "cachePercent": 99.51508836612832
+    },
+    {
+      "kind": "summarization",
+      "wallMs": 4933,
+      "exactPrefix": true,
+      "promptTokens": 25058,
+      "cachedTokens": 24832,
+      "cachePercent": 99.09809242557267
+    },
+    {
+      "kind": "planning",
+      "wallMs": 5126,
+      "exactPrefix": true,
+      "promptTokens": 25164,
+      "cachedTokens": 24960,
+      "cachePercent": 99.18931807343824
+    }
+  ],
+  "burst": [
+    {
+      "kind": "explanation",
+      "status": "cancelled",
+      "queueToProviderMs": 372,
+      "queueToHostRunningMs": 262
+    },
+    {
+      "kind": "translation",
+      "status": "completed",
+      "queueToProviderMs": 330,
+      "queueToHostRunningMs": 215
+    },
+    {
+      "kind": "creative",
+      "status": "completed",
+      "queueToProviderMs": 338,
+      "queueToHostRunningMs": 209
+    },
+    {
+      "kind": "calculation",
+      "status": "completed",
+      "queueToProviderMs": 10556,
+      "queueToHostRunningMs": 10489
+    },
+    {
+      "kind": "status",
+      "status": "completed",
+      "queueToProviderMs": 336,
+      "queueToHostRunningMs": 212
+    },
+    {
+      "kind": "classification",
+      "status": "completed",
+      "queueToProviderMs": 335,
+      "queueToHostRunningMs": 203
+    }
+  ],
+  "cancellation": {
+    "persistedMs": 14,
+    "apiMs": 55,
+    "proxyClosedMs": 27,
+    "siblingsCompleted": true
+  },
+  "storage": [
+    {
+      "pageCount": 621,
+      "pageSize": 4096,
+      "files": [
+        {
+          "name": "app.db",
+          "bytes": 4096
+        },
+        {
+          "name": "app.db-wal",
+          "bytes": 3547352
+        },
+        {
+          "name": "app.db-shm",
+          "bytes": 32768
+        }
+      ],
+      "requestRuns": {
+        "rows": 0,
+        "contextBytes": 0,
+        "transcriptBytes": 0
+      }
+    },
+    {
+      "pageCount": 646,
+      "pageSize": 4096,
+      "files": [
+        {
+          "name": "app.db",
+          "bytes": 4096
+        },
+        {
+          "name": "app.db-wal",
+          "bytes": 4041752
+        },
+        {
+          "name": "app.db-shm",
+          "bytes": 32768
+        }
+      ],
+      "requestRuns": {
+        "rows": 1,
+        "contextBytes": 194,
+        "transcriptBytes": 75107
+      }
+    },
+    {
+      "pageCount": 701,
+      "pageSize": 4096,
+      "files": [
+        {
+          "name": "app.db",
+          "bytes": 2719744
+        },
+        {
+          "name": "app.db-wal",
+          "bytes": 4194192
+        },
+        {
+          "name": "app.db-shm",
+          "bytes": 32768
+        }
+      ],
+      "requestRuns": {
+        "rows": 2,
+        "contextBytes": 75696,
+        "transcriptBytes": 151270
+      }
+    },
+    {
+      "pageCount": 740,
+      "pageSize": 4096,
+      "files": [
+        {
+          "name": "app.db",
+          "bytes": 2719744
+        },
+        {
+          "name": "app.db-wal",
+          "bytes": 4194192
+        },
+        {
+          "name": "app.db-shm",
+          "bytes": 32768
+        }
+      ],
+      "requestRuns": {
+        "rows": 3,
+        "contextBytes": 152458,
+        "transcriptBytes": 228419
+      }
+    },
+    {
+      "pageCount": 779,
+      "pageSize": 4096,
+      "files": [
+        {
+          "name": "app.db",
+          "bytes": 2719744
+        },
+        {
+          "name": "app.db-wal",
+          "bytes": 4194192
+        },
+        {
+          "name": "app.db-shm",
+          "bytes": 32768
+        }
+      ],
+      "requestRuns": {
+        "rows": 4,
+        "contextBytes": 230410,
+        "transcriptBytes": 306550
+      }
+    },
+    {
+      "pageCount": 824,
+      "pageSize": 4096,
+      "files": [
+        {
+          "name": "app.db",
+          "bytes": 2719744
+        },
+        {
+          "name": "app.db-wal",
+          "bytes": 4194192
+        },
+        {
+          "name": "app.db-shm",
+          "bytes": 32768
+        }
+      ],
+      "requestRuns": {
+        "rows": 5,
+        "contextBytes": 309548,
+        "transcriptBytes": 385754
+      }
+    },
+    {
+      "pageCount": 864,
+      "pageSize": 4096,
+      "files": [
+        {
+          "name": "app.db",
+          "bytes": 2719744
+        },
+        {
+          "name": "app.db-wal",
+          "bytes": 4194192
+        },
+        {
+          "name": "app.db-shm",
+          "bytes": 32768
+        }
+      ],
+      "requestRuns": {
+        "rows": 6,
+        "contextBytes": 389963,
+        "transcriptBytes": 466070
+      }
+    },
+    {
+      "pageCount": 945,
+      "pageSize": 4096,
+      "files": [
+        {
+          "name": "app.db",
+          "bytes": 3788800
+        },
+        {
+          "name": "app.db-wal",
+          "bytes": 4194192
+        },
+        {
+          "name": "app.db-shm",
+          "bytes": 32768
+        }
+      ],
+      "requestRuns": {
+        "rows": 12,
+        "contextBytes": 396676,
+        "transcriptBytes": 775812
+      }
+    }
+  ],
+  "responsivenessBaseline": {
+    "commit": "2764bc6a0760ead3480196fd7f0bacedfe2008fc",
+    "status": "passed",
+    "requiredClassCount": 6,
+    "cases": [
+      {
+        "kind": "direct simple answer",
+        "id": "simple",
+        "ms": {
+          "hostReceivedAt": 29,
+          "receiptObservedAt": null,
+          "firstVisibleReceiptAt": 600,
+          "firstVisibleTextAt": 3830,
+          "firstCommentaryAt": null,
+          "firstVisibleCommentaryAt": null,
+          "firstToolActivityAt": null,
+          "completedAt": 3977
+        },
+        "foregroundCalls": 1,
+        "errors": []
+      },
+      {
+        "kind": "calculation and explanation",
+        "id": "calculation",
+        "ms": {
+          "hostReceivedAt": 20,
+          "receiptObservedAt": null,
+          "firstVisibleReceiptAt": 577,
+          "firstVisibleTextAt": 3286,
+          "firstCommentaryAt": null,
+          "firstVisibleCommentaryAt": null,
+          "firstToolActivityAt": null,
+          "completedAt": 3567
+        },
+        "foregroundCalls": 1,
+        "errors": []
+      },
+      {
+        "kind": "real public web information",
+        "id": "web",
+        "ms": {
+          "hostReceivedAt": 17,
+          "receiptObservedAt": null,
+          "firstVisibleReceiptAt": 596,
+          "firstVisibleTextAt": 3603,
+          "firstCommentaryAt": 3573,
+          "firstVisibleCommentaryAt": 3603,
+          "firstToolActivityAt": 3573,
+          "completedAt": 13938
+        },
+        "foregroundCalls": 3,
+        "errors": []
+      },
+      {
+        "kind": "memory fixture setup",
+        "id": "memory-setup",
+        "ms": {
+          "hostReceivedAt": 24,
+          "receiptObservedAt": null,
+          "firstVisibleReceiptAt": 585,
+          "firstVisibleTextAt": 7176,
+          "firstCommentaryAt": null,
+          "firstVisibleCommentaryAt": null,
+          "firstToolActivityAt": 3371,
+          "completedAt": 7866
+        },
+        "foregroundCalls": 2,
+        "errors": []
+      },
+      {
+        "kind": "persistent private memory read",
+        "id": "memory",
+        "ms": {
+          "hostReceivedAt": 16,
+          "receiptObservedAt": null,
+          "firstVisibleReceiptAt": 535,
+          "firstVisibleTextAt": 3480,
+          "firstCommentaryAt": null,
+          "firstVisibleCommentaryAt": null,
+          "firstToolActivityAt": null,
+          "completedAt": 3503
+        },
+        "foregroundCalls": 1,
+        "errors": []
+      },
+      {
+        "kind": "task planning",
+        "id": "planning",
+        "ms": {
+          "hostReceivedAt": 9,
+          "receiptObservedAt": null,
+          "firstVisibleReceiptAt": 561,
+          "firstVisibleTextAt": 12568,
+          "firstCommentaryAt": null,
+          "firstVisibleCommentaryAt": null,
+          "firstToolActivityAt": null,
+          "completedAt": 20526
+        },
+        "foregroundCalls": 1,
+        "errors": []
+      },
+      {
+        "kind": "long Work delegation",
+        "id": "work",
+        "ms": {
+          "hostReceivedAt": 9,
+          "receiptObservedAt": null,
+          "firstVisibleReceiptAt": 567,
+          "firstVisibleTextAt": 10682,
+          "firstCommentaryAt": null,
+          "firstVisibleCommentaryAt": null,
+          "firstToolActivityAt": 4274,
+          "completedAt": 11596
+        },
+        "foregroundCalls": 2,
+        "errors": []
+      }
+    ],
+    "workConclusions": [
+      "succeeded"
+    ],
+    "concurrentCancellationPassed": true
+  }
+}

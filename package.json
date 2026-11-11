@@ -667,7 +667,11 @@
     "test:bot-history-paging-sqlite": "esbuild scripts/bot-history-paging-sqlite-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/bot-history-paging-sqlite-test.mjs && node scripts/test-guard.mjs out/tests/bot-history-paging-sqlite-test.mjs",
     "test:bot-history-paging-desktop": "esbuild scripts/bot-conversation-concurrent-desktop-fixture.tsx --bundle --platform=browser --format=iife --external:@terrastruct/d2 --jsx=automatic --alias:@=./src/renderer/src --alias:@shared=./src/shared --loader:.woff=file --loader:.woff2=file --loader:.ttf=file --outfile=out/tests/bot-conversation-concurrent-desktop-fixture.js && electron scripts/bot-history-paging-desktop-test.cjs",
     "test:bot-summary-pagination": "esbuild scripts/bot-summary-pagination-test.tsx --bundle --platform=node --format=cjs --external:linkedom --external:react --external:react-dom --jsx=automatic --alias:@=./src/renderer/src --alias:@shared=./src/shared --external:@terrastruct/d2 --loader:.css=empty --loader:.woff=empty --loader:.woff2=empty --outfile=out/tests/bot-summary-pagination-test.cjs && node scripts/test-guard.mjs out/tests/bot-summary-pagination-test.cjs",
-    "test:bot-work-summary-query": "esbuild scripts/bot-work-summary-query-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/bot-work-summary-query-test.cjs --external:better-sqlite3 --external:onnxruntime-node --external:electron --alias:@shared=./src/shared && node scripts/test-guard.mjs out/tests/bot-work-summary-query-test.cjs"
+    "test:bot-work-summary-query": "esbuild scripts/bot-work-summary-query-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/bot-work-summary-query-test.cjs --external:better-sqlite3 --external:onnxruntime-node --external:electron --alias:@shared=./src/shared && node scripts/test-guard.mjs out/tests/bot-work-summary-query-test.cjs",
+    "perf:bot-foreground": "node scripts/bot-frontdoor-live-test.cjs --performance",
+    "perf:bot-database": "node scripts/db-growth-perf-run.mjs",
+    "perf:bot-history": "node scripts/perf-bot-history-query.mjs",
+    "test:bot-history-query": "node scripts/perf-bot-history-query.mjs --correctness-only"
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.85.0",

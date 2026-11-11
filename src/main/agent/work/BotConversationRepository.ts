@@ -29,7 +29,8 @@ export class BotConversationRepository {
     db.exec(`CREATE TABLE IF NOT EXISTS bot_message_segments (
       message_id TEXT PRIMARY KEY REFERENCES bot_messages(message_id) ON DELETE CASCADE,
       segments_json TEXT NOT NULL CHECK(json_valid(segments_json))
-    )`);
+    );
+    CREATE INDEX IF NOT EXISTS idx_bot_messages_conversation_ordinal ON bot_messages(conversation_id,ordinal);`);
   }
 
   conversation(userId: string, botId: string, conversationId?: string, teamId?: string): BotConversation | undefined {
@@ -109,12 +110,39 @@ export class BotConversationRepository {
     const conversation = this.conversation(userId, request.botId, request.inbox ? botInboxId(userId, request.botId) : request.conversationId, request.teamId);
     this.assertScope(conversation, request.teamId);
     if (!conversation) return { conversationId: "", botId: request.botId, teamId: request.teamId, revision: 0, archived: false, messages: [] };
-    const rows = this.db.prepare(`SELECT m.* FROM bot_messages m JOIN bot_conversations c ON c.conversation_id=m.conversation_id
-      WHERE c.user_id=? AND (m.conversation_id=? OR (m.conversation_id LIKE 'bot-inbox-%' AND EXISTS (
+    // Query each disjoint source using its conversation/ordinal index. A single
+    // OR scans unrelated messages; a feedback-driven UNION instead scans/sorts
+    // all feedback when an inbox is large. Each source contributes at most 101
+    // rows, and the rolling merge keeps the same bounded global page.
+    const ascending = request.after !== undefined;
+    const ids = request.messageIds ? "AND m.message_id IN (SELECT value FROM json_each(@ids))" : "";
+    const params = { conversationId: conversation.conversation_id, before: request.before ?? Number.MAX_SAFE_INTEGER,
+      after: request.after ?? 0, ids: JSON.stringify(request.messageIds ?? []) };
+    const pageSql = `SELECT m.* FROM bot_messages m WHERE m.conversation_id=@sourceId
+      AND m.ordinal<@before AND m.ordinal>@after ${ids}`;
+    type HistoryRow = { ordinal: number };
+    let rows = this.db.prepare(pageSql + ` ORDER BY m.ordinal ${ascending ? "ASC" : "DESC"} LIMIT 101`)
+      .all({ ...params, sourceId: conversation.conversation_id }) as HistoryRow[];
+    const inboxes = this.db.prepare(`SELECT conversation_id FROM bot_conversations
+      WHERE user_id=? AND conversation_id LIKE 'bot-inbox-%' AND conversation_id<>?
+        AND EXISTS (SELECT 1 FROM bot_work_feedback)`)
+      .all(userId, conversation.conversation_id) as Array<{ conversation_id: string }>;
+    if (inboxes.length) {
+      const linkedPage = this.db.prepare(pageSql + ` AND EXISTS (
         SELECT 1 FROM bot_work_feedback f JOIN work_conversations t ON t.work_id=json_extract(f.metadata_json,'$.workId')
-        WHERE f.message_id=m.message_id AND t.channel_type='bot-delivery' AND t.conversation_id=?)))
-      AND m.ordinal<? AND m.ordinal>? ${request.messageIds ? "AND m.message_id IN (SELECT value FROM json_each(?))" : ""} ORDER BY m.ordinal ${request.after === undefined ? "DESC" : "ASC"} LIMIT 101`)
-      .all(userId, conversation.conversation_id, conversation.conversation_id, request.before ?? Number.MAX_SAFE_INTEGER, request.after ?? 0, ...(request.messageIds ? [JSON.stringify(request.messageIds)] : []));
+        WHERE f.message_id=m.message_id AND t.channel_type='bot-delivery' AND t.conversation_id=@conversationId)
+        ORDER BY m.ordinal ${ascending ? "ASC" : "DESC"} LIMIT 101`);
+      for (const inbox of inboxes) {
+        // Once the global page is full, older (or later for catch-up) inbox
+        // rows cannot enter it. Tighten the indexed range before looking for
+        // links, so a large irrelevant inbox is skipped rather than scanned.
+        const edge = rows.length === 101 ? rows[100].ordinal : undefined;
+        const linked = linkedPage.all({ ...params, sourceId: inbox.conversation_id,
+          before: ascending && edge !== undefined ? Math.min(params.before, edge) : params.before,
+          after: !ascending && edge !== undefined ? Math.max(params.after, edge) : params.after }) as HistoryRow[];
+        rows = rows.concat(linked).sort((a, b) => ascending ? a.ordinal - b.ordinal : b.ordinal - a.ordinal).slice(0, 101);
+      }
+    }
     const messages = rows.slice(0, 100).map(row => this.mapMessage(row));
     if (request.after === undefined) messages.reverse();
     return { conversationId: conversation.conversation_id, botId: request.botId, teamId: request.teamId, revision: conversation.revision,
