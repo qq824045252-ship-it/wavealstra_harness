@@ -79,7 +79,7 @@ function projectionRecordKey(kind: MemoryProjectionDeleteRequest["kind"], type: 
 }
 
 /** Unified Memory Kernel manager: inspect, edit and hard-delete one truth source across all scopes. */
-export default function MemoryKernelExplorer({ focusMemoryId }: { focusMemoryId?: string | null }): React.JSX.Element {
+export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId }: { focusMemoryId?: string | null; fixedBotId?: string }): React.JSX.Element {
   const spaces = useAppStore((s) => s.spaces);
   const projects = useAppStore((s) => s.projects);
   const tasks = useAppStore((s) => s.tasks);
@@ -138,18 +138,18 @@ export default function MemoryKernelExplorer({ focusMemoryId }: { focusMemoryId?
     const sourceId = sourceFocusIdRef.current;
     const items = await api.list({
       query: debouncedQuery || undefined,
-      scopeType: scope === "all" ? undefined : (scope as MemoryScopeType),
-      scopeId: scope === "bot" && botScopeId ? botScopeId : undefined,
+      scopeType: fixedBotId ? "bot" : scope === "all" ? undefined : (scope as MemoryScopeType),
+      scopeId: fixedBotId ?? (scope === "bot" && botScopeId ? botScopeId : undefined),
       kind: kind === "all" ? undefined : (kind as MemoryKind),
       status: lifecycle === "all" ? undefined : (lifecycle as MemoryStatus),
       limit: 500,
     });
-    if (sourceId && !debouncedQuery && scope === "all" && kind === "all" && lifecycle === "all" && !items.some((item) => item.id === sourceId)) {
+    if (!fixedBotId && sourceId && !debouncedQuery && scope === "all" && kind === "all" && lifecycle === "all" && !items.some((item) => item.id === sourceId)) {
       const source = await api.get(sourceId);
       if (source) return [source, ...items];
     }
-    return items;
-  }, [debouncedQuery, scope, botScopeId, kind, lifecycle]);
+    return fixedBotId ? items.filter(item => item.scopes.some(s => s.scopeType === "bot" && s.scopeId === fixedBotId)) : items;
+  }, [debouncedQuery, scope, botScopeId, kind, lifecycle, fixedBotId]);
 
   const fetchRecordsRef = useRef(fetchRecords);
   useEffect(() => { fetchRecordsRef.current = fetchRecords; }, [fetchRecords]);
@@ -164,12 +164,12 @@ export default function MemoryKernelExplorer({ focusMemoryId }: { focusMemoryId?
     try {
       const [items, nextStats, reviewItems, scenarioItems, profileItems, dismissedItems, proposalItems] = await Promise.all([
         fetchRecordsRef.current(),
-        api.stats(),
-        api.candidates("needs_review", 100),
-        api.scenarios(300),
-        api.coreProfiles(100),
-        api.dismissedProjections(),
-        api.projectionProposals(),
+        fixedBotId ? Promise.resolve(null) : api.stats(),
+        fixedBotId ? Promise.resolve([]) : api.candidates("needs_review", 100),
+        fixedBotId ? Promise.resolve([]) : api.scenarios(300),
+        fixedBotId ? Promise.resolve([]) : api.coreProfiles(100),
+        fixedBotId ? Promise.resolve([]) : api.dismissedProjections(),
+        fixedBotId ? Promise.resolve([]) : api.projectionProposals(),
       ]);
       if (request !== loadRequestRef.current) return;
       if (recordRequest === recordRequestRef.current) {
@@ -188,7 +188,7 @@ export default function MemoryKernelExplorer({ focusMemoryId }: { focusMemoryId?
     } finally {
       if (request === loadRequestRef.current) setLoading(false);
     }
-  }, [clearSelection]);
+  }, [clearSelection, fixedBotId]);
 
   useEffect(() => {
     void load();
@@ -324,12 +324,12 @@ export default function MemoryKernelExplorer({ focusMemoryId }: { focusMemoryId?
     try {
       const memory = await window.api?.memory?.get(id);
       if (selectedIdRef.current !== id) return;
-      if (!memory) { clearSelection(); setStatus("来源记忆已删除，历史候选仅保留审核快照。"); return; }
+      if (!memory || (fixedBotId && !memory.scopes.some(s => s.scopeType === "bot" && s.scopeId === fixedBotId))) { clearSelection(); setStatus("来源记忆已删除，历史候选仅保留审核快照。"); return; }
       setRecords((current) => [memory, ...current.filter((item) => item.id !== id)]);
     } catch (error) {
       if (selectedIdRef.current === id) setStatus(error instanceof Error ? error.message : String(error));
     }
-  }, [clearSelection]);
+  }, [clearSelection, fixedBotId]);
 
   useEffect(() => { if (focusMemoryId) void openL1Memory(focusMemoryId); }, [focusMemoryId, openL1Memory]);
   useEffect(() => {
@@ -437,8 +437,10 @@ export default function MemoryKernelExplorer({ focusMemoryId }: { focusMemoryId?
     }
   };
 
+  const selectedShared = Boolean(fixedBotId && selected?.scopes.some((s) => s.scopeType !== "bot" || s.scopeId !== fixedBotId));
+
   const editSelected = async (): Promise<void> => {
-    if (!selected || busy) return;
+    if (!selected || busy || selectedShared) return;
     const title = await requestText({
       title: "编辑记忆",
       label: "标题",
@@ -479,7 +481,7 @@ export default function MemoryKernelExplorer({ focusMemoryId }: { focusMemoryId?
   };
 
   const patchSelected = async (patch: Partial<Pick<MemoryUpdateRequest, "kind" | "status">>): Promise<void> => {
-    if (!selected || busy) return;
+    if (!selected || busy || selectedShared) return;
     setBusy(true);
     try {
       await window.api?.memory?.update({ id: selected.id, ...patch, changedBy: "manual", changeReason: "settings memory manager field edit" });
@@ -632,9 +634,11 @@ export default function MemoryKernelExplorer({ focusMemoryId }: { focusMemoryId?
     if (busy || ids.length === 0) return;
     setBusy(true);
     try {
-      await window.api?.memory?.forget(ids);
+      if (fixedBotId) {
+        for (const id of ids) await window.api?.memory?.detachScope(id, "bot", fixedBotId);
+      } else await window.api?.memory?.forget(ids);
       clearSelection();
-      setStatus(ids.length === 1 ? "记忆已硬删除。" : "已硬删除 " + ids.length + " 条记忆。");
+      setStatus(fixedBotId ? "已从此 Bot 移除记忆，其他作用域的记忆不受影响。" : ids.length === 1 ? "记忆已硬删除。" : "已硬删除 " + ids.length + " 条记忆。");
       await load();
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
@@ -662,23 +666,23 @@ export default function MemoryKernelExplorer({ focusMemoryId }: { focusMemoryId?
 
   return (
     <section className="settings-section memory-explorer" style={{ marginTop: 14 }}>
-      <MemoryOrganizationPanel activeCount={stats?.active ?? 0} onChanged={load} onOpen={(id) => void openL1Memory(id)}
-        scopeName={(s) => `${SCOPE_LABEL[s.scopeType]}${s.scopeId ? ` · ${scopeDisplayName(s)}` : ""}`} />
-      <div className="memory-overview" aria-label="记忆概览">
+      {!fixedBotId && <MemoryOrganizationPanel activeCount={stats?.active ?? 0} onChanged={load} onOpen={(id) => void openL1Memory(id)}
+        scopeName={(s) => `${SCOPE_LABEL[s.scopeType]}${s.scopeId ? ` · ${scopeDisplayName(s)}` : ""}`} />}
+      {!fixedBotId && <div className="memory-overview" aria-label="记忆概览">
         <div><strong>{stats?.active ?? 0}</strong><span>有效记忆</span></div>
         <div><strong>{Math.max(0, (stats?.total ?? 0) - (stats?.active ?? 0))}</strong><span>历史记录</span></div>
         <div><strong>{stats?.candidates?.["needs_review"] ?? review.length}</strong><span>待复核</span></div>
-      </div>
+      </div>}
       <div className="settings-section-head">
         <div>
-          <div className="settings-section-title">记忆内容与来源</div>
+          <div className="settings-section-title">{fixedBotId ? "此 Bot 的专属记忆" : "记忆内容与来源"}</div>
           <div className="settings-section-desc">
-            默认查看有效记忆。原始对话、证据和历史版本保留，可随时追溯。
+            {fixedBotId ? "同一 Bot 的新旧对话共享这些记忆；其他 Bot 不会自动读取。可在对话中说“记住”“更正”或“忘记”。" : "默认查看有效记忆。原始对话、证据和历史版本保留，可随时追溯。"}
           </div>
         </div>
       </div>
       <div className="settings-section-card" style={{ padding: 12 }}>
-        <div className="ext-subnav" role="tablist" aria-label="记忆层级" style={{ marginBottom: 10 }}>
+        {!fixedBotId && <div className="ext-subnav" role="tablist" aria-label="记忆层级" style={{ marginBottom: 10 }}>
           {([
             ["l1", "记忆条目", stats?.total ?? records.length],
             ["l0", "对话来源", stats?.l0Turns ?? 0],
@@ -696,7 +700,7 @@ export default function MemoryKernelExplorer({ focusMemoryId }: { focusMemoryId?
               {label} · {count}
             </button>
           ))}
-        </div>
+        </div>}
 
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
           {layer === "l0" ? <span className="memory-count">待提炼 {stats?.pendingTurns ?? 0}</span> : null}
@@ -707,7 +711,7 @@ export default function MemoryKernelExplorer({ focusMemoryId }: { focusMemoryId?
           <span style={{ flex: 1 }} />
           {layer === "l1" ? (
             <>
-              <button type="button" className="btn" disabled={busy} onClick={() => void reindex()}>补齐语义索引</button>
+              {!fixedBotId && <button type="button" className="btn" disabled={busy} onClick={() => void reindex()}>补齐语义索引</button>}
               <button
                 type="button"
                 className="btn danger"
@@ -717,7 +721,7 @@ export default function MemoryKernelExplorer({ focusMemoryId }: { focusMemoryId?
                   label: listIsPartial ? "当前筛选结果 " + records.length + " 条记忆" : "全部 " + records.length + " 条记忆",
                 })}
               >
-                {listIsPartial ? "删除筛选结果" : "删除全部记忆条目"}
+                {fixedBotId ? "清除此 Bot 的记忆" : listIsPartial ? "删除筛选结果" : "删除全部记忆条目"}
               </button>
             </>
           ) : null}
@@ -758,7 +762,7 @@ export default function MemoryKernelExplorer({ focusMemoryId }: { focusMemoryId?
         ) : null}
 
         <div style={{ display: layer === "l1" ? "block" : "none", marginBottom: 10 }}>
-          <div className="memory-scope-filter">
+          {!fixedBotId && <div className="memory-scope-filter">
             <label htmlFor="memory-scope-filter">浏览范围</label>
             <select id="memory-scope-filter" className="new-project-input" aria-label="筛选记忆范围" value={scope} onChange={(event) => setScope(event.target.value)}>
               <option value="all">全部范围 · {stats?.total ?? records.length}</option>
@@ -773,13 +777,13 @@ export default function MemoryKernelExplorer({ focusMemoryId }: { focusMemoryId?
               {bots.map((bot) => <option key={bot.botId} value={bot.botId}>{bot.displayName}</option>)}
             </select>}
             <span>仅筛选列表，AI 整理始终覆盖全部范围</span>
-          </div>
+          </div>}
           <div className="memory-filters">
             <input
               className="new-project-input"
               aria-label="搜索记忆条目"
               value={query}
-              placeholder={scope === "all" ? "搜索全部记忆条目" : scope === "bot" ? "搜索 Bot 私人记忆" : `搜索${SCOPE_LABEL[scope] ?? scope}记忆`}
+              placeholder={fixedBotId ? "搜索此 Bot 的记忆" : scope === "all" ? "搜索全部记忆条目" : scope === "bot" ? "搜索 Bot 私人记忆" : `搜索${SCOPE_LABEL[scope] ?? scope}记忆`}
               onChange={(event) => setQuery(event.target.value)}
             />
             <select className="new-project-input" aria-label="筛选记忆类型" value={kind} onChange={(event) => setKind(event.target.value)}>
@@ -827,7 +831,7 @@ export default function MemoryKernelExplorer({ focusMemoryId }: { focusMemoryId?
                 <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
                   <div style={{ fontWeight: 600, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{selected.title}</div>
                   <span style={{ flex: 1 }} />
-                  <button type="button" className="btn" disabled={busy} onClick={() => void editSelected()}>编辑</button>
+                  <button type="button" className="btn" disabled={busy || selectedShared} onClick={() => void editSelected()}>编辑</button>
                   <button
                     type="button"
                     className="btn danger"
@@ -837,15 +841,16 @@ export default function MemoryKernelExplorer({ focusMemoryId }: { focusMemoryId?
                     删除
                   </button>
                 </div>
+                {selectedShared && <p className="settings-row-desc">此条是历史共享记忆。在此仅能移除本 Bot 的关联，不修改其他作用域；如需更正共享内容，请到全局记忆设置。</p>}
                 {selected.content ? <div style={{ whiteSpace: "pre-wrap", marginBottom: 9 }}>{selected.content}</div> : null}
                 <div className="settings-row-desc" style={{ lineHeight: 1.65 }}>
                   <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
                     类型：
-                    <select className="new-project-input" style={{ width: "auto", padding: "2px 4px" }} value={selected.kind} disabled={busy} onChange={(e) => void patchSelected({ kind: e.target.value as MemoryKind })}>
+                    <select className="new-project-input" style={{ width: "auto", padding: "2px 4px" }} value={selected.kind} disabled={busy || selectedShared} onChange={(e) => void patchSelected({ kind: e.target.value as MemoryKind })}>
                       {Object.entries(KIND_LABEL).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                     </select>
                     状态：
-                    <select className="new-project-input" style={{ width: "auto", padding: "2px 4px" }} value={selected.status} disabled={busy} onChange={(e) => void patchSelected({ status: e.target.value as MemoryStatus })}>
+                    <select className="new-project-input" style={{ width: "auto", padding: "2px 4px" }} value={selected.status} disabled={busy || selectedShared} onChange={(e) => void patchSelected({ status: e.target.value as MemoryStatus })}>
                       {Object.entries(STATUS_LABEL).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                     </select>
                   </div>
@@ -854,17 +859,17 @@ export default function MemoryKernelExplorer({ focusMemoryId }: { focusMemoryId?
                     {selected.scopes.map((s) => (
                       <span key={`${s.scopeType}:${s.scopeId ?? ""}:${s.binding}`} className="memory-source manual" style={{ display: "inline-flex", alignItems: "center", gap: 3 }}>
                         {SCOPE_LABEL[s.scopeType] ?? s.scopeType}{s.scopeId ? `·${scopeDisplayName(s)}` : ""}{s.binding === "promoted" ? "↑" : ""}
-                        <button
+                        {!fixedBotId && <button
                           type="button"
                           aria-label="解绑作用域"
                           disabled={busy}
                           onClick={() => requestDetach(s)}
                           style={{ border: 0, background: "transparent", color: "inherit", cursor: "pointer", padding: 0, lineHeight: 1 }}
-                        >×</button>
+                        >×</button>}
                       </span>
                     ))}
                   </div>
-                  <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginTop: 2 }}>
+                  {!fixedBotId && <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginTop: 2 }}>
                     <select className="new-project-input" style={{ width: "auto", padding: "2px 4px" }} value={promoteType} disabled={busy} onChange={(e) => { setPromoteType(e.target.value as "global" | "workspace" | "project"); setPromoteTarget(""); }}>
                       <option value="global">绑定全局</option>
                       <option value="workspace">绑定工作空间</option>
@@ -877,7 +882,7 @@ export default function MemoryKernelExplorer({ focusMemoryId }: { focusMemoryId?
                       </select>
                     ) : null}
                     <button type="button" className="btn" disabled={busy || (promoteType === "global" ? alreadyGlobal : !promoteTarget)} onClick={() => void promoteSelected()}>提升作用域</button>
-                  </div>
+                  </div>}
                   <div>重要度：{selected.importance} · 置信度：{selected.confidence.toFixed(2)} · 显式：{selected.explicit ? "是" : "否"}</div>
                   <div>来源：{selected.sourceType}{selected.sourceTaskId ? ` · ${selected.sourceTaskId}` : ""}</div>
                   <div>召回：{selected.recallCount} 次 · 最近 {fmt(selected.lastRecalledAt)}</div>
@@ -888,9 +893,9 @@ export default function MemoryKernelExplorer({ focusMemoryId }: { focusMemoryId?
                     <div key={ev.id} style={{ marginBottom: 4 }}>
                       {ev.evidenceKind === "conversation" ? (
                         <>
-                          <button type="button" className="btn" onClick={() => void openL0Evidence(ev.refId)}>
+                          {!fixedBotId && <button type="button" className="btn" onClick={() => void openL0Evidence(ev.refId)}>
                             查看对话原文
-                          </button>
+                          </button>}
                           {ev.excerpt ? <div style={{ whiteSpace: "pre-wrap", marginTop: 3 }}>{ev.excerpt}</div> : null}
                         </>
                       ) : (
@@ -1158,7 +1163,7 @@ export default function MemoryKernelExplorer({ focusMemoryId }: { focusMemoryId?
         body={
           pendingDelete ? (
             <>
-              将删除{pendingDelete.label}，同时清理其归属范围、证据、修改历史、关系和检索索引。
+              {fixedBotId ? `将从此 Bot 移除${pendingDelete.label}。若记忆还有其他作用域，其内容保留；仅属于此 Bot 的条目将删除。` : <>将删除{pendingDelete.label}，同时清理其归属范围、证据、修改历史、关系和检索索引。</>}
               <br />
               此操作不可恢复。
               <br />

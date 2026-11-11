@@ -1,10 +1,12 @@
+import MemoryKernelExplorer from "../settings/MemoryKernelExplorer";
+import "../settings/Memory.css";
 import { useAppStore } from "@/store/appStore";
 import { useEffect, useId, useState } from "react";
 import type { BotSettingsDto, BotSettingsView, BotSettingsChoice } from "@shared/bot-settings";
 
 export function BotExecutionSettings({ botId, onManageModels }: { botId: string; onManageModels?: () => void }): React.JSX.Element {
   const sectionId = useId();
-  const [section, setSection] = useState<"workspace" | "model" | "capabilities">("workspace");
+  const [section, setSection] = useState<"workspace" | "model" | "capabilities" | "memory">("workspace");
   const [view, setView] = useState<BotSettingsView>();
   const [draft, setDraft] = useState<BotSettingsDto>();
   const [notice, setNotice] = useState("");
@@ -62,7 +64,7 @@ export function BotExecutionSettings({ botId, onManageModels }: { botId: string;
   return <section className="bot-execution-settings" aria-label="Bot 执行设置"><h3>工作空间与能力</h3>
     {view && draft ? <>
       <nav className="bot-settings-sections" aria-label="Bot 设置分区">
-        {([{ id: "workspace", label: "工作目录" }, { id: "model", label: "模型" }, { id: "capabilities", label: "能力挂载" }] as const).map(item =>
+        {([{ id: "workspace", label: "工作目录" }, { id: "model", label: "模型" }, { id: "capabilities", label: "能力挂载" }, { id: "memory", label: "专属记忆" }] as const).map(item =>
           <button key={item.id} type="button" aria-pressed={section === item.id} aria-controls={`${sectionId}-${item.id}`} onClick={() => setSection(item.id)}>{item.label}</button>)}
       </nav>
       <div id={`${sectionId}-workspace`} hidden={section !== "workspace"} className="bot-settings-section">
@@ -92,7 +94,8 @@ export function BotExecutionSettings({ botId, onManageModels }: { botId: string;
       <p>专家指令用于对话与新任务，专家自带能力一并挂载。下方可额外挂载能力，真实工具在后台任务中执行。</p>
       {choices("Skill", "skillIds", view.skills)}{choices("MCP", "mcpIds", view.mcps)}{choices("连接器", "connectorIds", view.connectors)}
       </div>
-      <div className="bot-settings-save"><button type="button" disabled={busy} onClick={() => void save()}>{busy ? "保存中…" : "保存 Bot 设置"}</button><span>保存全部分区的修改</span></div>
+      {section === "memory" && <div id={`${sectionId}-memory`} className="bot-settings-section"><MemoryKernelExplorer key={botId} fixedBotId={botId} /></div>}
+      {section !== "memory" && <div className="bot-settings-save"><button type="button" disabled={busy} onClick={() => void save()}>{busy ? "保存中…" : "保存 Bot 设置"}</button><span>保存全部分区的修改</span></div>}
     </> : !notice && <p>正在读取设置…</p>}
     {notice && <p role="status">{notice}</p>}
   </section>;
