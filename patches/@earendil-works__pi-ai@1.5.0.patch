@@ -49,3 +49,39 @@ index d33b8069b80bc454b0db59a221aba9332d522bf3..3cbc89a9264f6ecb58c08cd776be5f14
      return RETRYABLE_PROVIDER_ERROR_PATTERN.test(errorMessage);
  }
  //# sourceMappingURL=retry.js.map
+diff --git a/dist/api/openai-completions.js b/dist/api/openai-completions.js
+--- a/dist/api/openai-completions.js
++++ b/dist/api/openai-completions.js
+@@ -206,6 +206,7 @@
+             let thinkingBlock = null;
+             let hasFinishReason = false;
+             const toolCallBlocksByIndex = new Map();
++            const ambiguousToolCallIndices = new Set();
+             const toolCallBlocksById = new Map();
+             const toolCallStates = new Map();
+             const blocks = output.content;
+@@ -285,9 +286,21 @@
+             const ensureToolCallBlock = (toolCall) => {
+                 const streamIndex = typeof toolCall.index === "number" ? toolCall.index : undefined;
+                 const name = toolCall.function?.name ?? toolCall.custom?.name ?? "";
+-                let block = streamIndex !== undefined ? toolCallBlocksByIndex.get(streamIndex) : undefined;
+-                if (!block && toolCall.id) {
+-                    block = toolCallBlocksById.get(toolCall.id);
++                // A gateway may reuse an index for a new call. Never attach a distinct
++                // id/name to an existing argument buffer: that silently joins two JSONs.
++                const indexed = streamIndex !== undefined ? toolCallBlocksByIndex.get(streamIndex) : undefined;
++                const identified = toolCall.id ? toolCallBlocksById.get(toolCall.id) : undefined;
++                let block = identified ?? indexed;
++                if (toolCall.id && indexed?.id && indexed.id !== toolCall.id) {
++                    // Once an index is reused, index-only fragments are ambiguous.
++                    ambiguousToolCallIndices.add(streamIndex);
++                    block = identified;
++                }
++                if (!toolCall.id && ambiguousToolCallIndices.has(streamIndex)) {
++                    throw new Error("Ambiguous streamed tool call index; provider must send a stable call id");
++                }
++                if (block && name && block.name && name !== block.name) {
++                    throw new Error("Conflicting streamed tool call name for the same identity");
+                 }
+                 if (!block) {
+                     // Note: the "input" fallback here should/must not be taken.  in case the LLM makes up
