@@ -277,7 +277,7 @@ export function subagentUsageFields(usage: SubagentUsage): SubagentUsageField[] 
   const hit = subagentCacheHitRate(usage);
   return [
     { key: "input", label: "输入", value: formatTokenCount(usage.input) },
-    { key: "cacheRead", label: "缓存读", value: formatTokenCount(usage.cacheRead) },
+    { key: "cacheRead", label: "缓存读取", value: formatTokenCount(usage.cacheRead) },
     { key: "output", label: "输出", value: formatTokenCount(usage.output) },
     {
       key: "hit",

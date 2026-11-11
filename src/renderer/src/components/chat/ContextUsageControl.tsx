@@ -395,7 +395,7 @@ export default function ContextUsageControl({ executing = false }: Props): React
 
   const tokenDetail = [
     { key: "input", label: "输入", tokens: contextInputTokens, color: "#f5a623" },
-    { key: "cacheRead", label: "缓存读", tokens: contextCacheReadTokens, color: "#34c759" },
+    { key: "cacheRead", label: "缓存读取", tokens: contextCacheReadTokens, color: "#34c759" },
     { key: "output", label: "输出", tokens: contextOutputTokens, color: "#8b5cf6" },
   ];
   const hasTokenDetail = tokenDetail.some((t) => t.tokens != null);

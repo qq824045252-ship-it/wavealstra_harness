@@ -32,8 +32,8 @@ export function subagentHeaderMetrics(usage?: HeaderUsage, scope = "本子代理
   });
   return [
     token("input", usage?.totalInput !== undefined ? "总输入" : "新输入", number(usage?.totalInput) ?? input, usage?.totalInput !== undefined ? "供应商报告的总输入，包含缓存部分" : "未命中的输入，不含缓存读取和缓存写入"),
+    token("cacheRead", "缓存读取", read, "命中缓存的输入 token"),
     token("output", "输出", output, "输出 token"),
-    token("cacheRead", "缓存读", read, "命中缓存的输入 token"),
     token("cacheWrite", "缓存写", write, "写入缓存的输入 token"),
     { key: "hit", label: "缓存命中率", value: formatRateDash(hit),
       title: usage?.totalInput !== undefined ? `${scope}：缓存读 ÷ 供应商总输入 tokens；未将缺失缓存写入视为 0` : `${scope}：缓存读 ÷（新输入 + 缓存读 + 缓存写）；缺少任一分量或分母为 0 时显示 —` },

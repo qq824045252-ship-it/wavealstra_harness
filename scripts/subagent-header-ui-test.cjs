@@ -35,13 +35,23 @@ runRendererFixture({ name: "subagent-header-ui", width: 1640, height: 600 }, asy
     assert(layout.items.slice(0,-1).every(a=>Math.min(a.right,close.right)-Math.max(a.left,close.left)<=1 || Math.min(a.bottom,close.bottom)-Math.max(a.top,close.top)<=1), `${width}: close button stays unobscured`);
     if ([1560,560,320].includes(width)) await fixture.screenshot(join(output, `subagent-header-${width}.png`));
   }
-  const values = () => evaluate('Object.fromEntries([...document.querySelectorAll("[data-metric]")].map(el=>[el.dataset.metric,el.querySelector("dd").textContent]))');
+  for (const width of [1200, 390, 320]) {
+    await evaluate(`document.getElementById("column").style.width="${width}px"`); await settle();
+    const rows = await evaluate(`['bot-reply','team-reply','work-metrics'].map(id=>{const el=document.getElementById(id);return {id,text:el.textContent,overflow:el.scrollWidth>el.clientWidth+1};})`);
+    for (const row of rows) { assert(row.text.includes('缓存读取') && row.text.includes('0.875M'), row.id+' visibly displays raw cache read'); assert(!row.overflow, row.id+' no horizontal overflow at '+width); }
+    await fixture.screenshot(join(output, `cache-read-metrics-${width}.png`));
+  }
+  const values = () => evaluate('Object.fromEntries([...document.querySelectorAll(".subagent-detail-header [data-metric]")].map(el=>[el.dataset.metric,el.querySelector("dd").textContent]))');
   let v = await values();
-  assert.deepEqual(v, {input:"0.125M",output:"0.022M",cacheRead:"0.875M",cacheWrite:"0M",hit:"88%",elapsed:"16m 56s"});
+  assert.deepEqual(v, {input:"0.125M",output:"0.022M",cacheRead:"0.875M",cacheWrite:"0.000M",hit:"88%",elapsed:"16m 56s"});
   await evaluate('window.setScenario("missing")'); await settle(); v=await values();
   assert(Object.values(v).every(value=>value==="—"), "missing receipt never displays zero usage or duration");
+  for (const id of ['bot-reply','team-reply','work-metrics']) assert((await evaluate(`document.getElementById("${id}").textContent`)).match(/缓存读取\s*—/),id+' missing cache is unknown');
+  await evaluate('window.setScenario("partial")'); await settle();
+  for (const id of ['bot-reply','team-reply','work-metrics']) { const text=await evaluate(`document.getElementById("${id}").textContent`); assert(text.match(/缓存读取\s*—/),id+' partial cache is unknown'); assert(!text.includes('NaN'),id+' no NaN'); }
   await evaluate('window.setScenario("other")'); await settle(); v=await values();
-  assert(v.hit==="0%" && v.cacheRead==="0M" && v.input==="0.001M", "switch child snapshot replaces metrics without aggregation");
+  assert(v.hit==="0%" && v.cacheRead==="0.000M" && v.input==="0.001M", "switch child snapshot replaces metrics without aggregation");
+  for (const id of ['bot-reply','team-reply','work-metrics']) assert((await evaluate(`document.getElementById("${id}").textContent`)).match(/缓存读取\s*0\.000M/),id+' known zero remains visible');
   await evaluate('window.setScenario("running")'); await settle();
   assert((await values()).elapsed==="3m 12s", "running elapsed refreshes");
   await evaluate('document.querySelector(".subagent-detail-heading .icon-btn").click()'); await settle();

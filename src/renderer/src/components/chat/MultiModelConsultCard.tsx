@@ -11,6 +11,7 @@ import {
 } from "@shared/multi-model-consult";
 import { IconUsers, IconX } from "@/components/common/icons";
 import "./MultiModelConsultCard.css";
+import { subagentHeaderMetrics } from "@/lib/subagentHeaderMetrics";
 
 const STATUS: Record<ConsultWorkerStatus, string> = {
   queued: "等待", running: "分析中", complete: "已完成", error: "失败", cancelled: "已取消", timeout: "超时",
@@ -143,9 +144,9 @@ export default function MultiModelConsultCard({ toolCall }: { toolCall: ToolCall
   const duration = (item: ConsultWorkerResult): string => item.startedAt && item.endedAt
     ? `${((item.endedAt - item.startedAt) / 1000).toFixed(1)} 秒`
     : item.startedAt ? "计时中" : "";
-  const tokens = (item: ConsultWorkerResult): string => item.tokens
-    ? `tokens 输入 ${item.tokens.input} / 输出 ${item.tokens.output}${item.tokens.cacheRead ? ` / 缓存读 ${item.tokens.cacheRead}` : ""}`
-    : "";
+  const tokens = (item: ConsultWorkerResult): string => subagentHeaderMetrics(item.tokens, "本会诊成员累计")
+    .filter(metric => metric.key !== "cacheWrite")
+    .map(metric => `${metric.label} ${metric.value}`).join(" / ");
   const sameTask = Boolean(report) && activeTaskId === report?.taskId;
   // A failed, timed-out or cancelled participant stays quotable while it has an answer or a reason.
   const hasEvidence = Boolean(worker && ((worker.answer ?? "").trim() || (worker.error ?? "").trim()));
