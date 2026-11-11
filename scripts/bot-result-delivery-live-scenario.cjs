@@ -56,7 +56,7 @@ if(id==='csv-analysis')check(/118/.test(row.presentation.text)&&/Coffee|咖啡/.
 if(id==='missing-facts')check(/无法|不能|不知道|不确定|需要|提供/.test(row.presentation.text)&&!/20\d\d[-年]\d/.test(row.presentation.text),'missing facts honesty');
 if(id==='code-review')check(/NaN|0\s*\/\s*0/.test(row.presentation.text),'empty-array defect');
 if(id==='multiple-deliverables'){
-const front=message.workFeedback.report.summary.replace(/[*`]/g,'').trim();check(row.presentation.body.trim()===front,'foreground reviewed prose precedes raw structured conclusions');
+const plain=t=>t.replace(/[*`#]/g,'').replace(/(?:^|\n)\s*[-•]\s+/g,' ').replace(/\s+/g,' ').trim();const front=plain(message.workFeedback.report.summary);check(plain(row.presentation.body)===front,'foreground reviewed prose precedes raw structured conclusions');
 check(row.presentation.details.filter(d=>d.label==='执行详情与来源').every(d=>!d.open),'execution details closed initially');
 await rpc('Emulation.setDeviceMetricsOverride',{width:440,height:900,deviceScaleFactor:1,mobile:false});await new Promise(r=>setTimeout(r,250));
 check(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'),'narrow viewport no horizontal overflow');

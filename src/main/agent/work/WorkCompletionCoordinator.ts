@@ -10,6 +10,7 @@ export interface WorkCompletionDelivery {
   bindingId: string; eventId: string; text: string; category: "progress" | "result" | "decision"; notices?: string[];
   completion?: NonNullable<WorkFeedbackDto["report"]>["completion"];
   primaryArtifactRefs?: string[];
+  sourceNotices?: string[];
 }
 export interface CompletionTurn { binding_id: string; context_json: string; decision_json: string | null; state: string; attempts: number; retry_at: number; error: string | null }
 export interface WorkCompletionOptions {
@@ -91,7 +92,6 @@ export class WorkCompletionCoordinator {
     if (!candidate || !binding || this.closed || !this.options.isAuthority()) return;
     const results = workDeliveryResults(works, binding);
     const availableFiles = workDeliveryFiles(works, results).filter(file => file.openPath).map(({ref, name}) => ({ref, name}));
-    const raw = results.map(item => item.summary).filter(Boolean).join("\n\n");
     const eventId = `completion:${bindingId}`;
     const personalPreferences = this.options.preferences?.(binding.taskId) ?? "";
     const preferenceFingerprint = createHash("sha256").update(personalPreferences).digest("hex");
@@ -167,8 +167,13 @@ export class WorkCompletionCoordinator {
         if (!this.current(bindingId)) return;
         const exhausted = (this.row(bindingId)?.attempts ?? 0) >= 2;
         db.prepare("UPDATE work_completion_turns SET state='queued',retry_at=?,error=? WHERE binding_id=?").run(Date.now() + 15000, message, bindingId);
-        const delivered = this.options.deliver({ bindingId, eventId: `${eventId}:fallback:${exhausted ? "final" : "retrying"}`, category: "result", text: raw || "后台没有返回可用的结果正文。",
-          notices: [...this.temporalContext(bindingId).historicalRecovery ? ["以下是历史执行记录，不代表刚刚重新执行或当前环境状态。"] : [], exhausted ? "结果整理未能完成，先交付真实执行结果；没有重跑业务任务。" : "结果整理暂时失败，先交付真实执行结果；正在重试整理，不会重跑业务任务。", message, ...candidate.conclusion === "ended_unsuccessfully" ? [candidate.summary] : []] });
+        const historical = this.temporalContext(bindingId).historicalRecovery;
+        const fallbackFiles = workDeliveryFiles(works, workDeliveryResults(works, binding)).filter(file => file.openPath);
+        const delivered = this.options.deliver({ bindingId, eventId: `${eventId}:fallback:${exhausted ? "final" : "retrying"}`, category: "result",
+          text: `${historical ? "历史执行结果" : "执行结果"}已保留，但还没能整理出可靠结论，目标是否达成尚未核实。${fallbackFiles.length ? "你可以先打开下方已登记的文件；" : ""}原始报告保留在执行详情里。`,
+          completion: { outcome: "unknown", nextStep: "deliver" },
+          notices: [...historical ? ["这是历史记录，未重新执行或核实当前状态。"] : [], ...(exhausted ? [] : ["正在重试整理，不会重跑业务任务。"])],
+          sourceNotices: [message, ...candidate.conclusion === "ended_unsuccessfully" ? [candidate.summary] : []] });
         if (exhausted && delivered) {
           works.automaticCompletion.recordDelivery(bindingId, "已交付原始执行结果；结果整理失败，未将其冒充独立核验。", "unknown");
           works.automaticCompletion.drain();

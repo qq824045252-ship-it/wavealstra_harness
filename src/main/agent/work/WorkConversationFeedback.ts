@@ -80,7 +80,7 @@ export class WorkConversationFeedback {
           title: work.title, summary: input.text, artifactRefs: refs, reviewStatus: result?.status ?? "proposed", current: true,
           ...(input.completion ? { completion: input.completion } : {}),
           ...(primaryArtifactRefs ? { primaryArtifactRefs } : {}),
-          ...(input.completion ? { sourceNotices: [...new Set(results.flatMap(item => item.uncoveredScope))] } : {}),
+          ...(input.completion ? { sourceNotices: [...new Set([...input.sourceNotices ?? [], ...results.flatMap(item => item.uncoveredScope)])] } : {}),
           ...projectTeamReport(raw, works.repo.reportContext(binding)),
           notices: [...input.notices ?? [], ...input.completion ? [] : results.flatMap(item => item.uncoveredScope),
             ...results.some(item => item.hasWriteConflicts) ? ["成果存在写入冲突"] : [],

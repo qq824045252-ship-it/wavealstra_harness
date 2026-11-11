@@ -288,6 +288,15 @@ try {
   await flush(); failReview=false;
   assert.equal(works.getWork(failed)?.lifecycle,"closed","report failure delivers original result instead of hanging");
   assert.equal(works.repo.listBindings(failed).length,1,"summary retry never reruns the business task");
+  const failedOrigin=feedback.messages.resolveWorkDelivery(LOCAL_USER_ID,failed)!;
+  const fallbackMessages=feedback.messages.history(LOCAL_USER_ID,{botId:failedOrigin.bot_id,conversationId:failedOrigin.conversation_id}).messages.filter(item=>item.workIds.includes(failed)&&item.workFeedback?.report);
+  const fallbackReport=fallbackMessages.at(-1)!.workFeedback!.report!;
+  assert(fallbackMessages[0].workFeedback!.report!.notices.some(text=>text.includes("正在重试整理")),"first failure still explains pending retry without dumping raw output");
+  assert.equal(fallbackReport.completion?.outcome,"unknown","review failure must not pretend the goal was verified");
+  assert.match(fallbackReport.summary,/目标是否达成尚未核实/);
+  assert(!fallbackReport.summary.includes("已交付请求的文字方案"),"failure does not dump the worker report into the foreground");
+  assert(fallbackMessages.at(-1)!.text.includes("已交付请求的文字方案"),"raw worker result stays in the exact delivery record");
+  assert(fallbackReport.sourceNotices?.includes("model unavailable"),"technical diagnostic stays available as secondary evidence");
   assert.deepEqual(errors, []);
   console.log("PASS automatic completion: delivery, in-flight, replay, watch, honest missing evidence, legacy history, unknown effects, real clarification");
 } finally { coordinator.close(); await queue.close(); await adapter.close(); db.close(); rmSync(root, { recursive: true, force: true }); }
