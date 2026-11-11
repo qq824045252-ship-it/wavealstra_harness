@@ -1,0 +1,244 @@
+{
+  "date": "2026-11-11",
+  "scope": "Real model tool loop using production extensions and actual isolated Electron browser; not full application main-UI flow",
+  "final": {
+    "passed": true,
+    "model": {
+      "modelId": "opendesign/deepseek-v4.1-flash-eco",
+      "declaredContextWindow": 1048000,
+      "declaredMaxOutputTokens": 328000,
+      "effectiveMaxOutputTokens": 328000,
+      "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null,
+        "minimal": null,
+        "low": "low",
+        "medium": null,
+        "high": "high",
+        "xhigh": null,
+        "max": "max"
+      },
+      "mode": "gateway-model-configuration",
+      "pricing": "not-measured",
+      "source": "http://127.0.0.1:3425/v1/models"
+    },
+    "cases": [
+      {
+        "id": "table-arithmetic",
+        "passed": true,
+        "responseModel": "opendesign/deepseek-v4.1-flash-eco",
+        "toolCalls": 2,
+        "errors": []
+      },
+      {
+        "id": "form-fill",
+        "passed": true,
+        "responseModel": "opendesign/deepseek-v4.1-flash-eco",
+        "toolCalls": 8,
+        "errors": []
+      },
+      {
+        "id": "target-blank",
+        "passed": true,
+        "responseModel": "opendesign/deepseek-v4.1-flash-eco",
+        "toolCalls": 4,
+        "errors": []
+      },
+      {
+        "id": "local-html",
+        "passed": true,
+        "responseModel": "opendesign/deepseek-v4.1-flash-eco",
+        "toolCalls": 2,
+        "errors": []
+      },
+      {
+        "id": "gadget-update-running",
+        "passed": true,
+        "responseModel": "opendesign/deepseek-v4.1-flash-eco",
+        "toolCalls": 4,
+        "errors": []
+      },
+      {
+        "id": "gadget-stopped-recovery",
+        "passed": true,
+        "responseModel": "opendesign/deepseek-v4.1-flash-eco",
+        "toolCalls": 6,
+        "errors": [
+          {
+            "tool": "browser_exec",
+            "action": "navigate",
+            "code": "NAVIGATION_FAILED"
+          }
+        ]
+      }
+    ]
+  },
+  "discovery": {
+    "passed": true,
+    "model": {
+      "modelId": "opendesign/deepseek-v4.1-flash-eco",
+      "declaredContextWindow": 1048000,
+      "declaredMaxOutputTokens": 328000,
+      "effectiveMaxOutputTokens": 328000,
+      "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null,
+        "minimal": null,
+        "low": "low",
+        "medium": null,
+        "high": "high",
+        "xhigh": null,
+        "max": "max"
+      },
+      "mode": "gateway-model-configuration",
+      "pricing": "not-measured",
+      "source": "http://127.0.0.1:3425/v1/models"
+    },
+    "cases": [
+      {
+        "id": "table-arithmetic",
+        "passed": true,
+        "responseModel": "opendesign/deepseek-v4.1-flash-eco",
+        "toolCalls": 2,
+        "errors": []
+      },
+      {
+        "id": "form-fill",
+        "passed": true,
+        "responseModel": "opendesign/deepseek-v4.1-flash-eco",
+        "toolCalls": 11,
+        "errors": [
+          {
+            "tool": "browser_exec",
+            "action": "fill",
+            "code": "SELECTOR_NOT_FOUND"
+          },
+          {
+            "tool": "browser_exec",
+            "action": "click",
+            "code": "SELECTOR_NOT_FOUND"
+          }
+        ]
+      },
+      {
+        "id": "target-blank",
+        "passed": true,
+        "responseModel": "opendesign/deepseek-v4.1-flash-eco",
+        "toolCalls": 5,
+        "errors": [
+          {
+            "tool": "browser_exec",
+            "action": "click",
+            "code": "INVALID_INPUT"
+          }
+        ]
+      },
+      {
+        "id": "local-html",
+        "passed": true,
+        "responseModel": "opendesign/deepseek-v4.1-flash-eco",
+        "toolCalls": 2,
+        "errors": []
+      },
+      {
+        "id": "gadget-update-running",
+        "passed": true,
+        "responseModel": "opendesign/deepseek-v4.1-flash-eco",
+        "toolCalls": 4,
+        "errors": []
+      },
+      {
+        "id": "gadget-stopped-recovery",
+        "passed": true,
+        "responseModel": "opendesign/deepseek-v4.1-flash-eco",
+        "toolCalls": 6,
+        "errors": [
+          {
+            "tool": "browser_exec",
+            "action": "navigate",
+            "code": "NAVIGATION_FAILED"
+          }
+        ]
+      }
+    ]
+  },
+  "intermediate": {
+    "passed": false,
+    "model": {
+      "modelId": "opendesign/deepseek-v4.1-flash-eco",
+      "declaredContextWindow": 1048000,
+      "declaredMaxOutputTokens": 328000,
+      "effectiveMaxOutputTokens": 328000,
+      "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null,
+        "minimal": null,
+        "low": "low",
+        "medium": null,
+        "high": "high",
+        "xhigh": null,
+        "max": "max"
+      },
+      "mode": "gateway-model-configuration",
+      "pricing": "not-measured",
+      "source": "http://127.0.0.1:3425/v1/models"
+    },
+    "cases": [
+      {
+        "id": "table-arithmetic",
+        "passed": true,
+        "responseModel": "opendesign/deepseek-v4.1-flash-eco",
+        "toolCalls": 6,
+        "errors": []
+      },
+      {
+        "id": "form-fill",
+        "passed": true,
+        "responseModel": "opendesign/deepseek-v4.1-flash-eco",
+        "toolCalls": 8,
+        "errors": []
+      },
+      {
+        "id": "target-blank",
+        "passed": true,
+        "responseModel": "opendesign/deepseek-v4.1-flash-eco",
+        "toolCalls": 4,
+        "errors": []
+      },
+      {
+        "id": "local-html",
+        "passed": true,
+        "responseModel": "opendesign/deepseek-v4.1-flash-eco",
+        "toolCalls": 2,
+        "errors": []
+      },
+      {
+        "id": "gadget-update-running",
+        "passed": true,
+        "responseModel": "opendesign/deepseek-v4.1-flash-eco",
+        "toolCalls": 4,
+        "errors": []
+      },
+      {
+        "id": "gadget-stopped-recovery",
+        "passed": false,
+        "responseModel": "opendesign/deepseek-v4.1-flash-eco",
+        "toolCalls": 2,
+        "errors": [
+          {
+            "tool": "browser_exec",
+            "action": "navigate",
+            "code": "NAVIGATION_FAILED"
+          }
+        ],
+        "failure": "fetch failed"
+      }
+    ]
+  },
+  "caveats": [
+    "Discovery batch initially promised structured targets in fixture system text before that metadata existed; final neutral prompt removed this statement.",
+    "Intermediate sixth case failed at model gateway fetch; retained as failed.",
+    "Final sixth task deliberately navigated one stopped localhost URL; this single expected error is not an unexpected regression.",
+    "No process crash injection or production-data modification performed."
+  ]
+}

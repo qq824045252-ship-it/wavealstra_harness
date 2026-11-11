@@ -44,6 +44,9 @@ export interface BrowserExecOutput {
   text?: string;
   detail?: string;
   screenshot?: Uint8Array;
+  /** Observed targets, never guessed selectors or editable values. */
+  elements?: Array<{ selector: string; tag: string; label: string; type?: string }>;
+  elementsTruncated?: boolean;
 }
 
 function assertBrowserUrl(raw: string): string {
@@ -138,10 +141,17 @@ export class BrowserAutomationService {
         return { action: input.action, url: wc.getURL(), title: await wc.getTitle() };
       } catch (error) {
         if (error instanceof Error && error.name === "AbortError") throw error;
-        throw new BrowserAutomationError("NAVIGATION_FAILED", `浏览器导航失败：${target}`, {
+        const cause = error instanceof Error ? error.message : String(error);
+        const refusedLocalServer = ["localhost", "127.0.0.1", "[::1]"].includes(new URL(target).hostname)
+          && /ERR_CONNECTION_REFUSED|ECONNREFUSED/.test(cause);
+        const guidance = refusedLocalServer
+          ? "本地预览服务未监听该端口。若这是 Gadget，请用 gadget_open 重新取得当前 URL；不要反复重试旧端口或改用外部浏览器。普通本地 HTML 可直接用 file:// URL 预览。"
+          : "请先确认当前页面和目标地址，再决定是否重试；无需切换外部浏览器。";
+        throw new BrowserAutomationError("NAVIGATION_FAILED", `内置浏览器导航失败：${cause}。${guidance}`, {
           targetUrl: target,
           currentUrl: safeUrl(wc),
-          cause: error instanceof Error ? error.message : String(error),
+          cause,
+          reason: refusedLocalServer ? "local-server-unavailable" : "navigation-failed",
         });
       }
     }
@@ -151,10 +161,13 @@ export class BrowserAutomationService {
       try { page = await this.content.getCurrentPage(); }
       catch (error) { throw jsFailure(error, input.action, safeUrl(wc)); }
       if (!page) throw new BrowserAutomationError("PAGE_UNAVAILABLE", "浏览器没有可读取的页面", { currentUrl: safeUrl(wc) });
-      if (documentRevision !== await this.documentRevision(wc)) throw new BrowserAutomationError("SURFACE_CHANGED", "页面在读取期间变化，请重新读取");
       const max = Math.max(1_000, Math.min(100_000, Math.round(input.maxChars ?? 30_000)));
+      let targets: Pick<BrowserExecOutput, "elements" | "elementsTruncated" | "text">;
+      try { targets = await this.readTargets(wc, max); }
+      catch (error) { throw jsFailure(error, input.action, safeUrl(wc)); }
+      if (documentRevision !== await this.documentRevision(wc)) throw new BrowserAutomationError("SURFACE_CHANGED", "页面在读取期间变化，请重新读取");
       this.observations.set(owner, { version: host.captureVersion, webContentsId: wc.id, url: wc.getURL(), documentRevision });
-      return { action: input.action, url: page.url, title: page.title, text: page.text.slice(0, max) };
+      return { action: input.action, url: page.url, title: page.title, ...targets, text: targets.text ?? page.text.slice(0, max) };
     }
     if (input.action === "screenshot") {
       if (!host.url) throw new BrowserAutomationError("PAGE_UNAVAILABLE", "浏览器没有可截图的页面");
@@ -232,6 +245,37 @@ export class BrowserAutomationService {
       return { action: input.action, url: wc.getURL(), detail: `已向 ${selector} 发送按键 ${key}` };
     }
     throw new BrowserAutomationError("INVALID_INPUT", `不支持的 browser_exec action：${String(input.action)}`);
+  }
+
+  private async readTargets(wc: NonNullable<BrowserHost["inspectionWebContents"]>, maxChars: number): Promise<Pick<BrowserExecOutput, "elements" | "elementsTruncated" | "text">> {
+    // Plain text is insufficient for click/fill/press: without target evidence a
+    // model has to invent CSS selectors. Inspect only visible interactive nodes,
+    // never form values, hidden inputs, password contents, or page scripts.
+    return await wc.executeJavaScript(`(() => {
+      const nodes=[...document.querySelectorAll('a[href],button,input:not([type="hidden"]),textarea,select,[role="button"],[role="link"],[contenteditable="true"]')];
+      const visible=nodes.filter(el=>{const r=el.getBoundingClientRect(),s=getComputedStyle(el);return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden'});
+      const selectorFor=el=>{
+        if(el.id){const selector='#'+CSS.escape(el.id);if(document.querySelectorAll(selector).length===1)return selector;}
+        const parts=[];
+        for(let node=el;node&&node.nodeType===1;node=node.parentElement){
+          let part=node.localName;
+          const peers=node.parentElement?[...node.parentElement.children].filter(p=>p.localName===node.localName):[node];
+          if(peers.length>1)part+=':nth-of-type('+(peers.indexOf(node)+1)+')';
+          parts.unshift(part);
+        }
+        const selector=parts.join(' > ');
+        return selector.length<=1000&&document.querySelector(selector)===el?selector:null;
+      };
+      const elements=visible.slice(0,80).map(el=>{
+        const selector=selectorFor(el);if(!selector)return null;
+        const editable=el instanceof HTMLInputElement||el instanceof HTMLTextAreaElement||el instanceof HTMLSelectElement||el.isContentEditable;
+        const label=(el.getAttribute('aria-label')||(el.labels?[...el.labels].map(l=>{const c=l.cloneNode(true);c.querySelectorAll('input,textarea,select,[contenteditable]').forEach(n=>n.remove());return c.textContent||''}).join(' '):'')||el.getAttribute('placeholder')||el.getAttribute('title')||(!editable?el.innerText:'')||el.getAttribute('name')||'').trim().slice(0,160);
+        return {selector,tag:el.localName,label,...(el instanceof HTMLInputElement?{type:el.type}:{})};
+      }).filter(Boolean);
+      // Rendered innerText retains table-cell tabs and block line breaks. Raw
+      // textContent concatenates cells (17 and 3 become 173), forcing guesses.
+      return {text:(document.body?.innerText??'').slice(0,${maxChars}),elements,elementsTruncated:visible.length>80};
+    })()`) as Pick<BrowserExecOutput, "elements" | "elementsTruncated" | "text">;
   }
 
   private async documentRevision(wc: NonNullable<BrowserHost["inspectionWebContents"]>): Promise<string> {

@@ -202,6 +202,9 @@ async function main(): Promise<void> {
     } as never);
     assert.equal(changed.isError, undefined);
     assert.notEqual((changed.details as { revision: string }).revision, revision);
+    assert.deepEqual((changed.details as { runtime: { url?: string; pid?: number; status: string } }).runtime,
+      service.get(workspaceAgentGadgetId)?.runtime, "update returns verified current preview evidence");
+    assert.equal((changed.details as { runtime: { url?: string } }).runtime.url, opened.url);
     assert.match(await (await fetch(opened.url)).text(), /edited from task/);
     assert.equal(service.get(workspaceAgentGadgetId)?.runtime.pid, opened.pid, "edits retain the running URL/process");
     assert.equal(readFileSync(join(storage.paths(workspaceAgentGadgetId).dataPath, "keep.txt"), "utf8"), "runtime data");

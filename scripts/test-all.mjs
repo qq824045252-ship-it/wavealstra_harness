@@ -76,6 +76,7 @@ const SERIAL_TEST_PATTERNS = [/^test:core-performance/, /^test:bot-work-query-sc
  */
 const GUI_TESTS = new Set([
   "test:gadget-menu-dev",
+  "test:browser-builtin-electron",
   "test:bot-add-menu-desktop",
   "test:diagnostics-cache-ui",
   "test:bot-display-groups-ui",
@@ -163,6 +164,7 @@ const GUI_TESTS = new Set([
 
 const NETWORK_TESTS = new Set([
   "test:web-page-answer-runtime:live", // Real gateway model; output-pressure injection runs last.
+  "test:browser-builtin-live",
   "test:bot-result-delivery:live",
   "test:bot-memory-live", // isolated pnpm dev desktop + configured live model
   "test:bot-watch:live",

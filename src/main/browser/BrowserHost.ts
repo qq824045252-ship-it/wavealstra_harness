@@ -3,7 +3,7 @@
  * 允许 http(s) 站内导航（Penpot SPA 需要）；与产物预览 ArtifactPreviewHost 分离，
  * 避免 mybuddy-artifact 协议宿主拦截外链。
  */
-import { BrowserWindow, dialog, shell, WebContentsView, type Rectangle } from "electron";
+import { BrowserWindow, dialog, WebContentsView, type Rectangle } from "electron";
 import type { CaptureModeState, SelectionDescriptor } from "../../shared/capture-mode";
 import {
   pageInspectionService,
@@ -104,8 +104,15 @@ export class BrowserHost {
       if (this.confirmUnload(win)) event.preventDefault();
     });
     wc.setWindowOpenHandler(({ url }) => {
-      // 新窗口请求：全部 http(s)（含 localhost）交给系统浏览器
-      if (/^https?:/i.test(url)) void shell.openExternal(url);
+      // A page's target=_blank/window.open is still part of the current browser
+      // task. Keep the exact sandboxed WCV/session instead of silently launching
+      // another application that browser_exec cannot observe or control.
+      if (/^https?:/i.test(url)) {
+        void wc.loadURL(url).catch((error: unknown) => {
+          if (error && typeof error === "object" && "code" in error && error.code === "ERR_ABORTED") return;
+          console.error("[BrowserHost] in-app popup navigation failed", error);
+        });
+      }
       return { action: "deny" };
     });
     wc.on("did-navigate", (_e, url) => {

@@ -104,7 +104,7 @@ function errorResult(tool: string, error: unknown) {
   return {
     content: [{ type: "text" as const, text: `[${tool}] ${message}${computerEvidence ? `\n\n执行证据（先回读状态，禁止重放已执行或结果未知的输入）：\n${computerEvidence}` : ""}` }],
     isError: true as const,
-    details: details as Record<string, unknown>,
+    details: { ...details, ...(error && typeof error === "object" && "code" in error && typeof error.code === "string" ? { code: error.code } : {}) } as Record<string, unknown>,
   };
 }
 
@@ -707,7 +707,7 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
       pi.registerTool({
         name: "browser_exec",
         label: "浏览器操作",
-        description: "操作 MyBuddy 自有浏览器。navigate 支持 http(s) 网页以及本机 file:// 文件 URL，可直接预览和截图已生成的 HTML，无需另开 Chrome；不支持网络共享文件。仅支持 status/navigate/read/click/fill/press/screenshot 枚举动作，不执行任意 JavaScript。screenshot 会按当前主模型能力自动选择原生多模态直读或内部 Vision 委托，不需要再手动调用 describe_image。需要桌面窗口级操作（跨应用、结构化控件、窗口输入）时用 computer_exec，不要用本工具。",
+        description: "网页任务默认使用 MyBuddy 内置 Electron 浏览器，页面的新窗口链接也留在内置浏览器。navigate 支持 http(s) 网页以及本机 file:// 文件 URL，可直接预览和截图已生成的 HTML，无需另开 Chrome；不支持网络共享文件。read 返回正文及可见交互元素的准确 CSS selector，click/fill/press 使用这些观察到的 selector；页面或焦点变化后重新 read。仅支持 status/navigate/read/click/fill/press/screenshot 枚举动作，不执行任意 JavaScript。screenshot 会按当前主模型能力自动选择原生多模态直读或内部 Vision 委托，不需要再手动调用 describe_image。需要桌面窗口级操作（跨应用、结构化控件、窗口输入）时用 computer_exec，不要用本工具。",
         promptSnippet: "browser_exec(action, url?, selector?, text?, key?)",
         parameters: browserExecSchema,
         execute: async (tc, p: BrowserExecInput & { max_chars?: number }, signal, _onUpdate, ctx) => {

@@ -1,3 +1,4 @@
+import { durableToolDiagnosticMessages } from "./DurableToolDiagnostics";
 import { emptyUsageEvidence, usagePresence, type ProviderUsageEvidence, type ProviderUsagePresence } from "../../../shared/provider-usage-evidence";
 import { supportsUsageObservation, withUsageEvidence } from "../../usage/provider-usage-evidence";
 import { createDurableArtifactRegistrationTool, withDurableArtifactRegistration } from "./DurableArtifactRegistration";
@@ -1181,7 +1182,7 @@ function botExtension(
           executionScope: options.executionIdentity?.executionScope, conversationId: String(api.conversationId), toolTaskId: api.taskId,
           generationTaskId: toolGeneration(api.taskId, String(api.conversationId)),
           callId: call.id, name: call.name, at: Date.now(), isError: observed.isError,
-          diagnostics: observed.diagnostics?.map(item => item.code ?? item.message),
+          diagnostics: durableToolDiagnosticMessages(observed),
           sourceKind: options.executionIdentity?.sourceKind ?? (await childConversation(api, context) ? "subagent" : "main") });
       } catch { /* Observers never change tool execution. */ }
       return changed;

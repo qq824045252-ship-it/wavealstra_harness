@@ -90,6 +90,13 @@ try {
   settleBrowserAutomationRecovery(bridge, navInput, { action: "navigate", url: "https://example.test/next", title: "Next" });
   assert(failures.list("task").find((item) => item.id === navFailure.id)?.resolvedAt, "same target URL success establishes final navigation state");
 
+  const refused = hostWith({ loadError: new Error("ERR_CONNECTION_REFUSED (-102) loading localhost") });
+  await assert.rejects(new BrowserAutomationService(() => refused.host).execute({ action: "navigate", url: "http://127.0.0.1:50878/?v=2" }),
+    (error: unknown) => error instanceof BrowserAutomationError && error.code === "NAVIGATION_FAILED"
+      && error.message.includes("ERR_CONNECTION_REFUSED") && error.message.includes("gadget_open")
+      && (error.details as { reason?: string }).reason === "local-server-unavailable",
+    "refused preview explains the dead local server and recovery without an external browser");
+
   const missing = hostWith({ script: () => ({ ok: false, code: "SELECTOR_NOT_FOUND", error: "selector not found" }) });
   const missingService = new BrowserAutomationService(() => missing.host);
   let missingError: BrowserAutomationError | undefined;

@@ -115,7 +115,7 @@ export function createGadgetAgentExtension(bridge: GadgetAgentBridge): Extension
     pi.registerTool({
       name: "gadget_update",
       label: "Gadget · 修改源码",
-      description: "修改已有 Gadget 的指定源码文件（也可新增文件），保留其 id、作用域、其他文件和数据。expectedRevision 使用 gadget_read 返回值；冲突时重新读取再修改。修改工作空间或个人 Gadget 会影响所有使用它的任务。",
+      description: "修改已有 Gadget 的指定源码文件（也可新增文件），保留其 id、作用域、其他文件和数据。expectedRevision 使用 gadget_read 返回值；冲突时重新读取再修改。修改工作空间或个人 Gadget 会影响所有使用它的任务。返回预览运行状态；浏览器检查使用返回的当前 URL，服务不可用时用 gadget_open 恢复，不能沿用旧端口。",
       promptSnippet: "gadget_update(gadgetId, expectedRevision, files) — 原地修改 Gadget，保存后已打开的界面自动刷新",
       parameters: Type.Object({
         gadgetId: Type.String({ minLength: 1 }),
@@ -134,7 +134,14 @@ export function createGadgetAgentExtension(bridge: GadgetAgentBridge): Extension
           }
           bridge.service.getForTask(params.gadgetId, bridge.taskId);
           const source = bridge.service.updateSource(params);
-          return { content: [{ type: "text" as const, text: `已更新 Gadget「${gadget.name}」。id=${gadget.id}，revision=${source.revision}。` }], details: { gadgetId: gadget.id, revision: source.revision } };
+          // Saving source does not prove that its separately owned preview process
+          // survived. Return current evidence rather than leaving the model with a
+          // remembered port (a stopped/restarted process gets a different port).
+          const runtime = await bridge.service.health(gadget.id);
+          const preview = runtime.status === "running" && runtime.url
+            ? `内置浏览器当前预览 URL：${runtime.url}；请读取或刷新这个地址验证更新。`
+            : "预览服务当前不可用，请用 gadget_open 取得可用 URL 后再检查。源码已经保存，不要重放本次修改或重试旧端口。";
+          return { content: [{ type: "text" as const, text: `已更新 Gadget「${gadget.name}」。id=${gadget.id}，revision=${source.revision}。${preview}` }], details: { gadgetId: gadget.id, revision: source.revision, runtime } };
         } catch (error) { return errorResult(error, "gadget_update"); }
       },
     });

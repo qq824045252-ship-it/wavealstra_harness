@@ -1,3 +1,4 @@
+import { durableExtensionDiagnostics } from "./DurableToolDiagnostics";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { ModelRegistry, type ModelRuntime, type ExtensionAPI, type ExtensionContext, type ToolDefinition, type InlineExtension } from "@earendil-works/pi-coding-agent";
 import { defineEntry, LiveDoc, type ToolRegistration, type Cursor, type EntryRecord, type ConversationId, type ToolHooks } from "@earendil-works/pi-durable";
@@ -49,7 +50,7 @@ export async function durableDomainTools(factories: readonly InlineExtension[], 
                 update => { for (const block of update.content ?? []) if (block.type === "text") native.output(block.text); },
                 extensionContext as Parameters<typeof tool.execute>[4]);
               context.abortSignal?.throwIfAborted();
-              return { output: result.content, isError: result.isError, details: result.details === undefined ? undefined : JSON.parse(JSON.stringify(result.details)) };
+              return { output: result.content, isError: result.isError, diagnostics: durableExtensionDiagnostics(result), details: result.details === undefined ? undefined : JSON.parse(JSON.stringify(result.details)) };
             } finally { await Promise.all(invocation.getStore()!.writes); }
           });
           const execute = () => settings ? withModelInvocationSettings(settings, invoke) : invoke();
