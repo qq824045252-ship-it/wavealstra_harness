@@ -20,7 +20,7 @@ export function BotWorkArchiveActions({ work }: { work: WorkProjectionDto }): Re
     finally { inFlight.current = false; setBusy(false); }
   };
   const archived = isWorkArchived(work), deleted = Boolean(work.archive?.deletedAt);
-  if (!archived && !canArchiveWork(work)) return null;
+  if (!archived && !(work.listSummary?.canArchive ?? canArchiveWork(work))) return null;
   return <div className="bot-work-archive-actions" aria-label={`管理记录：${work.title}`}>
     {deleted ? <button type="button" disabled={busy} onClick={() => void perform("restore")}>恢复到归档</button>
       : archived ? <button type="button" disabled={busy} title="删除列表记录，可恢复；不会删除磁盘成果文件" onClick={() => void perform("delete")}>删除记录</button>

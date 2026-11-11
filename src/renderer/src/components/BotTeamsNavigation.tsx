@@ -1,3 +1,4 @@
+import { useWorkSummaryPages } from "@/lib/botActivityMonitor";
 import type { WorkProjectionDto } from "@shared/bot-work";
 import { useEffect, useRef, useState } from "react";
 import { useAppStore } from "@/store/appStore";
@@ -18,7 +19,7 @@ function pendingTeam(): SavedTeamRequest | null {
 export function BotTeamsNavigation({ onSelect }: { onSelect?: () => void } = {}): React.JSX.Element {
   const activeTeam = useAppStore(state => state.activeTeam);
   const bots = useAppStore(s => s.botIdentities);
-  const works = useAppStore(s => s.botWorks);
+  const [historyPages, setHistoryPages] = useState(1);
   const [teams, setTeams] = useState<WorkTeamTemplateDto[]>([]);
   const [error, setError] = useState("");
   const [selected, setSelected] = useState<WorkTeamTemplateDto | null>(null);
@@ -112,8 +113,8 @@ export function BotTeamsNavigation({ onSelect }: { onSelect?: () => void } = {})
     } catch { setError("保存结果尚未确认，请重试核对原请求，不会重复创建。"); }
     finally { saveFlight.current = false; setSaving(false); }
   };
-  const tasks = selected ? works.filter(work => !work.archive?.deletedAt && work.team?.teamId === selected.templateId) : [];
-  const adHoc = works.filter(work => work.team && !work.team.removedAt && !work.archive?.deletedAt && (!work.team.teamId || !teams.some(team => team.templateId === work.team?.teamId)));
+  const historical = useWorkSummaryPages({ scope: { kind: "historical_teams" }, view: "all", pageSize: 24, sort: "recent" }, historyPages, teams.map(team => team.templateId).sort().join("|"));
+  const adHoc = historical.result?.works ?? [];
   return <section className="bot-teams-navigation" aria-label="我的 Bot 团队">
     <div className="sidebar-tree-header"><span className="section-title">我的 Bot 团队</span><span className="sidebar-section-count">{teams.length}</span>
       <button type="button" className="sidebar-bot-create" onClick={() => { viewEpoch.current++; setError(""); setCreating(true); if (!saveRequest.current) { setName(""); setOwner(candidates[0]?.botId ?? ""); setMembers([]); } }}><IconPlus size={12} />新建团队</button>
@@ -122,7 +123,13 @@ export function BotTeamsNavigation({ onSelect }: { onSelect?: () => void } = {})
     {teams.map(team => <button type="button" className={`sidebar-bot-row sidebar-bot-identity ${activeTeam?.templateId === team.templateId ? "active" : ""}`} aria-pressed={activeTeam?.templateId === team.templateId} key={team.templateId} onClick={() => openTeam(team)}>
       <span className="sidebar-bot-avatar"><IconBot size={18} /></span><span><strong>{team.name}</strong><small>{team.members.length + 1} 位 Bot · 队长 {botName(team.ownerBotId)}</small></span>
     </button>)}
-    {adHoc.length > 0 && <details className="bot-team-history"><summary>临时与历史团队事项（{adHoc.length}）</summary>{adHoc.map(work => <button type="button" key={work.workId} onClick={() => openWork(work)}>{work.title}</button>)}</details>}
+    {(historical.loading || historical.error || (historical.result?.filtered ?? 0) > 0) && <details className="bot-team-history"><summary>临时与历史团队事项（{historical.result?.filtered ?? "…"}）</summary>
+      {adHoc.map(work => <button type="button" key={work.workId} onClick={() => openWork(work)}>{work.title}</button>)}
+      {historical.loading && <p role="status">正在加载历史团队事项…</p>}
+      {historical.error && <p role="alert">{historical.error}</p>}
+      {historical.result && <p>已加载 {adHoc.length} / {historical.result.filtered} 项</p>}
+      {historical.result && adHoc.length < historical.result.filtered && <button type="button" disabled={historical.loading} onClick={() => setHistoryPages(value => value + 1)}>加载更多历史事项</button>}
+    </details>}
     {error && !creating && !selected && <p role="status">{error}</p>}
     <dialog ref={dialog} className="bot-team-directory-dialog" aria-label={creating ? "新建 Bot 团队" : "团队工作空间"} onCancel={event => { event.preventDefault(); close(); }} onClose={close}>
       <header><h2>{creating ? "新建 Bot 团队" : settings ? `${selected?.name} · 团队设置` : selected?.name}</h2><button type="button" aria-label="关闭团队面板" onClick={close}><IconX size={18} /></button></header>
@@ -151,7 +158,7 @@ export function BotTeamsNavigation({ onSelect }: { onSelect?: () => void } = {})
         <button type="button" onClick={() => { setDelegating(selected); close(); }}>交给团队新任务</button>
         <h3>团队任务与成果</h3>
         <p>任务由「{selected.name}」负责，队长协调成员执行。</p>
-        {!tasks.length ? <p>当前已加载记录中还没有这个团队的任务。</p> : tasks.map(work => <button className="bot-team-task-row" type="button" key={work.workId} onClick={() => openWork(work)}><strong>{work.title}</strong><span>{work.lifecycle === "closed" ? "已结束" : "进行中"} · 打开进度与成果</span></button>)}
+        <button type="button" onClick={() => openTeam(selected)}>打开团队事项与成果</button>
       </>}
       {error && <p role="alert">{error}</p>}
     </dialog>

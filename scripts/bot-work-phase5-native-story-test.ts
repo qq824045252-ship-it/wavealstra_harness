@@ -361,7 +361,8 @@ async function stageThree(host: NativeHost) {
     const mobileA = useRemoteWorkStore.getState().works.find(work => work.workId === story.workA)!;
     assert.equal(desktopA.lifecycle, "closed"); assert.equal(mobileA.closureConclusion, "succeeded");
     assert.equal(desktopA.intentRevision, mobileA.intentRevision); assert.equal(desktopA.ownerEpoch, mobileA.ownerEpoch);
-    assert.deepEqual((desktopA.cards ?? []).map(card => [card.semanticCardKey, card.readAt]), mobileA.cards.map(card => [card.semanticCardKey, card.readAt]));
+    assert.ok(desktopA.listSummary);
+    assert.deepEqual((works.getDetailProjection(desktopA.workId)!.cards ?? []).map(card => [card.semanticCardKey, card.readAt]), mobileA.cards.map(card => [card.semanticCardKey, card.readAt]));
     const allKeys = useRemoteWorkStore.getState().works.map(work => work.workId).sort();
     useRemoteWorkStore.getState().setIncludeClosed(false); await useRemoteWorkStore.getState().refresh(phone.client);
     assert(!useRemoteWorkStore.getState().works.some(work => work.workId === story.workA));

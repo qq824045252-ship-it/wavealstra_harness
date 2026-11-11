@@ -18,7 +18,7 @@ export function navigableBot(bot: BotDto): boolean {
     && (bot.authorization.expiresAt === undefined || bot.authorization.expiresAt > Date.now());
 }
 
-/** A cache of UI location only. The current host's scoped list must validate it. */
+/** A location cache only. Bots are validated on restore; Work access is checked on demand. */
 export function createBotNavigationPersistence() {
   let saved: SavedNavigation | null = null;
   try { saved = savedSchema.parse(JSON.parse(localStorage.getItem(storageKey) ?? "null")); } catch { /* Optional cache. */ }
@@ -40,14 +40,14 @@ export function createBotNavigationPersistence() {
         write();
       }
     },
-    restore(bots: BotDto[], works: WorkProjectionDto[]): Partial<AppState> {
+    restore(bots: BotDto[], _works: WorkProjectionDto[]): Partial<AppState> {
       const value = pending;
       pending = null;
       if (!value) return {};
       const bot = bots.find(item => item.botId === value.botId && item.userId === value.userId && navigableBot(item));
       if (!bot) return {};
-      const work = works.find(item => item.workId === value.workId && botParticipatesInWork(item, bot.botId) && item.lifecycle !== "closed");
-      return { activeBotId: bot.botId, selectedWorkId: work?.workId ?? null,
+      // The detail endpoint validates old IDs on demand; the first summary page is incomplete.
+      return { activeBotId: bot.botId, selectedWorkId: value.workId,
         ...(value.page === "bot" ? { page: "bot" as const } : {}) };
     },
     persist(state: AppState) {
@@ -56,7 +56,7 @@ export function createBotNavigationPersistence() {
       const bot = state.botIdentities.find(item => item.botId === state.activeBotId && navigableBot(item));
       const work = state.botWorks.find(item => item.workId === state.selectedWorkId && botParticipatesInWork(item, bot?.botId) && item.lifecycle !== "closed");
       saved = bot ? { version: 1, userId: bot.userId, botId: bot.botId,
-        page: state.page === "bot" ? "bot" : "chat", workId: work?.workId ?? null } : null;
+        page: state.page === "bot" ? "bot" : "chat", workId: work?.workId ?? state.selectedWorkId ?? null } : null;
       write();
     },
   };

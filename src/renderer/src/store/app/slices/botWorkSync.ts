@@ -57,5 +57,5 @@ export function mergeWorkList(works: WorkProjectionDto[], cursor: WorkListCursor
     if (event.kind === "remove") next.delete(event.workId);
     else next.set(event.projection.workId, reconcileWorkProjection(event.projection, next.get(event.projection.workId)));
   }
-  return { works: [...next.values()], cursor: update.cursor };
+  return { works: [...next.values()].sort((a, b) => b.updatedAt - a.updatedAt || a.workId.localeCompare(b.workId)).slice(0, 100), cursor: update.cursor };
 }

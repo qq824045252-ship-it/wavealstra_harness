@@ -333,7 +333,8 @@ step("通知恢复与双端追溯：验收后未发送即崩溃，恢复只补�
   syncInto(desktop); syncInto(phone);
   assert.deepEqual(desktop.works.map(item => [item.workId, item.stateVersion, item.cards?.length]).sort(),
     phone.works.map(item => [item.workId, item.stateVersion, item.cards?.length]).sort());
-  const aCard = desktop.works.find(item => item.workId === workA)!.cards!.find(card => card.kind === "accepted_result")!;
+  assert.ok(desktop.works.find(item => item.workId === workA)!.listSummary);
+  const aCard = works.getDetailProjection(workA)!.cards!.find(card => card.kind === "accepted_result")!;
   assert.equal(aCard.kind, "accepted_result");
   assert.equal(desktop.works.find(item => item.workId === workB)!.lifecycle, "active");
 });

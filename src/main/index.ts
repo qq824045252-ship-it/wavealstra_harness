@@ -1096,6 +1096,7 @@ function registerIpc(): void {
   ipcMain.handle(BotWorkIpc.workspaceNavigation, () => agentService.botWorkspaceNavigation());
   ipcMain.handle(BotWorkIpc.cancelSend, (_e, botId: string, requestId: string) => agentService.cancelBotSend(botId, requestId));
   ipcMain.handle(BotWorkIpc.archiveConversation, (_e, botId: string, conversationId: string) => agentService.archiveBotConversation(botId, conversationId));
+  ipcMain.handle(BotWorkIpc.queryWorks, (_e, request: unknown) => agentService.queryWorkProjections(request));
   ipcMain.handle(BotWorkIpc.listWorks, (_e, includeClosed?: boolean) => agentService.listWorkProjections(Boolean(includeClosed)));
   ipcMain.handle(BotWorkIpc.getWork, (_e, workId: string) => agentService.getWorkProjection(workId));
   ipcMain.handle(BotWorkIpc.attestCriteria, (_e, request: AttestCriteriaParams) => agentService.attestWorkCriteria(request));

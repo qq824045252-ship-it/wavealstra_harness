@@ -6,9 +6,9 @@ import { BotWorkDetails } from "./BotWorkDetails";
 import "./BotWorkConversationDetail.css";
 
 /** The same details and artifact actions, presented in the conversation viewport. */
-export function BotWorkConversationDetail({ work, conversationName, ownerName, includeClosed, returnLabel = "对话", onBack, onReplyToBlocker, children }: {
+export function BotWorkConversationDetail({ work, workId, loading = false, error, conversationName, ownerName, includeClosed, returnLabel = "对话", onBack, onReplyToBlocker, children }: {
   work: WorkProjectionDto | null; conversationName: string; ownerName: string; includeClosed: boolean;
-  returnLabel?: string;
+  returnLabel?: string; workId?: string; loading?: boolean; error?: string;
   children?: ReactNode;
   onBack: () => void; onReplyToBlocker?: (blocker: WorkProjectionDto["blockers"][number]) => void;
 }): React.JSX.Element {
@@ -20,7 +20,7 @@ export function BotWorkConversationDetail({ work, conversationName, ownerName, i
     // Retry focus after that commit only when the native inert layer blocked it.
     const frame = document.activeElement !== button ? requestAnimationFrame(() => button?.focus({ preventScroll: true })) : 0;
     return () => { if (frame) cancelAnimationFrame(frame); };
-  }, [work?.workId]);
+  }, [workId ?? work?.workId]);
   return <section className="bot-work-conversation-detail" aria-label="对话中的事项详情" onKeyDown={event => {
     if (event.key === "Escape" && !event.defaultPrevented) { event.stopPropagation(); onBack(); }
   }}>
@@ -35,9 +35,9 @@ export function BotWorkConversationDetail({ work, conversationName, ownerName, i
       <button type="button" className="bot-icon-button" aria-label={`关闭事项详情并返回${returnLabel}`} onClick={onBack}><IconX size={18} /></button>
     </header>
     <div className="bot-work-conversation-body" tabIndex={-1}>
-      {children}
-      {work ? <BotWorkDetails key={work.workId} work={work} ownerName={ownerName} includeClosed={includeClosed} onReplyToBlocker={onReplyToBlocker} />
-        : <p role="status">此事项已不在当前列表中。可以返回{returnLabel}查看原记录。</p>}
+      {!loading && work && children}
+      {work ? <BotWorkDetails key={`detail:${work.workId}`} work={work} ownerName={ownerName} includeClosed={includeClosed} onReplyToBlocker={onReplyToBlocker} />
+        : <p role="status">{loading ? "正在读取事项详情…" : error ?? `此事项已不可用，可能已删除或无权访问。可以返回${returnLabel}查看原记录。`}</p>}
     </div>
   </section>;
 }

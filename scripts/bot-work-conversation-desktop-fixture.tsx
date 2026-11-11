@@ -1,3 +1,5 @@
+import { queryWorkFixture } from "./work-query-fixture";
+import type { WorkQueryRequest } from "../src/shared/bot-work-query";
 import "../src/renderer/src/styles/global.css";
 import { createRoot } from "react-dom/client";
 import BotWorkspacePage from "../src/renderer/src/components/pages/BotWorkspacePage";
@@ -40,16 +42,38 @@ function listCase(scope: "personal" | "team", state: "active" | "completed" | "c
     botHistories:{[team ? "team:list-team" : "owner"]:{botId:"owner",teamId:team?.templateId,conversationId:"list-c",revision:1,archived:false,messages:[]}}});
 }
 const events:string[]=[];
-Object.assign(window,{api:{botWork:{listBotExpertVersions:async()=>[],getSettings:async()=>({settings:{botId:"owner",revision:0,workspacePath:"",effectiveWorkspacePath:"/fixture",spaceId:"fixture",modelId:"",expertId:"",skillIds:[],mcpIds:[],connectorIds:[]},models:[],experts:[],skills:[],mcps:[],connectors:[]})},openFolder:async(path:string)=>events.push(path)},detailEvents:events,
-  detailFixture:{listCase, refreshListHistory:()=>useAppStore.setState({botHistories:{owner:{botId:"owner",conversationId:"list-refreshed",revision:2,archived:false,messages:[]}}}), selectListWork:()=>useAppStore.setState({selectedWorkId:useAppStore.getState().botWorks[0]?.workId}), updateSelected:()=>useAppStore.setState(s=>({botWorks:s.botWorks.map(w=>w.workId === s.selectedWorkId ? {...w,lifecycle:"closed",closureConclusion:"succeeded",archive:{archivedAt:3000} as WorkProjectionDto["archive"]} : w)})), linkCase, original:()=>useAppStore.setState({activeBotId:"owner",activeTeam:null,botWorks:[work],selectedWorkId:null,botHistories:{owner:{botId:"owner",conversationId:"c",revision:1,archived:false,messages}}}),team:()=>useAppStore.setState({activeTeam:null,activeBotId:"owner",selectedWorkId:null,botWorks:[work,teamWork],botHistories:{owner:{botId:"owner",conversationId:"c",revision:1,archived:false,messages:teamMessages}}}),
+const pendingDetails = new Map<string, (work: WorkProjectionDto | undefined) => void>();
+const detailRequests: string[] = [];
+const detailOverrides = new Map<string, WorkProjectionDto | undefined>();
+function getWork(id: string): Promise<WorkProjectionDto | undefined> {
+  detailRequests.push(id);
+  if (detailOverrides.has(id)) return Promise.resolve(detailOverrides.get(id));
+  if ((id === "history" && !useAppStore.getState().botWorks.some(w => w.workId === id)) || id.startsWith("pending-")) return new Promise(resolve => pendingDetails.set(id, resolve));
+  return Promise.resolve(useAppStore.getState().botWorks.find(work => work.workId === id));
+}
+Object.assign(window,{detailRequests, api:{botWork:{getWork,queryWorks:async(request:WorkQueryRequest)=>queryWorkFixture(useAppStore.getState().botWorks,request),listBotExpertVersions:async()=>[],getSettings:async()=>({settings:{botId:"owner",revision:0,workspacePath:"",effectiveWorkspacePath:"/fixture",spaceId:"fixture",modelId:"",expertId:"",skillIds:[],mcpIds:[],connectorIds:[]},models:[],experts:[],skills:[],mcps:[],connectors:[]})},openFolder:async(path:string)=>events.push(path)},detailEvents:events,
+  detailFixture:{listCase,
+    removeTeam:()=>useAppStore.setState(s=>({botWorks:s.botWorks.map(w=>w.team?{...w,team:{...w.team,removedAt:3}}:w)})),
+    historical:()=>useAppStore.getState().setHistoricalTeamWork(teamWork),
+    settle:(id:string,title:string)=>{const value={...work,workId:id,title};detailOverrides.set(id,value);pendingDetails.get(id)?.(value);},
+    invalidate:(id:string,removed=false)=>{const existing=detailOverrides.get(id);detailOverrides.set(id,existing?(removed?{...existing,archive:{archivedAt:1,deletedAt:2}}:{...existing,nextSteps:["水位更新后的下一步"]}):undefined);useAppStore.setState(s=>({botWorkCursor:{scope:"all",epoch:"fixture",sequence:(s.botWorkCursor?.sequence ?? 0)+1}}));},
+    identity:()=>({bot:useAppStore.getState().activeBotId,team:useAppStore.getState().activeTeam,selected:useAppStore.getState().selectedWorkId}),
+    old:()=>useAppStore.setState({selectedWorkId:"pending-old"}),
+    newer:()=>useAppStore.setState({selectedWorkId:"pending-new"}),
+    summary:()=>useAppStore.setState(s=>({botWorks:s.botWorks.map(w=>({...w,blockers:[],cards:[],nextSteps:[]}))})), refreshListHistory:()=>useAppStore.setState({botHistories:{owner:{botId:"owner",conversationId:"list-refreshed",revision:2,archived:false,messages:[]}}}), selectListWork:()=>useAppStore.setState({selectedWorkId:useAppStore.getState().botWorks[0]?.workId}), updateSelected:()=>useAppStore.setState(s=>({botWorks:s.botWorks.map(w=>w.workId === s.selectedWorkId ? {...w,lifecycle:"closed",closureConclusion:"succeeded",archive:{archivedAt:3000} as WorkProjectionDto["archive"]} : w)})), linkCase, original:()=>useAppStore.setState({activeBotId:"owner",activeTeam:null,botWorks:[work],selectedWorkId:null,botHistories:{owner:{botId:"owner",conversationId:"c",revision:1,archived:false,messages}}}),team:()=>useAppStore.setState({activeTeam:null,activeBotId:"owner",selectedWorkId:null,botWorks:[work,teamWork],botHistories:{owner:{botId:"owner",conversationId:"c",revision:1,archived:false,messages:teamMessages}}}),
     otherBot:()=>useAppStore.setState({activeBotId:"unrelated",selectedWorkId:null,botHistories:{unrelated:{botId:"unrelated",conversationId:"other",revision:1,archived:false,messages:teamMessages.map(m=>({...m,botId:"unrelated",conversationId:"other"}))}}}),
     otherConversation:()=>useAppStore.setState({selectedWorkId:null,botHistories:{owner:{botId:"owner",conversationId:"new",revision:1,archived:false,messages}}}),
     selectLinked:()=>useAppStore.setState({selectedWorkId:"linked-team"}),
     blocked:()=>useAppStore.setState({botWorks:[{...work,blockers:[{blockerId:"ask",kind:"operational",status:"open",reason:"补充原始文件",waitingForUserInput:true} as never]}]}),selectWork:()=>useAppStore.setState({selectedWorkId:"work"}),switchTeam:()=>useAppStore.setState({activeTeam:{templateId:"other",name:"另一团队",ownerBotId:"owner",members:[]} as never}),
-    resolve:()=>{useAppStore.setState({botWorks:[work,{...work,workId:"history"}],botWorkCursor:{scope:"all",epoch:"fixture",sequence:1}});},
+    resolve:()=>{pendingDetails.get("history")?.({...work,workId:"history"});useAppStore.setState({botWorks:[work,{...work,workId:"history"}],botWorkCursor:{scope:"all",epoch:"fixture",sequence:1}});},
     reset:()=>useAppStore.setState({activeTeam:null,botWorks:[work],selectedWorkId:null}),
     remove:()=>useAppStore.setState({botWorks:[]}),
     update:()=>useAppStore.setState({botWorks:[{...work,lifecycle:"closed",closureConclusion:"succeeded",nextSteps:[]}]})}});
 useAppStore.setState({activeBotId:"owner",activeTeam:null,botIdentities:bots.map(bot=>({...bot,status:"active",authorization:{allowedScopes:[]}} as never)),botWorks:[work],botHistories:{owner:{botId:"owner",conversationId:"c",revision:1,archived:false,messages}},
  botHostStatus:{online:true} as never,refreshModelConfiguration:async()=>{},refreshBotHistory:async()=>{},refreshBotWork:async()=>{}});
+useAppStore.subscribe((state, previous) => {
+  if (state.botWorks !== previous.botWorks && state.botWorkCursor === previous.botWorkCursor) {
+    useAppStore.setState({botWorkCursor:{scope:"all",epoch:"fixture",sequence:(state.botWorkCursor?.sequence ?? 0)+1}});
+  }
+});
 createRoot(document.getElementById('root')!).render(<BotWorkspacePage/>);

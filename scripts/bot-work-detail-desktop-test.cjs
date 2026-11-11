@@ -52,7 +52,7 @@ assert.equal(await ev('document.querySelectorAll(".bot-work-card").length'),24);
 await ev(`(()=>{const input=document.querySelector('input[type="search"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'独有尾部 abc');input.dispatchEvent(new Event('input',{bubbles:true}));})()`);await new Promise(r=>setTimeout(r,100));
 assert.equal(await ev('document.querySelectorAll(".bot-work-card").length'),1);
 assert.equal(await ev('document.querySelector(".bot-work-card").dataset.workId'),'goal-60');
-assert.equal(await ev('window.originalCalls()'),callsBeforeSearch,'search only indexes already scoped projections');
+assert.equal(await ev('window.originalCalls()'),callsBeforeSearch,'server summary search never fetches a full Work');
 assert(await ev('document.documentElement.scrollWidth<=innerWidth'));
 console.log('PASS: real Chromium detail layout at 390/760/1440, readable report, retained failures, raw expand, terminal outcomes');
 }catch(e){console.error(e);process.exitCode=1;}finally{if(win&&!win.isDestroyed())win.close();app.quit();}});

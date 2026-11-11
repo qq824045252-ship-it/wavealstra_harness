@@ -391,20 +391,20 @@ async function testNavigationRecovery(work: WorkProjectionDto) {
       const invalid = navigationFixture(); invalid.setWorks(invalidWorks);
       await invalid.store.getState().refreshBotWork();
       assert.equal(invalid.store.getState().page, "bot");
-      assert.equal(invalid.store.getState().selectedWorkId, null, "missing, closed or transferred Work is not reselected");
-      assert.equal(JSON.parse(values.get(key)!).workId, null);
+      assert.equal(invalid.store.getState().selectedWorkId, "work-b", "bounded summary cache defers old ID validation to the scoped detail viewer");
+      assert.equal(JSON.parse(values.get(key)!).workId, "work-b");
     }
 
     values.set(key, saved);
     const live = navigationFixture(); await live.store.getState().refreshBotWork();
     live.setWorks([{ ...works[1], lifecycle: "closed" }]);
     await live.store.getState().refreshBotWork();
-    assert.equal(live.store.getState().selectedWorkId, null, "closure clears selection in the open Work view");
+    assert.equal(live.store.getState().selectedWorkId, "work-b", "closing a Work does not interrupt the active detail viewer");
     await live.store.getState().refreshBotWork(true);
     live.store.getState().setSelectedWorkId("work-b");
     await live.store.getState().refreshBotWork(true);
     assert.equal(live.store.getState().selectedWorkId, "work-b", "explicit closed-history inspection survives polling");
-    assert.equal(JSON.parse(values.get(key)!).workId, null, "closed history selection must not be auto-restored on restart");
+    assert.equal(JSON.parse(values.get(key)!).workId, "work-b", "historical selection remains a lazy validated deep link on restart");
     live.setBots(bots.slice(0, 1)); await live.store.getState().refreshBotWork();
     assert.equal(live.store.getState().page, "chat", "loss of the active Bot safely leaves Bot mode");
     live.store.getState().setActiveBotId("a");

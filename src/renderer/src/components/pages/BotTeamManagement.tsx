@@ -1,3 +1,4 @@
+import { useWorkQueryPage } from "@/hooks/useWorkQueryPage";
 import { useEffect, useState } from "react";
 import type { WorkProjectionDto } from "@shared/bot-work";
 import type { WorkTeamControlRequest, WorkTeamTemplateDto } from "@shared/bot-work-team";
@@ -6,14 +7,17 @@ import type { WorkTeamControlRequest, WorkTeamTemplateDto } from "@shared/bot-wo
 export function BotTeamManagement({ team, work, onChanged }: {
   team?: WorkTeamTemplateDto; work?: WorkProjectionDto; onChanged: () => void;
 }): React.JSX.Element {
-  const [teams, setTeams] = useState<WorkTeamTemplateDto[]>([]), [removed, setRemoved] = useState<WorkProjectionDto[]>([]);
+  const [teams, setTeams] = useState<WorkTeamTemplateDto[]>([]);
+  const [recycleOpen, setRecycleOpen] = useState(false), [recyclePage, setRecyclePage] = useState(1);
+  const recycle = useWorkQueryPage({ scope: { kind: "removed_teams" }, view: "all", page: recyclePage, pageSize: 24 }, recycleOpen);
+  const removed = recycle.result?.works ?? [];
   const [target, setTarget] = useState(""), [busy, setBusy] = useState(false), [notice, setNotice] = useState("");
   const [confirm, setConfirm] = useState<"team" | "work" | null>(null);
   const reload = async () => {
     if (!window.api) return;
-    const [result, works] = await Promise.all([window.api.botWork.teamControl({ kind: "list_templates", includeDeleted: true }), window.api.botWork.listWorks(true)]);
+    const result = await window.api.botWork.teamControl({ kind: "list_templates", includeDeleted: true });
     if (result.ok) setTeams(result.templates ?? []);
-    setRemoved(works.filter(item => item.team?.removedAt));
+
   };
   useEffect(() => { void reload().catch(() => setNotice("管理记录暂时无法加载，请重新打开。")); }, []);
   useEffect(() => { setConfirm(null); setTarget(""); setNotice(""); }, [team?.templateId, work?.workId]);
@@ -24,7 +28,7 @@ export function BotTeamManagement({ team, work, onChanged }: {
       if (!window.api) throw new Error("桌面接口不可用。");
       const result = await window.api.botWork.teamControl(request);
       if (!result.ok) { setNotice(result.message); return; }
-      setConfirm(null); setNotice(success); await reload(); onChanged();
+      setConfirm(null); setNotice(success); await reload(); recycle.retry(); onChanged();
     } catch (error) { setNotice(error instanceof Error ? error.message : "操作结果未确认，请重新打开核对。"); }
     finally { setBusy(false); }
   };
@@ -53,10 +57,13 @@ export function BotTeamManagement({ team, work, onChanged }: {
         if (confirm === "work" && work) void perform({ kind: work.lifecycle === "closed" ? "remove_work" : "stop_and_remove_work", workId: work.workId }, work.lifecycle === "closed" ? "事项已移到回收站，成果文件未删除。" : "已受理停止并删除；执行停止后自动移到回收站。");
       }}>确认移到回收站</button>
     </div>}
-    <details className="bot-team-recycle"><summary>回收站（团队 {teams.filter(item => item.deletedAt).length} · 事项 {removed.length}）</summary>
+    <details className="bot-team-recycle" onToggle={event => setRecycleOpen(event.currentTarget.open)}><summary>回收站（团队 {teams.filter(item => item.deletedAt).length}{recycle.result ? ` · 事项 ${recycle.result.filtered}` : ""}）</summary>
       <p>这里能恢复删除的团队与已结束事项。恢复不重新执行任务。</p>
       {teams.filter(item => item.deletedAt).map(item => <p key={item.templateId}>团队：{item.name} <button type="button" disabled={busy} onClick={() => void perform({ kind: "restore_template", templateId: item.templateId }, "团队已恢复。")}>恢复团队</button></p>)}
+      {recycle.loading && <p role="status">正在读取事项回收站…</p>}
+      {recycle.error && <p role="alert">{recycle.error}<button type="button" onClick={recycle.retry}>重试</button></p>}
       {removed.map(item => <p key={item.workId}>事项：{item.title} <button type="button" disabled={busy} onClick={() => void perform({ kind: "restore_work", workId: item.workId }, "事项已恢复。")}>恢复事项</button></p>)}
+      {recycle.result && recycle.result.pages > 1 && <nav aria-label="回收站事项分页"><button type="button" disabled={recycle.result.page <= 1} onClick={() => setRecyclePage(recycle.result!.page - 1)}>上一页</button><span>第 {recycle.result.page} / {recycle.result.pages} 页</span><button type="button" disabled={recycle.result.page >= recycle.result.pages} onClick={() => setRecyclePage(recycle.result!.page + 1)}>下一页</button></nav>}
     </details>
     {notice && <p role="status">{notice}</p>}
   </section>;

@@ -31,6 +31,7 @@ export const BotWorkIpc = {
   listBotExpertVersions: "bot-work:list-bot-expert-versions",
   adoptBotExpertVersion: "bot-work:adopt-bot-expert-version",
   listWorks: "bot-work:list-works",
+  queryWorks: "bot-work:query-works",
   syncWorks: "bot-work:sync-works",
   sendMessage: "bot-work:send-message",
   history: "bot-work:history",
@@ -85,6 +86,7 @@ export interface BotWorkApi {
   listBotExpertVersions(botId: string): Promise<BotExpertVersionDto[]>;
   adoptBotExpertVersion(botId: string, expected: { pendingVersion: number; snapshotId: string }): Promise<BotExpertAdoptionResult>;
   listWorks(includeClosed?: boolean): Promise<WorkProjectionDto[]>;
+  queryWorks(request: import("./bot-work-query").WorkQueryRequest): Promise<import("./bot-work-query").WorkQueryResult>;
   syncWorks(request: WorkListRequest): Promise<WorkListUpdate>;
   sendMessage(request: BotSendRequest): Promise<BotSendReceipt>;
   history(request: BotHistoryRequest): Promise<BotHistoryDto>;

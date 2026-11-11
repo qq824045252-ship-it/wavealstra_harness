@@ -672,6 +672,7 @@ const api = {
     teamControl: request => ipcRenderer.invoke(BotWorkIpc.teamControl, request),
     listBotExpertVersions: (botId: string) => ipcRenderer.invoke(BotWorkIpc.listBotExpertVersions, botId),
     adoptBotExpertVersion: (botId: string, expected) => ipcRenderer.invoke(BotWorkIpc.adoptBotExpertVersion, botId, expected),
+    queryWorks: (request: import("../shared/bot-work-query").WorkQueryRequest) => ipcRenderer.invoke(BotWorkIpc.queryWorks, request),
     listWorks: (includeClosed?: boolean) => ipcRenderer.invoke(BotWorkIpc.listWorks, includeClosed),
     syncWorks: request => ipcRenderer.invoke(BotWorkIpc.syncWorks, request),
     sendMessage: request => ipcRenderer.invoke(BotWorkIpc.sendMessage, request),

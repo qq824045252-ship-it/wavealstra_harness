@@ -82,7 +82,8 @@ check("a read fact reaches another device without changing the Work version", ()
   if (event?.kind !== "upsert") return;
   const after = works.getWork(f.work.workId)!;
   assert.equal(after.stateVersion, before.stateVersion, "the read did not bump the Work version");
-  assert.equal(event.projection.cards?.[0]?.readAt, clock, "the read still reaches the other device");
+  assert.ok(event.projection.listSummary, "the read invalidates the compact list without shipping detail cards");
+  assert.equal(works.getDetailProjection(event.projection.workId)?.cards?.[0]?.readAt, clock, "explicit detail read observes the card read");
   assert.equal(event.projection.stateVersion, before.stateVersion);
 });
 

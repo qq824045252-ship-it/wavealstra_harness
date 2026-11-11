@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { z } from "zod";
 import { workListRequestSchema, type WorkListUpdate } from "../../../shared/bot-conversation";
+import type { WorkListQuery } from "./WorkListQuery";
 import type { WorkService } from "./WorkService";
 
 const streamSchema = z.object({ epoch: z.string(), sequence: z.number().int().nonnegative() });
@@ -17,8 +18,19 @@ export class WorkProjectionJournal {
       const stream = streamSchema.parse(this.db.prepare("SELECT epoch,sequence FROM work_projection_streams WHERE user_id=?").get(userId));
       const scope = request.includeClosed ? "all" as const : "open" as const;
       const cursor = { ...stream, scope };
-      if (!request.cursor) return { kind: "snapshot", cursor,
-        works: this.works.listProjections(userId, { includeClosed: request.includeClosed }) };
+      const summaries = this.works.listQuery;
+      if (!request.cursor) {
+        // The stream is a bounded bootstrap/invalidation feed, never the complete
+        // list. Filtered pages and counts come from queryWorks in their own snapshot.
+        const ids = this.db.prepare(`SELECT work_id FROM works WHERE user_id=?
+          AND NOT EXISTS(SELECT 1 FROM work_record_archive a WHERE a.work_id=works.work_id AND a.deleted_at IS NOT NULL)
+          ${request.includeClosed ? "" : "AND lifecycle != 'closed'"}
+          ORDER BY updated_at DESC, work_id ASC LIMIT 24`).all(userId) as Array<{ work_id: string }>;
+        return { kind: "snapshot", cursor, works: ids.flatMap(row => {
+          const summary = summaries.get(userId, row.work_id);
+          return summary && !summary.archive?.deletedAt ? [summary] : [];
+        }) };
+      }
       if (request.cursor.epoch !== stream.epoch || request.cursor.scope !== scope || request.cursor.sequence > stream.sequence) {
         return { kind: "resync_required" };
       }
@@ -26,9 +38,11 @@ export class WorkProjectionJournal {
         .all(userId, request.cursor.sequence).map(row => eventSchema.parse(row));
       if ((rows[0]?.sequence ?? stream.sequence + 1) !== request.cursor.sequence + 1
         || rows.some((row, index) => row.sequence !== request.cursor!.sequence + index + 1)) return { kind: "resync_required" };
+      const current = new Map<string, ReturnType<WorkListQuery["get"]>>();
       const events = rows.map(row => {
-        const projection = this.works.getProjection(row.work_id);
-        if (!projection || this.works.getWork(row.work_id)?.userId !== userId) return { kind: "remove" as const, sequence: row.sequence,
+        if (!current.has(row.work_id)) current.set(row.work_id, summaries.get(userId, row.work_id));
+        const projection = current.get(row.work_id);
+        if (!projection || projection.archive?.deletedAt) return { kind: "remove" as const, sequence: row.sequence,
           workId: row.work_id, reason: "removed" as const, stateVersion: 0 };
         if (!request.includeClosed && projection.lifecycle === "closed") return { kind: "remove" as const, sequence: row.sequence,
           workId: row.work_id, reason: "closed" as const, stateVersion: projection.stateVersion };

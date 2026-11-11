@@ -1,3 +1,5 @@
+import { queryWorkFixture } from "./work-query-fixture";
+import { useBotWorkDetail } from "../src/renderer/src/hooks/useBotWorkDetail";
 /** Real React lifecycle and button events with controlled API replies; not an IPC/browser acceptance test. */
 import assert from "node:assert/strict";
 import { parseHTML } from "linkedom";
@@ -70,7 +72,9 @@ let reviewReply = deferred<WorkControlResult>();
 let readReply = deferred<WorkCardReadResult>();
 let diagnosticsReply = deferred<WorkExpandedDiagnosticsDto | undefined>();
 let diagnosticsRequests = 0;
-const api: Pick<BotWorkApi, "reviewControl" | "markCardRead" | "workDiagnostics"> = {
+const api: Pick<BotWorkApi, "reviewControl" | "markCardRead" | "workDiagnostics" | "queryWorks" | "getWork"> = {
+  queryWorks: async request => queryWorkFixture(useAppStore.getState().botWorks, request),
+  getWork: async id => useAppStore.getState().botWorks.find(work => work.workId === id),
   reviewControl(request) { reviewRequests.push(request); return reviewReply.promise; },
   markCardRead(request) { readRequests.push(request); return readReply.promise; },
   workDiagnostics() { diagnosticsRequests += 1; return diagnosticsReply.promise; },
@@ -139,6 +143,7 @@ async function complete(panel: Panel, failed = false) {
 }
 let count = 0;
 async function check(name: string, run: () => Promise<void>) {
+  if (process.env.BOT_REVIEW_TEST_FILTER && !name.includes(process.env.BOT_REVIEW_TEST_FILTER)) return;
   if (process.env.BOT_WORK_UI_FILTER && !name.includes(process.env.BOT_WORK_UI_FILTER)) return;
   await run(); count += 1; console.log(`PASS ${count}: ${name}`);
 }
@@ -296,7 +301,7 @@ async function main() {
         for (let version = 8; version <= 14; version++) {
           current = { ...current, stateVersion: version,
             cards: current.cards!.map(card => card.cardKey === "card" ? { ...card, summary: `Current result ${version}` } : card) };
-          await act(async () => useAppStore.setState({ botWorks: [current] }));
+          await act(async () => useAppStore.setState({ botWorks: [current], botWorkCursor: {epoch:"review-fixture",scope:"all",sequence:version} }));
           assert.equal(container.querySelectorAll('[aria-label="结果卡片与证据"]').length, 1);
           assert.equal(container.querySelectorAll('[aria-label="成果评审与结束"]').length, 0);
           assert.equal(container.querySelectorAll('[aria-label="结果卡片"]').length, 2, "distinct history is retained, not deduplicated away");
@@ -435,6 +440,45 @@ async function main() {
       assert.doesNotMatch(container.textContent!, /向负责人回复此问题/,
         "operational recovery gaps do not ask the user to fill information or approve a rerun");
       assert.match(container.textContent!, /Recovery ended without a new result/, "remaining execution gaps are still visible");
+    });
+    await check("open detail polls unjournaled facts, coalesces slow reads and rejects old scope responses", async () => {
+      await unmount();
+      const { createRoot } = await import("react-dom/client");
+      container = testDocument.body.appendChild(testDocument.createElement("div")); root = createRoot(container);
+      const originalSetInterval = globalThis.setInterval, originalClearInterval = globalThis.clearInterval;
+      const originalGetWork = testWindow.api!.botWork.getWork;
+      const timers = new Map<number, () => void>(); let nextTimer = 0;
+      const reads: { id: string; reply: ReturnType<typeof deferred<WorkProjectionDto | undefined>> }[] = [];
+      globalThis.setInterval = ((callback: () => void, delay: number) => { assert.equal(delay, 5000); timers.set(++nextTimer, callback); return nextTimer; }) as unknown as typeof setInterval;
+      globalThis.clearInterval = ((id: number) => { timers.delete(id); }) as unknown as typeof clearInterval;
+      testWindow.api!.botWork.getWork = id => { const reply = deferred<WorkProjectionDto | undefined>(); reads.push({id, reply}); return reply.promise; };
+      let latest: ReturnType<typeof useBotWorkDetail>;
+      function Probe({ id, scope = "personal" }: { id: string | null; scope?: string }) { latest = useBotWorkDetail(id, scope); return <span>{latest.work?.title ?? latest.error ?? "loading"}</span>; }
+      const tick = async () => { await act(async () => { [...timers.values()].forEach(callback => callback()); }); };
+      try {
+        await act(async () => root!.render(<Probe id={null} />)); assert.equal(timers.size, 0); assert.equal(reads.length, 0);
+        await act(async () => root!.render(<Probe id="first" />)); assert.equal(reads.length, 1);
+        await tick(); await tick(); assert.equal(reads.length, 1, "slow same-ID read coalesces ticks");
+        await act(async () => reads[0].reply.resolve({...projection, workId:"first",title:"full detail"}));
+        await tick(); assert.equal(reads.length, 2); assert.equal(latest!.loading, false); assert.equal(latest!.work?.title, "full detail");
+        await act(async () => reads[1].reply.resolve({...projection,workId:"first",title:"unjournaled fact"}));
+        assert.equal(latest!.work?.title,"unjournaled fact");
+        await tick();
+        await act(async () => useAppStore.setState({botWorkCursor:{epoch:"poll",scope:"all",sequence:50}}));
+        assert.equal(reads.length,3,"journal invalidation coalesces the in-flight request");
+        await act(async () => reads[2].reply.resolve({...projection,workId:"first",title:"before watermark"}));
+        assert.equal(reads.length,4,"journal invalidation queues a fresh read"); assert.notEqual(latest!.work?.title,"before watermark");
+        await act(async () => root!.render(<Probe id="second" scope="team" />)); assert.equal(reads.length,5);
+        await act(async () => reads[3].reply.resolve({...projection,workId:"first",title:"stale scope"})); assert.equal(latest!.work,null);
+        await act(async () => reads[4].reply.reject(new Error("temporary offline"))); assert.equal(latest!.error,"temporary offline");
+        await tick(); assert.equal(reads.length,6,"errors retry on the next tick");
+        await act(async () => reads[5].reply.resolve({...projection,workId:"second",title:"recovered"})); assert.equal(container.textContent,"recovered");
+        await act(async () => root!.render(<Probe id={null} />)); assert.equal(timers.size,0);
+        await tick(); assert.equal(reads.length,6,"closed viewer stops polling");
+      } finally {
+        await unmount(); globalThis.setInterval = originalSetInterval; globalThis.clearInterval = originalClearInterval;
+        testWindow.api!.botWork.getWork = originalGetWork;
+      }
     });
     console.log(`Bot Work review UI: ${count} React lifecycle scenarios passed (controlled API promises, no real IPC/browser claim)`);
   } finally {

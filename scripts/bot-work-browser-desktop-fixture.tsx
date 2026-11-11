@@ -1,3 +1,5 @@
+import { queryWorkFixture } from "./work-query-fixture";
+import { useAppStore } from "../src/renderer/src/store/appStore";
 import { BotWorkNavigation } from "../src/renderer/src/components/pages/BotWorkNavigation";
 import { StrictMode, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -15,12 +17,23 @@ const works: WorkProjectionDto[] = Array.from({ length: 137 }, (_, index) => {
     executions: status ? [{ bindingId: `binding-${index}`, workId: id, intentRevision: 1, inputSnapshotId: "input", ownerEpoch: 1, status } as WorkProjectionDto["executions"][number]] : [],
     notifications: [], subscriptionIds: [], uncoveredScope: [], nextSteps: ["核对原始要求，保留完整报告与文件，不重复执行已有动作。"], updatedAt: Date.now() + index };
 });
-Object.assign(window, { browserFixtureWorks: works, browserFixtureSelected: [] });
+let fixtureWorks = works;
+const calls: import("../src/shared/bot-work-query").WorkQueryRequest[] = [];
+let slowQueries = false, failQueries = false;
+const queryWorks = async (request: import("../src/shared/bot-work-query").WorkQueryRequest) => {
+  calls.push(structuredClone(request));
+  const result = queryWorkFixture(fixtureWorks, request);
+  if (slowQueries && request.query === "slow-no-match") await new Promise(resolve => setTimeout(resolve, 800));
+  if (failQueries) throw new Error("fixture read failure");
+  return result;
+};
+Object.assign(window, { browserQueryCalls: calls, replaceBrowserWithoutCursor: (items: WorkProjectionDto[]) => {fixtureWorks = items;}, setBrowserQueryDelay: (value: boolean) => {slowQueries=value;}, setBrowserQueryFailure: (value: boolean) => {failQueries=value;} });
+Object.assign(window, { api: { botWork: { queryWorks } }, browserFixtureWorks: works, browserFixtureSelected: [] });
 function Fixture() {
   const [items, setItems] = useState(works);
   const [view, setView] = useState<"active" | "completed" | "closed">("active");
   const [selected, setSelected] = useState<string | null>(null);
-  Object.assign(window, { refreshBrowserFixture: (items: WorkProjectionDto[]) => setItems(items), setBrowserFixtureView: setView });
-  return <StrictMode><div className="bot-workspace"><div className="bot-conversation"><BotWorkNavigation works={items} view={view} allWorksLoaded={true} onChange={next => { if (next !== "conversation") setView(next); }} /><BotWorkBrowser key={view} works={items} view={view} loading={false} selectedWorkId={selected} onConversation={() => {}} onOpenWork={id => { setSelected(id); (window as unknown as { browserFixtureSelected: string[] }).browserFixtureSelected.push(id); }} /></div></div></StrictMode>;
+  Object.assign(window, { refreshBrowserFixture: (items: WorkProjectionDto[]) => { fixtureWorks = items; setItems(items); useAppStore.setState(state=>({botWorkCursor:{epoch:"fixture",sequence:(state.botWorkCursor?.sequence ?? 0)+1,scope:"all"}})); }, setBrowserFixtureView: setView });
+  return <StrictMode><div className="bot-workspace"><div className="bot-conversation"><BotWorkNavigation scope={{kind:"all"}} view={view} allWorksLoaded={true} onChange={next => { if (next !== "conversation") setView(next); }} /><BotWorkBrowser key={view} scope={{kind:"all"}} view={view} loading={false} selectedWorkId={selected} onConversation={() => {}} onOpenWork={id => { setSelected(id); (window as unknown as { browserFixtureSelected: string[] }).browserFixtureSelected.push(id); }} /></div></div></StrictMode>;
 }
 createRoot(document.getElementById("root")!).render(<Fixture />);

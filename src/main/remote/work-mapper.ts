@@ -118,8 +118,18 @@ export function createRemoteWorkBridge(input: { db: Database.Database; works: Wo
     return projection && summary ? toRemoteWork(summary, (projection.cards ?? []).map(toRemoteWorkCard)) : undefined;
   };
   return {
+    // Legacy paired devices do not implement queryWorks pagination yet. Preserve
+    // their complete snapshot contract, in the same transaction as its watermark.
+    // Desktop sync remains bounded; this compatibility path is remote-only.
     sync: (request: { includeClosed: boolean; cursor?: { epoch: string; sequence: number; scope: "open" | "all" } }) =>
-      toRemoteWorkUpdate(journal.sync(input.userId, request) as unknown as { kind: string }, load),
+      input.db.transaction(() => {
+        const update = journal.sync(input.userId, request);
+        if (update.kind !== "snapshot") return toRemoteWorkUpdate(update as unknown as { kind: string }, load);
+        const ids = input.db.prepare(`SELECT work_id FROM works WHERE user_id=?
+          ${request.includeClosed ? "" : "AND lifecycle != 'closed'"}
+          ORDER BY updated_at DESC,work_id ASC`).all(input.userId) as Array<{ work_id: string }>;
+        return toRemoteWorkUpdate({ ...update, works: ids.map(row => ({ workId: row.work_id })) }, load);
+      }).immediate(),
     summary: (workId: string) => load(workId),
     diagnostics: (request: { workId: string; sections?: string[]; limit?: number; cursor?: string }) =>
       input.works.getWorkDiagnostics(input.userId, request),

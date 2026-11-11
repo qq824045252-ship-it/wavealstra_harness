@@ -1228,6 +1228,10 @@ export class AgentService {
     return result;
   }
 
+  queryWorkProjections(request: unknown) {
+    return this.workService.listQuery.query(LOCAL_USER_ID, request);
+  }
+
   syncWorkProjections(request: unknown) {
     return new WorkProjectionJournal(this.db.connection, this.workService).sync(LOCAL_USER_ID, request);
   }

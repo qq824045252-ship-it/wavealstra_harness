@@ -1,8 +1,8 @@
 {
   "scope": "src/main/**",
-  "mainRegistrations": 519,
-  "allRegistrations": 531,
-  "uniqueChannels": 519,
+  "mainRegistrations": 528,
+  "allRegistrations": 540,
+  "uniqueChannels": 528,
   "channels": [
     "agent:abort",
     "agent:abortCompaction",
@@ -164,6 +164,7 @@
     "bot-work:mark-notification-read",
     "bot-work:phase3-control",
     "bot-work:phase4-control",
+    "bot-work:query-works",
     "bot-work:record-user-feedback",
     "bot-work:rename-bot",
     "bot-work:resend-notification",
@@ -318,6 +319,14 @@
     "gateway:weixinQrCancel",
     "gateway:weixinQrStart",
     "gateway:weixinQrState",
+    "google-workspace:create-event",
+    "google-workspace:get-event",
+    "google-workspace:list-events",
+    "google-workspace:read-mail",
+    "google-workspace:search-mail",
+    "google-workspace:send-mail",
+    "google-workspace:status",
+    "google-workspace:update-event",
     "html-edit:start",
     "html-edit:stop",
     "library:attachToTask",
@@ -541,7 +550,7 @@
       {
         "channel": "artifact-domain:get",
         "entries": [
-          "src/main/index.ts:2244",
+          "src/main/index.ts:2257",
           "scripts/wave5-real-open-e2e.ts:304"
         ],
         "foreign": [
@@ -551,7 +560,7 @@
       {
         "channel": "artifact-domain:list",
         "entries": [
-          "src/main/index.ts:2248",
+          "src/main/index.ts:2261",
           "scripts/wave5-real-open-e2e.ts:300"
         ],
         "foreign": [
@@ -561,7 +570,7 @@
       {
         "channel": "artifact-domain:snapshot",
         "entries": [
-          "src/main/index.ts:2252",
+          "src/main/index.ts:2265",
           "scripts/wave5-real-open-e2e.ts:297"
         ],
         "foreign": [
@@ -571,7 +580,7 @@
       {
         "channel": "artifact-domain:register",
         "entries": [
-          "src/main/index.ts:2263",
+          "src/main/index.ts:2276",
           "scripts/wave5-real-open-e2e.ts:296"
         ],
         "foreign": [
@@ -581,7 +590,7 @@
       {
         "channel": "artifact-domain:readContent",
         "entries": [
-          "src/main/index.ts:2267",
+          "src/main/index.ts:2280",
           "scripts/wave5-real-open-e2e.ts:292"
         ],
         "foreign": [
@@ -591,7 +600,7 @@
       {
         "channel": "artifact-domain:removeTask",
         "entries": [
-          "src/main/index.ts:2272",
+          "src/main/index.ts:2285",
           "scripts/wave5-real-open-e2e.ts:307"
         ],
         "foreign": [
@@ -601,7 +610,7 @@
       {
         "channel": "artifact-domain:remove",
         "entries": [
-          "src/main/index.ts:2276",
+          "src/main/index.ts:2289",
           "scripts/wave5-real-open-e2e.ts:310"
         ],
         "foreign": [

@@ -22,6 +22,7 @@ export type WorkStatusGroup = "running" | "waiting" | "attention" | "results" | 
 
 /** Labels and list filters share one decision, never infer state from report text. */
 export function workStatus(work: WorkProjectionDto): { label: string; group: WorkStatusGroup } {
+  if (work.listSummary) return work.listSummary.status;
   if (watchEndedByTime({ ...work, watchRule: work.watchPlan })) return { label: "到期结束", group: "ended" };
   if (work.lifecycle === "closed") {
     if (work.closureConclusion === "succeeded") return { label: "已完成", group: "succeeded" };

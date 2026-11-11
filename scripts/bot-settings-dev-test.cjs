@@ -18,12 +18,12 @@ const out = path.join(root, process.env.GADGET_MENU_DEV === '1' ? 'out/diagnosti
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-work-phase3-dev-'));
 const agentDir = path.join(home, '.mybuddy'); fs.mkdirSync(agentDir, { recursive: true });
 for (const directory of ['AppData/Roaming', 'AppData/Local', 'Temp']) fs.mkdirSync(path.join(home, directory), { recursive: true });
-let processDev, socket, sequence = 0, log;
+let processDev, socket, sequence = 0, log, providerFailure;
 let electronExecutable, devDebugPort, launcherIdentity, electronWatch;
 const ownedElectronMains = new Map();
 const pending = new Map(), requests = [];
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
-const until = async (fn, label) => { const end = Date.now() + 90000; while (!await fn()) { if (Date.now() > end) throw Error('timeout: ' + label); await wait(100); } };
+const until = async (fn, label) => { const end = Date.now() + 90000; while (!await fn()) { if (providerFailure) throw providerFailure; if (Date.now() > end) throw Error('timeout: ' + label); await wait(100); } };
 const freePort = () => new Promise((resolve, reject) => { const server = net.createServer(); server.on('error', reject); server.listen(0, '127.0.0.1', () => { const port = server.address().port; server.close(() => resolve(port)); }); });
 function linuxProcessState(pid) {
   try {
@@ -90,11 +90,12 @@ async function evaluate(expression) {
   return value.result?.value;
 }
 const provider = http.createServer(async (req, res) => {
+  try {
   let raw = ''; for await (const part of req) raw += part;
   const body = JSON.parse(raw); requests.push(body);
   const names = (body.tools || []).map(tool => tool.function?.name);
   const foreground = names.includes('work_create');
-  if (foreground) assert(names.every(name => ['reminder_manage', 'foreground_query_requests', 'foreground_cancel_request', 'memory_remember', 'memory_forget', 'work_query_status', 'work_create', 'work_amend', 'work_pause', 'work_resume', 'work_cancel', 'memory_search', 'work_team_templates', 'work_team_create', 'web_search', 'fetch_content'].includes(name)), 'actual foreground provider whitelist');
+  if (foreground) assert(names.every(name => ['google_workspace_status', 'gmail_search', 'gmail_read', 'calendar_agenda', 'calendar_get', 'gmail_send', 'calendar_create', 'calendar_update', 'bot_list', 'bot_ask', 'reminder_manage', 'foreground_query_requests', 'foreground_cancel_request', 'memory_remember', 'memory_forget', 'work_query_status', 'work_create', 'work_amend', 'work_pause', 'work_resume', 'work_cancel', 'memory_search', 'work_team_templates', 'work_team_create', 'web_search', 'fetch_content'].includes(name)), 'actual foreground provider whitelist: ' + names.join(', '));
   const userIndex = body.messages.findLastIndex(message => message.role === 'user');
   const recent = body.messages.slice(userIndex + 1);
   const input = JSON.stringify(body.messages[userIndex]?.content);
@@ -109,6 +110,7 @@ const provider = http.createServer(async (req, res) => {
   chunk({ choices: [{ index: 0, delta, finish_reason: null }] });
   chunk({ choices: [{ index: 0, delta: {}, finish_reason: tool ? 'tool_calls' : 'stop' }], usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 } });
   res.end('data: [DONE]\n\n');
+  } catch (error) { providerFailure = error; res.writeHead(500); res.end(String(error)); }
 });
 async function send(text) {
   await evaluate('document.querySelector("#bot-draft").focus()');
@@ -273,7 +275,7 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     await evaluate(`document.querySelector('[aria-label="Bot 设置与对话管理"]').click()`);
     await until(() => evaluate(`document.querySelector('[aria-label="Bot 模型"]')?.value === ${JSON.stringify(modelKey)}`), 'return from manager preserves saved selection');
     report.checks.push('model manager navigation closes native modal; return retains saved model');
-    if (process.env.BOT_WORK_BROWSER_DEV === '1') await require('./bot-work-browser-dev-checks.cjs')({ evaluate, rpc, until, report, out });
+    if (process.env.BOT_WORK_BROWSER_DEV === '1') await require('./bot-work-browser-dev-checks.cjs')({ evaluate, rpc, until, report, out, isolatedSql });
     report.status='passed';
   } catch (error) {
     report.status = 'failed'; report.error = String(error.stack || error); console.error(error); process.exitCode = 1;

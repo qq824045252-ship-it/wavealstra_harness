@@ -1,3 +1,5 @@
+import { queryWorkFixture } from "./work-query-fixture";
+import type { WorkQueryRequest } from "../src/shared/bot-work-query";
 import { createRoot } from 'react-dom/client';
 import { BotWorkBrowser } from '../src/renderer/src/components/pages/BotWorkBrowser';
 import { BotWorkDetails } from '../src/renderer/src/components/pages/BotWorkDetails';
@@ -12,11 +14,12 @@ const collaboration = {messageId:'collab-1',workId:work.workId,kind:'result' as 
 work.phase3 = {subitems:[],continuations:[],gaps:[],settlingActions:0,pausedEventCount:0,handoffs:[],collaborationMessages:[collaboration,{...collaboration,messageId:'collab-2',createdAt:1700000001000},{...collaboration,messageId:'collab-3',body:'独有的后续发现不可丢失。'}]};
 work.cards = [{cardKey:'card-history',semanticCardKey:'history',workId:work.workId,userId:'user',kind:'owner_summary',intentRevision:1,inputSnapshotId:'input',originOwnerEpoch:1,canonicalOutcomeHash:'hash',title:'历史汇总',summary:collaborationBody,deliverableIds:[],evidenceIds:[],sourceRefs:[],artifactRefs:[],unverifiedScope:['**旧缺口**','**旧缺口**'],createdAt:1700000000000,currency:'superseded',readVersion:0,notificationIds:[]}];
 let originalCalls = 0;
-Object.assign(window, { api: { botWork: { getWork: async (workId: string) => {
+Object.assign(window, { api: { botWork: { queryWorks: async (request: WorkQueryRequest) => queryWorkFixture(goalRows, request), getWork: async (workId: string) => {
   originalCalls++;
   return {...work, workId, originalDelegation: {descriptionOrigin:'assistant',messages:[{messageId:'original-user',text:'真实原委托，不能冒称助理目标。\n原文尾部标记',intentRevision:1,sourceVersion:1}],context:[{messageId:'clarification',role:'assistant',text:'上下文建议，不是用户授权'}]}};
 }}}, originalCalls: () => originalCalls });
 const root=createRoot(document.getElementById('root')!);
 const render=(patch: Partial<WorkProjectionDto>={})=>root.render(<BotWorkDetails work={{...work,...patch}} ownerName="负责人" includeClosed />);
-const renderGoalBrowser = () => root.render(<BotWorkBrowser works={Array.from({length:61},(_,i)=>({...work,workId:`goal-${i}`,title:`唯一标题 ${i}`,goalDescription:i===60?'完整目标独有尾部 FULLWIDTH ＡＢＣ':'其他目标',lifecycle:'active',closureConclusion:undefined,closureSummary:undefined,deliverables:[]}))} view="active" loading={false} onOpenWork={()=>{}} onConversation={()=>{}} />);
+const goalRows: WorkProjectionDto[] = Array.from({length:61},(_,i)=>({...work,workId:`goal-${i}`,title:`唯一标题 ${i}`,goalDescription:i===60?'完整目标独有尾部 FULLWIDTH ＡＢＣ':'其他目标',lifecycle:'active',closureConclusion:undefined,closureSummary:undefined,deliverables:[]}));
+const renderGoalBrowser = () => root.render(<BotWorkBrowser scope={{kind:"all"}} view="active" onOpenWork={()=>{}} onConversation={()=>{}} />);
 Object.assign(window,{renderDetailFixture:render,renderGoalBrowser}); render();

@@ -7,6 +7,7 @@ import { AppDatabase } from "../src/main/db/AppDatabase";
 import { WORK_PROJECTION_EVENT_RETENTION } from "../src/main/db/bot-work-phase2-schema";
 import { BotRegistry } from "../src/main/agent/work/BotRegistry";
 import { WorkService, DESKTOP_USER_GRANTS } from "../src/main/agent/work/WorkService";
+import { createRemoteWorkBridge } from "../src/main/remote/work-mapper";
 import { WorkProjectionJournal } from "../src/main/agent/work/WorkProjectionJournal";
 import { mergeWorkList } from "../src/renderer/src/store/app/slices/botWorkSync";
 import { DEFAULT_BOT_ID, LOCAL_USER_ID, type WorkActor, type WorkControlResult } from "../src/shared/bot-work";
@@ -109,6 +110,37 @@ try {
   assert.equal(stats().count, WORK_PROJECTION_EVENT_RETENTION, "startup reinstates ongoing bounded writes");
   assert.equal(works.getWork(active.workId)?.ownerBotId, DEFAULT_BOT_ID);
   console.log("PASS projection retention: restart compaction preserves epoch, sequence and other users");
+
+  // Old paired devices have no queryWorks endpoint and still need a complete
+  // bootstrap. The desktop path is deliberately bounded and summary-only.
+  for (let index = 0; index < 30; index++) unwrap(works.createWork(user, {
+    operationId: `paging-${index}`, title: `Paging ${index}`, authorization: DESKTOP_USER_GRANTS,
+  }));
+  const originalList = works.listProjections;
+  const originalGet = works.getProjection;
+  works.listProjections = () => { throw new Error("full list projection is forbidden in desktop sync"); };
+  works.getProjection = () => { throw new Error("full detail projection is forbidden in desktop sync"); };
+  const desktop = journal.sync(LOCAL_USER_ID, { includeClosed: true });
+  if (desktop.kind === "snapshot") {
+    bump(active.workId, 1);
+    const compactDelta = journal.sync(LOCAL_USER_ID, { includeClosed: true, cursor: desktop.cursor });
+    assert(compactDelta.kind === "delta" && compactDelta.events.some(event => event.kind === "upsert" && event.projection.listSummary));
+  }
+  works.listProjections = originalList;
+  works.getProjection = originalGet;
+  assert(desktop.kind === "snapshot");
+  assert.equal(desktop.works.length, 24);
+  assert(desktop.works.every(work => work.listSummary && !work.criteria.length && !work.deliverables.length));
+  const remote = createRemoteWorkBridge({ db: db.connection, works, userId: LOCAL_USER_ID })
+    .sync({ includeClosed: true }) as { kind: string; works: Array<{ workId: string }>; cursor: unknown };
+  assert.equal(remote.kind, "snapshot");
+  assert.equal(remote.works.length, works.listWorks(LOCAL_USER_ID, { includeClosed: true }).length);
+  assert(remote.works.length > 24);
+  const currentDesktop = journal.sync(LOCAL_USER_ID, { includeClosed: true });
+  assert(currentDesktop.kind === "snapshot");
+  assert.deepEqual(remote.cursor, currentDesktop.cursor);
+  assert(remote.works.every(work => works.getWork(work.workId)?.userId === LOCAL_USER_ID));
+  console.log("PASS projection retention: bounded desktop summaries and complete legacy remote bootstrap");
 } finally {
   db.close();
   rmSync(root, { recursive: true, force: true });

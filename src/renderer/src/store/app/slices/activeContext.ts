@@ -1,4 +1,3 @@
-import { botParticipatesInWork } from "@/lib/botWorkspacePresentation";
 import { createBotConversationActions, createBotConversationState, type BotConversationUiState } from "./botConversation";
 import { mergeWorkList } from "./botWorkSync";
 import type { WorkListCursor } from "../../../../../shared/bot-conversation";
@@ -211,10 +210,8 @@ export function createActiveContextActions(
             botWorkError: null,
             botDraft: activeBotId === state.activeBotId ? state.botDraft : state.botDrafts[activeBotId ?? ""] ?? "",
             activeBotId,
-            selectedWorkId: !invalidatedBot && botWorks.some((work) => work.workId === selectedWorkId && (state.activeTeam ? work.team?.teamId === state.activeTeam.templateId : botParticipatesInWork(work, activeBotId))
-              && (includeClosed || work.lifecycle !== "closed"))
-              ? selectedWorkId ?? null
-              : null,
+            // A bounded summary page cannot prove an old/deep-linked Work is absent.
+            selectedWorkId: invalidatedBot ? null : selectedWorkId ?? null,
           };
         });
       } catch (error) {

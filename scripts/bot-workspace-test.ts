@@ -8,7 +8,7 @@ import type { WorkResultCardDto } from "../src/shared/bot-work-phase5";
 import Sidebar, { AccountNavigation } from "../src/renderer/src/components/Sidebar";
 import ChatMarkdown from "../src/renderer/src/components/chat/ChatMarkdown";
 import BotWorkspacePage, { BotMessage } from "../src/renderer/src/components/pages/BotWorkspacePage";
-import { BotWorkBrowser } from "../src/renderer/src/components/pages/BotWorkBrowser";
+import { BotWorkBrowser, WorkCard } from "../src/renderer/src/components/pages/BotWorkBrowser";
 import { WorkExecutionMetrics } from "../src/renderer/src/components/pages/WorkExecutionMetrics";
 import { BotWorkConversationDetail } from "../src/renderer/src/components/pages/BotWorkConversationDetail";
 import { BotWorkDetails } from "../src/renderer/src/components/pages/BotWorkDetails";
@@ -238,7 +238,7 @@ for (const override of [{ intentRevision: 0 }, { inputSnapshotId: "old" }, { own
 assert.equal(workStatusLabel({ ...watching, phase4: { ...watching.phase4!, host: { online: false } } }), "等待宿主恢复");
 for (const [patch, label] of [[{ status: "paused" }, "检查订阅已暂停"], [{ status: "offline" }, "等待检查源恢复"], [{ status: "stopped" }, "暂无后续检查"], [{ source: "file", cronExpression: undefined, nextWakeAt: undefined }, "等待来源变化"], [{ nextWakeAt: undefined }, "暂无后续检查"], [{ queue: { ...onlineSubscription.queue, blocked: 1 } }, "检查事件受阻"]] as const)
   assert.equal(workStatusLabel({ ...watching, phase4: { ...watching.phase4!, subscriptions: [{ ...onlineSubscription, ...patch }] } }), label);
-const watchHtml = renderToStaticMarkup(createElement(BotWorkBrowser, { works: [watching], view: "active", loading: false, onOpenWork: () => {}, onConversation: () => {} }));
+const watchHtml = renderToStaticMarkup(createElement(WorkCard, { work: watching, status: workStatus(watching), selected: false, onSelect: () => {} }));
 assert.match(watchHtml, /等待下次检查/); assert.match(watchHtml, /下次计划检查/); assert.match(watchHtml, /应用需保持运行/);
 
 const indexed = workSearchText({ ...plain, title: "器件价格核对", goalDescription: "只出现在完整目标里的尾部特征词ZXCV。\n保留第二行", nextSteps: ["联系供应商 ACME"], criteria: [{ ...plain.criteria[0], text: "比较贴片电容" }],
@@ -250,9 +250,8 @@ assert.ok(!workMatchesSearch(indexed, "ACME missing"));
 assert.ok(workMatchesSearch(workSearchText({ ...plain, generatedArtifacts: [{ path: "/tmp/generated-only.csv", snapshotPath: "/tmp/snapshot-only.csv" } as NonNullable<WorkProjectionDto["generatedArtifacts"]>[number]] }), "generated-only.csv snapshot-only.csv"), "generated-only files remain findable without a deliverable summary");
 const largeList = Array.from({ length: 1000 }, (_, i) => work({ workId: `list-${i}`, title: `列表事项 ${i}`, updatedAt: i }));
 const listHtml = renderToStaticMarkup(createElement(BotWorkBrowser, { works: largeList, view: "active", loading: false, onOpenWork: () => {}, onConversation: () => {} }));
-assert.equal((listHtml.match(/class="bot-work-card"/g) ?? []).length, 24, "large list mounts only one page, without dropping searchable Work");
-assert.match(listHtml, /共 1000 件 · 当前 1–24 件/);
-assert.match(listHtml, /第 1 \/ 42 页/);
+assert.equal((listHtml.match(/class="bot-work-card"/g) ?? []).length, 0, "list waits for the bounded server page, never renders supplied full records");
+assert.match(listHtml, /正在读取记录/);
 assert.match(listHtml, /按事项状态筛选/);
 assert.match(listHtml, /最久未更新优先/);
 
@@ -372,9 +371,10 @@ assert.equal(workMatchesView(archivedSuccess, "closed"), true);
 const deletedArchive = { ...archivedSuccess, archive: { archivedAt: 2, deletedAt: 3 } };
 assert.equal(workMatchesView(deletedArchive, "closed"), false);
 assert.equal(workMatchesView(deletedArchive, "active"), false);
-const archivedHtml = renderToStaticMarkup(createElement(BotWorkBrowser, { works: [archivedSuccess, deletedArchive], view: "closed", loading: false, onOpenWork() {}, onConversation() {} }));
+const archivedHtml = renderToStaticMarkup(createElement(WorkCard, { work: archivedSuccess, status: workStatus(archivedSuccess), selected: false, onSelect() {} }));
 assert.match(archivedHtml, /删除记录/);
-assert.match(archivedHtml, /已删除记录（1）/);
+const deletedHtml = renderToStaticMarkup(createElement(WorkCard, { work: deletedArchive, status: workStatus(deletedArchive), selected: false, onSelect() {} }));
+assert.match(deletedHtml, /恢复到归档/);
 assert.doesNotMatch(archivedHtml, /其他记录/);
 
 const night = work({ workId: "work-night", title: "夜间巡检", intentRevision: 2 });

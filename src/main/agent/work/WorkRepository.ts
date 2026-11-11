@@ -696,7 +696,7 @@ export class WorkRepository {
   }
 
   listBindings(workId: string): WorkExecutionBindingDto[] {
-    return (this.db.prepare("SELECT * FROM work_execution_bindings WHERE work_id=? ORDER BY admitted_at ASC")
+    return (this.db.prepare("SELECT * FROM work_execution_bindings WHERE work_id=? ORDER BY admitted_at ASC,rowid ASC")
       .all(workId) as BindingRow[]).map(row => ({ ...mapBinding(row), metrics: this.metrics.read(row.binding_id) }));
   }
 

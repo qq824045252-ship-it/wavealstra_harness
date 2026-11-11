@@ -1,3 +1,5 @@
+import { useEffect, useRef, useState } from "react";
+import type { WorkQueryRequest, WorkQueryResult } from "@shared/bot-work-query";
 import type { Task } from "@/types";
 import type { BotDto, WorkProjectionDto } from "@shared/bot-work";
 import type { BotActiveRequestDto, BotHistoryDto } from "@shared/bot-conversation";
@@ -22,21 +24,21 @@ function taskText(task: Task): string {
 export function buildActivityRows(input: {
   tasks: Task[]; works: WorkProjectionDto[]; bots: BotDto[];
   histories: Record<string, BotHistoryDto>; subagents: Record<string, SubagentSummaryDto[]>;
-  now: number; activeRequests?: BotActiveRequestDto[]; scopeBotId?: string | null; scopeTeamId?: string;
+  now: number; workExecutionTaskIds?: string[]; activeRequests?: BotActiveRequestDto[]; scopeBotId?: string | null; scopeTeamId?: string;
 }): ActivityRow[] {
   // Default UI scope is one Bot. Team work never belongs to a member's
   // personal inbox; unbound ordinary tasks appear only in explicit global view.
   if (input.scopeTeamId) {
     const teamId = input.scopeTeamId;
     const works = input.works.filter(work => work.team?.teamId === teamId);
-    const taskIds = new Set(works.flatMap(work => work.executions.map(binding => binding.taskId)));
+    const taskIds = new Set(input.workExecutionTaskIds ?? works.flatMap(work => work.listSummary?.executionTaskIds ?? work.executions.map(binding => binding.taskId)));
     input = { ...input, works, tasks: input.tasks.filter(task => taskIds.has(task.id)),
       histories: Object.fromEntries(Object.entries(input.histories).filter(([, history]) => history.teamId === teamId)),
       activeRequests: input.activeRequests?.filter(request => request.message.teamId === teamId) };
   } else if (input.scopeBotId !== undefined && input.scopeBotId !== null) {
     const botId = input.scopeBotId;
     const works = input.works.filter(work => work.ownerBotId === botId && !work.team);
-    const taskIds = new Set(works.flatMap(work => work.executions.map(binding => binding.taskId)));
+    const taskIds = new Set(input.workExecutionTaskIds ?? works.flatMap(work => work.listSummary?.executionTaskIds ?? work.executions.map(binding => binding.taskId)));
     input = { ...input, works, tasks: input.tasks.filter(task => taskIds.has(task.id)),
       bots: input.bots.filter(bot => bot.botId === botId),
       histories: Object.fromEntries(Object.entries(input.histories).filter(([, history]) => history.botId === botId && !history.teamId)),
@@ -51,7 +53,7 @@ export function buildActivityRows(input: {
   });
   const activeMessageIds = new Set(activeRequests.map(request => request.message.messageId));
   const names = new Map(input.bots.map(bot => [bot.botId, bot.displayName]));
-  const workTasks = new Set(input.works.flatMap(work => work.executions.map(binding => binding.taskId)));
+  const workTasks = new Set([...(input.workExecutionTaskIds ?? []), ...input.works.flatMap(work => work.listSummary?.executionTaskIds ?? work.executions.map(binding => binding.taskId))]);
   for (const task of input.tasks) {
     if (task.archived) continue;
     const status = deriveTaskStatus(task);
@@ -96,19 +98,82 @@ export function buildActivityRows(input: {
       botId: message.botId, teamId: message.teamId, messageId: message.messageId, sourceRequest: inCurrentWindow ? undefined : request });
   }
   for (const work of input.works) {
-    if (work.team?.removedAt || work.archive?.archivedAt) continue;
+    if (work.archive?.deletedAt) continue;
     const status = workStatus(work);
     const latest = [...work.deliverables].reverse().find(item => item.status === "accepted" || item.status === "proposed");
     const completed = work.criteria.filter(item => item.status === "satisfied" || item.status === "waived").length;
     const currentBindings = work.executions.filter(item => item.intentRevision === work.intentRevision && item.inputSnapshotId === work.inputSnapshotId && !item.invalidatedAt);
-    const executing = work.lifecycle === "closing" || (work.lifecycle === "active" && currentBindings.some(item => item.status === "running"));
+    const executing = work.listSummary?.running ?? (work.lifecycle === "closing" || (work.lifecycle === "active" && currentBindings.some(item => item.status === "running")));
     const submittedOnly = status.group === "running" && !executing;
     rows.push({ id: "work:" + work.workId, kind: "work", title: work.title, owner: work.team?.teamName ? work.team.teamName + " · " + (names.get(work.ownerBotId) ?? "Bot") : names.get(work.ownerBotId) ?? "Bot",
-      label: submittedOnly ? "已提交，等待执行" : status.label, running: executing, ended: work.lifecycle === "closed",
-      detail: [work.criteria.length ? completed + "/" + work.criteria.length + " 项目标已核验" : "",
+      label: submittedOnly ? "已提交，等待执行" : status.label, running: executing, ended: work.lifecycle === "closed" || Boolean(work.archive?.archivedAt || work.team?.removedAt),
+      detail: work.listSummary?.excerpt ?? [work.criteria.length ? completed + "/" + work.criteria.length + " 项目标已核验" : "",
         work.blockers.find(item => item.status === "open")?.reason || latest?.summary || work.nextSteps[0]].filter(Boolean).join(" · "),
       updatedAt: work.updatedAt, botId: work.ownerBotId, workId: work.workId, teamWork: Boolean(work.team) });
   }
   return rows.map(row => ({ ...row, title: workCardExcerpt(row.title) || "未命名任务", detail: workCardExcerpt(row.detail) }))
     .sort((a, b) => Number(b.running) - Number(a.running) || b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
+}
+
+/** Rebuild the loaded prefix atomically. Never append pages from different snapshots:
+ * inserts, deletes and reordering may otherwise duplicate or skip a Work. */
+export async function readWorkSummaryPrefix(
+  read: (request: WorkQueryRequest) => Promise<WorkQueryResult>, request: WorkQueryRequest,
+  pageCount: number, isCurrent: () => boolean = () => true,
+): Promise<WorkQueryResult | null> {
+  for (let attempt = 0; attempt < 3 && isCurrent(); attempt++) {
+    const candidates = request.candidateTaskIds ?? [];
+    const first = await read({ ...request, candidateTaskIds: candidates.slice(0, 500), page: 1 });
+    if (!isCurrent()) return null;
+    const works = [...first.works];
+    let changed = false;
+    for (let page = 2; page <= Math.min(pageCount, first.pages); page++) {
+      const next = await read({ ...request, candidateTaskIds: [], page, watermark: first.watermark });
+      if (!isCurrent()) return null;
+      if (next.watermark.epoch !== first.watermark.epoch || next.watermark.sequence !== first.watermark.sequence || next.watermark.revision !== first.watermark.revision) { changed = true; break; }
+      works.push(...next.works);
+    }
+    const taskIds = new Set(first.workExecutionTaskIds);
+    for (let offset = 500; !changed && offset < candidates.length; offset += 500) {
+      const bindings = await read({ ...request, candidateTaskIds: candidates.slice(offset, offset + 500), page: 1, pageSize: 1, watermark: first.watermark });
+      if (!isCurrent()) return null;
+      if (bindings.watermark.epoch !== first.watermark.epoch || bindings.watermark.sequence !== first.watermark.sequence || bindings.watermark.revision !== first.watermark.revision) { changed = true; break; }
+      bindings.workExecutionTaskIds.forEach(id => taskIds.add(id));
+    }
+    if (!changed) return { ...first, workExecutionTaskIds: [...taskIds], works: [...new Map(works.map(work => [work.workId, work])).values()] };
+  }
+  if (!isCurrent()) return null;
+  throw new Error("事项正在变化，请稍后刷新。");
+}
+
+/** Local, bounded summary reader. A newer scope/query owns its own request flight. */
+export function useWorkSummaryPages(request: WorkQueryRequest, pageCount: number, refreshKey = "") {
+  const key = JSON.stringify(request);
+  const identity = key + ":" + pageCount + ":" + refreshKey;
+  const [snapshot, setSnapshot] = useState<{ key: string; result: WorkQueryResult } | null>(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  const current = useRef(identity);
+  current.current = identity;
+  useEffect(() => {
+    let live = true;
+    let inFlight = false;
+    const valid = () => live && current.current === identity;
+    setLoading(true); setError("");
+    const refresh = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        if (!window.api?.botWork.queryWorks) throw new Error("事项摘要接口不可用，请更新并重启应用");
+        const result = await readWorkSummaryPrefix(value => window.api!.botWork.queryWorks(value), JSON.parse(key), pageCount, valid);
+        if (valid() && result) { setSnapshot({ key, result }); setError(""); }
+      } catch (cause) { if (valid()) setError(cause instanceof Error ? cause.message : String(cause)); }
+      finally { inFlight = false; if (valid()) setLoading(false); }
+    };
+    void refresh();
+    const timer = setInterval(() => void refresh(), 5000);
+    window.addEventListener("mybuddy:teams-refresh", refresh);
+    return () => { live = false; clearInterval(timer); window.removeEventListener("mybuddy:teams-refresh", refresh); };
+  }, [identity]);
+  return { result: snapshot?.key === key ? snapshot.result : null, loading, error };
 }

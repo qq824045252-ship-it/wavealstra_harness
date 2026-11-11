@@ -1,3 +1,4 @@
+import { useBotWorkDetail } from "@/hooks/useBotWorkDetail";
 import ScopedMemoryPanel from "../settings/ScopedMemoryPanel";
 import { BotExecutionDiagnosticsButton } from "./BotExecutionDiagnostics";
 import { BotReplyMetrics } from "./BotReplyMetrics";
@@ -83,8 +84,6 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   const [archiveError, setArchiveError] = useState("");
   const [navigationNotice, setNavigationNotice] = useState("");
   const requestedWork = useRef<string | null>(null);
-  const [pendingWorkId, setPendingWorkId] = useState<string | null>(null);
-  const pendingWorkOpen = useRef<{ workId: string; scope: string; conversationId?: string; show: () => void } | null>(null);
   const threadRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const browserRef = useRef<HTMLElement>(null);
@@ -98,6 +97,9 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   const newConversationRef = useRef<HTMLDialogElement>(null);
   const lastBot = useRef(scopeKey);
   const scopeChanged = lastBot.current !== scopeKey;
+  const previousSelection = useRef(selectedWorkId);
+  const selectionChanged = previousSelection.current !== selectedWorkId;
+  previousSelection.current = selectedWorkId;
   const activeBot = identities.find(bot => bot.botId === activeBotId) ?? null;
   const botWorks = useMemo(() => works.filter(work => !work.team?.removedAt && (teamId ? work.team?.teamId === teamId : personalBotWork(work, activeBotId))), [works, activeBotId, teamId]);
   const displayName = activeTeam?.name ?? activeBot?.displayName ?? "Bot";
@@ -108,7 +110,10 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
     const owned = new Set(botWorks.map(work => work.workId));
     return works.filter(work => owned.has(work.workId) || linkedConversationWork(work, messages, activeBotId, teamId, histories[scopeKey]?.conversationId));
   }, [works, botWorks, messages, activeBotId, teamId, histories[scopeKey]?.conversationId]);
-  const inlineWork = detailWorks.find(work => work.workId === inlineWorkId) ?? null;
+  const detail = useBotWorkDetail(scopeChanged ? null : inlineWorkId, `${scopeKey}:${histories[scopeKey]?.conversationId ?? ""}`);
+  const loadedWork = detail.work;
+  const inlineWork = loadedWork && !loadedWork.team?.removedAt && (teamId ? loadedWork.team?.teamId === teamId : personalBotWork(loadedWork, activeBotId)
+    || linkedConversationWork(loadedWork, messages, activeBotId, teamId, histories[scopeKey]?.conversationId)) ? loadedWork : null;
   const selected = (view === "conversation" ? detailWorks : botWorks).find(work => work.workId === selectedWorkId) ?? null;
   const questionsByRequest = useMemo(() => new Map(messages.filter(item => item.role === "user").map(item => [item.requestId, item])), [messages]);
   const activeReply = activeBotReply(messages);
@@ -142,8 +147,8 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   // viewer. History is a read-only route, not a writable team/composer selection.
   useEffect(() => useAppStore.subscribe((state, previous) => {
     if (!state.historicalTeamWork || previous.historicalTeamWork) return;
-    requestedWork.current = null; pendingWorkOpen.current = null;
-    setPendingWorkId(null); setNavigationNotice("");
+    requestedWork.current = null;
+    setNavigationNotice("");
     const source = sourceViewRef.current?.querySelector<HTMLElement>(".bot-work-conversation-body, .bot-work-browser, .bot-thread") ?? null;
     historicalReturn.current = { scope: currentScope.current,
       conversationId: state.botHistories[currentScope.current]?.conversationId,
@@ -163,13 +168,14 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   useEffect(() => {
     if (lastBot.current === scopeKey) return;
     lastBot.current = scopeKey; setReplyReference(null); setAttachmentError("");
-    requestedWork.current = null; pendingWorkOpen.current = null; setNavigationNotice(""); setInlineWorkId(null); returnTarget.current = null; historicalReturn.current = null;
+    requestedWork.current = null; setNavigationNotice(""); setInlineWorkId(null); returnTarget.current = null; historicalReturn.current = null;
     setView("conversation"); closeSettings(); setArchiveConfirm(false); setNewConversationOpen(false);
   }, [scopeKey]);
   useEffect(() => {
     if (historicalTeamWork) return;
     if (suppressAutoInline.current) { suppressAutoInline.current = false; return; }
-    if (!selected || (!scopeChanged && inlineWorkId === selected.workId)) return;
+    if (scopeChanged && !selectionChanged && !selected) return;
+    if (!selectedWorkId || (!scopeChanged && inlineWorkId === selectedWorkId)) return;
     // Menu and cross-Bot/team navigation set selection in the store. Consume it
     // only after this render has resolved the target scope, not in a stale callback.
     returnTarget.current = { scope: scopeKey, conversationId: histories[scopeKey]?.conversationId,
@@ -178,8 +184,8 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
       trigger: document.activeElement instanceof HTMLElement ? document.activeElement : null };
     setNavigationNotice("");
     pauseFollowing(); setIncludeClosed(true);
-    setInlineWorkId(selected.workId);
-  }, [selected?.workId, scopeKey, view]);
+    setInlineWorkId(selectedWorkId);
+  }, [selectedWorkId, scopeKey, view]);
   useEffect(() => {
     const dialog = settingsRef.current;
     if (settingsOpen) dialog?.showModal(); else if (dialog?.open) dialog.close();
@@ -190,8 +196,8 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   }, [newConversationOpen]);
   const returnFromWork = () => {
     const target = returnTarget.current;
-    requestedWork.current = null; pendingWorkOpen.current = null;
-    setInlineWorkId(null); setSelectedWorkId(null); setPendingWorkId(null);
+    requestedWork.current = null;
+    setInlineWorkId(null); setSelectedWorkId(null);
     setNavigationNotice("");
     returnTarget.current = null;
     if (target?.scope === currentScope.current) setView(target.view);
@@ -239,28 +245,11 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
       setInlineWorkId(workId);
       setNavigationNotice("");
     };
-    // Resolve current ownership or an explicit source-conversation result link. Never let a late history fetch
-    // open another team's work after navigation or a new conversation.
-    requestedWork.current = workId; pendingWorkOpen.current = null;
-    if (detailWorks.some(work => work.workId === workId)) { show(); return; }
-    pendingWorkOpen.current = { workId, scope: sourceScope, conversationId: sourceConversation, show };
-    setPendingWorkId(workId);
-    setIncludeClosed(true); setNavigationNotice("正在读取关联事项…");
-    // A refresh promise may resolve before its replacement snapshot is installed.
-    // Navigate from the actual all-scope projection, not a superseded response.
-    void useAppStore.getState().refreshBotWork(true);
+    requestedWork.current = workId;
+    show();
   };
-  useEffect(() => {
-    const pending = pendingWorkOpen.current;
-    if (!pending || !allWorksLoaded) return;
-    if (requestedWork.current !== pending.workId || pending.scope !== scopeKey ||
-      histories[scopeKey]?.conversationId !== pending.conversationId) { pendingWorkOpen.current = null; return; }
-    pendingWorkOpen.current = null; setPendingWorkId(null);
-    if (detailWorks.some(work => work.workId === pending.workId)) pending.show();
-    else setNavigationNotice("暂时无法打开此事项，可能已删除或不属于当前对话。");
-  }, [works, botWorks, messages, allWorksLoaded, scopeKey, histories[scopeKey]?.conversationId, pendingWorkId]);
   const changeView = (next: BotWorkspaceView) => {
-    requestedWork.current = null; pendingWorkOpen.current = null; setPendingWorkId(null); setNavigationNotice("");
+    requestedWork.current = null; setNavigationNotice("");
     returnTarget.current = null; setSelectedWorkId(null); setInlineWorkId(null);
     setView(next);
     if (next === "closed" || next === "completed") setIncludeClosed(true);
@@ -318,10 +307,10 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
           <button type="button" className="bot-icon-button" aria-label={activeTeam ? "团队设置与管理" : "Bot 设置与对话管理"} onClick={() => { settingsEpoch.current++; setSettingsOpen(true); }}><IconSettings size={18} /></button>
         </div>
       </header>
-      {!inlineWorkId && <BotWorkNavigation works={botWorks} view={view} allWorksLoaded={allWorksLoaded} onChange={changeView} />}
+      {!inlineWorkId && <BotWorkNavigation view={view} onChange={changeView} />}
       {workError && <p className="bot-alert" role="alert">{workError}</p>}
       {navigationNotice && <p className="bot-navigation-notice" role="status">{navigationNotice}</p>}
-      {inlineWorkId && <BotWorkConversationDetail work={inlineWork} conversationName={displayName}
+      {inlineWorkId && <BotWorkConversationDetail work={inlineWork} workId={inlineWorkId} loading={detail.loading} error={detail.error} conversationName={displayName}
         ownerName={inlineWork?.team?.teamName ?? identities.find(bot => bot.botId === inlineWork?.ownerBotId)?.displayName ?? displayName}
         includeClosed={includeClosed} returnLabel={view === "active" ? "进行中" : view === "completed" ? "已完成" : view === "closed" ? "归档" : "对话"} onBack={returnFromWork}
         onReplyToBlocker={blocker => { if (inlineWork) { returnFromWork(); replyToBlocker(inlineWork, blocker); } }} />}
@@ -350,7 +339,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
               {row.messages.map(message => <BotMessage key={message.messageId} message={message} botName={displayName} works={detailWorks} onOpenWork={openWork} onCancel={() => {}} />)}
             </details>)}</div>}
         </div>
-      </> : <BotWorkBrowser key={`${scopeKey}-${view}`} hidden={Boolean(inlineWorkId)} scrollRef={browserRef} works={botWorks} view={view} loading={(view === "closed" || view === "completed") && !allWorksLoaded} selectedWorkId={selected?.workId} onOpenWork={openWork} onConversation={() => { setView("conversation"); requestAnimationFrame(() => composerRef.current?.focus()); }} />}
+      </> : <BotWorkBrowser key={`${scopeKey}-${view}`} hidden={Boolean(inlineWorkId)} scrollRef={browserRef} view={view} selectedWorkId={selected?.workId} onOpenWork={openWork} onConversation={() => { setView("conversation"); requestAnimationFrame(() => composerRef.current?.focus()); }} />}
       <form hidden={Boolean(inlineWorkId)} className="bot-composer input-area" onDragOver={event => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; } }} onDrop={event => { if (event.dataTransfer.files.length) { event.preventDefault(); void addAttachments(Array.from(event.dataTransfer.files)); } }} onSubmit={event => { event.preventDefault(); send(); }}>
         {view === "conversation" && awayFromBottom && <button type="button" className="bot-latest-button" onClick={followBottom}><IconChevronDown size={14} />回到最新消息</button>}
         {activeBotId && sendErrors[scopeKey] && <p className="bot-send-error" role="alert">{sendErrors[scopeKey]}</p>}

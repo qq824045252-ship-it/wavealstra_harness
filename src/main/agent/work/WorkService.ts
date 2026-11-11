@@ -10,6 +10,7 @@ import { pauseWorkMutation, resumeWorkMutation } from "./WorkPauseResumeMutation
 import { handoffOwnerMutation, addParticipantMutation } from "./WorkDelegationMutations";
 import { WorkClosureMutations } from "./WorkClosureMutations";
 import type { Fail, Mutation, ResolvedActor } from "./WorkControlTypes";
+import { WorkListQuery } from "./WorkListQuery";
 import { WorkProjectionBuilder } from "./WorkProjectionBuilder";
 import { submitDeliverableMutation, acceptDeliverableMutation, rejectDeliverableMutation, recordUserFeedbackMutation, attestCriteriaMutation } from "./WorkDeliverableMutations";
 import { WorkRecordArchive } from "./WorkRecordArchive";
@@ -209,6 +210,12 @@ export class WorkService {
     return works[0];
   }
 
+  private cachedListQuery?: WorkListQuery;
+  /** One function/index registration per database service, not per poll. */
+  get listQuery(): WorkListQuery {
+    return this.cachedListQuery ??= new WorkListQuery(this.db, () => this.scheduler.hostState().online);
+  }
+
   getProjection(workId: string): WorkProjectionDto | undefined {
     const work = this.repo.getWork(workId);
     return work ? this.project(work) : undefined;
@@ -236,8 +243,9 @@ export class WorkService {
     // the other devices, so those paths force the push while the client reads facts back.
     if (!options.force && work.stateVersion <= last) return undefined;
     this.lastEmitted.set(workId, Math.max(last, work.stateVersion));
-    const projection = this.project(work);
-    this.emit(projection);
+    // Push is a wakeup plus a bounded list shell. Details are requested explicitly.
+    const projection = this.listQuery.get(work.userId, workId);
+    if (projection) this.emit(projection);
     return projection;
   }
 

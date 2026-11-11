@@ -58,7 +58,7 @@ const SELF_EXCLUDE_PATTERNS = [/^test:all/, /^test:verify/];
  * 内部还会再跑一遍同类用例，所以性能用例仍放在最后。
  * 不跳过用例、不重试失败，也不调整 timeout 或失败基线。
  */
-const SERIAL_TEST_PATTERNS = [/^test:core-performance/, /^test:bot-work-query-scale$/, /^test:bot-work-phase2-recovery$/, /^test:bot-work-phase5-native-story$/, /^test:gateway-inbox-crash$/, /^test:gateway-port-fallback$/];
+const SERIAL_TEST_PATTERNS = [/^test:core-performance/, /^test:bot-work-query-scale$/, /^test:bot-work-summary-query$/, /^test:bot-work-phase2-recovery$/, /^test:bot-work-phase5-native-story$/, /^test:gateway-inbox-crash$/, /^test:gateway-port-fallback$/];
 
 /**
  * 排除集合按执行前置条件分类（+ 一个临时桶），默认套件只跑 headless 用例：
@@ -331,6 +331,8 @@ const HEADLESS_TESTS = new Set([
   "test:weixin-gateway",
   "test:weixin-qr-integration",
   "test:weixin-qr-ui",
+  "test:bot-summary-pagination",
+  "test:bot-work-summary-query",
   "test:bot-work-phase5-owner-summary",
   "test:bot-work-phase5-review",
   "test:bot-work-phase5-review-ui",

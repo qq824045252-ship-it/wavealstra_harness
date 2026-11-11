@@ -36,6 +36,7 @@ export function watchPresentation(work: WorkProjectionDto): { label: string; gro
 }
 
 export function nextWatchCheckAt(work: WorkProjectionDto): number | undefined {
+  if (work.listSummary) return work.listSummary.nextCheckAt;
   if (work.mode !== "watch" || work.lifecycle !== "active" || work.archive?.archivedAt) return undefined;
   const times = work.phase4?.subscriptions.filter(item => item.status === "online" && Number.isFinite(item.nextWakeAt))
     .map(item => item.nextWakeAt!) ?? [];
