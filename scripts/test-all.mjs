@@ -127,6 +127,7 @@ const GUI_TESTS = new Set([
   "test:runtime-probe-electron",
   "test:browser-refresh",
   "test:browser-navbar-ui",
+  "test:extension-toolbar-dev",
   "test:browser-screenshot-electron",
   // 性能用例里会 spawn 真实 Electron（core-performance-all 内部还串联 electron 用例）
   "test:core-performance-electron",

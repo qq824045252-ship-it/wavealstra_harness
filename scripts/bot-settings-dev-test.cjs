@@ -14,7 +14,7 @@ const modelKey = `fixture/${selectedModel}`;
 const headless = process.env.BOT_WORK_DEV_HEADLESS === '1';
 const phase5 = process.env.BOT_WORK_DEV_PHASE5 === '1';
 if (headless && process.platform !== 'linux') throw Error('Headless dev page validation requires Linux; it does not validate desktop input.');
-const out = path.join(root, process.env.ACP_MENU_DEV === '1' ? 'out/diagnostics/acp-menu' : process.env.BOT_ADD_MENU_DEV === '1' ? 'out/diagnostics/bot-add-menu/dev' : process.env.SUBAGENT_POPOVER_DEV === '1' ? 'out/diagnostics/subagent-popover' : process.env.BOT_WORK_BROWSER_DEV === '1' ? 'out/diagnostics/bot-work-browser/dev' : live ? 'out/diagnostics/bot-settings/live' : 'out/diagnostics/bot-settings/dev'); fs.mkdirSync(out, { recursive: true });
+const out = path.join(root, process.env.EXTENSION_TOOLBAR_DEV === '1' ? 'out/diagnostics/extension-toolbar' : process.env.ACP_MENU_DEV === '1' ? 'out/diagnostics/acp-menu' : process.env.BOT_ADD_MENU_DEV === '1' ? 'out/diagnostics/bot-add-menu/dev' : process.env.SUBAGENT_POPOVER_DEV === '1' ? 'out/diagnostics/subagent-popover' : process.env.BOT_WORK_BROWSER_DEV === '1' ? 'out/diagnostics/bot-work-browser/dev' : live ? 'out/diagnostics/bot-settings/live' : 'out/diagnostics/bot-settings/dev'); fs.mkdirSync(out, { recursive: true });
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-work-phase3-dev-'));
 const agentDir = path.join(home, '.mybuddy'); fs.mkdirSync(agentDir, { recursive: true });
 for (const directory of ['AppData/Roaming', 'AppData/Local', 'Temp']) fs.mkdirSync(path.join(home, directory), { recursive: true });
@@ -171,6 +171,11 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     await until(() => evaluate('Boolean(window.api?.botWork?.sendMessage && document.querySelector("textarea"))'), 'preload and renderer');
     if (process.env.ACP_MENU_DEV === '1') {
       await require('./acp-menu-dev-checks.cjs')({evaluate,rpc,until,report,out});
+      report.status='passed'; return;
+    }
+    if (process.env.EXTENSION_TOOLBAR_DEV === '1') {
+      assert(!headless, 'extension toolbar acceptance requires a real desktop session');
+      await require('./extension-toolbar-dev-checks.cjs')({evaluate,rpc,until,report,out,home});
       report.status='passed'; return;
     }
     if (process.env.SUBAGENT_POPOVER_DEV === '1') {

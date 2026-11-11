@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import type { PanelMode } from "@/store/appStore";
 import {
   useActiveTerminalTabs,
@@ -36,6 +36,14 @@ interface Props {
   wsSearch?: string;
 }
 
+function revealNavigationButton(navigation: HTMLDivElement, button: HTMLElement | null): void {
+  if (!button) return;
+  const viewport = navigation.getBoundingClientRect();
+  const bounds = button.getBoundingClientRect();
+  if (bounds.left < viewport.left + 2) navigation.scrollLeft += bounds.left - viewport.left - 2;
+  else if (bounds.right > viewport.right - 2) navigation.scrollLeft += bounds.right - viewport.right + 2;
+}
+
 export default function ExtensionTopBar({
   tabs,
   activeId,
@@ -44,6 +52,29 @@ export default function ExtensionTopBar({
   onCloseTab,
 }: Props): React.JSX.Element {
   const panelMode = useAppStore((s) => s.panelMode);
+  const navigationRef = useRef<HTMLDivElement>(null);
+
+  // A narrow rail scrolls only its tool group. Keep the selected tool visible
+  // after a mode switch or resize without moving the page or window controls.
+  useEffect(() => {
+    const navigation = navigationRef.current;
+    if (!navigation) return;
+    revealNavigationButton(navigation, navigation.querySelector<HTMLElement>(".extension-tab-btn.active"));
+  }, [panelMode]);
+
+  useEffect(() => {
+    const navigation = navigationRef.current;
+    if (!navigation) return;
+    const observer = new ResizeObserver(() => {
+      const focused = document.activeElement;
+      const button = focused instanceof HTMLElement && navigation.contains(focused) && focused.matches(".extension-tab-btn")
+        ? focused
+        : navigation.querySelector<HTMLElement>(".extension-tab-btn.active");
+      revealNavigationButton(navigation, button);
+    });
+    observer.observe(navigation);
+    return () => observer.disconnect();
+  }, []);
   const closePanel = useAppStore((s) => s.closePanel);
   const panelPinned = useAppStore((s) => s.panelPinned);
   const togglePanelPinned = useAppStore((s) => s.togglePanelPinned);
@@ -92,7 +123,13 @@ export default function ExtensionTopBar({
     <div className={`extension-top-bar-container ${showSubBar ? "has-sub-bar" : ""}`}>
       {/* 第一行：主功能 Tab 栏（纯图标模式，间距舒适，高辨识度） */}
       <div className="extension-top-bar">
-        <div className="extension-nav-tabs">
+        <div
+          ref={navigationRef}
+          className="extension-nav-tabs"
+          role="group"
+          aria-label="扩展栏功能"
+          onFocus={(event) => revealNavigationButton(event.currentTarget, event.target.closest<HTMLElement>(".extension-tab-btn"))}
+        >
           {/* ⚡ 概览与运行态 */}
           <button
             type="button"

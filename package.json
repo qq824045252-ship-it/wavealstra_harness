@@ -45,6 +45,7 @@
     "build": "electron-vite build",
     "typecheck": "tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json && node scripts/typecheck-scripts.mjs",
     "test:browser-refresh": "esbuild scripts/browser-refresh-e2e.ts --bundle --platform=node --format=cjs --outfile=out/tests/browser-refresh-e2e.cjs --external:electron && electron out/tests/browser-refresh-e2e.cjs",
+    "test:extension-toolbar-dev": "node scripts/extension-toolbar-dev-test.cjs",
     "test:browser-navbar-ui": "esbuild scripts/browser-navbar-ui-test.tsx --bundle --platform=browser --format=iife --global-name=BrowserNavTest --jsx=automatic --alias:@=./src/renderer/src --outfile=out/tests/browser-navbar-ui.js && electron scripts/browser-navbar-ui-test.cjs",
     "test:pi-autonomous-execution": "esbuild scripts/pi-autonomous-execution-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/pi-autonomous-execution-test.mjs && node scripts/test-guard.mjs out/tests/pi-autonomous-execution-test.mjs",
     "test:compaction": "esbuild scripts/compaction-runtime-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/compaction-runtime-test.mjs && node scripts/test-guard.mjs out/tests/compaction-runtime-test.mjs",

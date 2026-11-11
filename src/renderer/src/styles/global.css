@@ -21248,7 +21248,8 @@ html[data-theme="dark"] .extension-artifact-item.active {
 }
 
 .extension-top-bar {
-  height: 44px;
+  /* A narrow tool group may need a horizontal scrollbar; keep it inside the bar. */
+  height: auto;
   min-height: 44px;
   padding-block: 6px;
 }
@@ -23799,12 +23800,18 @@ html[data-theme="dark"] .chat-column.task-ambient[data-mode="general"] {
 .extension-nav-tabs {
   display: flex;
   align-items: center;
-  /* 7 个图标在可用宽度内平均分布；不再用固定 7px 挤在左边，也不会和右侧窗口按钮重叠 */
+  /* Keep the normal 375px rail's spacing when terminal/browser widens the panel.
+     257 = rail width - horizontal padding (20) - window actions (90) - gap (8).
+     Extra width belongs between the two groups, not between individual tools. */
   justify-content: space-between;
   gap: 4px;
-  padding: 0 2px;
+  padding: 1px 2px;
   min-width: 0;
+  max-width: 257px;
   flex: 1;
+  /* The panel can shrink to 200px. Scroll tools instead of covering window controls. */
+  overflow-x: auto;
+  scrollbar-width: thin;
 }
 
 .extension-tab-btn {
