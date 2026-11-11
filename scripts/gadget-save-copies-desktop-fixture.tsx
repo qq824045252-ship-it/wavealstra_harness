@@ -1,13 +1,15 @@
 /** Renderer-only Electron fixture: real GadgetMoveDialog, mocked API/store, no app bootstrap. */
 import React from "react";
 import { createRoot } from "react-dom/client";
+import GadgetSection from "../src/renderer/src/components/gadget/GadgetSection";
 import GadgetMoveDialog from "../src/renderer/src/components/gadget/GadgetMoveDialog";
 
-const state: any = { tasks: [{ id: "task", spaceId: "space" }], spaces: [{ id: "space", name: "Fixture space" }] };
+const state: any = { tasks: [{ id: "task", spaceId: "space" }], spaces: [{ id: "space", name: "Fixture space" }], setGadgetsCount: () => {} };
 // This module is also the esbuild alias for appStore; no real store or credentials are loaded.
-export const useAppStore = (selector: (value: any) => unknown): any => selector(state);
+export const useAppStore = Object.assign((selector: (value: any) => unknown): any => selector(state), { getState: () => state });
 const root = createRoot(document.getElementById("root")!);
-const gadget: any = { id: "source", name: "Original", scope: { type: "task", taskId: "task" } };
+const gadget: any = { id: "source", name: "Original", scope: { type: "task", taskId: "task" }, runtime: { status: "stopped" } };
+let listedGadget = gadget;
 const wait = (): Promise<void> => new Promise(resolve => setTimeout(resolve, 30));
 const assert = (ok: unknown, message: string): void => { if (!ok) throw Error(message); };
 let closed = 0;
@@ -16,6 +18,8 @@ let requests: any[] = [];
 let resolveSave: (() => void) | undefined;
 let rejectSave: ((error: Error) => void) | undefined;
 (window as any).api = { gadget: {
+  list: async () => [listedGadget],
+  onChanged: () => () => {},
   copyScope: (request: unknown) => { requests.push({ route: "copy", request }); return new Promise<void>((resolve, reject) => { resolveSave = resolve; rejectSave = reject; }); },
   moveScope: (request: unknown) => { requests.push({ route: "move", request }); return new Promise<void>((resolve, reject) => { resolveSave = resolve; rejectSave = reject; }); },
 } };
@@ -64,6 +68,44 @@ async function main(): Promise<void> {
   assert(document.querySelector('[data-view="other"]'), "Navigation survives delayed completion");
   assert(closed === 0, "No incidental close callback");
   results.push("navigation while save pending ignores stale completion");
+  // Exercise the actual section menu, not a copied menu or source-text assertion.
+  async function section(type: "task" | "workspace" | "global"): Promise<void> {
+    root.render(null); await wait();
+    const scope: any = type === "task" ? { type, taskId: "task" } : type === "workspace" ? { type, workspaceId: "space" } : { type };
+    listedGadget = { ...gadget, scope };
+    root.render(<GadgetSection scope={scope} />);
+    for (let i = 0; i < 100 && !document.querySelector(".gadget-more-btn"); i++) await wait();
+    assert(document.querySelector(".gadget-more-btn"), "Section must render actual tool card");
+    (document.querySelector(".gadget-more-btn") as HTMLElement).click(); await wait();
+  }
+  const menuButtons = (): HTMLButtonElement[] => [...document.querySelectorAll<HTMLButtonElement>(".gadget-action-menu-popover button")];
+  const action = (text: string): HTMLButtonElement => {
+    const button = menuButtons().find(item => item.textContent?.trim() === text);
+    assert(button, `Missing menu action: ${text}`); return button!;
+  };
+  for (const type of ["task", "workspace", "global"] as const) {
+    await section(type);
+    const labels = menuButtons().map(item => item.textContent?.trim());
+    assert(labels.filter(label => label === "保存到工作空间").length === 1, `${type}: exactly one workspace-copy action`);
+    assert(labels.filter(label => label === "保存到我的工作台").length === (type === "global" ? 0 : 1), `${type}: personal-copy action without duplicate`);
+    assert(!labels.some(label => label?.includes("任务工作目录") || label?.includes("移动")), `${type}: no directory-export or move menu`);
+    if (type !== "global") {
+      const before = requests.length;
+      action("保存到我的工作台").click(); await wait();
+      assert(requests.length === before + 1 && requests.at(-1).route === "copy" && requests.at(-1).request.scope.type === "global", `${type}: personal menu creates copy`);
+      resolveSave!(); await wait();
+      assert(document.querySelector(".gadget-card-name")?.textContent === "Original", "Copy leaves original rendered");
+    }
+  }
+  await section("task");
+  action("保存到工作空间").click(); await wait();
+  assert(document.querySelector('[aria-label="保存 Gadget 副本"]'), "Workspace menu opens copy dialog");
+  const beforeWorkspace = requests.length;
+  submit().click(); await wait();
+  assert(requests.length === beforeWorkspace + 1 && requests.at(-1).route === "copy" && requests.at(-1).request.scope.workspaceId === "space", "Section workspace save copies to selected space");
+  resolveSave!(); await wait();
+  assert(!document.querySelector('[aria-label="保存 Gadget 副本"]'), "Successful section copy dismisses dialog");
+  results.push("actual task/workspace/global section menus expose unique in-app copy entries, no export/move, and dispatch copyScope");
   return (window as any).require("electron").ipcRenderer.send("fixture-result", { status: "passed", tests: results });
 }
 void main().catch(error => (window as any).require("electron").ipcRenderer.send("fixture-result", { status: "failed", error: String(error.stack || error) }));

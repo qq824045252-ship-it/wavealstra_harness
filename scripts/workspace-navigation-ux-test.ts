@@ -35,7 +35,7 @@ for (const label of ["概览", "记忆", "上下文", "资料", "文件", "Gadge
 
 contains("src/renderer/src/components/gadget/GadgetSection.tsx", "保存到工作空间", "task Gadget must expose the localized save-to-workspace action");
 contains("src/renderer/src/components/gadget/GadgetSection.tsx", "保存到我的工作台", "task Gadget must expose the localized personal-workbench action");
-contains("src/renderer/src/components/gadget/GadgetSection.tsx", 'setMoveItem({ item, mode: "copy", initialTarget: "workspace" })', "workspace save must open the workspace target picker");
+contains("src/renderer/src/components/gadget/GadgetSection.tsx", 'setMoveItem({ item, initialTarget: "workspace" })', "workspace save must open the workspace target picker");
 contains("src/renderer/src/components/gadget/GadgetSection.tsx", 'copyScope({ gadgetId: item.id, scope: { type: "global" } })', "personal-workbench save must preserve the global Gadget scope");
 excludes("src/renderer/src/components/gadget/GadgetSection.tsx", "window.prompt(\"目标", "Gadget move must not request a raw target id");
 contains("src/renderer/src/components/gadget/GadgetMoveDialog.tsx", "WorkspacePicker", "Gadget move must reuse WorkspacePicker");

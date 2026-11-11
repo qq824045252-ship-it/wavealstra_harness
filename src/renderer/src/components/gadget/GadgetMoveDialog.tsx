@@ -85,7 +85,7 @@ export default function GadgetMoveDialog({ gadget, mode, initialTarget, onClose,
             />
           </div>
         )}
-        {mode === "copy" && <p>这里保存到应用内的工作台。需要磁盘文件时，请使用「保存到任务工作目录」。</p>}
+        {mode === "copy" && <p>副本保存在软件内的工作空间或我的工作台，可直接打开使用。</p>}
         {error && <div className="gadget-error" role="alert">{error}</div>}
         <footer>
           <button type="button" className="btn" disabled={busy} onClick={onClose}>取消</button>

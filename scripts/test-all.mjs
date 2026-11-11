@@ -108,7 +108,6 @@ const GUI_TESTS = new Set([
   "test:computer-use-agent-desktop",
   "test:workspace-notes-ui",
   "test:gadget-task-desktop",
-  "test:gadget-save-directory-desktop",
   // 真 Electron 窗口（隐藏 BrowserWindow / 真实 UI 交互）
   "test:memory-ui",
   "test:memory-organization-desktop",
