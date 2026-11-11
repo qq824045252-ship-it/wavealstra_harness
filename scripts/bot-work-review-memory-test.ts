@@ -10,7 +10,7 @@ import { WorkService, DESKTOP_USER_GRANTS } from "../src/main/agent/work/WorkSer
 import { MemoryService, type MemoryExtractionInput } from "../src/main/memory/MemoryService";
 import { WorkMemoryCapture } from "../src/main/memory/WorkMemoryCapture";
 import { createMemoryExtension } from "../src/main/memory/memory-extension";
-import { projectMemoryContext } from "../src/main/agent/MemoryContextProjection";
+import { projectMemoryContext, renderWorkPreferenceState, WORK_PREFERENCE_SOURCE_LIMIT, WORK_PREFERENCE_POLICY_BUDGET } from "../src/main/agent/MemoryContextProjection";
 import { ExpertService } from "../src/main/experts/ExpertService";
 import { TaskExpertBindingService } from "../src/main/experts/TaskExpertBindingService";
 import { DEFAULT_BOT_ID, LOCAL_USER_ID, type WorkActor, type WorkControlResult } from "../src/shared/bot-work";
@@ -80,6 +80,66 @@ const cases: Array<[string, (f: Fixture) => Promise<void> | void]> = [
     f.memory.forget(f.own.id);
     assert(!projectMemoryContext(f.memory, {taskId: "worker", query: "核对行程安排", trackRecall: false}).items.some(item => item.id === f.own.id));
     assert(!projectMemoryContext(f.memory, {taskId: "ordinary", query: "统计季度库存数量", trackRecall: false}).items.some(item => item.scopeType === "bot"));
+  }],
+  ["current Work preference state does not promote historical formats or generic constraints", f => {
+    f.memory.update({id: f.own.id, content: "每次结果末尾写松露标记"});
+    const workId = f.memory.inferAgentScope("worker").scopeId!;
+    f.db.connection.prepare("UPDATE works SET progress_summary=? WHERE work_id=?").run("历史结果：库存 3 件。松露标记", workId);
+    const snapshot = new WorkMemoryCapture(f.db, f.memory).capture(workId)!;
+    const originalFacts = f.memory.get(snapshot)!.content;
+    const project = () => projectMemoryContext(f.memory, {taskId:"worker",query:"核对库存",trackRecall:false});
+    const initial = project();
+    assert.deepEqual(initial.currentPreferences, {status:"current",sources:[{id:f.own.id,revision:f.memory.history(f.own.id)[0].revision}]});
+    f.memory.update({id:f.own.id,content:"每次结果末尾写琉璃标记"});
+    const updated = project();
+    assert(updated.currentPreferences!.sources[0].revision > initial.currentPreferences!.sources[0].revision);
+    assert.match(updated.text, /琉璃标记/);
+    f.memory.forget(f.own.id);
+    const afterForget = project();
+    assert.deepEqual(afterForget.currentPreferences, {status:"empty",sources:[]});
+    assert.match(afterForget.text, /库存 3 件。松露标记/, "raw historical Work facts stay intact");
+    assert(!afterForget.currentPreferences!.sources.some(source => source.id === snapshot));
+    assert.doesNotMatch(JSON.stringify(afterForget.currentPreferences), /松露|琉璃/);
+    const constraint = f.memory.create({kind:"constraint",title:"跟随最新偏好",content:"委托目标不写死旧偏好，按每轮最新有效长期回复偏好输出",
+      scopeType:"bot",scopeId:DEFAULT_BOT_ID,sourceType:"user"});
+    const generic = project();
+    assert.deepEqual(generic.currentPreferences!.sources.map(source => source.id), [constraint.id]);
+    const policy = renderWorkPreferenceState(generic.currentPreferences!);
+    assert.match(policy, /一般约束本身不要求任何特定格式/);
+    assert.match(policy, /不要猜测、改名或编造替代项/);
+    assert.match(policy, /不要询问用户补齐/);
+    assert.match(policy, /历史事实，不是当前格式授权/);
+    assert.equal(f.memory.get(snapshot)!.content, originalFacts);
+    assert.equal(projectMemoryContext(f.memory,{taskId:"ordinary",trackRecall:false}).currentPreferences, undefined);
+  }],
+  ["current Work preference state stays bounded and distinguishes omitted from empty", f => {
+    for (let i=0;i<WORK_PREFERENCE_SOURCE_LIMIT+2;i++) f.memory.create({kind:"preference",title:`可用偏好 ${i}`,content:`当前明确格式规则 ${i}`,
+      scopeType:"bot",scopeId:DEFAULT_BOT_ID,sourceType:"user"});
+    const full=projectMemoryContext(f.memory,{taskId:"worker",query:"核对行程",trackRecall:false});
+    assert.equal(full.currentPreferences!.status,"partial");
+    assert.equal(full.currentPreferences!.sources.length,WORK_PREFERENCE_SOURCE_LIMIT);
+    assert(Buffer.byteLength(renderWorkPreferenceState(full.currentPreferences!),"utf8") <= WORK_PREFERENCE_POLICY_BUDGET);
+    const small=projectMemoryContext(f.memory,{taskId:"worker",query:"核对行程",trackRecall:false,budgetChars:80});
+    assert.equal(small.currentPreferences!.status,"partial");
+    assert.deepEqual(small.currentPreferences!.sources,[]);
+    const filtered=projectMemoryContext(f.memory,{taskId:"worker",query:"核对行程",trackRecall:false,kinds:["fact"]});
+    assert.equal(filtered.currentPreferences!.status,"partial");
+    assert.deepEqual(filtered.currentPreferences!.sources,[]);
+    assert(filtered.items.every(item=>item.kind==="fact"),"preference baseline cannot override explicit kind filters");
+  }],
+  ["current Work preference state retains team and explicit public boundaries", f => {
+    const workId=f.memory.inferAgentScope("worker").scopeId!;
+    f.db.connection.prepare("INSERT INTO work_team_templates(template_id,user_id,operation_id,request_hash,name,plan_json,created_at) VALUES('pref-team',?,'pref-team-op','hash','Pref Team','{}',1)").run(LOCAL_USER_ID);
+    f.db.connection.prepare("INSERT INTO work_teams(work_id,user_id,operation_id,request_hash,plan_json,intent_revision,input_snapshot_id,created_at) VALUES(?,?,?,'test','{}',1,'test',?)")
+      .run(workId,LOCAL_USER_ID,"team-test",Date.now());
+    f.db.connection.prepare("INSERT INTO work_team_ownership(work_id,team_id,team_name) VALUES(?,'pref-team','Pref Team')").run(workId);
+    const project=()=>projectMemoryContext(f.memory,{taskId:"worker",botId:DEFAULT_BOT_ID,teamId:"foreign-team",query:"统计库存",trackRecall:false});
+    assert.deepEqual(project().currentPreferences,{status:"empty",sources:[]});
+    const team=f.memory.create({kind:"preference",title:"团队格式",content:"团队使用普通列表",scopeType:"team",scopeId:"pref-team",sourceType:"user"});
+    const shared=f.memory.create({kind:"preference",title:"公共格式",content:"公共偏好使用公制",scopeType:"global",sourceType:"user",metadata:{publicShared:true}});
+    const actual=project();
+    assert.deepEqual(new Set(actual.currentPreferences!.sources.map(source=>source.id)),new Set([team.id,shared.id]));
+    assert(!actual.items.some(item=>[f.own.id,f.other.id,f.global.id].includes(item.id)));
   }],
   ["stable baseline does not widen team privacy or pull unrelated facts", f => {
     f.memory.update({id: f.own.id, title: "答复格式", content: "默认使用简短中文列表"});

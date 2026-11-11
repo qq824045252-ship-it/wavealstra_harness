@@ -22,6 +22,14 @@ exports.run=async({send,foregroundDone,until,evaluate,history,rpc,report,request
   费用:[['item,amount\nTrain,10\nHotel,15','25'],['item,amount\nTrain,2\nHotel,3','5']]
  };
  const changeInputs=phase=>{for(const item of report.works){const [data,expected]=changes[item.title][phase];fs.writeFileSync(item.file,data+'\n');item.expected=expected;}};
+ const noTrailingMarker=text=>!/^\s*(?:[*_`]+)?[\p{Script=Han}A-Za-z0-9]{1,12}标记(?:[*_`]+)?[。.!！]?\s*$/mu.test(text);
+ const assertComparison=(text,round,label)=>{
+  const plain=text.replace(/[*_`]/g,'');
+  if(round===1){
+   assert(!/与(?:上(?:一)?轮|首轮)[^。\n]{0,55}(?:一致|相同|无变化|没有变化)|(?:^|[：:，,；;。\n])\s*(?:无变化|没有变化|未发生变化|未变化|有变化|出现变化|发生变化)/.test(plain),label+' first observation cannot invent a comparison');
+  }
+  if(round===4)assert(/无变化|未变化|没有变化|未发生变化|保持(?:不变|一致)|(?:与|和)[^。\n]{0,60}(?:一致|相同)|(?:仍|还是|依旧)(?:然)?(?:是|为)/.test(plain),label+' real unchanged round remains reportable');
+ };
  let phaseAt=0;
  const observe=async(round,marker)=>{
   for(const item of report.works){
@@ -29,12 +37,14 @@ exports.run=async({send,foregroundDone,until,evaluate,history,rpc,report,request
    assert.equal(w.lifecycle,'active');
    const deliverable=w.deliverables.find(d=>d.executionId===e.bindingId);assert(deliverable,'round result');
    const output=deliverable.summary;assert(output.includes(item.expected),item.title+' actual result');
-   if(marker)assert(output.includes(marker),'current preference '+item.title);else assert(!/松露标记|琉璃标记/.test(output),'forgotten preference '+item.title);
+   if(marker)assert(output.includes(marker),'current preference '+item.title);else assert(!/松露标记|琉璃标记/.test(output)&&noTrailingMarker(output),'forgotten preference or fabricated replacement marker '+item.title);
+   assertComparison(output,round,'native '+item.title);
    await until(async()=>(await history()).messages.some(m=>m.workFeedback?.executionId===e.bindingId&&m.workFeedback?.kind==='result'),'foreground result '+item.title);
    const message=(await history()).messages.find(m=>m.workFeedback?.executionId===e.bindingId&&m.workFeedback?.kind==='result');
    const foreground=message.text.split('原始执行记录：')[0];
    if(marker)assert(foreground.includes(marker),'foreground summary keeps current preference '+item.title);
-   else assert(!/松露标记|琉璃标记/.test(foreground),'foreground summary forgets old preference '+item.title);
+   else assert(!/松露标记|琉璃标记/.test(foreground)&&noTrailingMarker(foreground),'foreground summary forgets old preference without replacement '+item.title);
+   assertComparison(foreground,round,'foreground '+item.title);
    const db=new (require('better-sqlite3'))(path.join(home,'.mybuddy','app.db'),{readonly:true,fileMustExist:true});
    let sourceEventId;try{sourceEventId=db.prepare('SELECT source_event_id FROM work_events_inbox WHERE event_id=? AND work_id=?').get(e.inboxEventId,item.workId)?.source_event_id;}finally{db.close();}
    assert(sourceEventId,'persisted event identity for this exact execution');
@@ -64,7 +74,9 @@ exports.run=async({send,foregroundDone,until,evaluate,history,rpc,report,request
  await send('忘记并删除所有关于末尾标记的长期记忆，以后不附加标记。');await foregroundDone();
  await until(async()=>!(await atoms()).some(a=>/松露标记|琉璃标记/.test(a.content)),'preference forgotten');
  phaseAt=Date.now();await observe(3,null);
- for(const item of report.works){const rounds=report.rounds.filter(r=>r.workId===item.workId);assert.equal(new Set(rounds.map(r=>r.taskId)).size,3,'fresh execution task per real timer round');await send(`暂停持续跟踪 ${item.workId}，不要再检查。`);await foregroundDone();assert.equal((await detail(item.workId)).lifecycle,'paused');}
+ // Leave all six input files unchanged for one further real timer round.
+ phaseAt=Date.now();await observe(4,null);
+ for(const item of report.works){const rounds=report.rounds.filter(r=>r.workId===item.workId);assert.equal(new Set(rounds.map(r=>r.taskId)).size,4,'fresh execution task per real timer round');await send(`暂停持续跟踪 ${item.workId}，不要再检查。`);await foregroundDone();assert.equal((await detail(item.workId)).lifecycle,'paused');}
  const shot=await rpc('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,'watch-memory.png'),Buffer.from(shot.data,'base64'));
- report.checks.push('six task types, three actual timer rounds each, original/corrected/deleted memory in native Bot L1 and output, foreground return, distinct execution tasks sharing one persistent Work memory; paused afterwards');
+ report.checks.push('six task types, four actual timer rounds each, absent initial baseline and real unchanged comparison, original/corrected/deleted memory without invented replacement markers in native Bot L1 and output, foreground return, distinct execution tasks sharing one persistent Work memory; paused afterwards');
 };

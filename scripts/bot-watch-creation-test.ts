@@ -245,11 +245,70 @@ try {
   assert.deepEqual(bindings[0].delegatedScope, ["workspace:read"]);
   const input = JSON.parse(works.repo.executionInput(bindings[0]));
   assert.equal(input.watchFollowUp.readOnly, true);
+  assert.deepEqual(input.watchFollowUp.previousReports, []);
+  assert.equal(input.watchFollowUp.comparisonState, "no_baseline", "the first native tick has no comparison baseline");
   assert.match(input.watchLifetimeControl, /由前台自主判断/);
   assert.match(input.watchLifetimeControl, /不调用 conversation_goal_propose_complete/);
   assert.match(input.watchLifetimeControl, /不使用 automation_exec/);
   assert.equal(input.watchFollowUp.watchRule.stopConditionText, "发布成功");
   assert.match(input.watchFollowUp.instructions, /不自行循环/);
+  // Exercise the production history query, including out-of-order completion
+  // and equal timestamps. These synthetic bindings never reach the dispatcher.
+  {
+    const at = bindings[0].admittedAt + 100;
+    const ids: string[] = [];
+    const seed = (name: string, admittedAt: number, createdAt: number,
+      bindingPatch: Partial<WorkExecutionBindingDto> = {}, resultPatch: Record<string, unknown> = {}) => {
+      const id = `baseline-${name}`; ids.push(id);
+      const binding = { ...bindings[0], bindingId: id, operationId: id, taskId: id,
+        admittedAt, status: "completed" as const, inboxEventId: `tick:${id}`, ...bindingPatch };
+      works.repo.insertBinding(binding);
+      works.repo.insertDeliverable({ deliverableId: `result:${id}`, workId: work.workId,
+        executionId: id, producerBotId: binding.botId, intentRevision: binding.intentRevision,
+        ownerEpoch: binding.ownerEpoch, inputSnapshotId: binding.inputSnapshotId, status: "proposed",
+        summary: name, artifactRefs: [], evidenceRefs: [], uncoveredScope: [], uncoveredCriterionIds: [],
+        isSpeculation: false, hasWriteConflicts: false, createdAt, ...resultPatch });
+      return binding;
+    };
+    try {
+      seed("older-structured", at - 30, at - 30, {}, { summary: JSON.stringify({ protocol: "watch-observation-v1",
+        status: "observed", facts: [{ source: "/source", key: "value", value: "A" }], summary: "older baseline" }) });
+      seed("previous", at - 20, at - 20);
+      seed("incomplete", at - 10, at - 10, {}, { uncoveredScope: ["partial source"] });
+      seed("old-intent", at - 10, at - 10, { intentRevision: work.intentRevision + 1 });
+      seed("old-input", at - 10, at - 10, { inputSnapshotId: "other-input" });
+      seed("old-owner", at - 10, at - 10, { ownerEpoch: work.ownerEpoch + 1 });
+      seed("other-producer", at - 10, at - 10, { botId: "other-bot" });
+      seed("invalidated", at - 10, at - 10, { invalidatedAt: at - 5 });
+      seed("invalidated-status", at - 10, at - 10, { status: "invalidated" });
+      seed("rejected", at - 10, at - 10, {}, { status: "rejected" });
+      seed("superseded", at - 10, at - 10, {}, { status: "superseded" });
+      seed("late-result", at - 10, at + 1);
+      seed("same-round", at - 10, at - 10, { inboxEventId: bindings[0].inboxEventId });
+      seed("same-time-before", at, at);
+      const target = seed("current", at, at + 10, { inboxEventId: bindings[0].inboxEventId });
+      seed("same-time-after", at, at);
+      seed("future-finishes-first", at + 1, at - 1);
+      const history = works.repo.previousWatchReports(target);
+      assert.deepEqual(history.map(r => r.summary), ["previous", "incomplete", "same-time-before"],
+        "only prior same-identity observations present at admission can be baseline candidates");
+      const comparisonHistory = works.repo.previousWatchReports(target, true);
+      assert.equal(comparisonHistory.length, 4, "bounded recent history may retain one older structured baseline");
+      assert.equal(comparisonHistory[0].executionId, "baseline-older-structured");
+      const native = JSON.parse(works.repo.executionInput(target)).watchFollowUp;
+      assert.equal(native.comparisonState, "unverified", "existing history is not proof of equality");
+      assert.deepEqual(native.previousReports.map((r: { summary: string }) => r.summary), history.map(r => r.summary));
+      for (const row of comparisonHistory) db.connection.prepare("DELETE FROM work_deliverables WHERE deliverable_id=?").run(row.deliverableId);
+      const isolated = JSON.parse(works.repo.executionInput(target)).watchFollowUp;
+      assert.deepEqual(isolated.previousReports, [], "own/future/stale results never reconstruct a baseline on review or recovery");
+      assert.equal(isolated.comparisonState, "no_baseline");
+    } finally {
+      for (const id of ids) {
+        db.connection.prepare("DELETE FROM work_deliverables WHERE execution_id=?").run(id);
+        db.connection.prepare("DELETE FROM work_execution_bindings WHERE binding_id=?").run(id);
+      }
+    }
+  }
   settle(work.workId);
   works.tick(clock.at); await queue.flush();
   assert.equal(works.repo.listBindings(work.workId).length, 1, "same slot never starts a duplicate execution");

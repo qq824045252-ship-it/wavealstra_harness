@@ -19,9 +19,9 @@ const works=new WorkService(db.connection,{bots}),messages=new BotConversationRe
 const source=messages.accept(LOCAL_USER_ID,{botId:DEFAULT_BOT_ID,requestId:'source',text:'每分钟持续观察，不要结束'});
 const created=works.createWork({kind:'user',userId:LOCAL_USER_ID,entry:'desktop',grants:DESKTOP_USER_GRANTS},{operationId:'create',title:'持续观察',mode:'watch',ownerBotId:DEFAULT_BOT_ID,inputSnapshotId:'input',authorization:DESKTOP_USER_GRANTS,conversationId:source.conversationId,sourceMessageId:source.userMessageId,watchRule:{cronExpression:'* * * * *',timezone:'UTC'}});assert(created.ok);const work=created.work;
 const feedback=new WorkConversationFeedback({db:db.connection,userId:LOCAL_USER_ID,works,isAuthority:()=>true,superviseWatch:true});
-function receipt(id:string){
- works.repo.insertBinding({bindingId:id,workId:work.workId,operationId:id,botId:DEFAULT_BOT_ID,taskId:id,durableStoreKey:'store',conversationId:'native',intentRevision:work.intentRevision,ownerEpoch:work.ownerEpoch,inputSnapshotId:work.inputSnapshotId,expertSnapshot:bots.activeSnapshot(DEFAULT_BOT_ID)!,delegatedScope:['workspace:read'],workspaceBinding:root,status:'completed',admittedAt:Date.now(),settledAt:Date.now(),settlementNote:id});
- works.repo.insertDeliverable({deliverableId:`result:${id}`,workId:work.workId,executionId:id,producerBotId:DEFAULT_BOT_ID,intentRevision:work.intentRevision,ownerEpoch:work.ownerEpoch,inputSnapshotId:work.inputSnapshotId,status:'proposed',summary:id,artifactRefs:[],evidenceRefs:[],uncoveredScope:[],uncoveredCriterionIds:[],isSpeculation:false,hasWriteConflicts:false,createdAt:Date.now()});
+function receipt(id:string,target=work,summary=id){
+ works.repo.insertBinding({bindingId:id,workId:target.workId,operationId:id,botId:DEFAULT_BOT_ID,taskId:id,durableStoreKey:'store',conversationId:'native',intentRevision:target.intentRevision,ownerEpoch:target.ownerEpoch,inputSnapshotId:target.inputSnapshotId,expertSnapshot:bots.activeSnapshot(DEFAULT_BOT_ID)!,delegatedScope:['workspace:read'],workspaceBinding:root,status:'completed',admittedAt:Date.now(),settledAt:Date.now(),settlementNote:id});
+ works.repo.insertDeliverable({deliverableId:`result:${id}`,workId:target.workId,executionId:id,producerBotId:DEFAULT_BOT_ID,intentRevision:target.intentRevision,ownerEpoch:target.ownerEpoch,inputSnapshotId:target.inputSnapshotId,status:'proposed',summary,artifactRefs:[],evidenceRefs:[],uncoveredScope:[],uncoveredCriterionIds:[],isSpeculation:false,hasWriteConflicts:false,createdAt:Date.now()});
  db.connection.prepare('INSERT INTO work_native_inbox(fact_id,binding_id,namespace_hash,payload_json,received_at,consumed_at) VALUES (?,?,?,?,?,?)').run(id,id,id,'{}',Date.now(),Date.now());
 }
 let calls=0,fail=false,deliveryBlocked=false,preferences="",replaceDuringReview:string|undefined;
@@ -32,9 +32,13 @@ let supervisor=new WorkWatchSupervision(options);
 async function flush(){supervisor.wake();supervisor.wake();await delay(60);}
 receipt('round1');feedback.drain();assert.equal((db.connection.prepare("SELECT count(*) n FROM bot_work_feedback WHERE json_extract(metadata_json,'$.executionId')='round1'").get() as {n:number}).n,0,'raw result waits for independent owner review');
 await flush();assert.equal(calls,1);assert.equal(works.getWork(work.workId)!.lifecycle,'active');
+assert.equal(reviewContexts[0].comparisonState,'no_baseline');assert.equal(reviewContexts[0].hostProvenUnchanged,false);
+assert.deepEqual(reviewContexts[0].previousResults,[],'current result never supplies its own comparison baseline');
 await flush();assert.equal(calls,1,'one review per round');
 supervisor.close();supervisor=new WorkWatchSupervision(options);await flush();assert.equal(calls,1,'normal restart does not repeat delivered review');
 receipt('round2');await flush();assert.equal(calls,2);assert.equal(works.getWork(work.workId)!.lifecycle,'active');
+assert.equal(reviewContexts[1].comparisonState,'unverified');assert.equal(reviewContexts[1].hostProvenUnchanged,false);
+assert.deepEqual(reviewContexts[1].previousResults.map((r:any)=>r.summary),['round1']);
 receipt('error');fail=true;await flush();db.connection.prepare('UPDATE work_watch_reviews SET retry_at=0 WHERE binding_id=?').run('error');await flush();
 const failed=db.connection.prepare('SELECT state,error FROM work_watch_reviews WHERE binding_id=?').get('error') as any;assert.equal(failed.state,'delivered');assert.match(failed.error,/unavailable/);
 assert.equal((db.connection.prepare("SELECT count(*) n FROM work_watch_reviews WHERE state='delivered'").get() as any).n,3);
@@ -98,6 +102,36 @@ assert(!follow.availability({...works.getWork(work.workId)!,lifecycle:'paused'},
 assert(!follow.availability({...works.getWork(work.workId)!,watchRule:{...work.watchRule!,endsAt:Date.now()-1}},originalBinding).allowed);
 assert(!follow.availability(works.getWork(work.workId)!,{...originalBinding,status:'stopped'}).allowed);
 assert(follow.availability(works.getWork(work.workId)!,{...originalBinding,delegatedScope:[]}).allowed, 'retired delegated scope does not block scheduled observations');
+// Production supervision must not confuse notification policy with comparison
+// proof. Keep the first silent baseline distinct from a later unchanged round.
+const comparisonCreated=works.createWork({kind:'user',userId:LOCAL_USER_ID,entry:'desktop',grants:DESKTOP_USER_GRANTS},
+ {operationId:'comparison-watch',title:'comparison watch',mode:'watch',ownerBotId:DEFAULT_BOT_ID,inputSnapshotId:'comparison-input',
+ authorization:DESKTOP_USER_GRANTS,conversationId:source.conversationId,sourceMessageId:source.userMessageId,
+ watchRule:{cronExpression:'* * * * *',timezone:'UTC',notificationMode:'changes_only',notifyInitial:false}});
+assert(comparisonCreated.ok);const comparisonWork=comparisonCreated.work;
+function observed(id:string,value:string){
+ const summary=JSON.stringify({protocol:'watch-observation-v1',status:'observed',facts:[{source:'/fixture/comparison',key:'file_content',value}],summary:'本轮读取：'+value});
+ receipt(id,comparisonWork,summary);
+ db.connection.prepare('UPDATE work_native_inbox SET payload_json=? WHERE binding_id=?').run(JSON.stringify({status:'completed',summary,
+  readEvidence:[{toolCallId:id,toolName:'read',kind:'file-content',target:'/fixture/comparison',partial:false,at:Date.now(),
+   outputHash:createHash('sha256').update(value).digest('hex'),outputText:value}]}),id);
+}
+const reviewState=(id:string)=>(db.connection.prepare('SELECT state FROM work_watch_reviews WHERE binding_id=?').get(id) as {state:string}).state;
+observed('comparison-first','A');await flush();
+assert.equal(reviewContexts.at(-1).comparisonState,'no_baseline');assert.equal(reviewContexts.at(-1).hostProvenUnchanged,false);
+assert.equal(reviewState('comparison-first'),'silent');
+observed('comparison-same','A');await flush();
+assert.equal(reviewContexts.at(-1).comparisonState,'unchanged');assert.equal(reviewContexts.at(-1).hostProvenUnchanged,true);
+assert.equal(reviewContexts.at(-1).comparisonBaseline.deliverableId,'result:comparison-first');
+assert.equal(reviewState('comparison-same'),'silent');
+observed('comparison-changed','B');await flush();
+assert.equal(reviewContexts.at(-1).comparisonState,'changed');assert.equal(reviewContexts.at(-1).hostProvenUnchanged,false);
+assert.equal(reviewState('comparison-changed'),'delivered');
+const currentComparison=works.getWork(comparisonWork.workId)!;
+works.repo.updateWork({...currentComparison,watchRule:{...currentComparison.watchRule!,notificationMode:'every_check'}});
+observed('comparison-every-check','B');await flush();
+assert.equal(reviewContexts.at(-1).comparisonState,'unchanged');assert.equal(reviewContexts.at(-1).hostProvenUnchanged,true);
+assert.equal(reviewState('comparison-every-check'),'delivered','equal evidence does not override every-check notification policy');
 const latest=works.getWork(work.workId)!;works.repo.updateWork({...latest,lifecycle:'closed',closureConclusion:'cancelled',updatedAt:Date.now()});
 feedback.drain();assert((db.connection.prepare("SELECT count(*) n FROM bot_work_feedback WHERE json_extract(metadata_json,'$.kind')='closure'").get() as {n:number}).n>0,'watch closure feedback is not suppressed by reviewed round');
 supervisor.close();feedback.close();db.close();console.log('PASS: multi-round owner review, nonblocking queue, no duplicate raw results, restart receipts, visible model failure fallback; standing work remains active');

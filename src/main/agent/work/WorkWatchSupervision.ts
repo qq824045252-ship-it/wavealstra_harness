@@ -3,7 +3,7 @@ import { WorkWatchFollowUp } from "./WorkWatchFollowUp";
 import { watchGoalEvidence, watchGoalMet, watchGoalClosureSummary } from "./WorkWatchGoal";
 import type { WorkCompletionOptions } from "./WorkCompletionCoordinator";
 import type { WorkResultDecision } from "./BotWorkResultTurn";
-import { watchObservationDelivery, watchTeamReadEvidence } from "./WorkWatchObservation";
+import { watchObservationDelivery, watchTeamReadEvidence, type WatchObservationPresentation } from "./WorkWatchObservation";
 
 /** A durable, independent owner review per observation. A round never closes the
  * standing commission, and reviewing a receipt never repeats its business effects. */
@@ -97,16 +97,22 @@ export class WorkWatchSupervision {
       || binding.invalidatedAt || binding.ownerEpoch !== work.ownerEpoch || binding.intentRevision !== work.intentRevision
       || binding.inputSnapshotId !== work.inputSnapshotId) return;
     const results = works.repo.listDeliverables(work.workId).filter(r => r.executionId === id && r.status !== 'superseded');
+    const prior = works.repo.previousWatchReports(binding, work.watchRule?.notificationMode === 'changes_only');
     const rawEvidence = watchGoalEvidence(this.options.db,works,binding);
+    const result = results.find(r => r.deliverableId === `result:${id}`);
+    const presentation: WatchObservationPresentation = result ? watchObservationDelivery(work,result,[...prior,result],
+      item => watchTeamReadEvidence(this.options.db,works.repo,works.repo.getBinding(item.executionId),item))
+      : {silent:false,comparisonState:prior.length ? 'unverified' : 'no_baseline',summary:binding.settlementNote || '本轮没有返回可用结果'};
     const personalPreferences = this.options.preferences?.(binding.taskId) ?? "";
     const preferenceFingerprint = createHash("sha256").update(personalPreferences).digest("hex");
-    const evidence = JSON.stringify([preferenceFingerprint,work.watchRule,rawEvidence,results.map(r => [r.deliverableId,r.summary,r.status,r.uncoveredScope,r.artifactRefs,r.isSpeculation,r.hasWriteConflicts])]);
-    return {binding,work,results,evidence,rawEvidence,personalPreferences,preferenceFingerprint};
+    const evidence = JSON.stringify(['watch-comparison-v1',preferenceFingerprint,work.watchRule,rawEvidence,presentation,
+      [...prior,...results].map(r => [r.deliverableId,r.summary,r.status,r.uncoveredScope,r.artifactRefs,r.isSpeculation,r.hasWriteConflicts])]);
+    return {binding,work,results,prior,presentation,evidence,rawEvidence,personalPreferences,preferenceFingerprint};
   }
   private async process(id: string): Promise<void> {
     const {works,db} = this.options;
     const current = this.snapshot(id); if (!current) return;
-    const {binding,work,results,evidence,rawEvidence,personalPreferences,preferenceFingerprint} = current;
+    const {binding,work,results,prior,presentation,evidence,rawEvidence,personalPreferences,preferenceFingerprint} = current;
     // A later observation stopped because the goal was already proven is not a
     // new failed goal. Keep its native receipt in details without another model
     // verdict/message contradicting the accepted round.
@@ -118,15 +124,9 @@ export class WorkWatchSupervision {
     }
     // Native receipt consumption and its aggregate result commit together.
     if (binding.status === 'completed' && !db.prepare('SELECT 1 FROM work_native_inbox WHERE binding_id=? AND consumed_at IS NOT NULL').get(id)) return;
-    const allResults = works.repo.listDeliverables(work.workId);
-    const position = allResults.findIndex(r => r.executionId === id);
-    const prior = allResults.slice(0,position < 0 ? 0 : position).filter(r => r.executionId !== id && r.intentRevision === work.intentRevision
-      && r.inputSnapshotId === work.inputSnapshotId && r.producerBotId === work.ownerBotId && r.status !== 'superseded').slice(-3);
     const source = JSON.parse(works.repo.executionInput(binding));
     const {instructions:_instructions,teamAssignment:_assignment,...originalRequest} = source;
-    const result = results.find(r => r.deliverableId === `result:${id}`);
-    const presentation = result ? watchObservationDelivery(work,result,works.repo.listDeliverables(work.workId),
-      item => watchTeamReadEvidence(db,works.repo,works.repo.getBinding(item.executionId),item)) : {silent:false,summary:binding.settlementNote || '本轮没有返回可用结果'};
+    const baseline = prior.find(r => r.deliverableId === presentation.baselineResultId);
     const context = {watchSupervision:true,preferenceFingerprint,teamRound:source.teamAssignment?.watchRound?.sequence,originalRequest,title:work.title,goal:work.goalDescription,
       watchRule:work.watchRule,lifecycle:work.lifecycle,
       nextWakeAt:works.repo.listSubscriptions(work.workId).filter(s => !s.stoppedAt).map(s => s.nextWakeAt).filter(Boolean),
@@ -135,8 +135,10 @@ export class WorkWatchSupervision {
       verifiedObservations:rawEvidence,
       teamPartialResults: source.teamAssignment?.role === 'owner_summary' && (binding.status !== 'completed' || !results.length)
         ? {notice:'负责人本轮未完成，下列仅为本轮成员已结算的部分依据，不代表全队完成', results:source.teamAssignment.previousResults ?? []} : undefined,
-      previousResults:prior.map(r=>({summary:r.summary,createdAt:r.createdAt})),
-      observationSummary:presentation.summary, hostProvenUnchanged:presentation.silent,
+      previousResults:prior.slice(-3).map(r=>({deliverableId:r.deliverableId,summary:r.summary,createdAt:r.createdAt})),
+      observationSummary:presentation.summary, comparisonState:presentation.comparisonState,
+      comparisonBaseline:baseline ? {deliverableId:baseline.deliverableId,summary:baseline.summary,createdAt:baseline.createdAt} : undefined,
+      hostProvenUnchanged:presentation.comparisonState === 'unchanged',
       followUpAvailability:this.followUp.availability(work,binding),
       notificationMode:work.watchRule?.notificationMode ?? 'every_check',
       nextAction:work.lifecycle==='active' ? '本轮观察不完整时可提出原委托内只读 followUp，由宿主持久补查并再次核对，不改变周期；否则按已保存的周期继续下一轮；如用户明确的可观察停止条件已由本轮真实证据满足，提交 stopAssessment 由宿主结束，否则继续' : work.lifecycle==='closing' ? '已停止新轮，整理末轮结果，说明正在收尾；不承诺下一轮' : '已暂停，只整理已发生的本轮观察，不承诺下一轮', evidence};

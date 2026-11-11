@@ -13,6 +13,12 @@ import { CONTEXT_LEDGER_VERSION } from "../src/main/agent/EphemeralContextProjec
 import { resolveDurableBranch, captureDurableBranch } from "../src/main/agent/durable/DurableTaskBranch";
 import { openDurableStorage } from "../src/main/agent/durable/DurableStorage";
 import { findDurableUserEntry } from "../src/main/agent/durable/DurableConversationBranch";
+import { AppDatabase } from "../src/main/db/AppDatabase";
+import { MemoryService } from "../src/main/memory/MemoryService";
+import { WorkMemoryCapture } from "../src/main/memory/WorkMemoryCapture";
+import { BotRegistry } from "../src/main/agent/work/BotRegistry";
+import { WorkService, DESKTOP_USER_GRANTS } from "../src/main/agent/work/WorkService";
+import { DEFAULT_BOT_ID, LOCAL_USER_ID, type WorkControlResult } from "../src/shared/bot-work";
 import { DurableConsultIdentity } from "../src/main/agent/durable/DurableConsultSession";
 
 process.env.MYBUDDY_CACHE_TRACE = "0";
@@ -329,3 +335,112 @@ try {
   assert.equal(bounded.snapshot, tail);
 } finally { await bounded.close(); }
 console.log("PASS bounded live history, complete older pagination and observer isolation");
+
+
+// Real native Durable requests use current L1 state, never the format in old Work reports.
+// Provider responses are deterministic; live model semantics are covered by the six-type Watch scenario.
+const preferenceDb = new AppDatabase(":memory:");
+try {
+  const bots = new BotRegistry(preferenceDb.connection); bots.ensureDefaultBot(LOCAL_USER_ID);
+  bots.registerBot({botId:"foreign-pref-bot",userId:LOCAL_USER_ID,displayName:"Other"});
+  const works = new WorkService(preferenceDb.connection,{bots});
+  const actor = {kind:"user" as const,userId:LOCAL_USER_ID,entry:"desktop" as const,grants:DESKTOP_USER_GRANTS};
+  const workResult = (result:WorkControlResult) => {assert(result.ok);return result.work;};
+  const work = workResult(works.createWork(actor,{operationId:"pref-work",title:"库存 Watch",ownerBotId:DEFAULT_BOT_ID,
+    inputSnapshotId:"pref-input",authorization:{allowedScopes:["workspace:read"]}}));
+  preferenceDb.upsertTask({id:"pref-worker",title:"Preference worker",updatedAt:Date.now()});
+  workResult(works.dispatchExecution(actor,{operationId:"pref-dispatch",workId:work.workId,botId:DEFAULT_BOT_ID,taskId:"pref-worker",
+    durableStoreKey:"pref-store",conversationId:"pref-conversation",workspaceBinding:cwd}));
+  const memory = new MemoryService(preferenceDb,{semantic:false});
+  const preference = memory.create({kind:"preference",title:"结果尾行",content:"末尾单独写松露标记",scopeType:"bot",scopeId:DEFAULT_BOT_ID,sourceType:"user"});
+  memory.create({kind:"preference",title:"其他 Bot 偏好",content:"FOREIGN_BOT_FORMAT",scopeType:"bot",scopeId:"foreign-pref-bot",sourceType:"user"});
+  preferenceDb.connection.prepare("UPDATE works SET mode='watch',progress_summary=? WHERE work_id=?").run("历史已报告事实：库存 3 件。松露标记",work.workId);
+  const snapshot = new WorkMemoryCapture(preferenceDb,memory).capture(work.workId)!;
+  const rawFacts = memory.get(snapshot)!.content;
+  const preferenceRequests:Message[][]=[];
+  let firstPreferenceCall=true;
+  const preferenceModels:Models={...api,streamSimple:(_model,input)=>{
+    preferenceRequests.push(structuredClone([...input.messages]));
+    const output=createAssistantMessageEventStream();
+    const tool=firstPreferenceCall;firstPreferenceCall=false;
+    queueMicrotask(()=>{
+      const response:AssistantMessage=tool ? {...answer("",Date.now()),stopReason:"toolUse",content:[{type:"toolCall",id:"pref-tool",name:"advance_preference",arguments:{}}]} : answer("native result",Date.now());
+      output.push({type:"done",reason:tool?"toolUse":"stop",message:response});output.end();
+    });
+    return output;
+  }};
+  const preferenceOptions={...options,directory:join(directory,"preference-runtime"),models:preferenceModels,
+    evidenceProjection:{memory,enabled:()=>true,scope:()=>({taskId:"pref-worker"}),supplementalEvidence:()=>[]},
+    tools:[defineTool({name:"advance_preference",description:"Advance a synthetic preference between native requests",parameters:Type.Object({}),replay:"safe",
+      execute:async()=>{memory.update({id:preference.id,content:"末尾单独写琉璃标记"});return {output:[{type:"text",text:"fixture update completed"}]};}})]};
+  const capsule=(request:Message[])=>request.findLast(message=>message.role==="user" && typeof message.content==="string" && message.content.includes("本轮 Work 当前偏好状态"))?.content as string|undefined;
+  const ledger=async(worker:DurableBotRuntime)=>(await worker.conversation.entries({order:"ascending"},100,undefined,context)).items.filter(entry=>entry.kind==="mybuddy.context-ledger");
+  let worker=await DurableBotRuntime.open(preferenceOptions);
+  try {
+    await (await worker.submit("核对当前库存","pref-first")).wait(context);
+    assert.equal(preferenceRequests.length,2,"real native tool continuation executed");
+    assert.deepEqual(preferenceRequests[1].slice(0,preferenceRequests[0].length),preferenceRequests[0],"current preference state is frozen within a turn");
+    assert.match(capsule(preferenceRequests[1])!,/松露标记/);
+    assert.doesNotMatch(capsule(preferenceRequests[1])!,/琉璃标记|FOREIGN_BOT_FORMAT/);
+    await (await worker.submit("整理下轮摘要","pref-second")).wait(context);
+    assert.deepEqual(preferenceRequests[2].slice(0,preferenceRequests[1].length),preferenceRequests[1]);
+    assert.match(capsule(preferenceRequests[2])!,/琉璃标记/);
+    const records=await ledger(worker);
+    const latest=records.at(-1)!.data as any;
+    assert.deepEqual(latest.currentPreferences,{status:"current",sources:[{id:preference.id,revision:memory.history(preference.id)[0].revision}]});
+    assert.doesNotMatch(JSON.stringify(records),/松露标记|琉璃标记|历史已报告事实|FOREIGN_BOT_FORMAT/,"only references and state are persisted by the projection");
+  } finally {await worker.close();}
+  worker=await DurableBotRuntime.open(preferenceOptions);
+  try {
+    await (await worker.submit("重启后复核","pref-reopen")).wait(context);
+    assert.deepEqual(preferenceRequests[3].slice(0,preferenceRequests[2].length),preferenceRequests[2],"preference metadata restores without rewriting the historical prefix");
+  } finally {await worker.close();}
+  memory.forget(preference.id);
+  const generic=memory.create({kind:"constraint",title:"跟随当前偏好",content:"委托目标不写死旧偏好，按每轮最新有效长期回复偏好输出",scopeType:"bot",scopeId:DEFAULT_BOT_ID,sourceType:"user"});
+  worker=await DurableBotRuntime.open({...preferenceOptions,directory:join(directory,"preference-forgotten")});
+  try {
+    await (await worker.submit("核对新一轮库存，历史 previousReports 仅供事实对比","pref-forgotten")).wait(context);
+    const request=preferenceRequests.at(-1)!;
+    const text=capsule(request)!;
+    assert.match(text,/历史已报告事实：库存 3 件。松露标记/,"original historical facts remain available");
+    assert.doesNotMatch(text,/琉璃标记|FOREIGN_BOT_FORMAT/);
+    assert.match(text,/一般约束本身不要求任何特定格式/);
+    assert.match(text,/不要猜测、改名或编造替代项/);
+    assert.match(text,/不要询问用户补齐/);
+    const latest=(await ledger(worker)).at(-1)!.data as any;
+    assert.deepEqual(latest.currentPreferences.sources.map((source:{id:string})=>source.id),[generic.id]);
+    assert.equal(memory.get(snapshot)!.content,rawFacts,"no destructive cleaning of historical Work evidence");
+  } finally {await worker.close();}
+  memory.forget(generic.id);memory.forget(snapshot);
+  worker=await DurableBotRuntime.open({...preferenceOptions,directory:join(directory,"preference-empty")});
+  try {
+    await (await worker.submit("执行没有偏好的新一轮","pref-empty")).wait(context);
+    assert.match(capsule(preferenceRequests.at(-1)!)!,/当前作用域没有有效的身份、偏好或约束记忆/);
+    const latest=(await ledger(worker)).at(-1)!.data as any;
+    assert.deepEqual(latest.currentPreferences,{status:"empty",sources:[]});
+    assert.deepEqual(latest.manifest,[],"empty state is delivered even without any selected evidence");
+    assert.deepEqual(latest.additions,[]);
+  } finally {await worker.close();}
+  worker=await DurableBotRuntime.open({...preferenceOptions,directory:join(directory,"preference-disabled"),
+    evidenceProjection:{...preferenceOptions.evidenceProjection,enabled:()=>false}});
+  try {
+    await (await worker.submit("记忆关闭时执行","pref-disabled")).wait(context);
+    assert.match(capsule(preferenceRequests.at(-1)!)!,/当前偏好未加载/);
+    const latest=(await ledger(worker)).at(-1)!.data as any;
+    assert.deepEqual(latest.currentPreferences,{status:"unavailable",sources:[]});
+  } finally {await worker.close();}
+  memory.create({kind:"preference",title:"预算不足时不可猜测",content:"低预算下也不能从历史猜出此偏好",scopeType:"bot",scopeId:DEFAULT_BOT_ID,sourceType:"user"});
+  worker=await DurableBotRuntime.open({...preferenceOptions,directory:join(directory,"preference-no-budget"),
+    models:{...preferenceModels,getModel:()=>({...model,input:["text"],contextWindow:2048})}});
+  try {
+    await (await worker.submit("预算耗尽仍按默认格式完成","pref-no-budget")).wait(context);
+    const text=capsule(preferenceRequests.at(-1)!)!;
+    assert.match(text,/当前偏好未加载/);
+    assert.doesNotMatch(text,/当前作用域没有有效|低预算下也不能从历史猜出此偏好/);
+    const latest=(await ledger(worker)).at(-1)!.data as any;
+    assert.deepEqual(latest.currentPreferences,{status:"unavailable",sources:[]});
+    assert.deepEqual(latest.additions,[],"zero evidence budget injects only bounded runtime control, never memory bodies");
+    assert(Buffer.byteLength(text,"utf8")<3600,"fixed policy plus capsule/manifest wrappers remain bounded at zero evidence capacity");
+  } finally {await worker.close();}
+  console.log("PASS native Work preference correction, immutable tool continuation/restart, forgetting with raw history, generic constraints, empty/disabled/exhausted state and scope isolation");
+} finally {preferenceDb.close();}

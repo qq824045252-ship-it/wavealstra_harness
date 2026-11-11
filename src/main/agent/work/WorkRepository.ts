@@ -1,4 +1,4 @@
-import { WATCH_OBSERVATION_INSTRUCTIONS } from "./WorkWatchObservation";
+import { parseWatchObservation, WATCH_COMPARISON_INSTRUCTIONS, WATCH_OBSERVATION_INSTRUCTIONS } from "./WorkWatchObservation";
 import { WorkExecutionMetricsStore } from "./WorkExecutionMetrics";
 import { botAttachmentSchema } from "../../../shared/bot-conversation";
 import { nonBlockingEffect, workAdmissionInFlight } from "../../../shared/work-effect-policy";
@@ -536,6 +536,7 @@ export class WorkRepository {
     const hasTeams = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='work_team_execution_history'").get();
     const team = hasTeams ? this.db.prepare("SELECT input_json FROM work_team_executions WHERE task_id=? AND work_id=? UNION ALL SELECT input_json FROM work_team_execution_history WHERE task_id=? AND work_id=? LIMIT 1")
       .get(binding.taskId, binding.workId, binding.taskId, binding.workId) as { input_json: string | null } | undefined : undefined;
+    const previousReports = sourceEvent?.event_type === "work.tick" ? this.previousWatchReports(binding) : [];
     return JSON.stringify({
       ...(team?.input_json ? { teamAssignment: JSON.parse(team.input_json) } : {}),
       workId: binding.workId, intentRevision: binding.intentRevision, inputSnapshotId: binding.inputSnapshotId,
@@ -550,10 +551,9 @@ export class WorkRepository {
         readOnly: true,
         ...(this.getWork(binding.workId)?.watchRule?.notificationMode === "changes_only" ? { observationContract: WATCH_OBSERVATION_INSTRUCTIONS } : {}),
         watchRule: this.getWork(binding.workId)?.watchRule,
-        previousReports: this.db.prepare(`SELECT deliverable_id AS deliverableId,substr(summary,1,2000) AS summary
-          FROM work_deliverables WHERE work_id=? AND execution_id!=? ORDER BY created_at DESC LIMIT 3`)
-          .all(binding.workId, binding.bindingId),
-        instructions: "这是按用户时间表触发的一次只读检查。读取当前来源，和已有报告比较，汇报重要变化或明确缺口；不重跑原任务的修改、购买、发送等副作用。不自行循环等待下一次，完成本次后交还宿主调度。说明用户停止条件是否已满足，不把一次检查当成整个事项已完成。",
+        previousReports: previousReports.map(r => ({ deliverableId: r.deliverableId, summary: r.summary.slice(0, 2000), createdAt: r.createdAt })),
+        comparisonState: previousReports.length ? "unverified" : "no_baseline",
+        instructions: "这是按用户时间表触发的一次只读检查。读取当前来源，和已有报告比较，汇报重要变化或明确缺口；不重跑原任务的修改、购买、发送等副作用。不自行循环等待下一次，完成本次后交还宿主调度。说明用户停止条件是否已满足，不把一次检查当成整个事项已完成。\n" + WATCH_COMPARISON_INSTRUCTIONS,
       } } : {}),
       ...(sourceEvent?.event_type === "deadline_expired" ? { deadlineFollowUp: {
         readOnly: true, deadlineRevision: json<Record<string, unknown>>(sourceEvent.payload_json, {}).deadlineRevision,
@@ -759,6 +759,40 @@ export class WorkRepository {
   listDeliverables(workId: string): WorkDeliverableDto[] {
     return (this.db.prepare("SELECT * FROM work_deliverables WHERE work_id=? ORDER BY created_at ASC,rowid ASC")
       .all(workId) as DeliverableRow[]).map(mapDeliverable);
+  }
+
+  /** History that already existed when this observation was admitted. The same
+   * cutoff is used before native submission and after completion/recovery: a
+   * later round (even one finishing first) must never become an earlier baseline.
+   * Incomplete reports remain history, not proof that anything is unchanged. */
+  previousWatchReports(binding: WorkExecutionBindingDto, includeBaseline = false): WorkDeliverableDto[] {
+    const sql = `SELECT d.* FROM work_deliverables d
+      JOIN work_execution_bindings b ON b.binding_id=d.execution_id
+      JOIN work_execution_bindings current ON current.binding_id=@bindingId
+      WHERE d.work_id=@workId AND d.intent_revision=@intentRevision AND d.input_snapshot_id=@inputSnapshotId
+        AND d.owner_epoch=@ownerEpoch AND d.producer_bot_id=@botId
+        AND b.work_id=d.work_id AND b.intent_revision=d.intent_revision AND b.input_snapshot_id=d.input_snapshot_id
+        AND b.owner_epoch=d.owner_epoch AND b.bot_id=d.producer_bot_id
+        AND b.invalidated_at IS NULL AND b.status<>'invalidated' AND d.status NOT IN ('superseded','rejected')
+        AND (current.inbox_event_id IS NULL OR b.inbox_event_id IS NULL OR b.inbox_event_id<>current.inbox_event_id)
+        AND d.created_at<=current.admitted_at
+        AND (b.admitted_at<current.admitted_at OR (b.admitted_at=current.admitted_at AND b.rowid<current.rowid))`;
+    const params = { bindingId: binding.bindingId, workId: binding.workId,
+      intentRevision: binding.intentRevision, inputSnapshotId: binding.inputSnapshotId,
+      ownerEpoch: binding.ownerEpoch, botId: binding.botId };
+    const order = " ORDER BY d.created_at DESC,d.rowid DESC";
+    const recent = (this.db.prepare(sql + order + " LIMIT 3").all(params) as DeliverableRow[]).map(mapDeliverable).reverse();
+    const comparable = (r: WorkDeliverableDto) => !r.isSpeculation && !r.hasWriteConflicts && !r.uncoveredScope.length
+      && parseWatchObservation(r.summary)?.status === "observed";
+    // Repeated failed rounds must not erase a prior changes-only baseline. Find
+    // just that one candidate lazily; never materialize an unbounded report list.
+    if (includeBaseline && !recent.some(comparable)) {
+      for (const row of this.db.prepare(sql + " AND d.is_speculation=0 AND d.has_write_conflicts=0 AND d.uncovered_scope_json='[]'" + order).iterate(params)) {
+        const candidate = mapDeliverable(row as DeliverableRow);
+        if (comparable(candidate)) { recent.unshift(candidate); break; }
+      }
+    }
+    return recent;
   }
 
   supersedeStaleDeliverables(workId: string, intentRevision: number, inputSnapshotId: string): void {

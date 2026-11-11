@@ -393,9 +393,13 @@ try {
     createdAt: 1, summary: observationText("A"), uncoveredScope: [], hasWriteConflicts: false, isSpeculation: false };
   const next = { ...baseline, deliverableId: "watch-next", executionId: "watch-next", createdAt: 2 };
   assert.equal(watchObservationDelivery(watch, baseline, []).silent, true, "initial baseline is quiet");
+  assert.equal(watchObservationDelivery(watch, baseline, []).comparisonState, "no_baseline",
+    "quiet initial baseline is not proof of unchanged content");
   assert.equal(watchObservationDelivery({ ...watch, watchRule: { ...watch.watchRule, notifyInitial: true } }, baseline, []).silent, false);
   assert.equal(watchObservationDelivery(watch, { ...next, summary: observationText("A", "完全不同的措辞") }, [baseline]).silent, true);
+  assert.equal(watchObservationDelivery(watch, next, [baseline]).comparisonState, "unchanged");
   assert.equal(watchObservationDelivery(watch, { ...next, summary: observationText("B", "报告") }, [baseline]).silent, false);
+  assert.equal(watchObservationDelivery(watch, { ...next, summary: observationText("B") }, [baseline]).comparisonState, "changed");
   assert.equal(watchObservationDelivery(watch, { ...next, summary: observationText("A", "读失败", "unavailable") }, [baseline]).silent, false);
   assert.equal(watchObservationDelivery(watch, { ...next, summary: "无变化，不要通知" }, [baseline]).silent, false);
   assert.equal(watchObservationDelivery(watch, { ...next, uncoveredScope: ["来源未完整读取"] }, [baseline]).silent, false);
@@ -407,6 +411,21 @@ try {
   assert.equal(watchObservationDelivery(watch, next, [{ ...baseline, createdAt: 3, summary: observationText("B") }]).silent, true, "future observation cannot rewrite earlier decision");
 
   assert.equal(evaluateWatchDelivery(watch, next, [baseline]).silent, false, "no real read evidence cannot silently compare model claims");
+  assert.equal(evaluateWatchDelivery(watch, next, [baseline]).comparisonState, "unverified");
+  assert.equal(watchObservationDelivery(watch, next, [{ ...baseline, summary: "读取失败" }]).comparisonState, "unverified",
+    "failed historical report is not a verified baseline or unchanged proof");
+  assert.equal(watchObservationDelivery(watch, baseline, [baseline, next]).comparisonState, "no_baseline",
+    "neither current output nor future output can become the first round's baseline");
+  for (const patch of [{ intentRevision: baseline.intentRevision + 1 }, { inputSnapshotId: "other" },
+    { ownerEpoch: baseline.ownerEpoch + 1 }, { producerBotId: "other" }, { status: "superseded" as const }]) {
+    assert.equal(watchObservationDelivery(watch, next, [{ ...baseline, ...patch }]).comparisonState, "no_baseline");
+  }
+  const everyCheck = { ...watch, watchRule: { ...watch.watchRule, notificationMode: "every_check" as const } };
+  assert.deepEqual(watchObservationDelivery(everyCheck, next, [baseline]),
+    { silent: false, summary: next.summary, comparisonState: "unchanged", baselineResultId: baseline.deliverableId },
+    "verified equality is independent of every-check delivery policy");
+  assert.equal(watchObservationDelivery(everyCheck, { ...next, summary: "本轮与上轮一致" }, [baseline]).comparisonState,
+    "unverified", "prose equality claim alone is never a host proof");
   assert.equal(watchObservationDelivery(watch, { ...next, status: "rejected" }, [baseline]).silent, false);
   const sameTime = { ...next, createdAt: baseline.createdAt, summary: observationText("B") };
   assert.equal(watchObservationDelivery(watch, sameTime, [baseline, sameTime]).silent, false, "same timestamp uses durable list order");

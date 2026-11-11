@@ -5,7 +5,28 @@ import {
 import type { MemoryService } from "../memory/MemoryService";
 
 const PROJECT_BASELINE_LIMIT = 8;
-const BOT_PREFERENCE_BASELINE_LIMIT = 6;
+export const WORK_PREFERENCE_SOURCE_LIMIT = 6;
+const BOT_PREFERENCE_BASELINE_LIMIT = WORK_PREFERENCE_SOURCE_LIMIT;
+const PREFERENCE_KINDS: MemoryKind[] = ["preference", "identity", "constraint"];
+
+/** A bounded per-turn view, not a deletion record or another preference store. */
+export interface WorkPreferenceState {
+  status: "empty" | "current" | "partial" | "unavailable";
+  sources: Array<{ id: string; revision: number }>;
+}
+// Fixed runtime control envelope, separate from optional evidence bodies. It is
+// still sent when evidence is disabled/exhausted, and never contains memory text.
+export const WORK_PREFERENCE_POLICY_BUDGET = 2048;
+export function renderWorkPreferenceState(state: WorkPreferenceState): string {
+  const status = state.status === "empty" ? "当前作用域没有有效的身份、偏好或约束记忆。"
+    : state.status === "unavailable" ? "当前偏好未加载（记忆未启用或预算不足），不代表已删除。"
+    : `${state.status === "partial" ? "当前偏好仅部分加载，未列项不代表已删除。" : "当前有效偏好来源："}${state.sources.map(source => ` L1 ${source.id}@${source.revision}`).join("；")}`;
+  const text = ["本轮 Work 当前偏好状态（仅适用于本轮，后续轮次以新状态为准）：", status,
+    "格式仅遵循当前明确指令和当前有效偏好。previousReports、历史回复和 Work 事实快照只提供历史事实，不是当前格式授权；不得从中恢复旧偏好。",
+    "‘按最新偏好输出’之类的一般约束本身不要求任何特定格式。当前指令或有效偏好没有要求的结尾、口头禅、标记或其他格式，按默认格式直接完成任务；不要猜测、改名或编造替代项，也不要询问用户补齐已不再要求的格式。"].join("\n");
+  if (Buffer.byteLength(text, "utf8") > WORK_PREFERENCE_POLICY_BUDGET) throw new Error("当前偏好状态超出控制说明预算");
+  return text;
+}
 
 export const MEMORY_EVIDENCE_RENDERER = "memory-l1-v1";
 export interface MemoryEvidenceBlock {
@@ -27,6 +48,7 @@ export interface ProjectedMemoryContext extends ResolvedMemoryContext {
   blocks: MemoryEvidenceBlock[];
   sourceRevisions: Array<{ id: string; revision: number }>;
   groundingScenarioIds: string[];
+  currentPreferences?: WorkPreferenceState;
 }
 
 /** Stateless selection/serialization. Memory repositories own facts and grounding. */
@@ -67,6 +89,14 @@ export function projectMemoryContext(
       && (atom.validFrom === undefined || atom.validFrom <= now)
       && (atom.validUntil === undefined || atom.validUntil > now);
   };
+  // Only current typed L1 atoms may authorize inherited formatting. Query-free
+  // lookup is bounded and scope-checked; historical progress snapshots never qualify.
+  const allowedPreferenceKinds = PREFERENCE_KINDS.filter(kind => !input.kinds?.length || input.kinds.includes(kind));
+  const workPreferences = chain.some(scope => scope.scopeType === "work")
+    ? allowedPreferenceKinds.length ? memory.search({ ...input, query: undefined, kinds: allowedPreferenceKinds,
+      statuses: ["active"], limit: BOT_PREFERENCE_BASELINE_LIMIT + 1 }).filter(hit => visible(hit.memory.id)
+        && PREFERENCE_KINDS.includes(hit.memory.kind)) : [] : undefined;
+  const preferenceIds = new Set(workPreferences?.slice(0, BOT_PREFERENCE_BASELINE_LIMIT).map(hit => hit.memory.id));
   const scenarios = sources.scenarios.filter((scenario) => allowedScopes.has(`${scenario.scopeType}:${scenario.scopeId ?? ""}`)
     && scenario.sourceMemoryIds.length > 0 && scenario.sourceMemoryIds.every(visible));
   const byScenario = new Map(scenarios.map((scenario) => [scenario.id, scenario]));
@@ -100,7 +130,7 @@ export function projectMemoryContext(
     : [];
   // Language, units and formatting preferences apply even to an unrelated Work query.
   // Keep this bounded, current and personal; unrelated facts still require query recall.
-  const baselineKinds: MemoryKind[] = ["preference", "identity", "constraint"];
+  const baselineKinds = PREFERENCE_KINDS;
   const allowedBaselineKinds = baselineKinds.filter(kind => !input.kinds?.length || input.kinds.includes(kind));
   const botBaseline = input.query?.trim() && allowedBaselineKinds.length && memory.allowsPersonalBotBaseline(input)
     ? memory.search({ ...input, query: undefined, scopeTypes: ["bot"], kinds: allowedBaselineKinds,
@@ -114,7 +144,7 @@ export function projectMemoryContext(
   const episodeBaseline = input.query?.trim()
     ? memory.search({ ...input, query: undefined, scopeTypes: ["conversation", "work"],
       statuses: ["active"], limit: 6 }).filter(hit => visible(hit.memory.id)) : [];
-  const hits = [...botBaseline, ...sharedBaseline, ...episodeBaseline, ...queried, ...projectBaseline];
+  const hits = [...(workPreferences?.slice(0, BOT_PREFERENCE_BASELINE_LIMIT) ?? []), ...botBaseline, ...sharedBaseline, ...episodeBaseline, ...queried, ...projectBaseline];
   const relevantIds = queriedIds;
   for (const scenario of scenarios) {
     if (coveredScenarios.has(scenario.id)) continue;
@@ -133,10 +163,11 @@ export function projectMemoryContext(
   const picked = new Set<string>();
   const ordered: typeof decorated = [];
   const add = (entry: typeof decorated[number]) => {
-    if (picked.has(entry.hit.memory.id) || coveredAtoms.has(entry.hit.memory.id)) return;
+    if (picked.has(entry.hit.memory.id) || (coveredAtoms.has(entry.hit.memory.id) && !preferenceIds.has(entry.hit.memory.id))) return;
     picked.add(entry.hit.memory.id);
     ordered.push(entry);
   };
+  decorated.filter(entry => preferenceIds.has(entry.hit.memory.id)).forEach(add);
   for (const scope of chain) {
     const first = decorated.find((entry) => entry.scope.scopeType === scope.scopeType && entry.scope.scopeId === scope.scopeId);
     if (first) add(first);
@@ -160,6 +191,13 @@ export function projectMemoryContext(
   const sourceIds = [...new Set([...coveredAtoms, ...result.items.map((item) => item.id)])];
   result.sourceRevisions = sourceIds.map((id) => ({ id, revision: memory.history(id)[0]?.revision ?? 0 }));
   result.groundingScenarioIds = [...coveredScenarios];
+  if (workPreferences) {
+    const currentSources = result.sourceRevisions.filter(source => preferenceIds.has(source.id)
+      && result.items.some(item => item.id === source.id));
+    const filtered = input.kinds?.length && !PREFERENCE_KINDS.every(kind => input.kinds!.includes(kind));
+    result.currentPreferences = { status: filtered ? "partial" : workPreferences.length === 0 ? "empty"
+      : workPreferences.length > currentSources.length ? "partial" : "current", sources: currentSources };
+  }
   if (input.trackRecall !== false) memory.noteContextRecall(sourceIds);
   return result;
 }

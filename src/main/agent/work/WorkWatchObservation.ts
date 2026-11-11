@@ -11,6 +11,13 @@ const observation = z.object({
   summary: z.string(),
 }).strict();
 
+export type WatchComparisonState = "no_baseline" | "unverified" | "unchanged" | "changed";
+export interface WatchObservationPresentation {
+  silent: boolean; summary: string; comparisonState: WatchComparisonState; baselineResultId?: string;
+}
+
+export const WATCH_COMPARISON_INSTRUCTIONS = `comparisonState 是宿主提供的比较状态，与是否通知或静默无关。no_baseline 表示没有本轮之前可用的同一观察历史：只报告本轮事实，可说明首次观察或暂无历史可比，禁止声称“无变化”“与上轮一致”或“有变化”。本轮结果、同轮成员结果、任务说明和长期记忆不是上一轮基线。unverified 表示有历史，但宿主尚未证实相同或不同；只有当前真实读取与所给历史记录中同一来源、同一属性的明确事实足以比较时，才可给出有依据的具体比较，否则说明无法可靠比较。unchanged / changed 才分别表示宿主已核对可比较的读取证据相同 / 不同。不要把缺失、失败、不完整的历史当成无变化，也不要照抄结果摘要中没有比较依据的变化判断。没有历史不是需要补查的缺项，不为构造过去的基线重新执行。`;
+
 export const WATCH_OBSERVATION_INSTRUCTIONS = `本事项选择只在变化时通知。每次检查仍须执行真实只读工具，最终只返回一个 JSON 对象（不要另加说明）：
 {"protocol":"watch-observation-v1","status":"observed","facts":[{"source":"实际来源的稳定路径或URL","key":"用户跟踪的属性，如file_content","value":"真实读取到的精确属性值"}],"summary":"变化时供用户阅读的简短报告"}。
 facts 是稳定的业务事实，不是摘要措辞；不要包含检查时间、轮次、自己推算的哈希或会变化的汇报文案。文件内容使用精确原文。只有本次真实工具取得完整、可比较事实才使用 observed；来源读取失败、不完整、不能可靠比较则 status=unavailable，summary 说明缺口，不得用空值假装无变化。宿主负责建立基线、比较和静默，你不得自己发送通知。`;
@@ -31,31 +38,34 @@ export function parseWatchObservation(text: string) {
  * Unknown/malformed observations are visible, not silently treated as unchanged.
  */
 export function watchObservationDelivery(work: WorkDto, result: WorkDeliverableDto, previous: WorkDeliverableDto[],
-  evidence: (item: WorkDeliverableDto) => string | undefined = () => undefined) {
-  if (work.mode !== "watch" || work.watchRule?.notificationMode !== "changes_only")
-    return { silent: false, summary: result.summary };
-  if (["rejected", "superseded"].includes(result.status) || result.isSpeculation || result.hasWriteConflicts || result.uncoveredScope.length)
-    return { silent: false, summary: result.summary };
-  const current = parseWatchObservation(result.summary);
-  if (!current || current.status !== "observed") return { silent: false,
-    summary: current?.summary || `本轮未取得可可靠比较的结构化观察，不能判断是否变化。\n${result.summary}` };
-  const currentEvidence = evidence(result);
-  if (!currentEvidence) return { silent: false, summary: `本轮缺少完整、可比对的来源读取回执，不能可靠判断无变化。\n${current.summary || result.summary}` };
+  evidence: (item: WorkDeliverableDto) => string | undefined = () => undefined): WatchObservationPresentation {
   // Repository order includes rowid as a deterministic tie-breaker. Never infer
   // chronological precedence from an arbitrary UUID when timestamps collide.
   const position = previous.findIndex(r => r.deliverableId === result.deliverableId);
   const predecessors = position >= 0 ? previous.slice(0, position) : previous.filter(r => r.createdAt < result.createdAt);
-  const prior = predecessors.filter(r => r.executionId !== result.executionId
+  const history = predecessors.filter(r => r.workId === result.workId && r.executionId !== result.executionId
     && r.intentRevision === result.intentRevision && r.inputSnapshotId === result.inputSnapshotId
     && r.ownerEpoch === result.ownerEpoch && r.producerBotId === result.producerBotId
-    && !r.isSpeculation && !r.hasWriteConflicts && !r.uncoveredScope.length
-    && !["superseded", "rejected"].includes(r.status)).reverse()
+    && !["superseded", "rejected"].includes(r.status));
+  const comparisonState: WatchComparisonState = history.length ? "unverified" : "no_baseline";
+  const changesOnly = work.mode === "watch" && work.watchRule?.notificationMode === "changes_only";
+  const visible = (summary = result.summary): WatchObservationPresentation => ({ silent: false,
+    summary: changesOnly ? summary : result.summary, comparisonState });
+  if (work.mode !== "watch" || ["rejected", "superseded"].includes(result.status)
+    || result.isSpeculation || result.hasWriteConflicts || result.uncoveredScope.length) return visible();
+  const current = parseWatchObservation(result.summary);
+  if (!current || current.status !== "observed") return visible(
+    current?.summary || `本轮未取得可可靠比较的结构化观察，不能判断是否变化。\n${result.summary}`);
+  const currentEvidence = evidence(result);
+  if (!currentEvidence) return visible(`本轮缺少完整、可比对的来源读取回执，不能可靠判断无变化。\n${current.summary || result.summary}`);
+  const prior = history.filter(r => !r.isSpeculation && !r.hasWriteConflicts && !r.uncoveredScope.length).reverse()
     .find(r => parseWatchObservation(r.summary)?.status === "observed");
   const previousEvidence = prior && evidence(prior);
-  if (prior && !previousEvidence) return { silent: false,
-    summary: `上轮来源回执不可用，无法可靠比较；本轮观察已保留。\n${current.summary || result.summary}` };
-  return { silent: prior ? previousEvidence === currentEvidence : !work.watchRule.notifyInitial,
-    summary: current.summary || `本轮跟踪来源内容：\n${current.facts.map(f => `${f.source} · ${f.key}：${f.value}`).join("\n")}` };
+  if (prior && !previousEvidence) return visible(`上轮来源回执不可用，无法可靠比较；本轮观察已保留。\n${current.summary || result.summary}`);
+  return { silent: changesOnly && (prior ? previousEvidence === currentEvidence : !work.watchRule?.notifyInitial),
+    comparisonState: prior ? previousEvidence === currentEvidence ? "unchanged" : "changed" : comparisonState,
+    ...(prior ? { baselineResultId: prior.deliverableId } : {}),
+    summary: changesOnly ? current.summary || `本轮跟踪来源内容：\n${current.facts.map(f => `${f.source} · ${f.key}：${f.value}`).join("\n")}` : result.summary };
 }
 
 /** Host-recorded successful tool output, never a model-provided digest or a
