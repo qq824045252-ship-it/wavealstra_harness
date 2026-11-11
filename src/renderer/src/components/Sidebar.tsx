@@ -234,6 +234,7 @@ export default function Sidebar({ onClose, onCreateBot }: { onClose?: () => void
   );
 
   const visibleRows = useMemo((): VisibleRow[] => {
+    let tasksById: Map<string, Task> | undefined;
     const rows: VisibleRow[] = [];
     // 默认全部收起：只有用户显式展开过（expandedSpaceIds）的空间才展开
     const expandedSet = new Set(expandedSpaceIds);
@@ -260,7 +261,11 @@ export default function Sidebar({ onClose, onCreateBot }: { onClose?: () => void
             if (n.children.length) walk(n.children, depth + 1);
           }
         } else {
-          const task = tasks.find((t) => t.id === n.id);
+          if (!tasksById) {
+            tasksById = new Map<string, Task>();
+            for (const task of tasks) if (!tasksById.has(task.id)) tasksById.set(task.id, task);
+          }
+          const task = tasksById.get(n.id);
           if (!task) continue;
           rows.push({ key: `task-${n.id}`, kind: "task", task, depth, node: n });
         }

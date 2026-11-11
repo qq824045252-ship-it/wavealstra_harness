@@ -1,0 +1,4706 @@
+{
+  "date": "2026-11-11",
+  "baselineRef": "c8d951597edb9580b3d06e1b7bc2fbf9e349143a",
+  "productionScope": "Only projection-local lazy first-match task index; no sorting, selector, navigation cadence, foreground or Durable changes.",
+  "validatedSourceHashes": {
+    "src/renderer/src/components/Sidebar.tsx": "5d243e60c53904fbd06fa436db6be16c68eab3f77f223d2b3cc0a4c9a4d0af05",
+    "package.json": "e260f749f9e21098b8060bc89285ece89d897633d9bd3af5ba521313aed965fe",
+    "scripts/sidebar-row-lookup-test.cjs": "5d4b7ac625a8acaf9af6cf19cfa8ca921f5927bb08b606a42666a6ddcef9edf3",
+    "scripts/sidebar-projection-dev-equivalence.cjs": "ae213fa78073eca0aeb4eed4b1761a5ac4b2a89488135a5cabc24f562d7ccb92",
+    "scripts/sidebar-projection-dev-seed.ts": "47edd3e7cde5bf48d69ec1c6772b739b7e25fba3eb57d8223765100dc4a87df8",
+    "scripts/sidebar-projection-dev-test.cjs": "105ff1409bd47781a96bee0b30be2e91f6f8b833593af8cc8c3eea99256dbbb9"
+  },
+  "baselineSidebarSha256": "892509d7dfae296ec953ca409745d1ad2e2abb5c218e5a69cc61d06ee239a03f",
+  "navigation": {
+    "metric": "Actual navigation IPC start to second requestAnimationFrame; includes IPC/store/renderer work, excludes scheduled debounce; development StrictMode, not physical input/presentation latency.",
+    "secondaryMetric": "Refresh event after archive IPC completes to second requestAnimationFrame; includes observed scheduling/debounce wait.",
+    "fixture": {
+      "databaseTasks": 5000,
+      "rendererTaskCounts": [
+        20,
+        1000,
+        5000
+      ],
+      "taskSource": "Actual bootstrapped Task objects sliced in real store; backing database fixed across sizes",
+      "foregroundRequests": 27,
+      "conversations": 3,
+      "spaces": 5,
+      "ordinaryTaskDomNodes": 0,
+      "page": "bot",
+      "projectionCallsPerRefresh": 2
+    },
+    "variantOrder": [
+      "baseline",
+      "candidate",
+      "candidate",
+      "baseline"
+    ],
+    "summary": [
+      {
+        "tasks": 20,
+        "baseline": {
+          "medianMs": 37.400000005960464,
+          "rangeMs": [
+            14.599999994039536,
+            43.6000000089407
+          ],
+          "projectionMedianMs": 0.10000000149011612,
+          "ipcMedianMs": 19.650000005960464,
+          "roundMediansMs": {
+            "0": 25.600000008940697,
+            "3": 38.400000005960464
+          },
+          "refreshEventToSecondRafMedianMs": 538.0499999970198
+        },
+        "candidate": {
+          "medianMs": 36.70000000298023,
+          "rangeMs": [
+            25.799999997019768,
+            66.79999999701977
+          ],
+          "projectionMedianMs": 0.0,
+          "ipcMedianMs": 19.600000001490116,
+          "roundMediansMs": {
+            "1": 37.29999999701977,
+            "2": 35.29999999701977
+          },
+          "refreshEventToSecondRafMedianMs": 537.7999999970198
+        }
+      },
+      {
+        "tasks": 1000,
+        "baseline": {
+          "medianMs": 60.04999999701977,
+          "rangeMs": [
+            46.70000000298023,
+            62.599999994039536
+          ],
+          "projectionMedianMs": 24.25,
+          "ipcMedianMs": 19.05000000447035,
+          "roundMediansMs": {
+            "0": 61.29999999701977,
+            "3": 51
+          },
+          "refreshEventToSecondRafMedianMs": 550.8500000014901
+        },
+        "candidate": {
+          "medianMs": 38.55000000447035,
+          "rangeMs": [
+            32.400000005960464,
+            40.80000001192093
+          ],
+          "projectionMedianMs": 0.5999999940395355,
+          "ipcMedianMs": 20.19999999552965,
+          "roundMediansMs": {
+            "1": 39.5,
+            "2": 36.8999999910593
+          },
+          "refreshEventToSecondRafMedianMs": 537.9499999955297
+        }
+      },
+      {
+        "tasks": 5000,
+        "baseline": {
+          "medianMs": 97.70000000298023,
+          "rangeMs": [
+            84.79999999701977,
+            98.80000001192093
+          ],
+          "projectionMedianMs": 66.45000000298023,
+          "ipcMedianMs": 19.450000002980232,
+          "roundMediansMs": {
+            "0": 97.70000000298023,
+            "3": 97.90000000596046
+          },
+          "refreshEventToSecondRafMedianMs": 598.1499999985099
+        },
+        "candidate": {
+          "medianMs": 45.649999998509884,
+          "rangeMs": [
+            35.70000000298023,
+            79.59999999403954
+          ],
+          "projectionMedianMs": 2.600000001490116,
+          "ipcMedianMs": 19.0,
+          "roundMediansMs": {
+            "1": 45.19999998807907,
+            "2": 46.8999999910593
+          },
+          "refreshEventToSecondRafMedianMs": 546.25
+        }
+      }
+    ],
+    "rawSamples": [
+      {
+        "label": "nav:baseline:20:round0",
+        "round": 0,
+        "size": 20,
+        "variant": "baseline",
+        "ipcMs": 8,
+        "toSecondRaf": 14.599999994039536,
+        "triggerToSecondRaf": 269,
+        "projections": [
+          {
+            "variant": "baseline",
+            "ms": 0,
+            "rows": 23
+          },
+          {
+            "variant": "baseline",
+            "ms": 0.09999999403953552,
+            "rows": 23
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:baseline:20:round0",
+        "round": 0,
+        "size": 20,
+        "variant": "baseline",
+        "ipcMs": 9,
+        "toSecondRaf": 16.900000005960464,
+        "triggerToSecondRaf": 517.5,
+        "projections": [
+          {
+            "variant": "baseline",
+            "ms": 0,
+            "rows": 23
+          },
+          {
+            "variant": "baseline",
+            "ms": 0.10000000894069672,
+            "rows": 23
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:baseline:20:round0",
+        "round": 0,
+        "size": 20,
+        "variant": "baseline",
+        "ipcMs": 22,
+        "toSecondRaf": 38.70000000298023,
+        "triggerToSecondRaf": 539.2000000029802,
+        "projections": [
+          {
+            "variant": "baseline",
+            "ms": 0.09999999403953552,
+            "rows": 23
+          },
+          {
+            "variant": "baseline",
+            "ms": 0.10000000894069672,
+            "rows": 23
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:baseline:20:round0",
+        "round": 0,
+        "size": 20,
+        "variant": "baseline",
+        "ipcMs": 21.5,
+        "toSecondRaf": 38.400000005960464,
+        "triggerToSecondRaf": 539,
+        "projections": [
+          {
+            "variant": "baseline",
+            "ms": 0.10000000894069672,
+            "rows": 23
+          },
+          {
+            "variant": "baseline",
+            "ms": 0,
+            "rows": 23
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:baseline:20:round0",
+        "round": 0,
+        "size": 20,
+        "variant": "baseline",
+        "ipcMs": 18.600000008940697,
+        "toSecondRaf": 25.600000008940697,
+        "triggerToSecondRaf": 542.5,
+        "projections": [
+          {
+            "variant": "baseline",
+            "ms": 0,
+            "rows": 23
+          },
+          {
+            "variant": "baseline",
+            "ms": 0.10000000894069672,
+            "rows": 23
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:baseline:1000:round0",
+        "round": 0,
+        "size": 1000,
+        "variant": "baseline",
+        "ipcMs": 15.600000008940697,
+        "toSecondRaf": 58,
+        "triggerToSecondRaf": 558.5999999940395,
+        "projections": [
+          {
+            "variant": "baseline",
+            "ms": 12.099999994039536,
+            "rows": 1003
+          },
+          {
+            "variant": "baseline",
+            "ms": 12.200000002980232,
+            "rows": 1003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:baseline:1000:round0",
+        "round": 0,
+        "size": 1000,
+        "variant": "baseline",
+        "ipcMs": 18.099999994039536,
+        "toSecondRaf": 61.29999999701977,
+        "triggerToSecondRaf": 561.5999999940395,
+        "projections": [
+          {
+            "variant": "baseline",
+            "ms": 13.299999997019768,
+            "rows": 1003
+          },
+          {
+            "variant": "baseline",
+            "ms": 11.799999997019768,
+            "rows": 1003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:baseline:1000:round0",
+        "round": 0,
+        "size": 1000,
+        "variant": "baseline",
+        "ipcMs": 20.5,
+        "toSecondRaf": 62.599999994039536,
+        "triggerToSecondRaf": 92.70000000298023,
+        "projections": [
+          {
+            "variant": "baseline",
+            "ms": 12.200000002980232,
+            "rows": 1003
+          },
+          {
+            "variant": "baseline",
+            "ms": 12.299999997019768,
+            "rows": 1003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:baseline:1000:round0",
+        "round": 0,
+        "size": 1000,
+        "variant": "baseline",
+        "ipcMs": 19.100000008940697,
+        "toSecondRaf": 61.79999999701977,
+        "triggerToSecondRaf": 449.8999999910593,
+        "projections": [
+          {
+            "variant": "baseline",
+            "ms": 12.400000005960464,
+            "rows": 1003
+          },
+          {
+            "variant": "baseline",
+            "ms": 12.099999994039536,
+            "rows": 1003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:baseline:1000:round0",
+        "round": 0,
+        "size": 1000,
+        "variant": "baseline",
+        "ipcMs": 19.200000002980232,
+        "toSecondRaf": 61.1000000089407,
+        "triggerToSecondRaf": 561.8000000119209,
+        "projections": [
+          {
+            "variant": "baseline",
+            "ms": 11.599999994039536,
+            "rows": 1003
+          },
+          {
+            "variant": "baseline",
+            "ms": 12.5,
+            "rows": 1003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:baseline:5000:round0",
+        "round": 0,
+        "size": 5000,
+        "variant": "baseline",
+        "ipcMs": 19.600000008940697,
+        "toSecondRaf": 97.70000000298023,
+        "triggerToSecondRaf": 598.2999999970198,
+        "projections": [
+          {
+            "variant": "baseline",
+            "ms": 49.29999999701977,
+            "rows": 5003
+          },
+          {
+            "variant": "baseline",
+            "ms": 17.200000002980232,
+            "rows": 5003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:baseline:5000:round0",
+        "round": 0,
+        "size": 5000,
+        "variant": "baseline",
+        "ipcMs": 19.599999994039536,
+        "toSecondRaf": 97.70000000298023,
+        "triggerToSecondRaf": 598,
+        "projections": [
+          {
+            "variant": "baseline",
+            "ms": 49.1000000089407,
+            "rows": 5003
+          },
+          {
+            "variant": "baseline",
+            "ms": 17.299999997019768,
+            "rows": 5003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:baseline:5000:round0",
+        "round": 0,
+        "size": 5000,
+        "variant": "baseline",
+        "ipcMs": 20.299999997019768,
+        "toSecondRaf": 97.5,
+        "triggerToSecondRaf": 597.7999999970198,
+        "projections": [
+          {
+            "variant": "baseline",
+            "ms": 48.900000005960464,
+            "rows": 5003
+          },
+          {
+            "variant": "baseline",
+            "ms": 17.099999994039536,
+            "rows": 5003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:baseline:5000:round0",
+        "round": 0,
+        "size": 5000,
+        "variant": "baseline",
+        "ipcMs": 19.80000001192093,
+        "toSecondRaf": 98.80000001192093,
+        "triggerToSecondRaf": 599.3000000119209,
+        "projections": [
+          {
+            "variant": "baseline",
+            "ms": 49.20000000298023,
+            "rows": 5003
+          },
+          {
+            "variant": "baseline",
+            "ms": 17.200000002980232,
+            "rows": 5003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:baseline:5000:round0",
+        "round": 0,
+        "size": 5000,
+        "variant": "baseline",
+        "ipcMs": 9.200000002980232,
+        "toSecondRaf": 87.5,
+        "triggerToSecondRaf": 588,
+        "projections": [
+          {
+            "variant": "baseline",
+            "ms": 48.900000005960464,
+            "rows": 5003
+          },
+          {
+            "variant": "baseline",
+            "ms": 18.099999994039536,
+            "rows": 5003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:candidate:20:round1",
+        "round": 1,
+        "size": 20,
+        "variant": "candidate",
+        "ipcMs": 21.200000002980232,
+        "toSecondRaf": 37.900000005960464,
+        "triggerToSecondRaf": 538.5,
+        "projections": [
+          {
+            "variant": "candidate",
+            "ms": 0,
+            "rows": 23
+          },
+          {
+            "variant": "candidate",
+            "ms": 0.10000000894069672,
+            "rows": 23
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:candidate:20:round1",
+        "round": 1,
+        "size": 20,
+        "variant": "candidate",
+        "ipcMs": 20.599999994039536,
+        "toSecondRaf": 37.29999999701977,
+        "triggerToSecondRaf": 537.9000000059605,
+        "projections": [
+          {
+            "variant": "candidate",
+            "ms": 0,
+            "rows": 23
+          },
+          {
+            "variant": "candidate",
+            "ms": 0.09999999403953552,
+            "rows": 23
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:candidate:20:round1",
+        "round": 1,
+        "size": 20,
+        "variant": "candidate",
+        "ipcMs": 15.100000008940697,
+        "toSecondRaf": 31.700000002980232,
+        "triggerToSecondRaf": 532.3999999910593,
+        "projections": [
+          {
+            "variant": "candidate",
+            "ms": 0,
+            "rows": 23
+          },
+          {
+            "variant": "candidate",
+            "ms": 0,
+            "rows": 23
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:candidate:20:round1",
+        "round": 1,
+        "size": 20,
+        "variant": "candidate",
+        "ipcMs": 20.30000001192093,
+        "toSecondRaf": 37,
+        "triggerToSecondRaf": 537.6999999880791,
+        "projections": [
+          {
+            "variant": "candidate",
+            "ms": 0,
+            "rows": 23
+          },
+          {
+            "variant": "candidate",
+            "ms": 0,
+            "rows": 23
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:candidate:20:round1",
+        "round": 1,
+        "size": 20,
+        "variant": "candidate",
+        "ipcMs": 19.200000002980232,
+        "toSecondRaf": 66.79999999701977,
+        "triggerToSecondRaf": 567.3999999910593,
+        "projections": [
+          {
+            "variant": "candidate",
+            "ms": 0,
+            "rows": 23
+          },
+          {
+            "variant": "candidate",
+            "ms": 0,
+            "rows": 23
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:candidate:1000:round1",
+        "round": 1,
+        "size": 1000,
+        "variant": "candidate",
+        "ipcMs": 20,
+        "toSecondRaf": 38.900000005960464,
+        "triggerToSecondRaf": 539.7000000029802,
+        "projections": [
+          {
+            "variant": "candidate",
+            "ms": 0.29999999701976776,
+            "rows": 1003
+          },
+          {
+            "variant": "candidate",
+            "ms": 0.30000001192092896,
+            "rows": 1003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:candidate:1000:round1",
+        "round": 1,
+        "size": 1000,
+        "variant": "candidate",
+        "ipcMs": 20.5,
+        "toSecondRaf": 38.70000000298023,
+        "triggerToSecondRaf": 539.4000000059605,
+        "projections": [
+          {
+            "variant": "candidate",
+            "ms": 0.29999999701976776,
+            "rows": 1003
+          },
+          {
+            "variant": "candidate",
+            "ms": 0.29999999701976776,
+            "rows": 1003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:candidate:1000:round1",
+        "round": 1,
+        "size": 1000,
+        "variant": "candidate",
+        "ipcMs": 20.5,
+        "toSecondRaf": 39.5,
+        "triggerToSecondRaf": 540.1000000089407,
+        "projections": [
+          {
+            "variant": "candidate",
+            "ms": 0.29999999701976776,
+            "rows": 1003
+          },
+          {
+            "variant": "candidate",
+            "ms": 0.29999999701976776,
+            "rows": 1003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:candidate:1000:round1",
+        "round": 1,
+        "size": 1000,
+        "variant": "candidate",
+        "ipcMs": 21.399999991059303,
+        "toSecondRaf": 39.79999999701977,
+        "triggerToSecondRaf": 540.0999999940395,
+        "projections": [
+          {
+            "variant": "candidate",
+            "ms": 0.30000001192092896,
+            "rows": 1003
+          },
+          {
+            "variant": "candidate",
+            "ms": 0.29999999701976776,
+            "rows": 1003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:candidate:1000:round1",
+        "round": 1,
+        "size": 1000,
+        "variant": "candidate",
+        "ipcMs": 22.400000005960464,
+        "toSecondRaf": 40.80000001192093,
+        "triggerToSecondRaf": 331,
+        "projections": [
+          {
+            "variant": "candidate",
+            "ms": 0.3999999910593033,
+            "rows": 1003
+          },
+          {
+            "variant": "candidate",
+            "ms": 0.29999999701976776,
+            "rows": 1003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:candidate:5000:round1",
+        "round": 1,
+        "size": 5000,
+        "variant": "candidate",
+        "ipcMs": 22.799999997019768,
+        "toSecondRaf": 48.70000000298023,
+        "triggerToSecondRaf": 549.1000000089407,
+        "projections": [
+          {
+            "variant": "candidate",
+            "ms": 1.2999999970197678,
+            "rows": 5003
+          },
+          {
+            "variant": "candidate",
+            "ms": 1.4000000059604645,
+            "rows": 5003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:candidate:5000:round1",
+        "round": 1,
+        "size": 5000,
+        "variant": "candidate",
+        "ipcMs": 18.299999997019768,
+        "toSecondRaf": 43.79999999701977,
+        "triggerToSecondRaf": 544.1999999880791,
+        "projections": [
+          {
+            "variant": "candidate",
+            "ms": 1.2999999970197678,
+            "rows": 5003
+          },
+          {
+            "variant": "candidate",
+            "ms": 1.2999999970197678,
+            "rows": 5003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:candidate:5000:round1",
+        "round": 1,
+        "size": 5000,
+        "variant": "candidate",
+        "ipcMs": 19.799999997019768,
+        "toSecondRaf": 45.19999998807907,
+        "triggerToSecondRaf": 545.8999999910593,
+        "projections": [
+          {
+            "variant": "candidate",
+            "ms": 1.4000000059604645,
+            "rows": 5003
+          },
+          {
+            "variant": "candidate",
+            "ms": 1.2999999970197678,
+            "rows": 5003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:candidate:5000:round1",
+        "round": 1,
+        "size": 5000,
+        "variant": "candidate",
+        "ipcMs": 20.399999991059303,
+        "toSecondRaf": 45.3999999910593,
+        "triggerToSecondRaf": 545.7999999970198,
+        "projections": [
+          {
+            "variant": "candidate",
+            "ms": 1,
+            "rows": 5003
+          },
+          {
+            "variant": "candidate",
+            "ms": 1.2999999970197678,
+            "rows": 5003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:candidate:5000:round1",
+        "round": 1,
+        "size": 5000,
+        "variant": "candidate",
+        "ipcMs": 18.700000002980232,
+        "toSecondRaf": 40.599999994039536,
+        "triggerToSecondRaf": 540.8999999910593,
+        "projections": [
+          {
+            "variant": "candidate",
+            "ms": 1.300000011920929,
+            "rows": 5003
+          },
+          {
+            "variant": "candidate",
+            "ms": 1.2999999970197678,
+            "rows": 5003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:candidate:20:round2",
+        "round": 2,
+        "size": 20,
+        "variant": "candidate",
+        "ipcMs": 20,
+        "toSecondRaf": 36.400000005960464,
+        "triggerToSecondRaf": 537,
+        "projections": [
+          {
+            "variant": "candidate",
+            "ms": 0,
+            "rows": 23
+          },
+          {
+            "variant": "candidate",
+            "ms": 0,
+            "rows": 23
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:candidate:20:round2",
+        "round": 2,
+        "size": 20,
+        "variant": "candidate",
+        "ipcMs": 18.799999997019768,
+        "toSecondRaf": 35.1000000089407,
+        "triggerToSecondRaf": 535.6000000089407,
+        "projections": [
+          {
+            "variant": "candidate",
+            "ms": 0,
+            "rows": 23
+          },
+          {
+            "variant": "candidate",
+            "ms": 0,
+            "rows": 23
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:candidate:20:round2",
+        "round": 2,
+        "size": 20,
+        "variant": "candidate",
+        "ipcMs": 18.799999997019768,
+        "toSecondRaf": 25.799999997019768,
+        "triggerToSecondRaf": 567.1000000089407,
+        "projections": [
+          {
+            "variant": "candidate",
+            "ms": 0,
+            "rows": 23
+          },
+          {
+            "variant": "candidate",
+            "ms": 0,
+            "rows": 23
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:candidate:20:round2",
+        "round": 2,
+        "size": 20,
+        "variant": "candidate",
+        "ipcMs": 21.100000008940697,
+        "toSecondRaf": 37.400000005960464,
+        "triggerToSecondRaf": 538.1000000089407,
+        "projections": [
+          {
+            "variant": "candidate",
+            "ms": 0,
+            "rows": 23
+          },
+          {
+            "variant": "candidate",
+            "ms": 0,
+            "rows": 23
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:candidate:20:round2",
+        "round": 2,
+        "size": 20,
+        "variant": "candidate",
+        "ipcMs": 19.099999994039536,
+        "toSecondRaf": 35.29999999701977,
+        "triggerToSecondRaf": 535.5999999940395,
+        "projections": [
+          {
+            "variant": "candidate",
+            "ms": 0.10000000894069672,
+            "rows": 23
+          },
+          {
+            "variant": "candidate",
+            "ms": 0,
+            "rows": 23
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:candidate:1000:round2",
+        "round": 2,
+        "size": 1000,
+        "variant": "candidate",
+        "ipcMs": 20.399999991059303,
+        "toSecondRaf": 38.20000000298023,
+        "triggerToSecondRaf": 328.40000000596046,
+        "projections": [
+          {
+            "variant": "candidate",
+            "ms": 0.29999999701976776,
+            "rows": 1003
+          },
+          {
+            "variant": "candidate",
+            "ms": 0.20000000298023224,
+            "rows": 1003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:candidate:1000:round2",
+        "round": 2,
+        "size": 1000,
+        "variant": "candidate",
+        "ipcMs": 19.099999994039536,
+        "toSecondRaf": 36.8999999910593,
+        "triggerToSecondRaf": 537.0999999940395,
+        "projections": [
+          {
+            "variant": "candidate",
+            "ms": 0.19999998807907104,
+            "rows": 1003
+          },
+          {
+            "variant": "candidate",
+            "ms": 0.30000001192092896,
+            "rows": 1003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:candidate:1000:round2",
+        "round": 2,
+        "size": 1000,
+        "variant": "candidate",
+        "ipcMs": 15.599999994039536,
+        "toSecondRaf": 32.400000005960464,
+        "triggerToSecondRaf": 533,
+        "projections": [
+          {
+            "variant": "candidate",
+            "ms": 0.29999999701976776,
+            "rows": 1003
+          },
+          {
+            "variant": "candidate",
+            "ms": 0.20000000298023224,
+            "rows": 1003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:candidate:1000:round2",
+        "round": 2,
+        "size": 1000,
+        "variant": "candidate",
+        "ipcMs": 18.600000008940697,
+        "toSecondRaf": 38.400000005960464,
+        "triggerToSecondRaf": 538.7999999970198,
+        "projections": [
+          {
+            "variant": "candidate",
+            "ms": 0.20000000298023224,
+            "rows": 1003
+          },
+          {
+            "variant": "candidate",
+            "ms": 0.29999999701976776,
+            "rows": 1003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:candidate:1000:round2",
+        "round": 2,
+        "size": 1000,
+        "variant": "candidate",
+        "ipcMs": 18.900000005960464,
+        "toSecondRaf": 36,
+        "triggerToSecondRaf": 536.2999999970198,
+        "projections": [
+          {
+            "variant": "candidate",
+            "ms": 0.7000000029802322,
+            "rows": 1003
+          },
+          {
+            "variant": "candidate",
+            "ms": 0.3999999910593033,
+            "rows": 1003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:candidate:5000:round2",
+        "round": 2,
+        "size": 5000,
+        "variant": "candidate",
+        "ipcMs": 19.099999994039536,
+        "toSecondRaf": 79.59999999403954,
+        "triggerToSecondRaf": 580.2000000029802,
+        "projections": [
+          {
+            "variant": "candidate",
+            "ms": 0.5,
+            "rows": 5003
+          },
+          {
+            "variant": "candidate",
+            "ms": 1.5999999940395355,
+            "rows": 5003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:candidate:5000:round2",
+        "round": 2,
+        "size": 5000,
+        "variant": "candidate",
+        "ipcMs": 17.899999991059303,
+        "toSecondRaf": 46.8999999910593,
+        "triggerToSecondRaf": 547.3999999910593,
+        "projections": [
+          {
+            "variant": "candidate",
+            "ms": 3.4000000059604645,
+            "rows": 5003
+          },
+          {
+            "variant": "candidate",
+            "ms": 2.7999999970197678,
+            "rows": 5003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:candidate:5000:round2",
+        "round": 2,
+        "size": 5000,
+        "variant": "candidate",
+        "ipcMs": 20,
+        "toSecondRaf": 47.70000000298023,
+        "triggerToSecondRaf": 548.2999999970198,
+        "projections": [
+          {
+            "variant": "candidate",
+            "ms": 1.2000000029802322,
+            "rows": 5003
+          },
+          {
+            "variant": "candidate",
+            "ms": 1.2000000029802322,
+            "rows": 5003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:candidate:5000:round2",
+        "round": 2,
+        "size": 5000,
+        "variant": "candidate",
+        "ipcMs": 8.5,
+        "toSecondRaf": 35.70000000298023,
+        "triggerToSecondRaf": 536.2999999970198,
+        "projections": [
+          {
+            "variant": "candidate",
+            "ms": 1.2000000029802322,
+            "rows": 5003
+          },
+          {
+            "variant": "candidate",
+            "ms": 3.0999999940395355,
+            "rows": 5003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:candidate:5000:round2",
+        "round": 2,
+        "size": 5000,
+        "variant": "candidate",
+        "ipcMs": 18.900000005960464,
+        "toSecondRaf": 45.900000005960464,
+        "triggerToSecondRaf": 546.6000000089407,
+        "projections": [
+          {
+            "variant": "candidate",
+            "ms": 1.2000000029802322,
+            "rows": 5003
+          },
+          {
+            "variant": "candidate",
+            "ms": 1.2999999970197678,
+            "rows": 5003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:baseline:20:round3",
+        "round": 3,
+        "size": 20,
+        "variant": "baseline",
+        "ipcMs": 25,
+        "toSecondRaf": 43.6000000089407,
+        "triggerToSecondRaf": 543.9000000059605,
+        "projections": [
+          {
+            "variant": "baseline",
+            "ms": 0,
+            "rows": 23
+          },
+          {
+            "variant": "baseline",
+            "ms": 0.10000000894069672,
+            "rows": 23
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:baseline:20:round3",
+        "round": 3,
+        "size": 20,
+        "variant": "baseline",
+        "ipcMs": 20.80000001192093,
+        "toSecondRaf": 38.400000005960464,
+        "triggerToSecondRaf": 152.59999999403954,
+        "projections": [
+          {
+            "variant": "baseline",
+            "ms": 0,
+            "rows": 23
+          },
+          {
+            "variant": "baseline",
+            "ms": 0.09999999403953552,
+            "rows": 23
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:baseline:20:round3",
+        "round": 3,
+        "size": 20,
+        "variant": "baseline",
+        "ipcMs": 17.099999994039536,
+        "toSecondRaf": 33.599999994039536,
+        "triggerToSecondRaf": 318.3999999910593,
+        "projections": [
+          {
+            "variant": "baseline",
+            "ms": 0,
+            "rows": 23
+          },
+          {
+            "variant": "baseline",
+            "ms": 0,
+            "rows": 23
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:baseline:20:round3",
+        "round": 3,
+        "size": 20,
+        "variant": "baseline",
+        "ipcMs": 20.700000002980232,
+        "toSecondRaf": 39.6000000089407,
+        "triggerToSecondRaf": 539.9000000059605,
+        "projections": [
+          {
+            "variant": "baseline",
+            "ms": 0,
+            "rows": 23
+          },
+          {
+            "variant": "baseline",
+            "ms": 0,
+            "rows": 23
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:baseline:20:round3",
+        "round": 3,
+        "size": 20,
+        "variant": "baseline",
+        "ipcMs": 18.100000008940697,
+        "toSecondRaf": 36.400000005960464,
+        "triggerToSecondRaf": 537.0999999940395,
+        "projections": [
+          {
+            "variant": "baseline",
+            "ms": 0.09999999403953552,
+            "rows": 23
+          },
+          {
+            "variant": "baseline",
+            "ms": 0,
+            "rows": 23
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:baseline:1000:round3",
+        "round": 3,
+        "size": 1000,
+        "variant": "baseline",
+        "ipcMs": 20.299999997019768,
+        "toSecondRaf": 50,
+        "triggerToSecondRaf": 550.4000000059605,
+        "projections": [
+          {
+            "variant": "baseline",
+            "ms": 12,
+            "rows": 1003
+          },
+          {
+            "variant": "baseline",
+            "ms": 10.299999997019768,
+            "rows": 1003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:baseline:1000:round3",
+        "round": 3,
+        "size": 1000,
+        "variant": "baseline",
+        "ipcMs": 18,
+        "toSecondRaf": 60.69999998807907,
+        "triggerToSecondRaf": 561.3999999910593,
+        "projections": [
+          {
+            "variant": "baseline",
+            "ms": 12.400000005960464,
+            "rows": 1003
+          },
+          {
+            "variant": "baseline",
+            "ms": 12.5,
+            "rows": 1003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:baseline:1000:round3",
+        "round": 3,
+        "size": 1000,
+        "variant": "baseline",
+        "ipcMs": 19.599999994039536,
+        "toSecondRaf": 51,
+        "triggerToSecondRaf": 551.2999999970198,
+        "projections": [
+          {
+            "variant": "baseline",
+            "ms": 13.300000011920929,
+            "rows": 1003
+          },
+          {
+            "variant": "baseline",
+            "ms": 10.5,
+            "rows": 1003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:baseline:1000:round3",
+        "round": 3,
+        "size": 1000,
+        "variant": "baseline",
+        "ipcMs": 18.200000002980232,
+        "toSecondRaf": 59.400000005960464,
+        "triggerToSecondRaf": 429.30000001192093,
+        "projections": [
+          {
+            "variant": "baseline",
+            "ms": 12,
+            "rows": 1003
+          },
+          {
+            "variant": "baseline",
+            "ms": 12.200000002980232,
+            "rows": 1003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:baseline:1000:round3",
+        "round": 3,
+        "size": 1000,
+        "variant": "baseline",
+        "ipcMs": 19,
+        "toSecondRaf": 46.70000000298023,
+        "triggerToSecondRaf": 70,
+        "projections": [
+          {
+            "variant": "baseline",
+            "ms": 4,
+            "rows": 1003
+          },
+          {
+            "variant": "baseline",
+            "ms": 7.699999988079071,
+            "rows": 1003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:baseline:5000:round3",
+        "round": 3,
+        "size": 5000,
+        "variant": "baseline",
+        "ipcMs": 18.200000002980232,
+        "toSecondRaf": 97.90000000596046,
+        "triggerToSecondRaf": 598.3000000119209,
+        "projections": [
+          {
+            "variant": "baseline",
+            "ms": 49.20000000298023,
+            "rows": 5003
+          },
+          {
+            "variant": "baseline",
+            "ms": 17.5,
+            "rows": 5003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:baseline:5000:round3",
+        "round": 3,
+        "size": 5000,
+        "variant": "baseline",
+        "ipcMs": 18.799999997019768,
+        "toSecondRaf": 84.79999999701977,
+        "triggerToSecondRaf": 585.0999999940395,
+        "projections": [
+          {
+            "variant": "baseline",
+            "ms": 37.69999998807907,
+            "rows": 5003
+          },
+          {
+            "variant": "baseline",
+            "ms": 17.400000005960464,
+            "rows": 5003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:baseline:5000:round3",
+        "round": 3,
+        "size": 5000,
+        "variant": "baseline",
+        "ipcMs": 21.19999998807907,
+        "toSecondRaf": 98.5,
+        "triggerToSecondRaf": 598.9000000059605,
+        "projections": [
+          {
+            "variant": "baseline",
+            "ms": 48.6000000089407,
+            "rows": 5003
+          },
+          {
+            "variant": "baseline",
+            "ms": 17.299999997019768,
+            "rows": 5003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:baseline:5000:round3",
+        "round": 3,
+        "size": 5000,
+        "variant": "baseline",
+        "ipcMs": 19.30000001192093,
+        "toSecondRaf": 98.80000001192093,
+        "triggerToSecondRaf": 599.1000000089407,
+        "projections": [
+          {
+            "variant": "baseline",
+            "ms": 49.79999999701977,
+            "rows": 5003
+          },
+          {
+            "variant": "baseline",
+            "ms": 17.600000008940697,
+            "rows": 5003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      },
+      {
+        "label": "nav:baseline:5000:round3",
+        "round": 3,
+        "size": 5000,
+        "variant": "baseline",
+        "ipcMs": 17.69999998807907,
+        "toSecondRaf": 96.29999999701977,
+        "triggerToSecondRaf": 596.6000000089407,
+        "projections": [
+          {
+            "variant": "baseline",
+            "ms": 49,
+            "rows": 5003
+          },
+          {
+            "variant": "baseline",
+            "ms": 17.700000002980232,
+            "rows": 5003
+          }
+        ],
+        "requests": 27,
+        "conversations": 3,
+        "hidden": false,
+        "taskNodes": 0
+      }
+    ],
+    "rawReportSha256": "c2c3955f3d06838b78c96c1d88e2b15213b1756caa0752cea63319f99c7ef1e8",
+    "metadataNote": "The original raw report retained a legacy top-level click label; this export uses and labels its actual navigation sample fields. Final harness uses mode-specific metric metadata."
+  },
+  "behavior": {
+    "status": "passed",
+    "environment": {
+      "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) wavealstra_harness/0.1.108 Chrome/152.0.7977.130 Electron/44.5.1 Safari/537.36",
+      "eventTypes": [
+        "element",
+        "event",
+        "first-input",
+        "interaction-contentful-paint",
+        "largest-contentful-paint",
+        "layout-shift",
+        "long-animation-frame",
+        "longtask",
+        "mark",
+        "measure",
+        "navigation",
+        "paint",
+        "resource",
+        "soft-navigation",
+        "visibility-state"
+      ],
+      "hidden": false,
+      "focus": true,
+      "tasks": 20,
+      "spaces": 5
+    },
+    "fixture": {
+      "databaseTasks": 20,
+      "bootstrappedTasks": 20,
+      "rendererTaskCounts": [
+        20
+      ],
+      "rendererTaskSource": "Actual bootstrapped Task objects sliced into the unchanged app store; DB stays fixed across sizes",
+      "spaces": 5,
+      "foregroundRequests": 27,
+      "foregroundConversations": 3,
+      "ordinaryTaskDom": "actual current visible task rows"
+    },
+    "checks": [
+      "Exact live row/DOM parity: initial nested groups, counts, order and statuses",
+      "Exact live row/DOM parity: dynamic status via real store command and DB IPC",
+      "Exact live row/DOM parity: rename and recency order",
+      "Exact live row/DOM parity: group move via real workspace command and IPC",
+      "Exact live row/DOM parity: explicit sibling order preserves current selector behavior",
+      "Exact live row/DOM parity: pin and pinned section through actual command",
+      "Exact live row/DOM parity: filter in_progress",
+      "Exact live row/DOM parity: filter completed",
+      "Exact live row/DOM parity: filter failed",
+      "Exact live row/DOM parity: filter pending",
+      "Exact live row/DOM parity: filter planning",
+      "Exact live row/DOM parity: filter all",
+      "Exact live row/DOM parity: collapse group",
+      "Exact live row/DOM parity: expand group",
+      "Exact live row/DOM parity: foreground conversation expansion and 20-row limit",
+      "Exact live row/DOM parity: foreground show-more appends remaining requests",
+      "CDP typed search query and selected identical single result in both variants",
+      "Candidate stayed mounted without HMR while pending/running/completed status, rename, pin/unpin, group moves and filters updated actual rows/DOM/counts immediately; status/pin/group persistence read back through IPC",
+      "Existing pending-status-only appearance preserved: no pending badge unless approval/interaction messages exist; running and completed indicators update normally"
+    ],
+    "projectionEquivalence": {
+      "cases": 241,
+      "rows": 3612,
+      "checks": [
+        "exact full projection values and order",
+        "first duplicate task and space matches",
+        "missing task and space skip",
+        "original task/space/node/request/conversation identities",
+        "nested and collapsed spaces",
+        "conversation grouping and expansion",
+        "foreground ordering/status/limits/more rows",
+        "empty and archived conversations",
+        "no input mutation",
+        "collapsed tree avoids task indexing"
+      ]
+    },
+    "pairedSnapshots": [
+      {
+        "case": "initial nested groups, counts, order and statuses",
+        "rowCount": 28,
+        "domCount": 25,
+        "baselineSha256": "1276774fa0c28c85c67ca8235d90185ee348cbc19c88ec945ca8d33c4d5b9991",
+        "candidateSha256": "1276774fa0c28c85c67ca8235d90185ee348cbc19c88ec945ca8d33c4d5b9991",
+        "equal": true
+      },
+      {
+        "case": "dynamic status via real store command and DB IPC",
+        "rowCount": 28,
+        "domCount": 25,
+        "baselineSha256": "276acbf413a4333740d5fa7a420a075e27d8e054e7ca4f521147754dc5acf002",
+        "candidateSha256": "276acbf413a4333740d5fa7a420a075e27d8e054e7ca4f521147754dc5acf002",
+        "equal": true
+      },
+      {
+        "case": "rename and recency order",
+        "rowCount": 28,
+        "domCount": 25,
+        "baselineSha256": "a8c8311f2b67f76fe14f26effea651258874d0330ca005483ecb2fa6be43bcae",
+        "candidateSha256": "a8c8311f2b67f76fe14f26effea651258874d0330ca005483ecb2fa6be43bcae",
+        "equal": true
+      },
+      {
+        "case": "group move via real workspace command and IPC",
+        "rowCount": 28,
+        "domCount": 25,
+        "baselineSha256": "b41bed92e88826c2fdf1917fbb6290bb470cdd3d793a652500dd9c1a2a14e280",
+        "candidateSha256": "b41bed92e88826c2fdf1917fbb6290bb470cdd3d793a652500dd9c1a2a14e280",
+        "equal": true
+      },
+      {
+        "case": "explicit sibling order preserves current selector behavior",
+        "rowCount": 28,
+        "domCount": 25,
+        "baselineSha256": "b41bed92e88826c2fdf1917fbb6290bb470cdd3d793a652500dd9c1a2a14e280",
+        "candidateSha256": "b41bed92e88826c2fdf1917fbb6290bb470cdd3d793a652500dd9c1a2a14e280",
+        "equal": true
+      },
+      {
+        "case": "pin and pinned section through actual command",
+        "rowCount": 28,
+        "domCount": 25,
+        "baselineSha256": "f5159c77449b39730800eb0d2449f7886ea4e975932e48a768b531e243a0e75c",
+        "candidateSha256": "f5159c77449b39730800eb0d2449f7886ea4e975932e48a768b531e243a0e75c",
+        "equal": true
+      },
+      {
+        "case": "filter in_progress",
+        "rowCount": 13,
+        "domCount": 10,
+        "baselineSha256": "72ffb84ffc0abc17d1344c9d05cf30873e6de8e52804d9dee0226803772710ff",
+        "candidateSha256": "72ffb84ffc0abc17d1344c9d05cf30873e6de8e52804d9dee0226803772710ff",
+        "equal": true
+      },
+      {
+        "case": "filter completed",
+        "rowCount": 12,
+        "domCount": 9,
+        "baselineSha256": "329674f16945caf903390e41b3fde3aec98c2500a0e8cfe2aee061def3f6d923",
+        "candidateSha256": "329674f16945caf903390e41b3fde3aec98c2500a0e8cfe2aee061def3f6d923",
+        "equal": true
+      },
+      {
+        "case": "filter failed",
+        "rowCount": 12,
+        "domCount": 9,
+        "baselineSha256": "7ee429a723e4a64ea4dffc9ef9156bb443d771b3de6753d7d8dc7ec377f8c6f9",
+        "candidateSha256": "7ee429a723e4a64ea4dffc9ef9156bb443d771b3de6753d7d8dc7ec377f8c6f9",
+        "equal": true
+      },
+      {
+        "case": "filter pending",
+        "rowCount": 11,
+        "domCount": 8,
+        "baselineSha256": "8ea3562e57217a1503882ab580442b3398641446d4ea4d64eed928d21c227301",
+        "candidateSha256": "8ea3562e57217a1503882ab580442b3398641446d4ea4d64eed928d21c227301",
+        "equal": true
+      },
+      {
+        "case": "filter planning",
+        "rowCount": 12,
+        "domCount": 9,
+        "baselineSha256": "7530b0d690b3ad3c5cfd3f5a7d63b8c9fff50868eef3a2c86383475a757110af",
+        "candidateSha256": "7530b0d690b3ad3c5cfd3f5a7d63b8c9fff50868eef3a2c86383475a757110af",
+        "equal": true
+      },
+      {
+        "case": "filter all",
+        "rowCount": 28,
+        "domCount": 25,
+        "baselineSha256": "f5159c77449b39730800eb0d2449f7886ea4e975932e48a768b531e243a0e75c",
+        "candidateSha256": "f5159c77449b39730800eb0d2449f7886ea4e975932e48a768b531e243a0e75c",
+        "equal": true
+      },
+      {
+        "case": "collapse group",
+        "rowCount": 9,
+        "domCount": 8,
+        "baselineSha256": "d2cb9fdf302f9159ed0051eca01ca4656c1848d66277520dbb41f976b0b2f89a",
+        "candidateSha256": "d2cb9fdf302f9159ed0051eca01ca4656c1848d66277520dbb41f976b0b2f89a",
+        "equal": true
+      },
+      {
+        "case": "expand group",
+        "rowCount": 28,
+        "domCount": 25,
+        "baselineSha256": "1d111a5c6428b2939b9be954b6c3219f026b6447a3da9b97a110548edc5ab555",
+        "candidateSha256": "1d111a5c6428b2939b9be954b6c3219f026b6447a3da9b97a110548edc5ab555",
+        "equal": true
+      },
+      {
+        "case": "foreground conversation expansion and 20-row limit",
+        "rowCount": 49,
+        "domCount": 25,
+        "baselineSha256": "c65a2705688dd81ac9e67d2a762c2b54f9d4d8c5ec476f1dbfd1c2470c0cf0ea",
+        "candidateSha256": "c65a2705688dd81ac9e67d2a762c2b54f9d4d8c5ec476f1dbfd1c2470c0cf0ea",
+        "equal": true
+      },
+      {
+        "case": "foreground show-more appends remaining requests",
+        "rowCount": 53,
+        "domCount": 25,
+        "baselineSha256": "77db2fb5b7510f2a9ce64addad016a93c3a64fa92450c25508940f38dc9d6841",
+        "candidateSha256": "77db2fb5b7510f2a9ce64addad016a93c3a64fa92450c25508940f38dc9d6841",
+        "equal": true
+      }
+    ],
+    "searches": [
+      {
+        "variant": "baseline",
+        "query": "renamed needle",
+        "results": [
+          "Sidebar renamed needle"
+        ]
+      },
+      {
+        "variant": "candidate",
+        "query": "renamed needle",
+        "results": [
+          "Sidebar renamed needle"
+        ]
+      }
+    ],
+    "candidateMountedActions": [
+      {
+        "label": "status pending",
+        "moduleSequence": 36,
+        "variant": "candidate",
+        "task": {
+          "id": "sb-task-00004",
+          "title": "Synthetic task 00004",
+          "status": "pending",
+          "spaceId": "sb-root",
+          "isFavorited": false,
+          "updatedAt": 1794427698767
+        },
+        "row": {
+          "title": "Synthetic task 00004",
+          "status": "pending",
+          "spaceId": "sb-root",
+          "isFavorited": false,
+          "depth": 1
+        },
+        "element": {
+          "title": "Synthetic task 00004",
+          "statusClasses": [],
+          "pinned": false,
+          "inPinnedSection": false,
+          "runningDot": false,
+          "doneDot": false
+        },
+        "actualTitles": [
+          "Sidebar renamed needle",
+          "Synthetic task 00000",
+          "Synthetic task 00001",
+          "Synthetic task 00002",
+          "Synthetic task 00003",
+          "Synthetic task 00004",
+          "Synthetic task 00005",
+          "Synthetic task 00006",
+          "Synthetic task 00007",
+          "Synthetic task 00008",
+          "Synthetic task 00009",
+          "Synthetic task 00010",
+          "Synthetic task 00011",
+          "Synthetic task 00012",
+          "Synthetic task 00013",
+          "Synthetic task 00014",
+          "Synthetic task 00015",
+          "Synthetic task 00016",
+          "Synthetic task 00017",
+          "Synthetic task 00018"
+        ],
+        "expectedTitles": [
+          "Sidebar renamed needle",
+          "Synthetic task 00000",
+          "Synthetic task 00001",
+          "Synthetic task 00002",
+          "Synthetic task 00003",
+          "Synthetic task 00004",
+          "Synthetic task 00005",
+          "Synthetic task 00006",
+          "Synthetic task 00007",
+          "Synthetic task 00008",
+          "Synthetic task 00009",
+          "Synthetic task 00010",
+          "Synthetic task 00011",
+          "Synthetic task 00012",
+          "Synthetic task 00013",
+          "Synthetic task 00014",
+          "Synthetic task 00015",
+          "Synthetic task 00016",
+          "Synthetic task 00017",
+          "Synthetic task 00018"
+        ],
+        "actualCounts": [
+          0,
+          45
+        ],
+        "expectedCounts": [
+          0,
+          45
+        ],
+        "filter": "all"
+      },
+      {
+        "label": "status in_progress",
+        "moduleSequence": 36,
+        "variant": "candidate",
+        "task": {
+          "id": "sb-task-00004",
+          "title": "Synthetic task 00004",
+          "status": "in_progress",
+          "spaceId": "sb-root",
+          "isFavorited": false,
+          "updatedAt": 1794427698836
+        },
+        "row": {
+          "title": "Synthetic task 00004",
+          "status": "in_progress",
+          "spaceId": "sb-root",
+          "isFavorited": false,
+          "depth": 1
+        },
+        "element": {
+          "title": "Synthetic task 00004",
+          "statusClasses": [
+            "status-running"
+          ],
+          "pinned": false,
+          "inPinnedSection": false,
+          "runningDot": true,
+          "doneDot": false
+        },
+        "actualTitles": [
+          "Sidebar renamed needle",
+          "Synthetic task 00000",
+          "Synthetic task 00001",
+          "Synthetic task 00002",
+          "Synthetic task 00003",
+          "Synthetic task 00004",
+          "Synthetic task 00005",
+          "Synthetic task 00006",
+          "Synthetic task 00007",
+          "Synthetic task 00008",
+          "Synthetic task 00009",
+          "Synthetic task 00010",
+          "Synthetic task 00011",
+          "Synthetic task 00012",
+          "Synthetic task 00013",
+          "Synthetic task 00014",
+          "Synthetic task 00015",
+          "Synthetic task 00016",
+          "Synthetic task 00017",
+          "Synthetic task 00018"
+        ],
+        "expectedTitles": [
+          "Sidebar renamed needle",
+          "Synthetic task 00000",
+          "Synthetic task 00001",
+          "Synthetic task 00002",
+          "Synthetic task 00003",
+          "Synthetic task 00004",
+          "Synthetic task 00005",
+          "Synthetic task 00006",
+          "Synthetic task 00007",
+          "Synthetic task 00008",
+          "Synthetic task 00009",
+          "Synthetic task 00010",
+          "Synthetic task 00011",
+          "Synthetic task 00012",
+          "Synthetic task 00013",
+          "Synthetic task 00014",
+          "Synthetic task 00015",
+          "Synthetic task 00016",
+          "Synthetic task 00017",
+          "Synthetic task 00018"
+        ],
+        "actualCounts": [
+          0,
+          45
+        ],
+        "expectedCounts": [
+          0,
+          45
+        ],
+        "filter": "all"
+      },
+      {
+        "label": "status completed",
+        "moduleSequence": 36,
+        "variant": "candidate",
+        "task": {
+          "id": "sb-task-00004",
+          "title": "Synthetic task 00004",
+          "status": "completed",
+          "spaceId": "sb-root",
+          "isFavorited": false,
+          "updatedAt": 1794427698885
+        },
+        "row": {
+          "title": "Synthetic task 00004",
+          "status": "completed",
+          "spaceId": "sb-root",
+          "isFavorited": false,
+          "depth": 1
+        },
+        "element": {
+          "title": "Synthetic task 00004",
+          "statusClasses": [
+            "status-done"
+          ],
+          "pinned": false,
+          "inPinnedSection": false,
+          "runningDot": false,
+          "doneDot": true
+        },
+        "actualTitles": [
+          "Sidebar renamed needle",
+          "Synthetic task 00000",
+          "Synthetic task 00001",
+          "Synthetic task 00002",
+          "Synthetic task 00003",
+          "Synthetic task 00004",
+          "Synthetic task 00005",
+          "Synthetic task 00006",
+          "Synthetic task 00007",
+          "Synthetic task 00008",
+          "Synthetic task 00009",
+          "Synthetic task 00010",
+          "Synthetic task 00011",
+          "Synthetic task 00012",
+          "Synthetic task 00013",
+          "Synthetic task 00014",
+          "Synthetic task 00015",
+          "Synthetic task 00016",
+          "Synthetic task 00017",
+          "Synthetic task 00018"
+        ],
+        "expectedTitles": [
+          "Sidebar renamed needle",
+          "Synthetic task 00000",
+          "Synthetic task 00001",
+          "Synthetic task 00002",
+          "Synthetic task 00003",
+          "Synthetic task 00004",
+          "Synthetic task 00005",
+          "Synthetic task 00006",
+          "Synthetic task 00007",
+          "Synthetic task 00008",
+          "Synthetic task 00009",
+          "Synthetic task 00010",
+          "Synthetic task 00011",
+          "Synthetic task 00012",
+          "Synthetic task 00013",
+          "Synthetic task 00014",
+          "Synthetic task 00015",
+          "Synthetic task 00016",
+          "Synthetic task 00017",
+          "Synthetic task 00018"
+        ],
+        "actualCounts": [
+          0,
+          45
+        ],
+        "expectedCounts": [
+          0,
+          45
+        ],
+        "filter": "all"
+      },
+      {
+        "label": "rename visible task",
+        "moduleSequence": 36,
+        "variant": "candidate",
+        "task": {
+          "id": "sb-task-00004",
+          "title": "Candidate immediate renamed",
+          "status": "completed",
+          "spaceId": "sb-root",
+          "isFavorited": false,
+          "updatedAt": 1794427698936
+        },
+        "row": {
+          "title": "Candidate immediate renamed",
+          "status": "completed",
+          "spaceId": "sb-root",
+          "isFavorited": false,
+          "depth": 1
+        },
+        "element": {
+          "title": "Candidate immediate renamed",
+          "statusClasses": [
+            "status-done"
+          ],
+          "pinned": false,
+          "inPinnedSection": false,
+          "runningDot": false,
+          "doneDot": true
+        },
+        "actualTitles": [
+          "Candidate immediate renamed",
+          "Sidebar renamed needle",
+          "Synthetic task 00000",
+          "Synthetic task 00001",
+          "Synthetic task 00002",
+          "Synthetic task 00003",
+          "Synthetic task 00005",
+          "Synthetic task 00006",
+          "Synthetic task 00007",
+          "Synthetic task 00008",
+          "Synthetic task 00009",
+          "Synthetic task 00010",
+          "Synthetic task 00011",
+          "Synthetic task 00012",
+          "Synthetic task 00013",
+          "Synthetic task 00014",
+          "Synthetic task 00015",
+          "Synthetic task 00016",
+          "Synthetic task 00017",
+          "Synthetic task 00018"
+        ],
+        "expectedTitles": [
+          "Candidate immediate renamed",
+          "Sidebar renamed needle",
+          "Synthetic task 00000",
+          "Synthetic task 00001",
+          "Synthetic task 00002",
+          "Synthetic task 00003",
+          "Synthetic task 00005",
+          "Synthetic task 00006",
+          "Synthetic task 00007",
+          "Synthetic task 00008",
+          "Synthetic task 00009",
+          "Synthetic task 00010",
+          "Synthetic task 00011",
+          "Synthetic task 00012",
+          "Synthetic task 00013",
+          "Synthetic task 00014",
+          "Synthetic task 00015",
+          "Synthetic task 00016",
+          "Synthetic task 00017",
+          "Synthetic task 00018"
+        ],
+        "actualCounts": [
+          0,
+          45
+        ],
+        "expectedCounts": [
+          0,
+          45
+        ],
+        "filter": "all"
+      },
+      {
+        "label": "pin",
+        "moduleSequence": 36,
+        "variant": "candidate",
+        "task": {
+          "id": "sb-task-00004",
+          "title": "Candidate immediate renamed",
+          "status": "completed",
+          "spaceId": "sb-root",
+          "isFavorited": true,
+          "updatedAt": 1794427698983
+        },
+        "row": {
+          "title": "Candidate immediate renamed",
+          "status": "completed",
+          "spaceId": "sb-root",
+          "isFavorited": true,
+          "depth": 1
+        },
+        "element": {
+          "title": "Candidate immediate renamed",
+          "statusClasses": [
+            "status-done"
+          ],
+          "pinned": true,
+          "inPinnedSection": true,
+          "runningDot": false,
+          "doneDot": true
+        },
+        "actualTitles": [
+          "Candidate immediate renamed",
+          "Sidebar renamed needle",
+          "Synthetic task 00000",
+          "Synthetic task 00001",
+          "Synthetic task 00002",
+          "Synthetic task 00003",
+          "Synthetic task 00005",
+          "Synthetic task 00006",
+          "Synthetic task 00007",
+          "Synthetic task 00008",
+          "Synthetic task 00009",
+          "Synthetic task 00010",
+          "Synthetic task 00011",
+          "Synthetic task 00012",
+          "Synthetic task 00013",
+          "Synthetic task 00014",
+          "Synthetic task 00015",
+          "Synthetic task 00016",
+          "Synthetic task 00017",
+          "Synthetic task 00018"
+        ],
+        "expectedTitles": [
+          "Candidate immediate renamed",
+          "Sidebar renamed needle",
+          "Synthetic task 00000",
+          "Synthetic task 00001",
+          "Synthetic task 00002",
+          "Synthetic task 00003",
+          "Synthetic task 00005",
+          "Synthetic task 00006",
+          "Synthetic task 00007",
+          "Synthetic task 00008",
+          "Synthetic task 00009",
+          "Synthetic task 00010",
+          "Synthetic task 00011",
+          "Synthetic task 00012",
+          "Synthetic task 00013",
+          "Synthetic task 00014",
+          "Synthetic task 00015",
+          "Synthetic task 00016",
+          "Synthetic task 00017",
+          "Synthetic task 00018"
+        ],
+        "actualCounts": [
+          0,
+          44
+        ],
+        "expectedCounts": [
+          0,
+          44
+        ],
+        "filter": "all"
+      },
+      {
+        "label": "unpin",
+        "moduleSequence": 36,
+        "variant": "candidate",
+        "task": {
+          "id": "sb-task-00004",
+          "title": "Candidate immediate renamed",
+          "status": "completed",
+          "spaceId": "sb-root",
+          "isFavorited": false,
+          "updatedAt": 1794427699085
+        },
+        "row": {
+          "title": "Candidate immediate renamed",
+          "status": "completed",
+          "spaceId": "sb-root",
+          "isFavorited": false,
+          "depth": 1
+        },
+        "element": {
+          "title": "Candidate immediate renamed",
+          "statusClasses": [
+            "status-done"
+          ],
+          "pinned": false,
+          "inPinnedSection": false,
+          "runningDot": false,
+          "doneDot": true
+        },
+        "actualTitles": [
+          "Candidate immediate renamed",
+          "Sidebar renamed needle",
+          "Synthetic task 00000",
+          "Synthetic task 00001",
+          "Synthetic task 00002",
+          "Synthetic task 00003",
+          "Synthetic task 00005",
+          "Synthetic task 00006",
+          "Synthetic task 00007",
+          "Synthetic task 00008",
+          "Synthetic task 00009",
+          "Synthetic task 00010",
+          "Synthetic task 00011",
+          "Synthetic task 00012",
+          "Synthetic task 00013",
+          "Synthetic task 00014",
+          "Synthetic task 00015",
+          "Synthetic task 00016",
+          "Synthetic task 00017",
+          "Synthetic task 00018"
+        ],
+        "expectedTitles": [
+          "Candidate immediate renamed",
+          "Sidebar renamed needle",
+          "Synthetic task 00000",
+          "Synthetic task 00001",
+          "Synthetic task 00002",
+          "Synthetic task 00003",
+          "Synthetic task 00005",
+          "Synthetic task 00006",
+          "Synthetic task 00007",
+          "Synthetic task 00008",
+          "Synthetic task 00009",
+          "Synthetic task 00010",
+          "Synthetic task 00011",
+          "Synthetic task 00012",
+          "Synthetic task 00013",
+          "Synthetic task 00014",
+          "Synthetic task 00015",
+          "Synthetic task 00016",
+          "Synthetic task 00017",
+          "Synthetic task 00018"
+        ],
+        "actualCounts": [
+          0,
+          45
+        ],
+        "expectedCounts": [
+          0,
+          45
+        ],
+        "filter": "all"
+      },
+      {
+        "label": "move to other group",
+        "moduleSequence": 36,
+        "variant": "candidate",
+        "task": {
+          "id": "sb-task-00004",
+          "title": "Candidate immediate renamed",
+          "status": "completed",
+          "spaceId": "sb-other",
+          "isFavorited": false,
+          "updatedAt": 1794427699085
+        },
+        "row": {
+          "title": "Candidate immediate renamed",
+          "status": "completed",
+          "spaceId": "sb-other",
+          "isFavorited": false,
+          "depth": 1
+        },
+        "element": {
+          "title": "Candidate immediate renamed",
+          "statusClasses": [
+            "status-done"
+          ],
+          "pinned": false,
+          "inPinnedSection": false,
+          "runningDot": false,
+          "doneDot": true
+        },
+        "actualTitles": [
+          "Candidate immediate renamed",
+          "Sidebar renamed needle",
+          "Synthetic task 00000",
+          "Synthetic task 00001",
+          "Synthetic task 00002",
+          "Synthetic task 00003",
+          "Synthetic task 00005",
+          "Synthetic task 00006",
+          "Synthetic task 00007",
+          "Synthetic task 00008",
+          "Synthetic task 00009",
+          "Synthetic task 00010",
+          "Synthetic task 00011",
+          "Synthetic task 00012",
+          "Synthetic task 00013",
+          "Synthetic task 00014",
+          "Synthetic task 00015",
+          "Synthetic task 00016",
+          "Synthetic task 00017",
+          "Synthetic task 00018"
+        ],
+        "expectedTitles": [
+          "Candidate immediate renamed",
+          "Sidebar renamed needle",
+          "Synthetic task 00000",
+          "Synthetic task 00001",
+          "Synthetic task 00002",
+          "Synthetic task 00003",
+          "Synthetic task 00005",
+          "Synthetic task 00006",
+          "Synthetic task 00007",
+          "Synthetic task 00008",
+          "Synthetic task 00009",
+          "Synthetic task 00010",
+          "Synthetic task 00011",
+          "Synthetic task 00012",
+          "Synthetic task 00013",
+          "Synthetic task 00014",
+          "Synthetic task 00015",
+          "Synthetic task 00016",
+          "Synthetic task 00017",
+          "Synthetic task 00018"
+        ],
+        "actualCounts": [
+          0,
+          45
+        ],
+        "expectedCounts": [
+          0,
+          45
+        ],
+        "filter": "all"
+      },
+      {
+        "label": "move to independent group",
+        "moduleSequence": 36,
+        "variant": "candidate",
+        "task": {
+          "id": "sb-task-00004",
+          "title": "Candidate immediate renamed",
+          "status": "completed",
+          "spaceId": null,
+          "isFavorited": false,
+          "updatedAt": 1794427699085
+        },
+        "row": {
+          "title": "Candidate immediate renamed",
+          "status": "completed",
+          "spaceId": null,
+          "isFavorited": false,
+          "depth": 0
+        },
+        "element": {
+          "title": "Candidate immediate renamed",
+          "statusClasses": [
+            "status-done"
+          ],
+          "pinned": false,
+          "inPinnedSection": false,
+          "runningDot": false,
+          "doneDot": true
+        },
+        "actualTitles": [
+          "Candidate immediate renamed",
+          "Sidebar renamed needle",
+          "Synthetic task 00000",
+          "Synthetic task 00001",
+          "Synthetic task 00002",
+          "Synthetic task 00003",
+          "Synthetic task 00005",
+          "Synthetic task 00006",
+          "Synthetic task 00007",
+          "Synthetic task 00008",
+          "Synthetic task 00009",
+          "Synthetic task 00010",
+          "Synthetic task 00011",
+          "Synthetic task 00012",
+          "Synthetic task 00013",
+          "Synthetic task 00014",
+          "Synthetic task 00015",
+          "Synthetic task 00016",
+          "Synthetic task 00017",
+          "Synthetic task 00018"
+        ],
+        "expectedTitles": [
+          "Candidate immediate renamed",
+          "Sidebar renamed needle",
+          "Synthetic task 00000",
+          "Synthetic task 00001",
+          "Synthetic task 00002",
+          "Synthetic task 00003",
+          "Synthetic task 00005",
+          "Synthetic task 00006",
+          "Synthetic task 00007",
+          "Synthetic task 00008",
+          "Synthetic task 00009",
+          "Synthetic task 00010",
+          "Synthetic task 00011",
+          "Synthetic task 00012",
+          "Synthetic task 00013",
+          "Synthetic task 00014",
+          "Synthetic task 00015",
+          "Synthetic task 00016",
+          "Synthetic task 00017",
+          "Synthetic task 00018"
+        ],
+        "actualCounts": [
+          1,
+          44
+        ],
+        "expectedCounts": [
+          1,
+          44
+        ],
+        "filter": "all"
+      },
+      {
+        "label": "filter pending",
+        "moduleSequence": 36,
+        "variant": "candidate",
+        "task": {
+          "id": "sb-task-00004",
+          "title": "Candidate immediate renamed",
+          "status": "completed",
+          "spaceId": null,
+          "isFavorited": false,
+          "updatedAt": 1794427699085
+        },
+        "row": null,
+        "element": null,
+        "actualTitles": [
+          "Sidebar renamed needle",
+          "Synthetic task 00009",
+          "Synthetic task 00014"
+        ],
+        "expectedTitles": [
+          "Sidebar renamed needle",
+          "Synthetic task 00009",
+          "Synthetic task 00014"
+        ],
+        "actualCounts": [
+          0,
+          29
+        ],
+        "expectedCounts": [
+          0,
+          29
+        ],
+        "filter": "pending"
+      },
+      {
+        "label": "filter completed",
+        "moduleSequence": 36,
+        "variant": "candidate",
+        "task": {
+          "id": "sb-task-00004",
+          "title": "Candidate immediate renamed",
+          "status": "completed",
+          "spaceId": null,
+          "isFavorited": false,
+          "updatedAt": 1794427699085
+        },
+        "row": {
+          "title": "Candidate immediate renamed",
+          "status": "completed",
+          "spaceId": null,
+          "isFavorited": false,
+          "depth": 0
+        },
+        "element": {
+          "title": "Candidate immediate renamed",
+          "statusClasses": [
+            "status-done"
+          ],
+          "pinned": false,
+          "inPinnedSection": false,
+          "runningDot": false,
+          "doneDot": true
+        },
+        "actualTitles": [
+          "Candidate immediate renamed",
+          "Synthetic task 00001",
+          "Synthetic task 00006",
+          "Synthetic task 00011",
+          "Synthetic task 00016"
+        ],
+        "expectedTitles": [
+          "Candidate immediate renamed",
+          "Synthetic task 00001",
+          "Synthetic task 00006",
+          "Synthetic task 00011",
+          "Synthetic task 00016"
+        ],
+        "actualCounts": [
+          1,
+          31
+        ],
+        "expectedCounts": [
+          1,
+          31
+        ],
+        "filter": "completed"
+      },
+      {
+        "label": "filter in_progress",
+        "moduleSequence": 36,
+        "variant": "candidate",
+        "task": {
+          "id": "sb-task-00004",
+          "title": "Candidate immediate renamed",
+          "status": "completed",
+          "spaceId": null,
+          "isFavorited": false,
+          "updatedAt": 1794427699085
+        },
+        "row": null,
+        "element": null,
+        "actualTitles": [
+          "Synthetic task 00003",
+          "Synthetic task 00008",
+          "Synthetic task 00013",
+          "Synthetic task 00018"
+        ],
+        "expectedTitles": [
+          "Synthetic task 00003",
+          "Synthetic task 00008",
+          "Synthetic task 00013",
+          "Synthetic task 00018"
+        ],
+        "actualCounts": [
+          0,
+          31
+        ],
+        "expectedCounts": [
+          0,
+          31
+        ],
+        "filter": "in_progress"
+      },
+      {
+        "label": "filter all",
+        "moduleSequence": 36,
+        "variant": "candidate",
+        "task": {
+          "id": "sb-task-00004",
+          "title": "Candidate immediate renamed",
+          "status": "completed",
+          "spaceId": null,
+          "isFavorited": false,
+          "updatedAt": 1794427699085
+        },
+        "row": {
+          "title": "Candidate immediate renamed",
+          "status": "completed",
+          "spaceId": null,
+          "isFavorited": false,
+          "depth": 0
+        },
+        "element": {
+          "title": "Candidate immediate renamed",
+          "statusClasses": [
+            "status-done"
+          ],
+          "pinned": false,
+          "inPinnedSection": false,
+          "runningDot": false,
+          "doneDot": true
+        },
+        "actualTitles": [
+          "Candidate immediate renamed",
+          "Sidebar renamed needle",
+          "Synthetic task 00000",
+          "Synthetic task 00001",
+          "Synthetic task 00002",
+          "Synthetic task 00003",
+          "Synthetic task 00005",
+          "Synthetic task 00006",
+          "Synthetic task 00007",
+          "Synthetic task 00008",
+          "Synthetic task 00009",
+          "Synthetic task 00010",
+          "Synthetic task 00011",
+          "Synthetic task 00012",
+          "Synthetic task 00013",
+          "Synthetic task 00014",
+          "Synthetic task 00015",
+          "Synthetic task 00016",
+          "Synthetic task 00017",
+          "Synthetic task 00018"
+        ],
+        "expectedTitles": [
+          "Candidate immediate renamed",
+          "Sidebar renamed needle",
+          "Synthetic task 00000",
+          "Synthetic task 00001",
+          "Synthetic task 00002",
+          "Synthetic task 00003",
+          "Synthetic task 00005",
+          "Synthetic task 00006",
+          "Synthetic task 00007",
+          "Synthetic task 00008",
+          "Synthetic task 00009",
+          "Synthetic task 00010",
+          "Synthetic task 00011",
+          "Synthetic task 00012",
+          "Synthetic task 00013",
+          "Synthetic task 00014",
+          "Synthetic task 00015",
+          "Synthetic task 00016",
+          "Synthetic task 00017",
+          "Synthetic task 00018"
+        ],
+        "actualCounts": [
+          1,
+          44
+        ],
+        "expectedCounts": [
+          1,
+          44
+        ],
+        "filter": "all"
+      }
+    ],
+    "rendererErrors": [],
+    "remainingOwnedElectronMains": [],
+    "sharedGeneratedCache": {
+      "entries": 923,
+      "beforeDigest": "4109db13a0ecfaaf0d81b38fe195adb68d101e1c8e95579229a70e5df3a985e0",
+      "afterDigest": "4109db13a0ecfaaf0d81b38fe195adb68d101e1c8e95579229a70e5df3a985e0",
+      "unchanged": true
+    },
+    "rawReportSha256": "13985e6f24c58bf1d842c7ce6d861c544ce46815b720e93775f858236bffb27d"
+  },
+  "gates": {
+    "unit": {
+      "status": "passed",
+      "output": "$ node scripts/test-guard.mjs scripts/sidebar-row-lookup-test.cjs\n[test-guard] pid=811884 cmd=node --max-old-space-size=4096 scripts/sidebar-row-lookup-test.cjs mem_cap=6144MB timeout=900s poll=1500ms\nPASS sidebar row lookup: 241 full-value/reference parity cases, between-call freshness, 500500 -> 2000 task id reads\n[test-guard] exit pid=811884 code=0 elapsed=0s\n"
+    },
+    "focused": {
+      "status": "passed",
+      "names": [
+        "sidebar-pinned",
+        "sidebar-space-collapse",
+        "app-store-transactions",
+        "workspace-tree",
+        "bot-workspace"
+      ]
+    },
+    "typecheck": {
+      "status": "passed",
+      "output": "$ tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json && node scripts/typecheck-scripts.mjs\n[typecheck-scripts] scripts/ 错误 0 条 · 基线 0 条 · 新增 0 · 已修复 0\n[typecheck-scripts] OK：没有新增错误。\n"
+    },
+    "fullHeadless": {
+      "status": "passed",
+      "summary": "[test-all] 4.5 min · 通过 480 · 失败 0 · 已知失败 0 · 新增回归 0",
+      "individualResults": [
+        {
+          "name": "test:acp-catalog",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:acp-permission-policy",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:acp-remote",
+          "seconds": 1.9
+        },
+        {
+          "name": "test:agent-loadout",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:app-store-runtime",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:app-permission-ui-removal",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:app-store-structure",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:acp-runtime",
+          "seconds": 2.9
+        },
+        {
+          "name": "test:app-store-transactions",
+          "seconds": 1.6
+        },
+        {
+          "name": "test:acp-desktop-hydration",
+          "seconds": 4.4
+        },
+        {
+          "name": "test:artifact-char",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:architecture-graph",
+          "seconds": 2.0
+        },
+        {
+          "name": "test:artifact-cross-ref",
+          "seconds": 1.4
+        },
+        {
+          "name": "test:architecture",
+          "seconds": 4.2
+        },
+        {
+          "name": "test:artifact-image-cache",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:archive-deletion",
+          "seconds": 3.1
+        },
+        {
+          "name": "test:artifact-policy-display",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:artifact-projection",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:artifact-render-hydration",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:artifact-gate",
+          "seconds": 1.6
+        },
+        {
+          "name": "test:atspi-transport",
+          "seconds": 0.5
+        },
+        {
+          "name": "test:backup",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:baidu-ocr",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:black-forest-labs-provider",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:bot-active-requests",
+          "seconds": 0.5
+        },
+        {
+          "name": "test:bot-activity-monitor",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:bot-attachments",
+          "seconds": 1.4
+        },
+        {
+          "name": "test:artifact-provenance",
+          "seconds": 3.9
+        },
+        {
+          "name": "test:bot-conversation-ui",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:bot-call-thread",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:atspi-driver",
+          "seconds": 4.8
+        },
+        {
+          "name": "test:bot-create-ui",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:bot-create",
+          "seconds": 1.3
+        },
+        {
+          "name": "test:bot-deletion",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:bot-delegation-fidelity",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:bot-display-groups",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:bot-foreground-metrics",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:bot-history-paging",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:bot-execution-diagnostics",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:bot-history-context",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:artifact-domain",
+          "seconds": 8.6
+        },
+        {
+          "name": "test:bot-memory",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:bot-history-paging-sqlite",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:bot-message-presentation",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:bot-memory-forget-watermark",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:bot-peer-calls",
+          "seconds": 1.4
+        },
+        {
+          "name": "test:bot-rename",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:bot-reply-segments",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:bot-reminders",
+          "seconds": 2.6
+        },
+        {
+          "name": "test:bot-history-query",
+          "seconds": 4.2
+        },
+        {
+          "name": "test:bot-result-delivery",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:bot-report-images",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:bot-scheduling-routing",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:bot-settings",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:bot-memory-runtime",
+          "seconds": 5.0
+        },
+        {
+          "name": "test:bot-scheduling-continuation",
+          "seconds": 1.7
+        },
+        {
+          "name": "test:bot-report-images-ui",
+          "seconds": 2.1
+        },
+        {
+          "name": "test:bot-summary-pagination",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:bot-team-ui",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:bot-watch-expiry",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:bot-team-conversation",
+          "seconds": 1.6
+        },
+        {
+          "name": "test:bot-watch-intake",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:bot-watch-creation",
+          "seconds": 3.8
+        },
+        {
+          "name": "test:bot-work-automatic-completion",
+          "seconds": 3.0
+        },
+        {
+          "name": "test:bot-work-control",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:bot-work-foreground-contract",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:bot-work-automatic-recovery",
+          "seconds": 4.7
+        },
+        {
+          "name": "test:bot-work-milestones",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:bot-work-execution",
+          "seconds": 3.1
+        },
+        {
+          "name": "test:bot-work-no-quota",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:bot-work-phase1",
+          "seconds": 1.3
+        },
+        {
+          "name": "test:bot-work-phase2-invariants",
+          "seconds": 1.4
+        },
+        {
+          "name": "test:bot-work-phase3-collaboration",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:bot-work-phase3-handoff",
+          "seconds": 1.5
+        },
+        {
+          "name": "test:bot-work-phase3-partial-settlement",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:bot-work-phase2-usage",
+          "seconds": 3.8
+        },
+        {
+          "name": "test:bot-work-phase3-pause-backlog",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:bot-work-phase4-backpressure",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:bot-work-phase4-causal-guard",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:bot-work-phase4-hook-fanout",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:bot-work-phase4-offline-catchup",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:bot-work-phase4-schedule-clock",
+          "seconds": 2.1
+        },
+        {
+          "name": "test:bot-work-phase5-e2e-story",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:bot-work-phase5-delivery-dedup",
+          "seconds": 3.4
+        },
+        {
+          "name": "test:bot-watch-scheduler",
+          "seconds": 17.7
+        },
+        {
+          "name": "test:bot-work-phase5-gateway",
+          "seconds": 2.9
+        },
+        {
+          "name": "test:bot-work-phase5-reconnect-diagnostics",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:bot-work-phase5-review",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:bot-work-phase5-review-ui",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:bot-work-phase5-owner-summary",
+          "seconds": 4.4
+        },
+        {
+          "name": "test:bot-work-projection-retention",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:bot-work-read-lifecycle",
+          "seconds": 1.4
+        },
+        {
+          "name": "test:bot-work-review-control",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:bot-work-phase2",
+          "seconds": 15.7
+        },
+        {
+          "name": "test:bot-work-review-projection",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:bot-work-review-execution",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:bot-work-team-access",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:bot-work-resume-dispatch",
+          "seconds": 3.2
+        },
+        {
+          "name": "test:bot-work-review-memory",
+          "seconds": 5.1
+        },
+        {
+          "name": "test:bot-work-team-service",
+          "seconds": 4.0
+        },
+        {
+          "name": "test:bot-work-team-watch",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:bot-workspace-navigation",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:bot-workspace",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:browser-open-guard",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:btw",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:btw-arch",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:bot-workspace-navigation-ui",
+          "seconds": 1.3
+        },
+        {
+          "name": "test:bot-work-team-native",
+          "seconds": 7.7
+        },
+        {
+          "name": "test:builtin-capabilities",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:cache-request-trace",
+          "seconds": 1.5
+        },
+        {
+          "name": "test:cache-boundary-matrix",
+          "seconds": 1.7
+        },
+        {
+          "name": "test:capability-packaging",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:capture-mode",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:cache-trace-audit",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:cache-strategies",
+          "seconds": 1.5
+        },
+        {
+          "name": "test:chat-composer-ui",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:chat-scroll-anchor",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:cloudflared-cli-detect",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:chat-selection",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:codex-image",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:chat-markdown",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:command-code-request",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:compaction-settings-ui",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:connector-id-case",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:compaction-policy-history",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:compaction",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:context-usage",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:conversation-branch",
+          "seconds": 1.4
+        },
+        {
+          "name": "test:context-ledger",
+          "seconds": 1.7
+        },
+        {
+          "name": "test:conversation-branch:native",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:conversation-branch-service",
+          "seconds": 2.2
+        },
+        {
+          "name": "test:conversation-branch-ui",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:conversation-input",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:bot-work-team-recovery",
+          "seconds": 12.6
+        },
+        {
+          "name": "test:crash-reporting",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:conversation-runtime-ui",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:dashscope-provider",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:conversation-branch:workspace",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:conversation-runtime",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:cron-scheduling",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:detail-card-layout-stability",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:diagnostics-rules",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:delegated-run",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:dingtalk-gateway",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:dingtalk-media",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:db-migration",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:discord-media",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:durable-compaction-settings",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:discord-gateway",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:db-schema-discard",
+          "seconds": 1.6
+        },
+        {
+          "name": "test:durable-artifact-registration",
+          "seconds": 2.2
+        },
+        {
+          "name": "test:durable-context-management",
+          "seconds": 2.5
+        },
+        {
+          "name": "test:durable-consult",
+          "seconds": 3.0
+        },
+        {
+          "name": "test:durable-context-performance",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:durable-log-repair",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:durable-history-block",
+          "seconds": 1.4
+        },
+        {
+          "name": "test:durable-context-branch-cancel",
+          "seconds": 4.5
+        },
+        {
+          "name": "test:durable-resume-admission",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:durable-history-readonly",
+          "seconds": 2.2
+        },
+        {
+          "name": "test:durable-session-recovery",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:durable-sync",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:durable-task-projection",
+          "seconds": 0.5
+        },
+        {
+          "name": "test:durable-projection",
+          "seconds": 5.0
+        },
+        {
+          "name": "test:durable-tool-gate",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:durable-tool-diagnostics",
+          "seconds": 3.1
+        },
+        {
+          "name": "test:durable-turn-evidence",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:durable-provider-authority",
+          "seconds": 9.6
+        },
+        {
+          "name": "test:durable-workspace-binding",
+          "seconds": 1.4
+        },
+        {
+          "name": "test:execution-failure-dismiss",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:execution-restart-recovery",
+          "seconds": 0.5
+        },
+        {
+          "name": "test:expert",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:expert-metadata",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:durable-work-liveness",
+          "seconds": 6.7
+        },
+        {
+          "name": "test:external-cli-memory",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:external-write-ui",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:external-write-grant",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:feishu-media",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:gadget-browser-binding",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:gadget-blueprint",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:gadget-preview-recovery",
+          "seconds": 0.5
+        },
+        {
+          "name": "test:gadget-save-copies",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:gadget-runtime-lifecycle",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:gateway-cache",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:gateway",
+          "seconds": 4.8
+        },
+        {
+          "name": "test:gateway-delivery-journal",
+          "seconds": 4.6
+        },
+        {
+          "name": "test:gateway-lifecycle",
+          "seconds": 2.0
+        },
+        {
+          "name": "test:gateway-media",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:gateway-platform-registry",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:durable-tool-policy",
+          "seconds": 16.3
+        },
+        {
+          "name": "test:gateway-provider-config",
+          "seconds": 1.5
+        },
+        {
+          "name": "test:gateway-task-space",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:gateway-security",
+          "seconds": 4.1
+        },
+        {
+          "name": "test:google-workspace",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:generation-speed",
+          "seconds": 3.1
+        },
+        {
+          "name": "test:google-workspace-faults",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:google-workspace-request-scope",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:google-workspace-tools",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:google-workspace-ui",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:google-workspace-write-tools",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:harness-quality",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:hero-suggest",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:google-workspace-write-ui",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:history-prepend-scroll",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:history-questions",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:input-guardian",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:html-edit-source",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:ipc-channel-inventory",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:knowledge-lifecycle",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:lark-wecom-gateway",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:library-document-editor",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:input-guardian-process",
+          "seconds": 1.9
+        },
+        {
+          "name": "test:library-extension",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:gateway-durable",
+          "seconds": 12.2
+        },
+        {
+          "name": "test:library-domain",
+          "seconds": 1.6
+        },
+        {
+          "name": "test:library-lifecycle-transaction",
+          "seconds": 0.5
+        },
+        {
+          "name": "test:library-materialization-transaction",
+          "seconds": 0.5
+        },
+        {
+          "name": "test:library-update-transaction",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:linux-native-backend",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:library-workspace-context",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:linux-native-outcomes",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:linux-session",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:linux-worker-packaging",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:local-ocr-capability",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:library-owner-scope",
+          "seconds": 2.0
+        },
+        {
+          "name": "test:magpie-agent-mybuddy",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:magpie-capabilities",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:local-capability-checks",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:mcp",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:mcp-composer-focus",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:mcp-config-parse",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:magpie-catalog",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:mcp-execution-evidence",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:mcp-mode",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:mcp-section-stability",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:media-artifact-transaction",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:local-workflow",
+          "seconds": 3.5
+        },
+        {
+          "name": "test:media-capability-config",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:mcp-context-chars",
+          "seconds": 2.4
+        },
+        {
+          "name": "test:media-capability-services",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:media-provider-presets",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:media-capabilities-dom",
+          "seconds": 1.5
+        },
+        {
+          "name": "test:durable-subagent",
+          "seconds": 36.2
+        },
+        {
+          "name": "test:memory-assistant-scopes",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:memory-cognition",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:memory",
+          "seconds": 1.7
+        },
+        {
+          "name": "test:memory-gateway",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:memory-gateway-controller",
+          "seconds": 1.5
+        },
+        {
+          "name": "test:media-capability-extension",
+          "seconds": 3.3
+        },
+        {
+          "name": "test:memory-projection-deletion",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:memory-scope-schema",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:memory-lifecycle",
+          "seconds": 2.0
+        },
+        {
+          "name": "test:memory-procedure-learning",
+          "seconds": 1.7
+        },
+        {
+          "name": "test:memory-skill-effectiveness",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:memory-skill-history",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:message-lifecycle",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:meta-skill-authoring",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:minimal-coding-mode",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:mode",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:memory-skill-learning",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:mode-preset",
+          "seconds": 0.5
+        },
+        {
+          "name": "test:memory-organization",
+          "seconds": 3.6
+        },
+        {
+          "name": "test:memory-skill-revision",
+          "seconds": 1.7
+        },
+        {
+          "name": "test:models-settings-overlay",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:model-catalog-update",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:model-refresh",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:native-cost-evidence",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:native-surface",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:model-scope-stale-heal",
+          "seconds": 1.8
+        },
+        {
+          "name": "test:oauth-bundle",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:multi-search",
+          "seconds": 3.5
+        },
+        {
+          "name": "test:openrouter-capabilities",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:openrouter-model-autoload",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:overview-runtime",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:notes-task-tools",
+          "seconds": 3.7
+        },
+        {
+          "name": "test:packaged-package-json-guard",
+          "seconds": 0.5
+        },
+        {
+          "name": "test:pdf-runtime-compat",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:pi-cache-protocol",
+          "seconds": 0.5
+        },
+        {
+          "name": "test:pi-codemode-auto",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:multi-model-consult",
+          "seconds": 5.2
+        },
+        {
+          "name": "test:pi-codemode-ui",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:pi-autonomous-execution",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:pi-host-control",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:officecli",
+          "seconds": 3.7
+        },
+        {
+          "name": "test:pi-native-control",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:pi-host-native",
+          "seconds": 1.4
+        },
+        {
+          "name": "test:pi-native-core-tools",
+          "seconds": 1.3
+        },
+        {
+          "name": "test:pi-codemode-native",
+          "seconds": 2.5
+        },
+        {
+          "name": "test:pi-tool-call-stream",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:pi-native-lifecycle",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:pi-reasoning-stream",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:pi-host-boundary",
+          "seconds": 3.5
+        },
+        {
+          "name": "test:pi100-model-admission",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:pinned-public-proxy",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:platform-browsers",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:platform-computer-use",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:platform-providers",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:preset-editor",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:pi104-model-compat",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:preset-runtime-contract",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:professional-tools",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:professional-tools-live",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:pi104-features",
+          "seconds": 1.7
+        },
+        {
+          "name": "test:project-automation",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:pi100-context-boundary",
+          "seconds": 2.4
+        },
+        {
+          "name": "test:project-binding-matrix",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:project-autopilot",
+          "seconds": 0.5
+        },
+        {
+          "name": "test:project-config-detail",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:project-config-rail",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:project-convergence",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:project-creation",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:project-cadence",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:project-domain",
+          "seconds": 1.4
+        },
+        {
+          "name": "test:project-event",
+          "seconds": 1.7
+        },
+        {
+          "name": "test:project-event-document",
+          "seconds": 1.9
+        },
+        {
+          "name": "test:project-event-promotion-transaction",
+          "seconds": 0.5
+        },
+        {
+          "name": "test:project-agent",
+          "seconds": 3.5
+        },
+        {
+          "name": "test:project-file-import-transaction",
+          "seconds": 0.5
+        },
+        {
+          "name": "test:project-event-promotion",
+          "seconds": 2.2
+        },
+        {
+          "name": "test:project-event-triage",
+          "seconds": 1.9
+        },
+        {
+          "name": "test:project-folder-relocation",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:project-file-import",
+          "seconds": 2.1
+        },
+        {
+          "name": "test:project-memory-extraction",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:project-memory-agent",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:project-memory-migration",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:project-notes",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:project-plan-schedule",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:project-task-defaults",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:project-template",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:project-plan-agent",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:project-workspace-ui",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:project-todo",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:prompt-context",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:prompt-enhance",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:prompt-execution",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:prompt-submission",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:prompt-failure-recovery",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:project-knowledge",
+          "seconds": 3.1
+        },
+        {
+          "name": "test:provider-login",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:qq-media",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:qq-gateway",
+          "seconds": 1.3
+        },
+        {
+          "name": "test:qq-qr-integration",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:regenerate-connection-runtime",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:regenerate-lifecycle",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:project-materials-dom",
+          "seconds": 4.7
+        },
+        {
+          "name": "test:retry-display",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:qq-qr-ui",
+          "seconds": 1.6
+        },
+        {
+          "name": "test:regenerate-stop-runtime",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:runtime-orchestrator",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:remote-work-sync",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:runtime-requirement-recovery",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:runtime-prewarm",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:scoped-library-manager",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:scroll-follow",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:search-source-address",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:selection-store",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:runtime-materials",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:session-approval-bridge",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:runtime-probe",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:session-lifecycle",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:shell-arguments",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:shell-preferences",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:sidebar-pinned",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:sidebar-row-lookup",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:sidebar-space-collapse",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:skill-authoring-recovery",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:skill-authoring",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:skill-connector",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:skill-root-guard",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:runtime-skill-loader",
+          "seconds": 4.6
+        },
+        {
+          "name": "test:space-relocate",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:slack-media",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:streaming-send",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:session-history-recovery",
+          "seconds": 4.5
+        },
+        {
+          "name": "test:subagent-acceptance-gate",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:subagent-cache-accounting",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:subagent-display-names",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:subagent-agent-discovery",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:subagent-ipc-host",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:subagent-mapper",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:subagent-model-ui",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:slack-gateway",
+          "seconds": 2.7
+        },
+        {
+          "name": "test:subagent-selection",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:subagent-runs",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:subagent-settings",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:subagent-write-conflict",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:task-delete-panel",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:subagent-parallel-limits",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:task-diagnostics",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:task-file-changes",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:subagent-worktree",
+          "seconds": 1.5
+        },
+        {
+          "name": "test:task-isolation-p2",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:task-prompt-mode",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:task-isolation-audit",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:task-switch",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:task-terminal",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:task-status-dot",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:task-workspace-isolation",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:task-trash-retention",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:task-expert-binding",
+          "seconds": 2.8
+        },
+        {
+          "name": "test:task-workspace-lifecycle",
+          "seconds": 2.2
+        },
+        {
+          "name": "test:team-subagent-policy",
+          "seconds": 2.5
+        },
+        {
+          "name": "test:task-workspace-migration",
+          "seconds": 2.9
+        },
+        {
+          "name": "test:terminal-surface",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:telegram-reply-routing",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:timeline-focus",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:token-format",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:test-bundle-pool",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:tool-image-aging",
+          "seconds": 1.7
+        },
+        {
+          "name": "test:subagent-acceptance",
+          "seconds": 9.7
+        },
+        {
+          "name": "test:ui-automation-recovery",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:telegram-media",
+          "seconds": 3.3
+        },
+        {
+          "name": "test:unified-media-adapters",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:usage-recon",
+          "seconds": 0.5
+        },
+        {
+          "name": "test:user-prompt-display",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:verified-code-execution",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:visual-polish-ux",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:usage-stats",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:wave5b",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:wave5c",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:wave5d1",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:usage-dashboard-projection",
+          "seconds": 4.3
+        },
+        {
+          "name": "test:wave5d3",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:web-access-capability",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:web-access-convergence",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:typecheck-guard",
+          "seconds": 6.9
+        },
+        {
+          "name": "test:web-artifact-runtime",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:web-access-extract-runtime",
+          "seconds": 1.4
+        },
+        {
+          "name": "test:wave5a",
+          "seconds": 4.8
+        },
+        {
+          "name": "test:wechat-callback-auth",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:wecom-media",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:web-page-answer-runtime",
+          "seconds": 1.3
+        },
+        {
+          "name": "test:wave5d2",
+          "seconds": 4.6
+        },
+        {
+          "name": "test:weixin-qr-integration",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:whisper-check-feedback",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:weixin-gateway",
+          "seconds": 1.9
+        },
+        {
+          "name": "test:work-budget-retirement",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:work-effect-retirement",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:work-execution-metrics",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:work-conversation-feedback",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:work-graph-bridge",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:weixin-media",
+          "seconds": 4.0
+        },
+        {
+          "name": "test:work-graph",
+          "seconds": 1.7
+        },
+        {
+          "name": "test:work-graph-execution",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:work-graph-hardening",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:work-graph-r3-union",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:weixin-qr-ui",
+          "seconds": 4.0
+        },
+        {
+          "name": "test:work-graph-ux",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:work-partial-read",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:work-memory-capture",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:work-shell-read",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:work-team-watch-evidence",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:work-isolation-retirement",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:work-permissions-retired",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:work-watch-goal",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:work-watch-unchanged",
+          "seconds": 1.7
+        },
+        {
+          "name": "test:workspace-chunk-benchmark",
+          "seconds": 2.2
+        },
+        {
+          "name": "test:workspace-files-ui",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:work-watch-supervision",
+          "seconds": 2.5
+        },
+        {
+          "name": "test:workspace-chunk-r2",
+          "seconds": 1.8
+        },
+        {
+          "name": "test:workspace-files-sort",
+          "seconds": 1.4
+        },
+        {
+          "name": "test:workspace-library-binding",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:workspace-navigation-ux",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:workspace-materials-view",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:workspace-notes",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:workspace-resolver",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:workspace-phase5",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:workspace-materials-dom",
+          "seconds": 1.6
+        },
+        {
+          "name": "test:workspace-shared-context",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:workspace-runtime-consolidation",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:workspace-shared-context-ui-foundation",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:workspace-runtime-integration",
+          "seconds": 1.4
+        },
+        {
+          "name": "test:workspace-resource-locator",
+          "seconds": 2.2
+        },
+        {
+          "name": "test:workspace-tree",
+          "seconds": 8.4
+        },
+        {
+          "name": "test:bot-work-phase2-recovery",
+          "seconds": 25.8
+        },
+        {
+          "name": "test:bot-work-phase5-native-story",
+          "seconds": 13.3
+        },
+        {
+          "name": "test:bot-work-query-scale",
+          "seconds": 18.1
+        },
+        {
+          "name": "test:bot-work-summary-query",
+          "seconds": 13.9
+        },
+        {
+          "name": "test:core-performance",
+          "seconds": 21.3
+        },
+        {
+          "name": "test:gateway-inbox-crash",
+          "seconds": 2.8
+        },
+        {
+          "name": "test:gateway-port-fallback",
+          "seconds": 0.1
+        }
+      ]
+    },
+    "classificationAudit": {
+      "status": "passed",
+      "headless": 480,
+      "gui": 89,
+      "network": 41,
+      "dataset": 3,
+      "artifact": 3,
+      "pending": 0
+    }
+  },
+  "notClaimed": [
+    "Packaged-production timings",
+    "Physical user-input/display latency",
+    "Large expanded-list lag solved",
+    "Search speed improvement",
+    "Universal sparse-view improvement",
+    "Memory improvement",
+    "Full GUI suite",
+    "Windows validation",
+    "NETWORK/DATASET/ARTIFACT acceptance",
+    "GitHub Actions success"
+  ]
+}
