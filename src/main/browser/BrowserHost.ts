@@ -58,6 +58,8 @@ export class BrowserHost {
   private captureGeneration: number | null = null;
   private inspector: PageInspectionSession | null = null;
   private screenshotWindow: BrowserWindow | null = null;
+  private parkedScreenshotWindow: BrowserWindow | null = null;
+  private detachParkedScreenshotWindow: (() => void) | null = null;
   private releaseScreenshotSurface: (() => void) | null = null;
   private preserveScreenshotSurface: (() => void) | null = null;
   private layoutVersion = 0;
@@ -261,25 +263,50 @@ export class BrowserHost {
     const mainWindow = this.win;
     if (!mainWindow || mainWindow.isDestroyed()) throw new PageCaptureError("SURFACE_CHANGED", "浏览器宿主已关闭");
     if (this.isVisible && mainWindow.isVisible() && !mainWindow.isMinimized()) return () => {};
-    const captureWindow = new BrowserWindow({
+    const parkedWindow = this.parkedScreenshotWindow;
+    this.detachParkedScreenshotWindow?.();
+    const captureWindow = parkedWindow && !parkedWindow.isDestroyed() ? parkedWindow : new BrowserWindow({
       show: false, width: bounds.width, height: bounds.height, useContentSize: true,
       frame: false, transparent: true, opacity: 0, hasShadow: false,
       focusable: false, skipTaskbar: true, resizable: false,
       webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false },
     });
     captureWindow.setIgnoreMouseEvents(true);
+    captureWindow.setContentSize(bounds.width, bounds.height);
     this.screenshotWindow = captureWindow;
+    const refreshVisibility: ReturnType<typeof setTimeout>[] = [];
     const release = () => {
+      for (const timer of refreshVisibility) clearTimeout(timer);
       if (this.screenshotWindow !== captureWindow) return;
       this.screenshotWindow = null;
       this.releaseScreenshotSurface = null;
+      if (!view.webContents.isDestroyed()) view.setVisible(false);
       if (!captureWindow.isDestroyed()) captureWindow.contentView.removeChildView(view);
       if (this.view === view && !view.webContents.isDestroyed() && !mainWindow.isDestroyed()) {
         mainWindow.contentView.addChildView(view);
         view.setBounds(this.lastBounds && this.lastBounds.width >= 8 && this.lastBounds.height >= 8 ? this.lastBounds : bounds);
         this.applyVisibility();
       }
-      if (!captureWindow.isDestroyed()) captureWindow.destroy();
+      if (!captureWindow.isDestroyed()) {
+        if (!mainWindow.isDestroyed() && mainWindow.isMinimized()) {
+          // Closing even an empty inactive native window can restore another
+          // minimized window on Wayland. Keep one empty, non-interactive
+          // presenter until the user restores/closes the parent, and reuse it.
+          this.parkedScreenshotWindow = captureWindow;
+          const detach = () => {
+            mainWindow.off("restore", destroy);
+            mainWindow.off("closed", destroy);
+            if (this.parkedScreenshotWindow === captureWindow) {
+              this.parkedScreenshotWindow = null;
+              this.detachParkedScreenshotWindow = null;
+            }
+          };
+          const destroy = () => { detach(); if (!captureWindow.isDestroyed()) captureWindow.destroy(); };
+          this.detachParkedScreenshotWindow = detach;
+          mainWindow.once("restore", destroy);
+          mainWindow.once("closed", destroy);
+        } else captureWindow.destroy();
+      }
     };
     this.releaseScreenshotSurface = release;
     try {
@@ -288,6 +315,23 @@ export class BrowserHost {
       view.setBounds({ x: 0, y: 0, width: bounds.width, height: bounds.height });
       view.setVisible(true);
       captureWindow.showInactive();
+      // A transferred WCV can retain the minimized parent's native hidden state
+      // even while document.visibilityState says "visible". The temporary
+      // window's show/ready-to-show events can precede native surface mapping.
+      // Refresh only the still-leased surface after mapping has had a chance to
+      // settle; never restore/focus the main window or change the DOM viewport.
+      // Fast captures cancel all recovery attempts when they release the lease.
+      // A single fixed delay is insufficient when native mapping is delayed.
+      for (const delay of [300, 700, 1500, 3000]) {
+        const timer = setTimeout(() => {
+          if (this.screenshotWindow !== captureWindow || captureWindow.isDestroyed()
+            || view.webContents.isDestroyed()) return;
+          view.setVisible(false);
+          view.setVisible(true);
+        }, delay);
+        timer.unref();
+        refreshVisibility.push(timer);
+      }
       return release;
     } catch (error) { release(); throw error; }
   }
@@ -495,6 +539,9 @@ export class BrowserHost {
       this.view = null;
       this.win = null;
     }
+    const parkedWindow = this.parkedScreenshotWindow;
+    this.detachParkedScreenshotWindow?.();
+    if (parkedWindow && !parkedWindow.isDestroyed()) parkedWindow.destroy();
     this.currentUrl = "";
     this.lastBounds = null;
     this.desiredVisible = false;

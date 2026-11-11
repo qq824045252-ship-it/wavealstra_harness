@@ -1,0 +1,53 @@
+{
+  "at": "2026-11-11T08:07:57.675Z",
+  "selectedModel": "opendesign/deepseek-v4.1-flash-eco",
+  "passed": true,
+  "cases": [
+    {
+      "id": "table-arithmetic",
+      "passed": true,
+      "actualModel": "opendesign/deepseek-v4.1-flash-eco",
+      "toolCalls": 2,
+      "errors": 0
+    },
+    {
+      "id": "form-fill",
+      "passed": true,
+      "actualModel": "opendesign/deepseek-v4.1-flash-eco",
+      "toolCalls": 8,
+      "errors": 0
+    },
+    {
+      "id": "target-blank",
+      "passed": true,
+      "actualModel": "opendesign/deepseek-v4.1-flash-eco",
+      "toolCalls": 4,
+      "errors": 0
+    },
+    {
+      "id": "local-html",
+      "passed": true,
+      "actualModel": "opendesign/deepseek-v4.1-flash-eco",
+      "toolCalls": 2,
+      "errors": 0
+    },
+    {
+      "id": "gadget-update-running",
+      "passed": true,
+      "actualModel": "opendesign/deepseek-v4.1-flash-eco",
+      "toolCalls": 4,
+      "errors": 0
+    },
+    {
+      "id": "gadget-stopped-recovery",
+      "passed": true,
+      "actualModel": "opendesign/deepseek-v4.1-flash-eco",
+      "toolCalls": 6,
+      "errors": 1
+    }
+  ],
+  "toolCalls": 26,
+  "unexpectedToolErrors": 0,
+  "expectedError": "One intentional navigation to the normally stopped Gadget preview, followed by successful reopen and current-URL verification.",
+  "scope": "Six real-model tasks with production browser/Gadget tools in isolated Electron. DOM/navigation regression; screenshot pixel and native-state checks are the separate64-check Electron suite."
+}

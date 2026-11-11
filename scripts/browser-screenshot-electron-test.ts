@@ -20,7 +20,13 @@ const html = `<!doctype html><meta charset="utf-8"><title>Screenshot fixture</ti
 <style>html,body{margin:0;width:100%;height:100%}body{background:linear-gradient(135deg,#ef3628,#294ac9 45%,#21c774);color:white;font:36px sans-serif}button{margin:32px;padding:20px;font-size:30px;background:#ffee18}#color{width:300px;height:180px;background:#9326ed}</style>
 <button id="increment" onclick="document.querySelector('#count').textContent=++window.count;document.querySelector('#color').style.background=window.count%2?'#f1206c':'#9326ed'">Click</button><span id="count">0</span><div id="color"></div><script>window.count=0</script>`;
 const server = createServer((_request, response) => { response.setHeader("Content-Type", "text/html"); response.end(html); });
-const guard = setTimeout(() => { console.error("browser screenshot test timed out"); app.exit(1); }, 90_000);
+let phase = "starting";
+const guard = setTimeout(() => {
+  const error = `browser screenshot test timed out during ${phase}`;
+  console.error(error);
+  writeFileSync(join(evidence, "results.json"), JSON.stringify({ error, phase, results }, null, 2));
+  app.exit(1);
+}, 90_000);
 app.on("window-all-closed", () => {});
 
 function deferred<T>() {
@@ -63,8 +69,45 @@ async function fixture(url: string) {
   const ui = new UiAutomationService({ app: () => null, browser: () => null, artifact: () => null });
   ui.setBrowserHost(host);
   return { win, host, view, service, wc, ui,
-    close: () => { host.dispose(); if (!wc.isDestroyed()) wc.close(); if (!win.isDestroyed()) win.destroy(); },
+    close: () => {
+      host.dispose(); if (!wc.isDestroyed()) wc.close(); if (!win.isDestroyed()) win.destroy();
+      assert.equal(BrowserWindow.getAllWindows().length, 0, "fixture disposal releases any parked presenter");
+    },
   };
+}
+
+/** showInactive() reports logical visibility before Wayland has mapped the
+ * native surface. Even ready-to-show can precede mapping, so a one-shot minimize
+ * may be ignored. Retry only this isolated window's transition until the actual
+ * native state changes, with a bounded failure instead of an unbounded event wait. */
+async function minimizeFixtureWindow(win: BrowserWindow): Promise<void> {
+  const started = Date.now();
+  let attempts = 0;
+  while (!win.isDestroyed() && !win.isMinimized()) {
+    if (Date.now() - started >= 3000) {
+      throw new Error(`Fixture window did not minimize: ${JSON.stringify({
+        phase, attempts, visible: win.isVisible(), minimized: win.isMinimized(),
+        platform: process.platform, session: process.env.XDG_SESSION_TYPE ?? "unknown",
+      })}`);
+    }
+    win.minimize();
+    attempts++;
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+  }
+  assert(!win.isDestroyed(), "fixture window was destroyed before minimizing");
+  assert(win.isMinimized(), "minimized coverage requires a real native minimized state");
+}
+
+function assertOwnedWindows(win: BrowserWindow, host: BrowserHost) {
+  const parked = (host as unknown as { parkedScreenshotWindow: BrowserWindow | null }).parkedScreenshotWindow;
+  const expected = parked ? [win, parked] : [win];
+  assert.deepEqual(BrowserWindow.getAllWindows().map(window => window.id).sort(), expected.map(window => window.id).sort(), "capture owns at most one presenter");
+  if (parked) {
+    assert(win.isMinimized(), "presenter is retained only while the parent is minimized");
+    assert.equal(parked.contentView.children.length, 0, "parked presenter contains no child page content");
+    assert.equal(parked.isFocusable(), false, "parked presenter cannot take focus");
+    assert(win.contentView.children.includes(host.captureSurface!.view), "page content is returned to the parent");
+  }
 }
 
 async function queueSettled(host: BrowserHost) {
@@ -75,6 +118,7 @@ void (async () => {
   await app.whenReady();
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/`;
+  phase = "invalid-input-then-independent-action";
   const preflight = await fixture(url);
   try {
     const originalUrl = preflight.wc.getURL();
@@ -87,6 +131,7 @@ void (async () => {
     assert.equal(await preflight.wc.executeJavaScript("document.querySelector('#count').textContent"), "1");
     results.push({ mode: "invalid-input-then-independent-action", invalidUrl: "not_started", missingSelector: "not_started", continued: true });
   } finally { preflight.close(); }
+  phase = "local-file-preview";
   const localPath = join(profile, "本地产物 preview #1.html");
   writeFileSync(localPath, html);
   const local = await fixture(pathToFileURL(localPath).href);
@@ -105,19 +150,22 @@ void (async () => {
     return;
   }
   for (const mode of ["hidden", "inspector", "blocker", "minimized", "visible"] as const) {
+    phase = `continuous screenshots: ${mode}`;
     const f = await fixture(url);
     try {
       if (mode === "blocker") { f.host.addBlocker("test-modal"); f.host.setBounds({ x: 0, y: 0, width: 640, height: 480 }); }
       if (mode === "inspector") await f.host.enterCapture();
       if (mode === "visible") { f.host.show(); f.win.showInactive(); }
       if (mode === "minimized") {
-        const minimized = new Promise<void>((resolve) => f.win.once("minimize", () => resolve()));
-        f.win.showInactive(); f.win.minimize(); await minimized;
+        f.win.showInactive();
+        await minimizeFixtureWindow(f.win);
+        results.push({ mode: "minimize-precondition", nativeMinimized: f.win.isMinimized() });
       }
       const bounds = f.view.getBounds();
       const visibility = [f.win.isVisible(), f.win.isMinimized(), f.host.visible];
       const inspector = pageInspectionService.sessionFor(f.wc, "browser-host");
       let lastHash = "";
+      let presenterId: number | undefined;
       for (let index = 0; index < 10; index++) {
         if (index) await f.service.execute({ action: "click", selector: "#increment" });
         const started = Date.now();
@@ -127,15 +175,34 @@ void (async () => {
         const image = checkedImage(bytes);
         if (index) assert.notEqual(image.sha256, lastHash, "screenshot must reflect the intervening real DOM click");
         lastHash = image.sha256;
+        // Closing a native presenter used to restore the parent asynchronously.
+        // Check after the native event has had time to arrive, not just at ACK.
+        if (mode === "minimized") await new Promise<void>(resolve => setTimeout(resolve, 100));
         assert.deepEqual(f.view.getBounds(), bounds);
         assert.deepEqual([f.win.isVisible(), f.win.isMinimized(), f.host.visible], visibility);
         assert.equal(f.view.getVisible(), f.host.visible, "temporary presenting view must return to product visibility");
-        assert.deepEqual(BrowserWindow.getAllWindows(), [f.win], "capture must release its temporary window");
+        assertOwnedWindows(f.win, f.host);
+        if (mode === "minimized") {
+          const parked = (f.host as unknown as { parkedScreenshotWindow: BrowserWindow }).parkedScreenshotWindow;
+          presenterId ??= parked.id;
+          assert.equal(parked.id, presenterId, "repeated minimized captures reuse the exact presenter");
+        }
         assert.deepEqual(await f.wc.executeJavaScript("[innerWidth,innerHeight,window.count]"), [640, 480, index]);
         if (inspector) { assert.equal(pageInspectionService.sessionFor(f.wc, "browser-host"), inspector); assert(inspector.isAttached && inspector.inspectMode); }
         else assert.equal(pageInspectionService.sessionFor(f.wc, "browser-host"), null, "capture must release its temporary debugger owner");
         writeFileSync(join(evidence, `${mode}-${index}.png`), bytes);
         results.push({ mode, index, elapsedMs: Date.now() - started, ...image });
+      }
+      if (mode === "minimized") {
+        const parked = (f.host as unknown as { parkedScreenshotWindow: BrowserWindow | null }).parkedScreenshotWindow;
+        assert(parked, "minimized captures retain their single empty presenter");
+        f.win.restore();
+        const deadline = Date.now() + 3000;
+        while (f.win.isMinimized() && Date.now() < deadline) await new Promise<void>(resolve => setTimeout(resolve, 25));
+        assert(!f.win.isMinimized(), "explicit user restore must complete");
+        assert(parked.isDestroyed(), "presenter is released when the parent is restored");
+        assertOwnedWindows(f.win, f.host);
+        results.push({ mode: "minimized-presenter-cleanup", reused: true, releasedOnRestore: true });
       }
       console.log(`PASS continuous screenshots: ${mode}`);
     } finally { f.close(); }
@@ -144,6 +211,7 @@ void (async () => {
   // The user can hide/minimize the window or open a blocking modal after a
   // visible capture starts. The exact page must continue presenting until done.
   for (const transition of ["window-hide", "window-minimize", "panel-blocker"] as const) {
+    phase = `capture-during-${transition}`;
     const f = await fixture(url);
     try {
       f.host.show(); f.win.showInactive();
@@ -153,24 +221,32 @@ void (async () => {
         if (armed && method === "Page.captureScreenshot") {
           armed = false;
           if (transition === "window-hide") f.win.hide();
-          else if (transition === "window-minimize") f.win.minimize();
+          else if (transition === "window-minimize") await minimizeFixtureWindow(f.win);
           else f.host.addBlocker("during-capture");
         }
         return original(method, params);
       };
-      checkedImage(await f.host.captureScreenshot({ timeoutMs: 3000 }));
+      checkedImage(await f.host.captureScreenshot({ timeoutMs: 6000 }));
       f.wc.debugger.sendCommand = original;
+      const expectedVisibility = [f.win.isVisible(), f.win.isMinimized(), f.host.visible];
+      if (transition === "window-minimize") assert(f.win.isMinimized(), "capture must preserve the actual minimized state");
+      if (transition === "window-hide") assert(!f.win.isVisible(), "capture must preserve the actual hidden state");
+      if (transition === "panel-blocker") assert(!f.host.visible, "capture must preserve the actual blocked state");
       checkedImage(await f.host.captureScreenshot({ timeoutMs: 3000 }));
-      assert.deepEqual(BrowserWindow.getAllWindows(), [f.win]);
+      await new Promise<void>(resolve => setTimeout(resolve, 350));
+      assert.deepEqual([f.win.isVisible(), f.win.isMinimized(), f.host.visible], expectedVisibility, "late native events and retired recovery timers must preserve state");
+      assertOwnedWindows(f.win, f.host);
       assert.equal(f.view.getVisible(), f.host.visible);
       assert.deepEqual(await f.wc.executeJavaScript("[innerWidth,innerHeight]"), [640, 480]);
-      results.push({ mode: `capture-during-${transition}`, currentFrame: true, subsequentCaptureRecovered: true });
+      results.push({ mode: `capture-during-${transition}`, currentFrame: true, subsequentCaptureRecovered: true,
+        nativeMinimized: f.win.isMinimized(), nativeVisible: f.win.isVisible(), panelVisible: f.host.visible });
     } finally { f.close(); }
   }
 
   // Cancel while the real native snapshot is pending, not after its ACK.
   // The caller returns promptly while the host preserves/drains the producer.
   for (const existingInspector of [false, true]) {
+    phase = `cancel-in-flight-native-capture: inspector=${existingInspector}`;
     const f = await fixture(url);
     try {
       if (existingInspector) await f.host.enterCapture();
@@ -186,7 +262,7 @@ void (async () => {
       assert(Date.now() - started < 500, "caller must not wait for the cancelled native snapshot");
       await queueSettled(f.host);
       f.wc.debugger.sendCommand = original;
-      assert.deepEqual(BrowserWindow.getAllWindows(), [f.win]);
+      assertOwnedWindows(f.win, f.host);
       assert.equal(f.view.getVisible(), false);
       checkedImage(await f.host.captureScreenshot({ timeoutMs: 3000 }));
       results.push({ mode: "cancel-in-flight-native-capture", existingInspector, callerPrompt: true, recovered: true });
@@ -196,6 +272,7 @@ void (async () => {
   // Abort after the real native screenshot acknowledges; late completion must
   // preserve both the DOM viewport and the existing inspector owner.
   for (const existingInspector of [false, true]) {
+    phase = `abort-after-native-capture: inspector=${existingInspector}`;
     const f = await fixture(url);
     try {
       if (existingInspector) await f.host.enterCapture();
@@ -216,12 +293,13 @@ void (async () => {
       results.push({ mode: "abort-after-native-capture", existingInspector, viewport, emulationCommands });
       assert.deepEqual(viewport, [640, 480], "cancellation must restore the actual DOM viewport");
       assert.equal(emulationCommands, 0, "capture must not override the viewport");
-      assert.deepEqual(BrowserWindow.getAllWindows(), [f.win]);
+      assertOwnedWindows(f.win, f.host);
       assert.equal(f.view.getVisible(), false);
       checkedImage(await f.host.captureScreenshot());
     } finally { f.close(); }
   }
 
+  phase = "late-native-result";
   const f = await fixture(url);
   try {
     await f.host.enterCapture();
@@ -257,6 +335,7 @@ void (async () => {
     results.push({ mode: "late-native-result", cancelledQueue: true, timeoutQueue: true, preservedInspector: true, recovered: true });
 
     for (const change of ["layout", "navigation"] as const) {
+      phase = `stale-${change}`;
       const captured = deferred<void>();
       const finish = deferred<void>();
       f.wc.debugger.sendCommand = async (method, params) => {
@@ -280,6 +359,6 @@ void (async () => {
   console.log(`browser screenshot Electron: PASS (${results.length} checks), ${join(evidence, "results.json")}`);
 })().then(() => { clearTimeout(guard); server.close(); app.quit(); }, (error) => {
   console.error(error);
-  writeFileSync(join(evidence, "results.json"), JSON.stringify({ error: String(error), results }, null, 2));
+  writeFileSync(join(evidence, "results.json"), JSON.stringify({ error: String(error), phase, results }, null, 2));
   clearTimeout(guard); server.close(); app.exit(1);
 });

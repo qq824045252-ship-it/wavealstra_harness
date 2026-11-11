@@ -39,3 +39,7 @@ The existing full screenshot regression passed ten captures each in hidden, insp
 A separate plain-Electron probe on the same Wayland session confirmed `BrowserWindow.minimize()` produced neither a `minimize` event nor `isMinimized=true` within the probe interval, without involving BrowserHost. This explains the existing suite's event wait; no system settings or test assertions were weakened.
 
 Independent focused code review found no blocking regression in routing, target metadata, diagnostics, or update/preview separation.
+
+## Follow-up: minimized screenshot limitation resolved
+
+Further real-window investigation distinguished the original fixture mapping race from actual native capture and temporary-window lifecycle problems. The full screenshot suite subsequently passed with real minimization and strengthened delayed-state/cleanup assertions. See [the follow-up evidence and scope](minimized-capture-followup.md); the earlier paragraph remains a record of what had and had not passed at the initial commit.
