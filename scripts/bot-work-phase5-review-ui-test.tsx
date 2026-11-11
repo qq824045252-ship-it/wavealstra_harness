@@ -225,6 +225,8 @@ async function main() {
         assert.match(after.botDraft, /legacy-question/); assert.match(after.botDraft, /Please clarify the expected date/);
         assert.equal(after.botWorks[0].blockers[0].status, "open"); assert.equal(sends, 0); assert.equal(reviewRequests.length, beforeReviews);
         const draft = after.botDraft;
+        assert.equal(container.querySelector(".bot-work-conversation-detail"), null, "reply returns to the composer");
+        await act(async () => container.querySelector<HTMLButtonElement>(".bot-composer-context button")!.dispatchEvent(new testWindow.Event("click", { bubbles: true })));
         await click("向负责人回复此问题");
         assert.equal(useAppStore.getState().botDraft, draft, "repeat click does not append duplicate question text");
         await act(async () => useAppStore.setState({ botWorks: [{ ...legacy, stateVersion: 8 }] }));
@@ -261,7 +263,7 @@ async function main() {
         assert.equal(JSON.stringify(useAppStore.getState().botWorks[0]), original, "opening the excerpt changes no result/status/evidence");
       } finally { await unmount(); useAppStore.setState(originalState, true); }
     });
-    await check("workspace: repeated state refreshes keep one inspector panel and both historical/current cards", async () => {
+    await check("workspace: repeated state refreshes keep one inline detail panel and both historical/current cards", async () => {
       await unmount(); testDocument.body.replaceChildren();
       const originalState = useAppStore.getState();
       const errors: unknown[][] = [];

@@ -1,3 +1,4 @@
+import { guardHistoricalTeamNavigation } from "./runtime/historicalTeamNavigation";
 import { create } from "zustand";
 import type { AppContext, AppStoreDependencies } from "./context";
 import type { AppState } from "./types";
@@ -60,10 +61,10 @@ export function createAppStore(dependencies: AppStoreDependencies = {}) {
     context = {
       set: ((partial, replace) => {
         const observed = typeof partial === "function" ? (state: AppState) => {
-          const patch = partial(state);
+          const patch = guardHistoricalTeamNavigation(state, partial(state));
           if (patch !== state) runtime.botNavigation.observePatch(patch);
           return patch;
-        } : partial;
+        } : guardHistoricalTeamNavigation(get(), partial);
         if (typeof observed !== "function") runtime.botNavigation.observePatch(observed);
         // Preserve Zustand's replace overload while observing explicit page writes.
         if (replace) set(observed as AppState | ((state: AppState) => AppState), true);

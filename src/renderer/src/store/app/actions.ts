@@ -158,6 +158,7 @@ export interface AppActions {
   setActiveTeam: (team: import("../../../../shared/bot-work-team").WorkTeamTemplateDto | null) => void;
   setActiveBotId: (botId: string | null) => void;
   setSelectedWorkId: (workId: string | null) => void;
+  setHistoricalTeamWork: (work: import("../../../../shared/bot-work").WorkProjectionDto | null) => void;
   refreshBotWork: (includeClosed?: boolean) => Promise<void>;
   applyWorkProjection: (projection: import("../../../../shared/bot-work").WorkProjectionDto) => void;
   markBotNotificationRead: (notificationId: string) => Promise<void>;

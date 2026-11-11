@@ -10,6 +10,7 @@ import ChatMarkdown from "../src/renderer/src/components/chat/ChatMarkdown";
 import BotWorkspacePage, { BotMessage } from "../src/renderer/src/components/pages/BotWorkspacePage";
 import { BotWorkBrowser } from "../src/renderer/src/components/pages/BotWorkBrowser";
 import { WorkExecutionMetrics } from "../src/renderer/src/components/pages/WorkExecutionMetrics";
+import { BotWorkConversationDetail } from "../src/renderer/src/components/pages/BotWorkConversationDetail";
 import { BotWorkDetails } from "../src/renderer/src/components/pages/BotWorkDetails";
 import { WorkFiles, workFiles, generatedWorkFiles, additionalReportRecord, resultBodyText } from "../src/renderer/src/components/pages/BotWorkResult";
 import { WorkCardsPanel } from "../src/renderer/src/components/pages/BotWorkCardsPanel";
@@ -452,19 +453,34 @@ assert.doesNotMatch(populatedSidebar, /夜间巡检|交接记录/, "sidebar sele
 assert.match(populatedSidebar, /在线/);
 assert.doesNotMatch(populatedSidebar, /独立任务|新建任务/);
 assert.match(populatedPage, /夜间巡检/);
-assert.match(populatedPage, /日志齐全/);
-assert.match(populatedPage, /值班 · 一次性事项/);
-assert.match(populatedPage, /<dialog[^>]*aria-label="事项详情"/);
-assert.match(populatedPage, /<details class="bot-advanced"><summary>高级设置与诊断<\/summary>/, "advanced settings start collapsed");
-const detailsStart = populatedPage.indexOf('class="bot-work-details"');
-const overview = populatedPage.slice(detailsStart);
+assert.doesNotMatch(populatedPage, /<dialog[^>]*aria-label="事项详情"/, "selected Work never mounts a second sidebar details route");
+// Store selection is consumed by a client effect. Verify the shared detail body
+// independently here; Electron tests exercise selection and each actual entry.
+const populatedDetail = renderToStaticMarkup(createElement(BotWorkConversationDetail, {
+  work: night, conversationName: duty.displayName, ownerName: duty.displayName,
+  includeClosed: true, onBack: () => {}, onReplyToBlocker: () => {},
+}));
+assert.match(populatedDetail, /日志齐全/);
+assert.match(populatedDetail, /值班 · 一次性事项/);
+assert.match(populatedDetail, /aria-label="对话中的事项详情"/);
+assert.match(populatedDetail, /<details class="bot-advanced"><summary>高级设置与诊断<\/summary>/, "advanced settings start collapsed");
+for (const returnLabel of ["对话", "进行中", "已完成", "归档"]) {
+  const html = renderToStaticMarkup(createElement(BotWorkConversationDetail, {
+    work: night, conversationName: duty.displayName, ownerName: duty.displayName,
+    includeClosed: true, returnLabel, onBack: () => {}, onReplyToBlocker: () => {},
+  }));
+  assert.match(html, new RegExp(`aria-label="返回值班的${returnLabel}"`));
+  assert.match(html, new RegExp(`aria-label="关闭事项详情并返回${returnLabel}"`));
+}
+const detailsStart = populatedDetail.indexOf('class="bot-work-details"');
+const overview = populatedDetail.slice(detailsStart);
 const orderedHeadings = ["目标", "进度", "下一步", "成果与证据", "原始执行记录"];
 for (let index = 1; index < orderedHeadings.length; index++) {
   assert.ok(overview.indexOf(`<h3>${orderedHeadings[index - 1]}</h3>`) < overview.indexOf(`<h3>${orderedHeadings[index]}</h3>`), "details prioritize actionable information");
 }
 assert.ok(overview.indexOf("高级设置与诊断") < overview.indexOf("要求 r2"), "technical versions live in advanced settings");
-assert.match(populatedPage, /要求 r2/);
-assert.doesNotMatch(populatedPage, /要求 r5/);
+assert.match(populatedDetail, /要求 r2/);
+assert.doesNotMatch(populatedDetail, /要求 r5/);
 night.phase4 = {
   subscriptions: [{ subscriptionId: "sub-1", workId: night.workId, source: "hook", targetKey: "repo-a",
     status: "online", catchUpPolicy: "latest", timezone: "Asia/Shanghai", scheduleRevision: 2, configRevision: 3,
@@ -481,7 +497,10 @@ night.phase4 = {
   deadlineAt: 300, deadlineRevision: 4, host: { authorityId: "local", sessionId: "session-1", online: true,
     lastScanAt: 190, lastScanCursor: "cursor-1", activeSince: 50 },
 };
-const phase4Page = renderToStaticMarkup(createElement(BotWorkspacePage));
+const renderSelectedDetail = (work: WorkProjectionDto) => renderToStaticMarkup(createElement(BotWorkConversationDetail, {
+  work, conversationName: duty.displayName, ownerName: duty.displayName, includeClosed: true, onBack: () => {}, onReplyToBlocker: () => {},
+}));
+const phase4Page = renderSelectedDetail(night);
 assert.match(phase4Page, /关注与运行/);
 assert.match(phase4Page, /repo-a/);
 assert.match(phase4Page, /合并为最新一次/);
@@ -493,7 +512,7 @@ assert.match(phase4Page, /causal-loop-guard/);
 assert.match(phase4Page, /承诺期限/);
 snapshot.botWorkCursor = { epoch: "closed-work-fixture", sequence: 1, scope: "all" };
 night.lifecycle = "closed";
-const closedPhase4Page = renderToStaticMarkup(createElement(BotWorkspacePage));
+const closedPhase4Page = renderSelectedDetail(night);
 assert.match(closedPhase4Page, /已结束/);
 assert.match(closedPhase4Page, /不可回查/, "completed tasks retain their actual offline history");
 assert.doesNotMatch(closedPhase4Page, /预算|额度|核对未知用量/);
@@ -502,12 +521,12 @@ snapshot.botWorkCursor = savedSnapshot.botWorkCursor;
 delete night.phase4;
 night.phase3 = { subitems: [], continuations: [], gaps: [], settlingActions: 1,
   pausedEventCount: 0, handoffs: [], collaborationMessages: [] };
-const settlingPage = renderToStaticMarkup(createElement(BotWorkspacePage));
+const settlingPage = renderSelectedDetail(night);
 assert.match(settlingPage, /仍有 1 项在途操作等待结算/, "real in-flight admissions stay visible without any approval surface");
 assert.doesNotMatch(settlingPage, /共享资源|后台操作审批|授权规则|重新核对隔离资源/, "retired isolation and approval surfaces never render");
 delete night.phase3;
 snapshot.selectedWorkId = handoff.workId;
-const handoffPage = renderToStaticMarkup(createElement(BotWorkspacePage));
+const handoffPage = renderSelectedDetail(handoff);
 assert.match(handoffPage, /要求 r5/);
 assert.match(handoffPage, /交接说明已读/);
 assert.doesNotMatch(handoffPage, /要求 r2/);

@@ -9,6 +9,8 @@ export function createAppNavigationActions(
     setPage: (page) =>
       set((s) => ({
         page,
+        historicalTeamWork: null,
+        botNavigationEpoch: s.botNavigationEpoch + 1,
         // Bot 模式保留普通任务草稿，其他页面沿用原来的清理规则。
         draft: page === "chat" || page === "bot" ? s.draft : null,
         hubMcpFocusName: page === "mcp" ? s.hubMcpFocusName : null,

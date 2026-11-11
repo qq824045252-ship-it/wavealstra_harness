@@ -1,7 +1,7 @@
 import { nextWatchCheckAt } from "@/lib/botWatchPresentation";
 import { BotWorkArchiveActions } from "./BotWorkArchiveActions";
 import { isWorkArchived } from "@shared/bot-work-archive";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import type { WorkProjectionDto } from "@shared/bot-work";
 import { IconChevronRight, IconListTodo, IconSearch, IconX } from "@/components/common/icons";
 import { workCardExcerpt, workMatchesSearch, workMatchesView, workSearchText, workStatus, type WorkStatusGroup } from "@/lib/botWorkspacePresentation";
@@ -19,7 +19,9 @@ const closedFilters: Array<{ id: WorkStatusGroup; label: string }> = [
 ];
 
 /** Bounded rendering only: every loaded Work remains searchable and reachable. */
-export function BotWorkBrowser({ works, view, loading, selectedWorkId, onOpenWork, onConversation }: {
+export function BotWorkBrowser({ works, view, loading, selectedWorkId, onOpenWork, onConversation, hidden, scrollRef }: {
+  hidden?: boolean;
+  scrollRef?: RefObject<HTMLElement | null>;
   works: WorkProjectionDto[];
   view: "active" | "completed" | "closed";
   loading: boolean;
@@ -33,7 +35,8 @@ export function BotWorkBrowser({ works, view, loading, selectedWorkId, onOpenWor
   const [filter, setFilter] = useState<WorkStatusGroup | "all">("all");
   const [sort, setSort] = useState("recent");
   const [page, setPage] = useState(1);
-  const browserRef = useRef<HTMLElement>(null);
+  const internalRef = useRef<HTMLElement>(null);
+  const browserRef = scrollRef ?? internalRef;
   const index = useMemo(() => works.filter(work => view === "closed" && showDeleted ? Boolean(work.archive?.deletedAt) && isWorkArchived(work) : workMatchesView(work, view))
     .map(work => ({ work, status: workStatus(work), text: workSearchText(work) })), [works, view, showDeleted]);
   const searched = useMemo(() => index.filter(item => workMatchesSearch(item.text, query)), [index, query]);
@@ -52,7 +55,7 @@ export function BotWorkBrowser({ works, view, loading, selectedWorkId, onOpenWor
   const restartPage = () => { setPage(1); browserRef.current?.scrollTo({ top: 0 }); };
   const reset = () => { setQuery(""); setFilter("all"); restartPage(); };
   const goToPage = (next: number) => { setPage(next); browserRef.current?.scrollTo({ top: 0 }); };
-  return <section className="bot-work-browser" ref={browserRef} aria-label={`${heading}事项`}>
+  return <section className="bot-work-browser" hidden={hidden} ref={browserRef} tabIndex={-1} aria-label={`${heading}事项`}>
     <header className="bot-list-heading"><div><h2>{heading}<span className="bot-list-total">{loading ? "…" : index.length}</span></h2><p>{description}</p></div>{view === "closed" && (deletedCount > 0 || showDeleted) && <label className="bot-archive-deleted"><input type="checkbox" checked={showDeleted} onChange={event => { setShowDeleted(event.target.checked); setFilter("all"); setPage(1); }} />已删除记录（{deletedCount}）</label>}</header>
     <div className="bot-work-toolbar">
       <div className="bot-work-search-row"><label className="bot-work-search"><IconSearch size={16} /><span className="bot-sr-only">搜索事项</span><input type="search" value={query} onChange={event => { setQuery(event.target.value); restartPage(); }} placeholder="搜索标题、目标、结果或文件" /></label>{query && <button type="button" className="bot-icon-button" aria-label="清除搜索" onClick={() => { setQuery(""); restartPage(); }}><IconX size={16} /></button>}<label className="bot-work-sort"><span className="bot-sr-only">事项排序</span><select aria-label="事项排序" value={sort} onChange={event => { setSort(event.target.value); restartPage(); }}><option value="recent">最近更新优先</option><option value="oldest">最久未更新优先</option></select></label></div>

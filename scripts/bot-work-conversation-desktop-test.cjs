@@ -73,8 +73,8 @@ app.whenReady().then(async()=>{let win;try{
  assert(await ev('!document.querySelector(".bot-work-conversation-detail")'),'missing ID cannot open foreign data');
  await ev('window.detailFixture.blocked()');
  await click('.bot-view-tabs button:nth-child(2)');await click('.bot-work-card');
- await wait('!!document.querySelector(".bot-inspector[open]")');
- await ev(`[...document.querySelectorAll('.bot-inspector button')].find(b=>b.textContent==='向负责人回复此问题').click()`);
+ await wait('!!document.querySelector(".bot-work-conversation-detail")');
+ await ev(`[...document.querySelectorAll('.bot-work-conversation-detail button')].find(b=>b.textContent==='向负责人回复此问题').click()`);
  await wait('!document.querySelector(".bot-work-conversation-detail") && document.querySelector("#bot-draft").value.includes("补充原始文件")');
  assert(await ev('!document.querySelector(".bot-composer").hidden'),'reply from list retains editable composer');
  await ev('window.detailFixture.team()');await wait(`!!document.querySelector('[data-message-id="m4"] .bot-message-work-links button')`);
@@ -95,5 +95,73 @@ app.whenReady().then(async()=>{let win;try{
  await ev('window.detailFixture.team()'); await new Promise(r=>setTimeout(r,150));
  await ev('window.detailFixture.otherConversation();window.detailFixture.selectLinked()');await new Promise(r=>setTimeout(r,150));
  assert(await ev('!document.querySelector(".bot-work-conversation-detail")'),'new conversation cannot auto-open former linked work');
+ // Every list entry must use the same inline detail, preserving the mounted list.
+ const listSnapshot = `(()=>{const b=document.querySelector('.bot-work-browser');return {query:b.querySelector('input[type=search]').value,sort:b.querySelector('select').value,filter:b.querySelector('.bot-work-filters [aria-pressed=true]')?.textContent,page:b.querySelector('.bot-work-pagination span')?.textContent,ids:[...b.querySelectorAll('.bot-work-card')].map(e=>e.dataset.workId),scroll:b.scrollTop}})()`;
+ await ev(`document.addEventListener('click',e=>{if(e.target.closest('.bot-work-card')) {window.listBefore=${listSnapshot};window.listNode=document.querySelector('.bot-work-browser');window.listTrigger=e.target.closest('.bot-work-card');}},true)`);
+ const escape=async()=>{win.webContents.sendInputEvent({type:'keyDown',keyCode:'ESC'});win.webContents.sendInputEvent({type:'keyUp',keyCode:'ESC'});};
+ for(const scope of ['personal','team']) for(const [state,label,tab] of [['active','进行中',2],['completed','已完成',3],['closed','归档',4]]) for(const width of [1440,1100,760,390]) {
+  win.setSize(width,900);
+  await ev(`window.detailFixture.listCase(${JSON.stringify(scope)},${JSON.stringify(state)})`);
+  await wait('!!document.querySelector(".bot-view-tabs")');
+  await click(`.bot-view-tabs button:nth-child(${tab})`);
+  await wait('document.querySelectorAll(".bot-work-card").length===24');
+  // Exercise React-controlled search and sort with DOM input/change events.
+  await ev(`(()=>{const b=document.querySelector('.bot-work-browser'),i=b.querySelector('input[type=search]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(i,'保留');i.dispatchEvent(new Event('input',{bubbles:true}));const s=b.querySelector('select');s.value='oldest';s.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+  await wait('document.querySelector(".bot-work-list-summary").textContent.includes("匹配 55 件")');
+  if(state !== 'completed') await click('.bot-work-filters button:nth-child(2)');
+  await click('.bot-work-pagination button:last-child');
+  await wait('document.querySelector(".bot-work-pagination span").textContent.includes("第 2 / 3 页")');
+  const source=scope==='team'?'验收团队':'MyBuddy';
+  for(const close of ['back','close','escape']) {
+   await click('.bot-work-card-container:nth-child(12) .bot-work-card');
+   await wait('!!document.querySelector(".bot-work-conversation-detail")');
+   assert(await ev('document.querySelector(".bot-work-browser")===window.listNode'), 'source list stays mounted');
+   assert(await ev('!!document.querySelector(".bot-work-browser").closest("[hidden]")'),'source list hidden');
+   assert(await ev('!document.querySelector(".bot-inspector") && !document.querySelector("dialog[open]")'),'no side panel or modal');
+   assert.equal(await ev('document.querySelector(".bot-work-conversation-breadcrumb button").getAttribute("aria-label")'),`返回${source}的${label}`);
+   assert(await ev('document.documentElement.scrollWidth<=innerWidth+1'),'no overflow '+scope+state+width);
+   if(close==='back') {
+    await ev('window.openDetailNode=document.querySelector(".bot-work-conversation-detail")');
+    win.setSize(width===390?1440:390,900);await stableLayout();
+    assert(await ev('window.openDetailNode===document.querySelector(".bot-work-conversation-detail")'),'resize does not remount detail');
+    assert(await ev('document.querySelector(".bot-work-conversation-header").getBoundingClientRect().top>=0'),'resize keeps return accessible');
+    win.setSize(width,900);await stableLayout();
+    fs.writeFileSync(path.join(out,`bot-list-detail-${scope}-${state}-${width}.png`),(await win.webContents.capturePage()).toPNG());
+    await click('.bot-work-conversation-breadcrumb button');
+   } else if(close==='close') await click(`[aria-label="关闭事项详情并返回${label}"]`);
+   else await escape();
+   await wait('!document.querySelector(".bot-work-conversation-detail")');
+   await wait('document.activeElement===window.listTrigger && Math.abs(document.querySelector(".bot-work-browser").scrollTop-window.listBefore.scroll)<2');
+   const before=await ev('window.listBefore'),after=await ev(listSnapshot);
+   assert(before.scroll>0,'list restoration exercises a scrolled viewport');
+   assert(Math.abs(after.scroll-before.scroll)<2,'list scroll restored '+scope+state+width+close);
+   delete before.scroll;delete after.scroll;assert.deepEqual(after,before,'query/filter/sort/page/card order retained');
+   assert(await ev('document.activeElement===window.listTrigger'),'list trigger focus restored');
+  }
+  // Clear local list state before the next matrix case, even when scope/view stay unchanged.
+  await click('.bot-view-tabs button:first-child');
+  console.log(`PASS list ${scope}/${state}/${width}: card/back/close/Escape, resize, mounted source, search/filter/sort/page/scroll/focus.`);
+ }
+ // Selection from navigation/deep links and an archived transition cannot fall back to a side panel.
+ await ev('window.detailFixture.listCase("personal","active")');
+ await wait('!!document.querySelector(".bot-view-tabs")');
+ await click('.bot-view-tabs button:nth-child(2)');
+ await ev('window.detailFixture.selectListWork()');await wait('!!document.querySelector(".bot-work-conversation-detail")');
+ await escape();await wait('!document.querySelector(".bot-work-conversation-detail")');
+ await click('.bot-work-card-container:nth-child(12) .bot-work-card');
+ await wait('!!document.querySelector(".bot-work-conversation-detail")');
+ await ev('window.detailFixture.updateSelected()');
+ await wait('document.querySelector(".bot-work-conversation-status").textContent.includes("已完成")');
+ assert(await ev('!document.querySelector(".bot-inspector")'),'live archive transition stays inline');
+ await escape();await wait('!!document.querySelector(".bot-work-browser") && !document.querySelector(".bot-work-conversation-detail")');
+ assert(await ev('document.querySelector(".bot-work-browser").getAttribute("aria-label")==="进行中事项"'),'status change returns to source view');
+ await wait('document.activeElement===document.querySelector(".bot-work-browser")');
+ await click('.bot-work-card-container:nth-child(12) .bot-work-card');
+ await wait('!!document.querySelector(".bot-work-conversation-detail")');
+ await ev('window.detailFixture.refreshListHistory()');
+ await escape();await wait('!document.querySelector(".bot-work-conversation-detail")');
+ await wait('document.activeElement===window.listTrigger');
+ assert(await ev('Math.abs(document.querySelector(".bot-work-browser").scrollTop-window.listBefore.scroll)<2'),'history refresh preserves list scroll');
+ console.log('PASS list deep-link selection, live completion/archive transition with missing-trigger focus fallback, and history refresh scroll/focus.');
  console.log('PASS Electron real clicks: message/detail/back, source-team links with Bot/conversation isolation, 3 widths, scroll+focus restoration, saved artifact target, live status, removed work, stale team lookup. Isolated fixture data; no live model.');
  }catch(e){console.error(e);process.exitCode=1;}finally{win?.close();app.exit(process.exitCode||0);}});

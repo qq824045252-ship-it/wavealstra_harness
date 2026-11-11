@@ -26,9 +26,22 @@ function linkCase(kind: string) {
     botWorks:[work,{...work,workId:"other"}],botHistories:{[team ? "team:team" : "owner"]:{botId:"owner",teamId:team?.templateId,conversationId:"c",revision:2,archived:false,messages:rows}}});
   return new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
 }
+function listCase(scope: "personal" | "team", state: "active" | "completed" | "closed") {
+  const team = scope === "team" ? {templateId:"list-team",name:"验收团队",ownerBotId:"owner",members:[]} : null;
+  const rows: WorkProjectionDto[] = Array.from({length:60}, (_, i) => ({
+    ...work, workId:`list-${scope}-${state}-${i}`, title:`${i < 55 ? "保留" : "其他"}事项 ${String(i).padStart(2,"0")}`,
+    updatedAt:1000+i, lifecycle:state === "active" ? "active" : "closed",
+    closureConclusion:state === "active" ? undefined : "succeeded",
+    archive:state === "closed" ? {archivedAt:2000} as WorkProjectionDto["archive"] : undefined,
+    team:team ? {...teamWork.team!,workId:`list-${scope}-${state}-${i}`,teamId:team.templateId} : undefined,
+  }));
+  useAppStore.setState({activeBotId:"owner",activeTeam:team as never,selectedWorkId:null,botWorks:rows,
+    botWorkCursor:{scope:"all",epoch:"fixture",sequence:1},
+    botHistories:{[team ? "team:list-team" : "owner"]:{botId:"owner",teamId:team?.templateId,conversationId:"list-c",revision:1,archived:false,messages:[]}}});
+}
 const events:string[]=[];
 Object.assign(window,{api:{botWork:{listBotExpertVersions:async()=>[],getSettings:async()=>({settings:{botId:"owner",revision:0,workspacePath:"",effectiveWorkspacePath:"/fixture",spaceId:"fixture",modelId:"",expertId:"",skillIds:[],mcpIds:[],connectorIds:[]},models:[],experts:[],skills:[],mcps:[],connectors:[]})},openFolder:async(path:string)=>events.push(path)},detailEvents:events,
-  detailFixture:{linkCase, original:()=>useAppStore.setState({activeBotId:"owner",activeTeam:null,botWorks:[work],selectedWorkId:null,botHistories:{owner:{botId:"owner",conversationId:"c",revision:1,archived:false,messages}}}),team:()=>useAppStore.setState({activeTeam:null,activeBotId:"owner",selectedWorkId:null,botWorks:[work,teamWork],botHistories:{owner:{botId:"owner",conversationId:"c",revision:1,archived:false,messages:teamMessages}}}),
+  detailFixture:{listCase, refreshListHistory:()=>useAppStore.setState({botHistories:{owner:{botId:"owner",conversationId:"list-refreshed",revision:2,archived:false,messages:[]}}}), selectListWork:()=>useAppStore.setState({selectedWorkId:useAppStore.getState().botWorks[0]?.workId}), updateSelected:()=>useAppStore.setState(s=>({botWorks:s.botWorks.map(w=>w.workId === s.selectedWorkId ? {...w,lifecycle:"closed",closureConclusion:"succeeded",archive:{archivedAt:3000} as WorkProjectionDto["archive"]} : w)})), linkCase, original:()=>useAppStore.setState({activeBotId:"owner",activeTeam:null,botWorks:[work],selectedWorkId:null,botHistories:{owner:{botId:"owner",conversationId:"c",revision:1,archived:false,messages}}}),team:()=>useAppStore.setState({activeTeam:null,activeBotId:"owner",selectedWorkId:null,botWorks:[work,teamWork],botHistories:{owner:{botId:"owner",conversationId:"c",revision:1,archived:false,messages:teamMessages}}}),
     otherBot:()=>useAppStore.setState({activeBotId:"unrelated",selectedWorkId:null,botHistories:{unrelated:{botId:"unrelated",conversationId:"other",revision:1,archived:false,messages:teamMessages.map(m=>({...m,botId:"unrelated",conversationId:"other"}))}}}),
     otherConversation:()=>useAppStore.setState({selectedWorkId:null,botHistories:{owner:{botId:"owner",conversationId:"new",revision:1,archived:false,messages}}}),
     selectLinked:()=>useAppStore.setState({selectedWorkId:"linked-team"}),

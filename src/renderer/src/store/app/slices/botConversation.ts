@@ -55,14 +55,14 @@ export function createBotConversationActions({ get, set, getApi }: AppContext): 
     },
     setActiveTeam: team => {
       try { if (team) localStorage.setItem("mybuddy.active-team", team.templateId); else localStorage.removeItem("mybuddy.active-team"); } catch {}
-      if (!team) { set({ activeTeam: null }); return; }
+      if (!team) { set(state => ({ activeTeam: null, historicalTeamWork: null, botNavigationEpoch: state.botNavigationEpoch + 1 })); return; }
       const key = botConversationScope(team.ownerBotId, team.templateId);
-      set(state => ({ activeTeam: team, activeBotId: team.ownerBotId, selectedWorkId: null, botDraft: state.botDrafts[key] ?? "", botSubmissionNotice: false, page: "bot" }));
+      set(state => ({ historicalTeamWork: null, botNavigationEpoch: state.botNavigationEpoch + 1, activeTeam: team, activeBotId: team.ownerBotId, selectedWorkId: null, botDraft: state.botDrafts[key] ?? "", botSubmissionNotice: false, page: "bot" }));
       void get().refreshBotHistory(team.ownerBotId, team.templateId);
     },
     setActiveBotId: botId => {
       try { localStorage.removeItem("mybuddy.active-team"); } catch {}
-      set(state => ({ activeTeam: null, activeBotId: botId, selectedWorkId: null, botDraft: botId ? state.botDrafts[botId] ?? "" : "", botSubmissionNotice: false }));
+      set(state => ({ historicalTeamWork: null, botNavigationEpoch: state.botNavigationEpoch + 1, activeTeam: null, activeBotId: botId, selectedWorkId: null, botDraft: botId ? state.botDrafts[botId] ?? "" : "", botSubmissionNotice: false }));
       if (botId) void get().refreshBotHistory(botId);
     },
     submitBotDraft: async (options = {}) => {

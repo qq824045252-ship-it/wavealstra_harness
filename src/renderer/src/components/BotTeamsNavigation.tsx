@@ -1,9 +1,7 @@
-import { BotTeamManagement } from "./pages/BotTeamManagement";
 import type { WorkProjectionDto } from "@shared/bot-work";
 import { useEffect, useRef, useState } from "react";
 import { useAppStore } from "@/store/appStore";
 import { IconBot, IconPlus, IconX } from "@/components/common/icons";
-import { BotWorkDetails } from "./pages/BotWorkDetails";
 import { BotTeamSettings } from "./pages/BotTeamSettings";
 import { BotTeamDialog } from "./pages/BotTeamDialog";
 import { workTeamControlSchema, type WorkTeamTemplateDto, type WorkTeamMember, type WorkTeamPlan } from "@shared/bot-work-team";
@@ -24,8 +22,6 @@ export function BotTeamsNavigation({ onSelect }: { onSelect?: () => void } = {})
   const [teams, setTeams] = useState<WorkTeamTemplateDto[]>([]);
   const [error, setError] = useState("");
   const [selected, setSelected] = useState<WorkTeamTemplateDto | null>(null);
-  const [detailSnapshot, setDetailSnapshot] = useState<WorkProjectionDto | null>(null);
-  const [detailId, setDetailId] = useState<string | null>(null);
   const [settings, setSettings] = useState(false);
   const [savedNotice, setSavedNotice] = useState("");
   const [creating, setCreating] = useState(false);
@@ -56,38 +52,41 @@ export function BotTeamsNavigation({ onSelect }: { onSelect?: () => void } = {})
     return () => { live = false; window.removeEventListener("mybuddy:teams-refresh", refresh); };
   }, []);
   useEffect(() => {
-    if (creating || selected || detailId) { if (!dialog.current?.open) dialog.current?.showModal(); }
+    if (creating || selected) { if (!dialog.current?.open) dialog.current?.showModal(); }
     else dialog.current?.close();
-  }, [creating, selected, detailId]);
-  const close = () => { viewEpoch.current++; setCreating(false); setSelected(null); setSettings(false); setDetailId(null); setDetailSnapshot(null); };
+  }, [creating, selected]);
+  const close = () => { viewEpoch.current++; setCreating(false); setSelected(null); setSettings(false); };
   const openTeam = (team: WorkTeamTemplateDto) => {
     close(); setError(""); setSavedNotice("");
     useAppStore.getState().setActiveTeam(team); onSelect?.();
     void useAppStore.getState().refreshBotWork(true);
   };
-  const openWork = (work: { workId: string }) => { setSettings(false); setDetailId(work.workId); };
+  const openWork = (work: WorkProjectionDto) => {
+    close(); onSelect?.();
+    useAppStore.getState().setHistoricalTeamWork(work);
+  };
   useEffect(() => {
     const listener = (event: Event) => {
       const id = (event as CustomEvent<{ workId?: string }>).detail?.workId;
       if (!id) return;
       const epoch = ++viewEpoch.current;
+      const navigationEpoch = useAppStore.getState().botNavigationEpoch;
       void window.api?.botWork.getWork(id).then(work => {
-        if (viewEpoch.current !== epoch) return;
+        if (viewEpoch.current !== epoch || useAppStore.getState().botNavigationEpoch !== navigationEpoch) return;
         if (!work?.team) { setError("找不到该团队任务，请刷新后重试。"); return; }
         const team = teams.find(item => item.templateId === work.team?.teamId);
         if (team) { openTeam(team); useAppStore.getState().setSelectedWorkId(id); return; }
-        setDetailSnapshot(work); setCreating(false); setSettings(false); setSelected(teams.find(team => team.templateId === work.team?.teamId) ?? null); setDetailId(id);
-      }).catch(() => { if (viewEpoch.current === epoch) setError("团队任务详情暂时无法加载，请重试。"); });
+        openWork(work);
+      }).catch(() => { if (viewEpoch.current === epoch && useAppStore.getState().botNavigationEpoch === navigationEpoch) setError("团队任务详情暂时无法加载，请重试。"); });
     };
     window.addEventListener("mybuddy:open-team-work", listener);
-    return () => window.removeEventListener("mybuddy:open-team-work", listener);
+    return () => { viewEpoch.current++; window.removeEventListener("mybuddy:open-team-work", listener); };
   }, [teams]);
   useEffect(() => {
     const update = (event: Event) => { const team = (event as CustomEvent<WorkTeamTemplateDto>).detail; if (team?.templateId) setTeams(current => current.map(item => item.templateId === team.templateId ? team : item)); };
     window.addEventListener("mybuddy:team-updated", update);
     return () => window.removeEventListener("mybuddy:team-updated", update);
   }, []);
-  const detail = works.find(work => work.workId === detailId && work.team) ?? (detailSnapshot?.workId === detailId ? detailSnapshot : undefined);
   const save = async () => {
     if (saveFlight.current) return;
     if (!saveRequest.current) saveRequest.current = {
@@ -125,9 +124,9 @@ export function BotTeamsNavigation({ onSelect }: { onSelect?: () => void } = {})
     </button>)}
     {adHoc.length > 0 && <details className="bot-team-history"><summary>临时与历史团队事项（{adHoc.length}）</summary>{adHoc.map(work => <button type="button" key={work.workId} onClick={() => openWork(work)}>{work.title}</button>)}</details>}
     {error && !creating && !selected && <p role="status">{error}</p>}
-    <dialog ref={dialog} className="bot-team-directory-dialog" aria-label={creating ? "新建 Bot 团队" : detail ? "团队任务详情" : "团队工作空间"} onCancel={event => { event.preventDefault(); close(); }} onClose={close}>
-      <header><h2>{creating ? "新建 Bot 团队" : detail ? `${detail.team?.teamName ?? "临时团队"} · ${detail.title}` : settings ? `${selected?.name} · 团队设置` : selected?.name}</h2><button type="button" aria-label="关闭团队面板" onClick={close}><IconX size={18} /></button></header>
-      {detail ? <><BotTeamManagement work={detail} onChanged={() => { void useAppStore.getState().refreshBotWork(true); }} /><button type="button" onClick={() => { if (selected) setDetailId(null); else close(); }}>返回团队</button><BotWorkDetails work={detail} ownerName={detail.team?.teamName ?? "临时团队"} includeClosed /></> : selected && settings ? <BotTeamSettings key={selected.templateId} team={selected} onCancel={() => { viewEpoch.current++; setSettings(false); }} onSaved={team => { setTeams(current => current.map(item => item.templateId === team.templateId ? team : item)); if (viewEpoch.current !== settingsEpoch.current) return; setSelected(team); setSettings(false); setSavedNotice("团队设置已保存，用于后续新任务。"); }} /> : creating ? <form onSubmit={event => { event.preventDefault(); void save(); }}>
+    <dialog ref={dialog} className="bot-team-directory-dialog" aria-label={creating ? "新建 Bot 团队" : "团队工作空间"} onCancel={event => { event.preventDefault(); close(); }} onClose={close}>
+      <header><h2>{creating ? "新建 Bot 团队" : settings ? `${selected?.name} · 团队设置` : selected?.name}</h2><button type="button" aria-label="关闭团队面板" onClick={close}><IconX size={18} /></button></header>
+      {selected && settings ? <BotTeamSettings key={selected.templateId} team={selected} onCancel={() => { viewEpoch.current++; setSettings(false); }} onSaved={team => { setTeams(current => current.map(item => item.templateId === team.templateId ? team : item)); if (viewEpoch.current !== settingsEpoch.current) return; setSelected(team); setSettings(false); setSavedNotice("团队设置已保存，用于后续新任务。"); }} /> : creating ? <form onSubmit={event => { event.preventDefault(); void save(); }}>
         <p>先建立团队。之后交给这个团队的任务、进度和成果会归在一起；队长负责协调与汇报。</p>
         <fieldset disabled={saving || Boolean(saveRequest.current)}>
           <label>团队名称<input required maxLength={120} value={name} onChange={e => setName(e.target.value)} placeholder="例如：产品研发团队" /></label>

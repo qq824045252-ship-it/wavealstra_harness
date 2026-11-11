@@ -34,7 +34,7 @@ export function createBotNavigationPersistence() {
     observePatch(patch: Partial<AppState>) {
       // Even selecting ordinary mode while it is already the loading page wins
       // over a delayed restore. Cover all navigation commands, not just setPage.
-      if ("page" in patch || "activeBotId" in patch || "selectedWorkId" in patch) pending = null;
+      if ("page" in patch || "activeBotId" in patch || "selectedWorkId" in patch || "historicalTeamWork" in patch) pending = null;
       if ("page" in patch && saved) {
         saved = { ...saved, page: patch.page === "bot" ? "bot" : "chat" };
         write();

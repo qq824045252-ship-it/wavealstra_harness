@@ -23,6 +23,8 @@ export interface ActiveContextState {
   activeBotId: string | null;
   activeTeam: import("../../../../../shared/bot-work-team").WorkTeamTemplateDto | null;
   selectedWorkId: string | null;
+  historicalTeamWork: WorkProjectionDto | null;
+  botNavigationEpoch: number;
   botDraft: string;
   botSubmissionNotice: boolean;
   botIdentities: BotDto[];
@@ -62,6 +64,8 @@ export function createActiveContextState(): ActiveContextState {
     activeBotId: null,
     activeTeam: null,
     selectedWorkId: null,
+    historicalTeamWork: null,
+    botNavigationEpoch: 0,
     botDraft: "",
     botSubmissionNotice: false,
     botIdentities: [],
@@ -114,6 +118,7 @@ export function createActiveContextActions(
   | "setActiveTeam"
   | "createBot"
   | "setSelectedWorkId"
+  | "setHistoricalTeamWork"
   | "refreshBotWork"
   | "applyWorkProjection"
   | "markBotNotificationRead"
@@ -153,7 +158,8 @@ export function createActiveContextActions(
       }
       return result;
     },
-    setSelectedWorkId: (workId) => set({ selectedWorkId: workId }),
+    setSelectedWorkId: (workId) => set(state => ({ selectedWorkId: workId, historicalTeamWork: null, botNavigationEpoch: state.botNavigationEpoch + 1 })),
+    setHistoricalTeamWork: (work) => set(state => ({ historicalTeamWork: work?.team ? work : null, botNavigationEpoch: state.botNavigationEpoch + 1 })),
     refreshBotWork: async (includeClosed = false) => {
       const api = getApi();
       const requestSequence = ++refreshSequence;
