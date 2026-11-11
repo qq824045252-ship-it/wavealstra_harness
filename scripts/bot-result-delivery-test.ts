@@ -53,3 +53,6 @@ assert.equal(workDeliveryFiles(works,continued).find(f=>f.name==="talk.html")?.o
 continuationSource=undefined;
 assert.equal(workDeliveryFiles(works,workDeliveryResults(works,followup))[0]?.openPath,undefined,"a naked prior ref is not continuation authority");
 console.log("PASS persisted continuation lineage retains member output without global history guessing");
+
+// Keep the production result-review transport regression in this focused gate.
+await import("./bot-result-artifact-selection-test");
