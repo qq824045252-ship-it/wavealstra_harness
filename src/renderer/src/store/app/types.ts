@@ -103,6 +103,9 @@ export interface TerminalTabItem {
   title: string;
 }
 
+/** 终端标签归属的界面面：扩展栏面板 vs 空间详情页。两处的标签/会话必须独立。 */
+export type TerminalSurface = "panel" | "workspace";
+
 export type RelocateSpaceResult =
   | { ok: true }
   | {

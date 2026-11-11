@@ -51,6 +51,7 @@ import type {
   RelocateSpaceResult,
   SettingsTab,
   StreamingSendMode,
+  TerminalSurface,
 } from "./types";
 
 /** Public action signatures retained by the appStore facade. */
@@ -118,7 +119,7 @@ export interface AppActions {
   setPanelMode: (mode: PanelMode) => void;
   setTerminalSession: (info: TerminalSessionInfo) => void;
   applyTerminalExit: (ev: TerminalExitEvent) => void;
-  setActiveTerminalTabId: (tabId: string) => void;
+  setActiveTerminalTabId: (tabId: string, surface?: TerminalSurface) => void;
   setModelReasoningPreference: (
     modelId: string,
     preference: ModelReasoningPreferenceDto | undefined,
@@ -218,8 +219,8 @@ export interface AppActions {
   }) => boolean;
   fillComposer: (text: string) => void;
   appendComposer: (text: string) => void;
-  createTerminalTab: () => void;
-  closeTerminalTab: (tabId: string) => void;
+  createTerminalTab: (surface?: TerminalSurface) => void;
+  closeTerminalTab: (tabId: string, surface?: TerminalSurface) => void;
   shareTaskToConversation: (
     sourceTaskId: string,
     targetTaskId: string,

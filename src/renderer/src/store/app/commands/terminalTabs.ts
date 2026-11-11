@@ -2,16 +2,16 @@ import { canvasPanelWidth } from "../../../lib/panelWidth";
 import type { AppActions } from "../actions";
 import type { AppContext } from "../context";
 import { currentTerminalOwnerKey } from "../selectors";
-import type { TerminalTabItem } from "../types";
+import type { TerminalSurface, TerminalTabItem } from "../types";
 
 export function createTerminalTabsActions(
   storeContext: AppContext,
 ): Pick<AppActions, "createTerminalTab" | "closeTerminalTab"> {
   const { get, set } = storeContext;
   return {
-    createTerminalTab: () => {
+    createTerminalTab: (surface: TerminalSurface = "panel") => {
       const s = get();
-      const ownerKey = currentTerminalOwnerKey(s);
+      const ownerKey = currentTerminalOwnerKey(s, surface);
       const current = s.terminalTabsByOwner[ownerKey] ?? {
         tabs: [],
         activeId: null,
@@ -30,17 +30,20 @@ export function createTerminalTabsActions(
           ...s.terminalTabsByOwner,
           [ownerKey]: { tabs: nextTabs, activeId: newTab.id },
         },
-        panelOpen: true,
-        panelMode: "terminal",
-        extensionView: "terminal",
-        extensionFlyoutOpen: false,
-        panelWidth: canvasPanelWidth(s.sidebarCollapsed),
+        // 只有扩展栏面板的新建才打开/切换面板；空间详情页的终端不能把面板抢过来。
+        ...(surface === "panel" ? {
+          panelOpen: true,
+          panelMode: "terminal" as const,
+          extensionView: "terminal" as const,
+          extensionFlyoutOpen: false,
+          panelWidth: canvasPanelWidth(s.sidebarCollapsed),
+        } : {}),
       });
     },
 
-    closeTerminalTab: (tabId: string) => {
+    closeTerminalTab: (tabId: string, surface: TerminalSurface = "panel") => {
       const s = get();
-      const ownerKey = currentTerminalOwnerKey(s);
+      const ownerKey = currentTerminalOwnerKey(s, surface);
       const current = s.terminalTabsByOwner[ownerKey] ?? {
         tabs: [],
         activeId: null,

@@ -218,8 +218,8 @@ export default function WorkspaceDetail(): React.JSX.Element | null {
       {tab === "gadgets" && <WorkspaceGadgetsSection workspaceId={space.id} />}
       {tab === "terminal" && (
         <div className="workspace-terminal-pane">
-          <TerminalTabsBar />
-          <TerminalView />
+          <TerminalTabsBar surface="workspace" />
+          <TerminalView surface="workspace" />
         </div>
       )}
     </div>

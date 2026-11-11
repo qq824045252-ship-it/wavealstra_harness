@@ -27,6 +27,7 @@ import { resolveTerminalContrastRatio, resolveTerminalTheme } from "@/lib/termin
 import { FONT_SETTINGS_EVENT, getAppliedFontSettings } from "@/lib/fontSettings";
 import { resolveTerminalUiOwner, terminalUiSpawnKey } from "@/lib/terminalOwner";
 import { useActiveTerminalTabs, useAppStore } from "@/store/appStore";
+import type { TerminalSurface } from "@/store/app/types";
 import {
   IconArrowUpRight,
   IconCode,
@@ -550,8 +551,8 @@ function TerminalSessionPane({ tabId, tabTitle, active }: TerminalSessionPanePro
   );
 }
 
-export default function TerminalView(): React.JSX.Element {
-  const { tabs: terminalTabs, activeId: activeTerminalTabId } = useActiveTerminalTabs();
+export default function TerminalView({ surface = "panel" }: { surface?: TerminalSurface }): React.JSX.Element {
+  const { tabs: terminalTabs, activeId: activeTerminalTabId } = useActiveTerminalTabs(surface);
   const createTerminalTab = useAppStore((s) => s.createTerminalTab);
 
   if (terminalTabs.length === 0 || !activeTerminalTabId) {
@@ -564,7 +565,7 @@ export default function TerminalView(): React.JSX.Element {
           <button
             type="button"
             className="btn btn--primary terminal-empty-add-btn"
-            onClick={createTerminalTab}
+            onClick={() => createTerminalTab(surface)}
           >
             <IconPlus size={14} /> 新建终端
           </button>

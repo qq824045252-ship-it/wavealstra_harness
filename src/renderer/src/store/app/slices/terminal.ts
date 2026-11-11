@@ -65,9 +65,9 @@ export function createTerminalActions(
       });
     },
 
-    setActiveTerminalTabId: (tabId: string) => {
+    setActiveTerminalTabId: (tabId: string, surface = "panel") => {
       const s = get();
-      const ownerKey = currentTerminalOwnerKey(s);
+      const ownerKey = currentTerminalOwnerKey(s, surface);
       const current = s.terminalTabsByOwner[ownerKey] ?? {
         tabs: [],
         activeId: null,

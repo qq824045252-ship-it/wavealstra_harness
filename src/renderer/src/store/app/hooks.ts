@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import type { Artifact, Task } from "../../types";
-import type { AppState, TerminalTabItem } from "./types";
+import type { AppState, TerminalSurface, TerminalTabItem } from "./types";
 import { currentTerminalOwnerKey } from "./selectors";
 import { appSelectors, useAppStore } from "./store";
 
@@ -78,12 +78,12 @@ const EMPTY_TERMINAL_TABS_RECORD: {
   activeId: null,
 };
 
-export function useActiveTerminalTabs(): {
+export function useActiveTerminalTabs(surface: TerminalSurface = "panel"): {
   tabs: TerminalTabItem[];
   activeId: string | null;
 } {
   return useAppStore((s) => {
-    const ownerKey = currentTerminalOwnerKey(s);
+    const ownerKey = currentTerminalOwnerKey(s, surface);
     return s.terminalTabsByOwner[ownerKey] ?? EMPTY_TERMINAL_TABS_RECORD;
   });
 }

@@ -449,6 +449,7 @@
     "test:acp-remote-android-e2e:live": "node scripts/test-guard.mjs scripts/android-acp-e2e-check.cjs",
     "test:remote-task-dot-android:live": "node scripts/test-guard.mjs scripts/android-webview-dot-check.cjs",
     "test:sidebar-space-collapse": "esbuild scripts/sidebar-space-collapse-test.ts --bundle --platform=node --format=esm --outfile=out/tests/sidebar-space-collapse-test.mjs --alias:@=./src/renderer/src --alias:@shared=./src/shared && node scripts/test-guard.mjs out/tests/sidebar-space-collapse-test.mjs",
+    "test:terminal-surface": "esbuild scripts/terminal-surface-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/terminal-surface-test.cjs --alias:@=./src/renderer/src --alias:@shared=./src/shared && node scripts/test-guard.mjs out/tests/terminal-surface-test.cjs",
     "test:sidebar-space-collapse-desktop": "esbuild scripts/sidebar-space-seed.ts --bundle --platform=node --format=cjs --external:better-sqlite3 --external:electron --external:onnxruntime-node --outfile=out/tests/sidebar-space-seed.cjs && node scripts/test-guard.mjs scripts/sidebar-space-collapse-desktop-test.cjs",
     "typecheck:scripts": "node scripts/typecheck-scripts.mjs",
     "typecheck:scripts:update-baseline": "node scripts/typecheck-scripts.mjs --update-baseline",

@@ -1,9 +1,10 @@
 import type React from "react";
 import { useActiveTerminalTabs, useAppStore } from "@/store/appStore";
+import type { TerminalSurface } from "@/store/app/types";
 import { IconPlus, IconTerminal, IconX } from "@/components/common/icons";
 
-export default function TerminalTabsBar(): React.JSX.Element {
-  const { tabs: terminalTabs, activeId: activeTerminalTabId } = useActiveTerminalTabs();
+export default function TerminalTabsBar({ surface = "panel" }: { surface?: TerminalSurface }): React.JSX.Element {
+  const { tabs: terminalTabs, activeId: activeTerminalTabId } = useActiveTerminalTabs(surface);
   const createTerminalTab = useAppStore((s) => s.createTerminalTab);
   const closeTerminalTab = useAppStore((s) => s.closeTerminalTab);
   const setActiveTerminalTabId = useAppStore((s) => s.setActiveTerminalTabId);
@@ -17,8 +18,8 @@ export default function TerminalTabsBar(): React.JSX.Element {
             role="button"
             tabIndex={0}
             className={`extension-terminal-tab ${activeTerminalTabId === tab.id ? "active" : ""}`}
-            onClick={() => setActiveTerminalTabId(tab.id)}
-            onKeyDown={(e) => e.key === "Enter" && setActiveTerminalTabId(tab.id)}
+            onClick={() => setActiveTerminalTabId(tab.id, surface)}
+            onKeyDown={(e) => e.key === "Enter" && setActiveTerminalTabId(tab.id, surface)}
             title={tab.title}
           >
             <IconTerminal size={12} className="terminal-tab-icon" />
@@ -29,7 +30,7 @@ export default function TerminalTabsBar(): React.JSX.Element {
               title="关闭终端"
               onClick={(e) => {
                 e.stopPropagation();
-                closeTerminalTab(tab.id);
+                closeTerminalTab(tab.id, surface);
               }}
             >
               <IconX size={11} />
@@ -40,7 +41,7 @@ export default function TerminalTabsBar(): React.JSX.Element {
           type="button"
           className="extension-tab-add-btn"
           title="新建终端"
-          onClick={createTerminalTab}
+          onClick={() => createTerminalTab(surface)}
         >
           <IconPlus size={12} />
           <span>新建终端</span>

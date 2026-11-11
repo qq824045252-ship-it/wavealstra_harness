@@ -178,15 +178,14 @@ export function currentTerminalOwnerKey(s: {
   page?: string;
   activeTaskId?: string | null;
   activeWorkspaceId?: string | null;
-}): string {
-  if (s.page === "workspace" && s.activeWorkspaceId) {
-    return `ws:${s.activeWorkspaceId}`;
-  }
-  if (s.activeTaskId) {
-    return `task:${s.activeTaskId}`;
-  }
-  if (s.activeWorkspaceId) {
-    return `ws:${s.activeWorkspaceId}`;
-  }
-  return "default";
+}, surface: "panel" | "workspace" = "panel"): string {
+  const base = s.page === "workspace" && s.activeWorkspaceId
+    ? `ws:${s.activeWorkspaceId}`
+    : s.activeTaskId
+      ? `task:${s.activeTaskId}`
+      : s.activeWorkspaceId
+        ? `ws:${s.activeWorkspaceId}`
+        : "default";
+  // 空间详情页的终端与扩展栏面板的终端是两套独立标签/会话。
+  return surface === "workspace" ? `workspace:${base}` : base;
 }
