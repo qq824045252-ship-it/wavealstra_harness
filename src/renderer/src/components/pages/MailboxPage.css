@@ -1,0 +1,22 @@
+.workspace-page { max-width: 1100px; }
+.workspace-panel { border: 1px solid var(--border); border-radius: 14px; background: var(--bg-secondary); padding: 18px 20px; margin: 16px 0; overflow-wrap: anywhere; }
+.workspace-panel h3 { margin: 0 0 10px; font-size: 15px; }
+.workspace-panel p { margin: 8px 0; }
+.workspace-heading, .workspace-tabs, .workspace-query { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.workspace-heading { justify-content: space-between; }
+.workspace-tabs { margin: 24px 0 16px; }
+.workspace-note { font-size: 12px; color: var(--fg-secondary); line-height: 1.7; }
+.workspace-query { align-items: flex-end; }
+.workspace-query label { display: flex; flex-direction: column; gap: 8px; font-size: 13px; flex: 1; min-width: 150px; }
+.workspace-query input, .workspace-query select { min-width: 0; border: 1px solid var(--border); border-radius: 8px; padding: 9px 12px; color: var(--fg); background: var(--bg-secondary); font: inherit; }
+.workspace-error { border: 1px solid var(--border); padding: 12px; border-radius: 10px; margin: 12px 0; overflow-wrap: anywhere; }
+.workspace-mail-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr); gap: 16px; align-items: start; }
+.workspace-mail-list { display: flex; flex-direction: column; gap: 8px; }
+.workspace-message { text-align: left; display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--border); background: var(--bg-secondary); color: var(--fg); border-radius: 10px; padding: 14px; cursor: pointer; overflow-wrap: anywhere; }
+.workspace-message span { font-size: 12px; color: var(--fg-secondary); }
+.workspace-message.selected { outline: 2px solid var(--fg-secondary); outline-offset: -2px; }
+.workspace-mail-body { margin: 0; min-width: 0; }
+.workspace-mail-body pre { font: inherit; font-size: 13px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+.workspace-event-description { white-space: pre-wrap; font-size: 13px; }
+.workspace-footer { margin-top: 28px; }
+@media (max-width: 850px) { .workspace-mail-grid { grid-template-columns: minmax(0, 1fr); } }

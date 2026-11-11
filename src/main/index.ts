@@ -1,3 +1,5 @@
+import { GoogleWorkspaceIpc } from "../shared/google-workspace";
+import { googleWorkspaceService } from "./connectors/GoogleWorkspaceService";
 import "./platform/credentials";
 import "./agent-environment";
 import "./officecli-environment";
@@ -1259,6 +1261,10 @@ function registerIpc(): void {
   ipcMain.handle(AgentIpc.switchExpert, async (_e, req: AgentSwitchExpertRequest) => {
     await agentService.switchExpert(req);
   });
+  ipcMain.handle(GoogleWorkspaceIpc.status, () => googleWorkspaceService.status());
+  ipcMain.handle(GoogleWorkspaceIpc.searchMail, (_event, request) => googleWorkspaceService.searchMail(request));
+  ipcMain.handle(GoogleWorkspaceIpc.readMail, (_event, request) => googleWorkspaceService.readMail(request));
+  ipcMain.handle(GoogleWorkspaceIpc.listEvents, (_event, request) => googleWorkspaceService.listEvents(request));
   ipcMain.handle(AgentIpc.listConnectors, () => agentService.listConnectors());
   ipcMain.handle(AgentIpc.installConnector, (_e, id: string) =>
     agentService.installConnector(id),

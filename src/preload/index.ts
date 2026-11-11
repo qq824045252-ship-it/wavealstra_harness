@@ -1,3 +1,4 @@
+import { GoogleWorkspaceIpc, type GoogleWorkspaceApi } from "../shared/google-workspace";
 import type { BrowserOpenOptions, BrowserTabInfo, BrowserTabsState } from "../shared/browser-tabs";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import { ProjectNotesIpc, type ProjectNoteSaveRequest } from "../shared/project-notes";
@@ -1436,6 +1437,13 @@ const api = {
     listTaskReferences: (taskId: string): Promise<{ ok: true; value: import("../shared/library-ipc").LibraryTaskReferencesDto } | { ok: false; error: string }> =>
       ipcRenderer.invoke(LibraryIpc.listTaskReferences, taskId),
   },
+
+  googleWorkspace: {
+    status: () => ipcRenderer.invoke(GoogleWorkspaceIpc.status),
+    searchMail: request => ipcRenderer.invoke(GoogleWorkspaceIpc.searchMail, request),
+    readMail: request => ipcRenderer.invoke(GoogleWorkspaceIpc.readMail, request),
+    listEvents: request => ipcRenderer.invoke(GoogleWorkspaceIpc.listEvents, request),
+  } satisfies GoogleWorkspaceApi,
 
   projectNotes: {
     read: (projectId: string) => ipcRenderer.invoke(ProjectNotesIpc.read, projectId),

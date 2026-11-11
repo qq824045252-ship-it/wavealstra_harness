@@ -168,6 +168,7 @@ const GUI_TESTS = new Set([
 ]);
 
 const NETWORK_TESTS = new Set([
+  "test:google-workspace:live", // Real Electron/model; isolated synthetic gws process, no real account.
   "test:gadget-browser-recovery-live",
   "test:bot-history-context:live",
   "test:bot-peer-calls:live",

@@ -647,7 +647,12 @@
     "test:bot-peer-calls": "esbuild scripts/bot-peer-calls-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/bot-peer-calls-test.mjs && node scripts/test-guard.mjs out/tests/bot-peer-calls-test.mjs",
     "test:bot-peer-calls:live": "node scripts/bot-frontdoor-live-test.cjs --peer-calls",
     "test:bot-history-context": "esbuild scripts/bot-history-context-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/bot-history-context-test.cjs --external:better-sqlite3 --external:onnxruntime-node --external:electron && node scripts/test-guard.mjs out/tests/bot-history-context-test.cjs",
-    "test:bot-history-context:live": "node scripts/test-guard.mjs scripts/bot-frontdoor-live-test.cjs --history-context"
+    "test:bot-history-context:live": "node scripts/test-guard.mjs scripts/bot-frontdoor-live-test.cjs --history-context",
+    "test:google-workspace": "esbuild scripts/google-workspace-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/google-workspace-test.mjs && node scripts/test-guard.mjs out/tests/google-workspace-test.mjs",
+    "test:google-workspace-faults": "esbuild scripts/google-workspace-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/google-workspace-test.mjs && node scripts/test-guard.mjs out/tests/google-workspace-test.mjs --faults",
+    "test:google-workspace-ui": "esbuild scripts/google-workspace-ui-test.tsx --bundle --platform=node --format=cjs --external:linkedom --external:react --external:react-dom --external:@terrastruct/d2 --jsx=automatic --alias:@=./src/renderer/src --alias:@shared=./src/shared --loader:.css=empty --loader:.woff=empty --loader:.woff2=empty --outfile=out/tests/google-workspace-ui-test.cjs && node scripts/test-guard.mjs out/tests/google-workspace-ui-test.cjs",
+    "test:google-workspace:live": "node scripts/bot-frontdoor-live-test.cjs --google-workspace",
+    "test:google-workspace-tools": "esbuild scripts/google-workspace-tools-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/google-workspace-tools-test.mjs && node scripts/test-guard.mjs out/tests/google-workspace-tools-test.mjs"
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.85.0",

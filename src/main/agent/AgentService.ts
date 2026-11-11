@@ -1,4 +1,5 @@
 import { connectorRuntimeContext } from "../connectors/ConnectorRuntimeContext";
+import { createGoogleWorkspaceTools, GOOGLE_WORKSPACE_INSTRUCTIONS } from "../connectors/GoogleWorkspaceTools";
 import { WorkWatchSupervision } from "./work/WorkWatchSupervision";
 import { botExecutionDiagnostics } from "./work/BotExecutionDiagnostics";
 import { BotDisplayGroupsService } from "./work/BotDisplayGroupsService";
@@ -1828,6 +1829,7 @@ export class AgentService {
     const skills = this.resolveSkillsForContext(task.cwd, paths, { projectId: task.projectId, workspaceId: task.spaceId }).dtos;
     return [
       ...assembly.appendParts,
+      GOOGLE_WORKSPACE_INSTRUCTIONS,
       connectors.length ? connectorRuntimeContext(connectors, this.connectorsService.list(), "execution") : "",
       "## Skills\nRead the relevant SKILL.md before using a skill.\n" + skills.filter(s => s.enabled && s.filePath)
         .filter(s => assembly.skillFilter.visible.includes(s.name))
@@ -1938,7 +1940,7 @@ export class AgentService {
         return await consultHooks.afterTool?.(call, observed ?? result, api, context) ?? observed;
       },
     };
-    return { ...domain, toolHooks, tools: [...domain.tools,
+    return { ...domain, toolHooks, tools: [...domain.tools, ...createGoogleWorkspaceTools(),
       ...createDurableSubagentTools({ taskId: task.id, cwd, models: this.durableModels!, permissionMode: getPermissionMode,
         allowGitBranchOrWorktree: () => true,
         workspaceNotes: () => [new ProjectNotesService(this.db).forSubagent(task.id), new WorkspaceNotesService(this.db).forSubagent(task.id)].filter(Boolean).join("\n\n"),
