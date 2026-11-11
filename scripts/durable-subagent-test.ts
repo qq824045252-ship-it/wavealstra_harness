@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import { createRegistry, defineExtension, defineTool, Harness, hook, ToolTask } from "@earendil-works/pi-durable";
+import { AgentDoc, configure, createRegistry, defineExtension, defineTool, Harness, hook, ToolTask, type ToolExecutionApi, type ConversationId } from "@earendil-works/pi-durable";
 import { openNodeJsonlStorage } from "@earendil-works/pi-durable/storage/jsonl/node";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { Type } from "typebox";
@@ -263,10 +263,45 @@ try {
       await writeFile(target, args.content);
       return { output: [{ type: "text", text: `wrote ${args.path}` }] };
     } });
+  const readIdentity = async (h: Harness, id: ConversationId) => (await h.snapshot(DurableSubagentIdentity, id, ctx))?.value;
+  type Identity = NonNullable<Awaited<ReturnType<typeof readIdentity>>>;
+  let legacyFixture: "uncreated" | "owned" | undefined;
+  let seededIdentity: Identity | undefined;
+  let legacyChildId: number | undefined;
   const open = async (store: string) => {
     const registry = createRegistry();
     registry.install(defineExtension({ name: "fixture",
-      tools: [proof, write, ...createDurableSubagentTools({ taskId: "test-task", cwd, models: native, permissionMode: () => permission, allowGitBranchOrWorktree: () => allowGitIsolation })],
+      tools: [proof, write, ...createDurableSubagentTools({ taskId: "test-task", cwd, models: native, permissionMode: () => permission, allowGitBranchOrWorktree: () => allowGitIsolation }).map(tool => {
+        if (tool.name !== "subagent" || !legacyFixture) return tool;
+        const fixture = legacyFixture;
+        return { ...tool, execute: async (args, api, context) => {
+          const proxy = new Proxy(api, { get(target, key) {
+            if (key !== "memo") return Reflect.get(target, key);
+            return async (...values: unknown[]) => {
+              if (values[0] !== "dispatch" || values.length !== 3) return Reflect.apply(target.memo, target, values);
+              const dispatch = structuredClone(values[1]) as { items: Identity["item"][]; timeout: Identity["timeout"] };
+              dispatch.items = dispatch.items.map(item => ({ ...item, tools: [] }));
+              const stored = await Reflect.apply(target.memo, target, ["dispatch", dispatch, context]);
+              if (fixture === "owned") {
+                const item = dispatch.items[0]!;
+                await target.commit(async tx => {
+                  const child = await tx.createConversation({ ownership: { kind: "task", taskId: target.taskId } });
+                  legacyChildId = child.id;
+                  const identity: Identity = { taskId: "test-task", parentConversationId: target.conversationId, item,
+                    workspace: { kind: "shared", cwd }, startedAt: target.now() - 1000,
+                    deadline: target.now() + 120000, timeout: dispatch.timeout };
+                  seededIdentity = structuredClone(identity);
+                  (await tx.doc(DurableSubagentIdentity, child.id)).value = identity;
+                  await configure(tx, child.id, { cwd, tools: [], modelTools: [], instructions: "old tool list",
+                    model: { provider: "fixture", modelId: "child" } });
+                }, context);
+              }
+              return stored;
+            };
+          } }) as ToolExecutionApi;
+          return tool.execute(args, proxy, context);
+        } };
+      })],
       // D-2: the same beforeTool entry point AgentService installs for production (a one-line
       // `guardSubagentWriteCall(call, api.conversationId, task.id)`); the guard itself is registered by
       // DurableSubagents.runChild for parallel dispatches with concurrency > 1, keyed by taskId here too
@@ -394,6 +429,44 @@ try {
   permission = "auto";
 
   // ---- D-3: parallel text projection (header + per-item status + id + truncation) ------------
+  // Persist old restrictive memo/AgentDoc shapes, then execute the real SDK recovery path.
+  for (const fixture of ["uncreated", "owned"] as const) {
+    legacyFixture = fixture; legacyChildId = undefined; seededIdentity = undefined;
+    const store = join(root, `legacy-${fixture}`);
+    let upgrade = await open(store);
+    let parent = await upgrade.root(ctx, { agent: { cwd, model: { provider: "fixture", modelId: "parent" } } });
+    const before = writes;
+    const input = { type: "input" as const, content: "Delegate", requestId: `legacy-${fixture}` };
+    const submission = await parent.submit(input, ctx);
+    assert.equal((await submission.wait(ctx)).status, "done");
+    assert.equal(writes, before + 1, `${fixture}: old empty tools must regain actual write capability`);
+    const owned = (await upgrade.commit(tx => tx.scanConversations({}, 20), ctx)).items.filter(child => child.owner);
+    assert.equal(owned.length, 1);
+    const childId = owned[0]!.id;
+    const identity = (await readIdentity(upgrade, childId))!;
+    assert(identity.item.tools.includes("proof") && identity.item.tools.includes("write"));
+    const agent = (await upgrade.snapshot(AgentDoc, childId, ctx))!;
+    assert(JSON.stringify(agent).includes('"proof"') && JSON.stringify(agent).includes('"write"'));
+    if (fixture === "owned") {
+      assert.equal(childId, legacyChildId);
+      const previous = seededIdentity!;
+      assert.deepEqual(identity.workspace, previous.workspace);
+      assert.equal(identity.deadline, previous.deadline);
+      assert.equal(identity.startedAt, previous.startedAt);
+      assert.deepEqual(identity.timeout, previous.timeout);
+    }
+    await upgrade.close(ctx);
+    upgrade = await open(store); parent = await upgrade.root(ctx);
+    const reused = await parent.submit(input, ctx);
+    assert.equal(reused.id, submission.id);
+    assert.equal((await reused.wait(ctx)).status, "done");
+    assert.equal(writes, before + 1, "completed write must not replay after reopening upgraded store");
+    assert.equal((await upgrade.commit(tx => tx.scanConversations({}, 20), ctx)).items.filter(child => child.owner).length, 1);
+    await upgrade.close(ctx);
+  }
+  legacyFixture = undefined;
+  console.log("PASS persisted legacy dispatch + owned child tool refresh, original workspace/deadline/identity, and completed receipt reuse");
+
   const parallelRun = await runScenario("parallel-status", "SCENARIO=parallel-status");
   assert.equal(parallelRun.children, 2);
   assert.equal(parallelRun.isError, true, "one failed item keeps isError=true");

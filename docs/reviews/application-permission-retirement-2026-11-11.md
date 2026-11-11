@@ -24,8 +24,14 @@ Upgrade regression: an old native `approval:<callId>` pending interaction is ret
 
 Artifacts remain local under `out/diagnostics/bot-multi-delegation/live/`; raw provider payloads are not committed.
 
-## Explicit remaining boundary
+## Boundary at the initial landing (resolved in follow-up below)
 
 A tool-execution review rejected the additional change that would clear the tools allowlist in historical subagent snapshots. That change was not executed or bypassed. New subagents inherit the host catalogue; an old persisted dispatch can still retain its historical `items[].tools` list in `DurableSubagents.runChild`, and an already-created child retains its configured catalogue. The user elected to apply that remaining migration manually. It is tracked separately, not reported as complete removal of every historical restriction.
 
 Final broad non-fault regression: 418 passed / 0 failed / 0 known failures / 0 regressions (2.4 minutes). Twenty crash/recovery/fault-injection suites were excluded with a temporary runner, not a permanent gate or baseline edit, as requested. Those exclusions are deferred rather than marked passed. Final typecheck: web/node/scripts passed, scripts 0 errors.
+
+## Follow-up: user-applied historical child migration
+
+The user manually applied the remaining `DurableSubagents.ts` migration. Review verified that the immutable dispatch memo is retained; executable items inherit the current host catalogue, while already-created owned conversations have their AgentDoc tool catalogue refreshed. Stored workspace/isolation, model, original deadline, ownership and cancellation remain unchanged.
+
+Added native SDK regression fixtures persist both legacy shapes: a dispatch with no child yet and an already-created owned child with an empty tool catalogue. Both execute a real filesystem write after catalogue restoration. The existing child's identity, workspace, start time, timeout and deadline remain identical. Closing/reopening the upgraded store and resubmitting the same request returns the same submission without repeating the write or creating another child. These are isolated persisted SDK fixtures, not claims about inspecting a user's historical production database or an online-model test.

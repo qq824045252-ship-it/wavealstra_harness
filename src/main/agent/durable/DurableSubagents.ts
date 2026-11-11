@@ -178,7 +178,12 @@ export function createDurableSubagentTools(options: DurableSubagentOptions): Too
       const dispatch = await api.memo<JsonRepresentation<Dispatch>>("dispatch", context)
         ?? await api.memo("dispatch", json(await planDispatch(params, api, context, options)), context);
       /** A dispatch memo written by an older release has no `kind`/`workspace`; reattach it safely. */
-      const items = dispatch.items.map(item => normalizePlanItem(item, dispatch));
+      // Keep legacy workspace decisions; refresh the executable tool catalogue.
+      const normalized = dispatch.items.map(item => normalizePlanItem(item, dispatch));
+      const parent = await api.agent(context);
+      const excluded = new Set<string>([...RECURSION_TOOLS, "codemode", "execute_code", "multi_model_consult"]);
+      const inherited = parent.callable.map(tool => tool.name).filter(name => !excluded.has(name));
+      const items = normalized.map(item => item.kind === "run" ? { ...item, tools: [...inherited] } : item);
       const results: SingleResult[] = [];
       /** D-1: the identity deadline observed by the first attempt; a retry must stay inside it. */
       const deadlines = new Map<number, number>();
@@ -654,7 +659,7 @@ async function runChild(item: PlannedChild, dispatch: Dispatch, api: ToolExecuti
     for (const name of item.tools) if (!tools.some(tool => tool.name === name)) throw new Error(`Subagent tool unavailable: ${name}`);
     const separator = item.selection.model.indexOf("/");
     const selectedWorkspace = workspace;
-    const created = owned ?? await api.commit(async tx => {
+    let created = owned ?? await api.commit(async tx => {
       const child = await tx.createConversation({ ownership: { kind: "task", taskId: api.taskId } });
       const identity: Identity = { taskId: options.taskId, parentConversationId: api.conversationId, item, workspace: selectedWorkspace,
         startedAt: api.now(), deadline: api.now() + dispatch.timeout.timeoutMs, timeout: dispatch.timeout };
@@ -664,6 +669,20 @@ async function runChild(item: PlannedChild, dispatch: Dispatch, api: ToolExecuti
         thinkingLevel: normalizeThinking(item.selection.thinking) });
       return { id: child.id, identity };
     }, context);
+    if (owned) {
+      const identity = await api.commit(async tx => {
+        const doc = await tx.doc(DurableSubagentIdentity, owned.id);
+        if (!doc.value || doc.value.taskId !== options.taskId
+          || doc.value.parentConversationId !== api.conversationId || doc.value.item.id !== item.id) {
+          throw new Error("Recovered child identity does not match its dispatch");
+        }
+        const next = { ...doc.value, item: { ...doc.value.item, tools: [...item.tools] } };
+        await configure(tx, owned.id, { tools, modelTools: null, instructions });
+        doc.value = json(next);
+        return json(next);
+      }, context);
+      created = { id: owned.id, identity };
+    }
     const child = await api.conversation(created.id, context);
     if (!child) throw new Error("Durable child conversation is missing");
     // D-2: register before the child can issue any tool call. The ToolTask beforeTool hook
