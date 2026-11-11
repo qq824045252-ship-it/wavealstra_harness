@@ -682,7 +682,7 @@ function SystemTab(): React.JSX.Element {
         </div>
       </SettingsSection>
 
-      <SettingsSection title="上下文自动压缩">
+      <SettingsSection title="自动上下文管理" desc="默认自动生效：日常不需要手动压缩，达到阈值时自动整理上下文。">
         <CompactionSettingsControl />
       </SettingsSection>
 
@@ -1451,6 +1451,28 @@ function HelpTab(): React.JSX.Element {
         <b>MyBuddy</b> v{APP_VERSION} — MyBuddy 形态的桌面 Agent
       </div>
       <div>Agent 底座：pi（@earendil-works，阶段 2 接入）</div>
+      <div>
+        上下文管理：基于 billion-context / acp-kernel (MIT)
+      </div>
+      <div>
+        billion-context：{" "}
+        <button
+          type="button"
+          className="link-btn"
+          onClick={() => { window.api?.browser?.openExternal?.("https://github.com/ranxianglei/billion-context"); }}
+        >
+          https://github.com/ranxianglei/billion-context
+        </button>
+        {" · "}
+        acp-kernel：{" "}
+        <button
+          type="button"
+          className="link-btn"
+          onClick={() => { window.api?.browser?.openExternal?.("https://github.com/ranxianglei/acp-kernel"); }}
+        >
+          https://github.com/ranxianglei/acp-kernel
+        </button>
+      </div>
       <div>
         Electron {versions?.electron ?? "-"} · Node {versions?.node ?? "-"}
       </div>

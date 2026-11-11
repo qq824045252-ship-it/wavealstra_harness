@@ -86,6 +86,11 @@ try {
   check("settings default, disable, reload and unrelated preferences", () => {
     const store = new AppSettingsStore();
     assert.equal(store.read().compactionTriggerTokens, 200_000);
+    assert.equal(store.read().compactionEngine, "billion-context", "默认引擎必须是 billion-context");
+    store.write({ compactionEngine: "native" });
+    assert.equal(new AppSettingsStore().read().compactionEngine, "native", "引擎选择必须持久化");
+    store.write({ compactionEngine: "bogus" as never });
+    assert.equal(store.read().compactionEngine, "billion-context", "非法引擎值必须回退默认");
     store.write({ compactionTriggerRatio: 0.5, compactionTriggerTokens: 96000, theme: "dark" });
     assert.equal(new AppSettingsStore().read().compactionTriggerTokens, 96000);
     store.write({ compactionTriggerTokens: null });

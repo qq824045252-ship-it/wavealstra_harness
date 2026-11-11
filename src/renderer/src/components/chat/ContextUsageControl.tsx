@@ -279,7 +279,16 @@ interface Props {
 
 export default function ContextUsageControl({ executing = false }: Props): React.JSX.Element {
   const activeTaskId = useAppStore((s) => s.activeTaskId);
-  const compacting = useAppStore(s => Boolean(s.activeTaskId && s.compactionByTask[s.activeTaskId]?.status === "running"));
+  // 压缩中判定同时认手动/自动压缩状态与 Durable 快照的 compacting 标记。
+  const compacting = useAppStore((s) => {
+    if (!s.activeTaskId) return false;
+    if (s.compactionByTask[s.activeTaskId]?.status === "running") return true;
+    return s.tasks.find((t) => t.id === s.activeTaskId)?.durable?.compacting === true;
+  });
+  /** 压缩引擎（billion-context / native）；字段可选，缺失时按 Pi 路径文案展示。 */
+  const compactionEngine = useAppStore((s) =>
+    s.activeTaskId ? s.compactionByTask[s.activeTaskId]?.engine : undefined,
+  );
   const activeModelId = useAppStore((s) => s.activeModelId);
   const models = useAppStore((s) => s.models);
   const contextUsedTokens = useAppStore((s) => s.contextUsedTokens);
@@ -387,7 +396,10 @@ export default function ContextUsageControl({ executing = false }: Props): React
     ? `上下文窗口 ${winLabel}`
     : `${pct}% · ${usedLabel} / ${winLabel} 上下文已使用`;
 
-  const summaryText = compacting ? "正在压缩上下文 · " + usageText : usageText;
+  const summaryText = compacting
+    ? (compactionEngine === "billion-context" ? "billion-context 正在整理上下文" : "Pi 正在压缩上下文") +
+      " · " + usageText
+    : usageText;
   const cacheUnknown = contextCacheHitRate == null;
   const cachePct = cacheUnknown ? null : Math.round(contextCacheHitRate! * 1000) / 10;
   const cacheColor =

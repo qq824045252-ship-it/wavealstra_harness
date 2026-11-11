@@ -35,6 +35,11 @@ import {
   normalizeCompactionTriggerRatio,
 } from "../shared/compaction-policy";
 import {
+  DEFAULT_COMPACTION_ENGINE,
+  normalizeCompactionEngine,
+  type ContextManagementEngine,
+} from "../shared/context-management";
+import {
   DEFAULT_NOTIFICATION_PREFERENCES,
   normalizeNotificationPreferences,
   type NotificationPreferencesDto,
@@ -112,6 +117,8 @@ export interface AppSettings {
   compactionTriggerRatio?: number;
   /** Absolute token threshold; null disables it. Combined with ratio using OR. */
   compactionTriggerTokens?: number | null;
+  /** 上下文管理引擎（默认 billion-context；native = Pi 原生按比例压缩，可随时切换并下一轮生效）。 */
+  compactionEngine?: ContextManagementEngine;
   /**
    * 对话分支（Branch in new task）灰度开关（实施规划 §15.1）。
    * 默认关闭；验收通过后默认开启。
@@ -195,6 +202,7 @@ const DEFAULTS: AppSettings = {
   terminalShellPath: "",
   compactionTriggerRatio: DEFAULT_COMPACTION_TRIGGER_RATIO,
   compactionTriggerTokens: DEFAULT_COMPACTION_TRIGGER_TOKENS,
+  compactionEngine: DEFAULT_COMPACTION_ENGINE,
   conversationBranchEnabled: false,
 };
 
@@ -287,6 +295,7 @@ export class AppSettingsStore {
       merged.terminalShellPath = normalizeTerminalShellPath(merged.terminalShellPath);
       merged.compactionTriggerRatio = normalizeCompactionTriggerRatio(merged.compactionTriggerRatio);
       merged.compactionTriggerTokens = normalizeCompactionTriggerTokens(merged.compactionTriggerTokens);
+      merged.compactionEngine = normalizeCompactionEngine(merged.compactionEngine);
       merged.conversationBranchEnabled = merged.conversationBranchEnabled === true;
       return merged;
     } catch {
@@ -374,6 +383,9 @@ export class AppSettingsStore {
     }
     if (partial.compactionTriggerTokens !== undefined) {
       next.compactionTriggerTokens = normalizeCompactionTriggerTokens(partial.compactionTriggerTokens);
+    }
+    if (partial.compactionEngine !== undefined) {
+      next.compactionEngine = normalizeCompactionEngine(partial.compactionEngine);
     }
     const persisted = { ...next } as Record<string, unknown>;
     delete persisted.defaultModelId;

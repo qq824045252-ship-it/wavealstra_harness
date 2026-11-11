@@ -7,7 +7,7 @@ import { canRebindDurableWorkspace, migrateDurableWorkspace, WorkspaceMigrationB
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT as ctx, type Context } from "@earendil-works/chord/context";
 import type { Models, Message, AssistantMessage } from "@earendil-works/pi-ai";
 import {
   Harness, SessionFailed, StorageRequestError, NestedCallDoc, createRegistry, defineExtension, section, AgentDoc, LiveDoc, hook, CompactionTask, GenerationTask, ToolTask, defineDoc,
@@ -37,6 +37,11 @@ import { identifyModelInvocation, requestTraceBoundary, setRequestTraceBoundary,
 import type { CacheTraceBoundary, CacheTraceOperation } from "../CacheRequestTracer";
 import { DurableSubagentIdentity, resolveDurableExecutionCwd } from "./DurableSubagents";
 import { DurableEvidenceProjection, type DurableEvidenceOptions } from "./DurableEvidenceProjection";
+import { DurableContextManager } from "./context/DurableContextManager";
+import { createDurableContextTools } from "./context/DurableContextTools";
+import { resolveDurableCompactionSettings } from "./context/CompactionPolicy";
+import type { DurableCompactionOutcome, DurableContextManagementOptions } from "./context/types";
+import type { ContextManagementEngine, ContextManagementStatusDto } from "../../../shared/context-management";
 import { ActiveDurableConversation, forkDurableConversation, resolveActiveDurableConversation, type DurableRegenerationInput, type DurableRegenerationState } from "./DurableConversationBranch";
 import { DurableConsultIdentity } from "./DurableConsultSession";
 import type { DiagnosticSource, ToolDiagnosticEvent } from "../../../shared/task-diagnostics";
@@ -95,6 +100,11 @@ export interface DurableBotOptions {
   tools?: readonly ToolRegistration[];
   /** 扩展的 context 钩子（改写每次请求的上下文）；在 beforeRequest 里与 evidence 一起执行。 */
   contextHooks?: readonly DurableContextHook[];
+  /**
+   * 自动上下文管理（内嵌 acp-kernel）。缺省时 Durable 使用 Pi 原生压缩策略；
+   * 提供后由本运行时统一接线 Harness settings/getter、请求前投影、原生压缩协调与工具。
+   */
+  contextManagement?: DurableContextManagementOptions;
   /** Task-scoped compatibility registrations for stored names, without transport startup. */
   restoreTools?: (names: readonly string[]) => readonly ToolRegistration[];
   prepareCodeMode?: (code: string, context: Parameters<ToolRegistration["execute"]>[2]) => Promise<readonly ToolRegistration[]>;
@@ -140,6 +150,16 @@ export class DurableBotRuntime {
   /** Host-side stream clocks, one per live generation task; pi's `LiveState.generation` carries no timestamps. */
   private readonly generationTimings = new Map<number, { attempt: number; timing: GenerationTiming }>();
   private evidence?: DurableEvidenceProjection;
+  /** 自动上下文管理协调器；仅在 DurableBotOptions.contextManagement 提供时存在。 */
+  private contextManager?: DurableContextManager;
+  /** 上下文管理工具需在 configure 重建 nativeTools 时保留。 */
+  private contextTools: ToolRegistration[] = [];
+  /** 当前会话模型窗口/键的同步缓存，供 Harness settings getter 每次读取。 */
+  private modelWindow = 0;
+  private modelKeyCache?: string;
+  /** 子代理/会诊 conversation 的独立协调器（每个 conversation 一份压缩状态）。 */
+  private readonly childManagers = new Map<string, Promise<DurableContextManager | undefined>>();
+  private readonly ownedChildManagers = new Set<DurableContextManager>();
   private constructor(readonly harness: Harness, readonly conversation: Conversation, private readonly options: DurableBotOptions) {
     this.observeSession();
   }
@@ -206,6 +226,25 @@ export class DurableBotRuntime {
     };
     options = { ...options, models: taskScopedModels(options.models, options.cwd,
       options.executionIdentity?.taskId, options.onProviderUsage, options.beforeProviderRequest, nextCompactionRequest, options.providerAuthorityGuarded) };
+    const initialModel = options.model ? options.models.getModel(options.model.provider, options.model.modelId) : undefined;
+    const initialModelWindow = initialModel?.contextWindow ?? 0;
+    const initialModelKey = options.model ? `${options.model.provider}/${options.model.modelId}` : undefined;
+    // Harness settings must be a synchronous getter: Pi reads it at every resolution, so
+    // settings changes and model switches take effect on the next request without reopening.
+    const harnessSettings = options.contextManagement ? () => {
+      try {
+        return {
+          compaction: resolveDurableCompactionSettings(
+            runtime?.currentModelWindow() || initialModelWindow,
+            options.contextManagement!.policy(),
+            { modelKey: runtime?.currentModelKey() ?? initialModelKey },
+          ),
+        };
+      } catch {
+        // 设置 store 暂时不可读时按产品默认值继续，绝不因为读阈值失败而阻断生成。
+        return { compaction: resolveDurableCompactionSettings(initialModelWindow || 128_000, { ratio: 0.8, absoluteTokens: 200_000 }, { modelKey: initialModelKey }) };
+      }
+    } : undefined;
     const handle = options.storage ? undefined : await openDurableStorage(options.directory, ctx, { readOnly: options.readOnly });
     const storage = options.storage ?? handle!.storage;
     const registry = createRegistry();
@@ -229,6 +268,15 @@ export class DurableBotRuntime {
         native.push(...compatibility);
       }
     } catch (error) { await storage.close(ctx); handle?.lease.release(); throw error; }
+    // 上下文管理工具必须在 Code Mode 的 tool declaration 冻结之前进入 native 列表：
+    // 否则第一次 configure 会改变 codemode 的声明，同一轮内触发 planTools 的 remove+add，
+    // 让 provider 请求末尾多出 tool-change system 消息（已验证会导致工具重放）。
+    let contextManagerRef: DurableContextManager | undefined;
+    let mainConversationId: Conversation["id"] | undefined;
+    const contextTools = options.contextManagement && !options.readOnly
+      ? createDurableContextTools({ manager: (conversationId, context) => runtime!.contextManagerFor(conversationId, context) })
+      : [];
+    native.push(...contextTools);
     const codemode = createDurableCodeMode(() => native.filter(tool => options.toolAllowed?.(tool.name) !== false), options.assets, join(options.directory, "images"), async (code, context) => {
       const tools = await options.prepareCodeMode?.(code, context) ?? [];
       runtime?.installCompatibility(tools);
@@ -239,12 +287,13 @@ export class DurableBotRuntime {
     let finishOpening!: (projection: DurableEvidenceProjection | undefined) => void;
     const openingEvidence = new Promise<DurableEvidenceProjection | undefined>(resolve => { finishOpening = resolve; });
     registry.install(botExtension(options, native, codemode, (id, message) => runtime?.recordResponse(id, message),
-      (code, context, conversationId) => runtime?.prewarmCodeMode(code, context, conversationId), () => options.evidenceProjection ? openingEvidence : undefined, (call, api, context) => runtime?.recordSkillRead(call, api, context), async (id, context) => harness?.getTask(id, context)));
+      (code, context, conversationId) => runtime?.prewarmCodeMode(code, context, conversationId), () => options.evidenceProjection ? openingEvidence : undefined, (call, api, context) => runtime?.recordSkillRead(call, api, context), async (id, context) => harness?.getTask(id, context), (conversationId, context) => runtime!.contextManagerFor(conversationId, context)));
     let harness: Harness | undefined;
     try {
       harness = await Harness.open(storage, {
         readOnly: options.readOnly,
         models: options.models, registry,
+        ...(harnessSettings ? { settings: harnessSettings } : {}),
         env: async (target, context) => {
           const cwd = await resolveDurableExecutionCwd(target, context, options.cwd);
           if (!statSync(cwd).isDirectory()) throw new Error("任务工作目录失效，请修复项目目录后继续");
@@ -264,6 +313,7 @@ export class DurableBotRuntime {
       });
       if (!options.readOnly && options.initialBranch) await seedDurableBranch(root, options.initialBranch);
       const conversation = await resolveActiveDurableConversation(harness, root, ctx);
+      mainConversationId = conversation.id;
       runtime = new DurableBotRuntime(harness, conversation, options);
       if (options.evidenceProjection) runtime.evidence = new DurableEvidenceProjection(options.evidenceProjection, conversation, options.models);
       runtime.storage = storage;
@@ -273,6 +323,24 @@ export class DurableBotRuntime {
       runtime.nativeTools = native;
       runtime.compatibilityTools = compatibility;
       runtime.codemode = codemode;
+      if (options.contextManagement && !options.readOnly) {
+        runtime.modelWindow = initialModelWindow;
+        runtime.modelKeyCache = initialModelKey;
+        const manager = new DurableContextManager({
+          conversation, models: options.models,
+          policy: options.contextManagement.policy,
+          engine: () => runtime!.currentCompactionEngine(),
+          contextWindow: () => runtime!.currentModelWindow(),
+          modelKey: () => runtime!.currentModelKey(),
+          toolEstimateTokens: options.contextManagement.toolEstimateTokens ?? (() => runtime!.estimateNativeToolTokens()),
+          ...(options.contextManagement.onStatus ? { onStatus: options.contextManagement.onStatus } : {}),
+          log: (message, error) => console.warn(message, error ?? ""),
+        });
+        contextManagerRef = manager;
+        runtime.contextManager = manager;
+        // 工具在 Harness.open 前创建（保证 codemode 声明不含中途变化），这里只登记以便 configure 重建时保留。
+        runtime.contextTools = contextTools;
+      }
       if (options.workspaceMigrationFrom) {
         if (options.readOnly) throw new Error("Read-only history cannot migrate a Bot workspace");
         if (options.waitingForInput?.()) throw new WorkspaceMigrationBusyError();
@@ -280,6 +348,11 @@ export class DurableBotRuntime {
       }
       const bound = await conversation.agent(ctx);
       if (bound.cwd && resolve(bound.cwd) !== resolve(options.cwd)) throw new Error("Bot 已绑定的工作目录与当前项目不一致");
+      if (bound.model) {
+        const boundModel = options.models.getModel(bound.model.provider, bound.model.modelId);
+        runtime.modelWindow = boundModel?.contextWindow ?? initialModelWindow;
+        runtime.modelKeyCache = `${bound.model.provider}/${bound.model.modelId}`;
+      }
       finishOpening(runtime.evidence);
       // Stored agent choices win on reopen, including an unfinished Code Mode call.
       const configured = await conversation.commit(async tx => Boolean((await tx.doc(AgentDoc, conversation.id)).tools), ctx);
@@ -289,6 +362,9 @@ export class DurableBotRuntime {
         // while the model is still offered only codemode.
         if (!options.readOnly && options.toolMode === "codemode") await runtime.configure(undefined, "codemode");
       } else if (!options.readOnly) await runtime.configure(options.model, options.toolMode);
+      // Context tools are created after Harness.open, so a reopened (already-configured) session
+      // re-installs the extension once to make them visible to the model.
+      if (runtime.contextManager) runtime.installExtension();
       runtime.watch = await conversation.watch(ctx);
       await runtime.refresh();
       runtime.watch.start(async () => { await runtime!.refresh(); });
@@ -313,20 +389,23 @@ export class DurableBotRuntime {
     // together so a refreshed tool set can never keep a stale (or dropped) context rewrite.
     if (contextHooks) this.options.contextHooks = [...contextHooks];
     if (toolHooks) this.options.toolHooks = toolHooks;
+    if (model) {
+      const resolved = this.options.models.getModel(model.provider, model.modelId);
+      this.modelWindow = resolved?.contextWindow ?? this.modelWindow;
+      this.modelKeyCache = `${model.provider}/${model.modelId}`;
+    }
     if (extensions || contextHooks) {
-      if (extensions) this.nativeTools = [...codingTools(this.options.directory, this.options.readonlyShell), ...extensions];
+      if (extensions) {
+        this.nativeTools = [...codingTools(this.options.directory, this.options.readonlyShell), ...extensions,
+          ...this.contextTools.filter(tool => !extensions.some(item => item.name === tool.name))];
+      }
       const available = this.nativeTools;
       this.codemode = createDurableCodeMode(() => available.filter(tool => this.options.toolAllowed?.(tool.name) !== false), this.options.assets, join(this.options.directory, "images"), async (code, context) => {
         const tools = await this.options.prepareCodeMode?.(code, context) ?? [];
         this.installCompatibility(tools);
         return tools;
       });
-      // Retain implementations referenced by old in-flight phase agents, without declaring them
-      // to new turns. Durable still decides whether an interrupted external call may replay.
-      const names = new Set(available.map(tool => tool.name));
-      const registered = [...available, ...this.compatibilityTools.filter(tool => !names.has(tool.name))];
-      this.registry.install(botExtension(this.options, registered, this.codemode, (id, message) => this.recordResponse(id, message),
-        (code, context, conversationId) => this.prewarmCodeMode(code, context, conversationId), () => this.evidence, (call, api, context) => this.recordSkillRead(call, api, context), (id, context) => this.harness.getTask(id, context)));
+      this.installExtension();
     }
     this.options.toolMode = toolMode;
     await this.conversation.configure({
@@ -336,16 +415,107 @@ export class DurableBotRuntime {
     }, ctx);
   }
 
+  /** 重新安装扩展：重建 native 工具后，hooks 与工具必须和同一份注册表一起生效。 */
+  private installExtension(): void {
+    const names = new Set(this.nativeTools.map(tool => tool.name));
+    const registered = [...this.nativeTools, ...this.compatibilityTools.filter(tool => !names.has(tool.name))];
+    this.registry.install(botExtension(this.options, registered, this.codemode,
+      (id, message) => this.recordResponse(id, message),
+      (code, context, conversationId) => this.prewarmCodeMode(code, context, conversationId), () => this.evidence,
+      (call, api, context) => this.recordSkillRead(call, api, context), (id, context) => this.harness.getTask(id, context),
+      (conversationId, context) => this.contextManagerFor(conversationId, context)));
+  }
+
+  /** Harness settings getter 的同步窗口来源；未知时返回 0，让策略回退保守值。 */
+  currentModelWindow(): number { return this.modelWindow; }
+  currentModelKey(): string | undefined { return this.modelKeyCache; }
+
+  /** 工具 schema 的保守 token 估算：压力判断必须计入工具定义，否则会低估出站请求。 */
+  private toolTokenCache = 0;
+  private toolTokenCacheKey = "";
+  estimateNativeToolTokens(): number {
+    const key = `${this.nativeTools.length}:${this.nativeTools.map(tool => tool.name).join(",")}`;
+    if (key !== this.toolTokenCacheKey) {
+      this.toolTokenCacheKey = key;
+      try {
+        this.toolTokenCache = estimateTextTokens(JSON.stringify(this.nativeTools.map(tool => ({
+          name: tool.name, description: tool.description, parameters: tool.parameters,
+        }))));
+      } catch {
+        this.toolTokenCache = 8_000;
+      }
+    }
+    return this.toolTokenCache;
+  }
+
+  /** 上下文管理真实状态；未启用时返回 undefined（UI/服务层不得伪造）。 */
+  contextManagementStatus(): ContextManagementStatusDto | undefined { return this.contextManager?.statusSnapshot(); }
+
+  /** 当前设置的引擎：native = Pi 原生按比例压缩；billion-context = 内嵌分层摘要。 */
+  currentCompactionEngine(): ContextManagementEngine {
+    const configured = this.options.contextManagement?.engine?.();
+    if (configured === "native") return "native";
+    return this.options.contextManagement ? "billion-context" : "native";
+  }
+
+  /**
+   * 每个 conversation 一份协调器：主会话用构造时那份；子代理/会诊按身份懒创建并缓存。
+   * 其他私有会话（Code Mode 内部 conversation）没有子代理身份，不接管。
+   */
+  private contextManagerFor(conversationId: Conversation["id"], context: Context): Promise<DurableContextManager | undefined> {
+    if (!this.contextManager || !this.options.contextManagement) return Promise.resolve(undefined);
+    const key = String(conversationId);
+    if (key === String(this.conversation.id)) return Promise.resolve(this.contextManager);
+    const cached = this.childManagers.get(key);
+    if (cached) return cached;
+    const created = (async (): Promise<DurableContextManager | undefined> => {
+      try {
+        const conversation = await this.harness.conversation(conversationId, context);
+        if (!conversation) return undefined;
+        const [subagent, consult] = await Promise.all([
+          this.harness.snapshot(DurableSubagentIdentity, conversationId, context),
+          this.harness.snapshot(DurableConsultIdentity, conversationId, context),
+        ]);
+        if (!subagent?.value && !consult?.key) return undefined;
+        const agent = await conversation.agent(context);
+        const model = agent.model ? this.options.models.getModel(agent.model.provider, agent.model.modelId) : undefined;
+        const window = model?.contextWindow ?? this.modelWindow;
+        const manager: DurableContextManager = new DurableContextManager({
+          conversation, models: this.options.models,
+          policy: this.options.contextManagement!.policy,
+          engine: () => this.currentCompactionEngine(),
+          contextWindow: () => window,
+          ...(agent.model ? { modelKey: () => `${agent.model!.provider}/${agent.model!.modelId}` } : {}),
+          toolEstimateTokens: this.options.contextManagement!.toolEstimateTokens ?? (() => this.estimateNativeToolTokens()),
+          log: (message, error) => console.warn(message, error ?? ""),
+        });
+        this.ownedChildManagers.add(manager);
+        return manager;
+      } catch (error) {
+        console.warn("[Durable] 子会话上下文管理初始化失败，该会话沿用 Pi 原生压缩", error);
+        return undefined;
+      }
+    })();
+    this.childManagers.set(key, created);
+    return created;
+  }
+
+  /** 设置里的压缩阈值变化后：Harness getter 每轮重读，这里刷新状态投影并推送一次。 */
+  refreshContextPolicy(): void {
+    const status = this.contextManager?.statusSnapshot();
+    if (status) {
+      try { this.options.contextManagement?.onStatus?.(status); }
+      catch (error) { console.warn("[Durable] 上下文管理状态推送失败", error); }
+    }
+  }
+
   resume(): void { this.assertSessionHealthy(); this.harness.resume(); }
   private installCompatibility(tools: readonly ToolRegistration[]): void {
     if (!tools.length) return;
     const compatibility = new Map(this.compatibilityTools.map(tool => [tool.name, tool]));
     for (const tool of tools) compatibility.set(tool.name, tool);
     this.compatibilityTools = [...compatibility.values()];
-    const names = new Set(this.nativeTools.map(tool => tool.name));
-    this.registry.install(botExtension(this.options, [...this.nativeTools, ...this.compatibilityTools.filter(tool => !names.has(tool.name))], this.codemode,
-      (id, message) => this.recordResponse(id, message),
-      (code, context, conversationId) => this.prewarmCodeMode(code, context, conversationId), () => this.evidence, (call, api, context) => this.recordSkillRead(call, api, context), (id, context) => this.harness.getTask(id, context)));
+    this.installExtension();
   }
   /** Install Code Mode's dynamically discovered tools before the nested ToolTask freezes its registry snapshot. */
   private async prewarmCodeMode(code: string, context: Parameters<ToolRegistration["execute"]>[2], conversationId = this.conversation.id): Promise<void> {
@@ -708,15 +878,43 @@ export class DurableBotRuntime {
     }
   }
 
-  async compact(): Promise<void> {
+  /**
+   * 手动“立即整理上下文”。BC 启用时由它做真实的分层摘要；BC 不可用或明确失败时回退原生压缩。
+   * 返回值必须区分 completed 与 skipped，并把真实前后口径交给服务层。
+   */
+  async compact(): Promise<DurableCompactionOutcome> {
     this.assertSessionHealthy();
+    const beforeTokens = this.latest?.contextUsage?.usedTokens ?? undefined;
+    if (this.contextManager && this.currentCompactionEngine() === "billion-context") {
+      try {
+        const outcome = await this.contextManager.compressNow(ctx);
+        if (outcome.applied || !outcome.skippedReason?.includes("失败")) {
+          await this.refresh();
+          return { ...outcome, ...(outcome.beforeTokens === undefined && beforeTokens !== undefined ? { beforeTokens } : {}) };
+        }
+      } catch (error) {
+        console.warn("[Durable] BC 手动整理失败，回退原生压缩", error);
+      }
+    }
     try {
       const id = await this.conversation.compact(undefined, ctx);
       const result = await this.harness.waitForTask(id, ctx);
       if (result.state.outcome.status !== "completed") throw new Error(`Durable 压缩${result.state.outcome.status}`);
-      const submissionId = result.state.outcome.result.submissionId;
+      const payload = result.state.outcome.result;
+      const submissionId = payload.submissionId;
       if (submissionId) await (await this.harness.submission(submissionId, ctx))?.wait(ctx);
+      this.contextManager?.markNativeCompaction();
       await this.refresh();
+      const applied = payload.entryId !== undefined || payload.submissionId !== undefined;
+      const afterTokens = this.latest?.contextUsage?.usedTokens ?? undefined;
+      return {
+        applied, engine: "native",
+        ...(beforeTokens !== undefined ? { beforeTokens } : {}),
+        ...(afterTokens !== undefined ? { afterTokens } : {}),
+        estimated: true,
+        ...(payload.entryId !== undefined ? { entryId: payload.entryId } : {}),
+        ...(applied ? {} : { skippedReason: "没有可压缩的历史" }),
+      };
     } catch (error) {
       return await this.normalizeFailure(error);
     }
@@ -724,6 +922,8 @@ export class DurableBotRuntime {
 
   async abortCompaction(): Promise<boolean> {
     this.assertSessionHealthy();
+    // 内嵌引擎的手动整理不是 Durable task：先取消它的摘要调用，再检查原生 manual compaction。
+    if (this.contextManager?.cancelMaintenance()) { await this.refresh(); return true; }
     const live = await this.harness.snapshot(LiveDoc, this.conversation.id, ctx);
     const manual = live?.compactions?.filter(compaction => compaction.trigger === "manual") ?? [];
     for (const compaction of manual) await this.harness.abortTask(compaction.taskId, ctx);
@@ -739,11 +939,20 @@ export class DurableBotRuntime {
       catch (error) { if (!this.failed) throw error; }
       await Promise.allSettled([...this.children.values()].map(watch => watch.stop()));
       await this.projection.catch(() => {});
+      // 关闭前把节流中的上下文状态强制落盘一次（失败只影响跨重启恢复）。
+      try {
+        await this.contextManager?.flush(ctx);
+        for (const manager of this.ownedChildManagers) await manager.flush(ctx);
+      } catch (error) { console.warn("[Durable] Context state flush before close failed", error); }
       // close checkpoints pending work; abort would permanently cancel it.
       try { await this.harness.close(ctx); }
       catch (error) { if (!(error instanceof SessionFailed) && !this.failed) throw error; }
     } finally {
       this.evidence?.dispose();
+      this.contextManager?.dispose();
+      for (const manager of this.ownedChildManagers) manager.dispose();
+      this.ownedChildManagers.clear();
+      this.childManagers.clear();
       this.lease?.release();
     }
   }
@@ -1138,6 +1347,7 @@ function botExtension(
   evidence?: () => DurableEvidenceProjection | undefined | Promise<DurableEvidenceProjection | undefined>,
   recordSkillRead?: (call: Parameters<ToolHooks["afterTool"]>[0], api: HookApi, context: Parameters<ToolRegistration["execute"]>[2]) => Promise<void> | void,
   readNativeTask?: (id: Parameters<Harness["getTask"]>[0], context: Parameters<Harness["getTask"]>[1]) => ReturnType<Harness["getTask"]>,
+  getContextManager?: (conversationId: Conversation["id"], context: Context) => Promise<DurableContextManager | undefined>,
 ) {
   const childConversation = async (api: Pick<HookApi, "snapshot" | "conversationId">, context: Parameters<ToolRegistration["execute"]>[2]) =>
     Boolean((await api.snapshot(DurableSubagentIdentity, api.conversationId, context))?.value || (await api.snapshot(DurableConsultIdentity, api.conversationId, context))?.key);
@@ -1196,11 +1406,17 @@ function botExtension(
       const consult = await input.read.snapshot(DurableConsultIdentity, input.conversationId, context);
       return child?.value || consult?.key ? undefined : options.instructions();
     }, { tag: false })],
-    hooks: [hook(ToolTask, toolHooks), hook(CompactionTask, { beforeCompact: async (_compaction, api, context) => {
+    hooks: [hook(ToolTask, toolHooks), hook(CompactionTask, { beforeCompact: async (compaction, api, context) => {
       // Compaction is its own task, never a GenerationTask: its summarization request must not share a
       // prefix chain with the visible answer, so it registers `compact` under its own invocation signal.
       setRequestTraceBoundary(context.abortSignal, traceBoundary(api, "compact"));
-      return undefined;
+      // 主会话与子代理/会诊各自持有独立协调器；Code Mode 私有会话没有子代理身份，不会命中。
+      const manager = await getContextManager?.(api.conversationId, context);
+      if (!manager) return undefined;
+      // BC 正常时拒绝 Pi 原生阈值压缩；原生手动/溢出/BC 故障时接管摘要输入，保证 fallback 有界。
+      const decision = await manager.beforeCompact({ reason: compaction.reason, messages: compaction.messages }, api, context);
+      if (decision === undefined || (decision !== undefined && "summary" in decision)) manager.markNativeCompaction();
+      return decision;
     } }), hook(GenerationTask, { beforeRequest: async (request, api, context) => {
       // Same signal-keyed contract as modelRequestGuards: the invocation signal identifies the request.
       setRequestTraceBoundary(context.abortSignal, traceBoundary(api, "stream"));
@@ -1214,7 +1430,14 @@ function botExtension(
         rememberGeneration(String(api.conversationId), api.taskId);
         try { options.onRequest?.({ conversationId: String(api.conversationId), generationTaskId: api.taskId, sourceKind: child ? "subagent" : "main" }); }
         catch (error) { console.warn("[Durable] Request diagnostics failed", error); }
-        if (child) { validate = () => {}; return; }
+        if (child) {
+          // 子代理/会诊是独立 conversation：用各自的协调器投影，绝不套用主会话的 refs。
+          validate = () => {};
+          const childManager = await getContextManager?.(api.conversationId, context);
+          if (!childManager) return;
+          const projected = await childManager.beforeRequest(messages, api, context);
+          return projected ? { messages: projected.messages } : undefined;
+        }
         const ledger = await evidence?.();
         if (options.evidenceProjection && !ledger) throw new Error("任务的证据校验服务未就绪");
         if (ledger) { messages = await ledger.project(messages, context); changed = true; }
@@ -1226,6 +1449,12 @@ function botExtension(
         for (const contextHook of options.contextHooks ?? []) {
           const rewritten = await contextHook(messages);
           if (rewritten?.messages) { messages = rewritten.messages; changed = true; }
+        }
+        // 自动上下文管理必须在 evidence 投影之后运行：它只替换被摘要覆盖的历史，保留证据注入与当前回合。
+        const manager = await getContextManager?.(api.conversationId, context);
+        if (manager) {
+          const projected = await manager.beforeRequest(messages, api, context);
+          if (projected) { messages = projected.messages; changed = true; }
         }
         validate = ledger?.captureRequestGuard() ?? (() => {});
         return changed ? { messages } : undefined;

@@ -5,6 +5,7 @@ import { z } from "zod";
 import type { Models } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { DurableBotRuntime, type DurableBotOptions } from "./DurableBotRuntime";
+import { DEFAULT_PRODUCT_COMPACTION_SETTINGS } from "./context/CompactionPolicy";
 
 const bindingSchema = z.object({
   id: z.string().min(1), kind: z.enum(["btw", "prompt-enhance", "authoring"]),
@@ -20,7 +21,7 @@ export async function openDurableAuxiliary(options: {
   agentDir: string; id: string; models: Models;
   initialize: () => Promise<DurableAuxiliaryBinding>;
   runtime: (binding: DurableAuxiliaryBinding) => Promise<Pick<DurableBotOptions,
-    "tools" | "toolAllowed" | "toolHooks" | "evidenceProjection" | "contextHooks" | "onSnapshot" | "onEntries" | "onRequest" | "onResponse" | "onTool">>;
+    "tools" | "toolAllowed" | "toolHooks" | "evidenceProjection" | "contextHooks" | "contextManagement" | "onSnapshot" | "onEntries" | "onRequest" | "onResponse" | "onTool">>;
 }): Promise<{ runtime: DurableBotRuntime; binding: DurableAuxiliaryBinding }> {
   const directory = join(options.agentDir, "durable-auxiliary", createHash("sha256").update(options.id).digest("hex"));
   const path = join(directory, "binding.json");
@@ -44,7 +45,11 @@ export async function openDurableAuxiliary(options: {
     }
   }
   if (binding.id !== options.id) throw new Error("辅助会话身份不一致");
-  const runtime = await DurableBotRuntime.open({ ...await options.runtime(binding), directory: join(directory, "session"),
+  const provided = await options.runtime(binding);
+  const runtime = await DurableBotRuntime.open({ ...provided, directory: join(directory, "session"),
+    // 辅助会话没有独立设置页：调用方给了 contextManagement 就用调用方的，
+    // 否则跟随产品默认阈值（0.8 / 200K）。
+    contextManagement: provided.contextManagement ?? { policy: () => DEFAULT_PRODUCT_COMPACTION_SETTINGS },
     cwd: binding.cwd, models: options.models, model: binding.model, taskId: binding.parentTaskId ?? binding.id,
     executionIdentity: { taskId: binding.parentTaskId, sourceKind: "auxiliary", executionScope: `${binding.kind}:${binding.id}` },
     toolMode: "native", instructions: () => binding.instructions });

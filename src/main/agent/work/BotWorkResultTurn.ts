@@ -5,6 +5,9 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { z } from "zod";
 import { DurableBotRuntime } from "../durable/DurableBotRuntime";
+import { DEFAULT_PRODUCT_COMPACTION_SETTINGS } from "../durable/context/CompactionPolicy";
+import type { ProductCompactionSettings } from "../durable/context/types";
+import type { ContextManagementEngine } from "../../../shared/context-management";
 import { resolveBotModel } from "../durable/BotModelCatalog";
 import { WATCH_COMPARISON_INSTRUCTIONS } from "./WorkWatchObservation";
 
@@ -40,7 +43,10 @@ export class BotWorkResultTurn {
   private readonly active = new Map<string, DurableBotRuntime>();
   private closing = false;
   constructor(private readonly options: { models: ModelRuntime; directory: string; defaultModel: () => string | undefined;
-    botModel: (botId: string) => string | undefined; isAuthority: () => boolean }) {}
+    botModel: (botId: string) => string | undefined; isAuthority: () => boolean;
+    /** 产品压缩阈值（同步 getter，与 DurableBotService 同源）；缺省用产品默认值（测试构造）。 */
+    productCompaction?: () => ProductCompactionSettings
+    compactionEngine?: () => ContextManagementEngine }) {}
 
   async review(input: WorkResultTurnInput): Promise<WorkResultDecision> {
     if (this.closing || !this.options.isAuthority()) throw Error("结果整理服务暂不可用");
@@ -51,6 +57,11 @@ export class BotWorkResultTurn {
     if (preferred && model.repairedFrom) throw Error(`Bot 模型 ${preferred} 不可用`);
     const runtime = await DurableBotRuntime.open({ directory, cwd: directory, models: this.options.models, model: model.target,
       toolMode: "native", toolAllowed: () => false, tools: [], onSnapshot: () => {},
+      // 产品阈值与 Durable 任务同源；测试构造未注入时用产品默认值。
+      contextManagement: {
+        policy: () => this.options.productCompaction?.() ?? DEFAULT_PRODUCT_COMPACTION_SETTINGS,
+        engine: () => this.options.compactionEngine?.() ?? "billion-context",
+      },
       evidence: () => input.personalPreferences === undefined ? "" : [
         "当前个人回复偏好（仅影响自然语言 reply，不改变事实、执行目标、JSON 字段或停止判断；本次用户明确要求优先）：",
         input.personalPreferences || "当前没有有效的个人长期偏好，不从旧报告恢复已经撤销的格式、称呼或结尾标记。",

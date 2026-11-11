@@ -26,7 +26,12 @@ mybuddyskills-main/skills/*
 !mybuddyskills-main/skills/blender-validation/
 
 # 上游 MCP 源码浅克隆（extensions/mcp/*/repo 联接）
+# acp-kernel 按固定 SHA 入库（vendor/acp-kernel/SOURCE.md），需要被 git 追踪；
+# 其他任何层级的 vendor/ 子目录（officecli 等）仍然忽略。
 vendor/
+!/vendor/
+/vendor/*
+!/vendor/acp-kernel/
 
 # 本地 MCP 工具索引（codegraph/serena 等）
 .codegraph/

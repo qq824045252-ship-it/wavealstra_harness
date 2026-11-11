@@ -1564,6 +1564,11 @@ export interface AppSettingsDto {
   compactionTriggerRatio?: number;
   /** 1K = 1000 tokens; null disables the absolute threshold. */
   compactionTriggerTokens?: number | null;
+  /**
+   * 上下文管理引擎：`billion-context`（默认，内嵌分层摘要 + 原文回查）或 `native`（Pi 原生按比例压缩）。
+   * 切换后下一次请求生效，无需重开会话。
+   */
+  compactionEngine?: "billion-context" | "native";
   /** 对话分支（Branch in new task）灰度开关（§15.1；默认关闭） */
   conversationBranchEnabled?: boolean;
   /** ACP 管理页显式停用的外部 Agent id；缺省/空数组 = 全部启用。 */

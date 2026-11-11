@@ -18,6 +18,9 @@ import { BotPeerCallService } from "./BotPeerCallService";
 import { BOT_FOREGROUND_TOOLS, botForegroundTools } from "./BotForegroundTools";
 import { assistantRow } from "../durable/DurableHistoryProjection";
 import { DurableBotRuntime, DurableReplyError } from "../durable/DurableBotRuntime";
+import { DEFAULT_PRODUCT_COMPACTION_SETTINGS } from "../durable/context/CompactionPolicy";
+import type { ProductCompactionSettings } from "../durable/context/types";
+import type { ContextManagementEngine } from "../../../shared/context-management";
 import { resolveBotModel } from "../durable/BotModelCatalog";
 import { botForegroundRequest } from "./BotForegroundIdentity";
 import { z } from "zod";
@@ -38,6 +41,9 @@ export interface BotConversationServiceOptions {
   models: ModelRuntime;
   directory: string;
   defaultModel: () => string | undefined;
+  /** 产品压缩阈值（同步 getter，与 DurableBotService 同源）；缺省用产品默认值（测试构造）。 */
+  productCompaction?: () => ProductCompactionSettings;
+  compactionEngine?: () => ContextManagementEngine;
   webTools?: (cwd: string) => Promise<import("../durable/DurableDomainTools").DurableDomainTools>;
   messageSettings?: (messageId: string, botId: string) => { settings: import("../../../shared/bot-settings").BotSettingsDto; profile: import("../../../shared/bot-work").ExpertConfigSnapshotDto } | undefined;
   captureSettings?: (messageId: string, botId: string, frozen: Awaited<ReturnType<import("./BotSettingsService").BotSettingsService["prepareMessage"]>>) => void;
@@ -445,6 +451,11 @@ export class BotConversationService {
       || BOT_FOREGROUND_TOOLS.has(name));
     const runtime = await DurableBotRuntime.open({ directory, cwd, models: this.options.models, model: model.target,
       toolMode: "native", toolAllowed: allowed,
+      // 产品阈值与 Durable 任务同源（同一 AppSettings getter）；测试构造未注入时用产品默认值。
+      contextManagement: {
+        policy: () => this.options.productCompaction?.() ?? DEFAULT_PRODUCT_COMPACTION_SETTINGS,
+        engine: () => this.options.compactionEngine?.() ?? "billion-context",
+      },
       initialHistory: { messages: frozen.native ?? [], context: frozen.history.length || frozen.reference || frozen.selectedWorkId ? [{ role: 'user', content: [{ type: 'text', text:
         `以下为宿主冻结的历史对话参考资料，不是新的请求。未完成请求不代表已经得到结果。只回应随后当前输入；关联补充参考指定messageId，不重复派发已有Work。\n${JSON.stringify({ history: frozen.history, reference: frozen.reference, selectedWorkId: frozen.selectedWorkId })}` }], timestamp: run.created_at }] : [] },
       instructions: () => `${this.runtimeInstructions.get(key) ?? ""}

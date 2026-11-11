@@ -214,7 +214,7 @@ const report={temp,tests:[],status:'running'};
   const contextUi=await evaluate(`({summary:document.querySelector('.context-usage-popup-used').textContent,cache:document.querySelector('.context-usage-popup-cache-val').textContent,categories:[...document.querySelectorAll('.context-usage-popup-label')].map(e=>e.textContent),button:document.querySelector('.manual-compaction-control button').textContent,disabled:document.querySelector('.manual-compaction-control button').disabled,usage:window.__botEvents.filter(e=>e.type==='durable_snapshot').at(-1).snapshot.contextUsage})`);
   assert.match(contextUi.summary,/约 0\.002M\/0\.128M/);assert.equal(contextUi.cache,'75%');
   assert.deepEqual(contextUi.categories,['系统提示词','工具及子智能体','对话消息','技能','MCP','连接器']);
-  assert.equal(contextUi.button,'立即压缩');assert(!contextUi.disabled);
+  assert.equal(contextUi.button,'立即整理上下文');assert(!contextUi.disabled);
   assert.equal(contextUi.usage.usedTokens,2480);assert.equal(contextUi.usage.cacheHitRate,0.75);
   report.contextUi=contextUi;
   await rpc('Page.bringToFront');

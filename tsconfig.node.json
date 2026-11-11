@@ -1,6 +1,9 @@
 {
   "compilerOptions": {
     "target": "ES2022",
+    // vendor/acp-kernel 的 persist/store.ts 使用 Promise.withResolvers（上游 kernel
+    // tsconfig 即 lib: ["ES2022","ES2024.Promise"]）；仅新增该库，不改动既有目标/模块语义。
+    "lib": ["ES2022", "ES2024.Promise", "DOM"],
     "module": "ESNext",
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
@@ -9,12 +12,19 @@
     "skipLibCheck": true,
     "esModuleInterop": true,
     "types": ["node", "electron-vite/node"],
+    // 仅供类型检查：vendor/acp-kernel/src/wire/bili-message.ts type-only 自引用
+    // `import type { CoreMessage } from "acp-kernel"`。运行时代码请用相对路径 import
+    // vendor 源码（electron-vite/rollup 不读取 tsconfig paths）。
+    "paths": {
+      "acp-kernel": ["./vendor/acp-kernel/src/index.ts"]
+    },
     "outDir": "out/types-node"
   },
   "include": [
     "electron.vite.config.ts",
     "src/main/**/*",
     "src/preload/**/*",
-    "src/shared/**/*"
+    "src/shared/**/*",
+    "vendor/acp-kernel/**/*"
   ]
 }

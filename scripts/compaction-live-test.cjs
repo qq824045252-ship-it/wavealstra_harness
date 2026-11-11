@@ -206,12 +206,12 @@ async function readLogs(cwd,prefix,name,count=3) {
 async function compactUi(id,name) {
   await openUsage();
   const before=await evaluate('window.api.agent.getCompactionStatus('+JSON.stringify(id)+')');
-  await evaluate('[...document.querySelectorAll(".manual-compaction-control button")].find(e=>e.textContent==="立即压缩").click()');
+  await evaluate('[...document.querySelectorAll(".manual-compaction-control button")].find(e=>e.textContent==="立即整理上下文").click()');
   const state=await until('window.api.agent.getCompactionStatus('+JSON.stringify(id)+').then(s=>s.operationId!=='+JSON.stringify(before.operationId||'')+'&&["completed","failed","cancelled","skipped"].includes(s.status)?s:false)',240000);
   report.scenarios[name]=state;save();
   check(name+': real native summarization completed',state.status==='completed');
   check(name+': native projected context reduced',state.estimatedTokensAfter<state.tokensBefore);
-  await until('document.querySelector(".manual-compaction-control")?.innerText.includes("已压缩")');
+  await until('document.querySelector(".manual-compaction-control")?.innerText.includes("已整理")');
   await screenshot(name);await closeUsage();return state;
 }
 (async()=>{
@@ -261,8 +261,8 @@ async function compactUi(id,name) {
     check('branch during manual compact rejected',forkBlocked.code==='TASK_BUSY');
     await openUsage();
     check('composer send disabled during manual compact',await evaluate('!!document.querySelector(".send-btn")?.disabled'));
-    await until('[...document.querySelectorAll(".manual-compaction-control button")].some(e=>e.textContent==="取消压缩")');
-    await evaluate('[...document.querySelectorAll(".manual-compaction-control button")].find(e=>e.textContent==="取消压缩").click()');
+    await until('[...document.querySelectorAll(".manual-compaction-control button")].some(e=>e.textContent==="取消整理")');
+    await evaluate('[...document.querySelectorAll(".manual-compaction-control button")].find(e=>e.textContent==="取消整理").click()');
     const cancelled=await until('window.__manualResult',240000);report.scenarios.cancel=cancelled;save();
     check('manual cancellation settles as cancelled',cancelled.state.status==='cancelled');
     check('cancelled summary does not replace active branch',SessionManager.open(priorFile.sessionFile).getLeafId()===oldLeaf);

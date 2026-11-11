@@ -19,6 +19,9 @@ import { emptyMcpFilterResult } from "../../mcp/McpModeFilter";
 import { toNativeMcpConfig } from "../../mcp/NativeMcpConfig";
 import { McpCredentialBackend } from "../../mcp/McpCredentialBackend";
 import { DurableBotRuntime } from "./DurableBotRuntime";
+import type { DurableCompactionOutcome, ProductCompactionSettings } from "./context/types";
+import { DEFAULT_PRODUCT_COMPACTION_SETTINGS } from "./context/CompactionPolicy";
+import type { ContextManagementEngine, ContextManagementStatusDto } from "../../../shared/context-management";
 import { DurableTaskProjection } from "./DurableTaskProjection";
 import { ToolGate } from "./ToolGate";
 import { DEFAULT_DURABLE_RESUME_CONCURRENCY, ResumeAdmission, type ResumeAdmissionReport } from "./ResumeAdmission";
@@ -88,6 +91,12 @@ export interface DurableBotServiceOptions {
   onRelease?: (taskId: string) => void;
   toolMode: (task: TaskDto) => BotToolMode;
   defaultModel: () => string | undefined;
+  /** 产品压缩阈值（同步 getter：每次使用重新读取，运行中改设置即时生效）。缺省用产品默认值。 */
+  productCompaction?: () => ProductCompactionSettings;
+  /** 上下文管理引擎选择（billion-context / native）；同步 getter，切换后下一轮生效。 */
+  compactionEngine?: () => ContextManagementEngine;
+  /** 上下文管理状态投影回调：只做 UI 投影，绝不在这里等待或阻塞运行时线程。 */
+  onContextStatus?: (taskId: string, status: ContextManagementStatusDto) => void;
   emit: (patch: AgentUiPatch) => void;
   projectArtifacts?: (taskId: string, snapshot: DurableBotSnapshot, before: Map<string, string>, cwd: string, messageWorkspaces?: ReadonlyMap<string, string>) => Promise<void>;
   thinking?: (task: TaskDto, request: AgentPromptRequest) => ModelThinkingLevel | undefined;
@@ -151,6 +160,13 @@ export class DurableBotService {
   contextUsage(taskId: string) {
     const value = this.opened.get(taskId)?.runtime.snapshot.contextUsage;
     return value ? { taskId, ...value } : null;
+  }
+  /**
+   * 会话级上下文管理的只读状态投影：不打开运行时、不建 host、无副作用。
+   * 没有已打开运行时（或运行时未启用上下文管理）时返回 undefined，由调用方回退旧逻辑。
+   */
+  contextManagementStatus(taskId: string): ContextManagementStatusDto | undefined {
+    return this.opened.get(taskId)?.runtime.contextManagementStatus();
   }
   /**
    * MCP 元工具定义的字符口径（只读投影）：当前已打开 bot 的元工具字符数 / 元工具个数 / 已配置服务数。
@@ -399,6 +415,22 @@ export class DurableBotService {
         workspaceMigrationFrom: move?.from_cwd,
         projectionAfterEntryId: projectionCheckpoint?.entry_id ?? 0,
         toolAllowed: name => toolGate.allowed(name),
+        // 产品阈值以同步 getter 注入运行时：运行中改设置不需要重开会话，也不会留在旧副本上。
+        // 只有宿主显式提供设置源/状态回调时才启用内嵌上下文管理；直接构造服务的测试
+        // （无 productCompaction）沿用 Pi 原生压缩，避免改变既有语义。
+        ...(this.options.productCompaction ? {
+          contextManagement: {
+            policy: this.options.productCompaction,
+            engine: () => this.options.compactionEngine?.() ?? "billion-context",
+            // 状态从运行时同步回调；这里只转发，不做等待（回调方只 emit UI patch）。
+            ...(this.options.onContextStatus ? {
+              onStatus: status => {
+                try { this.options.onContextStatus?.(taskId, status); }
+                catch (error) { console.warn(`[Durable] Context management status push failed for ${taskId}`, error); }
+              },
+            } : {}),
+          },
+        } : {}),
         taskId, model: selected, toolMode: this.toolMode(task), tools: [...mcp.tools, ...domain?.tools ?? []],
         contextHooks: domain?.contextHooks ?? [],
         toolHooks: domain?.toolHooks,
@@ -961,7 +993,21 @@ export class DurableBotService {
     try { if (this.binding(taskId)) await this.withRecovery(taskId, open => open.runtime.abort()); }
     finally { this.options.onRelease?.(taskId); }
   }
-  async compact(taskId: string): Promise<void> { await this.trackAdmission(taskId, () => this.withRecovery(taskId, open => open.runtime.compact())); }
+  async compact(taskId: string): Promise<DurableCompactionOutcome> {
+    return await this.trackAdmission(taskId, () => this.withRecovery(taskId, open => open.runtime.compact()));
+  }
+  /**
+   * 产品阈值变更后让已打开运行时重算按阈值派生的缓存并重新投影状态。
+   * 阈值本身是同步 getter，下一次请求自然读到新值；这里不打开任何新运行时。
+   */
+  refreshCompactionPolicy(taskId?: string): void {
+    const targets = taskId ? [this.opened.get(taskId)] : [...this.opened.values()];
+    for (const open of targets) {
+      if (!open) continue;
+      try { open.runtime.refreshContextPolicy(); }
+      catch (error) { console.warn(`[Durable] Cannot refresh compaction policy for ${taskId ?? "opened sessions"}`, error); }
+    }
+  }
   async abortCompaction(taskId: string): Promise<boolean> { return await this.opened.get(taskId)?.runtime.abortCompaction() ?? false; }
   async purge(taskId: string): Promise<void> {
     if (this.options.db.getTask(taskId)) throw new Error("Only a permanently deleted task can purge Durable storage");

@@ -188,9 +188,11 @@ import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/compat";
 import { mapPiEventToPatches, type MapperContext } from "../../shared/pi-event-mapper";
 import { formatTerminalContextForPrompt } from "../../shared/terminal-ipc";
 import { AppSettingsStore } from "../AppSettingsStore";
-import { resolveCompactionPolicy } from "../../shared/compaction-policy";
+import { resolveCompactionPolicy, normalizeCompactionTriggerRatio, normalizeCompactionTriggerTokens } from "../../shared/compaction-policy";
 import type { TaskCompactionStatusDto, TaskCompactionResultDto } from "../../shared/compaction";
 import { resolveContextTokenEstimate } from "../../shared/compaction";
+import { normalizeCompactionEngine, type ContextManagementEngine, type ContextManagementStatusDto } from "../../shared/context-management";
+import type { ProductCompactionSettings } from "./durable/context/types";
 import { existsSync as sessionFileExists } from "node:fs";
 import { UserFontsStore } from "../UserFontsStore";
 import { AppDatabase } from "../db/AppDatabase";
@@ -1536,6 +1538,13 @@ export class AgentService {
           ?? this.taskWorkspace.ensureTaskExecutionWorkspace(id);
       },
       defaultModel: () => this.settingsStore.read().defaultModelId,
+      // 产品阈值是同步 getter：Durable 每次使用重新读取，运行中改设置即时生效。
+      // 只读设置文件、不缓存副本，避免与设置页显示的阈值口径漂移。
+      productCompaction: () => this.productCompactionSettings(),
+      compactionEngine: () => this.compactionEngineSetting(),
+      // 自动/手动整理的状态都从运行时回调进来；这里只做 DTO 投影并 emit，不同步等待。
+      onContextStatus: (taskId, status) =>
+        this.publishCompactionState(this.durableCompactionStatus(taskId, status, this.lastCompactionStatus.get(taskId))),
       prepareTask: request => this.prepareDurableTask(request),
       beforeSubmit: request => {
         const blocked = this.workService.checkTaskInput(request.taskId, request.userMessageId);
@@ -1709,6 +1718,9 @@ export class AgentService {
     this.botConversations ??= new BotConversationService({ reminders: () => this.localWorkflow?.cron, onTool: event => this.taskDiagnostics.observeTool(event), db: this.db.connection, userId: LOCAL_USER_ID,
       bots: this.botRegistry, works: this.workService, models: this.durableModels, directory: join(getMyBuddyDir(), "bot-conversations"),
       botModel: botId => this.botSettings.get(botId).modelId || undefined,
+      // 前台 Bot 会话跟随设置页的压缩阈值（与 DurableBotService 同一 getter，改设置即时生效）。
+      productCompaction: () => this.productCompactionSettings(),
+      compactionEngine: () => this.compactionEngineSetting(),
       thinking: (id, preference) => {
         const slash = id.indexOf("/");
         const model = this.durableModels!.getModel(id.slice(0, slash), id.slice(slash + 1));
@@ -1782,6 +1794,9 @@ export class AgentService {
     });
     this.botResultTurns ??= new BotWorkResultTurn({ models: this.durableModels, directory: join(getMyBuddyDir(), "bot-result-turns"),
       defaultModel: () => this.settingsStore.read().defaultModelId, botModel: botId => this.botSettings.get(botId).modelId || undefined,
+      // 结果整理回合使用同一产品阈值，避免它与前台/任务通道的压缩口径不一致。
+      productCompaction: () => this.productCompactionSettings(),
+      compactionEngine: () => this.compactionEngineSetting(),
       isAuthority: () => this.workHostAuthority.isAuthority() });
     const resultPreferences = (taskId: string): string => {
       if (!this.settingsStore.read().memoryEnabled || !this.memoryService.allowsPersonalBotBaseline({ taskId })) return "";
@@ -3754,10 +3769,14 @@ export class AgentService {
     const nextApp = this.settingsStore.write(productPartial);
     const next = this.getAppSettings();
     if (previous.compactionTriggerRatio !== nextApp.compactionTriggerRatio ||
-        previous.compactionTriggerTokens !== nextApp.compactionTriggerTokens) {
+        previous.compactionTriggerTokens !== nextApp.compactionTriggerTokens ||
+        previous.compactionEngine !== nextApp.compactionEngine) {
       for (const entry of this.registry.values()) {
         this.applyCompactionReserveForModel(entry.session);
       }
+      // Durable 的阈值是同步 getter，下一次请求自然读到新值；这里只让已打开的运行时
+      // 丢掉按旧阈值派生的缓存并把新状态投影到 UI（没有已打开会话时是空操作）。
+      this.durableBots?.refreshCompactionPolicy();
     }
     if (previous.memoryEnabled !== nextApp.memoryEnabled) {
       if (!nextApp.memoryEnabled) this.memoryOrganization.pauseActive();
@@ -4461,13 +4480,63 @@ export class AgentService {
 
   getCompactionStatus(taskId: string): TaskCompactionStatusDto {
     const previous = this.lastCompactionStatus.get(taskId);
+    // Durable 是唯一真实状态源：查询只读投影，绝不为读状态去打开运行时。
+    const live = this.durableBots?.contextManagementStatus(taskId);
+    // 正在整理时以运行时为准。运行时停在 idle/上一次终态时不能盖掉本地刚发布的
+    // running/终态记录（手动操作锁仍在，或运行时尚未投影本次结果）。
+    if (live && this.durableCompactionRunning(live)) return this.durableCompactionStatus(taskId, live, previous);
     if (this.manualCompactions.has(taskId)) return previous ?? { taskId, status: "running", reason: "manual" };
+    if (live && (live.phase !== "idle" || live.compaction)) return this.durableCompactionStatus(taskId, live, previous);
     if (this.registry.get(taskId)?.session.isCompacting) return { taskId, status: "running" };
     return previous ?? { taskId, status: "idle" };
   }
 
+  private durableCompactionRunning(live: ContextManagementStatusDto): boolean {
+    return live.phase === "analyzing" || live.phase === "summarizing" || live.phase === "applying";
+  }
+
+  /** 把内嵌上下文管理的只读状态投影成任务压缩 DTO；字段口径与 shared/compaction 一致。 */
+  private durableCompactionStatus(taskId: string, live: ContextManagementStatusDto,
+    previous: TaskCompactionStatusDto | undefined): TaskCompactionStatusDto {
+    // 运行时自己给出的任务压缩投影优先（手动操作由 AgentService 生成，这里只补 taskId）。
+    if (live.compaction) return { ...live.compaction, taskId };
+    const status: TaskCompactionStatusDto["status"] = live.phase === "completed" ? "completed"
+      : live.phase === "skipped" ? "skipped"
+        : live.phase === "cancelled" ? "cancelled"
+          : live.phase === "failed" ? "failed"
+            : live.phase === "idle" ? "idle" : "running";
+    // DTO 只认 manual/threshold/overflow；内核增长建议归入 threshold，原生回退不回填 reason。
+    const reason: TaskCompactionStatusDto["reason"] = live.reason === "growth" ? "threshold"
+      : live.reason === "fallback" ? undefined : live.reason;
+    return {
+      taskId, status, reason, engine: live.engine, automatic: live.automatic, estimated: live.estimated,
+      operationId: live.operationId ?? previous?.operationId,
+      tokensBefore: live.beforeTokens, tokensAfter: live.afterTokens, estimatedTokensAfter: live.afterTokens,
+      blocks: live.blocks,
+      // 只有失败态才把 lastError 当消息，避免历史错误盖在一次成功整理之后。
+      message: live.message ?? (live.phase === "failed" ? live.lastError : undefined),
+    };
+  }
+
+  /**
+   * 产品压缩阈值（设置页同一口径）：所有 Durable 通道共用一个同步 getter，
+   * 运行中改设置对下一次请求立即生效，不需要重开会话。
+   */
+  private compactionEngineSetting(): ContextManagementEngine {
+    return normalizeCompactionEngine(this.settingsStore.read().compactionEngine);
+  }
+
+  private productCompactionSettings(): ProductCompactionSettings {
+    const settings = this.settingsStore.read();
+    // 缺省 0.8/200K；显式 null 表示只按比例，不能被 ?? 折回默认值。
+    return { ratio: normalizeCompactionTriggerRatio(settings.compactionTriggerRatio),
+      absoluteTokens: normalizeCompactionTriggerTokens(settings.compactionTriggerTokens) };
+  }
+
   private publishCompactionState(state: TaskCompactionStatusDto): void {
-    if (state.reason === "manual" && this.manualCompactions.has(state.taskId)) {
+    // 手动操作的状态可能由运行时异步投影，发布时操作锁已释放；operationId 仍必须延续，
+    // 否则 UI 无法把前后两条状态与同一次点击对上。
+    if (state.reason === "manual") {
       state = { ...state, operationId: state.operationId ?? this.lastCompactionStatus.get(state.taskId)?.operationId };
     }
     if (state.status === "completed" && state.estimatedTokensAfter != null) {
@@ -4494,16 +4563,35 @@ export class AgentService {
   async compactTask(taskId: string): Promise<TaskCompactionResultDto> {
     if (!this.durableBots || !this.db.getTask(taskId)) return { ok: false, code: "NO_SESSION", state: { taskId, status: "skipped", message: "当前任务没有可压缩的会话" } };
     if (this.manualCompactions.has(taskId) || this.durableBots.busy(taskId)) return { ok: false, code: "TASK_BUSY", state: { taskId, status: "skipped", message: "任务正在执行" } };
+    const operationId = randomUUID();
     const operation = { cancelled: false };
     this.manualCompactions.set(taskId, operation);
-    this.publishCompactionState({ taskId, status: "running", reason: "manual" });
+    this.publishCompactionState({ taskId, status: "running", reason: "manual", operationId });
     try {
-      await this.durableBots.compact(taskId);
-      const state: TaskCompactionStatusDto = { taskId, status: operation.cancelled ? "cancelled" : "completed", reason: "manual" };
+      // 运行时返回确定性结果（applied/skipped + 真实前后 token + 引擎）；宿主只负责
+      // 操作锁、取消语义和 UI 投影，不在这里推断压缩是否发生了。
+      const outcome = await this.durableBots.compact(taskId);
+      if (operation.cancelled) {
+        const state: TaskCompactionStatusDto = { taskId, status: "cancelled", reason: "manual", operationId,
+          engine: outcome.engine, tokensBefore: outcome.beforeTokens, tokensAfter: outcome.afterTokens };
+        this.publishCompactionState(state);
+        return { ok: false, state };
+      }
+      if (!outcome.applied) {
+        // 「没有可整理的历史」不是失败：ok 仍为 false，但用 code 与真正失败区分。
+        const state: TaskCompactionStatusDto = { taskId, status: "skipped", reason: "manual", operationId,
+          engine: outcome.engine, estimated: outcome.estimated, message: outcome.skippedReason ?? "没有可整理的历史" };
+        this.publishCompactionState(state);
+        return { ok: false, code: "NOTHING_TO_COMPRESS", state };
+      }
+      const state: TaskCompactionStatusDto = { taskId, status: "completed", reason: "manual", operationId,
+        engine: outcome.engine, estimated: outcome.estimated, tokensBefore: outcome.beforeTokens,
+        tokensAfter: outcome.afterTokens, estimatedTokensAfter: outcome.afterTokens, blocks: outcome.blocks,
+        message: outcome.message };
       this.publishCompactionState(state);
-      return { ok: !operation.cancelled, state };
+      return { ok: true, state };
     } catch (error) {
-      const state: TaskCompactionStatusDto = { taskId, status: operation.cancelled ? "cancelled" : "failed", reason: "manual", message: String(error) };
+      const state: TaskCompactionStatusDto = { taskId, status: operation.cancelled ? "cancelled" : "failed", reason: "manual", operationId, message: String(error) };
       this.publishCompactionState(state);
       return { ok: false, code: "COMPACTION_FAILED", state };
     } finally { this.manualCompactions.delete(taskId); }
@@ -4801,6 +4889,8 @@ export class AgentService {
         } : undefined;
         return {
           onSnapshot: input.onSnapshot ?? (() => {}),
+          // 辅助会话（btw/prompt-enhance/authoring）也跟随产品压缩阈值，与任务/前台同源。
+          contextManagement: { policy: () => this.productCompactionSettings(), engine: () => this.compactionEngineSetting() },
           onTool: event => this.taskDiagnostics.observeTool(event),
           tools: readOnly ? [...createDurableReadOnlyTools(binding.cwd), ...shared.tools.filter(tool => allowed.has(tool.name)).map(tool => ({ ...tool, replay: "safe" as const }))] : [],
           toolAllowed: permit,
