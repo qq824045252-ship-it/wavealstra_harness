@@ -6,6 +6,7 @@ import { BotConversationMemory } from "../src/main/agent/work/BotConversationMem
 import { MemoryService } from "../src/main/memory/MemoryService";
 import { MemoryPipelineManager } from "../src/main/memory/MemoryPipelineManager";
 import { LOCAL_USER_ID } from "../src/shared/bot-work";
+import { botHistoryContext } from "../src/main/agent/work/BotHistoryContext";
 import { botMemoryConversationOnly } from "../src/main/memory/BotMemorySource";
 
 const db = new AppDatabase(":memory:");
@@ -87,6 +88,18 @@ try {
   assert(!recall("DeletedSource").includes("source-private"), "fresh read respects L0 source deletion");
   const active = pair("CurrentOnly", "current-private", { archive: false });
   assert.equal(bridge.context("learn", active.conversationId, active.userMessageId), "", "current source is not historical evidence");
+  const recentInput = { userId: LOCAL_USER_ID, botId: "learn", query: "今天学到什么", before: sequence * 100 + 2,
+    after: sequence * 100, mode: "recent" as const };
+  const recent = botHistoryContext(db.connection, recentInput);
+  assert(recent.includes("current-private") && recent.includes("有界近期问答样本"), "peer can include current personal source without a fake conversation ID");
+  assert(!botHistoryContext(db.connection, { ...recentInput, excludeConversationId: active.conversationId }).includes("current-private"));
+  assert.equal(botHistoryContext(db.connection, { ...recentInput, mode: "related" }), "", "related retains lexical relevance");
+  assert.equal(botHistoryContext(db.connection, { ...recentInput, after: recentInput.before }), "");
+  assert.equal(botHistoryContext(db.connection, { ...recentInput, after: recentInput.before - 86400001 }), "", "recent must not exceed 24h");
+  assert.equal(botHistoryContext(db.connection, { ...recentInput, after: NaN }), "");
+  assert.equal(botHistoryContext(db.connection, { ...recentInput, before: recentInput.after }), "", "before excludes later completion");
+  assert.equal(botHistoryContext(db.connection, { ...recentInput, userId: "foreign-user" }), "", "caller cannot read another owner");
+  assert.equal(botHistoryContext(db.connection, { ...recentInput, botId: "other" }), "", "target scope remains exact");
   messages.archive(LOCAL_USER_ID, "learn", active.conversationId);
   pair("FutureOnly", "future-private");
   db.connection.prepare("UPDATE bot_messages SET text='FutureOnly' WHERE message_id=?").run(active.userMessageId);
@@ -94,6 +107,7 @@ try {
   enabled = false; assert.equal(recall("NSH"), ""); enabled = true;
   memory.recordForgetBoundary("bot", "learn", sequence * 100 + 99);
   assert.equal(recall("NSH"), "", "forgotten historical discussions cannot revive");
+  assert.equal(botHistoryContext(db.connection, { userId: LOCAL_USER_ID, botId: "learn", query: "recent learning", mode: "recent", after: 0, before: (sequence - 1) * 100 + 99 }), "", "recent cannot resurrect forgotten or restricted pairs");
   pair("NSH fresh", "fresh-after-forget");
   assert(recall("NSH").includes("fresh-after-forget"));
   for (let i = 0; i < 8; i++) pair("BoundedTopic", `result-${i} ` + "evidence ".repeat(1200));

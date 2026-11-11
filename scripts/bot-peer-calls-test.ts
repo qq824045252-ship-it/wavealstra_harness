@@ -25,11 +25,11 @@ try {
   const make = (id: string) => messages.accept("u", { botId: "source", requestId: id, text: `user input ${id}` });
   const a = make("a"), b = make("b");
   const team = messages.accept("u", { botId: "source", teamId: "team-unit", requestId: "team", text: "team question" });
-  let authority = true;
+  let authority = true, memoryEnabled = true, searchValue = "fresh-L1-marker";
   const memoryContexts: unknown[][] = [];
   const options = { db, userId: "u", bots, works, directory: root,
     models: { getModel: () => ({ provider: "test", id: "model" }), getModels: () => [{ provider: "test", id: "model" }], getAvailable: async () => [{ provider: "test", id: "model" }] },
-    memory: { enabled: () => true, context: (...args: unknown[]) => { memoryContexts.push(args); return "own Bot facts"; }, search: () => [] },
+    memory: { enabled: () => memoryEnabled, context: (...args: unknown[]) => { memoryContexts.push(args); return "own Bot facts"; }, search: () => searchValue ? [searchValue] : [] },
     defaultModel: () => "test/model", isAuthority: () => authority, memorySearch: () => [], schedule: () => {}, wake: () => {},
   } as unknown as BotConversationServiceOptions;
   const emptyRuntime = { assertSessionHealthy: () => {}, conversation: { id: "empty" },
@@ -64,6 +64,13 @@ try {
   assert.equal(receivers[0].options.toolAllowed?.("write"), false, "recipient cannot write on forwarded authority");
   receivers[0].options.evidence?.([]);
   assert.deepEqual(memoryContexts.at(-1), ["target", ""], "peer context excludes personal conversation-only memory");
+  const searchMessages = [{ role: "assistant", content: [{ type: "toolCall", id: "lookup", name: "memory_search", arguments: { query: "marker" } }] }] as unknown as Parameters<NonNullable<typeof receivers[0]["options"]["evidence"]>>[0];
+  assert(receivers[0].options.evidence?.(searchMessages).includes("fresh-L1-marker"));
+  searchValue = "";
+  assert(!receivers[0].options.evidence?.(searchMessages).includes("fresh-L1-marker"), "deleted L1 is withdrawn on next provider request");
+  memoryEnabled = false;
+  assert.equal(receivers[0].options.evidence?.(searchMessages), "", "disabled memory withdraws all fresh references");
+  memoryEnabled = true;
   assert(receivers[0].options.instructions().includes('"target"'));
   receivers[1].resolve("B original answer");
   assert.equal((await second).replyText, "B original answer");

@@ -15,9 +15,10 @@ exports.run = async ({send, foregroundDone, until, evaluate, history, rpc, repor
   };
   await select(peer, '学习搭子');
   const marker = '水杉学习记录731';
-  await send(`请长期记住我的学习项目事实：记录代号是“${marker}”，学习结论是 Python 列表切片会创建浅拷贝，嵌套列表元素仍可共享。以后被同一用户问到学习记录时请如实引用这个代号与结论。`);
+  await send(`用两句话解释 Python 列表切片的浅拷贝，把这次课堂笔记命名为“${marker}”。这是一次普通学习问答，不是长期用户事实。`);
   await foregroundDone();
-  await until(async () => JSON.stringify(await evaluate(`window.api.memory.list({scopeType:'bot',scopeId:${JSON.stringify(peer)},status:'active'})`)).includes(marker), 'real target memory saved');
+  await until(async () => (await evaluate('window.api.memory.turns({limit:100})')).every(t => !['pending','processing'].includes(t.extractionState)), 'target real history capture settled');
+  assert(!JSON.stringify(await evaluate(`window.api.memory.list({scopeType:'bot',scopeId:${JSON.stringify(peer)},status:'active'})`)).includes(marker), 'ordinary Q&A is not a permanent memory fact');
   const targetBefore = await history();
   await select(owner, 'MyBuddy');
   report.peerCalls = { recipientBotId: peer, cases: [], observedStatuses: [] };

@@ -104,7 +104,7 @@ export class BotConversationMemory {
     const source = sourceMessageId && this.messages.message(sourceMessageId);
     if (!source || source.role !== "user" || source.botId !== botId || source.conversationId !== conversationId) return stable;
     const historical = botHistoryContext(this.options.db.connection, { userId: this.options.userId, botId,
-      conversationId, teamId: context.teamId, query: source.text, before: source.createdAt });
+      excludeConversationId: conversationId, teamId: context.teamId, query: source.text, before: source.createdAt });
     return [stable, historical].filter(Boolean).join("\n\n");
   }
 
