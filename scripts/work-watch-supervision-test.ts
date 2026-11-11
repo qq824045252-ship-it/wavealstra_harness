@@ -1,5 +1,6 @@
 import {createHash} from 'node:crypto';
-import {watchGoalEvidence} from '../src/main/agent/work/WorkWatchGoal';
+import {watchGoalEvidence,watchGoalMet} from '../src/main/agent/work/WorkWatchGoal';
+import {previousWatchObservations,WATCH_PREVIOUS_SOURCE_LIMIT,WATCH_PREVIOUS_EVIDENCE_BUDGET} from '../src/main/agent/work/WorkWatchComparison';
 import assert from 'node:assert/strict';
 import {mkdtempSync} from 'node:fs';
 import {tmpdir} from 'node:os';
@@ -25,9 +26,17 @@ function receipt(id:string,target=work,summary=id){
  db.connection.prepare('INSERT INTO work_native_inbox(fact_id,binding_id,namespace_hash,payload_json,received_at,consumed_at) VALUES (?,?,?,?,?,?)').run(id,id,id,'{}',Date.now(),Date.now());
 }
 let calls=0,fail=false,deliveryBlocked=false,preferences="",replaceDuringReview:string|undefined;
+let historicalStop=false;
+const stopCondition='文件为 READY 时结束';
 const reviewPreferences:string[]=[];
 const reviewContexts:any[]=[];
-const options={db:db.connection,works,isAuthority:()=>true,preferences:(taskId:string)=>{assert(works.repo.bindingForTask(taskId));return preferences;},wake:()=>{},deliver:(input:any)=>deliveryBlocked?false:feedback.deliverCompletion(input),review:async(input:any)=>{calls++;reviewContexts.push(input.context);reviewPreferences.push(input.personalPreferences);assert(input.context.watchSupervision);await delay(20);if(replaceDuringReview!==undefined){preferences=replaceDuringReview;replaceDuringReview=undefined;}if(fail)throw Error('temporary provider unavailable');return {decision:'deliver' as const,outcome:'completed' as const,reply:'已对照目标核对：'+input.context.observationSummary,missing:[]};}};
+const options={db:db.connection,works,isAuthority:()=>true,preferences:(taskId:string)=>{assert(works.repo.bindingForTask(taskId));return preferences;},wake:()=>{},deliver:(input:any)=>deliveryBlocked?false:feedback.deliverCompletion(input),review:async(input:any)=>{calls++;reviewContexts.push(input.context);reviewPreferences.push(input.personalPreferences);assert(input.context.watchSupervision);await delay(20);if(replaceDuringReview!==undefined){preferences=replaceDuringReview;replaceDuringReview=undefined;}if(fail)throw Error('temporary provider unavailable');
+ if(historicalStop&&input.context.title==='历史停止证据隔离'){
+  const old=input.context.previousVerifiedObservations.observations[0];assert(old?.text==='READY');
+  return {decision:'deliver' as const,outcome:'completed' as const,reply:'旧轮曾经 READY',missing:[],
+   stopAssessment:{status:'met' as const,conditionExcerpt:stopCondition,requestExcerpt:stopCondition,evidence:[{resultId:old.resultId,quote:'READY'}]}};
+ }
+ return {decision:'deliver' as const,outcome:'completed' as const,reply:'已对照目标核对：'+input.context.observationSummary,missing:[]};}};
 let supervisor=new WorkWatchSupervision(options);
 async function flush(){supervisor.wake();supervisor.wake();await delay(60);}
 receipt('round1');feedback.drain();assert.equal((db.connection.prepare("SELECT count(*) n FROM bot_work_feedback WHERE json_extract(metadata_json,'$.executionId')='round1'").get() as {n:number}).n,0,'raw result waits for independent owner review');
@@ -102,6 +111,77 @@ assert(!follow.availability({...works.getWork(work.workId)!,lifecycle:'paused'},
 assert(!follow.availability({...works.getWork(work.workId)!,watchRule:{...work.watchRule!,endsAt:Date.now()-1}},originalBinding).allowed);
 assert(!follow.availability(works.getWork(work.workId)!,{...originalBinding,status:'stopped'}).allowed);
 assert(follow.availability(works.getWork(work.workId)!,{...originalBinding,delegatedScope:[]}).allowed, 'retired delegated scope does not block scheduled observations');
+// Isolated, real SQLite/native-receipt tests for bounded historical comparison.
+{
+ const testDb=new AppDatabase(join(root,'comparison-evidence.db'));
+ const registry=new BotRegistry(testDb.connection);registry.ensureDefaultBot(LOCAL_USER_ID);
+ const service=new WorkService(testDb.connection,{bots:registry});
+ const made=service.createWork({kind:'user',userId:LOCAL_USER_ID,grants:DESKTOP_USER_GRANTS},
+  {operationId:'history',title:'history',mode:'watch',ownerBotId:DEFAULT_BOT_ID,inputSnapshotId:'history-input',
+   authorization:DESKTOP_USER_GRANTS,watchRule:{cronExpression:'* * * * *',timezone:'UTC',stopConditionText:stopCondition}});
+ assert(made.ok);const target=made.work,at=Date.now();
+ const seed=(id:string,time:number)=>{
+  service.repo.insertBinding({...works.repo.getBinding('round1')!,bindingId:id,operationId:id,taskId:id,workId:target.workId,
+   intentRevision:target.intentRevision,inputSnapshotId:target.inputSnapshotId,ownerEpoch:target.ownerEpoch,
+   admittedAt:time,settledAt:time+1,workspaceBinding:root});
+  service.repo.insertDeliverable({...works.repo.getDeliverable('result:round1')!,deliverableId:`result:${id}`,executionId:id,
+   workId:target.workId,intentRevision:target.intentRevision,inputSnapshotId:target.inputSnapshotId,ownerEpoch:target.ownerEpoch,
+   summary:id,createdAt:time+1});
+  return service.repo.getBinding(id)!;
+ };
+ const past=seed('history-past',at-100),current=seed('history-current',at);
+ seed('history-future',at+100);
+ const read=(name:string,text:string,partial=false)=>({toolCallId:name,toolName:'read',kind:'file-content',target:name,at,
+  outputHash:createHash('sha256').update(text).digest('hex'),partial,outputText:text});
+ const save=(id:string,reads:ReturnType<typeof read>[],status='completed')=>{
+  testDb.connection.prepare('DELETE FROM work_native_inbox WHERE binding_id=?').run(id);
+  testDb.connection.prepare('INSERT INTO work_native_inbox(fact_id,binding_id,namespace_hash,payload_json,received_at,consumed_at) VALUES (?,?,?,?,?,?)')
+   .run(id,id,id,JSON.stringify({status,summary:id,hasWriteConflicts:false,artifactRefs:[],readEvidence:reads}),at,at);
+ };
+ const actual=()=>watchGoalEvidence(testDb.connection,service,current);
+ const previous=()=>previousWatchObservations(testDb.connection,service,current,actual());
+ try {
+  save(past.bindingId,[read('./source.txt','open: call\nopen: email\n')]);
+  save(current.bindingId,[read(join(root,'source.txt'),'open: call\n')]);
+  const values=previous();assert.equal(values.status,'complete');assert.equal(values.baselineResultId,'result:history-past');
+  assert.equal(values.reportedAt,at-99,'report time is distinct from each native source read time');
+  assert.equal(values.observations[0].source,join(root,'source.txt'),'relative/absolute aliases match after binding-local normalization');
+  assert.equal(values.observations[0].text,'open: call\nopen: email\n');assert.equal(actual()[0].text,'open: call\n');
+  testDb.connection.prepare('UPDATE work_execution_bindings SET workspace_binding=? WHERE binding_id=?').run(join(root,'different-workspace'),past.bindingId);
+  assert.equal(previous().reason,'source_mismatch','identical relative names in different workspaces are different sources');
+  testDb.connection.prepare('UPDATE work_execution_bindings SET workspace_binding=? WHERE binding_id=?').run(root,past.bindingId);
+  save(past.bindingId,[read('different.txt','old')]);assert.equal(previous().reason,'source_mismatch');
+  save(past.bindingId,[read('./source.txt','old',true)]);assert.equal(previous().reason,'history_unavailable');
+  save(past.bindingId,[read('./source.txt','old'),read(join(root,'source.txt'),'failed',true)]);
+  assert.equal(previous().reason,'history_unavailable','latest failed alias cannot fall back to earlier complete read');
+  save(past.bindingId,[read('source.txt','old')],'failed');assert.equal(previous().reason,'history_unavailable');
+  save(past.bindingId,[read('source.txt','old')]);
+  testDb.connection.prepare('INSERT INTO work_native_inbox(fact_id,binding_id,namespace_hash,payload_json,received_at,consumed_at) VALUES (?,?,?,?,?,?)')
+   .run('latest-failure',past.bindingId,'latest-failure',JSON.stringify({status:'failed',summary:'failed',hasWriteConflicts:false,artifactRefs:[]}),at+1,at+1);
+  assert.equal(previous().reason,'history_unavailable','latest failed receipt never falls back to an earlier success');
+  save(past.bindingId,[read('source.txt','old')]);
+  save(current.bindingId,[read('source.txt','new'),read('second.txt','new')]);
+  assert.equal(previous().status,'unavailable');assert.deepEqual(previous().observations,[],'missing a current source is explicit, not silently complete');
+  const large='x'.repeat(WATCH_PREVIOUS_EVIDENCE_BUDGET/2);
+  save(past.bindingId,[read('source.txt',large),read('second.txt',large)]);
+  assert.equal(previous().status,'budget_exceeded');assert.equal(previous().reason,'text_budget');
+  assert.deepEqual(previous().observations,[],'over-budget historical text is omitted, never truncated into apparent full evidence');
+  const unicode='汉🙂'.repeat(Math.ceil(WATCH_PREVIOUS_EVIDENCE_BUDGET/Buffer.byteLength('汉🙂','utf8')));
+  assert(unicode.length<WATCH_PREVIOUS_EVIDENCE_BUDGET,'Unicode fixture fits a character-count budget');
+  save(past.bindingId,[read('source.txt',unicode)]);save(current.bindingId,[read('source.txt','new')]);
+  assert.equal(previous().reason,'text_budget','budget uses UTF-8 bytes including Chinese/emoji, not UTF-16 characters');
+  save(current.bindingId,Array.from({length:WATCH_PREVIOUS_SOURCE_LIMIT+1},(_,i)=>read(`source-${i}.txt`,'new')));
+  assert.equal(previous().reason,'source_limit');assert.deepEqual(previous().observations,[]);
+  save(past.bindingId,[read('source.txt','READY')]);save(current.bindingId,[read('source.txt','WAITING')]);
+  const raw=actual(),before=JSON.stringify(raw),old=previous().observations[0];assert(old);
+  assert.equal(JSON.stringify(raw),before,'historical evidence never mutates or merges into current proof');
+  assert(!watchGoalMet(target,current,{decision:'deliver',outcome:'completed',reply:'old READY',missing:[],
+   stopAssessment:{status:'met',conditionExcerpt:stopCondition,requestExcerpt:stopCondition,evidence:[{resultId:old.resultId,quote:'READY'}]}},
+   {userRequest:{messages:[{text:stopCondition}]}},raw),'previous READY cannot satisfy current WAITING stop condition');
+  testDb.connection.prepare('DELETE FROM work_deliverables WHERE execution_id=?').run(past.bindingId);
+  assert.equal(previous().reason,'no_history','current and future outputs do not supply historical evidence');
+ } finally {testDb.close();}
+}
 // Production supervision must not confuse notification policy with comparison
 // proof. Keep the first silent baseline distinct from a later unchanged round.
 const comparisonCreated=works.createWork({kind:'user',userId:LOCAL_USER_ID,entry:'desktop',grants:DESKTOP_USER_GRANTS},
@@ -112,7 +192,7 @@ assert(comparisonCreated.ok);const comparisonWork=comparisonCreated.work;
 function observed(id:string,value:string){
  const summary=JSON.stringify({protocol:'watch-observation-v1',status:'observed',facts:[{source:'/fixture/comparison',key:'file_content',value}],summary:'本轮读取：'+value});
  receipt(id,comparisonWork,summary);
- db.connection.prepare('UPDATE work_native_inbox SET payload_json=? WHERE binding_id=?').run(JSON.stringify({status:'completed',summary,
+ db.connection.prepare('UPDATE work_native_inbox SET payload_json=? WHERE binding_id=?').run(JSON.stringify({status:'completed',summary,hasWriteConflicts:false,artifactRefs:[],
   readEvidence:[{toolCallId:id,toolName:'read',kind:'file-content',target:'/fixture/comparison',partial:false,at:Date.now(),
    outputHash:createHash('sha256').update(value).digest('hex'),outputText:value}]}),id);
 }
@@ -123,6 +203,8 @@ assert.equal(reviewState('comparison-first'),'silent');
 observed('comparison-same','A');await flush();
 assert.equal(reviewContexts.at(-1).comparisonState,'unchanged');assert.equal(reviewContexts.at(-1).hostProvenUnchanged,true);
 assert.equal(reviewContexts.at(-1).comparisonBaseline.deliverableId,'result:comparison-first');
+assert.equal(reviewContexts.at(-1).previousVerifiedObservations.status,'complete');
+assert.equal(reviewContexts.at(-1).previousVerifiedObservations.observations[0].text,'A');
 assert.equal(reviewState('comparison-same'),'silent');
 observed('comparison-changed','B');await flush();
 assert.equal(reviewContexts.at(-1).comparisonState,'changed');assert.equal(reviewContexts.at(-1).hostProvenUnchanged,false);
@@ -132,6 +214,39 @@ works.repo.updateWork({...currentComparison,watchRule:{...currentComparison.watc
 observed('comparison-every-check','B');await flush();
 assert.equal(reviewContexts.at(-1).comparisonState,'unchanged');assert.equal(reviewContexts.at(-1).hostProvenUnchanged,true);
 assert.equal(reviewState('comparison-every-check'),'delivered','equal evidence does not override every-check notification policy');
+// A cached verdict must not outlive the exact historical native evidence used
+// for its comparison, even when all model-written report summaries stay equal.
+deliveryBlocked=true;observed('comparison-history-cache','B');await flush();
+const cacheReviews=()=>reviewContexts.filter(c=>c.verifiedObservations.some((r:any)=>r.resultId==='comparison-history-cache:comparison-history-cache'));
+const beforeHistoryChange=cacheReviews().length;assert.equal(beforeHistoryChange,1);
+const historicalPayload=JSON.parse((db.connection.prepare('SELECT payload_json FROM work_native_inbox WHERE binding_id=?').get('comparison-every-check') as {payload_json:string}).payload_json);
+historicalPayload.readEvidence[0].outputText='corrected historical read';
+historicalPayload.readEvidence[0].outputHash=createHash('sha256').update('corrected historical read').digest('hex');
+db.connection.prepare('UPDATE work_native_inbox SET payload_json=? WHERE binding_id=?').run(JSON.stringify(historicalPayload),'comparison-every-check');
+deliveryBlocked=false;db.connection.prepare('UPDATE work_watch_reviews SET retry_at=0 WHERE binding_id=?').run('comparison-history-cache');await flush();
+assert.equal(cacheReviews().length,beforeHistoryChange+1,'changed native historical evidence invalidates cached review');
+assert.equal(cacheReviews().at(-1).previousVerifiedObservations.observations[0].text,'corrected historical read');
+// Even an explicitly supplied previous READY read cannot prove a current
+// WAITING round's stop condition through the actual supervision/settlement path.
+const stopSource=messages.accept(LOCAL_USER_ID,{botId:DEFAULT_BOT_ID,requestId:'historical-stop-source',text:`持续观察，${stopCondition}。`});
+const stopCreated=works.createWork({kind:'user',userId:LOCAL_USER_ID,entry:'desktop',grants:DESKTOP_USER_GRANTS},
+ {operationId:'historical-stop',title:'历史停止证据隔离',mode:'watch',ownerBotId:DEFAULT_BOT_ID,inputSnapshotId:'historical-stop-input',
+ authorization:DESKTOP_USER_GRANTS,conversationId:stopSource.conversationId,sourceMessageId:stopSource.userMessageId,
+ watchRule:{cronExpression:'* * * * *',timezone:'UTC',stopConditionText:stopCondition}});
+assert(stopCreated.ok);const stopWork=stopCreated.work;
+const stopReceipt=(id:string,text:string)=>{
+ receipt(id,stopWork,text);
+ db.connection.prepare('UPDATE work_native_inbox SET payload_json=? WHERE binding_id=?').run(JSON.stringify({status:'completed',summary:text,
+  hasWriteConflicts:false,artifactRefs:[],readEvidence:[{toolCallId:'read',toolName:'read',kind:'file-content',target:'/fixture/status',
+   partial:false,at:Date.now(),outputText:text,outputHash:createHash('sha256').update(text).digest('hex')}]}),id);
+};
+stopReceipt('historical-stop-before','READY');await flush();
+stopReceipt('historical-stop-now','WAITING');historicalStop=true;await flush();historicalStop=false;
+const stopContext=[...reviewContexts].reverse().find(c=>c.title==='历史停止证据隔离');
+assert.equal(stopContext.previousVerifiedObservations.observations[0].text,'READY');
+assert.deepEqual(stopContext.verifiedObservations.map((r:any)=>[r.resultId,r.text]),[['historical-stop-now:read','WAITING']]);
+assert.equal(works.getWork(stopWork.workId)!.lifecycle,'active','old READY proof is rejected, not allowed to stop current WAITING');
+assert.equal(reviewState('historical-stop-now'),'delivered');
 const latest=works.getWork(work.workId)!;works.repo.updateWork({...latest,lifecycle:'closed',closureConclusion:'cancelled',updatedAt:Date.now()});
 feedback.drain();assert((db.connection.prepare("SELECT count(*) n FROM bot_work_feedback WHERE json_extract(metadata_json,'$.kind')='closure'").get() as {n:number}).n>0,'watch closure feedback is not suppressed by reviewed round');
 supervisor.close();feedback.close();db.close();console.log('PASS: multi-round owner review, nonblocking queue, no duplicate raw results, restart receipts, visible model failure fallback; standing work remains active');

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { WorkWatchFollowUp } from "./WorkWatchFollowUp";
+import { previousWatchObservations } from "./WorkWatchComparison";
 import { watchGoalEvidence, watchGoalMet, watchGoalClosureSummary } from "./WorkWatchGoal";
 import type { WorkCompletionOptions } from "./WorkCompletionCoordinator";
 import type { WorkResultDecision } from "./BotWorkResultTurn";
@@ -99,20 +100,21 @@ export class WorkWatchSupervision {
     const results = works.repo.listDeliverables(work.workId).filter(r => r.executionId === id && r.status !== 'superseded');
     const prior = works.repo.previousWatchReports(binding, work.watchRule?.notificationMode === 'changes_only');
     const rawEvidence = watchGoalEvidence(this.options.db,works,binding);
+    const previousVerifiedObservations = previousWatchObservations(this.options.db,works,binding,rawEvidence);
     const result = results.find(r => r.deliverableId === `result:${id}`);
     const presentation: WatchObservationPresentation = result ? watchObservationDelivery(work,result,[...prior,result],
       item => watchTeamReadEvidence(this.options.db,works.repo,works.repo.getBinding(item.executionId),item))
       : {silent:false,comparisonState:prior.length ? 'unverified' : 'no_baseline',summary:binding.settlementNote || '本轮没有返回可用结果'};
     const personalPreferences = this.options.preferences?.(binding.taskId) ?? "";
     const preferenceFingerprint = createHash("sha256").update(personalPreferences).digest("hex");
-    const evidence = JSON.stringify(['watch-comparison-v1',preferenceFingerprint,work.watchRule,rawEvidence,presentation,
+    const evidence = JSON.stringify(['watch-comparison-v2',preferenceFingerprint,work.watchRule,rawEvidence,previousVerifiedObservations,presentation,
       [...prior,...results].map(r => [r.deliverableId,r.summary,r.status,r.uncoveredScope,r.artifactRefs,r.isSpeculation,r.hasWriteConflicts])]);
-    return {binding,work,results,prior,presentation,evidence,rawEvidence,personalPreferences,preferenceFingerprint};
+    return {binding,work,results,prior,presentation,evidence,rawEvidence,previousVerifiedObservations,personalPreferences,preferenceFingerprint};
   }
   private async process(id: string): Promise<void> {
     const {works,db} = this.options;
     const current = this.snapshot(id); if (!current) return;
-    const {binding,work,results,prior,presentation,evidence,rawEvidence,personalPreferences,preferenceFingerprint} = current;
+    const {binding,work,results,prior,presentation,evidence,rawEvidence,previousVerifiedObservations,personalPreferences,preferenceFingerprint} = current;
     // A later observation stopped because the goal was already proven is not a
     // new failed goal. Keep its native receipt in details without another model
     // verdict/message contradicting the accepted round.
@@ -133,6 +135,7 @@ export class WorkWatchSupervision {
       observedAt:binding.settledAt, reviewAt:Date.now(), executionStatus:binding.status,
       results:results.map(r=>({summary:r.summary,artifactRefs:r.artifactRefs,uncoveredScope:r.uncoveredScope})),
       verifiedObservations:rawEvidence,
+      previousVerifiedObservations,
       teamPartialResults: source.teamAssignment?.role === 'owner_summary' && (binding.status !== 'completed' || !results.length)
         ? {notice:'负责人本轮未完成，下列仅为本轮成员已结算的部分依据，不代表全队完成', results:source.teamAssignment.previousResults ?? []} : undefined,
       previousResults:prior.slice(-3).map(r=>({deliverableId:r.deliverableId,summary:r.summary,createdAt:r.createdAt})),

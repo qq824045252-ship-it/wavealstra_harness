@@ -28,7 +28,8 @@ exports.run=async({send,foregroundDone,until,evaluate,history,rpc,report,request
   if(round===1){
    assert(!/与(?:上(?:一)?轮|首轮)[^。\n]{0,55}(?:一致|相同|无变化|没有变化)|(?:^|[：:，,；;。\n])\s*(?:无变化|没有变化|未发生变化|未变化|有变化|出现变化|发生变化)/.test(plain),label+' first observation cannot invent a comparison');
   }
-  if(round===4)assert(/无变化|未变化|没有变化|未发生变化|保持(?:不变|一致)|(?:与|和)[^。\n]{0,60}(?:一致|相同)|(?:仍|还是|依旧)(?:然)?(?:是|为)/.test(plain),label+' real unchanged round remains reportable');
+  if(round===4)assert(/无变化|未变化|未见变化|未发现变化|没有(?:发生)?变化|未发生变化|保持(?:不变|一致)|数值一致|同为|两(?:者|轮)[^。\n]{0,30}(?:一致|相同)|(?:与|和)[^。\n]{0,60}(?:一致|相同)|(?:仍|还是|依旧)(?:然)?(?:是|为)/.test(plain),label+' real unchanged round remains reportable');
+  if(round===4)assert(!/(?:不能|无法|暂不)[^。！\n]{0,30}(?:确认|声称|判定)[^。！\n]{0,15}(?:无变化|一致|相同)/.test(plain),label+' identical complete source evidence is not rejected solely for missing structured comparison');
  };
  let phaseAt=0;
  const observe=async(round,marker)=>{

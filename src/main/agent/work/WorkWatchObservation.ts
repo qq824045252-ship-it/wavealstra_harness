@@ -16,7 +16,9 @@ export interface WatchObservationPresentation {
   silent: boolean; summary: string; comparisonState: WatchComparisonState; baselineResultId?: string;
 }
 
-export const WATCH_COMPARISON_INSTRUCTIONS = `comparisonState 是宿主提供的比较状态，与是否通知或静默无关。no_baseline 表示没有本轮之前可用的同一观察历史：只报告本轮事实，可说明首次观察或暂无历史可比，禁止声称“无变化”“与上轮一致”或“有变化”。本轮结果、同轮成员结果、任务说明和长期记忆不是上一轮基线。unverified 表示有历史，但宿主尚未证实相同或不同；只有当前真实读取与所给历史记录中同一来源、同一属性的明确事实足以比较时，才可给出有依据的具体比较，否则说明无法可靠比较。unchanged / changed 才分别表示宿主已核对可比较的读取证据相同 / 不同。不要把缺失、失败、不完整的历史当成无变化，也不要照抄结果摘要中没有比较依据的变化判断。没有历史不是需要补查的缺项，不为构造过去的基线重新执行。`;
+export const WATCH_COMPARISON_INSTRUCTIONS = `comparisonState 是宿主的自动比较状态，与是否通知或静默无关，也不是限制你进行事实比较的审批。no_baseline 表示没有本轮之前可用的同一观察历史：只报告本轮事实，可说明首次观察或暂无历史可比，禁止声称“无变化”“与上轮一致”或“有变化”。本轮结果、同轮成员结果、任务说明和长期记忆不是上一轮基线。
+unverified 仅表示尚未完成宿主的结构化自动比较，不表示历史记录不可信、没有比较依据或禁止比较。你应根据本轮真实读取和所给同源历史的明确值自行核对：例如此前 open=2、本轮 open=1，就直接报告减少1；此前和本轮都是3且明细一致，就直接报告数量和明细未变。完整原文或历史报告中同源同属性的明确数值/文本都可以支持具体比较，不必等待额外宿主证明。只有确有来源错配、读取失败、不完整、证据矛盾或缺少对应事实时，才说明具体比较局限；不得仅因 unverified 机械追加“宿主未核验”“暂不判定”“只能并列事实”等免责。unchanged / changed 表示宿主已自动核对可比较的读取证据相同 / 不同。
+不要照抄结果摘要中没有依据的变化判断。没有历史不是需要补查的缺项，不为构造过去的基线重新执行。面向用户只说具体事实、变化和真实局限，不输出 comparisonState、unverified、宿主核验等内部字段或流程术语。`;
 
 export const WATCH_OBSERVATION_INSTRUCTIONS = `本事项选择只在变化时通知。每次检查仍须执行真实只读工具，最终只返回一个 JSON 对象（不要另加说明）：
 {"protocol":"watch-observation-v1","status":"observed","facts":[{"source":"实际来源的稳定路径或URL","key":"用户跟踪的属性，如file_content","value":"真实读取到的精确属性值"}],"summary":"变化时供用户阅读的简短报告"}。

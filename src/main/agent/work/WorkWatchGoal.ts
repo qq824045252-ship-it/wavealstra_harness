@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { resolve } from "node:path";
 import type { WorkExecutionBindingDto, WorkDto } from "../../../shared/bot-work";
 import type { WorkService } from "./WorkService";
 import type { WorkResultDecision } from "./BotWorkResultTurn";
@@ -61,16 +62,20 @@ function collectEvidence(db: Database.Database, works: WorkService, binding: Wor
     if (!member || member.workId !== binding.workId || member.status !== "completed" || member.invalidatedAt
       || member.intentRevision !== binding.intentRevision || member.inputSnapshotId !== binding.inputSnapshotId
       || member.ownerEpoch !== binding.ownerEpoch || member.inboxEventId !== binding.inboxEventId) return [];
-    const rows = db.prepare("SELECT payload_json FROM work_native_inbox WHERE binding_id=? AND consumed_at IS NOT NULL ORDER BY received_at DESC,rowid DESC").all(id) as {payload_json:string}[];
+    const row = db.prepare("SELECT payload_json FROM work_native_inbox WHERE binding_id=? AND consumed_at IS NOT NULL ORDER BY received_at DESC,rowid DESC LIMIT 1").get(id) as {payload_json:string}|undefined;
     // Never reach back past the latest consumed failure/malformed receipt for an
     // older success. A new failure invalidates that execution's current proof.
-    const parsed = rows[0] && workExecutionObservationSchema.safeParse(JSON.parse(rows[0].payload_json));
+    const parsed = row && workExecutionObservationSchema.safeParse(JSON.parse(row.payload_json));
     if (!parsed?.success || parsed.data.status !== "completed" || parsed.data.hasWriteConflicts) return [];
     const latest = new Map<string,NonNullable<typeof parsed.data.readEvidence>[number]>();
-    for (const read of parsed.data.readEvidence ?? []) latest.set(JSON.stringify([read.kind,read.target]),read);
+    const source = (read: NonNullable<typeof parsed.data.readEvidence>[number]) =>
+      read.toolName === "read" ? resolve(member.workspaceBinding,read.target) : read.target;
+    for (const read of parsed.data.readEvidence ?? []) latest.set(JSON.stringify([read.toolName,source(read)]),read);
     const usable = [...latest.values()].filter(read=>!read.partial && !!read.outputText && /^[a-f0-9]{64}$/.test(read.outputHash));
     if (!usable.length) return [];
-    evidence.push(...usable.map(read=>({resultId:`${id}:${read.toolCallId}`,toolName:read.toolName,source:read.target,observedAt:read.at,text:read.outputText!})));
+    evidence.push(...usable.map(read=>({resultId:`${id}:${read.toolCallId}`,toolName:read.toolName,
+      source:source(read),
+      observedAt:read.at,text:read.outputText!})));
   }
   return evidence;
 }
