@@ -68,6 +68,14 @@ async function main() {
   results.push("navigation invalidates locators even when DOM IDs repeat");
   extra.destroy();
 
+  // Focused, cross-platform interaction evidence without overlay lifecycle cases.
+  if (process.argv.includes("--interaction-only")) {
+    mkdirSync("out/tests", { recursive: true });
+    writeFileSync("out/tests/computer-use-interaction.json", JSON.stringify({ results }, null, 2));
+    console.log(`Computer Use Electron interaction PASS (${results.length} scenarios)\n` + results.join("\n"));
+    main.destroy();
+    return;
+  }
   const cuWindows = () => BrowserWindow.getAllWindows().filter(w => w.getTitle().includes("COMPUTER_USE_"));
   const cuVisible = () => cuWindows().length === 2 && cuWindows().every(w => w.isVisible());
   const cuHidden = () => cuWindows().length === 2 && cuWindows().every(w => !w.isVisible());
