@@ -1,3 +1,4 @@
+import type { WorkResultDecision } from "./BotWorkResultTurn";
 import { WorkTeamWatchCycles } from "./WorkTeamWatchCycles";
 import { watchEndedByTime, watchTimeExpired } from "../../../shared/work-watch-expiry";
 import { ensureTeamConversation } from "./WorkDeliveryTargets";
@@ -33,7 +34,7 @@ const recoveryRowSchema = z.object({ recovery_id: z.string(), work_id: z.string(
   role: z.enum(["member", "owner_summary"]), intent_revision: z.number(), input_snapshot_id: z.string(), owner_epoch: z.number(),
   source_key: z.string(), source_binding_id: z.string().nullable(), generation: z.number(), operation_id: z.string(),
   state: z.enum(["pending", "claimed", "dispatched", "completed", "stopped"]), failure_class: z.string(),
-  failure_message: z.string(), progress_hash: z.string().nullable(), outcome: z.string().nullable(),
+  failure_message: z.string(), missing_json: z.string().nullable().optional(), progress_hash: z.string().nullable(), outcome: z.string().nullable(),
   attempt_count: z.number(), binding_id: z.string().nullable(), claimed_at: z.number().nullable(),
   dispatched_at: z.number().nullable(), settled_at: z.number().nullable(), created_at: z.number() });
 type TeamRow = z.infer<typeof teamRowSchema>;
@@ -112,6 +113,7 @@ export function ensureWorkTeamSchema(db: Database.Database): void {
   add("work_team_record_visibility", "removal_requested_at", "removal_requested_at INTEGER");
   add("work_team_executions", "reported_binding_id", "reported_binding_id TEXT");
   add("work_team_executions", "original_input_json", "original_input_json TEXT");
+  add("work_team_recovery_attempts", "missing_json", "missing_json TEXT");
 }
 
 /** A bounded, explicit user-created team. It does not create a second execution engine. */
@@ -533,6 +535,8 @@ export class WorkTeamService {
           this.ensureRecovery(work, original, binding);
           work = this.works.getWork(work.workId)!;
         }
+        this.stopBlockedMissingRepairs(work, plan);
+        work = this.works.getWork(work.workId)!;
         const next = this.nextDispatch(work, plan, this.rows(work.workId));
         if (!next) continue;
         const { row, recovery } = next;
@@ -585,6 +589,76 @@ export class WorkTeamService {
         console.warn("[Work] 团队准备等待核对", team.work_id, error instanceof Error ? error.message : String(error));
       }
     }
+  }
+
+  /** Host-owned provenance scoped to this exact team and input revision. */
+  continuationTargets(owner: WorkExecutionBindingDto) {
+    const work = this.works.getWork(owner.workId), team = this.row(owner.workId);
+    if (!work || !team) return undefined;
+    const rows = this.rows(owner.workId);
+    const summary = rows.find(row => row.role === "owner_summary" && row.task_id === owner.taskId);
+    if (!summary || work.mode !== "once" || owner.botId !== work.ownerBotId
+      || this.works.repo.bindingForTask(owner.taskId)?.bindingId !== owner.bindingId
+      || !this.works.collaboration.isDelegationAdopted(owner, work)) return [];
+    return rows.filter(row => row.role === "member" && !row.cancelled).flatMap(row => {
+      const binding = this.works.repo.bindingForTask(row.task_id);
+      if (!binding || binding.status !== "completed" || binding.invalidatedAt
+        || !this.works.collaboration.isDelegationAdopted(binding, work)) return [];
+      const results = this.works.repo.listDeliverables(work.workId).filter(result => result.executionId === binding.bindingId
+        && result.producerBotId === row.bot_id && result.status !== "superseded" && result.status !== "rejected")
+        .map(result => ({ deliverableId: result.deliverableId, summary: result.summary,
+          uncoveredScope: result.uncoveredScope, artifactRefs: result.artifactRefs }));
+      return [{ sourceBindingId: binding.bindingId, botId: row.bot_id, responsibility: row.responsibility,
+        intentRevision: binding.intentRevision, inputSnapshotId: binding.inputSnapshotId,
+        delegatedScope: binding.delegatedScope, results }];
+    });
+  }
+
+  /** All targets validate before any write, so a malformed batch cannot partly run. */
+  continueMissing(owner: WorkExecutionBindingDto, missing: WorkResultDecision["missing"], frozen: unknown, reason: string): boolean {
+    if (!this.db.inTransaction) throw Error("团队补缺必须与结果核对同事务提交");
+    this.works.collaboration.assertAuthority();
+    const work = this.works.getWork(owner.workId), targets = this.continuationTargets(owner);
+    if (!work || work.lifecycle !== "active" || !targets?.length || !missing.length
+      || JSON.stringify(targets) !== JSON.stringify(frozen)
+      || this.works.repo.listAdmissions(work.workId).some(item => item.state === "unknown" || workAdmissionInFlight(item))) return false;
+    const rows = this.rows(work.workId), summary = rows.find(row => row.role === "owner_summary" && row.task_id === owner.taskId)!;
+    const groups = new Map<string, WorkResultDecision["missing"]>();
+    for (const item of missing) {
+      const target = item.teamTarget;
+      const candidate = target && targets.find(candidate => candidate.sourceBindingId === target.sourceBindingId
+        && candidate.botId === target.botId && candidate.responsibility === target.responsibility
+        && candidate.intentRevision === target.intentRevision && candidate.inputSnapshotId === target.inputSnapshotId);
+      if (!target || !candidate || !candidate.results.some(result => result.deliverableId === target.evidence.deliverableId
+        && [result.summary, ...result.uncoveredScope].some(text => text.includes(target.evidence.quote)))) return false;
+      const member = rows.find(row => row.bot_id === candidate.botId && row.role === "member")!;
+      const bot = this.bots.getBot(candidate.botId);
+      const history = this.recoveryRows(work.workId, member.task_id);
+      if (!bot || bot.userId !== work.userId || bot.status !== "active" || this.memberInFlight(work.workId, member.task_id)
+        || history.some(attempt => ["pending", "claimed", "dispatched"].includes(attempt.state))
+        || history.filter(attempt => attempt.failure_class === "semantic_missing").length >= 2
+        || history.some(attempt => attempt.source_key === candidate.sourceBindingId)) return false;
+      groups.set(member.task_id, [...groups.get(member.task_id) ?? [], item]);
+    }
+    if (this.memberInFlight(work.workId, owner.taskId)
+      || this.recoveryRows(work.workId, owner.taskId).some(attempt => ["pending", "claimed", "dispatched"].includes(attempt.state))) return false;
+    const enqueue = (row: ExecutionRow, source: WorkExecutionBindingDto, failureClass: string, items: WorkResultDecision["missing"]) => {
+      const generation = (this.latestRecovery(work.workId, row.task_id)?.generation ?? 0) + 1;
+      this.db.prepare(`INSERT INTO work_team_recovery_attempts
+        (recovery_id,work_id,task_id,bot_id,role,intent_revision,input_snapshot_id,owner_epoch,source_key,
+         source_binding_id,generation,operation_id,state,failure_class,failure_message,missing_json,created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'pending',?,?,?,?)`)
+        .run(`team-recovery-${randomUUID()}`,work.workId,row.task_id,row.bot_id,row.role,work.intentRevision,
+          work.inputSnapshotId,work.ownerEpoch,source.bindingId,source.bindingId,generation,
+          `team-recovery:${row.task_id}:${generation}`,failureClass,reason.slice(0,2000),JSON.stringify(items),this.now());
+      this.db.prepare("UPDATE work_team_executions SET error=NULL WHERE work_id=? AND ordinal=?").run(work.workId,row.ordinal);
+    };
+    for (const [taskId, items] of groups) enqueue(rows.find(row => row.task_id === taskId)!,
+      this.works.repo.getBinding(items[0].teamTarget!.sourceBindingId)!, "semantic_missing", items);
+    enqueue(summary, owner, "member_repaired_summary", []);
+    this.works.repo.updateWork({ ...work, stateVersion: work.stateVersion + 1, updatedAt: this.now() });
+    this.works.emitCurrentProjection(work.workId);
+    return true;
   }
 
   private latestRecovery(workId: string, taskId: string): RecoveryRow | undefined {
@@ -674,13 +748,13 @@ export class WorkTeamService {
       if (!current || current.lifecycle !== "active") return;
       this.db.prepare(`INSERT OR IGNORE INTO work_team_recovery_attempts
         (recovery_id,work_id,task_id,bot_id,role,intent_revision,input_snapshot_id,owner_epoch,source_key,
-         source_binding_id,generation,operation_id,state,failure_class,failure_message,progress_hash,outcome,
+         source_binding_id,generation,operation_id,state,failure_class,failure_message,progress_hash,outcome,missing_json,
          attempt_count,settled_at,created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)`)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)`)
         .run(`team-recovery-${randomUUID()}`, work.workId, row.task_id, binding.botId, row.role,
           current.intentRevision, current.inputSnapshotId, current.ownerEpoch, binding.bindingId,
           binding.bindingId, generation, `team-recovery:${row.task_id}:${generation}`, state,
-          failureClass, failureMessage, progress, outcome,
+          failureClass, failureMessage, progress, outcome, last?.binding_id === binding.bindingId ? last.missing_json ?? null : null,
           state === "completed" || state === "stopped" ? now : null, now);
       if (state === "stopped") {
         this.db.prepare("UPDATE work_team_executions SET error=? WHERE work_id=? AND ordinal=?").run(
@@ -765,16 +839,18 @@ export class WorkTeamService {
     const input = { ...base, role: row.role, botId: identity, displayName: this.memberDisplayName(work, identity), responsibility: row.responsibility,
       previousResults: previous, executionPolicy: plan.executionPolicy ?? "sequential",
       dependsOnBotIds: plan.members.find(member => member.botId === row.bot_id)?.dependsOnBotIds ?? [],
-      readOnly: false,
+      readOnly: row.role === "owner_summary" || !JSON.parse(row.scopes_json).includes("workspace:write"),
       recovery: { generation: recovery.generation, failureClass: recovery.failure_class,
         failureMessage: recovery.failure_message, sourceBindingId: recovery.source_binding_id,
-        pendingSteps: [...new Set(own.flatMap(item => item.uncoveredScope))], priorDeliverables: own,
+        pendingSteps: recovery.missing_json ? JSON.parse(recovery.missing_json).map((item: {task:string}) => item.task) : [...new Set(own.flatMap(item => item.uncoveredScope))],
+        missingItems: recovery.missing_json ? JSON.parse(recovery.missing_json) : undefined, priorDeliverables: own,
         attempts: history.map(item => ({ generation: item.generation, state: item.state, outcome: item.outcome,
           failureClass: item.failure_class, failureMessage: item.failure_message })) },
       uncertainOperations: this.works.repo.listAdmissions(work.workId)
         .filter(item => item.state === "unknown" && item.bindingId === recovery.source_binding_id)
         .map(item => ({ operationId: item.operationId, actionKind: item.actionKind })),
       instructions: this.instructionsFor(row, identity, false)
+        + (row.role === "member" && recovery.missing_json ? " 本次仅完成 recovery.missingItems 中已核实的原分工缺项；原始目标与其他职责仅供核对，不得重做其他步骤。先回读 priorDeliverables 对应文件，保留已完成内容，只补缺少部分，再回读新结果。" : recovery.failure_class === "member_repaired_summary" ? " 原成员已按缺项定向补做。重新读取最新 previousResults，汇总原成果和补做成果，明确仍未完成的部分；保持只读，不代替成员写入。" : "")
         + " 未知效果只保留为诊断，不阻止独立步骤；它不代表原动作未发生。先回读或核对幂等回执，不盲目重发同一未知操作，不把失败或未知报告为成功。" };
     this.works.transaction(() => {
       this.works.collaboration.assertAuthority();
@@ -802,7 +878,8 @@ export class WorkTeamService {
         return reason ? [{ botId: item.bot_id, displayName: this.memberDisplayName(work, item.bot_id), executionStatus: "not_started", responsibility: item.responsibility,
           status: "not_started", summary: reason, artifactRefs: [], uncoveredScope: [item.responsibility], hasWriteConflicts: false }] : [];
       }
-      const failureReason = binding.status !== "completed" ? this.latestRecovery(work.workId, item.task_id)?.failure_message
+      const recovery = this.latestRecovery(work.workId, item.task_id);
+      const failureReason = binding.status !== "completed" || recovery?.state === "stopped" ? recovery?.failure_message
         ?? binding.settlementNote ?? binding.status : undefined;
       // A later empty failure must not hide a useful partial result from an earlier
       // attempt. Dependent workers still receive only the latest execution boundary.
@@ -833,6 +910,33 @@ export class WorkTeamService {
         executionStatus: this.works.repo.getBinding(result.executionId)?.status, summary: result.summary.slice(0, 8000),
         artifactRefs: result.artifactRefs.slice(0, 128), hasWriteConflicts: result.hasWriteConflicts, uncoveredScope: result.uncoveredScope }));
   }
+  /** A completed first attempt is not a runnable dependent supplement when its
+   * prerequisite's repair has ended unsuccessfully. Settle the queued repair so
+   * the read-only owner can report the retained results and remaining gap. */
+  private stopBlockedMissingRepairs(work: WorkDto, plan: WorkTeamPlan): void {
+    const rows = this.rows(work.workId);
+    for (const row of rows) {
+      const recovery = this.latestRecovery(work.workId, row.task_id);
+      if (row.role !== "member" || !recovery?.missing_json || !["pending", "claimed"].includes(recovery.state)) continue;
+      const predecessors = plan.executionPolicy !== "parallel" ? rows.filter(item => item.ordinal < row.ordinal)
+        : rows.filter(item => (plan.members.find(member => member.botId === row.bot_id)?.dependsOnBotIds ?? []).includes(item.bot_id));
+      const blockedBy = predecessors.find(previous => !previous.cancelled
+        && this.latestRecovery(work.workId, previous.task_id)?.state === "stopped"
+        && !this.memberInFlight(work.workId, previous.task_id));
+      if (!blockedBy) continue;
+      this.works.transaction(() => {
+        this.works.collaboration.assertAuthority();
+        const reason = `补缺未启动：前置成员 ${this.memberDisplayName(work, blockedBy.bot_id)} 的恢复已停止，保留此前成果并报告剩余缺项`;
+        this.db.prepare("UPDATE work_team_recovery_attempts SET state='stopped',outcome='dependency_failed',failure_message=?,settled_at=? WHERE recovery_id=? AND state IN ('pending','claimed')")
+          .run(reason, this.now(), recovery.recovery_id);
+        this.db.prepare("UPDATE work_team_executions SET error=? WHERE work_id=? AND ordinal=?").run(reason, work.workId, row.ordinal);
+        const current = this.works.getWork(work.workId)!;
+        this.works.repo.updateWork({...current,stateVersion:current.stateVersion+1,updatedAt:this.now()});
+        this.works.emitCurrentProjection(work.workId);
+      });
+    }
+  }
+
   private nextDispatch(work: WorkDto, plan: WorkTeamPlan, rows: ExecutionRow[]): { row: ExecutionRow; recovery?: RecoveryRow } | undefined {
     for (const row of rows) {
       if (row.cancelled) continue;
@@ -997,7 +1101,8 @@ export class WorkTeamService {
     return Boolean(recovery && recovery.work_id === workId && recovery.task_id === taskId
       && ["pending", "claimed"].includes(recovery.state) && occupied.workId === workId
       && occupied.taskId === taskId && this.recoverySourceSettled(recovery)
-      && (occupied.operationId === operationId || ["failed", "stopped", "invalidated"].includes(occupied.status)));
+      && (occupied.operationId === operationId || ["failed", "stopped", "invalidated"].includes(occupied.status)
+        || occupied.status === "completed" && ["semantic_missing", "member_repaired_summary"].includes(recovery.failure_class)));
   }
 
   dispatchError(workId: string, taskId: string, botId: string, _scopes: string[] | undefined, operationId?: string): string | undefined {
@@ -1023,6 +1128,11 @@ export class WorkTeamService {
         return "自动恢复必须使用原成员身份与当前代次";
       if (recovery.work_id !== workId || !this.recoverySourceSettled(recovery))
         return "原生执行尚未确认结束或仍有在途操作，不能启动恢复";
+      const source = recovery.source_binding_id && this.works.repo.getBinding(recovery.source_binding_id);
+      const scopes = [..._scopes ?? []].sort();
+      if (JSON.stringify(scopes) !== JSON.stringify([...JSON.parse(row.scopes_json)].sort())
+        || source && JSON.stringify(scopes) !== JSON.stringify([...source.delegatedScope].sort()))
+        return "团队补做必须保持原成员的授权范围";
       return undefined;
     }
     if (!row.input_json || row.error) return "团队执行必须使用持久分工与原任务身份，不能追加未登记执行";

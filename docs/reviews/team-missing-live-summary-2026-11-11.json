@@ -1,0 +1,289 @@
+{
+  "base": "e4acf814e3d434639f55606e4fd24a76cc5eb813",
+  "model": "opendesign/deepseek-v4.1-flash",
+  "mode": "real online model, isolated pnpm dev, headless renderer; not desktop-input acceptance",
+  "coreRepairPasses": 6,
+  "bindingCount": 30,
+  "completedRecoveries": 12,
+  "terminalCompleted": 3,
+  "terminalPartial": 3,
+  "notes": [
+    "Report, translation and manifest final reviews correctly reported partial because the loaded fixture globally prohibited extra read-only shell/byte checks; manifest also exceeded its fixture sentence limit. All requested files were present and exact, no original or sibling write replayed.",
+    "Normal six-type run: exact files for all six, five strict fixture passes; CSV counted only write tool and failed on a legitimate single printf write.",
+    "Initial partial CSV review malformed JSON was safely rejected twice; an exact nested output example fixed the prompt before the final six-type run.",
+    "Saved fixture later clarifies method scope and waits for terminal closure; those test-only edits were not loaded into the completed batch. Final DB/feedback audit independently verified every closure and delivery.",
+    "Unselected workspace private sentinel absent from model contexts; this is not a complete private-memory isolation test. Existing targeted team access and subagent policy suites also passed."
+  ],
+  "cases": [
+    {
+      "type": "csv",
+      "coreRepairAssertions": "passed",
+      "lifecycle": "closed",
+      "closureConclusion": "succeeded",
+      "finalReview": {
+        "state": "delivered",
+        "decision": "deliver",
+        "outcome": "completed",
+        "missingCount": 0
+      },
+      "bindingCount": 5,
+      "recoveries": [
+        {
+          "failure_class": "semantic_missing",
+          "state": "completed"
+        },
+        {
+          "failure_class": "member_repaired_summary",
+          "state": "completed"
+        }
+      ],
+      "files": [
+        {
+          "name": "checked.txt",
+          "bytes": 25,
+          "sha256": "66140587cf265eb00823617427b02bd635a2136559ca08ac8954e56870ae24ca"
+        },
+        {
+          "name": "evidence.txt",
+          "bytes": 19,
+          "sha256": "649b0f229d843e1832ccc1cf9950997488b0033dcc1d06161bf776f16de4d2d0"
+        },
+        {
+          "name": "rows.csv",
+          "bytes": 19,
+          "sha256": "649b0f229d843e1832ccc1cf9950997488b0033dcc1d06161bf776f16de4d2d0"
+        },
+        {
+          "name": "total.txt",
+          "bytes": 2,
+          "sha256": "f0b5c2c2211c8d67ed15e75e656c7862d086e9245420892a7de62cd9ec582a06"
+        }
+      ]
+    },
+    {
+      "type": "json",
+      "coreRepairAssertions": "passed",
+      "lifecycle": "closed",
+      "closureConclusion": "succeeded",
+      "finalReview": {
+        "state": "delivered",
+        "decision": "deliver",
+        "outcome": "completed",
+        "missingCount": 0
+      },
+      "bindingCount": 5,
+      "recoveries": [
+        {
+          "failure_class": "semantic_missing",
+          "state": "completed"
+        },
+        {
+          "failure_class": "member_repaired_summary",
+          "state": "completed"
+        }
+      ],
+      "files": [
+        {
+          "name": "checked.txt",
+          "bytes": 26,
+          "sha256": "1f1377e432dcb155ca92099eee78a27d6f1b5cc4413b5f23148dd607286b2b86"
+        },
+        {
+          "name": "evidence.txt",
+          "bytes": 34,
+          "sha256": "7a874fcc0df19c3da7235f7e5005e1e1ba388a91c07a69cba657845777f49d4b"
+        },
+        {
+          "name": "initials.json",
+          "bytes": 18,
+          "sha256": "e0964d612f376ddf45e14e625b0b8301f965430fb67e8fbf48312b0f67c19123"
+        },
+        {
+          "name": "person.json",
+          "bytes": 24,
+          "sha256": "753781bc35a5e8a870af57dcf14377beb2a68749a8ab6c0654c4362d9280033a"
+        }
+      ]
+    },
+    {
+      "type": "report",
+      "coreRepairAssertions": "passed",
+      "lifecycle": "closed",
+      "closureConclusion": "ended_unsuccessfully",
+      "finalReview": {
+        "state": "delivered",
+        "decision": "deliver",
+        "outcome": "partial",
+        "missingCount": 0
+      },
+      "bindingCount": 5,
+      "recoveries": [
+        {
+          "failure_class": "semantic_missing",
+          "state": "completed"
+        },
+        {
+          "failure_class": "member_repaired_summary",
+          "state": "completed"
+        }
+      ],
+      "files": [
+        {
+          "name": "appendix.md",
+          "bytes": 32,
+          "sha256": "eebbe025ccce7fbb5642a1cb0627344feb5eadc4979c9cf58de02e4144b6a59b"
+        },
+        {
+          "name": "checked.txt",
+          "bytes": 28,
+          "sha256": "2b36a7167eb855ab60ed807e746880bb9598bcce43f67c7d26e32ca85cfce5f4"
+        },
+        {
+          "name": "evidence.txt",
+          "bytes": 30,
+          "sha256": "ced275710066bc4818a2b0e4cf9b5d2074630f64691721ca6cc58aeadefdb995"
+        },
+        {
+          "name": "report.md",
+          "bytes": 30,
+          "sha256": "ebe91ba4af941759c57844ca6552782d262994025beedf92bd605e217f1803bd"
+        }
+      ]
+    },
+    {
+      "type": "code",
+      "coreRepairAssertions": "passed",
+      "lifecycle": "closed",
+      "closureConclusion": "succeeded",
+      "finalReview": {
+        "state": "delivered",
+        "decision": "deliver",
+        "outcome": "completed",
+        "missingCount": 0
+      },
+      "bindingCount": 5,
+      "recoveries": [
+        {
+          "failure_class": "semantic_missing",
+          "state": "completed"
+        },
+        {
+          "failure_class": "member_repaired_summary",
+          "state": "completed"
+        }
+      ],
+      "files": [
+        {
+          "name": "add.cjs",
+          "bytes": 34,
+          "sha256": "3c4a78e286981651d3745d5e79e6e4e61940dfb45c44adad547ed04c5f811519"
+        },
+        {
+          "name": "add.test.cjs",
+          "bytes": 68,
+          "sha256": "02499a704938d0894573405853d0bb102ca4e6295b6c84bcce44b8dfc753377b"
+        },
+        {
+          "name": "checked.txt",
+          "bytes": 26,
+          "sha256": "fe330c44d51cf1a1323c7f6714905d2f57458de7116e30a12eb6b7f940a79e52"
+        },
+        {
+          "name": "evidence.txt",
+          "bytes": 48,
+          "sha256": "fa94c42a86665d69491d686876e4d4b2368d703e063e3156c493db036e43f201"
+        }
+      ]
+    },
+    {
+      "type": "translation",
+      "coreRepairAssertions": "passed",
+      "lifecycle": "closed",
+      "closureConclusion": "ended_unsuccessfully",
+      "finalReview": {
+        "state": "delivered",
+        "decision": "deliver",
+        "outcome": "partial",
+        "missingCount": 0
+      },
+      "bindingCount": 5,
+      "recoveries": [
+        {
+          "failure_class": "semantic_missing",
+          "state": "completed"
+        },
+        {
+          "failure_class": "member_repaired_summary",
+          "state": "completed"
+        }
+      ],
+      "files": [
+        {
+          "name": "checked.txt",
+          "bytes": 33,
+          "sha256": "7d1206e9f40ec5b1c7ba61b0fa34e9fee95cb02df3e25632fed8850aa920765c"
+        },
+        {
+          "name": "evidence.txt",
+          "bytes": 18,
+          "sha256": "2f3625c4cfef28ea1b4981f146f7d03eafc3cb416247cec114fc254bc09108dd"
+        },
+        {
+          "name": "first.txt",
+          "bytes": 10,
+          "sha256": "7d906fa843b21e1eff02c7002af9946a47674cc5979cd7534445d3db263b2a89"
+        },
+        {
+          "name": "second.txt",
+          "bytes": 10,
+          "sha256": "66b26a9ee1ce088c62084e1763bbbddd18f37f193d61df2c64e713211bcfcf0b"
+        }
+      ]
+    },
+    {
+      "type": "manifest",
+      "coreRepairAssertions": "passed",
+      "lifecycle": "closed",
+      "closureConclusion": "ended_unsuccessfully",
+      "finalReview": {
+        "state": "delivered",
+        "decision": "deliver",
+        "outcome": "partial",
+        "missingCount": 0
+      },
+      "bindingCount": 5,
+      "recoveries": [
+        {
+          "failure_class": "semantic_missing",
+          "state": "completed"
+        },
+        {
+          "failure_class": "member_repaired_summary",
+          "state": "completed"
+        }
+      ],
+      "files": [
+        {
+          "name": "alpha.txt",
+          "bytes": 6,
+          "sha256": "b6a98d9ce9a2d9149288fa3df42d377c3e42737afdcdaf714e33c0a100b51060"
+        },
+        {
+          "name": "beta.txt",
+          "bytes": 5,
+          "sha256": "f2c82decdd7181cf98945929a62598db7e6b477e11f6e0eb0ae97020eff151ad"
+        },
+        {
+          "name": "checked.txt",
+          "bytes": 30,
+          "sha256": "273bbe859c9e4851b87e8cb84d1db50be69b834fa437127466185e0751e1c3bb"
+        },
+        {
+          "name": "evidence.txt",
+          "bytes": 11,
+          "sha256": "e49c81e2d2f84e259d40e2fb8192f3bcd198b355184845d76d8f58807d0d78ee"
+        }
+      ]
+    }
+  ]
+}

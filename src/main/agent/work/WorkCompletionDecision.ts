@@ -68,6 +68,8 @@ function continueMissing({ works, db }: WorkCompletionOptions, binding: WorkExec
   const prior = db.prepare(`SELECT count(*) count FROM work_completion_turns t JOIN work_execution_bindings b ON b.binding_id=t.binding_id
     WHERE b.work_id=? AND b.intent_revision=? AND b.input_snapshot_id=? AND t.state='continued'`).get(work.workId, work.intentRevision, work.inputSnapshotId) as { count: number };
   if (prior.count >= 2) return false; // A result rephrasing loop must end with honest partial delivery.
+  // Team gaps retain the original member's identity and scope, never the owner's.
+  if (works.teams.get(work.workId)) return works.teams.continueMissing(binding, decision.missing, context.teamContinuationTargets, decision.reply);
   const items = decision.missing.map(item => ({ itemId: `result-followup:${hash([binding.bindingId,item.requestExcerpt,item.task])}`, task: item.task,
     required: true, dependencies: [], criterionIds: [], nativeStatus: "result_review", outcome: "not_started" as const,
     artifactRefs: [], writeConflicts: [], summary: `原请求仍缺此部分：${item.requestExcerpt}` }));

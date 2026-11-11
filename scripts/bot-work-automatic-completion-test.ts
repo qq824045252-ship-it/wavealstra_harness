@@ -76,7 +76,7 @@ const coordinator = new WorkCompletionCoordinator({ db: db.connection, works, is
     if ((input.context.pendingQuestions as Array<{blockerId:string}>|undefined)?.some(item=>item.blockerId === "late-question")) return {decision:"ask",outcome:"partial",reply:"必须提供收件人",missing:[]};
     if (input.context.title === "waiting-input") return {decision:"ask",outcome:"partial",reply:"已交付请求的文字方案；收件人是谁？",missing:[]};
     if (lateResultWork) { db.connection.prepare("UPDATE work_deliverables SET summary=summary || ' 后到证据' WHERE work_id=?").run(lateResultWork); lateResultWork=undefined; }
-    if (reviewContinue && ["continue-required","team-review-followup"].includes(String(input.context.title))) { reviewContinue=false; return {decision:"continue",outcome:"partial",reply:"已完成第一部分，补充剩余内容",missing:[{task:"补充剩余内容",requestExcerpt:String(input.context.title)}]}; }
+    if (reviewContinue && ["continue-required","team-review-followup"].includes(String(input.context.title))) { reviewContinue=false; return {decision:"continue",outcome:"partial",reply:"已完成第一部分，补充剩余内容",missing:[{task:"补充剩余内容",requestExcerpt:String(input.context.title), ...(input.context.title === "team-review-followup" ? {teamTarget:(() => { const target = (input.context.teamContinuationTargets as any[])[0]; return {sourceBindingId:target.sourceBindingId,botId:target.botId,responsibility:target.responsibility,intentRevision:target.intentRevision,inputSnapshotId:target.inputSnapshotId,evidence:{deliverableId:target.results[0].deliverableId,quote:target.results[0].summary}}; })()} : {})}]}; }
     return { decision: "deliver", outcome: reviewPartial || ["explicit", "uncertain"].includes(String(input.context.title)) ? "partial" : "completed", reply: `已整理：${input.context.title}。结果依据原始执行记录。`, missing: [] }; },
   deliver: input => { assert.notEqual(works.getWork(works.repo.getBinding(input.bindingId)!.workId)?.lifecycle, "closed", "delivery precedes closure");
     return deliveryAvailable && feedback.deliverCompletion(input); }, wake: () => {} });
@@ -257,7 +257,7 @@ try {
   assert.equal(works.getWork(teamId)?.lifecycle,"active","team review schedules missing part without user acceptance");
   for(let i=0;i<5;i++) await flush();
   assert.equal(works.getWork(teamId)?.closureConclusion,"succeeded","team owner continuation returns to automatic review and closes");
-  assert.equal(works.repo.listBindings(teamId).length,3,"only one missing-part execution; members are not rerun");
+  assert.equal(works.repo.listBindings(teamId).length,4,"one original member supplements, then the read-only owner summarizes again");
 
   for (const variant of ["empty", "reusable"]) {
     const teamFailure = works.teams.handle({...user,grants:{...DESKTOP_USER_GRANTS,allowRedelegation:true}}, {kind:"create",request:{

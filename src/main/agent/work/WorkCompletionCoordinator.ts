@@ -113,6 +113,7 @@ export class WorkCompletionCoordinator {
           diagnosticSummary: candidate.summary },
         criteria: candidate.work.criteria,
         continuationScope: binding.delegatedScope,
+        teamContinuationTargets: works.teams.continuationTargets(binding),
         pendingQuestions: this.questions(binding.workId),
         actualMissing: works.partialResults.gaps(binding.workId).map(item => ({task:item.task, summary:item.summary, outcome:item.outcome})),
         unknownEffects: works.repo.listAdmissions(binding.workId).filter(item => item.state === "unknown").map(item => item.operationId),
@@ -152,9 +153,10 @@ export class WorkCompletionCoordinator {
         if (latestPreferenceFingerprint !== preferenceFingerprint
           || JSON.stringify(latestResults) !== JSON.stringify(frozen.results)
           || JSON.stringify(latestFiles) !== JSON.stringify(frozen.availableFiles ?? [])
+          || JSON.stringify(works.teams.continuationTargets(binding)) !== JSON.stringify(frozen.teamContinuationTargets)
           || JSON.stringify(pendingQuestions) !== JSON.stringify(frozen.pendingQuestions ?? [])) {
           db.prepare("UPDATE work_completion_turns SET context_json=?,decision_json=NULL,state='queued',retry_at=0 WHERE binding_id=?")
-            .run(JSON.stringify({...frozen,preferenceFingerprint:latestPreferenceFingerprint,results:latestResults,availableFiles:latestFiles,pendingQuestions,actualMissing:current.conclusion === "succeeded" ? [] : [current.summary]}),bindingId);
+            .run(JSON.stringify({...frozen,preferenceFingerprint:latestPreferenceFingerprint,results:latestResults,availableFiles:latestFiles,pendingQuestions,teamContinuationTargets:works.teams.continuationTargets(binding),actualMissing:current.conclusion === "succeeded" ? [] : [current.summary]}),bindingId);
           return; // A late result must not be guided by a decision on older evidence.
         }
         db.prepare("UPDATE work_completion_turns SET decision_json=?,error=NULL WHERE binding_id=?").run(JSON.stringify(decision), bindingId);

@@ -1,5 +1,7 @@
+import { resultDecisionSchema } from "../src/main/agent/work/BotWorkResultTurn";
+import { WorkCompletionCoordinator } from "../src/main/agent/work/WorkCompletionCoordinator";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentSubmissionReceipt } from "../src/shared/agent-ipc";
@@ -34,6 +36,8 @@ class FakeHost implements WorkExecutionPort {
   onUnknownEffect?: (taskId: string) => void;
   readonly runningRecovery = new Set<string>();
   readonly observations = new Map<string, (attempt: number) => WorkExecutionObservation>();
+  missingMode = false;
+  supplementalWrites = 0;
   writes = 0;
   sequence = 0;
   constructor(private readonly workspace: string, private readonly artifact: string) {}
@@ -45,6 +49,12 @@ class FakeHost implements WorkExecutionPort {
     this.assignment.set(binding.bindingId, input.teamAssignment);
     const recovery = binding.operationId.startsWith("team-recovery:");
     if (input.teamAssignment.botId.endsWith("-a") && !recovery) { writeFileSync(this.artifact, "written-once"); this.writes++; }
+    if (this.missingMode && input.teamAssignment.botId.endsWith("-a") && recovery) {
+      assert.equal(readFileSync(this.artifact, "utf8"), "written-once", "repair reads and retains original output");
+      assert.equal(input.teamAssignment.recovery.missingItems.length, 1);
+      assert.equal(input.teamAssignment.recovery.missingItems[0].task, "只补写 b.txt");
+      if (!existsSync(join(this.workspace, "b.txt"))) { writeFileSync(join(this.workspace, "b.txt"), "supplemented-once"); this.supplementalWrites++; }
+    }
     const receipt = { taskId: binding.taskId, operationId: binding.operationId, submissionId: ++this.sequence, status: "done" as const };
     this.receipts.set(binding.bindingId, receipt);
     return receipt;
@@ -67,6 +77,7 @@ class FakeHost implements WorkExecutionPort {
       this.failOnce.delete(botId);
       return { status: "failed", summary: "failed after writing the file", hasWriteConflicts: false, artifactRefs: [this.artifact] } as WorkExecutionObservation;
     }
+    if (this.missingMode && botId.endsWith("-a")) return { status: "completed", summary: recovery ? "a.txt 保留，b.txt 已补写并回读" : "a.txt 已写入；b.txt 未写入", hasWriteConflicts: false, artifactRefs: [this.artifact] };
     return { status: "completed", summary: `${botId} completed`, hasWriteConflicts: false, artifactRefs: [] } as WorkExecutionObservation;
   }
   async stop(): Promise<void> {}
@@ -521,6 +532,133 @@ try {
       assert.equal(f.host.writes, 1);
       const attempts = f.db.connection.prepare("SELECT COUNT(*) AS n FROM work_team_recovery_attempts WHERE work_id=?").get(workId) as { n: number };
       assert.equal(attempts.n, 1, "duplicate delivery/restart does not create another recovery generation");
+    } finally { await f.close(); }
+  }
+  // A process-completed omission is returned only to its exact original member.
+  // Reject forged provenance atomically, survive restart, then re-summarize read-only.
+  {
+    const f = fixture();
+    let coordinator: WorkCompletionCoordinator | undefined;
+    try {
+      f.host.missingMode = true;
+      const created = f.create("生成 a.txt 和 b.txt", [{botId:"recovery-a"}, {botId:"recovery-b"}], true);
+      assert(created.ok && created.work);
+      const workId = created.work.workId;
+      await wait(() => f.team(workId).state === "awaiting_review", "completed omission", () => f.flush(4));
+      const initial = f.bindings(workId), owner = initial.find(binding => binding.botId === "recovery-owner")!;
+      const targets = f.works.teams.continuationTargets(owner)!;
+      const target = targets.find(item => item.botId === "recovery-a")!;
+      const missing = {task:"只补写 b.txt",requestExcerpt:"b.txt",teamTarget:{sourceBindingId:target.sourceBindingId,
+        botId:target.botId,responsibility:target.responsibility,intentRevision:target.intentRevision,inputSnapshotId:target.inputSnapshotId,
+        evidence:{deliverableId:target.results[0].deliverableId,quote:"b.txt 未写入"}}};
+      const review = {decision:"continue",outcome:"partial",reply:"补写 b.txt",missing:[missing]};
+      assert(resultDecisionSchema.safeParse(review).success,"target is nested under the exact missing item");
+      assert.equal(resultDecisionSchema.safeParse({...review,teamContinuationTargets:targets}).success,false,"input-only team targets cannot be accepted as a top-level output field");
+      assert.equal(f.db.connection.prepare("SELECT 1 FROM work_team_recovery_attempts WHERE work_id=?").get(workId),undefined,
+        "native completed alone neither proves goal completion nor triggers failed-task recovery");
+      for (const patch of [{sourceBindingId:"foreign"},{botId:"recovery-b"},{responsibility:"foreign responsibility"},
+        {intentRevision:999},{inputSnapshotId:"foreign"},{evidence:{deliverableId:target.results[0].deliverableId,quote:"invented"}}]) {
+        assert.equal(f.works.transaction(() => f.works.teams.continueMissing(owner,
+          [missing,{...missing,teamTarget:{...missing.teamTarget,...patch}}],targets,"missing")),false);
+        assert.equal(f.db.connection.prepare("SELECT 1 FROM work_team_recovery_attempts WHERE work_id=?").get(workId),undefined,"bad batch has no partial effects");
+      }
+      let reviews = 0;
+      coordinator = new WorkCompletionCoordinator({db:f.db.connection,works:f.works,isAuthority:()=>true,
+        review:async input => { reviews++; assert.deepEqual(input.context.continuationScope,["workspace:read"]);
+          return {decision:"continue",outcome:"partial",reply:"补写 b.txt",missing:[missing]}; },deliver:()=>true,wake:()=>{}});
+      coordinator.wake(); await new Promise(resolve=>setImmediate(resolve)); coordinator.close();
+      assert.equal(reviews,1);
+      assert.equal(f.works.getWork(workId)?.lifecycle,"active");
+      assert.equal(f.works.partialResults.plans(workId).length,0,"never inherits the owner's generic continuation");
+      assert.equal(f.works.transaction(()=>f.works.teams.continueMissing(owner,[missing],targets,"duplicate")),false);
+      f.reopen();
+      await wait(() => f.team(workId).state === "awaiting_review", "member supplement and renewed summary", () => f.flush(4));
+      const bindings = f.bindings(workId);
+      assert.equal(bindings.length,5,"two initial members + initial owner + one member repair + one owner summary");
+      const a = bindings.filter(binding=>binding.botId === "recovery-a"), b = bindings.filter(binding=>binding.botId === "recovery-b");
+      assert.equal(a.length,2); assert.equal(a[0].taskId,a[1].taskId); assert.deepEqual(a[1].delegatedScope,a[0].delegatedScope);
+      assert.equal(b.length,1,"completed sibling never reruns");
+      for (const binding of bindings.filter(binding=>binding.botId === "recovery-owner")) assert.deepEqual(binding.delegatedScope,["workspace:read"]);
+      assert.equal(f.host.writes,1); assert.equal(f.host.supplementalWrites,1);
+      assert.equal(readFileSync(f.artifact,"utf8"),"written-once");
+      assert.equal(readFileSync(join(f.workspace,"b.txt"),"utf8"),"supplemented-once");
+      const summary = f.host.submissions.filter(item=>item.botId === "recovery-owner").at(-1)!;
+      assert(summary.input.teamAssignment.previousResults.some((item:any)=>item.bindingId === a[1].bindingId && item.summary.includes("b.txt 已补写")));
+      assert.equal(summary.input.teamAssignment.readOnly,true);
+      assert.equal(f.works.transaction(()=>f.works.teams.continueMissing(owner,[missing],targets,"old owner")),false);
+      coordinator = new WorkCompletionCoordinator({db:f.db.connection,works:f.works,isAuthority:()=>true,
+        review:async()=>({decision:"deliver",outcome:"completed",reply:"两个文件已核对",missing:[]}),deliver:()=>true,wake:()=>{}});
+      coordinator.wake(); await new Promise(resolve=>setImmediate(resolve));
+      assert.equal(f.works.getWork(workId)?.closureConclusion,"succeeded");
+      assert.equal(f.errors.length,0);
+    } finally { coordinator?.close(); await f.close(); }
+  }
+  // A failed supplement keeps the narrow persisted gap, and a user stop wins
+  // before either the member or the fresh owner summary can be dispatched.
+  for (const mode of ["failed-supplement", "cancel-supplement"] as const) {
+    const f = fixture();
+    try {
+      f.host.missingMode = true;
+      const created = f.create(mode, [{botId:"recovery-a"},{botId:"recovery-b"}],true);
+      assert(created.ok && created.work);
+      const workId = created.work.workId;
+      await wait(()=>f.team(workId).state === "awaiting_review","initial completed omission",()=>f.flush(4));
+      const owner = f.bindings(workId).find(binding=>binding.botId === "recovery-owner")!;
+      const targets = f.works.teams.continuationTargets(owner)!;
+      const target = targets.find(item=>item.botId === "recovery-a")!;
+      const missing = {task:"只补写 b.txt",requestExcerpt:mode,teamTarget:{sourceBindingId:target.sourceBindingId,
+        botId:target.botId,responsibility:target.responsibility,intentRevision:target.intentRevision,inputSnapshotId:target.inputSnapshotId,
+        evidence:{deliverableId:target.results[0].deliverableId,quote:"b.txt 未写入"}}};
+      assert(f.works.transaction(()=>f.works.teams.continueMissing(owner,[missing],targets,"补缺")));
+      const operation = (f.db.connection.prepare("SELECT operation_id FROM work_team_recovery_attempts WHERE work_id=? AND bot_id='recovery-a'").get(workId) as {operation_id:string}).operation_id;
+      const aTask = created.team!.executions.find(item=>item.botId === "recovery-a")!.taskId;
+      assert.match(f.works.teams.dispatchError(workId,aTask,"recovery-a",["workspace:read","workspace:write","network:write"],operation)!,/授权范围/);
+      if (mode === "cancel-supplement") {
+        assert(f.works.cancelWork(actor,{operationId:"cancel-missing",workId}).ok);
+        await f.flush(6);
+        assert.equal(f.bindings(workId).length,3); assert.equal(f.host.supplementalWrites,0);
+      } else {
+        f.host.observations.set("recovery-a", attempt => attempt === 2
+          ? {status:"failed",summary:"supplement wrote b.txt but provider failed before result",hasWriteConflicts:false,artifactRefs:[f.artifact,join(f.workspace,"b.txt")]}
+          : {status:"completed",summary:"a.txt 保留，b.txt 已补写并回读",hasWriteConflicts:false,artifactRefs:[f.artifact,join(f.workspace,"b.txt")]});
+        await wait(()=>f.team(workId).state === "awaiting_review","failed supplement settles before owner summary",()=>f.flush(4));
+        const repaired = f.host.submissions.filter(item=>item.botId === "recovery-a" && item.operationId.startsWith("team-recovery:"));
+        assert.equal(repaired.length,2);
+        assert(repaired.every(item=>item.input.teamAssignment.recovery.missingItems[0].task === "只补写 b.txt"));
+        assert.equal(f.host.writes,1); assert.equal(f.host.supplementalWrites,1,"failed supplement reads existing b.txt instead of rewriting it");
+        assert.equal(readFileSync(join(f.workspace,"b.txt"),"utf8"),"supplemented-once");
+      }
+      assert.equal(f.errors.length,0);
+    } finally { await f.close(); }
+  }
+  // Two completed members can both need repair. An exhausted prerequisite must
+  // settle the dependent repair rather than strand the pending owner summary.
+  for (const parallel of [false,true]) {
+    const f = fixture();
+    try {
+      const created = f.create(`missing-dependency-${parallel}`,[{botId:"recovery-a"},{botId:"recovery-b",dependsOnBotIds:["recovery-a"]}],parallel);
+      assert(created.ok && created.work);
+      const workId = created.work.workId;
+      await wait(()=>f.team(workId).state === "awaiting_review","initial team",()=>f.flush(4));
+      const owner = f.bindings(workId).find(binding=>binding.botId === "recovery-owner")!;
+      const targets = f.works.teams.continuationTargets(owner)!;
+      const missing = targets.map(target=>({task:`只补 ${target.botId} 的缺项`,requestExcerpt:`missing-dependency-${parallel}`,
+        teamTarget:{sourceBindingId:target.sourceBindingId,botId:target.botId,responsibility:target.responsibility,
+          intentRevision:target.intentRevision,inputSnapshotId:target.inputSnapshotId,
+          evidence:{deliverableId:target.results[0].deliverableId,quote:target.results[0].summary}}}));
+      assert(f.works.transaction(()=>f.works.teams.continueMissing(owner,missing,targets,"两个成员均缺项")));
+      f.host.failAlways.add("recovery-a");
+      f.reopen();
+      await wait(()=>f.bindings(workId).filter(binding=>binding.botId === "recovery-owner").length === 2
+        && f.team(workId).executions.find(item=>item.role === "owner_summary")!.status === "recovered",
+        "failed prerequisite still reaches honest owner re-summary",()=>f.flush(4));
+      const b = f.team(workId).executions.find(item=>item.botId === "recovery-b")!;
+      assert.equal(b.recoveryState,"stopped"); assert.equal(b.recoveryOutcome,"dependency_failed");
+      assert.equal(f.bindings(workId).filter(binding=>binding.botId === "recovery-b").length,1,"blocked supplement never replays original completed task");
+      const ownerInput = f.host.submissions.filter(item=>item.botId === "recovery-owner").at(-1)!.input.teamAssignment;
+      assert(ownerInput.previousResults.some((result:any)=>result.botId === "recovery-b" && /补缺未启动/.test(result.failureReason)));
+      assert.equal(f.db.connection.prepare("SELECT 1 FROM work_team_recovery_attempts WHERE work_id=? AND state IN ('pending','claimed','dispatched')").get(workId),undefined);
+      assert.equal(f.host.writes,1);
     } finally { await f.close(); }
   }
   console.log("PASS team recovery: same identity continuation, single write, dependency advancement, independent members, nonblocking unknown effects, stop cancellation, verified byte/native-item progress, wording-independent stagnation, partial-result dependency barrier, exhausted-chain summaries and restart dedup");
