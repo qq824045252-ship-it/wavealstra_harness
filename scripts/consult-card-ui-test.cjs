@@ -83,9 +83,9 @@ app.whenReady().then(async () => {
       assert.equal(tabs.length, 3);
       assert(tabs[0].includes('Gemini 3.8 Flash') && tabs[0].includes('思考等级 high') && tabs[0].includes('已完成'), tabs[0]);
       assert(tabs[0].includes('9.0 秒') || tabs[0].includes('3.0 秒'), `duration missing: ${tabs[0]}`);
-      assert(tabs[0].includes('缓存读取 0.000M') && tabs[0].includes('缓存率 3%'), `raw cache metrics missing: ${tabs[0]}`);
-      assert(tabs[1].includes('缓存读取 0.000M') && tabs[1].includes('缓存率 0%'), `known zero cache must be visible: ${tabs[1]}`);
-      assert(tabs[2].includes('缓存读取 —') && tabs[2].includes('缓存率 —'), `missing cache must remain unknown: ${tabs[2]}`);
+      assert(tabs[0].includes('缓存读取 0.000M') && tabs[0].includes('缓存命中率 3%'), `raw cache metrics missing: ${tabs[0]}`);
+      assert(tabs[1].includes('缓存读取 0.000M') && tabs[1].includes('缓存命中率 0%'), `known zero cache must be visible: ${tabs[1]}`);
+      assert(tabs[2].includes('缓存读取 —') && tabs[2].includes('缓存命中率 —'), `missing cache must remain unknown: ${tabs[2]}`);
       assert(tabs[2].includes('失败'), tabs[2]);
     });
     await screenshot('detail-desktop');

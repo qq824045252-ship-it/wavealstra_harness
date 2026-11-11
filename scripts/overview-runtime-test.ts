@@ -654,7 +654,7 @@ console.log("== 子代理累计用量（运行中 DTO + 完成态 details.usage�
 
   // 四个显示参数：输入 / 缓存读 / 输出 / 命中（顺序固定，label 字面量断言）
   const fields = subagentUsageFields(running[0].usage!);
-  assert(fields.map((f) => f.label).join("/") === "输入/缓存读/输出/命中", `四参数顺序（${fields.map((f) => f.label).join("/")}）`);
+  assert(fields.map((f) => f.label).join("/") === "输入/缓存读取/输出/命中", `四参数顺序（${fields.map((f) => f.label).join("/")}）`);
   assert(fields[0].value === "0.001M" && fields[1].value === "0.008M" && fields[2].value === "0.000M",
     `token 走 M 口径（${fields.map((f) => f.value).join(" ")}）`);
   assert(subagentCacheHitRate(running[0].usage!) !== null && fields[3].value === "89%", `命中率 = cacheRead/(input+cacheRead+cacheWrite)（${fields[3].value}）`);

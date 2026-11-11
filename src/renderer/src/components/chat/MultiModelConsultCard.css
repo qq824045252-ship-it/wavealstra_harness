@@ -113,3 +113,5 @@
 }
 
 .consult-composer-notice { color: var(--fg-muted); font-size: 12px; line-height: 1.6; padding: 6px 12px; }
+
+.consult-usage-metric { display: inline-block; white-space: nowrap; margin-right: 8px; }

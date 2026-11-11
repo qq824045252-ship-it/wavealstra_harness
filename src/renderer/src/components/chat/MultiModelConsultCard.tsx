@@ -144,9 +144,11 @@ export default function MultiModelConsultCard({ toolCall }: { toolCall: ToolCall
   const duration = (item: ConsultWorkerResult): string => item.startedAt && item.endedAt
     ? `${((item.endedAt - item.startedAt) / 1000).toFixed(1)} 秒`
     : item.startedAt ? "计时中" : "";
-  const tokens = (item: ConsultWorkerResult): string => subagentHeaderMetrics(item.tokens, "本会诊成员累计")
+  const tokenDetails = (item: ConsultWorkerResult): string => subagentHeaderMetrics(item.tokens, "本会诊成员累计")
+    .map(metric => metric.title).join("\n");
+  const tokens = (item: ConsultWorkerResult): React.JSX.Element[] => subagentHeaderMetrics(item.tokens, "本会诊成员累计")
     .filter(metric => metric.key !== "cacheWrite")
-    .map(metric => `${metric.label} ${metric.value}`).join(" / ");
+    .map(metric => <span className="consult-usage-metric" key={metric.key} title={metric.title}>{metric.label} {metric.value}</span>);
   const sameTask = Boolean(report) && activeTaskId === report?.taskId;
   // A failed, timed-out or cancelled participant stays quotable while it has an answer or a reason.
   const hasEvidence = Boolean(worker && ((worker.answer ?? "").trim() || (worker.error ?? "").trim()));
@@ -232,7 +234,7 @@ export default function MultiModelConsultCard({ toolCall }: { toolCall: ToolCall
                     <small className="consult-tab-level">思考等级 {item.thinkingLevel ?? "默认"}</small>
                     <small className={`consult-tab-status is-${item.status}`}>{status(item.status)}</small>
                     {duration(item) && <small className="consult-tab-duration">{duration(item)}</small>}
-                    {tokens(item) && <small className="consult-tab-tokens">{tokens(item)}</small>}
+                    {tokens(item) && <small className="consult-tab-tokens" title={tokenDetails(item)}>{tokens(item)}</small>}
                   </span>
                 </button>
               ))}
@@ -246,7 +248,7 @@ export default function MultiModelConsultCard({ toolCall }: { toolCall: ToolCall
                   <span>思考等级 {worker.thinkingLevel ?? "默认"}</span>
                   <span className={`consult-worker-status is-${worker.status}`}>{status(worker.status)}</span>
                   {duration(worker) && <span>{duration(worker)}</span>}
-                  {tokens(worker) && <span>{tokens(worker)}</span>}
+                  {tokens(worker) && <span title={tokenDetails(worker)}>{tokens(worker)}</span>}
                   {canStop(worker) && (
                     <button
                       type="button"

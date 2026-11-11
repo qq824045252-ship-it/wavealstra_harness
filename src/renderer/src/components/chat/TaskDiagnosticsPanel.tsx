@@ -13,13 +13,14 @@ import {
 import { parseSubagentDetails } from "@/lib/subagentDetails";
 import { useAppStore } from "@/store/appStore";
 import "./TaskDiagnosticsPanel.css";
+import { formatTokenCount } from "@shared/token-format";
 
 const sourceLabels = { main: "主代理", subagent: "子代理／会诊", auxiliary: "辅助任务" };
 const costLabels = { "provider-reported": "供应商报告", "pi-native": "Pi 原生计价", "sdk-default": "未取得费用（SDK 初始值）" };
 const statusLabels = { running: "执行中", completed: "完成", failed: "失败", aborted: "已停止", interrupted: "观测中断" };
 const verdictLabels: Record<Verdict, string> = { ok: "正常", warn: "需注意", error: "异常", unknown: "无法判断", waiting: "在等人" };
 const verdictIcons: Record<Verdict, string> = { ok: "✓", warn: "!", error: "✕", unknown: "?", waiting: "…" };
-const count = (value: number | null) => value === null ? "未知" : value.toLocaleString();
+const count = (value: number | null) => <span title={value === null ? "供应商未报告，不按 0 计算" : `${value.toLocaleString()} tokens`}>{formatTokenCount(value ?? undefined)}</span>;
 const duration = (value: number | null) => value === null ? "未知" : value < 1000 ? `${Math.round(value)} ms` : `${(value / 1000).toFixed(2)} s`;
 const money = (value: number | null, complete: boolean) => value === null ? "未知" : `${complete ? "" : "已知部分 "}$${value.toFixed(6)}`;
 const time = (value: number) => new Date(value).toLocaleTimeString();
@@ -63,8 +64,8 @@ function RequestDetails({ request }: { request: ModelRequestDiagnostic }) {
         <dt>首个输出等待</dt><dd>{duration(request.firstResponseAt === null ? null : Math.max(0, request.firstResponseAt - request.startedAt))}（参考指标，不参与判定）</dd>
         <dt>结果</dt><dd>{request.outcome ?? "尚未完成"}{request.error ? `：${request.error}` : ""}</dd>
       </dl>
-      <div className="task-diagnostic-table-wrap"><table><thead><tr><th>新输入 token</th><th>输出 token</th><th>缓存读取</th><th>缓存写入</th><th>费用</th></tr></thead>
-        <tbody><tr><td>{count(request.usage.input)}</td><td>{count(request.usage.output)}</td><td>{count(request.usage.cacheRead)}</td><td>{count(request.usage.cacheWrite)}</td><td>{money(request.knownCostUsd, request.costComplete)}</td></tr></tbody></table></div>
+      <div className="task-diagnostic-table-wrap"><table><thead><tr><th>新输入</th><th>缓存读取</th><th>输出</th><th>缓存写入</th><th>费用</th></tr></thead>
+        <tbody><tr><td>{count(request.usage.input)}</td><td>{count(request.usage.cacheRead)}</td><td>{count(request.usage.output)}</td><td>{count(request.usage.cacheWrite)}</td><td>{money(request.knownCostUsd, request.costComplete)}</td></tr></tbody></table></div>
       <p className="task-diagnostic-note">用量来源：{request.usageSource ? `供应商原始事件（${request.usageSource}）` : "未取得供应商原始用量"}。费用来源：{request.costSource ? costLabels[request.costSource] : "未知"}，缺失字段不补零。</p>
       <p>历史前缀：{prefix === null ? "没有可比较的前次请求" : prefix ? "保持稳定" : "已变化"}。
         配置变化：{request.cacheContext.changedFields.length ? request.cacheContext.changedFields.map(field => changedLabels[field] ?? field).join("、") : "未观察到"}。
