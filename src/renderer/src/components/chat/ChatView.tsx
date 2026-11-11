@@ -18,6 +18,7 @@ import WorkspaceCrumb from "./WorkspaceCrumb";
 import SubagentRunsChip from "./SubagentRunsChip";
 import SubagentChatView from "./SubagentChatView";
 import RuntimeStatusChips from "./RuntimeStatusChips";
+import { mergeHistoryQuestions } from "@/lib/historyQuestions";
 import TaskDiagnosticsButton from "./TaskDiagnosticsButton";
 import TaskDiagnosticsDialog from "./TaskDiagnosticsDialog";
 import WelcomeModeIcon from "@/components/common/WelcomeModeIcon";
@@ -271,7 +272,19 @@ function HistoryPopup({
   onJumpToMessage: (messageId: string) => void;
 }): React.JSX.Element | null {
   const task = useActiveTask();
-  const questions = (task?.messages ?? [])
+  const taskId = task?.id;
+  /** 完整提问索引来自主进程（跨实时窗口）；请求未返回前退回当前窗口内容。 */
+  const [index, setIndex] = useState<Array<{ id: string; text: string }> | null>(null);
+  useEffect(() => {
+    setIndex(null);
+    if (!taskId) return;
+    const load = window.api?.agent?.listTaskUserQuestions;
+    if (!load) return;
+    let alive = true;
+    void load(taskId).then(value => { if (alive) setIndex(value.questions); }).catch(() => { /* keep the window fallback */ });
+    return () => { alive = false; };
+  }, [taskId]);
+  const windowQuestions = (task?.messages ?? [])
     .filter((m) => m.role === "user")
     .map((m) => ({
       id: m.id,
@@ -282,6 +295,7 @@ function HistoryPopup({
     }))
     .filter((q) => q.text)
     .reverse();
+  const questions = mergeHistoryQuestions(windowQuestions, index);
 
   return (
     <div className="history-popup">
@@ -627,6 +641,53 @@ export default function ChatView(): React.JSX.Element {
     scrollRef,
     applyProgrammaticScrollTop,
   });
+
+  /**
+   * 历史提问跳转：提问可能早于实时窗口（窗口只保留最近 200 条 entry），
+   * 先按历史块向前加载到目标消息再滚动；已在视图中则直接跳。
+   */
+  const jumpToHistoryQuestion = useCallback(async (messageId: string): Promise<void> => {
+    commitFollow(onHistoryJump(followStateRef.current));
+    if (displayMessages.some(message => message.id === messageId)) {
+      listApiRef.current?.scrollToMessageId(messageId);
+      return;
+    }
+    const taskId = task?.id;
+    const epoch = task?.durable?.epoch;
+    if (!taskId || !epoch) return;
+    let cursor = beforeHistory;
+    for (let pageIndex = 0; pageIndex < 40 && cursor !== undefined; pageIndex += 1) {
+      const history = await window.api?.agent?.loadTaskHistory?.(taskId, cursor);
+      const block = history?.page;
+      if (!history || history.historyError || !block || block.epoch !== epoch || block.before === cursor) return;
+      const state = useAppStore.getState();
+      const row = state.tasks.find(item => item.id === taskId);
+      if (!row || row.durable?.epoch !== epoch || state.activeTaskId !== taskId) return;
+      const current = row.historyWindow?.epoch === epoch ? row.historyWindow.before : row.durable?.historyBefore;
+      if (current !== cursor) return;
+      const messages = history.messages.map(durableMessageToChatMessage);
+      useAppStore.setState(currentState => ({
+        tasks: currentState.tasks.map(item => item.id === taskId
+          ? {
+              ...item,
+              historyWindow: {
+                epoch,
+                seed: item.historyWindow?.seed ?? cursor!,
+                before: block.before,
+                messages: mergeHistoryWindow([messages, item.historyWindow?.messages ?? []], []),
+              },
+            }
+          : item),
+      }));
+      cursor = block.before;
+      await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+      const latest = useAppStore.getState().tasks.find(item => item.id === taskId);
+      if ((latest?.historyWindow?.messages ?? []).some(message => message.id === messageId)) {
+        listApiRef.current?.scrollToMessageId(messageId);
+        return;
+      }
+    }
+  }, [beforeHistory, commitFollow, displayMessages, task?.durable?.epoch, task?.id]);
 
   const latestUserMessageIdRef = useRef(latestUserMessageId);
   latestUserMessageIdRef.current = latestUserMessageId;
@@ -994,11 +1055,7 @@ export default function ChatView(): React.JSX.Element {
           {historyOpen && (
             <HistoryPopup
               onClose={() => setHistoryOpen(false)}
-              onJumpToMessage={(id) => {
-                // 历史跳转：退出跟随并清除手势方向（随后是程序化平滑滚动，不改变状态）
-                commitFollow(onHistoryJump(followStateRef.current));
-                listApiRef.current?.scrollToMessageId(id);
-              }}
+              onJumpToMessage={(id) => { void jumpToHistoryQuestion(id); }}
             />
           )}
         </div>

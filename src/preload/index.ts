@@ -193,6 +193,7 @@ import {
   type SpaceDto,
   type TaskDto,
   type TaskHistoryDto,
+  type TaskUserQuestionsDto,
   type WorkspaceFileNodeDto,
   type WorkspaceFilePreviewDto,
   type WorkspaceMutationResult,
@@ -569,6 +570,8 @@ const api = {
       ipcRenderer.invoke(AgentIpc.getContextUsage, taskId),
     loadTaskHistory: (taskId: string, beforeEntryId?: number): Promise<TaskHistoryDto> =>
       ipcRenderer.invoke(AgentIpc.loadTaskHistory, taskId, beforeEntryId),
+    listTaskUserQuestions: (taskId: string): Promise<TaskUserQuestionsDto> =>
+      ipcRenderer.invoke(AgentIpc.listTaskUserQuestions, taskId),
     listLoginProviders: (): Promise<LoginProviderDto[]> =>
       ipcRenderer.invoke(AgentIpc.listLoginProviders),
     setProviderEnabled: (providerId: string, enabled: boolean): Promise<ModelInfoDto[]> =>

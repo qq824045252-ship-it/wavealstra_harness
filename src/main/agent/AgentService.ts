@@ -4581,6 +4581,26 @@ export class AgentService {
   }
 
   /**
+   * 列出一个任务的全部用户提问（跨实时历史窗口，历史提问弹窗用）。
+   * durable 会话直接只读扫描完整 entry 流；其它会话退回历史解析结果。
+   */
+  async listTaskUserQuestions(taskId: string): Promise<Array<{ id: string; text: string }>> {
+    try {
+      if (this.durableBots?.owns(taskId)) {
+        const questions = await this.durableBots.userQuestions(taskId);
+        if (questions.length > 0) return questions;
+      }
+      const history = await this.loadTaskHistory(taskId);
+      return history.messages
+        .filter(message => message.role === "user" && message.text.trim())
+        .map(message => ({ id: message.id, text: message.text }));
+    } catch (error) {
+      console.warn("[AgentService] listTaskUserQuestions failed", taskId, error);
+      return [];
+    }
+  }
+
+  /**
    * 会话文件的指纹（mtime + size）。文件未变时历史必然不变，
    * 所以可安全复用解析结果：手机端每次切任务都会请求历史，重解析整份 JSONL 是主要耗时。
    */

@@ -1432,6 +1432,9 @@ function registerIpc(): void {
         .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)),
     };
   });
+  ipcMain.handle(AgentIpc.listTaskUserQuestions, async (_e, taskId: string) =>
+    ({ questions: await agentService.listTaskUserQuestions(taskId) }),
+  );
   ipcMain.handle(AgentIpc.listLoginProviders, () => agentService.listLoginProviders());
   ipcMain.handle(AgentIpc.setProviderEnabled, (_e, providerId: string, enabled: boolean) =>
     agentService.setProviderEnabled(providerId, enabled),

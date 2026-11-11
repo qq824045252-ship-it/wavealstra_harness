@@ -18,3 +18,15 @@ export async function readDurableReadOnlyHistory(input: {
       ...(block ? { page: { epoch: block.epoch, before: block.before } } : {}) };
   } finally { await runtime.close(); }
 }
+
+/** Read-only viewer for the complete user-question index; never promotes to a writer. */
+export async function readDurableUserQuestions(input: {
+  directory: string; cwd: string; models: ModelRuntime;
+}): Promise<Array<{ id: string; text: string }>> {
+  if (!existsSync(join(input.directory, "main.jsonl"))) return [];
+  const runtime = await DurableBotRuntime.open({ directory: input.directory, cwd: input.cwd,
+    models: input.models, readOnly: true, toolMode: "native", instructions: () => "", onSnapshot: () => {} });
+  try {
+    return await runtime.loadUserQuestions();
+  } finally { await runtime.close(); }
+}

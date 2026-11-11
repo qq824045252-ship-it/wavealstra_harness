@@ -23,7 +23,7 @@ import { DurableTaskProjection } from "./DurableTaskProjection";
 import { ToolGate } from "./ToolGate";
 import { DEFAULT_DURABLE_RESUME_CONCURRENCY, ResumeAdmission, type ResumeAdmissionReport } from "./ResumeAdmission";
 import { WorkspaceMigrationBusyError } from "./DurableWorkspaceMigration";
-import { readDurableReadOnlyHistory } from "./DurableReadOnlyHistory";
+import { readDurableReadOnlyHistory, readDurableUserQuestions } from "./DurableReadOnlyHistory";
 import { modelKey, resolveBotModel, type BotModelResolution } from "./BotModelCatalog";
 import type { DurableDomainTools } from "./DurableDomainTools";
 import type { DurableEvidenceOptions } from "./DurableEvidenceProjection";
@@ -866,6 +866,21 @@ export class DurableBotService {
   async refresh(taskId: string): Promise<void> {
     const open = this.opened.get(taskId);
     if (open) await open.runtime.refresh();
+  }
+
+  /** 完整用户提问索引（历史提问弹窗用）；只读扫描，不改变实时窗口。 */
+  async userQuestions(taskId: string): Promise<Array<{ id: string; text: string }>> {
+    const binding = this.binding(taskId);
+    if (!binding) return [];
+    try {
+      const opening = this.opening.get(taskId);
+      const live = this.opened.get(taskId)?.runtime ?? (opening ? (await opening).runtime : undefined);
+      if (live) return await live.loadUserQuestions();
+      return await readDurableUserQuestions({ directory: binding.directory, cwd: binding.cwd, models: this.options.models });
+    } catch (error) {
+      console.warn("[Durable] Cannot read the complete user-question index", taskId, error);
+      return [];
+    }
   }
 
   private async passiveHistory(taskId: string, beforeEntryId?: number): Promise<TaskHistoryDto> {

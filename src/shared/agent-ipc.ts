@@ -204,6 +204,8 @@ export const AgentIpc = {
   runtimeRequirementStateChanged: "agent:runtimeRequirementStateChanged",
   getContextUsage: "agent:getContextUsage",
   loadTaskHistory: "agent:loadTaskHistory",
+  /** 任务的全部用户提问（跨实时窗口，历史提问弹窗用） */
+  listTaskUserQuestions: "agent:listTaskUserQuestions",
   /** pi /login 等价：列出可登录 provider、凭证、登录/登出 */
   listLoginProviders: "agent:listLoginProviders",
   setProviderEnabled: "agent:setProviderEnabled",
@@ -2132,8 +2134,7 @@ export interface SessionHistoryRecoveryDto {
 
 export interface TaskHistoryDto {
   durable?: import("./durable-bot").DurableBotSnapshot;
-  messages: ChatMessageDto[];
-  /**
+  messages: ChatMessageDto[];  /**
    * 带 beforeEntryId 读取「更早历史块」时的块元数据；顶层 messages 即该块消息，
    * durable 仍是实时窗口快照（两者的 epoch 必须一致，否则客户端丢弃该块）。
    * 缺省 = 本次读取是实时窗口，不是历史块。
@@ -2156,6 +2157,16 @@ export interface TaskHistoryDto {
   modelId?: string;
   /** 本次打开会话时持久化的模型已被目录淘汰而自动替换：必须展示给用户，不能静默换模型。 */
   modelRecovery?: { from: string; to: string };
+}
+
+/** 历史提问索引：id 与渲染层消息 id 一致（durable-<entryId>），可直接用于滚动定位。 */
+export interface TaskUserQuestionDto {
+  id: string;
+  text: string;
+}
+
+export interface TaskUserQuestionsDto {
+  questions: TaskUserQuestionDto[];
 }
 
 /* ------------------------------ MCP 配置 ------------------------------ */

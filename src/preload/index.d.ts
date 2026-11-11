@@ -107,6 +107,7 @@ import type {
   SpaceDto,
   TaskDto,
   TaskHistoryDto,
+  TaskUserQuestionsDto,
   WorkspaceFileNodeDto,
   WorkspaceFilePreviewDto,
   WorkspaceMutationResult,
@@ -344,6 +345,7 @@ export interface PreloadApi {
     saveSubagentConfig: (config: SubagentConfigPatch) => Promise<SubagentConfigDto>;
     getContextUsage: (taskId: string) => Promise<ContextUsageDto | null>;
     loadTaskHistory: (taskId: string, beforeEntryId?: number) => Promise<TaskHistoryDto>;
+    listTaskUserQuestions: (taskId: string) => Promise<TaskUserQuestionsDto>;
     listLoginProviders: () => Promise<import("../shared/agent-ipc").LoginProviderDto[]>;
     setProviderEnabled: (providerId: string, enabled: boolean) => Promise<ModelInfoDto[]>;
     listCredentials: () => Promise<import("../shared/agent-ipc").CredentialInfoDto[]>;

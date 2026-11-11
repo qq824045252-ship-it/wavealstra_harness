@@ -53,6 +53,12 @@ try {
   assert.equal(new Set(messages.map(message => message.id)).size, messages.length);
   assert.deepEqual(messages.map(message => message.text), Array.from({ length: 240 }, (_, n) => [`question ${n}`, `answer ${n}`]).flat());
   assert(messages.filter(message => message.role === "assistant").every(message => message.tools?.[0]?.status === "success"));
+  // 历史提问索引必须覆盖实时窗口之外的全部用户提问，且 id 与投影消息一致。
+  const questions = await runtime.loadUserQuestions();
+  assert.equal(questions.length, 240);
+  assert.deepEqual(questions.map(question => question.text), Array.from({ length: 240 }, (_, n) => `question ${n}`));
+  assert.deepEqual(questions.map(question => question.id), messages.filter(message => message.role === "user").map(message => message.id));
+  console.log(`PASS ${questions.length} user questions across ${blocks} history blocks (live window holds ${snapshot.messages.filter(message => message.role === "user").length})`);
   assert.equal(runtime.snapshot, snapshot);
   console.log(`PASS ${blocks} history blocks, complete ordered transcript, tool results and live snapshot isolation`);
   const target = join(directory, "moved"); await mkdir(target);

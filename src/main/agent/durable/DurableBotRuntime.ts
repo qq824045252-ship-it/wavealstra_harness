@@ -520,6 +520,37 @@ export class DurableBotRuntime {
     return { epoch: this.epoch, before, messages: history.messages };
   }
 
+  /**
+   * 完整会话里的所有用户提问（跨实时历史窗口）。
+   *
+   * 实时窗口最多保留 DURABLE_HISTORY_ENTRY_LIMIT 条 entry，历史提问弹窗不能只
+   * 依赖窗口（否则长会话里只剩最近一条提问）。这里只读扫描已提交 entry，按
+   * 与投影相同的 id / displayText 口径返回，id 可直接用于消息滚动定位。
+   */
+  async loadUserQuestions(limit = 2000): Promise<Array<{ id: string; text: string }>> {
+    await this.projection;
+    const questions: Array<{ id: string; text: string }> = [];
+    const metadata = new Map<number, BotInputMetadata>();
+    let cursor: Cursor | undefined;
+    let scanned = 0;
+    do {
+      const page = await this.conversation.entries({ order: "ascending" }, 500, cursor, ctx);
+      const users = page.items.filter(entry => entry.kind === "pi.user" || entry.kind === "mybuddy.user");
+      await this.loadInputMetadata(users, metadata);
+      for (const entry of users) {
+        const message = entry.model?.find(item => item.role === "user");
+        if (!message) continue;
+        const text = metadata.get(entry.id)?.displayText ?? contentText(message.content);
+        if (!text.trim()) continue;
+        questions.push({ id: `durable-${entry.id}`, text });
+        if (questions.length >= limit) return questions;
+      }
+      cursor = page.next;
+      scanned += page.items.length;
+    } while (cursor && scanned < 20_000);
+    return questions;
+  }
+
   /** The service releases and reopens after this atomic branch switch. */
   async forkAt(entryId?: number): Promise<string> {
     if (entryId !== undefined && (!Number.isSafeInteger(entryId) || entryId < 1)) throw new Error("Invalid conversation entry");
