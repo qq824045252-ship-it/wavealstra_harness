@@ -2,7 +2,7 @@
 
 ## Scope and measured bottleneck
 
-Baseline **[object Object]**. This round changes only BotWorkspacePage.tsx in production. It does not change Work search, scheduling/recovery, issue #27, Vivion work, persistence, history pagination, message ordering, permissions or features.
+Baseline **277188267e72ba193e6484cc33c70fd5d479d2af**. This round changes only BotWorkspacePage.tsx in production. It does not change Work search, scheduling/recovery, issue #27, Vivion work, persistence, history pagination, message ordering, permissions or features.
 
 The real Bot page subscribes to the draft and rebuilt every loaded message component for each keystroke, even though the transcript was unchanged. A 1,000-message synthetic history caused 1,000 message renders per input and roughly half a second before a stable frame. The delivered change memoizes the existing transcript JSX and stabilizes its existing open-Work callback with all required dependencies. All DOM nodes and keys remain; there is no virtualization, truncation, delayed message display or new polling policy. The memo avoids computing the transcript in non-conversation/empty views.
 
@@ -47,10 +47,12 @@ Initial large-history mount and per-message streaming remain measurable renderer
 ## Reproduce
 
 ~~~sh
-TMPDIR=<short-external-temp-dir> env -u ELECTRON_RUN_AS_NODE pnpm exec electron scripts/perf-bot-history-render.cjs [object Object]
+TMPDIR=<short-external-temp-dir> env -u ELECTRON_RUN_AS_NODE pnpm exec electron scripts/perf-bot-history-render.cjs 277188267e72ba193e6484cc33c70fd5d479d2af
 TMPDIR=<short-external-temp-dir> env -u ELECTRON_RUN_AS_NODE pnpm -s test:bot-history-paging-desktop
 TMPDIR=<short-external-temp-dir> env -u ELECTRON_RUN_AS_NODE pnpm -s test:bot-scroll-desktop
 pnpm -s typecheck
 ~~~
 
 [Public synthetic evidence](bot-history-draft-render-2026-11-11.json).
+
+Report metadata correction: the original runner used the same `baseline` key for the commit and measurements, so the measurement object hid the commit. The runner now emits `baselineCommit` separately. The adjacent JSON adds the verified commit without changing observations or the hashes recorded for the original run.

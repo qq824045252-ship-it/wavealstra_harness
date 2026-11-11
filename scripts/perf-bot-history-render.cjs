@@ -2,9 +2,9 @@
 const {app,BrowserWindow,protocol}=require('electron'),{build}=require('esbuild');
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),assert=require('node:assert/strict');
 const {pathToFileURL}=require('node:url'),{execFileSync}=require('node:child_process'),{createHash}=require('node:crypto');
-const baseline=process.argv[2]||'277188267e72ba193e6484cc33c70fd5d479d2af';
+const baselineCommit=process.argv[2]||'277188267e72ba193e6484cc33c70fd5d479d2af';
 const sourcePath='src/renderer/src/components/pages/BotWorkspacePage.tsx';
-const sources={baseline:execFileSync('git',['show',baseline+':'+sourcePath],{encoding:'utf8'}),candidate:fs.readFileSync(sourcePath,'utf8')};
+const sources={baseline:execFileSync('git',['show',baselineCommit+':'+sourcePath],{encoding:'utf8'}),candidate:fs.readFileSync(sourcePath,'utf8')};
 const out=path.resolve('out/diagnostics/history-render-final');fs.mkdirSync(out,{recursive:true});
 const profile=fs.mkdtempSync(path.join(os.tmpdir(),'history-render-'));app.setPath('userData',path.join(profile,'chromium'));
 process.env.HOME=profile;process.env.USERPROFILE=profile;process.env.XDG_CONFIG_HOME=path.join(profile,'config');
@@ -39,6 +39,6 @@ app.whenReady().then(async()=>{let win;try{
     reports[label]={rows,transcripts,errors};win.destroy();win=null;
   }
   assert.deepEqual(reports.candidate.transcripts,reports.baseline.transcripts,'baseline/candidate complete transcript DOM parity');
-  fs.writeFileSync(path.join(out,'comparison.json'),JSON.stringify({baseline,sourceHashes:Object.fromEntries(Object.entries(sources).map(([k,v])=>[k,hash(v)])),contract:'Actual BotWorkspacePage/store/Markdown in Electron; synthetic loaded history, native char input, React development Profiler; controlled host polling disabled only in fixture. No IPC/database/provider or full-product startup timing.',...reports},null,2));
+  fs.writeFileSync(path.join(out,'comparison.json'),JSON.stringify({baselineCommit,sourceHashes:Object.fromEntries(Object.entries(sources).map(([k,v])=>[k,hash(v)])),contract:'Actual BotWorkspacePage/store/Markdown in Electron; synthetic loaded history, native char input, React development Profiler; controlled host polling disabled only in fixture. No IPC/database/provider or full-product startup timing.',...reports},null,2));
   console.log('PASS native typing, full transcript DOM parity, stream invalidation and rename');
 }catch(error){console.error(error);process.exitCode=1;}finally{win?.destroy();app.exit(process.exitCode||0);}});
