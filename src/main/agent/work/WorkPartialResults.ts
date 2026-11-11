@@ -30,6 +30,11 @@ export function ensureWorkPartialTables(db: Database.Database): void {
 const itemRow = z.object({ fact_id: z.string(), work_id: z.string(), binding_id: z.string(), result_json: z.string(), deliverable_id: z.string().nullable(), created_at: z.number() });
 const planRow = z.object({ plan_id: z.string(), work_id: z.string(), source_binding_id: z.string(), intent_revision: z.number(), input_snapshot_id: z.string(),
   owner_epoch: z.number(), owner_bot_id: z.string(), gap_items_json: z.string(), reason: z.string(), state: z.enum(["pending", "dispatched", "settled", "cancelled"]), created_at: z.number() });
+interface PartialGapRead {
+  items: WorkSubitemDto[];
+  plans: () => WorkContinuationDto[];
+  bindingForPlan: (planId: string) => WorkExecutionBindingDto | undefined;
+}
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
 /** Facts and continuation intents share the WorkService business transaction. */
@@ -41,8 +46,13 @@ export class WorkPartialResults {
   }
 
   list(workId: string): WorkSubitemDto[] {
+    return this.readItems(workId, new Map());
+  }
+  private readItems(workId: string, bindings: Map<string, WorkExecutionBindingDto | undefined>): WorkSubitemDto[] {
     return this.db.prepare("SELECT * FROM work_subitem_results WHERE work_id=? ORDER BY created_at,rowid").all(workId).map(raw => {
-      const row = itemRow.parse(raw); const binding = this.works.repo.getBinding(row.binding_id);
+      const row = itemRow.parse(raw);
+      if (!bindings.has(row.binding_id)) bindings.set(row.binding_id, this.works.repo.getBinding(row.binding_id));
+      const binding = bindings.get(row.binding_id);
       if (!binding) throw new Error("逐项事实缺少原执行绑定");
       return this.coverage.project({ ...workSubitemSchema.parse(JSON.parse(row.result_json)), factId: row.fact_id, workId, bindingId: row.binding_id,
         intentRevision: binding.intentRevision, inputSnapshotId: binding.inputSnapshotId, deliverableId: row.deliverable_id ?? undefined, createdAt: row.created_at });
@@ -73,12 +83,27 @@ export class WorkPartialResults {
   gaps(workId: string): WorkSubitemDto[] {
     const work = this.works.getWork(workId);
     if (!work) return [];
-    const all = this.list(workId).filter(item => {
-      const binding = this.works.repo.getBinding(item.bindingId);
-      return item.intentRevision === work.intentRevision && item.inputSnapshotId === work.inputSnapshotId
-        && binding && this.works.collaboration.isDelegationAdopted(binding, work);
+    // Reuse immutable facts only within this synchronous read. No cache survives
+    // a call: a later read must see settlements, owner changes and rollbacks.
+    const bindings = new Map<string, WorkExecutionBindingDto | undefined>();
+    const items = this.readItems(workId, bindings);
+    const adopted = new Map<string, boolean>();
+    let plans: WorkContinuationDto[] | undefined;
+    const planBindings = new Map<string, WorkExecutionBindingDto | undefined>();
+    const read: PartialGapRead = { items, plans: () => plans ??= this.plans(workId), bindingForPlan: planId => {
+      if (!planBindings.has(planId)) {
+        const request = z.object({ task_id: z.string() }).optional().parse(this.db.prepare("SELECT task_id FROM work_dispatch_requests WHERE continuation_plan_id=? AND state='dispatched'").get(planId));
+        planBindings.set(planId, request ? this.works.repo.bindingForTask(request.task_id) : undefined);
+      }
+      return planBindings.get(planId);
+    } };
+    const all = items.filter(item => {
+      const binding = bindings.get(item.bindingId);
+      if (item.intentRevision !== work.intentRevision || item.inputSnapshotId !== work.inputSnapshotId || !binding) return false;
+      if (!adopted.has(binding.bindingId)) adopted.set(binding.bindingId, this.works.collaboration.isDelegationAdopted(binding, work));
+      return adopted.get(binding.bindingId);
     });
-    return all.filter(item => item.required && item.outcome !== "completed" && !item.coverage && !this.resolvedByContinuation(item));
+    return all.filter(item => item.required && item.outcome !== "completed" && !item.coverage && !this.resolvedByContinuation(item, read));
   }
   settle(binding:WorkExecutionBindingDto):void {
     if(!this.db.inTransaction) throw Error("补跑结算必须与原生 Inbox 同事务提交");
@@ -126,22 +151,21 @@ export class WorkPartialResults {
       artifactRefs:item.artifactRefs,writeConflicts:[],summary:verified?"原生只读执行已读取当前产物，仍等待必要验收反馈":"核验未提供当前产物的成功读取凭据，原业务效果未重做",origin:"artifact_revalidation"}));
     return {...observation,artifactRefs:[...new Set([...observation.artifactRefs,...(verified?items.flatMap(item=>item.artifactRefs):[])])],subitems:[...observation.subitems ?? [],...results]};
   }
-  private resolvedByContinuation(item: WorkSubitemDto, seen = new Set<string>()): boolean {
-    return this.plans(item.workId).filter(plan => plan.sourceBindingId === item.bindingId && plan.gapItemIds.includes(item.itemId))
-      .some(plan => this.continuationCompletes(item, plan.planId, seen));
+  private resolvedByContinuation(item: WorkSubitemDto, read: PartialGapRead, seen = new Set<string>()): boolean {
+    return read.plans().filter(plan => plan.sourceBindingId === item.bindingId && plan.gapItemIds.includes(item.itemId))
+      .some(plan => this.continuationCompletes(item, plan.planId, seen, read));
   }
-  private continuationCompletes(item: WorkSubitemDto, planId: string, seen: Set<string>): boolean {
+  private continuationCompletes(item: WorkSubitemDto, planId: string, seen: Set<string>, read: PartialGapRead): boolean {
     if (seen.has(planId)) return false;
     const nextSeen = new Set(seen).add(planId);
-    const request = z.object({ task_id: z.string() }).optional().parse(this.db.prepare("SELECT task_id FROM work_dispatch_requests WHERE continuation_plan_id=? AND state='dispatched'").get(planId));
-    const binding = request && this.works.repo.bindingForTask(request.task_id);
+    const binding = read.bindingForPlan(planId);
     if (!binding || !["completed", "failed", "stopped"].includes(binding.status)) return false;
-    if (this.list(item.workId).some(result => result.bindingId === binding.bindingId
+    if (read.items.some(result => result.bindingId === binding.bindingId
       && (result.itemId === item.itemId || result.task === item.task) && result.outcome === "completed")) return true;
     // A continuation may fail before emitting this item. Its persistent descendant
     // still owns the same gap; only a real matching completed fact resolves it.
-    return this.plans(item.workId).filter(plan => plan.sourceBindingId === binding.bindingId && plan.state !== "cancelled")
-      .some(plan => this.continuationCompletes(item, plan.planId, nextSeen));
+    return read.plans().filter(plan => plan.sourceBindingId === binding.bindingId && plan.state !== "cancelled")
+      .some(plan => this.continuationCompletes(item, plan.planId, nextSeen, read));
   }
   record(binding: WorkExecutionBindingDto, items: WorkSubitemResult[], now = Date.now()): void {
     if (!this.db.inTransaction) throw new Error("逐项结果必须与原生 Inbox 消费同事务提交");

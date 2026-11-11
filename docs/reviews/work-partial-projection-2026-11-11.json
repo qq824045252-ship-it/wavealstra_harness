@@ -1,0 +1,2871 @@
+{
+  "synthetic": true,
+  "backendOnly": true,
+  "node": "v26.13.0",
+  "results": [
+    {
+      "scenario": {
+        "n": 20,
+        "bindings": 1,
+        "plans": false
+      },
+      "completeDtoParityChecks": 15,
+      "digest": "4b5ccb510c7927dfeed26d26e33c131b2f6342c626412acb9f68e762a60080eb",
+      "summary": {
+        "baseline": {
+          "wallMedianMs": 10.485479000000055,
+          "wallMaxMs": 12.573843999999951,
+          "cpuMedianMs": 11.839,
+          "timerMedianMs": 10.596947999999998,
+          "prepares": 333
+        },
+        "candidate": {
+          "wallMedianMs": 2.8996570000000474,
+          "wallMaxMs": 3.2545290000000477,
+          "cpuMedianMs": 3.858,
+          "timerMedianMs": 2.987589000000071,
+          "prepares": 63
+        }
+      },
+      "samples": [
+        {
+          "pair": 0,
+          "variant": "baseline",
+          "wallMs": 12.573843999999951,
+          "cpuMs": 20.766,
+          "timerLagMs": 12.726101000000028,
+          "heapDeltaMiB": 2.1664886474609375
+        },
+        {
+          "pair": 0,
+          "variant": "candidate",
+          "wallMs": 3.2545290000000477,
+          "cpuMs": 4.931,
+          "timerLagMs": 6.084414000000038,
+          "heapDeltaMiB": 0.684783935546875
+        },
+        {
+          "pair": 1,
+          "variant": "candidate",
+          "wallMs": 3.078873999999928,
+          "cpuMs": 5.859,
+          "timerLagMs": 3.1728819999999587,
+          "heapDeltaMiB": 0.7279129028320312
+        },
+        {
+          "pair": 1,
+          "variant": "baseline",
+          "wallMs": 9.99162100000001,
+          "cpuMs": 11.839,
+          "timerLagMs": 10.084093000000053,
+          "heapDeltaMiB": 2.0487060546875
+        },
+        {
+          "pair": 2,
+          "variant": "baseline",
+          "wallMs": 10.485479000000055,
+          "cpuMs": 11.46,
+          "timerLagMs": 10.596947999999998,
+          "heapDeltaMiB": 2.0475997924804688
+        },
+        {
+          "pair": 2,
+          "variant": "candidate",
+          "wallMs": 2.797826999999984,
+          "cpuMs": 2.823,
+          "timerLagMs": 2.902729999999906,
+          "heapDeltaMiB": 0.6723251342773438
+        },
+        {
+          "pair": 3,
+          "variant": "candidate",
+          "wallMs": 2.8996570000000474,
+          "cpuMs": 3.858,
+          "timerLagMs": 2.987589000000071,
+          "heapDeltaMiB": 0.6805191040039062
+        },
+        {
+          "pair": 3,
+          "variant": "baseline",
+          "wallMs": 11.857327999999939,
+          "cpuMs": 12.495,
+          "timerLagMs": 18.873861000000034,
+          "heapDeltaMiB": 2.03875732421875
+        },
+        {
+          "pair": 4,
+          "variant": "baseline",
+          "wallMs": 9.834195000000022,
+          "cpuMs": 10.309,
+          "timerLagMs": 9.947968999999944,
+          "heapDeltaMiB": 2.0434188842773438
+        },
+        {
+          "pair": 4,
+          "variant": "candidate",
+          "wallMs": 2.643334999999979,
+          "cpuMs": 3.033,
+          "timerLagMs": 2.756758999999988,
+          "heapDeltaMiB": 0.6736984252929688
+        },
+        {
+          "pair": 5,
+          "variant": "candidate",
+          "wallMs": 2.4735469999999395,
+          "cpuMs": 2.503,
+          "timerLagMs": 2.552051000000006,
+          "heapDeltaMiB": 0.6712799072265625
+        },
+        {
+          "pair": 5,
+          "variant": "baseline",
+          "wallMs": 9.195415000000025,
+          "cpuMs": 9.164,
+          "timerLagMs": 9.276921000000016,
+          "heapDeltaMiB": 2.0310592651367188
+        }
+      ],
+      "queryCounts": {
+        "baseline": {
+          "SELECT * FROM works WHERE work_id=?": 9,
+          "SELECT * FROM work_participants WHERE work_id=? ORDER BY added_at ASC": 9,
+          "SELECT * FROM work_deliverables WHERE work_id=? ORDER BY created_at ASC,rowid ASC": 2,
+          "SELECT * FROM work_blockers WHERE work_id=? ORDER BY created_at ASC": 2,
+          "SELECT * FROM work_execution_bindings WHERE work_id=? ORDER BY admitted_at ASC,rowid ASC": 2,
+          "SELECT value_json FROM work_execution_metrics WHERE binding_id=?": 122,
+          "SELECT * FROM work_notifications WHERE work_id=? ORDER BY created_at DESC": 1,
+          "SELECT * FROM work_subscriptions WHERE work_id=? AND stopped_at IS NULL ORDER BY created_at ASC": 1,
+          "SELECT * FROM work_action_admissions WHERE work_id=? ORDER BY admitted_at ASC": 1,
+          "SELECT * FROM work_subitem_results WHERE work_id=? ORDER BY created_at,rowid": 4,
+          "SELECT * FROM work_execution_bindings WHERE binding_id=?": 120,
+          "SELECT * FROM work_continuation_plans WHERE work_id=? ORDER BY created_at,rowid": 41,
+          "SELECT * FROM work_teams WHERE work_id=?": 1,
+          "SELECT archived_at,deleted_at FROM work_record_archive WHERE work_id=?": 1,
+          "SELECT a.binding_id,a.payload_json FROM work_generated_artifacts a\n      JOIN work_execution_bindings b ON b.binding_id=a.binding_id\n      WHERE b.work_id=? AND (? OR (b.intent_revision=? AND b.input_snapshot_id=?)) ORDER BY a.rowid": 3,
+          "SELECT * FROM work_result_cards WHERE work_id=? ORDER BY created_at ASC, card_key ASC": 1,
+          "SELECT * FROM work_watch_host_state WHERE authority_id=?": 2,
+          "SELECT authority_id FROM work_host_lease WHERE lease_id='singleton'": 2,
+          "SELECT authority_id,released_at,heartbeat_at FROM work_host_lease WHERE lease_id='singleton'": 2,
+          "SELECT * FROM work_subscriptions WHERE work_id=? ORDER BY created_at ASC": 1,
+          "SELECT * FROM work_offline_gaps WHERE work_id=? ORDER BY offline_gap_from DESC LIMIT 20": 1,
+          "SELECT * FROM work_causal_chains WHERE target_work_id=? AND decision!='blocked-budget' ORDER BY created_at DESC,rowid DESC LIMIT ?": 1,
+          "SELECT * FROM work_events_inbox WHERE work_id=? AND status IN (?,?,?)\n      ORDER BY received_at ASC": 1,
+          "SELECT dependency.* FROM work_artifact_dependencies dependency\n      JOIN work_execution_bindings binding ON binding.binding_id=dependency.binding_id\n      WHERE dependency.work_id=? AND binding.intent_revision=? AND binding.input_snapshot_id=?\n      ORDER BY binding.admitted_at,dependency.rowid": 1,
+          "SELECT * FROM work_collaboration_messages WHERE work_id=? ORDER BY created_at,message_id": 2
+        },
+        "candidate": {
+          "SELECT * FROM works WHERE work_id=?": 9,
+          "SELECT * FROM work_participants WHERE work_id=? ORDER BY added_at ASC": 9,
+          "SELECT * FROM work_deliverables WHERE work_id=? ORDER BY created_at ASC,rowid ASC": 2,
+          "SELECT * FROM work_blockers WHERE work_id=? ORDER BY created_at ASC": 2,
+          "SELECT * FROM work_execution_bindings WHERE work_id=? ORDER BY admitted_at ASC,rowid ASC": 2,
+          "SELECT value_json FROM work_execution_metrics WHERE binding_id=?": 6,
+          "SELECT * FROM work_notifications WHERE work_id=? ORDER BY created_at DESC": 1,
+          "SELECT * FROM work_subscriptions WHERE work_id=? AND stopped_at IS NULL ORDER BY created_at ASC": 1,
+          "SELECT * FROM work_action_admissions WHERE work_id=? ORDER BY admitted_at ASC": 1,
+          "SELECT * FROM work_subitem_results WHERE work_id=? ORDER BY created_at,rowid": 4,
+          "SELECT * FROM work_execution_bindings WHERE binding_id=?": 4,
+          "SELECT * FROM work_continuation_plans WHERE work_id=? ORDER BY created_at,rowid": 3,
+          "SELECT * FROM work_teams WHERE work_id=?": 1,
+          "SELECT archived_at,deleted_at FROM work_record_archive WHERE work_id=?": 1,
+          "SELECT a.binding_id,a.payload_json FROM work_generated_artifacts a\n      JOIN work_execution_bindings b ON b.binding_id=a.binding_id\n      WHERE b.work_id=? AND (? OR (b.intent_revision=? AND b.input_snapshot_id=?)) ORDER BY a.rowid": 3,
+          "SELECT * FROM work_result_cards WHERE work_id=? ORDER BY created_at ASC, card_key ASC": 1,
+          "SELECT * FROM work_watch_host_state WHERE authority_id=?": 2,
+          "SELECT authority_id FROM work_host_lease WHERE lease_id='singleton'": 2,
+          "SELECT authority_id,released_at,heartbeat_at FROM work_host_lease WHERE lease_id='singleton'": 2,
+          "SELECT * FROM work_subscriptions WHERE work_id=? ORDER BY created_at ASC": 1,
+          "SELECT * FROM work_offline_gaps WHERE work_id=? ORDER BY offline_gap_from DESC LIMIT 20": 1,
+          "SELECT * FROM work_causal_chains WHERE target_work_id=? AND decision!='blocked-budget' ORDER BY created_at DESC,rowid DESC LIMIT ?": 1,
+          "SELECT * FROM work_events_inbox WHERE work_id=? AND status IN (?,?,?)\n      ORDER BY received_at ASC": 1,
+          "SELECT dependency.* FROM work_artifact_dependencies dependency\n      JOIN work_execution_bindings binding ON binding.binding_id=dependency.binding_id\n      WHERE dependency.work_id=? AND binding.intent_revision=? AND binding.input_snapshot_id=?\n      ORDER BY binding.admitted_at,dependency.rowid": 1,
+          "SELECT * FROM work_collaboration_messages WHERE work_id=? ORDER BY created_at,message_id": 2
+        }
+      }
+    },
+    {
+      "scenario": {
+        "n": 100,
+        "bindings": 1,
+        "plans": false
+      },
+      "completeDtoParityChecks": 15,
+      "digest": "7714b42bc639b78abf65c1cae347c46382eedacc1e8c2858c4aca260c000d6f5",
+      "summary": {
+        "baseline": {
+          "wallMedianMs": 41.562388000000055,
+          "wallMaxMs": 44.27689399999997,
+          "cpuMedianMs": 41.629,
+          "timerMedianMs": 48.53897199999983,
+          "prepares": 1453
+        },
+        "candidate": {
+          "wallMedianMs": 4.073991999999976,
+          "wallMaxMs": 5.035305999999991,
+          "cpuMedianMs": 5.096,
+          "timerMedianMs": 4.786037999999962,
+          "prepares": 63
+        }
+      },
+      "samples": [
+        {
+          "pair": 0,
+          "variant": "baseline",
+          "wallMs": 44.27689399999997,
+          "cpuMs": 50.169,
+          "timerLagMs": 62.75928699999997,
+          "heapDeltaMiB": -5.771919250488281
+        },
+        {
+          "pair": 0,
+          "variant": "candidate",
+          "wallMs": 5.035305999999991,
+          "cpuMs": 5.111,
+          "timerLagMs": 5.121213000000012,
+          "heapDeltaMiB": 1.9129486083984375
+        },
+        {
+          "pair": 1,
+          "variant": "candidate",
+          "wallMs": 4.073991999999976,
+          "cpuMs": 4.114,
+          "timerLagMs": 4.158431999999948,
+          "heapDeltaMiB": 1.9127655029296875
+        },
+        {
+          "pair": 1,
+          "variant": "baseline",
+          "wallMs": 42.47201999999993,
+          "cpuMs": 45.211,
+          "timerLagMs": 49.04232899999988,
+          "heapDeltaMiB": -5.715736389160156
+        },
+        {
+          "pair": 2,
+          "variant": "baseline",
+          "wallMs": 39.55441299999984,
+          "cpuMs": 39.62,
+          "timerLagMs": 48.53897199999983,
+          "heapDeltaMiB": 8.912033081054688
+        },
+        {
+          "pair": 2,
+          "variant": "candidate",
+          "wallMs": 4.700061999999889,
+          "cpuMs": 4.77,
+          "timerLagMs": 4.786037999999962,
+          "heapDeltaMiB": 1.912872314453125
+        },
+        {
+          "pair": 3,
+          "variant": "candidate",
+          "wallMs": 3.9887140000000727,
+          "cpuMs": 5.096,
+          "timerLagMs": 4.077833000000055,
+          "heapDeltaMiB": 1.9147567749023438
+        },
+        {
+          "pair": 3,
+          "variant": "baseline",
+          "wallMs": 38.908367,
+          "cpuMs": 38.931,
+          "timerLagMs": 46.46066400000018,
+          "heapDeltaMiB": 8.911880493164062
+        },
+        {
+          "pair": 4,
+          "variant": "baseline",
+          "wallMs": 41.508261000000175,
+          "cpuMs": 41.544,
+          "timerLagMs": 41.59158300000013,
+          "heapDeltaMiB": 8.91180419921875
+        },
+        {
+          "pair": 4,
+          "variant": "candidate",
+          "wallMs": 3.6772860000000946,
+          "cpuMs": 3.707,
+          "timerLagMs": 3.7599790000001576,
+          "heapDeltaMiB": 1.9127883911132812
+        },
+        {
+          "pair": 5,
+          "variant": "candidate",
+          "wallMs": 3.7905699999998888,
+          "cpuMs": 5.279,
+          "timerLagMs": 11.904401000000007,
+          "heapDeltaMiB": 1.9130096435546875
+        },
+        {
+          "pair": 5,
+          "variant": "baseline",
+          "wallMs": 41.562388000000055,
+          "cpuMs": 41.629,
+          "timerLagMs": 41.64619999999991,
+          "heapDeltaMiB": 8.863822937011719
+        }
+      ],
+      "queryCounts": {
+        "baseline": {
+          "SELECT * FROM works WHERE work_id=?": 9,
+          "SELECT * FROM work_participants WHERE work_id=? ORDER BY added_at ASC": 9,
+          "SELECT * FROM work_deliverables WHERE work_id=? ORDER BY created_at ASC,rowid ASC": 2,
+          "SELECT * FROM work_blockers WHERE work_id=? ORDER BY created_at ASC": 2,
+          "SELECT * FROM work_execution_bindings WHERE work_id=? ORDER BY admitted_at ASC,rowid ASC": 2,
+          "SELECT value_json FROM work_execution_metrics WHERE binding_id=?": 602,
+          "SELECT * FROM work_notifications WHERE work_id=? ORDER BY created_at DESC": 1,
+          "SELECT * FROM work_subscriptions WHERE work_id=? AND stopped_at IS NULL ORDER BY created_at ASC": 1,
+          "SELECT * FROM work_action_admissions WHERE work_id=? ORDER BY admitted_at ASC": 1,
+          "SELECT * FROM work_subitem_results WHERE work_id=? ORDER BY created_at,rowid": 4,
+          "SELECT * FROM work_execution_bindings WHERE binding_id=?": 600,
+          "SELECT * FROM work_continuation_plans WHERE work_id=? ORDER BY created_at,rowid": 201,
+          "SELECT * FROM work_teams WHERE work_id=?": 1,
+          "SELECT archived_at,deleted_at FROM work_record_archive WHERE work_id=?": 1,
+          "SELECT a.binding_id,a.payload_json FROM work_generated_artifacts a\n      JOIN work_execution_bindings b ON b.binding_id=a.binding_id\n      WHERE b.work_id=? AND (? OR (b.intent_revision=? AND b.input_snapshot_id=?)) ORDER BY a.rowid": 3,
+          "SELECT * FROM work_result_cards WHERE work_id=? ORDER BY created_at ASC, card_key ASC": 1,
+          "SELECT * FROM work_watch_host_state WHERE authority_id=?": 2,
+          "SELECT authority_id FROM work_host_lease WHERE lease_id='singleton'": 2,
+          "SELECT authority_id,released_at,heartbeat_at FROM work_host_lease WHERE lease_id='singleton'": 2,
+          "SELECT * FROM work_subscriptions WHERE work_id=? ORDER BY created_at ASC": 1,
+          "SELECT * FROM work_offline_gaps WHERE work_id=? ORDER BY offline_gap_from DESC LIMIT 20": 1,
+          "SELECT * FROM work_causal_chains WHERE target_work_id=? AND decision!='blocked-budget' ORDER BY created_at DESC,rowid DESC LIMIT ?": 1,
+          "SELECT * FROM work_events_inbox WHERE work_id=? AND status IN (?,?,?)\n      ORDER BY received_at ASC": 1,
+          "SELECT dependency.* FROM work_artifact_dependencies dependency\n      JOIN work_execution_bindings binding ON binding.binding_id=dependency.binding_id\n      WHERE dependency.work_id=? AND binding.intent_revision=? AND binding.input_snapshot_id=?\n      ORDER BY binding.admitted_at,dependency.rowid": 1,
+          "SELECT * FROM work_collaboration_messages WHERE work_id=? ORDER BY created_at,message_id": 2
+        },
+        "candidate": {
+          "SELECT * FROM works WHERE work_id=?": 9,
+          "SELECT * FROM work_participants WHERE work_id=? ORDER BY added_at ASC": 9,
+          "SELECT * FROM work_deliverables WHERE work_id=? ORDER BY created_at ASC,rowid ASC": 2,
+          "SELECT * FROM work_blockers WHERE work_id=? ORDER BY created_at ASC": 2,
+          "SELECT * FROM work_execution_bindings WHERE work_id=? ORDER BY admitted_at ASC,rowid ASC": 2,
+          "SELECT value_json FROM work_execution_metrics WHERE binding_id=?": 6,
+          "SELECT * FROM work_notifications WHERE work_id=? ORDER BY created_at DESC": 1,
+          "SELECT * FROM work_subscriptions WHERE work_id=? AND stopped_at IS NULL ORDER BY created_at ASC": 1,
+          "SELECT * FROM work_action_admissions WHERE work_id=? ORDER BY admitted_at ASC": 1,
+          "SELECT * FROM work_subitem_results WHERE work_id=? ORDER BY created_at,rowid": 4,
+          "SELECT * FROM work_execution_bindings WHERE binding_id=?": 4,
+          "SELECT * FROM work_continuation_plans WHERE work_id=? ORDER BY created_at,rowid": 3,
+          "SELECT * FROM work_teams WHERE work_id=?": 1,
+          "SELECT archived_at,deleted_at FROM work_record_archive WHERE work_id=?": 1,
+          "SELECT a.binding_id,a.payload_json FROM work_generated_artifacts a\n      JOIN work_execution_bindings b ON b.binding_id=a.binding_id\n      WHERE b.work_id=? AND (? OR (b.intent_revision=? AND b.input_snapshot_id=?)) ORDER BY a.rowid": 3,
+          "SELECT * FROM work_result_cards WHERE work_id=? ORDER BY created_at ASC, card_key ASC": 1,
+          "SELECT * FROM work_watch_host_state WHERE authority_id=?": 2,
+          "SELECT authority_id FROM work_host_lease WHERE lease_id='singleton'": 2,
+          "SELECT authority_id,released_at,heartbeat_at FROM work_host_lease WHERE lease_id='singleton'": 2,
+          "SELECT * FROM work_subscriptions WHERE work_id=? ORDER BY created_at ASC": 1,
+          "SELECT * FROM work_offline_gaps WHERE work_id=? ORDER BY offline_gap_from DESC LIMIT 20": 1,
+          "SELECT * FROM work_causal_chains WHERE target_work_id=? AND decision!='blocked-budget' ORDER BY created_at DESC,rowid DESC LIMIT ?": 1,
+          "SELECT * FROM work_events_inbox WHERE work_id=? AND status IN (?,?,?)\n      ORDER BY received_at ASC": 1,
+          "SELECT dependency.* FROM work_artifact_dependencies dependency\n      JOIN work_execution_bindings binding ON binding.binding_id=dependency.binding_id\n      WHERE dependency.work_id=? AND binding.intent_revision=? AND binding.input_snapshot_id=?\n      ORDER BY binding.admitted_at,dependency.rowid": 1,
+          "SELECT * FROM work_collaboration_messages WHERE work_id=? ORDER BY created_at,message_id": 2
+        }
+      }
+    },
+    {
+      "scenario": {
+        "n": 1000,
+        "bindings": 1,
+        "plans": false
+      },
+      "completeDtoParityChecks": 15,
+      "digest": "c542b26e196050ad74c94a3165291e9c25edb0391f63d5f5253e186eb12e6efc",
+      "summary": {
+        "baseline": {
+          "wallMedianMs": 359.7093169999998,
+          "wallMaxMs": 415.5942719999998,
+          "cpuMedianMs": 379.437,
+          "timerMedianMs": 413.3442179999993,
+          "prepares": 14053
+        },
+        "candidate": {
+          "wallMedianMs": 18.660072000000582,
+          "wallMaxMs": 19.341177999999672,
+          "cpuMedianMs": 23.405,
+          "timerMedianMs": 25.445495999999366,
+          "prepares": 63
+        }
+      },
+      "samples": [
+        {
+          "pair": 0,
+          "variant": "baseline",
+          "wallMs": 415.5942719999998,
+          "cpuMs": 437.004,
+          "timerLagMs": 618.0698870000001,
+          "heapDeltaMiB": 25.10376739501953
+        },
+        {
+          "pair": 0,
+          "variant": "candidate",
+          "wallMs": 17.574997000000167,
+          "cpuMs": 23.405,
+          "timerLagMs": 72.4079099999999,
+          "heapDeltaMiB": 11.516021728515625
+        },
+        {
+          "pair": 1,
+          "variant": "candidate",
+          "wallMs": 17.14001700000017,
+          "cpuMs": 18.233,
+          "timerLagMs": 19.346836000000167,
+          "heapDeltaMiB": 11.469970703125
+        },
+        {
+          "pair": 1,
+          "variant": "baseline",
+          "wallMs": 343.016713,
+          "cpuMs": 366.488,
+          "timerLagMs": 371.3010339999996,
+          "heapDeltaMiB": 26.214637756347656
+        },
+        {
+          "pair": 2,
+          "variant": "baseline",
+          "wallMs": 346.966316,
+          "cpuMs": 369.707,
+          "timerLagMs": 394.71983699999964,
+          "heapDeltaMiB": -1.5857925415039062
+        },
+        {
+          "pair": 2,
+          "variant": "candidate",
+          "wallMs": 18.497409999999945,
+          "cpuMs": 18.568,
+          "timerLagMs": 18.5949099999998,
+          "heapDeltaMiB": 11.47564697265625
+        },
+        {
+          "pair": 3,
+          "variant": "candidate",
+          "wallMs": 18.872323999999935,
+          "cpuMs": 26.104,
+          "timerLagMs": 25.445495999999366,
+          "heapDeltaMiB": -16.29656982421875
+        },
+        {
+          "pair": 3,
+          "variant": "baseline",
+          "wallMs": 355.61723600000005,
+          "cpuMs": 368.745,
+          "timerLagMs": 389.62558199999967,
+          "heapDeltaMiB": 25.616127014160156
+        },
+        {
+          "pair": 4,
+          "variant": "baseline",
+          "wallMs": 359.7093169999998,
+          "cpuMs": 391.589,
+          "timerLagMs": 413.3442179999993,
+          "heapDeltaMiB": -1.68218994140625
+        },
+        {
+          "pair": 4,
+          "variant": "candidate",
+          "wallMs": 19.341177999999672,
+          "cpuMs": 22.216,
+          "timerLagMs": 19.43504699999994,
+          "heapDeltaMiB": 11.494438171386719
+        },
+        {
+          "pair": 5,
+          "variant": "candidate",
+          "wallMs": 18.660072000000582,
+          "cpuMs": 26.009,
+          "timerLagMs": 27.351572000000488,
+          "heapDeltaMiB": -16.342132568359375
+        },
+        {
+          "pair": 5,
+          "variant": "baseline",
+          "wallMs": 359.91444500000034,
+          "cpuMs": 379.437,
+          "timerLagMs": 420.6847520000001,
+          "heapDeltaMiB": 25.13933563232422
+        }
+      ],
+      "queryCounts": {
+        "baseline": {
+          "SELECT * FROM works WHERE work_id=?": 9,
+          "SELECT * FROM work_participants WHERE work_id=? ORDER BY added_at ASC": 9,
+          "SELECT * FROM work_deliverables WHERE work_id=? ORDER BY created_at ASC,rowid ASC": 2,
+          "SELECT * FROM work_blockers WHERE work_id=? ORDER BY created_at ASC": 2,
+          "SELECT * FROM work_execution_bindings WHERE work_id=? ORDER BY admitted_at ASC,rowid ASC": 2,
+          "SELECT value_json FROM work_execution_metrics WHERE binding_id=?": 6002,
+          "SELECT * FROM work_notifications WHERE work_id=? ORDER BY created_at DESC": 1,
+          "SELECT * FROM work_subscriptions WHERE work_id=? AND stopped_at IS NULL ORDER BY created_at ASC": 1,
+          "SELECT * FROM work_action_admissions WHERE work_id=? ORDER BY admitted_at ASC": 1,
+          "SELECT * FROM work_subitem_results WHERE work_id=? ORDER BY created_at,rowid": 4,
+          "SELECT * FROM work_execution_bindings WHERE binding_id=?": 6000,
+          "SELECT * FROM work_continuation_plans WHERE work_id=? ORDER BY created_at,rowid": 2001,
+          "SELECT * FROM work_teams WHERE work_id=?": 1,
+          "SELECT archived_at,deleted_at FROM work_record_archive WHERE work_id=?": 1,
+          "SELECT a.binding_id,a.payload_json FROM work_generated_artifacts a\n      JOIN work_execution_bindings b ON b.binding_id=a.binding_id\n      WHERE b.work_id=? AND (? OR (b.intent_revision=? AND b.input_snapshot_id=?)) ORDER BY a.rowid": 3,
+          "SELECT * FROM work_result_cards WHERE work_id=? ORDER BY created_at ASC, card_key ASC": 1,
+          "SELECT * FROM work_watch_host_state WHERE authority_id=?": 2,
+          "SELECT authority_id FROM work_host_lease WHERE lease_id='singleton'": 2,
+          "SELECT authority_id,released_at,heartbeat_at FROM work_host_lease WHERE lease_id='singleton'": 2,
+          "SELECT * FROM work_subscriptions WHERE work_id=? ORDER BY created_at ASC": 1,
+          "SELECT * FROM work_offline_gaps WHERE work_id=? ORDER BY offline_gap_from DESC LIMIT 20": 1,
+          "SELECT * FROM work_causal_chains WHERE target_work_id=? AND decision!='blocked-budget' ORDER BY created_at DESC,rowid DESC LIMIT ?": 1,
+          "SELECT * FROM work_events_inbox WHERE work_id=? AND status IN (?,?,?)\n      ORDER BY received_at ASC": 1,
+          "SELECT dependency.* FROM work_artifact_dependencies dependency\n      JOIN work_execution_bindings binding ON binding.binding_id=dependency.binding_id\n      WHERE dependency.work_id=? AND binding.intent_revision=? AND binding.input_snapshot_id=?\n      ORDER BY binding.admitted_at,dependency.rowid": 1,
+          "SELECT * FROM work_collaboration_messages WHERE work_id=? ORDER BY created_at,message_id": 2
+        },
+        "candidate": {
+          "SELECT * FROM works WHERE work_id=?": 9,
+          "SELECT * FROM work_participants WHERE work_id=? ORDER BY added_at ASC": 9,
+          "SELECT * FROM work_deliverables WHERE work_id=? ORDER BY created_at ASC,rowid ASC": 2,
+          "SELECT * FROM work_blockers WHERE work_id=? ORDER BY created_at ASC": 2,
+          "SELECT * FROM work_execution_bindings WHERE work_id=? ORDER BY admitted_at ASC,rowid ASC": 2,
+          "SELECT value_json FROM work_execution_metrics WHERE binding_id=?": 6,
+          "SELECT * FROM work_notifications WHERE work_id=? ORDER BY created_at DESC": 1,
+          "SELECT * FROM work_subscriptions WHERE work_id=? AND stopped_at IS NULL ORDER BY created_at ASC": 1,
+          "SELECT * FROM work_action_admissions WHERE work_id=? ORDER BY admitted_at ASC": 1,
+          "SELECT * FROM work_subitem_results WHERE work_id=? ORDER BY created_at,rowid": 4,
+          "SELECT * FROM work_execution_bindings WHERE binding_id=?": 4,
+          "SELECT * FROM work_continuation_plans WHERE work_id=? ORDER BY created_at,rowid": 3,
+          "SELECT * FROM work_teams WHERE work_id=?": 1,
+          "SELECT archived_at,deleted_at FROM work_record_archive WHERE work_id=?": 1,
+          "SELECT a.binding_id,a.payload_json FROM work_generated_artifacts a\n      JOIN work_execution_bindings b ON b.binding_id=a.binding_id\n      WHERE b.work_id=? AND (? OR (b.intent_revision=? AND b.input_snapshot_id=?)) ORDER BY a.rowid": 3,
+          "SELECT * FROM work_result_cards WHERE work_id=? ORDER BY created_at ASC, card_key ASC": 1,
+          "SELECT * FROM work_watch_host_state WHERE authority_id=?": 2,
+          "SELECT authority_id FROM work_host_lease WHERE lease_id='singleton'": 2,
+          "SELECT authority_id,released_at,heartbeat_at FROM work_host_lease WHERE lease_id='singleton'": 2,
+          "SELECT * FROM work_subscriptions WHERE work_id=? ORDER BY created_at ASC": 1,
+          "SELECT * FROM work_offline_gaps WHERE work_id=? ORDER BY offline_gap_from DESC LIMIT 20": 1,
+          "SELECT * FROM work_causal_chains WHERE target_work_id=? AND decision!='blocked-budget' ORDER BY created_at DESC,rowid DESC LIMIT ?": 1,
+          "SELECT * FROM work_events_inbox WHERE work_id=? AND status IN (?,?,?)\n      ORDER BY received_at ASC": 1,
+          "SELECT dependency.* FROM work_artifact_dependencies dependency\n      JOIN work_execution_bindings binding ON binding.binding_id=dependency.binding_id\n      WHERE dependency.work_id=? AND binding.intent_revision=? AND binding.input_snapshot_id=?\n      ORDER BY binding.admitted_at,dependency.rowid": 1,
+          "SELECT * FROM work_collaboration_messages WHERE work_id=? ORDER BY created_at,message_id": 2
+        }
+      }
+    },
+    {
+      "scenario": {
+        "n": 1000,
+        "bindings": 20,
+        "plans": false
+      },
+      "completeDtoParityChecks": 15,
+      "digest": "f44feea4286d096689f0cfba544df360947e7fe32523c34564331379c40fcf28",
+      "summary": {
+        "baseline": {
+          "wallMedianMs": 354.70082699999966,
+          "wallMaxMs": 398.91011099999923,
+          "cpuMedianMs": 374.448,
+          "timerMedianMs": 431.170435,
+          "prepares": 14091
+        },
+        "candidate": {
+          "wallMedianMs": 23.681619999999384,
+          "wallMaxMs": 37.75379799999973,
+          "cpuMedianMs": 31.851,
+          "timerMedianMs": 32.479489999999714,
+          "prepares": 253
+        }
+      },
+      "samples": [
+        {
+          "pair": 0,
+          "variant": "baseline",
+          "wallMs": 354.70082699999966,
+          "cpuMs": 368.414,
+          "timerLagMs": 656.2280639999999,
+          "heapDeltaMiB": 25.155364990234375
+        },
+        {
+          "pair": 0,
+          "variant": "candidate",
+          "wallMs": 37.75379799999973,
+          "cpuMs": 45.234,
+          "timerLagMs": 50.863892999999734,
+          "heapDeltaMiB": -15.249176025390625
+        },
+        {
+          "pair": 1,
+          "variant": "candidate",
+          "wallMs": 22.540251000000353,
+          "cpuMs": 22.607,
+          "timerLagMs": 22.627973000000566,
+          "heapDeltaMiB": 12.342231750488281
+        },
+        {
+          "pair": 1,
+          "variant": "baseline",
+          "wallMs": 382.0567289999999,
+          "cpuMs": 412.316,
+          "timerLagMs": 431.170435,
+          "heapDeltaMiB": -2.6052169799804688
+        },
+        {
+          "pair": 2,
+          "variant": "baseline",
+          "wallMs": 398.91011099999923,
+          "cpuMs": 417.715,
+          "timerLagMs": 451.23546199999873,
+          "heapDeltaMiB": 25.786376953125
+        },
+        {
+          "pair": 2,
+          "variant": "candidate",
+          "wallMs": 22.08627399999932,
+          "cpuMs": 35.216,
+          "timerLagMs": 123.3734229999991,
+          "heapDeltaMiB": 12.436347961425781
+        },
+        {
+          "pair": 3,
+          "variant": "candidate",
+          "wallMs": 27.74688200000128,
+          "cpuMs": 27.828,
+          "timerLagMs": 32.392187000001286,
+          "heapDeltaMiB": 12.320625305175781
+        },
+        {
+          "pair": 3,
+          "variant": "baseline",
+          "wallMs": 346.85113900000033,
+          "cpuMs": 362.941,
+          "timerLagMs": 375.6916170000004,
+          "heapDeltaMiB": 25.703712463378906
+        },
+        {
+          "pair": 4,
+          "variant": "baseline",
+          "wallMs": 351.2325090000013,
+          "cpuMs": 374.448,
+          "timerLagMs": 399.2074300000004,
+          "heapDeltaMiB": -2.1623306274414062
+        },
+        {
+          "pair": 4,
+          "variant": "candidate",
+          "wallMs": 23.681619999999384,
+          "cpuMs": 23.749,
+          "timerLagMs": 23.772484999999506,
+          "heapDeltaMiB": 12.310134887695312
+        },
+        {
+          "pair": 5,
+          "variant": "candidate",
+          "wallMs": 23.45714599999883,
+          "cpuMs": 31.851,
+          "timerLagMs": 32.479489999999714,
+          "heapDeltaMiB": -14.971229553222656
+        },
+        {
+          "pair": 5,
+          "variant": "baseline",
+          "wallMs": 352.69529299999886,
+          "cpuMs": 365.92,
+          "timerLagMs": 385.70293299999867,
+          "heapDeltaMiB": 24.992271423339844
+        }
+      ],
+      "queryCounts": {
+        "baseline": {
+          "SELECT * FROM works WHERE work_id=?": 9,
+          "SELECT * FROM work_participants WHERE work_id=? ORDER BY added_at ASC": 9,
+          "SELECT * FROM work_deliverables WHERE work_id=? ORDER BY created_at ASC,rowid ASC": 2,
+          "SELECT * FROM work_blockers WHERE work_id=? ORDER BY created_at ASC": 2,
+          "SELECT * FROM work_execution_bindings WHERE work_id=? ORDER BY admitted_at ASC,rowid ASC": 2,
+          "SELECT value_json FROM work_execution_metrics WHERE binding_id=?": 6040,
+          "SELECT * FROM work_notifications WHERE work_id=? ORDER BY created_at DESC": 1,
+          "SELECT * FROM work_subscriptions WHERE work_id=? AND stopped_at IS NULL ORDER BY created_at ASC": 1,
+          "SELECT * FROM work_action_admissions WHERE work_id=? ORDER BY admitted_at ASC": 1,
+          "SELECT * FROM work_subitem_results WHERE work_id=? ORDER BY created_at,rowid": 4,
+          "SELECT * FROM work_execution_bindings WHERE binding_id=?": 6000,
+          "SELECT * FROM work_continuation_plans WHERE work_id=? ORDER BY created_at,rowid": 2001,
+          "SELECT * FROM work_teams WHERE work_id=?": 1,
+          "SELECT archived_at,deleted_at FROM work_record_archive WHERE work_id=?": 1,
+          "SELECT a.binding_id,a.payload_json FROM work_generated_artifacts a\n      JOIN work_execution_bindings b ON b.binding_id=a.binding_id\n      WHERE b.work_id=? AND (? OR (b.intent_revision=? AND b.input_snapshot_id=?)) ORDER BY a.rowid": 3,
+          "SELECT * FROM work_result_cards WHERE work_id=? ORDER BY created_at ASC, card_key ASC": 1,
+          "SELECT * FROM work_watch_host_state WHERE authority_id=?": 2,
+          "SELECT authority_id FROM work_host_lease WHERE lease_id='singleton'": 2,
+          "SELECT authority_id,released_at,heartbeat_at FROM work_host_lease WHERE lease_id='singleton'": 2,
+          "SELECT * FROM work_subscriptions WHERE work_id=? ORDER BY created_at ASC": 1,
+          "SELECT * FROM work_offline_gaps WHERE work_id=? ORDER BY offline_gap_from DESC LIMIT 20": 1,
+          "SELECT * FROM work_causal_chains WHERE target_work_id=? AND decision!='blocked-budget' ORDER BY created_at DESC,rowid DESC LIMIT ?": 1,
+          "SELECT * FROM work_events_inbox WHERE work_id=? AND status IN (?,?,?)\n      ORDER BY received_at ASC": 1,
+          "SELECT dependency.* FROM work_artifact_dependencies dependency\n      JOIN work_execution_bindings binding ON binding.binding_id=dependency.binding_id\n      WHERE dependency.work_id=? AND binding.intent_revision=? AND binding.input_snapshot_id=?\n      ORDER BY binding.admitted_at,dependency.rowid": 1,
+          "SELECT * FROM work_collaboration_messages WHERE work_id=? ORDER BY created_at,message_id": 2
+        },
+        "candidate": {
+          "SELECT * FROM works WHERE work_id=?": 9,
+          "SELECT * FROM work_participants WHERE work_id=? ORDER BY added_at ASC": 9,
+          "SELECT * FROM work_deliverables WHERE work_id=? ORDER BY created_at ASC,rowid ASC": 2,
+          "SELECT * FROM work_blockers WHERE work_id=? ORDER BY created_at ASC": 2,
+          "SELECT * FROM work_execution_bindings WHERE work_id=? ORDER BY admitted_at ASC,rowid ASC": 2,
+          "SELECT value_json FROM work_execution_metrics WHERE binding_id=?": 120,
+          "SELECT * FROM work_notifications WHERE work_id=? ORDER BY created_at DESC": 1,
+          "SELECT * FROM work_subscriptions WHERE work_id=? AND stopped_at IS NULL ORDER BY created_at ASC": 1,
+          "SELECT * FROM work_action_admissions WHERE work_id=? ORDER BY admitted_at ASC": 1,
+          "SELECT * FROM work_subitem_results WHERE work_id=? ORDER BY created_at,rowid": 4,
+          "SELECT * FROM work_execution_bindings WHERE binding_id=?": 80,
+          "SELECT * FROM work_continuation_plans WHERE work_id=? ORDER BY created_at,rowid": 3,
+          "SELECT * FROM work_teams WHERE work_id=?": 1,
+          "SELECT archived_at,deleted_at FROM work_record_archive WHERE work_id=?": 1,
+          "SELECT a.binding_id,a.payload_json FROM work_generated_artifacts a\n      JOIN work_execution_bindings b ON b.binding_id=a.binding_id\n      WHERE b.work_id=? AND (? OR (b.intent_revision=? AND b.input_snapshot_id=?)) ORDER BY a.rowid": 3,
+          "SELECT * FROM work_result_cards WHERE work_id=? ORDER BY created_at ASC, card_key ASC": 1,
+          "SELECT * FROM work_watch_host_state WHERE authority_id=?": 2,
+          "SELECT authority_id FROM work_host_lease WHERE lease_id='singleton'": 2,
+          "SELECT authority_id,released_at,heartbeat_at FROM work_host_lease WHERE lease_id='singleton'": 2,
+          "SELECT * FROM work_subscriptions WHERE work_id=? ORDER BY created_at ASC": 1,
+          "SELECT * FROM work_offline_gaps WHERE work_id=? ORDER BY offline_gap_from DESC LIMIT 20": 1,
+          "SELECT * FROM work_causal_chains WHERE target_work_id=? AND decision!='blocked-budget' ORDER BY created_at DESC,rowid DESC LIMIT ?": 1,
+          "SELECT * FROM work_events_inbox WHERE work_id=? AND status IN (?,?,?)\n      ORDER BY received_at ASC": 1,
+          "SELECT dependency.* FROM work_artifact_dependencies dependency\n      JOIN work_execution_bindings binding ON binding.binding_id=dependency.binding_id\n      WHERE dependency.work_id=? AND binding.intent_revision=? AND binding.input_snapshot_id=?\n      ORDER BY binding.admitted_at,dependency.rowid": 1,
+          "SELECT * FROM work_collaboration_messages WHERE work_id=? ORDER BY created_at,message_id": 2
+        }
+      }
+    },
+    {
+      "scenario": {
+        "n": 100,
+        "bindings": 5,
+        "plans": true
+      },
+      "completeDtoParityChecks": 15,
+      "digest": "52e445213622b6890141f23b894887aba6362265ac4b5e6c61400aa531c61f00",
+      "summary": {
+        "baseline": {
+          "wallMedianMs": 1251.8790950000002,
+          "wallMaxMs": 1355.314762,
+          "cpuMedianMs": 1333.817,
+          "timerMedianMs": 1458.7956369999993,
+          "prepares": 42471
+        },
+        "candidate": {
+          "wallMedianMs": 20.81408900000315,
+          "wallMaxMs": 68.36736799999926,
+          "cpuMedianMs": 20.888,
+          "timerMedianMs": 22.648016999999527,
+          "prepares": 143
+        }
+      },
+      "samples": [
+        {
+          "pair": 0,
+          "variant": "baseline",
+          "wallMs": 1355.314762,
+          "cpuMs": 1445.863,
+          "timerLagMs": 2199.3150669999977,
+          "heapDeltaMiB": 15.116996765136719
+        },
+        {
+          "pair": 0,
+          "variant": "candidate",
+          "wallMs": 22.56001599999945,
+          "cpuMs": 23.313,
+          "timerLagMs": 22.648016999999527,
+          "heapDeltaMiB": 2.2207717895507812
+        },
+        {
+          "pair": 1,
+          "variant": "candidate",
+          "wallMs": 8.759735999999975,
+          "cpuMs": 9.407,
+          "timerLagMs": 8.864220999999816,
+          "heapDeltaMiB": 2.2214584350585938
+        },
+        {
+          "pair": 1,
+          "variant": "baseline",
+          "wallMs": 1216.698801999999,
+          "cpuMs": 1281.519,
+          "timerLagMs": 1361.9688720000013,
+          "heapDeltaMiB": 44.13123321533203
+        },
+        {
+          "pair": 2,
+          "variant": "baseline",
+          "wallMs": 1249.9994960000004,
+          "cpuMs": 1333.817,
+          "timerLagMs": 1561.6393790000002,
+          "heapDeltaMiB": 42.43133544921875
+        },
+        {
+          "pair": 2,
+          "variant": "candidate",
+          "wallMs": 68.36736799999926,
+          "cpuMs": 68.438,
+          "timerLagMs": 68.47792900000059,
+          "heapDeltaMiB": 2.2145614624023438
+        },
+        {
+          "pair": 3,
+          "variant": "candidate",
+          "wallMs": 9.343620999999985,
+          "cpuMs": 9.905,
+          "timerLagMs": 9.4282699999967,
+          "heapDeltaMiB": 2.2216949462890625
+        },
+        {
+          "pair": 3,
+          "variant": "baseline",
+          "wallMs": 1251.8790950000002,
+          "cpuMs": 1302.973,
+          "timerLagMs": 1402.1599549999992,
+          "heapDeltaMiB": 43.664710998535156
+        },
+        {
+          "pair": 4,
+          "variant": "baseline",
+          "wallMs": 1309.3413650000002,
+          "cpuMs": 1376.345,
+          "timerLagMs": 1458.7956369999993,
+          "heapDeltaMiB": 43.80675506591797
+        },
+        {
+          "pair": 4,
+          "variant": "candidate",
+          "wallMs": 11.161345000000438,
+          "cpuMs": 17.15,
+          "timerLagMs": 119.57048400000349,
+          "heapDeltaMiB": 2.2398681640625
+        },
+        {
+          "pair": 5,
+          "variant": "candidate",
+          "wallMs": 20.81408900000315,
+          "cpuMs": 20.888,
+          "timerLagMs": 20.90565300000162,
+          "heapDeltaMiB": 2.215545654296875
+        },
+        {
+          "pair": 5,
+          "variant": "baseline",
+          "wallMs": 1188.2483040000006,
+          "cpuMs": 1284.914,
+          "timerLagMs": 1302.9687049999993,
+          "heapDeltaMiB": 41.596275329589844
+        }
+      ],
+      "queryCounts": {
+        "baseline": {
+          "SELECT * FROM works WHERE work_id=?": 9,
+          "SELECT * FROM work_participants WHERE work_id=? ORDER BY added_at ASC": 9,
+          "SELECT * FROM work_deliverables WHERE work_id=? ORDER BY created_at ASC,rowid ASC": 2,
+          "SELECT * FROM work_blockers WHERE work_id=? ORDER BY created_at ASC": 2,
+          "SELECT * FROM work_execution_bindings WHERE work_id=? ORDER BY admitted_at ASC,rowid ASC": 2,
+          "SELECT value_json FROM work_execution_metrics WHERE binding_id=?": 20820,
+          "SELECT * FROM work_notifications WHERE work_id=? ORDER BY created_at DESC": 1,
+          "SELECT * FROM work_subscriptions WHERE work_id=? AND stopped_at IS NULL ORDER BY created_at ASC": 1,
+          "SELECT * FROM work_action_admissions WHERE work_id=? ORDER BY admitted_at ASC": 1,
+          "SELECT * FROM work_subitem_results WHERE work_id=? ORDER BY created_at,rowid": 204,
+          "SELECT * FROM work_execution_bindings WHERE binding_id=?": 20600,
+          "SELECT * FROM work_continuation_plans WHERE work_id=? ORDER BY created_at,rowid": 401,
+          "SELECT task_id FROM work_dispatch_requests WHERE continuation_plan_id=? AND state='dispatched'": 200,
+          "SELECT * FROM work_execution_bindings WHERE task_id=? ORDER BY admitted_at DESC, rowid DESC LIMIT 1": 200,
+          "SELECT * FROM work_teams WHERE work_id=?": 1,
+          "SELECT archived_at,deleted_at FROM work_record_archive WHERE work_id=?": 1,
+          "SELECT a.binding_id,a.payload_json FROM work_generated_artifacts a\n      JOIN work_execution_bindings b ON b.binding_id=a.binding_id\n      WHERE b.work_id=? AND (? OR (b.intent_revision=? AND b.input_snapshot_id=?)) ORDER BY a.rowid": 3,
+          "SELECT * FROM work_result_cards WHERE work_id=? ORDER BY created_at ASC, card_key ASC": 1,
+          "SELECT * FROM work_watch_host_state WHERE authority_id=?": 2,
+          "SELECT authority_id FROM work_host_lease WHERE lease_id='singleton'": 2,
+          "SELECT authority_id,released_at,heartbeat_at FROM work_host_lease WHERE lease_id='singleton'": 2,
+          "SELECT * FROM work_subscriptions WHERE work_id=? ORDER BY created_at ASC": 1,
+          "SELECT * FROM work_offline_gaps WHERE work_id=? ORDER BY offline_gap_from DESC LIMIT 20": 1,
+          "SELECT * FROM work_causal_chains WHERE target_work_id=? AND decision!='blocked-budget' ORDER BY created_at DESC,rowid DESC LIMIT ?": 1,
+          "SELECT * FROM work_events_inbox WHERE work_id=? AND status IN (?,?,?)\n      ORDER BY received_at ASC": 1,
+          "SELECT dependency.* FROM work_artifact_dependencies dependency\n      JOIN work_execution_bindings binding ON binding.binding_id=dependency.binding_id\n      WHERE dependency.work_id=? AND binding.intent_revision=? AND binding.input_snapshot_id=?\n      ORDER BY binding.admitted_at,dependency.rowid": 1,
+          "SELECT * FROM work_collaboration_messages WHERE work_id=? ORDER BY created_at,message_id": 2
+        },
+        "candidate": {
+          "SELECT * FROM works WHERE work_id=?": 9,
+          "SELECT * FROM work_participants WHERE work_id=? ORDER BY added_at ASC": 9,
+          "SELECT * FROM work_deliverables WHERE work_id=? ORDER BY created_at ASC,rowid ASC": 2,
+          "SELECT * FROM work_blockers WHERE work_id=? ORDER BY created_at ASC": 2,
+          "SELECT * FROM work_execution_bindings WHERE work_id=? ORDER BY admitted_at ASC,rowid ASC": 2,
+          "SELECT value_json FROM work_execution_metrics WHERE binding_id=?": 50,
+          "SELECT * FROM work_notifications WHERE work_id=? ORDER BY created_at DESC": 1,
+          "SELECT * FROM work_subscriptions WHERE work_id=? AND stopped_at IS NULL ORDER BY created_at ASC": 1,
+          "SELECT * FROM work_action_admissions WHERE work_id=? ORDER BY admitted_at ASC": 1,
+          "SELECT * FROM work_subitem_results WHERE work_id=? ORDER BY created_at,rowid": 4,
+          "SELECT * FROM work_execution_bindings WHERE binding_id=?": 20,
+          "SELECT * FROM work_continuation_plans WHERE work_id=? ORDER BY created_at,rowid": 3,
+          "SELECT task_id FROM work_dispatch_requests WHERE continuation_plan_id=? AND state='dispatched'": 10,
+          "SELECT * FROM work_execution_bindings WHERE task_id=? ORDER BY admitted_at DESC, rowid DESC LIMIT 1": 10,
+          "SELECT * FROM work_teams WHERE work_id=?": 1,
+          "SELECT archived_at,deleted_at FROM work_record_archive WHERE work_id=?": 1,
+          "SELECT a.binding_id,a.payload_json FROM work_generated_artifacts a\n      JOIN work_execution_bindings b ON b.binding_id=a.binding_id\n      WHERE b.work_id=? AND (? OR (b.intent_revision=? AND b.input_snapshot_id=?)) ORDER BY a.rowid": 3,
+          "SELECT * FROM work_result_cards WHERE work_id=? ORDER BY created_at ASC, card_key ASC": 1,
+          "SELECT * FROM work_watch_host_state WHERE authority_id=?": 2,
+          "SELECT authority_id FROM work_host_lease WHERE lease_id='singleton'": 2,
+          "SELECT authority_id,released_at,heartbeat_at FROM work_host_lease WHERE lease_id='singleton'": 2,
+          "SELECT * FROM work_subscriptions WHERE work_id=? ORDER BY created_at ASC": 1,
+          "SELECT * FROM work_offline_gaps WHERE work_id=? ORDER BY offline_gap_from DESC LIMIT 20": 1,
+          "SELECT * FROM work_causal_chains WHERE target_work_id=? AND decision!='blocked-budget' ORDER BY created_at DESC,rowid DESC LIMIT ?": 1,
+          "SELECT * FROM work_events_inbox WHERE work_id=? AND status IN (?,?,?)\n      ORDER BY received_at ASC": 1,
+          "SELECT dependency.* FROM work_artifact_dependencies dependency\n      JOIN work_execution_bindings binding ON binding.binding_id=dependency.binding_id\n      WHERE dependency.work_id=? AND binding.intent_revision=? AND binding.input_snapshot_id=?\n      ORDER BY binding.admitted_at,dependency.rowid": 1,
+          "SELECT * FROM work_collaboration_messages WHERE work_id=? ORDER BY created_at,message_id": 2
+        }
+      }
+    }
+  ],
+  "source": {
+    "baselineRef": "1df82d13527083e39b503e5527cb54df8d96c8df",
+    "head": "1df82d13527083e39b503e5527cb54df8d96c8df",
+    "baselineHash": "2a2b5c01b1d3918dd7dd26a482ded3c3cfb626a34839947c43a374a6184f5b82",
+    "candidateHash": "7f9f54abf79d95bf29bbc8b2201f70759e1136d0e3b0f07ab28c1a275db3387b",
+    "diff": "diff --git i/src/main/agent/work/WorkPartialResults.ts w/src/main/agent/work/WorkPartialResults.ts\nindex 69f19edc..193cd797 100644\n--- i/src/main/agent/work/WorkPartialResults.ts\n+++ w/src/main/agent/work/WorkPartialResults.ts\n@@ -30,6 +30,11 @@ export function ensureWorkPartialTables(db: Database.Database): void {\n const itemRow = z.object({ fact_id: z.string(), work_id: z.string(), binding_id: z.string(), result_json: z.string(), deliverable_id: z.string().nullable(), created_at: z.number() });\n const planRow = z.object({ plan_id: z.string(), work_id: z.string(), source_binding_id: z.string(), intent_revision: z.number(), input_snapshot_id: z.string(),\n   owner_epoch: z.number(), owner_bot_id: z.string(), gap_items_json: z.string(), reason: z.string(), state: z.enum([\"pending\", \"dispatched\", \"settled\", \"cancelled\"]), created_at: z.number() });\n+interface PartialGapRead {\n+  items: WorkSubitemDto[];\n+  plans: () => WorkContinuationDto[];\n+  bindingForPlan: (planId: string) => WorkExecutionBindingDto | undefined;\n+}\n const hash = (value: unknown) => createHash(\"sha256\").update(JSON.stringify(value)).digest(\"hex\");\n \n /** Facts and continuation intents share the WorkService business transaction. */\n@@ -41,8 +46,13 @@ export class WorkPartialResults {\n   }\n \n   list(workId: string): WorkSubitemDto[] {\n+    return this.readItems(workId, new Map());\n+  }\n+  private readItems(workId: string, bindings: Map<string, WorkExecutionBindingDto | undefined>): WorkSubitemDto[] {\n     return this.db.prepare(\"SELECT * FROM work_subitem_results WHERE work_id=? ORDER BY created_at,rowid\").all(workId).map(raw => {\n-      const row = itemRow.parse(raw); const binding = this.works.repo.getBinding(row.binding_id);\n+      const row = itemRow.parse(raw);\n+      if (!bindings.has(row.binding_id)) bindings.set(row.binding_id, this.works.repo.getBinding(row.binding_id));\n+      const binding = bindings.get(row.binding_id);\n       if (!binding) throw new Error(\"逐项事实缺少原执行绑定\");\n       return this.coverage.project({ ...workSubitemSchema.parse(JSON.parse(row.result_json)), factId: row.fact_id, workId, bindingId: row.binding_id,\n         intentRevision: binding.intentRevision, inputSnapshotId: binding.inputSnapshotId, deliverableId: row.deliverable_id ?? undefined, createdAt: row.created_at });\n@@ -73,12 +83,27 @@ export class WorkPartialResults {\n   gaps(workId: string): WorkSubitemDto[] {\n     const work = this.works.getWork(workId);\n     if (!work) return [];\n-    const all = this.list(workId).filter(item => {\n-      const binding = this.works.repo.getBinding(item.bindingId);\n-      return item.intentRevision === work.intentRevision && item.inputSnapshotId === work.inputSnapshotId\n-        && binding && this.works.collaboration.isDelegationAdopted(binding, work);\n+    // Reuse immutable facts only within this synchronous read. No cache survives\n+    // a call: a later read must see settlements, owner changes and rollbacks.\n+    const bindings = new Map<string, WorkExecutionBindingDto | undefined>();\n+    const items = this.readItems(workId, bindings);\n+    const adopted = new Map<string, boolean>();\n+    let plans: WorkContinuationDto[] | undefined;\n+    const planBindings = new Map<string, WorkExecutionBindingDto | undefined>();\n+    const read: PartialGapRead = { items, plans: () => plans ??= this.plans(workId), bindingForPlan: planId => {\n+      if (!planBindings.has(planId)) {\n+        const request = z.object({ task_id: z.string() }).optional().parse(this.db.prepare(\"SELECT task_id FROM work_dispatch_requests WHERE continuation_plan_id=? AND state='dispatched'\").get(planId));\n+        planBindings.set(planId, request ? this.works.repo.bindingForTask(request.task_id) : undefined);\n+      }\n+      return planBindings.get(planId);\n+    } };\n+    const all = items.filter(item => {\n+      const binding = bindings.get(item.bindingId);\n+      if (item.intentRevision !== work.intentRevision || item.inputSnapshotId !== work.inputSnapshotId || !binding) return false;\n+      if (!adopted.has(binding.bindingId)) adopted.set(binding.bindingId, this.works.collaboration.isDelegationAdopted(binding, work));\n+      return adopted.get(binding.bindingId);\n     });\n-    return all.filter(item => item.required && item.outcome !== \"completed\" && !item.coverage && !this.resolvedByContinuation(item));\n+    return all.filter(item => item.required && item.outcome !== \"completed\" && !item.coverage && !this.resolvedByContinuation(item, read));\n   }\n   settle(binding:WorkExecutionBindingDto):void {\n     if(!this.db.inTransaction) throw Error(\"补跑结算必须与原生 Inbox 同事务提交\");\n@@ -126,22 +151,21 @@ export class WorkPartialResults {\n       artifactRefs:item.artifactRefs,writeConflicts:[],summary:verified?\"原生只读执行已读取当前产物，仍等待必要验收反馈\":\"核验未提供当前产物的成功读取凭据，原业务效果未重做\",origin:\"artifact_revalidation\"}));\n     return {...observation,artifactRefs:[...new Set([...observation.artifactRefs,...(verified?items.flatMap(item=>item.artifactRefs):[])])],subitems:[...observation.subitems ?? [],...results]};\n   }\n-  private resolvedByContinuation(item: WorkSubitemDto, seen = new Set<string>()): boolean {\n-    return this.plans(item.workId).filter(plan => plan.sourceBindingId === item.bindingId && plan.gapItemIds.includes(item.itemId))\n-      .some(plan => this.continuationCompletes(item, plan.planId, seen));\n+  private resolvedByContinuation(item: WorkSubitemDto, read: PartialGapRead, seen = new Set<string>()): boolean {\n+    return read.plans().filter(plan => plan.sourceBindingId === item.bindingId && plan.gapItemIds.includes(item.itemId))\n+      .some(plan => this.continuationCompletes(item, plan.planId, seen, read));\n   }\n-  private continuationCompletes(item: WorkSubitemDto, planId: string, seen: Set<string>): boolean {\n+  private continuationCompletes(item: WorkSubitemDto, planId: string, seen: Set<string>, read: PartialGapRead): boolean {\n     if (seen.has(planId)) return false;\n     const nextSeen = new Set(seen).add(planId);\n-    const request = z.object({ task_id: z.string() }).optional().parse(this.db.prepare(\"SELECT task_id FROM work_dispatch_requests WHERE continuation_plan_id=? AND state='dispatched'\").get(planId));\n-    const binding = request && this.works.repo.bindingForTask(request.task_id);\n+    const binding = read.bindingForPlan(planId);\n     if (!binding || ![\"completed\", \"failed\", \"stopped\"].includes(binding.status)) return false;\n-    if (this.list(item.workId).some(result => result.bindingId === binding.bindingId\n+    if (read.items.some(result => result.bindingId === binding.bindingId\n       && (result.itemId === item.itemId || result.task === item.task) && result.outcome === \"completed\")) return true;\n     // A continuation may fail before emitting this item. Its persistent descendant\n     // still owns the same gap; only a real matching completed fact resolves it.\n-    return this.plans(item.workId).filter(plan => plan.sourceBindingId === binding.bindingId && plan.state !== \"cancelled\")\n-      .some(plan => this.continuationCompletes(item, plan.planId, nextSeen));\n+    return read.plans().filter(plan => plan.sourceBindingId === binding.bindingId && plan.state !== \"cancelled\")\n+      .some(plan => this.continuationCompletes(item, plan.planId, nextSeen, read));\n   }\n   record(binding: WorkExecutionBindingDto, items: WorkSubitemResult[], now = Date.now()): void {\n     if (!this.db.inTransaction) throw new Error(\"逐项结果必须与原生 Inbox 消费同事务提交\");\n",
+    "scriptHashes": {
+      "scripts/perf-work-partial.mjs": "52e3550e29ca90a5b86a4e96e297d485172510e8fe5c476c6225ae94682adad6",
+      "scripts/perf-work-partial.ts": "76e122c8c5ae65a6a66655a848e77700ba061c31221b5327ac09ce3cceba408d"
+    }
+  },
+  "environment": {
+    "computer": "Omarchy isolated clone",
+    "os": "Linux 7.2.14-arch1-1 x86_64",
+    "cpu": "AMD Ryzen 7 4800H, 16 logical CPUs",
+    "node": "v26.13.0"
+  },
+  "excludedAttempt": {
+    "scenario": {
+      "n": 1000,
+      "bindings": 20,
+      "plans": true
+    },
+    "status": "terminated by the unchanged repository memory guard",
+    "guardCapMiB": 6144,
+    "observedRssMiB": 6263,
+    "elapsedSeconds": 33,
+    "completedTimingClaim": false
+  },
+  "validation": {
+    "typecheck": "passed: web, node and scripts; zero errors",
+    "classificationAudit": "passed",
+    "diffCheck": "passed",
+    "headless": {
+      "status": "passed",
+      "passed": 478,
+      "failed": 0,
+      "knownFailures": 0,
+      "newRegressions": 0,
+      "elapsedMinutes": 4.6,
+      "tests": [
+        {
+          "name": "test:acp-catalog",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:acp-permission-policy",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:acp-remote",
+          "seconds": 1.9
+        },
+        {
+          "name": "test:agent-loadout",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:app-store-runtime",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:app-permission-ui-removal",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:app-store-structure",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:acp-runtime",
+          "seconds": 2.8
+        },
+        {
+          "name": "test:app-store-transactions",
+          "seconds": 1.6
+        },
+        {
+          "name": "test:acp-desktop-hydration",
+          "seconds": 4.4
+        },
+        {
+          "name": "test:artifact-char",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:architecture-graph",
+          "seconds": 2.0
+        },
+        {
+          "name": "test:artifact-cross-ref",
+          "seconds": 1.4
+        },
+        {
+          "name": "test:architecture",
+          "seconds": 4.3
+        },
+        {
+          "name": "test:artifact-image-cache",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:archive-deletion",
+          "seconds": 3.1
+        },
+        {
+          "name": "test:artifact-projection",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:artifact-policy-display",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:artifact-render-hydration",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:artifact-gate",
+          "seconds": 1.6
+        },
+        {
+          "name": "test:atspi-transport",
+          "seconds": 0.5
+        },
+        {
+          "name": "test:backup",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:baidu-ocr",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:black-forest-labs-provider",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:bot-active-requests",
+          "seconds": 0.5
+        },
+        {
+          "name": "test:bot-activity-monitor",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:bot-attachments",
+          "seconds": 1.4
+        },
+        {
+          "name": "test:artifact-provenance",
+          "seconds": 3.9
+        },
+        {
+          "name": "test:bot-call-thread",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:bot-conversation-ui",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:bot-create-ui",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:atspi-driver",
+          "seconds": 4.8
+        },
+        {
+          "name": "test:bot-create",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:bot-deletion",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:bot-display-groups",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:bot-foreground-metrics",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:bot-delegation-fidelity",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:bot-history-paging",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:bot-execution-diagnostics",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:bot-history-context",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:artifact-domain",
+          "seconds": 8.6
+        },
+        {
+          "name": "test:bot-memory",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:bot-history-paging-sqlite",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:bot-message-presentation",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:bot-memory-forget-watermark",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:bot-peer-calls",
+          "seconds": 1.4
+        },
+        {
+          "name": "test:bot-rename",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:bot-reply-segments",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:bot-reminders",
+          "seconds": 2.6
+        },
+        {
+          "name": "test:bot-history-query",
+          "seconds": 4.1
+        },
+        {
+          "name": "test:bot-result-delivery",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:bot-report-images",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:bot-scheduling-routing",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:bot-settings",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:bot-memory-runtime",
+          "seconds": 5.0
+        },
+        {
+          "name": "test:bot-scheduling-continuation",
+          "seconds": 1.7
+        },
+        {
+          "name": "test:bot-report-images-ui",
+          "seconds": 2.1
+        },
+        {
+          "name": "test:bot-summary-pagination",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:bot-team-ui",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:bot-team-conversation",
+          "seconds": 1.5
+        },
+        {
+          "name": "test:bot-watch-expiry",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:bot-watch-intake",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:bot-watch-creation",
+          "seconds": 3.8
+        },
+        {
+          "name": "test:bot-work-automatic-completion",
+          "seconds": 3.0
+        },
+        {
+          "name": "test:bot-work-control",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:bot-work-foreground-contract",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:bot-work-automatic-recovery",
+          "seconds": 4.8
+        },
+        {
+          "name": "test:bot-work-milestones",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:bot-work-execution",
+          "seconds": 3.0
+        },
+        {
+          "name": "test:bot-work-no-quota",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:bot-work-phase1",
+          "seconds": 1.4
+        },
+        {
+          "name": "test:bot-work-phase2-invariants",
+          "seconds": 1.3
+        },
+        {
+          "name": "test:bot-work-phase3-collaboration",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:bot-work-phase3-handoff",
+          "seconds": 1.6
+        },
+        {
+          "name": "test:bot-work-phase3-partial-settlement",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:bot-work-phase2-usage",
+          "seconds": 4.0
+        },
+        {
+          "name": "test:bot-work-phase3-pause-backlog",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:bot-work-phase4-causal-guard",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:bot-work-phase4-backpressure",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:bot-work-phase4-offline-catchup",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:bot-work-phase4-hook-fanout",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:bot-work-phase4-schedule-clock",
+          "seconds": 2.1
+        },
+        {
+          "name": "test:bot-work-phase5-e2e-story",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:bot-work-phase5-delivery-dedup",
+          "seconds": 3.5
+        },
+        {
+          "name": "test:bot-watch-scheduler",
+          "seconds": 18.1
+        },
+        {
+          "name": "test:bot-work-phase5-gateway",
+          "seconds": 2.9
+        },
+        {
+          "name": "test:bot-work-phase5-reconnect-diagnostics",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:bot-work-phase5-review",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:bot-work-phase5-review-ui",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:bot-work-phase5-owner-summary",
+          "seconds": 4.3
+        },
+        {
+          "name": "test:bot-work-projection-retention",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:bot-work-review-control",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:bot-work-read-lifecycle",
+          "seconds": 1.4
+        },
+        {
+          "name": "test:bot-work-phase2",
+          "seconds": 16.3
+        },
+        {
+          "name": "test:bot-work-review-projection",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:bot-work-review-execution",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:bot-work-team-access",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:bot-work-resume-dispatch",
+          "seconds": 3.2
+        },
+        {
+          "name": "test:bot-work-review-memory",
+          "seconds": 5.3
+        },
+        {
+          "name": "test:bot-work-team-service",
+          "seconds": 3.9
+        },
+        {
+          "name": "test:bot-work-team-watch",
+          "seconds": 1.3
+        },
+        {
+          "name": "test:bot-workspace",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:bot-workspace-navigation",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:browser-open-guard",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:btw",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:btw-arch",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:bot-workspace-navigation-ui",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:bot-work-team-native",
+          "seconds": 7.6
+        },
+        {
+          "name": "test:builtin-capabilities",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:cache-boundary-matrix",
+          "seconds": 1.7
+        },
+        {
+          "name": "test:cache-request-trace",
+          "seconds": 1.5
+        },
+        {
+          "name": "test:cache-trace-audit",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:capability-packaging",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:capture-mode",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:chat-composer-ui",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:chat-scroll-anchor",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:chat-markdown",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:cloudflared-cli-detect",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:chat-selection",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:codex-image",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:cache-strategies",
+          "seconds": 1.7
+        },
+        {
+          "name": "test:command-code-request",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:compaction-settings-ui",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:connector-id-case",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:compaction-policy-history",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:compaction",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:context-usage",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:context-ledger",
+          "seconds": 1.7
+        },
+        {
+          "name": "test:conversation-branch",
+          "seconds": 1.5
+        },
+        {
+          "name": "test:conversation-branch:native",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:conversation-branch-ui",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:conversation-branch-service",
+          "seconds": 2.2
+        },
+        {
+          "name": "test:bot-work-team-recovery",
+          "seconds": 12.4
+        },
+        {
+          "name": "test:conversation-input",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:crash-reporting",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:conversation-runtime-ui",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:conversation-runtime",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:conversation-branch:workspace",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:dashscope-provider",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:cron-scheduling",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:detail-card-layout-stability",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:diagnostics-rules",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:delegated-run",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:dingtalk-media",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:dingtalk-gateway",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:db-migration",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:discord-media",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:durable-compaction-settings",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:discord-gateway",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:db-schema-discard",
+          "seconds": 1.6
+        },
+        {
+          "name": "test:durable-artifact-registration",
+          "seconds": 2.1
+        },
+        {
+          "name": "test:durable-context-performance",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:durable-context-management",
+          "seconds": 2.6
+        },
+        {
+          "name": "test:durable-consult",
+          "seconds": 3.0
+        },
+        {
+          "name": "test:durable-log-repair",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:durable-history-block",
+          "seconds": 1.5
+        },
+        {
+          "name": "test:durable-context-branch-cancel",
+          "seconds": 4.7
+        },
+        {
+          "name": "test:durable-resume-admission",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:durable-history-readonly",
+          "seconds": 2.3
+        },
+        {
+          "name": "test:durable-session-recovery",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:durable-sync",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:durable-task-projection",
+          "seconds": 0.5
+        },
+        {
+          "name": "test:durable-projection",
+          "seconds": 4.8
+        },
+        {
+          "name": "test:durable-tool-gate",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:durable-tool-diagnostics",
+          "seconds": 3.1
+        },
+        {
+          "name": "test:durable-turn-evidence",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:durable-provider-authority",
+          "seconds": 9.5
+        },
+        {
+          "name": "test:durable-workspace-binding",
+          "seconds": 1.3
+        },
+        {
+          "name": "test:execution-failure-dismiss",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:execution-restart-recovery",
+          "seconds": 0.5
+        },
+        {
+          "name": "test:expert",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:expert-metadata",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:durable-work-liveness",
+          "seconds": 6.3
+        },
+        {
+          "name": "test:external-write-grant",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:external-cli-memory",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:external-write-ui",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:feishu-media",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:gadget-browser-binding",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:gadget-blueprint",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:gadget-preview-recovery",
+          "seconds": 0.5
+        },
+        {
+          "name": "test:gadget-save-copies",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:gadget-runtime-lifecycle",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:gateway-cache",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:gateway-delivery-journal",
+          "seconds": 4.4
+        },
+        {
+          "name": "test:gateway",
+          "seconds": 4.9
+        },
+        {
+          "name": "test:durable-tool-policy",
+          "seconds": 15.1
+        },
+        {
+          "name": "test:gateway-media",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:gateway-platform-registry",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:gateway-lifecycle",
+          "seconds": 2.0
+        },
+        {
+          "name": "test:gateway-provider-config",
+          "seconds": 1.5
+        },
+        {
+          "name": "test:gateway-task-space",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:gateway-security",
+          "seconds": 4.2
+        },
+        {
+          "name": "test:google-workspace",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:google-workspace-faults",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:generation-speed",
+          "seconds": 3.1
+        },
+        {
+          "name": "test:google-workspace-request-scope",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:google-workspace-ui",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:google-workspace-write-tools",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:google-workspace-tools",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:harness-quality",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:hero-suggest",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:history-prepend-scroll",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:history-questions",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:google-workspace-write-ui",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:input-guardian",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:html-edit-source",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:ipc-channel-inventory",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:knowledge-lifecycle",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:lark-wecom-gateway",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:library-document-editor",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:input-guardian-process",
+          "seconds": 1.9
+        },
+        {
+          "name": "test:library-extension",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:library-domain",
+          "seconds": 1.7
+        },
+        {
+          "name": "test:library-lifecycle-transaction",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:library-materialization-transaction",
+          "seconds": 0.5
+        },
+        {
+          "name": "test:gateway-durable",
+          "seconds": 12.5
+        },
+        {
+          "name": "test:library-update-transaction",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:library-workspace-context",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:linux-native-backend",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:linux-native-outcomes",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:linux-worker-packaging",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:linux-session",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:local-ocr-capability",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:library-owner-scope",
+          "seconds": 1.9
+        },
+        {
+          "name": "test:magpie-agent-mybuddy",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:magpie-capabilities",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:local-capability-checks",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:mcp",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:mcp-composer-focus",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:mcp-config-parse",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:magpie-catalog",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:mcp-execution-evidence",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:mcp-mode",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:mcp-section-stability",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:media-artifact-transaction",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:local-workflow",
+          "seconds": 3.4
+        },
+        {
+          "name": "test:media-capability-config",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:mcp-context-chars",
+          "seconds": 2.3
+        },
+        {
+          "name": "test:media-capability-services",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:media-provider-presets",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:media-capabilities-dom",
+          "seconds": 1.5
+        },
+        {
+          "name": "test:memory-assistant-scopes",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:durable-subagent",
+          "seconds": 36.1
+        },
+        {
+          "name": "test:memory-cognition",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:memory",
+          "seconds": 1.8
+        },
+        {
+          "name": "test:memory-gateway",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:media-capability-extension",
+          "seconds": 3.3
+        },
+        {
+          "name": "test:memory-gateway-controller",
+          "seconds": 1.6
+        },
+        {
+          "name": "test:memory-projection-deletion",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:memory-scope-schema",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:memory-lifecycle",
+          "seconds": 2.1
+        },
+        {
+          "name": "test:memory-procedure-learning",
+          "seconds": 1.7
+        },
+        {
+          "name": "test:memory-skill-effectiveness",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:memory-skill-history",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:message-lifecycle",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:meta-skill-authoring",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:minimal-coding-mode",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:mode",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:memory-skill-learning",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:mode-preset",
+          "seconds": 0.5
+        },
+        {
+          "name": "test:memory-organization",
+          "seconds": 3.7
+        },
+        {
+          "name": "test:memory-skill-revision",
+          "seconds": 1.7
+        },
+        {
+          "name": "test:models-settings-overlay",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:model-catalog-update",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:model-refresh",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:native-cost-evidence",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:native-surface",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:model-scope-stale-heal",
+          "seconds": 1.9
+        },
+        {
+          "name": "test:oauth-bundle",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:notes-task-tools",
+          "seconds": 2.8
+        },
+        {
+          "name": "test:openrouter-capabilities",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:openrouter-model-autoload",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:overview-runtime",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:multi-search",
+          "seconds": 3.6
+        },
+        {
+          "name": "test:packaged-package-json-guard",
+          "seconds": 0.5
+        },
+        {
+          "name": "test:pdf-runtime-compat",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:pi-cache-protocol",
+          "seconds": 0.5
+        },
+        {
+          "name": "test:pi-codemode-auto",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:pi-autonomous-execution",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:multi-model-consult",
+          "seconds": 5.0
+        },
+        {
+          "name": "test:pi-codemode-ui",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:pi-host-control",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:officecli",
+          "seconds": 3.6
+        },
+        {
+          "name": "test:pi-native-control",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:pi-host-native",
+          "seconds": 1.4
+        },
+        {
+          "name": "test:pi-codemode-native",
+          "seconds": 2.6
+        },
+        {
+          "name": "test:pi-native-core-tools",
+          "seconds": 1.3
+        },
+        {
+          "name": "test:pi-tool-call-stream",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:pi-native-lifecycle",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:pi-reasoning-stream",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:pi-host-boundary",
+          "seconds": 3.4
+        },
+        {
+          "name": "test:pi100-model-admission",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:pinned-public-proxy",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:platform-browsers",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:platform-computer-use",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:platform-providers",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:pi104-model-compat",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:preset-editor",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:preset-runtime-contract",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:professional-tools-live",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:professional-tools",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:pi104-features",
+          "seconds": 1.7
+        },
+        {
+          "name": "test:project-automation",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:pi100-context-boundary",
+          "seconds": 2.1
+        },
+        {
+          "name": "test:project-binding-matrix",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:project-autopilot",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:project-config-detail",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:project-config-rail",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:project-convergence",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:project-creation",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:project-cadence",
+          "seconds": 0.5
+        },
+        {
+          "name": "test:project-domain",
+          "seconds": 1.3
+        },
+        {
+          "name": "test:project-event",
+          "seconds": 1.7
+        },
+        {
+          "name": "test:project-event-document",
+          "seconds": 1.9
+        },
+        {
+          "name": "test:project-event-promotion-transaction",
+          "seconds": 0.5
+        },
+        {
+          "name": "test:project-agent",
+          "seconds": 3.5
+        },
+        {
+          "name": "test:project-file-import-transaction",
+          "seconds": 0.5
+        },
+        {
+          "name": "test:project-event-promotion",
+          "seconds": 2.3
+        },
+        {
+          "name": "test:project-event-triage",
+          "seconds": 1.9
+        },
+        {
+          "name": "test:project-folder-relocation",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:project-file-import",
+          "seconds": 2.0
+        },
+        {
+          "name": "test:project-memory-extraction",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:project-memory-agent",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:project-memory-migration",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:project-notes",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:project-plan-schedule",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:project-task-defaults",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:project-template",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:project-plan-agent",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:project-workspace-ui",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:prompt-context",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:project-todo",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:prompt-enhance",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:prompt-execution",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:prompt-submission",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:prompt-failure-recovery",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:project-knowledge",
+          "seconds": 3.2
+        },
+        {
+          "name": "test:provider-login",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:qq-gateway",
+          "seconds": 1.3
+        },
+        {
+          "name": "test:qq-media",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:qq-qr-integration",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:regenerate-connection-runtime",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:regenerate-lifecycle",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:project-materials-dom",
+          "seconds": 4.7
+        },
+        {
+          "name": "test:retry-display",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:regenerate-stop-runtime",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:qq-qr-ui",
+          "seconds": 1.6
+        },
+        {
+          "name": "test:runtime-orchestrator",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:remote-work-sync",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:runtime-requirement-recovery",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:runtime-prewarm",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:scoped-library-manager",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:scroll-follow",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:search-source-address",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:selection-store",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:runtime-materials",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:session-approval-bridge",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:session-lifecycle",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:runtime-probe",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:shell-preferences",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:shell-arguments",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:sidebar-space-collapse",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:sidebar-pinned",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:skill-authoring-recovery",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:skill-authoring",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:skill-connector",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:skill-root-guard",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:runtime-skill-loader",
+          "seconds": 4.6
+        },
+        {
+          "name": "test:space-relocate",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:slack-media",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:streaming-send",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:session-history-recovery",
+          "seconds": 4.4
+        },
+        {
+          "name": "test:subagent-acceptance-gate",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:subagent-cache-accounting",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:subagent-display-names",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:subagent-agent-discovery",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:subagent-ipc-host",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:subagent-mapper",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:subagent-model-ui",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:slack-gateway",
+          "seconds": 2.8
+        },
+        {
+          "name": "test:subagent-selection",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:subagent-runs",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:subagent-settings",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:subagent-write-conflict",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:task-delete-panel",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:subagent-parallel-limits",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:task-diagnostics",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:task-file-changes",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:subagent-worktree",
+          "seconds": 1.5
+        },
+        {
+          "name": "test:task-isolation-p2",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:task-prompt-mode",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:task-isolation-audit",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:task-switch",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:task-terminal",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:task-status-dot",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:task-trash-retention",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:task-workspace-isolation",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:task-expert-binding",
+          "seconds": 2.9
+        },
+        {
+          "name": "test:task-workspace-lifecycle",
+          "seconds": 2.2
+        },
+        {
+          "name": "test:team-subagent-policy",
+          "seconds": 2.5
+        },
+        {
+          "name": "test:task-workspace-migration",
+          "seconds": 2.8
+        },
+        {
+          "name": "test:terminal-surface",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:telegram-reply-routing",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:timeline-focus",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:token-format",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:test-bundle-pool",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:tool-image-aging",
+          "seconds": 1.6
+        },
+        {
+          "name": "test:subagent-acceptance",
+          "seconds": 9.8
+        },
+        {
+          "name": "test:ui-automation-recovery",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:telegram-media",
+          "seconds": 3.3
+        },
+        {
+          "name": "test:usage-recon",
+          "seconds": 0.5
+        },
+        {
+          "name": "test:unified-media-adapters",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:user-prompt-display",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:verified-code-execution",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:visual-polish-ux",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:usage-stats",
+          "seconds": 1.3
+        },
+        {
+          "name": "test:wave5b",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:wave5c",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:wave5d1",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:usage-dashboard-projection",
+          "seconds": 3.8
+        },
+        {
+          "name": "test:wave5d3",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:web-access-capability",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:web-access-convergence",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:typecheck-guard",
+          "seconds": 6.8
+        },
+        {
+          "name": "test:web-artifact-runtime",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:web-access-extract-runtime",
+          "seconds": 1.3
+        },
+        {
+          "name": "test:wechat-callback-auth",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:wave5a",
+          "seconds": 4.8
+        },
+        {
+          "name": "test:wecom-media",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:web-page-answer-runtime",
+          "seconds": 1.4
+        },
+        {
+          "name": "test:wave5d2",
+          "seconds": 4.6
+        },
+        {
+          "name": "test:weixin-qr-integration",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:whisper-check-feedback",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:weixin-gateway",
+          "seconds": 1.9
+        },
+        {
+          "name": "test:work-budget-retirement",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:work-effect-retirement",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:work-conversation-feedback",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:work-execution-metrics",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:work-graph-bridge",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:weixin-media",
+          "seconds": 4.0
+        },
+        {
+          "name": "test:work-graph",
+          "seconds": 1.7
+        },
+        {
+          "name": "test:work-graph-execution",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:work-graph-hardening",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:work-graph-r3-union",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:weixin-qr-ui",
+          "seconds": 4.1
+        },
+        {
+          "name": "test:work-graph-ux",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:work-isolation-retirement",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:work-partial-read",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:work-memory-capture",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:work-shell-read",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:work-team-watch-evidence",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:work-permissions-retired",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:work-watch-goal",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:work-watch-unchanged",
+          "seconds": 1.7
+        },
+        {
+          "name": "test:workspace-files-ui",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:workspace-library-binding",
+          "seconds": 0.5
+        },
+        {
+          "name": "test:work-watch-supervision",
+          "seconds": 2.6
+        },
+        {
+          "name": "test:workspace-chunk-benchmark",
+          "seconds": 2.4
+        },
+        {
+          "name": "test:workspace-navigation-ux",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:workspace-chunk-r2",
+          "seconds": 2.0
+        },
+        {
+          "name": "test:workspace-materials-view",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:workspace-notes",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:workspace-resolver",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:workspace-phase5",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:workspace-materials-dom",
+          "seconds": 1.6
+        },
+        {
+          "name": "test:workspace-shared-context",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:workspace-runtime-consolidation",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:workspace-runtime-integration",
+          "seconds": 1.4
+        },
+        {
+          "name": "test:workspace-shared-context-ui-foundation",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:workspace-resource-locator",
+          "seconds": 2.2
+        },
+        {
+          "name": "test:workspace-tree",
+          "seconds": 8.4
+        },
+        {
+          "name": "test:bot-work-phase2-recovery",
+          "seconds": 29.4
+        },
+        {
+          "name": "test:bot-work-phase5-native-story",
+          "seconds": 15.5
+        },
+        {
+          "name": "test:bot-work-query-scale",
+          "seconds": 18.6
+        },
+        {
+          "name": "test:bot-work-summary-query",
+          "seconds": 14.0
+        },
+        {
+          "name": "test:core-performance",
+          "seconds": 21.5
+        },
+        {
+          "name": "test:gateway-inbox-crash",
+          "seconds": 2.9
+        },
+        {
+          "name": "test:gateway-port-fallback",
+          "seconds": 0.1
+        }
+      ]
+    },
+    "notRun": [
+      "GUI suite",
+      "NETWORK suite",
+      "DATASET suite",
+      "ARTIFACT suite",
+      "Windows",
+      "packaged app",
+      "product build or packaging"
+    ]
+  }
+}
