@@ -128,3 +128,39 @@ Pause then waited 70 seconds across the next slot with no additional execution.
 The source file remained unchanged by the assistant. Both 1280 and 390 pixel layouts
 had no horizontal overflow; the mobile screenshot was inspected. The live process
 exited 0. No production profile/restart or crash injection was used.
+
+## Batch 7: execution submission, admission and reconciliation (2026-11-11)
+
+Rechecked baseline `a19cd63`: the facade had grown from 1,270 to 1,306 lines with
+watch completion integration. The previous six batches were complete, but the
+roadmap's execution coordination boundary still remained in the facade.
+
+This batch extracts three distinct responsibilities, without introducing a replacement
+mega-service or moving transaction ownership:
+
+- `WorkSubmissionMutations` (22 lines): original-attempt and native-receipt binding/
+  outbox writes, retaining both their ordering and first-submission timestamp.
+- `WorkActionAdmission` (105 lines): current binding/lifecycle, workspace and delegation
+  checks plus admission facts; the facade still resolves the actor, checks access and
+  versions, and owns the transaction. This moves existing checks, not new approvals.
+- `WorkExecutionReconciliation` (37 lines): binding-specific actor matching and the
+  call to existing `WorkExecutionSettlement`. Cancellation does not prevent receipt
+  reconciliation; settlement logic is not duplicated.
+
+`WorkService` is now 1,202 lines. All public signatures, table schema, control receipts,
+transaction entry points, projection publication and policy are unchanged. Dependencies
+are explicit callbacks/repository interfaces, never the facade or `any`.
+
+Added real SQLite behaviour assertions for submission/outbox pairing, late receipt
+terminal stability, immutable task/conversation identity, admission replay, authenticated
+worker binding when the payload omits it, workspace rejection and terminal refusal.
+The new tests run after existing adapter scenarios so their settled-but-unread bindings
+do not contaminate those scenarios' global outbox fixture.
+
+Remaining facade responsibilities are intentional for now: composition/wiring;
+shared transaction + postcommit projections; common actor/access/version/idempotency
+control admission; create/observed-source compare-and-swap; host-only evidence capture;
+and small public delegation methods. These are not declared permanently finished:
+future splits should follow concrete responsibility growth, not an arbitrary line target.
+No new persistent state, UI, model invocation, approval path or production restart.
+Final validation is recorded below after running the current code.
