@@ -1139,6 +1139,13 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     report.status='passed';
   } catch (error) {
     report.status = 'failed'; report.error = String(error.stack || error); console.error(error); process.exitCode = 1;
+    if (String(error).includes('CDP timeout')) {
+      const diagnostics={at:new Date().toISOString(),probes:{}};
+      if(process.platform==='linux')try{diagnostics.processes=cp.execFileSync('ps',['-eo','pid,ppid,pcpu,rss,etime,args'],{encoding:'utf8',timeout:3000}).split('\n').filter(line=>line.includes(home)||[...ownedElectronMains.keys()].some(pid=>new RegExp('^\\s*'+pid+'\\s').test(line)));}catch(e){diagnostics.processError=String(e);}
+      await Promise.all([['browser','Browser.getVersion',{}],['renderer','Runtime.evaluate',{expression:'1+1',returnByValue:true}],['ipc','Runtime.evaluate',{expression:'window.api.botWork.listWorks(true).then(rows=>rows.length)',awaitPromise:true,returnByValue:true}]].map(async([name,method,params])=>{const at=Date.now();try{diagnostics.probes[name]={value:await rpc(method,params),elapsedMs:Date.now()-at};}catch(e){diagnostics.probes[name]={error:String(e),elapsedMs:Date.now()-at};}}));
+      fs.writeFileSync(path.join(out,'cdp-timeout-diagnostics.json'),JSON.stringify(diagnostics,null,2));
+      report.cdpTimeoutDiagnostics=diagnostics;
+    }
     if (socket) try { report.visibleText = await evaluate('document.body.innerText'); const shot = await rpc('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }); fs.writeFileSync(path.join(out, 'failed-page.png'), Buffer.from(shot.data, 'base64')); } catch {}
   }
   finally {

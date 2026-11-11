@@ -155,6 +155,33 @@ const cases: Array<[string, (f: Fixture) => Promise<void> | void]> = [
     assert.match(f.memory.get(id)!.content, /持续追踪（单轮产出不代表结束）/);
     assert.equal((f.db.connection.prepare("SELECT suppressed FROM memory_capture_receipts WHERE memory_id=?").get(id) as {suppressed:number}).suppressed, 0);
   }],
+  ["repair old automatic takeovers without reviving manual edits, unbindings or deletion", async () => {
+    for (const mode of ["repair", "suppressed", "manual", "unbound", "deleted", "foreign-source"]) {
+      const f = fixture();
+      try {
+        const workId=f.memory.inferAgentScope("worker").scopeId!;
+        const capture=new WorkMemoryCapture(f.db,f.memory),id=capture.capture(workId)!;
+        f.memory.repository.insertCandidate({id:"old-candidate",taskId:mode==="foreign-source"?"ordinary":"worker",kind:"progress",title:"Work 事实与未决事项",content:"old auto rewrite",scopeType:"work",scopeId:workId,confidence:1,importance:1,explicit:true,operationHint:"update",status:"pending",createdAt:Date.now()});
+        f.memory.update({id,content:"old auto rewrite",changedBy:"user",changeReason:"candidate:old-candidate"});
+        f.memory.repository.resolveCandidate("old-candidate","committed",id);
+        if(mode==="suppressed")f.db.connection.prepare("UPDATE memory_capture_receipts SET suppressed=1 WHERE memory_id=?").run(id);
+        if(mode==="manual")f.memory.update({id,content:"owner actual edit",changedBy:"user",changeReason:"settings edit"});
+        if(mode==="unbound")f.memory.detachScope(id,"work",workId);
+        if(mode==="deleted")f.memory.forget(id);
+        f.db.connection.prepare("UPDATE works SET progress_summary='Latest real state' WHERE work_id=?").run(workId);
+        if(mode==="repair"||mode==="suppressed") {
+          assert.equal(capture.capture(workId),id);
+          assert.match(f.memory.get(id)!.content,/Latest real state/);
+          assert.equal(f.memory.get(id)!.sourceType,"event");
+          assert.equal((f.db.connection.prepare("SELECT suppressed FROM memory_capture_receipts WHERE memory_id=?").get(id) as {suppressed:number}).suppressed,0);
+        } else {
+          assert.equal(capture.capture(workId),undefined,mode);
+          if(mode==="manual")assert.equal(f.memory.get(id)!.content,"owner actual edit");
+          if(mode==="deleted")assert.equal(f.memory.get(id),undefined);
+        }
+      } finally {f.close();}
+    }
+  }],
   ["automatic candidate reconciliation cannot mutate a previously promoted worker atom", async f => {
     for (const operation of ["update", "supersede", "resolve", "forget", "create"]) {
       const local = f.memory.create({ kind: "fact", title: `promoted ${operation} atom`, content: `confirmed ${operation} content`,

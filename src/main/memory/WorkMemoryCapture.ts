@@ -3,6 +3,7 @@ import type { AppDatabase } from "../db/AppDatabase";
 import type { MemoryService } from "./MemoryService";
 import { botMemoryTextEligible } from "./BotMemorySource";
 import { MEMORY_CONTENT_MAX_CHARS } from "../../shared/memory-kernel";
+import { repairWorkMemorySnapshot } from "./WorkMemorySnapshotRepair";
 import { LOCAL_USER_ID } from "../../shared/bot-work";
 
 /** Facts-only bridge into the existing Kernel. Never consumes execution/outbox events. */
@@ -35,13 +36,15 @@ export class WorkMemoryCapture {
       const key = `work-summary:${workId}`;
       const receipt = this.db.connection.prepare("SELECT * FROM memory_capture_receipts WHERE source_key=?").get(key) as
         { memory_id: string; content_hash: string; suppressed: number } | undefined;
+      const repaired = receipt && repairWorkMemorySnapshot(this.db, this.memory, workId, receipt.memory_id);
+      if (repaired) { receipt.suppressed = 0; receipt.content_hash = ""; }
       if (receipt?.suppressed) return undefined;
       const existing = receipt ? this.memory.get(receipt.memory_id) : undefined;
       const latestRevision = existing ? this.db.connection.prepare(
         'SELECT changed_by FROM memory_revisions WHERE memory_id=? ORDER BY revision DESC LIMIT 1'
       ).get(existing.id) as { changed_by: string } | undefined : undefined;
       // A manual correction or unbinding transfers ownership away from this capture source.
-      if (receipt && (!existing
+      if (receipt && !repaired && (!existing
         || (latestRevision && latestRevision.changed_by !== 'event')
         || createHash('sha256').update(existing.content).digest('hex') !== receipt.content_hash
         || !existing.scopes.some(scope => scope.scopeType === 'work' && scope.scopeId === workId))) {
