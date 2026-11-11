@@ -1,0 +1,2429 @@
+{
+  "date": "2026-11-11",
+  "scope": "Warm backend listing benchmark plus headless and actual Electron component equivalence; synthetic files and isolated profiles only.",
+  "measurement": {
+    "head": "6766877792496b1af1c617bba3eaf1138b3baad5",
+    "node": "v26.13.0",
+    "contract": "Actual production listWorkspaceFiles versus Git baseline; same synthetic directories; complete-tree parity; backend only",
+    "output": [
+      {
+        "spec": {
+          "dirs": 1,
+          "files": 100
+        },
+        "rootEntries": 100,
+        "digest": "39fa8c862b3b644a4d00f8ce60f82a6e187e0f2f3d050715afca0309dd617327",
+        "completeTreeParityChecks": 13,
+        "summary": {
+          "baseline": {
+            "medianMs": 3.3126324999999994,
+            "medianCpuMs": 3.958
+          },
+          "candidate": {
+            "medianMs": 0.5271019999999993,
+            "medianCpuMs": 0.657
+          }
+        },
+        "samples": [
+          {
+            "pair": 0,
+            "variant": "baseline",
+            "wallMs": 3.0577770000000015,
+            "cpuMs": 3.122
+          },
+          {
+            "pair": 0,
+            "variant": "candidate",
+            "wallMs": 0.5313629999999989,
+            "cpuMs": 0.503
+          },
+          {
+            "pair": 1,
+            "variant": "candidate",
+            "wallMs": 0.5228409999999997,
+            "cpuMs": 1.2
+          },
+          {
+            "pair": 1,
+            "variant": "baseline",
+            "wallMs": 3.2934959999999904,
+            "cpuMs": 4.131
+          },
+          {
+            "pair": 2,
+            "variant": "baseline",
+            "wallMs": 3.350138000000001,
+            "cpuMs": 3.785
+          },
+          {
+            "pair": 2,
+            "variant": "candidate",
+            "wallMs": 0.7175620000000009,
+            "cpuMs": 0.811
+          },
+          {
+            "pair": 3,
+            "variant": "candidate",
+            "wallMs": 0.5729189999999988,
+            "cpuMs": 1.023
+          },
+          {
+            "pair": 3,
+            "variant": "baseline",
+            "wallMs": 3.3317690000000084,
+            "cpuMs": 5.196
+          },
+          {
+            "pair": 4,
+            "variant": "baseline",
+            "wallMs": 3.7611610000000013,
+            "cpuMs": 4.141
+          },
+          {
+            "pair": 4,
+            "variant": "candidate",
+            "wallMs": 0.5025169999999974,
+            "cpuMs": 0.46
+          },
+          {
+            "pair": 5,
+            "variant": "candidate",
+            "wallMs": 0.5152980000000014,
+            "cpuMs": 0.474
+          },
+          {
+            "pair": 5,
+            "variant": "baseline",
+            "wallMs": 3.119517000000002,
+            "cpuMs": 3.144
+          }
+        ]
+      },
+      {
+        "spec": {
+          "dirs": 1,
+          "files": 1000
+        },
+        "rootEntries": 1000,
+        "digest": "95a56ea0de41d9e0058b7b17761449fecb749758ef2a7d7e2eda6e0a5b6578d5",
+        "completeTreeParityChecks": 13,
+        "summary": {
+          "baseline": {
+            "medianMs": 30.200583500000022,
+            "medianCpuMs": 31.028
+          },
+          "candidate": {
+            "medianMs": 3.83257500000002,
+            "medianCpuMs": 4.5634999999999994
+          }
+        },
+        "samples": [
+          {
+            "pair": 0,
+            "variant": "baseline",
+            "wallMs": 33.596292999999974,
+            "cpuMs": 33.887
+          },
+          {
+            "pair": 0,
+            "variant": "candidate",
+            "wallMs": 3.9001480000000015,
+            "cpuMs": 4.796
+          },
+          {
+            "pair": 1,
+            "variant": "candidate",
+            "wallMs": 2.960695000000044,
+            "cpuMs": 2.941
+          },
+          {
+            "pair": 1,
+            "variant": "baseline",
+            "wallMs": 30.97636,
+            "cpuMs": 38.002
+          },
+          {
+            "pair": 2,
+            "variant": "baseline",
+            "wallMs": 29.609680999999966,
+            "cpuMs": 29.624
+          },
+          {
+            "pair": 2,
+            "variant": "candidate",
+            "wallMs": 4.464544999999987,
+            "cpuMs": 4.516
+          },
+          {
+            "pair": 3,
+            "variant": "candidate",
+            "wallMs": 2.688869000000011,
+            "cpuMs": 2.694
+          },
+          {
+            "pair": 3,
+            "variant": "baseline",
+            "wallMs": 30.427677000000017,
+            "cpuMs": 30.685
+          },
+          {
+            "pair": 4,
+            "variant": "baseline",
+            "wallMs": 29.837437000000023,
+            "cpuMs": 31.371
+          },
+          {
+            "pair": 4,
+            "variant": "candidate",
+            "wallMs": 3.765002000000038,
+            "cpuMs": 6.961
+          },
+          {
+            "pair": 5,
+            "variant": "candidate",
+            "wallMs": 4.413071000000002,
+            "cpuMs": 4.611
+          },
+          {
+            "pair": 5,
+            "variant": "baseline",
+            "wallMs": 29.973490000000027,
+            "cpuMs": 29.959
+          }
+        ]
+      },
+      {
+        "spec": {
+          "dirs": 1,
+          "files": 5000
+        },
+        "rootEntries": 5000,
+        "digest": "381222004badb208aa97349c43202cfca29ea651d5f79d56c01d380fda716ee8",
+        "completeTreeParityChecks": 13,
+        "summary": {
+          "baseline": {
+            "medianMs": 144.27480849999995,
+            "medianCpuMs": 150.249
+          },
+          "candidate": {
+            "medianMs": 15.36508200000003,
+            "medianCpuMs": 20.1035
+          }
+        },
+        "samples": [
+          {
+            "pair": 0,
+            "variant": "baseline",
+            "wallMs": 153.54144799999995,
+            "cpuMs": 176.176
+          },
+          {
+            "pair": 0,
+            "variant": "candidate",
+            "wallMs": 22.52561999999989,
+            "cpuMs": 27.056
+          },
+          {
+            "pair": 1,
+            "variant": "candidate",
+            "wallMs": 16.19774499999994,
+            "cpuMs": 30.196
+          },
+          {
+            "pair": 1,
+            "variant": "baseline",
+            "wallMs": 149.13577999999984,
+            "cpuMs": 168.993
+          },
+          {
+            "pair": 2,
+            "variant": "baseline",
+            "wallMs": 145.33013000000005,
+            "cpuMs": 152.875
+          },
+          {
+            "pair": 2,
+            "variant": "candidate",
+            "wallMs": 11.414997000000085,
+            "cpuMs": 13.456
+          },
+          {
+            "pair": 3,
+            "variant": "candidate",
+            "wallMs": 15.016359000000193,
+            "cpuMs": 19.91
+          },
+          {
+            "pair": 3,
+            "variant": "baseline",
+            "wallMs": 143.21948699999984,
+            "cpuMs": 143.103
+          },
+          {
+            "pair": 4,
+            "variant": "baseline",
+            "wallMs": 142.97001,
+            "cpuMs": 147.623
+          },
+          {
+            "pair": 4,
+            "variant": "candidate",
+            "wallMs": 15.15569400000004,
+            "cpuMs": 15.142
+          },
+          {
+            "pair": 5,
+            "variant": "candidate",
+            "wallMs": 15.57447000000002,
+            "cpuMs": 20.297
+          },
+          {
+            "pair": 5,
+            "variant": "baseline",
+            "wallMs": 142.6106699999998,
+            "cpuMs": 142.498
+          }
+        ]
+      },
+      {
+        "spec": {
+          "dirs": 50,
+          "files": 100
+        },
+        "rootEntries": 50,
+        "digest": "92171b030fd20c937273f7a7f41b93d286e37b88c965347ad602258c04f4bb96",
+        "completeTreeParityChecks": 13,
+        "summary": {
+          "baseline": {
+            "medianMs": 148.70425849999992,
+            "medianCpuMs": 148.942
+          },
+          "candidate": {
+            "medianMs": 21.5524690000002,
+            "medianCpuMs": 22.548499999999997
+          }
+        },
+        "samples": [
+          {
+            "pair": 0,
+            "variant": "baseline",
+            "wallMs": 150.2930019999999,
+            "cpuMs": 150.184
+          },
+          {
+            "pair": 0,
+            "variant": "candidate",
+            "wallMs": 22.81518700000015,
+            "cpuMs": 24.883
+          },
+          {
+            "pair": 1,
+            "variant": "candidate",
+            "wallMs": 16.694115999999667,
+            "cpuMs": 15.927
+          },
+          {
+            "pair": 1,
+            "variant": "baseline",
+            "wallMs": 152.9013420000001,
+            "cpuMs": 175.042
+          },
+          {
+            "pair": 2,
+            "variant": "baseline",
+            "wallMs": 147.11551499999996,
+            "cpuMs": 147.7
+          },
+          {
+            "pair": 2,
+            "variant": "candidate",
+            "wallMs": 20.28975100000025,
+            "cpuMs": 20.214
+          },
+          {
+            "pair": 3,
+            "variant": "candidate",
+            "wallMs": 28.002113999999892,
+            "cpuMs": 32.101
+          },
+          {
+            "pair": 3,
+            "variant": "baseline",
+            "wallMs": 144.84241900000006,
+            "cpuMs": 143.943
+          },
+          {
+            "pair": 4,
+            "variant": "baseline",
+            "wallMs": 152.91964000000007,
+            "cpuMs": 166.228
+          },
+          {
+            "pair": 4,
+            "variant": "candidate",
+            "wallMs": 28.671205999999984,
+            "cpuMs": 44.605
+          },
+          {
+            "pair": 5,
+            "variant": "candidate",
+            "wallMs": 15.885759000000235,
+            "cpuMs": 15.222
+          },
+          {
+            "pair": 5,
+            "variant": "baseline",
+            "wallMs": 147.01263599999993,
+            "cpuMs": 145.442
+          }
+        ]
+      }
+    ]
+  },
+  "sourceMetadata": {
+    "baselineRef": "6766877792496b1af1c617bba3eaf1138b3baad5",
+    "head": "6766877792496b1af1c617bba3eaf1138b3baad5",
+    "baselineHash": "18b84361bdb42e39bc6db45f3c64da77ce26c7ffb84abd188feb755ebd50f815",
+    "candidateHash": "160a138eb656e9a08cada8962edd54e3dce08a9d1364cfca5e0924623a4f8a69",
+    "diff": "diff --git i/src/main/workspace/WorkspaceService.ts w/src/main/workspace/WorkspaceService.ts\nindex efea235b..3977a619 100644\n--- i/src/main/workspace/WorkspaceService.ts\n+++ w/src/main/workspace/WorkspaceService.ts\n@@ -709,6 +709,10 @@ export async function readWorkspaceFile(root: string, relativePath: string): Pro\n   return previewWorkspaceFile(target);\n }\n \n+// Match localeCompare's explicit locale/options without rebuilding the collator\n+// for every sibling comparison in a large workspace tree.\n+const compareWorkspaceFileNames = new Intl.Collator(\"zh-CN\", { numeric: true }).compare;\n+\n export async function listWorkspaceFiles(root: string): Promise<WorkspaceFileNodeDto[]> {\n   const resolvedRoot = resolve(root);\n   const rootStat = await stat(resolvedRoot);\n@@ -733,7 +737,7 @@ export async function listWorkspaceFiles(root: string): Promise<WorkspaceFileNod\n         nodes.push({ name: entry.name, path: relativePath, kind: \"file\" });\n       }\n     }\n-    return nodes.sort((a, b) => a.kind === b.kind ? a.name.localeCompare(b.name, \"zh-CN\", { numeric: true }) : a.kind === \"folder\" ? -1 : 1);\n+    return nodes.sort((a, b) => a.kind === b.kind ? compareWorkspaceFileNames(a.name, b.name) : a.kind === \"folder\" ? -1 : 1);\n   };\n   return walk(resolvedRoot);\n }\n",
+    "scriptHashes": {
+      "scripts/perf-workspace-files.ts": "9d0dd31f84d420507e8a0386e1b4a6d5eacd749c752efaed2107bf2477aa91ee",
+      "scripts/perf-workspace-files.mjs": "a0d5feee1134e5383d5404d3dae894798a63a348865bc09d8eacc3603d37a759"
+    }
+  },
+  "validatedSourceHashes": {
+    "src/main/workspace/WorkspaceService.ts": "160a138eb656e9a08cada8962edd54e3dce08a9d1364cfca5e0924623a4f8a69",
+    "scripts/workspace-files-sort-test.ts": "977e30e4400a1f962be8a294138f72b455ea11d9f7a43c4ac9089849d193d0c8",
+    "scripts/workspace-files-sort-desktop-test.cjs": "0091aa2e13016bf76bd5a0736465d9c452110d0edad9e84f9bc0ed2f9810b8cc",
+    "scripts/workspace-files-sort-desktop-fixture.tsx": "bce503fac292e49c86033720630b4b465a4aa7959ffd34f4409d4bc13b638f2d",
+    "scripts/perf-workspace-files.ts": "9d0dd31f84d420507e8a0386e1b4a6d5eacd749c752efaed2107bf2477aa91ee",
+    "scripts/perf-workspace-files.mjs": "a0d5feee1134e5383d5404d3dae894798a63a348865bc09d8eacc3603d37a759",
+    "package.json": "40340b98d4097f8c03fa86cb6eba8e6747ab937b0d27b7d8de6dd9e4819cd481",
+    "scripts/test-all.mjs": "0bd8ed0beb5ef0476866977c0620b43c5d9fb8c74c118eaf9441b591ad829e5f"
+  },
+  "validation": {
+    "typecheck": {
+      "status": "passed",
+      "output": "$ tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json && node scripts/typecheck-scripts.mjs\n[typecheck-scripts] scripts/ 错误 0 条 · 基线 0 条 · 新增 0 · 已修复 0\n[typecheck-scripts] OK：没有新增错误。\n"
+    },
+    "unit": {
+      "status": "passed",
+      "platform": "linux",
+      "uid": 1000,
+      "assertedDefaultLocales": [
+        "en-US",
+        "de-DE",
+        "tr-TR",
+        "zh-CN"
+      ],
+      "permissionDenial": "EACCES asserted",
+      "output": "$ esbuild scripts/workspace-files-sort-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/workspace-files-sort-test.mjs && node scripts/test-guard.mjs out/tests/workspace-files-sort-test.mjs\n\n  out/tests/workspace-files-sort-test.mjs  9.0kb\n\n⚡ Done in 7ms\n[test-guard] pid=743191 cmd=node --max-old-space-size=4096 out/tests/workspace-files-sort-test.mjs mem_cap=6144MB timeout=900s poll=1500ms\nPASS workspace file order, visibility, refresh and errors; default locale=en-US\nPASS workspace file order, visibility, refresh and errors; default locale=de-DE\nPASS workspace file order, visibility, refresh and errors; default locale=tr-TR\nPASS workspace file order, visibility, refresh and errors; default locale=zh-CN\nPASS workspace file order, visibility, refresh and errors; default locale=en-US\n[test-guard] exit pid=743191 code=0 elapsed=1s\n"
+    },
+    "focusedExistingSuites": {
+      "status": "passed",
+      "names": [
+        "workspace-files-ui",
+        "task-workspace-isolation",
+        "workspace-tree"
+      ]
+    },
+    "fullHeadlessGate": {
+      "status": "passed",
+      "summary": "[test-all] 4.5 min · 通过 479 · 失败 0 · 已知失败 0 · 新增回归 0",
+      "individualResults": [
+        {
+          "name": "test:acp-catalog",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:acp-permission-policy",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:acp-remote",
+          "seconds": 1.9
+        },
+        {
+          "name": "test:agent-loadout",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:app-store-runtime",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:app-permission-ui-removal",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:app-store-structure",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:acp-runtime",
+          "seconds": 2.8
+        },
+        {
+          "name": "test:app-store-transactions",
+          "seconds": 1.6
+        },
+        {
+          "name": "test:acp-desktop-hydration",
+          "seconds": 4.4
+        },
+        {
+          "name": "test:artifact-char",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:architecture-graph",
+          "seconds": 1.9
+        },
+        {
+          "name": "test:artifact-cross-ref",
+          "seconds": 1.5
+        },
+        {
+          "name": "test:architecture",
+          "seconds": 4.1
+        },
+        {
+          "name": "test:artifact-image-cache",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:artifact-policy-display",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:artifact-projection",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:archive-deletion",
+          "seconds": 3.2
+        },
+        {
+          "name": "test:artifact-render-hydration",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:artifact-gate",
+          "seconds": 1.6
+        },
+        {
+          "name": "test:atspi-transport",
+          "seconds": 0.5
+        },
+        {
+          "name": "test:backup",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:baidu-ocr",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:black-forest-labs-provider",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:bot-active-requests",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:bot-activity-monitor",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:bot-attachments",
+          "seconds": 1.3
+        },
+        {
+          "name": "test:artifact-provenance",
+          "seconds": 3.9
+        },
+        {
+          "name": "test:bot-call-thread",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:bot-conversation-ui",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:atspi-driver",
+          "seconds": 4.8
+        },
+        {
+          "name": "test:bot-create-ui",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:bot-create",
+          "seconds": 1.3
+        },
+        {
+          "name": "test:bot-deletion",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:bot-delegation-fidelity",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:bot-display-groups",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:bot-foreground-metrics",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:bot-execution-diagnostics",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:bot-history-paging",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:artifact-domain",
+          "seconds": 8.6
+        },
+        {
+          "name": "test:bot-history-context",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:bot-memory",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:bot-history-paging-sqlite",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:bot-message-presentation",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:bot-memory-forget-watermark",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:bot-peer-calls",
+          "seconds": 1.5
+        },
+        {
+          "name": "test:bot-rename",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:bot-reminders",
+          "seconds": 2.6
+        },
+        {
+          "name": "test:bot-reply-segments",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:bot-history-query",
+          "seconds": 4.3
+        },
+        {
+          "name": "test:bot-result-delivery",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:bot-report-images",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:bot-scheduling-routing",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:bot-memory-runtime",
+          "seconds": 4.9
+        },
+        {
+          "name": "test:bot-settings",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:bot-report-images-ui",
+          "seconds": 2.1
+        },
+        {
+          "name": "test:bot-scheduling-continuation",
+          "seconds": 1.8
+        },
+        {
+          "name": "test:bot-summary-pagination",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:bot-team-ui",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:bot-watch-expiry",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:bot-team-conversation",
+          "seconds": 1.5
+        },
+        {
+          "name": "test:bot-watch-intake",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:bot-watch-creation",
+          "seconds": 3.8
+        },
+        {
+          "name": "test:bot-work-automatic-completion",
+          "seconds": 3.0
+        },
+        {
+          "name": "test:bot-work-control",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:bot-work-foreground-contract",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:bot-work-automatic-recovery",
+          "seconds": 4.6
+        },
+        {
+          "name": "test:bot-work-milestones",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:bot-work-no-quota",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:bot-work-execution",
+          "seconds": 3.0
+        },
+        {
+          "name": "test:bot-work-phase1",
+          "seconds": 1.3
+        },
+        {
+          "name": "test:bot-work-phase2-invariants",
+          "seconds": 1.4
+        },
+        {
+          "name": "test:bot-work-phase3-collaboration",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:bot-work-phase3-handoff",
+          "seconds": 1.5
+        },
+        {
+          "name": "test:bot-work-phase3-partial-settlement",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:bot-work-phase2-usage",
+          "seconds": 3.8
+        },
+        {
+          "name": "test:bot-work-phase3-pause-backlog",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:bot-work-phase4-backpressure",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:bot-work-phase4-causal-guard",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:bot-work-phase4-offline-catchup",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:bot-work-phase4-hook-fanout",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:bot-work-phase4-schedule-clock",
+          "seconds": 2.2
+        },
+        {
+          "name": "test:bot-work-phase5-e2e-story",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:bot-work-phase5-delivery-dedup",
+          "seconds": 3.3
+        },
+        {
+          "name": "test:bot-watch-scheduler",
+          "seconds": 17.9
+        },
+        {
+          "name": "test:bot-work-phase5-gateway",
+          "seconds": 2.8
+        },
+        {
+          "name": "test:bot-work-phase5-reconnect-diagnostics",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:bot-work-phase5-review",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:bot-work-phase5-review-ui",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:bot-work-phase5-owner-summary",
+          "seconds": 4.4
+        },
+        {
+          "name": "test:bot-work-projection-retention",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:bot-work-review-control",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:bot-work-phase2",
+          "seconds": 15.5
+        },
+        {
+          "name": "test:bot-work-read-lifecycle",
+          "seconds": 1.5
+        },
+        {
+          "name": "test:bot-work-review-projection",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:bot-work-review-execution",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:bot-work-team-access",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:bot-work-resume-dispatch",
+          "seconds": 3.2
+        },
+        {
+          "name": "test:bot-work-review-memory",
+          "seconds": 5.3
+        },
+        {
+          "name": "test:bot-work-team-service",
+          "seconds": 3.9
+        },
+        {
+          "name": "test:bot-work-team-watch",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:bot-workspace",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:bot-workspace-navigation",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:browser-open-guard",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:btw",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:btw-arch",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:bot-workspace-navigation-ui",
+          "seconds": 1.3
+        },
+        {
+          "name": "test:bot-work-team-native",
+          "seconds": 7.9
+        },
+        {
+          "name": "test:builtin-capabilities",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:cache-boundary-matrix",
+          "seconds": 1.7
+        },
+        {
+          "name": "test:cache-trace-audit",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:capability-packaging",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:capture-mode",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:cache-request-trace",
+          "seconds": 1.4
+        },
+        {
+          "name": "test:chat-composer-ui",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:chat-scroll-anchor",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:chat-markdown",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:chat-selection",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:cache-strategies",
+          "seconds": 1.7
+        },
+        {
+          "name": "test:cloudflared-cli-detect",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:codex-image",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:command-code-request",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:compaction-settings-ui",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:connector-id-case",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:compaction-policy-history",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:compaction",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:context-usage",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:context-ledger",
+          "seconds": 1.5
+        },
+        {
+          "name": "test:conversation-branch",
+          "seconds": 1.5
+        },
+        {
+          "name": "test:bot-work-team-recovery",
+          "seconds": 12.5
+        },
+        {
+          "name": "test:conversation-branch:native",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:conversation-branch-ui",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:conversation-branch-service",
+          "seconds": 2.3
+        },
+        {
+          "name": "test:conversation-input",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:crash-reporting",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:conversation-runtime-ui",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:conversation-branch:workspace",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:conversation-runtime",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:dashscope-provider",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:cron-scheduling",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:detail-card-layout-stability",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:diagnostics-rules",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:delegated-run",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:dingtalk-media",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:db-migration",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:dingtalk-gateway",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:discord-media",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:discord-gateway",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:durable-compaction-settings",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:db-schema-discard",
+          "seconds": 1.6
+        },
+        {
+          "name": "test:durable-artifact-registration",
+          "seconds": 2.2
+        },
+        {
+          "name": "test:durable-context-performance",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:durable-context-management",
+          "seconds": 2.5
+        },
+        {
+          "name": "test:durable-consult",
+          "seconds": 3.0
+        },
+        {
+          "name": "test:durable-log-repair",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:durable-history-block",
+          "seconds": 1.5
+        },
+        {
+          "name": "test:durable-context-branch-cancel",
+          "seconds": 4.7
+        },
+        {
+          "name": "test:durable-resume-admission",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:durable-history-readonly",
+          "seconds": 2.4
+        },
+        {
+          "name": "test:durable-session-recovery",
+          "seconds": 1.3
+        },
+        {
+          "name": "test:durable-sync",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:durable-task-projection",
+          "seconds": 0.5
+        },
+        {
+          "name": "test:durable-projection",
+          "seconds": 4.9
+        },
+        {
+          "name": "test:durable-tool-gate",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:durable-tool-diagnostics",
+          "seconds": 3.1
+        },
+        {
+          "name": "test:durable-turn-evidence",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:durable-provider-authority",
+          "seconds": 9.6
+        },
+        {
+          "name": "test:durable-workspace-binding",
+          "seconds": 1.3
+        },
+        {
+          "name": "test:execution-failure-dismiss",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:execution-restart-recovery",
+          "seconds": 0.5
+        },
+        {
+          "name": "test:expert",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:expert-metadata",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:durable-work-liveness",
+          "seconds": 6.3
+        },
+        {
+          "name": "test:external-write-grant",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:external-cli-memory",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:external-write-ui",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:feishu-media",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:gadget-browser-binding",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:gadget-blueprint",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:gadget-preview-recovery",
+          "seconds": 0.5
+        },
+        {
+          "name": "test:gadget-save-copies",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:gadget-runtime-lifecycle",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:gateway-cache",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:durable-tool-policy",
+          "seconds": 11.5
+        },
+        {
+          "name": "test:gateway-delivery-journal",
+          "seconds": 3.4
+        },
+        {
+          "name": "test:gateway",
+          "seconds": 4.6
+        },
+        {
+          "name": "test:gateway-media",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:gateway-platform-registry",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:gateway-lifecycle",
+          "seconds": 1.9
+        },
+        {
+          "name": "test:gateway-provider-config",
+          "seconds": 1.5
+        },
+        {
+          "name": "test:gateway-task-space",
+          "seconds": 0.5
+        },
+        {
+          "name": "test:gateway-security",
+          "seconds": 4.1
+        },
+        {
+          "name": "test:google-workspace",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:generation-speed",
+          "seconds": 3.1
+        },
+        {
+          "name": "test:google-workspace-faults",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:google-workspace-request-scope",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:google-workspace-ui",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:google-workspace-tools",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:google-workspace-write-tools",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:harness-quality",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:hero-suggest",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:history-prepend-scroll",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:history-questions",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:google-workspace-write-ui",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:input-guardian",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:gateway-durable",
+          "seconds": 8.8
+        },
+        {
+          "name": "test:html-edit-source",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:ipc-channel-inventory",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:lark-wecom-gateway",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:library-document-editor",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:knowledge-lifecycle",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:library-extension",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:input-guardian-process",
+          "seconds": 1.8
+        },
+        {
+          "name": "test:library-materialization-transaction",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:library-lifecycle-transaction",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:library-domain",
+          "seconds": 1.7
+        },
+        {
+          "name": "test:library-update-transaction",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:library-workspace-context",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:linux-native-backend",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:linux-native-outcomes",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:linux-worker-packaging",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:linux-session",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:local-ocr-capability",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:library-owner-scope",
+          "seconds": 1.9
+        },
+        {
+          "name": "test:magpie-agent-mybuddy",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:local-capability-checks",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:magpie-capabilities",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:mcp",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:mcp-composer-focus",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:mcp-config-parse",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:magpie-catalog",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:mcp-execution-evidence",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:mcp-mode",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:mcp-section-stability",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:durable-subagent",
+          "seconds": 30.6
+        },
+        {
+          "name": "test:local-workflow",
+          "seconds": 3.4
+        },
+        {
+          "name": "test:media-capability-config",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:mcp-context-chars",
+          "seconds": 2.3
+        },
+        {
+          "name": "test:media-artifact-transaction",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:media-provider-presets",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:media-capability-services",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:memory-assistant-scopes",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:media-capabilities-dom",
+          "seconds": 1.6
+        },
+        {
+          "name": "test:memory-cognition",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:memory",
+          "seconds": 1.7
+        },
+        {
+          "name": "test:memory-gateway",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:memory-gateway-controller",
+          "seconds": 1.5
+        },
+        {
+          "name": "test:media-capability-extension",
+          "seconds": 3.2
+        },
+        {
+          "name": "test:memory-projection-deletion",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:memory-scope-schema",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:memory-lifecycle",
+          "seconds": 1.9
+        },
+        {
+          "name": "test:memory-procedure-learning",
+          "seconds": 1.6
+        },
+        {
+          "name": "test:memory-skill-effectiveness",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:memory-skill-history",
+          "seconds": 1.3
+        },
+        {
+          "name": "test:message-lifecycle",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:meta-skill-authoring",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:minimal-coding-mode",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:memory-skill-learning",
+          "seconds": 1.3
+        },
+        {
+          "name": "test:mode",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:memory-organization",
+          "seconds": 3.6
+        },
+        {
+          "name": "test:mode-preset",
+          "seconds": 0.5
+        },
+        {
+          "name": "test:model-refresh",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:model-catalog-update",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:memory-skill-revision",
+          "seconds": 1.7
+        },
+        {
+          "name": "test:models-settings-overlay",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:native-cost-evidence",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:native-surface",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:model-scope-stale-heal",
+          "seconds": 1.8
+        },
+        {
+          "name": "test:oauth-bundle",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:multi-search",
+          "seconds": 3.5
+        },
+        {
+          "name": "test:openrouter-capabilities",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:openrouter-model-autoload",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:notes-task-tools",
+          "seconds": 3.6
+        },
+        {
+          "name": "test:overview-runtime",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:pdf-runtime-compat",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:packaged-package-json-guard",
+          "seconds": 0.5
+        },
+        {
+          "name": "test:multi-model-consult",
+          "seconds": 4.9
+        },
+        {
+          "name": "test:pi-cache-protocol",
+          "seconds": 0.5
+        },
+        {
+          "name": "test:pi-codemode-auto",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:pi-codemode-ui",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:pi-autonomous-execution",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:pi-host-control",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:officecli",
+          "seconds": 3.5
+        },
+        {
+          "name": "test:pi-native-control",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:pi-host-native",
+          "seconds": 1.4
+        },
+        {
+          "name": "test:pi-native-core-tools",
+          "seconds": 1.3
+        },
+        {
+          "name": "test:pi-codemode-native",
+          "seconds": 2.6
+        },
+        {
+          "name": "test:pi-tool-call-stream",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:pi-reasoning-stream",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:pi-native-lifecycle",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:pi-host-boundary",
+          "seconds": 3.4
+        },
+        {
+          "name": "test:pi100-model-admission",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:pinned-public-proxy",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:platform-browsers",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:platform-computer-use",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:platform-providers",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:preset-editor",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:pi104-model-compat",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:preset-runtime-contract",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:professional-tools",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:professional-tools-live",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:project-automation",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:pi104-features",
+          "seconds": 1.7
+        },
+        {
+          "name": "test:pi100-context-boundary",
+          "seconds": 2.3
+        },
+        {
+          "name": "test:project-binding-matrix",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:project-autopilot",
+          "seconds": 0.5
+        },
+        {
+          "name": "test:project-config-detail",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:project-config-rail",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:project-convergence",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:project-creation",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:project-cadence",
+          "seconds": 0.5
+        },
+        {
+          "name": "test:project-domain",
+          "seconds": 1.3
+        },
+        {
+          "name": "test:project-event",
+          "seconds": 1.7
+        },
+        {
+          "name": "test:project-event-document",
+          "seconds": 1.8
+        },
+        {
+          "name": "test:project-event-promotion-transaction",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:project-agent",
+          "seconds": 3.5
+        },
+        {
+          "name": "test:project-file-import-transaction",
+          "seconds": 0.5
+        },
+        {
+          "name": "test:project-event-promotion",
+          "seconds": 2.2
+        },
+        {
+          "name": "test:project-folder-relocation",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:project-event-triage",
+          "seconds": 1.9
+        },
+        {
+          "name": "test:project-file-import",
+          "seconds": 2.0
+        },
+        {
+          "name": "test:project-memory-extraction",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:project-memory-agent",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:project-notes",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:project-memory-migration",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:project-plan-schedule",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:project-task-defaults",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:project-template",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:project-plan-agent",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:project-workspace-ui",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:prompt-context",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:project-todo",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:prompt-enhance",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:prompt-execution",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:prompt-submission",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:prompt-failure-recovery",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:project-knowledge",
+          "seconds": 3.0
+        },
+        {
+          "name": "test:provider-login",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:qq-media",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:qq-gateway",
+          "seconds": 1.3
+        },
+        {
+          "name": "test:qq-qr-integration",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:regenerate-connection-runtime",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:regenerate-lifecycle",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:project-materials-dom",
+          "seconds": 4.7
+        },
+        {
+          "name": "test:retry-display",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:regenerate-stop-runtime",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:qq-qr-ui",
+          "seconds": 1.6
+        },
+        {
+          "name": "test:runtime-orchestrator",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:remote-work-sync",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:runtime-requirement-recovery",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:runtime-prewarm",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:scoped-library-manager",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:scroll-follow",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:search-source-address",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:selection-store",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:runtime-materials",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:runtime-probe",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:session-approval-bridge",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:session-lifecycle",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:shell-arguments",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:shell-preferences",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:sidebar-space-collapse",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:sidebar-pinned",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:skill-authoring-recovery",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:skill-authoring",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:skill-connector",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:skill-root-guard",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:slack-media",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:space-relocate",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:runtime-skill-loader",
+          "seconds": 4.7
+        },
+        {
+          "name": "test:streaming-send",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:session-history-recovery",
+          "seconds": 4.4
+        },
+        {
+          "name": "test:subagent-acceptance-gate",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:subagent-cache-accounting",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:subagent-display-names",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:slack-gateway",
+          "seconds": 2.7
+        },
+        {
+          "name": "test:subagent-ipc-host",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:subagent-agent-discovery",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:subagent-mapper",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:subagent-model-ui",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:subagent-selection",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:subagent-runs",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:subagent-settings",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:subagent-write-conflict",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:task-delete-panel",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:subagent-parallel-limits",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:task-diagnostics",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:task-file-changes",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:subagent-worktree",
+          "seconds": 1.5
+        },
+        {
+          "name": "test:task-isolation-p2",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:task-prompt-mode",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:task-isolation-audit",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:task-switch",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:task-terminal",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:task-status-dot",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:task-trash-retention",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:task-workspace-isolation",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:task-expert-binding",
+          "seconds": 2.8
+        },
+        {
+          "name": "test:task-workspace-lifecycle",
+          "seconds": 2.3
+        },
+        {
+          "name": "test:team-subagent-policy",
+          "seconds": 2.5
+        },
+        {
+          "name": "test:task-workspace-migration",
+          "seconds": 2.7
+        },
+        {
+          "name": "test:terminal-surface",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:telegram-reply-routing",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:timeline-focus",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:token-format",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:test-bundle-pool",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:tool-image-aging",
+          "seconds": 1.7
+        },
+        {
+          "name": "test:subagent-acceptance",
+          "seconds": 9.7
+        },
+        {
+          "name": "test:ui-automation-recovery",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:telegram-media",
+          "seconds": 3.3
+        },
+        {
+          "name": "test:unified-media-adapters",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:usage-recon",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:user-prompt-display",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:verified-code-execution",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:visual-polish-ux",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:usage-stats",
+          "seconds": 1.3
+        },
+        {
+          "name": "test:wave5b",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:wave5c",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:wave5d1",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:usage-dashboard-projection",
+          "seconds": 4.1
+        },
+        {
+          "name": "test:wave5d3",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:web-access-capability",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:web-access-convergence",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:typecheck-guard",
+          "seconds": 6.7
+        },
+        {
+          "name": "test:web-artifact-runtime",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:web-access-extract-runtime",
+          "seconds": 1.3
+        },
+        {
+          "name": "test:wave5a",
+          "seconds": 4.8
+        },
+        {
+          "name": "test:wechat-callback-auth",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:wecom-media",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:web-page-answer-runtime",
+          "seconds": 1.3
+        },
+        {
+          "name": "test:weixin-qr-integration",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:wave5d2",
+          "seconds": 4.5
+        },
+        {
+          "name": "test:whisper-check-feedback",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:weixin-gateway",
+          "seconds": 1.9
+        },
+        {
+          "name": "test:work-budget-retirement",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:work-effect-retirement",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:work-execution-metrics",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:work-conversation-feedback",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:work-graph-bridge",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:weixin-media",
+          "seconds": 4.0
+        },
+        {
+          "name": "test:work-graph",
+          "seconds": 1.7
+        },
+        {
+          "name": "test:work-graph-execution",
+          "seconds": 0.8
+        },
+        {
+          "name": "test:work-graph-hardening",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:work-graph-r3-union",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:weixin-qr-ui",
+          "seconds": 4.1
+        },
+        {
+          "name": "test:work-graph-ux",
+          "seconds": 1.1
+        },
+        {
+          "name": "test:work-memory-capture",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:work-partial-read",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:work-shell-read",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:work-isolation-retirement",
+          "seconds": 1.0
+        },
+        {
+          "name": "test:work-team-watch-evidence",
+          "seconds": 0.2
+        },
+        {
+          "name": "test:work-permissions-retired",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:work-watch-goal",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:work-watch-unchanged",
+          "seconds": 1.7
+        },
+        {
+          "name": "test:workspace-chunk-benchmark",
+          "seconds": 2.3
+        },
+        {
+          "name": "test:work-watch-supervision",
+          "seconds": 2.5
+        },
+        {
+          "name": "test:workspace-files-ui",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:workspace-chunk-r2",
+          "seconds": 1.9
+        },
+        {
+          "name": "test:workspace-files-sort",
+          "seconds": 1.4
+        },
+        {
+          "name": "test:workspace-library-binding",
+          "seconds": 0.7
+        },
+        {
+          "name": "test:workspace-navigation-ux",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:workspace-materials-view",
+          "seconds": 0.6
+        },
+        {
+          "name": "test:workspace-notes",
+          "seconds": 0.4
+        },
+        {
+          "name": "test:workspace-resolver",
+          "seconds": 0.3
+        },
+        {
+          "name": "test:workspace-phase5",
+          "seconds": 0.9
+        },
+        {
+          "name": "test:workspace-materials-dom",
+          "seconds": 1.6
+        },
+        {
+          "name": "test:workspace-shared-context",
+          "seconds": 0.1
+        },
+        {
+          "name": "test:workspace-runtime-consolidation",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:workspace-shared-context-ui-foundation",
+          "seconds": 1.2
+        },
+        {
+          "name": "test:workspace-runtime-integration",
+          "seconds": 1.4
+        },
+        {
+          "name": "test:workspace-resource-locator",
+          "seconds": 2.2
+        },
+        {
+          "name": "test:workspace-tree",
+          "seconds": 8.5
+        },
+        {
+          "name": "test:bot-work-phase2-recovery",
+          "seconds": 25.9
+        },
+        {
+          "name": "test:bot-work-phase5-native-story",
+          "seconds": 13.5
+        },
+        {
+          "name": "test:bot-work-query-scale",
+          "seconds": 18.4
+        },
+        {
+          "name": "test:bot-work-summary-query",
+          "seconds": 13.8
+        },
+        {
+          "name": "test:core-performance",
+          "seconds": 21.2
+        },
+        {
+          "name": "test:gateway-inbox-crash",
+          "seconds": 2.8
+        },
+        {
+          "name": "test:gateway-port-fallback",
+          "seconds": 0.2
+        }
+      ]
+    },
+    "classificationAudit": {
+      "status": "passed",
+      "headless": 479,
+      "gui": 89,
+      "network": 41,
+      "dataset": 3,
+      "artifact": 3,
+      "pending": 0
+    },
+    "gui": {
+      "status": "passed",
+      "baseline": {
+        "strategy": "current-source-with-guarded-original-localeCompare",
+        "replacements": 1
+      },
+      "kind": "actual-electron-production-component-filesystem-ab",
+      "versions": {
+        "node": "24.21.0",
+        "acorn": "8.18.0",
+        "ada": "4.0.0",
+        "amaro": "1.1.11",
+        "ares": "1.34.8",
+        "brotli": "1.2.0",
+        "cldr": "48.0",
+        "icu": "78.2",
+        "llhttp": "9.4.3",
+        "merve": "1.2.2",
+        "modules": "149",
+        "napi": "10",
+        "nbytes": "0.1.4",
+        "ncrypto": "0.0.1",
+        "nghttp2": "1.70.0",
+        "nghttp3": "",
+        "ngtcp2": "",
+        "openssl": "0.0.0",
+        "simdjson": "4.6.7",
+        "simdutf": "7.7.0",
+        "sqlite": "3.53.4",
+        "tz": "2025c",
+        "undici": "7.29.1",
+        "unicode": "17.0",
+        "uv": "1.52.1",
+        "uvwasi": "0.0.23",
+        "v8": "15.2.124.28-electron.0",
+        "zlib": "1.3.2.1-motley",
+        "zstd": "1.6.0",
+        "electron": "44.5.1",
+        "chrome": "152.0.7977.130"
+      },
+      "tests": [
+        "baseline: ordering, expansion/collapse, native pointer file open, native input filter, repeated refresh, failed refresh, filesystem error and remount recovery",
+        "optimized: ordering, expansion/collapse, native pointer file open, native input filter, repeated refresh, failed refresh, filesystem error and remount recovery",
+        "Exact backend DTO and DOM/content/open-callback identity across baseline and optimized"
+      ],
+      "backendIpcCalls": 14,
+      "dtoAndCapturedDomEquality": true,
+      "noGitVerification": "Final run with WORKSPACE_SORT_BASELINE unset and temporary NODE_OPTIONS preload denying only git/git.exe execFileSync calls; launcher and Electron loaded shim, passed; shim/profile cleaned.",
+      "fullReportSha256": "4f3ab9daa0f950efbf08b25013199ada26ad930cb4f3e5482f668ca37f9e2b20",
+      "resultSha256": "5ffaea247eb973716f922fc8041fb5b454cedfd45f4e7d9c39892021f8c3e1c9",
+      "screenshots": {
+        "baseline": "a48acd4c23c52bfd8807d3d719e9acb00168f3c2c9937f6084b21ab18deb8ec3",
+        "optimized": "fd91a0887c22ca2f1678502ee1ffb4bb4101a67282f537f37245c10657c2566d"
+      },
+      "cleanupFailureChecks": "Launcher-owned temp profile cleanup verified after normal exit, preparation error and injected child spawn error."
+    },
+    "readOnlyReview": "No release-blocking production regression; locale/EACCES assertions and conventional median corrected; warm-backend/component-UI scope documented."
+  },
+  "notClaimed": [
+    "Startup improvement",
+    "UI latency improvement",
+    "Full application end-to-end file opening",
+    "Full GUI suite",
+    "Windows validation",
+    "NETWORK/DATASET/ARTIFACT suites",
+    "Packaged-app acceptance",
+    "GitHub Actions success"
+  ]
+}

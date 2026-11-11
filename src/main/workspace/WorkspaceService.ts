@@ -709,6 +709,10 @@ export async function readWorkspaceFile(root: string, relativePath: string): Pro
   return previewWorkspaceFile(target);
 }
 
+// Match localeCompare's explicit locale/options without rebuilding the collator
+// for every sibling comparison in a large workspace tree.
+const compareWorkspaceFileNames = new Intl.Collator("zh-CN", { numeric: true }).compare;
+
 export async function listWorkspaceFiles(root: string): Promise<WorkspaceFileNodeDto[]> {
   const resolvedRoot = resolve(root);
   const rootStat = await stat(resolvedRoot);
@@ -733,7 +737,7 @@ export async function listWorkspaceFiles(root: string): Promise<WorkspaceFileNod
         nodes.push({ name: entry.name, path: relativePath, kind: "file" });
       }
     }
-    return nodes.sort((a, b) => a.kind === b.kind ? a.name.localeCompare(b.name, "zh-CN", { numeric: true }) : a.kind === "folder" ? -1 : 1);
+    return nodes.sort((a, b) => a.kind === b.kind ? compareWorkspaceFileNames(a.name, b.name) : a.kind === "folder" ? -1 : 1);
   };
   return walk(resolvedRoot);
 }
