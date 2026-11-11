@@ -223,7 +223,7 @@ export class WorkPartialResults {
     const recovery = this.recovery.input(binding, plan.planId); if (recovery) return recovery;
     const items = this.list(binding.workId).filter(item => item.bindingId === plan.sourceBindingId && plan.gapItemIds.includes(item.itemId));
     return JSON.stringify({ continuation: { planId: plan.planId,
-      instructions: "只完成以下已受理的缺口计划。已完成的文件、发送或其他效果不得重做。originalGoal 仅用于核对原始输入与要求，不扩大本次续跑范围。",
+      instructions: "只完成以下已受理的缺口计划。已完成的文件、发送或其他效果不得重做。未核实的未知外部效果不得重放；只推进与其无依赖的独立步骤，核对实际状态或幂等回执前不重复同一操作。originalGoal 仅用于核对原始输入与要求，不扩大本次续跑范围。",
       items: items.map(item => ({ itemId: item.itemId, task: item.task, criterionIds: item.criterionIds,
         dependencies: item.dependencies, previousOutcome: item.outcome, writeConflicts: item.writeConflicts })) },
       originalGoal: JSON.parse(this.works.repo.executionInput(binding)) });

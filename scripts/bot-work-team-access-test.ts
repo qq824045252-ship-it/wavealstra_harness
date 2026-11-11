@@ -72,8 +72,8 @@ try {
   assert.equal(catalogue.templates[0].members[0].displayName, "member");
   assert.equal((await invoke("work_team_templates", {})).templates.length, 0, "members cannot adopt owner's templates");
   const request = { mode: "once" as const, requestedOutcome: "one_time" as const, templateId: template.template.templateId, title: "团队盘点", goalDescription: "模型规划", criteria: ["核对文件"] };
-  await assert.rejects(invokeOwner("work_team_create", {...request,requestedOutcome:"ongoing",mode:"once"}), /持续目标不能/);
-  await assert.rejects(invokeOwner("work_team_create", {...request,requestedOutcome:"ongoing",mode:"watch",watchRule:{nextWakeAt:Date.now()+60000,scheduleBasis:"user_specified"}}), /持续目标需要后续周期/);
+  await assert.rejects(invokeOwner("work_team_create", {...request,requestedOutcome:"ongoing",mode:"once"}), /持续目标需要真实/);
+  await assert.rejects(invokeOwner("work_team_create", {...request,requestedOutcome:"ongoing",mode:"watch"}), /持续目标需要可执行/);
   await assert.rejects(invokeOwner("work_team_create", {...request,requestedOutcome:"ongoing",mode:"watch",watchRule:{cronExpression:"* * * * *",scheduleBasis:"recommended"}}), /建议检查频率须给出/);
   const started = await invokeOwner("work_team_create", request);
   assert(started.ok, JSON.stringify(started));

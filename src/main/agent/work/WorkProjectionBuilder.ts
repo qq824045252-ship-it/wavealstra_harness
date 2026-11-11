@@ -13,6 +13,7 @@ import type { WorkWatchScheduler } from "./WorkWatchScheduler";
 import type { WorkCausalGuard } from "./WorkCausalGuard";
 import type { WorkPausedBacklog } from "./WorkPausedBacklog";
 import type { WorkArtifactValidation } from "./WorkArtifactValidation";
+import type { WorkMilestones } from "./WorkMilestones";
 import type { WorkCollaborationService } from "./WorkCollaborationService";
 import type { WorkWatchIngress } from "./WorkWatchIngress";
 import type { legacyUserInputSource } from "./WorkLegacyUserInput";
@@ -35,6 +36,7 @@ export interface WorkProjectionSources {
   causal: Pick<WorkCausalGuard, "list">;
   pausedBacklog: Pick<WorkPausedBacklog, "count">;
   artifacts: Pick<WorkArtifactValidation, "currentSnapshotId">;
+  milestones: Pick<WorkMilestones, "project">;
   collaboration: Pick<WorkCollaborationService, "history">;
   ingress: Pick<WorkWatchIngress, "queueStats" | "listCursors">;
 }
@@ -130,6 +132,7 @@ export class WorkProjectionBuilder {
       phase3: {
         subitems: this.sources.partialResults.list(work.workId), continuations: this.sources.partialResults.plans(work.workId),
         gaps, settlingActions, pausedEventCount: this.sources.pausedBacklog.count(work.workId),
+        milestones: this.sources.milestones.project(work, executions),
         artifactSnapshotId: this.sources.artifacts.currentSnapshotId(work.workId),
         handoffs: this.sources.collaboration.history(work.workId).filter(message => message.kind === "handoff"),
         collaborationMessages: this.sources.collaboration.history(work.workId),

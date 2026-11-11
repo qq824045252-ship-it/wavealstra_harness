@@ -32,7 +32,7 @@ const provider = http.createServer(async (req, res) => {
   const body = JSON.parse(raw); requests.push(body);
   const names = (body.tools || []).map(tool => tool.function?.name);
   const foreground = names.includes('work_create');
-  if (foreground) assert(names.every(name => ['work_query_status', 'work_create', 'work_amend', 'work_pause', 'work_resume', 'work_cancel', 'memory_search', 'work_team_templates', 'work_team_create', 'web_search', 'fetch_content'].includes(name)), 'actual foreground provider whitelist');
+  if (foreground) assert(names.every(name => ['work_query_status', 'work_create', 'work_amend', 'work_pause', 'work_resume', 'work_cancel', 'memory_search', 'work_team_templates', 'work_team_create', 'schedule_overview', 'web_search', 'fetch_content'].includes(name)), 'actual foreground provider whitelist');
   const userIndex = body.messages.findLastIndex(message => message.role === 'user');
   const recent = body.messages.slice(userIndex + 1);
   const input = JSON.stringify(body.messages[userIndex]?.content);

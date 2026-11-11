@@ -7,6 +7,8 @@ import type { WorkDto } from "../../../shared/bot-work";
 import { BotConversationRepository } from "./BotConversationRepository";
 import { projectTeamReport } from "./WorkReportPresentation";
 import { workDeliveryFiles, workDeliveryResults } from "./WorkDeliveryArtifacts";
+import { workMilestoneVersion } from "./WorkMilestones";
+import type { WorkMilestoneDto, WorkMilestonesProjectionDto } from "../../../shared/bot-work-phase3";
 import type { WorkService } from "./WorkService";
 
 export interface WorkConversationFeedbackOptions {
@@ -93,6 +95,30 @@ export class WorkConversationFeedback {
     });
   }
 
+  /** Several verified items of one execution become one message, never one per item. */
+  private milestoneGroups(projection: WorkMilestonesProjectionDto): Array<[string, WorkMilestoneDto[]]> {
+    const groups = new Map<string, WorkMilestoneDto[]>();
+    for (const item of projection.ready) {
+      if (!item.deliverableId) continue;
+      groups.set(item.bindingId, [...groups.get(item.bindingId) ?? [], item]);
+    }
+    return [...groups.entries()];
+  }
+
+  /** Verified partial progress. Explicitly not a goal-completion claim. */
+  private milestoneBody(items: readonly WorkMilestoneDto[], projection: WorkMilestonesProjectionDto): string {
+    const shown = items.slice(-6);
+    const line = (text: string) => text.replace(/\s+/g, " ").trim().slice(0, 160);
+    const files = [...new Set(shown.flatMap(item => item.files.flatMap(file => file.openPath ? [file.openPath] : [])))];
+    return [
+      `已核实 ${items.length} 项子步骤成果，可先使用（部分成果不代表整体目标已完成）：`,
+      ...shown.map(item => `· ${line(item.task || item.summary)}${item.summary && item.summary !== item.task ? `：${line(item.summary)}` : ""}`),
+      ...(shown.length < items.length ? [`另有 ${items.length - shown.length} 项已核实成果。`] : []),
+      ...(files.length ? [`可打开文件：\n${files.join("\n")}`] : []),
+      ...(projection.openGaps.length ? [`仍有 ${projection.openGaps.length} 项必要缺口待核对。`] : []),
+    ].join("\n");
+  }
+
   private drainPending(workId?: string): number {
     if (!this.options.isAuthority()) return 0;
     const { works, userId } = this.options;
@@ -129,14 +155,19 @@ export class WorkConversationFeedback {
         };
         const results = works.repo.listDeliverables(work.workId);
         const generated = works.generatedArtifacts.list(work.workId, true);
-        const completed = new Set(works.repo.listBindings(work.workId).filter(b => b.status === "completed").map(b => b.bindingId));
+        const bindings = works.repo.listBindings(work.workId);
+        const completed = new Set(bindings.filter(b => b.status === "completed").map(b => b.bindingId));
+        // 运行中已验证子项与详情读共用同一份里程碑投影；合并成一条，不逐项转发。
+        const milestones = results.some(result => result.deliverableId.startsWith("partial:"))
+          ? works.milestones.project(work, bindings) : undefined;
+        const milestoneDeliverables = new Set((milestones?.ready ?? []).flatMap(item => item.deliverableId ? [item.deliverableId] : []));
         const watchResults = results.filter(r => completed.has(r.executionId));
         const delivery = (result: typeof results[number]) => completed.has(result.executionId)
           ? watchObservationDelivery(work, result, watchResults, item => watchReadEvidence(this.options.db, works.repo.getBinding(item.executionId), item)) : { silent: false, summary: result.summary };
         const memberBindings = new Set((this.options.db.prepare(`SELECT b.binding_id FROM work_team_executions e
           JOIN work_execution_bindings b ON b.work_id=e.work_id AND b.task_id=e.task_id
           WHERE e.work_id=? AND e.role='member'`).all(work.workId) as Array<{ binding_id: string }>).map(row => row.binding_id));
-        for (const binding of works.repo.listBindings(work.workId)) {
+        for (const binding of bindings) {
           if (!["completed", "failed", "stopped", "invalidated", "unknown"].includes(binding.status) || managed(binding.bindingId)) continue;
           const watchResult = results.find(r => r.deliverableId === `result:${binding.bindingId}`);
           // A scheduled observation has one user-facing result, not a separate
@@ -161,6 +192,8 @@ export class WorkConversationFeedback {
         }
         for (const result of results) {
           if (managed(result.executionId)) continue;
+          // Covered partial facts reach the chat once, merged per execution below.
+          if (milestoneDeliverables.has(result.deliverableId)) continue;
           const presentationResult = delivery(result);
           if (presentationResult.silent) continue;
           const current = result.intentRevision === work.intentRevision && result.inputSnapshotId === work.inputSnapshotId;
@@ -195,6 +228,14 @@ export class WorkConversationFeedback {
                   ...result.hasWriteConflicts ? ["存在写入冲突，仍需处理。"] : [],
                   ...result.rejectedReason ? [`未通过核验：${result.rejectedReason}`] : [],
                 ] } });
+        }
+        if (milestones) for (const [bindingId, items] of this.milestoneGroups(milestones)) {
+          if (managed(bindingId)) continue;
+          const binding = works.repo.getBinding(bindingId);
+          if (!binding || binding.workId !== work.workId) continue;
+          emit(`milestone:${bindingId}`, workMilestoneVersion(bindingId, items), this.milestoneBody(items, milestones),
+            { kind: "binding", category: "progress", executionId: bindingId,
+              intentRevision: binding.intentRevision, inputSnapshotId: binding.inputSnapshotId });
         }
         for (const blocker of works.repo.listBlockers(work.workId)) {
           // Recovery and effect reconciliation are host work, not a request for

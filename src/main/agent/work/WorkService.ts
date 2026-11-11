@@ -85,6 +85,7 @@ import { cronNextWake, type WorkNextWake } from "./WorkSchedule";
 import { matchesFilter } from "./WorkControlNormalization";
 import { WorkNativeResultInbox } from "./WorkNativeResultInbox";
 import { WorkPartialResults } from "./WorkPartialResults";
+import { WorkMilestones } from "./WorkMilestones";
 import { WorkArtifactValidation } from "./WorkArtifactValidation";
 import { WorkCollaborationService } from "./WorkCollaborationService";
 import { WorkNotificationDelivery } from "./WorkNotificationDelivery";
@@ -116,6 +117,7 @@ export class WorkService {
   readonly repo: WorkRepository;
   readonly nativeResults: WorkNativeResultInbox;
   readonly partialResults: WorkPartialResults;
+  readonly milestones: WorkMilestones;
   readonly artifacts: WorkArtifactValidation;
   readonly generatedArtifacts: WorkGeneratedArtifacts;
   readonly runtimeObservations: WorkRuntimeObservation;
@@ -153,6 +155,7 @@ export class WorkService {
     this.partialResults = new WorkPartialResults(db, this);
     this.artifacts = new WorkArtifactValidation(db, this);
     this.generatedArtifacts = new WorkGeneratedArtifacts(db, this);
+    this.milestones = new WorkMilestones({ repo: this.repo, partialResults: this.partialResults, generatedArtifacts: this.generatedArtifacts });
     this.runtimeObservations = new WorkRuntimeObservation(id => this.repo.listBindings(id));
     this.collaboration = new WorkCollaborationService(db, this, this.bots, { now: this.now, isAuthority: () => !this.authority || this.authority() });
     this.notifications = new WorkNotificationDelivery(db, this, { now: this.now, isAuthority: () => !this.authority || this.authority(), artifacts: this.artifacts });
@@ -257,7 +260,7 @@ export class WorkService {
       teams: this.teams, recordArchive: this.recordArchive,
       generatedArtifacts: this.generatedArtifacts, runtimeObservations: this.runtimeObservations,
       cards: this.cards, scheduler: this.scheduler, causal: this.causal,
-      pausedBacklog: this.pausedBacklog, artifacts: this.artifacts,
+      pausedBacklog: this.pausedBacklog, artifacts: this.artifacts, milestones: this.milestones,
       collaboration: this.collaboration, ingress: this.ingress,
     }).build(work);
   }

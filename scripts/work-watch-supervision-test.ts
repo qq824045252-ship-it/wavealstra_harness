@@ -26,11 +26,12 @@ function receipt(id:string,target=work,summary=id){
  db.connection.prepare('INSERT INTO work_native_inbox(fact_id,binding_id,namespace_hash,payload_json,received_at,consumed_at) VALUES (?,?,?,?,?,?)').run(id,id,id,'{}',Date.now(),Date.now());
 }
 let calls=0,fail=false,deliveryBlocked=false,preferences="",replaceDuringReview:string|undefined;
+let comparisonReviews=0;
 let historicalStop=false;
 const stopCondition='文件为 READY 时结束';
 const reviewPreferences:string[]=[];
 const reviewContexts:any[]=[];
-const options={db:db.connection,works,isAuthority:()=>true,preferences:(taskId:string)=>{assert(works.repo.bindingForTask(taskId));return preferences;},wake:()=>{},deliver:(input:any)=>deliveryBlocked?false:feedback.deliverCompletion(input),review:async(input:any)=>{calls++;reviewContexts.push(input.context);reviewPreferences.push(input.personalPreferences);assert(input.context.watchSupervision);await delay(20);if(replaceDuringReview!==undefined){preferences=replaceDuringReview;replaceDuringReview=undefined;}if(fail)throw Error('temporary provider unavailable');
+const options={db:db.connection,works,isAuthority:()=>true,preferences:(taskId:string)=>{assert(works.repo.bindingForTask(taskId));return preferences;},wake:()=>{},deliver:(input:any)=>deliveryBlocked?false:feedback.deliverCompletion(input),review:async(input:any)=>{calls++;if(input.context.title==='comparison watch')comparisonReviews++;reviewContexts.push(input.context);reviewPreferences.push(input.personalPreferences);assert(input.context.watchSupervision);await delay(20);if(replaceDuringReview!==undefined){preferences=replaceDuringReview;replaceDuringReview=undefined;}if(fail)throw Error('temporary provider unavailable');
  if(historicalStop&&input.context.title==='历史停止证据隔离'){
   const old=input.context.previousVerifiedObservations.observations[0];assert(old?.text==='READY');
   return {decision:'deliver' as const,outcome:'completed' as const,reply:'旧轮曾经 READY',missing:[],
@@ -197,22 +198,34 @@ function observed(id:string,value:string){
    outputHash:createHash('sha256').update(value).digest('hex'),outputText:value}]}),id);
 }
 const reviewState=(id:string)=>(db.connection.prepare('SELECT state FROM work_watch_reviews WHERE binding_id=?').get(id) as {state:string}).state;
+// Other works may still have queued rounds; count/read only this work's reviews.
+const comparisonContexts=()=>reviewContexts.filter((context:any)=>context.title==='comparison watch');
 observed('comparison-first','A');await flush();
-assert.equal(reviewContexts.at(-1).comparisonState,'no_baseline');assert.equal(reviewContexts.at(-1).hostProvenUnchanged,false);
+assert.equal(comparisonReviews,1);
+assert.equal(comparisonContexts().at(-1).comparisonState,'no_baseline');assert.equal(comparisonContexts().at(-1).hostProvenUnchanged,false);
 assert.equal(reviewState('comparison-first'),'silent');
+// Issue #27 §6: a host-proven unchanged changes_only round must not spend another
+// result review. Silence comes from host facts and is persisted as provenance,
+// not from "the user received nothing".
 observed('comparison-same','A');await flush();
-assert.equal(reviewContexts.at(-1).comparisonState,'unchanged');assert.equal(reviewContexts.at(-1).hostProvenUnchanged,true);
-assert.equal(reviewContexts.at(-1).comparisonBaseline.deliverableId,'result:comparison-first');
-assert.equal(reviewContexts.at(-1).previousVerifiedObservations.status,'complete');
-assert.equal(reviewContexts.at(-1).previousVerifiedObservations.observations[0].text,'A');
-assert.equal(reviewState('comparison-same'),'silent');
+assert.equal(comparisonReviews,1,'proven-unchanged round makes zero extra review calls');
+const fastRow=db.connection.prepare(`SELECT state,decision_json,reviewed_at,attempts,
+  json_extract(context_json,'$.reason') reason,json_extract(context_json,'$.comparisonState') comparisonState
+  FROM work_watch_reviews WHERE binding_id=?`).get('comparison-same') as {state:string;decision_json:string|null;reviewed_at:number|null;attempts:number;reason:string;comparisonState:string};
+assert.equal(fastRow.state,'silent');assert.equal(fastRow.decision_json,null);assert.equal(fastRow.attempts,0);
+assert.equal(fastRow.reason,'host_proven_unchanged');assert.equal(fastRow.comparisonState,'unchanged');assert(fastRow.reviewed_at!>0);
+assert.equal((db.connection.prepare("SELECT count(*) n FROM bot_work_feedback WHERE json_extract(metadata_json,'$.executionId')=? AND json_extract(metadata_json,'$.kind')='result'").get('comparison-same') as {n:number}).n,0,'unchanged fast path never delivers to the user');
 observed('comparison-changed','B');await flush();
-assert.equal(reviewContexts.at(-1).comparisonState,'changed');assert.equal(reviewContexts.at(-1).hostProvenUnchanged,false);
+assert.equal(comparisonReviews,2,'changed evidence still goes through the existing review path');
+assert.equal(comparisonContexts().at(-1).comparisonState,'changed');assert.equal(comparisonContexts().at(-1).hostProvenUnchanged,false);
 assert.equal(reviewState('comparison-changed'),'delivered');
 const currentComparison=works.getWork(comparisonWork.workId)!;
 works.repo.updateWork({...currentComparison,watchRule:{...currentComparison.watchRule!,notificationMode:'every_check'}});
 observed('comparison-every-check','B');await flush();
-assert.equal(reviewContexts.at(-1).comparisonState,'unchanged');assert.equal(reviewContexts.at(-1).hostProvenUnchanged,true);
+assert.equal(comparisonContexts().at(-1).comparisonState,'unchanged');assert.equal(comparisonContexts().at(-1).hostProvenUnchanged,true);
+assert.equal(comparisonContexts().at(-1).comparisonBaseline.deliverableId,'result:comparison-changed');
+assert.equal(comparisonContexts().at(-1).previousVerifiedObservations.status,'complete');
+assert.equal(comparisonContexts().at(-1).previousVerifiedObservations.observations[0].text,'B');
 assert.equal(reviewState('comparison-every-check'),'delivered','equal evidence does not override every-check notification policy');
 // A cached verdict must not outlive the exact historical native evidence used
 // for its comparison, even when all model-written report summaries stay equal.

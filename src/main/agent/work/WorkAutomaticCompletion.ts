@@ -101,7 +101,10 @@ export class WorkAutomaticCompletion {
     if (binding.status === "failed"
       && this.db.prepare("SELECT 1 FROM work_dispatch_requests WHERE task_id=?").get(binding.taskId)
       && !this.db.prepare("SELECT 1 FROM work_automatic_recovery WHERE source_binding_id=?").get(bindingId)) return;
-    if (bindings.some(item => ["pending", "submitted", "running", "unknown"].includes(item.status))
+    // Only still-valid executions gate their own settlement. An invalidated older
+    // revision stays history: its unknown effects are listed below, not replayed,
+    // and cannot hold the current revision's available results hostage.
+    if (bindings.some(item => !item.invalidatedAt && ["pending", "submitted", "running", "unknown"].includes(item.status))
       || this.works.repo.listAdmissions(work.workId).some(item => item.state === "admitted")
       || this.works.partialResults.plans(work.workId).some(item => ["pending", "dispatched"].includes(item.state))
       || this.db.prepare("SELECT 1 FROM work_dispatch_requests WHERE work_id=? AND state IN ('pending','blocked')").get(work.workId)) return;
@@ -130,7 +133,11 @@ export class WorkAutomaticCompletion {
       ...results.flatMap(item => [...item.uncoveredScope, ...item.hasWriteConflicts ? ["成果存在写入冲突"] : [],
         ...item.isSpeculation ? ["成果包含尚未验证的推测"] : [], ...item.status === "rejected" ? [item.rejectedReason || "成果已被拒绝"] : []]),
       ...blockers.map(item => item.reason),
-      ...this.works.repo.listAdmissions(work.workId).filter(item => item.state === "unknown").map(() => "有工具效果尚未核实，未重放原动作"),
+      // Retired executions no longer block, but their uncertain effects stay in
+      // the settlement instead of disappearing with the binding.
+      ...this.works.repo.listAdmissions(work.workId).filter(item => item.state === "unknown")
+        .map(item => item.bindingId && bindings.find(binding => binding.bindingId === item.bindingId)?.invalidatedAt
+          ? "旧修订执行有工具效果尚未核实，未重放原动作" : "有工具效果尚未核实，未重放原动作"),
       ...(team?.executions.filter(item => !["completed", "recovered"].includes(item.status)).map(item => `${item.responsibility}：${item.error || item.notStartedReason || item.status}`) ?? []),
     ];
     const reasons = [...new Set(missing)];

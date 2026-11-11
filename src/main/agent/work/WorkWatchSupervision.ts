@@ -4,6 +4,8 @@ import { previousWatchObservations } from "./WorkWatchComparison";
 import { watchGoalEvidence, watchGoalMet, watchGoalClosureSummary } from "./WorkWatchGoal";
 import type { WorkCompletionOptions } from "./WorkCompletionCoordinator";
 import type { WorkResultDecision } from "./BotWorkResultTurn";
+import type { WorkDto, WorkExecutionBindingDto } from "../../../shared/bot-work";
+import { watchTimeExpired } from "../../../shared/work-watch-expiry";
 import { watchObservationDelivery, watchTeamReadEvidence, type WatchObservationPresentation } from "./WorkWatchObservation";
 
 /** A durable, independent owner review per observation. A round never closes the
@@ -90,6 +92,45 @@ export class WorkWatchSupervision {
       AND NOT EXISTS (SELECT 1 FROM bot_work_feedback f WHERE json_extract(f.metadata_json,'$.executionId')=b.binding_id
         AND json_extract(f.metadata_json,'$.kind')='result') LIMIT 1`).get(workId));
   }
+  /** A watch-only supplementary round that is already queued is still a pending
+   * obligation; a proven-unchanged round must not settle around it. */
+  private hasPendingFollowUp(workId: string): boolean {
+    return this.options.works.partialResults.plans(workId).some(plan => plan.state !== 'cancelled' && plan.state !== 'settled'
+      && plan.gapItemIds.length > 0 && plan.gapItemIds.every(id => id.startsWith('watch-followup:')));
+  }
+  /** Host-owned proof that this round adds nothing to understand: the comparison
+   * is unchanged, the changes_only policy is silent, and no fact that could alter
+   * the judgement (lifecycle, expiry, follow-up, question, preference/goal
+   * version) moved. Then the reviewed baseline already answered this round, so a
+   * second result-model turn is pure overhead. Never a model's claimed silence. */
+  private hostProvenUnchanged(binding: WorkExecutionBindingDto, work: WorkDto,
+    presentation: WatchObservationPresentation, preferenceFingerprint: string): boolean {
+    if (presentation.comparisonState !== 'unchanged' || !presentation.silent) return false;
+    if (binding.status !== 'completed' || work.lifecycle !== 'active') return false;
+    const rule = work.watchRule;
+    if (!rule || rule.notificationMode !== 'changes_only') return false;
+    if (rule.termination || (rule.endsAt !== undefined && watchTimeExpired(work, Date.now()))) return false;
+    if (work.pendingConclusion || work.cancelRequestedAt) return false;
+    if (this.hasPendingFollowUp(work.workId)) return false;
+    if (this.options.works.repo.listOpenBlockers(work.workId).some(blocker => blocker.waitingForUserInput)) return false;
+    // A cached verdict or a failed delivery must finish through its own path.
+    if (this.options.db.prepare("SELECT 1 FROM work_watch_reviews WHERE binding_id=? AND (decision_json IS NOT NULL OR state<>'queued')").get(binding.bindingId)) return false;
+    const prior = this.options.db.prepare(`SELECT r.context_json FROM work_watch_reviews r
+      JOIN work_execution_bindings b ON b.binding_id=r.binding_id
+      WHERE b.work_id=? AND r.binding_id<>? AND r.state IN ('silent','delivered')
+        AND json_extract(r.context_json,'$.watchSupervision')=1
+      ORDER BY r.reviewed_at DESC,r.rowid DESC LIMIT 1`).get(work.workId,binding.bindingId) as {context_json:string}|undefined;
+    if (!prior) return false;
+    try {
+      const previous = JSON.parse(prior.context_json) as {preferenceFingerprint?:unknown;
+        watchRule?:{notificationMode?:unknown;notifyInitial?:unknown;stopConditionText?:unknown}};
+      // Same personal-preference and watcher-policy version as the reviewed round.
+      return previous.preferenceFingerprint === preferenceFingerprint
+        && previous.watchRule?.notificationMode === rule.notificationMode
+        && previous.watchRule?.notifyInitial === rule.notifyInitial
+        && (previous.watchRule?.stopConditionText ?? null) === (rule.stopConditionText ?? null);
+    } catch { return false; }
+  }
   private snapshot(id: string) {
     const {works} = this.options;
     const binding = works.repo.getBinding(id);
@@ -126,6 +167,21 @@ export class WorkWatchSupervision {
     }
     // Native receipt consumption and its aggregate result commit together.
     if (binding.status === 'completed' && !db.prepare('SELECT 1 FROM work_native_inbox WHERE binding_id=? AND consumed_at IS NOT NULL').get(id)) return;
+    // §6 unchanged fast path: the host already proved this round equals the
+    // reviewed baseline under changes_only. Persist that provenance as silence
+    // and return before any result-model turn or user delivery.
+    if (this.hostProvenUnchanged(binding,work,presentation,preferenceFingerprint)) {
+      const reviewedAt = Date.now();
+      const context = {watchSupervision:true,reason:'host_proven_unchanged',comparisonState:presentation.comparisonState,
+        hostProvenUnchanged:true,preferenceFingerprint,watchRule:work.watchRule,
+        notificationMode:work.watchRule?.notificationMode ?? null,baselineResultId:presentation.baselineResultId ?? null,
+        lifecycle:work.lifecycle,observedAt:binding.settledAt ?? null,reviewedAt,evidence,
+        notice:'宿主已证明本轮与既有基线一致且在仅变化时通知模式下静默：未调用结果整理，未向用户投递。'};
+      db.prepare(`INSERT INTO work_watch_reviews(binding_id,context_json,state,reviewed_at) VALUES (?,?,'silent',?)
+        ON CONFLICT(binding_id) DO UPDATE SET context_json=excluded.context_json,state='silent',reviewed_at=excluded.reviewed_at,
+          decision_json=NULL,error=NULL,retry_at=0`).run(id,JSON.stringify(context),reviewedAt);
+      return;
+    }
     const source = JSON.parse(works.repo.executionInput(binding));
     const {instructions:_instructions,teamAssignment:_assignment,...originalRequest} = source;
     const baseline = prior.find(r => r.deliverableId === presentation.baselineResultId);

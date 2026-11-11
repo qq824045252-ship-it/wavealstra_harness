@@ -458,6 +458,8 @@ export interface WorkProjectionDto {
     subitems: WorkSubitemDto[];
     continuations: WorkContinuationDto[];
     gaps: WorkSubitemDto[];
+    /** 运行中已核实子项与缺口的只读投影；主动回报与详情读同一份事实。 */
+    milestones?: import("./bot-work-phase3").WorkMilestonesProjectionDto;
     /** 仍有准入但未结算的动作数（真实执行记录，不是审批）。 */
     settlingActions: number;
     pausedEventCount: number;

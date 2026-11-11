@@ -1,0 +1,225 @@
+// Issue #27 §5/§6 foreground scheduling contract:
+//  (b) one read-only "我的安排" projection merges reminders + once Works +
+//      watch/event Works without inventing a second scheduler;
+//  (c) unique title named in the actual user message resolves the target while
+//      explicit IDs / replied message / selected card keep priority and
+//      ambiguity still refuses;
+//  (d) requestedOutcome=ongoing may act now and then wait (nextWakeAt), but still
+//      rejects goals with no future action and one_time + infinite cron.
+import assert from 'node:assert/strict';
+import {mkdtempSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {BACKGROUND_CONTEXT} from '@earendil-works/chord/context';
+import type {ToolExecutionApi,ToolRegistration} from '@earendil-works/pi-durable';
+import {Type} from 'typebox';
+import {Value} from 'typebox/value';
+import {z} from 'zod';
+import {AppDatabase} from '../src/main/db/AppDatabase';
+import {CronService,type CronAgent} from '../src/main/cron/CronService';
+import {BotRegistry} from '../src/main/agent/work/BotRegistry';
+import {BotConversationRepository} from '../src/main/agent/work/BotConversationRepository';
+import {botForegroundTools,BOT_FOREGROUND_TOOLS} from '../src/main/agent/work/BotForegroundTools';
+import {WorkService,DESKTOP_USER_GRANTS} from '../src/main/agent/work/WorkService';
+import {DEFAULT_BOT_ID,LOCAL_USER_ID,type ExpectedVersionGuard,type WorkActor,
+ type WorkControlResult,type WorkDto} from '../src/shared/bot-work';
+
+const root=mkdtempSync(join(tmpdir(),'scheduling-routing-'));
+const db=new AppDatabase(join(root,'routing.db'));
+const bots=new BotRegistry(db.connection);
+bots.registerBot({userId:LOCAL_USER_ID,botId:DEFAULT_BOT_ID,displayName:'routing fixture',authorization:DESKTOP_USER_GRANTS});
+const works=new WorkService(db.connection,{bots});
+const messages=new BotConversationRepository(db.connection);
+const cron=new CronService(db,{prompt:async()=>{throw Error('schedule_overview must never run a model');},
+ waitForSubmission:async()=>{throw Error('no submissions');},loadTaskHistory:async()=>({messages:[]}),isTaskBusy:()=>false,
+ getAppSettings:()=>({}),resolveAvailableModelId:async()=>undefined,listSkills:()=>[],listConnectors:()=>[]} satisfies CronAgent);
+const scheduled:string[]=[];
+const first=messages.accept(LOCAL_USER_ID,{botId:DEFAULT_BOT_ID,requestId:'routing-first',text:'我的安排'});
+const tools:ToolRegistration[]=botForegroundTools({db:db.connection,userId:LOCAL_USER_ID,botId:DEFAULT_BOT_ID,
+ conversationId:first.conversationId,bots,messages,works,isAuthority:()=>true,schedule:(work)=>scheduled.push(work.workId),
+ wake:()=>{},memorySearch:()=>[],reminders:()=>cron});
+const schemas=new Map(tools.map(tool=>[tool.name,Type.Unsafe(JSON.parse(JSON.stringify(tool.parameters)))]));
+const accepts=(name:string,args:unknown)=>Value.Check(schemas.get(name)!,args);
+let nextTask=0,serial=0;
+const invoke=async(name:string,args:unknown,requestId=first.requestId):Promise<any>=>{
+ const api={callId:`call-${++nextTask}`,taskId:`tool-${nextTask}`,memo:async()=>requestId} as unknown as ToolExecutionApi;
+ const result=await tools.find(tool=>tool.name===name)!.execute(args as never,api,BACKGROUND_CONTEXT);
+ const output=result.output?.find(block=>block.type==='text');assert(output?.type==='text');return JSON.parse(output.text);
+};
+const validInvoke=async(name:string,args:unknown,requestId=first.requestId)=>{
+ assert(accepts(name,args),`${name} must accept ${JSON.stringify(args).slice(0,160)}`);
+ return invoke(name,args,requestId);
+};
+const user:WorkActor={kind:'user',userId:LOCAL_USER_ID,grants:DESKTOP_USER_GRANTS};
+const unwrap=(value:unknown)=>{const result=value as WorkControlResult;assert(result.ok,JSON.stringify(result));return result.work;};
+const guardOf=(work:WorkDto):ExpectedVersionGuard=>({expectedStateVersion:work.stateVersion,
+ expectedIntentRevision:work.intentRevision,expectedOwnerEpoch:work.ownerEpoch});
+const requestFor=(text:string,selectedWorkId?:string,referenceMessageId?:string)=>messages.accept(LOCAL_USER_ID,{
+ botId:DEFAULT_BOT_ID,conversationId:first.conversationId,requestId:`routing-request-${++serial}`,text,selectedWorkId,referenceMessageId});
+const queryGuard=async(workId:string,requestId:string)=>{
+ const result=z.array(z.object({workId:z.string(),versionGuard:z.object({expectedStateVersion:z.number(),
+  expectedIntentRevision:z.number(),expectedOwnerEpoch:z.number()})})).parse(await validInvoke('work_query_status',{workId},requestId));
+ assert.equal(result.length,1);assert.equal(result[0].workId,workId);return result[0].versionGuard;
+};
+const reviewState=(workId:string)=>works.getWork(workId)!.lifecycle;
+const restore=(workId:string)=>unwrap(works.resumeWork(user,{operationId:`restore-${++serial}`,workId,
+ versionGuard:guardOf(works.getWork(workId)!)}));
+const assertRejectedTarget=async(requestId:string,workId:string)=>{
+ const before=works.getWork(workId);
+ await assert.rejects(()=>validInvoke('work_pause',{workId,versionGuard:guardOf(works.getWork(workId)!)},requestId),/请明确/);
+ assert.deepEqual(works.getWork(workId),before,'ambiguous/non-selected target must not change');
+};
+const tableCounts=()=>{
+ const names=(db.connection.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all() as Array<{name:string}>).map(row=>row.name);
+ return Object.fromEntries(names.map(name=>[name,(db.connection.prepare(`SELECT count(*) n FROM "${name}"`).get() as {n:number}).n]));
+};
+const now=Date.now();
+try {
+ // ---------------------------------------------------------------- (b) 我的安排
+ assert.equal(BOT_FOREGROUND_TOOLS.has('schedule_overview'),true);
+ assert.deepEqual(new Set(tools.map(tool=>tool.name)),BOT_FOREGROUND_TOOLS);
+ assert.equal(accepts('schedule_overview',{}),true);
+ assert.equal(accepts('schedule_overview',{query:'x'}),false,'the overview is a fixed read-only query');
+ cron.upsert({id:'reminder-plan',name:'看 PR 结果提醒',prompt:'该看今天的 PR 结果了',scheduleType:'cron',
+  scheduleExpr:'0 20 * * *',timezone:'Asia/Shanghai',enabled:true,createdAt:now,updatedAt:now,restartPolicy:'resume',
+  reminder:{state:'scheduled',kind:'bot-reminder',userId:LOCAL_USER_ID,botId:DEFAULT_BOT_ID,conversationId:first.conversationId}});
+ const onceCreated=works.createWork(user,{operationId:'routing-once-work',title:'明早查资料并回报结果',mode:'once',
+  inputSnapshotId:'input-routing-once',authorization:DESKTOP_USER_GRANTS,conversationId:first.conversationId,
+  sourceMessageId:first.userMessageId,deadlineAt:now+86_400_000});
+ assert(onceCreated.ok,JSON.stringify(onceCreated));const onceWork=onceCreated.work;
+ const watchCreated=works.createWork(user,{operationId:'routing-watch-work',title:'持续观察仓库变化',mode:'watch',
+  inputSnapshotId:'input-routing-watch',authorization:DESKTOP_USER_GRANTS,conversationId:first.conversationId,
+  sourceMessageId:first.userMessageId,watchRule:{cronExpression:'0 9 * * *',timezone:'Asia/Shanghai',
+   notificationMode:'changes_only',scheduleBasis:'user_specified'}});
+ assert(watchCreated.ok,JSON.stringify(watchCreated));const watchWork=watchCreated.work;
+ const eventConfigured=works.phase4Control(user,{kind:'configure-subscription',operationId:'routing-hook-subscription',
+  workId:watchWork.workId,source:'hook',targetKey:'pr:42',catchUpPolicy:'latest',versionGuard:guardOf(works.getWork(watchWork.workId)!)});
+ assert(eventConfigured.ok,JSON.stringify(eventConfigured));
+ const hookSubscription=works.repo.listSubscriptions(watchWork.workId).find(item=>item.source==='hook')!;
+ works.ingress.setCursor(hookSubscription.subscriptionId,'hook','pr:42',{highestAcceptedVersion:'41',highestConsumedVersion:'40'});
+ // Read-only is proved by unchanged row counts and an unchanged write counter.
+ const overviewRequest=requestFor('明天有哪些安排');
+ const before=tableCounts();
+ const changesBefore=(db.connection.prepare('SELECT total_changes() n').get() as {n:number}).n;
+ const overview=await validInvoke('schedule_overview',{},overviewRequest.requestId);
+ const changesAfter=(db.connection.prepare('SELECT total_changes() n').get() as {n:number}).n;
+ assert.deepEqual(tableCounts(),before,'schedule_overview must not write any table');
+ assert.equal(changesAfter,changesBefore,'schedule_overview performs zero writes');
+ assert.equal(scheduled.length,0,'schedule_overview never dispatches or schedules work');
+ assert.equal(overview.readOnly,true);assert.equal(overview.hostMustBeRunning,true);
+ assert.match(overview.hostBoundary,/宿主/);
+ const reminderItem=overview.items.find((item:any)=>item.kind==='reminder'&&item.reminderId==='reminder-plan');
+ assert(reminderItem,'reminder projection is included');
+ assert.equal('workId' in reminderItem,false,'a reminder is never presented as a Work');
+ assert.equal(reminderItem.timing.kind,'cron');assert.equal(reminderItem.timing.expression,'0 20 * * *');
+ assert.equal(reminderItem.timing.nextAt,cron.list().find(job=>job.id==='reminder-plan')!.nextRunAt);
+ assert.equal(reminderItem.enabled,true);assert.equal(reminderItem.resultReturnsTo.conversationId,first.conversationId);
+ assert.match(reminderItem.whatWillHappen,/不调用模型/);assert.match(reminderItem.deliveryBoundary,/恢复后合并补发/);
+ const onceItem=overview.items.find((item:any)=>item.kind==='work'&&item.workId===onceWork.workId);
+ assert(onceItem,'once Work projection is included');
+ assert.equal(onceItem.workMode,'once');assert.equal('reminderId' in onceItem,false,'a Work is never presented as a reminder');
+ assert.equal(onceItem.timing.kind,'deadline');assert.equal(onceItem.timing.nextAt,now+86_400_000);
+ assert.equal(onceItem.resultReturnsTo.currentConversation,true);assert.equal(onceItem.hostMustBeRunning,true);
+ assert.match(onceItem.whatWillHappen,/真实执行/);
+ const watchItem=overview.items.find((item:any)=>item.kind==='work'&&item.workId===watchWork.workId);
+ assert(watchItem,'watch Work projection is included');
+ assert.equal(watchItem.workMode,'watch');assert.equal(watchItem.notificationMode,'changes_only');
+ assert.equal(watchItem.timing.kind,'cron');assert.equal(watchItem.timing.expression,'0 9 * * *');
+ assert.equal(watchItem.timing.timezone,'Asia/Shanghai');
+ const cronSubscription=works.repo.listSubscriptions(watchWork.workId).find(item=>item.source==='cron')!;
+ assert.equal(watchItem.timing.nextAt,cronSubscription.nextWakeAt);
+ const eventItem=watchItem.eventSubscriptions.find((item:any)=>item.source==='hook');
+ assert(eventItem,'event subscription projection is included');
+ assert.equal(eventItem.targetKey,'pr:42');assert.equal(eventItem.registeredSource,true);assert.equal(eventItem.canQueryHistory,false);
+ const hookCursor=eventItem.cursors.find((item:any)=>item.targetKey==='pr:42');
+ assert.equal(hookCursor.highestConsumedVersion,'40');assert.match(eventItem.trigger,/pr:42/);
+ assert.match(watchItem.whatWillHappen,/仅在本轮来源证据变化时通知/);
+ assert.equal(overview.counts.reminders,1);assert.equal(overview.counts.watchWorks,1);
+ assert.equal(overview.counts.onceWorks,1);assert.equal(overview.counts.eventSubscriptions,1);
+ assert.equal(overview.truncated,false);
+ console.log('PASS schedule_overview: reminder + once Work + watch/event Work merged with exact times/conditions and status, zero writes');
+
+ // ------------------------------------------- (c) interrupt/redirect target resolution
+ const alpha=unwrap(works.createWork(user,{operationId:'routing-title-alpha',title:'历史读取修复'}));
+ const beta=unwrap(works.createWork(user,{operationId:'routing-title-beta',title:'长期记忆迁移'}));
+ const longWork=unwrap(works.createWork(user,{operationId:'routing-title-long',title:'持续优化首屏打开速度的完整性能回归检查'}));
+ const shortWork=unwrap(works.createWork(user,{operationId:'routing-title-short',title:'周报'}));
+ const duplicateA=unwrap(works.createWork(user,{operationId:'routing-title-duplicate-a',title:'重名事项复核'}));
+ const duplicateB=unwrap(works.createWork(user,{operationId:'routing-title-duplicate-b',title:'重名事项复核'}));
+ // Unique title literally named in the actual user message resolves without a card.
+ const named=requestFor('这轮只修历史读取修复，不要动别的');
+ const namedGuard=await queryGuard(alpha.workId,named.requestId);
+ assert.equal(unwrap(await invoke('work_pause',{workId:alpha.workId,versionGuard:namedGuard},named.requestId)).lifecycle,'paused');
+ assert.equal(reviewState(beta.workId),'active','an unrelated Work is untouched');
+ const resumeByTitle=requestFor('恢复历史读取修复');
+ assert.equal(unwrap(await invoke('work_resume',{workId:alpha.workId,
+  versionGuard:await queryGuard(alpha.workId,resumeByTitle.requestId)},resumeByTitle.requestId)).lifecycle,'active');
+ // Explicit workId in the message keeps priority over a named title.
+ const explicit=requestFor(`请暂停 ${beta.workId}，历史读取修复这轮先不动`);
+ await assertRejectedTarget(explicit.requestId,alpha.workId);
+ assert.equal(unwrap(await invoke('work_pause',{workId:beta.workId,
+  versionGuard:await queryGuard(beta.workId,explicit.requestId)},explicit.requestId)).lifecycle,'paused');
+ assert.equal(reviewState(alpha.workId),'active');
+ restore(beta.workId);
+ // The UI-selected card keeps priority over a title named in the message.
+ const card=requestFor('暂停长期记忆迁移',alpha.workId);
+ await assertRejectedTarget(card.requestId,beta.workId);
+ assert.equal(unwrap(await invoke('work_pause',{workId:alpha.workId,
+  versionGuard:await queryGuard(alpha.workId,card.requestId)},card.requestId)).lifecycle,'paused');
+ restore(alpha.workId);
+ // Two open Works both named in the message: ambiguous, refuse with the old style.
+ const ambiguous=requestFor('同时处理历史读取修复与长期记忆迁移');
+ await assertRejectedTarget(ambiguous.requestId,alpha.workId);
+ await assertRejectedTarget(ambiguous.requestId,beta.workId);
+ // Two open Works sharing the same named title are also ambiguous.
+ const duplicate=requestFor('暂停重名事项复核');
+ await assertRejectedTarget(duplicate.requestId,duplicateA.workId);
+ await assertRejectedTarget(duplicate.requestId,duplicateB.workId);
+ // Too-short titles are not deterministic anchors; the unrelated long title is
+ // never inferred from a short control message.
+ await assertRejectedTarget(requestFor('暂停周报').requestId,shortWork.workId);
+ await assertRejectedTarget(requestFor('暂停').requestId,longWork.workId);
+ // A Work created earlier in the same request remains controllable (replay contract).
+ const createdRequest=requestFor('创建一个新任务然后暂停它');
+ const createdInRequest=unwrap(await validInvoke('work_create',{requestedOutcome:'one_time',mode:'once',
+  title:'Created routing item'},createdRequest.requestId));
+ assert.equal(unwrap(await invoke('work_pause',{workId:createdInRequest.workId,
+  versionGuard:await queryGuard(createdInRequest.workId,createdRequest.requestId)},createdRequest.requestId)).lifecycle,'paused');
+ // Cancel also reuses the same resolver: the unique named title is the target.
+ const cancelByTitle=requestFor('取消持续优化首屏打开速度的完整性能回归检查');
+ const cancelled=unwrap(await invoke('work_cancel',{workId:longWork.workId,
+  versionGuard:await queryGuard(longWork.workId,cancelByTitle.requestId)},cancelByTitle.requestId));
+ assert.equal(cancelled.closureConclusion,'cancelled');
+ assert.equal(reviewState(alpha.workId),'active');assert.equal(reviewState(beta.workId),'active');
+ console.log('PASS target resolution: unique title resolves, explicit ID/card keep priority, ambiguous/named-duplicate/short/unrelated refuse, request links and cancel reuse the same policy');
+
+ // ----------------------------------------------------- (d) ongoing can act then wait
+ const future=Date.now()+3_600_000;
+ const ongoingThenWait=requestFor('持续优化首屏速度，先把现在能做的做完，之后复查');
+ const ongoingArgs={requestedOutcome:'ongoing',mode:'watch',title:'持续优化首屏速度',startImmediately:true,
+  watchRule:{nextWakeAt:future,scheduleBasis:'user_specified',timezone:'UTC'}};
+ const ongoing=unwrap(await validInvoke('work_create',ongoingArgs,ongoingThenWait.requestId));
+ assert.equal(ongoing.mode,'watch');assert.equal(ongoing.watchRule?.cronExpression,undefined);
+ const ongoingSubscription=works.repo.listSubscriptions(ongoing.workId).find(item=>item.source==='cron')!;
+ assert.equal(ongoingSubscription.nextWakeAt,future,'the future follow-up is persisted');
+ assert.equal((db.connection.prepare("SELECT count(*) n FROM work_events_inbox WHERE work_id=? AND process_reason='user-requested-first-check'")
+  .get(ongoing.workId) as {n:number}).n,1,'ongoing startImmediately executes now, then waits');
+ const waitOnly=requestFor('持续跟进，先不动，之后复查');
+ const waiting=unwrap(await validInvoke('work_create',{requestedOutcome:'ongoing',mode:'watch',title:'先等待再跟进',
+  watchRule:{nextWakeAt:future+1000,scheduleBasis:'user_specified',timezone:'UTC'}},waitOnly.requestId));
+ assert.equal((db.connection.prepare("SELECT count(*) n FROM work_events_inbox WHERE work_id=? AND process_reason='user-requested-first-check'")
+  .get(waiting.workId) as {n:number}).n,0,'without startImmediately the first action is the future check');
+ const worksBefore=works.listWorks(LOCAL_USER_ID,{includeClosed:true}).length;
+ const rejects:Array<[unknown,RegExp]>=[
+  [{requestedOutcome:'ongoing',mode:'watch',title:'没有未来动作'},/持续目标需要可执行/],
+  [{requestedOutcome:'ongoing',mode:'once',title:'持续目标不能降到一次'},/持续目标需要真实/],
+  [{requestedOutcome:'one_time',mode:'watch',title:'一次性不能无限周期',
+    watchRule:{cronExpression:'0 9 * * *',scheduleBasis:'user_specified'}},/一次性目标不能创建无限周期/]];
+ for(const [args,expected] of rejects){
+  const request=requestFor(`拒绝夹具：${(args as {title:string}).title}`);
+  assert.equal(accepts('work_create',args),true,'wire shape stays valid; the host rejects by policy');
+  await assert.rejects(()=>invoke('work_create',args,request.requestId),expected);
+ }
+ assert.equal(works.listWorks(LOCAL_USER_ID,{includeClosed:true}).length,worksBefore,'rejected goals create no Work');
+ console.log('PASS ongoing semantics: nextWakeAt(+startImmediately) accepted as execute-then-wait, no-future-action and one_time+cron still rejected');
+} finally {cron.stop();db.close();rmSync(root,{recursive:true,force:true});}

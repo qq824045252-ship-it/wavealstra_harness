@@ -61,7 +61,6 @@ try {
     { title: "model guessed epoch cannot delay cron", requestedOutcome:"ongoing", mode:"watch", watchRule:{cronExpression:"* * * * *",timezone:"UTC",nextWakeAt:future + 20*86400000,scheduleBasis:"user_specified"}},
     { title: "ongoing without timing", requestedOutcome: "ongoing", mode: "watch" },
     { title: "one-time cannot recur", requestedOutcome: "one_time", mode: "watch", watchRule: { cronExpression: "0 9 * * *", scheduleBasis: "user_specified" } },
-    { title: "ongoing only one wake", requestedOutcome: "ongoing", mode: "watch", watchRule: { nextWakeAt: future, scheduleBasis: "user_specified" } },
     { title: "watch without origin", requestedOutcome: "ongoing", mode: "watch", watchRule: { cronExpression: "0 9 * * *", timezone: "UTC" } },
     { title: "recommendation without reason", requestedOutcome: "ongoing", mode: "watch", watchRule: { cronExpression: "0 9 * * *", scheduleBasis: "recommended" } },
     { title: "expired one shot", requestedOutcome: "one_time", mode: "watch", watchRule: { nextWakeAt: Date.now() - 1000, scheduleBasis: "user_specified" } },
@@ -97,6 +96,18 @@ try {
     watchRule: { nextWakeAt: future, timezone: "UTC", scheduleBasis: "user_specified" } }, "Check once tomorrow, not repeatedly.");
   assert(oneShot.ok); assert.equal(oneShot.tracking.nextWakeAt, future); assert.equal(oneShot.work.watchRule?.cronExpression, undefined);
   assert.equal(scheduled.length, 0);
+  // Issue #27 §6: an ongoing goal may act now and then wait. A real future
+  // nextWakeAt (plus startImmediately for today's action) is a follow-up plan,
+  // not merely a one-off schedule; it is no longer forced to be a cron cycle.
+  const ongoingThenWait = await invoke({ title: "Steady goal with a next step", requestedOutcome: "ongoing", mode: "watch",
+    startImmediately: true, watchRule: { nextWakeAt: future, timezone: "UTC", scheduleBasis: "user_specified" } },
+    "持续优化，先把现在能做的做完，之后到时间再复查。");
+  assert(ongoingThenWait.ok, JSON.stringify(ongoingThenWait));
+  assert.equal(ongoingThenWait.work.mode, "watch");
+  assert.equal(ongoingThenWait.work.watchRule?.cronExpression, undefined);
+  assert.equal(ongoingThenWait.tracking.nextWakeAt, future);
+  assert.equal((db.connection.prepare("SELECT count(*) n FROM work_events_inbox WHERE work_id=? AND process_reason='user-requested-first-check'").get(ongoingThenWait.work.workId) as {n:number}).n, 1,
+    "ongoing + startImmediately executes now and keeps the real future follow-up");
 
   // The host enforces typed facts. It does not interpret Chinese keywords or
   // require quotes to match frequency prose; semantic accuracy belongs to live model tests.

@@ -18,7 +18,12 @@ export async function readDurableWorkExecution(
 ): Promise<WorkExecutionObservation> {
   if (record.type !== "input") throw new Error("原生回执不是已结束的业务输入");
   const evidence = await scanExecutionEvidence(tx, record, workspaceBinding, durableStoreKey);
-  if (record.status === "queued" || record.status === "placed") return { status: "running", ...(evidence.generatedArtifacts.length ? { generatedArtifacts: evidence.generatedArtifacts } : {}) };
+  if (record.status === "queued" || record.status === "placed") {
+    const subitems = inFlightSubitems(evidence.projection);
+    return { status: "running",
+      ...(evidence.generatedArtifacts.length ? { generatedArtifacts: evidence.generatedArtifacts } : {}),
+      ...(subitems.length ? { subitems } : {}) };
+  }
   const answer = evidence.answer;
   const status = record.status === "unanswered" ? record.reason === "aborted" ? "stopped" : "failed"
     : !answer || ["error", "length"].includes(answer.stopReason) ? "failed"
@@ -44,6 +49,25 @@ export async function readDurableWorkExecution(
     ...(evidence.readEvidence.length ? { readEvidence: evidence.readEvidence } : {}),
     ...(evidence.readPaths.size ? { readPaths: [...evidence.readPaths] } : {}),
   };
+}
+
+const TERMINAL_SUBITEM_OUTCOMES: ReadonlySet<WorkSubitemResult["outcome"]> = new Set(["completed", "failed", "rejected", "blocked", "stopped"]);
+const IN_FLIGHT_SUBITEM_LIMIT = 40;
+
+/** Bounded in-flight progress for still-queued inputs. Stable itemIds make a
+ * repeated poll the same fact instead of a new milestone. Candidate details are
+ * pre-filtered so polling re-parses only plan/result payloads, not every tool. */
+function inFlightSubitems(projection: DurableHistoryProjection): WorkSubitemResult[] {
+  const latest = new Map<string, WorkSubitemResult>();
+  for (const message of projection.messages) for (const tool of message.tools ?? []) {
+    if (!tool.detail || !tool.detail.includes('"plan"') && !tool.detail.includes('"results"')) continue;
+    for (const item of readNativeSubitems(tool.id, tool.detail)) {
+      if (TERMINAL_SUBITEM_OUTCOMES.has(item.outcome)) latest.set(item.itemId, item);
+    }
+  }
+  // Keep the newest window: older items were already persisted by an earlier poll,
+  // while a fixed leading window would starve later completions of a long plan.
+  return [...latest.values()].slice(-IN_FLIGHT_SUBITEM_LIMIT);
 }
 
 /** All terminal paths share the same crop, successful-tool checks and pagination. */

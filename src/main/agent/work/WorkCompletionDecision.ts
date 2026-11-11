@@ -2,16 +2,30 @@ import { createHash } from "node:crypto";
 import type { WorkDto, WorkExecutionBindingDto } from "../../../shared/bot-work";
 import type { WorkResultDecision } from "./BotWorkResultTurn";
 import type { CompletionTurn, WorkCompletionOptions } from "./WorkCompletionCoordinator";
+import { continuationProgress, lastContinuationProgress, recordContinuationProgress } from "./WorkContinuationProgress";
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+/** Real durable progress may extend a result lane, but never without bound. */
+const CONTINUATION_PROGRESS_CAP = 4;
+/** A host downgrade must not keep promising the continuation it just refused. */
+const CONTINUATION_PROMISE = /(接下来|下一步|随后|稍后|一会儿|之后|马上|接着|后续|正在|仍在|仍会|会|将)[^。！？!?；;\n]{0,24}(继续|续做|补[做齐上充跑完]|再(?:执行|尝试|核对|处理|做)|重新执行|重新核对|推进|处理剩余|完成剩余)|请稍(?:候|等)/;
+const DOWNGRADED_BODY = "本次只交付已经确认的成果；未完成部分没有继续执行，也没有重放已完成的动作。";
+/** Sentence-level strip keeps already-true content, never a future promise. */
+function withoutContinuationPromise(reply: string): string {
+  const sentences = reply.match(/[^。！？!?；;\n]+[。！？!?；;\n]?/g) ?? [reply];
+  return sentences.filter(sentence => !CONTINUATION_PROMISE.test(sentence)).join("").trim() || DOWNGRADED_BODY;
+}
 
 /** Runs in the same transaction as its exact result delivery receipt. */
 export function applyCompletionDecision(options: WorkCompletionOptions, binding: WorkExecutionBindingDto, work: WorkDto,
   decision: WorkResultDecision, eventId: string): void {
   const { works, db } = options;
   let kind = decision.decision;
+  let body = decision.reply;
   let notice: string | undefined;
   if (kind === "continue" && !continueMissing(options, binding, work, decision)) {
-    kind = "deliver"; notice = "没有重复执行已完成动作；无法可靠补做的部分已保留在结果中。";
+    // Body, nextStep and completion outcome must all describe what is delivered.
+    kind = "deliver"; body = withoutContinuationPromise(decision.reply);
+    notice = "没有重复执行已完成动作；无法可靠补做的部分已保留在结果中。";
   }
   if (kind === "ask" && !works.repo.listOpenBlockers(work.workId).some(item => item.waitingForUserInput && item.kind === "operational" && !item.unknownExternalEffectRef)) {
     const current = works.getWork(work.workId)!;
@@ -33,24 +47,24 @@ export function applyCompletionDecision(options: WorkCompletionOptions, binding:
   }
   // Semantic follow-up items are resolved by this exact follow-up result review,
   // never by a bare native completed status or by unrelated evidence.
-  if (kind === "deliver" && decision.outcome === "completed") {
+  if (kind === "deliver" && decision.decision === "deliver" && decision.outcome === "completed") {
     const request = db.prepare("SELECT continuation_plan_id FROM work_dispatch_requests WHERE task_id=?").get(binding.taskId) as {continuation_plan_id:string|null}|undefined;
     const plan = request?.continuation_plan_id && works.partialResults.plans(work.workId).find(item => item.planId === request.continuation_plan_id);
     const source = plan && works.partialResults.list(work.workId).filter(item => item.bindingId === plan.sourceBindingId && plan.gapItemIds.includes(item.itemId));
     if (source && source.length && source.every(item => item.nativeStatus === "result_review" && item.itemId.startsWith("result-followup:")))
       works.partialResults.record(binding, source.map(item => ({itemId:item.itemId,task:item.task,required:true,dependencies:[],criterionIds:[],
-        nativeStatus:"result_review",outcome:"completed",artifactRefs:[],writeConflicts:[],summary:`前台对照本次补做结果完成核对：${decision.reply}`})));
+        nativeStatus:"result_review",outcome:"completed",artifactRefs:[],writeConflicts:[],summary:`前台对照本次补做结果完成核对：${body}`})));
   }
   const facts = kind === "deliver" ? works.automaticCompletion.outcome(binding.bindingId) : undefined;
   const notices = [...notice ? [notice] : [], ...facts && !facts.executionDelivered ? [facts.summary] : []];
   const outcome = kind !== "deliver" && decision.outcome === "completed" || decision.decision === "continue"
     || (decision.outcome === "completed" && !facts?.executionDelivered) ? "partial" : decision.outcome;
-  const delivered = options.deliver({ bindingId: binding.bindingId, eventId, text: decision.reply,
+  const delivered = options.deliver({ bindingId: binding.bindingId, eventId, text: body,
     category: kind === "ask" ? "decision" : "result", notices,
     completion: { outcome, nextStep: kind }, primaryArtifactRefs: decision.artifactRefs });
   if (!delivered) throw Error("结果尚未送达明确的回报位置");
   if (kind === "deliver") {
-    const summary = facts && !facts.executionDelivered ? `${decision.reply}\n${facts.summary}` : decision.reply;
+    const summary = facts && !facts.executionDelivered ? `${body}\n${facts.summary}` : body;
     works.automaticCompletion.recordDelivery(binding.bindingId, summary, outcome, true);
     works.automaticCompletion.drain();
   } else works.automaticCompletion.consume(binding.bindingId);
@@ -58,8 +72,11 @@ export function applyCompletionDecision(options: WorkCompletionOptions, binding:
   options.wake();
 }
 function continueMissing({ works, db }: WorkCompletionOptions, binding: WorkExecutionBindingDto, work: WorkDto, decision: WorkResultDecision): boolean {
-  if (!decision.missing.length
-    || works.repo.listAdmissions(work.workId).some(item => item.state === "unknown")) return false;
+  if (!decision.missing.length) return false;
+  // An unverified effect governs only the execution that produced it. Independent
+  // read-only gaps still proceed; the unknown action itself is never replayed.
+  const lineage = new Set(works.partialResults.recovery.ancestry(binding).map(item => item.bindingId));
+  if (works.repo.listAdmissions(work.workId).some(item => item.state === "unknown" && !!item.bindingId && lineage.has(item.bindingId))) return false;
   const row = db.prepare("SELECT * FROM work_completion_turns WHERE binding_id=?").get(binding.bindingId) as CompletionTurn;
   const context = JSON.parse(row.context_json);
   const original = context.originalRequest?.userRequest?.messages?.map((item: { text: string }) => item.text).join("\n")
@@ -67,9 +84,18 @@ function continueMissing({ works, db }: WorkCompletionOptions, binding: WorkExec
   if (decision.missing.some(item => !original.includes(item.requestExcerpt))) return false;
   const prior = db.prepare(`SELECT count(*) count FROM work_completion_turns t JOIN work_execution_bindings b ON b.binding_id=t.binding_id
     WHERE b.work_id=? AND b.intent_revision=? AND b.input_snapshot_id=? AND t.state='continued'`).get(work.workId, work.intentRevision, work.inputSnapshotId) as { count: number };
-  if (prior.count >= 2) return false; // A result rephrasing loop must end with honest partial delivery.
+  if (prior.count >= CONTINUATION_PROGRESS_CAP) return false; // Honest partial delivery ends an endless chain.
+  const progress = continuationProgress(works, work);
+  // Only new durable facts (verified artifact bytes or completed current-version
+  // subitems) buy another execution. A rephrased report is not progress.
+  if (prior.count > 0 && lastContinuationProgress(db, work)?.fingerprint === progress) return false;
+  const now = Date.now();
   // Team gaps retain the original member's identity and scope, never the owner's.
-  if (works.teams.get(work.workId)) return works.teams.continueMissing(binding, decision.missing, context.teamContinuationTargets, decision.reply);
+  if (works.teams.get(work.workId)) {
+    if (!works.teams.continueMissing(binding, decision.missing, context.teamContinuationTargets, decision.reply)) return false;
+    recordContinuationProgress(db, binding, work, progress, now);
+    return true;
+  }
   const items = decision.missing.map(item => ({ itemId: `result-followup:${hash([binding.bindingId,item.requestExcerpt,item.task])}`, task: item.task,
     required: true, dependencies: [], criterionIds: [], nativeStatus: "result_review", outcome: "not_started" as const,
     artifactRefs: [], writeConflicts: [], summary: `原请求仍缺此部分：${item.requestExcerpt}` }));
@@ -81,5 +107,6 @@ function continueMissing({ works, db }: WorkCompletionOptions, binding: WorkExec
     versionGuard: { expectedStateVersion: current.stateVersion, expectedIntentRevision: current.intentRevision, expectedOwnerEpoch: current.ownerEpoch },
   });
   if (!result.ok) throw Error(result.message);
+  recordContinuationProgress(db, binding, work, progress, now);
   return true;
 }

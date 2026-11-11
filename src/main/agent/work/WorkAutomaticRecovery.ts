@@ -1,4 +1,5 @@
 import { isScheduledFollowUp } from "./WorkScheduledFollowUp";
+import { continuationProgress } from "./WorkContinuationProgress";
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { WorkDto, WorkExecutionBindingDto } from "../../../shared/bot-work";
@@ -120,11 +121,7 @@ export class WorkAutomaticRecovery {
     // Compare durable progress, not model wording: changing an error sentence
     // cannot buy another identical retry. Current artifact fingerprints include
     // bytes already verified by the native result receiver.
-    const fingerprint = digest([this.works.artifacts.currentSnapshotId(work.workId),
-      [...new Set(this.works.partialResults.list(work.workId).filter(item => item.outcome === "completed" && !item.itemId.startsWith("recover:")
-        && item.intentRevision === work.intentRevision && item.inputSnapshotId === work.inputSnapshotId
-        && this.works.collaboration.isDelegationAdopted(this.works.repo.getBinding(item.bindingId)!, work))
-        .map(item => JSON.stringify([item.task, [...item.artifactRefs].sort()])))].sort()]);
+    const fingerprint = continuationProgress(this.works, work);
     const prior = this.db.prepare(`SELECT recovery.* FROM work_automatic_recovery recovery JOIN work_execution_bindings binding
       ON binding.binding_id=recovery.source_binding_id WHERE binding.work_id=? AND binding.intent_revision=? AND binding.input_snapshot_id=?`)
       .all(work.workId, work.intentRevision, work.inputSnapshotId) as Recovery[];

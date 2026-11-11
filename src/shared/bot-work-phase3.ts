@@ -59,3 +59,29 @@ export interface WorkContinuationDto {
   state: "pending" | "dispatched" | "settled" | "cancelled"; reason: string; createdAt: number;
 }
 
+/** 已登记的文件版本。存在与可用分开：只有宿主登记过的路径才可打开。 */
+export interface WorkMilestoneFileDto {
+  ref: string; name: string; openPath?: string; digest?: string; immutable: boolean;
+}
+/** 运行中已核实子项（partial deliverable）的只读投影，不是目标完成证明。 */
+export interface WorkMilestoneDto {
+  milestoneId: string; bindingId: string; itemId: string; task: string; summary: string;
+  artifactRefs: string[]; files: WorkMilestoneFileDto[]; deliverableId?: string;
+  /** Work 当前是否真的在等用户输入；只影响措辞，不提升完成度。 */
+  requiresUserInput: boolean; createdAt: number;
+}
+export interface WorkMilestoneGapDto {
+  itemId: string; bindingId: string; task: string;
+  outcome: WorkSubitemResult["outcome"]; required: boolean;
+}
+/** 里程碑与缺口是 work_subitem_results + deliverables + gaps 的既有事实投影。 */
+export interface WorkMilestonesProjectionDto {
+  intentRevision: number; inputSnapshotId: string;
+  ready: WorkMilestoneDto[];
+  covered: Array<{ itemId: string; task: string; deliverableId?: string }>;
+  openGaps: WorkMilestoneGapDto[];
+  nextStep: string; requiresUserInput: boolean;
+  /** 同样的里程碑集合得到同样的 digest，用于主动回报去重。 */
+  digest: string; createdAt: number; updatedAt: number;
+}
+

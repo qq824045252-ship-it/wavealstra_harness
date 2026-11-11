@@ -10,7 +10,9 @@ import { DESKTOP_USER_GRANTS, WorkService } from "./WorkService";
 import type { BotRegistry } from "./BotRegistry";
 import type { BotConversationRepository } from "./BotConversationRepository";
 import { botForegroundRequest } from "./BotForegroundIdentity";
-import { BotWorkQuery, botWorkQuerySchema } from "./BotWorkQuery";
+import { BotWorkQuery, botWorkQuerySchema, type BotWorkQueryInput } from "./BotWorkQuery";
+import { resolveWorkTarget } from "./BotWorkTargetSelection";
+import { botScheduleOverview } from "./BotScheduleOverview";
 
 // Validate the wire text before trimming so its length and non-blank rules can be
 // represented exactly in the model-visible JSON Schema as well as at execution.
@@ -27,7 +29,7 @@ const timing = { mode: z.enum(["once", "watch"]).optional(), watchRule: watchRul
 const create = z.object({ ...fields, ...timing, title: text,
   requestedOutcome: z.enum(["one_time", "ongoing"]).describe("你对用户本次目标的语义理解，结合上下文而非关键词：one_time是交付一次结果，ongoing是之后仍须继续观察/跟进。实现监控功能、总结历史周期数据不等于要求Bot持续监控。这是你的理解，不替代宿主保存的用户原文"),
   mode: z.enum(["once", "watch"]).describe("实际执行计划：立即一次执行用once；未来检查或持续关注用watch。ongoing不能降为once，一次性未来跟进也可用watch"),
-  startImmediately: z.boolean().optional().describe("持续跟踪默认等到首次检查；仅用户要求现在也检查时设 true") }).strict();
+  startImmediately: z.boolean().optional().describe("持续计划默认等到首次检查；用户要求现在也行动时设 true。持续目标可先用 startImmediately 执行，再用 nextWakeAt 安排后续跟进") }).strict();
 const change = z.object({ ...fields, ...timing, watchRule: watchRule.nullable().optional(),
   deadlineAt: timing.deadlineAt.nullable().optional(), workId: text, versionGuard: guard }).strict();
 const control = z.object({ workId: text, reason: text.optional(), versionGuard: guard }).strict();
@@ -41,13 +43,17 @@ const teamCreate = z.object({ ...timing, requestedOutcome: create.shape.requeste
   taskAssignment: workTeamTaskAssignmentSchema.optional().describe("按本次任务从候选 Bot 或模板内选成员并分配具体职责、依赖；负责人汇总。不用模板时必须提供。不能新建 Bot 或增加权限。依赖成员须排在前面，互不依赖的成员无需填写依赖。省略则沿用模板分工") }).strict();
 function validateWatchIntent(requestedOutcome: "ongoing" | "one_time", input: { mode: "once" | "watch"; watchRule?: z.infer<typeof watchRule> }): void {
   const mode = input.mode;
+  const hasFutureAction = Boolean(input.watchRule?.cronExpression) || input.watchRule?.nextWakeAt !== undefined;
           if (requestedOutcome === "ongoing" && mode !== "watch")
-            throw new Error("持续目标不能按一次性计划受理；请保留ongoing理解并提供watch安排，不能只在目标文字里承诺持续");
+            throw new Error("持续目标需要真实的后续安排；请使用 mode=watch 并给出 watchRule（周期 cronExpression，或 nextWakeAt 的一次后续动作），不能只在目标文字里承诺持续");
           if (requestedOutcome === "one_time" && input.watchRule?.cronExpression)
             throw new Error("一次性目标不能创建无限周期；未来只检查一次请使用nextWakeAt，不设置cronExpression");
-          if (requestedOutcome === "ongoing" && !input.watchRule?.cronExpression)
-            throw new Error("持续目标需要后续周期安排；只有一次nextWakeAt不能满足持续跟进。可按任务建议合理频率并明确说明，也可询问必要偏好");
-          if (mode === "watch" && !input.watchRule?.cronExpression && input.watchRule?.nextWakeAt === undefined)
+          // An ongoing goal may act now and then wait: nextWakeAt plus
+          // startImmediately is a real executable-then-follow-up plan, not a
+          // prose promise. cronExpression stays the recurring alternative.
+          if (requestedOutcome === "ongoing" && !hasFutureAction)
+            throw new Error("持续目标需要可执行的下一步或真实未来动作；请设置周期 cronExpression，或先用 startImmediately 立即执行、再用 nextWakeAt 安排后续跟进，不能只保存一句承诺");
+          if (mode === "watch" && !hasFutureAction)
             throw new Error("未来跟进需要有效检查时间或频率；可按任务建议合理安排并明确说明，不能仅保存一句承诺");
           if (input.watchRule && mode !== "watch") throw new Error("持续跟踪规则必须使用 watch 模式");
           if (mode === "watch" && !input.watchRule?.scheduleBasis)
@@ -83,7 +89,7 @@ export interface BotForegroundToolOptions {
 }
 
 /** Foreground Work/memory controls. Read-only web tools are mounted separately by the host. */
-export const BOT_FOREGROUND_TOOLS = new Set(["reminder_manage", "work_query_status", "work_create", "work_amend", "work_pause", "work_resume", "work_cancel", "memory_search", "memory_forget", "memory_remember", "work_team_templates", "work_team_create"]);
+export const BOT_FOREGROUND_TOOLS = new Set(["reminder_manage", "schedule_overview", "work_query_status", "work_create", "work_amend", "work_pause", "work_resume", "work_cancel", "memory_search", "memory_forget", "memory_remember", "work_team_templates", "work_team_create"]);
 
 export function botForegroundTools(options: BotForegroundToolOptions) {
   const { db, works, bots, messages, userId, botId, conversationId } = options;
@@ -100,6 +106,19 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
     return value;
   };
   const catalogue = new BotWorkQuery(db, userId, botId, options.teamId);
+  // Deterministic title resolution only when no stronger fact exists. Bounded SQL
+  // pages; never hydrates Work detail or interprets model arguments.
+  const openWorksForTargets = () => {
+    const items: Array<{ workId: string; title: string }> = [];
+    let query: BotWorkQueryInput = { status: "open", limit: 50 };
+    for (let page = 0; page < 10; page++) {
+      const result = catalogue.page(query);
+      items.push(...result.items.map(item => ({ workId: item.workId, title: item.title })));
+      if (!result.hasMore || !result.nextQuery) break;
+      query = result.nextQuery;
+    }
+    return items;
+  };
   const select = (workId: string, source: ReturnType<typeof receipt>) => {
     const reference = source.reference_message_id ? messages.message(source.reference_message_id)?.workIds ?? [] : [];
     const userMessage = messages.message(source.user_message_id);
@@ -107,15 +126,15 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
     // Include unknown/foreign IDs so they cannot fall back to an unrelated card.
     const explicit = [...new Set(userMessage?.text.match(/(?<![A-Za-z0-9_-])work-[A-Za-z0-9_-]+(?![A-Za-z0-9_-])/g) ?? [])];
     const linked = userMessage?.workIds ?? [];
-    const soleOpen = explicit.length || reference.length || source.selected_work_id ? undefined : catalogue.soleOpenWorkId();
-    const allowed = explicit.length ? explicit.length === 1 ? explicit : []
-      : reference.length ? reference.length === 1 ? reference : []
-      : source.selected_work_id ? [source.selected_work_id]
-      : soleOpen ? [soleOpen] : [];
-    // Links support follow-up calls/replay for Work created in this request, but
-    // cannot override an explicit target or rescue ambiguous explicit IDs.
-    if (!allowed.includes(workId) && !(explicit.length === 0 && linked.includes(workId))) throw new Error("请明确要控制的 Work 卡片或 workId；多个事项不能按模糊消息全局控制");
-    const target = catalogue.canRead(workId) ? works.getWork(workId) : undefined;
+    const higherPriority = Boolean(explicit.length || reference.length || source.selected_work_id);
+    const resolution = resolveWorkTarget({ userText: userMessage?.text ?? "", explicitWorkIds: explicit,
+      referencedWorkIds: reference, selectedWorkId: source.selected_work_id ?? undefined, linkedWorkIds: linked,
+      openWorks: higherPriority ? [] : openWorksForTargets(),
+      soleOpenWorkId: higherPriority ? undefined : catalogue.soleOpenWorkId(), requestedWorkId: workId });
+    if (!resolution.ok) throw new Error(resolution.message);
+    // Links support follow-up calls/replay for Work created in this request; they
+    // never override an explicit target or rescue ambiguous named titles.
+    const target = catalogue.canRead(resolution.workId) ? works.getWork(resolution.workId) : undefined;
     if (!target) throw new Error("Work 不属于当前用户与 Bot");
     return target;
   };
@@ -128,7 +147,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
   const output = (value: unknown) => ({ output: [{ type: "text" as const, text: JSON.stringify(value) }] });
   const mutations = (["work_create", "work_amend", "work_pause", "work_resume", "work_cancel"] as const).map(name => defineTool({
     name, description: name === "work_create"
-      ? "受理长耗时、多步骤或文件/代码/桌面操作并派发后台。goalDescription、constraints、criteria 是你的规划，宿主会独立附上用户原文；忠实传达要求，计算结果和未验证假设不得写成用户约束。日常天气、新闻等实时查询直接使用前台 web_search/fetch_content，不创建 Work。用户已经提出的执行请求无需再确认创建任务。同一调用用requestedOutcome记录对用户目标的一次性/持续性理解，用mode和watchRule记录实际计划，不能省略mode后默认一次性。持续跟踪使用 mode=watch 与 watchRule.cronExpression，一次未来检查可使用nextWakeAt，不得只在文字中承诺；按用户指定频率和时区，未指定时明确区分建议安排。deadlineAt 是到期跟进，不是授权到期。创建无需先查询版本；已有相同事项则查询进度，避免重复创建。返回成功才可声称已受理或已安排；未来检查不得声称正在执行。"
+      ? "受理长耗时、多步骤或文件/代码/桌面操作并派发后台。goalDescription、constraints、criteria 是你的规划，宿主会独立附上用户原文；忠实传达要求，计算结果和未验证假设不得写成用户约束。日常天气、新闻等实时查询直接使用前台 web_search/fetch_content，不创建 Work。用户已经提出的执行请求无需再确认创建任务。同一调用用requestedOutcome记录对用户目标的一次性/持续性理解，用mode和watchRule记录实际计划，不能省略mode后默认一次性。持续目标使用 mode=watch：周期跟踪给 watchRule.cronExpression；若现在就能推进、之后才需等待，用 startImmediately=true 先执行并给 watchRule.nextWakeAt 安排后续跟进；一次未来检查可用nextWakeAt，不得只在文字中承诺。ongoing不能降为once或没有任何未来动作。按用户指定频率和时区，未指定时明确区分建议安排。deadlineAt 是到期跟进，不是授权到期。创建无需先查询版本；已有相同事项则查询进度，避免重复创建。返回成功才可声称已受理或已安排；未来检查不得声称正在执行。"
       : `${name}: 操作用户明确指定的已有事项，先查询并携带返回的 versionGuard；冲突重新查询。work_amend 可改 watchRule/期限，watchRule=null 停止后续跟踪而保留事项；work_pause/resume 暂停/恢复，work_cancel 取消整个事项。仅改时间表不会立即重跑原任务。团队watch调整时间只传watchRule/deadlineAt及身份/版本，不要顺手改标题或目标，否则会使成员分工失效；真正改目标需另行重新规划。批评、催促、抱怨不是暂停或取消意图；仅明确要求停止/取消时调用对应控制。`,
     parameters: name === "work_create" ? inputParameters.create
       : name === "work_amend" ? inputParameters.change : inputParameters.control,
@@ -266,6 +285,18 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
       const { items, ...queryPage } = page;
       return items.map((item, index) => index === 0 ? { ...item, queryPage } : item);
     })); } }), ...mutations,
+  defineTool({ name: "schedule_overview",
+    description: "只读汇总当前用户/Bot 的“我的安排”：把纯提醒(kind=reminder)与尚未结束的后台事项(kind=work，含一次性执行、持续观察和事件订阅)合并成一个列表，逐项说明具体时间或触发条件、实际会做什么、当前状态和结果回到哪里。提醒由 CronService 到期直接发已保存内容，不调用模型、不创建 Work；事项是真实后台执行。二者不会互相冒充：提醒没有工作模式，事项不是提醒。本工具不写库、不新建 Work、不新建调度器，只投影既有 Cron/Work/Watch 事实。宿主离线或休眠时不会到点执行/投递(hostMustBeRunning)，恢复后按各自补查策略处理；已登记安排不等于正在执行。用户问“明天有什么安排/提醒和跟进”时优先用本工具一次查询，不要用 work_query_status 逐项猜测，也不要为查安排创建 Work。",
+    parameters: parameters(z.object({}).strict()), replay: "safe",
+    execute: async (_args, api, context) => {
+      z.object({}).strict().parse(_args);
+      const requestId = await botForegroundRequest(api, api.callId, context);
+      return output(options.db.transaction(() => {
+        assertActive(); receipt(requestId);
+        return botScheduleOverview({ db, works, catalogue, reminders: options.reminders, userId, botId,
+          teamId: options.teamId, conversationId, now: Date.now });
+      }).deferred());
+    } }),
   defineTool({ name: "work_team_templates", description: "查询当前 Bot 负责的已保存团队分工。同时返回当前工作目录可用的现有候选 Bot。需要多人协作时先查成员名字与职责；无模板也可从 availableBots 选择成员直接组队，无需用户先保存模板。",
     parameters: parameters(z.object({}).strict()), replay: "safe",
     execute: async (_args, api, context) => {
@@ -279,7 +310,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
       const workspacePath = options.teamId ? works.teams.resolveWorkspace(userId, options.teamId) : options.botWorkspace?.(botId);
       return output({ templates, availableBots: workspacePath ? works.teams.foregroundCandidates(userId, botId, workspacePath) : [], workspacePath: workspacePath ?? null });
     } }),
-  defineTool({ name: "work_team_create", description: "创建并启动团队：先查 work_team_templates；可省略 templateId，提供 taskAssignment 从 availableBots 自主选择适合本次委托的成员和依赖，宿主默认有界并行。也可复用模板内成员和上限。负责人保持当前 Bot，权限仅来自已有范围，目录来自 Bot 设置。title/goalDescription/criteria 是执行规划，宿主独立保留用户原文与附件。用户要求执行即可开工，无需再次确认。不要另调用 work_create 重复派发。持续委托必须传 requestedOutcome=ongoing、mode=watch 和 watchRule 周期/时区，不能创建once后文字承诺持续；每轮重新观察由成员执行、负责人汇总，默认等首次检查，用户要求现在也检查才startImmediately=true。成功后可用 work_query_status 查询成员进度，work_pause/resume/cancel 控制已有团队。",
+  defineTool({ name: "work_team_create", description: "创建并启动团队：先查 work_team_templates；可省略 templateId，提供 taskAssignment 从 availableBots 自主选择适合本次委托的成员和依赖，宿主默认有界并行。也可复用模板内成员和上限。负责人保持当前 Bot，权限仅来自已有范围，目录来自 Bot 设置。title/goalDescription/criteria 是执行规划，宿主独立保留用户原文与附件。用户要求执行即可开工，无需再次确认。不要另调用 work_create 重复派发。持续委托必须传 requestedOutcome=ongoing 和 mode=watch：周期观察给 watchRule.cronExpression；若现在就有可执行步骤、之后才需等待，传 startImmediately=true 并给 watchRule.nextWakeAt 安排后续跟进，不能创建once后文字承诺持续。每轮重新观察由成员执行、负责人汇总，默认等首次检查。成功后可用 work_query_status 查询成员进度，work_pause/resume/cancel 控制已有团队。",
     parameters: parameters(teamCreate), replay: "safe",
     execute: async (args, api, context) => {
       const { requestedOutcome, startImmediately, ...input } = teamCreate.parse(args);
