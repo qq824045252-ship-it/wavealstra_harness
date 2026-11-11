@@ -75,6 +75,7 @@ const SERIAL_TEST_PATTERNS = [/^test:core-performance/, /^test:bot-work-query-sc
  * （历史教训：`-ui$` 与 `:desktop$` 都曾漏出 GUI 用例，混进"无头"门禁）。
  */
 const GUI_TESTS = new Set([
+  "test:gadget-save-workspace-desktop",
   "test:gadget-save-copies-desktop",
   "test:gadget-menu-dev",
   "test:browser-builtin-electron",
