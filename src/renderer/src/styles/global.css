@@ -3144,6 +3144,26 @@ html[data-theme="dark"] .msg-detail-frame {
   min-width: 0;
 }
 
+/* Keep ACP identity visible when a saved model has a long label. */
+.add-menu-flyout-row .add-menu-flyout-item > svg {
+  flex-shrink: 0;
+}
+
+.add-menu-flyout-row .add-menu-flyout-text {
+  flex-shrink: 0;
+  max-width: 45%;
+}
+
+.add-menu-flyout-row .add-menu-item-meta {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+  color: inherit;
+}
+
 .add-menu-flyout-pin {
   display: inline-flex;
   align-items: center;

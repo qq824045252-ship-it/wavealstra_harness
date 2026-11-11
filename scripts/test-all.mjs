@@ -93,6 +93,7 @@ const GUI_TESTS = new Set([
   "test:bot-work-browser-dev",
   "test:work-artifact-desktop",
   "test:bot-settings-dev",
+  "test:acp-menu-dev", // actual pnpm dev Electron, isolated profile and seeded ACP catalog
   "test:bot-work-recovery-dev",
   "test:bot-work-phase5:dev",
   "test:bot-work-phase3:dev",

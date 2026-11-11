@@ -1091,6 +1091,8 @@ export default function InputAddMenu({
           ) : (
             externalAgents.map((agent) => {
               const acpModel = selectedAcpModelLabel(agent);
+              const acpStatus = agent.available ? (agent.availability === "adapter" ? "ACP 适配器" : "ACP") : "未就绪";
+              const acpDescription = acpModel ? `${acpStatus} · ${acpModel}` : acpStatus;
               return (
               <div key={agent.id} className="add-menu-flyout-row">
                 <button
@@ -1106,9 +1108,8 @@ export default function InputAddMenu({
                 >
                   <IconBot size={14} />
                   <span className="add-menu-flyout-text">{agent.name}</span>
-                  <span className="add-menu-item-meta">
-                    {agent.available ? (agent.availability === "adapter" ? "ACP 适配器" : "ACP") : "未就绪"}
-                    {acpModel ? ` · ${acpModel}` : ""}
+                  <span className="add-menu-item-meta" title={acpDescription}>
+                    {acpDescription}
                   </span>
                 </button>
                 {agent.available && onPinExternalAgent && (
