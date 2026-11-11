@@ -202,6 +202,42 @@ export class GadgetService {
     return state;
   }
 
+  /** Independent source/configuration snapshot. Runtime data and browser sessions are not shared. */
+  copyScope(id: string, scope: GadgetScope): GadgetDescriptor {
+    assertGadgetScope(scope);
+    this.assertScopeTarget(scope);
+    const original = this.require(id);
+    // A task destination must already be able to see the source; never copy another task's private tool.
+    if (scope.type === "task") this.assertVisibleToTask(original, scope.taskId);
+    const snapshot = this.deps.storage.readSource(id);
+    if (snapshot.files.length === 0) throw new Error("Gadget 入口文件不存在，不能保存空源码副本");
+    const metadata = normalizeJsonRecord(original.metadata, "Gadget metadata");
+    const copyId = `gdt-${randomUUID()}`;
+    const paths = this.deps.storage.create(copyId, snapshot.manifest, snapshot.files);
+    const now = Date.now();
+    // createdByTaskId remains origin provenance; visibility and deletion use scope exclusively.
+    const descriptor: GadgetDescriptor = {
+      ...original,
+      id: copyId,
+      scope: { ...scope },
+      manifestPath: paths.manifestPath,
+      sourcePath: paths.sourcePath,
+      metadata,
+      createdAt: now,
+      updatedAt: now,
+    };
+    let saved: GadgetDescriptor;
+    try {
+      saved = this.deps.repository.create(descriptor);
+    } catch (error) {
+      try { this.deps.storage.delete(copyId); } catch { /* preserve database failure; reconcile retries cleanup */ }
+      throw error;
+    }
+    this.deps.registry.upsert(saved);
+    this.emitChanged({ type: "created", gadgetId: saved.id });
+    return saved;
+  }
+
   moveScope(id: string, scope: GadgetScope): GadgetDescriptor {
     assertGadgetScope(scope);
     this.assertScopeTarget(scope);
@@ -284,7 +320,7 @@ export class GadgetService {
     if (!artifact) throw new Error(`Artifact 不存在：${input.artifactId}`);
     if (artifact.kind !== "html") throw new Error("当前仅支持把 HTML Artifact 转换为 Gadget");
     if (input.scope.type !== "task" || input.scope.taskId !== artifact.taskId) {
-      throw new Error("Artifact 只能先转换为其所属任务的 Task Gadget；长期使用请在创建后显式移动作用域");
+      throw new Error("Artifact 只能先转换为其所属任务的 Task Gadget；长期使用请在创建后保存独立副本");
     }
     return this.create({
       name: input.name?.trim() || artifact.title || "HTML Gadget",

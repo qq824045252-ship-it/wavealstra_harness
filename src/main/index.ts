@@ -76,6 +76,7 @@ import {
   type GadgetExportArtifactRequest,
   type GadgetSaveToTaskDirectoryRequest,
   type GadgetListRequest,
+  type GadgetCopyScopeRequest,
   type GadgetMoveScopeRequest,
   type GadgetSaveAsBlueprintRequest,
 } from "../shared/gadget-ipc";
@@ -742,6 +743,7 @@ function registerIpc(): void {
   ipcMain.handle(GadgetIpc.update, (_event, request: GadgetUpdateRequest) => gadgetService.update(request));
   ipcMain.handle(GadgetIpc.readSource, (_event, id: string) => gadgetService.readSource(id));
   ipcMain.handle(GadgetIpc.updateSource, (_event, request: GadgetSourceUpdateRequest) => gadgetService.updateSource(request));
+  ipcMain.handle(GadgetIpc.copyScope, (_event, request: GadgetCopyScopeRequest) => gadgetService.copyScope(request.gadgetId, request.scope));
   ipcMain.handle(GadgetIpc.moveScope, (_event, request: GadgetMoveScopeRequest) => gadgetService.moveScope(request.gadgetId, request.scope));
   ipcMain.handle(GadgetIpc.start, (_event, id: string) => gadgetService.start(id));
   ipcMain.handle(GadgetIpc.health, (_event, id: string) => gadgetService.health(id));

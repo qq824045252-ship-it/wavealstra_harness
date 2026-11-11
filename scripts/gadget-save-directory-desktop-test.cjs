@@ -118,10 +118,12 @@ async function screenshot(name) {
     report.tests.push('Real menu clicks save nested HTML/binary resources/configuration to the bound task directory; repeated saves preserve user edits and expose the folder action');
     const rejected = await evaluate(`window.api.gadget.saveToTaskDirectory({gadgetId:${JSON.stringify(seed.privateGadget)},taskId:'isolated-task'}).then(()=>'',e=>String(e))`);
     assert(rejected.includes('其它任务'), rejected);
-    // Promote the actual task Gadget, then save it again from My Gadgets.
+    // Save an independent personal copy, then export it from My Gadgets.
     await click(`${card('Task save fixture')}?.querySelector('.gadget-more-btn')`);
     await click(button('.gadget-action-menu-popover button', '保存到我的工作台'));
-    await until(() => evaluate(`window.api.gadget.get(${JSON.stringify(seed.own)}).then(g=>g.scope.type==='global')`), 'promoted personal Gadget');
+    await until(() => evaluate(`window.api.gadget.list({scope:{type:'global'}}).then(rows=>rows.some(g=>g.name==='Task save fixture' && g.id!==${JSON.stringify(seed.own)}))`), 'independent personal Gadget');
+    const personalCopyId = await evaluate(`window.api.gadget.list({scope:{type:'global'}}).then(rows=>rows.find(g=>g.name==='Task save fixture' && g.id!==${JSON.stringify(seed.own)}).id)`);
+    assert.equal(await evaluate(`window.api.gadget.get(${JSON.stringify(seed.own)}).then(g=>g.scope.type)`), 'task');
     const openMyGadgets = async () => {
       await click('document.querySelector(".sidebar-user-main")');
       await click(button('.sidebar-popup-item', '我的工作台'));
@@ -145,10 +147,11 @@ async function screenshot(name) {
     const promotedCopy = await evaluate('document.querySelector(".gadget-saved-path").textContent');
     assert.equal(path.dirname(promotedCopy), path.join(taskRoot, 'gadgets'));
     assert.notEqual(promotedCopy, first);
-    assert.equal(await evaluate(`window.api.gadget.get(${JSON.stringify(seed.own)}).then(g=>g.scope.type)`), 'global');
+    assert.equal(await evaluate(`window.api.gadget.get(${JSON.stringify(seed.own)}).then(g=>g.scope.type)`), 'task');
+    assert.equal(await evaluate(`window.api.gadget.get(${JSON.stringify(personalCopyId)}).then(g=>g.scope.type)`), 'global');
     assert.equal(fs.readFileSync(path.join(first, 'code/page/index.html'), 'utf8'), 'user change');
     await screenshot('personal-tool-task-save');
-    report.tests.push('Actual promote-to-My-Gadgets then save: current task is offered explicitly, Cancel creates nothing, saving keeps the personal Gadget and prior user-edited copies');
+    report.tests.push('Actual copy-to-My-Gadgets then save: current task is offered explicitly, Cancel creates nothing, saving keeps the personal Gadget and prior user-edited copies');
     await click('document.querySelector("button[aria-label=新建独立任务]")');
     await openMyGadgets();
     await openTaskPicker();
@@ -168,7 +171,8 @@ async function screenshot(name) {
     const chosenCopy = await evaluate('document.querySelector(".gadget-saved-path").textContent');
     assert(chosenCopy.startsWith(path.join(home, '.mybuddy/task-workspaces') + path.sep), chosenCopy);
     assert.equal(fs.readFileSync(path.join(chosenCopy, 'code/page/index.html'), 'utf8'), '<h1>Task saved source</h1>');
-    assert.equal(await evaluate(`window.api.gadget.get(${JSON.stringify(seed.own)}).then(g=>g.scope.type)`), 'global');
+    assert.equal(await evaluate(`window.api.gadget.get(${JSON.stringify(seed.own)}).then(g=>g.scope.type)`), 'task');
+    assert.equal(await evaluate(`window.api.gadget.get(${JSON.stringify(personalCopyId)}).then(g=>g.scope.type)`), 'global');
     report.tests.push('Without an active task, My Gadgets requires a destination selection; native select and save write only to the chosen isolated task, preserving the personal tool');
     await click(button('.task-item-title', 'isolated-task'));
     await until(() => evaluate('!document.querySelector(".gadget-save-result")'), 'prior save notice hidden');

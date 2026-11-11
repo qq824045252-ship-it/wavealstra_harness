@@ -79,9 +79,9 @@ export class GadgetStorage {
     const normalized = normalizeGadgetManifest(manifest);
     const materialized = files?.length ? files : [{ path: normalized.entry, content: defaultHtml(normalized.name), encoding: "utf8" as const }];
     this.validateSourceFiles(materialized);
-    mkdirSync(target.sourcePath, { recursive: true });
-    mkdirSync(target.dataPath, { recursive: true });
     try {
+      mkdirSync(target.sourcePath, { recursive: true });
+      mkdirSync(target.dataPath, { recursive: true });
       for (const file of materialized) this.writeSourceFile(id, file);
       if (!existsSync(join(target.sourcePath, ...normalized.entry.split("/")))) {
         throw new Error(`Gadget 入口文件不存在：${normalized.entry}`);

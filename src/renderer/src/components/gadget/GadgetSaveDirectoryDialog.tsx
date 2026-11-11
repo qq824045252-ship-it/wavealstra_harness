@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { GadgetListItem } from "@shared/gadget-types";
 import type { GadgetSaveToTaskDirectoryResult } from "@shared/gadget-ipc";
 import { useAppStore } from "@/store/appStore";
@@ -30,20 +30,24 @@ export default function GadgetSaveDirectoryDialog({ gadget, onClose, onSaved }: 
     return false;
   }), [tasks, spaces, gadget.scope]);
   const [taskId, setTaskId] = useState(() => targets.some(task => task.id === activeTaskId) ? activeTaskId! : "");
+  const pending = useRef(false);
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const selected = targets.find(task => task.id === taskId);
   const save = async (): Promise<void> => {
-    if (!selected) return;
+    if (!selected || pending.current) return;
+    pending.current = true;
     try {
       setBusy(true);
       setError(null);
       if (!window.api?.gadget) throw new Error("Gadget 能力尚未加载，请重启 MyBuddy");
       const result = await window.api.gadget.saveToTaskDirectory({ gadgetId: gadget.id, taskId: selected.id });
-      onSaved(result, selected.id, selected.title);
+      if (mounted.current) onSaved(result, selected.id, selected.title);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally { setBusy(false); }
+      if (mounted.current) setError(cause instanceof Error ? cause.message : String(cause));
+    } finally { pending.current = false; if (mounted.current) setBusy(false); }
   };
   return (
     <div className="gadget-dialog-overlay" role="dialog" aria-modal="true" aria-label="保存到任务工作目录">

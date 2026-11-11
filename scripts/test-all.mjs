@@ -75,6 +75,7 @@ const SERIAL_TEST_PATTERNS = [/^test:core-performance/, /^test:bot-work-query-sc
  * （历史教训：`-ui$` 与 `:desktop$` 都曾漏出 GUI 用例，混进"无头"门禁）。
  */
 const GUI_TESTS = new Set([
+  "test:gadget-save-copies-desktop",
   "test:gadget-menu-dev",
   "test:browser-builtin-electron",
   "test:bot-add-menu-desktop",
@@ -269,6 +270,7 @@ const KNOWN_HEADLESS_RED = new Set([
  * 显式清单优先于下面的命名兜底，否则它们会被 `^test:browser-` 之类正则误伤。
  */
 const HEADLESS_TESTS = new Set([
+  "test:gadget-save-copies",
   "test:bot-reminders",
   "test:work-watch-goal",
   "test:bot-rename",

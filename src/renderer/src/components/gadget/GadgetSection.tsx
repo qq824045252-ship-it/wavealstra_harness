@@ -48,7 +48,7 @@ export default function GadgetSection({ scope, includeInherited = false, title, 
   const [savedDirectory, setSavedDirectory] = useState<(GadgetSaveToTaskDirectoryResult & { taskId: string; taskTitle: string; scopeKey: string }) | null>(null);
   const [saveDirectoryItem, setSaveDirectoryItem] = useState<GadgetListItem | null>(null);
   const [pendingRemove, setPendingRemove] = useState<GadgetListItem | null>(null);
-  const [moveItem, setMoveItem] = useState<{ item: GadgetListItem; initialTarget?: "global" | "workspace" } | null>(null);
+  const [moveItem, setMoveItem] = useState<{ item: GadgetListItem; mode: "copy" | "move"; initialTarget?: "global" | "workspace" } | null>(null);
   const [openActionId, setOpenActionId] = useState<string | null>(null);
   const [actionAnchor, setActionAnchor] = useState<HTMLElement | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
@@ -57,17 +57,24 @@ export default function GadgetSection({ scope, includeInherited = false, title, 
   const { requestText, textPromptDialog } = useTextPrompt();
   const key = scopeKey(scope);
   const currentScopeKey = useRef(key);
+  const scopeGeneration = useRef(0);
+  if (currentScopeKey.current !== key) scopeGeneration.current++;
   currentScopeKey.current = key;
-  useEffect(() => { setSavedDirectory(null); setSaveDirectoryItem(null); setBusyId(null); }, [key]);
+  const pendingSaves = useRef(new Set<string>());
+  const listRequest = useRef(0);
+  useEffect(() => { setSavedDirectory(null); setSaveDirectoryItem(null); setMoveItem(null); setPendingRemove(null); setSourceItem(null); setNotice(null); setError(null); setItems([]); setOpenActionId(null); setBusyId(null); }, [key]);
 
   const reload = useCallback(async (): Promise<void> => {
+    const generation = scopeGeneration.current;
+    const request = ++listRequest.current;
     try {
       const rows = await gadgetApi().list({ scope, includeInherited });
+      if (currentScopeKey.current !== key || scopeGeneration.current !== generation || request !== listRequest.current) return;
       setItems(rows);
       useAppStore.getState().setGadgetsCount(rows.length);
       setError(null);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      if (currentScopeKey.current === key && scopeGeneration.current === generation && request === listRequest.current) setError(cause instanceof Error ? cause.message : String(cause));
     }
   }, [key, includeInherited, taskWorkspaceId]);
 
@@ -105,14 +112,23 @@ export default function GadgetSection({ scope, includeInherited = false, title, 
   };
 
   const saveToMyGadgets = async (item: GadgetListItem): Promise<void> => {
+    if (pendingSaves.current.has(item.id)) return;
+    pendingSaves.current.add(item.id);
+    const generation = scopeGeneration.current;
+    const stillHere = (): boolean => currentScopeKey.current === key && scopeGeneration.current === generation;
     try {
       setBusyId(item.id);
-      await gadgetApi().moveScope({ gadgetId: item.id, scope: { type: "global" } });
-      await reload();
+      setError(null);
+      await gadgetApi().copyScope({ gadgetId: item.id, scope: { type: "global" } });
+      if (stillHere()) {
+        setNotice("已保存独立副本到我的工作台，原工具保留且不自动同步。");
+        await reload();
+      }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      if (stillHere()) setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
-      setBusyId(null);
+      pendingSaves.current.delete(item.id);
+      if (stillHere()) setBusyId(null);
     }
   };
 
@@ -184,7 +200,9 @@ export default function GadgetSection({ scope, includeInherited = false, title, 
   };
 
   const saveTaskDirectory = async (item: GadgetListItem): Promise<void> => {
-    if (scope.type !== "task") return;
+    if (scope.type !== "task" || pendingSaves.current.has(item.id)) return;
+    pendingSaves.current.add(item.id);
+    const generation = scopeGeneration.current;
     const taskId = scope.taskId;
     const startedInScope = key;
     try {
@@ -192,11 +210,12 @@ export default function GadgetSection({ scope, includeInherited = false, title, 
       setError(null);
       setSavedDirectory(null);
       const saved = await gadgetApi().saveToTaskDirectory({ gadgetId: item.id, taskId });
-      if (currentScopeKey.current === startedInScope) setSavedDirectory({ ...saved, taskId, taskTitle: useAppStore.getState().tasks.find(task => task.id === taskId)?.title || taskId, scopeKey: key });
+      if (currentScopeKey.current === startedInScope && scopeGeneration.current === generation) setSavedDirectory({ ...saved, taskId, taskTitle: useAppStore.getState().tasks.find(task => task.id === taskId)?.title || taskId, scopeKey: key });
     } catch (cause) {
-      if (currentScopeKey.current === startedInScope) setError(cause instanceof Error ? cause.message : String(cause));
+      if (currentScopeKey.current === startedInScope && scopeGeneration.current === generation) setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
-      if (currentScopeKey.current === startedInScope) setBusyId(null);
+      pendingSaves.current.delete(item.id);
+      if (currentScopeKey.current === startedInScope && scopeGeneration.current === generation) setBusyId(null);
     }
   };
 
@@ -277,18 +296,18 @@ export default function GadgetSection({ scope, includeInherited = false, title, 
                     <button type="button" disabled={busy} onClick={() => { closeActions(); setSourceItem(item); }}>
                       编辑源码
                     </button>
-                    {!item.inherited && taskScoped && (
-                      <button type="button" disabled={busy} onClick={() => { closeActions(); setMoveItem({ item, initialTarget: "workspace" }); }}>
+                    {!item.inherited && (
+                      <button type="button" disabled={busy} onClick={() => { closeActions(); setMoveItem({ item, mode: "copy", initialTarget: "workspace" }); }}>
                         保存到工作空间
                       </button>
                     )}
-                    {!item.inherited && taskScoped && (
+                    {!item.inherited && item.scope.type !== "global" && (
                       <button type="button" disabled={busy} onClick={() => { closeActions(); void saveToMyGadgets(item); }}>
                         保存到我的工作台
                       </button>
                     )}
                     {!item.inherited && !taskScoped && (
-                      <button type="button" disabled={busy} onClick={() => { closeActions(); setMoveItem({ item }); }}>
+                      <button type="button" disabled={busy} onClick={() => { closeActions(); setMoveItem({ item, mode: "move" }); }}>
                         移动到…
                       </button>
                     )}
@@ -437,10 +456,17 @@ export default function GadgetSection({ scope, includeInherited = false, title, 
       {sourceItem && createPortal(<GadgetSourceDialog gadget={sourceItem} onClose={() => setSourceItem(null)} />, document.body)}
       {moveItem && (
         <GadgetMoveDialog
+          key={`${key}:${moveItem.item.id}:${moveItem.mode}`}
           gadget={moveItem.item}
+          mode={moveItem.mode}
           initialTarget={moveItem.initialTarget}
           onClose={() => setMoveItem(null)}
-          onMoved={() => { setMoveItem(null); void reload(); }}
+          onMoved={() => {
+            if (currentScopeKey.current !== key) return;
+            setMoveItem(null);
+            setNotice(moveItem.mode === "copy" ? "已保存独立副本，原工具保留且不自动同步。" : "已移动工具。");
+            void reload();
+          }}
         />
       )}
       {createOpen && (
@@ -461,7 +487,7 @@ export default function GadgetSection({ scope, includeInherited = false, title, 
       <ConfirmDialog
         open={pendingRemove !== null}
         title={`删除 Gadget「${pendingRemove?.name ?? ""}」？`}
-        body="源码和持久数据将一并删除；已导出的 Artifact 不受影响。"
+        body="仅删除此工具的源码和持久数据。另存的独立副本、任务目录副本和已导出的 Artifact 不受影响；其它位置对同一工具的引用会消失。"
         confirmLabel="删除"
         danger
         onCancel={() => setPendingRemove(null)}

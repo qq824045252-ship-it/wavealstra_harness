@@ -16,6 +16,7 @@ export const GadgetIpc = {
   update: "gadget:update",
   readSource: "gadget:readSource",
   updateSource: "gadget:updateSource",
+  copyScope: "gadget:copyScope",
   moveScope: "gadget:moveScope",
   start: "gadget:start",
   health: "gadget:health",
@@ -38,6 +39,12 @@ export interface GadgetChangedEvent {
 export interface GadgetListRequest {
   scope?: GadgetScope;
   includeInherited?: boolean;
+}
+
+/** Save an independent source/configuration copy; never move the original. */
+export interface GadgetCopyScopeRequest {
+  gadgetId: string;
+  scope: GadgetScope;
 }
 
 export interface GadgetMoveScopeRequest {
@@ -82,6 +89,7 @@ export interface GadgetApi {
   update(request: GadgetUpdateRequest): Promise<GadgetDescriptor>;
   readSource(id: string): Promise<GadgetSourceSnapshot>;
   updateSource(request: GadgetSourceUpdateRequest): Promise<GadgetSourceSnapshot>;
+  copyScope(request: GadgetCopyScopeRequest): Promise<GadgetDescriptor>;
   moveScope(request: GadgetMoveScopeRequest): Promise<GadgetDescriptor>;
   start(id: string): Promise<GadgetRuntimeState>;
   health(id: string): Promise<GadgetRuntimeState>;
