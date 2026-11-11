@@ -5,9 +5,16 @@ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'work-conversation-'));app.setPat
 app.whenReady().then(async()=>{let win;try{
  const out=path.resolve('out/tests'),url=n=>pathToFileURL(path.join(out,n)).href;
  fs.writeFileSync(path.join(dir,'index.html'),`<html><meta charset="utf-8"><link rel="stylesheet" href="${url('bot-work-conversation-desktop-fixture.css')}"><style>*{box-sizing:border-box}body{margin:0;font:14px system-ui;color:#222;background:white}#root{height:100vh;display:flex}:root{--surface-right:white;--fg:#222;--fg-secondary:#666;--border-subtle:#eee;--border-default:#ddd;--bg-input:white;--bg-sidebar:#f5f5f5;--accent:#3871ed}h1,h2,h3,p{margin:0}</style><div id="root"></div><script src="${url('bot-work-conversation-desktop-fixture.js')}"></script></html>`);
- win=new BrowserWindow({width:1100,height:900,show:true});win.webContents.on('console-message',(_e,_l,m)=>console.log('renderer:',m)); await win.loadFile(path.join(dir,'index.html')); 
+ const rendererErrors=[];
+ win=new BrowserWindow({width:1100,height:900,show:true});
+ win.webContents.on('console-message',event=>{
+   console.log('renderer:',event.message);
+   if(event.level==='error')rendererErrors.push(event.message);
+ });
+ await win.loadFile(path.join(dir,'index.html'));
  const ev=s=>win.webContents.executeJavaScript(s),wait=async s=>{for(let i=0;i<100;i++){if(await ev(s))return;await new Promise(r=>setTimeout(r,40));}throw Error(s);};
  await wait('document.querySelectorAll("[data-message-id]").length===16');
+ assert.deepEqual(rendererErrors,[],'fixture startup must not hide renderer errors');
  assert.equal(await ev('window.detailRequests.length'),0,'initial conversation loads no full Work details');
  await ev(`document.addEventListener('click', e=>{if(e.target.closest('.bot-message-work-links button')) window.beforeDetailScroll=document.querySelector('.bot-thread').scrollTop;}, true)`);
  const stableLayout=async()=>{let last='',same=0;for(let i=0;i<50;i++){const next=await ev(`JSON.stringify([innerWidth,innerHeight,document.querySelector('.bot-thread')?.scrollHeight])`);same=next===last?same+1:0;if(same>=3)return;last=next;await new Promise(r=>setTimeout(r,100));}throw Error('window layout did not settle');};
@@ -213,5 +220,6 @@ app.whenReady().then(async()=>{let win;try{
    assert(await ev('Math.abs(window.historySource.scrollTop-window.historyScroll)<2'),'historical return restores scroll');
  }
  console.log('PASS historical team: conversation/list return, two widths, unchanged identity, mounted source and native Escape/focus restoration.');
+ assert.deepEqual(rendererErrors,[],'navigation must not hide renderer errors');
  if (!process.env.WORK_DETAIL_FOCUS) console.log('PASS Electron real clicks: message/detail/back, source-team links with Bot/conversation isolation, 3 widths, scroll+focus restoration, saved artifact target, live status, removed work, stale team lookup. Isolated fixture data; no live model.');
  }catch(e){console.error(e);process.exitCode=1;}finally{win?.close();app.exit(process.exitCode||0);}});
