@@ -5,7 +5,8 @@ import { botMemorySource } from "./BotMemorySource";
 
 /** Authoritative assistant ownership graph; model hints never override persisted bindings. */
 export function resolveWorkMemoryScope(db: AppDatabase, taskId: string): { bot_id: string; work_id: string; project_id: string | null; team_id: string | null; is_team: boolean } | undefined {
-    const row = db.connection.prepare(`SELECT b.bot_id,b.work_id,w.project_id FROM work_execution_bindings b
+    // Executing collaborators/subagents do not change the owner of personal Work memory.
+    const row = db.connection.prepare(`SELECT w.owner_bot_id AS bot_id,b.work_id,w.project_id FROM work_execution_bindings b
       JOIN works w ON w.work_id=b.work_id WHERE b.task_id=? AND w.user_id=? ORDER BY b.admitted_at DESC, b.rowid DESC LIMIT 1`)
       .get(taskId, LOCAL_USER_ID) as { bot_id: string; work_id: string; project_id: string | null } | undefined;
     if (!row) return undefined;
@@ -62,4 +63,3 @@ export function resolveAssistantScopeChain(db: AppDatabase, request: MemorySearc
       seen.add(key); return true;
     });
   }
-

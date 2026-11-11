@@ -59,6 +59,13 @@ try {
   check({ workId: "w1" }, [a.id, w1.id, project.id], [w2.id, taskOnly.id]);
   check({ taskId: "t2", botId: "b", workId: "w2", teamId: "other-team", projectId: "other-project" },
     [a.id, w1.id, project.id], [b.id, w2.id]);
+  // Personal Work remains owned by A even when collaborator B executes its next round.
+  db.connection.prepare("UPDATE work_execution_bindings SET bot_id='b' WHERE task_id='t2'").run();
+  check({ taskId: "t2" }, [a.id,w1.id,project.id], [b.id,w2.id]);
+  // The native subagent memory extension is bound to its parentTaskId, not the executing Bot hint.
+  const childBinding = { parentTaskId: "t2", executorBotId: "b" };
+  check({ taskId: childBinding.parentTaskId, botId: childBinding.executorBotId }, [a.id,w1.id,project.id], [b.id]);
+  assert(memory.resolveScopeChain({taskId:childBinding.parentTaskId}).some(scope => scope.scopeType==='bot' && scope.scopeId==='a'));
   db.connection.prepare("INSERT INTO work_teams(work_id,user_id,operation_id,request_hash,plan_json,intent_revision,input_snapshot_id,created_at) VALUES('w2',?,'op-team','hash','{}',1,'input',1)").run(LOCAL_USER_ID);
   db.connection.prepare("INSERT INTO work_team_ownership(work_id,team_id,team_name) VALUES('w2','team-a','Team A')").run();
   check({ taskId: "t3" }, [team.id, w2.id, project.id, shared.id], [a.id, b.id, w1.id, legacyGlobal.id]);
