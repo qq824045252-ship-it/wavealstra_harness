@@ -60,9 +60,10 @@ source = source.slice(0, start) + `
       }
       await until(()=>evaluate('Boolean(document.querySelector("#bot-draft"))'),'restart composer');
     };
-    await require('./bot-scheduling-live-scenario.cjs').run({send,foregroundDone,until,evaluate,history,rpc,report,requests,rawUsageAudit,out,home,modelKey,botId,restart});
-    report.source.finishedFingerprint=fingerprint();
-    assert.equal(report.source.finishedFingerprint.sha256,report.source.fingerprint.sha256,'frozen source must not change during live batch');
+    try { await require('./bot-scheduling-live-scenario.cjs').run({send,foregroundDone,until,evaluate,history,rpc,report,requests,rawUsageAudit,out,home,modelKey,botId,restart}); } finally {
+      report.source.finishedFingerprint=fingerprint();
+      assert.equal(report.source.finishedFingerprint.sha256,report.source.fingerprint.sha256,'frozen source must not change during live batch');
+    }
 ` + source.slice(end);
 if (process.argv.includes('--check-harness')) {
   new (require('node:vm').Script)(source, {filename});

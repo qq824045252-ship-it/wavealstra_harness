@@ -93,6 +93,22 @@ export function watchGoalMet(work: WorkDto, binding: WorkExecutionBindingDto, de
   return stop.evidence.every(proof=>proof.quote.trim() && evidence.some(item=>item.resultId===proof.resultId && (item.text.includes(proof.quote) || JSON.stringify(item.text).slice(1,-1).includes(proof.quote))));
 }
 
-export function watchGoalClosureSummary(decision: WorkResultDecision): string {
+export function watchGoalClosureSummary(decision: WorkResultDecision, work?: WorkDto): string {
+  if (work?.watchRule?.requestedOutcome === "one_time") return "已核对本次未来执行的原始目标和真实成果，任务已完成，不再安排下一轮。";
   return `已根据本轮实际观察确认停止条件满足：${(decision.stopAssessment?.conditionExcerpt ?? "原委托明确的停止条件").replace(/[。；;]+$/, "")}。持续委托已完成，后续不再检查。详细依据见本轮报告。`;
+}
+
+/** The same original-request and current-native-evidence binding as stop assessment,
+ * but a notification verdict never closes the Work or changes its schedule. */
+export function watchNotificationNotMet(work: WorkDto, binding: WorkExecutionBindingDto, decision: WorkResultDecision,
+  originalRequest: unknown, evidence: WatchGoalEvidence[]): boolean {
+  const assessment=decision.notificationAssessment;
+  if (work.mode!=="watch" || work.lifecycle!=="active" || binding.status!=="completed" || binding.invalidatedAt
+    || binding.intentRevision!==work.intentRevision || binding.inputSnapshotId!==work.inputSnapshotId || binding.ownerEpoch!==work.ownerEpoch
+    || decision.decision!=="deliver" || decision.outcome!=="completed" || decision.missing.length || decision.followUp || decision.waitPlan
+    || assessment?.status!=="not_met" || !assessment.conditionExcerpt.trim() || !assessment.requestExcerpt.trim() || !assessment.evidence.length) return false;
+  const request=originalRequest as {userRequest?:{messages?:{text:string}[]}};
+  const texts=request.userRequest?.messages?.map(message=>message.text) ?? [];
+  if (!texts.some(text=>text.includes(assessment.requestExcerpt)) || !assessment.requestExcerpt.includes(assessment.conditionExcerpt)) return false;
+  return assessment.evidence.every(proof=>proof.quote.trim() && evidence.some(item=>item.resultId===proof.resultId && item.text.includes(proof.quote)));
 }

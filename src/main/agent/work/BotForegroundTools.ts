@@ -222,7 +222,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
           shouldSchedule = mode !== "watch";
           startWatchImmediately = mode === "watch" && (startImmediately === true || input.watchRule?.triggerMode === "current_condition");
           result = works.createWork(actor(), { ...input, mode,
-            watchRule: input.watchRule ? { ...input.watchRule, subscriptions: [input.watchRule.eventSource ?? "cron"],
+            watchRule: input.watchRule ? { ...input.watchRule, requestedOutcome, subscriptions: [input.watchRule.eventSource ?? "cron"],
               timezone: input.watchRule.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
               ...(fileBaseline ? { maxMergeWaitMs: 1000 } : {}) } : undefined,
             criteria: input.criteria?.map(item => ({ ...item, origin: "assistant_proposal" as const })), operationId, ownerBotId: botId,
@@ -394,6 +394,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
         const workspacePath = input.templateId ? works.teams.resolveWorkspace(userId, input.templateId) : options.botWorkspace?.(botId, true);
         if (!workspacePath) throw new Error("当前 Bot 没有可用工作目录，请在 Bot 设置中指定文件夹");
         const result = works.teams.createFromForeground(actor(), { ...input,
+          ...(input.mode === "watch" ? { watchRule: { ...input.watchRule, requestedOutcome } } : {}),
           operationId: `bot:${conversationId}:${options.requestNamespace ? `request:${options.requestNamespace}:` : ""}team:${api.taskId}`, workspacePath, conversationId, sourceMessageId: source.user_message_id });
         if (result.ok && result.work) {
           if (startImmediately && result.work.mode === "watch" && !result.replayed) {

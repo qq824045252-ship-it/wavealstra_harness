@@ -171,6 +171,7 @@ const GUI_TESTS = new Set([
 ]);
 
 const NETWORK_TESTS = new Set([
+  "test:bot-completion-evidence:live", // six registered text task types with real result review
   "test:bot-scheduling-live", // real Electron + configured real model; at least six task types per batch
   "test:google-workspace-write:live", // Real model/Electron with isolated local SDK fixture only.
   "test:google-workspace:live", // Real Electron/model; isolated synthetic gws process, no real account.

@@ -6,6 +6,8 @@ import type { CronJobDto } from "../../../shared/agent-ipc";
 import type { BotForegroundToolOptions } from "./BotForegroundTools";
 import { botForegroundRequest } from "./BotForegroundIdentity";
 
+import { reminderResultAccessible } from "../../cron/CronReminderResults";
+
 const text = z.string().trim().min(1).max(2000);
 const schedule = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("after"), seconds: z.number().int().min(1).max(315360000) }).strict(),
@@ -15,6 +17,7 @@ const schedule = z.discriminatedUnion("kind", [
 ]);
 const request = z.object({ action: z.enum(["list", "create", "update", "pause", "resume", "cancel", "snooze"]),
   reminderId: text.optional(), title: text.optional(), content: text.optional(), schedule: schedule.optional(),
+  result: z.object({ workId: text, fileRefs: z.array(text).min(1).max(20).optional() }).strict().nullable().optional(),
   timezone: z.string().min(1).optional(), snoozeSeconds: z.number().int().min(1).max(315360000).optional() }).strict();
 
 export function reminderSchedule(input: z.infer<typeof schedule>, receivedAt: number): Pick<CronJobDto, "scheduleType" | "scheduleExpr"> {
@@ -26,7 +29,7 @@ export function reminderSchedule(input: z.infer<typeof schedule>, receivedAt: nu
 
 export function botReminderTool(options: BotForegroundToolOptions) {
   return defineTool({ name: "reminder_manage",
-    description: "纯提醒专用：例如2分钟后提醒喝水、每天9点提醒。到时直接发已保存的内容，不调用模型、不创建Work。create必须给title/content/schedule；相对时间传after.seconds由宿主按本次用户消息时间计算，绝对时间用带时区ISO，重复用every.seconds或cron.expression+IANA timezone。不要心算Unix时间。list查询当前Bot或团队所有对话的提醒；update改期/内容，pause/resume/cancel管理，snooze将同一提醒稍后再发（需要snoozeSeconds，仅调整下一次提醒，重复周期保留）。已有同一提醒改期不要新建；同名歧义先list并明确目标。仅替用户提醒，不把发出当用户已完成；到时需要做研究/执行的不是纯提醒，应交Work。只有返回成功才能承诺，说明具体下次时间；本机离线无法准时弹出，恢复后合并补发。",
+    description: "纯提醒专用：关联已有成果请传result:{workId,fileRefs?}，workId必须来自当前原会话已有Work，fileRefs可选且必须是已登记文件的准确ref；省略选全部当前可投递成果。到时只读取已有报告与不可变文件，不重新运行业务。update传result:null解除关联，省略则保留。例如2分钟后提醒喝水、每天9点提醒。到时直接发已保存的内容，不调用模型、不创建Work。create必须给title/content/schedule；相对时间传after.seconds由宿主按本次用户消息时间计算，绝对时间用带时区ISO，重复用every.seconds或cron.expression+IANA timezone。不要心算Unix时间。list查询当前Bot或团队所有对话的提醒；update改期/内容，pause/resume/cancel管理，snooze将同一提醒稍后再发（需要snoozeSeconds，仅调整下一次提醒，重复周期保留）。已有同一提醒改期不要新建；同名歧义先list并明确目标。仅替用户提醒，不把发出当用户已完成；到时需要做研究/执行的不是纯提醒，应交Work。只有返回成功才能承诺，说明具体下次时间；本机离线无法准时弹出，恢复后合并补发。",
     parameters: Type.Unsafe<z.input<typeof request>>(z.toJSONSchema(request, { target: "draft-7", io: "input" })), replay: "safe",
     execute: async (args, api, context) => {
       const input = request.parse(args);
@@ -37,7 +40,7 @@ export function botReminderTool(options: BotForegroundToolOptions) {
       const scoped = () => cron.list().filter(job => job.reminder?.userId === options.userId
         && (options.teamId ? job.reminder.teamId === options.teamId : job.reminder.botId === options.botId && !job.reminder.teamId));
       const output = (value: unknown) => ({ output: [{ type: "text" as const, text: JSON.stringify(value) }] });
-      const summarize = (job: CronJobDto) => ({ reminderId: job.id, title: job.name, content: job.prompt,
+      const summarize = (job: CronJobDto) => ({ reminderId: job.id, title: job.name, content: job.prompt, result: job.reminder?.result ?? null,
         enabled: job.enabled, state: job.reminder?.state ?? (job.enabled ? "scheduled" : "paused"), scheduleType: job.scheduleType, scheduleExpr: job.scheduleExpr, timezone: job.timezone,
         nextReminderAt: job.nextRunAt === undefined ? null : new Date(job.nextRunAt).toISOString(),
         nextReminderLocal: job.nextRunAt === undefined ? null : new Intl.DateTimeFormat("zh-CN", { timeZone: job.timezone, dateStyle: "full", timeStyle: "long" }).format(job.nextRunAt),
@@ -63,13 +66,18 @@ export function botReminderTool(options: BotForegroundToolOptions) {
           if (nextSchedule.scheduleType === "at" && Date.parse(nextSchedule.scheduleExpr) < source.createdAt) throw new Error("提醒时间早于本次请求，请根据当前时间修正，不要建立过去的提醒");
           const timezone = input.timezone ?? job?.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
           new Intl.DateTimeFormat("zh-CN", { timeZone: timezone }).format();
+          const target = job?.reminder ?? { state: "scheduled" as const, kind: "bot-reminder" as const, userId: options.userId,
+            botId: options.botId, conversationId: options.conversationId, ...(options.teamId ? {teamId:options.teamId} : {}) };
+          const result = input.result === undefined ? target.result : input.result ?? undefined;
+          const reminder = {...target, state:"scheduled" as const, result};
+          if (input.result !== undefined && input.action === "snooze") throw new Error("关联成果请使用update修改");
+          if (input.result && !reminderResultAccessible(options.db,reminder)) throw new Error("成果必须属于提醒原会话、当前用户与Bot/团队");
           const now = Date.now();
           if (input.action === "snooze" && job!.scheduleType !== "at") job = cron.snoozeReminder(job!.id, source.createdAt + input.snoozeSeconds! * 1000);
           else job = cron.upsert({ ...job, id: job?.id ?? `reminder-${createHash("sha256").update(operationId).digest("hex")}`,
             name: input.title ?? job!.name, prompt: input.content ?? job!.prompt, ...nextSchedule, timezone,
             enabled: true, createdAt: job?.createdAt ?? now, updatedAt: now, restartPolicy: "resume",
-            reminder: job?.reminder ? { ...job.reminder, state: "scheduled" } : { state: "scheduled", kind: "bot-reminder", userId: options.userId, botId: options.botId,
-              conversationId: options.conversationId, ...(options.teamId ? { teamId: options.teamId } : {}) } });
+            reminder });
         } else {
           cron.setEnabled(job!.id, input.action === "resume", input.action === "cancel" ? "cancelled" : undefined);
           job = cron.list().find(value => value.id === job!.id)!;

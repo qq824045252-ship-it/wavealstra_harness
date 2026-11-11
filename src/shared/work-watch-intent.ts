@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 export const workWatchNormalizedSchema = z.object({
+  requestedOutcome: z.enum(["one_time", "ongoing"]).optional().describe("保存目标的一次性/持续性；create由外层requestedOutcome写入，缺省历史事项维持持续语义"),
   executionMode: z.enum(["observe", "continuous"]).optional().describe("observe只读观察，不修改成果；continuous按授权持续推进/修复/更新同一个成果，即使用户指定周期cron也须选continuous。现在可行动就先行动，只有确实需要等待时才安排时间或事件"),
   eventSource: z.string().min(1).max(200).optional().describe("先用work_watch_sources查询真实可用来源。未接入来源不能假装已有事件订阅，应明确说明并设置轮询时间"),
   eventTarget: z.string().min(1).max(2000).optional().describe("来源内的具体对象标识，避免无关对象触发"),

@@ -1,5 +1,9 @@
+import {createHash} from "node:crypto";
+import {execFileSync} from "node:child_process";
+import {REMINDER_RESULT_LIMITS,verifyReminderSnapshot} from "../src/main/cron/CronReminderResults";
+import {CronReminderDelivery} from "../src/main/cron/CronReminderDelivery";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, symlinkSync, truncateSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
@@ -91,6 +95,115 @@ async function main() {
   const changed=await invoke({action:'update',reminderId:id,schedule:{kind:'at',iso:new Date(Date.now()+60000).toISOString()},content:'新内容'});
   assert.equal(changed.reminder.content,'新内容');assert.equal(cron.list().find(j=>j.id===id)!.reminder!.botId,DEFAULT_BOT_ID);
   assert.equal(calls,0);console.log('PASS scope and reschedule');
+  cron.stop();
+  const created=works.createWork({kind:'user',userId:LOCAL_USER_ID,grants:DESKTOP_USER_GRANTS},
+    {operationId:'reminder-result-work',title:'silent benchmark',conversationId:receipt.conversationId,authorization:DESKTOP_USER_GRANTS});
+  assert(created.ok);const w=created.work;
+  db.connection.prepare("UPDATE work_conversations SET channel_type='bot-delivery' WHERE work_id=?").run(w.workId);
+  const associated=await invoke({action:'create',title:'看成果',content:'看benchmark',schedule:{kind:'after',seconds:60},result:{workId:w.workId}});
+  const resultJobId=associated.reminder.reminderId;
+  await invoke({action:'update',reminderId:resultJobId,schedule:{kind:'after',seconds:120}});
+  const resultJob=()=>cron.list().find(j=>j.id===resultJobId)!;
+  assert.equal(resultJob().reminder!.result!.workId,w.workId,'reschedule preserves association');
+  const host=new CronReminderDelivery(db);
+  assert.match(host.deliver(resultJob(),Date.now(),Date.now(),true).body,/尚无当前可投递/);
+  await assert.rejects(()=>invoke({action:'update',reminderId:resultJobId,result:{workId:'foreign-work'}}),/必须属于/);
+  const sourcePath=join(root,'benchmark.json');
+  const publish=(version:number)=>{
+    const snapshot=join(root,`benchmark-v${version}.json`),bytes=JSON.stringify({version});writeFileSync(snapshot,bytes);
+    const binding=`result-binding-${version}`;
+    db.connection.prepare(`INSERT INTO work_execution_bindings(binding_id,work_id,operation_id,bot_id,task_id,durable_store_key,conversation_id,
+      intent_revision,owner_epoch,input_snapshot_id,expert_snapshot_json,workspace_binding,status,admitted_at,settled_at)
+      VALUES (?,?,?,?,?,?,?, ?,?,?,'{}',?,'completed',?,?)`).run(binding,w.workId,binding,w.ownerBotId,binding,binding,binding,w.intentRevision,w.ownerEpoch,w.inputSnapshotId,root,version,version);
+    const artifact={path:sourcePath,snapshotPath:snapshot,digest:createHash('sha256').update(bytes).digest('hex'),sizeBytes:Buffer.byteLength(bytes),registeredAt:version,sourceEntryId:version};
+    db.connection.prepare('INSERT INTO work_generated_artifacts VALUES (?,?,?,?)').run(binding,sourcePath,artifact.digest,JSON.stringify(artifact));
+    db.connection.prepare(`INSERT INTO work_deliverables(deliverable_id,work_id,producer_bot_id,execution_id,intent_revision,owner_epoch,input_snapshot_id,status,summary,artifact_refs_json,created_at)
+      VALUES (?,?,?,?,?,?,?,'proposed',?,?,?)`).run(binding,w.workId,w.ownerBotId,binding,w.intentRevision,w.ownerEpoch,w.inputSnapshotId,`silent ${version}`,JSON.stringify([sourcePath]),version);
+    return snapshot;
+  };
+  publish(1);const newest=publish(2);
+  // Two snapshots from this same current binding, oldest ref listed first.
+  const oldSnapshot=join(root,'same-binding-old.json'),oldBytes='old';writeFileSync(oldSnapshot,oldBytes);
+  const oldDigest=createHash('sha256').update(oldBytes).digest('hex');
+  db.connection.prepare('INSERT INTO work_generated_artifacts VALUES (?,?,?,?)').run('result-binding-2',sourcePath,oldDigest,
+    JSON.stringify({path:sourcePath,snapshotPath:oldSnapshot,digest:oldDigest,sizeBytes:3,registeredAt:1,sourceEntryId:1}));
+  db.connection.prepare('UPDATE work_deliverables SET artifact_refs_json=? WHERE execution_id=?').run(JSON.stringify([oldSnapshot,newest]),'result-binding-2');
+  for(const [fileRefs,expected] of [[undefined,newest],[[newest],newest],[[oldSnapshot],oldSnapshot],[[sourcePath],newest]] as const) {
+    await invoke({action:'update',reminderId:resultJobId,result:{workId:w.workId,...(fileRefs?{fileRefs}: {})}});
+    const versioned=host.deliver(resultJob(),Date.now(),Date.now(),true);
+    assert.equal(versioned.event.message.workFeedback!.report!.files![0].openPath,expected,'exact snapshot selection precedes per-path deduplication');
+  }
+  db.connection.prepare('UPDATE work_deliverables SET artifact_refs_json=? WHERE execution_id=?').run(JSON.stringify([sourcePath]),'result-binding-2');
+  await invoke({action:'update',reminderId:resultJobId,result:{workId:w.workId}});
+  console.log('PASS same binding dual versions: newest default, explicit new/old snapshot and raw path');
+  for (const [column,value] of [['intent_revision',w.intentRevision+1],['input_snapshot_id','different'],['owner_epoch',w.ownerEpoch+1]] as const) {
+    const previous=(db.connection.prepare(`SELECT ${column} value FROM works WHERE work_id=?`).get(w.workId) as {value:unknown}).value;
+    db.connection.prepare(`UPDATE works SET ${column}=? WHERE work_id=?`).run(value,w.workId);
+    assert.match(host.deliver(resultJob(),Date.now(),Date.now(),true).body,/尚无当前可投递/);
+    db.connection.prepare(`UPDATE works SET ${column}=? WHERE work_id=?`).run(previous,w.workId);
+  }
+  db.connection.prepare('UPDATE work_execution_bindings SET settled_at=NULL WHERE work_id=?').run(w.workId);
+  assert.match(host.deliver(resultJob(),Date.now(),Date.now(),true).body,/尚无当前可投递/);
+  db.connection.prepare('UPDATE work_execution_bindings SET settled_at=admitted_at WHERE work_id=?').run(w.workId);
+  await invoke({action:'update',reminderId:resultJobId,result:{workId:w.workId,fileRefs:['/never/read/arbitrary/path']}});
+  const unregistered=host.deliver(resultJob(),Date.now(),Date.now(),true);
+  assert.equal(unregistered.event.message.workFeedback!.report!.files!.length,0);assert.match(unregistered.body,/指定文件/);
+  await invoke({action:'update',reminderId:resultJobId,result:{workId:w.workId,fileRefs:[sourcePath]}});
+  const beforeWorks=db.connection.prepare('SELECT count(*) n FROM works').get();
+  const due=Date.now();const sent=host.deliver(resultJob(),due);
+  assert.equal(sent.event.message.workFeedback!.report!.files![0].openPath,newest,'silent result uses latest current immutable snapshot');
+  assert.equal(sent.event.message.conversationId,receipt.conversationId);
+  assert.equal(sent.event.message.workFeedback!.report!.summary,`⏰ ${sent.body}`,'main report summary preserves reminder body');
+  assert.equal(sent.event.message.workFeedback!.report!.title,resultJob().name);
+  assert(sent.event.message.workFeedback!.report!.sourceNotices!.some(note=>note.includes('silent 2')));
+  const lateResult=host.deliver(resultJob(),due+1,due+10000);
+  assert.match(lateResult.event.message.workFeedback!.report!.summary,/看benchmark[\s\S]*已有成果[\s\S]*原定/);
+  assert.equal(lateResult.event.message.workFeedback!.report!.completion,undefined,'reminder never declares goal completion');
+  assert.deepEqual(host.deliver(resultJob(),due),JSON.parse(JSON.stringify(sent)),'same due time reuses frozen delivery');
+  writeFileSync(newest,'tampered');
+  const bad=host.deliver(resultJob(),due,Date.now(),true);
+  assert.equal(bad.event.message.workFeedback!.report!.files!.length,0);assert.match(bad.body,/校验失败/);
+  assert.deepEqual(host.deliver(resultJob(),due),JSON.parse(JSON.stringify(sent)),'replay does not resolve later mutations');
+  // Descriptor verification stays bounded for huge/special files and repeated failures.
+  const large=join(root,'large-snapshot');writeFileSync(large,'');truncateSync(large,REMINDER_RESULT_LIMITS.fileBytes+1);
+  const ioBudget={bytes:REMINDER_RESULT_LIMITS.totalBytes as number};
+  assert.equal(verifyReminderSnapshot(large,REMINDER_RESULT_LIMITS.fileBytes+1,'unused',ioBudget),'budget');
+  assert.equal(ioBudget.bytes,REMINDER_RESULT_LIMITS.totalBytes);
+  const valid=join(root,'valid-snapshot');writeFileSync(valid,'valid');const digest=createHash('sha256').update('valid').digest('hex');
+  const link=join(root,'symlink-snapshot');symlinkSync(valid,link);
+  assert.equal(verifyReminderSnapshot(link,5,digest,ioBudget),'unreadable','symlink never followed');
+  // mkfifo is a fixture only on hosts which provide it; assertions are not skipped on Linux.
+  if(process.platform!=='win32') {
+    const fifo=join(root,'fifo-snapshot');execFileSync('mkfifo',[fifo]);
+    assert.equal(verifyReminderSnapshot(fifo,0,createHash('sha256').digest('hex'),ioBudget),'unreadable','FIFO open never blocks');
+  }
+  const full=join(root,'budget-snapshot'),fullBytes=Buffer.alloc(REMINDER_RESULT_LIMITS.fileBytes,1);
+  writeFileSync(full,fullBytes);const fullDigest=createHash('sha256').update(fullBytes).digest('hex');
+  const exhausted={bytes:REMINDER_RESULT_LIMITS.totalBytes as number};
+  assert.equal(verifyReminderSnapshot(full,fullBytes.length,fullDigest,exhausted),'verified');
+  assert.equal(verifyReminderSnapshot(full,fullBytes.length,fullDigest,exhausted),'verified');
+  assert.equal(verifyReminderSnapshot(full,fullBytes.length,fullDigest,exhausted),'budget');assert.equal(exhausted.bytes,0);
+  const many=Array.from({length:70},(_,i)=>join(root,`registered-${i}.json`));
+  for(const [i,path] of many.entries()) db.connection.prepare('INSERT INTO work_generated_artifacts VALUES (?,?,?,?)')
+    .run('result-binding-2',path,digest,JSON.stringify({path,snapshotPath:valid,digest,sizeBytes:5,registeredAt:i+10,sourceEntryId:i+10}));
+  db.connection.prepare('UPDATE work_deliverables SET artifact_refs_json=? WHERE execution_id=?').run(JSON.stringify(many),'result-binding-2');
+  await invoke({action:'update',reminderId:resultJobId,result:{workId:w.workId}});
+  const capped=host.deliver(resultJob(),Date.now(),Date.now(),true);
+  assert.equal(capped.event.message.workFeedback!.report!.files!.length,20);
+  assert.match(capped.body,/6 条引用未检查/);assert.match(capped.body,/44 个文件未检查/);
+  db.connection.prepare('UPDATE work_deliverables SET artifact_refs_json=? WHERE execution_id=?').run(JSON.stringify([sourcePath]),'result-binding-2');
+  console.log('PASS bounded chunk hashing, per-file/total bytes, reference/file caps, symlink and FIFO rejection');
+  rmSync(newest);
+  assert.match(host.deliver(resultJob(),due,Date.now(),true).body,/已删除/);
+  db.connection.prepare('UPDATE works SET user_id=? WHERE work_id=?').run('other',w.workId);
+  assert.match(host.deliver(resultJob(),due,Date.now(),true).body,/不可访问/);
+  db.connection.prepare('UPDATE works SET user_id=? WHERE work_id=?').run(LOCAL_USER_ID,w.workId);
+  db.connection.prepare("UPDATE work_conversations SET channel_type='desktop' WHERE work_id=?").run(w.workId);
+  assert.match(host.deliver(resultJob(),due,Date.now(),true).body,/不可访问/);
+  assert.deepEqual(db.connection.prepare('SELECT count(*) n FROM works').get(),beforeWorks);assert.equal(calls,0);
+  await invoke({action:'update',reminderId:resultJobId,result:null});assert.equal(resultJob().reminder!.result,undefined);
+  console.log('PASS existing silent result, latest immutable version, reschedule, unavailable, tamper, scope, replay and zero model/Work');
+
  } finally {cron.stop();db.close();rmSync(root,{recursive:true,force:true});}
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});

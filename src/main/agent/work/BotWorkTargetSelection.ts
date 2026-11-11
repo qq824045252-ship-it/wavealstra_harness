@@ -93,6 +93,19 @@ function namedTaskFragments(facts: WorkTargetFacts): string[] {
   return [...new Set(facts.openWorks.filter(work => [...taskAnchors(work.title)].some(anchor => userAnchors.has(anchor))).map(work => work.workId))];
 }
 
+/** A complete title is one mention, not an additional mention of every Work
+ * sharing its words. Still inspect text outside complete titles so a second
+ * actual target (including a partial title) remains ambiguous. */
+function namedTargets(facts: WorkTargetFacts): { fullTitles: string[]; matches: string[] } {
+  const fullTitles = namedTitles(facts);
+  let remainder = normalize(facts.userText);
+  const titles = facts.openWorks.filter(work => fullTitles.includes(work.workId))
+    .map(work => normalize(work.title.trim())).sort((a, b) => b.length - a.length);
+  for (const title of titles) remainder = remainder.split(title).join("\n");
+  return { fullTitles, matches: [...new Set([...fullTitles,
+    ...namedTaskFragments({ ...facts, userText: remainder })])] };
+}
+
 /** Explicit exclusions only narrow targeting. A negative clause never supplies
  * authorization, even when it names the sole Work or a selected/replied card.
  * Keep ambiguous mixed clauses conservative instead of inferring intent. */
@@ -125,7 +138,7 @@ export function resolveWorkTarget(facts: WorkTargetFacts): WorkTargetResolution 
   const clauses = targetClauses(facts.userText);
   if (!clauses.positive) return ambiguous();
   const excludedFacts = { ...facts, userText: clauses.excluded };
-  const excluded = new Set([...namedTitles(excludedFacts), ...namedTaskFragments(excludedFacts),
+  const excluded = new Set([...namedTargets(excludedFacts).matches,
     ...facts.explicitWorkIds.filter(id => normalize(clauses.excluded).includes(normalize(id)))]);
   if (excluded.has(facts.requestedWorkId)) return ambiguous();
   const positiveFacts = { ...facts, userText: clauses.positive };
@@ -142,8 +155,9 @@ export function resolveWorkTarget(facts: WorkTargetFacts): WorkTargetResolution 
   else if (referenced.length === 1) resolved = { workId: referenced[0]!, basis: "reference_message" };
   else if (facts.selectedWorkId) resolved = { workId: facts.selectedWorkId, basis: "selected_card" };
   else {
-    const fullTitles = namedTitles(positiveFacts).filter(id => !excluded.has(id));
-    const matches = [...new Set([...fullTitles, ...namedTaskFragments(positiveFacts)])].filter(id => !excluded.has(id));
+    const named = namedTargets(positiveFacts);
+    const fullTitles = named.fullTitles.filter(id => !excluded.has(id));
+    const matches = named.matches.filter(id => !excluded.has(id));
     if (facts.openWorksComplete === false || matches.length > 1) titleAmbiguous = true;
     else if (matches.length === 1) resolved = { workId: matches[0]!, basis: fullTitles.length ? "unique_title" : "unique_task_fragment" };
     else if (!clauses.excluded && facts.soleOpenWorkId) resolved = { workId: facts.soleOpenWorkId, basis: "sole_open_work" };

@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { WorkService } from "./WorkService";
 import type { WorkResultDecision, WorkResultTurnInput } from "./BotWorkResultTurn";
+import { completionMilestoneEvidence } from "./WorkCompletionMilestoneEvidence";
 import { applyCompletionDecision } from "./WorkCompletionDecision";
 import { workDeliveryFiles, workDeliveryResults } from "./WorkDeliveryArtifacts";
 import type { WorkFeedbackDto } from "../../../shared/bot-conversation";
@@ -30,9 +31,9 @@ export interface CompletionArtifactEvidence {
 export function completionArtifactEvidence(works: WorkService, binding: Parameters<typeof workDeliveryResults>[1]): CompletionArtifactEvidence[] {
   const registered = works.generatedArtifacts.list(binding.workId);
   let remaining = 48000;
-  const files = workDeliveryFiles(works, workDeliveryResults(works, binding)).filter(file => file.openPath);
+  const files = workDeliveryFiles(works, workDeliveryResults(works, binding));
   return files.slice(0, 20).map((file, index) => {
-    const artifact = registered.find(item => item.snapshotPath === file.ref);
+    const artifact = file.openPath ? registered.find(item => item.snapshotPath === file.ref) : undefined;
     const base = { ref: file.ref, name: file.name, ...(index === 0 && files.length > 20 ? { omittedEvidenceCount: files.length - 20 } : {}), trust: "untrusted_artifact_content" as const,
       registeredDigest: artifact?.digest, registeredSizeBytes: artifact?.sizeBytes };
     if (!artifact?.snapshotPath) return { ...base, state: "unavailable", reason: "No immutable registered snapshot" };
@@ -136,6 +137,7 @@ export class WorkCompletionCoordinator {
     const results = workDeliveryResults(works, binding);
     const availableFiles = workDeliveryFiles(works, results).filter(file => file.openPath).map(({ref, name}) => ({ref, name}));
     const artifactEvidence = completionArtifactEvidence(works, binding);
+    const milestoneDeliveryEvidence = completionMilestoneEvidence(db, binding);
     const eventId = `completion:${bindingId}`;
     const personalPreferences = this.options.preferences?.(binding.taskId) ?? "";
     const preferenceFingerprint = createHash("sha256").update(personalPreferences).digest("hex");
@@ -148,7 +150,7 @@ export class WorkCompletionCoordinator {
         temporalContext: this.temporalContext(bindingId), preferenceFingerprint,
         originalRequest, title: candidate.work.title, goal: candidate.work.goalDescription,
         results: results.map(item => ({ summary: item.summary, artifactRefs: item.artifactRefs, uncoveredScope: item.uncoveredScope })),
-        availableFiles, artifactEvidence,
+        availableFiles, artifactEvidence, milestoneDeliveryEvidence,
         previousResults: works.repo.listDeliverables(binding.workId).filter(item => item.executionId !== bindingId
           && item.intentRevision === binding.intentRevision && item.inputSnapshotId === binding.inputSnapshotId && item.status !== "superseded")
           .map(item => ({ executionId:item.executionId, summary:item.summary, artifactRefs:item.artifactRefs, uncoveredScope:item.uncoveredScope, status:item.status })),
@@ -165,9 +167,10 @@ export class WorkCompletionCoordinator {
     }
     let row = this.row(bindingId)!;
     if (JSON.parse(row.context_json).preferenceFingerprint !== preferenceFingerprint
+      || JSON.stringify(JSON.parse(row.context_json).milestoneDeliveryEvidence) !== JSON.stringify(milestoneDeliveryEvidence)
       || JSON.stringify(JSON.parse(row.context_json).artifactEvidence) !== JSON.stringify(artifactEvidence)) {
       db.prepare("UPDATE work_completion_turns SET context_json=?,decision_json=NULL,state='queued',retry_at=0 WHERE binding_id=?")
-        .run(JSON.stringify({...JSON.parse(row.context_json),preferenceFingerprint,artifactEvidence}),bindingId);
+        .run(JSON.stringify({...JSON.parse(row.context_json),preferenceFingerprint,artifactEvidence,milestoneDeliveryEvidence}),bindingId);
       row = this.row(bindingId)!;
     }
     try {
@@ -182,13 +185,14 @@ export class WorkCompletionCoordinator {
         const reviewContext = JSON.parse(row.context_json);
         // Also sanitize persisted turns written by an older host.
         const { teamAssignment: _teamAssignment, instructions: _instructions, ...originalRequest } = reviewContext.originalRequest ?? {};
-        decision = await this.options.review({ eventId: `${eventId}:review:${attempt}:${preferenceFingerprint}`, botId: binding.botId, personalPreferences, context: {...reviewContext, originalRequest, temporalContext: this.temporalContext(bindingId)} });
+        decision = await this.options.review({ eventId: `${eventId}:review:${attempt}:${preferenceFingerprint}:${createHash("sha256").update(JSON.stringify(milestoneDeliveryEvidence)).digest("hex")}`, botId: binding.botId, personalPreferences, context: {...reviewContext, originalRequest, temporalContext: this.temporalContext(bindingId)} });
       }
       if (this.closed || !this.options.isAuthority()) return;
       const latestArtifactEvidence = completionArtifactEvidence(works, binding);
       works.transaction(() => {
         const current = this.current(bindingId);
         if (!current) return;
+        const latestMilestoneDeliveryEvidence = completionMilestoneEvidence(db, binding);
         const deliveryResults = workDeliveryResults(works, binding);
         const latestResults = deliveryResults.map(item => ({summary:item.summary,artifactRefs:item.artifactRefs,uncoveredScope:item.uncoveredScope}));
         const latestFiles = workDeliveryFiles(works, deliveryResults).filter(file => file.openPath).map(({ref,name}) => ({ref,name}));
@@ -197,13 +201,14 @@ export class WorkCompletionCoordinator {
         const latestPreferences = this.options.preferences?.(binding.taskId) ?? "";
         const latestPreferenceFingerprint = createHash("sha256").update(latestPreferences).digest("hex");
         if (latestPreferenceFingerprint !== preferenceFingerprint
+          || JSON.stringify(latestMilestoneDeliveryEvidence) !== JSON.stringify(frozen.milestoneDeliveryEvidence)
           || JSON.stringify(latestArtifactEvidence) !== JSON.stringify(frozen.artifactEvidence)
           || JSON.stringify(latestResults) !== JSON.stringify(frozen.results)
           || JSON.stringify(latestFiles) !== JSON.stringify(frozen.availableFiles ?? [])
           || JSON.stringify(works.teams.continuationTargets(binding)) !== JSON.stringify(frozen.teamContinuationTargets)
           || JSON.stringify(pendingQuestions) !== JSON.stringify(frozen.pendingQuestions ?? [])) {
           db.prepare("UPDATE work_completion_turns SET context_json=?,decision_json=NULL,state='queued',retry_at=0 WHERE binding_id=?")
-            .run(JSON.stringify({...frozen,preferenceFingerprint:latestPreferenceFingerprint,results:latestResults,availableFiles:latestFiles,artifactEvidence:latestArtifactEvidence,pendingQuestions,teamContinuationTargets:works.teams.continuationTargets(binding),actualMissing:current.conclusion === "succeeded" ? [] : [current.summary]}),bindingId);
+            .run(JSON.stringify({...frozen,preferenceFingerprint:latestPreferenceFingerprint,results:latestResults,availableFiles:latestFiles,artifactEvidence:latestArtifactEvidence,milestoneDeliveryEvidence:latestMilestoneDeliveryEvidence,pendingQuestions,teamContinuationTargets:works.teams.continuationTargets(binding),actualMissing:current.conclusion === "succeeded" ? [] : [current.summary]}),bindingId);
           return; // A late result must not be guided by a decision on older evidence.
         }
         db.prepare("UPDATE work_completion_turns SET decision_json=?,error=NULL WHERE binding_id=?").run(JSON.stringify(decision), bindingId);

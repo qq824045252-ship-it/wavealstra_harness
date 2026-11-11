@@ -20,6 +20,7 @@ import { WorkAutomaticCompletion } from "./WorkAutomaticCompletion";
 import { isReadOnlyScheduledFollowUp, isScheduledFollowUp, scheduledFollowUpCurrent } from "./WorkScheduledFollowUp";
 import { WorkRuntimeObservation } from "./WorkRuntimeObservation";
 import { WorkGeneratedArtifacts } from "./WorkGeneratedArtifacts";
+import { WorkRevisionHandoff } from "./WorkRevisionHandoff";
 import { reportWorkBlockerMutation, replyUserInputMutation, replyLegacyUserInputMutation } from "./WorkUserInputControls";
 import { legacyUserInputSource } from "./WorkLegacyUserInput";
 import type { ReplyUserInputParams, ReplyLegacyUserInputParams } from "../../../shared/bot-work-review";
@@ -122,6 +123,7 @@ export class WorkService {
   readonly milestones: WorkMilestones;
   readonly artifacts: WorkArtifactValidation;
   readonly generatedArtifacts: WorkGeneratedArtifacts;
+  readonly revisionHandoff: WorkRevisionHandoff;
   readonly runtimeObservations: WorkRuntimeObservation;
   readonly collaboration: WorkCollaborationService;
   readonly notifications: WorkNotificationDelivery;
@@ -158,6 +160,7 @@ export class WorkService {
     this.partialResults = new WorkPartialResults(db, this);
     this.artifacts = new WorkArtifactValidation(db, this);
     this.generatedArtifacts = new WorkGeneratedArtifacts(db, this);
+    this.revisionHandoff = new WorkRevisionHandoff(db, this);
     this.milestones = new WorkMilestones({ repo: this.repo, partialResults: this.partialResults, generatedArtifacts: this.generatedArtifacts });
     this.runtimeObservations = new WorkRuntimeObservation(id => this.repo.listBindings(id));
     this.collaboration = new WorkCollaborationService(db, this, this.bots, { now: this.now, isAuthority: () => !this.authority || this.authority() });
@@ -524,7 +527,7 @@ export class WorkService {
     if (!work || !binding || work.mode !== "watch" || work.lifecycle !== "closing" || work.pendingConclusion
       || work.watchRule?.termination || binding.invalidatedAt || binding.ownerEpoch !== work.ownerEpoch
       || binding.intentRevision !== work.intentRevision || binding.inputSnapshotId !== work.inputSnapshotId) return false;
-    if (this.repo.listBindings(workId).some(b=>["pending","submitted","running","unknown"].includes(b.status))
+    if (this.repo.listBindings(workId).some(b=>!b.invalidatedAt && ["pending","submitted","running","unknown"].includes(b.status))
       || this.repo.listAdmissions(workId).some(a=>a.state === "admitted")) return false;
     this.closeWithConclusion(work,"succeeded",{operationId:`watch-goal:${bindingId}`,closureSummary:summary},this.now());
     this.emitCurrentProjection(workId);

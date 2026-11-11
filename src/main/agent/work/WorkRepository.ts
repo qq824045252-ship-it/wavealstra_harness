@@ -1,4 +1,4 @@
-import { parseWatchObservation, WATCH_COMPARISON_INSTRUCTIONS, WATCH_OBSERVATION_INSTRUCTIONS } from "./WorkWatchObservation";
+import { parseWatchObservation, CONTINUOUS_WATCH_OBSERVATION_INSTRUCTIONS, WATCH_COMPARISON_INSTRUCTIONS, WATCH_OBSERVATION_INSTRUCTIONS } from "./WorkWatchObservation";
 import { WorkExecutionMetricsStore } from "./WorkExecutionMetrics";
 import { botAttachmentSchema } from "../../../shared/bot-conversation";
 import { nonBlockingEffect, workAdmissionInFlight } from "../../../shared/work-effect-policy";
@@ -557,13 +557,14 @@ export class WorkRepository {
       ...(userRequest ? { userRequest, ...userDefinition, delegationPlan: { provenance: "assistant_generated", ...planDefinition } }
         : definition),
       delegatedScope: binding.delegatedScope,
-      ...(this.getWork(binding.workId)?.mode === "watch" ? { watchLifetimeControl: this.getWork(binding.workId)?.watchRule?.executionMode === "continuous" ? "按原始授权推进持续目标，先完成现在可行动的步骤，再交付实际结果、未完成步骤和证据。不要虚构等待时间，不因本轮回复结束宣称整个目标完成；后续由前台安排。不要重复已完成的外部动作。" : "你只执行本轮观察（团队成员也相同），交付实际结果和用户停止条件对应的证据；本轮回复结束后由前台自主判断持续委托是否应结束。不调用 conversation_goal_propose_complete，不请求用户确认结束，也不使用 automation_exec 修改或取消 Work 订阅。不要等待下一轮或尝试自行关闭长期委托。" } : {}),
+      ...(this.getWork(binding.workId)?.mode === "watch" ? { watchLifetimeControl: this.getWork(binding.workId)?.watchRule?.requestedOutcome === "one_time" ? "这是用户指定未来执行的一次性目标，不是长期职责。现在触发后完成原请求，交付真实结果与产物，前台核对全部完成后结案；有缺项如实保留，不自造后续周期或等待。" : this.getWork(binding.workId)?.watchRule?.executionMode === "continuous" ? "按原始授权推进持续目标，先完成现在可行动的步骤，再交付实际结果、未完成步骤和证据。不要虚构等待时间，不因本轮回复结束宣称整个目标完成；后续由前台安排。不要重复已完成的外部动作。" : "你只执行本轮观察（团队成员也相同），交付实际结果和用户停止条件对应的证据；本轮回复结束后由前台自主判断持续委托是否应结束。不调用 conversation_goal_propose_complete，不请求用户确认结束，也不使用 automation_exec 修改或取消 Work 订阅。不要等待下一轮或尝试自行关闭长期委托。" } : {}),
+      ...(this.getWork(binding.workId)?.mode === "watch" ? { watchArtifactContract: "用户指定了成品文件或附件时，必须回读并通过现有产物登记工具登记该指定文件的本轮真实快照，供前台核验和交付。额外写的报告或摘要不能替代指定成品，例如要求 benchmark.json 时不能只登记 benchmark-report.md。只登记实际存在且已核验的文件，不自行扫描或伪造快照；登记失败或目标缺失时如实报告缺项。只读观察只核验已有成果，不因此改写文件。" } : {}),
       ...(sourceEvent ? { sourceEvent: { source: sourceEvent.source, eventId: sourceEvent.source_event_id,
         eventType: sourceEvent.event_type, sourceVersion: sourceEvent.source_version ?? undefined,
         receivedAt: sourceEvent.received_at, payload: json<Record<string, unknown>>(sourceEvent.payload_json, {}) } } : {}),
       ...(sourceEvent?.event_type === "work.tick" ? { watchFollowUp: {
         readOnly: this.getWork(binding.workId)?.watchRule?.executionMode !== "continuous",
-        ...(this.getWork(binding.workId)?.watchRule?.notificationMode === "changes_only" ? { observationContract: WATCH_OBSERVATION_INSTRUCTIONS } : {}),
+        ...(this.getWork(binding.workId)?.watchRule?.notificationMode === "changes_only" ? { observationContract: this.getWork(binding.workId)?.watchRule?.executionMode === "continuous" ? CONTINUOUS_WATCH_OBSERVATION_INSTRUCTIONS : WATCH_OBSERVATION_INSTRUCTIONS } : {}),
         watchRule: this.getWork(binding.workId)?.watchRule,
         previousReports: previousReports.map(r => ({ deliverableId: r.deliverableId, summary: r.summary.slice(0, 2000), createdAt: r.createdAt })),
         comparisonState: previousReports.length ? "unverified" : "no_baseline",

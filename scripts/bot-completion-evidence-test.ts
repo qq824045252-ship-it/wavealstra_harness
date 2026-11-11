@@ -38,6 +38,16 @@ try {
   const missing = add("missing.txt","content"); rmSync(missing.snapshotPath!);
   assert.equal(read().find(item=>item.name==="missing.txt")?.state,"unavailable");
   artifacts=[];results=[];
+  add("valid.txt","Verified complete content");
+  results[0].artifactRefs.push(join(root,"never-registered.txt"));
+  let mixed = read();
+  assert.equal(mixed.length,2,"unregistered refs remain explicit evidence gaps beside valid files");
+  assert.equal(mixed[0].state,"text"); assert.equal(mixed[1].state,"unavailable");
+  const foreign = add("foreign.txt","DIFFERENT BINDING CONTENT");
+  foreign.bindingId="other-binding"; results.pop(); results[0].artifactRefs.push(foreign.snapshotPath!);
+  mixed=read(); assert.equal(mixed[2].state,"unavailable");
+  assert(!JSON.stringify(mixed).includes("DIFFERENT BINDING CONTENT"),"unresolvable cross-binding refs are never read");
+  artifacts=[];results=[];
   for(let i=0;i<8;i++)add(`long${i}.txt`,"a".repeat(20000));
   assert.equal(read().reduce((total,item)=>total+(item.text?.length ?? 0),0),48000);
   assert(read().some(item=>item.truncated)); assert(read().some(item=>item.state==="unavailable"));

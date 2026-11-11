@@ -1,3 +1,5 @@
+import { completionMilestoneEvidence } from "../src/main/agent/work/WorkCompletionMilestoneEvidence";
+import type { WorkExecutionBindingDto } from "../src/shared/bot-work";
 import { WorkCompletionCoordinator } from "../src/main/agent/work/WorkCompletionCoordinator";
 import { WorkConversationFeedback } from "../src/main/agent/work/WorkConversationFeedback";
 import assert from "node:assert/strict";
@@ -19,6 +21,8 @@ const evidenceText = "# Final report\nReal current contents, not a filename clai
 writeFileSync(evidenceSnapshot,evidenceText);
 const evidenceDigest = createHash("sha256").update(evidenceText).digest("hex");
 let evidenceReviews = 0;
+let milestoneReviews = 0;
+let milestoneBinding: WorkExecutionBindingDto;
 const db = new AppDatabase(join(root, "app.db"));
 const bots = new BotRegistry(db.connection);
 bots.registerBot({ botId: DEFAULT_BOT_ID, userId: LOCAL_USER_ID, displayName: "assistant", authorization: DESKTOP_USER_GRANTS });
@@ -79,6 +83,13 @@ const coordinator = new WorkCompletionCoordinator({ db: db.connection, works, is
       assert(works.pauseWork(user,{operationId:"pause-during-review",workId:pauseReviewWork}).ok);
       pauseReviewWork=undefined;
     }
+    if (input.context.title === "milestone-race") {
+      milestoneReviews++;
+      const evidence = input.context.milestoneDeliveryEvidence as ReturnType<typeof completionMilestoneEvidence>;
+      assert.equal(evidence.deliveries.length,milestoneReviews === 1 ? 1 : 2);
+      assert.equal(evidence.deliveries[0].millisecondsBeforeSettlement,155000);
+      if (milestoneReviews === 1) publishMilestone(milestoneBinding,"both",1794436504279);
+    }
     if (input.context.title === "evidence-race") {
       evidenceReviews++;
       const evidence = input.context.artifactEvidence as Array<{state:string;text?:string}>;
@@ -111,7 +122,85 @@ function create(name: string, watch = false, criteria?: string[]) {
   states.set(result.work.workId, "running");
   return result.work.workId;
 }
+function publishMilestone(binding: WorkExecutionBindingDto, version: string, createdAt: number, override = {}) {
+  const eventId = `milestone:${binding.bindingId}`;
+  const metadata = {workId:binding.workId,eventId,kind:"binding" as const,category:"progress" as const,
+    executionId:binding.bindingId,intentRevision:binding.intentRevision,inputSnapshotId:binding.inputSnapshotId,
+    report:{title:"milestone",summary:version,artifactRefs:["/immutable/A-v1.md"],files:[{ref:"/immutable/A-v1.md",name:"A.md",openPath:"/immutable/A-v1.md"}],
+      milestone:true as const,reviewStatus:"proposed" as const,current:true,notices:[]},...override};
+  assert(feedback.messages.appendWorkDelivery(LOCAL_USER_ID,binding.workId,eventId,version,version,metadata).delivered);
+  db.connection.prepare("UPDATE bot_messages SET created_at=? WHERE ordinal=(SELECT MAX(ordinal) FROM bot_messages)").run(createdAt);
+}
 try {
+  const milestoneWork=create("milestone-race"); await flush();
+  milestoneBinding=works.repo.listBindings(milestoneWork)[0]!;
+  db.connection.prepare("UPDATE work_execution_bindings SET admitted_at=? WHERE binding_id=?").run(1794436380000,milestoneBinding.bindingId);
+  publishMilestone(milestoneBinding,"A",1794436385715);
+  const readMilestones=()=>completionMilestoneEvidence(db.connection,milestoneBinding);
+  assert.equal(readMilestones().deliveries.length,1);
+  assert.equal(readMilestones().deliveries[0].settledAt,null);
+  const frozenFiles=readMilestones().deliveries[0].files;
+  const firstId=readMilestones().deliveries[0].messageId;
+  for (const [column,value] of [["role","user"],["status","running"],["request_id","native-claim"]]) {
+    const old=(db.connection.prepare(`SELECT ${column} value FROM bot_messages WHERE message_id=?`).get(firstId) as {value:string}).value;
+    db.connection.prepare(`UPDATE bot_messages SET ${column}=? WHERE message_id=?`).run(value,firstId);
+    assert.equal(readMilestones().deliveries.length,0,"user/native/incomplete messages are not host delivery receipts");
+    db.connection.prepare(`UPDATE bot_messages SET ${column}=? WHERE message_id=?`).run(old,firstId);
+  }
+  db.connection.prepare("UPDATE work_conversations SET channel_type='fixture-other' WHERE work_id=? AND channel_type='bot-delivery'").run(milestoneWork);
+  assert.equal(readMilestones().deliveries.length,0,"only the persisted originating delivery route is read");
+  db.connection.prepare("UPDATE work_conversations SET channel_type='bot-delivery' WHERE work_id=? AND channel_type='fixture-other'").run(milestoneWork);
+
+  publishMilestone(milestoneBinding,"wrong-revision",1794436385815,{intentRevision:999});
+  publishMilestone(milestoneBinding,"wrong-input",1794436385816,{inputSnapshotId:"wrong"});
+  publishMilestone(milestoneBinding,"wrong-binding",1794436385817,{executionId:"wrong"});
+  publishMilestone(milestoneBinding,"wrong-work",1794436385818,{workId:"wrong"});
+  assert.equal(readMilestones().deliveries.length,1,"other identity metadata never enters review");
+  assert.equal(completionMilestoneEvidence(db.connection,{...milestoneBinding,ownerEpoch:999}).deliveries.length,0);
+  db.connection.prepare("UPDATE works SET owner_epoch=owner_epoch+1 WHERE work_id=?").run(milestoneWork);
+  assert.equal(readMilestones().deliveries.length,0,"old ownership is not current evidence");
+  db.connection.prepare("UPDATE works SET owner_epoch=owner_epoch-1 WHERE work_id=?").run(milestoneWork);
+  states.set(milestoneWork,"completed"); await queue.flush(); await adapter.flush(); await queue.flush();
+  db.connection.prepare("UPDATE work_execution_bindings SET settled_at=? WHERE binding_id=?").run(1794436540715,milestoneBinding.bindingId);
+  coordinator.wake(); await new Promise(resolve=>setTimeout(resolve,20));
+  assert.equal(milestoneReviews,1);
+  assert.notEqual(works.getWork(milestoneWork)?.lifecycle,"closed","new persisted delivery invalidates an in-flight decision");
+  const staleContext=JSON.parse((db.connection.prepare("SELECT context_json FROM work_completion_turns WHERE binding_id=?").get(milestoneBinding.bindingId) as {context_json:string}).context_json);
+  delete staleContext.milestoneDeliveryEvidence;
+  db.connection.prepare("UPDATE work_completion_turns SET context_json=?,decision_json=? WHERE binding_id=?")
+    .run(JSON.stringify(staleContext),JSON.stringify({decision:"deliver",outcome:"partial",reply:"stale cached summary denies early delivery",missing:[]}),milestoneBinding.bindingId);
+  await flush(); assert.equal(milestoneReviews,2);
+  assert.deepEqual(readMilestones().deliveries[0].files,frozenFiles,"later reports never substitute earlier attachment metadata");
+  assert.equal(works.getWork(milestoneWork)?.closureConclusion,"succeeded");
+  const largeFiles=Array.from({length:25},(_,i)=>({ref:`/immutable/${i}-${"x".repeat(2500)}`,name:`file-${i}`,openPath:`/immutable/${i}-${"x".repeat(2500)}`}));
+  const metadataRow=db.connection.prepare("SELECT metadata_json FROM bot_work_feedback WHERE message_id=?").get(firstId) as {metadata_json:string};
+  const oversized=JSON.parse(metadataRow.metadata_json);oversized.report.files=largeFiles;oversized.report.summary="x".repeat(3000);
+  db.connection.prepare("UPDATE bot_work_feedback SET metadata_json=? WHERE message_id=?").run(JSON.stringify(oversized),firstId);
+  const bounded=readMilestones().deliveries[0];
+  assert(bounded.omittedFileCount>0);assert.equal(bounded.summary.length,2000);assert.equal(bounded.summaryTruncated,true);
+  assert(JSON.stringify(bounded.files).length<48000,"total historical file metadata is bounded");
+  db.connection.prepare("UPDATE bot_work_feedback SET metadata_json=? WHERE message_id=?").run(metadataRow.metadata_json,firstId);
+  for(let i=0;i<22;i++) publishMilestone(milestoneBinding,`bounded-${i}`,1794436540800+i);
+  assert.equal(readMilestones().deliveries.length,20); assert.equal(readMilestones().omittedDeliveryCount,4);
+  const originalMetadata=JSON.parse(metadataRow.metadata_json);
+  db.connection.transaction(() => {
+    for(let i=0;i<1000;i++) {
+      const eventId=`unrelated:${i}`;
+      feedback.messages.appendWorkDelivery(LOCAL_USER_ID,milestoneWork,eventId,"1","unrelated history",{...originalMetadata,eventId});
+    }
+  })();
+  let plan: Array<{detail:string}> = [];
+  const tracedDb={prepare:(sql:string)=>({all:(...params: unknown[])=>{
+    plan=db.connection.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...params) as Array<{detail:string}>;
+    return db.connection.prepare(sql).all(...params);
+  }})} as unknown as typeof db.connection;
+  assert.deepEqual(completionMilestoneEvidence(tracedDb,milestoneBinding),readMilestones(),"unrelated feedback does not change evidence");
+  const planText=plan.map(row=>row.detail).join("\n");
+  assert(/SEARCH m USING INDEX .*\(conversation_id=\? AND request_id>\? AND request_id<\?\)/.test(planText),planText);
+  assert(/SEARCH f USING INDEX .*\(message_id=\?\)/.test(planText),planText);
+  assert(!/SCAN [mf]\b/.test(planText),"never scan all message or feedback history: "+planText);
+  console.log("PASS milestone indexed lookup:",planText);
+
   // Reproduce the live race: the native terminal receipt becomes visible before
   // the dispatch loop has atomically chosen recovery vs final readback.
   const recoveryRace = create("recovery-review-race"); await flush();

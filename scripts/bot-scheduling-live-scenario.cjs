@@ -9,10 +9,10 @@ exports.run=async({send,foregroundDone,until,evaluate,history,rpc,report,request
   fs.writeFileSync(source,'SOURCE-V1: launch date pending\n');
   fs.writeFileSync(path.join(workspace,'sales.csv'),'product,units,price\nTea,3,12\nCoffee,2,25\nCake,4,8\n');
   const prSource=path.join(workspace,'pr-merge.json'),benchmark=path.join(workspace,'benchmark.json'),benchmarkRuns=path.join(workspace,'benchmark-runs.jsonl');
-  const prBaseline={pr:27,version:'PR-V1',merged:false,samples:[7,11,13]},prMerged={...prBaseline,version:'PR-V2',merged:true};
+  const prBaseline={pr:27,version:'PR-V1',merged:false,samples:[7,11,13],controlledDelayMs:0},prMerged={...prBaseline,version:'PR-V2',merged:true};
   const prBaselineText=JSON.stringify(prBaseline)+'\n',prMergedText=JSON.stringify(prMerged)+'\n';
   fs.writeFileSync(prSource,prBaselineText);
-  fs.writeFileSync(path.join(workspace,'benchmark.cjs'),`const fs=require('node:fs'),path=require('node:path');const input=JSON.parse(fs.readFileSync(path.join(__dirname,'pr-merge.json'),'utf8'));if(input.merged!==true)throw Error('PR has not merged');const start=process.hrtime.bigint();let checksum=0;for(let i=0;i<200000;i++)for(const x of input.samples)checksum+=x;const result={sourceVersion:input.version,iterations:200000,checksum,elapsedMs:Number(process.hrtime.bigint()-start)/1e6,runAt:new Date().toISOString()};fs.writeFileSync(path.join(__dirname,'benchmark.json'),JSON.stringify(result,null,2));fs.appendFileSync(path.join(__dirname,'benchmark-runs.jsonl'),JSON.stringify(result)+'\\n');console.log(JSON.stringify(result));`);
+  fs.writeFileSync(path.join(workspace,'benchmark.cjs'),`const fs=require('node:fs'),path=require('node:path');const input=JSON.parse(fs.readFileSync(path.join(__dirname,'pr-merge.json'),'utf8'));if(input.merged!==true)throw Error('PR has not merged');const samples=[];let checksum=0;for(let run=0;run<3;run++){const start=process.hrtime.bigint();checksum=0;for(let i=0;i<200000;i++)for(const x of input.samples)checksum+=x;if(input.controlledDelayMs)Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,input.controlledDelayMs);samples.push(Number(process.hrtime.bigint()-start)/1e6);}const elapsedMs=[...samples].sort((a,b)=>a-b)[1];const basePath=path.join(__dirname,'benchmark-baseline.json');let baseline=fs.existsSync(basePath)?JSON.parse(fs.readFileSync(basePath,'utf8')):null;const result={sourceVersion:input.version,iterations:200000,checksum,elapsedMs,samples,controlledDelayMs:input.controlledDelayMs||0,baselineMs:baseline?.elapsedMs??elapsedMs,regression:!!baseline&&elapsedMs>Math.max(baseline.elapsedMs*3,50),runAt:new Date().toISOString(),scope:'Synthetic local workload; not user product performance'};if(!baseline)fs.writeFileSync(basePath,JSON.stringify(result,null,2));fs.writeFileSync(path.join(__dirname,'benchmark.json'),JSON.stringify(result,null,2));fs.appendFileSync(path.join(__dirname,'benchmark-runs.jsonl'),JSON.stringify(result)+'\\n');console.log(JSON.stringify(result));`);
 
   const works=()=>evaluate('window.api.botWork.listWorks(true)');
   const detail=id=>evaluate(`window.api.botWork.getWork(${JSON.stringify(id)})`);
@@ -22,7 +22,7 @@ exports.run=async({send,foregroundDone,until,evaluate,history,rpc,report,request
 import sqlite3,json,sys
 c=sqlite3.connect('file:'+sys.argv[1]+'?mode=ro',uri=True);c.row_factory=sqlite3.Row
 rows=[]
-for row in c.execute("SELECT b.binding_id,b.task_id,b.status,b.admitted_at,b.settled_at,b.intent_revision,b.input_snapshot_id,b.owner_epoch,e.source,e.event_type,e.payload_json,r.state review_state,r.context_json,r.decision_json,r.attempts,r.error FROM work_execution_bindings b LEFT JOIN work_events_inbox e ON e.event_id=b.inbox_event_id LEFT JOIN work_watch_reviews r ON r.binding_id=b.binding_id WHERE b.work_id=? ORDER BY b.admitted_at",(sys.argv[2],)):
+for row in c.execute("SELECT b.binding_id,b.task_id,b.status,b.admitted_at,b.settled_at,b.intent_revision,b.input_snapshot_id,b.owner_epoch,e.source,e.event_type,e.payload_json,r.state review_state,r.context_json,r.decision_json,r.attempts,r.error FROM work_execution_bindings b LEFT JOIN work_events_inbox e ON e.event_id=b.inbox_event_id OR (b.inbox_event_id IS NULL AND e.work_id=b.work_id AND e.source='file' AND e.source_version=b.input_snapshot_id AND e.received_at<=b.admitted_at) LEFT JOIN work_watch_reviews r ON r.binding_id=b.binding_id WHERE b.work_id=? ORDER BY b.admitted_at",(sys.argv[2],)):
  d=dict(row)
  for key in ['payload_json','context_json','decision_json']:
   d[key]=json.loads(d[key]) if d[key] else None
@@ -45,21 +45,22 @@ print(json.dumps(rows))
   assert((await evaluate(`window.api.botWork.saveSettings(${JSON.stringify({botId,expectedRevision:settings.revision,workspacePath:workspace,modelId:modelKey,expertId:'',skillIds:[],mcpIds:[],connectorIds:[]})})`)).ok);
   const install=()=>evaluate(`(()=>{
     window.__scheduleUnsubscribe?.();window.__scheduleDomObserver?.disconnect();
-    window.__scheduleEvents=[];window.__scheduleDomSamples={};let pending=false;
+    window.__scheduleEvents=[];window.__scheduleDomSamples={};let pending=false,readingFeedback=false;
+    const discoverFeedback=()=>{if(readingFeedback||![...document.querySelectorAll('[data-message-id]')].some(el=>el.dataset.messageId.startsWith('work-feedback-')&&!window.__scheduleDomSamples[el.dataset.messageId]))return;readingFeedback=true;window.api.botWork.history({botId:${JSON.stringify(botId)}}).then(h=>{for(const m of h.messages){if(m.role!=='assistant'||!m.workFeedback||window.__scheduleDomSamples[m.messageId])continue;window.__scheduleDomSamples[m.messageId]={messageId:m.messageId,requestId:m.requestId,firstHostObservedAt:Date.now(),observationKind:'history-read-after-DOM-mutation',persistedCreatedAt:m.createdAt,lastPersistedUpdatedAt:m.updatedAt,workFeedback:m.workFeedback};}scan();}).finally(()=>{readingFeedback=false;});};
     const laidOut=el=>{const r=el.getBoundingClientRect(),s=getComputedStyle(el);return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden';};
     const inViewport=el=>{const r=el.getBoundingClientRect();return laidOut(el)&&r.bottom>0&&r.top<innerHeight&&r.right>0&&r.left<innerWidth;};
-    const scan=()=>{if(pending)return;pending=true;requestAnimationFrame(()=>{pending=false;
+    const scan=()=>{if(pending)return;pending=true;requestAnimationFrame(()=>{pending=false;discoverFeedback();
       for(const row of Object.values(window.__scheduleDomSamples)){const article=document.querySelector('[data-message-id="'+row.messageId+'"]');if(!article)continue;
         const body=article.querySelector('.bot-result-body')||article.querySelector('.bot-assistant-content');
         if(body){const walker=document.createTreeWalker(body,NodeFilter.SHOW_TEXT);let n;const texts=[];let layout=false,viewport=false;
-          while(n=walker.nextNode()){const p=n.parentElement;if(!n.textContent.trim()||p.closest('.bot-reply-placeholder,.bot-tool-activity,[role="status"],.bot-reply-segment-receipt,[data-segment-kind="receipt"],button,summary,.bot-message-metrics'))continue;texts.push(n.textContent.trim());layout ||= laidOut(p);viewport ||= inViewport(p);}
+          while(n=walker.nextNode()){const p=n.parentElement;if(!n.textContent.trim()||p.closest('.bot-reply-placeholder,.bot-tool-activity,[role="status"],.bot-reply-segment-receipt,[data-segment-kind="receipt"],[data-segment-kind="commentary"],button,summary,.bot-message-metrics'))continue;texts.push(n.textContent.trim());layout ||= laidOut(p);viewport ||= inViewport(p);}
           if(texts.length){row.firstBodyPresentAt ||= Date.now();row.firstBodyText ||= texts.join(' ').slice(0,500);if(layout)row.firstBodyLaidOutAt ||= Date.now();if(viewport)row.firstBodyViewportAt ||= Date.now();}
         }
         const buttons=[...article.querySelectorAll('button[aria-label^="打开 "]')];if(buttons.length){row.firstFileButtonPresentAt ||= Date.now();if(buttons.some(laidOut))row.firstFileButtonLaidOutAt ||= Date.now();if(buttons.some(inViewport))row.firstFileButtonViewportAt ||= Date.now();row.fileButtons=buttons.map(b=>b.getAttribute('aria-label'));}
       }
     });};
     window.__scheduleUnsubscribe=window.api.botWork.onMessageChanged(e=>{const m=e.message,at=Date.now();window.__scheduleEvents.push({at,messageId:m.messageId,requestId:m.requestId,role:m.role,status:m.status,text:m.text,segments:m.segments,activity:m.activity,workIds:m.workIds,workFeedback:m.workFeedback,createdAt:m.createdAt,updatedAt:m.updatedAt});
-      if(m.role==='assistant'){const row=window.__scheduleDomSamples[m.messageId] ||= {messageId:m.messageId,requestId:m.requestId,firstHostObservedAt:at,persistedCreatedAt:m.createdAt};row.lastPersistedUpdatedAt=m.updatedAt;row.workFeedback=m.workFeedback;scan();}
+      if(m.role==='assistant'){const row=window.__scheduleDomSamples[m.messageId] ||= {messageId:m.messageId,requestId:m.requestId,firstHostObservedAt:at,persistedCreatedAt:m.createdAt};row.lastPersistedUpdatedAt=m.updatedAt;row.workFeedback=m.workFeedback;if(m.segments?.some(s=>s.kind==='answer'&&s.text?.trim())||m.status==='completed'&&m.text?.trim())row.firstAnswerHostObservedAt ||= at;scan();}
     });
     window.__scheduleDomObserver=new MutationObserver(scan);window.__scheduleDomObserver.observe(document.body,{subtree:true,childList:true,characterData:true,attributes:true});document.addEventListener('scroll',scan,true);return true;
   })()`);
@@ -78,7 +79,7 @@ print(json.dumps(rows))
     {id:'query',type:'short-current-state-query',prompt:'请查询当前正在进行的委托，用两句话告诉我验收分析A和验收历史读取修复B的真实当前状态。只查询，不等待、不修改或取消。'},
     {id:'reminder',type:'independent-reminder',prompt:'5分钟后提醒我“检查验收结果”，提醒名称“调度验收提醒”。仅到时发提醒，不执行任务，不创建Work。'},
     {id:'scheduled-execution',type:'one-time-scheduled-execution',expectedAt:scheduledAt,prompt:`约两分钟后，在 ${new Date(scheduledAt).toISOString()}（UTC）实际执行一次独立委托，标题“验收定时读取”。到时真实读取 ${source}，把读取到的完整原文写到当前工作区 scheduled-check.txt，真实回读并交付文件。现在不要读取或写入，这是一次定时执行，不是提醒，不循环，也不要用 sleep 代替定时安排。`},
-    {id:'file-event',type:'file-event-triggered-benchmark',prompt:`建立事件驱动持续委托，标题“验收PR合并benchmark”。这里 ${prSource} 是测试用PR状态文件，不是真实GitHub webhook。请先查询已接入的事件来源，使用真实 file 事件源、eventTarget 为这个规范绝对路径，triggerMode=next_event，executionMode=continuous，catchUpPolicy=latest，notificationMode=changes_only，notifyInitial=true；不配置cron轮询，不在创建时执行。今后收到该文件的真实变化事件后，实际读取文件；如果 merged=true，对当前来源版本实际执行一次 node benchmark.cjs（当前工作区已有脚本），实际回读 benchmark.json 并交付，首个合并事件的真实benchmark也要交付。相同来源内容/相同版本重复写入不要重复运行。不要修改 benchmark.cjs、不要自行伪造benchmark输出，不联网。保持等待后续事件，不要第一轮后结束。`},
+    {id:'file-event',type:'file-event-triggered-benchmark',prompt:`建立事件驱动持续委托，标题“验收PR合并benchmark”。这里 ${prSource} 是测试用PR状态文件，不是真实GitHub webhook。请先查询已接入的事件来源，使用真实 file 事件源、eventTarget 为这个规范绝对路径，triggerMode=next_event，executionMode=continuous，catchUpPolicy=latest，notificationMode=changes_only，notifyInitial=true；不配置cron轮询，不在创建时执行。今后收到该文件的真实变化事件后，实际读取文件；如果 merged=true，对当前来源版本实际执行一次 node benchmark.cjs（当前工作区已有脚本），实际回读 benchmark.json 并交付，首个合并事件的真实benchmark必须交付作为实测基线；后续每个新版本仍实际执行并回读登记 benchmark.json，但只有结果 regression=true 才通知我，regression=false 时静默，不发普通结果通知。脚本会实测三次中位数，阈值为基线三倍与50ms中较大者；数据中的controlledDelayMs是明确标注的本地受控回归负载，不是真实产品性能。相同来源内容/相同版本重复写入不要重复运行。不要修改 benchmark.cjs、不要自行伪造benchmark输出，不联网。保持等待后续事件，不要第一轮后结束。`},
     {id:'ongoing',type:'ongoing-goal',prompt:`建立持续执行目标，标题“验收持续简报”。现在先真实读取 ${source} 并立即写 ${brief}，做一个简短状态摘要（含原始版本标记）。完成本轮后再等后续变化，每分钟检查同一来源，只在来源发生变化时更新同一个 brief.md 并交付新版本，内容未变时静默。每轮都实际回读并登记当前 brief.md 的文件快照，即使来源不变也只登记相同文件、不改写内容，用真实快照核对成果仍然有效。新聊天问题不应停止该目标。使用真实文件工具，不要联网，不要只设置等待然后不做首轮，不要因首轮完成而结束目标。`},
   ];
   for(const s of specs){const row={...s,submittedAt:Date.now(),providerOffset:requests.length,status:'submitted'};report.cases.push(row);await send(s.prompt);row.user=(await history()).messages.filter(m=>m.role==='user').at(-1);persist();}
@@ -210,6 +211,7 @@ print(json.dumps(rows))
     report.scheduledExecution.delivery=(await history()).messages.findLast(m=>m.workIds?.includes(w.workId)&&m.workFeedback?.report?.files?.some(f=>f.name==='scheduled-check.txt'));
     const file=report.scheduledExecution.delivery.workFeedback.report.files.find(f=>f.name==='scheduled-check.txt');
     check(!!file.openPath&&fs.existsSync(file.openPath)&&fs.readFileSync(file.openPath,'utf8')===report.scheduledExecution.file,'S2 actual delivered scheduled immutable snapshot');
+    await section('S2 one-time goal closes after verified delivery',async()=>{await until(async()=>{report.scheduledExecution.finalWork=await detail(w.workId);return report.scheduledExecution.finalWork.lifecycle==='closed';},'one-time scheduled goal settled');check(report.scheduledExecution.finalWork.closureConclusion==='succeeded','S2 one-time scheduled goal closes succeeded');});
     report.coverage.scheduledExecution='real one-time clock, model, native tools, artifact; not push event';
   });
   await section('S2 real file event to benchmark and version dedup',async()=>{
@@ -225,13 +227,26 @@ print(json.dumps(rows))
     check(report.fileEvent.ingressProof.some(r=>r.source==='file'&&r.event_type==='file.changed'&&r.payload_json?.observation==='fs-watch'),'S2 actual fs.watch event persisted and dispatched');
     check(report.fileEvent.benchmark.sourceVersion==='PR-V2'&&report.fileEvent.benchmark.checksum===6200000&&Number.isFinite(report.fileEvent.benchmark.elapsedMs),'S2 real benchmark used merged authoritative source');
     check(report.fileEvent.runs.length===1,'S2 one benchmark execution for source version');
-    await until(async()=>(await history()).messages.some(m=>m.workIds?.includes(w.workId)&&m.workFeedback?.report?.files?.some(f=>f.name==='benchmark.json')),'event benchmark file delivered');
-    report.fileEvent.delivery=(await history()).messages.findLast(m=>m.workIds?.includes(w.workId)&&m.workFeedback?.report?.files?.some(f=>f.name==='benchmark.json'));
+    await section('S2 target benchmark JSON registered and delivered',async()=>{
+      await until(async()=>(await history()).messages.some(m=>m.workIds?.includes(w.workId)&&m.workFeedback?.report?.files?.some(f=>f.name==='benchmark.json')),'event benchmark file delivered');
+      report.fileEvent.delivery=(await history()).messages.findLast(m=>m.workIds?.includes(w.workId)&&m.workFeedback?.report?.files?.some(f=>f.name==='benchmark.json'));
+      const file=report.fileEvent.delivery.workFeedback.report.files.find(f=>f.name==='benchmark.json');
+      check(!!file.openPath&&fs.existsSync(file.openPath)&&JSON.parse(fs.readFileSync(file.openPath,'utf8')).sourceVersion==='PR-V2','S2 target JSON immutable snapshot opens with actual version');
+    });
     const count=w.executions.length,runBytes=fs.readFileSync(benchmarkRuns,'utf8');report.fileEvent.beforeDuplicateInbox=readFileInbox(w.workId);
     fs.writeFileSync(prSource,prMergedText);await wait(1000);fs.writeFileSync(prSource,prMergedText);await wait(5000);
     report.fileEvent.afterDuplicate=await detail(w.workId);report.fileEvent.afterDuplicateInbox=readFileInbox(w.workId);
     check(report.fileEvent.afterDuplicateInbox.length===report.fileEvent.beforeDuplicateInbox.length,'S2 repeated identical source bytes create no extra inbox event');
     check(report.fileEvent.afterDuplicate.executions.length===count&&fs.readFileSync(benchmarkRuns,'utf8')===runBytes,'S2 repeated same authoritative bytes/version does not rerun benchmark');
+    for(const [version,delay,expectedSilent] of [['PR-V3',0,true],['PR-V4',100,false]])await section('S2 conditional benchmark '+version,async()=>{
+      const before=await detail(w.workId),mutationAt=Date.now();fs.writeFileSync(prSource,JSON.stringify({...prMerged,version,controlledDelayMs:delay})+'\n');
+      await until(async()=>{const current=await detail(w.workId);return current.executions.length>before.executions.length&&fs.existsSync(benchmark)&&JSON.parse(fs.readFileSync(benchmark,'utf8')).sourceVersion===version&&current.executions.some(e=>e.admittedAt>=mutationAt&&e.status==='completed');},'actual benchmark version '+version);
+      let proof;await until(()=>{proof=readWatchProof(w.workId).findLast(r=>r.admitted_at>=mutationAt);return proof&&['silent','delivered','superseded'].includes(proof.review_state);},'review business condition '+version);
+      const result=JSON.parse(fs.readFileSync(benchmark,'utf8'));(report.fileEvent.conditionalVersions ||= []).push({version,mutationAt,result,proof});
+      check(result.regression===!expectedSilent,'S2 real benchmark baseline comparison '+version);
+      check(expectedSilent?proof.review_state==='silent'&&proof.result_notifications.length===0:proof.review_state==='delivered'&&proof.result_notifications.length>0,'S2 condition-based result visibility '+version);
+      check(proof.context_json?.artifactEvidence?.length>0,'S2 current benchmark evidence registered '+version);
+    });
     report.coverage.fileEvent='Real fs.watch, authoritative SHA-256 readback, ingress, model/tool dispatch; PR JSON is simulated. Not GitHub webhook.';
   });
   await section('S3 ongoing first action and independent question',async()=>{
@@ -244,7 +259,9 @@ print(json.dumps(rows))
     const immediateRequests=requests.map((r,index)=>({index,text:JSON.stringify(r.messages||[])})).filter(r=>r.text.includes(ongoing.workId)&&/\\?"immediate\\?"\s*:\s*true/.test(r.text));
     report.ongoingInitial.immediateEvidence={firstExecution,nextWake,firstArtifact:report.artifactObservations.find(o=>o.name==='brief.md'),immediateRequestIndices:immediateRequests.map(r=>r.index)};
     check(immediateRequests.length>0,'S3 actual model input contains immediate source event for this Work');
-    check(!!firstExecution&&Number.isFinite(nextWake)&&firstExecution.admittedAt<nextWake,'S3 initial execution admitted before next scheduled wake (immediate inbox permitted)');
+    const firstProof=readWatchProof(ongoing.workId).find(r=>r.binding_id===firstExecution?.bindingId);
+    report.ongoingInitial.immediateEvidence.persistedFirstEvent=firstProof;
+    check(!!firstExecution&&firstProof?.payload_json?.immediate===true,'S3 initial execution admitted from actual immediate event (not inferred from current schedule)');
     check(report.ongoingInitial.work.lifecycle==='active','S3 first round retains goal');
     await send('另一个不相关的小问题：一小时有多少分钟？直接回答，不要停止或修改任何持续目标。');await foregroundDone();
     check((await detail(ongoing.workId)).lifecycle==='active','S3 short question leaves ongoing goal active');
@@ -273,18 +290,33 @@ print(json.dumps(rows))
     await send('暂停验收持续简报，保留现有成果，不要立即再检查。');await foregroundDone();
     check((await detail(ongoing.workId)).lifecycle==='paused','S3 explicit pause works');
   });
+  await section('independent normal restart recovery',async()=>{
+    if(report.coverage.restart!=='real normal Electron restart completed'){const id=(await history()).conversationId;report.eventsBeforeRestart=await evaluate('window.__scheduleEvents');report.domBeforeRestart=await evaluate('Object.values(window.__scheduleDomSamples)');await restart();await install();report.coverage.restart='real normal Electron restart completed';check((await history()).conversationId===id,'independent restart retains original conversation');}
+  });
   // Run reminder delivery after the background jobs settle/are paused, so a strict zero-model delta is meaningful.
   await section('S2 independent reminder reschedule and delivery',async()=>{
     const matches=(await jobs()).filter(j=>j.name==='调度验收提醒');assert.equal(matches.length,1);const job=matches[0];
     const priorWorks=(await works()).map(w=>w.workId),oldDue=job.scheduleExpr;
     const eventBefore=eventWork?await detail(eventWork.workId):null,eventRunBytes=fs.existsSync(benchmarkRuns)?fs.readFileSync(benchmarkRuns,'utf8'):null;
-    await send(`把调度验收提醒 ${job.id} 改到从现在起20秒后，保持同一个提醒及提醒内容，不创建Work。`);await foregroundDone();
+    report.reminderRequest=await request(`把调度验收提醒 ${job.id} 改到从现在起20秒后，保持同一个提醒；同时关联“验收PR合并benchmark”当前已经生成并登记的 benchmark.json 成果，到期把这份已有成果作为可打开文件一并交付。不要到期重跑benchmark，不创建Work，不修改该Work，不用纯文本路径冒充可打开附件。`);
     const after=(await jobs()).filter(j=>j.name==='调度验收提醒');check(after.length===1&&after[0].id===job.id,'S2 reschedule preserves reminder identity');
     report.reminder={id:job.id,oldDue,newDue:after[0]?.scheduleExpr};
     const baseline=requests.length;
     await until(async()=>(await notes()).some(n=>n.sourceId===job.id&&n.type==='reminder.due'&&n.createdAt>=Date.parse(after[0].scheduleExpr)-1000),'real reminder clock delivery');
     report.reminder.modelCallsDuringDelivery=requests.length-baseline;
     check(requests.length===baseline,'S2 due reminder requires no model');
+    await section('S2 reminder delivers existing benchmark snapshot',async()=>{
+      const note=(await notes()).filter(n=>n.sourceId===job.id&&n.type==='reminder.due'&&n.createdAt>=Date.parse(after[0].scheduleExpr)-1000).sort((a,b)=>b.createdAt-a.createdAt)[0];
+      const message=(await history()).messages.find(m=>m.requestId===note.dedupeKey);report.reminder.resultMessage=message;
+      const file=message?.workFeedback?.report?.files?.find(f=>f.name==='benchmark.json');
+      check(!!file?.openPath,'S2 reminder includes real benchmark file attachment');
+      if(!file?.openPath)return;
+      check(fs.existsSync(file.openPath)&&fs.readFileSync(file.openPath,'utf8')===fs.readFileSync(benchmark,'utf8'),'S2 reminder existing immutable snapshot matches current benchmark');
+      const selector='[data-message-id="'+message.messageId+'"] button[aria-label="打开 benchmark.json"]';
+      await until(()=>evaluate('!!document.querySelector('+JSON.stringify(selector)+')'),'reminder benchmark actual open button');
+      report.reminder.openControl=await evaluate('(()=>{const b=document.querySelector('+JSON.stringify(selector)+');b.scrollIntoView({block:"center"});const r=b.getBoundingClientRect();b.click();return {label:b.getAttribute("aria-label"),visible:r.width>0&&r.height>0,clickedAt:Date.now()};})()');
+      check(report.reminder.openControl.visible,'S2 reminder actual file open control visible and clicked');
+    });
     if(eventBefore){const eventAfter=await detail(eventWork.workId);report.reminder.eventIndependence={before:eventBefore,after:eventAfter};check(eventAfter.intentRevision===eventBefore.intentRevision&&eventAfter.executions.length===eventBefore.executions.length&&(!eventRunBytes||fs.readFileSync(benchmarkRuns,'utf8')===eventRunBytes),'S2 independent reminder reschedule/delivery does not alter event Work or rerun benchmark');}
     check(JSON.stringify((await works()).map(w=>w.workId))===JSON.stringify(priorWorks),'S2 reminder creates no extra Work');
     await wait(4000);report.reminder.notifications=(await notes()).filter(n=>n.sourceId===job.id&&n.type==='reminder.due');
@@ -293,30 +325,30 @@ print(json.dumps(rows))
   });
   for(const probe of report.responsivenessProbes||[])await section('response sample '+probe.index,async()=>{await until(async()=>(await history()).messages.some(m=>m.role==='assistant'&&m.requestId===probe.user.requestId&&['completed','failed','cancelled','unknown'].includes(m.status)),'probe exact response '+probe.user.requestId);probe.answer=(await history()).messages.find(m=>m.role==='assistant'&&m.requestId===probe.user.requestId);});
   report.events=[...(report.eventsBeforeRestart||[]),...await evaluate('window.__scheduleEvents')];
-  report.domObservationSamples=[...(report.domBeforeRestart||[]),...await evaluate('Object.values(window.__scheduleDomSamples)')].map(row=>({...row,hostEventToDomBodyMs:row.firstBodyLaidOutAt?row.firstBodyLaidOutAt-row.firstHostObservedAt:null,hostEventToViewportBodyMs:row.firstBodyViewportAt?row.firstBodyViewportAt-row.firstHostObservedAt:null,persistedMessageToViewportBodyMs:row.firstBodyViewportAt&&row.persistedCreatedAt?row.firstBodyViewportAt-row.persistedCreatedAt:null,persistedMessageToFileButtonMs:row.firstFileButtonViewportAt&&row.persistedCreatedAt?row.firstFileButtonViewportAt-row.persistedCreatedAt:null}));
+  report.domObservationSamples=[...(report.domBeforeRestart||[]),...await evaluate('Object.values(window.__scheduleDomSamples)')].map(row=>({...row,hostEventToDomBodyMs:row.firstBodyLaidOutAt&&row.firstAnswerHostObservedAt?row.firstBodyLaidOutAt-row.firstAnswerHostObservedAt:null,hostEventToViewportBodyMs:row.firstBodyViewportAt&&row.firstAnswerHostObservedAt?row.firstBodyViewportAt-row.firstAnswerHostObservedAt:null,persistedMessageToViewportBodyMs:row.firstBodyViewportAt&&row.persistedCreatedAt?row.firstBodyViewportAt-row.persistedCreatedAt:null,persistedMessageToFileButtonMs:row.firstFileButtonViewportAt&&row.persistedCreatedAt?row.firstFileButtonViewportAt-row.persistedCreatedAt:null}));
   report.milestoneVisibility=report.domObservationSamples.filter(row=>row.workFeedback?.eventId?.startsWith('milestone:'));
   report.domMeasurementContract='requestAnimationFrame + actual laid-out text/control; viewport intersection recorded separately. Receipt/tool activity excluded. createdAt is persisted message timestamp, not database transaction commit instrumentation; missing observations remain null/untested.';
   report.history=await history();report.works=await works();report.modelCalls=requests.length;
   report.toolCalls=[...new Map(requests.flatMap(r=>r.messages||[]).flatMap(m=>m.tool_calls||[]).map(c=>[c.id,c])).values()];
   report.providerIntervals=rawUsageAudit;
-  for(const probe of report.responsivenessProbes||[]){const events=report.events.filter(e=>e.role==='assistant'&&e.requestId===probe.user.requestId),prose=events.find(e=>e.segments?.some(s=>s.kind!=='receipt'&&s.text?.trim())||e.status==='completed'&&e.text?.trim()),done=events.find(e=>e.status==='completed');probe.timing={firstSubstantiveHostProseMs:prose?prose.at-probe.submittedAt:null,completedMs:done?done.at-probe.submittedAt:null};}
+  for(const probe of report.responsivenessProbes||[]){const events=report.events.filter(e=>e.role==='assistant'&&e.requestId===probe.user.requestId),prose=events.find(e=>e.segments?.some(s=>s.kind==='answer'&&s.text?.trim())||e.status==='completed'&&e.text?.trim()),done=events.find(e=>e.status==='completed');probe.timing={firstSubstantiveHostProseMs:prose?prose.at-probe.submittedAt:null,completedMs:done?done.at-probe.submittedAt:null};}
   const quantiles=key=>{const values=(report.responsivenessProbes||[]).map(p=>p.timing?.[key]).filter(Number.isFinite).sort((a,b)=>a-b);return {n:values.length,p50:values.length?values[Math.ceil(values.length*.5)-1]:null,p95:values.length?values[Math.ceil(values.length*.95)-1]:null,rawMs:values};};
-  report.empiricalResponsiveness={firstSubstantive:quantiles('firstSubstantiveHostProseMs'),completion:quantiles('completedMs'),method:'nearest-rank empirical P50/P95, 8 small samples; host substantive prose excluding receipt, not guaranteed visible DOM and not SLA',load:report.performanceCaveat};
+  report.empiricalResponsiveness={firstSubstantive:quantiles('firstSubstantiveHostProseMs'),completion:quantiles('completedMs'),method:'nearest-rank empirical P50/P95, 8 small samples; host answer segment excluding receipt/planning commentary, not guaranteed visible DOM and not SLA',load:report.performanceCaveat};
   const diagnosticRows=JSON.parse(cp.execFileSync('python3',['-c',"import sqlite3,json,sys;c=sqlite3.connect('file:'+sys.argv[1]+'?mode=ro',uri=True);print(json.dumps([json.loads(r[0]) for r in c.execute('SELECT record_json FROM task_request_diagnostics')]))",path.join(home,'.mybuddy','app.db')],{encoding:'utf8',maxBuffer:32*1024*1024}));
   report.attributedRequests=diagnosticRows.map(d=>{let attribution={kind:'unknown',reason:'No exact foreground message, execution task, or binding identifier match'};const message=report.history.messages.find(m=>m.role==='assistant'&&d.executionScope==='bot-foreground:'+m.messageId);if(message)attribution={kind:'foreground',requestId:message.requestId,messageId:message.messageId};else for(const w of report.works){const binding=w.executions.find(e=>e.taskId===d.taskId);const review=w.executions.find(e=>String(d.executionScope).includes(e.bindingId));if(binding){attribution={kind:d.sourceKind==='subagent'?'work-subagent':'work-execution',workId:w.workId,bindingId:binding.bindingId};break;}if(review){attribution={kind:'work-result-review',workId:w.workId,bindingId:review.bindingId};break;}}return {id:d.id,model:d.model,taskId:d.taskId,executionScope:d.executionScope,sourceKind:d.sourceKind,status:d.status,startedAt:d.startedAt,finishedAt:d.finishedAt,usage:d.usage,knownCostUsd:d.knownCostUsd,costComplete:d.costComplete,attribution};});
   report.costAccounting={pricing:'Provider catalog pricing not measured; unknown costs are not zero',requests:report.attributedRequests.length,unknownAttribution:report.attributedRequests.filter(r=>r.attribution.kind==='unknown').length,completeCostRequests:report.attributedRequests.filter(r=>r.costComplete).length};
 
   for(const row of report.cases){const events=report.events.filter(e=>e.requestId===row.user.requestId&&e.role==='assistant');
-    const prose=events.find(e=>e.segments?.some(s=>s.kind!=='receipt'&&typeof s.text==='string'&&s.text.trim())||(e.text?.trim()&&e.status==='completed'));
+    const prose=events.find(e=>e.segments?.some(s=>s.kind==='answer'&&typeof s.text==='string'&&s.text.trim())||(e.text?.trim()&&e.status==='completed'));
     row.timing={firstSubstantiveHostProseMs:prose?prose.at-row.submittedAt:null,foregroundFinalMs:events.find(e=>e.status==='completed')?events.find(e=>e.status==='completed').at-row.submittedAt:null,firstUsablePartialMs:row.id==='execution-B'&&report.parallelPartial?report.parallelPartial.at-row.submittedAt:row.id==='analysis-A'&&report.firstA?report.firstA.at-row.submittedAt:null,finalArtifactMs:row.id==='execution-B'&&report.finalAB?report.finalAB.at-row.submittedAt:null};
     row.measurement='Host persisted/observed prose, excluding receipt; not provider TTFT or native-input latency';
   }
-  const identities=report.history.messages.filter(m=>m.workFeedback).map(m=>JSON.stringify([m.workFeedback.workId,m.workFeedback.executionId,m.workFeedback.eventId,m.workFeedback.category]));
+  const identities=report.history.messages.filter(m=>m.workFeedback).map(m=>JSON.stringify([m.workFeedback.workId,m.workFeedback.executionId,m.workFeedback.eventId,m.workFeedback.category,m.workFeedback.report?.milestone?{summary:m.workFeedback.report.summary,files:m.workFeedback.report.files}:null]));
   report.duplicateFeedbackIdentities=identities.filter((x,i)=>identities.indexOf(x)!==i);check(!report.duplicateFeedbackIdentities.length,'no duplicate feedback identity');
-  for(const width of [1280,390]){await rpc('Emulation.setDeviceMetricsOverride',{width,height:900,deviceScaleFactor:1,mobile:false});await wait(200);check(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'),'no horizontal overflow '+width);const shot=await rpc('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});fs.writeFileSync(path.join(out,'scheduling-'+width+'.png'),Buffer.from(shot.data,'base64'));}
+  for(const width of [1280,390])await section('viewport '+width,async()=>{await rpc('Emulation.setDeviceMetricsOverride',{width,height:900,deviceScaleFactor:1,mobile:false});await wait(200);check(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'),'no horizontal overflow '+width);const shot=await rpc('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});fs.writeFileSync(path.join(out,'scheduling-'+width+'.png'),Buffer.from(shot.data,'base64'));});
   // This lane does not fabricate a supported external event source. A separate hook lane must provide event/version ingress evidence.
   report.coverage.eventVersionDedup=report.fileEvent?.afterDuplicate?'real file receiver same-content/source-version dedup measured; external provider webhook untested':'not-established: file receiver scenario did not reach duplicate verification';
-  clearInterval(artifactWatch);persist();assert.equal(report.failures.length,0,report.failures.join('\n'));
+  clearInterval(artifactWatch);report.status=report.failures.length?'failed':'passed';persist();assert.equal(report.failures.length,0,report.failures.join('\n'));
 };
 
 /** Synthetic inputs only; these scripts measure/check, never repair renderer or query code. */

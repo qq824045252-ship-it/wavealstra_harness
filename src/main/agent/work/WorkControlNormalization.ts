@@ -22,7 +22,7 @@ export function normalizeWatchRule(input: Partial<WorkWatchRuleDto> | undefined)
   if (!input) return undefined;
   const catchUpPolicy = input.catchUpPolicy ?? "latest";
   return {
-    executionMode: input.executionMode, eventSource: input.eventSource, eventTarget: input.eventTarget,
+    requestedOutcome: input.requestedOutcome, executionMode: input.executionMode ?? (input.requestedOutcome === "one_time" ? "continuous" : undefined), eventSource: input.eventSource, eventTarget: input.eventTarget,
     eventFilter: input.eventFilter, triggerMode: input.triggerMode,
     endsAt: input.endsAt,
     subscriptions: normalizeTexts(input.subscriptions ?? (input.eventSource ? [input.eventSource] : input.cronExpression || input.nextWakeAt !== undefined || input.executionMode === "continuous" ? ["cron"] : [])),

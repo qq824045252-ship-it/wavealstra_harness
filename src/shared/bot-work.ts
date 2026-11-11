@@ -180,6 +180,7 @@ export interface WorkGoalSourceDto {
 }
 
 export interface WorkWatchRuleDto {
+  requestedOutcome?: "one_time" | "ongoing";
   executionMode?: "observe" | "continuous";
   eventSource?: string;
   eventTarget?: string;

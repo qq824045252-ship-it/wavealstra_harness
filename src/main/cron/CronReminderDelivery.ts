@@ -3,6 +3,7 @@ import type { AppDatabase } from "../db/AppDatabase";
 import type { CronJobDto } from "../../shared/agent-ipc";
 import { BotConversationRepository } from "../agent/work/BotConversationRepository";
 import type { BotMessageEvent } from "../../shared/bot-conversation";
+import { reminderResult } from "./CronReminderResults";
 import { computeNextRunAt } from "./CronSchedule";
 
 export interface ReminderDelivery {
@@ -55,10 +56,20 @@ export class CronReminderDelivery {
       const invalid = this.checkTarget(job); if (invalid) throw new Error(invalid);
       const late = !preview && now - dueAt > 5000;
       const formatted = new Intl.DateTimeFormat("zh-CN", { timeZone: job.timezone, dateStyle: "short", timeStyle: "medium" }).format(dueAt);
-      const body = `${preview ? "测试提醒：" : ""}${job.prompt}${late ? `\n\n原定 ${formatted}（${job.timezone}）；设备离线、休眠或调度延迟后补发${job.scheduleType !== "at" ? "，错过的重复提醒已合并为这一条" : ""}。` : ""}`;
+      const resultReference = reminderResult(this.db.connection, target, deliveryId);
+      const body = `${preview ? "测试提醒：" : ""}${job.prompt}${resultReference.notice ? `\n\n${resultReference.notice}` : ""}${late ? `\n\n原定 ${formatted}（${job.timezone}）；设备离线、休眠或调度延迟后补发${job.scheduleType !== "at" ? "，错过的重复提醒已合并为这一条" : ""}。` : ""}`;
+      // The report renderer displays summary as the main body. Keep this a
+      // reminder, with its saved prompt and timing, rather than a new Work result.
+      if (resultReference.feedback?.report) resultReference.feedback.report = {
+        ...resultReference.feedback.report, title: job.name, summary: `⏰ ${body}`,
+        sourceNotices: [...(resultReference.feedback.report.sourceNotices ?? []),
+          `已有成果摘要（未重新执行）：${resultReference.feedback.report.summary}`],
+      };
       const messageId = `bot-message-${deliveryId}`;
       this.db.connection.prepare(`INSERT INTO bot_messages(message_id,conversation_id,bot_id,request_id,role,text,status,created_at,updated_at)
         VALUES (?,?,?,?, 'assistant',?,'completed',?,?)`).run(messageId, target.conversationId, target.botId, deliveryId, `⏰ ${body}`, now, now);
+      if (resultReference.feedback) this.db.connection.prepare("INSERT INTO bot_work_feedback(message_id,metadata_json) VALUES (?,?)")
+        .run(messageId,JSON.stringify(resultReference.feedback));
       this.db.connection.prepare("UPDATE bot_conversations SET revision=revision+1,updated_at=? WHERE conversation_id=?").run(now, target.conversationId);
       const messages = new BotConversationRepository(this.db.connection);
       const conversation = messages.conversation(target.userId, target.botId, target.conversationId, target.teamId)!;

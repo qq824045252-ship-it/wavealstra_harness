@@ -142,6 +142,23 @@ try {
  console.log('PASS schedule_overview: reminder + once Work + watch/event Work merged with exact times/conditions and status, zero writes');
 
  // ------------------------------------------- (c) interrupt/redirect target resolution
+ // Live pause regression: a full title sharing 验收持续 with another Work is
+ // still one target. Retention instructions must not change that identity.
+ const pauseFacts={explicitWorkIds:[],referencedWorkIds:[],linkedWorkIds:[],
+  openWorks:[{workId:'work-screen',title:'验收持续首屏优化'},{workId:'work-summary',title:'验收持续简报'},
+   ...['验收混合历史检索','验收定时读取','验收PR合并benchmark','验收分析A','验收历史读取修复B']
+    .map((title,index)=>({workId:`work-live-other-${index}`,title}))],
+  requestedWorkId:'work-screen'};
+ const livePause='暂停验收持续首屏优化，保留全部测试测量和成果，不要取消或修改别的任务。';
+ assert.deepEqual(resolveWorkTarget({...pauseFacts,userText:livePause}),{ok:true,workId:'work-screen',basis:'unique_title'});
+ assert.equal(resolveWorkTarget({...pauseFacts,userText:livePause,requestedWorkId:'work-summary'}).ok,false,'model workId cannot pick the sibling');
+ assert.equal(resolveWorkTarget({...pauseFacts,userText:'暂停验收持续'}).ok,false,'shared fragment remains ambiguous');
+ for (const userText of ['暂停验收持续首屏优化和验收持续简报','暂停验收持续首屏优化，也暂停持续简报'])
+  assert.equal(resolveWorkTarget({...pauseFacts,userText}).ok,false,'a separate full or partial target remains ambiguous');
+ assert.equal(resolveWorkTarget({...pauseFacts,userText:'暂停验收持续首屏优化，不要动验收持续简报'}).ok,true,'complete exclusion must not exclude its sibling via shared words');
+ assert.equal(resolveWorkTarget({...pauseFacts,userText:'暂停验收持续首屏优化，不要动持续首屏'}).ok,false,'explicit substantive exclusion still wins');
+ assert.equal(resolveWorkTarget({...pauseFacts,userText:livePause,openWorksComplete:false}).ok,false,'incomplete catalog cannot establish uniqueness');
+ assert.equal(resolveWorkTarget({...pauseFacts,userText:livePause,openWorks:[...pauseFacts.openWorks,{workId:'work-duplicate',title:'验收持续首屏优化'}]}).ok,false,'duplicate full titles remain ambiguous');
  const alpha=unwrap(works.createWork(user,{operationId:'routing-title-alpha',title:'历史读取修复'}));
  const beta=unwrap(works.createWork(user,{operationId:'routing-title-beta',title:'长期记忆迁移'}));
  const longWork=unwrap(works.createWork(user,{operationId:'routing-title-long',title:'持续优化首屏打开速度的完整性能回归检查'}));
@@ -270,11 +287,16 @@ try {
  const ongoingArgs={requestedOutcome:'ongoing',mode:'watch',title:'持续优化首屏速度',startImmediately:true,
   watchRule:{nextWakeAt:future,scheduleBasis:'user_specified',timezone:'UTC'}};
  const ongoing=unwrap(await validInvoke('work_create',ongoingArgs,ongoingThenWait.requestId));
+ assert.equal(ongoing.watchRule?.requestedOutcome,'ongoing');
  assert.equal(ongoing.mode,'watch');assert.equal(ongoing.watchRule?.cronExpression,undefined);
  const ongoingSubscription=works.repo.listSubscriptions(ongoing.workId).find(item=>item.source==='cron')!;
  assert.equal(ongoingSubscription.nextWakeAt,future,'the future follow-up is persisted');
  assert.equal((db.connection.prepare("SELECT count(*) n FROM work_events_inbox WHERE work_id=? AND process_reason='user-requested-first-check'")
   .get(ongoing.workId) as {n:number}).n,1,'ongoing startImmediately executes now, then waits');
+ const onceFutureRequest=requestFor('一小时后读取文件并交付一次结果，不循环');
+ const onceFuture=unwrap(await validInvoke('work_create',{requestedOutcome:'one_time',mode:'watch',title:'一次未来执行',watchRule:{nextWakeAt:future,scheduleBasis:'user_specified',timezone:'UTC'}},onceFutureRequest.requestId));
+ assert.equal(onceFuture.watchRule?.executionMode,'continuous');
+ assert.equal(onceFuture.watchRule?.requestedOutcome,'one_time','one-time intent survives frontend routing and normalized persistence');
  const waitOnly=requestFor('持续跟进，先不动，之后复查');
  const waiting=unwrap(await validInvoke('work_create',{requestedOutcome:'ongoing',mode:'watch',title:'先等待再跟进',
   watchRule:{nextWakeAt:future+1000,scheduleBasis:'user_specified',timezone:'UTC'}},waitOnly.requestId));

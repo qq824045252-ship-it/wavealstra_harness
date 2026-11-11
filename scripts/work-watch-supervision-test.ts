@@ -6,6 +6,8 @@ import {mkdtempSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
+import {CronReminderDelivery} from '../src/main/cron/CronReminderDelivery';
+import type {CronJobDto} from '../src/shared/agent-ipc';
 import {AppDatabase} from '../src/main/db/AppDatabase';
 import {BotRegistry} from '../src/main/agent/work/BotRegistry';
 import {WorkService,DESKTOP_USER_GRANTS} from '../src/main/agent/work/WorkService';
@@ -13,7 +15,7 @@ import {BotConversationRepository} from '../src/main/agent/work/BotConversationR
 import {WorkConversationFeedback} from '../src/main/agent/work/WorkConversationFeedback';
 import {isReadOnlyScheduledFollowUp} from '../src/main/agent/work/WorkScheduledFollowUp';
 import {WorkWatchFollowUp} from '../src/main/agent/work/WorkWatchFollowUp';
-import {WorkWatchSupervision} from '../src/main/agent/work/WorkWatchSupervision';
+import {WorkWatchSupervision,WATCH_EXECUTION_RISK_LIMIT} from '../src/main/agent/work/WorkWatchSupervision';
 import {LOCAL_USER_ID,DEFAULT_BOT_ID} from '../src/shared/bot-work';
 const root=mkdtempSync(join(tmpdir(),'watch-supervisor-')),db=new AppDatabase(join(root,'test.db'));
 const bots=new BotRegistry(db.connection);bots.registerBot({userId:LOCAL_USER_ID,botId:DEFAULT_BOT_ID,displayName:"watch fixture",authorization:DESKTOP_USER_GRANTS});
@@ -29,11 +31,26 @@ function receipt(id:string,target=work,summary=id){
 let calls=0,fail=false,deliveryBlocked=false,preferences="",replaceDuringReview:string|undefined;
 let comparisonReviews=0;
 let historicalStop=false;
+let notificationCase="valid";
 const stopCondition='文件为 READY 时结束';
 const reviewPreferences:string[]=[];
 const reviewContexts:any[]=[];const reviewIds:string[]=[];
 const deliveredBodies:Array<{bindingId:string;text:string}>=[];
 const options={db:db.connection,works,isAuthority:()=>true,preferences:(taskId:string)=>{assert(works.repo.bindingForTask(taskId));return preferences;},wake:()=>{},deliver:(input:any)=>{deliveredBodies.push(input);return deliveryBlocked?false:feedback.deliverCompletion(input);},review:async(input:any)=>{calls++;if(input.context.title==='comparison watch')comparisonReviews++;reviewContexts.push(input.context);reviewIds.push(input.eventId);reviewPreferences.push(input.personalPreferences);assert(input.context.watchSupervision);await delay(20);if(replaceDuringReview!==undefined){preferences=replaceDuringReview;replaceDuringReview=undefined;}if(fail)throw Error('temporary provider unavailable');
+ if(input.context.title.startsWith('risk-case-')){
+  const dependent=input.context.title==='risk-case-dependent';const proof=input.context.verifiedObservations[0];
+  return {decision:'deliver' as const,outcome:dependent?'partial' as const:'completed' as const,reply:dependent?'当前目标依赖尚未核实的旧写入':'独立新目标的真实报告已完成',missing:[],
+   ...(input.context.title==='risk-case-current-unknown'?{stopAssessment:{status:'met' as const,conditionExcerpt:'只读取独立来源并交付报告',requestExcerpt:'只读取独立来源并交付报告',evidence:[{resultId:proof.resultId,quote:proof.text}]}}:{}),
+   priorRiskAssessment:{status:dependent?'dependent' as const:'independent' as const,riskIds:input.context.executionRisks.items.map((risk:any)=>risk.riskId),reason:dependent?'当前交付依赖旧写入':'新目标仅读取独立来源，成果不依赖旧效果',requestExcerpt:'只读取独立来源并交付报告',evidence:[{resultId:proof.resultId,quote:proof.text}]}};
+ }
+ if(input.context.title==='one-time partial')return {decision:'deliver' as const,outcome:'partial' as const,reply:'仍缺必要成果',missing:[]};
+ if(input.context.title==='conditional benchmark'){
+  const current=input.context.verifiedObservations[0];
+  return {decision:'deliver' as const,outcome:notificationCase==='partial'?'partial' as const:'completed' as const,reply:'基准完成，报告已更新',missing:[],
+   notificationAssessment:{status:notificationCase==='unknown'?'unknown' as const:notificationCase==='regression'?'met' as const:'not_met' as const,
+    conditionExcerpt:'明显退化或失败才通知',requestExcerpt:notificationCase==='invented'?'自创条件':'PR合并后跑基准，明显退化或失败才通知，没退化更新报告',
+    evidence:[{resultId:notificationCase==='old'?'benchmark-valid:read':current?.resultId??'missing',quote:current?.text??'missing'}]}};
+ }
  if(input.context.title==='rejected-continuation')return {decision:'continue' as const,outcome:'partial' as const,reply:'I promise to keep executing immediately without waiting.',missing:[{task:'invented task',requestExcerpt:'not in the original request'}]};
  if(historicalStop&&input.context.title==='历史停止证据隔离'){
   const old=input.context.previousVerifiedObservations.observations[0];assert(old?.text==='READY');
@@ -334,6 +351,136 @@ continuousObserved('continuous-gap');await flush();
 assert.equal(reviewContexts.filter(context=>context.title==='continuous file updates').length,continuousReviewCount+1,'unchanged input with an actionable gap must still be reviewed');
 assert.notEqual((db.connection.prepare("SELECT json_extract(context_json,'$.reason') reason FROM work_watch_reviews WHERE binding_id=?").get('continuous-gap') as {reason:string|null}).reason,'host_proven_unchanged');
 console.log('PASS continuous changes_only: complete reviewed unchanged artifact is silent without reviewer; actionable gap still reviews');
+// Consecutive stalled rounds reuse the Work's reason identity, not each binding ID.
+const blockedCreate=works.createWork({kind:'user',userId:LOCAL_USER_ID,grants:DESKTOP_USER_GRANTS},{operationId:'blocked-rounds',title:'blocked rounds',mode:'watch',ownerBotId:DEFAULT_BOT_ID,inputSnapshotId:'blocked-rounds',authorization:DESKTOP_USER_GRANTS,watchRule:{executionMode:'continuous'}});assert(blockedCreate.ok);
+const blockedWork=blockedCreate.work;
+receipt('blocked-first',blockedWork);await flush();receipt('blocked-second',blockedWork);await flush();
+assert.equal(reviewState('blocked-first'),'delivered');assert.equal(reviewState('blocked-second'),'delivered','second same-reason round does not loop on UNIQUE');
+assert.equal(works.repo.listOpenBlockers(blockedWork.workId).filter(blocker=>blocker.reasonCode==='invalid-schedule').length,1);
+assert.equal((db.connection.prepare('SELECT error FROM work_watch_reviews WHERE binding_id=?').get('blocked-second') as {error:string|null}).error,null);
+const stalled=works.repo.listOpenBlockers(blockedWork.workId)[0];
+const repairedSub=works.repo.listSubscriptions(blockedWork.workId)[0];assert(repairedSub);
+works.repo.updateSubscription({...repairedSub,nextWakeAt:Date.now()+60000,updatedAt:Date.now()});await flush();
+assert.equal(works.repo.getBlocker(stalled.blockerId)!.status,'cleared','persisted real future plan clears the stale Watch diagnostic');
+works.repo.updateSubscription({...repairedSub,nextWakeAt:undefined,updatedAt:Date.now()});receipt('blocked-third',blockedWork);await flush();
+assert.equal(works.repo.listOpenBlockers(blockedWork.workId).filter(blocker=>blocker.reasonCode==='invalid-schedule').length,1,'later regression retains cleared history and one new open reason');
+works.repo.updateWork({...works.getWork(blockedWork.workId)!,lifecycle:'closed',closureConclusion:'cancelled',updatedAt:Date.now()});await flush();
+assert.equal(works.repo.listOpenBlockers(blockedWork.workId).length,0,'closed Work no longer carries next-step diagnostic');
+console.log('PASS duplicate Watch blocker reason is reused, real schedule clears it, later regression and closure preserve history');
+// Persisted one-time defaults retain original execution semantics, including host tick and actual action guard.
+for(const variant of ['default-once','observe-once','ongoing-default','legacy-default'] as const){
+ const due=Date.now()+30000;
+ const made=works.createWork({kind:'user',userId:LOCAL_USER_ID,grants:DESKTOP_USER_GRANTS},{operationId:variant,title:variant,mode:'watch',ownerBotId:DEFAULT_BOT_ID,inputSnapshotId:variant,authorization:DESKTOP_USER_GRANTS,watchRule:{requestedOutcome:variant==='legacy-default'?undefined:variant==='ongoing-default'?'ongoing':'one_time',executionMode:variant==='observe-once'?'observe':undefined,nextWakeAt:due}});assert(made.ok);
+ works.tick(due+1);const event=works.repo.listInbox(made.work.workId).find(item=>item.eventType==='work.tick')!;assert(event);
+ const current=works.getWork(made.work.workId)!;
+ assert.equal(current.watchRule!.executionMode,variant==='default-once'?'continuous':variant==='observe-once'?'observe':undefined);
+ const dispatched=works.dispatchExecution({kind:'user',userId:LOCAL_USER_ID,grants:DESKTOP_USER_GRANTS},{operationId:`dispatch-${variant}`,workId:current.workId,botId:DEFAULT_BOT_ID,taskId:variant,durableStoreKey:variant,conversationId:'native',workspaceBinding:root,inboxEventId:event.eventId,versionGuard:{expectedStateVersion:current.stateVersion,expectedIntentRevision:current.intentRevision,expectedOwnerEpoch:current.ownerEpoch}});assert(dispatched.ok);
+ const binding=works.repo.bindingForTask(variant)!;const native=JSON.parse(works.repo.executionInput(binding));
+ assert.equal(native.watchFollowUp.readOnly,variant!=='default-once');
+ const denied=works.admitTaskAction(variant,{operationId:`write-${variant}`,actionKind:'workspace:write'});
+ if(variant==='default-once')assert.equal(denied,undefined,'explicit one-time original task can actually admit its write');else assert(denied,'explicit observation and unspecified ongoing/legacy remain read only');
+ works.repo.updateBinding({...binding,invalidatedAt:Date.now()});
+}
+const blockerScan=db.connection.prepare("EXPLAIN QUERY PLAN SELECT DISTINCT work_id FROM work_blockers INDEXED BY uq_work_blocker_reason WHERE status='open' AND reason_code IS NOT NULL AND reason_code IN ('invalid-schedule','user-input') AND blocker_id LIKE 'watch-next-step:%'").all() as {detail:string}[];
+assert(blockerScan.some(row=>row.detail.includes('USING INDEX uq_work_blocker_reason')),'watch wake scans only the existing partial open-reason index');
+console.log('PASS one-time default native contract and real action guard; explicit observe/ongoing/legacy unchanged; blocker reconciliation uses partial index');
+// Explicit future one-time goals close only after a complete evidence-backed review.
+// A single scheduled wait on ongoing or legacy watch must never imply completion.
+for(const kind of ['one_time','partial','no-evidence','failed','mixed-artifacts','ongoing','legacy'] as const){
+ const created=works.createWork({kind:'user',userId:LOCAL_USER_ID,grants:DESKTOP_USER_GRANTS},{operationId:`future-${kind}`,title:kind==='partial'?'one-time partial':`future ${kind}`,mode:'watch',ownerBotId:DEFAULT_BOT_ID,inputSnapshotId:`future-${kind}`,authorization:DESKTOP_USER_GRANTS,watchRule:{requestedOutcome:kind==='legacy'?undefined:['partial','no-evidence','failed','mixed-artifacts'].includes(kind)?'one_time':kind as 'one_time'|'ongoing',executionMode:'continuous',nextWakeAt:Date.now()+60000}});assert(created.ok);
+ if(kind==='one_time')works.repo.insertBlocker({blockerId:'watch-next-step:prior-one-time',workId:created.work.workId,kind:'operational',reasonCode:'invalid-schedule',reason:'上一轮尚无下一步',waitingForUserInput:false,status:'open',createdAt:Date.now()});
+ const id=`future-${kind}`;receipt(id,created.work,'完整读取了原请求的内容');
+ db.connection.prepare('UPDATE work_native_inbox SET payload_json=? WHERE binding_id=?').run(JSON.stringify({status:'completed',summary:'完整读取了原请求的内容',hasWriteConflicts:false,artifactRefs:[],readEvidence:[{toolCallId:'read',toolName:'read',kind:'file-content',target:'/fixture/once',partial:false,at:Date.now(),outputHash:createHash('sha256').update('source').digest('hex'),outputText:'source'}]}),id);
+ if(kind==='mixed-artifacts'){const file=join(root,'once-valid.md');writeFileSync(file,'actual result');works.transaction(()=>works.generatedArtifacts.record(works.repo.getBinding(id)!,[{path:file,snapshotPath:file,digest:createHash('sha256').update('actual result').digest('hex'),sizeBytes:13,registeredAt:Date.now(),sourceEntryId:1}]));db.connection.prepare('UPDATE work_deliverables SET artifact_refs_json=? WHERE deliverable_id=?').run(JSON.stringify([file,join(root,'once-missing.md')]),`result:${id}`);}
+ if(kind==='no-evidence')db.connection.prepare('UPDATE work_native_inbox SET payload_json=? WHERE binding_id=?').run('{}',id);
+ if(kind==='failed')works.repo.updateBinding({...works.repo.getBinding(id)!,status:'failed'});
+ await flush();assert.equal(works.getWork(created.work.workId)!.lifecycle,kind==='one_time'?'closed':'active',`future goal ${kind}`);
+ if(kind==='one_time'){assert.equal(works.getWork(created.work.workId)!.closureConclusion,'succeeded');assert(works.repo.listSubscriptions(created.work.workId).every(sub=>sub.stoppedAt));assert(!works.repo.listOpenBlockers(created.work.workId).length);}
+}
+console.log('PASS explicit future one-time completes after review; partial, ongoing single-wait and legacy watch stay open');
+// An explicitly reviewed independent r2 may finish without rewriting the unknown r1 history.
+for(const variant of ['independent','dependent','current-unknown','overflow'] as const){
+ const made=works.createWork({kind:'user',userId:LOCAL_USER_ID,grants:DESKTOP_USER_GRANTS},{operationId:`risk-${variant}`,title:`risk-case-${variant}`,mode:'watch',ownerBotId:DEFAULT_BOT_ID,inputSnapshotId:`risk-${variant}-r1`,authorization:DESKTOP_USER_GRANTS,watchRule:{requestedOutcome:'one_time',stopConditionText:'只读取独立来源并交付报告',nextWakeAt:Date.now()+60000}});assert(made.ok);
+ const oldId=`risk-${variant}-old`;receipt(oldId,made.work);works.repo.updateBinding({...works.repo.getBinding(oldId)!,status:'running',settledAt:undefined});
+ works.repo.insertAdmission({admissionId:`${oldId}-effect`,workId:made.work.workId,bindingId:oldId,operationId:`${oldId}-write`,actionKind:'write',state:'unknown',intentRevision:made.work.intentRevision,ownerEpoch:made.work.ownerEpoch,admittedAt:Date.now()});
+ if(variant==='overflow')for(let n=0;n<WATCH_EXECUTION_RISK_LIMIT+1;n++)works.repo.insertAdmission({admissionId:`${oldId}-extra-${n}`,workId:made.work.workId,bindingId:oldId,operationId:`${oldId}-write-${n}`,actionKind:'write',state:'unknown',intentRevision:made.work.intentRevision,ownerEpoch:made.work.ownerEpoch,admittedAt:Date.now()+n+1});
+ const changed=works.amendWork({kind:'user',userId:LOCAL_USER_ID,grants:DESKTOP_USER_GRANTS},{operationId:`risk-${variant}-amend`,workId:made.work.workId,inputSnapshotId:`risk-${variant}-r2`,goalDescription:'只读取独立来源并交付报告',versionGuard:{expectedStateVersion:made.work.stateVersion,expectedIntentRevision:made.work.intentRevision,expectedOwnerEpoch:made.work.ownerEpoch}});assert(changed.ok);
+ const target=works.getWork(made.work.workId)!;assert(works.repo.getBinding(oldId)!.invalidatedAt);
+ const id=`risk-${variant}-new`;receipt(id,target,'已读取独立来源并生成报告');
+ const binding=works.repo.getBinding(id)!,file=join(root,`${id}.md`);writeFileSync(file,'independent verified report');
+ works.transaction(()=>works.generatedArtifacts.record(binding,[{path:file,snapshotPath:file,digest:createHash('sha256').update('independent verified report').digest('hex'),sizeBytes:Buffer.byteLength('independent verified report'),registeredAt:Date.now(),sourceEntryId:1}]));
+ db.connection.prepare('UPDATE work_deliverables SET artifact_refs_json=? WHERE deliverable_id=?').run(JSON.stringify([file]),`result:${id}`);
+ db.connection.prepare('UPDATE work_native_inbox SET payload_json=? WHERE binding_id=?').run(JSON.stringify({status:'completed',summary:'已读取独立来源并生成报告',hasWriteConflicts:false,artifactRefs:[file],readEvidence:[{toolCallId:'read',toolName:'read',kind:'file-content',target:'/fixture/independent',partial:false,at:Date.now(),outputHash:createHash('sha256').update('independent source').digest('hex'),outputText:'independent source'}]}),id);
+ if(variant==='current-unknown')works.repo.insertAdmission({admissionId:`${id}-effect`,workId:target.workId,bindingId:id,operationId:`${id}-write`,actionKind:'write',state:'unknown',intentRevision:target.intentRevision,ownerEpoch:target.ownerEpoch,admittedAt:Date.now()});
+ works.repo.executionInput=b=>b.workId===target.workId?JSON.stringify({...JSON.parse(input(b)),userRequest:{messages:[{text:'只读取独立来源并交付报告'}]}}):input(b);
+ await flush();works.repo.executionInput=input;
+ assert.equal(works.getWork(target.workId)!.lifecycle,variant==='independent'?'closed':'active',`old unknown risk ${variant}`);
+ assert.equal(works.repo.getBinding(oldId)!.status,'running','stop request must not fake an old terminal receipt');
+ assert.equal(works.repo.listAdmissions(target.workId).find(item=>item.admissionId===`${oldId}-effect`)!.state,'unknown','old unknown effect preserved');
+ const context=reviewContexts.findLast(item=>item.title===`risk-case-${variant}`);assert(context.executionRisks.items.some((risk:any)=>risk.operationId===`${oldId}-write`&&risk.retired));
+ if(variant==='overflow'){assert.equal(context.executionRisks.items.length,WATCH_EXECUTION_RISK_LIMIT);assert(context.executionRisks.omittedRiskCount>0);const before=context.executionRisks.fingerprint;
+  // Same count, different omitted operation: its hash must invalidate the evidence identity.
+  db.connection.prepare('UPDATE work_action_admissions SET operation_id=? WHERE admission_id=?').run('changed-omitted-operation',`${oldId}-extra-${WATCH_EXECUTION_RISK_LIMIT}`);
+  const fresh=(supervisor as any).executionRisks(binding);assert.equal(fresh.omittedRiskCount,context.executionRisks.omittedRiskCount);assert.notEqual(fresh.fingerprint,before);
+ }
+ const delivery=deliveredBodies.find(body=>body.bindingId===id) as any;assert(delivery?.notices.some((notice:string)=>notice.includes('尚未核实')&&notice.includes(`${oldId}-write`)),'host always delivers the old-risk notice');
+}
+console.log('PASS independent revised one-time goal completes with old risk visible; dependency and current unknown remain open without effect replay');
+// A long, fully terminal continuation history with no risks is not a completion quota.
+const longMade=works.createWork({kind:'user',userId:LOCAL_USER_ID,grants:DESKTOP_USER_GRANTS},{operationId:'long-terminal-chain',title:'long terminal chain',mode:'watch',ownerBotId:DEFAULT_BOT_ID,inputSnapshotId:'long-terminal-chain',authorization:DESKTOP_USER_GRANTS,watchRule:{requestedOutcome:'one_time',nextWakeAt:Date.now()+60000}});assert(longMade.ok);
+for(let n=0;n<WATCH_EXECUTION_RISK_LIMIT+2;n++){
+ const id=`terminal-chain-${n}`;receipt(id,longMade.work,'已完成独立步骤');
+ if(n<WATCH_EXECUTION_RISK_LIMIT+1)works.repo.updateBinding({...works.repo.getBinding(id)!,invalidatedAt:Date.now()});
+ if(n){const plan=`terminal-plan-${n}`;
+  db.connection.prepare("INSERT INTO work_continuation_plans(plan_id,work_id,source_binding_id,operation_id,intent_revision,input_snapshot_id,owner_epoch,owner_bot_id,gap_items_json,reason,state,created_at) VALUES (?,?,?,?,?,?,?,?,'[]','已完成','settled',?)").run(plan,longMade.work.workId,`terminal-chain-${n-1}`,plan,longMade.work.intentRevision,longMade.work.inputSnapshotId,longMade.work.ownerEpoch,DEFAULT_BOT_ID,Date.now());
+  db.connection.prepare("INSERT INTO work_dispatch_requests(operation_id,work_id,task_id,bot_id,intent_revision,input_snapshot_id,state,created_at,continuation_plan_id) VALUES (?,?,?,?,?,?,'dispatched',?,?)").run(plan,longMade.work.workId,id,DEFAULT_BOT_ID,longMade.work.intentRevision,longMade.work.inputSnapshotId,Date.now(),plan);
+ }
+}
+const lastId=`terminal-chain-${WATCH_EXECUTION_RISK_LIMIT+1}`;
+db.connection.prepare('UPDATE work_native_inbox SET payload_json=? WHERE binding_id=?').run(JSON.stringify({status:'completed',summary:'已完成独立步骤',hasWriteConflicts:false,artifactRefs:[],readEvidence:[{toolCallId:'read',toolName:'read',kind:'file-content',target:'/fixture/final',partial:false,at:Date.now(),outputHash:createHash('sha256').update('complete').digest('hex'),outputText:'complete'}]}),lastId);
+await flush();const longContext=reviewContexts.findLast(context=>context.title==='long terminal chain');assert(longContext.executionRisks.omittedLineageCount>0);assert.equal(longContext.executionRisks.items.length,0);assert.equal(longContext.executionRisks.omittedRiskCount,0);assert.equal(works.getWork(longMade.work.workId)!.lifecycle,'closed','risk-free long chain can complete');
+// A reminder may attach settled artifacts before first goal review; it is not that review's final delivery.
+for(const preview of [false,true]){
+ const key=preview?'preview':'due',made=works.createWork({kind:'user',userId:LOCAL_USER_ID,grants:DESKTOP_USER_GRANTS},{operationId:`reminder-race-${key}`,title:`reminder-race-${key}`,mode:'watch',ownerBotId:DEFAULT_BOT_ID,conversationId:source.conversationId,inputSnapshotId:`reminder-race-${key}`,authorization:DESKTOP_USER_GRANTS,watchRule:{requestedOutcome:'one_time',nextWakeAt:Date.now()+60000}});assert(made.ok);
+ db.connection.prepare("UPDATE work_conversations SET channel_type='bot-delivery' WHERE work_id=?").run(made.work.workId);
+ const id=`reminder-race-${key}`;receipt(id,made.work,'指定成果已生成');const b=works.repo.getBinding(id)!,file=join(root,`${id}.md`),body='verified requested report';writeFileSync(file,body);
+ works.transaction(()=>works.generatedArtifacts.record(b,[{path:file,snapshotPath:file,digest:createHash('sha256').update(body).digest('hex'),sizeBytes:Buffer.byteLength(body),registeredAt:Date.now(),sourceEntryId:1}]));
+ db.connection.prepare('UPDATE work_deliverables SET artifact_refs_json=? WHERE deliverable_id=?').run(JSON.stringify([file]),`result:${id}`);
+ const due=Date.now(),job:CronJobDto={id:`reminder-job-${key}`,name:'查看已有成果',prompt:'提醒我查看成果',scheduleType:'at',scheduleExpr:new Date(due).toISOString(),timezone:'UTC',enabled:true,createdAt:due,updatedAt:due,reminder:{kind:'bot-reminder',userId:LOCAL_USER_ID,botId:DEFAULT_BOT_ID,conversationId:source.conversationId,result:{workId:made.work.workId}}};
+ db.upsertCronJob(job);const host=new CronReminderDelivery(db),first=host.deliver(job,due,due,preview);
+ assert.equal(first.event.message.workFeedback!.executionId,id);assert.equal(first.event.message.workFeedback!.kind,'result');
+ assert.equal(first.event.message.workFeedback!.report!.files!.length,1);
+ if(!preview){const count=(db.connection.prepare('SELECT count(*) n FROM bot_messages').get() as {n:number}).n;assert.equal(host.deliver(job,due,due).deliveryId,first.deliveryId);assert.equal((db.connection.prepare('SELECT count(*) n FROM bot_messages').get() as {n:number}).n,count,'due reminder replay stays idempotent');}
+ assert(supervisor.hasPending(made.work.workId),'reminder result reference must not suppress pending supervision');
+ const before=calls;await flush();assert.equal(calls,before+1,'first Watch review still executes after reminder attachment');
+ assert.equal(works.getWork(made.work.workId)!.lifecycle,'closed');assert.equal(works.getWork(made.work.workId)!.closureConclusion,'succeeded');
+}
+const ordinary=works.createWork({kind:'user',userId:LOCAL_USER_ID,grants:DESKTOP_USER_GRANTS},{operationId:'ordinary-result-dedupe',title:'ordinary result dedupe',mode:'watch',ownerBotId:DEFAULT_BOT_ID,conversationId:source.conversationId,inputSnapshotId:'ordinary-result-dedupe',authorization:DESKTOP_USER_GRANTS,watchRule:{cronExpression:'* * * * *',timezone:'UTC'}});assert(ordinary.ok);
+receipt('ordinary-result-dedupe',ordinary.work);assert(feedback.deliverCompletion({bindingId:'ordinary-result-dedupe',eventId:'ordinary-completion',text:'已有终态结果',category:'result'}));
+assert(!supervisor.hasPending(ordinary.work.workId));const beforeOrdinary=calls;await flush();assert.equal(calls,beforeOrdinary,'ordinary final feedback still suppresses duplicate review');
+console.log('PASS real due/preview reminder artifact delivery does not suppress first Watch goal review; reminder replay and ordinary result dedupe preserved');
+// Changed source does not imply the user's business notification condition is met.
+const conditionalCreated=works.createWork({kind:'user',userId:LOCAL_USER_ID,grants:DESKTOP_USER_GRANTS},{operationId:'conditional-benchmark',title:'conditional benchmark',mode:'watch',ownerBotId:DEFAULT_BOT_ID,inputSnapshotId:'conditional-benchmark',authorization:DESKTOP_USER_GRANTS,watchRule:{executionMode:'continuous',cronExpression:'* * * * *',timezone:'UTC',notificationMode:'changes_only',notifyInitial:true}});assert(conditionalCreated.ok);
+const conditionalWork=conditionalCreated.work;
+works.repo.executionInput=b=>b.workId===conditionalWork.workId ? JSON.stringify({...JSON.parse(input(b)),userRequest:{messages:[{text:'PR合并后跑基准，明显退化或失败才通知，没退化更新报告'}]}}):input(b);
+for(const variant of ['valid','changed','invented','old','partial','unknown','regression','missing-source','missing-artifact','mixed-artifacts','bad-artifact','gap']){
+ notificationCase=variant;const id=`benchmark-${variant}`,value=`commit-${variant}: latency=10ms; baseline=10ms; passed`,summary=JSON.stringify({protocol:'watch-observation-v1',status:'observed',facts:[{source:'/fixture/benchmark',key:'file_content',value}],summary:value});
+ receipt(id,conditionalWork,summary);const binding=works.repo.getBinding(id)!,file=join(root,`${id}.md`);writeFileSync(file,value);
+ works.transaction(()=>works.generatedArtifacts.record(binding,[{path:file,snapshotPath:file,digest:createHash('sha256').update(value).digest('hex'),sizeBytes:Buffer.byteLength(value),registeredAt:Date.now(),sourceEntryId:1}]));
+ db.connection.prepare('UPDATE work_deliverables SET artifact_refs_json=? WHERE deliverable_id=?').run(JSON.stringify([file]),`result:${id}`);
+ db.connection.prepare('UPDATE work_native_inbox SET payload_json=? WHERE binding_id=?').run(JSON.stringify({status:'completed',summary,hasWriteConflicts:false,artifactRefs:[file],readEvidence:variant==='missing-source'?[]:[{toolCallId:'read',toolName:'read',kind:'file-content',target:'/fixture/benchmark',partial:false,at:Date.now(),outputHash:createHash('sha256').update(value).digest('hex'),outputText:value}]}),id);
+ if(variant==='missing-artifact')db.connection.prepare('UPDATE work_deliverables SET artifact_refs_json=? WHERE deliverable_id=?').run(JSON.stringify([join(root,'missing-report.md')]),`result:${id}`);
+ if(variant==='mixed-artifacts')db.connection.prepare('UPDATE work_deliverables SET artifact_refs_json=? WHERE deliverable_id=?').run(JSON.stringify([file,join(root,'missing-report.md')]),`result:${id}`);
+ if(variant==='bad-artifact')writeFileSync(file,'tampered');
+ if(variant==='gap')works.transaction(()=>works.partialResults.record(binding,[{itemId:'benchmark-gap',task:'报告缺失指标',required:true,dependencies:[],criterionIds:[],nativeStatus:'pending',outcome:'not_started',artifactRefs:[],writeConflicts:[],summary:'指标未完成'}]));
+ await flush();const silent=['valid','changed'].includes(variant);
+ assert.equal(reviewState(id),silent?'silent':'delivered',`conditional notification ${variant}`);
+ assert.equal(deliveredBodies.some(body=>body.bindingId===id),!silent);
+ assert(works.repo.listDeliverables(conditionalWork.workId).some(result=>result.executionId===id&&result.artifactRefs.length),'silent report remains queryable');
+ if(variant==='changed')assert.equal(reviewContexts.at(-1).comparisonState,'changed','changed source still reviews but does not notify for unmet business condition');
+}
+works.repo.executionInput=input;
+console.log('PASS conditional notification: changed complete reports silent; invalid/stale/unknown/failed evidence and gaps stay visible');
 observed('comparison-changed','B');await flush();
 assert.equal(comparisonReviews,2,'changed evidence still goes through the existing review path');
 assert.equal(comparisonContexts().at(-1).comparisonState,'changed');assert.equal(comparisonContexts().at(-1).hostProvenUnchanged,false);
