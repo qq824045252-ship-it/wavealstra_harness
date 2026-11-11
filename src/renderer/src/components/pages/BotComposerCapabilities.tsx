@@ -86,7 +86,7 @@ export function BotComposerCapabilities({ botId, scope, text, attach, attachment
         onSelectConnector={connector => add("connectorIds", connector.id)} />}
     </div>
     <div className="bot-composer-capability-chips" aria-label="本条消息能力">
-      {chips.map(chip => <span key={`${chip.kind}:${chip.id}`} className="attach-chip" title={`${chip.name} · 用于本条消息及其后台任务`}>
+      {chips.map(chip => <span key={`${chip.kind}:${chip.id}`} className="attach-chip" title={`${chip.name} · 用于本条消息及其后台任务${chip.kind === "connectorIds" ? " · 已选连接器；CLI/登录未验证" : ""}`}>
         <span className="attach-chip-name">{chip.name}</span><button type="button" className="attach-chip-x" aria-label={`移除 ${chip.name}`}
           onClick={() => update(chip.kind === "expertId" ? {expertId:""} : {[chip.kind]:selection![chip.kind].filter(id => id !== chip.id)})}><IconX size={12} /></button></span>)}
     </div>

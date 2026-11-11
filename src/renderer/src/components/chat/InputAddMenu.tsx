@@ -1166,13 +1166,10 @@ export default function InputAddMenu({
                   </span>
                   <div className="add-menu-connector-info">
                     <span className="add-menu-connector-name">{conn.name}</span>
-                    <span className="add-menu-connector-desc">
+                    <span className="add-menu-connector-desc" title={`${conn.description || conn.id} · CLI/登录未验证`}>
                       {conn.enabled === false
                         ? "已停用：请到「连接器」页启用后引用"
-                        : conn.description ||
-                          (conn.skillCount > 0
-                            ? `${conn.skillCount} 个配套技能`
-                            : conn.type || conn.id)}
+                        : `${conn.description || conn.id} · 技能已安装；CLI/登录未验证${conn.requiresAuth ? "；使用服务需登录" : ""}`}
                     </span>
                   </div>
                   <button
@@ -1181,7 +1178,7 @@ export default function InputAddMenu({
                     title={
                       conn.enabled === false
                         ? "连接器已停用（安装 ≠ active），请到「连接器」页启用"
-                        : "引用到当前任务（任务级 Active）"
+                        : "挂载配套技能到当前任务；CLI/登录未验证"
                     }
                     disabled={conn.enabled === false}
                     onClick={() => {
@@ -1203,13 +1200,14 @@ export default function InputAddMenu({
                   </span>
                   <div className="add-menu-connector-info">
                     <span className="add-menu-connector-name">{conn.name}</span>
-                    <span className="add-menu-connector-desc">
-                      {conn.description || conn.id}
+                    <span className="add-menu-connector-desc" title={`${conn.description || conn.id} · CLI/登录未验证`}>
+                      {conn.description || conn.id} · 安装仅添加配套技能，CLI/登录未验证
                     </span>
                   </div>
                   <button
                     type="button"
                     className="add-menu-connect-btn"
+                    title="安装配套技能，不执行 CLI 安装或服务登录"
                     disabled={connectorBusy === conn.id}
                     onClick={() => {
                       setConnectorBusy(conn.id);

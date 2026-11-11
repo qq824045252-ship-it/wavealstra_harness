@@ -51,6 +51,7 @@ export function BotExecutionSettings({ botId, onManageModels }: { botId: string;
   };
   const choices = (label: string, key: "skillIds" | "mcpIds" | "connectorIds", options: BotSettingsChoice[]) => <fieldset>
     <legend>{label} · 已选 {draft![key].length}</legend>
+    {key === "connectorIds" && <p>连接器仅挂载配套技能；CLI/登录未验证。勾选不代表服务已连接。</p>}
     {options.length ? options.map(item => <label key={item.id} className="bot-setting-choice">
       <input type="checkbox" checked={draft![key].includes(item.id)} disabled={busy || (!item.available && !draft![key].includes(item.id))}
         onChange={event => setDraft(current => current && ({ ...current, [key]: event.target.checked ? [...current[key], item.id] : current[key].filter(id => id !== item.id) }))} />

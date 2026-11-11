@@ -1575,11 +1575,11 @@ function ConnectorsTab({ query }: { query: string }): React.JSX.Element {
                   {connector.skillCount > 0 ? ` · ${connector.skillCount} 个技能` : ""}
                 </>
               }
-              description={connector.description || "（无描述）"}
+              description={`${connector.description || "（无描述）"} · ${connector.installed ? "技能已安装；CLI/登录未验证" : "安装仅添加配套技能，不验证 CLI/登录"}${connector.requiresAuth ? "；使用服务需登录" : ""}`}
               tags={[]}
               density="compact"
               highlight={!!connector.installed}
-              status={<HubStatusBadge label={connector.installed ? (connector.enabled !== false ? "已启用" : "已停用") : "未安装"} tone={connector.installed ? (connector.enabled !== false ? "positive" : "neutral") : "neutral"} />}
+              status={<HubStatusBadge label={connector.installed ? (connector.enabled !== false ? "技能已启用" : "技能已停用") : "未安装"} tone={connector.installed ? (connector.enabled !== false ? "positive" : "neutral") : "neutral"} />}
               footer={
                 connector.installed ? (
                   <HubActionsMenu
@@ -1595,7 +1595,7 @@ function ConnectorsTab({ query }: { query: string }): React.JSX.Element {
                               await setConnectorEnabled(connector.id, connector.enabled !== false ? false : true);
                               setConnToast({
                                 kind: "ok",
-                                text: connector.enabled !== false ? `已停用「${connector.name}」：配套技能不再进入会话` : `已启用「${connector.name}」：可引用到任务（安装 ≠ active）`,
+                                text: connector.enabled !== false ? `已停用「${connector.name}」：配套技能不再进入会话` : `已启用「${connector.name}」配套技能；CLI/登录未验证`,
                               });
                             } catch (err) {
                               setConnToast({ kind: "err", text: `操作失败：${err instanceof Error ? err.message : String(err)}` });
@@ -1647,7 +1647,7 @@ function ConnectorsTab({ query }: { query: string }): React.JSX.Element {
                           setBusyId(connector.id);
                           void installConnector(connector.id)
                             .then((names) => {
-                              setConnToast({ kind: "ok", text: `已安装连接器「${connector.name}」，配套技能 ${names.length} 个（默认启用）` });
+                              setConnToast({ kind: "ok", text: `已安装「${connector.name}」配套技能 ${names.length} 个；CLI/登录未验证` });
                               setBusyId(null);
                             })
                             .catch((err) => {

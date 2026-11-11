@@ -1,3 +1,4 @@
+import { connectorRuntimeContext } from "../connectors/ConnectorRuntimeContext";
 import { WorkWatchSupervision } from "./work/WorkWatchSupervision";
 import { botExecutionDiagnostics } from "./work/BotExecutionDiagnostics";
 import { BotDisplayGroupsService } from "./work/BotDisplayGroupsService";
@@ -1707,6 +1708,7 @@ export class AgentService {
         const { openBotComposerRuntime } = await import("./work/BotComposerRuntime");
         return openBotComposerRuntime({ profile, cwd, models: this.durableModels!,
           connectorSkillRoots: this.connectorsService.getPrivateSkillDirs(profile.allowedConnectorIds),
+          connectorContext: profile.allowedConnectorIds.length ? connectorRuntimeContext(profile.allowedConnectorIds, this.connectorsService.list(), "foreground") : "",
           enabledMcpIds: this.mcpRuntime.previewMcpFilter("working", this.modeProfiles.getProfile("working").policy.mcpPolicy).enabled,
           readOnly: () => this.settingsStore.read().permissionMode === "readonly" });
       },
@@ -1781,6 +1783,7 @@ export class AgentService {
     const skills = this.resolveSkillsForContext(task.cwd, paths, { projectId: task.projectId, workspaceId: task.spaceId }).dtos;
     return [
       ...assembly.appendParts,
+      connectors.length ? connectorRuntimeContext(connectors, this.connectorsService.list(), "execution") : "",
       "## Skills\nRead the relevant SKILL.md before using a skill.\n" + skills.filter(s => s.enabled && s.filePath)
         .filter(s => assembly.skillFilter.visible.includes(s.name))
         .map(s => `- ${s.name}: ${s.description} (${s.filePath})`).join("\n"),

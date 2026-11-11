@@ -288,9 +288,8 @@ export class ConnectorService {
         const iconPath = ["icon.png", "icon.jpg", "icon.jpeg", "logo.png"].find((f) =>
           existsSync(join(dir, f)),
         );
-        const initCommand = cli?.init?.[platformKey()] ?? cli?.init?.win32;
-        const versionCheckCommand = cli?.versionCheck?.command?.[platformKey()] ??
-          cli?.versionCheck?.command?.win32;
+        const initCommand = cli?.init?.[platformKey()];
+        const versionCheckCommand = cli?.versionCheck?.command?.[platformKey()];
         out.push({
           id: name,
           name: meta?.name || meta?.name_en || name,

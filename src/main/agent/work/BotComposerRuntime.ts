@@ -20,7 +20,7 @@ export interface BotComposerRuntime {
 /** The ordinary native MCP transport, one instance per foreground request. */
 export async function openBotComposerRuntime(input: {
   profile: ExpertConfigSnapshotDto; cwd: string; models: ModelRuntime;
-  connectorSkillRoots: string[]; enabledMcpIds: string[]; readOnly: () => boolean;
+  connectorSkillRoots: string[]; connectorContext?: string; enabledMcpIds: string[]; readOnly: () => boolean;
 }): Promise<BotComposerRuntime> {
   const skillRoots = new Map((input.profile.skillPackages ?? []).map(item => [item.id, realpathSync(item.directory)]));
   for (const directory of input.connectorSkillRoots) {
@@ -60,5 +60,5 @@ export async function openBotComposerRuntime(input: {
       return tool.execute(args,api,context);
     }});
   }
-  return {tools,instructions:skillRoots.size?`本条消息已挂载技能：${[...skillRoots.keys()].join("、")}。使用前先 read_skill 读取 SKILL.md，可继续读取包内相对引用。技能要求长耗时文件/代码操作时派发 Work，所选技能及 MCP/连接器配置会随原请求传入。`:"",close:async()=>{await mcp?.close();}};
+  return {tools,instructions:[input.connectorContext, skillRoots.size?`本条消息已挂载技能：${[...skillRoots.keys()].join("、")}。使用前先 read_skill 读取 SKILL.md，可继续读取包内相对引用。技能要求长耗时文件/代码操作时派发 Work，所选技能及 MCP/连接器配置会随原请求传入。`:""].filter(Boolean).join("\n\n"),close:async()=>{await mcp?.close();}};
 }

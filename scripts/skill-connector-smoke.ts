@@ -29,7 +29,7 @@ async function main(): Promise<void> {
   put(skillSource, skillMarkdown("fixture-market-skill"));
   const connectorSource = join(plugins, "connector-market", "connectors", "fixture-connector");
   put(join(connectorSource, "connector-meta.json"), JSON.stringify({ name: "Fixture connector", description: "Local isolated connector", type: "cli", version: "1.0.0" }));
-  put(join(connectorSource, "cli.json"), JSON.stringify({ runtime: { type: "node" } }));
+  put(join(connectorSource, "cli.json"), JSON.stringify({ runtime: { type: "node" }, auth: { command: "must-not-run" }, init: {win32:"windows-only-init"}, versionCheck:{command:{win32:"windows-only-version"}} }));
   put(join(connectorSource, "skills", "fixture-connector-skill", "SKILL.md"), skillMarkdown("fixture-connector-skill"));
 
   // Dynamic imports are intentional: modules must not capture the real profile before isolation.
@@ -63,6 +63,22 @@ async function main(): Promise<void> {
   assert.deepEqual(connectors.install("fixture-connector"), ["fixture-connector-skill"]);
   assert.equal(skills.listInstalled().length, 1);
   assert.throws(() => connectors.install("fixture-missing"), /未找到连接器/);
+  const { connectorRuntimeContext } = await import("../src/main/connectors/ConnectorRuntimeContext");
+  assert.equal(connectorRuntimeContext([], connectors.list(), "foreground"), "");
+  const facts = connectorRuntimeContext([after.id.toUpperCase(), after.id], connectors.list(), "foreground");
+  assert.match(facts, /registered_not_runtime_verified/);
+  assert.match(facts, /required_not_verified/);
+  assert.match(facts, /not a general connector CLI executor/);
+  assert.equal((facts.match(/"id":/g) ?? []).length, 1);
+  assert.doesNotMatch(facts, /must-not-run|windows-only-init/);
+  assert.match(connectorRuntimeContext(["absent"], connectors.list(), "execution"), /not_installed/);
+  connectors.setEnabled(after.id, false);
+  assert.match(connectorRuntimeContext([after.id], connectors.list(), "execution"), /"skills":"disabled"/);
+  assert.match(connectorRuntimeContext([after.id], connectors.list(), "execution"), /read-only version\/status/);
+  const { connectorPlatformKey } = await import("../src/main/platform/apps");
+  assert.equal(after.initCommand, connectorPlatformKey() === "win32" ? "windows-only-init" : undefined);
+  assert.equal(after.versionCheckCommand, connectorPlatformKey() === "win32" ? "windows-only-version" : undefined);
+  console.log("PASS connector state honesty, no implicit command execution, disabled/missing/dedup, platform-correct commands");
   console.log("PASS isolated connector install, private skills, reinstall and missing-id error");
   console.log(`Fixture retained for diagnosis: ${sandbox}`);
 }
