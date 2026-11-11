@@ -79,14 +79,23 @@ app.whenReady().then(async () => {
     await wait(`${firstReply}.querySelector('[data-segment-kind="receipt"]')?.textContent.includes('收到')`);
     assert.equal(await evaluate(`${firstReply}.querySelector('[data-segment-kind="receipt"]').getAttribute('aria-label')`),'消息回执');
     assert(!await evaluate(`Boolean(${firstReply}.querySelector('.bot-reply-placeholder'))`),'receipt does not duplicate generic running status');
+    for (const [status,label] of [['cancelled','已停止'],['failed','回复失败']]) {
+      await updateReply({status});
+      await wait(`${firstReply}.querySelector('.bot-message-stamp')?.textContent.includes(${JSON.stringify(label)})`);
+      assert.equal(await evaluate(`${firstReply}.textContent.split(${JSON.stringify(label)}).length-1`),1);
+      assert(!await evaluate(`Boolean(${firstReply}.querySelector('.bot-typing-dots, .bot-message-stop'))`));
+      assert(await evaluate(`Boolean(${firstReply}.querySelector('[data-segment-kind="receipt"]'))`));
+    }
     await updateReply({status:'queued'});
     await wait(`!${firstReply}.hasAttribute('data-streaming')`);
     assert(!await evaluate(`Boolean(${firstReply}.querySelector('.bot-reply-placeholder'))`),'receipt does not duplicate generic queued status');
     await updateReply({status:'running',activity:{tool:'web_search',status:'running'}});
     await wait(`${firstReply}.querySelector('[role="status"]')?.textContent.includes('正在搜索实时信息')`);
     assert(await evaluate(`Boolean(${firstReply}.querySelector('[data-segment-kind="receipt"]'))`),'real tool status remains visible alongside receipt');
+    assert.equal(await evaluate(`${firstReply}.textContent.split('正在搜索实时信息').length-1`),1);
     await updateReply({segments:[receipt],text:'模型先回复的旧版文本'});
     await wait(`${firstReply}.textContent.includes('模型先回复的旧版文本')`);
+    assert.equal(await evaluate(`${firstReply}.textContent.split('正在搜索实时信息').length-1`),1);
     assert(!await evaluate(`Boolean(${firstReply}.querySelector('[data-segment-kind="receipt"]'))`),'legacy model text also hides receipt');
     await updateReply({segments:[receipt,acknowledgement,empty],text:'',status:'running',activity:{tool:'web_search',status:'running'}});
     await wait(`${firstReply}.querySelector('[data-segment-kind="commentary"]')?.textContent.includes('我来核对')`);
@@ -99,6 +108,7 @@ app.whenReady().then(async () => {
     await updateReply({segments:[receipt,acknowledgement,answer],text:answer.text,activity:{tool:'web_search',status:'success'}});
     await wait(`${firstReply}.querySelector('[data-segment-id="answer-0"]')?.textContent.includes('杭州今天')`);
     assert(await evaluate(`${firstReply}.querySelector('[role="status"]').textContent.includes('已返回')`));
+    assert.equal(await evaluate(`${firstReply}.textContent.split('搜索已返回').length-1`),1);
     answer.text='杭州今天有雨，请带伞。'; answer.updatedAt=4;
     await updateReply({segments:[receipt,acknowledgement,answer],text:answer.text,status:'completed'});
     await wait(`${firstReply}.textContent.includes('请带伞') && !${firstReply}.querySelector('[role="status"]')`);

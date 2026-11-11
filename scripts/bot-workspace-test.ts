@@ -28,6 +28,21 @@ for (const text of ["", "正在核对资料。"] ) {
   assert.equal((html.match(/正在搜索实时信息/g) ?? []).length, 1, "tool activity uses one status line with or without streamed text");
   assert.match(html, /停止回复/, "waiting on a search keeps cancellation available");
 }
+const receiptSegment = { id: "receipt", kind: "receipt" as const, text: "收到，正在处理这条消息。", createdAt: 1, updatedAt: 1 };
+const modelSegment = { id: "commentary", kind: "commentary" as const, text: "我来核对资料。", createdAt: 2, updatedAt: 2 };
+for (const segments of [[receiptSegment], [receiptSegment, modelSegment]]) {
+  for (const text of ["", segments.length > 1 ? modelSegment.text : "旧版模型回复"]) {
+    const html = renderActivity({ ...activityMessage, text, segments });
+    assert.equal((html.match(/正在搜索实时信息/g) ?? []).length, 1, "receipt and model segments share one actual tool status");
+  }
+}
+for (const [status, label] of [["cancelled", "已停止"], ["failed", "回复失败"]] as const) {
+  const html = renderActivity({ ...activityMessage, status, segments: [receiptSegment] });
+  assert.equal((html.match(new RegExp(label, "g")) ?? []).length, 1, "reloaded receipt-only messages retain one terminal status");
+  assert.match(html, /消息回执/);
+  assert.doesNotMatch(html, /bot-typing-dots|停止回复|正在搜索实时信息/);
+}
+assert.match(renderActivity({ ...activityMessage, status: "completed", text: "" }), /已回复/);
 assert.equal(botMessageStatus({ ...activityMessage, activity: { tool: "fetch_content", status: "running" } }), "正在读取来源");
 assert.equal(botMessageStatus({ ...activityMessage, activity: { tool: "web_search", status: "error" } }), "搜索未成功，正在整理回复");
 assert.equal(botMessageStatus({ ...activityMessage, activity: { tool: "web_search", status: "success" } }), "搜索已返回，正在整理回复");

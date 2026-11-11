@@ -373,7 +373,7 @@ export function BotMessage({ message, botName, works, onOpenWork, onCancel, sour
     </div>}
     {message.workIds.length > 0 && <div className="bot-message-work-links">{message.workIds.map(workId => <button type="button" key={workId} onClick={() => onOpenWork(workId)}><IconListTodo size={14} /><span>{works.find(work => work.workId === workId)?.title ?? (message.workFeedback?.workId === workId ? message.workFeedback.report?.title : undefined) ?? "查看关联事项"}</span><IconChevronRight size={14} /></button>)}</div>}
     <BotReplyMetrics message={message} />
-    <BotMessageActions message={message} onReply={onReply} onCancel={onCancel} />
+    <BotMessageActions message={message} onReply={onReply} onCancel={onCancel} statusAlreadyVisible={message.role === "assistant" && (showActivity || !hasContent) && message.status !== "completed"} />
     {message.error && <p className="bot-alert" role="alert">{message.error}</p>}
   </article>;
 }

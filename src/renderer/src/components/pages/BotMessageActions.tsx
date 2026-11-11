@@ -3,8 +3,8 @@ import { IconBtw, IconStop } from "@/components/common/icons";
 import { botMessageStatus } from "@/lib/botWorkspacePresentation";
 
 /** Per-message controls stay next to their message, not among its timestamps. */
-export function BotMessageActions({ message, onReply, onCancel }: {
-  message: BotMessageDto; onReply?: () => void; onCancel: () => void;
+export function BotMessageActions({ message, onReply, onCancel, statusAlreadyVisible = false }: {
+  message: BotMessageDto; statusAlreadyVisible?: boolean; onReply?: () => void; onCancel: () => void;
 }): React.JSX.Element {
   const running = message.role === "assistant" && ["queued", "running", "unknown"].includes(message.status);
   return <footer className="bot-message-meta">
@@ -13,7 +13,7 @@ export function BotMessageActions({ message, onReply, onCancel }: {
       {running && <button type="button" className="bot-message-stop" onClick={onCancel} title="仅停止这条回复，其他任务继续"><IconStop size={12} /><span>停止回复</span></button>}
     </div>
     <div className="bot-message-stamp">
-      {(message.text || !running) && <span role={running ? "status" : undefined}>{botMessageStatus(message)}</span>}
+      {!statusAlreadyVisible && (message.text || !running) && <span role={running ? "status" : undefined}>{botMessageStatus(message)}</span>}
       <time dateTime={new Date(message.createdAt).toISOString()}>{new Date(message.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time>
     </div>
   </footer>;
