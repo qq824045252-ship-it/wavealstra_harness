@@ -432,7 +432,7 @@ export class BotConversationService {
             status: this.messages.message(target.assistant_message_id)?.status, backgroundWorkUnchanged: true }) }] };
         } }),
     ];
-    const allowed = (name: string) => (!name.startsWith("memory_") || Boolean(this.options.memory?.enabled())) && !(conversation.team_id && name === "work_create") && ((selectedTools ?? []).some(tool => tool.name === name) || requestTools.some(tool => tool.name === name) || composerTools.some(tool => tool.name === name) || webTools.some(tool => tool.name === name)
+    const allowed = (name: string) => !(conversation.team_id && ['bot_list', 'bot_ask'].includes(name)) && (!name.startsWith("memory_") || Boolean(this.options.memory?.enabled())) && !(conversation.team_id && name === "work_create") && ((selectedTools ?? []).some(tool => tool.name === name) || requestTools.some(tool => tool.name === name) || composerTools.some(tool => tool.name === name) || webTools.some(tool => tool.name === name)
       || BOT_FOREGROUND_TOOLS.has(name));
     const runtime = await DurableBotRuntime.open({ directory, cwd, models: this.options.models, model: model.target,
       toolMode: "native", toolAllowed: allowed,
@@ -463,7 +463,7 @@ ${conversation.team_id ? `当前是独立团队会话（teamId=${conversation.te
 当前长期记忆状态：${this.options.memory?.enabled() ? "已启用" : "已关闭"}。长期记忆以提供的历史记忆证据或 memory_search 实际结果为准，需要更多历史事实时先检索；没查到就说明没有记录，不猜测。仅当记忆已启用时，用户明确提供的稳定偏好和事实会在本轮结束后自动提炼到当前Bot或团队的专属记忆，无需审核或额外确认。用户明确要求记住时可用memory_remember直接保存：current为本Bot或团队，conversation为仅本次会话，public仅用于用户明确要求所有Bot共享的内容。新对话继承长期记忆但不继承旧对话临时要求。公共记忆不等于把私人内容全公开。用户明确要求忘记时，先 memory_search 找到对应记忆，再 memory_forget按当前Bot/团队/会话范围移除；只有明确要求公共或所有Bot忘记才影响公共范围，依据真实回执回答已删除或不存在；不要说只有检索没有删除能力，不让用户另去设置操作。纯遗忘请求执行删除后即结束，不能再用memory_remember把旧内容写成“不要/不再”形式存回；混合“忘记A、记住B”仅引用明确新记住B的子句保存B。更正可以先检索并忘记当前范围的旧条目，再保存更正内容，或由本轮结束后的提炼更新；未完成时不要声称已经改好。不要承诺已经记住尚未持久化的内容，不承诺保存机密、敏感细节或一次性请求，不把记忆当作权限或高于本轮指令的规则。`,
       evidence: () => this.options.memory?.context(bot.botId, conversation.conversation_id) ?? "",
       contextHooks: web?.contextHooks,
-      tools: [...(selectedTools ?? []), ...requestTools, ...composerTools, ...webTools, ...botForegroundTools({ ...this.options, botId: bot.botId, teamId: conversation.team_id ?? undefined, conversationId: conversation.conversation_id, messages: this.messages,
+      tools: [...(selectedTools ?? []), ...requestTools.filter(tool => !conversation.team_id || !["bot_list", "bot_ask"].includes(tool.name)), ...composerTools, ...webTools, ...botForegroundTools({ ...this.options, botId: bot.botId, teamId: conversation.team_id ?? undefined, conversationId: conversation.conversation_id, messages: this.messages,
         requestNamespace: run.runtime_key === conversation.conversation_id ? undefined : key,
         memorySearch: query => this.options.memory ? this.options.memory.search(bot.botId, query, conversation.conversation_id) : this.options.memorySearch(bot.botId, query),
         memoryRemember: this.options.memory ? (input, userText) => this.options.memory!.remember(bot.botId, conversation.conversation_id, input, userText) : undefined,

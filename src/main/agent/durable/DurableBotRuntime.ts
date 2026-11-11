@@ -676,7 +676,7 @@ export class DurableBotRuntime {
   }
 
   /** The answer belongs to this receipt even if another turn has already started or failed. */
-  async reply(submission: Submission): Promise<string> {
+  async reply(submission: Submission, options?: { requireText?: boolean }): Promise<string> {
     this.assertSessionHealthy();
     try {
       const settled = await submission.wait(ctx);
@@ -690,7 +690,9 @@ export class DurableBotRuntime {
       if (message.stopReason === "error" || message.stopReason === "aborted" || message.stopReason === "length") {
         throw new Error(message.errorMessage || `Durable 回复未完成：${message.stopReason}`);
       }
-      return contentText(message.content).trim() || "任务已处理，但未产生文本回复。";
+      const text = contentText(message.content).trim();
+      if (!text && options?.requireText) throw new DurableReplyError("接收方未产生文本回复");
+      return text || "任务已处理，但未产生文本回复。";
     } catch (error) {
       return await this.normalizeFailure(error);
     }

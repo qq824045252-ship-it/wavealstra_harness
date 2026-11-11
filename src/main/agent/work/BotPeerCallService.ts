@@ -23,6 +23,7 @@ export class BotPeerCallService {
     const parent = this.messages.message(parentMessageId);
     if (!parent || parent.role !== "assistant" || !pending(parent.status) || !this.options.isAuthority() || this.closing)
       throw new Error("原始请求已结束或宿主不可用，未联系其他 Bot");
+    if (parent.teamId) throw new Error("团队会话不能通过私人 Bot 咨询读取成员私聊或记忆，请使用当前团队协作");
     const source = this.options.bots.getBot(parent.botId), target = this.options.bots.getBot(targetBotId);
     if (!source || source.userId !== this.options.userId || source.status !== "active") throw new Error("来源 Bot 不可用");
     if (!target || target.userId !== this.options.userId) throw new Error("目标 Bot 不属于当前用户");
@@ -55,7 +56,7 @@ export class BotPeerCallService {
       const preferred = this.options.botModel?.(target.botId);
       const model = await resolveBotModel(this.options.models, preferred, this.options.defaultModel());
       if (preferred && model.repairedFrom) throw new Error(`@${target.displayName} 的模型不可用，请检查其 Bot 设置`);
-      if (this.closing || this.messages.peerCalls.get(record.callId)?.call.status === "cancelled") return this.messages.peerCalls.get(record.callId)!.call;
+      if (this.closing || this.messages.peerCalls.get(record.callId)?.call.status === "cancelled") return this.stopped(parentMessageId, record.callId);
       const directory = join(this.options.directory, "peer-calls", record.callId);
       mkdirSync(directory, { recursive: true });
       // Only the receiving Bot sees its own memory. The caller receives the reply,
@@ -69,8 +70,10 @@ export class BotPeerCallService {
           ? this.options.memory!.search(target.botId, args.query, conversationId || undefined) : []) }] }),
       })];
       const live = () => !this.closing && this.options.isAuthority() && this.options.bots.getBot(target.botId)?.status === "active"
+        && this.options.bots.getBot(record.sourceBotId)?.status === "active"
         && pending(this.messages.message(parentMessageId)?.status ?? "cancelled")
         && pending(this.messages.peerCalls.get(record.callId)?.call.status ?? "cancelled");
+      let streamedAt = 0;
       runtime = await DurableBotRuntime.open({ directory, cwd: directory, models: this.options.models, model: model.target,
         toolMode: "native", toolAllowed: name => name === "memory_search" && enabled(), tools,
         providerAuthorityGuarded: live, beforeProviderRequest: () => { if (!live()) throw new Error("Bot 沟通已停止或接收方不可用"); },
@@ -83,11 +86,15 @@ export class BotPeerCallService {
           const rows = snapshot.messages.filter(message => message.role === "assistant");
           const text = rows.at(-1)?.text;
           const current = this.messages.peerCalls.get(record.callId)?.call;
-          if (text && current && text !== current.replyText) this.change(parentMessageId, record.callId, { status: "running", replyText: text });
+          const now = Date.now();
+          if (text && current && text !== current.replyText && (!current.replyText || now - streamedAt >= 80)) {
+            streamedAt = now;
+            this.change(parentMessageId, record.callId, { status: "running", replyText: text });
+          }
         },
       });
       this.runtimes.set(record.callId, runtime);
-      if (!live()) return this.messages.peerCalls.get(record.callId)!.call;
+      if (!live()) return this.stopped(parentMessageId, record.callId);
       this.change(parentMessageId, record.callId, { status: "running", error: undefined });
       await runtime.configure(model.target, "native", this.options.thinking?.(`${model.target.provider}/${model.target.modelId}`));
       runtime.resume();
@@ -98,22 +105,34 @@ export class BotPeerCallService {
       const submission = prior ? await runtime.harness.submission(prior.id, BACKGROUND_CONTEXT)
         : await runtime.submit(input, record.callId, "followUp", { text: record.requestText, displayText: record.requestText, attachments: [] });
       if (!submission) throw new Error("Bot 沟通持久请求不存在");
-      const reply = await Promise.race([runtime.reply(submission), new Promise<never>((_, reject) => {
+      const reply = await Promise.race([runtime.reply(submission, { requireText: true }), new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error(`等待 @${target.displayName} 回复超时，本次沟通未完成`)), 180000);
         timer.unref?.();
       })]);
-      if (!live()) return this.messages.peerCalls.get(record.callId)!.call;
+      if (!live()) return this.stopped(parentMessageId, record.callId);
       if (!reply.trim()) throw new Error(`@${target.displayName} 未返回有效回复`);
       return this.change(parentMessageId, record.callId, { status: "completed", replyText: reply, error: undefined });
     } catch (error) {
       const current = this.messages.peerCalls.get(record.callId)!.call;
-      if (current.status === "cancelled" || this.closing) return current;
+      if (current.status === "cancelled") return current;
+      if (this.closing || !this.options.isAuthority() || !pending(this.messages.message(parentMessageId)?.status ?? "cancelled")
+        || this.options.bots.getBot(record.targetBotId)?.status !== "active" || this.options.bots.getBot(record.sourceBotId)?.status !== "active")
+        return this.stopped(parentMessageId, record.callId);
       return this.change(parentMessageId, record.callId, { status: "failed", error: error instanceof Error ? error.message : String(error) });
     } finally {
       if (timer) clearTimeout(timer);
       if (runtime) await runtime.close().catch(error => console.warn("[Bot] 关闭沟通运行时失败", error));
       this.runtimes.delete(record.callId);
     }
+  }
+  private stopped(parentMessageId: string, callId: string): BotCallDto {
+    const current = this.messages.peerCalls.get(callId)!.call;
+    if (!pending(current.status)) return current;
+    if (this.closing || !this.options.isAuthority()) return this.change(parentMessageId, callId, { status: "unknown", error: "宿主不可用，沟通结果尚未确认" });
+    if (this.messages.message(parentMessageId)?.status === "cancelled") return this.change(parentMessageId, callId, { status: "cancelled", error: "原请求已停止" });
+    if (this.options.bots.getBot(current.targetBotId)?.status !== "active") return this.change(parentMessageId, callId,
+      { status: "failed", error: `@${current.targetDisplayName} 已暂停或停用，本次沟通未完成` });
+    return this.change(parentMessageId, callId, { status: "failed", error: "来源请求或来源 Bot 已不可用，本次沟通未完成" });
   }
   recover(): void {
     for (const { parentMessageId, call } of this.messages.peerCalls.unfinished())

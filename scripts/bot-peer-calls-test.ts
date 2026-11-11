@@ -16,7 +16,7 @@ const db = app.connection, bots = new BotRegistry(db), works = new WorkService(d
 const messages = new BotConversationRepository(db);
 const events: string[] = [];
 const originalOpen = DurableBotRuntime.open;
-const receivers: Array<{ options: Parameters<typeof DurableBotRuntime.open>[0]; resolve: (text: string) => void }> = [];
+const receivers: Array<{ options: Parameters<typeof DurableBotRuntime.open>[0]; resolve: (text: string) => void; reject: (error: Error) => void }> = [];
 let service: BotPeerCallService;
 try {
   for (const id of ["source", "target", "other"]) bots.registerBot({ botId: id, userId: "u", displayName: id });
@@ -24,18 +24,29 @@ try {
   bots.registerBot({ botId: "foreign", userId: "foreign-user", displayName: "foreign" });
   const make = (id: string) => messages.accept("u", { botId: "source", requestId: id, text: `user input ${id}` });
   const a = make("a"), b = make("b");
+  const team = messages.accept("u", { botId: "source", teamId: "team-unit", requestId: "team", text: "team question" });
+  let authority = true;
   const options = { db, userId: "u", bots, works, directory: root,
     models: { getModel: () => ({ provider: "test", id: "model" }), getModels: () => [{ provider: "test", id: "model" }], getAvailable: async () => [{ provider: "test", id: "model" }] },
-    defaultModel: () => "test/model", isAuthority: () => true, memorySearch: () => [], schedule: () => {}, wake: () => {},
+    defaultModel: () => "test/model", isAuthority: () => authority, memorySearch: () => [], schedule: () => {}, wake: () => {},
   } as unknown as BotConversationServiceOptions;
+  const emptyRuntime = { assertSessionHealthy: () => {}, conversation: { id: "empty" },
+    storage: { entry: async () => ({ entry: { model: [{ role: "assistant", stopReason: "stop", content: [] }] } }) },
+    normalizeFailure: async (error: unknown) => { throw error; },
+  } as unknown as DurableBotRuntime;
+  const emptySubmission = { wait: async () => ({ status: "answered", type: "input", answer: 1 }) } as unknown as Parameters<DurableBotRuntime["reply"]>[0];
+  assert.equal(await DurableBotRuntime.prototype.reply.call(emptyRuntime, emptySubmission), "任务已处理，但未产生文本回复。");
+  await assert.rejects(DurableBotRuntime.prototype.reply.call(emptyRuntime, emptySubmission, { requireText: true }), /未产生文本回复/);
   service = new BotPeerCallService(options, messages, id => events.push(id));
   DurableBotRuntime.open = async options => {
     let resolve!: (text: string) => void;
-    const reply = new Promise<string>(yes => { resolve = yes; });
-    receivers.push({ options, resolve });
+    let reject!: (error: Error) => void;
+    const reply = new Promise<string>((yes, no) => { resolve = yes; reject = no; });
+    receivers.push({ options, resolve, reject });
     return { conversation: { id: "unit", commit: async () => undefined }, configure: async () => {}, resume: () => {},
       submit: async () => ({}), reply: () => reply, abort: async () => resolve(""), close: async () => resolve("") } as unknown as DurableBotRuntime;
   };
+  await assert.rejects(service.call(team.assistantMessageId, "privacy", "target", "private memory"), /团队会话/);
   await assert.rejects(service.call(a.assistantMessageId, "self", "source", "question"), /自己/);
   await assert.rejects(service.call(a.assistantMessageId, "foreign", "foreign", "question"), /当前用户/);
   assert.equal(messages.peerCalls.list(a.assistantMessageId).length, 0);
@@ -68,6 +79,23 @@ try {
   assert.equal((await cancel).status, "cancelled");
   const revision = messages.message(c.assistantMessageId)!.messageRevision!;
   assert(revision > 1, "call updates bump message revision for reconnect ordering");
+  const paused = make("paused-during-call");
+  const pausedCall = service.call(paused.assistantMessageId, "pausing", "target", "in flight pause");
+  await new Promise(resolve => setTimeout(resolve, 20));
+  db.prepare("UPDATE bots SET status='paused' WHERE bot_id='target'").run();
+  receivers.at(-1)!.resolve("late reply must not become completed");
+  assert.equal((await pausedCall).status, "failed", "recipient pause settles rather than leaves permanent running");
+  db.prepare("UPDATE bots SET status='active' WHERE bot_id='target'").run();
+  const lost = make("authority-loss");
+  const lostCall = service.call(lost.assistantMessageId, "loss", "target", "authority test");
+  await new Promise(resolve => setTimeout(resolve, 20));
+  authority = false; receivers.at(-1)!.reject(new Error("host authority lost before provider request"));
+  assert.equal((await lostCall).status, "unknown", "authority loss is recoverable even when provider guard rejects");
+  authority = true;
+  const resumed = service.call(lost.assistantMessageId, "loss", "target", "authority test");
+  await new Promise(resolve => setTimeout(resolve, 20));
+  receivers.at(-1)!.resolve("recovered answer");
+  assert.equal((await resumed).status, "completed");
   const d = make("d");
   const interrupted = service.call(d.assistantMessageId, "close", "target", "in flight");
   await new Promise(resolve => setTimeout(resolve, 20));
