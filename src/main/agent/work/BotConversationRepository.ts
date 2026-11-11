@@ -1,4 +1,5 @@
 import { BotForegroundMetricsStore } from "./BotForegroundMetrics";
+import { BotPeerCallRepository } from "./BotPeerCallRepository";
 import { botInboxId, ensurePersonalConversation, ensureTeamConversation } from "./WorkDeliveryTargets";
 import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
@@ -20,8 +21,10 @@ const messageRow = z.object({ message_id: z.string(), conversation_id: z.string(
 
 export class BotConversationRepository {
   readonly metrics: BotForegroundMetricsStore;
+  readonly peerCalls: BotPeerCallRepository;
   constructor(readonly db: Database.Database) {
     this.metrics = new BotForegroundMetricsStore(db);
+    this.peerCalls = new BotPeerCallRepository(db);
     // Additive presentation storage: existing conversations need no destructive schema reset.
     db.exec(`CREATE TABLE IF NOT EXISTS bot_message_segments (
       message_id TEXT PRIMARY KEY REFERENCES bot_messages(message_id) ON DELETE CASCADE,
@@ -392,7 +395,8 @@ export class BotConversationRepository {
       .get(row.message_id) as { segments_json: string } | undefined : undefined;
     const segments = segmentRow ? z.array(botReplySegmentSchema).parse(JSON.parse(segmentRow.segments_json)) : undefined;
     return { teamId: scope?.team_id ?? undefined, messageRevision: version?.revision ?? 0, messageId: row.message_id, conversationId: row.conversation_id, botId: row.bot_id, requestId: row.request_id,
-      segments, metrics: this.metrics.read(row.message_id), workFeedback: parsed?.success ? parsed.data : undefined, attachments, activity: activity?.success ? activity.data : undefined,
+      segments, botCalls: row.role === "assistant" ? this.peerCalls.list(row.message_id) : undefined,
+      metrics: this.metrics.read(row.message_id), workFeedback: parsed?.success ? parsed.data : undefined, attachments, activity: activity?.success ? activity.data : undefined,
       ordinal: row.ordinal, role: row.role, text: row.text, status: row.status,
       workIds: z.array(z.string()).parse(JSON.parse(row.work_ids_json)), error: row.error ?? undefined,
       createdAt: row.created_at, updatedAt: row.updated_at };

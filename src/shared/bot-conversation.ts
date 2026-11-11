@@ -83,11 +83,20 @@ export interface BotForegroundMetrics {
   reportedCalls: number; contextTokens: number | null; contextWindow: number | null; contextEstimated: boolean;
   generation?: import("./generation-stats").GenerationStats; modelName?: string; durationMs?: number;
 }
+/** A real recipient-model exchange, projected by the host rather than parsed from @ text. */
+export const botCallSchema = z.object({
+  callId: id, sourceBotId: id, sourceDisplayName: z.string(), targetBotId: id, targetDisplayName: z.string(),
+  requestText: z.string(), replyText: z.string().optional(),
+  status: z.enum(["queued", "running", "completed", "failed", "cancelled", "unknown"]),
+  error: z.string().optional(), createdAt: z.number(), updatedAt: z.number(),
+}).strict();
+export type BotCallDto = z.infer<typeof botCallSchema>;
 export const botMessageSchema = z.object({
   messageId: id, conversationId: id, botId: id, teamId: id.optional(), requestId: id, ordinal: z.number().int().positive(),
   messageRevision: z.number().int().nonnegative().optional(),
   metrics: z.custom<BotForegroundMetrics>().optional(),
   segments: z.array(botReplySegmentSchema).optional(),
+  botCalls: z.array(botCallSchema).optional(),
   role: z.enum(["user", "assistant"]), text: z.string(), attachments: z.array(botAttachmentSchema).optional(),
   status: z.enum(["queued", "running", "completed", "cancelled", "unknown", "failed"]),
   workIds: z.array(id), workFeedback: workFeedbackSchema.optional(), activity: botActivitySchema.optional(), error: z.string().optional(), createdAt: z.number(), updatedAt: z.number(),

@@ -7,6 +7,7 @@ const net = require('node:net');
 const http = require('node:http');
 const cp = require('node:child_process');
 const root = path.resolve(__dirname, '..');
+const peerCallsScenario = process.argv.includes('--peer-calls');
 const commitmentQueryScenario = process.argv.includes("--commitment-query");
 const outputPressureScenario = process.argv.includes('--responsiveness-output-pressure');
 const responsivenessScenario = process.argv.includes('--responsiveness') || outputPressureScenario;
@@ -66,7 +67,7 @@ const watchStatusScenario = process.argv.includes('--watch-status');
 const watchScenario = process.argv.includes('--watch');
 const watchIntentScenario = process.argv.includes('--watch-intent');
 if (headless && process.platform !== 'linux') throw Error('Headless dev page validation requires Linux; it does not validate desktop input.');
-const out = path.join(root, outputPressureScenario ? 'out/diagnostics/bot-responsiveness/output-pressure' : responsivenessScenario ? 'out/diagnostics/bot-responsiveness/live' : commitmentQueryScenario ? 'out/diagnostics/bot-commitment-query/live' : teamNativeMemoryScenario ? 'out/diagnostics/team-native-memory/live' : teamMemoryScopesScenario ? 'out/diagnostics/team-memory-scopes/live' : workMemoryScopesScenario ? 'out/diagnostics/work-memory-scopes/live' : memoryScopesScenario ? 'out/diagnostics/bot-memory-scopes/live' : botIsolationScenario ? 'out/diagnostics/bot-isolation/live' : connectorReadinessScenario ? 'out/diagnostics/bot-connector-readiness/live' : watchMemoryScenario ? 'out/diagnostics/bot-watch-memory/live' : workMemoryScenario ? 'out/diagnostics/bot-work-memory/live' : attachmentReadingScenario ? 'out/diagnostics/bot-attachment-reading/live' : remindersUiScenario ? 'out/diagnostics/bot-reminders/ui' : remindersScenario ? 'out/diagnostics/bot-reminders/live' : deadlineScenario ? 'out/diagnostics/bot-deadline-followup/live' : watchSupplementScenario ? 'out/diagnostics/bot-watch-supplement/live' : teamWatchChangesScenario ? 'out/diagnostics/bot-team-watch-changes/live' : webWatchScenario ? 'out/diagnostics/bot-web-watch/live' : teamWatchGoalScenario ? 'out/diagnostics/bot-team-watch-goal/live' : watchGoalScenario ? 'out/diagnostics/bot-watch-goal/live' : teamWatchScenario ? 'out/diagnostics/bot-team-watch/live' : watchExpiryScenario ? 'out/diagnostics/bot-watch-expiry/live' : watchChangesScenario ? 'out/diagnostics/bot-watch-changes/live' : watchFollowupScenario ? 'out/diagnostics/bot-watch-followup/live' : multiDelegationScenario ? 'out/diagnostics/bot-multi-delegation/live' : teamSubagentScenario ? 'out/diagnostics/bot-team-subagent/live' : workMetricsScenario ? 'out/diagnostics/work-execution-metrics/live' : modelPreferenceScenario ? 'out/diagnostics/bot-model-preference/live' : watchStatusScenario ? 'out/diagnostics/bot-watch-status/live' : teamDefaultWorkspaceScenario ? 'out/diagnostics/bot-team-default-workspace/live' : watchIntentScenario ? 'out/diagnostics/bot-watch-intent/live' : displayGroupsScenario ? 'out/diagnostics/bot-display-groups/live' : composerScenario ? 'out/diagnostics/bot-composer/live' : workspaceNavigationScenario ? 'out/diagnostics/bot-workspace-navigation/live' : searchGroundingScenario ? 'out/diagnostics/bot-search-grounding/live' : searchFallbackScenario ? 'out/diagnostics/bot-search-fallback/live' : searchScenario ? 'out/diagnostics/bot-search/live' : teamWorkspaceScenario ? 'out/diagnostics/bot-team-workspace/live' : concurrentScenario ? 'out/diagnostics/bot-concurrent/live' : completionScenario ? 'out/diagnostics/bot-completion/live' : trackingScenario ? 'out/diagnostics/bot-tracking/live' : teamTransientFailure ? 'out/diagnostics/bot-team-transient-failure/live' : teamTransportFailure ? 'out/diagnostics/bot-team-transport-failure/live' : teamFailureScenario ? 'out/diagnostics/bot-team-failure/live' : teamFreeScenario ? 'out/diagnostics/bot-team-free/live' : teamPlanningScenario ? 'out/diagnostics/bot-team-planning/live' : teamScenario ? 'out/diagnostics/bot-team-frontdoor/live' : cacheScenario ? 'out/diagnostics/bot-cache/live' : memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
+const out = path.join(root, peerCallsScenario ? 'out/diagnostics/bot-peer-calls/live' : outputPressureScenario ? 'out/diagnostics/bot-responsiveness/output-pressure' : responsivenessScenario ? 'out/diagnostics/bot-responsiveness/live' : commitmentQueryScenario ? 'out/diagnostics/bot-commitment-query/live' : teamNativeMemoryScenario ? 'out/diagnostics/team-native-memory/live' : teamMemoryScopesScenario ? 'out/diagnostics/team-memory-scopes/live' : workMemoryScopesScenario ? 'out/diagnostics/work-memory-scopes/live' : memoryScopesScenario ? 'out/diagnostics/bot-memory-scopes/live' : botIsolationScenario ? 'out/diagnostics/bot-isolation/live' : connectorReadinessScenario ? 'out/diagnostics/bot-connector-readiness/live' : watchMemoryScenario ? 'out/diagnostics/bot-watch-memory/live' : workMemoryScenario ? 'out/diagnostics/bot-work-memory/live' : attachmentReadingScenario ? 'out/diagnostics/bot-attachment-reading/live' : remindersUiScenario ? 'out/diagnostics/bot-reminders/ui' : remindersScenario ? 'out/diagnostics/bot-reminders/live' : deadlineScenario ? 'out/diagnostics/bot-deadline-followup/live' : watchSupplementScenario ? 'out/diagnostics/bot-watch-supplement/live' : teamWatchChangesScenario ? 'out/diagnostics/bot-team-watch-changes/live' : webWatchScenario ? 'out/diagnostics/bot-web-watch/live' : teamWatchGoalScenario ? 'out/diagnostics/bot-team-watch-goal/live' : watchGoalScenario ? 'out/diagnostics/bot-watch-goal/live' : teamWatchScenario ? 'out/diagnostics/bot-team-watch/live' : watchExpiryScenario ? 'out/diagnostics/bot-watch-expiry/live' : watchChangesScenario ? 'out/diagnostics/bot-watch-changes/live' : watchFollowupScenario ? 'out/diagnostics/bot-watch-followup/live' : multiDelegationScenario ? 'out/diagnostics/bot-multi-delegation/live' : teamSubagentScenario ? 'out/diagnostics/bot-team-subagent/live' : workMetricsScenario ? 'out/diagnostics/work-execution-metrics/live' : modelPreferenceScenario ? 'out/diagnostics/bot-model-preference/live' : watchStatusScenario ? 'out/diagnostics/bot-watch-status/live' : teamDefaultWorkspaceScenario ? 'out/diagnostics/bot-team-default-workspace/live' : watchIntentScenario ? 'out/diagnostics/bot-watch-intent/live' : displayGroupsScenario ? 'out/diagnostics/bot-display-groups/live' : composerScenario ? 'out/diagnostics/bot-composer/live' : workspaceNavigationScenario ? 'out/diagnostics/bot-workspace-navigation/live' : searchGroundingScenario ? 'out/diagnostics/bot-search-grounding/live' : searchFallbackScenario ? 'out/diagnostics/bot-search-fallback/live' : searchScenario ? 'out/diagnostics/bot-search/live' : teamWorkspaceScenario ? 'out/diagnostics/bot-team-workspace/live' : concurrentScenario ? 'out/diagnostics/bot-concurrent/live' : completionScenario ? 'out/diagnostics/bot-completion/live' : trackingScenario ? 'out/diagnostics/bot-tracking/live' : teamTransientFailure ? 'out/diagnostics/bot-team-transient-failure/live' : teamTransportFailure ? 'out/diagnostics/bot-team-transport-failure/live' : teamFailureScenario ? 'out/diagnostics/bot-team-failure/live' : teamFreeScenario ? 'out/diagnostics/bot-team-free/live' : teamPlanningScenario ? 'out/diagnostics/bot-team-planning/live' : teamScenario ? 'out/diagnostics/bot-team-frontdoor/live' : cacheScenario ? 'out/diagnostics/bot-cache/live' : memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-frontdoor-live-'));
 const agentDir = path.join(home, '.mybuddy'); fs.mkdirSync(agentDir, { recursive: true });
 for (const directory of ['AppData/Roaming', 'AppData/Local', 'Temp']) fs.mkdirSync(path.join(home, directory), { recursive: true });
@@ -209,7 +210,7 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     report.modelConfiguration = evidence;
     fs.writeFileSync(path.join(agentDir, 'models.json'), JSON.stringify({ providers: { fixture: { api: 'openai-completions', apiKey: 'fixture-only', baseUrl: `http://127.0.0.1:${provider.address().port}/v1`, models: [model, ...(teamTransportFailure?[{...model,id:'controlled-unavailable',name:'Controlled unavailable member'}]:[])] } } }));
     fs.writeFileSync(path.join(agentDir, 'settings.json'), JSON.stringify({ defaultProvider: 'fixture', defaultModel: selectedModel, enabledModels: [modelKey, ...(teamTransportFailure?['fixture/controlled-unavailable']:[])],
-      memoryEnabled: responsivenessScenario || teamNativeMemoryScenario || teamMemoryScopesScenario || memoryScopesScenario || botIsolationScenario || memoryScenario || workMemoryScenario || watchMemoryScenario, memoryGatewayEnabled: false, remoteAccessEnabled: false, closeToTray: false, theme: 'light', permissionMode: teamSubagentScenario || multiDelegationScenario ? 'auto' : 'readonly' }));
+      memoryEnabled: peerCallsScenario || responsivenessScenario || teamNativeMemoryScenario || teamMemoryScopesScenario || memoryScopesScenario || botIsolationScenario || memoryScenario || workMemoryScenario || watchMemoryScenario, memoryGatewayEnabled: false, remoteAccessEnabled: false, closeToTray: false, theme: 'light', permissionMode: teamSubagentScenario || multiDelegationScenario ? 'auto' : 'readonly' }));
     if (teamSubagentScenario) {
       fs.mkdirSync(path.join(agentDir,'agents'),{recursive:true});
       fs.writeFileSync(path.join(agentDir,'agents','reader.md'),'---\nname: reader\ndescription: Read one file and report exact content.\n---\nRead the requested file, create the requested output using write, read it back, and report exact evidence. Never guess file contents.\n');
@@ -276,7 +277,6 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     };
     await launch();
     await until(() => evaluate('Boolean(window.api?.botWork?.sendMessage && document.querySelector("textarea"))'), 'preload and renderer');
-    await evaluate('document.querySelector(".sidebar-user-main").click()');
     await until(() => evaluate('[...document.querySelectorAll("button")].some(button => button.textContent.includes("Bot 模式"))'), 'account navigation');
     await evaluate('[...document.querySelectorAll("button")].find(button => button.textContent.includes("Bot 模式")).click()');
     await until(() => evaluate('Boolean(document.querySelector("#bot-draft"))'), 'independent Bot page');
@@ -288,7 +288,9 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       assert(requestId, 'accepted user request identity');
       await until(async () => (await history()).messages.some(m=>m.role==='assistant'&&m.requestId===requestId&&m.status==='completed'), 'matching foreground request completed');
     };
-    if (commitmentQueryScenario) {
+    if (peerCallsScenario) {
+      await require('./bot-peer-calls-live-scenario.cjs').run({send,foregroundDone,until,evaluate,history,rpc,report,requests,out,botId,setBotId:value=>{botId=value;}});
+    } else if (commitmentQueryScenario) {
       await require('./commitment-query-live-scenario.cjs').run({send,foregroundDone,evaluate,history,report,requests,agentDir,out,botId});
     } else if (responsivenessScenario) {
       await require('./bot-responsiveness-live-scenario.cjs').run({send,foregroundDone,until,evaluate,history,rpc,report,requests,rawUsageAudit,agentDir,out,home,modelKey,botId});
@@ -316,8 +318,7 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
         await launch();
         await until(() => evaluate('Boolean(window.api?.botWork?.history && document.querySelector(".sidebar-user-main"))'), 'normal restart preload');
         if (!await evaluate('Boolean(document.querySelector("#bot-draft"))')) {
-          await evaluate('document.querySelector(".sidebar-user-main").click()');
-          await until(() => evaluate('[...document.querySelectorAll("button")].some(b=>b.textContent.includes("Bot 模式"))'), 'restart navigation');
+                await until(() => evaluate('[...document.querySelectorAll("button")].some(b=>b.textContent.includes("Bot 模式"))'), 'restart navigation');
           await evaluate('[...document.querySelectorAll("button")].find(b=>b.textContent.includes("Bot 模式")).click()');
         }
         await until(() => evaluate('Boolean(document.querySelector("#bot-draft"))'), 'normal restart Bot');
@@ -985,8 +986,7 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       await launch();
       await until(()=>evaluate('Boolean(window.api?.botWork?.history && document.querySelector(".sidebar-user-main"))'), 'memory persisted after actual Electron restart');
       if(!await evaluate('Boolean(document.querySelector("#bot-draft"))')) {
-        await evaluate('document.querySelector(".sidebar-user-main").click()');
-        await until(() => evaluate('[...document.querySelectorAll("button")].some(button => button.textContent.includes("Bot 模式"))'), 'account navigation after restart');
+            await until(() => evaluate('[...document.querySelectorAll("button")].some(button => button.textContent.includes("Bot 模式"))'), 'account navigation after restart');
         await evaluate('[...document.querySelectorAll("button")].find(button => button.textContent.includes("Bot 模式")).click()');
       }
       await until(()=>evaluate('Boolean(document.querySelector("#bot-draft"))'), 'Bot UI after memory restart');
@@ -1082,8 +1082,7 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       report.checks.push('actual Electron main restart retains next wake; real scheduler dispatches exactly one read-only native model execution');
       // Return to the same Bot UI after restart before sending explicit stop.
       if(!await evaluate('Boolean(document.querySelector("#bot-draft"))')) {
-        await evaluate('document.querySelector(".sidebar-user-main").click()');
-        await evaluate('[...document.querySelectorAll("button")].find(button => button.textContent.includes("Bot 模式")).click()');
+            await evaluate('[...document.querySelectorAll("button")].find(button => button.textContent.includes("Bot 模式")).click()');
       }
       await until(()=>evaluate('Boolean(document.querySelector("#bot-draft"))'), 'Bot UI after restart');
       before=(await history()).messages.filter(m=>m.role==='assistant'&&m.status==='completed').length;

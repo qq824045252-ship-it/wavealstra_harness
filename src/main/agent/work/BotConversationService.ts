@@ -13,6 +13,7 @@ import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { botHistorySchema, botSendSchema, type BotMessageDto } from "../../../shared/bot-conversation";
 import type { WorkDto } from "../../../shared/bot-work";
 import { BotConversationRepository, type BotConversation } from "./BotConversationRepository";
+import { BotPeerCallService } from "./BotPeerCallService";
 import { BOT_FOREGROUND_TOOLS, botForegroundTools } from "./BotForegroundTools";
 import { assistantRow } from "../durable/DurableHistoryProjection";
 import { DurableBotRuntime, DurableReplyError } from "../durable/DurableBotRuntime";
@@ -56,6 +57,7 @@ export interface BotConversationServiceOptions {
 /** Persistent foreground messages have their own identity and native root, without a Task row. */
 export class BotConversationService {
   readonly messages: BotConversationRepository;
+  private readonly peerCalls: BotPeerCallService;
   private readonly drains = new Map<string, Promise<void>>();
   private readonly runningConversations = new Map<string, string>();
   private readonly attempted = new Set<string>();
@@ -72,6 +74,7 @@ export class BotConversationService {
   private readonly receiptTimers = new Map<string, ReturnType<typeof setTimeout>>();
   constructor(private readonly options: BotConversationServiceOptions) {
     this.messages = new BotConversationRepository(options.db);
+    this.peerCalls = new BotPeerCallService(options, this.messages, messageId => this.publish(messageId));
   }
 
   send(input: unknown, frozen?: Awaited<ReturnType<import("./BotSettingsService").BotSettingsService["prepareMessage"]>>) {
@@ -146,6 +149,7 @@ export class BotConversationService {
       this.options.db.prepare("INSERT OR IGNORE INTO bot_cancel_intents(conversation_id,request_id) VALUES (?,?)").run(source.conversation_id, requestId);
     });
     this.publish(message.messageId);
+    await this.peerCalls.cancel(message.messageId);
     await this.stopPending(botId, source.conversation_id);
     this.options.wake();
   }
@@ -157,6 +161,7 @@ export class BotConversationService {
 
   recover(): void {
     if (!this.options.isAuthority()) return;
+    this.peerCalls.recover();
     this.options.memory?.recover();
     this.options.works.transaction(() => this.messages.pruneTerminalWorkReads(this.options.userId));
     const cancelled = this.options.db.prepare(`SELECT DISTINCT r.bot_id,c.conversation_id FROM bot_conversations c
@@ -174,6 +179,7 @@ export class BotConversationService {
     for (const timer of this.receiptTimers.values()) clearTimeout(timer);
     this.receiptTimers.clear();
     this.shutdown.abort();
+    await this.peerCalls.close();
     await Promise.allSettled(this.openings.values());
     await Promise.allSettled([...this.runtimes.values()].map(runtime => runtime.close()));
     await Promise.allSettled([...this.stops.values(), ...this.drains.values()]);
@@ -394,6 +400,19 @@ export class BotConversationService {
     const webNames = new Set(["web_search", "fetch_content"]);
     const webTools = (web?.tools ?? []).filter(tool => webNames.has(tool.name)).map(tool => ({ ...tool, replay: "safe" as const }));
     const requestTools = [
+      defineTool({ name: 'bot_list', description: '查看同一用户现有 Bot 的准确名字、职责和状态。用户提及其他 Bot、让你问它或向它学习时先查找目标，再 bot_ask 真实联系。不是团队派活。',
+        parameters: Type.Object({}), replay: 'safe', execute: async () => ({ output: [{ type: 'text' as const, text: JSON.stringify(
+          this.options.bots.listBots(this.options.userId).filter(item => item.botId !== bot.botId)
+            .map(item => ({ botId: item.botId, displayName: item.displayName, responsibilitySummary: item.responsibilitySummary, status: item.status }))
+        ) }] }) }),
+      defineTool({ name: 'bot_ask', description: '真实向另一位现有 Bot 咨询并等待其回复。先 bot_list 确认 botId。目标以自己的身份、模型和记忆回答，呼叫状态、问题与原始回复会显示在当前对话。适合询问其今天学到什么、征询意见、核对信息；不要用自己的旧任务摘要冒充它的回复。无需新建团队或 Work。只读咨询不授权对方修改文件、对外发送或执行工作，长任务仍用 work_team_create。返回失败就如实报告，不能编造对方回答。',
+        parameters: Type.Object({ botId: Type.String({ minLength: 1, maxLength: 200 }), question: Type.String({ minLength: 1, maxLength: 8000 }) }),
+        replay: 'safe', execute: async (args, api, ctx) => {
+          const origin = await botForegroundRequest(api, api.callId, ctx);
+          if (origin !== requestId || !args.question.trim()) throw new Error('Bot 沟通缺少当前请求或有效问题');
+          const result = await this.peerCalls.call(key, String(api.taskId), args.botId, args.question.trim());
+          return { output: [{ type: 'text' as const, text: JSON.stringify(result) }] };
+        } }),
       defineTool({ name: 'foreground_query_requests', description: '查看本对话各条前台请求的状态、原文和关联事项。用于用户插话、询问当前进度、修正上一条请求或指明要停止哪一条；不是后台Work查询。',
         parameters: Type.Object({}), replay: 'safe', execute: async () => ({ output: [{ type: 'text' as const, text: JSON.stringify(
           this.messages.history(this.options.userId, { botId: bot.botId, conversationId: conversation.conversation_id, teamId: conversation.team_id ?? undefined }).messages
@@ -423,6 +442,7 @@ export class BotConversationService {
 ${composer?.instructions ?? ""}
 ${requiredTool ? `用户为本条消息明确选择了 ${requiredTool}。必须先调用此工具处理完整请求，再综合实际结果回答，不能以本机模型替代所选能力。` : ""}
 当前 Bot 显示名称是 ${JSON.stringify(this.options.bots.getBot(bot.botId)?.displayName ?? bot.displayName)}。这是当前身份名称；旧配置或历史中的旧称不代表另一个 Bot。
+用户提到另一位 Bot 并询问其掌握的内容、让你问它或向它学习时，先 bot_list 确认准确对象，再 bot_ask 向它提出具体问题，在本轮继续等它真实回复。不要求用户再确认“要不要问”，不以自己查到的旧任务产出替代对方本次回答。普通提及名字、翻译或改写含名字的文本不需要联系。尚未调用只能说“我来问 @名字”，实际状态由宿主显示。回复原文会显示在沟通记录中；你再简短综合、明确未确认的内容。联系失败须说明真实错误，不冒充成功。跨 Bot 的只读咨询不是后台委托，不创建普通 Work，不改变双方的私聊、记忆或权限。
 ${conversation.team_id ? `当前是独立团队会话（teamId=${conversation.team_id}），不是队长的个人会话。所有委托交给当前团队，用 work_team_create；模板由宿主绑定，禁止另建个人任务。work_query_status仅查询本团队。团队历史独立保留，不能读写队长或成员的私人记忆。` : ""}
 你是用户的个人助理 Bot。同一对话的新消息可与其他请求同时处理，只响应本次输入。冻结历史中的 queued/running/unknown 等状态只表示上下文取样时的状态，不是当前执行证据。不同主题的新问题只回答本次问题，不主动附带其他请求的进度、状态或“完成后会发来”等送达承诺。确需回答或提及其他前台请求当前状态时，先 foreground_query_requests 重新读取；以实际返回为准，已取消就明确已停止，不能凭旧快照说仍在执行。用户插话修正尚未完成的查询时，先foreground_query_requests核对具体目标；若明确替换旧查询，foreground_cancel_request停止旧前台查询，在本次执行新的查询。已关联后台Work则查询并修订该Work，不能重复创建。不同主题不停止旧请求，不能把其他未完成请求说成已完成。需要原结果才能回答的追问，明确关联原问题，不编造尚未返回的结果。闲聊、解释和已有事实可以直接答复；需要实时信息的请求应立即调用联网工具，而不是停在口头建议。
 优先让用户尽快得到回应：简单问题直接流式回答，不机械添加“收到”。需要查询、调用工具或执行耗时任务时，在第一次工具调用前先用一句简短具体的话承接当前请求，表达你要查什么或处理什么，然后在同一请求中立即继续实际工具调用，不等待用户确认，也不另开模型调用只为写承接。承接不是执行回执：尚未调用工具只能说“我来查/核对/处理”，不能说“已查到/已安排/已开始执行”。前面的承接和过程文字会独立保留，最终回答只给结果、依据和必要局限，不重复承接或整段过程。中途只在有实质发现、变化或阻塞时补充简短进展，不输出推理过程。
