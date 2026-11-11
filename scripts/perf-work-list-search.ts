@@ -40,19 +40,22 @@ export function run(path: string, output: string) {
     ['closed-page-clamp',{...common,view:'closed',query:'Synthetic',page:999999}],
   ];
   try {
-    const results = cases.map(([name,request]) => {
+    const measure = ([name,request]: [string, WorkQueryRequest]) => {
       const cold = () => f.db.transaction(() => f.read(request))();
-      const reference = cold();
+      const firstStart=performance.now(),reference = cold(),firstQueryMs=performance.now()-firstStart;
       const {watermark: _watermark,...payload} = reference;
       const digest = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
       const samples: number[] = [];
       for(let i=0;i<7;i++) { const start=performance.now(); const actual=cold(); samples.push(performance.now()-start); assert.deepEqual({...actual,watermark:undefined},{...reference,watermark:undefined}); }
       samples.sort((a,b)=>a-b);
       f.read(request); const start=performance.now();f.read(request);const cachedMs=performance.now()-start;
-      const row={name,request,medianMs:samples[3],p95Ms:samples[6],cachedMs,filtered:reference.filtered,pages:reference.pages,
+      const row={name,request,firstQueryMs,medianMs:samples[3],p95Ms:samples[6],cachedMs,filtered:reference.filtered,pages:reference.pages,
         page:reference.page,statusCounts:reference.filterCounts,digest};
       console.log(JSON.stringify(row)); return row;
-    });
+    };
+    const results = cases.map(measure);
+    f.db.prepare('UPDATE work_deliverables SET summary=?').run('Long report content. '.repeat(6000)+'DeepReportTail');
+    results.push(measure(['long-report-tail',{...common,query:'DeepReportTail'}]));
     const ids: string[]=[];
     // Walk every page of the mixed full-text result, with both sorting directions.
     for(const sort of ['oldest','recent'] as const) {

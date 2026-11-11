@@ -152,14 +152,37 @@ try {
     db.connection.prepare("UPDATE work_deliverables SET summary=summary||' Item' WHERE deliverable_id='search-deliverable'").run();
     assert.ok(uncachedSearch('Item').works.some(work=>work.workId===subject.workId),'prefix-plan misses still search full detail');
     assert.ok(subjectFullReads>0,'a representative probe is not a result filter');
+    subjectFullReads = 0;
     assert.equal(uncachedSearch('status-subject full-report-tail').filtered,1);
-    assert.ok(subjectFullReads > 0,'mixed terms still read the complete document');
+    assert.equal(subjectFullReads,1,'sparse full-text matching is shared by counts and page lookup');
+    const emptyStatus = db.connection.transaction(() => query.query(LOCAL_USER_ID, {scope:{kind:'all'},view:'all',query:'status-subject full-report-tail',status:'cancelled',page:99999,pageSize:1}))();
+    assert.equal(emptyStatus.filtered,0);
+    assert.equal(emptyStatus.page,1);
+    assert.equal(emptyStatus.pages,1);
+    assert.equal(emptyStatus.works.length,0);
+    assert.ok(Object.values(emptyStatus.filterCounts).some(count=>count===1),'zero selected status preserves other status counts');
     subjectFullReads = 0; subjectPrefixReads = 0;
     assert.equal(uncachedSearch('no-such-tail').filtered,0);
     assert.equal(subjectFullReads,1,'zero exact matches skip the redundant page scan');
     new WorkListQuery(db.connection, () => works.scheduler.hostState().online);
     for (const term of ['full-report-tail', 'no-such-tail', 'full-report-tail', 'ＳＴＡＴＵＳ-ＳＵＢＪＥＣＴ'])
         assert.equal(uncachedSearch(term).filtered,term === 'no-such-tail' ? 0 : 1,'changing queries refresh normalized terms');
+    for (const [id,time] of [['bulk-0100',201],['bulk-0101',201],['bulk-0102',202]] as const)
+        db.connection.prepare("UPDATE works SET title='single-pass-boundary',updated_at=? WHERE work_id=?").run(time,id);
+    for (const sort of ['recent','oldest'] as const) {
+        const request={scope:{kind:'all'} as const,view:'all' as const,query:'single-pass-boundary',sort,status:'waiting' as const,pageSize:2};
+        const firstPage=query.query(LOCAL_USER_ID,request),lastPage=query.query(LOCAL_USER_ID,{...request,page:99999});
+        assert.deepEqual(firstPage.works.map(work=>work.workId),sort==='recent'?['bulk-0102','bulk-0100']:['bulk-0100','bulk-0101']);
+        assert.equal(lastPage.page,2);assert.equal(lastPage.pages,2);assert.equal(lastPage.filtered,3);
+        assert.deepEqual(lastPage.works.map(work=>work.workId),sort==='recent'?['bulk-0101']:['bulk-0102'],'sparse last-page clamp and deterministic ties');
+    }
+    const schemaRequest={scope:{kind:'all'} as const,view:'all' as const,query:'single-pass-boundary',pageSize:2};
+    const schemaRead=()=>db.connection.transaction(()=>query.query(LOCAL_USER_ID,schemaRequest))();
+    schemaRead();const beforeSchema=schemaRead();
+    db.connection.exec('CREATE INDEX idx_work_summary_reprepare_fixture ON works(title)');
+    const afterSchema=schemaRead();
+    assert.deepEqual({...afterSchema,watermark:undefined},{...beforeSchema,watermark:undefined},'hot statements reprepare after schema changes');
+    db.connection.exec('DROP INDEX idx_work_summary_reprepare_fixture');
     const blockedItem = { itemId: 'gap-item', task: 'finish actual work', required: true, dependencies: [], criterionIds: [], nativeStatus: 'test', outcome: 'blocked', artifactRefs: [], writeConflicts: [], summary: 'not done' };
     db.connection.prepare(`INSERT INTO work_subitem_results(fact_id,work_id,binding_id,item_id,result_json,created_at) VALUES ('gap-fact',?,'status-binding','gap-item',?,1)`).run(subject.workId, JSON.stringify(blockedItem));
     parity();

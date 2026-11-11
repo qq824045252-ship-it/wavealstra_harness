@@ -130,6 +130,7 @@ type Row = {
 export class WorkListQuery {
     private readonly databaseIdentity: string;
     private readonly pageCache = new Map<string, WorkQueryResult>();
+    private readonly statements = new Map<string, Database.Statement>();
     constructor(private readonly db: Database.Database, private readonly hostOnline: () => boolean = () => true) {
         this.databaseIdentity = databaseIdentities.get(db) ?? randomUUID();
         databaseIdentities.set(db, this.databaseIdentity);
@@ -150,17 +151,26 @@ export class WorkListQuery {
             CREATE INDEX IF NOT EXISTS idx_work_summary_subitems ON work_subitem_results(work_id,binding_id);
             CREATE INDEX IF NOT EXISTS idx_work_summary_continuations ON work_continuation_plans(work_id,source_binding_id);`);
     }
+    /** Bounded query plans; parameters are bound afresh. SQLite reparses on schema/function changes. */
+    private prepare(sql: string): Database.Statement {
+        let statement = this.statements.get(sql);
+        if (statement) this.statements.delete(sql);
+        else statement = this.db.prepare(sql);
+        this.statements.set(sql, statement);
+        if (this.statements.size > 24) this.statements.delete(this.statements.keys().next().value!);
+        return statement;
+    }
     /** The supplied watermark is advisory: always replace with a current atomic page. */
     query(userId: string, input: unknown): WorkQueryResult {
         const request = workQueryRequestSchema.parse(input);
         const cacheAllowed = !this.db.inTransaction;
         return this.db.transaction(() => {
-            this.db.prepare("INSERT OR IGNORE INTO work_projection_streams(user_id) VALUES (?)").run(userId);
-            const stream = this.db.prepare('SELECT epoch,sequence FROM work_projection_streams WHERE user_id=?').get(userId) as { epoch: string; sequence: number };
+            this.prepare("INSERT OR IGNORE INTO work_projection_streams(user_id) VALUES (?)").run(userId);
+            const stream = this.prepare('SELECT epoch,sequence FROM work_projection_streams WHERE user_id=?').get(userId) as { epoch: string; sequence: number };
             const online = this.hostOnline();
             // The journal alone is insufficient: template visibility and related facts can
             // change independently. SQLite counters cover local and other-connection writes.
-            const localChanges = this.db.prepare('SELECT total_changes() AS n').get() as { n: number };
+            const localChanges = this.prepare('SELECT total_changes() AS n').get() as { n: number };
             const dataVersion = this.db.pragma('data_version', { simple: true });
             const watermark = { ...stream, revision: `${this.databaseIdentity}:${localChanges.n}:${dataVersion}:${Number(online)}` };
             const { watermark: _advisory, ...pageRequest } = request;
@@ -182,16 +192,17 @@ export class WorkListQuery {
     /** Ownership is checked in SQL before any related facts are selected. */
     get(userId: string, workId: string): WorkProjectionDto | undefined {
         return this.db.transaction(() => {
-            const row = this.db.prepare(this.base('w.work_id=@workId') + this.pageSelect() + ' FROM classified w LIMIT 1').get({ userId, workId, online: this.hostOnline() ? 1 : 0 }) as Row | undefined;
+            const row = this.prepare(this.base('w.work_id=@workId') + this.pageSelect() + ' FROM classified w LIMIT 1').get({ userId, workId, online: this.hostOnline() ? 1 : 0 }) as Row | undefined;
             return row ? this.shell(row) : undefined;
         }).deferred();
     }
-    private base(scope: string): string {
-        return `WITH facts AS (SELECT w.*,a.archived_at,a.deleted_at,t.plan_json,t.created_at AS team_created_at,o.team_id,o.team_name,v.removed_at,
+    private base(scope: string, inline = false): string {
+        const hint = inline ? ' NOT MATERIALIZED' : '';
+        return `WITH facts AS${hint} (SELECT w.*,a.archived_at,a.deleted_at,t.plan_json,t.created_at AS team_created_at,o.team_id,o.team_name,v.removed_at,
   (a.archived_at IS NOT NULL OR (w.lifecycle='closed' AND coalesce(w.closure_conclusion,'')!='succeeded')) AS is_archived,${statusSql} AS status_key
   FROM works w LEFT JOIN work_record_archive a ON a.work_id=w.work_id LEFT JOIN work_teams t ON t.work_id=w.work_id AND t.user_id=w.user_id
   LEFT JOIN work_team_ownership o ON o.work_id=t.work_id LEFT JOIN work_team_record_visibility v ON v.work_id=t.work_id WHERE w.user_id=@userId AND (${scope})),
-  classified AS (SELECT *,CASE WHEN is_archived THEN 'closed' WHEN lifecycle='closed' AND closure_conclusion='succeeded' THEN 'completed' ELSE 'active' END AS view_kind,
+  classified AS${hint} (SELECT *,CASE WHEN is_archived THEN 'closed' WHEN lifecycle='closed' AND closure_conclusion='succeeded' THEN 'completed' ELSE 'active' END AS view_kind,
   CASE status_key ${Object.entries(statuses).map(([key, value]) => `WHEN '${key}' THEN '${value.group}'`).join(' ')} END AS status_group FROM facts) `;
     }
     private read(userId: string, request: WorkQueryRequest, online: boolean, watermark: WorkQueryResult['watermark']): WorkQueryResult {
@@ -218,12 +229,14 @@ export class WorkListQuery {
         const params = { userId, online: online ? 1 : 0, scopeId: scope.kind === 'personal' ? scope.botId : scope.kind === 'team' ? scope.teamId : '', query: request.query ?? '', view: request.view ?? 'active', status: request.status ?? 'all', showDeleted: request.showDeleted ? 1 : 0 };
         const base = this.base(scopeSql), visibility = '((@showDeleted=1 AND w.deleted_at IS NOT NULL) OR (@showDeleted=0 AND w.deleted_at IS NULL))', view = "(@view='all' OR w.view_kind=@view)";
         let search = '1';
+        let singleSearchPass = false;
         if (request.query?.trim()) {
             // A bounded scalar-only probe chooses a plan, never narrows the results.
             // Avoid a second matcher call on every row for sparse/deep-only searches.
-            const probe = this.db.prepare(base + `SELECT work_list_matches(${searchPrefixSql},@query) AS matches
+            const probe = this.prepare(base + `SELECT work_list_matches(${searchPrefixSql},@query) AS matches
                 FROM classified w WHERE ${visibility} AND ${view} LIMIT 32`).all(params) as { matches: number }[];
             const prefixPlan = probe.length > 0 && probe.filter(row => row.matches).length >= probe.length / 2;
+            singleSearchPass = !prefixPlan;
             // CASE guarantees lazy evaluation; OR does not promise to skip the full document.
             search = prefixPlan ? `CASE WHEN work_list_matches(${searchPrefixSql},@query)=1 THEN 1
                 ELSE work_list_matches(${searchSql},@query) END=1` : `work_list_matches(${searchSql},@query)=1`;
@@ -233,7 +246,7 @@ export class WorkListQuery {
         let deletedCount = 0;
         // One cheap grouped pass supplies navigation totals and trash counts. It does not
         // evaluate status or search fields, which remain in the filtered query below.
-        for (const row of this.db.prepare(base + `SELECT view_kind, deleted_at IS NOT NULL AS deleted, count(*) AS n
+        for (const row of this.prepare(base + `SELECT view_kind, deleted_at IS NOT NULL AS deleted, count(*) AS n
             FROM classified w GROUP BY view_kind, deleted_at IS NOT NULL`).all(params) as Array<{
                 view_kind: 'active' | 'completed' | 'closed'; deleted: number; n: number;
             }>) {
@@ -244,20 +257,50 @@ export class WorkListQuery {
             }
         }
         const total = viewCounts[request.view ?? 'active'];
-        const filterCounts: Partial<Record<WorkListStatusGroup, number>> = {};
-        for (const row of this.db.prepare(base + `SELECT status_group,count(*) AS n FROM classified w WHERE ${filter} GROUP BY status_group`).all(params) as {
-            status_group: WorkListStatusGroup;
-            n: number;
-        }[])
-            filterCounts[row.status_group] = row.n;
+        let filterCounts: Partial<Record<WorkListStatusGroup, number>> = {};
+        let matchedRows: Row[] | undefined;
+        // Below this size the extra combined-plan setup costs more than another
+        // short scan. Both paths have identical counts, ordering and page contracts.
+        if (singleSearchPass && total >= 1000) {
+            const matched = this.readMatchedPage(this.base(scopeSql, true), filter, params, request);
+            filterCounts = matched.filterCounts;
+            matchedRows = matched.rows;
+        } else {
+            for (const row of this.prepare(base + `SELECT status_group,count(*) AS n FROM classified w WHERE ${filter} GROUP BY status_group`).all(params) as {
+                status_group: WorkListStatusGroup;
+                n: number;
+            }[]) filterCounts[row.status_group] = row.n;
+        }
         const filtered = request.status && request.status !== 'all' ? filterCounts[request.status] ?? 0 : Object.values(filterCounts).reduce((sum, n) => sum + (n ?? 0), 0);
         const pageSize = request.pageSize ?? 24, pages = Math.max(1, Math.ceil(filtered / pageSize)), page = Math.min(request.page ?? 1, pages);
         // The exact zero count belongs to this same transaction; there is no page to scan.
-        const rows = filtered === 0 ? [] : this.db.prepare(base + this.pageSelect() + ` FROM classified w WHERE ${filter} AND (@status='all' OR status_group=@status) ORDER BY updated_at ${request.sort === 'oldest' ? 'ASC' : 'DESC'},work_id ASC LIMIT @limit OFFSET @offset`).all({ ...params, limit: pageSize, offset: (page - 1) * pageSize }) as Row[];
-        const workExecutionTaskIds = request.candidateTaskIds?.length ? (this.db.prepare(base + 'SELECT DISTINCT b.task_id FROM work_execution_bindings b JOIN classified w ON w.work_id=b.work_id WHERE b.task_id IN (SELECT value FROM json_each(@candidates)) ORDER BY b.task_id').all({ ...params, candidates: JSON.stringify(request.candidateTaskIds) }) as {
+        const rows = matchedRows ?? (filtered === 0 ? [] : this.prepare(base + this.pageSelect() + ` FROM classified w WHERE ${filter} AND (@status='all' OR status_group=@status) ORDER BY updated_at ${request.sort === 'oldest' ? 'ASC' : 'DESC'},work_id ASC LIMIT @limit OFFSET @offset`).all({ ...params, limit: pageSize, offset: (page - 1) * pageSize }) as Row[]);
+        const workExecutionTaskIds = request.candidateTaskIds?.length ? (this.prepare(base + 'SELECT DISTINCT b.task_id FROM work_execution_bindings b JOIN classified w ON w.work_id=b.work_id WHERE b.task_id IN (SELECT value FROM json_each(@candidates)) ORDER BY b.task_id').all({ ...params, candidates: JSON.stringify(request.candidateTaskIds) }) as {
             task_id: string;
         }[]).map(row => row.task_id) : [];
         return { works: rows.map(row => this.shell(row)), total, filtered, page, pageSize, pages, filterCounts, viewCounts, deletedCount, watermark, workExecutionTaskIds };
+    }
+    /** Full-text matches are shared by exact counts and page selection in one statement.
+     * Materialize only IDs, sort keys and status groups, never complete Work records.
+     * The outer LEFT JOIN retains counts even when the selected status has no rows. */
+    private readMatchedPage(base: string, filter: string, params: Record<string, string | number>, request: WorkQueryRequest): {
+        rows: Row[]; filterCounts: Partial<Record<WorkListStatusGroup, number>>;
+    } {
+        const direction = request.sort === 'oldest' ? 'ASC' : 'DESC';
+        const selectedStatus = "(@status='all' OR status_group=@status)";
+        const rows = this.prepare(base + `,
+            matched AS MATERIALIZED (SELECT work_id,updated_at,status_group FROM classified w WHERE ${filter}),
+            counts AS MATERIALIZED (SELECT status_group,count(*) AS n FROM matched GROUP BY status_group),
+            page_ids AS MATERIALIZED (SELECT work_id AS selected_id FROM matched WHERE ${selectedStatus}
+                ORDER BY updated_at ${direction},work_id ASC LIMIT @limit
+                OFFSET (max(1,min(@requestedPage,CAST((coalesce((SELECT sum(n) FROM counts WHERE ${selectedStatus}),0)+@limit-1)/@limit AS INTEGER)))-1)*@limit)
+            SELECT (SELECT json_group_object(status_group,n) FROM counts) AS filter_counts,p.*
+            FROM (SELECT 1) seed LEFT JOIN (${this.pageSelect()} FROM classified w
+                JOIN page_ids ON page_ids.selected_id=w.work_id) p ON 1
+            ORDER BY p.updated_at ${direction},p.work_id ASC`).all({ ...params,
+                limit: request.pageSize ?? 24, requestedPage: request.page ?? 1,
+            }) as Array<Row & { filter_counts: string }>;
+        return { filterCounts: JSON.parse(rows[0].filter_counts), rows: rows.filter(row => row.work_id !== null) };
     }
     private pageSelect(): string {
         const latestResult = `(SELECT d.summary FROM work_deliverables d WHERE d.work_id=w.work_id
