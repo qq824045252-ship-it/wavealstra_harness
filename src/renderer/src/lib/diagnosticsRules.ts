@@ -81,6 +81,8 @@ export interface CacheTrendPoint {
   order: number;
   hitRate: number | null;
   startedAt: number;
+  /** 由规则判定，不把首轮冷缓存等同于异常。 */
+  cacheAlert?: boolean;
 }
 
 /** 一个标签页：主任务一个、每个子代理一个（各有一条自己的缓存趋势）。 */
@@ -125,7 +127,7 @@ export const RULE_TEXTS: Array<{ ruleId: string; text: string }> = [
   { ruleId: "B1", text: "用量字段缺失 → 观测缺口（不按 0 计）" },
   { ruleId: "B2", text: "费用来自 SDK 默认值 → 不是真实账单" },
   { ruleId: "B3", text: "缓存前缀被打断且配置没变 → 需注意" },
-  { ruleId: "C3", text: "缓存命中率掉到 0% → 需注意（真的回源）；只是波动不算" },
+  { ruleId: "C3", text: "同组已有缓存命中后归零 → 需注意；首个有效观测为 0% 仅作基线，普通波动不算" },
 ];
 
 const VERDICT_RANK: Record<Verdict, number> = { ok: 0, unknown: 1, waiting: 2, warn: 3, error: 4 };
@@ -431,6 +433,7 @@ export function buildDiagnosticsReport(
     const tab = tabBuckets.get(key)!;
     const turns: TurnDiagnostics[] = [];
     let previousHitRate: number | null = null;
+    let hasPriorCacheHit = false;
     let counter = 0;
     for (const bucket of tab.buckets) {
       const requests = [...bucket.requests].sort((a, b) => a.startedAt - b.startedAt);
@@ -445,7 +448,7 @@ export function buildDiagnosticsReport(
       }
       const hitRateDeltaPct = cache.hitRate !== null && previousHitRate !== null ? Math.round((cache.hitRate - previousHitRate) * 100) : null;
       const cacheUsed = (cache.input ?? 0) + (cache.cacheRead ?? 0) + (cache.cacheWrite ?? 0) > 0;
-      if (cache.hitRate !== null && cacheUsed && cache.hitRate === 0) {
+      if (cache.hitRate !== null && cacheUsed && cache.hitRate === 0 && hasPriorCacheHit) {
         // 只有真的掉到 0%（全部回源）才判定；正常波动不报警。
         findings.push({
           ruleId: "C3", verdict: "warn",
@@ -453,7 +456,7 @@ export function buildDiagnosticsReport(
           evidence: previousHitRate === null
             ? `命中 0% · 新输入 ${formatTokenCount(cache.input ?? 0)} · 缓存读 0`
             : `${pct(previousHitRate)} → 0%（${hitRateDeltaPct}pp）`,
-          basis: "缓存命中率只有归零才作为回源证据；其余波动不判异常。",
+          basis: "同组曾实际命中过缓存后归零才提示回源；首个有效观测为 0% 不判异常，也不假定首轮必为 0。",
         });
       }
       const startedAt = Math.min(...[...requests.map((r) => r.startedAt), ...bucket.tools.map((t) => t.startedAt), ...bucket.waits.map((w) => w.startedAt)]);
@@ -487,6 +490,7 @@ export function buildDiagnosticsReport(
       };
       turns.push(turn);
       previousHitRate = cache.hitRate ?? previousHitRate;
+      if (cache.hitRate !== null && cache.hitRate > 0) hasPriorCacheHit = true;
     }
 
     const tabSummary = emptySummary();
@@ -512,6 +516,7 @@ export function buildDiagnosticsReport(
         sourceKind: turn.sourceKind,
         order: index + 1,
         hitRate: turn.cache.hitRate,
+        cacheAlert: turn.findings.some(finding => finding.ruleId === "C3"),
         startedAt: turn.startedAt,
       })),
     });

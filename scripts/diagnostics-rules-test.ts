@@ -209,7 +209,21 @@ console.log("== 性能指标只展示、不判定 ==");
   const zeroFromStart = buildDiagnosticsReport(dto({ requests: [
     request({ id: "c", executionId: "t9", usage: { input: 5_000, output: 1, cacheRead: 0, cacheWrite: 0 } }),
   ] }), NOW).turns[0];
-  assert(Boolean(zeroFromStart?.findings.some((finding) => finding.title.includes("命中 0%"))), "首轮 0% 也提示");
+  assert(!zeroFromStart?.findings.some(finding => finding.ruleId === "C3"), "首轮 0% 只作基线，不提示缓存异常");
+  assert(zeroFromStart?.verdict === "ok", "首轮冷缓存保持正常");
+  assert(zeroTurn.tabs[0]?.cacheTrend[1]?.cacheAlert === true, "后续回源趋势点仍告警");
+  const baseline = buildDiagnosticsReport(dto({ requests: [
+    request({ id:"z1", executionId:"z1", usage:{input:5000, output:1, cacheRead:0, cacheWrite:0} }),
+    request({ id:"z2", executionId:"z2", startedAt:NOW-30000, usage:{input:5000, output:1, cacheRead:0, cacheWrite:0} }),
+  ] }), NOW);
+  assert(baseline.turns.every(turn => !turn.findings.some(f=>f.ruleId === "C3")), "连续冷缓存不虚构掉零历史");
+  assert(baseline.tabs[0]!.cacheTrend.every(p=>p.hitRate===0 && !p.cacheAlert), "冷缓存真实零保留，不标红");
+  const warm = buildDiagnosticsReport(dto({requests:[request({id:"warm", executionId:"warm"})]}),NOW);
+  assert(warm.turns[0]!.cache.hitRate===0.9 && warm.turns[0]!.verdict==="ok", "首轮预热缓存90%真实保留");
+  const failed = buildDiagnosticsReport(dto({requests:[request({id:"err",executionId:"err",status:"failed",error:"HTTP 500", usage:{input:5000,output:1,cacheRead:0,cacheWrite:0}})]}),NOW);
+  assert(failed.turns[0]!.verdict==="error", "首轮0豁免不掩盖真实请求失败");
+  const sub = buildDiagnosticsReport(dto({requests:[request({id:"main", executionId:"main"}),request({id:"sub",executionId:"sub",sourceKind:"subagent",conversationId:"sub",usage:{input:5000,output:1,cacheRead:0,cacheWrite:0}})]}),NOW);
+  assert(!sub.turns.find(t=>t.key==="sub")!.findings.some(f=>f.ruleId==="C3"), "子代理首轮不继承主任务缓存基线");
 }
 
 console.log("== 标签页：主任务 + 每个子代理各一页，各带自己的缓存趋势 ==");

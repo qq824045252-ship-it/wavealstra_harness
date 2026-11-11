@@ -90,7 +90,7 @@ function TurnCard({ turn }: { turn: TurnDiagnostics }): React.JSX.Element {
   const retries = turn.requests.reduce((sum, request) => sum + Math.max(0, request.attempts.length - 1), 0);
   const failedTools = turn.tools.filter((tool) => tool.status === "failed").length;
   const delta = turn.hitRateDeltaPct;
-  const cacheAlert = turn.cache.hitRate === 0;
+  const cacheAlert = turn.findings.some(finding => finding.ruleId === "C3");
   return <section className={`td-turn td-turn--${turn.verdict}`} data-turn-key={turn.key} data-verdict={turn.verdict}>
     <header className="td-turn-head">
       <VerdictBadge verdict={turn.verdict} />
@@ -154,7 +154,7 @@ const trendStyles = [
   { color: "var(--fg, #e6e6e6)" },
 ];
 
-/** 单个标签的缓存命中率走势：未知值断开，0% 用异常色标出。 */
+/** 单个标签的缓存命中率走势：未知值断开，只有规则判定的缓存回源用警示色标出。 */
 function CacheTrend({ points, label }: { points: CacheTrendPoint[]; label: string }): React.JSX.Element {
   const allPoints = points;
   const known = allPoints.filter((point) => point.hitRate !== null);
@@ -202,8 +202,8 @@ function CacheTrend({ points, label }: { points: CacheTrendPoint[]; label: strin
         return segments.filter(segment => segment.length > 1).map((segment, index) => <polyline key={index} points={segment.join(" ")} fill="none" stroke={trendStyles[0]!.color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />);
       })()}
       {points.map((point, index) => point.hitRate === null ? null : (
-        <circle key={point.key} cx={x(index)} cy={y(point.hitRate)} r={point.hitRate === 0 ? 4 : 2.6}
-          fill={point.hitRate === 0 ? "var(--danger, #ff3b30)" : trendStyles[0]!.color} className="td-trend-dot">
+        <circle key={point.key} cx={x(index)} cy={y(point.hitRate)} r={point.cacheAlert ? 4 : 2.6}
+          fill={point.cacheAlert ? "var(--danger, #ff3b30)" : trendStyles[0]!.color} className="td-trend-dot" data-cache-alert={Boolean(point.cacheAlert)}>
           <title>{`${point.label} · 命中 ${Math.round(point.hitRate * 100)}%`}</title>
         </circle>
       ))}
