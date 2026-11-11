@@ -113,9 +113,35 @@ Read for view/get/query/watch, DOM edits, batch or raw XML syntax: [references/c
 | Modifying an open file | Close the file in PowerPoint/WPS first |
 | `\n` in shell strings | Use `\\n` for newlines in `--prop text="..."` |
 | `$` in shell text | `--prop text="$15M"` strips `$15`. Use single quotes: `--prop text='$15M'`, or heredoc batch |
-| `Access to the path '…\\Temp\\tmp*.tmp' is denied` / 工作区 `.tmp_officecli` 被拒 | 本机写权限或瞬时锁被拒，不是文档路径错误。不要对同一路径反复重试：改用内置 `write` 直接生成文本/表格文件，或在本任务工作区用 Python/脚本生成后再 `register_artifact`；确需 Office 格式时换一个工作区内路径（如 `<cwd>/产物/…`）只重试一次，仍失败就如实报告阻塞 |
+| `Access to the path '…\\Temp\\tmp*.tmp' is denied` / 工作区 `.tmp_officecli` 被拒 | 只证明该操作被拒，不能由此断言是 ACL、文件锁、OneDrive 或临时目录问题。停止该写入，不改权限、不复制二进制、不换路径绕过拒绝。保留原始命令与错误，按下方有界诊断收集证据；普通 touch 成功不能证明 Office 写入成功 |
 
 ---
+
+## Bounded write diagnostic
+
+For a write failure, preserve the original command, path, exit code and stderr.
+If the task already permits creating diagnostic samples in its workspace, run once:
+
+```bash
+node <this-skill-directory>/scripts/probe-write.cjs /absolute/task/workspace
+```
+
+The helper requires `MYBUDDY_OFFICECLI` and uses that exact executable. It creates
+only a unique `.officecli-probe-*` directory, with at most five commands (version,
+create, set A1, fresh-process readback, validate), each limited to 10 seconds and
+64 KiB output. The first failure stops the probe. It does not change TEMP, update
+or copy the binary, install software, alter permissions, start resident mode or
+retry the denied operation. If Node or the helper is unavailable, report that
+limit instead of installing anything or substituting an unverified command.
+
+The JSON result and saved `report.json` record each command's actual exit code,
+signal, timeout/error and bounded stdout/stderr, plus the binary and sample hashes.
+Keep the report and sample paths with the original failure as evidence. Register
+the report if an artifact link is needed. A passed probe proves only that this new
+XLSX could be written and read back in this directory at that time. It neither
+explains nor clears the original denied operation, and does not validate a final
+document, page count, formulas or visual layout. Never clear an interrupted tool
+record just because a later artifact exists; link the separate acceptance evidence.
 
 ## Specialized workflows
 

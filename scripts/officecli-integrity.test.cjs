@@ -28,7 +28,7 @@ function upstream(data, tag = 'v9.8.7', override = {}) {
 }
 function makeResources(root, data) {
   const resources = path.join(root, 'resources');
-  const files = ['builtin-skills/officecli/SKILL.md', 'builtin-skills/officecli/LICENSE.txt', 'builtin-skills/officecli/references/cli-operations.md', 'builtin-skills/officecli/references/specialized-routing.md', 'magpie-agent-mybuddy/package.json', 'magpie-agent-mybuddy/mybuddy.agent.js'];
+  const files = ['builtin-skills/officecli/SKILL.md', 'builtin-skills/officecli/LICENSE.txt', 'builtin-skills/officecli/references/cli-operations.md', 'builtin-skills/officecli/references/specialized-routing.md', 'builtin-skills/officecli/scripts/probe-write.cjs', 'magpie-agent-mybuddy/package.json', 'magpie-agent-mybuddy/mybuddy.agent.js'];
   for (const rel of files) { const file = path.join(resources, rel); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, 'fixture'); }
   fs.mkdirSync(path.join(resources, 'officecli'), { recursive: true });
   fs.writeFileSync(path.join(resources, 'officecli', 'officecli.exe'), data);
@@ -78,6 +78,10 @@ test('packaged binary is checked against the build receipt, not the package rece
   await prepareOfficeCli(key, { vendorRoot, fetch: upstream(data).fetch });
   const verified = verifyOfficeCli(resources, 'win32', 'x64', { vendorRoot });
   assert.deepEqual(verified.errors, []);
+  const probe = path.join(resources, 'builtin-skills/officecli/scripts/probe-write.cjs');
+  fs.rmSync(probe);
+  assert.match(verifyOfficeCli(resources, 'win32', 'x64', { vendorRoot }).errors.join('\n'), /missing bundled OfficeCLI skill asset: scripts\/probe-write\.cjs/);
+  fs.writeFileSync(probe, 'fixture');
   if (nativeTarget) assert.equal(verified.facts.officecliVersion, process.version);
   else assert.equal(verified.facts.officecliVersion, undefined);
   const binary = path.join(resources, 'officecli', 'officecli.exe');

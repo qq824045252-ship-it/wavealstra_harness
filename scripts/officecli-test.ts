@@ -27,6 +27,7 @@ try {
   const skills = join(root, '.mybuddy/plugins/skills');
   assert.equal(ensureOfficeCliSkill(source, skills), 'created');
   assert(existsSync(join(skills, 'officecli/references/cli-operations.md')));
+  assert(existsSync(join(skills, 'officecli/scripts/probe-write.cjs')), 'new skill installs include the bounded diagnostic');
   const service = new SkillsService();
   assert(service.listInstalled(root).some(skill => skill.id === 'officecli'));
   assert(service.resolveRuntimeSkills(root).skills.some(skill => skill.name === 'officecli'));

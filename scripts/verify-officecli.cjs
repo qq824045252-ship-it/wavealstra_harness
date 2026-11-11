@@ -35,7 +35,7 @@ function verifyOfficeCli(resources, platform, arch = 'x64', options = {}) {
     }
     if (platform === 'linux' && (fs.statSync(binary).mode & 0o111) === 0) errors.push('bundled OfficeCLI is not executable');
   }
-  for (const rel of ['SKILL.md', 'LICENSE.txt', 'references/cli-operations.md', 'references/specialized-routing.md']) {
+  for (const rel of ['SKILL.md', 'LICENSE.txt', 'references/cli-operations.md', 'references/specialized-routing.md', 'scripts/probe-write.cjs']) {
     const file = path.join(resources, 'builtin-skills', 'officecli', rel);
     if (!fs.existsSync(file) || fs.statSync(file).size === 0) errors.push(`missing bundled OfficeCLI skill asset: ${rel}`);
   }
