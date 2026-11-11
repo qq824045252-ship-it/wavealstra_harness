@@ -4,6 +4,8 @@
  * 避免 mybuddy-artifact 协议宿主拦截外链。
  */
 import { BrowserWindow, dialog, WebContentsView, type Rectangle } from "electron";
+import { randomUUID } from "node:crypto";
+import type { BrowserOpenOptions, BrowserTabInfo, BrowserTabsState } from "../../shared/browser-tabs";
 import type { CaptureModeState, SelectionDescriptor } from "../../shared/capture-mode";
 import {
   pageInspectionService,
@@ -23,10 +25,10 @@ function sameBounds(left: Rectangle, right: Rectangle): boolean {
 
 export interface BrowserSurfaceChange {
   generation: number;
-  reason: "navigate" | "reload" | "close" | "destroy";
+  reason: "navigate" | "reload" | "close" | "destroy" | "select";
 }
 
-export class BrowserHost {
+class BrowserTabSurface {
   private win: BrowserWindow | null = null;
   private view: WebContentsView | null = null;
 
@@ -81,10 +83,14 @@ export class BrowserHost {
       noLink: true,
     }) === 0) {}
 
-  attach(win: BrowserWindow): void {
+  onCreatePopup: ((options: Electron.BrowserWindowConstructorOptions) => Electron.WebContents) | null = null;
+
+  attach(win: BrowserWindow, preferences?: Electron.WebPreferences, webContents?: Electron.WebContents): void {
     if (this.view) return;
     this.view = new WebContentsView({
+      ...(webContents ? { webContents } : {}),
       webPreferences: {
+        ...preferences,
         contextIsolation: true,
         sandbox: true,
         nodeIntegration: false,
@@ -99,28 +105,21 @@ export class BrowserHost {
     this.ensureViewport();
 
     const wc = this.view.webContents;
-    runtimeProbeService.attach("browser", wc);
     // WebContentsView 没有浏览器标签页自带的离开确认 UI。默认拒绝会让
     // loadURL/reload 以 ERR_FAILED 结束，页面看起来仍是旧内容。
     wc.on("will-prevent-unload", (event) => {
       if (this.confirmUnload(win)) event.preventDefault();
     });
     wc.setWindowOpenHandler(({ url }) => {
-      // A page's target=_blank/window.open is still part of the current browser
-      // task. Keep the exact sandboxed WCV/session instead of silently launching
-      // another application that browser_exec cannot observe or control.
-      if (/^https?:/i.test(url)) {
-        void wc.loadURL(url).catch((error: unknown) => {
-          if (error && typeof error === "object" && "code" in error && error.code === "ERR_ABORTED") return;
-          console.error("[BrowserHost] in-app popup navigation failed", error);
-        });
-      }
-      return { action: "deny" };
+      // Preserve Chromium opener/post-body semantics without creating an external
+      // BrowserWindow or replacing the source document.
+      if (!this.onCreatePopup || !(/^https?:/i.test(url) || url === "about:blank")) return { action: "deny" };
+      return { action: "allow", outlivesOpener: true, createWindow: (options) => this.onCreatePopup!(options) };
     });
     wc.on("did-navigate", (_e, url) => {
       this.currentUrl = url;
       this.advanceSurface("navigate");
-      if (this.isVisible) this.onUrlChanged?.(url);
+      this.onUrlChanged?.(url);
     });
     wc.on("did-start-navigation", (_e, _url, _inPlace, isMainFrame) => {
       if (isMainFrame) this.advanceSurface("navigate");
@@ -129,13 +128,14 @@ export class BrowserHost {
       if (!isMainFrame) return;
       this.currentUrl = url;
       this.advanceSurface("navigate");
-      if (this.isVisible) this.onUrlChanged?.(url);
+      this.onUrlChanged?.(url);
     });
     wc.on("destroyed", () => {
       runtimeProbeService.detach("browser", wc);
       this.releaseScreenshotSurface?.();
       this.exitCapture();
       pageInspectionService.release(wc, "browser-host");
+      if (this.view && this.win && !this.win.isDestroyed()) this.win.contentView.removeChildView(this.view);
       this.view = null;
       this.advanceSurface("destroy");
     });
@@ -189,7 +189,7 @@ export class BrowserHost {
     this.applyVisibility();
   }
 
-  open(url: string, options?: { reload?: boolean }): void {
+  open(url: string, options?: { reload?: boolean; preserveDocument?: boolean }): void {
     if (!this.view) return;
     if (!url) {
       this.close();
@@ -211,7 +211,7 @@ export class BrowserHost {
       });
     } else {
       // 同一路径的本地文件可能已被编辑，重开也必须更新其 JS/CSS。
-      if (options?.reload || /^file:/i.test(target)) this.reload();
+      if (options?.reload || (!options?.preserveDocument && /^file:/i.test(target))) this.reload();
       this.desiredVisible = Boolean(this.lastBounds);
       this.applyVisibility();
     }
@@ -241,10 +241,11 @@ export class BrowserHost {
   }
 
   /** Agent navigation shares the exact WCV without changing renderer visibility. */
-  async navigateForAutomation(url: string, signal?: AbortSignal): Promise<void> {
+  async navigateForAutomation(url: string, signal?: AbortSignal, options?: { reload?: boolean }): Promise<void> {
     const wc = this.view?.webContents;
     if (!wc || wc.isDestroyed()) throw new Error("MyBuddy 浏览器尚未挂载");
     this.ensureViewport();
+    if (!options?.reload && wc.getURL() === url && !wc.isLoadingMainFrame()) return;
     const scope = new PageCaptureScope(signal, 30_000);
     await scope.run(() => wc.loadURL(url));
   }
@@ -534,9 +535,11 @@ export class BrowserHost {
       this.exitCapture();
       pageInspectionService.release(this.view.webContents, "browser-host");
       runtimeProbeService.detach("browser", this.view.webContents);
-      this.view.webContents.removeAllListeners();
-      this.win?.contentView.removeChildView(this.view);
+      const view = this.view;
+      view.webContents.removeAllListeners();
+      if (this.win && !this.win.isDestroyed()) this.win.contentView.removeChildView(view);
       this.view = null;
+      if (!view.webContents.isDestroyed()) view.webContents.close();
       this.win = null;
     }
     const parkedWindow = this.parkedScreenshotWindow;
@@ -551,5 +554,240 @@ export class BrowserHost {
   }
 }
 
-export const browserHost = new BrowserHost();
 
+
+
+/** A fixed document owner for a whole automation invocation. Unlike BrowserHost,
+ * this handle never follows the user's selected tab. */
+export type BrowserPageHost = Pick<BrowserTabSurface,
+  "inspectionWebContents" | "url" | "captureVersion" | "navigateForAutomation" | "captureScreenshot" | "readDocumentHtml">;
+
+interface ManagedBrowserTab {
+  id: string;
+  key: string;
+  taskId?: string;
+  gadgetId?: string;
+  openerTabId?: string;
+  dirty?: boolean;
+  surface: BrowserTabSurface;
+}
+
+/** Native tab registry. UI selection and automation document ownership are
+ * deliberately independent. Hiding the panel never closes a document. */
+export class BrowserHost {
+  private win: BrowserWindow | null = null;
+  private readonly tabs = new Map<string, ManagedBrowserTab>();
+  private activeId: string | null = null;
+  private lastBounds: Rectangle | null = null;
+  private desiredVisible = false;
+  private readonly blockers = new Set<string>();
+  private selectionVersion = 0;
+  onUrlChanged: ((url: string) => void) | null = null;
+  onTabsChanged: ((state: BrowserTabsState) => void) | null = null;
+  onCaptureStateChanged: BrowserTabSurface["onCaptureStateChanged"] = null;
+  onSelection: BrowserTabSurface["onSelection"] = null;
+  onSurfaceChanged: BrowserTabSurface["onSurfaceChanged"] = null;
+
+  constructor(private readonly confirmUnload?: (win: BrowserWindow) => boolean) {}
+
+  private get active(): BrowserTabSurface | null { return this.tabs.get(this.activeId ?? "")?.surface ?? null; }
+  get attached(): boolean { return Boolean(this.win && !this.win.isDestroyed()); }
+  get activeTabId(): string | null { return this.activeId; }
+  get inspectionWebContents(): Electron.WebContents | null { return this.active?.inspectionWebContents ?? null; }
+  get captureSurface(): BrowserTabSurface["captureSurface"] { return this.active?.captureSurface ?? null; }
+  get visible(): boolean { return this.active?.visible ?? false; }
+  get url(): string { return this.active?.url ?? ""; }
+  get captureVersion(): number { return this.selectionVersion; }
+
+  attach(win: BrowserWindow): void {
+    if (this.win) return;
+    this.win = win;
+    this.ensureTab({ key: "legacy", activate: true });
+  }
+
+  private info(tab: ManagedBrowserTab): BrowserTabInfo {
+    const wc = tab.surface.inspectionWebContents;
+    return { id: tab.id, key: tab.key, taskId: tab.taskId, gadgetId: tab.gadgetId, openerTabId: tab.openerTabId,
+      url: wc && !wc.isDestroyed() ? wc.getURL() : tab.surface.url,
+      title: wc && !wc.isDestroyed() ? wc.getTitle() : "",
+      loading: Boolean(wc && !wc.isDestroyed() && wc.isLoadingMainFrame()) };
+  }
+  listTabs(): BrowserTabInfo[] { return [...this.tabs.values()].map((tab) => this.info(tab)); }
+  getTabsState(): BrowserTabsState { return { activeTabId: this.activeId, tabs: this.listTabs() }; }
+  getTabHost(id: string): BrowserPageHost | null { return this.tabs.get(id)?.surface ?? null; }
+  private emitTabs(): void { this.onTabsChanged?.(this.getTabsState()); }
+
+  ensureTab(options: BrowserOpenOptions = {}): BrowserTabInfo {
+    if (!this.win || this.win.isDestroyed()) throw new Error("MyBuddy 浏览器尚未挂载");
+    const key = options.key || "legacy";
+    const existing = [...this.tabs.values()].find((tab) => tab.key === key && tab.taskId === options.taskId);
+    if (existing) {
+      if (options.activate !== false) this.selectTab(existing.id);
+      return this.info(existing);
+    }
+    return this.createTab({ ...options, key });
+  }
+
+  private createTab(options: BrowserOpenOptions, preferences?: Electron.WebPreferences, openerTabId?: string, webContents?: Electron.WebContents): BrowserTabInfo {
+    const surface = new BrowserTabSurface(this.confirmUnload);
+    const tab: ManagedBrowserTab = { id: randomUUID(), key: options.key || randomUUID(),
+      taskId: options.taskId, gadgetId: options.gadgetId, openerTabId, surface };
+    surface.attach(this.win!, preferences, webContents);
+    for (const token of this.blockers) surface.addBlocker(token);
+    this.tabs.set(tab.id, tab);
+    surface.onUrlChanged = (url) => {
+      this.emitTabs();
+      if (this.activeId === tab.id) this.onUrlChanged?.(url);
+    };
+    surface.onSurfaceChanged = (change) => {
+      if (this.activeId !== tab.id) return;
+      this.selectionVersion++;
+      this.onSurfaceChanged?.({ ...change, generation: this.selectionVersion });
+    };
+    surface.onCaptureStateChanged = (state, error) => {
+      if (this.activeId === tab.id) this.onCaptureStateChanged?.(state, error);
+    };
+    surface.onSelection = (selection) => {
+      if (this.activeId === tab.id) this.onSelection?.({ ...selection,
+        artifactVersion: this.selectionVersion, surfaceGeneration: this.selectionVersion });
+    };
+    surface.onCreatePopup = (popupOptions) => {
+      const popup = this.createTab({ key: `popup:${randomUUID()}`, taskId: tab.taskId,
+        gadgetId: tab.gadgetId, activate: this.activeId === tab.id }, popupOptions.webPreferences, tab.id,
+        (popupOptions as Electron.BrowserWindowConstructorOptions & { webContents?: Electron.WebContents }).webContents);
+      return this.tabs.get(popup.id)!.surface.inspectionWebContents!;
+    };
+    const wc = surface.inspectionWebContents!;
+    wc.on("page-title-updated", () => this.emitTabs());
+    wc.on("did-start-loading", () => this.emitTabs());
+    wc.on("did-stop-loading", () => this.emitTabs());
+    wc.once("destroyed", () => this.removeTab(tab.id));
+    if (openerTabId) {
+      // Finish Chromium's native-child adoption handshake before publishing or
+      // selecting the new tab. Never replace options.webContents with a second
+      // newly allocated child: the opener is waiting for that exact native page.
+      setImmediate(() => {
+        if (!this.tabs.has(tab.id)) return;
+        if (options.activate !== false && this.activeId === openerTabId) this.selectTab(tab.id);
+        this.emitTabs();
+      });
+      return { id: tab.id, key: tab.key, taskId: tab.taskId, gadgetId: tab.gadgetId,
+        openerTabId, url: "", title: "", loading: true };
+    }
+    if (options.activate !== false) this.selectTab(tab.id);
+    this.emitTabs();
+    return this.info(tab);
+  }
+
+  markGadgetUpdated(gadgetId: string): void {
+    for (const tab of this.tabs.values()) if (tab.gadgetId === gadgetId) tab.dirty = true;
+  }
+
+  selectTab(id: string, refreshDirty = true): boolean {
+    const tab = this.tabs.get(id);
+    if (!tab) return false;
+    if (this.activeId !== id) {
+      this.active?.exitCapture();
+      this.active?.hide();
+      const oldWc = this.inspectionWebContents;
+      if (oldWc) runtimeProbeService.detach("browser", oldWc);
+      this.activeId = id;
+      const wc = this.inspectionWebContents;
+      if (wc) runtimeProbeService.attach("browser", wc);
+      this.selectionVersion++;
+      this.onSurfaceChanged?.({ generation: this.selectionVersion, reason: "select" });
+    }
+    if (this.lastBounds) tab.surface.setBounds(this.lastBounds);
+    if (!this.desiredVisible) tab.surface.hide();
+    if (refreshDirty && tab.dirty) { tab.dirty = false; tab.surface.hardReload(); }
+    this.emitTabs();
+    return true;
+  }
+
+  /** Explicit tab close honors beforeunload; a denied close keeps its tab. */
+  closeTab(id: string): void {
+    const wc = this.tabs.get(id)?.surface.inspectionWebContents;
+    if (wc && !wc.isDestroyed()) wc.close({ waitForBeforeUnload: true });
+  }
+
+  private removeTab(id: string): void {
+    const tab = this.tabs.get(id);
+    if (!tab) return;
+    this.tabs.delete(id);
+    tab.surface.dispose();
+    if (this.activeId === id) {
+      this.activeId = null;
+      const remaining = [...this.tabs.values()];
+      const next = remaining.filter((candidate) => candidate.taskId === tab.taskId).at(-1);
+      if (next) this.selectTab(next.id);
+      else { this.selectionVersion++; this.onSurfaceChanged?.({ generation: this.selectionVersion, reason: "close" }); }
+    }
+    this.emitTabs();
+  }
+
+  open(url: string, options?: BrowserOpenOptions): void {
+    if (!this.win) return;
+    if (!url) { this.close(); return; }
+    let tab: ManagedBrowserTab | undefined;
+    if (options?.key || options?.taskId) {
+      const info = this.ensureTab({ ...options, activate: false });
+      tab = this.tabs.get(info.id);
+    } else {
+      if (!this.active) this.ensureTab({ key: "legacy" });
+      tab = this.tabs.get(this.activeId ?? "");
+    }
+    if (!tab) return;
+    if (options?.activate !== false) this.selectTab(tab.id, false);
+    const reload = options?.reload || tab.dirty;
+    tab.dirty = false;
+    tab.surface.open(url, { reload, preserveDocument: Boolean(options?.key) });
+    if (tab.id !== this.activeId) tab.surface.hide();
+    this.emitTabs();
+  }
+
+  /** Compatibility: old browser.close() means dismiss panel, never destroy tabs. */
+  close(): void { this.hide(); this.active?.exitCapture(); }
+  hide(): void { this.desiredVisible = false; this.active?.hide(); }
+  show(): void { this.desiredVisible = true; this.active?.show(); }
+  setBounds(rect: Rectangle): void {
+    this.lastBounds = rect;
+    this.desiredVisible = rect.width >= 8 && rect.height >= 8;
+    this.active?.setBounds(rect);
+  }
+  addBlocker(token: string): void { this.blockers.add(token); for (const tab of this.tabs.values()) tab.surface.addBlocker(token); }
+  removeBlocker(token: string): void { this.blockers.delete(token); for (const tab of this.tabs.values()) tab.surface.removeBlocker(token); }
+  navigate(url: string): void { this.active?.navigate(url); }
+  navigateForAutomation(url: string, signal?: AbortSignal, options?: { reload?: boolean }): Promise<void> {
+    const surface = this.active;
+    if (!surface) return Promise.reject(new Error("MyBuddy 浏览器尚未挂载"));
+    return surface.navigateForAutomation(url, signal, options);
+  }
+  captureScreenshot(options: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<Uint8Array> {
+    const surface = this.active;
+    if (!surface) return Promise.reject(new Error("浏览器没有可截图的页面"));
+    return surface.captureScreenshot(options);
+  }
+  reload(): void { this.hardReload(); }
+  hardReload(): void {
+    const tab = this.tabs.get(this.activeId ?? "");
+    if (tab) { tab.dirty = false; tab.surface.hardReload(); }
+  }
+  back(): void { this.active?.back(); }
+  forward(): void { this.active?.forward(); }
+  async enterCapture(): Promise<void> { await this.active?.enterCapture(); }
+  exitCapture(): void { this.active?.exitCapture(); }
+  async resumeCapture(): Promise<void> { await this.active?.resumeCapture(); }
+  async pauseCapture(): Promise<void> { await this.active?.pauseCapture(); }
+  async readDocumentHtml(): Promise<string | null> { return await this.active?.readDocumentHtml() ?? null; }
+  dispose(): void {
+    const tabs = [...this.tabs.values()];
+    this.tabs.clear(); this.activeId = null;
+    for (const tab of tabs) tab.surface.dispose();
+    this.win = null; this.lastBounds = null; this.desiredVisible = false; this.blockers.clear();
+    this.selectionVersion++;
+    this.onSurfaceChanged?.({ generation: this.selectionVersion, reason: "destroy" });
+    this.emitTabs();
+  }
+}
+
+export const browserHost = new BrowserHost();

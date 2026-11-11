@@ -9,7 +9,7 @@ import GadgetActionMenu from "./GadgetActionMenu";
 import GadgetMoveDialog from "./GadgetMoveDialog";
 import GadgetCreateDialog from "./GadgetCreateDialog";
 import GadgetSourceDialog from "./GadgetSourceDialog";
-import { openGadgetBrowser } from "@/lib/gadgetBrowser";
+import { gadgetBrowserTarget, openGadgetBrowser } from "@/lib/gadgetBrowser";
 
 interface Props {
   scope: GadgetScope;
@@ -94,12 +94,13 @@ export default function GadgetSection({ scope, includeInherited = false, title, 
   }, [items, query, key, openActionId, actionAnchor]);
 
   const run = async (item: GadgetListItem, action: "start" | "stop" | "restart"): Promise<void> => {
+    const isCurrent = gadgetBrowserTarget();
     try {
       setBusyId(item.id);
       const state = await gadgetApi()[action](item.id);
       if (state.status === "error") throw new Error(state.error || "Gadget 启动失败");
       await reload();
-      if (action !== "stop" && state.url) openGadgetBrowser(state.url);
+      if (action !== "stop" && state.url && isCurrent()) openGadgetBrowser(item.id, state.url);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -415,7 +416,7 @@ export default function GadgetSection({ scope, includeInherited = false, title, 
               setError(item.runtime.error || "Gadget 启动失败");
               return;
             }
-            if (item.runtime.url) openGadgetBrowser(item.runtime.url);
+            if (item.runtime.url) openGadgetBrowser(item.id, item.runtime.url);
           }}
         />
       )}

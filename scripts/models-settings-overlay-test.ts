@@ -156,7 +156,9 @@ check(
 );
 check(
   "browserFrameKey bump reloads the current page",
-  browserView.includes("else browser.hardReload()") && browserView.includes("[activeUrl, browserFrameKey]"),
+  browserView.includes("prev.frame !== browserFrameKey")
+    && browserView.includes("browser.open(next, { key,")
+    && browserView.includes("reload });"),
 );
 
 const failed = results.filter((item) => !item.pass);

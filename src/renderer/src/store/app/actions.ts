@@ -308,7 +308,7 @@ export interface AppActions {
   setPanelWidth: (w: number) => void;
   togglePanelExpanded: () => void;
   showBrowser: () => void;
-  setBrowserUrl: (url: string | null) => void;
+  setBrowserUrl: (url: string | null, gadgetId?: string) => void;
   navigateBrowser: () => void;
   archiveSpace: (id: string) => Promise<void>;
   restoreSpace: (id: string) => Promise<void>;

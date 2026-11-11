@@ -22,7 +22,8 @@
     "setActiveTeam": "Select a stable team identity, preserving independent personal/team drafts and conversation scopes.",
     "openSubagentView": "Open a specific subagent conversation while retaining its parent task navigation.",
     "closeSubagentView": "Return from the subagent conversation to its parent task without deleting the run.",
-    "setBotComposerSelection": "Update the active Bot or team composer model, experts, skills, MCP and connectors without changing ordinary task selection."
+    "setBotComposerSelection": "Update the active Bot or team composer model, experts, skills, MCP and connectors without changing ordinary task selection.",
+    "setHistoricalTeamWork": "Select or clear a runtime-only historical team Work viewer and advance the navigation intent version without changing composer or active team ownership."
   },
   "publicExports": {
     "CreateRelatedTaskOptions": "type",
@@ -630,6 +631,11 @@
     "botAttachmentDrafts": "Bot attachments: durable per-Bot file drafts survive switching and lost acknowledgements without crossing Task context.",
     "activeTeam": "Explicit selected team workspace scope; kept separate from personal Bot conversations and drafts.",
     "subagentView": "Independent subagent conversation navigation retains parent task and completed subagent visibility.",
-    "botComposerDrafts": "Per-Bot and per-team composer capability drafts, isolated from ordinary task drafts and other Bot identities."
+    "botComposerDrafts": "Per-Bot and per-team composer capability drafts, isolated from ordinary task drafts and other Bot identities.",
+    "browserGadgetByTask": "Retain explicit Gadget identity per task/home so a new runtime port updates only its owned browser entry.",
+    "browserNavigationVersion": "Guard asynchronous Gadget open results against newer explicit renderer navigation.",
+    "browserTabByTask": "Retain selected native tab identity per task/home across internal navigation, panel dismissal and task switches.",
+    "historicalTeamWork": "Runtime-only historical team Work viewer; never becomes a composer selection or team identity and clears when navigation changes.",
+    "botNavigationEpoch": "Monotonic Bot/team navigation intent version; invalidates delayed historical Work navigation when the user changes page, Bot, team or selected Work."
   }
 }

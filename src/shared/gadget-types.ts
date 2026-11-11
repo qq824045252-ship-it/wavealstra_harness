@@ -33,6 +33,19 @@ export interface GadgetDescriptor {
   updatedAt: number;
 }
 
+export interface GadgetRuntimeDiagnostics {
+  reason: "explicit_stop" | "restart" | "unexpected_exit" | "startup_failure" | "health_failure";
+  occurredAt: number;
+  exitedAt?: number;
+  exitCode?: number | null;
+  signal?: string | null;
+  stderr?: string;
+  pid?: number;
+  /** Historical identity only; never a current running URL. */
+  url?: string;
+  error?: string;
+}
+
 export interface GadgetRuntimeState {
   gadgetId: string;
   status: GadgetRuntimeStatus;
@@ -41,6 +54,7 @@ export interface GadgetRuntimeState {
   pid?: number;
   startedAt?: number;
   error?: string;
+  diagnostics?: GadgetRuntimeDiagnostics;
 }
 
 export interface GadgetSourceFile {

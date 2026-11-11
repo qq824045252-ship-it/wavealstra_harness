@@ -1,4 +1,6 @@
-import type { BrowserHost } from "../browser/BrowserHost";
+import { GadgetPreviewUnavailableError, type GadgetBrowserPreview } from "../gadget/GadgetService";
+import { browserTabKey, type BrowserTabInfo } from "../../shared/browser-tabs";
+import type { BrowserHost, BrowserPageHost } from "../browser/BrowserHost";
 import { BrowserContentService } from "../browser/BrowserContentService";
 import { PageCaptureError } from "../artifact/PageInspectionService";
 import { randomUUID } from "node:crypto";
@@ -31,19 +33,27 @@ export class BrowserAutomationError extends Error {
 
 export interface BrowserExecInput {
   action: BrowserExecAction;
+  gadgetId?: string;
+  tabId?: string;
   url?: string;
   selector?: string;
   text?: string;
   key?: string;
   maxChars?: number;
+  reload?: boolean;
 }
 export interface BrowserExecOutput {
   action: BrowserExecAction;
+  gadgetId?: string;
+  tabId?: string;
   url?: string;
   title?: string;
   text?: string;
   detail?: string;
   screenshot?: Uint8Array;
+  recoveredFromUrl?: string;
+  openedTabId?: string;
+  tabs?: BrowserTabInfo[];
   /** Observed targets, never guessed selectors or editable values. */
   elements?: Array<{ selector: string; tag: string; label: string; type?: string }>;
   elementsTruncated?: boolean;
@@ -85,25 +95,39 @@ function jsFailure(error: unknown, action: BrowserExecAction, url?: string): Bro
 }
 
 export class BrowserAutomationService {
-  private readonly content: BrowserContentService;
   private readonly observationSlot = `__mybuddy_${randomUUID().replaceAll("-", "")}`;
   private readonly observations = new Map<string, { version: number; webContentsId: number; url: string; documentRevision: string }>();
 
-  constructor(private readonly host: () => BrowserHost | null) {
-    this.content = new BrowserContentService(host);
+  private readonly ownedTabs = new Map<string, string>();
+  private readonly navigationRequests = new Map<string, number>();
+  private readonly sourceRevisions = new Map<string, string>();
+  private resolveGadgetPreview?: (url: string, taskId: string, gadgetId?: string) => Promise<GadgetBrowserPreview | null>;
+
+  setGadgetPreviewResolver(resolve: (url: string, taskId: string, gadgetId?: string) => Promise<GadgetBrowserPreview | null>): void {
+    this.resolveGadgetPreview = resolve;
   }
+
+  constructor(private readonly host: () => BrowserHost | null) {}
 
   get available(): boolean {
-    return Boolean(this.host()?.inspectionWebContents);
+    return Boolean(this.host()?.attached);
   }
 
-  async execute(input: BrowserExecInput, signal?: AbortSignal): Promise<BrowserExecOutput> {
+  async execute(input: BrowserExecInput, signal?: AbortSignal, context?: { taskId: string }): Promise<BrowserExecOutput> {
     // Validate the complete request before touching the browser surface. A durable
     // checkpoint written here proves this exact invocation never began its action.
     try {
       if (!["status", "navigate", "read", "click", "fill", "press", "screenshot"].includes(input.action)) {
         throw new BrowserAutomationError("INVALID_INPUT", `不支持的 browser_exec action：${String(input.action)}`);
       }
+      if (input.gadgetId !== undefined) {
+        requireShort(input.gadgetId, "gadgetId", 200);
+        if (input.action !== "navigate") throw new BrowserAutomationError("INVALID_INPUT", "gadgetId 仅用于 navigate；其它操作使用 tabId");
+      }
+      if (input.reload !== undefined && (typeof input.reload !== "boolean" || input.action !== "navigate")) {
+        throw new BrowserAutomationError("INVALID_INPUT", "reload 仅用于 navigate，且必须是布尔值");
+      }
+      if (input.tabId !== undefined) requireShort(input.tabId, "tabId", 200);
       if (input.action === "navigate") assertBrowserUrl(requireShort(input.url, "url", 2_000));
       if (["click", "fill", "press"].includes(input.action)) requireShort(input.selector, "selector", 1_000);
       if (input.action === "press") requireShort(input.key, "key", 60);
@@ -114,33 +138,72 @@ export class BrowserAutomationService {
       await recordHostToolNotStarted("browser_exec");
       throw error;
     }
-    return this.executeManaged(input, signal);
+    return this.executeManaged(input, signal, context);
   }
 
-  private async executeManaged(input: BrowserExecInput, signal?: AbortSignal): Promise<BrowserExecOutput> {
+  private async executeManaged(input: BrowserExecInput, signal?: AbortSignal, context?: { taskId: string }): Promise<BrowserExecOutput> {
     if (signal?.aborted) throw new DOMException("浏览器操作已取消", "AbortError");
-    const host = this.host();
-    const wc = host?.inspectionWebContents;
-    if (!host || !wc) throw new BrowserAutomationError("HOST_UNAVAILABLE", "MyBuddy 浏览器尚未挂载");
+    const browser = this.host();
+    if (!browser || !browser.attached) throw new BrowserAutomationError("HOST_UNAVAILABLE", "MyBuddy 浏览器尚未挂载");
     const invocation = currentDurableInvocation();
-    const owner = invocation ? `${invocation.execution.taskId}:${invocation.native.conversationId}` : "direct-host-entry";
-    const remembered = this.observations.get(owner);
-    if (["click", "fill", "press"].includes(input.action) && remembered
-      && (remembered.version !== host.captureVersion || remembered.webContentsId !== wc.id || remembered.url !== wc.getURL()
-        || remembered.documentRevision !== await this.documentRevision(wc))) {
-      throw new BrowserAutomationError("SURFACE_CHANGED", "读取后浏览器页面、导航或焦点已经变化，请重新读取后再操作");
-    }
-    if (input.action === "status") {
-      return { action: input.action, url: host.url || undefined, detail: host.url ? "ready" : "idle" };
-    }
+    const taskId = context?.taskId ?? invocation?.execution.taskId;
+    if (input.gadgetId && (!taskId || !this.resolveGadgetPreview)) throw new BrowserAutomationError("INVALID_INPUT", "Gadget 导航需要当前任务及 Gadget 服务");
+    const owner = invocation ? `${invocation.execution.taskId}:${invocation.native.conversationId}` : taskId ?? "direct-host-entry";
+    const tabs = taskId ? browser.listTabs().filter(tab => tab.taskId === taskId) : [];
+    let tab = input.tabId ? tabs.find(tab => tab.id === input.tabId) : tabs.find(tab => tab.id === this.ownedTabs.get(owner));
+    if (input.tabId && !tab) throw new BrowserAutomationError("PAGE_UNAVAILABLE", "标签页已关闭或不属于当前任务，请重新导航", { tabId: input.tabId });
     if (input.action === "navigate") {
       this.observations.delete(owner);
-      const target = assertBrowserUrl(requireShort(input.url, "url", 2_000));
+      const requested = assertBrowserUrl(requireShort(input.url, "url", 2_000));
+      let target = requested;
+      let preview: GadgetBrowserPreview | null = null;
+      let page: BrowserPageHost | null = tab ? browser.getTabHost(tab.id) : taskId ? null : browser;
+      const previousVersion = page?.captureVersion;
+      const versions = new Map(tabs.map(value => [value.id, browser.getTabHost(value.id)?.captureVersion]));
+      const navigationOwner = taskId ?? owner;
+      const request = (this.navigationRequests.get(navigationOwner) ?? 0) + 1;
+      this.navigationRequests.set(navigationOwner, request);
       try {
-        await host.navigateForAutomation(target, signal);
-        return { action: input.action, url: wc.getURL(), title: await wc.getTitle() };
+        if (taskId && this.resolveGadgetPreview) preview = await this.resolveGadgetPreview(requested, taskId, input.gadgetId);
+        if (signal?.aborted) throw new DOMException("浏览器操作已取消", "AbortError");
+        if (this.navigationRequests.get(navigationOwner) !== request || page && page.captureVersion !== previousVersion) {
+          throw new BrowserAutomationError("SURFACE_CHANGED", "恢复预览期间页面已变化，请重新读取后再导航");
+        }
+        target = preview?.url ?? requested;
+        if (taskId && !input.tabId) {
+          const key = browserTabKey(target, preview?.gadgetId);
+          const existing = browser.listTabs().find(value => value.taskId === taskId && value.key === key);
+          if (existing && (!versions.has(existing.id) || browser.getTabHost(existing.id)?.captureVersion !== versions.get(existing.id))) {
+            throw new BrowserAutomationError("SURFACE_CHANGED", "目标标签在恢复预览期间变化，请重新读取后再导航");
+          }
+          tab = browser.ensureTab({ key, taskId, gadgetId: preview?.gadgetId, activate: false });
+        }
+        if (tab) page = browser.getTabHost(tab.id);
+        if (!page?.inspectionWebContents) throw new BrowserAutomationError("HOST_UNAVAILABLE", "MyBuddy 浏览器尚未挂载");
+        const previousRevision = tab && this.sourceRevisions.get(tab.id);
+        let revision = preview ? `gadget:${preview.revision}` : undefined;
+        if (!preview && target.startsWith("file:")) {
+          const file = statSync(fileURLToPath(new URL(target)), { bigint: true });
+          revision = `file:${file.mtimeNs}:${file.ctimeNs}:${file.size}`;
+        }
+        const reload = input.reload === true || revision !== undefined && previousRevision !== revision;
+        await page.navigateForAutomation(target, signal, { reload });
+        if (this.navigationRequests.get(navigationOwner) !== request) throw new BrowserAutomationError("SURFACE_CHANGED", "导航已被较新的浏览器请求替代，请重新读取");
+        if (taskId && tab) this.ownedTabs.set(owner, tab.id);
+        if (revision && tab) this.sourceRevisions.set(tab.id, revision);
+        const current = page.inspectionWebContents;
+        if (!current || current.isDestroyed()) throw new BrowserAutomationError("PAGE_UNAVAILABLE", "标签页已关闭");
+        return { action: input.action, tabId: tab?.id, url: current.getURL(), title: current.getTitle(),
+          ...(preview ? { gadgetId: preview.gadgetId, recoveredFromUrl: preview.previousUrl } : {}) };
       } catch (error) {
         if (error instanceof Error && error.name === "AbortError") throw error;
+        if (error instanceof BrowserAutomationError) throw error;
+        if (error instanceof GadgetPreviewUnavailableError) {
+          throw new BrowserAutomationError("NAVIGATION_FAILED", `${error.message}。源码没有重放，浏览器操作没有执行。`, {
+            targetUrl: requested, currentUrl: page?.url, reason: "gadget-preview-unavailable",
+            gadgetId: error.gadgetId, runtime: error.runtime,
+          });
+        }
         const cause = error instanceof Error ? error.message : String(error);
         const refusedLocalServer = ["localhost", "127.0.0.1", "[::1]"].includes(new URL(target).hostname)
           && /ERR_CONNECTION_REFUSED|ECONNREFUSED/.test(cause);
@@ -148,17 +211,38 @@ export class BrowserAutomationService {
           ? "本地预览服务未监听该端口。若这是 Gadget，请用 gadget_open 重新取得当前 URL；不要反复重试旧端口或改用外部浏览器。普通本地 HTML 可直接用 file:// URL 预览。"
           : "请先确认当前页面和目标地址，再决定是否重试；无需切换外部浏览器。";
         throw new BrowserAutomationError("NAVIGATION_FAILED", `内置浏览器导航失败：${cause}。${guidance}`, {
-          targetUrl: target,
-          currentUrl: safeUrl(wc),
-          cause,
+          targetUrl: target, currentUrl: page?.url, cause,
           reason: refusedLocalServer ? "local-server-unavailable" : "navigation-failed",
         });
       }
     }
+    if (input.action === "status" && taskId) return { action: input.action, tabId: tab?.id, url: tab?.url || undefined, tabs, detail: tab?.url ? "ready" : "idle" };
+    const page = taskId ? tab && browser.getTabHost(tab.id) : browser;
+    if (!page) throw new BrowserAutomationError("PAGE_UNAVAILABLE", "当前任务没有可用标签页，请 navigate 打开页面；不会自动接管其它任务的页面");
+    const before = new Set(browser.listTabs().map(value => value.id));
+    const result = await this.executeOnPage(input, signal, page, owner);
+    // A popup opened by this exact document is a new retained page. Follow it
+    // only for this task's next observation; never redirect another task or UI.
+    const popup = ["click", "press"].includes(input.action) && taskId && tab && browser.listTabs().find(value => !before.has(value.id)
+      && value.taskId === taskId && value.openerTabId === tab!.id);
+    if (taskId && tab) this.ownedTabs.set(owner, popup ? popup.id : tab.id);
+    return { ...result, tabId: tab?.id, ...(popup ? { openedTabId: popup.id, detail: `${result.detail ?? ""}；已打开新标签 ${popup.id}，后续读取使用新标签` } : {}) };
+  }
+
+  private async executeOnPage(input: BrowserExecInput, signal: AbortSignal | undefined, host: BrowserPageHost, owner: string): Promise<BrowserExecOutput> {
+    const wc = host.inspectionWebContents;
+    if (!wc || wc.isDestroyed()) throw new BrowserAutomationError("PAGE_UNAVAILABLE", "标签页已关闭");
+    const remembered = this.observations.get(owner);
+    if (["click", "fill", "press"].includes(input.action) && remembered
+      && (remembered.version !== host.captureVersion || remembered.webContentsId !== wc.id || remembered.url !== wc.getURL()
+        || remembered.documentRevision !== await this.documentRevision(wc))) {
+      throw new BrowserAutomationError("SURFACE_CHANGED", "读取后浏览器页面、导航或焦点已经变化，请重新读取后再操作");
+    }
+    if (input.action === "status") return { action: input.action, url: host.url || undefined, detail: host.url ? "ready" : "idle" };
     if (input.action === "read") {
       const documentRevision = await this.documentRevision(wc);
       let page;
-      try { page = await this.content.getCurrentPage(); }
+      try { page = await new BrowserContentService(() => host).getCurrentPage(); }
       catch (error) { throw jsFailure(error, input.action, safeUrl(wc)); }
       if (!page) throw new BrowserAutomationError("PAGE_UNAVAILABLE", "浏览器没有可读取的页面", { currentUrl: safeUrl(wc) });
       const max = Math.max(1_000, Math.min(100_000, Math.round(input.maxChars ?? 30_000)));

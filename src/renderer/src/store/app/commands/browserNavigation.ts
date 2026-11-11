@@ -31,13 +31,19 @@ export function createBrowserNavigationActions(
       });
     },
 
-    setBrowserUrl: (url) => {
+    setBrowserUrl: (url, gadgetId) => {
       const key = get().activeTaskId ?? HOME_BROWSER_KEY;
+      const tabs = { ...get().browserTabByTask };
+      delete tabs[key];
+      const bindings = { ...get().browserGadgetByTask };
+      delete bindings[key];
+      if (url && gadgetId) bindings[key] = { gadgetId, url };
+      const identity = { browserTabByTask: tabs, browserGadgetByTask: bindings, browserNavigationVersion: get().browserNavigationVersion + 1 };
       if (!url) {
         set((s) => {
           const urls = { ...s.browserUrlByTask };
           delete urls[key];
-          return { browserUrlByTask: urls, browserUrlInput: "" };
+          return { ...identity, browserUrlByTask: urls, browserUrlInput: "" };
         });
         return;
       }
@@ -47,6 +53,7 @@ export function createBrowserNavigationActions(
           ? currentMode
           : get().browserPreviousPanelMode;
       set((s) => ({
+        ...identity,
         browserUrlByTask: { ...s.browserUrlByTask, [key]: url },
         browserUrlInput: url,
         browserPreviousPanelMode: previousMode ?? "gadgets",

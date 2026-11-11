@@ -1,3 +1,4 @@
+import type { BrowserOpenOptions, BrowserTabInfo, BrowserTabsState } from "../shared/browser-tabs";
 import type { BrowserConsoleEventDto, BrowserConsoleSnapshotDto, BrowserConsoleTarget } from "../shared/browser-console";
 import type { ArchivedContentDeletionRequest, ArchivedContentDeletionResult, TrashedTaskDto } from "../shared/archive-deletion";
 import type { MemoryCandidateDto, MemoryCoreProfileDto, MemoryCreateRequest, MemoryDismissedProjectionDto, MemoryKernelStats, MemoryListRequest, MemoryProjectionProposalDto, MemoryRecordDto, MemoryRevisionDto, MemoryScenarioDto, MemoryScopeType, MemorySearchHit, MemorySearchRequest, MemoryTurnDto, MemoryTurnListRequest, MemorySkillCandidateDto, MemorySkillCandidateStatus, MemorySkillEffectivenessDto, MemorySkillEffectivenessSummaryDto, MemorySkillFeedbackKind, MemorySkillRevisionCandidateDto, MemorySkillRevisionStatus, MemoryUpdateRequest } from "../shared/memory-kernel";
@@ -658,7 +659,12 @@ export interface PreloadApi {
   };
   /** 扩展栏浏览器 */
   browser: {
-    open: (url: string, options?: { reload?: boolean }) => void;
+    getTabs: () => Promise<BrowserTabsState>;
+    ensureTab: (options: BrowserOpenOptions) => Promise<BrowserTabInfo>;
+    selectTab: (id: string) => void;
+    closeTab: (id: string) => void;
+    onTabsChanged: (callback: (state: BrowserTabsState) => void) => () => void;
+    open: (url: string, options?: BrowserOpenOptions) => void;
     close: () => void;
     navigate: (url: string) => void;
     reload: () => void;

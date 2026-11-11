@@ -1,8 +1,8 @@
 {
   "scope": "src/main/**",
-  "mainRegistrations": 511,
-  "allRegistrations": 522,
-  "uniqueChannels": 511,
+  "mainRegistrations": 519,
+  "allRegistrations": 531,
+  "uniqueChannels": 519,
   "channels": [
     "agent:abort",
     "agent:abortCompaction",
@@ -26,6 +26,7 @@
     "agent:generateExpertAuthoringDraft",
     "agent:generateSkillAuthoringDraft",
     "agent:generateSkillImprovementDraft",
+    "agent:generateTaskTitle",
     "agent:getAppSettings",
     "agent:getAuthPath",
     "agent:getBuiltinCapabilities",
@@ -68,6 +69,7 @@
     "agent:listRuntimeContextSnapshots",
     "agent:listSkills",
     "agent:listSystemFonts",
+    "agent:listTaskUserQuestions",
     "agent:listUserFonts",
     "agent:loadTaskHistory",
     "agent:login",
@@ -176,6 +178,8 @@
     "bot-work:workspace-navigation",
     "browser:addBlocker",
     "browser:back",
+    "browser:closeTab",
+    "browser:ensureTab",
     "browser:forward",
     "browser:hardReload",
     "browser:hide",
@@ -184,8 +188,10 @@
     "browser:openExternal",
     "browser:reload",
     "browser:removeBlocker",
+    "browser:selectTab",
     "browser:setRect",
     "browser:show",
+    "browser:tabs",
     "btw:abort",
     "btw:close",
     "btw:keepalive",
@@ -295,6 +301,7 @@
     "gadget:readSource",
     "gadget:restart",
     "gadget:saveAsBlueprint",
+    "gadget:saveToTaskDirectory",
     "gadget:start",
     "gadget:stop",
     "gadget:update",
@@ -534,7 +541,7 @@
       {
         "channel": "artifact-domain:get",
         "entries": [
-          "src/main/index.ts:2230",
+          "src/main/index.ts:2244",
           "scripts/wave5-real-open-e2e.ts:304"
         ],
         "foreign": [
@@ -544,7 +551,7 @@
       {
         "channel": "artifact-domain:list",
         "entries": [
-          "src/main/index.ts:2234",
+          "src/main/index.ts:2248",
           "scripts/wave5-real-open-e2e.ts:300"
         ],
         "foreign": [
@@ -554,7 +561,7 @@
       {
         "channel": "artifact-domain:snapshot",
         "entries": [
-          "src/main/index.ts:2238",
+          "src/main/index.ts:2252",
           "scripts/wave5-real-open-e2e.ts:297"
         ],
         "foreign": [
@@ -564,7 +571,7 @@
       {
         "channel": "artifact-domain:register",
         "entries": [
-          "src/main/index.ts:2249",
+          "src/main/index.ts:2263",
           "scripts/wave5-real-open-e2e.ts:296"
         ],
         "foreign": [
@@ -574,7 +581,7 @@
       {
         "channel": "artifact-domain:readContent",
         "entries": [
-          "src/main/index.ts:2253",
+          "src/main/index.ts:2267",
           "scripts/wave5-real-open-e2e.ts:292"
         ],
         "foreign": [
@@ -584,7 +591,7 @@
       {
         "channel": "artifact-domain:removeTask",
         "entries": [
-          "src/main/index.ts:2258",
+          "src/main/index.ts:2272",
           "scripts/wave5-real-open-e2e.ts:307"
         ],
         "foreign": [
@@ -594,7 +601,7 @@
       {
         "channel": "artifact-domain:remove",
         "entries": [
-          "src/main/index.ts:2262",
+          "src/main/index.ts:2276",
           "scripts/wave5-real-open-e2e.ts:310"
         ],
         "foreign": [

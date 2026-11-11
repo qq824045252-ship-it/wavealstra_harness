@@ -316,6 +316,11 @@ export const RuntimeConsoleIpc = {
  */
 export const BrowserIpc = {
   open: "browser:open",
+  tabs: "browser:tabs",
+  ensureTab: "browser:ensureTab",
+  selectTab: "browser:selectTab",
+  closeTab: "browser:closeTab",
+  tabsChanged: "browser:tabsChanged",
   navigate: "browser:navigate",
   reload: "browser:reload",
   hardReload: "browser:hardReload",

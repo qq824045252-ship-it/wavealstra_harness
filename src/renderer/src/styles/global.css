@@ -24708,3 +24708,12 @@ html[data-theme="dark"] .chat-column.task-ambient[data-mode="general"] {
   .auto-freq-row input { max-width: 100%; box-sizing: border-box; }
   .auto-toast { max-width: calc(100% - 24px); white-space: normal; box-sizing: border-box; }
 }
+
+/* Managed native browser tabs: only the selected WCV is presented below. */
+.browser-tabs { display:flex; flex-shrink:0; align-items:center; gap:4px; padding:5px 8px 0; overflow-x:auto; background:var(--bg-panel); border-bottom:1px solid var(--border); }
+.browser-tab { display:flex; flex:0 1 190px; min-width:90px; max-width:230px; border:1px solid var(--border); border-radius:6px 6px 0 0; opacity:.7; }
+.browser-tab.active { opacity:1; background:var(--bg-hover); border-bottom-color:var(--fg); }
+.browser-tab > button { border:0; background:transparent; color:var(--fg); cursor:pointer; padding:7px 8px; }
+.browser-tab > [role="tab"] { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-align:left; font-size:12px; }
+.browser-tab > .browser-tab-close { flex:0 0 25px; padding:3px; }
+.browser-tab-new { border:0; background:transparent; color:var(--fg); cursor:pointer; font-size:19px; padding:2px 8px; }

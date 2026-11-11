@@ -24,6 +24,7 @@ function hostWith(options: { url?: string; loadError?: Error; captureError?: Err
   let url = options.url ?? "https://example.test/form";
   const sent: unknown[] = [];
   const wc = {
+    isDestroyed: () => false,
     loadURL: async (target: string) => { if (options.loadError) throw options.loadError; url = target; },
     getURL: () => url,
     getTitle: () => "Fixture",
@@ -32,6 +33,8 @@ function hostWith(options: { url?: string; loadError?: Error; captureError?: Err
     capturePage: async () => ({ isEmpty: () => false, toPNG: () => Buffer.from("png") }),
   };
   const host = {
+    attached: true,
+    listTabs: () => [],
     inspectionWebContents: wc,
     get url() { return url; },
     navigateForAutomation: (target: string) => wc.loadURL(target),

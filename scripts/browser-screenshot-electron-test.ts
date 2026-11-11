@@ -99,7 +99,7 @@ async function minimizeFixtureWindow(win: BrowserWindow): Promise<void> {
 }
 
 function assertOwnedWindows(win: BrowserWindow, host: BrowserHost) {
-  const parked = (host as unknown as { parkedScreenshotWindow: BrowserWindow | null }).parkedScreenshotWindow;
+  const parked = (host.getTabHost(host.activeTabId!) as unknown as { parkedScreenshotWindow: BrowserWindow | null }).parkedScreenshotWindow;
   const expected = parked ? [win, parked] : [win];
   assert.deepEqual(BrowserWindow.getAllWindows().map(window => window.id).sort(), expected.map(window => window.id).sort(), "capture owns at most one presenter");
   if (parked) {
@@ -111,7 +111,7 @@ function assertOwnedWindows(win: BrowserWindow, host: BrowserHost) {
 }
 
 async function queueSettled(host: BrowserHost) {
-  await (host as unknown as { screenshotQueue: Promise<void> }).screenshotQueue;
+  await (host.getTabHost(host.activeTabId!) as unknown as { screenshotQueue: Promise<void> }).screenshotQueue;
 }
 
 void (async () => {
@@ -183,7 +183,7 @@ void (async () => {
         assert.equal(f.view.getVisible(), f.host.visible, "temporary presenting view must return to product visibility");
         assertOwnedWindows(f.win, f.host);
         if (mode === "minimized") {
-          const parked = (f.host as unknown as { parkedScreenshotWindow: BrowserWindow }).parkedScreenshotWindow;
+          const parked = (f.host.getTabHost(f.host.activeTabId!) as unknown as { parkedScreenshotWindow: BrowserWindow }).parkedScreenshotWindow;
           presenterId ??= parked.id;
           assert.equal(parked.id, presenterId, "repeated minimized captures reuse the exact presenter");
         }
@@ -194,7 +194,7 @@ void (async () => {
         results.push({ mode, index, elapsedMs: Date.now() - started, ...image });
       }
       if (mode === "minimized") {
-        const parked = (f.host as unknown as { parkedScreenshotWindow: BrowserWindow | null }).parkedScreenshotWindow;
+        const parked = (f.host.getTabHost(f.host.activeTabId!) as unknown as { parkedScreenshotWindow: BrowserWindow | null }).parkedScreenshotWindow;
         assert(parked, "minimized captures retain their single empty presenter");
         f.win.restore();
         const deadline = Date.now() + 3000;

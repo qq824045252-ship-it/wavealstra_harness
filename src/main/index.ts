@@ -1,6 +1,7 @@
 import "./platform/credentials";
 import "./agent-environment";
 import "./officecli-environment";
+import type { BrowserOpenOptions } from "../shared/browser-tabs";
 import { ensureOfficeCliSkill } from "./skills/OfficeCliSkill";
 import { ProjectNotesIpc, type ProjectNoteSaveRequest } from "../shared/project-notes";
 import { ProjectNotesService } from "./project/ProjectNotesService";
@@ -663,6 +664,9 @@ function createWindow(initialTheme: AppTheme = "light"): void {
   browserHost.attach(win);
   uiAutomationService.setBrowserHost(browserHost);
   bindBrowserBridge(browserHost); // WebAccess/Browser 收敛 B：注入浏览器只读桥
+  browserHost.onTabsChanged = (state) => {
+    if (!win.isDestroyed()) win.webContents.send(BrowserIpc.tabsChanged, state);
+  };
   browserHost.onUrlChanged = (url) => {
     if (!win.isDestroyed()) win.webContents.send(BrowserIpc.urlChanged, url);
   };
@@ -2344,7 +2348,11 @@ function registerIpc(): void {
   });
 
   // 扩展栏浏览器 IPC
-  ipcMain.on(BrowserIpc.open, (_e, url: string, options?: { reload?: boolean }) => browserHost.open(url ?? "", options));
+  ipcMain.on(BrowserIpc.open, (_e, url: string, options?: BrowserOpenOptions) => browserHost.open(url ?? "", options));
+  ipcMain.handle(BrowserIpc.tabs, () => browserHost.getTabsState());
+  ipcMain.handle(BrowserIpc.ensureTab, (_e, options: BrowserOpenOptions) => browserHost.ensureTab(options));
+  ipcMain.on(BrowserIpc.selectTab, (_e, id: string) => browserHost.selectTab(id));
+  ipcMain.on(BrowserIpc.closeTab, (_e, id: string) => browserHost.closeTab(id));
   ipcMain.on(BrowserIpc.navigate, (_e, url: string) => browserHost.navigate(url ?? ""));
   ipcMain.on(BrowserIpc.reload, () => browserHost.reload());
   ipcMain.on(BrowserIpc.hardReload, () => browserHost.hardReload());
@@ -3198,7 +3206,10 @@ app.whenReady().then(async () => {
     taskWorkspaceId: (id) => db.getTask(id)?.spaceId ?? null,
     resolveTaskDirectory: (id) => agentService.resolveTaskExecutionWorkspaceCwd(id),
     workspaceAncestors: (id) => db.getSpaceAncestors(id).filter((space) => !space.effectiveArchived).map((space) => space.id),
-    onChanged: (event) => broadcastToWindows(GadgetIpc.changed, event),
+    onChanged: (event) => {
+      if (event.type === "updated" && event.sourceChanged) browserHost.markGadgetUpdated(event.gadgetId);
+      broadcastToWindows(GadgetIpc.changed, event);
+    },
     artifacts: {
       read: async (artifactId) => {
         const descriptor = artifactDomainService.get(artifactId);

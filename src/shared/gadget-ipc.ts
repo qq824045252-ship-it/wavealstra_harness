@@ -34,6 +34,8 @@ export interface GadgetChangedEvent {
   type: "created" | "updated" | "runtime" | "deleted" | "open-requested";
   gadgetId: string;
   taskId?: string;
+  /** Only source writes invalidate retained browser documents. */
+  sourceChanged?: boolean;
 }
 
 export interface GadgetListRequest {

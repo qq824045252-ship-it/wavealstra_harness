@@ -41,7 +41,25 @@ export interface GadgetServiceDependencies {
   onChanged?(event: GadgetChangedEvent): void;
 }
 
+export interface GadgetBrowserPreview {
+  gadgetId: string;
+  url: string;
+  previousUrl?: string;
+  revision: string;
+  runtime: GadgetRuntimeState;
+}
+
+export class GadgetPreviewUnavailableError extends Error {
+  constructor(public readonly gadgetId: string, public readonly runtime: GadgetRuntimeState) {
+    super(`Gadget 预览无法启动：${runtime.error ?? runtime.status}`);
+    this.name = "GadgetPreviewUnavailableError";
+  }
+}
+
 export class GadgetService {
+  /** Only origins actually issued by this process are recoverable. Ambiguous
+   * recycled ports fail closed instead of opening another Gadget. */
+  private readonly previewOwners = new Map<string, string | null>();
   constructor(private readonly deps: GadgetServiceDependencies) {
     const descriptors = deps.repository.list();
     deps.storage.reconcile(new Set(descriptors.map((item) => item.id)));
@@ -188,7 +206,7 @@ export class GadgetService {
     const updated = { ...current, updatedAt: Date.now() };
     const snapshot = this.deps.storage.updateSource(request, () => this.deps.repository.update(updated));
     this.deps.registry.upsert(updated);
-    this.emitChanged({ type: "updated", gadgetId: current.id });
+    this.emitChanged({ type: "updated", gadgetId: current.id, sourceChanged: true });
     return snapshot;
   }
 
@@ -250,8 +268,53 @@ export class GadgetService {
 
   async start(id: string): Promise<GadgetRuntimeState> {
     const state = await this.deps.runtime.start(this.require(id));
+    this.rememberPreview(state);
     this.emitChanged({ type: "runtime", gadgetId: id });
     return state;
+  }
+
+  /** Resolve only an observed Gadget origin, within the calling task's scope.
+   * Used for explicit browser navigation, never for replaying an input or edit. */
+  async resolveBrowserPreview(rawUrl: string, taskId: string, explicitGadgetId?: string): Promise<GadgetBrowserPreview | null> {
+    const requested = new URL(rawUrl);
+    const origin = this.previewOrigin(requested);
+    if (explicitGadgetId && (requested.protocol !== "http:" || !["localhost", "127.0.0.1"].includes(requested.hostname))) {
+      throw new Error("gadgetId 只能与本机 Gadget 预览 URL 一起使用");
+    }
+    if (!explicitGadgetId && !this.previewOwners.has(origin)) return null;
+    const gadgetId = explicitGadgetId ?? this.previewOwners.get(origin);
+    if (!gadgetId) throw new Error("该预览端口曾属于不同 Gadget，无法安全判断目标。请用 gadget_open 取得目标，再为 browser_exec navigate 同时提供 gadgetId 和 URL；不会导航到这个旧端口。");
+    this.getForTask(gadgetId, taskId);
+    const runtime = await this.start(gadgetId);
+    // Awaited startup may outlive a scope change or deletion.
+    this.getForTask(gadgetId, taskId);
+    if (runtime.status !== "running" || !runtime.url) throw new GadgetPreviewUnavailableError(gadgetId, runtime);
+    const target = new URL(runtime.url);
+    target.pathname = requested.pathname;
+    target.search = requested.search;
+    target.hash = requested.hash;
+    const url = target.href;
+    return { gadgetId, url, ...(url !== requested.href ? { previousUrl: requested.href } : {}),
+      revision: this.deps.storage.readSource(gadgetId).revision, runtime };
+  }
+
+  private previewOrigin(url: URL): string {
+    // The fixture host accepts both names for its IPv4 listener. Ownership must
+    // not disappear merely because a caller uses the other loopback alias.
+    if (url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname)) {
+      return `http://127.0.0.1:${url.port || "80"}`;
+    }
+    return url.origin;
+  }
+
+  private rememberPreview(state: GadgetRuntimeState): void {
+    if (state.status !== "running" || !state.url) return;
+    const origin = this.previewOrigin(new URL(state.url));
+    if (this.previewOwners.has(origin) && this.previewOwners.get(origin) !== state.gadgetId) {
+      this.previewOwners.set(origin, null);
+    } else this.previewOwners.set(origin, state.gadgetId);
+    // Do not evict known origins: an evicted/recycled port must not become an
+    // ordinary unscoped URL. Loopback ports bound the map for this app lifetime.
   }
 
   async health(id: string): Promise<GadgetRuntimeState> {
@@ -270,6 +333,7 @@ export class GadgetService {
 
   async restart(id: string): Promise<GadgetRuntimeState> {
     const state = await this.deps.runtime.restart(this.require(id));
+    this.rememberPreview(state);
     this.emitChanged({ type: "runtime", gadgetId: id });
     return state;
   }

@@ -75,6 +75,9 @@ const SERIAL_TEST_PATTERNS = [/^test:core-performance/, /^test:bot-work-query-sc
  * （历史教训：`-ui$` 与 `:desktop$` 都曾漏出 GUI 用例，混进"无头"门禁）。
  */
 const GUI_TESTS = new Set([
+  "test:browser-tabs-ui",
+  "test:browser-tabs-electron",
+  "test:gadget-browser-recovery-electron",
   "test:gadget-save-workspace-desktop",
   "test:gadget-save-copies-desktop",
   "test:gadget-menu-dev",
@@ -165,6 +168,7 @@ const GUI_TESTS = new Set([
 ]);
 
 const NETWORK_TESTS = new Set([
+  "test:gadget-browser-recovery-live",
   "test:web-page-answer-runtime:live", // Real gateway model; output-pressure injection runs last.
   "test:browser-builtin-live",
   "test:bot-result-delivery:live",

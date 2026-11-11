@@ -37,17 +37,27 @@ void (async () => {
   host = new BrowserHost(); host.attach(win);
   const service = new BrowserAutomationService(() => host!);
   const wc = host.inspectionWebContents!;
-  const wcId = wc.id;
+  const sourceTabId = host.activeTabId!;
   for (const selector of ["#next", "#popup"]) {
+    host.selectTab(sourceTabId);
     await service.execute({ action: "navigate", url });
+    await service.execute({ action: "read" });
+    const previous = new Set(host.listTabs().map(tab => tab.id));
     await service.execute({ action: "click", selector });
-    await until(() => wc.getURL() === url + "next" && !wc.isLoading(), selector);
-    assert.equal(host.inspectionWebContents?.id, wcId, "link keeps the exact Electron WCV");
+    await until(() => host!.listTabs().some(tab => !previous.has(tab.id) && tab.openerTabId === sourceTabId
+      && tab.url === url + "next" && !tab.loading), selector);
+    const popup = host.listTabs().find(tab => !previous.has(tab.id) && tab.openerTabId === sourceTabId)!;
+    assert.equal(wc.getURL(), url, "popup preserves the parent document");
+    const child = host.getTabHost(popup.id)!.inspectionWebContents!;
+    assert.notEqual(child.id, wc.id, "popup owns a distinct native WebContents");
+    assert.equal(child.session, wc.session, "popup keeps the exact authenticated session");
+    host.selectTab(popup.id);
     assert.match((await service.execute({ action: "read" })).text ?? "", /7284/);
     assert.equal(external.length, 0, "no external browser launch");
     assert.equal(BrowserWindow.getAllWindows().length, 1);
-    report.checks.push({ selector, url: wc.getURL(), sameWebContents: true, externalOpens: external.length });
+    report.checks.push({ selector, url: child.getURL(), parentPreserved: true, managedPopup: true, externalOpens: external.length });
   }
+  host.selectTab(sourceTabId);
   await service.execute({ action: "navigate", url });
   const observed = await service.execute({ action: "read" });
   assert.match(observed.text ?? "", /Alpha\t17\t3/, "rendered table cells retain their numeric boundaries");
@@ -68,7 +78,7 @@ void (async () => {
   await assert.rejects(service.execute({ action: "navigate", url: `http://127.0.0.1:${port}/?v=2` }),
     (e: unknown) => e instanceof BrowserAutomationError && e.message.includes("ERR_CONNECTION_REFUSED") && e.message.includes("gadget_open"));
   report.checks.push({ name: "real-refused-localhost", actionableError: true });
-  console.log("builtin browser Electron: PASS (target=_blank, window.open, shared WCV/session, fresh form input, actual refused localhost)");
+  console.log("builtin browser Electron: PASS (target=_blank, window.open, retained parent and managed popup/session, fresh form input, actual refused localhost)");
 })().catch(error => { report.error = String(error?.stack ?? error); console.error(report.error); process.exitCode = 1; }).finally(() => {
   writeFileSync(join(output, "electron-results.json"), JSON.stringify(report, null, 2));
   shell.openExternal = originalExternal; host?.dispose(); if (win && !win.isDestroyed()) win.destroy(); server.close(); clearTimeout(guard); app.exit(Number(process.exitCode ?? 0));

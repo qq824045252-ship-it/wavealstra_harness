@@ -699,6 +699,7 @@ export class AgentService {
 
   setGadgetDomain(service: GadgetService): void {
     this.gadgetService = service;
+    this.browserAutomation.setGadgetPreviewResolver((url, taskId, gadgetId) => service.resolveBrowserPreview(url, taskId, gadgetId));
   }
 
   setProfessionalToolRuntime(runtime: ProfessionalToolRuntimeFacade | null): void {

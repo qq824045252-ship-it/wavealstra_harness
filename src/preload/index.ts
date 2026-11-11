@@ -1,3 +1,4 @@
+import type { BrowserOpenOptions, BrowserTabInfo, BrowserTabsState } from "../shared/browser-tabs";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import { ProjectNotesIpc, type ProjectNoteSaveRequest } from "../shared/project-notes";
 import { WorkspaceNotesIpc, type WorkspaceNoteSaveRequest } from "../shared/workspace-notes";
@@ -1128,7 +1129,16 @@ const api = {
   },
   /** 扩展栏浏览器（WebContentsView） */
   browser: {
-    open: (url: string, options?: { reload?: boolean }): void => ipcRenderer.send(BrowserIpc.open, url, options),
+    getTabs: (): Promise<BrowserTabsState> => ipcRenderer.invoke(BrowserIpc.tabs),
+    ensureTab: (options: BrowserOpenOptions): Promise<BrowserTabInfo> => ipcRenderer.invoke(BrowserIpc.ensureTab, options),
+    selectTab: (id: string): void => ipcRenderer.send(BrowserIpc.selectTab, id),
+    closeTab: (id: string): void => ipcRenderer.send(BrowserIpc.closeTab, id),
+    onTabsChanged: (callback: (state: BrowserTabsState) => void): (() => void) => {
+      const handler = (_: Electron.IpcRendererEvent, state: BrowserTabsState): void => callback(state);
+      ipcRenderer.on(BrowserIpc.tabsChanged, handler);
+      return () => ipcRenderer.removeListener(BrowserIpc.tabsChanged, handler);
+    },
+    open: (url: string, options?: BrowserOpenOptions): void => ipcRenderer.send(BrowserIpc.open, url, options),
     close: (): void => ipcRenderer.send(BrowserIpc.open, ""),
     navigate: (url: string): void => ipcRenderer.send(BrowserIpc.navigate, url),
     reload: (): void => ipcRenderer.send(BrowserIpc.reload),

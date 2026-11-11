@@ -13,6 +13,7 @@ interface Props {
   hardDisabled?: boolean;
   onOpenInBrowser?: () => void;
   onClose?: () => void;
+  closeLabel?: string;
   /** 可编辑地址栏（扩展栏浏览器）；产物预览保持只读展示 */
   editable?: boolean;
   /** 地址栏提交（Enter 或失焦有变更时）；仅 editable 时有效 */
@@ -41,6 +42,7 @@ export default function BrowserNavBar({
   hardDisabled = false,
   onOpenInBrowser,
   onClose,
+  closeLabel = "关闭网页",
   editable = false,
   onNavigate,
   openDisabled = false,
@@ -124,7 +126,8 @@ export default function BrowserNavBar({
             aria-label="浏览器地址"
             spellCheck={false}
             onChange={(e) => setDraft(e.target.value)}
-            onBlur={() => {
+            onBlur={(event) => {
+              if (event.relatedTarget instanceof Element && event.relatedTarget.closest(".browser-tabs")) return;
               // 失焦时若与当前 url 不同且非空则导航（便于点选后提交）
               if (draft.trim() && draft.trim() !== url) submit();
             }}
@@ -202,8 +205,8 @@ export default function BrowserNavBar({
       <button
         type="button"
         className="icon-btn"
-        title="关闭网页"
-        aria-label="关闭网页"
+        title={closeLabel}
+        aria-label={closeLabel}
         onClick={onClose}
       >
         <IconX size={15} />

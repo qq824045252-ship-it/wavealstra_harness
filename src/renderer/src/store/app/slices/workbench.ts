@@ -23,6 +23,9 @@ export interface WorkbenchState {
   panelExpanded: boolean;
   sidebarBeforePanelExpand: boolean | null;
   browserUrlByTask: Record<string, string>;
+  browserTabByTask: Record<string, { id: string; key: string; url: string }>;
+  browserGadgetByTask: Record<string, { gadgetId: string; url: string }>;
+  browserNavigationVersion: number;
   browserUrlInput: string;
   browserFrameKey: number;
 }
@@ -45,6 +48,9 @@ export function createWorkbenchState(): WorkbenchState {
     panelExpanded: false,
     sidebarBeforePanelExpand: null,
     browserUrlByTask: {},
+    browserTabByTask: {},
+    browserGadgetByTask: {},
+    browserNavigationVersion: 0,
     browserUrlInput: "",
     browserFrameKey: 0,
   };

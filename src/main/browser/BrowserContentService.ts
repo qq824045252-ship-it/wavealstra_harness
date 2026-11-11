@@ -14,7 +14,7 @@
  */
 import type { PageWebContentsLike } from "../artifact/PageInspectionService";
 import { pageInspectionService } from "../artifact/PageInspectionService";
-import type { BrowserHost } from "./BrowserHost";
+import type { BrowserPageHost } from "./BrowserHost";
 import { isBrowserPageMatch, resolveWebFetchStrategy, type WebFetchStrategy } from "./WebResourceResolver";
 
 export interface BrowserPageRead {
@@ -27,7 +27,7 @@ export interface BrowserPageRead {
 }
 
 export class BrowserContentService {
-  constructor(private readonly host: () => BrowserHost | null) {}
+  constructor(private readonly host: () => Pick<BrowserPageHost, "inspectionWebContents" | "url"> | null) {}
 
   /** 浏览器是否可用且有已加载页面 */
   get available(): boolean {
