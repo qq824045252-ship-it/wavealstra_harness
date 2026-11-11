@@ -6,7 +6,7 @@ import { createRoot } from "react-dom/client";
 import BotWorkspacePage from "../src/renderer/src/components/pages/BotWorkspacePage";
 import { useAppStore } from "../src/renderer/src/store/appStore";
 import { mergeBotMessageEvent } from "../src/renderer/src/store/app/slices/botMessageStream";
-import type { BotHistoryDto, BotSendRequest, BotSendReceipt } from "../src/shared/bot-conversation";
+import type { BotHistoryDto, BotMessageDto, BotSendRequest, BotSendReceipt } from "../src/shared/bot-conversation";
 import type { BotDto } from "../src/shared/bot-work";
 const requests: BotSendRequest[] = [], cancellations: string[] = [];
 const receipts = new Map<string, (receipt: BotSendReceipt) => void>();
@@ -64,6 +64,11 @@ Object.assign(window, { concurrentFixture: {
     useAppStore.setState({activeBotId: "bot-2", botIdentities: [bot, {...bot, botId: "bot-2", displayName: "第二位助理"}]}); publish();
   },
   newScrollConversation: () => { history = {...history, conversationId: "new-chat", messages: [], revision: history.revision + 1}; publish(); },
+  updateReply: (index: number, patch: Partial<BotMessageDto>) => {
+    const message = history.messages.find(item => item.requestId === requests[index].requestId && item.role === "assistant")!;
+    Object.assign(message, patch, { messageRevision: (message.messageRevision ?? 0) + 1 });
+    history.revision++; publish();
+  },
   setMetrics: (index: number, input: number) => {
     const message=history.messages.find(item=>item.requestId===requests[index].requestId && item.role==='assistant')!;
     message.metrics={totalInputTokens:input+30,evidenceVersion:1,inputTokens:input,outputTokens:20,cacheReadTokens:30,cacheWriteTokens:0,reportedCalls:1,contextTokens:120,contextWindow:1000,contextEstimated:true,

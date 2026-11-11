@@ -3,7 +3,7 @@ import { botInboxId, ensurePersonalConversation, ensureTeamConversation } from "
 import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { z } from "zod";
-import { botActivitySchema, type BotActivityDto, botAttachmentSchema, type BotAttachmentDto, botMessageSchema, workFeedbackSchema, type WorkFeedbackDto, type BotHistoryDto, type BotHistoryRequest, type BotMessageDto, type BotSendReceipt, type BotSendRequest } from "../../../shared/bot-conversation";
+import { botActivitySchema, botReplySegmentSchema, type BotReplySegment, type BotActivityDto, botAttachmentSchema, type BotAttachmentDto, botMessageSchema, workFeedbackSchema, type WorkFeedbackDto, type BotHistoryDto, type BotHistoryRequest, type BotMessageDto, type BotSendReceipt, type BotSendRequest } from "../../../shared/bot-conversation";
 import type { WorkDto } from "../../../shared/bot-work";
 import { BOT_MESSAGE_ID_PREFIX } from "../../../shared/bot-conversation";
 
@@ -20,7 +20,14 @@ const messageRow = z.object({ message_id: z.string(), conversation_id: z.string(
 
 export class BotConversationRepository {
   readonly metrics: BotForegroundMetricsStore;
-  constructor(readonly db: Database.Database) { this.metrics = new BotForegroundMetricsStore(db); }
+  constructor(readonly db: Database.Database) {
+    this.metrics = new BotForegroundMetricsStore(db);
+    // Additive presentation storage: existing conversations need no destructive schema reset.
+    db.exec(`CREATE TABLE IF NOT EXISTS bot_message_segments (
+      message_id TEXT PRIMARY KEY REFERENCES bot_messages(message_id) ON DELETE CASCADE,
+      segments_json TEXT NOT NULL CHECK(json_valid(segments_json))
+    )`);
+  }
 
   conversation(userId: string, botId: string, conversationId?: string, teamId?: string): BotConversation | undefined {
     // Explicit IDs are internal receipt identities. External send/history validate
@@ -136,12 +143,14 @@ export class BotConversationRepository {
     return row ? this.mapMessage(row) : undefined;
   }
 
-  update(messageId: string, status: BotMessageDto["status"], text: string, error?: string, activity?: BotActivityDto): void {
+  update(messageId: string, status: BotMessageDto["status"], text: string, error?: string, activity?: BotActivityDto, segments?: BotReplySegment[]): void {
     this.db.transaction(() => {
       const message = this.message(messageId);
       if (!message) throw new Error("消息不存在");
       this.db.prepare("UPDATE bot_messages SET status=?,text=?,error=?,updated_at=? WHERE message_id=?")
         .run(status, text, error ?? null, Date.now(), messageId);
+      if (segments !== undefined) this.db.prepare("INSERT OR REPLACE INTO bot_message_segments(message_id,segments_json) VALUES (?,?)")
+        .run(messageId, JSON.stringify(z.array(botReplySegmentSchema).parse(segments)));
       if (status === "running" && activity) {
         this.db.prepare("INSERT OR REPLACE INTO bot_message_activity(message_id,activity_json) VALUES (?,?)")
           .run(messageId, JSON.stringify(botActivitySchema.parse(activity)));
@@ -379,8 +388,11 @@ export class BotConversationRepository {
     const activityRow = row.status === "running" ? this.db.prepare("SELECT activity_json FROM bot_message_activity WHERE message_id=?")
       .get(row.message_id) as { activity_json: string } | undefined : undefined;
     const activity = activityRow ? botActivitySchema.safeParse(JSON.parse(activityRow.activity_json)) : undefined;
+    const segmentRow = row.role === "assistant" ? this.db.prepare("SELECT segments_json FROM bot_message_segments WHERE message_id=?")
+      .get(row.message_id) as { segments_json: string } | undefined : undefined;
+    const segments = segmentRow ? z.array(botReplySegmentSchema).parse(JSON.parse(segmentRow.segments_json)) : undefined;
     return { teamId: scope?.team_id ?? undefined, messageRevision: version?.revision ?? 0, messageId: row.message_id, conversationId: row.conversation_id, botId: row.bot_id, requestId: row.request_id,
-      metrics: this.metrics.read(row.message_id), workFeedback: parsed?.success ? parsed.data : undefined, attachments, activity: activity?.success ? activity.data : undefined,
+      segments, metrics: this.metrics.read(row.message_id), workFeedback: parsed?.success ? parsed.data : undefined, attachments, activity: activity?.success ? activity.data : undefined,
       ordinal: row.ordinal, role: row.role, text: row.text, status: row.status,
       workIds: z.array(z.string()).parse(JSON.parse(row.work_ids_json)), error: row.error ?? undefined,
       createdAt: row.created_at, updatedAt: row.updated_at };

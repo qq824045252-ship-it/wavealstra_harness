@@ -348,17 +348,29 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
 export function BotMessage({ message, botName, works, onOpenWork, onCancel, sourceQuestion, onReply }: { sourceQuestion?: BotMessageDto; onReply?: () => void; message: BotMessageDto; botName: string; works: WorkProjectionDto[]; onOpenWork: (id: string) => void; onCancel: () => void }): React.JSX.Element {
   // Replace trusted image destinations before Markdown parsing: raw Windows
   // backslashes (e.g. \.mybuddy) otherwise become Markdown escapes.
-  const renderMarkdown = (text: string) => <ChatImageScope taskId={message.reportImages?.taskId ?? null} artifacts={message.reportImages?.artifacts ?? []} sources={message.reportImages?.sources ?? {}}><ChatMarkdown resolveTaskFiles={false} text={rewriteMarkdownImageSources(text, source => {
+  const renderMarkdown = (text: string, streaming = message.status === "running") => <ChatImageScope taskId={message.reportImages?.taskId ?? null} artifacts={message.reportImages?.artifacts ?? []} sources={message.reportImages?.sources ?? {}}><ChatMarkdown resolveTaskFiles={false} text={rewriteMarkdownImageSources(text, source => {
     const id = message.reportImages?.sources[source];
     const image = message.reportImages?.artifacts.find(item => item.id === id);
     return image ? artifactImageUrl(image.id, "full", { version: image.version }) : source;
-  })} streaming={message.status === "running"} /></ChatImageScope>;
+  })} streaming={streaming} /></ChatImageScope>;
   const result = message.role === "assistant" && message.status === "completed" && message.workFeedback?.kind === "result" && message.workFeedback.report;
   const running = message.role === "assistant" && ["queued", "running", "unknown"].includes(message.status);
+  const nonemptySegments = message.segments?.filter(segment => segment.text.trim()) ?? [];
+  const hasModelText = Boolean(message.text.trim()) || nonemptySegments.some(segment => segment.kind !== "receipt");
+  const segments = nonemptySegments.filter(segment => segment.kind !== "receipt" || !hasModelText);
+  const receiptOnly = segments.length > 0 && !hasModelText;
+  const showActivity = running && !(receiptOnly && !message.activity && message.status !== "unknown");
+  const hasContent = Boolean(message.text) || segments.length > 0;
   return <article className={`bot-message msg-row ${message.role}`} data-message-id={message.messageId} data-streaming={message.role === "assistant" && message.status === "running" ? "true" : undefined} aria-label={`${message.role === "user" ? "你" : botName}的消息`}>
     {message.role === "assistant" && <div className="bot-message-author"><span className="bot-avatar" aria-hidden="true"><IconBot size={16} /></span><strong>{botName}</strong></div>}
     {message.role === "assistant" && sourceQuestion && !message.workFeedback && <div className="bot-reply-reference" aria-label="回复对应问题">回复：{sourceQuestion.text || sourceQuestion.attachments?.map(item => item.name).join("、")}</div>}
-    {message.role === "user" ? <div className="user-bubble">{Boolean(message.attachments?.length) && <div className="input-attach-chips"><ComposerAttachmentChips attachments={message.attachments ?? []} /></div>}{message.text && <div className="user-bubble-text">{message.text}</div>}</div> : <div className="bot-assistant-content">{message.text ? <>{result ? <BotResultReport message={message} work={works.find(work => work.workId === message.workFeedback?.workId)} renderMarkdown={renderMarkdown} /> : renderMarkdown(message.text)}</> : <p className="bot-reply-placeholder" role={running ? "status" : undefined}>{message.status === "completed" ? "没有文本回复" : botMessageStatus(message)}{running && <span className="bot-typing-dots" aria-hidden="true">···</span>}</p>}</div>}
+    {message.role === "user" ? <div className="user-bubble">{Boolean(message.attachments?.length) && <div className="input-attach-chips"><ComposerAttachmentChips attachments={message.attachments ?? []} /></div>}{message.text && <div className="user-bubble-text">{message.text}</div>}</div> : <div className="bot-assistant-content">
+      {result && message.text ? <BotResultReport message={message} work={works.find(work => work.workId === message.workFeedback?.workId)} renderMarkdown={renderMarkdown} />
+        : segments.length > 0 ? segments.map((segment, index) => <div key={segment.id} data-segment-id={segment.id} data-segment-kind={segment.kind} aria-label={segment.kind === "receipt" ? "消息回执" : undefined} className={`bot-reply-segment bot-reply-segment-${segment.kind}`}>
+          {renderMarkdown(segment.text, message.status === "running" && segment.kind === "answer" && index === segments.length - 1)}
+        </div>) : message.text ? renderMarkdown(message.text) : null}
+      {(showActivity || !hasContent) && <p className="bot-reply-placeholder" role={running ? "status" : undefined}>{message.status === "completed" ? "没有文本回复" : botMessageStatus(message)}{running && <span className="bot-typing-dots" aria-hidden="true">···</span>}</p>}
+    </div>}
     {message.workIds.length > 0 && <div className="bot-message-work-links">{message.workIds.map(workId => <button type="button" key={workId} onClick={() => onOpenWork(workId)}><IconListTodo size={14} /><span>{works.find(work => work.workId === workId)?.title ?? (message.workFeedback?.workId === workId ? message.workFeedback.report?.title : undefined) ?? "查看关联事项"}</span><IconChevronRight size={14} /></button>)}</div>}
     <BotReplyMetrics message={message} />
     <BotMessageActions message={message} onReply={onReply} onCancel={onCancel} />

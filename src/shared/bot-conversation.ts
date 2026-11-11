@@ -46,6 +46,12 @@ export const botActivitySchema = z.object({
   tool: z.string().min(1).max(200), status: z.enum(["running", "success", "error"]),
 }).strict();
 export type BotActivityDto = z.infer<typeof botActivitySchema>;
+/** Receipt is host-authored acknowledgment only; other segments contain public model text. */
+export const botReplySegmentSchema = z.object({
+  id: id, kind: z.enum(["receipt", "commentary", "answer"]), text: z.string(),
+  createdAt: z.number(), updatedAt: z.number(),
+}).strict();
+export type BotReplySegment = z.infer<typeof botReplySegmentSchema>;
 export interface BotForegroundMetrics {
   totalInputTokens?: number | null; evidenceVersion?: 1;
   inputTokens: number | null; outputTokens: number | null; cacheReadTokens: number | null; cacheWriteTokens: number | null;
@@ -56,6 +62,7 @@ export const botMessageSchema = z.object({
   messageId: id, conversationId: id, botId: id, teamId: id.optional(), requestId: id, ordinal: z.number().int().positive(),
   messageRevision: z.number().int().nonnegative().optional(),
   metrics: z.custom<BotForegroundMetrics>().optional(),
+  segments: z.array(botReplySegmentSchema).optional(),
   role: z.enum(["user", "assistant"]), text: z.string(), attachments: z.array(botAttachmentSchema).optional(),
   status: z.enum(["queued", "running", "completed", "cancelled", "unknown", "failed"]),
   workIds: z.array(id), workFeedback: workFeedbackSchema.optional(), activity: botActivitySchema.optional(), error: z.string().optional(), createdAt: z.number(), updatedAt: z.number(),

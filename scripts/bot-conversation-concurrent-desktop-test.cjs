@@ -69,8 +69,56 @@ app.whenReady().then(async () => {
     await evaluate(`document.querySelector('[aria-label="发送消息"]').click()`);
     await wait('window.concurrentFixture.requests.length===4');
     assert(await evaluate('window.concurrentFixture.requests[3].referenceMessageId === "u-"+window.concurrentFixture.requests[0].requestId'));
+    // Persistent reply segments survive streaming, tool activity and terminal updates.
+    const firstReply = `document.querySelectorAll('.bot-message.assistant')[0]`;
+    const acknowledgement = {id:'ack-0',kind:'commentary',text:'我来核对杭州天气。',createdAt:1,updatedAt:1};
+    const empty = {id:'empty',kind:'answer',text:'  ',createdAt:2,updatedAt:2};
+    const updateReply = async patch => { await evaluate(`window.concurrentFixture.updateReply(0,${JSON.stringify(patch)})`); };
+    const receipt = {id:'receipt-0',kind:'receipt',text:'收到，正在处理这条消息。',createdAt:0,updatedAt:0};
+    await updateReply({segments:[receipt],text:'',status:'running'});
+    await wait(`${firstReply}.querySelector('[data-segment-kind="receipt"]')?.textContent.includes('收到')`);
+    assert.equal(await evaluate(`${firstReply}.querySelector('[data-segment-kind="receipt"]').getAttribute('aria-label')`),'消息回执');
+    assert(!await evaluate(`Boolean(${firstReply}.querySelector('.bot-reply-placeholder'))`),'receipt does not duplicate generic running status');
+    await updateReply({status:'queued'});
+    await wait(`!${firstReply}.hasAttribute('data-streaming')`);
+    assert(!await evaluate(`Boolean(${firstReply}.querySelector('.bot-reply-placeholder'))`),'receipt does not duplicate generic queued status');
+    await updateReply({status:'running',activity:{tool:'web_search',status:'running'}});
+    await wait(`${firstReply}.querySelector('[role="status"]')?.textContent.includes('正在搜索实时信息')`);
+    assert(await evaluate(`Boolean(${firstReply}.querySelector('[data-segment-kind="receipt"]'))`),'real tool status remains visible alongside receipt');
+    await updateReply({segments:[receipt],text:'模型先回复的旧版文本'});
+    await wait(`${firstReply}.textContent.includes('模型先回复的旧版文本')`);
+    assert(!await evaluate(`Boolean(${firstReply}.querySelector('[data-segment-kind="receipt"]'))`),'legacy model text also hides receipt');
+    await updateReply({segments:[receipt,acknowledgement,empty],text:'',status:'running',activity:{tool:'web_search',status:'running'}});
+    await wait(`${firstReply}.querySelector('[data-segment-kind="commentary"]')?.textContent.includes('我来核对')`);
+    assert(!await evaluate(`Boolean(${firstReply}.querySelector('[data-segment-kind="receipt"]'))`),'model prelude replaces receipt even before legacy text updates');
+    await wait(`${firstReply}.querySelector('[role="status"]')?.textContent.includes('正在搜索实时信息')`);
+    assert.equal(await evaluate(`${firstReply}.querySelectorAll('[data-segment-id]').length`),1);
+    assert.equal(await evaluate(`${firstReply}.textContent.split('我来核对杭州天气。').length-1`),1,'legacy mirror does not repeat acknowledgement');
+    await evaluate(`window.savedAcknowledgement=${firstReply}.querySelector('[data-segment-id="ack-0"]')`);
+    const answer = {id:'answer-0',kind:'answer',text:'杭州今天',createdAt:3,updatedAt:3};
+    await updateReply({segments:[receipt,acknowledgement,answer],text:answer.text,activity:{tool:'web_search',status:'success'}});
+    await wait(`${firstReply}.querySelector('[data-segment-id="answer-0"]')?.textContent.includes('杭州今天')`);
+    assert(await evaluate(`${firstReply}.querySelector('[role="status"]').textContent.includes('已返回')`));
+    answer.text='杭州今天有雨，请带伞。'; answer.updatedAt=4;
+    await updateReply({segments:[receipt,acknowledgement,answer],text:answer.text,status:'completed'});
+    await wait(`${firstReply}.textContent.includes('请带伞') && !${firstReply}.querySelector('[role="status"]')`);
+    assert(await evaluate(`window.savedAcknowledgement===${firstReply}.querySelector('[data-segment-id="ack-0"]')`),'acknowledgement remains mounted');
+    assert.equal(await evaluate(`${firstReply}.textContent.split('请带伞').length-1`),1,'answer renders once');
+    for (const [status,label] of [['queued','等待回复'],['unknown','结果待核对']]) {
+      await updateReply({status});
+      await wait(`${firstReply}.querySelector('[role="status"]')?.textContent.includes(${JSON.stringify(label)})`);
+    }
+    await updateReply({status:'failed',error:'来源不可用，未能完成核对。'});
+    await wait(`${firstReply}.querySelector('[role="alert"]')?.textContent.includes('未能完成核对')`);
+    assert.equal(await evaluate(`${firstReply}.querySelectorAll('[data-segment-id]').length`),2,'failure preserves previous prose');
+    assert(!await evaluate(`Boolean(${firstReply}.querySelector('[role="status"]'))`));
+    await updateReply({status:'cancelled',error:undefined});
+    await wait(`!${firstReply}.querySelector('.bot-message-stop')`);
+    assert.equal(await evaluate(`${firstReply}.querySelectorAll('[data-segment-id]').length`),2,'cancellation preserves previous prose');
+    await updateReply({segments:[],text:'旧版回复仍可阅读',status:'completed',error:''});
+    await wait(`${firstReply}.textContent.includes('旧版回复仍可阅读')`);
     fs.writeFileSync(path.join(out,'bot-conversation-concurrent-desktop.png'),await win.webContents.capturePage().then(image=>image.toPNG()));
-    console.log('PASS real Chromium page/store: 3 unacknowledged sends, reverse acknowledgements, out-of-order streams, stable question association, isolated stop, reference followup');
+    console.log('PASS real Chromium page/store: 3 unacknowledged sends, reverse acknowledgements, out-of-order streams, stable question association, isolated stop, reference followup, receipt-to-model lifecycle and persistent segments');
   } catch(error) { console.error(error); process.exitCode=1; }
   finally { win?.destroy(); app.exit(process.exitCode||0); }
 });

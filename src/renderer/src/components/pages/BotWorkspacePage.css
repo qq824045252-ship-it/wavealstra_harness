@@ -48,6 +48,12 @@
 .bot-workspace .bot-message-actions .bot-message-stop { background:var(--bg-sidebar); color:var(--fg); }
 .bot-message-actions svg { flex-shrink:0; }
 @media (pointer:coarse) { .bot-workspace .bot-message-actions button { min-height:40px; } }
+.bot-reply-segment + .bot-reply-segment { margin-top:16px; }
+.bot-reply-segment-commentary { color:var(--fg-secondary); }
+.bot-reply-segment-receipt { color:var(--fg-muted); }
+.bot-reply-segment-receipt .md { font-size:13px; }
+.bot-reply-segment .md > :first-child { margin-top:0; }
+.bot-reply-segment .md > :last-child { margin-bottom:0; }
 .bot-reply-placeholder { color:var(--fg-secondary); font-size:13px; }
 .bot-typing-dots { letter-spacing:3px; animation:bot-reply-pulse 1.3s ease-in-out infinite; }
 @keyframes bot-reply-pulse { 50% { opacity:.35; } }

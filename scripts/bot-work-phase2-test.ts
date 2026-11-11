@@ -61,7 +61,7 @@ const reply = (modelId: string, request: TranscriptContext): AssistantMessage["c
     }
     return text(contentText(last.content));
   }
-  if (input === "前台天气") return tool("web_search", {});
+  if (input === "前台天气" || input === "前台天气迟到流") return [...text("我来查杭州天气。"), ...tool("web_search", {})];
   if (input === "前台抓取失败") return tool("fetch_content", {});
   if (input === "扩展写入越权") return tool("unrelated_extension_write", {});
   if (input.startsWith("委托")) return tool("work_create", { requestedOutcome: "one_time", mode: "once", title: input, criteria: [{ text: "核验实际成果" }] });
@@ -95,6 +95,11 @@ models.registerProvider("fixture", { api: "openai-completions", apiKey: "fixture
         const stopReason = content.some(block => block.type === "toolCall") ? "toolUse" : "stop";
         const message: AssistantMessage = { role: "assistant", content, stopReason, api: model.api, provider: model.provider, model: model.id,
           timestamp: Date.now(), usage: { input: 3, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 5, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+        if (model.id === "front" && contentText(content) === "我来查杭州天气。") {
+          stream.push({ type: "start", partial: { ...message, content: text("") } });
+          stream.push({ type: "text_delta", contentIndex: 0, delta: "我来查杭州天气。", partial: { ...message, content: text("我来查杭州天气。") } });
+          await delay(180);
+        }
         if (model.id === "front" && contentText(content) === "前台普通答复") {
           stream.push({ type: "start", partial: { ...message, content: text("") } });
           for (const part of ["前台", "前台普通", "前台普通答复"]) {
@@ -139,6 +144,7 @@ const send = async (requestId: string, value: string, selectedWorkId?: string, a
 try {
   const ordinary = await send("ordinary", "你好");
   assert.equal(foreground.messages.message(ordinary.assistantMessageId)?.text, "前台普通答复");
+  assert(!foreground.messages.message(ordinary.assistantMessageId)?.segments?.some(segment => segment.kind === "receipt"), "early streamed direct answer suppresses delayed host receipt");
   const firstRequest = foregroundRequests.at(-1)!;
   await send("ordinary-cache-followup", "缓存连续第二轮");
   const secondRequest = foregroundRequests.at(-1)!;
@@ -165,7 +171,14 @@ try {
   await wait(() => streamEvents.some(event => event.message.requestId === "frontend-weather" && event.message.activity?.tool === "web_search" && event.message.activity.status === "running"), "search activity before tool completion");
   const weatherActivity = foreground.history({ botId: DEFAULT_BOT_ID }).messages.find(message => message.requestId === "frontend-weather" && message.role === "assistant")!;
   assert.deepEqual(weatherActivity.activity, { tool: "web_search", status: "running" }, "reconnected readers see the same bounded tool status");
-  assert.equal(weatherActivity.text, "", "activity must not become fabricated answer text");
+  assert.equal(weatherActivity.text, "我来查杭州天气。", "public model prelude survives while actual tool activity is separate");
+  assert.deepEqual(weatherActivity.segments?.map(segment => [segment.kind, segment.text]), [["commentary", "我来查杭州天气。"]]);
+  const weatherFrames = streamEvents.filter(event => event.message.requestId === "frontend-weather");
+  const firstPrelude = weatherFrames.findIndex(event => event.message.segments?.some(segment => segment.text === "我来查杭州天气。"));
+  const firstTool = weatherFrames.findIndex(event => event.message.activity?.status === "running");
+  assert(firstPrelude >= 0 && firstPrelude < firstTool, "first visible model sentence publishes before tool execution without an extra generation");
+  const preludeId = weatherActivity.segments![0].id;
+  assert.equal(new BotConversationRepository(db.connection).message(weatherActivity.messageId)?.segments?.[0].id, preludeId, "reconnect retains the same prelude identity");
   assert.equal(new BotConversationRepository(db.connection).message(weatherActivity.messageId)?.activity?.tool, "web_search", "activity does not rely on service memory");
   const nativeSnapshot: DurableBotSnapshot = { backend: "pi-durable", epoch: "fixture", revision: 1, conversationId: "native",
     toolMode: "native", busy: true, queued: 0, pendingInputs: [], compacting: false, messages: [
@@ -190,10 +203,31 @@ try {
   const weather = await weatherDone;
   assert.equal(foreground.messages.message(weather.assistantMessageId)?.text, "dated source fixture");
   assert.equal(foreground.messages.message(weather.assistantMessageId)?.activity, undefined, "final reconciliation removes transient activity");
+  assert.deepEqual(foreground.messages.message(weather.assistantMessageId)?.segments?.map(segment => [segment.kind, segment.text]),
+    [["commentary", "我来查杭州天气。"], ["answer", "dated source fixture"]], "final answer neither replaces nor duplicates the prelude");
+  assert.equal(foreground.messages.message(weather.assistantMessageId)?.segments?.[0].id, preludeId);
+  assert.equal(foregroundRequests.filter(request => {
+    const user = [...request.messages].reverse().find(message => message.role === "user");
+    return user && contentText(user.content).startsWith("前台天气");
+  }).length, 2, "prelude uses the existing tool-call generation, not another model request");
   const afterOutOfOrder = await send("after-out-of-order", "乱序完成后的后续问题");
   const contextRow = db.connection.prepare('SELECT context_json FROM bot_request_runs WHERE message_id=?').get(afterOutOfOrder.assistantMessageId) as { context_json: string };
   const frozen = JSON.parse(contextRow.context_json);
   assert(frozen.history.some((message: { messageId: string; text: string }) => message.messageId === weather.assistantMessageId && message.text === 'dated source fixture'), 'late completed earlier result must supplement the newer native prefix');
+  // Deliberately drop every final-answer presentation frame for one native request.
+  // Completion must rebuild from durable entries, not overwrite the visible prelude.
+  const streamPort = foreground as unknown as { stream(conversation: BotConversation, snapshot: DurableBotSnapshot, requestId?: string): void };
+  const originalStream = streamPort.stream.bind(foreground);
+  let droppedFinalFrames = 0;
+  streamPort.stream = (conversation, snapshot, requestId) => {
+    if (requestId === "late-final" && snapshot.messages.at(-1)?.text === "dated source fixture") { droppedFinalFrames++; return; }
+    originalStream(conversation, snapshot, requestId);
+  };
+  const lateFinal = await send("late-final", "前台天气迟到流");
+  streamPort.stream = originalStream;
+  assert(droppedFinalFrames > 0, "fixture really suppressed the final stream frames");
+  assert.deepEqual(foreground.messages.message(lateFinal.assistantMessageId)?.segments?.filter(segment => segment.kind !== "receipt").map(segment => [segment.kind, segment.text]),
+    [["commentary", "我来查杭州天气。"], ["answer", "dated source fixture"]], "authoritative final transcript repairs missing presentation frames without replacing or duplicating the prelude");
   nativeSnapshot.messages[0].botRequestId = "frontend-weather";
   const completedWeather = foreground.messages.message(weather.assistantMessageId);
   applySnapshot();
@@ -304,12 +338,24 @@ try {
   const slowRequests = [1,2,3].map(index => foreground.send({ botId: DEFAULT_BOT_ID, requestId: `slow-${index}`, text: `并发慢请求${index}` }));
   await wait(() => slowRequests.every(receipt => foreground.messages.message(receipt.assistantMessageId)?.status === 'running'), 'three independent slow requests admitted');
   const overflow = foreground.send({ botId: DEFAULT_BOT_ID, requestId: 'overflow', text: '普通容量队列' });
-  await delay(150);
+  await wait(() => slowRequests.every(receipt => foreground.messages.message(receipt.assistantMessageId)?.segments?.some(segment => segment.kind === "receipt")), "slow requests receive truthful acknowledgment while model is silent");
+  await wait(() => foreground.messages.message(overflow.assistantMessageId)?.segments?.some(segment => segment.kind === "receipt") ?? false, "queued request receives truthful acknowledgment without waiting for a runtime slot");
   assert.equal(foreground.messages.message(overflow.assistantMessageId)?.status, 'queued');
+  assert.match(foreground.messages.message(overflow.assistantMessageId)?.segments?.[0].text ?? "", /已排队/);
+  for (const receipt of slowRequests) {
+    const message = foreground.messages.message(receipt.assistantMessageId)!;
+    assert.equal(message.text, "", "host receipt cannot become model answer text");
+    assert.equal(message.segments?.length, 1);
+    assert.match(message.segments![0].text, /正在处理/);
+  }
+  const silentRevision = foreground.messages.message(slowRequests[0].assistantMessageId)!.messageRevision;
+  await delay(600);
+  assert.equal(foreground.messages.message(slowRequests[0].assistantMessageId)!.messageRevision, silentRevision, "one quiet receipt, not repeated polling prose");
   const urgent = await send('priority-status', '当前进度状态');
   assert.equal(foreground.messages.message(urgent.assistantMessageId)?.status, 'completed', 'reserved capacity handles progress while normal slots are occupied');
   await foreground.cancel(DEFAULT_BOT_ID, 'slow-2');
   assert.equal(foreground.messages.message(slowRequests[1].assistantMessageId)?.status, 'cancelled');
+  assert.equal(foreground.messages.message(slowRequests[1].assistantMessageId)?.segments?.filter(segment => segment.kind === 'receipt').length, 1, 'cancellation preserves one receipt and never invents a model final');
   assert.equal(foreground.messages.message(slowRequests[0].assistantMessageId)?.status, 'running', 'cancel one must not abort sibling runtime');
   await wait(() => foreground.messages.message(overflow.assistantMessageId)?.status === 'completed', 'free slot drains ordinary queued request');
   await Promise.all([foreground.cancel(DEFAULT_BOT_ID, 'slow-1'), foreground.cancel(DEFAULT_BOT_ID, 'slow-3')]);
