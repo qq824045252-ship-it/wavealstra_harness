@@ -94,6 +94,21 @@ try {
   assert.equal(recovered.error,null,'a later healthy lookup is not locked out by an earlier rejection');
   assert.equal(recovered.retryable,undefined);
   assert.equal(calls.length,3);
+  // Real registered tool: fetch succeeds, missing answer model fails synthesis.
+  // It must retain the source without claiming that the requested answer succeeded.
+  const answerFailure = await fetchTool.execute('answer-failure-test',
+    { url: 'https://93.184.216.34/weather', mode: 'answer', prompt: 'What is the temperature?' },
+    new AbortController().signal, undefined, { cwd: temp, hasUI: false });
+  assert.equal(answerFailure.isError, true);
+  assert.equal(answerFailure.details.answerStatus, 'failed', JSON.stringify(answerFailure));
+  assert.equal(answerFailure.details.fetched, true);
+  assert.match(answerFailure.content[0].text, /十六至二十二/);
+  assert.match(answerFailure.content[0].text, /NOT a verified answer/);
+  assert.match(answerFailure.content[0].text, /get_search_content/);
+  const stored = await registered.get('get_search_content').execute('stored-source',
+    { responseId: answerFailure.details.responseId, urlIndex: 0 },
+    new AbortController().signal, undefined, { cwd: temp, hasUI: false });
+  assert.match(stored.content[0].text, /十六至二十二/);
   if (process.argv.includes('--live-weather')) {
     globalThis.fetch = savedFetch;
     const live = await extractContent('https://www.weather.com.cn/weather1d/101210101.shtml', undefined, { timeoutMs: 15000 });

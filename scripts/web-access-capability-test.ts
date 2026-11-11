@@ -1,3 +1,4 @@
+import { pageAnswerFallback } from "../src/main/capabilities/web-access/page-answer-fallback";
 /**
  * WebAccess Capability 纯逻辑测试（P2-3/P3：browser reuse 决策、codex fallback、provider 一致性）。
  *
@@ -130,5 +131,16 @@ console.log("== WebAccess product capability boundary ==");
   assert(!indexSrc.includes("loadBrowserBridge"), "no legacy dynamic bridge loader remains");
 }
 
+{
+  const base = { mode: "answer", fetchError: null, content: "retrieved fact", url: "https://example.org", responseId: "r1", toolName: "get_search_content" };
+  const recovered = pageAnswerFallback(base)!;
+  assert(recovered.text.includes("retrieved fact") && recovered.text.includes("NOT a verified answer"), "synthesis failure retains explicitly unverified source text");
+  assert(recovered.details.answerStatus === "failed" && recovered.details.fetched === true, "fetch success is distinct from answer failure");
+  assert(pageAnswerFallback({ ...base, content: "x".repeat(10_000) })!.details.shownSourceChars === 4_000, "fallback is bounded");
+  assert(pageAnswerFallback({ ...base, fetchError: "url-policy" }) === null, "access failure never exposes fallback");
+  assert(pageAnswerFallback({ ...base, aborted: true }) === null, "aborted answer does not continue as fallback");
+  assert(pageAnswerFallback({ ...base, content: "  " }) === null, "empty source is not fabricated");
+  assert(pageAnswerFallback({ ...base, mode: "raw" }) === null, "non-answer behavior unchanged");
+}
 console.log(`\n结果: passed=${passed} failed=${failed}`);
 if (failed > 0) process.exit(1);

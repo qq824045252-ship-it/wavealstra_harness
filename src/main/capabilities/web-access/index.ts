@@ -10,6 +10,7 @@ import type { ExtractedContent, ExtractOptions } from "./extract.ts";
 import { normalizeFetchContentParams } from "./fetch-params.ts";
 import { findContent, type FindMode } from "./content-find.ts";
 import { answerFromPage } from "./page-query.ts";
+import { pageAnswerFallback } from "./page-answer-fallback.ts";
 import { clearCloneCache } from "./github-extract.ts";
 import { getSearchPolicy, configuredProviderSelection, getConfiguredSearchRouting, normalizeSearchProviderSelection, RESOLVED_SEARCH_PROVIDERS, SEARCH_PROVIDERS, search, type AttributedSearchResponse, type SearchProvider, type SearchProviderSelection, type ResolvedSearchProvider } from "./gemini-search.ts";
 import type { SearchResult } from "./perplexity.ts";
@@ -2340,10 +2341,11 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 			if (urlList.length === 1) {
 				const result = presentedResults[0];
 				if (result.error) {
+					const fallback = pageAnswerFallback({ mode, fetchError: fetchResults[0].error, content: fetchResults[0].content, url: result.url, responseId, toolName: toolNames.getSearchContent, aborted: signal?.aborted || result.error.endsWith(": Aborted") });
 					return {
 						isError: true,
-						content: [{ type: "text", text: `Error: ${result.error}${result.errorCode === "url-policy" ? `\n${policyHint}` : ""}` }],
-						details: { urls: urlList, urlCount: 1, successful: 0, error: result.error, ...(result.errorCode ? {errorCode:result.errorCode,retryable:result.retryable} : {}), responseId, prompt: params.prompt, timestamp: params.timestamp, frames: params.frames },
+						content: [{ type: "text", text: `Error: ${result.error}${result.errorCode === "url-policy" ? `\n${policyHint}` : ""}${fallback?.text ?? ""}` }],
+						details: { ...fallback?.details, urls: urlList, urlCount: 1, successful: 0, error: result.error, ...(result.errorCode ? {errorCode:result.errorCode,retryable:result.retryable} : {}), responseId, prompt: params.prompt, timestamp: params.timestamp, frames: params.frames },
 					};
 				}
 
@@ -2399,9 +2401,10 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 
 			// Multi-URL: existing behavior (summary + responseId)
 			let output = "## Fetched URLs\n\n";
-			for (const { url, title, content, error, errorCode } of presentedResults) {
+			for (const [urlIndex, { url, title, content, error, errorCode }] of presentedResults.entries()) {
 				if (error) {
-					output += `- ${url}: Error - ${error}${errorCode === "url-policy" ? `\n${policyHint}` : ""}\n`;
+					const fallback = pageAnswerFallback({ mode, fetchError: fetchResults[urlIndex].error, content: fetchResults[urlIndex].content, url, responseId, toolName: toolNames.getSearchContent, urlIndex, aborted: signal?.aborted || error.endsWith(": Aborted") });
+					output += `- ${url}: Error - ${error}${errorCode === "url-policy" ? `\n${policyHint}` : ""}${fallback?.text ?? ""}\n`;
 				} else {
 					output += `- ${title || url} (${content.length} chars)\n`;
 				}
