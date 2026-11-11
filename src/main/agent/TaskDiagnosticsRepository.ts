@@ -35,6 +35,8 @@ const toolSchema = z.object({
   name: z.string(), callId: z.string(), startedAt: z.number(), finishedAt: nullableNumber,
   status: z.enum(["running", "completed", "failed", "interrupted"]), complete: z.boolean(),
   intervals: z.array(intervalSchema), segmentStartedAt: nullableNumber, diagnostics: z.array(z.string()),
+  /** 产生本次调用的 generation；旧记录缺省，读取侧按同会话最近的已完成请求归轮。 */
+  generationTaskId: z.number().int().optional(),
 });
 type Interval = z.infer<typeof intervalSchema>;
 type StoredTool = z.infer<typeof toolSchema>;
@@ -71,6 +73,21 @@ function requestExecutionId(value: { taskId: string | null; executionScope: stri
     return `durable:${value.taskId}:${value.conversationId}:${value.generationTaskId}`;
   }
   return `${value.executionScope || "global"}:${value.conversationId}:${value.generationTaskId}`;
+}
+
+/**
+ * 工具与模型请求共用同一个「轮」身份：工具任务本身有独立的 toolTaskId，
+ * 但触发它的是一次 generation。generationTaskId 已知时按与请求完全相同的
+ * 前缀规则挂到那一轮；否则保持旧的 toolTaskId 口径，读取侧再按同会话最近
+ * 完成的请求做一次归轮。
+ */
+function turnExecutionId(taskId: string | undefined, executionScope: string | undefined, conversationId: string, generationTaskId: number): string {
+  if (taskId && (!executionScope || executionScope === taskId)) return `durable:${taskId}:${conversationId}:${generationTaskId}`;
+  return `${executionScope || "global"}:${conversationId}:${generationTaskId}`;
+}
+
+function legacyToolExecutionId(scoped: boolean, owner: string, conversationId: string, toolTaskId: number): string {
+  return scoped ? `${owner}:${conversationId}:${toolTaskId}` : `durable:${owner}:${conversationId}:${toolTaskId}`;
 }
 
 function intervalMs(intervals: Interval[]): number {  let end = -Infinity;
@@ -192,12 +209,24 @@ export class TaskDiagnosticsRepository {
       const table = scoped ? "scope_tool_diagnostics" : "task_tool_diagnostics";
       const owner = scoped ? event.executionScope! : event.taskId!;
       const id = `${event.executionScope ?? event.taskId}:${event.conversationId}:${event.toolTaskId}`;
+      const executionIdFor = (toolTaskId: number, generationTaskId: number | undefined): string =>
+        generationTaskId !== undefined && Number.isInteger(generationTaskId) && generationTaskId >= 0
+          ? turnExecutionId(event.taskId, event.executionScope, event.conversationId, generationTaskId)
+          : legacyToolExecutionId(scoped, owner, event.conversationId, toolTaskId);
       const row = recordRow.optional().parse(this.db.prepare(`SELECT record_json FROM ${table} WHERE id=?`).get(id));
       let value: StoredTool = row ? toolSchema.parse(JSON.parse(row.record_json)) : {
-        id, taskId: owner, conversationId: event.conversationId, executionId: scoped ? `${owner}:${event.conversationId}:${event.toolTaskId}` : `durable:${owner}:${event.conversationId}:${event.toolTaskId}`,
+        id, taskId: owner, conversationId: event.conversationId,
+        executionId: executionIdFor(event.toolTaskId, event.generationTaskId),
         sourceKind: event.sourceKind, name: event.name, callId: event.callId, startedAt: event.at, finishedAt: null,
         status: "running", intervals: [], segmentStartedAt: null, complete: true, diagnostics: [],
+        ...(event.generationTaskId === undefined ? {} : { generationTaskId: event.generationTaskId }),
       };
+      // A later event may be the first one that knows the producing generation
+      // (recovery, or an observer that started before the turn identity existed).
+      if (event.generationTaskId !== undefined && value.generationTaskId !== event.generationTaskId) {
+        value.generationTaskId = event.generationTaskId;
+        value.executionId = executionIdFor(event.toolTaskId, event.generationTaskId);
+      }
       if (value.status === "completed" || value.status === "failed") return;
       if (event.phase === "start") { value.segmentStartedAt ??= event.at; value.status = "running"; }
       else {
@@ -296,28 +325,54 @@ export class TaskDiagnosticsRepository {
     const waitRows = scopes ? [] : bound === undefined
       ? this.db.prepare(`SELECT id,execution_id,title,created_at,resolved_at,status FROM conversation_interactions WHERE task_id=? ORDER BY created_at DESC,id DESC`).all(taskId)
       : this.db.prepare(`SELECT id,execution_id,title,created_at,resolved_at,status FROM conversation_interactions WHERE task_id=? ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?`).all(taskId, bound + 1, skip);
-    const waits: WaitDiagnostic[] = waitRows.slice(0, bound ?? waitRows.length).map(row => { const item = waitRow.parse(row); return { id: item.id, executionId: item.execution_id, title: item.title,
+    const rawWaits: WaitDiagnostic[] = waitRows.slice(0, bound ?? waitRows.length).map(row => { const item = waitRow.parse(row); return { id: item.id, executionId: item.execution_id, title: item.title,
         startedAt: item.created_at, finishedAt: item.resolved_at, status: item.status }; });
     const storedPage = read("task_tool_diagnostics", "started_at DESC,id DESC", row => [toolSchema.parse(JSON.parse(recordRow.parse(row).record_json))]);
     const stored = storedPage.rows.slice(0, bound ?? storedPage.rows.length);
+
+    // ---- 轮身份：新记录写入时已带 generation 身份；旧记录（没有 generationTaskId
+    // 字段、executionId 仍是 toolTaskId 口径）在读取时按「同一会话里最近完成的请求」归轮。
+    // 工具与等待记录原先都用 toolTaskId 作 executionId；不归并的话，每个工具都会
+    // 被面板当成单独一轮（60 轮 = 24 请求 + 36 工具），并制造「36 轮命中率未知」。
+    const completedByConversation = new Map<string, Array<{ at: number; executionId: string }>>();
+    for (const request of requests) {
+      if (request.status === "running" && request.finishedAt === null) continue;
+      // 任务页只把属于该任务执行范围的请求当作候选（辅助请求可能复用同一
+      // conversationId，不能把任务里的工具归到辅助轮）。
+      if (!scopes && request.executionScope !== taskId) continue;
+      const at = request.finishedAt ?? request.startedAt;
+      const list = completedByConversation.get(request.conversationId) ?? [];
+      list.push({ at, executionId: request.executionId });
+      completedByConversation.set(request.conversationId, list);
+    }
+    for (const list of completedByConversation.values()) list.sort((a, b) => a.at - b.at);
+    const turnForTool = (value: StoredTool): string => {
+      if (value.generationTaskId !== undefined) return value.executionId;
+      const list = completedByConversation.get(value.conversationId);
+      if (!list?.length) return value.executionId;
+      let candidate: string | undefined;
+      for (const item of list) { if (item.at <= value.startedAt) candidate = item.executionId; else break; }
+      return candidate ?? value.executionId;
+    };
+    // 等待记录落库时用的也是 toolTaskId 口径（durable:任务:会话:toolTaskId），
+    // 用工具记录 id 建立一次映射，把等待同样挂到 generation 轮。
+    const turnByLegacyToolId = new Map<string, string>();
+    for (const value of stored) turnByLegacyToolId.set(scopes ? value.id : `durable:${value.id}`, turnForTool(value));
+    const waits: WaitDiagnostic[] = rawWaits.map(wait => ({ ...wait, executionId: turnByLegacyToolId.get(wait.executionId) ?? wait.executionId }));
     const toolWaiting = new Map<string, Interval[]>();
-    const executionIds = [...new Set(stored.map(value => value.executionId))];
-    if (!scopes && executionIds.length) {
-      const rows = this.db.prepare(`SELECT execution_id,created_at AS start,COALESCE(resolved_at,?) AS end
-        FROM conversation_interactions WHERE task_id=? AND execution_id IN (${executionIds.map(() => "?").join(",")})`).all(now, taskId, ...executionIds);
-      for (const row of rows) {
-        const interval = intervalSchema.extend({ execution_id: z.string() }).parse(row);
-        const existing = toolWaiting.get(interval.execution_id) ?? [];
-        existing.push(interval); toolWaiting.set(interval.execution_id, existing);
-      }
+    if (!scopes) for (const wait of waits) {
+      const existing = toolWaiting.get(wait.executionId) ?? [];
+      existing.push({ start: wait.startedAt, end: wait.finishedAt ?? now }); toolWaiting.set(wait.executionId, existing);
     }
     const tools = stored.map(value => {
       const intervals = [...value.intervals, ...(value.segmentStartedAt !== null ? [{ start: value.segmentStartedAt, end: now }] : [])];
       const observedMs = intervalMs(intervals);
-      const waitingMs = overlapMs(intervals, toolWaiting.get(value.executionId) ?? []);
-      return { id: value.id, conversationId: value.conversationId, executionId: value.executionId, sourceKind: value.sourceKind,
+      const executionId = turnForTool(value);
+      const waitingMs = overlapMs(intervals, toolWaiting.get(executionId) ?? []);
+      return { id: value.id, conversationId: value.conversationId, executionId, sourceKind: value.sourceKind,
         name: value.name, callId: value.callId, startedAt: value.startedAt, finishedAt: value.finishedAt, status: value.status,
-        observedMs, activeMs: Math.max(0, observedMs - waitingMs), waitingMs, complete: value.complete, diagnostics: value.diagnostics };
+        observedMs, activeMs: Math.max(0, observedMs - waitingMs), waitingMs, complete: value.complete, diagnostics: value.diagnostics,
+        derivedExecution: value.generationTaskId === undefined && executionId !== value.executionId };
     });
     return { taskId, capturedAt: now, offset: skip, requests, tools, waits,
       truncated: requestPage.truncated || storedPage.truncated || waitRows.length > (bound ?? waitRows.length),

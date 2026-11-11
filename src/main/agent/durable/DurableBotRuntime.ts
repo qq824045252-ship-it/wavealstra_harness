@@ -1077,12 +1077,31 @@ function botExtension(
 ) {
   const childConversation = async (api: Pick<HookApi, "snapshot" | "conversationId">, context: Parameters<ToolRegistration["execute"]>[2]) =>
     Boolean((await api.snapshot(DurableSubagentIdentity, api.conversationId, context))?.value || (await api.snapshot(DurableConsultIdentity, api.conversationId, context))?.key);
+  // 工具任务是独立的 ToolTask（toolTaskId），触发它的却是一次 generation。
+  // 只按 toolTaskId 记诊断会让每个工具单独成「一轮」；这里记录每个会话最近一次
+  // generation，并在工具开始时固化到 toolTaskId，供执行诊断把工具挂回模型轮次。
+  const currentGenerationByConversation = new Map<string, number>();
+  const generationByToolTask = new Map<number, number>();
+  const rememberGeneration = (conversationId: string, generationTaskId: number) => {
+    currentGenerationByConversation.set(conversationId, generationTaskId);
+    while (currentGenerationByConversation.size > 256) currentGenerationByConversation.delete(currentGenerationByConversation.keys().next().value!);
+  };
+  const rememberToolGeneration = (toolTaskId: number, generationTaskId: number | undefined) => {
+    if (generationTaskId === undefined) return;
+    generationByToolTask.set(toolTaskId, generationTaskId);
+    while (generationByToolTask.size > 4096) generationByToolTask.delete(generationByToolTask.keys().next().value!);
+  };
+  const toolGeneration = (toolTaskId: number, conversationId: string): number | undefined =>
+    generationByToolTask.get(toolTaskId) ?? currentGenerationByConversation.get(conversationId);
   const toolHooks: Partial<ToolHooks> = {
     beforeTool: async (call, api, context) => {
       const decision = await options.toolHooks?.beforeTool?.(call, api, context);
+      const generationTaskId = toolGeneration(api.taskId, String(api.conversationId));
+      rememberToolGeneration(api.taskId, generationTaskId);
       if (!(decision && "block" in decision)) try {
         options.onTool?.({ phase: "start", taskId: options.executionIdentity ? options.executionIdentity.taskId : options.taskId,
           executionScope: options.executionIdentity?.executionScope, conversationId: String(api.conversationId), toolTaskId: api.taskId,
+          generationTaskId,
           callId: call.id, name: call.name, at: Date.now(),
           sourceKind: options.executionIdentity?.sourceKind ?? (await childConversation(api, context) ? "subagent" : "main") });
       } catch { /* Observers never change tool execution. */ }
@@ -1099,6 +1118,7 @@ function botExtension(
       try {
         options.onTool?.({ phase: "finish", taskId: options.executionIdentity ? options.executionIdentity.taskId : options.taskId,
           executionScope: options.executionIdentity?.executionScope, conversationId: String(api.conversationId), toolTaskId: api.taskId,
+          generationTaskId: toolGeneration(api.taskId, String(api.conversationId)),
           callId: call.id, name: call.name, at: Date.now(), isError: observed.isError,
           diagnostics: observed.diagnostics?.map(item => item.code ?? item.message),
           sourceKind: options.executionIdentity?.sourceKind ?? (await childConversation(api, context) ? "subagent" : "main") });
@@ -1127,6 +1147,7 @@ function botExtension(
       if (context.abortSignal) guards?.set(context.abortSignal, () => validate());
       try {
         const child = await childConversation(api, context);
+        rememberGeneration(String(api.conversationId), api.taskId);
         try { options.onRequest?.({ conversationId: String(api.conversationId), generationTaskId: api.taskId, sourceKind: child ? "subagent" : "main" }); }
         catch (error) { console.warn("[Durable] Request diagnostics failed", error); }
         if (child) { validate = () => {}; return; }

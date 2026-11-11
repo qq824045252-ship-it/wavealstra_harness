@@ -120,8 +120,8 @@ export const RULE_TEXTS: Array<{ ruleId: string; text: string }> = [
   { ruleId: "A2", text: "请求被进程退出打断（interrupted）→ 观测缺口，不算失败" },
   { ruleId: "A3", text: "同一请求发生重试 → 需注意" },
   { ruleId: "A4", text: "HTTP 429/5xx → 异常" },
-  { ruleId: "A6", text: "工具失败；同名工具连续失败 → 异常（疑似循环）" },
-  { ruleId: "A7", text: "工具诊断非空（写冲突/降级/模型回退）→ 需注意" },
+  { ruleId: "A6", text: "工具层故障（参数非法／被拦截／崩溃）→ 异常；命令以非零退出码结束 → 需注意" },
+  { ruleId: "A7", text: "工具诊断含真实降级/冲突（写冲突、模型回退等）→ 需注意；图片、截断等阅读提示不计" },
   { ruleId: "A8", text: "工具观测不完整（complete=false）→ 观测缺口" },
   { ruleId: "A9", text: "本轮在等待用户回答/审批 → 状态「在等人」，不算故障" },
   { ruleId: "B1", text: "用量字段缺失 → 观测缺口（不按 0 计）" },
@@ -288,20 +288,37 @@ function requestFindings(requests: ModelRequestDiagnostic[], cache: CacheSummary
   return findings;
 }
 
+/**
+ * 阅读类提示不是降级：图片读取（image）、输出截断（truncated / full_output）、
+ * 「N more lines in file…」的分段提示都只说明「还要继续读」，不构成故障。
+ */
+function isInformationalToolDiagnostic(text: string): boolean {
+  return text === "image" || text === "truncated" || text === "full_output"
+    || /^\d+ more lines in file/i.test(text) || /^读取结果已截断/.test(text);
+}
+
 function toolFindings(tools: ToolDiagnostic[]): Finding[] {
   const findings: Finding[] = [];
   const failures = new Map<string, number>();
   for (const tool of tools) {
     if (tool.status === "failed") {
-      findings.push({
+      // exit_code 是命令自身的退出状态，不是宿主工具故障；参数非法/被拦截/崩溃才判异常。
+      const exitOnly = tool.diagnostics.length === 1 && tool.diagnostics[0] === "exit_code";
+      findings.push(exitOnly ? {
+        ruleId: "A6", verdict: "warn",
+        title: `工具 ${tool.name} 命令非零退出`,
+        evidence: "命令以非零退出码结束；命令输出见工具结果",
+        basis: "exit_code 表示命令自身失败；宿主工具正常执行并返回了退出码。",
+      } : {
         ruleId: "A6", verdict: "error",
         title: `工具 ${tool.name} 失败`,
         evidence: tool.diagnostics.join("、") || "无诊断文本",
-        basis: "工具结束事件标记 isError。",
+        basis: "工具结束事件标记 isError，且不是普通命令退出码。",
       });
-      failures.set(tool.name, (failures.get(tool.name) ?? 0) + 1);
+      if (!exitOnly) failures.set(tool.name, (failures.get(tool.name) ?? 0) + 1);
     }
-    if (tool.status === "interrupted" || !tool.complete) {
+    // 失败工具不再重复标「观测不完整」：失败本身就是结论，A6 已记录。
+    if (tool.status !== "failed" && (tool.status === "interrupted" || !tool.complete)) {
       findings.push({
         ruleId: "A8", verdict: "unknown",
         title: `工具 ${tool.name} 观测不完整`,
@@ -309,13 +326,16 @@ function toolFindings(tools: ToolDiagnostic[]): Finding[] {
         basis: "complete=false（进程退出/观测中断）。",
       });
     }
-    if (tool.diagnostics.length > 0 && tool.status !== "failed") {
-      findings.push({
-        ruleId: "A7", verdict: "warn",
-        title: `工具 ${tool.name} 有降级/冲突诊断`,
-        evidence: tool.diagnostics.join("、"),
-        basis: "工具结果携带诊断文本（写冲突、模型回退等）。",
-      });
+    if (tool.status !== "failed") {
+      const meaningful = tool.diagnostics.filter((text) => !isInformationalToolDiagnostic(text));
+      if (meaningful.length > 0) {
+        findings.push({
+          ruleId: "A7", verdict: "warn",
+          title: `工具 ${tool.name} 有降级/冲突诊断`,
+          evidence: meaningful.join("、"),
+          basis: "工具结果携带真实降级/冲突文本（写冲突、模型回退等）；阅读类提示（图片/截断）不计。",
+        });
+      }
     }
   }
   for (const [name, count] of failures) {
@@ -324,7 +344,7 @@ function toolFindings(tools: ToolDiagnostic[]): Finding[] {
         ruleId: "A6", verdict: "error",
         title: `同名工具连续失败 ${count} 次`,
         evidence: `${name} × ${count}`,
-        basis: "同一轮内同名工具失败 ≥2 次，属于循环征兆。",
+        basis: "同一轮内同名工具因工具层故障失败 ≥2 次，属于循环征兆。",
       });
     }
   }

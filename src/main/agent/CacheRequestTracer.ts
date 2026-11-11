@@ -113,8 +113,14 @@ export class CacheRequestTracer {
       fields: this.fields(body, FIELDS, new Set([field])), bytes };
   }
 
-  start(model: { provider: string; id: string; api: string }, sessionId?: string, boundary?: CacheTraceBoundary, observer?: CacheTraceSink) {
+  /** Callers pass the full Pi `Model`; `cost` is the catalog's unit prices and may be absent. */
+  start(model: { provider: string; id: string; api: string; cost?: { input: number; output: number; cacheRead: number; cacheWrite: number } },
+    sessionId?: string, boundary?: CacheTraceBoundary, observer?: CacheTraceSink) {
     const emit = (value: Json, privateDiagnostic?: Json) => { const record = this.emit(value); try { observer?.({ ...record, ...privateDiagnostic }); } catch { /* observation cannot fail a request */ } };
+    // Four zero unit prices mean the model has no configured pricing: Pi's computed total of 0 is then
+    // not a bill, so it must not be recorded as a known pi-native cost.
+    const pricingConfigured = !!model.cost
+      && [model.cost.input, model.cost.output, model.cost.cacheRead, model.cost.cacheWrite].some(price => price > 0);
     const startedAt = Date.now();
     const startedClock = performance.now();
     let firstResponseAt: number | null = null;
@@ -246,7 +252,7 @@ export class CacheRequestTracer {
       result: (message: { responseId?: string; responseModel?: string; stopReason: string; errorMessage?: string; usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; cost?: { total?: number } } }) => {
         try {
           const u = message.usage;
-          const cost = nativeCostEvidence(u, reported, providerCost);
+          const cost = nativeCostEvidence(u, reported, providerCost, pricingConfigured);
           emit({ ...base, event: 'result', attempts, startedAt, firstResponseAt, modelMs: Math.max(0, performance.now() - startedClock),
             reportedUsage: reported, usageSource,
             nativeCostTotal: cost.total, nativeCostSource: cost.source, nativeCostComplete: cost.complete,

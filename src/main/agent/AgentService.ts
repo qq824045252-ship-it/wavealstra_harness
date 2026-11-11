@@ -1822,8 +1822,21 @@ export class AgentService {
       reportedUsage: this.taskDiagnostics.usageForGeneration(taskId, info.conversationId, info.generationTaskId),
       persistedEntryId: `durable:${taskId}:${info.conversationId}:generation:${info.generationTaskId}:${message.timestamp}`,
       sourceKind: info.sourceKind, sourceDetail: "pi-durable", message, userTurn: null,
+      // 模型没有配置单价时，pi 的 cost.total=0 不是账单；显式告诉用量统计不要记成真实 0。
+      pricingConfigured: this.durablePricingConfigured(message.provider, message.model),
       sample: { turnIndex: info.generationTaskId, requestStartedAt: null, firstResponseAt: null, completedAt: message.timestamp,
         ttftMs: null, decodeMs: null, generationTps: null, modelWallMs: null, outputTokens: message.usage.output, reasoningTokens: null } });
+  }
+
+  /** 模型目录里的单价是否真实配置；用于区分「未配置 → 0」与「真实 0 费用」。 */
+  private durablePricingConfigured(provider?: string | null, modelId?: string | null): boolean | undefined {
+    if (!provider || !modelId) return undefined;
+    try {
+      const model = this.durableModels?.getModel(provider, modelId);
+      const price = model?.cost;
+      if (!price) return undefined;
+      return [price.input, price.output, price.cacheRead, price.cacheWrite].some(value => typeof value === "number" && value > 0);
+    } catch { return undefined; }
   }
 
   private readonly durableAssemblies = new Map<string, { key: string; assembly: AssemblyTraceDto }>();
@@ -4643,6 +4656,7 @@ export class AgentService {
           this.usageStats.recordLive({ taskId: binding.parentTaskId ?? null, sessionFile: `auxiliary:${binding.id}:${conversationId}`,
             persistedEntryId: `auxiliary:${binding.id}:${conversationId}:generation:${generationTaskId}:${message.timestamp}`,
             sourceKind: binding.kind === "btw" ? "btw" : "auxiliary", sourceDetail: binding.kind, message, userTurn: null,
+            pricingConfigured: this.durablePricingConfigured(message.provider, message.model),
             reportedUsage: this.taskDiagnostics.usageForGeneration(binding.parentTaskId, conversationId, generationTaskId, `${binding.kind}:${binding.id}`),
             sample: { turnIndex: generationTaskId, requestStartedAt: null, firstResponseAt: null, completedAt: message.timestamp,
               ttftMs: null, decodeMs: null, generationTps: null, modelWallMs: null, outputTokens: message.usage.output, reasoningTokens: null } });

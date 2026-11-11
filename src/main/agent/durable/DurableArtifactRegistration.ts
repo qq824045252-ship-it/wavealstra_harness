@@ -43,7 +43,14 @@ export function durableRegisteredArtifact(entry: EntryRecord, inputId: number, w
 export async function inspectDurableArtifact(cwd: string, path: string, directory?: string): Promise<Pick<DurableArtifactRegistration, "path" | "cwd" | "digest" | "sizeBytes"> & { snapshotPath?: string }> {
   const root = await realpath(cwd), requested = resolve(root, path);
   if (!inside(root, requested)) throw new Error("Artifact path must be inside the bound workspace");
-  const canonical = await realpath(requested);
+  let canonical: string;
+  try { canonical = await realpath(requested); }
+  catch (error) {
+    // 常见误用：先 register_artifact 再 write。给出可执行提示，避免模型原样重试。
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") throw new Error(
+      `文件尚不存在：${path}。请先用 write/编辑或 shell 命令把文件创建出来再登记；write/edit 成功后会自动登记，只有 shell/Python 等生成的文件才需要手动调用 register_artifact。`);
+    throw error;
+  }
   if (!inside(root, canonical)) throw new Error("Artifact resolves outside the bound workspace");
   const before = await lstat(canonical);
   if (!before.isFile()) throw new Error("Artifact must be a regular file");
@@ -152,7 +159,7 @@ async function register(path: string, api: Api, context: Context, directory: str
 export function createDurableArtifactRegistrationTool(directory: string): ToolRegistration {
   return defineTool({
     name: "register_artifact", replay: "safe",
-    description: "Register a generated file for display in this task's deliverables. Immediately after creating a file with shell, Python or another tool, call register_artifact with its path; do not wait for your final reply. The host verifies a regular file within the bound workspace and records its hash and size durably. Register only intended output files; do not enumerate the workspace. This records generated evidence, not acceptance or task completion. Call again after changing the file to record its new version.",
+    description: "Register a generated file for display in this task's deliverables. write and edit register their target automatically, so this tool is mainly for files produced by shell, Python or other tools. Call it immediately after the file exists; do not call it before creating the file and do not wait for your final reply. The host verifies a regular file within the bound workspace and records its hash and size durably. Register only intended output files; do not enumerate the workspace. This records generated evidence, not acceptance or task completion. Call again after changing the file to record its new version.",
     parameters: Type.Object({ path: Type.String({ minLength: 1, description: "Generated file path, relative to the bound workspace or absolute within it." }) }),
     execute: async ({ path }, api, context) => {
       const data = await register(path, api, context, directory);

@@ -67,6 +67,19 @@ try {
   const interrupted = value.tools.find(row => row.id.endsWith(":31"));
   assert.equal(interrupted?.status, "interrupted"); assert.equal(interrupted?.complete, false);
   assert.equal(interrupted?.activeMs, 0, "unobserved downtime is not charged as tool time");
+
+  // 轮身份：generationTaskId 已知的工具与请求同轮；旧记录按同会话最近完成的请求归轮。
+  const legacyTool = value.tools.find(row => row.id.endsWith(":30"));
+  assert.equal(legacyTool?.executionId, "durable:task:7:11", "旧工具记录按前序请求归轮");
+  assert.equal(legacyTool?.derivedExecution, true, "旧记录标记归轮为推断");
+  diagnostics.observeTool({ taskId: "task", conversationId: "7", toolTaskId: 40, callId: "call-gen", name: "bash",
+    sourceKind: "main", phase: "start", at: now + 2_000, generationTaskId: 11 });
+  diagnostics.observeTool({ taskId: "task", conversationId: "7", toolTaskId: 40, callId: "call-gen", name: "bash",
+    sourceKind: "main", phase: "finish", at: now + 2_500, generationTaskId: 11 });
+  value = diagnostics.list("task");
+  const generated = value.tools.find(row => row.id.endsWith(":40"));
+  assert.equal(generated?.executionId, "durable:task:7:11", "工具直接挂到产生它的 generation 轮");
+  assert.equal(generated?.derivedExecution, false, "新记录不标推断");
   const statistics = new UsageStatsService(db.connection);
   statistics.recordLive({ taskId: "task", sessionFile: "durable:task:8", sourceKind: "subagent", sourceDetail: "pi-durable",
     persistedEntryId: "diagnostic-usage", message: { ...result, provider: model.provider, model: model.id, timestamp: now },
@@ -88,11 +101,14 @@ try {
   // 分母 = input + cacheRead + cacheWrite = 10 + 20 + 0，命中率不能因为上报缺失退回 null。
   assert.equal(statistics.dashboard(1).cacheHitRate, 20 / 30, "命中率按已知分量计算，不再整窗 null");
   assert.equal(diagnostics.list("task", 1, 1).requests.length, 1);
-  // 轮次身份：请求与工具/等待共用同一个 executionId 口径（不靠时间窗口猜归属）。
+  // 轮次身份：请求与工具/等待归到同一个 generation 轮（新记录写入即对齐；
+  // 旧记录读取时按同会话最近完成的请求推断，并在面板标注「归轮为推断」）。
   const turnRow = diagnostics.list("task").requests.find(row => row.generationTaskId === 11)!;
   assert.equal(turnRow.executionId, "durable:task:7:11", `请求带轮次身份（${turnRow.executionId}）`);
-  assert.equal(diagnostics.list("task").tools.find(row => row.id.endsWith(":30"))?.executionId, "durable:task:7:30",
-    "工具用同一口径（durable:task:conversation:turnTaskId）");
+  const legacyTurnTool = diagnostics.list("task").tools.find(row => row.id.endsWith(":30"))!;
+  assert.equal(legacyTurnTool.executionId, "durable:task:7:11",
+    "工具归到同一 generation 轮（不再是 durable:task:7:30 的工具专属轮）");
+  assert.equal(legacyTurnTool.derivedExecution, true, "旧记录标注归轮为推断");
   // 默认不再按 200 条截断：规则与基线需要整段观测。
   const insert = db.connection.prepare("INSERT INTO task_request_diagnostics VALUES(?,?,?,?)");
   for (let index = 0; index < 260; index += 1) {

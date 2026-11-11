@@ -113,6 +113,7 @@ Read for view/get/query/watch, DOM edits, batch or raw XML syntax: [references/c
 | Modifying an open file | Close the file in PowerPoint/WPS first |
 | `\n` in shell strings | Use `\\n` for newlines in `--prop text="..."` |
 | `$` in shell text | `--prop text="$15M"` strips `$15`. Use single quotes: `--prop text='$15M'`, or heredoc batch |
+| `Access to the path '…\\Temp\\tmp*.tmp' is denied` / 工作区 `.tmp_officecli` 被拒 | 本机写权限或瞬时锁被拒，不是文档路径错误。不要对同一路径反复重试：改用内置 `write` 直接生成文本/表格文件，或在本任务工作区用 Python/脚本生成后再 `register_artifact`；确需 Office 格式时换一个工作区内路径（如 `<cwd>/产物/…`）只重试一次，仍失败就如实报告阻塞 |
 
 ---
 

@@ -52,6 +52,8 @@ export const SUBAGENT_PREFIX = "sub:";
 
 export interface RecordLiveInput {
   reportedUsage?: import("../../shared/task-diagnostics").ReportedTokenUsage & { costTotal: number | null };
+  /** 模型目录是否配置了单价；显式 false 表示「0 不是账单」。缺省时沿用旧口径。 */
+  pricingConfigured?: boolean;
   taskId: string | null;
   sessionFile: string | null;
   sourceKind: "main" | "btw" | "subagent" | "auxiliary";
@@ -326,6 +328,9 @@ export class UsageStatsService {
     const attributed = applyMyBuddyModelAttribution(message, input.modelId);
     const entryId = input.persistedEntryId ?? `${LIVE_PREFIX}${sessionFile ?? input.taskId ?? "?"}:${message.responseId ?? `ti${sample.turnIndex}`}`;
     const total = (counts.input ?? 0) + (counts.output ?? 0) + (counts.cacheRead ?? 0) + (counts.cacheWrite ?? 0);
+    // 与执行诊断同一个费用口径：模型没有配置单价时，pi 算出的 0 不是账单，
+    // 记成「未知」（cost_known=0），而不是把 0 当真实费用写进事实表。
+    const cost = nativeCostEvidence(native, reported, reported?.costTotal ?? null, input.pricingConfigured);
     this.db
       .prepare(
         `INSERT OR IGNORE INTO usage_events (
@@ -363,7 +368,7 @@ export class UsageStatsService {
         cacheWrite1h: native?.cacheWrite1h ?? null,
         reasoningTokens: native?.reasoning ?? null,
         totalTokens: total,
-        costTotal: native?.cost?.total ?? 0,
+        costTotal: cost.total ?? 0,
         costInput: native?.cost?.input ?? 0,
         costOutput: native?.cost?.output ?? 0,
         costCacheRead: native?.cost?.cacheRead ?? 0,
@@ -385,7 +390,11 @@ export class UsageStatsService {
     // 未知。每行都写，取代 queryRows 里「token>0 才算已知」的旧启发式（它把真实的 0
     // 当成未知，让面板整片显示「未知」）。
     // cost：有真实用量即视为已知（没上报费用就是 0，见 queryRows 的同款口径）。
-    const costKnown = total > 0 || reported?.costTotal != null || nativeCostEvidence(native, reported).complete;
+    // cost：显式给出定价状态时按「未配置单价 = 未知」；否则沿用旧口径（有真实用量即视为已知，
+    // 没上报费用就是 0），避免让不掌握模型目录的历史调用方出现口径漂移。
+    const costKnown = input.pricingConfigured === undefined
+      ? total > 0 || reported?.costTotal != null || nativeCostEvidence(native, reported).complete
+      : reported?.costTotal != null || cost.complete;
     if (this.coverageAvailable) try {
       this.db.prepare("INSERT OR IGNORE INTO usage_event_coverage VALUES (?,?,?,?,?,?)")
         .run(entryId, Number(counts.input !== null), Number(counts.output !== null), Number(counts.cacheRead !== null), Number(counts.cacheWrite !== null), Number(costKnown));

@@ -146,6 +146,34 @@ console.log("== 硬规则 ==");
   assert(downgraded.turns[0]?.verdict === "warn", "工具降级诊断 → 需注意");
   assert(downgraded.turns[0]?.findings.some((finding) => finding.ruleId === "A7"), "A7 原样带诊断文本");
 
+  // 命令非零退出是命令自身的失败，不是宿主工具故障：判需注意而不是异常。
+  const exitOnly = buildDiagnosticsReport(dto({ tools: [
+    tool({ id: "a", executionId: "t1", name: "bash", status: "failed", diagnostics: ["exit_code"] }),
+  ] }), NOW);
+  assert(exitOnly.turns[0]?.verdict === "warn", "命令非零退出 → 需注意");
+  assert(exitOnly.turns[0]?.findings.some((finding) => finding.title.includes("命令非零退出")), "A6 区分命令退出与工具故障");
+  const twoExitOnly = buildDiagnosticsReport(dto({ tools: [
+    tool({ id: "a", executionId: "t1", name: "bash", status: "failed", diagnostics: ["exit_code"] }),
+    tool({ id: "b", executionId: "t1", name: "bash", status: "failed", diagnostics: ["exit_code"] }),
+  ] }), NOW);
+  assert(twoExitOnly.turns[0]?.verdict === "warn", "同一轮两条命令非零退出不判『循环异常』");
+  assert(!twoExitOnly.turns[0]?.findings.some((finding) => finding.title.includes("同名工具连续失败")), "正常命令退出不累计成循环");
+  // 工具层故障（参数非法/被拦截）才是异常。
+  const invalidArgs = buildDiagnosticsReport(dto({ tools: [
+    tool({ id: "a", executionId: "t1", name: "bash", status: "failed", diagnostics: ["invalid_arguments"] }),
+  ] }), NOW);
+  assert(invalidArgs.turns[0]?.verdict === "error", "工具层故障 → 异常");
+  assert(!invalidArgs.turns[0]?.findings.some((finding) => finding.ruleId === "A8"), "失败工具不再重复标观测不完整");
+
+  // 阅读类提示（图片/截断/分段）不是降级诊断，不应制造「需注意」。
+  const reading = buildDiagnosticsReport(dto({ tools: [
+    tool({ id: "a", executionId: "t1", name: "read", diagnostics: ["image"] }),
+    tool({ id: "b", executionId: "t1", name: "read", diagnostics: ["truncated"] }),
+    tool({ id: "c", executionId: "t1", name: "read", diagnostics: ["45 more lines in file. Use offset=31 to continue."] }),
+  ] }), NOW);
+  assert(reading.turns[0]?.verdict === "ok", "图片/截断/分段提示保持正常");
+  assert(!reading.turns[0]?.findings.some((finding) => finding.ruleId === "A7"), "阅读类提示不触发 A7");
+
   const waiting = buildDiagnosticsReport(dto({
     requests: [request({ id: "r1", executionId: "t1" })],
     waits: [wait({ id: "w1", executionId: "t1", status: "pending", finishedAt: null })],

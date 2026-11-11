@@ -81,7 +81,7 @@ function RequestDetails({ request }: { request: ModelRequestDiagnostic }) {
 
 function ToolTable({ tools }: { tools: ToolDiagnostic[] }): React.JSX.Element {
   return <div className="task-diagnostic-table-wrap"><table><thead><tr><th>工具／执行身份</th><th>来源</th><th>状态</th><th>执行观测</th><th>其中等待</th></tr></thead>
-    <tbody>{tools.map(tool => <tr key={tool.id}><td>{tool.name}<small><code>{tool.id}</code></small>{tool.diagnostics.length > 0 && <small>{tool.diagnostics.join("、")}</small>}</td>
+    <tbody>{tools.map(tool => <tr key={tool.id}><td>{tool.name}<small><code>{tool.id}</code></small>{tool.diagnostics.length > 0 && <small>{tool.diagnostics.join("、")}</small>}{tool.derivedExecution && <small>旧记录：按同会话前序请求归轮</small>}</td>
       <td>{sourceLabels[tool.sourceKind]}</td><td>{statusLabels[tool.status]}</td><td>{duration(!tool.complete && tool.observedMs === 0 ? null : tool.activeMs)}{tool.complete ? "" : "（不完整）"}</td><td>{duration(tool.waitingMs)}</td></tr>)}</tbody></table></div>;
 }
 

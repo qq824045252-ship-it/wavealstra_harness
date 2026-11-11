@@ -41,6 +41,12 @@ export interface ToolDiagnosticEvent {
   executionScope?: string;
   conversationId: string;
   toolTaskId: number;
+  /**
+   * 产生这次工具调用的 generation 任务 id。工具本身是独立的 ToolTask，
+   * 但一次模型请求可能先后发出多个工具；没有它，每个工具都会被当成单独一轮。
+   * 恢复/无法取得时缺省，读取侧再按「同会话最近完成的请求」归轮。
+   */
+  generationTaskId?: number;
   callId: string;
   name: string;
   sourceKind: DiagnosticSource;
@@ -63,6 +69,8 @@ export interface ToolDiagnostic {
   waitingMs: number;
   complete: boolean;
   diagnostics: string[];
+  /** 旧记录没有 generation 字段，执行身份是按「同会话最近完成的请求」推断归轮的。 */
+  derivedExecution?: boolean;
 }
 export interface WaitDiagnostic {
   id: string;
