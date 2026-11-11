@@ -1,0 +1,2187 @@
+{
+  "sources": {
+    "baselineCommit": "3a892555a1105024d026d1c80f204fdd6b6e6591",
+    "head": "3a892555a1105024d026d1c80f204fdd6b6e6591",
+    "candidate": {
+      "src/main/agent/work/BotConversationRepository.ts": "cc7af6aab35811e90b9b261e06969fb7c8af0bd76ef8d08256187e168cc7c25e",
+      "src/main/agent/work/BotReportImageService.ts": "95fcaceafefb6a30eb21087312f1dcf1596c53be7b1efc55bb6452b969f65279",
+      "src/main/agent/work/BotConversationService.ts": "2b30621f9ba425638eae49fc3ec6ea272aff0d4f449660fd4519ca6a3bf88b41",
+      "src/renderer/src/store/app/slices/botConversation.ts": "ba0637dfba73fa86afccd1b7722b3eb181ba15f2d2a2ddd66405964403c9609e",
+      "src/renderer/src/components/pages/BotWorkspacePage.tsx": "cc219e063bfa530db05333cbdae0edb4e1721bdf2216ef832a005952448668b8",
+      "scripts/bot-conversation-concurrent-desktop-fixture.tsx": "05b33a42a4a58cc1b95cd112f7d5aaa1e4beeefd81dec4a739d6f48cf0dd89f1",
+      "scripts/perf-bot-history-load.cjs": "ffd00aead25a0fd43b6c0d3a7e4b7f4f57c97bf74ec14a7808abc41c7320fbbf",
+      "scripts/perf-bot-history-load-fixture.ts": "289f9bd28e2510828d07ca0832e667e3b8d66501c3f0f2cbdbbc0e7f471e1963",
+      "scripts/perf-bot-history-load-renderer.ts": "bf7338d037215a02b20fc9944afc21325d7284386de4a4c760e7a98535a02332"
+    },
+    "baseline": {
+      "src/main/agent/work/BotConversationRepository.ts": "54a772c72719c8473c7f6aa6d4f10da4643ce52e997b2d48b68c4b86da2ddbc9",
+      "src/main/agent/work/BotReportImageService.ts": "6d4421c3defe085f09590dbc324955a9f62fd82d5849cc12d4bd679e047e9d01"
+    },
+    "diff": "diff --git a/src/main/agent/work/BotConversationRepository.ts b/src/main/agent/work/BotConversationRepository.ts\nindex 2e1563ff..aeb277e2 100644\n--- a/src/main/agent/work/BotConversationRepository.ts\n+++ b/src/main/agent/work/BotConversationRepository.ts\n@@ -96,6 +96,16 @@ export class BotConversationRepository {\n     return row ? this.mapMessage(row) : undefined;\n   }\n \n+  /** Image recovery only needs host feedback messages. Filter the current DB\n+   * before mapping unrelated attachments/metrics/segments; never trust a stale\n+   * history DTO to decide whether feedback has since been added. */\n+  messageWithWorkFeedback(messageId: string): BotMessageDto | undefined {\n+    const row = this.db.prepare(`SELECT m.* FROM bot_messages m\n+      JOIN bot_work_feedback f ON f.message_id=m.message_id\n+      WHERE m.message_id=? AND m.role='assistant'`).get(messageId);\n+    return row ? this.mapMessage(row) : undefined;\n+  }\n+\n   messageBelongsToConversation(userId: string, conversationId: string, messageId: string): boolean {\n     return Boolean(this.db.prepare(`SELECT 1 FROM bot_messages m JOIN bot_conversations c ON c.conversation_id=m.conversation_id\n       JOIN bot_conversations target ON target.conversation_id=? AND target.user_id=c.user_id\ndiff --git a/src/main/agent/work/BotReportImageService.ts b/src/main/agent/work/BotReportImageService.ts\nindex 78f0adee..fd3cfe84 100644\n--- a/src/main/agent/work/BotReportImageService.ts\n+++ b/src/main/agent/work/BotReportImageService.ts\n@@ -67,7 +67,7 @@ export class BotReportImageService {\n     if (!service) return undefined;\n     if (this.db.inTransaction) throw new Error(\"报告图片读取必须在 Work 事务外执行\");\n     // Always reload host-authored metadata. Renderer input cannot supply binding/root.\n-    const message = this.messages.message(messageId);\n+    const message = this.messages.messageWithWorkFeedback(messageId);\n     const feedback = message?.workFeedback;\n     if (!message || message.role !== \"assistant\" || !feedback?.executionId\n       || ![\"binding\", \"result\"].includes(feedback.kind) || !message.workIds.includes(feedback.workId)) return undefined;"
+  },
+  "environment": {
+    "electron": "44.5.1",
+    "chromium": "152.0.7977.130",
+    "node": "24.21.0",
+    "platform": "linux",
+    "arch": "x64",
+    "cpus": "AMD Ryzen 7 4800H with Radeon Graphics",
+    "samples": 8
+  },
+  "methodology": {
+    "diskMessagesPerScenario": 10000,
+    "rowsPerRequest": 100,
+    "mixedLatestPage": {
+      "ordinary": 75,
+      "feedbackNoImage": 15,
+      "feedbackWithImage": 10
+    },
+    "mainWarmupPairs": 2,
+    "uiWarmupPairs": 1,
+    "order": "Alternating AB/BA pairs, same DB/Work/artifacts/renderer",
+    "coldCapture": "One candidate-only first capture sample; no baseline cold-speedup claim",
+    "overhead": "SQL execution/prepare counters; process.cpuUsage snapshots; IPC timing payload; renderer two-frame barrier. CPU is whole main-process user+system, not thread-specific. No product/model/provider/full-app startup."
+  },
+  "firstCapture": {
+    "ordinary": {
+      "historyMs": 12.419328999999834,
+      "hydrationMs": 4.002465000000029,
+      "mainMs": 16.463909000000058,
+      "historyCpuMs": 15.701,
+      "hydrationCpuMs": 4.271,
+      "mainCpuMs": 19.989,
+      "historySql": 604,
+      "hydrationSql": 100,
+      "historyPrepares": 604,
+      "hydrationPrepares": 100,
+      "messages": 100,
+      "bytes": 59746
+    },
+    "mixed": {
+      "historyMs": 11.781945000000178,
+      "hydrationMs": 25.50662999999986,
+      "mainMs": 37.30498799999987,
+      "historyCpuMs": 12.091,
+      "hydrationCpuMs": 28.084,
+      "mainCpuMs": 40.182,
+      "historySql": 604,
+      "hydrationSql": 470,
+      "historyPrepares": 604,
+      "hydrationPrepares": 470,
+      "messages": 100,
+      "bytes": 74791
+    }
+  },
+  "main": [
+    {
+      "scenario": "ordinary",
+      "variant": "baseline",
+      "sample": 0,
+      "historyMs": 10.611245000000054,
+      "hydrationMs": 13.966339999999946,
+      "mainMs": 24.593369000000166,
+      "historyCpuMs": 12.597,
+      "hydrationCpuMs": 14.318,
+      "mainCpuMs": 26.923,
+      "historySql": 604,
+      "hydrationSql": 700,
+      "historyPrepares": 604,
+      "hydrationPrepares": 700,
+      "messages": 100,
+      "bytes": 59746
+    },
+    {
+      "scenario": "ordinary",
+      "variant": "candidate",
+      "sample": 0,
+      "historyMs": 10.652242000000115,
+      "hydrationMs": 3.6941109999997934,
+      "mainMs": 14.36297599999989,
+      "historyCpuMs": 10.669,
+      "hydrationCpuMs": 3.704,
+      "mainCpuMs": 14.382,
+      "historySql": 604,
+      "hydrationSql": 100,
+      "historyPrepares": 604,
+      "hydrationPrepares": 100,
+      "messages": 100,
+      "bytes": 59746
+    },
+    {
+      "scenario": "ordinary",
+      "variant": "candidate",
+      "sample": 1,
+      "historyMs": 10.392009000000144,
+      "hydrationMs": 3.700256999999965,
+      "mainMs": 14.111613000000034,
+      "historyCpuMs": 11.611,
+      "hydrationCpuMs": 3.86,
+      "mainCpuMs": 15.481,
+      "historySql": 604,
+      "hydrationSql": 100,
+      "historyPrepares": 604,
+      "hydrationPrepares": 100,
+      "messages": 100,
+      "bytes": 59746
+    },
+    {
+      "scenario": "ordinary",
+      "variant": "baseline",
+      "sample": 1,
+      "historyMs": 10.543498,
+      "hydrationMs": 14.027172999999948,
+      "mainMs": 24.586455000000115,
+      "historyCpuMs": 10.905,
+      "hydrationCpuMs": 14.175,
+      "mainCpuMs": 25.09,
+      "historySql": 604,
+      "hydrationSql": 700,
+      "historyPrepares": 604,
+      "hydrationPrepares": 700,
+      "messages": 100,
+      "bytes": 59746
+    },
+    {
+      "scenario": "ordinary",
+      "variant": "baseline",
+      "sample": 2,
+      "historyMs": 10.608661000000211,
+      "hydrationMs": 14.669165000000248,
+      "mainMs": 25.29521700000032,
+      "historyCpuMs": 11.396,
+      "hydrationCpuMs": 18.248,
+      "mainCpuMs": 29.653,
+      "historySql": 604,
+      "hydrationSql": 700,
+      "historyPrepares": 604,
+      "hydrationPrepares": 700,
+      "messages": 100,
+      "bytes": 59746
+    },
+    {
+      "scenario": "ordinary",
+      "variant": "candidate",
+      "sample": 2,
+      "historyMs": 10.249809999999798,
+      "hydrationMs": 3.9574179999999615,
+      "mainMs": 14.22252299999991,
+      "historyCpuMs": 10.266,
+      "hydrationCpuMs": 4.965,
+      "mainCpuMs": 15.242,
+      "historySql": 604,
+      "hydrationSql": 100,
+      "historyPrepares": 604,
+      "hydrationPrepares": 100,
+      "messages": 100,
+      "bytes": 59746
+    },
+    {
+      "scenario": "ordinary",
+      "variant": "candidate",
+      "sample": 3,
+      "historyMs": 10.291785000000345,
+      "hydrationMs": 3.684472999999798,
+      "mainMs": 13.990995000000112,
+      "historyCpuMs": 10.571,
+      "hydrationCpuMs": 3.695,
+      "mainCpuMs": 14.274,
+      "historySql": 604,
+      "hydrationSql": 100,
+      "historyPrepares": 604,
+      "hydrationPrepares": 100,
+      "messages": 100,
+      "bytes": 59746
+    },
+    {
+      "scenario": "ordinary",
+      "variant": "baseline",
+      "sample": 3,
+      "historyMs": 10.38404700000001,
+      "hydrationMs": 15.126634000000195,
+      "mainMs": 25.52562700000044,
+      "historyCpuMs": 10.399,
+      "hydrationCpuMs": 15.496,
+      "mainCpuMs": 25.903,
+      "historySql": 604,
+      "hydrationSql": 700,
+      "historyPrepares": 604,
+      "hydrationPrepares": 700,
+      "messages": 100,
+      "bytes": 59746
+    },
+    {
+      "scenario": "ordinary",
+      "variant": "baseline",
+      "sample": 4,
+      "historyMs": 24.16271999999981,
+      "hydrationMs": 14.578789000000143,
+      "mainMs": 38.7571539999999,
+      "historyCpuMs": 44.454,
+      "hydrationCpuMs": 20.44,
+      "mainCpuMs": 64.901,
+      "historySql": 604,
+      "hydrationSql": 700,
+      "historyPrepares": 604,
+      "hydrationPrepares": 700,
+      "messages": 100,
+      "bytes": 59746
+    },
+    {
+      "scenario": "ordinary",
+      "variant": "candidate",
+      "sample": 4,
+      "historyMs": 10.058442000000014,
+      "hydrationMs": 3.524952000000212,
+      "mainMs": 13.598689000000377,
+      "historyCpuMs": 10.661,
+      "hydrationCpuMs": 3.531,
+      "mainCpuMs": 14.2,
+      "historySql": 604,
+      "hydrationSql": 100,
+      "historyPrepares": 604,
+      "hydrationPrepares": 100,
+      "messages": 100,
+      "bytes": 59746
+    },
+    {
+      "scenario": "ordinary",
+      "variant": "candidate",
+      "sample": 5,
+      "historyMs": 9.756652000000031,
+      "hydrationMs": 3.5736329999999725,
+      "mainMs": 13.345510000000104,
+      "historyCpuMs": 9.775,
+      "hydrationCpuMs": 3.581,
+      "mainCpuMs": 13.364,
+      "historySql": 604,
+      "hydrationSql": 100,
+      "historyPrepares": 604,
+      "hydrationPrepares": 100,
+      "messages": 100,
+      "bytes": 59746
+    },
+    {
+      "scenario": "ordinary",
+      "variant": "baseline",
+      "sample": 5,
+      "historyMs": 10.217541999999867,
+      "hydrationMs": 13.695770999999695,
+      "mainMs": 23.92909699999973,
+      "historyCpuMs": 12.106,
+      "hydrationCpuMs": 14.343,
+      "mainCpuMs": 26.457,
+      "historySql": 604,
+      "hydrationSql": 700,
+      "historyPrepares": 604,
+      "hydrationPrepares": 700,
+      "messages": 100,
+      "bytes": 59746
+    },
+    {
+      "scenario": "ordinary",
+      "variant": "baseline",
+      "sample": 6,
+      "historyMs": 10.161110000000008,
+      "hydrationMs": 13.345718999999917,
+      "mainMs": 23.521985000000313,
+      "historyCpuMs": 10.725,
+      "hydrationCpuMs": 13.356,
+      "mainCpuMs": 24.089,
+      "historySql": 604,
+      "hydrationSql": 700,
+      "historyPrepares": 604,
+      "hydrationPrepares": 700,
+      "messages": 100,
+      "bytes": 59746
+    },
+    {
+      "scenario": "ordinary",
+      "variant": "candidate",
+      "sample": 6,
+      "historyMs": 10.06724099999974,
+      "hydrationMs": 3.514336000000185,
+      "mainMs": 13.597083000000111,
+      "historyCpuMs": 10.086,
+      "hydrationCpuMs": 3.523,
+      "mainCpuMs": 13.616,
+      "historySql": 604,
+      "hydrationSql": 100,
+      "historyPrepares": 604,
+      "hydrationPrepares": 100,
+      "messages": 100,
+      "bytes": 59746
+    },
+    {
+      "scenario": "ordinary",
+      "variant": "candidate",
+      "sample": 7,
+      "historyMs": 9.610122000000047,
+      "hydrationMs": 3.5098659999998745,
+      "mainMs": 13.136121999999887,
+      "historyCpuMs": 9.627,
+      "hydrationCpuMs": 3.518,
+      "mainCpuMs": 13.153,
+      "historySql": 604,
+      "hydrationSql": 100,
+      "historyPrepares": 604,
+      "hydrationPrepares": 100,
+      "messages": 100,
+      "bytes": 59746
+    },
+    {
+      "scenario": "ordinary",
+      "variant": "baseline",
+      "sample": 7,
+      "historyMs": 9.569614000000001,
+      "hydrationMs": 12.990778999999748,
+      "mainMs": 22.576038000000153,
+      "historyCpuMs": 9.581,
+      "hydrationCpuMs": 13.653,
+      "mainCpuMs": 23.243,
+      "historySql": 604,
+      "hydrationSql": 700,
+      "historyPrepares": 604,
+      "hydrationPrepares": 700,
+      "messages": 100,
+      "bytes": 59746
+    },
+    {
+      "scenario": "mixed",
+      "variant": "baseline",
+      "sample": 0,
+      "historyMs": 10.1271670000001,
+      "hydrationMs": 36.93056300000035,
+      "mainMs": 47.07351400000016,
+      "historyCpuMs": 10.358,
+      "hydrationCpuMs": 54.033,
+      "mainCpuMs": 64.399,
+      "historySql": 604,
+      "hydrationSql": 825,
+      "historyPrepares": 604,
+      "hydrationPrepares": 825,
+      "messages": 100,
+      "bytes": 74791
+    },
+    {
+      "scenario": "mixed",
+      "variant": "candidate",
+      "sample": 0,
+      "historyMs": 10.184855999999854,
+      "hydrationMs": 14.81667299999981,
+      "mainMs": 25.017243999999664,
+      "historyCpuMs": 10.198,
+      "hydrationCpuMs": 15.069,
+      "mainCpuMs": 25.275,
+      "historySql": 604,
+      "hydrationSql": 400,
+      "historyPrepares": 604,
+      "hydrationPrepares": 400,
+      "messages": 100,
+      "bytes": 74791
+    },
+    {
+      "scenario": "mixed",
+      "variant": "candidate",
+      "sample": 1,
+      "historyMs": 11.215452000000369,
+      "hydrationMs": 15.796493999999711,
+      "mainMs": 27.028009999999995,
+      "historyCpuMs": 11.474,
+      "hydrationCpuMs": 15.774,
+      "mainCpuMs": 27.269,
+      "historySql": 604,
+      "hydrationSql": 400,
+      "historyPrepares": 604,
+      "hydrationPrepares": 400,
+      "messages": 100,
+      "bytes": 74791
+    },
+    {
+      "scenario": "mixed",
+      "variant": "baseline",
+      "sample": 1,
+      "historyMs": 10.320630000000165,
+      "hydrationMs": 20.780456999999842,
+      "mainMs": 31.116242000000057,
+      "historyCpuMs": 10.339,
+      "hydrationCpuMs": 20.792,
+      "mainCpuMs": 31.139,
+      "historySql": 604,
+      "hydrationSql": 825,
+      "historyPrepares": 604,
+      "hydrationPrepares": 825,
+      "messages": 100,
+      "bytes": 74791
+    },
+    {
+      "scenario": "mixed",
+      "variant": "baseline",
+      "sample": 2,
+      "historyMs": 10.956895000000259,
+      "hydrationMs": 20.586223999999675,
+      "mainMs": 31.55848500000002,
+      "historyCpuMs": 14.872,
+      "hydrationCpuMs": 20.598,
+      "mainCpuMs": 35.479,
+      "historySql": 604,
+      "hydrationSql": 825,
+      "historyPrepares": 604,
+      "hydrationPrepares": 825,
+      "messages": 100,
+      "bytes": 74791
+    },
+    {
+      "scenario": "mixed",
+      "variant": "candidate",
+      "sample": 2,
+      "historyMs": 11.33474299999989,
+      "hydrationMs": 14.212535000000116,
+      "mainMs": 25.56536700000015,
+      "historyCpuMs": 11.356,
+      "hydrationCpuMs": 14.225,
+      "mainCpuMs": 25.591,
+      "historySql": 604,
+      "hydrationSql": 400,
+      "historyPrepares": 604,
+      "hydrationPrepares": 400,
+      "messages": 100,
+      "bytes": 74791
+    },
+    {
+      "scenario": "mixed",
+      "variant": "candidate",
+      "sample": 3,
+      "historyMs": 10.12150900000006,
+      "hydrationMs": 14.270923000000039,
+      "mainMs": 24.4081470000001,
+      "historyCpuMs": 10.11,
+      "hydrationCpuMs": 14.283,
+      "mainCpuMs": 24.404,
+      "historySql": 604,
+      "hydrationSql": 400,
+      "historyPrepares": 604,
+      "hydrationPrepares": 400,
+      "messages": 100,
+      "bytes": 74791
+    },
+    {
+      "scenario": "mixed",
+      "variant": "baseline",
+      "sample": 3,
+      "historyMs": 10.01583699999992,
+      "hydrationMs": 20.92181699999992,
+      "mainMs": 30.953298999999788,
+      "historyCpuMs": 10.034,
+      "hydrationCpuMs": 20.934,
+      "mainCpuMs": 30.977,
+      "historySql": 604,
+      "hydrationSql": 825,
+      "historyPrepares": 604,
+      "hydrationPrepares": 825,
+      "messages": 100,
+      "bytes": 74791
+    },
+    {
+      "scenario": "mixed",
+      "variant": "baseline",
+      "sample": 4,
+      "historyMs": 10.56018899999981,
+      "hydrationMs": 21.062131000000136,
+      "mainMs": 31.638034999999945,
+      "historyCpuMs": 16.43,
+      "hydrationCpuMs": 21.443,
+      "mainCpuMs": 37.882,
+      "historySql": 604,
+      "hydrationSql": 825,
+      "historyPrepares": 604,
+      "hydrationPrepares": 825,
+      "messages": 100,
+      "bytes": 74791
+    },
+    {
+      "scenario": "mixed",
+      "variant": "candidate",
+      "sample": 4,
+      "historyMs": 9.990832999999839,
+      "hydrationMs": 14.450628000000052,
+      "mainMs": 24.456616999999824,
+      "historyCpuMs": 10.008,
+      "hydrationCpuMs": 14.717,
+      "mainCpuMs": 24.735,
+      "historySql": 604,
+      "hydrationSql": 400,
+      "historyPrepares": 604,
+      "hydrationPrepares": 400,
+      "messages": 100,
+      "bytes": 74791
+    },
+    {
+      "scenario": "mixed",
+      "variant": "candidate",
+      "sample": 5,
+      "historyMs": 10.078137000000424,
+      "hydrationMs": 14.690817000000607,
+      "mainMs": 24.78473800000029,
+      "historyCpuMs": 10.095,
+      "hydrationCpuMs": 15.339,
+      "mainCpuMs": 25.444,
+      "historySql": 604,
+      "hydrationSql": 400,
+      "historyPrepares": 604,
+      "hydrationPrepares": 400,
+      "messages": 100,
+      "bytes": 74791
+    },
+    {
+      "scenario": "mixed",
+      "variant": "baseline",
+      "sample": 5,
+      "historyMs": 10.07129200000054,
+      "hydrationMs": 20.9327830000002,
+      "mainMs": 31.019860000000335,
+      "historyCpuMs": 10.736,
+      "hydrationCpuMs": 24.175,
+      "mainCpuMs": 34.92,
+      "historySql": 604,
+      "hydrationSql": 825,
+      "historyPrepares": 604,
+      "hydrationPrepares": 825,
+      "messages": 100,
+      "bytes": 74791
+    },
+    {
+      "scenario": "mixed",
+      "variant": "baseline",
+      "sample": 6,
+      "historyMs": 24.150986999999986,
+      "hydrationMs": 22.409254000000146,
+      "mainMs": 46.576304000000164,
+      "historyCpuMs": 42.839,
+      "hydrationCpuMs": 26.759,
+      "mainCpuMs": 69.606,
+      "historySql": 604,
+      "hydrationSql": 825,
+      "historyPrepares": 604,
+      "hydrationPrepares": 825,
+      "messages": 100,
+      "bytes": 74791
+    },
+    {
+      "scenario": "mixed",
+      "variant": "candidate",
+      "sample": 6,
+      "historyMs": 10.06654299999991,
+      "hydrationMs": 14.256954999999834,
+      "mainMs": 24.3393530000003,
+      "historyCpuMs": 10.079,
+      "hydrationCpuMs": 14.267,
+      "mainCpuMs": 24.354,
+      "historySql": 604,
+      "hydrationSql": 400,
+      "historyPrepares": 604,
+      "hydrationPrepares": 400,
+      "messages": 100,
+      "bytes": 74791
+    },
+    {
+      "scenario": "mixed",
+      "variant": "candidate",
+      "sample": 7,
+      "historyMs": 10.116130999999768,
+      "hydrationMs": 16.997855000000527,
+      "mainMs": 27.130189999999857,
+      "historyCpuMs": 10.128,
+      "hydrationCpuMs": 25.265,
+      "mainCpuMs": 35.402,
+      "historySql": 604,
+      "hydrationSql": 400,
+      "historyPrepares": 604,
+      "hydrationPrepares": 400,
+      "messages": 100,
+      "bytes": 74791
+    },
+    {
+      "scenario": "mixed",
+      "variant": "baseline",
+      "sample": 7,
+      "historyMs": 10.109287000000222,
+      "hydrationMs": 20.276402999999846,
+      "mainMs": 30.403639000000112,
+      "historyCpuMs": 10.129,
+      "hydrationCpuMs": 20.289,
+      "mainCpuMs": 30.427,
+      "historySql": 604,
+      "hydrationSql": 825,
+      "historyPrepares": 604,
+      "hydrationPrepares": 825,
+      "messages": 100,
+      "bytes": 74791
+    }
+  ],
+  "ui": [
+    {
+      "sample": 0,
+      "variant": "baseline",
+      "scenario": "ordinary",
+      "totalMs": 214.59999999403954,
+      "refreshMs": 197.70000000298023,
+      "afterRefreshFramesMs": 16.899999991059303,
+      "domMessages": 100,
+      "scrollHeight": 42041,
+      "transport": [
+        {
+          "historyMs": 30.26556100000016,
+          "hydrationMs": 26.560763000000406,
+          "mainMs": 56.8567750000002,
+          "historyCpuMs": 39.911,
+          "hydrationCpuMs": 26.574,
+          "mainCpuMs": 66.501,
+          "historySql": 604,
+          "hydrationSql": 700,
+          "historyPrepares": 604,
+          "hydrationPrepares": 700,
+          "messages": 100,
+          "bytes": 59746,
+          "roundTripMs": 59.5,
+          "request": {
+            "botId": "bot"
+          }
+        }
+      ]
+    },
+    {
+      "sample": 0,
+      "variant": "candidate",
+      "scenario": "ordinary",
+      "totalMs": 208.20000000298023,
+      "refreshMs": 188.5,
+      "afterRefreshFramesMs": 19.700000002980232,
+      "domMessages": 100,
+      "scrollHeight": 42041,
+      "transport": [
+        {
+          "historyMs": 27.884138999999777,
+          "hydrationMs": 11.817983999999342,
+          "mainMs": 39.73501899999974,
+          "historyCpuMs": 27.98,
+          "hydrationCpuMs": 11.838,
+          "mainCpuMs": 39.838,
+          "historySql": 604,
+          "hydrationSql": 100,
+          "historyPrepares": 604,
+          "hydrationPrepares": 100,
+          "messages": 100,
+          "bytes": 59746,
+          "roundTripMs": 43.29999999701977,
+          "request": {
+            "botId": "bot"
+          }
+        }
+      ]
+    },
+    {
+      "sample": 1,
+      "variant": "candidate",
+      "scenario": "ordinary",
+      "totalMs": 204.59999999403954,
+      "refreshMs": 187.20000000298023,
+      "afterRefreshFramesMs": 17.399999991059303,
+      "domMessages": 100,
+      "scrollHeight": 42041,
+      "transport": [
+        {
+          "historyMs": 27.55280700000003,
+          "hydrationMs": 10.714611000000332,
+          "mainMs": 38.29842800000006,
+          "historyCpuMs": 27.619,
+          "hydrationCpuMs": 10.665,
+          "mainCpuMs": 38.302,
+          "historySql": 604,
+          "hydrationSql": 100,
+          "historyPrepares": 604,
+          "hydrationPrepares": 100,
+          "messages": 100,
+          "bytes": 59746,
+          "roundTripMs": 41.900000005960464,
+          "request": {
+            "botId": "bot"
+          }
+        }
+      ]
+    },
+    {
+      "sample": 1,
+      "variant": "baseline",
+      "scenario": "ordinary",
+      "totalMs": 196,
+      "refreshMs": 179.70000000298023,
+      "afterRefreshFramesMs": 16.299999997019768,
+      "domMessages": 100,
+      "scrollHeight": 42041,
+      "transport": [
+        {
+          "historyMs": 28.134664999999586,
+          "hydrationMs": 26.343622999999752,
+          "mainMs": 54.50978699999996,
+          "historyCpuMs": 29.584,
+          "hydrationCpuMs": 26.334,
+          "mainCpuMs": 55.932,
+          "historySql": 604,
+          "hydrationSql": 700,
+          "historyPrepares": 604,
+          "hydrationPrepares": 700,
+          "messages": 100,
+          "bytes": 59746,
+          "roundTripMs": 57.400000005960464,
+          "request": {
+            "botId": "bot"
+          }
+        }
+      ]
+    },
+    {
+      "sample": 2,
+      "variant": "baseline",
+      "scenario": "ordinary",
+      "totalMs": 197.40000000596046,
+      "refreshMs": 177.29999999701977,
+      "afterRefreshFramesMs": 20.100000008940697,
+      "domMessages": 100,
+      "scrollHeight": 42041,
+      "transport": [
+        {
+          "historyMs": 28.82568699999956,
+          "hydrationMs": 27.01481000000058,
+          "mainMs": 55.87059899999986,
+          "historyCpuMs": 28.856,
+          "hydrationCpuMs": 29.541,
+          "mainCpuMs": 58.41,
+          "historySql": 604,
+          "hydrationSql": 700,
+          "historyPrepares": 604,
+          "hydrationPrepares": 700,
+          "messages": 100,
+          "bytes": 59746,
+          "roundTripMs": 58.29999999701977,
+          "request": {
+            "botId": "bot"
+          }
+        }
+      ]
+    },
+    {
+      "sample": 2,
+      "variant": "candidate",
+      "scenario": "ordinary",
+      "totalMs": 182.59999999403954,
+      "refreshMs": 165.29999999701977,
+      "afterRefreshFramesMs": 17.299999997019768,
+      "domMessages": 100,
+      "scrollHeight": 42041,
+      "transport": [
+        {
+          "historyMs": 27.83042999999998,
+          "hydrationMs": 10.55634900000041,
+          "mainMs": 38.418767000000116,
+          "historyCpuMs": 27.858,
+          "hydrationCpuMs": 10.576,
+          "mainCpuMs": 38.454,
+          "historySql": 604,
+          "hydrationSql": 100,
+          "historyPrepares": 604,
+          "hydrationPrepares": 100,
+          "messages": 100,
+          "bytes": 59746,
+          "roundTripMs": 41.400000005960464,
+          "request": {
+            "botId": "bot"
+          }
+        }
+      ]
+    },
+    {
+      "sample": 3,
+      "variant": "candidate",
+      "scenario": "ordinary",
+      "totalMs": 213.6000000089407,
+      "refreshMs": 197.40000000596046,
+      "afterRefreshFramesMs": 16.200000002980232,
+      "domMessages": 100,
+      "scrollHeight": 42041,
+      "transport": [
+        {
+          "historyMs": 11.311764999999468,
+          "hydrationMs": 4.036689000000479,
+          "mainMs": 15.366194000000178,
+          "historyCpuMs": 13.686,
+          "hydrationCpuMs": 4.049,
+          "mainCpuMs": 17.743,
+          "historySql": 604,
+          "hydrationSql": 100,
+          "historyPrepares": 604,
+          "hydrationPrepares": 100,
+          "messages": 100,
+          "bytes": 59746,
+          "roundTripMs": 85.29999999701977,
+          "request": {
+            "botId": "bot"
+          }
+        }
+      ]
+    },
+    {
+      "sample": 3,
+      "variant": "baseline",
+      "scenario": "ordinary",
+      "totalMs": 162.79999999701977,
+      "refreshMs": 146.8999999910593,
+      "afterRefreshFramesMs": 15.900000005960464,
+      "domMessages": 100,
+      "scrollHeight": 42041,
+      "transport": [
+        {
+          "historyMs": 10.647842999999739,
+          "hydrationMs": 14.002098999999362,
+          "mainMs": 24.6667039999993,
+          "historyCpuMs": 10.739,
+          "hydrationCpuMs": 14.014,
+          "mainCpuMs": 24.762,
+          "historySql": 604,
+          "hydrationSql": 700,
+          "historyPrepares": 604,
+          "hydrationPrepares": 700,
+          "messages": 100,
+          "bytes": 59746,
+          "roundTripMs": 26.599999994039536,
+          "request": {
+            "botId": "bot"
+          }
+        }
+      ]
+    },
+    {
+      "sample": 4,
+      "variant": "baseline",
+      "scenario": "ordinary",
+      "totalMs": 191.70000000298023,
+      "refreshMs": 175.29999999701977,
+      "afterRefreshFramesMs": 16.400000005960464,
+      "domMessages": 100,
+      "scrollHeight": 42041,
+      "transport": [
+        {
+          "historyMs": 25.37581500000033,
+          "hydrationMs": 27.62900499999978,
+          "mainMs": 53.02919500000007,
+          "historyCpuMs": 26.024,
+          "hydrationCpuMs": 27.643,
+          "mainCpuMs": 53.679,
+          "historySql": 604,
+          "hydrationSql": 700,
+          "historyPrepares": 604,
+          "hydrationPrepares": 700,
+          "messages": 100,
+          "bytes": 59746,
+          "roundTripMs": 55.79999999701977,
+          "request": {
+            "botId": "bot"
+          }
+        }
+      ]
+    },
+    {
+      "sample": 4,
+      "variant": "candidate",
+      "scenario": "ordinary",
+      "totalMs": 181.3999999910593,
+      "refreshMs": 163.5,
+      "afterRefreshFramesMs": 17.899999991059303,
+      "domMessages": 100,
+      "scrollHeight": 42041,
+      "transport": [
+        {
+          "historyMs": 28.962578000000576,
+          "hydrationMs": 11.94474799999989,
+          "mainMs": 40.938546000000315,
+          "historyCpuMs": 28.996,
+          "hydrationCpuMs": 11.912,
+          "mainCpuMs": 40.926,
+          "historySql": 604,
+          "hydrationSql": 100,
+          "historyPrepares": 604,
+          "hydrationPrepares": 100,
+          "messages": 100,
+          "bytes": 59746,
+          "roundTripMs": 44.6000000089407,
+          "request": {
+            "botId": "bot"
+          }
+        }
+      ]
+    },
+    {
+      "sample": 5,
+      "variant": "candidate",
+      "scenario": "ordinary",
+      "totalMs": 180.70000000298023,
+      "refreshMs": 155.5,
+      "afterRefreshFramesMs": 25.200000002980232,
+      "domMessages": 100,
+      "scrollHeight": 42041,
+      "transport": [
+        {
+          "historyMs": 30.847138999999515,
+          "hydrationMs": 11.882239000000482,
+          "mainMs": 42.76108700000077,
+          "historyCpuMs": 30.965,
+          "hydrationCpuMs": 11.915,
+          "mainCpuMs": 42.908,
+          "historySql": 604,
+          "hydrationSql": 100,
+          "historyPrepares": 604,
+          "hydrationPrepares": 100,
+          "messages": 100,
+          "bytes": 59746,
+          "roundTripMs": 47,
+          "request": {
+            "botId": "bot"
+          }
+        }
+      ]
+    },
+    {
+      "sample": 5,
+      "variant": "baseline",
+      "scenario": "ordinary",
+      "totalMs": 181.29999999701977,
+      "refreshMs": 165.8999999910593,
+      "afterRefreshFramesMs": 15.400000005960464,
+      "domMessages": 100,
+      "scrollHeight": 42041,
+      "transport": [
+        {
+          "historyMs": 33.39618200000041,
+          "hydrationMs": 24.703999999999724,
+          "mainMs": 58.1307029999989,
+          "historyCpuMs": 33.425,
+          "hydrationCpuMs": 24.719,
+          "mainCpuMs": 58.158,
+          "historySql": 604,
+          "hydrationSql": 700,
+          "historyPrepares": 604,
+          "hydrationPrepares": 700,
+          "messages": 100,
+          "bytes": 59746,
+          "roundTripMs": 61.29999999701977,
+          "request": {
+            "botId": "bot"
+          }
+        }
+      ]
+    },
+    {
+      "sample": 6,
+      "variant": "baseline",
+      "scenario": "ordinary",
+      "totalMs": 181.30000001192093,
+      "refreshMs": 165.1000000089407,
+      "afterRefreshFramesMs": 16.200000002980232,
+      "domMessages": 100,
+      "scrollHeight": 42041,
+      "transport": [
+        {
+          "historyMs": 28.93554899999981,
+          "hydrationMs": 25.124103000000105,
+          "mainMs": 54.090871000000334,
+          "historyCpuMs": 29.052,
+          "hydrationCpuMs": 25.139,
+          "mainCpuMs": 54.204,
+          "historySql": 604,
+          "hydrationSql": 700,
+          "historyPrepares": 604,
+          "hydrationPrepares": 700,
+          "messages": 100,
+          "bytes": 59746,
+          "roundTripMs": 57.400000005960464,
+          "request": {
+            "botId": "bot"
+          }
+        }
+      ]
+    },
+    {
+      "sample": 6,
+      "variant": "candidate",
+      "scenario": "ordinary",
+      "totalMs": 166.90000000596046,
+      "refreshMs": 151.5,
+      "afterRefreshFramesMs": 15.400000005960464,
+      "domMessages": 100,
+      "scrollHeight": 42041,
+      "transport": [
+        {
+          "historyMs": 29.22462799999994,
+          "hydrationMs": 12.592189000000872,
+          "mainMs": 41.849223000001075,
+          "historyCpuMs": 29.264,
+          "hydrationCpuMs": 12.612,
+          "mainCpuMs": 41.895,
+          "historySql": 604,
+          "hydrationSql": 100,
+          "historyPrepares": 604,
+          "hydrationPrepares": 100,
+          "messages": 100,
+          "bytes": 59746,
+          "roundTripMs": 46.19999998807907,
+          "request": {
+            "botId": "bot"
+          }
+        }
+      ]
+    },
+    {
+      "sample": 7,
+      "variant": "candidate",
+      "scenario": "ordinary",
+      "totalMs": 183.30000001192093,
+      "refreshMs": 164.90000000596046,
+      "afterRefreshFramesMs": 18.400000005960464,
+      "domMessages": 100,
+      "scrollHeight": 42041,
+      "transport": [
+        {
+          "historyMs": 32.448419000000285,
+          "hydrationMs": 12.29577700000118,
+          "mainMs": 44.77904699999999,
+          "historyCpuMs": 32.486,
+          "hydrationCpuMs": 12.316,
+          "mainCpuMs": 44.824,
+          "historySql": 604,
+          "hydrationSql": 100,
+          "historyPrepares": 604,
+          "hydrationPrepares": 100,
+          "messages": 100,
+          "bytes": 59746,
+          "roundTripMs": 48.70000000298023,
+          "request": {
+            "botId": "bot"
+          }
+        }
+      ]
+    },
+    {
+      "sample": 7,
+      "variant": "baseline",
+      "scenario": "ordinary",
+      "totalMs": 178.70000000298023,
+      "refreshMs": 162.70000000298023,
+      "afterRefreshFramesMs": 16,
+      "domMessages": 100,
+      "scrollHeight": 42041,
+      "transport": [
+        {
+          "historyMs": 32.37752899999941,
+          "hydrationMs": 22.339131999999154,
+          "mainMs": 54.74739199999931,
+          "historyCpuMs": 32.47,
+          "hydrationCpuMs": 22.353,
+          "mainCpuMs": 54.841,
+          "historySql": 604,
+          "hydrationSql": 700,
+          "historyPrepares": 604,
+          "hydrationPrepares": 700,
+          "messages": 100,
+          "bytes": 59746,
+          "roundTripMs": 57.5,
+          "request": {
+            "botId": "bot"
+          }
+        }
+      ]
+    },
+    {
+      "sample": 0,
+      "variant": "baseline",
+      "scenario": "mixed",
+      "totalMs": 205.29999999701977,
+      "refreshMs": 167.70000000298023,
+      "afterRefreshFramesMs": 37.599999994039536,
+      "domMessages": 100,
+      "scrollHeight": 26517,
+      "transport": [
+        {
+          "historyMs": 34.002973000000566,
+          "hydrationMs": 32.44129500000054,
+          "mainMs": 66.47478900000169,
+          "historyCpuMs": 34.133,
+          "hydrationCpuMs": 37.954,
+          "mainCpuMs": 72.101,
+          "historySql": 604,
+          "hydrationSql": 825,
+          "historyPrepares": 604,
+          "hydrationPrepares": 825,
+          "messages": 100,
+          "bytes": 74791,
+          "roundTripMs": 70.6000000089407,
+          "request": {
+            "botId": "bot"
+          }
+        }
+      ]
+    },
+    {
+      "sample": 0,
+      "variant": "candidate",
+      "scenario": "mixed",
+      "totalMs": 189.90000000596046,
+      "refreshMs": 150.79999999701977,
+      "afterRefreshFramesMs": 39.1000000089407,
+      "domMessages": 100,
+      "scrollHeight": 26517,
+      "transport": [
+        {
+          "historyMs": 12.04273699999976,
+          "hydrationMs": 31.42152399999941,
+          "mainMs": 43.48123299999861,
+          "historyCpuMs": 12.061,
+          "hydrationCpuMs": 38.632,
+          "mainCpuMs": 50.703,
+          "historySql": 604,
+          "hydrationSql": 400,
+          "historyPrepares": 604,
+          "hydrationPrepares": 400,
+          "messages": 100,
+          "bytes": 74791,
+          "roundTripMs": 47.6000000089407,
+          "request": {
+            "botId": "bot"
+          }
+        }
+      ]
+    },
+    {
+      "sample": 1,
+      "variant": "candidate",
+      "scenario": "mixed",
+      "totalMs": 191.70000000298023,
+      "refreshMs": 154.79999999701977,
+      "afterRefreshFramesMs": 36.900000005960464,
+      "domMessages": 100,
+      "scrollHeight": 26517,
+      "transport": [
+        {
+          "historyMs": 30.286442999999053,
+          "hydrationMs": 27.147091999999247,
+          "mainMs": 57.46405599999889,
+          "historyCpuMs": 30.32,
+          "hydrationCpuMs": 27.163,
+          "mainCpuMs": 57.497,
+          "historySql": 604,
+          "hydrationSql": 400,
+          "historyPrepares": 604,
+          "hydrationPrepares": 400,
+          "messages": 100,
+          "bytes": 74791,
+          "roundTripMs": 61.5,
+          "request": {
+            "botId": "bot"
+          }
+        }
+      ]
+    },
+    {
+      "sample": 1,
+      "variant": "baseline",
+      "scenario": "mixed",
+      "totalMs": 211.59999999403954,
+      "refreshMs": 167.69999998807907,
+      "afterRefreshFramesMs": 43.900000005960464,
+      "domMessages": 100,
+      "scrollHeight": 26517,
+      "transport": [
+        {
+          "historyMs": 33.55304799999976,
+          "hydrationMs": 34.32871899999918,
+          "mainMs": 67.91228799999953,
+          "historyCpuMs": 34.69,
+          "hydrationCpuMs": 45.404,
+          "mainCpuMs": 80.109,
+          "historySql": 604,
+          "hydrationSql": 825,
+          "historyPrepares": 604,
+          "hydrationPrepares": 825,
+          "messages": 100,
+          "bytes": 74791,
+          "roundTripMs": 72.29999999701977,
+          "request": {
+            "botId": "bot"
+          }
+        }
+      ]
+    },
+    {
+      "sample": 2,
+      "variant": "baseline",
+      "scenario": "mixed",
+      "totalMs": 207.5,
+      "refreshMs": 167.79999999701977,
+      "afterRefreshFramesMs": 39.70000000298023,
+      "domMessages": 100,
+      "scrollHeight": 26517,
+      "transport": [
+        {
+          "historyMs": 19.38863500000116,
+          "hydrationMs": 36.952493000000686,
+          "mainMs": 56.360265000001164,
+          "historyCpuMs": 19.41,
+          "hydrationCpuMs": 36.986,
+          "mainCpuMs": 56.408,
+          "historySql": 604,
+          "hydrationSql": 825,
+          "historyPrepares": 604,
+          "hydrationPrepares": 825,
+          "messages": 100,
+          "bytes": 74791,
+          "roundTripMs": 59.69999998807907,
+          "request": {
+            "botId": "bot"
+          }
+        }
+      ]
+    },
+    {
+      "sample": 2,
+      "variant": "candidate",
+      "scenario": "mixed",
+      "totalMs": 191.09999999403954,
+      "refreshMs": 154.20000000298023,
+      "afterRefreshFramesMs": 36.8999999910593,
+      "domMessages": 100,
+      "scrollHeight": 26517,
+      "transport": [
+        {
+          "historyMs": 33.23477500000081,
+          "hydrationMs": 24.437551000000894,
+          "mainMs": 57.70235800000046,
+          "historyCpuMs": 33.233,
+          "hydrationCpuMs": 24.456,
+          "mainCpuMs": 57.701,
+          "historySql": 604,
+          "hydrationSql": 400,
+          "historyPrepares": 604,
+          "hydrationPrepares": 400,
+          "messages": 100,
+          "bytes": 74791,
+          "roundTripMs": 61.599999994039536,
+          "request": {
+            "botId": "bot"
+          }
+        }
+      ]
+    },
+    {
+      "sample": 3,
+      "variant": "candidate",
+      "scenario": "mixed",
+      "totalMs": 195,
+      "refreshMs": 157.5,
+      "afterRefreshFramesMs": 37.5,
+      "domMessages": 100,
+      "scrollHeight": 26517,
+      "transport": [
+        {
+          "historyMs": 35.05354499999885,
+          "hydrationMs": 25.637445000000298,
+          "mainMs": 60.72053400000004,
+          "historyCpuMs": 35.267,
+          "hydrationCpuMs": 25.631,
+          "mainCpuMs": 60.912,
+          "historySql": 604,
+          "hydrationSql": 400,
+          "historyPrepares": 604,
+          "hydrationPrepares": 400,
+          "messages": 100,
+          "bytes": 74791,
+          "roundTripMs": 64.5,
+          "request": {
+            "botId": "bot"
+          }
+        }
+      ]
+    },
+    {
+      "sample": 3,
+      "variant": "baseline",
+      "scenario": "mixed",
+      "totalMs": 214.1000000089407,
+      "refreshMs": 174.90000000596046,
+      "afterRefreshFramesMs": 39.20000000298023,
+      "domMessages": 100,
+      "scrollHeight": 26517,
+      "transport": [
+        {
+          "historyMs": 33.81586499999867,
+          "hydrationMs": 34.44598399999995,
+          "mainMs": 68.29306899999938,
+          "historyCpuMs": 33.846,
+          "hydrationCpuMs": 35.119,
+          "mainCpuMs": 68.979,
+          "historySql": 604,
+          "hydrationSql": 825,
+          "historyPrepares": 604,
+          "hydrationPrepares": 825,
+          "messages": 100,
+          "bytes": 74791,
+          "roundTripMs": 72.30000001192093,
+          "request": {
+            "botId": "bot"
+          }
+        }
+      ]
+    },
+    {
+      "sample": 4,
+      "variant": "baseline",
+      "scenario": "mixed",
+      "totalMs": 204.90000000596046,
+      "refreshMs": 166.5,
+      "afterRefreshFramesMs": 38.400000005960464,
+      "domMessages": 100,
+      "scrollHeight": 26517,
+      "transport": [
+        {
+          "historyMs": 32.874039000000266,
+          "hydrationMs": 33.450589000000036,
+          "mainMs": 66.35368199999903,
+          "historyCpuMs": 33.003,
+          "hydrationCpuMs": 33.465,
+          "mainCpuMs": 66.482,
+          "historySql": 604,
+          "hydrationSql": 825,
+          "historyPrepares": 604,
+          "hydrationPrepares": 825,
+          "messages": 100,
+          "bytes": 74791,
+          "roundTripMs": 70.29999999701977,
+          "request": {
+            "botId": "bot"
+          }
+        }
+      ]
+    },
+    {
+      "sample": 4,
+      "variant": "candidate",
+      "scenario": "mixed",
+      "totalMs": 160.5,
+      "refreshMs": 123,
+      "afterRefreshFramesMs": 37.5,
+      "domMessages": 100,
+      "scrollHeight": 26517,
+      "transport": [
+        {
+          "historyMs": 12.084222999999838,
+          "hydrationMs": 18.21954099999857,
+          "mainMs": 30.33037399999921,
+          "historyCpuMs": 12.109,
+          "hydrationCpuMs": 19.07,
+          "mainCpuMs": 31.192,
+          "historySql": 604,
+          "hydrationSql": 400,
+          "historyPrepares": 604,
+          "hydrationPrepares": 400,
+          "messages": 100,
+          "bytes": 74791,
+          "roundTripMs": 32.900000005960464,
+          "request": {
+            "botId": "bot"
+          }
+        }
+      ]
+    },
+    {
+      "sample": 5,
+      "variant": "candidate",
+      "scenario": "mixed",
+      "totalMs": 200.20000000298023,
+      "refreshMs": 161.1000000089407,
+      "afterRefreshFramesMs": 39.099999994039536,
+      "domMessages": 100,
+      "scrollHeight": 26517,
+      "transport": [
+        {
+          "historyMs": 35.52826500000083,
+          "hydrationMs": 20.84617799999978,
+          "mainMs": 56.40398600000117,
+          "historyCpuMs": 50.26,
+          "hydrationCpuMs": 20.846,
+          "mainCpuMs": 71.119,
+          "historySql": 604,
+          "hydrationSql": 400,
+          "historyPrepares": 604,
+          "hydrationPrepares": 400,
+          "messages": 100,
+          "bytes": 74791,
+          "roundTripMs": 60.5,
+          "request": {
+            "botId": "bot"
+          }
+        }
+      ]
+    },
+    {
+      "sample": 5,
+      "variant": "baseline",
+      "scenario": "mixed",
+      "totalMs": 193.19999998807907,
+      "refreshMs": 156.29999999701977,
+      "afterRefreshFramesMs": 36.8999999910593,
+      "domMessages": 100,
+      "scrollHeight": 26517,
+      "transport": [
+        {
+          "historyMs": 33.282617999999275,
+          "hydrationMs": 27.732232000000295,
+          "mainMs": 61.044184000000314,
+          "historyCpuMs": 33.408,
+          "hydrationCpuMs": 27.75,
+          "mainCpuMs": 61.171,
+          "historySql": 604,
+          "hydrationSql": 825,
+          "historyPrepares": 604,
+          "hydrationPrepares": 825,
+          "messages": 100,
+          "bytes": 74791,
+          "roundTripMs": 65,
+          "request": {
+            "botId": "bot"
+          }
+        }
+      ]
+    },
+    {
+      "sample": 6,
+      "variant": "baseline",
+      "scenario": "mixed",
+      "totalMs": 201.09999999403954,
+      "refreshMs": 159.09999999403954,
+      "afterRefreshFramesMs": 42,
+      "domMessages": 100,
+      "scrollHeight": 26517,
+      "transport": [
+        {
+          "historyMs": 32.932636999999886,
+          "hydrationMs": 30.14745700000094,
+          "mainMs": 63.10970699999962,
+          "historyCpuMs": 33.047,
+          "hydrationCpuMs": 30.536,
+          "mainCpuMs": 63.597,
+          "historySql": 604,
+          "hydrationSql": 825,
+          "historyPrepares": 604,
+          "hydrationPrepares": 825,
+          "messages": 100,
+          "bytes": 74791,
+          "roundTripMs": 67.3999999910593,
+          "request": {
+            "botId": "bot"
+          }
+        }
+      ]
+    },
+    {
+      "sample": 6,
+      "variant": "candidate",
+      "scenario": "mixed",
+      "totalMs": 200.90000000596046,
+      "refreshMs": 161.5,
+      "afterRefreshFramesMs": 39.400000005960464,
+      "domMessages": 100,
+      "scrollHeight": 26517,
+      "transport": [
+        {
+          "historyMs": 31.138661999999385,
+          "hydrationMs": 25.840127999999822,
+          "mainMs": 57.00972999999976,
+          "historyCpuMs": 31.17,
+          "hydrationCpuMs": 25.827,
+          "mainCpuMs": 57.011,
+          "historySql": 604,
+          "hydrationSql": 400,
+          "historyPrepares": 604,
+          "hydrationPrepares": 400,
+          "messages": 100,
+          "bytes": 74791,
+          "roundTripMs": 61.1000000089407,
+          "request": {
+            "botId": "bot"
+          }
+        }
+      ]
+    },
+    {
+      "sample": 7,
+      "variant": "candidate",
+      "scenario": "mixed",
+      "totalMs": 189.59999999403954,
+      "refreshMs": 152.19999998807907,
+      "afterRefreshFramesMs": 37.400000005960464,
+      "domMessages": 100,
+      "scrollHeight": 26517,
+      "transport": [
+        {
+          "historyMs": 31.17106800000147,
+          "hydrationMs": 26.13395599999967,
+          "mainMs": 57.33456800000022,
+          "historyCpuMs": 31.305,
+          "hydrationCpuMs": 26.149,
+          "mainCpuMs": 57.468,
+          "historySql": 604,
+          "hydrationSql": 400,
+          "historyPrepares": 604,
+          "hydrationPrepares": 400,
+          "messages": 100,
+          "bytes": 74791,
+          "roundTripMs": 61,
+          "request": {
+            "botId": "bot"
+          }
+        }
+      ]
+    },
+    {
+      "sample": 7,
+      "variant": "baseline",
+      "scenario": "mixed",
+      "totalMs": 201.5,
+      "refreshMs": 163.79999999701977,
+      "afterRefreshFramesMs": 37.70000000298023,
+      "domMessages": 100,
+      "scrollHeight": 26517,
+      "transport": [
+        {
+          "historyMs": 35.448575000000346,
+          "hydrationMs": 32.08181500000137,
+          "mainMs": 67.56091100000049,
+          "historyCpuMs": 42.705,
+          "hydrationCpuMs": 32.078,
+          "mainCpuMs": 74.797,
+          "historySql": 604,
+          "hydrationSql": 825,
+          "historyPrepares": 604,
+          "hydrationPrepares": 825,
+          "messages": 100,
+          "bytes": 74791,
+          "roundTripMs": 71.29999999701977,
+          "request": {
+            "botId": "bot"
+          }
+        }
+      ]
+    }
+  ],
+  "parity": {
+    "mainPairs": 20,
+    "uiPairs": 18,
+    "pagingPairs": 1
+  },
+  "checks": {
+    "ordinary": {
+      "absent": 100,
+      "empty": 0,
+      "populated": 0
+    },
+    "mixed": {
+      "absent": 75,
+      "empty": 15,
+      "populated": 10
+    },
+    "ordinaryScroll": {
+      "top": 0,
+      "bottom": 41470,
+      "height": 42041,
+      "viewport": 572
+    },
+    "mixedScroll": {
+      "top": 0,
+      "bottom": 25945.625,
+      "height": 26517,
+      "viewport": 572
+    },
+    "images": [
+      {
+        "src": "mybuddy-artifact://local/bot-report-bfa2934b85f6107e0604fd1169eb1f68b205c350e8bbdf97a66f501c096286d8/?variant=thumb&v=1",
+        "width": 1,
+        "height": 1
+      },
+      {
+        "src": "mybuddy-artifact://local/bot-report-75d32a5c059116337dd32558181d98daf02c2a3bdb7e2dca1026af45e55223bb/?variant=thumb&v=1",
+        "width": 1,
+        "height": 1
+      },
+      {
+        "src": "mybuddy-artifact://local/bot-report-17f9313995da3cb09b012aa711d388c91ccfcddb6acbda49af79dc81cdb3dd71/?variant=thumb&v=1",
+        "width": 1,
+        "height": 1
+      },
+      {
+        "src": "mybuddy-artifact://local/bot-report-59c4eceda6d03ee4454e4b1fc25268e16bb887290ad5e91f19970806b575fc66/?variant=thumb&v=1",
+        "width": 1,
+        "height": 1
+      },
+      {
+        "src": "mybuddy-artifact://local/bot-report-3153c57fd864f4ae3af4abcb62e0053419ae181436922f7d30bee1d2959a1b9e/?variant=thumb&v=1",
+        "width": 1,
+        "height": 1
+      },
+      {
+        "src": "mybuddy-artifact://local/bot-report-1454bc497d9b0a282af13c219dc753aafd964daea7ee52a7d246875e5590c352/?variant=thumb&v=1",
+        "width": 1,
+        "height": 1
+      },
+      {
+        "src": "mybuddy-artifact://local/bot-report-23e70dd1b379fd43cf9215a0f77ae345dfd88af63f8befc9032d67f5c23fecc4/?variant=thumb&v=1",
+        "width": 1,
+        "height": 1
+      },
+      {
+        "src": "mybuddy-artifact://local/bot-report-1f3a14e37df8c266867cc884623a2951fe0355f8440e8cb2a60a284ffc6b0142/?variant=thumb&v=1",
+        "width": 1,
+        "height": 1
+      },
+      {
+        "src": "mybuddy-artifact://local/bot-report-ee973cc5990d13ae0bc8106aa8f8b7db8c5bfc27d7b77902f5924818badce636/?variant=thumb&v=1",
+        "width": 1,
+        "height": 1
+      },
+      {
+        "src": "mybuddy-artifact://local/bot-report-6f3a502b17816e5c9a78643cde2d43805c20b76c152007cce08863e2ed93e80e/?variant=thumb&v=1",
+        "width": 1,
+        "height": 1
+      }
+    ],
+    "accumulated": {
+      "messages": 1000,
+      "requests": 10,
+      "pageSize": 100
+    },
+    "protocolHits": 11
+  },
+  "errors": [],
+  "warnings": [],
+  "summary": {
+    "ordinary": {
+      "baseline": {
+        "main": {
+          "historyMs": {
+            "median": 10.463772500000005,
+            "p95": 24.16271999999981,
+            "min": 9.569614000000001,
+            "max": 24.16271999999981
+          },
+          "hydrationMs": {
+            "median": 13.996756499999947,
+            "p95": 15.126634000000195,
+            "min": 12.990778999999748,
+            "max": 15.126634000000195
+          },
+          "mainMs": {
+            "median": 24.58991200000014,
+            "p95": 38.7571539999999,
+            "min": 22.576038000000153,
+            "max": 38.7571539999999
+          },
+          "historyCpuMs": {
+            "median": 11.150500000000001,
+            "p95": 44.454,
+            "min": 9.581,
+            "max": 44.454
+          },
+          "hydrationCpuMs": {
+            "median": 14.3305,
+            "p95": 20.44,
+            "min": 13.356,
+            "max": 20.44
+          },
+          "mainCpuMs": {
+            "median": 26.18,
+            "p95": 64.901,
+            "min": 23.243,
+            "max": 64.901
+          },
+          "historySql": {
+            "median": 604,
+            "p95": 604,
+            "min": 604,
+            "max": 604
+          },
+          "hydrationSql": {
+            "median": 700,
+            "p95": 700,
+            "min": 700,
+            "max": 700
+          }
+        },
+        "ui": {
+          "historyMs": {
+            "median": 28.880617999999686,
+            "p95": 33.39618200000041,
+            "min": 10.647842999999739,
+            "max": 33.39618200000041
+          },
+          "hydrationMs": {
+            "median": 25.73386299999993,
+            "p95": 27.62900499999978,
+            "min": 14.002098999999362,
+            "max": 27.62900499999978
+          },
+          "mainMs": {
+            "median": 54.628589499999634,
+            "p95": 58.1307029999989,
+            "min": 24.6667039999993,
+            "max": 58.1307029999989
+          },
+          "historyCpuMs": {
+            "median": 29.317999999999998,
+            "p95": 39.911,
+            "min": 10.739,
+            "max": 39.911
+          },
+          "hydrationCpuMs": {
+            "median": 25.7365,
+            "p95": 29.541,
+            "min": 14.014,
+            "max": 29.541
+          },
+          "mainCpuMs": {
+            "median": 55.3865,
+            "p95": 66.501,
+            "min": 24.762,
+            "max": 66.501
+          },
+          "historySql": {
+            "median": 604,
+            "p95": 604,
+            "min": 604,
+            "max": 604
+          },
+          "hydrationSql": {
+            "median": 700,
+            "p95": 700,
+            "min": 700,
+            "max": 700
+          },
+          "totalMs": {
+            "median": 186.50000000745058,
+            "p95": 214.59999999403954,
+            "min": 162.79999999701977,
+            "max": 214.59999999403954
+          },
+          "refreshMs": {
+            "median": 170.59999999403954,
+            "p95": 197.70000000298023,
+            "min": 146.8999999910593,
+            "max": 197.70000000298023
+          },
+          "roundTripMs": {
+            "median": 57.45000000298023,
+            "p95": 61.29999999701977,
+            "min": 26.599999994039536,
+            "max": 61.29999999701977
+          }
+        }
+      },
+      "candidate": {
+        "main": {
+          "historyMs": {
+            "median": 10.158525499999769,
+            "p95": 10.652242000000115,
+            "min": 9.610122000000047,
+            "max": 10.652242000000115
+          },
+          "hydrationMs": {
+            "median": 3.6290529999998853,
+            "p95": 3.9574179999999615,
+            "min": 3.5098659999998745,
+            "max": 3.9574179999999615
+          },
+          "mainMs": {
+            "median": 13.794842000000244,
+            "p95": 14.36297599999989,
+            "min": 13.136121999999887,
+            "max": 14.36297599999989
+          },
+          "historyCpuMs": {
+            "median": 10.4185,
+            "p95": 11.611,
+            "min": 9.627,
+            "max": 11.611
+          },
+          "hydrationCpuMs": {
+            "median": 3.638,
+            "p95": 4.965,
+            "min": 3.518,
+            "max": 4.965
+          },
+          "mainCpuMs": {
+            "median": 14.236999999999998,
+            "p95": 15.481,
+            "min": 13.153,
+            "max": 15.481
+          },
+          "historySql": {
+            "median": 604,
+            "p95": 604,
+            "min": 604,
+            "max": 604
+          },
+          "hydrationSql": {
+            "median": 100,
+            "p95": 100,
+            "min": 100,
+            "max": 100
+          }
+        },
+        "ui": {
+          "historyMs": {
+            "median": 28.423358500000177,
+            "p95": 32.448419000000285,
+            "min": 11.311764999999468,
+            "max": 32.448419000000285
+          },
+          "hydrationMs": {
+            "median": 11.850111499999912,
+            "p95": 12.592189000000872,
+            "min": 4.036689000000479,
+            "max": 12.592189000000872
+          },
+          "mainMs": {
+            "median": 40.33678250000003,
+            "p95": 44.77904699999999,
+            "min": 15.366194000000178,
+            "max": 44.77904699999999
+          },
+          "historyCpuMs": {
+            "median": 28.488,
+            "p95": 32.486,
+            "min": 13.686,
+            "max": 32.486
+          },
+          "hydrationCpuMs": {
+            "median": 11.875,
+            "p95": 12.612,
+            "min": 4.049,
+            "max": 12.612
+          },
+          "mainCpuMs": {
+            "median": 40.382000000000005,
+            "p95": 44.824,
+            "min": 17.743,
+            "max": 44.824
+          },
+          "historySql": {
+            "median": 604,
+            "p95": 604,
+            "min": 604,
+            "max": 604
+          },
+          "hydrationSql": {
+            "median": 100,
+            "p95": 100,
+            "min": 100,
+            "max": 100
+          },
+          "totalMs": {
+            "median": 182.95000000298023,
+            "p95": 213.6000000089407,
+            "min": 166.90000000596046,
+            "max": 213.6000000089407
+          },
+          "refreshMs": {
+            "median": 165.10000000149012,
+            "p95": 197.40000000596046,
+            "min": 151.5,
+            "max": 197.40000000596046
+          },
+          "roundTripMs": {
+            "median": 45.399999998509884,
+            "p95": 85.29999999701977,
+            "min": 41.400000005960464,
+            "max": 85.29999999701977
+          }
+        }
+      }
+    },
+    "mixed": {
+      "baseline": {
+        "main": {
+          "historyMs": {
+            "median": 10.223898500000132,
+            "p95": 24.150986999999986,
+            "min": 10.01583699999992,
+            "max": 24.150986999999986
+          },
+          "hydrationMs": {
+            "median": 20.92730000000006,
+            "p95": 36.93056300000035,
+            "min": 20.276402999999846,
+            "max": 36.93056300000035
+          },
+          "mainMs": {
+            "median": 31.337363500000038,
+            "p95": 47.07351400000016,
+            "min": 30.403639000000112,
+            "max": 47.07351400000016
+          },
+          "historyCpuMs": {
+            "median": 10.547,
+            "p95": 42.839,
+            "min": 10.034,
+            "max": 42.839
+          },
+          "hydrationCpuMs": {
+            "median": 21.1885,
+            "p95": 54.033,
+            "min": 20.289,
+            "max": 54.033
+          },
+          "mainCpuMs": {
+            "median": 35.1995,
+            "p95": 69.606,
+            "min": 30.427,
+            "max": 69.606
+          },
+          "historySql": {
+            "median": 604,
+            "p95": 604,
+            "min": 604,
+            "max": 604
+          },
+          "hydrationSql": {
+            "median": 825,
+            "p95": 825,
+            "min": 825,
+            "max": 825
+          }
+        },
+        "ui": {
+          "historyMs": {
+            "median": 33.41783299999952,
+            "p95": 35.448575000000346,
+            "min": 19.38863500000116,
+            "max": 35.448575000000346
+          },
+          "hydrationMs": {
+            "median": 32.94594200000029,
+            "p95": 36.952493000000686,
+            "min": 27.732232000000295,
+            "max": 36.952493000000686
+          },
+          "mainMs": {
+            "median": 66.41423550000036,
+            "p95": 68.29306899999938,
+            "min": 56.360265000001164,
+            "max": 68.29306899999938
+          },
+          "historyCpuMs": {
+            "median": 33.626999999999995,
+            "p95": 42.705,
+            "min": 19.41,
+            "max": 42.705
+          },
+          "hydrationCpuMs": {
+            "median": 34.292,
+            "p95": 45.404,
+            "min": 27.75,
+            "max": 45.404
+          },
+          "mainCpuMs": {
+            "median": 67.7305,
+            "p95": 80.109,
+            "min": 56.408,
+            "max": 80.109
+          },
+          "historySql": {
+            "median": 604,
+            "p95": 604,
+            "min": 604,
+            "max": 604
+          },
+          "hydrationSql": {
+            "median": 825,
+            "p95": 825,
+            "min": 825,
+            "max": 825
+          },
+          "totalMs": {
+            "median": 205.10000000149012,
+            "p95": 214.1000000089407,
+            "min": 193.19999998807907,
+            "max": 214.1000000089407
+          },
+          "refreshMs": {
+            "median": 167.09999999403954,
+            "p95": 174.90000000596046,
+            "min": 156.29999999701977,
+            "max": 174.90000000596046
+          },
+          "roundTripMs": {
+            "median": 70.45000000298023,
+            "p95": 72.30000001192093,
+            "min": 59.69999998807907,
+            "max": 72.30000001192093
+          }
+        }
+      },
+      "candidate": {
+        "main": {
+          "historyMs": {
+            "median": 10.118819999999914,
+            "p95": 11.33474299999989,
+            "min": 9.990832999999839,
+            "max": 11.33474299999989
+          },
+          "hydrationMs": {
+            "median": 14.570722500000329,
+            "p95": 16.997855000000527,
+            "min": 14.212535000000116,
+            "max": 16.997855000000527
+          },
+          "mainMs": {
+            "median": 24.900990999999976,
+            "p95": 27.130189999999857,
+            "min": 24.3393530000003,
+            "max": 27.130189999999857
+          },
+          "historyCpuMs": {
+            "median": 10.119,
+            "p95": 11.474,
+            "min": 10.008,
+            "max": 11.474
+          },
+          "hydrationCpuMs": {
+            "median": 14.893,
+            "p95": 25.265,
+            "min": 14.225,
+            "max": 25.265
+          },
+          "mainCpuMs": {
+            "median": 25.359499999999997,
+            "p95": 35.402,
+            "min": 24.354,
+            "max": 35.402
+          },
+          "historySql": {
+            "median": 604,
+            "p95": 604,
+            "min": 604,
+            "max": 604
+          },
+          "hydrationSql": {
+            "median": 400,
+            "p95": 400,
+            "min": 400,
+            "max": 400
+          }
+        },
+        "ui": {
+          "historyMs": {
+            "median": 31.154865000000427,
+            "p95": 35.52826500000083,
+            "min": 12.04273699999976,
+            "max": 35.52826500000083
+          },
+          "hydrationMs": {
+            "median": 25.73878650000006,
+            "p95": 31.42152399999941,
+            "min": 18.21954099999857,
+            "max": 31.42152399999941
+          },
+          "mainMs": {
+            "median": 57.17214899999999,
+            "p95": 60.72053400000004,
+            "min": 30.33037399999921,
+            "max": 60.72053400000004
+          },
+          "historyCpuMs": {
+            "median": 31.2375,
+            "p95": 50.26,
+            "min": 12.061,
+            "max": 50.26
+          },
+          "hydrationCpuMs": {
+            "median": 25.729,
+            "p95": 38.632,
+            "min": 19.07,
+            "max": 38.632
+          },
+          "mainCpuMs": {
+            "median": 57.4825,
+            "p95": 71.119,
+            "min": 31.192,
+            "max": 71.119
+          },
+          "historySql": {
+            "median": 604,
+            "p95": 604,
+            "min": 604,
+            "max": 604
+          },
+          "hydrationSql": {
+            "median": 400,
+            "p95": 400,
+            "min": 400,
+            "max": 400
+          },
+          "totalMs": {
+            "median": 191.39999999850988,
+            "p95": 200.90000000596046,
+            "min": 160.5,
+            "max": 200.90000000596046
+          },
+          "refreshMs": {
+            "median": 154.5,
+            "p95": 161.5,
+            "min": 123,
+            "max": 161.5
+          },
+          "roundTripMs": {
+            "median": 61.05000000447035,
+            "p95": 64.5,
+            "min": 32.900000005960464,
+            "max": 64.5
+          }
+        }
+      }
+    }
+  },
+  "validation": {
+    "typecheck": "PASS: web, node, scripts",
+    "focused": [
+      "bot-report-images",
+      "bot-report-images-ui",
+      "bot-history-context",
+      "bot-history-paging",
+      "bot-history-paging-sqlite",
+      "bot-history-query",
+      "bot-conversation-ui",
+      "bot-work-phase5-review",
+      "bot-work-phase5-review-ui"
+    ],
+    "realElectronGui": [
+      "bot-history-paging-desktop",
+      "bot-work-conversation-desktop"
+    ],
+    "staticReview": "No blocking functional or image-authorization findings",
+    "testAudit": "PASS: 476 headless, 87 GUI, 41 NETWORK, 3 DATASET, 3 ARTIFACT, 0 pending",
+    "fullDefault": "Not yet rerun for this candidate; independent post-push run requested",
+    "notRun": [
+      "full product build",
+      "packaged application",
+      "Windows",
+      "network/provider scenarios",
+      "full GUI suite",
+      "cloud CI"
+    ]
+  }
+}

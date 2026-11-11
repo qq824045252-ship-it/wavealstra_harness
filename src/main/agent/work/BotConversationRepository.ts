@@ -96,6 +96,16 @@ export class BotConversationRepository {
     return row ? this.mapMessage(row) : undefined;
   }
 
+  /** Image recovery only needs host feedback messages. Filter the current DB
+   * before mapping unrelated attachments/metrics/segments; never trust a stale
+   * history DTO to decide whether feedback has since been added. */
+  messageWithWorkFeedback(messageId: string): BotMessageDto | undefined {
+    const row = this.db.prepare(`SELECT m.* FROM bot_messages m
+      JOIN bot_work_feedback f ON f.message_id=m.message_id
+      WHERE m.message_id=? AND m.role='assistant'`).get(messageId);
+    return row ? this.mapMessage(row) : undefined;
+  }
+
   messageBelongsToConversation(userId: string, conversationId: string, messageId: string): boolean {
     return Boolean(this.db.prepare(`SELECT 1 FROM bot_messages m JOIN bot_conversations c ON c.conversation_id=m.conversation_id
       JOIN bot_conversations target ON target.conversation_id=? AND target.user_id=c.user_id

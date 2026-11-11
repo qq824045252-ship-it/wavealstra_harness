@@ -110,5 +110,34 @@ try {
   await Promise.all([images.hydrateHistory(history()), images.hydrateHistory(history())]);
   assert.deepEqual(works.getWork(work.workId), before);
   assert.equal(artifacts.listByTask(binding.taskId).length, 2);
-  console.log("PASS bot report images: old/new reports, exact binding, aliases, immutable recovery, boundaries and IPC");
+  // Hydration must consult fresh host state, not skip based on a stale DTO.
+  const ordinary = messages.message(send.assistantMessageId)!;
+  assert.equal(ordinary.workFeedback, undefined);
+  const stale = { ...history(), messages: [ordinary] };
+  const metadata = { workId: work.workId, eventId: "backfill", kind: "binding", category: "result",
+    executionId: binding.bindingId, intentRevision: binding.intentRevision, inputSnapshotId: binding.inputSnapshotId };
+  db.connection.prepare("INSERT INTO bot_work_feedback(message_id,metadata_json) VALUES (?,?)").run(ordinary.messageId, JSON.stringify(metadata));
+  const emptyScope = (await images.hydrateHistory(stale)).messages[0].reportImages!;
+  assert.equal(emptyScope.taskId, binding.taskId, "valid feedback without an image still returns its scope");
+  assert.equal(emptyScope.artifacts.length, 0);
+  messages.update(ordinary.messageId, "completed", body);
+  const backfilled = (await images.hydrateHistory(stale)).messages[0];
+  assert.equal(backfilled.text, ordinary.text, "hydration must not rewrite the supplied history body");
+  assert.equal(backfilled.reportImages?.artifacts.length, 2, "fresh DB text/feedback wins over stale DTO metadata");
+  const originalGetWork = works.getWork;
+  works.getWork = id => { const value = originalGetWork.call(works, id); return value ? { ...value, userId: "other-user" } : value; };
+  try { assert.equal((await images.hydrateHistory(stale)).messages[0].reportImages, undefined, "cached images do not bypass current Work ownership"); }
+  finally { works.getWork = originalGetWork; }
+  writeFileSync(join(cwd, "missing.png"), bytes);
+  assert.equal((await images.hydrateHistory(stale)).messages[0].reportImages?.artifacts.length, 3, "missing images are retried, not negatively cached");
+  const advertised = { ...stale, messages: [messages.message(ordinary.messageId)!] };
+  db.connection.prepare("DELETE FROM bot_work_feedback WHERE message_id=?").run(ordinary.messageId);
+  assert.equal((await images.hydrateHistory(advertised)).messages[0].reportImages, undefined, "stale advertised feedback cannot restore removed authorization");
+  // The specialized reader is exactly the ordinary mapper on eligible rows.
+  const rows = db.connection.prepare(`SELECT m.message_id,m.role,EXISTS(SELECT 1 FROM bot_work_feedback f WHERE f.message_id=m.message_id) AS feedback
+    FROM bot_messages m`).all() as { message_id: string; role: string; feedback: number }[];
+  for (const row of rows) assert.deepEqual(messages.messageWithWorkFeedback(row.message_id),
+    row.role === "assistant" && row.feedback ? messages.message(row.message_id) : undefined);
+  assert.equal(messages.messageWithWorkFeedback("missing-message"), undefined);
+  console.log("PASS bot report images: old/new reports, exact binding, aliases, immutable recovery, boundaries, stale DTO/backfill, fresh scope and IPC");
 } finally { db.close(); rmSync(root, { recursive: true, force: true }); }

@@ -67,7 +67,7 @@ export class BotReportImageService {
     if (!service) return undefined;
     if (this.db.inTransaction) throw new Error("报告图片读取必须在 Work 事务外执行");
     // Always reload host-authored metadata. Renderer input cannot supply binding/root.
-    const message = this.messages.message(messageId);
+    const message = this.messages.messageWithWorkFeedback(messageId);
     const feedback = message?.workFeedback;
     if (!message || message.role !== "assistant" || !feedback?.executionId
       || !["binding", "result"].includes(feedback.kind) || !message.workIds.includes(feedback.workId)) return undefined;
