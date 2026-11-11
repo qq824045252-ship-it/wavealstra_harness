@@ -5,6 +5,7 @@ import { useTextPrompt } from "@/components/common/useTextPrompt";
 import ConfirmDialog from "@/components/common/ConfirmDialog";
 import { useAppStore } from "@/store/appStore";
 import { IconArrowUpRight, IconPlus, IconPuzzle } from "@/components/common/icons";
+import GadgetActionMenu from "./GadgetActionMenu";
 import GadgetMoveDialog from "./GadgetMoveDialog";
 import GadgetCreateDialog from "./GadgetCreateDialog";
 import GadgetSourceDialog from "./GadgetSourceDialog";
@@ -45,6 +46,7 @@ export default function GadgetSection({ scope, includeInherited = false, title, 
   const [pendingRemove, setPendingRemove] = useState<GadgetListItem | null>(null);
   const [moveItem, setMoveItem] = useState<{ item: GadgetListItem; initialTarget?: "global" | "workspace" } | null>(null);
   const [openActionId, setOpenActionId] = useState<string | null>(null);
+  const [actionAnchor, setActionAnchor] = useState<HTMLElement | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [sourceItem, setSourceItem] = useState<GadgetListItem | null>(null);
   const [query, setQuery] = useState("");
@@ -68,21 +70,6 @@ export default function GadgetSection({ scope, includeInherited = false, title, 
     if (!api) return;
     return api.onChanged(() => { void reload(); });
   }, [reload]);
-  useEffect(() => {
-    const handlePointerDown = (event: PointerEvent): void => {
-      const target = event.target;
-      if (!(target instanceof Element) || !target.closest(".gadget-action-menu")) setOpenActionId(null);
-    };
-    const handleKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") setOpenActionId(null);
-    };
-    document.addEventListener("pointerdown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("pointerdown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, []);
 
   const direct = useMemo(() => items.filter((item) => !item.inherited), [items]);
   const inherited = useMemo(() => items.filter((item) => item.inherited), [items]);
@@ -90,6 +77,11 @@ export default function GadgetSection({ scope, includeInherited = false, title, 
     const needle = query.trim().toLowerCase();
     return needle ? direct.filter((item) => `${item.name} ${item.description ?? ""}`.toLowerCase().includes(needle)) : direct;
   }, [direct, query]);
+
+  useEffect(() => {
+    // A filtered/removed row must not reopen against a detached anchor later.
+    if (openActionId && !actionAnchor?.isConnected) setOpenActionId(null);
+  }, [items, query, key, openActionId, actionAnchor]);
 
   const run = async (item: GadgetListItem, action: "start" | "stop" | "restart"): Promise<void> => {
     try {
@@ -229,13 +221,14 @@ export default function GadgetSection({ scope, includeInherited = false, title, 
                   onClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
+                    setActionAnchor(event.currentTarget);
                     setOpenActionId((current) => (current === item.id ? null : item.id));
                   }}
                 >
                   •••
                 </summary>
-                {actionOpen && (
-                  <div className="gadget-action-menu-popover" role="menu">
+                {actionOpen && actionAnchor && (
+                  <GadgetActionMenu anchor={actionAnchor} onClose={closeActions}>
                     {item.runtime.status === "running" && (
                       <button type="button" disabled={busy} onClick={() => { closeActions(); void run(item, "restart"); }}>
                         重新启动
@@ -278,7 +271,7 @@ export default function GadgetSection({ scope, includeInherited = false, title, 
                         删除
                       </button>
                     )}
-                  </div>
+                  </GadgetActionMenu>
                 )}
               </details>
             )}

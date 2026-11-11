@@ -587,6 +587,7 @@
     "test:bot-settings": "esbuild scripts/bot-settings-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/bot-settings-test.mjs && node scripts/test-guard.mjs out/tests/bot-settings-test.mjs",
     "test:bot-frontdoor:live": "node scripts/bot-frontdoor-live-test.cjs",
     "test:bot-settings-dev": "node scripts/bot-settings-dev-test.cjs",
+    "test:gadget-menu-dev": "node scripts/gadget-menu-dev-test.cjs",
     "test:acp-menu-dev": "node scripts/acp-menu-dev-test.cjs",
     "test:durable-artifact-registration": "esbuild scripts/durable-artifact-registration-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/durable-artifact-registration-test.mjs && node scripts/test-guard.mjs out/tests/durable-artifact-registration-test.mjs",
     "test:work-artifact-desktop": "esbuild scripts/work-artifact-desktop-fixture.tsx --external:@terrastruct/d2 --bundle --platform=browser --format=iife --jsx=automatic --alias:@=./src/renderer/src --alias:@shared=./src/shared --loader:.css=empty --outfile=out/tests/work-artifact-desktop-fixture.js && electron scripts/work-artifact-desktop-test.cjs",
