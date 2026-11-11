@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { parseHTML } from "linkedom";
 import { act, StrictMode, useState } from "react";
 import type { Root } from "react-dom/client";
+import { workTeamControlSchema } from "../src/shared/bot-work-team";
 import type { CreateTeamWorkRequest, WorkTeamControlRequest, WorkTeamControlResult, WorkTeamTemplateDto } from "../src/shared/bot-work-team";
 import type { BotDto, WorkProjectionDto } from "../src/shared/bot-work";
 import type { WorkListUpdate } from "../src/shared/bot-conversation";
@@ -86,7 +87,7 @@ let initialState: AppState;
 let createRoot: typeof import("react-dom/client")["createRoot"];
 let BotTeamDialog: typeof import("../src/renderer/src/components/pages/BotTeamDialog")["BotTeamDialog"];
 const api = { pickLocalFolder: () => folderReply.promise, botWork: {
-  teamControl: async (request: WorkTeamControlRequest) => { if (request.kind === "get_by_operation") { lookupRequests.push(request.operationId); return lookupReply.promise; } if (request.kind === "list_templates") return { ok: true, templates: hostTemplates };
+  teamControl: async (input: WorkTeamControlRequest) => { const request = workTeamControlSchema.parse(input); if (request.kind === "get_by_operation") { lookupRequests.push(request.operationId); return lookupReply.promise; } if (request.kind === "list_templates") return { ok: true, templates: hostTemplates };
     if (request.kind === "save_template") { templateCalls.push(request); const template = { ...request.request.plan, templateId: "template-a", name: request.request.name, createdAt: 1 }; hostTemplates = [template]; return { ok: true, template }; }
     if (request.kind === "set_work_team" || request.kind === "remove_work" || request.kind === "stop_and_remove_work" || request.kind === "restore_work" || request.kind === "restore_template") { templateCalls.push(request); return { ok: true }; }
     if (request.kind === "resolve_workspace") return { ok: true, workspacePath: "/teams/default/" + request.templateId };
@@ -171,7 +172,7 @@ function creationReceipt(patch: Partial<import("../src/shared/bot-work").WorkDto
   const created = { ...work, workId: "new-team", title: request.title, ...patch } as unknown as import("../src/shared/bot-work").WorkDto;
   return { ok: true, operationId: request.operationId, work: created,
     team: { workId: created.workId, ownerBotId: created.ownerBotId, ownerResponsibility: request.ownerResponsibility,
-      members: request.members, intentRevision: created.intentRevision, ownerEpoch: created.ownerEpoch, inputSnapshotId: created.inputSnapshotId, state: "queued", executions: [], createdAt: 1 } };
+      members: request.members.map(member => ({ ...member, delegatedScope: member.delegatedScope ?? [] })), intentRevision: created.intentRevision, ownerEpoch: created.ownerEpoch, inputSnapshotId: created.inputSnapshotId, state: "queued", executions: [], createdAt: 1 } };
 }
 async function succeed() { await act(async () => reply.resolve(creationReceipt())); }
 let count = 0;
@@ -380,6 +381,28 @@ async function main() {
       assert.equal(store.getState().botDrafts[mybuddy.botId], "MyBuddy draft", "personal draft is preserved");
       assert.equal(requests.length, 0, "opening team does not create a Work or hijack a personal conversation");
       assert.equal(container.querySelector('dialog[open]'), null, "team opens as a page, not management modal");
+    });
+    await check("sidebar creates a two-member team with empty retired scopes through real DTO validation", async () => {
+      await reset(); await unmount();
+      const { BotTeamsNavigation } = await import("../src/renderer/src/components/BotTeamsNavigation");
+      hostBots = [mybuddy, other, bot("third-bot", "Third assistant")].map(item => ({ ...item, authorization: { ...item.authorization, allowedScopes: [] } }));
+      store.setState({ botIdentities: hostBots });
+      container = testDocument.body.appendChild(testDocument.createElement("div")); root = createRoot(container);
+      await act(async () => root!.render(<BotTeamsNavigation />));
+      await act(async () => nativeClick([...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.includes("新建团队"))!));
+      await edit(container.querySelector<HTMLInputElement>('input[placeholder="例如：产品研发团队"]')!, "Empty grants team");
+      for (const name of [other.displayName, "Third assistant"]) {
+        const row = [...container.querySelectorAll<HTMLElement>(".bot-team-member-choice")].find(item => item.querySelector("label")?.textContent === name)!;
+        const checkbox = row.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+        await act(async () => { checkbox.checked = true; checkbox.dispatchEvent(new testWindow.Event("click", { bubbles: true })); });
+        await edit(container.querySelector<HTMLInputElement>(`input[aria-label="${name}的职责"]`)!, "Inspect one assigned part");
+      }
+      await submit();
+      const saved = templateCalls.find(call => call.kind === "save_template");
+      assert(saved?.kind === "save_template"); assert.equal(saved.request.plan.members.length, 2);
+      assert(saved.request.plan.members.every(member => member.delegatedScope?.length === 0));
+      assert.equal(hostTemplates.length, 1); assert.equal(store.getState().activeTeam?.name, "Empty grants team");
+      assert.equal(requests.length, 0, "creating a team does not dispatch a Work");
     });
     await check("team settings edits stable team identity without dispatching or changing personal selection", async () => {
       await reset(); await unmount();

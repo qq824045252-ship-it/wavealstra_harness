@@ -49,7 +49,7 @@ export function BotTeamDialog({ open, onClose, initialTeam }: { open: boolean; o
   const [workspace, setWorkspace] = useState(pending?.workspacePath ?? initialTeam?.workspacePath ?? "");
   const [owner, setOwner] = useState(pending?.ownerBotId ?? initialTeam?.ownerBotId ?? activeBotId ?? "");
   const [ownerResponsibility, setOwnerResponsibility] = useState(pending?.ownerResponsibility ?? initialTeam?.ownerResponsibility ?? "核对各成员成果、整理结论与证据，明确待验收项和阻碍。");
-  const [members, setMembers] = useState<MemberDraft[]>(pending?.members ?? initialTeam?.members ?? []);
+  const [members, setMembers] = useState<MemberDraft[]>((pending?.members ?? initialTeam?.members ?? []).map(member => ({ ...member, delegatedScope: member.delegatedScope ?? [] })));
   const [executionPolicy, setExecutionPolicy] = useState<"sequential" | "parallel">(pending?.executionPolicy ?? initialTeam?.executionPolicy ?? "sequential");
   const [maxConcurrency, setMaxConcurrency] = useState(pending?.maxConcurrency ?? initialTeam?.maxConcurrency ?? 2);
   const [criteria, setCriteria] = useState(pending?.criteria.join("\n") ?? "");

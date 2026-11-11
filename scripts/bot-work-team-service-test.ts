@@ -71,6 +71,10 @@ const countWorks = () => works.listWorks(LOCAL_USER_ID, { includeClosed: true })
 try {
   // User-only validated atomic admission; templates confer no authorization.
   const initial = setup();
+  const emptyScopePlan = { ...initial.plan, members: initial.plan.members.map(member => ({ ...member, delegatedScope: [] })) };
+  const noGrantTemplate = ok(works.teams.handle(user, { kind: "save_template", request: { operationId: "no-grant-template", name: "No retired grants", plan: emptyScopePlan } })).template!;
+  assert(noGrantTemplate.members.every(member => member.delegatedScope.length === 0), "new Bots can create teams without retired grants");
+  ok(works.teams.handle(user, { kind: "delete_template", templateId: noGrantTemplate.templateId }));
   reject(works.teams.handle({ kind: "bot", userId: LOCAL_USER_ID, botId: initial.plan.ownerBotId, host: "foreground", grants }, { kind: "create", request: initial.request }), "unauthorized_actor");
   reject(works.teams.handle(user, { kind: "create", request: { ...initial.request, members: [initial.plan.members[0], initial.plan.members[0]] } }), "invalid_request");
   reject(works.teams.handle(user, { kind: "create", request: { ...initial.request, workspacePath: "relative" } }), "invalid_workspace");

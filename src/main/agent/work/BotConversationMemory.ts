@@ -66,9 +66,9 @@ export class BotConversationMemory {
   forget(botId: string, ids: string[], userText: string, evidence: string, conversationId?: string, source?: { createdAt: number; messageId: string }) {
     if (!this.allowedBot(botId)) throw new Error("当前 Bot 记忆未启用或不可用");
     if (!evidence.trim() || !userText.includes(evidence)
-      || !/(?:忘记|删除.*记忆|forget|delete.*memor)/i.test(evidence)
-      || /(?:不要|别|不必|不能|勿).{0,4}(?:忘记|删除)|(?:don['’]?t|do not|never)\s+(?:forget|delete)/i.test(userText)) {
-      throw new Error("仅在当前用户明确要求忘记时删除记忆，不能用历史消息或模型推测替代");
+      || !/(?:忘记|删除.*记忆|forget|delete.*memor|(?:更正|修正|纠正|替换).{0,24}(?:偏好|记忆|长期|回复格式)|(?:correct|update|replace).{0,32}(?:preference|memory))/i.test(evidence)
+      || /(?:不要|别|不必|不能|勿).{0,4}(?:忘记|删除|更正|修正|纠正|替换)|(?:don['’]?t|do not|never)\s+(?:forget|delete|correct|update|replace)/i.test(userText)) {
+      throw new Error("仅在当前用户明确要求忘记或更正记忆偏好时移除旧记忆，不能用历史消息或模型推测替代");
     }
     const result = this.options.db.connection.transaction(() => {
       const records = [...new Set(ids)].map(id => this.options.memory.get(id));

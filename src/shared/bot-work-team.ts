@@ -8,8 +8,9 @@ export const workTeamMemberSchema = z.object({
   botId: id,
   responsibility,
   dependsOnBotIds: z.array(id).max(24).optional(),
-  delegatedScope: z.array(z.enum(["workspace:read", "workspace:write"])).min(1).max(2)
-    .refine(scopes => new Set(scopes).size === scopes.length, "范围不能重复"),
+  /** Legacy metadata only; retired grants must not prevent team creation. */
+  delegatedScope: z.array(z.enum(["workspace:read", "workspace:write"])).max(2)
+    .refine(scopes => new Set(scopes).size === scopes.length, "范围不能重复").default([]),
 }).strict();
 /** Per-commission planning over an existing user-selected team, not new grants. */
 export const workTeamTaskAssignmentSchema = z.object({

@@ -42,9 +42,6 @@ export function ensureExtendedMemoryScopes(db: Database.Database): void {
 
 /** Add only proven ownership; retain original task bindings, atoms and evidence. */
 export function attachReliableLegacyWorkScopes(db: Database.Database): void {
-  for (const table of ['works', 'work_execution_bindings']) {
-    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table)) return;
-  }
   db.exec(`CREATE TABLE IF NOT EXISTS memory_capture_receipts (
     source_key TEXT PRIMARY KEY, memory_id TEXT NOT NULL, content_hash TEXT NOT NULL,
     suppressed INTEGER NOT NULL DEFAULT 0 CHECK(suppressed IN (0,1)), updated_at INTEGER NOT NULL
@@ -54,6 +51,11 @@ export function attachReliableLegacyWorkScopes(db: Database.Database): void {
     const migrationKey = 'migration:legacy-work-scopes:v1';
     db.prepare("INSERT OR IGNORE INTO memory_capture_receipts(source_key,memory_id,content_hash,updated_at) VALUES(?,'','',?)").run(migrationKey,Date.now());
     const cutoff = (db.prepare("SELECT updated_at FROM memory_capture_receipts WHERE source_key=?").get(migrationKey) as {updated_at:number}).updated_at;
+    // Record the first-install cutoff even before WorkService creates its tables.
+    // Reopening a fresh database must not introduce a later migration boundary.
+    for (const table of ['works', 'work_execution_bindings']) {
+      if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table)) return;
+    }
     const candidates = db.prepare(`SELECT s.id,s.memory_id,mapping.work_id,s.created_at
       FROM memory_scopes s
       JOIN (SELECT task_id,MIN(work_id) AS work_id FROM work_execution_bindings
