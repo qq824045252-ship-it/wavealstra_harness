@@ -56,6 +56,20 @@ export class WorkPartialResults {
         state: row.state, reason: row.reason, createdAt: row.created_at };
     });
   }
+  /** Exact persisted continuation ancestry, never guessed from file paths or task names. */
+  deliverySource(binding: WorkExecutionBindingDto): WorkExecutionBindingDto | undefined {
+    const request = z.object({ continuation_plan_id: z.string().nullable(), state: z.string() }).optional().parse(
+      this.db.prepare("SELECT continuation_plan_id,state FROM work_dispatch_requests WHERE task_id=? AND work_id=? AND bot_id=? AND intent_revision=? AND input_snapshot_id=?")
+        .get(binding.taskId, binding.workId, binding.botId, binding.intentRevision, binding.inputSnapshotId));
+    if (!request?.continuation_plan_id || request.state === "cancelled") return undefined;
+    const plan = this.plans(binding.workId).find(item => item.planId === request.continuation_plan_id);
+    if (!plan || plan.state === "cancelled" || plan.intentRevision !== binding.intentRevision
+      || plan.inputSnapshotId !== binding.inputSnapshotId || plan.ownerEpoch !== binding.ownerEpoch || plan.ownerBotId !== binding.botId) return undefined;
+    const source = this.works.repo.getBinding(plan.sourceBindingId);
+    return source && source.bindingId !== binding.bindingId && source.workId === binding.workId
+      && source.intentRevision === binding.intentRevision && source.inputSnapshotId === binding.inputSnapshotId
+      && source.ownerEpoch === binding.ownerEpoch ? source : undefined;
+  }
   gaps(workId: string): WorkSubitemDto[] {
     const work = this.works.getWork(workId);
     if (!work) return [];

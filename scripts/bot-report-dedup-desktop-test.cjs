@@ -17,6 +17,7 @@ app.whenReady().then(async()=>{
   assert(await run('document.querySelector(".bot-result-body").clientHeight>320'));
   await click();await wait('document.querySelector(".bot-result-body.is-collapsed")');
   await run('window.setReportCase("distinct")');await wait('document.querySelector(".bot-original-report")');
+  await run('document.querySelector(".bot-result-details summary").click()');
   await run('document.querySelector(".bot-original-report summary").click()');
   assert(await run('document.querySelector(".bot-original-report").open'));
   assert(await run('document.querySelector(".bot-original-report").textContent.includes("31 字节")'));

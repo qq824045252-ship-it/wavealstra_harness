@@ -43,11 +43,13 @@ export function applyCompletionDecision(options: WorkCompletionOptions, binding:
   }
   const facts = kind === "deliver" ? works.automaticCompletion.outcome(binding.bindingId) : undefined;
   const notices = [...notice ? [notice] : [], ...facts && !facts.executionDelivered ? [facts.summary] : []];
+  const outcome = kind !== "deliver" && decision.outcome === "completed" || decision.decision === "continue"
+    || (decision.outcome === "completed" && !facts?.executionDelivered) ? "partial" : decision.outcome;
   const delivered = options.deliver({ bindingId: binding.bindingId, eventId, text: decision.reply,
-    category: kind === "ask" ? "decision" : "result", notices });
+    category: kind === "ask" ? "decision" : "result", notices,
+    completion: { outcome, nextStep: kind }, primaryArtifactRefs: decision.artifactRefs });
   if (!delivered) throw Error("结果尚未送达明确的回报位置");
   if (kind === "deliver") {
-    const outcome = decision.decision === "continue" || (decision.outcome === "completed" && !facts?.executionDelivered) ? "partial" : decision.outcome;
     const summary = facts && !facts.executionDelivered ? `${decision.reply}\n${facts.summary}` : decision.reply;
     works.automaticCompletion.recordDelivery(binding.bindingId, summary, outcome, true);
     works.automaticCompletion.drain();

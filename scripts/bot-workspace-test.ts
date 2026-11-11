@@ -11,7 +11,7 @@ import BotWorkspacePage, { BotMessage } from "../src/renderer/src/components/pag
 import { BotWorkBrowser } from "../src/renderer/src/components/pages/BotWorkBrowser";
 import { WorkExecutionMetrics } from "../src/renderer/src/components/pages/WorkExecutionMetrics";
 import { BotWorkDetails } from "../src/renderer/src/components/pages/BotWorkDetails";
-import { WorkFiles, workFiles, generatedWorkFiles, additionalReportRecord } from "../src/renderer/src/components/pages/BotWorkResult";
+import { WorkFiles, workFiles, generatedWorkFiles, additionalReportRecord, resultBodyText } from "../src/renderer/src/components/pages/BotWorkResult";
 import { WorkCardsPanel } from "../src/renderer/src/components/pages/BotWorkCardsPanel";
 import { WorkReviewPanel } from "../src/renderer/src/components/pages/BotWorkReviewPanel";
 import { useAppStore } from "../src/renderer/src/store/appStore";
@@ -638,7 +638,7 @@ assert.match(longPartitionedHtml, /展开完整报告/, "long structured reports
 
 assert.match(renderToStaticMarkup(createElement(BotMessage, { message: structuredResult, botName: "Bot", works: [], onOpenWork() {}, onCancel() {} })), /report.csv/, "persisted filename survives missing/closed Work projections");
 
-assert.doesNotMatch(renderToStaticMarkup(createElement(WorkFiles, { files: [{ ref: "/unregistered/private.txt", name: "private.txt" }] })), /打开文件|打开保存版本/, "unregistered model file references remain text, not privileged file-open actions");
+assert.doesNotMatch(renderToStaticMarkup(createElement(WorkFiles, { files: [{ ref: "/unregistered/private.txt", name: "private.txt" }] })), /<button/, "unregistered model file references remain text, not privileged file-open actions");
 
 
 // List excerpts are deterministic presentation, not generated/rewritten results.
@@ -720,3 +720,25 @@ assert(!linkedConversationWork({...work,archive:{archivedAt:1,deletedAt:2}},[mes
   assert.deepEqual([question, answer], original, "presentation never removes durable associations or message text");
   console.log("PASS Work link ownership: same request, extra/distinct IDs, partial history, all statuses, team/scope fences, feedback, rehydration, immutable records");
 }
+
+// Goal review prose is the foreground answer; raw structured worker output is evidence only.
+const reviewedResult = structuredClone(partitionedResult);
+reviewedResult.workFeedback!.report!.completion = {outcome:"partial",nextStep:"deliver"};
+reviewedResult.workFeedback!.report!.summary = "初稿已做好，仍缺真实个人案例。";
+reviewedResult.workFeedback!.report!.primaryArtifactRefs = ["/snap/hash-report"];
+assert.equal(resultBodyText(reviewedResult.workFeedback!.report!), "初稿已做好，仍缺真实个人案例。");
+const reviewedHtml = renderToStaticMarkup(createElement(BotMessage,{message:reviewedResult,botName:"Bot",works:[fileWork],onOpenWork(){},onCancel(){}}));
+assert.match(reviewedHtml,/部分完成/);
+assert(reviewedHtml.indexOf("初稿已做好") < reviewedHtml.indexOf("执行详情与来源"));
+assert(reviewedHtml.indexOf("打开保存版本") < reviewedHtml.indexOf("执行详情与来源"));
+assert(reviewedHtml.indexOf("执行详情与来源") < reviewedHtml.indexOf("文件没有读到"),"worker conclusions cannot override or precede reviewed reply");
+assert.match(reviewedHtml,/<details class="bot-result-details"><summary>执行详情与来源/);
+assert.match(reviewedHtml,/完整原始消息/,"full raw evidence remains available without becoming the answer");
+for (const [outcome,label] of [["completed","已完成"],["unknown","尚未核实"]] as const) {
+ reviewedResult.workFeedback!.report!.completion={outcome,nextStep:"deliver"};
+ assert(renderToStaticMarkup(createElement(BotMessage,{message:reviewedResult,botName:"Bot",works:[],onOpenWork(){},onCancel(){}})).includes(label));
+}
+
+reviewedResult.workFeedback!.report!.sourceNotices=["真实客户案例仍是占位"];
+const sourceGapHtml=renderToStaticMarkup(createElement(BotMessage,{message:reviewedResult,botName:"Bot",works:[],onOpenWork(){},onCancel(){}}));
+assert(sourceGapHtml.indexOf("执行详情与来源") < sourceGapHtml.indexOf("真实客户案例仍是占位"),"original gap evidence is retained in the disclosure, not discarded or promoted to a new goal");

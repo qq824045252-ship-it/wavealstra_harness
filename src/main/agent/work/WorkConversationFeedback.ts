@@ -6,6 +6,7 @@ import type { WorkFeedbackDto } from "../../../shared/bot-conversation";
 import type { WorkDto } from "../../../shared/bot-work";
 import { BotConversationRepository } from "./BotConversationRepository";
 import { projectTeamReport } from "./WorkReportPresentation";
+import { workDeliveryFiles, workDeliveryResults } from "./WorkDeliveryArtifacts";
 import type { WorkService } from "./WorkService";
 
 export interface WorkConversationFeedbackOptions {
@@ -64,27 +65,31 @@ export class WorkConversationFeedback {
       const work = binding && works.getWork(binding.workId);
       if (!binding || !work || work.userId !== userId || binding.intentRevision !== work.intentRevision
         || binding.inputSnapshotId !== work.inputSnapshotId || binding.ownerEpoch !== work.ownerEpoch) return false;
-      const results = works.repo.listDeliverables(work.workId).filter(item => item.executionId === binding.bindingId && item.status !== "superseded");
-      const refs = [...new Set(results.flatMap(item => item.artifactRefs))];
-      const raw = results.map(item => item.summary).join("\n\n") || binding.settlementNote || "没有可用结果正文";
-      const generated = works.generatedArtifacts.list(work.workId, true).filter(item => item.bindingId === binding.bindingId);
-      const result = results.at(-1);
+      const results = workDeliveryResults(works, binding);
+      const files = workDeliveryFiles(works, results);
+      const refs = [...new Set(files.map(file => file.ref))];
+      const ownResults = results.filter(item => item.executionId === binding.bindingId);
+      const raw = ownResults.map(item => item.summary).join("\n\n") || binding.settlementNote || "没有可用结果正文";
+      const result = ownResults.at(-1);
+      const primaryArtifactRefs = input.primaryArtifactRefs === undefined ? undefined
+        : [...new Set(input.primaryArtifactRefs.filter(ref => files.some(file => file.ref === ref && file.openPath)))];
       const metadata: WorkFeedbackDto = { workId: work.workId, eventId: input.eventId,
         kind: input.category === "progress" ? "binding" : "result", category: input.category,
         executionId: binding.bindingId, intentRevision: binding.intentRevision, inputSnapshotId: binding.inputSnapshotId,
         ...(input.category === "progress" ? {} : { report: {
           title: work.title, summary: input.text, artifactRefs: refs, reviewStatus: result?.status ?? "proposed", current: true,
+          ...(input.completion ? { completion: input.completion } : {}),
+          ...(primaryArtifactRefs ? { primaryArtifactRefs } : {}),
+          ...(input.completion ? { sourceNotices: [...new Set(results.flatMap(item => item.uncoveredScope))] } : {}),
           ...projectTeamReport(raw, works.repo.reportContext(binding)),
-          notices: [...input.notices ?? [], ...results.flatMap(item => item.uncoveredScope),
+          notices: [...input.notices ?? [], ...input.completion ? [] : results.flatMap(item => item.uncoveredScope),
             ...results.some(item => item.hasWriteConflicts) ? ["成果存在写入冲突"] : [],
             ...results.some(item => item.isSpeculation) ? ["部分结论尚未验证"] : []],
-          files: refs.map(ref => { const candidates = generated.filter(item => item.path === ref);
-            const artifact = generated.find(item => item.snapshotPath === ref) ?? (candidates.length === 1 ? candidates[0] : undefined);
-            return { ref, name: (artifact?.path ?? ref).split(/[\\/]/).pop() || ref, openPath: artifact?.snapshotPath ?? artifact?.path }; }),
+          files,
         } }),
       };
       const text = `【${work.title}】\n${input.text}${input.category !== "progress" && raw !== input.text ? `\n\n原始执行记录：\n${raw}` : ""}`;
-      return this.messages.appendWorkDelivery(userId, work.workId, input.eventId, JSON.stringify([input.text,input.notices ?? [],refs]), text, metadata).delivered;
+      return this.messages.appendWorkDelivery(userId, work.workId, input.eventId, JSON.stringify([input.text,input.notices ?? [],refs,input.completion ?? null,primaryArtifactRefs ?? null]), text, metadata).delivered;
     });
   }
 

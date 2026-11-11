@@ -3,9 +3,13 @@ import type Database from "better-sqlite3";
 import type { WorkService } from "./WorkService";
 import type { WorkResultDecision, WorkResultTurnInput } from "./BotWorkResultTurn";
 import { applyCompletionDecision } from "./WorkCompletionDecision";
+import { workDeliveryFiles, workDeliveryResults } from "./WorkDeliveryArtifacts";
+import type { WorkFeedbackDto } from "../../../shared/bot-conversation";
 
 export interface WorkCompletionDelivery {
   bindingId: string; eventId: string; text: string; category: "progress" | "result" | "decision"; notices?: string[];
+  completion?: NonNullable<WorkFeedbackDto["report"]>["completion"];
+  primaryArtifactRefs?: string[];
 }
 export interface CompletionTurn { binding_id: string; context_json: string; decision_json: string | null; state: string; attempts: number; retry_at: number; error: string | null }
 export interface WorkCompletionOptions {
@@ -85,7 +89,8 @@ export class WorkCompletionCoordinator {
     const candidate = works.transaction(() => this.current(bindingId));
     const binding = works.repo.getBinding(bindingId);
     if (!candidate || !binding || this.closed || !this.options.isAuthority()) return;
-    const results = works.repo.listDeliverables(binding.workId).filter(item => item.executionId === bindingId && item.status !== "superseded");
+    const results = workDeliveryResults(works, binding);
+    const availableFiles = workDeliveryFiles(works, results).filter(file => file.openPath).map(({ref, name}) => ({ref, name}));
     const raw = results.map(item => item.summary).filter(Boolean).join("\n\n");
     const eventId = `completion:${bindingId}`;
     const personalPreferences = this.options.preferences?.(binding.taskId) ?? "";
@@ -99,6 +104,7 @@ export class WorkCompletionCoordinator {
         temporalContext: this.temporalContext(bindingId), preferenceFingerprint,
         originalRequest, title: candidate.work.title, goal: candidate.work.goalDescription,
         results: results.map(item => ({ summary: item.summary, artifactRefs: item.artifactRefs, uncoveredScope: item.uncoveredScope })),
+        availableFiles,
         previousResults: works.repo.listDeliverables(binding.workId).filter(item => item.executionId !== bindingId
           && item.intentRevision === binding.intentRevision && item.inputSnapshotId === binding.inputSnapshotId && item.status !== "superseded")
           .map(item => ({ executionId:item.executionId, summary:item.summary, artifactRefs:item.artifactRefs, uncoveredScope:item.uncoveredScope, status:item.status })),
@@ -136,17 +142,19 @@ export class WorkCompletionCoordinator {
       works.transaction(() => {
         const current = this.current(bindingId);
         if (!current) return;
-        const latestResults = works.repo.listDeliverables(binding.workId).filter(item => item.executionId === bindingId && item.status !== "superseded")
-          .map(item => ({summary:item.summary,artifactRefs:item.artifactRefs,uncoveredScope:item.uncoveredScope}));
+        const deliveryResults = workDeliveryResults(works, binding);
+        const latestResults = deliveryResults.map(item => ({summary:item.summary,artifactRefs:item.artifactRefs,uncoveredScope:item.uncoveredScope}));
+        const latestFiles = workDeliveryFiles(works, deliveryResults).filter(file => file.openPath).map(({ref,name}) => ({ref,name}));
         const frozen = JSON.parse(row.context_json);
         const pendingQuestions = this.questions(binding.workId);
         const latestPreferences = this.options.preferences?.(binding.taskId) ?? "";
         const latestPreferenceFingerprint = createHash("sha256").update(latestPreferences).digest("hex");
         if (latestPreferenceFingerprint !== preferenceFingerprint
           || JSON.stringify(latestResults) !== JSON.stringify(frozen.results)
+          || JSON.stringify(latestFiles) !== JSON.stringify(frozen.availableFiles ?? [])
           || JSON.stringify(pendingQuestions) !== JSON.stringify(frozen.pendingQuestions ?? [])) {
           db.prepare("UPDATE work_completion_turns SET context_json=?,decision_json=NULL,state='queued',retry_at=0 WHERE binding_id=?")
-            .run(JSON.stringify({...frozen,preferenceFingerprint:latestPreferenceFingerprint,results:latestResults,pendingQuestions,actualMissing:current.conclusion === "succeeded" ? [] : [current.summary]}),bindingId);
+            .run(JSON.stringify({...frozen,preferenceFingerprint:latestPreferenceFingerprint,results:latestResults,availableFiles:latestFiles,pendingQuestions,actualMissing:current.conclusion === "succeeded" ? [] : [current.summary]}),bindingId);
           return; // A late result must not be guided by a decision on older evidence.
         }
         db.prepare("UPDATE work_completion_turns SET decision_json=?,error=NULL WHERE binding_id=?").run(JSON.stringify(decision), bindingId);

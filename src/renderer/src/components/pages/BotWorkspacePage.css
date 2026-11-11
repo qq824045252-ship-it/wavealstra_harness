@@ -253,7 +253,7 @@
 .bot-result-report > header h3 { flex:1 1 220px; font-size:16px; overflow-wrap:anywhere; }
 .bot-result-report .bot-status-badge { white-space:nowrap; margin-top:2px; }
 .bot-result-body { min-width:0; overflow-wrap:anywhere; }
-.bot-result-body.is-collapsed { max-height:320px; overflow:hidden; mask-image:linear-gradient(#000 85%,transparent); }
+.bot-result-body.is-collapsed { max-height:240px; overflow:hidden; mask-image:linear-gradient(#000 85%,transparent); }
 .bot-result-expand { margin-top:8px; }
 .bot-assistant-content .md table { min-width:480px; }
 .bot-assistant-content .md th { white-space:nowrap; }
@@ -349,3 +349,14 @@
 .bot-rename-dialog input { width: 100%; box-sizing: border-box; padding: 10px; }
 .bot-rename-dialog p { display:block; font-size:13px; line-height:1.6; margin-top:12px; color:var(--fg-secondary); }
 .bot-rename-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+
+/* The foreground is a delivery surface; audit evidence is a secondary disclosure. */
+.bot-result-details { margin-top:14px; border-top:1px solid var(--border-subtle); padding-top:10px; color:var(--fg-secondary); font-size:12px; }
+.bot-result-details > summary { cursor:pointer; }
+.bot-result-details[open] > section, .bot-result-details[open] > details { margin-top:12px; }
+.bot-result-details .bot-original-report { margin-top:12px; }
+.bot-result-limitations { margin-top:12px; }
+.bot-result-limitations h4, .bot-result-attachments h4 { margin:0; font-size:12px; color:var(--fg-secondary); }
+.bot-result-notices { margin:6px 0; }
+.bot-result-attachments > .bot-result-files > li > button { color:var(--accent); border-color:var(--accent); font-weight:600; }
+.bot-result-report .bot-status-badge[data-outcome="partial"], .bot-result-report .bot-status-badge[data-outcome="unknown"] { color:var(--fg); }

@@ -237,6 +237,10 @@ try {
   await flush(); await flush();
   assert.equal(works.getWork(continuation)?.closureConclusion,"succeeded","reviewed continuation resolves only its semantic gap");
   assert.equal(works.repo.listBindings(continuation).length,2,"one exact missing-part execution, not original task replay");
+  const continuationBindings=works.repo.listBindings(continuation);
+  assert.equal(works.partialResults.deliverySource(continuationBindings[1])?.bindingId,continuationBindings[0].bindingId,"delivery ancestry comes from the persisted continuation dispatch");
+  for (const mismatch of [{workId:"foreign"},{intentRevision:999},{inputSnapshotId:"foreign"},{ownerEpoch:999},{botId:"foreign"},{taskId:"foreign"}])
+    assert.equal(works.partialResults.deliverySource({...continuationBindings[1],...mismatch}),undefined,"continuation ancestry cannot cross identity, input or ownership boundaries");
   bots.registerBot({botId:"team-review-member",userId:LOCAL_USER_ID,displayName:"成员",authorization:DESKTOP_USER_GRANTS});
   const teamResult=works.teams.handle({...user,grants:{...DESKTOP_USER_GRANTS,allowRedelegation:true}}, {kind:"create",request:{
     operationId:"team-review-followup",title:"team-review-followup",goalDescription:"补充剩余内容",workspacePath:root,

@@ -27,11 +27,16 @@ function reportFile(file: WorkFile): boolean {
   return /\.(?:pdf|docx?|xlsx?|csv|tsv|json|jsonl|xml|ya?ml|pptx?|md|txt|html?|png|jpe?g|webp|svg)$/i.test(file.name);
 }
 
-export function WorkFiles({ files }: { files: WorkFile[] }): React.JSX.Element | null {
+export function WorkFiles({ files, primaryRefs, compact = false }: { files: WorkFile[]; primaryRefs?: string[]; compact?: boolean }): React.JSX.Element | null {
   const [notice, setNotice] = useState("");
   if (!files.length) return null;
   const reports = files.filter(reportFile);
   const others = files.filter(file => !reportFile(file));
+  const openable = (file: WorkFile) => Boolean(file.artifact || file.openPath);
+  const ordered = primaryRefs === undefined ? (reports.length ? reports : files).filter(openable)
+    : [...new Set(primaryRefs)].flatMap(ref => files.filter(file => file.ref === ref && openable(file)));
+  const primary = compact ? ordered.slice(0, 3) : [];
+  const remaining = compact ? files.filter(file => !primary.includes(file)) : [];
   const open = async (file: WorkFile) => {
     try {
       if (!window.api?.openFolder) throw new Error("文件打开接口不可用");
@@ -43,13 +48,19 @@ export function WorkFiles({ files }: { files: WorkFile[] }): React.JSX.Element |
   };
   const list = (items: WorkFile[]) => <ul className="bot-result-files">{items.map(file => <li key={file.artifact ? JSON.stringify([file.artifact.bindingId, file.artifact.path, file.artifact.digest]) : file.ref}>
     <div><strong title={file.name}>{file.name}</strong>{file.artifact && <small>{formatSize(file.artifact.sizeBytes)}</small>}</div>
-    {(file.artifact || file.openPath) && <button type="button" onClick={() => void open(file)}>{file.artifact?.snapshotPath || file.openPath ? "打开保存版本" : "打开文件"}</button>}
+    {!(file.artifact || file.openPath) && <small>未登记可打开文件</small>}
+    {(file.artifact || file.openPath) && <button type="button" aria-label={`打开 ${file.name}`} onClick={() => void open(file)}>{file.artifact?.snapshotPath || file.openPath ? "打开保存版本" : "打开文件"}</button>}
     <details><summary>路径与版本</summary><p>{file.ref}</p>{file.artifact && <><p>原文件：{file.artifact.path}</p><p>SHA-256：{file.artifact.digest}</p><button type="button" onClick={() => void window.api?.showItemInFolder?.(file.artifact!.path)}>定位文件</button></>}</details>
   </li>)}</ul>;
   return <section className="bot-result-attachments" aria-label="成果附件">
-    <h4>{reports.length ? "报告与数据" : "成果附件"} · {reports.length || files.length}</h4>
-    {list(reports.length ? reports : files)}
-    {reports.length > 0 && others.length > 0 && <details className="bot-result-other-files"><summary>其他文件与脚本 · {others.length}</summary>{list(others)}</details>}
+    {compact ? <>
+      {!!primary.length && <><h4>本次交付</h4>{list(primary)}</>}
+      {!!remaining.length && <details className="bot-result-other-files"><summary>其他文件与引用 · {remaining.length}</summary>{list(remaining)}</details>}
+    </> : <>
+      <h4>{reports.length ? "报告与数据" : "成果附件"} · {reports.length || files.length}</h4>
+      {list(reports.length ? reports : files)}
+      {reports.length > 0 && others.length > 0 && <details className="bot-result-other-files"><summary>其他文件与脚本 · {others.length}</summary>{list(others)}</details>}
+    </>}
     {notice && <p role="alert">{notice}</p>}
   </section>;
 }
@@ -71,10 +82,10 @@ export function additionalReportRecord(report: NonNullable<WorkFeedbackDto["repo
   const titlePrefix = `【${report.title}】`;
   if (original === titlePrefix) return "";
   if (original.startsWith(`${titlePrefix}\n`)) original = original.slice(titlePrefix.length + 1).trim();
-  const displayed = (report.structured?.conclusions.map(item => item.text).join("\n") ?? report.summary).replace(/\r\n/g, "\n").trim();
+  const displayed = resultBodyText(report).replace(/\r\n/g, "\n").trim();
   if (!original || original === displayed) return "";
   // Structured projections may omit JSON fields; keep their source intact.
-  if (report.structured || !displayed) return original;
+  if (report.structured && !report.completion || !displayed) return original;
   const at = original.indexOf(displayed);
   if (at < 0 || (at > 0 && original[at - 1] !== "\n")
     || (at + displayed.length < original.length && original[at + displayed.length] !== "\n")) return original;
@@ -90,42 +101,57 @@ export function additionalReportRecord(report: NonNullable<WorkFeedbackDto["repo
   return remainder.split("\n").filter(line => !representedLines.has(line)).join("\n").trim();
 }
 
+/** A foreground goal review is the user reply. Worker conclusions remain source
+ * evidence and must never override the review simply because they are JSON. */
+export function resultBodyText(report: NonNullable<WorkFeedbackDto["report"]>): string {
+  return report.completion ? report.summary : report.structured?.conclusions.map(item => item.text).join("\n") ?? report.summary;
+}
+
 export function WorkReport({ report, originalText, executionId, work, renderMarkdown }: {
   report: NonNullable<WorkFeedbackDto["report"]>; originalText: string; executionId?: string; work?: WorkProjectionDto;
   renderMarkdown: (text: string) => React.JSX.Element;
 }): React.JSX.Element {
   const [expanded, setExpanded] = useState(false);
-  const unprojectedJson = !report.structured && /^(?:```(?:json)?\s*)?[{[]/.test(report.summary.trim());
-  const bodyText = report.structured?.conclusions.map(item => item.text).join("\n") ?? report.summary;
-  const long = !unprojectedJson && (bodyText.length > 1600 || bodyText.split("\n").length > 20);
+  const bodyText = resultBodyText(report);
+  const unprojectedJson = !report.structured && /^(?:```(?:json)?\s*)?[{[]/.test(bodyText.trim());
+  const long = !unprojectedJson && (bodyText.length > 800 || bodyText.split("\n").length > 12);
   const additionalRecord = unprojectedJson
     ? (originalText.includes(report.summary) ? originalText : [report.summary, originalText].filter(Boolean).join("\n\n"))
     : additionalReportRecord(report, originalText);
   const files = workFiles(report.artifactRefs, work, executionId).map(file => ({ ...file,
     name: report.files?.find(item => item.ref === file.ref)?.name ?? file.name,
     openPath: report.files?.find(item => item.ref === file.ref)?.openPath }));
+  const sourceConclusions = report.structured?.conclusions ?? [];
+  const hasDetails = Boolean(report.teamFacts?.length || sourceConclusions.length || report.structured?.observations.length || report.sourceNotices?.length || additionalRecord);
+  const status = !report.current ? "历史成果" : report.completion
+    ? report.completion.nextStep === "ask" ? "需要你补充" : report.completion.nextStep === "continue" ? "继续处理中"
+      : { completed: "已完成", partial: "部分完成", unknown: "尚未核实" }[report.completion.outcome]
+    : { proposed: "结果已返回", accepted: "负责人已核验", rejected: "未通过核验", superseded: "已被新成果替代" }[report.reviewStatus];
   return <section className="bot-result-report" aria-label={`成果：${report.title}`}>
-    <header><h3>{report.title}</h3><span className="bot-status-badge">{!report.current ? "历史成果" : {
-      proposed: "结果已返回", accepted: "负责人已核验", rejected: "未通过核验", superseded: "已被新成果替代",
-    }[report.reviewStatus]}</span></header>
+    <header><h3>{report.title}</h3><span className="bot-status-badge" data-outcome={report.completion?.outcome}>{status}</span></header>
     <div className={`bot-result-body ${long && !expanded ? "is-collapsed" : ""}`}>
-      {report.structured ? <section aria-label="本次请求的结论"><h4>本次请求的结论</h4>{report.structured.conclusions.map((item, index) => <article key={index}>
-        {renderMarkdown(item.text)}<details><summary>关联请求与来源</summary><p>{item.requestText}</p>
-        <p>引用关联不代表结论已自动证实。</p><ul>{item.sources.map(source => <li key={source.ref}>{source.label}<details><summary>来源标识</summary><code>{source.ref}</code></details></li>)}</ul>
-        </details></article>)}</section> : unprojectedJson ? <p>报告已返回；此记录未生成可读投影，请展开下方完整报告查看原始内容。</p> : renderMarkdown(report.summary)}
+      {unprojectedJson ? <p>原始报告已保留，尚未整理成可读结论。请展开执行详情查看，不代表目标已完成。</p>
+        : <>{!report.completion && report.structured && <h4>本次请求的结论</h4>}{renderMarkdown(bodyText)}</>}
     </div>
-    {report.teamFacts && <section aria-label="汇总时的执行事实"><h4>汇总时的执行事实</h4><ul>{report.teamFacts.map((fact, index) => <li key={index}>
-      <strong>{fact.displayName}</strong>：{{ completed: "执行结束", failed: "执行失败", stopped: "执行停止", invalidated: "执行已失效", unknown: "执行结果未知", not_started: "未启动", running: "执行中", submitted: "已派发", pending: "准备中" }[fact.executionStatus] ?? fact.executionStatus}
-      {fact.failureReason && <p role="status">{fact.failureSummary ?? fact.failureReason}</p>}
-      <details><summary>分工与执行来源</summary><p>{fact.responsibility}</p>{fact.failureReason && <p>{fact.failureReason}</p>}{fact.sourceRefs.map(ref => <p key={ref}><code>{ref}</code></p>)}</details>
-    </li>)}</ul></section>}
-    {report.structured?.observations.length ? <details aria-label="额外观察"><summary>额外观察（不增加任务要求）· {report.structured.observations.length}</summary>
-      {report.structured.observations.map((text, index) => <div key={index}>{renderMarkdown(text)}</div>)}
-    </details> : null}
     {long && <button className="bot-result-expand" type="button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? "收起长报告" : "展开完整报告"}</button>}
-    {report.notices.length > 0 && <ul className="bot-result-notices">{report.notices.map((notice, i) => <li key={i}>{notice}</li>)}</ul>}
-    <WorkFiles files={files} />
-    {additionalRecord && <details className="bot-original-report"><summary>{unprojectedJson ? "完整报告（原始格式）" : "补充原始记录"}</summary><p>成果记录：{{ proposed: "已生成，尚未登记采纳", accepted: "已采纳", rejected: "未采纳", superseded: "已被后续成果替代" }[report.reviewStatus]}。</p>{renderMarkdown(additionalRecord)}</details>}
+    {report.notices.length > 0 && <section className="bot-result-limitations" aria-label="需要注意"><h4>需要注意</h4><ul className="bot-result-notices">{[...new Set(report.notices)].map((notice, i) => <li key={i}>{notice}</li>)}</ul></section>}
+    <WorkFiles files={files} primaryRefs={report.primaryArtifactRefs} compact />
+    {hasDetails && <details className="bot-result-details"><summary>执行详情与来源</summary>
+      {!!report.sourceNotices?.length && <section aria-label="执行报告中的限制"><h4>执行报告中的限制</h4><ul>{report.sourceNotices.map((notice,index) => <li key={index}>{notice}</li>)}</ul></section>}
+      {report.teamFacts?.length ? <section aria-label="汇总时的执行事实"><h4>汇总时的执行事实</h4><ul>{report.teamFacts.map((fact, index) => <li key={index}>
+        <strong>{fact.displayName}</strong>：{{ completed: "执行结束", failed: "执行失败", stopped: "执行停止", invalidated: "执行已失效", unknown: "执行结果未知", not_started: "未启动", running: "执行中", submitted: "已派发", pending: "准备中" }[fact.executionStatus] ?? fact.executionStatus}
+        {fact.failureReason && <p>{fact.failureSummary ?? fact.failureReason}</p>}
+        <details><summary>分工与执行来源</summary><p>{fact.responsibility}</p>{fact.failureReason && <p>{fact.failureReason}</p>}{fact.sourceRefs.map(ref => <p key={ref}><code>{ref}</code></p>)}</details>
+      </li>)}</ul></section> : null}
+      {!!sourceConclusions.length && <section aria-label="结论来源">{sourceConclusions.map((item,index) => <details key={index}><summary>关联请求与来源 {index + 1}</summary>
+        {report.completion && renderMarkdown(item.text)}<p>{item.requestText}</p><p>引用关联不代表结论已自动证实。</p>
+        <ul>{item.sources.map(source => <li key={source.ref}>{source.label}<details><summary>来源标识</summary><code>{source.ref}</code></details></li>)}</ul>
+      </details>)}</section>}
+      {report.structured?.observations.length ? <details aria-label="额外观察"><summary>额外观察（不增加任务要求）· {report.structured.observations.length}</summary>
+        {report.structured.observations.map((text, index) => <div key={index}>{renderMarkdown(text)}</div>)}
+      </details> : null}
+      {additionalRecord && <details className="bot-original-report"><summary>{unprojectedJson ? "完整报告（原始格式）" : "补充原始记录"}</summary><p>成果记录：{{ proposed: "已生成，尚未登记采纳", accepted: "已采纳", rejected: "未采纳", superseded: "已被后续成果替代" }[report.reviewStatus]}。</p>{renderMarkdown(additionalRecord)}</details>}
+    </details>}
   </section>;
 }
 

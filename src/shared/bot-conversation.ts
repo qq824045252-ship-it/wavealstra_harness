@@ -51,6 +51,10 @@ export const workFeedbackSchema = z.object({
   /** Immutable host projection of this exact result version; text retains the full original record. */
   report: z.object({
     title: z.string(), summary: z.string(), artifactRefs: z.array(z.string()),
+    /** This is the foreground goal review, not the worker's execution status. */
+    completion: z.object({ outcome: z.enum(["completed", "partial", "unknown"]), nextStep: z.enum(["deliver", "continue", "ask"]) }).strict().optional(),
+    primaryArtifactRefs: z.array(z.string()).optional(),
+    sourceNotices: z.array(z.string()).optional(),
     files: z.array(z.object({ ref: z.string(), name: z.string(), openPath: z.string().optional() }).strict()).optional(),
     reviewStatus: z.enum(["proposed", "accepted", "rejected", "superseded"]),
     current: z.boolean(), notices: z.array(z.string()),
