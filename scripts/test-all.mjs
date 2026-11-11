@@ -162,6 +162,7 @@ const GUI_TESTS = new Set([
 ]);
 
 const NETWORK_TESTS = new Set([
+  "test:web-page-answer-runtime:live", // Real gateway model; output-pressure injection runs last.
   "test:bot-result-delivery:live",
   "test:bot-memory-live", // isolated pnpm dev desktop + configured live model
   "test:bot-watch:live",

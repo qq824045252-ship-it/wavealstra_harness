@@ -235,6 +235,8 @@
     "test:artifact-projection": "esbuild scripts/artifact-projection-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/artifact-projection-test.cjs && node scripts/test-guard.mjs out/tests/artifact-projection-test.cjs",
     "test:artifact-cross-ref": "esbuild scripts/artifact-cross-ref-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/artifact-cross-ref-test.cjs --external:better-sqlite3 --external:electron && node scripts/test-guard.mjs out/tests/artifact-cross-ref-test.cjs",
     "test:artifact-provenance": "esbuild scripts/artifact-provenance-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/artifact-provenance-test.cjs --external:better-sqlite3 --external:electron && node scripts/test-guard.mjs out/tests/artifact-provenance-test.cjs",
+    "test:web-page-answer-runtime": "node scripts/test-guard.mjs scripts/web-page-answer-runtime-test.mjs",
+    "test:web-page-answer-runtime:live": "node scripts/test-guard.mjs scripts/web-page-answer-runtime-test.mjs --live",
     "test:web-access-extract-runtime": "node scripts/test-guard.mjs scripts/web-access-extract-runtime-test.mjs",
     "test:web-access-capability": "esbuild scripts/web-access-capability-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/web-access-capability-test.cjs --external:esbuild && node scripts/test-guard.mjs out/tests/web-access-capability-test.cjs",
     "test:capability-packaging": "esbuild scripts/capability-packaging-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/capability-packaging-test.cjs && node scripts/test-guard.mjs out/tests/capability-packaging-test.cjs",

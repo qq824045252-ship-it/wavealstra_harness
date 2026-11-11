@@ -46,7 +46,7 @@ export function summaryModelValue(model: ModelLike): string {
 /** Pi owns effective settings, pattern parsing, catalogue and request-time auth. */
 export async function resolveSummaryModelScope(ctx: Pick<ExtensionContext, "sessionManager">) {
   const native = nativeRuntimes.get(ctx.sessionManager);
-  if (native) return { models: await native.getAvailable(), isAllowed: () => true, complete: native.complete.bind(native) };
+  if (native) return { models: await native.getAvailable(), isAllowed: () => true, complete: native.complete.bind(native), completeSimple: native.completeSimple.bind(native) };
   const invocation = getSessionModelInvocation(ctx.sessionManager);
   await invocation.settings.reload();
   const errors = invocation.settings.drainErrors();
@@ -59,5 +59,8 @@ export async function resolveSummaryModelScope(ctx: Pick<ExtensionContext, "sess
   const complete: ModelRuntime["complete"] = (model, context, options) => invocation.run(
     () => invocation.runtime.complete(model, context, options),
   );
-  return { models, isAllowed: (model: ModelLike) => allowed.has(summaryModelValue(model)), complete };
+  const completeSimple: ModelRuntime["completeSimple"] = (model, context, options) => invocation.run(
+    () => invocation.runtime.completeSimple(model, context, options),
+  );
+  return { models, isAllowed: (model: ModelLike) => allowed.has(summaryModelValue(model)), complete, completeSimple };
 }
