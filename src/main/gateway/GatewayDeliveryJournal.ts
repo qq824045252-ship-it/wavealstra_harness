@@ -201,11 +201,11 @@ export class GatewayDeliveryJournal {
     })();
   }
 
-  recoverable(channelId: string, accountKey: string, limit = 1024, retryBlocked = false): GatewayInboxEntry[] {
+  recoverable(channelId: string, accountKey: string, limit = 1024, retryBlocked = false, cutoff = this.now()): GatewayInboxEntry[] {
     return this.db.prepare(`SELECT i.* FROM gateway_inbox i LEFT JOIN gateway_outbox o ON o.delivery_id=i.delivery_id
       WHERE i.channel_id=? AND i.account_key=? AND i.status IN ('pending','reply_pending')
       AND (o.delivery_id IS NULL OR (o.status='pending' AND o.next_attempt_at<=?) OR (o.status='blocked' AND ?=1))
-      ORDER BY i.created_at,i.rowid LIMIT ?`).all(channelId, accountKey, this.now(), retryBlocked ? 1 : 0, limit) as GatewayInboxEntry[];
+      ORDER BY i.created_at,i.rowid LIMIT ?`).all(channelId, accountKey, cutoff, retryBlocked ? 1 : 0, limit) as GatewayInboxEntry[];
   }
 
   begin(id: string): GatewayInboxEntry {
@@ -281,10 +281,10 @@ export class GatewayDeliveryJournal {
       .all(channelId) as Array<{ status: string; count: number }>).map(row => [row.status, row.count]));
   }
 
-  nextRetryAt(channelId: string, accountKey: string): number | undefined {
+  nextRetryAt(channelId: string, accountKey: string, cutoff = this.now()): number | undefined {
     const row = this.db.prepare(`SELECT MIN(o.next_attempt_at) AS at FROM gateway_outbox o
       JOIN gateway_inbox i ON i.delivery_id=o.delivery_id
-      WHERE i.channel_id=? AND i.account_key=? AND o.status='pending' AND o.next_attempt_at>?`).get(channelId, accountKey, this.now()) as { at: number | null };
+      WHERE i.channel_id=? AND i.account_key=? AND o.status='pending' AND o.next_attempt_at>?`).get(channelId, accountKey, cutoff) as { at: number | null };
     return row.at ?? undefined;
   }
 

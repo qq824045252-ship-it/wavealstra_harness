@@ -72,6 +72,42 @@ async function check(name: string, test: () => Promise<void> | void) {
 }
 
 try {
+  for (const crossedBy of [0, 1]) {
+    await check(`retry deadline crossing between recovery queries is not lost (${crossedBy}ms past)`, async () => {
+      let clock = 100;
+      const now = () => clock, deadline = 101;
+      const f = fixture({ now });
+      const entry = f.accept();
+      f.journal.begin(entry.delivery_id);
+      f.journal.queueReply(entry.delivery_id, "saved answer");
+      f.journal.beginSend(entry.delivery_id);
+      f.journal.sendFailed(entry.delivery_id, { status: "pending", reason: "provider_not_sent", nextAttemptAt: deadline });
+      const registry = f.registry({ now });
+      registry.register(f.adapter, async () => { assert.fail("outbox recovery must not rerun native work"); });
+      const recoverable = f.journal.recoverable.bind(f.journal);
+      let crossed = false;
+      f.journal.recoverable = (...args) => {
+        const rows = recoverable(...args);
+        if (!crossed) {
+          assert.equal(rows.length, 0, "reply is not yet due at the recovery cutoff");
+          clock = deadline + crossedBy;
+          crossed = true;
+        }
+        return rows;
+      };
+      registry.resume(f.adapter.id);
+      assert.equal(f.journal.nextRetryAt(f.adapter.id, f.adapter.key), undefined,
+        "already-due outboxes must not create a hot retry loop while queued");
+      // No second resume or inbound message may rescue a lost timer.
+      await until(() => f.journal.outbox(entry.delivery_id)?.status === "sent");
+      assert.equal(crossed, true);
+      assert.equal(f.journal.outbox(entry.delivery_id)?.retry_count, 2);
+      assert.deepEqual(f.adapter.sent, ["saved answer"]);
+      assert.equal(f.journal.get(entry.delivery_id)?.status, "completed");
+      registry.suspend();
+    });
+  }
+
   await check("canonical queue tuples preserve sessions and cannot collide on delimiters or object field order", () => {
     const adapter = new Adapter();
     assert.equal(gatewaySessionQueueKey(adapter, adapter.key, { chatId: "x:y", taskId: "a" }), gatewaySessionQueueKey(adapter, adapter.key, { taskId: "b", chatId: "x:y" }));

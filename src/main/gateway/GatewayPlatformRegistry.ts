@@ -317,14 +317,17 @@ export class GatewayPlatformRegistry {
       return;
     }
     this.offlineChecks.delete(channelId);
-    for (const entry of journal.recoverable(channelId, key, 1024, retryBlocked)) {
+    // Partition due and future retries at one instant. A deadline crossed between
+    // the two queries must still schedule a wake, not fall into neither result.
+    const cutoff = this.now();
+    for (const entry of journal.recoverable(channelId, key, 1024, retryBlocked, cutoff)) {
       if (this.activeDeliveries.has(entry.delivery_id)) continue;
       if (this.pending >= 1024) break;
       if ((this.depths.get(entry.session_key) ?? 0) >= 64) continue;
       try { void this.dispatchStored(adapter, entry).catch(() => {}); }
       catch { this.report(channelId, "Gateway 恢复暂时不可用，未删除待处理记录"); }
     }
-    const next = journal.nextRetryAt(channelId, key);
+    const next = journal.nextRetryAt(channelId, key, cutoff);
     if (next !== undefined) this.scheduleResume(channelId, Math.max(1, next - this.now()));
   }
 
