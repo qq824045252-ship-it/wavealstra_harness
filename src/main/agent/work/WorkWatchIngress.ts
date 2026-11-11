@@ -101,6 +101,7 @@ const BUILTIN_ADAPTERS: WorkSourceAdapterCapability[] = [
  */
 export class WorkWatchIngress {
   private readonly adapters = new Map<string, WorkSourceAdapterCapability>();
+  private readonly receivers = new Set<string>();
   constructor(
     private readonly db: Database.Database,
     private readonly works: WorkService,
@@ -118,6 +119,14 @@ export class WorkWatchIngress {
   }
 
   adapter(source: string): WorkSourceAdapterCapability | undefined { return this.adapters.get(source); }
+  setReceiverAvailable(source: string, available: boolean): void {
+    if (available && !this.adapters.has(source)) throw Error("事件接收器缺少来源适配器");
+    if (available) this.receivers.add(source); else this.receivers.delete(source);
+  }
+  availableEventSources(): WorkSourceAdapterCapability[] {
+    const internal = new Set(["cron", "system", "user", "foreground_bot", "durable_host"]);
+    return [...this.adapters.values()].filter(adapter => !internal.has(adapter.source) && this.receivers.has(adapter.source));
+  }
   canQueryHistory(source: string): boolean { return this.adapters.get(source)?.canQueryHistory ?? false; }
 
   /** Freeze every batch whose fixed first-received deadline has elapsed. Safe to call repeatedly. */
@@ -203,6 +212,18 @@ export class WorkWatchIngress {
     if (subscription.sourceTarget && subscription.sourceTarget !== targetKey) {
       return { workId: work.workId, subscriptionId: subscription.subscriptionId, outcome: "skipped",
         reasonCode: "target-mismatch", targetKey };
+    }
+    if (work.watchRule?.triggerMode === "next_event" && event.occurredAt === undefined) {
+      this.upsertRoute({source:event.source,sourceEventId:event.sourceEventId,subscriptionId:subscription.subscriptionId,
+        workId:work.workId,targetKey,state:"rejected",reasonCode:"next-event-time-unverified",sourceVersion:event.sourceVersion,
+        trust:input.trust ?? "adapter",acceptedAt:now});
+      return {workId:work.workId,subscriptionId:subscription.subscriptionId,outcome:"rejected",reasonCode:"next-event-time-unverified",targetKey};
+    }
+    if (work.watchRule?.triggerMode === "next_event" && event.occurredAt !== undefined && event.occurredAt <= subscription.createdAt) {
+      this.upsertRoute({ source: event.source, sourceEventId: event.sourceEventId, subscriptionId: subscription.subscriptionId,
+        workId: work.workId, targetKey, state: "skipped", reasonCode: "before-next-event-baseline", sourceVersion: event.sourceVersion,
+        trust: input.trust ?? "adapter", acceptedAt: now });
+      return { workId: work.workId, subscriptionId: subscription.subscriptionId, outcome: "skipped", reasonCode: "before-next-event-baseline", targetKey };
     }
     const existingRoute = this.getRoute(event.source, event.sourceEventId, subscription.subscriptionId);
     if (existingRoute && existingRoute.state !== "rejected") {

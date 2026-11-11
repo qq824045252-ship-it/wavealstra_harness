@@ -337,6 +337,7 @@ export class WorkWatchScheduler {
           eventType: "work.tick", workId: work.workId, subscriptionId: subscription.subscriptionId,
           intentRevision: work.intentRevision, stateVersion: work.stateVersion, ownerEpoch: work.ownerEpoch,
           sourceVersion: String(cursor), payload: { scheduledAt: cursor, plannedAt: cursor, effectiveAt,
+            continuousExecution: work.watchRule?.executionMode === "continuous",
             logicalSlotKey: slot.key, plannedWallTime: slot.wallTime, scheduleRevision: revision,
             timezone: timezone ?? null, dstNormalized: slot.normalized,
             ...(subscription.catchUpPolicy === "latest" ? { authoritativeReadbackRequired: true,

@@ -21,6 +21,8 @@ export interface WorkExecutionPort {
   submit(binding: WorkExecutionBindingDto, text: string): Promise<AgentSubmissionReceipt>;
   inspect(binding: WorkExecutionBindingDto, receipt: AgentSubmissionReceipt): Promise<WorkExecutionObservation>;
   stop(binding: WorkExecutionBindingDto): Promise<void>;
+  /** Optional disposable scan cursor, advanced only after durable inbox ingestion. */
+  acknowledgeObservation?(binding: WorkExecutionBindingDto, receipt: AgentSubmissionReceipt, observation: WorkExecutionObservation): void;
 }
 
 /** Delivers persisted instructions, never retries the underlying business execution. */
@@ -151,6 +153,7 @@ export class WorkExecutionAdapter {
     const failures = this.service.nativeResults.receive(current, receipt, observation);
     for (const failure of failures) this.onError(failure.bindingId, failure.error);
     if (!failures.length) {
+      this.native.acknowledgeObservation?.(current, receipt, observation);
       this.service.nativeResults.readRecovered(current);
       if (observation.status !== "running") this.service.partialResults.recovery.markEvidenceRead(current.bindingId);
     }

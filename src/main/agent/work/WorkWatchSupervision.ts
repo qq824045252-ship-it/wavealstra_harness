@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { WorkWatchFollowUp } from "./WorkWatchFollowUp";
 import { previousWatchObservations } from "./WorkWatchComparison";
 import { watchGoalEvidence, watchGoalMet, watchGoalClosureSummary } from "./WorkWatchGoal";
-import type { WorkCompletionOptions } from "./WorkCompletionCoordinator";
+import { completionArtifactEvidence, type WorkCompletionOptions } from "./WorkCompletionCoordinator";
 import type { WorkResultDecision } from "./BotWorkResultTurn";
 import type { WorkDto, WorkExecutionBindingDto } from "../../../shared/bot-work";
 import { watchTimeExpired } from "../../../shared/work-watch-expiry";
@@ -98,6 +98,33 @@ export class WorkWatchSupervision {
     return this.options.works.partialResults.plans(workId).some(plan => plan.state !== 'cancelled' && plan.state !== 'settled'
       && plan.gapItemIds.length > 0 && plan.gapItemIds.every(id => id.startsWith('watch-followup:')));
   }
+  /** Continuous work may reuse a reviewed result only when no actionable responsibility remains. */
+  private continuousRoundComplete(binding: WorkExecutionBindingDto, work: WorkDto): boolean {
+    const {works,db}=this.options;
+    if (works.partialResults.gaps(work.workId).length || works.repo.listOpenBlockers(work.workId).length
+      || works.partialResults.plans(work.workId).some(plan=>!['cancelled','settled'].includes(plan.state))) return false;
+    if (!works.repo.listSubscriptions(work.workId).some(sub=>!sub.stoppedAt &&
+      (sub.nextWakeAt !== undefined && sub.nextWakeAt > Date.now() || sub.source !== 'cron' && works.ingress.availableEventSources().some(adapter=>adapter.source===sub.source)))) return false;
+    if (works.repo.listAdmissions(work.workId).some(admission=>['admitted','attempted','unknown'].includes(admission.state))) return false;
+    const results=works.repo.listDeliverables(work.workId).filter(result=>result.executionId===binding.bindingId && result.status!=='superseded' && result.status!=='rejected');
+    if (!results.length || results.some(result=>result.isSpeculation || result.hasWriteConflicts || result.uncoveredScope.length || result.uncoveredCriterionIds.length)) return false;
+    const previous=db.prepare(`SELECT r.context_json,r.decision_json,r.error FROM work_watch_reviews r
+      JOIN work_execution_bindings b ON b.binding_id=r.binding_id
+      WHERE b.work_id=? AND b.binding_id<>? AND b.intent_revision=? AND b.input_snapshot_id=? AND b.owner_epoch=?
+        AND b.invalidated_at IS NULL AND r.state IN ('silent','delivered') AND r.decision_json IS NOT NULL
+      ORDER BY r.reviewed_at DESC,r.rowid DESC LIMIT 1`).get(work.workId,binding.bindingId,work.intentRevision,work.inputSnapshotId,work.ownerEpoch) as {context_json:string;decision_json:string;error:string|null}|undefined;
+    if (!previous || previous.error) return false;
+    try {
+      const decision=JSON.parse(previous.decision_json) as WorkResultDecision;
+      const context=JSON.parse(previous.context_json) as {watchRule?:unknown;artifactEvidence?:ReturnType<typeof completionArtifactEvidence>};
+      if (decision.decision!=='deliver' || decision.outcome!=='completed' || decision.missing.length || decision.followUp || decision.waitPlan
+        || ['unknown','met'].includes(decision.stopAssessment?.status ?? '') || JSON.stringify(context.watchRule)!==JSON.stringify(work.watchRule)) return false;
+      const current=completionArtifactEvidence(works,binding);
+      if (!context.artifactEvidence || [...current,...context.artifactEvidence].some(item=>item.state!=='text' || item.truncated || item.omittedEvidenceCount)) return false;
+      const fingerprints=(items:typeof current)=>items.map(item=>[item.name,item.registeredDigest,item.registeredSizeBytes]).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)));
+      return JSON.stringify(fingerprints(current))===JSON.stringify(fingerprints(context.artifactEvidence));
+    } catch { return false; }
+  }
   /** Host-owned proof that this round adds nothing to understand: the comparison
    * is unchanged, the changes_only policy is silent, and no fact that could alter
    * the judgement (lifecycle, expiry, follow-up, question, preference/goal
@@ -109,6 +136,7 @@ export class WorkWatchSupervision {
     if (binding.status !== 'completed' || work.lifecycle !== 'active') return false;
     const rule = work.watchRule;
     if (!rule || rule.notificationMode !== 'changes_only') return false;
+    if (rule.executionMode === 'continuous' && !this.continuousRoundComplete(binding,work)) return false;
     if (rule.termination || (rule.endsAt !== undefined && watchTimeExpired(work, Date.now()))) return false;
     if (work.pendingConclusion || work.cancelRequestedAt) return false;
     if (this.hasPendingFollowUp(work.workId)) return false;
@@ -146,11 +174,12 @@ export class WorkWatchSupervision {
     const presentation: WatchObservationPresentation = result ? watchObservationDelivery(work,result,[...prior,result],
       item => watchTeamReadEvidence(this.options.db,works.repo,works.repo.getBinding(item.executionId),item))
       : {silent:false,comparisonState:prior.length ? 'unverified' : 'no_baseline',summary:binding.settlementNote || '本轮没有返回可用结果'};
+    const teamContinuationTargets = work.watchRule?.executionMode === "continuous" ? works.teams.continuationTargets(binding) : [];
     const personalPreferences = this.options.preferences?.(binding.taskId) ?? "";
     const preferenceFingerprint = createHash("sha256").update(personalPreferences).digest("hex");
-    const evidence = JSON.stringify(['watch-comparison-v2',preferenceFingerprint,work.watchRule,rawEvidence,previousVerifiedObservations,presentation,
+    const evidence = JSON.stringify(['watch-comparison-v2',teamContinuationTargets,preferenceFingerprint,work.watchRule,rawEvidence,previousVerifiedObservations,presentation,
       [...prior,...results].map(r => [r.deliverableId,r.summary,r.status,r.uncoveredScope,r.artifactRefs,r.isSpeculation,r.hasWriteConflicts])]);
-    return {binding,work,results,prior,presentation,evidence,rawEvidence,previousVerifiedObservations,personalPreferences,preferenceFingerprint};
+    return {binding,work,results,prior,presentation,evidence,rawEvidence,teamContinuationTargets,previousVerifiedObservations,personalPreferences,preferenceFingerprint};
   }
   private async process(id: string): Promise<void> {
     const {works,db} = this.options;
@@ -182,15 +211,19 @@ export class WorkWatchSupervision {
           decision_json=NULL,error=NULL,retry_at=0`).run(id,JSON.stringify(context),reviewedAt);
       return;
     }
+    const artifactEvidence = completionArtifactEvidence(works,binding);
     const source = JSON.parse(works.repo.executionInput(binding));
     const {instructions:_instructions,teamAssignment:_assignment,...originalRequest} = source;
     const baseline = prior.find(r => r.deliverableId === presentation.baselineResultId);
-    const context = {watchSupervision:true,preferenceFingerprint,teamRound:source.teamAssignment?.watchRound?.sequence,originalRequest,title:work.title,goal:work.goalDescription,
+    const context = {watchSupervision:true,executionMode:work.watchRule?.executionMode,preferenceFingerprint,teamRound:source.teamAssignment?.watchRound?.sequence,originalRequest,title:work.title,goal:work.goalDescription,
       watchRule:work.watchRule,lifecycle:work.lifecycle,
+      availableEventSources:works.ingress.availableEventSources().map(item=>({source:item.source,namespace:item.namespace})),
       nextWakeAt:works.repo.listSubscriptions(work.workId).filter(s => !s.stoppedAt).map(s => s.nextWakeAt).filter(Boolean),
       observedAt:binding.settledAt, reviewAt:Date.now(), executionStatus:binding.status,
       results:results.map(r=>({summary:r.summary,artifactRefs:r.artifactRefs,uncoveredScope:r.uncoveredScope})),
       verifiedObservations:rawEvidence,
+      artifactEvidence,
+      teamContinuationTargets:current.teamContinuationTargets,
       previousVerifiedObservations,
       teamPartialResults: source.teamAssignment?.role === 'owner_summary' && (binding.status !== 'completed' || !results.length)
         ? {notice:'负责人本轮未完成，下列仅为本轮成员已结算的部分依据，不代表全队完成', results:source.teamAssignment.previousResults ?? []} : undefined,
@@ -202,14 +235,14 @@ export class WorkWatchSupervision {
       notificationMode:work.watchRule?.notificationMode ?? 'every_check',
       nextAction:work.lifecycle==='active' ? '本轮观察不完整时可提出原委托内只读 followUp，由宿主持久补查并再次核对，不改变周期；否则按已保存的周期继续下一轮；如用户明确的可观察停止条件已由本轮真实证据满足，提交 stopAssessment 由宿主结束，否则继续' : work.lifecycle==='closing' ? '已停止新轮，整理末轮结果，说明正在收尾；不承诺下一轮' : '已暂停，只整理已发生的本轮观察，不承诺下一轮', evidence};
     db.prepare('INSERT OR IGNORE INTO work_watch_reviews(binding_id,context_json) VALUES (?,?)').run(id,JSON.stringify(context));
-    db.prepare("UPDATE work_watch_reviews SET context_json=?,decision_json=NULL WHERE binding_id=? AND json_extract(context_json,'$.evidence') IS NOT ?").run(JSON.stringify(context),id,evidence);
+    db.prepare("UPDATE work_watch_reviews SET context_json=?,decision_json=NULL WHERE binding_id=? AND (json_extract(context_json,'$.evidence') IS NOT ? OR json_extract(context_json,'$.artifactEvidence') IS NOT ?)").run(JSON.stringify(context),id,evidence,JSON.stringify(artifactEvidence));
     const row = db.prepare('SELECT * FROM work_watch_reviews WHERE binding_id=?').get(id) as {context_json:string;decision_json:string|null;attempts:number;error:string|null};
     const attempt = row.attempts > 0 && !row.error && !row.decision_json ? row.attempts : row.attempts+1;
     db.prepare('UPDATE work_watch_reviews SET attempts=?,error=NULL WHERE binding_id=?').run(attempt,id);
     let decision: WorkResultDecision;
     let error: string | undefined;
     try {
-      decision = row.decision_json ? JSON.parse(row.decision_json) : await this.options.review({eventId:`watch-review:${id}:${attempt}:${preferenceFingerprint}`,botId:work.ownerBotId,personalPreferences,context});
+      decision = row.decision_json ? JSON.parse(row.decision_json) : await this.options.review({eventId:`watch-review:${id}:${attempt}:${createHash("sha256").update(JSON.stringify([evidence,artifactEvidence])).digest("hex")}`,botId:work.ownerBotId,personalPreferences,context});
     } catch (failure) {
       error = failure instanceof Error ? failure.message : String(failure);
       if (attempt < 2) {
@@ -221,7 +254,8 @@ export class WorkWatchSupervision {
     if (this.closed || !this.options.isAuthority()) return;
     const fresh = this.snapshot(id);
     if (!fresh) return;
-    if (fresh.evidence !== evidence || fresh.work.lifecycle !== work.lifecycle) {
+    if (fresh.evidence !== evidence || fresh.work.lifecycle !== work.lifecycle
+      || JSON.stringify(completionArtifactEvidence(works,binding)) !== JSON.stringify(artifactEvidence)) {
       db.prepare('UPDATE work_watch_reviews SET decision_json=NULL,attempts=0,error=NULL,retry_at=0 WHERE binding_id=?').run(id); return;
     }
     // Preserve the expensive model verdict independently of delivery retries.
@@ -236,11 +270,22 @@ export class WorkWatchSupervision {
       const met = !error && watchGoalMet(latest.work,latest.binding,decision,originalRequest,latest.rawEvidence);
       const requestedStop = decision.stopAssessment?.status === "met";
       this.followUp.settle(binding,decision);
-      const followUp = !met && !error ? this.followUp.enqueue(latest.work,binding,decision,originalRequest) : {scheduled:false};
-      const reply = requestedStop && !met ? `${presentation.summary}\n\n停止条件尚未由本轮有效证据完成核对，未将持续委托标记完成。` : decision.reply;
-      const silent = !decision.followUp && !requestedStop && decision.stopAssessment?.status !== 'unknown' && presentation.silent && decision.outcome === 'completed' && decision.decision !== 'ask' && !error;
+      const followUp = !met && !error ? decision.waitPlan
+        ? this.followUp.arrangeWait(latest.work,binding,decision,originalRequest,latest.rawEvidence)
+        : this.followUp.enqueue(latest.work,binding,decision,originalRequest,current.teamContinuationTargets) : {scheduled:false};
+      const waitingOnPlan = works.repo.listSubscriptions(work.workId).some(s => !s.stoppedAt && (s.nextWakeAt !== undefined || s.source !== 'cron'));
+      if (!met && latest.work.lifecycle === 'active' && latest.work.watchRule?.executionMode === 'continuous' && !followUp.scheduled
+        && (decision.decision === 'ask' || !waitingOnPlan)) {
+        const blockerId = `watch-next-step:${id}`;
+        if (!works.repo.listOpenBlockers(work.workId).some(blocker => blocker.blockerId === blockerId))
+          works.repo.insertBlocker({blockerId,workId:work.workId,reportedByBotId:work.ownerBotId,kind:'operational',
+            reasonCode:decision.decision === 'ask' ? 'user-input' : 'invalid-schedule',reason:decision.decision === 'ask' ? decision.reply : followUp.notice ?? '持续目标尚未结束，但没有可执行的下一步或真实等待安排。',
+            waitingForUserInput:decision.decision === 'ask',status:'open',createdAt:Date.now()});
+      }
+      const reply = (decision.decision === "continue" || decision.waitPlan) && !followUp.scheduled ? "本次交付已保留的结果，原目标仍有未完成部分。没有安排继续执行，也没有重放已完成或结果未知的动作。" : requestedStop && !met ? `${presentation.summary}\n\n停止条件尚未由本轮有效证据完成核对，未将持续委托标记完成。` : decision.reply;
+      const silent = work.watchRule?.executionMode !== 'continuous' && !decision.followUp && !requestedStop && decision.stopAssessment?.status !== 'unknown' && presentation.silent && decision.outcome === 'completed' && decision.decision !== 'ask' && !error;
       if (!silent && !this.options.deliver({bindingId:id,eventId:`watch-supervision:${id}`,text:reply,category:'result',
-        notices:[...(followUp.notice ? [followUp.notice] : []),...(source.teamAssignment?.watchRound?.sequence ? [`团队观察轮次：第 ${source.teamAssignment.watchRound.sequence} 轮（持久调度记录）`] : []),`本轮执行回执时间：${binding.settledAt ? new Date(binding.settledAt).toISOString() : '未记录'}（不是来源内容发布时间）`,...(error ? [`前台整理错误：${error}`] : []), met ? '已依据本轮实际观察核对停止条件，停止新检查并结算在途轮次，无须人工确认。' : work.lifecycle!=='active' ? '持续委托已暂停或正在结束，不会安排新检查。' : '本轮结束不结束持续委托，后续按已保存计划运行。']})) throw Error('持续委托结果尚未送达原会话');
+        notices:[...(followUp.notice ? [followUp.notice] : []),...(source.teamAssignment?.watchRound?.sequence ? [`团队观察轮次：第 ${source.teamAssignment.watchRound.sequence} 轮（持久调度记录）`] : []),`本轮执行回执时间：${binding.settledAt ? new Date(binding.settledAt).toISOString() : '未记录'}（不是来源内容发布时间）`,...(error ? [`前台整理错误：${error}`] : []), met ? '已依据本轮实际观察核对停止条件，停止新检查并结算在途轮次，无须人工确认。' : work.lifecycle!=='active' ? '持续委托已暂停或正在结束，不会安排新检查。' : followUp.scheduled ? '下一步已持久安排，继续推进原目标。' : works.repo.listSubscriptions(work.workId).some(s => !s.stoppedAt && (s.nextWakeAt !== undefined || s.source !== 'cron')) ? '本轮结束不结束持续委托，后续按已保存计划运行。' : '持续目标尚未结束，但当前没有可运行的后续安排，需要明确下一步或等待条件。']})) throw Error('持续委托结果尚未送达原会话');
       db.prepare('UPDATE work_watch_reviews SET state=?,reviewed_at=?,retry_at=0 WHERE binding_id=?').run(met?'finishing':silent?'silent':'delivered',Date.now(),id);
       if (followUp.scheduled) this.options.wake();
       if (met) {

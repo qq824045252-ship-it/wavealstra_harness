@@ -129,7 +129,7 @@ export class WorkTeamService {
     this.works.repo.insertInbox({ eventId, dedupeKey: eventId, source: "cron", sourceEventId: eventId,
       eventType: "work.tick", workId: work.workId, subscriptionId: subscription.subscriptionId,
       intentRevision: work.intentRevision, stateVersion: work.stateVersion, ownerEpoch: work.ownerEpoch,
-      payload: { scheduledAt: this.now(), immediate: true, scheduleRevision: subscription.scheduleRevision ?? 1 },
+      payload: { scheduledAt: this.now(), immediate: true, continuousExecution: work.watchRule?.executionMode === "continuous", scheduleRevision: subscription.scheduleRevision ?? 1 },
       status: "pending", mergedCount: 1, receivedAt: this.now(), processReason: "user-requested-team-first-check" });
   }
 
@@ -546,7 +546,9 @@ export class WorkTeamService {
           if (!bot || bot.userId !== work.userId || bot.status !== "active")
             throw new TeamError("unauthorized_actor", "执行 Bot 已停用或不再属于该事项");
           const rowScopes = z.array(z.string()).parse(JSON.parse(row.scopes_json));
-          const scopes = rowScopes;
+          const semanticReadOnly = recovery?.failure_class === "semantic_missing" && recovery.missing_json
+            && (JSON.parse(recovery.missing_json) as WorkResultDecision["missing"]).every(item => item.readOnly === true);
+          const scopes = semanticReadOnly ? rowScopes.filter(scope => scope === "workspace:read") : rowScopes;
           const operationId = recovery?.operation_id ?? `team-dispatch:${row.task_id}`;
           if (!recovery && row.role === "owner_summary" && identity !== row.bot_id && !this.works.repo.bindingForTask(row.task_id)) {
             const currentWorkId = work.workId;
@@ -597,7 +599,7 @@ export class WorkTeamService {
     if (!work || !team) return undefined;
     const rows = this.rows(owner.workId);
     const summary = rows.find(row => row.role === "owner_summary" && row.task_id === owner.taskId);
-    if (!summary || work.mode !== "once" || owner.botId !== work.ownerBotId
+    if (!summary || work.mode !== "once" && work.watchRule?.executionMode !== "continuous" || owner.botId !== work.ownerBotId
       || this.works.repo.bindingForTask(owner.taskId)?.bindingId !== owner.bindingId
       || !this.works.collaboration.isDelegationAdopted(owner, work)) return [];
     return rows.filter(row => row.role === "member" && !row.cancelled).flatMap(row => {
@@ -621,7 +623,8 @@ export class WorkTeamService {
     const work = this.works.getWork(owner.workId), targets = this.continuationTargets(owner);
     if (!work || work.lifecycle !== "active" || !targets?.length || !missing.length
       || JSON.stringify(targets) !== JSON.stringify(frozen)
-      || this.works.repo.listAdmissions(work.workId).some(item => item.state === "unknown" || workAdmissionInFlight(item))) return false;
+      || this.works.repo.listAdmissions(work.workId).some(item => workAdmissionInFlight(item)
+        || item.state === "unknown" && missing.some(gap => gap.readOnly !== true))) return false;
     const rows = this.rows(work.workId), summary = rows.find(row => row.role === "owner_summary" && row.task_id === owner.taskId)!;
     const groups = new Map<string, WorkResultDecision["missing"]>();
     for (const item of missing) {
@@ -636,7 +639,7 @@ export class WorkTeamService {
       const history = this.recoveryRows(work.workId, member.task_id);
       if (!bot || bot.userId !== work.userId || bot.status !== "active" || this.memberInFlight(work.workId, member.task_id)
         || history.some(attempt => ["pending", "claimed", "dispatched"].includes(attempt.state))
-        || history.filter(attempt => attempt.failure_class === "semantic_missing").length >= 2
+        || history.filter(attempt => attempt.failure_class === "semantic_missing").at(-1)?.progress_hash === this.progressHash(work.workId, member.task_id)
         || history.some(attempt => attempt.source_key === candidate.sourceBindingId)) return false;
       groups.set(member.task_id, [...groups.get(member.task_id) ?? [], item]);
     }
@@ -646,11 +649,11 @@ export class WorkTeamService {
       const generation = (this.latestRecovery(work.workId, row.task_id)?.generation ?? 0) + 1;
       this.db.prepare(`INSERT INTO work_team_recovery_attempts
         (recovery_id,work_id,task_id,bot_id,role,intent_revision,input_snapshot_id,owner_epoch,source_key,
-         source_binding_id,generation,operation_id,state,failure_class,failure_message,missing_json,created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'pending',?,?,?,?)`)
+         source_binding_id,generation,operation_id,state,failure_class,failure_message,missing_json,progress_hash,created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'pending',?,?,?,?,?)`)
         .run(`team-recovery-${randomUUID()}`,work.workId,row.task_id,row.bot_id,row.role,work.intentRevision,
           work.inputSnapshotId,work.ownerEpoch,source.bindingId,source.bindingId,generation,
-          `team-recovery:${row.task_id}:${generation}`,failureClass,reason.slice(0,2000),JSON.stringify(items),this.now());
+          `team-recovery:${row.task_id}:${generation}`,failureClass,reason.slice(0,2000),JSON.stringify(items),this.progressHash(work.workId,row.task_id),this.now());
       this.db.prepare("UPDATE work_team_executions SET error=NULL WHERE work_id=? AND ordinal=?").run(work.workId,row.ordinal);
     };
     for (const [taskId, items] of groups) enqueue(rows.find(row => row.task_id === taskId)!,
@@ -822,7 +825,7 @@ export class WorkTeamService {
       dependencyPolicy: "依赖表示等待前置成员结算并读取其真实结果，不代表成功。前置失败时仅执行可确认安全的分工，明确报告无法覆盖的目标，不伪造前置成功。",
       historicalResultPolicy: "历史成果与效果不因要求变化而消失。只用于核对来源和避免重复，不自动满足当前验收；变更后重新安排仅只读，不重做已有业务动作。",
       watchRound: this.watchCycles.current(work.workId),
-      instructions: this.instructionsFor(row, identity, work.mode === "watch") + (work.mode === "watch" ? " 本轮是长期委托的一次新观察，不结束长期职责；只读核验当前事实，不重复历史写入；成员失败与未覆盖必须进入负责人本轮报告。" : "") };
+      instructions: this.instructionsFor(row, identity, work.mode === "watch" && work.watchRule?.executionMode !== "continuous") + (work.mode === "watch" && work.watchRule?.executionMode !== "continuous" ? " 本轮是长期委托的一次新观察，不结束长期职责；只读核验当前事实，不重复历史写入；成员失败与未覆盖必须进入负责人本轮报告。" : "") };
     this.db.prepare("UPDATE work_team_executions SET input_json=? WHERE work_id=? AND ordinal=? AND input_json IS NULL")
       .run(JSON.stringify(input), work.workId, row.ordinal);
   }
@@ -836,10 +839,13 @@ export class WorkTeamService {
       artifactRefs: item.artifactRefs.slice(0, 128), uncoveredScope: item.uncoveredScope }));
     const original = row.original_input_json ?? row.input_json;
     const base = original ? JSON.parse(original) as Record<string, unknown> : {};
+    const semanticReadOnly = recovery.failure_class === "semantic_missing" && recovery.missing_json
+      && (JSON.parse(recovery.missing_json) as WorkResultDecision["missing"]).length > 0
+      && (JSON.parse(recovery.missing_json) as WorkResultDecision["missing"]).every(item => item.readOnly === true);
     const input = { ...base, role: row.role, botId: identity, displayName: this.memberDisplayName(work, identity), responsibility: row.responsibility,
       previousResults: previous, executionPolicy: plan.executionPolicy ?? "sequential",
       dependsOnBotIds: plan.members.find(member => member.botId === row.bot_id)?.dependsOnBotIds ?? [],
-      readOnly: row.role === "owner_summary" || !JSON.parse(row.scopes_json).includes("workspace:write"),
+      readOnly: row.role === "owner_summary" || Boolean(semanticReadOnly),
       recovery: { generation: recovery.generation, failureClass: recovery.failure_class,
         failureMessage: recovery.failure_message, sourceBindingId: recovery.source_binding_id,
         pendingSteps: recovery.missing_json ? JSON.parse(recovery.missing_json).map((item: {task:string}) => item.task) : [...new Set(own.flatMap(item => item.uncoveredScope))],
@@ -849,7 +855,7 @@ export class WorkTeamService {
       uncertainOperations: this.works.repo.listAdmissions(work.workId)
         .filter(item => item.state === "unknown" && item.bindingId === recovery.source_binding_id)
         .map(item => ({ operationId: item.operationId, actionKind: item.actionKind })),
-      instructions: this.instructionsFor(row, identity, false)
+      instructions: this.instructionsFor(row, identity, Boolean(semanticReadOnly))
         + (row.role === "member" && recovery.missing_json ? " 本次仅完成 recovery.missingItems 中已核实的原分工缺项；原始目标与其他职责仅供核对，不得重做其他步骤。先回读 priorDeliverables 对应文件，保留已完成内容，只补缺少部分，再回读新结果。" : recovery.failure_class === "member_repaired_summary" ? " 原成员已按缺项定向补做。重新读取最新 previousResults，汇总原成果和补做成果，明确仍未完成的部分；保持只读，不代替成员写入。" : "")
         + " 未知效果只保留为诊断，不阻止独立步骤；它不代表原动作未发生。先回读或核对幂等回执，不盲目重发同一未知操作，不把失败或未知报告为成功。" };
     this.works.transaction(() => {
@@ -1105,6 +1111,18 @@ export class WorkTeamService {
         || occupied.status === "completed" && ["semantic_missing", "member_repaired_summary"].includes(recovery.failure_class)));
   }
 
+  /** Semantic execution boundary from the persisted team plan, not retired grant scopes. */
+  isReadOnlyBinding(binding: WorkExecutionBindingDto): boolean {
+    const row = this.rows(binding.workId).find(item => item.task_id === binding.taskId && item.bot_id === binding.botId);
+    if (!row) return false;
+    if (row.role === "owner_summary") return true;
+    const recovery = this.recoveryForOperation(binding.operationId);
+    if (!recovery || recovery.work_id !== binding.workId || recovery.task_id !== binding.taskId
+      || recovery.bot_id !== binding.botId || recovery.failure_class !== "semantic_missing" || !recovery.missing_json) return false;
+    const items = JSON.parse(recovery.missing_json) as WorkResultDecision["missing"];
+    return items.length > 0 && items.every(item => item.readOnly === true);
+  }
+
   dispatchError(workId: string, taskId: string, botId: string, _scopes: string[] | undefined, operationId?: string): string | undefined {
     if (!this.row(workId)) return undefined;
     // A foreground result review may persist an exact missing-part plan for the
@@ -1130,6 +1148,12 @@ export class WorkTeamService {
         return "原生执行尚未确认结束或仍有在途操作，不能启动恢复";
       const source = recovery.source_binding_id && this.works.repo.getBinding(recovery.source_binding_id);
       const scopes = [..._scopes ?? []].sort();
+      const readOnlyMissing = recovery.failure_class === "semantic_missing" && recovery.missing_json
+        && (JSON.parse(recovery.missing_json) as WorkResultDecision["missing"]).length > 0
+        && (JSON.parse(recovery.missing_json) as WorkResultDecision["missing"]).every(item => item.readOnly === true);
+      if (readOnlyMissing && JSON.stringify(scopes) === JSON.stringify(["workspace:read"])
+        && source && source.delegatedScope.includes("workspace:read")
+        && JSON.parse(row.scopes_json).includes("workspace:read")) return undefined;
       if (JSON.stringify(scopes) !== JSON.stringify([...JSON.parse(row.scopes_json)].sort())
         || source && JSON.stringify(scopes) !== JSON.stringify([...source.delegatedScope].sort()))
         return "团队补做必须保持原成员的授权范围";

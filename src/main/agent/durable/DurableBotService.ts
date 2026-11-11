@@ -33,7 +33,7 @@ import type { DurableEvidenceOptions } from "./DurableEvidenceProjection";
 import { DurableUserEntryNotFoundError, findDurableUserEntry } from "./DurableConversationBranch";
 import { durableContentText } from "./DurableHistoryProjection";
 import { durableWorkRuntimeState } from "./DurableWorkRuntimeState";
-import { readDurableWorkExecution } from "./DurableWorkExecutionProjection";
+import { DurableWorkProgressReader } from "./DurableWorkProgressReader";
 import { DurableMcp } from "./DurableMcp";
 import type { ExternalEffectRecovery } from "./DurableEffectRecovery";
 import type { DurableLogRepairReport } from "./DurableLogRepair";
@@ -41,7 +41,7 @@ import { DurableStorageOwnedError } from "./DurableStorageLease";
 import type { WorkExecutionBindingDto } from "../../../shared/bot-work";
 import type { WorkExecutionPort } from "../work/WorkExecutionAdapter";
 import { snapshotWorkspace } from "../../workspace/WorkspaceService";
-import { AgentDoc, SessionFailed, type Cursor, type EntryRecord, type SubmissionId, type SubmissionRecord } from "@earendil-works/pi-durable";
+import { AgentDoc, LiveDoc, SessionFailed, type Cursor, type EntryRecord, type SubmissionId, type SubmissionRecord } from "@earendil-works/pi-durable";
 import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
 import type { durableCompletedTurns } from "./DurableTurnProjection";
 import type { TaskExpertBindingService } from "../../experts/TaskExpertBindingService";
@@ -115,6 +115,8 @@ export interface DurableBotServiceOptions {
 
 /** One process owns each store. SQLite only binds product IDs; all execution state is in Durable. */
 export class DurableBotService {
+  private readonly workProgress = new DurableWorkProgressReader();
+  private readonly pendingWorkProgress = new Map<string, { record: SubmissionRecord; observation: import("../work/WorkExecutionAdapter").WorkExecutionObservation }>();
   private readonly rebinding = new Map<string, Promise<OpenBot>>();
   private readonly opening = new Map<string, Promise<OpenBot>>();
   private readonly opened = new Map<string, OpenBot>();
@@ -752,12 +754,22 @@ export class DurableBotService {
         if (String(open.runtime.conversation.id) !== binding.conversationId) throw new Error("停止目标与原执行会话不一致");
         await this.abort(binding.taskId);
       },
+      acknowledgeObservation: (binding, _receipt, observation) => {
+        const pending = this.pendingWorkProgress.get(binding.bindingId);
+        if (pending && observation.status === "running") {
+          this.workProgress.acknowledge(pending.record, pending.observation, binding.workspaceBinding, binding.durableStoreKey);
+          this.pendingWorkProgress.delete(binding.bindingId);
+        }
+      },
       inspect: async (binding, receipt) => {
         const { open, record } = await this.workSubmission(binding);
         if (!record || record.id !== receipt.submissionId || record.requestId !== receipt.operationId) throw new Error("执行回执与原命名空间不一致");
         await open.runtime.refresh();
-        const observation = await open.runtime.conversation.commit(tx => readDurableWorkExecution(tx, record, binding.workspaceBinding, binding.durableStoreKey), context);
+        const live = record.type === "input" && record.status === "placed"
+          ? await open.runtime.harness.snapshot(LiveDoc, open.runtime.conversation.id, context) : undefined;
+        const observation = await open.runtime.conversation.commit(tx => this.workProgress.read(tx, record, binding.workspaceBinding, binding.durableStoreKey, live), context);
         if (observation.status === "running") {
+          this.pendingWorkProgress.set(binding.bindingId, { record, observation });
           const inspection = await open.runtime.harness.inspect(context);
           // A storage failure can evict/reopen a Session after the startup drain
           // has ended. Resume the existing receipt, never submit a replacement.
@@ -765,6 +777,7 @@ export class DurableBotService {
           if (inspection.scheduling === "paused" && !this.resumeSkipReason(binding.taskId)) open.runtime.resume();
           return { ...observation, ...durableWorkRuntimeState(inspection) };
         }
+        this.pendingWorkProgress.delete(binding.bindingId);
         const dedicated = this.options.db.connection.prepare("SELECT 1 FROM work_dispatch_requests WHERE task_id=? AND work_id=?")
           .get(binding.taskId, binding.workId);
         if (dedicated) {
@@ -772,7 +785,7 @@ export class DurableBotService {
           // include exactly its root, owned children and compaction, without
           // attributing a shared answer or another Work's history to this binding.
           const inspection = await open.runtime.harness.inspect(context);
-          if (inspection.tasks.length) return { status: "running", generatedArtifacts: observation.generatedArtifacts,
+          if (inspection.tasks.length) return { status: "running", generatedArtifacts: observation.generatedArtifacts, subitems: observation.subitems,
             ...durableWorkRuntimeState(inspection) };
           const interruptedUsage = await open.runtime.conversation.commit(async tx => {
             let cursor: Cursor | undefined;
@@ -1027,6 +1040,8 @@ export class DurableBotService {
     await this.projections.get(taskId);
   }
   async close(): Promise<void> {
+    this.workProgress.clear();
+    this.pendingWorkProgress.clear();
     this.closing = true;
     this.resumeAdmission?.cancel();
     await Promise.allSettled(this.passiveReads.values());

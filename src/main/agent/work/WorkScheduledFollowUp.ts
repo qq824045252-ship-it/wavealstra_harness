@@ -6,6 +6,10 @@ export function isScheduledFollowUp(event: WorkInboxEventDto | undefined): boole
     || event?.eventType === "work.offline_catchup" && event.payload.readOnlyFollowUp === true;
 }
 
+export function isReadOnlyScheduledFollowUp(event: WorkInboxEventDto | undefined, work: WorkDto | undefined): boolean {
+  return isScheduledFollowUp(event) && !(work?.watchRule?.executionMode === "continuous" && event?.payload.continuousExecution === true);
+}
+
 export function scheduledFollowUpCurrent(work: WorkDto, event: WorkInboxEventDto | undefined,
   subscription?: WorkSubscriptionDto): boolean {
   if (!event || event.workId !== work.workId) return false;

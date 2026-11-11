@@ -15,7 +15,10 @@ export function ensureWorkContinuationProgress(db: Database.Database): void {
  * completed current-version subitems. Rewording the same report is not progress,
  * and an older revision's artifacts cannot make a new revision look advanced. */
 export function continuationProgress(works: WorkService, work: WorkDto): string {
-  return digest([works.artifacts.currentSnapshotId(work.workId),
+  const bindings = works.repo.listBindings(work.workId).filter(binding =>
+    binding.intentRevision === work.intentRevision && binding.inputSnapshotId === work.inputSnapshotId
+    && works.collaboration.isDelegationAdopted(binding, work));
+  return digest([works.artifacts.progressSnapshotId(work.workId, bindings.map(binding => binding.bindingId)),
     [...new Set(works.partialResults.list(work.workId).filter(item => item.outcome === "completed" && !item.itemId.startsWith("recover:")
       && item.intentRevision === work.intentRevision && item.inputSnapshotId === work.inputSnapshotId
       && works.collaboration.isDelegationAdopted(works.repo.getBinding(item.bindingId)!, work))

@@ -180,6 +180,11 @@ export interface WorkGoalSourceDto {
 }
 
 export interface WorkWatchRuleDto {
+  executionMode?: "observe" | "continuous";
+  eventSource?: string;
+  eventTarget?: string;
+  eventFilter?: Record<string, unknown>;
+  triggerMode?: "next_event" | "current_condition";
   /** Explicit absolute time, never inferred from an illustrative duration or stop-condition prose. */
   endsAt?: number;
   /** Host-owned termination fact. No success, failure or user-cancellation is implied. */
@@ -548,6 +553,7 @@ export type WorkActor =
 
 export type WorkControlErrorCode =
   | "invalid_request"
+  | "source_version_unverified"
   | "not_found"
   | "version_conflict"
   | "epoch_mismatch"
@@ -587,6 +593,7 @@ export interface WorkCriterionInput {
 }
 
 export interface CreateWorkParams {
+  sourceIdentity?: { provider: string; account: string; objectId: string; action: string; version: string; revision?: number };
   operationId: string;
   title: string;
   goalDescription?: string;

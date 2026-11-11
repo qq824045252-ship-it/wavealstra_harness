@@ -81,7 +81,7 @@ export class WorkMilestones {
           : ready.length ? `已核验 ${ready.length} 项子步骤成果，等待整体收尾与验收` : "尚无已核验的可用子步骤成果",
       requiresUserInput,
       digest: hash([work.workId, work.intentRevision, work.inputSnapshotId,
-        ready.map(item => [item.milestoneId, item.itemId, item.bindingId, item.deliverableId ?? null, item.artifactRefs]),
+        ready.map(item => [item.milestoneId, item.itemId, item.bindingId, item.deliverableId ?? null, item.task, item.summary, item.artifactRefs, item.files]),
         gaps.map(item => [item.itemId, item.bindingId, item.outcome])]),
       createdAt: ready[0]?.createdAt ?? work.createdAt, updatedAt: work.updatedAt,
     };
@@ -100,7 +100,7 @@ export class WorkMilestones {
 
 /** Stable version for one binding's merged report; new verified items change it. */
 export function workMilestoneVersion(bindingId: string, milestones: readonly WorkMilestoneDto[]): string {
-  return JSON.stringify([bindingId, milestones.map(item => [item.milestoneId, item.itemId, item.artifactRefs])]);
+  return JSON.stringify([bindingId, milestones.map(item => [item.milestoneId, item.itemId, item.task, item.summary, item.artifactRefs, item.files])]);
 }
 
 /** Resolve host-registered versions only: a raw path is a claim until registered. */
@@ -115,8 +115,8 @@ function projectFiles(refs: readonly string[], artifacts: readonly (GeneratedArt
         .sort((left, right) => right.sourceEntryId - left.sourceEntryId || right.registeredAt - left.registeredAt)[0];
     const refValue = artifact?.snapshotPath ?? artifact?.path ?? ref;
     if (files.has(refValue)) continue;
-    files.set(refValue, { ref: refValue, name: basename(refValue) || refValue,
-      ...(artifact ? { openPath: artifact.snapshotPath ?? artifact.path, digest: artifact.digest, immutable: artifact.snapshotPath !== undefined } : { immutable: false }) });
+    files.set(refValue, { ref: refValue, name: basename(artifact?.path ?? refValue) || refValue,
+      ...(artifact ? { ...(artifact.snapshotPath ? { openPath: artifact.snapshotPath } : {}), digest: artifact.digest, immutable: artifact.snapshotPath !== undefined } : { immutable: false }) });
   }
   return [...files.values()];
 }

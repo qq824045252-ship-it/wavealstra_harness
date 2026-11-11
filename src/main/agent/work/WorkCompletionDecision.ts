@@ -4,16 +4,8 @@ import type { WorkResultDecision } from "./BotWorkResultTurn";
 import type { CompletionTurn, WorkCompletionOptions } from "./WorkCompletionCoordinator";
 import { continuationProgress, lastContinuationProgress, recordContinuationProgress } from "./WorkContinuationProgress";
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
-/** Real durable progress may extend a result lane, but never without bound. */
-const CONTINUATION_PROGRESS_CAP = 4;
-/** A host downgrade must not keep promising the continuation it just refused. */
-const CONTINUATION_PROMISE = /(接下来|下一步|随后|稍后|一会儿|之后|马上|接着|后续|正在|仍在|仍会|会|将)[^。！？!?；;\n]{0,24}(继续|续做|补[做齐上充跑完]|再(?:执行|尝试|核对|处理|做)|重新执行|重新核对|推进|处理剩余|完成剩余)|请稍(?:候|等)/;
-const DOWNGRADED_BODY = "本次只交付已经确认的成果；未完成部分没有继续执行，也没有重放已完成的动作。";
-/** Sentence-level strip keeps already-true content, never a future promise. */
-function withoutContinuationPromise(reply: string): string {
-  const sentences = reply.match(/[^。！？!?；;\n]+[。！？!?；;\n]?/g) ?? [reply];
-  return sentences.filter(sentence => !CONTINUATION_PROMISE.test(sentence)).join("").trim() || DOWNGRADED_BODY;
-}
+/** A host override must replace the proposal, not guess at promises in arbitrary languages. */
+const DOWNGRADED_BODY = "本次交付已保留的结果，原目标仍有未完成部分。没有安排继续执行，也没有重放已完成或结果未知的动作。";
 
 /** Runs in the same transaction as its exact result delivery receipt. */
 export function applyCompletionDecision(options: WorkCompletionOptions, binding: WorkExecutionBindingDto, work: WorkDto,
@@ -24,7 +16,7 @@ export function applyCompletionDecision(options: WorkCompletionOptions, binding:
   let notice: string | undefined;
   if (kind === "continue" && !continueMissing(options, binding, work, decision)) {
     // Body, nextStep and completion outcome must all describe what is delivered.
-    kind = "deliver"; body = withoutContinuationPromise(decision.reply);
+    kind = "deliver"; body = DOWNGRADED_BODY;
     notice = "没有重复执行已完成动作；无法可靠补做的部分已保留在结果中。";
   }
   if (kind === "ask" && !works.repo.listOpenBlockers(work.workId).some(item => item.waitingForUserInput && item.kind === "operational" && !item.unknownExternalEffectRef)) {
@@ -51,7 +43,7 @@ export function applyCompletionDecision(options: WorkCompletionOptions, binding:
     const request = db.prepare("SELECT continuation_plan_id FROM work_dispatch_requests WHERE task_id=?").get(binding.taskId) as {continuation_plan_id:string|null}|undefined;
     const plan = request?.continuation_plan_id && works.partialResults.plans(work.workId).find(item => item.planId === request.continuation_plan_id);
     const source = plan && works.partialResults.list(work.workId).filter(item => item.bindingId === plan.sourceBindingId && plan.gapItemIds.includes(item.itemId));
-    if (source && source.length && source.every(item => item.nativeStatus === "result_review" && item.itemId.startsWith("result-followup:")))
+    if (source && source.length && source.every(item => ["result_review", "result_read_followup"].includes(item.nativeStatus) && item.itemId.startsWith("result-followup:")))
       works.partialResults.record(binding, source.map(item => ({itemId:item.itemId,task:item.task,required:true,dependencies:[],criterionIds:[],
         nativeStatus:"result_review",outcome:"completed",artifactRefs:[],writeConflicts:[],summary:`前台对照本次补做结果完成核对：${body}`})));
   }
@@ -76,7 +68,10 @@ function continueMissing({ works, db }: WorkCompletionOptions, binding: WorkExec
   // An unverified effect governs only the execution that produced it. Independent
   // read-only gaps still proceed; the unknown action itself is never replayed.
   const lineage = new Set(works.partialResults.recovery.ancestry(binding).map(item => item.bindingId));
-  if (works.repo.listAdmissions(work.workId).some(item => item.state === "unknown" && !!item.bindingId && lineage.has(item.bindingId))) return false;
+  const hasUnknown = works.repo.listAdmissions(work.workId).some(item => item.state === "unknown" && !!item.bindingId && lineage.has(item.bindingId));
+  // Model classification only narrows authority: admitted read follow-ups are
+  // enforced read-only by the existing continuation-plan execution boundary.
+  if (hasUnknown && decision.missing.some(item => item.readOnly !== true)) return false;
   const row = db.prepare("SELECT * FROM work_completion_turns WHERE binding_id=?").get(binding.bindingId) as CompletionTurn;
   const context = JSON.parse(row.context_json);
   const original = context.originalRequest?.userRequest?.messages?.map((item: { text: string }) => item.text).join("\n")
@@ -84,7 +79,6 @@ function continueMissing({ works, db }: WorkCompletionOptions, binding: WorkExec
   if (decision.missing.some(item => !original.includes(item.requestExcerpt))) return false;
   const prior = db.prepare(`SELECT count(*) count FROM work_completion_turns t JOIN work_execution_bindings b ON b.binding_id=t.binding_id
     WHERE b.work_id=? AND b.intent_revision=? AND b.input_snapshot_id=? AND t.state='continued'`).get(work.workId, work.intentRevision, work.inputSnapshotId) as { count: number };
-  if (prior.count >= CONTINUATION_PROGRESS_CAP) return false; // Honest partial delivery ends an endless chain.
   const progress = continuationProgress(works, work);
   // Only new durable facts (verified artifact bytes or completed current-version
   // subitems) buy another execution. A rephrased report is not progress.
@@ -97,7 +91,7 @@ function continueMissing({ works, db }: WorkCompletionOptions, binding: WorkExec
     return true;
   }
   const items = decision.missing.map(item => ({ itemId: `result-followup:${hash([binding.bindingId,item.requestExcerpt,item.task])}`, task: item.task,
-    required: true, dependencies: [], criterionIds: [], nativeStatus: "result_review", outcome: "not_started" as const,
+    required: true, dependencies: [], criterionIds: [], nativeStatus: decision.missing.every(item => item.readOnly === true) ? "result_read_followup" : "result_review", outcome: "not_started" as const,
     artifactRefs: [], writeConflicts: [], summary: `原请求仍缺此部分：${item.requestExcerpt}` }));
   works.partialResults.record(binding, items);
   const current = works.getWork(work.workId)!;

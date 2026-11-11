@@ -42,8 +42,43 @@ app.whenReady().then(async () => {
     await viewport(440);
     assert(await evaluate(`document.documentElement.scrollWidth <= innerWidth`));
     assert(await evaluate(`!document.body.textContent.includes('任务收件箱') && document.querySelectorAll('.bot-thread').length === 1`), 'one natural conversation stream');
+    // Native Chromium input, not a DOM .click(): exercise the early file entry
+    // on the real main-chat message component at desktop and narrow widths.
+    const nativeClick = async selector => {
+      const point = await evaluate(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return{x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()`);
+      win.webContents.sendInputEvent({type:'mouseDown',button:'left',...point,clickCount:1});
+      win.webContents.sendInputEvent({type:'mouseUp',button:'left',...point,clickCount:1});
+      await new Promise(resolve => setTimeout(resolve,100));
+    };
+    for (const width of [1050,440]) {
+      await viewport(width);
+      for (const mode of ['milestone','refreshed']) {
+        await evaluate(`window.deliveryFixture.render(${JSON.stringify(mode)})`);
+        await until(`document.querySelector('.bot-status-badge')?.textContent==='阶段成果'`, 'milestone report');
+        assert(await evaluate(`document.querySelector('.bot-result-report').textContent.includes('不代表整体目标已完成')`));
+        assert(await evaluate(`document.querySelector('.bot-result-report').textContent.includes('当前可用文件')`));
+        assert.equal(await evaluate(`document.querySelectorAll('.bot-result-files button').length`),1,'only saved early A opens, including after refreshed B is registered');
+        const before = await evaluate('window.deliveryOpened.length');
+        await nativeClick('[aria-label="打开 A.md"]');
+        await until(`window.deliveryOpened.length === ${before+1}`, 'native early file button');
+        assert.equal((await evaluate('window.deliveryOpened')).at(-1),'/saved/A-v1.md','the old saved version never drifts to current A-v2');
+        assert(await evaluate('document.documentElement.scrollWidth <= innerWidth'),'milestone has no overflow');
+        assert(await evaluate(`!document.querySelector('[data-outcome]') && !document.body.textContent.includes('本次交付')`),'no fabricated final outcome');
+      }
+      await screenshot(`bot-work-milestone-delivery-${width}.png`);
+    }
+    await evaluate('window.deliveryFixture.render("error")');
+    await nativeClick('[aria-label="打开 A.md"]');
+    await until(`document.querySelector('[role="alert"]')?.textContent.includes('保存文件暂不可用')`, 'open error');
+    await evaluate('window.deliveryFixture.render("milestone")');
+    await nativeClick('[aria-label="打开 A.md"]');
+    await until(`!document.querySelector('[role="alert"]')`, 'open retry clears error');
+    await evaluate('window.deliveryFixture.render("legacy")');
+    await until(`!document.querySelector('.bot-result-report') && document.body.textContent.includes('A 已核实可先使用')`, 'legacy text preserved');
+    await evaluate('window.deliveryFixture.render("result")');
+    await until(`document.querySelector('.bot-status-badge')?.textContent==='结果已返回'`, 'final report unaffected');
     assert.deepEqual(errors, []);
-    console.log('PASS real Electron natural delivery: one conversation stream, task title/summary, exact work/file buttons, no inbox panel, composer available');
+    console.log('PASS real Electron natural delivery and milestone file entry: native early-A click, frozen A-v1 after refresh, mutable/unregistered B disabled, replay, 2 widths, open error/retry, legacy text and final result preserved');
   } catch (error) { console.error(error); if(win) console.error(await win.webContents.executeJavaScript('document.body.innerText')); process.exitCode = 1; }
   finally { win?.destroy(); app.exit(process.exitCode || 0); }
 });

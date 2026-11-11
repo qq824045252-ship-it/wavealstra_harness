@@ -1,3 +1,4 @@
+import { WorkSourceAssociation, workSourceIdentitySchema } from "./WorkSourceAssociation";
 import { reconcileWorkExecution } from "./WorkExecutionReconciliation";
 import { admitWorkActionMutation } from "./WorkActionAdmission";
 import { markWorkDispatchAttempt, recordWorkSubmissionReceipt } from "./WorkSubmissionMutations";
@@ -16,7 +17,7 @@ import { submitDeliverableMutation, acceptDeliverableMutation, rejectDeliverable
 import { WorkRecordArchive } from "./WorkRecordArchive";
 import { recordWorkDelivery } from "./WorkDeliveryTargets";
 import { WorkAutomaticCompletion } from "./WorkAutomaticCompletion";
-import { isScheduledFollowUp, scheduledFollowUpCurrent } from "./WorkScheduledFollowUp";
+import { isReadOnlyScheduledFollowUp, isScheduledFollowUp, scheduledFollowUpCurrent } from "./WorkScheduledFollowUp";
 import { WorkRuntimeObservation } from "./WorkRuntimeObservation";
 import { WorkGeneratedArtifacts } from "./WorkGeneratedArtifacts";
 import { reportWorkBlockerMutation, replyUserInputMutation, replyLegacyUserInputMutation } from "./WorkUserInputControls";
@@ -113,6 +114,7 @@ export interface WorkServiceOptions {
 const UNSETTLED_BINDING_STATUSES = new Set<WorkExecutionStatus>(["pending", "submitted", "running", "unknown"]);
 export class WorkService {
   readonly automaticCompletion: WorkAutomaticCompletion;
+  readonly sourceAssociations: WorkSourceAssociation;
   readonly teams: WorkTeamService;
   readonly repo: WorkRepository;
   readonly nativeResults: WorkNativeResultInbox;
@@ -142,6 +144,7 @@ export class WorkService {
 
   constructor(private readonly db: Database.Database, options: WorkServiceOptions) {
     this.repo = new WorkRepository(db);
+    this.sourceAssociations = new WorkSourceAssociation(db);
     this.nativeResults = new WorkNativeResultInbox(db, this, () => !this.authority || this.authority());
     this.bots = options.bots;
     this.requestExpert = options.requestExpert;
@@ -277,6 +280,8 @@ export class WorkService {
     }
     const invalid = this.validatePayload("createWork", params);
     if (invalid) return invalid;
+    if (params.sourceIdentity && !workSourceIdentitySchema.safeParse(params.sourceIdentity).success)
+      return { ok: false, code: "invalid_request", message: "来源身份必须包含准确的 provider/account/objectId/action/version，不能使用摘要代替" };
     const payloadHash = this.hash("createWork", params);
 
     const outcome = this.transaction((): WorkControlResult => {
@@ -308,10 +313,46 @@ export class WorkService {
           work: snapshot, outboxEventId: existing.outbox_event_id ?? undefined,
         };
       }
-      const mutation = this.intentMutations().create(resolved, params);
+      const identity = params.sourceIdentity ? workSourceIdentitySchema.parse(params.sourceIdentity) : undefined;
+      const association = identity && this.sourceAssociations.find(resolved.userId, identity);
+      const prior = association && this.repo.getWork(association.workId);
+      if (prior) {
+        const denied = this.requireAccess(prior, resolved);
+        // A second observer cannot create a duplicate to get around ownership.
+        if (denied) return { ...denied, message: "相同来源事项已有负责人；请在原事项继续，不重复建立委托" };
+        if (association!.duplicate) {
+          this.repo.saveReceipt({ userId: resolved.userId, operationId: params.operationId, workId: prior.workId,
+            operationType: "createWork", payloadHash, workSnapshot: prior, now: this.now() });
+          return { ok: true, replayed: true, operationId: params.operationId, work: prior };
+        }
+        if (!association!.versionVerified) return { ok: false, code: "source_version_unverified",
+          message: "来源版本顺序未核对，未安排新执行；请回读来源当前版本及其单调 revision，再在原事项继续", latestWorkSnapshot: prior };
+        if (prior.lifecycle === "closing" || prior.lifecycle === "paused") return { ok: false, code: "invalid_lifecycle_transition",
+          message: "原来源事项已暂停或正在关闭，新版本尚未处理且未安排新执行", latestWorkSnapshot: prior };
+        if (prior.lifecycle === "active") {
+          // The same source's new version changes inputs, not the original goal.
+          // Normal owner/guard checks still apply; no trusted readback is forged.
+          const inputSnapshotId = `source:${this.sourceAssociations.key(identity!)}:${createHash("sha256").update(identity!.version).digest("hex")}`;
+          const changed = this.amendWork(actor, { operationId: `source-update:${params.operationId}`.slice(0,200), workId: prior.workId,
+            inputSnapshotId, goalSources: [...prior.goalSources.filter(item => item.sourceRef !== identity!.objectId),
+              { sourceType: "external_input", sourceRef: identity!.objectId, inputSnapshotId: identity!.version, observedAt: this.now() }],
+            versionGuard: { expectedStateVersion: prior.stateVersion, expectedIntentRevision: prior.intentRevision, expectedOwnerEpoch: prior.ownerEpoch } });
+          if (!changed.ok) return changed;
+          this.sourceAssociations.record(resolved.userId, identity!, prior.workId, this.now());
+          this.repo.saveReceipt({ userId: resolved.userId, operationId: params.operationId, workId: prior.workId,
+            operationType: "createWork", payloadHash, workSnapshot: changed.work, outboxEventId: changed.outboxEventId, now: this.now() });
+          return { ...changed, operationId: params.operationId, replayed: false };
+        }
+      }
+      const associatedParams = identity ? { ...params, goalSources: [...params.goalSources ?? [],
+        { sourceType: "external_input" as const, sourceRef: identity.objectId, inputSnapshotId: identity.version, observedAt: this.now() },
+        ...(prior ? [{ sourceType: "external_input" as const, sourceRef: `work:${prior.workId}`,
+          inputSnapshotId: prior.inputSnapshotId, observedAt: this.now() }] : [])] } : params;
+      const mutation = this.intentMutations().create(resolved, associatedParams);
       if (!mutation.ok) return mutation;
       const { work, outboxEventId, now } = mutation;
       const workId = work.workId;
+      if (identity) this.sourceAssociations.record(resolved.userId, identity, workId, now, prior?.workId);
       this.repo.saveReceipt({
         userId: resolved.userId, operationId: params.operationId, workId,
         operationType: "createWork", payloadHash, workSnapshot: work,
@@ -539,10 +580,20 @@ export class WorkService {
   }
 
   admitTaskAction(taskId: string, input: { operationId: string; actionKind: string; paths?: string[] }): string | undefined {
-    if (this.partialResults.recovery.readOnlyTask(taskId) && input.actionKind !== "workspace:read")
-      return "本次恢复只读取并交付已有成果，不重做未知业务效果；请使用读取或查询工具核对原结果。";
     const binding = this.repo.bindingForTask(taskId);
     if (!binding) return undefined;
+    if (input.actionKind !== "workspace:read") {
+      const request = this.db.prepare("SELECT continuation_plan_id FROM work_dispatch_requests WHERE task_id=?")
+        .get(taskId) as { continuation_plan_id: string | null } | undefined;
+      const plan = request?.continuation_plan_id && this.partialResults.plans(binding.workId).find(item => item.planId === request.continuation_plan_id);
+      const work = this.repo.getWork(binding.workId);
+      const event = binding.inboxEventId ? this.repo.getInbox(binding.inboxEventId) : undefined;
+      // Enforce the persisted task's readback goal at the real tool boundary.
+      // Authorization scopes are not a substitute for this execution invariant.
+      if (this.teams.isReadOnlyBinding(binding) || this.partialResults.recovery.readOnlyTask(taskId) || plan && this.partialResults.isReadOnlyPlan(plan)
+        || isReadOnlyScheduledFollowUp(event, work))
+        return "本次任务只读取、核验并交付已有成果，不重新写入或重做未知业务效果；请使用读取或查询工具。";
+    }
     const admitted = this.admitNewAction({ kind: "worker", botId: binding.botId, bindingId: binding.bindingId }, {
       ...input, admissionId: input.operationId, workId: binding.workId, bindingId: binding.bindingId,
     });

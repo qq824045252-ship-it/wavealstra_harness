@@ -1,4 +1,4 @@
-import { isScheduledFollowUp } from "./WorkScheduledFollowUp";
+import { isReadOnlyScheduledFollowUp } from "./WorkScheduledFollowUp";
 import { continuationProgress } from "./WorkContinuationProgress";
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
@@ -38,7 +38,7 @@ export class WorkAutomaticRecovery {
     // Readback is an execution goal, not an inherited permission restriction.
     return this.ancestry(binding).some(source => {
       const event = source.inboxEventId ? this.works.repo.getInbox(source.inboxEventId) : undefined;
-      return isScheduledFollowUp(event);
+      return isReadOnlyScheduledFollowUp(event,this.works.getWork(source.workId));
     });
   }
 

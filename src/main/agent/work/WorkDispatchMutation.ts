@@ -4,7 +4,7 @@ import type { BotRegistry } from "./BotRegistry";
 import type { WorkTeamService } from "./WorkTeamService";
 import type { WorkCausalGuard } from "./WorkCausalGuard";
 import { newId, type WorkRepository } from "./WorkRepository";
-import { isScheduledFollowUp, scheduledFollowUpCurrent } from "./WorkScheduledFollowUp";
+import { isReadOnlyScheduledFollowUp, isScheduledFollowUp, scheduledFollowUpCurrent } from "./WorkScheduledFollowUp";
 import type { Mutation } from "./WorkControlTypes";
 
 interface DispatchMutationDeps {
@@ -67,7 +67,7 @@ export function dispatchExecutionMutation(deps: DispatchMutationDeps, work: Work
   const readOnlyFollowUp = isScheduledFollowUp(inboxEvent);
   if (readOnlyFollowUp && !scheduledFollowUpCurrent(work, inboxEvent, inboxEvent?.subscriptionId ? deps.repo.getSubscription(inboxEvent.subscriptionId) : undefined))
     return { ok: false, code: "invalid_request", message: "检查时间表或承诺期限已变更，旧触发不再派发" };
-  const delegatedScope = readOnlyFollowUp ? ["workspace:read"] as string[] : params.delegatedScope ?? [...work.authorization.allowedScopes];
+  const delegatedScope = isReadOnlyScheduledFollowUp(inboxEvent,work) ? ["workspace:read"] as string[] : params.delegatedScope ?? [...work.authorization.allowedScopes];
   const recoveryRequest = deps.recoveryRequest(params.taskId);
   const recoverySource = recoveryRequest && deps.repo.getBinding(recoveryRequest.source_binding_id);
   const binding: WorkExecutionBindingDto = {

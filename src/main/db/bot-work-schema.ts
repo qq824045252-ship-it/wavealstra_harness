@@ -349,6 +349,7 @@ export function ensureBotWorkTables(db: Database.Database): void {
       stopped_at INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_work_subscriptions_work ON work_subscriptions(work_id, stopped_at);
+    CREATE INDEX IF NOT EXISTS idx_work_subscriptions_source_active ON work_subscriptions(source, stopped_at, created_at);
     CREATE INDEX IF NOT EXISTS idx_work_subscriptions_wake ON work_subscriptions(next_wake_at);
 
     CREATE TABLE IF NOT EXISTS work_notifications (

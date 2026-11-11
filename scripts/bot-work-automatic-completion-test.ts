@@ -1,7 +1,8 @@
 import { WorkCompletionCoordinator } from "../src/main/agent/work/WorkCompletionCoordinator";
 import { WorkConversationFeedback } from "../src/main/agent/work/WorkConversationFeedback";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppDatabase } from "../src/main/db/AppDatabase";
@@ -13,6 +14,11 @@ import { DEFAULT_BOT_ID, LOCAL_USER_ID, type WorkActor } from "../src/shared/bot
 import type { AgentSubmissionReceipt } from "../src/shared/agent-ipc";
 
 const root = mkdtempSync(join(tmpdir(), "automatic-completion-"));
+const evidenceSnapshot = join(root,"registered-final.md");
+const evidenceText = "# Final report\nReal current contents, not a filename claim.";
+writeFileSync(evidenceSnapshot,evidenceText);
+const evidenceDigest = createHash("sha256").update(evidenceText).digest("hex");
+let evidenceReviews = 0;
 const db = new AppDatabase(join(root, "app.db"));
 const bots = new BotRegistry(db.connection);
 bots.registerBot({ botId: DEFAULT_BOT_ID, userId: LOCAL_USER_ID, displayName: "assistant", authorization: DESKTOP_USER_GRANTS });
@@ -38,6 +44,8 @@ const port: WorkExecutionPort = {
   inspect: async binding => {
     if (states.get(binding.workId) === "running") return { status: "running" };
     const title = works.getWork(binding.workId)?.title;
+    if (title === "evidence-race") return {status:"completed",summary:"文件已完成",artifactRefs:[evidenceSnapshot],hasWriteConflicts:false,
+      generatedArtifacts:[{path:join(root,"final.md"),snapshotPath:evidenceSnapshot,digest:evidenceDigest,sizeBytes:Buffer.byteLength(evidenceText),registeredAt:1,sourceEntryId:1}]};
     const failedOwner = title?.startsWith("team-owner-failure-") && binding.botId === DEFAULT_BOT_ID;
     return { status: failedOwner || states.get(binding.workId) === "failed" ? "failed" : "completed",
       summary: title === "empty-result" || title === "team-owner-failure-empty" && failedOwner ? "" : "已交付请求的文字方案",
@@ -70,6 +78,19 @@ const coordinator = new WorkCompletionCoordinator({ db: db.connection, works, is
     if (pauseReviewWork) {
       assert(works.pauseWork(user,{operationId:"pause-during-review",workId:pauseReviewWork}).ok);
       pauseReviewWork=undefined;
+    }
+    if (input.context.title === "evidence-race") {
+      evidenceReviews++;
+      const evidence = input.context.artifactEvidence as Array<{state:string;text?:string}>;
+      assert.equal(evidence.length,1);
+      if (evidenceReviews === 1) {
+        assert.equal(evidence[0].text,evidenceText,"review gets actual registered bytes");
+        writeFileSync(evidenceSnapshot,"TODO missing all core sections");
+        return {decision:"deliver",outcome:"completed",reply:"stale completed claim",missing:[]};
+      }
+      assert.equal(evidence[0].state,"changed","late mutation is detected before decision application");
+      assert.equal(evidence[0].text,undefined,"unregistered replacement bytes are never adopted");
+      return {decision:"deliver",outcome:"partial",reply:"登记后的成品发生变化，完整性尚未核实。",missing:[]};
     }
     if (failReview) throw Error("model unavailable");
     if (lateQuestionWork) { works.repo.insertBlocker({blockerId:"late-question",workId:lateQuestionWork,kind:"operational",reason:"必须提供收件人",waitingForUserInput:true,status:"open",createdAt:Date.now()}); lateQuestionWork=undefined; }
@@ -134,6 +155,13 @@ try {
   assert.notEqual(works.getWork(memoryRace)?.lifecycle,"closed","preference deletion during review prevents stale closure delivery");
   await flush();assert.equal(works.getWork(memoryRace)?.lifecycle,"closed");assert.equal(reviewedPreferences.at(-1),"");
   assert(!JSON.stringify(db.connection.prepare("SELECT context_json FROM work_completion_turns WHERE binding_id IN (SELECT binding_id FROM work_execution_bindings WHERE work_id=?)").all(memoryRace)).includes("completion-marker"),"no preference text copy in durable completion context");
+  const evidenceRace = create("evidence-race"); await flush(); states.set(evidenceRace,"completed"); await flush();
+  assert.notEqual(works.getWork(evidenceRace)?.lifecycle,"closed","snapshot mutation rejects stale completed verdict");
+  await flush(); assert.equal(evidenceReviews,2);
+  assert.equal(works.getWork(evidenceRace)?.closureConclusion,"ended_unsuccessfully");
+  const evidenceOrigin = feedback.messages.resolveWorkDelivery(LOCAL_USER_ID,evidenceRace)!;
+  assert(!JSON.stringify(feedback.messages.history(LOCAL_USER_ID,{botId:evidenceOrigin.bot_id,conversationId:evidenceOrigin.conversation_id})).includes("stale completed claim"));
+
   const healthy = create("healthy"); await flush();
   assert.equal(works.getWork(healthy)?.lifecycle, "active", "running remains active");
   states.set(healthy, "completed"); await flush();

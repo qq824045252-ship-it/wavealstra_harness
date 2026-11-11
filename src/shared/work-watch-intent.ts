@@ -1,6 +1,11 @@
 import { z } from "zod";
 
 export const workWatchNormalizedSchema = z.object({
+  executionMode: z.enum(["observe", "continuous"]).optional().describe("observe只读观察，不修改成果；continuous按授权持续推进/修复/更新同一个成果，即使用户指定周期cron也须选continuous。现在可行动就先行动，只有确实需要等待时才安排时间或事件"),
+  eventSource: z.string().min(1).max(200).optional().describe("先用work_watch_sources查询真实可用来源。未接入来源不能假装已有事件订阅，应明确说明并设置轮询时间"),
+  eventTarget: z.string().min(1).max(2000).optional().describe("来源内的具体对象标识，避免无关对象触发"),
+  eventFilter: z.record(z.string(), z.unknown()).optional(),
+  triggerMode: z.enum(["next_event", "current_condition"]).optional().describe("next_event仅等待创建后新事件，不检查已有状态；current_condition立即检查当前状态，随后等变化"),
   endsAt: z.number().int().nonnegative().max(8640000000000000).optional().describe("仅用户明确指定的持续追踪终止时刻，Unix毫秒。按用户时区换算为绝对时刻；到期停止新轮并结算在途，不代表目标成功。无限持续不填；举例365天不是指定期限；不能用任意语义停止条件推断日期。暂停和离线不会顺延"),
   notificationMode: z.enum(["every_check", "changes_only"]).optional().describe("用户要求仅变化时通知必须设changes_only；每轮汇报用every_check。旧任务未配置时保持每轮汇报"),
   notifyInitial: z.boolean().optional().describe("changes_only首轮是否通知；默认false只建立基线，用户要求首次也汇报才设true"),

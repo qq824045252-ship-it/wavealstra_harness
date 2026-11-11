@@ -299,9 +299,15 @@ try {
   assert(!closedResult.ok, "explicit target selection does not bypass closed lifecycle rejection");
   assert.equal(works.getWork(cancelled.workId)?.lifecycle, "closed");
 
-  // A newly created Work is linked during this request and remains controllable
-  // despite stale selection; repeat execution keeps the same operation identity.
-  const createRequest = requestFor("创建一个新事项，然后暂停它", targetA.workId);
+  // Same-request replay links cannot silently override the persisted selected card.
+  const selectedCreateRequest = requestFor("创建一个新事项，然后暂停它", targetA.workId);
+  const selectedCreated = unwrap(await validInvoke("work_create", { requestedOutcome: "one_time", mode: "once", title: "Created beside selected card" }, selectedCreateRequest.requestId));
+  const selectedBefore = works.getWork(targetA.workId);
+  await assertRejectedTarget(selectedCreateRequest.requestId, selectedCreated);
+  assert.deepEqual(works.getWork(targetA.workId), selectedBefore);
+  // Without a conflicting target, a Work created in this request remains
+  // controllable and repeated execution keeps the same operation identity.
+  const createRequest = requestFor("创建一个新事项，然后暂停它");
   const created = unwrap(await validInvoke("work_create", { requestedOutcome: "one_time", mode: "once", title: "Created in request" }, createRequest.requestId));
   const createdArgs = { workId: created.workId, versionGuard: await queryGuard(created.workId, createRequest.requestId) };
   assert.equal(unwrap(await invoke("work_pause", createdArgs, createRequest.requestId, "created-replay")).lifecycle, "paused");

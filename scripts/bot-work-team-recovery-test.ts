@@ -661,6 +661,50 @@ try {
       assert.equal(f.host.writes,1);
     } finally { await f.close(); }
   }
+  // A member's uncertain write does not suppress independent read-only repair.
+  {
+    const f = fixture();
+    try {
+      f.host.missingMode = true;
+      const created = f.create("生成 a.txt 并核对独立来源", [{botId:"recovery-a"}], true);
+      assert(created.ok && created.work);
+      const workId = created.work.workId;
+      await wait(() => f.team(workId).state === "awaiting_review", "initial member result", () => f.flush(4));
+      const owner = f.bindings(workId).find(binding => binding.botId === "recovery-owner")!;
+      const targets = f.works.teams.continuationTargets(owner)!;
+      const target = targets[0];
+      f.works.repo.insertAdmission({admissionId:"uncertain-member",operationId:"uncertain-member",workId,
+        bindingId:target.sourceBindingId,actionKind:"workspace:write",state:"unknown",intentRevision:owner.intentRevision,
+        ownerEpoch:owner.ownerEpoch,admittedAt:Date.now(),settledAt:Date.now()});
+      const missing = {task:"只读核对独立来源",requestExcerpt:"核对独立来源",readOnly:true,teamTarget:{sourceBindingId:target.sourceBindingId,
+        botId:target.botId,responsibility:target.responsibility,intentRevision:target.intentRevision,inputSnapshotId:target.inputSnapshotId,
+        evidence:{deliverableId:target.results[0].deliverableId,quote:"b.txt 未写入"}}};
+      assert.equal(f.works.transaction(()=>f.works.teams.continueMissing(owner,[{...missing,readOnly:false}],targets,"unsafe")),false);
+      assert(f.works.transaction(()=>f.works.teams.continueMissing(owner,[missing],targets,"独立只读核对")));
+      assert.equal(f.works.transaction(()=>f.works.teams.continueMissing(owner,[missing],targets,"duplicate")),false);
+      f.host.missingMode = false;
+      const memberTask = f.bindings(workId).find(binding=>binding.botId === target.botId)!.taskId;
+      f.host.runningRecovery.add(memberTask);
+      await f.flush(4);
+      const runningRead = f.bindings(workId).filter(binding=>binding.botId === target.botId).at(-1)!;
+      assert.equal(runningRead.status,"running");
+      assert(f.works.teams.isReadOnlyBinding(runningRead));
+      assert.equal(f.works.admitTaskAction(memberTask,{operationId:"allowed-independent-read",actionKind:"workspace:read"}),undefined);
+      f.works.settleTaskAction(memberTask,"allowed-independent-read","consumed");
+      assert.equal(typeof f.works.admitTaskAction(memberTask,{operationId:"forbidden-running-write",actionKind:"workspace:write"}),"string");
+      f.host.runningRecovery.delete(memberTask);
+      await f.flush(12);
+      await wait(() => f.bindings(workId).filter(binding=>binding.botId === target.botId).length === 2
+        && f.bindings(workId).filter(binding=>binding.botId === "recovery-owner").length === 2, "independent read repair", () => f.flush(4));
+      const read = f.bindings(workId).filter(binding=>binding.botId === target.botId).at(-1)!;
+      assert.deepEqual(read.delegatedScope,["workspace:read"]);
+      const submission = f.host.submissions.find(item=>item.operationId === read.operationId)!;
+      assert.equal(submission.input.teamAssignment.readOnly,true);
+      assert.equal(typeof f.works.admitTaskAction(read.taskId,{operationId:"forbidden-replay",actionKind:"workspace:write"}),"string");
+      assert.equal(f.works.repo.listAdmissions(workId).find(item=>item.operationId === "uncertain-member")?.state,"unknown");
+      assert.equal(f.host.writes,1); assert.equal(f.host.supplementalWrites,0);
+    } finally { await f.close(); }
+  }
   console.log("PASS team recovery: same identity continuation, single write, dependency advancement, independent members, nonblocking unknown effects, stop cancellation, verified byte/native-item progress, wording-independent stagnation, partial-result dependency barrier, exhausted-chain summaries and restart dedup");
 } catch (error) {
   console.error(error);

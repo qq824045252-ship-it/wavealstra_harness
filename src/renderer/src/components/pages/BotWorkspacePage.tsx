@@ -401,7 +401,9 @@ export function BotMessage({ message, botName, works, onOpenWork, onCancel, sour
     return image ? artifactImageUrl(image.id, "full", { version: image.version }) : source;
   })} streaming={streaming} /></ChatImageScope>;
   const linkedWorkIds = botMessageWorkLinks(message, workLinkSource ?? sourceQuestion);
-  const result = message.role === "assistant" && message.status === "completed" && message.workFeedback?.kind === "result" && message.workFeedback.report;
+  const result = message.role === "assistant" && message.status === "completed" && message.workFeedback?.report
+    && (message.workFeedback.kind === "result" || (message.workFeedback.kind === "binding"
+      && message.workFeedback.category === "progress" && message.workFeedback.report.milestone));
   const running = message.role === "assistant" && ["queued", "running", "unknown"].includes(message.status);
   const nonemptySegments = message.segments?.filter(segment => segment.text.trim()) ?? [];
   const hasModelText = Boolean(message.text.trim()) || nonemptySegments.some(segment => segment.kind !== "receipt");

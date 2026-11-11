@@ -106,7 +106,7 @@ export class WorkConversationFeedback {
   }
 
   /** Verified partial progress. Explicitly not a goal-completion claim. */
-  private milestoneBody(items: readonly WorkMilestoneDto[], projection: WorkMilestonesProjectionDto): string {
+  private milestoneBody(items: readonly WorkMilestoneDto[], projection: WorkMilestonesProjectionDto, includeFiles = true): string {
     const shown = items.slice(-6);
     const line = (text: string) => text.replace(/\s+/g, " ").trim().slice(0, 160);
     const files = [...new Set(shown.flatMap(item => item.files.flatMap(file => file.openPath ? [file.openPath] : [])))];
@@ -114,7 +114,7 @@ export class WorkConversationFeedback {
       `已核实 ${items.length} 项子步骤成果，可先使用（部分成果不代表整体目标已完成）：`,
       ...shown.map(item => `· ${line(item.task || item.summary)}${item.summary && item.summary !== item.task ? `：${line(item.summary)}` : ""}`),
       ...(shown.length < items.length ? [`另有 ${items.length - shown.length} 项已核实成果。`] : []),
-      ...(files.length ? [`可打开文件：\n${files.join("\n")}`] : []),
+      ...(includeFiles && files.length ? [`可打开文件：\n${files.join("\n")}`] : []),
       ...(projection.openGaps.length ? [`仍有 ${projection.openGaps.length} 项必要缺口待核对。`] : []),
     ].join("\n");
   }
@@ -233,9 +233,15 @@ export class WorkConversationFeedback {
           if (managed(bindingId)) continue;
           const binding = works.repo.getBinding(bindingId);
           if (!binding || binding.workId !== work.workId) continue;
+          // Persist the same registered versions used by Work detail. Never turn
+          // a mutable/unregistered reference into an openable path in chat.
+          const files = [...new Map(items.flatMap(item => item.files).map(file => [file.ref,
+            { ref: file.ref, name: file.name, ...(file.immutable && file.openPath ? { openPath: file.openPath } : {}) }])).values()];
           emit(`milestone:${bindingId}`, workMilestoneVersion(bindingId, items), this.milestoneBody(items, milestones),
             { kind: "binding", category: "progress", executionId: bindingId,
-              intentRevision: binding.intentRevision, inputSnapshotId: binding.inputSnapshotId });
+              intentRevision: binding.intentRevision, inputSnapshotId: binding.inputSnapshotId,
+              report: { title: work.title, summary: this.milestoneBody(items, milestones, false), milestone: true,
+                artifactRefs: files.map(file => file.ref), files, reviewStatus: "proposed", current: true, notices: [] } });
         }
         for (const blocker of works.repo.listBlockers(work.workId)) {
           // Recovery and effect reconciliation are host work, not a request for

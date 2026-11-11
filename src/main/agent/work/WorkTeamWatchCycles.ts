@@ -42,7 +42,7 @@ export class WorkTeamWatchCycles {
     if (work.mode !== "watch" || !inboxEventId) return true;
     if (this.db.prepare("SELECT 1 FROM work_team_watch_cycles WHERE inbox_event_id=? AND work_id=?").get(inboxEventId,work.workId)) return true;
     const event = this.works.repo.getInbox(inboxEventId);
-    if (!isScheduledFollowUp(event) || !scheduledFollowUpCurrent(work,event,event?.subscriptionId ? this.works.repo.getSubscription(event.subscriptionId) : undefined)) return true;
+    if (!(isScheduledFollowUp(event) || event?.eventType === "work.tick" && event.payload.continuousExecution === true) || !scheduledFollowUpCurrent(work,event,event?.subscriptionId ? this.works.repo.getSubscription(event.subscriptionId) : undefined)) return true;
     if (work.lifecycle !== "active" || watchTimeExpired(work,this.now())) return true;
     if (this.pending(work.workId)) return false;
     this.works.transaction(() => {
@@ -50,15 +50,15 @@ export class WorkTeamWatchCycles {
       const prior = this.current(work.workId);
       this.db.prepare("UPDATE work_team_recovery_attempts SET state='stopped',outcome='superseded',settled_at=? WHERE work_id=? AND state IN ('pending','claimed','dispatched')")
         .run(this.now(),work.workId);
-      const rows = this.db.prepare("SELECT * FROM work_team_executions WHERE work_id=? ORDER BY ordinal").all(work.workId) as Array<{task_id:string;input_json:string|null;ordinal:number}>;
+      const rows = this.db.prepare("SELECT * FROM work_team_executions WHERE work_id=? ORDER BY ordinal").all(work.workId) as Array<{task_id:string;input_json:string|null;ordinal:number;scopes_json:string}>;
       // Preserve immutable assignment envelopes so prior receipts/results retain
       // their member/round attribution after the current projection advances.
       for (const row of rows) {
         if (prior) this.db.prepare("INSERT OR IGNORE INTO work_team_execution_history(task_id,work_id,input_json,execution_json,archived_at) VALUES (?,?,?,?,?)")
           .run(row.task_id,work.workId,row.input_json,JSON.stringify(row),this.now());
         this.db.prepare(`UPDATE work_team_executions SET task_id=?,input_json=NULL,original_input_json=NULL,
-          scopes_json='["workspace:read"]',error=NULL,cancelled=0,reported=0,reported_binding_id=NULL WHERE work_id=? AND ordinal=?`)
-          .run(`team-execution-${randomUUID()}`,work.workId,row.ordinal);
+          scopes_json=?,error=NULL,cancelled=0,reported=0,reported_binding_id=NULL WHERE work_id=? AND ordinal=?`)
+          .run(`team-execution-${randomUUID()}`,work.watchRule?.executionMode === "continuous" ? row.scopes_json : JSON.stringify(["workspace:read"]),work.workId,row.ordinal);
       }
       this.db.prepare("INSERT INTO work_team_watch_cycles(work_id,inbox_event_id,sequence,created_at) VALUES (?,?,?,?)")
         .run(work.workId,inboxEventId,(prior?.sequence ?? 0)+1,this.now());

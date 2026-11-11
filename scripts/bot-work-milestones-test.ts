@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { workFeedbackSchema } from "../src/shared/bot-conversation";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -171,11 +172,11 @@ try {
     assert.ok(milestone.summary.includes("结论"));
   }
   const milestoneA = milestones.ready.find(item => item.itemId === "subagent-1:read-a")!;
-  assert.deepEqual(milestoneA.files, [{ ref: snapshotA, name: "read-a.v1.txt", openPath: snapshotA, digest: "a".repeat(64), immutable: true }],
+  assert.deepEqual(milestoneA.files, [{ ref: snapshotA, name: "read-a.txt", openPath: snapshotA, digest: "a".repeat(64), immutable: true }],
     "a registered immutable snapshot is opened by its stored version");
   const milestoneB = milestones.ready.find(item => item.itemId === "subagent-1:read-b")!;
-  assert.deepEqual(milestoneB.files, [{ ref: fileB, name: "read-b.txt", openPath: fileB, digest: "b".repeat(64), immutable: false }],
-    "an unregistered-version file is still shown but not claimed immutable");
+  assert.deepEqual(milestoneB.files, [{ ref: fileB, name: "read-b.txt", digest: "b".repeat(64), immutable: false }],
+    "a mutable file is shown as evidence but is not offered as an openable milestone snapshot");
   assert.equal(projection.phase3?.subitems.filter(item => item.outcome === "completed").length, 2);
   assert.equal(projection.generatedArtifacts?.length, 3, "registered files remain the same evidence");
 
@@ -204,12 +205,26 @@ try {
   assert.equal(merged.workFeedback?.category, "progress");
   assert.equal(merged.workFeedback?.kind, "binding");
   assert.equal(merged.workFeedback?.executionId, binding.bindingId);
+  const earlyReport = merged.workFeedback!.report!;
+  assert.equal(earlyReport.milestone, true, "progress carries a display-only milestone report");
+  assert.equal(earlyReport.completion, undefined, "a verified subitem cannot invent goal outcome or nextStep");
+  assert.deepEqual([...earlyReport.artifactRefs].sort(), [snapshotA, fileB].sort());
+  assert.deepEqual([...earlyReport.files!].sort((a, b) => a.name.localeCompare(b.name)), [
+    { ref: snapshotA, name: "read-a.txt", openPath: snapshotA },
+    { ref: fileB, name: "read-b.txt" },
+  ], "chat receives the exact same immutable versions as the Work milestone projection");
+  assert(!earlyReport.summary.includes(snapshotA), "the visible summary does not dump file paths instead of buttons");
+  assert(!earlyReport.artifactRefs.includes(snapshotC), "an unfinished item's registered file is not an early result");
+  assert.deepEqual(workFeedbackSchema.parse(JSON.parse(JSON.stringify(merged.workFeedback))), merged.workFeedback,
+    "the report survives schema validation and persisted JSON round trips");
+  const legacy = { ...merged.workFeedback, report: undefined };
+  assert.equal(workFeedbackSchema.parse(legacy).report, undefined, "old progress messages without reports remain valid");
   assert(merged.text.includes("已核实 2 项子步骤成果"), "several items are merged into one milestone message");
   assert(merged.text.includes("读取甲文件") && merged.text.includes("读取乙文件"));
   assert(merged.text.includes("已读取甲文件，结论 A 可用"));
   assert(merged.text.includes("不代表整体目标已完成"), "in-flight milestones never claim the goal is done");
   assert(merged.text.includes("仍有 1 项必要缺口待核对"));
-  assert(merged.text.includes(snapshotA) && merged.text.includes(fileB), "openable registered versions are reported");
+  assert(merged.text.includes(snapshotA) && !merged.text.includes(fileB), "only immutable registered snapshots are reported as openable");
   assert.equal(history().messages.filter(message => message.workFeedback?.eventId?.startsWith("result:partial:")).length, 0,
     "no one-message-per-subitem delivery");
   assert.equal(works.getProjection(created.workId)?.lifecycle, "active");
@@ -225,6 +240,7 @@ try {
   const restored = works.getProjection(created.workId)!.phase3!.milestones!;
   assert.equal(restored.digest, digestBefore, "the same facts produce the same digest after restart");
   assert.equal(restored.ready.length, 2);
+  assert.deepEqual(milestoneMessages()[0]!.workFeedback!.report, earlyReport, "restart retains the early report and its saved open paths");
 
   // (d) Completion still delivers the whole final result; the milestone stays partial history.
   const finished = await readDurableWorkExecution(persisted(completedEntries), completed(10, 20), root);

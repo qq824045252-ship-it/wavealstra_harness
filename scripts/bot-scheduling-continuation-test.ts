@@ -87,6 +87,9 @@ const coordinator = new WorkCompletionCoordinator({ db: db.connection, works, is
     if (title === "unrelated-unknown-gap") return index < 3
       ? { decision: "continue", outcome: "partial", reply: "只读核对已完成一部分，接下来我会继续核对剩余来源。", missing: [{ task: "只读核对剩余来源", requestExcerpt: title }] }
       : { decision: "deliver", outcome: "completed", reply: "只读核对已完成，剩余来源均已核对并交付。", missing: [] };
+    if (title === "same-binding-independent-read") return index < 2
+      ? { decision: "continue", outcome: "partial", reply: "继续核对独立来源", missing: [{ task: "只读核对独立来源", requestExcerpt: title, readOnly: true }] }
+      : { decision: "deliver", outcome: "partial", reply: "独立来源已核对，原写入效果仍未知。", missing: [] };
     if (title === "same-binding-unknown") return { decision: "continue", outcome: "partial",
       reply: "接下来我会继续补齐剩余内容。已确认的部分已交付。", missing: [{ task: "补齐剩余内容", requestExcerpt: title }] };
     if (title === "stale-revision-settles") return { decision: "deliver", outcome: "partial",
@@ -159,15 +162,15 @@ try {
   assert.equal(continuedTurns(noProgress), 2, "only the two progress-making continuations were admitted");
   assert.equal(progressRows(noProgress), 2);
   const rewritten = assertNoContinuationPromise(noProgress);
-  assert(rewritten.summary.includes("已有部分成果可直接使用"), "already-true sentences are kept, not the whole body dropped");
+  assert(!rewritten.summary.includes("可直接使用"), "host never preserves unsupported model claims after override");
   assert.equal(works.getWork(noProgress)?.closureConclusion, "ended_unsuccessfully", "refused continuation ends honestly as partial");
 
-  // The hard safety cap still ends even a Work that keeps producing progress.
+  // Genuine progress can continue beyond four rounds; only lack of progress stops the lane.
   const capped = create("progress-cap"); await flush();
   states.set(capped, "completed"); await settle(16);
-  assert.equal(works.repo.listBindings(capped).length, 5, "the safety cap admits at most four continuations");
-  assert.equal(continuedTurns(capped), 4);
-  assertNoContinuationPromise(capped);
+  assert.equal(works.repo.listBindings(capped).length, 6, "five genuine progress continuations all run");
+  assert.equal(continuedTurns(capped), 5);
+  assert.equal(lastReport(capped).completion?.outcome, "completed");
 
   // Acceptance 3a: an unknown write of another (invalidated) lineage does not
   // block an independent read-only gap of the current revision.
@@ -197,7 +200,21 @@ try {
   states.set(blocked, "completed"); await settle(8);
   assert.equal(works.repo.listBindings(blocked).length, 1, "an unknown effect in the same lineage is not retried");
   const blockedReport = assertNoContinuationPromise(blocked);
-  assert(blockedReport.summary.includes("已确认的部分已交付"), "the true part of the reply survives the rewrite");
+  assert(!blockedReport.summary.includes("已确认的部分已交付"), "host replacement does not rely on model claims");
+
+  const independent = create("same-binding-independent-read"); await flush();
+  const independentSource = works.repo.listBindings(independent)[0]!;
+  works.admitTaskAction(independentSource.taskId, { operationId: "independent-unknown-write", actionKind: "workspace:write" });
+  works.settleTaskAction(independentSource.taskId, "independent-unknown-write", "unknown");
+  states.set(independent, "completed"); await settle(10);
+  assert.equal(works.repo.listBindings(independent).length, 2, "independent read runs even within same unknown lineage");
+  const readPlan = works.partialResults.plans(independent)[0]!;
+  assert(works.partialResults.isReadOnlyPlan(readPlan), "host enforces read-only plan, not merely a prompt");
+  const readBinding = works.repo.listBindings(independent).at(-1)!;
+  const deniedWrite = works.admitTaskAction(readBinding.taskId, { operationId: "must-not-write", actionKind: "workspace:write" });
+  assert.equal(typeof deniedWrite, "string", "read-only continuation cannot replay a write");
+  assert.deepEqual(readBinding.delegatedScope, ["workspace:read"]);
+  assert.equal(works.repo.listAdmissions(independent).find(item => item.operationId === "independent-unknown-write")?.state, "unknown");
 
   // Acceptance 4: r2 settles its own available results while the invalidated,
   // lost r1 is still running, and r1's unknown effect stays in the settlement.

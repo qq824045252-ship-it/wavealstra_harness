@@ -2,7 +2,7 @@ import {createHash} from 'node:crypto';
 import {watchGoalEvidence,watchGoalMet} from '../src/main/agent/work/WorkWatchGoal';
 import {previousWatchObservations,WATCH_PREVIOUS_SOURCE_LIMIT,WATCH_PREVIOUS_EVIDENCE_BUDGET} from '../src/main/agent/work/WorkWatchComparison';
 import assert from 'node:assert/strict';
-import {mkdtempSync} from 'node:fs';
+import {mkdtempSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
@@ -11,11 +11,12 @@ import {BotRegistry} from '../src/main/agent/work/BotRegistry';
 import {WorkService,DESKTOP_USER_GRANTS} from '../src/main/agent/work/WorkService';
 import {BotConversationRepository} from '../src/main/agent/work/BotConversationRepository';
 import {WorkConversationFeedback} from '../src/main/agent/work/WorkConversationFeedback';
+import {isReadOnlyScheduledFollowUp} from '../src/main/agent/work/WorkScheduledFollowUp';
 import {WorkWatchFollowUp} from '../src/main/agent/work/WorkWatchFollowUp';
 import {WorkWatchSupervision} from '../src/main/agent/work/WorkWatchSupervision';
 import {LOCAL_USER_ID,DEFAULT_BOT_ID} from '../src/shared/bot-work';
 const root=mkdtempSync(join(tmpdir(),'watch-supervisor-')),db=new AppDatabase(join(root,'test.db'));
-const bots=new BotRegistry(db.connection);bots.ensureDefaultBot(LOCAL_USER_ID);
+const bots=new BotRegistry(db.connection);bots.registerBot({userId:LOCAL_USER_ID,botId:DEFAULT_BOT_ID,displayName:"watch fixture",authorization:DESKTOP_USER_GRANTS});
 const works=new WorkService(db.connection,{bots}),messages=new BotConversationRepository(db.connection);
 const source=messages.accept(LOCAL_USER_ID,{botId:DEFAULT_BOT_ID,requestId:'source',text:'每分钟持续观察，不要结束'});
 const created=works.createWork({kind:'user',userId:LOCAL_USER_ID,entry:'desktop',grants:DESKTOP_USER_GRANTS},{operationId:'create',title:'持续观察',mode:'watch',ownerBotId:DEFAULT_BOT_ID,inputSnapshotId:'input',authorization:DESKTOP_USER_GRANTS,conversationId:source.conversationId,sourceMessageId:source.userMessageId,watchRule:{cronExpression:'* * * * *',timezone:'UTC'}});assert(created.ok);const work=created.work;
@@ -30,8 +31,10 @@ let comparisonReviews=0;
 let historicalStop=false;
 const stopCondition='文件为 READY 时结束';
 const reviewPreferences:string[]=[];
-const reviewContexts:any[]=[];
-const options={db:db.connection,works,isAuthority:()=>true,preferences:(taskId:string)=>{assert(works.repo.bindingForTask(taskId));return preferences;},wake:()=>{},deliver:(input:any)=>deliveryBlocked?false:feedback.deliverCompletion(input),review:async(input:any)=>{calls++;if(input.context.title==='comparison watch')comparisonReviews++;reviewContexts.push(input.context);reviewPreferences.push(input.personalPreferences);assert(input.context.watchSupervision);await delay(20);if(replaceDuringReview!==undefined){preferences=replaceDuringReview;replaceDuringReview=undefined;}if(fail)throw Error('temporary provider unavailable');
+const reviewContexts:any[]=[];const reviewIds:string[]=[];
+const deliveredBodies:Array<{bindingId:string;text:string}>=[];
+const options={db:db.connection,works,isAuthority:()=>true,preferences:(taskId:string)=>{assert(works.repo.bindingForTask(taskId));return preferences;},wake:()=>{},deliver:(input:any)=>{deliveredBodies.push(input);return deliveryBlocked?false:feedback.deliverCompletion(input);},review:async(input:any)=>{calls++;if(input.context.title==='comparison watch')comparisonReviews++;reviewContexts.push(input.context);reviewIds.push(input.eventId);reviewPreferences.push(input.personalPreferences);assert(input.context.watchSupervision);await delay(20);if(replaceDuringReview!==undefined){preferences=replaceDuringReview;replaceDuringReview=undefined;}if(fail)throw Error('temporary provider unavailable');
+ if(input.context.title==='rejected-continuation')return {decision:'continue' as const,outcome:'partial' as const,reply:'I promise to keep executing immediately without waiting.',missing:[{task:'invented task',requestExcerpt:'not in the original request'}]};
  if(historicalStop&&input.context.title==='历史停止证据隔离'){
   const old=input.context.previousVerifiedObservations.observations[0];assert(old?.text==='READY');
   return {decision:'deliver' as const,outcome:'completed' as const,reply:'旧轮曾经 READY',missing:[],
@@ -54,6 +57,15 @@ const failed=db.connection.prepare('SELECT state,error FROM work_watch_reviews W
 assert.equal((db.connection.prepare("SELECT count(*) n FROM work_watch_reviews WHERE state='delivered'").get() as any).n,3);
 fail=false;deliveryBlocked=true;receipt('delivery-retry');await flush();const countBeforeRetry=calls;
 db.connection.prepare('UPDATE work_watch_reviews SET retry_at=0 WHERE binding_id=?').run('delivery-retry');deliveryBlocked=false;await flush();assert.equal(calls,countBeforeRetry,'delivery retry reuses persisted model verdict');
+// Changing artifact bytes after a delivery failure invalidates the cached verdict.
+receipt('artifact-retry');const artifactBinding=works.repo.getBinding('artifact-retry')!,snapshotPath=join(root,'artifact-retry.txt');
+writeFileSync(snapshotPath,'completed original');
+works.transaction(()=>works.generatedArtifacts.record(artifactBinding,[{path:snapshotPath,snapshotPath,digest:createHash('sha256').update('completed original').digest('hex'),sizeBytes:Buffer.byteLength('completed original'),registeredAt:Date.now(),sourceEntryId:1}]));
+db.connection.prepare('UPDATE work_deliverables SET artifact_refs_json=? WHERE deliverable_id=?').run(JSON.stringify([snapshotPath]),'result:artifact-retry');
+deliveryBlocked=true;await flush();const artifactCalls=calls;
+writeFileSync(snapshotPath,'tampered placeholder TODO');deliveryBlocked=false;db.connection.prepare('UPDATE work_watch_reviews SET retry_at=0 WHERE binding_id=?').run('artifact-retry');await flush();
+assert.equal(calls,artifactCalls+1,'tampering between delivery retries requires a fresh verdict');
+assert.equal(reviewContexts.at(-1).artifactEvidence[0].state,'changed');assert.notEqual(reviewIds.at(-1),reviewIds.at(-2),'native idempotent reviewer gets a new identity for changed artifact evidence');
 // Current preference version invalidates cached decisions, without persisting its text.
 preferences="old-private-marker";deliveryBlocked=true;receipt('preference-cache');await flush();
 const cachedCalls=calls;
@@ -74,6 +86,93 @@ works.repo.executionInput=b=>b.bindingId==='team-owner-stopped' ? JSON.stringify
 await flush();
 assert.equal(reviewContexts.at(-1).teamPartialResults.results[0].summary,'成员已读取的真实部分结果','expiry/stopped owner review retains already settled member evidence');
 works.repo.executionInput=input;
+// Continuous actionable work reuses the same continuation queue without read-only downgrading.
+const continuousCreated=works.createWork({kind:'user',userId:LOCAL_USER_ID,entry:'desktop',grants:DESKTOP_USER_GRANTS},
+ {operationId:'continuous',title:'continuous',mode:'watch',ownerBotId:DEFAULT_BOT_ID,inputSnapshotId:'continuous',authorization:DESKTOP_USER_GRANTS,watchRule:{executionMode:'continuous'}});
+assert(continuousCreated.ok);const continuous=continuousCreated.work;
+receipt('continuous-step',continuous);works.repo.updateBinding({...works.repo.getBinding('continuous-step')!,delegatedScope:['workspace:read','workspace:write']});
+const continuousFollow=new WorkWatchFollowUp(options),continuousBinding=works.repo.getBinding('continuous-step')!;
+const continuousDecision={decision:'continue' as const,outcome:'partial' as const,reply:'继续完成剩余步骤',missing:[{task:'修复剩余组件并验证',requestExcerpt:'持续优化组件'}]};
+const continueResult=works.transaction(()=>continuousFollow.enqueue(continuous,continuousBinding,continuousDecision,{userRequest:{messages:[{text:'持续优化组件'}]}}));
+assert(continueResult.scheduled,JSON.stringify(continueResult));
+const continuePlan=works.partialResults.plans(continuous.workId)[0];assert(continuePlan);assert(!works.partialResults.isReadOnlyPlan(continuePlan));
+assert.equal(works.repo.listSubscriptions(continuous.workId)[0].nextWakeAt,undefined,'continuation does not fabricate a wait clock');
+assert(works.transaction(()=>continuousFollow.enqueue(works.getWork(continuous.workId)!,continuousBinding,continuousDecision,{userRequest:{messages:[{text:'持续优化组件'}]}})).scheduled);
+assert.equal(works.partialResults.plans(continuous.workId).length,1,'same action review cannot duplicate continuation');
+works.repo.updateBinding({...continuousBinding,invalidatedAt:Date.now()});
+const unknownCreated=works.createWork({kind:'user',userId:LOCAL_USER_ID,grants:DESKTOP_USER_GRANTS},{operationId:'watch-unknown',title:'watch-unknown',mode:'watch',ownerBotId:DEFAULT_BOT_ID,inputSnapshotId:'watch-unknown',authorization:DESKTOP_USER_GRANTS,watchRule:{executionMode:'continuous'}});assert(unknownCreated.ok);
+receipt('unknown-continuous',unknownCreated.work);const unknownBinding=works.repo.getBinding('unknown-continuous')!;
+works.repo.insertAdmission({admissionId:'watch-unknown-effect',workId:unknownCreated.work.workId,bindingId:unknownBinding.bindingId,operationId:'watch-unknown-effect',actionKind:'write',state:'unknown',intentRevision:unknownBinding.intentRevision,ownerEpoch:unknownBinding.ownerEpoch,admittedAt:Date.now()});
+assert(!works.transaction(()=>continuousFollow.enqueue(unknownCreated.work,unknownBinding,continuousDecision,{userRequest:{messages:[{text:'持续优化组件'}]}})).scheduled,'unknown effect cannot acquire writable continuation');
+assert(works.transaction(()=>continuousFollow.enqueue(unknownCreated.work,unknownBinding,{...continuousDecision,missing:[{...continuousDecision.missing[0],readOnly:true}]},{userRequest:{messages:[{text:'持续优化组件'}]}})).scheduled,'independent enforced read can proceed');
+assert(works.partialResults.isReadOnlyPlan(works.partialResults.plans(unknownCreated.work.workId)[0]));works.repo.updateBinding({...unknownBinding,invalidatedAt:Date.now()});
+const rejectedCreated=works.createWork({kind:'user',userId:LOCAL_USER_ID,grants:DESKTOP_USER_GRANTS},{operationId:'rejected-continuation',title:'rejected-continuation',mode:'watch',ownerBotId:DEFAULT_BOT_ID,inputSnapshotId:'rejected-continuation',authorization:DESKTOP_USER_GRANTS,watchRule:{executionMode:'continuous'}});assert(rejectedCreated.ok);
+receipt('rejected-continuation',rejectedCreated.work);await flush();
+const rejectedReply=deliveredBodies.findLast(body=>body.bindingId==='rejected-continuation');assert(rejectedReply);assert(!rejectedReply.text.includes('I promise'),'rejected continuation replaces arbitrary model promise');assert.match(rejectedReply.text,/没有安排继续执行/);
+
+// A grounded wait is durable and its clock wake retains the original continuous authority.
+const waitCreated=works.createWork({kind:'user',userId:LOCAL_USER_ID,entry:'desktop',grants:DESKTOP_USER_GRANTS},
+ {operationId:'continuous-wait',title:'continuous wait',mode:'watch',ownerBotId:DEFAULT_BOT_ID,inputSnapshotId:'continuous-wait',authorization:DESKTOP_USER_GRANTS,watchRule:{executionMode:'continuous'}});
+assert(waitCreated.ok);const waitWork=waitCreated.work;receipt('wait-step',waitWork);
+const waitBinding=works.repo.getBinding('wait-step')!,wakeAt=Date.now()+60000;
+const waitRequest={userRequest:{messages:[{text:'持续处理，等一分钟后继续'}]}};
+const waitDecision={decision:'deliver' as const,outcome:'partial' as const,reply:'现在需要等待',missing:[],waitPlan:{basis:'user_specified' as const,requestExcerpt:'等一分钟后继续',reason:'用户指定等待一分钟',nextWakeAt:wakeAt}};
+const savedWait=works.transaction(()=>continuousFollow.arrangeWait(waitWork,waitBinding,waitDecision,waitRequest,[]));
+assert(savedWait.scheduled,JSON.stringify(savedWait));
+assert.equal(works.repo.listSubscriptions(waitWork.workId).find(s=>!s.stoppedAt)?.nextWakeAt,wakeAt);
+assert(works.transaction(()=>continuousFollow.arrangeWait(works.getWork(waitWork.workId)!,waitBinding,waitDecision,waitRequest,[])).scheduled,'wait application is replay safe');
+assert.equal(works.repo.listSubscriptions(waitWork.workId).filter(s=>!s.stoppedAt).length,1);
+works.tick(wakeAt+1);const wakeEvent=works.repo.listInbox(waitWork.workId,['pending']).find(event=>event.eventType==='work.tick');assert(wakeEvent);
+const currentWait=works.getWork(waitWork.workId)!;assert(!isReadOnlyScheduledFollowUp(wakeEvent,currentWait));
+const resumed=works.dispatchExecution({kind:'user',userId:LOCAL_USER_ID,grants:DESKTOP_USER_GRANTS},{operationId:'resume-after-wait',workId:waitWork.workId,botId:DEFAULT_BOT_ID,taskId:'resume-after-wait',durableStoreKey:'resume-after-wait',conversationId:'native',workspaceBinding:root,inboxEventId:wakeEvent.eventId,
+ versionGuard:{expectedStateVersion:currentWait.stateVersion,expectedIntentRevision:currentWait.intentRevision,expectedOwnerEpoch:currentWait.ownerEpoch}});
+assert(resumed.ok,JSON.stringify(resumed));assert.equal(works.admitTaskAction('resume-after-wait',{operationId:'actual-write-after-wait',actionKind:'workspace:write'}),undefined,'timed resume actually admits write action under the original continuous goal');
+assert(!isReadOnlyScheduledFollowUp(wakeEvent,currentWait));
+assert(isReadOnlyScheduledFollowUp(wakeEvent,{...currentWait,watchRule:{...currentWait.watchRule!,executionMode:'observe'}}),'payload alone cannot upgrade observation authority');
+works.repo.updateBinding({...waitBinding,invalidatedAt:Date.now()});
+const eventCreated=works.createWork({kind:'user',userId:LOCAL_USER_ID,entry:'desktop',grants:DESKTOP_USER_GRANTS},
+ {operationId:'continuous-event-wait',title:'event wait',mode:'watch',ownerBotId:DEFAULT_BOT_ID,inputSnapshotId:'continuous-event',authorization:DESKTOP_USER_GRANTS,watchRule:{executionMode:'continuous'}});
+assert(eventCreated.ok);receipt('event-wait-step',eventCreated.work);const eventBinding=works.repo.getBinding('event-wait-step')!;
+// This test injects a simulated hook receiver; production hook has no receiver.
+works.ingress.setReceiverAvailable('hook',true);
+const eventDecision={...waitDecision,waitPlan:{basis:'observed_dependency' as const,requestExcerpt:'持续处理',reason:'等待外部构建下一次事件',eventSource:'hook',eventTarget:'fixture',evidence:{resultId:'build-state',quote:'pending'}}};
+assert(!works.transaction(()=>continuousFollow.arrangeWait(eventCreated.work,eventBinding,eventDecision,waitRequest,[])).scheduled,'invented dependency evidence cannot arm a wait');
+const eventWait=works.transaction(()=>continuousFollow.arrangeWait(eventCreated.work,eventBinding,eventDecision,waitRequest,[{resultId:'build-state',text:'pending',toolName:'read',source:'build',observedAt:Date.now()}]));
+assert(eventWait.scheduled,JSON.stringify(eventWait));const eventSub=works.repo.listSubscriptions(eventCreated.work.workId).find(s=>!s.stoppedAt)!;assert.equal(eventSub.source,'hook');assert.equal(eventSub.nextWakeAt,undefined);
+assert.equal(works.ingress.accept({source:'hook',sourceEventId:'old-wait-event',eventType:'build',occurredAt:eventSub.createdAt-1,payload:{target:'fixture'}},{subscriptionId:eventSub.subscriptionId,trust:'host'}).outcomes[0].reasonCode,'before-next-event-baseline');
+assert.equal(works.ingress.accept({source:'hook',sourceEventId:'unknown-age-event',eventType:'build',payload:{target:'fixture'}},{subscriptionId:eventSub.subscriptionId,trust:'host',offline:true}).acknowledged,false,'unknown-age replay cannot masquerade as a new event');
+works.repo.updateBinding({...eventBinding,invalidatedAt:Date.now()});
+console.log('PASS continuous execute→grounded wait→actual writable admission, replay, event baseline, fabricated dependency refusal');
+// A followUp is always a read, including continuous deliver + missing=[] with an unknown effect.
+const readOnlyCreated=works.createWork({kind:'user',userId:LOCAL_USER_ID,grants:DESKTOP_USER_GRANTS},{operationId:'followup-only',title:'followup-only',mode:'watch',ownerBotId:DEFAULT_BOT_ID,inputSnapshotId:'followup-only',authorization:DESKTOP_USER_GRANTS,watchRule:{executionMode:'continuous'}});assert(readOnlyCreated.ok);
+receipt('followup-only-source',readOnlyCreated.work);const readSource=works.repo.getBinding('followup-only-source')!;
+works.repo.insertAdmission({admissionId:'followup-only-unknown',workId:readSource.workId,bindingId:readSource.bindingId,operationId:'followup-only-unknown',actionKind:'write',state:'unknown',intentRevision:readSource.intentRevision,ownerEpoch:readSource.ownerEpoch,admittedAt:Date.now()});
+const onlyRead={decision:'deliver' as const,outcome:'partial' as const,reply:'读取独立来源',missing:[],followUp:{task:'只读核对独立来源',requestExcerpt:'持续处理'}};
+assert(works.transaction(()=>continuousFollow.enqueue(readOnlyCreated.work,readSource,onlyRead,waitRequest)).scheduled);
+const readPlan=works.partialResults.plans(readSource.workId)[0];assert(works.partialResults.isReadOnlyPlan(readPlan));
+const readCurrent=works.getWork(readSource.workId)!;
+const readDispatch=works.dispatchExecution({kind:'user',userId:LOCAL_USER_ID,grants:DESKTOP_USER_GRANTS},{operationId:'followup-only-dispatch',workId:readSource.workId,botId:DEFAULT_BOT_ID,taskId:'followup-only-child',durableStoreKey:'followup-only-child',conversationId:'native',workspaceBinding:root,
+ versionGuard:{expectedStateVersion:readCurrent.stateVersion,expectedIntentRevision:readCurrent.intentRevision,expectedOwnerEpoch:readCurrent.ownerEpoch}});assert(readDispatch.ok,JSON.stringify(readDispatch));
+db.connection.prepare("INSERT INTO work_dispatch_requests(operation_id,work_id,task_id,bot_id,intent_revision,input_snapshot_id,state,created_at,continuation_plan_id) VALUES (?,?,?,?,?,?,'dispatched',?,?)")
+ .run('followup-only-request',readSource.workId,'followup-only-child',DEFAULT_BOT_ID,readCurrent.intentRevision,readCurrent.inputSnapshotId,Date.now(),readPlan.planId);
+assert.equal(works.admitTaskAction('followup-only-child',{operationId:'followup-real-read',actionKind:'workspace:read'}),undefined);
+assert.match(works.admitTaskAction('followup-only-child',{operationId:'followup-real-write',actionKind:'workspace:write'}) ?? '',/只读|只读取/,'real tool admission refuses writes on the followUp-only branch');
+const beforeUnknownWait=JSON.stringify(works.repo.listSubscriptions(readSource.workId));
+const refusedWait=works.transaction(()=>continuousFollow.arrangeWait(works.getWork(readSource.workId)!,readSource,waitDecision,waitRequest,[]));assert(!refusedWait.scheduled);assert.match(refusedWait.notice ?? '',/未核实/);
+assert.equal(JSON.stringify(works.repo.listSubscriptions(readSource.workId)),beforeUnknownWait,'rejected wait preserves subscriptions');
+// The unknown original also blocks a descendant from arming a new writable timer.
+const readChild=works.repo.bindingForTask('followup-only-child')!;works.repo.updateBinding({...readChild,status:'completed',settledAt:Date.now()});
+assert(!works.transaction(()=>continuousFollow.arrangeWait(works.getWork(readSource.workId)!,works.repo.getBinding(readChild.bindingId)!,waitDecision,waitRequest,[])).scheduled);
+works.repo.updateBinding({...readSource,invalidatedAt:Date.now()});works.repo.updateBinding({...readChild,status:'completed',invalidatedAt:Date.now()});
+// An unrelated binding's uncertainty must not block a genuinely independent wait.
+const independentCreated=works.createWork({kind:'user',userId:LOCAL_USER_ID,grants:DESKTOP_USER_GRANTS},{operationId:'independent-wait',title:'independent-wait',mode:'watch',ownerBotId:DEFAULT_BOT_ID,inputSnapshotId:'independent-wait',authorization:DESKTOP_USER_GRANTS,watchRule:{executionMode:'continuous'}});assert(independentCreated.ok);
+receipt('independent-wait-source',independentCreated.work);receipt('unrelated-wait-source',independentCreated.work);
+const independentBinding=works.repo.getBinding('independent-wait-source')!,unrelatedBinding=works.repo.getBinding('unrelated-wait-source')!;
+works.repo.insertAdmission({admissionId:'unrelated-wait-unknown',workId:independentBinding.workId,bindingId:unrelatedBinding.bindingId,operationId:'unrelated-wait-unknown',actionKind:'write',state:'unknown',intentRevision:unrelatedBinding.intentRevision,ownerEpoch:unrelatedBinding.ownerEpoch,admittedAt:Date.now()});
+assert(works.transaction(()=>continuousFollow.arrangeWait(independentCreated.work,independentBinding,waitDecision,waitRequest,[])).scheduled,'unrelated unknown is not a Work-wide wait veto');
+works.repo.updateBinding({...independentBinding,invalidatedAt:Date.now()});works.repo.updateBinding({...unrelatedBinding,invalidatedAt:Date.now()});
+console.log('PASS continuous followUp-only real read admission/write denial; same-lineage unknown wait rejection and independent wait preservation');
+
 // Persistent supplemental reads use the existing queue, never mutate the schedule.
 const follow = new WorkWatchFollowUp(options);
 const request = {userRequest:{messages:[{text:'持续观察文件内容，缺失时继续补查完整内容'}]}};
@@ -215,6 +314,26 @@ const fastRow=db.connection.prepare(`SELECT state,decision_json,reviewed_at,atte
 assert.equal(fastRow.state,'silent');assert.equal(fastRow.decision_json,null);assert.equal(fastRow.attempts,0);
 assert.equal(fastRow.reason,'host_proven_unchanged');assert.equal(fastRow.comparisonState,'unchanged');assert(fastRow.reviewed_at!>0);
 assert.equal((db.connection.prepare("SELECT count(*) n FROM bot_work_feedback WHERE json_extract(metadata_json,'$.executionId')=? AND json_extract(metadata_json,'$.kind')='result'").get('comparison-same') as {n:number}).n,0,'unchanged fast path never delivers to the user');
+// A continuous file-update responsibility may be silent only after a complete reviewed result.
+const continuousComparisonCreated=works.createWork({kind:'user',userId:LOCAL_USER_ID,grants:DESKTOP_USER_GRANTS},{operationId:'continuous-comparison',title:'continuous file updates',mode:'watch',ownerBotId:DEFAULT_BOT_ID,inputSnapshotId:'continuous-comparison',authorization:DESKTOP_USER_GRANTS,watchRule:{executionMode:'continuous',cronExpression:'* * * * *',timezone:'UTC',notificationMode:'changes_only',notifyInitial:false}});assert(continuousComparisonCreated.ok);
+const continuousComparison=continuousComparisonCreated.work,briefPath=join(root,'continuous-brief.md');writeFileSync(briefPath,'Verified brief from unchanged source');
+function continuousObserved(id:string){
+ const value='stable input',summary=JSON.stringify({protocol:'watch-observation-v1',status:'observed',facts:[{source:'/fixture/continuous-source',key:'file_content',value}],summary:'已核对来源和简报，无变化'});
+ receipt(id,continuousComparison,summary);const b=works.repo.getBinding(id)!;
+ works.transaction(()=>works.generatedArtifacts.record(b,[{path:briefPath,snapshotPath:briefPath,digest:createHash('sha256').update('Verified brief from unchanged source').digest('hex'),sizeBytes:Buffer.byteLength('Verified brief from unchanged source'),registeredAt:Date.now(),sourceEntryId:1}]));
+ db.connection.prepare('UPDATE work_deliverables SET artifact_refs_json=? WHERE deliverable_id=?').run(JSON.stringify([briefPath]),`result:${id}`);
+ db.connection.prepare('UPDATE work_native_inbox SET payload_json=? WHERE binding_id=?').run(JSON.stringify({status:'completed',summary,hasWriteConflicts:false,artifactRefs:[briefPath],readEvidence:[{toolCallId:id,toolName:'read',kind:'file-content',target:'/fixture/continuous-source',partial:false,at:Date.now(),outputHash:createHash('sha256').update(value).digest('hex'),outputText:value}]}),id);
+}
+continuousObserved('continuous-baseline');await flush();
+const continuousReviewCount=reviewContexts.filter(context=>context.title==='continuous file updates').length;assert.equal(continuousReviewCount,1);
+continuousObserved('continuous-unchanged');await flush();
+assert.equal(reviewContexts.filter(context=>context.title==='continuous file updates').length,continuousReviewCount,'complete unchanged continuous round has zero extra reviewer turns');
+assert.equal(reviewState('continuous-unchanged'),'silent');assert(!deliveredBodies.some(body=>body.bindingId==='continuous-unchanged'),'complete unchanged continuous round sends no notification');
+works.transaction(()=>works.partialResults.record(works.repo.getBinding('continuous-unchanged')!,[{itemId:'still-actionable',task:'补齐简报遗漏的结论',required:true,dependencies:[],criterionIds:[],nativeStatus:'pending',outcome:'not_started',artifactRefs:[],writeConflicts:[],summary:'已有真实缺项，不能用来源无变化跳过'}]));
+continuousObserved('continuous-gap');await flush();
+assert.equal(reviewContexts.filter(context=>context.title==='continuous file updates').length,continuousReviewCount+1,'unchanged input with an actionable gap must still be reviewed');
+assert.notEqual((db.connection.prepare("SELECT json_extract(context_json,'$.reason') reason FROM work_watch_reviews WHERE binding_id=?").get('continuous-gap') as {reason:string|null}).reason,'host_proven_unchanged');
+console.log('PASS continuous changes_only: complete reviewed unchanged artifact is silent without reviewer; actionable gap still reviews');
 observed('comparison-changed','B');await flush();
 assert.equal(comparisonReviews,2,'changed evidence still goes through the existing review path');
 assert.equal(comparisonContexts().at(-1).comparisonState,'changed');assert.equal(comparisonContexts().at(-1).hostProvenUnchanged,false);

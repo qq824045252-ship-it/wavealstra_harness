@@ -108,7 +108,8 @@ export class WorkSubscriptionMutations {
         subscriptionId: newId("subscription"),
         workId: work.workId,
         source,
-        filter: {},
+        filter: source === rule.eventSource ? rule.eventFilter ?? {} : {},
+        sourceTarget: source === rule.eventSource ? rule.eventTarget : undefined,
         catchUpPolicy: rule.catchUpPolicy,
         maxMergeWaitMs: rule.maxMergeWaitMs,
         maxQueueDepth: rule.maxQueueDepth,
@@ -141,7 +142,8 @@ export class WorkSubscriptionMutations {
       if (current && scheduleChanged) this.discardPendingSchedule(current.subscriptionId, now);
       const subscription: WorkSubscriptionDto = {
         ...current, subscriptionId: current?.subscriptionId ?? newId("subscription"), workId: work.workId, source,
-        filter: current?.filter ?? {}, catchUpPolicy: rule.catchUpPolicy, maxMergeWaitMs: rule.maxMergeWaitMs,
+        filter: source === rule.eventSource ? rule.eventFilter ?? {} : current?.filter ?? {},
+        sourceTarget: source === rule.eventSource ? rule.eventTarget : current?.sourceTarget, catchUpPolicy: rule.catchUpPolicy, maxMergeWaitMs: rule.maxMergeWaitMs,
         maxQueueDepth: rule.maxQueueDepth, stopConditionText: rule.stopConditionText, timezone: rule.timezone,
         cronExpression: rule.cronExpression,
         nextWakeAt: scheduleChanged ? this.deps.computeNextWake({ cronExpression: rule.cronExpression, timezone: rule.timezone,

@@ -51,6 +51,8 @@ export const workFeedbackSchema = z.object({
   /** Immutable host projection of this exact result version; text retains the full original record. */
   report: z.object({
     title: z.string(), summary: z.string(), artifactRefs: z.array(z.string()),
+    /** Display-only verified partial progress, never a goal-completion review. */
+    milestone: z.literal(true).optional(),
     /** This is the foreground goal review, not the worker's execution status. */
     completion: z.object({ outcome: z.enum(["completed", "partial", "unknown"]), nextStep: z.enum(["deliver", "continue", "ask"]) }).strict().optional(),
     primaryArtifactRefs: z.array(z.string()).optional(),

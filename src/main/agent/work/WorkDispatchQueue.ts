@@ -1,5 +1,6 @@
+import { WorkFileEventSource } from "./WorkFileEventSource";
 import { watchTimeExpired } from "../../../shared/work-watch-expiry";
-import { isScheduledFollowUp, scheduledFollowUpCurrent } from "./WorkScheduledFollowUp";
+import { isReadOnlyScheduledFollowUp, isScheduledFollowUp, scheduledFollowUpCurrent } from "./WorkScheduledFollowUp";
 import { createHash,randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { AppDatabase } from "../../db/AppDatabase";
@@ -22,6 +23,8 @@ const retainsInput = (binding: WorkExecutionBindingDto, work: WorkDto) => sameIn
 /** Business transaction persists the execution intent; native preparation can be resumed separately. */
 export class WorkDispatchQueue {
   private flushing?: Promise<void>;
+  private readonly fileEvents: WorkFileEventSource;
+  private closed = false;
   private dirty = false;
   private timer?: ReturnType<typeof setInterval>;
   constructor(private readonly db: AppDatabase, private readonly works: WorkService,
@@ -29,7 +32,9 @@ export class WorkDispatchQueue {
     private readonly defaultModel: () => string | undefined,
     private readonly permissionMode: () => import("../../../shared/agent-ipc").PermissionMode = () => "default",
     private readonly resumeDeferredActions?: () => Promise<void>,
-    private readonly botSettings?: (work: WorkDto, botId?: string) => import("../../../shared/bot-settings").BotSettingsDto) {}
+    private readonly botSettings?: (work: WorkDto, botId?: string) => import("../../../shared/bot-settings").BotSettingsDto) {
+    this.fileEvents = new WorkFileEventSource(works, isAuthority, () => this.wake());
+  }
 
   enqueue(work: WorkDto, operationId: string, retryBlocked = false, inboxEventId?: string): void {
     const current = this.works.getWork(work.workId);
@@ -61,14 +66,15 @@ export class WorkDispatchQueue {
   }
 
   start(): void {
-    if (this.timer) return;
+    if (this.timer || this.closed) return;
     this.timer = setInterval(() => this.wake(), 1000);
     this.timer.unref?.();
     this.wake();
   }
   wake(): void { void this.flush().catch(error => console.warn("[Work] 派发恢复待核对", error)); }
-  async close(): Promise<void> { if (this.timer) clearInterval(this.timer); this.timer = undefined; await this.flushing; }
+  async close(): Promise<void> { this.closed = true; if (this.timer) clearInterval(this.timer); this.timer = undefined; await this.fileEvents.close(); await this.flushing; }
   flush(): Promise<void> {
+    if (this.closed) return Promise.resolve();
     this.dirty = true;
     if (!this.flushing) this.flushing = (async () => {
       do { this.dirty = false; await this.deliver(); } while (this.dirty);
@@ -77,7 +83,8 @@ export class WorkDispatchQueue {
   }
 
   private async deliver(): Promise<void> {
-    if (!this.isAuthority()) return;
+    await this.fileEvents.reconcile();
+    if (this.closed || !this.isAuthority()) return;
     await this.resumeDeferredActions?.();
     this.resumeRetiredQuotaRequests();
     await this.works.teams.dispatchPending(this.db, this.adapter, this.defaultModel, this.permissionMode, this.botSettings);
@@ -123,7 +130,7 @@ export class WorkDispatchQueue {
         const actor: WorkActor = { kind: "bot", userId: work.userId, botId: work.ownerBotId, host: "background", grants: DESKTOP_USER_GRANTS };
         const result = await this.adapter.dispatch(actor, { taskId: request.task_id, operationId: `dispatch:${request.operation_id}`,
           workId: work.workId, botId: request.bot_id,
-          delegatedScope: readOnlyFollowUp ? ["workspace:read"]
+          delegatedScope: isReadOnlyScheduledFollowUp(requestEvent,work) ? ["workspace:read"]
             : continuation && this.works.partialResults.isReadOnlyPlan(continuation) ? ["workspace:read"]
               : continuation ? work.authorization.allowedScopes.filter(scope => this.works.repo.getBinding(continuation.sourceBindingId)?.delegatedScope.includes(scope))
                 : work.authorization.allowedScopes,

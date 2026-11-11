@@ -171,6 +171,7 @@ const GUI_TESTS = new Set([
 ]);
 
 const NETWORK_TESTS = new Set([
+  "test:bot-scheduling-live", // real Electron + configured real model; at least six task types per batch
   "test:google-workspace-write:live", // Real model/Electron with isolated local SDK fixture only.
   "test:google-workspace:live", // Real Electron/model; isolated synthetic gws process, no real account.
   "test:gadget-browser-recovery-live",
@@ -283,6 +284,7 @@ const KNOWN_HEADLESS_RED = new Set([
  * 显式清单优先于下面的命名兜底，否则它们会被 `^test:browser-` 之类正则误伤。
  */
 const HEADLESS_TESTS = new Set([
+  "test:work-file-event-source", // Real local fs.watch + SQLite; no Electron or external source account.
   "test:gadget-save-copies",
   "test:bot-call-thread",
   "test:bot-peer-calls",

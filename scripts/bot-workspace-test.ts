@@ -618,6 +618,27 @@ const structuredResult: BotMessageDto = { ...feedbackMessage("result-card", "pla
   text: "完整原始消息 /snap/hash-report", workFeedback: { workId: "plain", eventId: "result:done", kind: "result", category: "result", executionId: "done",
     report: { title: "CSV 汇总", summary: "合计 42 元。", artifactRefs: ["/snap/hash-report"], files: [{ ref: "/snap/hash-report", name: "report.csv" }], reviewStatus: "proposed", current: true, notices: ["尚未覆盖：现场验收"] } } };
 const reportHtml = renderToStaticMarkup(createElement(BotMessage, { message: structuredResult, botName: "Bot", works: [fileWork], onOpenWork() {}, onCancel() {} }));
+const earlyMilestone: BotMessageDto = { ...structuredResult, text: "【CSV 汇总】\nA 已核实可先用，B 仍在处理中；不代表整体目标已完成。",
+  workFeedback: { ...structuredResult.workFeedback!, kind: "binding", category: "progress", eventId: "milestone:done",
+    report: { title: "CSV 汇总", milestone: true, summary: "A 已核实可先用，B 仍在处理中；不代表整体目标已完成。",
+      artifactRefs: ["/snap/hash-report", "/work/report.csv", "unregistered.csv"],
+      files: [{ ref: "/snap/hash-report", name: "report-v1.csv", openPath: "/snap/hash-report" },
+        { ref: "/work/report.csv", name: "mutable.csv" }, { ref: "unregistered.csv", name: "unregistered.csv" }],
+      reviewStatus: "proposed", current: true, notices: [] } } };
+for (const cachedWorks of [[], [fileWork], [rerunWork]]) {
+  const html = renderToStaticMarkup(createElement(BotMessage, { message: earlyMilestone, botName: "Bot", works: cachedWorks, onOpenWork() {}, onCancel() {} }));
+  assert.match(html, /阶段成果/);
+  assert.match(html, /当前可用文件/);
+  assert.match(html, /不代表整体目标已完成/);
+  assert.match(html, /aria-label="打开 report-v1.csv"/);
+  assert.doesNotMatch(html, /aria-label="打开 (?:mutable|unregistered).csv"/, "live Work cache must not turn mutable or unregistered milestone evidence into an open button");
+  assert.doesNotMatch(html, /本次交付|data-outcome=|>已完成<|>结果已返回</, "an early result is neither final delivery nor a fabricated goal review");
+}
+assert.equal(earlyMilestone.workFeedback!.report!.completion, undefined);
+const oldMilestone = { ...earlyMilestone, workFeedback: { ...earlyMilestone.workFeedback!, report: undefined } };
+const oldMilestoneHtml = renderToStaticMarkup(createElement(BotMessage, { message: oldMilestone, botName: "Bot", works: [], onOpenWork() {}, onCancel() {} }));
+assert.match(oldMilestoneHtml, /A 已核实可先用/);
+assert.doesNotMatch(oldMilestoneHtml, /bot-result-report/, "old progress messages keep their normal text presentation");
 assert.match(reportHtml, /成果：CSV 汇总/);
 assert.match(reportHtml, /合计 42 元/);
 assert.match(reportHtml, /结果已返回/);

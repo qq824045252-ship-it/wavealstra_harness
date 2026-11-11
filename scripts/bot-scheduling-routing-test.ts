@@ -7,6 +7,8 @@
 //  (d) requestedOutcome=ongoing may act now and then wait (nextWakeAt), but still
 //      rejects goals with no future action and one_time + infinite cron.
 import assert from 'node:assert/strict';
+import {resolveWorkTarget} from '../src/main/agent/work/BotWorkTargetSelection';
+import {isReadOnlyScheduledFollowUp} from '../src/main/agent/work/WorkScheduledFollowUp';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -154,6 +156,75 @@ try {
  const resumeByTitle=requestFor('恢复历史读取修复');
  assert.equal(unwrap(await invoke('work_resume',{workId:alpha.workId,
   versionGuard:await queryGuard(alpha.workId,resumeByTitle.requestId)},resumeByTitle.requestId)).lifecycle,'active');
+ // A real persisted task fragment, not the complete generated title, redirects exactly one Work.
+ const fragment=requestFor('这轮只修历史读取');
+ const betaBefore=works.getWork(beta.workId);
+ const amendedHistory=unwrap(await invoke('work_amend',{workId:alpha.workId,goalDescription:'本轮只修历史读取',
+  versionGuard:await queryGuard(alpha.workId,fragment.requestId)},fragment.requestId));
+ assert.equal(amendedHistory.goalDescription,'本轮只修历史读取');
+ assert.deepEqual(works.getWork(beta.workId),betaBefore,'memory task is untouched by history-only redirect');
+ await assertRejectedTarget(fragment.requestId,beta.workId);
+ // Explicit negative clauses exclude targets; they are never control authorization.
+ for (const exclusion of ['不动长期记忆','别动长期记忆','不要改长期记忆']) {
+  const narrowed=requestFor(`这轮只修历史读取，${exclusion}`);
+  const beforeMemory=works.getWork(beta.workId);
+  assert.equal(unwrap(await invoke('work_amend',{workId:alpha.workId,goalDescription:'只修历史读取，不改长期记忆',
+   versionGuard:await queryGuard(alpha.workId,narrowed.requestId)},narrowed.requestId)).goalDescription,'只修历史读取，不改长期记忆');
+  assert.deepEqual(works.getWork(beta.workId),beforeMemory);
+  await assertRejectedTarget(narrowed.requestId,beta.workId);
+ }
+ for (const denied of [requestFor('不要改历史读取'),requestFor('不要改历史读取',alpha.workId),
+   requestFor(`不要动 ${alpha.workId}`),requestFor('历史读取修复这轮先不动',undefined,named.assistantMessageId)]) {
+  messages.linkWork(messages.receipt(LOCAL_USER_ID,DEFAULT_BOT_ID,denied.requestId)!,alpha.workId);
+  await assertRejectedTarget(denied.requestId,alpha.workId);
+ }
+ const soleTargetFacts={explicitWorkIds:[],referencedWorkIds:[],linkedWorkIds:[alpha.workId],selectedWorkId:alpha.workId,
+  openWorks:[{workId:alpha.workId,title:'历史读取修复'}],soleOpenWorkId:alpha.workId,requestedWorkId:alpha.workId};
+ assert.equal(resolveWorkTarget({...soleTargetFacts,userText:'不要改历史读取'}).ok,false,'negative-only sole/card/link target is not authorization');
+ assert.equal(resolveWorkTarget({...soleTargetFacts,userText:'请暂停数据库备份，不是历史读取',selectedWorkId:undefined,linkedWorkIds:[],soleOpenWorkId:undefined,
+  requestedWorkId:'work-backup',openWorks:[{workId:alpha.workId,title:'历史读取修复'},{workId:'work-backup',title:'数据库备份检查'}]}).ok,true);
+ const severalPositive=requestFor('修历史读取和长期记忆，不动重名事项');
+ await assertRejectedTarget(severalPositive.requestId,alpha.workId);
+ await assertRejectedTarget(severalPositive.requestId,beta.workId);
+ // Real user correction: change only B while A/C continue unchanged.
+ const preservedA=unwrap(works.createWork(user,{operationId:'preserved-analysis-a',title:'验收分析A'}));
+ const preservedC=unwrap(works.createWork(user,{operationId:'preserved-continuous-c',title:'验收持续简报'}));
+ const retainedBefore=[works.getWork(preservedA.workId),works.getWork(preservedC.workId)];
+ const realCorrection='这轮只修历史读取：最终 execution.txt 必须为 B-AMENDED，替换原来的 B-ORIGINAL。验收分析A和验收持续简报都继续，不要取消或改变它们。';
+ for (const instruction of [realCorrection,'这轮只修历史读取，验收分析A和验收持续简报保持不变',
+   '这轮只修历史读取，验收分析A和验收持续简报照常运行']) {
+  const request=requestFor(instruction);
+  assert.equal(unwrap(await invoke('work_amend',{workId:alpha.workId,goalDescription:'最终 execution.txt 必须为 B-AMENDED',
+   versionGuard:await queryGuard(alpha.workId,request.requestId)},request.requestId)).goalDescription,'最终 execution.txt 必须为 B-AMENDED');
+  await assertRejectedTarget(request.requestId,preservedA.workId);
+  await assertRejectedTarget(request.requestId,preservedC.workId);
+ }
+ assert.deepEqual([works.getWork(preservedA.workId),works.getWork(preservedC.workId)],retainedBefore,'preserved A/C are not cancelled, resumed, or amended');
+ const bothControls=requestFor('修历史读取，继续验收分析A');
+ await assertRejectedTarget(bothControls.requestId,alpha.workId);
+ await assertRejectedTarget(bothControls.requestId,preservedA.workId);
+ const exclusiveWithResume=requestFor('只修历史读取，恢复验收分析A继续执行');
+ await assertRejectedTarget(exclusiveWithResume.requestId,alpha.workId);
+ await assertRejectedTarget(exclusiveWithResume.requestId,preservedA.workId);
+ unwrap(works.pauseWork(user,{operationId:'pause-preserved-a',workId:preservedA.workId,versionGuard:guardOf(works.getWork(preservedA.workId)!)}));
+ const actualResume=requestFor('继续验收分析A');
+ assert.equal(unwrap(await invoke('work_resume',{workId:preservedA.workId,
+  versionGuard:await queryGuard(preservedA.workId,actualResume.requestId)},actualResume.requestId)).lifecycle,'active','continue may genuinely resume a paused task');
+ // A request link is replay evidence, never permission to override a resolved target.
+ for (const linkedRequest of [requestFor(`暂停 ${alpha.workId}`),requestFor('暂停历史读取修复'),
+   requestFor('这轮只修历史读取'),requestFor('暂停当前选中任务',alpha.workId),
+   requestFor('暂停刚才那项',undefined,named.assistantMessageId)]) {
+  messages.linkWork(messages.receipt(LOCAL_USER_ID,DEFAULT_BOT_ID,linkedRequest.requestId)!,beta.workId);
+  await assertRejectedTarget(linkedRequest.requestId,beta.workId);
+ }
+ const fragmentAmbiguous=requestFor('历史读取和长期记忆这轮都处理');
+ await assertRejectedTarget(fragmentAmbiguous.requestId,alpha.workId);
+ await assertRejectedTarget(fragmentAmbiguous.requestId,beta.workId);
+ await assertRejectedTarget(requestFor('这轮继续修复任务').requestId,alpha.workId);
+ const similar=unwrap(works.createWork(user,{operationId:'routing-history-second',title:'历史读取性能回归'}));
+ await assertRejectedTarget(requestFor('这轮只修历史读取').requestId,alpha.workId);
+ await assertRejectedTarget(requestFor('这轮只修历史读取').requestId,similar.workId);
+ unwrap(works.cancelWork(user,{operationId:'close-routing-history-second',workId:similar.workId,versionGuard:guardOf(works.getWork(similar.workId)!)}));
  // Explicit workId in the message keeps priority over a named title.
  const explicit=requestFor(`请暂停 ${beta.workId}，历史读取修复这轮先不动`);
  await assertRejectedTarget(explicit.requestId,alpha.workId);
@@ -209,6 +280,29 @@ try {
   watchRule:{nextWakeAt:future+1000,scheduleBasis:'user_specified',timezone:'UTC'}},waitOnly.requestId));
  assert.equal((db.connection.prepare("SELECT count(*) n FROM work_events_inbox WHERE work_id=? AND process_reason='user-requested-first-check'")
   .get(waiting.workId) as {n:number}).n,0,'without startImmediately the first action is the future check');
+ const immediateRequest=requestFor('持续优化，先推进当前步骤，不要编造等待时间');
+ const immediate=unwrap(await validInvoke('work_create',{requestedOutcome:'ongoing',mode:'watch',title:'立即持续推进',startImmediately:true},immediateRequest.requestId));
+ assert.equal(immediate.watchRule?.executionMode,'continuous');
+ assert.equal(works.repo.listSubscriptions(immediate.workId)[0].nextWakeAt,undefined);
+ const immediateEvent=works.repo.listInbox(immediate.workId,['pending'])[0];
+ assert(immediateEvent);assert.equal(isReadOnlyScheduledFollowUp(immediateEvent,immediate),false,'immediate continuous action is not reduced to a read-only poll');
+ const sources=await validInvoke('work_watch_sources',{}) as {sources:Array<{source:string}>};
+ assert(!sources.sources.some(s=>s.source==='hook'));assert(!sources.sources.some(s=>s.source==='file'));
+ await assert.rejects(()=>invoke('work_create',{requestedOutcome:'ongoing',mode:'watch',title:'unwired hook',watchRule:{eventSource:'hook',scheduleBasis:'user_specified'}},immediateRequest.requestId),/尚未接入/);
+ await assert.rejects(()=>invoke('work_create',{requestedOutcome:'ongoing',mode:'watch',title:'unsupported',watchRule:{eventSource:'file',scheduleBasis:'user_specified'}},immediateRequest.requestId),/不可用/);
+ // Explicit simulated receiver for the following hook-only test. Production has none.
+ works.ingress.setReceiverAvailable('hook',true);
+ const eventRequest=requestFor('下一次hook事件发生时检查');
+ const eventWork=unwrap(await validInvoke('work_create',{requestedOutcome:'ongoing',mode:'watch',title:'下一次事件',watchRule:{eventSource:'hook',eventTarget:'fixture',triggerMode:'next_event',scheduleBasis:'user_specified'}},eventRequest.requestId));
+ const sub=works.repo.listSubscriptions(eventWork.workId)[0];
+ assert.equal(sub.source,'hook');assert.equal(sub.sourceTarget,'fixture');assert.equal(sub.nextWakeAt,undefined);
+ assert.equal(works.repo.listInbox(eventWork.workId,['pending']).length,0);
+ const oldEvent=works.ingress.accept({source:'hook',sourceEventId:'old-event',eventType:'hook',occurredAt:sub.createdAt-1,payload:{target:'fixture'}},{subscriptionId:sub.subscriptionId,trust:'host'});
+ assert.equal(oldEvent.outcomes[0].reasonCode,'before-next-event-baseline');
+ const currentRequest=requestFor('检查现在的状态，然后等待hook变化');
+ const currentWork=unwrap(await validInvoke('work_create',{requestedOutcome:'ongoing',mode:'watch',title:'当前状态',watchRule:{eventSource:'hook',eventTarget:'fixture',triggerMode:'current_condition',scheduleBasis:'user_specified'}},currentRequest.requestId));
+ assert.equal(works.repo.listInbox(currentWork.workId,['pending']).length,1,'current condition checks immediately without inventing a cron');
+ console.log('PASS immediate ongoing with no clock, truthful event catalog, unsupported source fallback, next-event baseline and current-condition check');
  const worksBefore=works.listWorks(LOCAL_USER_ID,{includeClosed:true}).length;
  const rejects:Array<[unknown,RegExp]>=[
   [{requestedOutcome:'ongoing',mode:'watch',title:'没有未来动作'},/持续目标需要可执行/],

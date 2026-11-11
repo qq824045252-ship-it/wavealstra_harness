@@ -1,3 +1,4 @@
+import { readWorkFileSource } from "./WorkFileEventSource";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
@@ -21,7 +22,7 @@ export class WorkSourceObserver {
     for(const source of work.goalSources) {
       if(source.sourceType==="external_input" && source.sourceRef.startsWith("work-event:"))continue;
       let current:WorkGoalSourceDto;
-      if(source.sourceType==="file") current={...source,inputSnapshotId:`sha256:${createHash("sha256").update(await readFile(source.sourceRef)).digest("hex")}`,observedAt:Date.now()};
+      if(source.sourceType==="file") current=await readWorkFileSource(source.sourceRef);
       else if(source.sourceType==="git_commit") current={...source,...await readGitSource(source.sourceRef)};
       else throw Error(`来源尚无可信回读适配：${source.sourceType} ${source.sourceRef}`);
       sources.push(current.inputSnapshotId===source.inputSnapshotId?source:current);

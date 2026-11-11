@@ -370,7 +370,7 @@ try {
   assert.equal(works.repo.listBindings(work.workId).length, onceCount + 1, "deadline instance survives restart without duplicate follow-up");
 
   const before = works.listWorks(LOCAL_USER_ID, { includeClosed: true }).length;
-  await assert.rejects(() => invoke("work_create", { requestedOutcome: "one_time", title: "missing timing", mode: "watch" }), /时间或频率/);
+  await assert.rejects(() => invoke("work_create", { requestedOutcome: "one_time", title: "missing timing", mode: "watch" }), /执行时间或已支持事件来源/);
   const invalidZone = await invoke("work_create", { requestedOutcome: "ongoing", title: "bad zone", mode: "watch", watchRule: { scheduleBasis: "user_specified", cronExpression: "0 9 * * *", timezone: "Not/AZone" } });
   assert.equal(invalidZone.ok, false);
   const invalidCron = await invoke("work_create", { requestedOutcome: "ongoing", title: "bad schedule", mode: "watch", watchRule: { scheduleBasis: "user_specified", cronExpression: "bad bad bad bad bad" } });
@@ -390,7 +390,17 @@ try {
   const firstCheck = works.repo.listBindings(immediate.workId)[0];
   assert(firstCheck); assert.deepEqual(firstCheck.delegatedScope, ["workspace:read"]);
   assert(works.repo.listSubscriptions(immediate.workId)[0].nextWakeAt! > clock.at);
-  assertUnrestrictedAdmission(firstCheck.taskId, "watch-owner");
+  // Retired scope labels are not an approval framework. The persisted task
+  // purpose still matters: an observation cannot silently become a write/send.
+  for (const actionKind of ["workspace:write", "send", "delegate"]) {
+    const operationId = `watch-owner:${actionKind}`;
+    assert.equal(typeof works.admitTaskAction(firstCheck.taskId, { operationId, actionKind }), "string",
+      `persisted read-only observation rejects ${actionKind}`);
+    assert(!works.repo.listAdmissions(immediate.workId).some(item => item.operationId === operationId),
+      "rejected actions have no effect admission");
+  }
+  assert.equal(works.admitTaskAction(firstCheck.taskId, { operationId: "watch-owner:read", actionKind: "workspace:read" }), undefined);
+  works.settleTaskAction(firstCheck.taskId, "watch-owner:read", "consumed");
   unwrap(works.reconcileExecution({ kind: "system", reason: "test interrupted check" }, {
     bindingId: firstCheck.bindingId, outcome: "failed", note: "read interrupted before producing a result" }));
   works.partialResults.recovery.markEvidenceRead(firstCheck.bindingId);
@@ -406,6 +416,15 @@ try {
   assert.equal(works.admitTaskAction(recovery.taskId, { operationId: "readback:read", actionKind: "workspace:read" }), undefined);
   works.settleTaskAction(recovery.taskId, "readback:read", "consumed");
   settle(immediate.workId);
+  // Continuous authorized execution is not observation: neither mode=watch nor
+  // a legacy scope label may accidentally turn all ongoing work read-only.
+  const continuous = unwrap(await invoke("work_create", { requestedOutcome: "ongoing", title: "持续完成当前可执行任务", mode: "watch", startImmediately: true }));
+  await queue.flush();
+  const continuousBinding = works.repo.listBindings(continuous.workId)[0];
+  assert(continuousBinding);
+  assert.equal(works.getWork(continuous.workId)?.watchRule?.executionMode, "continuous");
+  assertUnrestrictedAdmission(continuousBinding.taskId, "continuous-execution");
+  settle(continuous.workId);
   const expiredPause = unwrap(await invoke("work_create", { requestedOutcome: "one_time", title: "暂停期间到期后仍可取消", mode: "watch",
     watchRule: { scheduleBasis: "user_specified", nextWakeAt: clock.at + 60_000 }, deadlineAt: clock.at + 1000 }));
   request("暂停", expiredPause.workId);

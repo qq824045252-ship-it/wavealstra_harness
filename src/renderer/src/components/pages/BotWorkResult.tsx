@@ -27,7 +27,7 @@ function reportFile(file: WorkFile): boolean {
   return /\.(?:pdf|docx?|xlsx?|csv|tsv|json|jsonl|xml|ya?ml|pptx?|md|txt|html?|png|jpe?g|webp|svg)$/i.test(file.name);
 }
 
-export function WorkFiles({ files, primaryRefs, compact = false }: { files: WorkFile[]; primaryRefs?: string[]; compact?: boolean }): React.JSX.Element | null {
+export function WorkFiles({ files, primaryRefs, compact = false, compactTitle = "本次交付" }: { files: WorkFile[]; primaryRefs?: string[]; compact?: boolean; compactTitle?: string }): React.JSX.Element | null {
   const [notice, setNotice] = useState("");
   if (!files.length) return null;
   const reports = files.filter(reportFile);
@@ -54,7 +54,7 @@ export function WorkFiles({ files, primaryRefs, compact = false }: { files: Work
   </li>)}</ul>;
   return <section className="bot-result-attachments" aria-label="成果附件">
     {compact ? <>
-      {!!primary.length && <><h4>本次交付</h4>{list(primary)}</>}
+      {!!primary.length && <><h4>{compactTitle}</h4>{list(primary)}</>}
       {!!remaining.length && <details className="bot-result-other-files"><summary>其他文件与引用 · {remaining.length}</summary>{list(remaining)}</details>}
     </> : <>
       <h4>{reports.length ? "报告与数据" : "成果附件"} · {reports.length || files.length}</h4>
@@ -118,12 +118,17 @@ export function WorkReport({ report, originalText, executionId, work, renderMark
   const additionalRecord = unprojectedJson
     ? (originalText.includes(report.summary) ? originalText : [report.summary, originalText].filter(Boolean).join("\n\n"))
     : additionalReportRecord(report, originalText);
-  const files = workFiles(report.artifactRefs, work, executionId).map(file => ({ ...file,
-    name: report.files?.find(item => item.ref === file.ref)?.name ?? file.name,
-    openPath: report.files?.find(item => item.ref === file.ref)?.openPath }));
+  // Milestones carry an immutable host snapshot. A later Work cache refresh
+  // must not upgrade mutable evidence or replace the early saved version.
+  const files: WorkFile[] = report.milestone ? [...new Set(report.artifactRefs)].map(ref => ({ ref,
+    name: report.files?.find(file => file.ref === ref)?.name ?? fileNameFromPath(ref),
+    openPath: report.files?.find(file => file.ref === ref)?.openPath }))
+    : workFiles(report.artifactRefs, work, executionId).map(file => ({ ...file,
+      name: report.files?.find(item => item.ref === file.ref)?.name ?? file.name,
+      openPath: report.files?.find(item => item.ref === file.ref)?.openPath }));
   const sourceConclusions = report.structured?.conclusions ?? [];
   const hasDetails = Boolean(report.teamFacts?.length || sourceConclusions.length || report.structured?.observations.length || report.sourceNotices?.length || additionalRecord);
-  const status = !report.current ? "历史成果" : report.completion
+  const status = !report.current ? (report.milestone ? "历史阶段成果" : "历史成果") : report.milestone ? "阶段成果" : report.completion
     ? report.completion.nextStep === "ask" ? "需要你补充" : report.completion.nextStep === "continue" ? "继续处理中"
       : { completed: "已完成", partial: "部分完成", unknown: "尚未核实" }[report.completion.outcome]
     : { proposed: "结果已返回", accepted: "负责人已核验", rejected: "未通过核验", superseded: "已被新成果替代" }[report.reviewStatus];
@@ -135,7 +140,7 @@ export function WorkReport({ report, originalText, executionId, work, renderMark
     </div>
     {long && <button className="bot-result-expand" type="button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? "收起长报告" : "展开完整报告"}</button>}
     {report.notices.length > 0 && <section className="bot-result-limitations" aria-label="需要注意"><h4>需要注意</h4><ul className="bot-result-notices">{[...new Set(report.notices)].map((notice, i) => <li key={i}>{notice}</li>)}</ul></section>}
-    <WorkFiles files={files} primaryRefs={report.primaryArtifactRefs} compact />
+    <WorkFiles files={files} primaryRefs={report.primaryArtifactRefs} compact compactTitle={report.milestone ? "当前可用文件" : "本次交付"} />
     {hasDetails && <details className="bot-result-details"><summary>执行详情与来源</summary>
       {!!report.sourceNotices?.length && <section aria-label="执行报告中的限制"><h4>执行报告中的限制</h4><ul>{report.sourceNotices.map((notice,index) => <li key={index}>{notice}</li>)}</ul></section>}
       {report.teamFacts?.length ? <section aria-label="汇总时的执行事实"><h4>汇总时的执行事实</h4><ul>{report.teamFacts.map((fact, index) => <li key={index}>

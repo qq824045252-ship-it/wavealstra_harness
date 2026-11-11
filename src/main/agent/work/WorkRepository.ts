@@ -557,17 +557,17 @@ export class WorkRepository {
       ...(userRequest ? { userRequest, ...userDefinition, delegationPlan: { provenance: "assistant_generated", ...planDefinition } }
         : definition),
       delegatedScope: binding.delegatedScope,
-      ...(this.getWork(binding.workId)?.mode === "watch" ? { watchLifetimeControl: "你只执行本轮观察（团队成员也相同），交付实际结果和用户停止条件对应的证据；本轮回复结束后由前台自主判断持续委托是否应结束。不调用 conversation_goal_propose_complete，不请求用户确认结束，也不使用 automation_exec 修改或取消 Work 订阅。不要等待下一轮或尝试自行关闭长期委托。" } : {}),
+      ...(this.getWork(binding.workId)?.mode === "watch" ? { watchLifetimeControl: this.getWork(binding.workId)?.watchRule?.executionMode === "continuous" ? "按原始授权推进持续目标，先完成现在可行动的步骤，再交付实际结果、未完成步骤和证据。不要虚构等待时间，不因本轮回复结束宣称整个目标完成；后续由前台安排。不要重复已完成的外部动作。" : "你只执行本轮观察（团队成员也相同），交付实际结果和用户停止条件对应的证据；本轮回复结束后由前台自主判断持续委托是否应结束。不调用 conversation_goal_propose_complete，不请求用户确认结束，也不使用 automation_exec 修改或取消 Work 订阅。不要等待下一轮或尝试自行关闭长期委托。" } : {}),
       ...(sourceEvent ? { sourceEvent: { source: sourceEvent.source, eventId: sourceEvent.source_event_id,
         eventType: sourceEvent.event_type, sourceVersion: sourceEvent.source_version ?? undefined,
         receivedAt: sourceEvent.received_at, payload: json<Record<string, unknown>>(sourceEvent.payload_json, {}) } } : {}),
       ...(sourceEvent?.event_type === "work.tick" ? { watchFollowUp: {
-        readOnly: true,
+        readOnly: this.getWork(binding.workId)?.watchRule?.executionMode !== "continuous",
         ...(this.getWork(binding.workId)?.watchRule?.notificationMode === "changes_only" ? { observationContract: WATCH_OBSERVATION_INSTRUCTIONS } : {}),
         watchRule: this.getWork(binding.workId)?.watchRule,
         previousReports: previousReports.map(r => ({ deliverableId: r.deliverableId, summary: r.summary.slice(0, 2000), createdAt: r.createdAt })),
         comparisonState: previousReports.length ? "unverified" : "no_baseline",
-        instructions: "这是按用户时间表触发的一次只读检查。读取当前来源，和已有报告比较，汇报重要变化或明确缺口；不重跑原任务的修改、购买、发送等副作用。不自行循环等待下一次，完成本次后交还宿主调度。说明用户停止条件是否已满足，不把一次检查当成整个事项已完成。\n" + WATCH_COMPARISON_INSTRUCTIONS,
+        instructions: this.getWork(binding.workId)?.watchRule?.executionMode === "continuous" ? "这是持续目标的可执行步骤，按原始授权推进，不要因没有nextWakeAt而等待。交付真实结果与剩余步骤，不重复已完成动作。" : "这是按用户时间表触发的一次只读检查。读取当前来源，和已有报告比较，汇报重要变化或明确缺口；不重跑原任务的修改、购买、发送等副作用。不自行循环等待下一次，完成本次后交还宿主调度。说明用户停止条件是否已满足，不把一次检查当成整个事项已完成。\n" + WATCH_COMPARISON_INSTRUCTIONS,
       } } : {}),
       ...(sourceEvent?.event_type === "deadline_expired" ? { deadlineFollowUp: {
         readOnly: true, deadlineRevision: json<Record<string, unknown>>(sourceEvent.payload_json, {}).deadlineRevision,
@@ -997,9 +997,11 @@ export class WorkRepository {
     return rows.map(mapSubscription);
   }
 
-  listActiveSubscriptions(): WorkSubscriptionDto[] {
-    return (this.db.prepare("SELECT * FROM work_subscriptions WHERE stopped_at IS NULL ORDER BY created_at ASC").all() as SubscriptionRow[])
-      .map(mapSubscription);
+  listActiveSubscriptions(source?: string): WorkSubscriptionDto[] {
+    const rows = source === undefined
+      ? this.db.prepare("SELECT * FROM work_subscriptions WHERE stopped_at IS NULL ORDER BY created_at ASC").all()
+      : this.db.prepare("SELECT * FROM work_subscriptions WHERE source=? AND stopped_at IS NULL ORDER BY created_at ASC").all(source);
+    return (rows as SubscriptionRow[]).map(mapSubscription);
   }
 
   stopSubscriptionsForWork(workId: string, now: number): void {
