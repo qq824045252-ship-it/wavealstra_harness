@@ -647,6 +647,8 @@ export class AgentService {
   private readonly userFonts = new UserFontsStore();
   /** Product-owned native tools. This is not a user-installable extension catalog. */
   readonly builtinCapabilities = new BuiltinCapabilityRuntime();
+  private externalAgentRuntime?: import("../external-agent/ExternalAgentRuntime").ExternalAgentRuntime;
+  setExternalAgentRuntime(runtime: import("../external-agent/ExternalAgentRuntime").ExternalAgentRuntime): void { this.externalAgentRuntime = runtime; }
   private localWorkflow?: Omit<LocalWorkflowBridge, "getPermissionMode">;
 
   setLocalWorkflowServices(services: Omit<LocalWorkflowBridge, "getPermissionMode">): void {
@@ -1720,6 +1722,38 @@ export class AgentService {
           connectorContext: profile.allowedConnectorIds.length ? connectorRuntimeContext(profile.allowedConnectorIds, this.connectorsService.list(), "foreground") : "",
           enabledMcpIds: this.mcpRuntime.previewMcpFilter("working", this.modeProfiles.getProfile("working").policy.mcpPolicy).enabled,
           readOnly: () => false });
+      },
+      selectedTools: async (selection, cwd, identity, onStatus) => {
+        const { selectedExternalAgentTool } = await import("./work/BotSelectedTools");
+        if (selection.externalAgentId) {
+          if (!this.externalAgentRuntime) throw new Error("External Agent Runtime 未初始化");
+          if (!selection.hostRequest) throw new Error("外部 Agent 缺少原始用户请求");
+          return [selectedExternalAgentTool({ hostRequest: selection.hostRequest, requestIdentity: identity, onStatus, agentId: selection.externalAgentId, runtime: this.externalAgentRuntime,
+            createTask: (id, title) => this.db.upsertTask({ id, title, cwd, updatedAt: Date.now(), welcomeMode: "working" }) })];
+        }
+        if (!selection.consultRequested) return [];
+        const config = this.builtinCapabilities.config().multiModelConsult;
+        if (!config.enabled || config.participants.length < 2) throw new Error("多模型会诊未启用或未配置至少两个参与者");
+        const { defineTool } = await import("@earendil-works/pi-durable");
+        const { Type } = await import("typebox");
+        const { withDurableExecution, durableExecutionContext } = await import("./durable/DurableExecutionContext");
+        const { consultToolResult } = await import("../capabilities/MultiModelConsult");
+        const policy = new TaskFileAccessPolicy({ taskId: identity, taskRoot: cwd, writeGrants: [] });
+        return [defineTool({ name: "multi_model_consult", description: "用户明确选择的多模型会诊：提交完整任务与事实，让已配置模型独立分析，再综合真实结果。",
+          parameters: Type.Object({ task: Type.String({ minLength: 1, maxLength: 100000 }), context: Type.Optional(Type.String({ maxLength: 100000 })) }), replay: "safe",
+          execute: async (input, native, context) => {
+            if (!this.builtinCapabilities.config().multiModelConsult.enabled) throw new Error("多模型会诊已关闭");
+            const execution = await durableExecutionContext(identity, native, context);
+            return withDurableExecution({ execution, cwd, runId: `bot-consult:${identity}:${native.taskId}`, native, context }, async () => {
+              const report = await runDurableMultiModelConsult({ id: native.callId, taskId: identity, input, config, signal: context.abortSignal,
+                createSession: (participant, signal, onToolLimit, stableConfig) => createDurableConsultSession({ participant, cwd, agentDir: getMyBuddyDir(), runtime: this.durableModels!,
+                  parentSettings: createAgentSettingsManager(cwd, getMyBuddyDir()), policy,
+                  readProjectFiles: stableConfig.readProjectFiles, maxToolCalls: stableConfig.maxToolCalls, timeoutMs: stableConfig.timeoutSeconds * 1000,
+                  signal, onToolLimit, isEnabled: () => this.builtinCapabilities.config().multiModelConsult.enabled }) });
+              const result = consultToolResult(report);
+              return { output: result.content, details: JSON.parse(JSON.stringify(result.details)), isError: result.isError };
+            });
+          } })];
       },
       webTools: async cwd => {
         const { createWebAccessCapabilityExtension } = await import("../capabilities/web-access");

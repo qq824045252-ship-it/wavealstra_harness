@@ -1,3 +1,5 @@
+// Selected composer execution is part of the foreground contract, not a separate full-suite gate.
+import "./bot-selected-tools-test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";

@@ -1,3 +1,5 @@
+import { mapTaskRowToTask } from "../tasks/taskMapper";
+import { historyMessageToChatMessage } from "../messages/historyMapper";
 import { mergeBotMessageEvent } from "../slices/botMessageStream";
 import type { ExternalAgentUiEvent } from "../../../../../shared/external-agent";
 import type { RuntimeBinding } from "./binding";
@@ -40,11 +42,40 @@ export function bindAgentEvents(
     }),
   );
 
-  addCleanup(
-    api.externalAgent?.onEvent?.((event: ExternalAgentUiEvent) => {
+  const discovering = new Map<string, ExternalAgentUiEvent[]>();
+  const applyExternalEvent = (event: ExternalAgentUiEvent): void => {
       if (!isActive()) return;
       // A turn from another device may need its missing assistant message restored first.
       const currentTask = get().tasks.find((task) => task.id === event.taskId);
+      if (!currentTask) {
+        const queued = discovering.get(event.taskId);
+        if (queued) { queued.push(event); return; }
+        const events = [event]; discovering.set(event.taskId, events);
+        void (async () => {
+          try {
+            const rows = await api.db.listTasks();
+            if (!isActive()) return;
+            const row = rows.find(item => item.id === event.taskId);
+            if (!row) return;
+            const history = await api.agent.loadTaskHistory(event.taskId);
+            if (!isActive()) return;
+            const state = get();
+            const mapped = mapTaskRowToTask(row, { enabledModelIds: new Set((state.models ?? []).map(model => model.id)),
+              defaultModelId: state.activeModelId, permissionModeDefault: state.permissionMode });
+            mapped.messages = (history?.messages ?? []).map(historyMessageToChatMessage);
+            set(current => current.tasks.some(task => task.id === event.taskId) ? {} : { tasks: [mapped, ...current.tasks] });
+            // History already contains preceding text deltas. Pending approval/tool events
+            // must still replay because ACP history intentionally omits pending approvals.
+            for (const pending of events) {
+              const cursor = history?.messages.find(message => message.id === pending.assistantMessageId)?.externalAgent?.outputCursor ?? -1;
+              if ((pending.patch.type === "text_delta" || pending.patch.type === "thinking_delta") && pending.outputCursor <= cursor) continue;
+              applyExternalEvent(pending);
+            }
+          } catch { /* Keep runtime events retryable; the next event may rediscover the row. */ }
+          finally { discovering.delete(event.taskId); }
+        })();
+        return;
+      }
       if (
         currentTask &&
         !currentTask.messages.some(
@@ -99,6 +130,6 @@ export function bindAgentEvents(
       }
       deltas.flush();
       get().applyAgentPatch(patch);
-    }),
-  );
+  };
+  addCleanup(api.externalAgent?.onEvent?.(applyExternalEvent));
 }

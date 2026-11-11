@@ -15719,13 +15719,15 @@ html[data-theme="dark"] .task-item-action-pin.is-pinned:hover {
 
 .add-menu {
   position: relative;
-  min-width: 220px;
+  width: min(220px, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
+  box-sizing: border-box;
+  overflow-y: auto;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 12px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
   padding: 6px;
-  overflow: visible;
 }
 
 .add-menu-header {
@@ -15785,8 +15787,8 @@ html[data-theme="dark"] .task-item-action-pin.is-pinned:hover {
 .add-menu-flyout {
   position: absolute;
   z-index: 2;
-  min-width: 200px;
-  max-width: 280px;
+  min-width: min(200px, calc(100vw - 16px));
+  max-width: min(280px, calc(100vw - 16px));
   max-height: min(360px, calc(100vh - 16px));
   display: flex;
   flex-direction: column;
@@ -15799,7 +15801,16 @@ html[data-theme="dark"] .task-item-action-pin.is-pinned:hover {
 }
 
 .add-menu-flyout-wide {
-  min-width: 240px;
+  min-width: min(240px, calc(100vw - 16px));
+}
+
+.add-menu-flyout-back {
+  padding: 7px 10px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  color: var(--fg-secondary);
+  flex-shrink: 0;
 }
 
 .add-menu-flyout-empty {

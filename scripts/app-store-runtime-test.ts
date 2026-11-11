@@ -794,6 +794,32 @@ function testStoreResourcesOutliveRuntimeDisposal(): void {
   );
 }
 
+async function testExternalTaskDiscoveryKeepsApprovals(): Promise<void> {
+  const harness = createRuntimeHarness();
+  const dispose = startRuntime(harness);
+  const taskId = "bot-acp-bot-message-discovery";
+  const rows = deferred<TaskDto[]>();
+  harness.setTaskLoader(() => rows.promise);
+  harness.setHistoryLoader(async () => ({ messages: [{ id: "message-a", role: "assistant", createdAt: 1, text: "already saved", externalAgent: {
+    id: "codex", name: "Codex", protocol: "acp", runId: "run-a", outputCursor: 10,
+  } }] }));
+  harness.channels.externalAgent.emit({ ...externalEvent({ type: "text_delta", taskId, messageId: "message-a", delta: "already saved" }), taskId, outputCursor: 10 });
+  harness.channels.externalAgent.emit({ ...externalEvent({ type: "tool_start", taskId, messageId: "message-a", toolCallId: "approval", tool: "shell", summary: "Approval", status: "pending_approval", approvalKind: "acp", externalRunId: "run-a" }), taskId, outputCursor: 10 });
+  rows.resolve([{ id: taskId, title: "Bot · Codex · request", updatedAt: 1 }]);
+  await settleAsyncReads();
+  const task = harness.store.getState().tasks.find(item => item.id === taskId);
+  assert.equal(task?.title, "Bot · Codex · request", "host-created ACP task appears without app reload");
+  assert.equal(task?.messages[0]?.externalAgent?.runId, "run-a");
+  assert(harness.calls.includes("tool_start"), "pending approval is not dropped while metadata loads");
+  assert(!harness.calls.some(call => call.includes("already saved")), "saved delta is not appended again");
+  dispose();
+  const stale = createRuntimeHarness(), stop = startRuntime(stale), late = deferred<TaskDto[]>();
+  stale.setTaskLoader(() => late.promise);
+  stale.channels.externalAgent.emit({ ...externalEvent({type:"assistant_start",taskId,messageId:"message-a"}),taskId });
+  stop();late.resolve([{id:taskId,title:"stale",updatedAt:1}]);await settleAsyncReads();
+  assert(!stale.store.getState().tasks.some(item => item.id === taskId), "retired runtime cannot insert a discovered task");
+}
+
 async function main(): Promise<void> {
   testAdjacentDeltaBoundaries();
   testBackgroundFallbackAndFlushOrder();
@@ -804,6 +830,7 @@ async function main(): Promise<void> {
   await testDisposedCronReadsDoNotWrite();
   await testCurrentCronHistoryStillRestoresMessages();
   await testExternalHistoryFollowsItsRuntimeLifetime();
+  await testExternalTaskDiscoveryKeepsApprovals();
   testStoreResourcesOutliveRuntimeDisposal();
   console.log(
     "app store runtime: ok (stream ordering, lifecycle ownership, stale async reads, store resource lifetime)",

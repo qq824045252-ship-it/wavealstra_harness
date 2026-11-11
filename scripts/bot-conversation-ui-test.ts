@@ -1,5 +1,6 @@
 import { mergeBotMessageEvent } from "../src/renderer/src/store/app/slices/botMessageStream";
 import assert from "node:assert/strict";
+import { botSendSchema, botMessageDisplayText } from "../src/shared/bot-conversation";
 import type { BotHistoryDto, BotSendReceipt, BotSendRequest, WorkListUpdate } from "../src/shared/bot-conversation";
 import type { BotDto, WorkProjectionDto } from "../src/shared/bot-work";
 import { createAppStore } from "../src/renderer/src/store/app/createAppStore";
@@ -77,6 +78,68 @@ async function main() {
   await firstPreference;
   assert.equal(configured.calls[0].selection?.reasoningPreference?.effort,"high","in-flight request keeps original thinking selection");
   assert.equal(configured.store.getState().botComposerDrafts.a.reasoningPreference?.effort,"low");
+  const reference = fixture();
+  reference.store.getState().setActiveBotId("a");
+  const choice = { modelId: "", expertId: "", skillIds: [], mcpIds: [], connectorIds: [],
+    consultRequested: true,
+    refTasks: [{ id: "task-source", title: "Source task", messages: [{ role: "assistant" as const, text: "source evidence" }],
+      files: [{ id: "disk", name: "disk.txt", path: "/disk.txt", source: "artifact" as const }] }],
+    refFiles: [{ id: "inline", name: "inline.txt", content: "inline evidence", source: "artifact" as const },
+      { id: "same-disk", name: "disk.txt", path: "/disk.txt", source: "artifact" as const }],
+  };
+  reference.store.getState().setBotComposerSelection("a", choice);
+  reference.sender(async () => { throw new Error("receipt lost"); });
+  await reference.store.getState().submitBotDraft();
+  const referenced = reference.calls[0];
+  assert(botSendSchema.safeParse(referenced).success, "references-only request satisfies shared send schema");
+  assert(referenced.text.includes("source evidence")); assert(referenced.text.includes("inline evidence"));
+  assert(referenced.text.includes("multi_model_consult"));
+  assert.equal(referenced.attachments?.length, 1, "referenced disk files deduplicate across task and file selection");
+  assert.equal(botMessageDisplayText(referenced.text), "请结合引用任务的上下文继续");
+  assert.equal(reference.store.getState().botComposerDrafts.a.consultRequested, false);
+  assert.deepEqual(reference.store.getState().botComposerDrafts.a.refTasks, []);
+  reference.store.getState().setBotDraft("new draft");
+  await reference.store.getState().submitBotDraft({ retryRequestId: referenced.requestId });
+  assert.deepEqual(reference.calls[1], referenced, "retry keeps original references and consult request");
+  assert.equal(reference.store.getState().botDraft, "new draft", "retry does not erase newer draft");
+  reference.store.getState().setBotComposerSelection("a", { ...choice, externalAgentId: "external-test" });
+  await reference.store.getState().submitBotDraft();
+  assert.equal(reference.calls.length, 2, "external agent and consult conflict is visible before send");
+  assert.match(reference.store.getState().botConversationErrors.a, /外部 Agent/);
+  reference.store.getState().setBotComposerSelection("a", { ...choice, consultRequested: false, externalAgentId: "external-test" });
+  await reference.store.getState().submitBotDraft();
+  assert.equal(reference.calls[2].selection?.externalAgentId, "external-test");
+  assert.equal(reference.store.getState().botComposerDrafts.a.externalAgentId, undefined, "external agent is one-shot");
+  reference.store.getState().setBotComposerSelection("a", { ...choice, consultRequested: false,
+    refFiles: Array.from({ length: 11 }, (_, index) => ({ id: `file-${index}`, name: `file-${index}`, path: `/file-${index}`, source: "artifact" as const })) });
+  reference.store.getState().setBotDraft("keep oversized draft");
+  await reference.store.getState().submitBotDraft();
+  assert.equal(reference.calls.length, 3, "oversized attachments are rejected before consuming the draft");
+  assert.equal(reference.store.getState().botDraft, "keep oversized draft");
+  assert.equal(reference.store.getState().botComposerDrafts.a.refFiles?.length, 11);
+  const removeReference = fixture();
+  removeReference.store.getState().setActiveBotId("a");
+  removeReference.store.getState().setBotComposerSelection("a", { ...choice, consultRequested: false });
+  removeReference.store.getState().setBotAttachments("a", [{name:"direct.txt",path:"/direct.txt"}]);
+  removeReference.sender(async () => { throw new Error("BOT_ATTACHMENT_REJECTED: missing file"); });
+  await removeReference.store.getState().submitBotDraft();
+  await removeReference.store.getState().submitBotDraft({editRejectedRequestId:removeReference.calls[0].requestId});
+  assert.deepEqual(removeReference.store.getState().botAttachmentDrafts.a.map(file => file.path), ["/direct.txt"], "editing a rejected reference does not duplicate it as an ordinary attachment");
+  removeReference.store.getState().setBotComposerSelection("a", { ...choice, consultRequested:false,refFiles:[],refTasks:[] });
+  await removeReference.store.getState().submitBotDraft();
+  assert.deepEqual(removeReference.calls[1].attachments?.map(file => file.path), ["/direct.txt"], "removing references after edit removes their files from resend");
+  console.log("PASS Bot references-only send, disk deduplication, consult and external selection, immutable retry and one-shot reset");
+
+  const editReference = fixture();
+  editReference.store.getState().setActiveBotId("a");
+  editReference.store.getState().setBotComposerSelection("a", choice);
+  editReference.store.getState().setBotDraft("original question");
+  editReference.sender(async () => { throw new Error("BOT_SELECTION_REJECTED: unavailable model"); });
+  await editReference.store.getState().submitBotDraft();
+  await editReference.store.getState().submitBotDraft({ editRejectedRequestId: editReference.calls[0].requestId });
+  assert.equal(editReference.store.getState().botDraft, "original question", "editing rejected request strips generated wrappers");
+  await editReference.store.getState().submitBotDraft();
+  assert.equal(editReference.calls[1].text, editReference.calls[0].text, "editing and resending never duplicates reference or consult context");
   const scoped = fixture();
   const team = { templateId: "team-a", name: "Research", ownerBotId: "a", ownerResponsibility: "coordinate", members: [], executionPolicy: "parallel" as const, maxConcurrency: 2, createdAt: 1 };
   scoped.store.getState().setActiveBotId("a");

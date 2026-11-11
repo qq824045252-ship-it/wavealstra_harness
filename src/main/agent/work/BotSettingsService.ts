@@ -51,6 +51,7 @@ export class BotSettingsService {
   async prepareMessage(botId: string, selection?: import("../../../shared/bot-conversation").BotComposerSelection) {
     const base = this.get(botId);
     if (!selection) return { settings: base, profile: this.bots.activeSnapshot(botId)! };
+    if (selection.consultRequested && selection.externalAgentId) throw new Error("外部 Agent 不能同时使用多模型会诊，请重新选择");
     const choices = await this.catalog();
     for (const [ids, available, label] of [
       [selection.modelId ? [selection.modelId] : [], choices.models, "模型"],

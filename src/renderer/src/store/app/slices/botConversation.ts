@@ -1,6 +1,8 @@
+import { buildTaskReferenceBlock, wrapReferenceContext } from "@/lib/taskReference";
+import { requestConsultForMessage } from "@shared/multi-model-consult";
 import type { Attachment } from "@/types";
 import { z } from "zod";
-import { botSendSchema, botComposerSelectionSchema, type BotComposerSelection, type BotHistoryDto, type BotSendRequest } from "../../../../../shared/bot-conversation";
+import { botMessageDisplayText, botSendSchema, botComposerSelectionSchema, type BotComposerSelection, type BotHistoryDto, type BotSendRequest } from "../../../../../shared/bot-conversation";
 import type { AppActions } from "../actions";
 import type { AppContext } from "../context";
 
@@ -72,29 +74,61 @@ export function createBotConversationActions({ get, set, getApi }: AppContext): 
         const item = get().botPendingSends[options.editRejectedRequestId];
         if (!item || (item.request.botId !== botId || item.request.teamId !== teamId) || !(item.error?.includes("BOT_ATTACHMENT_REJECTED:") || item.error?.includes("BOT_SELECTION_REJECTED:"))) return;
         if (botDraft.trim() || get().botAttachmentDrafts[scopeKey]?.length) return;
+        const referencedPaths = new Set([
+          ...(item.request.selection?.refFiles ?? []),
+          ...(item.request.selection?.refTasks ?? []).flatMap(task => task.files ?? []),
+        ].flatMap(file => file.path ? [file.path] : []));
         set(state => {
           const pending = { ...state.botPendingSends }; delete pending[item.request.requestId];
-          return { botPendingSends: pending, botDraft: item.request.text,
+          return { botPendingSends: pending, botDraft: botMessageDisplayText(item.request.text),
             ...(item.request.selection ? { botComposerDrafts: { ...state.botComposerDrafts, [scopeKey]: item.request.selection } } : {}),
-            botDrafts: { ...state.botDrafts, [scopeKey]: item.request.text },
-            botAttachmentDrafts: { ...state.botAttachmentDrafts, [scopeKey]: item.request.attachments ?? [] } };
+            botDrafts: { ...state.botDrafts, [scopeKey]: botMessageDisplayText(item.request.text) },
+            botAttachmentDrafts: { ...state.botAttachmentDrafts, [scopeKey]: (item.request.attachments ?? []).filter(file => !referencedPaths.has(file.path)) } };
         });
         persist(); return;
       }
       const attachments = get().botAttachmentDrafts[scopeKey] ?? [];
       const previous = options.retryRequestId ? get().botPendingSends[options.retryRequestId] : undefined;
       if (options.retryRequestId && (!previous || (previous.request.botId !== botId || previous.request.teamId !== teamId) || previous.sending)) return;
-      if (!previous && !botDraft.trim() && !attachments.length) return;
+      const selection = get().botComposerDrafts[scopeKey];
+      const refTasks = selection?.refTasks ?? [];
+      const refFiles = selection?.refFiles ?? [];
+      if (!previous && !botDraft.trim() && !attachments.length && !refTasks.length && !refFiles.length) return;
+      if (!previous && selection?.consultRequested && selection.externalAgentId) {
+        set(state => ({ botConversationErrors: { ...state.botConversationErrors,
+          [scopeKey]: "当前选择的是外部 Agent，请移除外部 Agent 或多模型会诊标签后发送。" } }));
+        return;
+      }
+      const referenceContext = wrapReferenceContext([
+        ...refTasks.map(buildTaskReferenceBlock),
+        ...refFiles.filter(file => !file.path?.trim()).map(file => {
+          const content = file.content?.trim();
+          return `## 引用文件：${file.name}\n${content ? content.slice(0, 12000) : "（无可用内容，请在对话中查看产物）"}`;
+        }),
+      ].join("\n\n"));
+      const body = [botDraft.trim() || (refTasks.length ? "请结合引用任务的上下文继续" : refFiles.length ? "请查看附带/引用的文件" : ""), referenceContext].filter(Boolean).join("\n\n");
+      const mergedAttachments = [...attachments, ...refFiles, ...refTasks.flatMap(task => task.files ?? [])]
+        .filter((file, index, all) => index < attachments.length || (file.path?.trim() && all.findIndex(other => other.path === file.path) === index))
+        .map(item => ({ name: item.name, path: item.path ?? "" }));
       // Each send owns its identity. A missing receipt can be retried independently
       // without hijacking a newer draft or blocking unrelated messages.
-      const request = previous?.request ?? { botId, teamId, requestId: crypto.randomUUID(), text: botDraft.trim(),
-        selection: get().botComposerDrafts[scopeKey],
-        attachments: attachments.map(item => ({ name: item.name, path: item.path ?? "" })),
+      const request = previous?.request ?? { botId, teamId, requestId: crypto.randomUUID(), text: selection?.consultRequested ? requestConsultForMessage(body) : body,
+        selection,
+        attachments: mergedAttachments,
         conversationId: get().botHistories[scopeKey]?.conversationId || undefined,
         selectedWorkId: selectedWorkId ?? undefined, referenceMessageId: options.referenceMessageId };
+      const valid = botSendSchema.safeParse(request);
+      if (!valid.success) {
+        set(state => ({ botConversationErrors: { ...state.botConversationErrors,
+          [scopeKey]: `消息或引用超出发送限制，请减少引用内容/附件后重试：${valid.error.issues[0]?.message ?? "无效请求"}` } }));
+        return;
+      }
       set(state => ({ botPendingSends: { ...state.botPendingSends, [request.requestId]: { request, sending: true } },
         ...(!previous ? { botDraft: "", botDrafts: { ...state.botDrafts, [scopeKey]: "" },
-          botAttachmentDrafts: { ...state.botAttachmentDrafts, [scopeKey]: [] } } : {}) }));
+          botAttachmentDrafts: { ...state.botAttachmentDrafts, [scopeKey]: [] },
+          ...(selection ? { botComposerDrafts: { ...state.botComposerDrafts, [scopeKey]: {
+            ...selection, consultRequested: false, externalAgentId: undefined, refTasks: [], refFiles: [],
+          } } } : {}) } : {}) }));
       persist();
       try {
         const api = getApi();

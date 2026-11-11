@@ -50,6 +50,8 @@ type SubMenu =
 
 interface Props {
   contextMode?: "bot";
+  /** Explicit conversation files for adapters without an ordinary active Task. */
+  conversationFiles?: RefFileItem[];
   onClose: () => void;
   onSelectConsult?: () => void;
   consultDisabled?: boolean;
@@ -221,6 +223,7 @@ function historyAttachmentPath(task: Task, path?: string): string | undefined {
 export default function InputAddMenu({
   onClose,
   contextMode,
+  conversationFiles,
   onSelectConsult,
   consultDisabled,
   onAttachFile,
@@ -316,7 +319,7 @@ export default function InputAddMenu({
   /** 子菜单相对主菜单顶部的偏移 + 水平方向（右侧放不下则翻到左侧） */
   const [flyoutLayout, setFlyoutLayout] = useState<{
     top: number;
-    side: "right" | "left";
+    side: "right" | "left" | "overlay";
   } | null>(null);
   const [skillSearch, setSkillSearch] = useState("");
   const [mcpSearch, setMcpSearch] = useState("");
@@ -389,13 +392,13 @@ export default function InputAddMenu({
 
   /** 当前任务可引用文件（产物 + 附件 + 变更）；产物来自 projection 派生视图（hookArtifacts） */
   const refFiles = useMemo((): RefFileItem[] => {
-    const fromTask = collectTaskFiles(activeTask, hookArtifacts);
+    const fromTask = conversationFiles ?? collectTaskFiles(activeTask, hookArtifacts);
     const q = refSearch.trim().toLowerCase();
     if (!q) return fromTask;
     return fromTask.filter(
       (f) => f.name.toLowerCase().includes(q) || (f.path?.toLowerCase().includes(q) ?? false),
     );
-  }, [activeTask, hookArtifacts, refSearch]);
+  }, [activeTask, hookArtifacts, conversationFiles, refSearch]);
 
   const refTasks = useMemo((): Task[] => {
     const q = taskSearch.trim().toLowerCase();
@@ -471,8 +474,8 @@ export default function InputAddMenu({
     if (!anchor) return;
 
     const rect = anchor.getBoundingClientRect();
-    const menuH = Math.max(menu?.offsetHeight ?? 0, 280);
-    const menuW = Math.max(menu?.offsetWidth ?? 0, 220);
+    const menuH = (menu?.offsetHeight || 280);
+    const menuW = (menu?.offsetWidth || 220);
     const gap = 8;
     const pad = 8;
 
@@ -503,8 +506,10 @@ export default function InputAddMenu({
     const menuRect = menu.getBoundingClientRect();
     const btnRect = btn.getBoundingClientRect();
     const flyout = flyoutRef.current;
-    const flyoutH = Math.max(flyout?.offsetHeight ?? 0, 120);
-    const flyoutW = Math.max(flyout?.offsetWidth ?? 0, 240);
+    const flyoutH = (flyout?.offsetHeight || 120);
+    // Reserve the non-overlay max width so narrowing the overlay cannot oscillate
+    // between side and overlay placement on ResizeObserver callbacks.
+    const flyoutW = Math.min(280, window.innerWidth - 16);
     const gap = 6;
     const pad = 8;
 
@@ -521,9 +526,10 @@ export default function InputAddMenu({
     }
 
     const spaceRight = window.innerWidth - pad - menuRect.right - gap;
-    const side: "right" | "left" = spaceRight >= flyoutW ? "right" : "left";
+    const spaceLeft = menuRect.left - pad - gap;
+    const side = spaceRight >= flyoutW ? "right" : spaceLeft >= flyoutW ? "left" : "overlay";
 
-    setFlyoutLayout({ top, side });
+    setFlyoutLayout({ top: side === "overlay" ? Math.max(pad - menuRect.top, Math.min(0, window.innerHeight - pad - flyoutH - menuRect.top)) : top, side });
   };
 
   const syncAllPos = (): void => {
@@ -731,9 +737,13 @@ export default function InputAddMenu({
           top: flyoutLayout.top,
           ...(flyoutLayout.side === "right"
             ? { left: "calc(100% + 6px)", right: "auto" }
-            : { right: "calc(100% + 6px)", left: "auto" }),
+            : flyoutLayout.side === "left"
+              ? { right: "calc(100% + 6px)", left: "auto" }
+              : { left: 0, right: "auto", width: "100%", minWidth: 0 }),
         } as const)
       : ({ visibility: "hidden" as const, top: 0, left: "calc(100% + 6px)" } as const);
+
+  const backButton = flyoutLayout?.side === "overlay" ? <button type="button" className="add-menu-flyout-back" onClick={() => { const key = activeSub; setActiveSub(null); if (key) itemRefs.current[key]?.focus(); }}>‹ 返回添加菜单</button> : null;
 
   const flyout =
     activeSub === "file" ? (
@@ -743,6 +753,7 @@ export default function InputAddMenu({
         style={flyoutStyle}
         onPointerDown={(e) => e.stopPropagation()}
       >
+        {backButton}
         <button
           type="button"
           className="add-menu-flyout-item"
@@ -772,6 +783,7 @@ export default function InputAddMenu({
         style={flyoutStyle}
         onPointerDown={(e) => e.stopPropagation()}
       >
+        {backButton}
         <div className="add-menu-search">
           <IconSearch size={14} />
           <input
@@ -829,6 +841,7 @@ export default function InputAddMenu({
         style={flyoutStyle}
         onPointerDown={(e) => e.stopPropagation()}
       >
+        {backButton}
         <div className="add-menu-search">
           <IconSearch size={14} />
           <input
@@ -844,7 +857,7 @@ export default function InputAddMenu({
               <div className="add-menu-flyout-empty-hint">
                 {activeTask
                   ? `当前任务「${activeTask.title || "未命名"}」还没有产物/附件。Agent 写文件或你上传附件后会出现在这里。`
-                  : "请先打开或新建一个任务，再引用该任务中的文件。"}
+                  : contextMode === "bot" ? "当前 Bot 对话还没有可引用的附件或产物。" : "请先打开或新建一个任务，再引用该任务中的文件。"}
               </div>
             </div>
           ) : (
@@ -873,6 +886,7 @@ export default function InputAddMenu({
         style={flyoutStyle}
         onPointerDown={(e) => e.stopPropagation()}
       >
+        {backButton}
         <div className="add-menu-flyout-scroll">
           {sortedExperts.length === 0 ? (
             <div className="add-menu-flyout-empty">
@@ -941,6 +955,7 @@ export default function InputAddMenu({
         style={flyoutStyle}
         onPointerDown={(e) => e.stopPropagation()}
       >
+        {backButton}
         <div className="add-menu-search">
           <IconSearch size={14} />
           <input
@@ -1012,6 +1027,7 @@ export default function InputAddMenu({
         style={flyoutStyle}
         onPointerDown={(e) => e.stopPropagation()}
       >
+        {backButton}
         <div className="add-menu-search">
           <IconSearch size={14} />
           <input
@@ -1082,6 +1098,7 @@ export default function InputAddMenu({
         style={flyoutStyle}
         onPointerDown={(e) => e.stopPropagation()}
       >
+        {backButton}
         <div className="add-menu-section-label">外部 Agent · ACP</div>
         <div className="add-menu-flyout-scroll">
           {externalAgentsLoading && externalAgents.length === 0 ? (
@@ -1139,6 +1156,7 @@ export default function InputAddMenu({
         style={flyoutStyle}
         onPointerDown={(e) => e.stopPropagation()}
       >
+        {backButton}
         <div className="add-menu-search">
           <IconSearch size={14} />
           <input
@@ -1247,7 +1265,7 @@ export default function InputAddMenu({
       onPointerDown={(e) => e.stopPropagation()}
     >
       <div className="add-menu-wrap" role="menu">
-        <div className="add-menu" ref={menuRef}>
+        <div className="add-menu" ref={menuRef} style={flyoutLayout?.side === "overlay" && activeSub ? { visibility: "hidden" } : undefined}>
           {onSelectConsult && (
             <button type="button" className="add-menu-item" data-testid="consult-add-menu"
               disabled={consultDisabled}

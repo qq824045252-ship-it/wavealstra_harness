@@ -14,7 +14,7 @@ import { ComposerAttachmentChips } from "@/components/chat/ComposerAttachmentChi
 import { composerFiles, mergeComposerAttachments, pastedComposerFiles, pickComposerAttachment } from "@/components/chat/composerAttachments";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { BotDto, WorkProjectionDto } from "@shared/bot-work";
-import type { BotMessageDto } from "@shared/bot-conversation";
+import { botExternalAgentTaskId, botMessageDisplayText, type BotMessageDto } from "@shared/bot-conversation";
 import type { BotWorkHostStatusDto } from "@shared/bot-work-ipc";
 import { useAppStore } from "@/store/appStore";
 import { rewriteMarkdownImageSources } from "@shared/markdown-images";
@@ -119,7 +119,8 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   const [replyReference, setReplyReference] = useState<BotMessageDto | null>(null);
   const reference = replyReference?.conversationId === histories[scopeKey]?.conversationId ? replyReference : null;
   const attachments = activeBotId ? attachmentDrafts[scopeKey] ?? [] : [];
-  const canSend = Boolean(activeBotId && (botDraft.trim() || attachments.length) && !attachmentBusy);
+  const composerSelection = useAppStore(state => state.botComposerDrafts[scopeKey]);
+  const canSend = Boolean(activeBotId && (botDraft.trim() || attachments.length || composerSelection?.refTasks?.length || composerSelection?.refFiles?.length) && !attachmentBusy);
   const addAttachments = async (source: File[] | "pick") => {
     const botId = activeBotId;
     if (!botId) return;
@@ -316,7 +317,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
         {view === "conversation" && awayFromBottom && <button type="button" className="bot-latest-button" onClick={followBottom}><IconChevronDown size={14} />回到最新消息</button>}
         {activeBotId && sendErrors[scopeKey] && <p className="bot-send-error" role="alert">{sendErrors[scopeKey]}</p>}
         {selected && <div className="bot-composer-context"><button type="button" onClick={() => openWork(selected.workId)}><IconListTodo size={14} /><span>当前事项：{selected.title}</span><IconChevronRight size={14} /></button><button type="button" className="bot-icon-button" aria-label="取消关联事项，返回普通对话" onClick={() => { requestedWork.current = null; setNavigationNotice(""); setSelectedWorkId(null); setInspectorOpen(false); }}><IconX size={14} /></button></div>}
-        {reference && <div className="bot-composer-context"><span>回复：{reference.text.slice(0, 100) || "附件消息"}</span><button type="button" aria-label="取消引用" onClick={() => setReplyReference(null)}><IconX size={14} /></button></div>}
+        {reference && <div className="bot-composer-context"><span>回复：{botMessageDisplayText(reference.text).slice(0, 100) || "附件消息"}</span><button type="button" aria-label="取消引用" onClick={() => setReplyReference(null)}><IconX size={14} /></button></div>}
         {pending.length > 0 && <div className="bot-pending-requests" aria-label="待确认发送的消息">{pending.map(item => <div key={item.request.requestId} className="bot-pending-request"><span>{item.request.text.slice(0, 100) || item.request.attachments?.map(file => file.name).join("、")}</span><small>{item.sending ? "正在发送" : item.error}</small>{!item.sending && ((item.error?.includes("BOT_ATTACHMENT_REJECTED:") || item.error?.includes("BOT_SELECTION_REJECTED:")) ? <button type="button" disabled={Boolean(botDraft.trim() || attachments.length)} title="先发送或清空当前草稿，再编辑这条消息" onClick={() => void submitBotDraft({ editRejectedRequestId: item.request.requestId })}>编辑重发</button> : <button type="button" onClick={() => void submitBotDraft({ retryRequestId: item.request.requestId })}>重试此消息</button>)}</div>)}</div>}
         {attachmentError && <p className="bot-send-error" role="alert">{attachmentError}</p>}
         <div className="bot-composer-box input-box">{attachments.length > 0 && <div className="input-attach-chips"><ComposerAttachmentChips attachments={attachments} onRemove={item => { if (activeBotId) useAppStore.getState().setBotAttachments(scopeKey, attachments.filter(value => value.path !== item.path)); }} /></div>}<label htmlFor="bot-draft" className="bot-sr-only">给 Bot 发消息</label><ChatComposer ref={composerRef} aria-label="给 Bot 发消息" id="bot-draft" onPaste={event => { const files = pastedComposerFiles(event.clipboardData); if (files.length) { event.preventDefault(); void addAttachments(files); } }} value={botDraft} maxLength={32000} onChange={event => setBotDraft(event.target.value)} onKeyDown={event => { if (shouldSendBotComposer({ key: event.key, shiftKey: event.shiftKey, isComposing: event.nativeEvent.isComposing, keyCode: event.keyCode })) { event.preventDefault(); send(); } }} placeholder={selected ? "补充要求，或问问这件事的进展…" : "说说你想做什么…"} rows={2} toolbarClassName="bot-composer-toolbar input-toolbar" toolbar={<>{activeBotId && <BotComposerCapabilities key={scopeKey} botId={activeBotId} scope={scopeKey} text={botDraft} attachmentBusy={attachmentBusy} attach={() => void addAttachments("pick")} />}<span className="bot-composer-send-actions"><button type="submit" className="bot-send-button send-btn" disabled={!canSend} aria-label="发送消息"><IconArrowUp size={17} /></button></span></>} /></div>
@@ -346,6 +347,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
 }
 
 export function BotMessage({ message, botName, works, onOpenWork, onCancel, sourceQuestion, workLinkSource, onReply }: { workLinkSource?: BotMessageDto; sourceQuestion?: BotMessageDto; onReply?: () => void; message: BotMessageDto; botName: string; works: WorkProjectionDto[]; onOpenWork: (id: string) => void; onCancel: () => void }): React.JSX.Element {
+  const externalTask = useAppStore(state => state.tasks.find(task => task.id === botExternalAgentTaskId(message.messageId)));
   // Replace trusted image destinations before Markdown parsing: raw Windows
   // backslashes (e.g. \.mybuddy) otherwise become Markdown escapes.
   const renderMarkdown = (text: string, streaming = message.status === "running") => <ChatImageScope taskId={message.reportImages?.taskId ?? null} artifacts={message.reportImages?.artifacts ?? []} sources={message.reportImages?.sources ?? {}}><ChatMarkdown resolveTaskFiles={false} text={rewriteMarkdownImageSources(text, source => {
@@ -364,8 +366,8 @@ export function BotMessage({ message, botName, works, onOpenWork, onCancel, sour
   const hasContent = Boolean(message.text) || segments.length > 0;
   return <article className={`bot-message msg-row ${message.role}`} data-message-id={message.messageId} data-streaming={message.role === "assistant" && message.status === "running" ? "true" : undefined} aria-label={`${message.role === "user" ? "你" : botName}的消息`}>
     {message.role === "assistant" && <div className="bot-message-author"><span className="bot-avatar" aria-hidden="true"><IconBot size={16} /></span><strong>{botName}</strong></div>}
-    {message.role === "assistant" && sourceQuestion && !message.workFeedback && <div className="bot-reply-reference" aria-label="回复对应问题">回复：{sourceQuestion.text || sourceQuestion.attachments?.map(item => item.name).join("、")}</div>}
-    {message.role === "user" ? <div className="user-bubble">{Boolean(message.attachments?.length) && <div className="input-attach-chips"><ComposerAttachmentChips attachments={message.attachments ?? []} /></div>}{message.text && <div className="user-bubble-text">{message.text}</div>}</div> : <div className="bot-assistant-content">
+    {message.role === "assistant" && sourceQuestion && !message.workFeedback && <div className="bot-reply-reference" aria-label="回复对应问题">回复：{botMessageDisplayText(sourceQuestion.text) || sourceQuestion.attachments?.map(item => item.name).join("、")}</div>}
+    {message.role === "user" ? <div className="user-bubble">{Boolean(message.attachments?.length) && <div className="input-attach-chips"><ComposerAttachmentChips attachments={message.attachments ?? []} /></div>}{message.text && <div className="user-bubble-text">{botMessageDisplayText(message.text)}</div>}</div> : <div className="bot-assistant-content">
       {result && message.text ? <BotResultReport message={message} work={works.find(work => work.workId === message.workFeedback?.workId)} renderMarkdown={renderMarkdown} />
         : segments.length > 0 ? segments.map((segment, index) => <div key={segment.id} data-segment-id={segment.id} data-segment-kind={segment.kind} aria-label={segment.kind === "receipt" ? "消息回执" : undefined} className={`bot-reply-segment bot-reply-segment-${segment.kind}`}>
           {renderMarkdown(segment.text, message.status === "running" && segment.kind === "answer" && index === segments.length - 1)}
@@ -373,6 +375,7 @@ export function BotMessage({ message, botName, works, onOpenWork, onCancel, sour
       {(showActivity || !hasContent) && <p className="bot-reply-placeholder" role={running ? "status" : undefined}>{message.status === "completed" ? "没有文本回复" : botMessageStatus(message)}{running && <span className="bot-typing-dots" aria-hidden="true">···</span>}</p>}
     </div>}
     {linkedWorkIds.length > 0 && <div className="bot-message-work-links">{linkedWorkIds.map(workId => <button type="button" key={workId} onClick={() => onOpenWork(workId)}><IconListTodo size={14} /><span>{works.find(work => work.workId === workId)?.title ?? (message.workFeedback?.workId === workId ? message.workFeedback.report?.title : undefined) ?? "查看关联事项"}</span><IconChevronRight size={14} /></button>)}</div>}
+    {externalTask && <div className="bot-message-work-links"><button type="button" onClick={() => useAppStore.getState().setActiveTask(externalTask.id)}><IconBot size={14} /><span>打开外部 Agent 任务</span><IconChevronRight size={14} /></button></div>}
     <BotReplyMetrics message={message} />
     <BotMessageActions message={message} onReply={onReply} onCancel={onCancel} statusAlreadyVisible={message.role === "assistant" && (showActivity || !hasContent) && message.status !== "completed"} />
     {message.error && <p className="bot-alert" role="alert">{message.error}</p>}

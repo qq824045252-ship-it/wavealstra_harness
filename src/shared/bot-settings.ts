@@ -7,6 +7,8 @@ export const botSettingsSchema = z.object({
 }).strict();
 export type BotSettingsSaveRequest = z.infer<typeof botSettingsSchema>;
 export interface BotSettingsDto extends Omit<BotSettingsSaveRequest, "expectedRevision"> {
+  consultRequested?: boolean;
+  externalAgentId?: string;
   reasoningPreference?: import("./model-metadata").ModelReasoningPreferenceDto;
   revision: number; spaceId: string; effectiveWorkspacePath: string;
 }

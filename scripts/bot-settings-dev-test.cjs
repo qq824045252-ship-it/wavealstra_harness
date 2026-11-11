@@ -14,7 +14,7 @@ const modelKey = `fixture/${selectedModel}`;
 const headless = process.env.BOT_WORK_DEV_HEADLESS === '1';
 const phase5 = process.env.BOT_WORK_DEV_PHASE5 === '1';
 if (headless && process.platform !== 'linux') throw Error('Headless dev page validation requires Linux; it does not validate desktop input.');
-const out = path.join(root, process.env.ACP_MENU_DEV === '1' ? 'out/diagnostics/acp-menu' : process.env.SUBAGENT_POPOVER_DEV === '1' ? 'out/diagnostics/subagent-popover' : process.env.BOT_WORK_BROWSER_DEV === '1' ? 'out/diagnostics/bot-work-browser/dev' : live ? 'out/diagnostics/bot-settings/live' : 'out/diagnostics/bot-settings/dev'); fs.mkdirSync(out, { recursive: true });
+const out = path.join(root, process.env.ACP_MENU_DEV === '1' ? 'out/diagnostics/acp-menu' : process.env.BOT_ADD_MENU_DEV === '1' ? 'out/diagnostics/bot-add-menu/dev' : process.env.SUBAGENT_POPOVER_DEV === '1' ? 'out/diagnostics/subagent-popover' : process.env.BOT_WORK_BROWSER_DEV === '1' ? 'out/diagnostics/bot-work-browser/dev' : live ? 'out/diagnostics/bot-settings/live' : 'out/diagnostics/bot-settings/dev'); fs.mkdirSync(out, { recursive: true });
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-work-phase3-dev-'));
 const agentDir = path.join(home, '.mybuddy'); fs.mkdirSync(agentDir, { recursive: true });
 for (const directory of ['AppData/Roaming', 'AppData/Local', 'Temp']) fs.mkdirSync(path.join(home, directory), { recursive: true });
@@ -94,7 +94,7 @@ const provider = http.createServer(async (req, res) => {
   const body = JSON.parse(raw); requests.push(body);
   const names = (body.tools || []).map(tool => tool.function?.name);
   const foreground = names.includes('work_create');
-  if (foreground) assert(names.every(name => ['work_query_status', 'work_create', 'work_amend', 'work_pause', 'work_resume', 'work_cancel', 'memory_search', 'work_team_templates', 'work_team_create', 'web_search', 'fetch_content'].includes(name)), 'actual foreground provider whitelist');
+  if (foreground) assert(names.every(name => ['reminder_manage', 'foreground_query_requests', 'foreground_cancel_request', 'memory_remember', 'memory_forget', 'work_query_status', 'work_create', 'work_amend', 'work_pause', 'work_resume', 'work_cancel', 'memory_search', 'work_team_templates', 'work_team_create', 'web_search', 'fetch_content'].includes(name)), 'actual foreground provider whitelist');
   const userIndex = body.messages.findLastIndex(message => message.role === 'user');
   const recent = body.messages.slice(userIndex + 1);
   const input = JSON.stringify(body.messages[userIndex]?.content);
@@ -183,6 +183,10 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     await until(() => evaluate('Boolean(document.querySelector("#bot-draft"))'), 'independent Bot page');
     await until(() => evaluate('window.api.botWork.hostStatus().then(value => value.isAuthority)'), 'authoritative Bot host');
     const botId = 'bot-mybuddy-default';
+    if (process.env.BOT_ADD_MENU_DEV === '1') {
+      await require('./bot-add-menu-dev-checks.cjs')({evaluate,rpc,until,report,out,botId});
+      report.status='passed'; return;
+    }
     await evaluate(`document.querySelector('[aria-label="Bot 设置与对话管理"]').click()`);
     await until(() => evaluate(`Boolean(document.querySelector('[aria-label="Bot 工作文件夹"]'))`), "settings form");
     const switchSection = async label => {

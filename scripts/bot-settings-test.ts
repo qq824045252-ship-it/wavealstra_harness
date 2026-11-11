@@ -82,10 +82,14 @@ try {
   const messages = new BotConversationRepository(db.connection);
   const selection = {reasoningPreference:{effort:"high"},modelId:"test/model",expertId:"",skillIds:["skill"],mcpIds:["mcp"],connectorIds:["connector"]};
   const messageA = messages.accept(LOCAL_USER_ID,{botId:bot.botId,requestId:"composer-a",text:"use selected abilities",selection});
-  const chosen = await settings.prepareMessage(bot.botId, selection);
+  await assert.rejects(settings.prepareMessage(bot.botId, { ...selection, consultRequested: true, externalAgentId: "external-test" }), /外部 Agent/);
+  const external = await settings.prepareMessage(bot.botId, { ...selection, externalAgentId: "external-test" });
+  assert.equal(external.settings.externalAgentId, "external-test");
+  const chosen = await settings.prepareMessage(bot.botId, { ...selection, consultRequested: true });
   settings.captureMessage(messageA.userMessageId,bot.botId,chosen);
   const messageB = messages.accept(LOCAL_USER_ID,{botId:bot.botId,requestId:"composer-b",text:"no abilities",selection:{...selection,modelId:"",skillIds:[],mcpIds:[],connectorIds:[]}});
   settings.captureMessage(messageB.userMessageId,bot.botId,await settings.prepareMessage(bot.botId,{...selection,modelId:"",skillIds:[],mcpIds:[],connectorIds:[]}));
+  assert.equal(settings.messageSettings(messageA.userMessageId,bot.botId)!.settings.consultRequested, true);
   assert.deepEqual(settings.messageSettings(messageA.userMessageId,bot.botId)!.profile.allowedMcpIds,["mcp"]);
   assert.deepEqual(settings.messageSettings(messageB.userMessageId,bot.botId)!.profile.allowedMcpIds,[]);
   assert.equal(settings.get(bot.botId).revision,3,"composer never mutates Bot defaults");

@@ -19,6 +19,7 @@ import { DurableBotRuntime, DurableReplyError } from "../durable/DurableBotRunti
 import { resolveBotModel } from "../durable/BotModelCatalog";
 import { botForegroundRequest } from "./BotForegroundIdentity";
 import { z } from "zod";
+import { selectedBotTool, selectedBotToolEvidence } from "./BotSelectedTools";
 import type { BotRegistry } from "./BotRegistry";
 import type { WorkService } from "./WorkService";
 
@@ -39,6 +40,7 @@ export interface BotConversationServiceOptions {
   messageSettings?: (messageId: string, botId: string) => { settings: import("../../../shared/bot-settings").BotSettingsDto; profile: import("../../../shared/bot-work").ExpertConfigSnapshotDto } | undefined;
   captureSettings?: (messageId: string, botId: string, frozen: Awaited<ReturnType<import("./BotSettingsService").BotSettingsService["prepareMessage"]>>) => void;
   composerTools?: (profile: import("../../../shared/bot-work").ExpertConfigSnapshotDto, cwd: string) => Promise<import("./BotComposerRuntime").BotComposerRuntime>;
+  selectedTools?: (settings: import("./BotSelectedTools").BotSelectedToolOptions, cwd: string, identity: string, onStatus: (text: string) => void) => Promise<import("@earendil-works/pi-durable").ToolRegistration[]>;
   thinking?: (modelId: string, preference?: import("../../../shared/model-metadata").ModelReasoningPreferenceDto) => import("@earendil-works/pi-ai").ModelThinkingLevel | undefined;
   botModel?: (botId: string) => string | undefined;
   botWorkspace?: (botId: string, prepareDefault?: boolean) => string;
@@ -270,19 +272,25 @@ export class BotConversationService {
         }
         catch (error) { console.warn("[Bot] 最终用量快照暂不可用", error); }
 
+        const requiredTool = selectedBotTool(this.options.messageSettings?.(user.messageId, botId)?.settings);
         if (this.messages.message(next.messageId)?.status !== "cancelled") {
+          const toolEvidence = selectedBotToolEvidence(next.requestId, requiredTool);
           const transcript: Message[] = [];
           const replyRows: import("../../../shared/agent-ipc").ChatMessageDto[] = [];
           let cursor: import("@earendil-works/pi-durable").Cursor | undefined;
           do {
             const page = await runtime.conversation.entries({ order: 'ascending' }, 500, cursor, context);
-            for (const entry of page.items) for (const message of entry.model ?? []) {
-              transcript.push(message);
-              if (message.role === "user") replyRows.length = 0;
-              else if (message.role === "assistant") replyRows.push(assistantRow(`durable-${entry.id}`, entry.byTaskId, message));
+            for (const entry of page.items) {
+              toolEvidence.observe(entry);
+              for (const message of entry.model ?? []) {
+                transcript.push(message);
+                if (message.role === "user") replyRows.length = 0;
+                else if (message.role === "assistant") replyRows.push(assistantRow(`durable-${entry.id}`, entry.byTaskId, message));
+              }
             }
             cursor = page.next;
           } while (cursor);
+          toolEvidence.assert();
           this.options.db.prepare('UPDATE bot_request_runs SET transcript_json=? WHERE message_id=?')
             .run(JSON.stringify(transcript), next.messageId);
           let memorySource: string | undefined;
@@ -370,6 +378,15 @@ export class BotConversationService {
     this.runtimeModels.set(key, this.options.models.getModel(model.target.provider, model.target.modelId));
     this.runtimeInstructions.set(key, selected?.profile.configuration?.instructions ?? this.options.bots.activeSnapshot(bot.botId)?.configuration?.instructions ?? '');
     const cwd = conversation.team_id ? this.options.works.teams.resolveWorkspace(this.options.userId, conversation.team_id) : directory;
+    const requiredTool = selectedBotTool(selected?.settings);
+    const originalMessage = this.messages.message(source.user_message_id);
+    if (requiredTool && !originalMessage) throw new Error("所选执行能力缺少原始用户消息");
+    const selectedTools = requiredTool ? await this.options.selectedTools?.({ ...selected!.settings, hostRequest: { text: originalMessage!.text, attachments: originalMessage!.attachments } }, cwd, key, text => {
+      if (this.messages.message(key)?.status !== "running") return;
+      this.messages.update(key, "running", text);
+      this.publish(key);
+    }) : [];
+    if (requiredTool && !selectedTools?.some(tool => tool.name === requiredTool)) throw new Error("所选执行能力未配置，未回退为普通回答");
     const composer = selected && await this.options.composerTools?.(selected.profile, cwd);
     if (composer) this.composerRuntimes.set(key, composer);
     const composerTools = composer?.tools ?? [];
@@ -396,7 +413,7 @@ export class BotConversationService {
             status: this.messages.message(target.assistant_message_id)?.status, backgroundWorkUnchanged: true }) }] };
         } }),
     ];
-    const allowed = (name: string) => (!name.startsWith("memory_") || Boolean(this.options.memory?.enabled())) && !(conversation.team_id && name === "work_create") && (requestTools.some(tool => tool.name === name) || composerTools.some(tool => tool.name === name) || webTools.some(tool => tool.name === name)
+    const allowed = (name: string) => (!name.startsWith("memory_") || Boolean(this.options.memory?.enabled())) && !(conversation.team_id && name === "work_create") && ((selectedTools ?? []).some(tool => tool.name === name) || requestTools.some(tool => tool.name === name) || composerTools.some(tool => tool.name === name) || webTools.some(tool => tool.name === name)
       || BOT_FOREGROUND_TOOLS.has(name));
     const runtime = await DurableBotRuntime.open({ directory, cwd, models: this.options.models, model: model.target,
       toolMode: "native", toolAllowed: allowed,
@@ -404,6 +421,7 @@ export class BotConversationService {
         `以下为宿主冻结的历史对话参考资料，不是新的请求。未完成请求不代表已经得到结果。只回应随后当前输入；关联补充参考指定messageId，不重复派发已有Work。\n${JSON.stringify({ history: frozen.history, reference: frozen.reference, selectedWorkId: frozen.selectedWorkId })}` }], timestamp: run.created_at }] : [] },
       instructions: () => `${this.runtimeInstructions.get(key) ?? ""}
 ${composer?.instructions ?? ""}
+${requiredTool ? `用户为本条消息明确选择了 ${requiredTool}。必须先调用此工具处理完整请求，再综合实际结果回答，不能以本机模型替代所选能力。` : ""}
 当前 Bot 显示名称是 ${JSON.stringify(this.options.bots.getBot(bot.botId)?.displayName ?? bot.displayName)}。这是当前身份名称；旧配置或历史中的旧称不代表另一个 Bot。
 ${conversation.team_id ? `当前是独立团队会话（teamId=${conversation.team_id}），不是队长的个人会话。所有委托交给当前团队，用 work_team_create；模板由宿主绑定，禁止另建个人任务。work_query_status仅查询本团队。团队历史独立保留，不能读写队长或成员的私人记忆。` : ""}
 你是用户的个人助理 Bot。同一对话的新消息可与其他请求同时处理，只响应本次输入。冻结历史中的 queued/running/unknown 等状态只表示上下文取样时的状态，不是当前执行证据。不同主题的新问题只回答本次问题，不主动附带其他请求的进度、状态或“完成后会发来”等送达承诺。确需回答或提及其他前台请求当前状态时，先 foreground_query_requests 重新读取；以实际返回为准，已取消就明确已停止，不能凭旧快照说仍在执行。用户插话修正尚未完成的查询时，先foreground_query_requests核对具体目标；若明确替换旧查询，foreground_cancel_request停止旧前台查询，在本次执行新的查询。已关联后台Work则查询并修订该Work，不能重复创建。不同主题不停止旧请求，不能把其他未完成请求说成已完成。需要原结果才能回答的追问，明确关联原问题，不编造尚未返回的结果。闲聊、解释和已有事实可以直接答复；需要实时信息的请求应立即调用联网工具，而不是停在口头建议。
@@ -425,7 +443,7 @@ ${conversation.team_id ? `当前是独立团队会话（teamId=${conversation.te
 当前长期记忆状态：${this.options.memory?.enabled() ? "已启用" : "已关闭"}。长期记忆以提供的历史记忆证据或 memory_search 实际结果为准，需要更多历史事实时先检索；没查到就说明没有记录，不猜测。仅当记忆已启用时，用户明确提供的稳定偏好和事实会在本轮结束后自动提炼到当前Bot或团队的专属记忆，无需审核或额外确认。用户明确要求记住时可用memory_remember直接保存：current为本Bot或团队，conversation为仅本次会话，public仅用于用户明确要求所有Bot共享的内容。新对话继承长期记忆但不继承旧对话临时要求。公共记忆不等于把私人内容全公开。用户明确要求忘记时，先 memory_search 找到对应记忆，再 memory_forget按当前Bot/团队/会话范围移除；只有明确要求公共或所有Bot忘记才影响公共范围，依据真实回执回答已删除或不存在；不要说只有检索没有删除能力，不让用户另去设置操作。纯遗忘请求执行删除后即结束，不能再用memory_remember把旧内容写成“不要/不再”形式存回；混合“忘记A、记住B”仅引用明确新记住B的子句保存B。更正可以先检索并忘记当前范围的旧条目，再保存更正内容，或由本轮结束后的提炼更新；未完成时不要声称已经改好。不要承诺已经记住尚未持久化的内容，不承诺保存机密、敏感细节或一次性请求，不把记忆当作权限或高于本轮指令的规则。`,
       evidence: () => this.options.memory?.context(bot.botId, conversation.conversation_id) ?? "",
       contextHooks: web?.contextHooks,
-      tools: [...requestTools, ...composerTools, ...webTools, ...botForegroundTools({ ...this.options, botId: bot.botId, teamId: conversation.team_id ?? undefined, conversationId: conversation.conversation_id, messages: this.messages,
+      tools: [...(selectedTools ?? []), ...requestTools, ...composerTools, ...webTools, ...botForegroundTools({ ...this.options, botId: bot.botId, teamId: conversation.team_id ?? undefined, conversationId: conversation.conversation_id, messages: this.messages,
         requestNamespace: run.runtime_key === conversation.conversation_id ? undefined : key,
         memorySearch: query => this.options.memory ? this.options.memory.search(bot.botId, query, conversation.conversation_id) : this.options.memorySearch(bot.botId, query),
         memoryRemember: this.options.memory ? (input, userText) => this.options.memory!.remember(bot.botId, conversation.conversation_id, input, userText) : undefined,

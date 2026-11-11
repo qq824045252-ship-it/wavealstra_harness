@@ -1,14 +1,35 @@
 import { z } from "zod";
+import { requestConsultForMessage } from "./multi-model-consult";
 import type { WorkProjectionDto } from "./bot-work";
 
+/** Remove only product-authored context wrappers for a Bot bubble or editable retry. */
+export function botMessageDisplayText(text: string): string {
+  const prefix = requestConsultForMessage("");
+  const body = text.startsWith(prefix) ? text.slice(prefix.length) : text;
+  return body.replace(/<!-- mybuddy:reference-context -->[\s\S]*?<!-- \/mybuddy:reference-context -->/g, "").trim();
+}
+
 /** Host-generated Bot-chat identity namespace, distinct from native Task input IDs. */
+export const botExternalAgentTaskId = (assistantMessageId: string): string => `bot-acp-${assistantMessageId}`;
+
 export const BOT_MESSAGE_ID_PREFIX = "bot-message-";
 export const isBotConversationMessageId = (value: string): boolean => value.startsWith(BOT_MESSAGE_ID_PREFIX);
 
 const id = z.string().trim().min(1).max(200);
 export const botAttachmentSchema = z.object({ name: z.string().trim().min(1).max(255), path: z.string().min(1).max(8192) }).strict();
 export type BotAttachmentDto = z.infer<typeof botAttachmentSchema>;
+export const botReferenceFileSchema = z.object({
+  id, name: z.string().min(1).max(255), path: z.string().max(8192).optional(),
+  content: z.string().max(128000).optional(), source: z.enum(["artifact", "attachment", "change"]),
+}).strict();
+export const botReferenceTaskSchema = z.object({
+  id, title: z.string().max(2000), spaceName: z.string().max(2000).optional(), cwd: z.string().max(8192).optional(),
+  messages: z.array(z.object({ role: z.enum(["user", "assistant"]), text: z.string().max(128000) }).strict()).max(100).optional(),
+  files: z.array(botReferenceFileSchema).max(100).optional(),
+}).strict();
 export const botComposerSelectionSchema = z.object({
+  consultRequested: z.boolean().optional(), externalAgentId: id.optional(),
+  refTasks: z.array(botReferenceTaskSchema).max(20).optional(), refFiles: z.array(botReferenceFileSchema).max(100).optional(),
   reasoningPreference: z.object({enabled:z.boolean().optional(),effort:z.string().max(40).optional(),budgetTokens:z.number().int().nonnegative().optional()}).strict().optional(),
   modelId: z.string().trim().max(500), expertId: z.string().trim().max(240),
   skillIds: z.array(id).max(100), mcpIds: z.array(id).max(100), connectorIds: z.array(id).max(100),
