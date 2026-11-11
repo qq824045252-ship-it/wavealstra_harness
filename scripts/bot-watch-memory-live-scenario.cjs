@@ -35,7 +35,11 @@ exports.run=async({send,foregroundDone,until,evaluate,history,rpc,report,request
    const foreground=message.text.split('原始执行记录：')[0];
    if(marker)assert(foreground.includes(marker),'foreground summary keeps current preference '+item.title);
    else assert(!/松露标记|琉璃标记/.test(foreground),'foreground summary forgets old preference '+item.title);
-   const native=requests.filter(r=>r.tools?.some(t=>t.function?.name==='read')&&JSON.stringify(r.messages).includes(e.bindingId));
+   const db=new (require('better-sqlite3'))(path.join(home,'.mybuddy','app.db'),{readonly:true,fileMustExist:true});
+   let sourceEventId;try{sourceEventId=db.prepare('SELECT source_event_id FROM work_events_inbox WHERE event_id=? AND work_id=?').get(e.inboxEventId,item.workId)?.source_event_id;}finally{db.close();}
+   assert(sourceEventId,'persisted event identity for this exact execution');
+   // Native prompts carry the frozen source event, not the internal binding ID.
+   const native=requests.filter(r=>r.tools?.some(t=>t.function?.name==='read')&&JSON.stringify(r.messages).includes(item.workId)&&JSON.stringify(r.messages).includes(sourceEventId));
    assert(native.length,'actual native request for this exact watch execution');
    const l1=native.flatMap(r=>r.messages).map(m=>typeof m.content==='string'?m.content:JSON.stringify(m.content)).filter(t=>t.includes('[L1 ')).join('\n');
    const botEvidence=l1.split(/(?=\[L1 )/).filter(block=>/^\[L1 [^\n]*\[bot\]/.test(block)).join('\n');

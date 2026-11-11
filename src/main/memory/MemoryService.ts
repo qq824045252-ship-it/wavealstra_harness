@@ -1115,6 +1115,7 @@ export class MemoryService {
       return true;
     };
     const matches = this.repository.listScopeRecords(candidate.scopeType, candidate.scopeId)
+      .filter(record => force || !this.isCapturedSnapshot(record.id))
       .filter(record => !botSource || candidate.scopeType !== "global" || publicShared && record.metadata.publicShared === true);
     const targetText = candidate.replaces || candidate.title;
     const best = matches
@@ -1239,7 +1240,11 @@ export class MemoryService {
     }
   }
 
+  private isCapturedSnapshot(id: string): boolean {
+    return Boolean(this.db.connection.prepare("SELECT 1 FROM memory_capture_receipts WHERE memory_id=? AND suppressed=0").get(id));
+  }
   private canMutateFromTask(taskId: string, memory: MemoryRecordDto): boolean {
+    if (this.isCapturedSnapshot(memory.id)) return false;
     const work = this.workMemoryScope(taskId);
     const conversation = botMemorySource(this.db, taskId);
     const botId = work || conversation?.team_id ? undefined : this.channelBotId(taskId);

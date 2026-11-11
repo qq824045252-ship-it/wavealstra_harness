@@ -8,6 +8,7 @@ import { BotRegistry } from "../src/main/agent/work/BotRegistry";
 import { BotWorkContextService } from "../src/main/agent/work/BotWorkContextService";
 import { WorkService, DESKTOP_USER_GRANTS } from "../src/main/agent/work/WorkService";
 import { MemoryService, type MemoryExtractionInput } from "../src/main/memory/MemoryService";
+import { WorkMemoryCapture } from "../src/main/memory/WorkMemoryCapture";
 import { createMemoryExtension } from "../src/main/memory/memory-extension";
 import { projectMemoryContext } from "../src/main/agent/MemoryContextProjection";
 import { ExpertService } from "../src/main/experts/ExpertService";
@@ -133,6 +134,26 @@ const cases: Array<[string, (f: Fixture) => Promise<void> | void]> = [
     const ordinary = await toolsFor(f.memory, "ordinary");
     assert(!((await ordinary("memory_update", { id: f.global.id, content: "ordinary task preference" })).isError),
       "ordinary task Global behavior is preserved");
+  }],
+  ["automatic candidates and native tools cannot replace the system Work facts projection", async f => {
+    const workId = f.memory.inferAgentScope("worker").scopeId!;
+    f.db.connection.prepare("UPDATE works SET mode='watch' WHERE work_id=?").run(workId);
+    const capture = new WorkMemoryCapture(f.db, f.memory);
+    const id = capture.capture(workId)!;
+    const original = f.memory.get(id)!;
+    for (const operation of ["update", "supersede", "resolve", "forget", "create"]) {
+      await extract(f, operation, original.title, "事项：会议。模式：持续追踪；状态：active。执行规则：每两分钟读取会议文件", "work");
+      assert.equal(f.memory.get(id)!.content, original.content, operation + " must not rewrite factual projection");
+    }
+    const tool = await toolsFor(f.memory, "worker");
+    assert.equal((await tool("memory_update", {id, content:"rewritten snapshot"})).isError, true);
+    assert.equal((await tool("memory_update", {id, status:"resolved"})).isError, true);
+    assert.equal(f.memory.get(id)!.sourceType, "event");
+    f.db.connection.prepare("UPDATE works SET progress_summary='Second real timer round completed' WHERE work_id=?").run(workId);
+    assert.equal(capture.capture(workId), id);
+    assert.match(f.memory.get(id)!.content, /Second real timer round completed/);
+    assert.match(f.memory.get(id)!.content, /持续追踪（单轮产出不代表结束）/);
+    assert.equal((f.db.connection.prepare("SELECT suppressed FROM memory_capture_receipts WHERE memory_id=?").get(id) as {suppressed:number}).suppressed, 0);
   }],
   ["automatic candidate reconciliation cannot mutate a previously promoted worker atom", async f => {
     for (const operation of ["update", "supersede", "resolve", "forget", "create"]) {
