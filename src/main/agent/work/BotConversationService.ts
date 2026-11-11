@@ -306,7 +306,9 @@ export class BotConversationService {
             this.messages.update(next.messageId, "completed", reply, undefined, undefined,
               completeBotReplySegments(projectBotReplySegments(replyRows,
                 this.messages.message(next.messageId)?.segments), reply, next.requestId));
-            try { memorySource = conversation.team_id ? undefined : this.options.memory?.capture(botId, next.requestId); }
+            // The adapter resolves the real conversation owner (team or personal Bot).
+            // Team replies must enter the same verified L0/L1 pipeline, not the leader's private namespace.
+            try { memorySource = this.options.memory?.capture(botId, next.requestId); }
             catch (error) { console.warn("[Bot] 记忆捕获未完成", error); }
           });
           this.publish(next.messageId);

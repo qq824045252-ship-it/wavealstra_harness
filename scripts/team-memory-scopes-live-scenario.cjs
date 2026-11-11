@@ -5,7 +5,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-exports.run = async ({ send, foregroundDone, until, evaluate, history, rpc, report, requests, out, botId, setBotId, setTeamId }) => {
+exports.run = async ({ autoOnly = false, send, foregroundDone, until, evaluate, history, rpc, report, requests, out, botId, setBotId, setTeamId }) => {
   assert.equal(typeof setBotId, 'function'); assert.equal(typeof setTeamId, 'function');
   const owner = botId;
   const markers = { owner: '私人北辰184', member: '私人南星295', a: '团队青岚316', b: '团队海棠427', public: '共享松石538' };
@@ -50,14 +50,30 @@ exports.run = async ({ send, foregroundDone, until, evaluate, history, rpc, repo
   await say(`长期记住：这个 Bot 的最终答复末尾单独写“${markers.member}”，仅本 Bot，不共享。`);
   await until(async () => text(await list('bot', member.bot.botId)).includes(markers.member), 'member private persisted');
   await select('MyBuddy', owner);
+  const automaticSources = [];
   const a = await createTeam('记忆团队青岚');
-  await say(`请长期记住本团队的回复格式：最终答复末尾单独写“${markers.a}”。只属于本团队，不共享其他团队或个人 Bot。`);
+  await say(autoOnly
+    ? `本团队一贯的回复格式是：最终答复末尾单独写“${markers.a}”。这是本团队的稳定偏好，只属于本团队，不共享其他团队或个人 Bot。本轮不要调用任何工具，只需一句话确认。`
+    : `请长期记住本团队的回复格式：最终答复末尾单独写“${markers.a}”。只属于本团队，不共享其他团队或个人 Bot。`);
+  automaticSources.push(await history());
   await until(async () => text(await list('team', a)).includes(markers.a), 'team A scoped memory');
   await select('MyBuddy', owner);
   const b = await createTeam('记忆团队海棠');
-  await say(`请长期记住本团队的回复格式：最终答复末尾单独写“${markers.b}”。只属于本团队，不共享其他团队或个人 Bot。`);
+  await say(autoOnly
+    ? `本团队一贯的回复格式是：最终答复末尾单独写“${markers.b}”。这是本团队的稳定偏好，只属于本团队，不共享其他团队或个人 Bot。本轮不要调用任何工具，只需一句话确认。`
+    : `请长期记住本团队的回复格式：最终答复末尾单独写“${markers.b}”。只属于本团队，不共享其他团队或个人 Bot。`);
+  automaticSources.push(await history());
   await until(async () => text(await list('team', b)).includes(markers.b), 'team B scoped memory');
   assert(!text(await list('bot', owner)).includes(markers.a), 'team memory is not copied to technical owner');
+  if (autoOnly) for (const source of automaticSources) {
+    const turns = await evaluate(`window.api.memory.turns(${JSON.stringify({taskId: source.conversationId})})`);
+    const user = source.messages.find(m => m.role === 'user');
+    const assistant = source.messages.find(m => m.role === 'assistant');
+    assert(turns.some(t => t.userMessageId === user.messageId && t.assistantMessageId === assistant.messageId && t.metadata?.teamId), 'ordinary completion produced exact team L0 source');
+    assert(!JSON.stringify(assistant.segments || []).includes('memory_remember'), 'seed did not call direct remember tool');
+    report.checks.push(`automatic team source ${source.conversationId}: exact receipt pointers, no direct remember tool`);
+  }
+
   await select('MyBuddy', owner);
   await say(`明确让所有 Bot 和团队共享一条公共事实：测试项目代号为“${markers.public}”。请保存到公共记忆，个人回复格式不共享。`);
   await until(async () => (await list('global')).some(r => r.metadata?.publicShared === true && `${r.title}\n${r.content}`.includes(markers.public)), 'explicit public memory');
@@ -87,6 +103,20 @@ exports.run = async ({ send, foregroundDone, until, evaluate, history, rpc, repo
   await runTask('b', '出门清单', '给出出门前三项物品检查清单。');
   await runTask('a', '装箱表格与共享事实', '12本书均分3箱，用表格列箱号与数量，并写出公共记忆中的测试项目代号。', ['4', markers.public]);
   await runTask('b', '标点校对与共享事实', '给“明天上午十点开会请准时参加”加标点，并写出公共记忆中的测试项目代号。', [markers.public]);
+  if (autoOnly) {
+    await select('记忆团队青岚', owner, a);
+    await say('忘记并删除本团队的末尾回复格式偏好，后续不要从旧对话恢复它。');
+    await until(async () => !text(await list('team', a)).includes(markers.a), 'team preference actually forgotten');
+    await newChat();
+    const offset = requests.length;
+    await say('之前本团队末尾回复格式的代码是什么？如果没有可用记录就说明不知道，不要猜。');
+    const answer = (await history()).messages.filter(m => m.role === 'assistant').at(-1);
+    assert(!answer.text.includes(markers.a), 'forgotten team code is not revived in fresh conversation');
+    assert(!JSON.stringify(requests.slice(offset)).includes(markers.a), 'forgotten team code withdrawn from real provider wire');
+    assert(text(await list('team', b)).includes(markers.b), 'forget leaves other team intact');
+    assert((await list('global')).some(r => r.metadata?.publicShared === true && r.content.includes(markers.public)), 'forget leaves explicitly shared public fact intact');
+    report.checks.push('natural team forget removes exact team memory; fresh real-model request cannot revive old source; other team, members and public scope unchanged');
+  }
   assert.equal(report.cases.length, 8);
   assert.equal(new Set(report.cases.map(r => r.conversationId)).size, 8, 'all task checks use distinct team conversations');
   assert(text(await list('bot', owner)).includes(markers.owner));

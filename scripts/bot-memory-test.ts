@@ -17,7 +17,7 @@ async function main() {
     const memory = new MemoryService(db, { semantic: false });
     const insertCandidate = memory.repository.insertCandidate.bind(memory.repository);
     memory.repository.insertCandidate = candidate => {
-      if (candidate.scopeType === "bot") assert(db.connection.inTransaction, "Bot candidate lifecycle must be atomic, never leaving a crash-time approval row");
+      if (candidate.scopeType === "bot" || candidate.scopeType === "team") assert(db.connection.inTransaction, "Bot candidate lifecycle must be atomic, never leaving a crash-time approval row");
       return insertCandidate(candidate);
     };
     const pipeline = new MemoryPipelineManager(db);
@@ -78,6 +78,9 @@ async function main() {
     enabled = true;
     candidates = [candidate("用户住在上海", "助手猜的", { title: "居住地" }), candidate("当前天气晴", "你好", { kind: "progress" }),
       candidate("喜欢橙色", "你好", { retention: "temporary" }),
+      candidate("缺少保留分类", "你好", { retention: undefined }),
+      candidate("缺少敏感分类", "你好", { sensitivity: undefined }),
+      candidate("敏感候选", "你好", { sensitivity: "sensitive" }),
       candidate("喜欢粉色", "你好", { replaces: "api_key_hidden_should_not_persist" })];
     await bridge.extract(second.source);
     assert.equal(memory.listExactScope("bot", "alice").length, 1, "unsupported/ephemeral facts never commit");
@@ -197,6 +200,26 @@ async function main() {
     await bridge.extract(team.conversationId);
     assert(memory.listExactScope("team", "memory-team").some(m => m.content === "团队偏好绿茶"));
     assert(!memory.listExactScope("bot", "alice").some(m => m.content === "团队偏好绿茶"));
+    // Team extraction inherits both source-deletion and explicit-forget barriers.
+    for (const deletion of ["source", "record"] as const) {
+      const content = `团队竞态偏好${deletion}`;
+      const receipt = messages.accept(LOCAL_USER_ID, { botId: "alice", teamId: "memory-team", requestId: `team-race-${deletion}`, text: content });
+      messages.update(receipt.assistantMessageId, "completed", "收到");
+      assert.equal(bridge.capture("alice", receipt.requestId), receipt.conversationId);
+      const prior = deletion === "record" ? memory.create({ kind: "preference", title: content, content,
+        scopeType: "team", scopeId: "memory-team", sourceType: "user" }) : undefined;
+      candidates = [candidate(content, content, { title: content, explicit: false })];
+      held = new Promise(resolve => { release = resolve; });
+      const before = modelCalls;
+      const extraction = bridge.extract(receipt.conversationId);
+      while (modelCalls === before) await new Promise(resolve => setTimeout(resolve, 1));
+      if (prior) bridge.forget("alice", [prior.id], `忘记${content}`, `忘记${content}`, receipt.conversationId);
+      else pipeline.turns.deleteMany(pipeline.turns.listByTask(receipt.conversationId).filter(turn => turn.userMessageId === receipt.userMessageId).map(turn => turn.id));
+      release(); await extraction; held = undefined;
+      assert(!memory.listExactScope("team", "memory-team").some(atom => atom.content === content), `team ${deletion} deletion prevents in-flight resurrection`);
+      assert(!memory.listExactScope("bot", "alice").some(atom => atom.content === content));
+      assert(!memory.listExactScope("global").some(atom => atom.content === content));
+    }
     const liveText = "请长期记住我的答复格式偏好：这个 Bot 每次最终答复末尾单独写“白桦甲731”。不要分享给其他 Bot。";
     const liveArgs = { scope: "current" as const, kind: "preference" as const, title: "最终答复末尾单独写“白桦甲731”", content: "用户要求：这个 Bot 每次最终答复的末尾单独一行写“白桦甲731”。该偏好仅限当前 Bot，不分享给其他 Bot。", userEvidence: liveText };
     enabled = false;

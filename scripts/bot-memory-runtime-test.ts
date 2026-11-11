@@ -10,7 +10,7 @@ import { AppDatabase } from "../src/main/db/AppDatabase";
 import { BotRegistry } from "../src/main/agent/work/BotRegistry";
 import { BotConversationService } from "../src/main/agent/work/BotConversationService";
 import { BotConversationMemory } from "../src/main/agent/work/BotConversationMemory";
-import { WorkService } from "../src/main/agent/work/WorkService";
+import { WorkService, DESKTOP_USER_GRANTS } from "../src/main/agent/work/WorkService";
 import { MemoryService } from "../src/main/memory/MemoryService";
 import { MemoryPipelineManager } from "../src/main/memory/MemoryPipelineManager";
 import { LOCAL_USER_ID } from "../src/shared/bot-work";
@@ -45,10 +45,14 @@ models.registerProvider("fixture", { api: "openai-completions", apiKey: "fixture
     }); return stream;
   },
 });
-const extractModels = { completeSimple: async () => {
+const extractModels = { completeSimple: async (_: unknown, input: { messages: Array<{ content: string }> }) => {
   assert(capturedReply, "reply publishes before extraction waits"); calls++;
   await extractionHold;
-  return { content: [{ type: "text", text: JSON.stringify({ candidates: calls === 1 ? [{ kind: "preference", title: "偏好颜色", retention: "stable", sensitivity: "none", content: "用户喜欢青绿色。", scopeType: "global", userEvidence: "我喜欢青绿色", explicit: true, confidence: 1, importance: 2, operationHint: "create" }] : [] }) }], stopReason: "stop" };
+  const payload = JSON.parse(input.messages[0].content);
+  const teamLearning = payload.conversationTurns.some((turn: { user: string }) => turn.user.includes("团队固定回复色是湖绿色"));
+  return { content: [{ type: "text", text: JSON.stringify({ candidates: teamLearning
+    ? [{ kind: "preference", title: "团队回复色", retention: "stable", sensitivity: "none", content: "团队固定回复色是湖绿色。", scopeType: "global", userEvidence: "团队固定回复色是湖绿色", explicit: false, confidence: 0.99, importance: 2, operationHint: "create" }]
+    : calls === 1 ? [{ kind: "preference", title: "偏好颜色", retention: "stable", sensitivity: "none", content: "用户喜欢青绿色。", scopeType: "global", userEvidence: "我喜欢青绿色", explicit: true, confidence: 1, importance: 2, operationHint: "create" }] : [] }) }], stopReason: "stop" };
 } } as unknown as ModelRuntime;
 const bridge = new BotConversationMemory({ db, userId: LOCAL_USER_ID, memory, pipeline, enabled: () => enabled,
   changed: () => {}, extract: async taskId => {
@@ -84,6 +88,45 @@ try {
   await until(() => service.messages.message(deleted.assistantMessageId)?.status === "completed", "after deletion reply");
   assert(!JSON.stringify(requests.at(-1)).includes("用户喜欢青绿色"), "memory evidence was not persisted into native transcript");
   await until(() => pipeline.turns.listByTask(deleted.conversationId).every(turn => turn.extractionState === "completed"), "previous learning settled");
+  // Exercise the real service completion path, not a direct bridge.capture call.
+  bots.registerBot({ userId: LOCAL_USER_ID, botId: "team-member", displayName: "member" });
+  const saved = works.teams.handle({ kind: "user", userId: LOCAL_USER_ID, grants: DESKTOP_USER_GRANTS }, {
+    kind: "save_template", request: { operationId: "memory-team", name: "memory team", plan: {
+      ownerBotId: "memory-native", ownerResponsibility: "汇总", workspacePath: root,
+      members: [{ botId: "team-member", responsibility: "核验", delegatedScope: ["workspace:read"] }],
+    } },
+  });
+  assert(saved.ok && saved.template);
+  const teamId = saved.template.templateId;
+  const teamInput = { botId: "memory-native", teamId, requestId: "native-team-1", text: "团队固定回复色是湖绿色" };
+  const team = service.send(teamInput);
+  await until(() => memory.listExactScope("team", teamId).length === 1, "ordinary team completion automatically learns without remember tool");
+  const teamTurns = pipeline.turns.listByTask(team.conversationId);
+  assert.equal(teamTurns.length, 1);
+  assert.equal(teamTurns[0].metadata.teamId, teamId);
+  assert.equal(teamTurns[0].userText, "", "team L0 retains only source pointers");
+  assert.equal(teamTurns[0].userMessageId, team.userMessageId);
+  assert.equal(teamTurns[0].assistantMessageId, team.assistantMessageId);
+  assert.equal(memory.listExactScope("bot", "memory-native").length, 0);
+  assert.equal(memory.listExactScope("bot", "team-member").length, 0);
+  assert.equal(memory.listExactScope("global").length, 0, "model-suggested global scope cannot promote a team statement");
+  assert.equal(memory.listCandidates("needs_review").length, 0);
+  assert(service.send(teamInput).replayed);
+  assert.equal(pipeline.turns.listByTask(team.conversationId).length, 1, "replayed team completion has one source");
+  service.archive("memory-native", team.conversationId);
+  const teamNext = service.send({ botId: "memory-native", teamId, requestId: "native-team-2", text: "团队默认回复色是什么" });
+  await until(() => service.messages.message(teamNext.assistantMessageId)?.status === "completed", "fresh team conversation reply");
+  assert.notEqual(teamNext.conversationId, team.conversationId);
+  assert(JSON.stringify(requests.at(-1)).includes("团队固定回复色是湖绿色"));
+  assert(!bridge.context("team-member", service.messages.accept(LOCAL_USER_ID, { botId: "team-member", requestId: "member-isolation", text: "颜色" }).conversationId).includes("湖绿色"));
+  await until(() => pipeline.turns.listByTask(teamNext.conversationId).every(turn => turn.extractionState === "completed"), "team learning settled");
+  // Cancel/failure states never qualify as completed sources, even on a team.
+  for (const status of ["cancelled", "failed", "running", "unknown"] as const) {
+    const receipt = service.messages.accept(LOCAL_USER_ID, { botId: "memory-native", teamId, requestId: `team-${status}`, text: "团队固定回复色是湖绿色" });
+    service.messages.update(receipt.assistantMessageId, status, "未完成");
+    assert.equal(bridge.capture("memory-native", receipt.requestId), undefined);
+    assert(!pipeline.turns.listByTask(receipt.conversationId).some(turn => turn.userMessageId === receipt.userMessageId));
+  }
   let release!: () => void;
   extractionHold = new Promise(resolve => { release = resolve; });
   const beforeHeld = calls;

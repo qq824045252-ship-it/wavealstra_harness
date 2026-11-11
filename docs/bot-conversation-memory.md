@@ -10,9 +10,23 @@
 2. L0 does not duplicate user, assistant, tool or attachment contents. Known secret/private/opt-out messages are excluded. The original message remains only in the ordinary Bot conversation.
 3. The existing `AgentService.memoryWriteQueue` reads completed user messages transiently after validating their receipt, user, Bot, conversation and message identities. It uses the configured Bot model/default model, the existing retry states and source-existence guards.
 4. Extraction must label a candidate `retention: "stable"` and `sensitivity: "none"`, include exact user evidence, and pass deterministic secret/identifier checks. Short-lived progress, questions, risks, procedures and unsupported model guesses are not learned by this adapter. The L1 evidence contains only the supporting quote, never the complete mixed message. Model classification is conservative but is not a proof that all possible sensitive phrases can be recognized.
-5. Candidates use the existing reconciler. Scope is forcibly the current Bot's private namespace; no global, project or team promotion. Unsupported/conflicting candidates are rejected instead of adding an approval workflow.
+5. Candidates use the existing reconciler. Scope follows the real conversation: current personal Bot or current team by default, conversation-only when requested, and public only with explicit sharing wording. No member-private or unrelated team/project promotion is allowed. Unsupported/conflicting candidates are rejected instead of adding an approval workflow.
 6. Every provider request receives a freshly selected, bounded active L1 context (6 KB budget, at most 12 atoms). `memory_search` uses the same Bot/user and enabled checks. Evidence is request-only and is not appended to the native transcript.
 7. Learning runs asynchronously. A slow or failed extraction cannot delay the next foreground message or close the chat. A just-sent fact may not be available to another new conversation until extraction completes.
+
+## Automatic team conversation capture
+
+Ordinary successful team replies now use the same completion-transaction capture as personal replies. The previous `conversation.team_id` exclusion skipped this path despite the foreground promising automatic extraction. The adapter resolves the real `bot_conversations.team_id` from the authenticated send receipt; the technical leader Bot is not the memory owner.
+
+L0 contains the actual user/assistant message IDs and team ID, with no duplicate transcript or synthetic Task. Stable supported candidates default to that team, explicit conversation-only wording stays in that conversation, and public promotion still requires the user's explicit sharing wording. Member and leader private memory remain outside team context. Failed, cancelled, running and unknown replies do not capture. Source deletion and the existing persistent forget watermarks continue to prevent queued or in-flight extraction from restoring removed memory.
+
+The Bot/team extractor explicitly requires the existing `retention` and `sensitivity` fields. Missing classifications still reject the candidate. A request to answer without tools is distinct from an explicit no-save or conversation-only restriction, which remains enforced by the shared source filters.
+
+The completion boundary queues extraction asynchronously. A successful reply is not a claim that every sentence has become durable memory; only eligible candidates accepted by the existing filters/reconciler persist. No additional memory service, approval queue or background Work is created.
+
+- `pnpm run test:bot-memory-runtime`: actual Durable team completion, automatic L0/L1, exact source provenance, replay, fresh conversation and personal isolation.
+- `pnpm run test:bot-memory`: includes team source-deletion and exact-forget races.
+- `pnpm run test:bot-frontdoor:live --team-auto-memory`: eight distinct real-model tasks in isolated Electron, two teams and two personal Bot scopes, automatic-only team seeds, public sharing, request-wire isolation and natural team forgetting. Requires the configured local model gateway and a desktop session; use repository-local `TMPDIR` if the shared temporary directory quota is exhausted.
 
 ## Explicit forget in the foreground
 

@@ -947,7 +947,7 @@ export class MemoryService {
     };
     const response = await input.modelRuntime.completeSimple(
       input.model,
-      { systemPrompt: EXTRACTION_SYSTEM_PROMPT + (botSource ? "\n当前来源是用户与 Bot 或团队的直接对话。只提取有用户原话支持的身份、偏好、事实、决定或约束。默认保存到当前Bot或团队专属范围，不读写成员私有记忆。用户明确要求所有Bot共享时scopeType=global；明确仅本次对话时scopeType=conversation、retention=temporary；否则稳定信息retention=stable。一次性查询与任务本身、敏感细节和权限授予不得成为记忆。scope最终由宿主根据原话决定。sensitivity=none仅用于非敏感内容。userEvidence仅引用支持事实的最短原话。不重复输出已保存的相同事实。" : ""), messages: [{ role: "user", content: JSON.stringify(payload), timestamp: Date.now() }] },
+      { systemPrompt: EXTRACTION_SYSTEM_PROMPT + (botSource ? "\n当前来源是用户与 Bot 或团队的直接对话。只提取有用户原话支持的身份、偏好、事实、决定或约束。默认保存到当前Bot或团队专属范围，不读写成员私有记忆。用户明确要求所有Bot共享时scopeType=global；明确仅本次对话时scopeType=conversation、retention=temporary；否则稳定信息retention=stable。一次性查询与任务本身、敏感细节和权限授予不得成为记忆。scope最终由宿主根据原话决定。每条候选 JSON 必须显式包含 retention（稳定事实为 \"stable\"，仅本会话为 \"temporary\"）和 sensitivity（非敏感为 \"none\"）；不得省略这两个字段。敏感内容不输出候选。不要把用户要求本轮直接回答或不调用工具误当作禁止后台提炼；只有明确不保存、不要记住或仅本会话等要求才限制记忆。userEvidence仅引用支持事实的最短原话。不重复输出已保存的相同事实。" : ""), messages: [{ role: "user", content: JSON.stringify(payload), timestamp: Date.now() }] },
       // Reasoning shares the response ceiling on Responses-compatible providers.
       // Leave room for both low-effort reasoning and the complete candidate JSON.
       { maxTokens: Math.min(input.model.maxTokens || 8192, input.model.reasoning ? 8192 : 4096), reasoning: "low", cacheRetention: "none" },
