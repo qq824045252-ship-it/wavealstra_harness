@@ -88,6 +88,7 @@ const GUI_TESTS = new Set([
   "test:model-menu-ui",
   "test:bot-conversation-concurrent-desktop",
   "test:bot-scroll-desktop",
+  "test:bot-history-paging-desktop",
   "test:bot-activity-desktop",
   "test:bot-rename-desktop",
   "test:bot-report-dedup-desktop",

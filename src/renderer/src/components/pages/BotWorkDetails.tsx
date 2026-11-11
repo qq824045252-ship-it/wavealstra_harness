@@ -5,7 +5,7 @@ import { BotWorkArchiveActions } from "./BotWorkArchiveActions";
 import { BotCollaborationLog } from "./BotCollaborationLog";
 import { userInputBlockerSnapshot } from "@shared/bot-work-review";
 import { isWorkEffectDiagnostic, WORK_EFFECT_DISPOSITION } from "@shared/work-effect-policy";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { WorkCriterionDto, WorkLifecycle, WorkProjectionDto } from "@shared/bot-work";
 import type { WorkPhase3ControlRequest } from "@shared/bot-work-phase3-control";
 import type { WorkPhase4ControlRequest } from "@shared/bot-work-phase4";
@@ -38,6 +38,26 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
   const effectDiagnostics = work.blockers.filter(blocker => isWorkEffectDiagnostic(blocker)
     && (blocker.status === "open" || blocker.details?.effectDisposition === WORK_EFFECT_DISPOSITION));
   const identities = useAppStore(s => s.botIdentities);
+  const [originalOpen, setOriginalOpen] = useState(false);
+  const originalKey = `${work.workId}:${work.intentRevision}:${work.sourceVersion}`;
+  const [originalResult, setOriginal] = useState<{ key: string; value: WorkProjectionDto["originalDelegation"] }>();
+  const original = originalResult?.key === originalKey ? originalResult.value : undefined;
+  const [originalError, setOriginalError] = useState(false);
+  const [originalRetry, setOriginalRetry] = useState(0);
+  useEffect(() => {
+    setOriginal(undefined); setOriginalError(false);
+    if (!originalOpen) return;
+    let current = true;
+    const api = window.api?.botWork;
+    if (!api?.getWork) { setOriginalError(true); return; }
+    void api.getWork(work.workId).then(detail => {
+      if (!current) return;
+      if (!detail || detail.workId !== work.workId || detail.intentRevision !== work.intentRevision
+        || detail.sourceVersion !== work.sourceVersion || !detail.originalDelegation) setOriginalError(true);
+      else setOriginal({ key: originalKey, value: detail.originalDelegation });
+    }).catch(() => { if (current) setOriginalError(true); });
+    return () => { current = false; };
+  }, [originalOpen, originalRetry, originalKey, work.workId, work.intentRevision, work.sourceVersion]);
   const [targetBotId, setTargetBotId] = useState("");
   const [question, setQuestion] = useState("");
   const [controlNotice, setControlNotice] = useState("");
@@ -107,7 +127,15 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
       {work.projectId && <ScopedMemoryPanel key={"project:" + work.projectId} scopeType="project" scopeId={work.projectId} title="项目记忆（同项目事项共享）" />}
       <section className="bot-detail-section" aria-label="目标与进度">
         <h3>目标</h3>
-        <p>{work.title}</p>
+        <p className="bot-work-goal">{work.goalDescription?.trim() ? work.goalDescription : work.title}</p>
+        <details className="bot-work-original-delegation" onToggle={event => setOriginalOpen(event.currentTarget.open)}>
+          <summary>原委托（用户原文）</summary>
+          {originalOpen && (originalError ? <p role="status">暂时无法读取原委托。<button type="button" onClick={() => setOriginalRetry(value => value + 1)}>重试</button></p>
+            : !original ? <p role="status">正在读取原委托…</p>
+            : original.unavailable ? <p>原委托来源暂不可核验；上方目标不代表用户逐字原文。</p>
+            : original.messages.length ? <>{original.descriptionOrigin === "assistant" && <p>上方目标由助理整理，以下为此事项保存的用户原文；后续修改优先。</p>}{original.messages.map(message => <div key={message.messageId}><h4>委托修订 {message.intentRevision}</h4><p className="bot-work-goal">{message.text}</p></div>)}{Boolean(original.context?.length) && <details><summary>相关对话与引用（保留角色，仅作上下文）</summary>{original.context?.map(message => <div key={message.messageId}><h4>{message.role === "user" ? "用户" : "助理"}</h4><p className="bot-work-goal">{message.text}</p></div>)}</details>}</>
+            : <p>此事项没有关联的对话原文；请以上方目标及验收要求为准。</p>)}
+        </details>
         <h3>进度</h3>
         <p>{workStatusLabel(work)}。{work.archive?.archivedAt ? "此事项已归档，不会自动重试；记录与已有成果保留。" : work.lifecycle === "closed" ? "处理结论已返回对话，原始结果保留在下方。" : "助理会对照原委托核对实际结果，自动补缺并返回结论。"}</p>
         {work.closureSummary && <details className="bot-original-report"><summary>结束说明原文</summary><WorkResultText text={work.closureSummary} /></details>}

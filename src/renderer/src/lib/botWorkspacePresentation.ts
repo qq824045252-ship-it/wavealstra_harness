@@ -55,7 +55,7 @@ export function workStatusLabel(work: WorkProjectionDto): string {
 
 /** Index full text, not the shortened list excerpt, so older results stay findable. */
 export function workSearchText(work: WorkProjectionDto): string {
-  return [work.workId, work.title, work.closureSummary, ...work.criteria.map(item => item.text),
+  return [work.workId, work.title, work.goalDescription, work.closureSummary, ...work.criteria.map(item => item.text),
     ...work.nextSteps, ...work.blockers.filter(item => item.status === "open").map(item => item.reason),
     ...work.deliverables.map(item => item.summary), ...work.deliverables.flatMap(item => item.artifactRefs),
     ...(work.generatedArtifacts ?? []).flatMap(item => [item.path, item.snapshotPath])]

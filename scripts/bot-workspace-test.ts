@@ -52,7 +52,8 @@ for (const status of ["completed", "cancelled", "failed", "unknown"] as const) {
 }
 assert.ok(menu.indexOf("助手") < menu.indexOf("项目"));
 assert.doesNotMatch(menu, /Bot 模式/, "account menu must not duplicate the top-level Bot mode entry");
-assert.equal((menu.match(/<button /g) ?? []).length, 4);
+for (const label of ["助手", "邮箱和日历", "项目", "自动化", "插件"])
+  assert.equal((menu.match(new RegExp(label, "g")) ?? []).length, 1, `account navigation exposes ${label} once`);
 assert.ok(menu.indexOf("项目") < menu.indexOf("自动化"));
 assert.ok(menu.indexOf("自动化") < menu.indexOf("插件"));
 
@@ -240,9 +241,10 @@ for (const [patch, label] of [[{ status: "paused" }, "检查订阅已暂停"], [
 const watchHtml = renderToStaticMarkup(createElement(BotWorkBrowser, { works: [watching], view: "active", loading: false, onOpenWork: () => {}, onConversation: () => {} }));
 assert.match(watchHtml, /等待下次检查/); assert.match(watchHtml, /下次计划检查/); assert.match(watchHtml, /应用需保持运行/);
 
-const indexed = workSearchText({ ...plain, title: "器件价格核对", nextSteps: ["联系供应商 ACME"], criteria: [{ ...plain.criteria[0], text: "比较贴片电容" }],
+const indexed = workSearchText({ ...plain, title: "器件价格核对", goalDescription: "只出现在完整目标里的尾部特征词ZXCV。\n保留第二行", nextSteps: ["联系供应商 ACME"], criteria: [{ ...plain.criteria[0], text: "比较贴片电容" }],
   deliverables: [{ summary: "完整报告含 47uF", artifactRefs: ["报价结果.xlsx"] } as WorkProjectionDto["deliverables"][number]] });
 assert.ok(workMatchesSearch(indexed, "ACME   电容"));
+assert.ok(workMatchesSearch(indexed, "尾部特征词zxcv 第二行"), "full persisted goal is searchable without fetching other Work");
 assert.ok(workMatchesSearch(indexed, "４７ｕｆ 报价结果"), "width-normalized terms find report text and files, not only titles");
 assert.ok(!workMatchesSearch(indexed, "ACME missing"));
 assert.ok(workMatchesSearch(workSearchText({ ...plain, generatedArtifacts: [{ path: "/tmp/generated-only.csv", snapshotPath: "/tmp/snapshot-only.csv" } as NonNullable<WorkProjectionDto["generatedArtifacts"]>[number]] }), "generated-only.csv snapshot-only.csv"), "generated-only files remain findable without a deliverable summary");

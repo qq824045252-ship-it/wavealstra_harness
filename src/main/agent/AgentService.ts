@@ -1261,7 +1261,7 @@ export class AgentService {
 
   getWorkProjection(workId: string): WorkProjectionDto | undefined {
     if (this.workService.getWork(workId)?.userId !== LOCAL_USER_ID) return undefined;
-    return this.workService.getProjection(workId);
+    return this.workService.getDetailProjection(workId);
   }
 
   getWorkService(): WorkService {

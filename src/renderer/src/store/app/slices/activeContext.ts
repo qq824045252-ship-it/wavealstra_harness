@@ -16,6 +16,7 @@ export interface ActiveContextState {
   botDrafts: BotConversationUiState["botDrafts"];
   botAttachmentDrafts: BotConversationUiState["botAttachmentDrafts"];
   botHistories: BotConversationUiState["botHistories"];
+  botHistoryPages: BotConversationUiState["botHistoryPages"];
   botPendingSends: BotConversationUiState["botPendingSends"];
   botConversationErrors: BotConversationUiState["botConversationErrors"];
   botWorkCursor: WorkListCursor | null;
@@ -112,6 +113,7 @@ export function createActiveContextActions(
   | "setBotDraft"
   | "submitBotDraft"
   | "refreshBotHistory"
+  | "loadOlderBotHistory"
   | "cancelBotSend"
   | "archiveBotConversation"
   | "setActiveBotId"

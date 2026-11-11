@@ -214,6 +214,11 @@ export class WorkService {
     return work ? this.project(work) : undefined;
   }
 
+  getDetailProjection(workId: string): WorkProjectionDto | undefined {
+    const work = this.repo.getWork(workId);
+    return work ? { ...this.project(work), originalDelegation: this.repo.originalDelegation(work) } : undefined;
+  }
+
   listProjections(userId: string, options?: { includeClosed?: boolean }): WorkProjectionDto[] {
     return this.repo.listWorks(userId, options).map((work) => this.project(work));
   }

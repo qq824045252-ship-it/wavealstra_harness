@@ -6,9 +6,17 @@ import { createRoot } from "react-dom/client";
 import BotWorkspacePage from "../src/renderer/src/components/pages/BotWorkspacePage";
 import { useAppStore } from "../src/renderer/src/store/appStore";
 import { mergeBotMessageEvent } from "../src/renderer/src/store/app/slices/botMessageStream";
-import type { BotHistoryDto, BotMessageDto, BotSendRequest, BotSendReceipt } from "../src/shared/bot-conversation";
+import type { BotHistoryDto, BotHistoryRequest, BotMessageDto, BotSendRequest, BotSendReceipt } from "../src/shared/bot-conversation";
 import type { BotDto } from "../src/shared/bot-work";
 const requests: BotSendRequest[] = [], cancellations: string[] = [];
+let paging = false, holdPage = false, releasePage: (() => void) | undefined;
+const pagingCalls: BotHistoryRequest[] = [];
+const historyPage = (request: BotHistoryRequest): BotHistoryDto => {
+  let rows = history.messages.filter(message => message.ordinal < (request.before ?? Infinity) && message.ordinal > (request.after ?? 0));
+  const more = rows.length > 100;
+  rows = request.after === undefined ? rows.slice(-100) : rows.slice(0, 100);
+  return { ...structuredClone(history), messages: structuredClone(rows), before: more || request.after !== undefined ? rows[0]?.ordinal : undefined };
+};
 const receipts = new Map<string, (receipt: BotSendReceipt) => void>();
 let history: BotHistoryDto = { botId: "bot", conversationId: "chat", revision: 1, archived: false, messages: [] };
 const publish = () => useAppStore.setState({ botHistories: { [history.botId]: structuredClone(history) } });
@@ -32,7 +40,13 @@ Object.assign(window, { api: {
     history.revision++; publish();
     return new Promise<BotSendReceipt>(resolve => receipts.set(request.requestId, resolve));
   },
-  history: async () => structuredClone(history),
+  history: async (request: BotHistoryRequest) => {
+    if (!paging) return structuredClone(history);
+    pagingCalls.push(request);
+    const result = historyPage(request);
+    if (request.before && holdPage) await new Promise<void>(resolve => { releasePage = resolve; });
+    return result;
+  },
   cancelSend: async (_bot: string, requestId: string) => {
     cancellations.push(requestId);
     history.messages = history.messages.map(item => item.role === "assistant" && item.requestId === requestId ? { ...item, status: "cancelled", messageRevision: (item.messageRevision ?? 0) + 1 } : item);
@@ -46,6 +60,23 @@ useAppStore.setState({ activeBotId: "bot", botIdentities: [bot], botHistories: {
   refreshConnectors:async()=>{},
   refreshBotWork: async () => {}, botHostStatus: { online: true } as never });
 Object.assign(window, { concurrentFixture: {
+  pagingCalls,
+  seedPaging: (teamId?: string) => {
+    paging = true; holdPage = true; pagingCalls.length = 0;
+    const conversationId = `page-${Date.now()}`;
+    history = {botId: "bot", teamId, conversationId, revision: 1, archived: false,
+      messages: Array.from({length: 250}, (_, i) => ({botId:"bot",conversationId,requestId:`paging-${i}`,messageId:`paging-${i}`,ordinal:i+1,
+        role:i%2?"assistant":"user",text:`历史消息 ${i+1}\n\n` + "分页阅读位置测试。\n\n".repeat(i%2?3:1),status:"completed",messageRevision:1,workIds:[],createdAt:1,updatedAt:1}))};
+    const key = teamId ? `team:${teamId}` : "bot";
+    useAppStore.setState({activeBotId:"bot",activeTeam:teamId?{templateId:teamId,ownerBotId:"bot",name:"分页团队",members:[]} as never:null,
+      botHistories:{[key]:historyPage({botId:"bot",teamId})},botHistoryPages:{},botPendingSends:{}});
+  },
+  releasePaging: () => { holdPage = false; releasePage?.(); releasePage = undefined; },
+  appendPaging: async () => {
+    const last=history.messages.at(-1)!;
+    history.messages.push({...last,messageId:`paging-${last.ordinal}`,requestId:`paging-${last.ordinal}`,ordinal:last.ordinal+1,text:"新消息不抢位置"}); history.revision++;
+    await useAppStore.getState().refreshBotHistory("bot",history.teamId);
+  },
   seedScroll: () => {
     history.messages = Array.from({length: 24}, (_, i) => ({ botId: history.botId, conversationId: history.conversationId, requestId: `scroll-${i}`, messageId: `scroll-${i}`,
       ordinal: i + 1, role: i % 2 ? "assistant" as const : "user" as const,

@@ -56,6 +56,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   const submitBotDraft = useAppStore(s => s.submitBotDraft);
   const notice = useAppStore(s => s.botSubmissionNotice);
   const histories = useAppStore(s => s.botHistories);
+  const historyPages = useAppStore(s => s.botHistoryPages);
   const sendErrors = useAppStore(s => s.botConversationErrors);
   const pendingSends = useAppStore(s => s.botPendingSends);
   const identities = useAppStore(s => s.botIdentities);
@@ -111,7 +112,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   const selected = (view === "conversation" ? detailWorks : botWorks).find(work => work.workId === selectedWorkId) ?? null;
   const questionsByRequest = useMemo(() => new Map(messages.filter(item => item.role === "user").map(item => [item.requestId, item])), [messages]);
   const activeReply = activeBotReply(messages);
-  const { followLatest, awayFromBottom, pauseFollowing, restoreScroll, followBottom } = useBotThreadScroll(
+  const { followLatest, awayFromBottom, pauseFollowing, restoreScroll, followBottom, preserveHistoryPosition } = useBotThreadScroll(
     threadRef, `${scopeKey}:${histories[scopeKey]?.conversationId ?? ""}`,
     view === "conversation" && !inlineWorkId && !historicalTeamWork, messages,
   );
@@ -326,6 +327,15 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
         onReplyToBlocker={blocker => { if (inlineWork) { returnFromWork(); replyToBlocker(inlineWork, blocker); } }} />}
       {view === "conversation" ? <>
         <div className="bot-thread" hidden={Boolean(inlineWorkId)} ref={threadRef} role="log" aria-label="对话记录" aria-live="off" tabIndex={0}>
+          {messages.length > 0 && <div className="bot-history-controls">
+            <button type="button" className="bot-quiet-button" aria-disabled={historyPages[scopeKey]?.loading || histories[scopeKey]?.before === undefined}
+              onClick={() => {
+                if (!activeBotId || historyPages[scopeKey]?.loading || histories[scopeKey]?.before === undefined) return;
+                preserveHistoryPosition();
+                void useAppStore.getState().loadOlderBotHistory(activeBotId, teamId);
+              }}>{historyPages[scopeKey]?.loading ? "正在加载更早消息…" : histories[scopeKey]?.before !== undefined ? "加载更早消息" : "已到最早消息"}</button>
+            {historyPages[scopeKey]?.error && <p role="alert">{historyPages[scopeKey].error}</p>}
+          </div>}
           {messages.length === 0 ? <div className="bot-conversation-empty">
             <span className="bot-welcome-icon" aria-hidden="true"><IconBot size={30} /></span>
             <span className="bot-eyebrow">从一句话开始</span>

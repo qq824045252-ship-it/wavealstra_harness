@@ -9,7 +9,7 @@ import {
  * an upward scroll: concurrent replies may update anywhere in the conversation. */
 export function useBotThreadScroll(
   ref: RefObject<HTMLDivElement | null>, conversationKey: string, visible: boolean,
-  messages: readonly unknown[],
+  messages: readonly { messageId: string }[],
 ) {
   const state = useRef(initialFollowState());
   const followLatest = useRef(true);
@@ -18,6 +18,14 @@ export function useBotThreadScroll(
   const enabled = useRef(visible); enabled.current = visible;
   const previousTop = useRef(0);
   const target = useRef<number | null>(null);
+  const historyAnchor = useRef<{ id: string; offset: number } | null>(null);
+  const captureAnchor = useCallback(() => {
+    const el = ref.current; if (!el || !enabled.current || !el.clientHeight) return;
+    const top = el.getBoundingClientRect().top;
+    const node = [...el.querySelectorAll<HTMLElement>("[data-message-id]")]
+      .find(item => item.getBoundingClientRect().height > 0 && item.getBoundingClientRect().bottom > top);
+    historyAnchor.current = node ? { id: node.dataset.messageId!, offset: node.getBoundingClientRect().top - top } : null;
+  }, [ref]);
   const commit = useCallback((next: FollowState) => {
     state.current = next; followLatest.current = next.follow;
     setAwayFromBottom(!next.follow);
@@ -51,22 +59,39 @@ export function useBotThreadScroll(
     cancel(); target.current = null; commit(onHistoryJump(state.current));
   }, [cancel, commit]);
   const followBottom = useCallback(() => {
+    historyAnchor.current = null;
     commit(onResetForTask(state.current)); schedule();
   }, [commit, schedule]);
+
+  const preserveHistoryPosition = useCallback(() => {
+    pauseFollowing(); captureAnchor();
+  }, [pauseFollowing, captureAnchor]);
+  const restoreAnchor = useCallback(() => {
+    const el = ref.current, anchor = historyAnchor.current;
+    if (!el || !anchor || !enabled.current || followLatest.current) return;
+    const node = [...el.querySelectorAll<HTMLElement>("[data-message-id]")].find(item => item.dataset.messageId === anchor.id);
+    if (node?.getBoundingClientRect().height) writeTop(el.scrollTop + node.getBoundingClientRect().top - el.getBoundingClientRect().top - anchor.offset);
+  }, [ref, writeTop]);
+
   const restoreScroll = useCallback((top: number, follow: boolean) => {
     cancel();
     commit(follow ? onResetForTask(state.current) : onHistoryJump(state.current));
-    writeTop(top);
-  }, [cancel, commit, writeTop]);
+    if (follow) historyAnchor.current = null;
+    writeTop(top); restoreAnchor();
+  }, [cancel, commit, writeTop, restoreAnchor]);
 
   useLayoutEffect(() => {
+    historyAnchor.current = null;
     cancel(); target.current = null; previousTop.current = 0;
     commit(initialFollowState());
   }, [conversationKey, cancel, commit]);
   useLayoutEffect(() => {
+    // Also restore after returning from a hidden Work detail or another tab:
+    // an older page may have committed while the source had no layout.
+    if (visible) restoreAnchor();
     if (visible) schedule(); else cancel();
     return cancel;
-  }, [conversationKey, visible, messages, schedule, cancel]);
+  }, [conversationKey, visible, messages, schedule, cancel, restoreAnchor]);
 
   useLayoutEffect(() => {
     const el = ref.current;
@@ -85,6 +110,7 @@ export function useBotThreadScroll(
       // Distance alone (including browser scroll anchoring / content collapse)
       // must never re-enable follow. Downward intent comes from user input only.
       if (!s.pointerScrolling && !s.direction && !s.wheelUpPending && delta < -1 && distance() > 48) s = onUserScrollUp(s);
+      if (historyAnchor.current) captureAnchor();
       const next = onScroll(s, distance(), delta);
       commit(next.follow && next.direction === "down" ? { ...next, direction: null } : next);
     };
@@ -115,7 +141,7 @@ export function useBotThreadScroll(
     document.addEventListener("pointerup", pointerUp);
     document.addEventListener("pointercancel", pointerCancel);
     el.addEventListener("keydown", key);
-    const observer = new ResizeObserver(schedule);
+    const observer = new ResizeObserver(() => { restoreAnchor(); schedule(); });
     observer.observe(el);
     const list = el.querySelector(".bot-message-list");
     if (list) observer.observe(list);
@@ -125,6 +151,6 @@ export function useBotThreadScroll(
       el.removeEventListener("pointerdown", pointerDown); el.removeEventListener("keydown", key);
       document.removeEventListener("pointerup", pointerUp); document.removeEventListener("pointercancel", pointerCancel);
     };
-  }, [conversationKey, visible, messages.length > 0, cancel, commit, ref, schedule]);
-  return { followLatest, awayFromBottom, pauseFollowing, restoreScroll, followBottom };
+  }, [conversationKey, visible, messages.length > 0, cancel, commit, ref, schedule, captureAnchor, restoreAnchor]);
+  return { followLatest, awayFromBottom, pauseFollowing, restoreScroll, followBottom, preserveHistoryPosition };
 }

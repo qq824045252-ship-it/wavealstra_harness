@@ -86,6 +86,7 @@ export class WorkProjectionBuilder {
       workId: work.workId,
       projectId: work.projectId,
       title: work.title,
+      goalDescription: work.goalDescription,
       mode: work.mode,
       watchPlan: work.watchRule ? { endsAt: work.watchRule.endsAt, termination: work.watchRule.termination, scheduleBasis: work.watchRule.scheduleBasis, scheduleRationale: work.watchRule.scheduleRationale } : undefined,
       lifecycle: work.lifecycle,

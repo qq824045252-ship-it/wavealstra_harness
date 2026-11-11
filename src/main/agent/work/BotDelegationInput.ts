@@ -24,7 +24,7 @@ const comparable = (field: DefinitionField, value: Definition[DefinitionField]) 
   ? (value as WorkCriterionDto[]).map(item => [item.id, item.text, item.origin, item.requiresRealEnvironmentCheck, item.requiredEnvironment]) : value);
 
 /** Source fidelity is owned by the host, not supplied as another model argument. */
-export function botDelegationInput(db: Database.Database, binding: WorkExecutionBindingDto, sourceVersion: number) {
+export function botDelegationInput(db: Database.Database, binding: Pick<WorkExecutionBindingDto, "workId" | "intentRevision">, sourceVersion: number) {
   const history = db.prepare(`SELECT intent_revision,source_version,created_by,source_message_id,title,goal_description,constraints_json,criteria_json
     FROM work_intent_snapshots WHERE work_id=? AND intent_revision<=? AND source_version<=?
     ORDER BY intent_revision,source_version`).all(binding.workId, binding.intentRevision, sourceVersion) as IntentRow[];

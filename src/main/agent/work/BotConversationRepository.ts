@@ -113,11 +113,12 @@ export class BotConversationRepository {
       WHERE c.user_id=? AND (m.conversation_id=? OR (m.conversation_id LIKE 'bot-inbox-%' AND EXISTS (
         SELECT 1 FROM bot_work_feedback f JOIN work_conversations t ON t.work_id=json_extract(f.metadata_json,'$.workId')
         WHERE f.message_id=m.message_id AND t.channel_type='bot-delivery' AND t.conversation_id=?)))
-      AND m.ordinal<? ORDER BY m.ordinal DESC LIMIT 101`)
-      .all(userId, conversation.conversation_id, conversation.conversation_id, request.before ?? Number.MAX_SAFE_INTEGER);
-    const messages = rows.slice(0, 100).map(row => this.mapMessage(row)).reverse();
+      AND m.ordinal<? AND m.ordinal>? ${request.messageIds ? "AND m.message_id IN (SELECT value FROM json_each(?))" : ""} ORDER BY m.ordinal ${request.after === undefined ? "DESC" : "ASC"} LIMIT 101`)
+      .all(userId, conversation.conversation_id, conversation.conversation_id, request.before ?? Number.MAX_SAFE_INTEGER, request.after ?? 0, ...(request.messageIds ? [JSON.stringify(request.messageIds)] : []));
+    const messages = rows.slice(0, 100).map(row => this.mapMessage(row));
+    if (request.after === undefined) messages.reverse();
     return { conversationId: conversation.conversation_id, botId: request.botId, teamId: request.teamId, revision: conversation.revision,
-      archived: conversation.archived_at !== null, messages, before: rows.length > 100 ? messages[0]?.ordinal : undefined };
+      archived: conversation.archived_at !== null, messages, before: !request.messageIds && (request.after !== undefined || rows.length > 100) ? messages[0]?.ordinal : undefined };
   }
 
   activeRequests(userId: string): import("../../../shared/bot-conversation").BotActiveRequestDto[] {

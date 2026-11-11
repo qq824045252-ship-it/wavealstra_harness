@@ -360,3 +360,10 @@
 .bot-result-notices { margin:6px 0; }
 .bot-result-attachments > .bot-result-files > li > button { color:var(--accent); border-color:var(--accent); font-weight:600; }
 .bot-result-report .bot-status-badge[data-outcome="partial"], .bot-result-report .bot-status-badge[data-outcome="unknown"] { color:var(--fg); }
+
+.bot-work-goal { white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; }
+.bot-work-original-delegation { margin:12px 0; }
+
+.bot-history-controls { text-align: center; padding: 8px 16px; flex: none; }
+.bot-history-controls button[aria-disabled="true"] { opacity: .65; cursor: default; }
+.bot-history-controls p { color: var(--danger, #b91c1c); font-size: 12px; margin: 6px 0; }

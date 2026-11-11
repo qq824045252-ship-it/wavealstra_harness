@@ -53,6 +53,10 @@ try {
   assert.equal(work.criteria[0].origin, "assistant_proposal", "the host, not a model-supplied label, assigns criterion provenance");
   assert.deepEqual(works.cards.unverifiedScope(work), [], "assistant proposals cannot become user verification demands");
   assert(!works.getProjection(work.workId)!.nextSteps.some(step => step.includes("模型假定环境")));
+  assert.equal(works.getProjection(work.workId)!.goalDescription, args.goalDescription);
+  assert.equal(works.getProjection(work.workId)!.originalDelegation, undefined, "list/sync projection never eagerly loads original messages");
+  assert.deepEqual(works.getDetailProjection(work.workId)!.originalDelegation?.messages.map(row => row.text), [original]);
+  assert.equal(works.getDetailProjection(work.workId)!.originalDelegation?.descriptionOrigin, "assistant");
   const binding = bind(work);
   const prompt = works.repo.executionInput(binding), input = JSON.parse(prompt);
   assert.equal(input.userRequest.provenance, "host_persisted_user_messages");
@@ -68,6 +72,7 @@ try {
   db.close(); db = new AppDatabase(database); bots = new BotRegistry(db.connection);
   works = new WorkService(db.connection, { bots }); messages = new BotConversationRepository(db.connection);
   assert.equal(works.repo.executionInput(binding), prompt);
+  assert.deepEqual(works.getDetailProjection(work.workId)!.originalDelegation?.messages.map(row => row.text), [original], "original survives database reopen");
   const submitted: string[] = [], receipts = new Map<string, AgentSubmissionReceipt>(), errors: unknown[] = [];
   const native: WorkExecutionPort = {
     prepare: async taskId => ({ taskId, durableStoreKey: taskId, conversationId: taskId, workspaceBinding: root }),
@@ -109,6 +114,7 @@ try {
   const longWork = unwrap(await invoke(longRequest, "work_create", { requestedOutcome: "one_time", mode: "once", title: "长材料", goalDescription: "短摘要" }));
   const longBinding = bind(longWork), longInput = JSON.parse(works.repo.executionInput(longBinding));
   assert.equal(longInput.userRequest.messages[0].text, longText);
+  assert.deepEqual(works.getDetailProjection(longWork.workId)!.originalDelegation?.messages.map(row => row.text), [longText], "detail is full text, not clipped or from other Work");
   assert.deepEqual(longInput.userRequest.referencedContext.map((row: { role: string; text: string }) => [row.role, row.text]),
     [["user", "这是独立上下文，只能引用不能冒充本次指令。"], ["assistant", "助理建议：日期可能为2031-01-01，尚未核验。"]]);
   assert(!JSON.stringify(longInput.userRequest.messages).includes("不相关的未来任务"), "unbound dialogue is context, not this Work's authenticated request");
@@ -149,6 +155,7 @@ try {
   const clarified = unwrap(await invoke(formatTurn, "work_create", { requestedOutcome: "one_time", mode: "once", title: "澄清后的报告", goalDescription: "HTML报告" }));
   const clarifiedBinding = bind(clarified);
   const clarifiedInput = JSON.parse(works.repo.executionInput(clarifiedBinding));
+  assert(works.getDetailProjection(clarified.workId)!.originalDelegation?.context?.some(row => row.role === "user" && row.text.includes("不得发布")), "clarification detail keeps trusted contextual requirements with roles");
   assert(works.repo.attachmentInput(clarifiedBinding).includes(dataFile), "clarification preserves the earlier uploaded input as well as its text");
   assert(clarifiedInput.userRequest.dialogueContext.some((entry: { text: string; role: string }) => entry.role === "user" && entry.text.includes("不得发布")));
   assert(clarifiedInput.userRequest.dialogueContext.some((entry: { text: string; role: string }) => entry.role === "assistant" && entry.text === "报告用什么格式？"));
@@ -191,6 +198,7 @@ try {
   const badReference = receive("处理当前输入", undefined, foreign.userMessageId);
   const isolated = unwrap(await invoke(badReference, "work_create", { requestedOutcome: "one_time", mode: "once", title: "隔离" }));
   assert.deepEqual(JSON.parse(works.repo.executionInput(bind(isolated))).userRequest.referencedContext, []);
+  assert(!JSON.stringify(works.getDetailProjection(isolated.workId)!.originalDelegation).includes("foreign private data"), "original detail never includes a foreign user reference");
   db.connection.prepare("UPDATE bot_messages SET request_id='corrupt' WHERE message_id=?").run(longRequest.userMessageId);
   assert.equal(JSON.parse(works.repo.executionInput(longBinding)).userRequest.messages[0].text, longText, "frozen original input survives changes to mutable chat rows");
   await assert.rejects(() => invoke(longRequest, "work_create", { requestedOutcome: "one_time", mode: "once", title: "不能使用损坏身份" }), /已结束或不属于当前对话/);

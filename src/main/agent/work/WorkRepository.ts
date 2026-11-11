@@ -507,6 +507,20 @@ export class WorkRepository {
     return `\n\n用户附件（此执行输入快照的宿主持久副本；读取实际文件，不要仅凭文件名推断内容）：\n${attachments.map(item => JSON.stringify(item)).join("\n")}`;
   }
 
+  /** Single-Work detail read using the same host-owned provenance as execution. */
+  originalDelegation(work: WorkDto): import("../../../shared/bot-work").WorkProjectionDto["originalDelegation"] {
+    try {
+      const input = botDelegationInput(this.db, work, work.sourceVersion);
+      return { messages: input?.messages.map(({ messageId, text, intentRevision, sourceVersion }) =>
+        ({ messageId, text, intentRevision, sourceVersion })) ?? [],
+        context: input ? [...new Map([...input.dialogueContext, ...input.referencedContext].map(message => [message.messageId, message])).values()]
+          .map(({ messageId, text, role }) => ({ messageId, text, role })) : [], descriptionOrigin: input?.definitionOrigins.description };
+    } catch {
+      // Missing receipts must not turn an assistant plan into a claimed user quote.
+      return { messages: [], unavailable: true };
+    }
+  }
+
   executionInput(binding: WorkExecutionBindingDto): string {
     const row = this.db.prepare(`SELECT title,goal_description,constraints_json,criteria_json,source_version,created_by
       FROM work_intent_snapshots WHERE work_id=? AND intent_revision=? AND input_snapshot_id=?

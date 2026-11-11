@@ -23,7 +23,8 @@
     "openSubagentView": "Open a specific subagent conversation while retaining its parent task navigation.",
     "closeSubagentView": "Return from the subagent conversation to its parent task without deleting the run.",
     "setBotComposerSelection": "Update the active Bot or team composer model, experts, skills, MCP and connectors without changing ordinary task selection.",
-    "setHistoricalTeamWork": "Select or clear a runtime-only historical team Work viewer and advance the navigation intent version without changing composer or active team ownership."
+    "setHistoricalTeamWork": "Select or clear a runtime-only historical team Work viewer and advance the navigation intent version without changing composer or active team ownership.",
+    "loadOlderBotHistory": "Explicit bounded conversation paging with scope and cursor fences."
   },
   "publicExports": {
     "CreateRelatedTaskOptions": "type",
@@ -636,6 +637,7 @@
     "browserNavigationVersion": "Guard asynchronous Gadget open results against newer explicit renderer navigation.",
     "browserTabByTask": "Retain selected native tab identity per task/home across internal navigation, panel dismissal and task switches.",
     "historicalTeamWork": "Runtime-only historical team Work viewer; never becomes a composer selection or team identity and clears when navigation changes.",
-    "botNavigationEpoch": "Monotonic Bot/team navigation intent version; invalidates delayed historical Work navigation when the user changes page, Bot, team or selected Work."
+    "botNavigationEpoch": "Monotonic Bot/team navigation intent version; invalidates delayed historical Work navigation when the user changes page, Bot, team or selected Work.",
+    "botHistoryPages": "Per-scope pending/error state for explicit older-history reads."
   }
 }

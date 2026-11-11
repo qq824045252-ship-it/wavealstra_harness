@@ -467,6 +467,15 @@ export interface WorkProjectionDto {
   /** Explicit project binding, never inferred from a filesystem path. */
   projectId?: string;
   title: string;
+  /** Current persisted goal; not necessarily verbatim user wording. */
+  goalDescription?: string;
+  /** On-demand detail only. Never inferred from neighbouring conversations. */
+  originalDelegation?: {
+    messages: Array<{ messageId: string; text: string; intentRevision: number; sourceVersion: number }>;
+    context?: Array<{ messageId: string; text: string; role: "user" | "assistant" }>;
+    descriptionOrigin?: "user" | "assistant";
+    unavailable?: boolean;
+  };
   mode: WorkMode;
   watchPlan?: Pick<WorkWatchRuleDto, "scheduleBasis" | "scheduleRationale" | "endsAt" | "termination">;
   lifecycle: WorkLifecycle;
