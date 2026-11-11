@@ -252,6 +252,39 @@ export interface UsageQueryRow extends UsageEventRow {
   backfilled: number;
 }
 
+type UsageCoverageRow = Pick<UsageEventRow,
+  "inputTokens" | "outputTokens" | "cacheRead" | "cacheWrite" | "totalTokens" | "costTotal"> & {
+  inputKnown: number | null; outputKnown: number | null; cacheReadKnown: number | null;
+  cacheWriteKnown: number | null; costKnown: number | null;
+};
+
+/** Identical coverage rules for complete rows and the bounded heatmap projection. */
+function normalizeUsageRow<T extends UsageCoverageRow>(row: T) {
+  // 有 coverage 行时以它为准（权威）。没有 coverage 行（老数据 / 回填 / 子代理归档）时
+  // 按行内数据判定：旧写入缺陷只会把整行 token 清零，所以 total_tokens > 0 的行是 pi
+  // 归一化后的真实计数、四字段可信；total_tokens = 0 才保持 unknown（失败调用没消耗
+  // token，不能用 0 冒充已知）。旧实现按 source_detail='pi-durable' 一律判未知，导致
+  // 历史 pi-durable 行永远显示「未知」。
+  // cost 口径（用户 2026-11-06 明确要求）：只要这一行有真实用量（total > 0），就把
+  // 费用视为已知——没有上报费用就是 0（面板按目录单价估算，0 与「未知」相比更接近
+  // 事实，也不会因为一条无费用行把整窗降级成未知）。total = 0 的失败行仍然未知。
+  const legacyKnown = row.totalTokens > 0;
+  const known = {
+  input: row.inputKnown === null ? legacyKnown : row.inputKnown === 1,
+  output: row.outputKnown === null ? legacyKnown : row.outputKnown === 1,
+  cacheRead: row.cacheReadKnown === null ? legacyKnown : row.cacheReadKnown === 1,
+  cacheWrite: row.cacheWriteKnown === null ? legacyKnown : row.cacheWriteKnown === 1,
+  cost: row.costKnown === null ? legacyKnown : row.costKnown === 1 || legacyKnown,
+  };
+  const inputTokens = known.input ? row.inputTokens : 0;
+  const outputTokens = known.output ? row.outputTokens : 0;
+  const cacheRead = known.cacheRead ? row.cacheRead : 0;
+  const cacheWrite = known.cacheWrite ? row.cacheWrite : 0;
+  return { ...row, known, inputTokens, outputTokens, cacheRead, cacheWrite,
+    totalTokens: known.input && known.output && known.cacheRead && known.cacheWrite ? row.totalTokens : inputTokens + outputTokens + cacheRead + cacheWrite,
+    costTotal: known.cost ? row.costTotal : 0 };
+}
+
 export class UsageStatsService {
   private coverageAvailable = true;
   constructor(private readonly db: Database) {
@@ -479,31 +512,21 @@ export class UsageStatsService {
       ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
       ORDER BY ts ASC`;
     const rows = this.db.prepare<unknown[], UsageQueryRow & { inputKnown: number | null; outputKnown: number | null; cacheReadKnown: number | null; cacheWriteKnown: number | null; costKnown: number | null }>(sql).all(...args);
-    return rows.map(row => {
-      // 有 coverage 行时以它为准（权威）。没有 coverage 行（老数据 / 回填 / 子代理归档）时
-      // 按行内数据判定：旧写入缺陷只会把整行 token 清零，所以 total_tokens > 0 的行是 pi
-      // 归一化后的真实计数、四字段可信；total_tokens = 0 才保持 unknown（失败调用没消耗
-      // token，不能用 0 冒充已知）。旧实现按 source_detail='pi-durable' 一律判未知，导致
-      // 历史 pi-durable 行永远显示「未知」。
-      // cost 口径（用户 2026-11-06 明确要求）：只要这一行有真实用量（total > 0），就把
-      // 费用视为已知——没有上报费用就是 0（面板按目录单价估算，0 与「未知」相比更接近
-      // 事实，也不会因为一条无费用行把整窗降级成未知）。total = 0 的失败行仍然未知。
-      const legacyKnown = row.totalTokens > 0;
-      const known = {
-      input: row.inputKnown === null ? legacyKnown : row.inputKnown === 1,
-      output: row.outputKnown === null ? legacyKnown : row.outputKnown === 1,
-      cacheRead: row.cacheReadKnown === null ? legacyKnown : row.cacheReadKnown === 1,
-      cacheWrite: row.cacheWriteKnown === null ? legacyKnown : row.cacheWriteKnown === 1,
-      cost: row.costKnown === null ? legacyKnown : row.costKnown === 1 || legacyKnown,
-      };
-      const inputTokens = known.input ? row.inputTokens : 0;
-      const outputTokens = known.output ? row.outputTokens : 0;
-      const cacheRead = known.cacheRead ? row.cacheRead : 0;
-      const cacheWrite = known.cacheWrite ? row.cacheWrite : 0;
-      return { ...row, known, inputTokens, outputTokens, cacheRead, cacheWrite,
-        totalTokens: known.input && known.output && known.cacheRead && known.cacheWrite ? row.totalTokens : inputTokens + outputTokens + cacheRead + cacheWrite,
-        costTotal: known.cost ? row.costTotal : 0 };
-    });
+    return rows.map(normalizeUsageRow);
+  }
+
+  /** Heatmap/streaks need the full calendar window, but not model/session payloads.
+   * Consume each ordered row synchronously without retaining a second full ledger. */
+  private *activityRows(since: number) {
+    const sql = `SELECT ts, source_kind AS sourceKind, stop_reason AS stopReason,
+        input_tokens AS inputTokens, output_tokens AS outputTokens,
+        cache_read AS cacheRead, cache_write AS cacheWrite,
+        total_tokens AS totalTokens, cost_total AS costTotal,
+        ${this.coverageAvailable ? "c.input_known AS inputKnown,c.output_known AS outputKnown,c.cache_read_known AS cacheReadKnown,c.cache_write_known AS cacheWriteKnown,c.cost_known AS costKnown" : "NULL AS inputKnown,NULL AS outputKnown,NULL AS cacheReadKnown,NULL AS cacheWriteKnown,NULL AS costKnown"}
+      FROM usage_events e ${this.coverageAvailable ? "LEFT JOIN usage_event_coverage c ON c.entry_id=e.entry_id" : ""}
+      WHERE ts >= ? ORDER BY ts ASC`;
+    const rows = this.db.prepare<[number], UsageCoverageRow & Pick<UsageEventRow, "ts" | "sourceKind" | "stopReason">>(sql).iterate(since);
+    for (const row of rows) yield normalizeUsageRow(row);
   }
 
   summarize(rangeDays: number): ReturnType<typeof summarizeRows> {
@@ -572,7 +595,7 @@ export class UsageStatsService {
     const rangeRows = this.queryRows({ since });
     const summary = summarizeRows(rangeRows);
     const heatSince = rangeStartMs(Math.max(rangeDays, 371), now);
-    const heatRows = rangeDays >= 371 ? rangeRows : this.queryRows({ since: heatSince });
+    const heatRows = rangeDays >= 371 ? rangeRows : this.activityRows(heatSince);
     const days = dailyActivity(heatRows, heatSince, now);
     const streaks = streakStats(days, localDayKey(now));
     const rangeDaysActivity = dailyActivity(rangeRows, since, now);

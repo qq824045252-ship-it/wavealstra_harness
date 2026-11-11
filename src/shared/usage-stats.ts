@@ -129,7 +129,7 @@ export function isErrorRow(row: UsageEventRow): boolean {
  * 与 dispose 安全结算行（stopReason=disposed：请求已开始但 pi 未持久化 assistant message，
  * PI 权威统计不将其计为调用）。
  */
-export function isCallRow(row: UsageEventRow): boolean {
+export function isCallRow(row: Pick<UsageEventRow, "sourceKind" | "stopReason">): boolean {
   return (
     (row.sourceKind === "main" || row.sourceKind === "btw" || row.sourceKind === "subagent" || row.sourceKind === "auxiliary") &&
     row.stopReason !== "disposed"
@@ -203,7 +203,7 @@ export interface DailyActivity {
   cost: number;
 }
 
-export function dailyActivity(rows: UsageEventRow[], fromMs: number, toMs: number): DailyActivity[] {
+export function dailyActivity(rows: Iterable<Pick<UsageEventRow, "ts" | "totalTokens" | "costTotal" | "sourceKind" | "stopReason">>, fromMs: number, toMs: number): DailyActivity[] {
   const map = new Map<string, DailyActivity>();
   for (const key of enumerateLocalDays(fromMs, toMs)) {
     map.set(key, { date: key, tokens: 0, calls: 0, cost: 0 });
