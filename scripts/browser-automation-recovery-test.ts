@@ -1,3 +1,7 @@
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import Database from "better-sqlite3";
@@ -57,6 +61,20 @@ try {
     (error: unknown) => error instanceof BrowserAutomationError && error.code === "INVALID_URL");
   assert.equal(recordBrowserAutomationFailureRecovery(bridge, { action: "navigate", url: "file:///tmp/x" }, new BrowserAutomationError("INVALID_URL", "bad")), false,
     "bad Agent URL input must not create a user recovery notice");
+
+  const previewDir = mkdtempSync(join(tmpdir(), "browser-local-url-"));
+  try {
+    const previewPath = join(previewDir, "本地 preview #1.html");
+    writeFileSync(previewPath, "<title>local preview</title>");
+    const previewUrl = pathToFileURL(previewPath).href;
+    const navigated = await invalidService.execute({ action: "navigate", url: previewUrl });
+    assert.equal(navigated.url, previewUrl, "encoded local preview uses the same browser host");
+    for (const bad of [pathToFileURL(previewDir).href, "file://network-share/private.html", "javascript:alert(1)", "data:text/html,not-a-file"]) {
+      await assert.rejects(invalidService.execute({ action: "navigate", url: bad }),
+        (error: unknown) => error instanceof BrowserAutomationError && error.code === "INVALID_URL");
+      assert.equal(invalid.wc.getURL(), previewUrl, "invalid URL does not disturb current preview");
+    }
+  } finally { rmSync(previewDir, { recursive: true, force: true }); }
 
   const nav = hostWith({ loadError: new Error("ERR_CONNECTION_RESET") });
   const navService = new BrowserAutomationService(() => nav.host);

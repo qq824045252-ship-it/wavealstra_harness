@@ -2,6 +2,8 @@ import type { BrowserHost } from "../browser/BrowserHost";
 import { BrowserContentService } from "../browser/BrowserContentService";
 import { PageCaptureError } from "../artifact/PageInspectionService";
 import { randomUUID } from "node:crypto";
+import { statSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { recordHostToolNotStarted } from "../agent/durable/DurableToolOutcome";
 import { currentDurableInvocation } from "../agent/durable/DurableExecutionContext";
 
@@ -44,12 +46,21 @@ export interface BrowserExecOutput {
   screenshot?: Uint8Array;
 }
 
-function assertHttpUrl(raw: string): string {
+function assertBrowserUrl(raw: string): string {
   try {
-    const value = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw.trim()) ? raw.trim() : `https://${raw.trim()}`;
+    const value = /^[a-z][a-z0-9+.-]*:/i.test(raw.trim()) ? raw.trim() : `https://${raw.trim()}`;
     const parsed = new URL(value);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      throw new BrowserAutomationError("INVALID_URL", "browser_exec 只允许 http(s) URL");
+    if (parsed.protocol === "file:") {
+      // Same sandboxed BrowserHost used by manual artifact opening. Do not turn
+      // local preview into a network-share request (UNC on Windows).
+      if (parsed.hostname && parsed.hostname !== "localhost") {
+        throw new BrowserAutomationError("INVALID_URL", "本地预览不支持网络共享文件；请使用本机 file:// URL");
+      }
+      if (!statSync(fileURLToPath(parsed)).isFile()) {
+        throw new BrowserAutomationError("INVALID_URL", "本地预览需要一个已存在的普通文件，而不是目录");
+      }
+    } else if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new BrowserAutomationError("INVALID_URL", "browser_exec 支持 http(s) 网页或本机 file:// 文件 URL");
     }
     return parsed.toString();
   } catch (error) {
@@ -90,7 +101,7 @@ export class BrowserAutomationService {
       if (!["status", "navigate", "read", "click", "fill", "press", "screenshot"].includes(input.action)) {
         throw new BrowserAutomationError("INVALID_INPUT", `不支持的 browser_exec action：${String(input.action)}`);
       }
-      if (input.action === "navigate") assertHttpUrl(requireShort(input.url, "url", 2_000));
+      if (input.action === "navigate") assertBrowserUrl(requireShort(input.url, "url", 2_000));
       if (["click", "fill", "press"].includes(input.action)) requireShort(input.selector, "selector", 1_000);
       if (input.action === "press") requireShort(input.key, "key", 60);
       if (input.action === "fill" && (input.text?.length ?? 0) > 100_000) {
@@ -121,7 +132,7 @@ export class BrowserAutomationService {
     }
     if (input.action === "navigate") {
       this.observations.delete(owner);
-      const target = assertHttpUrl(requireShort(input.url, "url", 2_000));
+      const target = assertBrowserUrl(requireShort(input.url, "url", 2_000));
       try {
         await host.navigateForAutomation(target, signal);
         return { action: input.action, url: wc.getURL(), title: await wc.getTitle() };

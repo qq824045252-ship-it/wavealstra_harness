@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { app, BrowserWindow, nativeImage } from "electron";
 import { BrowserHost } from "../src/main/browser/BrowserHost";
 import { BrowserAutomationService } from "../src/main/capabilities/BrowserAutomationService";
@@ -78,7 +79,7 @@ void (async () => {
   try {
     const originalUrl = preflight.wc.getURL();
     const originalFocus = await preflight.wc.executeJavaScript("document.activeElement.tagName");
-    await assert.rejects(preflight.service.execute({ action: "navigate", url: "file:///tmp/blocked.html" }), /只允许 http/);
+    await assert.rejects(preflight.service.execute({ action: "navigate", url: "file:///tmp/blocked.html" }), /无效浏览器 URL/);
     await assert.rejects(preflight.service.execute({ action: "press", key: "PageDown" }), /selector 不能为空/);
     assert.equal(preflight.wc.getURL(), originalUrl);
     assert.equal(await preflight.wc.executeJavaScript("document.activeElement.tagName"), originalFocus);
@@ -86,6 +87,23 @@ void (async () => {
     assert.equal(await preflight.wc.executeJavaScript("document.querySelector('#count').textContent"), "1");
     results.push({ mode: "invalid-input-then-independent-action", invalidUrl: "not_started", missingSelector: "not_started", continued: true });
   } finally { preflight.close(); }
+  const localPath = join(profile, "本地产物 preview #1.html");
+  writeFileSync(localPath, html);
+  const local = await fixture(pathToFileURL(localPath).href);
+  try {
+    const read = await local.service.execute({ action: "read" });
+    assert.match(read.text ?? "", /Click/);
+    await local.service.execute({ action: "click", selector: "#increment" });
+    assert.equal(await local.wc.executeJavaScript("document.querySelector('#count').textContent"), "1");
+    const image = await local.service.execute({ action: "screenshot" });
+    const evidence = checkedImage(image.screenshot!);
+    results.push({ mode: "local-file-preview", read: true, clicked: true, ...evidence });
+  } finally { local.close(); }
+  if (process.argv.includes("--local-preview-only")) {
+    writeFileSync(join(evidence, "local-preview-results.json"), JSON.stringify({ at: new Date().toISOString(), electron: process.versions.electron, results }, null, 2));
+    console.log("browser local preview Electron: PASS (navigation, read, click, nonempty screenshot)");
+    return;
+  }
   for (const mode of ["hidden", "inspector", "blocker", "minimized", "visible"] as const) {
     const f = await fixture(url);
     try {

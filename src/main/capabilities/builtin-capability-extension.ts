@@ -707,7 +707,7 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
       pi.registerTool({
         name: "browser_exec",
         label: "浏览器操作",
-        description: "操作 MyBuddy 自有浏览器。仅支持 status/navigate/read/click/fill/press/screenshot 枚举动作，不执行任意 JavaScript。screenshot 会按当前主模型能力自动选择原生多模态直读或内部 Vision 委托，不需要再手动调用 describe_image。需要桌面窗口级操作（跨应用、结构化控件、窗口输入）时用 computer_exec，不要用本工具。",
+        description: "操作 MyBuddy 自有浏览器。navigate 支持 http(s) 网页以及本机 file:// 文件 URL，可直接预览和截图已生成的 HTML，无需另开 Chrome；不支持网络共享文件。仅支持 status/navigate/read/click/fill/press/screenshot 枚举动作，不执行任意 JavaScript。screenshot 会按当前主模型能力自动选择原生多模态直读或内部 Vision 委托，不需要再手动调用 describe_image。需要桌面窗口级操作（跨应用、结构化控件、窗口输入）时用 computer_exec，不要用本工具。",
         promptSnippet: "browser_exec(action, url?, selector?, text?, key?)",
         parameters: browserExecSchema,
         execute: async (tc, p: BrowserExecInput & { max_chars?: number }, signal, _onUpdate, ctx) => {
