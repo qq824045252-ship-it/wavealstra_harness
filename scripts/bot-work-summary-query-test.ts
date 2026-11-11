@@ -22,6 +22,16 @@ const actor: WorkActor = { kind: 'user', userId: LOCAL_USER_ID, grants: DESKTOP_
 const create = (id: string) => { const r = works.createWork(actor, { operationId: id, title: id, authorization: DESKTOP_USER_GRANTS }); if (!r.ok)
     throw Error(r.message); return r.work; };
 try {
+    const matches = db.connection.prepare('SELECT work_list_matches(?,?) AS matches');
+    const normalizationParts = ['ＡＢＣ', 'cafe\u0301', 'ΟΣ', 'Ο\u0301Σ', 'İ I ı', 'Σ\u0301', '细节', '\u0301', 'K ﬃ ①', ''];
+    for (const prefix of normalizationParts) for (const suffix of normalizationParts) {
+        const full = prefix + '\n' + suffix;
+        for (const term of ['abc', 'CAFÉ', 'ος', 'οσ', '细节', 'ffi', '①', 'i', 'σ', 'σ i']) {
+            matches.get(prefix + '\n',term);
+            const expected = term.normalize('NFKC').toLocaleLowerCase().trim().split(/\s+/).every(t=>full.normalize('NFKC').toLocaleLowerCase().includes(t)) ? 1 : 0;
+            assert.equal((matches.get(full,term) as {matches:number}).matches,expected,'interleaved Unicode queries preserve matcher semantics');
+        }
+    }
     const first = create('seed');
     const columns = (db.connection.prepare('PRAGMA table_info(works)').all() as {
         name: string;
@@ -116,6 +126,40 @@ try {
       VALUES ('rejected-newest',?,?,'status-binding',1,1,'snapshot:bound','rejected','Rejected content must not be the card preview',999)`).run(subject.workId,DEFAULT_BOT_ID);
     assert.equal(query.get(LOCAL_USER_ID,subject.workId)?.listSummary?.excerpt,'x'.repeat(600));
     assert.equal(query.get(LOCAL_USER_ID,subject.workId)?.listSummary?.hasResultExcerpt,true);
+    // Preserve full Unicode/AND-term search across the cheap prefix and deep fields.
+    for (const term of ['status-subject full-report-tail', 'status-subject old-result.txt', 'status-subject 验收文字',
+        'ＳＴＡＴＵＳ-ＳＵＢＪＥＣＴ full-report-tail', '  status-subject\nfull-report-tail\t', 'status-subject no-such-tail']) {
+        const matched = query.query(LOCAL_USER_ID, {scope:{kind:'all'},view:'all',query:term});
+        assert.equal(matched.filtered, term.includes('no-such-tail') ? 0 : 1, term);
+    }
+    // Observe the actual text passed by SQL, rather than asserting source formatting.
+    db.connection.prepare("UPDATE works SET title='Item status-subject' WHERE work_id=?").run(subject.workId);
+    let subjectFullReads = 0, subjectPrefixReads = 0;
+    db.connection.function('work_list_matches', {deterministic:true}, (text: unknown, value: unknown) => {
+        const document = String(text ?? '');
+        if (document.startsWith(subject.workId + '\n')) {
+            if (document.includes('full-report-tail')) subjectFullReads++;
+            else subjectPrefixReads++;
+        }
+        const normalized = document.normalize('NFKC').toLocaleLowerCase();
+        return String(value ?? '').normalize('NFKC').toLocaleLowerCase().trim().split(/\s+/).every(term => normalized.includes(term)) ? 1 : 0;
+    });
+    const uncachedSearch = (term: string) => db.connection.transaction(() => query.query(LOCAL_USER_ID, {scope:{kind:'all'},view:'all',query:term}))();
+    assert.ok(uncachedSearch('Item').filtered>2000);
+    assert.ok(subjectPrefixReads > 0, 'matching row visits its scalar prefix');
+    assert.equal(subjectFullReads,0,'prefix match skips all deep search text');
+    db.connection.prepare("UPDATE works SET title='status-subject' WHERE work_id=?").run(subject.workId);
+    db.connection.prepare("UPDATE work_deliverables SET summary=summary||' Item' WHERE deliverable_id='search-deliverable'").run();
+    assert.ok(uncachedSearch('Item').works.some(work=>work.workId===subject.workId),'prefix-plan misses still search full detail');
+    assert.ok(subjectFullReads>0,'a representative probe is not a result filter');
+    assert.equal(uncachedSearch('status-subject full-report-tail').filtered,1);
+    assert.ok(subjectFullReads > 0,'mixed terms still read the complete document');
+    subjectFullReads = 0; subjectPrefixReads = 0;
+    assert.equal(uncachedSearch('no-such-tail').filtered,0);
+    assert.equal(subjectFullReads,1,'zero exact matches skip the redundant page scan');
+    new WorkListQuery(db.connection, () => works.scheduler.hostState().online);
+    for (const term of ['full-report-tail', 'no-such-tail', 'full-report-tail', 'ＳＴＡＴＵＳ-ＳＵＢＪＥＣＴ'])
+        assert.equal(uncachedSearch(term).filtered,term === 'no-such-tail' ? 0 : 1,'changing queries refresh normalized terms');
     const blockedItem = { itemId: 'gap-item', task: 'finish actual work', required: true, dependencies: [], criterionIds: [], nativeStatus: 'test', outcome: 'blocked', artifactRefs: [], writeConflicts: [], summary: 'not done' };
     db.connection.prepare(`INSERT INTO work_subitem_results(fact_id,work_id,binding_id,item_id,result_json,created_at) VALUES ('gap-fact',?,'status-binding','gap-item',?,1)`).run(subject.workId, JSON.stringify(blockedItem));
     parity();

@@ -89,7 +89,10 @@ const statusSql = `CASE
  AND json_array_length(d.uncovered_scope_json)>0 AND d.deliverable_id IN (SELECT value FROM json_each(w.accepted_deliverable_ids_json))) THEN 'finalizing' ELSE 'reviewing' END
  WHEN ${binding("b.status IN ('running','submitted')")} THEN 'executing' WHEN ${binding("b.status='unknown'")} THEN 'unknown'
  WHEN ${binding("b.status='pending'")} THEN 'queued' WHEN ${binding("b.status IN ('failed','stopped')")} THEN 'failed' ELSE 'idle' END`;
-const searchSql = `w.work_id||char(10)||w.title||char(10)||coalesce(w.goal_description,'')||char(10)||coalesce(w.closure_summary,'')||char(10)
+// This prefix is also part of the full search document. A positive match can skip
+// the correlated detail/guidance reads; a negative match still searches everything.
+const searchPrefixSql = `w.work_id||char(10)||w.title||char(10)||coalesce(w.goal_description,'')||char(10)||coalesce(w.closure_summary,'')||char(10)`;
+const searchSql = `${searchPrefixSql}
  ||coalesce((SELECT group_concat(json_extract(value,'$.text'),char(10)) FROM json_each(w.criteria_json)),'')||char(10)
  ||coalesce((SELECT group_concat(k.reason,char(10)) FROM work_blockers k WHERE k.work_id=w.work_id AND k.status='open'),'')||char(10)
  ||coalesce((SELECT group_concat(d.summary||char(10)||coalesce((SELECT group_concat(value,char(10)) FROM json_each(d.artifact_refs_json)),''),char(10)) FROM work_deliverables d WHERE d.work_id=w.work_id),'')||char(10)
@@ -130,9 +133,18 @@ export class WorkListQuery {
     constructor(private readonly db: Database.Database, private readonly hostOnline: () => boolean = () => true) {
         this.databaseIdentity = databaseIdentities.get(db) ?? randomUUID();
         databaseIdentities.set(db, this.databaseIdentity);
+        // One query normally visits many rows. Keep only the most recent normalized
+        // terms, without retaining searchable Work text or changing match semantics.
+        let previousQuery: string | undefined;
+        let terms: string[] = [];
         db.function('work_list_matches', { deterministic: true }, (text: unknown, query: unknown) => {
+            const value = String(query ?? '');
+            if (value !== previousQuery) {
+                terms = value.normalize('NFKC').toLocaleLowerCase().trim().split(/\s+/);
+                previousQuery = value;
+            }
             const haystack = String(text ?? '').normalize('NFKC').toLocaleLowerCase();
-            return String(query ?? '').normalize('NFKC').toLocaleLowerCase().trim().split(/\s+/).every(term => haystack.includes(term)) ? 1 : 0;
+            return terms.every(term => haystack.includes(term)) ? 1 : 0;
         });
         db.exec(`CREATE INDEX IF NOT EXISTS idx_works_user_summary_page ON works(user_id,updated_at DESC,work_id);
             CREATE INDEX IF NOT EXISTS idx_work_summary_subitems ON work_subitem_results(work_id,binding_id);
@@ -205,7 +217,17 @@ export class WorkListQuery {
         }
         const params = { userId, online: online ? 1 : 0, scopeId: scope.kind === 'personal' ? scope.botId : scope.kind === 'team' ? scope.teamId : '', query: request.query ?? '', view: request.view ?? 'active', status: request.status ?? 'all', showDeleted: request.showDeleted ? 1 : 0 };
         const base = this.base(scopeSql), visibility = '((@showDeleted=1 AND w.deleted_at IS NOT NULL) OR (@showDeleted=0 AND w.deleted_at IS NULL))', view = "(@view='all' OR w.view_kind=@view)";
-        const search = request.query?.trim() ? `work_list_matches(${searchSql},@query)=1` : '1';
+        let search = '1';
+        if (request.query?.trim()) {
+            // A bounded scalar-only probe chooses a plan, never narrows the results.
+            // Avoid a second matcher call on every row for sparse/deep-only searches.
+            const probe = this.db.prepare(base + `SELECT work_list_matches(${searchPrefixSql},@query) AS matches
+                FROM classified w WHERE ${visibility} AND ${view} LIMIT 32`).all(params) as { matches: number }[];
+            const prefixPlan = probe.length > 0 && probe.filter(row => row.matches).length >= probe.length / 2;
+            // CASE guarantees lazy evaluation; OR does not promise to skip the full document.
+            search = prefixPlan ? `CASE WHEN work_list_matches(${searchPrefixSql},@query)=1 THEN 1
+                ELSE work_list_matches(${searchSql},@query) END=1` : `work_list_matches(${searchSql},@query)=1`;
+        }
         const filter = `${visibility} AND ${view} AND ${search}`;
         const viewCounts = { active: 0, completed: 0, closed: 0, all: 0 };
         let deletedCount = 0;
@@ -230,7 +252,8 @@ export class WorkListQuery {
             filterCounts[row.status_group] = row.n;
         const filtered = request.status && request.status !== 'all' ? filterCounts[request.status] ?? 0 : Object.values(filterCounts).reduce((sum, n) => sum + (n ?? 0), 0);
         const pageSize = request.pageSize ?? 24, pages = Math.max(1, Math.ceil(filtered / pageSize)), page = Math.min(request.page ?? 1, pages);
-        const rows = this.db.prepare(base + this.pageSelect() + ` FROM classified w WHERE ${filter} AND (@status='all' OR status_group=@status) ORDER BY updated_at ${request.sort === 'oldest' ? 'ASC' : 'DESC'},work_id ASC LIMIT @limit OFFSET @offset`).all({ ...params, limit: pageSize, offset: (page - 1) * pageSize }) as Row[];
+        // The exact zero count belongs to this same transaction; there is no page to scan.
+        const rows = filtered === 0 ? [] : this.db.prepare(base + this.pageSelect() + ` FROM classified w WHERE ${filter} AND (@status='all' OR status_group=@status) ORDER BY updated_at ${request.sort === 'oldest' ? 'ASC' : 'DESC'},work_id ASC LIMIT @limit OFFSET @offset`).all({ ...params, limit: pageSize, offset: (page - 1) * pageSize }) as Row[];
         const workExecutionTaskIds = request.candidateTaskIds?.length ? (this.db.prepare(base + 'SELECT DISTINCT b.task_id FROM work_execution_bindings b JOIN classified w ON w.work_id=b.work_id WHERE b.task_id IN (SELECT value FROM json_each(@candidates)) ORDER BY b.task_id').all({ ...params, candidates: JSON.stringify(request.candidateTaskIds) }) as {
             task_id: string;
         }[]).map(row => row.task_id) : [];
