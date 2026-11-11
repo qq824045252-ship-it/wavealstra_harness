@@ -1,7 +1,7 @@
 /** Host fs backend of the trusted read commands: GNU-shaped output, security bounds, platform split. */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, linkSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { executeWorkReadCommand, type ScopedReadCommand } from "../src/main/platform/work-shell-read";
 import { platformId, type PlatformId } from "../src/main/platform/index";
@@ -104,7 +104,8 @@ async function run(): Promise<void> {
       assert.match(file.output, /Access: \(0[0-7]{3}\/(?:-|d)[rwx-]{9}\)/);
       assert.match(file.output, /Modify: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{9} \+0000/);
       const directory = await hostRead("dir", { command: "stat", flags: [] });
-      assert.match(directory.output, /Size: 0/);
+      // Directory inode size depends on the filesystem; it is not always zero.
+      assert.equal(Number(directory.output.match(/Size: (\d+)/)?.[1]), statSync(join(root, "dir")).size);
       assert.match(directory.output, /directory/);
       await assert.rejects(() => hostRead("hello.txt", { command: "stat", flags: ["-l"] }), /不支持的只读命令选项/);
     });

@@ -51,3 +51,9 @@ Passed on Omarchy with `opendesign/deepseek-v4.1-flash` through the local model 
 Local artifacts: `out/diagnostics/bot-watch-memory/live/report.json`, `provider-requests.json`, `watch-memory.png` and `dev.log`. Previous failed attempts remain archived beside the live directory. Temporary fixture HOME: `/tmp/bot-frontdoor-live-He6NNq`. Console log: `/tmp/watch-memory-four-round-final-20261111-1221.log`.
 
 The existing production Electron main (PID 79495 at verification) was not stopped, restarted or replaced. Source-only synchronization does not imply that this already-running process has loaded the new implementation. No change was made to vivion, release packages, application version or production database. Crash/fault injection remains deferred.
+
+### Integration after the live run
+
+Remote `main` advanced to `0394eda` during acceptance. The Watch commits were rebased without conflicts; their preference/Work source contents are unchanged from the live-tested code. Final integrated typecheck, Watch supervision, durable projection and Bot Work review memory passed. The newly added host read-command suite exposed a Windows-specific fixture assumption that directory `stat.size` is zero. The assertion now compares with the fixture directory's actual filesystem size; no runtime change was needed. On Omarchy the suite then passed 16/16, including both symlink-boundary cases and hardlink rejection, with no skips.
+
+The final integrated commit has focused verification, not a second full four-round model run after the unrelated diagnostic merge. Production source synchronization retains the user's untracked files and does not replace the running main process.
