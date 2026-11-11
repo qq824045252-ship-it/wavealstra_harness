@@ -595,6 +595,10 @@ export class AppDatabase {
 
   private ensureMemoryKernelTables(): void {
     this.db.exec(`
+      CREATE TABLE IF NOT EXISTS memory_forget_watermarks (
+        scope_type TEXT NOT NULL, scope_id TEXT NOT NULL DEFAULT '', cutoff_at INTEGER NOT NULL, allowed_message_id TEXT,
+        PRIMARY KEY(scope_type, scope_id)
+      );
       CREATE TABLE IF NOT EXISTS memory_organization_runs (
         id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
         state_json TEXT NOT NULL CHECK (json_valid(state_json))
@@ -857,6 +861,8 @@ export class AppDatabase {
            last_error='interrupted before L1 completion'
        WHERE extraction_state='processing'`,
     ).run();
+    const watermarkColumns = this.db.prepare("PRAGMA table_info(memory_forget_watermarks)").all() as Array<{ name: string }>;
+    if (!watermarkColumns.some(column => column.name === "allowed_message_id")) this.db.exec("ALTER TABLE memory_forget_watermarks ADD COLUMN allowed_message_id TEXT");
     this.ensureMemoryFts();
   }
 

@@ -33,6 +33,10 @@ export function testLegacyWorkScopeOwnership() {
     db.prepare("INSERT INTO work_execution_bindings VALUES('no-binding','w1')").run();
     attachReliableLegacyWorkScopes(db);
     assert.equal((db.prepare("SELECT scope_id FROM memory_scopes WHERE memory_id='unmapped' AND scope_type='work'").get() as {scope_id:string}).scope_id,'w1');
+    const cutoff=(db.prepare("SELECT updated_at FROM memory_capture_receipts WHERE source_key='migration:legacy-work-scopes:v1'").get() as {updated_at:number}).updated_at;
+    db.prepare("INSERT INTO memory_scopes VALUES('future','future','task','t1','owned',?)").run(cutoff+1);
+    attachReliableLegacyWorkScopes(db);
+    assert.equal(db.prepare("SELECT 1 FROM memory_scopes WHERE memory_id='future' AND scope_type='work'").get(),undefined,'new explicit task-local memory must not be migrated');
     console.log('Legacy Work scope migration passed: unique ownership only, conflicts/foreign/missing excluded, original bindings retained, idempotence');
   } finally {db.close();}
 }

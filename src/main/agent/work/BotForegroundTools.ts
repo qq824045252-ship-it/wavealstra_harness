@@ -77,7 +77,7 @@ export interface BotForegroundToolOptions {
   wake: (workId?: string) => void;
   memorySearch: (query: string) => unknown;
   memoryRemember?: (input: z.infer<typeof memoryRemember>, userText: string) => unknown;
-  memoryForget?: (ids: string[], userText: string, evidence: string) => unknown;
+  memoryForget?: (ids: string[], userText: string, evidence: string, source?: { createdAt: number; messageId: string }) => unknown;
   isAuthority: () => boolean;
   botWorkspace?: (botId: string, prepareDefault?: boolean) => string;
 }
@@ -329,6 +329,6 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
       const requestId = await botForegroundRequest(api, api.callId, context);
       const source = receipt(requestId);
       if (!options.memoryForget) throw new Error("当前记忆删除服务不可用");
-      return output(options.memoryForget(input.ids, messages.message(source.user_message_id)!.text, input.userEvidence));
+      return output(options.memoryForget(input.ids, messages.message(source.user_message_id)!.text, input.userEvidence, { createdAt: messages.message(source.user_message_id)!.createdAt, messageId: source.user_message_id }));
     } })];
 }

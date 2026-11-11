@@ -39,3 +39,23 @@ Bot/team settings, current conversation, Work detail and bound project reuse `Me
 Initial validation exposed and repaired: disabled memory still exposing write tools with a misleading provenance error; delayed startup capture touching a closed database; duplicated React sibling key in Work detail; legacy test contracts assuming task-scoped Work memory. The first live fixture omitted `memoryEnabled`; it was corrected, not counted as a product pass.
 
 Crash/fault-injection tests are intentionally deferred as requested. No physical-desktop or provider claims are inferred from headless fixture success. Test reports/provider requests remain local diagnostic artifacts and are not committed.
+
+## Follow-up hardening and live evidence
+
+- Team foreground: eight real-model task types passed with two teams, a common owner and another member. Actual model requests excluded owner/member private memories and the other team's records; explicitly shared public records remained available. This is foreground-team evidence, not a claim of native multi-member Work execution.
+- Work snapshots retain the latest six deliverables and prioritized open blockers with total counts. Manual correction/detachment is not overwritten. Personal Work memory uses its owner, not the currently executing member. Startup catch-up yields every twenty items and stops on disposal/authority change; one bad record does not block the remainder.
+- Real native Work testing found two defects after five successful task types: private-word redaction removed the truthful proposed-result label; and the model recreated a forgotten preference as a negative constraint. Both were repaired with focused regressions. The full eight-type rerun passed after these fixes (details below).
+- Forgetting now records only a scoped source-time boundary and an optional exact same-request exception, never the forgotten text. Persistent boundaries prevent old queued extraction or late-captured old messages from recreating deleted facts after a normal database reopen. Pure forget cannot create a negated replacement. Mixed “forget A, remember B” accepts only new B evidence; other owners' bindings remain unchanged.
+- Legacy task-to-Work migration has a first-install cutoff so later deliberately task-local records are not silently promoted. Normal database-reopen and migration checks are not crash/fault injection.
+
+This follow-up uses impacted memory/ownership/capture tests and type checks rather than mechanically repeating the foundational 416-test aggregate. No production profile or user data was modified by these isolated validations.
+
+### Native Work eight-type final rerun
+
+`BOT_WORK_DEV_HEADLESS=1 BOT_FRONTDOOR_MODEL=opendesign/deepseek-v4.1-flash-eco pnpm -s test:bot-frontdoor:live --work-memory-scopes`: **passed, 8/8**, in a fresh temporary HOME. Inventory arithmetic, meeting agenda, suggested itinerary, copy editing, unit conversion, checklist, numeric sorting and ratio calculation each created a real native Work and ended `closed/succeeded` (30 native model calls total). Runtime request evidence and final deliverables confirmed learned preference, corrected preference, then absence of forgotten preference. All final memory snapshots belonged only to the exact Work, retained truthful proposal/acceptance labels, and were not silently copied to Bot-private memory. Actual Electron screenshot inspected.
+
+Limits: this batch is memory validation, not full tool-permission validation. One result reported the pre-existing read-only command restriction; its explicit arithmetic result was correct. Same Work across multiple executions and project sharing have focused SQLite/contract coverage, not new real-model watch evidence in this batch. No native multi-member team execution or crash-injection success is claimed.
+
+Final impacted checks: persistent forget watermark test, Bot memory (including newest-source ownership), assistant scopes, migration schema, Work capture, full typecheck and architecture (278/0) passed. Runner classification audit passed. Reports and provider payloads remain local; no credentials or user profiles committed.
+
+Integration: the final patch was rebased without conflicts over team dispatch `9d0d410` and application-permission retirement `3ee1d6c`. After that integration, typecheck plus forget-watermark, Bot memory, assistant scopes, Work capture and foreground runtime-contract tests passed. The eight-type native live run above predates the permission-retirement rebase; it is not presented as a fresh permission-removal validation.

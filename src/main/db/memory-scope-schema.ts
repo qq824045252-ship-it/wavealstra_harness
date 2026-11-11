@@ -50,18 +50,22 @@ export function attachReliableLegacyWorkScopes(db: Database.Database): void {
     suppressed INTEGER NOT NULL DEFAULT 0 CHECK(suppressed IN (0,1)), updated_at INTEGER NOT NULL
   )`);
   db.transaction(() => {
+    // Only pre-upgrade task atoms are legacy. Future deliberately task-local notes must stay local.
+    const migrationKey = 'migration:legacy-work-scopes:v1';
+    db.prepare("INSERT OR IGNORE INTO memory_capture_receipts(source_key,memory_id,content_hash,updated_at) VALUES(?,'','',?)").run(migrationKey,Date.now());
+    const cutoff = (db.prepare("SELECT updated_at FROM memory_capture_receipts WHERE source_key=?").get(migrationKey) as {updated_at:number}).updated_at;
     const candidates = db.prepare(`SELECT s.id,s.memory_id,mapping.work_id,s.created_at
       FROM memory_scopes s
       JOIN (SELECT task_id,MIN(work_id) AS work_id FROM work_execution_bindings
         GROUP BY task_id HAVING COUNT(DISTINCT work_id)=1) mapping ON mapping.task_id=s.scope_id
       JOIN works w ON w.work_id=mapping.work_id AND w.user_id=?
-      WHERE s.scope_type='task'
+      WHERE s.scope_type='task' AND s.created_at<=?
         AND NOT EXISTS (SELECT 1 FROM memory_capture_receipts r WHERE r.source_key='legacy-work-scope:' || s.memory_id)
         AND NOT EXISTS (SELECT 1 FROM memory_scopes present WHERE present.memory_id=s.memory_id AND present.scope_type='work')
         AND NOT EXISTS (SELECT 1 FROM memory_scopes other
           JOIN work_execution_bindings ob ON ob.task_id=other.scope_id
           WHERE other.memory_id=s.memory_id AND other.scope_type='task' AND ob.work_id<>mapping.work_id)
-      ORDER BY s.id`).all(LOCAL_USER_ID) as Array<{id:string;memory_id:string;work_id:string;created_at:number}>;
+      ORDER BY s.id`).all(LOCAL_USER_ID,cutoff) as Array<{id:string;memory_id:string;work_id:string;created_at:number}>;
     const insert = db.prepare("INSERT OR IGNORE INTO memory_scopes(id,memory_id,scope_type,scope_id,binding,created_at) VALUES(?,?,'work',?,'owned',?)");
     const receipt = db.prepare("INSERT OR IGNORE INTO memory_capture_receipts(source_key,memory_id,content_hash,updated_at) VALUES(?,?,?,?)");
     for (const candidate of candidates) {

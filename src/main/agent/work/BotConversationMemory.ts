@@ -2,7 +2,7 @@ import type { AppDatabase } from "../../db/AppDatabase";
 import type { MemoryCreateRequest, MemoryScopeType } from "../../../shared/memory-kernel";
 import type { MemoryService } from "../../memory/MemoryService";
 import type { MemoryPipelineManager } from "../../memory/MemoryPipelineManager";
-import { botMemorySource, botMemoryTextEligible } from "../../memory/BotMemorySource";
+import { botMemorySource, botMemoryTextEligible, botMemoryWriteEvidenceAllowed } from "../../memory/BotMemorySource";
 import { BotConversationRepository } from "./BotConversationRepository";
 
 /** Foreground adapter over the existing L0/L1 store, deletion controls and single writer. */
@@ -40,6 +40,7 @@ export class BotConversationMemory {
     const context = this.scopeContext(botId, conversationId);
     if (!context) throw new Error("当前 Bot 记忆未启用或不可用，不能保存记忆；不要反复改写证据重试");
     if (!input.userEvidence.trim() || !userText.includes(input.userEvidence)) throw new Error("记忆证据必须逐字引用本次用户原话，不能使用历史消息或模型推测");
+    if (!botMemoryWriteEvidenceAllowed(userText, input.userEvidence)) throw new Error("本次是遗忘请求，不能把已删除内容换成否定形式重新保存。若同时要求记住新事实，只引用明确的新记住子句");
     if (!botMemoryTextEligible(`${userText} ${input.title} ${input.content}`)) throw new Error("记忆内容含敏感秘密或用户明确要求不保存，本次未写入");
     if (input.scope === "public" && !publicScopeRequested(userText)) throw new Error("公共记忆需要用户明确要求所有 Bot 共享；否则使用 current 范围");
     const temporary = /(?:仅|只)(?:限)?(?:在|对|用于)?(?:本次|这次|当前)(?:对话|会话)|(?:this conversation|this chat) only|only (?:for |in )?(?:this conversation|this chat)/i.test(userText);
@@ -62,7 +63,7 @@ export class BotConversationMemory {
   }
 
   /** Exact records selected by the foreground model, anchored to the current user's request. */
-  forget(botId: string, ids: string[], userText: string, evidence: string, conversationId?: string) {
+  forget(botId: string, ids: string[], userText: string, evidence: string, conversationId?: string, source?: { createdAt: number; messageId: string }) {
     if (!this.allowedBot(botId)) throw new Error("当前 Bot 记忆未启用或不可用");
     if (!evidence.trim() || !userText.includes(evidence)
       || !/(?:忘记|删除.*记忆|forget|delete.*memor)/i.test(evidence)
@@ -84,7 +85,7 @@ export class BotConversationMemory {
       }
       const present = records.filter(record => record !== undefined);
       for (const record of present) {
-        for (const scope of record.scopes.filter(scope => scopeMatches(scope) && (scope.scopeType !== "global" || record.metadata.publicShared === true))) this.options.memory.detachScope(record.id, scope.scopeType, scope.scopeId);
+        for (const scope of record.scopes.filter(scope => scopeMatches(scope) && (scope.scopeType !== "global" || record.metadata.publicShared === true))) this.options.memory.detachScope(record.id, scope.scopeType, scope.scopeId, source);
       }
       return { forgottenCount: present.length, alreadyAbsentCount: records.length - present.length, titles: present.map(record => record.title) };
     })();
@@ -113,6 +114,15 @@ export class BotConversationMemory {
       || user.status !== "completed" || assistant.status !== "completed"
       || [user, assistant].some(message => message.conversationId !== receipt.conversation_id || message.botId !== botId || message.requestId !== requestId)
       || !botMemoryTextEligible(user.text)) return;
+    // A pure forget can precede the old request's completion, so no L1 record may
+    // exist yet. Record its source time, not this delayed completion time.
+    if (/(?:忘记|删除.{0,24}记忆|清除.{0,24}记忆|\bforget\b|\bdelete\b.{0,32}\bmemor)/i.test(user.text)
+      && !user.text.split(/[，,、。；;！!？?\n]/).some(clause => botMemoryWriteEvidenceAllowed(user.text, clause))) {
+      const temporary = /(?:仅|只)(?:限)?(?:在|对|用于)?(?:本次|这次|当前)(?:对话|会话)/.test(user.text);
+      const scopeType = temporary ? "conversation" : publicScopeRequested(user.text) ? "global" : source.team_id ? "team" : "bot";
+      const scopeId = scopeType === "conversation" ? receipt.conversation_id : scopeType === "global" ? undefined : source.team_id ?? botId;
+      this.options.memory.recordForgetBoundary(scopeType, scopeId, user.createdAt);
+    }
     const decision = this.options.pipeline.capture({ taskId: receipt.conversation_id, sessionId: receipt.conversation_id,
       userMessageId: user.messageId, assistantMessageId: assistant.messageId, userText: "",
       // L0 is a source pointer. Do not duplicate raw conversations (including mixed

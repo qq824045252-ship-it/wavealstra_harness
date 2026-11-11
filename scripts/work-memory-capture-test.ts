@@ -7,6 +7,7 @@ import { BotRegistry } from '../src/main/agent/work/BotRegistry';
 import { MemoryService } from '../src/main/memory/MemoryService';
 import { WorkMemoryCapture } from '../src/main/memory/WorkMemoryCapture';
 import { LOCAL_USER_ID } from '../src/shared/bot-work';
+async function main() {
 const dir = mkdtempSync(join(tmpdir(), 'work-memory-capture-'));
 let db = new AppDatabase(join(dir, 'test.db'));
 try {
@@ -97,5 +98,28 @@ try {
   assert(!snapshot.includes('Result round 1:'));
   assert(snapshot.includes('其余 14 条')); assert(snapshot.includes('Result round 20:'));
   assert.equal((db.connection.prepare("SELECT COUNT(*) n FROM work_deliverables WHERE work_id='many-rounds'").get() as {n:number}).n,20,'capture must never delete source history');
+  for(let i=0;i<45;i++) db.connection.prepare(`INSERT INTO works(work_id,user_id,owner_bot_id,title,authorization_json,active_intent_snapshot_id,input_snapshot_id,created_by,created_at,updated_at)
+    VALUES(?,?,'a',?,'{}','intent','input','user',1,1)`).run(`catchup-${String(i).padStart(2,'0')}`,LOCAL_USER_ID,`Catch up ${i}`);
+  const total=(db.connection.prepare('SELECT COUNT(*) n FROM works WHERE user_id=?').get(LOCAL_USER_ID) as {n:number}).n;
+  let allowed=true, calls=0;
+  const stopping = new WorkMemoryCapture(db,memory,() => { if(++calls===3) allowed=false; });
+  const stopped=await stopping.catchUp(() => allowed);
+  assert(stopped.processed<total && stopped.processed>0,'disable must stop catch-up');
+  let eventLoopTurn=false;
+  setImmediate(() => {eventLoopTurn=true;});
+  const resumed=await bridge.catchUp(() => true);
+  assert(eventLoopTurn,'catch-up must yield to event loop');
+  assert.equal(resumed.processed,total); assert.equal(resumed.failed,0);
+  for(let i=0;i<45;i++) assert.equal(memory.listExactScope('work',`catchup-${String(i).padStart(2,'0')}`).length,1);
+  assert.deepEqual(await bridge.catchUp(() => false),{processed:0,failed:0});
+  const failing = new WorkMemoryCapture(db,memory);
+  const capture=failing.capture.bind(failing);
+  failing.capture=(workId:string) => { if(workId==='catchup-00') throw new Error('test single-item failure'); return capture(workId); };
+  const continued=await failing.catchUp(() => true);
+  assert.equal(continued.failed,1); assert.equal(continued.processed,total-1,'one failed item must not stop the scan');
+  db.close();
+  assert.deepEqual(await bridge.catchUp(() => true),{processed:0,failed:0},'closed database stops cleanly');
   console.log('WorkMemoryCapture passed: idempotence, proposal/acceptance distinction, watch persistence, sensitive exclusion, blocker refresh and restart-safe forget');
-} finally { db.close(); rmSync(dir,{recursive:true,force:true}); }
+} finally { if(db.connection.open) db.close(); rmSync(dir,{recursive:true,force:true}); }
+}
+void main().catch(error => {console.error(error);process.exitCode=1;});

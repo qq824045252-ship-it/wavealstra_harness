@@ -190,6 +190,35 @@ async function main() {
     const liveSaved = bridge.remember("alice", temporaryTurn.source!, liveArgs, liveText);
     assert.equal(liveSaved.scopeType, "bot");
     assert.equal(memory.get(liveSaved.memoryId)?.metadata.publicShared, undefined);
+    const pureForget = "忘记并删除关于回复末尾标记的长期记忆，不再要求任何末尾标记。";
+    const negativeArgs = { scope: "current" as const, kind: "constraint" as const, title: "答复末尾不加任何标记", content: "回复末尾不要添加任何形式的固定标记（原“青苔标记”“琥珀标记”等偏好均已作废并删除）。直接以正文结束，不额外另起一行的标记。", userEvidence: pureForget };
+    assert.throws(() => bridge.remember("alice", temporaryTurn.source!, negativeArgs, pureForget), /遗忘请求/);
+    assert.throws(() => bridge.remember("alice", temporaryTurn.source!, { ...negativeArgs, userEvidence: "不再要求任何末尾标记" }, pureForget), /遗忘请求/);
+    const forgetTurn = send(pureForget); assert(forgetTurn.source);
+    candidates = [candidate(negativeArgs.content, pureForget, { title: negativeArgs.title, kind: "constraint", operationHint: "create" })];
+    await bridge.extract(forgetTurn.source);
+    assert(!memory.listExactScope("bot", "alice").some(m => m.title === negativeArgs.title), "automatic create must not resurrect pure forget as negative memory");
+    const mixedText = "忘记旧标记、记住新的称呼是晴川。";
+    assert.throws(() => bridge.remember("alice", forgetTurn.source!, { ...negativeArgs, userEvidence: mixedText }, mixedText), /遗忘请求/);
+    const mixedArgs = { ...liveArgs, title: "新称呼", content: "称呼是晴川", userEvidence: "记住新的称呼是晴川" };
+    const mixedSaved = bridge.remember("alice", forgetTurn.source!, mixedArgs, mixedText);
+    assert.equal(memory.get(mixedSaved.memoryId)?.content, "称呼是晴川");
+    const mixedTurn = send("忘记旧标记，记住新的饮品偏好是红茶。"); assert(mixedTurn.source);
+    candidates = [candidate("饮品偏好红茶", "新的饮品偏好是红茶", { title: "新饮品" })];
+    await bridge.extract(mixedTurn.source);
+    assert(memory.listExactScope("bot", "alice").some(m => m.content === "饮品偏好红茶"), "explicit new fact survives mixed forget/remember request");
+    const sameQuote = "偏好竹叶清茶";
+    const oldPublic = messages.accept(LOCAL_USER_ID, { botId: "alice", requestId: "scope-old-public", text: `所有 Bot 共享记住${sameQuote}` });
+    const newPrivate = messages.accept(LOCAL_USER_ID, { botId: "alice", requestId: "scope-new-private", text: `只属于当前 Bot，记住${sameQuote}` });
+    // Same-millisecond user requests and reverse completion order must still choose the newer real source.
+    const tiedTime = Math.max(Date.now(), messages.message(newPrivate.userMessageId)!.createdAt);
+    db.connection.prepare("UPDATE bot_messages SET created_at=? WHERE message_id IN (?,?)").run(tiedTime, oldPublic.userMessageId, newPrivate.userMessageId);
+    messages.update(newPrivate.assistantMessageId, "completed", "新私有请求先完成"); bridge.capture("alice", newPrivate.requestId);
+    messages.update(oldPublic.assistantMessageId, "completed", "旧公共请求后完成"); bridge.capture("alice", oldPublic.requestId);
+    candidates = [candidate(sameQuote, sameQuote, { title: "同证据归属", scopeType: "global" })];
+    await bridge.extract(newPrivate.conversationId);
+    assert(memory.listExactScope("bot", "alice").some(m => m.content === sameQuote), "newest actual user statement chooses private scope despite reverse completion order");
+    assert(!memory.listExactScope("global").some(m => m.content === sameQuote), "older public instruction cannot upgrade a newer private fact in the same batch");
     assert.deepEqual(db.connection.pragma("foreign_key_check"), []);
     console.log("PASS Bot memory: real-source L0/L1, private scope, recall, new chat, replay, source deletion race, disabled/cancelled/sensitive boundaries, no approval queue, existing memory deletion");
   } finally { db.close(); }

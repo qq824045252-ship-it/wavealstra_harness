@@ -855,12 +855,9 @@ export class AgentService {
       },
       isAuthority: () => this.workHostAuthority.isAuthority(),
     });
-    setImmediate(() => {
-      if (this.memoryDisposed || !this.db.connection.open || !this.settingsStore.read().memoryEnabled || !this.workHostAuthority.isAuthority()) return;
-      for (const work of this.workService.repo.listWorks(LOCAL_USER_ID, { includeClosed: true })) {
-        try { this.workMemoryCapture.capture(work.workId); } catch (error) { console.warn("[Work] memory catch-up deferred", error); }
-      }
-    });
+    void this.workMemoryCapture.catchUp(() => !this.memoryDisposed && this.db.connection.open
+      && this.settingsStore.read().memoryEnabled && this.workHostAuthority.isAuthority())
+      .catch(error => console.warn("[Work] memory catch-up deferred", error));
     this.botReportImages = new BotReportImageService(db.connection, LOCAL_USER_ID, this.workService, () => this.artifactService);
     this.workConversationFeedback = new WorkConversationFeedback({ db: db.connection, userId: LOCAL_USER_ID, works: this.workService, superviseWatch: true,
       isAuthority: () => this.workHostAuthority.isAuthority(), prepareImages: workId => this.botReportImages!.captureWork(workId) });

@@ -18,3 +18,15 @@ export function botMemoryTextEligible(text: string): boolean {
     && !/(?:\d[ -]?){13,19}/.test(text)
     && !/\b[A-Fa-f0-9]{40,}\b/.test(text);
 }
+
+/** Forget is a deletion request, not a new negative preference. Mixed requests may
+ * write only the independently quoted, explicitly new remember clause. */
+export function botMemoryWriteEvidenceAllowed(userText: string, evidence: string): boolean {
+  const forgetting = /(?:忘记|删除.{0,24}记忆|清除.{0,24}记忆|\bforget\b|\bdelete\b.{0,32}\bmemor)/i;
+  if (!forgetting.test(userText)) return true;
+  if (!evidence.trim() || forgetting.test(evidence)) return false;
+  return userText.split(/[，,、。；;！!？?\n]/).some(clause =>
+    clause.includes(evidence.trim()) && /(?:记住|记下|保存|remember|memorize|save)/i.test(clause)
+    && !/(?:不要|别|勿|不再|无需).{0,8}(?:记住|记下|保存)|(?:do not|don['’]?t|never)\s+(?:remember|memorize|save)/i.test(clause)
+    && !forgetting.test(clause));
+}

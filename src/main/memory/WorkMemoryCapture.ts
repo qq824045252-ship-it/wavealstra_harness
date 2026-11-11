@@ -9,6 +9,26 @@ import { LOCAL_USER_ID } from "../../shared/bot-work";
 export class WorkMemoryCapture {
   constructor(private readonly db: AppDatabase, private readonly memory: MemoryService, private readonly onChanged?: () => void) {}
 
+  /** Lightweight startup scan; yields between small batches so foreground remains responsive. */
+  async catchUp(isActive: () => boolean): Promise<{ processed: number; failed: number }> {
+    const result = { processed: 0, failed: 0 };
+    if (!isActive() || !this.db.connection.open) return result;
+    const rows = this.db.connection.prepare('SELECT work_id FROM works WHERE user_id=? ORDER BY work_id')
+      .all(LOCAL_USER_ID) as Array<{ work_id: string }>;
+    for (let index = 0; index < rows.length; index++) {
+      if (index % 20 === 0) await new Promise<void>(resolve => setImmediate(resolve));
+      if (!isActive() || !this.db.connection.open) break;
+      try {
+        this.capture(rows[index].work_id);
+        result.processed++;
+      } catch (error) {
+        result.failed++;
+        console.warn('[WorkMemoryCapture] startup catch-up skipped one Work', rows[index].work_id, error);
+      }
+    }
+    return result;
+  }
+
   capture(workId: string): string | undefined {
     let changed = false;
     const result = this.db.connection.transaction(() => {

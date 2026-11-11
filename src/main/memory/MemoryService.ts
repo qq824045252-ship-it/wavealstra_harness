@@ -1,5 +1,6 @@
+import { MemoryForgetWatermarks } from "./MemoryForgetWatermarks";
 import { resolveAssistantScopeChain, resolveWorkMemoryScope } from "./AssistantMemoryScopes";
-import { botMemorySource, botMemoryTextEligible } from "./BotMemorySource";
+import { botMemorySource, botMemoryTextEligible, botMemoryWriteEvidenceAllowed } from "./BotMemorySource";
 import { projectMemoryContext } from "../agent/MemoryContextProjection";
 import { createHash, randomUUID } from "node:crypto";
 import type { AgentSession, ModelRuntime } from "@earendil-works/pi-coding-agent";
@@ -252,10 +253,12 @@ export class MemoryService {
   readonly cognition: MemoryCognitionService;
   readonly learning: MemorySkillLearningService;
   private readonly semantic: MemorySemanticProvider | null;
+  private readonly forgetWatermarks: MemoryForgetWatermarks;
   private readonly deletionVersions = new Map<string, number>();
 
   constructor(private readonly db: AppDatabase, opts?: { semantic?: boolean }) {
     this.repository = new MemoryRepository(db);
+    this.forgetWatermarks = new MemoryForgetWatermarks(db.connection);
     this.cognition = new MemoryCognitionService(db);
     this.learning = new MemorySkillLearningService(db, this.repository);
     this.semantic = opts?.semantic === false ? null : new MemorySemanticProvider(db);
@@ -599,6 +602,7 @@ export class MemoryService {
     this.db.connection.transaction(() => {
       this.repository.hardDelete(id);
       if (current) {
+        this.forgetWatermarks.advance(current.scopes);
         this.invalidateProjectionScopes(current.scopes);
         this.touchProjectScopes(current.scopes, Date.now());
       }
@@ -613,11 +617,16 @@ export class MemoryService {
     }
   }
 
+  recordForgetBoundary(scopeType: MemoryScopeType, scopeId: string | undefined, cutoffAt: number): void {
+    this.assertScope(scopeType, scopeId);
+    this.forgetWatermarks.advance([{ scopeType, scopeId }], cutoffAt);
+  }
+
   /**
    * Detach one durable scope without deleting the L1 atom from other scopes.
    * If the removed scope was the atom's last binding, the atom is hard-forgotten.
    */
-  detachScope(id: string, scopeType: MemoryScopeType, scopeId?: string): { detached: boolean; forgotten: boolean } {
+  detachScope(id: string, scopeType: MemoryScopeType, scopeId?: string, source?: { createdAt: number; messageId: string }): { detached: boolean; forgotten: boolean } {
     const current = this.repository.get(id);
     if (!current) return { detached: false, forgotten: false };
     const target = current.scopes.find(
@@ -626,6 +635,7 @@ export class MemoryService {
     if (!target) return { detached: false, forgotten: false };
 
     const forgotten = this.db.connection.transaction(() => {
+      this.forgetWatermarks.advance([target], source?.createdAt, source?.messageId);
       this.repository.removeScope(id, scopeType, scopeId);
       const remaining = this.repository.get(id)?.scopes ?? [];
       if (remaining.length === 0) {
@@ -866,15 +876,15 @@ export class MemoryService {
     if (!input.isEnabled()) return empty();
     const botSource = botMemorySource(this.db, input.taskId);
     if (input.taskId.startsWith("bot-conversation-") && (!botSource || botSource.status !== "active")) return empty();
-    const rawTurns = botSource ? (input.sourceTurns ?? []).map(turn => {
-      const row = this.db.connection.prepare(`SELECT u.text FROM bot_send_receipts r
+    const rawTurns = botSource ? (input.sourceTurns ?? []).map((turn): MemoryTurnDto | undefined => {
+      const row = this.db.connection.prepare(`SELECT u.text,u.created_at,u.rowid AS source_ordinal FROM bot_send_receipts r
         JOIN bot_messages u ON u.message_id=r.user_message_id AND u.role='user' AND u.status='completed'
         JOIN bot_messages a ON a.message_id=r.assistant_message_id AND a.role='assistant' AND a.status='completed'
         WHERE r.user_id=? AND r.bot_id=? AND r.conversation_id=? AND r.user_message_id=? AND r.assistant_message_id=?
           AND u.conversation_id=r.conversation_id AND a.conversation_id=r.conversation_id
           AND u.bot_id=r.bot_id AND a.bot_id=r.bot_id AND u.request_id=r.request_id AND a.request_id=r.request_id`)
-        .get(botSource.user_id, String(turn.metadata.botId ?? botSource.bot_id), input.taskId, turn.userMessageId ?? null, turn.assistantMessageId ?? null) as { text: string } | undefined;
-      return row && botMemoryTextEligible(row.text) ? { ...turn, userText: row.text, assistantText: "" } : undefined;
+        .get(botSource.user_id, String(turn.metadata.botId ?? botSource.bot_id), input.taskId, turn.userMessageId ?? null, turn.assistantMessageId ?? null) as { text: string; created_at: number; source_ordinal: number } | undefined;
+      return row && botMemoryTextEligible(row.text) ? { ...turn, capturedAt: row.created_at, metadata: { ...turn.metadata, sourceUserOrdinal: row.source_ordinal }, userText: row.text, assistantText: "" } : undefined;
     }).filter((turn): turn is MemoryTurnDto => Boolean(turn)) : input.sourceTurns;
     const userText = botSource ? rawTurns?.at(-1)?.userText ?? "" : input.userText.trim();
     if (botSource && !rawTurns?.length) return empty();
@@ -953,8 +963,11 @@ export class MemoryService {
     for (const candidate of extracted) {
       if (!input.isEnabled()) break;
       assertExtractionScope();
-      const supportingTurns = sourceTurns.filter(turn => candidate.userEvidence && turn.userText.includes(candidate.userEvidence));
-      const scopeWording = supportingTurns.map(turn => turn.userText).join("\n");
+      const supportingTurns = sourceTurns.filter(turn => candidate.userEvidence && turn.userText.includes(candidate.userEvidence)
+        && (!botSource || botMemoryWriteEvidenceAllowed(turn.userText, candidate.userEvidence)));
+      // Scope follows the newest real user statement, not capture/completion order or old sharing instructions.
+      const scopeWording = [...supportingTurns].sort((a, b) => b.capturedAt - a.capturedAt
+        || Number(b.metadata.sourceUserOrdinal ?? 0) - Number(a.metadata.sourceUserOrdinal ?? 0))[0]?.userText ?? "";
       const temporary = Boolean(botSource) && /(?:仅|只)(?:限)?(?:在|对|用于)?(?:本次|这次|当前)(?:对话|会话)|(?:this conversation|this chat) only|only (?:for |in )?(?:this conversation|this chat)/i.test(scopeWording);
       const publicShared = Boolean(botSource) && !temporary
         && /(?:所有|全部|每个).{0,12}(?:bot|助理)|(?:公共|共享)记忆|(?:all|every)\s+(?:bots?|assistants?)|public\s+memor/i.test(scopeWording)
@@ -962,7 +975,7 @@ export class MemoryService {
       // Private Bot learning never escalates uncertain facts to a new review workflow.
       // Ignore unsupported/short-lived material; direct user quotes remain mandatory.
       if (botSource && (!candidate.userEvidence || candidate.userEvidence.trim().length < 2
-        || !sourceTurns.some(turn => turn.userText.includes(candidate.userEvidence!))
+        || !supportingTurns.length
         || (candidate.retention !== "stable" && !(temporary && candidate.retention === "temporary")) || candidate.sensitivity !== "none" || !botMemoryTextEligible(`${candidate.title} ${candidate.content} ${candidate.userEvidence ?? ""} ${candidate.replaces ?? ""}`)
         || candidate.executionEvidence || ["progress", "open_question", "risk", "procedure"].includes(candidate.kind)
         // Foreground forget has an exact tool receipt. Never run the same deletion
@@ -972,6 +985,8 @@ export class MemoryService {
       const scope = publicShared ? { scopeType: "global" as const, scopeId: undefined }
         : this.normalizeCandidateScope(botSource ? temporary ? "conversation" : "bot" : candidate.scopeType, { projectId, workspaceId, taskId: input.taskId });
       if (!scope) continue;
+      const eligibleTurns = this.forgetWatermarks.newerSources(scope.scopeType, scope.scopeId, botSource ? supportingTurns : sourceTurns);
+      if (!eligibleTurns.length) continue;
       const dto: MemoryCandidateDto = {
         id: `mcand_${randomUUID()}`,
         taskId: input.taskId,
@@ -996,8 +1011,10 @@ export class MemoryService {
           this.repository.insertCandidate(dto);
           // An in-flight pending candidate may already have been resolved from the review UI.
           if (this.repository.getCandidate(dto.id)?.status !== "pending") return;
-          const evidenceTurns = botSource ? sourceTurns.filter(turn => candidate.userEvidence && turn.userText.includes(candidate.userEvidence))
-            .map(turn => ({ ...turn, userText: candidate.userEvidence!, assistantText: "" })) : sourceTurns;
+          const freshTurns = this.forgetWatermarks.newerSources(scope.scopeType, scope.scopeId, eligibleTurns);
+          if (!freshTurns.length) { this.repository.resolveCandidate(dto.id, "rejected"); return; }
+          const evidenceTurns = botSource ? freshTurns
+            .map(turn => ({ ...turn, userText: candidate.userEvidence!, assistantText: "" })) : freshTurns;
           const result = this.reconcileCandidate(dto, evidenceTurns);
           if (result.status === "committed") {
             committedCount++;
