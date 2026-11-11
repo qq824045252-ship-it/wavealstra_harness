@@ -143,7 +143,7 @@ const receiptFor = (binding: WorkExecutionBindingDto): AgentSubmissionReceipt =>
   operationId: binding.operationId, submissionId: 1, status: "done" });
 async function newImmediateWatch(title: string) {
   const work = unwrap(await invoke("work_create", { requestedOutcome: "one_time", title, mode: "watch", startImmediately: true,
-    watchRule: { scheduleBasis: "user_specified", nextWakeAt: clock.at + 24 * 60 * 60_000 } }));
+    watchRule: { executionMode: "observe", scheduleBasis: "user_specified", nextWakeAt: clock.at + 24 * 60 * 60_000 } }));
   await queue.flush();
   const binding = works.repo.listBindings(work.workId)[0]; assert(binding);
   return { work, binding };
@@ -384,7 +384,7 @@ try {
   // including when a separate one-shot future check is also requested.
   clock.at = Date.now();
   const immediate = unwrap(await invoke("work_create", { requestedOutcome: "one_time", title: "现在和明天各检查一次", mode: "watch", startImmediately: true,
-    watchRule: { scheduleBasis: "user_specified", nextWakeAt: clock.at + 24 * 60 * 60_000 } }));
+    watchRule: { executionMode: "observe", scheduleBasis: "user_specified", nextWakeAt: clock.at + 24 * 60 * 60_000 } }));
   assert.equal(scheduled.length, 0);
   await queue.flush();
   const firstCheck = works.repo.listBindings(immediate.workId)[0];

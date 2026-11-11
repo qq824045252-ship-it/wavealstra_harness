@@ -402,9 +402,14 @@ console.log('PASS explicit future one-time completes after review; partial, ongo
 for(const variant of ['independent','dependent','current-unknown','overflow'] as const){
  const made=works.createWork({kind:'user',userId:LOCAL_USER_ID,grants:DESKTOP_USER_GRANTS},{operationId:`risk-${variant}`,title:`risk-case-${variant}`,mode:'watch',ownerBotId:DEFAULT_BOT_ID,inputSnapshotId:`risk-${variant}-r1`,authorization:DESKTOP_USER_GRANTS,watchRule:{requestedOutcome:'one_time',stopConditionText:'只读取独立来源并交付报告',nextWakeAt:Date.now()+60000}});assert(made.ok);
  const oldId=`risk-${variant}-old`;receipt(oldId,made.work);works.repo.updateBinding({...works.repo.getBinding(oldId)!,status:'running',settledAt:undefined});
- works.repo.insertAdmission({admissionId:`${oldId}-effect`,workId:made.work.workId,bindingId:oldId,operationId:`${oldId}-write`,actionKind:'write',state:'unknown',intentRevision:made.work.intentRevision,ownerEpoch:made.work.ownerEpoch,admittedAt:Date.now()});
+ works.repo.insertAdmission({admissionId:`${oldId}-effect`,workId:made.work.workId,bindingId:oldId,operationId:`${oldId}-write`,actionKind:'write',state:'admitted',intentRevision:made.work.intentRevision,ownerEpoch:made.work.ownerEpoch,admittedAt:Date.now()});
+ assert(works.settleAdmission(`${oldId}-effect`,'unknown','真实工具回执未能确认效果').ok);
+ const effectDiagnostic=works.repo.listBlockers(made.work.workId).find(item=>item.unknownExternalEffectRef===`${oldId}-effect`);
+ assert(effectDiagnostic && effectDiagnostic.kind==='external_effect' && effectDiagnostic.status==='cleared', 'actual settlement preserves the effect diagnostic without reinstating the retired global lock');
+ assert(!works.repo.listOpenBlockers(made.work.workId).some(item=>item.unknownExternalEffectRef===`${oldId}-effect`));
+
  if(variant==='overflow')for(let n=0;n<WATCH_EXECUTION_RISK_LIMIT+1;n++)works.repo.insertAdmission({admissionId:`${oldId}-extra-${n}`,workId:made.work.workId,bindingId:oldId,operationId:`${oldId}-write-${n}`,actionKind:'write',state:'unknown',intentRevision:made.work.intentRevision,ownerEpoch:made.work.ownerEpoch,admittedAt:Date.now()+n+1});
- const changed=works.amendWork({kind:'user',userId:LOCAL_USER_ID,grants:DESKTOP_USER_GRANTS},{operationId:`risk-${variant}-amend`,workId:made.work.workId,inputSnapshotId:`risk-${variant}-r2`,goalDescription:'只读取独立来源并交付报告',versionGuard:{expectedStateVersion:made.work.stateVersion,expectedIntentRevision:made.work.intentRevision,expectedOwnerEpoch:made.work.ownerEpoch}});assert(changed.ok);
+ const changed=works.amendWork({kind:'user',userId:LOCAL_USER_ID,grants:DESKTOP_USER_GRANTS},{operationId:`risk-${variant}-amend`,workId:made.work.workId,inputSnapshotId:`risk-${variant}-r2`,goalDescription:'只读取独立来源并交付报告',versionGuard:{expectedStateVersion:works.getWork(made.work.workId)!.stateVersion,expectedIntentRevision:made.work.intentRevision,expectedOwnerEpoch:made.work.ownerEpoch}});assert(changed.ok);
  const target=works.getWork(made.work.workId)!;assert(works.repo.getBinding(oldId)!.invalidatedAt);
  const id=`risk-${variant}-new`;receipt(id,target,'已读取独立来源并生成报告');
  const binding=works.repo.getBinding(id)!,file=join(root,`${id}.md`);writeFileSync(file,'independent verified report');

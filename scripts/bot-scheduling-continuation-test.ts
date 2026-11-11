@@ -189,7 +189,10 @@ try {
   const readGapInput = submitted.find(item => item.bindingId === readGapBinding.bindingId)!;
   assert(readGapInput.text.includes("未核实的未知外部效果不得重放"), "the continuation input states that unverified effects are not replayed");
   assert(readGapInput.text.includes("只读核对剩余来源"), "only the independent gap is delegated");
-  assert(!readGapInput.text.includes("old-unknown-write"), "the unrelated unknown action is never delegated as a new task");
+  const { revisionHandoff, ...currentReadTask } = JSON.parse(readGapInput.text);
+  assert(!JSON.stringify(currentReadTask).includes("old-unknown-write"), "the unrelated unknown action is never delegated as a new task");
+  assert(revisionHandoff.unresolvedOperations.some((item: {operationId:string}) => item.operationId === "old-unknown-write"),
+    "the exact unknown operation identity remains historical evidence, not a newly delegated action");
 
   // Acceptance 3b: an unknown effect of the result lineage still blocks its own
   // continuation, and the refused promise never reaches the user.
