@@ -1,0 +1,816 @@
+{
+  "baseline": {
+    "rows": [
+      {
+        "kind": "seed",
+        "loaded": 100,
+        "totalMs": 608.5,
+        "actualMs": 359.50000005960464,
+        "commits": 3,
+        "messageRenders": 100,
+        "domMessages": 100,
+        "domNodes": 10838
+      },
+      {
+        "kind": "native-type",
+        "loaded": 100,
+        "totalMs": 127.1000000089407,
+        "actualMs": 71.70000003278255,
+        "commits": 2,
+        "messageRenders": 100,
+        "domMessages": 100,
+        "domNodes": 10846
+      },
+      {
+        "kind": "native-type",
+        "loaded": 100,
+        "totalMs": 85.8999999910593,
+        "actualMs": 45.40000005066395,
+        "commits": 1,
+        "messageRenders": 100,
+        "domMessages": 100,
+        "domNodes": 10846
+      },
+      {
+        "kind": "native-type",
+        "loaded": 100,
+        "totalMs": 71.29999999701977,
+        "actualMs": 34.60000003874302,
+        "commits": 1,
+        "messageRenders": 100,
+        "domMessages": 100,
+        "domNodes": 10846
+      },
+      {
+        "kind": "native-type",
+        "loaded": 100,
+        "totalMs": 72.40000000596046,
+        "actualMs": 34.60000006854534,
+        "commits": 1,
+        "messageRenders": 100,
+        "domMessages": 100,
+        "domNodes": 10846
+      },
+      {
+        "kind": "native-type",
+        "loaded": 100,
+        "totalMs": 72,
+        "actualMs": 35.79999993741512,
+        "commits": 1,
+        "messageRenders": 100,
+        "domMessages": 100,
+        "domNodes": 10846
+      },
+      {
+        "kind": "stream",
+        "loaded": 100,
+        "totalMs": 83.29999999701977,
+        "actualMs": 52.30000001192093,
+        "commits": 2,
+        "messageRenders": 100,
+        "domMessages": 100,
+        "domNodes": 10861
+      },
+      {
+        "kind": "stream",
+        "loaded": 100,
+        "totalMs": 66.70000000298023,
+        "actualMs": 42.00000001490116,
+        "commits": 2,
+        "messageRenders": 100,
+        "domMessages": 100,
+        "domNodes": 10863
+      },
+      {
+        "kind": "stream",
+        "loaded": 100,
+        "totalMs": 68.09999999403954,
+        "actualMs": 35.50000008940697,
+        "commits": 2,
+        "messageRenders": 100,
+        "domMessages": 100,
+        "domNodes": 10865
+      },
+      {
+        "kind": "stream",
+        "loaded": 100,
+        "totalMs": 55.400000005960464,
+        "actualMs": 31.19999995827675,
+        "commits": 2,
+        "messageRenders": 100,
+        "domMessages": 100,
+        "domNodes": 10867
+      },
+      {
+        "kind": "stream",
+        "loaded": 100,
+        "totalMs": 60,
+        "actualMs": 34.700000047683716,
+        "commits": 2,
+        "messageRenders": 100,
+        "domMessages": 100,
+        "domNodes": 10869
+      },
+      {
+        "kind": "seed",
+        "loaded": 500,
+        "totalMs": 1721.7999999970198,
+        "actualMs": 984.0000002980232,
+        "commits": 3,
+        "messageRenders": 500,
+        "domMessages": 500,
+        "domNodes": 53438
+      },
+      {
+        "kind": "native-type",
+        "loaded": 500,
+        "totalMs": 282.5,
+        "actualMs": 158.50000029802322,
+        "commits": 2,
+        "messageRenders": 500,
+        "domMessages": 500,
+        "domNodes": 53446
+      },
+      {
+        "kind": "native-type",
+        "loaded": 500,
+        "totalMs": 273.79999999701977,
+        "actualMs": 159.39999970793724,
+        "commits": 1,
+        "messageRenders": 500,
+        "domMessages": 500,
+        "domNodes": 53446
+      },
+      {
+        "kind": "native-type",
+        "loaded": 500,
+        "totalMs": 249.20000000298023,
+        "actualMs": 128.0999999344349,
+        "commits": 1,
+        "messageRenders": 500,
+        "domMessages": 500,
+        "domNodes": 53446
+      },
+      {
+        "kind": "native-type",
+        "loaded": 500,
+        "totalMs": 272.09999999403954,
+        "actualMs": 157.59999985992908,
+        "commits": 1,
+        "messageRenders": 500,
+        "domMessages": 500,
+        "domNodes": 53446
+      },
+      {
+        "kind": "native-type",
+        "loaded": 500,
+        "totalMs": 250.09999999403954,
+        "actualMs": 144.00000016391277,
+        "commits": 1,
+        "messageRenders": 500,
+        "domMessages": 500,
+        "domNodes": 53446
+      },
+      {
+        "kind": "stream",
+        "loaded": 500,
+        "totalMs": 264.3999999910593,
+        "actualMs": 142.39999985694885,
+        "commits": 2,
+        "messageRenders": 500,
+        "domMessages": 500,
+        "domNodes": 53461
+      },
+      {
+        "kind": "stream",
+        "loaded": 500,
+        "totalMs": 239.29999999701977,
+        "actualMs": 137.7999999076128,
+        "commits": 2,
+        "messageRenders": 500,
+        "domMessages": 500,
+        "domNodes": 53463
+      },
+      {
+        "kind": "stream",
+        "loaded": 500,
+        "totalMs": 286.29999999701977,
+        "actualMs": 175.2000002413988,
+        "commits": 2,
+        "messageRenders": 500,
+        "domMessages": 500,
+        "domNodes": 53465
+      },
+      {
+        "kind": "stream",
+        "loaded": 500,
+        "totalMs": 252.79999999701977,
+        "actualMs": 144.40000016987324,
+        "commits": 2,
+        "messageRenders": 500,
+        "domMessages": 500,
+        "domNodes": 53467
+      },
+      {
+        "kind": "stream",
+        "loaded": 500,
+        "totalMs": 263.09999999403954,
+        "actualMs": 145.0000000745058,
+        "commits": 2,
+        "messageRenders": 500,
+        "domMessages": 500,
+        "domNodes": 53469
+      },
+      {
+        "kind": "seed",
+        "loaded": 1000,
+        "totalMs": 2255.9000000059605,
+        "actualMs": 1253.2000000178814,
+        "commits": 3,
+        "messageRenders": 1000,
+        "domMessages": 1000,
+        "domNodes": 106688
+      },
+      {
+        "kind": "native-type",
+        "loaded": 1000,
+        "totalMs": 505.3999999910593,
+        "actualMs": 280.9000002294779,
+        "commits": 2,
+        "messageRenders": 1000,
+        "domMessages": 1000,
+        "domNodes": 106696
+      },
+      {
+        "kind": "native-type",
+        "loaded": 1000,
+        "totalMs": 526.7000000029802,
+        "actualMs": 312.29999981820583,
+        "commits": 1,
+        "messageRenders": 1000,
+        "domMessages": 1000,
+        "domNodes": 106696
+      },
+      {
+        "kind": "native-type",
+        "loaded": 1000,
+        "totalMs": 481.79999999701977,
+        "actualMs": 269.39999970793724,
+        "commits": 1,
+        "messageRenders": 1000,
+        "domMessages": 1000,
+        "domNodes": 106696
+      },
+      {
+        "kind": "native-type",
+        "loaded": 1000,
+        "totalMs": 500.90000000596046,
+        "actualMs": 280.29999999701977,
+        "commits": 1,
+        "messageRenders": 1000,
+        "domMessages": 1000,
+        "domNodes": 106696
+      },
+      {
+        "kind": "native-type",
+        "loaded": 1000,
+        "totalMs": 485.1000000089407,
+        "actualMs": 265.09999960660934,
+        "commits": 1,
+        "messageRenders": 1000,
+        "domMessages": 1000,
+        "domNodes": 106696
+      },
+      {
+        "kind": "stream",
+        "loaded": 1000,
+        "totalMs": 524,
+        "actualMs": 299.60000026226044,
+        "commits": 2,
+        "messageRenders": 1000,
+        "domMessages": 1000,
+        "domNodes": 106711
+      },
+      {
+        "kind": "stream",
+        "loaded": 1000,
+        "totalMs": 465.8999999910593,
+        "actualMs": 263.09999991953373,
+        "commits": 2,
+        "messageRenders": 1000,
+        "domMessages": 1000,
+        "domNodes": 106713
+      },
+      {
+        "kind": "stream",
+        "loaded": 1000,
+        "totalMs": 527.0999999940395,
+        "actualMs": 295.0000001490116,
+        "commits": 2,
+        "messageRenders": 1000,
+        "domMessages": 1000,
+        "domNodes": 106715
+      },
+      {
+        "kind": "stream",
+        "loaded": 1000,
+        "totalMs": 479,
+        "actualMs": 268.80000019073486,
+        "commits": 2,
+        "messageRenders": 1000,
+        "domMessages": 1000,
+        "domNodes": 106717
+      },
+      {
+        "kind": "stream",
+        "loaded": 1000,
+        "totalMs": 535.8999999910593,
+        "actualMs": 303.10000017285347,
+        "commits": 2,
+        "messageRenders": 1000,
+        "domMessages": 1000,
+        "domNodes": 106719
+      }
+    ],
+    "transcripts": [
+      {
+        "n": 100,
+        "digest": "01ab492670efffd6d31437874955b654b85ed41173e956777f7bb621ca469396"
+      },
+      {
+        "n": 500,
+        "digest": "23e70a6c120bd2f95f32ce71306dc66a86c028ed742d66eed9045f650bcc0989"
+      },
+      {
+        "n": 1000,
+        "digest": "888ab889588104296a5daf572928d2c690f8fbd971316973fdf7cbd475452d9e"
+      }
+    ],
+    "errors": []
+  },
+  "sourceHashes": {
+    "baseline": "70f6f5572c83e5491df27060a4bc9f59c7afa91d50cbf9e46262f2ba6f826dc0",
+    "candidate": "e2b62ce0f9d8b1c0b109013494a7f7d6d7ada6c4457a14ac9f469e956e4ff614"
+  },
+  "contract": "Actual BotWorkspacePage/store/Markdown in Electron; synthetic loaded history, native char input, React development Profiler; controlled host polling disabled only in fixture. No IPC/database/provider or full-product startup timing.",
+  "candidate": {
+    "rows": [
+      {
+        "kind": "seed",
+        "loaded": 100,
+        "totalMs": 604,
+        "actualMs": 392.1999998986721,
+        "commits": 3,
+        "messageRenders": 100,
+        "domMessages": 100,
+        "domNodes": 10838
+      },
+      {
+        "kind": "native-type",
+        "loaded": 100,
+        "totalMs": 46,
+        "actualMs": 4.5999999940395355,
+        "commits": 2,
+        "messageRenders": 0,
+        "domMessages": 100,
+        "domNodes": 10846
+      },
+      {
+        "kind": "native-type",
+        "loaded": 100,
+        "totalMs": 37.79999999701977,
+        "actualMs": 2.600000038743019,
+        "commits": 1,
+        "messageRenders": 0,
+        "domMessages": 100,
+        "domNodes": 10846
+      },
+      {
+        "kind": "native-type",
+        "loaded": 100,
+        "totalMs": 36,
+        "actualMs": 2.9000000208616257,
+        "commits": 1,
+        "messageRenders": 0,
+        "domMessages": 100,
+        "domNodes": 10846
+      },
+      {
+        "kind": "native-type",
+        "loaded": 100,
+        "totalMs": 38.3999999910593,
+        "actualMs": 3.000000014901161,
+        "commits": 1,
+        "messageRenders": 0,
+        "domMessages": 100,
+        "domNodes": 10846
+      },
+      {
+        "kind": "native-type",
+        "loaded": 100,
+        "totalMs": 38.79999999701977,
+        "actualMs": 2.9000000059604645,
+        "commits": 1,
+        "messageRenders": 0,
+        "domMessages": 100,
+        "domNodes": 10846
+      },
+      {
+        "kind": "stream",
+        "loaded": 100,
+        "totalMs": 103.6000000089407,
+        "actualMs": 68.09999985992908,
+        "commits": 2,
+        "messageRenders": 100,
+        "domMessages": 100,
+        "domNodes": 10861
+      },
+      {
+        "kind": "stream",
+        "loaded": 100,
+        "totalMs": 67.70000000298023,
+        "actualMs": 43.400000005960464,
+        "commits": 2,
+        "messageRenders": 100,
+        "domMessages": 100,
+        "domNodes": 10863
+      },
+      {
+        "kind": "stream",
+        "loaded": 100,
+        "totalMs": 61.1000000089407,
+        "actualMs": 37.09999991953373,
+        "commits": 2,
+        "messageRenders": 100,
+        "domMessages": 100,
+        "domNodes": 10865
+      },
+      {
+        "kind": "stream",
+        "loaded": 100,
+        "totalMs": 63.20000000298023,
+        "actualMs": 36.699999928474426,
+        "commits": 2,
+        "messageRenders": 100,
+        "domMessages": 100,
+        "domNodes": 10867
+      },
+      {
+        "kind": "stream",
+        "loaded": 100,
+        "totalMs": 62.20000000298023,
+        "actualMs": 37.49999997019768,
+        "commits": 2,
+        "messageRenders": 100,
+        "domMessages": 100,
+        "domNodes": 10869
+      },
+      {
+        "kind": "seed",
+        "loaded": 500,
+        "totalMs": 1775.8999999910593,
+        "actualMs": 1024.8000003248453,
+        "commits": 3,
+        "messageRenders": 500,
+        "domMessages": 500,
+        "domNodes": 53438
+      },
+      {
+        "kind": "native-type",
+        "loaded": 500,
+        "totalMs": 47,
+        "actualMs": 3.499999985098839,
+        "commits": 2,
+        "messageRenders": 0,
+        "domMessages": 500,
+        "domNodes": 53446
+      },
+      {
+        "kind": "native-type",
+        "loaded": 500,
+        "totalMs": 40.79999999701977,
+        "actualMs": 1.2999999970197678,
+        "commits": 1,
+        "messageRenders": 0,
+        "domMessages": 500,
+        "domNodes": 53446
+      },
+      {
+        "kind": "native-type",
+        "loaded": 500,
+        "totalMs": 37.29999999701977,
+        "actualMs": 1.9000000208616257,
+        "commits": 1,
+        "messageRenders": 0,
+        "domMessages": 500,
+        "domNodes": 53446
+      },
+      {
+        "kind": "native-type",
+        "loaded": 500,
+        "totalMs": 23.30000001192093,
+        "actualMs": 3.2000000178813934,
+        "commits": 1,
+        "messageRenders": 0,
+        "domMessages": 500,
+        "domNodes": 53446
+      },
+      {
+        "kind": "native-type",
+        "loaded": 500,
+        "totalMs": 28.399999991059303,
+        "actualMs": 1.2999999821186066,
+        "commits": 1,
+        "messageRenders": 0,
+        "domMessages": 500,
+        "domNodes": 53446
+      },
+      {
+        "kind": "stream",
+        "loaded": 500,
+        "totalMs": 245.3999999910593,
+        "actualMs": 131.59999987483025,
+        "commits": 2,
+        "messageRenders": 500,
+        "domMessages": 500,
+        "domNodes": 53461
+      },
+      {
+        "kind": "stream",
+        "loaded": 500,
+        "totalMs": 284.3999999910593,
+        "actualMs": 165.4999998807907,
+        "commits": 2,
+        "messageRenders": 500,
+        "domMessages": 500,
+        "domNodes": 53463
+      },
+      {
+        "kind": "stream",
+        "loaded": 500,
+        "totalMs": 265.79999999701977,
+        "actualMs": 154.00000016391277,
+        "commits": 2,
+        "messageRenders": 500,
+        "domMessages": 500,
+        "domNodes": 53465
+      },
+      {
+        "kind": "stream",
+        "loaded": 500,
+        "totalMs": 275.90000000596046,
+        "actualMs": 147.49999983608723,
+        "commits": 2,
+        "messageRenders": 500,
+        "domMessages": 500,
+        "domNodes": 53467
+      },
+      {
+        "kind": "stream",
+        "loaded": 500,
+        "totalMs": 252.8999999910593,
+        "actualMs": 153.799999833107,
+        "commits": 2,
+        "messageRenders": 500,
+        "domMessages": 500,
+        "domNodes": 53469
+      },
+      {
+        "kind": "seed",
+        "loaded": 1000,
+        "totalMs": 2309.6000000089407,
+        "actualMs": 1311.5999993383884,
+        "commits": 3,
+        "messageRenders": 1000,
+        "domMessages": 1000,
+        "domNodes": 106688
+      },
+      {
+        "kind": "native-type",
+        "loaded": 1000,
+        "totalMs": 21,
+        "actualMs": 1.6000000089406967,
+        "commits": 2,
+        "messageRenders": 0,
+        "domMessages": 1000,
+        "domNodes": 106696
+      },
+      {
+        "kind": "native-type",
+        "loaded": 1000,
+        "totalMs": 39.79999999701977,
+        "actualMs": 1.7999999970197678,
+        "commits": 1,
+        "messageRenders": 0,
+        "domMessages": 1000,
+        "domNodes": 106696
+      },
+      {
+        "kind": "native-type",
+        "loaded": 1000,
+        "totalMs": 28.80000001192093,
+        "actualMs": 1.4000000059604645,
+        "commits": 1,
+        "messageRenders": 0,
+        "domMessages": 1000,
+        "domNodes": 106696
+      },
+      {
+        "kind": "native-type",
+        "loaded": 1000,
+        "totalMs": 47.20000000298023,
+        "actualMs": 1.7999999821186066,
+        "commits": 1,
+        "messageRenders": 0,
+        "domMessages": 1000,
+        "domNodes": 106696
+      },
+      {
+        "kind": "native-type",
+        "loaded": 1000,
+        "totalMs": 23.5,
+        "actualMs": 2.0999999940395355,
+        "commits": 1,
+        "messageRenders": 0,
+        "domMessages": 1000,
+        "domNodes": 106696
+      },
+      {
+        "kind": "stream",
+        "loaded": 1000,
+        "totalMs": 500.29999999701977,
+        "actualMs": 276.8000001013279,
+        "commits": 2,
+        "messageRenders": 1000,
+        "domMessages": 1000,
+        "domNodes": 106711
+      },
+      {
+        "kind": "stream",
+        "loaded": 1000,
+        "totalMs": 521.2000000029802,
+        "actualMs": 304.50000037252903,
+        "commits": 2,
+        "messageRenders": 1000,
+        "domMessages": 1000,
+        "domNodes": 106713
+      },
+      {
+        "kind": "stream",
+        "loaded": 1000,
+        "totalMs": 482.20000000298023,
+        "actualMs": 270.29999977350235,
+        "commits": 2,
+        "messageRenders": 1000,
+        "domMessages": 1000,
+        "domNodes": 106715
+      },
+      {
+        "kind": "stream",
+        "loaded": 1000,
+        "totalMs": 521.7999999970198,
+        "actualMs": 297.3000000268221,
+        "commits": 2,
+        "messageRenders": 1000,
+        "domMessages": 1000,
+        "domNodes": 106717
+      },
+      {
+        "kind": "stream",
+        "loaded": 1000,
+        "totalMs": 495.90000000596046,
+        "actualMs": 279.9000000208616,
+        "commits": 2,
+        "messageRenders": 1000,
+        "domMessages": 1000,
+        "domNodes": 106719
+      }
+    ],
+    "transcripts": [
+      {
+        "n": 100,
+        "digest": "01ab492670efffd6d31437874955b654b85ed41173e956777f7bb621ca469396"
+      },
+      {
+        "n": 500,
+        "digest": "23e70a6c120bd2f95f32ce71306dc66a86c028ed742d66eed9045f650bcc0989"
+      },
+      {
+        "n": 1000,
+        "digest": "888ab889588104296a5daf572928d2c690f8fbd971316973fdf7cbd475452d9e"
+      }
+    ],
+    "errors": []
+  },
+  "summary": [
+    {
+      "loaded": 100,
+      "baseline": {
+        "medianMs": 72.40000000596046,
+        "reactMedianMs": 35.79999993741512,
+        "messageRenders": [
+          100,
+          100,
+          100,
+          100,
+          100
+        ]
+      },
+      "candidate": {
+        "medianMs": 38.3999999910593,
+        "reactMedianMs": 2.9000000208616257,
+        "messageRenders": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "loaded": 500,
+      "baseline": {
+        "medianMs": 272.09999999403954,
+        "reactMedianMs": 157.59999985992908,
+        "messageRenders": [
+          500,
+          500,
+          500,
+          500,
+          500
+        ]
+      },
+      "candidate": {
+        "medianMs": 37.29999999701977,
+        "reactMedianMs": 1.9000000208616257,
+        "messageRenders": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "loaded": 1000,
+      "baseline": {
+        "medianMs": 500.90000000596046,
+        "reactMedianMs": 280.29999999701977,
+        "messageRenders": [
+          1000,
+          1000,
+          1000,
+          1000,
+          1000
+        ]
+      },
+      "candidate": {
+        "medianMs": 28.80000001192093,
+        "reactMedianMs": 1.7999999821186066,
+        "messageRenders": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    }
+  ],
+  "validation": {
+    "transcriptDomParity": true,
+    "nativeTypingKeepsTranscript": true,
+    "streamInvalidation": true,
+    "renameInvalidation": true,
+    "independentTaskSubscription": true,
+    "independentImagePayloadSubscription": true,
+    "imagePreviewAndFoldState": true,
+    "gui": [
+      "bot-history-paging-desktop",
+      "bot-scroll-desktop",
+      "bot-conversation-concurrent-desktop",
+      "bot-message-actions-desktop",
+      "bot-work-conversation-desktop",
+      "bot-rename-desktop",
+      "bot-team-removal-desktop"
+    ],
+    "focused": [
+      "bot-report-images-ui",
+      "bot-message-presentation",
+      "bot-conversation-ui",
+      "bot-history-paging",
+      "bot-history-paging-sqlite",
+      "bot-team-conversation",
+      "bot-report-images"
+    ],
+    "typecheck": "web/node/scripts 0 errors",
+    "staticReview": "passed",
+    "fullDefault": "pending for this commit; parent 27718826 passed 476/476"
+  },
+  "fixtures": {
+    "controller": "0c113fae1e0bfd205ee9a5e2346c54ada7d492496a92d1b08cdd14d60db6f5ea",
+    "runner": "be1890145f00668c05fec322a73f3d11f50d3b608cf9e83fae64884650a3e099"
+  }
+}

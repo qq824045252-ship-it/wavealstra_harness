@@ -15,7 +15,7 @@ import { botConversationScope } from "@/store/app/slices/botConversation";
 import { BotWorkNavigation } from "./BotWorkNavigation";
 import { ComposerAttachmentChips } from "@/components/chat/ComposerAttachmentChips";
 import { composerFiles, mergeComposerAttachments, pastedComposerFiles, pickComposerAttachment } from "@/components/chat/composerAttachments";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { BotDto, WorkProjectionDto } from "@shared/bot-work";
 import { botExternalAgentTaskId, botMessageDisplayText, type BotMessageDto } from "@shared/bot-conversation";
 import type { BotWorkHostStatusDto } from "@shared/bot-work-ipc";
@@ -231,7 +231,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
       (trigger?.isConnected && trigger.getClientRects().length ? trigger : source)?.focus({ preventScroll: true });
     });
   };
-  const openWork = (workId: string) => {
+  const openWork = useCallback((workId: string) => {
     suppressAutoInline.current = false;
     const sourceScope = scopeKey;
     const sourceConversation = histories[sourceScope]?.conversationId;
@@ -247,7 +247,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
     };
     requestedWork.current = workId;
     show();
-  };
+  }, [scopeKey, histories, view, setSelectedWorkId, pauseFollowing, followLatest]);
   const changeView = (next: BotWorkspaceView) => {
     requestedWork.current = null; setNavigationNotice("");
     returnTarget.current = null; setSelectedWorkId(null); setInlineWorkId(null);
@@ -275,6 +275,15 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
     setView("conversation");
     requestAnimationFrame(() => { composerRef.current?.focus(); });
   };
+
+  // Draft edits and composer controls do not change the transcript. Keep its
+  // elements stable; message/store/context updates still render their own content.
+  const messageTimeline = useMemo(() => view === "conversation" && messages.length > 0 ? (<div className="bot-message-list">{botWorkTimeline(messages).map(row => row.kind === "message"
+            ? <BotMessage key={row.key} message={row.message} botName={displayName} works={detailWorks} onOpenWork={openWork} sourceQuestion={questionsByRequest.get(row.message.requestId)} onReply={() => { setReplyReference(row.message); composerRef.current?.focus(); }} onCancel={() => { if (activeBotId) void useAppStore.getState().cancelBotSend(row.message.botId, row.message.requestId); }} />
+            : <details key={row.key} className="bot-work-progress" aria-label="事项进展记录">
+              <summary>{row.workIds.length > 1 ? `${row.workIds.length} 个事项` : detailWorks.find(work => work.workId === row.workId)?.title ?? "事项"} · {row.messages.length} 条执行记录（展开查看）</summary>
+              {row.messages.map(message => <BotMessage key={message.messageId} message={message} botName={displayName} works={detailWorks} onOpenWork={openWork} onCancel={() => {}} />)}
+            </details>)}</div>) : null, [view, messages, displayName, detailWorks, openWork, questionsByRequest, activeBotId]);
 
   return <div className="bot-workspace" onKeyDownCapture={event => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { closeSettings(); } }}>
     {historicalTeamWork && <section className="bot-conversation" aria-label="历史团队事项">
@@ -332,12 +341,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
             <p>{activeBot ? "聊想法、交代事项，或继续上次的进展。普通聊天不会自动创建事项。" : "创建一个 Bot，给它名称和职责，就能开始独立的对话。"}</p>
             {!activeBot && props.onCreateBot && <button type="button" className="bot-empty-create" onClick={props.onCreateBot}>创建第一个 Bot</button>}
             {activeBot && <div className="bot-example-grid">{examples.map(example => <button type="button" key={example.title} onClick={() => draftExample(example.text)}><span>{example.title}</span><IconArrowUp size={16} /></button>)}</div>}
-          </div> : <div className="bot-message-list">{botWorkTimeline(messages).map(row => row.kind === "message"
-            ? <BotMessage key={row.key} message={row.message} botName={displayName} works={detailWorks} onOpenWork={openWork} sourceQuestion={questionsByRequest.get(row.message.requestId)} onReply={() => { setReplyReference(row.message); composerRef.current?.focus(); }} onCancel={() => { if (activeBotId) void useAppStore.getState().cancelBotSend(row.message.botId, row.message.requestId); }} />
-            : <details key={row.key} className="bot-work-progress" aria-label="事项进展记录">
-              <summary>{row.workIds.length > 1 ? `${row.workIds.length} 个事项` : detailWorks.find(work => work.workId === row.workId)?.title ?? "事项"} · {row.messages.length} 条执行记录（展开查看）</summary>
-              {row.messages.map(message => <BotMessage key={message.messageId} message={message} botName={displayName} works={detailWorks} onOpenWork={openWork} onCancel={() => {}} />)}
-            </details>)}</div>}
+          </div> : messageTimeline}
         </div>
       </> : <BotWorkBrowser key={`${scopeKey}-${view}`} hidden={Boolean(inlineWorkId)} scrollRef={browserRef} view={view} selectedWorkId={selected?.workId} onOpenWork={openWork} onConversation={() => { setView("conversation"); requestAnimationFrame(() => composerRef.current?.focus()); }} />}
       <form hidden={Boolean(inlineWorkId)} className="bot-composer input-area" onDragOver={event => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; } }} onDrop={event => { if (event.dataTransfer.files.length) { event.preventDefault(); void addAttachments(Array.from(event.dataTransfer.files)); } }} onSubmit={event => { event.preventDefault(); send(); }}>
