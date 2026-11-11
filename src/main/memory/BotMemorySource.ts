@@ -10,6 +10,17 @@ export function botMemorySource(db: AppDatabase, conversationId: string, userId 
     } | undefined;
 }
 
+/** One conservative scope boundary for direct writes, extraction, forgetting and
+ * historical references. A wording variant must never promote a temporary fact. */
+export function botMemoryConversationOnly(text: string): boolean {
+  const wording = text.replace(/\bnot\s+only\b/gi, "notexclusive");
+  const conversation = "(?:本(?:次|轮)?|这(?:次|轮|个)?|当前|此(?:次|轮)?)(?:对话|会话|聊天)";
+  return new RegExp(`(?<!不)(?:仅|只)(?:限)?(?:于|在|对|用于)?${conversation}|${conversation}(?:中|内|里)?(?:有效|适用)(?:而已|即可|就好)|(?:有效期|适用范围)(?:仅限|为|是)?${conversation}`).test(wording)
+    || /\b(?:only\s+(?:for\s+|in\s+|within\s+)?(?:this|the current)\s+(?:conversation|chat|session)|(?:for\s+|in\s+)?(?:this|the current)\s+(?:conversation|chat|session)\s+only)\b/i.test(wording)
+    || /(?:不要|不得|不能|不许|别)(?:再|继续)?(?:在|带到|用于|延续到|应用于)?(?:新的?|其他|下次|后续)(?:对话|会话|聊天)|不跨(?:对话|会话|聊天)|(?:新的?|下次|后续)(?:对话|会话|聊天)(?:中|内|里)?(?:不要|不得|不能|不再|不应)(?:再|继续)?(?:使用|保留|记住|应用)/.test(wording)
+    || /\b(?:do not|don't|never)\s+(?:carry|share|reuse|retain|remember)\b.{0,48}\b(?:other|future|new)\s+(?:chats?|conversations?|sessions?)\b/i.test(wording);
+}
+
 /** Conservative capture boundary: never copy secrets or one-off private details into memory evidence. */
 export function botMemoryTextEligible(text: string): boolean {
   return Boolean(text.trim()) && !/(?:api[ _-]?key|password|passwd|secret|access[ _-]?token|refresh[ _-]?token|private[ _-]?key|recovery[ _-]?(?:code|seed)|cookie|私钥|恢复码|助记词|密钥|密码|口令|令牌|验证码|身份证|护照|银行卡|信用卡|病历|诊断|用药|医疗|健康状况|银行账户|存款|资产|medical|diagnosis|medication|diabetes|insulin|cancer|hiv|antidepressant|糖尿病|胰岛素|癌症|艾滋|抑郁|passport|social security|credit card|bank account|保密|机密|不要(?:记住|记录|保存|存储)|别(?:记住|保存)|do not (?:remember|store|save)|don.t (?:remember|store|save))/i.test(text)

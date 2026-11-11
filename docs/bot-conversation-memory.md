@@ -30,7 +30,20 @@ Previously the model saw only a search tool and told the user it could not delet
 - This change does not extend or alter Bot/conversation deletion behavior. Existing memory settings retain their original forget/source-delete controls.
 - L2/L3 remain the existing manually generated, approved project/workspace/global derived views. This patch does not add Bot L2/L3 generation or another approval screen.
 
+## Query-aware historical references
+
+Foreground evidence also reads relevant completed turn pairs from earlier conversations in the same personal Bot or the current team, owned by the same user. This is a separate, request-only historical reference, not stable user memory: assistant answers remain attributed, potentially incorrect source material, never instructions or authority. The current request supplies the query and source timestamp. No additional model call or transcript copy is created.
+
+Sources require matching original messages, authenticated receipts and an existing exact L0 pointer. Deleted messages, receipts or L0 sources disappear on the next provider request; old conversations never captured by the memory pipeline are intentionally unavailable. Scope and conversation forget watermarks invalidate older sources. Both sides pass the conservative sensitive-text filter; conversation-only and opt-out wording excludes the source conversation. Disabled memory disables this retrieval too.
+
+`botMemoryConversationOnly` is the shared boundary for direct remember, automatic extraction, pure-forget capture, and historical retrieval. It covers natural Chinese forms such as `仅本会话有效`, `只在这个对话中使用`, and `仅此会话有效`, plus explicit new-conversation restrictions and English chat/session-only forms. A model-supplied `global` or `stable` classification cannot override that user boundary. Ambiguous matching remains conservative, so some history may be omitted rather than shared across conversations.
+
+Selection is lexical and conservative: named Latin terms or at least two Chinese bigrams, newest first, with newer explicit corrections suppressing older matches. Limits are 300 candidate pairs, 300 inspected restriction rows / 64,000 inspected characters across source conversations (fail closed when exhausted), three references, and 6,000 output characters in addition to the existing stable-memory budget. This is not exhaustive semantic search; long, very old, paraphrased, or sensitive discussions may not be returned. `memory_search` still returns stable records only; it does not silently change its result shape.
+
 ## Checks
+
+- `pnpm -s test:bot-history-context`: deterministic recall, source identity, isolation, correction, privacy, deletion, forget, disabled state and budgets.
+- `pnpm -s test:bot-history-context:live`: independent real-model acceptance cases through the isolated composer.
 
 - `pnpm -s test:bot-memory`: storage, provenance, scope isolation (including same-title correction/forget), replay, sensitive/opt-out filtering, disabled/cancelled behavior and L0/L1 deletion races.
 - `pnpm -s test:bot-memory-runtime`: actual Durable foreground runtime, completion callback, restart/new conversation recall and request-only evidence withdrawal.

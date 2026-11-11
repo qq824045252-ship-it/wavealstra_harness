@@ -236,7 +236,30 @@ async function main() {
     assert(memory.listExactScope("bot", "alice").some(m => m.content === sameQuote), "newest actual user statement chooses private scope despite reverse completion order");
     assert(!memory.listExactScope("global").some(m => m.content === sameQuote), "older public instruction cannot upgrade a newer private fact in the same batch");
     assert.deepEqual(db.connection.pragma("foreign_key_check"), []);
-    console.log("PASS Bot memory: real-source L0/L1, private scope, recall, new chat, replay, source deletion race, disabled/cancelled/sensitive boundaries, no approval queue, existing memory deletion");
+    // Every write/capture path must agree on natural conversation-only wording,
+    // even when a model mistakenly asks for global/stable storage.
+    for (const [index, wording] of ["仅本会话有效", "只在这个对话中使用", "仅此会话有效", "for this session only"].entries()) {
+      const botId = `temporary-variant-${index}`;
+      bots.registerBot({ botId, userId: LOCAL_USER_ID, displayName: botId });
+      const direct = `限定直写${index}`, automatic = `限定提炼${index}`;
+      const text = `${wording}，记住${direct}和${automatic}。`;
+      const turn = send(text, botId); assert(turn.source);
+      const saved = bridge.remember(botId, turn.source, { scope: "current", kind: "fact", title: direct, content: direct, userEvidence: direct }, text);
+      assert.equal(saved.scopeType, "conversation", `direct remember: ${wording}`);
+      candidates = [candidate(automatic, automatic, { kind: "fact", title: automatic, retention: "stable", scopeType: "global" })];
+      await bridge.extract(turn.source);
+      assert(memory.listExactScope("conversation", turn.source).some(m => m.content === automatic), `automatic extraction: ${wording}`);
+      assert.equal(memory.listExactScope("bot", botId).length, 0, "temporary facts cannot become Bot facts");
+      assert(!memory.listExactScope("global").some(m => [direct, automatic].includes(m.content)), "temporary facts cannot become public facts");
+      messages.archive(LOCAL_USER_ID, botId, turn.source);
+      const next = send(`查询${direct}和${automatic}`, botId); assert(next.source);
+      const projected = bridge.context(botId, next.source, next.receipt.userMessageId);
+      assert(!projected.includes(direct) && !projected.includes(automatic), `new conversation excludes L1 and historical sources: ${wording}`);
+      const erased = send(`${wording}，忘记并删除临时偏好记忆。`, botId); assert(erased.source);
+      assert(db.connection.prepare("SELECT 1 FROM memory_forget_watermarks WHERE scope_type='conversation' AND scope_id=?").get(erased.source), `pure forget stays within conversation: ${wording}`);
+      assert(!db.connection.prepare("SELECT 1 FROM memory_forget_watermarks WHERE scope_type='bot' AND scope_id=?").get(botId), "temporary forget cannot affect the whole Bot");
+    }
+    console.log("PASS Bot memory: real-source L0/L1, private scope, recall, new chat, replay, source deletion race, disabled/cancelled/sensitive boundaries, temporary wording across all write paths, no approval queue, existing memory deletion");
   } finally { db.close(); }
 }
 void main().catch(error => { console.error(error); process.exitCode = 1; });

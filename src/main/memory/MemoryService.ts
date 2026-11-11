@@ -1,6 +1,6 @@
 import { MemoryForgetWatermarks } from "./MemoryForgetWatermarks";
 import { resolveAssistantScopeChain, resolveWorkMemoryScope } from "./AssistantMemoryScopes";
-import { botMemorySource, botMemoryTextEligible, botMemoryWriteEvidenceAllowed } from "./BotMemorySource";
+import { botMemorySource, botMemoryTextEligible, botMemoryWriteEvidenceAllowed, botMemoryConversationOnly } from "./BotMemorySource";
 import { projectMemoryContext } from "../agent/MemoryContextProjection";
 import { createHash, randomUUID } from "node:crypto";
 import type { AgentSession, ModelRuntime } from "@earendil-works/pi-coding-agent";
@@ -968,7 +968,7 @@ export class MemoryService {
       // Scope follows the newest real user statement, not capture/completion order or old sharing instructions.
       const scopeWording = [...supportingTurns].sort((a, b) => b.capturedAt - a.capturedAt
         || Number(b.metadata.sourceUserOrdinal ?? 0) - Number(a.metadata.sourceUserOrdinal ?? 0))[0]?.userText ?? "";
-      const temporary = Boolean(botSource) && /(?:仅|只)(?:限)?(?:在|对|用于)?(?:本次|这次|当前)(?:对话|会话)|(?:this conversation|this chat) only|only (?:for |in )?(?:this conversation|this chat)/i.test(scopeWording);
+      const temporary = Boolean(botSource) && botMemoryConversationOnly(scopeWording);
       const publicShared = Boolean(botSource) && !temporary
         && /(?:所有|全部|每个).{0,12}(?:bot|助理)|(?:公共|共享)记忆|(?:all|every)\s+(?:bots?|assistants?)|public\s+memor/i.test(scopeWording)
         && !/(?:不要|别|不必|不能|勿).{0,8}(?:共享|公开|所有|全部)|(?:do not|don['’]?t|never).{0,12}(?:share|public|all bots)/i.test(scopeWording);

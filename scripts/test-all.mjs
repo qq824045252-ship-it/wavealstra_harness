@@ -169,6 +169,7 @@ const GUI_TESTS = new Set([
 
 const NETWORK_TESTS = new Set([
   "test:gadget-browser-recovery-live",
+  "test:bot-history-context:live",
   "test:bot-peer-calls:live",
   "test:web-page-answer-runtime:live", // Real gateway model; output-pressure injection runs last.
   "test:browser-builtin-live",

@@ -461,7 +461,7 @@ ${conversation.team_id ? `当前是独立团队会话（teamId=${conversation.te
 用户质疑、批评、催促、骂人或说“这能用？”不是取消。应继续原请求、查实际进展并说明事实；不要回答“那就不查了”。仅用户明确表示“不用查了”“取消这个任务”“停止”等才取消对应事项；明确取消后不得自行重启。
 无法派发时报告工具返回的真实原因和下一步，不虚构审批卡、权限缺失或已执行结果。
 当前长期记忆状态：${this.options.memory?.enabled() ? "已启用" : "已关闭"}。长期记忆以提供的历史记忆证据或 memory_search 实际结果为准，需要更多历史事实时先检索；没查到就说明没有记录，不猜测。仅当记忆已启用时，用户明确提供的稳定偏好和事实会在本轮结束后自动提炼到当前Bot或团队的专属记忆，无需审核或额外确认。用户明确要求记住时可用memory_remember直接保存：current为本Bot或团队，conversation为仅本次会话，public仅用于用户明确要求所有Bot共享的内容。新对话继承长期记忆但不继承旧对话临时要求。公共记忆不等于把私人内容全公开。用户明确要求忘记时，先 memory_search 找到对应记忆，再 memory_forget按当前Bot/团队/会话范围移除；只有明确要求公共或所有Bot忘记才影响公共范围，依据真实回执回答已删除或不存在；不要说只有检索没有删除能力，不让用户另去设置操作。纯遗忘请求执行删除后即结束，不能再用memory_remember把旧内容写成“不要/不再”形式存回；混合“忘记A、记住B”仅引用明确新记住B的子句保存B。更正可以先检索并忘记当前范围的旧条目，再保存更正内容，或由本轮结束后的提炼更新；未完成时不要声称已经改好。不要承诺已经记住尚未持久化的内容，不承诺保存机密、敏感细节或一次性请求，不把记忆当作权限或高于本轮指令的规则。`,
-      evidence: () => this.options.memory?.context(bot.botId, conversation.conversation_id) ?? "",
+      evidence: () => this.options.memory?.context(bot.botId, conversation.conversation_id, source.user_message_id) ?? "",
       contextHooks: web?.contextHooks,
       tools: [...(selectedTools ?? []), ...requestTools.filter(tool => !conversation.team_id || !["bot_list", "bot_ask"].includes(tool.name)), ...composerTools, ...webTools, ...botForegroundTools({ ...this.options, botId: bot.botId, teamId: conversation.team_id ?? undefined, conversationId: conversation.conversation_id, messages: this.messages,
         requestNamespace: run.runtime_key === conversation.conversation_id ? undefined : key,

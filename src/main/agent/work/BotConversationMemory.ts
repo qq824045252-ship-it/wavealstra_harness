@@ -2,8 +2,9 @@ import type { AppDatabase } from "../../db/AppDatabase";
 import type { MemoryCreateRequest, MemoryScopeType } from "../../../shared/memory-kernel";
 import type { MemoryService } from "../../memory/MemoryService";
 import type { MemoryPipelineManager } from "../../memory/MemoryPipelineManager";
-import { botMemorySource, botMemoryTextEligible, botMemoryWriteEvidenceAllowed } from "../../memory/BotMemorySource";
+import { botMemorySource, botMemoryTextEligible, botMemoryWriteEvidenceAllowed, botMemoryConversationOnly } from "../../memory/BotMemorySource";
 import { BotConversationRepository } from "./BotConversationRepository";
+import { botHistoryContext } from "./BotHistoryContext";
 
 /** Foreground adapter over the existing L0/L1 store, deletion controls and single writer. */
 export class BotConversationMemory {
@@ -43,7 +44,7 @@ export class BotConversationMemory {
     if (!botMemoryWriteEvidenceAllowed(userText, input.userEvidence)) throw new Error("本次是遗忘请求，不能把已删除内容换成否定形式重新保存。若同时要求记住新事实，只引用明确的新记住子句");
     if (!botMemoryTextEligible(`${userText} ${input.title} ${input.content}`)) throw new Error("记忆内容含敏感秘密或用户明确要求不保存，本次未写入");
     if (input.scope === "public" && !publicScopeRequested(userText)) throw new Error("公共记忆需要用户明确要求所有 Bot 共享；否则使用 current 范围");
-    const temporary = /(?:仅|只)(?:限)?(?:在|对|用于)?(?:本次|这次|当前)(?:对话|会话)|(?:this conversation|this chat) only|only (?:for |in )?(?:this conversation|this chat)/i.test(userText);
+    const temporary = botMemoryConversationOnly(userText);
     const scopeType: MemoryScopeType = temporary || input.scope === "conversation" ? "conversation"
       : publicScopeRequested(userText) ? "global" : context.teamId ? "team" : "bot";
     const scopeId = scopeType === "global" ? undefined : scopeType === "conversation" ? conversationId : scopeType === "team" ? context.teamId : botId;
@@ -93,13 +94,18 @@ export class BotConversationMemory {
     return result;
   }
 
-  context(botId: string, conversationId: string): string {
+  context(botId: string, conversationId: string, sourceMessageId?: string): string {
     const context = this.scopeContext(botId, conversationId);
     if (!context) return "";
     // Stable preferences should also influence unrelated requests. Bounded active L1,
     // read afresh at every provider request: no stale in-memory copy after deletion.
-    return this.options.memory.resolveContext({ ...context,
+    const stable = this.options.memory.resolveContext({ ...context,
       statuses: ["active"], budgetChars: 6000, limit: 12 }).text;
+    const source = sourceMessageId && this.messages.message(sourceMessageId);
+    if (!source || source.role !== "user" || source.botId !== botId || source.conversationId !== conversationId) return stable;
+    const historical = botHistoryContext(this.options.db.connection, { userId: this.options.userId, botId,
+      conversationId, teamId: context.teamId, query: source.text, before: source.createdAt });
+    return [stable, historical].filter(Boolean).join("\n\n");
   }
 
   /** Called within the assistant completion transaction; capture failure never changes the reply. */
@@ -118,7 +124,7 @@ export class BotConversationMemory {
     // exist yet. Record its source time, not this delayed completion time.
     if (/(?:忘记|删除.{0,24}记忆|清除.{0,24}记忆|\bforget\b|\bdelete\b.{0,32}\bmemor)/i.test(user.text)
       && !user.text.split(/[，,、。；;！!？?\n]/).some(clause => botMemoryWriteEvidenceAllowed(user.text, clause))) {
-      const temporary = /(?:仅|只)(?:限)?(?:在|对|用于)?(?:本次|这次|当前)(?:对话|会话)/.test(user.text);
+      const temporary = botMemoryConversationOnly(user.text);
       const scopeType = temporary ? "conversation" : publicScopeRequested(user.text) ? "global" : source.team_id ? "team" : "bot";
       const scopeId = scopeType === "conversation" ? receipt.conversation_id : scopeType === "global" ? undefined : source.team_id ?? botId;
       this.options.memory.recordForgetBoundary(scopeType, scopeId, user.createdAt);
