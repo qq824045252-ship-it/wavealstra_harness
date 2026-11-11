@@ -15,7 +15,8 @@ import { botConversationScope } from "@/store/app/slices/botConversation";
 import { BotWorkNavigation } from "./BotWorkNavigation";
 import { ComposerAttachmentChips } from "@/components/chat/ComposerAttachmentChips";
 import { composerFiles, mergeComposerAttachments, pastedComposerFiles, pickComposerAttachment } from "@/components/chat/composerAttachments";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import type { BotDto, WorkProjectionDto } from "@shared/bot-work";
 import { botExternalAgentTaskId, botMessageDisplayText, type BotMessageDto } from "@shared/bot-conversation";
 import type { BotWorkHostStatusDto } from "@shared/bot-work-ipc";
@@ -106,10 +107,14 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   const messages = activeBotId ? histories[scopeKey]?.messages ?? [] : [];
   // Lists/counts retain team ownership. A trusted result link in the source
   // conversation can still open its team's details without moving the Work.
-  const detailWorks = useMemo(() => {
+  const detailWorkCandidates = useMemo(() => {
     const owned = new Set(botWorks.map(work => work.workId));
     return works.filter(work => owned.has(work.workId) || linkedConversationWork(work, messages, activeBotId, teamId, histories[scopeKey]?.conversationId));
   }, [works, botWorks, messages, activeBotId, teamId, histories[scopeKey]?.conversationId]);
+  // Stream frames retain unchanged Work objects. Keep the list identity too
+  // when membership/order are unchanged, so unrelated messages can skip rendering.
+  const stabilizeDetailWorks = useShallow((value: WorkProjectionDto[]) => value);
+  const detailWorks = stabilizeDetailWorks(detailWorkCandidates);
   const detail = useBotWorkDetail(scopeChanged ? null : inlineWorkId, `${scopeKey}:${histories[scopeKey]?.conversationId ?? ""}`);
   const loadedWork = detail.work;
   const inlineWork = loadedWork && !loadedWork.team?.removedAt && (teamId ? loadedWork.team?.teamId === teamId : personalBotWork(loadedWork, activeBotId)
@@ -231,10 +236,11 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
       (trigger?.isConnected && trigger.getClientRects().length ? trigger : source)?.focus({ preventScroll: true });
     });
   };
+  const conversationId = histories[scopeKey]?.conversationId;
   const openWork = useCallback((workId: string) => {
     suppressAutoInline.current = false;
     const sourceScope = scopeKey;
-    const sourceConversation = histories[sourceScope]?.conversationId;
+    const sourceConversation = conversationId;
     const target = { scope: sourceScope, conversationId: sourceConversation, view,
       scrollTop: (view === "conversation" ? threadRef.current : browserRef.current)?.scrollTop ?? 0, follow: followLatest.current,
       trigger: document.activeElement instanceof HTMLElement ? document.activeElement : null };
@@ -247,7 +253,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
     };
     requestedWork.current = workId;
     show();
-  }, [scopeKey, histories, view, setSelectedWorkId, pauseFollowing, followLatest]);
+  }, [scopeKey, conversationId, view, setSelectedWorkId, pauseFollowing, followLatest]);
   const changeView = (next: BotWorkspaceView) => {
     requestedWork.current = null; setNavigationNotice("");
     returnTarget.current = null; setSelectedWorkId(null); setInlineWorkId(null);
@@ -276,14 +282,21 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
     requestAnimationFrame(() => { composerRef.current?.focus(); });
   };
 
+  const replyToMessage = useCallback((message: BotMessageDto) => {
+    setReplyReference(message); composerRef.current?.focus();
+  }, []);
+  const cancelMessage = useCallback((message: BotMessageDto) => {
+    if (activeBotId) void useAppStore.getState().cancelBotSend(message.botId, message.requestId);
+  }, [activeBotId]);
+
   // Draft edits and composer controls do not change the transcript. Keep its
   // elements stable; message/store/context updates still render their own content.
   const messageTimeline = useMemo(() => view === "conversation" && messages.length > 0 ? (<div className="bot-message-list">{botWorkTimeline(messages).map(row => row.kind === "message"
-            ? <BotMessage key={row.key} message={row.message} botName={displayName} works={detailWorks} onOpenWork={openWork} sourceQuestion={questionsByRequest.get(row.message.requestId)} onReply={() => { setReplyReference(row.message); composerRef.current?.focus(); }} onCancel={() => { if (activeBotId) void useAppStore.getState().cancelBotSend(row.message.botId, row.message.requestId); }} />
+            ? <TimelineMessage key={row.key} message={row.message} botName={displayName} works={detailWorks} onOpenWork={openWork} sourceQuestion={questionsByRequest.get(row.message.requestId)} onReply={replyToMessage} onCancel={cancelMessage} />
             : <details key={row.key} className="bot-work-progress" aria-label="事项进展记录">
               <summary>{row.workIds.length > 1 ? `${row.workIds.length} 个事项` : detailWorks.find(work => work.workId === row.workId)?.title ?? "事项"} · {row.messages.length} 条执行记录（展开查看）</summary>
-              {row.messages.map(message => <BotMessage key={message.messageId} message={message} botName={displayName} works={detailWorks} onOpenWork={openWork} onCancel={() => {}} />)}
-            </details>)}</div>) : null, [view, messages, displayName, detailWorks, openWork, questionsByRequest, activeBotId]);
+              {row.messages.map(message => <TimelineMessage key={message.messageId} message={message} botName={displayName} works={detailWorks} onOpenWork={openWork} onCancel={ignoreMessageCancel} />)}
+            </details>)}</div>) : null, [view, messages, displayName, detailWorks, openWork, questionsByRequest, replyToMessage, cancelMessage]);
 
   return <div className="bot-workspace" onKeyDownCapture={event => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { closeSettings(); } }}>
     {historicalTeamWork && <section className="bot-conversation" aria-label="历史团队事项">
@@ -373,7 +386,12 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   </div>;
 }
 
-export function BotMessage({ message, botName, works, onOpenWork, onCancel, sourceQuestion, workLinkSource, onReply }: { workLinkSource?: BotMessageDto; sourceQuestion?: BotMessageDto; onReply?: () => void; message: BotMessageDto; botName: string; works: WorkProjectionDto[]; onOpenWork: (id: string) => void; onCancel: () => void }): React.JSX.Element {
+// Default shallow memo compares every prop. Bind per-message actions inside
+// BotMessage, so unchanged rows need neither new callbacks nor another component.
+const ignoreMessageCancel = () => {};
+const TimelineMessage = memo(BotMessage);
+
+export function BotMessage({ message, botName, works, onOpenWork, onCancel, sourceQuestion, workLinkSource, onReply }: { workLinkSource?: BotMessageDto; sourceQuestion?: BotMessageDto; onReply?: (message: BotMessageDto) => void; message: BotMessageDto; botName: string; works: WorkProjectionDto[]; onOpenWork: (id: string) => void; onCancel: (message: BotMessageDto) => void }): React.JSX.Element {
   const externalTask = useAppStore(state => state.tasks.find(task => task.id === botExternalAgentTaskId(message.messageId)));
   // Replace trusted image destinations before Markdown parsing: raw Windows
   // backslashes (e.g. \.mybuddy) otherwise become Markdown escapes.
@@ -405,7 +423,7 @@ export function BotMessage({ message, botName, works, onOpenWork, onCancel, sour
     {externalTask && <div className="bot-message-work-links"><button type="button" onClick={() => useAppStore.getState().setActiveTask(externalTask.id)}><IconBot size={14} /><span>打开外部 Agent 任务</span><IconChevronRight size={14} /></button></div>}
     {message.role === "assistant" && <BotCallThread calls={message.botCalls} renderReply={renderMarkdown} />}
     <BotReplyMetrics message={message} />
-    <BotMessageActions message={message} onReply={onReply} onCancel={onCancel} statusAlreadyVisible={message.role === "assistant" && (showActivity || !hasContent) && message.status !== "completed"} />
+    <BotMessageActions message={message} onReply={onReply ? () => onReply(message) : undefined} onCancel={() => onCancel(message)} statusAlreadyVisible={message.role === "assistant" && (showActivity || !hasContent) && message.status !== "completed"} />
     {message.error && <p className="bot-alert" role="alert">{message.error}</p>}
   </article>;
 }
