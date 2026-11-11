@@ -12,6 +12,9 @@ runRendererFixture({name:'bot-workspace-navigation',width:1200,height:900},async
  await wait(`document.querySelectorAll('.workspace-foreground-row').length===23`);
  await run(`[...document.querySelectorAll('.workspace-foreground-row')].find(b=>b.textContent==='个人任务0已回复').click()`);
  await wait(`document.querySelector('.workspace-foreground-messages')?.innerText.includes('个人任务0结果')`);
+ assert.equal(await run(`document.querySelectorAll('.workspace-foreground-messages .bot-message-work-links button').length`),1,'workspace request detail deduplicates shared Work link');
+ assert.equal(await run(`document.querySelectorAll('.workspace-foreground-messages .bot-message.assistant .bot-message-work-links').length`),0,'workspace reply does not repeat the input card');
+ assert.equal(await run(`document.querySelectorAll('.workspace-foreground-messages .bot-reply-reference').length`),0,'link context does not add a duplicate question quote in request detail');
  await run(`document.querySelector('.workspace-foreground-heading button').click()`);
  await wait(`!!document.querySelector('.workspace-overview')`);
  assert.equal(await run(`document.querySelectorAll('.workspace-overview .workspace-overview-task-row').length`),31);

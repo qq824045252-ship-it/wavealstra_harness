@@ -24,7 +24,7 @@ import ChatComposer from "@/components/chat/ChatComposer";
 import ChatMarkdown from "@/components/chat/ChatMarkdown";
 import { IconPlus, IconArchive, IconChevronDown, IconArrowUp, IconBot, IconChevronRight, IconListTodo, IconPanel, IconSettings, IconX } from "@/components/common/icons";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
-import { activeBotReply, personalBotWork, linkedConversationWork, botMessageStatus, botWorkTimeline, shouldSendBotComposer, type BotWorkspaceView } from "@/lib/botWorkspacePresentation";
+import { activeBotReply, personalBotWork, linkedConversationWork, botMessageStatus, botMessageWorkLinks, botWorkTimeline, shouldSendBotComposer, type BotWorkspaceView } from "@/lib/botWorkspacePresentation";
 import { BotWorkBrowser } from "./BotWorkBrowser";
 import { BotWorkDetails } from "./BotWorkDetails";
 import { BotResultReport } from "./BotWorkResult";
@@ -345,7 +345,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   </div>;
 }
 
-export function BotMessage({ message, botName, works, onOpenWork, onCancel, sourceQuestion, onReply }: { sourceQuestion?: BotMessageDto; onReply?: () => void; message: BotMessageDto; botName: string; works: WorkProjectionDto[]; onOpenWork: (id: string) => void; onCancel: () => void }): React.JSX.Element {
+export function BotMessage({ message, botName, works, onOpenWork, onCancel, sourceQuestion, workLinkSource, onReply }: { workLinkSource?: BotMessageDto; sourceQuestion?: BotMessageDto; onReply?: () => void; message: BotMessageDto; botName: string; works: WorkProjectionDto[]; onOpenWork: (id: string) => void; onCancel: () => void }): React.JSX.Element {
   // Replace trusted image destinations before Markdown parsing: raw Windows
   // backslashes (e.g. \.mybuddy) otherwise become Markdown escapes.
   const renderMarkdown = (text: string, streaming = message.status === "running") => <ChatImageScope taskId={message.reportImages?.taskId ?? null} artifacts={message.reportImages?.artifacts ?? []} sources={message.reportImages?.sources ?? {}}><ChatMarkdown resolveTaskFiles={false} text={rewriteMarkdownImageSources(text, source => {
@@ -353,6 +353,7 @@ export function BotMessage({ message, botName, works, onOpenWork, onCancel, sour
     const image = message.reportImages?.artifacts.find(item => item.id === id);
     return image ? artifactImageUrl(image.id, "full", { version: image.version }) : source;
   })} streaming={streaming} /></ChatImageScope>;
+  const linkedWorkIds = botMessageWorkLinks(message, workLinkSource ?? sourceQuestion);
   const result = message.role === "assistant" && message.status === "completed" && message.workFeedback?.kind === "result" && message.workFeedback.report;
   const running = message.role === "assistant" && ["queued", "running", "unknown"].includes(message.status);
   const nonemptySegments = message.segments?.filter(segment => segment.text.trim()) ?? [];
@@ -371,7 +372,7 @@ export function BotMessage({ message, botName, works, onOpenWork, onCancel, sour
         </div>) : message.text ? renderMarkdown(message.text) : null}
       {(showActivity || !hasContent) && <p className="bot-reply-placeholder" role={running ? "status" : undefined}>{message.status === "completed" ? "没有文本回复" : botMessageStatus(message)}{running && <span className="bot-typing-dots" aria-hidden="true">···</span>}</p>}
     </div>}
-    {message.workIds.length > 0 && <div className="bot-message-work-links">{message.workIds.map(workId => <button type="button" key={workId} onClick={() => onOpenWork(workId)}><IconListTodo size={14} /><span>{works.find(work => work.workId === workId)?.title ?? (message.workFeedback?.workId === workId ? message.workFeedback.report?.title : undefined) ?? "查看关联事项"}</span><IconChevronRight size={14} /></button>)}</div>}
+    {linkedWorkIds.length > 0 && <div className="bot-message-work-links">{linkedWorkIds.map(workId => <button type="button" key={workId} onClick={() => onOpenWork(workId)}><IconListTodo size={14} /><span>{works.find(work => work.workId === workId)?.title ?? (message.workFeedback?.workId === workId ? message.workFeedback.report?.title : undefined) ?? "查看关联事项"}</span><IconChevronRight size={14} /></button>)}</div>}
     <BotReplyMetrics message={message} />
     <BotMessageActions message={message} onReply={onReply} onCancel={onCancel} statusAlreadyVisible={message.role === "assistant" && (showActivity || !hasContent) && message.status !== "completed"} />
     {message.error && <p className="bot-alert" role="alert">{message.error}</p>}

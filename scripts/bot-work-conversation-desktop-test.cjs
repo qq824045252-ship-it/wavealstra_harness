@@ -11,6 +11,30 @@ app.whenReady().then(async()=>{let win;try{
  await ev(`document.addEventListener('click', e=>{if(e.target.closest('.bot-message-work-links button')) window.beforeDetailScroll=document.querySelector('.bot-thread').scrollTop;}, true)`);
  const stableLayout=async()=>{let last='',same=0;for(let i=0;i<50;i++){const next=await ev(`JSON.stringify([innerWidth,innerHeight,document.querySelector('.bot-thread')?.scrollHeight])`);same=next===last?same+1:0;if(same>=3)return;last=next;await new Promise(r=>setTimeout(r,100));}throw Error('window layout did not settle');};
  const click=async(selector)=>{const r=await ev(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2}})()`);win.webContents.sendInputEvent({type:'mouseDown',button:'left',x:Math.round(r.x),y:Math.round(r.y),clickCount:1});win.webContents.sendInputEvent({type:'mouseUp',button:'left',x:Math.round(r.x),y:Math.round(r.y),clickCount:1});await new Promise(r=>setTimeout(r,100));};
+ // Real Bot workspace, with persisted-style request pairs and refreshed snapshots.
+ for (const width of [1100,390]) {
+  win.setSize(width,900);
+  for (const [kind,count] of [["same",1],["queued",1],["running",1],["unknown",1],["failed",1],["cancelled",1],["extra",2],["distinct",2],["partial",1],["different-request",2],["feedback",2],["next-turn",2],["team",1]]) {
+   await ev(`window.detailFixture.linkCase(${JSON.stringify(kind)})`);
+   await wait(`document.querySelectorAll('.bot-message-work-links button').length===${count}`);
+   const snapshot=await ev(`Array.from(document.querySelectorAll('[data-message-id]')).map(e=>({id:e.dataset.messageId,links:e.querySelectorAll('.bot-message-work-links button').length,text:e.textContent}))`);
+   assert.equal(snapshot.find(row=>row.id==='link-answer').links, ['extra','distinct','partial','different-request','feedback'].includes(kind)?1:0,kind+' reply link ownership');
+   assert(snapshot.find(row=>row.id==='link-answer').text.includes('已开始做，正文保留。'),kind+' independent answer retained');
+   assert(await ev('document.documentElement.scrollWidth<=innerWidth+1'),'no link overflow '+width+' '+kind);
+  }
+  await ev('window.detailFixture.linkCase("same")');await wait(`document.querySelectorAll('.bot-message-work-links button').length===1`);
+  await click('[data-message-id="link-user"] .bot-message-work-links button');
+  await wait('!!document.querySelector(".bot-work-conversation-detail")');
+  await click('.bot-work-conversation-breadcrumb button');
+  await wait('!document.querySelector(".bot-work-conversation-detail")');
+  assert.equal(await ev('document.querySelectorAll(".bot-message-work-links button").length'),1,'back does not duplicate cards');
+  await ev('window.detailFixture.linkCase("same")');
+  await wait(`document.querySelectorAll('[data-message-id]').length===2`);
+  assert.equal(await ev('document.querySelectorAll(".bot-message-work-links button").length'),1,'reconnect snapshot remains deduplicated');
+  fs.writeFileSync(path.join(out,`bot-work-link-dedup-${width}.png`),(await win.webContents.capturePage()).toPNG());
+ }
+ await ev('window.detailFixture.original()');await wait(`document.querySelectorAll('[data-message-id]').length===16`);
+ console.log('PASS Work-link UI: 13 states/cases, 2 widths, same-title distinct IDs, refresh/reconnect, preserved body, input-card click/back.');
  for(const width of [1100,760,390]){
   win.setSize(width,900);await stableLayout();
   await ev(`document.querySelector('[data-message-id="m4"] .bot-message-work-links button').scrollIntoView({block:'center'})`);await new Promise(r=>setTimeout(r,100));

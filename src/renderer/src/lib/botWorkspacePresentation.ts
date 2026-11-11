@@ -87,6 +87,19 @@ export function botMessageStatus(message: BotMessageDto): string {
   return { queued: "等待回复", running: "正在回复", cancelled: "已停止", unknown: "结果待核对", failed: "回复失败" }[message.status];
 }
 
+/** A request links both durable records for provenance. Show shared navigation
+ * on its input once; retain reply-only Work and independent background feedback.
+ * No text/title matching or cross-turn deduplication: associations are not messages.
+ */
+export function botMessageWorkLinks(message: BotMessageDto, sourceQuestion?: BotMessageDto): string[] {
+  const workIds = [...new Set(message.workIds)];
+  if (message.role !== "assistant" || message.workFeedback || sourceQuestion?.role !== "user"
+    || message.requestId !== sourceQuestion.requestId || message.conversationId !== sourceQuestion.conversationId
+    || message.botId !== sourceQuestion.botId || message.teamId !== sourceQuestion.teamId) return workIds;
+  const inputWorkIds = new Set(sourceQuestion.workIds);
+  return workIds.filter(workId => !inputWorkIds.has(workId));
+}
+
 export function shouldSendBotComposer(event: { key: string; shiftKey: boolean; isComposing: boolean; keyCode?: number }): boolean {
   return event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229;
 }

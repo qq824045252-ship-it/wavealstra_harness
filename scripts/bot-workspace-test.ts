@@ -688,3 +688,35 @@ assert(!linkedConversationWork(work,[{...message,role:"user"}],"owner",undefined
 assert(!linkedConversationWork({...work,team:{...work.team!,removedAt:1}},[message],"owner",undefined,"source"));
 assert(!linkedConversationWork({...work,archive:{archivedAt:1,deletedAt:2}},[message],"owner",undefined,"source"));
 }
+
+// A linked input and its reply share durable Work associations, not two UI cards.
+{
+  const question: BotMessageDto = { ...activityMessage, messageId: "linked-question", role: "user",
+    text: "继续做", status: "completed", ordinal: 1, workIds: ["same"] };
+  const answer: BotMessageDto = { ...question, messageId: "linked-answer", role: "assistant", ordinal: 2, text: "已开始做，保留独有回复。" };
+  const original = structuredClone([question, answer]);
+  const render = (message: BotMessageDto, sourceQuestion?: BotMessageDto) => renderToStaticMarkup(createElement(BotMessage, {
+    message, sourceQuestion, botName: "产品团队", works: [], onOpenWork() {}, onCancel() {} }));
+  const links = (html: string) => (html.match(/class="bot-message-work-links"/g) ?? []).length;
+  assert.equal(links(render(question)), 1);
+  assert.equal(links(render(answer, question)), 0, "same-request input retains the only shared Work link");
+  assert.match(render(answer, question), /已开始做，保留独有回复。/);
+  for (const status of ["queued", "running", "completed", "failed", "cancelled", "unknown"] as const) {
+    assert.equal(links(render({ ...answer, status }, question)), 0, status);
+  }
+  const extra = render({ ...answer, workIds: ["same", "different", "different"] }, question);
+  assert.equal(links(extra), 1);
+  assert.equal((extra.match(/查看关联事项/g) ?? []).length, 1, "keep new associations, deduplicate by ID only");
+  assert.equal(links(render({ ...answer, workIds: ["different"] }, question)), 1);
+  assert.equal(links(render(answer)), 1, "partial history still has a usable entry");
+  for (const mismatch of [{ requestId: "other" }, { conversationId: "other" }, { botId: "other" }, { teamId: "other" }, { role: "assistant" as const }]) {
+    assert.equal(links(render(answer, { ...question, ...mismatch })), 1, JSON.stringify(mismatch));
+  }
+  for (const category of ["progress", "decision", "result"] as const) {
+    assert.equal(links(render({ ...answer, workFeedback: { workId: "same", eventId: "event", kind: "result", category } }, question)), 1, "independent Work feedback keeps navigation");
+  }
+  assert.equal(links(render({ ...answer, teamId: "team" }, { ...question, teamId: "team" })), 0);
+  assert.equal(links(render(JSON.parse(JSON.stringify(answer)), JSON.parse(JSON.stringify(question)))), 0, "rehydration is deterministic");
+  assert.deepEqual([question, answer], original, "presentation never removes durable associations or message text");
+  console.log("PASS Work link ownership: same request, extra/distinct IDs, partial history, all statuses, team/scope fences, feedback, rehydration, immutable records");
+}

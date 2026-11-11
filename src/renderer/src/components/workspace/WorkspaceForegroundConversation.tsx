@@ -51,7 +51,7 @@ export function WorkspaceForegroundConversation({ request, conversationTitle, sp
     <div className="workspace-foreground-messages">
       {error && <p role="alert">{error}</p>}
       {loading && <p role="status">正在读取原始对话…</p>}
-      {work ? <BotWorkDetails work={work} ownerName={spaceName} includeClosed /> : messages.map(message => <BotMessage key={message.messageId} message={message} botName={spaceName} works={[]} onOpenWork={id => {
+      {work ? <BotWorkDetails work={work} ownerName={spaceName} includeClosed /> : messages.map(message => <BotMessage key={message.messageId} message={message} workLinkSource={messages.find(item => item.role === 'user' && item.requestId === message.requestId)} botName={spaceName} works={[]} onOpenWork={id => {
         void window.api?.botWork.getWork(id).then(result => { if (result) setWork(result); else setError('找不到关联事项'); }).catch(cause => setError(String(cause)));
       }} onCancel={() => { void window.api?.botWork.cancelSend(request.botId, request.requestId).catch(cause => setError(String(cause))); }} />)}
       {!loading && !error && messages.length === 0 && <p>没有找到此任务的原始消息。请返回工作空间刷新。</p>}
