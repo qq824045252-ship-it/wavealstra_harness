@@ -59,6 +59,7 @@ async function main(): Promise<void> {
       workspaceEffectiveArchived: (id) => db.getSpace(id)?.effectiveArchived === true,
       taskExists: (id) => Boolean(db.getTask(id)),
       taskWorkspaceId: (id) => db.getTask(id)?.spaceId ?? null,
+      resolveTaskDirectory: (id) => id === "task-gadget-test" ? ws.path! : child.path!,
       workspaceAncestors: (id) => db.getSpaceAncestors(id).map((space) => space.id),
       artifacts: {
         read: async (id) => {
@@ -81,6 +82,58 @@ async function main(): Promise<void> {
     const global = service.create({ name: "Global", scope: { type: "global" } });
     const workspace = service.create({ name: "Workspace", scope: { type: "workspace", workspaceId: ws.id } });
     const task = service.create({ name: "Task", scope: { type: "task", taskId: "task-gadget-test" } });
+    // Export is a source snapshot in the target task's authoritative directory, not a scope move.
+    const exportable = service.create({ name: "中文 / : \u0000 Gadget", scope: { type: "task", taskId: "task-gadget-test" }, entry: "pages/index.html", files: [
+      { path: "pages/index.html", content: "<h1>exported source</h1>" },
+      { path: "assets/pixel.bin", content: Buffer.from([0, 255, 13, 10]).toString("base64"), encoding: "base64" },
+    ] });
+    writeFileSync(join(storage.paths(exportable.id).dataPath, "private-state.json"), "private runtime data");
+    const snapshotBefore = service.readSource(exportable.id);
+    const exported = service.saveToTaskDirectory({ gadgetId: exportable.id, taskId: "task-gadget-test" });
+    assert(exported.directory.startsWith(join(ws.path!, "gadgets") + "/") || exported.directory.startsWith(join(ws.path!, "gadgets") + "\\"));
+    assert.equal(exported.fileCount, 2);
+    assert.equal(readFileSync(exported.entryPath, "utf8"), "<h1>exported source</h1>");
+    assert.deepEqual(readFileSync(join(exported.directory, "code/assets/pixel.bin")), Buffer.from([0, 255, 13, 10]));
+    assert.deepEqual(JSON.parse(readFileSync(join(exported.directory, "gadget.json"), "utf8")), snapshotBefore.manifest);
+    assert.equal(existsSync(join(exported.directory, "data")), false);
+    assert.equal(service.readSource(exportable.id).revision, snapshotBefore.revision);
+    assert.deepEqual(service.get(exportable.id)?.scope, exportable.scope);
+    writeFileSync(exported.entryPath, "user edited copy");
+    const repeated = service.saveToTaskDirectory({ gadgetId: exportable.id, taskId: "task-gadget-test" });
+    assert.notEqual(repeated.directory, exported.directory);
+    assert.equal(readFileSync(exported.entryPath, "utf8"), "user edited copy");
+    assert.equal(readFileSync(repeated.entryPath, "utf8"), "<h1>exported source</h1>");
+    assert.throws(() => service.saveToTaskDirectory({ gadgetId: exportable.id, taskId: "task-gadget-other" }), /其它任务/);
+    assert.throws(() => service.saveToTaskDirectory({ gadgetId: exportable.id, taskId: "missing-task" }), /任务不存在/);
+    assert.equal(existsSync(join(child.path!, "gadgets")), false, "unauthorized export must not materialize another task's directory");
+    const inheritedCopy = service.saveToTaskDirectory({ gadgetId: workspace.id, taskId: "task-gadget-other" });
+    assert(inheritedCopy.directory.startsWith(join(child.path!, "gadgets")), "visible ancestor Gadget exports to requested task, not its creation workspace");
+    const personalCopy = service.saveToTaskDirectory({ gadgetId: global.id, taskId: "task-gadget-test" });
+    assert(existsSync(personalCopy.entryPath));
+    // No following output symlinks, including a link into another task. Keep target bytes intact.
+    rmSync(join(child.path!, "gadgets"), { recursive: true });
+    symlinkSync(join(ws.path!, "gadgets"), join(child.path!, "gadgets"), "junction");
+    const exportsBeforeLink = readdirSync(join(ws.path!, "gadgets"));
+    assert.throws(() => service.saveToTaskDirectory({ gadgetId: global.id, taskId: "task-gadget-other" }), /符号链接/);
+    assert.deepEqual(readdirSync(join(ws.path!, "gadgets")), exportsBeforeLink);
+    rmSync(join(child.path!, "gadgets"));
+    writeFileSync(join(child.path!, "gadgets"), "existing user file");
+    assert.throws(() => service.saveToTaskDirectory({ gadgetId: global.id, taskId: "task-gadget-other" }), /真实文件夹/);
+    assert.equal(readFileSync(join(child.path!, "gadgets"), "utf8"), "existing user file");
+    rmSync(join(child.path!, "gadgets"));
+    symlinkSync(exported.entryPath, join(exportable.sourcePath, "outside.html"));
+    assert.throws(() => service.saveToTaskDirectory({ gadgetId: exportable.id, taskId: "task-gadget-test" }), /符号链接/);
+    assert.deepEqual(readdirSync(join(ws.path!, "gadgets")), exportsBeforeLink);
+    rmSync(join(exportable.sourcePath, "outside.html"));
+    if (process.platform === "win32") {
+      const mixedCase = service.create({ name: "CON.txt", scope: { type: "task", taskId: "task-gadget-test" }, entry: "index.html", files: [{ path: "Index.html", content: "mixed-case entry" }] });
+      const copy = service.saveToTaskDirectory({ gadgetId: mixedCase.id, taskId: "task-gadget-test" });
+      assert.equal(readFileSync(copy.entryPath, "utf8"), "mixed-case entry");
+      assert.equal(JSON.parse(readFileSync(join(copy.directory, "gadget.json"), "utf8")).entry, "Index.html");
+      await service.delete(mixedCase.id);
+    }
+    await service.delete(exportable.id);
+
     const archivedParent = db.createSpace({ name: "Archived Parent", path: join(root, "archived") });
     const archivedChild = db.createSpace({ name: "Archived Child", parentId: archivedParent.id, path: join(root, "archived", "child") });
     db.archiveSpace(archivedParent.id, true);

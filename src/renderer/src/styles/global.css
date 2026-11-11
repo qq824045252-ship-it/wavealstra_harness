@@ -20078,6 +20078,8 @@ html[data-theme="dark"] .input-expert-chip {
 .gadget-dialog, .workspace-create-dialog { width: min(680px, 94vw); max-height: 88vh; overflow: auto; padding: 20px; border: 1px solid var(--border); border-radius: 14px; background: var(--bg-panel); box-shadow: 0 24px 70px rgba(0,0,0,.25); }
 .gadget-dialog > header, .gadget-dialog > footer, .workspace-create-dialog > header, .workspace-create-dialog > footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .gadget-dialog h2, .workspace-create-dialog h2 { margin: 0; font-size: 19px; }
+.gadget-save-task-field { display: grid; gap: 8px; margin: 20px 0 12px; font-size: 13px; }
+.gadget-save-task-field select { width: 100%; min-width: 0; padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-input); color: var(--fg); font: inherit; }
 .gadget-dialog header p, .workspace-create-dialog header p { margin: 4px 0 0; color: var(--fg-muted); font-size: 12px; }
 .gadget-dialog > footer, .workspace-create-dialog > footer { justify-content: flex-end; margin-top: 18px; }
 .gadget-move-options, .workspace-create-options { display: grid; gap: 7px; margin-top: 16px; }

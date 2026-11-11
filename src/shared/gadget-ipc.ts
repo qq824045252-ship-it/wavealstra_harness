@@ -24,6 +24,7 @@ export const GadgetIpc = {
   delete: "gadget:delete",
   convertFromArtifact: "gadget:convertFromArtifact",
   exportArtifact: "gadget:exportArtifact",
+  saveToTaskDirectory: "gadget:saveToTaskDirectory",
   saveAsBlueprint: "gadget:saveAsBlueprint",
   changed: "gadget:changed",
 } as const;
@@ -57,6 +58,17 @@ export interface GadgetExportArtifactRequest {
   title?: string;
 }
 
+export interface GadgetSaveToTaskDirectoryRequest {
+  gadgetId: string;
+  taskId: string;
+}
+
+export interface GadgetSaveToTaskDirectoryResult {
+  directory: string;
+  entryPath: string;
+  fileCount: number;
+}
+
 export interface GadgetSaveAsBlueprintRequest {
   gadgetId: string;
   name?: string;
@@ -78,6 +90,7 @@ export interface GadgetApi {
   delete(id: string): Promise<{ ok: true }>;
   convertFromArtifact(request: GadgetConvertFromArtifactRequest): Promise<GadgetDescriptor>;
   exportArtifact(request: GadgetExportArtifactRequest): Promise<{ artifactId: string }>;
+  saveToTaskDirectory(request: GadgetSaveToTaskDirectoryRequest): Promise<GadgetSaveToTaskDirectoryResult>;
   saveAsBlueprint(request: GadgetSaveAsBlueprintRequest): Promise<{ blueprintId: string }>;
   onChanged(callback: (event: GadgetChangedEvent) => void): () => void;
 }

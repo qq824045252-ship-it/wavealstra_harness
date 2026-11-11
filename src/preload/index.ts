@@ -219,6 +219,8 @@ import {
   GadgetIpc,
   type GadgetConvertFromArtifactRequest,
   type GadgetExportArtifactRequest,
+  type GadgetSaveToTaskDirectoryRequest,
+  type GadgetSaveToTaskDirectoryResult,
   type GadgetListRequest,
   type GadgetMoveScopeRequest,
   type GadgetSaveAsBlueprintRequest,
@@ -1335,6 +1337,8 @@ const api = {
       ipcRenderer.invoke(GadgetIpc.convertFromArtifact, request),
     exportArtifact: (request: GadgetExportArtifactRequest): Promise<{ artifactId: string }> =>
       ipcRenderer.invoke(GadgetIpc.exportArtifact, request),
+    saveToTaskDirectory: (request: GadgetSaveToTaskDirectoryRequest): Promise<GadgetSaveToTaskDirectoryResult> =>
+      ipcRenderer.invoke(GadgetIpc.saveToTaskDirectory, request),
     saveAsBlueprint: (request: GadgetSaveAsBlueprintRequest): Promise<{ blueprintId: string }> =>
       ipcRenderer.invoke(GadgetIpc.saveAsBlueprint, request),
     onChanged: (callback: (event: GadgetChangedEvent) => void): (() => void) => {

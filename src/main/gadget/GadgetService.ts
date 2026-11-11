@@ -12,6 +12,8 @@ import type {
   GadgetSourceUpdateRequest,
 } from "../../shared/gadget-types";
 import { assertGadgetScope, GADGET_MANIFEST_SCHEMA_VERSION, normalizeJsonRecord } from "../../shared/gadget-types";
+import { saveGadgetToTaskDirectory } from "./saveGadgetToTaskDirectory";
+import type { GadgetSaveToTaskDirectoryRequest, GadgetSaveToTaskDirectoryResult } from "../../shared/gadget-ipc";
 import type { GadgetListRequest } from "../../shared/gadget-ipc";
 import type { GadgetChangedEvent } from "../../shared/gadget-ipc";
 import type { GadgetRepository } from "./GadgetRepository";
@@ -33,6 +35,7 @@ export interface GadgetServiceDependencies {
   workspaceEffectiveArchived(id: string): boolean;
   taskExists(id: string): boolean;
   taskWorkspaceId(id: string): string | null;
+  resolveTaskDirectory?(id: string): string;
   workspaceAncestors(id: string): string[];
   artifacts?: GadgetArtifactReader;
   onChanged?(event: GadgetChangedEvent): void;
@@ -301,6 +304,14 @@ export class GadgetService {
     this.assertVisibleToTask(gadget, input.taskId);
     const entry = this.deps.storage.readEntry(gadget.id);
     return this.deps.artifacts.write({ taskId: input.taskId, title: input.title?.trim() || gadget.name, content: entry.content });
+  }
+
+  /** Only Main resolves the destination; renderer paths and active-task state are not trusted. */
+  saveToTaskDirectory(input: GadgetSaveToTaskDirectoryRequest): GadgetSaveToTaskDirectoryResult {
+    const gadget = this.getForTask(input.gadgetId, input.taskId);
+    if (!this.deps.resolveTaskDirectory) throw new Error("任务工作目录尚未连接");
+    const directory = this.deps.resolveTaskDirectory(input.taskId);
+    return saveGadgetToTaskDirectory(directory, gadget, this.deps.storage.readSource(gadget.id));
   }
 
   captureSource(id: string): { descriptor: GadgetDescriptor; manifest: GadgetManifest; sourceFiles: GadgetSourceFile[] } {

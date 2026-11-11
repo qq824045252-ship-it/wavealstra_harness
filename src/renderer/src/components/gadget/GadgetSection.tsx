@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import type { GadgetSaveToTaskDirectoryResult } from "@shared/gadget-ipc";
 import type { GadgetListItem, GadgetRuntimeState, GadgetScope } from "@shared/gadget-types";
 import { useTextPrompt } from "@/components/common/useTextPrompt";
 import ConfirmDialog from "@/components/common/ConfirmDialog";
@@ -9,6 +10,7 @@ import GadgetActionMenu from "./GadgetActionMenu";
 import GadgetMoveDialog from "./GadgetMoveDialog";
 import GadgetCreateDialog from "./GadgetCreateDialog";
 import GadgetSourceDialog from "./GadgetSourceDialog";
+import GadgetSaveDirectoryDialog from "./GadgetSaveDirectoryDialog";
 import { openGadgetBrowser } from "@/lib/gadgetBrowser";
 
 interface Props {
@@ -43,6 +45,8 @@ export default function GadgetSection({ scope, includeInherited = false, title, 
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [savedDirectory, setSavedDirectory] = useState<(GadgetSaveToTaskDirectoryResult & { taskId: string; taskTitle: string; scopeKey: string }) | null>(null);
+  const [saveDirectoryItem, setSaveDirectoryItem] = useState<GadgetListItem | null>(null);
   const [pendingRemove, setPendingRemove] = useState<GadgetListItem | null>(null);
   const [moveItem, setMoveItem] = useState<{ item: GadgetListItem; initialTarget?: "global" | "workspace" } | null>(null);
   const [openActionId, setOpenActionId] = useState<string | null>(null);
@@ -52,6 +56,9 @@ export default function GadgetSection({ scope, includeInherited = false, title, 
   const [query, setQuery] = useState("");
   const { requestText, textPromptDialog } = useTextPrompt();
   const key = scopeKey(scope);
+  const currentScopeKey = useRef(key);
+  currentScopeKey.current = key;
+  useEffect(() => { setSavedDirectory(null); setSaveDirectoryItem(null); setBusyId(null); }, [key]);
 
   const reload = useCallback(async (): Promise<void> => {
     try {
@@ -176,6 +183,31 @@ export default function GadgetSection({ scope, includeInherited = false, title, 
     }
   };
 
+  const saveTaskDirectory = async (item: GadgetListItem): Promise<void> => {
+    if (scope.type !== "task") return;
+    const taskId = scope.taskId;
+    const startedInScope = key;
+    try {
+      setBusyId(item.id);
+      setError(null);
+      setSavedDirectory(null);
+      const saved = await gadgetApi().saveToTaskDirectory({ gadgetId: item.id, taskId });
+      if (currentScopeKey.current === startedInScope) setSavedDirectory({ ...saved, taskId, taskTitle: useAppStore.getState().tasks.find(task => task.id === taskId)?.title || taskId, scopeKey: key });
+    } catch (cause) {
+      if (currentScopeKey.current === startedInScope) setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      if (currentScopeKey.current === startedInScope) setBusyId(null);
+    }
+  };
+
+  const openSavedDirectory = async (directory: string): Promise<void> => {
+    const startedInScope = key;
+    try { await window.api?.openFolder(directory); }
+    catch (cause) {
+      if (currentScopeKey.current === startedInScope) setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
+
   const renderCard = (item: GadgetListItem): React.JSX.Element => {
     const busy = busyId === item.id;
     const taskScoped = item.scope.type === "task";
@@ -260,6 +292,13 @@ export default function GadgetSection({ scope, includeInherited = false, title, 
                         移动到…
                       </button>
                     )}
+                    <button type="button" disabled={busy} title="保存独立源码副本；再次保存不会覆盖已有文件" onClick={() => {
+                      closeActions();
+                      if (scope.type === "task") void saveTaskDirectory(item);
+                      else setSaveDirectoryItem(item);
+                    }}>
+                      保存到任务工作目录
+                    </button>
                     <button type="button" disabled={busy} onClick={() => { closeActions(); void saveBlueprint(item); }}>
                       保存为 Blueprint
                     </button>
@@ -344,6 +383,19 @@ export default function GadgetSection({ scope, includeInherited = false, title, 
       {error && <div className="gadget-error" role="alert">{error}<button type="button" onClick={() => setError(null)}>×</button></div>}
       {notice && <div className="gadget-notice" role="status">{notice}<button type="button" onClick={() => setNotice(null)}>×</button></div>}
 
+      {savedDirectory && savedDirectory.scopeKey === key && (
+        <div className="gadget-notice gadget-save-result" role="status">
+          <div style={{ minWidth: 0 }}>
+            <strong>已保存到任务工作目录</strong>
+            <div>目标任务：{savedDirectory.taskTitle}</div>
+            <div className="gadget-saved-path" style={{ overflowWrap: "anywhere", marginTop: 4 }}>{savedDirectory.directory}</div>
+            <div style={{ marginTop: 4 }}>独立源码副本 · {savedDirectory.fileCount} 个源文件 · 不自动同步</div>
+            <button type="button" onClick={() => void openSavedDirectory(savedDirectory.directory)}>打开文件夹</button>
+          </div>
+          <button type="button" aria-label="关闭保存结果" onClick={() => setSavedDirectory(null)}>×</button>
+        </div>
+      )}
+
       <div className="gadgets-panel-content">
         {visibleDirect.length === 0 && inherited.length === 0 ? (
           <div className="gadget-empty-state">
@@ -374,6 +426,14 @@ export default function GadgetSection({ scope, includeInherited = false, title, 
           </div>
         )}
       </div>
+      {saveDirectoryItem && createPortal(<GadgetSaveDirectoryDialog gadget={saveDirectoryItem}
+        onClose={() => setSaveDirectoryItem(null)}
+        onSaved={(result, taskId, taskTitle) => {
+          if (currentScopeKey.current !== key) return;
+          setSaveDirectoryItem(null);
+          setError(null);
+          setSavedDirectory({ ...result, taskId, taskTitle, scopeKey: key });
+        }} />, document.body)}
       {sourceItem && createPortal(<GadgetSourceDialog gadget={sourceItem} onClose={() => setSourceItem(null)} />, document.body)}
       {moveItem && (
         <GadgetMoveDialog

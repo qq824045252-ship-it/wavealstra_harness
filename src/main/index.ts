@@ -74,6 +74,7 @@ import {
   GadgetIpc,
   type GadgetConvertFromArtifactRequest,
   type GadgetExportArtifactRequest,
+  type GadgetSaveToTaskDirectoryRequest,
   type GadgetListRequest,
   type GadgetMoveScopeRequest,
   type GadgetSaveAsBlueprintRequest,
@@ -749,6 +750,7 @@ function registerIpc(): void {
   ipcMain.handle(GadgetIpc.delete, async (_event, id: string) => { await gadgetService.delete(id); return { ok: true as const }; });
   ipcMain.handle(GadgetIpc.convertFromArtifact, (_event, request: GadgetConvertFromArtifactRequest) => gadgetService.convertFromArtifact(request));
   ipcMain.handle(GadgetIpc.exportArtifact, (_event, request: GadgetExportArtifactRequest) => gadgetService.exportArtifact(request));
+  ipcMain.handle(GadgetIpc.saveToTaskDirectory, (_event, request: GadgetSaveToTaskDirectoryRequest) => gadgetService.saveToTaskDirectory(request));
   ipcMain.handle(GadgetIpc.saveAsBlueprint, (_event, request: GadgetSaveAsBlueprintRequest) => {
     const blueprint = blueprintService.captureGadget(request.gadgetId, request);
     return { blueprintId: blueprint.id };
@@ -3192,6 +3194,7 @@ app.whenReady().then(async () => {
     workspaceEffectiveArchived: (id) => db.getSpace(id)?.effectiveArchived === true,
     taskExists: (id) => Boolean(db.getTask(id)),
     taskWorkspaceId: (id) => db.getTask(id)?.spaceId ?? null,
+    resolveTaskDirectory: (id) => agentService.resolveTaskExecutionWorkspaceCwd(id),
     workspaceAncestors: (id) => db.getSpaceAncestors(id).filter((space) => !space.effectiveArchived).map((space) => space.id),
     onChanged: (event) => broadcastToWindows(GadgetIpc.changed, event),
     artifacts: {
