@@ -1,14 +1,15 @@
 {
   "date": "2026-11-11",
   "platform": "Omarchy Linux",
-  "parent_commit": "300a675679250697e27861c48861d2e342a34aee",
-  "scope": "All 469 default headless scripts other than the three explicitly deferred crash-injection suites; not a full 472 pass.",
+  "parent_commit": "d2a8eaaef3c599464463a178837583d947fa528b",
+  "scope": "Complete default headless gate: 472/472 passed, including all three newly authorized crash-injection suites, after integrating the cold Work-search optimization. This is not a pass of all GUI/live/dataset/artifact suites.",
   "headless": {
-    "passed": 469,
+    "passed": 472,
     "failed": 0,
     "knownFailing": 0,
-    "minutes": 3.8,
+    "minutes": 4.5,
     "selection_verified_against_test_all_list": true,
+    "command": "TMPDIR=\"$HOME/frtmp-regression\" pnpm -s test:all",
     "tests": [
       {
         "name": "test:acp-catalog",
@@ -23,22 +24,22 @@
       {
         "name": "test:acp-permission-policy",
         "status": "passed",
-        "seconds": 1.0
+        "seconds": 1.1
       },
       {
         "name": "test:acp-remote",
         "status": "passed",
-        "seconds": 1.9
+        "seconds": 1.8
       },
       {
         "name": "test:acp-runtime",
         "status": "passed",
-        "seconds": 3.0
+        "seconds": 2.9
       },
       {
         "name": "test:agent-loadout",
         "status": "passed",
-        "seconds": 0.8
+        "seconds": 0.9
       },
       {
         "name": "test:app-permission-ui-removal",
@@ -88,7 +89,7 @@
       {
         "name": "test:artifact-domain",
         "status": "passed",
-        "seconds": 8.7
+        "seconds": 8.3
       },
       {
         "name": "test:artifact-gate",
@@ -113,7 +114,7 @@
       {
         "name": "test:artifact-provenance",
         "status": "passed",
-        "seconds": 4.1
+        "seconds": 3.8
       },
       {
         "name": "test:artifact-render-hydration",
@@ -143,7 +144,7 @@
       {
         "name": "test:black-forest-labs-provider",
         "status": "passed",
-        "seconds": 0.2
+        "seconds": 0.1
       },
       {
         "name": "test:bot-active-requests",
@@ -173,12 +174,12 @@
       {
         "name": "test:bot-create",
         "status": "passed",
-        "seconds": 1.4
+        "seconds": 1.2
       },
       {
         "name": "test:bot-create-ui",
         "status": "passed",
-        "seconds": 0.9
+        "seconds": 0.8
       },
       {
         "name": "test:bot-delegation-fidelity",
@@ -188,7 +189,7 @@
       {
         "name": "test:bot-deletion",
         "status": "passed",
-        "seconds": 0.6
+        "seconds": 0.7
       },
       {
         "name": "test:bot-display-groups",
@@ -223,7 +224,7 @@
       {
         "name": "test:bot-history-query",
         "status": "passed",
-        "seconds": 4.3
+        "seconds": 4.2
       },
       {
         "name": "test:bot-memory",
@@ -233,12 +234,12 @@
       {
         "name": "test:bot-memory-forget-watermark",
         "status": "passed",
-        "seconds": 0.9
+        "seconds": 1.0
       },
       {
         "name": "test:bot-memory-runtime",
         "status": "passed",
-        "seconds": 5.1
+        "seconds": 5.0
       },
       {
         "name": "test:bot-message-presentation",
@@ -273,7 +274,7 @@
       {
         "name": "test:bot-report-images-ui",
         "status": "passed",
-        "seconds": 2.2
+        "seconds": 2.1
       },
       {
         "name": "test:bot-result-delivery",
@@ -293,7 +294,7 @@
       {
         "name": "test:bot-team-conversation",
         "status": "passed",
-        "seconds": 1.3
+        "seconds": 1.4
       },
       {
         "name": "test:bot-team-ui",
@@ -303,12 +304,12 @@
       {
         "name": "test:bot-watch-creation",
         "status": "passed",
-        "seconds": 3.6
+        "seconds": 3.7
       },
       {
         "name": "test:bot-watch-expiry",
         "status": "passed",
-        "seconds": 0.9
+        "seconds": 1.0
       },
       {
         "name": "test:bot-watch-intake",
@@ -323,7 +324,7 @@
       {
         "name": "test:bot-work-automatic-completion",
         "status": "passed",
-        "seconds": 3.0
+        "seconds": 2.9
       },
       {
         "name": "test:bot-work-automatic-recovery",
@@ -348,27 +349,32 @@
       {
         "name": "test:bot-work-no-quota",
         "status": "passed",
-        "seconds": 0.7
+        "seconds": 0.8
       },
       {
         "name": "test:bot-work-phase1",
         "status": "passed",
-        "seconds": 1.5
+        "seconds": 1.3
       },
       {
         "name": "test:bot-work-phase2",
         "status": "passed",
-        "seconds": 16.3
+        "seconds": 15.7
       },
       {
         "name": "test:bot-work-phase2-invariants",
         "status": "passed",
-        "seconds": 1.4
+        "seconds": 1.3
+      },
+      {
+        "name": "test:bot-work-phase2-recovery",
+        "status": "passed",
+        "seconds": 26.1
       },
       {
         "name": "test:bot-work-phase2-usage",
         "status": "passed",
-        "seconds": 4.0
+        "seconds": 3.9
       },
       {
         "name": "test:bot-work-phase3-collaboration",
@@ -383,7 +389,7 @@
       {
         "name": "test:bot-work-phase3-partial-settlement",
         "status": "passed",
-        "seconds": 0.9
+        "seconds": 0.8
       },
       {
         "name": "test:bot-work-phase3-pause-backlog",
@@ -393,17 +399,17 @@
       {
         "name": "test:bot-work-phase4-backpressure",
         "status": "passed",
-        "seconds": 1.1
+        "seconds": 1.0
       },
       {
         "name": "test:bot-work-phase4-causal-guard",
         "status": "passed",
-        "seconds": 0.6
+        "seconds": 0.7
       },
       {
         "name": "test:bot-work-phase4-hook-fanout",
         "status": "passed",
-        "seconds": 0.9
+        "seconds": 0.8
       },
       {
         "name": "test:bot-work-phase4-offline-catchup",
@@ -413,12 +419,12 @@
       {
         "name": "test:bot-work-phase4-schedule-clock",
         "status": "passed",
-        "seconds": 2.1
+        "seconds": 2.3
       },
       {
         "name": "test:bot-work-phase5-delivery-dedup",
         "status": "passed",
-        "seconds": 3.5
+        "seconds": 3.1
       },
       {
         "name": "test:bot-work-phase5-e2e-story",
@@ -428,12 +434,17 @@
       {
         "name": "test:bot-work-phase5-gateway",
         "status": "passed",
-        "seconds": 3.1
+        "seconds": 3.0
+      },
+      {
+        "name": "test:bot-work-phase5-native-story",
+        "status": "passed",
+        "seconds": 13.6
       },
       {
         "name": "test:bot-work-phase5-owner-summary",
         "status": "passed",
-        "seconds": 4.5
+        "seconds": 4.4
       },
       {
         "name": "test:bot-work-phase5-reconnect-diagnostics",
@@ -453,22 +464,22 @@
       {
         "name": "test:bot-work-projection-retention",
         "status": "passed",
-        "seconds": 1.1
+        "seconds": 1.2
       },
       {
         "name": "test:bot-work-query-scale",
         "status": "passed",
-        "seconds": 18.3
+        "seconds": 17.9
       },
       {
         "name": "test:bot-work-read-lifecycle",
         "status": "passed",
-        "seconds": 1.4
+        "seconds": 1.5
       },
       {
         "name": "test:bot-work-resume-dispatch",
         "status": "passed",
-        "seconds": 3.3
+        "seconds": 3.2
       },
       {
         "name": "test:bot-work-review-control",
@@ -478,7 +489,7 @@
       {
         "name": "test:bot-work-review-execution",
         "status": "passed",
-        "seconds": 0.9
+        "seconds": 1.0
       },
       {
         "name": "test:bot-work-review-memory",
@@ -493,7 +504,7 @@
       {
         "name": "test:bot-work-summary-query",
         "status": "passed",
-        "seconds": 19.8
+        "seconds": 17.9
       },
       {
         "name": "test:bot-work-team-access",
@@ -503,22 +514,22 @@
       {
         "name": "test:bot-work-team-native",
         "status": "passed",
-        "seconds": 7.8
+        "seconds": 7.7
       },
       {
         "name": "test:bot-work-team-recovery",
         "status": "passed",
-        "seconds": 12.3
+        "seconds": 12.4
       },
       {
         "name": "test:bot-work-team-service",
         "status": "passed",
-        "seconds": 3.9
+        "seconds": 3.8
       },
       {
         "name": "test:bot-work-team-watch",
         "status": "passed",
-        "seconds": 1.2
+        "seconds": 1.3
       },
       {
         "name": "test:bot-workspace",
@@ -528,7 +539,7 @@
       {
         "name": "test:bot-workspace-navigation",
         "status": "passed",
-        "seconds": 0.8
+        "seconds": 0.9
       },
       {
         "name": "test:bot-workspace-navigation-ui",
@@ -538,7 +549,7 @@
       {
         "name": "test:browser-open-guard",
         "status": "passed",
-        "seconds": 0.1
+        "seconds": 0.2
       },
       {
         "name": "test:btw",
@@ -553,17 +564,17 @@
       {
         "name": "test:builtin-capabilities",
         "status": "passed",
-        "seconds": 1.1
+        "seconds": 1.2
       },
       {
         "name": "test:cache-boundary-matrix",
         "status": "passed",
-        "seconds": 1.7
+        "seconds": 1.8
       },
       {
         "name": "test:cache-request-trace",
         "status": "passed",
-        "seconds": 1.4
+        "seconds": 1.5
       },
       {
         "name": "test:cache-strategies",
@@ -598,7 +609,7 @@
       {
         "name": "test:chat-scroll-anchor",
         "status": "passed",
-        "seconds": 0.2
+        "seconds": 0.1
       },
       {
         "name": "test:chat-selection",
@@ -623,12 +634,12 @@
       {
         "name": "test:compaction",
         "status": "passed",
-        "seconds": 0.9
+        "seconds": 1.0
       },
       {
         "name": "test:compaction-policy-history",
         "status": "passed",
-        "seconds": 0.8
+        "seconds": 0.9
       },
       {
         "name": "test:compaction-settings-ui",
@@ -643,7 +654,7 @@
       {
         "name": "test:context-ledger",
         "status": "passed",
-        "seconds": 1.8
+        "seconds": 1.7
       },
       {
         "name": "test:context-usage",
@@ -658,7 +669,7 @@
       {
         "name": "test:conversation-branch-service",
         "status": "passed",
-        "seconds": 2.3
+        "seconds": 2.2
       },
       {
         "name": "test:conversation-branch-ui",
@@ -683,7 +694,7 @@
       {
         "name": "test:conversation-runtime",
         "status": "passed",
-        "seconds": 0.7
+        "seconds": 0.6
       },
       {
         "name": "test:conversation-runtime-ui",
@@ -693,7 +704,7 @@
       {
         "name": "test:core-performance",
         "status": "passed",
-        "seconds": 21.4
+        "seconds": 20.8
       },
       {
         "name": "test:crash-reporting",
@@ -703,7 +714,7 @@
       {
         "name": "test:cron-scheduling",
         "status": "passed",
-        "seconds": 0.6
+        "seconds": 0.7
       },
       {
         "name": "test:dashscope-provider",
@@ -758,7 +769,7 @@
       {
         "name": "test:durable-artifact-registration",
         "status": "passed",
-        "seconds": 2.3
+        "seconds": 2.2
       },
       {
         "name": "test:durable-compaction-settings",
@@ -773,17 +784,17 @@
       {
         "name": "test:durable-context-branch-cancel",
         "status": "passed",
-        "seconds": 4.6
+        "seconds": 4.7
       },
       {
         "name": "test:durable-context-management",
         "status": "passed",
-        "seconds": 2.5
+        "seconds": 2.6
       },
       {
         "name": "test:durable-context-performance",
         "status": "passed",
-        "seconds": 1.0
+        "seconds": 0.9
       },
       {
         "name": "test:durable-history-block",
@@ -793,7 +804,7 @@
       {
         "name": "test:durable-history-readonly",
         "status": "passed",
-        "seconds": 2.2
+        "seconds": 2.4
       },
       {
         "name": "test:durable-log-repair",
@@ -803,12 +814,12 @@
       {
         "name": "test:durable-projection",
         "status": "passed",
-        "seconds": 4.8
+        "seconds": 4.9
       },
       {
         "name": "test:durable-provider-authority",
         "status": "passed",
-        "seconds": 9.4
+        "seconds": 9.6
       },
       {
         "name": "test:durable-resume-admission",
@@ -818,12 +829,12 @@
       {
         "name": "test:durable-session-recovery",
         "status": "passed",
-        "seconds": 1.2
+        "seconds": 1.3
       },
       {
         "name": "test:durable-subagent",
         "status": "passed",
-        "seconds": 25.9
+        "seconds": 36.0
       },
       {
         "name": "test:durable-sync",
@@ -838,7 +849,7 @@
       {
         "name": "test:durable-tool-diagnostics",
         "status": "passed",
-        "seconds": 3.1
+        "seconds": 3.0
       },
       {
         "name": "test:durable-tool-gate",
@@ -848,7 +859,7 @@
       {
         "name": "test:durable-tool-policy",
         "status": "passed",
-        "seconds": 11.5
+        "seconds": 14.0
       },
       {
         "name": "test:durable-turn-evidence",
@@ -858,12 +869,12 @@
       {
         "name": "test:durable-work-liveness",
         "status": "passed",
-        "seconds": 6.2
+        "seconds": 6.3
       },
       {
         "name": "test:durable-workspace-binding",
         "status": "passed",
-        "seconds": 1.4
+        "seconds": 1.3
       },
       {
         "name": "test:execution-failure-dismiss",
@@ -898,7 +909,7 @@
       {
         "name": "test:external-write-ui",
         "status": "passed",
-        "seconds": 0.2
+        "seconds": 0.1
       },
       {
         "name": "test:feishu-media",
@@ -928,12 +939,12 @@
       {
         "name": "test:gadget-save-copies",
         "status": "passed",
-        "seconds": 0.4
+        "seconds": 0.3
       },
       {
         "name": "test:gateway",
         "status": "passed",
-        "seconds": 4.7
+        "seconds": 4.8
       },
       {
         "name": "test:gateway-cache",
@@ -943,17 +954,22 @@
       {
         "name": "test:gateway-delivery-journal",
         "status": "passed",
-        "seconds": 3.3
+        "seconds": 4.3
       },
       {
         "name": "test:gateway-durable",
         "status": "passed",
-        "seconds": 6.8
+        "seconds": 12.3
+      },
+      {
+        "name": "test:gateway-inbox-crash",
+        "status": "passed",
+        "seconds": 2.8
       },
       {
         "name": "test:gateway-lifecycle",
         "status": "passed",
-        "seconds": 1.8
+        "seconds": 2.0
       },
       {
         "name": "test:gateway-media",
@@ -988,7 +1004,7 @@
       {
         "name": "test:generation-speed",
         "status": "passed",
-        "seconds": 3.0
+        "seconds": 3.1
       },
       {
         "name": "test:google-workspace",
@@ -998,7 +1014,7 @@
       {
         "name": "test:google-workspace-faults",
         "status": "passed",
-        "seconds": 0.3
+        "seconds": 0.4
       },
       {
         "name": "test:google-workspace-request-scope",
@@ -1008,12 +1024,12 @@
       {
         "name": "test:google-workspace-tools",
         "status": "passed",
-        "seconds": 1.0
+        "seconds": 0.9
       },
       {
         "name": "test:google-workspace-ui",
         "status": "passed",
-        "seconds": 0.3
+        "seconds": 0.2
       },
       {
         "name": "test:google-workspace-write-tools",
@@ -1058,7 +1074,7 @@
       {
         "name": "test:input-guardian-process",
         "status": "passed",
-        "seconds": 1.8
+        "seconds": 1.9
       },
       {
         "name": "test:ipc-channel-inventory",
@@ -1068,7 +1084,7 @@
       {
         "name": "test:knowledge-lifecycle",
         "status": "passed",
-        "seconds": 0.7
+        "seconds": 0.8
       },
       {
         "name": "test:lark-wecom-gateway",
@@ -1083,17 +1099,17 @@
       {
         "name": "test:library-domain",
         "status": "passed",
-        "seconds": 1.2
+        "seconds": 1.7
       },
       {
         "name": "test:library-extension",
         "status": "passed",
-        "seconds": 0.8
+        "seconds": 1.0
       },
       {
         "name": "test:library-lifecycle-transaction",
         "status": "passed",
-        "seconds": 0.5
+        "seconds": 0.6
       },
       {
         "name": "test:library-materialization-transaction",
@@ -1103,7 +1119,7 @@
       {
         "name": "test:library-owner-scope",
         "status": "passed",
-        "seconds": 1.6
+        "seconds": 2.0
       },
       {
         "name": "test:library-update-transaction",
@@ -1128,7 +1144,7 @@
       {
         "name": "test:linux-session",
         "status": "passed",
-        "seconds": 0.3
+        "seconds": 0.2
       },
       {
         "name": "test:linux-worker-packaging",
@@ -1138,7 +1154,7 @@
       {
         "name": "test:local-capability-checks",
         "status": "passed",
-        "seconds": 1.2
+        "seconds": 1.1
       },
       {
         "name": "test:local-ocr-capability",
@@ -1148,7 +1164,7 @@
       {
         "name": "test:local-workflow",
         "status": "passed",
-        "seconds": 3.4
+        "seconds": 3.5
       },
       {
         "name": "test:magpie-agent-mybuddy",
@@ -1203,7 +1219,7 @@
       {
         "name": "test:media-artifact-transaction",
         "status": "passed",
-        "seconds": 1.0
+        "seconds": 0.9
       },
       {
         "name": "test:media-capabilities-dom",
@@ -1218,7 +1234,7 @@
       {
         "name": "test:media-capability-extension",
         "status": "passed",
-        "seconds": 3.3
+        "seconds": 3.2
       },
       {
         "name": "test:media-capability-services",
@@ -1233,7 +1249,7 @@
       {
         "name": "test:memory",
         "status": "passed",
-        "seconds": 1.7
+        "seconds": 1.9
       },
       {
         "name": "test:memory-assistant-scopes",
@@ -1268,17 +1284,17 @@
       {
         "name": "test:memory-procedure-learning",
         "status": "passed",
-        "seconds": 1.7
+        "seconds": 1.6
       },
       {
         "name": "test:memory-projection-deletion",
         "status": "passed",
-        "seconds": 0.5
+        "seconds": 0.4
       },
       {
         "name": "test:memory-scope-schema",
         "status": "passed",
-        "seconds": 0.2
+        "seconds": 0.1
       },
       {
         "name": "test:memory-skill-effectiveness",
@@ -1348,7 +1364,7 @@
       {
         "name": "test:multi-model-consult",
         "status": "passed",
-        "seconds": 5.0
+        "seconds": 4.9
       },
       {
         "name": "test:multi-search",
@@ -1368,7 +1384,7 @@
       {
         "name": "test:notes-task-tools",
         "status": "passed",
-        "seconds": 3.3
+        "seconds": 3.5
       },
       {
         "name": "test:oauth-bundle",
@@ -1378,7 +1394,7 @@
       {
         "name": "test:officecli",
         "status": "passed",
-        "seconds": 3.7
+        "seconds": 3.6
       },
       {
         "name": "test:openrouter-capabilities",
@@ -1443,7 +1459,7 @@
       {
         "name": "test:pi-host-native",
         "status": "passed",
-        "seconds": 1.5
+        "seconds": 1.4
       },
       {
         "name": "test:pi-native-control",
@@ -1458,7 +1474,7 @@
       {
         "name": "test:pi-native-lifecycle",
         "status": "passed",
-        "seconds": 1.1
+        "seconds": 1.0
       },
       {
         "name": "test:pi-reasoning-stream",
@@ -1473,7 +1489,7 @@
       {
         "name": "test:pi100-context-boundary",
         "status": "passed",
-        "seconds": 2.3
+        "seconds": 2.2
       },
       {
         "name": "test:pi100-model-admission",
@@ -1483,17 +1499,17 @@
       {
         "name": "test:pi104-features",
         "status": "passed",
-        "seconds": 1.7
+        "seconds": 1.8
       },
       {
         "name": "test:pi104-model-compat",
         "status": "passed",
-        "seconds": 1.0
+        "seconds": 1.1
       },
       {
         "name": "test:pinned-public-proxy",
         "status": "passed",
-        "seconds": 0.2
+        "seconds": 0.3
       },
       {
         "name": "test:platform-browsers",
@@ -1608,7 +1624,7 @@
       {
         "name": "test:project-file-import",
         "status": "passed",
-        "seconds": 2.0
+        "seconds": 2.1
       },
       {
         "name": "test:project-file-import-transaction",
@@ -1618,7 +1634,7 @@
       {
         "name": "test:project-folder-relocation",
         "status": "passed",
-        "seconds": 0.8
+        "seconds": 0.9
       },
       {
         "name": "test:project-knowledge",
@@ -1633,7 +1649,7 @@
       {
         "name": "test:project-memory-agent",
         "status": "passed",
-        "seconds": 0.9
+        "seconds": 0.8
       },
       {
         "name": "test:project-memory-extraction",
@@ -1643,7 +1659,7 @@
       {
         "name": "test:project-memory-migration",
         "status": "passed",
-        "seconds": 0.7
+        "seconds": 0.6
       },
       {
         "name": "test:project-notes",
@@ -1708,12 +1724,12 @@
       {
         "name": "test:provider-login",
         "status": "passed",
-        "seconds": 0.7
+        "seconds": 0.8
       },
       {
         "name": "test:qq-gateway",
         "status": "passed",
-        "seconds": 1.3
+        "seconds": 1.2
       },
       {
         "name": "test:qq-media",
@@ -1733,7 +1749,7 @@
       {
         "name": "test:regenerate-connection-runtime",
         "status": "passed",
-        "seconds": 0.8
+        "seconds": 0.7
       },
       {
         "name": "test:regenerate-lifecycle",
@@ -1743,7 +1759,7 @@
       {
         "name": "test:regenerate-stop-runtime",
         "status": "passed",
-        "seconds": 0.7
+        "seconds": 0.8
       },
       {
         "name": "test:remote-work-sync",
@@ -1783,7 +1799,7 @@
       {
         "name": "test:runtime-skill-loader",
         "status": "passed",
-        "seconds": 4.7
+        "seconds": 4.6
       },
       {
         "name": "test:scoped-library-manager",
@@ -1828,7 +1844,7 @@
       {
         "name": "test:shell-preferences",
         "status": "passed",
-        "seconds": 0.9
+        "seconds": 0.8
       },
       {
         "name": "test:sidebar-pinned",
@@ -1853,7 +1869,7 @@
       {
         "name": "test:skill-connector",
         "status": "passed",
-        "seconds": 1.1
+        "seconds": 0.9
       },
       {
         "name": "test:skill-root-guard",
@@ -1863,7 +1879,7 @@
       {
         "name": "test:slack-gateway",
         "status": "passed",
-        "seconds": 2.8
+        "seconds": 2.9
       },
       {
         "name": "test:slack-media",
@@ -1883,7 +1899,7 @@
       {
         "name": "test:subagent-acceptance",
         "status": "passed",
-        "seconds": 9.8
+        "seconds": 9.6
       },
       {
         "name": "test:subagent-acceptance-gate",
@@ -1893,7 +1909,7 @@
       {
         "name": "test:subagent-agent-discovery",
         "status": "passed",
-        "seconds": 0.9
+        "seconds": 0.8
       },
       {
         "name": "test:subagent-cache-accounting",
@@ -1923,7 +1939,7 @@
       {
         "name": "test:subagent-parallel-limits",
         "status": "passed",
-        "seconds": 0.9
+        "seconds": 1.0
       },
       {
         "name": "test:subagent-runs",
@@ -1958,7 +1974,7 @@
       {
         "name": "test:task-diagnostics",
         "status": "passed",
-        "seconds": 0.6
+        "seconds": 0.7
       },
       {
         "name": "test:task-expert-binding",
@@ -1973,7 +1989,7 @@
       {
         "name": "test:task-isolation-audit",
         "status": "passed",
-        "seconds": 1.0
+        "seconds": 0.9
       },
       {
         "name": "test:task-isolation-p2",
@@ -2013,7 +2029,7 @@
       {
         "name": "test:task-workspace-lifecycle",
         "status": "passed",
-        "seconds": 2.4
+        "seconds": 2.1
       },
       {
         "name": "test:task-workspace-migration",
@@ -2023,7 +2039,7 @@
       {
         "name": "test:team-subagent-policy",
         "status": "passed",
-        "seconds": 2.6
+        "seconds": 2.5
       },
       {
         "name": "test:telegram-media",
@@ -2043,7 +2059,7 @@
       {
         "name": "test:test-bundle-pool",
         "status": "passed",
-        "seconds": 0.7
+        "seconds": 0.6
       },
       {
         "name": "test:timeline-focus",
@@ -2058,7 +2074,7 @@
       {
         "name": "test:tool-image-aging",
         "status": "passed",
-        "seconds": 1.6
+        "seconds": 1.7
       },
       {
         "name": "test:typecheck-guard",
@@ -2073,7 +2089,7 @@
       {
         "name": "test:unified-media-adapters",
         "status": "passed",
-        "seconds": 0.8
+        "seconds": 0.9
       },
       {
         "name": "test:usage-recon",
@@ -2098,12 +2114,12 @@
       {
         "name": "test:visual-polish-ux",
         "status": "passed",
-        "seconds": 0.2
+        "seconds": 0.1
       },
       {
         "name": "test:wave5a",
         "status": "passed",
-        "seconds": 5.0
+        "seconds": 4.8
       },
       {
         "name": "test:wave5b",
@@ -2123,7 +2139,7 @@
       {
         "name": "test:wave5d2",
         "status": "passed",
-        "seconds": 5.1
+        "seconds": 5.0
       },
       {
         "name": "test:wave5d3",
@@ -2143,7 +2159,7 @@
       {
         "name": "test:web-access-extract-runtime",
         "status": "passed",
-        "seconds": 1.9
+        "seconds": 1.6
       },
       {
         "name": "test:web-artifact-runtime",
@@ -2153,7 +2169,7 @@
       {
         "name": "test:web-page-answer-runtime",
         "status": "passed",
-        "seconds": 1.5
+        "seconds": 1.4
       },
       {
         "name": "test:wechat-callback-auth",
@@ -2178,7 +2194,7 @@
       {
         "name": "test:weixin-qr-integration",
         "status": "passed",
-        "seconds": 1.3
+        "seconds": 1.2
       },
       {
         "name": "test:weixin-qr-ui",
@@ -2213,7 +2229,7 @@
       {
         "name": "test:work-graph",
         "status": "passed",
-        "seconds": 1.7
+        "seconds": 1.6
       },
       {
         "name": "test:work-graph-bridge",
@@ -2273,7 +2289,7 @@
       {
         "name": "test:work-watch-supervision",
         "status": "passed",
-        "seconds": 2.6
+        "seconds": 2.7
       },
       {
         "name": "test:workspace-chunk-benchmark",
@@ -2293,12 +2309,12 @@
       {
         "name": "test:workspace-library-binding",
         "status": "passed",
-        "seconds": 0.5
+        "seconds": 0.4
       },
       {
         "name": "test:workspace-materials-dom",
         "status": "passed",
-        "seconds": 1.5
+        "seconds": 1.6
       },
       {
         "name": "test:workspace-materials-view",
@@ -2313,12 +2329,12 @@
       {
         "name": "test:workspace-notes",
         "status": "passed",
-        "seconds": 0.3
+        "seconds": 0.4
       },
       {
         "name": "test:workspace-phase5",
         "status": "passed",
-        "seconds": 0.9
+        "seconds": 0.8
       },
       {
         "name": "test:workspace-resolver",
@@ -2333,12 +2349,12 @@
       {
         "name": "test:workspace-runtime-consolidation",
         "status": "passed",
-        "seconds": 1.3
+        "seconds": 1.2
       },
       {
         "name": "test:workspace-runtime-integration",
         "status": "passed",
-        "seconds": 1.5
+        "seconds": 1.4
       },
       {
         "name": "test:workspace-shared-context",
@@ -2348,32 +2364,16 @@
       {
         "name": "test:workspace-shared-context-ui-foundation",
         "status": "passed",
-        "seconds": 1.3
+        "seconds": 1.2
       },
       {
         "name": "test:workspace-tree",
         "status": "passed",
-        "seconds": 8.6
+        "seconds": 8.4
       }
     ]
   },
-  "deferred": [
-    {
-      "name": "test:bot-work-phase2-recovery",
-      "status": "not_run",
-      "reason": "Keep crash injection last while issue #27 optimization remains ongoing."
-    },
-    {
-      "name": "test:bot-work-phase5-native-story",
-      "status": "not_run",
-      "reason": "Keep crash injection last while issue #27 optimization remains ongoing."
-    },
-    {
-      "name": "test:gateway-inbox-crash",
-      "status": "not_run",
-      "reason": "Keep crash injection last while issue #27 optimization remains ongoing."
-    }
-  ],
+  "deferred": [],
   "preliminary_run": {
     "passed": 460,
     "failed": 9,
@@ -2420,23 +2420,27 @@
     {
       "name": "test:media-capabilities-ui",
       "status": "passed",
-      "coverage": "16 behavior groups and verified 1280/760/480px renderer layout; screenshots unavailable in hidden Wayland window."
+      "coverage": "16 behavior groups and verified 1280/760/480px renderer layout; screenshots unavailable in hidden Wayland window.",
+      "tested_source_commit": "bd42a6a4b7548951c7bbc3c99db8dbd529ec7c2e"
     },
     {
       "name": "test:bot-work-browser-desktop",
       "status": "passed",
-      "coverage": "137 Works, bounded pagination, queries, filters, selected Work and 440px layout."
+      "coverage": "137 Works, bounded pagination, queries, filters, selected Work and 440px layout.",
+      "tested_source_commit": "bd42a6a4b7548951c7bbc3c99db8dbd529ec7c2e"
     },
     {
       "name": "test:bot-work-detail-desktop",
       "status": "passed_after_fix",
       "negative_exit_verified": 1,
-      "coverage": "390/760/1440px, reports/original request/stale response/search; replaced premature wait and fixed swallowed failure exit."
+      "coverage": "390/760/1440px, reports/original request/stale response/search; replaced premature wait and fixed swallowed failure exit.",
+      "tested_source_commit": "bd42a6a4b7548951c7bbc3c99db8dbd529ec7c2e"
     },
     {
       "name": "test:bot-history-paging-desktop",
       "status": "passed",
-      "coverage": "Personal/team at 1440/760/390px, 100/100/50 pages, input repetition and interruption, anchor/focus/resize/EOF/latest."
+      "coverage": "Personal/team at 1440/760/390px, 100/100/50 pages, input repetition and interruption, anchor/focus/resize/EOF/latest.",
+      "tested_source_commit": "bd42a6a4b7548951c7bbc3c99db8dbd529ec7c2e"
     }
   ],
   "other_categories": {
@@ -2449,7 +2453,731 @@
   "baseline_and_classification_changed": false,
   "typecheck": {
     "status": "passed",
-    "web_node_scripts_errors": 0
+    "web_node_scripts_errors": 0,
+    "tested_source_commit": "d2a8eaaef3c599464463a178837583d947fa528b"
   },
-  "diff_check": "passed"
+  "diff_check": "passed",
+  "previous_noncrash_run": {
+    "source_commit": "bd42a6a4b7548951c7bbc3c99db8dbd529ec7c2e",
+    "passed": 469,
+    "failed": 0,
+    "three_crash_suites_deferred_then": true
+  },
+  "crash_injection": {
+    "total_designated_strong_kill_boundaries": 13,
+    "phase2": {
+      "name": "test:bot-work-phase2-recovery",
+      "status": "passed",
+      "seconds": 26.1,
+      "recovery_scenarios": [
+        "outbox",
+        "accepted-cancel",
+        "before-result",
+        "received",
+        "cursor-transaction",
+        "consume-transaction",
+        "effect-receipt",
+        "effect-unknown"
+      ],
+      "foreground_cancel_kills": 2
+    },
+    "native_story": {
+      "name": "test:bot-work-phase5-native-story",
+      "status": "passed",
+      "seconds": 13.6,
+      "kills": [
+        {
+          "stage": 1,
+          "label": "native-accepted-before-business-receipt",
+          "requestedSignal": "SIGKILL",
+          "signalCode": "SIGKILL",
+          "exitCode": null,
+          "leaseReleasedAt": null
+        },
+        {
+          "stage": 2,
+          "label": "accepted-and-closed-before-notification",
+          "requestedSignal": "SIGKILL",
+          "signalCode": "SIGKILL",
+          "exitCode": null,
+          "leaseReleasedAt": null
+        }
+      ],
+      "steps": [
+        {
+          "number": 1,
+          "name": "同一持久库立项 A 与同宿主同来源 B，冻结有限职责、授权、验收和停止条件"
+        },
+        {
+          "number": 2,
+          "name": "真实 Hook 单次派发，前台原生讨论及时完成且不新建后台 Task"
+        },
+        {
+          "number": 3,
+          "name": "正式改要求为 r2，旧命令与执行失效，在途效果仍须结算"
+        },
+        {
+          "number": 4,
+          "name": "真实 Pi Durable 已落盘原 submission，业务回执未写入，进入外部 SIGKILL 窗口"
+        },
+        {
+          "number": 5,
+          "name": "r1 真实原生日志晚到后仅归档历史，r2 当前成果与完成通知保持隔离"
+        },
+        {
+          "number": 6,
+          "name": "真实并行 child 写入冲突，isError/blocked 保留，仅原生补跑缺口且成功分支零重跑"
+        },
+        {
+          "number": 7,
+          "name": "代码和自动检查通过，受信任评审采纳真实产物，明确等待 Omarchy 实测且不能提前关闭"
+        },
+        {
+          "number": 8,
+          "name": "真实配对 Remote 反馈失败、原生协作者修复期间交接，旧负责人和旧手机产物版本均被拒绝"
+        },
+        {
+          "number": 9,
+          "name": "当前版本反馈后用户关闭有限 Watch A；A 停止唤醒，B 的原授权/游标不受清理影响并继续真实执行"
+        },
+        {
+          "number": 10,
+          "name": "第二次真实强杀后仅补通知，已投递效果不重复；真实桌面 reducer 与配对 Remote 增量/快照/只读事实收敛"
+        }
+      ],
+      "counts": {
+        "modelCalls": 25,
+        "effects": 5,
+        "perModel": [
+          {
+            "model": "blocked",
+            "count": 2
+          },
+          {
+            "model": "front",
+            "count": 1
+          },
+          {
+            "model": "gap",
+            "count": 2
+          },
+          {
+            "model": "old",
+            "count": 2
+          },
+          {
+            "model": "provenance",
+            "count": 8
+          },
+          {
+            "model": "repair",
+            "count": 2
+          },
+          {
+            "model": "retain",
+            "count": 2
+          },
+          {
+            "model": "root",
+            "count": 4
+          },
+          {
+            "model": "watch",
+            "count": 2
+          }
+        ],
+        "perEffect": [
+          {
+            "marker": "gap-two",
+            "count": 1
+          },
+          {
+            "marker": "r1-historical",
+            "count": 1
+          },
+          {
+            "marker": "repair-v2",
+            "count": 1
+          },
+          {
+            "marker": "retain-one",
+            "count": 1
+          },
+          {
+            "marker": "watch-b",
+            "count": 1
+          }
+        ]
+      },
+      "forbidden_write_count": 0,
+      "physical_devices_verified": false
+    },
+    "gateway": {
+      "name": "test:gateway-inbox-crash",
+      "status": "passed",
+      "seconds": 2.8,
+      "strong_kills": 1,
+      "coverage": "Committed FIFO, native unsafe-effect no-replay, reply/redelivery deduplication."
+    }
+  },
+  "remaining_not_run": {
+    "gui": [
+      {
+        "name": "test:acp-menu-dev",
+        "platforms": null
+      },
+      {
+        "name": "test:archive-deletion-desktop",
+        "platforms": null
+      },
+      {
+        "name": "test:artifact-image-cache-electron",
+        "platforms": null
+      },
+      {
+        "name": "test:artifact-open-e2e",
+        "platforms": null
+      },
+      {
+        "name": "test:bot-activity-desktop",
+        "platforms": null
+      },
+      {
+        "name": "test:bot-add-menu-desktop",
+        "platforms": null
+      },
+      {
+        "name": "test:bot-conversation-concurrent-desktop",
+        "platforms": null
+      },
+      {
+        "name": "test:bot-display-groups-ui",
+        "platforms": null
+      },
+      {
+        "name": "test:bot-message-actions-desktop",
+        "platforms": null
+      },
+      {
+        "name": "test:bot-rename-desktop",
+        "platforms": null
+      },
+      {
+        "name": "test:bot-report-dedup-desktop",
+        "platforms": null
+      },
+      {
+        "name": "test:bot-scroll-desktop",
+        "platforms": null
+      },
+      {
+        "name": "test:bot-settings-dev",
+        "platforms": null
+      },
+      {
+        "name": "test:bot-team-removal-desktop",
+        "platforms": null
+      },
+      {
+        "name": "test:bot-work-browser-dev",
+        "platforms": null
+      },
+      {
+        "name": "test:bot-work-conversation-desktop",
+        "platforms": null
+      },
+      {
+        "name": "test:bot-work-delivery-desktop",
+        "platforms": null
+      },
+      {
+        "name": "test:bot-work-phase2:dev",
+        "platforms": [
+          "windows"
+        ]
+      },
+      {
+        "name": "test:bot-work-phase3-focus-desktop",
+        "platforms": [
+          "windows"
+        ]
+      },
+      {
+        "name": "test:bot-work-phase3:dev",
+        "platforms": [
+          "windows"
+        ]
+      },
+      {
+        "name": "test:bot-work-phase5:dev",
+        "platforms": null
+      },
+      {
+        "name": "test:bot-work-recovery-dev",
+        "platforms": null
+      },
+      {
+        "name": "test:browser-builtin-electron",
+        "platforms": null
+      },
+      {
+        "name": "test:browser-navbar-ui",
+        "platforms": null
+      },
+      {
+        "name": "test:browser-refresh",
+        "platforms": null
+      },
+      {
+        "name": "test:browser-screenshot-electron",
+        "platforms": null
+      },
+      {
+        "name": "test:browser-tabs-electron",
+        "platforms": null
+      },
+      {
+        "name": "test:browser-tabs-ui",
+        "platforms": null
+      },
+      {
+        "name": "test:chat-attachment-acp-desktop",
+        "platforms": null
+      },
+      {
+        "name": "test:computer-automation",
+        "platforms": [
+          "windows"
+        ]
+      },
+      {
+        "name": "test:computer-automation-windows",
+        "platforms": [
+          "windows"
+        ]
+      },
+      {
+        "name": "test:computer-use-agent-desktop",
+        "platforms": [
+          "windows"
+        ]
+      },
+      {
+        "name": "test:computer-use-behavior",
+        "platforms": [
+          "windows"
+        ]
+      },
+      {
+        "name": "test:computer-use-boundaries",
+        "platforms": null
+      },
+      {
+        "name": "test:computer-use-desktop",
+        "platforms": [
+          "windows"
+        ]
+      },
+      {
+        "name": "test:computer-use-linux",
+        "platforms": [
+          "linux"
+        ]
+      },
+      {
+        "name": "test:computer-use-linux:packaged",
+        "platforms": [
+          "linux"
+        ]
+      },
+      {
+        "name": "test:computer-use-overlay",
+        "platforms": [
+          "windows"
+        ]
+      },
+      {
+        "name": "test:computer-use-recovery",
+        "platforms": null
+      },
+      {
+        "name": "test:computer-use-run",
+        "platforms": [
+          "windows"
+        ]
+      },
+      {
+        "name": "test:consult-card-ui",
+        "platforms": null
+      },
+      {
+        "name": "test:consult-entry:desktop",
+        "platforms": null
+      },
+      {
+        "name": "test:consult-selection",
+        "platforms": null
+      },
+      {
+        "name": "test:core-performance-all",
+        "platforms": null
+      },
+      {
+        "name": "test:core-performance-electron",
+        "platforms": null
+      },
+      {
+        "name": "test:core-performance-mybuddy-startup",
+        "platforms": null
+      },
+      {
+        "name": "test:diagnostics-cache-ui",
+        "platforms": null
+      },
+      {
+        "name": "test:durable-bot-desktop",
+        "platforms": null
+      },
+      {
+        "name": "test:expert-binding-desktop",
+        "platforms": null
+      },
+      {
+        "name": "test:expert-ui",
+        "platforms": null
+      },
+      {
+        "name": "test:extension-toolbar-dev",
+        "platforms": null
+      },
+      {
+        "name": "test:gadget-browser-recovery-electron",
+        "platforms": null
+      },
+      {
+        "name": "test:gadget-menu-dev",
+        "platforms": null
+      },
+      {
+        "name": "test:gadget-save-copies-desktop",
+        "platforms": null
+      },
+      {
+        "name": "test:gadget-save-workspace-desktop",
+        "platforms": null
+      },
+      {
+        "name": "test:gadget-task-desktop",
+        "platforms": null
+      },
+      {
+        "name": "test:history-prepend-electron",
+        "platforms": null
+      },
+      {
+        "name": "test:html-edit-electron",
+        "platforms": null
+      },
+      {
+        "name": "test:local-capabilities-electron",
+        "platforms": null
+      },
+      {
+        "name": "test:magpie-desktop",
+        "platforms": null
+      },
+      {
+        "name": "test:memory-lifecycle-desktop",
+        "platforms": null
+      },
+      {
+        "name": "test:memory-organization-desktop",
+        "platforms": null
+      },
+      {
+        "name": "test:memory-ui",
+        "platforms": null
+      },
+      {
+        "name": "test:mode-navigation:desktop",
+        "platforms": null
+      },
+      {
+        "name": "test:model-menu-ui",
+        "platforms": null
+      },
+      {
+        "name": "test:multi-search-desktop",
+        "platforms": null
+      },
+      {
+        "name": "test:overview-model-ui",
+        "platforms": null
+      },
+      {
+        "name": "test:pdf-page-identity-e2e",
+        "platforms": null
+      },
+      {
+        "name": "test:pdf-runtime-e2e",
+        "platforms": null
+      },
+      {
+        "name": "test:project-activity-ui",
+        "platforms": null
+      },
+      {
+        "name": "test:project-create-folder-ui",
+        "platforms": null
+      },
+      {
+        "name": "test:project-materials-ui",
+        "platforms": null
+      },
+      {
+        "name": "test:remote-task-dot-ui-desktop",
+        "platforms": null
+      },
+      {
+        "name": "test:runtime-probe-electron",
+        "platforms": null
+      },
+      {
+        "name": "test:settings-records-ui",
+        "platforms": null
+      },
+      {
+        "name": "test:sidebar-space-collapse-desktop",
+        "platforms": null
+      },
+      {
+        "name": "test:subagent-header-ui",
+        "platforms": null
+      },
+      {
+        "name": "test:svg-preview-resize",
+        "platforms": null
+      },
+      {
+        "name": "test:task-status-dot-desktop",
+        "platforms": null
+      },
+      {
+        "name": "test:tray",
+        "platforms": null
+      },
+      {
+        "name": "test:work-artifact-desktop",
+        "platforms": null
+      },
+      {
+        "name": "test:work-record-archive-desktop",
+        "platforms": null
+      },
+      {
+        "name": "test:workspace-notes-ui",
+        "platforms": null
+      }
+    ],
+    "network": [
+      {
+        "name": "test:acp-dsh-live",
+        "platforms": null
+      },
+      {
+        "name": "test:acp-remote-android-e2e:live",
+        "platforms": null
+      },
+      {
+        "name": "test:acp-remote-android-sync:live",
+        "platforms": null
+      },
+      {
+        "name": "test:acp-remote-android:live",
+        "platforms": null
+      },
+      {
+        "name": "test:bot-frontdoor:live",
+        "platforms": null
+      },
+      {
+        "name": "test:bot-history-context:live",
+        "platforms": null
+      },
+      {
+        "name": "test:bot-memory-live",
+        "platforms": null
+      },
+      {
+        "name": "test:bot-peer-calls:live",
+        "platforms": null
+      },
+      {
+        "name": "test:bot-result-delivery:live",
+        "platforms": null
+      },
+      {
+        "name": "test:bot-watch-intent:live",
+        "platforms": null
+      },
+      {
+        "name": "test:bot-watch:live",
+        "platforms": null
+      },
+      {
+        "name": "test:browser-automation-recovery",
+        "platforms": null
+      },
+      {
+        "name": "test:browser-builtin-live",
+        "platforms": null
+      },
+      {
+        "name": "test:cache-live",
+        "platforms": null
+      },
+      {
+        "name": "test:compaction:live",
+        "platforms": null
+      },
+      {
+        "name": "test:conversation-branch:live",
+        "platforms": null
+      },
+      {
+        "name": "test:durable-bot",
+        "platforms": null
+      },
+      {
+        "name": "test:gadget-agent-live",
+        "platforms": null
+      },
+      {
+        "name": "test:gadget-browser-recovery-live",
+        "platforms": null
+      },
+      {
+        "name": "test:google-workspace-write:live",
+        "platforms": null
+      },
+      {
+        "name": "test:google-workspace:live",
+        "platforms": null
+      },
+      {
+        "name": "test:multi-model-consult:live",
+        "platforms": null
+      },
+      {
+        "name": "test:multi-search-live",
+        "platforms": null
+      },
+      {
+        "name": "test:remote-access",
+        "platforms": null
+      },
+      {
+        "name": "test:remote-connection",
+        "platforms": null
+      },
+      {
+        "name": "test:remote-db",
+        "platforms": null
+      },
+      {
+        "name": "test:remote-delete",
+        "platforms": null
+      },
+      {
+        "name": "test:remote-done-ack",
+        "platforms": null
+      },
+      {
+        "name": "test:remote-history-window",
+        "platforms": null
+      },
+      {
+        "name": "test:remote-image-owner",
+        "platforms": null
+      },
+      {
+        "name": "test:remote-multi-server",
+        "platforms": null
+      },
+      {
+        "name": "test:remote-pair-window",
+        "platforms": null
+      },
+      {
+        "name": "test:remote-renderer-stdio",
+        "platforms": null
+      },
+      {
+        "name": "test:remote-task-cache",
+        "platforms": null
+      },
+      {
+        "name": "test:remote-task-dot-android:live",
+        "platforms": null
+      },
+      {
+        "name": "test:remote-timeline",
+        "platforms": null
+      },
+      {
+        "name": "test:remote-workspace-create",
+        "platforms": null
+      },
+      {
+        "name": "test:streaming-live",
+        "platforms": null
+      },
+      {
+        "name": "test:subagent:live",
+        "platforms": null
+      },
+      {
+        "name": "test:task-status-dot:live",
+        "platforms": null
+      },
+      {
+        "name": "test:web-page-answer-runtime:live",
+        "platforms": null
+      }
+    ],
+    "dataset": [
+      {
+        "name": "test:google-workspace-write",
+        "platforms": null
+      },
+      {
+        "name": "test:task-terminal:live",
+        "platforms": null
+      },
+      {
+        "name": "test:terminal",
+        "platforms": null
+      }
+    ],
+    "artifact": [
+      {
+        "name": "test:image-resize-assets",
+        "platforms": null
+      },
+      {
+        "name": "test:oauth-build-assets",
+        "platforms": null
+      },
+      {
+        "name": "test:pi-codemode-assets",
+        "platforms": null
+      }
+    ]
+  },
+  "remaining_not_run_counts": {
+    "gui": 83,
+    "network": 41,
+    "dataset": 3,
+    "artifact": 3
+  }
 }
