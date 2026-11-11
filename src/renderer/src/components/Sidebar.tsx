@@ -117,7 +117,6 @@ export function AccountNavigation({ go, openProjects }: { go: (page: Page) => vo
   return <>
     <button className="sidebar-popup-item" onClick={() => go("assistant")}><IconSparkles size={14} /> 助手</button>
     <button className="sidebar-popup-item" onClick={openProjects}><IconFolderKanban size={14} /> 项目</button>
-    <button className="sidebar-popup-item" onClick={() => go("bot")}><IconBot size={14} /> Bot 模式</button>
     <button className="sidebar-popup-item" onClick={() => go("automation")}><IconZap size={14} /> 自动化</button>
     <button className="sidebar-popup-item" onClick={() => go("experts")}><IconPuzzle size={14} /> 插件</button>
   </>;

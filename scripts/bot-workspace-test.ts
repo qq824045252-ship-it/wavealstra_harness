@@ -50,8 +50,9 @@ for (const status of ["completed", "cancelled", "failed", "unknown"] as const) {
   assert.doesNotMatch(renderActivity({ ...activityMessage, status }), /正在搜索实时信息/, "terminal or unknown messages must not advertise ongoing tools");
 }
 assert.ok(menu.indexOf("助手") < menu.indexOf("项目"));
-assert.ok(menu.indexOf("项目") < menu.indexOf("Bot 模式"));
-assert.ok(menu.indexOf("Bot 模式") < menu.indexOf("自动化"));
+assert.doesNotMatch(menu, /Bot 模式/, "account menu must not duplicate the top-level Bot mode entry");
+assert.equal((menu.match(/<button /g) ?? []).length, 4);
+assert.ok(menu.indexOf("项目") < menu.indexOf("自动化"));
 assert.ok(menu.indexOf("自动化") < menu.indexOf("插件"));
 
 // React's server snapshot uses Zustand's initial state, so set the page on that
@@ -63,6 +64,13 @@ const chatSidebar = renderToStaticMarkup(createElement(Sidebar));
 initial.page = "bot";
 const botSidebar = renderToStaticMarkup(createElement(Sidebar));
 initial.page = originalPage;
+for (const sidebar of [chatSidebar, botSidebar]) {
+  const modes = sidebar.match(/<nav class="sidebar-mode-nav"[^>]*>([\s\S]*?)<\/nav>/)?.[1];
+  assert.ok(modes, "dedicated mode navigation remains available");
+  assert.match(modes, /普通模式/);
+  assert.match(modes, /Bot 模式/);
+  assert.equal((modes.match(/<button /g) ?? []).length, 2);
+}
 assert.match(chatSidebar, /独立任务/);
 assert.doesNotMatch(botSidebar, /独立任务|新建任务/);
 assert.match(botSidebar, /未分组/);

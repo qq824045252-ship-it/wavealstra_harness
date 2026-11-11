@@ -43,6 +43,43 @@ async function clickText(selector, text) {
   for (const type of ['mousePressed', 'mouseReleased']) await rpc('Input.dispatchMouseEvent', { type, button:'left', clickCount:1, ...p });
   await wait(150);
 }
+
+async function clickSelector(selector) {
+  const point = await evaluate(`(()=>{const element=document.querySelector(${JSON.stringify(selector)});if(!element)throw Error('Missing '+${JSON.stringify(selector)});const rect=element.getBoundingClientRect();return {x:rect.x+rect.width/2,y:rect.y+rect.height/2}})()`);
+  for (const type of ['mousePressed', 'mouseReleased']) await rpc('Input.dispatchMouseEvent', { type, button:'left', clickCount:1, ...point });
+  await wait(150);
+}
+async function accountMenu(mode) {
+  const expected = ['助手','项目','自动化','插件','我的工作台','任务成果','设置','用量统计','API 聚合'];
+  for (const dismissal of ['toggle','escape','outside']) {
+    await clickSelector('.sidebar-user-main');
+    assert.deepEqual(await evaluate(`[...document.querySelectorAll('.account-popup > button.sidebar-popup-item')].map(button=>button.textContent.trim())`), expected, mode+' account menu keeps other actions and excludes Bot mode');
+    assert.equal(await evaluate(`document.querySelector('.sidebar-mode-nav [aria-current="page"]').textContent.trim()`), mode);
+    if (dismissal === 'toggle') await clickSelector('.sidebar-user-main');
+    else if (dismissal === 'escape') {
+      await rpc('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
+      await rpc('Input.dispatchKeyEvent',{type:'keyUp',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
+      await wait(150);
+    } else await clickSelector('.sidebar-title');
+    assert.equal(await evaluate(`Boolean(document.querySelector('.account-popup'))`),false,dismissal+' dismisses menu');
+  }
+  await clickSelector('.sidebar-user-main');
+  const shot=await rpc('Page.captureScreenshot',{format:'png'});
+  fs.writeFileSync(path.join(output,mode==='Bot 模式'?'bot-account-menu.png':'ordinary-account-menu.png'),Buffer.from(shot.data,'base64'));
+  await clickSelector('.sidebar-user-main');
+  console.log('PASS '+mode+' account menu omits Bot mode; all other actions, toggle, Escape and outside dismissal remain');
+}
+async function remainingAccountRoutes() {
+  for (const [label,page] of [['助手','assistant'],['项目','projects'],['自动化','automation'],['插件','experts'],['我的工作台','gadgets'],['任务成果','files']]) {
+    await clickSelector('.sidebar-user-main');
+    await clickText('.account-popup > button',label);
+    assert.equal(await evaluate(`import('/src/store/appStore.ts').then(module=>module.useAppStore.getState().page)`),page,label+' navigates correctly');
+    assert.equal(await evaluate(`Boolean(document.querySelector('.account-popup'))`),false,label+' closes account menu');
+  }
+  await clickText('.sidebar-mode-nav button','普通模式');
+  console.log('PASS all six retained account navigation actions route correctly and dismiss menu');
+}
+
 async function selection(mode, label) {
   const actual = await evaluate(`({mode:document.querySelector('.hero')?.dataset.mode,selected:[...document.querySelectorAll('.hero-categories [aria-pressed=true]')].map(b=>b.textContent.trim()),dark:[...document.querySelectorAll('.hero-categories .dark')].map(b=>b.textContent.trim())})`);
   assert.deepEqual(actual, {mode, selected:[label], dark:[label]});
@@ -70,13 +107,17 @@ async function selection(mode, label) {
     await rpc('Emulation.setDeviceMetricsOverride',{width:680,height:850,deviceScaleFactor:1,mobile:false});await wait(200);await selection('general','通用模式');
     console.log('PASS focus/model refresh and resize preserve selection');
     await rpc('Emulation.setDeviceMetricsOverride',{width:1280,height:900,deviceScaleFactor:1,mobile:false});
-    await clickText('.sidebar button','Bot 模式');await wait(600);assert(await evaluate(`Boolean(document.querySelector('.app--bot'))`));
+    await accountMenu('普通模式');
+    await remainingAccountRoutes();
+    await clickText('.sidebar-mode-nav button','Bot 模式');await wait(600);assert(await evaluate(`Boolean(document.querySelector('.app--bot'))`));
     await evaluate(`window.dispatchEvent(new Event('focus'))`);await wait(400);assert(await evaluate(`Boolean(document.querySelector('.app--bot'))`));
-    await clickText('.sidebar button','普通模式');await wait(200);await selection('general','通用模式');
+    await accountMenu('Bot 模式');
+    await clickText('.sidebar-mode-nav button','普通模式');await wait(200);await selection('general','通用模式');
     console.log('PASS actual Bot workspace navigation stays in Bot and returns to selected ordinary mode');
     await rpc('Page.reload');await wait(1500);
     await clickText('.hero-categories button','通用模式');await selection('general','通用模式');
-    console.log('PASS renderer restart selects general without falling back to coding');
+    await accountMenu('普通模式');
+    console.log('PASS renderer restart preserves account menu removal and ordinary mode');
     const shot=await rpc('Page.captureScreenshot',{format:'png'});
     const out=path.resolve('out/tests/mode-navigation');fs.mkdirSync(out,{recursive:true});fs.writeFileSync(path.join(out,'general-selected.png'),Buffer.from(shot.data,'base64'));
   } finally { if(child&&ws?.readyState===1){ws.send(JSON.stringify({id:++sequence,method:'Browser.close'}));await wait(1000);}ws?.close();for(const p of pending.values())clearTimeout(p.timer);if(child?.exitCode===null)child.kill('SIGTERM');if(log!==undefined)fs.closeSync(log); }
