@@ -165,6 +165,26 @@ try {
   assert((await invokeOwner("work_resume", { workId: started.work.workId, versionGuard: pausedFacts[0].versionGuard }, "resume-team")).ok);
   assert.equal(works.teams.get(started.work.workId)?.executions.length, 2, "resume preserves member identities");
 
+  // A read-only coordinator must not cap an already writable specialist. This
+  // was the real UI failure: selected team folder -> unauthorized_actor before dispatch.
+  bots.registerBot({ botId: "writer", userId: LOCAL_USER_ID, displayName: "writer", authorization: grants });
+  const writerCandidate = works.teams.foregroundCandidates(LOCAL_USER_ID, "owner", root).find(bot => bot.botId === "writer");
+  assert.deepEqual(writerCandidate?.allowedScopes, ["workspace:read", "workspace:write"]);
+  const writableTemplate = works.teams.handle(user, { kind: "save_template", request: { operationId: "writable-team", name: "文档团队",
+    plan: { ownerBotId: "owner", ownerResponsibility: "汇总", members: [{ botId: "writer", responsibility: "生成 HTML", delegatedScope: ["workspace:read", "workspace:write"] }] } } });
+  assert(writableTemplate.ok && writableTemplate.template);
+  const writeInput = messages.accept(LOCAL_USER_ID, { botId: "owner", requestId: "write-team", text: "在团队目录生成 HTML" });
+  const writeRequest = { templateId: writableTemplate.template.templateId, operationId: "write-team-work", title: "HTML",
+    goalDescription: "生成 HTML", criteria: ["文件可打开"], workspacePath: root, conversationId: writeInput.conversationId, sourceMessageId: writeInput.userMessageId };
+  const foregroundActor: WorkActor = { kind: "bot", host: "foreground", userId: LOCAL_USER_ID, botId: "owner", grants: minimumAuthorization() };
+  const writable = works.teams.createFromForeground(foregroundActor, writeRequest);
+  assert(writable.ok && writable.work && writable.team, JSON.stringify(writable));
+  assert.deepEqual(writable.work.authorization.allowedScopes, ["workspace:read", "workspace:write"]);
+  assert.deepEqual(writable.team.executions.find(row => row.botId === "writer")?.delegatedScope, ["workspace:read", "workspace:write"]);
+  assert.deepEqual(bots.getBot("owner")?.authorization, minimumAuthorization(), "coordinator remains read-only outside this team dispatch");
+  assert(works.teams.createFromForeground(foregroundActor, writeRequest).ok, "team retry stays idempotent");
+  assert.equal(works.teams.createFromForeground(foregroundActor, { ...writeRequest, operationId: "forged-write", sourceMessageId: "forged" }).ok, false);
+
   let calls = 0;
   const frame = { url: "file:///app/renderer/index.html?language=zh#bot" };
   const sender = { mainFrame: frame, isDestroyed: () => false };

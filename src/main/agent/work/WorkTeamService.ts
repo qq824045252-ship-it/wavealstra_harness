@@ -167,7 +167,7 @@ export class WorkTeamService {
       && (!bot.authorization.targetWhitelist.length || bot.authorization.targetWhitelist.includes(workspacePath)))
       .map(bot => ({ botId: bot.botId, displayName: bot.displayName, responsibilitySummary: bot.responsibilitySummary,
         allowedScopes: (["workspace:read", "workspace:write"] as const).filter(scope =>
-          owner.authorization.allowedScopes.includes(scope) && bot.authorization.allowedScopes.includes(scope)) }))
+          bot.authorization.allowedScopes.includes(scope)) }))
       .filter(bot => bot.allowedScopes.includes("workspace:read"));
   }
 
@@ -222,9 +222,11 @@ export class WorkTeamService {
       Object.assign(plan, adjusted.data);
     }
     // The authenticated user commission permits this exact team dispatch, like the
-    // desktop entry. Host-derived scopes stay within every existing Bot grant;
-    // the actor remains the foreground Bot and no lasting authorization is edited.
-    return this.control({ ...actor, grants: { ...bot.authorization, allowRedelegation: true } }, { kind: "create", request: { ...request, ...plan, templateId: input.templateId } }, sourceMessageId);
+    // desktop entry. Each member executes its own saved scope; the coordinator
+    // does not need the union of its specialists' capabilities. validatePlan and
+    // dispatch still check each actual executor. Never persist broader Bot grants.
+    const allowedScopes = [...new Set(["workspace:read", ...plan.members.flatMap(member => member.delegatedScope)])];
+    return this.control({ ...actor, grants: { ...bot.authorization, allowedScopes, allowRedelegation: true } }, { kind: "create", request: { ...request, ...plan, templateId: input.templateId } }, sourceMessageId);
   }
 
   handle(actor: WorkActor, raw: unknown): WorkTeamControlResult {
