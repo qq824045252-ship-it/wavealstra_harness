@@ -7,7 +7,9 @@ const out=path.resolve('out/tests'); const url=name=>pathToFileURL(path.join(out
 fs.writeFileSync(path.join(dir,'index.html'),`<html><head><link rel="stylesheet" href="${url('bot-work-detail-desktop-fixture.css')}"><style>body{margin:0;padding:16px;font:14px system-ui;background:#fff;color:#222}*{box-sizing:border-box}:root{--surface-right:#fff;--fg:#222;--fg-secondary:#555;--border-default:#ddd;--border-subtle:#eee}#root{max-width:860px;margin:auto}</style></head><body><div id="root"></div><script src="${url('bot-work-detail-desktop-fixture.js')}"></script></body></html>`);
 win=new BrowserWindow({width:1000,height:900,show:true,webPreferences:{contextIsolation:true}});
 await win.loadFile(path.join(dir,'index.html'));win.webContents.debugger.attach('1.3');
-const ev=s=>win.webContents.executeJavaScript(s); await new Promise(r=>setTimeout(r,800));
+const ev=s=>win.webContents.executeJavaScript(s);
+const until=async(expression,label)=>{const deadline=Date.now()+8000;while(!await ev(expression)){if(Date.now()>deadline)throw Error('timeout: '+label);await new Promise(resolve=>setTimeout(resolve,30));}};
+await until(`Boolean(document.querySelector('.bot-result-body'))`,'initial detail');
 assert(await ev(`document.querySelector('.bot-result-body').textContent.includes('完成两份对照报告')`));
 assert(await ev(`document.querySelector('.bot-result-report').textContent.includes('执行失败')`));
 assert(await ev(`!document.querySelector('.bot-result-body').textContent.includes('bot-team-report-v1')`));
@@ -47,12 +49,12 @@ assert(await ev(`document.querySelector('.bot-work-original-delegation').textCon
 assert(await ev(`!document.querySelector('.bot-work-original-delegation').textContent.includes('过时事项不得串入')`));
 // A goal-only match beyond the first rendered page is reachable without any extra Work fetch.
 const callsBeforeSearch=await ev('window.originalCalls()');
-await ev('window.renderGoalBrowser()');await new Promise(r=>setTimeout(r,100));
+await ev('window.renderGoalBrowser()');await until(`document.querySelectorAll('.bot-work-card').length===24`,'initial goal page');
 assert.equal(await ev('document.querySelectorAll(".bot-work-card").length'),24);
-await ev(`(()=>{const input=document.querySelector('input[type="search"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'独有尾部 abc');input.dispatchEvent(new Event('input',{bubbles:true}));})()`);await new Promise(r=>setTimeout(r,100));
+await ev(`(()=>{const input=document.querySelector('input[type="search"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'独有尾部 abc');input.dispatchEvent(new Event('input',{bubbles:true}));})()`);await until(`document.querySelector('.bot-work-card')?.dataset.workId==='goal-60'`,'debounced goal search');
 assert.equal(await ev('document.querySelectorAll(".bot-work-card").length'),1);
 assert.equal(await ev('document.querySelector(".bot-work-card").dataset.workId'),'goal-60');
 assert.equal(await ev('window.originalCalls()'),callsBeforeSearch,'server summary search never fetches a full Work');
 assert(await ev('document.documentElement.scrollWidth<=innerWidth'));
 console.log('PASS: real Chromium detail layout at 390/760/1440, readable report, retained failures, raw expand, terminal outcomes');
-}catch(e){console.error(e);process.exitCode=1;}finally{if(win&&!win.isDestroyed())win.close();app.quit();}});
+}catch(e){console.error(e);process.exitCode=1;}finally{if(win&&!win.isDestroyed())win.close();app.exit(process.exitCode||0);}});

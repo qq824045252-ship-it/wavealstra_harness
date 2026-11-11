@@ -1,8 +1,8 @@
+import "./platform/credentials";
 import { GoogleWorkspaceWriteIpc } from "../shared/google-workspace-write";
 import { googleWorkspaceWriteService } from "./connectors/GoogleWorkspaceWriteService";
 import { GoogleWorkspaceIpc } from "../shared/google-workspace";
 import { googleWorkspaceService } from "./connectors/GoogleWorkspaceService";
-import "./platform/credentials";
 import "./agent-environment";
 import "./officecli-environment";
 import type { BrowserOpenOptions } from "../shared/browser-tabs";

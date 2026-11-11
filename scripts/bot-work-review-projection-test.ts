@@ -39,12 +39,20 @@ function fixture(listWorks: BotWorkApi["listWorks"], syncWorks?: BotWorkApi["syn
 }
 
 async function main(): Promise<void> {
-  // An authoritative open-only refresh omits a Work closed while disconnected.
+  // A bounded open-only summary removes stale cards, but cannot prove a selected
+  // Work is absent: it may be closed or outside this page and loaded on demand.
   const closed = fixture(async () => []);
   closed.setState({ botWorks: [work("closed-offline")], selectedWorkId: "closed-offline" });
   await closed.getState().refreshBotWork();
   assert.deepEqual(closed.getState().botWorks, [], "refresh must remove the stale active card for a Work no longer in the open list");
-  assert.equal(closed.getState().selectedWorkId, null);
+  assert.equal(closed.getState().selectedWorkId, "closed-offline", "summary omission must preserve the detail/deep-link target");
+
+  // Unlike an omitted Work summary, a missing Bot identity invalidates selection.
+  const removedBot = fixture(async () => []);
+  removedBot.setState({ activeBotId: "removed-bot", selectedWorkId: "removed-bot-work", page: "bot" });
+  await removedBot.getState().refreshBotWork();
+  assert.equal(removedBot.getState().selectedWorkId, null, "selection cannot survive removal of its Bot identity");
+  assert.equal(removedBot.getState().page, "chat");
 
   // A response captured before a newer push must retain both that Work and its selection.
   const pending = deferred<WorkProjectionDto[]>();
@@ -131,11 +139,11 @@ async function main(): Promise<void> {
   await pruned.getState().refreshBotWork();
   assert.deepEqual(syncCursors, [0, 1, undefined]);
   assert.deepEqual(pruned.getState().botWorks.map(item => [item.workId, item.stateVersion]), [["current", 3]]);
-  assert.equal(pruned.getState().selectedWorkId, null);
+  assert.equal(pruned.getState().selectedWorkId, "closed-offline", "resync must preserve a selected Work outside the bounded summary");
   assert.equal(pruned.getState().botWorkError, null);
   assert.equal(pruned.getState().botDraft, "keep draft");
   assert.deepEqual(pruned.getState().botPendingSends["bot-review"], pendingSend);
-  console.log("bot work review projection: 7 regression scenarios passed");
+  console.log("bot work review projection: 8 regression scenarios passed");
 }
 
 void main().catch(error => { console.error(error); process.exitCode = 1; });

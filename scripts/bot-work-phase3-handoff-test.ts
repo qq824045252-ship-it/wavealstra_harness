@@ -87,9 +87,19 @@ try {
   // Two independent SQLite connections prepare decisions on the same control version.
   const f = fixture("handoff");
   const before = works.getWork(f.work.workId)!;
-  bots.registerBot({ botId: "under-authorized-owner", userId: LOCAL_USER_ID, displayName: "read-only owner" });
-  assert.equal(works.handoffOwner(user, { operationId: "under-authorized-handoff", workId: before.workId, targetBotId: "under-authorized-owner" }).ok, false);
-  assert.equal(works.getWork(before.workId)!.ownerBotId, before.ownerBotId);
+  // Tool permission scopes are retired; identity and availability boundaries remain.
+  bots.registerBot({ botId: "default-grants-owner", userId: LOCAL_USER_ID, displayName: "Default grants owner" });
+  const defaultGrants = fixture("default-grants-handoff");
+  const defaultHanded = unwrap(works.handoffOwner(user, { operationId: "default-grants-handoff", workId: defaultGrants.work.workId, targetBotId: "default-grants-owner" }));
+  assert.equal(defaultHanded.ownerBotId, "default-grants-owner", "omitted legacy permissions do not block handoff");
+  assert.equal(works.collaboration.isDelegationAdopted(defaultGrants.binding, defaultHanded), true);
+  bots.registerBot({ botId: "foreign-owner", userId: "another-user", displayName: "Foreign owner" });
+  bots.registerBot({ botId: "disabled-owner", userId: LOCAL_USER_ID, displayName: "Disabled owner", status: "disabled" });
+  for (const targetBotId of ["missing-owner", "foreign-owner", "disabled-owner", before.ownerBotId]) {
+    const rejected = works.handoffOwner(user, { operationId: `invalid-handoff:${targetBotId}`, workId: before.workId, targetBotId });
+    assert.equal(rejected.ok, false, `${targetBotId} cannot become the new owner`);
+    assert.deepEqual(works.getWork(before.workId), before, "rejected handoff leaves control state unchanged");
+  }
   const prep = works.collaboration.prepareHandoff(owner, before.workId, "next-owner");
   const db2 = new AppDatabase(path);
   const works2 = new WorkService(db2.connection, { bots: new BotRegistry(db2.connection) });
