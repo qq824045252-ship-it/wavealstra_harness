@@ -3,7 +3,7 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from '@earendil-works/chord/conte
 import type { ToolExecutionApi } from '@earendil-works/pi-durable';
 import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { GoogleWorkspaceService } from '../src/main/connectors/GoogleWorkspaceService';
-import { createGoogleWorkspaceTools } from '../src/main/connectors/GoogleWorkspaceTools';
+import { createGoogleWorkspaceTools, GOOGLE_WORKSPACE_INSTRUCTIONS } from '../src/main/connectors/GoogleWorkspaceTools';
 import { openBotComposerRuntime } from '../src/main/agent/work/BotComposerRuntime';
 
 const commands: string[][] = [];
@@ -21,6 +21,15 @@ const tools = createGoogleWorkspaceTools(service);
 assert.equal(commands.length, 0, 'registration must not query accounts');
 assert.deepEqual(tools.map(t => t.name), ['google_workspace_status', 'gmail_search', 'gmail_read', 'calendar_agenda']);
 assert(tools.every(t => t.replay === 'safe'));
+// The wording narrows only Google account-status intent, not selected provider access.
+const statusTool = tools.find(tool => tool.name === 'google_workspace_status')!;
+assert.match(statusTool.description, /Google Workspace、Gmail 或 Google 日历/);
+assert.match(statusTool.description, /普通渠道连通问题不适用/);
+assert.match(GOOGLE_WORKSPACE_INSTRUCTIONS, /QQ、钉钉、Discord/);
+assert.match(GOOGLE_WORKSPACE_INSTRUCTIONS, /缺少指向时先澄清所指服务/);
+assert.match(GOOGLE_WORKSPACE_INSTRUCTIONS, /只读查询直接使用 gmail_search、gmail_read、calendar_agenda/);
+assert.match(GOOGLE_WORKSPACE_INSTRUCTIONS, /不自动登录或重新授权/);
+assert.equal(commands.length, 0, 'routing guidance never probes an account during registration');
 const api = {} as ToolExecutionApi;
 const invoke = (name: string, args: Record<string, unknown>, signal?: AbortSignal) => tools.find(t => t.name === name)!.execute(args, api, signal ? withAbortSignal(signal, BACKGROUND_CONTEXT) : BACKGROUND_CONTEXT);
 const unpack = (result: Awaited<ReturnType<typeof invoke>>) => {
