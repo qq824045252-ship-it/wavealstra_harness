@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import type { MemoryCandidateDto, MemoryRecordDto, MemoryRevisionDto, MemoryScopeType, MemoryTurnDto } from "../../shared/memory-kernel";
 import { createHash } from "node:crypto";
-import { memoryClauses, type MemoryForgetSource, type MemoryRemovalIntent } from "./MemoryIntent";
+import { memoryClauses, memoryRememberClause, MemoryInstructionDocument, type MemoryForgetSource, type MemoryRemovalIntent } from "./MemoryIntent";
 
 type Scope = { scopeType: MemoryScopeType; scopeId?: string };
 type Target = { fingerprint: string; text_length: number; cutoff_at: number; allowed_message_id: string | null;
@@ -28,7 +28,7 @@ export class MemoryForgetWatermarks {
       const quote = /^用户：([\s\S]*?)(?:\s+助手：|$)/.exec(item.excerpt ?? "")?.[1] ?? item.excerpt ?? "";
       if (normalize(quote) === normalize(record.title) || revisions.some(revision => normalize(quote) === normalize(revision.title))) continue;
       const clauses = memoryClauses(quote);
-      if (clauses.length === 1) { evidence.push({ kind: "evidence", value: clauses[0] }); continue; }
+      if (clauses.length === 1) evidence.push({ kind: "evidence", value: clauses[0] });
       // Match literal fact sentences AND their identity, never category titles
       // alone or generic retention notes. A/B may legitimately have equal values.
       for (const fact of [record, ...revisions]) {
@@ -43,6 +43,17 @@ export class MemoryForgetWatermarks {
           });
           if (!identity) continue;
           evidence.push({ kind: "fact", value: fragment, identity });
+          // Persist a second, identity-bound value proof for literal assignments.
+          // Assistant paraphrases need not retain the copula (e.g. X 的标记“V”).
+          // Only derive it from the fact body already found in original user evidence;
+          // never use a category title, a trailing number, or a retention annotation.
+          const assignment = /^(.+?)(?:是|为|[:：=]|\s+is\s+)([^。；;！!？?\n]+)$/i.exec(fragment.trim());
+          if (assignment && /^[a-z][a-z0-9_-]*$/i.test(identity) && normalize(assignment[1]).includes(normalize(identity))) {
+            const value = assignment[2].trim();
+            if (normalize(value).length >= 2 && normalize(value) !== normalize(identity)) {
+              evidence.push({ kind: "fact", value, identity });
+            }
+          }
         }
       }
     }
@@ -91,7 +102,7 @@ export class MemoryForgetWatermarks {
       FROM memory_forget_targets WHERE scope_type=? AND scope_id=?`).all(scope.scopeType, scope.scopeId ?? "") as Target[]);
   }
 
-  private matches(text: string, targets: readonly Target[], createdAt: number, messageId?: string): boolean {
+  private matches(text: string, targets: readonly Target[], createdAt: number, messageId?: string, allowSource = true): boolean {
     const value = normalize(text);
     const words = new Map<number, Set<string>>();
     for (const word of text.normalize("NFKC").toLowerCase().match(/[a-z0-9]+/g) ?? []) {
@@ -110,7 +121,8 @@ export class MemoryForgetWatermarks {
       }
       return hashes.has(hash);
     };
-    return targets.some(target => !this.after(target, createdAt, messageId)
+    return targets.some(target => !(allowSource || messageId !== target.allowed_message_id
+      ? this.after(target, createdAt, messageId) : false)
       && contains(target.value_fingerprint ?? target.fingerprint, target.text_length)
       && (!target.guard_fingerprint || target.guard_length !== null && contains(target.guard_fingerprint, target.guard_length)));
   }
@@ -129,11 +141,17 @@ export class MemoryForgetWatermarks {
   sourceFilter(scopes: readonly Scope[]) {
     const targets = this.targets(scopes);
     return (userText: string, assistantText: string, createdAt: number, messageId?: string) => {
-      const keep = (text: string) => text.replace(/[^，,、。；;！!？?\n]+[，,、。；;！!？?\n]*/g,
-        clause => this.matches(clause, targets, createdAt, messageId) ? "" : clause);
-      const user = keep(userText);
+      const keep = (text: string, allowSource = true) => text.replace(/[^，,、。；;！!？?\n]+[，,、。；;！!？?\n]*/g,
+        clause => this.matches(clause, targets, createdAt, messageId, allowSource) ? "" : clause);
+      const sameSource = messageId && targets.some(target => target.allowed_message_id === messageId);
+      const document = sameSource ? MemoryInstructionDocument.parse(userText) : undefined;
+      const removals = new Set(document?.removalIntents().map(intent => intent.clause));
+      const user = document ? document.clauses.map(clause => removals.has(clause.text) ? ""
+        : keep(clause.text, clause.kind === "user" && memoryRememberClause(clause.text))).filter(Boolean).join("；") : keep(userText);
       const changed = userText !== user;
-      return { userText: user, assistantText: changed ? "" : keep(assistantText) };
+      // The deletion message may also explicitly remember B. That user authority
+      // does not authorize the assistant's deletion confirmation to restate A.
+      return { userText: user, assistantText: changed ? "" : keep(assistantText, false) };
     };
   }
 

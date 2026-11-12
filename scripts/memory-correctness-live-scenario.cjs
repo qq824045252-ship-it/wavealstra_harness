@@ -48,7 +48,14 @@ exports.run = async ({send, foregroundDone, until, evaluate, history, rpc, repor
       const reply=h.messages.filter(m=>m.role==='assistant'&&m.requestId===latest.requestId).at(-1);
       assert.equal(reply?.status,'completed');
       Object.assign(row,{output:reply.text,conversationId:h.conversationId,requestId:latest.requestId});
-      await check(reply.text,requests.slice(offset));
+      const recorded=requests.slice(offset);
+      // Extraction for a previous Bot may run concurrently. Attribute privacy
+      // assertions to the actual current user turn, not the global time slice.
+      const foreground=recorded.filter(request=>(request.messages||[]).some(message=>message.role==='user' &&
+        (typeof message.content==='string' ? message.content===prompt : Array.isArray(message.content) && message.content.some(part=>part.type==='text'&&part.text===prompt))));
+      assert(foreground.length>0,'actual current foreground request captured');
+      row.foregroundProviderCalls=foreground.length;row.concurrentOtherCalls=recorded.length-foreground.length;
+      await check(reply.text,foreground);
       row.status='passed';
     } catch(error) { row.status='failed';row.error=String(error.stack||error); }
     finally { row.elapsedMs=Date.now()-start; row.providerCalls=requests.length-offset;console.log(JSON.stringify(row)); }

@@ -26,6 +26,9 @@ try {
   const b=memory.create({...common,title:'HeliosCalibration 标记',content:'HeliosCalibration 的标记是 青丘8264。（长期测试事实，仅存于本 Bot 专属记忆，不共享给其他 Bot）'});
   const request={botId:'owner',scopeTypes:['bot' as const],includeInherited:false,query:'HeliosCalibration',limit:20};
   assert(JSON.stringify(memory.search(request)).includes('紫杉7319'),'positive precondition: wide evidence really contains A');
+  const hypothetical=messages.accept(LOCAL_USER_ID,{botId:'owner',requestId:'hypothetical',text:'如果忘记全部记忆会怎样？'});
+  messages.update(hypothetical.assistantMessageId,'completed','例如 AsterPreference 的标记“紫杉7319”、HeliosCalibration 的标记“青丘8264”会消失。');
+  bridge.capture('owner',hypothetical.requestId);
   let entered=()=>{},release=()=>{};
   const started=new Promise<void>(resolve=>{entered=resolve;});
   const gate=new Promise<void>(resolve=>{release=resolve;});
@@ -38,7 +41,7 @@ try {
   const deleted=messages.accept(LOCAL_USER_ID,{botId:'owner',requestId:'forget',text:'忘记 AsterPreference 这条记忆。'});
   const user=messages.message(deleted.userMessageId)!;
   bridge.forget('owner',[a.id],user.text,user.text,deleted.conversationId,{createdAt:user.createdAt,messageId:user.messageId});
-  messages.update(deleted.assistantMessageId,'completed','已忘记');bridge.capture('owner',deleted.requestId);
+  messages.update(deleted.assistantMessageId,'completed','已删除 AsterPreference 那条记忆（标记“紫杉7319”）；仍保留 HeliosCalibration 的标记（青丘8264）。');bridge.capture('owner',deleted.requestId);
   for(const hits of [memory.search(request),await memory.searchHybrid(request)]) {
     assert(hits.some(hit=>hit.memory.id===b.id),'retained B remains searchable');
     assert(JSON.stringify(hits).includes('青丘8264'));
@@ -52,9 +55,22 @@ try {
   const projection=botHistoryContext(db.connection,{userId:LOCAL_USER_ID,botId:'owner',query:'HeliosCalibration',before:Date.now()+1000});
   assert(projection.includes('青丘8264'),'B history remains usable');
   assert(!projection.includes('紫杉7319'),'source history also redacted, not only tool DTO');
+  for(const query of ['AsterPreference','HeliosCalibration','忘记全部记忆']) {
+    const history=botHistoryContext(db.connection,{userId:LOCAL_USER_ID,botId:'owner',query,before:Date.now()+1000});
+    assert(!history.includes('紫杉7319'),'paraphrased old answers and deletion confirmation cannot resurrect A: '+query);
+  }
   const revocations=new MemoryForgetWatermarks(db.connection);
   const safe=revocations.sourceFilter([{scopeType:'bot',scopeId:'owner'}])(raw,'已保存紫杉7319和青丘8264',0);
   assert(safe.userText.includes('青丘8264'));assert(!safe.userText.includes('紫杉7319'));assert.equal(safe.assistantText,'');
+  const sameRequest=revocations.sourceFilter([{scopeType:'bot',scopeId:'owner'}])('忘记 AsterPreference 的标记是紫杉7319；记住 HeliosCalibration 的标记是青丘8264。',
+    '已删除 AsterPreference 的标记“紫杉7319”；HeliosCalibration 的标记“青丘8264”保留。',user.createdAt,user.messageId);
+  assert(sameRequest.userText.includes('青丘8264'),'mixed user B remains authoritative');
+  assert(!sameRequest.userText.includes('紫杉7319'),'the deletion user clause is not new factual authority');
+  assert(!sameRequest.assistantText.includes('紫杉7319'));
+  const later=messages.accept(LOCAL_USER_ID,{botId:'owner',requestId:'explicit-new',text:'重新记住 AsterPreference 的标记是紫杉7319。'});
+  const laterUser=messages.message(later.userMessageId)!;
+  const renewed=revocations.sourceFilter([{scopeType:'bot',scopeId:'owner'}])(laterUser.text,'AsterPreference 的标记“紫杉7319”已记住。',laterUser.createdAt,laterUser.messageId);
+  assert(renewed.userText.includes('紫杉7319')&&renewed.assistantText.includes('紫杉7319'),'a genuinely later user statement remains eligible');
   release();
   const result=await pendingExtraction;
   assert.equal(result.committedCount,0,'late extraction of revoked literal A must not revive it');
@@ -75,6 +91,8 @@ try {
   memory.forget(identityA.id);
   const identitySafe=revocations.sourceFilter([{scopeType:'bot',scopeId:'owner'}])(sharedEvidence,'',0).userText;
   assert(!identitySafe.includes('AlphaSetting'));assert(identitySafe.includes('BetaSetting 的值是蓝色'));assert(identitySafe.includes('不共享给其他Bot'));
+  const paraphrased=revocations.sourceFilter([{scopeType:'bot',scopeId:'owner'}])('之前的设置呢？','AlphaSetting 为“蓝色”；BetaSetting 为“蓝色”。',0);
+  assert(!paraphrased.assistantText.includes('AlphaSetting'));assert(paraphrased.assistantText.includes('BetaSetting'),'same value with another identity is not withdrawn');
   const wrapped=memory.create({...common,title:'Wrapper B',content:'B-only retained',evidence:[{evidenceKind:'conversation',refId:r.conversationId,
     excerpt:'用户：'+raw+'\n助手：A是紫杉7319，B是青丘8264'}]});
   // Set original evidence time before the deletion: a later new statement is not retroactively forgotten.
