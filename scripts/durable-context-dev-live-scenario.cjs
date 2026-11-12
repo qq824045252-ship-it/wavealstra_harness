@@ -45,7 +45,7 @@ exports.run=async({evaluate,rpc,until,report,requests,rawUsageAudit,out,home,res
  ['instruction correction','配置更正：这个验收项目原端口6173已废弃，当前端口6284。请只给JavaScript常量 PORT 的当前值，不调用工具。',a=>assert(a.includes('6284')&&!a.includes('6173'))],
  ];
  for(const [label,prompt,check] of cases){try{const result=await say(prompt,label);check(result.answer);}catch(error){report.cases.push({label,status:'failed',error:String(error.stack||error)});save();}}
- const summaryCalls=requests.map((request,index)=>({request,index})).filter(({request})=>request.messages?.some(message=>message.role==='system'&&JSON.stringify(message.content).includes('compress conversation history')));
+ const summaryCalls=requests.map((request,index)=>({request,index})).filter(({request})=>request.messages?.some(message=>['system','developer'].includes(message.role)&&JSON.stringify(message.content).includes('compress conversation history')));
  report.summaryCalls=summaryCalls.map(({request,index})=>({index,chars:JSON.stringify(request.messages).length,model:request.model}));
  const beforeRestart=await evaluate(`window.api.agent.loadTaskHistory(${JSON.stringify(taskId)})`);
  report.beforeRestart={messageCount:beforeRestart.messages.length,status:await evaluate(`window.api.agent.getCompactionStatus(${JSON.stringify(taskId)})`)};
