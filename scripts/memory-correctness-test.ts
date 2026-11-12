@@ -388,6 +388,9 @@ await check("#42 old L1 fact remains searchable beyond candidate windows", async
       const hits = await s.bridge.search("owner", "QZVXNEEDLE");
       assert(hits.length <= 20 && hits.some(hit => hit.memory.id === target.id), `foreground hybrid at ${total}`);
     }
+    s.db.connection.prepare("UPDATE memory_records SET explicit=CASE WHEN id=? THEN 0 ELSE 1 END").run(target.id);
+    assert((await s.bridge.search("owner", "QZVXNEEDLE")).some(hit => hit.memory.id === target.id),
+      "lower-explicit oldest exact fact must not be excluded by newer explicit unrelated records");
     assert(!(await s.bridge.search("peer", "QZVXNEEDLE")).length);
     s.memory.promote(target.id, "bot", "owner");
     assert.equal((await s.bridge.search("owner", "QZVXNEEDLE")).filter(hit => hit.memory.id === target.id).length, 1, "multiple bindings consume one result slot");
@@ -433,7 +436,7 @@ await check("#42 old L1 fact remains searchable beyond candidate windows", async
       assert(semanticHits.some(hit => hit.memory.id === target.id && hit.reasons.includes("semantic")), "old semantic-only candidate is discovered beyond every prior window");
       SemanticRuntime.prototype.embed = async () => { throw new SemanticUnavailableError("controlled unavailable runtime"); };
       assert((await semanticMemory.searchHybrid({ botId: "owner", query: "QZVXNEEDLE", limit: 20 })).some(hit => hit.memory.id === target.id));
-      for (const mutation of ["delete", "detach", "update", "expire"] as const) {
+      for (const mutation of ["delete", "detach", "update", "expire", "supersede"] as const) {
         const candidate = s.memory.create({ scopeType: "bot", scopeId: "owner", kind: "fact", title: `semantic-${mutation}`, content: "old vector", sourceType: "user" });
         s.db.connection.prepare(`INSERT INTO memory_embeddings(memory_id,model_id,model_version,content_hash,dimension,embedding,created_at)
           VALUES (?,?,?,?,?,?,?)`).run(candidate.id, SEMANTIC_MODEL_ID, SEMANTIC_MODEL_VERSION, candidate.contentHash, SEMANTIC_DIMENSION, Buffer.from(vector.buffer), Date.now());
@@ -444,10 +447,23 @@ await check("#42 old L1 fact remains searchable beyond candidate windows", async
         if (mutation === "delete") s.memory.forget(candidate.id);
         else if (mutation === "detach") s.memory.detachScope(candidate.id, "bot", "owner");
         else if (mutation === "update") s.memory.update({ id: candidate.id, content: "new revision" });
+        else if (mutation === "supersede") s.memory.supersede(candidate.id, {scopeType:"bot",scopeId:"owner",kind:"fact",title:"new replacement",content:"new current fact",sourceType:"user"});
         else s.memory.update({ id: candidate.id, validUntil: Date.now() - 1 });
         gate.release();
         assert(!(await pending).some(hit => hit.memory.id === candidate.id), `${mutation} during embed cannot return a stale DTO`);
       }
+      const now=Date.now();
+      for(const id of ['recall-project-a','recall-project-b']) s.db.connection.prepare('INSERT INTO projects(id,name,created_at,updated_at,archived,resource_budget_chars) VALUES(?,?,?,?,0,128000)').run(id,id,now,now);
+      s.db.upsertTask({id:'recall-task',title:'scope race',projectId:'recall-project-a',status:'in_progress',updatedAt:now});
+      const scoped=s.memory.create({scopeType:'project',scopeId:'recall-project-a',kind:'fact',title:'scoped vector',content:'old project fact',sourceType:'user'});
+      s.db.connection.prepare('INSERT INTO memory_embeddings(memory_id,model_id,model_version,content_hash,dimension,embedding,created_at) VALUES(?,?,?,?,?,?,?)').run(scoped.id,SEMANTIC_MODEL_ID,SEMANTIC_MODEL_VERSION,scoped.contentHash,SEMANTIC_DIMENSION,Buffer.from(vector.buffer),now);
+      const scopeGate=deferred(),scopeEntered=deferred();
+      SemanticRuntime.prototype.embed=async()=>{scopeEntered.release();await scopeGate.promise;return vector;};
+      const scopedPending=semanticMemory.searchHybrid({taskId:'recall-task',query:'ZZYXYX',limit:20});
+      await scopeEntered.promise;
+      s.db.upsertTask({id:'recall-task',title:'scope race',projectId:'recall-project-b',status:'in_progress',updatedAt:Date.now()});
+      scopeGate.release();
+      assert.deepEqual(await scopedPending,[], 'task project rebinding during embedding withdraws the old authorization');
       const late = s.memory.create({ scopeType: "bot", scopeId: "owner", kind: "fact", title: "late embedding", content: "withdrawn", sourceType: "user" });
       const gate = deferred(), entered = deferred();
       SemanticRuntime.prototype.embed = async () => { entered.release(); await gate.promise; return vector; };
@@ -456,7 +472,7 @@ await check("#42 old L1 fact remains searchable beyond candidate windows", async
       s.memory.forget(late.id); gate.release(); await indexing;
       assert(!s.db.connection.prepare("SELECT 1 FROM memory_embeddings WHERE memory_id=?").get(late.id), "late index writes cannot revive deleted memory");
     } finally { SemanticRuntime.prototype.embed = originalEmbed; }
-    for (const mutation of ["delete", "detach", "update", "expire"] as const) {
+    for (const mutation of ["delete", "detach", "update", "expire", "supersede"] as const) {
       const word = `YieldNeedle${mutation}`;
       const atom = s.memory.create({ scopeType: "bot", scopeId: "owner", sourceType: "user", kind: "fact", title: word, content: "old batch value" });
       const change = new Promise<void>((resolve, reject) => setImmediate(() => {
@@ -464,6 +480,7 @@ await check("#42 old L1 fact remains searchable beyond candidate windows", async
           if (mutation === "delete") s.memory.forget(atom.id);
           else if (mutation === "detach") s.memory.detachScope(atom.id, "bot", "owner");
           else if (mutation === "update") s.memory.update({ id: atom.id, content: "replacement without the old value" });
+          else if (mutation === "supersede") s.memory.supersede(atom.id, {scopeType:"bot",scopeId:"owner",kind:"fact",title:"new replacement",content:"new current fact",sourceType:"user"});
           else s.memory.update({ id: atom.id, validUntil: Date.now() - 1 });
           resolve();
         } catch (error) { reject(error); }
