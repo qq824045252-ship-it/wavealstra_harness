@@ -1,0 +1,18 @@
+{
+  "peer-followup-running.png": {
+    "bytes": 124413,
+    "sha256": "f788cf1eac9ee61f88a3bbe78c9ee18c6bd2823fef70270925887ef1856757d4"
+  },
+  "peer-followup-collapsed.png": {
+    "bytes": 166278,
+    "sha256": "1f28e5974ef0d56a6c55956578e47b8c5eb42b5462f20af46f636949bc46bea0"
+  },
+  "peer-followup-original-replies.png": {
+    "bytes": 227462,
+    "sha256": "339fa3fb7b14753cf81d95b50a032b50e10baf971e71c30378cd870cf09e1180"
+  },
+  "acceptance.json": {
+    "bytes": 40925,
+    "sha256": "9fc144f99f3daea98155aeb12922551cbf14a401968346308a48a7b6308b593a"
+  }
+}
