@@ -690,6 +690,8 @@ export interface WorkspaceFileThumbnailDto {
 }
 
 export interface WorkspaceFilePreviewDto {
+  /** Bounded plain-text preview stopped before EOF. */
+  truncated?: boolean;
   path: string;
   name: string;
   kind: ArtifactKind;

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, symlink, rm, readFile } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, symlink, rm, readFile, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -54,6 +54,24 @@ try {
     })),
   };
   const tool = createDurableArtifactRegistrationTool(directory);
+  const beforeMissing = await readdir(directory, { recursive: true });
+  const missing = await tool.execute({ path: "workspace/report.html" }, api, ctx);
+  assert.equal(missing.isError, true, "known missing source remains a failed tool result");
+  assert(JSON.stringify(missing.output).includes(join(cwd, "workspace/report.html")));
+  assert(JSON.stringify(missing.output).includes(cwd));
+  assert.equal(entries.length, 0, "missing source cannot append a receipt");
+  assert.deepEqual(await readdir(directory, { recursive: true }), beforeMissing, "missing source creates no snapshot");
+  assert.equal(await readFile(path, "utf8"), "<h1>shell-created output</h1>");
+  const blockedStore = join(root, "not-a-directory");
+  await writeFile(blockedStore, "keep");
+  await assert.rejects(createDurableArtifactRegistrationTool(blockedStore).execute({ path }, api, ctx),
+    "store I/O failure must remain an exception, not a known missing-source result");
+  const failingCommitApi = { ...api, commit: async (fn: any) => fn({
+    conversation: async () => ({ owner: undefined }), scanEntries: async () => ({ items: [] }),
+    appendEntry: async () => { throw Object.assign(new Error("commit lost"), { code: "ENOENT" }); },
+  }), snapshot: async () => ({ run: { inputs: [71] } }) };
+  await assert.rejects(tool.execute({ path }, failingCommitApi, ctx), /commit lost/,
+    "post-snapshot commit ENOENT must not be converted to a pre-write failure");
   await tool.execute({ path: "report.html" }, api, ctx);
   assert.equal(entries.length, 1);
   const receipt = durableRegisteredArtifact(entries[0], 71, cwd, directory)!;

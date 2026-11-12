@@ -39,6 +39,9 @@ export function durableRegisteredArtifact(entry: EntryRecord, inputId: number, w
   try { if (realpathSync(data.snapshotPath) !== data.snapshotPath) return undefined; } catch { /* Opening reports a missing snapshot separately. */ }
   return data;
 }
+/** Only the initial missing-path check can produce this known, pre-write failure. */
+class ArtifactPathMissingError extends Error {}
+
 /** Verify a regular file and hash stable bytes. Never enumerate the workspace. */
 export async function inspectDurableArtifact(cwd: string, path: string, directory?: string): Promise<Pick<DurableArtifactRegistration, "path" | "cwd" | "digest" | "sizeBytes"> & { snapshotPath?: string }> {
   const root = await realpath(cwd), requested = resolve(root, path);
@@ -46,9 +49,10 @@ export async function inspectDurableArtifact(cwd: string, path: string, director
   let canonical: string;
   try { canonical = await realpath(requested); }
   catch (error) {
-    // 常见误用：先 register_artifact 再 write。给出可执行提示，避免模型原样重试。
-    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") throw new Error(
-      `文件尚不存在：${path}。请先用 write/编辑或 shell 命令把文件创建出来再登记；write/edit 成功后会自动登记，只有 shell/Python 等生成的文件才需要手动调用 register_artifact。`);
+    // No snapshot directory, file or registration entry has been written yet.
+    // Do not apply this conversion to later ENOENTs after snapshot creation.
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") throw new ArtifactPathMissingError(
+      `登记路径不存在：${requested}（绑定工作区：${root}；传入路径：${path}）。相对路径以绑定工作区为基准；请先核对已有文件路径，必要时用正确的绝对路径登记，不要因此重跑生成脚本或重写已有成果。确实尚未生成时才先创建文件；write/edit 成功后会自动登记。`);
     throw error;
   }
   if (!inside(root, canonical)) throw new Error("Artifact resolves outside the bound workspace");
@@ -94,7 +98,12 @@ export async function inspectDurableArtifact(cwd: string, path: string, director
       catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
         if (!(await lstat(snapshotPath)).isFile() || await realpath(snapshotPath) !== snapshotPath) throw new Error("Existing artifact snapshot must be a regular file at its trusted path");
-        const stored = await inspectDurableArtifact(store, snapshotName(canonical, digest));
+        const stored = await inspectDurableArtifact(store, snapshotName(canonical, digest)).catch(error => {
+          // A snapshot disappearing during recursive integrity inspection is a
+          // post-write failure, never the original source preflight failure.
+          if (error instanceof ArtifactPathMissingError) throw new Error("Existing artifact snapshot disappeared during verification", { cause: error });
+          throw error;
+        });
         if (stored.digest !== digest || stored.sizeBytes !== sizeBytes) throw new Error("Existing artifact snapshot failed integrity verification");
       }
     }
@@ -162,8 +171,13 @@ export function createDurableArtifactRegistrationTool(directory: string): ToolRe
     description: "Register a generated file for display in this task's deliverables. write and edit register their target automatically, so this tool is mainly for files produced by shell, Python or other tools. Call it immediately after the file exists; do not call it before creating the file and do not wait for your final reply. The host verifies a regular file within the bound workspace and records its hash and size durably. Register only intended output files; do not enumerate the workspace. This records generated evidence, not acceptance or task completion. Call again after changing the file to record its new version.",
     parameters: Type.Object({ path: Type.String({ minLength: 1, description: "Generated file path, relative to the bound workspace or absolute within it." }) }),
     execute: async ({ path }, api, context) => {
-      const data = await register(path, api, context, directory);
-      return { output: [{ type: "text", text: `Registered generated file: ${data.path} (${data.sizeBytes} bytes, SHA-256 ${data.digest})` }] };
+      try {
+        const data = await register(path, api, context, directory);
+        return { output: [{ type: "text", text: `Registered generated file: ${data.path} (${data.sizeBytes} bytes, SHA-256 ${data.digest})` }] };
+      } catch (error) {
+        if (!(error instanceof ArtifactPathMissingError)) throw error;
+        return { isError: true, output: [{ type: "text", text: error.message }] };
+      }
     },
   });
 }

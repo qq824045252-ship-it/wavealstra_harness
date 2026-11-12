@@ -36,6 +36,7 @@ app.whenReady().then(async () => {
     await evaluate(`[...document.querySelectorAll('button')].find(x=>x.textContent.includes('打开保存版本')).click()`);
     await until(`window.deliveryOpened.length === 1`, 'file open');
     assert.deepEqual(await evaluate('window.deliveryOpened'), ['/fixture/report.md']);
+    assert.equal(await evaluate(`document.querySelector('.bot-work-file-preview pre').textContent`), '保存文本：/fixture/report.md');
     await evaluate(`document.querySelector('textarea').value='新任务仍可输入'`);
     assert.equal(await evaluate(`document.querySelector('textarea').value`), '新任务仍可输入');
     await screenshot('bot-work-delivery-desktop.png');
@@ -62,6 +63,7 @@ app.whenReady().then(async () => {
         await nativeClick('[aria-label="打开 A.md"]');
         await until(`window.deliveryOpened.length === ${before+1}`, 'native early file button');
         assert.equal((await evaluate('window.deliveryOpened')).at(-1),'/saved/A-v1.md','the old saved version never drifts to current A-v2');
+        assert.equal(await evaluate(`document.querySelector('.bot-work-file-preview pre').textContent`), '保存文本：/saved/A-v1.md');
         assert(await evaluate('document.documentElement.scrollWidth <= innerWidth'),'milestone has no overflow');
         assert(await evaluate(`!document.querySelector('[data-outcome]') && !document.body.textContent.includes('本次交付')`),'no fabricated final outcome');
       }

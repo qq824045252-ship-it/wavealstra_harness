@@ -367,3 +367,8 @@
 .bot-history-controls { text-align: center; padding: 8px 16px; flex: none; }
 .bot-history-controls button[aria-disabled="true"] { opacity: .65; cursor: default; }
 .bot-history-controls p { color: var(--danger, #b91c1c); font-size: 12px; margin: 6px 0; }
+
+.bot-work-file-preview { margin-top:12px; padding:12px; border:1px solid var(--border-subtle); border-radius:8px; min-width:0; }
+.bot-work-file-preview header { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.bot-work-file-preview p { overflow-wrap:anywhere; }
+.bot-work-file-preview pre { max-height:420px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; user-select:text; font-size:12px; }

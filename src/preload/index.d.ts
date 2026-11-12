@@ -227,7 +227,7 @@ export interface PreloadApi {
   openFolder: (folderPath?: string) => Promise<void>;
   showItemInFolder: (filePath: string) => Promise<void>;
   listWorkspaceFiles: (root: string) => Promise<WorkspaceFileNodeDto[]>;
-  readWorkspaceFile: (root: string, relativePath: string) => Promise<WorkspaceFilePreviewDto>;
+  readWorkspaceFile: (root: string, relativePath: string, textPreview?: boolean) => Promise<WorkspaceFilePreviewDto>;
   trashWorkspacePath: (root: string, relativePath: string) => Promise<WorkspaceMutationResult>;
   renameWorkspacePath: (
     root: string,

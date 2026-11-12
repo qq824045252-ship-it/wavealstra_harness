@@ -1,4 +1,4 @@
-import { cp, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { cp, open, lstat, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import JSZip from "jszip";
 import { MANIFEST_FILENAME, MANIFEST_TMP_SUFFIX } from "../task/TaskExecutionWorkspace";
@@ -703,10 +703,33 @@ export async function createWorkspacePath(
   }
 }
 
-export async function readWorkspaceFile(root: string, relativePath: string): Promise<WorkspaceFilePreviewDto> {
+export async function readWorkspaceFile(root: string, relativePath: string, textPreview = false): Promise<WorkspaceFilePreviewDto> {
   const target = resolve(root, relativePath);
   assertInsideRoot(root, target);
-  return previewWorkspaceFile(target);
+  if (!textPreview) return previewWorkspaceFile(target);
+  // Result cards only need bounded plain text, never full binary hydration.
+  if (!(await lstat(target)).isFile()) throw new Error("不是普通文件");
+  const handle = await open(target, "r");
+  try {
+    const info = await handle.stat();
+    if (!info.isFile()) throw new Error("不是普通文件");
+    const limit = 256 * 1024;
+    const buffer = Buffer.alloc(limit + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length);
+      if (!bytesRead) break;
+      length += bytesRead;
+    }
+    const truncated = length > limit;
+    let content: string;
+    try {
+      // Streaming decode omits an incomplete trailing code point at the byte cap.
+      content = new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, Math.min(length, limit)), { stream: truncated });
+    } catch { throw new Error("文件不是有效的 UTF-8 文本，无法内置预览"); }
+    if (content.includes("\0")) throw new Error("文件包含二进制内容，无法内置预览");
+    return { path: target, name: basename(target), kind: "code", content, bytes: info.size, truncated };
+  } finally { await handle.close(); }
 }
 
 // Match localeCompare's explicit locale/options without rebuilding the collator

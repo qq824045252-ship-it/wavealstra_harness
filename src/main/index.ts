@@ -970,8 +970,8 @@ function registerIpc(): void {
   });
 
   ipcMain.handle("workspace:listFiles", (_event, root: string) => listWorkspaceFiles(root));
-  ipcMain.handle("workspace:readFile", (_event, root: string, relativePath: string) =>
-    readWorkspaceFile(root, relativePath),
+  ipcMain.handle("workspace:readFile", (_event, root: string, relativePath: string, textPreview?: boolean) =>
+    readWorkspaceFile(root, relativePath, textPreview === true),
   );
   ipcMain.handle("workspace:trashPath", async (_event, root: string, relativePath: string) => {
     try {

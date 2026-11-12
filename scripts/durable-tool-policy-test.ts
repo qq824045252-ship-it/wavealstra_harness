@@ -338,6 +338,33 @@ try {
   }
   console.log("PASS host validation proof releases only the exact unstarted call; completed failures are consumed, output cannot forge not-started proof");
 
+  // Real artifact tool + durable hooks: only the initial missing-source path
+  // is a completed failure; storage failures retain an unknown outcome.
+  for (const storageFailure of [false, true]) {
+    const taskId = storageFailure ? "artifact-store-failure" : "artifact-path-recovery";
+    const f = await fixture(taskId, request => {
+      const results = request.messages.filter(message => message.role === "toolResult");
+      if (!results.length) return call("register_artifact", { path: storageFailure ? "result.json" : "inputs/result.json" }, "artifact-first");
+      if (!storageFailure && results.length === 1) return call("register_artifact", { path: join(root, taskId, "result.json") }, "artifact-corrected");
+      return text("Report actual registration outcomes without regenerating the source.");
+    });
+    await writeFile(join(f.cwd, "result.json"), '{"value":58}');
+    const outcomes: string[] = [];
+    f.state.settle = (_id, outcome) => outcomes.push(outcome);
+    const r = await f.open();
+    try {
+      if (storageFailure) await writeFile(join(f.cwd, "state", "artifacts"), "not a directory");
+      assert.equal((await (await r.submit("register existing result", taskId)).wait(ctx)).status, "done");
+      assert.deepEqual(outcomes, storageFailure ? ["unknown"] : ["consumed", "consumed"]);
+      const records = (db.connection.prepare("SELECT record_json FROM execution_attempts WHERE task_id=? ORDER BY rowid").all(taskId) as Array<{ record_json: string }>).map(row => JSON.parse(row.record_json));
+      assert.equal(records[0].status, storageFailure ? "inconclusive" : "failed");
+      assert.equal(records[0].verification.observed.isError, true);
+      if (!storageFailure) assert.equal(records[1].status, "passed");
+      assert.equal(await readFile(join(f.cwd, "result.json"), "utf8"), '{"value":58}');
+    } finally { await r.close(); }
+  }
+  console.log("PASS artifact missing-source failure is not success or unknown; storage failure remains unknown");
+
   // A nonzero process exit is not proof that no effect occurred. In particular,
   // a failed subprocess can follow an already-completed write.
   const partialShell = await fixture("partial-shell", request => request.messages.at(-1)?.role === "toolResult"

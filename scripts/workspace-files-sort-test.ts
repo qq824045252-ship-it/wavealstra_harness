@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { listWorkspaceFiles } from '../src/main/workspace/WorkspaceService';
+import { listWorkspaceFiles, readWorkspaceFile } from '../src/main/workspace/WorkspaceService';
 import { MANIFEST_FILENAME, MANIFEST_TMP_SUFFIX } from '../src/main/task/TaskExecutionWorkspace';
 import type { WorkspaceFileNodeDto } from '../src/shared/agent-ipc';
 
@@ -36,6 +36,24 @@ async function failure(fn: () => Promise<unknown>) {
   catch (error) { const e = error as NodeJS.ErrnoException; return { name: e.name, message: e.message, code: e.code }; }
 }
 try {
+  const preview = join(root, 'preview.txt');
+  for (const content of ['', 'data:ordinary text', '中文 JSON {"ok":true}']) {
+    await writeFile(preview, content);
+    const result = await readWorkspaceFile(preview, '', true);
+    assert.equal(result.content, content); assert.equal(result.truncated, false);
+  }
+  const limit = 256 * 1024;
+  await writeFile(preview, 'a'.repeat(limit - 1) + '中文');
+  const bounded = await readWorkspaceFile(preview, '', true);
+  assert.equal(bounded.content, 'a'.repeat(limit - 1)); assert.equal(bounded.truncated, true);
+  for (const bytes of [Buffer.from([0xff]), Buffer.from([0xe4, 0xb8]), Buffer.from([0x61, 0])]) {
+    await writeFile(preview, bytes); await assert.rejects(readWorkspaceFile(preview, '', true), /UTF-8|二进制/);
+  }
+  await assert.rejects(readWorkspaceFile(root, '', true), /普通文件/);
+  await assert.rejects(readWorkspaceFile(root, 'missing.txt', true));
+  await assert.rejects(readWorkspaceFile(root, '../outside.txt', true), /工作区/);
+  await writeFile(preview, 'legacy reader'); assert.equal((await readWorkspaceFile(root, 'preview.txt')).content, 'legacy reader');
+  await rm(preview);
   const names = ['file1.txt', 'file2.txt', 'file10.txt', 'file02.txt', 'File2.txt', '中文2.txt', '中文10.txt', '重庆.txt', '重阳.txt',
     'école2.txt', 'e\u0301cole2.txt', 'Ärger2.txt', 'ångström10.txt', 'I.txt', 'İ.txt', 'ı.txt', 'Ａ1.txt', 'emoji😀2.txt', '.visible-file', '_1.txt', '-2.txt'];
   await Promise.all(names.map(name => writeFile(join(root, name), '')));

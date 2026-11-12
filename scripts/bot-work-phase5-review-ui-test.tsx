@@ -11,6 +11,7 @@ import type { WorkCardReadResult, WorkExpandedDiagnosticsDto } from "../src/shar
 import type { WorkReviewControlRequest } from "../src/shared/bot-work-review";
 import type { WorkPhase3ControlRequest } from "../src/shared/bot-work-phase3-control";
 import { WorkReviewPanel } from "../src/renderer/src/components/pages/BotWorkReviewPanel";
+import { WorkFiles } from "../src/renderer/src/components/pages/BotWorkResult";
 import { BotWorkDetails } from "../src/renderer/src/components/pages/BotWorkDetails";
 import { WorkCardsPanel } from "../src/renderer/src/components/pages/BotWorkCardsPanel";
 import BotWorkspacePage, { BotMessage } from "../src/renderer/src/components/pages/BotWorkspacePage";
@@ -346,7 +347,7 @@ async function main() {
       const { createRoot } = await import("react-dom/client");
       container = testDocument.body.appendChild(testDocument.createElement("div")); root = createRoot(container);
       const opened: string[] = [];
-      Object.assign(testWindow.api!, { openFolder: async (path: string) => { opened.push(path); } });
+      Object.assign(testWindow.api!, { readWorkspaceFile: async (path: string) => { opened.push(path); return { content: "<h1>read-only source</h1>" }; } });
       await act(async () => root!.render(<BotWorkDetails work={{ ...projection, deliverables: [],
         runtimeObservations: [{ bindingId: "b", state: "recovering", reason: "宿主正在恢复原执行" }],
         generatedArtifacts: [{ bindingId: "b", path: "/fixture/result.html", digest: "a".repeat(64), sizeBytes: 31, registeredAt: 1, sourceEntryId: 12 }],
@@ -360,6 +361,55 @@ async function main() {
       assert.match(container.textContent!, /恢复中/);
       await click("打开文件");
       assert.deepEqual(opened, ["/fixture/result.html"]);
+      await unmount();
+    });
+    await check("result file preview handles exact versions, races, close, empty, errors and unsupported formats", async () => {
+      await unmount();
+      const { createRoot } = await import("react-dom/client");
+      container = testDocument.body.appendChild(testDocument.createElement("div")); root = createRoot(container);
+      const replies: ReturnType<typeof deferred<{ content: string; truncated?: boolean }>>[] = [];
+      const paths: unknown[][] = [], opened: string[] = [];
+      Object.assign(testWindow.api!, {
+        readWorkspaceFile: (...args: unknown[]) => { paths.push(args); const reply = deferred<{ content: string; truncated?: boolean }>(); replies.push(reply); return reply.promise; },
+        openFolder: async (path: string) => { opened.push(path); },
+      });
+      const files = [{ ref: "a", name: "a.txt", openPath: "/snapshot/a" }, { ref: "b", name: "b.json", openPath: "/snapshot/b" }, { ref: "c", name: "c.pdf", openPath: "/snapshot/c" }];
+      await act(async () => root!.render(<WorkFiles files={files} />));
+      const open = async (name: string) => { await act(async () => { container.querySelector<HTMLButtonElement>(`button[aria-label="打开 ${name}"]`)!.click(); }); };
+      await open("a.txt"); await open("a.txt");
+      assert.equal(replies.length, 1, "repeated click does not duplicate the read");
+      await open("b.json");
+      await act(async () => replies[1].resolve({ content: '{"version":"saved"}' }));
+      await act(async () => replies[0].resolve({ content: "OLD CONTENT" }));
+      assert.equal(container.querySelector("pre")!.textContent, '{"version":"saved"}');
+      assert.deepEqual(paths, [["/snapshot/a", "", true], ["/snapshot/b", "", true]]);
+      assert.deepEqual(opened, [], "primary action never relies on an OS application");
+      await click("关闭预览"); assert.equal(container.querySelector("pre"), null);
+      await open("a.txt"); await click("关闭预览");
+      await act(async () => replies[2].resolve({ content: "LATE CLOSED" }));
+      assert.equal(container.querySelector("pre"), null);
+      await open("a.txt"); await act(async () => replies[3].resolve({ content: "data:<script>unsafe()</script>", truncated: true }));
+      assert.equal(container.querySelector("pre")!.textContent, "data:<script>unsafe()</script>");
+      assert.equal(container.querySelector("script"), null);
+      assert.match(container.textContent!, /仅显示文件前 256 KiB/);
+      await click("关闭预览"); await open("a.txt");
+      await act(async () => replies[4].resolve({ content: "" })); assert.match(container.textContent!, /文件为空/);
+      await click("关闭预览"); await open("a.txt");
+      await act(async () => replies[5].reject(new Error("snapshot missing")));
+      assert.match(container.querySelector('[role="alert"]')!.textContent!, /snapshot missing/);
+      assert.deepEqual(opened, [], "missing snapshot must never fall back to a mutable file");
+      await click("重试读取");
+      await act(async () => replies[6].resolve({ content: "restored snapshot" }));
+      assert.equal(container.querySelector("pre")!.textContent, "restored snapshot");
+      assert.equal(container.querySelector('[role="alert"]'), null);
+      await open("c.pdf"); assert.equal(replies.length, 7);
+      assert.match(container.textContent!, /此格式暂不支持内置预览/);
+      await click("尝试用系统应用打开"); assert.deepEqual(opened, ["/snapshot/c"]);
+      assert.match(container.textContent!, /无法确认是否出现窗口/);
+      Object.assign(testWindow.api!, { openFolder: async () => { throw new Error("no application"); } });
+      await click("尝试用系统应用打开"); assert.match(container.textContent!, /无法打开文件：no application/);
+      await act(async () => root!.render(<WorkFiles files={[{ ...files[2], openPath: "/snapshot/new" }]} />));
+      assert.equal(container.querySelector(".bot-work-file-preview"), null, "old identity never appears for a replaced version");
       await unmount();
     });
     await check("unknown effects remain visible as nonblocking evidence while real blockers remain actionable", async () => {
@@ -389,7 +439,7 @@ async function main() {
       const { createRoot } = await import("react-dom/client");
       container = testDocument.body.appendChild(testDocument.createElement("div")); root = createRoot(container);
       const opened: string[] = [], revealed: string[] = [];
-      Object.assign(testWindow.api!, { openFolder: async (path: string) => { opened.push(path); }, showItemInFolder: async (path: string) => { revealed.push(path); } });
+      Object.assign(testWindow.api!, { readWorkspaceFile: async (path: string) => { opened.push(path); return { content: "saved csv" }; }, showItemInFolder: async (path: string) => { revealed.push(path); } });
       const generated = [
         { bindingId: "b", path: "/fixture/report.csv", snapshotPath: "/snap/hash-csv", digest: "csv", sizeBytes: 42, registeredAt: 1, sourceEntryId: 1 },
         { bindingId: "b", path: "/fixture/create.py", snapshotPath: "/snap/hash-py", digest: "py", sizeBytes: 100, registeredAt: 1, sourceEntryId: 2 },

@@ -349,8 +349,8 @@ const api = {
     ipcRenderer.invoke("workspace:showInFolder", filePath),
   listWorkspaceFiles: (root: string): Promise<WorkspaceFileNodeDto[]> =>
     ipcRenderer.invoke("workspace:listFiles", root),
-  readWorkspaceFile: (root: string, relativePath: string): Promise<WorkspaceFilePreviewDto> =>
-    ipcRenderer.invoke("workspace:readFile", root, relativePath),
+  readWorkspaceFile: (root: string, relativePath: string, textPreview?: boolean): Promise<WorkspaceFilePreviewDto> =>
+    ipcRenderer.invoke("workspace:readFile", root, relativePath, textPreview),
   trashWorkspacePath: (root: string, relativePath: string): Promise<WorkspaceMutationResult> =>
     ipcRenderer.invoke("workspace:trashPath", root, relativePath),
   renameWorkspacePath: (

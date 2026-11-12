@@ -23,10 +23,11 @@ function render(mode: "result" | "milestone" | "refreshed" | "legacy" | "error")
   const current = mode === "result" ? message : structuredClone(milestone);
   if (mode === "legacy") delete current.workFeedback!.report;
   Object.assign(window, { deliveryFailOpen: mode === "error" });
-  root.render(<div className="bot-workspace"><section className="bot-conversation"><div className="bot-thread"><BotMessage message={current} botName="MyBuddy" works={mode === "refreshed" ? [refreshedWork] : []} onOpenWork={id => (window as unknown as { deliverySelected: string[] }).deliverySelected.push(id)} onCancel={() => {}} /></div><textarea aria-label="继续聊天" /></section></div>);
+  root.render(<div key={mode} className="bot-workspace"><section className="bot-conversation"><div className="bot-thread"><BotMessage message={current} botName="MyBuddy" works={mode === "refreshed" ? [refreshedWork] : []} onOpenWork={id => (window as unknown as { deliverySelected: string[] }).deliverySelected.push(id)} onCancel={() => {}} /></div><textarea aria-label="继续聊天" /></section></div>);
 }
-Object.assign(window, { deliverySelected: [], deliveryOpened: [], deliveryFixture: { render }, api: { openFolder: async (path: string) => {
+Object.assign(window, { deliverySelected: [], deliveryOpened: [], deliveryFixture: { render }, api: { readWorkspaceFile: async (path: string) => {
   if ((window as unknown as { deliveryFailOpen: boolean }).deliveryFailOpen) throw Error("保存文件暂不可用");
   (window as unknown as { deliveryOpened: string[] }).deliveryOpened.push(path);
+  return { content: `保存文本：${path}` };
 } } });
 render("result");
