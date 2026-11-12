@@ -1,3 +1,4 @@
+import { deliveryFileBytes } from "../agent/work/WorkDeliveryArtifacts";
 import { assertGatewayWorkSend, postGatewayWork, GatewayWorkNotSentError, type GatewayWorkSendInput, type GatewayWorkSendResult } from "./work-outbound";
 import { BoundedTTLCache } from './BoundedTTLCache';
 import { GatewayReplyNotSentError, type GatewayReplyRestoreInput, type GatewayReplyRoute } from './GatewayReply';
@@ -97,22 +98,54 @@ export class QQChannelAdapter implements ChannelAdapter {
     check();
     if (input.target.channelType !== "qq") throw new GatewayWorkNotSentError("QQ 路由不一致");
     const target = input.target;
+    // One immutable effect owns one reply slot. Never send a separate caption or
+    // silently select the first file from a multi-file result.
+    const files = input.files ?? [];
+    if (files.length > 1 || (files.length && target.address.group)) {
+      throw new GatewayWorkNotSentError("fileunsupported: QQ 当前仅支持 C2C 单文件通知；多文件或群文件未发送，摘要也未发送");
+    }
+    const file = files[0] ? { ...files[0] } : undefined;
+    if (file && (!file.name || file.name.length > 180 || /[\\/\x00-\x1f\x7f]/.test(file.name)
+      || file.bytes > 10 * 1024 * 1024 || file.bytes <= 0)) throw new GatewayWorkNotSentError("QQ 文件名称无效或不在 0 < 大小 ≤ 10 MiB 的单次上传范围，未发送");
+    let fileData: string | undefined;
+    try { if (file) fileData = Buffer.from(deliveryFileBytes(file)).toString("base64"); }
+    catch { throw new GatewayWorkNotSentError("冻结附件哈希不一致，未发送"); }
     const token = await this.refreshToken(this.generation);
     check();
-    const hasFiles = Boolean(input.files?.length);
-    const result = await postGatewayWork({ url: `https://api.sgroup.qq.com/v2/${target.address.group ? "groups" : "users"}/${encodeURIComponent(target.address.recipient)}/messages`,
-      headers: { Authorization: `QQBot ${token}`, "X-Union-Appid": this.config!.appId }, signal: input.signal, fetcher: this.fetcher, label: "QQ",
-      body: { content: hasFiles ? `${input.text}\n\nQQ 无法发送这份文件，文件仍在 MyBuddy 对应 Work 中，请打开该事项查看。` : input.text, msg_type: 0, msg_id: target.address.messageId,
-        msg_seq: input.qqMessageSequence },
+    const headers = { Authorization: `QQBot ${token}`, "X-Union-Appid": this.config!.appId };
+    const base = `https://api.sgroup.qq.com/v2/${target.address.group ? "groups" : "users"}/${encodeURIComponent(target.address.recipient)}`;
+    let fileInfo: string | undefined;
+    if (file) {
+      // Tencent qqbot-nodejs media.ts: FILE=4, base64 upload does not send a message.
+      const upload = await postGatewayWork({ url: base + "/files", headers, signal: input.signal, fetcher: this.fetcher, label: "QQ 文件上传",
+        body: { file_type: 4, file_data: fileData, file_name: file.name, srv_send_msg: false },
+        interpret: (data, response) => response.ok && str(data.file_info) && (data.code === undefined || data.code === 0)
+          ? { ok: true, receipt: str(data.file_info) }
+          : { ok: false, retryable: false, responseLost: false, error: "QQ 文件上传未成功，消息未发送；请核对账号文件权限" } });
+      if (!upload.ok) return { ...upload, responseLost: false, retryable: false };
+      fileInfo = upload.receipt;
+      // Upload completion is not delivery. Cancellation, revision, expiry and account
+      // changes must stop the message even when the upload already succeeded.
+      check();
+    }
+    const result = await postGatewayWork({ url: base + "/messages", headers, signal: input.signal, fetcher: this.fetcher, label: "QQ",
+      body: { content: input.text, msg_type: fileInfo ? 7 : 0,
+        ...(fileInfo ? { media: { file_info: fileInfo } } : {}),
+        msg_id: target.address.messageId, msg_seq: input.qqMessageSequence },
       interpret: (data, response) => response.ok && str(data.id) && (data.code === undefined || data.code === 0)
         ? { ok: true, receipt: str(data.id) }
-        : { ok: false, retryable: false, responseLost: response.status >= 500, error: "QQ 未确认通知；可能超过回复次数或账号能力限制" } });
-    if (!hasFiles || !result.ok) return result;
-    input.recordProgress?.(JSON.stringify([{ part: "text", receipt: result.receipt },
-      { part: "files", status: "failed", code: "fileunsupported" }]));
-    return { ok: false, retryable: false, responseLost: false,
-      error: `fileunsupported: QQ 文件未发送；摘要和限制说明已送达，text receipt=${result.receipt}` };
+        : { ok: false, retryable: false, responseLost: response.status >= 500 || response.ok, error: "QQ 未确认通知；可能超过回复次数或账号能力限制" } });
+    if (file && result.ok) {
+      // The ID acknowledges the official media+content request, not a separate
+      // text message. Client rendering is a live acceptance concern.
+      const receipt = JSON.stringify([{ part: `file:${file.sha256}`, name: file.name, receipt: result.receipt },
+        { part: "text", receipt: result.receipt, via: "media_content" }]);
+      input.recordProgress?.(receipt);
+      return { ok: true, receipt };
+    }
+    return result;
   }
+
   restoreGatewayReply(input: GatewayReplyRestoreInput): ((text: string) => Promise<void>) | undefined {
     const route = input.route, senderId = input.sender?.id;
     if (!this.config || !this.connected || !this.activated || route?.kind !== "qq" || !senderId

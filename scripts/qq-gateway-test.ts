@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { QQChannelAdapter, type QQSocket } from "../src/main/gateway/QQChannelAdapter";
 import { QQBotQrLogin } from "../src/main/gateway/QQBotQrLogin";
 import type { GatewayInboundMessage } from "../src/main/gateway/channels";
-import { createCipheriv } from "node:crypto";
+import { createCipheriv, createHash } from "node:crypto";
 
 const pause = (ms = 0) => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check: () => boolean) { for (let i = 0; i < 100; i++) { if (check()) return; await pause(5); } throw new Error("mock condition timed out"); }
@@ -24,10 +24,17 @@ class Socket implements QQSocket {
 const sockets: Socket[] = [];
 const requests: Array<{ url: string; body: Record<string, any>; headers?: HeadersInit }> = [];
 let failedSend = false;
+let afterUpload: (() => void) | undefined;
+let unknownMessage = false;
+let failUpload = false;
+let missingMessageId = false;
 const fetcher = (async (url, init) => {
   const href = String(url), body = JSON.parse(String(init?.body ?? "{}"));
   requests.push({ url: href, body, headers: init?.headers });
   assert.equal(init?.redirect, "error");
+  if (href.endsWith("/files")) { if(failUpload) throw new Error("synthetic upload timeout"); afterUpload?.(); return new Response(JSON.stringify({ file_info: "synthetic-file-info", file_uuid: "upload-only", ttl: 3600 })); }
+  if (missingMessageId && href.endsWith("/messages")) return Response.json({});
+  if (unknownMessage && href.endsWith("/messages")) throw new Error("synthetic lost receipt");
   return new Response(JSON.stringify(href.endsWith("getAppAccessToken") ? { access_token: "synthetic-token", expires_in: 7200 }
     : href.endsWith("/gateway") ? { url: "wss://gateway.qq.com/ws" }
       : failedSend ? { code: 400 } : { id: "receipt" }), { status: failedSend && href.endsWith("/messages") ? 400 : 200 });
@@ -82,11 +89,55 @@ try {
   assert.equal(requests.length, afterValidWorkSend, "missing/exhausted reservations never call provider");
   assert(afterValidWorkSend > beforeWorkSend);
   const progress: string[]=[];
-  const partial=await adapter.sendWorkNotification({...workInput, files:[{name:"report.txt",sha256:"0".repeat(64),bytes:1,base64:"YQ=="}],recordProgress:receipt=>progress.push(receipt)});
-  assert(!partial.ok && !partial.responseLost && !partial.retryable && partial.error.includes("fileunsupported"));
-  assert.match(String(requests.at(-1)?.body.content),/QQ 无法发送这份文件/);
+  const bytes = Buffer.from("isolated report");
+  const file = {name:"report.txt",sha256:createHash("sha256").update(bytes).digest("hex"),bytes:bytes.length,base64:bytes.toString("base64")};
+  const startFile = requests.length;
+  const partial = await adapter.sendWorkNotification({...workInput, files:[file],recordProgress:receipt=>progress.push(receipt)});
+  assert(partial.ok);
+  assert.equal(requests.length, startFile + 2);
+  const upload = requests[startFile], media = requests[startFile+1];
+  assert.equal(upload.url, "https://api.sgroup.qq.com/v2/users/user/files");
+  assert.deepEqual(upload.body, {file_type:4,file_data:file.base64,file_name:file.name,srv_send_msg:false});
+  assert.equal(media.body.msg_type,7); assert.equal(media.body.msg_seq,2);
+  assert.equal(media.body.content,workInput.text); assert.deepEqual(media.body.media,{file_info:"synthetic-file-info"});
   assert.equal(JSON.parse(progress[0])[0].receipt,"receipt");
-  assert.equal(JSON.parse(progress[0])[1].code,"fileunsupported");
+  assert.equal(JSON.parse(progress[0])[0].part,`file:${file.sha256}`);
+  assert.equal(JSON.parse(progress[0])[1].via,"media_content");
+  const noSendStart=requests.length;
+  await assert.rejects(adapter.sendWorkNotification({...workInput,files:[{...file,sha256:"0".repeat(64)}]}),/哈希/);
+  await assert.rejects(adapter.sendWorkNotification({...workInput,files:[file,file]}),/多文件/);
+  await assert.rejects(adapter.sendWorkNotification({...workInput,files:[{...file,bytes:11*1024*1024}]}),/大小/);
+  await assert.rejects(adapter.sendWorkNotification({...workInput,files:[{...file,name:"../secret"}]}),/名称/);
+  await assert.rejects(adapter.sendWorkNotification({...workInput,files:[file],target:{...target,chatId:"group:group",address:{...target.address,group:true,recipient:"group"}}}),/群文件/);
+  assert.equal(requests.length,noSendStart,"invalid files, group and multipart never upload or consume another provider slot");
+  let revised=false; afterUpload=()=>{revised=true;};
+  const beforeRevision=requests.length;
+  await assert.rejects(adapter.sendWorkNotification({...workInput,files:[file],assertCurrent:()=>{if(revised)throw new Error("revision");}}),/授权/);
+  assert.equal(requests.length,beforeRevision+1,"revision after upload prevents message");
+  const controller=new AbortController(); afterUpload=()=>controller.abort();
+  const beforeCancel=requests.length;
+  await assert.rejects(adapter.sendWorkNotification({...workInput,files:[file],signal:controller.signal}),/停止/);
+  assert.equal(requests.length,beforeCancel+1);
+  afterUpload=undefined; failUpload=true;
+  const beforeUploadFailure=requests.length;
+  const uploadFailure=await adapter.sendWorkNotification({...workInput,files:[file]});
+  assert(!uploadFailure.ok && !uploadFailure.responseLost && !uploadFailure.retryable);
+  assert.equal(requests.length,beforeUploadFailure+1,"unknown upload is not a delivered message and must not send");
+  failUpload=false;
+  const clockNow=Date.now; afterUpload=()=>{Date.now=()=>target.address.expiresAt+1;};
+  try { await assert.rejects(adapter.sendWorkNotification({...workInput,files:[file]}),/过期/); }
+  finally { Date.now=clockNow; afterUpload=undefined; }
+  missingMessageId=true;
+  const noId=await adapter.sendWorkNotification({...workInput,files:[file]});
+  assert(!noId.ok && noId.responseLost && !noId.retryable,"HTTP 200 without message id is unknown, not a rejection");
+  missingMessageId=false; unknownMessage=true;
+  const beforeUnknown=requests.length;
+  const unknown=await adapter.sendWorkNotification({...workInput,files:[file]});
+  assert(!unknown.ok && unknown.responseLost && !unknown.retryable);
+  await pause(10); assert.equal(requests.length,beforeUnknown+2,"unknown send does not replay upload or message");
+  unknownMessage=false;
+  const fileOnly=await adapter.sendWorkNotification({...workInput,text:"",files:[file]});
+  assert(fileOnly.ok && JSON.parse(fileOnly.receipt)[0].receipt==="receipt");
 
   sockets[0].event(event("group", true)); await until(() => inbound.length === 2);
   assert.equal(inbound[1].chatId, "group:group");

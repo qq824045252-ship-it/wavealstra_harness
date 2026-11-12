@@ -60,7 +60,8 @@ export function workDeliveryContext(db: Database.Database, binding: WorkExecutio
         ...(delivery ? { notificationKind: delivery.kind } : {}),
         connection: !channel ? "unknown" as const : channel.connected ? "last_observed_connected" as const : "disconnected" as const,
         summaryDelivery: { capability: capability.workNotifications ? "supported" as const : "unsupported" as const, state: textState },
-        fileDelivery: { capability: capability.media === "bidirectional" ? "supported" as const : "unsupported" as const, state: fileState },
+        fileDelivery: { capability: capability.media === "bidirectional" || route.target.channelType === "qq" && !route.target.address.group ? "supported" as const : "unsupported" as const, state: fileState,
+          ...(route.target.channelType === "qq" && !route.target.address.group ? { limits: "single_file_up_to_10MiB_with_summary_in_one_reply_slot" as const } : {}) },
         ...(route.target.channelType === "qq" ? { replyWindow: Date.now() < route.target.address.expiresAt ? "open" as const : "expired" as const } : {}),
       };
     }),

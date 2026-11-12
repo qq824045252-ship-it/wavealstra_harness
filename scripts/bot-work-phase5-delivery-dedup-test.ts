@@ -888,17 +888,26 @@ console.log(`Phase 5 delivery dedup: ${passes.length} passed`);
     send(raw:string){const value=JSON.parse(raw);if(value.op===2)setImmediate(()=>this.emit({op:0,s:1,t:"READY",d:{session_id:"ledger"}}));if(value.op===1)this.emit({op:11});}
     close(){}
   }
-  let posts=0; const bodies:Array<Record<string,unknown>>=[];
+  let posts=0,uploads=0; const bodies:Array<Record<string,unknown>>=[];
   const adapter=new QQChannelAdapter("qq-ledger-real","QQ",{socketFactory:()=>new Socket(),fetch:async(url,init)=>{
     const href=String(url);
     if(href.endsWith("getAppAccessToken"))return Response.json({access_token:"token",expires_in:7200});
     if(href.endsWith("/gateway"))return Response.json({url:"wss://gateway.qq.com/ws"});
+    if(href.endsWith("/files")){uploads++;assert.equal(JSON.parse(String(init?.body)).srv_send_msg,false);return Response.json({file_info:"qq-file-info",ttl:3600});}
     assert.equal(href,"https://api.sgroup.qq.com/v2/users/user/messages");
     posts++;bodies.push(JSON.parse(String(init?.body)));return Response.json({id:"provider-qq-summary"});
   }});
   await adapter.connect({appId:"123",appSecret:"fixture",allowUsers:["user"]});
   try {
-    const f=accepted("qq-file-limitation");
+    const created=fixture("qq-single-file");
+    const snapshotPath=join(root,"qq-report.txt");writeFileSync(snapshotPath,"a");
+    works.transaction(()=>works.generatedArtifacts.record(created.binding,[{path:join(root,"qq-source.txt"),snapshotPath,
+      digest:createHash("sha256").update("a").digest("hex"),sizeBytes:1,registeredAt:clock,sourceEntryId:1}]));
+    unwrap(works.submitDeliverable(created.worker,{operationId:"qq-submit",workId:created.work.workId,bindingId:created.binding.bindingId,
+      deliverableId:"qq-file-deliverable",summary:"file delivered",artifactRefs:[snapshotPath],evidence:[{kind:"tool_receipt",sourceRef:"qq-proof"}]}));
+    unwrap(works.acceptDeliverable(user,{operationId:"qq-accept",workId:created.work.workId,deliverableId:"qq-file-deliverable"}));
+    works.reconcileExecution(user,{bindingId:created.binding.bindingId,outcome:"completed"});
+    const f={...created,notification:works.repo.listNotifications(created.work.workId).find(item=>item.kind==="result")!};
     const target=gatewayWorkTargetSchema.parse({version:1,channelType:"qq",channelId:adapter.id,connectionKey:adapter.workConnectionKey(),
       chatId:"c2c:user",senderId:"user",address:{recipient:"user",group:false,messageId:"original",expiresAt:Date.now()+60000}});
     const {GatewayWorkTargets}=await import('../src/main/gateway/GatewayWorkTargets');
@@ -912,23 +921,24 @@ console.log(`Phase 5 delivery dedup: ${passes.length} passed`);
     const endpoint:AsyncWorkNotificationChannel={channel:"gateway:qq-ledger-real",targetKey:recorded.targetKey,...capabilityOfGuarantee("best-effort-unqueryable"),
       send:async input=>adapter.sendWorkNotification({target,text:"成果摘要",effectKey:input.idempotencyKey,
         qqMessageSequence:qqWorkMessageSequence(db.connection,recorded.targetKey,"gateway:qq-ledger-real",input.idempotencyKey),
-        files:[{name:"report.txt",sha256:createHash("sha256").update("a").digest("hex"),bytes:1,base64:"YQ=="}],
+        files:input.notification.deliveryFiles,
         assertCurrent:input.assertCurrent,recordProgress:input.recordProgress})};
     works.repo.updateNotificationLinks(f.notification.notificationId,{targetKey:endpoint.targetKey,cardKey:f.notification.cardKey});
     works.repo.updateNotificationDelivery(f.notification.notificationId,{channel:endpoint.channel,delivery:"pending"});
     const pending=workDeliveryContext(db.connection,f.binding)!;
     assert.equal(pending.routes[0].connection,'disconnected');assert.equal(pending.routes[0].summaryDelivery.state,'pending');
-    assert.equal(pending.routes[0].fileDelivery.capability,'unsupported');
+    assert.equal(pending.routes[0].fileDelivery.capability,'supported');
     await works.notifications.deliverAsync(endpoint,f.work.workId);await works.notifications.deliverAsync(endpoint,f.work.workId);
-    assert.equal(posts,1);assert.match(String(bodies[0].content),/成果摘要.*|QQ 无法发送这份文件/);
-    assert(String(bodies[0].content).includes("QQ 无法发送这份文件"));
-    assert.equal(works.repo.getNotification(f.notification.notificationId)?.delivery,"failed","text success does not mark file delivery successful");
+    assert.equal(posts,1);assert.equal(uploads,1);
+    assert.equal(bodies[0].content,"成果摘要");assert.equal(bodies[0].msg_type,7);assert.equal(bodies[0].msg_seq,2);
+    assert.equal(works.repo.getNotification(f.notification.notificationId)?.delivery,"sent");
     const row=db.connection.prepare("SELECT status,receipt FROM work_notification_attempts WHERE notification_id=?").get(f.notification.notificationId) as {status:string;receipt:string};
-    assert.equal(row.status,"failed");const parts=JSON.parse(row.receipt);
-    assert.equal(parts[0].receipt,"provider-qq-summary");assert.equal(parts[1].code,"fileunsupported");
+    assert.equal(row.status,"sent");const parts=JSON.parse(row.receipt);
+    assert.equal(parts[0].receipt,"provider-qq-summary");assert.equal(parts[0].part,`file:${createHash("sha256").update("a").digest("hex")}`);
+    assert.equal(parts[1].via,"media_content");
     const reader=new Database(path,{readonly:true});
     const facts=workDeliveryContext(reader,f.binding)!;
-    assert.equal(facts.routes[0].summaryDelivery.state,'sent');assert.equal(facts.routes[0].fileDelivery.state,'unsupported');
+    assert.equal(facts.routes[0].summaryDelivery.state,'sent');assert.equal(facts.routes[0].fileDelivery.state,'sent');
     assert.equal(facts.scope,'reply_to_original_request_only');
     const serialized=JSON.stringify(facts);
     for(const hidden of [recorded.targetKey,target.connectionKey,originMessage,originConversation,'provider-qq-summary','c2c:user'])assert(!serialized.includes(hidden));
@@ -942,9 +952,9 @@ console.log(`Phase 5 delivery dedup: ${passes.length} passed`);
     db.connection.prepare('UPDATE works SET user_id=? WHERE work_id=?').run('other-user',before.workId);
     assert.equal(workDeliveryContext(db.connection,f.binding),undefined,'other user cannot acquire the original recipient context');
     db.connection.prepare('UPDATE works SET user_id=? WHERE work_id=?').run(before.userId,before.workId);
-    console.log('PASS host delivery facts separate real QQ text receipt/file unsupported, keep disconnect and unknown honest, reject other user/version and expose no route identifiers');
+    console.log('PASS host delivery facts project QQ media+content receipt, keep disconnect and unknown honest, reject other user/version and expose no route identifiers');
 
-    console.log("PASS QQ actual adapter informs file limitation once, preserves text receipt, and marks full delivery failed");
+    console.log("PASS QQ adapter sends frozen C2C file and summary in one reserved slot; persisted success prevents repeat upload/send");
   } finally {await adapter.disconnect();}
 }
 {
