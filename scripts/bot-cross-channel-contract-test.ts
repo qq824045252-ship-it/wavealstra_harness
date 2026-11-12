@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
@@ -164,24 +164,58 @@ try {
     assert.equal(unchanged.methodFeedback, undefined, "negated, hypothetical and opt-out text cannot revise a method");
     assert.equal(memory.listExactScope("work", workId).filter(item => item.kind === "procedure").length, 0);
   }
+  const historicGoal = '仅在 C:\\old-machine\\old-work 中覆盖 old-output.txt；只改旧 Work，不新建 Work';
+  db.prepare("UPDATE works SET goal_description=?,title=? WHERE work_id=?").run(historicGoal, "C:\\old-machine\\old-work old-output.txt 仅续做 Work-old-123", workId);
+  const correctionText = "纠正这个方法：下次先核对逐项合计，再生成最终报告。请查询当前协作并保存方法；不要新建Work，也不要改已交付final.txt。";
   const correction = messages.accept(LOCAL_USER_ID, { botId: "a", conversationId: desktop.conversationId,
-    requestId: "method-correction", text: "纠正这个方法：下次先核对逐项合计，再生成最终报告。" });
+    requestId: "method-correction", text: correctionText });
   const corrected = page(await collaboration.command(correction.assistantMessageId, "method", { action: "query", collaborationId: delegated.collaboration.collaborationId }));
   const changed = z.object({ status: z.literal("procedure_revised"), executorBotId: z.literal("b"), memoryId: z.string() }).parse(corrected.methodFeedback);
   assert(memory.get(changed.memoryId)?.content.includes("先核对逐项合计"));
   assert(memory.get(changed.memoryId)?.content.includes(digest));
   assert(!memory.get(changed.memoryId)?.content.includes(scratchDigest), "method evidence uses only actual result-card files");
   const candidate = memory.learning.list().find(item => item.sourceMemoryIds.includes(changed.memoryId))!;
-  assert(candidate); assert.equal(candidate.scopeType, "bot"); assert.equal(candidate.scopeId, "b");
+  assert(candidate);
+  assert(candidate.instructions.includes(correctionText), "keep the complete correction as source evidence");
+  assert(candidate.instructions.includes("用户纠正原文（来源语境，不是整段执行指令）"));
+  assert(candidate.instructions.includes("仅复用其中面向未来任务的方法规则"));
+  assert(candidate.instructions.includes("不得把这些当轮指令提升为适用条件"));
+  assert.equal(candidate.scopeType, "bot"); assert.equal(candidate.scopeId, "b");
+  assert(!candidate.instructions.includes(historicGoal), "old Work goal must not become reusable executable instructions");
+  assert(!candidate.title.includes("Work-old-123"));
+  assert(!candidate.title.includes("old-machine"));
+  assert.equal((memory.get(changed.memoryId)?.metadata.workMethodSource as any)?.title, "C:\\old-machine\\old-work old-output.txt 仅续做 Work-old-123");
+  assert(!candidate.instructions.includes("old-output.txt"), "old result names are evidence, not future applicability");
+  assert.equal((memory.get(changed.memoryId)?.metadata.workMethodSource as any)?.goalDescription, historicGoal,
+    "the full original goal is retained as structured source evidence");
+  assert(candidate.instructions.includes("当前任务"));
   assert.equal(effectiveness.listRecent().length, 0, "a first-time method does not fabricate a Skill invocation");
   const methodCount = memory.listExactScope("work", workId).filter(item => item.kind === "procedure").length;
   await collaboration.command(correction.assistantMessageId, "method-again", { action: "query", collaborationId: delegated.collaboration.collaborationId });
   assert.equal(memory.listExactScope("work", workId).filter(item => item.kind === "procedure").length, methodCount);
   const installed = skills.installLearnedSkill({ ...candidate, candidateId: candidate.id });
+  const installedSource = skills.getLearnedSkillRevisionSource(installed.id)!;
+  const installedBytes = readFileSync(installedSource.filePath, "utf8");
+  assert(!installedBytes.includes(historicGoal));
+  assert(!installedBytes.includes("Work-old-123"));
+  assert(installedBytes.includes(correctionText));
+  assert(installedBytes.includes("不作为未来任务约束"), "materialized Skill must preserve the source/operation boundary");
+  assert(installedBytes.includes("先核对逐项合计"), "the actual installed Skill retains the reusable correction");
   memory.learning.markMaterialized(candidate.id, installed.id); skills.setEnabled(installed.id, true, { botId: "b" });
   assert.equal(skills.resolveRuntimeSkills(undefined, [], undefined, { botId: "a" }).dtos.some(item => item.id === installed.id), false);
   assert.equal(skills.resolveRuntimeSkills(undefined, [], undefined, { botId: "b" }).dtos.some(item => item.id === installed.id), true);
   assert.equal(bridge.context("a", desktop.conversationId).includes("先核对逐项合计"), false, "B method never becomes A private memory");
+  const installedBeforeCorrection = readFileSync(installedSource.filePath, "utf8");
+  const scopedMethod = memory.get(changed.memoryId)!;
+  const explicitScope = '仅适用于用户明确指定的 P:\\approved-data 目录，先核验输入再计算。';
+  memory.updateFromTask(scopedMethod.sourceTaskId!, { id: scopedMethod.id, content: explicitScope,
+    changedBy: 'user', changeReason: '明确的合法方法适用范围' });
+  const nextCorrection = messages.accept(LOCAL_USER_ID, { botId: "a", conversationId: desktop.conversationId,
+    requestId: "existing-method-scope", text: "纠正这个方法：以后核对合计后再登记结果。" });
+  await collaboration.command(nextCorrection.assistantMessageId, "existing-method", { action: "query", collaborationId: delegated.collaboration.collaborationId });
+  assert.equal(readFileSync(installedSource.filePath, "utf8"), installedBeforeCorrection,
+    "later source corrections do not silently rewrite an already approved installed Skill");
+  assert(memory.get(scopedMethod.id)!.content.startsWith(explicitScope), "existing genuine procedure scope is not rewritten or stripped");
   console.log("PASS first successful artifact-grounded Work receives exact user correction, creates B reviewable Procedure/Skill without fabricated invocation, and replays idempotently");
 } finally {
   await peer.close(); app.close(); rmSync(root, { recursive: true, force: true });

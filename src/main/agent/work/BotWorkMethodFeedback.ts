@@ -125,16 +125,27 @@ export class BotWorkMethodFeedback {
             } catch { return false; }
           });
         if (!artifacts.length) return { status: "no_artifact_evidence", recorded: false };
-        const baseContent = methods[0]?.content ?? `适用任务：${work.goalDescription || work.title}\n已核对成果：${artifacts.map(artifact => `${basename(artifact.path)} (${artifact.digest})`).join("；")}\n这是一次成功执行后的方法候选，新的纠正规则仍需在后续任务验证，不代表本次已按新规则执行。`;
-        if (baseContent.length + text.length + 40 > MEMORY_CONTENT_MAX_CHARS) return { status: "procedure_needs_concise_revision", recorded: false };
-        const method = methods[0] ?? memory.create({ kind: "procedure", title: `${work.title}的方法`, content: baseContent,
+        const baseContent = methods[0]?.content ?? [
+          "这是已核验个人事项产生的方法纠正候选，不是原事项的重执行指令。",
+          "仅在用户纠正描述的适用条件与当前任务匹配时复用；工作目录、文件目标、Work 身份和一次性约束均来自当前任务，不继承来源事项。",
+          `历史成果证据（不是本次待生成文件）：${artifacts.map(artifact => `${basename(artifact.path)} (${artifact.digest})`).join("；")}`,
+          "来源事项的完整标题、目标和执行身份保留在 workMethodSource 元数据及原 Work 中，供溯源，不作为未来任务的执行约束。",
+          "新的纠正规则仍需在后续任务验证，不代表来源执行已经遵循新规则。",
+        ].join("\n");
+        const correctionHeader = methods[0]
+          ? "## 用户对本次方法的明确纠正"
+          : "## 用户纠正原文（来源语境，不是整段执行指令）\n仅复用其中面向未来任务的方法规则；查询当前协作、保存方法、不要新建旧 Work 或不要修改已交付文件等当轮沟通与保存指令，仅描述来源事项，不作为未来任务约束。原文完整保留供追溯，不得把这些当轮指令提升为适用条件。";
+        if (baseContent.length + text.length + correctionHeader.length + 3 > MEMORY_CONTENT_MAX_CHARS) return { status: "procedure_needs_concise_revision", recorded: false };
+        const method = methods[0] ?? memory.create({ kind: "procedure", title: "个人事项的用户方法纠正", content: baseContent,
           scopeType: "work", scopeId: work.workId, sourceType: "user", sourceTaskId: binding.task_id,
           sourceId: source.user_message_id, explicit: true, confidence: 0.9,
-          metadata: { workId: work.workId, executorBotId: binding.bot_id, bindingId: binding.binding_id, requiresReuseValidation: true },
+          metadata: { workId: work.workId, executorBotId: binding.bot_id, bindingId: binding.binding_id, requiresReuseValidation: true,
+            workMethodSource: { workId: work.workId, title: work.title, goalDescription: work.goalDescription,
+              intentRevision: work.intentRevision, inputSnapshotId: work.inputSnapshotId } },
           evidence: [{ evidenceKind: "task", refId: binding.task_id },
             ...artifacts.map(artifact => ({ evidenceKind: "artifact" as const, refId: artifact.snapshotPath!, excerpt: artifact.digest }))] });
         const revised = memory.updateFromTask(binding.task_id, { id: method.id,
-          content: `${method.content}\n\n## 用户对本次方法的明确纠正\n${text}`,
+          content: `${method.content}\n\n${correctionHeader}\n${text}`,
           metadata: { ...method.metadata, workMethodCorrection: { workId: work.workId, bindingId: binding.binding_id,
             executorBotId: binding.bot_id, userMessageId: source.user_message_id, previousContentHash: method.contentHash } },
           changedBy: "user", changeReason: `Work ${work.workId} 的真实用户纠正 ${source.user_message_id}` });
