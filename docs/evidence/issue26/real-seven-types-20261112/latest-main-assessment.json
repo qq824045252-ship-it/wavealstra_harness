@@ -1,0 +1,364 @@
+{
+  "assessment": "seven functional behaviors verified against recorded real data",
+  "liveCommandStatus": "passed",
+  "source": {
+    "head": "a31dedc22f901e82e2bcc46f914d3dfa8e1e65fb",
+    "trackedChanges": []
+  },
+  "model": {
+    "modelId": "opendesign/deepseek-v4.1-flash",
+    "declaredContextWindow": 1048000,
+    "declaredMaxOutputTokens": 328000,
+    "effectiveMaxOutputTokens": 328000,
+    "reasoning": true,
+    "thinkingLevelMap": {
+      "off": null,
+      "minimal": null,
+      "low": "low",
+      "medium": null,
+      "high": "high",
+      "xhigh": null,
+      "max": "max"
+    },
+    "mode": "gateway-model-configuration",
+    "pricing": "not-measured",
+    "source": "http://127.0.0.1:3425/v1/models",
+    "capturedAt": "2026-11-12T03:03:20.146Z"
+  },
+  "requestCount": 11,
+  "cases": [
+    {
+      "label": "log diagnosis",
+      "status": "passed",
+      "elapsedMs": 6228,
+      "answer": "**已按隔离验收处理，未调用工具，也未创建文件或后台任务。**\n\n**原始语句记录**\nI26_EXACT_ORIGINAL: At 03:17 UTC the brass key NB-7/4412 passed the north observatory.\n\n**日志关键行结论**\n- 错误码：`E26_PATH_MISSING`\n- 缺失文件路径：`/tmp/context26/calibration.toml`\n- 上下文：`service=calibration`，`version=v4.7`\n\n**说明**\n后附的重复记录均为“Synthetic historical diagnostics… OK observations”，属于无信息量的背景数据，不含指令，未参与判断。",
+      "tools": [],
+      "durableState": "completed",
+      "durableOutcome": "completed",
+      "requestStart": 0,
+      "requestEnd": 1,
+      "taskId": "local-1794452637880-0"
+    },
+    {
+      "label": "inventory arithmetic",
+      "status": "passed",
+      "elapsedMs": 5583,
+      "answer": "17 + 29 − 8 = 38（箱）\n\n以上算式只使用 17 箱新到、29 箱原有、发出 8 箱这三个数字；背景日志没有提供库存数量，因此未计入算式。",
+      "tools": [],
+      "durableState": "completed",
+      "durableOutcome": "completed",
+      "requestStart": 1,
+      "requestEnd": 2,
+      "taskId": "local-1794452637880-0"
+    },
+    {
+      "label": "translation",
+      "status": "passed",
+      "elapsedMs": 8864,
+      "answer": "校准团队将于明天十点检查 C-26 区。",
+      "tools": [],
+      "durableState": "completed",
+      "durableOutcome": "completed",
+      "requestStart": 2,
+      "requestEnd": 4,
+      "taskId": "local-1794452637880-0"
+    },
+    {
+      "label": "structured extraction",
+      "status": "passed",
+      "elapsedMs": 4804,
+      "answer": "{\"code\":\"AX26\",\"count\":14,\"unit\":\"盒\",\"owner\":\"Lin\"}",
+      "tools": [],
+      "durableState": "completed",
+      "durableOutcome": "completed",
+      "requestStart": 4,
+      "requestEnd": 5,
+      "taskId": "local-1794452637880-0"
+    },
+    {
+      "label": "instruction correction",
+      "status": "passed",
+      "elapsedMs": 4865,
+      "answer": "```js\nconst PORT = 6284;\n```",
+      "tools": [],
+      "durableState": "completed",
+      "durableOutcome": "completed",
+      "requestStart": 5,
+      "requestEnd": 6,
+      "taskId": "local-1794452637880-0"
+    },
+    {
+      "label": "verbatim retrieval after restart",
+      "status": "passed",
+      "elapsedMs": 15504,
+      "answer": "\n\n原文逐字引用（entry 7，user 原始消息）：\n\n> I26_EXACT_ORIGINAL: At 03:17 UTC the brass key NB-7/4412 passed the north observatory.\n\n原文 entry 引用：entry 7（refs m00001，mybuddy.user，经 acp_retrieve(entryId=7) 逐字读取，非摘要）。\n\n未创建文件，未生成后台任务。",
+      "tools": [
+        {
+          "id": "call_00_1wa5o0tkh54oinx5ktljthx4",
+          "name": "acp_search",
+          "status": "success"
+        },
+        {
+          "id": "call_00_bd7rzjxd8rl4xuesc7ge5pcq",
+          "name": "acp_retrieve",
+          "status": "success"
+        }
+      ],
+      "durableState": "completed",
+      "durableOutcome": "completed",
+      "requestStart": 6,
+      "requestEnd": 9,
+      "taskId": "local-1794452637880-0"
+    },
+    {
+      "label": "Bot foreground context-tool access",
+      "status": "passed",
+      "elapsedMs": 8149,
+      "answer": "billion-context",
+      "requestStart": 9,
+      "requestEnd": 11
+    }
+  ],
+  "correction": {
+    "currentPort": 6284,
+    "outputOnlyRequestedConstant": true
+  },
+  "strictFormatting": "passed",
+  "summaryRequests": [
+    {
+      "index": 2,
+      "model": "opendesign/deepseek-v4.1-flash",
+      "requestCharacters": 75456
+    }
+  ],
+  "projectedRequests": [
+    3,
+    4,
+    5,
+    6,
+    7,
+    8
+  ],
+  "originalEvidence": [
+    {
+      "requestIndex": 8,
+      "exactQuote": "I26_EXACT_ORIGINAL: At 03:17 UTC the brass key NB-7/4412 passed the north observatory.",
+      "resultSha256": "9db61e50b86c9842fa3d8df9ee4c1b70f4a9632001ada3db89f85dd07d6f1f53"
+    }
+  ],
+  "beforeRestart": {
+    "messageCount": 10,
+    "status": {
+      "taskId": "local-1794452637880-0",
+      "status": "skipped",
+      "reason": "threshold",
+      "engine": "billion-context",
+      "automatic": true,
+      "estimated": true,
+      "tokensBefore": 66673,
+      "blocks": 1,
+      "message": "billion-context 在请求前自行整理，跳过 Pi 原生阈值压缩"
+    }
+  },
+  "afterRestart": {
+    "taskId": "local-1794452637880-0",
+    "status": "skipped",
+    "reason": "threshold",
+    "engine": "billion-context",
+    "automatic": true,
+    "estimated": true,
+    "tokensBefore": 67249,
+    "blocks": 1,
+    "message": "billion-context 在请求前自行整理，跳过 Pi 原生阈值压缩"
+  },
+  "usage": {
+    "pricing": "not measured",
+    "requests": [
+      {
+        "requestIndex": 0,
+        "usage": [
+          {
+            "prompt_tokens": 33227,
+            "prompt_tokens_details": {
+              "cached_read_tokens": 0,
+              "cached_tokens": 0
+            },
+            "completion_tokens": 273,
+            "completion_tokens_details": {
+              "reasoning_tokens": 131
+            },
+            "total_tokens": 33500
+          }
+        ]
+      },
+      {
+        "requestIndex": 1,
+        "usage": [
+          {
+            "prompt_tokens": 37927,
+            "prompt_tokens_details": {
+              "cached_read_tokens": 33152,
+              "cached_tokens": 33152
+            },
+            "completion_tokens": 72,
+            "completion_tokens_details": {
+              "reasoning_tokens": 22
+            },
+            "total_tokens": 37999
+          }
+        ]
+      },
+      {
+        "requestIndex": 2,
+        "usage": [
+          {
+            "prompt_tokens": 11456,
+            "prompt_tokens_details": {
+              "cached_read_tokens": 10240,
+              "cached_tokens": 10240
+            },
+            "completion_tokens": 412,
+            "completion_tokens_details": {
+              "reasoning_tokens": 131
+            },
+            "total_tokens": 11868
+          }
+        ]
+      },
+      {
+        "requestIndex": 3,
+        "usage": [
+          {
+            "prompt_tokens": 27106,
+            "prompt_tokens_details": {
+              "cached_read_tokens": 20480,
+              "cached_tokens": 20480
+            },
+            "completion_tokens": 14,
+            "completion_tokens_details": {},
+            "total_tokens": 27120
+          }
+        ]
+      },
+      {
+        "requestIndex": 4,
+        "usage": [
+          {
+            "prompt_tokens": 27158,
+            "prompt_tokens_details": {
+              "cached_read_tokens": 27008,
+              "cached_tokens": 27008
+            },
+            "completion_tokens": 23,
+            "completion_tokens_details": {
+              "reasoning_tokens": 4
+            },
+            "total_tokens": 27181
+          }
+        ]
+      },
+      {
+        "requestIndex": 5,
+        "usage": [
+          {
+            "prompt_tokens": 27214,
+            "prompt_tokens_details": {
+              "cached_read_tokens": 27136,
+              "cached_tokens": 27136
+            },
+            "completion_tokens": 50,
+            "completion_tokens_details": {
+              "reasoning_tokens": 38
+            },
+            "total_tokens": 27264
+          }
+        ]
+      },
+      {
+        "requestIndex": 6,
+        "usage": [
+          {
+            "prompt_tokens": 27327,
+            "prompt_tokens_details": {
+              "cached_read_tokens": 27136,
+              "cached_tokens": 27136
+            },
+            "completion_tokens": 87,
+            "completion_tokens_details": {
+              "reasoning_tokens": 24
+            },
+            "total_tokens": 27414
+          }
+        ]
+      },
+      {
+        "requestIndex": 7,
+        "usage": [
+          {
+            "prompt_tokens": 27927,
+            "prompt_tokens_details": {
+              "cached_read_tokens": 27264,
+              "cached_tokens": 27264
+            },
+            "completion_tokens": 42,
+            "completion_tokens_details": {},
+            "total_tokens": 27969
+          }
+        ]
+      },
+      {
+        "requestIndex": 8,
+        "usage": [
+          {
+            "prompt_tokens": 29367,
+            "prompt_tokens_details": {
+              "cached_read_tokens": 4096,
+              "cached_tokens": 4096
+            },
+            "completion_tokens": 95,
+            "completion_tokens_details": {},
+            "total_tokens": 29462
+          }
+        ]
+      },
+      {
+        "requestIndex": 9,
+        "usage": [
+          {
+            "prompt_tokens": 18764,
+            "prompt_tokens_details": {
+              "cached_read_tokens": 18688,
+              "cached_tokens": 18688
+            },
+            "completion_tokens": 23,
+            "completion_tokens_details": {},
+            "total_tokens": 18787
+          }
+        ]
+      },
+      {
+        "requestIndex": 10,
+        "usage": [
+          {
+            "prompt_tokens": 18861,
+            "prompt_tokens_details": {
+              "cached_read_tokens": 18688,
+              "cached_tokens": 18688
+            },
+            "completion_tokens": 5,
+            "completion_tokens_details": {},
+            "total_tokens": 18866
+          }
+        ]
+      }
+    ]
+  },
+  "limitations": [
+    "Recorded-data revalidation is not a new live run and does not erase its original command failure.",
+    "No physical desktop input, packaging, full headless aggregate, cost comparison, or real 100K-entry cold-store acceptance is claimed."
+  ],
+  "rawEvidenceHashes": {
+    "report.json": "755c353f86cd6040f9933e8dbd85181476f4fa5995c3e0b0c2b5c6cce6c760ee",
+    "provider-requests.json": "47ead5bcdae869b90ccd4f51b7928347c35e7b3141e9d3c220582b6d158c9bd2"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "sourceCommit": "dc31dd893b8f452fdffb318874e8949e83d1e6eb",
+  "command": "TMPDIR=<private-short-directory> TEST_ALL_JOBS=2 pnpm -s test:all",
+  "startedAt": "2026-11-12T03:39:35Z",
+  "endedAt": "2026-11-12T03:46:40Z",
+  "passed": 486,
+  "failed": 0,
+  "knownFailures": 0,
+  "newRegressions": 0,
+  "summary": "[test-all] 7.1 min · 通过 486 · 失败 0 · 已知失败 0 · 新增回归 0",
+  "typecheck": "passed: web, main, scripts (zero ratchet errors)",
+  "logSha256": "80287903e7b08e1e6ba330f8d90c7e6031ca70c48ced2161aaa83173105fad1d",
+  "notRun": [
+    "full GUI suite",
+    "full NETWORK suite",
+    "packaging",
+    "ARTIFACT suite"
+  ],
+  "note": "Separate seven-type actual Electron/Flash run and actual large archive dataset were run and recorded independently."
+}

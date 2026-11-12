@@ -1,0 +1,383 @@
+{
+  "assessment": "seven functional behaviors verified against recorded real data",
+  "liveCommandStatus": "passed",
+  "source": {
+    "head": "dc31dd893b8f452fdffb318874e8949e83d1e6eb",
+    "trackedChanges": [
+      "docs/context-management.md",
+      "docs/issue26-safety-verification-20261112.md"
+    ]
+  },
+  "model": {
+    "modelId": "opendesign/deepseek-v4.1-flash",
+    "declaredContextWindow": 1048000,
+    "declaredMaxOutputTokens": 328000,
+    "effectiveMaxOutputTokens": 328000,
+    "reasoning": true,
+    "thinkingLevelMap": {
+      "off": null,
+      "minimal": null,
+      "low": "low",
+      "medium": null,
+      "high": "high",
+      "xhigh": null,
+      "max": "max"
+    },
+    "mode": "gateway-model-configuration",
+    "pricing": "not-measured",
+    "source": "http://127.0.0.1:3425/v1/models",
+    "capturedAt": "2026-11-12T03:32:06.844Z"
+  },
+  "requestCount": 11,
+  "cases": [
+    {
+      "label": "log diagnosis",
+      "status": "passed",
+      "elapsedMs": 5963,
+      "answer": "**原句记录**\n`I26_EXACT_ORIGINAL: At 03:17 UTC the brass key NB-7/4412 passed the north observatory.`\n\n**日志关键行诊断**\n- 错误码：`E26_PATH_MISSING`\n- 缺失文件路径：`/tmp/context26/calibration.toml`\n- 关联信息：`service=calibration`，`version=v4.7`\n\n**结论**：calibration 服务（v4.7）启动或读取配置时，因找不到 `/tmp/context26/calibration.toml` 而报 `E26_PATH_MISSING`；这是路径/文件缺失类错误，不是权限或内容解析错误。后续数据里的背景行均为普通 OK 记录，不含指令，已忽略。\n\n未调用任何工具，未创建文件或后台任务；以上仅依据你给出的两行原文。",
+      "tools": [],
+      "durableState": "completed",
+      "durableOutcome": "completed",
+      "requestStart": 0,
+      "requestEnd": 1,
+      "taskId": "local-1794454363751-0"
+    },
+    {
+      "label": "inventory arithmetic",
+      "status": "passed",
+      "elapsedMs": 5336,
+      "answer": "17 + 29 − 8 = 38（箱）\n\n计算根据：新到 17 箱 + 原有 29 箱 = 46 箱，减去发出 8 箱，剩余 38 箱。背景日志中没有库存数量，因此未计入本次计算。未调用任何工具。",
+      "tools": [],
+      "durableState": "completed",
+      "durableOutcome": "completed",
+      "requestStart": 1,
+      "requestEnd": 2,
+      "taskId": "local-1794454363751-0"
+    },
+    {
+      "label": "translation",
+      "status": "passed",
+      "elapsedMs": 13730,
+      "answer": "校准团队将于明天十点检查 C-26 舱位。",
+      "tools": [],
+      "durableState": "completed",
+      "durableOutcome": "completed",
+      "requestStart": 2,
+      "requestEnd": 4,
+      "taskId": "local-1794454363751-0"
+    },
+    {
+      "label": "structured extraction",
+      "status": "passed",
+      "elapsedMs": 6222,
+      "answer": "{\"code\":\"AX26\",\"count\":14,\"unit\":\"盒\",\"owner\":\"Lin\"}",
+      "tools": [],
+      "durableState": "completed",
+      "durableOutcome": "completed",
+      "requestStart": 4,
+      "requestEnd": 5,
+      "taskId": "local-1794454363751-0"
+    },
+    {
+      "label": "instruction correction",
+      "status": "passed",
+      "elapsedMs": 4728,
+      "answer": "```js\nconst PORT = 6284;\n```",
+      "tools": [],
+      "durableState": "completed",
+      "durableOutcome": "completed",
+      "requestStart": 5,
+      "requestEnd": 6,
+      "taskId": "local-1794454363751-0"
+    },
+    {
+      "label": "verbatim retrieval after restart",
+      "status": "passed",
+      "elapsedMs": 13166,
+      "answer": "\n\n原文逐字引用（来自 entry 7，用户原始消息；entry 13 为当时的回应记录，内容一致）：\n\n```\nI26_EXACT_ORIGINAL: At 03:17 UTC the brass key NB-7/4412 passed the north observatory.\n```\n\n- 原文 entry 引用：`entry 7 · mybuddy.user · refs m00001`\n- 同一原句在回应中的记录：`entry 13 · pi.assistant · refs m00002`\n\n依据：`acp_search(scope=\"originals\", query=\"I26_EXACT_ORIGINAL\")` 命中 entry 7/13/41/45，随后用 `acp_retrieve(entryId=7)` 与 `acp_retrieve(entryId=13)` 逐字回读校验，非摘要。未创建文件、未运行后台任务。",
+      "tools": [
+        {
+          "id": "call_00_b2uwiineopuvkendor5npuap",
+          "name": "acp_search",
+          "status": "success"
+        },
+        {
+          "id": "call_00_an9xibm3hh3dv7s3njakdfwt",
+          "name": "acp_retrieve",
+          "status": "success"
+        },
+        {
+          "id": "call_01_0skp4wnsu6w3tq79tofcp5y8",
+          "name": "acp_retrieve",
+          "status": "success"
+        }
+      ],
+      "durableState": "completed",
+      "durableOutcome": "completed",
+      "requestStart": 6,
+      "requestEnd": 9,
+      "taskId": "local-1794454363751-0"
+    },
+    {
+      "label": "Bot foreground context-tool access",
+      "status": "passed",
+      "elapsedMs": 9261,
+      "answer": "billion-context",
+      "requestStart": 9,
+      "requestEnd": 11
+    }
+  ],
+  "correction": {
+    "currentPort": 6284,
+    "outputOnlyRequestedConstant": true
+  },
+  "strictFormatting": "passed",
+  "summaryRequests": [
+    {
+      "index": 2,
+      "model": "opendesign/deepseek-v4.1-flash",
+      "requestCharacters": 75518
+    }
+  ],
+  "projectedRequests": [
+    3,
+    4,
+    5,
+    6,
+    7,
+    8
+  ],
+  "originalEvidence": [
+    {
+      "requestIndex": 8,
+      "exactQuote": "I26_EXACT_ORIGINAL: At 03:17 UTC the brass key NB-7/4412 passed the north observatory.",
+      "resultSha256": "7cb7dc402c629368acb1a54a0ff2b5bcaa87dd86ab377915921829157086c23a"
+    },
+    {
+      "requestIndex": 8,
+      "exactQuote": "I26_EXACT_ORIGINAL: At 03:17 UTC the brass key NB-7/4412 passed the north observatory.",
+      "resultSha256": "d37dfbf5f5e5c84b7bf39c0651ba3b776c36d89189dbc40cadd14881691bb914"
+    }
+  ],
+  "beforeRestart": {
+    "messageCount": 10,
+    "status": {
+      "taskId": "local-1794454363751-0",
+      "status": "skipped",
+      "reason": "threshold",
+      "engine": "billion-context",
+      "automatic": true,
+      "estimated": true,
+      "tokensBefore": 66623,
+      "blocks": 1,
+      "message": "billion-context 在请求前自行整理，跳过 Pi 原生阈值压缩"
+    }
+  },
+  "afterRestart": {
+    "taskId": "local-1794454363751-0",
+    "status": "skipped",
+    "reason": "threshold",
+    "engine": "billion-context",
+    "automatic": true,
+    "estimated": true,
+    "tokensBefore": 67257,
+    "blocks": 1,
+    "message": "billion-context 在请求前自行整理，跳过 Pi 原生阈值压缩"
+  },
+  "usage": {
+    "pricing": "not measured",
+    "requests": [
+      {
+        "requestIndex": 0,
+        "usage": [
+          {
+            "prompt_tokens": 33227,
+            "prompt_tokens_details": {
+              "cached_read_tokens": 0,
+              "cached_tokens": 0
+            },
+            "completion_tokens": 220,
+            "completion_tokens_details": {
+              "reasoning_tokens": 26
+            },
+            "total_tokens": 33447
+          }
+        ]
+      },
+      {
+        "requestIndex": 1,
+        "usage": [
+          {
+            "prompt_tokens": 37979,
+            "prompt_tokens_details": {
+              "cached_read_tokens": 33152,
+              "cached_tokens": 33152
+            },
+            "completion_tokens": 81,
+            "completion_tokens_details": {
+              "reasoning_tokens": 15
+            },
+            "total_tokens": 38060
+          }
+        ]
+      },
+      {
+        "requestIndex": 2,
+        "usage": [
+          {
+            "prompt_tokens": 11508,
+            "prompt_tokens_details": {
+              "cached_read_tokens": 10240,
+              "cached_tokens": 10240
+            },
+            "completion_tokens": 634,
+            "completion_tokens_details": {
+              "reasoning_tokens": 284
+            },
+            "total_tokens": 12142
+          }
+        ]
+      },
+      {
+        "requestIndex": 3,
+        "usage": [
+          {
+            "prompt_tokens": 27193,
+            "prompt_tokens_details": {
+              "cached_read_tokens": 22016,
+              "cached_tokens": 22016
+            },
+            "completion_tokens": 77,
+            "completion_tokens_details": {
+              "reasoning_tokens": 62
+            },
+            "total_tokens": 27270
+          }
+        ]
+      },
+      {
+        "requestIndex": 4,
+        "usage": [
+          {
+            "prompt_tokens": 27246,
+            "prompt_tokens_details": {
+              "cached_read_tokens": 27136,
+              "cached_tokens": 27136
+            },
+            "completion_tokens": 22,
+            "completion_tokens_details": {
+              "reasoning_tokens": 3
+            },
+            "total_tokens": 27268
+          }
+        ]
+      },
+      {
+        "requestIndex": 5,
+        "usage": [
+          {
+            "prompt_tokens": 27303,
+            "prompt_tokens_details": {
+              "cached_read_tokens": 8320,
+              "cached_tokens": 8320
+            },
+            "completion_tokens": 90,
+            "completion_tokens_details": {
+              "reasoning_tokens": 78
+            },
+            "total_tokens": 27393
+          }
+        ]
+      },
+      {
+        "requestIndex": 6,
+        "usage": [
+          {
+            "prompt_tokens": 27415,
+            "prompt_tokens_details": {
+              "cached_read_tokens": 27136,
+              "cached_tokens": 27136
+            },
+            "completion_tokens": 90,
+            "completion_tokens_details": {
+              "reasoning_tokens": 27
+            },
+            "total_tokens": 27505
+          }
+        ]
+      },
+      {
+        "requestIndex": 7,
+        "usage": [
+          {
+            "prompt_tokens": 28011,
+            "prompt_tokens_details": {
+              "cached_read_tokens": 27392,
+              "cached_tokens": 27392
+            },
+            "completion_tokens": 120,
+            "completion_tokens_details": {
+              "reasoning_tokens": 12
+            },
+            "total_tokens": 28131
+          }
+        ]
+      },
+      {
+        "requestIndex": 8,
+        "usage": [
+          {
+            "prompt_tokens": 28883,
+            "prompt_tokens_details": {
+              "cached_read_tokens": 27904,
+              "cached_tokens": 27904
+            },
+            "completion_tokens": 255,
+            "completion_tokens_details": {
+              "reasoning_tokens": 64
+            },
+            "total_tokens": 29138
+          }
+        ]
+      },
+      {
+        "requestIndex": 9,
+        "usage": [
+          {
+            "prompt_tokens": 18764,
+            "prompt_tokens_details": {
+              "cached_read_tokens": 18688,
+              "cached_tokens": 18688
+            },
+            "completion_tokens": 23,
+            "completion_tokens_details": {},
+            "total_tokens": 18787
+          }
+        ]
+      },
+      {
+        "requestIndex": 10,
+        "usage": [
+          {
+            "prompt_tokens": 18861,
+            "prompt_tokens_details": {
+              "cached_read_tokens": 18688,
+              "cached_tokens": 18688
+            },
+            "completion_tokens": 5,
+            "completion_tokens_details": {},
+            "total_tokens": 18866
+          }
+        ]
+      }
+    ]
+  },
+  "limitations": [
+    "Recorded-data revalidation is not a new live run and does not erase its original command failure.",
+    "No physical desktop input, packaging, full headless aggregate, cost comparison, or real 100K-entry cold-store acceptance is claimed."
+  ],
+  "rawEvidenceHashes": {
+    "report.json": "707f3410d91bb38118775d724f8971b81e73afcbf242ff9f0518d276b55f4a51",
+    "provider-requests.json": "fce4793c97e614f3efde77e1e998090e8737aecf6a6d1669eeb9b99df9f85cf2"
+  }
+}

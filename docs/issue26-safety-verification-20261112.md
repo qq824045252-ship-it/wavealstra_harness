@@ -2,6 +2,8 @@
 
 This is a follow-up to the existing billion-context adapter, not a claim that every acceptance item in issue #26 is complete.
 
+Later closure audit: the corrected driver completed a new seven-type real Flash/Electron run with exit code zero and strict formatting passing. See [the current 14-item closure matrix](issue26-closure-matrix-20261112.md) for the newer evidence, output-reserve fix and remaining architectural requirements. The two original nonzero command results below are retained as historical evidence.
+
 ## Repaired behavior
 
 - Admit the four registered context tools through the Bot foreground tool policy, which previously filtered them all out. Arbitrary `acp_*` names are not allowed.

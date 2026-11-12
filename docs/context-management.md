@@ -1,3 +1,5 @@
+> Latest closure audit and actual long-history limits: [Issue #26 matrix](issue26-closure-matrix-20261112.md). A successful automatic-compression story is not proof that every closure requirement is complete.
+
 # 自动上下文管理（billion-context / acp-kernel 原生接入）
 
 对应 Issue #26。本文说明 Durable 主执行路径如何自动管理模型上下文、如何回查原文、如何持久化/恢复，以及当前已验证与未验证的边界。
