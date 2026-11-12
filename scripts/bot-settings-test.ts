@@ -1,6 +1,6 @@
 import { BotConversationRepository } from "../src/main/agent/work/BotConversationRepository";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppDatabase } from "../src/main/db/AppDatabase";
@@ -35,8 +35,20 @@ const settings = service();
 const input = { botId: bot.botId, expectedRevision: 0, workspacePath: folderA, modelId: "test/model", expertId: "", skillIds: ["skill"], mcpIds: ["mcp"], connectorIds: ["connector"] };
 try {
   assert.equal(settings.get(bot.botId).revision, 0);
+  const initialFrozen = (await settings.prepareMessage(bot.botId)).settings;
+  assert(!existsSync(initialFrozen.effectiveWorkspacePath), "freezing/discovery does not create a directory");
+  assert.throws(() => settings.prepareMessageWorkspace({ ...initialFrozen, effectiveWorkspacePath: join(root, "unowned") }), /身份不匹配/);
+  assert(!existsSync(join(root, "unowned")));
+  assert.equal(settings.prepareMessageWorkspace(initialFrozen), initialFrozen.effectiveWorkspacePath);
+  assert(existsSync(initialFrozen.effectiveWorkspacePath));
+  const absentCustom = join(root, "deleted-custom");
+  assert.throws(() => settings.prepareMessageWorkspace({ ...initialFrozen, workspacePath: absentCustom, effectiveWorkspacePath: absentCustom }), /不存在/);
+  assert(!existsSync(absentCustom), "explicit user directory is never recreated");
   const saved = await settings.save(input);
   assert.equal(saved.settings.revision, 1);
+  rmSync(initialFrozen.effectiveWorkspacePath, { recursive: true });
+  assert.equal(settings.prepareMessageWorkspace(initialFrozen), initialFrozen.effectiveWorkspacePath, "queued frozen default is not redirected to latest custom folder");
+  assert(existsSync(initialFrozen.effectiveWorkspacePath));
   assert.deepEqual(bots.activeSnapshot(bot.botId)?.allowedMcpIds, ["mcp"]);
   const frozen = bots.activeSnapshot(bot.botId)!;
   assert.equal(readFileSync(join(frozen.skillPackages![0].directory,"references","evidence.txt"),"utf8"),"frozen skill evidence");

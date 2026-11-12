@@ -1779,6 +1779,7 @@ export class AgentService {
         return settings.getModelThinkingLevel(model.provider, model.id) ?? settings.getDefaultThinkingLevel();
       },
       messageSettings: (messageId, botId) => this.botSettings.messageSettings(messageId, botId),
+      prepareMessageWorkspace: settings => this.botSettings.prepareMessageWorkspace(settings),
       captureSettings: (messageId, botId, frozen) => this.botSettings.captureMessage(messageId, botId, frozen),
       botWorkspace: (botId, prepareDefault) => this.botSettings.resolveWorkspace(botId, prepareDefault),
       captureWorkSettings: work => { this.botSettings.forWork(work.workId, work.ownerBotId, work.workspacePath); },

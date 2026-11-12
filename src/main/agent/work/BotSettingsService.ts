@@ -1,7 +1,7 @@
 import { BotWorkspaceNavigationService } from "./BotWorkspaceNavigationService";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import { z } from "zod";
 import type { AppDatabase } from "../../db/AppDatabase";
 import type { BotRegistry, StageExpertVersionInput } from "./BotRegistry";
@@ -67,7 +67,17 @@ export class BotSettingsService {
   resolveWorkspace(botId: string, prepareDefault = false): string {
     const settings = this.get(botId);
     if (!prepareDefault) return settings.effectiveWorkspacePath;
-    if (!settings.workspacePath) mkdirSync(settings.effectiveWorkspacePath, { recursive: true });
+    return this.prepareMessageWorkspace(settings);
+  }
+  /** Prepare the captured directory at execution, never substitute newer Bot settings. */
+  prepareMessageWorkspace(settings: BotSettingsDto): string {
+    this.get(settings.botId);
+    if (!isAbsolute(settings.effectiveWorkspacePath)) throw new Error("Bot 工作文件夹必须是绝对路径");
+    if (!settings.workspacePath) {
+      const expected = join(this.root, createHash("sha256").update(settings.botId).digest("hex").slice(0, 24));
+      if (relative(expected, settings.effectiveWorkspacePath) !== "") throw new Error("Bot 默认工作文件夹身份不匹配");
+      mkdirSync(settings.effectiveWorkspacePath, { recursive: true });
+    }
     try {
       const directory = realpathSync(settings.effectiveWorkspacePath);
       if (!statSync(directory).isDirectory()) throw new Error("not a directory");

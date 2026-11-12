@@ -57,6 +57,7 @@ export interface BotConversationServiceOptions {
   compactionEngine?: () => ContextManagementEngine;
   webTools?: (cwd: string) => Promise<import("../durable/DurableDomainTools").DurableDomainTools>;
   messageSettings?: (messageId: string, botId: string) => { settings: import("../../../shared/bot-settings").BotSettingsDto; profile: import("../../../shared/bot-work").ExpertConfigSnapshotDto } | undefined;
+  prepareMessageWorkspace?: (settings: import("../../../shared/bot-settings").BotSettingsDto) => string;
   captureSettings?: (messageId: string, botId: string, frozen: Awaited<ReturnType<import("./BotSettingsService").BotSettingsService["prepareMessage"]>>) => void;
   prepareMessage?: (botId: string) => ReturnType<import("./BotSettingsService").BotSettingsService["prepareMessage"]>;
   composerTools?: (profile: import("../../../shared/bot-work").ExpertConfigSnapshotDto, cwd: string, resolveRequestScope: WorkspaceRequestScopeResolver,
@@ -621,7 +622,8 @@ export class BotConversationService {
     this.runtimeModels.set(key, this.options.models.getModel(model.target.provider, model.target.modelId));
     this.runtimeInstructions.set(key, selected?.profile.configuration?.instructions ?? this.options.bots.activeSnapshot(bot.botId)?.configuration?.instructions ?? '');
     const cwd = conversation.team_id ? this.options.works.teams.resolveWorkspace(this.options.userId, conversation.team_id)
-      : selected?.settings.effectiveWorkspacePath || this.options.botWorkspace?.(bot.botId, true) || directory;
+      : selected ? (this.options.prepareMessageWorkspace?.(selected.settings) ?? selected.settings.effectiveWorkspacePath)
+      : this.options.botWorkspace?.(bot.botId, true) || directory;
     const requiredTool = selectedBotTool(selected?.settings);
     const originalMessage = this.messages.message(source.user_message_id);
     if (requiredTool && !originalMessage) throw new Error("所选执行能力缺少原始用户消息");

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -82,6 +82,14 @@ const options: BotConversationServiceOptions = { db, bots, works, models, userId
 // Profile has no public botId field; assert the actual frozen cwd against the fixture directories instead.
 options.composerTools = async (_profile, cwd) => { assert(["a", "b", "c", "ordinary"].some(id => cwd === join(root, id)));
   composerOwners.push(cwd); return { tools: [], instructions: "fixture composer", close: async () => {} }; };
+let preparedFrozenWorkspace = false;
+Object.assign(options, { prepareMessageWorkspace: (value: ReturnType<typeof frozen>["settings"]) => {
+  if (value.botId === "b") preparedFrozenWorkspace = true;
+  mkdirSync(value.effectiveWorkspacePath, { recursive: true }); return value.effectiveWorkspacePath;
+} });
+const originalComposer = options.composerTools!;
+options.composerTools = async (...args) => { assert(existsSync(args[1]), "frozen workspace is prepared before any composer or native tool"); return originalComposer(...args); };
+rmSync(join(root, "b"), { recursive: true });
 let service = new BotConversationService(options);
 const wait = async (predicate: () => boolean, description: string) => {
   for (let i = 0; i < 750; i++) { if (predicate()) return; await delay(20); }
@@ -106,6 +114,7 @@ try {
   const paused = gate("work-barrier");
   const first = await command("work-barrier");
   await wait(() => paused.entered, "B normal foreground enters execution barrier");
+  assert(preparedFrozenWorkspace, "selected settings must not bypass actual foreground workspace preparation");
   assert.equal(works.listWorks(LOCAL_USER_ID).length, 0, "acceptance itself never creates Work");
   const delivery = accepted(first.id)!; assert(delivery.accepted_message_id);
   const receiver = service.messages.message(delivery.accepted_message_id)!;
