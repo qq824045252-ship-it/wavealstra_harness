@@ -1,5 +1,7 @@
 # Bot / Work 实施记录
 
+> 2026-11-12 现行契约：本文各阶段为历史实施记录。Issue #21 的共享资源隔离、Work 动作审批及续跑已退役；其后应用权限与预算也按用户方向退役。不得按下文 Phase 3 旧描述重新实现。现状和保留边界见 [退役契约](work-action-approval-loop.md)，最终核对见 [#21 闭环报告](reviews/work-isolation-21-closure-2026-11-12.md)。
+
 实施日期：2026-11-06；交付记录更新：2026-11-08。源码基线：`0501a10bdeff3b80996b16ad14af38521d6b0200`。Phase 1 实现与本记录在同一提交中交付，提交号可用 `git log -1 -- docs/bot-work-implementation.md` 查询。本文件记录实现与检查结果，不修改冻结设计，也不表示 BOT-WORK-1.0 已交付。
 
 **2026-11-08 Gateway 更新：** Bot 页面现已接通 `submitBotDraft`、持久会话历史、原请求重试与停止；下文“草稿占位”仅描述 Phase 1 当时的状态。Gateway 已在媒体接入基线 `de5a7496333f1f359991288582b504006d568c1c` 上继续加固有界缓存、全渠道凭据保护与 SQLite 入站/回复恢复。当前架构和本轮测试边界见 [Gateway 架构](hermes-gateway-architecture.md) 与 [加固复核](reviews/gateway-hardening-2026-11-08.md)。本次不把历史 `353 passed / 1 failed` 作为当前测试结果，也不把代码功能完成等同于真实平台验收。

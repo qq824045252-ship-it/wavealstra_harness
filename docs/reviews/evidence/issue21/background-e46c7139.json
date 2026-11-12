@@ -1,0 +1,146 @@
+{
+  "sourceSha": "e46c7139d64faac2a0538344573428c6c63514ed",
+  "fingerprint": {
+    "sha256": "ce3712857f089c68d723eb2d289ae09ec2e391d747cd2b0dae6c187c71209d84",
+    "files": 1268
+  },
+  "finishedFingerprint": {
+    "sha256": "ce3712857f089c68d723eb2d289ae09ec2e391d747cd2b0dae6c187c71209d84",
+    "files": 1268
+  },
+  "rawReportSha256": "778ffc858e5a17df6385d761d1f02a6cd7b5e32e275c7b0e5826a0934ef87adf",
+  "status": "passed",
+  "cases": [
+    {
+      "name": "Background public research and network read",
+      "kind": "public-research",
+      "status": "passed",
+      "requestStart": 0,
+      "requestEnd": 12,
+      "toolResults": [
+        {
+          "tool": "web_search",
+          "status": "success"
+        },
+        {
+          "tool": "bash",
+          "status": "success"
+        },
+        {
+          "tool": "bash",
+          "status": "success"
+        },
+        {
+          "tool": "write",
+          "status": "success"
+        },
+        {
+          "tool": "read",
+          "status": "success"
+        },
+        {
+          "tool": "edit",
+          "status": "success"
+        },
+        {
+          "tool": "bash",
+          "status": "success"
+        },
+        {
+          "tool": "read",
+          "status": "success"
+        },
+        {
+          "tool": "register_artifact",
+          "status": "success"
+        }
+      ],
+      "actualRequestedTools": [
+        "bash",
+        "edit",
+        "read",
+        "register_artifact",
+        "web_search",
+        "work_create",
+        "write"
+      ],
+      "work": {
+        "workId": "work-18640501-9a5f-4a4f-b1be-6f9742d40221",
+        "lifecycle": "closed",
+        "closureConclusion": "succeeded",
+        "executions": [
+          {
+            "taskId": "work-execution-f6cbc9e7-be29-4ed0-8059-d62bcccc80eb",
+            "status": "completed"
+          }
+        ]
+      },
+      "deliveredFiles": [
+        "research.md"
+      ],
+      "file": {
+        "bytes": 6349,
+        "sha256": "e557218374998f7086e8e1f1a55943965b5d55dbc558711254e23de884a3aae0"
+      }
+    },
+    {
+      "name": "Arithmetic",
+      "kind": "arithmetic",
+      "status": "passed",
+      "requestStart": 12,
+      "requestEnd": 13,
+      "toolResults": [],
+      "actualRequestedTools": []
+    },
+    {
+      "name": "Translation",
+      "kind": "translation",
+      "status": "passed",
+      "requestStart": 13,
+      "requestEnd": 14,
+      "toolResults": [],
+      "actualRequestedTools": [
+        "work_create"
+      ]
+    },
+    {
+      "name": "Editing",
+      "kind": "editing",
+      "status": "passed",
+      "requestStart": 14,
+      "requestEnd": 15,
+      "toolResults": [],
+      "actualRequestedTools": [
+        "work_create"
+      ]
+    },
+    {
+      "name": "Agenda",
+      "kind": "planning",
+      "status": "passed",
+      "requestStart": 15,
+      "requestEnd": 16,
+      "toolResults": [],
+      "actualRequestedTools": [
+        "work_create"
+      ]
+    },
+    {
+      "name": "JSON formatting",
+      "kind": "structured-output",
+      "status": "passed",
+      "requestStart": 16,
+      "requestEnd": 17,
+      "toolResults": [],
+      "actualRequestedTools": [
+        "work_create"
+      ]
+    }
+  ],
+  "modelCalls": 17,
+  "models": [
+    "opendesign/deepseek-v4.1-flash"
+  ],
+  "nativeUi": null,
+  "scope": "Real isolated pnpm dev, online model, actual disk tools and persisted delivery. No product build or real user profile."
+}

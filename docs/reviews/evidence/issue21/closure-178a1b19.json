@@ -1,0 +1,229 @@
+{
+  "sourceSha": "178a1b19470901952b7bae938856c0601398e85e",
+  "fingerprint": {
+    "sha256": "f1b5f69519bc0bf0250063f53eff36179f1b67b4db4e58205be8e6fd7a6c4be8",
+    "files": 1267
+  },
+  "finishedFingerprint": {
+    "sha256": "f1b5f69519bc0bf0250063f53eff36179f1b67b4db4e58205be8e6fd7a6c4be8",
+    "files": 1267
+  },
+  "rawReportSha256": "29f4175f341b5f14b02ad8475ca4a7056a193cb8a5385308ae4389785afc586c",
+  "status": "passed",
+  "cases": [
+    {
+      "name": "Code Mode CSV analysis",
+      "kind": "data-analysis",
+      "status": "passed",
+      "requestStart": 0,
+      "requestEnd": 3,
+      "toolResults": [
+        {
+          "tool": "codemode",
+          "status": "success"
+        },
+        {
+          "tool": "read",
+          "status": "success"
+        },
+        {
+          "tool": "codemode",
+          "status": "success"
+        },
+        {
+          "tool": "read",
+          "status": "success"
+        },
+        {
+          "tool": "write",
+          "status": "success"
+        },
+        {
+          "tool": "read",
+          "status": "success"
+        }
+      ],
+      "actualRequestedTools": [
+        "codemode"
+      ]
+    },
+    {
+      "name": "Code Mode code generation",
+      "kind": "code-generation",
+      "status": "passed",
+      "requestStart": 3,
+      "requestEnd": 7,
+      "toolResults": [
+        {
+          "tool": "codemode",
+          "status": "success"
+        },
+        {
+          "tool": "write",
+          "status": "success"
+        },
+        {
+          "tool": "bash",
+          "status": "success"
+        },
+        {
+          "tool": "codemode",
+          "status": "success"
+        },
+        {
+          "tool": "bash",
+          "status": "success"
+        },
+        {
+          "tool": "codemode",
+          "status": "success"
+        },
+        {
+          "tool": "bash",
+          "status": "success"
+        },
+        {
+          "tool": "write",
+          "status": "success"
+        },
+        {
+          "tool": "read",
+          "status": "success"
+        },
+        {
+          "tool": "read",
+          "status": "success"
+        }
+      ],
+      "actualRequestedTools": [
+        "codemode"
+      ]
+    },
+    {
+      "name": "Native subagent source extraction",
+      "kind": "source-extraction",
+      "status": "passed",
+      "requestStart": 7,
+      "requestEnd": 18,
+      "toolResults": [
+        {
+          "tool": "bash",
+          "status": "success"
+        },
+        {
+          "tool": "subagent",
+          "status": "success"
+        },
+        {
+          "tool": "bash",
+          "status": "success"
+        },
+        {
+          "tool": "register_artifact",
+          "status": "success"
+        }
+      ],
+      "actualRequestedTools": [
+        "bash",
+        "read",
+        "register_artifact",
+        "subagent",
+        "write"
+      ]
+    },
+    {
+      "name": "Ordinary translation with real output",
+      "kind": "translation",
+      "status": "passed",
+      "requestStart": 18,
+      "requestEnd": 21,
+      "toolResults": [
+        {
+          "tool": "write",
+          "status": "success"
+        },
+        {
+          "tool": "read",
+          "status": "success"
+        }
+      ],
+      "actualRequestedTools": [
+        "read",
+        "write"
+      ]
+    },
+    {
+      "name": "Team source document and business closure",
+      "kind": "team-document",
+      "status": "passed",
+      "requestStart": 21,
+      "requestEnd": 35,
+      "toolResults": [],
+      "actualRequestedTools": [
+        "bash",
+        "ls",
+        "read",
+        "register_artifact",
+        "work_query_status",
+        "work_team_create",
+        "work_team_templates",
+        "write"
+      ],
+      "work": {
+        "workId": "work-f43a3bfb-4f0c-4338-aa71-126d0a714b84",
+        "lifecycle": "closed",
+        "closureConclusion": "succeeded",
+        "executions": [
+          {
+            "taskId": "team-execution-f80272ee-820f-4cdb-b25b-0b2948dee5f0",
+            "status": "completed"
+          },
+          {
+            "taskId": "team-execution-1effbef3-2db5-41e2-86c0-c4105b1aff04",
+            "status": "completed"
+          }
+        ]
+      },
+      "deliveredFiles": [
+        "team-note.md"
+      ]
+    },
+    {
+      "name": "Actual stop and same-session recovery",
+      "kind": "cancellation",
+      "status": "passed",
+      "requestStart": 35,
+      "requestEnd": 39,
+      "toolResults": [
+        {
+          "tool": "read",
+          "status": "success"
+        },
+        {
+          "tool": "ls",
+          "status": "success"
+        }
+      ],
+      "actualRequestedTools": [
+        "ls",
+        "read"
+      ],
+      "cancelledOutcome": "aborted",
+      "resumedOutcome": "completed",
+      "forbiddenWriteAbsent": true
+    }
+  ],
+  "modelCalls": 39,
+  "models": [
+    "opendesign/deepseek-v4.1-flash"
+  ],
+  "nativeUi": {
+    "taskId": "closure-1a5ef2f9-82df-4ef7-94f9-3a18ec6662d0",
+    "markerVisible": true,
+    "translationVisible": true,
+    "navigation": "production setActiveTask after actual app restart; no synthetic renderer history"
+  },
+  "scope": "Real isolated pnpm dev, online model, actual disk tools and persisted delivery. No product build or real user profile.",
+  "nativeUiScreenshotSha256": "ede312d17d39656c6fbea31bd7e59da34d944909ae51fc779322ae272eee7276",
+  "nativeUiVisualReview": "Screenshot inspected: ordinary chat shows actual Friday translation, source marker, file link and artifact card in viewport. Screenshot stays local because it contains temporary personal paths."
+}
