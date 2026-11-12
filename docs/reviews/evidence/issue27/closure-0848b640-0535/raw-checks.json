@@ -1,0 +1,536 @@
+{
+  "status": "passed",
+  "evidence": [
+    {
+      "label": "actual window width initial-960",
+      "passed": true,
+      "data": {
+        "label": "initial-960",
+        "at": 1794461774651,
+        "requestedWidth": 960,
+        "client": {
+          "address": "0x5562a16eb480",
+          "mapped": true,
+          "hidden": false,
+          "visible": true,
+          "acceptsInput": true,
+          "at": [
+            215,
+            90
+          ],
+          "size": [
+            960,
+            800
+          ],
+          "workspace": {
+            "address": "3",
+            "id": 3,
+            "type": "normal",
+            "name": "3"
+          },
+          "floating": true,
+          "monitor": 0,
+          "class": "wavealstra-harness",
+          "title": "MyBuddy",
+          "initialClass": "wavealstra-harness",
+          "initialTitle": "MyBuddy",
+          "pid": 2163851,
+          "xwayland": false,
+          "pinned": false,
+          "pinFullscreened": false,
+          "fullscreen": 0,
+          "fullscreenClient": 0,
+          "fullscreenHandler": "default",
+          "allowedOverFullscreen": true,
+          "grouped": [],
+          "tags": [],
+          "swallowing": "0x0",
+          "focusHistoryID": 0,
+          "inhibitingIdle": false,
+          "xdgTag": "",
+          "xdgDescription": "",
+          "contentType": "none",
+          "tearingHint": false,
+          "stableId": "18000519"
+        },
+        "dom": {
+          "innerWidth": 960,
+          "innerHeight": 800,
+          "outerWidth": 960,
+          "outerHeight": 800,
+          "scrollWidth": 960,
+          "composer": true
+        }
+      }
+    },
+    {
+      "label": "no horizontal overflow initial-960",
+      "passed": true
+    },
+    {
+      "label": "foreground completed parallel-execution",
+      "passed": true,
+      "data": {
+        "status": "completed"
+      }
+    },
+    {
+      "label": "A visible before archive and amendment",
+      "passed": true
+    },
+    {
+      "label": "A exact immutable preview while B active",
+      "passed": true
+    },
+    {
+      "label": "official fresh empty conversation is not the archived conversation",
+      "passed": true
+    },
+    {
+      "label": "actual window width second-conversation-1200",
+      "passed": true,
+      "data": {
+        "label": "second-conversation-1200",
+        "at": 1794461848371,
+        "requestedWidth": 1200,
+        "client": {
+          "address": "0x5562a16eb480",
+          "mapped": true,
+          "hidden": false,
+          "visible": true,
+          "acceptsInput": true,
+          "at": [
+            95,
+            90
+          ],
+          "size": [
+            1200,
+            800
+          ],
+          "workspace": {
+            "address": "3",
+            "id": 3,
+            "type": "normal",
+            "name": "3"
+          },
+          "floating": true,
+          "monitor": 0,
+          "class": "wavealstra-harness",
+          "title": "MyBuddy",
+          "initialClass": "wavealstra-harness",
+          "initialTitle": "MyBuddy",
+          "pid": 2163851,
+          "xwayland": false,
+          "pinned": false,
+          "pinFullscreened": false,
+          "fullscreen": 0,
+          "fullscreenClient": 0,
+          "fullscreenHandler": "default",
+          "allowedOverFullscreen": true,
+          "grouped": [],
+          "tags": [],
+          "swallowing": "0x0",
+          "focusHistoryID": 0,
+          "inhibitingIdle": false,
+          "xdgTag": "",
+          "xdgDescription": "",
+          "contentType": "none",
+          "tearingHint": false,
+          "stableId": "18000519"
+        },
+        "dom": {
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "outerWidth": 1200,
+          "outerHeight": 800,
+          "scrollWidth": 1200,
+          "composer": true
+        }
+      }
+    },
+    {
+      "label": "no horizontal overflow second-conversation-1200",
+      "passed": true
+    },
+    {
+      "label": "two real persistent conversation identities after first new request",
+      "passed": true
+    },
+    {
+      "label": "six different semantic types submitted in the same frozen batch",
+      "passed": true
+    },
+    {
+      "label": "A registered while original execution running",
+      "passed": true
+    },
+    {
+      "label": "A original bytes exact",
+      "passed": true
+    },
+    {
+      "label": "old conversation A feedback not inserted into new conversation",
+      "passed": true
+    },
+    {
+      "label": "A delivered immutable registered snapshot",
+      "passed": true
+    },
+    {
+      "label": "new-conversation Work exists while old Work still busy",
+      "passed": true
+    },
+    {
+      "label": "foreground completed amendment",
+      "passed": true,
+      "data": {
+        "status": "completed"
+      }
+    },
+    {
+      "label": "amendment creates no replacement Work",
+      "passed": true
+    },
+    {
+      "label": "amendment preserves unrelated Work revision work-f3e7b6fa-f74d-41e2-b370-3e68fb85e914",
+      "passed": true
+    },
+    {
+      "label": "foreground completed busy-0",
+      "passed": true,
+      "data": {
+        "status": "completed"
+      }
+    },
+    {
+      "label": "busy arithmetic 0",
+      "passed": true
+    },
+    {
+      "label": "foreground completed busy-1",
+      "passed": true,
+      "data": {
+        "status": "completed"
+      }
+    },
+    {
+      "label": "busy arithmetic 1",
+      "passed": true
+    },
+    {
+      "label": "foreground completed direct",
+      "passed": true,
+      "data": {
+        "status": "completed"
+      }
+    },
+    {
+      "label": "foreground completed query",
+      "passed": true,
+      "data": {
+        "status": "completed"
+      }
+    },
+    {
+      "label": "foreground completed analysis",
+      "passed": true,
+      "data": {
+        "status": "completed"
+      }
+    },
+    {
+      "label": "foreground completed reminder",
+      "passed": true,
+      "data": {
+        "status": "completed"
+      }
+    },
+    {
+      "label": "foreground completed file-event",
+      "passed": true,
+      "data": {
+        "status": "completed"
+      }
+    },
+    {
+      "label": "direct arithmetic accurate",
+      "passed": true
+    },
+    {
+      "label": "no new Work for direct",
+      "passed": true
+    },
+    {
+      "label": "no new Work for query",
+      "passed": true
+    },
+    {
+      "label": "no new Work for reminder",
+      "passed": true
+    },
+    {
+      "label": "analysis closes succeeded",
+      "passed": true
+    },
+    {
+      "label": "analysis exact registered actual contents",
+      "passed": true
+    },
+    {
+      "label": "CSV original unchanged",
+      "passed": true
+    },
+    {
+      "label": "amended execution succeeds",
+      "passed": true
+    },
+    {
+      "label": "A bytes unchanged after amendment",
+      "passed": true
+    },
+    {
+      "label": "B final bytes latest revision",
+      "passed": true
+    },
+    {
+      "label": "B latest immutable delivered in original conversation",
+      "passed": true
+    },
+    {
+      "label": "old Work feedback remains in source conversation after cross-conversation amend",
+      "passed": true,
+      "data": {
+        "foreignIds": []
+      }
+    },
+    {
+      "label": "next_event baseline executes nothing",
+      "passed": true
+    },
+    {
+      "label": "file source not cron substitute",
+      "passed": true
+    },
+    {
+      "label": "actual fs.watch event persisted",
+      "passed": true
+    },
+    {
+      "label": "real event output correct",
+      "passed": true
+    },
+    {
+      "label": "event JSON immutable registered and delivered",
+      "passed": true
+    },
+    {
+      "label": "same-byte duplicate creates no new execution event or output",
+      "passed": true
+    },
+    {
+      "label": "event processor fixture not rewritten",
+      "passed": true
+    },
+    {
+      "label": "pure reminder delivered at actual clock",
+      "passed": true
+    },
+    {
+      "label": "reminder only delivered in originating second conversation",
+      "passed": true
+    },
+    {
+      "label": "reminder operation linked to exact request ID",
+      "passed": true
+    },
+    {
+      "label": "actual window width results-960",
+      "passed": true,
+      "data": {
+        "label": "results-960",
+        "at": 1794462036797,
+        "requestedWidth": 960,
+        "client": {
+          "address": "0x5562a16eb480",
+          "mapped": true,
+          "hidden": false,
+          "visible": true,
+          "acceptsInput": true,
+          "at": [
+            215,
+            90
+          ],
+          "size": [
+            960,
+            800
+          ],
+          "workspace": {
+            "address": "3",
+            "id": 3,
+            "type": "normal",
+            "name": "3"
+          },
+          "floating": true,
+          "monitor": 0,
+          "class": "wavealstra-harness",
+          "title": "MyBuddy",
+          "initialClass": "wavealstra-harness",
+          "initialTitle": "MyBuddy",
+          "pid": 2163851,
+          "xwayland": false,
+          "pinned": false,
+          "pinFullscreened": false,
+          "fullscreen": 0,
+          "fullscreenClient": 0,
+          "fullscreenHandler": "default",
+          "allowedOverFullscreen": true,
+          "grouped": [],
+          "tags": [],
+          "swallowing": "0x0",
+          "focusHistoryID": 0,
+          "inhibitingIdle": false,
+          "xdgTag": "",
+          "xdgDescription": "",
+          "contentType": "none",
+          "tearingHint": false,
+          "stableId": "18000519"
+        },
+        "dom": {
+          "innerWidth": 960,
+          "innerHeight": 800,
+          "outerWidth": 960,
+          "outerHeight": 800,
+          "scrollWidth": 960,
+          "composer": true
+        }
+      }
+    },
+    {
+      "label": "no horizontal overflow results-960",
+      "passed": true
+    },
+    {
+      "label": "visible exact immutable analysis.txt",
+      "passed": true
+    },
+    {
+      "label": "preview does not mutate analysis.txt",
+      "passed": true
+    },
+    {
+      "label": "actual window width results-1200",
+      "passed": true,
+      "data": {
+        "label": "results-1200",
+        "at": 1794462037879,
+        "requestedWidth": 1200,
+        "client": {
+          "address": "0x5562a16eb480",
+          "mapped": true,
+          "hidden": false,
+          "visible": true,
+          "acceptsInput": true,
+          "at": [
+            95,
+            90
+          ],
+          "size": [
+            1200,
+            800
+          ],
+          "workspace": {
+            "address": "3",
+            "id": 3,
+            "type": "normal",
+            "name": "3"
+          },
+          "floating": true,
+          "monitor": 0,
+          "class": "wavealstra-harness",
+          "title": "MyBuddy",
+          "initialClass": "wavealstra-harness",
+          "initialTitle": "MyBuddy",
+          "pid": 2163851,
+          "xwayland": false,
+          "pinned": false,
+          "pinFullscreened": false,
+          "fullscreen": 0,
+          "fullscreenClient": 0,
+          "fullscreenHandler": "default",
+          "allowedOverFullscreen": true,
+          "grouped": [],
+          "tags": [],
+          "swallowing": "0x0",
+          "focusHistoryID": 0,
+          "inhibitingIdle": false,
+          "xdgTag": "",
+          "xdgDescription": "",
+          "contentType": "none",
+          "tearingHint": false,
+          "stableId": "18000519"
+        },
+        "dom": {
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "outerWidth": 1200,
+          "outerHeight": 800,
+          "scrollWidth": 1200,
+          "composer": true
+        }
+      }
+    },
+    {
+      "label": "no horizontal overflow results-1200",
+      "passed": true
+    },
+    {
+      "label": "visible exact immutable event-result.json",
+      "passed": true
+    },
+    {
+      "label": "preview does not mutate event-result.json",
+      "passed": true
+    },
+    {
+      "label": "source request and answer displayed parallel-execution visit 1",
+      "passed": true
+    },
+    {
+      "label": "source foreground view excludes other request messages parallel-execution",
+      "passed": true
+    },
+    {
+      "label": "source request and answer displayed analysis visit 2",
+      "passed": true
+    },
+    {
+      "label": "source foreground view excludes other request messages analysis",
+      "passed": true
+    },
+    {
+      "label": "source request and answer displayed parallel-execution visit 3",
+      "passed": true
+    },
+    {
+      "label": "source foreground view excludes other request messages parallel-execution",
+      "passed": true
+    },
+    {
+      "label": "A transport-observed write call exactly once across revisions",
+      "passed": true
+    },
+    {
+      "label": "B original transport-observed write call exactly once",
+      "passed": true
+    },
+    {
+      "label": "B amended transport-observed write call exactly once",
+      "passed": true
+    },
+    {
+      "label": "only required real model",
+      "passed": true
+    }
+  ],
+  "failures": []
+}

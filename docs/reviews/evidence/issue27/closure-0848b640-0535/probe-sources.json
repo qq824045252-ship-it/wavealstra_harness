@@ -1,0 +1,22 @@
+[
+  {
+    "file": "/home/vivion/iq27-tmp/closure-v6/main-probe.cjs",
+    "sha256": "71d87fe97b226a14cb14aa0ccf7641ef0512971366e7c85f4ca10bc1916cd025"
+  },
+  {
+    "file": "/home/vivion/iq27-tmp/closure-v6/collector.cjs",
+    "sha256": "9fe456a4298bf8a3e053fa74bdcd66f0c83dbfa0f5145c33d6c493ee6519c9c9"
+  },
+  {
+    "file": "/home/vivion/iq27-tmp/closure-v6/bootstrap.cjs",
+    "sha256": "2d6c82b4060fa38683e81fe380d03c8f0d097812d50e04650814d425379463ee"
+  },
+  {
+    "file": "/home/vivion/iq27-tmp/closure-v6/analyze.cjs",
+    "sha256": "93ddf16f8286800ff5a5e0ac7e6562997aa5d804653e9d0db002e6b2a33a80c2"
+  },
+  {
+    "file": "/home/vivion/iq27-tmp/closure-v6/open-probe.cjs",
+    "sha256": "384d4e786a1695d28a684bfd4812d58a494ebac6ba5514ce06755ab7c904a3a4"
+  }
+]

@@ -1,0 +1,14 @@
+{
+  "harness": {
+    "runner": "/home/vivion/iq27-tmp/closure-v6/runner.cjs",
+    "scenario": "/home/vivion/iq27-tmp/closure-v6/scenario.cjs",
+    "sha256": "6deed55c85d9017195a9ab75f7b5eecb33bb5513cb081ceb2d3a0df9bae02068"
+  },
+  "root": "/home/vivion/iq27-tmp/s27-final-0848b640",
+  "capturedAt": 1794461707002,
+  "fingerprint": {
+    "sha256": "5f0efb48dab872477611388c1abb1b4e986f6840f31a995fb2de27aaf258fe2d",
+    "files": 1270
+  },
+  "snapshotLabel": "0848b640ffc74bf501343b358a7d1974974a7401"
+}
