@@ -1,0 +1,27 @@
+{
+  "upstream": "0848b640",
+  "issueCommit": "af8c3508",
+  "resolutions": [
+    {
+      "file": "package.json",
+      "conflicts": 1
+    },
+    {
+      "file": "scripts/test-all.mjs",
+      "conflicts": 2
+    },
+    {
+      "file": "scripts/bot-frontdoor-live-test.cjs",
+      "conflicts": 3
+    },
+    {
+      "file": "src/main/agent/work/BotConversationService.ts",
+      "conflicts": 2
+    },
+    {
+      "file": "src/main/agent/work/BotPeerCallService.ts",
+      "conflicts": 1
+    }
+  ],
+  "policy": "Keep upstream recall/yesterday/context tools and live scenarios; keep authenticated collaboration, receipt ordering and target Work ownership. Package test scripts and suite classifications are unioned."
+}

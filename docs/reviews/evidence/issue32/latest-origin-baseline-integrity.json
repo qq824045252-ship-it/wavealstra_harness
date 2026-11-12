@@ -1,0 +1,67 @@
+{
+  "origin": "0848b640ffc74bf501343b358a7d1974974a7401",
+  "trackedFileCount": 3283,
+  "changedDuringTests": [],
+  "results": [
+    {
+      "test": "test:bot-reminders",
+      "exitCode": 1,
+      "signal": null
+    },
+    {
+      "test": "test:cloudflared-cli-detect",
+      "exitCode": 1,
+      "signal": null
+    },
+    {
+      "test": "test:durable-artifact-registration",
+      "exitCode": 1,
+      "signal": null
+    },
+    {
+      "test": "test:durable-task-projection",
+      "exitCode": 1,
+      "signal": null
+    },
+    {
+      "test": "test:gadget-blueprint",
+      "exitCode": 1,
+      "signal": null
+    },
+    {
+      "test": "test:gadget-runtime-lifecycle",
+      "exitCode": 1,
+      "signal": null
+    },
+    {
+      "test": "test:gateway-media",
+      "exitCode": 1,
+      "signal": null
+    },
+    {
+      "test": "test:pinned-public-proxy",
+      "exitCode": 1,
+      "signal": null
+    },
+    {
+      "test": "test:session-history-recovery",
+      "exitCode": 1,
+      "signal": null
+    },
+    {
+      "test": "test:slack-media",
+      "exitCode": 1,
+      "signal": null
+    },
+    {
+      "test": "test:test-bundle-pool",
+      "exitCode": 1,
+      "signal": null
+    },
+    {
+      "test": "test:work-watch-supervision",
+      "exitCode": 1,
+      "signal": null
+    }
+  ]
+}

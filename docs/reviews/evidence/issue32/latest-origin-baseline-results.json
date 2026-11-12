@@ -1,0 +1,114 @@
+{
+  "origin": "0848b640ffc74bf501343b358a7d1974974a7401",
+  "archiveSHA256": "51041b64e2d5d187b95c4b7d32414e2e77c373f95725ac25ff90327444538b57",
+  "results": [
+    {
+      "test": "test:bot-reminders",
+      "exitCode": 1,
+      "signal": null,
+      "elapsedMs": 3046,
+      "log": "out\\diagnostics\\issue32\\latest-origin-bot-reminders.log",
+      "sha256": "0baa63e17fe241d0d88a8948915f34dd973beeee6fbcac6521ffb194992b3b56",
+      "tail": "\n  out\\tests\\bot-reminders-test.cjs  2.2mb\n\nDone in 256ms\n[test-guard] pid=35640 cmd=node --max-old-space-size=4096 out/tests/bot-reminders-test.cjs mem_cap=6144MB timeout=900s poll=1500ms\nTypeError: Cannot read properties of undefined (reading 'openPath')\n    at main (<repo>\\out\\diagnostics\\issue32\\latest-origin-baseline\\out\\tests\\bot-reminders-test.cjs:47875:88)\n[test-guard] exit pid=35640 code=1 elapsed=2s\n[ELIFECYCLE] Command failed with exit code 1.\n"
+    },
+    {
+      "test": "test:cloudflared-cli-detect",
+      "exitCode": 1,
+      "signal": null,
+      "elapsedMs": 465,
+      "log": "out\\diagnostics\\issue32\\latest-origin-cloudflared-cli-detect.log",
+      "sha256": "128aa9c8f46e91597aa6bc80216a07efc2ac25c3d23e55c28af3b547e16f8755",
+      "tail": "  actual: '<drive-less-temp>\\\\mybuddy-cloudflared-detect-BxFIiz\\\\bin\\\\cloudflared',\r\n  expected: '<temp>\\\\mybuddy-cloudflared-detect-BxFIiz\\\\bin\\\\cloudflared',\r\n  operator: 'strictEqual',\r\n  diff: 'simple'\r\n}\r\n\r\nNode.js v24.19.0\r\n[test-guard] exit pid=31964 code=1 elapsed=0s\n[ELIFECYCLE] Command failed with exit code 1.\n"
+    },
+    {
+      "test": "test:durable-artifact-registration",
+      "exitCode": 1,
+      "signal": null,
+      "elapsedMs": 2609,
+      "log": "out\\diagnostics\\issue32\\latest-origin-durable-artifact-registration.log",
+      "sha256": "40d98943f157584ae5be4ec0d74d7fcf56b821ab385370df907cccf78d953c3d",
+      "tail": "  code: 'EPERM',\r\n  syscall: 'symlink',\r\n  path: '<temp>\\\\artifact-registration-8X0YzW\\\\outside.html',\r\n  dest: '<temp>\\\\artifact-registration-8X0YzW\\\\workspace\\\\escape.html'\r\n}\r\n\r\nNode.js v24.19.0\r\n[test-guard] exit pid=39384 code=1 elapsed=2s\n[ELIFECYCLE] Command failed with exit code 1.\n"
+    },
+    {
+      "test": "test:durable-task-projection",
+      "exitCode": 1,
+      "signal": null,
+      "elapsedMs": 975,
+      "log": "out\\diagnostics\\issue32\\latest-origin-durable-task-projection.log",
+      "sha256": "eccd253b576eec5bde41bc1a9757fa67e6f595a01853c1b3d112cccc599b5c9d",
+      "tail": "  errno: 1,\r\n  code: 'EPERM',\r\n  path: '\\\\\\\\?\\\\<temp>\\\\mybuddy-durable-task-projection-test-NRY5Fj',\r\n  syscall: 'rm'\r\n}\r\n\r\nNode.js v24.19.0\r\n[test-guard] exit pid=1556 code=1 elapsed=1s\n[ELIFECYCLE] Command failed with exit code 1.\n"
+    },
+    {
+      "test": "test:gadget-blueprint",
+      "exitCode": 1,
+      "signal": null,
+      "elapsedMs": 814,
+      "log": "out\\diagnostics\\issue32\\latest-origin-gadget-blueprint.log",
+      "sha256": "32b3a4932ea80b90595b096bf11f3513406b9635c6f036b9aefbeecdd2a3134b",
+      "tail": "    at node:internal/main/run_main_module:33:47 {\n  errno: -4048,\n  code: 'EPERM',\n  syscall: 'symlink',\n  path: '<temp>\\\\mybuddy-gadget-blueprint-6IRcaF\\\\workspace\\\\gadgets\\\\中文 - - - Gadget-gdt-ec16648a-8402-4850-b988-e26fab275ef0\\\\code\\\\pages\\\\index.html',\n  dest: '<temp>\\\\mybuddy-gadget-blueprint-6IRcaF\\\\gadgets\\\\gdt-ec16648a-8402-4850-b988-e26fab275ef0\\\\code\\\\outside.html'\n}\n[test-guard] exit pid=36332 code=1 elapsed=0s\n[ELIFECYCLE] Command failed with exit code 1.\n"
+    },
+    {
+      "test": "test:gadget-runtime-lifecycle",
+      "exitCode": 1,
+      "signal": null,
+      "elapsedMs": 986,
+      "log": "out\\diagnostics\\issue32\\latest-origin-gadget-runtime-lifecycle.log",
+      "sha256": "be17ea2b9c00cedc22e45eb64dc30cc814ffd04650ee642cf8f7b8ae9e16927f",
+      "tail": "  generatedMessage: true,\n  code: 'ERR_ASSERTION',\n  actual: null,\n  expected: 'SIGTERM',\n  operator: 'strictEqual',\n  diff: 'simple'\n}\n[test-guard] exit pid=38808 code=1 elapsed=1s\n[ELIFECYCLE] Command failed with exit code 1.\n"
+    },
+    {
+      "test": "test:gateway-media",
+      "exitCode": 1,
+      "signal": null,
+      "elapsedMs": 418,
+      "log": "out\\diagnostics\\issue32\\latest-origin-gateway-media.log",
+      "sha256": "7c7223314f94f373f6792c41bb5ef208ec2deaa13b63eda7d78352c2d1dbb386",
+      "tail": "  code: 'EPERM',\r\n  syscall: 'symlink',\r\n  path: '<temp>\\\\gateway-media-test-63LOcb',\r\n  dest: '<temp>\\\\gateway-media-test-63LOcb\\\\link'\r\n}\r\n\r\nNode.js v24.19.0\r\n[test-guard] exit pid=25396 code=1 elapsed=0s\n[ELIFECYCLE] Command failed with exit code 1.\n"
+    },
+    {
+      "test": "test:pinned-public-proxy",
+      "exitCode": 1,
+      "signal": null,
+      "elapsedMs": 571,
+      "log": "out\\diagnostics\\issue32\\latest-origin-pinned-public-proxy.log",
+      "sha256": "c7919393533a9e3c07880ed06a9287305910ae1d4ff11992cbaf2dbd0f9daca7",
+      "tail": "  actual: undefined,\r\n  expected: true,\r\n  operator: '==',\r\n  diff: 'simple'\r\n}\r\n\r\nNode.js v24.19.0\r\n[test-guard] exit pid=29844 code=1 elapsed=0s\n[ELIFECYCLE] Command failed with exit code 1.\n"
+    },
+    {
+      "test": "test:session-history-recovery",
+      "exitCode": 1,
+      "signal": null,
+      "elapsedMs": 4114,
+      "log": "out\\diagnostics\\issue32\\latest-origin-session-history-recovery.log",
+      "sha256": "398504177335afcb31950d2312ddf77e4c63fad40c301c8eca2fb264790a74c0",
+      "tail": "  actual: false,\r\n  expected: true,\r\n  operator: '==',\r\n  diff: 'simple'\r\n}\r\n\r\nNode.js v24.19.0\r\n[test-guard] exit pid=2404 code=1 elapsed=3s\n[ELIFECYCLE] Command failed with exit code 1.\n"
+    },
+    {
+      "test": "test:slack-media",
+      "exitCode": 1,
+      "signal": null,
+      "elapsedMs": 803,
+      "log": "out\\diagnostics\\issue32\\latest-origin-slack-media.log",
+      "sha256": "93965c8622fb8cefb9df3f311e9fd05f769380b53392336b711cb901fe71984a",
+      "tail": "  code: 'EPERM',\r\n  syscall: 'symlink',\r\n  path: '<temp>\\\\slack-media-CDb31H\\\\linked-bytes',\r\n  dest: '<temp>\\\\slack-media-CDb31H\\\\media\\\\06ef5892a96037b4eaac8d9b3dd5ee8765933a1f199b36cea53d2a163e091ae0.txt'\r\n}\r\n\r\nNode.js v24.19.0\r\n[test-guard] exit pid=28992 code=1 elapsed=0s\n[ELIFECYCLE] Command failed with exit code 1.\n"
+    },
+    {
+      "test": "test:test-bundle-pool",
+      "exitCode": 1,
+      "signal": null,
+      "elapsedMs": 1340,
+      "log": "out\\diagnostics\\issue32\\latest-origin-test-bundle-pool.log",
+      "sha256": "66a37b1adb594c6f60b732b0c2987e052548d7a3136c0cfcab00acfb1ce5d024",
+      "tail": "    actual: 'X [ERROR] Failed to write to output file: open <temp>\\\\mybuddy-test-pool-s80ajN\\\\out\\\\tests\\\\good.cjs: Access is denied.\\n\\n',\n    expected: undefined,\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n$ node scripts/test-guard.mjs node --test scripts/test-bundle-pool.test.mjs\n[test-guard] pid=8180 cmd=node --max-old-space-size=4096 --test scripts/test-bundle-pool.test.mjs mem_cap=6144MB timeout=900s poll=1500ms\n[test-guard] exit pid=8180 code=1 elapsed=1s\n[ELIFECYCLE] Command failed with exit code 1.\n"
+    },
+    {
+      "test": "test:work-watch-supervision",
+      "exitCode": 1,
+      "signal": null,
+      "elapsedMs": 4437,
+      "log": "out\\diagnostics\\issue32\\latest-origin-work-watch-supervision.log",
+      "sha256": "d68a04d0bc6812fd7bcd58f58a12eca7401f98bb85bac5d7c24bc601edecf877",
+      "tail": "  actual: 0,\r\n  expected: 1,\r\n  operator: 'strictEqual',\r\n  diff: 'simple'\r\n}\r\n\r\nNode.js v24.19.0\r\n[test-guard] exit pid=32692 code=1 elapsed=4s\n[ELIFECYCLE] Command failed with exit code 1.\n"
+    }
+  ]
+}
