@@ -673,6 +673,7 @@
     "test:bot-result-delivery": "esbuild scripts/bot-result-delivery-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/bot-result-delivery-test.mjs && node scripts/test-guard.mjs out/tests/bot-result-delivery-test.mjs",
     "test:bot-result-delivery:live": "node scripts/bot-result-delivery-live-test.cjs",
     "test:durable-tool-diagnostics": "esbuild scripts/durable-tool-diagnostics-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/durable-tool-diagnostics-test.mjs && node scripts/test-guard.mjs out/tests/durable-tool-diagnostics-test.mjs",
+    "test:browser-benchmark-report": "node scripts/browser-benchmark-report-test.mjs",
     "test:browser-contract": "esbuild scripts/browser-contract-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/browser-contract-test.mjs && node scripts/test-guard.mjs out/tests/browser-contract-test.mjs",
     "test:browser-durable-composition": "esbuild scripts/browser-durable-composition-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/browser-durable-composition-test.mjs && node scripts/test-guard.mjs out/tests/browser-durable-composition-test.mjs",
     "test:browser-production-live": "node scripts/browser-production-benchmark.mjs",

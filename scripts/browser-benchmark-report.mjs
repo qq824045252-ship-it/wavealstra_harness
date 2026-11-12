@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
+import { browserBenchmarkCache } from "./browser-benchmark-cache.mjs";
 
 const directory = resolve(process.argv[2] ?? "");
 const manifest = JSON.parse(readFileSync(join(directory, "manifest.json"), "utf8"));
@@ -12,9 +13,8 @@ for (const run of manifest.runs) {
       elapsedMs: call.elapsedMs ?? null, httpStatus: call.httpStatus ?? null, error: call.error ?? null,
       transportState: call.error ? "failed" : call.elapsedMs === undefined ? "open-at-process-exit" : "completed",
       inputTokens: usage?.prompt_tokens ?? null, outputTokens: usage?.completion_tokens ?? null,
-      cacheReadTokens: usage?.prompt_tokens_details?.cached_tokens ?? usage?.cache_read_input_tokens ?? null,
+      ...browserBenchmarkCache(usage),
       cacheWriteTokens: usage?.cache_creation_input_tokens ?? null, costUsd: typeof usage?.cost === "number" ? usage.cost : null,
-      cacheState: typeof usage?.prompt_tokens_details?.cached_tokens === "number" ? usage.prompt_tokens_details.cached_tokens > 0 ? "cache-read-reported" : "zero-cache-read-reported" : "unknown",
       toolDefinitionChars: call.toolDefinitionChars ?? null, maxTokens: call.maxTokens ?? null,
       requestedModel: call.requestedModel ?? null, returnedModels: call.returnedModels ?? [], reasoning: call.reasoning ?? null });
   }

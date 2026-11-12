@@ -397,6 +397,7 @@ const HEADLESS_TESTS = new Set([
   "test:app-store-runtime",
   "test:app-store-transactions",
   "test:task-file-changes",
+  "test:browser-benchmark-report",
   "test:browser-contract",
   "test:browser-durable-composition",
   "test:browser-open-guard", // 纯源码文本断言（stale preload 回归门），6/6 PASS
