@@ -463,7 +463,9 @@ export function BotMessage({ message, botName, works, onOpenWork, onOpenCollabor
   const receiptOnly = segments.length > 0 && !hasModelText;
   const showActivity = running && !(receiptOnly && !message.activity && message.status !== "unknown");
   const hasContent = Boolean(message.text) || segments.length > 0;
-  return <article className={`bot-message msg-row ${message.role}`} data-message-id={message.messageId} data-streaming={message.role === "assistant" && message.status === "running" ? "true" : undefined} aria-label={`${message.role === "user" ? "你" : botName}的消息`}>
+  const author = message.peerOrigin && message.role === "user" ? `来自 ${message.peerOrigin.senderDisplayName} · Bot 协作` : message.role === "user" ? "你" : botName;
+  return <article className={`bot-message msg-row ${message.role}`} data-message-id={message.messageId} data-streaming={message.role === "assistant" && message.status === "running" ? "true" : undefined} aria-label={`${author}的消息`}>
+    {message.role === "user" && message.peerOrigin && <div className="bot-message-author"><strong>{author}</strong></div>}
     {message.role === "assistant" && <div className="bot-message-author"><span className="bot-avatar" aria-hidden="true"><IconBot size={16} /></span><strong>{botName}</strong></div>}
     {message.role === "assistant" && sourceQuestion && !message.workFeedback && <div className="bot-reply-reference" aria-label="回复对应问题">回复：{botMessageDisplayText(sourceQuestion.text) || sourceQuestion.attachments?.map(item => item.name).join("、")}</div>}
     {message.role === "user" ? <div className="user-bubble">{Boolean(message.attachments?.length) && <div className="input-attach-chips"><ComposerAttachmentChips attachments={message.attachments ?? []} /></div>}{message.text && <div className="user-bubble-text">{botMessageDisplayText(message.text)}</div>}</div> : <div className="bot-assistant-content">

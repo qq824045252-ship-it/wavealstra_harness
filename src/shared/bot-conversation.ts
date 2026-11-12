@@ -1,5 +1,6 @@
 import { botOrganizationSummarySchema } from "./bot-organization";
 import { z } from "zod";
+import { botPeerOriginSchema } from "./bot-peer-origin";
 import { requestConsultForMessage } from "./multi-model-consult";
 import type { WorkProjectionDto } from "./bot-work";
 import { botCollaborationSchema } from "./bot-collaboration";
@@ -75,6 +76,7 @@ export const botCallSchema = z.object({
 }).strict();
 export type BotCallDto = z.infer<typeof botCallSchema>;
 export const botMessageSchema = z.object({
+  peerOrigin: botPeerOriginSchema.optional(),
   messageId: id, conversationId: id, botId: id, teamId: id.optional(), requestId: id, ordinal: z.number().int().positive(),
   messageRevision: z.number().int().nonnegative().optional(),
   metrics: z.custom<BotForegroundMetrics>().optional(),

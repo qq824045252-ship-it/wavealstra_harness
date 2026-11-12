@@ -6,6 +6,7 @@ export { createIdempotencyGuard, isAllowedUser } from "./GatewayRateLimiter";
 export { GATEWAY_REDACTED } from "./GatewaySecrets";
 import { GatewayLifecycleManager } from "./GatewayLifecycleManager";
 import { GatewayDeliveryJournal } from "./GatewayDeliveryJournal";
+import type { GatewayBotOrigin } from "../agent/work/BotTurnOrigins";
 import { gatewayReplySecretCodec } from "./GatewayRouteCredentials";
 import { join } from "node:path";
 import { BrowserWindow } from "electron";
@@ -128,13 +129,22 @@ export class GatewayService {
 
   constructor(
     private readonly db: AppDatabase,
-    private readonly agent: Pick<AgentService, "runGatewayTurn">,
+    private readonly agent: Pick<AgentService, "runGatewayTurn"> & Partial<Pick<AgentService, "completeBotContinuation" | "canSendBotContinuation">>,
     private readonly projectMessageSink?: GatewayProjectMessageSink,
     options: GatewayServiceOptions = {},
   ) {
     this.settingsStore = options.settingsStore ?? new AppSettingsStore();
+    const journal = options.durableInbox !== false && db.connection ? new GatewayDeliveryJournal(db.connection) : undefined;
     this.platforms = new GatewayPlatformRegistry({
-      ...(options.durableInbox !== false && db.connection ? { journal: new GatewayDeliveryJournal(db.connection) } : {}),
+      ...(journal ? { journal } : {}),
+      onReplySent: deliveryId => {
+        const operationId = journal?.continuationOperation(deliveryId);
+        if (operationId) this.agent.completeBotContinuation?.(operationId);
+      },
+      replyCurrent: deliveryId => {
+        const operationId = journal?.continuationOperation(deliveryId);
+        return !operationId || this.agent.canSendBotContinuation?.(operationId) !== false;
+      },
       replayNativeReceipts: true,
       authorize: message => !this.stopping && this.channelPolicies.has(message.channelId)
         && this.isAllowed(message.channelId, message.sender?.id),
@@ -362,6 +372,10 @@ export class GatewayService {
     if (!gatewayCapabilities(adapter).workNotifications || !adapter.sendWorkNotification) return "Gateway 渠道不支持 Work 出站";
     if (!this.isAllowed(target.channelId, target.senderId)) return "原始发送者已不在 Gateway 允许名单中";
     return undefined;
+  }
+
+  sendBotContinuation(origin: GatewayBotOrigin, operationId: string, text: string): Promise<void> {
+    return this.platforms.continueBotReply(origin, operationId, this.secrets.redact(text));
   }
 
   async sendWorkNotification(input: GatewayWorkSendInput): Promise<GatewayWorkSendResult> {

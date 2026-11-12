@@ -9,6 +9,7 @@ import type { GatewayInboundMessage } from "./channels";
 import { GATEWAY_MEDIA_LIMITS } from "./GatewayMedia";
 import { gatewayReplyRouteSchema, type GatewayReplyRoute } from "./GatewayReply";
 import { gatewayWorkTargetSchema, type GatewayWorkTarget } from "./work-outbound";
+import type { GatewayBotOrigin } from "../agent/work/BotTurnOrigins";
 
 type InboxStatus = "pending" | "running" | "reply_pending" | "completed" | "blocked" | "unknown";
 type OutboxStatus = "pending" | "sending" | "sent" | "blocked" | "failed" | "unknown";
@@ -83,6 +84,7 @@ export class GatewayDeliveryJournal {
       throw new Error("Gateway 持久队列限制无效");
     }
     ensureGatewayDeliveryTables(db);
+    db.exec("CREATE TABLE IF NOT EXISTS bot_gateway_continuations(delivery_id TEXT PRIMARY KEY,operation_id TEXT NOT NULL UNIQUE)");
   }
 
   private attachment(file: { name: string; path: string }): StoredAttachment {
@@ -157,6 +159,50 @@ export class GatewayDeliveryJournal {
 
   get(id: string): GatewayInboxEntry | undefined {
     return this.db.prepare("SELECT * FROM gateway_inbox WHERE delivery_id=?").get(id) as GatewayInboxEntry | undefined;
+  }
+  /** Response-only continuation. Its outbox commits atomically, so recovery can
+   * never treat it as another human input or re-run the original model turn. */
+  continueReply(origin: GatewayBotOrigin, operationId: string, text: string): GatewayInboxEntry {
+    const saved = this.db.prepare(`SELECT * FROM gateway_inbox WHERE channel_id=? AND account_key=? AND chat_id=? AND message_id=?`)
+      .get(origin.channelId, origin.connectionKey, origin.chatId, origin.messageId) as GatewayInboxEntry | undefined;
+    const target = origin.workTarget ? gatewayWorkTargetSchema.parse(origin.workTarget) : undefined;
+    const slack = target?.channelType === "slack" ? target : undefined;
+    if (slack && (slack.channelId !== origin.channelId || slack.connectionKey !== origin.connectionKey || slack.chatId !== origin.chatId
+      || slack.senderId !== origin.senderId || origin.audience !== "private" || !slack.address.channel.startsWith("D")))
+      throw new Error("协作回传来源不是原私人发送者");
+    // Slack's original input belongs to its existing Slack journal. This is an
+    // outbox-only reply addressed by that input's persisted, authenticated target.
+    const original: Pick<GatewayInboxEntry, "delivery_id" | "platform" | "channel_id" | "account_key" | "chat_id" | "session_key"> | undefined = saved ?? (slack ? {
+      delivery_id: digest(JSON.stringify(["slack-bot-source", origin.channelId, origin.connectionKey, origin.chatId, origin.senderId, origin.messageId])),
+      platform: "slack", channel_id: origin.channelId,
+      account_key: origin.connectionKey, chat_id: origin.chatId, session_key: JSON.stringify([origin.channelId, origin.connectionKey, origin.chatId]),
+    } : undefined);
+    if (!original) throw new Error("原渠道持久回执不可用，协作成果保留，不改投其他会话");
+    const payload: GatewayStoredPayload = saved ? this.decode(saved, false) : { version: 1, channelId: origin.channelId,
+      chatId: origin.chatId, messageId: origin.messageId, sender: { id: origin.senderId }, audience: "private", text: "", workTarget: slack };
+    if (payload.sender?.id !== origin.senderId || payload.audience === "shared") throw new Error("协作回传来源不是原私人发送者");
+    const id = digest(JSON.stringify(["bot-continuation", original.delivery_id, operationId]));
+    return this.db.transaction(() => {
+      const previous = this.get(id);
+      if (previous) {
+        const outbox = this.outbox(id);
+        if (!outbox || outbox.reply_text !== text) throw new Error("idempotency_conflict: 协作渠道回传正文已固定");
+        return previous;
+      }
+      const messageId = `bot-reply:${id}`, now = this.now();
+      const json = JSON.stringify({ ...payload, messageId, text: "", attachments: undefined });
+      this.db.prepare(`INSERT INTO gateway_inbox(delivery_id,platform,channel_id,account_key,chat_id,session_key,message_id,
+        payload_json,payload_hash,status,retry_count,receipt_mode,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,'reply_pending',0,'none',?,?)`)
+        .run(id, original.platform, original.channel_id, original.account_key, original.chat_id, original.session_key,
+          messageId, json, digest(json), now, now);
+      this.queueReply(id, text);
+      this.db.prepare("INSERT OR IGNORE INTO bot_gateway_continuations VALUES(?,?)").run(id, operationId);
+      return this.get(id)!;
+    })();
+  }
+  continuationOperation(deliveryId: string): string | undefined {
+    const row = this.db.prepare("SELECT operation_id FROM bot_gateway_continuations WHERE delivery_id=?").get(deliveryId) as { operation_id: string } | undefined;
+    return row?.operation_id;
   }
   outbox(id: string): GatewayOutboxEntry | undefined {
     return this.db.prepare("SELECT * FROM gateway_outbox WHERE delivery_id=?").get(id) as GatewayOutboxEntry | undefined;

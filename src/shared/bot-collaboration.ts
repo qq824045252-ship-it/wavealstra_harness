@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { workFeedbackSchema } from "./bot-work-feedback";
+import type { BotSendReceipt, BotMessageDto } from "./bot-conversation";
 
 const id = z.string().trim().min(1).max(500);
 const time = z.number().int().nonnegative();
@@ -71,4 +72,8 @@ export interface BotCollaborationHistoryPage {
   previews: BotCollaborationPreviewDto[];
   totalMessages: number;
   nextCursor: string | null;
+  receivers?: BotCollaborationReceiver[];
 }
+export type BotCollaborationReceiver = Omit<BotSendReceipt, "teamId" | "replayed"> & {
+  exchangeId: string; status: BotMessageDto["status"]; acceptedAt: number; startedAt: number | null; endedAt: number | null;
+};

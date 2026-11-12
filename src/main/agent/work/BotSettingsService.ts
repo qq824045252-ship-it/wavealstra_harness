@@ -193,12 +193,25 @@ export class BotSettingsService {
   forWork(workId: string, botId: string, workspacePath?: string): BotSettingsDto {
     const row = this.db.connection.prepare("SELECT settings_json FROM bot_work_settings WHERE work_id=?").get(workId) as {settings_json: string} | undefined;
     if (row) { const frozen = JSON.parse(row.settings_json) as BotSettingsDto; return { ...frozen, spaceId: new BotWorkspaceNavigationService(this.db, this.userId).spaceForWork(workId, botId) }; }
-    const work = this.db.connection.prepare("SELECT source_message_id FROM works WHERE work_id=?").get(workId) as { source_message_id?: string } | undefined;
-    const base = { ...(this.messageSettings(work?.source_message_id, botId)?.settings ?? this.get(botId)), spaceId: new BotWorkspaceNavigationService(this.db, this.userId).spaceForWork(workId, botId) };
+    const work = this.db.connection.prepare("SELECT source_message_id,input_snapshot_id FROM works WHERE work_id=?").get(workId) as { source_message_id?: string; input_snapshot_id: string } | undefined;
+    const selected = work && this.workMessageSettings({ workId, sourceMessageId: work.source_message_id, inputSnapshotId: work.input_snapshot_id }, botId);
+    const base = { ...(selected?.settings ?? this.get(botId)), spaceId: new BotWorkspaceNavigationService(this.db, this.userId).spaceForWork(workId, botId) };
     const settings = workspacePath ? { ...base, workspacePath, effectiveWorkspacePath: workspacePath } : base;
     this.ensureSpace(settings);
     this.db.connection.prepare("INSERT OR IGNORE INTO bot_work_settings VALUES(?,?)").run(workId, JSON.stringify(settings));
     return settings;
+  }
+  /** Peer Work keeps the human as its source while executing B's frozen setup. */
+  workMessageSettings(work: Pick<import("../../../shared/bot-work").WorkDto, "workId" | "sourceMessageId" | "inputSnapshotId">, botId: string) {
+    const db = this.db.connection;
+    if (db.prepare("SELECT 1 FROM sqlite_master WHERE name='bot_collaboration_work_context'").get()) {
+      const source = z.object({ receiver: z.string().nullable() }).optional().parse(db.prepare(`SELECT
+        json_extract(x.context_json,'$.receiverUserMessageId') receiver FROM bot_collaboration_work_context x
+        JOIN bot_collaborations c ON c.work_id=x.work_id AND c.user_id=? AND c.target_bot_id=?
+        WHERE x.work_id=? AND x.input_snapshot_id=?`).get(this.userId, botId, work.workId, work.inputSnapshotId));
+      if (source?.receiver) return this.messageSettings(source.receiver, botId);
+    }
+    return this.messageSettings(work.sourceMessageId, botId);
   }
   forMember(workId: string, ownerBotId: string, memberBotId: string, workspacePath?: string): BotSettingsDto {
     const owner = this.forWork(workId, ownerBotId, workspacePath);

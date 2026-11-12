@@ -193,7 +193,7 @@ export function ActivityWindow({ anchor, scopeTeamId, scopeBotId, onScopeChange,
       <h3>{inspected.owner} · {inspected.label}</h3>
       {inspectError && <p role="alert">{inspectError}</p>}
       <p>{inspected.sourceRequest.archived ? "原对话已归档，以下为该请求的真实消息，不会切换或覆盖当前对话。" : "该请求不在当前消息窗口，以下直接展示原请求与回复。"}</p>
-      <h4>你的原始请求</h4><div>{inspected.sourceRequest.prompt?.text || "原请求正文不可用"}</div>
+      <h4>{inspected.sourceRequest.prompt?.peerOrigin ? `来自 ${inspected.sourceRequest.prompt.peerOrigin.senderDisplayName} 的 Bot 协作` : "你的原始请求"}</h4><div>{inspected.sourceRequest.prompt?.text || "原请求正文不可用"}</div>
       <h4>回复与进展</h4><div>{inspected.sourceRequest.message.text || inspected.sourceRequest.message.error || inspected.label}</div>
     </div> : <div className="bot-activity-list">
       {!loading && !workList.loading && !workList.error && !filtered.length && <p className="bot-activity-empty">{query || kind !== "all" ? "没有匹配的任务或消息。" : "当前没有任务或消息。"}</p>}

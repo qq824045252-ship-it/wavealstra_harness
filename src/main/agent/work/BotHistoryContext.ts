@@ -77,6 +77,8 @@ export function botHistoryContext(db: Database.Database, input: {
   if (!botMemoryTextEligible(input.query) || botMemoryConversationOnly(input.query)) return "";
   if (!Number.isFinite(input.before)) return "";
   const recent = input.mode === "recent";
+  const sourceWhere = SOURCE_WHERE + (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='bot_peer_inputs'").get()
+    ? " AND NOT EXISTS(SELECT 1 FROM bot_peer_inputs p WHERE p.user_message_id=u.message_id)" : "");
   const queryTerms = terms(input.query).slice(0, QUERY_TERM_LIMIT);
   if (recent ? !Number.isFinite(input.after) || input.after! >= input.before || input.before - input.after! > 25 * 60 * 60 * 1000 : !queryTerms.length) return "";
   const params: Record<string, unknown> = {
@@ -96,9 +98,9 @@ export function botHistoryContext(db: Database.Database, input: {
   const score = queryTerms.map((_, index) =>
     `(CASE WHEN u.text LIKE $t${index} ESCAPE '~' OR a.text LIKE $t${index} ESCAPE '~' THEN 1 ELSE 0 END)`).join("+");
   const statement = recent
-    ? db.prepare(`${PROJECTION}${SOURCE_JOINS}${SOURCE_WHERE}
+    ? db.prepare(`${PROJECTION}${SOURCE_JOINS}${sourceWhere}
         ORDER BY u.created_at DESC,u.ordinal DESC LIMIT $limit`)
-    : db.prepare(`SELECT * FROM (${PROJECTION},(${score}) AS score${SOURCE_JOINS}${SOURCE_WHERE})
+    : db.prepare(`SELECT * FROM (${PROJECTION},(${score}) AS score${SOURCE_JOINS}${sourceWhere})
         WHERE score>0 ORDER BY score DESC,created_at DESC,ordinal DESC LIMIT $limit`);
   // A restriction elsewhere in the conversation also protects follow-up answers. It is
   // evaluated exactly for each candidate source, with no shared scan budget: running out

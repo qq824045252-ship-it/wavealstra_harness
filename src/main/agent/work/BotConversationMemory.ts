@@ -65,6 +65,8 @@ export class BotConversationMemory {
     if (!conversation) return;
     if (this.messages.origins.isShared(conversationId)) return { botId, conversationId,
       scopeTypes: ["conversation"], includeInherited: false };
+    if (this.options.db.connection.prepare("SELECT 1 FROM bot_conversations WHERE conversation_id=? AND source_kind='peer'").get(conversationId))
+      return { botId, conversationId, scopeTypes: ["bot", "conversation"], includeInherited: false };
     return { botId, conversationId, teamId: conversation.team_id ?? undefined,
       scopeTypes: ["global", "conversation", conversation.team_id ? "team" : "bot"] as MemoryScopeType[], includeInherited: true };
   }
@@ -165,7 +167,7 @@ export class BotConversationMemory {
     if (!this.allowedBot(botId)) return;
     const receipt = this.messages.receipt(this.options.userId, botId, requestId);
     const source = receipt && botMemorySource(this.options.db, receipt.conversation_id, this.options.userId);
-    if (!receipt || !source || (!source.team_id && source.bot_id !== botId)) return;
+    if (!receipt || !source || source.peer || this.messages.peers.origin(receipt.user_message_id) || (!source.team_id && source.bot_id !== botId)) return;
     const user = this.messages.message(receipt.user_message_id);
     const assistant = this.messages.message(receipt.assistant_message_id);
     if (!user || !assistant || user.role !== "user" || assistant.role !== "assistant"

@@ -3448,6 +3448,7 @@ app.whenReady().then(async () => {
   workGatewayNotificationChannels = new WorkGatewayNotificationChannels(db.connection, agentService.getWorkService(), gatewayService, {
     isAuthority: () => agentService.getWorkHostStatus().isAuthority,
   });
+  agentService.setBotContinuationDelivery((origin, operationId, text) => gatewayService.sendBotContinuation(origin, operationId, text));
   gatewayService.setWorkNotificationWake(() => workNotificationHost?.wake());
   workNotificationHost.wake();
   gatewayService.setTrashedWorkspaceRestorer((taskId) => {

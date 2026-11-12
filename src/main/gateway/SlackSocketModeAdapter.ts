@@ -474,6 +474,7 @@ export class SlackSocketModeAdapter implements ChannelAdapter {
       current = this.options.journal.update(current, { state: "running", backend: "pi-durable", slackHistory, attachments });
       await this.onInbound({
         channelId: this.id, chatId: [current.teamId, current.channel, current.threadTs].join(":"),
+        audience: current.channel.startsWith("D") ? "private" : "shared",
         workTarget: gatewayWorkTarget({ version: 1, channelType: this.type, channelId: this.id,
           connectionKey: this.workConnectionKey(), chatId: [current.teamId, current.channel, current.threadTs].join(":"),
           senderId: current.userId, address: { teamId: current.teamId, appId: current.appId,

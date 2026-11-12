@@ -3,6 +3,7 @@ import type { ChannelAdapter, ChannelConfig, GatewayInboundDelivery, GatewayInbo
 import { gatewayWorkTargetSchema } from "./work-outbound";
 import { GatewayDeliveryJournal, type GatewayInboxEntry } from "./GatewayDeliveryJournal";
 import { GatewayReplyNotSentError, gatewayReplyRouteSchema } from "./GatewayReply";
+import type { GatewayBotOrigin } from "../agent/work/BotTurnOrigins";
 
 import { GATEWAY_CAPABILITIES, type GatewayCapabilities } from "./GatewayCapabilities";
 export { GATEWAY_CAPABILITIES, type GatewayCapabilities } from "./GatewayCapabilities";
@@ -45,6 +46,8 @@ export interface GatewayPlatformRegistryOptions {
   retryDelayMs?: (attempt: number) => number;
   /** Current policy is rechecked on every replay and outbox attempt. */
   authorize?: (message: GatewayInboundMessage) => boolean;
+  onReplySent?: (deliveryId: string) => void;
+  replyCurrent?: (deliveryId: string) => boolean;
 }
 
 /** Fixed-position tuples preserve the native session's identity. Object key order
@@ -54,6 +57,17 @@ export function gatewaySessionQueueKey(adapter: Pick<ChannelAdapter, "id" | "typ
 }
 
 export class GatewayPlatformRegistry {
+  async continueBotReply(origin: GatewayBotOrigin, operationId: string, text: string): Promise<void> {
+    const journal = this.options.journal;
+    if (!journal) throw new Error("原渠道持久回复队列不可用");
+    const entry = journal.continueReply(origin, operationId, text);
+    if (journal.outbox(entry.delivery_id)?.status === "sent") return;
+    const adapter = this.entries.get(origin.channelId);
+    if (!adapter || !adapter.isConnected() || adapter.workConnectionKey?.() !== origin.connectionKey)
+      throw new Error("原渠道连接暂不可用，协作回传已持久等待恢复");
+    await this.dispatchStored(adapter, entry);
+    if (journal.outbox(entry.delivery_id)?.status !== "sent") throw new Error("原渠道协作回传尚无发送回执");
+  }
   private readonly entries = new Map<string, RegisteredGatewayAdapter>();
   private readonly handlers = new Map<string, (event: GatewayMessageEvent) => Promise<void>>();
   // Serialize only execution in the existing native session; never create a bot
@@ -242,6 +256,7 @@ export class GatewayPlatformRegistry {
         throw new GatewayReplyNotSentError("Gateway 回复连接不可用，未发送");
       }
       if (!this.isAuthorized(message)) throw new GatewayReplyNotSentError("Gateway 回复授权已撤回，未发送");
+      if (this.options.replyCurrent?.(entry.delivery_id) === false) throw new GatewayReplyNotSentError("原协作回传已取消，未发送");
       // A native turn may outlive a same-account reconnect. Rebuild only from
       // the original accepted route and current verified credentials, so an old
       // closure is never the reason a recoverable answer remains stranded.
@@ -250,8 +265,20 @@ export class GatewayPlatformRegistry {
         messageId: payload.messageId, sender: payload.sender, route: payload.replyRoute }) : undefined;
       const live = this.liveReplies.get(entry.delivery_id);
       const currentReply = live?.accountKey === entry.account_key && live.generation === adapter.gatewayConnectionGeneration?.() ? live.reply : undefined;
-      await (restored ?? currentReply ?? message.reply)(sending.reply_text);
+      if (adapter.type === "slack" && journal.continuationOperation(entry.delivery_id)) {
+        if (!payload.workTarget || payload.workTarget.channelType !== "slack" || !adapter.sendWorkNotification)
+          throw new GatewayReplyNotSentError("原 Slack 私人回传目标不可用");
+        const result = await adapter.sendWorkNotification({ target: payload.workTarget, text: sending.reply_text, effectKey: entry.delivery_id,
+          assertCurrent: () => { if (!this.isAuthorized(message) || this.options.replyCurrent?.(entry.delivery_id) === false)
+            throw new GatewayReplyNotSentError("原协作回传已取消或失去授权"); } });
+        if (!result.ok) {
+          if (result.responseLost) throw new Error("Slack 协作回传回执未知");
+          throw new GatewayReplyNotSentError(result.error, result.retryable);
+        }
+      } else await (restored ?? currentReply ?? message.reply)(sending.reply_text);
       journal.sent(entry.delivery_id);
+      try { this.options.onReplySent?.(entry.delivery_id); }
+      catch (error) { console.warn("[Gateway] 回复回执投影等待恢复", error); }
     } catch (error) {
       if (error instanceof GatewayReplyNotSentError) {
         const retryable = error.retryable && sending.retry_count < this.maxReplyAttempts;
@@ -282,7 +309,7 @@ export class GatewayPlatformRegistry {
     if (this.suspended || this.pausedChannels.has(channelId)) return;
     const adapter = this.entries.get(channelId), journal = this.options.journal;
     const key = adapter?.workConnectionKey?.();
-    if (!adapter || !journal || adapter.type === "slack") return;
+    if (!adapter || !journal) return;
     if (!adapter.isConnected() || !key) {
       const counts = journal.counts(channelId);
       // One unref'ed timer per affected channel observes transport recovery; it
@@ -299,6 +326,7 @@ export class GatewayPlatformRegistry {
     // the two queries must still schedule a wake, not fall into neither result.
     const cutoff = this.now();
     for (const entry of journal.recoverable(channelId, key, 1024, retryBlocked, cutoff)) {
+      if (adapter.type === "slack" && (!journal.continuationOperation(entry.delivery_id) || !journal.outbox(entry.delivery_id))) continue;
       if (this.activeDeliveries.has(entry.delivery_id)) continue;
       if (this.pending >= 1024) break;
       if ((this.depths.get(entry.session_key) ?? 0) >= 64) continue;

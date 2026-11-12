@@ -3,6 +3,12 @@ import { LOCAL_USER_ID } from "../../shared/bot-work";
 import { hasSensitiveMemoryContent } from "./MemoryTextSafety";
 import { MemoryInstructionDocument, memoryRememberClause } from "./MemoryIntent";
 
+/** Rechecked at write/extraction time, including delayed L0 turns. */
+export function botPeerMemoryInput(db: AppDatabase, messageId: string | undefined): boolean {
+  return Boolean(messageId && db.connection.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='bot_peer_inputs'").get()
+    && db.connection.prepare("SELECT 1 FROM bot_peer_inputs WHERE user_message_id=? OR assistant_message_id=?").get(messageId, messageId));
+}
+
 export function botWorkHasSharedOrigin(db: AppDatabase, workId: string): boolean {
   if (!db.connection.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='bot_turn_origins'").get()) return false;
   const origin = db.connection.prepare(`SELECT json_extract(o.origin_json,'$.audience') audience FROM works w
@@ -17,15 +23,18 @@ export function botWorkHasSharedOrigin(db: AppDatabase, workId: string): boolean
 
 /** A foreground conversation is a real memory source, never a fabricated Task row. */
 export function botMemorySource(db: AppDatabase, conversationId: string, userId = LOCAL_USER_ID) {
-  const source = db.connection.prepare(`SELECT c.conversation_id,c.bot_id,c.team_id,c.user_id,b.status
+  const source = db.connection.prepare(`SELECT c.conversation_id,c.bot_id,c.team_id,c.user_id,c.source_kind,b.status
     FROM bot_conversations c JOIN bots b ON b.bot_id=c.bot_id AND b.user_id=c.user_id
     WHERE c.conversation_id=? AND c.user_id=?`).get(conversationId, userId) as {
-      conversation_id: string; bot_id: string; team_id: string | null; user_id: string; status: string;
+      conversation_id: string; bot_id: string; team_id: string | null; user_id: string; source_kind: string; status: string;
     } | undefined;
   if (!source) return;
   const origins = db.connection.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='bot_gateway_conversations'").get();
   const shared = Boolean(origins && db.connection.prepare("SELECT 1 FROM bot_gateway_conversations WHERE conversation_id=? AND audience='shared'").get(conversationId));
-  return { ...source, shared };
+  const peers = db.connection.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='bot_peer_inputs'").get();
+  const peer = source.source_kind === "peer" || Boolean(peers && db.connection.prepare(`SELECT 1 FROM bot_peer_inputs p JOIN bot_messages m ON m.message_id=p.user_message_id
+    WHERE m.conversation_id=? AND json_extract(p.origin_json,'$.kind')='request' LIMIT 1`).get(conversationId));
+  return { ...source, shared, peer };
 }
 
 /** One conservative scope boundary for direct writes, extraction, forgetting and

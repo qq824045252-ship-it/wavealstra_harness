@@ -133,7 +133,7 @@ export function BotWorkDetails(props: { work: WorkProjectionDto; ownerName: stri
           {originalOpen && (originalError ? <p role="status">暂时无法读取原委托。<button type="button" onClick={() => setOriginalRetry(value => value + 1)}>重试</button></p>
             : !original ? <p role="status">正在读取原委托…</p>
             : original.unavailable ? <p>原委托来源暂不可核验；上方目标不代表用户逐字原文。</p>
-            : original.messages.length ? <>{original.descriptionOrigin === "assistant" && <p>上方目标由助理整理，以下为此事项保存的用户原文；后续修改优先。</p>}{original.messages.map(message => <div key={message.messageId}><h4>委托修订 {message.intentRevision}</h4><p className="bot-work-goal">{message.text}</p></div>)}{Boolean(original.context?.length) && <details><summary>相关对话与引用（保留角色，仅作上下文）</summary>{original.context?.map(message => <div key={message.messageId}><h4>{message.role === "user" ? "用户" : "助理"}</h4><p className="bot-work-goal">{message.text}</p></div>)}</details>}</>
+            : original.messages.length ? <>{original.descriptionOrigin === "assistant" && <p>上方目标由助理整理，以下为此事项保存的用户原文；后续修改优先。</p>}{original.messages.map(message => <div key={message.messageId}><h4>委托修订 {message.intentRevision}</h4><p className="bot-work-goal">{message.text}</p></div>)}{Boolean(original.context?.length) && <details><summary>相关对话与引用（保留角色，仅作上下文）</summary>{original.context?.map(message => <div key={message.messageId}><h4>{message.peerOrigin ? `来自 ${message.peerOrigin.senderDisplayName} 的 Bot 协作` : message.role === "user" ? "用户" : "助理"}</h4><p className="bot-work-goal">{message.text}</p></div>)}</details>}</>
             : <p>此事项没有关联的对话原文；请以上方目标及验收要求为准。</p>)}
         </details>
         <h3>进度</h3>

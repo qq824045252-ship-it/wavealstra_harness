@@ -646,6 +646,17 @@ export class AgentService {
   private readonly workHostAuthority: WorkHostAuthority;
   private workExecutions?: WorkExecutionAdapter;
   private botConversations?: BotConversationService;
+  private botContinuationDelivery?: (origin: import("./work/BotTurnOrigins").GatewayBotOrigin, operationId: string, text: string) => Promise<void>;
+  setBotContinuationDelivery(deliver: NonNullable<AgentService["botContinuationDelivery"]>): void {
+    this.botContinuationDelivery = deliver;
+    this.botConversations?.collaborations.recover();
+  }
+  completeBotContinuation(operationId: string): void { this.botConversations?.collaborations.delivery?.acknowledge(operationId); }
+  canSendBotContinuation(operationId: string): boolean {
+    const row = z.object({ cancelled_at: z.number().nullable() }).optional().parse(this.db.connection.prepare(
+      "SELECT cancelled_at FROM bot_peer_deliveries WHERE user_id=? AND operation_id=?").get(LOCAL_USER_ID, operationId));
+    return Boolean(row && row.cancelled_at === null);
+  }
   private workDispatchQueue?: WorkDispatchQueue;
   private workConversationFeedback?: WorkConversationFeedback;
   private workCompletion?: WorkCompletionCoordinator;
@@ -858,7 +869,7 @@ export class AgentService {
     this.workHostAuthority.start();
     this.workService = new WorkService(db.connection, {
       bots: this.botRegistry,
-      requestExpert: (work, botId) => botId === work.ownerBotId ? this.botSettings.messageSettings(work.sourceMessageId, botId)?.profile : undefined,
+      requestExpert: (work, botId) => botId === work.ownerBotId ? this.botSettings.workMessageSettings(work, botId)?.profile : undefined,
       emitProjection: (projection) => {
         this.emitPatch({ type: "work_projection_snapshot", projection });
         this.botConversations?.collaborations.publishWork(projection.workId);
@@ -877,6 +888,7 @@ export class AgentService {
       .catch(error => console.warn("[Work] memory catch-up deferred", error));
     this.botReportImages = new BotReportImageService(db.connection, LOCAL_USER_ID, this.workService, () => this.artifactService);
     this.workConversationFeedback = new WorkConversationFeedback({ db: db.connection, userId: LOCAL_USER_ID, works: this.workService, superviseWatch: true,
+      onReport: workId => this.botConversations?.collaborations.publishWork(workId),
       isAuthority: () => this.workHostAuthority.isAuthority(), prepareImages: workId => this.botReportImages!.captureWork(workId) });
     this.workConversationFeedback.start();
     this.workService.scheduler.beginHostSession(previousWorkLease);
@@ -1832,6 +1844,20 @@ export class AgentService {
         return result.descriptions.map(item => `${item.imagePath}\n${item.text}`).join("\n");
       },
       onMessage: event => broadcast(BotWorkIpc.messageChanged, event),
+      deliverPeerReturn: async (sourceUserMessageId, operationId, text) => {
+        const record = z.object({ origin_json: z.string() }).optional().parse(this.db.connection.prepare(
+          "SELECT origin_json FROM bot_turn_origins WHERE user_message_id=?").get(sourceUserMessageId));
+        if (!record) return;
+        const report = this.db.connection.prepare(`SELECT 1 FROM bot_peer_deliveries d
+          JOIN bot_collaboration_messages m ON m.message_id=d.journal_message_id
+          WHERE d.operation_id=? AND json_extract(m.value_json,'$.workFeedback.report') IS NOT NULL`).get(operationId);
+        if (report) {
+          this.workNotificationWake?.();
+          return "pending";
+        }
+        if (!this.botContinuationDelivery) throw new Error("原渠道回复服务尚未就绪");
+        await this.botContinuationDelivery(gatewayBotOriginSchema.parse(JSON.parse(record.origin_json)), operationId, text);
+      },
       recordWorkFeedback: (source, work) => this.settingsStore.read().memoryEnabled ? methodFeedback.record(source, work) : undefined,
     });
     this.botResultTurns ??= new BotWorkResultTurn({ models: this.durableModels, directory: join(getMyBuddyDir(), "bot-result-turns"),

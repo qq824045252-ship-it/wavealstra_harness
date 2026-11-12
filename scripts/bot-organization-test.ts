@@ -18,9 +18,8 @@ import { BotOrganizationService } from "../src/main/agent/work/BotOrganizationSe
 import { BotConversationRepository } from "../src/main/agent/work/BotConversationRepository";
 import { snapshotBotAttachments } from "../src/main/agent/work/BotAttachmentStorage";
 import { BotPeerCallService } from "../src/main/agent/work/BotPeerCallService";
-import { BotWorkMethodFeedback } from "../src/main/agent/work/BotWorkMethodFeedback";
 import { BotCollaborationService } from "../src/main/agent/work/BotCollaborationService";
-import type { BotConversationServiceOptions } from "../src/main/agent/work/BotConversationService";
+import { BotConversationService, type BotConversationServiceOptions } from "../src/main/agent/work/BotConversationService";
 import { BotWorkQuery } from "../src/main/agent/work/BotWorkQuery";
 import { WorkFileEventSource } from "../src/main/agent/work/WorkFileEventSource";
 import { WorkService } from "../src/main/agent/work/WorkService";
@@ -39,6 +38,7 @@ const audit: { scheduled: string[]; providerCalls: number; published: string[] }
 };
 const state = { authority: true, failSchedule: false };
 const fixtures: AppDatabase[] = [];
+const foregrounds: BotConversationService[] = [];
 let peerInferenceFailure = false;
 let peerBarrier: { entered: () => void; released: Promise<void> } | undefined;
 const regressionFailures: Error[] = [];
@@ -75,7 +75,7 @@ async function openFixture(directory: string) {
   models.registerProvider("organization-fixture", {
     api: "openai-completions", apiKey: "fixture-only", baseUrl: "http://127.0.0.1:1",
     models: [{ id: "reader", name: "organization fixture reader", reasoning: false,
-      input: ["text"], contextWindow: 32768, maxTokens: 1024,
+      input: ["text"], contextWindow: 128000, maxTokens: 1024,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
     streamSimple: model => {
       audit.providerCalls++;
@@ -116,14 +116,12 @@ async function openFixture(directory: string) {
     models: [choice(modelId)], experts: [], skills: [choice("organization-check")],
     mcps: [choice("fixture-mcp")], connectors: [choice("fixture-connector")],
   }), input => binding.assembleSettings(input, LOCAL_USER_ID));
-  const methodFeedbackCalls: string[] = [];
-  const methodFeedback = new BotWorkMethodFeedback({ db: app, works, userId: LOCAL_USER_ID,
-    memory: {}, skills: {}, effectiveness: {}, revisions: {},
-  } as unknown as ConstructorParameters<typeof BotWorkMethodFeedback>[0]);
   const options = {
     db, userId: LOCAL_USER_ID, bots, works, models, directory,
     defaultModel: () => modelId, isAuthority: () => state.authority,
-    recordWorkFeedback: (source, work) => { methodFeedbackCalls.push(source.assistant_message_id); return methodFeedback.record(source, work); },
+    prepareMessage: botId => settings.prepareMessage(botId),
+    captureSettings: (id, botId, frozen) => settings.captureMessage(id, botId, frozen),
+    messageSettings: (id, botId) => settings.messageSettings(id, botId),
     memorySearch: () => [], botWorkspace: (botId, prepare) => settings.resolveWorkspace(botId, prepare),
     botModel: botId => settings.get(botId).modelId || modelId,
     captureWorkSettings: work => { settings.forWork(work.workId, work.ownerBotId, work.workspacePath); },
@@ -135,7 +133,8 @@ async function openFixture(directory: string) {
   } satisfies BotConversationServiceOptions;
   const publish = (messageId: string) => { audit.published.push(messageId); };
   const peer = new BotPeerCallService(options, messages, publish);
-  const collaborations = new BotCollaborationService(options, messages, peer, publish);
+  const foreground = new BotConversationService(options); foregrounds.push(foreground);
+  const collaborations = foreground.collaborations;
   const creator = new BotCreationService(db, bots, { userId: LOCAL_USER_ID, isAuthority: () => state.authority });
   const organization = new BotOrganizationService({ ...options, settings, creator, collaborations, messages, publish });
   const request = (text: string, botId = DEFAULT_BOT_ID, conversationId?: string) => messages.accept(LOCAL_USER_ID, {
@@ -146,7 +145,7 @@ async function openFixture(directory: string) {
   const discover = (parent: string, operationId: string = randomUUID()) => command(parent, operationId, { action: "discover" });
   const count = (table: "bots" | "works" | "work_execution_bindings") => countSchema.parse(
     db.prepare(`SELECT COUNT(*) count FROM ${table}`).get()).count;
-  return { app, db, bots, works, messages, settings, creator, peer, collaborations, organization, request, command, discover, count, methodFeedbackCalls };
+  return { app, db, bots, works, messages, settings, creator, peer, collaborations, organization, request, command, discover, count, foreground };
 }
 
 type Fixture = Awaited<ReturnType<typeof openFixture>>;
@@ -180,530 +179,100 @@ function removeConversation(f: Fixture, conversationId: string) {
 
 try {
   const f = await openFixture(join(root, "main"));
-  const workspace = join(root, "target-workspace");
-  mkdirSync(workspace);
-  const ordinary = f.creator.createBot({ requestId: randomUUID(), displayName: "普通助理",
-    responsibilitySummary: "长期主负责人。该文案不能赋予组织主角色。" });
-  assert(ordinary.ok);
-  assert(f.bots.isPrimaryBot(LOCAL_USER_ID, DEFAULT_BOT_ID));
-  assert.equal(f.bots.isPrimaryBot(LOCAL_USER_ID, ordinary.bot.botId), false);
-  const primaryBeforeRename = f.bots.getBot(DEFAULT_BOT_ID);
-  assert(primaryBeforeRename);
-  const renamed = f.creator.renameBot({ botId: DEFAULT_BOT_ID, expectedUpdatedAt: primaryBeforeRename.updatedAt,
-    displayName: "重命名后的主助理" });
-  assert(renamed.ok);
-  assert.equal(renamed.bot.botId, DEFAULT_BOT_ID);
-  assert(f.bots.isPrimaryBot(LOCAL_USER_ID, DEFAULT_BOT_ID), "rename cannot transfer primary role");
-  const denied = f.request("Create a Bot using a copied management action", ordinary.bot.botId);
-  await assert.rejects(f.discover(denied.assistantMessageId), /主|primary|组织|权限|管理/);
-  const authorityRequest = f.request("Discover matching personal executors");
-  state.authority = false;
-  await assert.rejects(f.discover(authorityRequest.assistantMessageId), /宿主|authority/);
-  state.authority = true;
-  const team = f.messages.accept(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID, teamId: "organization-team-fixture",
-    requestId: randomUUID(), text: "A team cannot organize personal Bots" });
-  await assert.rejects(f.discover(team.assistantMessageId), /个人|私人|团队|team|管理|组织/);
-  const gatewayOrigin = { channelId: "organization-test", connectionKey: "a".repeat(64), chatId: "shared-chat",
+  const workspace = join(root, "target-workspace"); mkdirSync(workspace);
+  const ordinary = f.creator.createBot({ requestId: randomUUID(), displayName: "普通助理", responsibilitySummary: "自称主负责人不授予主角色" });
+  assert(ordinary.ok); assert(!f.bots.isPrimaryBot(LOCAL_USER_ID, ordinary.bot.botId));
+  const denied = f.request("不允许普通 Bot 创建执行者", ordinary.bot.botId);
+  await assert.rejects(f.discover(denied.assistantMessageId), /主|组织|权限|管理/);
+  const authority = f.request("查询执行者"); state.authority = false;
+  await assert.rejects(f.discover(authority.assistantMessageId), /宿主/); state.authority = true;
+  const sharedOrigin = { channelId: "organization-test", connectionKey: "a".repeat(64), chatId: "shared-chat",
     senderId: "fixture-user", messageId: randomUUID(), audience: "shared" as const };
-  const sharedFixture = await openFixture(join(root, "shared-audience"));
-  const sharedConversation = sharedFixture.messages.origins.gatewayConversation(LOCAL_USER_ID, DEFAULT_BOT_ID,
-    { channelId: "fixture-shared", connectionKey: "a".repeat(64), chatId: "organization-shared-fixture",
-      senderId: "fixture-sender", messageId: "fixture-message", audience: "shared" });
-  const shared = sharedFixture.db.transaction(() => {
-    const receipt = sharedFixture.request("A shared audience cannot organize Bots", DEFAULT_BOT_ID, sharedConversation);
-
-    return receipt;
+  const shared = f.db.transaction(() => {
+    const conversationId = f.messages.origins.gatewayConversation(LOCAL_USER_ID, DEFAULT_BOT_ID, sharedOrigin);
+    const receipt = f.request("共享渠道不能管理私人 Bot", DEFAULT_BOT_ID, conversationId);
+    f.messages.origins.recordGateway(LOCAL_USER_ID, receipt, sharedOrigin); return receipt;
   })();
-  await assert.rejects(sharedFixture.discover(shared.assistantMessageId), /共享|shared|个人|私人|管理|组织/);
-  console.log("PASS stable primary role, ordinary prose, host lease, team and shared-audience boundaries");
+  await assert.rejects(f.discover(shared.assistantMessageId), /共享|私人/);
+  console.log("PASS organization primary role, host authority and shared-audience boundaries");
 
-  const originalText = "USER ORIGINAL: compute 3*17 + 5*23, preserve this request and attachment identity";
-  const originalAttachment = { name: "source-stock.csv", path: join(root, "source-stock.csv") };
-  writeFileSync(originalAttachment.path, "item,quantity,unit_price\nCedar,3,17\nBirch,5,23\n");
-  const first = f.messages.accept(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID, requestId: randomUUID(),
-    text: originalText, attachments: [originalAttachment] });
-  const beforeBots = f.count("bots");
+  const originalText = "USER ORIGINAL: compute the attachment, keep this exact original and its file";
+  const attachment = { name: "source-stock.csv", path: join(root, "source-stock.csv") };
+  writeFileSync(attachment.path, "item,quantity,unit_price\nCedar,3,17\nBirch,5,23\n");
+  const first = f.messages.accept(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID, requestId: randomUUID(), text: originalText, attachments: [attachment] });
   await assert.rejects(f.command(first.assistantMessageId, "before-discovery", createCommand("核对助理", workspace)), /查询|discov|查找|目录/);
-  assert.equal(f.count("bots"), beforeBots);
-  const searched = await f.discover(first.assistantMessageId, "discover-main");
-  assert.equal(searched.kind, "discovery");
-  assert.equal(searched.sourceUserMessageId, first.userMessageId);
-  assert.equal(searched.sourceConversationId, first.conversationId);
-  assert(searched.receipts.some(receipt => receipt.step === "discovery" && receipt.status === "succeeded"));
-  await assert.rejects(f.command(first.assistantMessageId, "forged-actor", {
-    action: "arrange", actor: { botId: DEFAULT_BOT_ID, userId: LOCAL_USER_ID },
-    target: { kind: "existing", botId: ordinary.bot.botId }, contact: { kind: "none" },
-  }), z.ZodError, "model input cannot supply the authenticated management actor");
+  await f.discover(first.assistantMessageId, "discover-main");
+  await assert.rejects(f.command(first.assistantMessageId, "forged-actor", { action: "arrange", actor: { botId: DEFAULT_BOT_ID },
+    target: { kind: "existing", botId: ordinary.bot.botId }, contact: { kind: "none" } }), z.ZodError);
+  const held = deferred(), entered = deferred(); peerBarrier = { entered: entered.resolve, released: held.promise };
+  const beforeBots = f.count("bots");
   const arranged = linked(await f.command(first.assistantMessageId, "arrange-main", createCommand("核对助理", workspace)));
-  const targetId = arranged.target.botId;
-  const relation = f.collaborations.history({ botId: DEFAULT_BOT_ID, collaborationId: arranged.collaborationId });
-  assert(relation.collaboration.workId);
-  const work = f.works.getWork(relation.collaboration.workId);
-  assert(work);
-  assert.equal(work.ownerBotId, targetId);
-  assert.equal(work.sourceMessageId, first.userMessageId);
-  const preservedInput = z.object({ messages_json: z.string() }).parse(f.db.prepare(
-    "SELECT messages_json FROM bot_work_user_inputs WHERE work_id=? ORDER BY rowid LIMIT 1").get(work.workId));
-  assert(preservedInput.messages_json.includes(originalText), "Work preserves the original user text rather than only the model plan");
-  const preservedAttachment = z.object({ attachments_json: z.string() }).parse(f.db.prepare(
-    "SELECT attachments_json FROM bot_work_attachments WHERE work_id=? ORDER BY rowid LIMIT 1").get(work.workId));
-  assert(preservedAttachment.attachments_json.includes(originalAttachment.name));
-  assert.equal(f.works.teams.get(work.workId), undefined);
-  assert.equal(new BotWorkQuery(f.db, LOCAL_USER_ID, DEFAULT_BOT_ID).page({}).total, 0);
-  assert.equal(new BotWorkQuery(f.db, LOCAL_USER_ID, targetId).page({}).total, 1);
-  assert.equal(f.settings.forWork(work.workId, targetId).modelId, modelId);
-  assert.equal(f.settings.forWork(work.workId, targetId).effectiveWorkspacePath, workspace);
-  const selectedSkill = f.bots.activeSnapshot(targetId)?.skillPackages?.find(item => item.id === "organization-check");
-  assert(selectedSkill);
+  const relation = f.collaborations.organizationCollaboration(arranged.intentId)!;
+  assert.equal(arranged.phase, "linked", "linked means durable foreground delivery, not a finished answer or Work");
+  assert(relation.times.deliveredAt !== null); assert.equal(relation.workId, null);
+  assert.equal(f.count("works"), 0); assert.equal(f.count("bots"), beforeBots + 1);
+  const receives = f.messages.peers.deliveries(LOCAL_USER_ID).filter(item => JSON.parse(item.origin_json).collaborationId === relation.collaborationId);
+  assert.equal(receives.length, 1); assert(receives[0].accepted_message_id);
+  const receiver = f.messages.message(receives[0].accepted_message_id)!;
+  assert.equal(receiver.botId, arranged.target.botId); assert.equal(receiver.peerOrigin?.sourceUserMessageId, first.userMessageId);
+  const receivedSettings = f.settings.messageSettings(f.messages.receipt(LOCAL_USER_ID, receiver.botId, receiver.requestId)!.user_message_id, receiver.botId);
+  assert(receivedSettings); assert.equal(receivedSettings.settings.modelId, modelId);
+  assert.equal(receivedSettings.settings.effectiveWorkspacePath, realpathSync(workspace));
+  assert(receivedSettings.settings.skillIds.includes("organization-check"));
+  assert.deepEqual(receivedSettings.settings.mcpIds, f.settings.get(receiver.botId).mcpIds);
+  assert.deepEqual(receivedSettings.settings.connectorIds, f.settings.get(receiver.botId).connectorIds);
+  const selectedSkill = receivedSettings.profile.skillPackages?.find(item => item.id === "organization-check"); assert(selectedSkill);
   assert.equal(readFileSync(join(selectedSkill.directory, "references", "marker.txt"), "utf8"), "ORGANIZATION_SELECTED_SKILL");
-  assert(arranged.times.botCreatedAt !== null && arranged.times.configuredAt !== null && arranged.times.linkedAt !== null);
-  assert.equal(relation.collaboration.times.startedAt, null, "acceptance must not fabricate execution start");
-  assert.equal(relation.collaboration.times.returnedAt, null, "creation must not fabricate a result return");
-  const results = await Promise.all(["arrange-main", "arrange-duplicate"].map(operation =>
-    f.command(first.assistantMessageId, operation, createCommand("核对助理", workspace))));
-  assert(results.every(result => linked(result).intentId === arranged.intentId));
-  assert.equal(f.count("bots"), beforeBots + 1);
-  assert.equal(f.count("works"), 1);
-  assert.equal(audit.scheduled.filter(id => id === work.workId).length, 1);
-  await assert.rejects(f.command(first.assistantMessageId, "arrange-main", createCommand("改过参数", workspace)), /冲突|conflict|不同|更改/);
-  const duplicateSend = f.messages.accept(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID, requestId: randomUUID(),
-    conversationId: first.conversationId, text: originalText, attachments: [originalAttachment] });
-  await f.discover(duplicateSend.assistantMessageId, "repeat-send-discovery");
-  const repeatedSend = linked(await f.command(duplicateSend.assistantMessageId, "repeat-send-arrange", createCommand("核对助理", workspace)));
-  assert.equal(repeatedSend.intentId, arranged.intentId, "the same exact request in a new accepted user message reuses its saved intent");
-  assert.equal(repeatedSend.sourceUserMessageId, first.userMessageId, "duplicate send does not replace the original provenance");
-  assert.equal(repeatedSend.collaborationId, arranged.collaborationId);
-  assert.equal(f.count("bots"), beforeBots + 1);
-  assert.equal(f.count("works"), 1);
-  f.messages.update(first.assistantMessageId, "completed", "Original creation and acceptance completed.");
-  await assert.rejects(f.command(first.assistantMessageId, "stale-parent-query", { action: "query", intentId: arranged.intentId }), /当前|有效|私人|source/);
-  assert.equal(intent(await f.command(duplicateSend.assistantMessageId, "fresh-parent-query", { action: "query", intentId: arranged.intentId })).intentId, arranged.intentId);
-  const foreign = f.bots.registerBot({ userId: "organization-foreign-user", botId: "organization-foreign-bot", displayName: "Foreign primary claim" });
-  const foreignReceipt = f.messages.accept(foreign.userId, { botId: foreign.botId, requestId: randomUUID(), text: "Query a known foreign intent ID" });
-  await assert.rejects(f.command(foreignReceipt.assistantMessageId, "foreign-known-intent", {
-    action: "query", intentId: arranged.intentId,
-  }), /来源|用户|主|权限|管理|source|owner/);
-  console.log("PASS actual create/configure/accept, target model/workspace/skill, original input, counts and duplicate admission");
+  const peerManagement = await f.organization.eligible(receiver.messageId); assert.equal(peerManagement, false);
+  const duplicate = linked(await f.command(first.assistantMessageId, "arrange-duplicate", createCommand("核对助理", workspace)));
+  assert.equal(duplicate.intentId, arranged.intentId); assert.equal(duplicate.collaborationId, arranged.collaborationId);
+  assert.equal(f.messages.peers.deliveries(LOCAL_USER_ID).length, 1);
+  held.resolve(); peerBarrier = undefined;
+  const deadline = Date.now() + 15000;
+  while (f.messages.message(receiver.messageId)?.status !== "completed" && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(f.messages.message(receiver.messageId)?.status, "completed");
+  assert.equal(f.count("works"), 0, "a delegate suggestion can be completed directly by B, without manufacturing a Work");
+  console.log("PASS organization creates/configures one target then delivers to its real foreground; no synchronous Work prerequisite");
 
-  const concurrent = f.request("A single creation intent is admitted through two real SQLite connections");
-  await f.discover(concurrent.assistantMessageId);
-  const contender = await openFixture(join(root, "main"));
-  const concurrentBefore = f.count("bots");
-  const concurrentInput = createCommand("并发助理", workspace, "none");
-  const concurrentResults = await Promise.all([
-    f.command(concurrent.assistantMessageId, "concurrent-left", concurrentInput),
-    contender.command(concurrent.assistantMessageId, "concurrent-right", concurrentInput),
-  ]);
-  const leftIntent = intent(concurrentResults[0]);
-  const rightIntent = intent(concurrentResults[1]);
-  assert.equal(leftIntent.phase, "ready");
-  assert.equal(rightIntent.phase, "ready");
-  assert(leftIntent.target && rightIntent.target);
-  assert.equal(leftIntent.intentId, rightIntent.intentId);
-  assert.equal(leftIntent.target.botId, rightIntent.target.botId);
-  assert.equal(f.count("bots"), concurrentBefore + 1);
-  contender.app.close();
-  fixtures.splice(fixtures.indexOf(contender.app), 1);
-  console.log("PASS same intent admitted through two actual SQLite connections produces one target");
+  const existing = f.request("仅复用执行者，保留未指定配置");
+  const prior = f.settings.get(arranged.target.botId);
+  const ask = linked(await f.command(existing.assistantMessageId, "existing-ask", { action: "arrange",
+    target: { kind: "existing", botId: arranged.target.botId }, contact: { kind: "ask", text: "Compute 19 times 23" } }));
+  assert.equal(ask.target.botId, arranged.target.botId); assert.equal(ask.times.botCreatedAt, null);
+  assert.deepEqual(f.settings.get(arranged.target.botId), prior); assert.equal(f.count("works"), 0);
+  const noneSource = f.request("只创建配置，不联系"); await f.discover(noneSource.assistantMessageId);
+  const noContact = intent(await f.command(noneSource.assistantMessageId, "contact-none", createCommand("只配置助理", workspace, "none")));
+  assert.equal(noContact.phase, "ready"); assert.equal(noContact.collaborationId, null);
+  console.log("PASS existing target and contact:none preserve settings, separate delivery from answer and Work");
 
-  const existingSettings = f.settings.get(targetId);
-  const reuse = f.request("Ask the existing reviewer a read-only question");
-  const beforeWorks = f.count("works");
-  const providerBefore = audit.providerCalls;
-  const askedResult = await f.command(reuse.assistantMessageId, "reuse-ask", {
-    action: "arrange", target: { kind: "existing", botId: targetId },
-    contact: { kind: "ask", text: "Compute 19 times 23 without creating Work" },
-  });
-  if (askedResult.kind === "intent" && askedResult.phase !== "linked") console.error("ACTUAL_PEER_FAILURE", JSON.stringify({
-    organization: askedResult,
-    collaboration: f.collaborations.organizationCollaboration(askedResult.intentId),
-    peerCalls: f.messages.peerCalls.list(reuse.assistantMessageId).map(call => ({ callId: call.callId, status: call.status, error: call.error, replyText: call.replyText?.slice(0, 500) })),
-    actualProviderCalls: audit.providerCalls - providerBefore,
-  }));
-  const asked = linked(askedResult);
-  const askHistory = f.collaborations.history({ botId: DEFAULT_BOT_ID, collaborationId: asked.collaborationId });
-  assert.equal(askHistory.collaboration.workId, null);
-  assert(askHistory.messages.some(message => message.kind === "reply" && message.senderBotId === targetId && message.text.includes("437")));
-  assert(audit.providerCalls > providerBefore, "the real peer runtime reached only the controlled inference boundary");
-  assert.equal(f.count("works"), beforeWorks);
-  assert.deepEqual(f.settings.get(targetId), existingSettings, "reuse leaves unrelated settings untouched");
-  assert.equal(asked.times.botCreatedAt, null);
-  const ordinaryReply = await f.collaborations.command(denied.assistantMessageId, "ordinary-personal-ask", {
-    action: "ask", targetBotId: targetId, text: "Compute 19 times 23 using the ordinary personal collaboration path",
-  });
-  assert(JSON.stringify(ordinaryReply).includes("437"), "ordinary management refusal must preserve ordinary collaboration");
-  const sanitized = await f.organization.command(reuse.assistantMessageId, "scoped-discovery", { action: "discover" });
-  assert(!JSON.stringify(sanitized).includes("ORGANIZATION_SELECTED_SKILL"), "discovery never returns selected Skill bodies");
-  console.log("PASS existing-target consultation through real peer runtime, no Work and no settings overwrite");
+  const faulty = await openFixture(join(root, "faults"));
+  const original = faulty.request("创建失败后继续同一个意图"); await faulty.discover(original.assistantMessageId);
+  faulty.db.exec("CREATE TEMP TRIGGER fail_creation BEFORE INSERT ON bots BEGIN SELECT RAISE(ABORT,'fixture creation failure'); END");
+  const failed = intent(await faulty.command(original.assistantMessageId, "creation-fails", createCommand("恢复助理", workspace, "none")));
+  assert.equal(failed.phase, "creation_failed");
+  faulty.db.exec("DROP TRIGGER fail_creation");
+  const resumed = intent(await faulty.command(original.assistantMessageId, "creation-resume", { action: "resume", intentId: failed.intentId }));
+  assert.equal(resumed.intentId, failed.intentId); assert.equal(resumed.phase, "ready"); assert(resumed.target);
+  assert.equal(faulty.count("bots"), 2); assert.equal(faulty.count("works"), 0);
+  const settingsBefore = faulty.settings.get(resumed.target.botId);
+  const folderB = join(root, "settings-b"); mkdirSync(folderB);
+  const changed = await faulty.settings.save({ botId: settingsBefore.botId, expectedRevision: settingsBefore.revision,
+    workspacePath: folderB, modelId: settingsBefore.modelId, expertId: settingsBefore.expertId,
+    skillIds: settingsBefore.skillIds, mcpIds: settingsBefore.mcpIds, connectorIds: settingsBefore.connectorIds });
+  const continuation = faulty.request("重新查询已经配置的执行者");
+  const unchanged = intent(await faulty.command(continuation.assistantMessageId, "query-stable", { action: "query", intentId: resumed.intentId }));
+  assert.equal(unchanged.target?.botId, resumed.target.botId); assert.deepEqual(faulty.settings.get(resumed.target.botId), changed.settings);
+  console.log("PASS creation rollback/resume keeps one executor; query never overwrites a later real settings revision");
 
-  const failure = f.request("Create a reviewer, retry a real creation storage failure");
-  await f.discover(failure.assistantMessageId);
-  const botsBeforeFailure = f.count("bots");
-  f.db.exec("CREATE TRIGGER organization_creation_fault BEFORE INSERT ON bot_expert_versions BEGIN SELECT RAISE(ABORT,'organization real creation failure'); END");
-  const creationFailed = intent(await f.command(failure.assistantMessageId, "creation-fault", createCommand("创建失败助理", workspace, "none")));
-  assert.equal(creationFailed.phase, "creation_failed");
-  assert.equal(f.count("bots"), botsBeforeFailure);
-  f.db.exec("DROP TRIGGER organization_creation_fault");
-  const recoveredCreation = intent(await f.command(failure.assistantMessageId, "creation-retry", { action: "resume", intentId: creationFailed.intentId }));
-  assert.equal(recoveredCreation.intentId, creationFailed.intentId);
-  assert.equal(recoveredCreation.phase, "ready");
-  assert.equal(f.count("bots"), botsBeforeFailure + 1);
-  assert.equal(f.count("works"), beforeWorks);
-  console.log("PASS real creation transaction rollback and same-intent resume");
-
-  const configureFailure = f.request("A created Bot survives a real settings storage failure");
-  await f.discover(configureFailure.assistantMessageId);
-  const beforeConfigureBots = f.count("bots");
-  f.db.exec("CREATE TRIGGER organization_configuration_fault BEFORE INSERT ON bot_execution_settings BEGIN SELECT RAISE(ABORT,'organization real configuration failure'); END");
-  const configurationFailed = intent(await f.command(configureFailure.assistantMessageId, "configuration-fault", createCommand("配置失败助理", workspace, "none")));
-  assert.equal(configurationFailed.phase, "configuration_failed");
-  assert(configurationFailed.target);
-  assert.equal(f.count("bots"), beforeConfigureBots + 1, "committed creation survives later settings failure");
-  assert.equal(f.settings.get(configurationFailed.target.botId).revision, 0);
-  assert.equal(configurationFailed.times.configuredAt, null);
-  f.db.exec("DROP TRIGGER organization_configuration_fault");
-  const configured = intent(await f.command(configureFailure.assistantMessageId, "configuration-resume", { action: "resume", intentId: configurationFailed.intentId }));
-  assert.equal(configured.phase, "ready");
-  assert(configured.target);
-  assert.equal(configured.target.botId, configurationFailed.target.botId);
-  assert.equal(f.settings.get(configured.target.botId).revision, 1);
-  assert.equal(f.count("bots"), beforeConfigureBots + 1);
-  console.log("PASS actual settings storage failure preserves the created target and resumes only configuration");
-
-  f.methodFeedbackCalls.length = 0;
-  const handoff = f.request("ORIGINAL HANDOFF: preserve this exact source when a fresh conversation continues");
-  await f.discover(handoff.assistantMessageId);
-  state.failSchedule = true;
-  const failedHandoff = intent(await f.command(handoff.assistantMessageId, "handoff-fault", createCommand("续接助理", workspace)));
-  state.failSchedule = false;
-  assert.equal(failedHandoff.phase, "contact_failed");
-  assert(failedHandoff.target);
-  const stableTarget = failedHandoff.target.botId;
-  const stableRevision = f.settings.get(stableTarget).revision;
-  assert.equal(f.count("works"), beforeWorks);
-  f.messages.update(handoff.assistantMessageId, "completed", "The target was created; delegation failed and can continue.");
-  f.messages.archive(LOCAL_USER_ID, DEFAULT_BOT_ID, handoff.conversationId);
-  const current = f.request("Continue the saved creation intent from this fresh active request");
-  assert.notEqual(current.conversationId, handoff.conversationId);
-  const resumed = linked(await f.command(current.assistantMessageId, "handoff-resume", { action: "resume", intentId: failedHandoff.intentId }));
-  assert.equal(resumed.target.botId, stableTarget);
-  assert.equal(resumed.sourceConversationId, handoff.conversationId);
-  assert.equal(f.settings.get(stableTarget).revision, stableRevision);
-  const resumedHistory = f.collaborations.history({ botId: DEFAULT_BOT_ID, collaborationId: resumed.collaborationId });
-  assert.equal(resumedHistory.collaboration.sourceConversationId, handoff.conversationId);
-  assert(resumedHistory.collaboration.workId);
-  assert.equal(f.works.getWork(resumedHistory.collaboration.workId)?.sourceMessageId, handoff.userMessageId);
-  const acceptedWorkCount = f.count("works"), scheduledBeforeReplay = audit.scheduled.length;
-  assert.equal(f.methodFeedbackCalls.length, 0, "response projection must not run method correction on the original completed receipt");
-  const replayedHandoff = linked(await f.command(current.assistantMessageId, "handoff-resume-replay", { action: "resume", intentId: failedHandoff.intentId }));
-  assert.equal(replayedHandoff.collaborationId, resumed.collaborationId);
-  assert.equal(f.count("works"), acceptedWorkCount, "resume after committed acceptance must not create another Work");
-  assert.equal(audit.scheduled.length, scheduledBeforeReplay, "resume must not schedule committed acceptance again");
-  const correction = f.request("纠正这个方法：以后必须先检查输入。", DEFAULT_BOT_ID);
-  const feedback = await f.collaborations.command(correction.assistantMessageId, "explicit-current-feedback", { action: "query", collaborationId: resumed.collaborationId }) as { methodFeedback: { status: string } };
-  assert.equal(feedback.methodFeedback.status, "no_completed_execution");
-  assert.deepEqual(f.methodFeedbackCalls, [correction.assistantMessageId], "only explicit query learns from the real active user request");
-  f.messages.update(correction.assistantMessageId, "completed", "finished");
-  await assert.rejects(f.collaborations.command(correction.assistantMessageId, "stale-feedback", { action: "query", collaborationId: resumed.collaborationId }), /有效个人请求/);
-  f.methodFeedbackCalls.length = 0;
-  console.log("PASS actual handoff rollback, completed original turn, fresh authority and exact archived provenance");
-
-  const changed = f.request("Create a target; do not overwrite my settings edit after failed handoff");
-  await f.discover(changed.assistantMessageId);
-  state.failSchedule = true;
-  const beforeEdit = intent(await f.command(changed.assistantMessageId, "user-edit-handoff", createCommand("用户改配助理", workspace)));
-  state.failSchedule = false;
-  assert(beforeEdit.target);
-  const beforeUserEdit = f.settings.get(beforeEdit.target.botId);
-  const edited = await f.settings.save({ expectedRevision: beforeUserEdit.revision,
-    botId: beforeEdit.target.botId, workspacePath: workspace, modelId, expertId: "", skillIds: [],
-    mcpIds: ["fixture-mcp"], connectorIds: ["fixture-connector"] });
-  const afterEdit = intent(await f.command(changed.assistantMessageId, "do-not-overwrite", { action: "resume", intentId: beforeEdit.intentId }));
-  assert.notEqual(afterEdit.phase, "linked", "a later user edit blocks acceptance of the stale saved configuration");
-  assert.deepEqual(f.settings.get(beforeEdit.target.botId), edited.settings);
-  console.log("PASS settings CAS reconciliation preserves a later real user edit");
-
-  const deleted = f.request("Create an executor but never redirect a deleted source");
-  await f.discover(deleted.assistantMessageId);
-  state.failSchedule = true;
-  const orphan = intent(await f.command(deleted.assistantMessageId, "delete-origin-handoff", createCommand("删除来源助理", workspace)));
-  state.failSchedule = false;
-  removeConversation(f, deleted.conversationId);
-  const replacement = f.request("Inspect this saved intent without changing its original destination");
-  const beforeDeletedResume = f.count("works");
-  const noFallback = intent(await f.command(replacement.assistantMessageId, "deleted-origin-resume", { action: "resume", intentId: orphan.intentId }));
-  assert.notEqual(noFallback.phase, "linked");
-  assert.equal(noFallback.sourceConversationId, deleted.conversationId);
-  assert.equal(f.count("works"), beforeDeletedResume);
-  assert.equal(f.messages.history(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID, conversationId: replacement.conversationId }).messages.length, 2);
-  console.log("PASS deleted original source retains facts without new Work or fallback delivery");
-
-  const pending = f.request("Persist a configured target and resume after a real database reopen");
-  await f.discover(pending.assistantMessageId);
-  state.failSchedule = true;
-  const pendingIntent = intent(await f.command(pending.assistantMessageId, "restart-handoff", createCommand("重启助理", workspace)));
-  state.failSchedule = false;
-  assert(pendingIntent.target);
-  const targetBeforeRestart = pendingIntent.target.botId;
-  const settingsBeforeRestart = f.settings.get(targetBeforeRestart);
-  f.app.close();
-  fixtures.splice(fixtures.indexOf(f.app), 1);
-  const reopened = await openFixture(join(root, "main"));
-  reopened.organization.recover();
-  const afterRestart = linked(await reopened.command(pending.assistantMessageId, "restart-resume", { action: "resume", intentId: pendingIntent.intentId }));
-  assert.equal(afterRestart.target.botId, targetBeforeRestart);
-  assert.equal(afterRestart.times.botCreatedAt, pendingIntent.times.botCreatedAt);
-  assert.equal(afterRestart.times.configuredAt, pendingIntent.times.configuredAt);
-  assert.deepEqual(reopened.settings.get(targetBeforeRestart), settingsBeforeRestart);
-  assert(reopened.bots.isPrimaryBot(LOCAL_USER_ID, DEFAULT_BOT_ID));
-  const queried = intent(await reopened.command(pending.assistantMessageId, "query-restarted", { action: "query", intentId: pendingIntent.intentId }));
-  assert.equal(queried.collaborationId, afterRestart.collaborationId);
-  console.log("PASS database close/reopen preserves role, intent, target, settings, times and exact accepted relation");
-
-  await regression("a failed peer inference never becomes contact success", async () => {
-    const peerFixture = await openFixture(join(root, "regression-peer-failed"));
-    const target = peerFixture.creator.createBot({ requestId: randomUUID(), displayName: "失败咨询目标", responsibilitySummary: "只读咨询" });
-    assert(target.ok);
-    const source = peerFixture.request("Ask the actual peer runtime; the inference boundary will fail");
-    peerInferenceFailure = true;
-    try {
-      const failed = intent(await peerFixture.command(source.assistantMessageId, "peer-inference-fails", {
-        action: "arrange", target: { kind: "existing", botId: target.bot.botId },
-        contact: { kind: "ask", text: "There will be no successful receiver reply" },
-      }));
-      const relation = peerFixture.collaborations.organizationCollaboration(failed.intentId);
-      assert(relation);
-      assert.equal(relation.status, "failed", "the real peer failure is persisted in the actual collaboration");
-      assert.equal(relation.times.returnedAt, null);
-      assert.equal(peerFixture.works.listWorks(LOCAL_USER_ID, { includeClosed: true }).length, 0);
-      assert.equal(failed.phase, "contact_failed", JSON.stringify({ phase: failed.phase, relationStatus: relation.status, receipts: failed.receipts }));
-      assert(!failed.receipts.some(receipt => receipt.step === "contact" && receipt.status === "succeeded"));
-      const callsAfterFailure = audit.providerCalls;
-      const originalRelationId = relation.collaborationId;
-      peerInferenceFailure = false;
-      peerFixture.messages.update(source.assistantMessageId, "completed", "The peer failed; the known failure is resumable.");
-      const continuation = peerFixture.request("Retry this known failed read-only consultation using its original intent");
-      const resumed = linked(await peerFixture.command(continuation.assistantMessageId, "retry-known-failed-ask", {
-        action: "resume", intentId: failed.intentId,
-      }));
-      assert.equal(resumed.intentId, failed.intentId);
-      assert.equal(resumed.target.botId, target.bot.botId);
-      assert.equal(resumed.collaborationId, originalRelationId, "a known failed consultation retries inside its original relation");
-      assert.equal(audit.providerCalls, callsAfterFailure + 1, "known failure permits one actual new inference attempt");
-      const returned = peerFixture.collaborations.history({ botId: DEFAULT_BOT_ID, collaborationId: originalRelationId });
-      assert.equal(returned.collaboration.status, "returned");
-      assert(returned.collaboration.times.returnedAt !== null);
-      assert.equal(returned.messages.filter(message => message.kind === "reply" && message.text.includes("437")).length, 1);
-      assert.equal(resumed.receipts.filter(receipt => receipt.step === "contact" && receipt.status === "succeeded").length, 1);
-      assert.equal(peerFixture.count("works"), 0);
-    } finally { peerInferenceFailure = false; }
-  });
-
-  await regression("an unknown peer effect is preserved without blind resend on a fresh continuation", async () => {
-    const unknown = await openFixture(join(root, "regression-peer-unknown"));
-    const target = unknown.creator.createBot({ requestId: randomUUID(), displayName: "待核对咨询目标", responsibilitySummary: "只读咨询" });
-    assert(target.ok);
-    const source = unknown.request("The actual provider call will lose its host receipt before reply");
-    const entered = deferred(), release = deferred();
-    peerBarrier = { entered: entered.resolve, released: release.promise };
-    const pending = unknown.command(source.assistantMessageId, "peer-result-unknown", {
-      action: "arrange", target: { kind: "existing", botId: target.bot.botId },
-      contact: { kind: "ask", text: "Keep this original question without automatically resending unknown calls" },
-    });
-    let finished = false;
-    try {
-      await entered.promise;
-      const listed = z.object({ items: z.array(botOrganizationSummarySchema) }).parse(
-        await unknown.organization.command(source.assistantMessageId, "inspect-unknown", { action: "query" }));
-      const current = listed.items.find(item => item.kind === "intent");
-      assert(current?.kind === "intent");
-      unknown.peer.recover();
-      unknown.collaborations.recover();
-      unknown.organization.recover();
-      const beforeRelease = unknown.collaborations.organizationCollaboration(current.intentId);
-      assert(beforeRelease);
-      assert.equal(beforeRelease.status, "unknown", "the real peer and collaboration recovery recorded uncertainty");
-      assert.equal(beforeRelease.times.returnedAt, null);
-      const closing = unknown.peer.close();
-      peerBarrier = undefined;
-      release.resolve();
-      await closing;
-      const unresolved = intent(await pending);
-      finished = true;
-      assert.equal(unresolved.phase, "contact_unknown", "an interrupted actual peer call has a distinct truthful unknown phase");
-      assert(unresolved.receipts.some(receipt => receipt.step === "contact" && receipt.status === "unknown"));
-      assert(!unresolved.receipts.some(receipt => receipt.step === "contact" && receipt.status === "succeeded"));
-      const callsBeforeResume = audit.providerCalls;
-      const historyBeforeResume = unknown.collaborations.history({ botId: DEFAULT_BOT_ID, collaborationId: beforeRelease.collaborationId });
-      unknown.app.close();
-      fixtures.splice(fixtures.indexOf(unknown.app), 1);
-      const restored = await openFixture(join(root, "regression-peer-unknown"));
-      restored.organization.recover();
-      const continuation = restored.request("Inspect the saved unknown consultation without resending the original call");
-      const afterResume = intent(await restored.command(continuation.assistantMessageId, "resume-unknown-ask", {
-        action: "resume", intentId: current.intentId,
-      }));
-      assert.equal(afterResume.intentId, current.intentId);
-      assert.equal(afterResume.phase, "contact_unknown", "fresh continuation preserves uncertainty after a real database reopen");
-      assert(afterResume.receipts.some(receipt => receipt.step === "contact" && receipt.status === "unknown"));
-      assert.equal(afterResume.times.linkedAt, null);
-      assert.equal(audit.providerCalls, callsBeforeResume, "a new active caller does not authorize blind replay of an unknown recipient operation");
-      const historyAfterResume = restored.collaborations.history({ botId: DEFAULT_BOT_ID, collaborationId: beforeRelease.collaborationId });
-      assert.equal(historyAfterResume.collaboration.times.returnedAt, null);
-      assert.deepEqual(historyAfterResume.messages, historyBeforeResume.messages, "querying/continuing unknown state invents no recipient reply or new logical request");
-      assert(!afterResume.receipts.some(receipt => receipt.step === "contact" && receipt.status === "succeeded"));
-      assert.equal(restored.count("works"), 0);
-    } finally {
-      peerBarrier = undefined;
-      release.resolve();
-      if (!finished) await pending;
-      peerInferenceFailure = false;
-    }
-  });
-
-  await regression("recovery cannot infer successful consultation from a relation without returned receipt", async () => {
-    const peerFixture = await openFixture(join(root, "regression-peer-pending"));
-    const target = peerFixture.creator.createBot({ requestId: randomUUID(), displayName: "未回执咨询目标", responsibilitySummary: "只读咨询" });
-    assert(target.ok);
-    const source = peerFixture.request("Hold a real provider request after its relation is admitted");
-    const entered = deferred(), release = deferred();
-    peerBarrier = { entered: entered.resolve, released: release.promise };
-    peerInferenceFailure = true;
-    const pending = peerFixture.command(source.assistantMessageId, "peer-pending-at-recovery", {
-      action: "arrange", target: { kind: "existing", botId: target.bot.botId },
-      contact: { kind: "ask", text: "Hold the inference until after local receipt reconciliation" },
-    });
-    let pendingContinuation: Promise<ReturnType<typeof botOrganizationSummarySchema.parse>> | undefined;
-    let callsAtPendingContinuation: number | undefined;
-    try {
-      await entered.promise;
-      const listed = z.object({ items: z.array(botOrganizationSummarySchema) }).parse(
-        await peerFixture.organization.command(source.assistantMessageId, "inspect-pending", { action: "query" }));
-      const pendingIntent = listed.items.find(item => item.kind === "intent");
-      assert(pendingIntent?.kind === "intent");
-      const admitted = peerFixture.collaborations.organizationCollaboration(pendingIntent.intentId);
-      assert(admitted);
-      assert.equal(admitted.times.returnedAt, null);
-      peerFixture.organization.recover();
-      const recovered = intent(await peerFixture.command(source.assistantMessageId, "inspect-recovered", { action: "query", intentId: pendingIntent.intentId }));
-      assert.notEqual(recovered.phase, "linked", JSON.stringify({ phase: recovered.phase, relationStatus: admitted.status, returnedAt: admitted.times.returnedAt }));
-      assert(!recovered.receipts.some(receipt => receipt.step === "contact" && receipt.status === "succeeded"));
-      const fresh = peerFixture.request("Inspect and continue the same still-pending consultation without another recipient call");
-      callsAtPendingContinuation = audit.providerCalls;
-      const query = intent(await peerFixture.command(fresh.assistantMessageId, "query-held-peer", { action: "query", intentId: pendingIntent.intentId }));
-      assert.notEqual(query.phase, "linked");
-      pendingContinuation = peerFixture.command(fresh.assistantMessageId, "resume-held-peer", { action: "resume", intentId: pendingIntent.intentId });
-      await Promise.resolve();
-      assert.equal(audit.providerCalls, callsAtPendingContinuation, "fresh continuation while the actual provider is held starts no second inference");
-    } finally {
-      peerBarrier = undefined;
-      peerInferenceFailure = false;
-      release.resolve();
-      await pending;
-      if (pendingContinuation) {
-        await pendingContinuation;
-        assert.equal(audit.providerCalls, callsAtPendingContinuation, "the queued continuation also cannot resend after the original held call returns");
-      }
-    }
-  });
-
-  await regression("file baseline await rechecks the actual target settings revision before Work acceptance", async () => {
-    const race = await openFixture(join(root, "regression-settings-race"));
-    const target = race.creator.createBot({ requestId: randomUUID(), displayName: "文件监看目标", responsibilitySummary: "监看真实文件" });
-    assert(target.ok);
-    const watchedPath = join(root, "organization-real-watched.txt");
-    writeFileSync(watchedPath, "actual file baseline before the concurrent settings update");
-    const receiver = new WorkFileEventSource(race.works, () => true, () => {});
-    try {
-      const source = race.request("Watch this actual file, keeping my later settings edit authoritative");
-      const settingsBefore = race.settings.get(target.bot.botId);
-      const pending = race.command(source.assistantMessageId, "watch-settings-race", {
-        action: "arrange", target: { kind: "existing", botId: target.bot.botId },
-        contact: { kind: "delegate", plan: { title: "真实文件版本竞态", requestedOutcome: "ongoing", mode: "watch", startImmediately: false,
-          watchRule: { eventSource: "file", eventTarget: watchedPath, triggerMode: "next_event", executionMode: "continuous",
-            catchUpPolicy: "latest", scheduleBasis: "user_specified", notificationMode: "changes_only" } } },
-      });
-      const inFlight = z.object({ items: z.array(botOrganizationSummarySchema) }).parse(
-        await race.organization.command(source.assistantMessageId, "inspect-baseline-await", { action: "query" }));
-      const current = inFlight.items.find(item => item.kind === "intent");
-      assert(current?.kind === "intent");
-      assert(current.times.contactStartedAt !== null, "the pre-contact revision check has already run");
-      assert(race.collaborations.organizationCollaboration(current.intentId), "the real relation was admitted before asynchronous file read");
-      assert.equal(race.count("works"), 0, "the actual file source read has not accepted Work yet");
-      const edited = await race.settings.save({ botId: target.bot.botId, expectedRevision: settingsBefore.revision,
-        workspacePath: "", modelId, expertId: "", skillIds: [], mcpIds: ["fixture-mcp"], connectorIds: [] });
-      const completed = intent(await pending);
-      assert.deepEqual(race.settings.get(target.bot.botId), edited.settings, "a concurrent real settings save is retained");
-      assert.equal(race.count("works"), 0, JSON.stringify({ phase: completed.phase, oldRevision: settingsBefore.revision,
-        newRevision: edited.settings.revision, works: race.works.listWorks(LOCAL_USER_ID, { includeClosed: true }).map(item => ({ workId: item.workId, ownerBotId: item.ownerBotId })) }));
-      assert.equal(completed.phase, "contact_failed");
-      assert(!completed.receipts.some(receipt => receipt.step === "contact" && receipt.status === "succeeded"));
-    } finally { await receiver.close(); }
-  });
-
-  await regression("a changed rationale does not create a second intent for the same executor and work", async () => {
-    const equivalent = await openFixture(join(root, "regression-rationale"));
-    const source = equivalent.request("Create one specialized executor for this single request");
-    await equivalent.discover(source.assistantMessageId);
-    const input = createCommand("同一职责执行者", workspace);
-    const firstIntent = linked(await equivalent.command(source.assistantMessageId, "rationale-first", input));
-    const differentlyExplained = intent(await equivalent.command(source.assistantMessageId, "rationale-second", {
-      ...input, target: { ...input.target, whyExistingBotsDoNotFit: "No installed specialist currently matches this exact responsibility." },
-    }));
-    assert.equal(equivalent.count("bots"), 2);
-    assert.equal(equivalent.count("works"), 1);
-    assert.equal(differentlyExplained.intentId, firstIntent.intentId,
-      JSON.stringify({ originalIntent: firstIntent.intentId, replayIntent: differentlyExplained.intentId, phase: differentlyExplained.phase }));
-    assert.equal(differentlyExplained.phase, "linked");
-  });
-  await regression("actual per-request attachment snapshots dedupe by bytes while changed bytes remain distinct", async () => {
-    const snapshots = await openFixture(join(root, "regression-snapshot-bytes"));
-    const sourcePath = join(root, "repeated-ui-file.csv");
-    const originalBytes = "item,quantity,unit_price\nCedar,3,17\nBirch,5,23\n";
-    writeFileSync(sourcePath, originalBytes);
-    const attachment = { name: "repeated-ui-file.csv", path: sourcePath };
-    const text = "Create one reviewer for the exact CSV I am attaching";
-    const originalRequestId = randomUUID();
-    const firstSnapshots = snapshotBotAttachments(root, `${LOCAL_USER_ID}:${DEFAULT_BOT_ID}:${originalRequestId}`, [attachment]);
-    const original = snapshots.messages.accept(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID,
-      requestId: originalRequestId, text, attachments: [attachment] }, firstSnapshots);
-    await snapshots.discover(original.assistantMessageId);
-    const input = createCommand("附件快照核对员", workspace);
-    const firstIntent = linked(await snapshots.command(original.assistantMessageId, "snapshot-original", input));
-    const originalRelation = snapshots.collaborations.organizationCollaboration(firstIntent.intentId);
-    assert(originalRelation?.workId);
-    const duplicateRequestId = randomUUID();
-    const duplicateSnapshots = snapshotBotAttachments(root, `${LOCAL_USER_ID}:${DEFAULT_BOT_ID}:${duplicateRequestId}`, [attachment]);
-    assert(firstSnapshots[0] && duplicateSnapshots[0]);
-    assert.notEqual(firstSnapshots[0].path, duplicateSnapshots[0].path, "the actual UI host snapshot directories differ by accepted request");
-    assert.equal(readFileSync(firstSnapshots[0].path, "utf8"), readFileSync(duplicateSnapshots[0].path, "utf8"));
-    const duplicate = snapshots.messages.accept(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID,
-      requestId: duplicateRequestId, conversationId: original.conversationId, text, attachments: [attachment] }, duplicateSnapshots);
-    await snapshots.discover(duplicate.assistantMessageId);
-    const repeated = linked(await snapshots.command(duplicate.assistantMessageId, "snapshot-duplicate", input));
-    assert.equal(repeated.intentId, firstIntent.intentId, "different immutable snapshot paths with identical file bytes preserve one creation intent");
-    assert.equal(repeated.collaborationId, firstIntent.collaborationId);
-    assert.equal(snapshots.collaborations.organizationCollaboration(repeated.intentId)?.workId, originalRelation.workId);
-    assert.equal(snapshots.count("bots"), 2);
-    assert.equal(snapshots.count("works"), 1);
-
-    writeFileSync(sourcePath, "item,quantity,unit_price\nCedar,3,17\nBirch,6,23\n");
-    const changedRequestId = randomUUID();
-    const changedSnapshots = snapshotBotAttachments(root, `${LOCAL_USER_ID}:${DEFAULT_BOT_ID}:${changedRequestId}`, [attachment]);
-    assert(changedSnapshots[0]);
-    assert.equal(changedSnapshots[0].name, firstSnapshots[0].name);
-    assert.equal(readFileSync(firstSnapshots[0].path, "utf8"), originalBytes, "the earlier host snapshot is still immutable");
-    assert.notEqual(readFileSync(changedSnapshots[0].path, "utf8"), originalBytes);
-    const changed = snapshots.messages.accept(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID,
-      requestId: changedRequestId, conversationId: original.conversationId, text, attachments: [attachment] }, changedSnapshots);
-    await snapshots.discover(changed.assistantMessageId);
-    const changedIntent = intent(await snapshots.command(changed.assistantMessageId, "snapshot-changed-bytes", input));
-    assert.notEqual(changedIntent.intentId, firstIntent.intentId, "the same filename with different actual bytes must not merge into the prior accepted Work");
-    assert.notEqual(changedIntent.phase, "linked", "a new conflicting creation request cannot masquerade as the earlier successful handoff");
-    assert.equal(snapshots.collaborations.organizationCollaboration(firstIntent.intentId)?.workId, originalRelation.workId);
-    assert.equal(snapshots.count("works"), 1);
-  });
-  await regression("discovery pages beyond 100 targets without hiding truncation", async () => {
+  const foreign = await openFixture(join(root, "deleted-source"));
+  const old = foreign.request("原来源删除后不改投"); await foreign.discover(old.assistantMessageId);
+  const configured = intent(await foreign.command(old.assistantMessageId, "prepare-none", createCommand("来源保留助理", workspace, "none")));
+  assert(configured.target); const createdCount = foreign.count("bots"); removeConversation(foreign, old.conversationId);
+  const fresh = foreign.request("保留创建结果，查询原意图");
+  const read = intent(await foreign.command(fresh.assistantMessageId, "query-deleted-origin", { action: "query", intentId: configured.intentId }));
+  assert.equal(read.target?.botId, configured.target.botId); assert.equal(foreign.count("bots"), createdCount); assert.equal(foreign.count("works"), 0);
+  console.log("PASS deleted source preserves original executor facts without creating replacement execution");
+  await (async () => { console.log("discovery pages beyond 100 targets without hiding truncation");
     const fixture = await openFixture(join(root, "discovery-pagination"));
     for (let index = 0; index < 105; index++) fixture.bots.registerBot({ userId: LOCAL_USER_ID,
       botId: `page-bot-${String(index).padStart(3, "0")}`, displayName: `执行者${index}`, responsibilitySummary: index === 104 ? "唯一适配执行者" : "其他职责" });
@@ -717,8 +286,8 @@ try {
     assert(second.bots.some(bot => bot.botId === "page-bot-104"));
     assert.equal(new Set([...first.bots, ...second.bots].map(bot => bot.botId)).size, 105);
     assert.equal(fixture.count("bots"), 106); assert.equal(fixture.count("works"), 0);
-  });
-  await regression("discovery exposes actual CAS metadata for a bounded existing-target configuration patch", async () => {
+  })();
+  await (async () => { console.log("discovery exposes actual CAS metadata for a bounded existing-target configuration patch");
     const metadata = await openFixture(join(root, "regression-discovery-metadata"));
     const target = metadata.creator.createBot({ requestId: randomUUID(), displayName: "已有配置执行者", responsibilitySummary: "保存自己的执行配置" });
     assert(target.ok);
@@ -753,8 +322,8 @@ try {
     "only the explicitly patched workspace and CAS revision change; model, expert, Skill, MCP and connector settings survive");
     assert.equal(metadata.count("bots"), 2);
     assert.equal(metadata.count("works"), 0);
-  });
-  await regression("lost create acknowledgement cannot split one task through arrange existing and original resume", async () => {
+  })();
+  await (async () => { console.log("lost create acknowledgement cannot split one task through arrange existing and original resume");
     const cross = await openFixture(join(root, "create-existing-bridge"));
     const source = cross.request("Create one translation Bot and delegate the translation; also permit a separate calculation task.");
     await cross.discover(source.assistantMessageId);
@@ -785,13 +354,13 @@ try {
     const accepted = linked(await cross.command(fresh.assistantMessageId, "resume-original", { action: "resume", intentId: lost.intentId }));
     assert.equal(accepted.target.botId, committedTarget);
     assert.equal(cross.count("bots"), 2);
-    assert.equal(cross.count("works"), 1);
+    assert.equal(cross.count("works"), 0);
     const workId = cross.collaborations.organizationCollaboration(lost.intentId)?.workId;
-    assert(workId);
-    assert.equal(cross.works.getWork(workId)?.sourceMessageId, source.userMessageId);
+    assert.equal(workId, null);
+    assert.equal(cross.messages.peers.deliveries(LOCAL_USER_ID).length, 1);
     const scheduled = audit.scheduled.length;
     linked(await cross.command(fresh.assistantMessageId, "resume-again", { action: "resume", intentId: lost.intentId }));
-    assert.equal(cross.count("works"), 1);
+    assert.equal(cross.count("works"), 0);
     assert.equal(audit.scheduled.length, scheduled);
     // A distinct task for that same target and original user request is not merged.
     cross.messages.update(source.assistantMessageId, "running", "Continuing the independently requested calculation.");
@@ -800,22 +369,20 @@ try {
       contact: { kind: "delegate", plan: { ...plan, title: "独立核算", goalDescription: "Calculate the separate requested total." } },
     }));
     assert.notEqual(separate.intentId, lost.intentId);
-    assert.equal(cross.count("works"), 2);
+    assert.equal(cross.count("works"), 0);
     const same = linked(await cross.command(source.assistantMessageId, "equivalent-existing", {
       action: "arrange", target: { kind: "existing", botId: committedTarget }, contact: original.contact,
     }));
     assert.equal(same.intentId, lost.intentId);
-    assert.equal(cross.count("works"), 2);
-  });
-  if (regressionFailures.length) throw new AggregateError(regressionFailures, `${regressionFailures.length} organization behavior regressions failed`);
+    assert.equal(cross.count("works"), 0);
+  })();
 } finally {
-  state.failSchedule = false;
+  peerBarrier = undefined; peerInferenceFailure = false; state.failSchedule = false;
+  for (const foreground of foregrounds) await foreground.close();
   for (const fixture of fixtures) fixture.close();
   for (const [name, value] of Object.entries(previousEnvironment)) {
     if (value === undefined) delete process.env[name]; else process.env[name] = value;
   }
-  const relativeRoot = relative(tmpdir(), root);
-  assert(relativeRoot && !relativeRoot.startsWith("..") && !isAbsolute(relativeRoot));
-  assert(root.includes("bot-organization-behavior-"));
+  const relativeRoot = relative(tmpdir(), root); assert(relativeRoot && !relativeRoot.startsWith("..") && !isAbsolute(relativeRoot));
   rmSync(root, { recursive: true, force: true });
 }

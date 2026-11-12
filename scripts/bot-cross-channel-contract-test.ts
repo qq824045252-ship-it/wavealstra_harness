@@ -38,7 +38,7 @@ const feedback = new BotWorkMethodFeedback({ db: app, works, userId: LOCAL_USER_
 const options = { db, userId: LOCAL_USER_ID, bots, works, models: {} as ModelRuntime, directory: root,
   defaultModel: () => undefined, isAuthority: () => true, memorySearch: () => [], schedule: () => {}, wake: () => {},
   recordWorkFeedback: (source: Parameters<BotWorkMethodFeedback["record"]>[0], work: Parameters<BotWorkMethodFeedback["record"]>[1]) => feedback.record(source, work) };
-const peer = new BotPeerCallService(options, messages, () => {}), collaboration = new BotCollaborationService(options, messages, peer, () => {});
+const peer = new BotPeerCallService(options, messages, () => {}), collaboration = new BotCollaborationService(options, messages, () => {});
 const bridge = new BotConversationMemory({ db: app, userId: LOCAL_USER_ID, memory, pipeline: new MemoryPipelineManager(app),
   enabled: () => true, changed: () => {}, extract: async () => {} });
 const actor = { kind: "user", userId: LOCAL_USER_ID, entry: "desktop", grants: DESKTOP_USER_GRANTS } as const;
@@ -92,8 +92,21 @@ try {
   db.prepare("UPDATE bots SET status='active' WHERE bot_id='a'").run();
   console.log("PASS owner pairing, account binding, foreign/disabled Bot rejection and explicit A-to-B switch without history adoption");
 
-  const delegated = page(await collaboration.command(source.assistantMessageId, "delegate", { action: "delegate", targetBotId: "b",
-    plan: { title: "季度销售报告", goalDescription: "依据输入整理销售报告并核对汇总", mode: "once", requestedOutcome: "one_time" } }));
+  // Historical direct-Work fixture. New admissions are covered by the native
+  // test:bot-peer-ingress route; this test protects existing cross-channel control.
+  const historical = works.transaction(() => {
+    const result = works.createWork({ kind: "bot", userId: LOCAL_USER_ID, botId: "b", host: "foreground", grants: DESKTOP_USER_GRANTS }, {
+      operationId: "historical-cross-channel", ownerBotId: "b", title: "季度销售报告", mode: "once",
+      sourceMessageId: source.userMessageId, conversationId: source.conversationId });
+    assert(result.ok);
+    const relation = collaboration.repo.ensure({ userId: LOCAL_USER_ID, sourceBotId: "a", sourceDisplayName: "a",
+      sourceConversationId: source.conversationId, sourceRequestId: source.requestId, sourceUserMessageId: source.userMessageId,
+      sourceAssistantMessageId: source.assistantMessageId, targetBotId: "b", targetDisplayName: "b", operationId: "historical-cross-channel" });
+    collaboration.repo.linkWork(LOCAL_USER_ID, relation.collaborationId, result.work.workId);
+    messages.linkWork(messages.receipt(LOCAL_USER_ID, "a", source.requestId)!, result.work.workId);
+    return relation.collaborationId;
+  });
+  const delegated = page(await collaboration.command(source.assistantMessageId, "read-historical", { action: "query", collaborationId: historical }));
   const workId = delegated.collaboration.workId!;
   assert.equal(new BotWorkQuery(db, LOCAL_USER_ID, "a").page({}).total, 0);
   assert.equal(new BotWorkQuery(db, LOCAL_USER_ID, "b").page({}).total, 1);

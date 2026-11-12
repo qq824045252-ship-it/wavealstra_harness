@@ -8,6 +8,7 @@ import { GatewayWorkNotSentError, type GatewayWorkTarget, type GatewayWorkSendIn
 import type { AsyncWorkNotificationChannel } from "./WorkNotificationDelivery";
 import type { WorkService } from "./WorkService";
 import { closureCorrectionNotice } from "./WorkClosureCorrectionDelivery";
+import { BotCollaborationRepository } from "./BotCollaborationRepository";
 
 export interface WorkGatewayPort {
   checkWorkTarget(target: GatewayWorkTarget): string | undefined;
@@ -21,6 +22,26 @@ export class WorkGatewayNotificationChannels {
   constructor(private readonly db: Database.Database, private readonly works: WorkService,
     private readonly gateway: WorkGatewayPort, private readonly options: { isAuthority: () => boolean }) {
     this.targets = new GatewayWorkTargets(db);
+    db.exec(`CREATE TABLE IF NOT EXISTS bot_peer_gateway_notifications(notification_id TEXT PRIMARY KEY,return_operation_id TEXT NOT NULL)`);
+  }
+
+  private peerSummary(workId: string, executionIds: string[]) {
+    if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE name='bot_peer_deliveries'").get()) return { managed: false };
+    const managed = Boolean(this.db.prepare(`SELECT 1 FROM bot_collaborations c JOIN bot_peer_deliveries d
+      ON json_extract(d.origin_json,'$.collaborationId')=c.collaboration_id
+      WHERE c.work_id=? AND json_extract(d.origin_json,'$.kind')='request' LIMIT 1`).get(workId));
+    if (!managed) return { managed: false };
+    const summary = z.object({ operation_id: z.string(), text: z.string() }).optional().parse(this.db.prepare(`SELECT d.operation_id,a.text
+      FROM bot_peer_deliveries d JOIN bot_collaboration_messages m ON m.message_id=d.journal_message_id
+      JOIN bot_messages a ON a.message_id=d.accepted_message_id AND a.status='completed'
+      JOIN works w ON w.work_id=? AND json_extract(m.value_json,'$.workFeedback.workId')=w.work_id
+      WHERE json_extract(d.origin_json,'$.kind')='return' AND json_extract(m.value_json,'$.workFeedback.report') IS NOT NULL
+        AND d.cancelled_at IS NULL
+        AND json_extract(m.value_json,'$.workFeedback.intentRevision')=w.intent_revision
+        AND json_extract(m.value_json,'$.workFeedback.inputSnapshotId')=w.input_snapshot_id
+        AND (?='[]' OR json_extract(m.value_json,'$.workFeedback.executionId') IN(SELECT value FROM json_each(?)))
+      ORDER BY m.ordinal DESC LIMIT 1`).get(workId, JSON.stringify(executionIds), JSON.stringify(executionIds)));
+    return { managed: true, summary };
   }
 
   channels(): AsyncWorkNotificationChannel[] {
@@ -39,6 +60,7 @@ export class WorkGatewayNotificationChannels {
 
   materialize(): number {
     if (!this.options.isAuthority()) return 0;
+    this.reconcilePeerReturns();
     const candidates = this.db.prepare(`SELECT DISTINCT n.notification_id,t.target_key FROM work_notifications n
       JOIN works w ON w.work_id=n.work_id
       JOIN work_conversations c ON c.work_id=w.work_id
@@ -62,20 +84,45 @@ export class WorkGatewayNotificationChannels {
           || !this.targets.forWork(work.workId, work.userId).some(item => item.targetKey === route.targetKey)) continue;
         const card = this.works.cards.list(work).find(item => item.cardKey === source.cardKey);
         if (!card || card.currency === "historical") continue;
+        const executions = [...new Set(card.deliverableIds.flatMap(id => {
+          const result = this.works.repo.getDeliverable(id); return result ? [result.executionId] : [];
+        }))];
+        const peer = source.kind === "result" ? this.peerSummary(work.workId, executions) : { managed: false };
+        if (peer.managed && !peer.summary) continue;
         const hash = createHash("sha256").update(JSON.stringify(["work-gateway-intent-v1", work.workId,
           source.cardKey, route.target.channelId, route.targetKey])).digest("hex");
         const notificationId = `notification:gateway:${hash}`;
-        const added = this.works.repo.insertNotification({ ...source, notificationId, semanticKey: `work:gateway:${hash}`,
+        const added = this.works.repo.insertNotification({ ...source, ...(peer.summary ? { body: peer.summary.text } : {}), notificationId, semanticKey: `work:gateway:${hash}`,
           channel: `gateway:${route.target.channelId}`, targetKey: route.targetKey,
           delivery: "pending", attemptCount: 0, idempotencyKey: undefined, effectKey: undefined,
           externalReceipt: undefined, sentAt: undefined, readAt: undefined });
         if (!added) continue;
+        if (peer.summary) this.db.prepare("INSERT OR IGNORE INTO bot_peer_gateway_notifications VALUES(?,?)").run(notificationId, peer.summary.operation_id);
         this.db.prepare(`UPDATE work_notification_identity SET input_snapshot_id=?,owner_epoch=?,sender_bot_id=?,semantic_validity=?
           WHERE notification_id=?`).run(identity.inputSnapshotId, identity.ownerEpoch, identity.senderBotId, identity.semanticValidity, notificationId);
         inserted++;
       }
     });
     return inserted;
+  }
+
+  private reconcilePeerReturns(): void {
+    if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE name='bot_peer_deliveries'").get()) return;
+    const receipts = this.db.prepare(`SELECT d.operation_id,n.work_id,w.user_id FROM bot_peer_gateway_notifications p
+      JOIN work_notifications n ON n.notification_id=p.notification_id AND n.delivery='sent'
+      JOIN works w ON w.work_id=n.work_id JOIN bot_peer_deliveries d ON d.operation_id=p.return_operation_id
+      WHERE d.cancelled_at IS NULL AND d.returned_at IS NULL`).all()
+      .map(row => z.object({ operation_id: z.string(), work_id: z.string(), user_id: z.string() }).parse(row));
+    if (!receipts.length) return;
+    this.works.transaction(() => {
+      const repo = new BotCollaborationRepository(this.db);
+      for (const receipt of receipts) {
+        const relation = repo.byWork(receipt.user_id, receipt.work_id);
+        if (!relation) continue;
+        repo.event(receipt.user_id, relation.collaborationId, { operationId: receipt.operation_id, kind: "returned", workId: receipt.work_id });
+        this.db.prepare("UPDATE bot_peer_deliveries SET returned_at=? WHERE operation_id=?").run(Date.now(), receipt.operation_id);
+      }
+    });
   }
 
   private createChannel(targetKey: string): AsyncWorkNotificationChannel {
@@ -92,10 +139,19 @@ export class WorkGatewayNotificationChannels {
           const rejected = this.admit(route, input.notification);
           if (rejected) return { ok: false, retryable: true, responseLost: false, error: rejected };
           const correction = closureCorrectionNotice(this.db, input.notification);
-          return await this.gateway.sendWorkNotification({ target: route.target, text: workGatewayText(correction
-            ? { ...input.notification, body: input.notification.deliveryFiles?.length ? correction : input.notification.body, deliveryFiles: undefined } : input.notification),
+          const peer = z.object({ return_operation_id: z.string() }).optional().parse(this.db.prepare(
+            "SELECT return_operation_id FROM bot_peer_gateway_notifications WHERE notification_id=?").get(input.notification.notificationId));
+          const result = await this.gateway.sendWorkNotification({ target: route.target, text: workGatewayText(correction
+            ? { ...input.notification, body: input.notification.deliveryFiles?.length ? correction : input.notification.body, deliveryFiles: undefined } : input.notification,
+            peer && !correction ? input.notification.body : undefined),
             qqMessageSequence: route.target.channelType === "qq" ? qqWorkMessageSequence(this.db, route.targetKey, `gateway:${route.target.channelId}`, input.idempotencyKey) : undefined,
-            files: correction ? [] : input.notification.deliveryFiles, recordProgress: input.recordProgress, effectKey: input.idempotencyKey, signal: input.signal, assertCurrent: input.assertCurrent });
+            files: correction ? [] : input.notification.deliveryFiles, recordProgress: input.recordProgress, effectKey: input.idempotencyKey, signal: input.signal,
+            assertCurrent: () => {
+              input.assertCurrent();
+              const rejected = this.admit(route, input.notification);
+              if (rejected) throw new GatewayWorkNotSentError(rejected);
+            } });
+          return result;
         } catch (error) {
           return error instanceof GatewayWorkNotSentError
             ? { ok: false, retryable: error.retryable, responseLost: false, error: error.message }
@@ -108,6 +164,10 @@ export class WorkGatewayNotificationChannels {
   private admit(route: GatewayWorkRoute, notification: WorkNotificationDto): string | undefined {
     if (!this.options.isAuthority()) return "当前宿主不持有 Work 通知权威";
     if (notification.targetKey !== route.targetKey || notification.channel !== `gateway:${route.target.channelId}`) return "通知目标作用域不一致";
+    const peer = z.object({ return_operation_id: z.string() }).optional().parse(this.db.prepare(
+      "SELECT return_operation_id FROM bot_peer_gateway_notifications WHERE notification_id=?").get(notification.notificationId));
+    if (peer && !this.db.prepare("SELECT 1 FROM bot_peer_deliveries WHERE operation_id=? AND cancelled_at IS NULL").get(peer.return_operation_id))
+      return "原协作回流已取消，未发送";
     const work = this.works.getWork(notification.workId);
     if (!work || work.userId !== route.userId || !this.targets.forWork(work.workId, work.userId).some(item => item.targetKey === route.targetKey)) {
       return "通知目标不属于当前用户与原始 Work 输入";
@@ -120,7 +180,7 @@ export class WorkGatewayNotificationChannels {
 }
 
 /** One bounded plain-text request avoids untracked partial chunk sends. */
-export function workGatewayText(notification: Pick<WorkNotificationDto, "title" | "body" | "deliveryFiles"> & Partial<Pick<WorkNotificationDto, "kind">>): string {
+export function workGatewayText(notification: Pick<WorkNotificationDto, "title" | "body" | "deliveryFiles"> & Partial<Pick<WorkNotificationDto, "kind">>, peerSummary?: string): string {
   const suffix = "\n\n完整成果、待决事项和验证范围请在 MyBuddy 结果卡中查看。";
   // A model's desktop summary can say "attached" before this channel has sent anything.
   // External delivery wording is derived from this immutable request's actual files.
@@ -129,8 +189,8 @@ export function workGatewayText(notification: Pick<WorkNotificationDto, "title" 
       : "本次通知没有附件。";
   // Preserve the actual answer (including text-only results). Keep model claims
   // separate from transport facts rather than discarding the whole answer.
-  const body = notification.deliveryFiles !== undefined && notification.body
-    ? `执行方说明（不代表渠道投递回执）：\n${notification.body.split("\n").map(line => `> ${line}`).join("\n")}`
+  const body = notification.deliveryFiles !== undefined && (peerSummary || notification.body)
+    ? `执行方说明（不代表渠道投递回执）：\n${(peerSummary || notification.body || "").split("\n").map(line => `> ${line}`).join("\n")}`
     : notification.body;
   const content = [notification.title, body, attachmentStatus].filter(Boolean).join("\n\n");
   let text = "";

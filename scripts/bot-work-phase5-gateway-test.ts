@@ -84,7 +84,7 @@ function harness(path = join(root, "db-" + ++serial + ".db")) {
   const model:any={provider:"fixture",id:"native",name:"fixture",api:"openai-completions",reasoning:false,input:["text"],contextWindow:128000,maxTokens:4096,cost:{input:0,output:0,cacheRead:0,cacheWrite:0}};
   const models:any={getAuth:async()=>undefined,refresh:async()=>{},getAvailable:async()=>[model],getModel:()=>model,
     streamSimple:()=>{const stream=createAssistantMessageEventStream();queueMicrotask(()=>{stream.push({type:"done",reason:"stop",message:{role:"assistant",content:[{type:"text",text:"fixture native receipt"}],api:model.api,provider:model.provider,model:model.id,timestamp:Date.now(),stopReason:"stop",usage:{input:1,output:1,cacheRead:0,cacheWrite:0,totalTokens:2,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}}});stream.end();});return stream;}};
-  const foreground=createGatewayBotFixture({db,models,root,botId:DEFAULT_BOT_ID});
+  const foreground=createGatewayBotFixture({db,models,root,botId:DEFAULT_BOT_ID,deliverPeerReturn:async()=>"pending"});
   const gateway = new GatewayService(db, { runGatewayTurn: async request => {
     state.executions++;
     requests.push(request);
@@ -96,7 +96,7 @@ function harness(path = join(root, "db-" + ++serial + ".db")) {
     created.push(work); await state.answerGate; return foreground.botConversations.awaitReply(receipt);
   } }, undefined, { settingsStore: { read: () => ({}) as ReturnType<AppSettingsStore["read"]> }, adapters: { feishu } });
   const bridge = new WorkGatewayNotificationChannels(db.connection, works, gateway, { isAuthority: () => state.authority });
-  const result = { path, db, bots, works, state, gateway, feishu, bridge, created, requests,
+  const result = { path, db, bots, works, state, gateway, feishu, bridge, created, requests, foreground,
     async close() { if (state.closed) return; await state.host?.close(); await gateway.stop(); await foreground.close(); db.close(); state.closed = true; } };
   harnesses.push(result);
   return result;
@@ -543,6 +543,79 @@ try {
     assert(Buffer.byteLength(text, "utf8") <= 1800);
     assert(text.endsWith("完整成果、待决事项和验证范围请在 MyBuddy 结果卡中查看。"));
     assert(!text.includes("\ufffd"));
+  });
+  for (const cancelAt of ["none", "before-send", "during-auth"] as const) await check(`peer Work A summary and original Gateway intent (${cancelAt})`, async () => {
+    const local = harness(); await local.gateway.connect("feishu-default", config);
+    local.bots.registerBot({ botId: "source-43", userId: LOCAL_USER_ID, displayName: "A", authorization: grants });
+    const service = local.foreground.botConversations, messages = service.messages;
+    const origin = { channelId: "feishu-default", connectionKey: local.feishu.workConnectionKey()!, chatId: "chat-1",
+      senderId: "user-1", messageId: "peer-origin-43", audience: "private" as const,
+      workTarget: gatewayWorkTargetSchema.parse({ version: 1, channelType: "feishu", channelId: "feishu-default",
+        connectionKey: local.feishu.workConnectionKey()!, chatId: "chat-1", senderId: "user-1", address: { chatId: "chat-1" } }) };
+    const source = local.works.transaction(() => {
+      const conversationId = messages.origins.gatewayConversation(LOCAL_USER_ID, "source-43", origin);
+      const receipt = messages.accept(LOCAL_USER_ID, { botId: "source-43", requestId: "source-peer-43", conversationId, text: "让 B 核对文件" });
+      messages.origins.recordGateway(LOCAL_USER_ID, receipt, origin); return receipt;
+    });
+    await service.collaborations.command(source.assistantMessageId, "peer-43", { action: "ask", targetBotId: DEFAULT_BOT_ID, text: "核对文件" });
+    const relation = service.collaborations.list({ botId: "source-43", limit: 1 }).items[0]!;
+    const work = local.works.transaction(() => {
+      const work = unwrap(local.works.createWork(user, { operationId: "peer-owned-43", title: "B checked output", ownerBotId: DEFAULT_BOT_ID,
+        sourceMessageId: source.userMessageId, conversationId: source.conversationId, inputSnapshotId: "input:peer-43" }));
+      service.collaborations.repo.linkWork(LOCAL_USER_ID, relation.collaborationId, work.workId); return work;
+    });
+    local.db.upsertTask({ id: "peer-binding-task-43", title: "peer execution", updatedAt: Date.now() });
+    unwrap(local.works.dispatchExecution(user, { operationId: "peer-dispatch-43", workId: work.workId, botId: DEFAULT_BOT_ID,
+      taskId: "peer-binding-task-43", durableStoreKey: "peer-store-43", conversationId: "1", workspaceBinding: root, delegatedScope: [] }));
+    const binding = local.works.repo.listBindings(work.workId)[0]!;
+    unwrap(local.works.submitDeliverable({ kind: "worker", botId: DEFAULT_BOT_ID, bindingId: binding.bindingId }, {
+      operationId: "peer-submit-43", workId: work.workId, bindingId: binding.bindingId, deliverableId: "peer-result-43", summary: "B public result", artifactRefs: [] }));
+    unwrap(local.works.acceptDeliverable(user, { operationId: "peer-accept-43", workId: work.workId, deliverableId: "peer-result-43" }));
+    local.works.reconcileExecution(user, { bindingId: binding.bindingId, outcome: "completed" });
+    local.bridge.materialize();
+    assert(!local.works.repo.listNotifications(work.workId).some(item => item.channel?.startsWith("gateway:")), "B raw result is not sent before A summarizes");
+    messages.appendWorkDelivery(LOCAL_USER_ID, work.workId, "peer-public-report", "v1", "PRIVATE_TOOL_LOG raw result", {
+      workId: work.workId, eventId: "peer-public-report", kind: "result", category: "result", executionId: binding.bindingId,
+      intentRevision: work.intentRevision, inputSnapshotId: work.inputSnapshotId,
+      report: { title: work.title, summary: "B public result", artifactRefs: [], reviewStatus: "accepted", current: true, notices: [] } });
+    service.collaborations.publishWork(work.workId);
+    await until(() => local.db.connection.prepare(`SELECT 1 FROM bot_peer_deliveries d JOIN bot_messages a ON a.message_id=d.accepted_message_id
+      WHERE d.journal_message_id IS NOT NULL AND a.status='completed' AND a.text='fixture native receipt'`).get() !== undefined);
+    local.bridge.materialize();
+    const notification = local.works.repo.listNotifications(work.workId).find(item => item.channel === "gateway:feishu-default")!;
+    assert(notification); assert.equal(notification.body, "fixture native receipt");
+    const channel = local.bridge.channels().find(item => item.targetKey === notification.targetKey)!;
+    const before = workPosts().length;
+    if (cancelAt !== "none") {
+      const held = deferred<Response>(); let refreshing = false;
+      if (cancelAt === "during-auth") {
+        refresh = () => { refreshing = true; return held.promise; };
+        (local.feishu as unknown as { tokenExpireAt: number }).tokenExpireAt = 0;
+      }
+      const sending = cancelAt === "during-auth" ? local.works.notifications.deliverAsync(channel) : undefined;
+      if (sending) await until(() => refreshing);
+      await service.collaborations.delivery!.cancel(relation.collaborationId);
+      held.resolve(json({ code: 0, tenant_access_token: "new-token", expire: 7200 }));
+      if (sending) await sending; else await local.works.notifications.deliverAsync(channel);
+      assert.equal(workPosts().length, before, "cancelled peer summary never reaches the provider");
+      assert.notEqual(local.works.repo.getNotification(notification.notificationId)!.delivery, "sent");
+      assert(!local.db.connection.prepare("SELECT 1 FROM bot_peer_deliveries WHERE returned_at IS NOT NULL").get());
+      await local.close();
+      return;
+    }
+    await local.works.notifications.deliverAsync(channel); await local.works.notifications.deliverAsync(channel);
+    assert.equal(workPosts().length, before + 1);
+    assert(JSON.stringify(workPosts().at(-1)?.body).includes("fixture native receipt"), JSON.stringify(workPosts().at(-1)?.body));
+    assert(!JSON.stringify(workPosts().at(-1)?.body).includes("PRIVATE_TOOL_LOG"));
+    assert(!local.db.connection.prepare("SELECT 1 FROM bot_peer_deliveries WHERE returned_at IS NOT NULL").get(), "projection follows the committed channel ledger");
+    local.db.connection.exec(`CREATE TRIGGER fail_peer_receipt BEFORE INSERT ON bot_collaboration_events
+      WHEN json_extract(NEW.value_json,'$.kind')='returned' BEGIN SELECT RAISE(ABORT,'fixture projection fault'); END`);
+    assert.throws(() => local.bridge.materialize(), /fixture projection fault/);
+    assert.equal(local.works.repo.getNotification(notification.notificationId)!.delivery, "sent", "a projection failure cannot erase an actual provider receipt");
+    local.db.connection.exec("DROP TRIGGER fail_peer_receipt"); local.bridge.materialize();
+    await local.works.notifications.deliverAsync(channel); assert.equal(workPosts().length, before + 1);
+    assert(local.db.connection.prepare("SELECT 1 FROM bot_peer_deliveries WHERE returned_at IS NOT NULL").get());
+    await local.close();
   });
   console.log(`\n${passed} passed / 0 failed — Phase 5 Gateway production adapters, async claim and recovery`);
 } finally {

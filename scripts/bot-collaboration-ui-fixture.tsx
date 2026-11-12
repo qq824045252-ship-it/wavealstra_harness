@@ -38,6 +38,9 @@ const sourceHistory: BotHistoryDto = { botId: 'bot', conversationId: 'source-cha
   botId: 'bot', conversationId: 'source-chat', requestId: `source-${index}`, messageId: `source-${index}`, ordinal: index + 1,
   role: index % 2 ? 'assistant' : 'user', text: `原始对话消息 ${index}\n\n${'原始对话保持原来的阅读位置。\n\n'.repeat(3)}`,
   status: 'completed', workIds: [], createdAt: 1000, updatedAt: 1000,
+  ...(index === 26 ? { peerOrigin: { kind: 'return' as const, collaborationId: first.collaborationId, exchangeId: 'peer-return-ui',
+    replyMessageId: 'peer-answer-ui', senderBotId: 'target', senderDisplayName: '学习搭子', sourceBotId: 'bot',
+    sourceConversationId: 'source-chat', sourceRequestId: 'source-24', sourceUserMessageId: 'source-24', sourceAssistantMessageId: 'source-25' } } : {}),
   ...(index === 29 ? { collaborations: [first, first, second] } : {}),
 })) };
 const historyCalls: BotCollaborationHistoryQuery[] = [], listCalls: BotCollaborationsQuery[] = [], sendCalls: BotSendRequest[] = [];

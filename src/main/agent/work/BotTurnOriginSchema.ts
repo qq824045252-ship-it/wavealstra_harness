@@ -5,10 +5,12 @@ export function ensureBotTurnOriginSchema(db: Database.Database): void {
   const columns = db.pragma("table_info(bot_conversations)") as Array<{ name: string }>;
   if (!columns.some(column => column.name === "ingress_kind"))
     db.exec("ALTER TABLE bot_conversations ADD COLUMN ingress_kind TEXT NOT NULL DEFAULT 'desktop' CHECK(ingress_kind IN ('desktop','gateway'))");
+  if (!columns.some(column => column.name === "source_kind"))
+    db.exec("ALTER TABLE bot_conversations ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'user' CHECK(source_kind IN ('user','peer'))");
   const personalIndex = db.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='uq_bot_personal_live'").get() as { sql: string } | undefined;
-  if (personalIndex && !personalIndex.sql.includes("ingress_kind")) db.exec("DROP INDEX uq_bot_personal_live");
+  if (personalIndex && !personalIndex.sql.includes("source_kind")) db.exec("DROP INDEX uq_bot_personal_live");
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_bot_personal_live ON bot_conversations(user_id,bot_id)
-    WHERE archived_at IS NULL AND team_id IS NULL AND ingress_kind='desktop'`);
+    WHERE archived_at IS NULL AND team_id IS NULL AND ingress_kind='desktop' AND source_kind='user'`);
   db.exec(`CREATE TABLE IF NOT EXISTS bot_gateway_conversations (
     conversation_id TEXT PRIMARY KEY REFERENCES bot_conversations(conversation_id) ON DELETE CASCADE,
     user_id TEXT NOT NULL, bot_id TEXT NOT NULL, channel_id TEXT NOT NULL,

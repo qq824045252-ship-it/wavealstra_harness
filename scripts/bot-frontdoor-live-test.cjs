@@ -12,7 +12,8 @@ const teamMissingScenario = process.argv.includes('--team-missing');
 const performanceScenario = process.argv.includes('--performance');
 const peerFollowupScenario = process.argv.includes('--peer-followup');
 const peerCallsScenario = peerFollowupScenario || process.argv.includes('--peer-calls');
-const collaborationScenario = process.argv.includes('--collaboration');
+const peerIngressScenario = process.argv.includes('--issue43');
+const collaborationScenario = peerIngressScenario || process.argv.includes('--collaboration');
 const collaborationRun = new Date().toISOString().replace(/[:.]/g, '-');
 const commitmentQueryScenario = process.argv.includes("--commitment-query");
 const outputPressureScenario = process.argv.includes('--responsiveness-output-pressure');
@@ -367,7 +368,7 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       await require('./bot-history-context-live-scenario.cjs').run({send,foregroundDone,until,evaluate,history,report,requests,out,botId,home,setBotId:value=>{botId=value;}});
     } else if (collaborationScenario) {
       assert(fs.readFileSync(path.join(out,'dev.log'),'utf8').includes('[issue32-isolation] '), 'isolated entry bootstrapped, shared out/main untouched');
-      await require('./bot-collaboration-live-scenario.cjs').run({send,foregroundDone,until,evaluate,history,rpc,report,requests,out,home,modelKey,targetModelKey:report.collaborationTargetModel.modelKey,botId,setBotId:value=>{botId=value;}});
+      await require(peerIngressScenario ? './bot-peer-ingress-live-scenario.cjs' : './bot-collaboration-live-scenario.cjs').run({send,foregroundDone,until,evaluate,history,rpc,report,requests,out,home,modelKey,targetModelKey:report.collaborationTargetModel.modelKey,botId,setBotId:value=>{botId=value;}});
     } else if (peerCallsScenario) {
       await require(peerFollowupScenario ? './bot-peer-followup-live-scenario.cjs' : './bot-peer-calls-live-scenario.cjs').run({send,foregroundDone,until,evaluate,history,rpc,report,requests,out,botId,setBotId:value=>{botId=value;}});
     } else if (commitmentQueryScenario) {

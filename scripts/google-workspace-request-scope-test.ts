@@ -20,6 +20,14 @@ const user = {messageId:'user-1',botId:'bot',conversationId:'chat',requestId:'re
 const assistant = {...user,messageId:'assistant-1',role:'assistant',status:'running'} as BotMessageDto;
 const expected = workspaceUserRequestScope('owner','user-1');
 assert.equal(foregroundWorkspaceScope('owner','bot','chat','request',receipt,user,assistant), expected);
+const peerUser: BotMessageDto = { ...user, peerOrigin: { kind: 'request', collaborationId: 'collaboration', exchangeId: 'operation',
+  senderBotId: 'a', senderDisplayName: 'A', sourceBotId: 'a', sourceConversationId: 'a-chat', sourceRequestId: 'a-request',
+  sourceUserMessageId: 'human-input', sourceAssistantMessageId: 'a-assistant' } };
+const originalHuman: BotMessageReceipt = { ...receipt, bot_id: 'a', conversation_id: 'a-chat', request_id: 'a-request',
+  user_message_id: 'human-input', assistant_message_id: 'a-assistant' };
+assert.equal(foregroundWorkspaceScope('owner','bot','chat','request',receipt,peerUser,assistant,originalHuman), workspaceUserRequestScope('owner','human-input'));
+assert.throws(() => foregroundWorkspaceScope('owner','bot','chat','request',receipt,peerUser,assistant));
+assert.throws(() => foregroundWorkspaceScope('owner','bot','chat','request',receipt,peerUser,assistant,{...originalHuman,user_id:'other'}));
 assert.throws(() => foregroundWorkspaceScope('other','bot','chat','request',receipt,user,assistant));
 assert.throws(() => foregroundWorkspaceScope('owner','bot','chat','request',receipt,{...user,role:'assistant'},assistant));
 assert.throws(() => foregroundWorkspaceScope('owner','bot','chat','request',receipt,user,{...assistant,status:'completed'}));

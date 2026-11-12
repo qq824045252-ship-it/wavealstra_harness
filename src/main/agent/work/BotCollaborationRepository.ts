@@ -211,10 +211,13 @@ export class BotCollaborationRepository {
       const other = this.byWork(userId, workId);
       if (other && other.collaborationId !== collaborationId) throw new Error("Work 已绑定另一协作");
       if (!relation.workId) {
-        const times: BotCollaborationTimes = { sentAt: null, deliveredAt: null, acceptedAt: null,
+        const peerTable = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='bot_peer_deliveries'").get();
+        const frontend = peerTable && this.db.prepare(`SELECT 1 FROM bot_peer_deliveries WHERE user_id=?
+          AND json_extract(origin_json,'$.collaborationId')=? AND json_extract(origin_json,'$.kind')='request'`).get(userId, collaborationId);
+        const times: BotCollaborationTimes = frontend ? relation.times : { sentAt: null, deliveredAt: null, acceptedAt: null,
           startedAt: null, endedAt: null, returningAt: null, returnedAt: null };
-        this.db.prepare("UPDATE bot_collaborations SET work_id=?,times_json=?,status='sent' WHERE user_id=? AND collaboration_id=?")
-          .run(workId, JSON.stringify(times), userId, collaborationId);
+        this.db.prepare("UPDATE bot_collaborations SET work_id=?,times_json=?,status=? WHERE user_id=? AND collaboration_id=?")
+          .run(workId, JSON.stringify(times), frontend ? relation.status : "sent", userId, collaborationId);
       }
       return this.required(userId, collaborationId);
     })();

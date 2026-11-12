@@ -485,7 +485,7 @@ export interface WorkProjectionDto {
   /** On-demand detail only. Never inferred from neighbouring conversations. */
   originalDelegation?: {
     messages: Array<{ messageId: string; text: string; intentRevision: number; sourceVersion: number }>;
-    context?: Array<{ messageId: string; text: string; role: "user" | "assistant" }>;
+    context?: Array<{ messageId: string; text: string; role: "user" | "assistant"; peerOrigin?: import("./bot-peer-origin").BotPeerOrigin }>;
     descriptionOrigin?: "user" | "assistant";
     unavailable?: boolean;
   };

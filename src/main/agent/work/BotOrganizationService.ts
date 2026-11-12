@@ -228,8 +228,8 @@ export class BotOrganizationService {
         this.configured(row.organization_id, applied.settings.revision, applied.appliedAt);
       const linked = this.options.collaborations.organizationCollaboration(row.organization_id);
       const plan = z.object({ contact: contactSchema }).parse(JSON.parse(record.row.request_json));
-      if (linked && (linked.workId || plan.contact.kind === "ask" && linked.status === "returned" && linked.times.returnedAt !== null) && current.view.target)
-        this.linked(row.organization_id, linked.collaborationId, plan.contact.kind === "ask" ? linked.times.returnedAt : linked.times.acceptedAt);
+      if (linked && linked.times.deliveredAt !== null && current.view.target)
+        this.linked(row.organization_id, linked.collaborationId, linked.times.deliveredAt);
       else if (current.view.phase === "contacting" || linked?.status === "unknown")
         this.update(row.organization_id, view => view.kind !== "intent" || !view.target ? view : { ...view,
           phase: "contact_unknown", collaborationId: null, summary: "联系曾中断，保留实际记录；先核对结果，不自动重发", updatedAt: Date.now() });
@@ -243,6 +243,7 @@ export class BotOrganizationService {
     if (!parent || parent.role !== "assistant" || parent.teamId || !["queued", "running", "unknown"].includes(parent.status)
       || isSharedBotConversation(this.options.db, parent.conversationId)) throw new Error("组织操作需要当前有效的私人前台请求");
     const receipt = this.options.messages.receipt(this.options.userId, parent.botId, parent.requestId), bot = this.options.bots.getBot(parent.botId);
+    if (receipt && this.options.messages.peers.origin(receipt.user_message_id)) throw new Error("Bot 协作来源不继承主 Bot 管理权限");
     if (!receipt || receipt.assistant_message_id !== parentMessageId || receipt.conversation_id !== parent.conversationId
       || !bot || bot.userId !== this.options.userId || bot.status !== "active" || !this.options.bots.isPrimaryBot(this.options.userId, bot.botId))
       throw new Error("只有宿主持久指定的主 Bot 可以创建或改配其他 Bot");
@@ -456,12 +457,10 @@ export class BotOrganizationService {
       this.receipt(intentId, "contact", "started", plan.contact.kind === "ask" ? "正在真实联系目标 Bot" : "正在由目标 Bot 受理原委派", "contact:start");
       const collaboration = await this.options.collaborations.acceptOrganization({ intentId, currentParentMessageId: parentMessageId,
         origin: originSchema.parse(JSON.parse(record.row.origin_json)), targetBotId: bot.botId, contact: plan.contact,
-        configurationGuard, retryFailedAsk });
+        configurationGuard, retryFailedAsk, targetSettingsRevision: this.options.settings.get(bot.botId).revision });
       const linked = this.options.collaborations.organizationCollaboration(intentId);
-      if (!linked || (plan.contact.kind === "delegate" && !linked.workId)) throw new Error("委派未受理，已创建 Bot 与原计划保留，可继续");
-      if (plan.contact.kind === "ask" && (linked.status !== "returned" || linked.times.returnedAt === null))
-        throw new Error(`咨询尚未成功返回（${linked.status}），保留原协作；已知失败可 resume，结果未知时先查询，不自动重发`);
-      this.linked(intentId, linked.collaborationId, plan.contact.kind === "ask" ? linked.times.returnedAt : linked.times.acceptedAt);
+      if (!linked || linked.times.deliveredAt === null) throw new Error("目标前台尚未持久受理，已创建 Bot 与原计划保留，可继续");
+      this.linked(intentId, linked.collaborationId, linked.times.deliveredAt);
       return { organization: this.intent(intentId, source.bot_id).view, collaboration };
     } catch (error) {
       const detail = (error instanceof Error ? error.message : String(error)).slice(0, 2000);

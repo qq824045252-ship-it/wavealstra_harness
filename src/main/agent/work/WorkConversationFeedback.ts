@@ -5,9 +5,9 @@ import type Database from "better-sqlite3";
 import type { WorkFeedbackDto } from "../../../shared/bot-conversation";
 import type { WorkDto } from "../../../shared/bot-work";
 import { BotConversationRepository } from "./BotConversationRepository";
-import { recordCollaborationReturnFailure } from "./BotCollaborationExecutionFacts";
 import { WorkFeedbackCandidates, type WorkFeedbackCandidate } from "./WorkFeedbackCandidates";
 import type { BotReportImagePreparation } from "./BotReportImageService";
+import { recordCollaborationReturnFailure } from "./BotCollaborationExecutionFacts";
 import { projectTeamReport } from "./WorkReportPresentation";
 import { workDeliveryFiles, workDeliveryResults } from "./WorkDeliveryArtifacts";
 import { workMilestoneVersion } from "./WorkMilestones";
@@ -22,6 +22,7 @@ export interface WorkConversationFeedbackOptions {
   pollIntervalMs?: number;
   superviseWatch?: boolean;
   prepareImages?: (workId: string) => Promise<BotReportImagePreparation>;
+  onReport?: (workId: string) => void;
 }
 
 /** Durable facts are replayable inputs; completed Bot messages are atomic delivery
@@ -110,6 +111,7 @@ export class WorkConversationFeedback {
       };
       const text = `【${work.title}】\n${input.text}${input.category !== "progress" && raw !== input.text ? `\n\n原始执行记录：\n${raw}` : ""}`;
       const delivery = this.messages.appendWorkDelivery(userId, work.workId, input.eventId, JSON.stringify([input.text,input.notices ?? [],refs,input.completion ?? null,primaryArtifactRefs ?? null]), text, metadata);
+      if (delivery.delivered || delivery.recorded) queueMicrotask(() => this.options.onReport?.(work.workId));
       return delivery.delivered || Boolean(delivery.recorded);
     });
   }
@@ -174,6 +176,7 @@ export class WorkConversationFeedback {
         let count = 0;
         const emit = (event: string, version: unknown, body: string, metadata: Omit<WorkFeedbackDto, "workId" | "eventId">) => {
           if (this.messages.appendWorkDelivery(userId, work.workId, event, JSON.stringify(version), `【${work.title}】\n${body}`, { ...metadata, workId: work.workId, eventId: event }).inserted) count++;
+          if (metadata.report) queueMicrotask(() => this.options.onReport?.(work.workId));
         };
         const results = works.repo.listDeliverables(work.workId);
         const generated = works.generatedArtifacts.listForWork(work, true);

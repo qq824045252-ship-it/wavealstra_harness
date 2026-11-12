@@ -1,7 +1,7 @@
 import type { AppDatabase } from "../db/AppDatabase";
 import type { MemoryCandidateDto, MemoryTurnDto } from "../../shared/memory-kernel";
 import { botMemorySource, botMemoryWriteEvidenceAllowed, botMemoryConversationOnly,
-  botMemoryWorkForSource, botMemoryDurableEvidence, botMemoryTextEligible } from "./BotMemorySource";
+  botMemoryWorkForSource, botMemoryDurableEvidence, botMemoryTextEligible, botPeerMemoryInput } from "./BotMemorySource";
 
 type ExtractionCandidate = Pick<MemoryCandidateDto, "kind" | "title" | "content" | "explicit" | "confidence" | "operationHint" | "replaces"> & {
   userEvidence?: string;
@@ -13,7 +13,7 @@ type ExtractionCandidate = Pick<MemoryCandidateDto, "kind" | "title" | "content"
 /** Authorize each atom against its own real source before the extraction writer commits it. */
 export function botExtractionPolicy(db: AppDatabase, taskId: string, candidate: ExtractionCandidate,
   sourceTurns: MemoryTurnDto[], botSource: ReturnType<typeof botMemorySource>) {
-  const supportingTurns = sourceTurns.filter(turn => candidate.userEvidence && turn.userText.includes(candidate.userEvidence)
+  const supportingTurns = sourceTurns.filter(turn => !botPeerMemoryInput(db, turn.userMessageId) && candidate.userEvidence && turn.userText.includes(candidate.userEvidence)
     && (!botSource || botMemoryWriteEvidenceAllowed(turn.userText, candidate.userEvidence)));
   // Scope follows the newest real user statement, not capture/completion order or old sharing instructions.
   const supportingSource = [...supportingTurns].sort((a, b) => b.capturedAt - a.capturedAt
@@ -30,7 +30,8 @@ export function botExtractionPolicy(db: AppDatabase, taskId: string, candidate: 
     && !/(?:不要|别|不必|不能|勿).{0,8}(?:共享|公开|所有|全部)|(?:do not|don['’]?t|never).{0,12}(?:share|public|all bots)/i.test(scopeWording);
   // Automatic learning has no approval queue. Local facts need a bounded scope;
   // stable personal preferences and every other candidate still require user quotes.
-  const rejected = Boolean(botSource) && (!candidate.userEvidence || candidate.userEvidence.trim().length < 2
+  const peerOnly = taskId.startsWith("bot-peer-") || sourceTurns.length > 0 && sourceTurns.every(turn => botPeerMemoryInput(db, turn.userMessageId));
+  const rejected = peerOnly || Boolean(botSource) && (!candidate.userEvidence || candidate.userEvidence.trim().length < 2
     || !supportingTurns.length
     || (candidate.retention !== "stable" && !((temporary || localFact) && candidate.retention === "temporary"))
     || candidate.sensitivity !== "none"

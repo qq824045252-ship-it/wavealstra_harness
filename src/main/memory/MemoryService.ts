@@ -4,7 +4,7 @@ import { MemoryForgetWatermarks } from "./MemoryForgetWatermarks";
 import type { MemoryForgetSource, MemoryRemovalIntent } from "./MemoryIntent";
 import { hasSensitiveMemoryContent } from "./MemoryTextSafety";
 import { resolveAssistantScopeChain, resolveWorkMemoryScope } from "./AssistantMemoryScopes";
-import { botMemorySource, botMemoryTextEligible, botMemoryAutomaticBoundary } from "./BotMemorySource";
+import { botMemorySource, botMemoryTextEligible, botMemoryAutomaticBoundary, botPeerMemoryInput } from "./BotMemorySource";
 import { projectMemoryContext } from "../agent/MemoryContextProjection";
 import { createHash, randomUUID } from "node:crypto";
 import type { AgentSession, ModelRuntime } from "@earendil-works/pi-coding-agent";
@@ -847,8 +847,10 @@ export class MemoryService {
     });
     if (!input.isEnabled()) return empty();
     const botSource = botMemorySource(this.db, input.taskId);
-    if (input.taskId.startsWith("bot-conversation-") && (!botSource || botSource.status !== "active")) return empty();
+    if (botSource?.peer) return empty();
+    if (/^(?:bot-conversation-|bot-peer-)/.test(input.taskId) && (!botSource || botSource.status !== "active")) return empty();
     const rawTurns = botSource ? (input.sourceTurns ?? []).map((turn): MemoryTurnDto | undefined => {
+      if (botPeerMemoryInput(this.db, turn.userMessageId)) return undefined;
       const row = this.db.connection.prepare(`SELECT u.text,u.created_at,u.rowid AS source_ordinal FROM bot_send_receipts r
         JOIN bot_messages u ON u.message_id=r.user_message_id AND u.role='user' AND u.status='completed'
         JOIN bot_messages a ON a.message_id=r.assistant_message_id AND a.role='assistant' AND a.status='completed'

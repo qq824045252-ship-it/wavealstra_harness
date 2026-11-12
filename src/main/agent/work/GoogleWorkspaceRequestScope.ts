@@ -11,11 +11,19 @@ export function workspaceUserRequestScope(userId: string, sourceMessageId: strin
   return JSON.stringify([userId, sourceMessageId]);
 }
 export function foregroundWorkspaceScope(userId: string, botId: string, conversationId: string, requestId: string,
-  receipt: BotMessageReceipt | undefined, user: BotMessageDto | undefined, assistant: BotMessageDto | undefined): string {
+  receipt: BotMessageReceipt | undefined, user: BotMessageDto | undefined, assistant: BotMessageDto | undefined, original?: BotMessageReceipt): string {
   if (!receipt || receipt.user_id !== userId || receipt.bot_id !== botId || receipt.conversation_id !== conversationId || receipt.request_id !== requestId
     || !user || user.messageId !== receipt.user_message_id || user.role !== "user" || user.botId !== botId || user.conversationId !== conversationId || user.requestId !== requestId
     || !assistant || assistant.messageId !== receipt.assistant_message_id || assistant.role !== "assistant" || assistant.botId !== botId || assistant.conversationId !== conversationId || assistant.requestId !== requestId
     || !["queued", "running", "unknown"].includes(assistant.status)) throw new Error("Google 写操作的原始用户消息不可核对；未执行。");
+  if (user.peerOrigin) {
+    const peer = user.peerOrigin;
+    if (peer.kind !== "request" || !original || original.user_id !== userId || original.bot_id !== peer.sourceBotId
+      || original.conversation_id !== peer.sourceConversationId || original.request_id !== peer.sourceRequestId
+      || original.user_message_id !== peer.sourceUserMessageId || original.assistant_message_id !== peer.sourceAssistantMessageId)
+      throw new Error("Google 写操作缺少协作的真实原始用户来源；未执行。");
+    return workspaceUserRequestScope(userId, original.user_message_id);
+  }
   return workspaceUserRequestScope(userId, receipt.user_message_id);
 }
 /** Versioned host Work bindings preserve the same source across new tasks and Bots. */

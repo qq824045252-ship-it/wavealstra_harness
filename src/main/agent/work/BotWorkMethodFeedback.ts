@@ -7,7 +7,7 @@ import type { MemoryService } from "../../memory/MemoryService";
 import type { MemorySkillEffectivenessService } from "../../memory/MemorySkillEffectivenessService";
 import type { MemorySkillRevisionService } from "../../memory/MemorySkillRevisionService";
 import type { SkillsService } from "../../skills/SkillsService";
-import { botMemoryTextEligible, botWorkHasSharedOrigin } from "../../memory/BotMemorySource";
+import { botMemoryTextEligible, botWorkHasSharedOrigin, botPeerMemoryInput } from "../../memory/BotMemorySource";
 import type { WorkDto } from "../../../shared/bot-work";
 import type { BotMessageReceipt } from "./BotConversationRepository";
 import { MEMORY_CONTENT_MAX_CHARS } from "../../../shared/memory-kernel";
@@ -30,6 +30,7 @@ export class BotWorkMethodFeedback {
 
   record(source: BotMessageReceipt, work: WorkDto): unknown {
     const { db, userId, memory, skills, effectiveness, revisions } = this.options;
+    if (botPeerMemoryInput(db, source.user_message_id)) return { status: "peer_source", recorded: false };
     const current = z.object({ text: z.string() }).optional().parse(db.connection.prepare(`SELECT u.text FROM bot_send_receipts r
       JOIN bot_messages u ON u.message_id=r.user_message_id AND u.role='user'
       JOIN bot_messages a ON a.message_id=r.assistant_message_id AND a.role='assistant'

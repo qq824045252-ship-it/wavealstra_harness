@@ -9,6 +9,7 @@ import { GatewayPlatformRegistry, gatewaySessionQueueKey, type RegisteredGateway
 import { GatewayReplyNotSentError, type GatewayReplyRestoreInput } from "../src/main/gateway/GatewayReply";
 import { WechatMpChannelAdapter, WecomChannelAdapter, type GatewayInboundHandler, type GatewayInboundMessage } from "../src/main/gateway/channels";
 import { WxCrypt } from "../src/main/gateway/wx-crypt";
+import { assertGatewayWorkSend, type GatewayWorkSendInput, type GatewayWorkSendResult } from "../src/main/gateway/work-outbound";
 
 class Adapter implements RegisteredGatewayAdapter {
   readonly id = "telegram-default";
@@ -324,6 +325,61 @@ try {
     assert.equal(f.journal.get(next.delivery_id)?.status, "pending");
     assert.equal(f.journal.decode(pending).sender?.name, undefined);
     assert.throws(() => f.accept({ ...f.adapter.message("4"), replyRoute: { kind: "telegram", chatId: "100", sessionWebhook: "secret" } as never }));
+  });
+  await check("Bot continuation replies reuse the exact original route without rerunning a human turn", async () => {
+    const f = fixture(), registry = f.registry(); let turns = 0;
+    registry.register(f.adapter, async event => { turns++; await event.message.reply("initial answer"); });
+    const original = { ...f.adapter.message("701", "ask another Bot"), audience: "private" as const };
+    await f.adapter.inbound(original);
+    const origin = { channelId: f.adapter.id, connectionKey: f.adapter.key, chatId: "100", senderId: "owner", messageId: "701", audience: "private" as const };
+    await registry.continueBotReply(origin, "return-43", "A summarized B's result");
+    await registry.continueBotReply(origin, "return-43", "A summarized B's result");
+    assert.deepEqual(f.adapter.sent, ["initial answer", "A summarized B's result"]); assert.equal(turns, 1);
+    await assert.rejects(registry.continueBotReply(origin, "return-43", "changed result"), /conflict/);
+    await assert.rejects(registry.continueBotReply({ ...origin, senderId: "someone-else" }, "spoof", "not sent"), /原私人/);
+    const staged = f.journal.continueReply(origin, "return-after-restart", "persisted answer");
+    assert(f.journal.outbox(staged.delivery_id)); registry.suspend();
+    const restored = f.registry(); let unexpectedTurns = 0;
+    restored.register(f.adapter, async () => { unexpectedTurns++; }); restored.resume(f.adapter.id);
+    await until(() => f.journal.outbox(staged.delivery_id)?.status === "sent");
+    assert.equal(unexpectedTurns, 0); assert.equal(f.adapter.sent.at(-1), "persisted answer");
+    const before = f.adapter.sent.length; f.adapter.key = "b".repeat(64);
+    await assert.rejects(restored.continueBotReply(origin, "stale-account", "never retarget"), /原渠道/);
+    assert.equal(f.adapter.sent.length, before);
+  });
+  await check("Slack continuations preserve the authenticated private thread and recover only the response outbox", async () => {
+    const f = fixture();
+    class SlackAdapter implements RegisteredGatewayAdapter {
+      readonly id = "slack-default"; readonly type = "slack" as const; readonly name = "Slack fixture";
+      key = "c".repeat(64); sent: GatewayWorkSendInput[] = [];
+      connect = async () => {}; disconnect = async () => {};
+      isConnected = () => true; statusText = () => "connected"; workConnectionKey = () => this.key;
+      setInboundHandler(_handler: GatewayInboundHandler) {}
+      async sendWorkNotification(input: GatewayWorkSendInput): Promise<GatewayWorkSendResult> {
+        assertGatewayWorkSend(input, this); this.sent.push(input); return { ok: true, receipt: "slack-ts" };
+      }
+    }
+    const adapter = new SlackAdapter(), registry = f.registry();
+    let turns = 0; registry.register(adapter, async () => { turns++; });
+    const target = { version: 1 as const, channelType: "slack" as const, channelId: adapter.id, connectionKey: adapter.key,
+      chatId: "TTEST:DTEST:100.123", senderId: "UOWNER", address: { teamId: "TTEST", appId: "ATEST", channel: "DTEST", threadTs: "100.123" } };
+    const origin = { channelId: adapter.id, connectionKey: adapter.key, chatId: target.chatId, senderId: target.senderId,
+      messageId: "100.124", audience: "private" as const, workTarget: target };
+    await registry.continueBotReply(origin, "slack-return", "A's direct answer");
+    await registry.continueBotReply(origin, "slack-return", "A's direct answer");
+    assert.equal(turns, 0); assert.equal(adapter.sent.length, 1); assert.deepEqual(adapter.sent[0]?.target, target);
+    assert.equal(adapter.sent[0]?.text, "A's direct answer");
+    const staged = f.journal.continueReply(origin, "slack-restart", "saved Slack reply"); registry.suspend();
+    const restored = f.registry(); restored.register(adapter, async () => { assert.fail("response-only recovery cannot run a human turn"); });
+    restored.resume(adapter.id); await until(() => f.journal.outbox(staged.delivery_id)?.status === "sent");
+    assert.equal(adapter.sent.length, 2); assert.deepEqual(adapter.sent[1]?.target, target);
+    await assert.rejects(restored.continueBotReply({ ...origin, senderId: "UOTHER" }, "slack-forged", "never send"), /原私人/);
+    await assert.rejects(restored.continueBotReply({ ...origin, audience: "shared" }, "slack-shared", "never send"), /原私人/);
+    const sharedTarget = { ...target, chatId: "TTEST:CTEST:100.123", address: { ...target.address, channel: "CTEST" } };
+    await assert.rejects(restored.continueBotReply({ ...origin, chatId: sharedTarget.chatId, workTarget: sharedTarget }, "slack-channel", "never send"), /原私人/);
+    adapter.key = "d".repeat(64);
+    await assert.rejects(restored.continueBotReply(origin, "slack-account", "never send"), /原渠道/);
+    assert.equal(adapter.sent.length, 2); restored.suspend();
   });
   console.log(`Gateway SQLite delivery journal: ${passed} checks passed`);
 } finally {

@@ -10,6 +10,7 @@ import { botActivitySchema, botReplySegmentSchema, type BotReplySegment, type Bo
 import type { WorkDto } from "../../../shared/bot-work";
 import { BOT_MESSAGE_ID_PREFIX } from "../../../shared/bot-conversation";
 import { BotTurnOrigins } from "./BotTurnOrigins";
+import { BotPeerIngress } from "./BotPeerIngress";
 
 const conversationRow = z.object({ conversation_id: z.string(), bot_id: z.string(), team_id: z.string().nullable().optional(), user_id: z.string(), revision: z.number(),
   current_request_id: z.string().nullable(), archived_at: z.number().nullable(), created_at: z.number(), updated_at: z.number() });
@@ -27,11 +28,13 @@ export class BotConversationRepository {
   readonly peerCalls: BotPeerCallRepository;
   readonly collaborations: BotCollaborationRepository;
   readonly origins: BotTurnOrigins;
+  readonly peers: BotPeerIngress;
   constructor(readonly db: Database.Database) {
     this.metrics = new BotForegroundMetricsStore(db);
     this.peerCalls = new BotPeerCallRepository(db);
     this.collaborations = new BotCollaborationRepository(db);
     this.origins = new BotTurnOrigins(db);
+    this.peers = new BotPeerIngress(db);
     // Additive presentation storage: existing conversations need no destructive schema reset.
     db.exec(`CREATE TABLE IF NOT EXISTS bot_message_segments (
       message_id TEXT PRIMARY KEY REFERENCES bot_messages(message_id) ON DELETE CASCADE,
@@ -46,7 +49,7 @@ export class BotConversationRepository {
     const row = conversationId ? this.db.prepare(`SELECT * FROM bot_conversations WHERE user_id=? AND conversation_id=?
       AND (bot_id=? OR team_id IS NOT NULL)`).get(userId, conversationId, botId)
       : teamId ? this.db.prepare("SELECT * FROM bot_conversations WHERE user_id=? AND team_id=? AND archived_at IS NULL").get(userId, teamId)
-      : this.db.prepare(`SELECT * FROM bot_conversations c WHERE user_id=? AND bot_id=? AND team_id IS NULL AND archived_at IS NULL AND ingress_kind='desktop'
+      : this.db.prepare(`SELECT * FROM bot_conversations c WHERE user_id=? AND bot_id=? AND team_id IS NULL AND archived_at IS NULL AND ingress_kind='desktop' AND source_kind='user'
           AND NOT EXISTS(SELECT 1 FROM bot_gateway_conversations g WHERE g.conversation_id=c.conversation_id)`)
           .get(userId, botId);
     return row ? conversationRow.parse(row) : undefined;
@@ -99,6 +102,18 @@ export class BotConversationRepository {
   receipt(userId: string, botId: string, requestId: string): BotMessageReceipt | undefined {
     const row = this.db.prepare("SELECT * FROM bot_send_receipts WHERE user_id=? AND bot_id=? AND request_id=?").get(userId, botId, requestId);
     return row ? receiptRow.parse(row) : undefined;
+  }
+
+  /** The original human statement, never the peer's generated paraphrase. */
+  userSource(receipt: BotMessageReceipt): BotMessageReceipt {
+    const peer = this.peers.origin(receipt.user_message_id);
+    if (!peer) return receipt;
+    if (peer.kind !== "request") throw new Error("回传事件不是新的用户授权");
+    const source = this.receipt(receipt.user_id, peer.sourceBotId, peer.sourceRequestId);
+    if (!source || source.conversation_id !== peer.sourceConversationId || source.user_message_id !== peer.sourceUserMessageId
+      || source.assistant_message_id !== peer.sourceAssistantMessageId || this.peers.origin(source.user_message_id))
+      throw new Error("协作的原始用户来源已不可用");
+    return source;
   }
 
   message(messageId: string): BotMessageDto | undefined {
@@ -253,9 +268,10 @@ export class BotConversationRepository {
         AND r.user_id=? AND (r.user_message_id=m.message_id OR r.assistant_message_id=m.message_id)
       WHERE m.conversation_id=? AND m.ordinal>? AND m.ordinal<=? ORDER BY m.ordinal`)
       .all(receipt.user_id, receipt.conversation_id, boundary.ordinal ?? 0, current.ordinal).map(row => this.mapMessage(row))
-      .filter(message => !sourceIds || message.messageId === current.messageId || sourceIds.has(message.messageId));
+      .filter(message => !message.peerOrigin && (!sourceIds || message.messageId === current.messageId || sourceIds.has(message.messageId)));
     const compact = (message: BotMessageDto) => ({ messageId: message.messageId, conversationId: message.conversationId,
       role: message.role, text: message.text, ordinal: message.ordinal,
+      ...(message.peerOrigin ? { peerOrigin: message.peerOrigin } : {}),
       intentRevision: work.intentRevision, sourceVersion: work.sourceVersion,
       ...(message.attachments?.length ? { attachments: message.attachments } : {}) });
     const reference = receipt.reference_message_id ? this.message(receipt.reference_message_id) : undefined;
@@ -344,8 +360,14 @@ export class BotConversationRepository {
   appendWorkDelivery(userId: string, workId: string, event: string, version: string, text: string, metadata?: WorkFeedbackDto):
     { delivered: boolean; inserted: boolean; recorded?: boolean; conversationId?: string } {
     return this.db.transaction(() => {
-      const target = this.resolveWorkDelivery(userId, workId);
+      let target = this.resolveWorkDelivery(userId, workId);
       const collaboration = this.collaborations.byWork(userId, workId);
+      const receiver = collaboration && this.db.prepare(`SELECT m.conversation_id FROM bot_peer_deliveries d
+        JOIN bot_messages m ON m.message_id=d.accepted_message_id WHERE d.user_id=?
+        AND json_extract(d.origin_json,'$.collaborationId')=? AND json_extract(d.origin_json,'$.kind')='request' ORDER BY d.rowid LIMIT 1`)
+        .get(userId, collaboration.collaborationId);
+      const peerReceiver = z.object({ conversation_id: z.string() }).optional().parse(receiver || undefined);
+      if (peerReceiver && collaboration) target = this.conversation(userId, collaboration.targetBotId, peerReceiver.conversation_id);
       if (collaboration && metadata?.report) {
         const operationId = `work-feedback:${createHash("sha256").update(event).digest("hex")}`;
         const revision = createHash("sha256").update(version).digest("hex");
@@ -362,7 +384,7 @@ export class BotConversationRepository {
       }
       if (!target) return { delivered: false, inserted: false, recorded: Boolean(collaboration && metadata?.report) };
       const inserted = this.appendWorkFeedback(target, workId, event, version, text, metadata);
-      if (collaboration && metadata?.report) this.collaborations.event(userId, collaboration.collaborationId,
+      if (collaboration && metadata?.report && !peerReceiver) this.collaborations.event(userId, collaboration.collaborationId,
         { operationId: `work-feedback:${createHash("sha256").update(event).digest("hex")}`,
           version: createHash("sha256").update(version).digest("hex"), kind: "returned", workId });
       return { delivered: true, inserted, conversationId: target.conversation_id };
@@ -468,7 +490,7 @@ export class BotConversationRepository {
     const segments = segmentRow ? z.array(botReplySegmentSchema).parse(JSON.parse(segmentRow.segments_json)) : undefined;
     const organizationUser = row.role === "assistant" ? this.db.prepare("SELECT user_id FROM bot_conversations WHERE conversation_id=?").pluck().get(row.conversation_id) : undefined;
     const organizations = typeof organizationUser === "string" ? botOrganizationsForMessage(this.db, organizationUser, row.message_id) : [];
-    return { ...(organizations.length ? { organizations } : {}), teamId: scope?.team_id ?? undefined, messageRevision: version?.revision ?? 0, messageId: row.message_id, conversationId: row.conversation_id, botId: row.bot_id, requestId: row.request_id,
+    return { peerOrigin: this.peers.origin(row.message_id), ...(organizations.length ? { organizations } : {}), teamId: scope?.team_id ?? undefined, messageRevision: version?.revision ?? 0, messageId: row.message_id, conversationId: row.conversation_id, botId: row.bot_id, requestId: row.request_id,
       segments, botCalls: row.role === "assistant" ? this.peerCalls.list(row.message_id) : undefined,
       collaborations: row.role === "assistant" ? this.collaborations.summariesForMessage(
         z.string().parse(this.db.prepare("SELECT user_id FROM bot_conversations WHERE conversation_id=?").pluck().get(row.conversation_id)), row.message_id) : undefined,

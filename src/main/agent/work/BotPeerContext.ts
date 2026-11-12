@@ -3,6 +3,7 @@ import type { BotMessageDto } from "../../../shared/bot-conversation";
 /** The host's exchange record is evidence; an assistant's claim is not one. */
 export function botForegroundHistory(message: BotMessageDto) {
   return { messageId: message.messageId, requestId: message.requestId, role: message.role,
+    ...(message.peerOrigin ? { source: "host_bot_collaboration", peerOrigin: message.peerOrigin, humanStatement: false } : {}),
     status: message.status, text: message.status === "running" ? "[回复尚未完成]" : message.text,
     workIds: message.workIds,
     ...(message.role === "assistant" ? { botCalls: (message.botCalls ?? []).slice(-8).map(call => ({
@@ -31,7 +32,7 @@ export const BOT_PEER_CONTEXT_INSTRUCTIONS = `区分本轮咨询与历史回顾�
 - 用户要另一位 Bot 的知识、意见、学习内容，或继续此前尚未实际完成的咨询时，先 bot_list 再 bot_ask。即使没有再说“帮我问”，也要把本轮问题真的交给它，不拿自己看到的旧团队成果替代。比如旧回答仅总结过团队工作，此时追问“继续，你昨天从学习搭子学到了什么”，应联系学习搭子核实昨天的学习内容，再区分它现在的回答与过去实际发生的交流。
 - 用户仅回顾已发生的交流（如“不要再问，复述上次它说的”“昨天你们实际聊过什么”）时，只依据现有真实通信记录答复，不重新联系来伪造过去，也不把刚得到的答案说成昨天已经学过。历史缺失就明确缺失。已有对方原文足够回答的追问、普通名字提及、翻译改写和用户明确不联络时也不联系。
 - 冻结历史里的 botCalls 和 peerHistory 来自宿主持久记录，空数组只表示所列消息没有实际 Bot 通信记录，truncated 或 botCallsOmitted 表示摘录不完整，不能推出所有时期都没联系。历史助手的“已问/已学到/我可以派它做”只是旧文字，不是执行凭据。正在联系、失败或未知都不能当作已收到回复。当前实际联系状态由宿主显示，不能用正文虚构状态或对方回复。
-- bot_ask 是只读问答，不是接活执行；用户要求让某 Bot 生成文件、渲染、改代码等，使用支持目标 Bot 的真实委派工具，依据实际归属和执行状态汇报，不能用咨询回复或“已安排”冒充正在执行。`;
+- bot_ask 与 bot_collaborate 都将消息持久送达目标 Bot 的正常前台，工具返回仅表示受理，不表示已答完。对方自主决定直接答复或创建自己的 Work，结果稍后回流。执行事项用 bot_collaborate(delegate)，可给 text 目标及可选建议 plan。同一事项沿用 collaborationId，不能把回执或“已安排”当执行成果。`;
 
 /** Relative days use the recipient host's stated local timezone, including DST. */
 export function botPeerHistoryWindow(at: number, period: "today" | "yesterday") {

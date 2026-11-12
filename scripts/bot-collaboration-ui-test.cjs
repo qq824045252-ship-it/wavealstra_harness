@@ -35,6 +35,10 @@ app.whenReady().then(async () => {
       fs.writeFileSync(path.join(out, name), Buffer.from(value.data, 'base64'));
     };
     await wait(`Boolean(window.collaborationFixture && document.querySelector('.bot-collaboration-summary'))`);
+    assert.equal(await evaluate(`document.querySelector('[data-message-id="source-26"]').getAttribute('aria-label')`), '来自 学习搭子 · Bot 协作的消息');
+    assert.equal(await evaluate(`document.querySelector('[data-message-id="source-26"] .bot-message-author').textContent`), '来自 学习搭子 · Bot 协作');
+    assert.equal(await evaluate(`document.querySelector('[data-message-id="source-28"]').getAttribute('aria-label')`), '你的消息');
+    report.checks.push('peer source has a visible and accessible Bot author; ordinary human input keeps its true author');
     assert(Object.values(await evaluate(`window.collaborationFixture.organizationSchemaChecks`)).every(Boolean), 'organization projection rejects impossible targets, links and oversized receipt pages');
     assert.equal(await evaluate(`document.querySelector('.bot-heading h1').textContent`), '并发助理', 'primary badge keeps the heading name unchanged');
     assert.equal(await evaluate(`document.querySelector('.bot-primary-badge')?.textContent`), '主助理');
