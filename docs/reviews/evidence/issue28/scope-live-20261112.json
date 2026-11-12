@@ -1,0 +1,3370 @@
+{
+  "issue": 28,
+  "productBase": "e47790045bd2286323bff1620866434bb741b2e9",
+  "environment": "Omarchy isolated clone; synthetic HOME, SQLite and native logs only",
+  "scope": "Real production AgentService/foreground and native Work/project requests. Headless service acceptance, not Electron UI or full Work delivery lifecycle.",
+  "runs": [
+    {
+      "runId": "2026-11-12T04-31-41-011Z-2021211",
+      "startedAt": "2026-11-12T04:31:42.428Z",
+      "finishedAt": "2026-11-12T04:33:49.642Z",
+      "source": {
+        "commit": "a4725d786db41c254b4d98d62c8dc28556e09b54",
+        "compiledInputCount": 649,
+        "unchanged": true
+      },
+      "model": {
+        "modelId": "opendesign/deepseek-v4.1-flash",
+        "declaredContextWindow": 1048000,
+        "declaredMaxOutputTokens": 328000,
+        "effectiveMaxOutputTokens": 328000,
+        "reasoning": true,
+        "thinkingLevelMap": {
+          "off": null,
+          "minimal": null,
+          "low": "low",
+          "medium": null,
+          "high": "high",
+          "xhigh": null,
+          "max": "max"
+        },
+        "mode": "gateway-model-configuration",
+        "pricing": "not-measured",
+        "source": "http://127.0.0.1:3425/v1/models",
+        "capturedAt": "2026-11-12T04:31:41.062Z"
+      },
+      "modelCallCount": 38,
+      "agentModelCalls": 20,
+      "auxiliaryModelCalls": 18,
+      "distinctTaskTypes": [
+        "inventory",
+        "meeting-agenda",
+        "editing",
+        "sorting",
+        "punctuation",
+        "unit-conversion",
+        "duration",
+        "name-extraction",
+        "checklist",
+        "translation",
+        "percentage",
+        "ratio",
+        "temperature"
+      ],
+      "passed": 23,
+      "failed": 1,
+      "restartBoundary": "AgentService reconstruction against the same on-disk DB/native logs, not a process restart",
+      "laneClassifier": "Request has provider tools: agent; no tools: auxiliary (heuristic; raw bodies retained)",
+      "pricing": "not-measured; SDK zero catalog prices are not actual cost",
+      "ledgerRecordCount": 15,
+      "ledgerHasInlineMarkers": false,
+      "reportSha256": "b53fb5123b6d915d901a82a9cc544972d19497b03ff0abe14e4156907b336034",
+      "compileProvenanceSha256": "632b26c12edf6fae539797d29ea2b6d19a3b2086091d4f1a66d190997c74b38c",
+      "ledgerSha256": "f1b069464ef8936eff1a0e517f41e5c6bcdfbca3571d507c8a89c470c6a87915",
+      "exit": {
+        "code": 1,
+        "signal": null,
+        "finishedAt": "2026-11-12T04:33:49.749Z"
+      },
+      "rawUsageReports": 38,
+      "rawUsageTotals": {
+        "input": 443952,
+        "output": 9186,
+        "cachedRead": 58240
+      },
+      "cases": [
+        {
+          "id": "personal-bot",
+          "type": "inventory",
+          "yes": [
+            "owner",
+            "public"
+          ],
+          "no": [
+            "foreign",
+            "teamA",
+            "teamB",
+            "projectP",
+            "projectQ",
+            "legacy"
+          ],
+          "startedAt": "2026-11-12T04:31:42.723Z",
+          "answer": "总库存：7 + 11 = 18 件。\n\nSCOPE_OWNER_4c1029697\nSCOPE_PUBLIC_efa1f375d",
+          "wireCalls": [
+            1
+          ],
+          "passed": true,
+          "finishedAt": "2026-11-12T04:31:47.138Z"
+        },
+        {
+          "id": "team-a",
+          "type": "meeting-agenda",
+          "yes": [
+            "teamA",
+            "public"
+          ],
+          "no": [
+            "owner",
+            "foreign",
+            "teamB",
+            "projectP",
+            "projectQ",
+            "legacy"
+          ],
+          "startedAt": "2026-11-12T04:31:47.138Z",
+          "answer": "**会议议程（总时长 15 分钟）**\n\n| 时段 | 时长 | 环节 |\n|---|---|---|\n| 00:00–02:00 | 2 分钟 | 开场：说明会议目标与流程 |\n| 02:00–10:00 | 8 分钟 | 讨论：就核心议题交换意见 |\n| 10:00–15:00 | 5 分钟 | 总结：汇总结论并明确后续行动 |\n\n总时长：2 + 8 + 5 = **15 分钟**\n\nSCOPE_TEAMA_db7097d01\nSCOPE_PUBLIC_efa1f375d",
+          "wireCalls": [
+            3
+          ],
+          "passed": true,
+          "finishedAt": "2026-11-12T04:31:53.262Z"
+        },
+        {
+          "id": "team-b",
+          "type": "editing",
+          "yes": [
+            "teamB",
+            "public"
+          ],
+          "no": [
+            "owner",
+            "foreign",
+            "teamA",
+            "projectP",
+            "projectQ",
+            "legacy"
+          ],
+          "startedAt": "2026-11-12T04:31:53.262Z",
+          "answer": "温馨提醒：麻烦您在星期五前把预算表发给林经理，谢谢！\n\nSCOPE_TEAMB_9fbb22d93\nSCOPE_PUBLIC_efa1f375d",
+          "wireCalls": [
+            5
+          ],
+          "passed": true,
+          "finishedAt": "2026-11-12T04:31:58.028Z"
+        },
+        {
+          "id": "same-conversation",
+          "type": "sorting",
+          "yes": [
+            "owner",
+            "public",
+            "conversation"
+          ],
+          "no": [
+            "foreign",
+            "teamA",
+            "teamB",
+            "projectP",
+            "projectQ",
+            "legacy"
+          ],
+          "startedAt": "2026-11-12T04:31:58.030Z",
+          "answer": "升序：1、3、8、11\n\nSCOPE_CONVERSATION_8b34dbc2c\nSCOPE_OWNER_4c1029697\nSCOPE_PUBLIC_efa1f375d",
+          "wireCalls": [
+            7
+          ],
+          "passed": true,
+          "finishedAt": "2026-11-12T04:32:01.713Z"
+        },
+        {
+          "id": "new-conversation",
+          "type": "punctuation",
+          "yes": [
+            "owner",
+            "public"
+          ],
+          "no": [
+            "conversation",
+            "foreign",
+            "teamA",
+            "teamB",
+            "projectP",
+            "projectQ",
+            "legacy"
+          ],
+          "startedAt": "2026-11-12T04:32:01.721Z",
+          "answer": "“你好，小林，明天见。”\n\nSCOPE_OWNER_4c1029697\nSCOPE_PUBLIC_efa1f375d",
+          "wireCalls": [
+            9
+          ],
+          "passed": true,
+          "finishedAt": "2026-11-12T04:32:05.645Z"
+        },
+        {
+          "id": "personal-work",
+          "type": "unit-conversion",
+          "yes": [
+            "owner",
+            "personalWork",
+            "exactTask",
+            "projectP",
+            "public"
+          ],
+          "no": [
+            "foreign",
+            "teamA",
+            "teamB",
+            "projectQ",
+            "legacy",
+            "conversation"
+          ],
+          "startedAt": "2026-11-12T04:32:05.770Z",
+          "answer": "2.5 公里 = **2500 米**（1 公里 = 1000 米）。\n\nSCOPE_EXACTTASK_66c5747b8\nSCOPE_PERSONALWORK_7870ad161\nSCOPE_PROJECTP_b1e6d663a\nSCOPE_OWNER_4c1029697\nSCOPE_PUBLIC_efa1f375d",
+          "wireCalls": [
+            11
+          ],
+          "passed": true,
+          "finishedAt": "2026-11-12T04:32:09.054Z"
+        },
+        {
+          "id": "same-work-second-execution",
+          "type": "duration",
+          "yes": [
+            "owner",
+            "personalWork",
+            "projectP",
+            "public"
+          ],
+          "no": [
+            "foreign",
+            "teamA",
+            "teamB",
+            "projectQ",
+            "legacy",
+            "conversation",
+            "exactTask"
+          ],
+          "startedAt": "2026-11-12T04:32:09.105Z",
+          "answer": "90 分钟 = **1.5 小时**（90 ÷ 60）。\n\nSCOPE_EXACTTASK_66c5747b8\nSCOPE_PERSONALWORK_7870ad161\nSCOPE_PROJECTP_b1e6d663a\nSCOPE_OWNER_4c1029697\nSCOPE_PUBLIC_efa1f375d",
+          "wireCalls": [
+            13
+          ],
+          "passed": false,
+          "finishedAt": "2026-11-12T04:32:22.295Z",
+          "error": {
+            "message": "wire leaked exactTask"
+          }
+        },
+        {
+          "id": "team-work-member",
+          "type": "name-extraction",
+          "yes": [
+            "teamA",
+            "teamWork",
+            "projectP",
+            "public"
+          ],
+          "no": [
+            "owner",
+            "foreign",
+            "teamB",
+            "personalWork",
+            "exactTask",
+            "projectQ",
+            "legacy",
+            "conversation"
+          ],
+          "startedAt": "2026-11-12T04:32:22.385Z",
+          "answer": "两个人名是：**李明**、**王芳**。\n\nSCOPE_TEAMWORK_5d03c812d\nSCOPE_PROJECTP_b1e6d663a\nSCOPE_TEAMA_db7097d01\nSCOPE_PUBLIC_efa1f375d\n\n本成员的分工已完成：人名提取与参考码列举均依据本轮提供的有效记忆，未调用外部工具、未写文件。这个 Work 的整体验收，请交给负责人核对。",
+          "wireCalls": [
+            15
+          ],
+          "passed": true,
+          "finishedAt": "2026-11-12T04:32:34.952Z"
+        },
+        {
+          "id": "project-p-first",
+          "type": "checklist",
+          "yes": [
+            "projectP",
+            "public",
+            "legacy"
+          ],
+          "no": [
+            "owner",
+            "foreign",
+            "teamA",
+            "teamB",
+            "personalWork",
+            "exactTask",
+            "projectQ",
+            "conversation"
+          ],
+          "startedAt": "2026-11-12T04:32:34.953Z",
+          "answer": "老板，三项检查清单如下：\n\n1. **检查备份**：确认备份任务是否按计划执行完成、备份文件是否存在且可以正常读取，并记录本次备份的时间点和覆盖范围。\n2. **验证版本**：核对当前运行版本与预期版本是否一致，包括版本号、构建信息和变更记录，确认没有出现意外回退或未预期的改动。\n3. **确认健康状态**：检查服务或系统的核心指标与告警，确认关键依赖可用、没有未处理异常，并留存一份状态确认结论。\n\nSCOPE_PROJECTP_b1e6d663a\nSCOPE_LEGACY_c49fea742\nSCOPE_PUBLIC_efa1f375d",
+          "wireCalls": [
+            17
+          ],
+          "passed": true,
+          "finishedAt": "2026-11-12T04:32:41.607Z"
+        },
+        {
+          "id": "project-p-second",
+          "type": "translation",
+          "yes": [
+            "projectP",
+            "public",
+            "legacy"
+          ],
+          "no": [
+            "owner",
+            "foreign",
+            "teamA",
+            "teamB",
+            "personalWork",
+            "exactTask",
+            "projectQ",
+            "conversation"
+          ],
+          "startedAt": "2026-11-12T04:32:41.607Z",
+          "answer": "预约时间是周五下午3点。\n\nSCOPE_PROJECTP_b1e6d663a\nSCOPE_LEGACY_c49fea742\nSCOPE_PUBLIC_efa1f375d",
+          "wireCalls": [
+            19
+          ],
+          "passed": true,
+          "finishedAt": "2026-11-12T04:32:48.697Z"
+        },
+        {
+          "id": "project-q",
+          "type": "percentage",
+          "yes": [
+            "projectQ",
+            "public",
+            "legacy"
+          ],
+          "no": [
+            "owner",
+            "foreign",
+            "teamA",
+            "teamB",
+            "personalWork",
+            "exactTask",
+            "projectP",
+            "conversation"
+          ],
+          "startedAt": "2026-11-12T04:32:48.698Z",
+          "answer": "不合格率 = 5 ÷ 20 = 0.25，即 **25%**。\n\n（合格 15 个，不合格 5 个，共 20 个；不合格占比 25%，合格率 75%。）\n\nSCOPE_PROJECTQ_bc39fc08b\nSCOPE_LEGACY_c49fea742\nSCOPE_PUBLIC_efa1f375d",
+          "wireCalls": [
+            21
+          ],
+          "passed": true,
+          "finishedAt": "2026-11-12T04:32:55.846Z"
+        },
+        {
+          "id": "detach-before",
+          "type": "ratio",
+          "yes": [
+            "life_detach"
+          ],
+          "no": [],
+          "startedAt": "2026-11-12T04:32:55.850Z",
+          "answer": "4 杯水 2 人分，每人 **2 杯**。\n\nSCOPE_LIFE_DETACH_9a8689a7d\nSCOPE_LEGACY_c49fea742\nSCOPE_PUBLIC_efa1f375d",
+          "wireCalls": [
+            23
+          ],
+          "passed": true,
+          "finishedAt": "2026-11-12T04:33:03.323Z"
+        },
+        {
+          "id": "detach-old-session",
+          "type": "reauthorization-denial",
+          "startedAt": "2026-11-12T04:33:03.417Z",
+          "zeroModelCalls": true,
+          "passed": true,
+          "error": "AssertionError [ERR_ASSERTION]: {\"receipt\":{\"taskId\":\"old-detach\",\"operationId\":\"user-13\",\"submissionId\":19,\"status\":\"unanswered\"},\"queued\":false,\"error\":{\"code\":\"DURABLE_UNANSWERED\",\"message\":\"历史 Memory mem_011add65-98fa-457a-972b-6819737b431a 已撤销或不可见，请新建任务以移除可能受影响的回复和摘要\"}}\n+ actual - expected\n\n+ 'unanswered'\n- 'done'\n"
+        },
+        {
+          "id": "detach-fresh-session",
+          "type": "temperature",
+          "yes": [],
+          "no": [
+            "life_detach"
+          ],
+          "startedAt": "2026-11-12T04:33:03.559Z",
+          "answer": "摄氏 0 度 = 华氏 32 度（℉ = ℃ × 9/5 + 32 = 0 × 1.8 + 32 = 32）。\n\nSCOPE_LEGACY_c49fea742\nSCOPE_PUBLIC_efa1f375d",
+          "wireCalls": [
+            25
+          ],
+          "passed": true,
+          "finishedAt": "2026-11-12T04:33:07.743Z"
+        },
+        {
+          "id": "detach-retained-scope",
+          "type": "name-extraction",
+          "yes": [
+            "life_detach"
+          ],
+          "no": [],
+          "startedAt": "2026-11-12T04:33:07.744Z",
+          "answer": "提取结果：李明、王芳\n\nSCOPE_LIFE_DETACH_9a8689a7d\nSCOPE_LEGACY_c49fea742\nSCOPE_PUBLIC_efa1f375d",
+          "wireCalls": [
+            27
+          ],
+          "passed": true,
+          "finishedAt": "2026-11-12T04:33:16.013Z"
+        },
+        {
+          "id": "expiry-before",
+          "type": "ratio",
+          "yes": [
+            "life_expiry"
+          ],
+          "no": [],
+          "startedAt": "2026-11-12T04:33:16.020Z",
+          "answer": "4 ÷ 2 = 2，每人 2 杯。\n\nSCOPE_LIFE_EXPIRY_6bb2f85ed\nSCOPE_LEGACY_c49fea742\nSCOPE_PUBLIC_efa1f375d",
+          "wireCalls": [
+            29
+          ],
+          "passed": true,
+          "finishedAt": "2026-11-12T04:33:24.258Z"
+        },
+        {
+          "id": "expiry-old-session",
+          "type": "reauthorization-denial",
+          "startedAt": "2026-11-12T04:33:24.347Z",
+          "zeroModelCalls": true,
+          "passed": true,
+          "error": "AssertionError [ERR_ASSERTION]: {\"receipt\":{\"taskId\":\"old-expiry\",\"operationId\":\"user-17\",\"submissionId\":19,\"status\":\"unanswered\"},\"queued\":false,\"error\":{\"code\":\"DURABLE_UNANSWERED\",\"message\":\"历史 Memory mem_5cc0b834-bb85-44da-b095-1964c11f96b5 已撤销或不可见，请新建任务以移除可能受影响的回复和摘要\"}}\n+ actual - expected\n\n+ 'unanswered'\n- 'done'\n"
+        },
+        {
+          "id": "expiry-fresh-session",
+          "type": "temperature",
+          "yes": [],
+          "no": [
+            "life_expiry"
+          ],
+          "startedAt": "2026-11-12T04:33:24.474Z",
+          "answer": "摄氏 0 度等于华氏 32 度。\n换算公式：°F = °C × 9/5 + 32。代入 0：0 × 1.8 + 32 = 32。\n\nSCOPE_LEGACY_c49fea742\nSCOPE_PUBLIC_efa1f375d",
+          "wireCalls": [
+            31
+          ],
+          "passed": true,
+          "finishedAt": "2026-11-12T04:33:27.951Z"
+        },
+        {
+          "id": "forget-before",
+          "type": "ratio",
+          "yes": [
+            "life_forget"
+          ],
+          "no": [],
+          "startedAt": "2026-11-12T04:33:27.957Z",
+          "answer": "4 杯水分给 2 人，每人 **2 杯**。\n\n当前有效记忆提供的验收参考码：\n\nSCOPE_LIFE_FORGET_8aa2e7b45（project）\nSCOPE_LEGACY_c49fea742（global）\nSCOPE_PUBLIC_efa1f375d（global）",
+          "wireCalls": [
+            33
+          ],
+          "passed": true,
+          "finishedAt": "2026-11-12T04:33:34.731Z"
+        },
+        {
+          "id": "forget-old-session",
+          "type": "reauthorization-denial",
+          "startedAt": "2026-11-12T04:33:34.806Z",
+          "zeroModelCalls": true,
+          "passed": true,
+          "error": "AssertionError [ERR_ASSERTION]: {\"receipt\":{\"taskId\":\"old-forget\",\"operationId\":\"user-20\",\"submissionId\":19,\"status\":\"unanswered\"},\"queued\":false,\"error\":{\"code\":\"DURABLE_UNANSWERED\",\"message\":\"历史 Memory mem_157f588b-4688-4032-aebf-2d23edfbf63c 已撤销或不可见，请新建任务以移除可能受影响的回复和摘要\"}}\n+ actual - expected\n\n+ 'unanswered'\n- 'done'\n"
+        },
+        {
+          "id": "forget-fresh-session",
+          "type": "temperature",
+          "yes": [],
+          "no": [
+            "life_forget"
+          ],
+          "startedAt": "2026-11-12T04:33:34.929Z",
+          "answer": "0 °C = **32 °F**（换算公式：°F = °C × 9/5 + 32）。\n\nSCOPE_LEGACY_c49fea742\nSCOPE_PUBLIC_efa1f375d",
+          "wireCalls": [
+            35
+          ],
+          "passed": true,
+          "finishedAt": "2026-11-12T04:33:38.571Z"
+        },
+        {
+          "id": "disable-before",
+          "type": "ratio",
+          "yes": [
+            "life_disable"
+          ],
+          "no": [],
+          "startedAt": "2026-11-12T04:33:38.577Z",
+          "answer": "4 杯水分给 2 人：4 ÷ 2 = 2，每人 2 杯（平均分配）。\n\n如果杯子容量相同、要求平分，这就是唯一答案；若允许不平均，则有多种分法。\n\nSCOPE_LIFE_DISABLE_b216f0e0f\nSCOPE_LEGACY_c49fea742\nSCOPE_PUBLIC_efa1f375d",
+          "wireCalls": [
+            37
+          ],
+          "passed": true,
+          "finishedAt": "2026-11-12T04:33:46.176Z"
+        },
+        {
+          "id": "disable-old-session",
+          "type": "reauthorization-denial",
+          "startedAt": "2026-11-12T04:33:46.238Z",
+          "zeroModelCalls": true,
+          "passed": true,
+          "error": "AssertionError [ERR_ASSERTION]: {\"receipt\":{\"taskId\":\"old-disable\",\"operationId\":\"user-23\",\"submissionId\":19,\"status\":\"unanswered\"},\"queued\":false,\"error\":{\"code\":\"DURABLE_UNANSWERED\",\"message\":\"历史 Memory 已停用，请新建任务以重建上下文\"}}\n+ actual - expected\n\n+ 'unanswered'\n- 'done'\n"
+        },
+        {
+          "id": "disable-fresh-session",
+          "type": "temperature",
+          "yes": [],
+          "no": [
+            "life_disable"
+          ],
+          "startedAt": "2026-11-12T04:33:46.382Z",
+          "answer": "摄氏 0 度 = 华氏 32 度（换算公式：°F = °C × 9/5 + 32）。\n\n没有参考码",
+          "wireCalls": [
+            38
+          ],
+          "passed": true,
+          "finishedAt": "2026-11-12T04:33:49.576Z"
+        }
+      ],
+      "calls": [
+        {
+          "index": 1,
+          "caseId": "personal-bot",
+          "lane": "agent",
+          "requestSha256": "471fbdef88c6e7014c613cc15fc526f49f22ea1a8b21a11db0ef7ece5ebc16d2",
+          "responseSha256": "5456650231ae2916bef8ceadb2d1d012d0660e6793c6c9475762cc2bf0b8795f",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 19934,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 18432,
+                  "cached_tokens": 18432
+                },
+                "completion_tokens": 146,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 107
+                },
+                "total_tokens": 20080
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_02179445790445570c18af9f89e89788c62dbe22223236130322d"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 2,
+          "caseId": "team-a",
+          "lane": "auxiliary",
+          "requestSha256": "77a0ac43a1f84f7ba373191e586d6119e5692d4fe50eb2206878aa1bac47a06e",
+          "responseSha256": "93f38b2f3ab0f91f3c63c236e8b991f5d7058d94a975b411f511ed6bdadf71bd",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 1653,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 231,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 224
+                },
+                "total_tokens": 1884
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_02179445790749381fbe8801b4cfc8e3454077f6383f7cfa875b3"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 3,
+          "caseId": "team-a",
+          "lane": "agent",
+          "requestSha256": "9ea4b2b7e8b39faed949d80fd49bcb2abbb15e553bf4f9c0a3a5f581f8def067",
+          "responseSha256": "9523ad7bcc78064184ac7df9f0efa6ef3b475a9bd0e29e24a71d1587ca8346d1",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 17410,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 387,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 248
+                },
+                "total_tokens": 17797
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_021794457909343e40cd0a5f20110aac1f60c7d99b54634bd03c1"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 4,
+          "caseId": "team-b",
+          "lane": "auxiliary",
+          "requestSha256": "2b6c263192986919ea476217dd967e160d9160390822c474f470a6d892f3fb79",
+          "responseSha256": "41581f28981c9224b03149a37de161e4a24929c3274725df7ada71184ddd8c2b",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 1678,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 123,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 116
+                },
+                "total_tokens": 1801
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_0217944579135992e69d8f77ebb6ff0d882025244d1e9e06d8650"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 5,
+          "caseId": "team-b",
+          "lane": "agent",
+          "requestSha256": "c3e716d517744cd06f4149f5a757810eb6c7ce9baf2ce477b1badc8fb35718ac",
+          "responseSha256": "87f337647a44c66c9856622604e8104f04ba68440cc33cc1d1b4c5efe5518ff6",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 17418,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 369,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 326
+                },
+                "total_tokens": 17787
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_021794457913851373615d827d98655cdf28f8c9eebc817b88086"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 6,
+          "caseId": "same-conversation",
+          "lane": "auxiliary",
+          "requestSha256": "3bc77b81e20e3637c0f023e83bf921fe7a201087c1a65ad4eda9e6d217ddcdf5",
+          "responseSha256": "04311142a5acca1c8b977860af265deb696a5177fe4ed5478dc589c43d498948",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 1683,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 179,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 172
+                },
+                "total_tokens": 1862
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_021794457918407fd3ae808d5ba084b55a7f9e1600032cdb37ee5"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 7,
+          "caseId": "same-conversation",
+          "lane": "agent",
+          "requestSha256": "731f7374777be3f16a6d78ebc082513bba3849cc34233febcac097b9bea7821e",
+          "responseSha256": "ce5d2952d2ddb780fba514090fe536ac2d2a8c2f7f816c378639979bf02e5ccc",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 20164,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 18432,
+                  "cached_tokens": 18432
+                },
+                "completion_tokens": 149,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 97
+                },
+                "total_tokens": 20313
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_021794457918616a2f4933af3443b601e52f5659e0d958f2db5a0"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 8,
+          "caseId": "new-conversation",
+          "lane": "auxiliary",
+          "requestSha256": "11c442756884afd41a39cb85c1d9ceb047e101e63cf3383677a41b4646ac799c",
+          "responseSha256": "a0c10a1635efc76b1d2e62d17690bf5e2a87440c11fc36508e08dda784649804",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 1811,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 152,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 145
+                },
+                "total_tokens": 1963
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_02179445792209628c256f90ee836450e608b7d1b1192f38f8cca"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 9,
+          "caseId": "new-conversation",
+          "lane": "agent",
+          "requestSha256": "cd128c993d0e05beaf73fe450402a28ca7de7a473b37067b0cd9cae837a927ed",
+          "responseSha256": "fec7554c5b84f7d5186f19318ce1fb79d0387522df73ef08b91e1404cd16e482",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 19932,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 19584,
+                  "cached_tokens": 19584
+                },
+                "completion_tokens": 185,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 151
+                },
+                "total_tokens": 20117
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_0217944579228179f6cd41e8514911883ec9f138006f90fbcb112"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 10,
+          "caseId": "new-conversation",
+          "lane": "auxiliary",
+          "requestSha256": "567d85709f71ea2691eecb0053167c1c81b878056d99bbd2cc589fc15eeff9fb",
+          "responseSha256": "a2cb66ea3d250fbbc1c295e91fddff9dfd68555dd83ef2e77d7c246dd13fa77a",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 1646,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 177,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 170
+                },
+                "total_tokens": 1823
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_021794457925888312d4ce6e0ff480f3ded581ca0cd03ed240927"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 11,
+          "caseId": "personal-work",
+          "lane": "agent",
+          "requestSha256": "1554b7313cd1bcc8e01da39a372e28a4d357ecdcb3fd50e61a6ba635e80967b0",
+          "responseSha256": "3e7618f31c63bb75973308509843129696c58c8ec93b7179fef6e9b0163b8ef4",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 21922,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 144,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 53
+                },
+                "total_tokens": 22066
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_021794457926425c2670fe791a5f29d61bdea8e0ada6c5debd73d"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 12,
+          "caseId": "personal-work",
+          "lane": "auxiliary",
+          "requestSha256": "972997c34c8905b7a010aee883807c803c6d6ec8bc92cd40918ef89e957224e3",
+          "responseSha256": "f78af8d2c69699bafd954baaff7cfa3ff0f88ae35918a581e9a996edf89e08d0",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 1896,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 216,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 209
+                },
+                "total_tokens": 2112
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_021794457929339aaaf13501739a5ff290af8d9343e27fcfa1991"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 13,
+          "caseId": "same-work-second-execution",
+          "lane": "agent",
+          "requestSha256": "e4d964ca14a7d541474e7444a6af57bc42ae37c0df40a51431334d684b9e1cf2",
+          "responseSha256": "6429aab14afd26196da5961de0607ec147389a8c7a7d6194b28563a2094f9621",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 21888,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 799,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 714
+                },
+                "total_tokens": 22687
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_021794457932771e40cd0a5f20110aac1f60c7d99b546341362a2"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 14,
+          "caseId": "same-work-second-execution",
+          "lane": "auxiliary",
+          "requestSha256": "6e47c1877a0ebdf2df3fa3d37e981039c055ad0ee888bfce4d31cb116eca0c7d",
+          "responseSha256": "48905e6b730533013088cc05c7cf0173102c68d63ba2cdecb476bf3aa0254b5f",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 1760,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 239,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 232
+                },
+                "total_tokens": 1999
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_0217944579425570c64a0471125ddcff16fb536859661785a7462"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 15,
+          "caseId": "team-work-member",
+          "lane": "agent",
+          "requestSha256": "25145e94395e97ba1dac73218fdf4376e0650a0300a15daa4be3415ca9641eac",
+          "responseSha256": "c300dc0f569afae06145b03b73a617923ceff8815853a32684c51e6e37a72800",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 22806,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 1031,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 924
+                },
+                "total_tokens": 23837
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_0217944579458462e03d1d5cb4d12864ab68947fc6ea20797c83c"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 16,
+          "caseId": "team-work-member",
+          "lane": "auxiliary",
+          "requestSha256": "0fae045c09068c1a19f9a59dbdae42d40b00dfef18d81fc9b4d1c5d6366c8e81",
+          "responseSha256": "d42529cc1eb86842c3e32d9b74d1442b23c7613bc03310ac76f97e8bb3fb1816",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 2603,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 238,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 231
+                },
+                "total_tokens": 2841
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_0217944579552555d6d8f07cf2a752c74db4b42ef6a643ee5a9e0"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 17,
+          "caseId": "project-p-first",
+          "lane": "agent",
+          "requestSha256": "dafb60086eae5a71d763b5dc7237e47b717d4b4b4b329b90f68aabb481d7c61c",
+          "responseSha256": "d3f9f56985e63e944be584cfa2e22e6e92e9e12f85d643fab26bc14341cd83a4",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 21248,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 227,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 75
+                },
+                "total_tokens": 21475
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_021794457958545b825dd5258dc4c388f66926d17e5fb9ce5599a"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 18,
+          "caseId": "project-p-second",
+          "lane": "auxiliary",
+          "requestSha256": "0a81a3a1c470e6e3fcfbaf6ebdb1acb53bd8ab04558011c497dad35792eb91bf",
+          "responseSha256": "897834a651284ef892393a9b212cd820ad4bde94792c36ad763013fa9e3c79b8",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 1608,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 131,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 124
+                },
+                "total_tokens": 1739
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_0217944579619608823a6d9d4020aa2a4c8e545461b44d5523c1a"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 19,
+          "caseId": "project-p-second",
+          "lane": "agent",
+          "requestSha256": "df9ead48dbd955e5ac3fb10207594c150158a549b5a063568f7032ddfccfa07b",
+          "responseSha256": "105173f7ae9949bd4fcb3c0c1d3d357130aa0feec4e3f3fe57608fd43013d07a",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 21247,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 184,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 137
+                },
+                "total_tokens": 21431
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_0217944579654316ac55f1ae722766e84a3a1d53b37ba2dd02dfe"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 20,
+          "caseId": "project-q",
+          "lane": "auxiliary",
+          "requestSha256": "cc7366c7796ee729c05edc9d604b9fd3a42ce7d1893de4bce7df6b91a7e0eced",
+          "responseSha256": "51082f736d219cd3a58e5bc98078e63dced6e887868849147fa3e631b56c53e5",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 1605,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 359,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 352
+                },
+                "total_tokens": 1964
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_021794457969019cab51c90d4ba35885c8041829e1e0de919df83"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 21,
+          "caseId": "project-q",
+          "lane": "agent",
+          "requestSha256": "265f01cf29891abe21f79c03bf190e40498ddcfe18f136fae4975e83443022d8",
+          "responseSha256": "0df10e1ba62d573cb65dca3eea8cccbde2dce2815b215d8197de625455d9b972",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 21235,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 155,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 66
+                },
+                "total_tokens": 21390
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_0217944579729949601394fd5171fb187b1a439528361d36ee5ec"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 22,
+          "caseId": "detach-before",
+          "lane": "auxiliary",
+          "requestSha256": "7599eacdd080c2374345c92f388bf9daa059fc357a96aa612edaac857547a6de",
+          "responseSha256": "8fed6b58edc8031eb8a7b54b3ecc57dada854e36593dc27d585f86c0cf826cec",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 1597,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 896,
+                  "cached_tokens": 896
+                },
+                "completion_tokens": 229,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 222
+                },
+                "total_tokens": 1826
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_02179445797636039debe34dc0faea573b1e9db2da7e27b9f91c2"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 23,
+          "caseId": "detach-before",
+          "lane": "agent",
+          "requestSha256": "1fa20647db6d2b339619b5bfbccde38482c70a3a731045c23c3e643ccc4f4b53",
+          "responseSha256": "47c97a143ab03da779284c764d85d08ea750bc4563724471b6386420606578ae",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 21243,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 162,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 102
+                },
+                "total_tokens": 21405
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_0217944579804910fff30dca92d5f275a0fb147aaa6e5738c6b47"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 24,
+          "caseId": "background",
+          "lane": "auxiliary",
+          "requestSha256": "f0e38652858561f16362e5f2916ae4980e294adc869a72b29dd84ec288893204",
+          "responseSha256": "d86020d141b255751f22cc25f36c9d25ce53f7dec5dc5f18a43e3a2854520dae",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 1434,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 197,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 190
+                },
+                "total_tokens": 1631
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_021794457983722fd3ae808d5ba084b55a7f9e1600032cda57ad4"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 25,
+          "caseId": "detach-fresh-session",
+          "lane": "agent",
+          "requestSha256": "152d8da964e01b305a6912af3c0280a6a6a8bbde68f08f9761c54ecd7480c47c",
+          "responseSha256": "84ca26de28caa76822770d5b66b30fbd80a33af132d7200cade21342bf086614",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 21129,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 216,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 149
+                },
+                "total_tokens": 21345
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_021794457984684124404eabe9b927fceaa7c0eaca8bf7aca9a98"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 26,
+          "caseId": "detach-retained-scope",
+          "lane": "auxiliary",
+          "requestSha256": "dc3d98c0f56a301e0f9e5ecb74646d4c2557226b9f4e8f405a58f325037d2bb6",
+          "responseSha256": "b365adbcb0bd310e8644c8a08dcaf3709ea1dffe51421d41fb50a394f9f6bd67",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 1433,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 242,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 235
+                },
+                "total_tokens": 1675
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_0217944579881502b8720b6d986e81ce95e9b006de0a2cbbebf25"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 27,
+          "caseId": "detach-retained-scope",
+          "lane": "agent",
+          "requestSha256": "a37cd98e749e428353e8ce37f4b6c0e0865e536081b6a466fc1fba0c34b62e33",
+          "responseSha256": "5e9c99aee92acf0a9f4b48b21578d68396a8486d85248b88deaf9a40ba4e53c5",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 21244,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 117,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 66
+                },
+                "total_tokens": 21361
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_021794457993311f39d09b715cb307c823cd4ff1a5ec1ab13a18a"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 28,
+          "caseId": "expiry-before",
+          "lane": "auxiliary",
+          "requestSha256": "06f82f54947fb7bbb2a4f6e58ae01c273de4f64eedee73dfc994fef48ead6fda",
+          "responseSha256": "0b0121ab133f6cc89b04e48e1515f886cc091bf5caebeb36c8566bee8fe7ac59",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 1604,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 896,
+                  "cached_tokens": 896
+                },
+                "completion_tokens": 451,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 444
+                },
+                "total_tokens": 2055
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_0217944579966943a96cb89bb0639877068f7507e34a86ae86e0b"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 29,
+          "caseId": "expiry-before",
+          "lane": "agent",
+          "requestSha256": "79144d526689a027f8c892a62626dcf4f625dca6db9540d03c1f0ff2d7c4bd45",
+          "responseSha256": "642521646754f6b1576a785a9779706ccec1efd19bbd80c51e34f593416f15a4",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 21226,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 86,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 29
+                },
+                "total_tokens": 21312
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_0217944580013686362ddeee9049477b0b29b68d55a9ae94e5a22"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 30,
+          "caseId": "background",
+          "lane": "auxiliary",
+          "requestSha256": "cc0585a66f864581ab09fc8fe1ee9a7b86af59023f05eb043347a241cebf54d7",
+          "responseSha256": "b4154045b0b912703f20e0e8e0a5ecb309455c2bdab3e36f0a14d505d611ee7f",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 1432,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 169,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 162
+                },
+                "total_tokens": 1601
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_02179445800461399b13dab45b2d10982c2cf34f4d4639d6c0b34"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 31,
+          "caseId": "expiry-fresh-session",
+          "lane": "agent",
+          "requestSha256": "69935aa6909646f39784da3190c90fae31f9007b663b7b2eb2b54dc272027fe8",
+          "responseSha256": "3104fe9955e17c476dd75692ef60b42ed33537330d1025d4df4b9e0f41f53171",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 21110,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 126,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 53
+                },
+                "total_tokens": 21236
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_02179445800508435c9db62ef7a9766eeb1c4efe709aaa92e3d44"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 32,
+          "caseId": "forget-before",
+          "lane": "auxiliary",
+          "requestSha256": "c42f51560230f1143d388cd3b7740b725416764b70fb039afd3fb08e552a8645",
+          "responseSha256": "8e622ee7420d5966ca20fa7d9172d6009d3d323e514aab36023b9ae0289df528",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 1430,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 101,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 94
+                },
+                "total_tokens": 1531
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_021794458008314a139bd89baa39633285680c9471d15efd3f09f"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 33,
+          "caseId": "forget-before",
+          "lane": "agent",
+          "requestSha256": "1af0bf85dd4327de0271b550bc475f950fb501c592cab1b296f418dfbc766201",
+          "responseSha256": "3c754c16f7338a8cb5f9783e34c1d6a476fa06bfc9f7e34fbb0a4ba16b332317",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 21255,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 313,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 238
+                },
+                "total_tokens": 21568
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_021794458010880b1e926b94f741badb049b6681cf829b866759a"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 34,
+          "caseId": "background",
+          "lane": "auxiliary",
+          "requestSha256": "b83714949f75ac254c361ff2e67b20fd3d88d5e50d2e389fa250cb9f4fadf74b",
+          "responseSha256": "ed6642cc169dde66af4dac50d7074ed0699b60cfc58af77b28745ba00ece59ea",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 1439,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 226,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 219
+                },
+                "total_tokens": 1665
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_021794458015074c1826595e581f7a440f247fe98485b57c912d1"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 35,
+          "caseId": "forget-fresh-session",
+          "lane": "agent",
+          "requestSha256": "3b09eddfac143e32bdf42ebbee6b149cf11e9b2186981dd296a83d74c21188e4",
+          "responseSha256": "1fe40fa1443f4f353732ddcef3df8cde962d85c9da2aa498c17a92a746a09f80",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 21133,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 163,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 110
+                },
+                "total_tokens": 21296
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_0217944580156005482bcf7e80bfa8bf500513aca3a704d1c7532"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 36,
+          "caseId": "disable-before",
+          "lane": "auxiliary",
+          "requestSha256": "f07233e128095891e8e2fe37786dc16cc601582643f16e399400d56aa18bf208",
+          "responseSha256": "91480f5fb7660d25c5b9d41d9fd92c9f82d8cb3bee654048c5152284dd1959cf",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 1435,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 266,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 259
+                },
+                "total_tokens": 1701
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_0217944580189169e96f8c80ac47960a454270e9930f954928bad"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 37,
+          "caseId": "disable-before",
+          "lane": "agent",
+          "requestSha256": "a52359e2181b13e16af3f9110ed9fd79e8e2dfb2b3ef171c6036e0374c14816e",
+          "responseSha256": "c9c6a48ced8de12230be828c0a420da8bdad01dc7ec99dd8c020e0877714aa32",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 21228,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 190,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 99
+                },
+                "total_tokens": 21418
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_0217944580230034b0734cede0d35a658963f07bc220d4b3f2efc"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 38,
+          "caseId": "disable-fresh-session",
+          "lane": "agent",
+          "requestSha256": "5b3110dd8bcdb12b111c789c1a9ded69e55e9fd2d2a575d9fcf8d8d8580ac7ae",
+          "responseSha256": "0c2990dc65a26d9d902ca578d3b2559729855919b0fdacc58ffe116a56bd9a42",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 19433,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 111,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 76
+                },
+                "total_tokens": 19544
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_0217944580269530fff30dca92d5f275a0fb147aaa6e5735bd2b3"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        }
+      ]
+    },
+    {
+      "runId": "2026-11-12T04-37-09-135Z-2032402",
+      "startedAt": "2026-11-12T04:37:10.551Z",
+      "finishedAt": "2026-11-12T04:39:04.713Z",
+      "source": {
+        "commit": "a41288742c96cd504734e210b8201ca420212243",
+        "compiledInputCount": 649,
+        "unchanged": true
+      },
+      "model": {
+        "modelId": "opendesign/deepseek-v4.1-flash",
+        "declaredContextWindow": 1048000,
+        "declaredMaxOutputTokens": 328000,
+        "effectiveMaxOutputTokens": 328000,
+        "reasoning": true,
+        "thinkingLevelMap": {
+          "off": null,
+          "minimal": null,
+          "low": "low",
+          "medium": null,
+          "high": "high",
+          "xhigh": null,
+          "max": "max"
+        },
+        "mode": "gateway-model-configuration",
+        "pricing": "not-measured",
+        "source": "http://127.0.0.1:3425/v1/models",
+        "capturedAt": "2026-11-12T04:37:09.190Z"
+      },
+      "modelCallCount": 38,
+      "agentModelCalls": 20,
+      "auxiliaryModelCalls": 18,
+      "distinctTaskTypes": [
+        "inventory",
+        "meeting-agenda",
+        "editing",
+        "sorting",
+        "punctuation",
+        "unit-conversion",
+        "duration",
+        "name-extraction",
+        "checklist",
+        "translation",
+        "percentage",
+        "ratio",
+        "temperature"
+      ],
+      "passed": 24,
+      "failed": 0,
+      "restartBoundary": "AgentService reconstruction against the same on-disk DB/native logs, not a process restart",
+      "laneClassifier": "Request has provider tools: agent; no tools: auxiliary (heuristic; raw bodies retained)",
+      "pricing": "not-measured; SDK zero catalog prices are not actual cost",
+      "ledgerRecordCount": 15,
+      "ledgerHasInlineMarkers": false,
+      "reportSha256": "abec6397139171a98377709476a26ff83acfa314c88882ba3fef617d06cde4ea",
+      "compileProvenanceSha256": "ba2a5a4063667bcb41c0df7da17a84e22fce20e613c9bdd2c4c51f04da6b8045",
+      "ledgerSha256": "961522228feb76062d3f02da557409382d98c4057d37224d5d289578e7f5b0c0",
+      "exit": {
+        "code": 0,
+        "signal": null,
+        "finishedAt": "2026-11-12T04:39:04.791Z"
+      },
+      "rawUsageReports": 38,
+      "rawUsageTotals": {
+        "input": 444025,
+        "output": 7960,
+        "cachedRead": 58368
+      },
+      "cases": [
+        {
+          "id": "personal-bot",
+          "type": "inventory",
+          "yes": [
+            "owner",
+            "public"
+          ],
+          "no": [
+            "foreign",
+            "teamA",
+            "teamB",
+            "projectP",
+            "projectQ",
+            "legacy"
+          ],
+          "wireOnly": [],
+          "answerExcluded": [],
+          "startedAt": "2026-11-12T04:37:10.843Z",
+          "answer": "甲仓 7 件、乙仓 11 件，总库存 18 件。\n\nSCOPE_OWNER_4c1029697\nSCOPE_PUBLIC_efa1f375d",
+          "wireCalls": [
+            1
+          ],
+          "passed": true,
+          "finishedAt": "2026-11-12T04:37:14.224Z"
+        },
+        {
+          "id": "team-a",
+          "type": "meeting-agenda",
+          "yes": [
+            "teamA",
+            "public"
+          ],
+          "no": [
+            "owner",
+            "foreign",
+            "teamB",
+            "projectP",
+            "projectQ",
+            "legacy"
+          ],
+          "wireOnly": [],
+          "answerExcluded": [],
+          "startedAt": "2026-11-12T04:37:14.224Z",
+          "answer": "**会议议程（总时长 15 分钟）**\n\n| 时间 | 环节 | 时长 |\n|---|---|---|\n| 00:00–02:00 | 开场 | 2 分钟 |\n| 02:00–10:00 | 讨论 | 8 分钟 |\n| 10:00–15:00 | 总结 | 5 分钟 |\n\n总时长：2 + 8 + 5 = **15 分钟**\n\nSCOPE_TEAMA_db7097d01\nSCOPE_PUBLIC_efa1f375d",
+          "wireCalls": [
+            3
+          ],
+          "passed": true,
+          "finishedAt": "2026-11-12T04:37:18.807Z"
+        },
+        {
+          "id": "team-b",
+          "type": "editing",
+          "yes": [
+            "teamB",
+            "public"
+          ],
+          "no": [
+            "owner",
+            "foreign",
+            "teamA",
+            "projectP",
+            "projectQ",
+            "legacy"
+          ],
+          "wireOnly": [],
+          "answerExcluded": [],
+          "startedAt": "2026-11-12T04:37:18.814Z",
+          "answer": "“林经理，提醒您一下：请在星期五之前把预算表发给您，麻烦您了。”\n\nSCOPE_TEAMB_9fbb22d93\nSCOPE_PUBLIC_efa1f375d",
+          "wireCalls": [
+            5
+          ],
+          "passed": true,
+          "finishedAt": "2026-11-12T04:37:23.709Z"
+        },
+        {
+          "id": "same-conversation",
+          "type": "sorting",
+          "yes": [
+            "owner",
+            "public",
+            "conversation"
+          ],
+          "no": [
+            "foreign",
+            "teamA",
+            "teamB",
+            "projectP",
+            "projectQ",
+            "legacy"
+          ],
+          "wireOnly": [],
+          "answerExcluded": [],
+          "startedAt": "2026-11-12T04:37:23.712Z",
+          "answer": "1、3、8、11\n\nSCOPE_CONVERSATION_8b34dbc2c\nSCOPE_OWNER_4c1029697\nSCOPE_PUBLIC_efa1f375d",
+          "wireCalls": [
+            7
+          ],
+          "passed": true,
+          "finishedAt": "2026-11-12T04:37:26.909Z"
+        },
+        {
+          "id": "new-conversation",
+          "type": "punctuation",
+          "yes": [
+            "owner",
+            "public"
+          ],
+          "no": [
+            "conversation",
+            "foreign",
+            "teamA",
+            "teamB",
+            "projectP",
+            "projectQ",
+            "legacy"
+          ],
+          "wireOnly": [],
+          "answerExcluded": [],
+          "startedAt": "2026-11-12T04:37:26.910Z",
+          "answer": "你好，小林，明天见。\n\nSCOPE_OWNER_4c1029697\nSCOPE_PUBLIC_efa1f375d",
+          "wireCalls": [
+            9
+          ],
+          "passed": true,
+          "finishedAt": "2026-11-12T04:37:31.016Z"
+        },
+        {
+          "id": "personal-work",
+          "type": "unit-conversion",
+          "yes": [
+            "owner",
+            "personalWork",
+            "exactTask",
+            "projectP",
+            "public"
+          ],
+          "no": [
+            "foreign",
+            "teamA",
+            "teamB",
+            "projectQ",
+            "legacy",
+            "conversation"
+          ],
+          "wireOnly": [
+            "exactTask"
+          ],
+          "answerExcluded": [
+            "exactTask"
+          ],
+          "startedAt": "2026-11-12T04:37:31.152Z",
+          "answer": "2.5 公里 = 2500 米。\n\nSCOPE_PERSONALWORK_7870ad161\nSCOPE_PROJECTP_b1e6d663a\nSCOPE_OWNER_4c1029697\nSCOPE_PUBLIC_efa1f375d",
+          "wireCalls": [
+            11
+          ],
+          "passed": true,
+          "finishedAt": "2026-11-12T04:37:34.475Z"
+        },
+        {
+          "id": "same-work-second-execution",
+          "type": "duration",
+          "yes": [
+            "owner",
+            "personalWork",
+            "projectP",
+            "public"
+          ],
+          "no": [
+            "foreign",
+            "teamA",
+            "teamB",
+            "projectQ",
+            "legacy",
+            "conversation",
+            "exactTask"
+          ],
+          "wireOnly": [],
+          "answerExcluded": [],
+          "startedAt": "2026-11-12T04:37:34.527Z",
+          "answer": "90 分钟 = 1.5 小时（即 1 小时 30 分钟）。\n\n90 ÷ 60 = 1.5\n\nSCOPE_PERSONALWORK_7870ad161\nSCOPE_PROJECTP_b1e6d663a\nSCOPE_OWNER_4c1029697\nSCOPE_PUBLIC_efa1f375d",
+          "wireCalls": [
+            13
+          ],
+          "passed": true,
+          "finishedAt": "2026-11-12T04:37:45.784Z"
+        },
+        {
+          "id": "team-work-member",
+          "type": "name-extraction",
+          "yes": [
+            "teamA",
+            "teamWork",
+            "projectP",
+            "public"
+          ],
+          "no": [
+            "owner",
+            "foreign",
+            "teamB",
+            "personalWork",
+            "exactTask",
+            "projectQ",
+            "legacy",
+            "conversation"
+          ],
+          "wireOnly": [],
+          "answerExcluded": [],
+          "startedAt": "2026-11-12T04:37:45.872Z",
+          "answer": "两个人名：李明、王芳。\n\nSCOPE_TEAMWORK_5d03c812d\nSCOPE_PROJECTP_b1e6d663a\nSCOPE_TEAMA_db7097d01\nSCOPE_PUBLIC_efa1f375d",
+          "wireCalls": [
+            15
+          ],
+          "passed": true,
+          "finishedAt": "2026-11-12T04:37:52.801Z"
+        },
+        {
+          "id": "project-p-first",
+          "type": "checklist",
+          "yes": [
+            "projectP",
+            "public",
+            "legacy"
+          ],
+          "no": [
+            "owner",
+            "foreign",
+            "teamA",
+            "teamB",
+            "personalWork",
+            "exactTask",
+            "projectQ",
+            "conversation"
+          ],
+          "wireOnly": [],
+          "answerExcluded": [],
+          "startedAt": "2026-11-12T04:37:52.801Z",
+          "answer": "老板，三项检查清单如下：\n\n**检查清单**\n\n1. **检查备份** — 确认备份任务是否按计划执行、最近一次备份时间与结果是否正常，备份文件是否完整可读、存放位置是否可用。\n2. **验证版本** — 核对当前运行版本与目标/发布版本是否一致，确认版本号、构建信息与变更记录对应，回滚版本是否可获取。\n3. **确认健康状态** — 查看服务/节点运行状态与关键指标（可用性、错误率、资源占用），确认无告警或异常，核心功能可正常访问。\n\nSCOPE_PROJECTP_b1e6d663a\nSCOPE_LEGACY_c49fea742\nSCOPE_PUBLIC_efa1f375d",
+          "wireCalls": [
+            17
+          ],
+          "passed": true,
+          "finishedAt": "2026-11-12T04:38:01.009Z"
+        },
+        {
+          "id": "project-p-second",
+          "type": "translation",
+          "yes": [
+            "projectP",
+            "public",
+            "legacy"
+          ],
+          "no": [
+            "owner",
+            "foreign",
+            "teamA",
+            "teamB",
+            "personalWork",
+            "exactTask",
+            "projectQ",
+            "conversation"
+          ],
+          "wireOnly": [],
+          "answerExcluded": [],
+          "startedAt": "2026-11-12T04:38:01.010Z",
+          "answer": "预约时间是周五下午 3 点。\n\nSCOPE_PROJECTP_b1e6d663a\nSCOPE_LEGACY_c49fea742\nSCOPE_PUBLIC_efa1f375d",
+          "wireCalls": [
+            19
+          ],
+          "passed": true,
+          "finishedAt": "2026-11-12T04:38:10.222Z"
+        },
+        {
+          "id": "project-q",
+          "type": "percentage",
+          "yes": [
+            "projectQ",
+            "public",
+            "legacy"
+          ],
+          "no": [
+            "owner",
+            "foreign",
+            "teamA",
+            "teamB",
+            "personalWork",
+            "exactTask",
+            "projectP",
+            "conversation"
+          ],
+          "wireOnly": [],
+          "answerExcluded": [],
+          "startedAt": "2026-11-12T04:38:10.223Z",
+          "answer": "20 个零件中有 5 个不合格，不合格率为 5 ÷ 20 = 25%（合格率为 75%）。\n\nSCOPE_PROJECTQ_bc39fc08b\nSCOPE_LEGACY_c49fea742\nSCOPE_PUBLIC_efa1f375d",
+          "wireCalls": [
+            21
+          ],
+          "passed": true,
+          "finishedAt": "2026-11-12T04:38:16.836Z"
+        },
+        {
+          "id": "detach-before",
+          "type": "ratio",
+          "yes": [
+            "life_detach"
+          ],
+          "no": [],
+          "wireOnly": [],
+          "answerExcluded": [],
+          "startedAt": "2026-11-12T04:38:16.844Z",
+          "answer": "4 杯水平均分给 2 人，每人 **2 杯**。\n\nSCOPE_LIFE_DETACH_9a8689a7d\nSCOPE_LEGACY_c49fea742\nSCOPE_PUBLIC_efa1f375d",
+          "wireCalls": [
+            23
+          ],
+          "passed": true,
+          "finishedAt": "2026-11-12T04:38:23.660Z"
+        },
+        {
+          "id": "detach-old-session",
+          "type": "reauthorization-denial",
+          "startedAt": "2026-11-12T04:38:23.888Z",
+          "zeroModelCalls": true,
+          "passed": true,
+          "error": "AssertionError [ERR_ASSERTION]: {\"receipt\":{\"taskId\":\"old-detach\",\"operationId\":\"user-13\",\"submissionId\":19,\"status\":\"unanswered\"},\"queued\":false,\"error\":{\"code\":\"DURABLE_UNANSWERED\",\"message\":\"历史 Memory mem_c4b47ee8-c011-482d-999a-4f6a962e005b 已撤销或不可见，请新建任务以移除可能受影响的回复和摘要\"}}\n+ actual - expected\n\n+ 'unanswered'\n- 'done'\n"
+        },
+        {
+          "id": "detach-fresh-session",
+          "type": "temperature",
+          "yes": [],
+          "no": [
+            "life_detach"
+          ],
+          "wireOnly": [],
+          "answerExcluded": [],
+          "startedAt": "2026-11-12T04:38:24.071Z",
+          "answer": "摄氏 0 度 = 华氏 32 度（公式：°F = °C × 9/5 + 32）。\n\nSCOPE_LEGACY_c49fea742\nSCOPE_PUBLIC_efa1f375d",
+          "wireCalls": [
+            25
+          ],
+          "passed": true,
+          "finishedAt": "2026-11-12T04:38:28.237Z"
+        },
+        {
+          "id": "detach-retained-scope",
+          "type": "name-extraction",
+          "yes": [
+            "life_detach"
+          ],
+          "no": [],
+          "wireOnly": [],
+          "answerExcluded": [],
+          "startedAt": "2026-11-12T04:38:28.238Z",
+          "answer": "两个人名是：**李明**、**王芳**。\n\nSCOPE_LIFE_DETACH_9a8689a7d\nSCOPE_LEGACY_c49fea742\nSCOPE_PUBLIC_efa1f375d",
+          "wireCalls": [
+            27
+          ],
+          "passed": true,
+          "finishedAt": "2026-11-12T04:38:34.204Z"
+        },
+        {
+          "id": "expiry-before",
+          "type": "ratio",
+          "yes": [
+            "life_expiry"
+          ],
+          "no": [],
+          "wireOnly": [],
+          "answerExcluded": [],
+          "startedAt": "2026-11-12T04:38:34.211Z",
+          "answer": "每人 2 杯（4 ÷ 2 = 2）。\n\nSCOPE_LIFE_EXPIRY_6bb2f85ed\nSCOPE_LEGACY_c49fea742\nSCOPE_PUBLIC_efa1f375d",
+          "wireCalls": [
+            29
+          ],
+          "passed": true,
+          "finishedAt": "2026-11-12T04:38:41.653Z"
+        },
+        {
+          "id": "expiry-old-session",
+          "type": "reauthorization-denial",
+          "startedAt": "2026-11-12T04:38:41.727Z",
+          "zeroModelCalls": true,
+          "passed": true,
+          "error": "AssertionError [ERR_ASSERTION]: {\"receipt\":{\"taskId\":\"old-expiry\",\"operationId\":\"user-17\",\"submissionId\":19,\"status\":\"unanswered\"},\"queued\":false,\"error\":{\"code\":\"DURABLE_UNANSWERED\",\"message\":\"历史 Memory mem_247b75fd-80db-473f-9a4a-a1fd0a4d820b 已撤销或不可见，请新建任务以移除可能受影响的回复和摘要\"}}\n+ actual - expected\n\n+ 'unanswered'\n- 'done'\n"
+        },
+        {
+          "id": "expiry-fresh-session",
+          "type": "temperature",
+          "yes": [],
+          "no": [
+            "life_expiry"
+          ],
+          "wireOnly": [],
+          "answerExcluded": [],
+          "startedAt": "2026-11-12T04:38:41.850Z",
+          "answer": "摄氏 0 度等于华氏 32 度。（公式：℉ = ℃ × 9/5 + 32，即 0 × 1.8 + 32 = 32）\n\nSCOPE_LEGACY_c49fea742\nSCOPE_PUBLIC_efa1f375d",
+          "wireCalls": [
+            31
+          ],
+          "passed": true,
+          "finishedAt": "2026-11-12T04:38:45.579Z"
+        },
+        {
+          "id": "forget-before",
+          "type": "ratio",
+          "yes": [
+            "life_forget"
+          ],
+          "no": [],
+          "wireOnly": [],
+          "answerExcluded": [],
+          "startedAt": "2026-11-12T04:38:45.592Z",
+          "answer": "4 杯水分给 2 人，每人 2 杯（4 ÷ 2 = 2）。\n\nSCOPE_LIFE_FORGET_8aa2e7b45\nSCOPE_LEGACY_c49fea742\nSCOPE_PUBLIC_efa1f375d",
+          "wireCalls": [
+            33
+          ],
+          "passed": true,
+          "finishedAt": "2026-11-12T04:38:51.427Z"
+        },
+        {
+          "id": "forget-old-session",
+          "type": "reauthorization-denial",
+          "startedAt": "2026-11-12T04:38:51.508Z",
+          "zeroModelCalls": true,
+          "passed": true,
+          "error": "AssertionError [ERR_ASSERTION]: {\"receipt\":{\"taskId\":\"old-forget\",\"operationId\":\"user-20\",\"submissionId\":19,\"status\":\"unanswered\"},\"queued\":false,\"error\":{\"code\":\"DURABLE_UNANSWERED\",\"message\":\"历史 Memory mem_45027970-9975-4845-aae5-1cbd967f015e 已撤销或不可见，请新建任务以移除可能受影响的回复和摘要\"}}\n+ actual - expected\n\n+ 'unanswered'\n- 'done'\n"
+        },
+        {
+          "id": "forget-fresh-session",
+          "type": "temperature",
+          "yes": [],
+          "no": [
+            "life_forget"
+          ],
+          "wireOnly": [],
+          "answerExcluded": [],
+          "startedAt": "2026-11-12T04:38:51.631Z",
+          "answer": "摄氏 0 度等于华氏 32 度（换算公式：°F = °C × 9/5 + 32）。\n\n没有参考码",
+          "wireCalls": [
+            35
+          ],
+          "passed": true,
+          "finishedAt": "2026-11-12T04:38:55.014Z"
+        },
+        {
+          "id": "disable-before",
+          "type": "ratio",
+          "yes": [
+            "life_disable"
+          ],
+          "no": [],
+          "wireOnly": [],
+          "answerExcluded": [],
+          "startedAt": "2026-11-12T04:38:55.022Z",
+          "answer": "4 杯水由 2 人平分，则每人分到 2 杯，算式为 4 ÷ 2 = 2。\n\nSCOPE_LIFE_DISABLE_b216f0e0f\nSCOPE_LEGACY_c49fea742\nSCOPE_PUBLIC_efa1f375d",
+          "wireCalls": [
+            37
+          ],
+          "passed": true,
+          "finishedAt": "2026-11-12T04:39:01.194Z"
+        },
+        {
+          "id": "disable-old-session",
+          "type": "reauthorization-denial",
+          "startedAt": "2026-11-12T04:39:01.259Z",
+          "zeroModelCalls": true,
+          "passed": true,
+          "error": "AssertionError [ERR_ASSERTION]: {\"receipt\":{\"taskId\":\"old-disable\",\"operationId\":\"user-23\",\"submissionId\":19,\"status\":\"unanswered\"},\"queued\":false,\"error\":{\"code\":\"DURABLE_UNANSWERED\",\"message\":\"历史 Memory 已停用，请新建任务以重建上下文\"}}\n+ actual - expected\n\n+ 'unanswered'\n- 'done'\n"
+        },
+        {
+          "id": "disable-fresh-session",
+          "type": "temperature",
+          "yes": [],
+          "no": [
+            "life_disable"
+          ],
+          "wireOnly": [],
+          "answerExcluded": [],
+          "startedAt": "2026-11-12T04:39:01.385Z",
+          "answer": "摄氏 0 度 = 32 华氏度。换算：°F = 0 × 9/5 + 32 = 32。\n\n没有参考码",
+          "wireCalls": [
+            38
+          ],
+          "passed": true,
+          "finishedAt": "2026-11-12T04:39:04.667Z"
+        }
+      ],
+      "calls": [
+        {
+          "index": 1,
+          "caseId": "personal-bot",
+          "lane": "agent",
+          "requestSha256": "606bb4f5b2502c42be9184a29b0483c6cd4455135d96c9720cbf8770cb0a57c4",
+          "responseSha256": "59465c23303e1ff4b51f4966218e9764201df82de5d599eeb25be0808bc7bce0",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 19930,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 18432,
+                  "cached_tokens": 18432
+                },
+                "completion_tokens": 152,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 105
+                },
+                "total_tokens": 20082
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_021794458231581085ce2a5b85bafc715e5d42a46d04551624d32"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 2,
+          "caseId": "team-a",
+          "lane": "auxiliary",
+          "requestSha256": "2c6fa60107815e6cf30b63b0f8e0bb45981c6784637908fa69ffd04362987e14",
+          "responseSha256": "3bf065914b5b585c1ef5f027d6c00b548278d0a78afe5f9c4811488152b86478",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 1639,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 456,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 449
+                },
+                "total_tokens": 2095
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_0217944582345654883e653edd60bc78b7b920f959874d96a6f2a"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 3,
+          "caseId": "team-a",
+          "lane": "agent",
+          "requestSha256": "82faf4942b18f2e538585c4a831e3352683695defee0e29b5b5ea795194d022f",
+          "responseSha256": "27fd2c381caa1380e76964e06908c6f8caea3407f4099f81613f7b8bdc9df3fd",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 17412,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 239,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 119
+                },
+                "total_tokens": 17651
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_0217944582348248cdbdac5f420e20fe0e1829640806a22a66114"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 4,
+          "caseId": "team-b",
+          "lane": "auxiliary",
+          "requestSha256": "eeb5a667464c98c6c4c6df867bdf088f0afefd5498b8aae7cdcef473ff2d8dd1",
+          "responseSha256": "c4f26c72d27af6c44d1aacf3b8963748561b9405b5fb6e614283cd886af6b337",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 1677,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 345,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 338
+                },
+                "total_tokens": 2022
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_021794458239173904c389cfd819598df3df498c1c52189394895"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 5,
+          "caseId": "team-b",
+          "lane": "agent",
+          "requestSha256": "c24442c1bc4360168eeb284a301aea0efe626db6fea0fcd6c12a38505f78ef54",
+          "responseSha256": "0c519fb0079b2b560b37553ca3f12636bac85f580c96e435287a8f56f9ee33e3",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 17417,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 183,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 135
+                },
+                "total_tokens": 17600
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_02179445824022047fde1ce057a4e39ca4c3f804f8e42e0817d81"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 6,
+          "caseId": "team-b",
+          "lane": "auxiliary",
+          "requestSha256": "9f0f433d752e851961444cf28d8adbd4ad1e109e8ed6adaa05a72924a079bcf3",
+          "responseSha256": "9a6749a36593b97365860051299b771015e090a05d13ece8a95dcb3c8fc95b1b",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 1680,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 217,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 210
+                },
+                "total_tokens": 1897
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_02179445824392277dd13f2098096eba9569e39b59e750c7b503b"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 7,
+          "caseId": "same-conversation",
+          "lane": "agent",
+          "requestSha256": "7c603342a6a88d7d405e7af373649a011ab6a7cee40b7a24027e2c4c69e9762e",
+          "responseSha256": "f2ec6ec0677ec36277ab4c612a1a3a097763d7b3dbc185ed0d7678151e44b145",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 20169,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 18432,
+                  "cached_tokens": 18432
+                },
+                "completion_tokens": 159,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 110
+                },
+                "total_tokens": 20328
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_021794458244302718115c1869987166c12ff7f50db9b4ecb29c8"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 8,
+          "caseId": "new-conversation",
+          "lane": "auxiliary",
+          "requestSha256": "58182cc2c8288b5e4fa49737534a208d5527f4034c5a771a5f3422d4d06e0c6d",
+          "responseSha256": "e2f34686b2ac276065c535b47d2f2707ddd653c989475f807992b1935578398a",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 1810,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 57,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 50
+                },
+                "total_tokens": 1867
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_0217944582472350958c43c09b2d8895d306984ebab65858009d1"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 9,
+          "caseId": "new-conversation",
+          "lane": "agent",
+          "requestSha256": "d634f202a7a81a534c19672d98ca4e11f2ec3d323f6a47fa222f5deff725229e",
+          "responseSha256": "b7759d8da95c842f89d3ff2990e93ea8d87a54326ce8f4ea79e88bd09a2e1690",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 19928,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 19712,
+                  "cached_tokens": 19712
+                },
+                "completion_tokens": 314,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 281
+                },
+                "total_tokens": 20242
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_021794458247483cab51c90d4ba35885c8041829e1e0de9e701f8"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 10,
+          "caseId": "new-conversation",
+          "lane": "auxiliary",
+          "requestSha256": "03de3fa027cd70e30f3683e1190bb97b96ccdd9f80696ff7eb613ce4d3f9d28b",
+          "responseSha256": "d4c1b5c2d82557f90968606515692005c4ea8e66e1f95cd97d3a8157160c5ebf",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 1641,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 156,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 149
+                },
+                "total_tokens": 1797
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_021794458251347aaaf13501739a5ff290af8d9343e27fc17ddd1"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 11,
+          "caseId": "personal-work",
+          "lane": "agent",
+          "requestSha256": "5f2c98f7366fe62dd2282d76c976a03d3fc86cc68c6d26e04bddac3ca9c890ac",
+          "responseSha256": "65eb3079278ddf7228ece0e023334f49e1afc480d40d3c9af0957463e46bda80",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 22011,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 122,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 57
+                },
+                "total_tokens": 22133
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_021794458251815c41b39946b92a3163d51611244fc4a0d3bb44e"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 12,
+          "caseId": "personal-work",
+          "lane": "auxiliary",
+          "requestSha256": "8130e3f51aae3b7d1cd1cb56dc82aa5f9f403c119695f22a2a9a715ea182bf61",
+          "responseSha256": "d54c2b2094ae334ccdc87f01d96049ccebdd5a5136a67a616e763be33dbdbd9d",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 1956,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 702,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 695
+                },
+                "total_tokens": 2658
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_021794458255015718115c1869987166c12ff7f50db9b4e8c18f1"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 13,
+          "caseId": "same-work-second-execution",
+          "lane": "agent",
+          "requestSha256": "7d4a143a336daaa0d3721e0b2cb8b4f4e149aa2433f71c7a1c028c6cffeff830",
+          "responseSha256": "1049827b9349020bfa1e6a50fe5ccdb250a0e6ee8b101c0ec5844c82d0329456",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 21897,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 98,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 14
+                },
+                "total_tokens": 21995
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_0217944582627080fff30dca92d5f275a0fb147aaa6e57377cab6"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 14,
+          "caseId": "same-work-second-execution",
+          "lane": "auxiliary",
+          "requestSha256": "dc23c6252126e73f1dece1425dbefc69e599f7debb5e8b19133811b1811de52b",
+          "responseSha256": "65058fe581799fd941b8aba8a9f195d0f80164a514e9feafda190ac3710be65c",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 1768,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 232,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 225
+                },
+                "total_tokens": 2000
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_021794458266049f0a583d75381f7c0a662383f3247915e3636f9"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 15,
+          "caseId": "team-work-member",
+          "lane": "agent",
+          "requestSha256": "a529a8947446ed4e8acc29e826d873eca31c54289b14218c6607c0285750d7aa",
+          "responseSha256": "0c4ef097b092b976f8f6e1576117b2033d77c154ad5a358f41e5168f89fa2a7b",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 22817,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 204,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 142
+                },
+                "total_tokens": 23021
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_021794458269772b8350bdfd357a856ad43651cfdb51f6e9f7b01"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 16,
+          "caseId": "team-work-member",
+          "lane": "auxiliary",
+          "requestSha256": "ec6b19d5a61b14f94d89e90c8951ac9e50fe4728f72db458391e6e00ac9107d6",
+          "responseSha256": "6a804a11a06e8d1ee21d8dd5fa06ab0f82302b2453fe4b0c97354e1ae325c311",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 2611,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 349,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 342
+                },
+                "total_tokens": 2960
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_0217944582730844b0734cede0d35a658963f07bc220d4b46ed7c"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 17,
+          "caseId": "project-p-first",
+          "lane": "agent",
+          "requestSha256": "02d8bb58057856ba4b0ba1c493339288c280a80bfa117963b272f0f34dc9244a",
+          "responseSha256": "3147ea75c94fc3d5c318586df027b08ac743373c07821295989ec3affd5daac2",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 21242,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 198,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 31
+                },
+                "total_tokens": 21440
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_0217944582772169cf4adffd4482a40b9bfd1b5a653f2343fee32"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 18,
+          "caseId": "project-p-second",
+          "lane": "auxiliary",
+          "requestSha256": "4ba374255df2aa8f32857a436327722abf817302606d434a9ab39f407102f361",
+          "responseSha256": "3794e866e8df9214bdbf0b3bb43e1137ef7d9d896a02042acf80d772b407c1f2",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 1605,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 357,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 350
+                },
+                "total_tokens": 1962
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_021794458281367db3bb9a137825ab7489fb7012a5d616f82dafb"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 19,
+          "caseId": "project-p-second",
+          "lane": "agent",
+          "requestSha256": "51f5657c74e710ccf5c4bf299186b6a689ce19724df0db14e1394ce0ee6e5346",
+          "responseSha256": "8fbdd81f7d714f6312a6c5a1e5e0006bc9da29a94407ee982b05b7f23b146987",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 21241,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 98,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 49
+                },
+                "total_tokens": 21339
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_021794458286693c0a335079e7be4c79ef57584e00819ba664b7d"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 20,
+          "caseId": "project-q",
+          "lane": "auxiliary",
+          "requestSha256": "08c0765d29cc3265ed107e13c1e20100fb8bd6b0682828843f8fdebaabbb54e1",
+          "responseSha256": "8b872171163b43541d5a587ffb7c809ff7523476ad6a32b3ee7b3bfba723a070",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 1601,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 193,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 186
+                },
+                "total_tokens": 1794
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_02179445829059785f4608cdee6bbc8f8aaf952504d48fddfae50"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 21,
+          "caseId": "project-q",
+          "lane": "agent",
+          "requestSha256": "f7b97c794b9b6c7280f2ad73f6e4e3b12abc68dbc1e851e43793d84ad9a5e493",
+          "responseSha256": "7245fbc264a8d0b924c2af9d855920574240899929fc5f5da563ec8863a3baa5",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 21250,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 182,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 115
+                },
+                "total_tokens": 21432
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_021794458293830aaaf13501739a5ff290af8d9343e27fc693077"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 22,
+          "caseId": "detach-before",
+          "lane": "auxiliary",
+          "requestSha256": "d5e557ac5291d484a98656631b3c2b345e96b6ebad7896ef5ba02c28d66f0cf8",
+          "responseSha256": "e56b166ede4f47e280509c40321f06296d28af1081e6b08e4dd57c34a96db62d",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 1597,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 147,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 140
+                },
+                "total_tokens": 1744
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_02179445829718677dd13f2098096eba9569e39b59e750c82996e"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 23,
+          "caseId": "detach-before",
+          "lane": "agent",
+          "requestSha256": "28feca56ef2b0a4932e6277e86e9be0db7142527e2727c7d90f374c6476edd4a",
+          "responseSha256": "9b3ae4d48070c1926204a56d7853833a0e65c84e411b9ddd6b16ba9ba8ae9dd1",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 21237,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 189,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 127
+                },
+                "total_tokens": 21426
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_021794458300688e045a43b5e56b2f8dc8c9dfd4e628468aa57c9"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 24,
+          "caseId": "background",
+          "lane": "auxiliary",
+          "requestSha256": "8152e23d689c550e5bc556edbdc78a980dedc8e198650dcb6ae0eb44868e0946",
+          "responseSha256": "671e4291f74933513f983744df5908e15478c042a95d35953f192a69e9560be9",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 1432,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 121,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 114
+                },
+                "total_tokens": 1553
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_02179445830401207b4b942199433a510c68da6d01b36ec48a802"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 25,
+          "caseId": "detach-fresh-session",
+          "lane": "agent",
+          "requestSha256": "0457fcc9d5d9670da37fd0b77a788e6559d916db8ad380babc7729a34ee03d7d",
+          "responseSha256": "2bd7e810e74569e6f59eb9a0a83ad203aa9d355895fef1f97be07c3aee41dbf5",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 21116,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 122,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 66
+                },
+                "total_tokens": 21238
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_0217944583052346408ead186a36b7a71ea661df61e4b0c4e8a14"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 26,
+          "caseId": "detach-retained-scope",
+          "lane": "auxiliary",
+          "requestSha256": "099b2fe3b30e97b4623e356377e933494b2744d0e44611ac99d5207707c0547a",
+          "responseSha256": "a42684bb72f9f02fbeaf73b43c9da2f48def767ba00fffa53dd22dba1a2b7f53",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 1427,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 134,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 127
+                },
+                "total_tokens": 1561
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_02179445830858822877b9ff06629ca98d99f0267ba452bf3eb22"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 27,
+          "caseId": "detach-retained-scope",
+          "lane": "agent",
+          "requestSha256": "b8b928c1a9ba4b8911ed92d7581dcfb8053b96c3c1b6425a4aa9f22f839044ae",
+          "responseSha256": "8eb78c50bcb36a388bcb277289e38d823110f0f57cabd6be1e7fac78e56316d9",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 21247,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 175,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 119
+                },
+                "total_tokens": 21422
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_021794458311153682bfa727eaa8ae907bb4f408e14b63d50de67"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 28,
+          "caseId": "expiry-before",
+          "lane": "auxiliary",
+          "requestSha256": "c10b92a370384a729a77b94fb4016e3f6803cd04cee6f6489986a199b05b0a55",
+          "responseSha256": "b62ed53b2df515c051cf53dd811a64a1bd472720eadebec331f110d6a94541d7",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 1603,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 896,
+                  "cached_tokens": 896
+                },
+                "completion_tokens": 319,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 312
+                },
+                "total_tokens": 1922
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_021794458314548f5fadfdc607fef478c6f908597481cce92a48a"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 29,
+          "caseId": "expiry-before",
+          "lane": "agent",
+          "requestSha256": "8e618c563607841859a7472fac32bdb25c5f7086187e67040ea2a0aa080e6f0b",
+          "responseSha256": "f6bc79f635ba7174f33724f5f2210a076139a25e659fd4614a89fffd37218d24",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 21228,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 147,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 90
+                },
+                "total_tokens": 21375
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_021794458318687f0a583d75381f7c0a662383f3247915e377bd9"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 30,
+          "caseId": "background",
+          "lane": "auxiliary",
+          "requestSha256": "8a3bd72539eed67a1bc0f074769cfd8fdc0273af85c0542be954bae430724781",
+          "responseSha256": "513282301565c7646e2300847b03ecc40aa93b8fe54ea251e2b02ce913c26bed",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 1427,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 345,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 338
+                },
+                "total_tokens": 1772
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_0217944583221217e031431b40d2024cf18919c414bfdfa3c1a2a"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 31,
+          "caseId": "expiry-fresh-session",
+          "lane": "agent",
+          "requestSha256": "cbcdeb4fef7f4bbbfac644f20755afd68eb7c2c09fa0bf9b0fd89a72923d296b",
+          "responseSha256": "3cc4bf41fb7df5946f64116c8176a4c222fd968667486ad592c6072fdfcff1ad",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 21104,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 116,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 47
+                },
+                "total_tokens": 21220
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_0217944583225122504cb05148e9a08cc7612c3f2b24e52fb5550"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 32,
+          "caseId": "expiry-fresh-session",
+          "lane": "auxiliary",
+          "requestSha256": "8f8b0271d8238b3a3a50dd9c0fccc9bb36d776dc32a4647733c691899880d6dc",
+          "responseSha256": "3f7e9d6e77612a08c1f4402c58386f7a4215c76b88ae8a7783720d27fd206f7d",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 1425,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 896,
+                  "cached_tokens": 896
+                },
+                "completion_tokens": 263,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 256
+                },
+                "total_tokens": 1688
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_021794458325409c0a335079e7be4c79ef57584e00819bae4febf"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 33,
+          "caseId": "forget-before",
+          "lane": "agent",
+          "requestSha256": "30568d03a1216f6fa592ed9652d3653a0bb08c4e12d3300bafedd3feb77c689f",
+          "responseSha256": "bddea4f13e615b3dc40b4a7b6f039199507af915f61b28b26e2d2a13a5bd0188",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 21236,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 139,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 72
+                },
+                "total_tokens": 21375
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_02179445832863507b4b942199433a510c68da6d01b36eca4bdbd"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 34,
+          "caseId": "background",
+          "lane": "auxiliary",
+          "requestSha256": "30411b798f775508ce2c24c9a1f60e9ca9105608fa826aca61dc117876044928",
+          "responseSha256": "a871924af065c95548b4c8d7260803e9d575df5395e1cc4b986aedf540807275",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 1429,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 128,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 121
+                },
+                "total_tokens": 1557
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_021794458331767f9cb936a41ab283113693068986f31c39bcd85"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 35,
+          "caseId": "forget-fresh-session",
+          "lane": "agent",
+          "requestSha256": "e8b40d24d7eb666d9052d601a764850e67492bda3944214954191d74d325f176",
+          "responseSha256": "0830dedf93d924a9fd1422b70a1647e78a868b5396d887b67ce2ed28a676d73c",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 21118,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 155,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 121
+                },
+                "total_tokens": 21273
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_021794458332227600f73c29fbe2d8b6aeb9e23538767e7ef3038"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 36,
+          "caseId": "disable-before",
+          "lane": "auxiliary",
+          "requestSha256": "8cc9f2600083bd20077c068e167d1072bc1bd7ce93b3f7854ccdbb089d09932a",
+          "responseSha256": "677ec0ea8c80f1b68fe4ccf585140d87ec1b51838998d92ee99ee6f25b78c64b",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 1424,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 146,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 139
+                },
+                "total_tokens": 1570
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_021794458335356e1f2c28e220bf76d8a56e2a46eaa08e99197d0"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 37,
+          "caseId": "disable-before",
+          "lane": "agent",
+          "requestSha256": "e7b96b63d45db8485d1848e8eba0d2cc576aa2664ae0cf7529810700845a758f",
+          "responseSha256": "3eaf1a3cb44aa60cca9a84d291c9ba1ed4169121bc3c28ea8b94c69dcd383507",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 21228,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 234,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 161
+                },
+                "total_tokens": 21462
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_021794458337829ceb2efb7fea58c55155fc9fb92515dcd562ac7"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        },
+        {
+          "index": 38,
+          "caseId": "disable-fresh-session",
+          "lane": "agent",
+          "requestSha256": "2b3f6a13ea0fd6557d31ac3395362bdf36bf1e485c3c11f0ea384a23a8e4c9ca",
+          "responseSha256": "75c057b38815fffcf79a57cc26b672efe2c636777a3c4e1a907b13d3578bb739",
+          "status": 200,
+          "authorizationSent": false,
+          "rawUsage": [
+            {
+              "usage": {
+                "prompt_tokens": 19445,
+                "prompt_tokens_details": {
+                  "cached_read_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "completion_tokens": 67,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 31
+                },
+                "total_tokens": 19512
+              },
+              "model": "opendesign/deepseek-v4.1-flash",
+              "id": "resp_021794458341963e045a43b5e56b2f8dc8c9dfd4e628468d48f98"
+            }
+          ],
+          "reportedModels": [
+            "opendesign/deepseek-v4.1-flash"
+          ]
+        }
+      ]
+    }
+  ],
+  "interpretation": {
+    "originalFailure": "Original task atom was correctly absent from second execution. Its explicitly requested, published answer was copied into proposed Work deliverable and work progress, so a byte-level secrecy assertion contradicted the existing shared-result contract.",
+    "revision": "Only harness changed. First request must still include task atom, first answer must exclude its code by explicit user instruction, second request and answer must exclude it. This proves unpublished task evidence isolation, not downstream taint protection after publication.",
+    "originalFailureRetained": true,
+    "productionFixClaimed": false,
+    "realBillingCost": "Not available; catalog SDK zero prices do not establish actual zero cost."
+  }
+}
