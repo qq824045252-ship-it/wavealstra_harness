@@ -1,0 +1,436 @@
+{
+  "platform": "linux pnpm dev, isolated profile",
+  "displayMode": "desktop-session",
+  "validatesNativeDesktopInput": false,
+  "status": "passed",
+  "checks": [
+    "six distinct ordinary task types; real automatic summary provider calls; actual compressed outgoing requests; real Electron cold restart; exact original retrieval through model tools"
+  ],
+  "modelConfiguration": {
+    "modelId": "opendesign/deepseek-v4.1-flash",
+    "declaredContextWindow": 1048000,
+    "declaredMaxOutputTokens": 328000,
+    "effectiveMaxOutputTokens": 328000,
+    "reasoning": true,
+    "thinkingLevelMap": {
+      "off": null,
+      "minimal": null,
+      "low": "low",
+      "medium": null,
+      "high": "high",
+      "xhigh": null,
+      "max": "max"
+    },
+    "mode": "gateway-model-configuration",
+    "pricing": "not-measured",
+    "source": "http://127.0.0.1:3425/v1/models",
+    "capturedAt": "2026-11-12T05:15:51.696Z"
+  },
+  "source": {
+    "head": "7da4f002209e5ed5b8a0bef29ddf2b5d64a05cec",
+    "trackedChanges": []
+  },
+  "cases": [
+    {
+      "label": "log diagnosis",
+      "status": "passed",
+      "elapsedMs": 7676,
+      "tools": [],
+      "durableState": "completed",
+      "durableOutcome": "completed",
+      "requestStart": 0,
+      "requestEnd": 1,
+      "taskId": "local-1794460587947-0"
+    },
+    {
+      "label": "inventory arithmetic",
+      "status": "passed",
+      "elapsedMs": 4193,
+      "tools": [],
+      "durableState": "completed",
+      "durableOutcome": "completed",
+      "requestStart": 1,
+      "requestEnd": 2,
+      "taskId": "local-1794460587947-0"
+    },
+    {
+      "label": "translation",
+      "status": "passed",
+      "elapsedMs": 12224,
+      "tools": [],
+      "durableState": "completed",
+      "durableOutcome": "completed",
+      "requestStart": 2,
+      "requestEnd": 4,
+      "taskId": "local-1794460587947-0"
+    },
+    {
+      "label": "structured extraction",
+      "status": "passed",
+      "elapsedMs": 4825,
+      "tools": [],
+      "durableState": "completed",
+      "durableOutcome": "completed",
+      "requestStart": 4,
+      "requestEnd": 5,
+      "taskId": "local-1794460587947-0"
+    },
+    {
+      "label": "instruction correction",
+      "status": "passed",
+      "elapsedMs": 4865,
+      "tools": [],
+      "durableState": "completed",
+      "durableOutcome": "completed",
+      "requestStart": 5,
+      "requestEnd": 6,
+      "taskId": "local-1794460587947-0"
+    },
+    {
+      "label": "verbatim retrieval after restart",
+      "status": "passed",
+      "elapsedMs": 15186,
+      "tools": [
+        {
+          "id": "call_00_atsr6uai5bqxm0iptum7er1j",
+          "name": "acp_search",
+          "status": "success"
+        },
+        {
+          "id": "call_00_djw9sx891swc33wfqx3kquzi",
+          "name": "acp_retrieve",
+          "status": "success"
+        }
+      ],
+      "durableState": "completed",
+      "durableOutcome": "completed",
+      "requestStart": 6,
+      "requestEnd": 9,
+      "taskId": "local-1794460587947-0"
+    },
+    {
+      "label": "Bot foreground context-tool access",
+      "status": "passed",
+      "elapsedMs": 10576,
+      "requestStart": 9,
+      "requestEnd": 11
+    }
+  ],
+  "summaryCalls": [
+    {
+      "index": 2,
+      "chars": 75089,
+      "model": "opendesign/deepseek-v4.1-flash"
+    }
+  ],
+  "profileIsolation": {
+    "syntheticInput": true,
+    "realCredentialsRead": false
+  },
+  "settings": {
+    "compactionEngine": "billion-context",
+    "compactionTriggerTokens": 12000,
+    "compactionTriggerRatio": 0.8
+  },
+  "taskId": "local-1794460587947-0",
+  "translation": {
+    "bay": "C-26",
+    "day": "tomorrow",
+    "hour": 10
+  },
+  "correction": {
+    "currentPort": 6284,
+    "outputOnlyRequestedConstant": true,
+    "format": "constant declaration"
+  },
+  "beforeRestart": {
+    "messageCount": 10,
+    "status": {
+      "taskId": "local-1794460587947-0",
+      "status": "completed",
+      "reason": "threshold",
+      "engine": "billion-context",
+      "automatic": true,
+      "estimated": true,
+      "operationId": "87884443-0e15-4e97-a5cd-560f331fc06e:1:2",
+      "tokensBefore": 39725,
+      "tokensAfter": 239,
+      "estimatedTokensAfter": 239,
+      "blocks": 0,
+      "message": "原生压缩边界已提交"
+    }
+  },
+  "requestCount": 11,
+  "usage": {
+    "raw": [
+      {
+        "requestIndex": 0,
+        "requestStartedAt": 1794460588781,
+        "firstDeltaAt": 1794460592770,
+        "endedAt": 1794460595136,
+        "usage": [
+          {
+            "prompt_tokens": 33310,
+            "prompt_tokens_details": {
+              "cached_read_tokens": 0,
+              "cached_tokens": 0
+            },
+            "completion_tokens": 456,
+            "completion_tokens_details": {
+              "reasoning_tokens": 158
+            },
+            "total_tokens": 33766
+          }
+        ],
+        "label": "composer",
+        "usageOmitted": false,
+        "downstreamClosedAt": 1794460595137
+      },
+      {
+        "requestIndex": 1,
+        "requestStartedAt": 1794460595936,
+        "firstDeltaAt": 1794460599309,
+        "endedAt": 1794460599318,
+        "usage": [
+          {
+            "prompt_tokens": 38166,
+            "prompt_tokens_details": {
+              "cached_read_tokens": 33280,
+              "cached_tokens": 33280
+            },
+            "completion_tokens": 48,
+            "completion_tokens_details": {
+              "reasoning_tokens": 16
+            },
+            "total_tokens": 38214
+          }
+        ],
+        "label": "composer",
+        "usageOmitted": false,
+        "downstreamClosedAt": 1794460599318
+      },
+      {
+        "requestIndex": 2,
+        "requestStartedAt": 1794460600045,
+        "firstDeltaAt": 1794460602811,
+        "endedAt": 1794460607915,
+        "usage": [
+          {
+            "prompt_tokens": 11313,
+            "prompt_tokens_details": {
+              "cached_read_tokens": 11264,
+              "cached_tokens": 11264
+            },
+            "completion_tokens": 557,
+            "completion_tokens_details": {
+              "reasoning_tokens": 268
+            },
+            "total_tokens": 11870
+          }
+        ],
+        "label": "composer",
+        "usageOmitted": false,
+        "downstreamClosedAt": 1794460607915
+      },
+      {
+        "requestIndex": 3,
+        "requestStartedAt": 1794460608130,
+        "firstDeltaAt": 1794460611339,
+        "endedAt": 1794460611575,
+        "usage": [
+          {
+            "prompt_tokens": 27422,
+            "prompt_tokens_details": {
+              "cached_read_tokens": 8192,
+              "cached_tokens": 8192
+            },
+            "completion_tokens": 125,
+            "completion_tokens_details": {
+              "reasoning_tokens": 90
+            },
+            "total_tokens": 27547
+          }
+        ],
+        "label": "composer",
+        "usageOmitted": false,
+        "downstreamClosedAt": 1794460611575
+      },
+      {
+        "requestIndex": 4,
+        "requestStartedAt": 1794460612332,
+        "firstDeltaAt": 1794460616252,
+        "endedAt": 1794460616339,
+        "usage": [
+          {
+            "prompt_tokens": 27494,
+            "prompt_tokens_details": {
+              "cached_read_tokens": 22144,
+              "cached_tokens": 22144
+            },
+            "completion_tokens": 63,
+            "completion_tokens_details": {
+              "reasoning_tokens": 26
+            },
+            "total_tokens": 27557
+          }
+        ],
+        "label": "composer",
+        "usageOmitted": false,
+        "downstreamClosedAt": 1794460616339
+      },
+      {
+        "requestIndex": 5,
+        "requestStartedAt": 1794460617166,
+        "firstDeltaAt": 1794460621011,
+        "endedAt": 1794460621243,
+        "usage": [
+          {
+            "prompt_tokens": 27581,
+            "prompt_tokens_details": {
+              "cached_read_tokens": 27392,
+              "cached_tokens": 27392
+            },
+            "completion_tokens": 33,
+            "completion_tokens_details": {
+              "reasoning_tokens": 21
+            },
+            "total_tokens": 27614
+          }
+        ],
+        "label": "composer",
+        "usageOmitted": false,
+        "downstreamClosedAt": 1794460621243
+      },
+      {
+        "requestIndex": 6,
+        "requestStartedAt": 1794460678106,
+        "firstDeltaAt": 1794460681932,
+        "endedAt": 1794460682183,
+        "usage": [
+          {
+            "prompt_tokens": 27694,
+            "prompt_tokens_details": {
+              "cached_read_tokens": 27520,
+              "cached_tokens": 27520
+            },
+            "completion_tokens": 85,
+            "completion_tokens_details": {
+              "reasoning_tokens": 22
+            },
+            "total_tokens": 27779
+          }
+        ],
+        "label": "composer",
+        "usageOmitted": false,
+        "downstreamClosedAt": 1794460682183
+      },
+      {
+        "requestIndex": 7,
+        "requestStartedAt": 1794460682625,
+        "firstDeltaAt": 1794460687048,
+        "endedAt": 1794460687285,
+        "usage": [
+          {
+            "prompt_tokens": 28480,
+            "prompt_tokens_details": {
+              "cached_read_tokens": 27648,
+              "cached_tokens": 27648
+            },
+            "completion_tokens": 78,
+            "completion_tokens_details": {
+              "reasoning_tokens": 19
+            },
+            "total_tokens": 28558
+          }
+        ],
+        "label": "composer",
+        "usageOmitted": false,
+        "downstreamClosedAt": 1794460687285
+      },
+      {
+        "requestIndex": 8,
+        "requestStartedAt": 1794460687697,
+        "firstDeltaAt": 1794460691431,
+        "endedAt": 1794460692399,
+        "usage": [
+          {
+            "prompt_tokens": 29400,
+            "prompt_tokens_details": {
+              "cached_read_tokens": 28416,
+              "cached_tokens": 28416
+            },
+            "completion_tokens": 231,
+            "completion_tokens_details": {},
+            "total_tokens": 29631
+          }
+        ],
+        "label": "composer",
+        "usageOmitted": false,
+        "downstreamClosedAt": 1794460692399
+      },
+      {
+        "requestIndex": 9,
+        "requestStartedAt": 1794460693300,
+        "firstDeltaAt": 1794460697005,
+        "endedAt": 1794460697015,
+        "usage": [
+          {
+            "prompt_tokens": 19158,
+            "prompt_tokens_details": {
+              "cached_read_tokens": 19072,
+              "cached_tokens": 19072
+            },
+            "completion_tokens": 23,
+            "completion_tokens_details": {},
+            "total_tokens": 19181
+          }
+        ],
+        "label": "composer",
+        "usageOmitted": false,
+        "downstreamClosedAt": 1794460697015
+      },
+      {
+        "requestIndex": 10,
+        "requestStartedAt": 1794460697296,
+        "firstDeltaAt": 1794460703202,
+        "endedAt": 1794460703208,
+        "usage": [
+          {
+            "prompt_tokens": 19276,
+            "prompt_tokens_details": {
+              "cached_read_tokens": 14336,
+              "cached_tokens": 14336
+            },
+            "completion_tokens": 5,
+            "completion_tokens_details": {},
+            "total_tokens": 19281
+          }
+        ],
+        "label": "composer",
+        "usageOmitted": false,
+        "downstreamClosedAt": 1794460703208
+      }
+    ],
+    "pricing": "not measured; do not interpret fixture zero prices as free"
+  },
+  "afterRestart": {
+    "taskId": "local-1794460587947-0",
+    "status": "completed",
+    "reason": "threshold",
+    "engine": "billion-context",
+    "automatic": true,
+    "estimated": true,
+    "operationId": "87884443-0e15-4e97-a5cd-560f331fc06e:1:2",
+    "tokensBefore": 39725,
+    "tokensAfter": 239,
+    "estimatedTokensAfter": 239,
+    "blocks": 0,
+    "message": "原生压缩边界已提交"
+  },
+  "projectionEvidence": {
+    "summaryRequests": 1,
+    "requestsWithCommittedSummary": 6,
+    "inputChars": 73450
+  },
+  "originalReportSha256": "461cbdee5c0468430cf191e3331db6e96aa32d8fd290ee73fa518fa5455c23ec"
+}
