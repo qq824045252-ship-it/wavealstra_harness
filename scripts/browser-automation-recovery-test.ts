@@ -142,6 +142,33 @@ try {
   await pressOkService.execute({ action: "press", selector: "#field", key: "Enter" });
   assert.equal(pressOk.sent.length, 2, "verified focus sends exactly keyDown/keyUp");
 
+  // A task can be stopped while Electron is still resolving the target focus.
+  // Cancellation must win before the first input edge, including parallel callers.
+  const stoppedPress = new AbortController();
+  let focusReady!: (value: { ok: boolean }) => void;
+  let focusStarted!: () => void;
+  const startedFocus = new Promise<void>(resolve => { focusStarted = resolve; });
+  const cancelledPress = hostWith({ script: () => { focusStarted(); return new Promise(resolve => { focusReady = resolve; }); } });
+  const stoppedOperation = new BrowserAutomationService(() => cancelledPress.host)
+    .execute({ action: "press", selector: "#field", key: "Enter" }, stoppedPress.signal);
+  await startedFocus;
+  stoppedPress.abort();
+  focusReady({ ok: true });
+  await assert.rejects(stoppedOperation, (error: unknown) => error instanceof Error && error.name === "AbortError");
+  assert.deepEqual(cancelledPress.sent, [], "a stopped task cannot submit keys after delayed focus confirmation");
+  await new BrowserAutomationService(() => pressOk.host).execute({ action: "press", selector: "#field", key: "Tab" });
+  assert.equal(pressOk.sent.length, 4, "a cancelled task does not quarantine another browser caller");
+
+  const partialPress = hostWith();
+  partialPress.wc.sendInputEvent = event => {
+    partialPress.sent.push(event);
+    if ((event as { type: string }).type === "keyDown") throw new Error("input ACK lost after DOWN");
+  };
+  await assert.rejects(new BrowserAutomationService(() => partialPress.host)
+    .execute({ action: "press", selector: "#field", key: "Shift" }), /input ACK lost after DOWN/);
+  assert.deepEqual(partialPress.sent.map(event => (event as { type: string }).type), ["keyDown", "keyUp"],
+    "uncertain DOWN delivery still attempts its matching UP; the original error stays visible");
+
   const beforeInvocationErrors = failures.list("task").length;
   const captured = await new BrowserAutomationService(() => hostWith().host).execute({ action: "screenshot" });
   assert.equal(Buffer.from(captured.screenshot!).toString(), "png", "screenshot must use the shared BrowserHost owner");

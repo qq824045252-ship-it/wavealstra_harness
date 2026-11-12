@@ -1,6 +1,6 @@
 /** 退役共享资源隔离与 Work 动作审批：旧 profile 数据不得锁死执行层，业务数据保持不变。 */
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppDatabase, CURRENT_DATABASE_SCHEMA_VERSION } from "../src/main/db/AppDatabase";
@@ -20,19 +20,19 @@ const LEGACY_DDL = `
   CREATE TABLE IF NOT EXISTS work_resource_leases (token INTEGER PRIMARY KEY, owner_json TEXT NOT NULL, resources_json TEXT NOT NULL,
     state TEXT NOT NULL, acquired_at INTEGER NOT NULL, expires_at INTEGER, released_at INTEGER, host_id TEXT);
   CREATE TABLE IF NOT EXISTS work_resource_waiters (waiter_id TEXT PRIMARY KEY, action_id TEXT NOT NULL, owner_json TEXT NOT NULL);
-  CREATE TABLE IF NOT EXISTS work_resource_recovery (token INTEGER PRIMARY KEY, owner_json TEXT NOT NULL, attempts INTEGER NOT NULL);
+  CREATE TABLE IF NOT EXISTS work_resource_recovery (token INTEGER PRIMARY KEY REFERENCES work_resource_leases(token), owner_json TEXT NOT NULL, attempts INTEGER NOT NULL);
   CREATE TABLE IF NOT EXISTS work_resource_denials (action_id TEXT PRIMARY KEY, owner_key TEXT NOT NULL, reason TEXT NOT NULL, recorded_at INTEGER NOT NULL);
   CREATE TABLE IF NOT EXISTS work_resource_fingerprints (fingerprint TEXT PRIMARY KEY, recorded_at INTEGER NOT NULL);
   CREATE TABLE IF NOT EXISTS work_resource_opaque_observations (observation_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS work_resource_observation_clock (host_id TEXT PRIMARY KEY, observed_at INTEGER NOT NULL);
-  CREATE TABLE IF NOT EXISTS work_resource_effect_preparations (token INTEGER PRIMARY KEY, prepared_at INTEGER NOT NULL);
-  CREATE TABLE IF NOT EXISTS work_resource_effect_reviews (token INTEGER PRIMARY KEY, conclusion TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS work_resource_effect_preparations (token INTEGER PRIMARY KEY REFERENCES work_resource_leases(token), prepared_at INTEGER NOT NULL);
+  CREATE TABLE IF NOT EXISTS work_resource_effect_reviews (token INTEGER PRIMARY KEY REFERENCES work_resource_leases(token), conclusion TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS work_action_approvals (approval_id TEXT PRIMARY KEY, work_id TEXT, binding_id TEXT, operation_id TEXT,
     fingerprint TEXT, decision_json TEXT, data_json TEXT);
   CREATE TABLE IF NOT EXISTS work_action_approval_claims (source_gap_id TEXT PRIMARY KEY, approval_id TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS work_autonomy_rules (rule_id TEXT PRIMARY KEY, user_id TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS work_decisions (decision_id TEXT PRIMARY KEY, user_id TEXT NOT NULL);
-  CREATE TABLE IF NOT EXISTS work_deferred_actions (approval_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS work_deferred_actions (approval_id TEXT PRIMARY KEY REFERENCES work_action_approvals(approval_id), payload_json TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending');
 `;
 const RETIRED_TABLES = ["work_resource_leases", "work_resource_waiters", "work_resource_recovery", "work_resource_denials",
   "work_resource_fingerprints", "work_resource_opaque_observations", "work_resource_observation_clock",
@@ -73,12 +73,36 @@ try {
   first.connection.prepare("INSERT INTO work_autonomy_rules(rule_id,user_id) VALUES ('rule:old',?)").run(LOCAL_USER_ID);
   first.connection.prepare("INSERT INTO work_decisions(decision_id,user_id) VALUES ('decision:old',?)").run(LOCAL_USER_ID);
   first.connection.prepare("INSERT INTO work_deferred_actions(approval_id,payload_json) VALUES ('work-approval:old','{}')").run();
+  // Exercise real legacy parent/child relationships, including old outbox states.
+  first.connection.exec(`
+    INSERT INTO work_resource_recovery VALUES (7,'{}',3);
+    INSERT INTO work_resource_effect_preparations VALUES (7,1);
+    INSERT INTO work_resource_effect_reviews VALUES (7,'not_occurred');
+    INSERT INTO work_resource_waiters VALUES ('waiter:old','old-action','{}');
+    INSERT INTO work_resource_opaque_observations VALUES ('observation:old','{}');
+    INSERT INTO work_action_approval_claims VALUES ('gap:old','work-approval:old');
+    CREATE INDEX idx_legacy_resource_state ON work_resource_leases(state);
+    CREATE TRIGGER legacy_resource_observation AFTER INSERT ON work_resource_recovery
+      BEGIN UPDATE work_resource_observation_clock SET observed_at=observed_at+1; END;
+  `);
+  for (const state of ["queued", "running"]) {
+    first.connection.prepare("INSERT INTO work_action_approvals(approval_id,work_id,binding_id,data_json) VALUES (?,?,?,?)")
+      .run(`work-approval:${state}`, workId, bindingId, JSON.stringify({ status: state }));
+    first.connection.prepare("INSERT INTO work_deferred_actions(approval_id,payload_json,state) VALUES (?,?,?)")
+      .run(`work-approval:${state}`, JSON.stringify({ tool: "write", path: `must-not-replay-${state}` }), state);
+  }
+  works.repo.insertBlocker({ blockerId: "resource-recovery:" + bindingId, workId, kind: "operational",
+    reason: "旧恢复等待", waitingForUserInput: true, status: "open", createdAt: 1 });
   works.repo.insertBlocker({ blockerId: "work-approval:old", workId, kind: "operational",
     reason: "旧审批等待决定", waitingForUserInput: true, status: "open", createdAt: 1 });
   works.repo.insertBlocker({ blockerId: "resource-dispatch:" + binding.bindingId + ":", workId, kind: "operational",
     reason: "旧隔离派发等待", waitingForUserInput: true, status: "open", createdAt: 1 });
   works.repo.insertBlocker({ blockerId: "continuation:" + binding.bindingId, workId, kind: "operational",
     reason: "真实缺口仍需补跑", waitingForUserInput: true, status: "open", createdAt: 1 });
+  const retainedTables = ["works", "tasks", "bots", "work_action_admissions", "work_execution_bindings", "work_operation_receipts"]
+    .filter(table => tables(first).has(table));
+  const retainedRows = Object.fromEntries(retainedTables.map(table => [table,
+    first.connection.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
   const deliverablesBefore = works.repo.listDeliverables(workId).length;
   const admissionsBefore = works.repo.listAdmissions(workId).length;
   first.close();
@@ -91,6 +115,12 @@ try {
     const blockers = second.connection.prepare("SELECT blocker_id FROM work_blockers WHERE work_id=?").all(workId) as { blocker_id: string }[];
     assert.deepEqual(blockers.map(row => row.blocker_id), ["continuation:" + bindingId],
       "only the genuine continuation blocker survives; retired blockers never come back");
+    assert.deepEqual(second.connection.prepare("SELECT name FROM sqlite_master WHERE name IN ('idx_legacy_resource_state','legacy_resource_observation')").all(), []);
+    assert.deepEqual(second.connection.pragma("foreign_key_check"), []);
+    assert.equal(second.connection.pragma("quick_check", { simple: true }), "ok");
+    for (const table of retainedTables) assert.deepEqual(second.connection.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(), retainedRows[table], `${table} rows unchanged`);
+    assert.equal(readdirSync(root).some(name => name.includes("discarded-")), false, "same-schema old profile must migrate in place");
+    assert.equal(readdirSync(root).some(name => name.startsWith("must-not-replay-")), false, "old outbox payloads are never executed by migration");
   });
   check("business data, schema version and existing admissions are preserved", () => {
     const works2 = new WorkService(second.connection, { bots: new BotRegistry(second.connection) });
@@ -136,6 +166,34 @@ try {
       "the owner Work is no longer blocked by the retired Work action scope");
     assert.equal(works3.admitTaskAction("task-read-only", { operationId: "owner-read", actionKind: "workspace:read" }), undefined);
     db3.close();
+  });
+  check("partially cleaned old tables migrate with foreign keys enabled and report their exact scope", () => {
+    const partial = new AppDatabase(join(root, "partial.db"));
+    partial.connection.exec(LEGACY_DDL);
+    partial.connection.exec(`INSERT INTO work_resource_leases VALUES (1,'{}','[]','quarantined',1,NULL,NULL,'old-host');
+      INSERT INTO work_resource_recovery VALUES (1,'{}',1);
+      INSERT INTO work_resource_effect_preparations VALUES (1,1);
+      INSERT INTO work_resource_effect_reviews VALUES (1,'not_occurred');
+      INSERT INTO work_action_approvals(approval_id,data_json) VALUES ('approval:partial','{"status":"pending"}');
+      INSERT INTO work_deferred_actions VALUES ('approval:partial','{}','queued');
+      DROP TABLE work_resource_denials;
+    `);
+    assert.equal(partial.connection.pragma("foreign_keys", { simple: true }), 1);
+    assert.throws(() => partial.connection.transaction(() => {
+      retireWorkIsolation(partial.connection);
+      throw new Error("migration rollback probe");
+    })(), /migration rollback probe/);
+    assert.equal((partial.connection.prepare("SELECT COUNT(*) AS n FROM work_deferred_actions").get() as { n: number }).n, 1,
+      "outer transaction rollback restores the historical outbox without executing it");
+    const result = partial.connection.transaction(() => retireWorkIsolation(partial.connection))();
+    assert.equal(result.droppedTables.length, RETIRED_TABLES.length - 1);
+    assert.equal(result.deletedBlockers, 0);
+    assert.deepEqual(partial.connection.pragma("foreign_key_check"), []);
+    assert.deepEqual(retireWorkIsolation(partial.connection), { droppedTables: [], deletedBlockers: 0 });
+    partial.close();
+    const clean = new AppDatabase(join(root, "partial.db"));
+    for (const table of RETIRED_TABLES) assert.equal(tables(clean).has(table), false);
+    clean.close();
   });
   const fresh = new AppDatabase(join(root, "fresh.db"));
   check("a fresh profile never materializes the retired tables", () => {

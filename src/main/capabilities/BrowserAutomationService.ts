@@ -238,6 +238,8 @@ export class BrowserAutomationService {
         || remembered.documentRevision !== await this.documentRevision(wc))) {
       throw new BrowserAutomationError("SURFACE_CHANGED", "读取后浏览器页面、导航或焦点已经变化，请重新读取后再操作");
     }
+    // The awaited document/focus checks must not allow a stopped task to dispatch input.
+    if (signal?.aborted) throw new DOMException("浏览器操作已取消", "AbortError");
     if (input.action === "status") return { action: input.action, url: host.url || undefined, detail: host.url ? "ready" : "idle" };
     if (input.action === "read") {
       const documentRevision = await this.documentRevision(wc);
@@ -321,11 +323,16 @@ export class BrowserAutomationService {
           return { ok: true };
         })()`, true) as typeof focus;
       } catch (error) { throw jsFailure(error, input.action, safeUrl(wc)); }
+      if (signal?.aborted) throw new DOMException("浏览器操作已取消", "AbortError");
       if (!focus?.ok) throw browserResultError(focus, input.action, selector, safeUrl(wc));
-      try {
-        wc.sendInputEvent({ type: "keyDown", keyCode: key });
-        wc.sendInputEvent({ type: "keyUp", keyCode: key });
-      } catch (error) { throw jsFailure(error, input.action, safeUrl(wc)); }
+      // DOWN may have reached Chromium even if its call throws. Always attempt
+      // this invocation's matching UP without masking the first delivery error.
+      let inputError: unknown;
+      try { wc.sendInputEvent({ type: "keyDown", keyCode: key }); }
+      catch (error) { inputError = error; }
+      try { wc.sendInputEvent({ type: "keyUp", keyCode: key }); }
+      catch (error) { inputError ??= error; }
+      if (inputError) throw jsFailure(inputError, input.action, safeUrl(wc));
       return { action: input.action, url: wc.getURL(), detail: `已向 ${selector} 发送按键 ${key}` };
     }
     throw new BrowserAutomationError("INVALID_INPUT", `不支持的 browser_exec action：${String(input.action)}`);

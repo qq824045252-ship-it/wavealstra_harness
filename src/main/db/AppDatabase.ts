@@ -397,7 +397,10 @@ export class AppDatabase {
       ensureBotWorkPhase4Tables(this.db);
       ensureBotWorkPhase5Tables(this.db);
       ensureGatewayDeliveryTables(this.db);
-      retireWorkIsolation(this.db);
+      const isolationRetirement = retireWorkIsolation(this.db);
+      if (isolationRetirement.droppedTables.length || isolationRetirement.deletedBlockers) {
+        console.info(`[AppDatabase] work isolation retired: ${JSON.stringify(isolationRetirement)}`);
+      }
       const budgetRetirement = retireWorkBudget(this.db);
       if (budgetRetirement.droppedTables.length || budgetRetirement.droppedColumns.length
         || budgetRetirement.deletedBlockers || budgetRetirement.deletedCausalAdmissions

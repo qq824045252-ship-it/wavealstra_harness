@@ -688,6 +688,7 @@
     "test:bot-history-query": "node scripts/perf-bot-history-query.mjs --correctness-only",
     "test:bot-scheduling-gaps": "esbuild scripts/bot-scheduling-gaps-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/bot-scheduling-gaps-test.mjs && node scripts/test-guard.mjs out/tests/bot-scheduling-gaps-test.mjs",
     "test:bot-completion-evidence": "esbuild scripts/bot-completion-evidence-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/bot-completion-evidence-test.mjs && node scripts/test-guard.mjs out/tests/bot-completion-evidence-test.mjs",
+    "test:work-isolation-live": "node scripts/work-isolation-live-test.cjs",
     "test:bot-scheduling-live": "node scripts/bot-scheduling-live-test.cjs",
     "test:bot-completion-evidence:live": "node scripts/bot-completion-evidence-live-test.cjs --live",
     "test:work-file-event-source": "esbuild scripts/work-file-event-source-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/work-file-event-source-test.mjs && node scripts/test-guard.mjs out/tests/work-file-event-source-test.mjs",

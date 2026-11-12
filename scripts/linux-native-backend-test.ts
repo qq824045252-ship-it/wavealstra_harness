@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { computerUseRunCoordinator } from "../src/main/capabilities/ComputerUseRunCoordinator";
+import { setHeldInputReleaser } from "../src/main/platform/computer-use/heldInput";
 import type { ResourceRecoveryAttempt } from "../src/shared/resource-recovery";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { EventEmitter } from "node:events";
@@ -127,6 +129,39 @@ async function main() {
     f.state.sleepHook = () => controller.abort();
     await rejects("REQUEST_CANCELLED", () => f.backend.execute({ action: "drag_client", observationId: observed.observationId, x: 40, y: 40, x2: 170, y2: 70, durationMs: 600, steps: 6 }, controller.signal));
     assert.equal(f.state.moves.length, 1); assert.ok(hasEdge(f, "0x80"));
+  });
+  await check("stopping an active desktop owner releases its held input before another queued owner runs", async f => {
+    const owner = "retirement-stop-owner", other = "retirement-parallel-owner";
+    setHeldInputReleaser(taskId => f.backend.releaseHeldInput(taskId));
+    try {
+      await f.backend.execute({ action: "key_down", key: "Shift", windowHandle: f.handle, taskId: owner });
+      const observed = await f.observe(owner);
+      let unblock!: () => void, entered!: () => void;
+      const barrier = new Promise<void>(resolve => { unblock = resolve; });
+      const begun = new Promise<void>(resolve => { entered = resolve; });
+      f.state.sleepHook = async () => { entered(); await barrier; };
+      const first = f.backend.execute({ action: "drag_client", taskId: owner, observationId: observed.observationId,
+        x: 40, y: 40, x2: 170, y2: 70, durationMs: 600, steps: 6 });
+      const rejected = rejects("REQUEST_CANCELLED", () => first);
+      await begun;
+      const next = f.backend.execute({ action: "key_down", key: "Control", windowHandle: f.handle, taskId: other });
+      const cleanup = computerUseRunCoordinator.cancelAndWait(owner);
+      unblock();
+      await rejected; await next;
+      const receipt = await cleanup;
+      assert.equal(receipt.inputReleased, true); assert.equal(receipt.queueDrained, true);
+      const edges = f.state.edges.map(args => args.join(" "));
+      assert(edges.indexOf("key 42:0") < edges.indexOf("key 29:1"));
+      assert(edges.indexOf("click 0x80") < edges.indexOf("key 29:1"));
+      assert.equal(edges.includes("key 29:0"), false, "old cleanup cannot release the next owner's held modifier");
+      assert.equal(f.state.moves.length, 1, "stopped drag must not execute the remaining path");
+      await rejects("REQUEST_CANCELLED", () => f.backend.execute({ action: "key_press", key: "A", windowHandle: f.handle, taskId: owner }));
+      await computerUseRunCoordinator.cancelAndWait(other);
+      assert.equal(hasEdge(f, "29:0"), true);
+    } finally {
+      computerUseRunCoordinator.endTask(owner); computerUseRunCoordinator.endTask(other);
+      setHeldInputReleaser(undefined);
+    }
   });
   await check("partial DOWN failure has a reserved cleanup edge before next transaction", async f => {
     f.state.inputHook = args => { if (args.includes("42:1")) throw new ComputerUseError("HOST_UNAVAILABLE", "fixture lost ACK", { executed: "unknown" }); };

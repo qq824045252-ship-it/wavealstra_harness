@@ -9,7 +9,6 @@ import type Database from "better-sqlite3";
  */
 const RETIRED_TABLES = [
   // 共享资源隔离：租约、等待、恢复、指纹、不透明观测与效果核对。
-  "work_resource_leases",
   "work_resource_waiters",
   "work_resource_recovery",
   "work_resource_denials",
@@ -18,20 +17,35 @@ const RETIRED_TABLES = [
   "work_resource_observation_clock",
   "work_resource_effect_preparations",
   "work_resource_effect_reviews",
+  // Drop children before their referenced parent, including FK-enabled callers.
+  "work_resource_leases",
   // Work 动作审批、授权规则与决策、延迟动作 outbox。
-  "work_action_approvals",
+  "work_deferred_actions",
   "work_action_approval_claims",
+  "work_action_approvals",
   "work_autonomy_rules",
   "work_decisions",
-  "work_deferred_actions",
 ] as const;
 
 /** 这些 blocker 只由已退役机制写入；清掉它们避免留下可点但永远失败的入口。 */
 const RETIRED_BLOCKER_PREFIXES = ["work-approval:", "resource-dispatch:", "resource-recovery:"] as const;
 
-export function retireWorkIsolation(db: Database.Database): void {
-  for (const table of RETIRED_TABLES) db.exec(`DROP TABLE IF EXISTS ${table}`);
-  for (const prefix of RETIRED_BLOCKER_PREFIXES) {
-    db.prepare("DELETE FROM work_blockers WHERE blocker_id LIKE ?").run(`${prefix}%`);
+export interface WorkIsolationRetirementReport {
+  droppedTables: string[];
+  deletedBlockers: number;
+}
+
+/** Called inside AppDatabase's migration transaction; records scope, never payloads. */
+export function retireWorkIsolation(db: Database.Database): WorkIsolationRetirementReport {
+  const report: WorkIsolationRetirementReport = { droppedTables: [], deletedBlockers: 0 };
+  const exists = (table: string) => db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table) !== undefined;
+  for (const table of RETIRED_TABLES) {
+    if (!exists(table)) continue;
+    db.exec(`DROP TABLE ${table}`);
+    report.droppedTables.push(table);
   }
+  if (exists("work_blockers")) for (const prefix of RETIRED_BLOCKER_PREFIXES) {
+    report.deletedBlockers += db.prepare("DELETE FROM work_blockers WHERE blocker_id LIKE ?").run(`${prefix}%`).changes;
+  }
+  return report;
 }
