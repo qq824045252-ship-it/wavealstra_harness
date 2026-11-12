@@ -56,16 +56,18 @@ print(json.dumps({'retiredTables':[r[0] for r in c.execute("SELECT name FROM sql
     const assistantMessageId = crypto.randomUUID();
     const req = { taskId, text, spaceId, modelId: modelKey, welcomeMode: 'working', modePresetId: 'native', permissionMode: 'readonly', userMessageId: crypto.randomUUID(), assistantMessageId };
     row.prompt = text;
+    const eventStart = await evaluate("window.__isolationEvents.length");
     await evaluate(`(()=>{window.api.agent.prompt(${JSON.stringify(req)}).then(r=>window.__isolationSubmission=r,e=>window.__isolationError=String(e));return true})()`);
     try {
-      await until(() => evaluate(`window.__isolationEvents.some(e=>e.type==='assistant_end'&&e.taskId===${JSON.stringify(taskId)}&&e.messageId===${JSON.stringify(assistantMessageId)})`), 'ordinary completion ' + row.name);
-      row.events = await evaluate(`window.__isolationEvents.filter(e=>e.taskId===${JSON.stringify(taskId)})`);
-      const last = row.events.filter(e => e.type === 'assistant_end').at(-1); assert(!last?.error, last?.error);
+      await until(() => evaluate(`(()=>{const states=window.__isolationEvents.slice(${eventStart}).filter(e=>e.type==='durable_delta'&&e.taskId===${JSON.stringify(taskId)}&&e.delta.state).map(e=>e.delta.state);return states.some(s=>s.busy)&&states.at(-1)?.busy===false&&['completed','failed','aborted'].includes(states.at(-1)?.outcome);})()`), 'ordinary Durable completion ' + row.name);
+      row.events = await evaluate(`window.__isolationEvents.slice(${eventStart}).filter(e=>e.type==='durable_delta'&&e.taskId===${JSON.stringify(taskId)}&&e.delta.state).map(e=>({type:e.type,taskId:e.taskId,observedAt:e.observedAt,epoch:e.delta.epoch,revision:e.delta.revision,state:e.delta.state}))`);
+      const last = row.events.at(-1)?.state; assert.equal(last?.outcome,'completed',last?.error);
       row.history = await evaluate(`window.api.agent.loadTaskHistory(${JSON.stringify(taskId)})`);
-      assert(!row.events.some(e => e.status === 'pending_approval'), 'retired approval surfaced');
-      assert(!row.events.some(e => e.type === 'tool_update' && retired.test(e.output || '')), 'retired resource blocker surfaced');
-      row.tools = row.events.filter(e => e.type === 'tool_start').map(e => e.tool);
-      return row.events.filter(e => e.type === 'text_delta').map(e => e.delta || '').join('');
+      row.toolResults = row.history.messages.flatMap(m=>m.tools||[]);
+      assert(!row.toolResults.some(t => t.status === 'pending_approval'), 'retired approval surfaced');
+      assert(!row.toolResults.some(t => retired.test(t.output || '')), 'retired resource blocker surfaced');
+      row.tools = row.toolResults.map(t => t.tool);
+      return row.history.messages.filter(m=>m.role==='assistant').map(m=>m.text||'').join('\n');
     } finally {
       if (!row.events) await evaluate(`window.api.agent.abort(${JSON.stringify(taskId)})`).catch(() => {});
     }
@@ -80,19 +82,19 @@ print(json.dumps({'retiredTables':[r[0] for r in c.execute("SELECT name FROM sql
   await section('ordinary public information research', 'public-search', async row => {
     await native(row, '使用 web_search 搜索 IANA Example Domains 的公开用途，给出真实搜索结果 URL 和一句话结论。若实际网络失败就报告具体错误，不编造结果，不反复重试，也不改做后台 Work。');
     assert(row.tools.includes('web_search'), 'real search tool not invoked');
-    const errors = row.events.filter(e => e.type==='tool_update' && e.status==='error');
+    const errors = row.toolResults.filter(t => t.status==='error');
     row.networkErrors = errors; assert.equal(errors.length, 0, 'public search returned a real network/tool failure; not an isolation failure');
   });
   await section('ordinary public webpage extraction', 'browser-reading', async row => {
     const text = await native(row, '用内置 browser_exec navigate 打开 https://example.com，然后 browser_exec read 提取标题与正文并回复。必须实际打开读取，不用 fetch、curl、截图替代。不要创建后台 Work。');
     assert(row.tools.filter(t=>t==='browser_exec').length>=2); assert.match(text,/Example Domain/i);
-    assert(!row.events.some(e=>e.type==='tool_update'&&e.status==='error'), 'browser operation failed');
+    assert(!row.toolResults.some(t=>t.status==='error'), 'browser operation failed');
   });
   const closedPort = await new Promise(resolve => { const server=net.createServer();server.listen(0,'127.0.0.1',()=>{const port=server.address().port;server.close(()=>resolve(port));}); });
   await section('ordinary network failure diagnosis', 'network-diagnosis', async row => {
     const text = await native(row, `使用 bash 分别 curl --max-time 15 https://example.com 和 curl --max-time 3 http://127.0.0.1:${closedPort}/ 。第二个地址故意没有服务。报告每个命令实际退出码和真实错误，不能重试、不用后台 Work、不把失败改成成功。`);
     assert(row.tools.some(t=>['bash','execute','shell'].includes(t)), 'real shell was not called');
-    assert.match(JSON.stringify(row.events), /Connection refused|Failed to connect|ECONNREFUSED|连接.*拒绝|无法连接/i);
+    assert.match(JSON.stringify(row.toolResults), /Connection refused|Failed to connect|ECONNREFUSED|连接.*拒绝|无法连接/i);
     assert.match(text,/Example Domain|example\.com/i);
   });
   const settings = (await evaluate(`window.api.botWork.getSettings(${JSON.stringify(botId)})`)).settings;

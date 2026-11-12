@@ -38,3 +38,7 @@
 - 用户真实数据库中历史清理的 248 条记录，本轮只使用合成旧 profile。
 - 全部 GUI 或打包发行物。本轮不 build/pack。
 - fixture 不等于真实在线模型、真实物理输入或跨平台完整验收。
+
+## 首次真实批的 driver 中断
+
+`4bb4fc6b` 的首次批已产生 6 次真实 Flash 请求，首个普通任务完成建目录、写两个 26 字节文件、回读、ls/wc/stat 和字节校验。driver 错等旧 `assistant_end` 事件，而当前原生链通过 `durable_delta.state.outcome=completed` 交付，因此在该场景中断并保留 `status=interrupted`。这不是完整六类批通过，也不作为产品失败；后续 driver 改为真实 Durable 状态/历史工具结果，禁止造出旧结束事件来通过断言。
