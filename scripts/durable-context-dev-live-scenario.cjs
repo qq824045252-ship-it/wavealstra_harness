@@ -6,6 +6,7 @@ exports.run=async({evaluate,rpc,until,report,requests,rawUsageAudit,out,home,res
  assert(['billion-context','native'].includes(engine));
  const wait=ms=>new Promise(r=>setTimeout(r,ms));
  report.cases=[];report.summaryCalls=[];report.profileIsolation={home,syntheticInput:true,realCredentialsRead:false};
+ report.comparisonDesign={engine,workload:'issue26-seven-types-v1',profile:'fresh isolated per run',cacheCondition:'same provider/default main-request policy; provider cache not forcibly evicted',causalSpeedupClaim:false};
  const save=()=>fs.writeFileSync(path.join(out,'cases-progress.json'),JSON.stringify(report.cases,null,2));
  const subscribe=()=>evaluate(`(()=>{window.__contextProbe={events:[]};window.__contextStates=[];window.api.agent.onEvent(e=>{if(e.type==='compaction_status')window.__contextStates.push(e.state);const p=window.__contextProbe;if(!p)return;if((e.type==='durable_snapshot'||e.type==='durable_delta')&&!p.taskId)p.taskId=e.taskId;if(e.taskId===p.taskId){p.events.push({type:e.type,at:Date.now()});if(p.events.length>600)p.events.shift();}});return true;})()`);
  await subscribe();
