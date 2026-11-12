@@ -17,7 +17,7 @@ const advance = async (ms: number) => {
   mock.timers.tick(ms);
   await new Promise<void>(resolve => setImmediate(resolve));
 };
-let failureStage: "message" | "outbox" = "outbox";
+let failureStage: "message" | "cursor" | "outbox" = "outbox";
 const identity = (id: string, due: number) => `reminder-${createHash("sha256").update(`${id}:${due}`).digest("hex")}`;
 
 async function fixture(test: (f: ReturnType<typeof setup>) => Promise<void>) {
@@ -50,16 +50,17 @@ function setup(execution?: CronAgent) {
     if (notificationFailures-- > 0) throw new Error("notification unavailable");
     delivered.push(value);
   };
-  const installFault = () => db.connection.function("fail_reminder_commit", (id: unknown) => {
+  const installFault = () => db.connection.function("fail_reminder_commit", (id: unknown, cursorDue: unknown) => {
     assert.equal(typeof id, "string");
-    attempts.push(String(id));
+    attempts.push(failureStage === "cursor" ? identity(String(id), Number(cursorDue)) : String(id));
     return fail ? 1 : 0;
   });
   installFault();
   let cron = new CronService(db, agent, undefined, undefined, notify);
-  // Fail the final INSERT, after message/run/next due writes, to prove rollback.
-  db.connection.exec(`CREATE TRIGGER fail_reminder_commit BEFORE INSERT ON ${failureStage === "message" ? "bot_messages" : "cron_reminder_delivery"}
-    WHEN fail_reminder_commit(NEW.${failureStage === "message" ? "request_id" : "delivery_id"}) = 1 BEGIN SELECT RAISE(ABORT, 'reminder commit unavailable'); END;`);
+  const faultTarget = failureStage === "cursor" ? "UPDATE OF next_due_at ON cron_reminder_state" : `INSERT ON ${failureStage === "message" ? "bot_messages" : "cron_reminder_delivery"}`;
+  const faultId = failureStage === "cursor" ? "job_id" : failureStage === "message" ? "request_id" : "delivery_id";
+  db.connection.exec(`CREATE TRIGGER fail_reminder_commit BEFORE ${faultTarget}
+    WHEN ${failureStage === "cursor" ? "EXISTS (SELECT 1 FROM cron_runs WHERE job_id=NEW.job_id AND status='success') AND " : ""}fail_reminder_commit(NEW.${faultId}, ${failureStage === "cursor" ? "OLD.next_due_at" : "NULL"}) = 1 BEGIN SELECT RAISE(ABORT, 'reminder commit unavailable'); END;`);
   const create = (extra: Partial<CronJobDto> = {}) => cron.upsert({
     id: "reminder", name: "恢复提醒", prompt: "喝水", enabled: true,
     scheduleType: "at", scheduleExpr: new Date(Date.now() + 1000).toISOString(), timezone: "UTC",
@@ -80,7 +81,7 @@ function setup(execution?: CronAgent) {
   };
 }
 
-export async function testReminderRecovery(stage: "message" | "outbox" = "outbox") {
+export async function testReminderRecovery(stage: "message" | "cursor" | "outbox" = "outbox") {
   failureStage = stage;
   console.log(`Reminder failure stage: ${stage}`);
   for (const [scheduleType, maxRuns] of [["at", undefined], ["every", undefined], ["every", 1], ["every", 2]] as const) {
@@ -183,7 +184,8 @@ export async function testReminderRecovery(stage: "message" | "outbox" = "outbox
     });
     console.log(`PASS #45 retry invalidation: ${action}`);
   }
-  await fixture(async f => {
+  // Preview deliberately does not update the scheduled cursor. Its failure cases are covered at message/outbox writes.
+  if (stage !== "cursor") await fixture(async f => {
     f.create({ scheduleExpr: new Date(Date.now() + 60000).toISOString() });
     await f.cron.runNow("reminder"); await advance(0);
     assert.equal(f.db.getCronJob("reminder")?.runCount, 0);
@@ -199,6 +201,28 @@ export async function testReminderRecovery(stage: "message" | "outbox" = "outbox
     f.restart(); await advance(60000); assert.equal(f.messages().length, 1); assert.equal(f.delivered.length, 1);
   });
   console.log("PASS #45 preview failure and post-commit notification recovery remain separate");
+
+  for (const invalidation of ["expiry", "target"] as const) {
+    await fixture(async f => {
+      const job = f.create(invalidation === "expiry" ? { effectiveTo: Date.now() + 5000 } : {});
+      await advance(1000);
+      assert.equal(f.attempts.length, 1);
+      if (invalidation === "target") f.db.connection.prepare("UPDATE bot_conversations SET user_id=? WHERE conversation_id=?")
+        .run("unavailable-user", job.reminder!.conversationId);
+      f.recover(); await advance(10000);
+      assert.equal(f.delivered.length, 0);
+      assert.equal(f.db.getCronJob(job.id)?.enabled, false);
+      assert.equal(f.db.getCronJob(job.id)?.runCount, 0);
+      if (invalidation === "target") f.db.connection.prepare("UPDATE bot_conversations SET user_id=? WHERE conversation_id=?")
+        .run(LOCAL_USER_ID, job.reminder!.conversationId);
+      f.create({ id: "unrelated" }); await advance(1000);
+      assert.equal(f.delivered.length, 1);
+      assert.equal(f.delivered[0].jobId, "unrelated");
+      f.restart(); await advance(60000);
+      assert.equal(f.delivered.length, 1, "invalid reminder cannot revive after recovery/restart");
+    });
+    console.log(`PASS #45 retry invalidation and unrelated reminder independence: ${invalidation}`);
+  }
 
   let release = () => {};
   const gate = new Promise<void>(resolve => { release = resolve; });

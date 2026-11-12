@@ -23,6 +23,7 @@ import type { ReminderDelivery } from "../src/main/cron/CronReminderDelivery";
 async function main() {
  await testReminderRecovery();
  await testReminderRecovery("message");
+ await testReminderRecovery("cursor");
  const root = mkdtempSync(join(tmpdir(), "bot-reminders-"));
  const db = new AppDatabase(join(root,"app.db"));
  const bots = new BotRegistry(db.connection);
