@@ -60,7 +60,19 @@ exports.run = async context => {
   };
   const openArtifact = async artifact => {
     const label='打开 '+path.basename(artifact.file);
-    await until(()=>evaluate(`Boolean([...document.querySelectorAll('.bot-result-files button')].find(button=>button.getAttribute('aria-label')===${JSON.stringify(label)}))`),'source official artifact-open control');
+    const navigationDeadline=Date.now()+300000;
+    const waitNavigation=(test,label)=>until(test,label,Math.max(0,navigationDeadline-Date.now()));
+    const clickControl=async selector=>{let point;await waitNavigation(async()=>{point=await evaluate(`(()=>{const b=${selector};if(!b)return null;b.scrollIntoView({block:'center',behavior:'instant'});const r=b.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2,visible:r.width>0&&r.height>0&&b.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2))};})()`);return Boolean(point?.visible);},'official navigation control visible');await rpc('Input.dispatchMouseEvent',{type:'mousePressed',button:'left',buttons:1,clickCount:1,x:point.x,y:point.y});await rpc('Input.dispatchMouseEvent',{type:'mouseReleased',button:'left',buttons:0,clickCount:1,x:point.x,y:point.y});};
+    let navigation='source inline file';
+    if(!await evaluate(`Boolean([...document.querySelectorAll('.bot-result-files button')].find(button=>button.getAttribute('aria-label')===${JSON.stringify(label)}))`)) {
+      await clickControl("[...document.querySelectorAll('button')].find(b=>b.textContent==='协作记录'&&b.getBoundingClientRect().width>0)");
+      const relationSelector=`document.querySelector('[data-collaboration-id="${artifact.collaborationId}"]')`;
+      await waitNavigation(()=>evaluate(`Boolean(${relationSelector})`),'source collaboration entry');await clickControl(relationSelector);
+      const workSelector="[...document.querySelectorAll('.bot-collaboration-view button')].find(b=>b.textContent==='查看事项')";
+      await waitNavigation(()=>evaluate(`Boolean(${workSelector})`),'linked personal Work control');await clickControl(workSelector);
+      navigation='source collaboration history -> exact collaboration -> linked personal Work -> saved artifact';
+    }
+    await waitNavigation(()=>evaluate(`Boolean([...document.querySelectorAll('.bot-result-files button')].find(button=>button.getAttribute('aria-label')===${JSON.stringify(label)}))`),'source official artifact-open control');
     const point=await evaluate(`(()=>{const button=[...document.querySelectorAll('.bot-result-files button')].find(item=>item.getAttribute('aria-label')===${JSON.stringify(label)});for(let node=button.parentElement;node;node=node.parentElement)if(node.tagName==='DETAILS'&&!node.open)node.querySelector(':scope>summary')?.click();button.scrollIntoView({block:'center',behavior:'instant'});const rect=button.getBoundingClientRect();return {x:rect.x+rect.width/2,y:rect.y+rect.height/2,visible:rect.width>0&&rect.height>0&&button.contains(document.elementFromPoint(rect.x+rect.width/2,rect.y+rect.height/2))};})()`);
     assert(point.visible,'official returned artifact-open control is visible');
     await new Promise(resolve=>setTimeout(resolve,150));
@@ -82,7 +94,8 @@ exports.run = async context => {
     },'visible rendered JSON equals the actual saved artifact');
     await shot('saved-preview-visible');
     await evaluate(`(()=>{const preview=[...document.querySelectorAll('.bot-work-file-preview')].find(el=>el.getAttribute('aria-label')===${JSON.stringify('文件预览：'+path.basename(artifact.file))});[...preview.querySelectorAll('button')].find(button=>button.textContent==='关闭预览').click();})()`);
-    return {label,savedPath:artifact.savedPath,visiblePreview,receipts:receipts.filter(receipt=>receipt.target===artifact.savedPath)};
+    if(navigation!=='source inline file'){await clickControl("document.querySelector('button[aria-label=\"关闭事项详情并返回对话\"]')");await until(()=>evaluate("Boolean(document.querySelector('#bot-draft'))"),'return to original source conversation');}
+    return {label,navigation,collaborationId:artifact.collaborationId,savedPath:artifact.savedPath,visiblePreview,receipts:receipts.filter(receipt=>receipt.target===artifact.savedPath)};
   };
   const allOrganizations = async () => (await history()).messages.flatMap(message=>message.organizations ?? []);
   const findIntent = async predicate => {

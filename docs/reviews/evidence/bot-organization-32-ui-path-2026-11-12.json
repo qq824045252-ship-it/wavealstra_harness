@@ -1,0 +1,16 @@
+{
+  "baseSHA": "819b878ef0017cfd2fc58f968e372d7b87503ec5",
+  "route": [
+    "source collaboration summary",
+    "collaboration history",
+    "view Work",
+    "open saved version"
+  ],
+  "samePersistedTestDatabase": true,
+  "newModelRequests": 0,
+  "readReceipt": true,
+  "previewEqualsSavedJson": true,
+  "total": 166,
+  "sha256": "b57b5366b7ba529f01ce6c5ad82f0e1aab71fbc7a056ee4766f6fb1a04cd7b1d",
+  "limitation": "navigation used actual UI DOM buttons; file open used CDP mouse input; not OS-native hardware input"
+}
