@@ -8,6 +8,16 @@ import { test } from "node:test";
 import { build } from "esbuild";
 import { parseBundledTestCommand, prepareTestBundles } from "./test-bundle-pool.mjs";
 
+// Keep compiler subprocesses read-only; the fixture owns writing and cleaning its outputs.
+async function buildFixture(options) {
+  const result = await build({ ...options, write: false });
+  for (const output of result.outputFiles ?? []) {
+    await mkdir(dirname(output.path), { recursive: true });
+    await writeFile(output.path, output.contents);
+  }
+  return result;
+}
+
 function command(file, extra = "", args = "") {
   return `esbuild src/${file}.ts --bundle --platform=node --format=cjs --alias:fixture=./src/value.ts --outfile=out/tests/${file}.cjs ${extra} && node scripts/test-guard.mjs out/tests/${file}.cjs ${args}`;
 }
@@ -25,7 +35,7 @@ test("batch compilation retains output paths and aliases, and recompiles changed
   for (const name of ["one", "two"]) await writeFile(join(root, `src/${name}.ts`), 'import { value } from "fixture"; process.stdout.write(value);');
   const scripts = { "test:one": command("one"), "test:two": command("two", "", "--fixture-mode") };
   let invocations = 0;
-  const result = await prepareTestBundles(Object.keys(scripts), scripts, { root, buildImpl: async (options) => { invocations++; return build(options); } });
+  const result = await prepareTestBundles(Object.keys(scripts), scripts, { root, buildImpl: async (options) => { invocations++; return buildFixture(options); } });
   assert.equal(invocations, 1, "compatible entries compile in one build");
   assert.equal(result.prepared.size, 2);
   assert.deepEqual(result.prepared.get("test:two").guardArgs, ["out/tests/two.cjs", "--fixture-mode"]);
@@ -35,7 +45,7 @@ test("batch compilation retains output paths and aliases, and recompiles changed
     assert.equal(execution.stdout, "first");
   }
   await writeFile(join(root, "src/value.ts"), 'export const value = "changed";');
-  await prepareTestBundles(Object.keys(scripts), scripts, { root });
+  await prepareTestBundles(Object.keys(scripts), scripts, { root, buildImpl: buildFixture });
   assert.equal(runEntry(root, "one").stdout, "changed", "never reuse stale source output");
 }));
 
@@ -46,7 +56,7 @@ test("a broken entry is attributed without losing successful tests or running st
   await mkdir(join(root, "out/tests"), { recursive: true });
   await writeFile(join(root, "out/tests/bad.cjs"), 'process.stdout.write("stale");');
   const scripts = { good: command("good"), bad: command("bad") };
-  const { prepared } = await prepareTestBundles(Object.keys(scripts), scripts, { root });
+  const { prepared } = await prepareTestBundles(Object.keys(scripts), scripts, { root, buildImpl: buildFixture });
   assert.equal(prepared.get("good").error, undefined);
   assert.match(prepared.get("bad").error, /missing-dependency/);
   assert.equal(prepared.get("bad").guardArgs, undefined, "failed compilation cannot be launched");
@@ -60,7 +70,7 @@ test("commands with shell behavior, unrecognized flags or shared outputs stay on
     command("one").replace("esbuild", "SOURCE=1 esbuild"), command("one") + " && echo done",
     command("one", "", "$(anything)"), command("one").replaceAll("out/tests/one.cjs", "out/main/one.cjs"),
   ]) assert.equal(parseBundledTestCommand(script, root), undefined, script);
-  const { prepared, batches } = await prepareTestBundles(["first", "second"], { first: command("one"), second: command("one") }, { root });
+  const { prepared, batches } = await prepareTestBundles(["first", "second"], { first: command("one"), second: command("one") }, { root, buildImpl: buildFixture });
   assert.equal(prepared.size, 0);
   assert.equal(batches, 0);
 }));

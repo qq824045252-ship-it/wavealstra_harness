@@ -15,7 +15,8 @@ const snapshot = async dir => Object.fromEntries(await Promise.all((await fs.rea
   try {
     await fs.symlink(path.join(repo,'node_modules'), path.join(tmp,'node_modules'), 'dir');
     const output = path.join(tmp,'lease.cjs');
-    await esbuild.build({entryPoints:[path.join(repo,'src/main/agent/durable/DurableStorageLease.ts')],outfile:output,bundle:true,platform:'node',format:'cjs',external:['better-sqlite3']});
+    const compiled = await esbuild.build({write:false,entryPoints:[path.join(repo,'src/main/agent/durable/DurableStorageLease.ts')],outfile:output,bundle:true,platform:'node',format:'cjs',external:['better-sqlite3']});
+    await fs.writeFile(output, compiled.outputFiles[0].contents);
     const api = require(output);
     const dir = path.join(tmp,'synthetic');
     const lease = api.claimDurableStorageLease(dir);

@@ -119,6 +119,7 @@ async function main(): Promise<void> {
   process.env.HOME = root;
   process.env.USERPROFILE = root;
   const metrics: Metric[] = [];
+  const openDatabases: AppDatabase[] = [];
   try {
     const memoryStart = process.memoryUsage();
     let observedMaxRss = memoryStart.rss;
@@ -148,6 +149,7 @@ async function main(): Promise<void> {
 
     // 0b) Local prompt preflight subset before model I/O: canonical workspace resolution + workspace observation.
     const preflightDb = new AppDatabase(join(root, "preflight.db"));
+    openDatabases.push(preflightDb);
     preflightDb.upsertTask({ id: "perf-preflight", title: "Perf preflight", updatedAt: Date.now() });
     const preflightWorkspace = new TaskExecutionWorkspace(join(root, "task-workspaces"));
     const preflightFailures = new ExecutionFailureRepository(preflightDb.connection);
@@ -183,6 +185,7 @@ async function main(): Promise<void> {
 
     // 1) Library search: 800 managed markdown docs. Specific FTS query should not need a full file scan.
     const db = new AppDatabase(join(root, "library.db"));
+    openDatabases.push(db);
     const libRoot = join(root, "library");
     const lib = new LibraryService(db, { libraryRoot: libRoot });
     const personal = lib.ensureReady();
@@ -335,6 +338,8 @@ async function main(): Promise<void> {
     if (process.env.MYBUDDY_PERF_GATE === "1" && budgetFailures.length) throw new Error(`Performance budget exceeded: ${budgetFailures.join("; ")}`);
     db.close();
   } finally {
+    // Release fixture handles even when an earlier assertion fails, so Windows cleanup cannot mask it.
+    for (const handle of openDatabases) if (handle?.connection.open) handle.close();
     rmSync(root, { recursive: true, force: true });
   }
 }
