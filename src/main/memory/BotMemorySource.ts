@@ -1,6 +1,7 @@
 import type { AppDatabase } from "../db/AppDatabase";
 import { LOCAL_USER_ID } from "../../shared/bot-work";
 import { hasSensitiveMemoryContent } from "./MemoryTextSafety";
+import { MemoryInstructionDocument, memoryRememberClause } from "./MemoryIntent";
 
 export function botWorkHasSharedOrigin(db: AppDatabase, workId: string): boolean {
   if (!db.connection.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='bot_turn_origins'").get()) return false;
@@ -51,13 +52,12 @@ export function botMemoryTextEligible(text: string): boolean {
 /** Forget is a deletion request, not a new negative preference. Mixed requests may
  * write only the independently quoted, explicitly new remember clause. */
 export function botMemoryWriteEvidenceAllowed(userText: string, evidence: string): boolean {
-  const forgetting = /(?:忘记|删除.{0,24}记忆|清除.{0,24}记忆|\bforget\b|\bdelete\b.{0,32}\bmemor)/i;
-  if (!forgetting.test(userText)) return true;
-  if (!evidence.trim() || forgetting.test(evidence)) return false;
-  return userText.split(/[，,、。；;！!？?\n]/).some(clause =>
-    clause.includes(evidence.trim()) && /(?:记住|记下|保存|remember|memorize|save)/i.test(clause)
-    && !/(?:不要|别|勿|不再|无需).{0,8}(?:记住|记下|保存)|(?:do not|don['’]?t|never)\s+(?:remember|memorize|save)/i.test(clause)
-    && !forgetting.test(clause));
+  const document = MemoryInstructionDocument.parse(userText);
+  if (!document.allowsEvidence(evidence)) return false;
+  const removals = document.removalIntents();
+  if (!removals.some(intent => intent.kind === "forget")) return true;
+  return document.clauses.some(clause => clause.kind === "user" && clause.text.includes(evidence.trim())
+    && !removals.some(intent => intent.clause === clause.text) && memoryRememberClause(clause.text));
 }
 
 /** Resolve a single real input to its Work, never from candidate text or a model-selected ID. */
@@ -86,9 +86,9 @@ export function botMemoryWorkForSource(db: AppDatabase, conversationId: string, 
 
 /** An explicit durable write must apply to this candidate's own quoted clause. */
 export function botMemoryDurableEvidence(userText: string, evidence: string): boolean {
-  return Boolean(evidence.trim()) && userText.split(/[。；;！!？?\n]/).some(clause => clause.includes(evidence)
-    && /(?:记住|记下|保存.{0,8}(?:偏好|记忆)|长期.{0,8}(?:保留|保存)|\bremember\b|\bmemorize\b|\bsave\b.{0,16}\b(?:memory|preference)\b)/i.test(clause)
-    && !/(?:不要|别|勿|不再|无需).{0,8}(?:记住|记下|保存)|(?:do not|don['’]?t|never)\s+(?:remember|memorize|save)/i.test(clause));
+  const document = MemoryInstructionDocument.parse(userText);
+  return document.allowsEvidence(evidence) && userText.split(/[。；;！!？?\n]/).some(sentence => sentence.includes(evidence)
+    && document.allowsEvidence(sentence.trim()) && memoryRememberClause(sentence));
 }
 
 /** Narrow legacy automatic atoms at read time; preserve stored records and their evidence for audit. */

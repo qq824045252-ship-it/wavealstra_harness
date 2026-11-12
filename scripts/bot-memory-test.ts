@@ -296,7 +296,7 @@ async function main() {
       const projected = bridge.context(botId, next.source, next.receipt.userMessageId);
       assert(!projected.includes(direct) && !projected.includes(automatic), `new conversation excludes L1 and historical sources: ${wording}`);
       const erased = send(`${wording}，忘记并删除临时偏好记忆。`, botId); assert(erased.source);
-      assert(db.connection.prepare("SELECT 1 FROM memory_forget_watermarks WHERE scope_type='conversation' AND scope_id=?").get(erased.source), `pure forget stays within conversation: ${wording}`);
+      assert(db.connection.prepare("SELECT 1 FROM memory_forget_targets WHERE scope_type='conversation' AND scope_id=?").get(erased.source), `targeted forget stays within conversation: ${wording}`);
       assert(!db.connection.prepare("SELECT 1 FROM memory_forget_watermarks WHERE scope_type='bot' AND scope_id=?").get(botId), "temporary forget cannot affect the whole Bot");
     }
     // ── Review follow-up: kernel L1 uses the same technical/secret boundary ────────

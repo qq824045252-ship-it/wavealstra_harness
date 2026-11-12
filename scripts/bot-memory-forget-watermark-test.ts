@@ -93,9 +93,10 @@ try {
   assert(s.memory.get(multi.id)?.scopes.some(scope => scope.scopeType === "team"));
   assert.deepEqual(db.connection.prepare("SELECT cutoff_at FROM memory_forget_watermarks WHERE scope_type='team'").get(), teamCutoff,
     "detaching Bot scope never advances another owner's scope watermark");
-  const rows = db.connection.prepare("SELECT * FROM memory_forget_watermarks").all();
+  const rows = db.connection.prepare("SELECT * FROM memory_forget_targets").all();
   assert(rows.length >= 4);
-  assert(!JSON.stringify(rows).includes("偏好"), "watermarks contain scope identity and time only, never forgotten plaintext");
+  assert(!JSON.stringify(rows).includes("偏好"), "target withdrawals retain fingerprints, never forgotten plaintext");
+  assert.deepEqual(db.connection.prepare("SELECT * FROM memory_forget_watermarks").all(), [], "single-target deletion never creates a coarse watermark");
   assert.deepEqual(db.connection.pragma("foreign_key_check"), []);
   console.log("PASS persistent forget watermarks: four exact scopes, queued and delayed L0, normal DB reopen, original history intact, fresh relearning, no-record forget");
 } finally { db.close(); rmSync(root, { recursive: true, force: true }); }

@@ -5,6 +5,7 @@ import type { MemoryPipelineManager } from "../../memory/MemoryPipelineManager";
 import { botMemorySource, botMemoryTextEligible, botMemoryWriteEvidenceAllowed, botMemoryConversationOnly } from "../../memory/BotMemorySource";
 import { BotConversationRepository } from "./BotConversationRepository";
 import { botHistoryContext } from "./BotHistoryContext";
+import { MemoryInstructionDocument } from "../../memory/MemoryIntent";
 
 /** Foreground adapter over the existing L0/L1 store, deletion controls and single writer. */
 export class BotConversationMemory {
@@ -97,9 +98,9 @@ export class BotConversationMemory {
   /** Exact records selected by the foreground model, anchored to the current user's request. */
   forget(botId: string, ids: string[], userText: string, evidence: string, conversationId?: string, source?: { createdAt: number; messageId: string }) {
     if (!this.allowedBot(botId)) throw new Error("当前 Bot 记忆未启用或不可用");
+    const intents = MemoryInstructionDocument.parse(userText).removalIntents().filter(intent => evidence.includes(intent.clause));
     if (!evidence.trim() || !userText.includes(evidence)
-      || !/(?:忘记|删除.*记忆|forget|delete.*memor|(?:更正|修正|纠正|替换).{0,24}(?:偏好|记忆|长期|回复格式)|(?:correct|update|replace).{0,32}(?:preference|memory))/i.test(evidence)
-      || /(?:不要|别|不必|不能|勿).{0,4}(?:忘记|删除|更正|修正|纠正|替换)|(?:don['’]?t|do not|never)\s+(?:forget|delete|correct|update|replace)/i.test(userText)) {
+      || !intents.length) {
       throw new Error("仅在当前用户明确要求忘记或更正记忆偏好时移除旧记忆，不能用历史消息或模型推测替代");
     }
     const result = this.options.db.connection.transaction(() => {
@@ -117,7 +118,8 @@ export class BotConversationMemory {
       }
       const present = records.filter(record => record !== undefined);
       for (const record of present) {
-        for (const scope of record.scopes.filter(scope => scopeMatches(scope) && (scope.scopeType !== "global" || record.metadata.publicShared === true))) this.options.memory.detachScope(record.id, scope.scopeType, scope.scopeId, source);
+        for (const scope of record.scopes.filter(scope => scopeMatches(scope) && (scope.scopeType !== "global" || record.metadata.publicShared === true))) this.options.memory.detachScope(record.id, scope.scopeType, scope.scopeId,
+          source ? { ...source, requestClauses: intents.map(intent => intent.clause) } : undefined);
       }
       return { forgottenCount: present.length, alreadyAbsentCount: records.length - present.length, titles: present.map(record => record.title) };
     })();
@@ -154,12 +156,12 @@ export class BotConversationMemory {
       || !botMemoryTextEligible(user.text)) return;
     // A pure forget can precede the old request's completion, so no L1 record may
     // exist yet. Record its source time, not this delayed completion time.
-    if (/(?:忘记|删除.{0,24}记忆|清除.{0,24}记忆|\bforget\b|\bdelete\b.{0,32}\bmemor)/i.test(user.text)
-      && !user.text.split(/[，,、。；;！!？?\n]/).some(clause => botMemoryWriteEvidenceAllowed(user.text, clause))) {
+    for (const intent of MemoryInstructionDocument.parse(user.text).removalIntents()) {
+      if (intent.kind !== "forget") continue;
       const temporary = this.messages.origins.isShared(receipt.conversation_id) || botMemoryConversationOnly(user.text);
       const scopeType = temporary ? "conversation" : publicScopeRequested(user.text) ? "global" : source.team_id ? "team" : "bot";
       const scopeId = scopeType === "conversation" ? receipt.conversation_id : scopeType === "global" ? undefined : source.team_id ?? botId;
-      this.options.memory.recordForgetBoundary(scopeType, scopeId, user.createdAt);
+      this.options.memory.recordForgetIntent(scopeType, scopeId, intent, user.createdAt, user.messageId);
     }
     const decision = this.options.pipeline.capture({ taskId: receipt.conversation_id, sessionId: receipt.conversation_id,
       userMessageId: user.messageId, assistantMessageId: assistant.messageId, userText: "",

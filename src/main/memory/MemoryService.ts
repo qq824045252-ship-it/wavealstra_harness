@@ -1,5 +1,7 @@
+import { rankMemorySearch, rankMemorySearchAsync, tokenSimilarity } from "./MemoryRecallRanking";
 import { botExtractionPolicy } from "./BotMemoryExtractionPolicy";
 import { MemoryForgetWatermarks } from "./MemoryForgetWatermarks";
+import type { MemoryForgetSource, MemoryRemovalIntent } from "./MemoryIntent";
 import { hasSensitiveMemoryContent } from "./MemoryTextSafety";
 import { resolveAssistantScopeChain, resolveWorkMemoryScope } from "./AssistantMemoryScopes";
 import { botMemorySource, botMemoryTextEligible, botMemoryAutomaticBoundary } from "./BotMemorySource";
@@ -229,22 +231,6 @@ function extractCandidates(raw: string): ExtractedCandidate[] {
   return result;
 }
 
-function tokenSimilarity(a: string, b: string): number {
-  const aa = normalizeText(a);
-  const bb = normalizeText(b);
-  if (!aa || !bb) return 0;
-  if (aa === bb) return 1;
-  if (aa.includes(bb) || bb.includes(aa)) return 0.86;
-  const grams = (s: string): Set<string> => {
-    const out = new Set<string>();
-    for (let i = 0; i < Math.max(1, s.length - 1); i++) out.add(s.slice(i, i + 2));
-    return out;
-  };
-  const ga = grams(aa); const gb = grams(bb);
-  let hit = 0; for (const g of ga) if (gb.has(g)) hit++;
-  return hit / Math.max(1, ga.size + gb.size - hit);
-}
-
 /** 已完成启动期遗留候选清理的 AppDatabase：冷启动有 4 个 MemoryService 构造点，只允许清理一次。 */
 const reapedDatabases = new WeakSet<AppDatabase>();
 
@@ -254,7 +240,6 @@ export class MemoryService {
   readonly learning: MemorySkillLearningService;
   private readonly semantic: MemorySemanticProvider | null;
   private readonly forgetWatermarks: MemoryForgetWatermarks;
-  private readonly deletionVersions = new Map<string, number>();
 
   constructor(private readonly db: AppDatabase, opts?: { semantic?: boolean }) {
     this.repository = new MemoryRepository(db);
@@ -601,33 +586,34 @@ export class MemoryService {
     const current = this.repository.get(id);
     if (current) this.assertRecordWritable(current);
     this.db.connection.transaction(() => {
+      if (current) this.forgetWatermarks.withdrawRecord(current, this.repository.listRevisions(id), current.scopes);
       this.repository.hardDelete(id);
       if (current) {
-        this.forgetWatermarks.advance(current.scopes);
         this.invalidateProjectionScopes(current.scopes);
         this.touchProjectScopes(current.scopes, Date.now());
       }
     })();
-    for (const scope of current?.scopes ?? []) {
-      const key = `${scope.scopeType}:${scope.scopeId ?? ""}`;
-      this.deletionVersions.set(key, (this.deletionVersions.get(key) ?? 0) + 1);
-    }
     if (current?.kind === "procedure") {
       try { this.learning.invalidateByMemoryIds([id]); }
       catch (error) { console.warn("[MemoryKernel] skill candidate invalidation failed", error); }
     }
   }
 
-  recordForgetBoundary(scopeType: MemoryScopeType, scopeId: string | undefined, cutoffAt: number): void {
+  recordForgetBoundary(scopeType: MemoryScopeType, scopeId: string | undefined, cutoffAt: number, allowedMessageId?: string): void {
     this.assertScope(scopeType, scopeId);
-    this.forgetWatermarks.advance([{ scopeType, scopeId }], cutoffAt);
+    this.forgetWatermarks.advance([{ scopeType, scopeId }], cutoffAt, allowedMessageId);
+  }
+
+  recordForgetIntent(scopeType: MemoryScopeType, scopeId: string | undefined, intent: Extract<MemoryRemovalIntent, { kind: "forget" }>, cutoffAt: number, messageId: string): void {
+    this.assertScope(scopeType, scopeId);
+    this.forgetWatermarks.recordIntent([{ scopeType, scopeId }], intent, cutoffAt, messageId);
   }
 
   /**
    * Detach one durable scope without deleting the L1 atom from other scopes.
    * If the removed scope was the atom's last binding, the atom is hard-forgotten.
    */
-  detachScope(id: string, scopeType: MemoryScopeType, scopeId?: string, source?: { createdAt: number; messageId: string }): { detached: boolean; forgotten: boolean } {
+  detachScope(id: string, scopeType: MemoryScopeType, scopeId?: string, source?: MemoryForgetSource): { detached: boolean; forgotten: boolean } {
     const current = this.repository.get(id);
     if (!current) return { detached: false, forgotten: false };
     const target = current.scopes.find(
@@ -636,7 +622,7 @@ export class MemoryService {
     if (!target) return { detached: false, forgotten: false };
 
     const forgotten = this.db.connection.transaction(() => {
-      this.forgetWatermarks.advance([target], source?.createdAt, source?.messageId);
+      this.forgetWatermarks.withdrawRecord(current, this.repository.listRevisions(id), [target], source);
       this.repository.removeScope(id, scopeType, scopeId);
       const remaining = this.repository.get(id)?.scopes ?? [];
       if (remaining.length === 0) {
@@ -730,59 +716,31 @@ export class MemoryService {
 
   search(request: MemorySearchRequest): MemorySearchHit[] {
     const scopes = this.resolveScopeChain(request);
-    const scoped = this.repository.listByScopes({
+    const query = request.query?.trim() ?? "";
+    const scopeQuery = {
       scopes,
       statuses: request.statuses?.length ? request.statuses : ["active"],
       kinds: request.kinds,
-      limit: Math.max((request.limit ?? 20) * 30, 500),
-    });
+    } satisfies import("./MemorySearchScope").MemorySearchScope;
+    const candidates = query ? this.repository.searchScoped(query, scopeQuery, Math.max(Math.min(request.limit ?? 20, 100) * 4, 100),
+      memory => this.visibleInChain(memory, scopes, request)) : undefined;
+    const scoped = candidates?.scoped ?? this.repository.listByScopes({ ...scopeQuery, limit: Math.max((request.limit ?? 20) * 30, 500) });
+    const ftsRank = candidates?.ftsRanks ?? new Map<string, number>();
+    return rankMemorySearch({ scoped, ftsRank, query, request, scopes, visible: memory => this.visibleInChain(memory, scopes, request) });
+  }
+
+  private async searchLexicalAsync(request: MemorySearchRequest): Promise<MemorySearchHit[]> {
     const query = request.query?.trim() ?? "";
-    const allowedIds = [...new Set(scoped.map((item) => item.memory.id))];
-    const fts = query.length >= 3 ? this.repository.searchFts(query, allowedIds, Math.max((request.limit ?? 20) * 4, 60)) : [];
-    const ftsRank = new Map(fts.map((hit) => [hit.memoryId, hit.rank]));
-    const now = Date.now();
-    const byId = new Map<string, MemorySearchHit>();
-    for (const item of scoped) {
-      const distance = scopes.find((scope) => scope.scopeType === item.scopeType && (scope.scopeId ?? "") === (item.scopeId ?? ""))?.distance ?? 10;
-      const memory = item.memory;
-      if (!this.visibleInChain(memory, scopes, request)) continue;
-      if (memory.status === "active" && ((memory.validFrom !== undefined && memory.validFrom > now)
-        || (memory.validUntil !== undefined && memory.validUntil <= now))) continue;
-      const reasons: string[] = [];
-      let score = 0;
-      if (query) {
-        const titleSim = tokenSimilarity(query, memory.title);
-        const contentSim = tokenSimilarity(query, memory.content);
-        const sim = Math.max(titleSim * 1.15, contentSim);
-        const rank = ftsRank.get(memory.id);
-        if (rank !== undefined) {
-          score += 48 / (1 + Math.log2(rank + 1));
-          reasons.push("bm25");
-        }
-        if (sim > 0) score += sim * 36;
-        if (sim > 0.8) reasons.push("lexical-exact");
-        else if (sim > 0.20) reasons.push("lexical-related");
-        // Query mode must not return unrelated recent memories merely because they are in scope.
-        if (rank === undefined && sim < 0.10) continue;
-      } else {
-        score += 12;
-      }
-      score += Math.max(0, 18 - distance * 2.5);
-      reasons.push(`scope:${item.scopeType}${distance ? `/${distance}` : ""}`);
-      score += memory.importance * 8;
-      if (memory.importance >= 2) reasons.push(`importance:${memory.importance}`);
-      score += memory.confidence * 8;
-      if (memory.explicit) { score += 10; reasons.push("explicit"); }
-      if (memory.kind === "identity" || memory.kind === "preference") score += item.scopeType === "global" ? 8 : 2;
-      const ageDays = Math.max(0, (now - memory.updatedAt) / 86_400_000);
-      score += Math.max(0, 5 - Math.log2(ageDays + 1));
-      if (item.binding === "promoted") reasons.push("promoted");
-      const prev = byId.get(memory.id);
-      if (!prev || score > prev.score) byId.set(memory.id, { memory, score, reasons, scopeDistance: distance });
-    }
-    return [...byId.values()]
-      .sort((a, b) => b.score - a.score || b.memory.updatedAt - a.memory.updatedAt)
-      .slice(0, Math.max(1, Math.min(100, request.limit ?? 20)));
+    if (!query) return this.search(request);
+    const stamp = this.recallScopeStamp(request);
+    const scopes = this.resolveScopeChain(request);
+    const candidates = await this.repository.searchScopedAsync(query, { scopes,
+      statuses: request.statuses?.length ? request.statuses : ["active"], kinds: request.kinds },
+      Math.max(Math.min(request.limit ?? 20, 100) * 4, 100), memory => this.visibleInChain(memory, scopes, request));
+    if (!this.db.connection.open || this.recallScopeStamp(request) !== stamp) return [];
+    const hits = await rankMemorySearchAsync({ scoped: candidates.scoped, ftsRank: candidates.ftsRanks, query, request, scopes,
+      visible: memory => this.visibleInChain(memory, scopes, request), current: id => this.repository.get(id) });
+    return this.db.connection.open && this.recallScopeStamp(request) === stamp ? hits : [];
   }
 
   /** A pending external computation must never retain an old task/scope authorization. */
@@ -799,21 +757,23 @@ export class MemoryService {
     const requestedLimit = Math.max(1, Math.min(100, request.limit ?? 20));
     const query = request.query?.trim() ?? "";
     const initialScopeStamp = this.recallScopeStamp(request);
-    const freshLexical = (): MemorySearchHit[] => this.db.connection.open
+    const freshLexical = async (): Promise<MemorySearchHit[]> => this.db.connection.open
       && this.recallScopeStamp(request) === initialScopeStamp
-      ? this.search({ ...request, limit: Math.max(requestedLimit * 3, 40) }) : [];
-    if (query.length < 4 || !this.semantic) return freshLexical().slice(0, requestedLimit);
+      ? this.searchLexicalAsync({ ...request, limit: Math.max(requestedLimit * 3, 40) }) : [];
+    if (query.length < 4 || !this.semantic) return (await freshLexical()).slice(0, requestedLimit);
 
     const scopes = this.resolveScopeChain(request);
-    const visible = this.repository.listByScopes({ scopes,
-      statuses: request.statuses?.length ? request.statuses : ["active"], kinds: request.kinds, limit: 1600 });
-    const allowedHashes = new Map(visible.filter(({ memory }) => this.visibleInChain(memory, scopes, request)).map(({ memory }) => [memory.id, memory.contentHash]));
     try {
-      const semantic = await this.semantic.search(query, [...allowedHashes.keys()], Math.max(requestedLimit * 3, 40));
+      const semantic = await this.semantic.search(query, { scopes,
+        statuses: request.statuses?.length ? request.statuses : ["active"], kinds: request.kinds }, (id, hash) => {
+          const memory = this.repository.get(id);
+          return Boolean(memory && memory.contentHash === hash && this.visibleInChain(memory, this.resolveScopeChain(request), request));
+        }, Math.max(requestedLimit * 3, 40));
       if (!this.db.connection.open || this.recallScopeStamp(request) !== initialScopeStamp) return [];
       // Cached DTOs are not authorization: a forget, supersede, expiry, scope detach,
       // or update may have happened while the embedding runtime was busy.
-      const lexical = freshLexical();
+      const lexical = await freshLexical();
+      if (!this.db.connection.open || this.recallScopeStamp(request) !== initialScopeStamp) return [];
       const currentScopes = this.resolveScopeChain(request);
       const statuses = new Set(request.statuses?.length ? request.statuses : ["active"]);
       const now = Date.now();
@@ -821,7 +781,7 @@ export class MemoryService {
       lexical.forEach((hit, index) => fused.set(hit.memory.id, { lexicalRank: index + 1, lexicalReasons: hit.reasons, memory: hit.memory }));
       semantic.forEach((hit, index) => {
         const memory = this.repository.get(hit.memoryId);
-        if (!memory || allowedHashes.get(memory.id) !== memory.contentHash || !statuses.has(memory.status)
+        if (!memory || hit.contentHash !== memory.contentHash || !statuses.has(memory.status)
           || (request.kinds?.length && !request.kinds.includes(memory.kind))
           || (memory.status === "active" && ((memory.validFrom !== undefined && memory.validFrom > now)
             || (memory.validUntil !== undefined && memory.validUntil <= now)))
@@ -843,7 +803,7 @@ export class MemoryService {
       }).sort((a, b) => b.score - a.score || b.memory.updatedAt - a.memory.updatedAt).slice(0, requestedLimit);
     } catch (error) {
       if (!(error instanceof SemanticUnavailableError)) console.warn("[MemoryKernel] semantic recall failed", error);
-      return freshLexical().slice(0, requestedLimit);
+      return (await freshLexical()).slice(0, requestedLimit);
     }
   }
 
@@ -892,9 +852,6 @@ export class MemoryService {
     // A short acknowledgement can close a batch containing earlier substantive turns.
     // Eligibility belongs to the captured batch, not the most recent input alone.
     if (!input.sourceTurns?.length && !userText) return empty();
-    const deletionStamp = () => JSON.stringify(this.resolveScopeChain({ taskId: input.taskId })
-      .map(scope => this.deletionVersions.get(`${scope.scopeType}:${scope.scopeId ?? ""}`) ?? 0));
-    const initialDeletionStamp = deletionStamp();
     const extractionScopeStamp = this.recallScopeStamp({ taskId: input.taskId });
     const assertExtractionScope = () => {
       if (this.recallScopeStamp({ taskId: input.taskId }) !== extractionScopeStamp) {
@@ -907,6 +864,7 @@ export class MemoryService {
     const existingQuery = (rawTurns?.map(turn => turn.userText).join("\n") || userText).slice(-2000);
     const existing = await this.searchHybrid({ taskId: input.taskId, projectId, workspaceId, query: existingQuery, limit: 40 });
     assertExtractionScope();
+    const sourceFilter = this.forgetWatermarks.sourceFilter(this.resolveScopeChain({ taskId: input.taskId }));
     const sourceTurns = (rawTurns?.length ? rawTurns : [{
       id: `legacy:${input.taskId}:${Date.now()}`,
       taskId: input.taskId,
@@ -917,7 +875,9 @@ export class MemoryService {
       extractionState: "processing" as const,
       attemptCount: 0,
       metadata: {},
-    }]).slice(-8);
+    }]).slice(-8).map(turn => ({ ...turn, ...sourceFilter(turn.userText, turn.assistantText, turn.capturedAt, turn.userMessageId) }))
+      .filter(turn => turn.userText.trim() || turn.assistantText.trim());
+    if (!sourceTurns.length) return empty();
     let executionBudget = 24_000;
     const executionTurns = sourceTurns.slice().reverse().flatMap((turn) => {
       const execution = procedureExecution(turn.metadata);
@@ -955,7 +915,7 @@ export class MemoryService {
     );
     if (response.stopReason === "error" || response.stopReason === "aborted") throw new Error(response.errorMessage || "Memory extraction failed");
     if (response.stopReason === "length") throw new Error("记忆提炼输出被截断，请重试或减少本批对话");
-    if (!input.isEnabled() || deletionStamp() !== initialDeletionStamp) return empty();
+    if (!input.isEnabled()) return empty();
     assertExtractionScope();
     const extracted = extractCandidates(responseText(response));
     const changed = new Set<MemoryScopeType>();
@@ -972,7 +932,8 @@ export class MemoryService {
         : publicShared ? { scopeType: "global" as const, scopeId: undefined }
         : this.normalizeCandidateScope(botSource ? temporary ? "conversation" : "bot" : candidate.scopeType, { projectId, workspaceId, taskId: input.taskId });
       if (!scope) continue;
-      const eligibleTurns = this.forgetWatermarks.newerSources(scope.scopeType, scope.scopeId, botSource ? supportingTurns : sourceTurns);
+      const eligibleTurns = this.forgetWatermarks.candidateSources(scope.scopeType, scope.scopeId, botSource ? supportingTurns : sourceTurns,
+        `${candidate.title}\n${candidate.content}\n${candidate.userEvidence ?? ""}`);
       if (!eligibleTurns.length) continue;
       const dto: MemoryCandidateDto = {
         id: `mcand_${randomUUID()}`,
@@ -998,7 +959,8 @@ export class MemoryService {
           this.repository.insertCandidate(dto);
           // An in-flight pending candidate may already have been resolved from the review UI.
           if (this.repository.getCandidate(dto.id)?.status !== "pending") return;
-          const freshTurns = this.forgetWatermarks.newerSources(scope.scopeType, scope.scopeId, eligibleTurns);
+          const freshTurns = this.forgetWatermarks.candidateSources(scope.scopeType, scope.scopeId, eligibleTurns,
+            `${candidate.title}\n${candidate.content}\n${candidate.userEvidence ?? ""}`);
           if (!freshTurns.length) { this.repository.resolveCandidate(dto.id, "rejected"); return; }
           const evidenceTurns = botSource ? freshTurns
             .map(turn => ({ ...turn, userText: candidate.userEvidence!, assistantText: "" })) : freshTurns;
@@ -1070,6 +1032,12 @@ export class MemoryService {
   }
 
   private reconcileCandidateInTransaction(candidate: MemoryCandidateDto, sourceTurns: readonly MemoryTurnDto[], force: boolean): { status: "committed" | "rejected" | "needs_review"; memoryId?: string } {
+    const eligible = this.forgetWatermarks.reviewSources(candidate, sourceTurns);
+    if (!eligible) {
+      this.repository.resolveCandidate(candidate.id, "rejected");
+      return { status: "rejected" };
+    }
+    sourceTurns = eligible;
     if (!force) {
       let execution: ExtractedCandidate["executionEvidence"];
       try { execution = JSON.parse(candidate.rawJson ?? "{}").executionEvidence; } catch { /* use user evidence below */ }

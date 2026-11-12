@@ -558,6 +558,17 @@ export class AppDatabase {
         scope_type TEXT NOT NULL, scope_id TEXT NOT NULL DEFAULT '', cutoff_at INTEGER NOT NULL, allowed_message_id TEXT,
         PRIMARY KEY(scope_type, scope_id)
       );
+      CREATE TABLE IF NOT EXISTS memory_forget_targets (
+        scope_type TEXT NOT NULL, scope_id TEXT NOT NULL DEFAULT '',
+        fingerprint TEXT NOT NULL, text_length INTEGER NOT NULL, cutoff_at INTEGER NOT NULL,
+        value_fingerprint TEXT, guard_fingerprint TEXT, guard_length INTEGER,
+        allowed_message_id TEXT,
+        PRIMARY KEY(scope_type, scope_id, fingerprint)
+      );
+      CREATE TABLE IF NOT EXISTS memory_forget_receipts (
+        scope_type TEXT NOT NULL, scope_id TEXT NOT NULL DEFAULT '', source_message_id TEXT NOT NULL,
+        request_fingerprint TEXT NOT NULL, PRIMARY KEY(scope_type,scope_id,source_message_id,request_fingerprint)
+      );
       CREATE TABLE IF NOT EXISTS memory_organization_runs (
         id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
         state_json TEXT NOT NULL CHECK (json_valid(state_json))
@@ -823,6 +834,10 @@ export class AppDatabase {
     ).run();
     const watermarkColumns = this.db.prepare("PRAGMA table_info(memory_forget_watermarks)").all() as Array<{ name: string }>;
     if (!watermarkColumns.some(column => column.name === "allowed_message_id")) this.db.exec("ALTER TABLE memory_forget_watermarks ADD COLUMN allowed_message_id TEXT");
+    const targetColumns = this.db.prepare("PRAGMA table_info(memory_forget_targets)").all() as Array<{ name: string }>;
+    for (const [name, type] of [["value_fingerprint", "TEXT"], ["guard_fingerprint", "TEXT"], ["guard_length", "INTEGER"]]) {
+      if (!targetColumns.some(column => column.name === name)) this.db.exec(`ALTER TABLE memory_forget_targets ADD COLUMN ${name} ${type}`);
+    }
     this.ensureMemoryFts();
   }
 

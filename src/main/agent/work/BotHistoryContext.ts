@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { botMemoryTextEligible, botMemoryConversationOnly } from "../../memory/BotMemorySource";
+import { MemoryForgetWatermarks } from "../../memory/MemoryForgetWatermarks";
 
 const CORRECTION = /更正|纠正|修正|不是.{0,40}而是|\bcorrection\b|\bactually\b|\bnot .{0,40}but\b/i;
 const OPT_OUT = /不要(?:记住|记录|保存|存储)|别(?:记住|保存)|do not (?:remember|store|save)|don.t (?:remember|store|save)/i;
@@ -60,7 +61,9 @@ const SOURCE_WHERE = `
         AND t.task_id=c.conversation_id AND t.user_message_id=u.message_id)
       AND NOT EXISTS (SELECT 1 FROM memory_forget_watermarks w WHERE
         ((w.scope_type=$forgetScope AND w.scope_id=$forgetScopeId) OR (w.scope_type='conversation' AND w.scope_id=c.conversation_id)
-          OR (w.scope_type='global' AND w.scope_id='')) AND u.created_at<=w.cutoff_at)`;
+          OR (w.scope_type='global' AND w.scope_id='')) AND u.created_at<=w.cutoff_at
+        AND (w.allowed_message_id IS NULL OR (u.message_id<>w.allowed_message_id
+          AND (u.created_at<w.cutoff_at OR u.ordinal<=COALESCE((SELECT ordinal FROM bot_messages WHERE message_id=w.allowed_message_id),u.ordinal)))))`;
 
 const PROJECTION = `SELECT c.conversation_id,r.user_message_id,r.assistant_message_id,
       u.text AS user_text,a.text AS assistant_text,u.created_at,u.ordinal`;
@@ -155,15 +158,26 @@ export function botHistoryContext(db: Database.Database, input: {
     return chosen;
   };
   const pool: Scored[] = [];
+  const withdrawals = new MemoryForgetWatermarks(db);
+  const filters = new Map<string, ReturnType<MemoryForgetWatermarks["sourceFilter"]>>();
   let inspected = 0, inspectedChars = 0, capped = false, selected: Scored[] = [];
-  for (const row of statement.iterate(params) as Iterable<Pair>) {
+  for (const original of statement.iterate(params) as Iterable<Pair>) {
+    let filter = filters.get(original.conversation_id);
+    if (!filter) {
+      filter = withdrawals.sourceFilter([{ scopeType: input.teamId ? "team" : "bot", scopeId: input.teamId ?? input.botId },
+        { scopeType: "conversation", scopeId: original.conversation_id }, { scopeType: "global" }]);
+      filters.set(original.conversation_id, filter);
+    }
+    const redacted = filter(original.user_text, original.assistant_text, original.created_at, original.user_message_id);
+    const row = { ...original, user_text: redacted.userText, assistant_text: redacted.assistantText };
     if (inspected >= workCap || inspectedChars + row.user_text.length + row.assistant_text.length > INSPECTION_CHAR_CAP) {
       capped = true;
       break;
     }
     inspected++;
     inspectedChars += row.user_text.length + row.assistant_text.length;
-    if (!eligible(row)) continue;
+    if (!eligible(original) || !botMemoryTextEligible(row.user_text)
+      || (row.assistant_text && !botMemoryTextEligible(row.assistant_text))) continue;
     const scored = score1(row);
     if (recent || scored.relevant) pool.push(scored);
     // Recent samples are already in authoritative time/ordinal order. Related

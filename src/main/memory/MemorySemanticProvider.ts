@@ -1,5 +1,7 @@
 import type { AppDatabase } from "../db/AppDatabase";
 import type { MemoryRecordDto } from "../../shared/memory-kernel";
+import { memorySearchWhere, type MemorySearchScope } from "./MemorySearchScope";
+import { setImmediate as yieldThread } from "node:timers/promises";
 import {
   SEMANTIC_DIMENSION,
   SEMANTIC_MODEL_ID,
@@ -27,6 +29,7 @@ function cosine(a: Float32Array, b: Float32Array): number {
 export interface MemorySemanticHit {
   memoryId: string;
   score: number;
+  contentHash: string;
 }
 
 /** Shared BGE-M3 runtime, separate Memory index truth. */
@@ -62,32 +65,52 @@ export class MemorySemanticProvider {
     ).run(record.id, SEMANTIC_MODEL_ID, SEMANTIC_MODEL_VERSION, record.contentHash, SEMANTIC_DIMENSION, f32ToBlob(vector), Date.now());
   }
 
-  async search(query: string, allowedMemoryIds: string[], limit = 20, threshold = 0.50): Promise<MemorySemanticHit[]> {
+  async search(query: string, scope: MemorySearchScope, accept: (id: string, contentHash: string) => boolean,
+    limit = 20, threshold = 0.50): Promise<MemorySemanticHit[]> {
     const q = query.trim();
-    const allowed = [...new Set(allowedMemoryIds)].filter(Boolean);
-    if (!q || allowed.length === 0) return [];
+    if (!q || !scope.scopes.length) return [];
     const queryVec = await this.runtime.embed(q);
     const conn = this.db.connection;
     if (!conn.open) return [];
     const hits: MemorySemanticHit[] = [];
-    const batchSize = 350;
-    for (let offset = 0; offset < allowed.length; offset += batchSize) {
-      const batch = allowed.slice(offset, offset + batchSize);
-      const placeholders = batch.map(() => "?").join(",");
-      const rows = conn.prepare(
-        `SELECT e.memory_id,e.embedding,e.dimension,e.content_hash,m.content_hash AS current_hash
-         FROM memory_embeddings e JOIN memory_records m ON m.id=e.memory_id
-         WHERE e.memory_id IN (${placeholders}) AND e.model_id=? AND e.model_version=? AND m.status='active'`,
-      ).all(...batch, SEMANTIC_MODEL_ID, SEMANTIC_MODEL_VERSION) as Array<{
+    const keep = Math.max(1, Math.min(100, limit));
+    const where = memorySearchWhere(scope);
+    // Read each page completely before yielding, so writes and task cancellation
+    // can run between pages without an active SQLite statement or transaction.
+    const read = conn.prepare(
+      `SELECT e.memory_id,e.embedding,e.dimension,e.content_hash,m.content_hash AS current_hash
+       FROM memory_embeddings e CROSS JOIN memory_records m ON m.id=e.memory_id
+       WHERE e.model_id=? AND e.model_version=? AND ${where.sql} AND e.memory_id>?
+       ORDER BY e.memory_id LIMIT 128`,
+    );
+    let cursor = "", started = performance.now();
+    while (conn.open) {
+      const rows = read.all(SEMANTIC_MODEL_ID, SEMANTIC_MODEL_VERSION, ...where.args, cursor) as Array<{
         memory_id: string; embedding: Buffer; dimension: number; content_hash: string; current_hash: string;
       }>;
+      if (!rows.length) break;
+      cursor = rows[rows.length - 1].memory_id;
       for (const row of rows) {
         if (row.dimension !== SEMANTIC_DIMENSION || row.content_hash !== row.current_hash) continue;
         if (row.embedding.byteLength !== SEMANTIC_DIMENSION * 4) continue;
         const score = cosine(queryVec, blobToF32(row.embedding));
-        if (Number.isFinite(score) && score >= threshold) hits.push({ memoryId: row.memory_id, score });
+        const worst = hits.at(-1);
+        const canImprove = hits.length < keep || !worst || score > worst.score
+          || score === worst.score && row.memory_id.localeCompare(worst.memoryId) < 0;
+        if (Number.isFinite(score) && score >= threshold && canImprove && accept(row.memory_id, row.content_hash)) {
+          hits.push({ memoryId: row.memory_id, score, contentHash: row.content_hash });
+          hits.sort((a, b) => b.score - a.score || a.memoryId.localeCompare(b.memoryId));
+          if (hits.length > keep) hits.pop();
+        }
+      }
+      if (performance.now() - started >= 4) {
+        await yieldThread();
+        if (!conn.open) return [];
+        started = performance.now();
       }
     }
-    return hits.sort((a, b) => b.score - a.score).slice(0, Math.max(1, Math.min(50, limit)));
+    const current = memorySearchWhere(scope);
+    const exists = conn.prepare(`SELECT 1 FROM memory_records m WHERE m.id=? AND m.content_hash=? AND ${current.sql}`);
+    return hits.filter(hit => exists.get(hit.memoryId, hit.contentHash, ...current.args) && accept(hit.memoryId, hit.contentHash));
   }
 }

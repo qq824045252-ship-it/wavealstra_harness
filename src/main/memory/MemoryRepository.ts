@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { AppDatabase } from "../db/AppDatabase";
+import type { MemorySearchScope } from "./MemorySearchScope";
+import { buildMemoryFtsQuery, normalizeSearchText } from "./MemorySearchText";
+import { MemoryQueryCandidates } from "./MemoryQueryCandidates";
 import type {
   MemoryCandidateDto,
   MemoryEvidenceDto,
@@ -43,33 +46,16 @@ function parseObject(value: string): Record<string, unknown> {
   }
 }
 
-const MEMORY_FTS_MAX_TRIGRAMS = 64;
-
-function buildMemoryFtsQuery(query: string): string | null {
-  const compact = query.normalize("NFKC").toLowerCase().replace(/[\p{P}\p{S}\s]+/gu, "");
-  if (compact.length < 3) return null;
-  const grams: string[] = [];
-  const add = (value: string) => {
-    const term = value.trim();
-    if (term.length < 3 || grams.includes(term)) return;
-    grams.push(term);
-  };
-  const normalized = query.normalize("NFKC").toLowerCase();
-  for (const word of normalized.split(/[^\p{L}\p{N}_+.-]+/u)) {
-    if (word.length >= 3 && word.length <= 40) add(word);
-  }
-  // Latin/number identifiers (models, part numbers) embedded in CJK text are the most selective terms.
-  for (const word of normalized.match(/[a-z0-9][a-z0-9_+.-]{2,39}/g) ?? []) add(word);
-  // Trigrams make natural-language questions retrieve the embedded noun/model phrase without exact sentence matching.
-  // Sample across the whole prompt so terms late in a long message still participate.
-  const trigramCount = compact.length - 2;
-  const step = Math.max(1, trigramCount / MEMORY_FTS_MAX_TRIGRAMS);
-  for (let i = 0; i < trigramCount; i += step) add(compact.slice(Math.floor(i), Math.floor(i) + 3));
-  return grams.length ? grams.map((term) => `"${term.replaceAll('"', '""')}"`).join(" OR ") : null;
-}
+const normalizedConnections = new WeakSet<object>();
 
 export class MemoryRepository {
-  constructor(private readonly db: AppDatabase) {}
+  constructor(private readonly db: AppDatabase) {
+    if (!normalizedConnections.has(db.connection)) {
+      db.connection.function("memory_search_normalize", { deterministic: true },
+        (value: unknown) => typeof value === "string" ? normalizeSearchText(value) : "");
+      normalizedConnections.add(db.connection);
+    }
+  }
 
   private get conn() { return this.db.connection; }
 
@@ -224,6 +210,14 @@ export class MemoryRepository {
     } catch {
       return [];
     }
+  }
+
+  searchScoped(query: string, input: MemorySearchScope, limit: number, accept: (memory: MemoryRecordDto) => boolean) {
+    return new MemoryQueryCandidates({ db: this.conn, repository: this, query, scope: input, limit, accept }).search();
+  }
+
+  searchScopedAsync(query: string, input: MemorySearchScope, limit: number, accept: (memory: MemoryRecordDto) => boolean) {
+    return new MemoryQueryCandidates({ db: this.conn, repository: this, query, scope: input, limit, accept }).searchAsync();
   }
 
   insert(record: MemoryRecordDto): MemoryRecordDto {
