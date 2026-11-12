@@ -152,7 +152,14 @@ async function launch() {
   assert(process.env.npm_execpath&&fs.existsSync(process.env.npm_execpath),'launch this driver with pnpm exec node scripts/bot-organization-live-driver.cjs');
   // Keep dependency optimization local to this run, never in shared/junction node_modules.
   const configPath=path.join(out,'isolated-vite.config.mjs');
-  fs.writeFileSync(configPath,'import config from '+JSON.stringify(path.join(root,'electron.vite.config.ts').replaceAll('\\','/'))+';\nexport default {...config,renderer:{...config.renderer,cacheDir:'+JSON.stringify(path.join(out,'vite-cache'))+'}};\n');
+  const nodeWrite=process.env.BOT_LIVE_NODE_WRITE==='1';
+  const cacheDir=path.join(out,'vite-cache');
+  const cacheAdapter=nodeWrite?`import fs from 'node:fs';import path from 'node:path';
+const cacheRoot=${JSON.stringify(cacheDir)};
+const outputPlugin={name:'isolated-node-cache-write',setup(build){build.onEnd(result=>{if(result.errors.length)return;for(const file of result.outputFiles||[]){if(file.path==='<stdout>')continue;const relative=path.relative(cacheRoot,file.path);if(relative.startsWith('..')||path.isAbsolute(relative))throw Error('cache output escaped isolated root');fs.mkdirSync(path.dirname(file.path),{recursive:true});fs.writeFileSync(file.path,file.contents);}})}};
+` : '';
+  fs.writeFileSync(configPath,'import config from '+JSON.stringify(path.join(root,'electron.vite.config.ts').replaceAll('\\','/'))+';\n'+cacheAdapter+'export default {...config,renderer:{...config.renderer,cacheDir:'+JSON.stringify(cacheDir)+(nodeWrite?',optimizeDeps:{...config.renderer?.optimizeDeps,esbuildOptions:{...config.renderer?.optimizeDeps?.esbuildOptions,write:false,plugins:[...(config.renderer?.optimizeDeps?.esbuildOptions?.plugins||[]),outputPlugin]}}':'')+'}};\n');
+  report.testNodeCacheWriter=nodeWrite;
   const native=!/\.(?:cjs|mjs|js)$/i.test(process.env.npm_execpath),args=['dev','--config',configPath,'--outDir',devOutput,'--entry',bootstrap];
   if(log!==undefined)fs.closeSync(log);log=fs.openSync(path.join(out,'dev.log'),'a');
   processDev=cp.spawn(native?process.env.npm_execpath:process.execPath,native?args:[process.env.npm_execpath,...args],{cwd:root,env,windowsHide:true,stdio:['ignore',log,log]});
