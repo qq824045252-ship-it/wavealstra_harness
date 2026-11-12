@@ -1,6 +1,6 @@
 # Issue #26 closure audit, 2026-11-12
 
-Latest follow-up: [durable operation, crash recovery and seven-type real verification](issue26-operation-verification-20261112.md) on f8b22b05. The operation/status gaps below are superseded by that report; bounded cold/active history and the broader acceptance matrix remain open.
+Latest follow-up: [official SQLite cold storage, bounded text/signed-reasoning prefixes, independent-branch cold refs and real-run evidence](issue26-sqlite-migration-20261112.md). That report supersedes the historical JSONL/cold-replay and new-task-reference findings below for its explicitly tested scope. The earlier [operation/crash report](issue26-operation-verification-20261112.md) remains relevant. Giant initial imports, image-protected prefixes and the broader acceptance/comparison matrix are not declared complete.
 
 Issue #26 remains open. The implementation is useful and actual automatic compression works, but the issue's complete closing contract is larger than the repaired core flow. This matrix does not silently move mandatory requirements into another issue or turn untested cases into passes.
 
