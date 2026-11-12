@@ -1,0 +1,43 @@
+{
+  "baseSHA": "3bb937730808abf6168912a2a76d972d091ce0eb",
+  "failedRun": "2026-11-12T18-07-04-930Z",
+  "failedStage": "linked personal Work control timeout",
+  "realModelCalls": 23,
+  "completedExecution": {
+    "workClosedSucceeded": true,
+    "total": 166,
+    "sourceFinalReturn": true
+  },
+  "remainingCases": "B-F not_run",
+  "verification": "real Electron UI-only using copied synthetic profile; no provider calls",
+  "route": "source collaboration history -> exact collaboration -> linked personal Work -> saved artifact",
+  "actualClicks": [
+    {
+      "text": "协作记录",
+      "at": 1794507675408,
+      "collaborationId": null
+    },
+    {
+      "text": "发给 核算与语言助理-3a848c623 条消息 · 已返回2026/11/13 02:11:04 · 已关联个人事项",
+      "at": 1794507680650,
+      "collaborationId": "bot-collaboration-33f85610573eeff2b64fd00ab810335baffdfc375ed8cccfec7d3a084a37b730"
+    },
+    {
+      "text": "查看事项",
+      "at": 1794507685965,
+      "collaborationId": null
+    },
+    {
+      "text": "",
+      "at": 1794507696984,
+      "collaborationId": null
+    }
+  ],
+  "savedFileReadReceipts": 2,
+  "visibleJSONMatchesSavedFile": true,
+  "productChanged": false,
+  "limits": [
+    "No physical OS mouse claim",
+    "No A-F acceptance claim from UI-only check"
+  ]
+}
