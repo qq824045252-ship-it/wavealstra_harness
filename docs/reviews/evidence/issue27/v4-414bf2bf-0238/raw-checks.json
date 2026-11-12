@@ -1,0 +1,677 @@
+[
+  {
+    "label": "actual window width initial-960",
+    "passed": true,
+    "data": {
+      "label": "initial-960",
+      "at": 1794451148276,
+      "requestedWidth": 960,
+      "client": {
+        "address": "0x5562a177fe00",
+        "mapped": true,
+        "hidden": false,
+        "visible": true,
+        "acceptsInput": true,
+        "at": [
+          215,
+          90
+        ],
+        "size": [
+          960,
+          800
+        ],
+        "workspace": {
+          "address": "3",
+          "id": 3,
+          "type": "normal",
+          "name": "3"
+        },
+        "floating": true,
+        "monitor": 0,
+        "class": "wavealstra-harness",
+        "title": "MyBuddy",
+        "initialClass": "wavealstra-harness",
+        "initialTitle": "MyBuddy",
+        "pid": 1744569,
+        "xwayland": false,
+        "pinned": false,
+        "pinFullscreened": false,
+        "fullscreen": 0,
+        "fullscreenClient": 0,
+        "fullscreenHandler": "default",
+        "allowedOverFullscreen": true,
+        "grouped": [],
+        "tags": [],
+        "swallowing": "0x0",
+        "focusHistoryID": 0,
+        "inhibitingIdle": false,
+        "xdgTag": "",
+        "xdgDescription": "",
+        "contentType": "none",
+        "tearingHint": false,
+        "stableId": "18000506"
+      },
+      "dom": {
+        "innerWidth": 960,
+        "innerHeight": 800,
+        "outerWidth": 960,
+        "outerHeight": 800,
+        "scrollWidth": 960,
+        "composer": true
+      }
+    }
+  },
+  {
+    "label": "no horizontal overflow initial-960",
+    "passed": true
+  },
+  {
+    "label": "foreground completed parallel-execution",
+    "passed": true,
+    "data": {
+      "status": "completed"
+    }
+  },
+  {
+    "label": "A visible before archive and amendment",
+    "passed": true
+  },
+  {
+    "label": "official fresh empty conversation is not the archived conversation",
+    "passed": true
+  },
+  {
+    "label": "actual window width second-conversation-1200",
+    "passed": true,
+    "data": {
+      "label": "second-conversation-1200",
+      "at": 1794451190587,
+      "requestedWidth": 1200,
+      "client": {
+        "address": "0x5562a177fe00",
+        "mapped": true,
+        "hidden": false,
+        "visible": true,
+        "acceptsInput": true,
+        "at": [
+          95,
+          90
+        ],
+        "size": [
+          1200,
+          800
+        ],
+        "workspace": {
+          "address": "3",
+          "id": 3,
+          "type": "normal",
+          "name": "3"
+        },
+        "floating": true,
+        "monitor": 0,
+        "class": "wavealstra-harness",
+        "title": "MyBuddy",
+        "initialClass": "wavealstra-harness",
+        "initialTitle": "MyBuddy",
+        "pid": 1744569,
+        "xwayland": false,
+        "pinned": false,
+        "pinFullscreened": false,
+        "fullscreen": 0,
+        "fullscreenClient": 0,
+        "fullscreenHandler": "default",
+        "allowedOverFullscreen": true,
+        "grouped": [],
+        "tags": [],
+        "swallowing": "0x0",
+        "focusHistoryID": 0,
+        "inhibitingIdle": false,
+        "xdgTag": "",
+        "xdgDescription": "",
+        "contentType": "none",
+        "tearingHint": false,
+        "stableId": "18000506"
+      },
+      "dom": {
+        "innerWidth": 1200,
+        "innerHeight": 800,
+        "outerWidth": 1200,
+        "outerHeight": 800,
+        "scrollWidth": 1200,
+        "composer": true
+      }
+    }
+  },
+  {
+    "label": "no horizontal overflow second-conversation-1200",
+    "passed": true
+  },
+  {
+    "label": "two real persistent conversation identities after first new request",
+    "passed": true
+  },
+  {
+    "label": "six different semantic types submitted in the same frozen batch",
+    "passed": true
+  },
+  {
+    "label": "A registered while original execution running",
+    "passed": true
+  },
+  {
+    "label": "A original bytes exact",
+    "passed": true
+  },
+  {
+    "label": "old conversation A feedback not inserted into new conversation",
+    "passed": true
+  },
+  {
+    "label": "A delivered immutable registered snapshot",
+    "passed": true
+  },
+  {
+    "label": "new-conversation Work exists while old Work still busy",
+    "passed": true
+  },
+  {
+    "label": "foreground completed amendment",
+    "passed": true,
+    "data": {
+      "status": "completed"
+    }
+  },
+  {
+    "label": "amendment creates no replacement Work",
+    "passed": true
+  },
+  {
+    "label": "amendment preserves unrelated Work revision work-e6926288-7303-41f7-aa5b-4de77af959f5",
+    "passed": true
+  },
+  {
+    "label": "foreground completed busy-0",
+    "passed": true,
+    "data": {
+      "status": "completed"
+    }
+  },
+  {
+    "label": "busy arithmetic 0",
+    "passed": true
+  },
+  {
+    "label": "foreground completed busy-1",
+    "passed": true,
+    "data": {
+      "status": "completed"
+    }
+  },
+  {
+    "label": "busy arithmetic 1",
+    "passed": true
+  },
+  {
+    "label": "foreground completed direct",
+    "passed": true,
+    "data": {
+      "status": "completed"
+    }
+  },
+  {
+    "label": "foreground completed query",
+    "passed": true,
+    "data": {
+      "status": "completed"
+    }
+  },
+  {
+    "label": "foreground completed analysis",
+    "passed": true,
+    "data": {
+      "status": "completed"
+    }
+  },
+  {
+    "label": "foreground completed reminder",
+    "passed": true,
+    "data": {
+      "status": "completed"
+    }
+  },
+  {
+    "label": "foreground completed file-event",
+    "passed": true,
+    "data": {
+      "status": "completed"
+    }
+  },
+  {
+    "label": "direct arithmetic accurate",
+    "passed": true
+  },
+  {
+    "label": "no new Work for direct",
+    "passed": true
+  },
+  {
+    "label": "no new Work for query",
+    "passed": true
+  },
+  {
+    "label": "no new Work for reminder",
+    "passed": true
+  },
+  {
+    "label": "analysis closes succeeded",
+    "passed": true
+  },
+  {
+    "label": "analysis exact registered actual contents",
+    "passed": true
+  },
+  {
+    "label": "CSV original unchanged",
+    "passed": true
+  },
+  {
+    "label": "amended execution succeeds",
+    "passed": true
+  },
+  {
+    "label": "A bytes unchanged after amendment",
+    "passed": true
+  },
+  {
+    "label": "B final bytes latest revision",
+    "passed": true
+  },
+  {
+    "label": "B latest immutable delivered in original conversation",
+    "passed": true
+  },
+  {
+    "label": "old Work feedback remains in source conversation after cross-conversation amend",
+    "passed": true,
+    "data": {
+      "foreignIds": []
+    }
+  },
+  {
+    "label": "next_event baseline executes nothing",
+    "passed": true
+  },
+  {
+    "label": "file source not cron substitute",
+    "passed": true
+  },
+  {
+    "label": "actual fs.watch event persisted",
+    "passed": true
+  },
+  {
+    "label": "real event output correct",
+    "passed": true
+  },
+  {
+    "label": "event JSON immutable registered and delivered",
+    "passed": true
+  },
+  {
+    "label": "same-byte duplicate creates no new execution event or output",
+    "passed": true
+  },
+  {
+    "label": "event processor fixture not rewritten",
+    "passed": true
+  },
+  {
+    "label": "pure reminder delivered at actual clock",
+    "passed": true
+  },
+  {
+    "label": "reminder only delivered in originating second conversation",
+    "passed": true
+  },
+  {
+    "label": "reminder operation linked to exact request ID",
+    "passed": true
+  },
+  {
+    "label": "actual window width results-960",
+    "passed": true,
+    "data": {
+      "label": "results-960",
+      "at": 1794451467527,
+      "requestedWidth": 960,
+      "client": {
+        "address": "0x5562a177fe00",
+        "mapped": true,
+        "hidden": false,
+        "visible": true,
+        "acceptsInput": true,
+        "at": [
+          215,
+          90
+        ],
+        "size": [
+          960,
+          800
+        ],
+        "workspace": {
+          "address": "3",
+          "id": 3,
+          "type": "normal",
+          "name": "3"
+        },
+        "floating": true,
+        "monitor": 0,
+        "class": "wavealstra-harness",
+        "title": "MyBuddy",
+        "initialClass": "wavealstra-harness",
+        "initialTitle": "MyBuddy",
+        "pid": 1744569,
+        "xwayland": false,
+        "pinned": false,
+        "pinFullscreened": false,
+        "fullscreen": 0,
+        "fullscreenClient": 0,
+        "fullscreenHandler": "default",
+        "allowedOverFullscreen": true,
+        "grouped": [],
+        "tags": [],
+        "swallowing": "0x0",
+        "focusHistoryID": 0,
+        "inhibitingIdle": false,
+        "xdgTag": "",
+        "xdgDescription": "",
+        "contentType": "none",
+        "tearingHint": false,
+        "stableId": "18000506"
+      },
+      "dom": {
+        "innerWidth": 960,
+        "innerHeight": 800,
+        "outerWidth": 960,
+        "outerHeight": 800,
+        "scrollWidth": 960,
+        "composer": true
+      }
+    }
+  },
+  {
+    "label": "no horizontal overflow results-960",
+    "passed": true
+  },
+  {
+    "label": "actual button reached exact immutable file IPC and OS open analysis.txt",
+    "passed": true
+  },
+  {
+    "label": "opening preserves snapshot bytes analysis.txt",
+    "passed": true
+  },
+  {
+    "label": "OS accepted text snapshot open",
+    "passed": true,
+    "data": {
+      "name": "analysis.txt",
+      "messageId": "work-feedback-fea2396d40d5b8c7768299afc117df0ff0ca144a14baf57027a5d7a890c3abbe",
+      "click": {
+        "manuallyRevealed": true,
+        "at": 1794451468053,
+        "rect": {
+          "x": 746.328125,
+          "y": 375.244140625,
+          "width": 113.2421875,
+          "height": 39.12109375,
+          "top": 375.244140625,
+          "right": 859.5703125,
+          "bottom": 414.365234375,
+          "left": 746.328125
+        },
+        "x": 802.94921875,
+        "y": 394.8046875,
+        "inViewport": true
+      },
+      "notice": "MyBuddy\n本批CSV分析：sales.csv 收入汇总与交付 analysis.txt\n已完成\n\n已完成：sales.csv 实际表头为 product,units,price、共 3 条数据；按 units×price 计算的各产品收入为 Tea 36、Coffee 50、Cake 32，总销售额 118，收入最高产品是 Coffee（50）。结果已写入 analysis.txt 并回读校验，产品名保留原文、源文件未改动；文件已附上，可直接查看。\n\n本次交付\nanalysis.txt\n打开保存版本\n路径与版本\n执行详情与来源\n本批CSV分析：sales.csv 收入汇总与交付 analysis.txt\n回复 / 补充\n已回复\n10:40",
+      "newWindows": [],
+      "snapshot": {
+        "ref": "/home/vivion/iq27-tmp/i27-MDFwgZ/.mybuddy/durable/360ff137a98ebb1df06fa42606b55ab02f8b3ffcd74dd62ec485d0231a5d4053/artifacts/010ddd371491e027be36f716aeb5629ca16de78eeb1593e10f7369e27e51141f.txt",
+        "name": "analysis.txt",
+        "openPath": "/home/vivion/iq27-tmp/i27-MDFwgZ/.mybuddy/durable/360ff137a98ebb1df06fa42606b55ab02f8b3ffcd74dd62ec485d0231a5d4053/artifacts/010ddd371491e027be36f716aeb5629ca16de78eeb1593e10f7369e27e51141f.txt"
+      },
+      "probe": [
+        {
+          "seq": 25190,
+          "pid": 1744569,
+          "kind": "open-ipc-enter",
+          "monoNs": "154155295258246",
+          "operationId": "open-1",
+          "target": "/home/vivion/iq27-tmp/i27-MDFwgZ/.mybuddy/durable/360ff137a98ebb1df06fa42606b55ab02f8b3ffcd74dd62ec485d0231a5d4053/artifacts/010ddd371491e027be36f716aeb5629ca16de78eeb1593e10f7369e27e51141f.txt",
+          "channel": "workspace:openFolder",
+          "webContentsId": 1
+        },
+        {
+          "seq": 25191,
+          "pid": 1744569,
+          "kind": "shell-open-enter",
+          "monoNs": "154155295468193",
+          "operationId": "open-1",
+          "target": "/home/vivion/iq27-tmp/i27-MDFwgZ/.mybuddy/durable/360ff137a98ebb1df06fa42606b55ab02f8b3ffcd74dd62ec485d0231a5d4053/artifacts/010ddd371491e027be36f716aeb5629ca16de78eeb1593e10f7369e27e51141f.txt"
+        },
+        {
+          "seq": 25192,
+          "pid": 1744569,
+          "kind": "shell-open-resolved",
+          "monoNs": "154155304078332",
+          "operationId": "open-1",
+          "target": "/home/vivion/iq27-tmp/i27-MDFwgZ/.mybuddy/durable/360ff137a98ebb1df06fa42606b55ab02f8b3ffcd74dd62ec485d0231a5d4053/artifacts/010ddd371491e027be36f716aeb5629ca16de78eeb1593e10f7369e27e51141f.txt",
+          "returnedError": "",
+          "osRequestAccepted": true
+        },
+        {
+          "seq": 25193,
+          "pid": 1744569,
+          "kind": "open-ipc-resolved",
+          "monoNs": "154155304182677",
+          "operationId": "open-1",
+          "target": "/home/vivion/iq27-tmp/i27-MDFwgZ/.mybuddy/durable/360ff137a98ebb1df06fa42606b55ab02f8b3ffcd74dd62ec485d0231a5d4053/artifacts/010ddd371491e027be36f716aeb5629ca16de78eeb1593e10f7369e27e51141f.txt",
+          "returnType": "undefined"
+        }
+      ],
+      "digestBefore": "010ddd371491e027be36f716aeb5629ca16de78eeb1593e10f7369e27e51141f",
+      "osRequestAccepted": true,
+      "viewerDisplayed": "not proven by OS return or a new-window title alone"
+    }
+  },
+  {
+    "label": "actual window width results-1200",
+    "passed": true,
+    "data": {
+      "label": "results-1200",
+      "at": 1794451469546,
+      "requestedWidth": 1200,
+      "client": {
+        "address": "0x5562a177fe00",
+        "mapped": true,
+        "hidden": false,
+        "visible": true,
+        "acceptsInput": true,
+        "at": [
+          95,
+          90
+        ],
+        "size": [
+          1200,
+          800
+        ],
+        "workspace": {
+          "address": "3",
+          "id": 3,
+          "type": "normal",
+          "name": "3"
+        },
+        "floating": true,
+        "monitor": 0,
+        "class": "wavealstra-harness",
+        "title": "MyBuddy",
+        "initialClass": "wavealstra-harness",
+        "initialTitle": "MyBuddy",
+        "pid": 1744569,
+        "xwayland": false,
+        "pinned": false,
+        "pinFullscreened": false,
+        "fullscreen": 0,
+        "fullscreenClient": 0,
+        "fullscreenHandler": "default",
+        "allowedOverFullscreen": true,
+        "grouped": [],
+        "tags": [],
+        "swallowing": "0x0",
+        "focusHistoryID": 0,
+        "inhibitingIdle": false,
+        "xdgTag": "",
+        "xdgDescription": "",
+        "contentType": "none",
+        "tearingHint": false,
+        "stableId": "18000506"
+      },
+      "dom": {
+        "innerWidth": 1200,
+        "innerHeight": 800,
+        "outerWidth": 1200,
+        "outerHeight": 800,
+        "scrollWidth": 1200,
+        "composer": true
+      }
+    }
+  },
+  {
+    "label": "no horizontal overflow results-1200",
+    "passed": true
+  },
+  {
+    "label": "actual button reached exact immutable file IPC and OS open event-result.json",
+    "passed": true
+  },
+  {
+    "label": "opening preserves snapshot bytes event-result.json",
+    "passed": true
+  },
+  {
+    "label": "JSON OS open accepted or explicit UI failure shown",
+    "passed": true,
+    "data": {
+      "name": "event-result.json",
+      "messageId": "work-feedback-22160f1280730cc76302bc30cdd9cc39fa2ad51085088ba6c1c98d97fd6ba57a",
+      "click": {
+        "manuallyRevealed": true,
+        "at": 1794451470021,
+        "rect": {
+          "x": 998.3203125,
+          "y": 394.736328125,
+          "width": 113.2421875,
+          "height": 39.12109375,
+          "top": 394.736328125,
+          "right": 1111.5625,
+          "bottom": 433.857421875,
+          "left": 998.3203125
+        },
+        "x": 1054.94140625,
+        "y": 414.296875,
+        "inViewport": true
+      },
+      "notice": "MyBuddy\n本批文件变化\n结果已返回\n\n本次真实 file.changed 事件已按原授权处理一次：读取 source-state.json 为 version=LOCAL-V2、ready=true、value=29，满足执行条件；工作区执行一次 node process-event.cjs（exit=0），未改脚本、未联网。已回读并登记 event-result.json：version=LOCAL-V2、input=29、doubled=58、runAt=2026-11-12T02:42:20.853Z（98 B，SHA-256 ec46bf68…f7f8）。该版本已处理，相同字节/版本不重跑。当前仍有一项 current-lineage 的 workspace:write 状态未知，不能据此宣称所有写入效果均已确认，也不能重放该动作；因此本轮按部分完成交付。通知条件中的“真实变化”已由本轮事件触发，但宿主提供的通知用不可变产物只包含 event-result.json 内容，未独立携带 ready 字段，故通知条件核对记为 unknown，不据此作静默或成功推断。请交回既有 file 订阅继续等待下一次真实变化。\n\n需要注意\n仍有旧执行或工具效果尚未核实：workspace:write（操作 tool:1:35:call_00_3q02owjrzl9l7fmmjrunlc7v，绑定 binding-73b9481f-5e0b-4ace-a493-cce640b088c1，版本 1，状态 unknown）。这些风险保留在事项记录；未重放原动作，停止请求不代表已经停止或成功。\n本轮执行回执时间：2026-11-12T02:42:39.331Z（不是来源内容发布时间）\n本轮结束不结束持续委托，后续按已保存计划运行。\n本次交付\nevent-result.json\n打开保存版本\n路径与版本\n执行详情与来源\n本批文件变化\n回复 / 补充\n已回复\n10:44",
+      "newWindows": [],
+      "snapshot": {
+        "ref": "/home/vivion/iq27-tmp/i27-MDFwgZ/.mybuddy/durable/b35cdb11df8ad32a16685a78bffbe3cc21abc9cba2dce2a495cbcb363a446960/artifacts/ec46bf68fa0e9394de9a9b94e626c07359f1972727642951dc2750493085f7f8.json",
+        "name": "event-result.json",
+        "openPath": "/home/vivion/iq27-tmp/i27-MDFwgZ/.mybuddy/durable/b35cdb11df8ad32a16685a78bffbe3cc21abc9cba2dce2a495cbcb363a446960/artifacts/ec46bf68fa0e9394de9a9b94e626c07359f1972727642951dc2750493085f7f8.json"
+      },
+      "probe": [
+        {
+          "seq": 25260,
+          "pid": 1744569,
+          "kind": "open-ipc-enter",
+          "monoNs": "154157259721215",
+          "operationId": "open-2",
+          "target": "/home/vivion/iq27-tmp/i27-MDFwgZ/.mybuddy/durable/b35cdb11df8ad32a16685a78bffbe3cc21abc9cba2dce2a495cbcb363a446960/artifacts/ec46bf68fa0e9394de9a9b94e626c07359f1972727642951dc2750493085f7f8.json",
+          "channel": "workspace:openFolder",
+          "webContentsId": 1
+        },
+        {
+          "seq": 25261,
+          "pid": 1744569,
+          "kind": "shell-open-enter",
+          "monoNs": "154157259776111",
+          "operationId": "open-2",
+          "target": "/home/vivion/iq27-tmp/i27-MDFwgZ/.mybuddy/durable/b35cdb11df8ad32a16685a78bffbe3cc21abc9cba2dce2a495cbcb363a446960/artifacts/ec46bf68fa0e9394de9a9b94e626c07359f1972727642951dc2750493085f7f8.json"
+        },
+        {
+          "seq": 25262,
+          "pid": 1744569,
+          "kind": "shell-open-resolved",
+          "monoNs": "154157276447076",
+          "operationId": "open-2",
+          "target": "/home/vivion/iq27-tmp/i27-MDFwgZ/.mybuddy/durable/b35cdb11df8ad32a16685a78bffbe3cc21abc9cba2dce2a495cbcb363a446960/artifacts/ec46bf68fa0e9394de9a9b94e626c07359f1972727642951dc2750493085f7f8.json",
+          "returnedError": "",
+          "osRequestAccepted": true
+        },
+        {
+          "seq": 25263,
+          "pid": 1744569,
+          "kind": "open-ipc-resolved",
+          "monoNs": "154157276464257",
+          "operationId": "open-2",
+          "target": "/home/vivion/iq27-tmp/i27-MDFwgZ/.mybuddy/durable/b35cdb11df8ad32a16685a78bffbe3cc21abc9cba2dce2a495cbcb363a446960/artifacts/ec46bf68fa0e9394de9a9b94e626c07359f1972727642951dc2750493085f7f8.json",
+          "returnType": "undefined"
+        }
+      ],
+      "digestBefore": "ec46bf68fa0e9394de9a9b94e626c07359f1972727642951dc2750493085f7f8",
+      "osRequestAccepted": true,
+      "viewerDisplayed": "not proven by OS return or a new-window title alone",
+      "assessment": "Actual trusted CDP button click plus exact IPC and OS result. No application association changed; unsupported viewer is reported, not counted as successful viewing."
+    }
+  },
+  {
+    "label": "source request and answer displayed parallel-execution visit 1",
+    "passed": true
+  },
+  {
+    "label": "source foreground view excludes other request messages parallel-execution",
+    "passed": true
+  },
+  {
+    "label": "source request and answer displayed analysis visit 2",
+    "passed": true
+  },
+  {
+    "label": "source foreground view excludes other request messages analysis",
+    "passed": true
+  },
+  {
+    "label": "source request and answer displayed parallel-execution visit 3",
+    "passed": true
+  },
+  {
+    "label": "source foreground view excludes other request messages parallel-execution",
+    "passed": true
+  },
+  {
+    "label": "A transport-observed write call exactly once across revisions",
+    "passed": true
+  },
+  {
+    "label": "B original transport-observed write call exactly once",
+    "passed": true
+  },
+  {
+    "label": "B amended transport-observed write call exactly once",
+    "passed": true
+  },
+  {
+    "label": "only required real model",
+    "passed": true
+  }
+]

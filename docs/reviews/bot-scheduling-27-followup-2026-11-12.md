@@ -413,3 +413,5 @@ env -u ELECTRON_RUN_AS_NODE BOT_SCHEDULING_SNAPSHOT=<tested-sha> \
 用户继续要求测试后，另完成六类真实 V4.1 Flash 任务与八个忙时样本，62次模型调用。[独立补充报告](bot-scheduling-27-instrumented-2026-11-12.md)保留原始 **63/70、7 FAIL、exit1**：测试驱动过早读取空的新会话ID，导致运行中改向和文件点击没有执行；不得把正常r1的PASS标签当作跨修订通过。两个真实持久会话、各Work来源归属及不可变成果由独立只读SQLite审计核实。
 
 新增八个完整算术答案的分阶段链：输入→DOM P50 4.380秒/P95 15.089秒；COMMIT API返回→DOM P50 35.78–36.54ms/P95 68.94–69.70ms。另有同renderer后续Paint，但不是目标像素或物理屏幕时间。后台Work反馈未进入该观察流，其精确阶段仍未测。初稿把提醒也列为未测是ID前缀筛选遗漏，现已按原始数据更正：一条提醒COMMIT→DOM212.56–213.32ms，见补充报告§5.1；八个忙时样本不变。本补充不将原矩阵11、23–27整体改绿、不运行全量、不修改产品或CI、不关闭Issue。此前“补证结束”只描述当时批次，不能理解为之后没有继续测试。
+
+后续按最新main414bf2bf另跑七类真实补批，原始68/68、64次Flash，已实际补到同Work运行中r1→r2改向、A保留/B新版交付及原会话归属。详见[补充报告§7](bot-scheduling-27-instrumented-2026-11-12.md#7-修正驱动后的七类真实补批414bf2bf)。真实文件按钮已到准确snapshot的IPC/OS调用，但txt拉起无TTY的nvim、JSON无处理器且API仍空错误，故可见外部查看不算通过；file事件结果复核亦保留partial/unknown。原矩阵11、23–27仍不整体改绿。

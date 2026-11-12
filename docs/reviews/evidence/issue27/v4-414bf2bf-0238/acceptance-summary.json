@@ -1,0 +1,429 @@
+{
+  "sourceSha": "414bf2bfef86b67b36121192bbfe838512db5302",
+  "rawOutcome": {
+    "status": "passed",
+    "pass": 68,
+    "checks": 68,
+    "fail": 0
+  },
+  "scopeVerdict": "PARTIAL acceptance: defined functional assertions passed; external visible viewing, all Issue27 rows and clean-performance baseline not passed.",
+  "startUTC": "2026-11-12T02:38:08.126Z",
+  "endUTC": "2026-11-12T02:45:07.449Z",
+  "exitCode": 0,
+  "semanticTypes": [
+    "parallel-controlled-execution",
+    "direct-answer",
+    "readonly-current-state",
+    "csv-analysis-work",
+    "clock-reminder",
+    "real-local-file-event",
+    "natural-running-amendment"
+  ],
+  "busySamples": 2,
+  "sourceFingerprint": {
+    "sha256": "c2db687b4815a67c640be2ce4df0476fbd76a44bcddec8834f59efbdace46d5a",
+    "files": 1266
+  },
+  "sourceFingerprintAfter": {
+    "sha256": "c2db687b4815a67c640be2ce4df0476fbd76a44bcddec8834f59efbdace46d5a",
+    "files": 1266
+  },
+  "sourceManifestSha256": "f80854200cfea1f4c1a08219efd287ed0b80b03667c78204e7b5f54ec0df2bc5",
+  "instrumentationManifestSha256": "925b065878056d315890eb212ce301ca2ba787006c61a8ed581749b6ce0992a9",
+  "rawReportSha256": "26a7399dc2b3e80c1512606ea3e608f6feb60f8c8d3db7e47106b568cd5b470a",
+  "auditSha256": "78104da21a2dae93d4fc51ace5f592e306ae36434e4b032dd81c3f2a2e339c8b",
+  "models": [
+    "opendesign/deepseek-v4.1-flash"
+  ],
+  "modelCounts": {
+    "actualHttpCalls": 64,
+    "phaseCounts": {
+      "foreground": 21,
+      "native-main": 23,
+      "native-child": 16,
+      "completion-review": 2,
+      "unknown": 1,
+      "watch-review": 1
+    },
+    "usageTotals": {
+      "prompt_tokens": 1566206,
+      "completion_tokens": 23940,
+      "total_tokens": 1590146,
+      "cached_prompt_tokens": 1248256,
+      "reasoning_tokens": 8995
+    },
+    "firstHttpAt": 1794451149065,
+    "lastHttpEndAt": 1794451461604,
+    "monetaryCost": null
+  },
+  "usageMatchedOrPresent": 63,
+  "toolCounts": {
+    "uniqueDiagnosticCallIds": 53,
+    "uniqueTransportObservedCallIds": 51,
+    "statusCounts": {
+      "failed": 5,
+      "completed": 48
+    }
+  },
+  "failedTools": [
+    {
+      "name": "subagent",
+      "callId": "call_00_rglvjca9tgsfmshwmkx6ulz2",
+      "diagnostics": [
+        "aborted: Tool subagent was aborted"
+      ]
+    },
+    {
+      "name": "bash",
+      "callId": "call_00_yvrjo08pzhyfldfuiw36qkc3",
+      "diagnostics": [
+        "aborted: Tool bash was aborted"
+      ]
+    },
+    {
+      "name": "register_artifact",
+      "callId": "call_01_h9dsnblyf2qmn9lemnaed7tn",
+      "diagnostics": [
+        "tool_error: 文件尚不存在：inputs/analysis.txt。请先用 write/编辑或 shell 命令把文件创建出来再登记；write/edit 成功后会自动登记，只有 shell/Python 等生成的文件才需要手动调用 register_artifact。"
+      ]
+    },
+    {
+      "name": "register_artifact",
+      "callId": "call_00_3q02owjrzl9l7fmmjrunlc7v",
+      "diagnostics": [
+        "tool_error: 文件尚不存在：inputs/event-result.json。请先用 write/编辑或 shell 命令把文件创建出来再登记；write/edit 成功后会自动登记，只有 shell/Python 等生成的文件才需要手动调用 register_artifact。"
+      ]
+    },
+    {
+      "name": "work_amend",
+      "callId": "call_00_islrau4yhjb3xo7sgmb2gjrz",
+      "diagnostics": [
+        "tool_error: 必须先查询 Work，并使用本回合读取的完整版本守卫"
+      ]
+    }
+  ],
+  "amendment": {
+    "requestId": "b1b7d32a-6281-45a2-954e-2581436c26e1",
+    "sourceConversationId": "bot-conversation-f17bdd66-10fa-4db8-891c-ae1eb6cc694b",
+    "workId": "work-8395e382-018d-420e-8376-f1e06202c22f",
+    "latestRevision": 2,
+    "lifecycle": "closed",
+    "closureConclusion": "succeeded",
+    "bindingStatuses": [
+      {
+        "bindingId": "binding-5971c271-6011-4110-ae83-76fe6ca3ca8b",
+        "intentRevision": 1,
+        "status": "stopped"
+      },
+      {
+        "bindingId": "binding-f734984f-2c45-4909-a0c4-a960e271aa27",
+        "intentRevision": 2,
+        "status": "completed"
+      }
+    ],
+    "transportWriteCalls": [
+      {
+        "id": "call_00_4vjq7046moqemzlv76nnygu0",
+        "path": "/home/vivion/iq27-tmp/i27-MDFwgZ/inputs/a-ready.txt",
+        "content": "A-READY"
+      },
+      {
+        "id": "call_00_kb9cr81p71avd931k85wg5mx",
+        "path": "/home/vivion/iq27-tmp/i27-MDFwgZ/inputs/b-final.txt",
+        "content": "B-ORIGINAL"
+      },
+      {
+        "id": "call_00_73k09l7ig7hkc442bwwfuzoe",
+        "path": "/home/vivion/iq27-tmp/i27-MDFwgZ/inputs/b-final.txt",
+        "content": "B-AMENDED"
+      }
+    ],
+    "sourceFeedbackRouting": {
+      "caseId": "parallel-execution",
+      "workId": "work-8395e382-018d-420e-8376-f1e06202c22f",
+      "expectedConversationId": "bot-conversation-8f2f692e-0cee-4a39-ae37-d3359501185f",
+      "messageIds": [
+        "work-feedback-27074c8d5247284453fbfb05e744b578c81f0cd288c4d06c969b1389eb06c960",
+        "work-feedback-d23f221ca2133fef6f2f309ba021daaf29d85e2df23dbc11c9c3e3b15b320fa1",
+        "work-feedback-ce827b4967a359832745d640f3a36012606f141707eaab9e862b4df72c698c77",
+        "work-feedback-a0fec975430294ce76a79c231ea450d648de395fe559c3fb86c55fbbd35dc2e1",
+        "work-feedback-606526c89d0534a7715436a6767fca716bcfc10b9c4543b247894b8d9056fa94",
+        "work-feedback-fcabaf60270691327691f8a23b09af13f2ada6c2006e92ca6f3f5d92b6bf45f7"
+      ],
+      "observedConversationIds": [
+        "bot-conversation-8f2f692e-0cee-4a39-ae37-d3359501185f"
+      ],
+      "allMatch": true
+    }
+  },
+  "conversationRoutes": [
+    {
+      "caseId": "parallel-execution",
+      "workId": "work-8395e382-018d-420e-8376-f1e06202c22f",
+      "expectedConversationId": "bot-conversation-8f2f692e-0cee-4a39-ae37-d3359501185f",
+      "messageIds": [
+        "work-feedback-27074c8d5247284453fbfb05e744b578c81f0cd288c4d06c969b1389eb06c960",
+        "work-feedback-d23f221ca2133fef6f2f309ba021daaf29d85e2df23dbc11c9c3e3b15b320fa1",
+        "work-feedback-ce827b4967a359832745d640f3a36012606f141707eaab9e862b4df72c698c77",
+        "work-feedback-a0fec975430294ce76a79c231ea450d648de395fe559c3fb86c55fbbd35dc2e1",
+        "work-feedback-606526c89d0534a7715436a6767fca716bcfc10b9c4543b247894b8d9056fa94",
+        "work-feedback-fcabaf60270691327691f8a23b09af13f2ada6c2006e92ca6f3f5d92b6bf45f7"
+      ],
+      "observedConversationIds": [
+        "bot-conversation-8f2f692e-0cee-4a39-ae37-d3359501185f"
+      ],
+      "allMatch": true
+    },
+    {
+      "caseId": "analysis",
+      "workId": "work-e6926288-7303-41f7-aa5b-4de77af959f5",
+      "expectedConversationId": "bot-conversation-f17bdd66-10fa-4db8-891c-ae1eb6cc694b",
+      "messageIds": [
+        "work-feedback-703f4d59e650510930ab40667bb246e058b143b5513428daf7d56fde3562803c",
+        "work-feedback-fea2396d40d5b8c7768299afc117df0ff0ca144a14baf57027a5d7a890c3abbe"
+      ],
+      "observedConversationIds": [
+        "bot-conversation-f17bdd66-10fa-4db8-891c-ae1eb6cc694b"
+      ],
+      "allMatch": true
+    },
+    {
+      "caseId": "file-event",
+      "workId": "work-cf811941-04c6-47b5-920e-514717b37ad8",
+      "expectedConversationId": "bot-conversation-f17bdd66-10fa-4db8-891c-ae1eb6cc694b",
+      "messageIds": [
+        "work-feedback-22160f1280730cc76302bc30cdd9cc39fa2ad51085088ba6c1c98d97fd6ba57a"
+      ],
+      "observedConversationIds": [
+        "bot-conversation-f17bdd66-10fa-4db8-891c-ae1eb6cc694b"
+      ],
+      "allMatch": true
+    }
+  ],
+  "openAssessment": {
+    "text": {
+      "uiClickAndExactTargetIPC": true,
+      "shellReturnedEmptyError": true,
+      "newVisibleWindowObserved": false,
+      "actualViewerProcess": "nvim",
+      "viewerPid": 1756612,
+      "parentXdgOpenPid": 1756500,
+      "ttyNr": 0,
+      "stdinStdoutStderrAtCleanup": "test dev.log",
+      "visibleViewerVerdict": "not verified; detached editor without tty",
+      "cleanup": "Exact target argv/cwd and startTicks verified; SIGTERM to nvim only; nvim and xdg-open both exited. No user process stopped."
+    },
+    "json": {
+      "uiClickAndExactTargetIPC": true,
+      "shellReturnedEmptyError": true,
+      "newVisibleWindowObserved": false,
+      "stderr": "No applications found for mimetype: application/json",
+      "uiErrorNoticeObserved": false,
+      "visibleViewerVerdict": "not delivered to a visible viewer in this isolated profile despite successful shell API return"
+    },
+    "environment": "HOME and XDG_CONFIG_HOME/XDG_CACHE_HOME/XDG_DATA_HOME point to fresh isolated directories. This does not establish that the user normal profile has broken associations. No default association was changed."
+  },
+  "openText": {
+    "name": "analysis.txt",
+    "messageId": "work-feedback-fea2396d40d5b8c7768299afc117df0ff0ca144a14baf57027a5d7a890c3abbe",
+    "click": {
+      "manuallyRevealed": true,
+      "at": 1794451468053,
+      "rect": {
+        "x": 746.328125,
+        "y": 375.244140625,
+        "width": 113.2421875,
+        "height": 39.12109375,
+        "top": 375.244140625,
+        "right": 859.5703125,
+        "bottom": 414.365234375,
+        "left": 746.328125
+      },
+      "x": 802.94921875,
+      "y": 394.8046875,
+      "inViewport": true
+    },
+    "notice": "MyBuddy\n本批CSV分析：sales.csv 收入汇总与交付 analysis.txt\n已完成\n\n已完成：sales.csv 实际表头为 product,units,price、共 3 条数据；按 units×price 计算的各产品收入为 Tea 36、Coffee 50、Cake 32，总销售额 118，收入最高产品是 Coffee（50）。结果已写入 analysis.txt 并回读校验，产品名保留原文、源文件未改动；文件已附上，可直接查看。\n\n本次交付\nanalysis.txt\n打开保存版本\n路径与版本\n执行详情与来源\n本批CSV分析：sales.csv 收入汇总与交付 analysis.txt\n回复 / 补充\n已回复\n10:40",
+    "newWindows": [],
+    "snapshot": {
+      "ref": "/home/vivion/iq27-tmp/i27-MDFwgZ/.mybuddy/durable/360ff137a98ebb1df06fa42606b55ab02f8b3ffcd74dd62ec485d0231a5d4053/artifacts/010ddd371491e027be36f716aeb5629ca16de78eeb1593e10f7369e27e51141f.txt",
+      "name": "analysis.txt",
+      "openPath": "/home/vivion/iq27-tmp/i27-MDFwgZ/.mybuddy/durable/360ff137a98ebb1df06fa42606b55ab02f8b3ffcd74dd62ec485d0231a5d4053/artifacts/010ddd371491e027be36f716aeb5629ca16de78eeb1593e10f7369e27e51141f.txt"
+    },
+    "probe": [
+      {
+        "seq": 25190,
+        "pid": 1744569,
+        "kind": "open-ipc-enter",
+        "monoNs": "154155295258246",
+        "operationId": "open-1",
+        "target": "/home/vivion/iq27-tmp/i27-MDFwgZ/.mybuddy/durable/360ff137a98ebb1df06fa42606b55ab02f8b3ffcd74dd62ec485d0231a5d4053/artifacts/010ddd371491e027be36f716aeb5629ca16de78eeb1593e10f7369e27e51141f.txt",
+        "channel": "workspace:openFolder",
+        "webContentsId": 1
+      },
+      {
+        "seq": 25191,
+        "pid": 1744569,
+        "kind": "shell-open-enter",
+        "monoNs": "154155295468193",
+        "operationId": "open-1",
+        "target": "/home/vivion/iq27-tmp/i27-MDFwgZ/.mybuddy/durable/360ff137a98ebb1df06fa42606b55ab02f8b3ffcd74dd62ec485d0231a5d4053/artifacts/010ddd371491e027be36f716aeb5629ca16de78eeb1593e10f7369e27e51141f.txt"
+      },
+      {
+        "seq": 25192,
+        "pid": 1744569,
+        "kind": "shell-open-resolved",
+        "monoNs": "154155304078332",
+        "operationId": "open-1",
+        "target": "/home/vivion/iq27-tmp/i27-MDFwgZ/.mybuddy/durable/360ff137a98ebb1df06fa42606b55ab02f8b3ffcd74dd62ec485d0231a5d4053/artifacts/010ddd371491e027be36f716aeb5629ca16de78eeb1593e10f7369e27e51141f.txt",
+        "returnedError": "",
+        "osRequestAccepted": true
+      },
+      {
+        "seq": 25193,
+        "pid": 1744569,
+        "kind": "open-ipc-resolved",
+        "monoNs": "154155304182677",
+        "operationId": "open-1",
+        "target": "/home/vivion/iq27-tmp/i27-MDFwgZ/.mybuddy/durable/360ff137a98ebb1df06fa42606b55ab02f8b3ffcd74dd62ec485d0231a5d4053/artifacts/010ddd371491e027be36f716aeb5629ca16de78eeb1593e10f7369e27e51141f.txt",
+        "returnType": "undefined"
+      }
+    ],
+    "digestBefore": "010ddd371491e027be36f716aeb5629ca16de78eeb1593e10f7369e27e51141f",
+    "osRequestAccepted": true,
+    "viewerDisplayed": "not proven by OS return or a new-window title alone"
+  },
+  "openJson": {
+    "name": "event-result.json",
+    "messageId": "work-feedback-22160f1280730cc76302bc30cdd9cc39fa2ad51085088ba6c1c98d97fd6ba57a",
+    "click": {
+      "manuallyRevealed": true,
+      "at": 1794451470021,
+      "rect": {
+        "x": 998.3203125,
+        "y": 394.736328125,
+        "width": 113.2421875,
+        "height": 39.12109375,
+        "top": 394.736328125,
+        "right": 1111.5625,
+        "bottom": 433.857421875,
+        "left": 998.3203125
+      },
+      "x": 1054.94140625,
+      "y": 414.296875,
+      "inViewport": true
+    },
+    "notice": "MyBuddy\n本批文件变化\n结果已返回\n\n本次真实 file.changed 事件已按原授权处理一次：读取 source-state.json 为 version=LOCAL-V2、ready=true、value=29，满足执行条件；工作区执行一次 node process-event.cjs（exit=0），未改脚本、未联网。已回读并登记 event-result.json：version=LOCAL-V2、input=29、doubled=58、runAt=2026-11-12T02:42:20.853Z（98 B，SHA-256 ec46bf68…f7f8）。该版本已处理，相同字节/版本不重跑。当前仍有一项 current-lineage 的 workspace:write 状态未知，不能据此宣称所有写入效果均已确认，也不能重放该动作；因此本轮按部分完成交付。通知条件中的“真实变化”已由本轮事件触发，但宿主提供的通知用不可变产物只包含 event-result.json 内容，未独立携带 ready 字段，故通知条件核对记为 unknown，不据此作静默或成功推断。请交回既有 file 订阅继续等待下一次真实变化。\n\n需要注意\n仍有旧执行或工具效果尚未核实：workspace:write（操作 tool:1:35:call_00_3q02owjrzl9l7fmmjrunlc7v，绑定 binding-73b9481f-5e0b-4ace-a493-cce640b088c1，版本 1，状态 unknown）。这些风险保留在事项记录；未重放原动作，停止请求不代表已经停止或成功。\n本轮执行回执时间：2026-11-12T02:42:39.331Z（不是来源内容发布时间）\n本轮结束不结束持续委托，后续按已保存计划运行。\n本次交付\nevent-result.json\n打开保存版本\n路径与版本\n执行详情与来源\n本批文件变化\n回复 / 补充\n已回复\n10:44",
+    "newWindows": [],
+    "snapshot": {
+      "ref": "/home/vivion/iq27-tmp/i27-MDFwgZ/.mybuddy/durable/b35cdb11df8ad32a16685a78bffbe3cc21abc9cba2dce2a495cbcb363a446960/artifacts/ec46bf68fa0e9394de9a9b94e626c07359f1972727642951dc2750493085f7f8.json",
+      "name": "event-result.json",
+      "openPath": "/home/vivion/iq27-tmp/i27-MDFwgZ/.mybuddy/durable/b35cdb11df8ad32a16685a78bffbe3cc21abc9cba2dce2a495cbcb363a446960/artifacts/ec46bf68fa0e9394de9a9b94e626c07359f1972727642951dc2750493085f7f8.json"
+    },
+    "probe": [
+      {
+        "seq": 25260,
+        "pid": 1744569,
+        "kind": "open-ipc-enter",
+        "monoNs": "154157259721215",
+        "operationId": "open-2",
+        "target": "/home/vivion/iq27-tmp/i27-MDFwgZ/.mybuddy/durable/b35cdb11df8ad32a16685a78bffbe3cc21abc9cba2dce2a495cbcb363a446960/artifacts/ec46bf68fa0e9394de9a9b94e626c07359f1972727642951dc2750493085f7f8.json",
+        "channel": "workspace:openFolder",
+        "webContentsId": 1
+      },
+      {
+        "seq": 25261,
+        "pid": 1744569,
+        "kind": "shell-open-enter",
+        "monoNs": "154157259776111",
+        "operationId": "open-2",
+        "target": "/home/vivion/iq27-tmp/i27-MDFwgZ/.mybuddy/durable/b35cdb11df8ad32a16685a78bffbe3cc21abc9cba2dce2a495cbcb363a446960/artifacts/ec46bf68fa0e9394de9a9b94e626c07359f1972727642951dc2750493085f7f8.json"
+      },
+      {
+        "seq": 25262,
+        "pid": 1744569,
+        "kind": "shell-open-resolved",
+        "monoNs": "154157276447076",
+        "operationId": "open-2",
+        "target": "/home/vivion/iq27-tmp/i27-MDFwgZ/.mybuddy/durable/b35cdb11df8ad32a16685a78bffbe3cc21abc9cba2dce2a495cbcb363a446960/artifacts/ec46bf68fa0e9394de9a9b94e626c07359f1972727642951dc2750493085f7f8.json",
+        "returnedError": "",
+        "osRequestAccepted": true
+      },
+      {
+        "seq": 25263,
+        "pid": 1744569,
+        "kind": "open-ipc-resolved",
+        "monoNs": "154157276464257",
+        "operationId": "open-2",
+        "target": "/home/vivion/iq27-tmp/i27-MDFwgZ/.mybuddy/durable/b35cdb11df8ad32a16685a78bffbe3cc21abc9cba2dce2a495cbcb363a446960/artifacts/ec46bf68fa0e9394de9a9b94e626c07359f1972727642951dc2750493085f7f8.json",
+        "returnType": "undefined"
+      }
+    ],
+    "digestBefore": "ec46bf68fa0e9394de9a9b94e626c07359f1972727642951dc2750493085f7f8",
+    "osRequestAccepted": true,
+    "viewerDisplayed": "not proven by OS return or a new-window title alone",
+    "assessment": "Actual trusted CDP button click plus exact IPC and OS result. No application association changed; unsupported viewer is reported, not counted as successful viewing."
+  },
+  "fileEventFinalReview": [
+    {
+      "messageId": "work-feedback-22160f1280730cc76302bc30cdd9cc39fa2ad51085088ba6c1c98d97fd6ba57a",
+      "conversationId": "bot-conversation-f17bdd66-10fa-4db8-891c-ae1eb6cc694b",
+      "metadata": {
+        "workId": "work-cf811941-04c6-47b5-920e-514717b37ad8",
+        "eventId": "watch-supervision:binding-73b9481f-5e0b-4ace-a493-cce640b088c1",
+        "kind": "result",
+        "category": "result",
+        "executionId": "binding-73b9481f-5e0b-4ace-a493-cce640b088c1",
+        "intentRevision": 1,
+        "inputSnapshotId": "sha256:bd9b65c6e7e22904c8d5e0afa96e36afaed01c3f9fa742f8679f07a50cbd0684",
+        "report": {
+          "title": "本批文件变化",
+          "summary": "本次真实 file.changed 事件已按原授权处理一次：读取 source-state.json 为 version=LOCAL-V2、ready=true、value=29，满足执行条件；工作区执行一次 node process-event.cjs（exit=0），未改脚本、未联网。已回读并登记 event-result.json：version=LOCAL-V2、input=29、doubled=58、runAt=2026-11-12T02:42:20.853Z（98 B，SHA-256 ec46bf68…f7f8）。该版本已处理，相同字节/版本不重跑。当前仍有一项 current-lineage 的 workspace:write 状态未知，不能据此宣称所有写入效果均已确认，也不能重放该动作；因此本轮按部分完成交付。通知条件中的“真实变化”已由本轮事件触发，但宿主提供的通知用不可变产物只包含 event-result.json 内容，未独立携带 ready 字段，故通知条件核对记为 unknown，不据此作静默或成功推断。请交回既有 file 订阅继续等待下一次真实变化。",
+          "artifactRefs": [
+            "/home/vivion/iq27-tmp/i27-MDFwgZ/.mybuddy/durable/b35cdb11df8ad32a16685a78bffbe3cc21abc9cba2dce2a495cbcb363a446960/artifacts/ec46bf68fa0e9394de9a9b94e626c07359f1972727642951dc2750493085f7f8.json"
+          ],
+          "files": [
+            {
+              "ref": "/home/vivion/iq27-tmp/i27-MDFwgZ/.mybuddy/durable/b35cdb11df8ad32a16685a78bffbe3cc21abc9cba2dce2a495cbcb363a446960/artifacts/ec46bf68fa0e9394de9a9b94e626c07359f1972727642951dc2750493085f7f8.json",
+              "name": "event-result.json",
+              "openPath": "/home/vivion/iq27-tmp/i27-MDFwgZ/.mybuddy/durable/b35cdb11df8ad32a16685a78bffbe3cc21abc9cba2dce2a495cbcb363a446960/artifacts/ec46bf68fa0e9394de9a9b94e626c07359f1972727642951dc2750493085f7f8.json"
+            }
+          ],
+          "reviewStatus": "proposed",
+          "current": true,
+          "notices": [
+            "仍有旧执行或工具效果尚未核实：workspace:write（操作 tool:1:35:call_00_3q02owjrzl9l7fmmjrunlc7v，绑定 binding-73b9481f-5e0b-4ace-a493-cce640b088c1，版本 1，状态 unknown）。这些风险保留在事项记录；未重放原动作，停止请求不代表已经停止或成功。",
+            "本轮执行回执时间：2026-11-12T02:42:39.331Z（不是来源内容发布时间）",
+            "本轮结束不结束持续委托，后续按已保存计划运行。"
+          ]
+        }
+      }
+    }
+  ],
+  "fileEventCaveat": "Actual execution completed, correct output and duplicate-byte suppression verified; result review disclosed partial due current-lineage unknown registration attempt and missing ready field in immutable result proof. Do not claim unqualified S2 success.",
+  "trace": {
+    "rendererEvents": 316,
+    "rendererMarks": 729,
+    "traceCount": 815031,
+    "traceBytes": 216914303,
+    "dataLossOccurred": false,
+    "trace": "/home/vivion/iq27-tmp/s27-d0k1hd7g/out/diagnostics/bot-scheduling/batch-2026-11-12T02-38-08-183Z-1742727/chromium-trace.json"
+  },
+  "tracePostAnalysis": "Not parsed again; this rerun targets missing functionality, not repeated eight-sample metrics. Raw trace retained.",
+  "hostLoad": "Issue21 focused/typecheck CPU overlapped02:39:36–02:39:48 UTC (12s); no competing GUI/model batch. This is not a clean performance baseline.",
+  "cleanup": {
+    "checkedAtUTC": "2026-11-12T02:52:35.376128+00:00",
+    "remainingTestOwnedCandidates": [],
+    "electronPid": 1744569,
+    "runnerPid": 1742727,
+    "extraTextViewer": "Exact target argv/cwd and startTicks verified; SIGTERM to nvim only; nvim and xdg-open both exited. No user process stopped."
+  },
+  "limitations": [
+    "Seven semantic types actually submitted; two repeated busy arithmetic probes are not extra types.",
+    "Both file button clicks reached exact immutable target IPC and shell.openPath returned empty error, but no visible external viewer was verified. Text launched detached nvim without tty; JSON stderr reports no application. Isolated HOME/XDG did not inherit user associations.",
+    "Original 68/68 counts only the defined assertions. It is not a complete Issue27 or successful visible-file-viewing pass.",
+    "Write-call accounting counts real transport-observed write tools. It is not a proof against every possible equivalent filesystem mutation mechanism.",
+    "Source fixed at414bf2bf; later main21 changes were not injected during the batch.",
+    "No physical scanout, target-specific paint, multiple main windows, native390 width, real GitHub webhook, all-platform or full latest-source regression claim."
+  ]
+}

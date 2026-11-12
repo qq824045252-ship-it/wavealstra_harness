@@ -2,6 +2,8 @@
 
 本报告补充[既有逐条验收矩阵](bot-scheduling-27-followup-2026-11-12.md)，不替代此前成功/失败记录，不关闭 Issue。所有时间为 UTC，除非明确标为产品本地时区。
 
+最新补批见§7：414bf2bf上七类真实任务的原始68/68通过，实际改向已补到；可见文件查看仍受限。§1–6保留此前b5批63/70及后续提醒更正，不重写历史结果。
+
 ## 1. 结论及固定版本
 
 - **原始本批 FAIL：63/70，7 FAIL，进程自然 exit 1。** [原始断言](evidence/issue27/b5-instrumented-0129/raw-checks.json)、[失败明细](evidence/issue27/b5-instrumented-0129/failure-details.json)保留。63 个布尔真值不等于 63 项完整产品验收通过，下文列出弱断言/误导标签。
@@ -102,3 +104,64 @@
 后续安全可做项：修正驱动后另起新隔离profile，仍至少6类真实任务，补运行中改向与文件点击，检查准确IPC/打开结果，不复用已结束Work制造“改向成功”。若需要后台成果精确延迟，先补测试专用观察真实 invalidation/历史渲染路径，不能用前台change流假代替。任何新增真实批单列来源/结果，不覆盖本批FAIL。
 
 当前没有产品改动、没有全量回归、没有build/pack，也没有修改CI。最后完整headless仍以旧报告的 `1c4966bd` 为准，不因本报告提交而改写。多个主窗口、窄于960实体窗、真实GitHub webhook和跨渠道/常驻能力边界保持原样。Issue #27继续open。
+
+## 7. 修正驱动后的七类真实补批（414bf2bf）
+
+### 7.1 实际范围与原始结果
+
+2026-11-12 02:38:08.126–02:45:07.449 UTC，**6分59.323秒**。从当时最新main `414bf2bfef86b67b36121192bbfe838512db5302` 建独立archive，新HOME/XDG目录，真实Electron/Hyprland和同一V4.1 Flash。本批期间#21另推main，没有热改或换掉冻结源码。
+
+原始驱动结果为 **68/68，0 FAIL，exit0**，见[原始断言](evidence/issue27/v4-414bf2bf-0238/raw-checks.json)与[完整范围摘要](evidence/issue27/v4-414bf2bf-0238/acceptance-summary.json)。**只代表这些断言，不是#27全过；尤其不等于外部查看器成功显示。** 原先63/70原样保留，不被这批替换。
+
+实际七类：并行A/B、直接回答、只读查询、CSV分析委托、纯提醒、本地file事件、运行中自然改向。另带2个忙时算术功能问句，不重跑此前8样本的性能分位数。#21仅在02:39:36–02:39:48重叠12秒focused/typecheck CPU，无其他GUI/模型批；不将本批用作干净性能基线。
+
+驱动修正仅在测试副本：第一条新消息持久化后取得非空会话ID；等待第二Work实际创建后再改向；文件按钮使用CDP真实鼠标事件，逐条关联精确snapshot路径的IPC和shell结果。产品源码未改。3210文件清单前后校验零差异，1266个运行文件指纹均为 `c2db687b4815a67c640be2ce4df0476fbd76a44bcddec8834f59efbdace46d5a`。
+
+### 7.2 改向及归属缺口已实际补到
+
+- A先完成并登记真实7字节 `A-READY` 快照，B仍等受控gate；[960实体窗截图](evidence/issue27/v4-414bf2bf-0238/first-A-960.png)仍是展开/滚动后的可见证据。
+- 在新会话发送改向，目标明确为原Work `work-8395e382-018d-420e-8376-f1e06202c22f`，实际同Work从r1升r2，没有另建替代Work。r1绑定stopped/aborted，r2 completed，Work closed/succeeded。
+- r2真实复核并保留A，B复用原 `B-ORIGINAL`，gate后最终为9字节 `B-AMENDED`，登记新版不可变快照并回原会话。真实transport中A write一次、B-ORIGINAL一次、B-AMENDED一次。这个计数是write工具调用证据，不冒充穷尽所有等价文件写法的证明。
+- 第二个独立CSV Work保持r1并closed/succeeded；源CSV未变，真实交付结果118/Coffee50。
+- 只读SQLite复核原A/B Work六条feedback均属原会话；CSV两条、file一条各属新会话，提醒只回新会话。数据库immutable读前后hash一致。原→新→原来源请求视图仍逐ID匹配。
+- r1停止只表示真实停止回执，不证明任意旧外部副作用都不存在；未把旧风险或失败记录删除。
+
+来源、绑定、字节与账目见[独立持久事实审计](evidence/issue27/v4-414bf2bf-0238/independent-audit.json)。
+
+### 7.3 文件点击已真实执行，可见查看仍有明确限制
+
+两次点击均从已交付的准确immutable snapshot按钮发出，记录 `open-ipc-enter → shell-open-enter → shell-open-resolved → open-ipc-resolved`，操作ID和路径一致，打开前后快照hash相同。这里补到了上批未执行的真实按钮/IPC/OS调用。
+
+但**空错误返回不能证明用户看到了文件**：
+
+| 文件 | 实际观察 | 验收结论 |
+|---|---|---|
+| analysis.txt | shell.openPath返回空错误；实际启动xdg-open→nvim，无新可见窗口。nvim ttyNr=0，标准流指向测试dev.log | 调用/路径通过；可见查看未验证，不能称自动打开成功 |
+| event-result.json | shell.openPath同样返回空错误；stderr为`No applications found for mimetype: application/json`，无新可见窗口，UI未显示错误 | 调用/路径通过；本隔离profile未提供可见JSON查看器，不能称成功查看 |
+
+[逐次打开证据和判定](evidence/issue27/v4-414bf2bf-0238/open-file-assessment.json)及摘要保留确切shell返回。原68项中“OS accepted …”只断言此API返回，报告不扩张它。
+
+此profile未继承用户HOME/XDG里的应用关联；不能直接推断用户日常profile的表现。补充只读定位显示系统text/plain默认为nvim.desktop（Terminal=true），本机xdg-open generic路径直接执行desktop Exec，其文档明确终端程序复用调用者TTY；与此次后台无TTY的现象一致。没有改系统/用户默认关联、安装应用、手工另开查看器伪装自动打开，也没有修改产品以掩盖结果。
+
+额外拉起的nvim PID1756612和xdg-open PID1756500均只指向本次测试快照。核对argv/cwd/startTicks后仅向nvim发SIGTERM，launcher随后退出。未动用户编辑器或用户文件；最终自有Electron、runner、provider及上述进程全部消失。
+
+### 7.4 file事件与成本不因总分通过而抹平
+
+实际fs.watch触发LOCAL-V2，处理器只执行一次，value29→doubled58，登记98字节JSON；同字节重复写未增加执行/事件/输出。native绑定completed，持续Work保持active等待后续来源。
+
+**但该轮结果复核是partial**：一次错误路径登记留下当前lineage的unknown动作；已登记结果JSON未包含ready字段，通知条件核对也记unknown。用户可见正文明确披露风险和不能重放，交付现有文件，不将本轮描述成全部效果已确认。此处只通过执行/数据/去重断言，不充当完整无风险S2验收。
+
+调用及失败账目：
+
+- 64次真实HTTP，唯一模型仍为`opendesign/deepseek-v4.1-flash`。可唯一关联：foreground21、native main23、child16、completion review2、watch review1；另1次未能按usage+时刻唯一归因，保留unknown，不猜分类。
+- 63/64调用有可汇总usage：prompt1,566,206、completion23,940、total1,590,146、cached prompt1,248,256、reasoning8,995。另一调用usage缺失，不当零token；金额未知。
+- 53个唯一诊断工具调用：48 completed、5 failed。失败为改向取消原subagent/bash各1、错误路径register_artifact两次、缺当前版本守卫work_amend一次。后续合法恢复成功不抹去这些成本。
+- 首个HTTP02:39:09.065、最后HTTP完成02:44:21.604。相较运行总时长，启动/收尾时间单列，不全算模型推理。
+
+### 7.5 状态与再现边界
+
+冻结v4驱动在[evidence目录](evidence/issue27/v4-414bf2bf-0238/publication-manifest.json)，完整原始report SHA256为 `26a7399dc2b3e80c1512606ea3e608f6feb60f8c8d3db7e47106b568cd5b470a`。本机原始目录：`/home/vivion/iq27-tmp/s27-d0k1hd7g/out/diagnostics/bot-scheduling/batch-2026-11-12T02-38-08-183Z-1742727/`。
+
+保留815,031事件的约217MB原始trace，dataLossOccurred=false；未为了功能补测再次重解析或重新宣称性能提升。GUI/模型窗口已交给下一任务。没有全量回归或build/pack；没有产品编辑、CI设置变更或关闭Issue。
+
+当前缺口准确收窄为：可见外部查看器/打开错误呈现、Work里程碑完整commit→渲染观测，以及原矩阵仍注明的全场景/平台/多窗口/外部渠道边界。运行中改向和两个持久会话的此次实际链已有证据，不再说“这次未发送”。后续如要处理Linux文件打开，需区分产品打开适配、默认应用可用性与隔离profile配置，不以改关联后的夹具假代替现有环境结果。

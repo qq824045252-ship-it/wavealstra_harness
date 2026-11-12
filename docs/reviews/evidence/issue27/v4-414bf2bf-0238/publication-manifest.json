@@ -1,0 +1,78 @@
+{
+  "productSourceSha": "414bf2bfef86b67b36121192bbfe838512db5302",
+  "rawReportLocalPath": "/home/vivion/iq27-tmp/s27-d0k1hd7g/out/diagnostics/bot-scheduling/batch-2026-11-12T02-38-08-183Z-1742727/report.json",
+  "rawReportSha256": "26a7399dc2b3e80c1512606ea3e608f6feb60f8c8d3db7e47106b568cd5b470a",
+  "rawTraceLocalPath": "/home/vivion/iq27-tmp/s27-d0k1hd7g/out/diagnostics/bot-scheduling/batch-2026-11-12T02-38-08-183Z-1742727/chromium-trace.json",
+  "traceCount": 815031,
+  "traceStreamingPayloadBytes": 216914303,
+  "traceFileSizeBytes": 216921791,
+  "rawTraceNotReparsedOrPublished": true,
+  "probeBundle": "../b5-instrumented-0129/test-drivers (unchanged 5 probe hashes)",
+  "files": [
+    {
+      "path": "acceptance-summary.json",
+      "size": 22257,
+      "sha256": "95b1f4b3c422b1c11ee32c6b16a798050eb6e9176e17b5115f7d1e0fcfe52faf"
+    },
+    {
+      "path": "first-A-960.png",
+      "size": 169067,
+      "sha256": "f034263f67f7755ff2875195dc484a3212206748b7c34ed5f4d50460f9e735fc"
+    },
+    {
+      "path": "independent-audit.json",
+      "size": 118835,
+      "sha256": "78104da21a2dae93d4fc51ace5f592e306ae36434e4b032dd81c3f2a2e339c8b"
+    },
+    {
+      "path": "open-file-assessment.json",
+      "size": 1096,
+      "sha256": "92cfbb653cc2143f5c56e72f20fb54b652950988daca45677786710eeb3e407c"
+    },
+    {
+      "path": "raw-checks.json",
+      "size": 20839,
+      "sha256": "b4cdf0d911720f6d0e1532b56fc2a8088863093cbca6d56380ceb7b4bbc3ea2e"
+    },
+    {
+      "path": "results-1200.png",
+      "size": 194113,
+      "sha256": "fcc1d4ad4862ac7e21d36478691b33c9fafdfba96b2c564e87e40f8e96e2c123"
+    },
+    {
+      "path": "source-provenance.json",
+      "size": 505,
+      "sha256": "ac8e370490fe88af01e2f69f0a20e44150e5236b2a82450c2382a9e5606303b3"
+    },
+    {
+      "path": "test-drivers/audit.py",
+      "size": 10274,
+      "sha256": "c58f4e804ab69f2eb21e5ee8b558b544a7fbf48793ab2fa1b604ac41a2547a9c"
+    },
+    {
+      "path": "test-drivers/instrumentation-manifest.json",
+      "size": 1645,
+      "sha256": "925b065878056d315890eb212ce301ca2ba787006c61a8ed581749b6ce0992a9"
+    },
+    {
+      "path": "test-drivers/launch.sh",
+      "size": 1247,
+      "sha256": "1db758634cddcda47217805919c09d4814050005d738787740e161f81cff08dc"
+    },
+    {
+      "path": "test-drivers/runner.cjs",
+      "size": 8293,
+      "sha256": "4d9d88566e4e4fab63a9bcdf8acc8b3cb776249afb50d099f546202532124a55"
+    },
+    {
+      "path": "test-drivers/scenario.cjs",
+      "size": 35232,
+      "sha256": "21ed4b8f7300bf00fef7378b6d2f796d746aa2c1d3799f4b87802c8bd433e28c"
+    },
+    {
+      "path": "test-drivers/verify-frozen.py",
+      "size": 674,
+      "sha256": "ccc6312402bc40fe8e227111c6194b690158ffeb129528c7cf59fa6e28786dfe"
+    }
+  ]
+}

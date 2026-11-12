@@ -1,0 +1,23 @@
+{
+  "text": {
+    "uiClickAndExactTargetIPC": true,
+    "shellReturnedEmptyError": true,
+    "newVisibleWindowObserved": false,
+    "actualViewerProcess": "nvim",
+    "viewerPid": 1756612,
+    "parentXdgOpenPid": 1756500,
+    "ttyNr": 0,
+    "stdinStdoutStderrAtCleanup": "test dev.log",
+    "visibleViewerVerdict": "not verified; detached editor without tty",
+    "cleanup": "Exact target argv/cwd and startTicks verified; SIGTERM to nvim only; nvim and xdg-open both exited. No user process stopped."
+  },
+  "json": {
+    "uiClickAndExactTargetIPC": true,
+    "shellReturnedEmptyError": true,
+    "newVisibleWindowObserved": false,
+    "stderr": "No applications found for mimetype: application/json",
+    "uiErrorNoticeObserved": false,
+    "visibleViewerVerdict": "not delivered to a visible viewer in this isolated profile despite successful shell API return"
+  },
+  "environment": "HOME and XDG_CONFIG_HOME/XDG_CACHE_HOME/XDG_DATA_HOME point to fresh isolated directories. This does not establish that the user normal profile has broken associations. No default association was changed."
+}
