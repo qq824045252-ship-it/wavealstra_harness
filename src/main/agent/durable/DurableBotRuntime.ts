@@ -1,3 +1,4 @@
+import { withWindowsBashWorkspacePath } from "../../platform/bash-workspace-path";
 import { withShellTerminalGuidance } from "./DurableShellTerminal";
 import { durableToolDiagnosticMessages } from "./DurableToolDiagnostics";
 import { emptyUsageEvidence, usagePresence, type ProviderUsageEvidence, type ProviderUsagePresence } from "../../../shared/provider-usage-evidence";
@@ -1298,7 +1299,7 @@ function codingTools(directory: string, readonlyShell?: () => boolean): ToolRegi
     ...(CodingTools.tools ?? []).map(tool => tool.name === "read" ? withDurableImageRead(tool) : withDurableArtifactRegistration(tool, directory)),
     ...createPlatformShellTools(),
     createDurableArtifactRegistrationTool(directory),
-  ].map(withShellTerminalGuidance);
+  ].map(tool => withWindowsBashWorkspacePath(tool)).map(withShellTerminalGuidance);
 }
 
 /** Every native generation, including retries and compaction, uses the owning task's settings. */

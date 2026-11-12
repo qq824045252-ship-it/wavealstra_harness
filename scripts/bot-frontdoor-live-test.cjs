@@ -315,7 +315,16 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
         "require(" + JSON.stringify(path.join(devOutput, 'main/index.js')) + ");",
       ].join('\n'));
       new (require('node:vm').Script)(fs.readFileSync(bootstrap,'utf8'),{filename:bootstrap});
-      devArgs.push('--outDir', devOutput, '--entry', bootstrap);
+      const configPath=path.join(out,'isolated-vite.config.mjs');
+      const nodeWrite=process.env.BOT_LIVE_NODE_WRITE==='1';
+      const cacheDir=path.join(out,'vite-cache');
+      const cacheAdapter=nodeWrite?`import fs from 'node:fs';import path from 'node:path';
+const cacheRoot=${JSON.stringify(cacheDir)};
+const outputPlugin={name:'isolated-node-cache-write',setup(build){build.onEnd(result=>{if(result.errors.length)return;for(const file of result.outputFiles||[]){const relative=path.relative(cacheRoot,file.path);if(relative.startsWith('..')||path.isAbsolute(relative))throw Error('cache output escaped isolated root');fs.mkdirSync(path.dirname(file.path),{recursive:true});fs.writeFileSync(file.path,file.contents);}})}};
+` : '';
+      fs.writeFileSync(configPath,'import config from '+JSON.stringify(path.join(root,'electron.vite.config.ts').replaceAll('\\','/'))+';\n'+cacheAdapter+'export default {...config,renderer:{...config.renderer,cacheDir:'+JSON.stringify(cacheDir)+(nodeWrite?',optimizeDeps:{...config.renderer?.optimizeDeps,esbuildOptions:{...config.renderer?.optimizeDeps?.esbuildOptions,write:false,plugins:[...(config.renderer?.optimizeDeps?.esbuildOptions?.plugins||[]),outputPlugin]}}':'')+'}};\n');
+      report.testNodeCacheWriter=nodeWrite;
+      devArgs.push('--config', configPath, '--outDir', devOutput, '--entry', bootstrap);
       report.devIsolation = { bootstrap, devOutput, userData, root };
     }
     if (collaborationScenario || memoryCorrectnessScenario || cronRecoveryScenario) {
