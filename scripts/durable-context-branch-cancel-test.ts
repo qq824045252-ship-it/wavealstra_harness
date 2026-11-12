@@ -14,6 +14,9 @@ import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat";
 import { estimateMessageTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { DurableBotRuntime, type DurableBotOptions } from "../src/main/agent/durable/DurableBotRuntime";
+import { createInitialState } from "../vendor/acp-kernel/src/index.ts";
+import { DurableContextStateDoc, emptyPersistedState } from "../src/main/agent/durable/context/DurableContextState";
+import { DurableContextRefArchive, DurableContextBlockArchive } from "../src/main/agent/durable/context/DurableContextArchive";
 import { DurableContextManager } from "../src/main/agent/durable/context/DurableContextManager";
 import { DurableSubagentIdentity } from "../src/main/agent/durable/DurableSubagents";
 import { DurableConsultIdentity } from "../src/main/agent/durable/DurableConsultSession";
@@ -396,6 +399,61 @@ try {
     const targetEntries = (await withTimeout(target.conversation.entries({ order: "ascending" }, 500, undefined, ctx), "scan target entries")).items;
     console.log(`[branch-test] PASS independent task branch: anchor=${alphaUserId}, sourceEntries=${page.items.length}, seedEntries=${branchSeed.entries.length}, seedKinds=${JSON.stringify(branchSeed.entries.map(item => item.entry.kind))}, targetEntries=${targetEntries.length}, providerTokens=${targetRequest.tokens}, blocks=${targetStatus.blocks ?? 0}`);
     await withTimeout(target.close(), "close task-branch target");
+  }
+  // Independent task cold identities: past refs survive ID remapping and restart, future refs do not.
+  {
+    const fixture=createFixture();
+    const sourceDirectory=join(root,"identity-source"), targetDirectory=join(root,"identity-target");
+    const source=await DurableBotRuntime.open(runtimeOptions({directory:sourceDirectory,workspace,fixture,seed:[]}));
+    runtimes.push(source);
+    fixture.replyQueue.push({kind:"text",text:"original acknowledged"});
+    await submitTurn(source,"EXACT_OLD_ORIGINAL /p/a.ts version=7 corrected=42","identity-original");
+    const old=(await source.conversation.entries({order:"ascending"},100,undefined,ctx)).items.find(entry=>entry.model?.some(message=>messageText(message).includes("EXACT_OLD_ORIGINAL")))!;
+    await source.conversation.commit(async tx=>{
+      const kernel=createInitialState();
+      kernel.messageRefs.byRef.m00900=`e${old.id}:0`; kernel.messageRefs.byRaw[`e${old.id}:0`]="m00900";
+      kernel.nextBlockId=91;
+      Object.assign(await tx.doc(DurableContextStateDoc,source.conversation.id),{...emptyPersistedState(),stateJson:JSON.stringify(kernel),refs:{m00900:{entryId:old.id,slot:0,role:"user"}}});
+      (await tx.doc(DurableContextRefArchive,source.conversation.id,"m00800",[])).locators=[{entryId:old.id,slot:0,role:"user"}];
+      (await tx.doc(DurableContextBlockArchive,source.conversation.id,"b90",[])).entryIds=[old.id];
+    },ctx);
+    // Commit an explicit anchor after the documents, without activating a manager that would replace the synthetic fixture.
+    const anchorEntry=await source.conversation.commit(tx=>tx.appendEntry(source.conversation.id,{kind:"pi.user",model:[{role:"user",content:"IDENTITY_BRANCH_ANCHOR",timestamp:123}]}),ctx);
+    await source.conversation.commit(async tx=>{
+      const future=await tx.appendEntry(source.conversation.id,{kind:"pi.user",model:[{role:"user",content:"FUTURE_PRIVATE_SECRET",timestamp:124}]});
+      (await tx.doc(DurableContextRefArchive,source.conversation.id,"m00999",[])).locators=[{entryId:future.id,slot:0,role:"user"}];
+    },ctx);
+    const sourceBefore=JSON.stringify(await source.contextBranchAt(source.conversation.id,anchorEntry.id));
+    const anchor=await resolveDurableBranch(source,{sourceTaskId:"source",requestId:"identity",entryId:String(anchorEntry.id),position:"after_reply"});
+    const captured=await captureDurableBranch(source,anchor);
+    assert(captured.entries.at(-1)?.context?.refs.m00800,"capture contains archived ref at anchor");
+    assert(!captured.entries.at(-1)?.context?.refs.m00999,"future archive is excluded at capture");
+    let target=await DurableBotRuntime.open(runtimeOptions({directory:targetDirectory,workspace,fixture,initialBranch:captured}));
+    runtimes.push(target);
+    const inherited=(await target.conversation.entries({order:"ascending"},100,undefined,ctx)).items.find(entry=>entry.model?.some(message=>messageText(message).includes("EXACT_OLD_ORIGINAL")))!;
+    assert.notEqual(inherited.id,old.id,"fixture must exercise unequal global entry IDs");
+    const cold=await target.harness.snapshot(DurableContextRefArchive,target.conversation.id,"m00800",ctx);
+    assert.equal(cold?.locators[0]?.entryId,inherited.id,"archive points to target entry, not source global ID");
+    assert.deepEqual((await target.harness.snapshot(DurableContextBlockArchive,target.conversation.id,"b90",ctx))?.entryIds,[inherited.id]);
+    assert.equal(await target.harness.snapshot(DurableContextRefArchive,target.conversation.id,"m00999",ctx),undefined);
+    const targetPast=await target.contextBranchAt(target.conversation.id,inherited.id);
+    assert(!targetPast.refs.m00800,"rebranching before archive creation cannot inherit its future document");
+    assert(!targetPast.state?.refs.m00900,"target state history retains source entry watermarks");
+    await target.close();
+    target=await DurableBotRuntime.open(runtimeOptions({directory:targetDirectory,workspace,fixture})); runtimes.push(target);
+    for (const args of [{ref:"m00800"},{ref:"m00900"},{blockId:"b90"}]) {
+      fixture.replyQueue.push({kind:"tool",name:"acp_retrieve",arguments:args},{kind:"text",text:"retrieved original"});
+      await submitTurn(target,"Read exact inherited original",`identity-retrieve-${JSON.stringify(args)}`);
+      const request=fixture.requests.at(-1)!;
+      assert(request.messages.some(message=>message.role==="toolResult" && messageText(message).includes("EXACT_OLD_ORIGINAL /p/a.ts version=7 corrected=42")),"old ref/block must retrieve exact target original after restart");
+      assert(!requestText(request).includes("FUTURE_PRIVATE_SECRET"));
+    }
+    const targetState=await target.harness.snapshot(DurableContextStateDoc,target.conversation.id,ctx);
+    const newRefs=Object.keys(JSON.parse(targetState!.stateJson).messageRefs.byRef).filter(ref=>ref!=="m00900");
+    assert(newRefs.every(ref=>Number(ref.slice(1))>900),"new refs never reuse carried identities");
+    assert.equal(JSON.stringify(await source.contextBranchAt(source.conversation.id,anchorEntry.id)),sourceBefore,"source historical docs unchanged");
+    await target.close(); await source.close();
+    console.log("[branch-test] PASS independent cold identities: anchor as-of, remapped refs/block, restart, future exclusion, monotonic new refs, source unchanged");
   }
   // ── 6) Code Mode：工具面只暴露 codemode，但脚本内可调用 acp_* 工具 ──────────
   {

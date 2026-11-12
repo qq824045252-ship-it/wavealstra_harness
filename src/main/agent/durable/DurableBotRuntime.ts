@@ -40,6 +40,7 @@ import { DurableSubagentIdentity, resolveDurableExecutionCwd } from "./DurableSu
 import { DurableEvidenceProjection, type DurableEvidenceOptions } from "./DurableEvidenceProjection";
 import { DurableContextManager } from "./context/DurableContextManager";
 import { DurableContextStateDoc, type DurableContextPersistedState } from "./context/DurableContextState";
+import { captureContextBranchAt } from "./context/DurableContextBranch";
 import { contextStatusFromStorage } from "./context/DurableContextStatus";
 import { createDurableContextTools } from "./context/DurableContextTools";
 import { resolveDurableCompactionSettings } from "./context/CompactionPolicy";
@@ -947,6 +948,11 @@ export class DurableBotRuntime {
     for (const compaction of manual) await this.harness.abortTask(compaction.taskId, ctx);
     await this.refresh();
     return manual.length > 0;
+  }
+
+  /** Read-only historical context export for an independent task branch. */
+  contextBranchAt(conversationId: Conversation["id"], entryId: EntryId) {
+    return captureContextBranchAt(this.storage, conversationId, entryId, ctx);
   }
 
   async close(): Promise<void> {

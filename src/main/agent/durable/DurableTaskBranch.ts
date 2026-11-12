@@ -3,6 +3,7 @@ import { CodemodeStoreDoc } from "@earendil-works/pi-durable/codemode";
 import { InboxDoc, LiveDoc, type Conversation, type Cursor, type EntryDraft, type EntryRecord, type EntryId, type JsonObject } from "@earendil-works/pi-durable";
 import type { CreateConversationBranchRequest } from "../../../shared/conversation-branch";
 import { ConversationBranchDomainError } from "../../../shared/conversation-branch";
+import { seedContextBranch, type DurableContextBranchSnapshot } from "./context/DurableContextBranch";
 import type { DurableBotRuntime } from "./DurableBotRuntime";
 
 export interface DurableBranchAnchor {
@@ -13,7 +14,7 @@ export interface DurableBranchAnchor {
   inheritedToolCallIds: string[];
 }
 export interface DurableBranchSeed {
-  entries: Array<{ sourceId: EntryId; entry: EntryDraft; store: JsonObject }>;
+  entries: Array<{ sourceId: EntryId; entry: EntryDraft; store: JsonObject; context?: DurableContextBranchSnapshot }>;
 }
 export interface MaterializedDurableBranch {
   directory: string;
@@ -69,7 +70,7 @@ export async function captureDurableBranch(runtime: DurableBotRuntime, anchor: D
     const data = source.data && typeof source.data === "object" && !Array.isArray(source.data) ? source.data : {};
     const input = data.mybuddyInput && typeof data.mybuddyInput === "object" && !Array.isArray(data.mybuddyInput)
       ? data.mybuddyInput : runtime.inputMetadata(source.id);
-    entries.push({ sourceId: source.id, store: store?.values ?? {}, entry: {
+    entries.push({ sourceId: source.id, store: store?.values ?? {}, context: await runtime.contextBranchAt(fork.id, source.id), entry: {
       kind: source.kind, model: source.model, head: source.head, edits: source.edits,
       data: source.data !== undefined && (source.data === null || typeof source.data !== "object" || Array.isArray(source.data)) ? source.data : { ...data, inherited: true, sourceEntryId: String(source.id), ...(input ? {
         mybuddyInput: { text: input.text ?? "", displayText: input.displayText ?? "", attachments: input.attachments ?? [] },
@@ -87,13 +88,16 @@ export async function seedDurableBranch(conversation: Conversation, seed: Durabl
     if (mapped === undefined) throw new Error(`分支历史引用不存在：${id}`);
     return mapped;
   };
-  for (const { sourceId, entry, store } of seed.entries) {
+  for (const { sourceId, entry, store, context: contextSnapshot } of seed.entries) {
     const head = entry.head === sourceId ? "self" : entry.head === undefined || entry.head === "self" ? entry.head : remap(entry.head);
     const edits = entry.edits?.map(edit => ({ ...edit, target: remap(edit.target) }));
     const data = entry.kind === "mybuddy.context-ledger" ? remapLedger(entry.data, ids) : entry.data;
     const saved = await conversation.commit(async tx => {
       (await tx.doc(CodemodeStoreDoc, conversation.id)).values = store;
-      return tx.appendEntry(conversation.id, { ...entry, data, head, edits });
+      const saved = await tx.appendEntry(conversation.id, { ...entry, data, head, edits });
+      ids.set(String(sourceId), saved.id);
+      if (contextSnapshot) await seedContextBranch(tx, conversation.id, contextSnapshot, ids);
+      return saved;
     }, context);
     ids.set(String(sourceId), saved.id);
   }
