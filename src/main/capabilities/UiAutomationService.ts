@@ -119,6 +119,9 @@ function findScript(input: ReturnType<typeof locator>, limit: number, inspect: b
   })()`;
 }
 
+type UiAwait = <T>(operation: () => Promise<T>) => Promise<T>;
+const directUiAwait: UiAwait = operation => operation();
+
 export class UiAutomationService {
   private browserHost: BrowserHost | null = null;
   constructor(private readonly targets: UiAutomationTargets) {}
@@ -148,8 +151,8 @@ export class UiAutomationService {
     return wc;
   }
 
-  private async find(wc: WebContents, input: UiExecInput, limit = 20, inspect = false): Promise<UiElementInfo[]> {
-    const result = await wc.executeJavaScript(findScript(locator(input), limit, inspect), true) as { ok?: boolean; error?: string; matches?: UiElementInfo[] };
+  private async find(wc: WebContents, input: UiExecInput, limit = 20, inspect = false, wait: UiAwait = directUiAwait): Promise<UiElementInfo[]> {
+    const result = await wait(() => wc.executeJavaScript(findScript(locator(input), limit, inspect), true)) as { ok?: boolean; error?: string; matches?: UiElementInfo[] };
     if (!result?.ok) {
       const message = result?.error || "UI 元素查找失败";
       throw new UiAutomationError(/^invalid selector:/i.test(message) ? "INVALID_SELECTOR" : "EXECUTION_FAILED", message);
@@ -157,8 +160,8 @@ export class UiAutomationService {
     return result.matches ?? [];
   }
 
-  private async one(wc: WebContents, input: UiExecInput): Promise<UiElementInfo> {
-    const rows = await this.find(wc, input, 10, false);
+  private async one(wc: WebContents, input: UiExecInput, wait: UiAwait = directUiAwait): Promise<UiElementInfo> {
+    const rows = await this.find(wc, input, 10, false, wait);
     if (!rows.length) throw new UiAutomationError("ELEMENT_NOT_FOUND", "未找到目标 UI 元素");
     if (rows.length > 1) {
       const visible = rows.filter((row) => row.visible);
@@ -168,14 +171,14 @@ export class UiAutomationService {
     return rows[0];
   }
 
-  private async click(wc: WebContents, element: UiElementInfo, check = () => {}): Promise<{ x: number; y: number }> {
-    await wc.executeJavaScript(`document.querySelector(${JSON.stringify(element.selector)})?.scrollIntoView({block:'center',inline:'center'})`, true);
-    const current = await this.one(wc, { action: "find", selector: element.selector });
+  private async click(wc: WebContents, element: UiElementInfo, check = () => {}, wait: UiAwait = directUiAwait): Promise<{ x: number; y: number }> {
+    await wait(() => wc.executeJavaScript(`document.querySelector(${JSON.stringify(element.selector)})?.scrollIntoView({block:'center',inline:'center'})`, true));
+    const current = await this.one(wc, { action: "find", selector: element.selector }, wait);
     if (!current) throw new UiAutomationError("ELEMENT_DISAPPEARED", "目标元素在点击前消失");
     if (!current.visible) throw new UiAutomationError("ELEMENT_NOT_VISIBLE", "目标元素不可见");
     if (current.disabled) throw new UiAutomationError("ELEMENT_DISABLED", "目标元素已禁用");
     check();
-    const hit = await wc.executeJavaScript(`(() => {const el=document.querySelector(${JSON.stringify(element.selector)});if(!el)return null;const r=el.getBoundingClientRect();const x=Math.round(r.x+r.width/2),y=Math.round(r.y+r.height/2);const hit=document.elementFromPoint(x,y);return hit===el||el.contains(hit)?{x,y}:null})()`, true) as { x: number; y: number } | null;
+    const hit = await wait(() => wc.executeJavaScript(`(() => {const el=document.querySelector(${JSON.stringify(element.selector)});if(!el)return null;const r=el.getBoundingClientRect();const x=Math.round(r.x+r.width/2),y=Math.round(r.y+r.height/2);const hit=document.elementFromPoint(x,y);return hit===el||el.contains(hit)?{x,y}:null})()`, true)) as { x: number; y: number } | null;
     check();
     if (!hit) throw new UiAutomationError("ELEMENT_NOT_VISIBLE", "目标被其它元素遮挡，请重新观察界面");
     const { x, y } = hit;
@@ -199,20 +202,46 @@ export class UiAutomationService {
       if (signal?.aborted) throw new DOMException("界面操作已取消", "AbortError");
       if (wc.isDestroyed() || this.targetContents(target) !== wc) throw new UiAutomationError("SURFACE_CHANGED", "UI target 已变化，请重新观察");
     };
+    // Renderer lookups can remain pending during navigation or a stalled renderer.
+    // Bound the caller, and recheck before any later input dispatch. A late lookup
+    // may settle, but must never resume a cancelled action on a different surface.
+    const timeout = Math.max(100, Math.min(30_000, Math.round(input.timeoutMs ?? 5_000)));
+    const deadline = Date.now() + timeout;
+    const wait: UiAwait = async operation => {
+      check();
+      if (Date.now() >= deadline) throw new UiAutomationError("WAIT_TIMEOUT", `界面操作超时：${input.action} (${timeout}ms)`);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let onAbort: (() => void) | undefined;
+      const interrupted = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new UiAutomationError("WAIT_TIMEOUT", `界面操作超时：${input.action} (${timeout}ms)`)), Math.max(1, deadline - Date.now()));
+        onAbort = () => reject(new DOMException("界面操作已取消", "AbortError"));
+        signal?.addEventListener("abort", onAbort, { once: true });
+        if (signal?.aborted) onAbort();
+      });
+      try {
+        const result = await Promise.race([Promise.resolve().then(() => { check(); return operation(); }), interrupted]);
+        check();
+        if (Date.now() >= deadline) throw new UiAutomationError("WAIT_TIMEOUT", `界面操作超时：${input.action} (${timeout}ms)`);
+        return result;
+      } finally {
+        if (timer) clearTimeout(timer);
+        if (onAbort) signal?.removeEventListener("abort", onAbort);
+      }
+    };
     const base = { action: input.action, target, url: wc.getURL(), title: wc.getTitle() } as const;
 
     if (input.action === "snapshot") {
-      const page = await pageInspectionService.getPageSnapshot(wc);
+      const page = await wait(() => pageInspectionService.getPageSnapshot(wc));
       // A reference belongs to this exact DOM node and document. Reordering keeps it
       // valid; replacement/navigation/new snapshots cannot silently retarget it.
-      await wc.executeJavaScript(`document.querySelectorAll('[data-mybuddy-ui-ref]').forEach(el=>el.removeAttribute('data-mybuddy-ui-ref'))`, true);
-      const rows = await this.find(wc, { action: "find", selector: 'button,a,input,textarea,select,[role],[aria-label],[data-testid]' }, 200);
+      await wait(() => wc.executeJavaScript(`document.querySelectorAll('[data-mybuddy-ui-ref]').forEach(el=>el.removeAttribute('data-mybuddy-ui-ref'))`, true));
+      const rows = await this.find(wc, { action: "find", selector: 'button,a,input,textarea,select,[role],[aria-label],[data-testid]' }, 200, false, wait);
       const max = Math.max(1_000, Math.min(100_000, Math.round(input.maxChars ?? 30_000)));
       return { ...base, text: page?.text.slice(0, max) ?? "", elements: rows, detail: `snapshot: ${rows.length} interactive elements` };
     }
 
     if (input.action === "find" || input.action === "inspect") {
-      const rows = await this.find(wc, input, input.action === "inspect" ? 10 : 20, input.action === "inspect");
+      const rows = await this.find(wc, input, input.action === "inspect" ? 10 : 20, input.action === "inspect", wait);
       return { ...base, elements: rows, detail: `matched ${rows.length}` };
     }
 
@@ -246,7 +275,7 @@ export class UiAutomationService {
       const started = Date.now();
       while (Date.now() - started <= timeout) {
         check();
-        const rows = await this.find(wc, input, 20, false);
+        const rows = await this.find(wc, input, 20, false, wait);
         const attached = rows.length > 0;
         const visible = rows.some((row) => row.visible);
         const done = state === "attached" ? attached : state === "detached" ? !attached : state === "visible" ? visible : !visible;
@@ -256,17 +285,17 @@ export class UiAutomationService {
       throw new UiAutomationError("WAIT_TIMEOUT", `wait_for 超时：${state} (${timeout}ms)`, { state, timeoutMs: timeout });
     }
 
-    const element = await this.one(wc, input);
+    const element = await this.one(wc, input, wait);
     check();
     if (input.action === "click") {
-      const point = await this.click(wc, element, check);
+      const point = await this.click(wc, element, check, wait);
       return { ...base, elements: [element], detail: `clicked ${element.selector} @ ${point.x},${point.y}` };
     }
     if (input.action === "fill") {
       const value = input.value ?? "";
       if (value.length > 100_000) throw new UiAutomationError("INVALID_INPUT", "value 过长");
-      await this.click(wc, element, check);
-      const editable = await wc.executeJavaScript(`(() => {const el=document.querySelector(${JSON.stringify(element.selector)}); if(!(el instanceof HTMLInputElement||el instanceof HTMLTextAreaElement||(el instanceof HTMLElement&&el.isContentEditable)))return false; el.focus(); return true;})()`, true);
+      await this.click(wc, element, check, wait);
+      const editable = await wait(() => wc.executeJavaScript(`(() => {const el=document.querySelector(${JSON.stringify(element.selector)}); if(!(el instanceof HTMLInputElement||el instanceof HTMLTextAreaElement||(el instanceof HTMLElement&&el.isContentEditable)))return false; el.focus(); return true;})()`, true));
       if (!editable) throw new UiAutomationError("ELEMENT_NOT_EDITABLE", "目标元素不可编辑", { selector: element.selector });
       check();
       const selectModifier = selectAllModifier();
@@ -274,13 +303,13 @@ export class UiAutomationService {
       wc.sendInputEvent({ type: "keyUp", keyCode: "A", modifiers: [selectModifier] });
       wc.sendInputEvent({ type: "keyDown", keyCode: "Backspace" });
       wc.sendInputEvent({ type: "keyUp", keyCode: "Backspace" });
-      await wc.insertText(value);
+      await wait(() => wc.insertText(value));
       return { ...base, elements: [element], detail: `filled ${element.selector}` };
     }
     if (input.action === "press") {
       const key = clean(input.key, 80);
       if (!key) throw new UiAutomationError("INVALID_INPUT", "key 不能为空");
-      await this.click(wc, element, check);
+      await this.click(wc, element, check, wait);
       const tokens = key.split("+");
       const keyCode = tokens.pop()!;
       const aliases: Record<string, "control" | "alt" | "shift" | "meta"> = { ctrl: "control", control: "control", alt: "alt", shift: "shift", meta: "meta", cmd: "meta", command: "meta" };

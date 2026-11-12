@@ -9,8 +9,21 @@ import { traverseFast } from "@babel/types";
 
 // Persisted sessions require both domain services and window-backed tools before opening.
 const bootstrap = parse(readFileSync("src/main/index.ts", "utf8"), { sourceType: "module", plugins: ["typescript"] });
-const startupCalls = new Map<string, number[]>();
+// Inspect the ready callback, not later UI activation helper declarations.
+let readyBody: Parameters<typeof traverseFast>[0] | undefined;
 traverseFast(bootstrap, node => {
+  if (node.type !== "CallExpression" || node.callee.type !== "MemberExpression" || node.callee.computed
+    || node.callee.property.type !== "Identifier" || node.callee.property.name !== "then") return;
+  const ready = node.callee.object;
+  if (ready.type !== "CallExpression" || ready.callee.type !== "MemberExpression" || ready.callee.computed
+    || ready.callee.object.type !== "Identifier" || ready.callee.object.name !== "app"
+    || ready.callee.property.type !== "Identifier" || ready.callee.property.name !== "whenReady") return;
+  const callback = node.arguments[0];
+  if (callback?.type === "ArrowFunctionExpression" || callback?.type === "FunctionExpression") readyBody = callback.body;
+});
+assert(readyBody, "bootstrap has an app.whenReady callback");
+const startupCalls = new Map<string, number[]>();
+traverseFast(readyBody, node => {
   if (node.type === "CallExpression" && node.callee.type === "Identifier" && node.callee.name === "createWindow") {
     assert(typeof node.start === "number");
     startupCalls.set("createWindow", [...(startupCalls.get("createWindow") ?? []), node.start]);
@@ -121,6 +134,7 @@ try {
 } finally {
   cron.stop();
   await agent.abort("scheduled");
+  await agent.closeDurableBots();
   agent.dispose();
   host.dispose();
   db.close();

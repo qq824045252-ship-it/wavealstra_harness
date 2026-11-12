@@ -5,10 +5,8 @@ import { fileNameFromPath } from "@/lib/localFilePath";
 import ChatMarkdown from "@/components/chat/ChatMarkdown";
 import WorkFilePreview from "./WorkFilePreview";
 
-type GeneratedFile = NonNullable<WorkProjectionDto["generatedArtifacts"]>[number];
-export interface WorkFile { ref: string; name: string; artifact?: GeneratedFile; openPath?: string; previewManifestPath?: string | null }
-
-export const previewManifestFor = (file: WorkFile): string | undefined => file.previewManifestPath === null ? undefined : file.previewManifestPath ?? file.artifact?.previewManifestPath;
+import { previewManifestFor, type WorkFile } from "./workFileIdentity";
+export { previewManifestFor, type WorkFile } from "./workFileIdentity";
 
 /** Match exact paths within this execution, never a basename or the selected Task. */
 export function workFiles(refs: string[], work?: WorkProjectionDto, executionId?: string): WorkFile[] {

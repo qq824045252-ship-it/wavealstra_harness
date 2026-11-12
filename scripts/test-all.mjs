@@ -298,6 +298,7 @@ const KNOWN_HEADLESS_RED = new Set([
  */
 const HEADLESS_TESTS = new Set([
   "test:work-execution-isolation",
+  "test:ui-automation-cancellation",
   "test:bot-work-result-artifacts",
   "test:work-result-lifecycle",
   "test:work-completion-recovery",

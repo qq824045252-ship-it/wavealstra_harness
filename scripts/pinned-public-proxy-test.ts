@@ -25,16 +25,16 @@ const port=(proxy.address() as net.AddressInfo).port;
 try{
  await assert.rejects(fetchThroughExistingPublicProxy(new URL('https://example.com/'),{},{port,fakeIpRange:'198.18.0.1/16'}));
  assert(authorities.length>0);assert(authorities.every(x=>x==='CONNECT 223.5.5.5:443 HTTP/1.1'),'actual proxy CONNECT uses fixed DNS IP, never DNS hostname');
- const oldHome=process.env.HOME;const fixture=mkdtempSync(join(tmpdir(),'pinned-rebinding-'));
+ const oldHome=process.env.HOME,oldUserProfile=process.env.USERPROFILE;const fixture=mkdtempSync(join(tmpdir(),'pinned-rebinding-'));
  try {
-  process.env.HOME=fixture;const directory=join(fixture,'.local/share/com.follow.clash');mkdirSync(directory,{recursive:true});writeFileSync(join(directory,'config.yaml'),stringify({...config,'mixed-port':port}));
+  process.env.HOME=fixture;process.env.USERPROFILE=fixture;const directory=join(fixture,'.local/share/com.follow.clash');mkdirSync(directory,{recursive:true});writeFileSync(join(directory,'config.yaml'),stringify({...config,'mixed-port':port}));
   let dnsCalls=0,ordinaryFetch=0;const sequence=['198.18.0.8','8.8.8.8','127.0.0.1'];
   const lookup=async()=>[{address:sequence[Math.min(dnsCalls++,2)],family:4}];
   let ticket;try {await validateRemoteUrl('https://example.com/',{lookup});}catch(error){ticket=configuredPinnedProxy(error);}
   assert(ticket,'preflight fake-IP retains verified existing proxy');
   await assert.rejects(fetchRemoteUrl('https://example.com/',{}, {[PINNED_PUBLIC_PROXY]:ticket,lookup,fetch:async()=>{ordinaryFetch++;return new Response('must not happen');}}));
   assert.equal(dnsCalls,1,'no second local DNS after selecting pinned route');assert.equal(ordinaryFetch,0,'fake-public-private rebinding never falls back to ordinary fetch');
- }finally{if(oldHome===undefined)delete process.env.HOME;else process.env.HOME=oldHome;rmSync(fixture,{recursive:true,force:true});}
+ }finally{if(oldHome===undefined)delete process.env.HOME;else process.env.HOME=oldHome;if(oldUserProfile===undefined)delete process.env.USERPROFILE;else process.env.USERPROFILE=oldUserProfile;rmSync(fixture,{recursive:true,force:true});}
  const before=authorities.length;
  for(const url of ['http://example.com/','https://127.0.0.1/','https://localhost/','https://a.local/','https://user:password@example.com/'])await assert.rejects(fetchThroughExistingPublicProxy(new URL(url),{},{port,fakeIpRange:'198.18.0.1/16'}));
  await assert.rejects(fetchThroughExistingPublicProxy(new URL('https://example.com/'),{method:'POST'},{port,fakeIpRange:'198.18.0.1/16'}));

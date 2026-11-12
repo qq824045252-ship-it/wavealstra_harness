@@ -78,9 +78,14 @@ async function main(): Promise<void> {
       assert.equal(exited.diagnostics?.reason, "unexpected_exit");
       assert.equal(exited.diagnostics?.pid, owned.pid);
       assert.equal(exited.diagnostics?.url, owned.url);
-      // POSIX SIGTERM runs the graceful handler; Windows may terminate by signal.
-      assert.equal(exited.diagnostics?.signal, exited.diagnostics?.exitCode === 0 ? null : signal);
-      assert(exited.diagnostics?.exitCode === 0 || exited.diagnostics?.exitCode === null);
+      // Windows process.kill uses TerminateProcess: the child reports an exit code, not a POSIX signal.
+      if (process.platform === "win32") {
+        assert.equal(exited.diagnostics?.signal, null);
+        assert.equal(typeof exited.diagnostics?.exitCode, "number");
+      } else {
+        assert.equal(exited.diagnostics?.signal, exited.diagnostics?.exitCode === 0 ? null : signal);
+        assert(exited.diagnostics?.exitCode === 0 || exited.diagnostics?.exitCode === null);
+      }
       assert.equal((await runtime.health(descriptor.id)).status, "error");
       const recovered = await runtime.start(descriptor);
       assert.equal(recovered.status, "running");

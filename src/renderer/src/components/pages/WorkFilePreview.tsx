@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import CodeView from "@/components/artifact/CodeView";
 import MarkdownArtifactView from "@/components/artifact/MarkdownArtifactView";
 import { useAppStore } from "@/store/appStore";
-import { previewManifestFor, type WorkFile } from "./BotWorkResult";
+import { previewManifestFor, type WorkFile } from "./workFileIdentity";
 
 const languageFor = (name: string): string => {
   const ext = name.split(".").pop()?.toLowerCase() ?? "text";

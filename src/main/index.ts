@@ -1,6 +1,6 @@
+import "./platform/credentials";
 import { SavedArtifactIpc } from "../shared/saved-artifact";
 import { savedArtifactPreviewService } from "./artifact/SavedArtifactPreview";
-import "./platform/credentials";
 import { ResidentLifecycle, RESIDENT_HOST_ARGUMENT } from "./host/ResidentLifecycle";
 import { GatewayBotBindingIpc } from "../shared/gateway-bot-binding";
 import { configureGatewayBotBinding } from "./gateway/GatewayBotBindingSettings";

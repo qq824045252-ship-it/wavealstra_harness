@@ -87,33 +87,25 @@ try {
   legacy.close();
   const reset = new AppDatabase(legacyPath);
   assertCurrentSchema(reset, "legacy reset");
-  assert(!tableExists(reset, "sentinel"), "incompatible schema is rebuilt (not migrated) after backup");
+  assert(!tableExists(reset, "sentinel"), "incompatible schema is discarded and rebuilt (not migrated)");
   assert(reset.listTasks().length === 0, "incompatible database data is cleared from the rebuilt database");
   reset.close();
 
-  // 旧库不再被删除：三个文件改名为同目录 `.discarded-<UTC 时间戳>` 备份，备份内容仍可读。
-  const legacyBackups = discardedBackups(legacyPath);
-  assert(legacyBackups.length === 1, "incompatible database is backed up instead of deleted");
+  // Incompatible schemas are discarded without a compatibility backup.
+  assert(discardedBackups(legacyPath).length === 0, "incompatible database creates no discarded backup");
   assert(!existsSync(`${legacyPath}.pre-migration-v24-to-v${CURRENT_DATABASE_SCHEMA_VERSION}`), "no compatibility backup contract remains");
-  const legacyBackupStamp = basename(legacyBackups[0]).slice(`${basename(legacyPath)}.discarded-`.length);
-  assert(/^\d{8}T\d{9}Z$/.test(legacyBackupStamp), `backup name carries a UTC timestamp: ${legacyBackupStamp}`);
-  const legacyBackup = new Database(legacyBackups[0], { readonly: true, fileMustExist: true });
-  assert(legacyBackup.pragma("user_version", { simple: true }) === 24, "backup keeps the discarded user_version");
-  assert((legacyBackup.prepare("SELECT value FROM sentinel").get() as { value: string }).value === "must-disappear", "backup preserves the discarded rows");
-  legacyBackup.close();
   const rebuilt = new AppDatabase(legacyPath);
   assertCurrentSchema(rebuilt, "legacy rebuild reopen");
-  assert(rebuilt.listTasks().length === 0, "rebuilt empty database is usable after backup");
+  assert(rebuilt.listTasks().length === 0, "rebuilt empty database remains usable");
   rebuilt.close();
 
   const corruptPath = join(root, "corrupt.db");
   writeFileSync(corruptPath, "not-a-sqlite-database");
-  const recovered = new AppDatabase(corruptPath);
-  assertCurrentSchema(recovered, "corrupt reset");
-  recovered.close();
-  const corruptBackups = discardedBackups(corruptPath);
-  assert(corruptBackups.length === 1, "corrupt database is backed up instead of deleted");
-  assert(readFileSync(corruptBackups[0], "utf8") === "not-a-sqlite-database", "backup preserves the corrupt file bytes");
+  let corruptRejected = false;
+  try { new AppDatabase(corruptPath).close(); } catch { corruptRejected = true; }
+  assert(corruptRejected, "unreadable schema is not assumed to be an incompatible old version");
+  assert(readFileSync(corruptPath, "utf8") === "not-a-sqlite-database", "unreadable database bytes remain intact");
+  assert(discardedBackups(corruptPath).length === 0, "unreadable database creates no discarded backup");
 
   // 对话分支关系在 v27 库补表后立即可用（§5.2/§13.2）
   const branchDbPath = join(root, "branch.db");
