@@ -2,13 +2,15 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
 const {inspectPortCorrection,inspectTranslation}=require('./durable-context-live-assessment.cjs');
 exports.run=async({evaluate,rpc,until,report,requests,rawUsageAudit,out,home,restart})=>{
+ const engine=process.env.CONTEXT_LIVE_ENGINE || 'billion-context';
+ assert(['billion-context','native'].includes(engine));
  const wait=ms=>new Promise(r=>setTimeout(r,ms));
  report.cases=[];report.summaryCalls=[];report.profileIsolation={home,syntheticInput:true,realCredentialsRead:false};
  const save=()=>fs.writeFileSync(path.join(out,'cases-progress.json'),JSON.stringify(report.cases,null,2));
  const subscribe=()=>evaluate(`(()=>{window.__contextProbe={events:[]};window.__contextStates=[];window.api.agent.onEvent(e=>{if(e.type==='compaction_status')window.__contextStates.push(e.state);const p=window.__contextProbe;if(!p)return;if((e.type==='durable_snapshot'||e.type==='durable_delta')&&!p.taskId)p.taskId=e.taskId;if(e.taskId===p.taskId){p.events.push({type:e.type,at:Date.now()});if(p.events.length>600)p.events.shift();}});return true;})()`);
  await subscribe();
  const settings=await evaluate('window.api.agent.getAppSettings()');
- assert.equal(settings.compactionEngine,'billion-context');assert.equal(settings.compactionTriggerTokens,12000);
+ assert.equal(settings.compactionEngine,engine);assert.equal(settings.compactionTriggerTokens,12000);
  report.settings={compactionEngine:settings.compactionEngine,compactionTriggerTokens:settings.compactionTriggerTokens,compactionTriggerRatio:settings.compactionTriggerRatio};
  let taskId;
  const say=async(text,label)=>{
@@ -46,7 +48,7 @@ exports.run=async({evaluate,rpc,until,report,requests,rawUsageAudit,out,home,res
  ['instruction correction','配置更正：这个验收项目原端口6173已废弃，当前端口6284。请只输出一行有效JavaScript常量声明，格式为 const PORT = 当前端口; 不要仅输出数字，不调用工具。',a=>{report.correction=inspectPortCorrection(a);}],
  ];
  for(const [label,prompt,check] of cases){try{const result=await say(prompt,label);check(result.answer);}catch(error){report.cases.push({label,status:'failed',error:String(error.stack||error)});save();}}
- const summaryCalls=requests.map((request,index)=>({request,index})).filter(({request})=>request.messages?.some(message=>['system','developer'].includes(message.role)&&JSON.stringify(message.content).includes('compress conversation history')));
+ const summaryCalls=requests.map((request,index)=>({request,index})).filter(({request})=>request.messages?.some(message=>['system','developer'].includes(message.role)&&JSON.stringify(message.content).includes(engine==='native'?'You are a context summarization assistant.':'compress conversation history')));
  report.summaryCalls=summaryCalls.map(({request,index})=>({index,chars:JSON.stringify(request.messages).length,model:request.model}));
  const beforeRestart=await evaluate(`window.api.agent.loadTaskHistory(${JSON.stringify(taskId)})`);
  report.beforeRestart={messageCount:beforeRestart.messages.length,status:await evaluate(`window.api.agent.getCompactionStatus(${JSON.stringify(taskId)})`)};
@@ -72,12 +74,12 @@ exports.run=async({evaluate,rpc,until,report,requests,rawUsageAudit,out,home,res
    let answer;
    await until(async()=>{const history=await evaluate('window.api.botWork.history({botId:"bot-mybuddy-default"})');const requestId=history.messages.filter(message=>message.role==='user').at(-1)?.requestId;answer=history.messages.find(message=>message.role==='assistant'&&message.requestId===requestId&&message.status==='completed');return Boolean(answer);},'Bot context status');
    const wires=requests.slice(from);
-   assert(wires.some(request=>request.messages?.some(message=>message.role==='tool'&&JSON.stringify(message.content).includes('engine: billion-context'))),'Bot must receive real acp_status tool result');
+   assert(wires.some(request=>request.messages?.some(message=>message.role==='tool'&&JSON.stringify(message.content).includes('engine: '+engine))),'Bot must receive real acp_status tool result');
    report.cases.push({label:'Bot foreground context-tool access',status:'passed',elapsedMs:Date.now()-started,answer:answer.text,requestStart:from,requestEnd:requests.length});save();
  } catch(error) {report.cases.push({label:'Bot foreground context-tool access',status:'failed',error:String(error.stack||error)});save();}
  report.requestCount=requests.length;report.usage={raw:rawUsageAudit,pricing:'not measured; do not interpret fixture zero prices as free'};
  report.afterRestart=await evaluate(`window.api.agent.getCompactionStatus(${JSON.stringify(taskId)})`);
- const projected=requests.filter(request=>request.messages?.some(message=>JSON.stringify(message.content).includes('[Compressed conversation section]')));
+ const projected=requests.filter(request=>request.messages?.some(message=>JSON.stringify(message.content).includes(engine==='native'?'The conversation history before this point was compacted into the following summary:':'[Compressed conversation section]')));
  report.projectionEvidence={summaryRequests:summaryCalls.length,requestsWithCommittedSummary:projected.length,inputChars:padding.length};
  assert(summaryCalls.length>0,'automatic summaries must really call the model');
  assert(projected.length>0,'subsequent real provider requests must use the committed summary');
