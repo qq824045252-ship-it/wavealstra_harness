@@ -43,4 +43,3 @@ const input = { action: "scroll" as const, target: "browser" as const, selector:
  const f=fixture(); await assert.rejects(f.service.execute({...input,action:'wait_for'}),(e:any)=>e.code==='WAIT_TIMEOUT');
 }
 console.log('PASS UI renderer lookup abort, deadline, late resolve/reject, surface replacement, ordinary scroll and wait_for');
-
