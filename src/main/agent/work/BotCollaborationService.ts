@@ -32,7 +32,7 @@ export interface BotOrganizationContact {
   configurationGuard: () => void;
   targetSettingsRevision: number;
   retryFailedAsk: boolean;
-  contact: { kind: "ask"; text: string } | { kind: "delegate"; plan: z.infer<typeof botWorkCreateSchema> };
+  contact: { kind: "ask"; text: string } | { kind: "delegate"; text?: string; plan?: z.infer<typeof botWorkCreateSchema> };
 }
 // Providers require an object at the root. The action union remains the
 // runtime authority and rejects fields belonging to another action.
@@ -94,7 +94,7 @@ export class BotCollaborationService {
     const current = verify();
     const command = botCollaborationCommandSchema.parse(input.contact.kind === "ask"
       ? { action: "ask", targetBotId: input.targetBotId, text: input.contact.text }
-      : { action: "delegate", targetBotId: input.targetBotId, plan: input.contact.plan });
+      : { action: "delegate", targetBotId: input.targetBotId, text: input.contact.text, plan: input.contact.plan });
     const operationId = `organization-contact:${key(input.intentId)}`;
     const payloadHash = key(JSON.stringify(command), JSON.stringify(input.origin));
     const row = this.options.works.transaction(() => {

@@ -667,7 +667,7 @@ export class BotConversationService {
           if (origin !== requestId) throw new Error("协作调用不属于当前请求");
           return { output: [{ type: "text" as const, text: JSON.stringify(await this.collaborations.command(key, String(api.taskId), args)) }] };
         } }),
-      defineTool({ name: "bot_organize", description: "仅宿主持久指定的主 Bot 可组织其他个人 Bot。先 discover 查真实职责、状态和可用模型/Skill/专家/MCP/连接器，优先复用匹配者，尊重用户点名。arrange 指定 existing 或缺少执行者时 create；显式配置为补丁，省略项保留。contact=none 仅创建配置，ask/delegate 均交由目标正常前台判断，受理不创建 Work，目标自行决定直接答复或创建自己的唯一 Work。失败或重启后 query/resume 同一 intentId，不重建 Bot；创建不等于接单或完成。后续 Work 改向取消用原 collaborationId 的 bot_collaborate。不得读取或搬运其他 Bot 的私人记忆或技能，不创建临时团队。",
+      defineTool({ name: "bot_organize", description: "仅宿主持久指定的主 Bot 可组织其他个人 Bot。默认根据当前宿主职责/能力目录和上下文语义选派，适合专门处理的事项即使未点名也复用匹配既有 Bot；用户点名或要求自己处理优先，闲聊简单问答直接回答，无匹配默认自己继续。dispatch(targetBotId,settingsRevision,text,reason) 将一次真实用户请求幂等送达既有 Bot，返回原持久协作；重试不能换人重复执行。需要刷新完整能力目录时 discover，requirement 只是检索意图记录、不执行相关性匹配。arrange 指定 existing 或缺少执行者时 create；显式配置为补丁，省略项保留。contact=none 仅创建配置，ask/delegate 均交由目标正常前台判断，受理不创建 Work，目标自行决定直接答复或创建自己的唯一 Work。失败或重启后 query/resume 同一 intentId，不重建 Bot；创建不等于接单或完成。后续 Work 改向取消用原 collaborationId 的 bot_collaborate。不得读取或搬运其他 Bot 的私人记忆或技能，不创建临时团队。",
         parameters: Type.Unsafe<z.input<typeof botOrganizationToolSchema>>(z.toJSONSchema(botOrganizationToolSchema, { target: "draft-7", io: "input" })),
         replay: "safe", execute: async (args, api, ctx) => {
           const origin = await botForegroundRequest(api, api.callId, ctx);
