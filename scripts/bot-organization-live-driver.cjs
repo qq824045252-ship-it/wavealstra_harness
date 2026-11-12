@@ -285,7 +285,7 @@ async function waitOrganization(predicate,label) {
   let found;await until(async()=>{found=(await organizationsMatching(predicate)).findLast(item=>item.phase==='linked');return Boolean(found);},label);return found;
 }
 const journalFor = (organization,endpoint='bot-mybuddy-default') => api('collaborationHistory',{botId:endpoint,collaborationId:organization.collaborationId,limit:100});
-async function workFor(organization) {const journal=await journalFor(organization);assert(journal.collaboration.workId,'real accepted Work');return api('getWork',journal.collaboration.workId);}
+async function workFor(organization) {let observed;await until(async()=>{observed=await require('./bot-organization-live-state.cjs').observeRecipientWork(()=>journalFor(organization),id=>api('getWork',id));return Boolean(observed.work);},'B foreground decision and actual unique Work');return observed.work;}
 async function finishWork(workId) {let work;await until(async()=>{work=await api('getWork',workId);return work?.lifecycle==='closed';},'actual Work settlement',600000);return work;}
 async function concurrentBoundary(spec,execute) {
   const evidence={phase:spec.phase,events:[]};let gate=newGate(spec.marker);

@@ -100,7 +100,7 @@ exports.run = async context => {
     const relations=[];let cursor;
     do { const page=await api('collaborations',{botId:primaryBotId,limit:100,...(cursor?{cursor}:{})}); relations.push(...page.items);cursor=page.nextCursor; } while(cursor);
     for(const item of candidates){
-      const matches=relations.filter(relation=>relation.sourceBotId===item.sourceBotId&&relation.sourceConversationId===item.sourceConversationId&&relation.sourceRequestId===item.sourceRequestId&&relation.targetBotId===item.target.botId&&relation.workId);
+      const matches=relations.filter(relation=>relation.sourceBotId===item.sourceBotId&&relation.sourceConversationId===item.sourceConversationId&&relation.sourceRequestId===item.sourceRequestId&&relation.targetBotId===item.target.botId);
       assert(matches.length<=1,'one source organization must not have duplicate accepted Work');
       if(matches.length===1)separateContacts.set(item.intentId,matches[0]);
     }
@@ -129,8 +129,7 @@ exports.run = async context => {
   };
   const journal = organization => api('collaborationHistory',{botId:primaryBotId,collaborationId:organization.collaborationId,limit:100});
   const readWork = async organization => {
-    const page=await journal(organization);assert(page.collaboration.workId,'actual accepted Work link');
-    return {work:await api('getWork',page.collaboration.workId),journal:page};
+    return require('./bot-organization-live-state.cjs').observeRecipientWork(()=>journal(organization),id=>api('getWork',id));
   };
   const waitArtifact = async (organization, directory, filename, validate, timeoutMs=360000) => {
     let observed;const deadline=Date.now()+timeoutMs;
@@ -148,7 +147,8 @@ exports.run = async context => {
     const contents=fs.readFileSync(file,'utf8');validate(contents);
     await until(async()=>{
       observed=await readWork(organization);
-      return observed.journal.messages.some(message=>message.kind==='result');
+      const ids=new Set(observed.journal.messages.filter(message=>message.kind==='result'&&message.workFeedback?.report?.current&&message.workFeedback.intentRevision===observed.work.intentRevision).map(message=>message.messageId));
+      return (await history()).messages.some(message=>message.role==='assistant'&&message.status==='completed'&&message.peerOrigin?.kind==='return'&&message.peerOrigin.collaborationId===organization.collaborationId&&ids.has(message.peerOrigin.replyMessageId));
     },'actual organization result returned');
     const delivered=observed.journal.messages.flatMap(message=>message.workFeedback?.report?.files??[]).findLast(item=>item.name===filename);
     assert(delivered?.openPath||delivered?.artifact?.snapshotPath,'actual result has an openable saved artifact');
@@ -191,7 +191,7 @@ exports.run = async context => {
     let fatal;
     try { await execute(row);row.status='passed'; }
     catch(error) { row.status='failed';row.error=String(error.stack||error);console.error(id,row.error);
-      if(/Owned organization driver/.test(row.error)||(requests.length===row.providerOffset&&/unable to open database|SQLITE_CANTOPEN|EBADF|EACCES/.test(row.error)))fatal=error; }
+      fatal=error; }
     row.endedAt=Date.now();row.modelCalls=requests.length-row.providerOffset;persist();
     console.log(JSON.stringify({organizationCase:id,status:row.status,modelCalls:row.modelCalls,error:row.error}));
     if(fatal){result.status='failed';persist();throw fatal;}
@@ -227,8 +227,9 @@ exports.run = async context => {
     const question=`请通过原协作 ${dataOrganization.collaborationId} 向“${dataOrganization.target.displayName}”只读询问：把 Please send the invoice tomorrow morning 翻成自然中文。保留真实对方身份，不创建 Work 或新 Bot。`;
     const asked=await submit(question);row.consultation=asked;
     assert.equal((await works()).length,beforeWorks.length,'pure consultation creates no Work');
-    const originalJournal=await journal(dataOrganization);
-    assert(originalJournal.messages.some(message=>message.kind==='reply'&&/发票/.test(message.text)&&/明天|明早/.test(message.text)));
+    let originalJournal;
+    await until(async()=>{originalJournal=await journal(dataOrganization);const returned=(await history()).messages;return originalJournal.messages.some(message=>message.kind==='reply'&&/发票/.test(message.text)&&/明天|明早/.test(message.text))&&returned.some(message=>message.role==='assistant'&&message.status==='completed'&&message.peerOrigin?.kind==='return'&&message.peerOrigin.collaborationId===dataOrganization.collaborationId&&/发票/.test(message.text)&&/明天|明早/.test(message.text));},'B consultation and A actual return');
+    assert.equal((await works()).length,beforeWorks.length,'settled consultation creates no additional Work');
     const reuseCommand={action:'arrange',target:{kind:'existing',botId:dataOrganization.target.botId},contact:{kind:'delegate',plan:{
       title:'既有助理翻译复用-'+seed,goalDescription:`把 Please send the invoice tomorrow morning 和 Shipment confirmed 写成 reused-translation.md 的中英对照，包含 ${seed}。实际保存、回读并登记。`,requestedOutcome:'one_time',mode:'once'}}};
     const reusePrompt=`这是同一个逻辑请求 REUSE_${seed}，用户明确指定现有“${dataOrganization.target.displayName}” ${dataOrganization.target.botId}。先真实 discover 核对现有职责与配置，不能新建 Bot 或改配。若此逻辑请求已有组织意图，只 query/resume 原 intent；否则严格调用如下 bot_organize JSON，保留实际目标设置：${JSON.stringify(reuseCommand)}`;
