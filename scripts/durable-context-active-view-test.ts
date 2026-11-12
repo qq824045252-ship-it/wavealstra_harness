@@ -25,17 +25,18 @@ function fixture() {
   let summaries = 0;
   let action: ((signal?: AbortSignal) => Promise<void>) | undefined;
   const requests: Array<readonly Message[]> = [];
+  const summaryInputs: unknown[] = [];
   const model = { id: "fixture", provider: "fixture", api: "openai-completions", name: "fixture", reasoning: false,
     input: ["text"], contextWindow: 128_000, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
   const models = { getModel: () => model, getAuth: async () => undefined,
-    completeSimple: async (_model: unknown, _input: unknown, options?: { signal?: AbortSignal }) => { summaries++; await action?.(options?.signal); return assistant("Archived observations and paths remain searchable and retrievable. Continue the current task."); },
+    completeSimple: async (_model: unknown, _input: unknown, options?: { signal?: AbortSignal }) => { summaries++; summaryInputs.push(_input); await action?.(options?.signal); return assistant("Archived observations and paths remain searchable and retrievable. Continue the current task."); },
     streamSimple: (_model: unknown, input: { messages: readonly Message[] }) => {
       requests.push(input.messages);
       const stream = createAssistantMessageEventStream();
       queueMicrotask(() => { stream.push({ type: "done", reason: "stop", message: assistant("Acknowledged.") }); stream.end(); });
       return stream;
     } } as unknown as DurableBotOptions["models"];
-  return { models, requests, summaries: () => summaries, model, setAction: (next?: typeof action) => { action = next; } };
+  return { models, requests, summaryInputs, summaries: () => summaries, model, setAction: (next?: typeof action) => { action = next; } };
 }
 function manager(runtime: DurableBotRuntime): DurableContextManager {
   return (runtime as unknown as { contextManager: DurableContextManager }).contextManager;
@@ -154,20 +155,80 @@ try {
     assert(source.requests.at(-1)!.length > 1000);
     console.log("PASS native measured-usage behavior unchanged by BC raw-view opt-in");
   } finally { await runtime.close(); }
-  for (const kind of ["image", "thinking", "incomplete-parallel", "split-parallel"] as const) {
+  // Completed reasoning exchanges may retire as whole messages, never by modifying a signature.
+  for (const kind of ["signed", "redacted", "parallel-thinking"] as const) {
+    const directory = join(root, `completed-${kind}`); await mkdir(directory);
+    const source = fixture();
+    const originals = history(240);
+    const old = assistant(`Completed old ${kind} exchange.`);
+    const signature = `EXACT_OLD_SIGNATURE_${kind}`;
+    old.content.unshift({ type: "thinking", thinking: kind === "redacted" ? "" : "Readable old reasoning.",
+      thinkingSignature: signature, ...(kind === "redacted" ? { redacted: true } : {}) });
+    originals[1] = old;
+    if (kind === "parallel-thinking") {
+      old.stopReason = "toolUse";
+      old.content.push({ type: "toolCall", id: "closed-a", name: "read", arguments: { path: "a" } },
+        { type: "toolCall", id: "closed-b", name: "read", arguments: { path: "b" } });
+      originals[2] = { role: "toolResult", toolCallId: "closed-b", toolName: "read", content: [{ type: "text", text: "B done" }], isError: false, timestamp: 2 };
+      originals[3] = { role: "toolResult", toolCallId: "closed-a", toolName: "read", content: [{ type: "text", text: "A done" }], isError: false, timestamp: 3 };
+    }
+    const active = assistant("Keep this recent assistant unchanged.");
+    active.content.unshift({ type: "thinking", thinking: kind === "redacted" ? "" : "Recent reasoning", thinkingSignature: `EXACT_ACTIVE_SIGNATURE_${kind}`, ...(kind === "redacted" ? {redacted:true} : {}) });
+    originals[239] = active;
+    const options: DurableBotOptions = { directory, cwd: directory, models: source.models,
+      model: { provider: "fixture", modelId: "fixture" }, toolMode: "native", instructions: () => "", onSnapshot: () => {},
+      initialHistory: { messages: originals, context: [] }, contextManagement: {
+        policy: () => ({ ratio: 0.8, absoluteTokens: null }), engine: () => "billion-context", toolEstimateTokens: () => 0 } };
+    let runtime = await DurableBotRuntime.open(options);
+    try {
+      const originalEntry = (await runtime.conversation.entries({order:"ascending"},500,undefined,ctx)).items
+        .find(entry => JSON.stringify(entry.model).includes(signature));
+      assert(originalEntry, "signed original was durably imported");
+      const originalBytes = JSON.stringify(originalEntry.model);
+      await turn(runtime, `completed-${kind}`);
+      assert(source.summaries() > 0, "completed reasoning prefix receives a real summary request");
+      assert((await runtime.conversation.context(ctx)).head, "official native task must place a head");
+      const sent = source.requests.at(-1)!;
+      assert(!JSON.stringify(sent).includes(signature), "retired signature is not rewritten into provider history");
+      const retained = sent.find(message => JSON.stringify(message).includes(`EXACT_ACTIVE_SIGNATURE_${kind}`));
+      assert.deepEqual(retained, active, "active reasoning message remains byte-for-byte unchanged");
+      assert(!JSON.stringify(source.summaryInputs).includes(signature), "signature/opaque bytes never enter summary prompts");
+      assert.equal(JSON.stringify((await runtime.conversation.commit(tx => tx.entry(originalEntry.id),ctx))?.model), originalBytes);
+      await runtime.close();
+      runtime = await DurableBotRuntime.open({...options,initialHistory:undefined});
+      assert.equal(JSON.stringify((await runtime.conversation.commit(tx => tx.entry(originalEntry.id),ctx))?.model), originalBytes,
+        "cold SQLite restart retains complete signed/opaque original bytes");
+      await turn(runtime, `completed-${kind}-restart`);
+      assert.deepEqual(source.requests.at(-1)!.find(message => JSON.stringify(message).includes(`EXACT_ACTIVE_SIGNATURE_${kind}`)),active);
+      console.log(`PASS completed ${kind}: native head, exact cold original, unchanged active signature`);
+    } finally { await runtime.close(); }
+  }
+  for (const kind of ["image", "unfinished-thinking", "malformed-redacted", "unknown", "incomplete-parallel", "split-parallel", "result-before-call", "duplicate-result", "duplicate-call", "wrong-tool-name", "overlapping-round"] as const) {
     const directory = join(root, kind); await mkdir(directory);
     const source = fixture();
     const originals = history(40);
     if (kind === "image") originals[0] = { role: "user", content: [{ type: "text", text: "Preserve the original attachment." }, { type: "image", mimeType: "image/png", data: "opaque-image-payload" }], timestamp: 1 };
-    else if (kind === "thinking") {
+    else if (kind === "unfinished-thinking" || kind === "malformed-redacted" || kind === "unknown") {
       const message = assistant("Preserve signed thinking with its original message.");
       message.content.unshift({ type: "thinking", thinking: "Opaque reasoning", thinkingSignature: "exact-signature" });
+      if (kind === "unfinished-thinking") message.stopReason = "length";
+      if (kind === "malformed-redacted") message.content[0] = { type: "thinking", thinking: "opaque-should-not-be-text", redacted: true, thinkingSignature: "opaque" };
+      if (kind === "unknown") message.content[0] = { type: "future-unknown", data: "unknown" } as never;
       originals[1] = message;
     } else {
       const message = assistant("Two parallel reads.");
       message.content.push({ type: "toolCall", id: "a", name: "read", arguments: {} }, { type: "toolCall", id: "b", name: "read", arguments: {} });
+      message.stopReason = "toolUse";
       originals[1] = message;
       originals[2] = { role: "toolResult", toolCallId: "a", toolName: "read", content: [{ type: "text", text: "Result A" }], isError: false, timestamp: 2 };
+      if (["result-before-call", "duplicate-result", "duplicate-call", "wrong-tool-name"].includes(kind)) originals[3] = {
+        role: "toolResult", toolCallId: "b", toolName: "read", content: [{ type: "text", text: "Result B" }], isError: false, timestamp: 3,
+      };
+      if (kind === "result-before-call") [originals[1], originals[2]] = [originals[2]!, originals[1]!];
+      if (kind === "duplicate-result") originals[4] = structuredClone(originals[2]!);
+      if (kind === "duplicate-call") message.content.push({ type: "toolCall", id: "a", name: "read", arguments: {} });
+      if (kind === "wrong-tool-name") (originals[2] as Extract<Message,{role:"toolResult"}>).toolName = "write";
+      if (kind === "overlapping-round") { originals[3] = assistant("New round before B completed"); originals[4] = { role: "toolResult", toolCallId: "b", toolName: "read", content: [{ type: "text", text: "Result B" }], isError: false, timestamp: 4 }; }
       if (kind === "split-parallel") originals[25] = { role: "toolResult", toolCallId: "b", toolName: "read", content: [{ type: "text", text: "Result B" }], isError: false, timestamp: 3 };
     }
     const runtime = await DurableBotRuntime.open({ directory, cwd: directory, models: source.models, model: { provider: "fixture", modelId: "fixture" },
@@ -198,6 +259,7 @@ try {
     });
     const originals = history(240);
     const parallel = assistant("Complete parallel reads before retiring the prefix.");
+    parallel.stopReason = "toolUse";
     parallel.content.push({ type: "toolCall", id: "complete-a", name: "read", arguments: { path: "/exact/a" } },
       { type: "toolCall", id: "complete-b", name: "read", arguments: { path: "/exact/b" } });
     originals[1] = parallel;

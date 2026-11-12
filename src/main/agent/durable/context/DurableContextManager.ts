@@ -499,7 +499,8 @@ export class DurableContextManager {
       await this.ensureReady(ctx);
       if (input.reason === "threshold" && this.healthy && this.kernelState) {
         // Only the official compaction task may advance a busy conversation's head. A summary-only
-        // hook cannot carry protected media/signatures across that boundary, so refuse those cuts.
+        // hook retires whole completed exchanges; media and unfinished exchanges remain protected.
+        // Signed thinking is kept verbatim in cold originals, not rewritten inside an active message.
         if (!input.entries || input.firstKept === undefined) return { decline: true };
         const view = await this.host.conversation.context(ctx);
         const prefixIds = new Set<number>(input.entries.map(entry => entry.id));
@@ -1215,25 +1216,39 @@ export class DurableContextManager {
   dispose(): void { this.disposed = true; this.manualAbort?.abort(); }
 }
 
-/** A text prefix may retire only complete original exchanges. Synthetic missing results in a
- * ContextView do not prove completion, so inspect the original entry payloads, not repaired messages. */
+/** Retire complete original exchanges only. Signed/opaque reasoning may leave the active view
+ * with its entire old exchange, but remains byte-identical in the authoritative entries. Synthetic
+ * missing results do not prove completion, so inspect original payloads and causal result order. */
 function safeSummaryPrefix(entries: readonly EntryRecord[]): boolean {
-  const calls = new Set<string>();
+  const calls = new Map<string, string>();
+  const pending = new Set<string>();
   const results = new Set<string>();
   for (const entry of entries) for (const message of entry.model ?? []) {
+    if (message.role === "assistant") {
+      // Do not turn a cut-off/failed/deferred response, or an overlapping unfinished tool round,
+      // into a successful historical summary. Retain that original range instead.
+      if (pending.size || (message.stopReason !== "stop" && message.stopReason !== "toolUse")) return false;
+    }
     if (Array.isArray(message.content)) for (const part of message.content) {
-      if (part.type !== "text" && part.type !== "toolCall") return false;
-      if (part.type === "toolCall") {
-        if (calls.has(part.id)) return false;
-        calls.add(part.id);
-      }
+      if (part.type === "thinking") {
+        if (message.role !== "assistant") return false;
+        // Real Pi redacted reasoning stores opaque bytes only in thinkingSignature. Never
+        // textify a malformed record that puts an opaque payload in its readable text field.
+        if (part.redacted && part.thinking !== "") return false;
+      } else if (part.type === "toolCall") {
+        if (message.role !== "assistant" || message.stopReason !== "toolUse" || calls.has(part.id)) return false;
+        calls.set(part.id, part.name);
+        pending.add(part.id);
+      } else if (part.type !== "text") return false;
     }
     if (message.role === "toolResult") {
-      if (results.has(message.toolCallId)) return false;
+      if (!pending.has(message.toolCallId) || results.has(message.toolCallId)
+        || calls.get(message.toolCallId) !== message.toolName) return false;
+      pending.delete(message.toolCallId);
       results.add(message.toolCallId);
     }
   }
-  return [...calls].every(id => results.has(id)) && [...results].every(id => calls.has(id));
+  return pending.size === 0;
 }
 
 export interface ToolReader {
