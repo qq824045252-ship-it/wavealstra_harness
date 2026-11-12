@@ -149,7 +149,10 @@ async function launch() {
   const env={...process.env,HOME:home,USERPROFILE:home,APPDATA:path.join(home,'AppData/Roaming'),LOCALAPPDATA:path.join(home,'AppData/Local'),XDG_CONFIG_HOME:path.join(home,'.config'),XDG_CACHE_HOME:path.join(home,'.cache'),XDG_DATA_HOME:path.join(home,'.local/share'),REMOTE_DEBUGGING_PORT:String(port),ELECTRON_CLI_ARGS:JSON.stringify(['--remote-debugging-address=127.0.0.1','--disable-background-timer-throttling','--disable-backgrounding-occluded-windows'])};
   delete env.ELECTRON_RUN_AS_NODE;
   assert(process.env.npm_execpath&&fs.existsSync(process.env.npm_execpath),'launch this driver with pnpm exec node scripts/bot-organization-live-driver.cjs');
-  const native=!/\.(?:cjs|mjs|js)$/i.test(process.env.npm_execpath),args=['dev','--outDir',devOutput,'--entry',bootstrap];
+  // Keep dependency optimization local to this run, never in shared/junction node_modules.
+  const configPath=path.join(out,'isolated-vite.config.mjs');
+  fs.writeFileSync(configPath,'import config from '+JSON.stringify(path.join(root,'electron.vite.config.ts').replaceAll('\\','/'))+';\nexport default {...config,renderer:{...config.renderer,cacheDir:'+JSON.stringify(path.join(out,'vite-cache'))+'}};\n');
+  const native=!/\.(?:cjs|mjs|js)$/i.test(process.env.npm_execpath),args=['dev','--config',configPath,'--outDir',devOutput,'--entry',bootstrap];
   if(log!==undefined)fs.closeSync(log);log=fs.openSync(path.join(out,'dev.log'),'a');
   processDev=cp.spawn(native?process.env.npm_execpath:process.execPath,native?args:[process.env.npm_execpath,...args],{cwd:root,env,windowsHide:true,stdio:['ignore',log,log]});
   let target;
