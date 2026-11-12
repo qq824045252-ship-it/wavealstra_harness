@@ -1,0 +1,146 @@
+{
+  "recordedAt": "2026-11-12T06:18:10.919Z",
+  "method": "Sequential real Electron pnpm dev; fresh isolated profiles; same Flash provider/model and seven workload types; complete final provider usage per request, including summaries. No user data.",
+  "results": [
+    {
+      "engine": "native",
+      "source": {
+        "head": "bd99a359fcdeefd542ca6e290ab76d3d94c217cb",
+        "trackedChanges": []
+      },
+      "evidenceDirectory": "live-2026-11-12T05-51-32-084Z",
+      "status": "passed",
+      "exitCode": 0,
+      "cases": [
+        {
+          "label": "log diagnosis",
+          "status": "passed",
+          "elapsedMs": 6412
+        },
+        {
+          "label": "inventory arithmetic",
+          "status": "passed",
+          "elapsedMs": 15147
+        },
+        {
+          "label": "translation",
+          "status": "passed",
+          "elapsedMs": 12867
+        },
+        {
+          "label": "structured extraction",
+          "status": "passed",
+          "elapsedMs": 5714
+        },
+        {
+          "label": "instruction correction",
+          "status": "passed",
+          "elapsedMs": 5632
+        },
+        {
+          "label": "verbatim retrieval after restart",
+          "status": "passed",
+          "elapsedMs": 23759
+        },
+        {
+          "label": "Bot foreground context-tool access",
+          "status": "passed",
+          "elapsedMs": 8228
+        }
+      ],
+      "caseElapsedTotalMs": 77759,
+      "requestCount": 13,
+      "summaryIndices": [
+        1,
+        3,
+        9
+      ],
+      "usage": {
+        "input": 280225,
+        "output": 3575,
+        "cacheRead": 191360
+      },
+      "cacheReadRatio": 0.682879828709073,
+      "hashes": {
+        "report.json": "38e723166806f007ed71fc8174560fb65cf97afb1181ae49feb214395e1038e0",
+        "provider-requests.json": "6f818c296db9ecd8ec10ef239738e41b073dd67019d470219a331c8b2c71e73e",
+        "raw-usage-audit.json": "70bc0bd1c545b00822faf93aa54d7b852bc57ddbeaac3ebb9e2ad8a2cbd2a65a"
+      }
+    },
+    {
+      "engine": "billion-context",
+      "source": {
+        "head": "bd99a359fcdeefd542ca6e290ab76d3d94c217cb",
+        "trackedChanges": [
+          "scripts/durable-context-dev-live-scenario.cjs"
+        ]
+      },
+      "evidenceDirectory": "live-2026-11-12T06-14-07-322Z",
+      "status": "passed",
+      "exitCode": 0,
+      "cases": [
+        {
+          "label": "log diagnosis",
+          "status": "passed",
+          "elapsedMs": 8571
+        },
+        {
+          "label": "inventory arithmetic",
+          "status": "passed",
+          "elapsedMs": 4352
+        },
+        {
+          "label": "translation",
+          "status": "passed",
+          "elapsedMs": 13902
+        },
+        {
+          "label": "structured extraction",
+          "status": "passed",
+          "elapsedMs": 12830
+        },
+        {
+          "label": "instruction correction",
+          "status": "passed",
+          "elapsedMs": 5814
+        },
+        {
+          "label": "verbatim retrieval after restart",
+          "status": "passed",
+          "elapsedMs": 22140
+        },
+        {
+          "label": "Bot foreground context-tool access",
+          "status": "passed",
+          "elapsedMs": 9082
+        }
+      ],
+      "caseElapsedTotalMs": 76691,
+      "requestCount": 13,
+      "summaryIndices": [
+        2,
+        4,
+        9
+      ],
+      "usage": {
+        "input": 292223,
+        "output": 3402,
+        "cacheRead": 215296
+      },
+      "cacheReadRatio": 0.7367524116855962,
+      "hashes": {
+        "report.json": "4334ed1cf6f2e494c75f965ba0e0eb213d883ef33b5bbd00e397c2a1042e4e68",
+        "provider-requests.json": "3cefbf1742a25996ebcbc0260278443c83f513edd9264ba7e4cd8e51e5eaddea",
+        "raw-usage-audit.json": "55d124f419154aeb2b1c895c4fbaa42ff83e7baff636083da6c5cd06b336ec95"
+      }
+    }
+  ],
+  "limitations": [
+    "Provider cache was not evicted or controlled; no causal speedup claim.",
+    "Case elapsed totals exclude app startup and restart.",
+    "Pricing not measured.",
+    "Native original report counted only two pre-restart summaries; raw requests identify three including post-restart. Raw report preserved, audit classification corrected here.",
+    "Old BC batch live-2026-11-12T05-55-14-945Z interrupted after 5/7 with no final report or exit code; excluded.",
+    "This is production Electron via CDP, not native pointer/keyboard or full entrypoint matrix."
+  ]
+}

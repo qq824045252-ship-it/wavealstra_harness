@@ -49,7 +49,7 @@ exports.run=async({evaluate,rpc,until,report,requests,rawUsageAudit,out,home,res
  ['instruction correction','配置更正：这个验收项目原端口6173已废弃，当前端口6284。请只输出一行有效JavaScript常量声明，格式为 const PORT = 当前端口; 不要仅输出数字，不调用工具。',a=>{report.correction=inspectPortCorrection(a);}],
  ];
  for(const [label,prompt,check] of cases){try{const result=await say(prompt,label);check(result.answer);}catch(error){report.cases.push({label,status:'failed',error:String(error.stack||error)});save();}}
- const summaryCalls=requests.map((request,index)=>({request,index})).filter(({request})=>request.messages?.some(message=>['system','developer'].includes(message.role)&&JSON.stringify(message.content).includes(engine==='native'?'You are a context summarization assistant.':'compress conversation history')));
+ let summaryCalls=requests.map((request,index)=>({request,index})).filter(({request})=>request.messages?.some(message=>['system','developer'].includes(message.role)&&JSON.stringify(message.content).includes(engine==='native'?'You are a context summarization assistant.':'compress conversation history')));
  report.summaryCalls=summaryCalls.map(({request,index})=>({index,chars:JSON.stringify(request.messages).length,model:request.model}));
  const beforeRestart=await evaluate(`window.api.agent.loadTaskHistory(${JSON.stringify(taskId)})`);
  report.beforeRestart={messageCount:beforeRestart.messages.length,status:await evaluate(`window.api.agent.getCompactionStatus(${JSON.stringify(taskId)})`)};
@@ -78,6 +78,8 @@ exports.run=async({evaluate,rpc,until,report,requests,rawUsageAudit,out,home,res
    assert(wires.some(request=>request.messages?.some(message=>message.role==='tool'&&JSON.stringify(message.content).includes('engine: '+engine))),'Bot must receive real acp_status tool result');
    report.cases.push({label:'Bot foreground context-tool access',status:'passed',elapsedMs:Date.now()-started,answer:answer.text,requestStart:from,requestEnd:requests.length});save();
  } catch(error) {report.cases.push({label:'Bot foreground context-tool access',status:'failed',error:String(error.stack||error)});save();}
+ summaryCalls=requests.map((request,index)=>({request,index})).filter(({request})=>request.messages?.some(message=>['system','developer'].includes(message.role)&&JSON.stringify(message.content).includes(engine==='native'?'You are a context summarization assistant.':'compress conversation history')));
+ report.summaryCalls=summaryCalls.map(({request,index})=>({index,chars:JSON.stringify(request.messages).length,model:request.model}));
  report.requestCount=requests.length;report.usage={raw:rawUsageAudit,pricing:'not measured; do not interpret fixture zero prices as free'};
  report.afterRestart=await evaluate(`window.api.agent.getCompactionStatus(${JSON.stringify(taskId)})`);
  const projected=requests.filter(request=>request.messages?.some(message=>JSON.stringify(message.content).includes(engine==='native'?'The conversation history before this point was compacted into the following summary:':'[Compressed conversation section]')));

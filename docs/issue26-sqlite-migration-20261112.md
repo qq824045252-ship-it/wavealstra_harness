@@ -62,3 +62,18 @@ The native boundary now accepts whole completed signed/redacted-thinking exchang
 ### Completed integrated gate
 
 A fresh immutable source export of `aaa106fe` completed the default headless gate: **493 passed, 0 failed, 0 known failures, 0 new regressions, exit 0, 8.1 minutes**. The two earlier failures passed inside this full run. [Gate identity and log hash](evidence/issue26/sqlite-20261112/headless-gate.json) identify the frozen source and separate later deltas. C5 and signed-thinking changes were validated with their affected suites and final combined typecheck, not falsely counted as part of the earlier frozen full run. No baseline was loosened and no full suite was rerun for each small change.
+
+## Native / BC 七类真实模型对照（2026-11-12 06:17 UTC）
+
+在 `bd99a359` 产品代码、同一 Flash Provider 下，分别以全新隔离 profile 跑真实 Electron `pnpm dev`：native 与 billion-context 均 **7/7，命令退出 0**。覆盖日志判读、库存计算、翻译、结构抽取、指令纠正、冷重启后工具逐字回查原文、Bot 前台上下文工具。
+
+| 引擎 | 请求（含摘要） | 摘要 | 输入 tokens | 缓存读取 tokens | 输出 tokens | 七项用例耗时之和 |
+|---|---:|---:|---:|---:|---:|---:|
+| native | 13 | 3 | 280225 | 191360 | 3575 | 77759 ms |
+| billion-context | 13 | 3 | 292223 | 215296 | 3402 | 76691 ms |
+
+缓存未清空或强控；单批数据不能证明 BC 更快或更省。耗时之和不含启动/重启，价格未测。native 原报告摘要数只在重启前统计，原始请求证据实际有 3 次；本次修复夹具在全部场景后重算，原始报告保留不改写。两批完整 usage 都已经计入所有摘要费用口径。
+
+第一次 BC 批（05:55）中断在 5/7，无最终 report/退出码，不计通过；已保留证据。恢复批（06:14）使用新隔离 profile，7/7 且退出 0。
+
+结构化证据及 SHA256：`docs/evidence/issue26/sqlite-20261112/native-bc-seven-types-comparison.json`。仍未证明巨型首次历史/受保护图片前缀有界，以及全部 Work/team/Gateway/Remote 入口矩阵；不能据此关闭整个 #26。
