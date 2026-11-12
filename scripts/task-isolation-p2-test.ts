@@ -179,7 +179,7 @@ async function main(): Promise<void> {
       taskId: "t1",
       taskRoot,
       command: process.execPath,
-      args: ["-e", "console.log(1)"],
+      args: ["-e", "process.stdout.write('1')"],
       writePaths: [outside],
       timeoutMs: 5000,
     });

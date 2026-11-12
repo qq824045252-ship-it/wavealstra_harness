@@ -20,7 +20,7 @@ const BUDGET = { queryMs: 1500, eventLoopDelayMs: 50, rssGrowthBytes: 256 * 1024
 const root = mkdtempSync(join(tmpdir(), "memory-vector-scale-"));
 const db = new AppDatabase(join(root, "app.db"));
 const originalEmbed = SemanticRuntime.prototype.embed;
-const samples: Array<{ path: string; durationMs: number; eventLoopDelayMs: number; rssBytes: number; returned: number }> = [];
+const samples: Array<{ path: string; durationMs: number; eventLoopDelayMs: number; firstTickMs: number; histogramMaxMs: number; rssBytes: number; returned: number }> = [];
 const loop = monitorEventLoopDelay({ resolution: 5 });
 try {
   new BotRegistry(db.connection).registerBot({ userId: LOCAL_USER_ID, botId: "scale-owner", displayName: "scale" });
@@ -80,7 +80,8 @@ try {
       await pause(10);
       assert(hits.length <= 20 && hits.some(hit => hit.memory.id === target.id), "completed timed search must return the old target");
       assert.equal(new Set(hits.map(hit => hit.memory.id)).size, hits.length);
-      samples.push({ path: route.path, durationMs, eventLoopDelayMs: Math.max(loop.max / 1e6, firstTickMs), rssBytes: process.memoryUsage().rss, returned: hits.length });
+      // Preserve both signals so a failure can distinguish initial timer starvation from later loop stalls.
+      samples.push({ path: route.path, durationMs, eventLoopDelayMs: Math.max(loop.max / 1e6, firstTickMs), firstTickMs, histogramMaxMs: loop.max / 1e6, rssBytes: process.memoryUsage().rss, returned: hits.length });
     }
   }
   assert.equal(embeddings, 6, "all five semantic requests plus warmup actually embedded and searched");
