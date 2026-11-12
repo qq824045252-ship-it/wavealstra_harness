@@ -242,6 +242,7 @@ export class CronService {
     if (!job?.reminder || !Number.isSafeInteger(dueAt)) throw new Error("无效提醒");
     this.db.upsertCronJob({ ...job, enabled: true, updatedAt: Date.now(), reminder: { ...job.reminder, state: "scheduled" } });
     this.db.connection.prepare("UPDATE cron_reminder_state SET next_due_at=? WHERE job_id=?").run(dueAt, id);
+    this.reminders.clearRetry(id);
     this.disarm(id);
     const current = this.db.getCronJob(id)!;
     this.arm(current);
@@ -253,6 +254,7 @@ export class CronService {
   remove(id: string): void {
     this.disarm(id);
     this.db.removeCronJob(id);
+    this.reminders.clearRetry(id);
     broadcast(CronIpc.event, { type: "remove", id });
   }
 
@@ -296,12 +298,14 @@ export class CronService {
   private arm(job: CronJobDto): void {
     this.disarm(job.id);
     if (this.stopped) return;
-    const nextRun = job.reminder ? this.reminders.due(job) : computeNextRunAt(job);
+    const nextRun = job.reminder ? this.reminders.nextAttemptAt(job) : computeNextRunAt(job);
     if (nextRun === undefined) {
       this.setEnabled(job.id, false);
       return;
     }
     const timer = scheduleTimer(nextRun, () => {
+      if (this.timers.get(job.id) !== timer) return;
+      this.timers.delete(job.id);
       void this.execute(job).catch((error) => console.error("[CronService] timer failed", job.id, error));
     });
     this.timers.set(job.id, timer);
@@ -325,6 +329,7 @@ export class CronService {
     this.runningJobs.add(job.id);
     const revision = this.revisions.get(job.id);
     let run: CronRunDto | undefined;
+    let reminderDueAt: number | undefined;
     let latest = this.db.getCronJob(job.id);
     let newTask = false;
     try {
@@ -346,6 +351,8 @@ export class CronService {
       if (latest.reminder) {
         const dueAt = opts?.force ? Date.now() : this.reminders.due(latest);
         if (dueAt === undefined || (!opts?.force && dueAt > Date.now())) return;
+        if (!opts?.force && (this.reminders.nextAttemptAt(latest) ?? Infinity) > Date.now()) return;
+        reminderDueAt = dueAt;
         // Manual preview is distinct from the scheduled occurrence; neither uses a model/Task.
         this.reminders.deliver(latest, dueAt, Date.now(), !!opts?.force);
         this.flushReminders();
@@ -404,6 +411,11 @@ export class CronService {
       if (this.stopped && run) return;
       if (!latest) throw error;
       const message = error instanceof Error ? error.message : String(error);
+      if (latest.reminder) {
+        const retryAt = !opts?.force && reminderDueAt !== undefined ? this.reminders.defer(latest, reminderDueAt) : undefined;
+        console.warn("[Cron] reminder delivery failed", { jobId: job.id, dueAt: reminderDueAt, retryAt, error: message });
+        return;
+      }
       if (!run && this.db.getCronJob(job.id)) {
         run = { id: randomUUID(), jobId: job.id, startedAt: Date.now(), status: "running" };
         this.db.insertCronRun(run);
@@ -412,10 +424,12 @@ export class CronService {
     } finally {
       this.runningJobs.delete(job.id);
       const current = this.db.getCronJob(job.id);
-      if (current?.enabled && !this.stopped && this.revisions.get(job.id) === revision) {
-        if ((!opts?.force && current.scheduleType === "at") ||
+      if (current?.enabled && !this.stopped) {
+        // Only the owning revision may consume a one-time plan. A newer timer
+        // may have fired while this run was busy; reconcile its latest schedule.
+        if ((!opts?.force && !current.reminder && current.scheduleType === "at" && this.revisions.get(job.id) === revision) ||
           (current.maxRuns != null && (current.runCount ?? 0) >= current.maxRuns)) this.setEnabled(job.id, false);
-        else this.arm(current);
+        else if (!this.timers.has(job.id)) this.arm(current);
       }
     }
   }
@@ -454,7 +468,7 @@ export class CronService {
     } finally {
       this.runningJobs.delete(run.jobId);
       const current = this.db.getCronJob(run.jobId);
-      if (current?.enabled && !this.stopped) this.arm(current);
+      if (current?.enabled && !this.stopped && !this.timers.has(run.jobId)) this.arm(current);
     }
   }
 

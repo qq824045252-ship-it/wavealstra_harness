@@ -3592,7 +3592,7 @@ export class AppDatabase {
     const rows = this.db
       .prepare(`
         SELECT c.*,
-               (SELECT COUNT(id) FROM cron_runs WHERE job_id = c.id AND status != 'skipped') AS run_count
+               (SELECT COUNT(id) FROM cron_runs WHERE job_id = c.id AND CASE WHEN json_extract(c.execution_json, '$.reminder.kind') = 'bot-reminder' THEN status = 'success' ELSE status != 'skipped' END) AS run_count
         FROM cron_jobs c
         ORDER BY c.updated_at DESC
       `)
@@ -3673,7 +3673,7 @@ export class AppDatabase {
   getCronJob(id: string): CronJobDto | undefined {
     const row = this.db.prepare(`
       SELECT c.*,
-             (SELECT COUNT(id) FROM cron_runs WHERE job_id = c.id AND status != 'skipped') AS run_count
+             (SELECT COUNT(id) FROM cron_runs WHERE job_id = c.id AND CASE WHEN json_extract(c.execution_json, '$.reminder.kind') = 'bot-reminder' THEN status = 'success' ELSE status != 'skipped' END) AS run_count
       FROM cron_jobs c
       WHERE c.id = ?
     `).get(id) as Record<string, unknown> | undefined;

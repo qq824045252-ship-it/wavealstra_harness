@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { testSchedulingContinuity } from "./cron-scheduling-continuity";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,6 +23,7 @@ function barrier() {
 }
 
 async function main() {
+  await testSchedulingContinuity();
   const root = mkdtempSync(join(tmpdir(), "mybuddy-cron-native-"));
   process.env.HOME = root;
   process.env.USERPROFILE = root;
@@ -122,6 +124,7 @@ async function main() {
     empty = true;
     cron.upsert(job("empty", { target: { kind: "task", taskId: "source" } }));
     await cron.runNow("empty"); await waitRun("empty", "error");
+    assert.equal(db.getCronJob("empty")?.runCount, 1, "ordinary execution errors retain their existing attempt quota semantics");
     empty = false; cancelled = true;
     cron.upsert(job("cancelled"));
     await cron.runNow("cancelled"); await waitRun("cancelled", "error");

@@ -1,3 +1,4 @@
+import {testReminderRecovery} from "./cron-reminder-recovery";
 import {createHash} from "node:crypto";
 import {execFileSync} from "node:child_process";
 import {REMINDER_RESULT_LIMITS,verifyReminderSnapshot,verifyReminderSnapshots} from "../src/main/cron/CronReminderResults";
@@ -20,6 +21,8 @@ import { DEFAULT_BOT_ID, LOCAL_USER_ID } from "../src/shared/bot-work";
 import type { ReminderDelivery } from "../src/main/cron/CronReminderDelivery";
 
 async function main() {
+ await testReminderRecovery();
+ await testReminderRecovery("message");
  const root = mkdtempSync(join(tmpdir(), "bot-reminders-"));
  const db = new AppDatabase(join(root,"app.db"));
  const bots = new BotRegistry(db.connection);
