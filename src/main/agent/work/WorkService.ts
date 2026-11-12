@@ -374,7 +374,7 @@ export class WorkService {
   }
   /** Trusted host source readback. Not exposed as a model tool or IPC actor. */
   applyObservedSources(workId: string, operationId: string, readBefore: WorkDto,
-    current: { inputSnapshotId: string; sources: WorkGoalSourceDto[] }): WorkControlResult {
+    current: { inputSnapshotId: string; sources: WorkGoalSourceDto[] }, inboxEventId?: string): WorkControlResult {
     const params: AmendWorkParams = { operationId, workId, inputSnapshotId: current.inputSnapshotId, goalSources: current.sources };
     const invalid = this.validatePayload("amendWork", params);
     if (invalid) return invalid;
@@ -382,12 +382,19 @@ export class WorkService {
       const denied = this.authorityError(); if (denied) return denied;
       const work = this.repo.getWork(workId);
       if (!work || readBefore.workId !== workId) return { ok: false, code: "not_found", message: "找不到 Work" };
-      const payloadHash = this.hash("observedSources", params);
+      const payloadHash = this.hash("observedSources", inboxEventId ? {...params,inboxEventId} : params);
       const receipt = this.repo.getReceipt(work.userId, operationId);
       if (receipt) {
         if (receipt.work_id !== workId || receipt.operation_type !== "observedSources" || receipt.payload_hash !== payloadHash)
           return { ok: false, code: "idempotency_conflict", message: "来源操作身份已用于不同观察" };
         return { ok: true, replayed: true, operationId, work };
+      }
+      if(inboxEventId){
+        const event=this.repo.getInbox(inboxEventId),subscription=event?.subscriptionId?this.repo.getSubscription(event.subscriptionId):undefined;
+        if(!event || event.workId!==workId || event.intentRevision!==work.intentRevision || event.ownerEpoch!==work.ownerEpoch
+          || !['pending','merged','blocked','processed'].includes(event.status)
+          || event.subscriptionId && (!subscription || subscription.workId!==workId || subscription.source!==event.source || subscription.stoppedAt))
+          return {ok:false,code:"version_conflict",message:"触发事件不属于当前事项、修订或有效订阅"};
       }
       if (work.stateVersion !== readBefore.stateVersion || work.ownerEpoch !== readBefore.ownerEpoch
         || work.intentRevision !== readBefore.intentRevision || work.inputSnapshotId !== readBefore.inputSnapshotId)
@@ -399,7 +406,7 @@ export class WorkService {
       const updated = this.repo.getWork(workId)!;
       if (updated.inputSnapshotId !== readBefore.inputSnapshotId) this.outbox({ work: updated,
         eventType: "work.source_dispatch_requested", operationId: `source-dispatch:${operationId}`,
-        payload: { inputSnapshotId: updated.inputSnapshotId, sourceOperationId: operationId } });
+        payload: { inputSnapshotId: updated.inputSnapshotId, sourceOperationId: operationId, ...(inboxEventId ? {inboxEventId} : {}) } });
       this.repo.saveReceipt({ userId: work.userId, operationId, workId, operationType: "observedSources", payloadHash,
         workSnapshot: updated, outboxEventId: mutation.outboxEventId, now: this.now() });
       this.emitCurrentProjection(workId);

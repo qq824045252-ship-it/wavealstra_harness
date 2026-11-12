@@ -28,7 +28,7 @@ const state = (version: number) => JSON.stringify({ simulated: true, provider: "
 let db!: AppDatabase, bots!: BotRegistry, works!: WorkService, messages!: BotConversationRepository, queue!: WorkDispatchQueue;
 let authority = true;
 let calls = 0;
-const submitted: Array<{ workId: string; snapshot: string; text: string }> = [];
+const submitted: Array<{ workId: string; snapshot: string; text: string; input: any }> = [];
 const actor: WorkActor = { kind: "user", userId: LOCAL_USER_ID, grants: DESKTOP_USER_GRANTS };
 const unwrap = (result: WorkControlResult): WorkDto => { assert(result.ok, JSON.stringify(result)); return result.work; };
 const guard = (id: string) => { const work = works.getWork(id)!; return { expectedStateVersion: work.stateVersion,
@@ -40,8 +40,15 @@ function open() {
   const adapter = { dispatch: async (asActor, params) => {
     const result = works.dispatchExecution(asActor, { ...params, durableStoreKey: `fixture:${params.taskId}`,
       conversationId: "1", workspaceBinding: root });
-    if (result.ok) submitted.push({ workId: result.work.workId, snapshot: result.work.inputSnapshotId,
+    if (result.ok) {
+      const binding=works.repo.bindingForTask(params.taskId)!;assert(binding.inboxEventId,'real source event survives dispatch binding');
+      const native=JSON.parse(works.repo.executionInput(binding));
+      assert.equal(native.watchExecutionStage.stage,'triggered_execution');assert.equal(native.watchExecutionStage.inboxEventId,binding.inboxEventId);
+      assert.equal(native.watchExecutionStage.currentInputSnapshotId,result.work.inputSnapshotId);assert.equal(native.sourceEvent.source,'file');
+      assert.equal(native.sourceEvent.eventType,'file.changed');assert.match(native.watchExecutionStage.instructions,/先实际读取/);
+      submitted.push({ input:native,workId: result.work.workId, snapshot: result.work.inputSnapshotId,
       text: await readFile(result.work.goalSources[0].sourceRef, "utf8") });
+    }
     return result;
   }, flush: async () => {
     for (const row of submitted) for (const binding of works.repo.listBindings(row.workId)) if (binding.status === "pending")
@@ -143,6 +150,16 @@ try {
   const firstEvent = works.repo.listInbox(id, ["pending", "merged", "blocked", "processed", "skipped"]).find(event => event.eventType === "file.changed")!;
   assert.equal(firstEvent.payload.observation, "fs-watch");
   assert.equal(firstEvent.status, "processed");
+  assert.equal(submitted.at(-1)!.input.sourceEvent.sourceVersion,hash(state(1)));
+  const rootBinding=works.repo.listBindings(id).find(binding=>binding.inboxEventId===firstEvent.eventId)!;
+  const continuationId='stage-continuation',stagePlan='stage-continuation-plan';
+  works.repo.insertBinding({...rootBinding,bindingId:continuationId,operationId:continuationId,taskId:continuationId,inboxEventId:undefined,status:'completed'});
+  db.connection.prepare("INSERT INTO work_continuation_plans(plan_id,work_id,source_binding_id,operation_id,intent_revision,input_snapshot_id,owner_epoch,owner_bot_id,gap_items_json,reason,state,created_at) VALUES (?,?,?,?,?,?,?,?,'[]','阶段续办','settled',?)").run(stagePlan,id,rootBinding.bindingId,stagePlan,rootBinding.intentRevision,rootBinding.inputSnapshotId,rootBinding.ownerEpoch,DEFAULT_BOT_ID,Date.now());
+  db.connection.prepare("INSERT INTO work_dispatch_requests(operation_id,work_id,task_id,bot_id,intent_revision,input_snapshot_id,state,created_at,continuation_plan_id) VALUES (?,?,?,?,?,?,'dispatched',?,?)").run(stagePlan,id,continuationId,DEFAULT_BOT_ID,rootBinding.intentRevision,rootBinding.inputSnapshotId,Date.now(),stagePlan);
+  const continuation=works.repo.getBinding(continuationId)!;
+  const inherited=JSON.parse(works.repo.executionInput(continuation));assert.equal(inherited.watchExecutionStage.inboxEventId,firstEvent.eventId);assert.equal(inherited.watchExecutionStage.continuation,true);
+  const mismatched={...continuation,inputSnapshotId:hash(state(0))};assert.equal(JSON.parse(works.repo.executionInput(mismatched)).watchExecutionStage,undefined,'old trigger cannot cross input version');
+
   assert.equal(works.getWork(id)!.goalSources[0].inputSnapshotId, hash(state(1)));
   const replay = await created.replay(); assert.equal(replay.replayed, true, "tool replay uses its original baseline identity");
   await writeFile(path, state(1)); await delay(1300); await queue.flush();
@@ -151,8 +168,8 @@ try {
   await until(() => count(id) === 2, "atomic rename still watched");
   await writeFile(path, state(3)); await until(() => count(id) === 3, "replacement inode remains watched");
   // Source errors are visible, and restore is not falsely reported as unchanged success.
-  await rm(path);
-  await until(() => works.repo.listOpenBlockers(id).some(item => item.blockerId === `file-receiver:${subscription.subscriptionId}`), "missing source exposes blocker");
+  const beforeMissing=count(id);await rm(path);
+  await until(() => works.repo.listOpenBlockers(id).some(item => item.blockerId === `file-receiver:${subscription.subscriptionId}`), "missing source exposes blocker");assert.equal(count(id),beforeMissing,"failed source read never dispatches a fake trigger");
   assert.equal(count(id), 3);
   await assert.rejects(new WorkSourceObserver(works).readCurrent(works.getWork(id)!));
   await writeFile(path, state(4)); await until(() => count(id) === 4, "read error recovers on a real file event");
@@ -187,6 +204,14 @@ try {
   unwrap(works.resumeWork(actor, { operationId: "resume-rebaseline", workId: amendId, versionGuard: guard(amendId) }));
   await queue.flush(); await delay(1200); await queue.flush(); assert.equal(count(amendId), 0);
   await writeFile(amendPath, "baseline-2"); await until(() => count(amendId) === 1, "new change after rebaseline executes once");
+  const victim=works.getWork(skipId)!;
+  const rejected=works.applyObservedSources(skipId,'wrong-work-trigger',victim,{inputSnapshotId:hash('fake'),sources:victim.goalSources},firstEvent.eventId);
+  assert.equal(rejected.ok,false,'foreign Work event cannot be attached to a source update');
+  const original=works.getWork(id)!;
+  db.connection.prepare('UPDATE work_events_inbox SET intent_revision=intent_revision+1 WHERE event_id=?').run(firstEvent.eventId);
+  const stale=works.applyObservedSources(id,'wrong-revision-trigger',original,{inputSnapshotId:hash('fake'),sources:original.goalSources},firstEvent.eventId);
+  assert.equal(stale.ok,false,'mismatched event revision cannot supply execution stage');
+  db.connection.prepare('UPDATE work_events_inbox SET intent_revision=intent_revision-1 WHERE event_id=?').run(firstEvent.eventId);
   // Events cannot redirect a configured source or supply a fake target hash.
   const bad = works.ingestSourceEvent({ source: "file", sourceEventId: "untrusted-target", eventType: "file.changed", timestamp: Date.now(),
     workId: id, subscriptionId: subscription.subscriptionId, payload: { target: skipPath, inputSnapshotId: "forged" } });

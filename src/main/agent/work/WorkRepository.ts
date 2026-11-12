@@ -542,11 +542,26 @@ export class WorkRepository {
       userDefinition.criteria = definition.criteria.filter(item => item.origin !== "assistant_proposal");
       planDefinition.criteria = definition.criteria.filter(item => item.origin === "assistant_proposal");
     }
-    const sourceEvent = binding.inboxEventId
-      ? this.db.prepare("SELECT source,source_event_id,event_type,source_version,payload_json,received_at FROM work_events_inbox WHERE event_id=?")
-        .get(binding.inboxEventId) as { source: string; source_event_id: string; event_type: string; source_version: string | null;
-          payload_json: string; received_at: number } | undefined
-      : undefined;
+    // A continuation inherits only its proven same-version source's trigger;
+    // an active subscription alone never proves that an event has arrived.
+    let triggerBinding: WorkExecutionBindingDto | undefined = binding;
+    const seenTriggers=new Set<string>();
+    const hasContinuationPlans=!!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='work_continuation_plans'").get();
+    while(hasContinuationPlans && this.getWork(binding.workId)?.mode === "watch" && triggerBinding && !triggerBinding.inboxEventId && !seenTriggers.has(triggerBinding.bindingId)){
+      seenTriggers.add(triggerBinding.bindingId);
+      const parent=this.db.prepare(`SELECT p.source_binding_id FROM work_dispatch_requests r JOIN work_continuation_plans p ON p.plan_id=r.continuation_plan_id
+        WHERE r.task_id=? AND r.work_id=? AND r.state!='cancelled' AND p.state!='cancelled'
+          AND p.work_id=? AND p.intent_revision=? AND p.input_snapshot_id=? AND p.owner_epoch=? AND p.owner_bot_id=?`).get(triggerBinding.taskId,binding.workId,binding.workId,binding.intentRevision,binding.inputSnapshotId,binding.ownerEpoch,binding.botId) as {source_binding_id:string}|undefined;
+      const source=parent?this.getBinding(parent.source_binding_id):undefined;
+      triggerBinding=source && !source.invalidatedAt && source.workId===binding.workId && source.intentRevision===binding.intentRevision
+        && source.inputSnapshotId===binding.inputSnapshotId && source.ownerEpoch===binding.ownerEpoch ? source : undefined;
+    }
+    const triggerEvent=triggerBinding?.inboxEventId?this.getInbox(triggerBinding.inboxEventId):undefined;
+    const sourceEvent=triggerEvent && triggerEvent.workId===binding.workId && triggerEvent.intentRevision===binding.intentRevision
+      && triggerEvent.ownerEpoch===binding.ownerEpoch && triggerEvent.status!=='skipped' ? {
+        source:triggerEvent.source,source_event_id:triggerEvent.sourceEventId,event_type:triggerEvent.eventType,
+        source_version:triggerEvent.sourceVersion,payload_json:JSON.stringify(triggerEvent.frozenPayload??triggerEvent.payload),received_at:triggerEvent.receivedAt,
+      } : undefined;
     const hasTeams = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='work_team_execution_history'").get();
     const team = hasTeams ? this.db.prepare("SELECT input_json FROM work_team_executions WHERE task_id=? AND work_id=? UNION ALL SELECT input_json FROM work_team_execution_history WHERE task_id=? AND work_id=? LIMIT 1")
       .get(binding.taskId, binding.workId, binding.taskId, binding.workId) as { input_json: string | null } | undefined : undefined;
@@ -559,6 +574,12 @@ export class WorkRepository {
       delegatedScope: binding.delegatedScope,
       ...(this.getWork(binding.workId)?.mode === "watch" ? { watchLifetimeControl: this.getWork(binding.workId)?.watchRule?.requestedOutcome === "one_time" ? "这是用户指定未来执行的一次性目标，不是长期职责。现在触发后完成原请求，交付真实结果与产物，前台核对全部完成后结案；有缺项如实保留，不自造后续周期或等待。" : this.getWork(binding.workId)?.watchRule?.executionMode === "continuous" ? "按原始授权推进持续目标，先完成现在可行动的步骤，再交付实际结果、未完成步骤和证据。不要虚构等待时间，不因本轮回复结束宣称整个目标完成；后续由前台安排。不要重复已完成的外部动作。" : "你只执行本轮观察（团队成员也相同），交付实际结果和用户停止条件对应的证据；本轮回复结束后由前台自主判断持续委托是否应结束。不调用 conversation_goal_propose_complete，不请求用户确认结束，也不使用 automation_exec 修改或取消 Work 订阅。不要等待下一轮或尝试自行关闭长期委托。" } : {}),
       ...(this.getWork(binding.workId)?.mode === "watch" ? { watchArtifactContract: "用户指定了成品文件或附件时，必须回读并通过现有产物登记工具登记该指定文件的本轮真实快照，供前台核验和交付。额外写的报告或摘要不能替代指定成品，例如要求 benchmark.json 时不能只登记 benchmark-report.md。只登记实际存在且已核验的文件，不自行扫描或伪造快照；登记失败或目标缺失时如实报告缺项。只读观察只核验已有成果，不因此改写文件。" } : {}),
+      ...(this.getWork(binding.workId)?.mode === "watch" && sourceEvent ? { watchExecutionStage: {
+        stage:"triggered_execution",inboxEventId:triggerEvent!.eventId,triggerBindingId:triggerBinding!.bindingId,
+        continuation:triggerBinding!.bindingId!==binding.bindingId,subscriptionId:triggerEvent!.subscriptionId,
+        currentInputSnapshotId:binding.inputSnapshotId,
+        instructions:"宿主已建立此事项的订阅或执行计划，并因下列真实事件派发当前轮；现在不是创建监听阶段。原文的建立监听、查询事件源、创建时不执行是已处理的受理设置，不要重做、不要另建automation/监听，也不要因执行器工具目录没有file源就声称宿主未接入。只处理本次触发的原任务：先实际读取目标并判断业务条件，事件信号或哈希不证明merged、成果或成功；来源失败必须如实报告。当前已有可处理事件，不重新等待下一事件来替代本轮。完成后交回宿主按既有订阅安排后续。续办仅补本轮未完成步骤，不重复已完成或未知外部效果。",
+      } } : {}),
       ...(sourceEvent ? { sourceEvent: { source: sourceEvent.source, eventId: sourceEvent.source_event_id,
         eventType: sourceEvent.event_type, sourceVersion: sourceEvent.source_version ?? undefined,
         receivedAt: sourceEvent.received_at, payload: json<Record<string, unknown>>(sourceEvent.payload_json, {}) } } : {}),

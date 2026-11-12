@@ -60,7 +60,7 @@ source = source.slice(0, start) + `
       }
       await until(()=>evaluate('Boolean(document.querySelector("#bot-draft"))'),'restart composer');
     };
-    try { await require('./bot-scheduling-live-scenario.cjs')[process.env.BOT_SCHEDULING_FOCUSED==='1'?'runFocused':'run']({send,foregroundDone,until,evaluate,history,rpc,report,requests,rawUsageAudit,out,home,modelKey,botId,restart}); } finally {
+    try { await require('./bot-scheduling-live-scenario.cjs')[(process.env.BOT_SCHEDULING_FOCUSED==='1'||process.env.BOT_SCHEDULING_EVENT_ONLY==='1')?'runFocused':'run']({send,foregroundDone,until,evaluate,history,rpc,report,requests,rawUsageAudit,out,home,modelKey,botId,restart}); } finally {
       report.source.finishedFingerprint=fingerprint();
       assert.equal(report.source.finishedFingerprint.sha256,report.source.fingerprint.sha256,'frozen source must not change during live batch');
     }

@@ -248,7 +248,7 @@ export class WorkDispatchQueue {
               attemptCount:0, createdAt:Date.now() });
             return;
           }
-          const applied=this.works.applyObservedSources(current.workId,`source-inbox:${original.eventId}`,current,source);
+          const applied=this.works.applyObservedSources(current.workId,`source-inbox:${original.eventId}`,current,source,original.eventId);
           if(!applied.ok)throw Error(`${applied.code}: ${applied.message}`);
           this.works.repo.clearBlocker(`source-readback:${original.eventId}`,current.workId,Date.now());
         });

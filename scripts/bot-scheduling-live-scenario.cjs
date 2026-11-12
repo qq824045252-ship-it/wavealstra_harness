@@ -372,7 +372,7 @@ exports.seedActionFixtures=seedActionFixtures;
 
 /** Bounded follow-up batch: seven distinct real request types; no long parallel or renderer lane. */
 exports.runFocused=async({send,until,evaluate,history,rpc,report,requests,rawUsageAudit,out,home,modelKey,botId,restart})=>{
-  const wait=ms=>new Promise(r=>setTimeout(r,ms)),crypto=require('node:crypto');
+  const wait=ms=>new Promise(r=>setTimeout(r,ms)),crypto=require('node:crypto'),eventOnly=process.env.BOT_SCHEDULING_EVENT_ONLY==='1';
   const workspace=path.join(home,'focused-inputs');fs.mkdirSync(workspace,{recursive:true});
   const mixed=path.join(workspace,'mixed-history');fs.mkdirSync(mixed,{recursive:true});
   const records=JSON.stringify([{id:1,title:'history-token-original'},{id:2,title:'recent'}]);
@@ -385,7 +385,7 @@ exports.runFocused=async({send,until,evaluate,history,rpc,report,requests,rawUsa
   const works=()=>evaluate('window.api.botWork.listWorks(true)'),detail=id=>evaluate(`window.api.botWork.getWork(${JSON.stringify(id)})`),jobs=()=>evaluate('window.api.cron.list()'),notes=()=>evaluate('window.api.notification.list({limit:100})');
   const queryDb=(sql,args=[])=>JSON.parse(cp.execFileSync('python3',['-c',"import sqlite3,json,sys;c=sqlite3.connect('file:'+sys.argv[1]+'?mode=ro',uri=True);c.row_factory=sqlite3.Row;print(json.dumps([dict(r) for r in c.execute(sys.argv[2],json.loads(sys.argv[3]))]))",path.join(home,'.mybuddy','app.db'),sql,JSON.stringify(args)],{encoding:'utf8',maxBuffer:16*1024*1024}));
   const proof=id=>queryDb('SELECT b.binding_id,b.admitted_at,b.input_snapshot_id,b.status,r.state,r.attempts,r.context_json,r.decision_json,r.error FROM work_execution_bindings b LEFT JOIN work_watch_reviews r ON r.binding_id=b.binding_id WHERE b.work_id=? ORDER BY b.admitted_at',[id]).map(x=>({...x,context:x.context_json?JSON.parse(x.context_json):null,decision:x.decision_json?JSON.parse(x.decision_json):null,notifications:queryDb("SELECT message_id,metadata_json FROM bot_work_feedback WHERE json_extract(metadata_json,'$.executionId')=? AND json_extract(metadata_json,'$.kind')='result'",[x.binding_id])}));
-  report.batchMode='focused-seven-types-plus-revision-gate';report.cases=[];report.evidence=[];report.failures=[];report.workspace=workspace;report.coverage={real:'Electron, real Flash, tools, clock, fs.watch, persisted Work and immutable files',simulated:'Local PR JSON and controlled benchmark delay; not GitHub webhook',excluded:'Long A/B sleep, miniDOM optimization, weather, and service fault injection not repeated'};
+  report.batchMode=eventOnly?'focused-six-types-event-chain':'focused-seven-types-plus-revision-gate';report.cases=[];report.evidence=[];report.failures=[];report.workspace=workspace;report.coverage={real:'Electron, real Flash, tools, clock, fs.watch, persisted Work and immutable files',simulated:'Local PR JSON and controlled benchmark delay; not GitHub webhook',excluded:'Long A/B sleep, miniDOM optimization, weather, and service fault injection not repeated'};
   const persist=()=>{report.modelCalls=requests.length;report.actualModels=[...new Set(requests.map(q=>q.model))];report.checkpointAt=Date.now();fs.writeFileSync(path.join(out,'scheduling-progress.json'),JSON.stringify(report,null,2));};
   const check=(ok,label,data)=>{report.evidence.push({label,passed:!!ok,data});if(!ok)report.failures.push(label);persist();};
   const section=async(name,fn)=>{try{await fn();}catch(e){report.failures.push(name+': '+e.message);report.evidence.push({label:name,passed:false,error:e.stack});persist();}};
@@ -406,6 +406,7 @@ exports.runFocused=async({send,until,evaluate,history,rpc,report,requests,rawUsa
     {id:'file-event',type:'event-driven-benchmark',prompt:`建立持续事件委托“短验PRbenchmark”：${prSource} 是明确模拟的本地PR状态文件，不是真实GitHub。用已接入file事件源、这个绝对eventTarget、next_event、continuous、latest、changes_only、notifyInitial=true；不设cron，创建时不执行。真实变化后先读取来源，merged=true时只实际运行一次工作区 node benchmark.cjs，回读登记指定成品 benchmark.json。首个合并事件交付实际基线；后续新版本仍实际运行并登记，但只有 regression=true 才通知我，regression=false 时静默，不发普通结果通知。脚本实测三次中位数，阈值max(基线三倍,50ms)；controlledDelayMs是明确标注的本地受控负载非真实产品性能。相同字节/版本重复事件不重跑。不要改脚本，不伪造数据，不联网；处理后继续等待真实变化。`},
     {id:'mixed',type:'mixed-direct-execution-reminder',prompt:`同一请求三件事：立即直接答23+19；建立一次性后台委托“短验混合检索”，其执行范围仅为${mixed}：先read并运行node check.cjs diagnose，判断能修就修search.cjs让history-token-original可查，运行node check.cjs verify，回读登记诊断/验证成品，不改records.json或check.cjs；另外独立设置2分钟后提醒“查看短验混合结果”，名称“短验混合提醒”。这三个分支都属于本次请求，提醒不替代修复。`}
   ];
+  if(eventOnly)cases.splice(0,cases.length,...cases.filter(c=>!['revision-gate','mixed'].includes(c.id)));
   // Every real inference batch submits >=6 distinct semantic task types before collecting any result.
   cases.sort((a,b)=>a.id==='direct'?-1:b.id==='direct'?1:0);
   for(const c of cases){c.submittedAt=Date.now();report.cases.push(c);await send(c.prompt);c.user=(await history()).messages.filter(m=>m.role==='user').at(-1);assert(c.user?.requestId);persist();
@@ -414,7 +415,7 @@ exports.runFocused=async({send,until,evaluate,history,rpc,report,requests,rawUsa
   if(report.crossConversation){report.crossConversation.secondConversationId=cases.find(c=>c.id==='query').user.conversationId;check(report.crossConversation.secondConversationId!==report.crossConversation.originalConversationId,'planned cases establish two real conversation identities');}
 
   check(new Set(cases.map(c=>c.type)).size>=6,'at least six distinct types submitted in this same batch');
-  await section('controlled revision gate',async()=>{
+  if(!eventOnly)await section('controlled revision gate',async()=>{
     let w;await until(async()=>{w=(await works()).find(x=>x.title==='短验改向');return !!w;},'gate Work created');
     let partial;await until(async()=>{partial=(await history()).messages.find(m=>m.workIds?.includes(w.workId)&&m.workFeedback?.report?.milestone&&m.workFeedback.report.files?.some(f=>f.name==='gate-a.txt'));return !!partial&&fs.existsSync(gateB);},'A actual milestone and B prior write');
     const before=await detail(w.workId),aBytes=fs.readFileSync(gateA),aDigest=crypto.createHash('sha256').update(aBytes).digest('hex');report.revisionGate={initialWork:before,partialMessage:partial,initialADigest:aDigest,gateIsSimulatedExternalCondition:true};
@@ -440,9 +441,14 @@ exports.runFocused=async({send,until,evaluate,history,rpc,report,requests,rawUsa
 
   for(const c of cases)await section('foreground '+c.id,()=>complete(c));
   check(cases[0].answer?.text.includes('3973'),'direct arithmetic answer');
-  for(const [id,title,name] of [['analysis','短验分析','analysis.csv'],['execution','短验执行','copy.csv'],['mixed','短验混合检索','verification.json']])await section('verified closure '+id,async()=>{
-    const work=(await works()).find(w=>w.title===title);assert(work,title+' exists');let w;await until(async()=>{w=await detail(work.workId);return w.lifecycle==='closed';},title+' closed');(report.simpleWorks ||= {})[id]=w;check(w.closureConclusion==='succeeded',title+' closes succeeded within its own delegated scope');
-    const msgs=(await history()).messages.filter(m=>m.workIds?.includes(w.workId));const file=msgs.flatMap(m=>m.workFeedback?.report?.files||[]).find(f=>f.name===name);check(!!file?.openPath&&fs.existsSync(file.openPath),title+' actual registered immutable file');
+  for(const [id,title,name] of [['analysis','短验分析','analysis.csv'],['execution','短验执行','copy.csv'],['mixed','短验混合检索','verification.json']].filter(([id])=>cases.some(c=>c.id===id)))await section('verified closure '+id,async()=>{
+    const origin=cases.find(c=>c.id===id),linked=queryDb('SELECT work_id FROM works WHERE source_message_id=?',[origin.user.messageId]);assert.equal(linked.length,1,title+' unique Work from exact original request');const work=(await works()).find(w=>w.workId===linked[0].work_id);assert(work,title+' exists');let w;await until(async()=>{w=await detail(work.workId);return w.lifecycle==='closed';},title+' closed');(report.simpleWorks ||= {})[id]=w;check(w.closureConclusion==='succeeded',title+' closes succeeded within its own delegated scope');
+    const msgs=(await history()).messages.filter(m=>m.workIds?.includes(w.workId));const delivered=msgs.flatMap(m=>m.workFeedback?.report?.files||[]),file=delivered.find(f=>f.name===name);
+    if(id==='mixed'){
+      const proof=(w.generatedArtifacts||[]).filter(a=>a.snapshotPath&&fs.existsSync(a.snapshotPath)&&crypto.createHash('sha256').update(fs.readFileSync(a.snapshotPath)).digest('hex')===a.digest&&delivered.some(f=>f.openPath===a.snapshotPath)).map(a=>({path:a.path,snapshotPath:a.snapshotPath,text:fs.readFileSync(a.snapshotPath,'utf8')}));
+      const objects=proof.flatMap(a=>{const candidates=[a.text,...a.text.split('\n')];return candidates.flatMap(text=>{try{return [{...a,value:JSON.parse(text)}];}catch{return [];}});});(report.mixedRegisteredProof ||= []).push(...proof);
+      check(objects.some(a=>a.value.passed===false&&JSON.stringify(a.value.expected)==='[1]'&&JSON.stringify(a.value.actual)==='[]')&&objects.some(a=>a.value.passed===true&&JSON.stringify(a.value.expected)==='[1]'&&JSON.stringify(a.value.actual)==='[1]'),title+' actual registered diagnosis and successful verification contents');
+    }else check(!!file?.openPath&&fs.existsSync(file.openPath)&&(w.generatedArtifacts||[]).some(a=>a.snapshotPath===file.openPath&&crypto.createHash('sha256').update(fs.readFileSync(file.openPath)).digest('hex')===a.digest),title+' actual registered immutable file');
     if(id==='execution')check(fs.readFileSync(path.join(workspace,'copy.csv'),'utf8')===fs.readFileSync(path.join(workspace,'sales.csv'),'utf8'),'execution copied actual source bytes');
     if(id==='mixed'){check(fs.readFileSync(path.join(mixed,'records.json'),'utf8')===records&&JSON.parse(fs.readFileSync(path.join(mixed,'verification.json'),'utf8')).passed,'mixed preserves original records and truly repairs query');const ops=queryDb('SELECT operation_id,result_json FROM cron_reminder_operations WHERE operation_id LIKE ?',['%:'+cases.find(c=>c.id==='mixed').user.requestId+':%']);report.mixedReminderOperations=ops;check(ops.some(o=>o.result_json.includes('短验混合提醒')),'mixed reminder creation linked to exact original request');}
   });
@@ -474,7 +480,7 @@ exports.runFocused=async({send,until,evaluate,history,rpc,report,requests,rawUsa
   });
   await section('independent restart',async()=>{const id=(await history()).conversationId;report.eventsBeforeRestart=await evaluate('window.__focusedEvents');await restart();await install();check((await history()).conversationId===id,'restart preserves original conversation');if(eventWork){const w=await detail(eventWork.workId);report.afterRestartEvent=w;check(w.lifecycle==='active'&&w.phase4.subscriptions.some(s=>s.source==='file'&&s.status==='online'),'restart preserves live file subscription');}});
   for(const width of [1280,390])await section('viewport '+width,async()=>{await rpc('Emulation.setDeviceMetricsOverride',{width,height:900,deviceScaleFactor:1,mobile:false});await wait(200);check(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'),'no horizontal overflow '+width);const shot=await rpc('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});fs.writeFileSync(path.join(out,'focused-'+width+'.png'),Buffer.from(shot.data,'base64'));});
-  await section('official original-conversation navigation roundtrip',async()=>{
+  if(!eventOnly)await section('official original-conversation navigation roundtrip',async()=>{
     assert(report.crossConversation?.secondConversationId);const beforeCalls=requests.length;await rpc('Emulation.clearDeviceMetricsOverride');
     await evaluate('[...document.querySelectorAll("button")].find(b=>b.textContent.trim()==="普通模式").click()');
     const nav=await evaluate('window.api.botWork.workspaceNavigation()');report.crossConversation.navigation=nav;const original=cases.find(c=>c.id==='direct'),second=cases.find(c=>c.id==='query'),space=nav.spaces.find(s=>s.id===nav.foregroundRequests.find(q=>q.requestId===original.user.requestId)?.spaceId);assert(space);
