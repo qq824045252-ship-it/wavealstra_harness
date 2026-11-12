@@ -2,6 +2,10 @@
 
 对应 Issue #26。本文说明 Durable 主执行路径如何自动管理模型上下文、如何回查原文、如何持久化/恢复，以及当前已验证与未验证的边界。
 
+## 后续安全复核（2026-11-12）
+
+原实现复核发现 assistant ref 解析、持久提交失败、单条超长摘要输入、跨 head ref 重用和原文分页边界问题。修复、专项命令与验收状态见 [Issue #26 安全修复验收](issue26-safety-verification-20261112.md)。下文 Windows 数字是先前 fixture 记录，不代表最新 SHA 的真实模型/桌面或完整 issue 验收。1K/10K/100K 的测试仅模拟 refs 元数据，不能当作真实归档条目冷存储、RSS 或完整内核热态有界的证据。
+
 ## 1. 行为概览
 
 - 默认自动运行（billion-context）：无需用户点击，达到产品阈值（窗口比例 0.8 与绝对阈值 200K 取先达到者，可在设置中修改）或内核增长建议时，历史被分层摘要折叠，最新任务与当前指令保留。
@@ -30,7 +34,7 @@
 
 1. **单一策略**：BC 健康时 `beforeCompact(reason=threshold)` 返回 `{decline:true}`，由请求前投影负责整理；原生 overflow 恢复保持开启，BC 用有界摘要接管其输入。
 2. **有界兜底**：原生压缩选定前缀超过窗口预算时，宿主分块滚动摘要（实测 82K 输入 → 5 块，每块 ≤20.8K tokens），不会把整段 raw prefix 交给摘要模型。
-3. **refs 永不重用**：内核 ref 定位 `e<entryId>:<slot>`；分支/原生压缩边界变化时 state 重建、旧 refs 归档，原文回查仍可命中更早代次。
+3. **refs 身份**：内核 ref 定位 `e<entryId>:<slot>`，assistant content slot 使用 `.t` / `.cN` 后缀。原生边界变化只退役覆盖关系，保留 ref / block 分配高水位。已存在跨代次歧义的旧 ref 拒绝任意解析，须先检索明确 entryId。
 4. **压力口径**：`max(最近 assistant usage, 逐条消息独立估算) + 工具 schema 估算`，避免复制历史里过期 usage 低估出站体积（分支首次请求已验证）。
 5. **持久化节流**：摘要/边界变化立即落盘；普通轮次每 8 轮落盘一次，关闭前强制 flush（崩溃后 refs 可由消息顺序确定性重建）。refs 保留摘要覆盖 entry + 最近 2000 条，超过 20K 时裁剪。
 6. **分支**：会话 fork/regenerate 通过 `asOf` 文档拿到锚点时的状态，不复制“现在”的摘要；独立新任务分支按复制后的可见历史确定性重建。
@@ -42,7 +46,9 @@
 pnpm -s typecheck
 pnpm -s test:durable-context-management      # 自动整理/原文回查/重启/设置生效
 pnpm -s test:durable-context-branch-cancel   # 分支 as-of/取消/overflow 兜底/子会话/独立任务分支
-pnpm -s test:durable-context-performance     # 长历史只随活动视图增长、refs/state 有界
+pnpm -s test:durable-context-performance     # 合成 refs 元数据与活动视图测量，不是冷存储/RSS 验收
+pnpm -s test:durable-context-safety          # 原文身份/提交故障/分块/分页/超限输入
+pnpm -s test:durable-context-dev:live        # opt-in 真 Electron + 模型六类任务（需实机与本地模型网关）
 pnpm -s test:durable-compaction-settings     # 阈值换算
 pnpm -s test:compaction-settings-ui          # 设置页引擎切换/手动控件 skipped 文案（headless UI）
 pnpm -s test:durable-bot

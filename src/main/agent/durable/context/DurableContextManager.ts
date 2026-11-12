@@ -85,6 +85,8 @@ export class DurableContextManager {
   private persisted: DurableContextPersistedState = emptyPersistedState();
   private kernelState?: CompressionState;
   private loaded = false;
+  /** Only durable snapshots may be reused after a failed commit. */
+  private committed = emptyPersistedState();
   private loading?: Promise<void>;
   private headEntryId: number | null = null;
   private rebaseNeeded = true;
@@ -144,10 +146,10 @@ export class DurableContextManager {
     return {
       ...this.status,
       engine,
-      enabled: engine === "billion-context" && this.status.enabled && !this.disposed,
+      enabled: engine === "billion-context" && this.status.enabled && this.healthy && !this.disposed,
       contextWindow: policy.window,
       triggerTokens: policy.triggerTokens,
-      blocks: this.persisted.summaries.length,
+      blocks: this.kernelState ? countTopLevelBlocks(this.kernelState) : 0,
       summaries: this.persisted.summaries.slice(-5).map(toSummaryDto),
       updatedAt: this.status.updatedAt,
     };
@@ -176,6 +178,7 @@ export class DurableContextManager {
           })) as DurableContextPersistedState;
         }, ctx);
         this.persisted = normalizePersisted(record);
+        this.committed = structuredClone(this.persisted);
         this.headEntryId = currentHead;
         if (this.persisted.headEntryId === currentHead) {
           const parsed = parseKernelState(this.persisted);
@@ -185,11 +188,12 @@ export class DurableContextManager {
           }
         }
         if (!this.kernelState) await this.rebase(currentHead, ctx, "boundary");
+        this.loaded = true;
       } catch (error) {
         this.log("[Context] 无法恢复上下文管理状态，等待下一次重建", error);
         this.rebaseNeeded = true;
+        throw error;
       } finally {
-        this.loaded = true;
         this.loading = undefined;
       }
     })();
@@ -198,7 +202,8 @@ export class DurableContextManager {
 
   /** 原生压缩已改变 context head：清空当前内核 state 并从新边界重建，旧摘要 ref 归档。 */
   private async rebase(headEntryId: number | null, ctx: Context, reason: "boundary" | "native-fallback"): Promise<void> {
-    if (this.kernelState) {
+    const previous = this.kernelState ?? parseKernelState(this.persisted);
+    if (previous) {
       const previousEpoch = this.persisted.epoch;
       if (Object.keys(this.persisted.refs).length) {
         this.persisted.archivedRefs.push({ epoch: previousEpoch, refs: this.persisted.refs });
@@ -207,10 +212,29 @@ export class DurableContextManager {
       this.persisted.epoch = previousEpoch + 1;
     }
     this.kernelState = createInitialState();
+    // Retire coverage, not identities: stale mNNNNN/bN must never point at a new message/block.
+    if (previous) {
+      this.kernelState.messageRefs = structuredClone(previous.messageRefs);
+      this.kernelState.nextBlockId = Math.max(previous.nextBlockId,
+        ...this.persisted.summaries.map(item => Number(item.blockId.slice(1)) + 1).filter(Number.isSafeInteger));
+      // Older adapter versions may have retired refs beyond the latest epoch's map.
+      const retired = [...Object.keys(this.persisted.refs), ...this.persisted.archivedRefs.flatMap(item => Object.keys(item.refs))];
+      const highest = retired.reduce((max, ref) => Math.max(max, refIndex(ref) ?? 0), 0);
+      if (highest > 0) {
+        const ref = `m${String(highest).padStart(5, "0")}`;
+        if (!this.kernelState.messageRefs.byRef[ref]) {
+          const retiredId = `retired:${this.persisted.epoch}:${highest}`;
+          this.kernelState.messageRefs.byRef[ref] = retiredId;
+          this.kernelState.messageRefs.byRaw[retiredId] = ref;
+        }
+      }
+      this.kernelState.nextRunId = previous.nextRunId;
+    }
     this.persisted.refs = {};
     this.persisted.headEntryId = headEntryId;
     this.headEntryId = headEntryId;
     this.rebaseNeeded = false;
+    this.consecutiveFailures = 0;
     this.persisted.kernelVersion = EMPTY_KERNEL_VERSION;
     await this.save(ctx, true);
     this.log(`[Context] 上下文 state 从边界重建（${reason}）`);
@@ -231,27 +255,35 @@ export class DurableContextManager {
         for (const key of Object.keys(doc)) Reflect.deleteProperty(doc, key);
         Object.assign(doc, snapshot);
       }, ctx);
+      this.committed = snapshot;
     } catch (error) {
-      this.log("[Context] 上下文管理状态提交失败（只影响跨重启恢复）", error);
+      this.persisted = structuredClone(this.committed);
+      this.kernelState = parseKernelState(this.committed);
+      this.headEntryId = this.committed.headEntryId;
+      this.rebaseNeeded = !this.kernelState;
+      this.loaded = Boolean(this.kernelState);
+      throw new Error(`上下文管理状态未保存，已放弃未提交的摘要：${errorText(error)}`);
     }
   }
 
   /**
    * 每次 provider 请求前：把已提交历史投影成内核视图，必要时自动摘要，再把投影还原成真实消息。
-   * 任何失败都返回 undefined，让 Pi 用未投影消息继续；具体错误记录在状态里。
+   * 失败时只在原始消息仍可容纳时回退；不可容纳则明确失败，禁止发送超限输入。
    */
   async beforeRequest(messages: readonly Message[], api: HookApi, ctx: Context): Promise<{ messages: readonly Message[] } | undefined> {
-    if (this.disposed || !this.healthy || this.engine !== "billion-context") return undefined;
+    if (this.disposed || this.engine !== "billion-context") return undefined;
     try {
       await this.ensureReady(ctx);
       if (!this.kernelState) return undefined;
       const view = await this.host.conversation.context(ctx);
       const headEntryId = view.head?.id ?? null;
-      if (headEntryId !== this.headEntryId) {
+      if (headEntryId !== this.headEntryId || this.rebaseNeeded) {
         this.rebaseNeeded = true;
         await this.rebase(headEntryId, ctx, "boundary");
       }
+      if (!this.healthy) { this.assertRequestFits(messages); return undefined; }
       const outcome = await this.maintainAndProject(messages, view.entries, api.models, ctx, { automatic: true });
+      this.assertRequestFits(outcome.projected);
       this.consecutiveFailures = 0;
       this.publish({ ...this.status, phase: outcome.folds > 0 ? "completed" : "idle",
         automatic: true, reason: outcome.reason, beforeTokens: outcome.beforeTokens,
@@ -261,8 +293,21 @@ export class DurableContextManager {
       return outcome.projectedApplied ? { messages: outcome.projected } : undefined;
     } catch (error) {
       this.consecutiveFailures++;
-      this.fail("自动上下文整理失败，本轮沿用 Pi 原生上下文", error);
+      this.fail("自动上下文整理失败", error);
+      this.assertRequestFits(messages);
       return undefined;
+    }
+  }
+
+  /** Never send an oversized raw fallback after maintenance failed or protected input could not shrink. */
+  private assertRequestFits(messages: readonly Message[]): void {
+    const { window } = this.resolvePolicy();
+    if (!window) throw new Error("当前模型窗口未知，无法安全发送上下文");
+    const input = messages.reduce((sum, message) => sum + estimateMessageTokens(message), 0)
+      + Math.max(0, this.host.toolEstimateTokens?.() ?? 0);
+    const reserve = Math.min(16_384, Math.max(1_024, Math.floor(window * 0.1)));
+    if (input + reserve > window) {
+      throw new Error(`上下文超过当前模型安全输入上限（估算 ${input}，上限 ${Math.max(0, window - reserve)} tokens）。原始记录仍保留；请拆分过大的输入，或切换更大窗口模型后重试。`);
     }
   }
 
@@ -345,7 +390,6 @@ export class DurableContextManager {
   cancelMaintenance(): boolean {
     if (!this.manualAbort) return false;
     this.manualAbort.abort();
-    this.manualAbort = undefined;
     return true;
   }
 
@@ -355,7 +399,7 @@ export class DurableContextManager {
     return base ? AbortSignal.any([base, this.manualAbort.signal]) : this.manualAbort.signal;
   }
 
-  /** 关闭前强制落盘一次；失败只影响跨重启恢复，不影响本次状态。 */
+  /** 关闭前强制落盘一次；失败必须向调用者报告，不能伪造跨重启恢复成功。 */
   async flush(ctx: Context): Promise<void> { await this.save(ctx, true); }
 
   /** 原生压缩结束后通知管理器：下一次请求必须按新边界重建。 */
@@ -378,23 +422,29 @@ export class DurableContextManager {
   ): Promise<{ ok: boolean; message: string }> {
     if (this.engine !== "billion-context") return { ok: false, message: "当前设置为按比例压缩（Pi 原生），未启用 billion-context" };
     await this.ensureReady(ctx);
+    const view = await this.host.conversation.context(ctx);
+    if ((view.head?.id ?? null) !== this.headEntryId || this.rebaseNeeded) await this.rebase(view.head?.id ?? null, ctx, "boundary");
     const state = this.kernelState;
     if (!state) return { ok: false, message: "上下文状态尚未就绪，请稍后重试" };
-    const view = await this.host.conversation.context(ctx);
     const build = this.buildCoreMessages(view.messages, view.entries);
     const config = this.buildConfig(this.resolvePolicy().window, build.protectedIds);
     const applied = this.core.applyCompression({
       ranges: [{ startRef: input.startRef, endRef: input.endRef, summary: input.summary, ...(input.topic ? { topic: input.topic } : {}) }],
       messages: build.messages, state, config,
     });
-    this.kernelState = applied.state;
-    this.indexRefs(applied.state);
-    this.recordSummaries(applied.state);
-    await this.save(ctx, true);
     const result = applied.result;
     if (result.blocksCreated === 0) {
       return { ok: false, message: result.noop ? "该范围已被摘要覆盖（no-op），无需重复压缩" : `没有折叠任何范围：${result.errors.join("；") || "范围不可压缩"}` };
     }
+    const projected = this.renderProjected(build, applied.state);
+    if (projected.messages.reduce((sum, message) => sum + estimateMessageTokens(message), 0)
+      >= view.messages.reduce((sum, message) => sum + estimateMessageTokens(message), 0)) {
+      return { ok: false, message: "摘要没有减少实际输入，未提交压缩结果" };
+    }
+    this.kernelState = applied.state;
+    this.indexRefs(applied.state);
+    this.recordSummaries(applied.state);
+    await this.save(ctx, true);
     this.publish({ ...this.status, phase: "completed", automatic: false, reason: "manual",
       blocks: countTopLevelBlocks(applied.state), message: `模型压缩：${result.blocksCreated} 个摘要块` });
     return { ok: true, message: `已创建 ${result.blocksCreated} 个摘要块（压缩 ${result.tokensCompressed} tokens）${result.warnings.length ? `；提示：${result.warnings.join("；")}` : ""}` };
@@ -424,20 +474,46 @@ export class DurableContextManager {
   }
 
   /** 通过 ref / blockId / entryId 取回原始 entry 文本，分页且有上限。 */
-  async retrieveOriginal(input: { ref?: string; blockId?: string; entryId?: number; offset?: number; limit?: number }, api: ToolReader, ctx: Context): Promise<{ text: string; entryIds: number[]; page?: { offset: number; total: number } }> {
+  async retrieveOriginal(input: { ref?: string; blockId?: string; entryId?: number; offset?: number; limit?: number; cursor?: string }, api: ToolReader, ctx: Context): Promise<{ text: string; entryIds: number[]; page?: { offset: number; total?: number; nextCursor?: string } }> {
     const entryIds = await this.resolveEntryIds(input, ctx);
     if (!entryIds.length) return { text: "", entryIds: [] };
-    const texts: string[] = [];
-    for (const entryId of entryIds) {
-      const entry = await api.entry(entryId, ctx);
-      if (!entry) continue;
-      texts.push(`[entry ${entry.id} · ${entry.kind}]\n${entryText(entry)}`);
+    const target = JSON.stringify([this.host.contextId, this.conversationId, input.ref, input.blockId, input.entryId]);
+    let index = 0;
+    let skip = Math.max(0, Math.floor(input.offset ?? 0));
+    let offset = skip;
+    if (input.cursor) {
+      let cursor: { target: string; index: number; skip: number; offset: number };
+      try { cursor = JSON.parse(Buffer.from(input.cursor, "base64url").toString("utf8")); }
+      catch { throw new Error("原文分页 cursor 无效，请重新读取第一页"); }
+      if (cursor.target !== target || ![cursor.index, cursor.skip, cursor.offset].every(n => Number.isSafeInteger(n) && n >= 0)) {
+        throw new Error("原文分页 cursor 与查询目标不一致");
+      }
+      ({ index, skip, offset } = cursor);
     }
-    const full = texts.join("\n\n");
-    const offset = Math.max(0, input.offset ?? 0);
-    const limit = Math.min(12_000, Math.max(500, input.limit ?? 8_000));
-    const text = full.slice(offset, offset + limit);
-    return { text, entryIds, page: { offset, total: full.length } };
+    const limit = Math.min(12_000, Math.max(200, Math.floor(input.limit ?? 8_000)));
+    const parts: string[] = [];
+    const readIds: number[] = [];
+    let length = 0;
+    let scanned = 0;
+    for (; index < entryIds.length && length < limit && scanned < 16; index++) {
+      const entry = await api.entry(entryIds[index]!, ctx);
+      scanned++;
+      if (!entry) continue;
+      readIds.push(entry.id);
+      const full = `${index ? "\n\n" : ""}[entry ${entry.id} · ${entry.kind}]\n${entryText(entry)}`;
+      if (skip >= full.length) { skip -= full.length; continue; }
+      const text = full.slice(skip, skip + limit - length);
+      parts.push(text);
+      length += text.length;
+      skip += text.length;
+      if (skip < full.length) break;
+      skip = 0;
+    }
+    const nextCursor = index < entryIds.length
+      ? Buffer.from(JSON.stringify({ target, index, skip, offset: offset + length })).toString("base64url")
+      : undefined;
+    return { text: parts.join(""), entryIds: readIds, page: { offset,
+      ...(nextCursor ? { nextCursor } : { total: offset + length }) } };
   }
 
   private async resolveEntryIds(input: { ref?: string; blockId?: string; entryId?: number }, ctx: Context): Promise<number[]> {
@@ -446,21 +522,27 @@ export class DurableContextManager {
     if (!state) return [];
     if (input.blockId) {
       const block = state.blocks.find(item => item.blockId === input.blockId);
-      return block ? this.blockEntryIds(block) : [];
+      return block ? this.blockEntryIds(block) : this.persisted.summaries.find(item => item.blockId === input.blockId)?.entryIds ?? [];
     }
     if (input.ref) {
       const locator = this.lookupRef(input.ref);
       if (locator) return [locator.entryId];
       // block 级 ref（m00012–m00020）或未知 ref：在摘要块覆盖范围内回退。
-      const block = state.blocks.find(item => this.blockRefSpan(item).includes(input.ref!));
+      const block = state.blocks.find(item => this.blockRefSpan(item) === input.ref);
       return block ? this.blockEntryIds(block) : [];
     }
     return [];
   }
 
   private lookupRef(ref: string): DurableContextRefLocator | undefined {
-    return this.persisted.refs[ref]
-      ?? [...this.persisted.archivedRefs].reverse().find(item => item.refs[ref] !== undefined)?.refs[ref];
+    const rawId = this.kernelState?.messageRefs.byRef[ref];
+    const candidates = [rawId ? this.locatorOfRawId(rawId) : undefined, this.persisted.refs[ref], ...this.persisted.archivedRefs.map(item => item.refs[ref])]
+      .filter((item): item is DurableContextRefLocator => Boolean(item));
+    const first = candidates[0];
+    if (first && candidates.some(item => item.entryId !== first.entryId || item.slot !== first.slot)) {
+      throw new Error("该旧 ref 在历史代次中有歧义，请用 acp_search 查得明确 entryId 后回查原文");
+    }
+    return first;
   }
 
   private blockEntryIds(block: CompressionBlock): number[] {
@@ -472,18 +554,19 @@ export class DurableContextManager {
     return [...ids].sort((a, b) => a - b);
   }
 
-  private blockRefSpan(block: CompressionBlock): string {
-    if (!this.kernelState) return "";
-    const refs = block.effectiveMessageIds.map(id => this.kernelState!.messageRefs.byRaw[id]).filter((ref): ref is string => Boolean(ref));
+  private blockRefSpan(block: CompressionBlock, state = this.kernelState): string {
+    if (!state) return "";
+    const refs = block.effectiveMessageIds.map(id => state.messageRefs.byRaw[id]).filter((ref): ref is string => Boolean(ref));
     if (!refs.length) return "";
     return summaryRefSpan(refs[0]!, refs[refs.length - 1]!);
   }
 
   private locatorOfRawId(rawId: string): DurableContextRefLocator | undefined {
     if (!rawId.startsWith("e")) return undefined;
-    const [entryPart, slotPart] = rawId.slice(1).split(":");
-    const entryId = Number(entryPart);
-    const slot = Number(slotPart ?? 0);
+    const match = /^e(\d+):(\d+)(?:\.(?:t|c\d+))?$/.exec(rawId);
+    if (!match) return undefined;
+    const entryId = Number(match[1]);
+    const slot = Number(match[2]);
     if (!Number.isSafeInteger(entryId) || !Number.isSafeInteger(slot)) return undefined;
     return { entryId, slot, role: "unknown" };
   }
@@ -523,6 +606,7 @@ export class DurableContextManager {
     });
     state = turn.state;
     let folds = 0;
+    let tokensCompressed = 0;
     const ranges = turn.nudge?.compressibleRanges ?? [];
     const pressure = beforeTokens > policy.triggerTokens;
     const knownGrowth = Boolean(turn.nudge?.shouldInject);
@@ -542,26 +626,28 @@ export class DurableContextManager {
         ], Math.max(6_000, Math.floor(policy.window * 0.3)), model, models, ctx);
         const topic = firstLine(text).slice(0, 120);
         appliedRanges.push({ startRef: range.startRef, endRef: range.endRef, summary, ...(topic ? { topic } : {}) });
-        folds++;
       }
       if (appliedRanges.length) {
         const applied = this.core.applyCompression({ ranges: appliedRanges, messages: build.messages, state, config: this.buildConfig(policy.window, build.protectedIds) });
         state = applied.state;
+        folds = applied.result.blocksCreated;
         // applyCompression 已经产出新 state；不需要第二次 processTurn 重新跑完整管线。
-        this.persisted.stats.folds += folds;
-        this.persisted.stats.tokensCompressed += applied.result.tokensCompressed;
+        tokensCompressed = applied.result.tokensCompressed;
       } else {
         skippedReason = "推荐范围没有可读原文";
       }
     } else {
       skippedReason = beforeTokens <= policy.triggerTokens ? "尚未达到整理阈值" : undefined;
     }
+    const rendered = this.renderProjected(build, state);
+    const afterTokens = rendered.messages.reduce((total, message) => total + estimateMessageTokens(message), 0) + toolTokens;
+    if (folds > 0 && afterTokens >= estimatedMessages + toolTokens) throw new Error("摘要没有减少实际输入，未提交压缩结果");
     this.kernelState = state;
+    this.persisted.stats.folds += folds;
+    this.persisted.stats.tokensCompressed += tokensCompressed;
     this.persisted.watermarkEntryId = Math.max(this.persisted.watermarkEntryId, highestEntryId(entries));
     this.indexRefs(state);
     this.recordSummaries(state);
-    const rendered = this.renderProjected(build, state);
-    const afterTokens = estimateContextTokens(rendered.messages).tokens + toolTokens;
     this.persisted.headEntryId = this.headEntryId;
     this.persisted.configDigest = contextConfigDigest({
       contextWindow: policy.window, triggerTokens: policy.triggerTokens, keepRecentTokens: 20_000,
@@ -645,7 +731,16 @@ export class DurableContextManager {
         emit(baseId, "system", "text", flattenContent(message.content));
         protectedIds.add(baseId);
       }
+      if (!locator || (message.role === "user" && Array.isArray(message.content) && message.content.some(part => part.type === "image"))) {
+        for (const id of coreIds) protectedIds.add(id);
+      }
       mappings.push({ message, coreIds, ...(locator ? { locator } : {}) });
+    }
+    const resultIds = new Set(out.filter(message => message.contentType === "tool-result").map(message => message.toolCallId));
+    for (const mapping of mappings) {
+      if (mapping.message.role !== "assistant") continue;
+      const calls = mapping.message.content.filter(part => part.type === "toolCall");
+      if (calls.some(call => !resultIds.has(call.id))) for (const id of mapping.coreIds) protectedIds.add(id);
     }
     return { messages: out, mappings, protectedIds };
   }
@@ -709,6 +804,15 @@ export class DurableContextManager {
     for (const block of top) {
       for (const id of block.effectiveMessageIds) blockByCoreId.set(id, block);
     }
+    // A provider message is indivisible: partial coverage must never drop sibling tool calls,
+    // thinking/signature parts, or leave a result without its call.
+    const invalid = new Set<string>();
+    for (const mapping of build.mappings) {
+      const covered = mapping.coreIds.map(id => blockByCoreId.get(id));
+      const block = covered.find(Boolean);
+      if (block && covered.some(item => item?.blockId !== block.blockId)) invalid.add(block.blockId);
+    }
+    if (invalid.size) throw new Error("摘要范围拆分了同一条原生消息，请使用包含完整消息与工具批次的范围");
     const rendered: Message[] = [];
     const emitted = new Set<string>();
     for (const mapping of build.mappings) {
@@ -716,13 +820,27 @@ export class DurableContextManager {
       if (!block) { rendered.push(mapping.message); continue; }
       if (emitted.has(block.blockId)) continue;
       emitted.add(block.blockId);
-      rendered.push(this.summaryMessage(block));
+      rendered.push(this.summaryMessage(block, state));
+    }
+    const visibleCalls = new Set(rendered.flatMap(message => message.role === "assistant"
+      ? message.content.flatMap(part => part.type === "toolCall" ? [part.id] : []) : []));
+    const originalCalls = new Set(build.mappings.flatMap(mapping => mapping.message.role === "assistant"
+      ? mapping.message.content.flatMap(part => part.type === "toolCall" ? [part.id] : []) : []));
+    for (const message of rendered) {
+      if (message.role === "toolResult" && originalCalls.has(message.toolCallId) && !visibleCalls.has(message.toolCallId)) {
+        throw new Error("摘要范围拆分了工具调用与结果，未提交压缩结果");
+      }
+    }
+    const visibleResults = new Set(rendered.flatMap(message => message.role === "toolResult" ? [message.toolCallId] : []));
+    const originalResults = new Set(build.mappings.flatMap(mapping => mapping.message.role === "toolResult" ? [mapping.message.toolCallId] : []));
+    for (const id of visibleCalls) if (originalResults.has(id) && !visibleResults.has(id)) {
+      throw new Error("摘要范围拆分了工具调用与结果，未提交压缩结果");
     }
     return { messages: rendered, applied: emitted.size > 0 };
   }
 
-  private summaryMessage(block: CompressionBlock): Message {
-    const refs = this.blockRefSpan(block);
+  private summaryMessage(block: CompressionBlock, state: CompressionState): Message {
+    const refs = this.blockRefSpan(block, state);
     const entryIds = this.blockEntryIds(block);
     const where = [
       refs ? `refs ${refs}` : undefined,
@@ -756,25 +874,33 @@ export class DurableContextManager {
     models: Models,
     ctx: Context,
   ): Promise<string> {
-    const chunks = splitByTokens(messages, Math.max(2_000, Math.min(chunkBudget, 24_000)));
+    const window = this.resolvePolicy().window;
+    const budget = Math.min(chunkBudget, 24_000, window - 1_500 - estimateTextTokens(SUMMARIZER_SYSTEM) - 1_024);
+    if (budget < 256) throw new Error("当前模型窗口不足以执行有界摘要");
+    const chunks = splitByTokens(messages, budget);
     const summaries: string[] = [];
     for (const chunk of chunks) {
       summaries.push(await this.callSummarizer(chunk, model, models, ctx));
     }
     if (summaries.length === 1) return summaries[0]!;
-    const merged = summaries.join("\n\n---\n\n");
-    if (estimateTextTokens(merged) <= chunkBudget) return this.callSummarizer(merged, model, models, ctx, true);
-    // 合并摘要仍然过大：按分块预算再滚一轮，最后返回拼接（有界，不会把原文重新塞回窗口）。
-    const mergedChunks = splitByText(merged, chunkBudget);
-    const final: string[] = [];
-    for (const chunk of mergedChunks) final.push(await this.callSummarizer(chunk, model, models, ctx, true));
-    return final.join("\n\n");
+    let merged = summaries.join("\n\n---\n\n");
+    for (let round = 0; round < 6; round++) {
+      if (estimateTextTokens(merged) <= budget) return this.callSummarizer(merged, model, models, ctx, true);
+      const parts: string[] = [];
+      for (const chunk of splitByText(merged, budget)) parts.push(await this.callSummarizer(chunk, model, models, ctx, true));
+      const reduced = parts.join("\n\n");
+      if (estimateTextTokens(reduced) >= estimateTextTokens(merged)) throw new Error("摘要合并没有减少输入，已停止重试");
+      merged = reduced;
+    }
+    throw new Error("摘要合并达到安全重试上限");
   }
 
   private async callSummarizer(input: string, model: unknown, models: Models, ctx: Context, merge = false): Promise<string> {
     const prompt = merge
       ? `Merge these partial summaries into one coherent summary. Keep every concrete detail (paths, versions, errors, decisions, open tasks) and output only the merged summary.\n\n${input}`
       : `<conversation>\n${input}\n</conversation>\n\nSummarize this section so another assistant can continue the task without re-reading it.`;
+    const signal = this.maintenanceSignal(ctx);
+    signal?.throwIfAborted();
     const result = await models.completeSimple(model as never, {
       messages: [
         { role: "system", content: SUMMARIZER_SYSTEM, timestamp: Date.now() },
@@ -783,8 +909,9 @@ export class DurableContextManager {
     }, {
       maxTokens: 1_500,
       cacheRetention: "none",
-      signal: this.maintenanceSignal(ctx),
+      signal,
     }) as AssistantMessage;
+    signal?.throwIfAborted();
     const text = result.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n").trim();
     if (result.stopReason !== "stop" || !text) {
       throw new Error(`摘要模型没有返回有效摘要（${result.stopReason ?? "unknown"}）`);
@@ -915,34 +1042,40 @@ function selectRanges(ranges: readonly CompressibleRange[], targetTokens: number
   return chosen.slice(0, 3);
 }
 
-function splitByTokens(messages: readonly Message[], budget: number): string[] {
+export function splitByTokens(messages: readonly Message[], budget: number): string[] {
   const chunks: string[] = [];
-  let current: string[] = [];
-  let tokens = 0;
+  let current = "";
   for (const message of messages) {
-    const text = messageTextForSummary(message);
-    if (!text) continue;
-    const cost = estimateTextTokens(text);
-    if (tokens + cost > budget && current.length) {
-      chunks.push(current.join("\n\n"));
-      current = [];
-      tokens = 0;
+    for (const text of splitByText(messageTextForSummary(message), budget)) {
+      const joined = current ? `${current}\n\n${text}` : text;
+      if (current && estimateTextTokens(joined) > budget) { chunks.push(current); current = text; }
+      else current = joined;
     }
-    current.push(text);
-    tokens += cost;
   }
-  if (current.length) chunks.push(current.join("\n\n"));
+  if (current) chunks.push(current);
   return chunks;
 }
 
-function splitByText(text: string, budget: number): string[] {
+export function splitByText(text: string, budget: number): string[] {
+  if (!Number.isFinite(budget) || budget < 1) throw new Error("Invalid summary chunk budget");
   const chunks: string[] = [];
   let start = 0;
-  const charsPerToken = 3.5;
-  const maxChars = Math.max(1_000, Math.floor(budget * charsPerToken));
   while (start < text.length) {
-    chunks.push(text.slice(start, start + maxChars));
-    start += maxChars;
+    let low = 1;
+    let high = Math.min(text.length - start, Math.floor(budget * 4));
+    while (low < high) {
+      const mid = Math.ceil((low + high) / 2);
+      if (estimateTextTokens(text.slice(start, start + mid)) <= budget) low = mid;
+      else high = mid - 1;
+    }
+    // Do not cut a surrogate pair (emoji/non-BMP characters) in half.
+    let length = low;
+    const last = text.charCodeAt(start + length - 1);
+    if (length > 1 && last >= 0xd800 && last <= 0xdbff && start + length < text.length) length--;
+    const chunk = text.slice(start, start + length);
+    if (estimateTextTokens(chunk) > budget) throw new Error("A summary character exceeds the available budget");
+    chunks.push(chunk);
+    start += length;
   }
   return chunks;
 }

@@ -20,6 +20,7 @@ import { BOT_FOREGROUND_TOOLS, botForegroundTools } from "./BotForegroundTools";
 import { assistantRow } from "../durable/DurableHistoryProjection";
 import { DurableBotRuntime, DurableReplyError } from "../durable/DurableBotRuntime";
 import { DEFAULT_PRODUCT_COMPACTION_SETTINGS } from "../durable/context/CompactionPolicy";
+import { isDurableContextToolName } from "../durable/context/DurableContextTools";
 import type { ProductCompactionSettings } from "../durable/context/types";
 import type { ContextManagementEngine } from "../../../shared/context-management";
 import { resolveBotModel } from "../durable/BotModelCatalog";
@@ -455,7 +456,7 @@ export class BotConversationService {
         } }),
     ];
     const allowed = (name: string) => !(conversation.team_id && ['bot_list', 'bot_ask'].includes(name)) && (!name.startsWith("memory_") || Boolean(this.options.memory?.enabled())) && !(conversation.team_id && name === "work_create") && ((selectedTools ?? []).some(tool => tool.name === name) || requestTools.some(tool => tool.name === name) || composerTools.some(tool => tool.name === name) || webTools.some(tool => tool.name === name)
-      || BOT_FOREGROUND_TOOLS.has(name));
+      || BOT_FOREGROUND_TOOLS.has(name) || isDurableContextToolName(name));
     const runtime = await DurableBotRuntime.open({ directory, cwd, models: this.options.models, model: model.target,
       toolMode: "native", toolAllowed: allowed,
       // 产品阈值与 Durable 任务同源（同一 AppSettings getter）；测试构造未注入时用产品默认值。

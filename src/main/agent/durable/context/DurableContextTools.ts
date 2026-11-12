@@ -1,8 +1,12 @@
 import { Type } from "typebox";
 import type { Context } from "@earendil-works/chord/context";
-import { defineTool, type ConversationId, type Cursor, type EntryId, type EntryRecord, type ToolExecutionApi } from "@earendil-works/pi-durable";
+import { defineTool, type ConversationId, type EntryId, type EntryRecord, type ToolExecutionApi } from "@earendil-works/pi-durable";
 import type { ContextManagementSummaryDto } from "../../../../shared/context-management";
 import { entryText, type DurableContextManager, type ToolReader } from "./DurableContextManager";
+
+/** Fixed namespace shared with foreground tool policies; never admit arbitrary acp_* tools. */
+const CONTEXT_TOOL_NAMES = new Set(["acp_status", "acp_search", "acp_retrieve", "acp_compress"]);
+export function isDurableContextToolName(name: string): boolean { return CONTEXT_TOOL_NAMES.has(name); }
 
 const StatusParams = Type.Object({}, { additionalProperties: false });
 const SearchParams = Type.Object({
@@ -11,12 +15,14 @@ const SearchParams = Type.Object({
     description: "summaries: folded section summaries; originals: exact committed transcript entries; all (default): both.",
   })),
   limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })),
+  beforeEntryId: Type.Optional(Type.Integer({ minimum: 1, description: "Continue an original-history search using nextBeforeEntryId from the previous page." })),
 }, { additionalProperties: false });
 const RetrieveParams = Type.Object({
   ref: Type.Optional(Type.String({ description: "Message ref seen in a compressed summary or status, such as m00042." })),
   blockId: Type.Optional(Type.String({ description: "Summary block id (b3) to read its original messages." })),
   entryId: Type.Optional(Type.Integer({ description: "Committed Durable entry id to read verbatim." })),
-  offset: Type.Optional(Type.Integer({ minimum: 0, description: "Character offset for paging through a long result." })),
+  offset: Type.Optional(Type.Integer({ minimum: 0, description: "Legacy character offset. Prefer the returned cursor for bounded reads." })),
+  cursor: Type.Optional(Type.String({ description: "Continuation cursor returned by acp_retrieve for the same target." })),
   limit: Type.Optional(Type.Integer({ minimum: 200, maximum: 12000, description: "Characters to return (default 8000)." })),
 }, { additionalProperties: false });
 const CompressParams = Type.Object({
@@ -91,13 +97,16 @@ export function createDurableContextTools(options: DurableContextToolsOptions) {
           }
         }
         if (scope !== "summaries") {
-          const originals = await searchOriginalEntries(api, params.query, limit, context);
+          const page = await searchOriginalEntries(api, params.query, limit, context, params.beforeEntryId);
+          const originals = page.hits;
           if (originals.length) {
             lines.push("## Original hits (verbatim committed transcript)");
             for (const hit of originals) {
+              hit.refs = manager.refsForEntry(hit.entryId);
               lines.push(`- entry ${hit.entryId} · ${hit.kind}${hit.refs.length ? ` · refs ${hit.refs.join(",")}` : ""}\n  ${excerpt(hit.text, 400)}`);
             }
           }
+          if (page.nextBeforeEntryId !== undefined) lines.push(`[Search incomplete: scanned ${page.scanned} entries. Continue acp_search with the same query and beforeEntryId=${page.nextBeforeEntryId}.]`);
         }
         if (!lines.length) lines.push(`No matches for ${JSON.stringify(params.query)}. Try acp_status to see folded ranges, or narrower keywords.`);
         return { output: [{ type: "text" as const, text: lines.join("\n") }] };
@@ -121,9 +130,9 @@ export function createDurableContextTools(options: DurableContextToolsOptions) {
           return { output: [{ type: "text" as const, text: `没有找到 ${describeTarget(params)} 对应的原文。引用可能来自更早的摘要代次或已不存在的分支；先用 acp_search scope=originals 搜索。` }], isError: true };
         }
         const page = result.page;
-        const header = `[source: original Durable entries ${result.entryIds.join(", ")}${page ? ` · chars ${page.offset}–${page.offset + result.text.length} of ${page.total}` : ""}]`;
-        const footer = page && page.offset + result.text.length < page.total
-          ? `\n\n[truncated; call acp_retrieve again with offset=${page.offset + result.text.length} to read the next page]`
+        const header = `[source: original Durable entries ${result.entryIds.join(", ")}${page ? ` · chars ${page.offset}–${page.offset + result.text.length} of ${page.total ?? "unknown"}` : ""}]`;
+        const footer = page?.nextCursor
+          ? `\n\n[truncated; call acp_retrieve again for the same target with cursor=${JSON.stringify(page.nextCursor)} to read the next page]`
           : "";
         return { output: [{ type: "text" as const, text: `${header}\n\n${result.text}${footer}` }] };
       });
@@ -188,30 +197,32 @@ function createEntryReader(api: ToolApi): ToolReader {
   };
 }
 
-async function searchOriginalEntries(
+export async function searchOriginalEntries(
   api: ToolApi,
   query: string,
   limit: number,
   context: Context,
-): Promise<Array<{ entryId: number; kind: string; text: string; refs: string[] }>> {
+  beforeEntryId?: number,
+): Promise<{ hits: Array<{ entryId: number; kind: string; text: string; refs: string[] }>; scanned: number; nextBeforeEntryId?: number }> {
   const needle = query.trim().toLowerCase();
-  if (!needle) return [];
   const hits: Array<{ entryId: number; kind: string; text: string; refs: string[] }> = [];
-  let cursor: Cursor | undefined;
+  if (!needle) return { hits, scanned: 0 };
+  let before = beforeEntryId;
   let scanned = 0;
-  do {
-    const page = await api.commit(
-      tx => tx.scanEntries({ conversationId: api.conversationId, order: "descending" }, 100, cursor),
-      context,
-    );
-    for (const entry of page.items) {
+  while (scanned < 400 && hits.length < limit) {
+    const page = await api.commit(tx => tx.scanEntries({ conversationId: api.conversationId, order: "descending",
+      ...(before === undefined ? {} : { maxEntryId: (before - 1) as EntryId }) }, Math.min(100, 400 - scanned)), context);
+    for (let index = 0; index < page.items.length; index++) {
+      const entry = page.items[index]!;
       scanned++;
-      if (scanned > 400 || hits.length >= limit) break;
+      before = entry.id;
       const text = entryText(entry);
-      if (!text.toLowerCase().includes(needle)) continue;
-      hits.push({ entryId: entry.id, kind: entry.kind, text, refs: [] });
+      const at = text.toLowerCase().indexOf(needle);
+      if (at >= 0) hits.push({ entryId: entry.id, kind: entry.kind, text: text.slice(Math.max(0, at - 120), at + 600), refs: [] });
+      if (hits.length >= limit) return { hits, scanned,
+        ...(index + 1 < page.items.length || page.next ? { nextBeforeEntryId: before } : {}) };
     }
-    cursor = page.next;
-  } while (cursor && scanned < 400 && hits.length < limit);
-  return hits;
+    if (!page.next || !page.items.length) return { hits, scanned };
+  }
+  return { hits, scanned, nextBeforeEntryId: before };
 }
