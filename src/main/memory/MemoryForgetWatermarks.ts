@@ -140,10 +140,17 @@ export class MemoryForgetWatermarks {
    * An answer to a withdrawn user clause is not independent supporting evidence. */
   sourceFilter(scopes: readonly Scope[]) {
     const targets = this.targets(scopes);
+    const coarse = scopes.flatMap(scope => {
+      const row = this.db.prepare("SELECT cutoff_at,allowed_message_id FROM memory_forget_watermarks WHERE scope_type=? AND scope_id=?")
+        .get(scope.scopeType, scope.scopeId ?? "") as Pick<Target, "cutoff_at" | "allowed_message_id"> | undefined;
+      return row ? [row] : [];
+    });
     return (userText: string, assistantText: string, createdAt: number, messageId?: string) => {
+      if (coarse.some(boundary => !this.after(boundary, createdAt, messageId))) return { userText: "", assistantText: "" };
       const keep = (text: string, allowSource = true) => text.replace(/[^，,、。；;！!？?\n]+[，,、。；;！!？?\n]*/g,
         clause => this.matches(clause, targets, createdAt, messageId, allowSource) ? "" : clause);
-      const sameSource = messageId && targets.some(target => target.allowed_message_id === messageId);
+      const coarseSource = Boolean(messageId && coarse.some(boundary => boundary.allowed_message_id === messageId));
+      const sameSource = coarseSource || messageId && targets.some(target => target.allowed_message_id === messageId);
       const document = sameSource ? MemoryInstructionDocument.parse(userText) : undefined;
       const removals = new Set(document?.removalIntents().map(intent => intent.clause));
       const user = document ? document.clauses.map(clause => removals.has(clause.text) ? ""
@@ -151,7 +158,7 @@ export class MemoryForgetWatermarks {
       const changed = userText !== user;
       // The deletion message may also explicitly remember B. That user authority
       // does not authorize the assistant's deletion confirmation to restate A.
-      return { userText: user, assistantText: changed ? "" : keep(assistantText, false) };
+      return { userText: user, assistantText: changed || coarseSource ? "" : keep(assistantText, false) };
     };
   }
 

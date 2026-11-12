@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { botMemoryTextEligible, botMemoryConversationOnly, botMemoryOptedOut } from "../../memory/BotMemorySource";
 import { MemoryForgetWatermarks } from "../../memory/MemoryForgetWatermarks";
+import { MemoryRecallLineage, recallSourceHash } from "../../memory/MemoryRecallLineage";
 
 const CORRECTION = /更正|纠正|修正|不是.{0,40}而是|\bcorrection\b|\bactually\b|\bnot .{0,40}but\b/i;
 const STOP = new Set("the and for with this that please research project start use using help about what how 我要 开始 使用 项目 帮我 调研 之前 继续 这个 那个 什么 怎么 请问 研究 一下".split(/\s+/));
@@ -71,6 +72,7 @@ const PROJECTION = `SELECT c.conversation_id,r.user_message_id,r.assistant_messa
 export function botHistoryContext(db: Database.Database, input: {
   userId: string; botId: string; excludeConversationId?: string; teamId?: string; query: string; before: number;
   mode?: "related" | "recent"; after?: number;
+  onSources?: (messageIds: string[], sourceHashes: Record<string, string>) => void;
 }): string {
   if (!botMemoryTextEligible(input.query) || botMemoryConversationOnly(input.query)) return "";
   if (!Number.isFinite(input.before)) return "";
@@ -158,6 +160,8 @@ export function botHistoryContext(db: Database.Database, input: {
   };
   const pool: Scored[] = [];
   const withdrawals = new MemoryForgetWatermarks(db);
+  const lineage = new MemoryRecallLineage(db);
+  const assistantRevoked = lineage.projection([{ scopeType: input.teamId ? "team" : "bot", scopeId: input.teamId ?? input.botId }, { scopeType: "global" }]);
   const filters = new Map<string, ReturnType<MemoryForgetWatermarks["sourceFilter"]>>();
   let inspected = 0, inspectedChars = 0, capped = false, selected: Scored[] = [];
   for (const original of statement.iterate(params) as Iterable<Pair>) {
@@ -168,7 +172,8 @@ export function botHistoryContext(db: Database.Database, input: {
       filters.set(original.conversation_id, filter);
     }
     const redacted = filter(original.user_text, original.assistant_text, original.created_at, original.user_message_id);
-    const row = { ...original, user_text: redacted.userText, assistant_text: redacted.assistantText };
+    const revoked = assistantRevoked(original.assistant_message_id);
+    const row = { ...original, user_text: redacted.userText, assistant_text: revoked ? "" : redacted.assistantText };
     if (inspected >= workCap || inspectedChars + row.user_text.length + row.assistant_text.length > INSPECTION_CHAR_CAP) {
       capped = true;
       break;
@@ -198,6 +203,8 @@ export function botHistoryContext(db: Database.Database, input: {
       assistantQuote: excerpt(row.assistant_text, matches.length ? matches : queryTerms, 1500) });
     if (output.length + item.length + 1 > 6000) break;
     output += item + "\n";
+    input.onSources?.([row.user_message_id, ...(row.assistant_text ? [row.assistant_message_id] : [])],
+      { [row.user_message_id]: recallSourceHash(row.user_text) });
   }
   return output;
 }

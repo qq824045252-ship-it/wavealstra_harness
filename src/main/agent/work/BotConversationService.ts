@@ -1,3 +1,4 @@
+import { projectBotMemoryHistory } from "./BotMemoryHistoryProjection";
 import { botForegroundHistory, botPeerHistory, BOT_PEER_CONTEXT_INSTRUCTIONS } from "./BotPeerContext";
 import { BOT_REQUEST_AGING_MS, botRequestPriority, botRequestQueueRank, botRequestCapacity } from "./BotRequestPriority";
 import { foregroundWorkspaceScope, type WorkspaceRequestScopeResolver } from "./GoogleWorkspaceRequestScope";
@@ -505,15 +506,18 @@ export class BotConversationService {
     const user = this.messages.message(source.user_message_id)!;
     const legacy = conversation.current_request_id === message.requestId && ['running', 'unknown'].includes(message.status);
     const runtime_key = legacy ? conversation.conversation_id : `${conversation.conversation_id}/requests/${createHash('sha256').update(message.requestId).digest('hex')}`;
-    const history = this.messages.history(this.options.userId, { botId: message.botId, conversationId: conversation.conversation_id, teamId: conversation.team_id ?? undefined, before: user.ordinal }).messages;
+    const rawHistory = this.messages.history(this.options.userId, { botId: message.botId, conversationId: conversation.conversation_id, teamId: conversation.team_id ?? undefined, before: user.ordinal }).messages;
+    const projection = projectBotMemoryHistory(this.options.db, rawHistory, { botId: message.botId, conversationId: conversation.conversation_id, teamId: conversation.team_id ?? undefined });
+    const history = projection.messages;
     const transcript = history.map(botForegroundHistory);
     const reference = source.reference_message_id ? this.messages.message(source.reference_message_id) : undefined;
-    const previous = this.options.db.prepare(`SELECT r.transcript_json, r.context_json, m.ordinal FROM bot_request_runs r
+    const previous = this.options.db.prepare(`SELECT r.transcript_json, r.context_json, m.ordinal, m.message_id FROM bot_request_runs r
       JOIN bot_messages m ON m.message_id=r.message_id WHERE m.conversation_id=? AND m.ordinal<?
       AND m.status='completed' AND r.transcript_json IS NOT NULL ORDER BY m.ordinal DESC LIMIT 1`)
-      .get(conversation.conversation_id, user.ordinal) as { transcript_json: string; context_json: string; ordinal: number } | undefined;
-    const native = previous ? JSON.parse(previous.transcript_json) as Message[] : [];
-    const priorCoverage = previous ? z.object({ coveredMessageIds: z.array(z.string()).default([]) }).parse(JSON.parse(previous.context_json)).coveredMessageIds : [];
+      .get(conversation.conversation_id, user.ordinal) as { transcript_json: string; context_json: string; ordinal: number; message_id: string } | undefined;
+    const reuseNative = previous && !projection.changed && !projection.assistantRevoked(previous.message_id);
+    const native = reuseNative ? JSON.parse(previous.transcript_json) as Message[] : [];
+    const priorCoverage = reuseNative ? z.object({ coveredMessageIds: z.array(z.string()).default([]) }).parse(JSON.parse(previous.context_json)).coveredMessageIds : [];
     const covered = new Set(priorCoverage);
     const extra = history.filter(item => !covered.has(item.messageId) || ['running','queued','unknown'].includes(item.status))
       .map(item => transcript.find(row => row.messageId === item.messageId)!);
@@ -521,10 +525,10 @@ export class BotConversationService {
     covered.add(source.user_message_id);
     covered.add(source.assistant_message_id);
     const settledRequests = new Set(history.filter(item => item.role === 'assistant' && item.status === 'completed').map(item => item.requestId));
-    const sourceMessageIds = history.filter(item => settledRequests.has(item.requestId)).map(item => item.messageId);
+    const sourceMessageIds = history.filter(item => settledRequests.has(item.requestId) && projection.sourceMessageIds.includes(item.messageId)).map(item => item.messageId);
     const gatewayReference = z.object({ context_text: z.string() }).optional().parse(this.options.db.prepare(
       "SELECT context_text FROM bot_gateway_references WHERE user_message_id=?").get(source.user_message_id))?.context_text;
-    const context_json = JSON.stringify({ native, history: extra, peerHistory: history.some(item => item.botCalls?.length) ? botPeerHistory(history) : undefined, gatewayReference, reference, selectedWorkId: source.selected_work_id, sourceMessageIds, coveredMessageIds: [...covered] });
+    const context_json = JSON.stringify({ native, history: extra, peerHistory: history.some(item => item.botCalls?.length) ? botPeerHistory(history) : undefined, gatewayReference, reference, selectedWorkId: source.selected_work_id, sourceMessageIds, memoryRecallDependencies: { version: 1, records: [], sourceMessageIds, sourceHashes: projection.sourceHashes }, coveredMessageIds: [...covered] });
     const created_at = Date.now();
     this.options.db.prepare('INSERT INTO bot_request_runs(message_id,runtime_key,context_json,created_at) VALUES (?,?,?,?)')
       .run(message.messageId, runtime_key, context_json, created_at);
@@ -677,7 +681,7 @@ ${conversation.team_id ? `当前是独立团队会话（teamId=${conversation.te
       contextHooks: web?.contextHooks,
       tools: [...(selectedTools ?? []), ...requestTools.filter(tool => (tool.name !== "bot_organize" || Boolean(this.organizations?.eligible(key))) && (!conversation.team_id || !["bot_list", "bot_ask", "bot_collaborate"].includes(tool.name))), ...composerTools, ...webTools, ...botForegroundTools({ ...this.options, botId: bot.botId, teamId: conversation.team_id ?? undefined, conversationId: conversation.conversation_id, messages: this.messages,
         requestNamespace: run.runtime_key === conversation.conversation_id ? undefined : key,
-        memorySearch: query => this.options.memory ? this.options.memory.search(bot.botId, query, conversation.conversation_id) : this.options.memorySearch(bot.botId, query),
+        memorySearch: query => this.options.memory ? this.options.memory.search(bot.botId, query, conversation.conversation_id, source.user_message_id) : this.options.memorySearch(bot.botId, query),
         memoryRemember: this.options.memory ? (input, userText) => this.options.memory!.remember(bot.botId, conversation.conversation_id, input, userText) : undefined,
         memoryForget: this.options.memory ? (ids, userText, evidence, source) => this.options.memory!.forget(bot.botId, ids, userText, evidence, conversation.conversation_id, source) : undefined }).filter(tool => !conversation.team_id || tool.name !== "work_create")],
       toolHooks: { beforeTool: async (call, api, ctx) => {

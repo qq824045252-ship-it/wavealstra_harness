@@ -92,6 +92,11 @@ exports.run = async ({send, foregroundDone, until, evaluate, history, rpc, repor
       assert((await search('HeliosCalibration')).some(h=>h.memory.content?.includes(marker.b)),'B remains retrievable');
       assert.deepEqual(invalidations().memory_forget_watermarks,before.memory_forget_watermarks,'precise forget must not advance coarse watermark');
     });
+  await task('6a 同会话继续回查不继承撤销原文',
+    '请再次核实 HeliosCalibration 的标记，只给仍有效的结果，不恢复我要求遗忘的内容。',async(output,wire)=>{
+      assert(output.includes(marker.b)); assert(!output.includes(marker.a));
+      assert(!JSON.stringify(wire).includes(marker.a),'same-conversation native context must not retain revoked A');
+    });
   await newChat();
   await task('6 新会话回查与遗忘不复活',
     '请回查 HeliosCalibration 的标记并告诉我；另外之前被要求遗忘的那条偏好不要恢复。不要猜测。',async(output,wire)=>{
@@ -120,9 +125,9 @@ exports.run = async ({send, foregroundDone, until, evaluate, history, rpc, repor
       assert(wire.some(r=>JSON.stringify(r).includes(marker.answer)),'retrieved fact reaches provider');
       assert(wire.some(r=>(r.messages||[]).some(m=> (m.tool_calls||[]).some(t=>t.function?.name==='memory_search'))),'actual model memory_search invocation evidenced');
     });
-  assert.equal(report.cases.length,8);
+  assert.equal(report.cases.length,9);
   report.failedCases=report.cases.filter(row=>row.status!=='passed').map(row=>({title:row.title,error:row.error}));
-  if (!report.failedCases.length) report.checks.push('eight real UI user tasks with provider replies; persistent invalidation checks; same-source A/B precise forget; new-chat and cross-Bot request-wire checks; product-IPC-seeded 2102-record old-fact recall');
+  if (!report.failedCases.length) report.checks.push('nine real UI user tasks with provider replies; persistent invalidation checks; same-source A/B precise forget; new-chat and cross-Bot request-wire checks; product-IPC-seeded 2102-record old-fact recall');
   report.unverified=[...(report.unverified||[]),'bulk memory creation is IPC fixture setup, not model learning','real embedding quality, crash recovery, team/project scopes and physical input are not exercised','provider calls can exceed eight user turns due to tool continuations; actual counts recorded per case'];
   const shot=await rpc('Page.captureScreenshot',{format:'png'});
   fs.writeFileSync(path.join(out,'memory-correctness-live.png'),Buffer.from(shot.data,'base64'));

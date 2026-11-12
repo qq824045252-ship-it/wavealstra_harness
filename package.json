@@ -733,7 +733,8 @@
     "test:bot-work-method-feedback": "esbuild scripts/bot-work-method-feedback-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/bot-work-method-feedback-test.mjs && node scripts/test-guard.mjs out/tests/bot-work-method-feedback-test.mjs",
     "test:gateway-work-review": "node scripts/gateway-work-review-regression-test.cjs",
     "test:work-completion-recovery": "esbuild scripts/work-completion-recovery-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/work-completion-recovery-test.mjs && node scripts/test-guard.mjs out/tests/work-completion-recovery-test.mjs",
-    "test:work-result-lifecycle": "esbuild scripts/work-result-lifecycle-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/work-result-lifecycle-test.mjs && node scripts/test-guard.mjs out/tests/work-result-lifecycle-test.mjs"
+    "test:work-result-lifecycle": "esbuild scripts/work-result-lifecycle-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/work-result-lifecycle-test.mjs && node scripts/test-guard.mjs out/tests/work-result-lifecycle-test.mjs",
+    "test:memory-recall-lineage": "esbuild scripts/memory-recall-lineage-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/memory-recall-lineage-test.mjs && node scripts/test-guard.mjs out/tests/memory-recall-lineage-test.mjs"
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.85.0",

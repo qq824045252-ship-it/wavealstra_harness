@@ -1,11 +1,12 @@
 import type { AppDatabase } from "../../db/AppDatabase";
-import type { MemoryCreateRequest, MemoryScopeType } from "../../../shared/memory-kernel";
+import type { MemoryCreateRequest, MemoryRecordDto, MemoryScopeType } from "../../../shared/memory-kernel";
 import type { MemoryService } from "../../memory/MemoryService";
 import type { MemoryPipelineManager } from "../../memory/MemoryPipelineManager";
 import { botMemorySource, botMemoryTextEligible, botMemoryWriteEvidenceAllowed, botMemoryConversationOnly } from "../../memory/BotMemorySource";
 import { BotConversationRepository } from "./BotConversationRepository";
 import { botHistoryContext } from "./BotHistoryContext";
 import { MemoryInstructionDocument } from "../../memory/MemoryIntent";
+import { MemoryRecallLineage } from "../../memory/MemoryRecallLineage";
 
 /** Foreground adapter over the existing L0/L1 store, deletion controls and single writer. */
 export class BotConversationMemory {
@@ -21,12 +22,16 @@ export class BotConversationMemory {
 
   /** Foreground recall uses the shared hybrid path (lexical + semantic when available);
    * the kernel re-reads scopes and statuses after every async boundary. */
-  async search(botId: string, query: string, conversationId?: string) {
+  async search(botId: string, query: string, conversationId?: string, sourceMessageId?: string) {
     const context = this.scopeContext(botId, conversationId);
     if (!context) return [];
     const hits = await this.options.memory.searchHybrid({ ...context, query, statuses: ["active"], limit: 20 });
     // Memory may have been switched off while the hybrid runtime was working.
-    return this.options.enabled() ? hits : [];
+    if (!this.options.enabled()) return [];
+    const receipt = sourceMessageId && this.options.db.connection.prepare("SELECT assistant_message_id FROM bot_send_receipts WHERE user_message_id=? AND bot_id=? AND conversation_id=? AND user_id=?")
+      .get(sourceMessageId, botId, conversationId ?? "", this.options.userId) as { assistant_message_id: string } | undefined;
+    if (receipt) new MemoryRecallLineage(this.options.db.connection).record(receipt.assistant_message_id, this.consumedRecords(hits.map(hit => hit.memory), context));
+    return hits;
   }
 
   /** Read-only recall for an isolated peer consultation: the receiving Bot's own scope only. */
@@ -44,7 +49,7 @@ export class BotConversationMemory {
     if (!this.options.enabled()) return;
     const context = this.scopeContext(botId);
     if (!context) return;
-    const record = this.options.memory.get(id);
+    const record = this.options.memory.getForRecall(id, context);
     if (!record || record.status !== "active") return;
     const now = Date.now();
     if ((record.validFrom !== undefined && record.validFrom > now)
@@ -62,6 +67,13 @@ export class BotConversationMemory {
       scopeTypes: ["conversation"], includeInherited: false };
     return { botId, conversationId, teamId: conversation.team_id ?? undefined,
       scopeTypes: ["global", "conversation", conversation.team_id ? "team" : "bot"] as MemoryScopeType[], includeInherited: true };
+  }
+
+  private consumedRecords(records: MemoryRecordDto[], context: { botId: string; conversationId?: string; teamId?: string; scopeTypes: MemoryScopeType[] }): MemoryRecordDto[] {
+    return records.map(record => ({ ...record, scopes: record.scopes.filter(scope => context.scopeTypes.includes(scope.scopeType)
+      && (scope.scopeType === "global" || scope.scopeType === "bot" && scope.scopeId === context.botId
+        || scope.scopeType === "team" && scope.scopeId === context.teamId
+        || scope.scopeType === "conversation" && scope.scopeId === context.conversationId)) }));
   }
 
   remember(botId: string, conversationId: string, input: {
@@ -132,13 +144,19 @@ export class BotConversationMemory {
     if (!context) return "";
     // Stable preferences should also influence unrelated requests. Bounded active L1,
     // read afresh at every provider request: no stale in-memory copy after deletion.
-    const stable = this.options.memory.resolveContext({ ...context,
-      statuses: ["active"], budgetChars: 6000, limit: 12 }).text;
+    const projection = this.options.memory.resolveContext({ ...context,
+      statuses: ["active"], budgetChars: 6000, limit: 12 });
+    const stable = projection.text;
     const source = sourceMessageId && this.messages.message(sourceMessageId);
+    const receipt = source && this.messages.receipt(this.options.userId, botId, source.requestId);
+    const lineage = new MemoryRecallLineage(this.options.db.connection);
+    if (receipt && source.conversationId === conversationId) lineage.record(receipt.assistant_message_id,
+      this.consumedRecords(projection.items.flatMap(item => { const record = this.options.memory.get(item.id); return record ? [{ ...record, evidence: [] }] : []; }), context));
     if (this.messages.origins.isShared(conversationId)) return stable;
     if (!source || source.role !== "user" || source.botId !== botId || source.conversationId !== conversationId) return stable;
     const historical = botHistoryContext(this.options.db.connection, { userId: this.options.userId, botId,
-      excludeConversationId: conversationId, teamId: context.teamId, query: source.text, before: source.createdAt });
+      excludeConversationId: conversationId, teamId: context.teamId, query: source.text, before: source.createdAt,
+      onSources: (ids, hashes) => { if (receipt) lineage.record(receipt.assistant_message_id, [], ids, hashes); } });
     return [stable, historical].filter(Boolean).join("\n\n");
   }
 
@@ -167,7 +185,8 @@ export class BotConversationMemory {
       userMessageId: user.messageId, assistantMessageId: assistant.messageId, userText: "",
       // L0 is a source pointer. Do not duplicate raw conversations (including mixed
       // sensitive content) into long-term memory. Extraction reads the original transiently.
-      assistantText: "", metadata: { source: "bot_conversation", botId, teamId: source.team_id ?? undefined, userId: this.options.userId } });
+      assistantText: "", metadata: { source: "bot_conversation", botId, teamId: source.team_id ?? undefined, userId: this.options.userId,
+        memoryRecallDependencies: new MemoryRecallLineage(this.options.db.connection).snapshot(assistant.messageId) } });
     return decision.shouldExtractL1 ? receipt.conversation_id : undefined;
   }
 

@@ -1256,7 +1256,13 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     if (socket) { try { await rpc('Browser.close'); } catch {} socket.close(); }
     await stopTestElectronMains();
     if (processDev) { await wait(1000); if (processDev.exitCode === null) {
-      if (windows) cp.execFileSync('taskkill.exe', ['/PID', String(processDev.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+      if (windows) {
+        try { cp.execFileSync('taskkill.exe', ['/PID', String(processDev.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }); }
+        catch (error) {
+          try { process.kill(processDev.pid, 0); throw error; }
+          catch (probe) { if (probe.code !== 'ESRCH') throw probe; }
+        }
+      }
       else processDev.kill('SIGTERM');
     } }
     if (log !== undefined) fs.closeSync(log); provider.closeAllConnections(); await new Promise(resolve=>provider.close(resolve));
