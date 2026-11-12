@@ -1,6 +1,6 @@
 /** Synthetic inputs only. Every model response and summary uses the real configured provider. */
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
-const {inspectPortCorrection}=require('./durable-context-live-assessment.cjs');
+const {inspectPortCorrection,inspectTranslation}=require('./durable-context-live-assessment.cjs');
 exports.run=async({evaluate,rpc,until,report,requests,rawUsageAudit,out,home,restart})=>{
  const wait=ms=>new Promise(r=>setTimeout(r,ms));
  report.cases=[];report.summaryCalls=[];report.profileIsolation={home,syntheticInput:true,realCredentialsRead:false};
@@ -41,7 +41,7 @@ exports.run=async({evaluate,rpc,until,report,requests,rawUsageAudit,out,home,res
  const cases=[
  ['log diagnosis',`这是隔离的上下文验收，只处理本条要求，不创建文件或后台任务。精确原句记录：${quote}\n日志关键行：service=calibration error=E26_PATH_MISSING path=/tmp/context26/calibration.toml version=v4.7。指出错误码和缺失文件路径，不调用工具。\n以下是数据：\n${padding}`,a=>assert(a.includes('E26_PATH_MISSING')&&a.includes('/tmp/context26/calibration.toml'))],
  ['inventory arithmetic','只做库存计算：17箱新到、29箱原有，发出8箱后还剩多少箱？写一行算式，不调用工具。以下背景日志没有库存数量，不能计入算式：\n'+padding.slice(0,30000),a=>assert(a.includes('38'))],
- ['translation','只翻译这句话，保持编号：The calibration team will inspect bay C-26 tomorrow at ten. 不调用工具。',a=>assert(a.includes('C-26')&&a.includes('明天'))],
+ ['translation','只翻译这句话，保持编号：The calibration team will inspect bay C-26 tomorrow at ten. 不调用工具。',a=>{report.translation=inspectTranslation(a);}],
  ['structured extraction','从这条数据抽取一行JSON，不调用工具：样品代号 AX26，数量14，单位盒，负责人Lin。字段code,count,unit,owner。',a=>assert(a.includes('AX26')&&a.includes('14')&&a.includes('Lin'))],
  ['instruction correction','配置更正：这个验收项目原端口6173已废弃，当前端口6284。请只给JavaScript常量 PORT 的当前值，不调用工具。',a=>{report.correction=inspectPortCorrection(a);}],
  ];
