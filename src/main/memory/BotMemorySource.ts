@@ -21,13 +21,30 @@ export function botMemoryConversationOnly(text: string): boolean {
     || /\b(?:do not|don't|never)\s+(?:carry|share|reuse|retain|remember)\b.{0,48}\b(?:other|future|new)\s+(?:chats?|conversations?|sessions?)\b/i.test(wording);
 }
 
+/** Explicit "do not keep this" wording. Kept separate from secret syntax so a
+ * technical discussion can be captured while a real opt-out still wins. */
+const BOT_MEMORY_OPT_OUT = /不要(?:记住|记录|保存|存储)|别(?:记住|保存)|do not (?:remember|store|save)|don.t (?:remember|store|save)/i;
+
+/** Topic labels that only appear when a credential or sensitive personal record is at stake. */
+const BOT_MEMORY_SENSITIVE_TOPIC = /(?:api[ _-]?key|password|passwd|secret|access[ _-]?token|refresh[ _-]?token|private[ _-]?key|recovery[ _-]?(?:code|seed)|私钥|恢复码|助记词|密钥|密码|口令|令牌|验证码|身份证|护照|银行卡|信用卡|病历|诊断|用药|医疗|健康状况|银行账户|存款|资产|medical|diagnosis|medication|diabetes|insulin|cancer|hiv|antidepressant|糖尿病|胰岛素|癌症|艾滋|抑郁|passport|social security|credit card|bank account|保密|机密)/i;
+
+/** Secret-bearing syntax. A bare `cookie` term or a standalone Git SHA/hash is a
+ * technical identifier, not a credential, so only value-shaped occurrences block. */
+const BOT_MEMORY_SECRET_VALUE = new RegExp([
+  String.raw`\b(?:set[ _-]?cookie|(?:^|[^\w])cookie)\s*[:=：]\s*\S{6,}`,
+  String.raw`\b(?:authorization|bearer)\s*[:=]?\s*[A-Za-z0-9._~+/=-]{16,}`,
+  String.raw`\b(?:session|auth|csrf|xsrf|tracking)[ _-]?(?:id|key|token|cookie)\s*[:=：]\s*\S{8,}`,
+  String.raw`\b(?:token|secret|key|password|passwd|signature)\s*[:=]\s*["']?[A-Fa-f0-9]{32,}\b`,
+].join("|"), "i");
+
 /** Conservative capture boundary: never copy secrets or one-off private details into memory evidence. */
 export function botMemoryTextEligible(text: string): boolean {
-  return Boolean(text.trim()) && !/(?:api[ _-]?key|password|passwd|secret|access[ _-]?token|refresh[ _-]?token|private[ _-]?key|recovery[ _-]?(?:code|seed)|cookie|私钥|恢复码|助记词|密钥|密码|口令|令牌|验证码|身份证|护照|银行卡|信用卡|病历|诊断|用药|医疗|健康状况|银行账户|存款|资产|medical|diagnosis|medication|diabetes|insulin|cancer|hiv|antidepressant|糖尿病|胰岛素|癌症|艾滋|抑郁|passport|social security|credit card|bank account|保密|机密|不要(?:记住|记录|保存|存储)|别(?:记住|保存)|do not (?:remember|store|save)|don.t (?:remember|store|save))/i.test(text)
-    && !/\b(?:sk|pk|ghp|github_pat|xox[baprs])[-_][A-Za-z0-9_-]{12,}\b/i.test(text)
+  if (!text.trim()) return false;
+  if (BOT_MEMORY_OPT_OUT.test(text) || BOT_MEMORY_SENSITIVE_TOPIC.test(text) || BOT_MEMORY_SECRET_VALUE.test(text)) return false;
+  return !/\b(?:sk|pk|ghp|github_pat|xox[baprs])[-_][A-Za-z0-9_-]{12,}\b/i.test(text)
+    && !/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/.test(text)
     && !/\b\d{3}[- ]\d{2}[- ]\d{4}\b/.test(text)
-    && !/(?:\d[ -]?){13,19}/.test(text)
-    && !/\b[A-Fa-f0-9]{40,}\b/.test(text);
+    && !/(?<![\w-])(?:\d[ -]?){13,19}(?![\w-])/.test(text);
 }
 
 /** Forget is a deletion request, not a new negative preference. Mixed requests may

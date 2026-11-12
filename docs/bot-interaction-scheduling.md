@@ -209,3 +209,7 @@
 - [Bot / Work 验收规范](bot-work-acceptance.md)
 - [纯提醒闭环](reviews/bot-local-reminders-2026-11-11.md)
 - [调度验收报告](reviews/bot-scheduling-27-2026-11-11.md)
+
+## 11. 后续关联
+
+- [#28](https://github.com/qq824045252-ship-it/wavealstra_harness/issues/28) 的长历史召回、技术文本过滤与 hybrid 入口已按独立规格实施：[Bot 历史召回与记忆过滤](bot-memory-recall.md)、[验收报告](reviews/bot-memory-recall-28-2026-11-12.md)。本文 §9 的缺口条目保留为历史记录。

@@ -30,6 +30,20 @@ function pair(text: string, answer: string, options: { bot?: string; team?: stri
   if (options.archive !== false) messages.archive(userId, botId, receipt.conversationId);
   return receipt;
 }
+/** One real conversation with many completed turns, so source size is under test. */
+function conversation(turns: Array<[string, string]>, options: { bot?: string; team?: string } = {}) {
+  const botId = options.bot ?? "learn";
+  let conversationId: string | undefined;
+  for (const [text, answer] of turns) {
+    const receipt = messages.accept(LOCAL_USER_ID, { botId, teamId: options.team, conversationId, requestId: `r${++sequence}`, text });
+    messages.update(receipt.assistantMessageId, "completed", answer);
+    db.connection.prepare("UPDATE bot_messages SET created_at=?,updated_at=? WHERE request_id=?").run(sequence * 100, sequence * 100 + 1, receipt.requestId);
+    bridge.capture(botId, receipt.requestId);
+    conversationId = receipt.conversationId;
+  }
+  if (conversationId) messages.archive(LOCAL_USER_ID, botId, conversationId);
+  return conversationId!;
+}
 function recall(query: string, options: { bot?: string; team?: string } = {}) {
   const current = pair(query, "current", options);
   return bridge.context(options.bot ?? "learn", current.conversationId, current.userMessageId);
@@ -114,7 +128,66 @@ try {
   const bounded = recall("BoundedTopic");
   assert(bounded.length <= 6000 && bounded.split('"source":"historical_conversation"').length <= 4);
   assert(bounded.includes("result-7") && !bounded.includes("result-0"));
-  for (let i = 0; i < 8; i++) pair("ScanBudget " + "x".repeat(10000), "budget-private");
-  assert(!recall("BoundedTopic").includes("result-7"), "global inspection budget fails closed instead of scanning all conversations");
-  console.log("PASS history context: cross-session, precision, provenance, isolation, correction, sensitive/temporary filters, deletion, malformed receipts, forgetting, disabled and bounded output");
+
+  // ── Issue #28: relevance-first retrieval, no source-inspection cliff ─────────
+  const longSource = conversation([["LongSourceTopic 旧方案：用 NSH 的 MTLS 灰度回滚演练", "长会话答案：MTLS 灰度回滚演练旧结论是 NSH"],
+    ...Array.from({ length: 304 }, (_, i) => [`LongSourceNoise ${i}`, `长会话噪声回答 ${i}`] as [string, string])]);
+  const longRecall = recall("MTLS 灰度回滚演练的旧方案");
+  assert(longRecall.includes("长会话答案"), "a clean 305-turn source is recallable: the 300/301 scan boundary is gone");
+  assert(longRecall.includes(longSource), "provenance keeps the exact source conversation");
+
+  // Explicit 299/300/301-turn sources: the previous scan budget refused all three.
+  const boundary: Array<[number, string]> = [[299, "Boundary299Topic"], [300, "Boundary300Topic"], [301, "Boundary301Topic"]];
+  for (const [size, topic] of boundary) {
+    conversation([[`${topic} 的旧方案结论`, `${topic} 答案`],
+      ...Array.from({ length: size - 1 }, (_, i) => [`${topic}Noise ${i}`, `边界噪声回答 ${i}`] as [string, string])]);
+  }
+  for (const [size, topic] of boundary) assert(recall(`${topic} 的旧方案结论`).includes(`${topic} 答案`),
+    `a ${size}-turn source still recalls its oldest relevant pair`);
+
+  for (let c = 0; c < 6; c++) conversation(Array.from({ length: 250 }, (_, i) => [`BudgetNoise ${c}-${i}`, `规模噪声回答 ${c}-${i}`] as [string, string]));
+  assert(recall("MTLS 灰度回滚演练的旧方案").includes("长会话答案"), "unrelated large sources cannot consume a shared inspection budget");
+
+  conversation([["StoneTopic 不要保存：内部定价草稿 v1", "禁止保存的回答"],
+    ...Array.from({ length: 304 }, (_, i) => [`StoneNoise ${i}`, `禁止噪声回答 ${i}`] as [string, string]),
+    ["StoneTopic 后续补充：内部定价草稿 v2", "后续回答"]]);
+  assert.equal(recall("StoneTopic 内部定价草稿"), "", "do-not-save still protects every follow-up in a long source");
+
+  conversation([["仅本次对话有效：LocalScopeTopic 调度参数", "只在本会话"],
+    ...Array.from({ length: 120 }, (_, i) => [`LocalScopeNoise ${i}`, `范围噪声回答 ${i}`] as [string, string])]);
+  assert.equal(recall("LocalScopeTopic 调度参数"), "", "conversation-only wording keeps protecting a long source");
+
+  conversation([["SkipTopic 不要保存 旧内容", "禁止来源回答"]]);
+  pair("SkipTopic 合法的新结论", "合法来源回答");
+  assert(recall("SkipTopic 合法的新结论").includes("合法来源回答"), "one prohibited source cannot hide an allowed match");
+
+  const buried = pair("BuriedTopic 旧方案：NSH 的 MTLS 灰度回滚演练步骤",
+    "埋藏答案：NSH 的 MTLS 灰度回滚演练步骤见第 812 号记录");
+  for (let i = 0; i < 700; i++) {
+    pair(`BacklogTopic ${i} 的界面调整讨论`, `批量回答 ${i}`);
+    if (i % 2) pair(`TeamBacklog ${i} 的排期讨论`, `团队回答 ${i}`, { team: "team-long" });
+  }
+  const buriedRecall = recall("BuriedTopic NSH 的 MTLS 灰度回滚演练步骤");
+  assert(buriedRecall.includes(buried.userMessageId) && buriedRecall.includes("第 812 号记录"),
+    "a relevant pair older than 1000 interleaved pairs is retrieved with its original message ids");
+  assert(buriedRecall.includes(buried.conversationId) && buriedRecall.includes("sourceTime"), "source time and conversation survive retrieval");
+  assert(!recall("BuriedTopic NSH 的 MTLS 灰度回滚演练步骤", { bot: "other" }).includes(buried.userMessageId), "old personal recall stays inside the owning Bot");
+  assert(!recall("BuriedTopic NSH 的 MTLS 灰度回滚演练步骤", { team: "team-long" }).includes(buried.userMessageId), "old personal recall is not promoted into a team scope");
+
+  const gitSha = "14a650406359b5c4bd4cc358b2a7623364242298";
+  const shaPair = pair(`GitShaTopic 记住：生产只跑 TLS 1.3，参考提交 ${gitSha}`, `GitShaTopic 已记录 ${gitSha}`);
+  assert(recall("GitShaTopic TLS 1.3").includes(shaPair.userMessageId), "a full Git SHA is a technical identifier, not a blocked secret");
+  const cookiePair = pair("CookieTopic cookie 技术讨论：只记录主题，不放会话票据", "CookieTopic 讨论记录");
+  assert(recall("CookieTopic cookie 技术讨论").includes(cookiePair.userMessageId), "ordinary cookie discussion is recallable");
+  for (const [text, answer] of [["SecretTopic password=hunter2", "真实密码回答"],
+    ["SecretTopic2 Set-Cookie: session=abc123def456", "真实 Cookie 回答"], ["SecretTopic3 api_key={{API_KEY_live_9x}}", "真实令牌回答"]]) {
+    pair(text, answer);
+    assert.equal(recall(text.split(" ")[0]), "", `real secret syntax is still excluded: ${text}`);
+  }
+  const longAnswer = pair("LongAnswerTopic 超长答案主题", "LongAnswerTopic MARKER " + "补充说明 ".repeat(6000));
+  assert(recall("LongAnswerTopic 超长答案主题").includes("MARKER"), "an oversized answer is quoted instead of silently dropping the pair");
+  pair("OversizeTopic 超限内容", "x".repeat(210000) + "MARKER");
+  assert.equal(recall("OversizeTopic 超限内容"), "", "a message above the per-pair size bound is excluded, never truncated into a leak");
+
+  console.log("PASS history context: relevance-first retrieval beyond 1000 pairs, no 300/301 or shared-budget cliff, exact per-source prohibition, provenance, isolation, correction, Git SHA/cookie eligibility, secrets, deletion, receipts, forgetting, disabled and bounded output");
 } finally { db.close(); }

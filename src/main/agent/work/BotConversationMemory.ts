@@ -18,10 +18,26 @@ export class BotConversationMemory {
 
   enabled(): boolean { return this.options.enabled(); }
 
-  search(botId: string, query: string, conversationId?: string) {
+  /** Foreground recall uses the shared hybrid path (lexical + semantic when available);
+   * the kernel re-reads scopes and statuses after every async boundary. */
+  async search(botId: string, query: string, conversationId?: string) {
     const context = this.scopeContext(botId, conversationId);
     if (!context) return [];
-    return this.options.memory.search({ ...context, query, statuses: ["active"], limit: 20 });
+    return this.options.memory.searchHybrid({ ...context, query, statuses: ["active"], limit: 20 });
+  }
+
+  /** Read-only recall for an isolated peer consultation: the receiving Bot's own scope only. */
+  async recall(botId: string, query: string) {
+    const context = this.scopeContext(botId);
+    if (!context) return [];
+    return this.options.memory.searchHybrid({ ...context, query, statuses: ["active"], limit: 20 });
+  }
+
+  /** Peer evidence is recomputed per request; a prefetched hit must not outlive its record. */
+  activeFact(id: string) {
+    if (!this.options.enabled()) return;
+    const record = this.options.memory.get(id);
+    return record && record.status === "active" ? record : undefined;
   }
 
   /** A user-owned scope is selected from the real conversation, never from a model-supplied entity ID. */

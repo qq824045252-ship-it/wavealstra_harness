@@ -83,7 +83,7 @@ export interface BotForegroundToolOptions {
   requestNamespace?: string;
   schedule: (work: WorkDto, operationId: string, retryBlocked?: boolean) => void;
   wake: (workId?: string) => void;
-  memorySearch: (query: string) => unknown;
+  memorySearch: (query: string) => unknown | Promise<unknown>;
   memoryRemember?: (input: z.infer<typeof memoryRemember>, userText: string) => unknown;
   memoryForget?: (ids: string[], userText: string, evidence: string, source?: { createdAt: number; messageId: string }) => unknown;
   isAuthority: () => boolean;
@@ -412,7 +412,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
     } }),
   defineTool({ name: "memory_search", description: "查询当前对话可见记忆：本 Bot 或团队、本次会话，以及用户明确共享的公共记忆；不读其他 Bot 私人记忆。",
     parameters: inputParameters.memory, replay: "safe",
-    execute: async args => { assertActive(); return output(options.memorySearch(memory.parse(args).query)); } }),
+    execute: async args => { assertActive(); return output(await options.memorySearch(memory.parse(args).query)); } }),
   defineTool({ name: "memory_remember", description: "用户明确要求记住或更正一条事实/偏好时保存到宿主绑定范围。current是当前Bot专属或当前团队；仅本次对话的约束用conversation；只有用户明确说所有Bot共享时才用public。引用当前用户原话，成功后才能说已记住。不把临时要求保存为长期规则。",
     parameters: parameters(memoryRemember), replay: "safe",
     execute: async (args, api, context) => {

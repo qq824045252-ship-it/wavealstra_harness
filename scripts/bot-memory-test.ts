@@ -6,6 +6,7 @@ import { BotConversationRepository } from "../src/main/agent/work/BotConversatio
 import { BotConversationMemory } from "../src/main/agent/work/BotConversationMemory";
 import { MemoryService } from "../src/main/memory/MemoryService";
 import { MemoryPipelineManager } from "../src/main/memory/MemoryPipelineManager";
+import { botMemoryTextEligible } from "../src/main/memory/BotMemorySource";
 import { LOCAL_USER_ID } from "../src/shared/bot-work";
 
 async function main() {
@@ -62,7 +63,7 @@ async function main() {
     assert(atoms[0].evidence.some(e => e.evidenceKind === "conversation"));
     assert(!JSON.stringify(atoms).includes("UNSUPPORTED_ASSISTANT"));
     assert(bridge.context("alice", first.source).includes("中文简短"), "automatic active L1 recall");
-    assert.equal(bridge.search("bob", "中文").length, 0); assert.equal(bridge.search("foreign", "中文").length, 0);
+    assert.equal((await bridge.search("bob", "中文")).length, 0); assert.equal((await bridge.search("foreign", "中文")).length, 0);
     assert.equal(bridge.context("bob", first.source), "", "conversation belongs to Bot + user");
     messages.archive(LOCAL_USER_ID, "alice", first.source);
     const second = send("你好"); assert(second.source && second.source !== first.source);
@@ -70,10 +71,19 @@ async function main() {
     for (const text of ["我的密码是 12345，记住我喜欢绿茶。", "这次病历诊断为某病。", "不要保存这条消息", "passport number is X12345", "I have diabetes", "I take insulin", "123-45-6789", "4111 1111 1111 1111"]) {
       assert.equal(send(text).source, undefined, "sensitive/opt-out source is not copied into L0");
     }
+    // Technical identifiers are not secrets: a real commit SHA or an ordinary cookie
+    // discussion stays capturable, while value-shaped credentials still do not.
+    assert(botMemoryTextEligible("生产只开 TLS 1.3，提交 14a650406359b5c4bd4cc358b2a7623364242298"));
+    assert(botMemoryTextEligible("cookie 只保存主题，不放会话票据"));
+    assert(!botMemoryTextEligible("Set-Cookie: sessionid=abc123def456"));
+    assert(!botMemoryTextEligible("password=hunter2"), "real password syntax stays blocked");
+    assert(!botMemoryTextEligible("token=0123456789abcdef0123456789abcdef"), "labelled token value stays blocked");
+    for (const text of ["记住：生产只开 TLS 1.3，提交 14a650406359b5c4bd4cc358b2a7623364242298",
+      "记住：cookie 讨论只记录主题，不放会话票据"]) assert(send(text).source, `technical text is captured: ${text}`);
     assert.equal(send("记住我喜欢咖啡", "alice", "cancelled").source, undefined);
     assert.equal(send("记住我喜欢茶", "alice", "running").source, undefined);
     enabled = false;
-    assert.equal(bridge.context("alice", second.source), ""); assert.equal(bridge.search("alice", "中文").length, 0);
+    assert.equal(bridge.context("alice", second.source), ""); assert.equal((await bridge.search("alice", "中文")).length, 0);
     assert.equal(send("记住我的猫叫小白").source, undefined);
     enabled = true;
     candidates = [candidate("用户住在上海", "助手猜的", { title: "居住地" }), candidate("当前天气晴", "你好", { kind: "progress" }),
@@ -117,7 +127,7 @@ async function main() {
     const correctionText = "修正长期回复格式偏好：以后末尾改为琉璃标记，旧的松露标记不再使用";
     const oldMarker = memory.create({ kind: "preference", title: "末尾标记", content: "末尾使用松露标记", scopeType: "bot", scopeId: "alice", sourceType: "user" });
     const foreignMarker = memory.create({ kind: "preference", title: "末尾标记", content: "末尾使用松露标记", scopeType: "bot", scopeId: "bob", sourceType: "user" });
-    const searchedMarker = bridge.search("alice", "松露").find(item => item.memory.id === oldMarker.id);
+    const searchedMarker = (await bridge.search("alice", "松露")).find(item => item.memory.id === oldMarker.id);
     assert(searchedMarker, "correction operates on exact retrieved records");
     assert.throws(() => bridge.forget("alice", [oldMarker.id], "修正这篇文章的格式", "修正这篇文章的格式"), /当前用户/);
     assert.throws(() => bridge.forget("alice", [oldMarker.id], "不要修正长期回复格式偏好", "修正长期回复格式偏好"), /当前用户/);
@@ -180,7 +190,7 @@ async function main() {
     const shared = save("alice", fresh.conversationId, "public", "公共蓝莓", "所有 Bot 记住公共蓝莓");
     assert(bridge.context("bob", other.source).includes("公共蓝莓"));
     assert(bridge.context("alice", team.conversationId).includes("公共蓝莓"));
-    assert.equal(bridge.search("bob", "公共蓝莓", other.source).length, 1);
+    assert.equal((await bridge.search("bob", "公共蓝莓", other.source)).length, 1);
     assert.throws(() => bridge.forget("alice", [shared.memoryId], "忘记公共蓝莓", "忘记公共蓝莓", fresh.conversationId), /其他范围/);
     bridge.forget("alice", [shared.memoryId], "忘记所有 Bot 的公共蓝莓", "忘记所有 Bot 的公共蓝莓", fresh.conversationId);
     assert(!bridge.context("bob", other.source).includes("公共蓝莓"), "shared removal invalidates next recall");

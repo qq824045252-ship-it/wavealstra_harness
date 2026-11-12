@@ -27,9 +27,14 @@ try {
   const team = messages.accept("u", { botId: "source", teamId: "team-unit", requestId: "team", text: "team question" });
   let authority = true, memoryEnabled = true, searchValue = "fresh-L1-marker";
   const memoryContexts: unknown[][] = [];
+  const recallCalls: Array<[string, string]> = [];
+  const fact = (content: string) => ({ id: "m1", kind: "fact", title: "t", content, status: "active", scopes: [] });
   const options = { db, userId: "u", bots, works, directory: root,
     models: { getModel: () => ({ provider: "test", id: "model" }), getModels: () => [{ provider: "test", id: "model" }], getAvailable: async () => [{ provider: "test", id: "model" }] },
-    memory: { enabled: () => memoryEnabled, context: (...args: unknown[]) => { memoryContexts.push(args); return "own Bot facts"; }, search: () => searchValue ? [searchValue] : [] },
+    memory: { enabled: () => memoryEnabled, context: (...args: unknown[]) => { memoryContexts.push(args); return "own Bot facts"; },
+      recall: async (botId: string, query: string) => { recallCalls.push([botId, query]);
+        return searchValue ? [{ memory: fact(searchValue), score: 1, reasons: ["lexical"] }] : []; },
+      activeFact: (id: string) => id === "m1" && searchValue ? fact(searchValue) : undefined },
     defaultModel: () => "test/model", isAuthority: () => authority, memorySearch: () => [], schedule: () => {}, wake: () => {},
   } as unknown as BotConversationServiceOptions;
   const emptyRuntime = { assertSessionHealthy: () => {}, conversation: { id: "empty" },
@@ -65,6 +70,8 @@ try {
   receivers[0].options.evidence?.([]);
   assert.deepEqual(memoryContexts.at(-1), ["target", ""], "peer context excludes personal conversation-only memory");
   const searchMessages = [{ role: "assistant", content: [{ type: "toolCall", id: "lookup", name: "memory_search", arguments: { query: "marker" } }] }] as unknown as Parameters<NonNullable<typeof receivers[0]["options"]["evidence"]>>[0];
+  await receivers[0].options.toolHooks!.beforeTool!({ name: "memory_search", arguments: { query: "marker" } } as never, {} as never, {} as never);
+  assert.deepEqual(recallCalls.at(-1), ["target", "marker"], "peer memory_search runs the hybrid recall for the receiving Bot only");
   assert(receivers[0].options.evidence?.(searchMessages).includes("fresh-L1-marker"));
   searchValue = "";
   assert(!receivers[0].options.evidence?.(searchMessages).includes("fresh-L1-marker"), "deleted L1 is withdrawn on next provider request");

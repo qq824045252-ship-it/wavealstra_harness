@@ -55,7 +55,7 @@ export interface BotConversationServiceOptions {
   botModel?: (botId: string) => string | undefined;
   botWorkspace?: (botId: string, prepareDefault?: boolean) => string;
   isAuthority: () => boolean;
-  memorySearch: (botId: string, query: string) => unknown;
+  memorySearch: (botId: string, query: string) => unknown | Promise<unknown>;
   schedule: (work: WorkDto, operationId: string, retryBlocked?: boolean) => void;
   wake: (workId?: string) => void;
   visionFallback?: BotVisionFallback;
