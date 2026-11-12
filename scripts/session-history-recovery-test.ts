@@ -85,9 +85,10 @@ try {
     `, session.file, session.cwd], { encoding: "utf8", timeout: 4_000, killSignal: "SIGKILL", maxBuffer: 256 * 1024 });
     assert.match(probe.stdout ?? "", /PROBE_READY/, "upstream probe must reach the corrupt fixture before its bound");
     const boundedFailure = probe.status === 42
-      || (probe.signal === "SIGABRT" || process.platform === "win32" && probe.status === 134) && /heap out of memory|Allocation failed/.test(probe.stderr ?? "")
+      || (probe.signal === "SIGABRT" || process.platform === "win32" && probe.status === 134 && probe.signal === null)
+        && /heap out of memory|Allocation failed/.test(probe.stderr ?? "")
       || (probe.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT";
-    assert.ok(boundedFailure, `corrupt upstream traversal must reject or hit its isolated bound: status=${probe.status}, signal=${probe.signal}, error=${probe.error?.message}`);
+    assert.ok(boundedFailure, `corrupt upstream traversal must reject or hit its isolated bound: status=${probe.status}, signal=${probe.signal}, error=${probe.error?.message}, stderr=${probe.stderr}`);
     const history = loadTaskHistoryFromSession(session.file, session.cwd);
     assert.equal(history.sessionFile, session.file, "temporary recovery path must never escape into Task history");
     assert.equal(history.sessionRecovery?.kind, "read-only-fallback");

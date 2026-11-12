@@ -57,8 +57,12 @@ try {
   const beforeMissing = await readdir(directory, { recursive: true });
   const missing = await tool.execute({ path: "workspace/report.html" }, api, ctx);
   assert.equal(missing.isError, true, "known missing source remains a failed tool result");
-  assert(JSON.stringify(missing.output).includes(JSON.stringify(join(cwd, "workspace/report.html")).slice(1, -1)));
-  assert(JSON.stringify(missing.output).includes(JSON.stringify(cwd).slice(1, -1)));
+  assert(missing.output, "missing source includes diagnostic content");
+  assert.equal(missing.output.length, 1, "missing source returns one readable diagnostic");
+  const diagnostic = missing.output[0];
+  assert(diagnostic.type === "text", "missing source diagnostic must be text");
+  assert(diagnostic.text.includes(join(cwd, "workspace/report.html")), "diagnostic identifies the resolved missing path");
+  assert(diagnostic.text.includes(cwd), "diagnostic identifies the bound workspace");
   assert.equal(entries.length, 0, "missing source cannot append a receipt");
   assert.deepEqual(await readdir(directory, { recursive: true }), beforeMissing, "missing source creates no snapshot");
   assert.equal(await readFile(path, "utf8"), "<h1>shell-created output</h1>");

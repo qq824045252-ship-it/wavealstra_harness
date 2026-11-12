@@ -9,8 +9,7 @@ import { traverseFast } from "@babel/types";
 
 // Persisted sessions require both domain services and window-backed tools before opening.
 const bootstrap = parse(readFileSync("src/main/index.ts", "utf8"), { sourceType: "module", plugins: ["typescript"] });
-// Inspect the ready callback, not later UI activation helper declarations.
-let readyBody: Parameters<typeof traverseFast>[0] | undefined;
+const startupBodies: import("@babel/types").Node[] = [];
 traverseFast(bootstrap, node => {
   if (node.type !== "CallExpression" || node.callee.type !== "MemberExpression" || node.callee.computed
     || node.callee.property.type !== "Identifier" || node.callee.property.name !== "then") return;
@@ -19,11 +18,11 @@ traverseFast(bootstrap, node => {
     || ready.callee.object.type !== "Identifier" || ready.callee.object.name !== "app"
     || ready.callee.property.type !== "Identifier" || ready.callee.property.name !== "whenReady") return;
   const callback = node.arguments[0];
-  if (callback?.type === "ArrowFunctionExpression" || callback?.type === "FunctionExpression") readyBody = callback.body;
+  if (callback?.type === "ArrowFunctionExpression" || callback?.type === "FunctionExpression") startupBodies.push(callback.body);
 });
-assert(readyBody, "bootstrap has an app.whenReady callback");
+assert.equal(startupBodies.length, 1, "one app-ready composition owns service startup");
 const startupCalls = new Map<string, number[]>();
-traverseFast(readyBody, node => {
+traverseFast(startupBodies[0]!, node => {
   if (node.type === "CallExpression" && node.callee.type === "Identifier" && node.callee.name === "createWindow") {
     assert(typeof node.start === "number");
     startupCalls.set("createWindow", [...(startupCalls.get("createWindow") ?? []), node.start]);
@@ -46,6 +45,9 @@ const windowCreation = startupCalls.get("createWindow")?.[0];
 assert(typeof windowCreation === "number", "bootstrap must create the window-backed tool hosts");
 assert(initialization < windowCreation && windowCreation < recoveryStart,
   "initialize AgentService, attach the browser/UI hosts, then resume persisted tasks");
+assert(windowCreation < startupPosition("workNotificationHost.start")
+  && startupPosition("workNotificationHost.start") < recoveryStart,
+  "attach the desktop/resident notification sink before starting delivery and recovery");
 for (const dependency of ["setSelectionContextResolver", "setArtifactDomain", "setGadgetDomain", "setLocalWorkflowServices"]) {
   assert(startupPosition(`agentService.${dependency}`) < initialization,
     `install ${dependency} before agentService.init()`);

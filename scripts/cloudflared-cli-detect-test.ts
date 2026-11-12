@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { join } from "node:path";
 
 import { detectCloudflared, parseCloudflaredVersion, resolveCloudflaredPath } from "../src/main/remote/CloudflaredCli";
 
@@ -21,6 +21,7 @@ for (const [input, expected] of versionCases) {
 
 const platform = process.platform;
 const binaryName = platform === "win32" ? "cloudflared.exe" : "cloudflared";
+const separator = platform === "win32" ? ";" : ":";
 const root = mkdtempSync(join(tmpdir(), "mybuddy-cloudflared-detect-"));
 try {
   const binDir = join(root, "bin");
@@ -35,7 +36,7 @@ try {
   if (process.platform !== "win32") chmodSync(binary, 0o755);
 
   // PATH 命中（显式关掉常见目录兜底，避免读到宿主机真实的 cloudflared）
-  const resolved = resolveCloudflaredPath({ platform, env: { PATH: [otherDir, binDir].join(delimiter) }, wellKnownDirs: [] });
+  const resolved = resolveCloudflaredPath({ platform, env: { PATH: `${otherDir}${separator}${binDir}` }, wellKnownDirs: [] });
   assert.equal(resolved, binary, "PATH 里的 cloudflared 必须被解析到");
 
   // 目录同名不算可执行文件
@@ -50,7 +51,17 @@ try {
     binary,
   );
 
-  if (process.platform !== "win32") {
+  const missing = await detectCloudflared({ platform, env: { PATH: otherDir }, wellKnownDirs: [] });
+  assert.deepEqual(missing, { installed: false });
+  if (platform === "win32") {
+    // Real native executable: Node's version must be reported as unrecognized, not cloudflared.
+    copyFileSync(process.execPath, binary);
+    const probe = await detectCloudflared({ platform, env: { ...process.env, PATH: binDir }, wellKnownDirs: [] });
+    assert.equal(probe.installed, true);
+    assert.equal(probe.binary, binary);
+    assert.equal(probe.version, undefined);
+    assert.equal(probe.error, process.version);
+  } else {
     const probe = await detectCloudflared({ platform, env: { PATH: binDir }, wellKnownDirs: [], timeoutMs: 5000 });
     assert.equal(probe.installed, true);
     assert.equal(probe.version, "2026.10.2");
