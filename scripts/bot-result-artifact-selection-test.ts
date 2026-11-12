@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { InMemoryCredentialStore, getCurrentSystemPrompt, getCurrentTools, type AssistantMessage, type TranscriptContext } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat";
 import { z } from "zod";
+import { BACKGROUND_CONTEXT as storageContext } from "@earendil-works/chord/context";
+import type { Cursor } from "@earendil-works/pi-durable";
+import { openDurablePassiveStorage } from "../src/main/agent/durable/DurableStorage";
 import { DurableBotRuntime } from "../src/main/agent/durable/DurableBotRuntime";
 import { BotWorkResultTurn, resultDecisionSchema, type WorkResultTurnInput } from "../src/main/agent/work/BotWorkResultTurn";
 import { workResultArtifactSelection } from "../src/main/agent/work/WorkResultArtifactSelection";
@@ -151,8 +154,33 @@ try {
   const beforeRepair=calls;
   const repaired=await turn.review(malformedInput);
   assert.equal(calls,beforeRepair+2); assert.equal(repaired.outcome,"partial"); assert.deepEqual(repaired.artifactRefs,[refs[0]]);
-  const logs=readdirSync(join(root,"reviews"),{recursive:true,encoding:"utf8"}).filter(name=>name.endsWith(".jsonl"))
-    .map(name=>readFileSync(join(root,"reviews",name),"utf8")).join("\n");
+  // Inspect authoritative durable evidence, independently of JSONL/SQLite representation.
+  const evidence: unknown[] = [];
+  for (const name of readdirSync(join(root,"reviews"), {withFileTypes:true})) {
+    if (!name.isDirectory()) continue;
+    const storage = await openDurablePassiveStorage(join(root,"reviews",name.name),storageContext);
+    assert(storage,"review storage must exist");
+    try {
+      let conversations: Cursor | undefined;
+      do {
+        const page = await storage.scanConversations({},100,conversations,storageContext);
+        for (const conversation of page.items) {
+          let cursor: Cursor | undefined;
+          do {
+            const entries = await storage.scanEntries({conversationId:conversation.id},100,cursor,storageContext);
+            evidence.push(...entries.items); cursor=entries.next;
+          } while (cursor);
+        }
+        conversations=page.next;
+      } while (conversations);
+      let cursor: Cursor | undefined;
+      do {
+        const page = await storage.scanSubmissions({},100,cursor,storageContext);
+        evidence.push(...page.items); cursor=page.next;
+      } while (cursor);
+    } finally { await storage.close(storageContext); }
+  }
+  const logs=JSON.stringify(evidence);
   assert(logs.includes(raw),"first failed raw reply remains in durable evidence");
   assert(logs.includes("format-repair-syntax:validation:1"),"repair uses one fixed durable request ID");
   await turn.close(); turn=open();

@@ -381,6 +381,7 @@ console.log("== c. durable 夹具（真实 watch/projection 链路）==");
     assert.equal(persistedSpeeds[0]?.ttftMs, stats!.ttftMs, "持久化的 ttftMs 与 DTO 一致");
 
     // 历史重载：真实 durable 里计时是持久化的，重开 runtime 后仍能给出同一个平均速度。
+    await runtime.close(); // Release the single-writer lease before exercising a real restart.
     const reopened = await DurableBotRuntime.open({ directory: join(directory, "state"), cwd, models: streamModels,
       model: { provider: model.provider, modelId: model.id }, toolMode: "native", instructions: () => "fixture", onSnapshot: () => {} });
     try {
