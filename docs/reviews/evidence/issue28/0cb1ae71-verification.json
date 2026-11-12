@@ -1,0 +1,2013 @@
+{
+  "generatedAt": "2026-11-12T04:11:52.498183+00:00",
+  "sourceSha": "0cb1ae71f181067c2a73b07a9dbdc6753fd0ca99",
+  "baselineSha": "e35fafd621e2f8b707013f2d6cea2e4b212b1c0c",
+  "testEnvironment": "Omarchy isolated clone, synthetic databases, temporary HOME, TMPDIR=/home/vivion/i28tmp",
+  "typecheck": {
+    "status": "passed",
+    "command": "pnpm -s typecheck",
+    "output": "$ tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json && node scripts/typecheck-scripts.mjs\n[typecheck-scripts] scripts/ 错误 0 条 · 基线 0 条 · 新增 0 · 已修复 0\n[typecheck-scripts] OK：没有新增错误。",
+    "sha256": "5e466291d0170107de7b1030d1b0722d943fac00b628a20a2d1ab2a4f734bdfa"
+  },
+  "headless": {
+    "status": "passed",
+    "command": "pnpm -s test:all",
+    "elapsedMinutes": 4.7,
+    "passed": 486,
+    "failed": 0,
+    "knownFailed": 0,
+    "newRegressions": 0,
+    "sha256": "5bc0134d0247aeb23d810060dc31de254ec635df3b5292ab821bcecacdb908f8",
+    "checks": [
+      {
+        "name": "test:acp-catalog",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:acp-permission-policy",
+        "seconds": 1.1
+      },
+      {
+        "name": "test:acp-remote",
+        "seconds": 1.9
+      },
+      {
+        "name": "test:agent-loadout",
+        "seconds": 0.8
+      },
+      {
+        "name": "test:app-store-runtime",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:app-permission-ui-removal",
+        "seconds": 0.3
+      },
+      {
+        "name": "test:app-store-structure",
+        "seconds": 0.3
+      },
+      {
+        "name": "test:acp-runtime",
+        "seconds": 3.0
+      },
+      {
+        "name": "test:app-store-transactions",
+        "seconds": 1.6
+      },
+      {
+        "name": "test:acp-desktop-hydration",
+        "seconds": 4.4
+      },
+      {
+        "name": "test:artifact-char",
+        "seconds": 0.4
+      },
+      {
+        "name": "test:architecture-graph",
+        "seconds": 2.1
+      },
+      {
+        "name": "test:artifact-cross-ref",
+        "seconds": 1.4
+      },
+      {
+        "name": "test:architecture",
+        "seconds": 4.3
+      },
+      {
+        "name": "test:artifact-image-cache",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:archive-deletion",
+        "seconds": 3.2
+      },
+      {
+        "name": "test:artifact-projection",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:artifact-policy-display",
+        "seconds": 0.2
+      },
+      {
+        "name": "test:artifact-render-hydration",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:artifact-gate",
+        "seconds": 1.6
+      },
+      {
+        "name": "test:atspi-transport",
+        "seconds": 0.5
+      },
+      {
+        "name": "test:backup",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:baidu-ocr",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:black-forest-labs-provider",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:bot-active-requests",
+        "seconds": 0.5
+      },
+      {
+        "name": "test:bot-activity-monitor",
+        "seconds": 0.2
+      },
+      {
+        "name": "test:bot-attachments",
+        "seconds": 1.4
+      },
+      {
+        "name": "test:bot-call-thread",
+        "seconds": 0.3
+      },
+      {
+        "name": "test:artifact-provenance",
+        "seconds": 4.0
+      },
+      {
+        "name": "test:bot-completion-evidence",
+        "seconds": 0.2
+      },
+      {
+        "name": "test:bot-conversation-ui",
+        "seconds": 0.2
+      },
+      {
+        "name": "test:atspi-driver",
+        "seconds": 4.8
+      },
+      {
+        "name": "test:bot-create-ui",
+        "seconds": 0.8
+      },
+      {
+        "name": "test:bot-create",
+        "seconds": 1.3
+      },
+      {
+        "name": "test:bot-deletion",
+        "seconds": 0.7
+      },
+      {
+        "name": "test:bot-delegation-fidelity",
+        "seconds": 1.1
+      },
+      {
+        "name": "test:bot-display-groups",
+        "seconds": 0.6
+      },
+      {
+        "name": "test:bot-foreground-metrics",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:bot-history-paging",
+        "seconds": 0.2
+      },
+      {
+        "name": "test:bot-execution-diagnostics",
+        "seconds": 0.6
+      },
+      {
+        "name": "test:artifact-domain",
+        "seconds": 8.5
+      },
+      {
+        "name": "test:bot-memory",
+        "seconds": 0.7
+      },
+      {
+        "name": "test:bot-history-paging-sqlite",
+        "seconds": 1.1
+      },
+      {
+        "name": "test:bot-memory-forget-watermark",
+        "seconds": 0.9
+      },
+      {
+        "name": "test:bot-message-presentation",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:bot-peer-calls",
+        "seconds": 1.7
+      },
+      {
+        "name": "test:bot-history-query",
+        "seconds": 4.3
+      },
+      {
+        "name": "test:bot-rename",
+        "seconds": 0.5
+      },
+      {
+        "name": "test:bot-reply-segments",
+        "seconds": 0.5
+      },
+      {
+        "name": "test:bot-report-images",
+        "seconds": 0.7
+      },
+      {
+        "name": "test:bot-memory-runtime",
+        "seconds": 5.1
+      },
+      {
+        "name": "test:bot-reminders",
+        "seconds": 2.7
+      },
+      {
+        "name": "test:bot-report-images-ui",
+        "seconds": 2.2
+      },
+      {
+        "name": "test:bot-scheduling-continuation",
+        "seconds": 2.4
+      },
+      {
+        "name": "test:bot-scheduling-gaps",
+        "seconds": 1.4
+      },
+      {
+        "name": "test:bot-scheduling-routing",
+        "seconds": 1.2
+      },
+      {
+        "name": "test:bot-result-delivery",
+        "seconds": 4.0
+      },
+      {
+        "name": "test:bot-settings",
+        "seconds": 0.7
+      },
+      {
+        "name": "test:bot-summary-pagination",
+        "seconds": 0.4
+      },
+      {
+        "name": "test:bot-team-ui",
+        "seconds": 1.1
+      },
+      {
+        "name": "test:bot-team-conversation",
+        "seconds": 1.5
+      },
+      {
+        "name": "test:bot-watch-expiry",
+        "seconds": 1.0
+      },
+      {
+        "name": "test:bot-watch-intake",
+        "seconds": 0.9
+      },
+      {
+        "name": "test:bot-watch-creation",
+        "seconds": 3.9
+      },
+      {
+        "name": "test:bot-work-automatic-completion",
+        "seconds": 4.8
+      },
+      {
+        "name": "test:bot-work-control",
+        "seconds": 1.2
+      },
+      {
+        "name": "test:bot-work-automatic-recovery",
+        "seconds": 4.7
+      },
+      {
+        "name": "test:bot-work-foreground-contract",
+        "seconds": 1.2
+      },
+      {
+        "name": "test:bot-work-milestones",
+        "seconds": 0.9
+      },
+      {
+        "name": "test:bot-work-execution",
+        "seconds": 3.1
+      },
+      {
+        "name": "test:bot-work-no-quota",
+        "seconds": 0.8
+      },
+      {
+        "name": "test:bot-history-context",
+        "seconds": 22.6
+      },
+      {
+        "name": "test:bot-work-phase1",
+        "seconds": 1.3
+      },
+      {
+        "name": "test:bot-work-phase2-invariants",
+        "seconds": 1.4
+      },
+      {
+        "name": "test:bot-work-phase3-collaboration",
+        "seconds": 0.7
+      },
+      {
+        "name": "test:bot-work-phase3-handoff",
+        "seconds": 1.5
+      },
+      {
+        "name": "test:bot-work-phase2-usage",
+        "seconds": 3.7
+      },
+      {
+        "name": "test:bot-work-phase3-partial-settlement",
+        "seconds": 0.9
+      },
+      {
+        "name": "test:bot-work-phase3-pause-backlog",
+        "seconds": 0.7
+      },
+      {
+        "name": "test:bot-work-phase4-backpressure",
+        "seconds": 1.0
+      },
+      {
+        "name": "test:bot-work-phase4-causal-guard",
+        "seconds": 0.7
+      },
+      {
+        "name": "test:bot-work-phase4-hook-fanout",
+        "seconds": 0.9
+      },
+      {
+        "name": "test:bot-work-phase4-offline-catchup",
+        "seconds": 0.7
+      },
+      {
+        "name": "test:bot-watch-scheduler",
+        "seconds": 17.8
+      },
+      {
+        "name": "test:bot-work-phase4-schedule-clock",
+        "seconds": 2.2
+      },
+      {
+        "name": "test:bot-work-phase5-e2e-story",
+        "seconds": 0.9
+      },
+      {
+        "name": "test:bot-work-phase5-delivery-dedup",
+        "seconds": 3.3
+      },
+      {
+        "name": "test:bot-work-phase5-reconnect-diagnostics",
+        "seconds": 1.0
+      },
+      {
+        "name": "test:bot-work-phase5-gateway",
+        "seconds": 3.0
+      },
+      {
+        "name": "test:bot-work-phase5-review",
+        "seconds": 0.9
+      },
+      {
+        "name": "test:bot-work-phase5-review-ui",
+        "seconds": 1.1
+      },
+      {
+        "name": "test:bot-work-projection-retention",
+        "seconds": 1.1
+      },
+      {
+        "name": "test:bot-work-phase5-owner-summary",
+        "seconds": 4.4
+      },
+      {
+        "name": "test:bot-work-review-control",
+        "seconds": 0.9
+      },
+      {
+        "name": "test:bot-work-read-lifecycle",
+        "seconds": 1.5
+      },
+      {
+        "name": "test:bot-work-review-execution",
+        "seconds": 0.9
+      },
+      {
+        "name": "test:bot-work-review-projection",
+        "seconds": 0.2
+      },
+      {
+        "name": "test:bot-work-phase2",
+        "seconds": 15.8
+      },
+      {
+        "name": "test:bot-work-resume-dispatch",
+        "seconds": 3.2
+      },
+      {
+        "name": "test:bot-work-team-access",
+        "seconds": 1.0
+      },
+      {
+        "name": "test:bot-work-review-memory",
+        "seconds": 5.3
+      },
+      {
+        "name": "test:bot-work-team-service",
+        "seconds": 4.0
+      },
+      {
+        "name": "test:bot-workspace",
+        "seconds": 0.7
+      },
+      {
+        "name": "test:bot-work-team-watch",
+        "seconds": 1.3
+      },
+      {
+        "name": "test:bot-workspace-navigation",
+        "seconds": 0.9
+      },
+      {
+        "name": "test:browser-open-guard",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:btw",
+        "seconds": 0.2
+      },
+      {
+        "name": "test:bot-workspace-navigation-ui",
+        "seconds": 1.3
+      },
+      {
+        "name": "test:btw-arch",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:bot-work-team-native",
+        "seconds": 7.7
+      },
+      {
+        "name": "test:builtin-capabilities",
+        "seconds": 1.3
+      },
+      {
+        "name": "test:cache-boundary-matrix",
+        "seconds": 1.7
+      },
+      {
+        "name": "test:cache-trace-audit",
+        "seconds": 0.3
+      },
+      {
+        "name": "test:capability-packaging",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:capture-mode",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:cache-request-trace",
+        "seconds": 1.5
+      },
+      {
+        "name": "test:chat-composer-ui",
+        "seconds": 0.2
+      },
+      {
+        "name": "test:chat-scroll-anchor",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:chat-markdown",
+        "seconds": 0.4
+      },
+      {
+        "name": "test:chat-selection",
+        "seconds": 0.2
+      },
+      {
+        "name": "test:cloudflared-cli-detect",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:codex-image",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:cache-strategies",
+        "seconds": 1.7
+      },
+      {
+        "name": "test:command-code-request",
+        "seconds": 0.3
+      },
+      {
+        "name": "test:compaction-settings-ui",
+        "seconds": 0.4
+      },
+      {
+        "name": "test:connector-id-case",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:compaction",
+        "seconds": 1.0
+      },
+      {
+        "name": "test:compaction-policy-history",
+        "seconds": 0.9
+      },
+      {
+        "name": "test:context-usage",
+        "seconds": 0.2
+      },
+      {
+        "name": "test:context-ledger",
+        "seconds": 1.7
+      },
+      {
+        "name": "test:conversation-branch",
+        "seconds": 1.4
+      },
+      {
+        "name": "test:conversation-branch:native",
+        "seconds": 0.8
+      },
+      {
+        "name": "test:conversation-branch-service",
+        "seconds": 2.2
+      },
+      {
+        "name": "test:conversation-branch-ui",
+        "seconds": 1.1
+      },
+      {
+        "name": "test:conversation-input",
+        "seconds": 0.2
+      },
+      {
+        "name": "test:conversation-branch:workspace",
+        "seconds": 0.8
+      },
+      {
+        "name": "test:conversation-runtime-ui",
+        "seconds": 0.3
+      },
+      {
+        "name": "test:crash-reporting",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:conversation-runtime",
+        "seconds": 0.6
+      },
+      {
+        "name": "test:bot-work-team-recovery",
+        "seconds": 13.2
+      },
+      {
+        "name": "test:dashscope-provider",
+        "seconds": 0.2
+      },
+      {
+        "name": "test:cron-scheduling",
+        "seconds": 0.7
+      },
+      {
+        "name": "test:detail-card-layout-stability",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:diagnostics-rules",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:delegated-run",
+        "seconds": 0.7
+      },
+      {
+        "name": "test:dingtalk-media",
+        "seconds": 0.3
+      },
+      {
+        "name": "test:db-migration",
+        "seconds": 1.2
+      },
+      {
+        "name": "test:dingtalk-gateway",
+        "seconds": 0.6
+      },
+      {
+        "name": "test:discord-media",
+        "seconds": 0.2
+      },
+      {
+        "name": "test:durable-compaction-settings",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:discord-gateway",
+        "seconds": 0.5
+      },
+      {
+        "name": "test:db-schema-discard",
+        "seconds": 1.7
+      },
+      {
+        "name": "test:durable-artifact-registration",
+        "seconds": 2.1
+      },
+      {
+        "name": "test:durable-context-management",
+        "seconds": 2.6
+      },
+      {
+        "name": "test:durable-context-performance",
+        "seconds": 1.1
+      },
+      {
+        "name": "test:durable-consult",
+        "seconds": 3.0
+      },
+      {
+        "name": "test:durable-context-safety",
+        "seconds": 0.4
+      },
+      {
+        "name": "test:durable-log-repair",
+        "seconds": 1.2
+      },
+      {
+        "name": "test:durable-history-block",
+        "seconds": 1.5
+      },
+      {
+        "name": "test:durable-context-branch-cancel",
+        "seconds": 4.6
+      },
+      {
+        "name": "test:durable-resume-admission",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:durable-history-readonly",
+        "seconds": 2.3
+      },
+      {
+        "name": "test:durable-session-recovery",
+        "seconds": 1.2
+      },
+      {
+        "name": "test:durable-sync",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:durable-task-projection",
+        "seconds": 0.5
+      },
+      {
+        "name": "test:durable-projection",
+        "seconds": 4.9
+      },
+      {
+        "name": "test:durable-tool-gate",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:durable-tool-diagnostics",
+        "seconds": 3.1
+      },
+      {
+        "name": "test:durable-turn-evidence",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:durable-provider-authority",
+        "seconds": 9.4
+      },
+      {
+        "name": "test:durable-workspace-binding",
+        "seconds": 1.3
+      },
+      {
+        "name": "test:execution-failure-dismiss",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:execution-restart-recovery",
+        "seconds": 0.5
+      },
+      {
+        "name": "test:expert",
+        "seconds": 0.2
+      },
+      {
+        "name": "test:durable-work-liveness",
+        "seconds": 6.2
+      },
+      {
+        "name": "test:expert-metadata",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:external-write-grant",
+        "seconds": 0.3
+      },
+      {
+        "name": "test:external-cli-memory",
+        "seconds": 0.4
+      },
+      {
+        "name": "test:external-write-ui",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:feishu-media",
+        "seconds": 0.3
+      },
+      {
+        "name": "test:gadget-browser-binding",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:gadget-blueprint",
+        "seconds": 0.7
+      },
+      {
+        "name": "test:gadget-preview-recovery",
+        "seconds": 0.5
+      },
+      {
+        "name": "test:gadget-save-copies",
+        "seconds": 0.4
+      },
+      {
+        "name": "test:gadget-runtime-lifecycle",
+        "seconds": 0.7
+      },
+      {
+        "name": "test:gateway-cache",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:durable-tool-policy",
+        "seconds": 11.5
+      },
+      {
+        "name": "test:gateway-delivery-journal",
+        "seconds": 3.5
+      },
+      {
+        "name": "test:gateway",
+        "seconds": 4.7
+      },
+      {
+        "name": "test:gateway-media",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:gateway-platform-registry",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:gateway-lifecycle",
+        "seconds": 1.9
+      },
+      {
+        "name": "test:gateway-provider-config",
+        "seconds": 1.4
+      },
+      {
+        "name": "test:gateway-task-space",
+        "seconds": 0.5
+      },
+      {
+        "name": "test:generation-speed",
+        "seconds": 3.0
+      },
+      {
+        "name": "test:gateway-security",
+        "seconds": 4.2
+      },
+      {
+        "name": "test:google-workspace",
+        "seconds": 0.2
+      },
+      {
+        "name": "test:google-workspace-faults",
+        "seconds": 0.4
+      },
+      {
+        "name": "test:google-workspace-request-scope",
+        "seconds": 0.7
+      },
+      {
+        "name": "test:google-workspace-ui",
+        "seconds": 0.3
+      },
+      {
+        "name": "test:google-workspace-tools",
+        "seconds": 0.9
+      },
+      {
+        "name": "test:google-workspace-write-tools",
+        "seconds": 0.3
+      },
+      {
+        "name": "test:harness-quality",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:hero-suggest",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:history-prepend-scroll",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:history-questions",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:google-workspace-write-ui",
+        "seconds": 0.4
+      },
+      {
+        "name": "test:input-guardian",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:html-edit-source",
+        "seconds": 0.2
+      },
+      {
+        "name": "test:ipc-channel-inventory",
+        "seconds": 0.2
+      },
+      {
+        "name": "test:gateway-durable",
+        "seconds": 8.7
+      },
+      {
+        "name": "test:lark-wecom-gateway",
+        "seconds": 0.3
+      },
+      {
+        "name": "test:library-document-editor",
+        "seconds": 0.2
+      },
+      {
+        "name": "test:knowledge-lifecycle",
+        "seconds": 0.7
+      },
+      {
+        "name": "test:input-guardian-process",
+        "seconds": 1.8
+      },
+      {
+        "name": "test:library-extension",
+        "seconds": 0.9
+      },
+      {
+        "name": "test:library-materialization-transaction",
+        "seconds": 0.5
+      },
+      {
+        "name": "test:library-lifecycle-transaction",
+        "seconds": 0.6
+      },
+      {
+        "name": "test:library-domain",
+        "seconds": 1.6
+      },
+      {
+        "name": "test:library-update-transaction",
+        "seconds": 0.6
+      },
+      {
+        "name": "test:library-workspace-context",
+        "seconds": 0.7
+      },
+      {
+        "name": "test:linux-native-backend",
+        "seconds": 0.3
+      },
+      {
+        "name": "test:linux-native-outcomes",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:linux-worker-packaging",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:linux-session",
+        "seconds": 0.2
+      },
+      {
+        "name": "test:local-ocr-capability",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:library-owner-scope",
+        "seconds": 2.0
+      },
+      {
+        "name": "test:magpie-agent-mybuddy",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:local-capability-checks",
+        "seconds": 1.1
+      },
+      {
+        "name": "test:magpie-capabilities",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:mcp",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:mcp-composer-focus",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:mcp-config-parse",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:magpie-catalog",
+        "seconds": 0.9
+      },
+      {
+        "name": "test:mcp-execution-evidence",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:mcp-mode",
+        "seconds": 0.2
+      },
+      {
+        "name": "test:mcp-section-stability",
+        "seconds": 0.3
+      },
+      {
+        "name": "test:media-artifact-transaction",
+        "seconds": 1.0
+      },
+      {
+        "name": "test:local-workflow",
+        "seconds": 3.5
+      },
+      {
+        "name": "test:media-capability-config",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:mcp-context-chars",
+        "seconds": 2.6
+      },
+      {
+        "name": "test:media-capability-services",
+        "seconds": 0.2
+      },
+      {
+        "name": "test:durable-subagent",
+        "seconds": 31.7
+      },
+      {
+        "name": "test:media-provider-presets",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:memory-assistant-scopes",
+        "seconds": 0.4
+      },
+      {
+        "name": "test:memory-cognition",
+        "seconds": 0.4
+      },
+      {
+        "name": "test:media-capabilities-dom",
+        "seconds": 1.6
+      },
+      {
+        "name": "test:memory",
+        "seconds": 1.7
+      },
+      {
+        "name": "test:memory-gateway",
+        "seconds": 1.1
+      },
+      {
+        "name": "test:memory-gateway-controller",
+        "seconds": 1.6
+      },
+      {
+        "name": "test:media-capability-extension",
+        "seconds": 3.3
+      },
+      {
+        "name": "test:memory-projection-deletion",
+        "seconds": 0.4
+      },
+      {
+        "name": "test:memory-scope-schema",
+        "seconds": 0.2
+      },
+      {
+        "name": "test:memory-lifecycle",
+        "seconds": 2.0
+      },
+      {
+        "name": "test:memory-procedure-learning",
+        "seconds": 1.7
+      },
+      {
+        "name": "test:memory-skill-effectiveness",
+        "seconds": 1.3
+      },
+      {
+        "name": "test:memory-skill-history",
+        "seconds": 1.2
+      },
+      {
+        "name": "test:message-lifecycle",
+        "seconds": 0.2
+      },
+      {
+        "name": "test:meta-skill-authoring",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:minimal-coding-mode",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:memory-skill-learning",
+        "seconds": 1.2
+      },
+      {
+        "name": "test:mode",
+        "seconds": 0.2
+      },
+      {
+        "name": "test:memory-organization",
+        "seconds": 3.6
+      },
+      {
+        "name": "test:mode-preset",
+        "seconds": 0.5
+      },
+      {
+        "name": "test:model-refresh",
+        "seconds": 0.8
+      },
+      {
+        "name": "test:model-catalog-update",
+        "seconds": 1.0
+      },
+      {
+        "name": "test:models-settings-overlay",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:memory-skill-revision",
+        "seconds": 1.8
+      },
+      {
+        "name": "test:native-cost-evidence",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:native-surface",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:model-scope-stale-heal",
+        "seconds": 1.9
+      },
+      {
+        "name": "test:oauth-bundle",
+        "seconds": 0.9
+      },
+      {
+        "name": "test:multi-search",
+        "seconds": 3.5
+      },
+      {
+        "name": "test:notes-task-tools",
+        "seconds": 3.3
+      },
+      {
+        "name": "test:openrouter-capabilities",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:openrouter-model-autoload",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:overview-runtime",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:pdf-runtime-compat",
+        "seconds": 0.3
+      },
+      {
+        "name": "test:packaged-package-json-guard",
+        "seconds": 0.5
+      },
+      {
+        "name": "test:pi-cache-protocol",
+        "seconds": 0.5
+      },
+      {
+        "name": "test:pi-codemode-auto",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:multi-model-consult",
+        "seconds": 4.9
+      },
+      {
+        "name": "test:pi-codemode-ui",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:pi-autonomous-execution",
+        "seconds": 1.1
+      },
+      {
+        "name": "test:pi-host-control",
+        "seconds": 0.2
+      },
+      {
+        "name": "test:officecli",
+        "seconds": 3.6
+      },
+      {
+        "name": "test:pi-native-control",
+        "seconds": 0.2
+      },
+      {
+        "name": "test:pi-host-native",
+        "seconds": 1.5
+      },
+      {
+        "name": "test:pi-native-core-tools",
+        "seconds": 1.3
+      },
+      {
+        "name": "test:pi-codemode-native",
+        "seconds": 2.6
+      },
+      {
+        "name": "test:pi-tool-call-stream",
+        "seconds": 0.3
+      },
+      {
+        "name": "test:pi-native-lifecycle",
+        "seconds": 1.1
+      },
+      {
+        "name": "test:pi-reasoning-stream",
+        "seconds": 0.7
+      },
+      {
+        "name": "test:pi-host-boundary",
+        "seconds": 3.4
+      },
+      {
+        "name": "test:pi100-model-admission",
+        "seconds": 0.9
+      },
+      {
+        "name": "test:pinned-public-proxy",
+        "seconds": 0.3
+      },
+      {
+        "name": "test:platform-browsers",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:platform-computer-use",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:pi104-model-compat",
+        "seconds": 1.1
+      },
+      {
+        "name": "test:platform-providers",
+        "seconds": 0.2
+      },
+      {
+        "name": "test:preset-runtime-contract",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:preset-editor",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:professional-tools",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:professional-tools-live",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:project-automation",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:pi104-features",
+        "seconds": 1.8
+      },
+      {
+        "name": "test:pi100-context-boundary",
+        "seconds": 2.2
+      },
+      {
+        "name": "test:project-autopilot",
+        "seconds": 0.4
+      },
+      {
+        "name": "test:project-binding-matrix",
+        "seconds": 0.4
+      },
+      {
+        "name": "test:project-config-detail",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:project-config-rail",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:project-cadence",
+        "seconds": 0.4
+      },
+      {
+        "name": "test:project-convergence",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:project-creation",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:project-domain",
+        "seconds": 1.4
+      },
+      {
+        "name": "test:project-event",
+        "seconds": 1.7
+      },
+      {
+        "name": "test:project-event-document",
+        "seconds": 2.0
+      },
+      {
+        "name": "test:project-event-promotion-transaction",
+        "seconds": 0.5
+      },
+      {
+        "name": "test:project-agent",
+        "seconds": 3.6
+      },
+      {
+        "name": "test:project-file-import-transaction",
+        "seconds": 0.5
+      },
+      {
+        "name": "test:project-event-promotion",
+        "seconds": 2.4
+      },
+      {
+        "name": "test:project-event-triage",
+        "seconds": 1.9
+      },
+      {
+        "name": "test:project-folder-relocation",
+        "seconds": 0.7
+      },
+      {
+        "name": "test:project-file-import",
+        "seconds": 1.9
+      },
+      {
+        "name": "test:project-memory-extraction",
+        "seconds": 0.5
+      },
+      {
+        "name": "test:project-memory-agent",
+        "seconds": 1.0
+      },
+      {
+        "name": "test:project-memory-migration",
+        "seconds": 0.6
+      },
+      {
+        "name": "test:project-notes",
+        "seconds": 0.4
+      },
+      {
+        "name": "test:project-plan-schedule",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:project-task-defaults",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:project-plan-agent",
+        "seconds": 0.4
+      },
+      {
+        "name": "test:project-template",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:project-workspace-ui",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:prompt-context",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:project-todo",
+        "seconds": 0.3
+      },
+      {
+        "name": "test:prompt-enhance",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:prompt-execution",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:prompt-failure-recovery",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:prompt-submission",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:project-knowledge",
+        "seconds": 3.2
+      },
+      {
+        "name": "test:provider-login",
+        "seconds": 0.8
+      },
+      {
+        "name": "test:qq-gateway",
+        "seconds": 1.3
+      },
+      {
+        "name": "test:qq-media",
+        "seconds": 0.7
+      },
+      {
+        "name": "test:qq-qr-integration",
+        "seconds": 1.2
+      },
+      {
+        "name": "test:regenerate-lifecycle",
+        "seconds": 0.2
+      },
+      {
+        "name": "test:regenerate-connection-runtime",
+        "seconds": 0.8
+      },
+      {
+        "name": "test:project-materials-dom",
+        "seconds": 4.7
+      },
+      {
+        "name": "test:retry-display",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:qq-qr-ui",
+        "seconds": 1.6
+      },
+      {
+        "name": "test:regenerate-stop-runtime",
+        "seconds": 0.7
+      },
+      {
+        "name": "test:runtime-orchestrator",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:remote-work-sync",
+        "seconds": 0.9
+      },
+      {
+        "name": "test:runtime-requirement-recovery",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:runtime-prewarm",
+        "seconds": 0.4
+      },
+      {
+        "name": "test:scoped-library-manager",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:scroll-follow",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:search-source-address",
+        "seconds": 0.2
+      },
+      {
+        "name": "test:selection-store",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:runtime-materials",
+        "seconds": 1.2
+      },
+      {
+        "name": "test:runtime-probe",
+        "seconds": 1.1
+      },
+      {
+        "name": "test:session-approval-bridge",
+        "seconds": 0.3
+      },
+      {
+        "name": "test:session-lifecycle",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:shell-arguments",
+        "seconds": 0.8
+      },
+      {
+        "name": "test:shell-preferences",
+        "seconds": 0.8
+      },
+      {
+        "name": "test:sidebar-pinned",
+        "seconds": 0.3
+      },
+      {
+        "name": "test:sidebar-row-lookup",
+        "seconds": 0.2
+      },
+      {
+        "name": "test:sidebar-space-collapse",
+        "seconds": 0.2
+      },
+      {
+        "name": "test:skill-authoring-recovery",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:skill-authoring",
+        "seconds": 0.9
+      },
+      {
+        "name": "test:skill-connector",
+        "seconds": 0.9
+      },
+      {
+        "name": "test:skill-root-guard",
+        "seconds": 1.1
+      },
+      {
+        "name": "test:slack-media",
+        "seconds": 0.7
+      },
+      {
+        "name": "test:runtime-skill-loader",
+        "seconds": 4.7
+      },
+      {
+        "name": "test:space-relocate",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:streaming-send",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:subagent-acceptance-gate",
+        "seconds": 0.3
+      },
+      {
+        "name": "test:session-history-recovery",
+        "seconds": 4.5
+      },
+      {
+        "name": "test:subagent-cache-accounting",
+        "seconds": 0.5
+      },
+      {
+        "name": "test:subagent-display-names",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:subagent-ipc-host",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:subagent-mapper",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:subagent-model-ui",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:slack-gateway",
+        "seconds": 2.8
+      },
+      {
+        "name": "test:subagent-agent-discovery",
+        "seconds": 0.8
+      },
+      {
+        "name": "test:subagent-selection",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:subagent-runs",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:subagent-settings",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:subagent-write-conflict",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:task-delete-panel",
+        "seconds": 0.2
+      },
+      {
+        "name": "test:subagent-parallel-limits",
+        "seconds": 1.0
+      },
+      {
+        "name": "test:task-diagnostics",
+        "seconds": 0.6
+      },
+      {
+        "name": "test:task-file-changes",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:subagent-worktree",
+        "seconds": 1.5
+      },
+      {
+        "name": "test:task-isolation-p2",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:task-prompt-mode",
+        "seconds": 0.2
+      },
+      {
+        "name": "test:task-isolation-audit",
+        "seconds": 0.9
+      },
+      {
+        "name": "test:task-switch",
+        "seconds": 0.2
+      },
+      {
+        "name": "test:task-terminal",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:task-status-dot",
+        "seconds": 0.6
+      },
+      {
+        "name": "test:task-trash-retention",
+        "seconds": 1.2
+      },
+      {
+        "name": "test:task-workspace-isolation",
+        "seconds": 1.0
+      },
+      {
+        "name": "test:task-expert-binding",
+        "seconds": 2.8
+      },
+      {
+        "name": "test:task-workspace-lifecycle",
+        "seconds": 2.2
+      },
+      {
+        "name": "test:team-subagent-policy",
+        "seconds": 2.5
+      },
+      {
+        "name": "test:task-workspace-migration",
+        "seconds": 2.9
+      },
+      {
+        "name": "test:terminal-surface",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:telegram-reply-routing",
+        "seconds": 0.3
+      },
+      {
+        "name": "test:timeline-focus",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:token-format",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:test-bundle-pool",
+        "seconds": 0.6
+      },
+      {
+        "name": "test:tool-image-aging",
+        "seconds": 1.6
+      },
+      {
+        "name": "test:ui-automation-recovery",
+        "seconds": 0.3
+      },
+      {
+        "name": "test:subagent-acceptance",
+        "seconds": 9.9
+      },
+      {
+        "name": "test:telegram-media",
+        "seconds": 3.3
+      },
+      {
+        "name": "test:usage-recon",
+        "seconds": 0.5
+      },
+      {
+        "name": "test:unified-media-adapters",
+        "seconds": 1.0
+      },
+      {
+        "name": "test:user-prompt-display",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:verified-code-execution",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:visual-polish-ux",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:usage-stats",
+        "seconds": 1.4
+      },
+      {
+        "name": "test:wave5b",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:wave5c",
+        "seconds": 0.7
+      },
+      {
+        "name": "test:wave5d1",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:usage-dashboard-projection",
+        "seconds": 4.0
+      },
+      {
+        "name": "test:wave5d3",
+        "seconds": 0.2
+      },
+      {
+        "name": "test:web-access-capability",
+        "seconds": 0.2
+      },
+      {
+        "name": "test:web-access-convergence",
+        "seconds": 0.2
+      },
+      {
+        "name": "test:typecheck-guard",
+        "seconds": 7.2
+      },
+      {
+        "name": "test:web-artifact-runtime",
+        "seconds": 0.2
+      },
+      {
+        "name": "test:web-access-extract-runtime",
+        "seconds": 1.4
+      },
+      {
+        "name": "test:wechat-callback-auth",
+        "seconds": 0.3
+      },
+      {
+        "name": "test:wave5a",
+        "seconds": 5.0
+      },
+      {
+        "name": "test:wecom-media",
+        "seconds": 0.3
+      },
+      {
+        "name": "test:web-page-answer-runtime",
+        "seconds": 1.3
+      },
+      {
+        "name": "test:wave5d2",
+        "seconds": 4.9
+      },
+      {
+        "name": "test:weixin-qr-integration",
+        "seconds": 1.2
+      },
+      {
+        "name": "test:weixin-gateway",
+        "seconds": 1.9
+      },
+      {
+        "name": "test:whisper-check-feedback",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:work-budget-retirement",
+        "seconds": 0.8
+      },
+      {
+        "name": "test:work-effect-retirement",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:work-execution-metrics",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:work-conversation-feedback",
+        "seconds": 1.0
+      },
+      {
+        "name": "test:weixin-media",
+        "seconds": 4.0
+      },
+      {
+        "name": "test:work-graph",
+        "seconds": 1.7
+      },
+      {
+        "name": "test:work-graph-bridge",
+        "seconds": 1.0
+      },
+      {
+        "name": "test:work-graph-execution",
+        "seconds": 0.8
+      },
+      {
+        "name": "test:weixin-qr-ui",
+        "seconds": 4.1
+      },
+      {
+        "name": "test:work-graph-hardening",
+        "seconds": 1.1
+      },
+      {
+        "name": "test:work-isolation-live-observation",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:work-graph-r3-union",
+        "seconds": 0.9
+      },
+      {
+        "name": "test:work-graph-ux",
+        "seconds": 1.2
+      },
+      {
+        "name": "test:work-memory-capture",
+        "seconds": 0.7
+      },
+      {
+        "name": "test:work-partial-read",
+        "seconds": 0.6
+      },
+      {
+        "name": "test:work-isolation-retirement",
+        "seconds": 1.2
+      },
+      {
+        "name": "test:work-permissions-retired",
+        "seconds": 0.6
+      },
+      {
+        "name": "test:work-shell-read",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:work-team-watch-evidence",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:work-watch-goal",
+        "seconds": 0.9
+      },
+      {
+        "name": "test:work-revision-handoff",
+        "seconds": 1.7
+      },
+      {
+        "name": "test:work-watch-unchanged",
+        "seconds": 1.7
+      },
+      {
+        "name": "test:workspace-chunk-benchmark",
+        "seconds": 2.3
+      },
+      {
+        "name": "test:workspace-chunk-r2",
+        "seconds": 1.8
+      },
+      {
+        "name": "test:workspace-files-ui",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:workspace-files-sort",
+        "seconds": 1.2
+      },
+      {
+        "name": "test:workspace-library-binding",
+        "seconds": 0.4
+      },
+      {
+        "name": "test:workspace-materials-view",
+        "seconds": 0.6
+      },
+      {
+        "name": "test:workspace-navigation-ux",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:workspace-notes",
+        "seconds": 0.3
+      },
+      {
+        "name": "test:workspace-materials-dom",
+        "seconds": 1.5
+      },
+      {
+        "name": "test:workspace-resolver",
+        "seconds": 0.3
+      },
+      {
+        "name": "test:workspace-phase5",
+        "seconds": 0.8
+      },
+      {
+        "name": "test:work-watch-supervision",
+        "seconds": 7.0
+      },
+      {
+        "name": "test:workspace-runtime-consolidation",
+        "seconds": 1.2
+      },
+      {
+        "name": "test:workspace-shared-context",
+        "seconds": 0.1
+      },
+      {
+        "name": "test:workspace-runtime-integration",
+        "seconds": 1.4
+      },
+      {
+        "name": "test:workspace-resource-locator",
+        "seconds": 2.0
+      },
+      {
+        "name": "test:workspace-shared-context-ui-foundation",
+        "seconds": 1.2
+      },
+      {
+        "name": "test:work-file-event-source",
+        "seconds": 18.3
+      },
+      {
+        "name": "test:workspace-tree",
+        "seconds": 8.5
+      },
+      {
+        "name": "test:bot-work-phase2-recovery",
+        "seconds": 26.0
+      },
+      {
+        "name": "test:bot-work-phase5-native-story",
+        "seconds": 13.3
+      },
+      {
+        "name": "test:bot-work-query-scale",
+        "seconds": 18.3
+      },
+      {
+        "name": "test:bot-work-summary-query",
+        "seconds": 13.9
+      },
+      {
+        "name": "test:core-performance",
+        "seconds": 21.2
+      },
+      {
+        "name": "test:gateway-inbox-crash",
+        "seconds": 2.8
+      },
+      {
+        "name": "test:gateway-port-fallback",
+        "seconds": 0.1
+      }
+    ]
+  },
+  "redRegressionEvidence": {
+    "e35-history-red.log": {
+      "assertion": "Cookie syntax must not escape through historical replay",
+      "sha256": "e61bac85647362b9ae0f23a829c3f16052a582de6c07fdf53a9ec5c52590b0da"
+    },
+    "e35-pagination-red.log": {
+      "assertion": "same-millisecond correction uses durable ordinal to retire older evidence",
+      "sha256": "84438ce5261aca6d3c294c44efee4d42ebfcc34aa7afde87e271f21a91cceca2"
+    },
+    "e35-first-page-red.log": {
+      "assertion": "latest lower-score correction beyond page 1 must reserve an evidence slot",
+      "sha256": "76a746caef5f79e32a38e327faaa4d25bc7ce3a2a49331794b035e84bb2a0aec"
+    }
+  },
+  "performance": {
+    "command": "pnpm -s perf:bot-history-recall",
+    "generatedAt": "2026-11-12T04:09:33.086Z",
+    "pairs": 30000,
+    "conversations": 200,
+    "relevance": {
+      "medianMs": 130.05,
+      "p95Ms": 132.1
+    },
+    "noisy": {
+      "medianMs": 193.51,
+      "p95Ms": 201.65
+    },
+    "recent": {
+      "medianMs": 27.04,
+      "p95Ms": 27.35
+    },
+    "missed": {
+      "medianMs": 103.41,
+      "p95Ms": 106.77
+    },
+    "buriedPairFound": true,
+    "outputChars": 398
+  },
+  "newLiveModelCalls": 0,
+  "newModelCost": 0,
+  "unverified": [
+    "Full live Team/Work/project scope matrix at this final source SHA",
+    "GUI, packaged/ARTIFACT gates",
+    "GitHub Actions outcome after publication"
+  ]
+}

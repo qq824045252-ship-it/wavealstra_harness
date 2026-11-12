@@ -1,5 +1,7 @@
 # Bot 历史召回与记忆过滤验收报告（issue #28）
 
+> 本文保留首次实施与 e35fafd6 并行修复的历史证据。随后发现的 Cookie 多值/编码、首批提前停止和同毫秒顺序缺口，以及新的独立门禁结果，见 [后续复核](bot-memory-recall-28-followup-2026-11-12.md)。
+
 | 项目 | 值 |
 | --- | --- |
 | 关联 issue | [#28 修复长历史召回、技术文本误过滤与 hybrid 入口](https://github.com/qq824045252-ship-it/wavealstra_harness/issues/28) |
