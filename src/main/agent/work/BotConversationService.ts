@@ -367,7 +367,7 @@ export class BotConversationService {
     covered.add(source.assistant_message_id);
     const settledRequests = new Set(history.filter(item => item.role === 'assistant' && item.status === 'completed').map(item => item.requestId));
     const sourceMessageIds = history.filter(item => settledRequests.has(item.requestId)).map(item => item.messageId);
-    const context_json = JSON.stringify({ native, history: extra, peerHistory: history.length ? botPeerHistory(history) : undefined, reference, selectedWorkId: source.selected_work_id, sourceMessageIds, coveredMessageIds: [...covered] });
+    const context_json = JSON.stringify({ native, history: extra, peerHistory: history.some(item => item.botCalls?.length) ? botPeerHistory(history) : undefined, reference, selectedWorkId: source.selected_work_id, sourceMessageIds, coveredMessageIds: [...covered] });
     const created_at = Date.now();
     this.options.db.prepare('INSERT INTO bot_request_runs(message_id,runtime_key,context_json,created_at) VALUES (?,?,?,?)')
       .run(message.messageId, runtime_key, context_json, created_at);

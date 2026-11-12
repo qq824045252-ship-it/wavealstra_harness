@@ -119,8 +119,14 @@ try {
   const bounded = botForegroundHistory({ ...oldAnswer, botCalls: Array.from({ length: 12 }, (_, i) => ({ ...oldAnswer.botCalls![1], callId: String(i), replyText: "x".repeat(5000) })) });
   assert.equal(bounded.botCalls?.length, 8); assert.equal(bounded.botCallsOmitted, 4);
   assert.equal(bounded.botCalls?.[0].replyText?.length, 4000); assert.equal(bounded.botCalls?.[0].truncated, true);
-  const follow = make("context-followup");
   const foreground = new BotConversationService(options);
+  const ordinary = messages.accept("u", { botId: "other", requestId: "no-peer-ordinary", text: "ordinary question" });
+  messages.update(ordinary.assistantMessageId, "completed", "ordinary answer");
+  const ordinaryFollow = messages.accept("u", { botId: "other", requestId: "no-peer-followup", text: "ordinary follow-up" });
+  const ordinarySnapshot = JSON.parse((foreground as unknown as { requestRun: (conversation: unknown, message: unknown) => { context_json: string } })
+    .requestRun(messages.conversation("u", "other", ordinaryFollow.conversationId)!, messages.message(ordinaryFollow.assistantMessageId)!).context_json);
+  assert.equal(ordinarySnapshot.peerHistory, undefined, "ordinary history adds no empty peer context or native system-prefix rebuild");
+  const follow = make("context-followup");
   const snapshot = (foreground as unknown as { requestRun: (conversation: unknown, message: unknown) => { context_json: string } })
     .requestRun(messages.conversation("u", "source", follow.conversationId)!, messages.message(follow.assistantMessageId)!);
   const frozen = JSON.parse(snapshot.context_json);
