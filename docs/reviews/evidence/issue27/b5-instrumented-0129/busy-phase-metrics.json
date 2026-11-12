@@ -1,0 +1,679 @@
+{
+  "schema": 1,
+  "sourceSha": "b5c1429d77d2d2f192149c48a92990cca8f4926c",
+  "rawStatusPreserved": "failed",
+  "groupDefinition": "Eight busy arithmetic requests, each first DOM-observed answer revision with complete final numeric answer text length, followed by fully-visible rAF within 100ms. One observation per request; commentary, receipts, Work milestones, reminders, navigation-induced visibility, later revisions excluded. Text-length+segment verification is not pixel attribution.",
+  "quantileMethod": "nearest rank ceil(n*p); eight samples only, not an SLA or stable population percentile",
+  "clock": {
+    "matched": 16,
+    "total": 16,
+    "offsetLowerUs": -291.31298828125,
+    "offsetUpperUs": 468.8739929199219,
+    "intersectionValid": true,
+    "minRoundTripUs": 777.139
+  },
+  "offsetIntersectionWidthMs": 0.7601869812011719,
+  "metrics": {
+    "inputToDomPerformanceNowMs": {
+      "n": 8,
+      "p50": 4380.100000023842,
+      "p95": 15089.300000011921
+    },
+    "hostProseEventMs": {
+      "n": 8,
+      "p50": 4347,
+      "p95": 15089
+    },
+    "commitToBroadcastMs": {
+      "n": 8,
+      "p50": 0.742846,
+      "p95": 0.820511
+    },
+    "commitToReceiveMs": {
+      "n": 8,
+      "p50": [
+        1.3273200073242188,
+        2.0875069885253907
+      ],
+      "p95": [
+        53.057359008789064,
+        53.817545989990236
+      ]
+    },
+    "commitToDomMs": {
+      "n": 8,
+      "p50": [
+        35.77832000732422,
+        36.53850698852539
+      ],
+      "p95": [
+        68.93535900878906,
+        69.69554598999024
+      ]
+    },
+    "commitToVisibleRafMs": {
+      "n": 8,
+      "p50": [
+        36.69032000732422,
+        37.45050698852539
+      ],
+      "p95": [
+        70.26135900878906,
+        71.02154598999023
+      ]
+    },
+    "commitToFirstSubsequentPaintStartMs": {
+      "n": 8,
+      "p50": [
+        37.65032000732422,
+        38.41050698852539
+      ],
+      "p95": [
+        70.81935900878906,
+        71.57954598999024
+      ]
+    },
+    "commitToFirstSubsequentPaintEndMs": {
+      "n": 8,
+      "p50": [
+        38.54232000732422,
+        39.302506988525394
+      ],
+      "p95": [
+        71.49235900878907,
+        72.25254598999024
+      ]
+    }
+  },
+  "rows": [
+    {
+      "caseId": "busy-0",
+      "requestId": "555ff7f2-15a8-4336-b8c9-2ab40faeb5e4",
+      "messageId": "bot-message-2a1561b0-d769-4b1a-be9c-a7eeec935baf",
+      "messageRevision": 5,
+      "answer": "48",
+      "activeWorkIds": [
+        "work-34a099bf-87b2-482f-889d-bae804f65e36"
+      ],
+      "inputPerformanceNowMs": 69610.69999998808,
+      "domPerformanceNowMs": 84700,
+      "inputToDomPerformanceNowMs": 15089.300000011921,
+      "hostProseEventMs": 15089,
+      "commitMonoNs": "149775457817023",
+      "broadcastMonoNs": "149775458637534",
+      "commitToBroadcastMs": 0.820511,
+      "commitToReceiveMs": [
+        1.4036640014648438,
+        2.1638509826660157
+      ],
+      "commitToDomMs": [
+        1.9446640014648438,
+        2.7048509826660156
+      ],
+      "commitToVisibleRafMs": [
+        21.385664001464843,
+        22.145850982666015
+      ],
+      "commitToFirstSubsequentPaintStartMs": [
+        21.985664001464844,
+        22.745850982666017
+      ],
+      "commitToFirstSubsequentPaintEndMs": [
+        22.626664001464842,
+        23.386850982666015
+      ],
+      "domToVisibleRafMs": 19.441,
+      "paint": {
+        "ts": 149775480094,
+        "dur": 641,
+        "tid": 1601037,
+        "args": {
+          "data": {
+            "clip": [
+              0,
+              0,
+              1920,
+              0,
+              1920,
+              1280,
+              0,
+              1280
+            ],
+            "frame": "B323767777F1DADF5A5702A3F49944C3",
+            "layerId": 0,
+            "nodeId": 1,
+            "nodeName": "#document"
+          }
+        }
+      },
+      "drawFrame": {
+        "ts": 149775482379,
+        "tid": 1601072,
+        "args": {
+          "frameSeqId": 5085,
+          "layerTreeId": 1
+        }
+      }
+    },
+    {
+      "caseId": "busy-1",
+      "requestId": "96d24529-b71f-4536-8b0c-2f4c4757ff23",
+      "messageId": "bot-message-ee213677-549a-4769-ac68-1e572039b066",
+      "messageRevision": 5,
+      "answer": "50",
+      "activeWorkIds": [
+        "work-7395c538-3e96-43fe-ba23-f171e0f52f37",
+        "work-34a099bf-87b2-482f-889d-bae804f65e36"
+      ],
+      "inputPerformanceNowMs": 84920.59999999404,
+      "domPerformanceNowMs": 89233.30000001192,
+      "inputToDomPerformanceNowMs": 4312.700000017881,
+      "hostProseEventMs": 4276,
+      "commitMonoNs": "149779954990173",
+      "broadcastMonoNs": "149779955769756",
+      "commitToBroadcastMs": 0.779583,
+      "commitToReceiveMs": [
+        1.3855140075683594,
+        2.1457009887695313
+      ],
+      "commitToDomMs": [
+        37.96051400756836,
+        38.72070098876953
+      ],
+      "commitToVisibleRafMs": [
+        38.56651400756836,
+        39.32670098876953
+      ],
+      "commitToFirstSubsequentPaintStartMs": [
+        39.35251400756836,
+        40.11270098876953
+      ],
+      "commitToFirstSubsequentPaintEndMs": [
+        40.66251400756836,
+        41.422700988769535
+      ],
+      "domToVisibleRafMs": 0.606,
+      "paint": {
+        "ts": 149779994634,
+        "dur": 1310,
+        "tid": 1601037,
+        "args": {
+          "data": {
+            "clip": [
+              0,
+              0,
+              1920,
+              0,
+              1920,
+              1280,
+              0,
+              1280
+            ],
+            "frame": "B323767777F1DADF5A5702A3F49944C3",
+            "layerId": 0,
+            "nodeId": 1,
+            "nodeName": "#document"
+          }
+        }
+      },
+      "drawFrame": {
+        "ts": 149779998392,
+        "tid": 1601072,
+        "args": {
+          "frameSeqId": 5356,
+          "layerTreeId": 1
+        }
+      }
+    },
+    {
+      "caseId": "busy-2",
+      "requestId": "784149f1-6811-4e9b-a9c8-7e67d2780770",
+      "messageId": "bot-message-7615c148-86bf-4ece-99ee-eb62769a8724",
+      "messageRevision": 5,
+      "answer": "33 + 19 = 52",
+      "activeWorkIds": [
+        "work-7395c538-3e96-43fe-ba23-f171e0f52f37",
+        "work-34a099bf-87b2-482f-889d-bae804f65e36"
+      ],
+      "inputPerformanceNowMs": 89501.30000001192,
+      "domPerformanceNowMs": 94052.5,
+      "inputToDomPerformanceNowMs": 4551.199999988079,
+      "hostProseEventMs": 4519,
+      "commitMonoNs": "149784778876238",
+      "broadcastMonoNs": "149784779217419",
+      "commitToBroadcastMs": 0.341181,
+      "commitToReceiveMs": [
+        0.6664490051269532,
+        1.426635986328125
+      ],
+      "commitToDomMs": [
+        33.30844900512695,
+        34.068635986328125
+      ],
+      "commitToVisibleRafMs": [
+        34.011449005126956,
+        34.77163598632813
+      ],
+      "commitToFirstSubsequentPaintStartMs": [
+        34.87644900512695,
+        35.63663598632812
+      ],
+      "commitToFirstSubsequentPaintEndMs": [
+        36.06844900512695,
+        36.82863598632812
+      ],
+      "domToVisibleRafMs": 0.703,
+      "paint": {
+        "ts": 149784814044,
+        "dur": 1192,
+        "tid": 1601037,
+        "args": {
+          "data": {
+            "clip": [
+              0,
+              0,
+              1920,
+              0,
+              1920,
+              1280,
+              0,
+              1280
+            ],
+            "frame": "B323767777F1DADF5A5702A3F49944C3",
+            "layerId": 0,
+            "nodeId": 1,
+            "nodeName": "#document"
+          }
+        }
+      },
+      "drawFrame": {
+        "ts": 149784817322,
+        "tid": 1601072,
+        "args": {
+          "frameSeqId": 5645,
+          "layerTreeId": 1
+        }
+      }
+    },
+    {
+      "caseId": "busy-3",
+      "requestId": "7b307788-a20c-43c3-a208-4fa8f56b3e8e",
+      "messageId": "bot-message-111f3486-86fb-420b-8ad8-8f0e6765febc",
+      "messageRevision": 5,
+      "answer": "34 + 20 = 54",
+      "activeWorkIds": [
+        "work-7395c538-3e96-43fe-ba23-f171e0f52f37",
+        "work-34a099bf-87b2-482f-889d-bae804f65e36"
+      ],
+      "inputPerformanceNowMs": 94212.19999998808,
+      "domPerformanceNowMs": 98836.19999998808,
+      "inputToDomPerformanceNowMs": 4624.0,
+      "hostProseEventMs": 4609,
+      "commitMonoNs": "149789526941328",
+      "broadcastMonoNs": "149789527712949",
+      "commitToBroadcastMs": 0.771621,
+      "commitToReceiveMs": [
+        53.057359008789064,
+        53.817545989990236
+      ],
+      "commitToDomMs": [
+        68.93535900878906,
+        69.69554598999024
+      ],
+      "commitToVisibleRafMs": [
+        70.26135900878906,
+        71.02154598999023
+      ],
+      "commitToFirstSubsequentPaintStartMs": [
+        70.81935900878906,
+        71.57954598999024
+      ],
+      "commitToFirstSubsequentPaintEndMs": [
+        71.49235900878907,
+        72.25254598999024
+      ],
+      "domToVisibleRafMs": 1.326,
+      "paint": {
+        "ts": 149789598052,
+        "dur": 673,
+        "tid": 1601037,
+        "args": {
+          "data": {
+            "clip": [
+              0,
+              0,
+              1920,
+              0,
+              1920,
+              1280,
+              0,
+              1280
+            ],
+            "frame": "B323767777F1DADF5A5702A3F49944C3",
+            "layerId": 0,
+            "nodeId": 1,
+            "nodeName": "#document"
+          }
+        }
+      },
+      "drawFrame": {
+        "ts": 149789600310,
+        "tid": 1601072,
+        "args": {
+          "frameSeqId": 5932,
+          "layerTreeId": 1
+        }
+      }
+    },
+    {
+      "caseId": "busy-4",
+      "requestId": "457b763b-8c93-488f-8f2b-80c7df1be59e",
+      "messageId": "bot-message-453aa1dc-d62c-450b-a8ef-3bbceb299c94",
+      "messageRevision": 5,
+      "answer": "35 + 21 = 56",
+      "activeWorkIds": [
+        "work-7395c538-3e96-43fe-ba23-f171e0f52f37",
+        "work-34a099bf-87b2-482f-889d-bae804f65e36"
+      ],
+      "inputPerformanceNowMs": 98932.19999998808,
+      "domPerformanceNowMs": 105372,
+      "inputToDomPerformanceNowMs": 6439.800000011921,
+      "hostProseEventMs": 6405,
+      "commitMonoNs": "149796095510732",
+      "broadcastMonoNs": "149796095781372",
+      "commitToBroadcastMs": 0.27064,
+      "commitToReceiveMs": [
+        0.7519550170898438,
+        1.5121419982910156
+      ],
+      "commitToDomMs": [
+        36.152955017089845,
+        36.91314199829102
+      ],
+      "commitToVisibleRafMs": [
+        37.002955017089846,
+        37.76314199829102
+      ],
+      "commitToFirstSubsequentPaintStartMs": [
+        38.09295501708984,
+        38.853141998291015
+      ],
+      "commitToFirstSubsequentPaintEndMs": [
+        39.96495501708984,
+        40.725141998291015
+      ],
+      "domToVisibleRafMs": 0.85,
+      "paint": {
+        "ts": 149796133895,
+        "dur": 1872,
+        "tid": 1601037,
+        "args": {
+          "data": {
+            "clip": [
+              0,
+              0,
+              1920,
+              0,
+              1920,
+              1280,
+              0,
+              1280
+            ],
+            "frame": "B323767777F1DADF5A5702A3F49944C3",
+            "layerId": 0,
+            "nodeId": 1,
+            "nodeName": "#document"
+          }
+        }
+      },
+      "drawFrame": {
+        "ts": 149796138803,
+        "tid": 1601072,
+        "args": {
+          "frameSeqId": 6324,
+          "layerTreeId": 1
+        }
+      }
+    },
+    {
+      "caseId": "busy-5",
+      "requestId": "e968a6e6-cbc1-43e4-bbd9-3584dc99ed50",
+      "messageId": "bot-message-b73e8664-550e-41db-8228-3e288b16b7b8",
+      "messageRevision": 5,
+      "answer": "36 + 22 = 58",
+      "activeWorkIds": [
+        "work-7395c538-3e96-43fe-ba23-f171e0f52f37",
+        "work-34a099bf-87b2-482f-889d-bae804f65e36"
+      ],
+      "inputPerformanceNowMs": 105500.19999998808,
+      "domPerformanceNowMs": 109880.30000001192,
+      "inputToDomPerformanceNowMs": 4380.100000023842,
+      "hostProseEventMs": 4347,
+      "commitMonoNs": "149800604257367",
+      "broadcastMonoNs": "149800604785587",
+      "commitToBroadcastMs": 0.52822,
+      "commitToReceiveMs": [
+        1.3273200073242188,
+        2.0875069885253907
+      ],
+      "commitToDomMs": [
+        35.77832000732422,
+        36.53850698852539
+      ],
+      "commitToVisibleRafMs": [
+        36.69032000732422,
+        37.45050698852539
+      ],
+      "commitToFirstSubsequentPaintStartMs": [
+        37.65032000732422,
+        38.41050698852539
+      ],
+      "commitToFirstSubsequentPaintEndMs": [
+        38.54232000732422,
+        39.302506988525394
+      ],
+      "domToVisibleRafMs": 0.912,
+      "paint": {
+        "ts": 149800642199,
+        "dur": 892,
+        "tid": 1601037,
+        "args": {
+          "data": {
+            "clip": [
+              0,
+              0,
+              1920,
+              0,
+              1920,
+              1280,
+              0,
+              1280
+            ],
+            "frame": "B323767777F1DADF5A5702A3F49944C3",
+            "layerId": 0,
+            "nodeId": 1,
+            "nodeName": "#document"
+          }
+        }
+      },
+      "drawFrame": {
+        "ts": 149800644625,
+        "tid": 1601072,
+        "args": {
+          "frameSeqId": 6595,
+          "layerTreeId": 1
+        }
+      }
+    },
+    {
+      "caseId": "busy-6",
+      "requestId": "efde7971-c327-4ce3-aa39-c01ce19ab110",
+      "messageId": "bot-message-0c01b73b-a582-46c2-8a6c-48af6468edcd",
+      "messageRevision": 5,
+      "answer": "37 + 23 = 60",
+      "activeWorkIds": [
+        "work-7395c538-3e96-43fe-ba23-f171e0f52f37",
+        "work-34a099bf-87b2-482f-889d-bae804f65e36"
+      ],
+      "inputPerformanceNowMs": 110003.90000000596,
+      "domPerformanceNowMs": 114182.19999998808,
+      "inputToDomPerformanceNowMs": 4178.299999982119,
+      "hostProseEventMs": 4139,
+      "commitMonoNs": "149804901120356",
+      "broadcastMonoNs": "149804901871164",
+      "commitToBroadcastMs": 0.750808,
+      "commitToReceiveMs": [
+        1.3463310241699218,
+        2.1065180053710937
+      ],
+      "commitToDomMs": [
+        40.77633102416992,
+        41.53651800537109
+      ],
+      "commitToVisibleRafMs": [
+        41.73133102416992,
+        42.49151800537109
+      ],
+      "commitToFirstSubsequentPaintStartMs": [
+        43.00533102416992,
+        43.76551800537109
+      ],
+      "commitToFirstSubsequentPaintEndMs": [
+        44.969331024169925,
+        45.72951800537109
+      ],
+      "domToVisibleRafMs": 0.955,
+      "paint": {
+        "ts": 149804944417,
+        "dur": 1964,
+        "tid": 1601037,
+        "args": {
+          "data": {
+            "clip": [
+              0,
+              0,
+              1920,
+              0,
+              1920,
+              1280,
+              0,
+              1280
+            ],
+            "frame": "B323767777F1DADF5A5702A3F49944C3",
+            "layerId": 0,
+            "nodeId": 1,
+            "nodeName": "#document"
+          }
+        }
+      },
+      "drawFrame": {
+        "ts": 149804949573,
+        "tid": 1601072,
+        "args": {
+          "frameSeqId": 6853,
+          "layerTreeId": 1
+        }
+      }
+    },
+    {
+      "caseId": "busy-7",
+      "requestId": "5fafa3f9-f1af-4530-934b-018e55ab6c52",
+      "messageId": "bot-message-71231658-de82-426b-b1ed-062dcde48783",
+      "messageRevision": 5,
+      "answer": "38 + 24 = 62",
+      "activeWorkIds": [
+        "work-7395c538-3e96-43fe-ba23-f171e0f52f37",
+        "work-34a099bf-87b2-482f-889d-bae804f65e36"
+      ],
+      "inputPerformanceNowMs": 114309.19999998808,
+      "domPerformanceNowMs": 118373.90000000596,
+      "inputToDomPerformanceNowMs": 4064.7000000178814,
+      "hostProseEventMs": 4048,
+      "commitMonoNs": "149809114985988",
+      "broadcastMonoNs": "149809115728834",
+      "commitToBroadcastMs": 0.742846,
+      "commitToReceiveMs": [
+        1.1896990051269531,
+        1.949885986328125
+      ],
+      "commitToDomMs": [
+        18.596699005126954,
+        19.356885986328123
+      ],
+      "commitToVisibleRafMs": [
+        19.090699005126954,
+        19.850885986328127
+      ],
+      "commitToFirstSubsequentPaintStartMs": [
+        19.682699005126953,
+        20.442885986328125
+      ],
+      "commitToFirstSubsequentPaintEndMs": [
+        20.503699005126954,
+        21.263885986328123
+      ],
+      "domToVisibleRafMs": 0.494,
+      "paint": {
+        "ts": 149809134960,
+        "dur": 821,
+        "tid": 1601037,
+        "args": {
+          "data": {
+            "clip": [
+              0,
+              0,
+              1920,
+              0,
+              1920,
+              1280,
+              0,
+              1280
+            ],
+            "frame": "B323767777F1DADF5A5702A3F49944C3",
+            "layerId": 0,
+            "nodeId": 1,
+            "nodeName": "#document"
+          }
+        }
+      },
+      "drawFrame": {
+        "ts": 149809137199,
+        "tid": 1601072,
+        "args": {
+          "frameSeqId": 7104,
+          "layerTreeId": 1
+        }
+      }
+    }
+  ],
+  "traceSummary": {
+    "events": 767627,
+    "dataLossOccurred": false,
+    "totalDomRows": 108,
+    "withVisibleRaf": 62,
+    "paintEvents": 1740,
+    "drawFrameEvents": 2496
+  },
+  "overhead": {
+    "mainMetadataAndEnqueueMs": 398.907504,
+    "rendererObserverMs": 9581.499997258186,
+    "rendererObserverCalls": 17854,
+    "excluded": "Main flush I/O and Chrome tracing costs not measured; no subtraction."
+  },
+  "limitations": [
+    "COMMIT means actual better-sqlite3 COMMIT API return, not durable fsync or first child-store persistence.",
+    "Paint is first subsequent same-renderer Paint for #document/full viewport, not target-message pixel or physical monitor presentation.",
+    "Input to DOM uses recorded performance.now values on same renderer clock, not OS keyboard timestamp.",
+    "All eight selected answers had prompt viewport rAF; no manual scroll/navigation in this group.",
+    "Foreground change stream did not include Work feedback or due reminders in this batch. No exact milestone/reminder COMMIT-to-DOM/paint claim.",
+    "Other 100 DOM rows mix streaming revisions, commentary, offscreen and navigation; not pooled with this group.",
+    "3 tool failures and all 7 original assertion failures remain in the batch result.",
+    "Diagnostic hooks, observer and tracing perturb timing; these are instrumented observations, not uninstrumented production SLA."
+  ],
+  "sources": {
+    "report.json": "bbacac703984911bc56d58ac9828ef65d4ec10de8baa3963d5dfd0d9099624a5",
+    "phase-summary.json": "652e8d23aaffd1634d12476f42fa80f6062840cd09ad2cb103e624efa2ef0817",
+    "renderer-probe.json": "7b6a5b419f7bba72920cbf00dea405692223b2ef4bb8beb1dd9e6f635e5fcd58",
+    "trace-calibration.json": "c3f13baf6727da34d726cb9b6785b8e67f20144fcba8c4d5fcf67c0b7ad9498b"
+  }
+}

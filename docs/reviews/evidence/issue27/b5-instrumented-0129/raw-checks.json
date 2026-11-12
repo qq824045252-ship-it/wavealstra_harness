@@ -1,0 +1,560 @@
+[
+  {
+    "label": "actual window width initial-960",
+    "passed": true,
+    "data": {
+      "label": "initial-960",
+      "at": 1794447009971,
+      "requestedWidth": 960,
+      "client": {
+        "address": "0x5562a1658680",
+        "mapped": true,
+        "hidden": false,
+        "visible": true,
+        "acceptsInput": true,
+        "at": [
+          215,
+          90
+        ],
+        "size": [
+          960,
+          800
+        ],
+        "workspace": {
+          "address": "3",
+          "id": 3,
+          "type": "normal",
+          "name": "3"
+        },
+        "floating": true,
+        "monitor": 0,
+        "class": "wavealstra-harness",
+        "title": "MyBuddy",
+        "initialClass": "wavealstra-harness",
+        "initialTitle": "MyBuddy",
+        "pid": 1600919,
+        "xwayland": false,
+        "pinned": false,
+        "pinFullscreened": false,
+        "fullscreen": 0,
+        "fullscreenClient": 0,
+        "fullscreenHandler": "default",
+        "allowedOverFullscreen": true,
+        "grouped": [],
+        "tags": [],
+        "swallowing": "0x0",
+        "focusHistoryID": 0,
+        "inhibitingIdle": false,
+        "xdgTag": "",
+        "xdgDescription": "",
+        "contentType": "none",
+        "tearingHint": false,
+        "stableId": "180004f2"
+      },
+      "dom": {
+        "innerWidth": 960,
+        "innerHeight": 800,
+        "outerWidth": 960,
+        "outerHeight": 800,
+        "scrollWidth": 960,
+        "composer": true
+      }
+    }
+  },
+  {
+    "label": "no horizontal overflow initial-960",
+    "passed": true
+  },
+  {
+    "label": "foreground completed parallel-execution",
+    "passed": true,
+    "data": {
+      "status": "completed"
+    }
+  },
+  {
+    "label": "A visible before archive and amendment",
+    "passed": true
+  },
+  {
+    "label": "two real persistent conversation identities",
+    "passed": true
+  },
+  {
+    "label": "actual window width second-conversation-1200",
+    "passed": true,
+    "data": {
+      "label": "second-conversation-1200",
+      "at": 1794447071697,
+      "requestedWidth": 1200,
+      "client": {
+        "address": "0x5562a1658680",
+        "mapped": true,
+        "hidden": false,
+        "visible": true,
+        "acceptsInput": true,
+        "at": [
+          95,
+          90
+        ],
+        "size": [
+          1200,
+          800
+        ],
+        "workspace": {
+          "address": "3",
+          "id": 3,
+          "type": "normal",
+          "name": "3"
+        },
+        "floating": true,
+        "monitor": 0,
+        "class": "wavealstra-harness",
+        "title": "MyBuddy",
+        "initialClass": "wavealstra-harness",
+        "initialTitle": "MyBuddy",
+        "pid": 1600919,
+        "xwayland": false,
+        "pinned": false,
+        "pinFullscreened": false,
+        "fullscreen": 0,
+        "fullscreenClient": 0,
+        "fullscreenHandler": "default",
+        "allowedOverFullscreen": true,
+        "grouped": [],
+        "tags": [],
+        "swallowing": "0x0",
+        "focusHistoryID": 0,
+        "inhibitingIdle": false,
+        "xdgTag": "",
+        "xdgDescription": "",
+        "contentType": "none",
+        "tearingHint": false,
+        "stableId": "180004f2"
+      },
+      "dom": {
+        "innerWidth": 1200,
+        "innerHeight": 800,
+        "outerWidth": 1200,
+        "outerHeight": 800,
+        "scrollWidth": 1200,
+        "composer": true
+      }
+    }
+  },
+  {
+    "label": "no horizontal overflow second-conversation-1200",
+    "passed": true
+  },
+  {
+    "label": "six different semantic types submitted in the same frozen batch",
+    "passed": true
+  },
+  {
+    "label": "A registered while original execution running",
+    "passed": true
+  },
+  {
+    "label": "A original bytes exact",
+    "passed": true
+  },
+  {
+    "label": "A milestone while B busy and natural amendment",
+    "passed": false,
+    "error": "Error: Error: Error invoking remote method 'bot-work:history': [\n  {\n    \"origin\": \"string\",\n    \"code\": \"too_small\",\n    \"minimum\": 1,\n    \"inclusive\": true,\n    \"path\": [\n      \"conversationId\"\n    ],\n    \"message\": \"Too small: expected string to have >=1 characters\"\n  }\n]\n    at evaluate (/home/vivion/iq27-tmp/s27-EMW04H/scripts/bot-frontdoor-live-test.cjs:149:37)\n    at async /home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:54:181\n    at async section (/home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:19:38)\n    at async exports.run.exports.runFocused (/home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:51:2)\n    at async /home/vivion/iq27-tmp/s27-EMW04H/scripts/bot-frontdoor-live-test.cjs:343:11"
+  },
+  {
+    "label": "foreground completed busy-0",
+    "passed": true,
+    "data": {
+      "status": "completed"
+    }
+  },
+  {
+    "label": "busy arithmetic 0",
+    "passed": true
+  },
+  {
+    "label": "foreground completed busy-1",
+    "passed": true,
+    "data": {
+      "status": "completed"
+    }
+  },
+  {
+    "label": "busy arithmetic 1",
+    "passed": true
+  },
+  {
+    "label": "foreground completed busy-2",
+    "passed": true,
+    "data": {
+      "status": "completed"
+    }
+  },
+  {
+    "label": "busy arithmetic 2",
+    "passed": true
+  },
+  {
+    "label": "foreground completed busy-3",
+    "passed": true,
+    "data": {
+      "status": "completed"
+    }
+  },
+  {
+    "label": "busy arithmetic 3",
+    "passed": true
+  },
+  {
+    "label": "foreground completed busy-4",
+    "passed": true,
+    "data": {
+      "status": "completed"
+    }
+  },
+  {
+    "label": "busy arithmetic 4",
+    "passed": true
+  },
+  {
+    "label": "foreground completed busy-5",
+    "passed": true,
+    "data": {
+      "status": "completed"
+    }
+  },
+  {
+    "label": "busy arithmetic 5",
+    "passed": true
+  },
+  {
+    "label": "foreground completed busy-6",
+    "passed": true,
+    "data": {
+      "status": "completed"
+    }
+  },
+  {
+    "label": "busy arithmetic 6",
+    "passed": true
+  },
+  {
+    "label": "foreground completed busy-7",
+    "passed": true,
+    "data": {
+      "status": "completed"
+    }
+  },
+  {
+    "label": "busy arithmetic 7",
+    "passed": true
+  },
+  {
+    "label": "foreground completed direct",
+    "passed": true,
+    "data": {
+      "status": "completed"
+    }
+  },
+  {
+    "label": "foreground completed query",
+    "passed": true,
+    "data": {
+      "status": "completed"
+    }
+  },
+  {
+    "label": "foreground completed analysis",
+    "passed": true,
+    "data": {
+      "status": "completed"
+    }
+  },
+  {
+    "label": "foreground completed reminder",
+    "passed": true,
+    "data": {
+      "status": "completed"
+    }
+  },
+  {
+    "label": "foreground completed file-event",
+    "passed": true,
+    "data": {
+      "status": "completed"
+    }
+  },
+  {
+    "label": "direct arithmetic accurate",
+    "passed": true
+  },
+  {
+    "label": "no new Work for direct",
+    "passed": true
+  },
+  {
+    "label": "no new Work for query",
+    "passed": true
+  },
+  {
+    "label": "no new Work for reminder",
+    "passed": true
+  },
+  {
+    "label": "analysis closes succeeded",
+    "passed": true
+  },
+  {
+    "label": "analysis exact registered actual contents",
+    "passed": true
+  },
+  {
+    "label": "CSV original unchanged",
+    "passed": true
+  },
+  {
+    "label": "amended execution succeeds",
+    "passed": true
+  },
+  {
+    "label": "A bytes unchanged after amendment",
+    "passed": true
+  },
+  {
+    "label": "B final bytes latest revision",
+    "passed": false
+  },
+  {
+    "label": "B latest immutable delivered in original conversation",
+    "passed": false
+  },
+  {
+    "label": "final amended execution",
+    "passed": false,
+    "error": "Error: Error: Error invoking remote method 'bot-work:history': [\n  {\n    \"origin\": \"string\",\n    \"code\": \"too_small\",\n    \"minimum\": 1,\n    \"inclusive\": true,\n    \"path\": [\n      \"conversationId\"\n    ],\n    \"message\": \"Too small: expected string to have >=1 characters\"\n  }\n]\n    at evaluate (/home/vivion/iq27-tmp/s27-EMW04H/scripts/bot-frontdoor-live-test.cjs:149:37)\n    at async /home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:68:703\n    at async section (/home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:19:38)\n    at async exports.run.exports.runFocused (/home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:68:2)\n    at async /home/vivion/iq27-tmp/s27-EMW04H/scripts/bot-frontdoor-live-test.cjs:343:11"
+  },
+  {
+    "label": "next_event baseline executes nothing",
+    "passed": true
+  },
+  {
+    "label": "file source not cron substitute",
+    "passed": true
+  },
+  {
+    "label": "actual fs.watch event persisted",
+    "passed": true
+  },
+  {
+    "label": "real event output correct",
+    "passed": true
+  },
+  {
+    "label": "event JSON immutable registered and delivered",
+    "passed": true
+  },
+  {
+    "label": "same-byte duplicate creates no new execution event or output",
+    "passed": true
+  },
+  {
+    "label": "event processor fixture not rewritten",
+    "passed": true
+  },
+  {
+    "label": "pure reminder delivered at actual clock",
+    "passed": true
+  },
+  {
+    "label": "reminder only delivered in originating second conversation",
+    "passed": true
+  },
+  {
+    "label": "reminder operation linked to exact request ID",
+    "passed": true
+  },
+  {
+    "label": "actual window width results-960",
+    "passed": true,
+    "data": {
+      "label": "results-960",
+      "at": 1794447310132,
+      "requestedWidth": 960,
+      "client": {
+        "address": "0x5562a1658680",
+        "mapped": true,
+        "hidden": false,
+        "visible": true,
+        "acceptsInput": true,
+        "at": [
+          215,
+          90
+        ],
+        "size": [
+          960,
+          800
+        ],
+        "workspace": {
+          "address": "3",
+          "id": 3,
+          "type": "normal",
+          "name": "3"
+        },
+        "floating": true,
+        "monitor": 0,
+        "class": "wavealstra-harness",
+        "title": "MyBuddy",
+        "initialClass": "wavealstra-harness",
+        "initialTitle": "MyBuddy",
+        "pid": 1600919,
+        "xwayland": false,
+        "pinned": false,
+        "pinFullscreened": false,
+        "fullscreen": 0,
+        "fullscreenClient": 0,
+        "fullscreenHandler": "default",
+        "allowedOverFullscreen": true,
+        "grouped": [],
+        "tags": [],
+        "swallowing": "0x0",
+        "focusHistoryID": 0,
+        "inhibitingIdle": false,
+        "xdgTag": "",
+        "xdgDescription": "",
+        "contentType": "none",
+        "tearingHint": false,
+        "stableId": "180004f2"
+      },
+      "dom": {
+        "innerWidth": 960,
+        "innerHeight": 800,
+        "outerWidth": 960,
+        "outerHeight": 800,
+        "scrollWidth": 960,
+        "composer": true
+      }
+    }
+  },
+  {
+    "label": "no horizontal overflow results-960",
+    "passed": true
+  },
+  {
+    "label": "actual text open at 960",
+    "passed": false,
+    "error": "Error: Error: Error invoking remote method 'bot-work:history': [\n  {\n    \"origin\": \"string\",\n    \"code\": \"too_small\",\n    \"minimum\": 1,\n    \"inclusive\": true,\n    \"path\": [\n      \"conversationId\"\n    ],\n    \"message\": \"Too small: expected string to have >=1 characters\"\n  }\n]\n    at evaluate (/home/vivion/iq27-tmp/s27-EMW04H/scripts/bot-frontdoor-live-test.cjs:149:37)\n    at async openFile (/home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:72:39)\n    at async /home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:73:106\n    at async section (/home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:19:38)\n    at async exports.run.exports.runFocused (/home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:73:2)\n    at async /home/vivion/iq27-tmp/s27-EMW04H/scripts/bot-frontdoor-live-test.cjs:343:11"
+  },
+  {
+    "label": "actual window width results-1200",
+    "passed": true,
+    "data": {
+      "label": "results-1200",
+      "at": 1794447310965,
+      "requestedWidth": 1200,
+      "client": {
+        "address": "0x5562a1658680",
+        "mapped": true,
+        "hidden": false,
+        "visible": true,
+        "acceptsInput": true,
+        "at": [
+          95,
+          90
+        ],
+        "size": [
+          1200,
+          800
+        ],
+        "workspace": {
+          "address": "3",
+          "id": 3,
+          "type": "normal",
+          "name": "3"
+        },
+        "floating": true,
+        "monitor": 0,
+        "class": "wavealstra-harness",
+        "title": "MyBuddy",
+        "initialClass": "wavealstra-harness",
+        "initialTitle": "MyBuddy",
+        "pid": 1600919,
+        "xwayland": false,
+        "pinned": false,
+        "pinFullscreened": false,
+        "fullscreen": 0,
+        "fullscreenClient": 0,
+        "fullscreenHandler": "default",
+        "allowedOverFullscreen": true,
+        "grouped": [],
+        "tags": [],
+        "swallowing": "0x0",
+        "focusHistoryID": 0,
+        "inhibitingIdle": false,
+        "xdgTag": "",
+        "xdgDescription": "",
+        "contentType": "none",
+        "tearingHint": false,
+        "stableId": "180004f2"
+      },
+      "dom": {
+        "innerWidth": 1200,
+        "innerHeight": 800,
+        "outerWidth": 1200,
+        "outerHeight": 800,
+        "scrollWidth": 1200,
+        "composer": true
+      }
+    }
+  },
+  {
+    "label": "no horizontal overflow results-1200",
+    "passed": true
+  },
+  {
+    "label": "actual JSON open at 1200",
+    "passed": false,
+    "error": "Error: Error: Error invoking remote method 'bot-work:history': [\n  {\n    \"origin\": \"string\",\n    \"code\": \"too_small\",\n    \"minimum\": 1,\n    \"inclusive\": true,\n    \"path\": [\n      \"conversationId\"\n    ],\n    \"message\": \"Too small: expected string to have >=1 characters\"\n  }\n]\n    at evaluate (/home/vivion/iq27-tmp/s27-EMW04H/scripts/bot-frontdoor-live-test.cjs:149:37)\n    at async openFile (/home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:72:39)\n    at async /home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:74:109\n    at async section (/home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:19:38)\n    at async exports.run.exports.runFocused (/home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:74:2)\n    at async /home/vivion/iq27-tmp/s27-EMW04H/scripts/bot-frontdoor-live-test.cjs:343:11"
+  },
+  {
+    "label": "source request and answer displayed parallel-execution visit 1",
+    "passed": true
+  },
+  {
+    "label": "source foreground view excludes other request messages parallel-execution",
+    "passed": true
+  },
+  {
+    "label": "source request and answer displayed analysis visit 2",
+    "passed": true
+  },
+  {
+    "label": "source foreground view excludes other request messages analysis",
+    "passed": true
+  },
+  {
+    "label": "source request and answer displayed parallel-execution visit 3",
+    "passed": true
+  },
+  {
+    "label": "source foreground view excludes other request messages parallel-execution",
+    "passed": true
+  },
+  {
+    "label": "A transport-observed write call exactly once across revisions",
+    "passed": true
+  },
+  {
+    "label": "B original transport-observed write call exactly once",
+    "passed": true
+  },
+  {
+    "label": "B amended transport-observed write call exactly once",
+    "passed": false
+  },
+  {
+    "label": "only required real model",
+    "passed": true
+  }
+]

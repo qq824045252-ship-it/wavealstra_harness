@@ -1,0 +1,2370 @@
+{
+  "scope": "Independent read-only audit; does not overwrite original FAIL report. No app launch or new model call.",
+  "rawReport": "/home/vivion/iq27-tmp/s27-EMW04H/out/diagnostics/bot-scheduling/batch-2026-11-12T01-29-20-008Z-1599454/report.json",
+  "rawReportSha256": "bbacac703984911bc56d58ac9828ef65d4ec10de8baa3963d5dfd0d9099624a5",
+  "source": {
+    "harness": {
+      "runner": "/home/vivion/iq27-tmp/instrumented-v3/runner.cjs",
+      "scenario": "/home/vivion/iq27-tmp/instrumented-v3/scenario.cjs",
+      "sha256": "db71a8daa79190a7afdf4f9626fb91f097546860d3714b0726040a00571df610"
+    },
+    "root": "/home/vivion/iq27-tmp/s27-EMW04H",
+    "capturedAt": 1794446960055,
+    "fingerprint": {
+      "sha256": "fa44173fa7b18d2aac9f6e8441f3123e56d08a7b295eb1402285fcf0e9adbde2",
+      "files": 1265
+    },
+    "snapshotLabel": "b5c1429d77d2d2f192149c48a92990cca8f4926c",
+    "finishedFingerprint": {
+      "sha256": "fa44173fa7b18d2aac9f6e8441f3123e56d08a7b295eb1402285fcf0e9adbde2",
+      "files": 1265
+    }
+  },
+  "sourceManifestSha256": "76e73e75fb2ee3bf4807d655e3c2efbbdac1675e6184f8a18347a63a570aae3b",
+  "instrumentationManifestSha256": "7ecbca1411deda39bd9995aa001ac208b5642ecc5001f5508b974113052a10a8",
+  "db": {
+    "path": "/home/vivion/iq27-tmp/i27-tXWrfg/.mybuddy/app.db",
+    "sha256Before": "b964672534f25745235ce0595f731f28515e5167c8bb08757a2041a25f1b007f",
+    "sha256After": "b964672534f25745235ce0595f731f28515e5167c8bb08757a2041a25f1b007f",
+    "immutableRead": true,
+    "walPresent": false
+  },
+  "rawOutcome": {
+    "status": "failed",
+    "pass": 63,
+    "checks": 70,
+    "fail": 7
+  },
+  "actualSemanticTypes": 6,
+  "busyDirectSamples": 8,
+  "plannedAmendment": "not submitted, untested",
+  "persistedConversationIds": [
+    "bot-conversation-158b6bfd-c687-4437-867c-fe94c46c95ec",
+    "bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad"
+  ],
+  "caseIdentityLinks": [
+    {
+      "id": "parallel-execution",
+      "semanticType": "parallel-controlled-execution",
+      "requestId": "762ae509-f82d-4156-8c36-2b03acf7114a",
+      "messageId": "bot-message-45ce8ba8-9a91-4c6c-b751-d8311c1fd4ab",
+      "conversationId": "bot-conversation-158b6bfd-c687-4437-867c-fe94c46c95ec",
+      "uiInputAt": 1794447010302,
+      "uiInputMark": "iq27-ui-input-0",
+      "answerMessageId": "bot-message-16fbaa3b-f932-4988-afc0-4b6f268f84b7",
+      "answerStatus": "completed",
+      "answerText": "已建立一次性后台委托“本批A快B等待”并立即开始执行。\n\n- 一个 subagent tasks 调用内并行派发 A、B（isolation=shared，cwd 均为 `/home/vivion/iq27-tmp/i27-tXWrfg/inputs`），使用现有用户目录 `reader` 角色。\n- A 先写 `a-ready.txt` = `A-READY`（无换行）并回读登记，先交付可用成果；B 先写 `b-final.txt` = `B-ORIGINAL` 并回读，再用真实 bash 观测 `release.txt` 出现（最长 300 秒，不自行创建 gate），出现后回读登记最终 B。\n- 已写入约束：不拆串行、A 完成后不重写、不联网、不创建放行文件。\n\n结果会回到本会话。",
+      "workLinks": [
+        {
+          "work_id": "work-34a099bf-87b2-482f-889d-bae804f65e36",
+          "source_message_id": "bot-message-45ce8ba8-9a91-4c6c-b751-d8311c1fd4ab",
+          "intent_revision": 1,
+          "lifecycle": "closed"
+        }
+      ]
+    },
+    {
+      "id": "direct",
+      "semanticType": "direct-answer",
+      "requestId": "53bbf305-7500-46c6-a1b7-11f604a7e3c3",
+      "messageId": "bot-message-a5d6f790-3b56-4d1d-a47a-af95524e7591",
+      "conversationId": "bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad",
+      "uiInputAt": 1794447072014,
+      "uiInputMark": "iq27-ui-input-2",
+      "answerMessageId": "bot-message-9f9aad3d-db01-48c5-9b53-1aa129e4fef3",
+      "answerStatus": "completed",
+      "answerText": "3973",
+      "workLinks": []
+    },
+    {
+      "id": "query",
+      "semanticType": "readonly-current-state",
+      "requestId": "601ddb5f-d95d-4654-9ad0-91fe119423c5",
+      "messageId": "bot-message-f348ceb6-3331-4867-a55f-d806e56619d8",
+      "conversationId": "bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad",
+      "uiInputAt": 1794447072271,
+      "uiInputMark": "iq27-ui-input-4",
+      "answerMessageId": "bot-message-9f41e1ba-53c6-4fb0-b742-886a73d96421",
+      "answerStatus": "completed",
+      "answerText": "目前只存在一个未结束事项「本批A快B等待」（一次性模式）：\n\n- 状态：进行中，有一条执行记录在运行，仍在等待结果；尚无阻塞，也不需要你输入。\n- 已有产出：子任务 A 已按约定写入 `inputs/a-ready.txt`（内容 `A-READY`，7 字节，已回读校验），这部分结果已提交但整项尚未收尾。\n\n其余无待办事项。",
+      "workLinks": []
+    },
+    {
+      "id": "analysis",
+      "semanticType": "csv-analysis-work",
+      "requestId": "49b55e98-264e-4ac7-ba8d-cb6a868e2589",
+      "messageId": "bot-message-cd0676ca-35ed-429d-bc3d-801222299092",
+      "conversationId": "bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad",
+      "uiInputAt": 1794447072488,
+      "uiInputMark": "iq27-ui-input-6",
+      "answerMessageId": "bot-message-7278eda0-f465-411f-8a80-a4ac14e7fc5c",
+      "answerStatus": "completed",
+      "answerText": "已建立一次性后台委托「本批CSV分析」：真实读取 sales.csv 计算各产品销售收入、总销售额和收入最高产品，写入 analysis.txt 后回读登记交付，保留原产品名且不改动源文件。结果会回到本会话。",
+      "workLinks": [
+        {
+          "work_id": "work-7395c538-3e96-43fe-ba23-f171e0f52f37",
+          "source_message_id": "bot-message-cd0676ca-35ed-429d-bc3d-801222299092",
+          "intent_revision": 1,
+          "lifecycle": "closed"
+        }
+      ]
+    },
+    {
+      "id": "reminder",
+      "semanticType": "clock-reminder",
+      "requestId": "fb88c583-0b62-43f3-82ba-bbb8bd70063b",
+      "messageId": "bot-message-65de7687-86f0-4c10-bfa9-36d76b4a0e0c",
+      "conversationId": "bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad",
+      "uiInputAt": 1794447072700,
+      "uiInputMark": "iq27-ui-input-8",
+      "answerMessageId": "bot-message-78586682-366a-491e-a2f1-af8124926d1e",
+      "answerStatus": "completed",
+      "answerText": "已安排纯提醒“本批90秒提醒”，并将在 2026年11月12日 09:32:42（Asia/Shanghai）触发，内容为“本批纯提醒检查”。\n\n该提醒不执行任务、不创建 Work；如果本机关闭或休眠，会延迟补发。",
+      "workLinks": []
+    },
+    {
+      "id": "file-event",
+      "semanticType": "real-local-file-event",
+      "requestId": "9e5afefe-fea3-4156-b35b-9719fcf4e0d1",
+      "messageId": "bot-message-11100b97-5094-4e9f-8b5b-63b20577cfa3",
+      "conversationId": "bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad",
+      "uiInputAt": 1794447072872,
+      "uiInputMark": "iq27-ui-input-10",
+      "answerMessageId": "bot-message-9c783d2f-47ae-4705-8e5e-ab495c81eb30",
+      "answerStatus": "completed",
+      "answerText": "已建立持续委托「本批文件变化」（work-b0124f56）。已经为 `inputs/source-state.json` 记录了当前基线，但还没有运行脚本。\n\n- 触发方式：只依赖已接入的 file 事件源；eventTarget 固定为该绝对路径，next_event、continuous、latest、changes_only（notifyInitial=true），并且不设 cron。\n- 处理条件：只有收到真实的新变化且 ready=true 时，才执行一次 `node process-event.cjs`；随后回读并登记 `event-result.json`，并通知当前版本的成果。如果字节或版本相同，就不重跑；不会改脚本，也不会联网。\n- 创建时没有执行，现在状态为 waiting_event；之后会继续等待下一次真实变化。\n\n有一点局限：事件监听要求宿主程序正在运行；关闭后就不会触发，重新启动后只按 latest 补处理最新一次变化。",
+      "workLinks": [
+        {
+          "work_id": "work-b0124f56-0524-4c42-8859-468f22a49902",
+          "source_message_id": "bot-message-11100b97-5094-4e9f-8b5b-63b20577cfa3",
+          "intent_revision": 1,
+          "lifecycle": "active"
+        }
+      ]
+    },
+    {
+      "id": "busy-0",
+      "semanticType": "busy-direct-sample",
+      "requestId": "555ff7f2-15a8-4336-b8c9-2ab40faeb5e4",
+      "messageId": "bot-message-7077b657-0990-479e-a595-a0c942d5f1af",
+      "conversationId": "bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad",
+      "uiInputAt": 1794447073185,
+      "uiInputMark": "iq27-ui-input-12",
+      "answerMessageId": "bot-message-2a1561b0-d769-4b1a-be9c-a7eeec935baf",
+      "answerStatus": "completed",
+      "answerText": "48",
+      "workLinks": []
+    },
+    {
+      "id": "busy-1",
+      "semanticType": "busy-direct-sample",
+      "requestId": "96d24529-b71f-4536-8b0c-2f4c4757ff23",
+      "messageId": "bot-message-83ced0fc-98bc-46d8-9b1c-53783c541ad8",
+      "conversationId": "bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad",
+      "uiInputAt": 1794447088495,
+      "uiInputMark": "iq27-ui-input-14",
+      "answerMessageId": "bot-message-ee213677-549a-4769-ac68-1e572039b066",
+      "answerStatus": "completed",
+      "answerText": "50",
+      "workLinks": []
+    },
+    {
+      "id": "busy-2",
+      "semanticType": "busy-direct-sample",
+      "requestId": "784149f1-6811-4e9b-a9c8-7e67d2780770",
+      "messageId": "bot-message-3c9d290d-dce7-4ea2-aa3d-5a3396de42fa",
+      "conversationId": "bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad",
+      "uiInputAt": 1794447093075,
+      "uiInputMark": "iq27-ui-input-16",
+      "answerMessageId": "bot-message-7615c148-86bf-4ece-99ee-eb62769a8724",
+      "answerStatus": "completed",
+      "answerText": "33 + 19 = 52",
+      "workLinks": []
+    },
+    {
+      "id": "busy-3",
+      "semanticType": "busy-direct-sample",
+      "requestId": "7b307788-a20c-43c3-a208-4fa8f56b3e8e",
+      "messageId": "bot-message-ab6bef7d-4bb6-41a0-9ad3-acd4ddba0f8a",
+      "conversationId": "bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad",
+      "uiInputAt": 1794447097786,
+      "uiInputMark": "iq27-ui-input-18",
+      "answerMessageId": "bot-message-111f3486-86fb-420b-8ad8-8f0e6765febc",
+      "answerStatus": "completed",
+      "answerText": "34 + 20 = 54",
+      "workLinks": []
+    },
+    {
+      "id": "busy-4",
+      "semanticType": "busy-direct-sample",
+      "requestId": "457b763b-8c93-488f-8f2b-80c7df1be59e",
+      "messageId": "bot-message-e5ae8b17-628d-4dff-8ffa-b53e0a652af7",
+      "conversationId": "bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad",
+      "uiInputAt": 1794447102506,
+      "uiInputMark": "iq27-ui-input-20",
+      "answerMessageId": "bot-message-453aa1dc-d62c-450b-a8ef-3bbceb299c94",
+      "answerStatus": "completed",
+      "answerText": "35 + 21 = 56",
+      "workLinks": []
+    },
+    {
+      "id": "busy-5",
+      "semanticType": "busy-direct-sample",
+      "requestId": "e968a6e6-cbc1-43e4-bbd9-3584dc99ed50",
+      "messageId": "bot-message-f4085180-4bc3-4e79-978f-c4dced835285",
+      "conversationId": "bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad",
+      "uiInputAt": 1794447109074,
+      "uiInputMark": "iq27-ui-input-22",
+      "answerMessageId": "bot-message-b73e8664-550e-41db-8228-3e288b16b7b8",
+      "answerStatus": "completed",
+      "answerText": "36 + 22 = 58",
+      "workLinks": []
+    },
+    {
+      "id": "busy-6",
+      "semanticType": "busy-direct-sample",
+      "requestId": "efde7971-c327-4ce3-aa39-c01ce19ab110",
+      "messageId": "bot-message-79130f43-636f-4eb1-b07c-2ac719e9b496",
+      "conversationId": "bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad",
+      "uiInputAt": 1794447113578,
+      "uiInputMark": "iq27-ui-input-24",
+      "answerMessageId": "bot-message-0c01b73b-a582-46c2-8a6c-48af6468edcd",
+      "answerStatus": "completed",
+      "answerText": "37 + 23 = 60",
+      "workLinks": []
+    },
+    {
+      "id": "busy-7",
+      "semanticType": "busy-direct-sample",
+      "requestId": "5fafa3f9-f1af-4530-934b-018e55ab6c52",
+      "messageId": "bot-message-1295b1ee-2f85-42aa-b302-409e13390b17",
+      "conversationId": "bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad",
+      "uiInputAt": 1794447117883,
+      "uiInputMark": "iq27-ui-input-26",
+      "answerMessageId": "bot-message-71231658-de82-426b-b1ed-062dcde48783",
+      "answerStatus": "completed",
+      "answerText": "38 + 24 = 62",
+      "workLinks": []
+    }
+  ],
+  "independentRouteChecks": [
+    {
+      "caseId": "parallel-execution",
+      "workId": "work-34a099bf-87b2-482f-889d-bae804f65e36",
+      "expectedConversationId": "bot-conversation-158b6bfd-c687-4437-867c-fe94c46c95ec",
+      "messageIds": [
+        "work-feedback-0a66990011ae1910e0fd308d20e761e7a965e5102c70225d696011c7c6176617",
+        "work-feedback-da8cc1d36b7b7968068fc0850d59a2d1aece2d17d53adb74817e90b673601e8f",
+        "work-feedback-e8357fa3e0f98daf2aa318633625897aa76221e4f242c500fb961ada21c93e9c",
+        "work-feedback-b67cd94733f0d44ca9849da21c66257878ce01358f9eb1cfecdac2cae7e7eec5"
+      ],
+      "observedConversationIds": [
+        "bot-conversation-158b6bfd-c687-4437-867c-fe94c46c95ec"
+      ],
+      "allMatch": true
+    },
+    {
+      "caseId": "analysis",
+      "workId": "work-7395c538-3e96-43fe-ba23-f171e0f52f37",
+      "expectedConversationId": "bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad",
+      "messageIds": [
+        "work-feedback-7b9d314ce774a2baabf1ea90b8a831421e72e1ea4114a4eec6143ea05e4ff3fa",
+        "work-feedback-c1025fe904e974708f3fbdd979c27cd24b69749f2d05ad8fc30dd33a2efa2166"
+      ],
+      "observedConversationIds": [
+        "bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad"
+      ],
+      "allMatch": true
+    },
+    {
+      "caseId": "file-event",
+      "workId": "work-b0124f56-0524-4c42-8859-468f22a49902",
+      "expectedConversationId": "bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad",
+      "messageIds": [
+        "work-feedback-9626dde32fb41fe16ae798600e4d60fd3d321306371cb3eec23d6a38ff16f51b"
+      ],
+      "observedConversationIds": [
+        "bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad"
+      ],
+      "allMatch": true
+    }
+  ],
+  "immutableArtifacts": [
+    {
+      "workId": "work-34a099bf-87b2-482f-889d-bae804f65e36",
+      "bindingId": "binding-69e5e1da-6172-4eef-a47a-65030d06edc8",
+      "intentRevision": 1,
+      "path": "/home/vivion/iq27-tmp/i27-tXWrfg/inputs/b-final.txt",
+      "snapshotPath": "/home/vivion/iq27-tmp/i27-tXWrfg/.mybuddy/durable/c35eb6a71999e368385a650d53bf3627e84efe4f00df8cfada52e3d2e45298f6/artifacts/709afb08ab129afbfc1aa66b37e76e6a4ead5d4769772bdac288125da851f5af.txt",
+      "digest": "709afb08ab129afbfc1aa66b37e76e6a4ead5d4769772bdac288125da851f5af",
+      "sizeBytes": 10,
+      "registeredAt": 1794447057606,
+      "sourceEntryId": 52,
+      "currentDigest": "709afb08ab129afbfc1aa66b37e76e6a4ead5d4769772bdac288125da851f5af",
+      "currentSize": 10,
+      "immutableBytesVerified": true
+    },
+    {
+      "workId": "work-34a099bf-87b2-482f-889d-bae804f65e36",
+      "bindingId": "binding-69e5e1da-6172-4eef-a47a-65030d06edc8",
+      "intentRevision": 1,
+      "path": "/home/vivion/iq27-tmp/i27-tXWrfg/inputs/a-ready.txt",
+      "snapshotPath": "/home/vivion/iq27-tmp/i27-tXWrfg/.mybuddy/durable/c35eb6a71999e368385a650d53bf3627e84efe4f00df8cfada52e3d2e45298f6/artifacts/04ccfb171301b7d32164166de87d534449a1e2fdcfa972e68261fbd6376af589.txt",
+      "digest": "04ccfb171301b7d32164166de87d534449a1e2fdcfa972e68261fbd6376af589",
+      "sizeBytes": 7,
+      "registeredAt": 1794447057649,
+      "sourceEntryId": 54,
+      "currentDigest": "04ccfb171301b7d32164166de87d534449a1e2fdcfa972e68261fbd6376af589",
+      "currentSize": 7,
+      "immutableBytesVerified": true
+    },
+    {
+      "workId": "work-7395c538-3e96-43fe-ba23-f171e0f52f37",
+      "bindingId": "binding-c95f0c93-4aa7-4706-a3d7-9a58ed19807b",
+      "intentRevision": 1,
+      "path": "/home/vivion/iq27-tmp/i27-tXWrfg/inputs/analysis.txt",
+      "snapshotPath": "/home/vivion/iq27-tmp/i27-tXWrfg/.mybuddy/durable/f6d101cad78fa7edda47dd22a5f78d16c8f05fc2e8ce656185f97843faba482d/artifacts/5340bfdb1daf4b5582265c20ddf7bcd47147d02f713ff203f65f2466505273f7.txt",
+      "digest": "5340bfdb1daf4b5582265c20ddf7bcd47147d02f713ff203f65f2466505273f7",
+      "sizeBytes": 612,
+      "registeredAt": 1794447110987,
+      "sourceEntryId": 37,
+      "currentDigest": "5340bfdb1daf4b5582265c20ddf7bcd47147d02f713ff203f65f2466505273f7",
+      "currentSize": 612,
+      "immutableBytesVerified": true
+    },
+    {
+      "workId": "work-b0124f56-0524-4c42-8859-468f22a49902",
+      "bindingId": "binding-4154b4c5-8a0c-4094-b932-76e5ea3441eb",
+      "intentRevision": 1,
+      "path": "/home/vivion/iq27-tmp/i27-tXWrfg/inputs/event-result.json",
+      "snapshotPath": "/home/vivion/iq27-tmp/i27-tXWrfg/.mybuddy/durable/e011244e58ff8394475b69168a8a5e3146ed07ec336447252736cfccd50dc9c0/artifacts/2a2d56c888dab36c7b1fff98fdf0d685c3529153ed72c606b098fb0cead946c3.json",
+      "digest": "2a2d56c888dab36c7b1fff98fdf0d685c3529153ed72c606b098fb0cead946c3",
+      "sizeBytes": 98,
+      "registeredAt": 1794447230372,
+      "sourceEntryId": 42,
+      "currentDigest": "2a2d56c888dab36c7b1fff98fdf0d685c3529153ed72c606b098fb0cead946c3",
+      "currentSize": 98,
+      "immutableBytesVerified": true
+    },
+    {
+      "workId": "work-b0124f56-0524-4c42-8859-468f22a49902",
+      "bindingId": "binding-4154b4c5-8a0c-4094-b932-76e5ea3441eb",
+      "intentRevision": 1,
+      "path": "/home/vivion/iq27-tmp/i27-tXWrfg/inputs/本批文件变化-执行回执.md",
+      "snapshotPath": "/home/vivion/iq27-tmp/i27-tXWrfg/.mybuddy/durable/e011244e58ff8394475b69168a8a5e3146ed07ec336447252736cfccd50dc9c0/artifacts/4ec2c28769e0a6846e60be2fdcf37eb0c446ddd9ff39a5c6dc15a79e0ef7378e.md",
+      "digest": "4ec2c28769e0a6846e60be2fdcf37eb0c446ddd9ff39a5c6dc15a79e0ef7378e",
+      "sizeBytes": 1790,
+      "registeredAt": 1794447251072,
+      "sourceEntryId": 59,
+      "currentDigest": "4ec2c28769e0a6846e60be2fdcf37eb0c446ddd9ff39a5c6dc15a79e0ef7378e",
+      "currentSize": 1790,
+      "immutableBytesVerified": true
+    }
+  ],
+  "verifiedDeliveries": [
+    {
+      "messageId": "work-feedback-0a66990011ae1910e0fd308d20e761e7a965e5102c70225d696011c7c6176617",
+      "conversationId": "bot-conversation-158b6bfd-c687-4437-867c-fe94c46c95ec",
+      "createdAt": 1794447070435,
+      "workId": "work-34a099bf-87b2-482f-889d-bae804f65e36",
+      "category": "progress",
+      "eventId": "milestone:binding-69e5e1da-6172-4eef-a47a-65030d06edc8",
+      "name": "a-ready.txt",
+      "snapshotPath": "/home/vivion/iq27-tmp/i27-tXWrfg/.mybuddy/durable/c35eb6a71999e368385a650d53bf3627e84efe4f00df8cfada52e3d2e45298f6/artifacts/04ccfb171301b7d32164166de87d534449a1e2fdcfa972e68261fbd6376af589.txt",
+      "digest": "04ccfb171301b7d32164166de87d534449a1e2fdcfa972e68261fbd6376af589",
+      "sizeBytes": 7
+    },
+    {
+      "messageId": "work-feedback-da8cc1d36b7b7968068fc0850d59a2d1aece2d17d53adb74817e90b673601e8f",
+      "conversationId": "bot-conversation-158b6bfd-c687-4437-867c-fe94c46c95ec",
+      "createdAt": 1794447135991,
+      "workId": "work-34a099bf-87b2-482f-889d-bae804f65e36",
+      "category": "progress",
+      "eventId": "milestone:binding-69e5e1da-6172-4eef-a47a-65030d06edc8",
+      "name": "a-ready.txt",
+      "snapshotPath": "/home/vivion/iq27-tmp/i27-tXWrfg/.mybuddy/durable/c35eb6a71999e368385a650d53bf3627e84efe4f00df8cfada52e3d2e45298f6/artifacts/04ccfb171301b7d32164166de87d534449a1e2fdcfa972e68261fbd6376af589.txt",
+      "digest": "04ccfb171301b7d32164166de87d534449a1e2fdcfa972e68261fbd6376af589",
+      "sizeBytes": 7
+    },
+    {
+      "messageId": "work-feedback-da8cc1d36b7b7968068fc0850d59a2d1aece2d17d53adb74817e90b673601e8f",
+      "conversationId": "bot-conversation-158b6bfd-c687-4437-867c-fe94c46c95ec",
+      "createdAt": 1794447135991,
+      "workId": "work-34a099bf-87b2-482f-889d-bae804f65e36",
+      "category": "progress",
+      "eventId": "milestone:binding-69e5e1da-6172-4eef-a47a-65030d06edc8",
+      "name": "b-final.txt",
+      "snapshotPath": "/home/vivion/iq27-tmp/i27-tXWrfg/.mybuddy/durable/c35eb6a71999e368385a650d53bf3627e84efe4f00df8cfada52e3d2e45298f6/artifacts/709afb08ab129afbfc1aa66b37e76e6a4ead5d4769772bdac288125da851f5af.txt",
+      "digest": "709afb08ab129afbfc1aa66b37e76e6a4ead5d4769772bdac288125da851f5af",
+      "sizeBytes": 10
+    },
+    {
+      "messageId": "work-feedback-c1025fe904e974708f3fbdd979c27cd24b69749f2d05ad8fc30dd33a2efa2166",
+      "conversationId": "bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad",
+      "createdAt": 1794447149571,
+      "workId": "work-7395c538-3e96-43fe-ba23-f171e0f52f37",
+      "category": "result",
+      "eventId": "completion:binding-c95f0c93-4aa7-4706-a3d7-9a58ed19807b",
+      "name": "analysis.txt",
+      "snapshotPath": "/home/vivion/iq27-tmp/i27-tXWrfg/.mybuddy/durable/f6d101cad78fa7edda47dd22a5f78d16c8f05fc2e8ce656185f97843faba482d/artifacts/5340bfdb1daf4b5582265c20ddf7bcd47147d02f713ff203f65f2466505273f7.txt",
+      "digest": "5340bfdb1daf4b5582265c20ddf7bcd47147d02f713ff203f65f2466505273f7",
+      "sizeBytes": 612
+    },
+    {
+      "messageId": "work-feedback-b67cd94733f0d44ca9849da21c66257878ce01358f9eb1cfecdac2cae7e7eec5",
+      "conversationId": "bot-conversation-158b6bfd-c687-4437-867c-fe94c46c95ec",
+      "createdAt": 1794447198008,
+      "workId": "work-34a099bf-87b2-482f-889d-bae804f65e36",
+      "category": "result",
+      "eventId": "completion:binding-69e5e1da-6172-4eef-a47a-65030d06edc8",
+      "name": "a-ready.txt",
+      "snapshotPath": "/home/vivion/iq27-tmp/i27-tXWrfg/.mybuddy/durable/c35eb6a71999e368385a650d53bf3627e84efe4f00df8cfada52e3d2e45298f6/artifacts/04ccfb171301b7d32164166de87d534449a1e2fdcfa972e68261fbd6376af589.txt",
+      "digest": "04ccfb171301b7d32164166de87d534449a1e2fdcfa972e68261fbd6376af589",
+      "sizeBytes": 7
+    },
+    {
+      "messageId": "work-feedback-b67cd94733f0d44ca9849da21c66257878ce01358f9eb1cfecdac2cae7e7eec5",
+      "conversationId": "bot-conversation-158b6bfd-c687-4437-867c-fe94c46c95ec",
+      "createdAt": 1794447198008,
+      "workId": "work-34a099bf-87b2-482f-889d-bae804f65e36",
+      "category": "result",
+      "eventId": "completion:binding-69e5e1da-6172-4eef-a47a-65030d06edc8",
+      "name": "b-final.txt",
+      "snapshotPath": "/home/vivion/iq27-tmp/i27-tXWrfg/.mybuddy/durable/c35eb6a71999e368385a650d53bf3627e84efe4f00df8cfada52e3d2e45298f6/artifacts/709afb08ab129afbfc1aa66b37e76e6a4ead5d4769772bdac288125da851f5af.txt",
+      "digest": "709afb08ab129afbfc1aa66b37e76e6a4ead5d4769772bdac288125da851f5af",
+      "sizeBytes": 10
+    },
+    {
+      "messageId": "work-feedback-9626dde32fb41fe16ae798600e4d60fd3d321306371cb3eec23d6a38ff16f51b",
+      "conversationId": "bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad",
+      "createdAt": 1794447304306,
+      "workId": "work-b0124f56-0524-4c42-8859-468f22a49902",
+      "category": "result",
+      "eventId": "watch-supervision:binding-4154b4c5-8a0c-4094-b932-76e5ea3441eb",
+      "name": "event-result.json",
+      "snapshotPath": "/home/vivion/iq27-tmp/i27-tXWrfg/.mybuddy/durable/e011244e58ff8394475b69168a8a5e3146ed07ec336447252736cfccd50dc9c0/artifacts/2a2d56c888dab36c7b1fff98fdf0d685c3529153ed72c606b098fb0cead946c3.json",
+      "digest": "2a2d56c888dab36c7b1fff98fdf0d685c3529153ed72c606b098fb0cead946c3",
+      "sizeBytes": 98
+    },
+    {
+      "messageId": "work-feedback-9626dde32fb41fe16ae798600e4d60fd3d321306371cb3eec23d6a38ff16f51b",
+      "conversationId": "bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad",
+      "createdAt": 1794447304306,
+      "workId": "work-b0124f56-0524-4c42-8859-468f22a49902",
+      "category": "result",
+      "eventId": "watch-supervision:binding-4154b4c5-8a0c-4094-b932-76e5ea3441eb",
+      "name": "本批文件变化-执行回执.md",
+      "snapshotPath": "/home/vivion/iq27-tmp/i27-tXWrfg/.mybuddy/durable/e011244e58ff8394475b69168a8a5e3146ed07ec336447252736cfccd50dc9c0/artifacts/4ec2c28769e0a6846e60be2fdcf37eb0c446ddd9ff39a5c6dc15a79e0ef7378e.md",
+      "digest": "4ec2c28769e0a6846e60be2fdcf37eb0c446ddd9ff39a5c6dc15a79e0ef7378e",
+      "sizeBytes": 1790
+    }
+  ],
+  "modelAccounting": {
+    "actualHttpCalls": 62,
+    "diagnostics": 62,
+    "phaseCounts": {
+      "foreground": 20,
+      "native-main": 30,
+      "native-child": 9,
+      "completion-review": 2,
+      "watch-review": 1
+    },
+    "unmatchedDiagnostics": [],
+    "matches": [
+      {
+        "transportIndex": 0,
+        "at": 1794447010719,
+        "diagnosticId": "91a8a99c-4ee8-4983-aa6b-c2217262e335",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -58,
+        "phase": "foreground",
+        "identity": {
+          "messageId": "bot-message-16fbaa3b-f932-4988-afc0-4b6f268f84b7",
+          "requestId": "762ae509-f82d-4156-8c36-2b03acf7114a",
+          "conversationId": "bot-conversation-158b6bfd-c687-4437-867c-fe94c46c95ec"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 18168,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 16384,
+            "cached_tokens": 16384
+          },
+          "completion_tokens": 1423,
+          "completion_tokens_details": {
+            "reasoning_tokens": 362
+          },
+          "total_tokens": 19591
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 1,
+        "at": 1794447023610,
+        "diagnosticId": "451a0d8d-a071-4141-b023-0640c00a29d9",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -30,
+        "phase": "foreground",
+        "identity": {
+          "messageId": "bot-message-16fbaa3b-f932-4988-afc0-4b6f268f84b7",
+          "requestId": "762ae509-f82d-4156-8c36-2b03acf7114a",
+          "conversationId": "bot-conversation-158b6bfd-c687-4437-867c-fe94c46c95ec"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 21195,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 16384,
+            "cached_tokens": 16384
+          },
+          "completion_tokens": 193,
+          "completion_tokens_details": {},
+          "total_tokens": 21388
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 2,
+        "at": 1794447023795,
+        "diagnosticId": "5ae8ba7e-470b-4eb3-9443-2309e1b99b48",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -25,
+        "phase": "native-main",
+        "identity": {
+          "workId": "work-34a099bf-87b2-482f-889d-bae804f65e36",
+          "bindingId": "binding-69e5e1da-6172-4eef-a47a-65030d06edc8",
+          "taskId": "work-execution-74c43d39-b61d-4a6c-847c-c8d046a0b0a2"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 24329,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 0,
+            "cached_tokens": 0
+          },
+          "completion_tokens": 347,
+          "completion_tokens_details": {
+            "reasoning_tokens": 224
+          },
+          "total_tokens": 24676
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 3,
+        "at": 1794447030716,
+        "diagnosticId": "c9a45ad3-4ec4-460e-9b7f-bee0b0fe76de",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -58,
+        "phase": "native-main",
+        "identity": {
+          "workId": "work-34a099bf-87b2-482f-889d-bae804f65e36",
+          "bindingId": "binding-69e5e1da-6172-4eef-a47a-65030d06edc8",
+          "taskId": "work-execution-74c43d39-b61d-4a6c-847c-c8d046a0b0a2"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 24955,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 14336,
+            "cached_tokens": 14336
+          },
+          "completion_tokens": 84,
+          "completion_tokens_details": {
+            "reasoning_tokens": 5
+          },
+          "total_tokens": 25039
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 4,
+        "at": 1794447036363,
+        "diagnosticId": "277e1d23-204b-4ca7-b469-8a8c56992920",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -23,
+        "phase": "native-main",
+        "identity": {
+          "workId": "work-34a099bf-87b2-482f-889d-bae804f65e36",
+          "bindingId": "binding-69e5e1da-6172-4eef-a47a-65030d06edc8",
+          "taskId": "work-execution-74c43d39-b61d-4a6c-847c-c8d046a0b0a2"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 25126,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 14336,
+            "cached_tokens": 14336
+          },
+          "completion_tokens": 1357,
+          "completion_tokens_details": {
+            "reasoning_tokens": 228
+          },
+          "total_tokens": 26483
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 5,
+        "at": 1794447053446,
+        "diagnosticId": "e4cca5b1-7906-4256-8d9c-3ad040efbc15",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -29,
+        "phase": "native-child",
+        "identity": {
+          "workId": "work-34a099bf-87b2-482f-889d-bae804f65e36",
+          "bindingId": "binding-69e5e1da-6172-4eef-a47a-65030d06edc8",
+          "taskId": "work-execution-74c43d39-b61d-4a6c-847c-c8d046a0b0a2"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 20720,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 0,
+            "cached_tokens": 0
+          },
+          "completion_tokens": 92,
+          "completion_tokens_details": {},
+          "total_tokens": 20812
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 6,
+        "at": 1794447053472,
+        "diagnosticId": "692ffe61-7754-432d-96ad-d753dcaf6d5b",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -19,
+        "phase": "native-child",
+        "identity": {
+          "workId": "work-34a099bf-87b2-482f-889d-bae804f65e36",
+          "bindingId": "binding-69e5e1da-6172-4eef-a47a-65030d06edc8",
+          "taskId": "work-execution-74c43d39-b61d-4a6c-847c-c8d046a0b0a2"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 20856,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 0,
+            "cached_tokens": 0
+          },
+          "completion_tokens": 84,
+          "completion_tokens_details": {},
+          "total_tokens": 20940
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 7,
+        "at": 1794447057847,
+        "diagnosticId": "ed009ba1-d1f7-4b04-839b-ef90945293d1",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -22,
+        "phase": "native-child",
+        "identity": {
+          "workId": "work-34a099bf-87b2-482f-889d-bae804f65e36",
+          "bindingId": "binding-69e5e1da-6172-4eef-a47a-65030d06edc8",
+          "taskId": "work-execution-74c43d39-b61d-4a6c-847c-c8d046a0b0a2"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 20972,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 16384,
+            "cached_tokens": 16384
+          },
+          "completion_tokens": 140,
+          "completion_tokens_details": {
+            "reasoning_tokens": 17
+          },
+          "total_tokens": 21112
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 8,
+        "at": 1794447057893,
+        "diagnosticId": "bb651924-4f19-4a6b-957d-bdcf9f1c05ae",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -38,
+        "phase": "native-child",
+        "identity": {
+          "workId": "work-34a099bf-87b2-482f-889d-bae804f65e36",
+          "bindingId": "binding-69e5e1da-6172-4eef-a47a-65030d06edc8",
+          "taskId": "work-execution-74c43d39-b61d-4a6c-847c-c8d046a0b0a2"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 20835,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 17408,
+            "cached_tokens": 17408
+          },
+          "completion_tokens": 78,
+          "completion_tokens_details": {
+            "reasoning_tokens": 20
+          },
+          "total_tokens": 20913
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 9,
+        "at": 1794447061626,
+        "diagnosticId": "8c6366ec-519d-4196-acde-120821fd11c8",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -21,
+        "phase": "native-child",
+        "identity": {
+          "workId": "work-34a099bf-87b2-482f-889d-bae804f65e36",
+          "bindingId": "binding-69e5e1da-6172-4eef-a47a-65030d06edc8",
+          "taskId": "work-execution-74c43d39-b61d-4a6c-847c-c8d046a0b0a2"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 21340,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 20864,
+            "cached_tokens": 20864
+          },
+          "completion_tokens": 251,
+          "completion_tokens_details": {
+            "reasoning_tokens": 31
+          },
+          "total_tokens": 21591
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 10,
+        "at": 1794447062042,
+        "diagnosticId": "825d989b-4cdd-4c3d-a714-1e73e6deba23",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -19,
+        "phase": "native-child",
+        "identity": {
+          "workId": "work-34a099bf-87b2-482f-889d-bae804f65e36",
+          "bindingId": "binding-69e5e1da-6172-4eef-a47a-65030d06edc8",
+          "taskId": "work-execution-74c43d39-b61d-4a6c-847c-c8d046a0b0a2"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 20928,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 18432,
+            "cached_tokens": 18432
+          },
+          "completion_tokens": 129,
+          "completion_tokens_details": {},
+          "total_tokens": 21057
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 11,
+        "at": 1794447065739,
+        "diagnosticId": "b7dd9551-c26b-40c6-9daf-a8be2f7cab65",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -25,
+        "phase": "native-child",
+        "identity": {
+          "workId": "work-34a099bf-87b2-482f-889d-bae804f65e36",
+          "bindingId": "binding-69e5e1da-6172-4eef-a47a-65030d06edc8",
+          "taskId": "work-execution-74c43d39-b61d-4a6c-847c-c8d046a0b0a2"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 21158,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 17152,
+            "cached_tokens": 17152
+          },
+          "completion_tokens": 436,
+          "completion_tokens_details": {
+            "reasoning_tokens": 8
+          },
+          "total_tokens": 21594
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 12,
+        "at": 1794447072342,
+        "diagnosticId": "93866bf2-5bed-4229-ad9e-664620b29323",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -16,
+        "phase": "foreground",
+        "identity": {
+          "messageId": "bot-message-9f9aad3d-db01-48c5-9b53-1aa129e4fef3",
+          "requestId": "53bbf305-7500-46c6-a1b7-11f604a7e3c3",
+          "conversationId": "bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 17964,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 17920,
+            "cached_tokens": 17920
+          },
+          "completion_tokens": 26,
+          "completion_tokens_details": {
+            "reasoning_tokens": 23
+          },
+          "total_tokens": 17990
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 13,
+        "at": 1794447072557,
+        "diagnosticId": "b8602853-062e-46fc-9750-054e5e9b67b7",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -15,
+        "phase": "foreground",
+        "identity": {
+          "messageId": "bot-message-9f41e1ba-53c6-4fb0-b742-886a73d96421",
+          "requestId": "601ddb5f-d95d-4654-9ad0-91fe119423c5",
+          "conversationId": "bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 18200,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 17024,
+            "cached_tokens": 17024
+          },
+          "completion_tokens": 93,
+          "completion_tokens_details": {
+            "reasoning_tokens": 54
+          },
+          "total_tokens": 18293
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 14,
+        "at": 1794447072768,
+        "diagnosticId": "74a171fc-7edf-4e29-863f-1dd75b2cf964",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -22,
+        "phase": "foreground",
+        "identity": {
+          "messageId": "bot-message-7278eda0-f465-411f-8a80-a4ac14e7fc5c",
+          "requestId": "49b55e98-264e-4ac7-ba8d-cb6a868e2589",
+          "conversationId": "bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 18403,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 16384,
+            "cached_tokens": 16384
+          },
+          "completion_tokens": 476,
+          "completion_tokens_details": {
+            "reasoning_tokens": 87
+          },
+          "total_tokens": 18879
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 15,
+        "at": 1794447073178,
+        "diagnosticId": "a9b259f4-df13-4258-8ce0-27a94fe6da19",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -22,
+        "phase": "foreground",
+        "identity": {
+          "messageId": "bot-message-9c783d2f-47ae-4705-8e5e-ab495c81eb30",
+          "requestId": "9e5afefe-fea3-4156-b35b-9719fcf4e0d1",
+          "conversationId": "bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 18890,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 16384,
+            "cached_tokens": 16384
+          },
+          "completion_tokens": 148,
+          "completion_tokens_details": {
+            "reasoning_tokens": 109
+          },
+          "total_tokens": 19038
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 16,
+        "at": 1794447077275,
+        "diagnosticId": "7b7bb584-8e41-4103-aa2b-8888c12831b4",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -40,
+        "phase": "foreground",
+        "identity": {
+          "messageId": "bot-message-9f41e1ba-53c6-4fb0-b742-886a73d96421",
+          "requestId": "601ddb5f-d95d-4654-9ad0-91fe119423c5",
+          "conversationId": "bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 18894,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 18176,
+            "cached_tokens": 18176
+          },
+          "completion_tokens": 97,
+          "completion_tokens_details": {},
+          "total_tokens": 18991
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 17,
+        "at": 1794447077584,
+        "diagnosticId": "54fd34fe-589f-477b-954d-d4871bcb1185",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -18,
+        "phase": "foreground",
+        "identity": {
+          "messageId": "bot-message-9c783d2f-47ae-4705-8e5e-ab495c81eb30",
+          "requestId": "9e5afefe-fea3-4156-b35b-9719fcf4e0d1",
+          "conversationId": "bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 19095,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 18816,
+            "cached_tokens": 18816
+          },
+          "completion_tokens": 841,
+          "completion_tokens_details": {
+            "reasoning_tokens": 198
+          },
+          "total_tokens": 19936
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 18,
+        "at": 1794447078820,
+        "diagnosticId": "00ef44e3-b42a-4b6e-9127-23be0e47a520",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -20,
+        "phase": "foreground",
+        "identity": {
+          "messageId": "bot-message-7278eda0-f465-411f-8a80-a4ac14e7fc5c",
+          "requestId": "49b55e98-264e-4ac7-ba8d-cb6a868e2589",
+          "conversationId": "bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 19684,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 18304,
+            "cached_tokens": 18304
+          },
+          "completion_tokens": 57,
+          "completion_tokens_details": {},
+          "total_tokens": 19741
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 19,
+        "at": 1794447079014,
+        "diagnosticId": "ce4bacc0-2f4d-48f5-8871-932e6770cc9b",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -35,
+        "phase": "native-main",
+        "identity": {
+          "workId": "work-7395c538-3e96-43fe-ba23-f171e0f52f37",
+          "bindingId": "binding-c95f0c93-4aa7-4706-a3d7-9a58ed19807b",
+          "taskId": "work-execution-cdc6f87e-6a0b-4cd2-973e-7f7d25f9b780"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 23211,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 21888,
+            "cached_tokens": 21888
+          },
+          "completion_tokens": 63,
+          "completion_tokens_details": {},
+          "total_tokens": 23274
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 20,
+        "at": 1794447080357,
+        "diagnosticId": "71e09b27-3852-4232-94b4-34744171aaaa",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -19,
+        "phase": "foreground",
+        "identity": {
+          "messageId": "bot-message-78586682-366a-491e-a2f1-af8124926d1e",
+          "requestId": "fb88c583-0b62-43f3-82ba-bbb8bd70063b",
+          "conversationId": "bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 18371,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 16384,
+            "cached_tokens": 16384
+          },
+          "completion_tokens": 166,
+          "completion_tokens_details": {
+            "reasoning_tokens": 39
+          },
+          "total_tokens": 18537
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 21,
+        "at": 1794447082952,
+        "diagnosticId": "36faeba4-dc36-47eb-8014-6a8b78787167",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -16,
+        "phase": "foreground",
+        "identity": {
+          "messageId": "bot-message-2a1561b0-d769-4b1a-be9c-a7eeec935baf",
+          "requestId": "555ff7f2-15a8-4336-b8c9-2ab40faeb5e4",
+          "conversationId": "bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 18780,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 15616,
+            "cached_tokens": 15616
+          },
+          "completion_tokens": 2,
+          "completion_tokens_details": {},
+          "total_tokens": 18782
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 22,
+        "at": 1794447083193,
+        "diagnosticId": "6acc8dff-f9e8-41c6-a201-df896a178701",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -31,
+        "phase": "native-main",
+        "identity": {
+          "workId": "work-7395c538-3e96-43fe-ba23-f171e0f52f37",
+          "bindingId": "binding-c95f0c93-4aa7-4706-a3d7-9a58ed19807b",
+          "taskId": "work-execution-cdc6f87e-6a0b-4cd2-973e-7f7d25f9b780"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 23298,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 23168,
+            "cached_tokens": 23168
+          },
+          "completion_tokens": 58,
+          "completion_tokens_details": {},
+          "total_tokens": 23356
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 23,
+        "at": 1794447084577,
+        "diagnosticId": "a3c1729f-84ce-4ff1-92f2-97e4eabf593b",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -18,
+        "phase": "foreground",
+        "identity": {
+          "messageId": "bot-message-9c783d2f-47ae-4705-8e5e-ab495c81eb30",
+          "requestId": "9e5afefe-fea3-4156-b35b-9719fcf4e0d1",
+          "conversationId": "bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 21136,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 19072,
+            "cached_tokens": 19072
+          },
+          "completion_tokens": 326,
+          "completion_tokens_details": {
+            "reasoning_tokens": 135
+          },
+          "total_tokens": 21462
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 24,
+        "at": 1794447085096,
+        "diagnosticId": "4237e956-f4f0-44c7-97bb-d9fd15928ba7",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -15,
+        "phase": "foreground",
+        "identity": {
+          "messageId": "bot-message-78586682-366a-491e-a2f1-af8124926d1e",
+          "requestId": "fb88c583-0b62-43f3-82ba-bbb8bd70063b",
+          "conversationId": "bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 18765,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 18304,
+            "cached_tokens": 18304
+          },
+          "completion_tokens": 67,
+          "completion_tokens_details": {},
+          "total_tokens": 18832
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 25,
+        "at": 1794447088859,
+        "diagnosticId": "a20b1ad7-bd0f-48cb-beeb-848c7e200487",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -15,
+        "phase": "foreground",
+        "identity": {
+          "messageId": "bot-message-ee213677-549a-4769-ac68-1e572039b066",
+          "requestId": "96d24529-b71f-4536-8b0c-2f4c4757ff23",
+          "conversationId": "bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 18266,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 17920,
+            "cached_tokens": 17920
+          },
+          "completion_tokens": 2,
+          "completion_tokens_details": {},
+          "total_tokens": 18268
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 26,
+        "at": 1794447093493,
+        "diagnosticId": "d006245e-ef89-40f2-85cb-098941d47ff9",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -38,
+        "phase": "foreground",
+        "identity": {
+          "messageId": "bot-message-7615c148-86bf-4ece-99ee-eb62769a8724",
+          "requestId": "784149f1-6811-4e9b-a9c8-7e67d2780770",
+          "conversationId": "bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 18321,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 15872,
+            "cached_tokens": 15872
+          },
+          "completion_tokens": 8,
+          "completion_tokens_details": {},
+          "total_tokens": 18329
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 27,
+        "at": 1794447093627,
+        "diagnosticId": "ddcb0866-b3c8-4b67-99f9-368616345e56",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -25,
+        "phase": "native-main",
+        "identity": {
+          "workId": "work-7395c538-3e96-43fe-ba23-f171e0f52f37",
+          "bindingId": "binding-c95f0c93-4aa7-4706-a3d7-9a58ed19807b",
+          "taskId": "work-execution-cdc6f87e-6a0b-4cd2-973e-7f7d25f9b780"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 23395,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 23296,
+            "cached_tokens": 23296
+          },
+          "completion_tokens": 210,
+          "completion_tokens_details": {
+            "reasoning_tokens": 62
+          },
+          "total_tokens": 23605
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 28,
+        "at": 1794447098129,
+        "diagnosticId": "71946ff7-e22f-41fd-b507-20ecb6f9b399",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -18,
+        "phase": "foreground",
+        "identity": {
+          "messageId": "bot-message-111f3486-86fb-420b-8ad8-8f0e6765febc",
+          "requestId": "7b307788-a20c-43c3-a208-4fa8f56b3e8e",
+          "conversationId": "bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 21456,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 19584,
+            "cached_tokens": 19584
+          },
+          "completion_tokens": 8,
+          "completion_tokens_details": {},
+          "total_tokens": 21464
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 29,
+        "at": 1794447098838,
+        "diagnosticId": "7cc6fb79-f390-4814-9658-609255a9cba2",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -42,
+        "phase": "native-main",
+        "identity": {
+          "workId": "work-7395c538-3e96-43fe-ba23-f171e0f52f37",
+          "bindingId": "binding-c95f0c93-4aa7-4706-a3d7-9a58ed19807b",
+          "taskId": "work-execution-cdc6f87e-6a0b-4cd2-973e-7f7d25f9b780"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 23695,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 23296,
+            "cached_tokens": 23296
+          },
+          "completion_tokens": 120,
+          "completion_tokens_details": {},
+          "total_tokens": 23815
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 30,
+        "at": 1794447102907,
+        "diagnosticId": "25d33624-5f6e-4c4b-8d75-7ce1a93d5c0a",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -18,
+        "phase": "foreground",
+        "identity": {
+          "messageId": "bot-message-453aa1dc-d62c-450b-a8ef-3bbceb299c94",
+          "requestId": "457b763b-8c93-488f-8f2b-80c7df1be59e",
+          "conversationId": "bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 21525,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 13184,
+            "cached_tokens": 13184
+          },
+          "completion_tokens": 8,
+          "completion_tokens_details": {},
+          "total_tokens": 21533
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 31,
+        "at": 1794447103189,
+        "diagnosticId": "d7d3a865-bdb6-4647-ba18-bce0cf889d2d",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -23,
+        "phase": "native-main",
+        "identity": {
+          "workId": "work-7395c538-3e96-43fe-ba23-f171e0f52f37",
+          "bindingId": "binding-c95f0c93-4aa7-4706-a3d7-9a58ed19807b",
+          "taskId": "work-execution-cdc6f87e-6a0b-4cd2-973e-7f7d25f9b780"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 23875,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 23680,
+            "cached_tokens": 23680
+          },
+          "completion_tokens": 223,
+          "completion_tokens_details": {
+            "reasoning_tokens": 87
+          },
+          "total_tokens": 24098
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 32,
+        "at": 1794447107443,
+        "diagnosticId": "1ebaf050-edf3-4003-b941-05b4134b4548",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -57,
+        "phase": "native-main",
+        "identity": {
+          "workId": "work-7395c538-3e96-43fe-ba23-f171e0f52f37",
+          "bindingId": "binding-c95f0c93-4aa7-4706-a3d7-9a58ed19807b",
+          "taskId": "work-execution-cdc6f87e-6a0b-4cd2-973e-7f7d25f9b780"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 24431,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 9984,
+            "cached_tokens": 9984
+          },
+          "completion_tokens": 234,
+          "completion_tokens_details": {},
+          "total_tokens": 24665
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 33,
+        "at": 1794447109411,
+        "diagnosticId": "18daa378-7e86-4c10-b8a5-1f640bd534a2",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -17,
+        "phase": "foreground",
+        "identity": {
+          "messageId": "bot-message-b73e8664-550e-41db-8228-3e288b16b7b8",
+          "requestId": "e968a6e6-cbc1-43e4-bbd9-3584dc99ed50",
+          "conversationId": "bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 21594,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 21376,
+            "cached_tokens": 21376
+          },
+          "completion_tokens": 8,
+          "completion_tokens_details": {},
+          "total_tokens": 21602
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 34,
+        "at": 1794447111155,
+        "diagnosticId": "0cc9c263-a2ed-4469-b8cd-a67a346edecb",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -22,
+        "phase": "native-main",
+        "identity": {
+          "workId": "work-7395c538-3e96-43fe-ba23-f171e0f52f37",
+          "bindingId": "binding-c95f0c93-4aa7-4706-a3d7-9a58ed19807b",
+          "taskId": "work-execution-cdc6f87e-6a0b-4cd2-973e-7f7d25f9b780"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 24704,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 23808,
+            "cached_tokens": 23808
+          },
+          "completion_tokens": 116,
+          "completion_tokens_details": {},
+          "total_tokens": 24820
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 35,
+        "at": 1794447113969,
+        "diagnosticId": "0bc1cca4-a27a-4abb-a632-aff1b0b68f9f",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -17,
+        "phase": "foreground",
+        "identity": {
+          "messageId": "bot-message-0c01b73b-a582-46c2-8a6c-48af6468edcd",
+          "requestId": "efde7971-c327-4ce3-aa39-c01ce19ab110",
+          "conversationId": "bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 21664,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 13312,
+            "cached_tokens": 13312
+          },
+          "completion_tokens": 8,
+          "completion_tokens_details": {},
+          "total_tokens": 21672
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 36,
+        "at": 1794447115393,
+        "diagnosticId": "5bbee2d1-6879-442a-803a-833b18a1a27e",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -21,
+        "phase": "native-main",
+        "identity": {
+          "workId": "work-7395c538-3e96-43fe-ba23-f171e0f52f37",
+          "bindingId": "binding-c95f0c93-4aa7-4706-a3d7-9a58ed19807b",
+          "taskId": "work-execution-cdc6f87e-6a0b-4cd2-973e-7f7d25f9b780"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 25126,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 24704,
+            "cached_tokens": 24704
+          },
+          "completion_tokens": 165,
+          "completion_tokens_details": {
+            "reasoning_tokens": 92
+          },
+          "total_tokens": 25291
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 37,
+        "at": 1794447118254,
+        "diagnosticId": "ec9cd78a-123e-46a9-af0d-481526ae6137",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -19,
+        "phase": "foreground",
+        "identity": {
+          "messageId": "bot-message-71231658-de82-426b-b1ed-062dcde48783",
+          "requestId": "5fafa3f9-f1af-4530-934b-018e55ab6c52",
+          "conversationId": "bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 21733,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 12672,
+            "cached_tokens": 12672
+          },
+          "completion_tokens": 8,
+          "completion_tokens_details": {},
+          "total_tokens": 21741
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 38,
+        "at": 1794447119503,
+        "diagnosticId": "2ba370ce-4700-4d84-8728-a98f51673e70",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -27,
+        "phase": "native-main",
+        "identity": {
+          "workId": "work-7395c538-3e96-43fe-ba23-f171e0f52f37",
+          "bindingId": "binding-c95f0c93-4aa7-4706-a3d7-9a58ed19807b",
+          "taskId": "work-execution-cdc6f87e-6a0b-4cd2-973e-7f7d25f9b780"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 25309,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 14464,
+            "cached_tokens": 14464
+          },
+          "completion_tokens": 60,
+          "completion_tokens_details": {},
+          "total_tokens": 25369
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 39,
+        "at": 1794447122324,
+        "diagnosticId": "29537a12-7bde-46c6-a4cd-d5012ffdd2e1",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -151,
+        "phase": "native-child",
+        "identity": {
+          "workId": "work-34a099bf-87b2-482f-889d-bae804f65e36",
+          "bindingId": "binding-69e5e1da-6172-4eef-a47a-65030d06edc8",
+          "taskId": "work-execution-74c43d39-b61d-4a6c-847c-c8d046a0b0a2"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 21673,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 21248,
+            "cached_tokens": 21248
+          },
+          "completion_tokens": 183,
+          "completion_tokens_details": {
+            "reasoning_tokens": 21
+          },
+          "total_tokens": 21856
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 40,
+        "at": 1794447126375,
+        "diagnosticId": "29f51e62-d29a-4220-a4fa-8e4f5a491cdb",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -60,
+        "phase": "native-main",
+        "identity": {
+          "workId": "work-7395c538-3e96-43fe-ba23-f171e0f52f37",
+          "bindingId": "binding-c95f0c93-4aa7-4706-a3d7-9a58ed19807b",
+          "taskId": "work-execution-cdc6f87e-6a0b-4cd2-973e-7f7d25f9b780"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 25451,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 25088,
+            "cached_tokens": 25088
+          },
+          "completion_tokens": 363,
+          "completion_tokens_details": {},
+          "total_tokens": 25814
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 41,
+        "at": 1794447126564,
+        "diagnosticId": "1edfbea9-2bfb-4582-8eb5-008607545c7f",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -19,
+        "phase": "native-child",
+        "identity": {
+          "workId": "work-34a099bf-87b2-482f-889d-bae804f65e36",
+          "bindingId": "binding-69e5e1da-6172-4eef-a47a-65030d06edc8",
+          "taskId": "work-execution-74c43d39-b61d-4a6c-847c-c8d046a0b0a2"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 22009,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 16384,
+            "cached_tokens": 16384
+          },
+          "completion_tokens": 1010,
+          "completion_tokens_details": {
+            "reasoning_tokens": 51
+          },
+          "total_tokens": 23019
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 42,
+        "at": 1794447132930,
+        "diagnosticId": "6ed45e8b-27a8-4032-a849-0956393d1ed7",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -12,
+        "phase": "completion-review",
+        "identity": {
+          "workId": "work-7395c538-3e96-43fe-ba23-f171e0f52f37",
+          "reviewTarget": {
+            "kind": "single_work_delegation",
+            "provenance": "host_persisted_execution_input_not_new_user_authorization",
+            "workId": "work-7395c538-3e96-43fe-ba23-f171e0f52f37",
+            "bindingId": "binding-c95f0c93-4aa7-4706-a3d7-9a58ed19807b",
+            "intentRevision": 1,
+            "inputSnapshotId": "input:bot-message-cd0676ca-35ed-429d-bc3d-801222299092",
+            "ownerEpoch": 1,
+            "definition": {
+              "criteria": []
+            },
+            "delegationPlan": {
+              "provenance": "assistant_generated",
+              "title": "本批CSV分析",
+              "description": "真实读取工作区中的 sales.csv（不凭猜测、不编造数据），完成本批销售数据分析：计算各产品销售收入、总销售额、收入最高的产品，将结果写入工作区的 analysis.txt，并在写入后回读该文件确认内容正确，登记为可交付文件。所有数值必须来自实际读取的 CSV 数据。",
+              "constraints": [
+                "必须先真实读取工作区的 sales.csv 文件，不得凭空填写或推测计算结果",
+                "输出中保留 CSV 中原始的产品名称，不改写、不翻译、不归类合并",
+                "结果写入工作区的 analysis.txt，写完后必须回读校验并登记交付",
+                "不得修改、覆盖或删除源文件 sales.csv",
+                "如文件不存在、字段缺失或数据无法解析，如实报告真实错误，不编造结果"
+              ],
+              "criteria": [
+                {
+                  "id": "criterion-1794447078588-0",
+                  "text": "analysis.txt 已生成在工作区，内容包含各产品销售收入、总销售额、收入最高产品三项结果",
+                  "origin": "assistant_proposal",
+                  "status": "pending",
+                  "requiredIntentRevision": 1,
+                  "requiresRealEnvironmentCheck": false,
+                  "evidenceRefs": []
+                },
+                {
+                  "id": "criterion-1794447078588-1",
+                  "text": "analysis.txt 已回读确认，登记为可交付文件，产品名称与 sales.csv 原文一致",
+                  "origin": "assistant_proposal",
+                  "status": "pending",
+                  "requiredIntentRevision": 1,
+                  "requiresRealEnvironmentCheck": false,
+                  "evidenceRefs": []
+                },
+                {
+                  "id": "criterion-1794447078588-2",
+                  "text": "sales.csv 未被修改（文件内容与读取前一致）",
+                  "origin": "assistant_proposal",
+                  "status": "pending",
+                  "requiredIntentRevision": 1,
+                  "requiresRealEnvironmentCheck": true,
+                  "evidenceRefs": []
+                }
+              ]
+            },
+            "delegatedScope": []
+          }
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 5329,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 2048,
+            "cached_tokens": 2048
+          },
+          "completion_tokens": 1149,
+          "completion_tokens_details": {
+            "reasoning_tokens": 1035
+          },
+          "total_tokens": 6478
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 43,
+        "at": 1794447136198,
+        "diagnosticId": "d2f27f8e-eb2e-474f-990f-3a1b7bfa1900",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -34,
+        "phase": "native-main",
+        "identity": {
+          "workId": "work-34a099bf-87b2-482f-889d-bae804f65e36",
+          "bindingId": "binding-69e5e1da-6172-4eef-a47a-65030d06edc8",
+          "taskId": "work-execution-74c43d39-b61d-4a6c-847c-c8d046a0b0a2"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 28180,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 24320,
+            "cached_tokens": 24320
+          },
+          "completion_tokens": 207,
+          "completion_tokens_details": {
+            "reasoning_tokens": 50
+          },
+          "total_tokens": 28387
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 44,
+        "at": 1794447141102,
+        "diagnosticId": "3c47fd81-2cd7-4406-aac6-664eb285c51a",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -65,
+        "phase": "native-main",
+        "identity": {
+          "workId": "work-34a099bf-87b2-482f-889d-bae804f65e36",
+          "bindingId": "binding-69e5e1da-6172-4eef-a47a-65030d06edc8",
+          "taskId": "work-execution-74c43d39-b61d-4a6c-847c-c8d046a0b0a2"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 28687,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 28160,
+            "cached_tokens": 28160
+          },
+          "completion_tokens": 169,
+          "completion_tokens_details": {
+            "reasoning_tokens": 63
+          },
+          "total_tokens": 28856
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 45,
+        "at": 1794447146067,
+        "diagnosticId": "7ae29dfa-b7ae-4f47-b9cd-8af3bec1c6f9",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -28,
+        "phase": "native-main",
+        "identity": {
+          "workId": "work-34a099bf-87b2-482f-889d-bae804f65e36",
+          "bindingId": "binding-69e5e1da-6172-4eef-a47a-65030d06edc8",
+          "taskId": "work-execution-74c43d39-b61d-4a6c-847c-c8d046a0b0a2"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 28884,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 28672,
+            "cached_tokens": 28672
+          },
+          "completion_tokens": 1351,
+          "completion_tokens_details": {
+            "reasoning_tokens": 272
+          },
+          "total_tokens": 30235
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 46,
+        "at": 1794447156233,
+        "diagnosticId": "2fbbc9bb-2921-42b8-beb6-915b8587e1fa",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -56,
+        "phase": "native-main",
+        "identity": {
+          "workId": "work-34a099bf-87b2-482f-889d-bae804f65e36",
+          "bindingId": "binding-69e5e1da-6172-4eef-a47a-65030d06edc8",
+          "taskId": "work-execution-74c43d39-b61d-4a6c-847c-c8d046a0b0a2"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 30281,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 28800,
+            "cached_tokens": 28800
+          },
+          "completion_tokens": 93,
+          "completion_tokens_details": {},
+          "total_tokens": 30374
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 47,
+        "at": 1794447162133,
+        "diagnosticId": "336ae161-ef31-4853-86f8-f7b45ad10445",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -36,
+        "phase": "native-main",
+        "identity": {
+          "workId": "work-34a099bf-87b2-482f-889d-bae804f65e36",
+          "bindingId": "binding-69e5e1da-6172-4eef-a47a-65030d06edc8",
+          "taskId": "work-execution-74c43d39-b61d-4a6c-847c-c8d046a0b0a2"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 30484,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 30208,
+            "cached_tokens": 30208
+          },
+          "completion_tokens": 51,
+          "completion_tokens_details": {},
+          "total_tokens": 30535
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 48,
+        "at": 1794447166465,
+        "diagnosticId": "5d155621-29a3-4f61-bc37-9581e62983d3",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -33,
+        "phase": "native-main",
+        "identity": {
+          "workId": "work-34a099bf-87b2-482f-889d-bae804f65e36",
+          "bindingId": "binding-69e5e1da-6172-4eef-a47a-65030d06edc8",
+          "taskId": "work-execution-74c43d39-b61d-4a6c-847c-c8d046a0b0a2"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 30616,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 8192,
+            "cached_tokens": 8192
+          },
+          "completion_tokens": 686,
+          "completion_tokens_details": {
+            "reasoning_tokens": 27
+          },
+          "total_tokens": 31302
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 49,
+        "at": 1794447177176,
+        "diagnosticId": "e89d4b4e-098a-4ce0-84a1-e4d1faf7c86c",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -27,
+        "phase": "completion-review",
+        "identity": {
+          "workId": "work-34a099bf-87b2-482f-889d-bae804f65e36",
+          "reviewTarget": {
+            "kind": "single_work_delegation",
+            "provenance": "host_persisted_execution_input_not_new_user_authorization",
+            "workId": "work-34a099bf-87b2-482f-889d-bae804f65e36",
+            "bindingId": "binding-69e5e1da-6172-4eef-a47a-65030d06edc8",
+            "intentRevision": 1,
+            "inputSnapshotId": "input:bot-message-45ce8ba8-9a91-4c6c-b751-d8311c1fd4ab",
+            "ownerEpoch": 1,
+            "definition": {
+              "criteria": []
+            },
+            "delegationPlan": {
+              "provenance": "assistant_generated",
+              "title": "本批A快B等待",
+              "description": "在 /home/vivion/iq27-tmp/i27-tXWrfg/inputs 工作目录下，用已有的用户目录 reader 角色（agentScope=user），发起**一次** subagent tasks 调用，在该调用内并行派发 A、B 两个子任务（isolation=shared，两子任务 cwd 均为 /home/vivion/iq27-tmp/i27-tXWrfg/inputs）。\n\n子任务 A（快速路径）：尽快用真实 write 工具把 /home/vivion/iq27-tmp/i27-tXWrfg/inputs/a-ready.txt 写为内容 A-READY（不包含换行符），然后用 read 工具回读该文件确认内容并登记结果。A 完成后应尽快交付，成为本批先可用的成果。\n\n子任务 B（等待路径）：先用真实 write 工具把 /home/vivion/iq27-tmp/i27-tXWrfg/inputs/b-final.txt 写为内容 B-ORIGINAL（不包含换行），用 read 回读确认并登记；随后用真实 bash 等待 /home/vivion/iq27-tmp/i27-tXWrfg/inputs/release.txt 出现（轮询该文件存在性），最长等待 300 秒。release.txt 由验收脚本控制产生，属于模拟外部依赖，不得由执行方自己创建。release.txt 出现后，用 read 工具回读登记 b-final.txt 作为最终 B 结果并报告等待耗时与是否超时。\n\n最终交付中需分别说明：A 的写入与回读结果（含 a-ready.txt 确切内容）、B 的初始写入回读结果、等待是否观测到 release.txt 出现、B 最终回读结果。",
+              "constraints": [
+                "使用已有的用户目录 reader 角色，agentScope=user，不新建 Bot 或角色",
+                "必须是一次 subagent tasks 调用内并行派发 A、B 两个子任务，不得拆成两个串行任务或替代为串行执行",
+                "isolation=shared；两个子任务的 cwd 都是 /home/vivion/iq27-tmp/i27-tXWrfg/inputs",
+                "a-ready.txt 内容必须恰好为 A-READY，末尾不带换行",
+                "b-final.txt 初始内容必须恰好为 B-ORIGINAL，末尾不带换行",
+                "A 完成后不得重写 a-ready.txt；A 的结果不得被后续步骤覆盖",
+                "B 的等待必须用真实 bash 观测 /home/vivion/iq27-tmp/i27-tXWrfg/inputs/release.txt 是否出现，最长 300 秒，不是固定 sleep",
+                "不得自行创建 release.txt 或任何 gate/放行文件，release.txt 只能来自验收脚本",
+                "不联网",
+                "写文件和回读都必须使用真实的 write/read/bash 工具，并登记实际回读内容，不臆测结果"
+              ],
+              "criteria": [
+                {
+                  "id": "criterion-1794447023338-0",
+                  "text": "A 子任务用真实 write 写出 /home/vivion/iq27-tmp/i27-tXWrfg/inputs/a-ready.txt，内容确切为 A-READY 且无末尾换行，并通过 read 回读登记了实际内容",
+                  "origin": "assistant_proposal",
+                  "status": "pending",
+                  "requiredIntentRevision": 1,
+                  "requiresRealEnvironmentCheck": true,
+                  "evidenceRefs": []
+                },
+                {
+                  "id": "criterion-1794447023338-1",
+                  "text": "A 的可用成果在 B 完成等待之前先交付（体现 A 快、B 等待的并行结构），且 A 完成后未被重写",
+                  "origin": "assistant_proposal",
+                  "status": "pending",
+                  "requiredIntentRevision": 1,
+                  "requiresRealEnvironmentCheck": false,
+                  "evidenceRefs": []
+                },
+                {
+                  "id": "criterion-1794447023338-2",
+                  "text": "B 子任务用真实 write 写出 b-final.txt 初始内容 B-ORIGINAL 无末尾换行，并 read 回读登记",
+                  "origin": "assistant_proposal",
+                  "status": "pending",
+                  "requiredIntentRevision": 1,
+                  "requiresRealEnvironmentCheck": true,
+                  "evidenceRefs": []
+                },
+                {
+                  "id": "criterion-1794447023338-3",
+                  "text": "B 用真实 bash 观测 release.txt 出现，等待上限 300 秒，报告中说明是否等到、等待耗时；未自建 release.txt 或任何 gate 文件",
+                  "origin": "assistant_proposal",
+                  "status": "pending",
+                  "requiredIntentRevision": 1,
+                  "requiresRealEnvironmentCheck": false,
+                  "evidenceRefs": []
+                },
+                {
+                  "id": "criterion-1794447023338-4",
+                  "text": "release.txt 出现后 B 完成 read 回读并登记最终 b-final.txt 内容",
+                  "origin": "assistant_proposal",
+                  "status": "pending",
+                  "requiredIntentRevision": 1,
+                  "requiresRealEnvironmentCheck": true,
+                  "evidenceRefs": []
+                },
+                {
+                  "id": "criterion-1794447023338-5",
+                  "text": "全程未联网，A、B 在同一 subagent tasks 调用内并行执行，isolation=shared，cwd 均为 /home/vivion/iq27-tmp/i27-tXWrfg/inputs",
+                  "origin": "assistant_proposal",
+                  "status": "pending",
+                  "requiredIntentRevision": 1,
+                  "requiresRealEnvironmentCheck": false,
+                  "evidenceRefs": []
+                }
+              ]
+            },
+            "delegatedScope": []
+          }
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 11562,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 2048,
+            "cached_tokens": 2048
+          },
+          "completion_tokens": 2497,
+          "completion_tokens_details": {
+            "reasoning_tokens": 2326
+          },
+          "total_tokens": 14059
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 50,
+        "at": 1794447200464,
+        "diagnosticId": "4805a899-fdce-4e55-84e8-c602d227383c",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -23,
+        "phase": "native-main",
+        "identity": {
+          "workId": "work-b0124f56-0524-4c42-8859-468f22a49902",
+          "bindingId": "binding-4154b4c5-8a0c-4094-b932-76e5ea3441eb",
+          "taskId": "work-execution-c982171b-c3e9-4b24-911a-9909c17be4f3"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 24125,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 20480,
+            "cached_tokens": 20480
+          },
+          "completion_tokens": 134,
+          "completion_tokens_details": {},
+          "total_tokens": 24259
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 51,
+        "at": 1794447204428,
+        "diagnosticId": "e10d9dbb-8f0b-42d5-aad4-eaa46c3e7b15",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -21,
+        "phase": "native-main",
+        "identity": {
+          "workId": "work-b0124f56-0524-4c42-8859-468f22a49902",
+          "bindingId": "binding-4154b4c5-8a0c-4094-b932-76e5ea3441eb",
+          "taskId": "work-execution-c982171b-c3e9-4b24-911a-9909c17be4f3"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 24740,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 14976,
+            "cached_tokens": 14976
+          },
+          "completion_tokens": 163,
+          "completion_tokens_details": {
+            "reasoning_tokens": 9
+          },
+          "total_tokens": 24903
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 52,
+        "at": 1794447208670,
+        "diagnosticId": "11383219-2c68-470a-91d7-341895d9a254",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -25,
+        "phase": "native-main",
+        "identity": {
+          "workId": "work-b0124f56-0524-4c42-8859-468f22a49902",
+          "bindingId": "binding-4154b4c5-8a0c-4094-b932-76e5ea3441eb",
+          "taskId": "work-execution-c982171b-c3e9-4b24-911a-9909c17be4f3"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 25337,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 14336,
+            "cached_tokens": 14336
+          },
+          "completion_tokens": 338,
+          "completion_tokens_details": {
+            "reasoning_tokens": 235
+          },
+          "total_tokens": 25675
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 53,
+        "at": 1794447214721,
+        "diagnosticId": "e0846b2e-5c95-4221-b1b4-1fbfd9536608",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -70,
+        "phase": "native-main",
+        "identity": {
+          "workId": "work-b0124f56-0524-4c42-8859-468f22a49902",
+          "bindingId": "binding-4154b4c5-8a0c-4094-b932-76e5ea3441eb",
+          "taskId": "work-execution-c982171b-c3e9-4b24-911a-9909c17be4f3"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 25831,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 24064,
+            "cached_tokens": 24064
+          },
+          "completion_tokens": 121,
+          "completion_tokens_details": {
+            "reasoning_tokens": 52
+          },
+          "total_tokens": 25952
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 54,
+        "at": 1794447219134,
+        "diagnosticId": "5be73bcd-6454-4923-a7cd-953c0ac60fb6",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -37,
+        "phase": "native-main",
+        "identity": {
+          "workId": "work-b0124f56-0524-4c42-8859-468f22a49902",
+          "bindingId": "binding-4154b4c5-8a0c-4094-b932-76e5ea3441eb",
+          "taskId": "work-execution-c982171b-c3e9-4b24-911a-9909c17be4f3"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 26005,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 25728,
+            "cached_tokens": 25728
+          },
+          "completion_tokens": 118,
+          "completion_tokens_details": {},
+          "total_tokens": 26123
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 55,
+        "at": 1794447223727,
+        "diagnosticId": "3cc98654-66c9-4a0c-8468-c602ef92ac62",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -30,
+        "phase": "native-main",
+        "identity": {
+          "workId": "work-b0124f56-0524-4c42-8859-468f22a49902",
+          "bindingId": "binding-4154b4c5-8a0c-4094-b932-76e5ea3441eb",
+          "taskId": "work-execution-c982171b-c3e9-4b24-911a-9909c17be4f3"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 26426,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 25984,
+            "cached_tokens": 25984
+          },
+          "completion_tokens": 301,
+          "completion_tokens_details": {
+            "reasoning_tokens": 240
+          },
+          "total_tokens": 26727
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 56,
+        "at": 1794447230521,
+        "diagnosticId": "98fdb24a-00e1-4af3-a5fd-e9f1717f8e9b",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -37,
+        "phase": "native-main",
+        "identity": {
+          "workId": "work-b0124f56-0524-4c42-8859-468f22a49902",
+          "bindingId": "binding-4154b4c5-8a0c-4094-b932-76e5ea3441eb",
+          "taskId": "work-execution-c982171b-c3e9-4b24-911a-9909c17be4f3"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 26812,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 26368,
+            "cached_tokens": 26368
+          },
+          "completion_tokens": 663,
+          "completion_tokens_details": {
+            "reasoning_tokens": 14
+          },
+          "total_tokens": 27475
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 57,
+        "at": 1794447236338,
+        "diagnosticId": "9ca9670e-b60a-4585-a8ff-4dee48442285",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -34,
+        "phase": "native-main",
+        "identity": {
+          "workId": "work-b0124f56-0524-4c42-8859-468f22a49902",
+          "bindingId": "binding-4154b4c5-8a0c-4094-b932-76e5ea3441eb",
+          "taskId": "work-execution-c982171b-c3e9-4b24-911a-9909c17be4f3"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 27520,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 12288,
+            "cached_tokens": 12288
+          },
+          "completion_tokens": 66,
+          "completion_tokens_details": {},
+          "total_tokens": 27586
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 58,
+        "at": 1794447241057,
+        "diagnosticId": "8ef72c5b-4006-4a0d-86ad-c7162c410f55",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -30,
+        "phase": "native-main",
+        "identity": {
+          "workId": "work-b0124f56-0524-4c42-8859-468f22a49902",
+          "bindingId": "binding-4154b4c5-8a0c-4094-b932-76e5ea3441eb",
+          "taskId": "work-execution-c982171b-c3e9-4b24-911a-9909c17be4f3"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 27617,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 26752,
+            "cached_tokens": 26752
+          },
+          "completion_tokens": 403,
+          "completion_tokens_details": {
+            "reasoning_tokens": 301
+          },
+          "total_tokens": 28020
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 59,
+        "at": 1794447246758,
+        "diagnosticId": "24b7760d-456a-43a2-b061-7e9232c56429",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -46,
+        "phase": "native-main",
+        "identity": {
+          "workId": "work-b0124f56-0524-4c42-8859-468f22a49902",
+          "bindingId": "binding-4154b4c5-8a0c-4094-b932-76e5ea3441eb",
+          "taskId": "work-execution-c982171b-c3e9-4b24-911a-9909c17be4f3"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 28384,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 27520,
+            "cached_tokens": 27520
+          },
+          "completion_tokens": 47,
+          "completion_tokens_details": {},
+          "total_tokens": 28431
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 60,
+        "at": 1794447251256,
+        "diagnosticId": "39e120f6-127f-4d1e-89d3-080fe0973aa0",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -24,
+        "phase": "native-main",
+        "identity": {
+          "workId": "work-b0124f56-0524-4c42-8859-468f22a49902",
+          "bindingId": "binding-4154b4c5-8a0c-4094-b932-76e5ea3441eb",
+          "taskId": "work-execution-c982171b-c3e9-4b24-911a-9909c17be4f3"
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 28527,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 28288,
+            "cached_tokens": 28288
+          },
+          "completion_tokens": 608,
+          "completion_tokens_details": {
+            "reasoning_tokens": 108
+          },
+          "total_tokens": 29135
+        },
+        "httpStatus": 200
+      },
+      {
+        "transportIndex": 61,
+        "at": 1794447259415,
+        "diagnosticId": "0e50c53b-44da-40e3-bdba-32a85f5f6f50",
+        "diagnosticStatus": "completed",
+        "startDifferenceMs": -43,
+        "phase": "watch-review",
+        "identity": {
+          "workId": "work-b0124f56-0524-4c42-8859-468f22a49902",
+          "reviewTarget": null
+        },
+        "correlationMethod": "Unique start difference <=1000 ms plus exact provider prompt/completion usage, one-to-one",
+        "usage": {
+          "prompt_tokens": 9275,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 0,
+            "cached_tokens": 0
+          },
+          "completion_tokens": 6316,
+          "completion_tokens_details": {
+            "reasoning_tokens": 5749
+          },
+          "total_tokens": 15591
+        },
+        "httpStatus": 200
+      }
+    ],
+    "actualModels": [
+      "opendesign/deepseek-v4.1-flash"
+    ],
+    "usageTotals": {
+      "prompt_tokens": 1394122,
+      "completion_tokens": 25249,
+      "total_tokens": 1419371,
+      "cached_prompt_tokens": 1108224,
+      "reasoning_tokens": 12334
+    },
+    "firstHttpAt": 1794447010719,
+    "lastHttpEndAt": 1794447304203,
+    "independentSummaryAndObservationStages": null,
+    "monetaryCost": null
+  },
+  "toolAccounting": {
+    "uniqueDiagnosticCallIds": 45,
+    "uniqueTransportObservedCallIds": 45,
+    "statusCounts": {
+      "completed": 42,
+      "failed": 3
+    },
+    "failedTools": [
+      {
+        "diagnostic": {
+          "id": "work-execution-74c43d39-b61d-4a6c-847c-c8d046a0b0a2:1:107",
+          "taskId": "work-execution-74c43d39-b61d-4a6c-847c-c8d046a0b0a2",
+          "conversationId": "1",
+          "executionId": "durable:work-execution-74c43d39-b61d-4a6c-847c-c8d046a0b0a2:1:105",
+          "sourceKind": "main",
+          "name": "register_artifact",
+          "callId": "call_00_c2jprs4s3bncc3lgl4zw9j07",
+          "startedAt": 1794447166292,
+          "finishedAt": 1794447166306,
+          "status": "failed",
+          "complete": true,
+          "intervals": [
+            {
+              "start": 1794447166292,
+              "end": 1794447166306
+            }
+          ],
+          "segmentStartedAt": null,
+          "diagnostics": [
+            "tool_error: 文件尚不存在：output/本批A快B等待-执行回执.md。请先用 write/编辑或 shell 命令把文件创建出来再登记；write/edit 成功后会自动登记，只有 shell/Python 等生成的文件才需要手动调用 register_artifact。"
+          ],
+          "generationTaskId": 105,
+          "diagnosticTable": "task_tool_diagnostics"
+        },
+        "call": {
+          "id": "call_00_c2jprs4s3bncc3lgl4zw9j07",
+          "type": "function",
+          "function": {
+            "name": "register_artifact",
+            "arguments": "{\"path\":\"output/本批A快B等待-执行回执.md\"}"
+          }
+        },
+        "observedResult": "<harness>\n[error] 文件尚不存在：output/本批A快B等待-执行回执.md。请先用 write/编辑或 shell 命令把文件创建出来再登记；write/edit 成功后会自动登记，只有 shell/Python 等生成的文件才需要手动调用 register_artifact。\n</harness>"
+      },
+      {
+        "diagnostic": {
+          "id": "work-execution-c982171b-c3e9-4b24-911a-9909c17be4f3:1:29",
+          "taskId": "work-execution-c982171b-c3e9-4b24-911a-9909c17be4f3",
+          "conversationId": "1",
+          "executionId": "durable:work-execution-c982171b-c3e9-4b24-911a-9909c17be4f3:1:27",
+          "sourceKind": "main",
+          "name": "bash",
+          "callId": "call_00_frsjnkootzer3c30spi5qlkf",
+          "startedAt": 1794447214520,
+          "finishedAt": 1794447214556,
+          "status": "failed",
+          "complete": true,
+          "intervals": [
+            {
+              "start": 1794447214520,
+              "end": 1794447214556
+            }
+          ],
+          "segmentStartedAt": null,
+          "diagnostics": [
+            "exit_code"
+          ],
+          "generationTaskId": 27,
+          "diagnosticTable": "task_tool_diagnostics"
+        },
+        "call": {
+          "id": "call_00_frsjnkootzer3c30spi5qlkf",
+          "type": "function",
+          "function": {
+            "name": "bash",
+            "arguments": "{\"command\":\"cd /home/vivion/iq27-tmp/i27-tXWrfg/inputs && sha256sum source-state.json process-event.cjs && echo \\\"--- prior results? ---\\\" && ls -la event-result.json event-runs.jsonl 2>&1 && echo \\\"--- node ---\\\" && node -v\"}"
+          }
+        },
+        "observedResult": "bd9b65c6e7e22904c8d5e0afa96e36afaed01c3f9fa742f8679f07a50cbd0684  source-state.json\n049a5241985a56c2d80fbaf7636bd25b93c99db992124e08c892a3d7fceffb4c  process-event.cjs\n--- prior results? ---\nls: cannot access 'event-result.json': No such file or directory\nls: cannot access 'event-runs.jsonl': No such file or directory\n\n<harness>\n[error] Command exited with code 2\n</harness>"
+      },
+      {
+        "diagnostic": {
+          "id": "work-execution-c982171b-c3e9-4b24-911a-9909c17be4f3:1:50",
+          "taskId": "work-execution-c982171b-c3e9-4b24-911a-9909c17be4f3",
+          "conversationId": "1",
+          "executionId": "durable:work-execution-c982171b-c3e9-4b24-911a-9909c17be4f3:1:48",
+          "sourceKind": "main",
+          "name": "register_artifact",
+          "callId": "call_00_4tspn6perib5akiydzij9gpo",
+          "startedAt": 1794447240889,
+          "finishedAt": 1794447240917,
+          "status": "failed",
+          "complete": true,
+          "intervals": [
+            {
+              "start": 1794447240889,
+              "end": 1794447240917
+            }
+          ],
+          "segmentStartedAt": null,
+          "diagnostics": [
+            "tool_error: Artifact path must be inside the bound workspace"
+          ],
+          "generationTaskId": 48,
+          "diagnosticTable": "task_tool_diagnostics"
+        },
+        "call": {
+          "id": "call_00_4tspn6perib5akiydzij9gpo",
+          "type": "function",
+          "function": {
+            "name": "register_artifact",
+            "arguments": "{\"path\":\"/home/vivion/iq27-tmp/i27-tXWrfg/output/本批文件变化-执行回执.md\"}"
+          }
+        },
+        "observedResult": "<harness>\n[error] Artifact path must be inside the bound workspace\n</harness>"
+      }
+    ]
+  },
+  "openProbeEntries": [],
+  "limitations": [
+    "Six types actually submitted, not seven. Amendment input/revision/new-tool chain untested in this batch.",
+    "Both file-open actions untested because harness failed before click; no UI/open IPC success is claimed.",
+    "Original 63/70 FAIL report is retained unchanged. Independent route checks use real persisted source IDs, not the faulty pre-message empty conversationId.",
+    "Artifact times are App DB message createdAt plus registered bytes verification, not exact commit/paint or child first disk persistence.",
+    "Render timing requires separate raw trace analysis. No physical scanout claim.",
+    "No supported multiple product main windows, native 390 width, real GitHub webhook, all-platform or full latest-source regression claim."
+  ]
+}

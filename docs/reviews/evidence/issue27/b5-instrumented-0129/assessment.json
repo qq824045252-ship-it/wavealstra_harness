@@ -1,0 +1,42 @@
+{
+  "rawResult": "failed;63/70;exit1",
+  "testSourceSha": "b5c1429d77d2d2f192149c48a92990cca8f4926c",
+  "unchangedProductFingerprint": {
+    "sha256": "fa44173fa7b18d2aac9f6e8441f3123e56d08a7b295eb1402285fcf0e9adbde2",
+    "files": 1265
+  },
+  "rawPassLabelCaveats": [
+    {
+      "label": "two real persistent conversation identities",
+      "assessment": "Weak check accepted empty ID. Independent SQLite later proved two actual nonempty identities; original check is not sufficient."
+    },
+    {
+      "labels": [
+        "amended execution succeeds",
+        "A bytes unchanged after amendment",
+        "A transport-observed write call exactly once across revisions"
+      ],
+      "assessment": "No amendment was submitted. Only original r1 completed and A was written once; these labels do not establish revision handling."
+    }
+  ],
+  "knownHarnessRootCause": "scenario.cjs:39 captured blank new conversation before its first message persisted; line54 history(blank) threw before amendment at line57. Later openFile also threw before click. No original report was rewritten.",
+  "notTestedThisBatch": [
+    "natural in-flight amendment",
+    "B-AMENDED revision contents and delivery",
+    "text/JSON open click and viewer outcome",
+    "exact background milestone/reminder commit-to-DOM/paint",
+    "multi-mainwindow",
+    "real GitHub webhook"
+  ],
+  "cleanup": "runner exited1 naturally 2026-11-12T01:35:48.100Z; test-owned runner/provider/Electron processes verified absent. User services untouched.",
+  "analysisExecution": {
+    "command": "node analyze.cjs EVIDENCE_DIR",
+    "elapsedSeconds": 4.068,
+    "userSeconds": 3.824,
+    "systemSeconds": 0.558,
+    "priority": "nice15",
+    "unavailableUtility": "First timing wrapper /usr/bin/time was absent; exited127 before analyzer ran. Successful run used shell time.",
+    "productChanged": false,
+    "newModelCalls": 0
+  }
+}

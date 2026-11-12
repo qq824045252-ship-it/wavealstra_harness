@@ -1,0 +1,136 @@
+{
+  "files": [
+    {
+      "file": "assessment.json",
+      "size": 1895,
+      "sha256": "4f3080493fee46dbbd998238c26a479dc5cf30cdb9dd2822aa4f0d9033329dfc"
+    },
+    {
+      "file": "busy-phase-metrics.json",
+      "size": 18754,
+      "sha256": "5bfb62a4e5cd1fbf9e788dc1a34f64f34075797eb4897245f36d0fdbdea0f1d9"
+    },
+    {
+      "file": "compact-result.json",
+      "size": 12374,
+      "sha256": "34af6db69b4144c9d17b402b797a1253703fd372378fea12708126fefa91af0f"
+    },
+    {
+      "file": "evidence-manifest.json",
+      "size": 14195,
+      "sha256": "faf8c1ce7d0becf62bba3ef18f8f6ba3c2ddf327a8ca07b792a84ab55dfe53fc"
+    },
+    {
+      "file": "failure-details.json",
+      "size": 8257,
+      "sha256": "c9548f683dc5ce02d4d8c7a19e3d24af5d74cf8e689f07cded42d20aa814b1b3"
+    },
+    {
+      "file": "first-A-960.png",
+      "size": 168542,
+      "sha256": "13e202ae1f390d1bec05a90d47b1a9569a7b6d77cb2ad899dc10b62ce02eaf49"
+    },
+    {
+      "file": "phase-summary.json",
+      "size": 192265,
+      "sha256": "652e8d23aaffd1634d12476f42fa80f6062840cd09ad2cb103e624efa2ef0817"
+    },
+    {
+      "file": "raw-checks.json",
+      "size": 15228,
+      "sha256": "8862f64ad2fd9a0146df3457b294fdb83bc988389746a32c1a15d82f895df0a3"
+    },
+    {
+      "file": "renderer-probe.json",
+      "size": 244266,
+      "sha256": "7b6a5b419f7bba72920cbf00dea405692223b2ef4bb8beb1dd9e6f635e5fcd58"
+    },
+    {
+      "file": "results-1200.png",
+      "size": 179478,
+      "sha256": "3b17c4ea7b01a870ea43e0b1461db8b3c239d7689a589b5670ef8039e5a1957a"
+    },
+    {
+      "file": "results-960.png",
+      "size": 138233,
+      "sha256": "8b9d89c8c42ac4175e429fa7b2a2086121b6bf75eaa2765e585a4bfde125133e"
+    },
+    {
+      "file": "routing-artifact-audit.json",
+      "size": 99566,
+      "sha256": "d63f02c01d2b8d673fd2abae13ad5b940b77601817ebc5f433b1763b5d5052d2"
+    },
+    {
+      "file": "second-conversation-1200.png",
+      "size": 130240,
+      "sha256": "260e1613e710b24d72463986bf05fe2b1e02fd6e467c61876f88e5109095cfe7"
+    },
+    {
+      "file": "test-drivers/README.md",
+      "size": 8048,
+      "sha256": "74d9b3368498a26ba2467a21d945e085af37caebebf2ab0f40988045fba41767"
+    },
+    {
+      "file": "test-drivers/analyze.cjs",
+      "size": 4111,
+      "sha256": "93ddf16f8286800ff5a5e0ac7e6562997aa5d804653e9d0db002e6b2a33a80c2"
+    },
+    {
+      "file": "test-drivers/bootstrap.cjs",
+      "size": 1792,
+      "sha256": "2d6c82b4060fa38683e81fe380d03c8f0d097812d50e04650814d425379463ee"
+    },
+    {
+      "file": "test-drivers/collector.cjs",
+      "size": 5358,
+      "sha256": "f6e5d77894b21c6fd15aca7183236fea73212518b1be1177c9990bbd41407d8d"
+    },
+    {
+      "file": "test-drivers/instrumentation-manifest.json",
+      "size": 1644,
+      "sha256": "7ecbca1411deda39bd9995aa001ac208b5642ecc5001f5508b974113052a10a8"
+    },
+    {
+      "file": "test-drivers/launch.sh",
+      "size": 1247,
+      "sha256": "6793ec9e92c0ba3414b809a2b8c9743e7d8cd95b9fe408f2765c19fce2c4752a"
+    },
+    {
+      "file": "test-drivers/main-probe.cjs",
+      "size": 6005,
+      "sha256": "71d87fe97b226a14cb14aa0ccf7641ef0512971366e7c85f4ca10bc1916cd025"
+    },
+    {
+      "file": "test-drivers/open-probe.cjs",
+      "size": 2515,
+      "sha256": "384d4e786a1695d28a684bfd4812d58a494ebac6ba5514ce06755ab7c904a3a4"
+    },
+    {
+      "file": "test-drivers/runner.cjs",
+      "size": 8293,
+      "sha256": "4d9d88566e4e4fab63a9bcdf8acc8b3cb776249afb50d099f546202532124a55"
+    },
+    {
+      "file": "test-drivers/scenario.cjs",
+      "size": 32462,
+      "sha256": "0f0a65c6da26dd2b1f1a56dc031d2c400bc0d8af9e033ccc27e35dc2840d6b2c"
+    },
+    {
+      "file": "test-drivers/summarize-busy.py",
+      "size": 5077,
+      "sha256": "cc645370cd1634c9a41fc651e2d82a10679f6368934e01edd81de6c1117bbc4e"
+    },
+    {
+      "file": "test-drivers/verify-frozen.py",
+      "size": 674,
+      "sha256": "ccc6312402bc40fe8e227111c6194b690158ffeb129528c7cf59fa6e28786dfe"
+    },
+    {
+      "file": "trace-calibration.json",
+      "size": 38471,
+      "sha256": "c3f13baf6727da34d726cb9b6785b8e67f20144fcba8c4d5fcf67c0b7ad9498b"
+    }
+  ],
+  "rawTraceLocalPath": "/home/vivion/iq27-tmp/s27-EMW04H/out/diagnostics/bot-scheduling/batch-2026-11-12T01-29-20-008Z-1599454/chromium-trace.json",
+  "rawTraceNotDuplicatedInGit": true
+}

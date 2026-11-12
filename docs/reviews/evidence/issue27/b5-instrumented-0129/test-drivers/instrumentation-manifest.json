@@ -1,0 +1,49 @@
+{
+  "files": [
+    {
+      "path": "/home/vivion/iq27-tmp/instrumented-v3/runner.cjs",
+      "size": 8293,
+      "sha256": "4d9d88566e4e4fab63a9bcdf8acc8b3cb776249afb50d099f546202532124a55"
+    },
+    {
+      "path": "/home/vivion/iq27-tmp/instrumented-v3/scenario.cjs",
+      "size": 32462,
+      "sha256": "0f0a65c6da26dd2b1f1a56dc031d2c400bc0d8af9e033ccc27e35dc2840d6b2c"
+    },
+    {
+      "path": "/home/vivion/iq27-tmp/instrumented-v3/verify-frozen.py",
+      "size": 674,
+      "sha256": "ccc6312402bc40fe8e227111c6194b690158ffeb129528c7cf59fa6e28786dfe"
+    },
+    {
+      "path": "/home/vivion/iq27-tmp/instrumented-v3/launch.sh",
+      "size": 1247,
+      "sha256": "6793ec9e92c0ba3414b809a2b8c9743e7d8cd95b9fe408f2765c19fce2c4752a"
+    },
+    {
+      "path": "/home/vivion/iq27-tmp/p27-1112/main-probe.cjs",
+      "size": 6005,
+      "sha256": "71d87fe97b226a14cb14aa0ccf7641ef0512971366e7c85f4ca10bc1916cd025"
+    },
+    {
+      "path": "/home/vivion/iq27-tmp/p27-1112/collector.cjs",
+      "size": 5358,
+      "sha256": "f6e5d77894b21c6fd15aca7183236fea73212518b1be1177c9990bbd41407d8d"
+    },
+    {
+      "path": "/home/vivion/iq27-tmp/p27-1112/bootstrap.cjs",
+      "size": 1792,
+      "sha256": "2d6c82b4060fa38683e81fe380d03c8f0d097812d50e04650814d425379463ee"
+    },
+    {
+      "path": "/home/vivion/iq27-tmp/p27-1112/analyze.cjs",
+      "size": 4111,
+      "sha256": "93ddf16f8286800ff5a5e0ac7e6562997aa5d804653e9d0db002e6b2a33a80c2"
+    },
+    {
+      "path": "/home/vivion/iq27-tmp/p27-1112/open-probe.cjs",
+      "size": 2515,
+      "sha256": "384d4e786a1695d28a684bfd4812d58a494ebac6ba5514ce06755ab7c904a3a4"
+    }
+  ]
+}

@@ -1,0 +1,1676 @@
+{
+  "calibrations": [
+    {
+      "name": "iq27-clock-start-0-1794447009449",
+      "beforeMonoNs": "149696635341843",
+      "afterMonoNs": "149696636523371",
+      "renderer": {
+        "now": 5875.9000000059605,
+        "origin": 1794447003574.6
+      }
+    },
+    {
+      "name": "iq27-clock-start-1-1794447009451",
+      "beforeMonoNs": "149696636554381",
+      "afterMonoNs": "149696637438030",
+      "renderer": {
+        "now": 5876.9000000059605,
+        "origin": 1794447003574.6
+      }
+    },
+    {
+      "name": "iq27-clock-start-2-1794447009452",
+      "beforeMonoNs": "149696637465687",
+      "afterMonoNs": "149696638436849",
+      "renderer": {
+        "now": 5877.800000011921,
+        "origin": 1794447003574.6
+      }
+    },
+    {
+      "name": "iq27-clock-start-3-1794447009453",
+      "beforeMonoNs": "149696638457942",
+      "afterMonoNs": "149696639441465",
+      "renderer": {
+        "now": 5878.800000011921,
+        "origin": 1794447003574.6
+      }
+    },
+    {
+      "name": "iq27-clock-start-4-1794447009454",
+      "beforeMonoNs": "149696639461859",
+      "afterMonoNs": "149696640433999",
+      "renderer": {
+        "now": 5879.800000011921,
+        "origin": 1794447003574.6
+      }
+    },
+    {
+      "name": "iq27-clock-start-5-1794447009455",
+      "beforeMonoNs": "149696640457117",
+      "afterMonoNs": "149696641335877",
+      "renderer": {
+        "now": 5880.800000011921,
+        "origin": 1794447003574.6
+      }
+    },
+    {
+      "name": "iq27-clock-start-6-1794447009455",
+      "beforeMonoNs": "149696641353547",
+      "afterMonoNs": "149696642210795",
+      "renderer": {
+        "now": 5881.699999988079,
+        "origin": 1794447003574.6
+      }
+    },
+    {
+      "name": "iq27-clock-start-7-1794447009456",
+      "beforeMonoNs": "149696642231259",
+      "afterMonoNs": "149696643324925",
+      "renderer": {
+        "now": 5882.5999999940395,
+        "origin": 1794447003574.6
+      }
+    },
+    {
+      "name": "iq27-clock-end-0-1794447312874",
+      "beforeMonoNs": "150000060428059",
+      "afterMonoNs": "150000061843768",
+      "renderer": {
+        "now": 309301.09999999404,
+        "origin": 1794447003574.6
+      }
+    },
+    {
+      "name": "iq27-clock-end-1-1794447312876",
+      "beforeMonoNs": "150000061891052",
+      "afterMonoNs": "150000063534867",
+      "renderer": {
+        "now": 309302.59999999404,
+        "origin": 1794447003574.6
+      }
+    },
+    {
+      "name": "iq27-clock-end-2-1794447312878",
+      "beforeMonoNs": "150000063595630",
+      "afterMonoNs": "150000064698025",
+      "renderer": {
+        "now": 309304.09999999404,
+        "origin": 1794447003574.6
+      }
+    },
+    {
+      "name": "iq27-clock-end-3-1794447312879",
+      "beforeMonoNs": "150000064712762",
+      "afterMonoNs": "150000065653541",
+      "renderer": {
+        "now": 309305.1999999881,
+        "origin": 1794447003574.6
+      }
+    },
+    {
+      "name": "iq27-clock-end-4-1794447312880",
+      "beforeMonoNs": "150000065663110",
+      "afterMonoNs": "150000066515608",
+      "renderer": {
+        "now": 309306,
+        "origin": 1794447003574.6
+      }
+    },
+    {
+      "name": "iq27-clock-end-5-1794447312881",
+      "beforeMonoNs": "150000066525735",
+      "afterMonoNs": "150000067302874",
+      "renderer": {
+        "now": 309306.90000000596,
+        "origin": 1794447003574.6
+      }
+    },
+    {
+      "name": "iq27-clock-end-6-1794447312881",
+      "beforeMonoNs": "150000067310417",
+      "afterMonoNs": "150000068485169",
+      "renderer": {
+        "now": 309307.8000000119,
+        "origin": 1794447003574.6
+      }
+    },
+    {
+      "name": "iq27-clock-end-7-1794447312883",
+      "beforeMonoNs": "150000068501931",
+      "afterMonoNs": "150000069863373",
+      "renderer": {
+        "now": 309309.09999999404,
+        "origin": 1794447003574.6
+      }
+    }
+  ],
+  "bufferUsage": [
+    {
+      "percentFull": 0.0018336438806727529,
+      "eventCount": 0,
+      "value": 0.0018336438806727529
+    },
+    {
+      "percentFull": 0.003608765546232462,
+      "eventCount": 0,
+      "value": 0.003608765546232462
+    },
+    {
+      "percentFull": 0.00454509723931551,
+      "eventCount": 0,
+      "value": 0.00454509723931551
+    },
+    {
+      "percentFull": 0.00454509723931551,
+      "eventCount": 0,
+      "value": 0.00454509723931551
+    },
+    {
+      "percentFull": 0.005091290455311537,
+      "eventCount": 0,
+      "value": 0.005091290455311537
+    },
+    {
+      "percentFull": 0.005910577718168497,
+      "eventCount": 0,
+      "value": 0.005910577718168497
+    },
+    {
+      "percentFull": 0.007627182174474001,
+      "eventCount": 0,
+      "value": 0.007627182174474001
+    },
+    {
+      "percentFull": 0.008992662653326988,
+      "eventCount": 0,
+      "value": 0.008992662653326988
+    },
+    {
+      "percentFull": 0.011099405586719513,
+      "eventCount": 0,
+      "value": 0.011099405586719513
+    },
+    {
+      "percentFull": 0.012991571798920631,
+      "eventCount": 0,
+      "value": 0.012991571798920631
+    },
+    {
+      "percentFull": 0.015215354040265083,
+      "eventCount": 0,
+      "value": 0.015215354040265083
+    },
+    {
+      "percentFull": 0.01681491918861866,
+      "eventCount": 0,
+      "value": 0.01681491918861866
+    },
+    {
+      "percentFull": 0.01870708540081978,
+      "eventCount": 0,
+      "value": 0.01870708540081978
+    },
+    {
+      "percentFull": 0.020618759095668793,
+      "eventCount": 0,
+      "value": 0.020618759095668793
+    },
+    {
+      "percentFull": 0.023427743464708328,
+      "eventCount": 0,
+      "value": 0.023427743464708328
+    },
+    {
+      "percentFull": 0.024676185101270676,
+      "eventCount": 0,
+      "value": 0.024676185101270676
+    },
+    {
+      "percentFull": 0.025671033188700676,
+      "eventCount": 0,
+      "value": 0.025671033188700676
+    },
+    {
+      "percentFull": 0.026412297040224075,
+      "eventCount": 0,
+      "value": 0.026412297040224075
+    },
+    {
+      "percentFull": 0.02748517505824566,
+      "eventCount": 0,
+      "value": 0.02748517505824566
+    },
+    {
+      "percentFull": 0.0295138880610466,
+      "eventCount": 0,
+      "value": 0.0295138880610466
+    },
+    {
+      "percentFull": 0.031874217092990875,
+      "eventCount": 0,
+      "value": 0.031874217092990875
+    },
+    {
+      "percentFull": 0.03343476727604866,
+      "eventCount": 0,
+      "value": 0.03343476727604866
+    },
+    {
+      "percentFull": 0.03448813781142235,
+      "eventCount": 0,
+      "value": 0.03448813781142235
+    },
+    {
+      "percentFull": 0.034995317459106445,
+      "eventCount": 0,
+      "value": 0.034995317459106445
+    },
+    {
+      "percentFull": 0.035756081342697144,
+      "eventCount": 0,
+      "value": 0.035756081342697144
+    },
+    {
+      "percentFull": 0.03657536953687668,
+      "eventCount": 0,
+      "value": 0.03657536953687668
+    },
+    {
+      "percentFull": 0.037375155836343765,
+      "eventCount": 0,
+      "value": 0.037375155836343765
+    },
+    {
+      "percentFull": 0.03899422660470009,
+      "eventCount": 0,
+      "value": 0.03899422660470009
+    },
+    {
+      "percentFull": 0.03975499048829079,
+      "eventCount": 0,
+      "value": 0.03975499048829079
+    },
+    {
+      "percentFull": 0.04026217386126518,
+      "eventCount": 0,
+      "value": 0.04026217386126518
+    },
+    {
+      "percentFull": 0.04112047329545021,
+      "eventCount": 0,
+      "value": 0.04112047329545021
+    },
+    {
+      "percentFull": 0.042290881276130676,
+      "eventCount": 0,
+      "value": 0.042290881276130676
+    },
+    {
+      "percentFull": 0.04320770874619484,
+      "eventCount": 0,
+      "value": 0.04320770874619484
+    },
+    {
+      "percentFull": 0.044378116726875305,
+      "eventCount": 0,
+      "value": 0.044378116726875305
+    },
+    {
+      "percentFull": 0.045548535883426666,
+      "eventCount": 0,
+      "value": 0.045548535883426666
+    },
+    {
+      "percentFull": 0.046699438244104385,
+      "eventCount": 0,
+      "value": 0.046699438244104385
+    },
+    {
+      "percentFull": 0.04749922454357147,
+      "eventCount": 0,
+      "value": 0.04749922454357147
+    },
+    {
+      "percentFull": 0.04857209697365761,
+      "eventCount": 0,
+      "value": 0.04857209697365761
+    },
+    {
+      "percentFull": 0.049820538610219955,
+      "eventCount": 0,
+      "value": 0.049820538610219955
+    },
+    {
+      "percentFull": 0.05054229125380516,
+      "eventCount": 0,
+      "value": 0.05054229125380516
+    },
+    {
+      "percentFull": 0.051615167409181595,
+      "eventCount": 0,
+      "value": 0.051615167409181595
+    },
+    {
+      "percentFull": 0.05288311466574669,
+      "eventCount": 0,
+      "value": 0.05288311466574669
+    },
+    {
+      "percentFull": 0.05288311466574669,
+      "eventCount": 0,
+      "value": 0.05288311466574669
+    },
+    {
+      "percentFull": 0.05366338789463043,
+      "eventCount": 0,
+      "value": 0.05366338789463043
+    },
+    {
+      "percentFull": 0.05510689690709114,
+      "eventCount": 0,
+      "value": 0.05510689690709114
+    },
+    {
+      "percentFull": 0.056277308613061905,
+      "eventCount": 0,
+      "value": 0.056277308613061905
+    },
+    {
+      "percentFull": 0.056823503226041794,
+      "eventCount": 0,
+      "value": 0.056823503226041794
+    },
+    {
+      "percentFull": 0.05758427083492279,
+      "eventCount": 0,
+      "value": 0.05758427083492279
+    },
+    {
+      "percentFull": 0.058364544063806534,
+      "eventCount": 0,
+      "value": 0.058364544063806534
+    },
+    {
+      "percentFull": 0.05932037904858589,
+      "eventCount": 0,
+      "value": 0.05932037904858589
+    },
+    {
+      "percentFull": 0.060100656002759933,
+      "eventCount": 0,
+      "value": 0.060100656002759933
+    },
+    {
+      "percentFull": 0.0610174797475338,
+      "eventCount": 0,
+      "value": 0.0610174797475338
+    },
+    {
+      "percentFull": 0.061583176255226135,
+      "eventCount": 0,
+      "value": 0.061583176255226135
+    },
+    {
+      "percentFull": 0.0627535879611969,
+      "eventCount": 0,
+      "value": 0.0627535879611969
+    },
+    {
+      "percentFull": 0.06382646411657333,
+      "eventCount": 0,
+      "value": 0.06382646411657333
+    },
+    {
+      "percentFull": 0.06437265872955322,
+      "eventCount": 0,
+      "value": 0.06437265872955322
+    },
+    {
+      "percentFull": 0.06548455357551575,
+      "eventCount": 0,
+      "value": 0.06548455357551575
+    },
+    {
+      "percentFull": 0.06681101769208908,
+      "eventCount": 0,
+      "value": 0.06681101769208908
+    },
+    {
+      "percentFull": 0.06733769923448563,
+      "eventCount": 0,
+      "value": 0.06733769923448563
+    },
+    {
+      "percentFull": 0.06811797618865967,
+      "eventCount": 0,
+      "value": 0.06811797618865967
+    },
+    {
+      "percentFull": 0.06897628307342529,
+      "eventCount": 0,
+      "value": 0.06897628307342529
+    },
+    {
+      "percentFull": 0.06997112929821014,
+      "eventCount": 0,
+      "value": 0.06997112929821014
+    },
+    {
+      "percentFull": 0.07182428240776062,
+      "eventCount": 0,
+      "value": 0.07182428240776062
+    },
+    {
+      "percentFull": 0.0763888880610466,
+      "eventCount": 0,
+      "value": 0.0763888880610466
+    },
+    {
+      "percentFull": 0.08003666996955872,
+      "eventCount": 0,
+      "value": 0.08003666996955872
+    },
+    {
+      "percentFull": 0.08083644509315491,
+      "eventCount": 0,
+      "value": 0.08083644509315491
+    },
+    {
+      "percentFull": 0.08204588294029236,
+      "eventCount": 0,
+      "value": 0.08204588294029236
+    },
+    {
+      "percentFull": 0.08465979248285294,
+      "eventCount": 0,
+      "value": 0.08465979248285294
+    },
+    {
+      "percentFull": 0.08713717758655548,
+      "eventCount": 0,
+      "value": 0.08713717758655548
+    },
+    {
+      "percentFull": 0.09088249504566193,
+      "eventCount": 0,
+      "value": 0.09088249504566193
+    },
+    {
+      "percentFull": 0.09304775297641754,
+      "eventCount": 0,
+      "value": 0.09304775297641754
+    },
+    {
+      "percentFull": 0.09517399966716766,
+      "eventCount": 0,
+      "value": 0.09517399966716766
+    },
+    {
+      "percentFull": 0.09763186424970627,
+      "eventCount": 0,
+      "value": 0.09763186424970627
+    },
+    {
+      "percentFull": 0.10135767608880997,
+      "eventCount": 0,
+      "value": 0.10135767608880997
+    },
+    {
+      "percentFull": 0.1041666567325592,
+      "eventCount": 0,
+      "value": 0.1041666567325592
+    },
+    {
+      "percentFull": 0.10676108300685883,
+      "eventCount": 0,
+      "value": 0.10676108300685883
+    },
+    {
+      "percentFull": 0.10816557705402374,
+      "eventCount": 0,
+      "value": 0.10816557705402374
+    },
+    {
+      "percentFull": 0.10906288772821426,
+      "eventCount": 0,
+      "value": 0.10906288772821426
+    },
+    {
+      "percentFull": 0.11081849783658981,
+      "eventCount": 0,
+      "value": 0.11081849783658981
+    },
+    {
+      "percentFull": 0.11419319361448288,
+      "eventCount": 0,
+      "value": 0.11419319361448288
+    },
+    {
+      "percentFull": 0.11620239913463593,
+      "eventCount": 0,
+      "value": 0.11620239913463593
+    },
+    {
+      "percentFull": 0.11908940970897675,
+      "eventCount": 0,
+      "value": 0.11908940970897675
+    },
+    {
+      "percentFull": 0.12049391120672226,
+      "eventCount": 0,
+      "value": 0.12049391120672226
+    },
+    {
+      "percentFull": 0.12230805307626724,
+      "eventCount": 0,
+      "value": 0.12230805307626724
+    },
+    {
+      "percentFull": 0.12609238922595978,
+      "eventCount": 0,
+      "value": 0.12609238922595978
+    },
+    {
+      "percentFull": 0.12718476355075836,
+      "eventCount": 0,
+      "value": 0.12718476355075836
+    },
+    {
+      "percentFull": 0.1282186359167099,
+      "eventCount": 0,
+      "value": 0.1282186359167099
+    },
+    {
+      "percentFull": 0.1289793998003006,
+      "eventCount": 0,
+      "value": 0.1289793998003006
+    },
+    {
+      "percentFull": 0.13210049271583557,
+      "eventCount": 0,
+      "value": 0.13210049271583557
+    },
+    {
+      "percentFull": 0.13526061177253723,
+      "eventCount": 0,
+      "value": 0.13526061177253723
+    },
+    {
+      "percentFull": 0.136353000998497,
+      "eventCount": 0,
+      "value": 0.136353000998497
+    },
+    {
+      "percentFull": 0.13756242394447327,
+      "eventCount": 0,
+      "value": 0.13756242394447327
+    },
+    {
+      "percentFull": 0.13906444609165192,
+      "eventCount": 0,
+      "value": 0.13906444609165192
+    },
+    {
+      "percentFull": 0.14238062500953674,
+      "eventCount": 0,
+      "value": 0.14238062500953674
+    },
+    {
+      "percentFull": 0.14415574073791504,
+      "eventCount": 0,
+      "value": 0.14415574073791504
+    },
+    {
+      "percentFull": 0.1454041749238968,
+      "eventCount": 0,
+      "value": 0.1454041749238968
+    },
+    {
+      "percentFull": 0.146047905087471,
+      "eventCount": 0,
+      "value": 0.146047905087471
+    },
+    {
+      "percentFull": 0.14620396494865417,
+      "eventCount": 0,
+      "value": 0.14620396494865417
+    },
+    {
+      "percentFull": 0.1486228108406067,
+      "eventCount": 0,
+      "value": 0.1486228108406067
+    },
+    {
+      "percentFull": 0.15030039846897125,
+      "eventCount": 0,
+      "value": 0.15030039846897125
+    },
+    {
+      "percentFull": 0.15264123678207397,
+      "eventCount": 0,
+      "value": 0.15264123678207397
+    },
+    {
+      "percentFull": 0.15408474206924438,
+      "eventCount": 0,
+      "value": 0.15408474206924438
+    },
+    {
+      "percentFull": 0.15720583498477936,
+      "eventCount": 0,
+      "value": 0.15720583498477936
+    },
+    {
+      "percentFull": 0.15833723545074463,
+      "eventCount": 0,
+      "value": 0.15833723545074463
+    },
+    {
+      "percentFull": 0.1602683961391449,
+      "eventCount": 0,
+      "value": 0.1602683961391449
+    },
+    {
+      "percentFull": 0.1627652943134308,
+      "eventCount": 0,
+      "value": 0.1627652943134308
+    },
+    {
+      "percentFull": 0.16477450728416443,
+      "eventCount": 0,
+      "value": 0.16477450728416443
+    },
+    {
+      "percentFull": 0.1666666865348816,
+      "eventCount": 0,
+      "value": 0.1666666865348816
+    },
+    {
+      "percentFull": 0.16809067130088806,
+      "eventCount": 0,
+      "value": 0.16809067130088806
+    },
+    {
+      "percentFull": 0.1704314947128296,
+      "eventCount": 0,
+      "value": 0.1704314947128296
+    },
+    {
+      "percentFull": 0.1733965426683426,
+      "eventCount": 0,
+      "value": 0.1733965426683426
+    },
+    {
+      "percentFull": 0.17542524635791779,
+      "eventCount": 0,
+      "value": 0.17542524635791779
+    },
+    {
+      "percentFull": 0.176068976521492,
+      "eventCount": 0,
+      "value": 0.176068976521492
+    },
+    {
+      "percentFull": 0.17776606976985931,
+      "eventCount": 0,
+      "value": 0.17776606976985931
+    },
+    {
+      "percentFull": 0.18061406910419464,
+      "eventCount": 0,
+      "value": 0.18061406910419464
+    },
+    {
+      "percentFull": 0.18184301257133484,
+      "eventCount": 0,
+      "value": 0.18184301257133484
+    },
+    {
+      "percentFull": 0.1830524504184723,
+      "eventCount": 0,
+      "value": 0.1830524504184723
+    },
+    {
+      "percentFull": 0.18845583498477936,
+      "eventCount": 0,
+      "value": 0.18845583498477936
+    },
+    {
+      "percentFull": 0.18966525793075562,
+      "eventCount": 0,
+      "value": 0.18966525793075562
+    },
+    {
+      "percentFull": 0.19036750495433807,
+      "eventCount": 0,
+      "value": 0.19036750495433807
+    },
+    {
+      "percentFull": 0.19229869544506073,
+      "eventCount": 0,
+      "value": 0.19229869544506073
+    },
+    {
+      "percentFull": 0.19409331679344177,
+      "eventCount": 0,
+      "value": 0.19409331679344177
+    },
+    {
+      "percentFull": 0.19604401290416718,
+      "eventCount": 0,
+      "value": 0.19604401290416718
+    },
+    {
+      "percentFull": 0.19881398975849152,
+      "eventCount": 0,
+      "value": 0.19881398975849152
+    },
+    {
+      "percentFull": 0.20004291832447052,
+      "eventCount": 0,
+      "value": 0.20004291832447052
+    },
+    {
+      "percentFull": 0.20056958496570587,
+      "eventCount": 0,
+      "value": 0.20056958496570587
+    },
+    {
+      "percentFull": 0.20351514220237732,
+      "eventCount": 0,
+      "value": 0.20351514220237732
+    },
+    {
+      "percentFull": 0.20534878969192505,
+      "eventCount": 0,
+      "value": 0.20534878969192505
+    },
+    {
+      "percentFull": 0.20585596561431885,
+      "eventCount": 0,
+      "value": 0.20585596561431885
+    },
+    {
+      "percentFull": 0.2070653885602951,
+      "eventCount": 0,
+      "value": 0.2070653885602951
+    },
+    {
+      "percentFull": 0.20841136574745178,
+      "eventCount": 0,
+      "value": 0.20841136574745178
+    },
+    {
+      "percentFull": 0.21161049604415894,
+      "eventCount": 0,
+      "value": 0.21161049604415894
+    },
+    {
+      "percentFull": 0.2135806828737259,
+      "eventCount": 0,
+      "value": 0.2135806828737259
+    },
+    {
+      "percentFull": 0.21479012072086334,
+      "eventCount": 0,
+      "value": 0.21479012072086334
+    },
+    {
+      "percentFull": 0.2160385251045227,
+      "eventCount": 0,
+      "value": 0.2160385251045227
+    },
+    {
+      "percentFull": 0.21662373840808868,
+      "eventCount": 0,
+      "value": 0.21662373840808868
+    },
+    {
+      "percentFull": 0.21992041170597076,
+      "eventCount": 0,
+      "value": 0.21992041170597076
+    },
+    {
+      "percentFull": 0.22179308533668518,
+      "eventCount": 0,
+      "value": 0.22179308533668518
+    },
+    {
+      "percentFull": 0.22230024635791779,
+      "eventCount": 0,
+      "value": 0.22230024635791779
+    },
+    {
+      "percentFull": 0.22358770668506622,
+      "eventCount": 0,
+      "value": 0.22358770668506622
+    },
+    {
+      "percentFull": 0.22704042494297028,
+      "eventCount": 0,
+      "value": 0.22704042494297028
+    },
+    {
+      "percentFull": 0.22838638722896576,
+      "eventCount": 0,
+      "value": 0.22838638722896576
+    },
+    {
+      "percentFull": 0.23041512072086334,
+      "eventCount": 0,
+      "value": 0.23041512072086334
+    },
+    {
+      "percentFull": 0.23250234127044678,
+      "eventCount": 0,
+      "value": 0.23250234127044678
+    },
+    {
+      "percentFull": 0.234453022480011,
+      "eventCount": 0,
+      "value": 0.234453022480011
+    },
+    {
+      "percentFull": 0.234453022480011,
+      "eventCount": 0,
+      "value": 0.234453022480011
+    },
+    {
+      "percentFull": 0.23659878969192505,
+      "eventCount": 0,
+      "value": 0.23659878969192505
+    },
+    {
+      "percentFull": 0.23942728340625763,
+      "eventCount": 0,
+      "value": 0.23942728340625763
+    },
+    {
+      "percentFull": 0.24073423445224762,
+      "eventCount": 0,
+      "value": 0.24073423445224762
+    },
+    {
+      "percentFull": 0.24247035384178162,
+      "eventCount": 0,
+      "value": 0.24247035384178162
+    },
+    {
+      "percentFull": 0.2439918965101242,
+      "eventCount": 0,
+      "value": 0.2439918965101242
+    },
+    {
+      "percentFull": 0.24451856315135956,
+      "eventCount": 0,
+      "value": 0.24451856315135956
+    },
+    {
+      "percentFull": 0.24582554399967194,
+      "eventCount": 0,
+      "value": 0.24582554399967194
+    },
+    {
+      "percentFull": 0.24990247189998627,
+      "eventCount": 0,
+      "value": 0.24990247189998627
+    },
+    {
+      "percentFull": 0.2519896924495697,
+      "eventCount": 0,
+      "value": 0.2519896924495697
+    },
+    {
+      "percentFull": 0.25323814153671265,
+      "eventCount": 0,
+      "value": 0.25323814153671265
+    },
+    {
+      "percentFull": 0.25460362434387207,
+      "eventCount": 0,
+      "value": 0.25460362434387207
+    },
+    {
+      "percentFull": 0.25751015543937683,
+      "eventCount": 0,
+      "value": 0.25751015543937683
+    },
+    {
+      "percentFull": 0.25870007276535034,
+      "eventCount": 0,
+      "value": 0.25870007276535034
+    },
+    {
+      "percentFull": 0.26057273149490356,
+      "eventCount": 0,
+      "value": 0.26057273149490356
+    },
+    {
+      "percentFull": 0.26184067130088806,
+      "eventCount": 0,
+      "value": 0.26184067130088806
+    },
+    {
+      "percentFull": 0.2625234127044678,
+      "eventCount": 0,
+      "value": 0.2625234127044678
+    },
+    {
+      "percentFull": 0.2646496593952179,
+      "eventCount": 0,
+      "value": 0.2646496593952179
+    },
+    {
+      "percentFull": 0.26741963624954224,
+      "eventCount": 0,
+      "value": 0.26741963624954224
+    },
+    {
+      "percentFull": 0.26944833993911743,
+      "eventCount": 0,
+      "value": 0.26944833993911743
+    },
+    {
+      "percentFull": 0.2721598148345947,
+      "eventCount": 0,
+      "value": 0.2721598148345947
+    },
+    {
+      "percentFull": 0.2747737169265747,
+      "eventCount": 0,
+      "value": 0.2747737169265747
+    },
+    {
+      "percentFull": 0.27664637565612793,
+      "eventCount": 0,
+      "value": 0.27664637565612793
+    },
+    {
+      "percentFull": 0.27793383598327637,
+      "eventCount": 0,
+      "value": 0.27793383598327637
+    },
+    {
+      "percentFull": 0.27920177578926086,
+      "eventCount": 0,
+      "value": 0.27920177578926086
+    },
+    {
+      "percentFull": 0.2796894609928131,
+      "eventCount": 0,
+      "value": 0.2796894609928131
+    },
+    {
+      "percentFull": 0.2809574007987976,
+      "eventCount": 0,
+      "value": 0.2809574007987976
+    },
+    {
+      "percentFull": 0.28232288360595703,
+      "eventCount": 0,
+      "value": 0.28232288360595703
+    },
+    {
+      "percentFull": 0.28339576721191406,
+      "eventCount": 0,
+      "value": 0.28339576721191406
+    },
+    {
+      "percentFull": 0.2840394675731659,
+      "eventCount": 0,
+      "value": 0.2840394675731659
+    },
+    {
+      "percentFull": 0.28567805886268616,
+      "eventCount": 0,
+      "value": 0.28567805886268616
+    },
+    {
+      "percentFull": 0.2871410846710205,
+      "eventCount": 0,
+      "value": 0.2871410846710205
+    },
+    {
+      "percentFull": 0.28766775131225586,
+      "eventCount": 0,
+      "value": 0.28766775131225586
+    },
+    {
+      "percentFull": 0.28901374340057373,
+      "eventCount": 0,
+      "value": 0.28901374340057373
+    },
+    {
+      "percentFull": 0.2903401851654053,
+      "eventCount": 0,
+      "value": 0.2903401851654053
+    },
+    {
+      "percentFull": 0.2908083498477936,
+      "eventCount": 0,
+      "value": 0.2908083498477936
+    },
+    {
+      "percentFull": 0.29211533069610596,
+      "eventCount": 0,
+      "value": 0.29211533069610596
+    },
+    {
+      "percentFull": 0.29443663358688354,
+      "eventCount": 0,
+      "value": 0.29443663358688354
+    },
+    {
+      "percentFull": 0.29443663358688354,
+      "eventCount": 0,
+      "value": 0.29443663358688354
+    },
+    {
+      "percentFull": 0.29504135251045227,
+      "eventCount": 0,
+      "value": 0.29504135251045227
+    },
+    {
+      "percentFull": 0.29630929231643677,
+      "eventCount": 0,
+      "value": 0.29630929231643677
+    },
+    {
+      "percentFull": 0.29783084988594055,
+      "eventCount": 0,
+      "value": 0.29783084988594055
+    },
+    {
+      "percentFull": 0.29837703704833984,
+      "eventCount": 0,
+      "value": 0.29837703704833984
+    },
+    {
+      "percentFull": 0.29964497685432434,
+      "eventCount": 0,
+      "value": 0.29964497685432434
+    },
+    {
+      "percentFull": 0.3019077777862549,
+      "eventCount": 0,
+      "value": 0.3019077777862549
+    },
+    {
+      "percentFull": 0.3037414252758026,
+      "eventCount": 0,
+      "value": 0.3037414252758026
+    },
+    {
+      "percentFull": 0.3066674470901489,
+      "eventCount": 0,
+      "value": 0.3066674470901489
+    },
+    {
+      "percentFull": 0.30875468254089355,
+      "eventCount": 0,
+      "value": 0.30875468254089355
+    },
+    {
+      "percentFull": 0.310042142868042,
+      "eventCount": 0,
+      "value": 0.310042142868042
+    },
+    {
+      "percentFull": 0.31056880950927734,
+      "eventCount": 0,
+      "value": 0.31056880950927734
+    },
+    {
+      "percentFull": 0.31476280093193054,
+      "eventCount": 0,
+      "value": 0.31476280093193054
+    },
+    {
+      "percentFull": 0.3160892724990845,
+      "eventCount": 0,
+      "value": 0.3160892724990845
+    },
+    {
+      "percentFull": 0.31663545966148376,
+      "eventCount": 0,
+      "value": 0.31663545966148376
+    },
+    {
+      "percentFull": 0.31802043318748474,
+      "eventCount": 0,
+      "value": 0.31802043318748474
+    },
+    {
+      "percentFull": 0.3223314583301544,
+      "eventCount": 0,
+      "value": 0.3223314583301544
+    },
+    {
+      "percentFull": 0.3228386342525482,
+      "eventCount": 0,
+      "value": 0.3228386342525482
+    },
+    {
+      "percentFull": 0.3241455852985382,
+      "eventCount": 0,
+      "value": 0.3241455852985382
+    },
+    {
+      "percentFull": 0.3254525661468506,
+      "eventCount": 0,
+      "value": 0.3254525661468506
+    },
+    {
+      "percentFull": 0.3276178240776062,
+      "eventCount": 0,
+      "value": 0.3276178240776062
+    },
+    {
+      "percentFull": 0.32894429564476013,
+      "eventCount": 0,
+      "value": 0.32894429564476013
+    },
+    {
+      "percentFull": 0.33272862434387207,
+      "eventCount": 0,
+      "value": 0.33272862434387207
+    },
+    {
+      "percentFull": 0.3340160846710205,
+      "eventCount": 0,
+      "value": 0.3340160846710205
+    },
+    {
+      "percentFull": 0.3345232903957367,
+      "eventCount": 0,
+      "value": 0.3345232903957367
+    },
+    {
+      "percentFull": 0.3358692228794098,
+      "eventCount": 0,
+      "value": 0.3358692228794098
+    },
+    {
+      "percentFull": 0.33939993381500244,
+      "eventCount": 0,
+      "value": 0.33939993381500244
+    },
+    {
+      "percentFull": 0.34084346890449524,
+      "eventCount": 0,
+      "value": 0.34084346890449524
+    },
+    {
+      "percentFull": 0.34211140871047974,
+      "eventCount": 0,
+      "value": 0.34211140871047974
+    },
+    {
+      "percentFull": 0.3434574007987976,
+      "eventCount": 0,
+      "value": 0.3434574007987976
+    },
+    {
+      "percentFull": 0.3435354232788086,
+      "eventCount": 0,
+      "value": 0.3435354232788086
+    },
+    {
+      "percentFull": 0.3456226587295532,
+      "eventCount": 0,
+      "value": 0.3456226587295532
+    },
+    {
+      "percentFull": 0.3476513624191284,
+      "eventCount": 0,
+      "value": 0.3476513624191284
+    },
+    {
+      "percentFull": 0.3489583730697632,
+      "eventCount": 0,
+      "value": 0.3489583730697632
+    },
+    {
+      "percentFull": 0.3496021032333374,
+      "eventCount": 0,
+      "value": 0.3496021032333374
+    },
+    {
+      "percentFull": 0.351065069437027,
+      "eventCount": 0,
+      "value": 0.351065069437027
+    },
+    {
+      "percentFull": 0.35237202048301697,
+      "eventCount": 0,
+      "value": 0.35237202048301697
+    },
+    {
+      "percentFull": 0.35436171293258667,
+      "eventCount": 0,
+      "value": 0.35436171293258667
+    },
+    {
+      "percentFull": 0.3579705059528351,
+      "eventCount": 0,
+      "value": 0.3579705059528351
+    },
+    {
+      "percentFull": 0.3600577414035797,
+      "eventCount": 0,
+      "value": 0.3600577414035797
+    },
+    {
+      "percentFull": 0.36134520173072815,
+      "eventCount": 0,
+      "value": 0.36134520173072815
+    },
+    {
+      "percentFull": 0.3620864450931549,
+      "eventCount": 0,
+      "value": 0.3620864450931549
+    },
+    {
+      "percentFull": 0.36413466930389404,
+      "eventCount": 0,
+      "value": 0.36413466930389404
+    },
+    {
+      "percentFull": 0.3675093948841095,
+      "eventCount": 0,
+      "value": 0.3675093948841095
+    },
+    {
+      "percentFull": 0.37061095237731934,
+      "eventCount": 0,
+      "value": 0.37061095237731934
+    },
+    {
+      "percentFull": 0.37265917658805847,
+      "eventCount": 0,
+      "value": 0.37265917658805847
+    },
+    {
+      "percentFull": 0.3739856481552124,
+      "eventCount": 0,
+      "value": 0.3739856481552124
+    },
+    {
+      "percentFull": 0.3745318353176117,
+      "eventCount": 0,
+      "value": 0.3745318353176117
+    },
+    {
+      "percentFull": 0.37798455357551575,
+      "eventCount": 0,
+      "value": 0.37798455357551575
+    },
+    {
+      "percentFull": 0.3800717890262604,
+      "eventCount": 0,
+      "value": 0.3800717890262604
+    },
+    {
+      "percentFull": 0.38061797618865967,
+      "eventCount": 0,
+      "value": 0.38061797618865967
+    },
+    {
+      "percentFull": 0.38196390867233276,
+      "eventCount": 0,
+      "value": 0.38196390867233276
+    },
+    {
+      "percentFull": 0.38485100865364075,
+      "eventCount": 0,
+      "value": 0.38485100865364075
+    },
+    {
+      "percentFull": 0.3861384093761444,
+      "eventCount": 0,
+      "value": 0.3861384093761444
+    },
+    {
+      "percentFull": 0.38912296295166016,
+      "eventCount": 0,
+      "value": 0.38912296295166016
+    },
+    {
+      "percentFull": 0.3904104232788086,
+      "eventCount": 0,
+      "value": 0.3904104232788086
+    },
+    {
+      "percentFull": 0.39179542660713196,
+      "eventCount": 0,
+      "value": 0.39179542660713196
+    },
+    {
+      "percentFull": 0.3923220932483673,
+      "eventCount": 0,
+      "value": 0.3923220932483673
+    },
+    {
+      "percentFull": 0.39596983790397644,
+      "eventCount": 0,
+      "value": 0.39596983790397644
+    },
+    {
+      "percentFull": 0.3980376124382019,
+      "eventCount": 0,
+      "value": 0.3980376124382019
+    },
+    {
+      "percentFull": 0.39856430888175964,
+      "eventCount": 0,
+      "value": 0.39856430888175964
+    },
+    {
+      "percentFull": 0.4000273048877716,
+      "eventCount": 0,
+      "value": 0.4000273048877716
+    },
+    {
+      "percentFull": 0.4013342559337616,
+      "eventCount": 0,
+      "value": 0.4013342559337616
+    },
+    {
+      "percentFull": 0.4027387499809265,
+      "eventCount": 0,
+      "value": 0.4027387499809265
+    },
+    {
+      "percentFull": 0.4053916931152344,
+      "eventCount": 0,
+      "value": 0.4053916931152344
+    },
+    {
+      "percentFull": 0.40808364748954773,
+      "eventCount": 0,
+      "value": 0.40808364748954773
+    },
+    {
+      "percentFull": 0.4103074371814728,
+      "eventCount": 0,
+      "value": 0.4103074371814728
+    },
+    {
+      "percentFull": 0.41050252318382263,
+      "eventCount": 0,
+      "value": 0.41050252318382263
+    },
+    {
+      "percentFull": 0.41177043318748474,
+      "eventCount": 0,
+      "value": 0.41177043318748474
+    },
+    {
+      "percentFull": 0.4130578935146332,
+      "eventCount": 0,
+      "value": 0.4130578935146332
+    },
+    {
+      "percentFull": 0.4142478108406067,
+      "eventCount": 0,
+      "value": 0.4142478108406067
+    },
+    {
+      "percentFull": 0.4148525297641754,
+      "eventCount": 0,
+      "value": 0.4148525297641754
+    },
+    {
+      "percentFull": 0.4161204397678375,
+      "eventCount": 0,
+      "value": 0.4161204397678375
+    },
+    {
+      "percentFull": 0.41758349537849426,
+      "eventCount": 0,
+      "value": 0.41758349537849426
+    },
+    {
+      "percentFull": 0.41809067130088806,
+      "eventCount": 0,
+      "value": 0.41809067130088806
+    },
+    {
+      "percentFull": 0.4192805886268616,
+      "eventCount": 0,
+      "value": 0.4192805886268616
+    },
+    {
+      "percentFull": 0.4206070601940155,
+      "eventCount": 0,
+      "value": 0.4206070601940155
+    },
+    {
+      "percentFull": 0.4211142361164093,
+      "eventCount": 0,
+      "value": 0.4211142361164093
+    },
+    {
+      "percentFull": 0.4224601984024048,
+      "eventCount": 0,
+      "value": 0.4224601984024048
+    },
+    {
+      "percentFull": 0.4237281382083893,
+      "eventCount": 0,
+      "value": 0.4237281382083893
+    },
+    {
+      "percentFull": 0.4241963326931,
+      "eventCount": 0,
+      "value": 0.4241963326931
+    },
+    {
+      "percentFull": 0.4254837930202484,
+      "eventCount": 0,
+      "value": 0.4254837930202484
+    },
+    {
+      "percentFull": 0.4267517030239105,
+      "eventCount": 0,
+      "value": 0.4267517030239105
+    },
+    {
+      "percentFull": 0.42727839946746826,
+      "eventCount": 0,
+      "value": 0.42727839946746826
+    },
+    {
+      "percentFull": 0.42887797951698303,
+      "eventCount": 0,
+      "value": 0.42887797951698303
+    },
+    {
+      "percentFull": 0.4301263689994812,
+      "eventCount": 0,
+      "value": 0.4301263689994812
+    },
+    {
+      "percentFull": 0.43061408400535583,
+      "eventCount": 0,
+      "value": 0.43061408400535583
+    },
+    {
+      "percentFull": 0.4319405257701874,
+      "eventCount": 0,
+      "value": 0.4319405257701874
+    },
+    {
+      "percentFull": 0.4332279860973358,
+      "eventCount": 0,
+      "value": 0.4332279860973358
+    },
+    {
+      "percentFull": 0.4345349371433258,
+      "eventCount": 0,
+      "value": 0.4345349371433258
+    },
+    {
+      "percentFull": 0.43502262234687805,
+      "eventCount": 0,
+      "value": 0.43502262234687805
+    },
+    {
+      "percentFull": 0.436271071434021,
+      "eventCount": 0,
+      "value": 0.436271071434021
+    },
+    {
+      "percentFull": 0.437578022480011,
+      "eventCount": 0,
+      "value": 0.437578022480011
+    },
+    {
+      "percentFull": 0.4381047189235687,
+      "eventCount": 0,
+      "value": 0.4381047189235687
+    },
+    {
+      "percentFull": 0.43933364748954773,
+      "eventCount": 0,
+      "value": 0.43933364748954773
+    },
+    {
+      "percentFull": 0.44066011905670166,
+      "eventCount": 0,
+      "value": 0.44066011905670166
+    },
+    {
+      "percentFull": 0.44124531745910645,
+      "eventCount": 0,
+      "value": 0.44124531745910645
+    },
+    {
+      "percentFull": 0.44247424602508545,
+      "eventCount": 0,
+      "value": 0.44247424602508545
+    },
+    {
+      "percentFull": 0.44399577379226685,
+      "eventCount": 0,
+      "value": 0.44399577379226685
+    },
+    {
+      "percentFull": 0.44450297951698303,
+      "eventCount": 0,
+      "value": 0.44450297951698303
+    },
+    {
+      "percentFull": 0.44450297951698303,
+      "eventCount": 0,
+      "value": 0.44450297951698303
+    },
+    {
+      "percentFull": 0.4458684027194977,
+      "eventCount": 0,
+      "value": 0.4458684027194977
+    },
+    {
+      "percentFull": 0.44713637232780457,
+      "eventCount": 0,
+      "value": 0.44713637232780457
+    },
+    {
+      "percentFull": 0.44840434193611145,
+      "eventCount": 0,
+      "value": 0.44840434193611145
+    },
+    {
+      "percentFull": 0.4489310383796692,
+      "eventCount": 0,
+      "value": 0.4489310383796692
+    },
+    {
+      "percentFull": 0.45014044642448425,
+      "eventCount": 0,
+      "value": 0.45014044642448425
+    },
+    {
+      "percentFull": 0.45148640871047974,
+      "eventCount": 0,
+      "value": 0.45148640871047974
+    },
+    {
+      "percentFull": 0.45199358463287354,
+      "eventCount": 0,
+      "value": 0.45199358463287354
+    },
+    {
+      "percentFull": 0.4532225430011749,
+      "eventCount": 0,
+      "value": 0.4532225430011749
+    },
+    {
+      "percentFull": 0.45454901456832886,
+      "eventCount": 0,
+      "value": 0.45454901456832886
+    },
+    {
+      "percentFull": 0.45501717925071716,
+      "eventCount": 0,
+      "value": 0.45501717925071716
+    },
+    {
+      "percentFull": 0.45628511905670166,
+      "eventCount": 0,
+      "value": 0.45628511905670166
+    },
+    {
+      "percentFull": 0.4581967890262604,
+      "eventCount": 0,
+      "value": 0.4581967890262604
+    },
+    {
+      "percentFull": 0.45866498351097107,
+      "eventCount": 0,
+      "value": 0.45866498351097107
+    },
+    {
+      "percentFull": 0.4600304365158081,
+      "eventCount": 0,
+      "value": 0.4600304365158081
+    },
+    {
+      "percentFull": 0.46139591932296753,
+      "eventCount": 0,
+      "value": 0.46139591932296753
+    },
+    {
+      "percentFull": 0.46186408400535583,
+      "eventCount": 0,
+      "value": 0.46186408400535583
+    },
+    {
+      "percentFull": 0.46340516209602356,
+      "eventCount": 0,
+      "value": 0.46340516209602356
+    },
+    {
+      "percentFull": 0.46594101190567017,
+      "eventCount": 0,
+      "value": 0.46594101190567017
+    },
+    {
+      "percentFull": 0.4675600826740265,
+      "eventCount": 0,
+      "value": 0.4675600826740265
+    }
+  ],
+  "traceComplete": {
+    "dataLossOccurred": false
+  },
+  "traceCount": 767627,
+  "traceBytes": 211845502,
+  "limitations": [
+    "COMMIT return is SQLite API completion, not disk fsync.",
+    "DOM/rAF are not paint; Paint/DrawFrame are actual Chromium trace events but do not prove physical monitor scanout.",
+    "A first subsequent renderer Paint is not proof that every target-message pixel belongs to that Paint.",
+    "Clock offsets bounded by CDP mark-call round trips; probe/tracing overhead is present."
+  ]
+}

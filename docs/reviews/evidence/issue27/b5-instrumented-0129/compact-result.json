@@ -1,0 +1,226 @@
+{
+  "rawOutcome": {
+    "status": "failed",
+    "pass": 63,
+    "checks": 70,
+    "fail": 7
+  },
+  "naturalExitCode": 1,
+  "actualSemanticTypes": 6,
+  "actualCases": 14,
+  "busySamples": 8,
+  "plannedAmendment": "not sent; untested",
+  "actualHttpCalls": 62,
+  "phaseCounts": {
+    "foreground": 20,
+    "native-main": 30,
+    "native-child": 9,
+    "completion-review": 2,
+    "watch-review": 1
+  },
+  "tokens": {
+    "prompt_tokens": 1394122,
+    "completion_tokens": 25249,
+    "total_tokens": 1419371,
+    "cached_prompt_tokens": 1108224,
+    "reasoning_tokens": 12334
+  },
+  "tools": {
+    "unique": 45,
+    "statuses": {
+      "completed": 42,
+      "failed": 3
+    },
+    "failedTools": [
+      {
+        "name": "register_artifact",
+        "callId": "call_00_c2jprs4s3bncc3lgl4zw9j07",
+        "diagnostics": [
+          "tool_error: 文件尚不存在：output/本批A快B等待-执行回执.md。请先用 write/编辑或 shell 命令把文件创建出来再登记；write/edit 成功后会自动登记，只有 shell/Python 等生成的文件才需要手动调用 register_artifact。"
+        ]
+      },
+      {
+        "name": "bash",
+        "callId": "call_00_frsjnkootzer3c30spi5qlkf",
+        "diagnostics": [
+          "exit_code"
+        ]
+      },
+      {
+        "name": "register_artifact",
+        "callId": "call_00_4tspn6perib5akiydzij9gpo",
+        "diagnostics": [
+          "tool_error: Artifact path must be inside the bound workspace"
+        ]
+      }
+    ]
+  },
+  "firstHttpUTC": "2026-11-12T01:30:10.719000+00:00",
+  "lastHttpEndUTC": "2026-11-12T01:35:04.203000+00:00",
+  "runStartUTC": "2026-11-12T01:29:19.976Z",
+  "runEndUTC": "2026-11-12T01:35:48.100Z",
+  "busyLatency": {
+    "hostProse": {
+      "n": 8,
+      "p50": 4347,
+      "p95": 15089,
+      "values": [
+        4048,
+        4139,
+        4276,
+        4347,
+        4519,
+        4609,
+        6405,
+        15089
+      ]
+    },
+    "final": {
+      "n": 8,
+      "p50": 4486,
+      "p95": 15246,
+      "values": [
+        4145,
+        4231,
+        4444,
+        4486,
+        4618,
+        4653,
+        6488,
+        15246
+      ]
+    },
+    "caveat": "Eight actual samples; not physical key-to-screen timing or SLA. Trace establishes separately observable boundaries only."
+  },
+  "paintProbe": {
+    "rendererEvents": 202,
+    "rendererMarks": 372,
+    "traceCount": 767627,
+    "traceBytes": 211845502,
+    "dataLossOccurred": false,
+    "trace": "/home/vivion/iq27-tmp/s27-EMW04H/out/diagnostics/bot-scheduling/batch-2026-11-12T01-29-20-008Z-1599454/chromium-trace.json"
+  },
+  "paintAnalysis": "Not run yet: 211 MB trace parsing deferred for other UI tests. No pixel-specific/physical paint claim.",
+  "failures": [
+    {
+      "rawEvidence": {
+        "label": "A milestone while B busy and natural amendment",
+        "passed": false,
+        "error": "Error: Error: Error invoking remote method 'bot-work:history': [\n  {\n    \"origin\": \"string\",\n    \"code\": \"too_small\",\n    \"minimum\": 1,\n    \"inclusive\": true,\n    \"path\": [\n      \"conversationId\"\n    ],\n    \"message\": \"Too small: expected string to have >=1 characters\"\n  }\n]\n    at evaluate (/home/vivion/iq27-tmp/s27-EMW04H/scripts/bot-frontdoor-live-test.cjs:149:37)\n    at async /home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:54:181\n    at async section (/home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:19:38)\n    at async exports.run.exports.runFocused (/home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:51:2)\n    at async /home/vivion/iq27-tmp/s27-EMW04H/scripts/bot-frontdoor-live-test.cjs:343:11"
+      },
+      "scriptLocation": "scenario.cjs:39,54; amendment is at line 57",
+      "classification": "NOT EXECUTED: amendment and inline cross-conversation A route assertion. Earlier A-running and A-byte checks passed.",
+      "verifiedFacts": "Line39 accepted empty string as different from old ID, before first new message persisted. Line54 invoked history(\"\") and threw before line57 submit. Cases contain14 requests: six baseline plus eight busy, no amendment; execution has only intentRevision1."
+    },
+    {
+      "rawEvidence": {
+        "label": "B final bytes latest revision",
+        "passed": false
+      },
+      "scriptLocation": "scenario.cjs:68",
+      "classification": "ACTUAL FALSE ASSERTION against an unsent revision; latest-revision B behavior untested.",
+      "verifiedFacts": "Disk and registered snapshot contain B-ORIGINAL, which is what the actual original user request asked for. No B-AMENDED user request reached the host."
+    },
+    {
+      "rawEvidence": {
+        "label": "B latest immutable delivered in original conversation",
+        "passed": false
+      },
+      "scriptLocation": "scenario.cjs:68",
+      "classification": "ACTUAL FALSE ASSERTION against an unsent revision; amended immutable delivery untested.",
+      "verifiedFacts": "Original r1 B-ORIGINAL immutable file was delivered in the old conversation. No amended file was expected by any submitted user request."
+    },
+    {
+      "rawEvidence": {
+        "label": "final amended execution",
+        "passed": false,
+        "error": "Error: Error: Error invoking remote method 'bot-work:history': [\n  {\n    \"origin\": \"string\",\n    \"code\": \"too_small\",\n    \"minimum\": 1,\n    \"inclusive\": true,\n    \"path\": [\n      \"conversationId\"\n    ],\n    \"message\": \"Too small: expected string to have >=1 characters\"\n  }\n]\n    at evaluate (/home/vivion/iq27-tmp/s27-EMW04H/scripts/bot-frontdoor-live-test.cjs:149:37)\n    at async /home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:68:703\n    at async section (/home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:19:38)\n    at async exports.run.exports.runFocused (/home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:68:2)\n    at async /home/vivion/iq27-tmp/s27-EMW04H/scripts/bot-frontdoor-live-test.cjs:343:11"
+      },
+      "scriptLocation": "scenario.cjs:68:703",
+      "classification": "NOT EXECUTED: inline old-Work/new-conversation feedback route assertion.",
+      "verifiedFacts": "The section later called history(\"\") and threw. Independent persisted-ID route audit separately proves all4 actual execution feedback messages stayed in original conversation; it does not overwrite original failure."
+    },
+    {
+      "rawEvidence": {
+        "label": "actual text open at 960",
+        "passed": false,
+        "error": "Error: Error: Error invoking remote method 'bot-work:history': [\n  {\n    \"origin\": \"string\",\n    \"code\": \"too_small\",\n    \"minimum\": 1,\n    \"inclusive\": true,\n    \"path\": [\n      \"conversationId\"\n    ],\n    \"message\": \"Too small: expected string to have >=1 characters\"\n  }\n]\n    at evaluate (/home/vivion/iq27-tmp/s27-EMW04H/scripts/bot-frontdoor-live-test.cjs:149:37)\n    at async openFile (/home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:72:39)\n    at async /home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:73:106\n    at async section (/home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:19:38)\n    at async exports.run.exports.runFocused (/home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:73:2)\n    at async /home/vivion/iq27-tmp/s27-EMW04H/scripts/bot-frontdoor-live-test.cjs:343:11"
+      },
+      "scriptLocation": "scenario.cjs:72:39,73:106",
+      "classification": "NOT EXECUTED: text open click, IPC and viewer behavior.",
+      "verifiedFacts": "Actual960 window check passed, then openFile called history(\"\") before looking up/clicking the button. Main probe contains zero open IPC/shell-open events."
+    },
+    {
+      "rawEvidence": {
+        "label": "actual JSON open at 1200",
+        "passed": false,
+        "error": "Error: Error: Error invoking remote method 'bot-work:history': [\n  {\n    \"origin\": \"string\",\n    \"code\": \"too_small\",\n    \"minimum\": 1,\n    \"inclusive\": true,\n    \"path\": [\n      \"conversationId\"\n    ],\n    \"message\": \"Too small: expected string to have >=1 characters\"\n  }\n]\n    at evaluate (/home/vivion/iq27-tmp/s27-EMW04H/scripts/bot-frontdoor-live-test.cjs:149:37)\n    at async openFile (/home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:72:39)\n    at async /home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:74:109\n    at async section (/home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:19:38)\n    at async exports.run.exports.runFocused (/home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:74:2)\n    at async /home/vivion/iq27-tmp/s27-EMW04H/scripts/bot-frontdoor-live-test.cjs:343:11"
+      },
+      "scriptLocation": "scenario.cjs:72:39,74:109",
+      "classification": "NOT EXECUTED: JSON open click, IPC and error notice.",
+      "verifiedFacts": "Actual1200 window check passed, then same invalid history call prevented click. Zero open IPC/shell-open events; no JSON association/UI notice conclusion."
+    },
+    {
+      "rawEvidence": {
+        "label": "B amended transport-observed write call exactly once",
+        "passed": false
+      },
+      "scriptLocation": "scenario.cjs:78",
+      "classification": "ACTUAL FALSE ASSERTION expecting an unsent B-AMENDED write; revision write behavior untested.",
+      "verifiedFacts": "Exactly one transport-observed A write and one B-ORIGINAL write exist, zero B-AMENDED writes. Native model work remained r1; no amendment was submitted."
+    }
+  ],
+  "sourceCommit": "b5c1429d77d2d2f192149c48a92990cca8f4926c",
+  "sourceFingerprint": {
+    "sha256": "fa44173fa7b18d2aac9f6e8441f3123e56d08a7b295eb1402285fcf0e9adbde2",
+    "files": 1265
+  },
+  "sourceManifestSha256": "76e73e75fb2ee3bf4807d655e3c2efbbdac1675e6184f8a18347a63a570aae3b",
+  "instrumentationManifestSha256": "7ecbca1411deda39bd9995aa001ac208b5642ecc5001f5508b974113052a10a8",
+  "evidenceManifestSha256": "faf8c1ce7d0becf62bba3ef18f8f6ba3c2ddf327a8ca07b792a84ab55dfe53fc",
+  "rawReportSha256": "bbacac703984911bc56d58ac9828ef65d4ec10de8baa3963d5dfd0d9099624a5",
+  "independentAuditSha256": "2d9c60ecc3991012aea4acd8a3d569964cfe113d0d4f59329f91242e6f725c54",
+  "failureDetailsSha256": "c9548f683dc5ce02d4d8c7a19e3d24af5d74cf8e689f07cded42d20aa814b1b3",
+  "sourceUnchangedBeforeAfter": true,
+  "dbUnchangedAfterReadOnlyAudit": true,
+  "cleanup": {
+    "exactElectronPid": 1600919,
+    "runnerPid": 1599454,
+    "bothExited": true,
+    "remainingProfileProcesses": []
+  },
+  "paths": {
+    "out": "/home/vivion/iq27-tmp/s27-EMW04H/out/diagnostics/bot-scheduling/batch-2026-11-12T01-29-20-008Z-1599454",
+    "profile": "/home/vivion/iq27-tmp/i27-tXWrfg",
+    "source": "/home/vivion/iq27-tmp/s27-EMW04H",
+    "harness": "/home/vivion/iq27-tmp/instrumented-v3"
+  },
+  "reproduceActualOriginalHarness": "ISSUE27_PARENT_GO=1 bash /home/vivion/iq27-tmp/instrumented-v3/launch.sh (real model requests; original known empty-conversationId harness failure preserved; do not rerun without scheduling/authorization)",
+  "priorZeroModelRuns": [
+    {
+      "path": "batch-2026-11-12T01-19-33-818Z-1577299",
+      "result": "startup FAIL; zero inference; /proc environ identity false negative"
+    },
+    {
+      "path": "batch-2026-11-12T01-23-48-018Z-1585846",
+      "result": "bounded window identity selfcheck FAIL; zero inference; mapped PID proved while HOME missing from proc environ"
+    },
+    {
+      "path": "batch-2026-11-12T01-27-01-113Z-1593573",
+      "result": "960/1200 identity selfcheck PASS; zero input/inference; exact startup probe and PID/startTicks/exe/cwd/WM address"
+    }
+  ],
+  "originalPassCaveats": [
+    {
+      "location": "scenario.cjs:39",
+      "label": "two real persistent conversation identities",
+      "problem": "Original raw PASS was too weak: empty string !== old ID. It does not itself prove a second persisted conversation.",
+      "independentEvidence": "cases[].user.messageId/requestId and read-only bot_messages/bot_send_receipts establish actual second bot-conversation-c957b31d-7ca3-46dc-bff8-ac2b62403aad for five baseline cases plus eight busy requests. Independent audit preserves both exact IDs; raw PASS is not overwritten."
+    },
+    {
+      "location": "scenario.cjs:76",
+      "problem": "histories.filter(Boolean) omitted the second conversation because the stored field was empty.",
+      "independentEvidence": "Second-conversation audit uses immutable read-only SQLite after exit, not report.histories. DB before/after SHA256 is unchanged."
+    }
+  ]
+}

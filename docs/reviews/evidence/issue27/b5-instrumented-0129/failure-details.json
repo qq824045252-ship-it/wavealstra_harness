@@ -1,0 +1,105 @@
+{
+  "scope": "Original raw FAILs retained; assessment does not replace report.json.",
+  "failures": [
+    {
+      "rawEvidence": {
+        "label": "A milestone while B busy and natural amendment",
+        "passed": false,
+        "error": "Error: Error: Error invoking remote method 'bot-work:history': [\n  {\n    \"origin\": \"string\",\n    \"code\": \"too_small\",\n    \"minimum\": 1,\n    \"inclusive\": true,\n    \"path\": [\n      \"conversationId\"\n    ],\n    \"message\": \"Too small: expected string to have >=1 characters\"\n  }\n]\n    at evaluate (/home/vivion/iq27-tmp/s27-EMW04H/scripts/bot-frontdoor-live-test.cjs:149:37)\n    at async /home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:54:181\n    at async section (/home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:19:38)\n    at async exports.run.exports.runFocused (/home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:51:2)\n    at async /home/vivion/iq27-tmp/s27-EMW04H/scripts/bot-frontdoor-live-test.cjs:343:11"
+      },
+      "scriptLocation": "scenario.cjs:39,54; amendment is at line 57",
+      "classification": "NOT EXECUTED: amendment and inline cross-conversation A route assertion. Earlier A-running and A-byte checks passed.",
+      "verifiedFacts": "Line39 accepted empty string as different from old ID, before first new message persisted. Line54 invoked history(\"\") and threw before line57 submit. Cases contain14 requests: six baseline plus eight busy, no amendment; execution has only intentRevision1."
+    },
+    {
+      "rawEvidence": {
+        "label": "B final bytes latest revision",
+        "passed": false
+      },
+      "scriptLocation": "scenario.cjs:68",
+      "classification": "ACTUAL FALSE ASSERTION against an unsent revision; latest-revision B behavior untested.",
+      "verifiedFacts": "Disk and registered snapshot contain B-ORIGINAL, which is what the actual original user request asked for. No B-AMENDED user request reached the host."
+    },
+    {
+      "rawEvidence": {
+        "label": "B latest immutable delivered in original conversation",
+        "passed": false
+      },
+      "scriptLocation": "scenario.cjs:68",
+      "classification": "ACTUAL FALSE ASSERTION against an unsent revision; amended immutable delivery untested.",
+      "verifiedFacts": "Original r1 B-ORIGINAL immutable file was delivered in the old conversation. No amended file was expected by any submitted user request."
+    },
+    {
+      "rawEvidence": {
+        "label": "final amended execution",
+        "passed": false,
+        "error": "Error: Error: Error invoking remote method 'bot-work:history': [\n  {\n    \"origin\": \"string\",\n    \"code\": \"too_small\",\n    \"minimum\": 1,\n    \"inclusive\": true,\n    \"path\": [\n      \"conversationId\"\n    ],\n    \"message\": \"Too small: expected string to have >=1 characters\"\n  }\n]\n    at evaluate (/home/vivion/iq27-tmp/s27-EMW04H/scripts/bot-frontdoor-live-test.cjs:149:37)\n    at async /home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:68:703\n    at async section (/home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:19:38)\n    at async exports.run.exports.runFocused (/home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:68:2)\n    at async /home/vivion/iq27-tmp/s27-EMW04H/scripts/bot-frontdoor-live-test.cjs:343:11"
+      },
+      "scriptLocation": "scenario.cjs:68:703",
+      "classification": "NOT EXECUTED: inline old-Work/new-conversation feedback route assertion.",
+      "verifiedFacts": "The section later called history(\"\") and threw. Independent persisted-ID route audit separately proves all4 actual execution feedback messages stayed in original conversation; it does not overwrite original failure."
+    },
+    {
+      "rawEvidence": {
+        "label": "actual text open at 960",
+        "passed": false,
+        "error": "Error: Error: Error invoking remote method 'bot-work:history': [\n  {\n    \"origin\": \"string\",\n    \"code\": \"too_small\",\n    \"minimum\": 1,\n    \"inclusive\": true,\n    \"path\": [\n      \"conversationId\"\n    ],\n    \"message\": \"Too small: expected string to have >=1 characters\"\n  }\n]\n    at evaluate (/home/vivion/iq27-tmp/s27-EMW04H/scripts/bot-frontdoor-live-test.cjs:149:37)\n    at async openFile (/home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:72:39)\n    at async /home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:73:106\n    at async section (/home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:19:38)\n    at async exports.run.exports.runFocused (/home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:73:2)\n    at async /home/vivion/iq27-tmp/s27-EMW04H/scripts/bot-frontdoor-live-test.cjs:343:11"
+      },
+      "scriptLocation": "scenario.cjs:72:39,73:106",
+      "classification": "NOT EXECUTED: text open click, IPC and viewer behavior.",
+      "verifiedFacts": "Actual960 window check passed, then openFile called history(\"\") before looking up/clicking the button. Main probe contains zero open IPC/shell-open events."
+    },
+    {
+      "rawEvidence": {
+        "label": "actual JSON open at 1200",
+        "passed": false,
+        "error": "Error: Error: Error invoking remote method 'bot-work:history': [\n  {\n    \"origin\": \"string\",\n    \"code\": \"too_small\",\n    \"minimum\": 1,\n    \"inclusive\": true,\n    \"path\": [\n      \"conversationId\"\n    ],\n    \"message\": \"Too small: expected string to have >=1 characters\"\n  }\n]\n    at evaluate (/home/vivion/iq27-tmp/s27-EMW04H/scripts/bot-frontdoor-live-test.cjs:149:37)\n    at async openFile (/home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:72:39)\n    at async /home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:74:109\n    at async section (/home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:19:38)\n    at async exports.run.exports.runFocused (/home/vivion/iq27-tmp/instrumented-v3/scenario.cjs:74:2)\n    at async /home/vivion/iq27-tmp/s27-EMW04H/scripts/bot-frontdoor-live-test.cjs:343:11"
+      },
+      "scriptLocation": "scenario.cjs:72:39,74:109",
+      "classification": "NOT EXECUTED: JSON open click, IPC and error notice.",
+      "verifiedFacts": "Actual1200 window check passed, then same invalid history call prevented click. Zero open IPC/shell-open events; no JSON association/UI notice conclusion."
+    },
+    {
+      "rawEvidence": {
+        "label": "B amended transport-observed write call exactly once",
+        "passed": false
+      },
+      "scriptLocation": "scenario.cjs:78",
+      "classification": "ACTUAL FALSE ASSERTION expecting an unsent B-AMENDED write; revision write behavior untested.",
+      "verifiedFacts": "Exactly one transport-observed A write and one B-ORIGINAL write exist, zero B-AMENDED writes. Native model work remained r1; no amendment was submitted."
+    }
+  ],
+  "independentRoutingAudit": "independent-audit.json",
+  "actualUserMessageIds": [
+    "bot-message-45ce8ba8-9a91-4c6c-b751-d8311c1fd4ab",
+    "bot-message-a5d6f790-3b56-4d1d-a47a-af95524e7591",
+    "bot-message-f348ceb6-3331-4867-a55f-d806e56619d8",
+    "bot-message-cd0676ca-35ed-429d-bc3d-801222299092",
+    "bot-message-65de7687-86f0-4c10-bfa9-36d76b4a0e0c",
+    "bot-message-11100b97-5094-4e9f-8b5b-63b20577cfa3",
+    "bot-message-7077b657-0990-479e-a595-a0c942d5f1af",
+    "bot-message-83ced0fc-98bc-46d8-9b1c-53783c541ad8",
+    "bot-message-3c9d290d-dce7-4ea2-aa3d-5a3396de42fa",
+    "bot-message-ab6bef7d-4bb6-41a0-9ad3-acd4ddba0f8a",
+    "bot-message-e5ae8b17-628d-4dff-8ffa-b53e0a652af7",
+    "bot-message-f4085180-4bc3-4e79-978f-c4dced835285",
+    "bot-message-79130f43-636f-4eb1-b07c-2ac719e9b496",
+    "bot-message-1295b1ee-2f85-42aa-b302-409e13390b17"
+  ],
+  "actualUserRequestIds": [
+    "762ae509-f82d-4156-8c36-2b03acf7114a",
+    "53bbf305-7500-46c6-a1b7-11f604a7e3c3",
+    "601ddb5f-d95d-4654-9ad0-91fe119423c5",
+    "49b55e98-264e-4ac7-ba8d-cb6a868e2589",
+    "fb88c583-0b62-43f3-82ba-bbb8bd70063b",
+    "9e5afefe-fea3-4156-b35b-9719fcf4e0d1",
+    "555ff7f2-15a8-4336-b8c9-2ab40faeb5e4",
+    "96d24529-b71f-4536-8b0c-2f4c4757ff23",
+    "784149f1-6811-4e9b-a9c8-7e67d2780770",
+    "7b307788-a20c-43c3-a208-4fa8f56b3e8e",
+    "457b763b-8c93-488f-8f2b-80c7df1be59e",
+    "e968a6e6-cbc1-43e4-bbd9-3584dc99ed50",
+    "efde7971-c327-4ce3-aa39-c01ce19ab110",
+    "5fafa3f9-f1af-4530-934b-018e55ab6c52"
+  ]
+}
