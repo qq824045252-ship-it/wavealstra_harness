@@ -1,6 +1,28 @@
 /** Real application acceptance. All local data below is synthetic and isolated. */
 const fs = require('node:fs'), path = require('node:path'), cp = require('node:child_process');
 const assert = require('node:assert/strict'), crypto = require('node:crypto'), net = require('node:net');
+// Observation helpers are also tested without launching an app or model.
+function currentTurn(history, previousIds, prompt) {
+  const messages = history.messages.filter(m => !previousIds.has(m.id));
+  const start = messages.findIndex(m => m.role === 'user' && m.text === prompt);
+  assert(start >= 0, 'current submitted user turn is absent from durable history');
+  const turn = messages.slice(start);
+  assert(turn.some(m => m.role === 'assistant'), 'current turn has no assistant response');
+  return turn;
+}
+function successfulFilesystemTools(tools) {
+  assert(tools.some(t => t.tool === 'read' && t.status === 'success'), 'actual file read missing');
+  assert(tools.some(t => ['write', 'bash', 'execute', 'shell'].includes(t.tool) && t.status === 'success'), 'actual file-writing tool missing');
+}
+function searchEvidence(tools) {
+  const search = tools.filter(t => t.tool === 'web_search');
+  assert(search.length && search.every(t => t.status === 'success'), 'real public search did not succeed');
+  assert(search.some(t => /https?:\/\//.test(t.output || '')), 'search did not return source URLs');
+  // Auxiliary original-page verification must remain visible, even when search succeeded.
+  const sourceFailures = tools.filter(t => t.tool !== 'web_search' && t.status === 'error');
+  return { searchStatus: 'passed', sourceVerification: sourceFailures.length ? 'failed' : tools.some(t=>['fetch_content','source_check'].includes(t.tool)) ? 'passed' : 'not-requested', sourceFailures };
+}
+exports.observation = { currentTurn, successfulFilesystemTools, searchEvidence };
 exports.run = async ({ send, until, evaluate, history, rpc, report, requests, rawUsageAudit, out, home, modelKey, botId, restart }) => {
   const workspace = path.join(home, 'issue21-inputs'); fs.mkdirSync(workspace, { recursive: true });
   const nonce = crypto.randomBytes(8).toString('hex'), marker = 'READBACK-' + nonce;
@@ -8,7 +30,7 @@ exports.run = async ({ send, until, evaluate, history, rpc, report, requests, ra
   fs.writeFileSync(path.join(workspace, 'sales.csv'), 'product,units,price\nTea,3,12\nCoffee,2,25\nCake,4,8\n');
   const dbPath = path.join(home, '.mybuddy/app.db'), sentinel = path.join(workspace, 'legacy-must-not-run.txt');
   const sql = (program, ...args) => JSON.parse(cp.execFileSync('python3', ['-c', program, dbPath, ...args], { encoding: 'utf8' }));
-  report.cases = []; report.failures = []; report.coverage = {
+  report.cases = []; report.failures = []; report.limitations = []; report.coverage = {
     actual: 'pnpm dev, real Electron/preload, real online model, real public network and disk tools',
     synthetic: 'isolated input files and seeded historical quarantine/approval records',
     notTested: ['Windows', 'physical keyboard/mouse input', 'live team/subagent/Code Mode'],
@@ -56,6 +78,8 @@ print(json.dumps({'retiredTables':[r[0] for r in c.execute("SELECT name FROM sql
     const assistantMessageId = crypto.randomUUID();
     const req = { taskId, text, spaceId, modelId: modelKey, welcomeMode: 'working', modePresetId: 'native', permissionMode: 'readonly', userMessageId: crypto.randomUUID(), assistantMessageId };
     row.prompt = text;
+    const previousHistory = await evaluate(`window.api.agent.loadTaskHistory(${JSON.stringify(taskId)})`);
+    const previousIds = new Set((previousHistory?.messages || []).map(m => m.id));
     const eventStart = await evaluate("window.__isolationEvents.length");
     await evaluate(`(()=>{window.api.agent.prompt(${JSON.stringify(req)}).then(r=>window.__isolationSubmission=r,e=>window.__isolationError=String(e));return true})()`);
     try {
@@ -63,11 +87,12 @@ print(json.dumps({'retiredTables':[r[0] for r in c.execute("SELECT name FROM sql
       row.events = await evaluate(`window.__isolationEvents.slice(${eventStart}).filter(e=>e.type==='durable_delta'&&e.taskId===${JSON.stringify(taskId)}&&e.delta.state).map(e=>({type:e.type,taskId:e.taskId,observedAt:e.observedAt,epoch:e.delta.epoch,revision:e.delta.revision,state:e.delta.state}))`);
       const last = row.events.at(-1)?.state; assert.equal(last?.outcome,'completed',last?.error);
       row.history = await evaluate(`window.api.agent.loadTaskHistory(${JSON.stringify(taskId)})`);
-      row.toolResults = row.history.messages.flatMap(m=>m.tools||[]);
+      row.turnMessages = currentTurn(row.history, previousIds, text);
+      row.toolResults = row.turnMessages.flatMap(m=>m.tools||[]);
       assert(!row.toolResults.some(t => t.status === 'pending_approval'), 'retired approval surfaced');
       assert(!row.toolResults.some(t => retired.test(t.output || '')), 'retired resource blocker surfaced');
       row.tools = row.toolResults.map(t => t.tool);
-      return row.history.messages.filter(m=>m.role==='assistant').map(m=>m.text||'').join('\n');
+      return row.turnMessages.filter(m=>m.role==='assistant').map(m=>m.text||'').join('\n');
     } finally {
       if (!row.events) await evaluate(`window.api.agent.abort(${JSON.stringify(taskId)})`).catch(() => {});
     }
@@ -76,14 +101,18 @@ print(json.dumps({'retiredTables':[r[0] for r in c.execute("SELECT name FROM sql
   await section('ordinary filesystem verification', 'filesystem', async row => {
     const text = await native(row, `执行真实磁盘验收：读取 ${path.join(workspace,'source.txt')}，创建 ${path.join(workspace,'native-output')} 目录，把读取的完整内容分别写入 one.txt 和 two.txt，再 read 两个文件并执行 ls、wc、stat 复核。最后给出读到的完整标记和两个文件大小。不要请求确认，不使用后台 Work。`);
     diskTask = row.taskId;
-    for (const file of ['one.txt', 'two.txt']) assert.equal(fs.readFileSync(path.join(workspace,'native-output',file),'utf8').trim(), marker);
-    assert(text.includes(marker)); assert(row.tools.includes('read') && row.tools.includes('write'));
+    row.files = ['one.txt', 'two.txt'].map(name => {
+      const bytes = fs.readFileSync(path.join(workspace, 'native-output', name));
+      assert.deepEqual(bytes, fs.readFileSync(path.join(workspace, 'source.txt')), 'exact written bytes differ');
+      return { name, bytes: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex') };
+    });
+    assert(text.includes(marker)); successfulFilesystemTools(row.toolResults);
   });
   await section('ordinary public information research', 'public-search', async row => {
     await native(row, '使用 web_search 搜索 IANA Example Domains 的公开用途，给出真实搜索结果 URL 和一句话结论。若实际网络失败就报告具体错误，不编造结果，不反复重试，也不改做后台 Work。');
-    assert(row.tools.includes('web_search'), 'real search tool not invoked');
-    const errors = row.toolResults.filter(t => t.status==='error');
-    row.networkErrors = errors; assert.equal(errors.length, 0, 'public search returned a real network/tool failure; not an isolation failure');
+    row.searchEvidence = searchEvidence(row.toolResults);
+    row.networkErrors = row.searchEvidence.sourceFailures;
+    if (row.networkErrors.length) report.limitations.push({ case: row.name, message: 'Search returned real sources, but additional original-page verification failed; no bypass or retry was attempted.', errors: row.networkErrors });
   });
   await section('ordinary public webpage extraction', 'browser-reading', async row => {
     const text = await native(row, '用内置 browser_exec navigate 打开 https://example.com，然后 browser_exec read 提取标题与正文并回复。必须实际打开读取，不用 fetch、curl、截图替代。不要创建后台 Work。');
@@ -117,7 +146,10 @@ print(json.dumps({'retiredTables':[r[0] for r in c.execute("SELECT name FROM sql
     assert(!retired.test(JSON.stringify(row.nativeHistories)), 'retired isolation or scope denied Bot');
     await until(async()=>{row.finalWork=await details(work.workId);return row.finalWork.lifecycle==='closed';},'business completion '+row.name);
     assert.equal(row.finalWork.closureConclusion,'succeeded');
-    row.visibleFeedback=await evaluate(`(()=>{const ids=${JSON.stringify(row.feedback.map(m=>m.messageId))};return ids.map(id=>({id,text:document.querySelector('[data-message-id="'+id+'"]')?.innerText||null}));})()`);
+    await until(async()=>{
+      row.visibleFeedback=await evaluate(`(()=>{const ids=${JSON.stringify(row.feedback.map(m=>m.messageId))};return ids.map(id=>({id,text:document.querySelector('[data-message-id="'+id+'"]')?.innerText||null}));})()`);
+      return row.visibleFeedback.some(m=>m.text?.includes(expectedFile));
+    }, 'visible result file in Bot conversation '+row.name);
   }
   await section('Bot background tabular analysis', 'data-analysis', async row => {
     await botWork(row, `请创建并立即执行一个一次性后台事项，标题“I21销售分析”。工作目录 ${workspace}。实际读取 sales.csv，计算每项金额与总额，写 sales-summary.txt 和 sales-detail.csv；两者必须包含总额118。用 read/ls/wc/stat复核，向当前会话交付两个实际文件并完成业务验收。不要计划定时检查。`, 'sales-summary.txt');
@@ -128,13 +160,14 @@ print(json.dumps({'retiredTables':[r[0] for r in c.execute("SELECT name FROM sql
     await botWork(row, `请创建并立即执行另一个一次性后台事项，标题“I21公开网页简报”。工作目录 ${workspace}。用 browser_exec navigate/read 实际打开 https://example.com，再读取 source.txt，把网页标题、用途、来源URL、source.txt完整标记写入 public-brief.md，同时写一份 public-brief.txt。用read/ls/wc/stat复核，向当前会话交付两个实际文件并完成业务验收。不得把已知标题当实际读取。`, 'public-brief.md');
     const result=fs.readFileSync(path.join(workspace,'public-brief.md'),'utf8');assert.match(result,/Example Domain/i);assert(result.includes(marker));
     assert(fs.existsSync(path.join(workspace,'public-brief.txt')));
-    assert(JSON.stringify(row.nativeHistories).includes('browser_exec'),'Bot browser tool not evidenced');
+    const browserTools = row.nativeHistories.flatMap(h=>h.messages.flatMap(m=>m.tools||[])).filter(t=>t.tool==='browser_exec');
+    assert(browserTools.length>=2 && browserTools.every(t=>t.status==='success'),'Bot successful browser navigate/read not evidenced');
   });
   // Reopen once more after real actions, then continue the original native task.
   await section('restart continuation without historical replay', 'same-session-restart', async row => {
     assert(diskTask,'initial filesystem task was not accepted'); await restart(); await installEvents();
     const text=await native(row, `这是重启后的同一会话核验。只读 ${path.join(workspace,'native-output/one.txt')}，不写任何文件，回复其中的完整标记。`, diskTask);
-    assert(text.includes(marker));assert(!fs.existsSync(sentinel));
+    assert(text.includes(marker));assert(row.tools.includes('read'));assert(!row.tools.some(t=>['write','edit','bash'].includes(t)));assert(!fs.existsSync(sentinel));
     row.finalDb=sql(`import sqlite3,json,sys
 c=sqlite3.connect('file:'+sys.argv[1]+'?mode=ro',uri=True);print(json.dumps({'quickCheck':c.execute('PRAGMA quick_check').fetchone()[0],'foreignKeyErrors':c.execute('PRAGMA foreign_key_check').fetchall()}))`);
     assert.equal(row.finalDb.quickCheck,'ok');assert.deepEqual(row.finalDb.foreignKeyErrors,[]);

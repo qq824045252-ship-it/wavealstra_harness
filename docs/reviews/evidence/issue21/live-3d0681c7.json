@@ -1,0 +1,354 @@
+{
+  "sourceSha": "3d0681c7598d551fafdda2bd1c957119127ae65f",
+  "sourceFingerprint": {
+    "sha256": "f626d15aacf71f2cd47cc382b9ccc6396fc01bf350236e91a9b180819a95a89a",
+    "files": 1265
+  },
+  "finishedFingerprint": {
+    "sha256": "f626d15aacf71f2cd47cc382b9ccc6396fc01bf350236e91a9b180819a95a89a",
+    "files": 1265
+  },
+  "rawReportSha256": "e97726466020d4d7e153037f310a70a54167b7e5ba1bdcbab06866f8dcc3082d",
+  "rawStatus": "failed",
+  "rawSummary": {
+    "passed": 5,
+    "failed": 2
+  },
+  "modelCalls": 48,
+  "model": [
+    "opendesign/deepseek-v4.1-flash"
+  ],
+  "legacySeed": {
+    "businessCounts": {
+      "bots": 1,
+      "tasks": 0,
+      "works": 0
+    },
+    "seededOutboxStates": [
+      "pending",
+      "queued",
+      "running"
+    ],
+    "quarantinedHost": true
+  },
+  "afterLegacyRestart": {
+    "retiredTables": [],
+    "businessCounts": {
+      "bots": 1,
+      "tasks": 0,
+      "works": 0
+    },
+    "quickCheck": "ok",
+    "foreignKeyErrors": []
+  },
+  "cases": [
+    {
+      "name": "ordinary filesystem verification",
+      "kind": "filesystem",
+      "rawStatus": "failed",
+      "modelCalls": 10,
+      "tools": [
+        {
+          "name": "read",
+          "status": "success"
+        },
+        {
+          "name": "bash",
+          "status": "success"
+        },
+        {
+          "name": "bash",
+          "status": "success"
+        },
+        {
+          "name": "read",
+          "status": "success"
+        },
+        {
+          "name": "read",
+          "status": "success"
+        },
+        {
+          "name": "bash",
+          "status": "success"
+        },
+        {
+          "name": "bash",
+          "status": "success"
+        },
+        {
+          "name": "register_artifact",
+          "status": "success"
+        },
+        {
+          "name": "register_artifact",
+          "status": "success"
+        }
+      ],
+      "adjudication": "Exact source bytes were written and read back. Raw failure required the tool name write although successful bash performed the writes. Raw report remains failed."
+    },
+    {
+      "name": "ordinary public information research",
+      "kind": "public-search",
+      "rawStatus": "failed",
+      "modelCalls": 3,
+      "tools": [
+        {
+          "name": "web_search",
+          "status": "success"
+        },
+        {
+          "name": "fetch_content",
+          "status": "error"
+        }
+      ],
+      "adjudication": "web_search succeeded with five real source URLs. An additional RFC original-page fetch failed URL policy because DNS returned a reserved fake-IP address in isolated HOME. No exception, proxy reconfiguration or alternate route was attempted."
+    },
+    {
+      "name": "ordinary public webpage extraction",
+      "kind": "browser-reading",
+      "rawStatus": "passed",
+      "modelCalls": 3,
+      "tools": [
+        {
+          "name": "browser_exec",
+          "status": "success"
+        },
+        {
+          "name": "browser_exec",
+          "status": "success"
+        }
+      ]
+    },
+    {
+      "name": "ordinary network failure diagnosis",
+      "kind": "network-diagnosis",
+      "rawStatus": "passed",
+      "modelCalls": 2,
+      "tools": [
+        {
+          "name": "bash",
+          "status": "success"
+        },
+        {
+          "name": "bash",
+          "status": "success"
+        }
+      ]
+    },
+    {
+      "name": "Bot background tabular analysis",
+      "kind": "data-analysis",
+      "rawStatus": "passed",
+      "modelCalls": 13,
+      "tools": [
+        {
+          "name": "bash",
+          "status": "success"
+        },
+        {
+          "name": "read",
+          "status": "success"
+        },
+        {
+          "name": "bash",
+          "status": "success"
+        },
+        {
+          "name": "bash",
+          "status": "success"
+        },
+        {
+          "name": "bash",
+          "status": "success"
+        },
+        {
+          "name": "bash",
+          "status": "success"
+        },
+        {
+          "name": "bash",
+          "status": "success"
+        },
+        {
+          "name": "bash",
+          "status": "success"
+        },
+        {
+          "name": "read",
+          "status": "success"
+        },
+        {
+          "name": "read",
+          "status": "success"
+        },
+        {
+          "name": "register_artifact",
+          "status": "success"
+        },
+        {
+          "name": "register_artifact",
+          "status": "success"
+        }
+      ],
+      "business": {
+        "lifecycle": "closed",
+        "conclusion": "succeeded",
+        "executions": [
+          "completed"
+        ]
+      },
+      "deliveredFiles": [
+        "sales-summary.txt",
+        "sales-detail.csv"
+      ],
+      "visibleAfterRestart": true,
+      "immediateDomSample": "empty; independent post-restart DOM snapshot confirms results and four file buttons"
+    },
+    {
+      "name": "Bot background sourced document writing",
+      "kind": "document-writing",
+      "rawStatus": "passed",
+      "modelCalls": 15,
+      "tools": [
+        {
+          "name": "ls",
+          "status": "success"
+        },
+        {
+          "name": "browser_exec",
+          "status": "success"
+        },
+        {
+          "name": "browser_exec",
+          "status": "success"
+        },
+        {
+          "name": "read",
+          "status": "success"
+        },
+        {
+          "name": "bash",
+          "status": "success"
+        },
+        {
+          "name": "write",
+          "status": "success"
+        },
+        {
+          "name": "write",
+          "status": "success"
+        },
+        {
+          "name": "bash",
+          "status": "success"
+        },
+        {
+          "name": "read",
+          "status": "success"
+        },
+        {
+          "name": "read",
+          "status": "success"
+        },
+        {
+          "name": "edit",
+          "status": "success"
+        },
+        {
+          "name": "edit",
+          "status": "success"
+        },
+        {
+          "name": "bash",
+          "status": "success"
+        },
+        {
+          "name": "bash",
+          "status": "success"
+        },
+        {
+          "name": "register_artifact",
+          "status": "success"
+        },
+        {
+          "name": "register_artifact",
+          "status": "success"
+        }
+      ],
+      "business": {
+        "lifecycle": "closed",
+        "conclusion": "succeeded",
+        "executions": [
+          "completed"
+        ]
+      },
+      "deliveredFiles": [
+        "public-brief.md",
+        "public-brief.txt"
+      ],
+      "visibleAfterRestart": true,
+      "immediateDomSample": "empty; independent post-restart DOM snapshot confirms results and four file buttons"
+    },
+    {
+      "name": "restart continuation without historical replay",
+      "kind": "same-session-restart",
+      "rawStatus": "passed",
+      "modelCalls": 2,
+      "tools": [
+        {
+          "name": "read",
+          "status": "success"
+        }
+      ],
+      "finalDb": {
+        "quickCheck": "ok",
+        "foreignKeyErrors": []
+      }
+    }
+  ],
+  "files": [
+    {
+      "name": "native-output/one.txt",
+      "bytes": 26,
+      "sha256": "b1ff25af54ec31161494e373f5270bc133c42b0365fba293796f26696ccb8645"
+    },
+    {
+      "name": "native-output/two.txt",
+      "bytes": 26,
+      "sha256": "b1ff25af54ec31161494e373f5270bc133c42b0365fba293796f26696ccb8645"
+    },
+    {
+      "name": "sales-summary.txt",
+      "bytes": 425,
+      "sha256": "8a6666411d5485690a2fb593ede1f1a37b795714a3cb4dd3fe1ca4349acd565c"
+    },
+    {
+      "name": "sales-detail.csv",
+      "bytes": 78,
+      "sha256": "f208c243d989b6182ed61561bb14d64c07d4d46940300852c736ad03375e5fca"
+    },
+    {
+      "name": "public-brief.md",
+      "bytes": 1821,
+      "sha256": "0c4298fd0eaac8645852fbc4841f27c2e9d648089dbf864c688bed2402db825b"
+    },
+    {
+      "name": "public-brief.txt",
+      "bytes": 1558,
+      "sha256": "95c23ea6b2786c9d508edb41b7f2d56f49de4b4582380c10af911e033a7c10d9"
+    }
+  ],
+  "visibleFileButtons": [
+    "打开 sales-summary.txt",
+    "打开 sales-detail.csv",
+    "打开 public-brief.md",
+    "打开 public-brief.txt"
+  ],
+  "notTested": [
+    "Windows",
+    "physical keyboard/mouse input",
+    "live team/subagent/Code Mode"
+  ],
+  "scope": "Real pnpm dev, isolated profile, real model and real public browser/disk. Not physical input, Windows, performance or packaged acceptance."
+}

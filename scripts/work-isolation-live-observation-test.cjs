@@ -1,0 +1,16 @@
+const assert = require('node:assert/strict');
+const { currentTurn, successfulFilesystemTools, searchEvidence } = require('./work-isolation-live-scenario.cjs').observation;
+const old = { id:'old', role:'assistant', text:'stale marker', tools:[{tool:'write',status:'success'}] };
+const user = { id:'new-user', role:'user', text:'read now' };
+const reply = { id:'new-reply', role:'assistant', text:'current marker', tools:[{tool:'read',status:'success'}] };
+assert.deepEqual(currentTurn({messages:[old,user,reply]},new Set(['old']),'read now'),[user,reply]);
+assert.throws(()=>currentTurn({messages:[old]},new Set(['old']),'read now'));
+assert.throws(()=>currentTurn({messages:[old,user]},new Set(['old']),'read now'));
+for (const tool of ['write','bash']) successfulFilesystemTools([{tool:'read',status:'success'},{tool,status:'success'}]);
+assert.throws(()=>successfulFilesystemTools([{tool:'read',status:'success'},{tool:'write',status:'error'}]));
+assert.throws(()=>searchEvidence([{tool:'web_search',status:'error',output:'https://example.com'}]));
+assert.throws(()=>searchEvidence([{tool:'web_search',status:'success',output:'No sources'}]));
+const blocked={tool:'fetch_content',status:'error',output:'Blocked internal address'};
+const evidence=searchEvidence([{tool:'web_search',status:'success',output:'Source https://example.com'},blocked]);
+assert.equal(evidence.searchStatus,'passed');assert.equal(evidence.sourceVerification,'failed');assert.deepEqual(evidence.sourceFailures,[blocked]);
+console.log('PASS live observation: current turn only; actual successful disk tools; source verification failures retained');

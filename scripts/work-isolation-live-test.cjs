@@ -68,6 +68,7 @@ source = source.slice(0, start) + `
       assert.equal(report.source.finishedFingerprint.sha256,report.source.fingerprint.sha256,'frozen source must not change during live batch');
     }
 ` + source.slice(end);
+replaceOnce("report.status='passed';", "report.status=report.limitations?.length?'passed-with-limitations':'passed';");
 if (process.argv.includes('--check-harness')) {
   new (require('node:vm').Script)(source, {filename});
   console.log('PASS isolation harness compilation; no app launch or inference');

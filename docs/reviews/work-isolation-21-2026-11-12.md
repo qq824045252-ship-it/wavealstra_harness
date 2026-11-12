@@ -42,3 +42,24 @@
 ## 首次真实批的 driver 中断
 
 `4bb4fc6b` 的首次批已产生 6 次真实 Flash 请求，首个普通任务完成建目录、写两个 26 字节文件、回读、ls/wc/stat 和字节校验。driver 错等旧 `assistant_end` 事件，而当前原生链通过 `durable_delta.state.outcome=completed` 交付，因此在该场景中断并保留 `status=interrupted`。这不是完整六类批通过，也不作为产品失败；后续 driver 改为真实 Durable 状态/历史工具结果，禁止造出旧结束事件来通过断言。
+
+
+## 完整七场景真实批（3d0681c7）
+
+48 次真实 Flash 请求；开始/结束源码指纹一致。原始结果是 **5 PASS / 2 FAIL**，没有追改报告。脱敏摘要及原报告哈希见 `evidence/issue21/live-3d0681c7.json`。
+
+- 普通磁盘：两文件均为 26 字节，内容与来源完全一致，实际 read、bash 写入、ls/wc/stat、回读成功。原断言错误要求必须出现 `write` 工具，而模型使用合法的 bash 写入，所以原始 FAIL 属于 driver 误判。
+- 公开检索：web_search 返回 5 个真实来源 URL。模型随后追加的 RFC 原文 fetch_content 被 URL-policy 拒绝：DNS 返回保留 fake-IP 地址，隔离 HOME 内没有既有 FlClash 受信配置。搜索成功不等于原文核验成功；原始 FAIL 保留，未放宽 allowRanges、复制私人代理配置、关闭 SSRF 或通过其他路径重试被拒网址。
+- 普通内置浏览器：真实 navigate/read `https://example.com`，成功得到 Example Domain 标题与正文。
+- 网络诊断：公开 curl 成功，故意关闭的本机端口返回实际 curl 退出码 7；没有变成共享资源隔离错误。
+- Bot 表格分析与来源文档：两项真实派发、执行完成、回会话交付，均业务 `closed/succeeded`。4 个文件实际存在，重启后独立 DOM 快照确认 4 个打开文件按钮。即时 DOM 抽样为空，不能把该抽样说成已可见。
+- 同一原生会话重启继续：新增回合有真实 read 和新回复，旧审批载荷未回放，SQLite 完整性通过。
+- 旧 profile 注入 pending/queued/running outbox 与 host quarantine 后真实重启，专用表清除、Bot/task/Work 计数不变，SQLite quick_check 与外键检查通过。
+
+## driver 后续修正与网络边界
+
+新增零模型观察回归：只采本次提交后新增的持久回合；按实际成功工具和精确文件字节验收 bash/write；等待 Bot 消息真正可见；Bot 网页证据检查实际工具状态而不是在任意 JSON 中搜词。搜索与额外原文核验分列，后者失败会保留错误并使总结果标为 `passed-with-limitations`，不能当作全面通过。
+
+`pinned-public-proxy` 安全专项覆盖公开 IPv4/IPv6、DNS 身份与私网混合答案、407 无后备路线、TLS 证书错误、非法输入零网络。此专项是受控测试，不构成被拒 RFC 网址已可访问的证明。没有改动任何地址安全检查或系统网络设置。
+
+恢复后新增检查：durable-tool-policy、IPC inventory、pinned-public-proxy、architecture（278 项）、typecheck（web/node/scripts）、test-all 分类自检均通过。首次 durable-tool-policy 在默认 /tmp 创建 SQLite 时遇 IOERR_WRITE；改用约定的仓库外磁盘 TMPDIR 后通过，保留两次日志，未删除或掩盖首次失败。
