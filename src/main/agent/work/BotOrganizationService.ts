@@ -1,3 +1,4 @@
+import { botContactIntent, assertBotContactAdmission } from "./BotContactAdmission";
 import { botDispatchIdentity } from "./BotDispatchIdentity";
 import { isSharedBotConversation } from "./BotConversationAudience";
 import { createHash } from "node:crypto";
@@ -110,16 +111,14 @@ export class BotOrganizationService {
     // One default routing decision per real user request, across tool retries and
     // restarts. Keep the existing organization journal and collaboration outbox.
     const dispatchIdentity = parsed.action === "dispatch" ? botDispatchIdentity(source.bot_id, source.user_message_id) : undefined;
-    if (dispatchIdentity) {
-      const saved = this.row(`bot-organization-${dispatchIdentity}`);
-      if (saved) {
-        // Replay is a read: only an explicit resume advances an unfinished
-        // intention. In particular, unknown admission must not select again.
-        return { organization: saved.view, replayed: true,
-          collaboration: this.options.collaborations.organizationCollaboration(saved.view.organizationId),
-          ...(parsed.action === "dispatch" && saved.view.kind === "intent" && saved.view.target?.botId !== parsed.targetBotId
-            ? { error: "dispatch_existing_intent: 本次原请求已有选派，返回原目标与真实协作；未改派新目标。继续 query/resume 原 intentId，修订用原 collaborationId。" } : {}) };
-      }
+    const contacting = parsed.action === "dispatch" || parsed.action === "arrange" && parsed.contact.kind !== "none";
+    const previousContact = contacting ? botContactIntent(this.options.db, source, parsed.action === "dispatch" ? "any" : "dispatch") : undefined;
+    if (previousContact) {
+      const saved = this.row(previousContact);
+      if (!saved) throw new Error("原派送记录不可核对，不创建替代投递");
+      return { organization: saved.view, replayed: true,
+        collaboration: this.options.collaborations.organizationCollaboration(previousContact),
+        error: "same_request_existing_intent: dispatch_existing_intent: 本次请求已有联系意图，返回原目标和真实记录；未改配、创建或重发。query/resume 原 intentId，后续沿原协作。" };
     }
     if (parsed.action === "dispatch") {
       const existing = this.options.collaborations.repo.summariesForMessage(this.options.userId, parentMessageId);
@@ -460,6 +459,8 @@ export class BotOrganizationService {
     let record = this.intent(intentId, source.bot_id);
     const plan = botOrganizationCommandSchema.parse(JSON.parse(record.row.request_json));
     if (plan.action !== "arrange") throw new Error("组织计划类型不可核对");
+    if (plan.contact.kind !== "none") assertBotContactAdmission(this.options.db,
+      originSchema.parse(JSON.parse(record.row.origin_json)), intentId);
     let stage: "creation" | "configuration" | "contact" = record.view.target ? "configuration" : "creation";
     try {
       if (record.view.phase === "linked") return { organization: record.view, replayed: true };

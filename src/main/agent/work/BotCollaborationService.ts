@@ -1,4 +1,4 @@
-import { botDispatchIdentity } from "./BotDispatchIdentity";
+import { botContactIntent, assertBotContactAdmission } from "./BotContactAdmission";
 import { isSharedBotConversation } from "./BotConversationAudience";
 import { createHash } from "node:crypto";
 import { z } from "zod";
@@ -89,6 +89,7 @@ export class BotCollaborationService {
         || !this.messages.conversation(this.options.userId, origin.bot_id, origin.conversation_id)
         || isSharedBotConversation(this.options.db, origin.conversation_id))
         throw new Error("原创建来源已不可用，保留创建结果，不改投或新建执行");
+      assertBotContactAdmission(this.options.db, input.origin, input.intentId);
       input.configurationGuard();
       return current;
     };
@@ -212,10 +213,8 @@ export class BotCollaborationService {
       // Other tool names/task IDs cannot turn an admitted default dispatch into
       // another logical send. Only that exact original user message is fenced;
       // a fresh explicit user request keeps normal ask/delegate semantics.
-      const intentId = `bot-organization-${botDispatchIdentity(source.bot_id, source.user_message_id)}`;
-      const hasJournal = this.options.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='bot_organization_records'").get();
-      if (hasJournal && this.options.db.prepare("SELECT 1 FROM bot_organization_records WHERE user_id=? AND source_bot_id=? AND organization_id=?")
-        .get(this.options.userId, source.bot_id, intentId)) {
+      const intentId = botContactIntent(this.options.db, source);
+      if (intentId) {
         const dispatched = this.organizationCollaboration(intentId);
         return { ...(dispatched ? this.query(dispatched, source) : {}), intentId, replayed: true,
           error: "dispatch_existing_intent: 本次原请求已有唯一选派，返回原目标和真实回执，未通过旧入口再次派送；query/resume 原 intentId，改向或补充沿原协作和新的真实用户请求。" };

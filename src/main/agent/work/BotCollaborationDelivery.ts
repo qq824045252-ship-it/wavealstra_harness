@@ -1,3 +1,4 @@
+import { assertBotContactAdmission } from "./BotContactAdmission";
 import { z } from "zod";
 import { botPeerOriginSchema, type BotPeerOrigin } from "../../../shared/bot-peer-origin";
 import type { BotSendReceipt } from "../../../shared/bot-conversation";
@@ -30,6 +31,7 @@ export class BotCollaborationDelivery {
       sourceBotId: source.bot_id, sourceConversationId: source.conversation_id, sourceRequestId: source.request_id,
       sourceUserMessageId: source.user_message_id, sourceAssistantMessageId: source.assistant_message_id, ...(configuration ? { configuration } : {}) };
     this.options.works.transaction(() => {
+      assertBotContactAdmission(this.options.db, source, configuration?.organizationIntentId, row.collaborationId);
       guard?.();
       if (this.messages.peers.origin(source.user_message_id)) throw new Error("协作不能把 Bot 转述作为新的用户授权");
       this.messages.peers.prepare(this.options.userId, operationId, origin, text, row.targetBotId);

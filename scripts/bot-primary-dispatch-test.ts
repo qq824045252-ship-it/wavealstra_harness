@@ -308,6 +308,94 @@ try {
       assert.equal(service.messages.peers.deliveries(LOCAL_USER_ID).length, before);
     });
   }
+  for (const state of ["accepted", "unknown"] as const) {
+    const origin = request(`新增入口绕行 ${state}`); failPreparation = state === "unknown";
+    const first = intentSchema.parse(await dispatch(origin.assistantMessageId, "learner", "同一派送事项"));
+    await service.organizations!.command(origin.assistantMessageId, randomUUID(), { action: "discover" });
+    for (const next of [
+      { action: "arrange", target: { kind: "existing", botId: "tester" }, contact: { kind: "delegate", text: "换入口和目标的重试" } },
+      { action: "arrange", target: { kind: "existing", botId: "learner" }, contact: { kind: "ask", text: "同一事项的新模型改写" } },
+      { action: "arrange", target: { kind: "create", displayName: `不应重复创建-${state}`, responsibilitySummary: "不得绕过派送身份", whyExistingBotsDoNotFit: "受控重复入口测试" }, contact: { kind: "delegate", text: "同一事项不另造 Bot" } },
+    ]) await boundary(`${state} dispatch then arrange ${next.target.kind}/${next.contact.kind} reuses original`, async () => {
+      const before = [count("bots"), count("bot_organization_records"), count("bot_collaborations"), service.messages.peers.deliveries(LOCAL_USER_ID).length];
+      const result = intentSchema.parse(await service.organizations!.command(origin.assistantMessageId, randomUUID(), next));
+      assert.deepEqual([count("bots"), count("bot_organization_records"), count("bot_collaborations"), service.messages.peers.deliveries(LOCAL_USER_ID).length], before, "arrange must not create/configure/contact a second executor");
+      assert.equal(result.organization.intentId, first.organization.intentId); assert.equal(result.organization.target.botId, "learner");
+    });
+    failPreparation = false;
+    const resume = request("仅恢复原入口事项");
+    await service.organizations!.command(resume.assistantMessageId, randomUUID(), { action: "resume", intentId: first.organization.intentId });
+    await boundary(`${state} contact:none remains a real configuration operation`, async () => {
+      const previous = settings.get("tester"), workspacePath = join(root, `configuration-only-${state}`); mkdirSync(workspacePath);
+      const before = [count("bot_collaborations"), service.messages.peers.deliveries(LOCAL_USER_ID).length];
+      const result = intentSchema.parse(await service.organizations!.command(origin.assistantMessageId, randomUUID(), { action: "arrange",
+        target: { kind: "existing", botId: "tester", configuration: { expectedRevision: previous.revision, changes: { workspacePath } } }, contact: { kind: "none" } }));
+      assert.equal(result.organization.phase, "ready"); assert.equal(settings.get("tester").workspacePath, workspacePath);
+      assert.equal(settings.get("tester").revision, previous.revision + 1);
+      assert.deepEqual([count("bot_collaborations"), service.messages.peers.deliveries(LOCAL_USER_ID).length], before);
+    });
+    const reverse = request(`先 arrange 再 dispatch ${state}`); failPreparation = state === "unknown";
+    const arranged = intentSchema.parse(await service.organizations!.command(reverse.assistantMessageId, randomUUID(), {
+      action: "arrange", target: { kind: "existing", botId: "learner" }, contact: { kind: "delegate", text: "原始 arrange 事项" } }));
+    await boundary(`${state} arrange then dispatch creates no other intent`, async () => {
+      const before = [count("bots"), count("bot_organization_records"), count("bot_collaborations"), service.messages.peers.deliveries(LOCAL_USER_ID).length];
+      let response: unknown;
+      try { response = await dispatch(reverse.assistantMessageId, "tester", "不同入口不能分叉原事项"); }
+      catch (error) { assert.match(String(error), /existing_collaboration|existing_intent/); }
+      assert.deepEqual([count("bots"), count("bot_organization_records"), count("bot_collaborations"), service.messages.peers.deliveries(LOCAL_USER_ID).length], before);
+      if (response) assert.equal(intentSchema.parse(response).organization.intentId, arranged.organization.intentId);
+    });
+    failPreparation = false;
+    const controller = request("恢复原 arrange 意图");
+    await service.organizations!.command(controller.assistantMessageId, randomUUID(), { action: "resume", intentId: arranged.organization.intentId });
+  }
+  await boundary("arrange journal committed before contact is respected by initial dispatch", async () => {
+    const origin = request("中断在 arrange 日志提交后，尚未联系");
+    const crashing = new BotOrganizationService({ ...options, settings, creator, messages: service.messages,
+      collaborations: service.collaborations, publish: () => { throw Error("controlled arrange journal interruption"); } });
+    await assert.rejects(crashing.command(origin.assistantMessageId, "arrange-before-crash", { action: "arrange",
+      target: { kind: "existing", botId: "learner" }, contact: { kind: "delegate", text: "原事项" } }), /controlled arrange/);
+    const row = z.object({ organization_id: z.string() }).parse(db.prepare("SELECT organization_id FROM bot_organization_records WHERE json_extract(origin_json,'$.user_message_id')=?").get(origin.userMessageId));
+    const before = [count("bot_organization_records"), service.messages.peers.deliveries(LOCAL_USER_ID).length];
+    const existing = intentSchema.parse(await dispatch(origin.assistantMessageId, "tester"));
+    assert.equal(existing.organization.intentId, row.organization_id); assert.equal(existing.organization.phase, "configuring");
+    assert.deepEqual([count("bot_organization_records"), service.messages.peers.deliveries(LOCAL_USER_ID).length], before);
+    const controller = request("恢复日志中原 arrange 意图");
+    const resumed = intentSchema.parse(await service.organizations!.command(controller.assistantMessageId, randomUUID(), { action: "resume", intentId: row.organization_id }));
+    assert.equal(resumed.organization.phase, "linked"); assert.equal(resumed.organization.target.botId, "learner");
+  });
+  for (const first of ["dispatch", "arrange"] as const) await boundary(`concurrent ${first} first and other entry admit only one choice`, async () => {
+    const origin = request(`同源并发 ${first}`), before = [count("bot_organization_records"), service.messages.peers.deliveries(LOCAL_USER_ID).length];
+    const sendDispatch = () => dispatch(origin.assistantMessageId, "learner");
+    const sendArrange = () => service.organizations!.command(origin.assistantMessageId, randomUUID(), { action: "arrange", target: { kind: "existing", botId: "tester" }, contact: { kind: "delegate", text: "同一并发事项" } });
+    const results = (await Promise.all(first === "dispatch" ? [sendDispatch(), sendArrange()] : [sendArrange(), sendDispatch()])).map(item => intentSchema.parse(item));
+    assert.equal(results[0].organization.intentId, results[1].organization.intentId);
+    assert.deepEqual([count("bot_organization_records"), service.messages.peers.deliveries(LOCAL_USER_ID).length], before.map(value => value + 1));
+  });
+  await boundary("contact:none first does not consume a later legitimate dispatch", async () => {
+    const origin = request("先核对配置再委派原目标");
+    const configured = intentSchema.parse(await service.organizations!.command(origin.assistantMessageId, randomUUID(), { action: "arrange", target: { kind: "existing", botId: "tester" }, contact: { kind: "none" } }));
+    const delivered = intentSchema.parse(await dispatch(origin.assistantMessageId, "learner"));
+    assert.notEqual(configured.organization.intentId, delivered.organization.intentId); assert.equal(delivered.organization.phase, "linked");
+  });
+  await boundary("host acceptance and final outbox guard reject alternate organization identities", async () => {
+    const origin = request("接收与 outbox 也必须保留原派送身份");
+    const original = intentSchema.parse(await dispatch(origin.assistantMessageId, "learner"));
+    const source = service.messages.receipt(LOCAL_USER_ID, DEFAULT_BOT_ID, service.messages.message(origin.assistantMessageId)!.requestId)!;
+    const before = [count("bot_collaborations"), service.messages.peers.deliveries(LOCAL_USER_ID).length];
+    await assert.rejects(service.collaborations.acceptOrganization({ intentId: "alternate-host-intent", currentParentMessageId: origin.assistantMessageId,
+      origin: source, targetBotId: "tester", configurationGuard: () => {}, targetSettingsRevision: settings.get("tester").revision,
+      retryFailedAsk: false, contact: { kind: "delegate", text: "不能绕开组织命令" } }), /dispatch_existing_intent/);
+    assert.deepEqual([count("bot_collaborations"), service.messages.peers.deliveries(LOCAL_USER_ID).length], before);
+    // Explicit fixture staging of a different relation proves that even a host
+    // adapter cannot forge the default intent ID to prepare another outbox row.
+    const alternate = service.collaborations.repo.ensure({ userId: LOCAL_USER_ID, sourceBotId: DEFAULT_BOT_ID, sourceDisplayName: "MyBuddy",
+      sourceConversationId: source.conversation_id, sourceRequestId: source.request_id, sourceUserMessageId: source.user_message_id,
+      sourceAssistantMessageId: source.assistant_message_id, targetBotId: "tester", targetDisplayName: "tester", operationId: "fixture-other-adapter" });
+    await assert.rejects(service.collaborations.delivery!.send(alternate, source, "fixture-forged-intent", "不得创建第二投递", undefined,
+      { organizationIntentId: original.organization.intentId, expectedRevision: settings.get("tester").revision }), /不匹配/);
+    assert.equal(service.messages.peers.deliveries(LOCAL_USER_ID).length, before[1]);
+  });
   await boundary("fresh explicit user requests keep normal ask/delegate/follow-up", async () => {
     const first = request("新的真实用户请求，另问一件事");
     const ask = z.object({ collaboration: z.object({ collaborationId: z.string() }) }).parse(await service.collaborations.command(first.assistantMessageId, "new-ask", { action: "ask", targetBotId: "tester", text: "新的明确咨询" }));
