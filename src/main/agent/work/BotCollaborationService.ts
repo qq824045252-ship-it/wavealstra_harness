@@ -212,7 +212,7 @@ export class BotCollaborationService {
       return row;
     });
     if (operation?.completed_at != null) return this.query(collaboration, source);
-    if (command.action === "query") return this.query(collaboration, source);
+    if (command.action === "query") return this.query(collaboration, source, true);
     if (command.action === "ask" || command.action === "follow_up") {
       const previous = this.turns.get(collaboration.collaborationId) ?? Promise.resolve();
       const turn = previous.catch(() => {}).then(() => this.ask(collaboration, source, operationId, command.text));
@@ -275,7 +275,9 @@ export class BotCollaborationService {
       sourceAssistantMessageId: source.assistant_message_id, targetBotId: target.botId, targetDisplayName: target.displayName, operationId });
   }
 
-  private query(row: BotCollaborationDto, source: BotMessageReceipt) {
+  // Only an explicit current-user query may capture method feedback. Operation
+  // receipts also use this projection with historical origins during recovery.
+  private query(row: BotCollaborationDto, source: BotMessageReceipt, captureMethodFeedback = false) {
     const work = row.workId ? this.options.works.getWork(row.workId) : undefined;
     if (work && (work.userId !== this.options.userId || work.ownerBotId !== row.targetBotId)) throw new Error("协作执行归属已变化，待核对");
     const versionGuard = work ? { expectedStateVersion: work.stateVersion, expectedIntentRevision: work.intentRevision, expectedOwnerEpoch: work.ownerEpoch } : undefined;
@@ -283,7 +285,7 @@ export class BotCollaborationService {
       ON CONFLICT(collaboration_id,request_id) DO UPDATE SET guard_json=excluded.guard_json`)
       .run(row.collaborationId, source.request_id, JSON.stringify(versionGuard));
     return { ...this.history({ botId: source.bot_id, collaborationId: row.collaborationId, limit: 30 }), versionGuard,
-      methodFeedback: work ? this.options.recordWorkFeedback?.(source, work) : undefined };
+      methodFeedback: captureMethodFeedback && work ? this.options.recordWorkFeedback?.(source, work) : undefined };
   }
 
   private async ask(row: BotCollaborationDto, source: BotMessageReceipt, operationId: string, text: string, controlParentMessageId = source.assistant_message_id,

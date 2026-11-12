@@ -18,6 +18,7 @@ import { BotOrganizationService } from "../src/main/agent/work/BotOrganizationSe
 import { BotConversationRepository } from "../src/main/agent/work/BotConversationRepository";
 import { snapshotBotAttachments } from "../src/main/agent/work/BotAttachmentStorage";
 import { BotPeerCallService } from "../src/main/agent/work/BotPeerCallService";
+import { BotWorkMethodFeedback } from "../src/main/agent/work/BotWorkMethodFeedback";
 import { BotCollaborationService } from "../src/main/agent/work/BotCollaborationService";
 import type { BotConversationServiceOptions } from "../src/main/agent/work/BotConversationService";
 import { BotWorkQuery } from "../src/main/agent/work/BotWorkQuery";
@@ -115,9 +116,14 @@ async function openFixture(directory: string) {
     models: [choice(modelId)], experts: [], skills: [choice("organization-check")],
     mcps: [choice("fixture-mcp")], connectors: [choice("fixture-connector")],
   }), input => binding.assembleSettings(input, LOCAL_USER_ID));
+  const methodFeedbackCalls: string[] = [];
+  const methodFeedback = new BotWorkMethodFeedback({ db: app, works, userId: LOCAL_USER_ID,
+    memory: {}, skills: {}, effectiveness: {}, revisions: {},
+  } as unknown as ConstructorParameters<typeof BotWorkMethodFeedback>[0]);
   const options = {
     db, userId: LOCAL_USER_ID, bots, works, models, directory,
     defaultModel: () => modelId, isAuthority: () => state.authority,
+    recordWorkFeedback: (source, work) => { methodFeedbackCalls.push(source.assistant_message_id); return methodFeedback.record(source, work); },
     memorySearch: () => [], botWorkspace: (botId, prepare) => settings.resolveWorkspace(botId, prepare),
     botModel: botId => settings.get(botId).modelId || modelId,
     captureWorkSettings: work => { settings.forWork(work.workId, work.ownerBotId, work.workspacePath); },
@@ -140,7 +146,7 @@ async function openFixture(directory: string) {
   const discover = (parent: string, operationId: string = randomUUID()) => command(parent, operationId, { action: "discover" });
   const count = (table: "bots" | "works" | "work_execution_bindings") => countSchema.parse(
     db.prepare(`SELECT COUNT(*) count FROM ${table}`).get()).count;
-  return { app, db, bots, works, messages, settings, creator, peer, collaborations, organization, request, command, discover, count };
+  return { app, db, bots, works, messages, settings, creator, peer, collaborations, organization, request, command, discover, count, methodFeedbackCalls };
 }
 
 type Fixture = Awaited<ReturnType<typeof openFixture>>;
@@ -364,6 +370,7 @@ try {
   assert.equal(f.count("bots"), beforeConfigureBots + 1);
   console.log("PASS actual settings storage failure preserves the created target and resumes only configuration");
 
+  f.methodFeedbackCalls.length = 0;
   const handoff = f.request("ORIGINAL HANDOFF: preserve this exact source when a fresh conversation continues");
   await f.discover(handoff.assistantMessageId);
   state.failSchedule = true;
@@ -386,6 +393,19 @@ try {
   assert.equal(resumedHistory.collaboration.sourceConversationId, handoff.conversationId);
   assert(resumedHistory.collaboration.workId);
   assert.equal(f.works.getWork(resumedHistory.collaboration.workId)?.sourceMessageId, handoff.userMessageId);
+  const acceptedWorkCount = f.count("works"), scheduledBeforeReplay = audit.scheduled.length;
+  assert.equal(f.methodFeedbackCalls.length, 0, "response projection must not run method correction on the original completed receipt");
+  const replayedHandoff = linked(await f.command(current.assistantMessageId, "handoff-resume-replay", { action: "resume", intentId: failedHandoff.intentId }));
+  assert.equal(replayedHandoff.collaborationId, resumed.collaborationId);
+  assert.equal(f.count("works"), acceptedWorkCount, "resume after committed acceptance must not create another Work");
+  assert.equal(audit.scheduled.length, scheduledBeforeReplay, "resume must not schedule committed acceptance again");
+  const correction = f.request("纠正这个方法：以后必须先检查输入。", DEFAULT_BOT_ID);
+  const feedback = await f.collaborations.command(correction.assistantMessageId, "explicit-current-feedback", { action: "query", collaborationId: resumed.collaborationId }) as { methodFeedback: { status: string } };
+  assert.equal(feedback.methodFeedback.status, "no_completed_execution");
+  assert.deepEqual(f.methodFeedbackCalls, [correction.assistantMessageId], "only explicit query learns from the real active user request");
+  f.messages.update(correction.assistantMessageId, "completed", "finished");
+  await assert.rejects(f.collaborations.command(correction.assistantMessageId, "stale-feedback", { action: "query", collaborationId: resumed.collaborationId }), /有效个人请求/);
+  f.methodFeedbackCalls.length = 0;
   console.log("PASS actual handoff rollback, completed original turn, fresh authority and exact archived provenance");
 
   const changed = f.request("Create a target; do not overwrite my settings edit after failed handoff");
