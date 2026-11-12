@@ -49,10 +49,18 @@ exports.run = async context => {
     let receipts=[];
     await until(()=>{
       receipts=fs.existsSync(auditFile)?fs.readFileSync(auditFile,'utf8').trim().split('\n').filter(Boolean).map(line=>JSON.parse(line)):[];
-      return receipts.some(receipt=>receipt.phase==='completed'&&receipt.target===artifact.savedPath);
-    },'actual shell.openPath receipt after source UI click');
+      return receipts.some(receipt=>receipt.phase==='completed'&&receipt.channel==='workspace:readFile'&&receipt.target===artifact.savedPath);
+    },'actual saved-file read receipt after source UI click');
     assert(!receipts.some(receipt=>receipt.phase==='failed'&&receipt.target===artifact.savedPath));
-    return {label,savedPath:artifact.savedPath,receipts:receipts.filter(receipt=>receipt.target===artifact.savedPath)};
+    let visiblePreview;
+    await until(async()=>{
+      visiblePreview=await evaluate(`(()=>{const preview=[...document.querySelectorAll('.bot-work-file-preview')].find(el=>el.getAttribute('aria-label')===${JSON.stringify('文件预览：'+path.basename(artifact.file))});if(!preview)return null;const body=preview.querySelector('.bot-work-file-preview-body');if(!body)return null;const text=body.querySelector('.view-lines')?.innerText||body.querySelector('pre')?.innerText||body.innerText;const rect=body.getBoundingClientRect();return {text,visible:rect.width>0&&rect.height>0&&rect.top<innerHeight&&rect.bottom>0,error:preview.querySelector('[role=alert]')?.innerText};})()`);
+      if(!visiblePreview?.visible||!visiblePreview.text||visiblePreview.error)return false;
+      try{return JSON.stringify(JSON.parse(visiblePreview.text.replace(/\u00a0/g,' ').replace(/\u200b/g,'')))===JSON.stringify(JSON.parse(fs.readFileSync(artifact.savedPath,'utf8')));}catch{return false;}
+    },'visible rendered JSON equals the actual saved artifact');
+    await shot('saved-preview-visible');
+    await evaluate(`(()=>{const preview=[...document.querySelectorAll('.bot-work-file-preview')].find(el=>el.getAttribute('aria-label')===${JSON.stringify('文件预览：'+path.basename(artifact.file))});[...preview.querySelectorAll('button')].find(button=>button.textContent==='关闭预览').click();})()`);
+    return {label,savedPath:artifact.savedPath,visiblePreview,receipts:receipts.filter(receipt=>receipt.target===artifact.savedPath)};
   };
   const allOrganizations = async () => (await history()).messages.flatMap(message=>message.organizations ?? []);
   const findIntent = async predicate => {
