@@ -899,12 +899,13 @@ console.log(`Phase 5 delivery dedup: ${passes.length} passed`);
   }});
   await adapter.connect({appId:"123",appSecret:"fixture",allowUsers:["user"]});
   try {
-    const created=fixture("qq-single-file");
-    const snapshotPath=join(root,"qq-report.txt");writeFileSync(snapshotPath,"a");
+    const created=fixture("qq-bundled-files");
+    const snapshotPath=join(root,"qq-report.txt"),secondSnapshot=join(root,"qq-report-2.txt");writeFileSync(snapshotPath,"a");writeFileSync(secondSnapshot,"b");
     works.transaction(()=>works.generatedArtifacts.record(created.binding,[{path:join(root,"qq-source.txt"),snapshotPath,
-      digest:createHash("sha256").update("a").digest("hex"),sizeBytes:1,registeredAt:clock,sourceEntryId:1}]));
+      digest:createHash("sha256").update("a").digest("hex"),sizeBytes:1,registeredAt:clock,sourceEntryId:1},
+      {path:join(root,"qq-source-2.txt"),snapshotPath:secondSnapshot,digest:createHash("sha256").update("b").digest("hex"),sizeBytes:1,registeredAt:clock,sourceEntryId:2}]));
     unwrap(works.submitDeliverable(created.worker,{operationId:"qq-submit",workId:created.work.workId,bindingId:created.binding.bindingId,
-      deliverableId:"qq-file-deliverable",summary:"file delivered",artifactRefs:[snapshotPath],evidence:[{kind:"tool_receipt",sourceRef:"qq-proof"}]}));
+      deliverableId:"qq-file-deliverable",summary:"file delivered",artifactRefs:[snapshotPath,secondSnapshot],evidence:[{kind:"tool_receipt",sourceRef:"qq-proof"}]}));
     unwrap(works.acceptDeliverable(user,{operationId:"qq-accept",workId:created.work.workId,deliverableId:"qq-file-deliverable"}));
     works.reconcileExecution(user,{bindingId:created.binding.bindingId,outcome:"completed"});
     const f={...created,notification:works.repo.listNotifications(created.work.workId).find(item=>item.kind==="result")!};
@@ -930,12 +931,12 @@ console.log(`Phase 5 delivery dedup: ${passes.length} passed`);
     assert.equal(pending.routes[0].fileDelivery.capability,'supported');
     await works.notifications.deliverAsync(endpoint,f.work.workId);await works.notifications.deliverAsync(endpoint,f.work.workId);
     assert.equal(posts,1);assert.equal(uploads,1);
-    assert.equal(bodies[0].content,"成果摘要");assert.equal(bodies[0].msg_type,7);assert.equal(bodies[0].msg_seq,2);
+    assert.match(String(bodies[0].content),/压缩包.*2.*原始文件/);assert.match(String(bodies[0].content),/成果摘要/);assert.equal(bodies[0].msg_type,7);assert.equal(bodies[0].msg_seq,2);
     assert.equal(works.repo.getNotification(f.notification.notificationId)?.delivery,"sent");
     const row=db.connection.prepare("SELECT status,receipt FROM work_notification_attempts WHERE notification_id=?").get(f.notification.notificationId) as {status:string;receipt:string};
     assert.equal(row.status,"sent");const parts=JSON.parse(row.receipt);
     assert.equal(parts[0].receipt,"provider-qq-summary");assert.equal(parts[0].part,`file:${createHash("sha256").update("a").digest("hex")}`);
-    assert.equal(parts[1].via,"media_content");
+    assert.equal(parts[0].via,"zip");assert.equal(parts[1].part,`file:${createHash("sha256").update("b").digest("hex")}`);assert.equal(parts[1].via,"zip");assert.equal(parts[2].via,"media_content");
     const reader=new Database(path,{readonly:true});
     const facts=workDeliveryContext(reader,f.binding)!;
     assert.equal(facts.routes[0].summaryDelivery.state,'sent');assert.equal(facts.routes[0].fileDelivery.state,'sent');
@@ -954,7 +955,7 @@ console.log(`Phase 5 delivery dedup: ${passes.length} passed`);
     db.connection.prepare('UPDATE works SET user_id=? WHERE work_id=?').run(before.userId,before.workId);
     console.log('PASS host delivery facts project QQ media+content receipt, keep disconnect and unknown honest, reject other user/version and expose no route identifiers');
 
-    console.log("PASS QQ adapter sends frozen C2C file and summary in one reserved slot; persisted success prevents repeat upload/send");
+    console.log("PASS QQ adapter explicitly bundles two frozen files and summary in one reserved slot; persisted success prevents repeat upload/send");
   } finally {await adapter.disconnect();}
 }
 {
