@@ -28,14 +28,14 @@ const contactSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("delegate"), plan: botWorkCreateSchema }).strict(),
 ]);
 export const botOrganizationCommandSchema = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("discover"), requirement: text.optional() }).strict(),
+  z.object({ action: z.literal("discover"), requirement: text.optional(), afterBotId: id.optional() }).strict(),
   z.object({ action: z.literal("arrange"), target: targetSchema, contact: contactSchema }).strict(),
   z.object({ action: z.literal("query"), intentId: id.optional() }).strict(),
   z.object({ action: z.literal("resume"), intentId: id }).strict(),
 ]);
 /** Provider tools require an object root; the strict action union is the boundary. */
 export const botOrganizationToolSchema = z.object({
-  action: z.enum(["discover", "arrange", "query", "resume"]), requirement: text.optional(),
+  action: z.enum(["discover", "arrange", "query", "resume"]), requirement: text.optional(), afterBotId: id.optional(),
   target: targetSchema.optional(), contact: contactSchema.optional(), intentId: id.optional(),
 }).strict();
 type Receipt = BotOrganizationSummaryDto["receipts"][number];
@@ -47,6 +47,7 @@ const discoverySchema = z.object({
     modelId: z.string(), skillIds: z.array(z.string()), mcpIds: z.array(z.string()), connectorIds: z.array(z.string()) })),
   catalogue: z.object({ models: z.array(choiceSchema), experts: z.array(choiceSchema), skills: z.array(choiceSchema),
     mcps: z.array(choiceSchema), connectors: z.array(choiceSchema) }),
+  totalBots: z.number().int().nonnegative().optional(), nextBotId: z.string().nullable().optional(),
   limitations: z.array(z.string()), searchedAt: z.number().int().nonnegative(),
 });
 const originSchema = z.object({ user_id: z.string(), bot_id: z.string(), request_id: z.string(), payload_hash: z.string(),
@@ -68,7 +69,7 @@ export interface BotOrganizationResult {
   organization: BotOrganizationSummaryDto; replayed?: boolean; error?: string;
   bots?: z.infer<typeof discoverySchema>["bots"];
   catalogue?: Awaited<ReturnType<BotSettingsService["availableChoices"]>>;
-  limitations?: string[]; collaboration?: unknown;
+  limitations?: string[]; totalBots?: number; nextBotId?: string | null; collaboration?: unknown;
 }
 
 /** Owns only pre-contact organization facts. Registry, settings, collaboration
@@ -161,7 +162,7 @@ export class BotOrganizationService {
     const parent = this.options.messages.message(parentMessageId);
     if (!parent) return "";
     const items = this.list(parent.botId).filter(item => item.kind === "intent");
-    return `你是宿主持久标记的主 Bot。先 bot_organize(discover) 核对职责、能力和状态，优先复用合适的现有 Bot；用户点名的对象必须尊重，缺少合适执行者才 arrange(create)。创建或配置不表示接单。已有 intentId 用 query/resume，已接入的 collaborationId 用 bot_collaborate，不重复建 Bot 或 Work。不能读取或搬走其他 Bot 的私人记忆、私人 Skill，不自动登录或获取新权限。\n已有真实组织记录：${JSON.stringify(items.slice(0, 12))}`;
+    return `你是宿主持久标记的主 Bot。先 bot_organize(discover) 核对职责、能力和状态，优先复用合适的现有 Bot；返回 nextBotId 表示目录尚未读完，用 afterBotId 继续查询，不能把第一页没有匹配当作不存在；用户点名的对象必须尊重，缺少合适执行者才 arrange(create)。创建或配置不表示接单。已有 intentId 用 query/resume，已接入的 collaborationId 用 bot_collaborate，不重复建 Bot 或 Work。不能读取或搬走其他 Bot 的私人记忆、私人 Skill，不自动登录或获取新权限。\n已有真实组织记录：${JSON.stringify(items.slice(0, 12))}`;
   }
 
   /** Reconcile committed local facts only. Recovery never invents a fresh user
@@ -315,7 +316,12 @@ export class BotOrganizationService {
     try {
       const catalogue = await this.options.settings.availableChoices();
       this.source(parentMessageId);
-      const bots = this.options.bots.listBots(this.options.userId).filter(bot => bot.botId !== source.bot_id).slice(0, 100).map(bot => {
+      const allBots = this.options.bots.listBots(this.options.userId).filter(bot => bot.botId !== source.bot_id)
+        .sort((a, b) => a.botId < b.botId ? -1 : a.botId > b.botId ? 1 : 0);
+      const remaining = command.afterBotId ? allBots.filter(bot => bot.botId > command.afterBotId!) : allBots;
+      const page = remaining.slice(0, 100);
+      const nextBotId = remaining.length > page.length ? page.at(-1)!.botId : null;
+      const bots = page.map(bot => {
         const settings = this.options.settings.get(bot.botId);
         return { botId: bot.botId, displayName: bot.displayName, responsibilitySummary: bot.responsibilitySummary, status: bot.status,
           organizationRole: this.options.bots.isPrimaryBot(this.options.userId, bot.botId) ? "primary" as const : "ordinary" as const,
@@ -325,15 +331,15 @@ export class BotOrganizationService {
           mcpIds: [...new Set([...settings.mcpIds, ...bot.expertProfile.allowedMcpIds])],
           connectorIds: [...new Set([...settings.connectorIds, ...bot.expertProfile.allowedConnectorIds])] };
       });
-      const result = discoverySchema.parse({ bots, catalogue, searchedAt: Date.now(),
-        limitations: ["MCP 已配置或启用不代表已成功连接。", "连接器安装和启用不代表已登录或可访问远端服务；没有验证的状态不得声称已连接。", "目录只提供身份、职责和能力元数据，不提供其他 Bot 的私人记忆或 Skill 正文。"] });
+      const result = discoverySchema.parse({ bots, catalogue, totalBots: allBots.length, nextBotId, searchedAt: Date.now(),
+        limitations: [...(nextBotId ? ["Bot 目录尚未读取完整；请以 nextBotId 作为 afterBotId 继续 discover，不能据此断言没有合适的现有 Bot。"] : []), "MCP 已配置或启用不代表已成功连接。", "连接器安装和启用不代表已登录或可访问远端服务；没有验证的状态不得声称已连接。", "目录只提供身份、职责和能力元数据，不提供其他 Bot 的私人记忆或 Skill 正文。"] });
       this.options.db.transaction(() => {
         this.source(parentMessageId);
         this.options.db.prepare("INSERT OR IGNORE INTO bot_organization_discovery_results VALUES(?,?)").run(organizationId, JSON.stringify(result));
         const accepted = this.discovery(organizationId);
         if (!accepted) throw new Error("查找回执未保存");
         this.update(organizationId, view => ({ ...view, status: "succeeded", matchedBotCount: accepted.bots.length, searchedAt: accepted.searchedAt,
-          summary: `实际查到 ${accepted.bots.length} 位其他 Bot，请按职责、能力和状态优先复用`, updatedAt: accepted.searchedAt }));
+          summary: `本页 ${accepted.bots.length} 位其他 Bot，目录共 ${accepted.totalBots ?? accepted.bots.length} 位${accepted.nextBotId ? "，还有下一页" : ""}；请按职责、能力和状态优先复用`, updatedAt: accepted.searchedAt }));
         this.receipt(organizationId, "discovery", "succeeded", `实际读取了 ${accepted.bots.length} 位 Bot 及配置目录；未创建 Bot 或 Work`, "discovery:finished", accepted.searchedAt);
       }).immediate();
       return { organization: this.row(organizationId)!.view, ...this.discovery(organizationId) };

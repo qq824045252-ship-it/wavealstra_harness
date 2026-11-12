@@ -27,9 +27,9 @@ export interface WorkExecutionPort {
 
 /** Delivers persisted instructions, never retries the underlying business execution. */
 export class WorkExecutionAdapter {
-  private flushing?: Promise<void>;
+  private readonly workFlights = new Map<string, Promise<void>>();
+  private readonly dirtyWorks = new Set<string>();
   private timer?: ReturnType<typeof setInterval>;
-  private dirty = false;
 
   constructor(
     private readonly service: WorkService,
@@ -56,7 +56,7 @@ export class WorkExecutionAdapter {
   async close(): Promise<void> {
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
-    await this.flushing;
+    await Promise.all([...this.workFlights.values()]);
   }
 
   wake(taskId?: string): void {
@@ -73,31 +73,42 @@ export class WorkExecutionAdapter {
   }
 
   flush(): Promise<void> {
-    this.dirty = true;
-    if (!this.flushing) {
-      this.flushing = (async () => {
-        do { this.dirty = false; await this.deliver(); } while (this.dirty);
-      })().finally(() => { this.flushing = undefined; });
+    if (!this.isAuthority()) return Promise.resolve();
+    for (const failure of this.service.nativeResults.consume()) this.onError(failure.bindingId, failure.error);
+    // A native read or cancellation may wait for an unresponsive tool. Serialize
+    // revisions within each Work, not all Work in the application. A later wake
+    // can still collect an unrelated result without replaying the blocked input.
+    for (const work of this.service.listWorks(this.userId, { includeClosed: true })) {
+      const workId = work.workId;
+      this.dirtyWorks.add(workId);
+      if (this.workFlights.has(workId)) continue;
+      const flight = Promise.resolve().then(async () => {
+        do {
+          this.dirtyWorks.delete(workId);
+          await this.deliverWork(workId);
+        } while (this.dirtyWorks.has(workId) && this.isAuthority());
+      }).finally(() => {
+        this.dirtyWorks.delete(workId);
+        if (this.workFlights.get(workId) === flight) this.workFlights.delete(workId);
+      });
+      this.workFlights.set(workId, flight);
     }
-    return this.flushing;
+    return Promise.all([...this.workFlights.values()]).then(() => undefined);
   }
 
-  private async deliver(): Promise<void> {
-    if (!this.isAuthority()) return;
-    for (const failure of this.service.nativeResults.consume()) this.onError(failure.bindingId, failure.error);
-    for (const work of this.service.listWorks(this.userId, { includeClosed: true })) {
-      for (const binding of this.service.repo.listBindings(work.workId)) {
-        const terminal = ["completed", "failed", "stopped", "invalidated"].includes(binding.status);
-        if (terminal && this.service.partialResults.recovery.evidenceRead(binding.bindingId)) continue;
-        if (!this.service.nativeResults.shouldInspect(binding.bindingId)) continue;
-        if (!this.isAuthority()) return;
-        try { await this.deliverBinding(binding); }
-        catch (error) { this.service.nativeResults.readFailed(binding, error); this.onError(binding.bindingId, error); }
-      }
-      // Retired uncertainty must not strand an already requested cancellation
-      // merely because its terminal native receipt was consumed before upgrade.
-      this.service.settlePendingClosure(work.workId);
+  private async deliverWork(workId: string): Promise<void> {
+    if (!this.isAuthority() || !this.service.getWork(workId)) return;
+    for (const binding of this.service.repo.listBindings(workId)) {
+      const terminal = ["completed", "failed", "stopped", "invalidated"].includes(binding.status);
+      if (terminal && this.service.partialResults.recovery.evidenceRead(binding.bindingId)) continue;
+      if (!this.service.nativeResults.shouldInspect(binding.bindingId)) continue;
+      if (!this.isAuthority()) return;
+      try { await this.deliverBinding(binding); }
+      catch (error) { this.service.nativeResults.readFailed(binding, error); this.onError(binding.bindingId, error); }
     }
+    // Retired uncertainty must not strand an already requested cancellation
+    // merely because its terminal native receipt was consumed before upgrade.
+    if (this.isAuthority()) this.service.settlePendingClosure(workId);
   }
 
   private async deliverBinding(binding: WorkExecutionBindingDto): Promise<void> {

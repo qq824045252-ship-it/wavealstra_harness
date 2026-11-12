@@ -60,6 +60,21 @@ exports.run = async context => {
     await until(async()=>{ found=(await allOrganizations()).findLast(value=>value.kind==='intent'&&predicate(value)); return Boolean(found); },'persisted organization intent');
     return found;
   };
+  // Creating/configuring first and delegating in the next real tool call is
+  // valid. Resolve only exact persisted source-request/target identities, never
+  // infer acceptance from prose or change the host organization phase.
+  const separateContacts = new Map();
+  const resolveSeparateContacts = async answer => {
+    const candidates=(answer.organizations??[]).filter(item=>item.kind==='intent'&&item.phase==='ready'&&item.target);
+    if(!candidates.length)return;
+    const relations=[];let cursor;
+    do { const page=await api('collaborations',{botId:primaryBotId,limit:100,...(cursor?{cursor}:{})}); relations.push(...page.items);cursor=page.nextCursor; } while(cursor);
+    for(const item of candidates){
+      const matches=relations.filter(relation=>relation.sourceBotId===item.sourceBotId&&relation.sourceConversationId===item.sourceConversationId&&relation.sourceRequestId===item.sourceRequestId&&relation.targetBotId===item.target.botId&&relation.workId);
+      assert(matches.length<=1,'one source organization must not have duplicate accepted Work');
+      if(matches.length===1)separateContacts.set(item.intentId,matches[0]);
+    }
+  };
   const answerFor = async (text, allowFailure=false) => {
     let answer,user;
     await until(async()=>{
@@ -68,6 +83,7 @@ exports.run = async context => {
       return answer&&['completed','failed','unknown','cancelled'].includes(answer.status);
     },'organization foreground receipt');
     if(!allowFailure)assert.equal(answer.status,'completed',answer.error||answer.text);
+    await resolveSeparateContacts(answer);
     return {answer,user};
   };
   const submit = async (text, allowFailure=false) => { await send(text); return answerFor(text,allowFailure); };
@@ -75,7 +91,12 @@ exports.run = async context => {
     const value=answer.organizations?.findLast(item=>item.kind==='intent');
     assert(value,'actual assistant row has a host-persisted organization summary');return value;
   };
-  const linked = value => { assert.equal(value.phase,'linked',JSON.stringify(value));assert(value.target&&value.collaborationId);return value; };
+  const linked = value => {
+    if(value.phase==='linked'){assert(value.target&&value.collaborationId);return value;}
+    const relation=separateContacts.get(value.intentId);
+    assert(value.phase==='ready'&&relation,JSON.stringify(value));
+    return {...value,collaborationId:relation.collaborationId,acceptanceEvidence:{kind:'separate_host_collaboration',sourceRequestId:relation.sourceRequestId,workId:relation.workId}};
+  };
   const journal = organization => api('collaborationHistory',{botId:primaryBotId,collaborationId:organization.collaborationId,limit:100});
   const readWork = async organization => {
     const page=await journal(organization);assert(page.collaboration.workId,'actual accepted Work link');
@@ -223,7 +244,13 @@ exports.run = async context => {
       const continued=linked(await resume(pending,'按真实已完成步骤继续，不重演完成的副作用。'));
       const accepted=await waitArtifact(continued,workspace('review'),output,contents=>assert(/NaN|0\s*\/\s*0/.test(contents)));
       assert.equal(fs.readFileSync(sourceFile,'utf8'),original);
-      assert.equal(accepted.journal.messages.filter(message=>message.kind==='result'&&message.workFeedback?.report?.files?.some(file=>file.name===output)).length,1);
+      const returns=accepted.journal.messages.filter(message=>message.kind==='result'&&message.workFeedback?.report?.files?.some(file=>file.name===output));
+      // An honest unknown fallback followed by a completed review is a status
+      // correction, not duplicate delivery. Preserve both immutable messages.
+      const completed=returns.filter(message=>message.workFeedback?.report?.completion?.outcome==='completed');
+      assert.equal(completed.length,1,'exactly one successful final return');
+      assert.equal(new Set(returns.map(message=>message.operationId)).size,returns.length,'no duplicated delivery identity');
+      assert(returns.every(message=>message===completed[0] || message.createdAt<=completed[0].createdAt && ['unknown','partial'].includes(message.workFeedback?.report?.completion?.outcome)), 'earlier non-success must remain distinct and precede success');
       row.failures.push({kind,evidence:observed.evidence,organization:continued,observed:accepted});persist();
     }
     await shot('failure-continuation');

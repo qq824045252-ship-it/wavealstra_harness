@@ -297,6 +297,7 @@ const KNOWN_HEADLESS_RED = new Set([
  * 显式清单优先于下面的命名兜底，否则它们会被 `^test:browser-` 之类正则误伤。
  */
 const HEADLESS_TESTS = new Set([
+  "test:work-execution-isolation",
   "test:bot-work-result-artifacts",
   "test:work-result-lifecycle",
   "test:work-completion-recovery",

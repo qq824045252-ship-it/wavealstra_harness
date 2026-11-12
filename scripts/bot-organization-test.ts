@@ -200,10 +200,9 @@ try {
   const gatewayOrigin = { channelId: "organization-test", connectionKey: "a".repeat(64), chatId: "shared-chat",
     senderId: "fixture-user", messageId: randomUUID(), audience: "shared" as const };
   const sharedFixture = await openFixture(join(root, "shared-audience"));
-  const sharedConversation = "organization-shared-fixture";
-  sharedFixture.db.prepare("INSERT INTO bot_conversations(conversation_id,bot_id,user_id,created_at,updated_at) VALUES(?,?,?,?,?)").run(sharedConversation, DEFAULT_BOT_ID, LOCAL_USER_ID, Date.now(), Date.now());
-  sharedFixture.db.exec("CREATE TABLE IF NOT EXISTS bot_gateway_conversations(conversation_id TEXT PRIMARY KEY,audience TEXT NOT NULL)");
-  sharedFixture.db.prepare("INSERT INTO bot_gateway_conversations VALUES(?,'shared')").run(sharedConversation);
+  const sharedConversation = sharedFixture.messages.origins.gatewayConversation(LOCAL_USER_ID, DEFAULT_BOT_ID,
+    { channelId: "fixture-shared", connectionKey: "a".repeat(64), chatId: "organization-shared-fixture",
+      senderId: "fixture-sender", messageId: "fixture-message", audience: "shared" });
   const shared = sharedFixture.db.transaction(() => {
     const receipt = sharedFixture.request("A shared audience cannot organize Bots", DEFAULT_BOT_ID, sharedConversation);
 
@@ -683,6 +682,21 @@ try {
     assert.notEqual(changedIntent.phase, "linked", "a new conflicting creation request cannot masquerade as the earlier successful handoff");
     assert.equal(snapshots.collaborations.organizationCollaboration(firstIntent.intentId)?.workId, originalRelation.workId);
     assert.equal(snapshots.count("works"), 1);
+  });
+  await regression("discovery pages beyond 100 targets without hiding truncation", async () => {
+    const fixture = await openFixture(join(root, "discovery-pagination"));
+    for (let index = 0; index < 105; index++) fixture.bots.registerBot({ userId: LOCAL_USER_ID,
+      botId: `page-bot-${String(index).padStart(3, "0")}`, displayName: `执行者${index}`, responsibilitySummary: index === 104 ? "唯一适配执行者" : "其他职责" });
+    const source = fixture.request("查找唯一适配执行者，不要重复创建");
+    const resultSchema = z.object({ bots: z.array(z.object({ botId: z.string() })), totalBots: z.number(), nextBotId: z.string().nullable(), limitations: z.array(z.string()) });
+    const first = resultSchema.parse(await fixture.organization.command(source.assistantMessageId, "page-first", { action: "discover" }));
+    assert.equal(first.bots.length, 100); assert.equal(first.totalBots, 105); assert(first.nextBotId);
+    assert(first.limitations.some(item => item.includes("尚未读取完整")));
+    const second = resultSchema.parse(await fixture.organization.command(source.assistantMessageId, "page-second", { action: "discover", afterBotId: first.nextBotId }));
+    assert.equal(second.bots.length, 5); assert.equal(second.nextBotId, null);
+    assert(second.bots.some(bot => bot.botId === "page-bot-104"));
+    assert.equal(new Set([...first.bots, ...second.bots].map(bot => bot.botId)).size, 105);
+    assert.equal(fixture.count("bots"), 106); assert.equal(fixture.count("works"), 0);
   });
   await regression("discovery exposes actual CAS metadata for a bounded existing-target configuration patch", async () => {
     const metadata = await openFixture(join(root, "regression-discovery-metadata"));

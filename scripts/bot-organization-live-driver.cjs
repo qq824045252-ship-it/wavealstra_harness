@@ -157,12 +157,12 @@ async function launch() {
   socket=new WebSocket(target.webSocketDebuggerUrl);await new Promise((resolve,reject)=>{socket.addEventListener('open',resolve,{once:true});socket.addEventListener('error',reject,{once:true});});
   socket.addEventListener('message',event=>{const value=JSON.parse(event.data),task=pending.get(value.id);if(!task)return;pending.delete(value.id);clearTimeout(task.timer);value.error?task.reject(Error(JSON.stringify(value.error))):task.resolve(value.result);});
   socket.addEventListener('close',()=>{for(const task of pending.values()){clearTimeout(task.timer);task.reject(Error('owned runtime CDP closed'));}pending.clear();});
-  await rpc('Runtime.enable');await rpc('Page.enable');await rpc('Emulation.setDeviceMetricsOverride',{width:1280,height:900,deviceScaleFactor:1,mobile:false});
-  await until(()=>evaluate('Boolean(window.api?.botWork?.history)'), 'real preload');
-  await selectBot('bot-mybuddy-default');
-  await until(()=>api('hostStatus').then(value=>value.isAuthority),'isolated authoritative host');
   const identities=fs.readFileSync(identityFile,'utf8').trim().split('\n').map(line=>JSON.parse(line));currentRuntime=identities.findLast(value=>value.debugPort===port);
   assert(currentRuntime&&currentRuntime.home===home&&currentRuntime.userData===userData,'real main identity confirms isolated HOME and Chromium profile');
+  await rpc('Runtime.enable');await rpc('Page.enable');await rpc('Emulation.setDeviceMetricsOverride',{width:1280,height:900,deviceScaleFactor:1,mobile:false});
+  await until(()=>evaluate('Boolean(window.api?.botWork?.history) && /^https?:$/.test(location.protocol) && document.readyState !== \"loading\"'), 'committed real renderer and preload');
+  await selectBot('bot-mybuddy-default');
+  await until(()=>api('hostStatus').then(value=>value.isAuthority),'isolated authoritative host');
   currentRuntime.launcherPid=processDev.pid;currentRuntime.bundles=bundles();runtimes.push(currentRuntime);persist();
   return currentRuntime;
 }
