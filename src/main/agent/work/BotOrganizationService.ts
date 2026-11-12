@@ -125,9 +125,13 @@ export class BotOrganizationService {
       sha256: createHash("sha256").update(readFileSync(attachment.path)).digest("hex") }));
     const identity = hash(source.bot_id, source.conversation_id, inputMessage.text, attachments,
       { ...command, target: creationIdentity });
-    const intentId = `bot-organization-${identity}`, requestHash = hash(command);
+    let intentId = `bot-organization-${identity}`;
+    const requestHash = hash(command);
+    let bridgedPlanConflict = false;
     this.options.db.transaction(() => {
       this.source(parentMessageId);
+      const bridge = this.createdTargetRetry(source, command);
+      if (bridge) { intentId = bridge.intentId; bridgedPlanConflict = bridge.changedPlan; }
       const old = z.object({ request_hash: z.string(), organization_id: z.string() }).optional().parse(this.options.db.prepare(
         "SELECT request_hash,organization_id FROM bot_organization_operations WHERE user_id=? AND operation_id=?")
         .get(this.options.userId, operation));
@@ -154,7 +158,40 @@ export class BotOrganizationService {
       this.link(intentId, parentMessageId);
     }).immediate();
     this.publish(intentId);
+    if (bridgedPlanConflict) return { organization: this.intent(intentId, source.bot_id).view, replayed: true,
+      error: "same_request_existing_intent: 此用户请求已为该目标登记同一委托；新计划差异未应用。请 query/resume 原 intentId；修改已接单事项用原 collaborationId amend，不另建 Work。" };
     return this.run(intentId, parentMessageId);
+  }
+
+  /** Preserve creation lineage when a committed creation loses its acknowledgement.
+   * Exact task identity only; changed conditions remain an explicit conflict. */
+  private createdTargetRetry(source: BotMessageReceipt,
+    command: Extract<z.infer<typeof botOrganizationCommandSchema>, { action: "arrange" }>) {
+    if (command.target.kind !== "existing" || command.contact.kind !== "delegate") return;
+    const incomingTarget = command.target;
+    const taskIdentity = (contact: z.infer<typeof contactSchema>) => contact.kind !== "delegate" ? null
+      : { title: contact.plan.title, goalDescription: contact.plan.goalDescription ?? null,
+          mode: contact.plan.mode, requestedOutcome: contact.plan.requestedOutcome,
+          watchRule: contact.plan.watchRule ?? null, startImmediately: contact.plan.startImmediately ?? null };
+    const rows = this.options.db.prepare(`SELECT organization_id FROM bot_organization_records
+      WHERE user_id=? AND source_bot_id=? AND create_request_json IS NOT NULL
+        AND json_extract(origin_json,'$.user_message_id')=?`)
+      .all(this.options.userId, source.bot_id, source.user_message_id);
+    const matches: Array<{ intentId: string; changedPlan: boolean }> = [];
+    for (const value of rows) {
+      const saved = this.intent(z.object({ organization_id: z.string() }).parse(value).organization_id, source.bot_id);
+      const plan = botOrganizationCommandSchema.parse(JSON.parse(saved.row.request_json));
+      if (plan.action !== "arrange" || plan.target.kind !== "create" || plan.contact.kind !== "delegate"
+        || hash(taskIdentity(plan.contact)) !== hash(taskIdentity(command.contact))) continue;
+      const creation = this.options.creator.readCreation(JSON.parse(saved.row.create_request_json!));
+      if (!creation?.ok || creation.bot.botId !== incomingTarget.botId) continue;
+      const changedConfiguration = incomingTarget.configuration !== undefined
+        && hash(incomingTarget.configuration.changes) !== hash(plan.target.configuration ?? {});
+      matches.push({ intentId: saved.view.intentId,
+        changedPlan: changedConfiguration || hash(plan.contact) !== hash(command.contact) });
+    }
+    if (matches.length > 1) throw new Error("同一来源存在多条已保存创建意图，请使用明确的 intentId，不新建委托");
+    return matches[0];
   }
 
   context(parentMessageId: string): string {

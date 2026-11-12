@@ -754,6 +754,59 @@ try {
     assert.equal(metadata.count("bots"), 2);
     assert.equal(metadata.count("works"), 0);
   });
+  await regression("lost create acknowledgement cannot split one task through arrange existing and original resume", async () => {
+    const cross = await openFixture(join(root, "create-existing-bridge"));
+    const source = cross.request("Create one translation Bot and delegate the translation; also permit a separate calculation task.");
+    await cross.discover(source.assistantMessageId);
+    const original = createCommand("跨路径恢复", workspace);
+    const create = cross.creator.createBot.bind(cross.creator);
+    let committedTarget = "";
+    cross.creator.createBot = request => {
+      const result = create(request);
+      if (result.ok) { committedTarget = result.bot.botId; throw new Error("lost committed creation acknowledgement"); }
+      return result;
+    };
+    const lost = intent(await cross.command(source.assistantMessageId, "lost-create", original));
+    cross.creator.createBot = create;
+    assert.equal(lost.phase, "creation_failed");
+    assert.equal(lost.target, null, "view does not know the committed identity yet");
+    assert(committedTarget);
+    assert.equal(cross.count("works"), 0);
+    const changed = { action: "arrange", target: { kind: "existing", botId: committedTarget,
+      configuration: { expectedRevision: 0, changes: original.target.configuration } },
+      contact: { kind: "delegate", plan: { ...plan, constraints: ["Reworded condition, not silently adopted"] } } };
+    const conflict = await cross.organization.command(source.assistantMessageId, "retry-as-existing", changed) as { organization: ReturnType<typeof botOrganizationSummarySchema.parse>; error?: string };
+    assert.equal(intent(conflict.organization).intentId, lost.intentId);
+    assert.match(conflict.error ?? "", /same_request_existing_intent/);
+    assert.equal(cross.count("works"), 0);
+    assert.equal(cross.settings.get(committedTarget).revision, 0, "conflicting plan must not alter configuration");
+    cross.messages.update(source.assistantMessageId, "completed", "The saved intent is retained.");
+    const fresh = cross.request("Resume that original saved intent only.");
+    const accepted = linked(await cross.command(fresh.assistantMessageId, "resume-original", { action: "resume", intentId: lost.intentId }));
+    assert.equal(accepted.target.botId, committedTarget);
+    assert.equal(cross.count("bots"), 2);
+    assert.equal(cross.count("works"), 1);
+    const workId = cross.collaborations.organizationCollaboration(lost.intentId)?.workId;
+    assert(workId);
+    assert.equal(cross.works.getWork(workId)?.sourceMessageId, source.userMessageId);
+    const scheduled = audit.scheduled.length;
+    linked(await cross.command(fresh.assistantMessageId, "resume-again", { action: "resume", intentId: lost.intentId }));
+    assert.equal(cross.count("works"), 1);
+    assert.equal(audit.scheduled.length, scheduled);
+    // A distinct task for that same target and original user request is not merged.
+    cross.messages.update(source.assistantMessageId, "running", "Continuing the independently requested calculation.");
+    const separate = linked(await cross.command(source.assistantMessageId, "independent-task", {
+      action: "arrange", target: { kind: "existing", botId: committedTarget },
+      contact: { kind: "delegate", plan: { ...plan, title: "独立核算", goalDescription: "Calculate the separate requested total." } },
+    }));
+    assert.notEqual(separate.intentId, lost.intentId);
+    assert.equal(cross.count("works"), 2);
+    const same = linked(await cross.command(source.assistantMessageId, "equivalent-existing", {
+      action: "arrange", target: { kind: "existing", botId: committedTarget }, contact: original.contact,
+    }));
+    assert.equal(same.intentId, lost.intentId);
+    assert.equal(cross.count("works"), 2);
+  });
   if (regressionFailures.length) throw new AggregateError(regressionFailures, `${regressionFailures.length} organization behavior regressions failed`);
 } finally {
   state.failSchedule = false;
