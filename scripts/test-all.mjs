@@ -89,6 +89,7 @@ const GUI_TESTS = new Set([
   "test:gadget-save-copies-desktop",
   "test:gadget-menu-dev",
   "test:browser-builtin-electron",
+  "test:browser-task-execution-electron",
   "test:bot-add-menu-desktop",
   "test:diagnostics-cache-ui",
   "test:bot-display-groups-ui",
@@ -190,6 +191,7 @@ const NETWORK_TESTS = new Set([
   "test:bot-peer-calls:live",
   "test:web-page-answer-runtime:live", // Real gateway model; output-pressure injection runs last.
   "test:browser-builtin-live",
+  "test:browser-production-live",
   "test:bot-result-delivery:live",
   "test:bot-memory-live", // isolated pnpm dev desktop + configured live model
   "test:bot-watch:live",
@@ -395,6 +397,8 @@ const HEADLESS_TESTS = new Set([
   "test:app-store-runtime",
   "test:app-store-transactions",
   "test:task-file-changes",
+  "test:browser-contract",
+  "test:browser-durable-composition",
   "test:browser-open-guard", // 纯源码文本断言（stale preload 回归门），6/6 PASS
   "test:models-settings-overlay", // 纯源码文本断言，9/9 PASS
 ]);

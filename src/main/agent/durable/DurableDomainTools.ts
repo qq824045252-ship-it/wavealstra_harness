@@ -10,6 +10,7 @@ import { durableSourceUserMessageId } from "./DurableInputProvenance";
 import { withModelInvocationSettings } from "../ModelInvocationAdmission";
 import { createAgentSettingsManager } from "../../agent-shell-settings";
 import { getMyBuddyDir } from "../../paths";
+import { browserStructuredOutputSchema } from "../../capabilities/BrowserToolContract";
 
 type NativeApi = Parameters<ToolRegistration["execute"]>[1];
 type NativeContext = Parameters<ToolRegistration["execute"]>[2];
@@ -39,6 +40,7 @@ export async function durableDomainTools(factories: readonly InlineExtension[], 
   const api = new Proxy({
     registerTool(tool: ToolDefinition) {
       tools.push({ name: tool.name, description: tool.description, parameters: tool.parameters,
+        ...(tool.name === "browser_exec" ? { structuredOutputSchema: browserStructuredOutputSchema } : {}),
         // Data writes must never be repeated after a crash with an unknown outcome.
         replay: capabilities?.taskId && (tool.name === "request_user_input" || tool.name === "multi_model_consult") ? "safe" : "unsafe",
         execute: async (args, native, context) => {
@@ -50,7 +52,9 @@ export async function durableDomainTools(factories: readonly InlineExtension[], 
                 update => { for (const block of update.content ?? []) if (block.type === "text") native.output(block.text); },
                 extensionContext as Parameters<typeof tool.execute>[4]);
               context.abortSignal?.throwIfAborted();
-              return { output: result.content, isError: result.isError, diagnostics: durableExtensionDiagnostics(result), details: result.details === undefined ? undefined : JSON.parse(JSON.stringify(result.details)) };
+              const details = result.details === undefined ? undefined : JSON.parse(JSON.stringify(result.details));
+              return { output: result.content, isError: result.isError, diagnostics: durableExtensionDiagnostics(result), details,
+                ...(tool.name === "browser_exec" ? { structuredOutput: { ...details, ...(details?.details?.outcome ? { outcome: details.details.outcome } : {}), isError: Boolean(result.isError) } } : {}) };
             } finally { await Promise.all(invocation.getStore()!.writes); }
           });
           const execute = () => settings ? withModelInvocationSettings(settings, invoke) : invoke();

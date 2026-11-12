@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { app, BrowserWindow, nativeImage } from "electron";
 import { BrowserHost } from "../src/main/browser/BrowserHost";
-import { BrowserAutomationService } from "../src/main/capabilities/BrowserAutomationService";
+import { BrowserAutomationService, BrowserAutomationError } from "../src/main/capabilities/BrowserAutomationService";
 import { UiAutomationService } from "../src/main/capabilities/UiAutomationService";
 import { pageInspectionService } from "../src/main/artifact/PageInspectionService";
 
@@ -65,6 +65,7 @@ async function fixture(url: string) {
   host.hide();
   const service = new BrowserAutomationService(() => host);
   await service.execute({ action: "navigate", url });
+  await service.execute({ action: "read" });
   const wc = host.inspectionWebContents!;
   const ui = new UiAutomationService({ app: () => null, browser: () => null, artifact: () => null });
   ui.setBrowserHost(host);
@@ -124,9 +125,26 @@ void (async () => {
     const originalUrl = preflight.wc.getURL();
     const originalFocus = await preflight.wc.executeJavaScript("document.activeElement.tagName");
     await assert.rejects(preflight.service.execute({ action: "navigate", url: "file:///tmp/blocked.html" }), /无效浏览器 URL/);
-    await assert.rejects(preflight.service.execute({ action: "press", key: "PageDown" }), /selector 不能为空/);
+    await assert.rejects(preflight.service.execute({ action: "press", key: "PageDown" }), error => error instanceof BrowserAutomationError && error.code === "INVALID_INPUT");
     assert.equal(preflight.wc.getURL(), originalUrl);
     assert.equal(await preflight.wc.executeJavaScript("document.activeElement.tagName"), originalFocus);
+    if (process.env.BROWSER_INPUT_PROBE === "1") {
+      await preflight.host.withAutomationSurface(async () => {
+      preflight.wc.debugger.attach();
+      try {
+        await preflight.wc.debugger.sendCommand("DOM.enable");
+        await preflight.wc.debugger.sendCommand("CSS.enable");
+        await preflight.wc.debugger.sendCommand("Overlay.enable");
+        if (process.env.BROWSER_OVERLAY_DISABLE === "1") await preflight.wc.debugger.sendCommand("Overlay.disable");
+        const point = await preflight.wc.executeJavaScript("(()=>{const r=document.querySelector('#increment').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()");
+        await preflight.wc.debugger.sendCommand("Input.dispatchMouseEvent", { type: "mousePressed", ...point, button: "left", clickCount: 1 });
+        await preflight.wc.debugger.sendCommand("Input.dispatchMouseEvent", { type: "mouseReleased", ...point, button: "left", clickCount: 1 });
+        assert.equal(await preflight.wc.executeJavaScript("document.querySelector('#count').textContent"), "1");
+        console.log("PASS CDP trusted input in never-shown native window");
+      } finally { preflight.wc.debugger.detach(); }
+      });
+      return;
+    }
     await preflight.service.execute({ action: "click", selector: "#increment" });
     assert.equal(await preflight.wc.executeJavaScript("document.querySelector('#count').textContent"), "1");
     results.push({ mode: "invalid-input-then-independent-action", invalidUrl: "not_started", missingSelector: "not_started", continued: true });
@@ -167,7 +185,13 @@ void (async () => {
       let lastHash = "";
       let presenterId: number | undefined;
       for (let index = 0; index < 10; index++) {
-        if (index) await f.service.execute({ action: "click", selector: "#increment" });
+        if (index) {
+          try { await f.service.execute({ action: "click", selector: "#increment" }); }
+          catch (error) {
+            console.error("input-failure", { mode, index, inspectMode: inspector?.inspectMode, page: await f.wc.executeJavaScript("({count:window.count,viewport:[innerWidth,innerHeight],rect:document.querySelector('#increment').getBoundingClientRect().toJSON(),focused:document.hasFocus()})") });
+            throw error;
+          }
+        }
         const started = Date.now();
         const bytes = index === 1
           ? (await f.ui.execute({ action: "screenshot", target: "browser" })).screenshot!

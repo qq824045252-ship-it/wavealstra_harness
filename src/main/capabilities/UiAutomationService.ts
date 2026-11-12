@@ -3,6 +3,7 @@ import type { BrowserWindow, WebContents } from "electron";
 import { selectAllModifier } from "../platform/input";
 import type { BrowserHost } from "../browser/BrowserHost";
 import { pageInspectionService, PageCaptureError, PageCaptureScope } from "../artifact/PageInspectionService";
+import { AutomationScope, AutomationTimeoutError } from "./AutomationScope";
 
 export type UiTarget = "app" | "browser" | "artifact";
 export type UiExecAction = "status" | "snapshot" | "find" | "inspect" | "click" | "fill" | "press" | "scroll" | "screenshot" | "wait_for";
@@ -34,6 +35,9 @@ export interface UiExecInput {
   maxChars?: number;
   timeoutMs?: number;
   state?: UiWaitState;
+  /** Host observation, never supplied by the tool schema. */
+  expected?: Pick<UiElementInfo, "tag" | "name">;
+  observedSelectors?: readonly string[];
 }
 
 export interface UiElementInfo {
@@ -66,6 +70,12 @@ export interface UiAutomationTargets {
   browser: () => WebContents | null;
   artifact: () => WebContents | null;
   browserScreenshot?: (options: { signal?: AbortSignal; timeoutMs?: number }) => Promise<Uint8Array>;
+  input?: UiNativeInput;
+}
+
+export interface UiNativeInput {
+  send(event: Parameters<WebContents["sendInputEvent"]>[0]): Promise<void>;
+  insertText(text: string): Promise<void>;
 }
 
 function clean(value: string | undefined, max: number): string | undefined {
@@ -86,9 +96,9 @@ function locator(input: UiExecInput): { selector?: string; text?: string; role?:
   return result;
 }
 
-function findScript(input: ReturnType<typeof locator>, limit: number, inspect: boolean): string {
+export function findScript(input: ReturnType<typeof locator> & { visibleOnly?: boolean }, limit: number, inspect: boolean, offset: number | "elementOffset" = 0, query?: "snapshot.query"): string {
   return `(() => {
-    const q=${JSON.stringify(input)}; const limit=${Math.max(1, Math.min(200, limit))}; const inspect=${inspect};
+    const q=${query ?? JSON.stringify(input)}; const limit=${Math.max(1, Math.min(200, limit))}; const inspect=${inspect};
     const norm=(v)=>String(v??'').replace(/\\s+/g,' ').trim();
     const roleOf=(el)=>{
       const explicit=norm(el.getAttribute('role')).toLowerCase(); if(explicit)return explicit;
@@ -111,20 +121,36 @@ function findScript(input: ReturnType<typeof locator>, limit: number, inspect: b
       }
       return '';
     };
-    const nameOf=(el)=>norm(el.getAttribute('aria-label')||(el.getAttribute('aria-labelledby')?document.getElementById(el.getAttribute('aria-labelledby'))?.textContent:'')||el.getAttribute('title')||(el instanceof HTMLInputElement?el.placeholder:'')||el.textContent);
-    const path=(el)=>{ let ref=el.getAttribute('data-mybuddy-ui-ref'); if(!ref){ref=${JSON.stringify(randomUUID())}+'-'+(++window.__mybuddyUiRefCounter|| (window.__mybuddyUiRefCounter=1));el.setAttribute('data-mybuddy-ui-ref',ref);} return '[data-mybuddy-ui-ref="'+CSS.escape(ref)+'"]'; };
+    const nameOf=(el)=>norm(el.getAttribute('aria-label')||(el.getAttribute('aria-labelledby')?el.getAttribute('aria-labelledby').split(/\\s+/).map(id=>document.getElementById(id)?.textContent||'').join(' '):'')||(el.labels?[...el.labels].map(l=>{const c=l.cloneNode(true);c.querySelectorAll('input,textarea,select,[contenteditable]').forEach(n=>n.remove());return c.textContent||''}).join(' '):'')||el.getAttribute('title')||(el instanceof HTMLInputElement?el.placeholder:'')||(!(el instanceof HTMLInputElement||el instanceof HTMLTextAreaElement||el.isContentEditable)?el.textContent:'')||el.getAttribute('name'));
+    const refs=window.__mybuddyUiRefs||(window.__mybuddyUiRefs=new WeakMap());
+    const path=(el)=>{ let ref=refs.get(el); if(!ref){ref=${JSON.stringify(randomUUID())}+'-'+(++window.__mybuddyUiRefCounter|| (window.__mybuddyUiRefCounter=1));refs.set(el,ref);el.setAttribute('data-mybuddy-ui-ref',ref);} return '[data-mybuddy-ui-ref="'+CSS.escape(ref)+'"]'; };
     let all; try{all=q.selector?Array.from(document.querySelectorAll(q.selector)):Array.from(document.querySelectorAll('body *'));}catch(e){return {ok:false,error:'invalid selector: '+String(e)}}
-    const matches=all.filter(el=>{ if(!(el instanceof Element))return false; const n=nameOf(el),r=roleOf(el); if(q.role&&r!==q.role.toLowerCase())return false; if(q.name&&!n.toLowerCase().includes(q.name.toLowerCase()))return false; if(q.text&&!norm(el.textContent).toLowerCase().includes(q.text.toLowerCase()))return false; return true; }).slice(0,limit).map(el=>{ const r=el.getBoundingClientRect(); const s=getComputedStyle(el); const item={selector:path(el),tag:el.tagName.toLowerCase(),id:el.id||undefined,role:roleOf(el)||undefined,name:nameOf(el).slice(0,500)||undefined,text:norm(el.textContent).slice(0,1000)||undefined,visible:r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden'&&Number(s.opacity||'1')>0,disabled:Boolean(el.disabled||el.getAttribute('aria-disabled')==='true'),bounds:{x:r.x,y:r.y,width:r.width,height:r.height}}; if(inspect){item.outerHTML=el.outerHTML.slice(0,8000); item.styles={display:s.display,visibility:s.visibility,opacity:s.opacity,position:s.position,zIndex:s.zIndex,pointerEvents:s.pointerEvents,overflowX:s.overflowX,overflowY:s.overflowY};} return item; });
-    return {ok:true,matches};
+    const filtered=all.filter(el=>{ if(!(el instanceof Element))return false; if(q.visibleOnly){const r=el.getBoundingClientRect(),s=getComputedStyle(el);if(!r.width||!r.height||s.visibility==='hidden'||s.display==='none'||Number(s.opacity||'1')===0)return false;} if(q.selector?.includes('data-mybuddy-ui-ref')&&refs.get(el)!==el.getAttribute('data-mybuddy-ui-ref'))return false; const n=nameOf(el),r=roleOf(el); if(q.role&&r!==q.role.toLowerCase())return false; if(q.name&&!n.toLowerCase().includes(q.name.toLowerCase()))return false; if(q.text&&!norm(el.textContent).toLowerCase().includes(q.text.toLowerCase()))return false; return true; });
+    const matches=filtered.slice(${offset},${offset}+limit).map(el=>{ const r=el.getBoundingClientRect(); const s=getComputedStyle(el); const editable=el instanceof HTMLInputElement||el instanceof HTMLTextAreaElement||el.isContentEditable; const item={selector:path(el),tag:el.tagName.toLowerCase(),id:el.id||undefined,role:roleOf(el)||undefined,name:nameOf(el).slice(0,160)||undefined,text:!editable?norm(el.textContent).slice(0,160)||undefined:undefined,visible:r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden'&&Number(s.opacity||'1')>0,disabled:Boolean(el.disabled||el.getAttribute('aria-disabled')==='true'),bounds:{x:r.x,y:r.y,width:r.width,height:r.height}}; if(inspect){item.outerHTML=el.outerHTML.slice(0,8000); item.styles={display:s.display,visibility:s.visibility,opacity:s.opacity,position:s.position,zIndex:s.zIndex,pointerEvents:s.pointerEvents,overflowX:s.overflowX,overflowY:s.overflowY};} return item; });
+    return {ok:true,matches,total:filtered.length};
   })()`;
 }
-
-type UiAwait = <T>(operation: () => Promise<T>) => Promise<T>;
-const directUiAwait: UiAwait = operation => operation();
 
 export class UiAutomationService {
   private browserHost: BrowserHost | null = null;
   constructor(private readonly targets: UiAutomationTargets) {}
+
+  private async send(wc: WebContents, event: Parameters<WebContents["sendInputEvent"]>[0]): Promise<void> {
+    if (this.targets.input) return this.targets.input.send(event);
+    wc.sendInputEvent(event);
+  }
+
+  private async sendPair(wc: WebContents, down: Parameters<WebContents["sendInputEvent"]>[0], up: Parameters<WebContents["sendInputEvent"]>[0], scope: AutomationScope): Promise<void> {
+    let sent = false, failed = false, cause: unknown;
+    try { await scope.run(() => { sent = true; return this.send(wc, down); }); }
+    catch (error) { failed = true; cause = error; }
+    if (sent) {
+      const released = this.send(wc, up);
+      if (failed) void released.catch(() => {});
+      else try { await scope.run(() => released); } catch (error) { failed = true; cause = error; }
+    }
+    if (failed) throw cause;
+  }
 
   setBrowserHost(host: BrowserHost | null): void { this.browserHost = host; }
 
@@ -151,8 +177,8 @@ export class UiAutomationService {
     return wc;
   }
 
-  private async find(wc: WebContents, input: UiExecInput, limit = 20, inspect = false, wait: UiAwait = directUiAwait): Promise<UiElementInfo[]> {
-    const result = await wait(() => wc.executeJavaScript(findScript(locator(input), limit, inspect), true)) as { ok?: boolean; error?: string; matches?: UiElementInfo[] };
+  private async find(wc: WebContents, input: UiExecInput, scope: AutomationScope, limit = 20, inspect = false, visibleOnly = false): Promise<UiElementInfo[]> {
+    const result = await scope.run(() => wc.executeJavaScript(findScript({ ...locator(input), visibleOnly }, limit, inspect), true)) as { ok?: boolean; error?: string; matches?: UiElementInfo[] };
     if (!result?.ok) {
       const message = result?.error || "UI 元素查找失败";
       throw new UiAutomationError(/^invalid selector:/i.test(message) ? "INVALID_SELECTOR" : "EXECUTION_FAILED", message);
@@ -160,35 +186,76 @@ export class UiAutomationService {
     return result.matches ?? [];
   }
 
-  private async one(wc: WebContents, input: UiExecInput, wait: UiAwait = directUiAwait): Promise<UiElementInfo> {
-    const rows = await this.find(wc, input, 10, false, wait);
+  private async one(wc: WebContents, input: UiExecInput, scope: AutomationScope): Promise<UiElementInfo> {
+    const visible = await this.find(wc, input, scope, 2, false, true);
+    if (visible.length === 1) return visible[0];
+    if (visible.length > 1) throw new UiAutomationError("ELEMENT_AMBIGUOUS", "UI 定位不唯一：存在多个可见目标");
+    const rows = await this.find(wc, input, scope, 2, false);
     if (!rows.length) throw new UiAutomationError("ELEMENT_NOT_FOUND", "未找到目标 UI 元素");
     if (rows.length > 1) {
-      const visible = rows.filter((row) => row.visible);
-      if (visible.length === 1) return visible[0];
       throw new UiAutomationError("ELEMENT_AMBIGUOUS", `UI 定位不唯一：匹配 ${rows.length} 个元素`, { count: rows.length });
     }
     return rows[0];
   }
 
-  private async click(wc: WebContents, element: UiElementInfo, check = () => {}, wait: UiAwait = directUiAwait): Promise<{ x: number; y: number }> {
-    await wait(() => wc.executeJavaScript(`document.querySelector(${JSON.stringify(element.selector)})?.scrollIntoView({block:'center',inline:'center'})`, true));
-    const current = await this.one(wc, { action: "find", selector: element.selector }, wait);
+  private async dispatch(wc: WebContents, selector: string, event: "click" | "keydown", scope: AutomationScope, send: () => Promise<void>): Promise<void> {
+    const token = randomUUID();
+    const prepared = await scope.run(() => wc.executeJavaScript(`(() => {
+      const el=document.querySelector(${JSON.stringify(selector)});if(!el)return false;
+      const receipts=window.__mybuddyInputReceipts||(window.__mybuddyInputReceipts=new Map());
+      for(const [key,old]of receipts){if(receipts.size<16)break;old.cleanup();receipts.delete(key);}
+      const entry={};entry.promise=new Promise(resolve=>{
+        const finish=value=>{document.removeEventListener(${JSON.stringify(event)},listener,true);clearTimeout(entry.timer);resolve(value)};
+        const listener=e=>{if(e.isTrusted)finish(e.target===el||el.contains(e.target))};
+        entry.cleanup=()=>finish(false);entry.timer=setTimeout(entry.cleanup,Math.max(1,${scope.deadline}-Date.now()));
+        document.addEventListener(${JSON.stringify(event)},listener,true);
+      });
+      receipts.set(${JSON.stringify(token)},entry);return true;
+    })()`, true));
+    if (!prepared) throw new UiAutomationError("ELEMENT_DISAPPEARED", "输入派发前目标已消失");
+    try {
+      scope.dispatch(); await send();
+      const accepted = await scope.run(() => wc.executeJavaScript(`window.__mybuddyInputReceipts.get(${JSON.stringify(token)})?.promise`, true));
+      if (!accepted) throw new UiAutomationError("EXECUTION_FAILED", "原生输入已派发，但目标没有确认收到事件；请只读观察，不要重放提交");
+    } finally {
+      // Cleanup is read-only and may outlive caller cancellation. The renderer
+      // also expires the listener at the invocation's absolute deadline.
+      if (!wc.isDestroyed()) void wc.executeJavaScript(`(() => {const receipts=window.__mybuddyInputReceipts,entry=receipts?.get(${JSON.stringify(token)});entry?.cleanup();receipts?.delete(${JSON.stringify(token)});})()`).catch(() => {});
+    }
+  }
+
+  private async click(wc: WebContents, element: UiElementInfo, scope: AutomationScope): Promise<{ x: number; y: number }> {
+    await scope.run(() => wc.executeJavaScript(`document.querySelector(${JSON.stringify(element.selector)})?.scrollIntoView({block:'center',inline:'center'})`, true));
+    const current = await this.one(wc, { action: "find", selector: element.selector }, scope);
     if (!current) throw new UiAutomationError("ELEMENT_DISAPPEARED", "目标元素在点击前消失");
     if (!current.visible) throw new UiAutomationError("ELEMENT_NOT_VISIBLE", "目标元素不可见");
     if (current.disabled) throw new UiAutomationError("ELEMENT_DISABLED", "目标元素已禁用");
-    check();
-    const hit = await wait(() => wc.executeJavaScript(`(() => {const el=document.querySelector(${JSON.stringify(element.selector)});if(!el)return null;const r=el.getBoundingClientRect();const x=Math.round(r.x+r.width/2),y=Math.round(r.y+r.height/2);const hit=document.elementFromPoint(x,y);return hit===el||el.contains(hit)?{x,y}:null})()`, true)) as { x: number; y: number } | null;
-    check();
+    if (current.tag !== element.tag || current.role !== element.role || current.name !== element.name) throw new UiAutomationError("SURFACE_CHANGED", "目标语义在操作前变化，请重新定位");
+    const hit = await scope.run(() => wc.executeJavaScript(`(() => {const el=document.querySelector(${JSON.stringify(element.selector)});if(!el)return null;const r=el.getBoundingClientRect();const x=Math.round(r.x+r.width/2),y=Math.round(r.y+r.height/2);const hit=document.elementFromPoint(x,y);return hit===el||el.contains(hit)?{x,y}:null})()`, true)) as { x: number; y: number } | null;
     if (!hit) throw new UiAutomationError("ELEMENT_NOT_VISIBLE", "目标被其它元素遮挡，请重新观察界面");
     const { x, y } = hit;
-    wc.sendInputEvent({ type: "mouseMove", x, y });
-    wc.sendInputEvent({ type: "mouseDown", x, y, button: "left", clickCount: 1 });
-    wc.sendInputEvent({ type: "mouseUp", x, y, button: "left", clickCount: 1 });
+    await this.dispatch(wc, element.selector, "click", scope, async () => {
+      await scope.run(() => this.send(wc, { type: "mouseMove", x, y }));
+      await this.sendPair(wc, { type: "mouseDown", x, y, button: "left", clickCount: 1 }, { type: "mouseUp", x, y, button: "left", clickCount: 1 }, scope);
+    });
     return { x, y };
   }
 
-  async execute(input: UiExecInput, signal?: AbortSignal): Promise<UiExecOutput> {
+  async execute(input: UiExecInput, signal?: AbortSignal, sharedScope?: AutomationScope): Promise<UiExecOutput> {
+    const scope = sharedScope ?? new AutomationScope(signal, input.timeoutMs);
+    const target = input.target ?? "app", wc = this.targetContents(target);
+    const release = wc ? scope.guard(() => {
+      if (wc.isDestroyed() || this.targetContents(target) !== wc) throw new UiAutomationError("SURFACE_CHANGED", "UI target 已变化，请重新观察");
+    }) : () => {};
+    try { return await this.executeScoped(input, scope); }
+    catch (error) {
+      if (error instanceof AutomationTimeoutError) throw new UiAutomationError("WAIT_TIMEOUT", error.message, { outcome: { dispatch: scope.dispatched ? "dispatched" : "not_started", effect: scope.confirmed ? "confirmed" : scope.dispatched ? "unknown" : "none" } });
+      throw error;
+    } finally { release(); if (!sharedScope) scope.close(); }
+  }
+
+  private async executeScoped(input: UiExecInput, scope: AutomationScope): Promise<UiExecOutput> {
+    const signal = scope.signal;
     if (signal?.aborted) throw new DOMException("界面操作已取消", "AbortError");
     const target = input.target ?? "app";
     if (input.action === "status") {
@@ -199,49 +266,29 @@ export class UiAutomationService {
 
     const wc = this.wc(target);
     const check = () => {
+      scope.check();
       if (signal?.aborted) throw new DOMException("界面操作已取消", "AbortError");
       if (wc.isDestroyed() || this.targetContents(target) !== wc) throw new UiAutomationError("SURFACE_CHANGED", "UI target 已变化，请重新观察");
     };
-    // Renderer lookups can remain pending during navigation or a stalled renderer.
-    // Bound the caller, and recheck before any later input dispatch. A late lookup
-    // may settle, but must never resume a cancelled action on a different surface.
-    const timeout = Math.max(100, Math.min(30_000, Math.round(input.timeoutMs ?? 5_000)));
-    const deadline = Date.now() + timeout;
-    const wait: UiAwait = async operation => {
+    const js = <T = unknown>(script: string): Promise<T> => scope.run(async () => {
       check();
-      if (Date.now() >= deadline) throw new UiAutomationError("WAIT_TIMEOUT", `界面操作超时：${input.action} (${timeout}ms)`);
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      let onAbort: (() => void) | undefined;
-      const interrupted = new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new UiAutomationError("WAIT_TIMEOUT", `界面操作超时：${input.action} (${timeout}ms)`)), Math.max(1, deadline - Date.now()));
-        onAbort = () => reject(new DOMException("界面操作已取消", "AbortError"));
-        signal?.addEventListener("abort", onAbort, { once: true });
-        if (signal?.aborted) onAbort();
-      });
-      try {
-        const result = await Promise.race([Promise.resolve().then(() => { check(); return operation(); }), interrupted]);
-        check();
-        if (Date.now() >= deadline) throw new UiAutomationError("WAIT_TIMEOUT", `界面操作超时：${input.action} (${timeout}ms)`);
-        return result;
-      } finally {
-        if (timer) clearTimeout(timer);
-        if (onAbort) signal?.removeEventListener("abort", onAbort);
-      }
-    };
+      const result: T = await wc.executeJavaScript(script, true);
+      check();
+      return result;
+    });
     const base = { action: input.action, target, url: wc.getURL(), title: wc.getTitle() } as const;
 
     if (input.action === "snapshot") {
-      const page = await wait(() => pageInspectionService.getPageSnapshot(wc));
+      const page = await scope.run(() => pageInspectionService.getPageSnapshot(wc));
       // A reference belongs to this exact DOM node and document. Reordering keeps it
       // valid; replacement/navigation/new snapshots cannot silently retarget it.
-      await wait(() => wc.executeJavaScript(`document.querySelectorAll('[data-mybuddy-ui-ref]').forEach(el=>el.removeAttribute('data-mybuddy-ui-ref'))`, true));
-      const rows = await this.find(wc, { action: "find", selector: 'button,a,input,textarea,select,[role],[aria-label],[data-testid]' }, 200, false, wait);
+      const rows = await this.find(wc, { action: "find", selector: 'button,a,input,textarea,select,[role],[aria-label],[data-testid]' }, scope, 200);
       const max = Math.max(1_000, Math.min(100_000, Math.round(input.maxChars ?? 30_000)));
       return { ...base, text: page?.text.slice(0, max) ?? "", elements: rows, detail: `snapshot: ${rows.length} interactive elements` };
     }
 
     if (input.action === "find" || input.action === "inspect") {
-      const rows = await this.find(wc, input, input.action === "inspect" ? 10 : 20, input.action === "inspect", wait);
+      const rows = await this.find(wc, input, scope, input.action === "inspect" ? 10 : 20, input.action === "inspect");
       return { ...base, elements: rows, detail: `matched ${rows.length}` };
     }
 
@@ -275,48 +322,55 @@ export class UiAutomationService {
       const started = Date.now();
       while (Date.now() - started <= timeout) {
         check();
-        const rows = await this.find(wc, input, 20, false, wait);
+        const rows = await this.find(wc, input, scope, 20, false);
         const attached = rows.length > 0;
         const visible = rows.some((row) => row.visible);
         const done = state === "attached" ? attached : state === "detached" ? !attached : state === "visible" ? visible : !visible;
         if (done) return { ...base, elements: rows, detail: `${state} after ${Date.now() - started}ms` };
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        await scope.run(() => new Promise((resolve) => setTimeout(resolve, Math.min(100, scope.remaining))));
       }
       throw new UiAutomationError("WAIT_TIMEOUT", `wait_for 超时：${state} (${timeout}ms)`, { state, timeoutMs: timeout });
     }
 
-    const element = await this.one(wc, input, wait);
+    const element = await this.one(wc, input, scope);
+    if (input.observedSelectors && !input.observedSelectors.includes(element.selector)) throw new UiAutomationError("SURFACE_CHANGED", "定位结果不是已观察的真实节点，请重新 find");
+    if (input.expected && (element.tag !== input.expected.tag || element.name !== input.expected.name)) throw new UiAutomationError("SURFACE_CHANGED", "目标语义与上次观察不一致");
     check();
     if (input.action === "click") {
-      const point = await this.click(wc, element, check, wait);
+      const point = await this.click(wc, element, scope);
+      scope.confirmed = true;
       return { ...base, elements: [element], detail: `clicked ${element.selector} @ ${point.x},${point.y}` };
     }
     if (input.action === "fill") {
       const value = input.value ?? "";
       if (value.length > 100_000) throw new UiAutomationError("INVALID_INPUT", "value 过长");
-      await this.click(wc, element, check, wait);
-      const editable = await wait(() => wc.executeJavaScript(`(() => {const el=document.querySelector(${JSON.stringify(element.selector)}); if(!(el instanceof HTMLInputElement||el instanceof HTMLTextAreaElement||(el instanceof HTMLElement&&el.isContentEditable)))return false; el.focus(); return true;})()`, true));
+      const editable = await js(`(() => {const el=document.querySelector(${JSON.stringify(element.selector)}); return Boolean(el && !el.disabled && !el.readOnly && (el instanceof HTMLInputElement||el instanceof HTMLTextAreaElement||(el instanceof HTMLElement&&el.isContentEditable)));})()`);
       if (!editable) throw new UiAutomationError("ELEMENT_NOT_EDITABLE", "目标元素不可编辑", { selector: element.selector });
+      await this.click(wc, element, scope);
+      const focused = await js(`document.activeElement===document.querySelector(${JSON.stringify(element.selector)})`);
+      if (!focused) throw new UiAutomationError("ELEMENT_NOT_EDITABLE", "目标未收到输入焦点");
       check();
       const selectModifier = selectAllModifier();
-      wc.sendInputEvent({ type: "keyDown", keyCode: "A", modifiers: [selectModifier] });
-      wc.sendInputEvent({ type: "keyUp", keyCode: "A", modifiers: [selectModifier] });
-      wc.sendInputEvent({ type: "keyDown", keyCode: "Backspace" });
-      wc.sendInputEvent({ type: "keyUp", keyCode: "Backspace" });
-      await wait(() => wc.insertText(value));
+      await this.dispatch(wc, element.selector, "keydown", scope, () => this.sendPair(wc, { type: "keyDown", keyCode: "A", modifiers: [selectModifier] }, { type: "keyUp", keyCode: "A", modifiers: [selectModifier] }, scope));
+      check();
+      if (value) await scope.run(() => this.targets.input ? this.targets.input.insertText(value) : wc.insertText(value));
+      else await this.dispatch(wc, element.selector, "keydown", scope, () => this.sendPair(wc, { type: "keyDown", keyCode: "Backspace" }, { type: "keyUp", keyCode: "Backspace" }, scope));
+      const accepted = await js(`(async () => {await new Promise(resolve=>setTimeout(resolve,0));const el=document.querySelector(${JSON.stringify(element.selector)});return !!el && (el instanceof HTMLInputElement||el instanceof HTMLTextAreaElement?el.value===${JSON.stringify(value)}:el.innerText===${JSON.stringify(value)}||el.textContent===${JSON.stringify(value)});})()`);
+      if (!accepted) throw new UiAutomationError("EXECUTION_FAILED", "输入已派发，但控件未接受目标值；请只读确认，不要重放提交");
+      scope.confirmed = true;
       return { ...base, elements: [element], detail: `filled ${element.selector}` };
     }
     if (input.action === "press") {
       const key = clean(input.key, 80);
       if (!key) throw new UiAutomationError("INVALID_INPUT", "key 不能为空");
-      await this.click(wc, element, check, wait);
       const tokens = key.split("+");
       const keyCode = tokens.pop()!;
       const aliases: Record<string, "control" | "alt" | "shift" | "meta"> = { ctrl: "control", control: "control", alt: "alt", shift: "shift", meta: "meta", cmd: "meta", command: "meta" };
       const modifiers = tokens.map(token => aliases[token.toLowerCase()]);
       if (modifiers.some(token => !token)) throw new UiAutomationError("INVALID_INPUT", "不支持的快捷键修饰符");
-      wc.sendInputEvent({ type: "keyDown", keyCode, modifiers });
-      wc.sendInputEvent({ type: "keyUp", keyCode, modifiers });
+      await this.click(wc, element, scope);
+      await this.dispatch(wc, element.selector, "keydown", scope, () => this.sendPair(wc, { type: "keyDown", keyCode, modifiers }, { type: "keyUp", keyCode, modifiers }, scope));
+      scope.confirmed = true;
       return { ...base, elements: [element], detail: `pressed ${key} on ${element.selector}` };
     }
     if (input.action === "scroll") {

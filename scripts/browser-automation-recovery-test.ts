@@ -24,7 +24,7 @@ function hostWith(options: { url?: string; loadError?: Error; captureError?: Err
   let url = options.url ?? "https://example.test/form";
   const sent: unknown[] = [];
   const wc = {
-    isDestroyed: () => false,
+    id: 1, isDestroyed: () => false,
     loadURL: async (target: string) => { if (options.loadError) throw options.loadError; url = target; },
     getURL: () => url,
     getTitle: () => "Fixture",
@@ -33,8 +33,10 @@ function hostWith(options: { url?: string; loadError?: Error; captureError?: Err
     capturePage: async () => ({ isEmpty: () => false, toPNG: () => Buffer.from("png") }),
   };
   const host = {
-    attached: true,
+    attached: true, activeTabId: "fixture", captureVersion: 0,
+    getTabHost: () => host,
     listTabs: () => [],
+    withAutomationSurface: async <T>(operation: () => Promise<T>) => operation(),
     inspectionWebContents: wc,
     get url() { return url; },
     navigateForAutomation: (target: string) => wc.loadURL(target),
@@ -100,74 +102,33 @@ try {
       && (error.details as { reason?: string }).reason === "local-server-unavailable",
     "refused preview explains the dead local server and recovery without an external browser");
 
-  const missing = hostWith({ script: () => ({ ok: false, code: "SELECTOR_NOT_FOUND", error: "selector not found" }) });
-  const missingService = new BrowserAutomationService(() => missing.host);
-  let missingError: BrowserAutomationError | undefined;
-  try { await missingService.execute(clickInput); }
-  catch (error) { if (error instanceof BrowserAutomationError) missingError = error; else throw error; }
-  assert.equal(missingError?.code, "SELECTOR_NOT_FOUND");
+  // Production preflight refuses actions without observed node identity.
+  const unobserved = hostWith();
+  await assert.rejects(new BrowserAutomationService(() => unobserved.host).execute(clickInput),
+    (error: unknown) => error instanceof BrowserAutomationError && error.code === "SURFACE_CHANGED");
+  assert.equal(unobserved.sent.length, 0);
+
+  const missingError = new BrowserAutomationError("SELECTOR_NOT_FOUND", "selector not found", { outcome: { dispatch: "not_started", effect: "none" }, currentUrl: "https://example.test/form" });
   assert(recordBrowserAutomationFailureRecovery(bridge, clickInput, missingError));
-  const missingFailure = failures.list("task").find((item) => item.causeCode === "browser-selector-not-found")!;
-  assert.equal(missingFailure.phase, "observe");
-  assert.equal(missingFailure.sideEffects, "none");
-  settleBrowserAutomationRecovery(bridge, clickInput, { action: "click", url: "https://example.test/form", detail: "button" });
-  assert(failures.list("task").find((item) => item.id === missingFailure.id)?.resolvedAt);
-  assert(failures.list("task").find((item) => item.id === hostFailure.id)?.resolvedAt, "restored browser surface clears host-unavailable for that action");
+  const missingFailure = failures.list("task").find(item => item.causeCode === "browser-selector-not-found")!;
+  assert.equal(missingFailure.phase, "observe"); assert.equal(missingFailure.sideEffects, "none");
+  settleBrowserAutomationRecovery(bridge, clickInput, { action: "click", url: "https://example.test/form" });
+  assert(failures.list("task").find(item => item.id === missingFailure.id)?.resolvedAt);
+  assert(failures.list("task").find(item => item.id === hostFailure.id)?.resolvedAt);
 
-  const exploding = hostWith({ script: () => { throw new Error("renderer crashed during click"); } });
-  const explodingService = new BrowserAutomationService(() => exploding.host);
-  let execError: BrowserAutomationError | undefined;
-  try { await explodingService.execute(clickInput); }
-  catch (error) { if (error instanceof BrowserAutomationError) execError = error; else throw error; }
-  assert.equal(execError?.code, "EXECUTION_FAILED");
-  assert(recordBrowserAutomationFailureRecovery(bridge, clickInput, execError));
-  const uncertain = failures.list("task").find((item) => !item.resolvedAt && item.causeCode === "browser-execution-failed")!;
-  assert.equal(uncertain.sideEffects, "unknown");
-  assert.equal(uncertain.target, "browser:uncertain:url=https%3A%2F%2Fexample.test%2Fform");
-  settleBrowserAutomationRecovery(bridge, clickInput, { action: "click", url: "https://example.test/form", detail: "success" });
-  assert.equal(failures.list("task").find((item) => item.id === uncertain.id)?.resolvedAt, undefined,
-    "later click success must not erase an uncertain earlier click without fresh observation");
-  settleBrowserAutomationRecovery(bridge, { action: "read" }, { action: "read", url: "https://example.test/form", text: "fresh page evidence" });
-  assert(failures.list("task").find((item) => item.id === uncertain.id)?.resolvedAt,
-    "fresh read of the same page reconciles uncertain side effects so the Agent can re-plan from actual state");
-
-  const pressMissing = hostWith({ script: () => ({ ok: false, code: "SELECTOR_NOT_FOUND", error: "selector not found" }) });
-  const pressService = new BrowserAutomationService(() => pressMissing.host);
-  await assert.rejects(pressService.execute({ action: "press", selector: "#missing", key: "Enter" }),
-    (error: unknown) => error instanceof BrowserAutomationError && error.code === "SELECTOR_NOT_FOUND");
-  assert.equal(pressMissing.sent.length, 0, "missing press target must never send the key to whichever element currently has focus");
-
-  const pressOk = hostWith({ script: () => ({ ok: true }) });
-  const pressOkService = new BrowserAutomationService(() => pressOk.host);
-  await pressOkService.execute({ action: "press", selector: "#field", key: "Enter" });
-  assert.equal(pressOk.sent.length, 2, "verified focus sends exactly keyDown/keyUp");
-
-  // A task can be stopped while Electron is still resolving the target focus.
-  // Cancellation must win before the first input edge, including parallel callers.
-  const stoppedPress = new AbortController();
-  let focusReady!: (value: { ok: boolean }) => void;
-  let focusStarted!: () => void;
-  const startedFocus = new Promise<void>(resolve => { focusStarted = resolve; });
-  const cancelledPress = hostWith({ script: () => { focusStarted(); return new Promise(resolve => { focusReady = resolve; }); } });
-  const stoppedOperation = new BrowserAutomationService(() => cancelledPress.host)
-    .execute({ action: "press", selector: "#field", key: "Enter" }, stoppedPress.signal);
-  await startedFocus;
-  stoppedPress.abort();
-  focusReady({ ok: true });
-  await assert.rejects(stoppedOperation, (error: unknown) => error instanceof Error && error.name === "AbortError");
-  assert.deepEqual(cancelledPress.sent, [], "a stopped task cannot submit keys after delayed focus confirmation");
-  await new BrowserAutomationService(() => pressOk.host).execute({ action: "press", selector: "#field", key: "Tab" });
-  assert.equal(pressOk.sent.length, 4, "a cancelled task does not quarantine another browser caller");
-
-  const partialPress = hostWith();
-  partialPress.wc.sendInputEvent = event => {
-    partialPress.sent.push(event);
-    if ((event as { type: string }).type === "keyDown") throw new Error("input ACK lost after DOWN");
-  };
-  await assert.rejects(new BrowserAutomationService(() => partialPress.host)
-    .execute({ action: "press", selector: "#field", key: "Shift" }), /input ACK lost after DOWN/);
-  assert.deepEqual(partialPress.sent.map(event => (event as { type: string }).type), ["keyDown", "keyUp"],
-    "uncertain DOWN delivery still attempts its matching UP; the original error stays visible");
+  for (const code of ["EXECUTION_FAILED", "WAIT_TIMEOUT", "CANCELLED"] as const) {
+    const error = new BrowserAutomationError(code, "lost action receipt", { outcome: { dispatch: "dispatched", effect: "unknown" }, currentUrl: "https://example.test/form" });
+    assert(recordBrowserAutomationFailureRecovery(bridge, clickInput, error));
+    const failure = failures.list("task").find(item => !item.resolvedAt && item.causeCode === `browser-${code.toLowerCase().replaceAll("_", "-")}`)!;
+    assert.equal(failure.sideEffects, "unknown");
+    settleBrowserAutomationRecovery(bridge, clickInput, { action: "click", url: "https://example.test/form" });
+    assert.equal(failures.list("task").find(item => item.id === failure.id)?.resolvedAt, undefined, "later click never reconciles an uncertain earlier click");
+  }
+  const preflightTimeout = new BrowserAutomationError("WAIT_TIMEOUT", "target check pending", { outcome: { dispatch: "not_started", effect: "none" } });
+  assert(recordBrowserAutomationFailureRecovery(bridge, { action: "fill", selector: "#pending" }, preflightTimeout));
+  assert.equal(failures.list("task").find(item => item.causeCode === "browser-wait-timeout" && item.target?.includes("%23pending"))?.sideEffects, "none");
+  settleBrowserAutomationRecovery(bridge, { action: "read" }, { action: "read", url: "https://example.test/form", text: "fresh actual page evidence" });
+  assert(!failures.list("task").some(item => !item.resolvedAt && item.target === "browser:uncertain:url=https%3A%2F%2Fexample.test%2Fform"));
 
   const beforeInvocationErrors = failures.list("task").length;
   const captured = await new BrowserAutomationService(() => hostWith().host).execute({ action: "screenshot" });

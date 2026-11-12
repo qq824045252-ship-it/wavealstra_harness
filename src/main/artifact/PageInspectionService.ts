@@ -133,6 +133,7 @@ export class PageInspectionSession {
   private debuggerLike: DebuggerLike | null = null;
   private attached = false;
   private inspectEnabled = false;
+  private overlayEnabled = false;
   private disposeListeners: Array<() => void> = [];
   private disposed = false;
   private attaching: Promise<void> | null = null;
@@ -185,6 +186,7 @@ export class PageInspectionSession {
       void event;
       this.attached = false;
       this.inspectEnabled = false;
+      this.overlayEnabled = false;
       this.onDetached?.(reason);
     };
     dbg.on("message", onMessage);
@@ -198,6 +200,7 @@ export class PageInspectionSession {
       await this.send("DOM.enable");
       await this.send("CSS.enable");
       await this.send("Overlay.enable");
+      this.overlayEnabled = true;
     } catch (error) {
       this.detach();
       throw error;
@@ -207,6 +210,7 @@ export class PageInspectionSession {
   /** 开启 Overlay inspect 模式（hover highlight + click-to-inspect） */
   async setInspectMode(): Promise<void> {
     if (!this.attached) return;
+    if (!this.overlayEnabled) { await this.send("Overlay.enable"); this.overlayEnabled = true; }
     this.inspectEnabled = true;
     await this.send("Overlay.setInspectMode", {
       mode: "searchForNode",
@@ -231,6 +235,14 @@ export class PageInspectionSession {
     } catch {
       /* target 可能已销毁 */
     }
+  }
+
+  async suspendInputOverlay(check: () => void = () => {}): Promise<void> {
+    check();
+    this.inspectEnabled = false;
+    this.overlayEnabled = false;
+    await this.send("Overlay.disable");
+    check();
   }
 
   /** 手动高亮指定节点 */
@@ -258,9 +270,15 @@ export class PageInspectionSession {
     return bytes;
   }
 
+  /** Only the pinned host's input adapter can issue these protocol commands. */
+  async inputCommand(method: "Input.dispatchMouseEvent" | "Input.dispatchKeyEvent" | "Input.insertText", parameters: Record<string, unknown>): Promise<void> {
+    await this.send(method, parameters);
+  }
+
   /** detach（幂等）：关 inspect、清监听、detach debugger */
   detach(): void {
     this.inspectEnabled = false;
+    this.overlayEnabled = false;
     if (this.debuggerLike && this.attached) {
       try {
         this.debuggerLike.detach();

@@ -19,6 +19,7 @@ const PRE_ACTION_CODES = new Set<BrowserAutomationErrorCode>([
 const RECOVERABLE_CODES = new Set<BrowserAutomationErrorCode>([
   ...PRE_ACTION_CODES,
   "NAVIGATION_FAILED", "FOCUS_FAILED", "EXECUTION_FAILED",
+  "WAIT_TIMEOUT", "CANCELLED", "SURFACE_CHANGED", "ELEMENT_AMBIGUOUS", "ELEMENT_DISABLED", "ELEMENT_NOT_VISIBLE",
 ]);
 const PRE_ACTION_CAUSE_CODES = [
   "browser-host-unavailable", "browser-page-unavailable", "browser-screenshot-empty", "browser-selector-not-found",
@@ -95,12 +96,16 @@ export function recordBrowserAutomationFailureRecovery(
   input: BrowserExecInput,
   error: unknown,
 ): boolean {
-  if (!bridge || !(error instanceof BrowserAutomationError) || !RECOVERABLE_CODES.has(error.code)) return false;
+  const cancelled = error instanceof Error && error.name === "AbortError";
+  if (!bridge || !(error instanceof BrowserAutomationError) && !cancelled) return false;
+  if (error instanceof Error && cancelled) error = new BrowserAutomationError("CANCELLED", error.message, "details" in error ? error.details : undefined);
+  if (!(error instanceof BrowserAutomationError) || !RECOVERABLE_CODES.has(error.code)) return false;
   const ctx = bridge.resolveContext();
   if (!ctx) return false;
   const sideEffecting = SIDE_EFFECT_ACTIONS.has(input.action);
-  const preAction = PRE_ACTION_CODES.has(error.code);
-  const unknownEffect = error.code === "EXECUTION_FAILED" && sideEffecting;
+  const outcome = evidenceRecord(evidenceRecord(error.details)?.outcome);
+  const preAction = outcome?.dispatch === "not_started" || PRE_ACTION_CODES.has(error.code);
+  const unknownEffect = !preAction && sideEffecting && input.action !== "navigate";
   const target = error.code === "HOST_UNAVAILABLE"
     ? `browser:${input.action}:surface`
     : unknownEffect ? uncertainPageTarget(error.details) : browserAutomationRecoveryTarget(input, error.details);
@@ -109,7 +114,7 @@ export function recordBrowserAutomationFailureRecovery(
     causeCode: causeCode(error),
     phase: preAction ? "observe" : "execute",
     recovery: "recoverable",
-    sideEffects: preAction || !sideEffecting ? "none" : error.code === "FOCUS_FAILED" ? "known" : "unknown",
+    sideEffects: preAction || !sideEffecting ? "none" : outcome?.effect === "confirmed" || error.code === "FOCUS_FAILED" ? "known" : "unknown",
     target,
     message: `Browser automation ${input.action} failed (${error.code}): ${error.message}`,
     nextAction: guidance(error, input),
@@ -135,8 +140,9 @@ export function settleBrowserAutomationRecovery(
   } else if (input.action === "press") {
     bridge.failures.resolveMatching(ctx.taskId, { target: exact, causeCodes: ["browser-focus-failed"] });
   } else if (input.action === "read" || input.action === "screenshot") {
-    bridge.failures.resolveMatching(ctx.taskId, { target: exact, causeCodes: ["browser-execution-failed"] });
-    bridge.failures.resolveMatching(ctx.taskId, { target: uncertainPageTarget(output), causeCodes: ["browser-execution-failed"] });
-    bridge.failures.resolveMatching(ctx.taskId, { target: "browser:uncertain:surface", causeCodes: ["browser-execution-failed"] });
+    const uncertainCodes = ["browser-execution-failed", "browser-wait-timeout", "browser-cancelled"];
+    bridge.failures.resolveMatching(ctx.taskId, { target: exact, causeCodes: uncertainCodes });
+    bridge.failures.resolveMatching(ctx.taskId, { target: uncertainPageTarget(output), causeCodes: uncertainCodes });
+    bridge.failures.resolveMatching(ctx.taskId, { target: "browser:uncertain:surface", causeCodes: uncertainCodes });
   }
 }

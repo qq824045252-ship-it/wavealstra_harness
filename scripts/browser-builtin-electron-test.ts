@@ -61,15 +61,13 @@ void (async () => {
   await service.execute({ action: "navigate", url });
   const observed = await service.execute({ action: "read" });
   assert.match(observed.text ?? "", /Alpha\t17\t3/, "rendered table cells retain their numeric boundaries");
-  assert(observed.elements?.some(element => element.selector === "#name" && element.type === "text"));
-  assert(observed.elements?.some(element => element.selector === "#save" && element.label === "Save"));
-  assert(!observed.elements?.some(element => element.selector === "#hidden"));
+  assert(observed.elements?.some(element => element.id === "name" && element.type === "text"));
+  assert(observed.elements?.some(element => element.id === "save" && element.label === "Save"));
+  assert(!observed.elements?.some(element => element.id === "hidden"));
   assert(!/SECRET-FIXTURE|HIDDEN-FIXTURE|PRIVATE-TEXTAREA|PRIVATE-EDITABLE/.test(JSON.stringify(observed.elements)), "target metadata contains labels, not editable values");
   for (const element of observed.elements ?? []) assert.equal(await wc.executeJavaScript(`document.querySelectorAll(${JSON.stringify(element.selector)}).length`), 1, "observed selector uniquely identifies its target");
   await service.execute({ action: "fill", selector: "#name", text: "verified" });
-  // Actions intentionally change the observation; fresh reading remains the
-  // explicit safety contract, not an automatic replay of a stale input.
-  await service.execute({ action: "read" });
+  // Stable observed nodes can be used consecutively without a full-page read.
   await service.execute({ action: "click", selector: "#save" });
   assert.equal(await wc.executeJavaScript("document.body.dataset.saved"), "verified");
   report.checks.push({ name: "fresh-observation-form", saved: true });

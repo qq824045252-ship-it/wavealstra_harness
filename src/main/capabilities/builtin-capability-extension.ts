@@ -1,3 +1,4 @@
+import { browserToolDescription } from "./BrowserToolContract";
 import { registerLocalWorkflowTools, type LocalWorkflowBridge } from "./local-workflow-extension";
 import { VideoJobPendingError } from "./VideoGenerationJobs";
 import { consultToolResult } from "./MultiModelConsult";
@@ -260,6 +261,7 @@ const browserExecSchema = Type.Object({
   action: Type.Union([
     Type.Literal("status"), Type.Literal("navigate"), Type.Literal("read"),
     Type.Literal("click"), Type.Literal("fill"), Type.Literal("press"), Type.Literal("screenshot"),
+    Type.Literal("find"), Type.Literal("inspect"), Type.Literal("wait_for"),
   ]),
   reload: Type.Optional(Type.Boolean()),
   gadgetId: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
@@ -269,6 +271,22 @@ const browserExecSchema = Type.Object({
   text: Type.Optional(Type.String({ maxLength: 100_000 })),
   key: Type.Optional(Type.String({ maxLength: 60 })),
   max_chars: Type.Optional(Type.Integer({ minimum: 1_000, maximum: 100_000 })),
+  mode: Type.Optional(Type.Union([Type.Literal("text"), Type.Literal("interactive")])),
+  role: Type.Optional(Type.String({ maxLength: 200 })),
+  name: Type.Optional(Type.String({ maxLength: 1_000 })),
+  cursor: Type.Optional(Type.String({ maxLength: 300 })),
+  offset: Type.Optional(Type.Integer({ minimum: 0 })),
+  element_offset: Type.Optional(Type.Integer({ minimum: 0 })),
+  timeout_ms: Type.Optional(Type.Integer({ minimum: 100, maximum: 30_000 })),
+  state: Type.Optional(Type.Union([Type.Literal("attached"), Type.Literal("detached"), Type.Literal("visible"), Type.Literal("hidden")])),
+  after: Type.Optional(Type.Object({
+    selector: Type.Optional(Type.String({ maxLength: 1_000 })),
+    role: Type.Optional(Type.String({ maxLength: 200 })),
+    name: Type.Optional(Type.String({ maxLength: 1_000 })),
+    state: Type.Optional(Type.Union([Type.Literal("attached"), Type.Literal("detached"), Type.Literal("visible"), Type.Literal("hidden")])),
+    mode: Type.Optional(Type.Union([Type.Literal("text"), Type.Literal("interactive")])),
+    maxChars: Type.Optional(Type.Integer({ minimum: 1_000, maximum: 100_000 })),
+  }, { additionalProperties: false })),
 }, { additionalProperties: false });
 
 const uiExecSchema = Type.Object({
@@ -710,14 +728,14 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
       pi.registerTool({
         name: "browser_exec",
         label: "浏览器操作",
-        description: "网页任务默认使用 MyBuddy 内置 Electron 浏览器，每个任务有独立保留的标签页，页面的新窗口链接也留在内置浏览器。navigate 返回已有标签时保留页面；需要强制刷新可传 reload:true。本机HTML或Gadget源码变更会自动刷新。Gadget导航可同时传 gadgetId 和URL，服务会按身份恢复当前端口。status 列出当前任务标签；tabId 可选择此前返回的本任务标签；不传时使用本任务最近操作的标签，不接管其它任务页面。navigate 支持 http(s) 网页以及本机 file:// 文件 URL，可直接预览和截图已生成的 HTML，无需另开 Chrome；不支持网络共享文件。read 返回正文及可见交互元素的准确 CSS selector，click/fill/press 使用这些观察到的 selector；页面或焦点变化后重新 read。仅支持 status/navigate/read/click/fill/press/screenshot 枚举动作，不执行任意 JavaScript。screenshot 会按当前主模型能力自动选择原生多模态直读或内部 Vision 委托，不需要再手动调用 describe_image。需要桌面窗口级操作（跨应用、结构化控件、窗口输入）时用 computer_exec，不要用本工具。",
-        promptSnippet: "browser_exec(action, url?, selector?, text?, key?)",
+        description: browserToolDescription,
+        promptSnippet: "browser_exec(action, tabId?, url?, selector?/role?/name?, text?, mode?, cursor?, after?, timeout_ms?)",
         parameters: browserExecSchema,
-        execute: async (tc, p: BrowserExecInput & { max_chars?: number }, signal, _onUpdate, ctx) => {
+        execute: async (tc, p: BrowserExecInput & { max_chars?: number; timeout_ms?: number; element_offset?: number }, signal, _onUpdate, ctx) => {
           let input: BrowserExecInput | undefined;
           try {
             const context = toolContext(bridge, tc, signal);
-            input = { ...p, maxChars: p.max_chars };
+            input = { ...p, maxChars: p.max_chars, timeoutMs: p.timeout_ms, elementOffset: p.element_offset };
             const result = await bridge.browser.execute(input, signal, { taskId: bridge.taskId });
             settleBrowserAutomationRecovery(bridge.browserRecovery, input, result);
             if (result.screenshot) {

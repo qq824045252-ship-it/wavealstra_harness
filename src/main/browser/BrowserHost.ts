@@ -262,6 +262,7 @@ class BrowserTabSurface {
    * by applyVisibility, and is applied again when the capture releases its view. */
   private leaseScreenshotSurface(view: WebContentsView, bounds: Rectangle): () => void {
     const mainWindow = this.win;
+    const contents = view.webContents;
     if (!mainWindow || mainWindow.isDestroyed()) throw new PageCaptureError("SURFACE_CHANGED", "浏览器宿主已关闭");
     if (this.isVisible && mainWindow.isVisible() && !mainWindow.isMinimized()) return () => {};
     const parkedWindow = this.parkedScreenshotWindow;
@@ -281,9 +282,9 @@ class BrowserTabSurface {
       if (this.screenshotWindow !== captureWindow) return;
       this.screenshotWindow = null;
       this.releaseScreenshotSurface = null;
-      if (!view.webContents.isDestroyed()) view.setVisible(false);
+      if (!contents.isDestroyed()) view.setVisible(false);
       if (!captureWindow.isDestroyed()) captureWindow.contentView.removeChildView(view);
-      if (this.view === view && !view.webContents.isDestroyed() && !mainWindow.isDestroyed()) {
+      if (this.view === view && !contents.isDestroyed() && !mainWindow.isDestroyed()) {
         mainWindow.contentView.addChildView(view);
         view.setBounds(this.lastBounds && this.lastBounds.width >= 8 && this.lastBounds.height >= 8 ? this.lastBounds : bounds);
         this.applyVisibility();
@@ -326,7 +327,7 @@ class BrowserTabSurface {
       for (const delay of [300, 700, 1500, 3000]) {
         const timer = setTimeout(() => {
           if (this.screenshotWindow !== captureWindow || captureWindow.isDestroyed()
-            || view.webContents.isDestroyed()) return;
+            || contents.isDestroyed()) return;
           view.setVisible(false);
           view.setVisible(true);
         }, delay);
@@ -403,6 +404,28 @@ class BrowserTabSurface {
     this.screenshotQueue = job.then(() => undefined, () => undefined);
     // Caller cancellation is prompt; the queue still owns/drains the native work.
     return scope.wait(job);
+  }
+
+  /** Input and capture share the same native view lease. A background task never
+   * selects a tab, restores the main window, or steals the user's foreground. */
+  withAutomationSurface<T>(operation: () => Promise<T>): Promise<T> {
+    const job = this.screenshotQueue.then(async () => {
+      this.ensureViewport();
+      const view = this.view;
+      if (!view || view.webContents.isDestroyed()) throw new PageCaptureError("SURFACE_CHANGED", "浏览器页面已关闭");
+      let release = () => {};
+      const inspecting = this.captureState === "active";
+      try {
+        if (inspecting) await this.pauseCapture();
+        release = this.leaseScreenshotSurface(view, view.getBounds());
+        return await operation();
+      } finally {
+        release();
+        if (inspecting && this.view === view) await this.resumeCapture();
+      }
+    });
+    this.screenshotQueue = job.then(() => undefined, () => undefined);
+    return job;
   }
 
   /**
@@ -560,7 +583,7 @@ class BrowserTabSurface {
 /** A fixed document owner for a whole automation invocation. Unlike BrowserHost,
  * this handle never follows the user's selected tab. */
 export type BrowserPageHost = Pick<BrowserTabSurface,
-  "inspectionWebContents" | "url" | "captureVersion" | "navigateForAutomation" | "captureScreenshot" | "readDocumentHtml">;
+  "inspectionWebContents" | "url" | "captureVersion" | "navigateForAutomation" | "captureScreenshot" | "readDocumentHtml" | "withAutomationSurface">;
 
 interface ManagedBrowserTab {
   id: string;
@@ -766,6 +789,11 @@ export class BrowserHost {
     const surface = this.active;
     if (!surface) return Promise.reject(new Error("浏览器没有可截图的页面"));
     return surface.captureScreenshot(options);
+  }
+  withAutomationSurface<T>(operation: () => Promise<T>): Promise<T> {
+    const surface = this.active;
+    if (!surface) return Promise.reject(new Error("浏览器没有可操作的页面"));
+    return surface.withAutomationSurface(operation);
   }
   reload(): void { this.hardReload(); }
   hardReload(): void {

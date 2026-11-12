@@ -1,8 +1,11 @@
 import { GadgetPreviewUnavailableError, type GadgetBrowserPreview } from "../gadget/GadgetService";
 import { browserTabKey, type BrowserTabInfo } from "../../shared/browser-tabs";
 import type { BrowserHost, BrowserPageHost } from "../browser/BrowserHost";
-import { BrowserContentService } from "../browser/BrowserContentService";
-import { PageCaptureError } from "../artifact/PageInspectionService";
+import { UiAutomationService, UiAutomationError, type UiElementInfo, type UiExecInput } from "./UiAutomationService";
+import { AutomationScope, AutomationTimeoutError } from "./AutomationScope";
+import { browserDocumentScript, browserPageReadScript, type BrowserReadOptions } from "./BrowserPageRead";
+import { PageCaptureError, pageInspectionService } from "../artifact/PageInspectionService";
+import { browserNativeInput } from "./BrowserNativeInput";
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -16,12 +19,14 @@ export type BrowserExecAction =
   | "click"
   | "fill"
   | "press"
-  | "screenshot";
+  | "screenshot"
+  | "find" | "inspect" | "wait_for";
 
 export const BROWSER_AUTOMATION_ERROR_CODES = [
   "HOST_UNAVAILABLE", "INVALID_INPUT", "INVALID_URL", "INVALID_SELECTOR", "NAVIGATION_FAILED",
   "PAGE_UNAVAILABLE", "SCREENSHOT_EMPTY", "SELECTOR_NOT_FOUND", "ELEMENT_NOT_CLICKABLE", "ELEMENT_NOT_EDITABLE",
   "FOCUS_FAILED", "EXECUTION_FAILED", "CAPTURE_TIMEOUT", "SURFACE_CHANGED",
+  "WAIT_TIMEOUT", "CANCELLED", "ELEMENT_AMBIGUOUS", "ELEMENT_DISABLED", "ELEMENT_NOT_VISIBLE", "CURSOR_STALE", "UNSUPPORTED_SCOPE", "READ_LIMIT",
 ] as const;
 export type BrowserAutomationErrorCode = (typeof BROWSER_AUTOMATION_ERROR_CODES)[number];
 export class BrowserAutomationError extends Error {
@@ -31,7 +36,7 @@ export class BrowserAutomationError extends Error {
   }
 }
 
-export interface BrowserExecInput {
+export interface BrowserExecInput extends BrowserReadOptions {
   action: BrowserExecAction;
   gadgetId?: string;
   tabId?: string;
@@ -41,6 +46,11 @@ export interface BrowserExecInput {
   key?: string;
   maxChars?: number;
   reload?: boolean;
+  role?: string;
+  name?: string;
+  timeoutMs?: number;
+  state?: UiExecInput["state"];
+  after?: { selector?: string; role?: string; name?: string; state?: UiExecInput["state"]; mode?: "text" | "interactive"; maxChars?: number };
 }
 export interface BrowserExecOutput {
   action: BrowserExecAction;
@@ -55,8 +65,26 @@ export interface BrowserExecOutput {
   openedTabId?: string;
   tabs?: BrowserTabInfo[];
   /** Observed targets, never guessed selectors or editable values. */
-  elements?: Array<{ selector: string; tag: string; label: string; type?: string }>;
+  elements?: Array<{ selector: string; tag: string; label: string; type?: string; id?: string }>;
+  textTotal?: number;
+  textOffset?: number;
+  textTruncated?: boolean;
+  nextOffset?: number;
+  nextCursor?: string;
+  documentId?: string;
+  contentState?: "empty" | "loading" | "ready";
+  elementsTotal?: number;
+  scope?: string;
+  contentRevision?: number;
+  coverage?: { iframe: "excluded"; shadowDOM: "excluded" };
+  outcome?: { dispatch: "not_started" | "dispatched"; effect: "none" | "unknown" | "confirmed" };
+  observation?: { status: "completed"; result: BrowserExecOutput } | { status: "failed"; code: string; message: string };
   elementsTruncated?: boolean;
+}
+
+interface ObservedPage {
+  version: number; webContentsId: number; url: string; documentId: string;
+  targets: Map<string, { selector: string; tag: string; label: string }>;
 }
 
 function assertBrowserUrl(raw: string): string {
@@ -89,17 +117,12 @@ function requireShort(value: string | undefined, label: string, max: number): st
   return normalized;
 }
 
-function jsFailure(error: unknown, action: BrowserExecAction, url?: string): BrowserAutomationError {
-  if (error instanceof BrowserAutomationError) return error;
-  return new BrowserAutomationError("EXECUTION_FAILED", `浏览器 ${action} 执行失败：${error instanceof Error ? error.message : String(error)}`, { action, url });
-}
-
 export class BrowserAutomationService {
   private readonly observationSlot = `__mybuddy_${randomUUID().replaceAll("-", "")}`;
-  private readonly observations = new Map<string, { version: number; webContentsId: number; url: string; documentRevision: string }>();
+  private readonly observations = new Map<string, ObservedPage>();
 
   private readonly ownedTabs = new Map<string, string>();
-  private readonly navigationRequests = new Map<string, number>();
+  private readonly navigationRequests = new Map<string, object>();
   private readonly sourceRevisions = new Map<string, string>();
   private resolveGadgetPreview?: (url: string, taskId: string, gadgetId?: string) => Promise<GadgetBrowserPreview | null>;
 
@@ -117,7 +140,7 @@ export class BrowserAutomationService {
     // Validate the complete request before touching the browser surface. A durable
     // checkpoint written here proves this exact invocation never began its action.
     try {
-      if (!["status", "navigate", "read", "click", "fill", "press", "screenshot"].includes(input.action)) {
+      if (!["status", "navigate", "read", "click", "fill", "press", "screenshot", "find", "inspect", "wait_for"].includes(input.action)) {
         throw new BrowserAutomationError("INVALID_INPUT", `不支持的 browser_exec action：${String(input.action)}`);
       }
       if (input.gadgetId !== undefined) {
@@ -129,7 +152,13 @@ export class BrowserAutomationService {
       }
       if (input.tabId !== undefined) requireShort(input.tabId, "tabId", 200);
       if (input.action === "navigate") assertBrowserUrl(requireShort(input.url, "url", 2_000));
-      if (["click", "fill", "press"].includes(input.action)) requireShort(input.selector, "selector", 1_000);
+      if (["click", "fill", "press", "find", "inspect", "wait_for"].includes(input.action) && !input.selector && !input.role && !input.name && !(input.action !== "fill" && input.text)) throw new BrowserAutomationError("INVALID_INPUT", "需要 selector / role / name / text 定位");
+      if (input.timeoutMs !== undefined && (!Number.isFinite(input.timeoutMs) || input.timeoutMs < 100 || input.timeoutMs > 30_000)) throw new BrowserAutomationError("INVALID_INPUT", "timeout_ms 必须为 100..30000");
+      for (const [label, value, max] of [["selector", input.selector, 1000], ["role", input.role, 200], ["name", input.name, 1000], ["cursor", input.cursor, 300]] as const) if (value !== undefined) requireShort(value, label, max);
+      if (input.maxChars !== undefined && (!Number.isSafeInteger(input.maxChars) || input.maxChars < 1000 || input.maxChars > 100000)) throw new BrowserAutomationError("INVALID_INPUT", "max_chars 必须为 1000..100000");
+      if (input.mode !== undefined && !["text", "interactive"].includes(input.mode)) throw new BrowserAutomationError("INVALID_INPUT", "未知读取模式");
+      if (input.after && !["navigate", "click", "fill", "press", "wait_for"].includes(input.action)) throw new BrowserAutomationError("INVALID_INPUT", "after 仅用于导航、动作或条件等待");
+      for (const value of [input.offset, input.elementOffset]) if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) throw new BrowserAutomationError("INVALID_INPUT", "读取偏移必须是非负整数");
       if (input.action === "press") requireShort(input.key, "key", 60);
       if (input.action === "fill" && (input.text?.length ?? 0) > 100_000) {
         throw new BrowserAutomationError("INVALID_INPUT", "text 过长", { max: 100_000 });
@@ -138,11 +167,32 @@ export class BrowserAutomationService {
       await recordHostToolNotStarted("browser_exec");
       throw error;
     }
-    return this.executeManaged(input, signal, context);
+    const scope = new AutomationScope(signal, input.timeoutMs);
+    try {
+      const result = await this.executeManaged(input, scope, context);
+      return { ...result, outcome: { dispatch: scope.dispatched ? "dispatched" : "not_started", effect: scope.confirmed ? "confirmed" : scope.dispatched ? "unknown" : "none" } };
+    } catch (error) {
+      const outcome = { dispatch: scope.dispatched ? "dispatched" : "not_started", effect: scope.confirmed ? "confirmed" : scope.dispatched ? "unknown" : "none" };
+      const evidence = { outcome, currentUrl: scope.pageUrl };
+      if (!scope.dispatched && ["navigate", "click", "fill", "press"].includes(input.action)) await recordHostToolNotStarted("browser_exec");
+      if (error instanceof Error && error.name === "AbortError") {
+        Object.assign(error, { details: evidence }); throw error;
+      }
+      if (error instanceof AutomationTimeoutError) throw new BrowserAutomationError("WAIT_TIMEOUT", error.message, evidence);
+      if (error instanceof PageCaptureError && error.code !== "CANCELLED") throw new BrowserAutomationError(error.code, error.message, evidence);
+      if (error instanceof BrowserAutomationError) throw new BrowserAutomationError(error.code, error.message, { ...evidence, ...(error.details && typeof error.details === "object" ? error.details : {}), outcome });
+      if (error instanceof UiAutomationError) {
+        const mapping: Partial<Record<UiAutomationError["code"], BrowserAutomationErrorCode>> = { ELEMENT_NOT_FOUND: "SELECTOR_NOT_FOUND", ELEMENT_DISAPPEARED: "SURFACE_CHANGED", TARGET_UNAVAILABLE: "PAGE_UNAVAILABLE", INVALID_LOCATOR: "INVALID_INPUT", UNSUPPORTED_ACTION: "INVALID_INPUT" };
+        const code = mapping[error.code] ?? BROWSER_AUTOMATION_ERROR_CODES.find(code => code === error.code) ?? "EXECUTION_FAILED";
+        throw new BrowserAutomationError(code, error.message, evidence);
+      }
+      throw new BrowserAutomationError("EXECUTION_FAILED", String(error), evidence);
+    } finally { scope.close(); }
   }
 
-  private async executeManaged(input: BrowserExecInput, signal?: AbortSignal, context?: { taskId: string }): Promise<BrowserExecOutput> {
-    if (signal?.aborted) throw new DOMException("浏览器操作已取消", "AbortError");
+  private async executeManaged(input: BrowserExecInput, scope: AutomationScope, context?: { taskId: string }): Promise<BrowserExecOutput> {
+    const signal = scope.signal;
+    scope.check();
     const browser = this.host();
     if (!browser || !browser.attached) throw new BrowserAutomationError("HOST_UNAVAILABLE", "MyBuddy 浏览器尚未挂载");
     const invocation = currentDurableInvocation();
@@ -153,18 +203,20 @@ export class BrowserAutomationService {
     let tab = input.tabId ? tabs.find(tab => tab.id === input.tabId) : tabs.find(tab => tab.id === this.ownedTabs.get(owner));
     if (input.tabId && !tab) throw new BrowserAutomationError("PAGE_UNAVAILABLE", "标签页已关闭或不属于当前任务，请重新导航", { tabId: input.tabId });
     if (input.action === "navigate") {
-      this.observations.delete(owner);
+
       const requested = assertBrowserUrl(requireShort(input.url, "url", 2_000));
       let target = requested;
       let preview: GadgetBrowserPreview | null = null;
-      let page: BrowserPageHost | null = tab ? browser.getTabHost(tab.id) : taskId ? null : browser;
+      let page: BrowserPageHost | null = tab ? browser.getTabHost(tab.id) : taskId ? null : browser.activeTabId ? browser.getTabHost(browser.activeTabId) : null;
       const previousVersion = page?.captureVersion;
       const versions = new Map(tabs.map(value => [value.id, browser.getTabHost(value.id)?.captureVersion]));
-      const navigationOwner = taskId ?? owner;
-      const request = (this.navigationRequests.get(navigationOwner) ?? 0) + 1;
+      const navigationOwner = `${taskId ?? owner}:${input.tabId ?? (input.gadgetId ? `gadget:${input.gadgetId}` : browserTabKey(requested))}`;
+      const request = {};
       this.navigationRequests.set(navigationOwner, request);
+      let pageNavigationKey: string | undefined;
+      let pageRequest: object | undefined;
       try {
-        if (taskId && this.resolveGadgetPreview) preview = await this.resolveGadgetPreview(requested, taskId, input.gadgetId);
+        if (taskId && this.resolveGadgetPreview) preview = await scope.run(() => this.resolveGadgetPreview!(requested, taskId, input.gadgetId));
         if (signal?.aborted) throw new DOMException("浏览器操作已取消", "AbortError");
         if (this.navigationRequests.get(navigationOwner) !== request || page && page.captureVersion !== previousVersion) {
           throw new BrowserAutomationError("SURFACE_CHANGED", "恢复预览期间页面已变化，请重新读取后再导航");
@@ -187,17 +239,28 @@ export class BrowserAutomationService {
           revision = `file:${file.mtimeNs}:${file.ctimeNs}:${file.size}`;
         }
         const reload = input.reload === true || revision !== undefined && previousRevision !== revision;
-        await page.navigateForAutomation(target, signal, { reload });
-        if (this.navigationRequests.get(navigationOwner) !== request) throw new BrowserAutomationError("SURFACE_CHANGED", "导航已被较新的浏览器请求替代，请重新读取");
+        const navigationPage = page;
+        const navigationTabId = tab?.id;
+        const wcBefore = page.inspectionWebContents;
+        pageNavigationKey = `page:${wcBefore.id}`;
+        pageRequest = {};
+        this.navigationRequests.set(pageNavigationKey, pageRequest);
+        this.observations.delete(`${owner}:${navigationTabId ?? wcBefore.id}`);
+        scope.dispatch();
+        await scope.run(() => navigationPage.navigateForAutomation(target, signal, { reload }));
+        if (navigationTabId && browser.getTabHost(navigationTabId) !== navigationPage) throw new BrowserAutomationError("SURFACE_CHANGED", "导航目标标签已关闭");
+        if (this.navigationRequests.get(navigationOwner) !== request || this.navigationRequests.get(pageNavigationKey) !== pageRequest) throw new BrowserAutomationError("SURFACE_CHANGED", "导航已被较新的浏览器请求替代，请重新读取");
         if (taskId && tab) this.ownedTabs.set(owner, tab.id);
         if (revision && tab) this.sourceRevisions.set(tab.id, revision);
         const current = page.inspectionWebContents;
         if (!current || current.isDestroyed()) throw new BrowserAutomationError("PAGE_UNAVAILABLE", "标签页已关闭");
-        return { action: input.action, tabId: tab?.id, url: current.getURL(), title: current.getTitle(),
+        scope.confirmed = true;
+        const result: BrowserExecOutput = { action: input.action, tabId: tab?.id, url: current.getURL(), title: current.getTitle(),
           ...(preview ? { gadgetId: preview.gadgetId, recoveredFromUrl: preview.previousUrl } : {}) };
+        return this.afterObservation(input, result, scope, page, `${owner}:${tab?.id ?? current.id}`);
       } catch (error) {
         if (error instanceof Error && error.name === "AbortError") throw error;
-        if (error instanceof BrowserAutomationError) throw error;
+        if (error instanceof BrowserAutomationError || error instanceof AutomationTimeoutError) throw error;
         if (error instanceof GadgetPreviewUnavailableError) {
           throw new BrowserAutomationError("NAVIGATION_FAILED", `${error.message}。源码没有重放，浏览器操作没有执行。`, {
             targetUrl: requested, currentUrl: page?.url, reason: "gadget-preview-unavailable",
@@ -214,189 +277,135 @@ export class BrowserAutomationService {
           targetUrl: target, currentUrl: page?.url, cause,
           reason: refusedLocalServer ? "local-server-unavailable" : "navigation-failed",
         });
+      } finally {
+        if (this.navigationRequests.get(navigationOwner) === request) this.navigationRequests.delete(navigationOwner);
+        if (pageNavigationKey && this.navigationRequests.get(pageNavigationKey) === pageRequest) this.navigationRequests.delete(pageNavigationKey);
       }
     }
     if (input.action === "status" && taskId) return { action: input.action, tabId: tab?.id, url: tab?.url || undefined, tabs, detail: tab?.url ? "ready" : "idle" };
-    const page = taskId ? tab && browser.getTabHost(tab.id) : browser;
+    const page = taskId ? tab && browser.getTabHost(tab.id) : browser.activeTabId ? browser.getTabHost(browser.activeTabId) : null;
     if (!page) throw new BrowserAutomationError("PAGE_UNAVAILABLE", "当前任务没有可用标签页，请 navigate 打开页面；不会自动接管其它任务的页面");
     const before = new Set(browser.listTabs().map(value => value.id));
-    const result = await this.executeOnPage(input, signal, page, owner);
+    const perform = () => this.executeOnPage(input, scope, page, `${owner}:${tab?.id ?? page.inspectionWebContents?.id}`, () => !taskId || Boolean(tab && browser.getTabHost(tab.id) === page));
+    const base = await (input.action !== "status" && input.action !== "screenshot" ? this.withSurface(scope, page, perform) : perform());
     // A popup opened by this exact document is a new retained page. Follow it
     // only for this task's next observation; never redirect another task or UI.
     const popup = ["click", "press"].includes(input.action) && taskId && tab && browser.listTabs().find(value => !before.has(value.id)
       && value.taskId === taskId && value.openerTabId === tab!.id);
     if (taskId && tab) this.ownedTabs.set(owner, popup ? popup.id : tab.id);
+    const afterPage = popup ? browser.getTabHost(popup.id) : page;
+    const result = afterPage ? await this.afterObservation(input, base, scope, afterPage, `${owner}:${popup ? popup.id : tab?.id ?? page.inspectionWebContents?.id}`) : base;
     return { ...result, tabId: tab?.id, ...(popup ? { openedTabId: popup.id, detail: `${result.detail ?? ""}；已打开新标签 ${popup.id}，后续读取使用新标签` } : {}) };
   }
 
-  private async executeOnPage(input: BrowserExecInput, signal: AbortSignal | undefined, host: BrowserPageHost, owner: string): Promise<BrowserExecOutput> {
+  private async afterObservation(input: BrowserExecInput, result: BrowserExecOutput, scope: AutomationScope, host: BrowserPageHost, owner: string): Promise<BrowserExecOutput> {
+    if (!input.after) return result;
+    try {
+      const after = input.after;
+      const observation = await this.withSurface(scope, host, async () => {
+        if (after.selector || after.role || after.name) await this.executeOnPage({ action: "wait_for", ...after }, scope, host, owner);
+        return this.executeOnPage({ action: "read", ...after }, scope, host, owner);
+      });
+      return { ...result, observation: { status: "completed", result: observation } };
+    } catch (error) {
+      return { ...result, observation: { status: "failed", code: error instanceof BrowserAutomationError || error instanceof UiAutomationError ? error.code : error instanceof Error ? error.name : "EXECUTION_FAILED", message: String(error) } };
+    }
+  }
+
+  private withSurface<T>(scope: AutomationScope, host: BrowserPageHost, operation: () => Promise<T>): Promise<T> {
+    return scope.run(() => host.withAutomationSurface(async () => {
+      scope.check();
+      const wc = host.inspectionWebContents;
+      if (!wc || wc.isDestroyed()) throw new BrowserAutomationError("PAGE_UNAVAILABLE", "页面已关闭");
+      const ready: boolean = await scope.run(() => wc.executeJavaScript(`new Promise(resolve=>{const check=()=>innerWidth>0&&innerHeight>0?resolve(true):Date.now()>=${scope.deadline}?resolve(false):setTimeout(check,20);check();})`));
+      if (!ready) throw new AutomationTimeoutError();
+      return operation();
+    }));
+  }
+
+  private remember(owner: string, identity: Omit<ObservedPage, "targets">, elements: NonNullable<BrowserExecOutput["elements"]>): void {
+    const prior = this.observations.get(owner);
+    const targets = new Map(prior?.documentId === identity.documentId ? prior.targets : []);
+    for (const el of elements) {
+      targets.delete(el.selector); targets.set(el.selector, el);
+      if (el.id) { targets.delete(`#${el.id}`); targets.set(`#${el.id}`, el); }
+    }
+    while (targets.size > 512) targets.delete(targets.keys().next().value!);
+    this.observations.delete(owner);
+    this.observations.set(owner, { ...identity, targets });
+    while (this.observations.size > 128) this.observations.delete(this.observations.keys().next().value!);
+  }
+
+  private async executeOnPage(input: BrowserExecInput, scope: AutomationScope, host: BrowserPageHost, owner: string, retained = () => true): Promise<BrowserExecOutput> {
     const wc = host.inspectionWebContents;
     if (!wc || wc.isDestroyed()) throw new BrowserAutomationError("PAGE_UNAVAILABLE", "标签页已关闭");
-    const remembered = this.observations.get(owner);
-    if (["click", "fill", "press"].includes(input.action) && remembered
-      && (remembered.version !== host.captureVersion || remembered.webContentsId !== wc.id || remembered.url !== wc.getURL()
-        || remembered.documentRevision !== await this.documentRevision(wc))) {
-      throw new BrowserAutomationError("SURFACE_CHANGED", "读取后浏览器页面、导航或焦点已经变化，请重新读取后再操作");
-    }
-    // The awaited document/focus checks must not allow a stopped task to dispatch input.
-    if (signal?.aborted) throw new DOMException("浏览器操作已取消", "AbortError");
-    if (input.action === "status") return { action: input.action, url: host.url || undefined, detail: host.url ? "ready" : "idle" };
+    const version = host.captureVersion, url = wc.getURL();
+    scope.pageUrl = url;
+    const assertSurface = () => {
+      if (!retained() || wc.isDestroyed() || host.inspectionWebContents !== wc || host.captureVersion !== version || wc.getURL() !== url) throw new BrowserAutomationError("SURFACE_CHANGED", "固定标签或文档已变化，请重新读取");
+    };
+    const release = scope.guard(assertSurface);
+    let releaseInput = () => {};
+    const check = () => scope.check();
+    try {
+    const js = async <T>(script: string): Promise<T> => {
+      check();
+      const result: T = await scope.run(() => wc.executeJavaScript(script, true));
+      check(); return result;
+    };
+    if (input.action === "status") return { action: input.action, url, detail: url ? "ready" : "idle" };
     if (input.action === "read") {
-      const documentRevision = await this.documentRevision(wc);
-      let page;
-      try { page = await new BrowserContentService(() => host).getCurrentPage(); }
-      catch (error) { throw jsFailure(error, input.action, safeUrl(wc)); }
-      if (!page) throw new BrowserAutomationError("PAGE_UNAVAILABLE", "浏览器没有可读取的页面", { currentUrl: safeUrl(wc) });
-      const max = Math.max(1_000, Math.min(100_000, Math.round(input.maxChars ?? 30_000)));
-      let targets: Pick<BrowserExecOutput, "elements" | "elementsTruncated" | "text">;
-      try { targets = await this.readTargets(wc, max); }
-      catch (error) { throw jsFailure(error, input.action, safeUrl(wc)); }
-      if (documentRevision !== await this.documentRevision(wc)) throw new BrowserAutomationError("SURFACE_CHANGED", "页面在读取期间变化，请重新读取");
-      this.observations.set(owner, { version: host.captureVersion, webContentsId: wc.id, url: wc.getURL(), documentRevision });
-      return { action: input.action, url: page.url, title: page.title, ...targets, text: targets.text ?? page.text.slice(0, max) };
+      const result = await js<BrowserExecOutput & { error?: BrowserAutomationErrorCode }>(browserPageReadScript(this.observationSlot, input));
+      if (result.error) throw new BrowserAutomationError(result.error, `页面读取失败：${result.error}`, { currentUrl: url, detail: result.detail });
+      if (!result.documentId) throw new BrowserAutomationError("SURFACE_CHANGED", "读取未返回文档身份");
+      this.remember(owner, { version, webContentsId: wc.id, url, documentId: result.documentId }, result.elements ?? []);
+      return { ...result, action: input.action };
     }
     if (input.action === "screenshot") {
-      if (!host.url) throw new BrowserAutomationError("PAGE_UNAVAILABLE", "浏览器没有可截图的页面");
-      try {
-        const screenshot = await host.captureScreenshot({ signal });
-        return { action: input.action, url: host.url, title: wc.getTitle(), screenshot };
-      } catch (error) {
-        if (error instanceof Error && error.name === "AbortError") throw error;
-        if (error instanceof PageCaptureError && error.code !== "CANCELLED") {
-          throw new BrowserAutomationError(error.code, error.message, { currentUrl: host.url });
-        }
-        if (error instanceof BrowserAutomationError) throw error;
-        throw jsFailure(error, input.action, host.url);
+      const screenshot = await scope.run(() => host.captureScreenshot({ signal: scope.signal, timeoutMs: scope.remaining }));
+      check(); return { action: input.action, url, title: wc.getTitle(), screenshot };
+    }
+    let selector = input.selector;
+    let expected: UiExecInput["expected"];
+    let observedSelectors: UiExecInput["observedSelectors"];
+    if (["click", "fill", "press"].includes(input.action)) {
+      const observed = this.observations.get(owner);
+      if (!observed || observed.version !== version || observed.webContentsId !== wc.id || observed.url !== url) throw new BrowserAutomationError("SURFACE_CHANGED", "需要先 read/find 当前任务标签，再操作已观察目标");
+      observedSelectors = [...new Set([...observed.targets.values()].map(target => target.selector))];
+      const documentId = await js<string | undefined>(`window[${JSON.stringify(this.observationSlot)}]?.documentId`);
+      if (documentId !== observed.documentId) throw new BrowserAutomationError("SURFACE_CHANGED", "观察所属文档已替换");
+      if (selector) {
+        const target = observed.targets.get(selector);
+        if (!target) throw new BrowserAutomationError("SURFACE_CHANGED", "selector 不属于当前文档观察，请先 find");
+        selector = target.selector;
+        expected = { tag: target.tag, name: target.label || undefined };
+        const current = await js<{ name?: string; tag?: string }>(`(() => {const el=document.querySelector(${JSON.stringify(selector)});return el?{tag:el.localName,name:el.getAttribute('aria-label')||undefined}:{};})()`);
+        if (current.tag !== target.tag || current.name && current.name !== target.label) throw new BrowserAutomationError("SURFACE_CHANGED", "目标节点或语义已变化");
       }
     }
-
-    const selector = requireShort(input.selector, "selector", 1_000);
-    if (input.action === "click") {
-      let result: { ok?: boolean; code?: string; error?: string; tag?: string; text?: string };
-      try {
-        result = await wc.executeJavaScript(`(() => {
-          let el; try { el = document.querySelector(${JSON.stringify(selector)}); }
-          catch (e) { return { ok: false, code: "INVALID_SELECTOR", error: "invalid selector: " + String(e) }; }
-          if (!el) return { ok: false, code: "SELECTOR_NOT_FOUND", error: "selector not found" };
-          el.scrollIntoView({ block: "center", inline: "center" });
-          if (!(el instanceof HTMLElement)) return { ok: false, code: "ELEMENT_NOT_CLICKABLE", error: "element is not clickable" };
-          el.click();
-          return { ok: true, tag: el.tagName, text: (el.innerText || el.getAttribute("aria-label") || "").slice(0, 200) };
-        })()`, true) as typeof result;
-      } catch (error) { throw jsFailure(error, input.action, safeUrl(wc)); }
-      if (!result?.ok) throw browserResultError(result, input.action, selector, safeUrl(wc));
-      return { action: input.action, url: wc.getURL(), detail: `${result.tag ?? "element"}: ${result.text ?? ""}`.trim() };
+    let inputTransport;
+    if (["click", "fill", "press"].includes(input.action)) {
+      const existing = pageInspectionService.sessionFor(wc, "browser-host");
+      const session = existing ?? pageInspectionService.acquire(wc, "browser-host");
+      releaseInput = () => { if (!existing) pageInspectionService.release(wc, "browser-host"); };
+      await scope.run(() => session.attach(wc.debugger));
+      await scope.run(() => session.suspendInputOverlay(() => scope.check()));
+      inputTransport = browserNativeInput(session);
     }
-    if (input.action === "fill") {
-      const text = input.text ?? "";
-      if (text.length > 100_000) throw new BrowserAutomationError("INVALID_INPUT", "text 过长", { max: 100_000 });
-      let result: { ok?: boolean; code?: string; error?: string };
-      try {
-        result = await wc.executeJavaScript(`(() => {
-          let el; try { el = document.querySelector(${JSON.stringify(selector)}); }
-          catch (e) { return { ok: false, code: "INVALID_SELECTOR", error: "invalid selector: " + String(e) }; }
-          if (!el) return { ok: false, code: "SELECTOR_NOT_FOUND", error: "selector not found" };
-          if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLElement && el.isContentEditable)) {
-            return { ok: false, code: "ELEMENT_NOT_EDITABLE", error: "selector is not an editable element" };
-          }
-          el.focus();
-          if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) el.value = ${JSON.stringify(text)};
-          else el.textContent = ${JSON.stringify(text)};
-          el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: ${JSON.stringify(text)} }));
-          el.dispatchEvent(new Event("change", { bubbles: true }));
-          return { ok: true };
-        })()`, true) as typeof result;
-      } catch (error) { throw jsFailure(error, input.action, safeUrl(wc)); }
-      if (!result?.ok) throw browserResultError(result, input.action, selector, safeUrl(wc));
-      return { action: input.action, url: wc.getURL(), detail: `已填写 ${selector}` };
+    const executor = new UiAutomationService({ app: () => null, artifact: () => null, browser: () => wc, input: inputTransport });
+    if (input.action === "navigate") throw new BrowserAutomationError("INVALID_INPUT", "navigate 必须由标签管理器执行");
+    const uiInput: UiExecInput = { action: input.action, target: "browser", selector, role: input.role, name: input.name, text: input.action !== "fill" ? input.text : undefined, value: input.text, key: input.key, state: input.state, timeoutMs: scope.remaining, expected, observedSelectors };
+    const result = await executor.execute(uiInput, scope.signal, scope);
+    const elements = result.elements?.map((el: UiElementInfo) => ({ selector: el.selector, id: el.id, tag: el.tag, label: el.name ?? "" }));
+    if (input.action === "find" || input.action === "inspect") {
+      const documentId = await js<string>(browserDocumentScript(this.observationSlot));
+      this.remember(owner, { version, webContentsId: wc.id, url, documentId }, elements ?? []);
+      return { action: input.action, url, documentId, elements, detail: result.detail };
     }
-    if (input.action === "press") {
-      const key = requireShort(input.key, "key", 60);
-      let focus: { ok?: boolean; code?: string; error?: string };
-      try {
-        focus = await wc.executeJavaScript(`(() => {
-          let el; try { el = document.querySelector(${JSON.stringify(selector)}); }
-          catch (e) { return { ok: false, code: "INVALID_SELECTOR", error: "invalid selector: " + String(e) }; }
-          if (!(el instanceof HTMLElement)) return { ok: false, code: el ? "FOCUS_FAILED" : "SELECTOR_NOT_FOUND", error: el ? "element cannot receive focus" : "selector not found" };
-          el.focus();
-          if (document.activeElement !== el) return { ok: false, code: "FOCUS_FAILED", error: "element did not receive focus" };
-          return { ok: true };
-        })()`, true) as typeof focus;
-      } catch (error) { throw jsFailure(error, input.action, safeUrl(wc)); }
-      if (signal?.aborted) throw new DOMException("浏览器操作已取消", "AbortError");
-      if (!focus?.ok) throw browserResultError(focus, input.action, selector, safeUrl(wc));
-      // DOWN may have reached Chromium even if its call throws. Always attempt
-      // this invocation's matching UP without masking the first delivery error.
-      let inputError: unknown;
-      try { wc.sendInputEvent({ type: "keyDown", keyCode: key }); }
-      catch (error) { inputError = error; }
-      try { wc.sendInputEvent({ type: "keyUp", keyCode: key }); }
-      catch (error) { inputError ??= error; }
-      if (inputError) throw jsFailure(inputError, input.action, safeUrl(wc));
-      return { action: input.action, url: wc.getURL(), detail: `已向 ${selector} 发送按键 ${key}` };
-    }
-    throw new BrowserAutomationError("INVALID_INPUT", `不支持的 browser_exec action：${String(input.action)}`);
+    release();
+    scope.check();
+    const output: BrowserExecOutput = { action: input.action, url: wc.getURL(), elements, detail: result.detail };
+    return output;
+    } finally { releaseInput(); release(); }
   }
-
-  private async readTargets(wc: NonNullable<BrowserHost["inspectionWebContents"]>, maxChars: number): Promise<Pick<BrowserExecOutput, "elements" | "elementsTruncated" | "text">> {
-    // Plain text is insufficient for click/fill/press: without target evidence a
-    // model has to invent CSS selectors. Inspect only visible interactive nodes,
-    // never form values, hidden inputs, password contents, or page scripts.
-    return await wc.executeJavaScript(`(() => {
-      const nodes=[...document.querySelectorAll('a[href],button,input:not([type="hidden"]),textarea,select,[role="button"],[role="link"],[contenteditable="true"]')];
-      const visible=nodes.filter(el=>{const r=el.getBoundingClientRect(),s=getComputedStyle(el);return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden'});
-      const selectorFor=el=>{
-        if(el.id){const selector='#'+CSS.escape(el.id);if(document.querySelectorAll(selector).length===1)return selector;}
-        const parts=[];
-        for(let node=el;node&&node.nodeType===1;node=node.parentElement){
-          let part=node.localName;
-          const peers=node.parentElement?[...node.parentElement.children].filter(p=>p.localName===node.localName):[node];
-          if(peers.length>1)part+=':nth-of-type('+(peers.indexOf(node)+1)+')';
-          parts.unshift(part);
-        }
-        const selector=parts.join(' > ');
-        return selector.length<=1000&&document.querySelector(selector)===el?selector:null;
-      };
-      const elements=visible.slice(0,80).map(el=>{
-        const selector=selectorFor(el);if(!selector)return null;
-        const editable=el instanceof HTMLInputElement||el instanceof HTMLTextAreaElement||el instanceof HTMLSelectElement||el.isContentEditable;
-        const label=(el.getAttribute('aria-label')||(el.labels?[...el.labels].map(l=>{const c=l.cloneNode(true);c.querySelectorAll('input,textarea,select,[contenteditable]').forEach(n=>n.remove());return c.textContent||''}).join(' '):'')||el.getAttribute('placeholder')||el.getAttribute('title')||(!editable?el.innerText:'')||el.getAttribute('name')||'').trim().slice(0,160);
-        return {selector,tag:el.localName,label,...(el instanceof HTMLInputElement?{type:el.type}:{})};
-      }).filter(Boolean);
-      // Rendered innerText retains table-cell tabs and block line breaks. Raw
-      // textContent concatenates cells (17 and 3 become 173), forcing guesses.
-      return {text:(document.body?.innerText??'').slice(0,${maxChars}),elements,elementsTruncated:visible.length>80};
-    })()`) as Pick<BrowserExecOutput, "elements" | "elementsTruncated" | "text">;
-  }
-
-  private async documentRevision(wc: NonNullable<BrowserHost["inspectionWebContents"]>): Promise<string> {
-    const result: unknown = await wc.executeJavaScript(`(() => {
-      const key=${JSON.stringify(this.observationSlot)};
-      if (!window[key]) {
-        const state={revision:0, focus:document.activeElement};
-        const observer=new MutationObserver(()=>state.revision++);
-        observer.observe(document,{subtree:true,childList:true,attributes:true,characterData:true});
-        document.addEventListener('focusin',()=>{state.revision++;state.focus=document.activeElement},true);
-        Object.defineProperty(window,key,{value:state});
-      }
-      return String(window[key].revision);
-    })()`);
-    if (typeof result !== "string") throw new BrowserAutomationError("SURFACE_CHANGED", "浏览器观测版本无法确认");
-    return result;
-  }
-}
-
-function safeUrl(wc: BrowserHost["inspectionWebContents"]): string | undefined {
-  try { return wc?.getURL() || undefined; } catch { return undefined; }
-}
-
-function browserResultError(
-  result: { code?: string; error?: string } | null | undefined,
-  action: BrowserExecAction,
-  selector: string,
-  currentUrl?: string,
-): BrowserAutomationError {
-  const allowed = new Set<BrowserAutomationErrorCode>(["INVALID_SELECTOR", "SELECTOR_NOT_FOUND", "ELEMENT_NOT_CLICKABLE", "ELEMENT_NOT_EDITABLE", "FOCUS_FAILED"]);
-  const code = allowed.has(result?.code as BrowserAutomationErrorCode) ? result!.code as BrowserAutomationErrorCode : "EXECUTION_FAILED";
-  return new BrowserAutomationError(code, result?.error || `浏览器 ${action} 执行失败`, { action, selector, currentUrl });
 }

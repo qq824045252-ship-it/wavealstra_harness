@@ -1,0 +1,166 @@
+{
+  "head": "00ecc5fde992162bd6888c615ae84a5382e01e46",
+  "branch": "main",
+  "createdAt": "2026-11-13T00:30:55.3812463+08:00",
+  "productBuilt": false,
+  "committed": false,
+  "pushed": false,
+  "typecheckExitCode": 0,
+  "nodeChecks": [
+    {
+      "test": "test:browser-contract",
+      "exitCode": 0
+    },
+    {
+      "test": "test:browser-durable-composition",
+      "exitCode": 0
+    },
+    {
+      "test": "test:browser-automation-recovery",
+      "exitCode": 0
+    },
+    {
+      "test": "test:ui-automation-recovery",
+      "exitCode": 0
+    },
+    {
+      "test": "test:capture-mode",
+      "exitCode": 0
+    },
+    {
+      "test": "test:durable-tool-policy",
+      "exitCode": 0
+    }
+  ],
+  "electronTaskChecks": {
+    "checks": [
+      "closed task tab never redirects to UI-selected page",
+      "background task fixed tab; trusted ordinary/textarea/contenteditable/React Chinese submission with unrelated DOM changes",
+      "readonly/disabled/occlusion/rejected controlled value are explicit failures",
+      "node replacement rejected and semantic ambiguity explicit",
+      "confirmed submission survives after-observation deadline",
+      "foreground real input submission",
+      "minimized real input submission",
+      "long text >100k Unicode complete continuation and stale-content rejection",
+      "120 targets paginated without omissions; selector-scoped read",
+      "bounded async readiness, explicit empty and iframe support boundary",
+      "real Electron pending renderer cancel; independent tab remains usable",
+      "closing a previously leased minimized page cleans native ownership"
+    ],
+    "passed": true,
+    "electron": "44.5.1",
+    "node": "24.21.0",
+    "profile": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\out\\diagnostics\\browser-46-50\\electron-fuZCdt"
+  },
+  "electronSuites": [
+    {
+      "test": "test:browser-builtin-electron",
+      "exitCode": 0
+    },
+    {
+      "test": "test:browser-tabs-electron",
+      "exitCode": 0
+    },
+    {
+      "test": "test:gadget-browser-recovery-electron",
+      "exitCode": 0
+    },
+    {
+      "test": "test:browser-screenshot-electron",
+      "exitCode": 0
+    }
+  ],
+  "fullHeadlessGate": {
+    "accepted": false,
+    "selected": 512,
+    "failed": 13,
+    "log": "out/diagnostics/browser-46-50/test-all-final.log",
+    "passed": 499,
+    "failedScripts": [
+      "test:architecture-graph",
+      "test:bot-call-thread",
+      "test:bot-create-ui",
+      "test:bot-foreground-lifecycle",
+      "test:bot-report-images-ui",
+      "test:bot-team-ui",
+      "test:bot-workspace-navigation-ui",
+      "test:db-migration",
+      "test:linux-session",
+      "test:local-workflow",
+      "test:task-isolation-p2",
+      "test:durable-storage-lease",
+      "test:memory-semantic-scale"
+    ]
+  },
+  "primaryBenchmarkBundle": "ab0165ddff1f6d098f0f18e9cbad97e851d6fa4460f33dcbe426edf61591176e",
+  "secondaryBenchmarkBundle": "ab0165ddff1f6d098f0f18e9cbad97e851d6fa4460f33dcbe426edf61591176e",
+  "identicalBenchmarkBundles": true,
+  "sourceChecks": [
+    {
+      "path": "src/main/capabilities/AutomationScope.ts",
+      "sha256": "ce34285a9d9389e4641af3646c9e386f6aec4fad7056545f6e58841a5036e61d",
+      "matchesFrozenBenchmark": true
+    },
+    {
+      "path": "src/main/capabilities/BrowserNativeInput.ts",
+      "sha256": "d71b3100c08b6efd41456f9fe9c1fc3e702e706cc31843ab7ec82c849e07742f",
+      "matchesFrozenBenchmark": true
+    },
+    {
+      "path": "src/main/capabilities/BrowserPageRead.ts",
+      "sha256": "e93451fc613a6c0e92b0a812ef58c540f88b7c69d1f1fa178fc66b66b9fad3c2",
+      "matchesFrozenBenchmark": true
+    },
+    {
+      "path": "src/main/capabilities/BrowserToolContract.ts",
+      "sha256": "69281e653f714cf33789970890c23ee11247c7762637bd3538472c60ade15acd",
+      "matchesFrozenBenchmark": true
+    },
+    {
+      "path": "src/main/capabilities/BrowserAutomationService.ts",
+      "sha256": "405ffeb6ea99731d0c7c901e72c7799982762cce7e1755d09b3f60c023c1f08f",
+      "matchesFrozenBenchmark": true
+    },
+    {
+      "path": "src/main/capabilities/UiAutomationService.ts",
+      "sha256": "f05c2a40eb11545027ad857892709ff3aed7d27fa4ff6ccbaceeea3cce3227ed",
+      "matchesFrozenBenchmark": true
+    },
+    {
+      "path": "src/main/capabilities/builtin-capability-extension.ts",
+      "sha256": "a72a51d01a6065408acb8f01d863c0a1d4570127e943cd4e6c5fdd230df6fa37",
+      "matchesFrozenBenchmark": true
+    },
+    {
+      "path": "src/main/artifact/PageInspectionService.ts",
+      "sha256": "18d2b1754a165ba4ae196f3ca0b2dc49e00250dcf64e43b86331e0bfa9c27868",
+      "matchesFrozenBenchmark": true
+    },
+    {
+      "path": "src/main/browser/BrowserHost.ts",
+      "sha256": "b01eaa4c1e28741214ddc33e58afac949a3d5bb86977fed4cd82f719501142b4",
+      "matchesFrozenBenchmark": true
+    },
+    {
+      "path": "src/main/agent/durable/DurableDomainTools.ts",
+      "sha256": "e1abfa5250d5a276719bf90d4e876b450b739a411455d72c87c9edc8dee0a84b",
+      "matchesFrozenBenchmark": true
+    },
+    {
+      "path": "src/main/agent/BrowserAutomationFailureRecovery.ts",
+      "sha256": "cb6b9067e8ef4b138bf5d26a25d73177a413f08ff0c112f10f7b246e9784a240",
+      "matchesFrozenBenchmark": true
+    }
+  ],
+  "evidenceRuns": {
+    "main-model-final": "2026-11-12T16-20-22-430Z",
+    "main-model-ab": "2026-11-12T15-59-15-174Z",
+    "second-model-final": "2026-11-12T16-25-48-470Z",
+    "bot-work-ab": "2026-11-12T16-13-39-625Z"
+  },
+  "memoryScaleStandalone": {
+    "failedSamples": 3,
+    "log": "out/diagnostics/browser-46-50/memory-semantic-scale-standalone.log",
+    "exitCode": 1
+  }
+}

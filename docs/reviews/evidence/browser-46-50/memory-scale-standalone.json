@@ -1,0 +1,111 @@
+{
+  "fixture": {
+    "records": 10000,
+    "vectors": 10000,
+    "bindings": 30000,
+    "maxTextChars": 8192
+  },
+  "dimension": 1024,
+  "embeddingComputation": "controlled; 10000 real stored vectors",
+  "budget": {
+    "queryMs": 1500,
+    "eventLoopDelayMs": 50,
+    "rssGrowthBytes": 268435456
+  },
+  "samples": [
+    {
+      "path": "lexical",
+      "durationMs": 1087.4030000000002,
+      "eventLoopDelayMs": 50.987007,
+      "rssBytes": 279203840,
+      "returned": 1
+    },
+    {
+      "path": "semantic",
+      "durationMs": 1117.8226999999988,
+      "eventLoopDelayMs": 13.978399999999965,
+      "rssBytes": 278040576,
+      "returned": 1
+    },
+    {
+      "path": "lexical",
+      "durationMs": 1034.8940000000002,
+      "eventLoopDelayMs": 44.793855,
+      "rssBytes": 278781952,
+      "returned": 1
+    },
+    {
+      "path": "semantic",
+      "durationMs": 1045.9854999999989,
+      "eventLoopDelayMs": 15.343615,
+      "rssBytes": 279371776,
+      "returned": 1
+    },
+    {
+      "path": "lexical",
+      "durationMs": 1102.8130999999994,
+      "eventLoopDelayMs": 51.118079,
+      "rssBytes": 279707648,
+      "returned": 1
+    },
+    {
+      "path": "semantic",
+      "durationMs": 1069.771999999999,
+      "eventLoopDelayMs": 16.02509999999893,
+      "rssBytes": 280711168,
+      "returned": 1
+    },
+    {
+      "path": "lexical",
+      "durationMs": 1049.4580000000024,
+      "eventLoopDelayMs": 47.710207,
+      "rssBytes": 280903680,
+      "returned": 1
+    },
+    {
+      "path": "semantic",
+      "durationMs": 1044.0813999999991,
+      "eventLoopDelayMs": 21.053439,
+      "rssBytes": 281042944,
+      "returned": 1
+    },
+    {
+      "path": "lexical",
+      "durationMs": 985.1650999999983,
+      "eventLoopDelayMs": 54.689791,
+      "rssBytes": 281612288,
+      "returned": 1
+    },
+    {
+      "path": "semantic",
+      "durationMs": 1132.2547000000013,
+      "eventLoopDelayMs": 15.714700000000448,
+      "rssBytes": 282984448,
+      "returned": 1
+    }
+  ],
+  "vectorPlan": [
+    {
+      "id": 11,
+      "parent": 0,
+      "notused": 205,
+      "detail": "SEARCH e USING INDEX sqlite_autoindex_memory_embeddings_1 (memory_id>?)"
+    },
+    {
+      "id": 21,
+      "parent": 0,
+      "notused": 46,
+      "detail": "SEARCH m USING INDEX sqlite_autoindex_memory_records_1 (id=?)"
+    },
+    {
+      "id": 39,
+      "parent": 0,
+      "notused": 62,
+      "detail": "SEARCH s EXISTS USING INDEX uq_memory_scope_binding (memory_id=?)"
+    }
+  ],
+  "baselineRss": 276140032,
+  "rssGrowth": 46047232,
+  "failedSamples": 3,
+  "rssPassed": true
+}

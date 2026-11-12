@@ -306,19 +306,22 @@ try {
     let surfaceCalls = 0;
     const browser = new BrowserAutomationService(() => {
       surfaceCalls++;
-      return { inspectionWebContents: { getURL: () => "https://example.test", getTitle: () => "test" },
+      const wc = { id: 1, isDestroyed: () => false, getURL: () => "https://example.test", getTitle: () => "test", executeJavaScript: async () => { throw Error("read renderer failure"); } };
+      const page = { inspectionWebContents: wc, captureVersion: 0, url: "https://example.test", withAutomationSurface: async (operation: () => Promise<unknown>) => operation(),
         navigateForAutomation: async () => { throw new Error("connection lost after navigation began"); },
-      } as any;
+      };
+      const tab = { id: "fixture-tab", taskId, url: page.url };
+      return { attached: true, activeTabId: tab.id, listTabs: () => [tab], getTabHost: () => page, ensureTab: () => tab } as any;
     });
     const taskId = `receipt-${scenario}`;
     const args: JsonObject = scenario === "invalid-url" ? { action: "navigate", url: "file:///tmp/test.html" }
       : scenario === "missing-selector" ? { action: "press", key: "PageDown" }
-      : scenario === "read-failure" ? { action: "read" } : { action: "navigate", url: "https://example.test" };
+      : scenario === "read-failure" ? { action: "read", tabId: "fixture-tab" } : { action: "navigate", url: "https://example.test" };
     const settled: string[] = [];
     const f = await fixture(taskId, request => request.messages.at(-1)?.role === "toolResult"
       ? text("continue independent work") : call("browser_exec", args), "native", [defineTool({
         name: "browser_exec", description: "Real browser service validation", replay: "unsafe",
-        parameters: Type.Object({ action: Type.String(), url: Type.Optional(Type.String()), key: Type.Optional(Type.String()) }),
+        parameters: Type.Object({ action: Type.String(), url: Type.Optional(Type.String()), key: Type.Optional(Type.String()), tabId: Type.Optional(Type.String()) }),
         execute: async (input, api, context) => {
           if (scenario === "forged-proof") return { isError: true, output: text("failed"),
             details: { phase: "validation", toolName: "browser_exec", callId: api.callId, taskId: api.taskId, conversationId: api.conversationId } };
