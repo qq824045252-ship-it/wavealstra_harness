@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {watchGoalEvidence,watchGoalMet} from '../src/main/agent/work/WorkWatchGoal';
+import {watchGoalEvidence,watchGoalMet,watchNotificationArtifactEvidence} from '../src/main/agent/work/WorkWatchGoal';
 import {previousWatchObservations,WATCH_PREVIOUS_SOURCE_LIMIT,WATCH_PREVIOUS_EVIDENCE_BUDGET} from '../src/main/agent/work/WorkWatchComparison';
 import assert from 'node:assert/strict';
 import {mkdtempSync,writeFileSync} from 'node:fs';
@@ -32,6 +32,8 @@ let calls=0,fail=false,deliveryBlocked=false,preferences="",replaceDuringReview:
 let comparisonReviews=0;
 let historicalStop=false;
 let notificationCase="valid";
+let priorArtifactProofId="";
+let mutateNotificationProvenance:(()=>void)|undefined;
 const stopCondition='文件为 READY 时结束';
 const reviewPreferences:string[]=[];
 const reviewContexts:any[]=[];const reviewIds:string[]=[];
@@ -45,11 +47,17 @@ const options={db:db.connection,works,isAuthority:()=>true,preferences:(taskId:s
  }
  if(input.context.title==='one-time partial')return {decision:'deliver' as const,outcome:'partial' as const,reply:'仍缺必要成果',missing:[]};
  if(input.context.title==='conditional benchmark'){
-  const current=input.context.verifiedObservations[0];
+  if(mutateNotificationProvenance){const mutate=mutateNotificationProvenance;mutateNotificationProvenance=undefined;mutate();}
+  const current=notificationCase.startsWith('artifact-')?input.context.notificationArtifactEvidence[0]:input.context.verifiedObservations[0];
+  let proofId=current?.resultId??'missing',quote=current?.text??'missing';
+  if(notificationCase==='artifact-old')proofId=priorArtifactProofId;
+  if(notificationCase==='artifact-summary')proofId=`result:${current?.bindingId}`;
+  if(notificationCase==='artifact-false-quote')quote='invented no regression';
+  if(notificationCase==='artifact-valid')priorArtifactProofId=proofId;
   return {decision:'deliver' as const,outcome:notificationCase==='partial'?'partial' as const:'completed' as const,reply:'基准完成，报告已更新',missing:[],
    notificationAssessment:{status:notificationCase==='unknown'?'unknown' as const:notificationCase==='regression'?'met' as const:'not_met' as const,
     conditionExcerpt:'明显退化或失败才通知',requestExcerpt:notificationCase==='invented'?'自创条件':'PR合并后跑基准，明显退化或失败才通知，没退化更新报告',
-    evidence:[{resultId:notificationCase==='old'?'benchmark-valid:read':current?.resultId??'missing',quote:current?.text??'missing'}]}};
+    evidence:[{resultId:notificationCase==='old'?'benchmark-valid:read':proofId,quote}]}};
  }
  if(input.context.title==='rejected-continuation')return {decision:'continue' as const,outcome:'partial' as const,reply:'I promise to keep executing immediately without waiting.',missing:[{task:'invented task',requestExcerpt:'not in the original request'}]};
  if(historicalStop&&input.context.title==='历史停止证据隔离'){
@@ -468,21 +476,52 @@ console.log('PASS real due/preview reminder artifact delivery does not suppress 
 const conditionalCreated=works.createWork({kind:'user',userId:LOCAL_USER_ID,grants:DESKTOP_USER_GRANTS},{operationId:'conditional-benchmark',title:'conditional benchmark',mode:'watch',ownerBotId:DEFAULT_BOT_ID,inputSnapshotId:'conditional-benchmark',authorization:DESKTOP_USER_GRANTS,watchRule:{executionMode:'continuous',cronExpression:'* * * * *',timezone:'UTC',notificationMode:'changes_only',notifyInitial:true}});assert(conditionalCreated.ok);
 const conditionalWork=conditionalCreated.work;
 works.repo.executionInput=b=>b.workId===conditionalWork.workId ? JSON.stringify({...JSON.parse(input(b)),userRequest:{messages:[{text:'PR合并后跑基准，明显退化或失败才通知，没退化更新报告'}]}}):input(b);
-for(const variant of ['valid','changed','invented','old','partial','unknown','regression','missing-source','missing-artifact','mixed-artifacts','bad-artifact','gap']){
+for(const variant of ['valid','changed','invented','old','partial','unknown','regression','missing-source','missing-artifact','mixed-artifacts','bad-artifact','artifact-valid','artifact-old','artifact-summary','artifact-false-quote','artifact-truncated','artifact-mixed','artifact-omitted','artifact-changed','gap']){
  notificationCase=variant;const id=`benchmark-${variant}`,value=`commit-${variant}: latency=10ms; baseline=10ms; passed`,summary=JSON.stringify({protocol:'watch-observation-v1',status:'observed',facts:[{source:'/fixture/benchmark',key:'file_content',value}],summary:value});
  receipt(id,conditionalWork,summary);const binding=works.repo.getBinding(id)!,file=join(root,`${id}.md`);writeFileSync(file,value);
  works.transaction(()=>works.generatedArtifacts.record(binding,[{path:file,snapshotPath:file,digest:createHash('sha256').update(value).digest('hex'),sizeBytes:Buffer.byteLength(value),registeredAt:Date.now(),sourceEntryId:1}]));
  db.connection.prepare('UPDATE work_deliverables SET artifact_refs_json=? WHERE deliverable_id=?').run(JSON.stringify([file]),`result:${id}`);
- db.connection.prepare('UPDATE work_native_inbox SET payload_json=? WHERE binding_id=?').run(JSON.stringify({status:'completed',summary,hasWriteConflicts:false,artifactRefs:[file],readEvidence:variant==='missing-source'?[]:[{toolCallId:'read',toolName:'read',kind:'file-content',target:'/fixture/benchmark',partial:false,at:Date.now(),outputHash:createHash('sha256').update(value).digest('hex'),outputText:value}]}),id);
+ db.connection.prepare('UPDATE work_native_inbox SET payload_json=? WHERE binding_id=?').run(JSON.stringify({status:'completed',summary,hasWriteConflicts:false,artifactRefs:[file],readEvidence:variant==='missing-source'||variant.startsWith('artifact-')?[]:[{toolCallId:'read',toolName:'read',kind:'file-content',target:'/fixture/benchmark',partial:false,at:Date.now(),outputHash:createHash('sha256').update(value).digest('hex'),outputText:value}]}),id);
  if(variant==='missing-artifact')db.connection.prepare('UPDATE work_deliverables SET artifact_refs_json=? WHERE deliverable_id=?').run(JSON.stringify([join(root,'missing-report.md')]),`result:${id}`);
  if(variant==='mixed-artifacts')db.connection.prepare('UPDATE work_deliverables SET artifact_refs_json=? WHERE deliverable_id=?').run(JSON.stringify([file,join(root,'missing-report.md')]),`result:${id}`);
+ if(variant==='artifact-mixed')db.connection.prepare('UPDATE work_deliverables SET artifact_refs_json=? WHERE deliverable_id=?').run(JSON.stringify([file,join(root,'absent-proof.md')]),`result:${id}`);
+ if(variant==='artifact-changed')writeFileSync(file,'changed after registration');
+ if(variant==='artifact-truncated'){const big='actual report '+ 'x'.repeat(13000);writeFileSync(file,big);works.transaction(()=>works.generatedArtifacts.record(binding,[{path:file,snapshotPath:file,digest:createHash('sha256').update(big).digest('hex'),sizeBytes:Buffer.byteLength(big),registeredAt:Date.now(),sourceEntryId:2}]));}
+ if(variant==='artifact-omitted'){const refs=[file];for(let n=0;n<20;n++){const extra=join(root,`${id}-${n}.md`);writeFileSync(extra,value);works.transaction(()=>works.generatedArtifacts.record(binding,[{path:extra,snapshotPath:extra,digest:createHash('sha256').update(value).digest('hex'),sizeBytes:Buffer.byteLength(value),registeredAt:Date.now(),sourceEntryId:n+2}]));refs.push(extra);}db.connection.prepare('UPDATE work_deliverables SET artifact_refs_json=? WHERE deliverable_id=?').run(JSON.stringify(refs),`result:${id}`);}
  if(variant==='bad-artifact')writeFileSync(file,'tampered');
  if(variant==='gap')works.transaction(()=>works.partialResults.record(binding,[{itemId:'benchmark-gap',task:'报告缺失指标',required:true,dependencies:[],criterionIds:[],nativeStatus:'pending',outcome:'not_started',artifactRefs:[],writeConflicts:[],summary:'指标未完成'}]));
- await flush();const silent=['valid','changed'].includes(variant);
+ await flush();const silent=['valid','changed','artifact-valid'].includes(variant);
  assert.equal(reviewState(id),silent?'silent':'delivered',`conditional notification ${variant}`);
  assert.equal(deliveredBodies.some(body=>body.bindingId===id),!silent);
  assert(works.repo.listDeliverables(conditionalWork.workId).some(result=>result.executionId===id&&result.artifactRefs.length),'silent report remains queryable');
  if(variant==='changed')assert.equal(reviewContexts.at(-1).comparisonState,'changed','changed source still reviews but does not notify for unmet business condition');
+}
+const proofBinding=works.repo.getBinding('benchmark-artifact-valid')!,proofContext=reviewContexts.findLast(context=>context.notificationArtifactEvidence?.some((proof:any)=>proof.bindingId===proofBinding.bindingId));
+assert.equal(proofContext.verifiedObservations.length,0,'artifact-only positive did not fabricate source reads');
+const proofBase=watchNotificationArtifactEvidence(proofBinding,proofContext.artifactEvidence,works)[0];assert(proofBase);
+for(const change of [{state:'changed'},{state:'unavailable'},{truncated:true},{omittedEvidenceCount:1},{registeredDigest:undefined},{registeredSizeBytes:undefined}])assert.deepEqual(watchNotificationArtifactEvidence(proofBinding,[{...proofContext.artifactEvidence[0],...change}],works),[],'invalid artifact metadata never supplies notification proof');
+for(const change of [{ref:'different-ref'},{registeredDigest:'a'.repeat(64)},{registeredSizeBytes:999}])assert.deepEqual(watchNotificationArtifactEvidence(proofBinding,[{...proofContext.artifactEvidence[0],...change}],works),[],'citation requires registered reference, digest and size');
+
+for(const other of [{...proofBinding,intentRevision:proofBinding.intentRevision+1},{...proofBinding,inputSnapshotId:'old-snapshot'},{...proofBinding,ownerEpoch:proofBinding.ownerEpoch+1}])assert.deepEqual(watchNotificationArtifactEvidence(other,proofContext.artifactEvidence,works),[],'artifact citation binds current version');
+assert(!watchGoalMet({...conditionalWork,watchRule:{...conditionalWork.watchRule!,stopConditionText:'明显退化或失败才通知'}},proofBinding,{decision:'deliver',outcome:'completed',missing:[],reply:'done',stopAssessment:{status:'met',conditionExcerpt:'明显退化或失败才通知',requestExcerpt:'明显退化或失败才通知',evidence:[{resultId:proofBase.resultId,quote:proofBase.text}]}},{userRequest:{messages:[{text:'明显退化或失败才通知'}]}},[]),'notification artifact proof never broadens stop evidence');
+// Proven lineage files remain visible, but cannot acquire a fresh notification identity without current registration.
+const lineageMade=works.createWork({kind:'user',userId:LOCAL_USER_ID,grants:DESKTOP_USER_GRANTS},{operationId:'notification-lineage',title:'conditional benchmark',mode:'watch',ownerBotId:DEFAULT_BOT_ID,inputSnapshotId:'notification-lineage',authorization:DESKTOP_USER_GRANTS,watchRule:{executionMode:'continuous',cronExpression:'* * * * *',timezone:'UTC',notificationMode:'changes_only'}});assert(lineageMade.ok);
+const lineageWork=lineageMade.work,lineageFile=join(root,'lineage-notification.json'),lineageText='{"regression":false}';writeFileSync(lineageFile,lineageText);
+const registration={path:lineageFile,snapshotPath:lineageFile,digest:createHash('sha256').update(lineageText).digest('hex'),sizeBytes:Buffer.byteLength(lineageText),registeredAt:Date.now(),sourceEntryId:1};
+works.repo.executionInput=b=>b.workId===lineageWork.workId?JSON.stringify({...JSON.parse(input(b)),userRequest:{messages:[{text:'PR合并后跑基准，明显退化或失败才通知，没退化更新报告'}]}}):input(b);
+receipt('notification-source',lineageWork,'source report');works.transaction(()=>works.generatedArtifacts.record(works.repo.getBinding('notification-source')!,[registration]));db.connection.prepare('UPDATE work_deliverables SET artifact_refs_json=? WHERE deliverable_id=?').run(JSON.stringify([lineageFile]),'result:notification-source');notificationCase='artifact-valid';await flush();
+for(const variant of ['lineage-only','ownership-race']){
+ const id=`notification-${variant}`,plan=`plan-${id}`;receipt(id,lineageWork,'current report references the preserved source file');db.connection.prepare('UPDATE work_deliverables SET artifact_refs_json=? WHERE deliverable_id=?').run(JSON.stringify([lineageFile]),`result:${id}`);
+ db.connection.prepare("INSERT INTO work_continuation_plans(plan_id,work_id,source_binding_id,operation_id,intent_revision,input_snapshot_id,owner_epoch,owner_bot_id,gap_items_json,reason,state,created_at) VALUES (?,?,?,?,?,?,?,?,'[]','续办','settled',?)").run(plan,lineageWork.workId,'notification-source',plan,lineageWork.intentRevision,lineageWork.inputSnapshotId,lineageWork.ownerEpoch,DEFAULT_BOT_ID,Date.now());
+ db.connection.prepare("INSERT INTO work_dispatch_requests(operation_id,work_id,task_id,bot_id,intent_revision,input_snapshot_id,state,created_at,continuation_plan_id) VALUES (?,?,?,?,?,?,'dispatched',?,?)").run(plan,lineageWork.workId,id,DEFAULT_BOT_ID,lineageWork.intentRevision,lineageWork.inputSnapshotId,Date.now(),plan);
+ notificationCase='artifact-valid';
+ if(variant==='ownership-race'){
+  works.transaction(()=>works.generatedArtifacts.record(works.repo.getBinding(id)!,[{...registration,sourceEntryId:2,registeredAt:Date.now()}]));
+  mutateNotificationProvenance=()=>{db.connection.prepare('DELETE FROM work_generated_artifacts WHERE binding_id=?').run(id);};
+ }
+ const before=reviewIds.length;await flush();
+ if(variant==='ownership-race'){assert.equal(reviewState(id),'queued','registration ownership changed during review rejects the pending silent decision');await flush();assert.notEqual(reviewIds[before],reviewIds[before+1],'changed provenance uses a fresh reviewer identity');}
+ const ctx=reviewContexts.at(-1);assert(ctx.artifactEvidence.some((item:any)=>item.state==='text'&&item.ref===lineageFile),'old lineage file remains verified and displayable');assert.deepEqual(ctx.notificationArtifactEvidence,[],'current explicit ref does not promote an older registration to current evidence');assert.equal(reviewState(id),'delivered');
 }
 works.repo.executionInput=input;
 console.log('PASS conditional notification: changed complete reports silent; invalid/stale/unknown/failed evidence and gaps stay visible');

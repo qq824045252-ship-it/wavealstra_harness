@@ -1,3 +1,4 @@
+import { completionReviewInput } from "../src/main/agent/work/WorkCompletionReviewTarget";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -65,6 +66,12 @@ try {
   assert.equal(input.delegationPlan.description, args.goalDescription);
   assert.equal(input.delegationPlan.provenance, "assistant_generated");
   assert.equal(input.delegationPlan.criteria[0].origin, "assistant_proposal");
+  const reviewInput=completionReviewInput(binding,input);
+  assert.deepEqual(reviewInput.originalRequest.userRequest,input.userRequest,"review keeps full user requirements rather than trusting the narrower plan");
+  assert.deepEqual(reviewInput.reviewTarget.delegationPlan,input.delegationPlan,"review preserves assistant provenance on proposed constraints and criteria");
+  assert.equal(reviewInput.originalRequest.instructions,undefined);
+  assert.equal(reviewInput.reviewTarget.provenance,"host_persisted_execution_input_not_new_user_authorization");
+
   const quantities = input.userRequest.messages[0].text.match(/^[A-C],\d+,\d+\.\d+$/gm).map((line: string) => Number(line.split(",")[1]));
   assert.equal(quantities.reduce((a: number, b: number) => a + b, 0), 25, "actual input can be recomputed independently of the invented target");
 

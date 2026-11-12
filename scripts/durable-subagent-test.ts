@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer, type ServerResponse } from "node:http";
-import { mkdtemp, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
@@ -11,6 +11,9 @@ import { AgentDoc, configure, createRegistry, defineExtension, defineTool, Harne
 import { openNodeJsonlStorage } from "@earendil-works/pi-durable/storage/jsonl/node";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { Type } from "typebox";
+import type { WorkRevisionBinding } from "../src/main/agent/durable/DurableWorkRevisionContext";
+import { recoverMissingSubitems } from "../src/main/agent/durable/DurableMissingSubitems";
+import { readDurableWorkExecution, readNativeSubitems } from "../src/main/agent/durable/DurableWorkExecutionProjection";
 import { Value } from "typebox/value";
 import { assertWorktreeIsolationPreflight, createDurableSubagentTools, DurableSubagentIdentity, durableSubagentIpcBackend, legacyPlannedWorkspace, resolveDurableExecutionCwd } from "../src/main/agent/durable/DurableSubagents";
 import { findDurableUserEntry, forkDurableConversation, resolveActiveDurableConversation } from "../src/main/agent/durable/DurableConversationBranch";
@@ -71,6 +74,7 @@ const sse = (response: ServerResponse, items: unknown[], usage: Record<string, u
 const parentDispatch = (prompt: string): Record<string, unknown> | undefined => {
   const marker = (name: string) => prompt.includes(`SCENARIO=${name}`);
   const model = "fixture/child", isolation = "shared";
+  if (marker("work-revision")) return { agent: "worker", task: "SCENARIO=work-revision Only handle B, parent has no copied history here", model, isolation };
   if (marker("parallel-status")) return { tasks: [
     { agent: "worker", task: "SCENARIO=parallel-status task one", model, isolation },
     { agent: "worker", task: "SCENARIO=parallel-status CHILD_FAIL", model, isolation },
@@ -149,6 +153,7 @@ const parentDispatch = (prompt: string): Record<string, unknown> | undefined => 
   return undefined;
 };
 
+const childRequests: unknown[] = [];
 const server = createServer(async (request, response) => {
   try {
     const chunks: Buffer[] = [];
@@ -171,6 +176,7 @@ const server = createServer(async (request, response) => {
       return;
     }
     seenChildTools.push(tools);
+    childRequests.push(body);
     assert(!tools.includes("subagent"), "child must not inherit recursive delegation");
     if (returned && !allowFinal) { waiting?.(); return; }
     const taskIndex = /POOL_TASK=(\d+)/.exec(text)?.[1];
@@ -268,10 +274,13 @@ try {
   let legacyFixture: "uncreated" | "owned" | undefined;
   let seededIdentity: Identity | undefined;
   let legacyChildId: number | undefined;
+  let workBinding: WorkRevisionBinding | undefined;
+  let workBindingReads = 0;
   const open = async (store: string) => {
     const registry = createRegistry();
     registry.install(defineExtension({ name: "fixture",
-      tools: [proof, write, ...createDurableSubagentTools({ taskId: "test-task", cwd, models: native, permissionMode: () => permission, allowGitBranchOrWorktree: () => allowGitIsolation }).map(tool => {
+      tools: [proof, write, ...createDurableSubagentTools({ taskId: "test-task", cwd, models: native, permissionMode: () => permission, allowGitBranchOrWorktree: () => allowGitIsolation,
+        workBinding: () => { workBindingReads++; return workBinding; } }).map(tool => {
         if (tool.name !== "subagent" || !legacyFixture) return tool;
         const fixture = legacyFixture;
         return { ...tool, execute: async (args, api, context) => {
@@ -316,12 +325,14 @@ try {
    * With `inspectSubmissions`, the durable ledger is read per child for the first attempt's
    * requestId and for `subagent:<id>:retry:1`; that proves a retry submitted under a new id.
    */
-  const runScenario = async (name: string, prompt: string, options: { inspectSubmissions?: boolean } = {}) => {
+  const runScenario = async (name: string, prompt: string, options: { inspectSubmissions?: boolean; frozenWork?: boolean } = {}) => {
     resetPool();
     let scenarioHarness: Harness | undefined;
     try {
       scenarioHarness = await open(join(root, `state-${name}`));
       const scenarioConversation = await scenarioHarness.root(ctx, { agent: { cwd, model: { provider: "fixture", modelId: "parent" } } });
+      if (options.frozenWork) workBinding = { taskId: "test-task", workId: "work-revision", bindingId: "binding-r2",
+        operationId: `scenario-${name}`, conversationId: String(scenarioConversation.id), intentRevision: 2, inputSnapshotId: "input-r2" };
       const submission = await scenarioConversation.submit({ type: "input", content: prompt, requestId: `scenario-${name}` }, ctx);
       assert.equal((await submission.wait(ctx)).status, "done");
       const scenarioEntries = await scenarioConversation.entries({}, 200, undefined, ctx);
@@ -350,6 +361,7 @@ try {
       }
       return { output, details: toolResult.details, isError: Boolean(toolResult.isError), children: owned.length, submissions, blockedWrites };
     } finally {
+      workBinding = undefined;
       await scenarioHarness?.close(ctx);
     }
   };
@@ -404,6 +416,17 @@ try {
   const entries = await conversation.entries({}, 100, undefined, ctx);
   const result = entries.items.flatMap(entry => entry.model ?? []).find(message => message.role === "toolResult" && message.toolName === "subagent");
   assert(result?.role === "toolResult" && !result.isError, JSON.stringify(result));
+  const resultEntry = entries.items.find(entry => entry.model?.includes(result))!;
+  const missing = readNativeSubitems(result.toolCallId, JSON.stringify({ ...result.details as object, results: [] }));
+  const recovered = await harness.commit(tx => recoverMissingSubitems(tx, conversation.id, resultEntry.byTaskId, result.toolCallId, missing), ctx);
+  assert.equal(recovered[0]?.childConversationId, String(childId), "actual native owner and identity recover the started child");
+  assert.equal(recovered[0]?.outcome, "unknown", "even a done child receipt cannot manufacture a missing semantic result");
+  const absent = missing.map(item => ({ ...item, itemId: `${result.toolCallId}:no-created-child` }));
+  assert.equal((await harness.commit(tx => recoverMissingSubitems(tx, conversation.id, resultEntry.byTaskId, result.toolCallId, absent), ctx))[0]?.outcome,
+    "not_started", "only a complete exact owner lookup with no matching child proves not_started");
+  const wrongOwner = await harness.commit(tx => recoverMissingSubitems(tx, (Number(conversation.id) + 10000) as ConversationId, resultEntry.byTaskId, result.toolCallId, missing), ctx);
+  assert.equal(wrongOwner[0]?.outcome, "unknown");
+  assert.equal(wrongOwner[0]?.childId, undefined, "another conversation must not acquire this child's identity");
   assert(JSON.stringify(result.details).includes("皮卡丘"));
   const selected = await findDurableUserEntry(conversation, { userMessageIndex: 0 }, ctx);
   assert.equal(selected.previous, undefined);
@@ -424,6 +447,68 @@ try {
   assert(seenChildTools.at(-1)?.includes("proof"), "legacy readonly no longer removes inherited tools");
   assert.equal(writes, 2);
   assert.equal(serverError, undefined);
+  // The actual child model receives the host's frozen Work submission, even
+  // though the parent's delegated task contains none of its facts or revisions.
+  const frozenInput = { workId: "work-revision", intentRevision: 2, inputSnapshotId: "input-r2",
+    userRequest: { provenance: "host_persisted_user_messages", messages: [
+      { role: "user", text: "SCENARIO=work-revision Original A then B; keep original constraint", intentRevision: 1 },
+      { role: "user", text: "Replace B with B-AMENDED; preserve completed A", intentRevision: 2 } ] },
+    delegationPlan: { provenance: "assistant_generated", constraints: ["OBSOLETE_ASSISTANT_PLAN: write old B first"] },
+    revisionHandoff: { provenance: "persisted_work_history", maxBytes: 32768, omittedCounts: {},
+      completedSubitems: [{ factId: "fact-A", task: "A", outcome: "completed" }],
+      registeredFiles: [{ snapshotPath: "/immutable/A-SNAPSHOT", digest: "digest-A", immutable: true }],
+      unresolvedOperations: [{ operationId: "old-B-operation", state: "unknown" }] } };
+  const requestStart = childRequests.length, bindingStart = workBindingReads;
+  const workRun = await runScenario("work-revision", JSON.stringify(frozenInput), { frozenWork: true });
+  assert.equal(workRun.isError, false); assert.equal(workRun.children, 1);
+  assert.equal(workBindingReads - bindingStart, 1, "one frozen context lookup per dispatch, not per child/model turn");
+  const strings = (value: unknown): string[] => typeof value === "string" ? [value] : Array.isArray(value)
+    ? value.flatMap(strings) : value && typeof value === "object" ? Object.values(value).flatMap(strings) : [];
+  const inherited = strings(childRequests.slice(requestStart)).find(text => text.includes("workRevisionContext="));
+  assert(inherited, "the real child provider request must contain host-injected context");
+  const childContext = JSON.parse(/workRevisionContext=(\{[^\n]+\})/.exec(inherited)![1]!);
+  assert.equal(childContext.provenance, "frozen_work_submission");
+  assert.equal(childContext.source.bindingId, "binding-r2");
+  assert.deepEqual(childContext.userRequest, frozenInput.userRequest, "complete ordered original user revisions survive");
+  assert.deepEqual(childContext.revisionHandoff, frozenInput.revisionHandoff);
+  assert.deepEqual(childContext.assistantDelegationPlan, frozenInput.delegationPlan, "old plan remains explicitly advisory");
+  assert.equal(childContext.constraints, undefined, "assistant constraints must not become user requirements");
+  assert.match(inherited, /不要为满足旧的并行计划再次启动已完成部分/);
+  const largeInput = { ...frozenInput, userRequest: { ...frozenInput.userRequest,
+    messages: [...frozenInput.userRequest.messages, { role: "user", text: "Original user restriction ".repeat(2000), intentRevision: 2 }] },
+    delegationPlan: { provenance: "assistant_generated", constraints: ["obsolete suggestion ".repeat(2000)] } };
+  const largeStart = childRequests.length;
+  await runScenario("work-revision-large", JSON.stringify(largeInput), { frozenWork: true });
+  const largeInherited = strings(childRequests.slice(largeStart)).find(text => text.includes("workRevisionContext="))!;
+  const largeContext = JSON.parse(/workRevisionContext=(\{[^\n]+\})/.exec(largeInherited)![1]!);
+  assert.deepEqual(largeContext.userRequest, largeInput.userRequest, "context budget must never trim original user restrictions");
+  assert.equal(largeContext.assistantDelegationPlan.omitted, true);
+  assert.equal(largeContext.assistantDelegationPlan.maxBytes, 4096);
+
+  // Optional offline regression against a copied real store. Opening is paused;
+  // no submit/wait/resume/model operation is allowed on this evidence copy.
+  if (process.env.DURABLE_REVISION_EVIDENCE_STORE) {
+    const copy = join(root, "real-evidence-copy");
+    await cp(process.env.DURABLE_REVISION_EVIDENCE_STORE, copy, { recursive: true });
+    const offline = await open(copy);
+    const requestsBefore = childRequests.length;
+    try {
+      const observation = await offline.commit(async tx => {
+        const root = (await tx.scanConversations({}, 250)).items.find(conversation => !conversation.owner)!;
+        const receipt = await tx.submissionByRequest(root.id, process.env.DURABLE_REVISION_EVIDENCE_REQUEST!);
+        assert(receipt?.type === "input");
+        return readDurableWorkExecution(tx, receipt);
+      }, ctx);
+      const missingB = observation.subitems?.find(item => item.childId?.endsWith("-114-1"));
+      assert(missingB, "real second-batch B must retain its original started child identity");
+      assert.equal(missingB.childConversationId, "122");
+      assert.equal(missingB.outcome, "stopped");
+      assert.equal(missingB.nativeStatus, "child_unanswered:aborted");
+      assert.equal(childRequests.length, requestsBefore, "offline evidence inspection must not run a model");
+      console.log("PASS copied real r1 B native projection: started child 122, exact aborted receipt, not not_started");
+    } finally { await offline.close(ctx); }
+  }
+  console.log("PASS actual native child frozen Work revision context, ordered user requirements, advisory old plan, bounded history and one dispatch read");
   await harness.close(ctx);
   harness = undefined;
   permission = "auto";

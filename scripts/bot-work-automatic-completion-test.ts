@@ -1,3 +1,4 @@
+import { completionReviewInput } from "../src/main/agent/work/WorkCompletionReviewTarget";
 import { completionMilestoneEvidence } from "../src/main/agent/work/WorkCompletionMilestoneEvidence";
 import type { WorkExecutionBindingDto } from "../src/shared/bot-work";
 import { WorkCompletionCoordinator } from "../src/main/agent/work/WorkCompletionCoordinator";
@@ -22,6 +23,10 @@ writeFileSync(evidenceSnapshot,evidenceText);
 const evidenceDigest = createHash("sha256").update(evidenceText).digest("hex");
 let evidenceReviews = 0;
 let milestoneReviews = 0;
+let scopeReviews = 0;
+let scopeBinding: WorkExecutionBindingDto;
+const mixedOriginal="先回答23+19；独立后台委托检索：诊断、修复并验证，禁止修改records.json。另独立设置2分钟提醒。";
+const mixedGoal="诊断、修复并验证检索";
 let milestoneBinding: WorkExecutionBindingDto;
 const db = new AppDatabase(join(root, "app.db"));
 const bots = new BotRegistry(db.connection);
@@ -83,6 +88,21 @@ const coordinator = new WorkCompletionCoordinator({ db: db.connection, works, is
       assert(works.pauseWork(user,{operationId:"pause-during-review",workId:pauseReviewWork}).ok);
       pauseReviewWork=undefined;
     }
+    if (input.context.title === "mixed-scope-review") {
+      scopeReviews++;
+      const target=input.context.reviewTarget as ReturnType<typeof completionReviewInput>["reviewTarget"];
+      assert.equal(target.kind,"single_work_delegation");assert.equal(target.bindingId,scopeBinding.bindingId);
+      assert.equal(target.workId,scopeBinding.workId);assert.equal(target.ownerEpoch,scopeBinding.ownerEpoch);
+      assert.equal(target.intentRevision,scopeBinding.intentRevision);assert.equal(target.inputSnapshotId,scopeBinding.inputSnapshotId);
+      assert.equal(target.delegationPlan?.provenance,"assistant_generated");
+      assert.equal(target.delegationPlan?.description,scopeReviews===1 ? mixedGoal : mixedGoal+"；交付实际证据");
+      const original=input.context.originalRequest as {userRequest:{messages:Array<{text:string}>};instructions?:unknown};
+      assert.equal(original.userRequest.messages[0].text,mixedOriginal,"all independent branches and omitted user restrictions remain available");
+      assert.equal(original.instructions,undefined,"executor instructions remain excluded");
+      assert(!JSON.stringify(target).includes("2分钟提醒"),"the delegated target is not widened to unrelated request branches");
+      if(scopeReviews===1) db.connection.prepare("UPDATE work_intent_snapshots SET goal_description=? WHERE work_id=? AND intent_revision=? AND input_snapshot_id=?")
+        .run(mixedGoal+"；交付实际证据",scopeBinding.workId,scopeBinding.intentRevision,scopeBinding.inputSnapshotId);
+    }
     if (input.context.title === "milestone-race") {
       milestoneReviews++;
       const evidence = input.context.milestoneDeliveryEvidence as ReturnType<typeof completionMilestoneEvidence>;
@@ -132,6 +152,25 @@ function publishMilestone(binding: WorkExecutionBindingDto, version: string, cre
   db.connection.prepare("UPDATE bot_messages SET created_at=? WHERE ordinal=(SELECT MAX(ordinal) FROM bot_messages)").run(createdAt);
 }
 try {
+  const mixedReceipt=feedback.messages.accept(LOCAL_USER_ID,{botId:DEFAULT_BOT_ID,requestId:"mixed-scope",text:mixedOriginal});
+  const mixedCreated=works.createWork({kind:"bot",botId:DEFAULT_BOT_ID,userId:LOCAL_USER_ID,host:"foreground",grants:DESKTOP_USER_GRANTS},
+    {operationId:"mixed-scope-review",title:"mixed-scope-review",goalDescription:mixedGoal,
+      sourceMessageId:mixedReceipt.userMessageId,inputSnapshotId:`input:${mixedReceipt.userMessageId}`,authorization:DESKTOP_USER_GRANTS});
+  assert(mixedCreated.ok,JSON.stringify(mixedCreated));
+  const mixedWork=mixedCreated.work.workId;
+  works.transaction(()=>queue.enqueue(mixedCreated.work,"mixed-scope-review"));states.set(mixedWork,"running");await flush();
+  scopeBinding=works.repo.listBindings(mixedWork)[0]!;
+  const scopeSource=JSON.parse(works.repo.executionInput(scopeBinding));
+  for(const mismatch of [{workId:"wrong"},{intentRevision:999},{inputSnapshotId:"wrong"}])
+    assert.throws(()=>completionReviewInput(scopeBinding,{...scopeSource,...mismatch}),/does not match/);
+  states.set(mixedWork,"completed");await flush();
+  assert.equal(scopeReviews,1);assert.notEqual(works.getWork(mixedWork)?.lifecycle,"closed","in-flight target changes reject stale conclusions");
+  const scopeContext=JSON.parse((db.connection.prepare("SELECT context_json FROM work_completion_turns WHERE binding_id=?").get(scopeBinding.bindingId) as {context_json:string}).context_json);
+  delete scopeContext.reviewTarget;
+  db.connection.prepare("UPDATE work_completion_turns SET context_json=?,decision_json=? WHERE binding_id=?")
+    .run(JSON.stringify(scopeContext),JSON.stringify({decision:"deliver",outcome:"partial",reply:"unrelated reminder unverified",missing:[]}),scopeBinding.bindingId);
+  await flush();assert.equal(scopeReviews,2,"legacy cached verdict must be reviewed with the exact scope");
+  assert.equal(works.getWork(mixedWork)?.closureConclusion,"succeeded","host applies the scoped test reviewer verdict; no external branch is executed");
   const milestoneWork=create("milestone-race"); await flush();
   milestoneBinding=works.repo.listBindings(milestoneWork)[0]!;
   db.connection.prepare("UPDATE work_execution_bindings SET admitted_at=? WHERE binding_id=?").run(1794436380000,milestoneBinding.bindingId);

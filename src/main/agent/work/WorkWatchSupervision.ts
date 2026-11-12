@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { WorkWatchFollowUp } from "./WorkWatchFollowUp";
 import { previousWatchObservations } from "./WorkWatchComparison";
-import { watchGoalEvidence, watchGoalMet, watchNotificationNotMet, watchGoalClosureSummary } from "./WorkWatchGoal";
+import { watchGoalEvidence, watchGoalMet, watchNotificationNotMet, watchNotificationArtifactEvidence, watchGoalClosureSummary } from "./WorkWatchGoal";
 import { completionArtifactEvidence, type WorkCompletionOptions } from "./WorkCompletionCoordinator";
 import type { WorkResultDecision } from "./BotWorkResultTurn";
 import type { WorkDto, WorkExecutionBindingDto } from "../../../shared/bot-work";
@@ -224,7 +224,7 @@ export class WorkWatchSupervision {
     const personalPreferences = this.options.preferences?.(binding.taskId) ?? "";
     const preferenceFingerprint = createHash("sha256").update(personalPreferences).digest("hex");
     const executionRisks=this.executionRisks(binding);
-    const evidence = JSON.stringify([executionRisks,'watch-comparison-v2',teamContinuationTargets,preferenceFingerprint,work.watchRule,rawEvidence,previousVerifiedObservations,presentation,
+    const evidence = JSON.stringify([executionRisks,'watch-comparison-v3-notification-artifacts',teamContinuationTargets,preferenceFingerprint,work.watchRule,rawEvidence,previousVerifiedObservations,presentation,
       [...prior,...results].map(r => [r.deliverableId,r.summary,r.status,r.uncoveredScope,r.artifactRefs,r.isSpeculation,r.hasWriteConflicts])]);
     return {binding,work,results,prior,presentation,evidence,executionRisks,rawEvidence,teamContinuationTargets,previousVerifiedObservations,personalPreferences,preferenceFingerprint};
   }
@@ -259,6 +259,7 @@ export class WorkWatchSupervision {
       return;
     }
     const artifactEvidence = completionArtifactEvidence(works,binding);
+    const notificationArtifactEvidence = watchNotificationArtifactEvidence(binding,artifactEvidence,works);
     const source = JSON.parse(works.repo.executionInput(binding));
     const {instructions:_instructions,teamAssignment:_assignment,...originalRequest} = source;
     const baseline = prior.find(r => r.deliverableId === presentation.baselineResultId);
@@ -270,7 +271,7 @@ export class WorkWatchSupervision {
       results:results.map(r=>({summary:r.summary,artifactRefs:r.artifactRefs,uncoveredScope:r.uncoveredScope})),
       executionRisks:current.executionRisks,
       verifiedObservations:rawEvidence,
-      artifactEvidence,
+      artifactEvidence,notificationArtifactEvidence,
       teamContinuationTargets:current.teamContinuationTargets,
       previousVerifiedObservations,
       teamPartialResults: source.teamAssignment?.role === 'owner_summary' && (binding.status !== 'completed' || !results.length)
@@ -283,14 +284,14 @@ export class WorkWatchSupervision {
       notificationMode:work.watchRule?.notificationMode ?? 'every_check',
       nextAction:work.lifecycle==='active' ? '本轮观察不完整时可提出原委托内只读 followUp，由宿主持久补查并再次核对，不改变周期；否则按已保存的周期继续下一轮；如用户明确的可观察停止条件已由本轮真实证据满足，提交 stopAssessment 由宿主结束，否则继续' : work.lifecycle==='closing' ? '已停止新轮，整理末轮结果，说明正在收尾；不承诺下一轮' : '已暂停，只整理已发生的本轮观察，不承诺下一轮', evidence};
     db.prepare('INSERT OR IGNORE INTO work_watch_reviews(binding_id,context_json) VALUES (?,?)').run(id,JSON.stringify(context));
-    db.prepare("UPDATE work_watch_reviews SET context_json=?,decision_json=NULL WHERE binding_id=? AND (json_extract(context_json,'$.evidence') IS NOT ? OR json_extract(context_json,'$.artifactEvidence') IS NOT ?)").run(JSON.stringify(context),id,evidence,JSON.stringify(artifactEvidence));
+    db.prepare("UPDATE work_watch_reviews SET context_json=?,decision_json=NULL WHERE binding_id=? AND (json_extract(context_json,'$.evidence') IS NOT ? OR json_extract(context_json,'$.artifactEvidence') IS NOT ? OR json_extract(context_json,'$.notificationArtifactEvidence') IS NOT ?)").run(JSON.stringify(context),id,evidence,JSON.stringify(artifactEvidence),JSON.stringify(notificationArtifactEvidence));
     const row = db.prepare('SELECT * FROM work_watch_reviews WHERE binding_id=?').get(id) as {context_json:string;decision_json:string|null;attempts:number;error:string|null};
     const attempt = row.attempts > 0 && !row.error && !row.decision_json ? row.attempts : row.attempts+1;
     db.prepare('UPDATE work_watch_reviews SET attempts=?,error=NULL WHERE binding_id=?').run(attempt,id);
     let decision: WorkResultDecision;
     let error: string | undefined;
     try {
-      decision = row.decision_json ? JSON.parse(row.decision_json) : await this.options.review({eventId:`watch-review:${id}:${attempt}:${createHash("sha256").update(JSON.stringify([evidence,artifactEvidence])).digest("hex")}`,botId:work.ownerBotId,personalPreferences,context});
+      decision = row.decision_json ? JSON.parse(row.decision_json) : await this.options.review({eventId:`watch-review:${id}:${attempt}:${createHash("sha256").update(JSON.stringify([evidence,artifactEvidence,notificationArtifactEvidence])).digest("hex")}`,botId:work.ownerBotId,personalPreferences,context});
     } catch (failure) {
       error = failure instanceof Error ? failure.message : String(failure);
       if (attempt < 2) {
@@ -302,15 +303,18 @@ export class WorkWatchSupervision {
     if (this.closed || !this.options.isAuthority()) return;
     const fresh = this.snapshot(id);
     if (!fresh) return;
+    const refreshedArtifacts=completionArtifactEvidence(works,binding);
     if (fresh.evidence !== evidence || fresh.work.lifecycle !== work.lifecycle
-      || JSON.stringify(completionArtifactEvidence(works,binding)) !== JSON.stringify(artifactEvidence)) {
+      || JSON.stringify(refreshedArtifacts) !== JSON.stringify(artifactEvidence)
+      || JSON.stringify(watchNotificationArtifactEvidence(binding,refreshedArtifacts,works)) !== JSON.stringify(notificationArtifactEvidence)) {
       db.prepare('UPDATE work_watch_reviews SET decision_json=NULL,attempts=0,error=NULL,retry_at=0 WHERE binding_id=?').run(id); return;
     }
     // Preserve the expensive model verdict independently of delivery retries.
     db.prepare('UPDATE work_watch_reviews SET decision_json=?,error=? WHERE binding_id=?').run(JSON.stringify(decision),error??null,id);
     works.transaction(()=>{
       const latest = this.snapshot(id); if (!latest) return;
-      if (latest.evidence !== evidence || latest.work.lifecycle !== work.lifecycle) {
+      if (latest.evidence !== evidence || latest.work.lifecycle !== work.lifecycle
+        || JSON.stringify(watchNotificationArtifactEvidence(binding,artifactEvidence,works)) !== JSON.stringify(notificationArtifactEvidence)) {
         db.prepare('UPDATE work_watch_reviews SET context_json=?,decision_json=NULL,retry_at=0 WHERE binding_id=?').run(JSON.stringify(context),id); return;
       }
       db.prepare('UPDATE work_watch_reviews SET decision_json=?,error=? WHERE binding_id=?').run(JSON.stringify(decision),error??null,id);
@@ -347,7 +351,7 @@ export class WorkWatchSupervision {
       }
       const reply = (decision.decision === "continue" || decision.waitPlan) && !followUp.scheduled ? "本次交付已保留的结果，原目标仍有未完成部分。没有安排继续执行，也没有重放已完成或结果未知的动作。" : requestedStop && !met ? `${presentation.summary}\n\n停止条件尚未由本轮有效证据完成核对，未将持续委托标记完成。` : decision.reply;
       const conditionSilent = !error && !requestedStop && decision.stopAssessment?.status !== 'unknown'
-        && watchNotificationNotMet(latest.work,latest.binding,decision,originalRequest,latest.rawEvidence)
+        && watchNotificationNotMet(latest.work,latest.binding,decision,originalRequest,[...latest.rawEvidence,...notificationArtifactEvidence])
         && !works.repo.listOpenBlockers(work.workId).length && !works.partialResults.gaps(work.workId).length
         && !works.partialResults.plans(work.workId).some(plan=>!['cancelled','settled'].includes(plan.state))
         && !works.repo.listAdmissions(work.workId).some(admission=>['admitted','attempted','unknown'].includes(admission.state))

@@ -3,6 +3,7 @@ import type { GeneratedArtifact, WorkSubitemResult } from "../../../shared/bot-w
 import type { WorkExecutionObservation } from "../work/WorkExecutionAdapter";
 import { durableRegisteredArtifact } from "./DurableArtifactRegistration";
 import { readDurableWorkExecution, readNativeSubitems } from "./DurableWorkExecutionProjection";
+import type { DurableWorkReadTx } from "./DurableMissingSubitems";
 
 type State = { after?: number; ended?: boolean; liveVersions: Map<string, string>; pending?: {
   after?: number; ended: boolean; items: WorkSubitemResult[]; artifacts: GeneratedArtifact[];
@@ -23,7 +24,7 @@ export class DurableWorkProgressReader {
   }
   clear(): void { this.states.clear(); }
 
-  async read(tx: Pick<Tx, "scanEntries">, record: SubmissionRecord, workspace?: string, store?: string, live?: LiveState): Promise<WorkExecutionObservation> {
+  async read(tx: DurableWorkReadTx, record: SubmissionRecord, workspace?: string, store?: string, live?: LiveState): Promise<WorkExecutionObservation> {
     const key = this.key(record, workspace, store);
     if (record.type !== "input" || !["queued", "placed"].includes(record.status)) {
       this.states.delete(key);

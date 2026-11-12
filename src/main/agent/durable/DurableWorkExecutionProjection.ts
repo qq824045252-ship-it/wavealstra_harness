@@ -4,14 +4,15 @@ import type { GeneratedArtifact } from "../../../shared/bot-work-phase3";
 import { z } from "zod";
 import { isAbsolute, resolve } from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { Cursor, SubmissionRecord, Tx } from "@earendil-works/pi-durable";
+import type { Cursor, SubmissionRecord, TaskId } from "@earendil-works/pi-durable";
+import { recoverMissingSubitems, type DurableWorkReadTx } from "./DurableMissingSubitems";
 import type { WorkExecutionObservation } from "../work/WorkExecutionAdapter";
 import { DurableHistoryProjection, durableContentText } from "./DurableHistoryProjection";
 import type { WorkSubitemResult } from "../../../shared/bot-work-phase3";
 
 /** Read only this input's persisted evidence, before the next user input. */
 export async function readDurableWorkExecution(
-  tx: Pick<Tx, "scanEntries">,
+  tx: DurableWorkReadTx,
   record: SubmissionRecord,
   workspaceBinding?: string,
   durableStoreKey?: string,
@@ -35,8 +36,11 @@ export async function readDurableWorkExecution(
   // Provider errors and tool-use narration are not deliverables. Retain actual
   // response content independently, even if a later generation failed or stopped.
   const summary = evidence.responses.filter(response => response.text !== failureReason).at(-1)?.text ?? "";
-  const subitems = evidence.projection.messages.flatMap(message => (message.tools ?? [])
-    .flatMap(tool => tool.detail ? readNativeSubitems(tool.id, tool.detail) : []));
+  const subitems: WorkSubitemResult[] = [];
+  for (const message of evidence.projection.messages) for (const tool of message.tools ?? []) if (tool.detail) {
+    subitems.push(...await recoverMissingSubitems(tx, record.conversationId, evidence.toolOwners.get(tool.id),
+      tool.id, readNativeSubitems(tool.id, tool.detail)));
+  }
   return {
     status, summary, ...(evidence.generatedArtifacts.length ? { generatedArtifacts: evidence.generatedArtifacts } : {}),
     ...(failureReason ? { failureReason } : {}),
@@ -71,7 +75,7 @@ function inFlightSubitems(projection: DurableHistoryProjection): WorkSubitemResu
 }
 
 /** All terminal paths share the same crop, successful-tool checks and pagination. */
-async function scanExecutionEvidence(tx: Pick<Tx, "scanEntries">,
+async function scanExecutionEvidence(tx: DurableWorkReadTx,
   record: Extract<SubmissionRecord, { type: "input" }>, workspaceBinding?: string, durableStoreKey?: string) {
   const projection = new DurableHistoryProjection();
   const readCalls = new Map<string, { name: string; args: unknown }>();
@@ -80,6 +84,7 @@ async function scanExecutionEvidence(tx: Pick<Tx, "scanEntries">,
   const readPaths = new Set<string>(), artifacts = new Set<string>();
   const responses: Array<{ text: string }> = [];
   const generatedArtifacts: GeneratedArtifact[] = [];
+  const toolOwners = new Map<string, TaskId>();
   let answer: AssistantMessage | undefined;
   let lastEntryId: number | undefined;
   let usageTokens = 0, reported = false;
@@ -116,6 +121,7 @@ async function scanExecutionEvidence(tx: Pick<Tx, "scanEntries">,
         }
       }
       if (message.role === "toolResult") {
+        if (message.toolName === "subagent" && entry.byTaskId !== undefined) toolOwners.set(message.toolCallId, entry.byTaskId);
         const readCall = readCalls.get(message.toolCallId);
         if (readCall) {
           const materials = readCall.name === message.toolName ? collectRuntimeMaterialEvidence({
@@ -157,7 +163,7 @@ async function scanExecutionEvidence(tx: Pick<Tx, "scanEntries">,
   } while (cursor);
   // A registered immutable version replaces the mutable source path in delivery.
   for (const artifact of generatedArtifacts) if (artifact.snapshotPath) artifacts.delete(artifact.path);
-  return { projection, readEvidence, readPaths, artifacts, generatedArtifacts, responses, answer, lastEntryId, usageTokens, reported };
+  return { projection, readEvidence, readPaths, artifacts, generatedArtifacts, responses, answer, lastEntryId, usageTokens, reported, toolOwners };
 }
 
 const nativePlanSchema = z.object({ itemId: z.string(), task: z.string(), required: z.boolean().optional(), dependencies: z.array(z.string()).optional(),

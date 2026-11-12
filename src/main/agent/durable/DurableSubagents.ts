@@ -10,10 +10,13 @@ import {
   resolveModelScopeWithDiagnostics, type ModelRuntime,
 } from "@earendil-works/pi-coding-agent";
 import {
-  configure, defineDoc, defineTool, LiveDoc, type ConversationId, type EnvTarget,
+  configure, defineTool, LiveDoc, type ConversationId, type EnvTarget,
   type Cursor, type ToolExecutionApi, type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import { Type, type Static } from "typebox";
+import { DurableSubagentIdentity, DURABLE_SUBAGENT_TIER_LIMIT_RETRIES } from "./DurableSubagentIdentity";
+export { DurableSubagentIdentity } from "./DurableSubagentIdentity";
+import { readDurableWorkRevisionContext, type WorkRevisionBinding } from "./DurableWorkRevisionContext";
 import { assertModelAdmission } from "../ModelInvocationAdmission";
 import type { SubagentSummaryDto } from "../../../shared/agent-ipc";
 import { assertSubagentModelAllowed, filterSubagentModels, resolveSubagentTimeout } from "../../../shared/subagent-execution-policy";
@@ -77,8 +80,10 @@ type Dispatch = {
   /** D-4：调用方传了 timeout_ms、但固定策略把它丢掉时，随结果一起回传的可见诊断。 */
   timeoutDiagnostic?: string;
   items: PlanItem[];
+  /** Frozen input evidence for this dispatch, never the latest mutable Work. */
+  workRevisionContext?: string;
 };
-type Identity = {
+export type DurableChildIdentity = {
   taskId: string;
   parentConversationId: ConversationId;
   item: PlannedChild;
@@ -87,12 +92,7 @@ type Identity = {
   deadline: number;
   timeout: Dispatch["timeout"];
 };
-
-export const DurableSubagentIdentity = defineDoc({
-  kind: "mybuddy.subagent", version: 1, scope: "conversation", history: "latest", fork: "initial",
-  checkpointWhen: () => false,
-  initial: (): { value: JsonRepresentation<Identity> | null } => ({ value: null }),
-});
+type Identity = DurableChildIdentity;
 
 export async function resolveDurableExecutionCwd(target: EnvTarget, context: Context, rootCwd: string): Promise<string> {
   if (!target.cwd) throw new Error("执行工作目录缺失");
@@ -111,6 +111,7 @@ export interface DurableSubagentOptions {
   workspaceNotes?: () => string;
   onChange?: () => void;
   allowGitBranchOrWorktree?: () => boolean;
+  workBinding?: () => WorkRevisionBinding | undefined;
 }
 
 type ActiveChild = {
@@ -158,7 +159,7 @@ export const durableSubagentIpcBackend = {
  */
 const TIER_LIMIT_PATTERN = /tier_limit_exceeded|membership concurrency limit exceeded/i;
 /** One deferred retry only: a provider quota window is hourly, so more retries just burn requests. */
-const TIER_LIMIT_RETRIES = 1;
+const TIER_LIMIT_RETRIES = DURABLE_SUBAGENT_TIER_LIMIT_RETRIES;
 /** Do not start a retry that no longer fits the original deadline; it would only time out. */
 const TIER_LIMIT_RETRY_MIN_BUDGET_MS = 1_000;
 
@@ -173,7 +174,7 @@ function isTierLimitFailure(result: SingleResult | undefined): boolean {
 export function createDurableSubagentTools(options: DurableSubagentOptions): ToolRegistration[] {
   const subagent = defineTool({
     name: "subagent", parameters: SubagentParams, replay: "safe",
-    description: "Delegate single (agent/task), parallel (tasks), or sequential (chain with {previous}) work to durable child conversations. Roles, model selection, reasoning, tool limits and Chinese display names follow MyBuddy settings. Children keep their original workspace and results across restart. Only a supplied subdirectory of the host task workspace is allowed. Child tools cannot delegate recursively. Use subagent_list and subagent_steer for live work.",
+    description: "Delegate single (agent/task), parallel (tasks), or sequential (chain with {previous}) work to durable child conversations. Roles, model selection, reasoning, tool limits and Chinese display names follow MyBuddy settings. Children keep their original workspace and results across restart. Only a supplied subdirectory of the host task workspace is allowed. Child tools cannot delegate recursively. Use subagent_list and subagent_steer for live work. On a revised Work, delegate only changed or missing steps: include the latest requirement and relevant completed/uncertain facts, never copy old imperative tasks to replay already completed work. An original one-time parallel process does not restart merely because the Work revision changed.",
     execute: async (params, api, context) => {
       const dispatch = await api.memo<JsonRepresentation<Dispatch>>("dispatch", context)
         ?? await api.memo("dispatch", json(await planDispatch(params, api, context, options)), context);
@@ -448,8 +449,10 @@ async function planDispatch(params: Invocation, api: ToolExecutionApi, context: 
     plan.set(base.index, { ...itemBase, kind: "run", role, tools, selection, workspace: { kind: "worktree" } });
   }
   const planned = [...plan.values()].sort((a, b) => a.index - b.index);
+  const workRevisionContext = await readDurableWorkRevisionContext(api, context, options.workBinding?.(), options.taskId);
   return { mode, agentScope: scope, projectAgentsDir: discovery.projectAgentsDir, concurrency: effectiveConcurrency,
     ...(serializedReason ? { serializedReason } : {}),
+    ...(workRevisionContext ? { workRevisionContext } : {}),
     permissionMode, timeout, ...(timeoutDiagnostic ? { timeoutDiagnostic } : {}), items: planned };
 }
 
@@ -653,7 +656,8 @@ async function runChild(item: PlannedChild, dispatch: Dispatch, api: ToolExecuti
     const shared = inspectSharedContext(item.sourceCwd);
     const instructions = buildSystemPromptContent(item.role.systemPrompt, buildContextBlock({ cwd: workspace.cwd,
       roleName: item.role.name, roleDescription: item.role.description, tools: item.tools, permissionMode: dispatch.permissionMode,
-      deniedTools: [...RECURSION_TOOLS], sharedContext: shared.text, sharedContextStatus: shared, depth: 1 }));
+      deniedTools: [...RECURSION_TOOLS], sharedContext: shared.text, sharedContextStatus: shared, depth: 1 })
+      + (dispatch.workRevisionContext ? `\n\n${dispatch.workRevisionContext}` : ""));
     const parent = await api.agent(context);
     const tools = parent.callable.filter(tool => item.tools.includes(tool.name));
     for (const name of item.tools) if (!tools.some(tool => tool.name === name)) throw new Error(`Subagent tool unavailable: ${name}`);

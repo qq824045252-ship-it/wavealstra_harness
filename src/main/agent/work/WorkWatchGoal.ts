@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import type { CompletionArtifactEvidence } from "./WorkCompletionCoordinator";
 import type Database from "better-sqlite3";
 import { resolve } from "node:path";
 import type { WorkExecutionBindingDto, WorkDto } from "../../../shared/bot-work";
@@ -98,10 +100,33 @@ export function watchGoalClosureSummary(decision: WorkResultDecision, work?: Wor
   return `已根据本轮实际观察确认停止条件满足：${(decision.stopAssessment?.conditionExcerpt ?? "原委托明确的停止条件").replace(/[。；;]+$/, "")}。持续委托已完成，后续不再检查。详细依据见本轮报告。`;
 }
 
+/** Notification-only citations of already verified immutable current artifacts.
+ * These are artifact contents, not source reads, stop proofs or effect reconciliation. */
+export function watchNotificationArtifactEvidence(binding: WorkExecutionBindingDto, artifacts: CompletionArtifactEvidence[], works: WorkService) {
+  if (!artifacts.length || artifacts.some(item=>item.state!=="text" || item.truncated || item.omittedEvidenceCount
+    || !item.text || !item.registeredDigest || !/^[a-f0-9]{64}$/.test(item.registeredDigest)
+    || !Number.isSafeInteger(item.registeredSizeBytes) || item.registeredSizeBytes!<0)) return [];
+  const results=works.repo.listDeliverables(binding.workId).filter(result=>result.executionId===binding.bindingId
+    && result.intentRevision===binding.intentRevision && result.inputSnapshotId===binding.inputSnapshotId && result.ownerEpoch===binding.ownerEpoch
+    && result.status!=="superseded" && result.status!=="rejected");
+  const registered=works.generatedArtifacts.list(binding.workId).filter(item=>item.bindingId===binding.bindingId);
+  return artifacts.flatMap(item=>{
+    const source=registered.find(source=>source.snapshotPath===item.ref && source.digest===item.registeredDigest
+      && source.sizeBytes===item.registeredSizeBytes && results.some(result=>result.artifactRefs.some(ref=>ref===source.path||ref===source.snapshotPath)));
+    if(!source)return [];
+    return [{
+    resultId:"watch-artifact:"+createHash("sha256").update(JSON.stringify([binding.bindingId,binding.intentRevision,
+      binding.inputSnapshotId,binding.ownerEpoch,item.ref,item.registeredDigest,item.registeredSizeBytes,source.path,source.sourceEntryId,source.registeredAt])).digest("hex"),
+    ref:item.ref,name:item.name,bindingId:binding.bindingId,registeredDigest:item.registeredDigest!,
+    registration:{path:source.path,sourceEntryId:source.sourceEntryId,registeredAt:source.registeredAt},
+    purpose:"notification_assessment_only" as const,trust:"untrusted_artifact_content" as const,text:item.text!,
+  }];});
+}
+
 /** The same original-request and current-native-evidence binding as stop assessment,
  * but a notification verdict never closes the Work or changes its schedule. */
 export function watchNotificationNotMet(work: WorkDto, binding: WorkExecutionBindingDto, decision: WorkResultDecision,
-  originalRequest: unknown, evidence: WatchGoalEvidence[]): boolean {
+  originalRequest: unknown, evidence: Pick<WatchGoalEvidence,"resultId"|"text">[]): boolean {
   const assessment=decision.notificationAssessment;
   if (work.mode!=="watch" || work.lifecycle!=="active" || binding.status!=="completed" || binding.invalidatedAt
     || binding.intentRevision!==work.intentRevision || binding.inputSnapshotId!==work.inputSnapshotId || binding.ownerEpoch!==work.ownerEpoch

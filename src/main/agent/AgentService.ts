@@ -1970,6 +1970,7 @@ export class AgentService {
         return durableWorkspaceScope(LOCAL_USER_ID)(api, context);
       } }),
       ...createDurableSubagentTools({ taskId: task.id, cwd, models: this.durableModels!, permissionMode: getPermissionMode,
+        workBinding: () => this.workService.repo.bindingForTask(task.id),
         allowGitBranchOrWorktree: () => true,
         workspaceNotes: () => [new ProjectNotesService(this.db).forSubagent(task.id), new WorkspaceNotesService(this.db).forSubagent(task.id)].filter(Boolean).join("\n\n"),
         onChange: () => { for (const window of BrowserWindow.getAllWindows()) if (!window.isDestroyed()) window.webContents.send(SubagentIpc.event); },

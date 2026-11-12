@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { InMemoryCredentialStore, getCurrentSystemPrompt, getCurrentTools, type AssistantMessage, type TranscriptContext } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat";
-import { BotWorkResultTurn, type WorkResultTurnInput } from "../src/main/agent/work/BotWorkResultTurn";
+import { z } from "zod";
+import { DurableBotRuntime } from "../src/main/agent/durable/DurableBotRuntime";
+import { BotWorkResultTurn, resultDecisionSchema, type WorkResultTurnInput } from "../src/main/agent/work/BotWorkResultTurn";
 import { workResultArtifactSelection } from "../src/main/agent/work/WorkResultArtifactSelection";
 
 const refs = ["/snap/ce-bEUAMi/甲/报告.md", "/snap/ce-BEUAMi/乙/报告.md", "/snap/café/报告.md"];
@@ -54,7 +56,7 @@ const root=mkdtempSync(join(tmpdir(),"result-artifact-selection-"));
 let calls=0;
 let lastRequest: TranscriptContext | undefined;
 let lastContext: any;
-let respond=(current:any):unknown=>({decision:"deliver",outcome:"partial",reply:"Still missing required material.",missing:[],
+let respond:(current:any,request:TranscriptContext)=>unknown=(current:any):unknown=>({decision:"deliver",outcome:"partial",reply:"Still missing required material.",missing:[],
   artifactRefs:[current.availableFiles[2].selectionId,current.availableFiles[0].selectionId]});
 const catalog=await ModelRuntime.create({credentials:new InMemoryCredentialStore(),modelsPath:null,
   modelsStorePath:join(root,"catalog.json"),allowModelNetwork:false,refreshOnCreate:false});
@@ -63,12 +65,15 @@ catalog.registerProvider("fixture",{api:"openai-completions",apiKey:"fixture-onl
     cost:{input:0,output:0,cacheRead:0,cacheWrite:0}}],
   streamSimple:(model,request)=>{
     calls++; lastRequest=request;
-    const message=request.messages.filter(message=>message.role==="user").at(-1)!;
-    const text=typeof message.content==="string" ? message.content : message.content.filter(block=>block.type==="text").map(block=>block.text).join("\n");
-    lastContext=JSON.parse(text);
+    lastContext=request.messages.filter(message=>message.role==="user").flatMap(message=>{
+      const text=typeof message.content==="string" ? message.content : message.content.filter(block=>block.type==="text").map(block=>block.text).join("\n");
+      try { return [JSON.parse(text)]; } catch { return []; } // Skip supplemental context and format feedback.
+    }).at(-1);
+    assert(lastContext && typeof lastContext==="object","original structured review input remains in transcript");
     const stream=createAssistantMessageEventStream();
     queueMicrotask(()=>{
-      const reply:AssistantMessage={role:"assistant",content:[{type:"text",text:JSON.stringify(respond(lastContext))}],stopReason:"stop",
+      const value=respond(lastContext,request);
+      const reply:AssistantMessage={role:"assistant",content:[{type:"text",text:typeof value==="string" ? value : JSON.stringify(value)}],stopReason:"stop",
         api:model.api,model:model.id,provider:model.provider,timestamp:Date.now(),
         usage:{input:1,output:1,cacheRead:0,cacheWrite:0,totalTokens:2,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}};
       stream.push({type:"done",reason:"stop",message:reply}); stream.end();
@@ -120,4 +125,88 @@ try {
   await turn.review({...withoutRegistry,context:{...withoutRegistry.context,reviewAt:20}});
   assert.equal(calls,beforeContinuousRetry,"continuous without explicit registry keeps its existing cache");
   console.log("PASS production BotWorkResultTurn: local fake stream, real durable cache/reopen, immutable refs, changed evidence, old refs, omitted selection, once/continuous/observe isolation");
+  const valid={decision:"deliver",outcome:"partial",reply:"User-specific material is still missing.",missing:[]};
+  const gap={task:"Fill missing material",requestExcerpt:"Complete my report"};
+  assert(resultDecisionSchema.safeParse(valid).success);
+  for(const decision of ["deliver","ask"]) assert(!resultDecisionSchema.safeParse({...valid,decision,missing:[gap]}).success,
+    "non-continue missing entries must fail validation, never be silently cleared");
+  assert(resultDecisionSchema.safeParse({...valid,decision:"continue",missing:[gap]}).success);
+  const userText=(request:TranscriptContext)=>{
+    const message=request.messages.filter(message=>message.role==="user").at(-1)!;
+    return typeof message.content==="string" ? message.content : message.content.filter(block=>block.type==="text").map(block=>block.text).join("\n");
+  };
+  const raw="First invalid review raw marker: required personal material is absent.";
+  let attempt=0;
+  respond=(current,request)=>{
+    if(++attempt===1) return raw; // Real SyntaxError, not a JSON string or invented verdict.
+    assert.equal(getCurrentTools(request.messages).length,0,"format correction has no business tools");
+    assert(request.messages.some(message=>message.role==="assistant" && message.content.some(block=>block.type==="text" && block.text===raw)),
+      "the original invalid response is retained in the repair transcript");
+    assert.deepEqual(current.artifactEvidence,input.context.artifactEvidence,"same evidence, no new business work");
+    const feedback=userText(request);
+    assert(feedback.includes("校验问题") && feedback.includes("partial/unknown") && feedback.includes("同一完成程度和语义"));
+    return {...valid,artifactRefs:[current.availableFiles[0].selectionId]};
+  };
+  const malformedInput={...input,eventId:"format-repair-syntax"};
+  const beforeRepair=calls;
+  const repaired=await turn.review(malformedInput);
+  assert.equal(calls,beforeRepair+2); assert.equal(repaired.outcome,"partial"); assert.deepEqual(repaired.artifactRefs,[refs[0]]);
+  const logs=readdirSync(join(root,"reviews"),{recursive:true,encoding:"utf8"}).filter(name=>name.endsWith(".jsonl"))
+    .map(name=>readFileSync(join(root,"reviews",name),"utf8")).join("\n");
+  assert(logs.includes(raw),"first failed raw reply remains in durable evidence");
+  assert(logs.includes("format-repair-syntax:validation:1"),"repair uses one fixed durable request ID");
+  await turn.close(); turn=open();
+  assert.deepEqual(await turn.review({...malformedInput,context:{...malformedInput.context,reviewAt:99}}),repaired);
+  assert.equal(calls,beforeRepair+2,"reopened repair and its initial answer are reused without another generation");
+
+  attempt=0;
+  respond=(_current,request)=>{
+    if(++attempt===1) return {...valid,missing:[gap]};
+    const feedback=userText(request);
+    assert(feedback.includes('"decision":"deliver"') && feedback.includes('"outcome":"partial"'));
+    assert(feedback.includes("missing"));
+    return valid;
+  };
+  const beforeContract=calls;
+  assert.deepEqual(await turn.review({...input,eventId:"format-repair-contract"}),valid);
+  assert.equal(calls,beforeContract+2,"cross-field contract violation receives exactly one repair");
+
+  for(const changed of [{outcome:"completed"},{decision:"continue",missing:[gap]}]) {
+    attempt=0;
+    respond=()=>++attempt===1 ? {...valid,missing:[gap]} : {...valid,...changed};
+    const before=calls;
+    await assert.rejects(turn.review({...input,eventId:`format-preserve-${Object.keys(changed)[0]}`}),/格式修正不得改变首答已解析/);
+    assert.equal(calls,before+2,"a repair cannot upgrade partial or admit new continuation actions");
+  }
+  attempt=0;
+  respond=()=>++attempt===1 ? {decision:"deliver",outcome:"unknown",missing:[]} : {...valid,outcome:"completed"};
+  await assert.rejects(turn.review({...input,eventId:"format-preserve-unknown"}),/格式修正不得改变首答已解析的 outcome=unknown/);
+
+  for(const invalid of ["Second invalid raw answer",{...valid,missing:[gap]}]) {
+    respond=()=>invalid;
+    const failedInput={...input,eventId:typeof invalid==="string" ? "format-repair-exhausted-json" : "format-repair-exhausted-fields"};
+    const before=calls;
+    const expected=typeof invalid==="string" ? SyntaxError : z.ZodError;
+    await assert.rejects(turn.review(failedInput),expected);
+    assert.equal(calls,before+2,"second invalid answer fails without a third model generation");
+    await turn.close(); turn=open();
+    await assert.rejects(turn.review(failedInput),expected);
+    assert.equal(calls,before+2,"reopening an exhausted format repair does not reset its budget");
+  }
+
+  // Inject only the receive boundary error. The production validation catch must
+  // not mistake transport errors (even SyntaxError) or timeouts for bad model JSON.
+  const originalReply=DurableBotRuntime.prototype.reply, originalSubmit=DurableBotRuntime.prototype.submit;
+  const submitted:string[]=[];
+  try {
+    DurableBotRuntime.prototype.submit=async function(...args) {submitted.push(args[1]);return originalSubmit.apply(this,args);};
+    for(const [index,failure] of [new Error("fixture network unavailable"),new Error("结果整理超时，原执行结果已保留"),new SyntaxError("fixture transport JSON failure")].entries()) {
+      DurableBotRuntime.prototype.reply=async function() {throw failure;};
+      respond=()=>valid;
+      const start=submitted.length;
+      await assert.rejects(turn.review({...input,eventId:`receive-failure-${index}`}),error=>error===failure);
+      assert.deepEqual(submitted.slice(start),[`receive-failure-${index}`],"receive failures never submit format correction");
+    }
+  } finally { DurableBotRuntime.prototype.reply=originalReply; DurableBotRuntime.prototype.submit=originalSubmit; }
+  console.log("PASS durable format repair: strict cross-field contract, raw evidence, exact two-call budget, cached restart, partial/unknown/decision preservation, receive-error isolation");
 } finally { await turn.close(); rmSync(root,{recursive:true,force:true}); }

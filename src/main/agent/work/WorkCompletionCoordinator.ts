@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { WorkService } from "./WorkService";
 import type { WorkResultDecision, WorkResultTurnInput } from "./BotWorkResultTurn";
+import { completionReviewInput } from "./WorkCompletionReviewTarget";
 import { completionMilestoneEvidence } from "./WorkCompletionMilestoneEvidence";
 import { applyCompletionDecision } from "./WorkCompletionDecision";
 import { workDeliveryFiles, workDeliveryResults } from "./WorkDeliveryArtifacts";
@@ -141,14 +142,11 @@ export class WorkCompletionCoordinator {
     const eventId = `completion:${bindingId}`;
     const personalPreferences = this.options.preferences?.(binding.taskId) ?? "";
     const preferenceFingerprint = createHash("sha256").update(personalPreferences).digest("hex");
+    const { originalRequest, reviewTarget } = completionReviewInput(binding, JSON.parse(works.repo.executionInput(binding)));
     if (!this.row(bindingId)) {
-      const source = JSON.parse(works.repo.executionInput(binding));
-      // Execution recipes (including team report JSON instructions) are not the
-      // user's request. Feeding them back to the judge can override its schema.
-      const { teamAssignment: _teamAssignment, instructions: _instructions, ...originalRequest } = source;
       db.prepare("INSERT OR IGNORE INTO work_completion_turns(binding_id,context_json) VALUES (?,?)").run(bindingId, JSON.stringify({
         temporalContext: this.temporalContext(bindingId), preferenceFingerprint,
-        originalRequest, title: candidate.work.title, goal: candidate.work.goalDescription,
+        originalRequest, reviewTarget, title: candidate.work.title, goal: candidate.work.goalDescription,
         results: results.map(item => ({ summary: item.summary, artifactRefs: item.artifactRefs, uncoveredScope: item.uncoveredScope })),
         availableFiles, artifactEvidence, milestoneDeliveryEvidence,
         previousResults: works.repo.listDeliverables(binding.workId).filter(item => item.executionId !== bindingId
@@ -166,11 +164,13 @@ export class WorkCompletionCoordinator {
       }));
     }
     let row = this.row(bindingId)!;
-    if (JSON.parse(row.context_json).preferenceFingerprint !== preferenceFingerprint
+    if (JSON.stringify(JSON.parse(row.context_json).reviewTarget) !== JSON.stringify(reviewTarget)
+      || JSON.stringify(JSON.parse(row.context_json).originalRequest) !== JSON.stringify(originalRequest)
+      || JSON.parse(row.context_json).preferenceFingerprint !== preferenceFingerprint
       || JSON.stringify(JSON.parse(row.context_json).milestoneDeliveryEvidence) !== JSON.stringify(milestoneDeliveryEvidence)
       || JSON.stringify(JSON.parse(row.context_json).artifactEvidence) !== JSON.stringify(artifactEvidence)) {
       db.prepare("UPDATE work_completion_turns SET context_json=?,decision_json=NULL,state='queued',retry_at=0 WHERE binding_id=?")
-        .run(JSON.stringify({...JSON.parse(row.context_json),preferenceFingerprint,artifactEvidence,milestoneDeliveryEvidence}),bindingId);
+        .run(JSON.stringify({...JSON.parse(row.context_json),preferenceFingerprint,artifactEvidence,milestoneDeliveryEvidence,originalRequest,reviewTarget}),bindingId);
       row = this.row(bindingId)!;
     }
     try {
@@ -185,13 +185,14 @@ export class WorkCompletionCoordinator {
         const reviewContext = JSON.parse(row.context_json);
         // Also sanitize persisted turns written by an older host.
         const { teamAssignment: _teamAssignment, instructions: _instructions, ...originalRequest } = reviewContext.originalRequest ?? {};
-        decision = await this.options.review({ eventId: `${eventId}:review:${attempt}:${preferenceFingerprint}:${createHash("sha256").update(JSON.stringify(milestoneDeliveryEvidence)).digest("hex")}`, botId: binding.botId, personalPreferences, context: {...reviewContext, originalRequest, temporalContext: this.temporalContext(bindingId)} });
+        decision = await this.options.review({ eventId: `${eventId}:review:${attempt}:${preferenceFingerprint}:${createHash("sha256").update(JSON.stringify([milestoneDeliveryEvidence,reviewTarget,originalRequest])).digest("hex")}`, botId: binding.botId, personalPreferences, context: {...reviewContext, originalRequest, temporalContext: this.temporalContext(bindingId)} });
       }
       if (this.closed || !this.options.isAuthority()) return;
       const latestArtifactEvidence = completionArtifactEvidence(works, binding);
       works.transaction(() => {
         const current = this.current(bindingId);
         if (!current) return;
+        const latestReviewInput = completionReviewInput(binding, JSON.parse(works.repo.executionInput(binding)));
         const latestMilestoneDeliveryEvidence = completionMilestoneEvidence(db, binding);
         const deliveryResults = workDeliveryResults(works, binding);
         const latestResults = deliveryResults.map(item => ({summary:item.summary,artifactRefs:item.artifactRefs,uncoveredScope:item.uncoveredScope}));
@@ -200,7 +201,9 @@ export class WorkCompletionCoordinator {
         const pendingQuestions = this.questions(binding.workId);
         const latestPreferences = this.options.preferences?.(binding.taskId) ?? "";
         const latestPreferenceFingerprint = createHash("sha256").update(latestPreferences).digest("hex");
-        if (latestPreferenceFingerprint !== preferenceFingerprint
+        if (JSON.stringify(latestReviewInput.reviewTarget) !== JSON.stringify(frozen.reviewTarget)
+          || JSON.stringify(latestReviewInput.originalRequest) !== JSON.stringify(frozen.originalRequest)
+          || latestPreferenceFingerprint !== preferenceFingerprint
           || JSON.stringify(latestMilestoneDeliveryEvidence) !== JSON.stringify(frozen.milestoneDeliveryEvidence)
           || JSON.stringify(latestArtifactEvidence) !== JSON.stringify(frozen.artifactEvidence)
           || JSON.stringify(latestResults) !== JSON.stringify(frozen.results)
@@ -208,7 +211,7 @@ export class WorkCompletionCoordinator {
           || JSON.stringify(works.teams.continuationTargets(binding)) !== JSON.stringify(frozen.teamContinuationTargets)
           || JSON.stringify(pendingQuestions) !== JSON.stringify(frozen.pendingQuestions ?? [])) {
           db.prepare("UPDATE work_completion_turns SET context_json=?,decision_json=NULL,state='queued',retry_at=0 WHERE binding_id=?")
-            .run(JSON.stringify({...frozen,preferenceFingerprint:latestPreferenceFingerprint,results:latestResults,availableFiles:latestFiles,artifactEvidence:latestArtifactEvidence,milestoneDeliveryEvidence:latestMilestoneDeliveryEvidence,pendingQuestions,teamContinuationTargets:works.teams.continuationTargets(binding),actualMissing:current.conclusion === "succeeded" ? [] : [current.summary]}),bindingId);
+            .run(JSON.stringify({...frozen,...latestReviewInput,preferenceFingerprint:latestPreferenceFingerprint,results:latestResults,availableFiles:latestFiles,artifactEvidence:latestArtifactEvidence,milestoneDeliveryEvidence:latestMilestoneDeliveryEvidence,pendingQuestions,teamContinuationTargets:works.teams.continuationTargets(binding),actualMissing:current.conclusion === "succeeded" ? [] : [current.summary]}),bindingId);
           return; // A late result must not be guided by a decision on older evidence.
         }
         db.prepare("UPDATE work_completion_turns SET decision_json=?,error=NULL WHERE binding_id=?").run(JSON.stringify(decision), bindingId);
