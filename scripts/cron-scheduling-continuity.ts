@@ -86,6 +86,20 @@ export async function testSchedulingContinuity() {
       console.log(`PASS #44 completion respects ${action} after the new timer is consumed`);
     } finally { await f.close(); }
   }
+  const parallel = setup();
+  try {
+    await advance(3600000); assert.equal(parallel.prompts.length, 1);
+    parallel.cron.upsert({ ...parallel.job, id: "independent-plan", scheduleExpr: "1s", createdAt: Date.now() });
+    await advance(1000);
+    assert.equal(parallel.prompts.length, 2, "another job is not blocked by the running first job");
+    assert.equal(parallel.maxActive, 2, "different jobs can execute concurrently");
+    parallel.cron.setEnabled(parallel.job.id, false);
+    parallel.cron.setEnabled("independent-plan", false);
+    parallel.release(); await drain();
+    assert.equal(parallel.db.listCronRuns().filter(r => r.status === "success").length, 2);
+    await advance(60000); assert.equal(parallel.prompts.length, 2, "disabled parallel jobs are not revived");
+    console.log("PASS #44 different jobs remain concurrent while each job is independently cancellable");
+  } finally { await parallel.close(); }
   const failed = setup(true);
   try {
     await advance(3600000); failed.cron.upsert({ ...failed.job, scheduleExpr: "60s" });
