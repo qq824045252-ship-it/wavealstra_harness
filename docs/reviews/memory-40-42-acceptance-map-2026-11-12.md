@@ -33,11 +33,11 @@ Only affected derived assistant evidence is withheld. Original independent user 
 
 | Item | Evidence and result |
 |---|---|
-| All window boundaries plus 5K/10K, bounded foreground results | Actual `BotConversationMemory.search`/MemoryService/SQLite tests at 600/601/1600/1601/1800/1801/2000/2001/5000/10000 passed. Real Electron model `memory_search` batch used 2102 records, not 10000. If the requirement is interpreted as real-model UI at every size, that additional UI sweep remains unrun. |
+| All window boundaries plus 5K/10K, bounded foreground results | Actual `BotConversationMemory.search`/MemoryService/SQLite tests at 600/601/1600/1601/1800/1801/2000/2001/5000/10000 passed. The initial real Electron batch used 2102 records. A separate real Electron foreground supplement now passes at 5000 and 10000 records in independent Bots; see [scale evidence](memory-42-scale-live-2026-11-12.md). Smaller table boundaries remain production-service/SQLite tests, not separate model turns. |
 | Importance, explicitness, recency, duplicate bindings; no-query semantics | Newer high-importance filler, low-explicit target versus explicit filler, duplicate bindings and old exact fact passed. Existing kernel/context suites preserve no-query selection behavior. |
 | Lexical, disabled/unavailable semantic, semantic-only | Real storage/provider paths with controlled embedding computation passed. Separate 10000 stored 1024-D vector scale test visits the full legal vector set. Actual embedding-model quality is untested and not substituted by these probes. |
 | Scope, status, expiry and async revocation | Scope service matrix; asynchronous delete/detach/update/expire/supersede; actual task project rebind during held embedding; frontdoor memory-disable during pending search; passed. |
 | Query plan, expanded records, latency/memory | Integration/scale reports include SQLite plans and hydration counts. Five lexical queries hydrate fewer than 5000 records total, not 10000 DTOs per query; 10K-vector latency/loop/RSS budgets passed. No universal speedup claim. |
-| L1 exists without usable original dialogue | IPC-created old fact was never supplied in prior user dialogue; actual model tool call retrieved it in the 2102-record UI scenario. |
+| L1 exists without usable original dialogue | IPC-created old fact was never supplied in prior user dialogue; actual model tool calls retrieved it in the 2102-record UI scenario and the independent 5000/10000-record supplement. |
 
 No full repository regression, release build or packaging is implied. The extra explicitness, supersede and task-rebind probes are targeted tests only; product code did not change after the successful real batch.

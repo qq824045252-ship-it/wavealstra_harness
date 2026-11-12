@@ -382,7 +382,7 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     } else if (connectorReadinessScenario) {
       await require("./bot-connector-readiness-live-scenario.cjs").run({send,foregroundDone,until,evaluate,history,rpc,report,requests,out,botId,modelKey});
     } else if (memoryScopesScenario || botIsolationScenario) {
-      await require(cronRecoveryScenario ? './cron-reminder-live-scenario.cjs' : memoryCorrectnessScenario ? './memory-correctness-live-scenario.cjs' : memoryScopesScenario ? './bot-memory-scopes-live-scenario.cjs' : './bot-memory-isolation-live-scenario.cjs').run({send,foregroundDone,until,evaluate,history,rpc,report,requests,agentDir,home,out,botId,setBotId:value=>{botId=value;}});
+      await require(cronRecoveryScenario ? './cron-reminder-live-scenario.cjs' : memoryCorrectnessScenario ? (process.argv.includes('--memory-scale-only') ? './memory-scale-live-scenario.cjs' : './memory-correctness-live-scenario.cjs') : memoryScopesScenario ? './bot-memory-scopes-live-scenario.cjs' : './bot-memory-isolation-live-scenario.cjs').run({send,foregroundDone,until,evaluate,history,rpc,report,requests,agentDir,home,out,botId,setBotId:value=>{botId=value;}});
     } else if (watchMemoryScenario) {
       await require('./bot-watch-memory-live-scenario.cjs').run({send,foregroundDone,until,evaluate,history,rpc,report,requests,agentDir,out,home,modelKey,botId});
     } else if (workMemoryScenario) {
