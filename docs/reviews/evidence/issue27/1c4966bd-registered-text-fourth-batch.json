@@ -1,0 +1,526 @@
+{
+  "issue": 27,
+  "checkpoint": "B6 registered text, fourth batch with bounded durable format correction",
+  "status": "passed",
+  "method": "真实结果模型判定 + 真实artifact读取：生产快照创建、登记、completionArtifactEvidence读取、BotWorkResultTurn真实V4.1Flash回合及短ID精确还原。",
+  "source": {
+    "commit": "1c4966bde7778d4002d36724defce757f239d575",
+    "expectedCommit": "1c4966bde7778d4002d36724defce757f239d575",
+    "compiledInputCount": 229,
+    "unchangedDuringRun": true,
+    "bundleSha256": "0102d2c7498efa587312f38b7ec9770890cc9a5c441d5931e1ada3412045e1f6",
+    "reportSha256": "91970fa6cfb36c34243404ade0fbb70c67c312498391facbfd7550e56fd96020",
+    "manifestSha256": "dcbe22de2fba6341eb4f5b079a1f1a0ff019925beb456399250018f339b47837",
+    "candidateManifestUnchangedFromThirdBatch": true,
+    "testScriptsUnchangedFromThirdBatch": true,
+    "resultTurnSha256": "7f0dbc031733cd5eb9158f7b6afd31880d943490d750a76c430fabd2427cdab3",
+    "shortIdImplementationSha256": "d5bf129cfb6194ac6cbbfc31c829bad1b542448f8a7382ad1fa455ab6f117197"
+  },
+  "result": {
+    "passed": 12,
+    "failed": 0,
+    "total": 12,
+    "distinctTaskTypes": 6,
+    "firstAnswersPassed": 12,
+    "firstAnswerFormatOrFieldErrors": 0,
+    "bodySemanticChecksPassed": 12,
+    "negativePartial": 6,
+    "validCompleted": 6,
+    "exactArtifactRefFailures": 0,
+    "expectationsChanged": false
+  },
+  "formatCorrection": {
+    "initialHttpCalls": 12,
+    "actualCorrectionHttpCalls": 0,
+    "triggeredCases": 0,
+    "succeededCases": 0,
+    "failedCases": 0,
+    "scriptExternalRetries": 0,
+    "coverage": "本批全部首答合法且通过，无内置格式校正发生。不能把本批当作真实模型纠错分支的覆盖，也未将此前失败改写为首次通过。"
+  },
+  "shortIdMapping": {
+    "nonemptySelections": 12,
+    "exactMappings": 12,
+    "emptySelections": 0,
+    "rawShortIdCount": 12,
+    "fullRefCompatibilityCount": 0,
+    "wrongResolvedRefs": 0,
+    "evidence": "逐项核对原始HTTP输入selectionId、原始输出artifactRefs与生产review返回真实ref。所有返回选择精确还原，原有完整ref断言未放宽。"
+  },
+  "model": "opendesign/deepseek-v4.1-flash",
+  "modelCalls": 12,
+  "httpWindow": {
+    "startedAt": "2026-11-12T00:02:45.344Z",
+    "finishedAt": "2026-11-12T00:04:16.367Z",
+    "timeZone": "UTC",
+    "coordination": "实际结束时间已通知Electron验收worker，后续8类Electron等待本批结束再启动。"
+  },
+  "usage": {
+    "promptTokens": 37693,
+    "completionTokens": 8353,
+    "totalTokens": 46046,
+    "cachedPromptTokens": 23040,
+    "reasoningTokens": 6879
+  },
+  "monetaryCost": null,
+  "monetaryCostReason": "接口未提供可核验金额，不将测试SDK零费率当作免费。",
+  "cases": [
+    {
+      "id": "sales-csv-negative",
+      "title": "销售CSV完整性",
+      "passed": true,
+      "outcome": "partial",
+      "decision": "deliver",
+      "bodySemanticCheckPassed": true,
+      "failures": [],
+      "modelCalls": 1,
+      "firstAnswer": {
+        "acceptedWithoutCorrection": true,
+        "validJson": true,
+        "decision": "deliver",
+        "outcome": "partial",
+        "missingCount": 0,
+        "requestSha256": "e70a47d99a799e8ab35b1213b776afbd78391fca2c481bb15d8bdbf30af1ab3f",
+        "responseSha256": "3dcd62cc232a777d69aca9cdee72a80d4894ccb0f507ce96beaf7c65d064d621"
+      },
+      "builtInFormatCorrection": {
+        "actualHttpCalls": 0,
+        "triggered": false,
+        "succeeded": null
+      },
+      "selectionMapping": {
+        "rawSelectionIds": [
+          "file-cf20e21d8cd82e9f-1"
+        ],
+        "shortIdCount": 1,
+        "fullRefCompatibilityCount": 0,
+        "exactResolvedRefs": true,
+        "nonempty": true
+      },
+      "bodyDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "evidenceSha256": "8b06cf055aafb2031f4d1e386d734f2f34ddad6291dd0d3474a979248cf70123",
+      "inputSha256": "33e6722b8c19d04720a8bcfa30e800e5efc5e51790bec202ece04a47b07e3a1e"
+    },
+    {
+      "id": "sales-csv-valid",
+      "title": "销售CSV完整性",
+      "passed": true,
+      "outcome": "completed",
+      "decision": "deliver",
+      "bodySemanticCheckPassed": true,
+      "failures": [],
+      "modelCalls": 1,
+      "firstAnswer": {
+        "acceptedWithoutCorrection": true,
+        "validJson": true,
+        "decision": "deliver",
+        "outcome": "completed",
+        "missingCount": 0,
+        "requestSha256": "1a0c33e872bcf98b07c07e11f702a96d9299a57d28f9cc5ab6476342c1264291",
+        "responseSha256": "3b8716e4be6e34975ab20db6c839ff4accac86eeafa0d28a0e72a7319f0891a3"
+      },
+      "builtInFormatCorrection": {
+        "actualHttpCalls": 0,
+        "triggered": false,
+        "succeeded": null
+      },
+      "selectionMapping": {
+        "rawSelectionIds": [
+          "file-b7cab31785f3056d-1"
+        ],
+        "shortIdCount": 1,
+        "fullRefCompatibilityCount": 0,
+        "exactResolvedRefs": true,
+        "nonempty": true
+      },
+      "bodyDigest": "8c6fe1501e54922bca0d51362a0aaeb66557e36a1613862d454f7871198506f9",
+      "evidenceSha256": "6a78c9cda82920cd296aab1d7005f225c2f3c02a9bd7b8f0f958070e63e7cefb",
+      "inputSha256": "4add8bd0fefcf791e7ed5be1aa9499aea5d4231916d48f3798f2db711abf9e8d"
+    },
+    {
+      "id": "project-report-negative",
+      "title": "项目报告章节",
+      "passed": true,
+      "outcome": "partial",
+      "decision": "deliver",
+      "bodySemanticCheckPassed": true,
+      "failures": [],
+      "modelCalls": 1,
+      "firstAnswer": {
+        "acceptedWithoutCorrection": true,
+        "validJson": true,
+        "decision": "deliver",
+        "outcome": "partial",
+        "missingCount": 0,
+        "requestSha256": "4a9793706e2cd23af3f6d7853a1a1df0e7bb72f8d11c483453387ba76bf88234",
+        "responseSha256": "12c0d7fe5c30b6545f94c552f8d5d9576fa7b3cfa2bac5d51e2a444f97a239fb"
+      },
+      "builtInFormatCorrection": {
+        "actualHttpCalls": 0,
+        "triggered": false,
+        "succeeded": null
+      },
+      "selectionMapping": {
+        "rawSelectionIds": [
+          "file-fd0639ab45b64da6-1"
+        ],
+        "shortIdCount": 1,
+        "fullRefCompatibilityCount": 0,
+        "exactResolvedRefs": true,
+        "nonempty": true
+      },
+      "bodyDigest": "71e4689c162d6cc8dc3b834c4588806eca5aaabfc7d714efc7c6484556c934e3",
+      "evidenceSha256": "61f5f2a46dea7db334b99d45ecc0add38e91bf63224a7df19cf721b66ba58571",
+      "inputSha256": "a1e5eab29a8c2d69be026542c0c63245a7211a7e3d345b025125b1869f3eeabe"
+    },
+    {
+      "id": "project-report-valid",
+      "title": "项目报告章节",
+      "passed": true,
+      "outcome": "completed",
+      "decision": "deliver",
+      "bodySemanticCheckPassed": true,
+      "failures": [],
+      "modelCalls": 1,
+      "firstAnswer": {
+        "acceptedWithoutCorrection": true,
+        "validJson": true,
+        "decision": "deliver",
+        "outcome": "completed",
+        "missingCount": 0,
+        "requestSha256": "f378aa3e2262a574b9203ccebc1cbc3f372970eab90f87d5e37862f56863edec",
+        "responseSha256": "ae124414d67fa2c72cb25e38d59dc5fd4abfa2d21089df2527dc73d0fe059aa6"
+      },
+      "builtInFormatCorrection": {
+        "actualHttpCalls": 0,
+        "triggered": false,
+        "succeeded": null
+      },
+      "selectionMapping": {
+        "rawSelectionIds": [
+          "file-47273167fc65066e-1"
+        ],
+        "shortIdCount": 1,
+        "fullRefCompatibilityCount": 0,
+        "exactResolvedRefs": true,
+        "nonempty": true
+      },
+      "bodyDigest": "cd3a63324596c6ca8db5d489dc774abc0d338acbd42b2c927cda470b63dd5e92",
+      "evidenceSha256": "ad523b177888b54bc30093f0da6373f7611eaaf86ebe2e98ecc7c03a8c7166a6",
+      "inputSha256": "be5abb50964ec2d95674e990718ac1e519bf3adbe2b7120a9803717ff3d6340e"
+    },
+    {
+      "id": "test-evidence-report-negative",
+      "title": "代码测试证据",
+      "passed": true,
+      "outcome": "partial",
+      "decision": "deliver",
+      "bodySemanticCheckPassed": true,
+      "failures": [],
+      "modelCalls": 1,
+      "firstAnswer": {
+        "acceptedWithoutCorrection": true,
+        "validJson": true,
+        "decision": "deliver",
+        "outcome": "partial",
+        "missingCount": 0,
+        "requestSha256": "41fc22df8c57eba3ef5a7147d0f7d1b7447775b3c03ed62ad5f0d0c5a8ca62ae",
+        "responseSha256": "9a376f0782e2f25112ffdbc2695528ed9e70ce8fd2421a4888870928439f4110"
+      },
+      "builtInFormatCorrection": {
+        "actualHttpCalls": 0,
+        "triggered": false,
+        "succeeded": null
+      },
+      "selectionMapping": {
+        "rawSelectionIds": [
+          "file-64eb680a132e0d33-1"
+        ],
+        "shortIdCount": 1,
+        "fullRefCompatibilityCount": 0,
+        "exactResolvedRefs": true,
+        "nonempty": true
+      },
+      "bodyDigest": "7eafbee394a3b568a5a48962250d681baf2e5272efbf6d71ca14ce387181dc58",
+      "evidenceSha256": "514b328b925d652357f5e614400670491c0397f6126138f55ba17749d6d0d34d",
+      "inputSha256": "c90adda28dd6d9140a1aaa5fe9ee6263ec3f3f8f6d3fd55707d2b9d206faeea2"
+    },
+    {
+      "id": "test-evidence-report-valid",
+      "title": "代码测试证据",
+      "passed": true,
+      "outcome": "completed",
+      "decision": "deliver",
+      "bodySemanticCheckPassed": true,
+      "failures": [],
+      "modelCalls": 1,
+      "firstAnswer": {
+        "acceptedWithoutCorrection": true,
+        "validJson": true,
+        "decision": "deliver",
+        "outcome": "completed",
+        "missingCount": 0,
+        "requestSha256": "cbf8db1d737edae614b379fe70a48078c5064a92795fd819b077806bea8b43dd",
+        "responseSha256": "706f69f8237f19a2ece85d1dffb4da15924f15788318a0cf399cdc18d552ac5a"
+      },
+      "builtInFormatCorrection": {
+        "actualHttpCalls": 0,
+        "triggered": false,
+        "succeeded": null
+      },
+      "selectionMapping": {
+        "rawSelectionIds": [
+          "file-bd2c387541fa1bdf-1"
+        ],
+        "shortIdCount": 1,
+        "fullRefCompatibilityCount": 0,
+        "exactResolvedRefs": true,
+        "nonempty": true
+      },
+      "bodyDigest": "e6e7079d92af49d80fb740a07c8475c0710e0da437f9cb8cfb6d4deb4f5357e1",
+      "evidenceSha256": "229230c3defb7dd72fec084cb5c289d60cc98ae526540a617e4e09c64bfb7785",
+      "inputSha256": "761a74f610ad50021f761a41fb4ec8d85d6a3c66c6db405d6e813864bc637617"
+    },
+    {
+      "id": "translation-negative",
+      "title": "翻译交付完整性",
+      "passed": true,
+      "outcome": "partial",
+      "decision": "deliver",
+      "bodySemanticCheckPassed": true,
+      "failures": [],
+      "modelCalls": 1,
+      "firstAnswer": {
+        "acceptedWithoutCorrection": true,
+        "validJson": true,
+        "decision": "deliver",
+        "outcome": "partial",
+        "missingCount": 0,
+        "requestSha256": "2816d78ac45e99f6f2b885dc1a1d33bc05724fcc6df218b82dfd00a4c942971d",
+        "responseSha256": "febb2efce7ac274561dc2ab8c90b04e654c044c4a388eb24721015ac7d3a9dca"
+      },
+      "builtInFormatCorrection": {
+        "actualHttpCalls": 0,
+        "triggered": false,
+        "succeeded": null
+      },
+      "selectionMapping": {
+        "rawSelectionIds": [
+          "file-7819a7df9ec9d8dd-1"
+        ],
+        "shortIdCount": 1,
+        "fullRefCompatibilityCount": 0,
+        "exactResolvedRefs": true,
+        "nonempty": true
+      },
+      "bodyDigest": "da688960c1fc0d3b68caf93870f53c1aca9e467a1afc32b3a7796ea8f1dffbb6",
+      "evidenceSha256": "357bda3b162fbea2b3d61d47da4ff15a74a663898a3357a149198df847e49487",
+      "inputSha256": "91bba372358112165619fc4e7dc7c9bf50c31a670b2ea2025ff10cfa2f1002af"
+    },
+    {
+      "id": "translation-valid",
+      "title": "翻译交付完整性",
+      "passed": true,
+      "outcome": "completed",
+      "decision": "deliver",
+      "bodySemanticCheckPassed": true,
+      "failures": [],
+      "modelCalls": 1,
+      "firstAnswer": {
+        "acceptedWithoutCorrection": true,
+        "validJson": true,
+        "decision": "deliver",
+        "outcome": "completed",
+        "missingCount": 0,
+        "requestSha256": "a633769658b7aa92ddc5d2164590d648b43cc44d527f713402266e3d41322221",
+        "responseSha256": "4b07ef2eda539e546482c503cdc7cb09bf6220f3bab745d2334d121824163211"
+      },
+      "builtInFormatCorrection": {
+        "actualHttpCalls": 0,
+        "triggered": false,
+        "succeeded": null
+      },
+      "selectionMapping": {
+        "rawSelectionIds": [
+          "file-1c38202057727679-1"
+        ],
+        "shortIdCount": 1,
+        "fullRefCompatibilityCount": 0,
+        "exactResolvedRefs": true,
+        "nonempty": true
+      },
+      "bodyDigest": "0f4c1337118846c7b48f3f227a3e82734b2be6f93a59f4e79ded4584f24776a1",
+      "evidenceSha256": "1d641e2624c3eece83b34ebcbc0e7bd06da0bb844bd5106b64e61456d2fbf0d1",
+      "inputSha256": "87f86256386e482cc687939f5dfbfcf4cf8f44f34f0feb7dbc0b975d14369998"
+    },
+    {
+      "id": "operational-checklist-negative",
+      "title": "操作清单回滚要求",
+      "passed": true,
+      "outcome": "partial",
+      "decision": "deliver",
+      "bodySemanticCheckPassed": true,
+      "failures": [],
+      "modelCalls": 1,
+      "firstAnswer": {
+        "acceptedWithoutCorrection": true,
+        "validJson": true,
+        "decision": "deliver",
+        "outcome": "partial",
+        "missingCount": 0,
+        "requestSha256": "cd86fc5e47311f2a911931375dc6e2dd3ae1147c587f6429cbe3b182a93de134",
+        "responseSha256": "425fb0ad61173e2e2dca72307201d4bc8040e68d9adae3b32a5859a1f208a350"
+      },
+      "builtInFormatCorrection": {
+        "actualHttpCalls": 0,
+        "triggered": false,
+        "succeeded": null
+      },
+      "selectionMapping": {
+        "rawSelectionIds": [
+          "file-54a4dacd1fa25b6d-1"
+        ],
+        "shortIdCount": 1,
+        "fullRefCompatibilityCount": 0,
+        "exactResolvedRefs": true,
+        "nonempty": true
+      },
+      "bodyDigest": "cf4a779cb47d1ac4c3b8204448ac01864980d1dc3748d5f22d410c3d4786b7bc",
+      "evidenceSha256": "e4687c7625e28da374c373e878a512848664a2776513690eac22dc9f688e58d5",
+      "inputSha256": "00b63ce668dd9b0f925478133540eb21b2a43ee23da3d21b492d043b280c4444"
+    },
+    {
+      "id": "operational-checklist-valid",
+      "title": "操作清单回滚要求",
+      "passed": true,
+      "outcome": "completed",
+      "decision": "deliver",
+      "bodySemanticCheckPassed": true,
+      "failures": [],
+      "modelCalls": 1,
+      "firstAnswer": {
+        "acceptedWithoutCorrection": true,
+        "validJson": true,
+        "decision": "deliver",
+        "outcome": "completed",
+        "missingCount": 0,
+        "requestSha256": "6494baee4fd03990a9e55a662bd4ebe6c9102beaca34264ab7d6c1c647e796ae",
+        "responseSha256": "199ba6f8974ceac889d257137a8a6ab229ce05f363f3feb4a0bfed78f31e8fe6"
+      },
+      "builtInFormatCorrection": {
+        "actualHttpCalls": 0,
+        "triggered": false,
+        "succeeded": null
+      },
+      "selectionMapping": {
+        "rawSelectionIds": [
+          "file-23e62e686a728aa8-1"
+        ],
+        "shortIdCount": 1,
+        "fullRefCompatibilityCount": 0,
+        "exactResolvedRefs": true,
+        "nonempty": true
+      },
+      "bodyDigest": "f8e053cc60fd07105bad8e4618a2db3b48db806f16dcfdfb8f82a366c5de1726",
+      "evidenceSha256": "4f00d529fa8604e62b4fadc1709f0911660404e36e1f984c8e02513f73ee72af",
+      "inputSha256": "4675b48d0f715e7d6b37b6a136fe9fc3598ecbb3d55a1a43cfe9bd1fb30e17cb"
+    },
+    {
+      "id": "structured-json-negative",
+      "title": "结构化数据结果",
+      "passed": true,
+      "outcome": "partial",
+      "decision": "deliver",
+      "bodySemanticCheckPassed": true,
+      "failures": [],
+      "modelCalls": 1,
+      "firstAnswer": {
+        "acceptedWithoutCorrection": true,
+        "validJson": true,
+        "decision": "deliver",
+        "outcome": "partial",
+        "missingCount": 0,
+        "requestSha256": "275f162ee6737ee33226607474109909fc8fac777f2f3bc58760f89d62477bcb",
+        "responseSha256": "44d914928e4e99e37f9da3c48506237853417cbe51ddf0f96b3bef3ad4afe89b"
+      },
+      "builtInFormatCorrection": {
+        "actualHttpCalls": 0,
+        "triggered": false,
+        "succeeded": null
+      },
+      "selectionMapping": {
+        "rawSelectionIds": [
+          "file-3e89536f7019df81-1"
+        ],
+        "shortIdCount": 1,
+        "fullRefCompatibilityCount": 0,
+        "exactResolvedRefs": true,
+        "nonempty": true
+      },
+      "bodyDigest": "5a5dd9e1a2d908cbc4faae70694166af05178b327df9d0bc0a05f03bd822e814",
+      "evidenceSha256": "1cb740d1064995ead33169314e8cb60493d4a46a285323c226f66cad005ae93e",
+      "inputSha256": "552c2f59713e3e790a2028e42b2c7f258d8cdec37447126e43263b63ec41cbc1"
+    },
+    {
+      "id": "structured-json-valid",
+      "title": "结构化数据结果",
+      "passed": true,
+      "outcome": "completed",
+      "decision": "deliver",
+      "bodySemanticCheckPassed": true,
+      "failures": [],
+      "modelCalls": 1,
+      "firstAnswer": {
+        "acceptedWithoutCorrection": true,
+        "validJson": true,
+        "decision": "deliver",
+        "outcome": "completed",
+        "missingCount": 0,
+        "requestSha256": "879eb95471590e7240175ade70f685e15361fd546e0624736cb68b4e14b4e66b",
+        "responseSha256": "d222f8483b26922001ea470cc95a1b84a1190677a2f18fecb6bad78db73c5352"
+      },
+      "builtInFormatCorrection": {
+        "actualHttpCalls": 0,
+        "triggered": false,
+        "succeeded": null
+      },
+      "selectionMapping": {
+        "rawSelectionIds": [
+          "file-c4e85d6effc5d355-1"
+        ],
+        "shortIdCount": 1,
+        "fullRefCompatibilityCount": 0,
+        "exactResolvedRefs": true,
+        "nonempty": true
+      },
+      "bodyDigest": "79a9802a38237ad4ae90cd19dc0404429c5f70902fca8329a794652f628ca9b5",
+      "evidenceSha256": "b068056da70a5020711ed4d028565df4aca7b5f2432a20707f25eca2dba0a7a7",
+      "inputSha256": "2367f7531098354000438d49585aa4be39a9997fb14c3277176b34a75564271b"
+    }
+  ],
+  "evidence": {
+    "localRunDirectory": "out/diagnostics/bot-completion-evidence/2026-11-12T00-02-42-717Z-1393854",
+    "files": [
+      "report.json",
+      "manifest.json",
+      "compile-provenance.json",
+      "request-*.json",
+      "response-*.txt",
+      "shared-gateway-window.json"
+    ],
+    "rawRequestsAndRepliesIncluded": false,
+    "credentialsIncluded": false,
+    "previousBatchesPreserved": [
+      "eef651e-registered-text-first-batch.json",
+      "5ba7e153-registered-text-second-batch.json",
+      "bc9f2330-registered-text-third-batch.json"
+    ]
+  },
+  "limitations": [
+    "候选正文、Work绑定及完成摘要为明确声明的fixtures；不是业务native执行、Electron UI或完整Coordinator交付/结算E2E。",
+    "6类正反12例正文digest均与真实登记匹配，未用tamper替代语义缺项；不覆盖PDF/PPT/OCR或渲染验收。",
+    "本批格式校正分支未触发，实际校正HTTP为0；这里不声称验证了非法JSON首答的语义保持。",
+    "有限模型样本不能保证普遍正确；前3批的原始失败及成绩全部保留。"
+  ],
+  "reproduce": "BOT_COMPLETION_EVIDENCE_EXPECT_COMMIT=1c4966bde7778d4002d36724defce757f239d575 TMPDIR=/home/vivion/iq27-tmp node scripts/bot-completion-evidence-live-test.cjs --live"
+}

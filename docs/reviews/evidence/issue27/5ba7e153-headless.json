@@ -1,0 +1,28 @@
+{
+  "sourceCommit": "5ba7e153c258ea9b1574047bfd3585040b4d1340",
+  "command": "TMPDIR=/home/vivion/iq27-tmp pnpm -s test:all",
+  "exitCode": 0,
+  "summary": "[test-all] 4.6 min · 通过 484 · 失败 0 · 已知失败 0 · 新增回归 0",
+  "passed": 484,
+  "failed": 0,
+  "knownFailures": 0,
+  "regressions": 0,
+  "scope": "default headless only; not the excluded GUI/NETWORK/DATASET/ARTIFACT suites",
+  "rawLog": "out/diagnostics/issue27-headless-5ba7e153.log",
+  "previousGate": {
+    "sourceCommit": "f576144c79877c8179fe642932070638ff8f8ad5",
+    "passed": 482,
+    "failed": 2,
+    "exitCode": 1,
+    "failedTests": [
+      "test:bot-scheduling-continuation",
+      "test:bot-watch-creation"
+    ],
+    "rawLog": "out/diagnostics/issue27-headless-f576144c.log"
+  },
+  "typecheck": {
+    "exitCode": 0,
+    "rawLog": "out/diagnostics/issue27-contract-typecheck.log",
+    "scope": "web, node, scripts; zero errors"
+  }
+}

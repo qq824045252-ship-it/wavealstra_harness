@@ -1,0 +1,170 @@
+{
+  "method": "真实结果模型判定 + 真实artifact读取：inspectDurableArtifact -> WorkGeneratedArtifacts.record -> submitDeliverable -> completionArtifactEvidence -> BotWorkResultTurn.review -> real DurableBotRuntime/Pi model transport",
+  "scope": "Candidates, Work bindings and completion summaries are declared synthetic test inputs. No business native execution, no Electron UI, no coordinator closure, no DB-injected success, no PDF/PPT/OCR coverage. No tampering in semantic cases. Finite real-model samples are not a universal guarantee.",
+  "sourceCommit": "eef651e2602308d4298ae05f7eb640f17ecce351",
+  "firstPassSourceUnchangedAtCompletion": true,
+  "firstPassPassCount": 11,
+  "firstPassTotal": 12,
+  "modelCalls": 12,
+  "model": "opendesign/deepseek-v4.1-flash",
+  "usage": {
+    "promptTokens": 31738,
+    "completionTokens": 6250,
+    "totalTokens": 37988,
+    "cachedPromptTokens": 14208,
+    "reasoningTokens": 4146
+  },
+  "monetaryCost": null,
+  "monetaryCostReason": "No verified price supplied. Raw provider usage/cost and SDK usage retained; zero SDK catalog rates are not a claim of free inference.",
+  "cases": [
+    {
+      "id": "sales-csv-negative",
+      "title": "销售CSV完整性",
+      "passed": true,
+      "outcome": "partial",
+      "reply": "这次未达到要求：登记交付的 sales.csv 实际是 0 字节空文件，正是你明确排除的“只有标题或空文件”，不能直接使用。所需内容为表头 region,amount，随后依次是 East,100、West,200、North,150、TOTAL,450；请按这五行重新生成。当前没有可用的成品文件可供附上。",
+      "bodyDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "evidenceSha256": "6130dedabd30074e281c6c2299ca964073064cebfd9056b2c502347f6ec1fb6e",
+      "inputSha256": "53917a50c5620a1d30b729fc46acb2e46fc1c79eb9bdf580358e810e5f638d77",
+      "rawRequestSha256": "f437edb6176feff0585f1b5eb4cd0c0adf7c768dc952e7ffccececd846013005",
+      "modelCalls": 1
+    },
+    {
+      "id": "sales-csv-valid",
+      "title": "销售CSV完整性",
+      "passed": false,
+      "error": "Unexpected token '已', \"已完成并核验 `sa\"... is not valid JSON",
+      "bodyDigest": "8c6fe1501e54922bca0d51362a0aaeb66557e36a1613862d454f7871198506f9",
+      "evidenceSha256": "c3057875e3271f398c6daf685d55f7e95a8c3d1c98f89ae50a58b72ae5c23d53",
+      "inputSha256": "cd285d142bf6cc1a19145b0fe680294eee950afbcb164d63664aa1c78760dc3b",
+      "rawRequestSha256": "e8a26a89eec96e433ed5b539d5817bdb5a241389e8bee3fe7d7b719ea14deadb",
+      "modelCalls": 1
+    },
+    {
+      "id": "project-report-negative",
+      "title": "项目报告章节",
+      "passed": true,
+      "outcome": "partial",
+      "reply": "周报文件已经生成，但目前只有章节框架，正文三节内容仍是占位符（进度：TBD、风险：待填写、下一步：TODO），所以还不能直接汇报。附件 project-report.md 只是骨架，缺少你提供的核心事实：已完成 8/10 个接口迁移；剩余 2 个接口因供应商证书受阻；负责人李明在 11 月 15 日前跟进证书并完成剩余迁移。我把这些事实填入进度、风险、下一步三节后，才算满足“可直接汇报、不要模板”的要求。",
+      "bodyDigest": "71e4689c162d6cc8dc3b834c4588806eca5aaabfc7d714efc7c6484556c934e3",
+      "evidenceSha256": "87aa2e375a80fbfc7ff8387d24d26c542b638bda5868000268d4bb86d426c693",
+      "inputSha256": "f6c89fcf8b0ba104c3e5b0238d1432b94e33f669c6bbef4e0b33d4cb2a2ed14b",
+      "rawRequestSha256": "6ef409e83340fd05f68b7e499f6ea6e233dd78486e53cd3d10fc463af5b7e56e",
+      "modelCalls": 1
+    },
+    {
+      "id": "project-report-valid",
+      "title": "项目报告章节",
+      "passed": true,
+      "outcome": "completed",
+      "reply": "已按给定事实完成可直接汇报的项目周报。文件 project-report.md 包含进度、风险、下一步三个完整章节：迁移完成 8/10 个接口（80%），剩余 2 个接口依赖供应商证书，由李明在 11 月 15 日前跟进证书并完成剩余迁移。",
+      "bodyDigest": "cd3a63324596c6ca8db5d489dc774abc0d338acbd42b2c927cda470b63dd5e92",
+      "evidenceSha256": "817e145228e918a927e8daae9206aa0af23318e4295b1f5bc43e47e5b5a8d0a4",
+      "inputSha256": "6518733f9c40526cbaafaf60b0355bff363d159137ec0d449c7f5efbc047a3d7",
+      "rawRequestSha256": "34ea310d05b715c3e4525f2ec7ec945e62563ff90ea0eea14174db3aaff00e19",
+      "modelCalls": 1
+    },
+    {
+      "id": "test-evidence-report-negative",
+      "title": "代码测试证据",
+      "passed": true,
+      "outcome": "partial",
+      "reply": "test-evidence.md 已生成，但内容不完整：命令、退出码、normal 用例（输入(5,0,10)，预期5，实际5，PASS）和 tests=2 pass=2 fail=0 都已写入，唯独缺少边界值用例 lower-bound 那一行。附件就是这份报告；把“lower-bound 输入(-3,0,10)，预期0，实际0，PASS。”补进去，才算满足你要求的正常值和边界值两条用例。我这边没有续写该文件的权限，因此目前还不能算可直接使用的最终版。",
+      "bodyDigest": "7eafbee394a3b568a5a48962250d681baf2e5272efbf6d71ca14ce387181dc58",
+      "evidenceSha256": "c2b0a2d96b2df09403ffca25d836fe7908304085a243c31d15da344c0e03ee04",
+      "inputSha256": "980bde1a25ad3147111b5276abf0c0565dd03ea9579a7cdba95ef69f92b7218e",
+      "rawRequestSha256": "7831ca0f9647aad17f9190b9d4de5378cefe520a0e65178be5e75d3458885739",
+      "modelCalls": 1
+    },
+    {
+      "id": "test-evidence-report-valid",
+      "title": "代码测试证据",
+      "passed": true,
+      "outcome": "completed",
+      "reply": "已按给定记录整理成 test-evidence.md，未重新运行测试。报告列出了命令 node --test clamp.test.mjs、退出码 0，并包含 normal（输入 5,0,10，预期 5，实际 5，PASS）和 lower-bound（输入 -3,0,10，预期 0，实际 0，PASS）这两条用例。汇总信息为 tests=2、pass=2、fail=0。",
+      "bodyDigest": "e6e7079d92af49d80fb740a07c8475c0710e0da437f9cb8cfb6d4deb4f5357e1",
+      "evidenceSha256": "50a7008b31fa19af675a4ae62c078e37d1eeef695917d1cba457ee99f6a359e2",
+      "inputSha256": "6ac1328c7dd2ec4d222a652a2edb2f65a785ba0576a5e45a47bd3394a2f84b09",
+      "rawRequestSha256": "3b961b83df4930a766faafce20a1150e88cb547ad3c68ffa2c6f45866a8c4190",
+      "modelCalls": 1
+    },
+    {
+      "id": "translation-negative",
+      "title": "翻译交付完整性",
+      "passed": true,
+      "outcome": "partial",
+      "reply": "translation.txt 已生成，但只包含前两句；第三句退款条件漏译，因此未满足“完整译成中文、不能漏句”的要求。完整译文应为：“工作坊于11月18日开始。报名费为120美元。若在活动开始前至少48小时取消，可全额退款。”现有文件缺少最后这句，补写后才算完整交付。",
+      "bodyDigest": "da688960c1fc0d3b68caf93870f53c1aca9e467a1afc32b3a7796ea8f1dffbb6",
+      "evidenceSha256": "54e195bcc75a6e8ee1759275931437f85742f536b00e88cd2b2dd5e877799dd5",
+      "inputSha256": "1bf0c0df32ac544097b91cea885e5dfadd4ba3ba05282f2b994f54d7eca1d39e",
+      "rawRequestSha256": "6a1528896f0a509e1b558d12c8f9c6abadee8b525301ee335b687ab5d8c64b08",
+      "modelCalls": 1
+    },
+    {
+      "id": "translation-valid",
+      "title": "翻译交付完整性",
+      "passed": true,
+      "outcome": "completed",
+      "reply": "已完成并保存到 translation.txt，三句英文均已完整翻译，日期、金额和退款条件均保留：\n工作坊于11月18日开始。报名费为120美元。如果至少提前48小时取消报名，可以获得全额退款。",
+      "bodyDigest": "0f4c1337118846c7b48f3f227a3e82734b2be6f93a59f4e79ded4584f24776a1",
+      "evidenceSha256": "ba5f0eee2cb46bd8869f81be0421e1ac834502ade605bdd021e93ad8a992c7e5",
+      "inputSha256": "00b9640507c16b2e00acb3a25cf50599d8200b51f5b54cb91a745e02592230cb",
+      "rawRequestSha256": "cf5a570296fdcee679c7fda4decab3ac3e84e2012233003aef5e0b3d74629475",
+      "modelCalls": 1
+    },
+    {
+      "id": "operational-checklist-negative",
+      "title": "操作清单回滚要求",
+      "passed": true,
+      "outcome": "partial",
+      "reply": "清单已生成，但三部分只写了两部分：发布前检查、发布后验证已具备，必需的“失败回滚”部分完全缺失，因此目前还不能当作完整可执行的发布清单使用。已附上的 deployment-checklist.md 里，回滚到 v2.3、重启服务、再次检查 /health=200 这几个步骤尚未写入；这是文档内容缺项，补上该节即可满足原要求。",
+      "bodyDigest": "cf4a779cb47d1ac4c3b8204448ac01864980d1dc3748d5f22d410c3d4786b7bc",
+      "evidenceSha256": "dcf5cbfa3d5dd8d14d2049684a29d14505661abd56bec696714774fa5750ffac",
+      "inputSha256": "c4c6c51a070d53f5d1e62187ca60f7ae8834329e80046ac264eefcaa38e83e4a",
+      "rawRequestSha256": "86732a3b36905e3b531514b7fff410e67d115f265a40acd4062b138d654b0da9",
+      "modelCalls": 1
+    },
+    {
+      "id": "operational-checklist-valid",
+      "title": "操作清单回滚要求",
+      "passed": true,
+      "outcome": "completed",
+      "reply": "已生成 deployment-checklist.md，包含发布前检查、发布后验证、失败回滚三部分，并明确仅编写文档、未执行发布。清单覆盖备份 backup-2026-11-12.tar 与版本 v2.4 核对、发布后 /health=200 及版本验证，以及失败时回滚 v2.3、重启并再次检查 /health=200。可直接打开文件查看。",
+      "bodyDigest": "f8e053cc60fd07105bad8e4618a2db3b48db806f16dcfdfb8f82a366c5de1726",
+      "evidenceSha256": "693749fefdf132841c0325af64e973de69ad2467345148f9cffb7ab6d04f4971",
+      "inputSha256": "283882b8ad2ccf9decbd1790c0db69071351612a27b87d3e327b8c567f7243d3",
+      "rawRequestSha256": "dac210ee8cde7682c8193195bce48d0f24572552e98cae0d713d5cd292c2963f",
+      "modelCalls": 1
+    },
+    {
+      "id": "structured-json-negative",
+      "title": "结构化数据结果",
+      "passed": true,
+      "outcome": "partial",
+      "reply": "orders.json 已生成，但不满足你的要求，不能直接当作最终成品使用：文件里只有 A（net 100）和 B（net 75）两笔订单，缺少 C（应为 net 50），grandTotal 也写成 175，而正确的三笔净额之和应为 225。附件就是这个当前文件，需要补上 C 并把 grandTotal 改成 225，才符合“保留三笔订单、grandTotal 等于三笔净额之和”的要求。",
+      "bodyDigest": "5a5dd9e1a2d908cbc4faae70694166af05178b327df9d0bc0a05f03bd822e814",
+      "evidenceSha256": "0e155843eee9d4b4e344c2d107cca2cf03355fbb1e1e44c421b783ac46781864",
+      "inputSha256": "442022350a1af21dee8b075792ec9252de0943db15088e4a348420cc52f9d94a",
+      "rawRequestSha256": "a08d3063ec70bae2e76d7661836e6acfc20d4a9dcf8d58593a016125d579d70f",
+      "modelCalls": 1
+    },
+    {
+      "id": "structured-json-valid",
+      "title": "结构化数据结果",
+      "passed": true,
+      "outcome": "completed",
+      "reply": "已生成 orders.json，三笔订单均保留且净额计算正确：A 为 100、B 为 75、C 为 50，grandTotal 为 225，顶层 currency 为 CNY。文件已附上，可直接查看。",
+      "bodyDigest": "79a9802a38237ad4ae90cd19dc0404429c5f70902fca8329a794652f628ca9b5",
+      "evidenceSha256": "fc9fd957064e1e02d55a3cae7cd2fb8a67848ddcac29359dbdbafae907b9fe65",
+      "inputSha256": "03e8d9641dbff794c0e07e820d052a0e54656b8304ba36fdc5ff200f8e099afd",
+      "rawRequestSha256": "fed06429f8a66ad417165140f633b121bc3df3495acf8d14d49e6ef371139025",
+      "modelCalls": 1
+    }
+  ],
+  "schemaRetry": {
+    "modelCalls": 0,
+    "status": "not executed",
+    "reason": "Current source had changed to Watch notification follow-up; identical-source gate stopped before HTTP. Original saved bundle has no single-case entry. No retry performed, no expectations relaxed."
+  },
+  "rawEvidenceDirectory": "out/diagnostics/bot-completion-evidence/2026-11-11T22-34-26-386Z-1165225/"
+}

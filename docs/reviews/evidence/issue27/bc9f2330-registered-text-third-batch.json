@@ -1,0 +1,360 @@
+{
+  "issue": 27,
+  "checkpoint": "B6 registered text, third batch after exact short-ID selection fix",
+  "status": "failed",
+  "method": "真实结果模型判定 + 真实artifact读取：生产快照创建、登记、completionArtifactEvidence读取及BotWorkResultTurn真实V4.1Flash回合。",
+  "source": {
+    "commit": "bc9f23303f2fa4fa12fea41bac7004283cee894b",
+    "expectedCommit": "bc9f23303f2fa4fa12fea41bac7004283cee894b",
+    "compiledInputCount": 226,
+    "unchangedDuringRun": true,
+    "bundleSha256": "79b1bcbb611addee92fc648dfcc69da6047e00c11cc7ceb87aadd38afc7d1af2",
+    "reportSha256": "df95a48498b61cd08d3d0d242621c3cd26dc26d9aeb48dfd325f0d913ae7dd67",
+    "manifestSha256": "dcbe22de2fba6341eb4f5b079a1f1a0ff019925beb456399250018f339b47837",
+    "candidateManifestUnchangedFromSecondBatch": true,
+    "testScriptsUnchangedFromSecondBatch": true,
+    "shortIdImplementationSha256": "d5bf129cfb6194ac6cbbfc31c829bad1b542448f8a7382ad1fa455ab6f117197"
+  },
+  "result": {
+    "passed": 8,
+    "failed": 4,
+    "total": 12,
+    "distinctTaskTypes": 6,
+    "structuredVerdicts": 10,
+    "bodySemanticChecksPassed": 10,
+    "bodySemanticChecksUnavailable": 2,
+    "negativePartial": 6,
+    "validCompleted": 4,
+    "jsonParseFailures": 2,
+    "deliverWithNonemptyMissingFailures": 2,
+    "exactArtifactRefFailures": 0,
+    "retries": 0,
+    "expectationsChanged": false,
+    "note": "缺少有效结构化回复的2例不算语义通过；保留原始8/12总评分。"
+  },
+  "shortIdMapping": {
+    "nonemptySelections": 9,
+    "exactMappings": 9,
+    "emptySelections": 1,
+    "unavailableDueToParseFailure": 2,
+    "wrongIds": 0,
+    "wrongResolvedRefs": 0,
+    "evidence": "对照9次原始HTTP请求availableFiles.selectionId、原始模型输出artifactRefs和生产review返回真实ref，9/9精确一致；另1例正确返回空选择。2例自然语言回复未进入映射，不能计入映射成功。"
+  },
+  "failures": {
+    "jsonParse": [
+      "project-report-valid",
+      "test-evidence-report-valid"
+    ],
+    "nonemptyMissingWithDeliver": [
+      "translation-negative",
+      "structured-json-negative"
+    ],
+    "details": "两个完整对照只返回自然语言，严格JSON.parse失败；另两个负例正确判partial并deliver，但missing数组非空，违反非continue时missing必须为空的既定断言。后者不等于正文误判，宿主deliver分支不会据此安排补做。未修改parser或重试。"
+  },
+  "model": "opendesign/deepseek-v4.1-flash",
+  "modelCalls": 12,
+  "httpWindow": {
+    "startedAt": "2026-11-11T23:33:51.400Z",
+    "finishedAt": "2026-11-11T23:34:56.940Z",
+    "timeZone": "UTC"
+  },
+  "usage": {
+    "promptTokens": 35241,
+    "completionTokens": 5718,
+    "totalTokens": 40959,
+    "cachedPromptTokens": 22528,
+    "reasoningTokens": 4274
+  },
+  "monetaryCost": null,
+  "monetaryCostReason": "接口未提供可核验金额；不将SDK测试零费率当作免费推理。",
+  "cases": [
+    {
+      "id": "sales-csv-negative",
+      "title": "销售CSV完整性",
+      "passed": true,
+      "outcome": "partial",
+      "bodySemanticCheck": true,
+      "failures": [],
+      "error": null,
+      "modelCalls": 1,
+      "selectionMapping": {
+        "rawSelectionIds": [],
+        "allIdsFromCurrentInput": true,
+        "resolvedToExactRegisteredRefs": true,
+        "nonempty": false
+      },
+      "bodyDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "evidenceSha256": "ff3737ce07834036c26b39cc4b899e4de0efe137711cb3ca97c576151781b303",
+      "inputSha256": "bbc869b220582ef4f5f2eb348315e83f5f2aa757bd4b5bebac4fcce2c6c877b8",
+      "requestSha256": "d0c7987186afefde5e21017845958eda61e0a2beb52cc909fafd38be7e899367",
+      "responseSha256": "e4c651cfc742889f1b665e54f6a5a325789c372f5ff2b69ca0cef820975ac076"
+    },
+    {
+      "id": "sales-csv-valid",
+      "title": "销售CSV完整性",
+      "passed": true,
+      "outcome": "completed",
+      "bodySemanticCheck": true,
+      "failures": [],
+      "error": null,
+      "modelCalls": 1,
+      "selectionMapping": {
+        "rawSelectionIds": [
+          "file-1fc1535072ce6529-1"
+        ],
+        "allIdsFromCurrentInput": true,
+        "resolvedToExactRegisteredRefs": true,
+        "nonempty": true
+      },
+      "bodyDigest": "8c6fe1501e54922bca0d51362a0aaeb66557e36a1613862d454f7871198506f9",
+      "evidenceSha256": "15c2cace34660911ec380c1113e982c68c8b9335cd5a18a3cb686e442957a4f9",
+      "inputSha256": "aba0c1415836d647e5932c097ef3521ee2f151a4fab383a9772daf95fa18bf6d",
+      "requestSha256": "2911bd38a277cc63ca86185c899874328cb146ee4dc5f4bd0128d11f3200329c",
+      "responseSha256": "d1d071425b9d0a3225440d03deb814c411b6f375e4c36c46b896662fbdcbc616"
+    },
+    {
+      "id": "project-report-negative",
+      "title": "项目报告章节",
+      "passed": true,
+      "outcome": "partial",
+      "bodySemanticCheck": true,
+      "failures": [],
+      "error": null,
+      "modelCalls": 1,
+      "selectionMapping": {
+        "rawSelectionIds": [
+          "file-cc293dc9e48fa333-1"
+        ],
+        "allIdsFromCurrentInput": true,
+        "resolvedToExactRegisteredRefs": true,
+        "nonempty": true
+      },
+      "bodyDigest": "71e4689c162d6cc8dc3b834c4588806eca5aaabfc7d714efc7c6484556c934e3",
+      "evidenceSha256": "68923dbb5b3117738be0ea5bb8bbdad7382f3f0b7353a24f3dc1bbb29de6f481",
+      "inputSha256": "46fbcf53711b577dbd4b243f768a9c796f8c79cee638f276481f02765e1dfad9",
+      "requestSha256": "25499d9b92b2b2637d374425bf0300c8f459ee1d930ddca5209b999db870e9f2",
+      "responseSha256": "a425289eaa111606a94d33e8893227c850d88f1a834af5202b2274989a018dd1"
+    },
+    {
+      "id": "project-report-valid",
+      "title": "项目报告章节",
+      "passed": false,
+      "outcome": null,
+      "bodySemanticCheck": "unavailable_due_to_parse_error",
+      "failures": [],
+      "error": "Unexpected token '周', \"周报已按给定事实完成\"... is not valid JSON",
+      "modelCalls": 1,
+      "selectionMapping": null,
+      "bodyDigest": "cd3a63324596c6ca8db5d489dc774abc0d338acbd42b2c927cda470b63dd5e92",
+      "evidenceSha256": "24fe314bef430c04b47403bca77e2aec98c54f52915062b543a4e69b2df7dfae",
+      "inputSha256": "f7cc7e33942e27634941b087830890c7c91bc3b8d7f596f6f0fc0e0333c1a45b",
+      "requestSha256": "f9bd42c2e8a25a41c55afc1e17c91dcc8027cad2a3f9b7c4beb7c7ea9232a165",
+      "responseSha256": "52c04bf5ac7b477a2fb91dc57d94725cee7e47ad7c60984efe4a9c5aa686928a"
+    },
+    {
+      "id": "test-evidence-report-negative",
+      "title": "代码测试证据",
+      "passed": true,
+      "outcome": "partial",
+      "bodySemanticCheck": true,
+      "failures": [],
+      "error": null,
+      "modelCalls": 1,
+      "selectionMapping": {
+        "rawSelectionIds": [
+          "file-9d42a113e0727dfb-1"
+        ],
+        "allIdsFromCurrentInput": true,
+        "resolvedToExactRegisteredRefs": true,
+        "nonempty": true
+      },
+      "bodyDigest": "7eafbee394a3b568a5a48962250d681baf2e5272efbf6d71ca14ce387181dc58",
+      "evidenceSha256": "5e03c0913f1342d182e3a1cd921eef26774e88d6c2d12159fb4408e6b1352485",
+      "inputSha256": "2fad4552d4d60e9297c52302521468588dbd02adf5ab41924b8eaf5cd05e188f",
+      "requestSha256": "32a97fb90aa6d763cde65615aa4269e134e04487da499df0e0b150bb6c42f2b3",
+      "responseSha256": "60edfc1d4b60ac2ab5448325ad3b2d507d427fa2201820626b3b59ba4a437454"
+    },
+    {
+      "id": "test-evidence-report-valid",
+      "title": "代码测试证据",
+      "passed": false,
+      "outcome": null,
+      "bodySemanticCheck": "unavailable_due_to_parse_error",
+      "failures": [],
+      "error": "Unexpected token '已', \"已按给定记录整理成 \"... is not valid JSON",
+      "modelCalls": 1,
+      "selectionMapping": null,
+      "bodyDigest": "e6e7079d92af49d80fb740a07c8475c0710e0da437f9cb8cfb6d4deb4f5357e1",
+      "evidenceSha256": "fac0c8615c083ced5a32336b634edfaee952ddd38cff5a97fda65c82bd96fa0d",
+      "inputSha256": "ce4666018c116dfad9312492b3f64e6ee5e1cfcd8004d92c08557d13646415e8",
+      "requestSha256": "9bbd9a39746900afddff64d552f8f58010f50f527f93fb71b1531f7d177507e8",
+      "responseSha256": "b24d8053353ccfb544df0cf0bc1383e2b17e960038ceb77d999ce39bed69aa62"
+    },
+    {
+      "id": "translation-negative",
+      "title": "翻译交付完整性",
+      "passed": false,
+      "outcome": "partial",
+      "bodySemanticCheck": true,
+      "failures": [
+        "Deliver-only review must not invent continuation work"
+      ],
+      "error": null,
+      "modelCalls": 1,
+      "selectionMapping": {
+        "rawSelectionIds": [
+          "file-e3bee873bc76eb4f-1"
+        ],
+        "allIdsFromCurrentInput": true,
+        "resolvedToExactRegisteredRefs": true,
+        "nonempty": true
+      },
+      "bodyDigest": "da688960c1fc0d3b68caf93870f53c1aca9e467a1afc32b3a7796ea8f1dffbb6",
+      "evidenceSha256": "852c319b83944503c08670f626c13d712758810cdacb3a4a162bcd7afddadffa",
+      "inputSha256": "f0c4065c7190ee62f79fc81f782b67601727bd5b6ce7ab96cdf25c7d3ec6081b",
+      "requestSha256": "5f7f00937cca24a60597a5e4a32305e5585df988b1f160d126c65b36280c26b6",
+      "responseSha256": "8592613ed9aa3beaa868d604b6fc70971a3178c5a883896dd45a0f6c1059de93"
+    },
+    {
+      "id": "translation-valid",
+      "title": "翻译交付完整性",
+      "passed": true,
+      "outcome": "completed",
+      "bodySemanticCheck": true,
+      "failures": [],
+      "error": null,
+      "modelCalls": 1,
+      "selectionMapping": {
+        "rawSelectionIds": [
+          "file-0690d797d5c892c2-1"
+        ],
+        "allIdsFromCurrentInput": true,
+        "resolvedToExactRegisteredRefs": true,
+        "nonempty": true
+      },
+      "bodyDigest": "0f4c1337118846c7b48f3f227a3e82734b2be6f93a59f4e79ded4584f24776a1",
+      "evidenceSha256": "6f7649091b8fdbafc4a73ab12b111ef50655b9c4f031aa5b3e6d81f95ecd1e2b",
+      "inputSha256": "2fd36bb02c542882b1c23705ff70d99d8c6ab3a34215c9e1cba3f3b91c55b515",
+      "requestSha256": "9b95be887794a5ea28b60dce88d28103727b2caa15b2e43396260ca54c4275a1",
+      "responseSha256": "0f3cff383e232434f87c6c3954bd5edd522ef3186bd32baa49f4a75f2f1d06ae"
+    },
+    {
+      "id": "operational-checklist-negative",
+      "title": "操作清单回滚要求",
+      "passed": true,
+      "outcome": "partial",
+      "bodySemanticCheck": true,
+      "failures": [],
+      "error": null,
+      "modelCalls": 1,
+      "selectionMapping": {
+        "rawSelectionIds": [
+          "file-1eacac1c2f77d8b6-1"
+        ],
+        "allIdsFromCurrentInput": true,
+        "resolvedToExactRegisteredRefs": true,
+        "nonempty": true
+      },
+      "bodyDigest": "cf4a779cb47d1ac4c3b8204448ac01864980d1dc3748d5f22d410c3d4786b7bc",
+      "evidenceSha256": "a7461078234f453e4c40b929fddc56142211da700a991259678419bc9e7c231b",
+      "inputSha256": "5c12c1b867f863257f4d3a3c70c0f3bb2cfa157909f6241ba3a9a3d975b31fbd",
+      "requestSha256": "12191f8f66dc49bc048754d65eb2927fd19de55de25d4d5ba29bdb125daaf484",
+      "responseSha256": "38efb4c39132e7ca9c4ef730a38feeaebb776ac928a236756807c4e8b9337657"
+    },
+    {
+      "id": "operational-checklist-valid",
+      "title": "操作清单回滚要求",
+      "passed": true,
+      "outcome": "completed",
+      "bodySemanticCheck": true,
+      "failures": [],
+      "error": null,
+      "modelCalls": 1,
+      "selectionMapping": {
+        "rawSelectionIds": [
+          "file-d1a46789e6449c8e-1"
+        ],
+        "allIdsFromCurrentInput": true,
+        "resolvedToExactRegisteredRefs": true,
+        "nonempty": true
+      },
+      "bodyDigest": "f8e053cc60fd07105bad8e4618a2db3b48db806f16dcfdfb8f82a366c5de1726",
+      "evidenceSha256": "f346d10461fd94459f5dd165d54e887993dd5a889af771b704611dde7782d853",
+      "inputSha256": "090ba81e1846cd3716ff76aae5afb89bf57e6e6e288d754b5bd1ecb002e86fad",
+      "requestSha256": "f95d0264a93421a9bde9e9bafb2056d7a1b9be39217a3f06ff42b98a6da71a5c",
+      "responseSha256": "38c9e613addc147481f3af1b7bf10bca7aaad35d0100db02da363a630fe337ba"
+    },
+    {
+      "id": "structured-json-negative",
+      "title": "结构化数据结果",
+      "passed": false,
+      "outcome": "partial",
+      "bodySemanticCheck": true,
+      "failures": [
+        "Deliver-only review must not invent continuation work"
+      ],
+      "error": null,
+      "modelCalls": 1,
+      "selectionMapping": {
+        "rawSelectionIds": [
+          "file-009f4e5f5cd93938-1"
+        ],
+        "allIdsFromCurrentInput": true,
+        "resolvedToExactRegisteredRefs": true,
+        "nonempty": true
+      },
+      "bodyDigest": "5a5dd9e1a2d908cbc4faae70694166af05178b327df9d0bc0a05f03bd822e814",
+      "evidenceSha256": "a83c3c808b8a0b690bb99970789d47e5f01d065ed079b828b1a105033e5331b7",
+      "inputSha256": "add9e8b722e0d6a6e9a0097fa28cfb18538630a89c50596571e46ce89fe59387",
+      "requestSha256": "2151bfeb2e80d920339d6a4f51221b294e6db584b5a8dcf7543c99648d7eb76b",
+      "responseSha256": "fbf9dd9df55f5a36a11206e5db3c3a9d523247b4457c050cb5b4460f0f92ca88"
+    },
+    {
+      "id": "structured-json-valid",
+      "title": "结构化数据结果",
+      "passed": true,
+      "outcome": "completed",
+      "bodySemanticCheck": true,
+      "failures": [],
+      "error": null,
+      "modelCalls": 1,
+      "selectionMapping": {
+        "rawSelectionIds": [
+          "file-ea96d24db02dcc53-1"
+        ],
+        "allIdsFromCurrentInput": true,
+        "resolvedToExactRegisteredRefs": true,
+        "nonempty": true
+      },
+      "bodyDigest": "79a9802a38237ad4ae90cd19dc0404429c5f70902fca8329a794652f628ca9b5",
+      "evidenceSha256": "219db062babc8686f10ad7d4af7080ac0bffc84cd694b39248cde83a01109c3e",
+      "inputSha256": "fdcb5c5e5be185f254689fe1349ebcb0cb9cf6d4cf0de25f350a681b9cdc5805",
+      "requestSha256": "0260f0a9406724e3bf5aeb1dea96e4cb00832932a9e5deacd08ceb4b26e19f31",
+      "responseSha256": "1207882222fa2f3df0a6b3ade117df65626fe3087dc502099555a497ab3bb108"
+    }
+  ],
+  "evidence": {
+    "localRunDirectory": "out/diagnostics/bot-completion-evidence/2026-11-11T23-33-48-940Z-1320724",
+    "files": [
+      "report.json",
+      "manifest.json",
+      "compile-provenance.json",
+      "request-*.json",
+      "response-*.txt"
+    ],
+    "rawRequestsAndRepliesIncluded": false,
+    "credentialsIncluded": false,
+    "previousBatchesPreserved": [
+      "eef651e-registered-text-first-batch.json",
+      "5ba7e153-registered-text-second-batch.json"
+    ]
+  },
+  "limitations": [
+    "候选成品、Work绑定和摘要是明确声明的测试fixtures；不是业务native执行、Electron UI或完整Coordinator交付/结算E2E。",
+    "正文digest与登记匹配；未以tamper代替语义缺项，不覆盖PDF/PPT/OCR或渲染验证。",
+    "所有6类×正反12例原样执行，源文件运行前后hash一致；没有自动重试、放宽期望或改写初次评分。",
+    "短ID修复已在9次实际非空选择中验证，不代表12项整体验收通过；有限模型样本不能保证普遍正确。"
+  ],
+  "reproduce": "BOT_COMPLETION_EVIDENCE_EXPECT_COMMIT=bc9f23303f2fa4fa12fea41bac7004283cee894b TMPDIR=/home/vivion/iq27-tmp node scripts/bot-completion-evidence-live-test.cjs --live"
+}

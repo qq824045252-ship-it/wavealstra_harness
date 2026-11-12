@@ -1,0 +1,788 @@
+{
+  "createdAt": "2026-11-12T00:34:21.709846+00:00",
+  "source": {
+    "root": "/home/vivion/i27-src4-2n97ai_7",
+    "capturedAt": 1794443164821,
+    "fingerprint": {
+      "sha256": "fa44173fa7b18d2aac9f6e8441f3123e56d08a7b295eb1402285fcf0e9adbde2",
+      "files": 1265
+    },
+    "snapshotLabel": "b3e90b8516dba43a37bcbb22b5585e77321dda4a",
+    "finishedFingerprint": {
+      "sha256": "fa44173fa7b18d2aac9f6e8441f3123e56d08a7b295eb1402285fcf0e9adbde2",
+      "files": 1265
+    }
+  },
+  "sourceManifest": {
+    "path": "/home/vivion/i27-src4-2n97ai_7/snapshot-manifest.json",
+    "sha256": "7613e28f281913bf02c919334f5f886cd2e843e4901a0b5251affd5b9147e40f"
+  },
+  "batch": "/home/vivion/i27-src4-2n97ai_7/out/diagnostics/bot-scheduling/batch-2026-11-12T00-26-04-773Z-1465892",
+  "mode": "focused-six-types-event-chain",
+  "rawOutcome": {
+    "exitCode": 0,
+    "status": "passed",
+    "assertions": 36,
+    "passed": 36,
+    "failures": []
+  },
+  "realModelCalls": 57,
+  "actualModels": [
+    "opendesign/deepseek-v4.1-flash"
+  ],
+  "firstHTTPAt": 1794443201545,
+  "lastHTTPEndedAt": 1794443521889,
+  "cases": [
+    {
+      "id": "direct",
+      "type": "direct-answer",
+      "requestId": "37906984-2f3e-4ac7-9697-1ce94dd8467f",
+      "conversationId": "bot-conversation-f135bad6-8fb6-4765-a6c7-a83d8ff722de",
+      "submittedAt": 1794443201113,
+      "completedObservedAt": 1794443207739,
+      "status": "completed"
+    },
+    {
+      "id": "query",
+      "type": "current-state-query",
+      "requestId": "9a4b7503-f0c7-4f51-a591-4b934e8eae9f",
+      "conversationId": "bot-conversation-36347302-b270-4a12-8021-6d9a11958ea3",
+      "submittedAt": 1794443206672,
+      "completedObservedAt": 1794443213819,
+      "status": "completed"
+    },
+    {
+      "id": "analysis",
+      "type": "analysis",
+      "requestId": "f7a73286-c9f2-43ee-a05e-cd54ba0f5d82",
+      "conversationId": "bot-conversation-36347302-b270-4a12-8021-6d9a11958ea3",
+      "submittedAt": 1794443206922,
+      "completedObservedAt": 1794443216953,
+      "status": "completed"
+    },
+    {
+      "id": "execution",
+      "type": "file-execution",
+      "requestId": "1374e786-4431-47b4-97db-c0b80f75e346",
+      "conversationId": "bot-conversation-36347302-b270-4a12-8021-6d9a11958ea3",
+      "submittedAt": 1794443207146,
+      "completedObservedAt": 1794443217114,
+      "status": "completed"
+    },
+    {
+      "id": "reminder",
+      "type": "reminder",
+      "requestId": "964d2ae4-47c7-4b7f-9c42-47dc963f934d",
+      "conversationId": "bot-conversation-36347302-b270-4a12-8021-6d9a11958ea3",
+      "submittedAt": 1794443207361,
+      "completedObservedAt": 1794443225381,
+      "status": "completed"
+    },
+    {
+      "id": "file-event",
+      "type": "event-driven-benchmark",
+      "requestId": "fff25644-9001-4447-8156-54c1bf2ce5a0",
+      "conversationId": "bot-conversation-36347302-b270-4a12-8021-6d9a11958ea3",
+      "submittedAt": 1794443207527,
+      "completedObservedAt": 1794443230580,
+      "status": "completed"
+    }
+  ],
+  "checks": [
+    {
+      "label": "new conversation UI itself invokes no model",
+      "passed": true
+    },
+    {
+      "label": "planned cases establish two real conversation identities",
+      "passed": true
+    },
+    {
+      "label": "at least six distinct types submitted in this same batch",
+      "passed": true
+    },
+    {
+      "label": "direct arithmetic answer",
+      "passed": true
+    },
+    {
+      "label": "短验分析 closes succeeded within its own delegated scope",
+      "passed": true
+    },
+    {
+      "label": "短验分析 actual registered immutable file",
+      "passed": true
+    },
+    {
+      "label": "短验执行 closes succeeded within its own delegated scope",
+      "passed": true
+    },
+    {
+      "label": "短验执行 actual registered immutable file",
+      "passed": true
+    },
+    {
+      "label": "execution copied actual source bytes",
+      "passed": true
+    },
+    {
+      "label": "next_event does not execute at baseline",
+      "passed": true
+    },
+    {
+      "label": "event source has no cron substitute",
+      "passed": true
+    },
+    {
+      "label": "PR-V2 real fs.watch ingress matches binding source version",
+      "passed": true
+    },
+    {
+      "label": "PR-V2 actual measured result and baseline comparison",
+      "passed": true
+    },
+    {
+      "label": "PR-V2 expected business-condition notification visibility",
+      "passed": true
+    },
+    {
+      "label": "PR-V2 current benchmark registered bytes in host evidence",
+      "passed": true
+    },
+    {
+      "label": "identical bytes produce no extra inbox, execution, or benchmark",
+      "passed": true
+    },
+    {
+      "label": "PR-V3 real fs.watch ingress matches binding source version",
+      "passed": true
+    },
+    {
+      "label": "PR-V3 actual measured result and baseline comparison",
+      "passed": true
+    },
+    {
+      "label": "PR-V3 expected business-condition notification visibility",
+      "passed": true
+    },
+    {
+      "label": "PR-V3 current benchmark registered bytes in host evidence",
+      "passed": true
+    },
+    {
+      "label": "PR-V4 real fs.watch ingress matches binding source version",
+      "passed": true
+    },
+    {
+      "label": "PR-V4 actual measured result and baseline comparison",
+      "passed": true
+    },
+    {
+      "label": "PR-V4 expected business-condition notification visibility",
+      "passed": true
+    },
+    {
+      "label": "PR-V4 current benchmark registered bytes in host evidence",
+      "passed": true
+    },
+    {
+      "label": "reminder reschedule retains identity",
+      "passed": true
+    },
+    {
+      "label": "reminder due invokes zero models",
+      "passed": true
+    },
+    {
+      "label": "reminder delivered only to its original second conversation, not archived direct conversation",
+      "passed": true
+    },
+    {
+      "label": "reminder delivers exact existing immutable benchmark snapshot",
+      "passed": true
+    },
+    {
+      "label": "reminder actual snapshot open button clicked",
+      "passed": true
+    },
+    {
+      "label": "reminder creates zero additional Work",
+      "passed": true
+    },
+    {
+      "label": "reminder does not change event Work or rerun benchmark",
+      "passed": true
+    },
+    {
+      "label": "same reminder slot delivered once",
+      "passed": true
+    },
+    {
+      "label": "restart preserves original conversation",
+      "passed": true
+    },
+    {
+      "label": "restart preserves live file subscription",
+      "passed": true
+    },
+    {
+      "label": "no horizontal overflow 1280",
+      "passed": true
+    },
+    {
+      "label": "no horizontal overflow 390",
+      "passed": true
+    }
+  ],
+  "eventBindings": [
+    {
+      "binding_id": "binding-86a198ad-9228-462c-9449-82119f10b373",
+      "work_id": "work-0ec4bcfd-5503-4904-8854-9cc4392c4f12",
+      "task_id": "work-execution-93a87462-84e6-40c2-846a-9ef4e2f4db55",
+      "inbox_event_id": "event-1458966d-4b14-43e5-9453-b80c61dbb162",
+      "input_snapshot_id": "sha256:b6955e20b1fd5b42e6ddbb00e8ea39aaa692ba99299105d6a275ca21e351397c",
+      "durable_store_key": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/921e4f3f7927f6afbc2d2679ad40ad2637472c9c7f37292ccc1ff0d1624e70ab",
+      "status": "completed",
+      "admitted_at": 1794443446762,
+      "nativeInputContainsTriggeredExecution": true,
+      "nativeInputContainsSourceEvent": true,
+      "nativeStoreSHA256": "f4d878fe4b7acbbb5004f5c1fd64131dbf0cc195288ca75cea94252f55d1b516",
+      "nativeStoreFile": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/921e4f3f7927f6afbc2d2679ad40ad2637472c9c7f37292ccc1ff0d1624e70ab/main.jsonl"
+    },
+    {
+      "binding_id": "binding-f04c3c80-e6aa-4ec0-9792-849abaf61811",
+      "work_id": "work-0ec4bcfd-5503-4904-8854-9cc4392c4f12",
+      "task_id": "work-execution-a23d8e09-932e-4007-bbcc-1056ded45993",
+      "inbox_event_id": "event-b8942090-9d28-486c-ba19-2aa2322006ff",
+      "input_snapshot_id": "sha256:dbf2ff7326eb8f908fc3853b866b70fa7c9f3fea41099e436e1c85ae01fd9ce7",
+      "durable_store_key": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/a3994915630ba1b44deaa7ca9c5ffcdbf13219fce92785fee06c0b5390a3894b",
+      "status": "completed",
+      "admitted_at": 1794443343564,
+      "nativeInputContainsTriggeredExecution": true,
+      "nativeInputContainsSourceEvent": true,
+      "nativeStoreSHA256": "a3b255ada2e7cd6702311fbe2c2db15dc1f4477d0025999870f7bb72dec691fd",
+      "nativeStoreFile": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/a3994915630ba1b44deaa7ca9c5ffcdbf13219fce92785fee06c0b5390a3894b/main.jsonl"
+    },
+    {
+      "binding_id": "binding-33ed7185-a137-4e68-928e-c077ab681c98",
+      "work_id": "work-0ec4bcfd-5503-4904-8854-9cc4392c4f12",
+      "task_id": "work-execution-f6d17695-3103-4a31-a180-fb3c8e939fd8",
+      "inbox_event_id": "event-d554ed87-d4f3-47ff-a01c-a2ce6814bb53",
+      "input_snapshot_id": "sha256:c468b05a9170ee30080b5a702d6787ce0acb13664cdf5e6bb905f647227d07a5",
+      "durable_store_key": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/28197f485bd2f150d3758697719754a42a1bc1899a24370bfb98b1b702497f0c",
+      "status": "completed",
+      "admitted_at": 1794443254387,
+      "nativeInputContainsTriggeredExecution": true,
+      "nativeInputContainsSourceEvent": true,
+      "nativeStoreSHA256": "9050ce620de33808184b5a09d255715ca74339a090f3e61f12b8dd331eabfd86",
+      "nativeStoreFile": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/28197f485bd2f150d3758697719754a42a1bc1899a24370bfb98b1b702497f0c/main.jsonl"
+    }
+  ],
+  "eventVersions": [
+    {
+      "version": "PR-V2",
+      "sourceHash": "sha256:c468b05a9170ee30080b5a702d6787ce0acb13664cdf5e6bb905f647227d07a5",
+      "mutationAt": 1794443252260,
+      "actualResult": {
+        "sourceVersion": "PR-V2",
+        "checksum": 6200000,
+        "samples": [
+          8.946621,
+          15.021805,
+          1.383861
+        ],
+        "elapsedMs": 8.946621,
+        "baselineMs": 8.946621,
+        "regression": false,
+        "controlledDelayMs": 0,
+        "runAt": "2026-11-12T00:27:51.786Z",
+        "scope": "Synthetic local fixture, not user product performance"
+      },
+      "bindingId": "binding-33ed7185-a137-4e68-928e-c077ab681c98",
+      "admittedAt": 1794443254387,
+      "nativeStatus": "completed",
+      "reviewState": "delivered",
+      "reviewAttempts": 1,
+      "notificationCount": 1,
+      "reviewDecision": {
+        "decision": "deliver",
+        "outcome": "completed",
+        "reply": "首个 merged=true 事件（PR-V2）已处理并建立基线。来源 pr-merge.json 核实为 PR-V2、merged=true、samples [7,11,13]、controlledDelayMs=0；已实际运行一次 node benchmark.cjs，并回读登记 benchmark.json（322 B，sha256 453b1451…00a67）。三次实测为 8.946621 / 15.021805 / 1.383861 ms，中位数 8.946621 ms；基线 8.946621 ms；阈值 max(3×基线, 50ms)=50 ms；regression=false。controlledDelayMs=0，为本地受控负载（合成 fixture），不代表真实产品性能。单次运行抖动较大，3×基线仅 26.84 ms，低于 50 ms 地板，实际生效判定线为 50 ms。相同字节/版本已记入去重台账，不会重跑；后续新版本仍会实际运行并登记，仅 regression=true 时通知。",
+        "artifactRefs": [
+          "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/28197f485bd2f150d3758697719754a42a1bc1899a24370bfb98b1b702497f0c/artifacts/453b1451b9eabb65c85c99f4bcd1a01b7db7713a6b3f878053862ac92ad00a67.json"
+        ],
+        "notificationAssessment": {
+          "status": "met",
+          "conditionExcerpt": "首个合并事件交付实际基线",
+          "requestExcerpt": "首个合并事件交付实际基线；后续新版本仍实际运行并登记，但只有 regression=true 才通知我，regression=false 时静默，不发普通结果通知。",
+          "evidence": [
+            {
+              "resultId": "binding-33ed7185-a137-4e68-928e-c077ab681c98:call_00_t1s7bt0fqfnou9q2r2t85l6d",
+              "quote": "{\"pr\":27,\"version\":\"PR-V2\",\"merged\":true,\"samples\":[7,11,13],\"controlledDelayMs\":0}\n"
+            },
+            {
+              "resultId": "binding-33ed7185-a137-4e68-928e-c077ab681c98:call_00_uf2q4w3byjdg60na8zbjt0s6",
+              "quote": "\"elapsedMs\": 8.946621,\n  \"baselineMs\": 8.946621,\n  \"regression\": false,"
+            }
+          ]
+        },
+        "missing": []
+      },
+      "registeredBenchmarkEvidence": [
+        {
+          "ref": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/28197f485bd2f150d3758697719754a42a1bc1899a24370bfb98b1b702497f0c/artifacts/453b1451b9eabb65c85c99f4bcd1a01b7db7713a6b3f878053862ac92ad00a67.json",
+          "name": "benchmark.json",
+          "trust": "untrusted_artifact_content",
+          "registeredDigest": "453b1451b9eabb65c85c99f4bcd1a01b7db7713a6b3f878053862ac92ad00a67",
+          "registeredSizeBytes": 322,
+          "state": "text",
+          "text": "{\n  \"sourceVersion\": \"PR-V2\",\n  \"checksum\": 6200000,\n  \"samples\": [\n    8.946621,\n    15.021805,\n    1.383861\n  ],\n  \"elapsedMs\": 8.946621,\n  \"baselineMs\": 8.946621,\n  \"regression\": false,\n  \"controlledDelayMs\": 0,\n  \"runAt\": \"2026-11-12T00:27:51.786Z\",\n  \"scope\": \"Synthetic local fixture, not user product performance\"\n}",
+          "truncated": false,
+          "placeholderIndicators": []
+        }
+      ],
+      "inbox": [
+        {
+          "event_id": "event-d554ed87-d4f3-47ff-a01c-a2ce6814bb53",
+          "source_version": "sha256:c468b05a9170ee30080b5a702d6787ce0acb13664cdf5e6bb905f647227d07a5",
+          "payload_json": "{\"target\":\"/home/vivion/iq27-tmp/l4-0qg0z0rk/focused-inputs/pr-merge.json\",\"authoritativeReadbackRequired\":true,\"observation\":\"fs-watch\",\"historyAvailable\":false}",
+          "status": "processed"
+        }
+      ]
+    },
+    {
+      "version": "PR-V3",
+      "sourceHash": "sha256:dbf2ff7326eb8f908fc3853b866b70fa7c9f3fea41099e436e1c85ae01fd9ce7",
+      "mutationAt": 1794443341827,
+      "actualResult": {
+        "sourceVersion": "PR-V3",
+        "checksum": 6200000,
+        "samples": [
+          8.074288,
+          14.704581,
+          4.206058
+        ],
+        "elapsedMs": 8.074288,
+        "baselineMs": 8.946621,
+        "regression": false,
+        "controlledDelayMs": 0,
+        "runAt": "2026-11-12T00:29:17.756Z",
+        "scope": "Synthetic local fixture, not user product performance"
+      },
+      "bindingId": "binding-f04c3c80-e6aa-4ec0-9792-849abaf61811",
+      "admittedAt": 1794443343564,
+      "nativeStatus": "completed",
+      "reviewState": "silent",
+      "reviewAttempts": 1,
+      "notificationCount": 0,
+      "reviewDecision": {
+        "decision": "deliver",
+        "outcome": "completed",
+        "reply": "本轮为 PR-V3 新版本事件（sha256 dbf2ff73…9ce7，与事件 sourceVersion 一致，来源 merged=true），去重确认该版本未处理过后，实际运行 node benchmark.cjs 一次（exit=0，无重复运行）。脚本内三次实测为 4.206058 / 8.074288 / 14.704581 ms，中位数 8.074288 ms；基线 8.946621 ms（PR-V2 首次合并事件产出，未覆盖），阈值 max(3×8.946621, 50) = 50 ms，8.074288 ≤ 50 → regression=false。按规则“regression=false 时静默、不发普通结果通知”，本轮不发送通知，仅登记产物。benchmark.json 已从磁盘回读并登记（sourceVersion=PR-V3、elapsedMs=8.074288、baselineMs=8.946621、regression=false），.pr-benchmark-processed.json 已追加 PR-V3 去重记录（现含 PR-V2、PR-V3 两条）。说明：controlledDelayMs=0 是本地受控负载参数，本脚本为合成本地固件，结果不代表真实产品性能；全程未改 benchmark.cjs、未联网、未访问真实 GitHub、未新增 cron 或按时间轮询。处理后继续等待下一次真实文件变化。",
+        "artifactRefs": [
+          "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/a3994915630ba1b44deaa7ca9c5ffcdbf13219fce92785fee06c0b5390a3894b/artifacts/5c60a887c76f897f20efb8b5a5f8367ccf9d12f24be06e3ba081144886490bda.json",
+          "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/a3994915630ba1b44deaa7ca9c5ffcdbf13219fce92785fee06c0b5390a3894b/artifacts/ec07a7bd6e1125617eb0519df93e620aae84f330cdcc58a47132c281fd942a4b.json"
+        ],
+        "notificationAssessment": {
+          "status": "not_met",
+          "conditionExcerpt": "只有 regression=true 才通知我，regression=false 时静默，不发普通结果通知",
+          "requestExcerpt": "首个合并事件交付实际基线；后续新版本仍实际运行并登记，但只有 regression=true 才通知我，regression=false 时静默，不发普通结果通知。",
+          "evidence": [
+            {
+              "resultId": "watch-artifact:c48edf99cb042879eb53bbeb32ad5ea940c0008c18f9a355f300016f9436b2ef",
+              "quote": "{\n  \"sourceVersion\": \"PR-V3\",\n  \"checksum\": 6200000,\n  \"samples\": [\n    8.074288,\n    14.704581,\n    4.206058\n  ],\n  \"elapsedMs\": 8.074288,\n  \"baselineMs\": 8.946621,\n  \"regression\": false,\n  \"controlledDelayMs\": 0,\n  \"runAt\": \"2026-11-12T00:29:17.756Z\",\n  \"scope\": \"Synthetic local fixture, not user product performance\"\n}"
+            },
+            {
+              "resultId": "watch-artifact:3776a3eb5d37e7331102e06229dedd543d57d42f411eceb4e7afbac40aad8da3",
+              "quote": "{\n  \"processed\": [\n    {\n      \"sha256\": \"c468b05a9170ee30080b5a702d6787ce0acb13664cdf5e6bb905f647227d07a5\",\n      \"version\": \"PR-V2\",\n      \"merged\": true,\n      \"ranAt\": \"2026-11-12T00:27:51.786Z\",\n      \"elapsedMs\": 8.946621,\n      \"thresholdMs\": 50\n    },\n    {\n      \"sha256\": \"dbf2ff7326eb8f908fc3853b866b70fa7c9f3fea41099e436e1c85ae01fd9ce7\",\n      \"version\": \"PR-V3\",\n      \"merged\": true,\n      \"ranAt\": \"2026-11-12T00:29:17.756Z\",\n      \"elapsedMs\": 8.074288,\n      \"baselineMs\": 8.946621,\n      \"thresholdMs\": 50,\n      \"regression\": false\n    }\n  ]\n}"
+            }
+          ]
+        },
+        "missing": []
+      },
+      "registeredBenchmarkEvidence": [
+        {
+          "ref": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/a3994915630ba1b44deaa7ca9c5ffcdbf13219fce92785fee06c0b5390a3894b/artifacts/ec07a7bd6e1125617eb0519df93e620aae84f330cdcc58a47132c281fd942a4b.json",
+          "name": "benchmark.json",
+          "trust": "untrusted_artifact_content",
+          "registeredDigest": "ec07a7bd6e1125617eb0519df93e620aae84f330cdcc58a47132c281fd942a4b",
+          "registeredSizeBytes": 322,
+          "state": "text",
+          "text": "{\n  \"sourceVersion\": \"PR-V3\",\n  \"checksum\": 6200000,\n  \"samples\": [\n    8.074288,\n    14.704581,\n    4.206058\n  ],\n  \"elapsedMs\": 8.074288,\n  \"baselineMs\": 8.946621,\n  \"regression\": false,\n  \"controlledDelayMs\": 0,\n  \"runAt\": \"2026-11-12T00:29:17.756Z\",\n  \"scope\": \"Synthetic local fixture, not user product performance\"\n}",
+          "truncated": false,
+          "placeholderIndicators": []
+        }
+      ],
+      "inbox": [
+        {
+          "event_id": "event-b8942090-9d28-486c-ba19-2aa2322006ff",
+          "source_version": "sha256:dbf2ff7326eb8f908fc3853b866b70fa7c9f3fea41099e436e1c85ae01fd9ce7",
+          "payload_json": "{\"target\":\"/home/vivion/iq27-tmp/l4-0qg0z0rk/focused-inputs/pr-merge.json\",\"authoritativeReadbackRequired\":true,\"observation\":\"fs-watch\",\"historyAvailable\":false}",
+          "status": "processed"
+        }
+      ]
+    },
+    {
+      "version": "PR-V4",
+      "sourceHash": "sha256:b6955e20b1fd5b42e6ddbb00e8ea39aaa692ba99299105d6a275ca21e351397c",
+      "mutationAt": 1794443444730,
+      "actualResult": {
+        "sourceVersion": "PR-V4",
+        "checksum": 6200000,
+        "samples": [
+          111.518442,
+          118.599149,
+          103.063792
+        ],
+        "elapsedMs": 111.518442,
+        "baselineMs": 8.946621,
+        "regression": true,
+        "controlledDelayMs": 100,
+        "runAt": "2026-11-12T00:31:00.958Z",
+        "scope": "Synthetic local fixture, not user product performance"
+      },
+      "bindingId": "binding-86a198ad-9228-462c-9449-82119f10b373",
+      "admittedAt": 1794443446762,
+      "nativeStatus": "completed",
+      "reviewState": "delivered",
+      "reviewAttempts": 1,
+      "notificationCount": 1,
+      "reviewDecision": {
+        "decision": "deliver",
+        "outcome": "completed",
+        "reply": "本轮 PR-V4 真实文件变化已处理，且本次 regression=true，按约定需要通知。\n\n- 来源：pr-merge.json 实读为 PR-V4、merged=true、samples=[7,11,13]、controlledDelayMs=100，哈希 b6955e20…51397c 与事件快照一致；该版本此前未处理，因此实际运行 node benchmark.cjs 一次。\n- 实测三次：111.518442 / 118.599149 / 103.063792 ms，中位数 111.518442 ms。\n- 基线 8.946621 ms，阈值 max(3×基线, 50ms)=50ms；本次中位数为阈值的约 2.23 倍，regression=true。\n- 已回读并登记指定成品 benchmark.json：sourceVersion=PR-V4、median=111.518442、baselineMs=8.946621、regression=true、controlledDelayMs=100，登记摘要 a1387ea0…32c469，大小 330 字节。\n\n口径说明：controlledDelayMs=100 是本地受控负载，不是真实产品性能；本次升高主要来自这 100ms 等待，不能解读为产品性能劣化。\n\n本轮未发现未覆盖项或执行风险；后续继续按既有 file 订阅等待真实变化，相同字节/版本不重跑，仅 regression=true 通知。",
+        "artifactRefs": [
+          "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/921e4f3f7927f6afbc2d2679ad40ad2637472c9c7f37292ccc1ff0d1624e70ab/artifacts/a1387ea04b73cdfd9943b2590dba48ac545c90280e6cd8958ad9325dbd32c469.json"
+        ],
+        "notificationAssessment": {
+          "status": "met",
+          "conditionExcerpt": "后续新版本仍实际运行并登记，但只有 regression=true 才通知我，regression=false 时静默，不发普通结果通知",
+          "requestExcerpt": "首个合并事件交付实际基线；后续新版本仍实际运行并登记，但只有 regression=true 才通知我，regression=false 时静默，不发普通结果通知。",
+          "evidence": [
+            {
+              "resultId": "watch-artifact:d1e19caa7d554cc4c164f827d447c0da670b2a2dc2214b7d15734ee06c8de3ff",
+              "quote": "\"sourceVersion\": \"PR-V4\""
+            },
+            {
+              "resultId": "watch-artifact:d1e19caa7d554cc4c164f827d447c0da670b2a2dc2214b7d15734ee06c8de3ff",
+              "quote": "\"regression\": true"
+            }
+          ]
+        },
+        "missing": []
+      },
+      "registeredBenchmarkEvidence": [
+        {
+          "ref": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/921e4f3f7927f6afbc2d2679ad40ad2637472c9c7f37292ccc1ff0d1624e70ab/artifacts/a1387ea04b73cdfd9943b2590dba48ac545c90280e6cd8958ad9325dbd32c469.json",
+          "name": "benchmark.json",
+          "trust": "untrusted_artifact_content",
+          "registeredDigest": "a1387ea04b73cdfd9943b2590dba48ac545c90280e6cd8958ad9325dbd32c469",
+          "registeredSizeBytes": 330,
+          "state": "text",
+          "text": "{\n  \"sourceVersion\": \"PR-V4\",\n  \"checksum\": 6200000,\n  \"samples\": [\n    111.518442,\n    118.599149,\n    103.063792\n  ],\n  \"elapsedMs\": 111.518442,\n  \"baselineMs\": 8.946621,\n  \"regression\": true,\n  \"controlledDelayMs\": 100,\n  \"runAt\": \"2026-11-12T00:31:00.958Z\",\n  \"scope\": \"Synthetic local fixture, not user product performance\"\n}",
+          "truncated": false,
+          "placeholderIndicators": []
+        }
+      ],
+      "inbox": [
+        {
+          "event_id": "event-1458966d-4b14-43e5-9453-b80c61dbb162",
+          "source_version": "sha256:b6955e20b1fd5b42e6ddbb00e8ea39aaa692ba99299105d6a275ca21e351397c",
+          "payload_json": "{\"target\":\"/home/vivion/iq27-tmp/l4-0qg0z0rk/focused-inputs/pr-merge.json\",\"authoritativeReadbackRequired\":true,\"observation\":\"fs-watch\",\"historyAvailable\":false}",
+          "status": "processed"
+        }
+      ]
+    }
+  ],
+  "actualBenchmarkRuns": [
+    {
+      "sourceVersion": "PR-V2",
+      "checksum": 6200000,
+      "samples": [
+        8.946621,
+        15.021805,
+        1.383861
+      ],
+      "elapsedMs": 8.946621,
+      "baselineMs": 8.946621,
+      "regression": false,
+      "controlledDelayMs": 0,
+      "runAt": "2026-11-12T00:27:51.786Z",
+      "scope": "Synthetic local fixture, not user product performance"
+    },
+    {
+      "sourceVersion": "PR-V3",
+      "checksum": 6200000,
+      "samples": [
+        8.074288,
+        14.704581,
+        4.206058
+      ],
+      "elapsedMs": 8.074288,
+      "baselineMs": 8.946621,
+      "regression": false,
+      "controlledDelayMs": 0,
+      "runAt": "2026-11-12T00:29:17.756Z",
+      "scope": "Synthetic local fixture, not user product performance"
+    },
+    {
+      "sourceVersion": "PR-V4",
+      "checksum": 6200000,
+      "samples": [
+        111.518442,
+        118.599149,
+        103.063792
+      ],
+      "elapsedMs": 111.518442,
+      "baselineMs": 8.946621,
+      "regression": true,
+      "controlledDelayMs": 100,
+      "runAt": "2026-11-12T00:31:00.958Z",
+      "scope": "Synthetic local fixture, not user product performance"
+    }
+  ],
+  "reminder": {
+    "id": "reminder-89e8ecfcbb8a97fcc888fca1c03d21c450e2611ec0a047328d14bd8546da323f",
+    "due": 1794443524940,
+    "modelCallsDuringDue": 0,
+    "message": {
+      "messageRevision": 2,
+      "messageId": "bot-message-reminder-fd5c16d563ab9579b4513fefd9a700970007ea18445c212d67a1a1cbd6abd780",
+      "conversationId": "bot-conversation-36347302-b270-4a12-8021-6d9a11958ea3",
+      "botId": "bot-mybuddy-default",
+      "requestId": "reminder-fd5c16d563ab9579b4513fefd9a700970007ea18445c212d67a1a1cbd6abd780",
+      "botCalls": [],
+      "workFeedback": {
+        "workId": "work-0ec4bcfd-5503-4904-8854-9cc4392c4f12",
+        "eventId": "reminder-fd5c16d563ab9579b4513fefd9a700970007ea18445c212d67a1a1cbd6abd780",
+        "kind": "result",
+        "category": "result",
+        "executionId": "binding-86a198ad-9228-462c-9449-82119f10b373",
+        "intentRevision": 1,
+        "inputSnapshotId": "sha256:b6955e20b1fd5b42e6ddbb00e8ea39aaa692ba99299105d6a275ca21e351397c",
+        "report": {
+          "title": "短验独立提醒",
+          "summary": "⏰ 检查短验结果\n\n以下是已有成果；未重新执行。",
+          "artifactRefs": [
+            "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/921e4f3f7927f6afbc2d2679ad40ad2637472c9c7f37292ccc1ff0d1624e70ab/artifacts/a1387ea04b73cdfd9943b2590dba48ac545c90280e6cd8958ad9325dbd32c469.json"
+          ],
+          "primaryArtifactRefs": [
+            "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/921e4f3f7927f6afbc2d2679ad40ad2637472c9c7f37292ccc1ff0d1624e70ab/artifacts/a1387ea04b73cdfd9943b2590dba48ac545c90280e6cd8958ad9325dbd32c469.json"
+          ],
+          "sourceNotices": [
+            "已有成果摘要（未重新执行）：老板，**这次 PR-V4 出现 regression=true，必须通知**：三次实测中位数 111.52ms，超阈值 50ms 的 2.23 倍。原因清楚：模拟文件这次带了 `controlledDelayMs: 100`（本地受控负载，非真实产品性能），脚本每轮空等 100ms，测量值因此被人为抬高。\n\n**本次事件核对**\n- 来源：`pr-merge.json`，实读 `{\"pr\":27,\"version\":\"PR-V4\",\"merged\":true,\"samples\":[7,11,13],\"controlledDelayMs\":100}`，SHA-256 `b6955e20…51397c`，与事件快照一致\n- 去重：该哈希不在已处理台账（已处理 PR-V2、PR-V3），确为新版本 → 实际运行 `node benchmark.cjs` **恰好一次**\n- 基线（PR-V2 首次合并实测）：8.946621ms；阈值 = max(3×8.946621, 50) = **50ms**\n\n| 项 | 数值 |\n|---|---|\n| 三次实测 (ms) | 111.518 / 118.599 / 103.064 |\n| 中位数 (ms) | 111.518 |\n| 基线 / 阈值 (ms) | 8.947 / 50 |\n| regression | true |\n\n**产物与证据**\n- `focused-inputs/benchmark.json` — 已从磁盘回读核对：sourceVersion=PR-V4、median=111.518442、baselineMs=8.946621、regression=true、controlledDelayMs=100，并已登记（SHA-256 `a1387ea0…32c469`）\n- `focused-inputs/benchmark-runs.jsonl` 追加第 3 条运行记录；`.pr-benchmark-processed.json` 台账登记 PR-V4 哈希\n- 未改动 `benchmark.cjs` 及原始文件；全程无联网\n\n**口径提醒**：本次升高几乎全部来自受控的 100ms 等待（111.5 ≈ 100 等待 + 约 11.5ms 计算），不能读作产品性能劣化；同样，PR-V2 基线是 0 延迟口径。\n\n当前状态：等待下一真实文件变化，继续按去重后执行、仅 regression=true 通知的规则处理。未验证项：无；本轮未涉及真实 GitHub 或远程服务。"
+          ],
+          "files": [
+            {
+              "ref": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/921e4f3f7927f6afbc2d2679ad40ad2637472c9c7f37292ccc1ff0d1624e70ab/artifacts/a1387ea04b73cdfd9943b2590dba48ac545c90280e6cd8958ad9325dbd32c469.json",
+              "name": "benchmark.json",
+              "openPath": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/921e4f3f7927f6afbc2d2679ad40ad2637472c9c7f37292ccc1ff0d1624e70ab/artifacts/a1387ea04b73cdfd9943b2590dba48ac545c90280e6cd8958ad9325dbd32c469.json"
+            }
+          ],
+          "reviewStatus": "proposed",
+          "current": true,
+          "notices": []
+        }
+      },
+      "ordinal": 22,
+      "role": "assistant",
+      "text": "⏰ 检查短验结果\n\n以下是已有成果；未重新执行。",
+      "status": "completed",
+      "workIds": [],
+      "createdAt": 1794443524960,
+      "updatedAt": 1794443524960
+    },
+    "open": {
+      "visible": true,
+      "at": 1794443525226
+    },
+    "filesVerified": [
+      {
+        "ref": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/921e4f3f7927f6afbc2d2679ad40ad2637472c9c7f37292ccc1ff0d1624e70ab/artifacts/a1387ea04b73cdfd9943b2590dba48ac545c90280e6cd8958ad9325dbd32c469.json",
+        "openPath": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/921e4f3f7927f6afbc2d2679ad40ad2637472c9c7f37292ccc1ff0d1624e70ab/artifacts/a1387ea04b73cdfd9943b2590dba48ac545c90280e6cd8958ad9325dbd32c469.json",
+        "actualSHA256": "a1387ea04b73cdfd9943b2590dba48ac545c90280e6cd8958ad9325dbd32c469",
+        "bytes": 330
+      }
+    ]
+  },
+  "recovery": {
+    "originalConversationPreserved": true,
+    "fileSubscriptionOnlineAfterRestart": true
+  },
+  "cost": {
+    "realHTTPCalls": 57,
+    "uniqueToolCalls": 45,
+    "diagnosticRequests": 57,
+    "attributionMethod": "Persisted task/execution scope; actual transport matched only unique attempt start within100ms; unmatched explicitly unknown",
+    "groups": {
+      "bot-foreground:bot-message-9fce7a8a-b68a-4b65-a986-25b3fe1c7245": {
+        "diagnosticRequests": 1,
+        "transportRequestIndexes": [
+          0
+        ]
+      },
+      "bot-foreground:bot-message-51321a5d-be14-4a74-9e2b-40a2361a462f": {
+        "diagnosticRequests": 2,
+        "transportRequestIndexes": [
+          1,
+          5
+        ]
+      },
+      "bot-foreground:bot-message-8a72ab95-a6c6-4b7a-8a90-8ec74735e598": {
+        "diagnosticRequests": 2,
+        "transportRequestIndexes": [
+          2,
+          6
+        ]
+      },
+      "bot-foreground:bot-message-6d7533db-03a6-439d-9e04-f55b174fcc7d": {
+        "diagnosticRequests": 2,
+        "transportRequestIndexes": [
+          3
+        ]
+      },
+      "bot-foreground:bot-message-f10cca0b-69d2-401b-a489-a6240a64456c": {
+        "diagnosticRequests": 3,
+        "transportRequestIndexes": [
+          4,
+          8,
+          18
+        ]
+      },
+      "work:work-236bb677-9bbb-4eec-ad2a-9e631053305b": {
+        "diagnosticRequests": 7,
+        "transportRequestIndexes": [
+          7,
+          13,
+          16,
+          19,
+          21,
+          23,
+          25
+        ]
+      },
+      "work:work-11f260c4-eb2e-4563-bb13-98d5b3f09261": {
+        "diagnosticRequests": 7,
+        "transportRequestIndexes": [
+          10,
+          12,
+          17,
+          20,
+          22,
+          24
+        ]
+      },
+      "bot-foreground:bot-message-35dff349-6637-4a47-9997-917acefbb66c": {
+        "diagnosticRequests": 2,
+        "transportRequestIndexes": [
+          11
+        ]
+      },
+      "global": {
+        "diagnosticRequests": 5,
+        "transportRequestIndexes": [
+          26,
+          27,
+          35,
+          44,
+          53
+        ]
+      },
+      "work:work-0ec4bcfd-5503-4904-8854-9cc4392c4f12": {
+        "diagnosticRequests": 23,
+        "transportRequestIndexes": [
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          45,
+          46,
+          47,
+          48,
+          51,
+          52
+        ]
+      },
+      "bot-foreground:bot-message-f6c83a31-0094-421f-9b7c-4a0be69ee580": {
+        "diagnosticRequests": 3,
+        "transportRequestIndexes": [
+          54,
+          55,
+          56
+        ]
+      }
+    },
+    "unknownTransportIndexes": [
+      9,
+      14,
+      15,
+      42,
+      43,
+      49,
+      50
+    ],
+    "money": "unknown, not zero"
+  },
+  "coverageLimits": {
+    "simulated": "Local PR JSON and controlled100ms benchmark delay; genuine fs.watch, model, tools, clock, persistence; not GitHub webhook",
+    "viewport": "1280/390 are CDP emulation, not distinct OS product windows",
+    "viewer": "Actual attachment bytes and UI button click verified; JSON external viewer not proven. No associated JSON application warning exists in dev.log. IPC return and error notice were not captured.",
+    "notRepeated": "Long mixed/gate/continuous performance stories not repeated; prior batches retained independently"
+  },
+  "loadNote": "Targeted six-type event-chain acceptance. No other planned real-model batches or full regression. Unrelated host load unmeasured; no performance SLA claim.",
+  "rawFiles": [
+    {
+      "path": "/home/vivion/i27-src4-2n97ai_7/out/diagnostics/bot-scheduling/batch-2026-11-12T00-26-04-773Z-1465892/report.json",
+      "bytes": 1396638,
+      "sha256": "5188c5178093312877ab47c2a615c3eead8dd7be151e01c2326868fcf1a1f59c"
+    },
+    {
+      "path": "/home/vivion/i27-src4-2n97ai_7/out/diagnostics/bot-scheduling/batch-2026-11-12T00-26-04-773Z-1465892/scheduling-progress.json",
+      "bytes": 1396498,
+      "sha256": "450004cd33537efbd7681b98296cd7e714e8929f57e3f12861fcdedca59ee191"
+    },
+    {
+      "path": "/home/vivion/i27-src4-2n97ai_7/out/diagnostics/bot-scheduling/batch-2026-11-12T00-26-04-773Z-1465892/provider-requests.jsonl",
+      "bytes": 4964480,
+      "sha256": "7be7fb52543065bd456dc7c93c8712463487a544c9ba3d3b185c5249dbfb0ecf"
+    },
+    {
+      "path": "/home/vivion/i27-src4-2n97ai_7/out/diagnostics/bot-scheduling/batch-2026-11-12T00-26-04-773Z-1465892/provider-requests.json",
+      "bytes": 7844192,
+      "sha256": "a43c80eaa121b1e972da67c53b860aeaef2f3c2274683f0081ac4558607093ef"
+    },
+    {
+      "path": "/home/vivion/i27-src4-2n97ai_7/out/diagnostics/bot-scheduling/batch-2026-11-12T00-26-04-773Z-1465892/raw-usage-audit.json",
+      "bytes": 31430,
+      "sha256": "a6546fdf21b47edc58bb4950b1df2b6edad0bbe7e2aa0a589ed5de0c5ce6aa08"
+    },
+    {
+      "path": "/home/vivion/i27-src4-2n97ai_7/out/diagnostics/bot-scheduling/batch-2026-11-12T00-26-04-773Z-1465892/dev.log",
+      "bytes": 51666,
+      "sha256": "c65681befaf640163fb61351bc5df7e6dcbd5b86fd5e2023f0aed405ccdb5164"
+    },
+    {
+      "path": "/home/vivion/i27-src4-2n97ai_7/out/diagnostics/bot-scheduling/batch-2026-11-12T00-26-04-773Z-1465892/focused-1280.png",
+      "bytes": 88257,
+      "sha256": "893e612e5b0b6e17b31879d85272884326cb8a11fadbf1b9a54f096bee92921a"
+    },
+    {
+      "path": "/home/vivion/i27-src4-2n97ai_7/out/diagnostics/bot-scheduling/batch-2026-11-12T00-26-04-773Z-1465892/focused-390.png",
+      "bytes": 53309,
+      "sha256": "ca312a72c8f3372de970a60c297911e28c30332302b37659a16521bc3c40f1fd"
+    }
+  ],
+  "cleanup": {
+    "ownProcessesRemaining": false,
+    "method": "Natural exit0 followed by exact source/HOME/PID process search empty; no user process touched"
+  }
+}

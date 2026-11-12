@@ -1,0 +1,1082 @@
+{
+  "batch": "second full live acceptance",
+  "status": "failed with explicit posthoc classification",
+  "gitSHA": "5ba7e153c258ea9b1574047bfd3585040b4d1340",
+  "source": {
+    "root": "/home/vivion/i27-src2-t6t387th",
+    "capturedAt": 1794439147587,
+    "fingerprint": {
+      "sha256": "4b257513a22b9467f2ec17f71e17f931e006075a2518594be94a389943c3594a",
+      "files": 1260
+    },
+    "snapshotLabel": "5ba7e153c258ea9b1574047bfd3585040b4d1340",
+    "finishedFingerprint": {
+      "sha256": "4b257513a22b9467f2ec17f71e17f931e006075a2518594be94a389943c3594a",
+      "files": 1260
+    }
+  },
+  "fullSourceManifest": "/home/vivion/i27-src2-t6t387th/snapshot-manifest.json",
+  "manifestSha256": "6c55d3c004fbce7673d2a6bfc0105d4be612fbeb990130a6ef66cc93944473ce",
+  "manifestFileSha256": "edebe06be8b70ad90245b2f2da083bf446399332e27ea0e21baa92cdd5ebaa4f",
+  "rawArtifacts": {
+    "report.json": {
+      "path": "/home/vivion/i27-src2-t6t387th/out/diagnostics/bot-scheduling/batch-2026-11-11T23-19-07-535Z-1288196/report.json",
+      "sha256": "7b7ae6d54b2ccecdbde662fa45f1c26977e6cdf3c2f3eee01d48cb978b678183",
+      "bytes": 5820816
+    },
+    "scheduling-progress.json": {
+      "path": "/home/vivion/i27-src2-t6t387th/out/diagnostics/bot-scheduling/batch-2026-11-11T23-19-07-535Z-1288196/scheduling-progress.json",
+      "sha256": "dab3c7671ef0c75c0411ee5efa0df4d9ce7ead76f7ecce16b723df422f9f3f2b",
+      "bytes": 5770389
+    },
+    "provider-requests.jsonl": {
+      "path": "/home/vivion/i27-src2-t6t387th/out/diagnostics/bot-scheduling/batch-2026-11-11T23-19-07-535Z-1288196/provider-requests.jsonl",
+      "sha256": "fd73420c21e547b72987486e56ac54a5fe1611c80b5d276928a40923b2663f0a",
+      "bytes": 27252032
+    },
+    "provider-requests.json": {
+      "path": "/home/vivion/i27-src2-t6t387th/out/diagnostics/bot-scheduling/batch-2026-11-11T23-19-07-535Z-1288196/provider-requests.json",
+      "sha256": "a659422b98f117fe7807c687a2978ac15ba01a0f686f97dc8f6bdafc182eb669",
+      "bytes": 42229471
+    },
+    "raw-usage-audit.json": {
+      "path": "/home/vivion/i27-src2-t6t387th/out/diagnostics/bot-scheduling/batch-2026-11-11T23-19-07-535Z-1288196/raw-usage-audit.json",
+      "sha256": "5e48b27c93697b2cc27338f9bbf54edf9151b47060b111e1b7a6dc8a71ad4188",
+      "bytes": 150822
+    },
+    "dev.log": {
+      "path": "/home/vivion/i27-src2-t6t387th/out/diagnostics/bot-scheduling/batch-2026-11-11T23-19-07-535Z-1288196/dev.log",
+      "sha256": "04f76f8d0fea2bf60a0b003d5948d51816573250a656d83acd7518905d2e9538",
+      "bytes": 54683
+    }
+  },
+  "originalReportsUnchanged": true,
+  "actualModelCalls": 276,
+  "actualModels": [
+    "opendesign/deepseek-v4.1-flash"
+  ],
+  "uniqueToolCalls": 264,
+  "assertions": {
+    "total": 84,
+    "passed": 82,
+    "rawFailures": [
+      "S2 condition-based result visibility PR-V3",
+      "S3 same artifact replaces stale version"
+    ]
+  },
+  "posthocFindings": {
+    "realFailure": "PR-V3 regression=false current artifact read/registration exists but notification emitted; native used bash reads, verifiedObservations empty; review not_met cites result summary, host conservatively did not silence",
+    "harnessFalsePositive": "brief current section is V2/confirmed Friday; V1 only explicitly old-version history, so no-V1-anywhere test is overstrict",
+    "additionalUnassertedFailure": "mixed repair Work ended_unsuccessfully because unrelated reminder branch absent from completion context, although exact original request reminder operation exists",
+    "replayCaveat": "Confirmed r2 new execution repeated completed A and old B steps despite present handoff, not old in-flight retry. A gained newline. Distinct analysis-A Work unaffected; amendment wording did not directly forbid partial-a rewrite, but completed-work reuse was not achieved."
+  },
+  "issue11Mapping": {
+    "direct": "direct",
+    "realtime": "weather",
+    "status": "query",
+    "lightweightOperation": "reminder reschedule",
+    "analysis": "analysis-A",
+    "execution": "execution-B",
+    "reminder": "reminder",
+    "scheduled": "scheduled-execution",
+    "event": "file-event",
+    "continuous": "continuous-action",
+    "mixed": "mixed-request"
+  },
+  "cases": [
+    {
+      "id": "mixed-request",
+      "semanticType": "mixed-direct-execution-reminder",
+      "requestId": "5d422c1d-1648-4adc-87ce-d95ada53f2b5",
+      "foregroundStatus": "completed",
+      "submittedAt": 1794439184203,
+      "timing": {
+        "firstSubstantiveHostProseMs": 7285,
+        "foregroundFinalMs": 15577,
+        "firstUsablePartialMs": null,
+        "finalArtifactMs": null
+      },
+      "assessment": "partial: arithmetic, repair, preserved records, same-request reminder pass; isolated repair Work closed ended_unsuccessfully because other reminder branch not in review evidence"
+    },
+    {
+      "id": "continuous-action",
+      "semanticType": "continuous-real-optimization",
+      "requestId": "6c9897bf-598f-49ed-a8aa-944a60b746fb",
+      "foregroundStatus": "completed",
+      "submittedAt": 1794439184486,
+      "timing": {
+        "firstSubstantiveHostProseMs": 11432,
+        "foregroundFinalMs": 26113,
+        "firstUsablePartialMs": null,
+        "finalArtifactMs": null
+      },
+      "assessment": "pass within recorded checks"
+    },
+    {
+      "id": "weather",
+      "semanticType": "short-realtime-query",
+      "requestId": "cc446885-329e-432c-9be0-ce0320b0271e",
+      "foregroundStatus": "completed",
+      "submittedAt": 1794439184751,
+      "timing": {
+        "firstSubstantiveHostProseMs": 11671,
+        "foregroundFinalMs": 12573,
+        "firstUsablePartialMs": null,
+        "finalArtifactMs": null
+      },
+      "assessment": "pass within recorded checks"
+    },
+    {
+      "id": "execution-B",
+      "semanticType": "execution",
+      "requestId": "59e72aff-6fa7-4304-8845-da5c16a5b1ef",
+      "foregroundStatus": "completed",
+      "submittedAt": 1794439185048,
+      "timing": {
+        "firstSubstantiveHostProseMs": 39933,
+        "foregroundFinalMs": 53188,
+        "firstUsablePartialMs": 233535,
+        "finalArtifactMs": 452480
+      },
+      "assessment": "pass early milestone/current query/semantic amendment/final snapshot and succeeded closure; partial-a repeated write is observed, not claimed reuse"
+    },
+    {
+      "id": "analysis-A",
+      "semanticType": "analysis",
+      "requestId": "f51e43f4-3c9e-4608-bd26-634e58971165",
+      "foregroundStatus": "completed",
+      "submittedAt": 1794439185233,
+      "timing": {
+        "firstSubstantiveHostProseMs": 34008,
+        "foregroundFinalMs": 40911,
+        "firstUsablePartialMs": 267766,
+        "finalArtifactMs": null
+      },
+      "assessment": "pass within recorded checks",
+      "timingPosthoc": {
+        "firstActualResultPersistedMs": 75306,
+        "reason": "firstA.at was delayed harness collection, not first delivery time"
+      }
+    },
+    {
+      "id": "direct",
+      "semanticType": "direct-answer",
+      "requestId": "16c3d36a-0449-4f6d-8480-03c302841857",
+      "foregroundStatus": "completed",
+      "submittedAt": 1794439185402,
+      "timing": {
+        "firstSubstantiveHostProseMs": 44923,
+        "foregroundFinalMs": 44988,
+        "firstUsablePartialMs": null,
+        "finalArtifactMs": null
+      },
+      "assessment": "pass within recorded checks"
+    },
+    {
+      "id": "query",
+      "semanticType": "short-current-state-query",
+      "requestId": "3767893f-e862-47a5-b157-12239501db82",
+      "foregroundStatus": "completed",
+      "submittedAt": 1794439185629,
+      "timing": {
+        "firstSubstantiveHostProseMs": 11003,
+        "foregroundFinalMs": 11296,
+        "firstUsablePartialMs": null,
+        "finalArtifactMs": null
+      },
+      "assessment": "pass within recorded checks"
+    },
+    {
+      "id": "reminder",
+      "semanticType": "independent-reminder",
+      "requestId": "b97d0bed-51a9-465e-ae8a-a46b406ef7b7",
+      "foregroundStatus": "completed",
+      "submittedAt": 1794439185862,
+      "timing": {
+        "firstSubstantiveHostProseMs": 48516,
+        "foregroundFinalMs": 48770,
+        "firstUsablePartialMs": null,
+        "finalArtifactMs": null
+      },
+      "assessment": "pass within recorded checks"
+    },
+    {
+      "id": "scheduled-execution",
+      "semanticType": "one-time-scheduled-execution",
+      "requestId": "4e428524-1195-44b9-bf7d-3ad08ededb3c",
+      "foregroundStatus": "completed",
+      "submittedAt": 1794439186075,
+      "timing": {
+        "firstSubstantiveHostProseMs": 25176,
+        "foregroundFinalMs": 25872,
+        "firstUsablePartialMs": null,
+        "finalArtifactMs": null
+      },
+      "assessment": "pass within recorded checks"
+    },
+    {
+      "id": "file-event",
+      "semanticType": "file-event-triggered-benchmark",
+      "requestId": "2574c229-5a71-4448-a733-1ee0b137ab23",
+      "foregroundStatus": "completed",
+      "submittedAt": 1794439186290,
+      "timing": {
+        "firstSubstantiveHostProseMs": 18011,
+        "foregroundFinalMs": 40175,
+        "firstUsablePartialMs": null,
+        "finalArtifactMs": null
+      },
+      "assessment": "partial: baseline/dedup/real regression delivery pass; normal PR-V3 wrongly notified"
+    },
+    {
+      "id": "ongoing",
+      "semanticType": "ongoing-goal",
+      "requestId": "12cdbf3a-8856-4f5a-8da7-e1a0ac639846",
+      "foregroundStatus": "completed",
+      "submittedAt": 1794439186504,
+      "timing": {
+        "firstSubstantiveHostProseMs": 16353,
+        "foregroundFinalMs": 28163,
+        "firstUsablePartialMs": null,
+        "finalArtifactMs": null
+      },
+      "assessment": "pass actual immediate run, repeated host-silent rounds, V2 current content, restart, pause; raw stale-version assertion is false positive because it forbids legitimate V1 history"
+    }
+  ],
+  "empiricalResponsiveness": {
+    "firstSubstantive": {
+      "n": 8,
+      "p50": 10063,
+      "p95": 14908,
+      "rawMs": [
+        4487,
+        7872,
+        8667,
+        10063,
+        10843,
+        12895,
+        13047,
+        14908
+      ]
+    },
+    "completion": {
+      "n": 8,
+      "p50": 10478,
+      "p95": 15035,
+      "rawMs": [
+        4680,
+        7902,
+        8694,
+        10478,
+        10888,
+        13029,
+        13289,
+        15035
+      ]
+    },
+    "method": "nearest-rank empirical P50/P95, 8 small samples; host answer segment excluding receipt/planning commentary, not guaranteed visible DOM and not SLA",
+    "load": "No concurrent headless gate. B6 shared-gateway review batch will wait until all 8 busy probes finish; any later overlap recorded posthoc. Small sample empirical timing, not SLA."
+  },
+  "metricCaveat": "8 probe nearest-rank empirical samples, not SLA. Initial direct request took 44.923s to answer under burst. First usable analysis timing corrected from persisted message. Synthetic DOM/benchmark not user product performance.",
+  "milestoneVisibility": [
+    {
+      "messageId": "work-feedback-f419881aac2cf1352142f5719fbc2efaaa21fa907c478d49bb3e0eba6548c8e4",
+      "intentRevision": 1,
+      "persistedCreatedAt": 1794439418335,
+      "firstButtonPresentMs": 775,
+      "firstButtonViewportMs": 775,
+      "measurement": "rAF after DOM mutation/history retrieval; upper-bound observation, not exact DB commit or paint. Viewport may follow later scroll."
+    },
+    {
+      "messageId": "work-feedback-7da7219776f7b249da6055063c9019696b96d1a397a779308933ea06a108bba2",
+      "intentRevision": 2,
+      "persistedCreatedAt": 1794439496731,
+      "firstButtonPresentMs": 1012,
+      "firstButtonViewportMs": 140622,
+      "measurement": "rAF after DOM mutation/history retrieval; upper-bound observation, not exact DB commit or paint. Viewport may follow later scroll."
+    },
+    {
+      "messageId": "work-feedback-fd516188f93ffff7176cde571029cb56dcf643412e8df328c16926e3375f72f8",
+      "intentRevision": 2,
+      "persistedCreatedAt": 1794439601575,
+      "firstButtonPresentMs": 1221,
+      "firstButtonViewportMs": 55951,
+      "measurement": "rAF after DOM mutation/history retrieval; upper-bound observation, not exact DB commit or paint. Viewport may follow later scroll."
+    }
+  ],
+  "repeatedWrites": [
+    {
+      "firstRequestContainingCall": 129,
+      "observedAt": 1794439405720,
+      "toolCallId": "call_00_tj6qb66cdv4h22i6r9svtbx1",
+      "arguments": {
+        "path": "/home/vivion/iq27-tmp/l2-jq5njc55/scheduling-inputs/partial-a.txt",
+        "content": "A-READY"
+      }
+    },
+    {
+      "firstRequestContainingCall": 130,
+      "observedAt": 1794439409294,
+      "toolCallId": "call_00_pl2mj3crm91f0rq550snz19g",
+      "arguments": {
+        "path": "/home/vivion/iq27-tmp/l2-jq5njc55/scheduling-inputs/execution.txt",
+        "content": "B-ORIGINAL\n"
+      }
+    },
+    {
+      "firstRequestContainingCall": 149,
+      "observedAt": 1794439485718,
+      "toolCallId": "call_00_zhej2h06inyox2hpay21gtqb",
+      "arguments": {
+        "path": "/home/vivion/iq27-tmp/l2-jq5njc55/scheduling-inputs/partial-a.txt",
+        "content": "A-READY\n"
+      }
+    },
+    {
+      "firstRequestContainingCall": 150,
+      "observedAt": 1794439485719,
+      "toolCallId": "call_00_owz52d58f5s0qc9e4zhm9dud",
+      "arguments": {
+        "path": "/home/vivion/iq27-tmp/l2-jq5njc55/scheduling-inputs/execution.txt",
+        "content": "B-ORIGINAL\n"
+      }
+    },
+    {
+      "firstRequestContainingCall": 161,
+      "observedAt": 1794439583445,
+      "toolCallId": "call_00_hstbvxju7evwglqdno56t75e",
+      "arguments": {
+        "content": "B-AMENDED\n",
+        "path": "/home/vivion/iq27-tmp/l2-jq5njc55/scheduling-inputs/execution.txt"
+      }
+    }
+  ],
+  "perGoalAndForegroundAccounting": {
+    "foreground:mixed-request": {
+      "calls": 2,
+      "statuses": {
+        "completed": 2
+      },
+      "reportedTokenSums": {
+        "input": 17437,
+        "output": 1278,
+        "cacheRead": 20224,
+        "cacheWrite": 0
+      },
+      "missingUsageRequests": 0,
+      "monetaryCostUsd": null,
+      "monetaryCostStatus": "not measured; null is not zero"
+    },
+    "foreground:continuous-action": {
+      "calls": 4,
+      "statuses": {
+        "completed": 4
+      },
+      "reportedTokenSums": {
+        "input": 22935,
+        "output": 2287,
+        "cacheRead": 60928,
+        "cacheWrite": 0
+      },
+      "missingUsageRequests": 0,
+      "monetaryCostUsd": null,
+      "monetaryCostStatus": "not measured; null is not zero"
+    },
+    "foreground:weather": {
+      "calls": 2,
+      "statuses": {
+        "completed": 2
+      },
+      "reportedTokenSums": {
+        "input": 16325,
+        "output": 570,
+        "cacheRead": 24448,
+        "cacheWrite": 0
+      },
+      "missingUsageRequests": 0,
+      "monetaryCostUsd": null,
+      "monetaryCostStatus": "not measured; null is not zero"
+    },
+    "foreground:query": {
+      "calls": 3,
+      "statuses": {
+        "completed": 3
+      },
+      "reportedTokenSums": {
+        "input": 5984,
+        "output": 478,
+        "cacheRead": 55168,
+        "cacheWrite": 0
+      },
+      "missingUsageRequests": 0,
+      "monetaryCostUsd": null,
+      "monetaryCostStatus": "not measured; null is not zero"
+    },
+    "work:验收混合历史检索": {
+      "calls": 9,
+      "statuses": {
+        "completed": 9
+      },
+      "reportedTokenSums": {
+        "input": 38083,
+        "output": 2787,
+        "cacheRead": 190464,
+        "cacheWrite": 0
+      },
+      "missingUsageRequests": 0,
+      "monetaryCostUsd": null,
+      "monetaryCostStatus": "not measured; null is not zero"
+    },
+    "foreground:ongoing": {
+      "calls": 3,
+      "statuses": {
+        "completed": 3
+      },
+      "reportedTokenSums": {
+        "input": 4161,
+        "output": 1223,
+        "cacheRead": 56064,
+        "cacheWrite": 0
+      },
+      "missingUsageRequests": 0,
+      "monetaryCostUsd": null,
+      "monetaryCostStatus": "not measured; null is not zero"
+    },
+    "foreground:scheduled-execution": {
+      "calls": 2,
+      "statuses": {
+        "completed": 2
+      },
+      "reportedTokenSums": {
+        "input": 5265,
+        "output": 1602,
+        "cacheRead": 33920,
+        "cacheWrite": 0
+      },
+      "missingUsageRequests": 0,
+      "monetaryCostUsd": null,
+      "monetaryCostStatus": "not measured; null is not zero"
+    },
+    "foreground:file-event": {
+      "calls": 3,
+      "statuses": {
+        "completed": 3
+      },
+      "reportedTokenSums": {
+        "input": 6621,
+        "output": 2405,
+        "cacheRead": 54784,
+        "cacheWrite": 0
+      },
+      "missingUsageRequests": 0,
+      "monetaryCostUsd": null,
+      "monetaryCostStatus": "not measured; null is not zero"
+    },
+    "work:验收持续首屏优化": {
+      "calls": 28,
+      "statuses": {
+        "completed": 27,
+        "aborted": 1
+      },
+      "reportedTokenSums": {
+        "input": 58973,
+        "output": 11419,
+        "cacheRead": 797952,
+        "cacheWrite": 0
+      },
+      "missingUsageRequests": 1,
+      "monetaryCostUsd": null,
+      "monetaryCostStatus": "not measured; null is not zero"
+    },
+    "work:验收持续简报": {
+      "calls": 66,
+      "statuses": {
+        "completed": 65,
+        "aborted": 1
+      },
+      "reportedTokenSums": {
+        "input": 225571,
+        "output": 12319,
+        "cacheRead": 1426048,
+        "cacheWrite": 0
+      },
+      "missingUsageRequests": 1,
+      "monetaryCostUsd": null,
+      "monetaryCostStatus": "not measured; null is not zero"
+    },
+    "foreground:execution-B": {
+      "calls": 2,
+      "statuses": {
+        "completed": 2
+      },
+      "reportedTokenSums": {
+        "input": 3534,
+        "output": 2186,
+        "cacheRead": 36096,
+        "cacheWrite": 0
+      },
+      "missingUsageRequests": 0,
+      "monetaryCostUsd": null,
+      "monetaryCostStatus": "not measured; null is not zero"
+    },
+    "foreground:analysis-A": {
+      "calls": 2,
+      "statuses": {
+        "completed": 2
+      },
+      "reportedTokenSums": {
+        "input": 2738,
+        "output": 771,
+        "cacheRead": 35840,
+        "cacheWrite": 0
+      },
+      "missingUsageRequests": 0,
+      "monetaryCostUsd": null,
+      "monetaryCostStatus": "not measured; null is not zero"
+    },
+    "work:验收分析A": {
+      "calls": 7,
+      "statuses": {
+        "completed": 7
+      },
+      "reportedTokenSums": {
+        "input": 34090,
+        "output": 1402,
+        "cacheRead": 133120,
+        "cacheWrite": 0
+      },
+      "missingUsageRequests": 0,
+      "monetaryCostUsd": null,
+      "monetaryCostStatus": "not measured; null is not zero"
+    },
+    "foreground:direct": {
+      "calls": 1,
+      "statuses": {
+        "completed": 1
+      },
+      "reportedTokenSums": {
+        "input": 228,
+        "output": 31,
+        "cacheRead": 17408,
+        "cacheWrite": 0
+      },
+      "missingUsageRequests": 0,
+      "monetaryCostUsd": null,
+      "monetaryCostStatus": "not measured; null is not zero"
+    },
+    "foreground:reminder": {
+      "calls": 2,
+      "statuses": {
+        "completed": 2
+      },
+      "reportedTokenSums": {
+        "input": 5016,
+        "output": 256,
+        "cacheRead": 33152,
+        "cacheWrite": 0
+      },
+      "missingUsageRequests": 0,
+      "monetaryCostUsd": null,
+      "monetaryCostStatus": "not measured; null is not zero"
+    },
+    "work:验收历史读取修复B": {
+      "calls": 47,
+      "statuses": {
+        "completed": 47
+      },
+      "reportedTokenSums": {
+        "input": 99144,
+        "output": 20226,
+        "cacheRead": 1265024,
+        "cacheWrite": 0
+      },
+      "missingUsageRequests": 0,
+      "monetaryCostUsd": null,
+      "monetaryCostStatus": "not measured; null is not zero"
+    },
+    "foreground:dc038516-75b0-47ee-8dcb-cf7d998cdea7": {
+      "calls": 2,
+      "statuses": {
+        "completed": 2
+      },
+      "reportedTokenSums": {
+        "input": 9614,
+        "output": 242,
+        "cacheRead": 31872,
+        "cacheWrite": 0
+      },
+      "missingUsageRequests": 0,
+      "monetaryCostUsd": null,
+      "monetaryCostStatus": "not measured; null is not zero"
+    },
+    "foreground:65edbe30-9360-4f2e-8fab-463926d218db": {
+      "calls": 1,
+      "statuses": {
+        "completed": 1
+      },
+      "reportedTokenSums": {
+        "input": 277,
+        "output": 10,
+        "cacheRead": 19584,
+        "cacheWrite": 0
+      },
+      "missingUsageRequests": 0,
+      "monetaryCostUsd": null,
+      "monetaryCostStatus": "not measured; null is not zero"
+    },
+    "foreground:6b20f41e-8e38-4d94-8884-a1326442083d": {
+      "calls": 2,
+      "statuses": {
+        "completed": 2
+      },
+      "reportedTokenSums": {
+        "input": 3396,
+        "output": 236,
+        "cacheRead": 38912,
+        "cacheWrite": 0
+      },
+      "missingUsageRequests": 0,
+      "monetaryCostUsd": null,
+      "monetaryCostStatus": "not measured; null is not zero"
+    },
+    "foreground:83621331-1765-4b63-ab64-6c01b775454d": {
+      "calls": 1,
+      "statuses": {
+        "completed": 1
+      },
+      "reportedTokenSums": {
+        "input": 1675,
+        "output": 2,
+        "cacheRead": 16384,
+        "cacheWrite": 0
+      },
+      "missingUsageRequests": 0,
+      "monetaryCostUsd": null,
+      "monetaryCostStatus": "not measured; null is not zero"
+    },
+    "foreground:d70b7967-60bf-4757-9ccb-cfd3d96bc24e": {
+      "calls": 2,
+      "statuses": {
+        "completed": 2
+      },
+      "reportedTokenSums": {
+        "input": 3144,
+        "output": 262,
+        "cacheRead": 35968,
+        "cacheWrite": 0
+      },
+      "missingUsageRequests": 0,
+      "monetaryCostUsd": null,
+      "monetaryCostStatus": "not measured; null is not zero"
+    },
+    "foreground:40efcd00-7fe3-4433-b7ef-7890d6b5a081": {
+      "calls": 1,
+      "statuses": {
+        "completed": 1
+      },
+      "reportedTokenSums": {
+        "input": 664,
+        "output": 2,
+        "cacheRead": 18048,
+        "cacheWrite": 0
+      },
+      "missingUsageRequests": 0,
+      "monetaryCostUsd": null,
+      "monetaryCostStatus": "not measured; null is not zero"
+    },
+    "foreground:e834e7ed-2713-4f02-9ee9-e2b1f67dde44": {
+      "calls": 2,
+      "statuses": {
+        "completed": 2
+      },
+      "reportedTokenSums": {
+        "input": 7869,
+        "output": 249,
+        "cacheRead": 31232,
+        "cacheWrite": 0
+      },
+      "missingUsageRequests": 0,
+      "monetaryCostUsd": null,
+      "monetaryCostStatus": "not measured; null is not zero"
+    },
+    "foreground:8160065f-d4bf-4553-8bb6-3bc4215ce943": {
+      "calls": 1,
+      "statuses": {
+        "completed": 1
+      },
+      "reportedTokenSums": {
+        "input": 802,
+        "output": 2,
+        "cacheRead": 17920,
+        "cacheWrite": 0
+      },
+      "missingUsageRequests": 0,
+      "monetaryCostUsd": null,
+      "monetaryCostStatus": "not measured; null is not zero"
+    },
+    "unknown": {
+      "calls": 12,
+      "statuses": {
+        "completed": 11,
+        "aborted": 1
+      },
+      "reportedTokenSums": {
+        "input": 82559,
+        "output": 32032,
+        "cacheRead": 10240,
+        "cacheWrite": 0
+      },
+      "missingUsageRequests": 1,
+      "monetaryCostUsd": null,
+      "monetaryCostStatus": "not measured; null is not zero"
+    },
+    "work:验收定时读取": {
+      "calls": 8,
+      "statuses": {
+        "completed": 8
+      },
+      "reportedTokenSums": {
+        "input": 11738,
+        "output": 936,
+        "cacheRead": 183424,
+        "cacheWrite": 0
+      },
+      "missingUsageRequests": 0,
+      "monetaryCostUsd": null,
+      "monetaryCostStatus": "not measured; null is not zero"
+    },
+    "foreground:4ec81458-57f4-41a6-b2f6-b8c7ed519df6": {
+      "calls": 2,
+      "statuses": {
+        "completed": 2
+      },
+      "reportedTokenSums": {
+        "input": 16795,
+        "output": 780,
+        "cacheRead": 40576,
+        "cacheWrite": 0
+      },
+      "missingUsageRequests": 0,
+      "monetaryCostUsd": null,
+      "monetaryCostStatus": "not measured; null is not zero"
+    },
+    "foreground:16934c36-1144-40c4-a13a-a194209354ac": {
+      "calls": 3,
+      "statuses": {
+        "completed": 3
+      },
+      "reportedTokenSums": {
+        "input": 86627,
+        "output": 1540,
+        "cacheRead": 81536,
+        "cacheWrite": 0
+      },
+      "missingUsageRequests": 0,
+      "monetaryCostUsd": null,
+      "monetaryCostStatus": "not measured; null is not zero"
+    },
+    "foreground:35549224-a1bc-47e7-a571-10816c76dedc": {
+      "calls": 8,
+      "statuses": {
+        "completed": 8
+      },
+      "reportedTokenSums": {
+        "input": 62820,
+        "output": 1564,
+        "cacheRead": 201600,
+        "cacheWrite": 0
+      },
+      "missingUsageRequests": 0,
+      "monetaryCostUsd": null,
+      "monetaryCostStatus": "not measured; null is not zero"
+    },
+    "work:验收PR合并benchmark": {
+      "calls": 34,
+      "statuses": {
+        "completed": 34
+      },
+      "reportedTokenSums": {
+        "input": 160003,
+        "output": 13578,
+        "cacheRead": 977664,
+        "cacheWrite": 0
+      },
+      "missingUsageRequests": 0,
+      "monetaryCostUsd": null,
+      "monetaryCostStatus": "not measured; null is not zero"
+    },
+    "foreground:da1130ec-da66-4059-bb55-ef133e08b751": {
+      "calls": 1,
+      "statuses": {
+        "completed": 1
+      },
+      "reportedTokenSums": {
+        "input": 4791,
+        "output": 8,
+        "cacheRead": 16384,
+        "cacheWrite": 0
+      },
+      "missingUsageRequests": 0,
+      "monetaryCostUsd": null,
+      "monetaryCostStatus": "not measured; null is not zero"
+    },
+    "foreground:7c8df0ee-c911-48c1-b970-df37943144f0": {
+      "calls": 8,
+      "statuses": {
+        "completed": 8
+      },
+      "reportedTokenSums": {
+        "input": 80020,
+        "output": 1593,
+        "cacheRead": 164736,
+        "cacheWrite": 0
+      },
+      "missingUsageRequests": 0,
+      "monetaryCostUsd": null,
+      "monetaryCostStatus": "not measured; null is not zero"
+    },
+    "foreground:239cacdf-f45f-4c6a-a5e8-907429ab7189": {
+      "calls": 5,
+      "statuses": {
+        "completed": 5
+      },
+      "reportedTokenSums": {
+        "input": 15306,
+        "output": 1376,
+        "cacheRead": 116480,
+        "cacheWrite": 0
+      },
+      "missingUsageRequests": 0,
+      "monetaryCostUsd": null,
+      "monetaryCostStatus": "not measured; null is not zero"
+    }
+  },
+  "accountedRequestTotal": 276,
+  "unknownRequests": 12,
+  "pricing": "not measured",
+  "S2Versions": [
+    {
+      "version": "PR-V3",
+      "benchmark": {
+        "sourceVersion": "PR-V3",
+        "iterations": 200000,
+        "checksum": 6200000,
+        "elapsedMs": 9.332991,
+        "samples": [
+          9.332991,
+          16.105623,
+          8.599085
+        ],
+        "controlledDelayMs": 0,
+        "baselineMs": 8.644344,
+        "regression": false,
+        "runAt": "2026-11-11T23:31:06.580Z",
+        "scope": "Synthetic local workload; not user product performance"
+      },
+      "bindingId": "binding-195fdd91-3fda-4200-8d5f-996f50a9fdf9",
+      "reviewState": "delivered",
+      "reviewAttempts": 2,
+      "notificationCount": 1
+    },
+    {
+      "version": "PR-V4",
+      "benchmark": {
+        "sourceVersion": "PR-V4",
+        "iterations": 200000,
+        "checksum": 6200000,
+        "elapsedMs": 109.48371,
+        "samples": [
+          109.48371,
+          117.582596,
+          102.341108
+        ],
+        "controlledDelayMs": 100,
+        "baselineMs": 8.644344,
+        "regression": true,
+        "runAt": "2026-11-11T23:34:11.287Z",
+        "scope": "Synthetic local workload; not user product performance"
+      },
+      "bindingId": "binding-6d3cd6a0-e658-4e41-ab45-a31d58ee08ca",
+      "reviewState": "delivered",
+      "reviewAttempts": 1,
+      "notificationCount": 1
+    }
+  ],
+  "reminder": {
+    "zeroModel": true,
+    "sameIdentity": "reminder-021fb8b87572d3fbee9905393126f2a39670681a5c51f7e2c734dcf3b8eb6775",
+    "oldDue": "2026-11-11T23:24:46.009Z",
+    "newDue": "2026-11-11T23:38:10.086Z",
+    "openControl": {
+      "label": "打开 benchmark.json",
+      "visible": true,
+      "clickedAt": 1794440295223
+    },
+    "benchmarkRunsUnchanged": true,
+    "newWorkCount": 0,
+    "snapshotByteEqualityAssertion": true
+  },
+  "recovery": {
+    "status": "real normal Electron restart completed",
+    "originalConversationRetained": true,
+    "ongoingRetainedThenPaused": true,
+    "eventSubscriptionsAfterRestart": [
+      {
+        "subscriptionId": "subscription-70b6ee43-a11d-43f5-a448-9da99ef96d9f",
+        "workId": "work-2a09d8bc-6d52-4dd1-b7c2-0888fb4972d9",
+        "source": "file",
+        "targetKey": "/home/vivion/iq27-tmp/l2-jq5njc55/scheduling-inputs/pr-merge.json",
+        "status": "online",
+        "catchUpPolicy": "latest",
+        "timezone": "Asia/Shanghai",
+        "scheduleRevision": 1,
+        "configRevision": 1,
+        "lastCheckedAt": 1794440030932,
+        "versionMode": "readback",
+        "queue": {
+          "ready": 0,
+          "frozen": 0,
+          "blocked": 0,
+          "bytes": 0,
+          "maxEvents": 100,
+          "maxBytes": 8388608
+        },
+        "cursors": [
+          {
+            "source": "file",
+            "targetKey": "/home/vivion/iq27-tmp/l2-jq5njc55/scheduling-inputs/pr-merge.json",
+            "highestAcceptedVersion": "sha256:c468b05a9170ee30080b5a702d6787ce0acb13664cdf5e6bb905f647227d07a5",
+            "highestConsumedVersion": "sha256:c468b05a9170ee30080b5a702d6787ce0acb13664cdf5e6bb905f647227d07a5",
+            "highestFrozenVersion": "sha256:c468b05a9170ee30080b5a702d6787ce0acb13664cdf5e6bb905f647227d07a5",
+            "replayCursor": "3",
+            "enumerationWatermark": "sha256:b6955e20b1fd5b42e6ddbb00e8ea39aaa692ba99299105d6a275ca21e351397c"
+          }
+        ]
+      }
+    ]
+  },
+  "slowReview": [
+    {
+      "requestIndex": 228,
+      "requestStartedAt": 1794439896364,
+      "firstDeltaAt": 1794439898570,
+      "endedAt": 1794439956326,
+      "usage": [],
+      "label": "composer",
+      "usageOmitted": false,
+      "downstreamClosedAt": 1794439956326
+    },
+    {
+      "requestIndex": 232,
+      "requestStartedAt": 1794439971839,
+      "firstDeltaAt": 1794439974846,
+      "endedAt": 1794440028901,
+      "usage": [
+        {
+          "prompt_tokens": 8231,
+          "prompt_tokens_details": {
+            "cached_read_tokens": 4096,
+            "cached_tokens": 4096
+          },
+          "completion_tokens": 5587,
+          "completion_tokens_details": {
+            "reasoning_tokens": 4971
+          },
+          "total_tokens": 13818
+        }
+      ],
+      "label": "composer",
+      "usageOmitted": false,
+      "downstreamClosedAt": 1794440028901
+    }
+  ],
+  "load": {
+    "headlessDuringBusy8": false,
+    "B6second": [
+      "2026-11-11T23:21:56.058Z",
+      "2026-11-11T23:23:05.199Z",
+      12
+    ],
+    "B6third": [
+      "2026-11-11T23:33:51.400Z",
+      "2026-11-11T23:34:56.940Z",
+      12
+    ],
+    "headlessLater": "Parent started final main-clone headless after ~23:33:51Z; not during busy8. Exact gate times in parent log.",
+    "busy8LastCompletedAt": 1794439248101
+  },
+  "unmeasured": [
+    "actual GitHub webhook (PR JSON intentionally simulated via real fs.watch)",
+    "service fault injection cases 13/14/15/16 not newly exercised here",
+    "monetary billing cost and 12 unknown-attribution calls",
+    "external side-effect replay safety"
+  ],
+  "writtenAt": "2026-11-11T23:41:43.320697+00:00",
+  "rawHashesFinalizedAt": "2026-11-11T23:46:05.413031+00:00",
+  "rawChangesSinceFirstSummary": [
+    "dev.log"
+  ],
+  "processCleanup": {
+    "ownedRunnerAndElectronExited": true,
+    "ownedSnapshotNvimPid": 1298219,
+    "ownedSnapshotNvimExited": true,
+    "ownedXdgOpenPid": 1298109,
+    "ownedXdgOpenExited": true,
+    "userMagpieAndOtherEditorsUntouched": true
+  },
+  "handoffPosthoc": {
+    "source": "preserve_revision_handoff worker read durable main.jsonl; exact toolResult receipt times",
+    "revision1Store": "f156ddd69d8586084044cd29ad46acfcb6bc20f1717875d314824579f1ef5da9",
+    "revision2StorePrefix": "1c890",
+    "exactToolReceiptTimes": [
+      {
+        "intentRevision": 1,
+        "action": "A write",
+        "at": 1794439405568,
+        "seq": 363,
+        "entry": 146,
+        "conversation": 115
+      },
+      {
+        "intentRevision": 1,
+        "action": "B original write",
+        "at": 1794439409191,
+        "seq": 376,
+        "entry": 151,
+        "conversation": 122
+      },
+      {
+        "intentRevision": 2,
+        "action": "A write",
+        "at": 1794439485482,
+        "seq": 106,
+        "entry": 65,
+        "conversation": 26
+      },
+      {
+        "intentRevision": 2,
+        "action": "B original write",
+        "at": 1794439485463,
+        "seq": 104,
+        "entry": 64,
+        "conversation": 33
+      },
+      {
+        "intentRevision": 2,
+        "action": "B amended write",
+        "at": 1794439583328,
+        "seq": 159,
+        "entry": 84,
+        "conversation": 33
+      }
+    ],
+    "finding": "Second writes came from a new r2 binding, not old in-flight replay. Full handoff was present in r2 input and model inspected A before launching new children. A changed from 7 to 8 bytes by appended newline. Old B with real child/write/sleep was incorrectly projected not_started because final result was absent."
+  },
+  "windowCoverage": {
+    "tested": "Same Electron product window, CDP renderer viewport widths1280/390; normal own-instance restart",
+    "notTested": "Second independent product conversation window; another persisted conversation then return (not in second batch)",
+    "capability": "Current main application is single-instance/single-main-window; second-instance focuses existing window, window.open is denied or external. Previews/remote-pair/editor windows are not second conversation windows.",
+    "physicalWindowCaveat": "Main BrowserWindow minWidth960; 390 is renderer viewport emulation, not physical OS window width390",
+    "nextBatchPrepared": "Use existing direct case in first conversation then official New Conversation and remaining planned cases; official UI navigation old/new/old with no extra model requests."
+  }
+}

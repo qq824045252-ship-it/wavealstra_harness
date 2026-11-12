@@ -1,0 +1,50 @@
+{
+  "sourceSHA": "b3e90b8516dba43a37bcbb22b5585e77321dda4a",
+  "scope": "Focused checks before committing the exact reviewed source-event context diff; not a full gate or model batch",
+  "checks": [
+    {
+      "command": "TMPDIR=/home/vivion/iq27-tmp pnpm -s test:work-file-event-source",
+      "log": "/home/vivion/iq27-tmp/watch-stage-file.log",
+      "sha256": "99f6793935b623b10addfb2fe2b0748adbcfd13fecf22b919868c5a7453309d5",
+      "exitCode": 0,
+      "lastModifiedAt": "2026-11-12T00:20:25.648045+00:00",
+      "tail": "$ esbuild scripts/work-file-event-source-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/work-file-event-source-test.mjs && node scripts/test-guard.mjs out/tests/work-file-event-source-test.mjs\n\n  out/tests/work-file-event-source-test.mjs  1.2mb ⚠️\n\n⚡ Done in 36ms\n[test-guard] pid=1450136 cmd=node --max-old-space-size=4096 out/tests/work-file-event-source-test.mjs mem_cap=6144MB timeout=900s poll=1500ms\nPASS file receiver query: indexed source lookup, zero unrelated cron hydration, legacy all-source compatibility\nPASS real file receiver: frontend baseline, fs.watch, atomic rename, hash dedupe, error/recovery, pause, authority, restart, skip, cancel, close, bounded IO\n[test-guard] exit pid=1450136 code=0 elapsed=18s\n"
+    },
+    {
+      "command": "TMPDIR=/home/vivion/iq27-tmp pnpm -s test:work-watch-supervision",
+      "log": "/home/vivion/iq27-tmp/watch-stage-supervision.log",
+      "sha256": "579bbe965dc7a6fd8ae5072198248d1fa59bda3019b4430cc7b3cef727c12a27",
+      "exitCode": 0,
+      "lastModifiedAt": "2026-11-12T00:20:32.604084+00:00",
+      "tail": "-20261112/out/tests/work-watch-supervision-test.mjs:20141:44)\n    at WorkWatchSupervision.wake (file:///home/vivion/github/wavealstra-issue27-completion-20261112/out/tests/work-watch-supervision-test.mjs:19922:17)\n    at flush (file:///home/vivion/github/wavealstra-issue27-completion-20261112/out/tests/work-watch-supervision-test.mjs:20368:14)\n    at file:///home/vivion/github/wavealstra-issue27-completion-20261112/out/tests/work-watch-supervision-test.mjs:20455:7\nPASS continuous execute→grounded wait→actual writable admission, replay, event baseline, fabricated dependency refusal\nPASS continuous followUp-only real read admission/write denial; same-lineage unknown wait rejection and independent wait preservation\nPASS continuous changes_only: complete reviewed unchanged artifact is silent without reviewer; actionable gap still reviews\nPASS duplicate Watch blocker reason is reused, real schedule clears it, later regression and closure preserve history\nPASS one-time default native contract and real action guard; explicit observe/ongoing/legacy unchanged; blocker reconciliation uses partial index\nPASS explicit future one-time completes after review; partial, ongoing single-wait and legacy watch stay open\nPASS independent revised one-time goal completes with old risk visible; dependency and current unknown remain open without effect replay\nPASS real due/preview reminder artifact delivery does not suppress first Watch goal review; reminder replay and ordinary result dedupe preserved\nPASS conditional notification: changed complete reports silent; invalid/stale/unknown/failed evidence and gaps stay visible\n[Work] 持续委托结果整理等待重试 Error: 持续委托结果尚未送达原会话\n    at sqliteTransaction.<anonymous> (file:///home/vivion/github/wavealstra-issue27-completion-20261112/out/tests/work-watch-supervision-test.mjs:20249:17)\n    at sqliteTransaction (/home/vivion/github/wavealstra_harness/node_modules/.pnpm/better-sqlite3@13.0.3/node_modules/better-sqlite3/lib/methods/transaction.js:65:24)\n    at WorkService.transaction (file:///home/vivion/github/wavealstra-issue27-completion-20261112/out/tests/work-watch-supervision-test.mjs:18152:38)\n    at WorkWatchSupervision.process (file:///home/vivion/github/wavealstra-issue27-completion-20261112/out/tests/work-watch-supervision-test.mjs:20205:12)\nPASS: multi-round owner review, nonblocking queue, no duplicate raw results, restart receipts, visible model failure fallback; standing work remains active\n[test-guard] exit pid=1450749 code=0 elapsed=7s\n"
+    },
+    {
+      "command": "TMPDIR=/home/vivion/iq27-tmp pnpm -s test:bot-watch-scheduler",
+      "log": "/home/vivion/iq27-tmp/watch-stage-scheduler.log",
+      "sha256": "c48bfe249452d5875f66fe3e4bcf572cca376f2b7eeae42f222e06e9e20f9f62",
+      "exitCode": 0,
+      "lastModifiedAt": "2026-11-12T00:21:07.702278+00:00",
+      "tail": "$ esbuild scripts/bot-watch-scheduler-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/bot-watch-scheduler-test.mjs && node scripts/test-guard.mjs out/tests/bot-watch-scheduler-test.mjs\n\n  out/tests/bot-watch-scheduler-test.mjs  1002.9kb\n\n⚡ Done in 33ms\n[test-guard] pid=1451906 cmd=node --max-old-space-size=4096 out/tests/bot-watch-scheduler-test.mjs mem_cap=6144MB timeout=900s poll=1500ms\nPASS: watch scheduler policies, bounded catch-up/queues, persisted restart, pause/resume, online skip, DST and per-work blockers\n[test-guard] exit pid=1451906 code=0 elapsed=16s\n"
+    }
+  ],
+  "typecheck": {
+    "command": "pnpm -s typecheck",
+    "exitCode": 0,
+    "source": "worker tool-console result; no separate persisted log",
+    "exactTime": "not retained"
+  },
+  "diffCheck": {
+    "command": "git diff --check",
+    "exitCode": 0
+  },
+  "review": {
+    "baseline": "1c4966bde7778d4002d36724defce757f239d575",
+    "fiveFileDiffSHA256": "bff4c1c852411b96d5b93583bef46ead0dab47501bc30307713f30b86b5aa128",
+    "result": "No confirmed blocker found in read-only narrow review; real model S2 pending at review time"
+  },
+  "limits": [
+    "No full headless gate repeated for this narrow fix. Last complete gate was 484/484 at 1c4966bd.",
+    "Log modification times are not claimed as start/end wall-clock measurements.",
+    "Does not backfill missing event IDs on old dispatched bindings."
+  ]
+}

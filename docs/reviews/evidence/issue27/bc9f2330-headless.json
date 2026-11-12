@@ -1,0 +1,13 @@
+{
+  "sourceCommit": "bc9f23303f2fa4fa12fea41bac7004283cee894b",
+  "command": "TMPDIR=/home/vivion/iq27-tmp pnpm -s test:all",
+  "exitCode": 0,
+  "passed": 484,
+  "failed": 0,
+  "knownFailures": 0,
+  "regressions": 0,
+  "durationMinutes": 4.8,
+  "scope": "default headless only; excludes the separate GUI/NETWORK/DATASET/ARTIFACT suites",
+  "rawLog": "out/diagnostics/issue27-headless-bc9f2330.log",
+  "sourceUnchangedDuringGate": true
+}

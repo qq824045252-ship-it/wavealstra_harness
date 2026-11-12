@@ -1,0 +1,130 @@
+{
+  "sourceCommit": "eef651e2602308d4298ae05f7eb640f17ecce351",
+  "status": "failed",
+  "rawReportPreserved": true,
+  "sourceUnchanged": true,
+  "runtimeSourceFingerprint": {
+    "sha256": "d1742bc6946e983016c24d8016cf771c24347cdf7b68c8c58177ef4831cf4821",
+    "files": 1257
+  },
+  "models": [
+    "opendesign/deepseek-v4.1-flash"
+  ],
+  "modelCalls": 192,
+  "rawFailures": [
+    "S1 B successful closure",
+    "S3 explicit pause after continuous-action acceptance",
+    "S2 actual fs.watch event persisted and dispatched",
+    "S2 real file event to benchmark and version dedup: timeout: event benchmark file delivered",
+    "S3 initial execution admitted before next scheduled wake (immediate inbox permitted)",
+    "S3 unchanged round persisted host-proven silence",
+    "S3 unchanged round invokes zero result-review model turns",
+    "S3 unchanged round emits no result notification",
+    "S3 ongoing first action and independent question: timeout: same brief updated from changed source",
+    "no duplicate feedback identity"
+  ],
+  "posthoc": {
+    "corrections": [
+      "First answer excludes planning commentary. Raw report counted some planning prose as substantive.",
+      "file latest association must use matching source_version/input_snapshot_id; inbox_event_id may be null.",
+      "Immediate first execution must inspect persisted immediate event; later stopped schedule is not original nextWake.",
+      "Two distinct milestone reports A then A+B are not duplicate delivery."
+    ],
+    "probes": [
+      {
+        "requestId": "238153e4-6e53-4698-bda1-7f57b95fc344",
+        "submittedAt": 1794436280329,
+        "runningWorkCount": 4,
+        "firstAnswerMs": 8792,
+        "completedMs": 9134
+      },
+      {
+        "requestId": "9d0b8bda-6097-4357-ac34-1d199324f76c",
+        "submittedAt": 1794436281004,
+        "runningWorkCount": 5,
+        "firstAnswerMs": 3965,
+        "completedMs": 4213
+      },
+      {
+        "requestId": "131edc97-06f3-4e45-bdf7-bdc310a36550",
+        "submittedAt": 1794436281409,
+        "runningWorkCount": 5,
+        "firstAnswerMs": 8501,
+        "completedMs": 8879
+      },
+      {
+        "requestId": "fdd809a6-0dae-4e6b-b106-bda45d83afa8",
+        "submittedAt": 1794436281776,
+        "runningWorkCount": 5,
+        "firstAnswerMs": 6790,
+        "completedMs": 6984
+      },
+      {
+        "requestId": "07bbc9cd-e532-4b17-8309-fe525de619f9",
+        "submittedAt": 1794436282285,
+        "runningWorkCount": 5,
+        "firstAnswerMs": 11053,
+        "completedMs": 11636
+      },
+      {
+        "requestId": "bd03dc36-e67b-486f-8990-5d582f8126bc",
+        "submittedAt": 1794436282564,
+        "runningWorkCount": 5,
+        "firstAnswerMs": 9801,
+        "completedMs": 10036
+      },
+      {
+        "requestId": "aa3235da-d3f9-403a-b75e-43d0d78f3e7b",
+        "submittedAt": 1794436282852,
+        "runningWorkCount": 5,
+        "firstAnswerMs": 15216,
+        "completedMs": 15922
+      },
+      {
+        "requestId": "86350d5a-2877-4185-971e-1c59591780ff",
+        "submittedAt": 1794436283275,
+        "runningWorkCount": 5,
+        "firstAnswerMs": 11068,
+        "completedMs": 11224
+      }
+    ],
+    "firstAnswer": {
+      "n": 8,
+      "p50": 8792,
+      "p95": 15216
+    },
+    "completion": {
+      "n": 8,
+      "p50": 9134,
+      "p95": 15922
+    },
+    "milestones": [],
+    "load": {
+      "headlessConcurrent": false,
+      "b6Start": "2026-11-11T22:34:27.359Z",
+      "b6End": "2026-11-11T22:35:33.197Z",
+      "b6Calls": 12,
+      "probeBeforeB6": true
+    },
+    "scope": "Small n=8 empirical nearest-rank, not SLA; DOM present is distinct from in viewport; createdAt not exact SQLite commit instrumentation.",
+    "unmeasured": [
+      "restart skipped after cron source update timeout",
+      "reminder artifact/link delivery not supported by tested text-only reminder",
+      "per-goal monetary cost; 13 unattributed requests"
+    ],
+    "writeReplay": {
+      "partialAWriteCalls": 2,
+      "originalBWriteCalls": 2,
+      "amendedBWriteCalls": 1,
+      "scope": "Local same-content A overwrite repeated; external side-effect replay not tested"
+    }
+  },
+  "costAccounting": {
+    "pricing": "Provider catalog pricing not measured; unknown costs are not zero",
+    "requests": 192,
+    "unknownAttribution": 13,
+    "completeCostRequests": 0
+  },
+  "rawEvidenceDirectory": "/home/vivion/i27-src-sz1yrs2r/out/diagnostics/bot-scheduling/batch-2026-11-11T22-30-01-044Z-1155604",
+  "evidenceScope": "Real Electron pnpm dev and real model/tools with explicitly synthetic local source/PR/mini-DOM data. This is not a real GitHub webhook or external channel acceptance."
+}

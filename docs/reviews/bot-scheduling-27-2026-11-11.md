@@ -1,5 +1,7 @@
 # Bot 交互调度验收报告（issue #27）
 
+> 历史记录：最新缺项与修复见 [二次核对报告](bot-scheduling-27-followup-2026-11-12.md)。本报告的部分“通过”仅为夹具/服务级；旧实现的 LiveDoc 成果路径、有界扫描、B-6 范围与续办上限已在复核中发现不足，不代表 Issue 全部验收。
+
 | 项目 | 值 |
 | --- | --- |
 | 关联 issue | [#27 个人助理统一响应调度](https://github.com/qq824045252-ship-it/wavealstra_harness/issues/27)（P0） |
