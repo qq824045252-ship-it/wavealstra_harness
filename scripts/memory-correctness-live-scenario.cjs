@@ -128,7 +128,7 @@ exports.run = async ({send, foregroundDone, until, evaluate, history, rpc, repor
   assert.equal(report.cases.length,9);
   report.failedCases=report.cases.filter(row=>row.status!=='passed').map(row=>({title:row.title,error:row.error}));
   if (!report.failedCases.length) report.checks.push('nine real UI user tasks with provider replies; persistent invalidation checks; same-source A/B precise forget; new-chat and cross-Bot request-wire checks; product-IPC-seeded 2102-record old-fact recall');
-  report.unverified=[...(report.unverified||[]),'bulk memory creation is IPC fixture setup, not model learning','real embedding quality, crash recovery, team/project scopes and physical input are not exercised','provider calls can exceed eight user turns due to tool continuations; actual counts recorded per case'];
+  report.unverified=[...(report.unverified||[]),'bulk memory creation is IPC fixture setup, not model learning','real embedding quality, crash recovery, team/project scopes and physical input are not exercised','provider calls can exceed nine user turns due to tool continuations; actual counts recorded per case'];
   const shot=await rpc('Page.captureScreenshot',{format:'png'});
   fs.writeFileSync(path.join(out,'memory-correctness-live.png'),Buffer.from(shot.data,'base64'));
   assert.equal(report.failedCases.length,0,JSON.stringify(report.failedCases));
