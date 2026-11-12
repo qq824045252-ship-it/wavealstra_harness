@@ -216,6 +216,7 @@ const NETWORK_TESTS = new Set([
 ]);
 
 const DATASET_TESTS = new Set([
+  "test:durable-context-cold-store", // Explicit large generated JSONL corpus (1K/10K/100K), not a per-edit default run.
   "test:google-workspace-write", // Existing POSIX Python runtime required for isolated SDK subprocess fixtures.
   // node-pty 原生模块 + 真实 pty。
   "test:terminal",
