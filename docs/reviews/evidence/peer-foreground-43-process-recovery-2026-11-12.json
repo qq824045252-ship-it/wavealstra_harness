@@ -1,0 +1,325 @@
+{
+  "baseSHA": "ab5b8967cd182a12a2122a53a03772f45dc9fdfa",
+  "platform": "Linux, Omarchy",
+  "testMode": "real SIGKILL child processes; production services, file SQLite and native Durable; synthetic model/backend/channel adapters",
+  "realGui": false,
+  "realProvider": false,
+  "realExternalChannel": false,
+  "productChanges": false,
+  "cases": [
+    {
+      "scenario": "prepared",
+      "status": "passed",
+      "workId": "work-7eecb138-3cb7-44ed-9885-b97bc9c008c9",
+      "bRequestCount": 3,
+      "receiverRequests": 1,
+      "returnIdentities": 1,
+      "fault": {
+        "phase": "seed",
+        "kind": "SIGKILL",
+        "detail": {
+          "point": "prepared",
+          "inTransaction": false
+        }
+      },
+      "aRecoveryCalls": 2,
+      "bRecoveryCalls": 3
+    },
+    {
+      "scenario": "accepted",
+      "status": "passed",
+      "workId": "work-8ffade05-4b06-4921-ad22-962b9010ed05",
+      "bRequestCount": 3,
+      "receiverRequests": 1,
+      "returnIdentities": 1,
+      "fault": {
+        "phase": "seed",
+        "kind": "SIGKILL",
+        "detail": {
+          "point": "accepted",
+          "inTransaction": false
+        }
+      },
+      "aRecoveryCalls": 2,
+      "bRecoveryCalls": 3
+    },
+    {
+      "scenario": "before-decision",
+      "status": "passed",
+      "workId": "work-40d1a4aa-5df8-463b-8d82-2df84400a8f3",
+      "bRequestCount": 4,
+      "receiverRequests": 1,
+      "returnIdentities": 1,
+      "fault": {
+        "phase": "seed",
+        "kind": "SIGKILL",
+        "detail": {
+          "point": "before-decision",
+          "inTransaction": false
+        }
+      },
+      "aRecoveryCalls": 1,
+      "bRecoveryCalls": 3
+    },
+    {
+      "scenario": "work-committed",
+      "status": "passed",
+      "workId": "work-f00b0768-2a7b-4b2e-8ae2-56f7a0c48268",
+      "bRequestCount": 3,
+      "receiverRequests": 1,
+      "returnIdentities": 1,
+      "fault": {
+        "phase": "seed",
+        "kind": "SIGKILL",
+        "detail": {
+          "point": "work-committed",
+          "inTransaction": false
+        }
+      },
+      "aRecoveryCalls": 1,
+      "bRecoveryCalls": 2
+    },
+    {
+      "scenario": "result-pending",
+      "status": "passed",
+      "workId": "work-5f19c0d5-e83e-403f-8e76-90e74577cbc1",
+      "bRequestCount": 3,
+      "receiverRequests": 1,
+      "returnIdentities": 1,
+      "fault": {
+        "phase": "seed",
+        "kind": "SIGKILL",
+        "detail": {
+          "point": "result-pending",
+          "inTransaction": false
+        }
+      },
+      "aRecoveryCalls": 1,
+      "bRecoveryCalls": 0
+    },
+    {
+      "scenario": "return-failed",
+      "status": "passed",
+      "workId": "work-08fdcbc4-95f9-41c1-8db6-21122d28daf3",
+      "bRequestCount": 3,
+      "receiverRequests": 1,
+      "returnIdentities": 1,
+      "fault": {
+        "phase": "seed",
+        "kind": "SIGKILL",
+        "detail": {
+          "point": "return-failed",
+          "inTransaction": false
+        }
+      },
+      "aRecoveryCalls": 0,
+      "bRecoveryCalls": 0
+    },
+    {
+      "scenario": "final-persisted",
+      "status": "passed",
+      "workId": "work-9deee61a-c583-4370-bba8-fb3200ebddec",
+      "lifecycle": "closed",
+      "closureConclusion": "succeeded",
+      "fileDigest": "aee439e172b354115a9510616522873279c78e261aa25412934b917de55c500d",
+      "finalReturnId": "peer-return:23a9059700a30a5ec72d0034e3b97a5fbe7c8c3872dcab45da6dd0a3a6445978",
+      "finalMessageId": "bot-message-64757e04-89c6-4d5e-9bf6-5462e9fec7e5",
+      "finalModelCalls": 1,
+      "receiverRequests": 1,
+      "workCount": 1,
+      "finalReturns": 1,
+      "transportAttempts": 1,
+      "fault": {
+        "phase": "seed",
+        "kind": "SIGKILL",
+        "detail": {
+          "point": "final-persisted",
+          "inTransaction": false
+        }
+      },
+      "recoveryModels": [
+        {
+          "model": "a",
+          "afterTool": false,
+          "finalReport": true,
+          "includesFile": true
+        }
+      ]
+    },
+    {
+      "scenario": "final-queued",
+      "status": "passed",
+      "workId": "work-c058fe59-72c9-46f5-85db-9451088054bf",
+      "lifecycle": "closed",
+      "closureConclusion": "succeeded",
+      "fileDigest": "aee439e172b354115a9510616522873279c78e261aa25412934b917de55c500d",
+      "finalReturnId": "peer-return:5a111e4dc71d7148918cde69e035ab78e259b90d968fd4927fa689cf59ecf0af",
+      "finalMessageId": "bot-message-1b6024f5-3e3b-44ca-8943-f4538bb0c9b7",
+      "finalModelCalls": 1,
+      "receiverRequests": 1,
+      "workCount": 1,
+      "finalReturns": 1,
+      "transportAttempts": 1,
+      "fault": {
+        "phase": "seed",
+        "kind": "SIGKILL",
+        "detail": {
+          "point": "final-queued",
+          "inTransaction": false
+        }
+      },
+      "recoveryModels": [
+        {
+          "model": "a",
+          "afterTool": false,
+          "finalReport": true,
+          "includesFile": true
+        }
+      ]
+    },
+    {
+      "scenario": "final-accepted",
+      "status": "passed",
+      "workId": "work-9a97a8ed-4d5a-4185-9722-54ed6629b9ca",
+      "lifecycle": "closed",
+      "closureConclusion": "succeeded",
+      "fileDigest": "aee439e172b354115a9510616522873279c78e261aa25412934b917de55c500d",
+      "finalReturnId": "peer-return:097c1cc50eb6fca708189bab24930cc53e68f0469af500f051623a0ff0b1f00c",
+      "finalMessageId": "bot-message-d3e602b4-a724-41a1-8a82-b9da6787cacc",
+      "finalModelCalls": 1,
+      "receiverRequests": 1,
+      "workCount": 1,
+      "finalReturns": 1,
+      "transportAttempts": 1,
+      "fault": {
+        "phase": "seed",
+        "kind": "SIGKILL",
+        "detail": {
+          "point": "final-accepted",
+          "inTransaction": false
+        }
+      },
+      "recoveryModels": [
+        {
+          "model": "a",
+          "afterTool": false,
+          "finalReport": true,
+          "includesFile": true
+        }
+      ]
+    },
+    {
+      "scenario": "final-completed",
+      "status": "passed",
+      "workId": "work-5a3c36d8-9b91-4c89-afe6-1e0a438d9464",
+      "lifecycle": "closed",
+      "closureConclusion": "succeeded",
+      "fileDigest": "aee439e172b354115a9510616522873279c78e261aa25412934b917de55c500d",
+      "finalReturnId": "peer-return:470504bfb34b1050dcd05680bab817d89a5e0b24cd4534b96a24ee5f1acde099",
+      "finalMessageId": "bot-message-273a7a7a-82ba-41f0-91c2-c9f24d121279",
+      "finalModelCalls": 1,
+      "receiverRequests": 1,
+      "workCount": 1,
+      "finalReturns": 1,
+      "transportAttempts": 2,
+      "fault": {
+        "phase": "seed",
+        "kind": "SIGKILL",
+        "detail": {
+          "point": "final-completed",
+          "inTransaction": false
+        }
+      },
+      "recoveryModels": []
+    },
+    {
+      "scenario": "final-delivery-failed",
+      "status": "passed",
+      "workId": "work-4f3f9ef5-1729-4c18-b784-83ffbba7e8d6",
+      "lifecycle": "closed",
+      "closureConclusion": "succeeded",
+      "fileDigest": "aee439e172b354115a9510616522873279c78e261aa25412934b917de55c500d",
+      "finalReturnId": "peer-return:fe511ddb1e26cbfb454b2998c37beda95f4cb115ef1e8237bd70367f2825da97",
+      "finalMessageId": "bot-message-f2e81cd5-c74d-4091-a481-e2fd7b479325",
+      "finalModelCalls": 1,
+      "receiverRequests": 1,
+      "workCount": 1,
+      "finalReturns": 1,
+      "transportAttempts": 2,
+      "fault": {
+        "phase": "seed",
+        "kind": "SIGKILL",
+        "detail": {
+          "point": "final-delivery-failed",
+          "inTransaction": false
+        }
+      },
+      "recoveryModels": []
+    },
+    {
+      "mutation": "source-archived",
+      "status": "passed",
+      "workId": "work-bf22a895-2529-4f67-aed0-7f115f472ab3",
+      "retainedFinalReports": 1,
+      "finalAcceptedMessageId": null,
+      "finalReturnedAt": null,
+      "error": "原协作来源已失效，保留通信，不改投其他会话",
+      "unrelatedConversationUnchanged": true,
+      "fileDigest": "aee439e172b354115a9510616522873279c78e261aa25412934b917de55c500d"
+    },
+    {
+      "mutation": "source-deleted",
+      "status": "passed",
+      "workId": "work-76eb63d4-eb0e-4e9c-a78f-5237eb3074cb",
+      "retainedFinalReports": 1,
+      "finalAcceptedMessageId": null,
+      "finalReturnedAt": null,
+      "error": "Bot 不属于当前用户或暂不可受理消息",
+      "unrelatedConversationUnchanged": true,
+      "fileDigest": "aee439e172b354115a9510616522873279c78e261aa25412934b917de55c500d"
+    },
+    {
+      "mutation": "destination-disabled",
+      "status": "passed",
+      "workId": "work-340cdd16-ea96-47e7-951d-fcf0f6e6f666",
+      "retainedFinalReports": 1,
+      "finalAcceptedMessageId": null,
+      "finalReturnedAt": null,
+      "error": "Bot 不属于当前用户或暂不可受理消息",
+      "unrelatedConversationUnchanged": true,
+      "fileDigest": "aee439e172b354115a9510616522873279c78e261aa25412934b917de55c500d"
+    },
+    {
+      "mutation": "recipient-B-disabled-before-admission",
+      "status": "passed",
+      "recipientRequests": 1,
+      "recipientReceipts": 0,
+      "workCount": 0,
+      "error": "Bot 不属于当前用户或暂不可受理消息"
+    }
+  ],
+  "sourceHashes": {
+    "src/main/agent/work/BotConversationService.ts": "b2c4380fec7532f41dad436e2c9b24fcd37b445d70ca532be65610beb6cbf2f2",
+    "src/main/agent/work/BotCollaborationDelivery.ts": "bfd6a1f8fd1eb0ed8b21ff0e21aeb9c83788de4749019ae47047bdcaa8ab1e57",
+    "src/main/agent/work/BotForegroundTools.ts": "c2c3dd0a7b09433924ad393a9e0a86a7ad21c32f71c1a310fd911ea6e34ffa19",
+    "src/main/agent/work/BotPeerIngress.ts": "b20da7d6ec5e96306faf95d579a8b92264c039765ee9c553c7bbe837bcc0f98a"
+  },
+  "probeHashes": {
+    "child.ts": "7365981cefa8ec5b0c46cc9ab60b7df0d7d52d6edd4242503a88d4c19a828f70",
+    "child-final.ts": "d86764cc70c7b85a3638e5f57fb00f421b5ef400146b3d7fb98c0e699079277e",
+    "child-invalid-source.ts": "13d7b4e48ce3a70398361e0c99872f584f3739f0f93254a866ff42c570d8eed6",
+    "child-disabled-b.ts": "cf0035f25b152bcbebb51c178c5171d36adca36b303451535889515392c9e80a"
+  },
+  "firstFinalProbeAttempt": {
+    "status": "failed",
+    "reason": "fixture used default listWorks which excludes closed Work; fixed assertion to count all user Work, reran with fresh databases",
+    "productCodeChanged": false
+  },
+  "limits": [
+    "not Electron GUI main-process/system crash",
+    "backend execution is controlled fixture using production Work APIs",
+    "external transport attempts do not prove real account receipts or exactly-once send after unknown external effect",
+    "full regression not run",
+    "raw probes include machine-specific paths and are not yet installed as portable repository tests"
+  ]
+}
