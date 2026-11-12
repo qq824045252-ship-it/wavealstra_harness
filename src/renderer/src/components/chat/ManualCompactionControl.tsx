@@ -91,7 +91,7 @@ export default function ManualCompactionControl({ taskId, executing, contextWind
   };
   const running = state?.status === "running";
   return <div className="manual-compaction-control">
-    <div className="settings-row-desc">设置触发线：{threshold == null ? "—" : formatTokenCount(threshold)}</div>
+    <div className="settings-row-desc">{state?.engine === "billion-context" ? "压力触发线（分层整理也可提前触发）" : "设置触发线"}：{threshold == null ? "—" : formatTokenCount(threshold)}</div>
     {(notice || resultLabel(state)) && <div role={state?.status === "failed" ? "alert" : "status"} className="compaction-result">{notice || resultLabel(state)}</div>}
     <div className="compaction-actions"><button type="button" className="btn btn--primary" disabled={executing || running || pending}
       onClick={() => void compact()}>{running || pending ? "正在整理…" : executing ? "执行结束后可整理" : "立即整理上下文"}</button>

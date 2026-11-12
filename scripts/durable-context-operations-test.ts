@@ -25,17 +25,18 @@ function seed(): Message[] {
     return index % 2 ? assistant(content, index + 1) : { role: "user", content, timestamp: index + 1 };
   });
 }
-function fixture(contextWindow = 128_000) {
+function fixture(contextWindow = 128_000, outputLimit = 4096) {
+  let reply: (() => AssistantMessage) | undefined;
   let calls = 0;
   let action: ((signal?: AbortSignal) => Promise<void>) | undefined;
   const model = { id: "fixture", provider: "fixture", api: "openai-completions", name: "fixture", reasoning: false,
-    input: ["text"], contextWindow, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
+    input: ["text"], contextWindow, maxTokens: outputLimit, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
   const models = { getModel: () => model, getAuth: async () => undefined,
     streamSimple: () => { throw new Error("Status/maintenance must not start a business generation"); },
     completeSimple: async (_model: unknown, _input: unknown, options?: { signal?: AbortSignal }) => {
-      calls++; await action?.(options?.signal); return assistant("Earlier notes preserve the archive paths, exact errors and versions; originals remain retrievable.");
+      calls++; await action?.(options?.signal); if (reply) return reply(); return assistant("Earlier notes preserve the archive paths, exact errors and versions; originals remain retrievable.");
     } } as unknown as DurableBotOptions["models"];
-  return { models, calls: () => calls, setAction: (next?: typeof action) => { action = next; } };
+  return { models, setReply: (next?: () => AssistantMessage) => { reply = next; }, calls: () => calls, setAction: (next?: typeof action) => { action = next; } };
 }
 type Internals = { contextManager: DurableContextManager; conversation: Conversation; harness: Harness; storage: Storage };
 function internals(runtime: DurableBotRuntime): Internals { return runtime as unknown as Internals; }
@@ -356,6 +357,42 @@ if (crashMode === "--crash") {
       manager.dispose(); await runtime.close();
     }
     console.log("PASS mid-summary config change rejects old coverage and a later operation recovers with a higher revision");
+
+    for (const exhaust of [false, true]) {
+      const source = fixture(128_000, 32768);
+      let attempts = 0;
+      source.setReply(() => {
+        const result = assistant("Incomplete prefix must not be committed");
+        if (exhaust || attempts++ === 0) result.stopReason = "length";
+        else result.content = [{ type: "text", text: "Archive paths, exact errors, versions and pending tasks are preserved in the original records." }];
+        return result;
+      });
+      const directory = join(root, exhaust ? "length-exhausted" : "length-recovered");
+      const runtime = await open(directory, source, seed());
+      const { contextManager: manager, conversation, storage } = internals(runtime);
+      const originalId = (await conversation.context(ctx)).entries[0]!.id;
+      const result = await manager.compressNow(ctx);
+      const stored = await state(runtime);
+      assert.equal(result.applied, !exhaust);
+      assert.equal(stored.lastOperation?.phase, exhaust ? "failed" : "completed");
+      if (exhaust) {
+        assert.equal(source.calls(), 3);
+        assert.equal(stored.summaries.length, 0);
+        assert.match(stored.lastOperation?.lastError ?? "", /length.*尝试 3 次/);
+      } else {
+        assert(source.calls() >= 2);
+        assert(stored.summaries.length > 0);
+        assert(!JSON.stringify(stored.summaries).includes("Incomplete prefix"));
+      }
+      const original = await manager.retrieveOriginal({ entryId: originalId, limit: 400 }, {
+        entry: async id => (await storage.entry(conversation.id, id as never, ctx))?.entry,
+      }, ctx);
+      assert(original.text.includes("EXACT_ORIGINAL_0"));
+      await runtime.close();
+      assert.equal((await readDurableContextStatus(directory))?.phase, exhaust ? "failed" : "completed");
+    }
+    console.log("PASS length recovery/exhaustion persisted truthfully in real Durable storage; truncated summaries never committed; originals readable");
+
 
     {
       const source = fixture(32_000); const directory = join(root, "unrelated-native-head");

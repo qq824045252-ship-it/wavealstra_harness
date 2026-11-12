@@ -4632,7 +4632,8 @@ export class AgentService {
       tokensBefore: live.beforeTokens, tokensAfter: live.afterTokens, estimatedTokensAfter: live.afterTokens,
       blocks: live.blocks,
       // 只有失败态才把 lastError 当消息，避免历史错误盖在一次成功整理之后。
-      message: live.message ?? (live.phase === "failed" ? live.lastError : undefined),
+      message: live.phase === "failed" && live.lastError
+        ? `${live.message ?? "上下文整理失败"}：${live.lastError}` : live.message,
     };
   }
 

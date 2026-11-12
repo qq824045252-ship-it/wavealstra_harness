@@ -1,3 +1,4 @@
+import { summaryModelLimits, summaryOutputBudget, nextSummaryOutputBudget } from "./DurableSummaryBudget";
 import { createHash } from "node:crypto";
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import type { AssistantMessage, Message, Models } from "@earendil-works/pi-ai";
@@ -1154,7 +1155,9 @@ export class DurableContextManager {
     ctx: Context,
   ): Promise<string> {
     const window = this.resolvePolicy().window;
-    const budget = Math.min(chunkBudget, 24_000, window - 1_500 - estimateTextTokens(SUMMARIZER_SYSTEM) - 1_024);
+    const limits = summaryModelLimits(model, window);
+    const outputReserve = Math.min(limits.output, Math.floor(limits.window / 4));
+    const budget = Math.min(chunkBudget, 24_000, limits.window - outputReserve - estimateTextTokens(SUMMARIZER_SYSTEM) - limits.safety - 256);
     if (budget < 256) throw new Error("当前模型窗口不足以执行有界摘要");
     const chunks = splitByTokens(messages, budget);
     const summaries: string[] = [];
@@ -1180,22 +1183,31 @@ export class DurableContextManager {
       : `<conversation>\n${input}\n</conversation>\n\nSummarize this section so another assistant can continue the task without re-reading it.`;
     const signal = this.maintenanceSignal(ctx);
     signal?.throwIfAborted();
-    const result = await models.completeSimple(model as never, {
-      messages: [
-        { role: "system", content: SUMMARIZER_SYSTEM, timestamp: Date.now() },
-        { role: "user", content: prompt, timestamp: Date.now() },
-      ],
-    }, {
-      maxTokens: 1_500,
-      cacheRetention: "none",
-      signal,
-    }) as AssistantMessage;
-    signal?.throwIfAborted();
-    const text = result.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n").trim();
-    if (result.stopReason !== "stop" || !text) {
-      throw new Error(`摘要模型没有返回有效摘要（${result.stopReason ?? "unknown"}）`);
+    const messages: Message[] = [
+      { role: "system", content: SUMMARIZER_SYSTEM, timestamp: Date.now() },
+      { role: "user", content: prompt, timestamp: Date.now() },
+    ];
+    const inputTokens = messages.reduce((sum, message) => sum + estimateMessageTokens(message), 0);
+    const budget = summaryOutputBudget(model, this.resolvePolicy().window, inputTokens);
+    let maxTokens = budget.initial;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      signal?.throwIfAborted();
+      const result = await models.completeSimple(model as never, { messages }, {
+        maxTokens, cacheRetention: "none", signal,
+      }) as AssistantMessage;
+      signal?.throwIfAborted();
+      const text = result.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n").trim();
+      if (result.stopReason === "stop" && text) return text;
+      // Never commit a truncated summary or feed it back as authoritative history. Retry only
+      // the same read-only summary request; model accounting remains on completeSimple.
+      const next = nextSummaryOutputBudget(maxTokens, budget.ceiling);
+      if (result.stopReason !== "length" || attempt === 2 || next <= maxTokens) {
+        throw new Error(`摘要模型没有返回有效摘要（${result.stopReason ?? "unknown"}）；输出预算 ${maxTokens}/${budget.ceiling} tokens，尝试 ${attempt + 1} 次；原文和已提交摘要保留`);
+      }
+      this.publish({ ...this.status, message: `摘要输出被截断，正在增加输出预算重试（${next} tokens）` });
+      maxTokens = next;
     }
-    return text;
+    throw new Error("摘要重试已耗尽，原文保留");
   }
 
   private async resolveModel(models: Models, ctx: Context): Promise<unknown> {
