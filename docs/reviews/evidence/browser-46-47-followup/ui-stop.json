@@ -1,0 +1,16 @@
+{
+  "sourceVersion": "895e1effd8e4e546ee89ab315e22b58ad4ce1eb0",
+  "scope": "actual ChatInput button and store action, production preload IPC, AgentService, Durable and real renderer; controlled provider; isolated profile",
+  "clickedAt": 1794504865555,
+  "ipcTaskId": "isolated-ui-stop",
+  "ipcAt": 1794504865557,
+  "signalAborted": true,
+  "toolError": "AbortError: 浏览器操作已取消",
+  "toolSettledAt": 1794504865581,
+  "abortReturnedAt": 1794504865850,
+  "historyReturnedAt": 1794504865883,
+  "historyBusy": false,
+  "rendererStopped": true,
+  "passed": true,
+  "electron": "44.5.1"
+}

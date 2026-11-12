@@ -37,3 +37,24 @@ Read sub-wait cancellation, pre-dispatch no-input, post-dispatch unknown outcome
 The first directly piped Windows GUI launch produced only five progress records and no final JSON; it is not counted as passing. Redirected logs avoided that launch problem. A second driver incorrectly awaited the destroyed WebContents' underlying JavaScript promise after the browser caller had already stopped; that promise need not settle. The driver was corrected not to wait for a destroyed page. No production timeout, action or cleanup code was relaxed. An initial native-stop fixture used a data URL rejected by the real browser contract; it was corrected to an isolated file URL, without changing product URL policy.
 
 
+
+## #47 user-stop entry follow-up (same day, closing evidence)
+
+This later supplement resolves the user-stop gap above. Tested checkout is `895e1eff`; the intervening commit after `3da53d82` changes only #43 evidence documents, not production code. The report now records HEAD dynamically.
+
+The isolated renderer mounts the **production ChatInput component and production Zustand store**, uses the **production preload**, and receives native mouse down/up at the real “停止生成” button. Its real callback invokes the original runControl action and AgentIpc.abort. The test registers the normal handler body against a fully initialized real AgentService, real AppDatabase and real Durable runtime. It does not replace the abort callback with direct service calls. The returned history is applied by the renderer; the test waits until its actual durable state is no longer busy before cleanup.
+
+Only the model response is controlled, so the task deterministically reaches a browser read. A finite real renderer busy loop injects the fault; BrowserAutomationService itself is not replaced by a pending-Promise stub. The wrapper only starts this fault and records the real operation's signal/error. The rendered shell/selected task is a fixture, not the user's running application or a full installed-app startup test. Unused optional D2 diagram loading is external in this test bundle; no diagram is rendered.
+
+Final result: actual click → correct task ID at IPC → AbortError with aborted native signal → AgentService abort returned → persisted history busy=false → renderer stopped=true. See [UI stop result](evidence/browser-46-47-followup/ui-stop.json). Run `node scripts/run-browser-stop-ui.cjs` in an available isolated GUI slot. It does not contact a real provider or repeat six-task/full-regression tests.
+
+Original #47 acceptance mapping:
+- Read/target/snapshot waits, common deadline: existing browser contract tests plus real busy-renderer abort/deadline supplement.
+- Pre-dispatch cancellation: existing contract input count=0; post-dispatch unknown outcome and no replay: existing contract and failure-recovery tests.
+- Late reply and document/request identity: existing latest-wins/document guards and navigation contract tests.
+- Independent tab: existing pending-A contract plus real-tab recovery supplement; these are separately described, not conflated.
+- Listener/timer cleanup and success/navigation/screenshot controls: original focused contract/recovery evidence and integrated rerun in browser-46-50 review.
+- Real Electron renderer nonresponse/destruction: the 15-group supplement; actual user stop entry: this mounted production-button integration.
+
+The first UI driver ended after the tool aborted but before the host IPC/history finished and closed its database too early. That result was rejected as incomplete. The driver now waits for host return, history and renderer state. Missing unrelated settings/profile IPC handlers in that first driver were connected to the real AgentService. Final run has no such errors. No product source was changed to make tests pass.
+
