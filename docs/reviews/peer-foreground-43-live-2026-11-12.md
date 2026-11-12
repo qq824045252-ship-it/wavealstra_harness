@@ -36,3 +36,20 @@ Two earlier runs failed before model traffic (`16-51-05-935Z`, `16-52-38-489Z`):
 The frontdoor runner now uses a per-run Vite cache. Optional `BOT_LIVE_NODE_WRITE=1` passes identical esbuild inputs with write:false and writes returned bytes using Node inside that cache only, rejecting escaped output paths. No shared dependency, product Vite configuration, OS permissions or security settings changed. This enabled the real run above; it is not a product fix or a claim that startup in an ordinary installation is broken.
 
 Evidence retained locally under `out/diagnostics/issue32/live/2026-11-12T16-55-04-866Z`: report, per-case progress, provider requests, launch fingerprint, screenshot and dev log. No real user memory/account data were used.
+
+## Final integrated six-case rerun
+
+Fixed product SHA `3da53d82517ff3e1df00355e19c825d5b0baa1f9`; run `2026-11-12T17-18-25-840Z`; source digest `d248533c5f830a82e73e96fbd1a6088d4245a053ece5ee124113d4fc2321966f`; sourceDeltaFiles remained empty. Same real Electron/model and original deadlines. All six passed, driver exit 0; post-exit owned Electron/node scan found zero remaining fixture processes.
+
+| Category | Result | Elapsed |
+| --- | --- | --- |
+| arithmetic | passed | 25.5 s |
+| translation | passed | 39.1 s |
+| csv | passed | 127.3 s |
+| code | passed | 167.5 s |
+| structured-extraction | passed | 122.8 s |
+| offline-html | passed | 216.0 s |
+
+HTML now exists in B’s actual native workspace, is registered and returned to A; its SHA-256 is `07f48e619c460b745cb5c70b9630f2c917b006f0259e255446e1fe905a477c4e`. No file relocation or timeout extension. The earlier failed batch is retained above, not relabeled. Sanitized identities, per-case request counts and artifact hashes are in [the six-case evidence](evidence/peer-foreground-43-six-real-2026-11-12.json). Raw model traces remain local.
+
+This proves the six live functional categories, not every Issue acceptance condition or OS-native input. Final unified regression and per-condition UI/recovery reconciliation are still outstanding; #43 is not closed on this evidence alone.

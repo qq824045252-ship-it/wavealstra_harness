@@ -1,0 +1,105 @@
+{
+  "run": "2026-11-12T17-18-25-840Z",
+  "status": "passed",
+  "baseSHA": "3da53d82517ff3e1df00355e19c825d5b0baa1f9",
+  "sourceDigest": "d248533c5f830a82e73e96fbd1a6088d4245a053ece5ee124113d4fc2321966f",
+  "sourceDeltaFiles": [],
+  "model": "opendesign/deepseek-v4.1-flash-eco",
+  "mode": "real Windows Electron and real local Magpie model; isolated synthetic fixtures",
+  "validatesNativeDesktopInput": false,
+  "checks": [
+    "issue43 six real model categories: B normal foreground decisions, own configuration/Work, exact files and A result return"
+  ],
+  "cases": [
+    {
+      "name": "arithmetic",
+      "status": "passed",
+      "durationMs": 25509,
+      "providerRequestCount": 6,
+      "collaborationId": "bot-collaboration-0b9a7d4d08a320295a6f46609e770a3f8e511b72654c0d30ee0e3a9a3ab215ee",
+      "aRequestId": "1f4d37d0-0348-495e-ab0a-0b9fe93ffbd1",
+      "workId": null,
+      "receiverStatus": "completed",
+      "returnMessageCount": 2,
+      "artifact": null
+    },
+    {
+      "name": "translation",
+      "status": "passed",
+      "durationMs": 39139,
+      "providerRequestCount": 7,
+      "collaborationId": "bot-collaboration-2e07cff90417dd9234a30e73e9dea7dc9179a63bab39264a2f113523749c355c",
+      "aRequestId": "38497977-22b7-4ad5-a0d5-b2799efa0e32",
+      "workId": null,
+      "receiverStatus": "completed",
+      "returnMessageCount": 2,
+      "artifact": null
+    },
+    {
+      "name": "csv",
+      "status": "passed",
+      "durationMs": 127315,
+      "providerRequestCount": 20,
+      "collaborationId": "bot-collaboration-c817d36e0d86b248f56ef517eafd089c2ce20920dea4e3a887c471189727b77f",
+      "aRequestId": "50097575-a427-43d1-be7a-7b076b8f7cad",
+      "workId": "work-03fa8934-97f4-48f5-b92d-f31c57aa808c",
+      "receiverStatus": "completed",
+      "returnMessageCount": 4,
+      "artifact": {
+        "file": "stock-result.json",
+        "sha256": "f96d5836a6734661099965ab0251cafd8e0404a084c3746abe0830f192a4c032",
+        "bytes": 386
+      }
+    },
+    {
+      "name": "code",
+      "status": "passed",
+      "durationMs": 167496,
+      "providerRequestCount": 23,
+      "collaborationId": "bot-collaboration-6491f1fa76679b267c2abc6835c5730c283b13c914c80f4c266f644c29ac0d05",
+      "aRequestId": "5f4b6d5f-feb4-4db6-910d-7635616ad220",
+      "workId": "work-fd946326-0b3b-49de-9e1a-d1c445bee820",
+      "receiverStatus": "completed",
+      "returnMessageCount": 4,
+      "artifact": {
+        "file": "code-check.txt",
+        "sha256": "fc8bbc17b0d98be4e7c5c08caac18f52545b7499a3985859eebf50d595de2109",
+        "bytes": 1307
+      }
+    },
+    {
+      "name": "structured-extraction",
+      "status": "passed",
+      "durationMs": 122838,
+      "providerRequestCount": 17,
+      "collaborationId": "bot-collaboration-4a1924587cea31eac5fd8c5e7e3dbd3b7e4f6fb627423c21a963efeaf2dfdb3c",
+      "aRequestId": "2c0a4c5e-1c76-4f55-94c0-4a66a5cba7b0",
+      "workId": "work-6b000a2a-3b53-4214-a003-ddb53fe4a3b2",
+      "receiverStatus": "completed",
+      "returnMessageCount": 4,
+      "artifact": {
+        "file": "incident.json",
+        "sha256": "74ba89c085045dd2afb48b967f787fd0c29ae5f0e51ad7a2e03b55b1b4e613fd",
+        "bytes": 95
+      }
+    },
+    {
+      "name": "offline-html",
+      "status": "passed",
+      "durationMs": 215980,
+      "providerRequestCount": 21,
+      "collaborationId": "bot-collaboration-48135ab1fd237f78abb3239fee4a780adc8db61e04237137075dc68b25e1f8cb",
+      "aRequestId": "1048f890-9e37-4287-a2ae-c86dde67a2c7",
+      "workId": "work-c8031bf1-614e-4efe-ba4c-9f9caaf963c7",
+      "receiverStatus": "completed",
+      "returnMessageCount": 4,
+      "artifact": {
+        "file": "water-cycle.html",
+        "sha256": "07f48e619c460b745cb5c70b9630f2c917b006f0259e255446e1fe905a477c4e",
+        "bytes": 16193
+      }
+    }
+  ],
+  "ownedFixtureProcessesAfterExit": 0,
+  "exitCode": 0
+}
