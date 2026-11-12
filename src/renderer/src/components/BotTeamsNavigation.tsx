@@ -2,7 +2,7 @@ import { useWorkSummaryPages } from "@/lib/botActivityMonitor";
 import type { WorkProjectionDto } from "@shared/bot-work";
 import { useEffect, useRef, useState } from "react";
 import { useAppStore } from "@/store/appStore";
-import { IconBot, IconPlus, IconX } from "@/components/common/icons";
+import { IconUsers, IconPlus, IconX } from "@/components/common/icons";
 import { BotTeamSettings } from "./pages/BotTeamSettings";
 import { BotTeamDialog } from "./pages/BotTeamDialog";
 import { workTeamControlSchema, type WorkTeamTemplateDto, type WorkTeamMember, type WorkTeamPlan } from "@shared/bot-work-team";
@@ -121,7 +121,7 @@ export function BotTeamsNavigation({ onSelect }: { onSelect?: () => void } = {})
     </div>
     {!teams.length && <p className="sidebar-empty">把常用 Bot 组成团队，统一接收任务和返回成果。</p>}
     {teams.map(team => <button type="button" className={`sidebar-bot-row sidebar-bot-identity ${activeTeam?.templateId === team.templateId ? "active" : ""}`} aria-pressed={activeTeam?.templateId === team.templateId} key={team.templateId} onClick={() => openTeam(team)}>
-      <span className="sidebar-bot-avatar"><IconBot size={18} /></span><span><strong>{team.name}</strong><small>{team.members.length + 1} 位 Bot · 队长 {botName(team.ownerBotId)}</small></span>
+      <span className="sidebar-bot-avatar"><IconUsers size={18} /></span><span><strong title={team.name}>{team.name}</strong><small>{team.members.length + 1} 位 Bot · 队长 {botName(team.ownerBotId)}</small></span>
     </button>)}
     {(historical.loading || historical.error || (historical.result?.filtered ?? 0) > 0) && <details className="bot-team-history"><summary>临时与历史团队事项（{historical.result?.filtered ?? "…"}）</summary>
       {adHoc.map(work => <button type="button" key={work.workId} onClick={() => openWork(work)}>{work.title}</button>)}

@@ -1,11 +1,11 @@
 /* Bot uses the shared neutral surfaces, typography and chat Markdown renderer. */
-.bot-workspace { display:flex; flex:1; min-width:0; min-height:0; position:relative; background:var(--bg-panel); color:var(--fg); isolation:isolate; }
+.bot-workspace { --bot-body-size:var(--font-ui-size,15px); --bot-meta-size:max(11px,calc(var(--bot-body-size) * .8)); display:flex; flex:1; min-width:0; min-height:0; position:relative; background:var(--bg-panel); color:var(--fg); isolation:isolate; }
 .bot-conversation { display:flex; flex:1; min-width:0; min-height:0; flex-direction:column; position:relative; }
 .bot-workspace :is(h1,h2,h3,h4,p) { margin:0; }
-.bot-workspace h1 { font-size:16px; font-weight:650; }
-.bot-workspace h2 { font-size:19px; line-height:1.4; font-weight:650; }
-.bot-workspace h3 { font-size:14px; line-height:1.5; }
-.bot-workspace h4 { font-size:13px; }
+.bot-workspace h1 { font-size:calc(var(--bot-body-size) * 1.067); font-weight:650; }
+.bot-workspace h2 { font-size:calc(var(--bot-body-size) * 1.267); line-height:1.4; font-weight:650; }
+.bot-workspace h3 { font-size:calc(var(--bot-body-size) * 1.067); line-height:1.5; }
+.bot-workspace h4 { font-size:calc(var(--bot-body-size) * .867); }
 .bot-workspace p { line-height:1.65; }
 .bot-workspace button:not(.table-node__resize-handle), .bot-navigation-drawer button { font:inherit; cursor:pointer; }
 .bot-workspace button:where(:not(.send-btn, .table-node__resize-handle, .bot-composer-capabilities button)) { display:inline-flex; align-items:center; justify-content:center; gap:6px; padding:8px 11px; border:1px solid var(--border-default); border-radius:9px; color:var(--fg); background:var(--bg-elevated); font-size:12px; transition:background var(--motion-fast),border-color var(--motion-fast); }
@@ -19,7 +19,7 @@
 .bot-heading-title { display:flex; align-items:center; gap:8px; min-width:0; }
 .bot-primary-badge { flex-shrink:0; padding:2px 6px; border:1px solid var(--border-default); border-radius:5px; color:var(--fg-secondary); font-size:10px; line-height:1.3; }
 .bot-heading h1 { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.bot-heading p { display:flex; align-items:center; gap:5px; margin-top:3px; color:var(--fg-secondary); font-size:11px; }
+.bot-heading p { display:flex; align-items:center; gap:5px; margin-top:3px; color:var(--fg-secondary); font-size:var(--bot-meta-size); }
 .bot-avatar { display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; width:27px; height:27px; border-radius:9px; color:var(--fg-secondary); background:var(--bg-sidebar); border:1px solid var(--border-subtle); }
 .bot-header-avatar { width:39px; height:39px; border-radius:13px; }
 .bot-presence { width:5px; height:5px; border-radius:50%; background:var(--fg-muted); }
@@ -30,33 +30,36 @@
 .bot-view-tabs button[aria-current="page"] { background:var(--bg-active); color:var(--fg); font-weight:650; }
 .bot-tab-count { min-width:16px; line-height:17px; text-align:center; font-size:10px; padding:0 4px; background:var(--bg-hover); border-radius:5px; }
 .bot-thread { flex:1; overflow:auto; min-height:0; overscroll-behavior:contain; scrollbar-gutter:stable; }
-.bot-message-list { display:flex; flex-direction:column; gap:32px; width:min(100%,calc(var(--chat-content-max,832px) + 2 * var(--chat-gutter,24px))); margin:auto; box-sizing:border-box; padding:28px max(16px,var(--chat-gutter,24px)) 24px; }
-.bot-message { gap:8px; }
-.bot-message-author { display:flex; align-items:center; gap:9px; font-size:12px; }
+.bot-message-list { display:flex; flex-direction:column; gap:28px; width:min(100%,calc(min(var(--chat-content-max,832px),760px) + 2 * var(--chat-gutter,24px))); margin:auto; box-sizing:border-box; padding:28px max(16px,var(--chat-gutter,24px)) 24px; }
+.bot-message { gap:6px; }
+.bot-message-author { display:flex; align-items:center; gap:9px; font-size:var(--bot-meta-size); color:var(--fg-secondary); }
 .bot-message-author strong { font-weight:600; }
-.bot-assistant-content { padding-left:36px; min-width:0; }
-.bot-assistant-content .md { font-size:14px; line-height:1.8; }
-.bot-message.user .user-bubble { max-width:min(85%,600px); padding:12px 17px; }
-.bot-message-meta { display:flex; align-items:center; flex-wrap:wrap; column-gap:14px; row-gap:2px; padding-left:36px; min-width:0; color:var(--fg-secondary); font-size:11px; }
-.bot-message.user .bot-message-meta { padding-left:0; }
+.bot-assistant-content { margin-left:36px; min-width:0; overflow-wrap:anywhere; }
+.bot-assistant-content .md { font-size:var(--bot-body-size); line-height:1.75; }
+.bot-assistant-content .md > :first-child { margin-top:0; }
+.bot-assistant-content .md > :last-child { margin-bottom:0; }
+.bot-message.user .user-bubble { max-width:min(85%,600px); padding:12px 17px; border-radius:18px; font-size:var(--bot-body-size); line-height:1.75; }
+.bot-message-meta { display:flex; align-items:center; flex-wrap:wrap; column-gap:14px; row-gap:2px; padding-left:36px; min-width:0; width:100%; box-sizing:border-box; color:var(--fg-secondary); font-size:var(--bot-meta-size); }
+.bot-message.user .bot-message-meta { padding-left:0; width:auto; max-width:min(85%,600px); gap:10px; }
 /* Actions form one quiet, predictable group; timestamps never split the controls. */
 .bot-message-actions, .bot-message-stamp { display:flex; align-items:center; flex-wrap:wrap; gap:4px; min-width:0; }
+.bot-message-actions { order:2; margin-left:auto; }
 .bot-message-actions:empty { display:none; }
-.bot-message-stamp { gap:8px; font-size:11px; line-height:1.5; color:var(--fg-secondary); font-variant-numeric:tabular-nums; }
+.bot-message-stamp { gap:8px; font-size:var(--bot-meta-size); line-height:1.5; color:var(--fg-secondary); font-variant-numeric:tabular-nums; }
 .bot-message-stamp time { white-space:nowrap; }
 .bot-message-stamp > span:not(:empty) + time::before { content:"·"; margin-right:8px; opacity:.55; }
-.bot-workspace .bot-message-actions button { min-height:30px; padding:4px 7px; border:1px solid transparent; border-radius:6px; background:transparent; color:var(--fg-secondary); font-size:12px; line-height:20px; white-space:nowrap; }
+.bot-workspace .bot-message-actions button { width:32px; height:32px; min-height:32px; padding:6px; border:1px solid transparent; border-radius:50%; background:transparent; color:var(--fg-secondary); font-size:12px; line-height:20px; white-space:nowrap; }
 .bot-workspace .bot-message-actions button:hover:not(:disabled) { background:var(--bg-hover); border-color:transparent; color:var(--fg); }
-.bot-workspace .bot-message-actions .bot-message-stop { background:var(--bg-sidebar); color:var(--fg); }
+.bot-workspace .bot-message-actions .bot-message-stop { color:var(--fg); }
 .bot-message-actions svg { flex-shrink:0; }
-@media (pointer:coarse) { .bot-workspace .bot-message-actions button { min-height:40px; } }
+@media (pointer:coarse) { .bot-workspace .bot-message-actions button { width:44px; height:44px; min-height:44px; } }
 .bot-reply-segment + .bot-reply-segment { margin-top:16px; }
 .bot-reply-segment-commentary { color:var(--fg-secondary); }
 .bot-reply-segment-receipt { color:var(--fg-muted); }
-.bot-reply-segment-receipt .md { font-size:13px; }
+.bot-reply-segment-receipt .md { font-size:var(--bot-body-size); }
 .bot-reply-segment .md > :first-child { margin-top:0; }
 .bot-reply-segment .md > :last-child { margin-bottom:0; }
-.bot-reply-placeholder { color:var(--fg-secondary); font-size:13px; }
+.bot-reply-placeholder { color:var(--fg-secondary); font-size:var(--bot-meta-size); }
 .bot-typing-dots { letter-spacing:3px; animation:bot-reply-pulse 1.3s ease-in-out infinite; }
 @keyframes bot-reply-pulse { 50% { opacity:.35; } }
 .bot-message-work-links { display:flex; flex-wrap:wrap; gap:7px; padding-left:36px; }
@@ -148,8 +151,8 @@
 .sidebar-bot-identity { display:flex!important; align-items:center; gap:10px; padding:12px!important; border-radius:11px!important; }
 .sidebar-bot-avatar { display:grid!important; place-items:center; width:34px; height:34px; border-radius:10px; background:var(--bg-panel); border:1px solid var(--border-subtle); }
 .sidebar-bot-identity > span:last-child { display:flex; flex-direction:column; gap:5px; align-items:flex-start; }
-.sidebar-bot-identity strong { font-size:13px; color:var(--fg); }
-.sidebar-bot-identity small { font-size:11px; color:var(--fg-secondary); }
+.sidebar-bot-identity strong { font-size:calc(var(--font-ui-size,15px) * .867); color:var(--fg); }
+.sidebar-bot-identity small { font-size:max(11px,calc(var(--font-ui-size,15px) * .8)); color:var(--fg-secondary); }
 .sidebar-bot-tip { display:flex; flex-direction:column; gap:10px; margin:24px 12px; padding:18px 14px; border:1px solid var(--border-default); border-radius:12px; font-size:11px; color:var(--fg-secondary); }
 .sidebar-bot-tip strong { font-size:12px; color:var(--fg); }
 .sidebar-bot-tip p { margin:0; line-height:1.8; }
@@ -225,6 +228,9 @@
 
 @media (max-width:640px) {
   .bot-workspace-header { gap:7px; padding:12px; }
+  .bot-workspace-actions { flex-basis:100%; min-width:0; flex-wrap:nowrap; overflow-x:auto; padding-bottom:2px; }
+  .bot-workspace-actions > * { flex-shrink:0; }
+  .bot-workspace-actions > button, .bot-workspace-actions .bot-activity-trigger { padding:6px 7px; font-size:12px; white-space:nowrap; }
   .bot-header-avatar { display:none; }
   .bot-workspace-actions { gap:2px; }
   .bot-workspace .bot-new-conversation { padding:8px 6px; white-space:nowrap; }
@@ -305,7 +311,7 @@
 .bot-settings-save { display:flex; align-items:center; flex-wrap:wrap; gap:10px; padding-block:10px; border-top:1px solid var(--border-color, #8885); }
 .bot-settings-save span { font-size:12px; opacity:.7; }
 
-.bot-reply-reference { color: var(--fg-secondary); font-size: 12px; border-left: 2px solid var(--border-default); padding: 4px 10px; margin-bottom: 8px; white-space: pre-wrap; max-height: 64px; overflow: auto; }
+.bot-reply-reference { color: var(--fg-secondary); font-size: var(--bot-meta-size); border-left: 2px solid var(--border-default); padding: 4px 10px; margin-bottom: 8px; white-space: pre-wrap; max-height: 64px; overflow: auto; }
 .bot-pending-requests { max-height: 140px; overflow: auto; }
 .bot-pending-request { display: flex; gap: 8px; align-items: center; padding: 6px 8px; font-size: 12px; }
 .bot-pending-request span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -399,3 +405,23 @@
 .bot-work-file-preview-tabs { width:fit-content; padding:3px; border:1px solid var(--border-subtle); border-radius:9px; }
 .bot-work-file-preview-tabs button { border-color:transparent; min-width:54px; }
 .bot-work-file-preview footer button { font-size:11px; }
+
+/* The composer and transcript share one reading column. Keep controls at the right
+   even when capability chips wrap, and retain sending during concurrent replies. */
+.bot-composer.input-area { max-width:calc(min(var(--chat-content-max,832px),760px) + 2 * var(--chat-gutter,24px)); }
+.bot-composer .input-box { border-radius:22px; }
+.bot-composer .input-textarea { font-size:var(--bot-body-size); line-height:1.65; padding:12px 16px 4px; }
+.bot-composer-send-actions { display:flex; align-items:center; align-self:flex-end; gap:6px; margin-left:auto; flex:0 0 auto; }
+.bot-workspace .bot-composer-send-actions button { display:inline-flex; align-items:center; justify-content:center; width:36px; height:36px; min-width:36px; padding:0; border-radius:50%; }
+.bot-workspace .bot-composer-send-actions .bot-composer-stop { border:1px solid var(--border-default); background:transparent; color:var(--fg); }
+.bot-workspace .bot-composer-stop:hover { background:var(--bg-hover); }
+.bot-reply-reference { margin-left:36px; }
+@media(max-width:520px) {
+  .bot-message-list { padding:20px 14px; gap:24px; }
+  .bot-assistant-content { margin-left:0; padding:12px 14px; border-radius:18px; background:var(--bg-sidebar); }
+  .bot-message-meta, .bot-message-work-links { padding-left:0; }
+  .bot-reply-reference { margin-left:0; }
+  .bot-composer.input-area { padding:8px 12px 12px; }
+  .bot-composer .bot-composer-capabilities { flex-basis:calc(100% - 86px); }
+}
+@media(pointer:coarse) { .bot-workspace .bot-composer-send-actions button { width:44px; height:44px; min-width:44px; } }

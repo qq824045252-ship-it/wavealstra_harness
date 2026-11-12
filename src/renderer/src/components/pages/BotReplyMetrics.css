@@ -1,1 +1,7 @@
-.bot-reply-metrics{display:flex;align-items:center;flex-wrap:wrap;gap:5px 14px;margin:10px 0 2px;color:var(--text-tertiary);font-size:11px;font-variant-numeric:tabular-nums;line-height:1.6}.bot-reply-metrics>span{white-space:nowrap}.bot-reply-metrics .generation-speed{font-size:11px}
+/* Native disclosure keeps every metric available to keyboard and touch users. */
+.bot-reply-metrics { margin:2px 0 0 36px; color:var(--fg-secondary); font-size:var(--bot-meta-size,12px); font-variant-numeric:tabular-nums; line-height:1.6; }
+.bot-workspace .bot-reply-metrics > summary { width:fit-content; padding:5px 0; font-size:var(--bot-meta-size,12px); font-weight:400; cursor:pointer; }
+.bot-reply-metrics-grid { display:flex; align-items:center; flex-wrap:wrap; gap:6px 16px; padding:8px 12px; margin:4px 0 6px; border-radius:10px; background:var(--bg-sidebar); }
+.bot-reply-metrics-grid > span { overflow-wrap:anywhere; }
+.bot-reply-metrics .generation-speed { font-size:inherit; }
+@media(max-width:520px) { .bot-reply-metrics { margin-left:0; } }

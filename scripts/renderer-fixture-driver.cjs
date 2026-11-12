@@ -38,7 +38,7 @@ function runRendererFixture({ name, width, height, show = false, timeoutMs = 600
     return join(dirname(file), `${basename(file, extension)}-${backend}${extension}`);
   };
 
-  void (async () => {
+  return (async () => {
     try {
       mkdirSync(output, { recursive: true });
       for (const extension of ['txt', 'html']) rmSync(join(output, `${name}-${backend}-failure.${extension}`), { force: true });

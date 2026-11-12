@@ -1,3 +1,4 @@
+import './bot-interface-dom-env';
 import { emptyModePolicy } from "../src/shared/mode-profile";
 /** Actual page/store in Chromium, controlled host replies (not model acceptance). */
 import "../src/renderer/src/styles/global.css";
@@ -24,7 +25,7 @@ const bot = { botId: "bot", displayName: "并发助理", status: "active", autho
 let enhanceResolve: ((value:{text:string})=>void)|undefined;
 Object.assign(window, { api: {
   enhance: {prompt:()=>new Promise(resolve=>{enhanceResolve=resolve;})},
-  agent: {getModeProfile:async()=>({policy:emptyModePolicy()}),getAppSettings:async()=>({skillModeFilterEnabled:false})},
+  agent: {listModels:async()=>[],getModeProfile:async()=>({policy:emptyModePolicy()}),getAppSettings:async()=>({skillModeFilterEnabled:false})},
   mcp: {listServers:async()=>[{name:"fixture-mcp",installed:true,disabled:false,endpoint:"stdio",transport:"stdio",sourceId:"fixture"}]},
   botWork: {
   getSettings: async()=>({settings:{botId:"bot",revision:0,workspacePath:"",effectiveWorkspacePath:"/fixture",spaceId:"bot-space",modelId:"model-a",expertId:"",skillIds:[],mcpIds:[],connectorIds:[]},
@@ -106,7 +107,7 @@ Object.assign(window, { concurrentFixture: {
       generation:{phase:'complete',estimated:false,tps:40,outputTokens:20,startedAt:1,updatedAt:2,ttftMs:10,outcome:'completed'}};
     publish();
   },
-  requests, cancellations, resolveEnhance:(text:string)=>enhanceResolve?.({text}), draft: (text: string) => useAppStore.getState().setBotDraft(text),
+  requests, cancellations, enhancePending: () => Boolean(enhanceResolve), resolveEnhance:(text:string)=>enhanceResolve?.({text}), draft: (text: string) => useAppStore.getState().setBotDraft(text),
   acknowledge: (index: number) => { const request = requests[index]; receipts.get(request.requestId)!({ botId: "bot", conversationId: "chat", requestId: request.requestId,
     userMessageId: `u-${request.requestId}`, assistantMessageId: `a-${request.requestId}`, replayed: false }); },
   answer: (index: number, text: string, revision: number, status: "running" | "completed") => {
@@ -115,4 +116,6 @@ Object.assign(window, { concurrentFixture: {
     history = mergeBotMessageEvent(history, event)!; publish();
   },
 } });
-createRoot(document.getElementById("root")!).render(<BotWorkspacePage />);
+const fixtureRoot = createRoot(document.getElementById("root")!);
+fixtureRoot.render(<BotWorkspacePage />);
+Object.assign(window, { disposeConversationFixture: () => fixtureRoot.unmount() });
