@@ -1,0 +1,88 @@
+{
+  "startedAt": "2026-11-12T04:01:46.158Z",
+  "scope": "Zero-model supplement attached to the same verified isolated application. Does not rewrite the primary runner result.",
+  "checks": [
+    {
+      "label": "actual text snapshot visible through real IPC",
+      "passed": true,
+      "data": {
+        "snapshot": "/home/vivion/iq27-tmp/i27-QajIPb/.mybuddy/durable/61765569b013db01138ce867ee9a0b355cfac800a5e263c0b2096b08c158b9af/artifacts/830141d5aa43a3a682047b99c3bceb5b75b9216579e172ecf61d5c46379fe66f.txt",
+        "digest": "830141d5aa43a3a682047b99c3bceb5b75b9216579e172ecf61d5c46379fe66f"
+      }
+    },
+    {
+      "label": "missing registered snapshot shows error without mutable fallback",
+      "passed": true,
+      "data": {
+        "error": "无法读取文件：Error invoking remote method 'workspace:readFile': Error: ENOENT: no such file or directory, lstat '/home/vivion/iq27-tmp/i27-QajIPb/.mybuddy/durable/61765569b013db01138ce867ee9a0b355cfac800a5e263c0b2096b08c158b9af/artifacts/830141d5aa43a3a682047b99c3bceb5b75b9216579e172ecf61d5c46379fe66f.txt'"
+      }
+    },
+    {
+      "label": "retry reads restored exact immutable bytes",
+      "passed": true
+    },
+    {
+      "label": "real reminder linked by exact scheduler dedupe identity",
+      "passed": true,
+      "data": {
+        "job": {
+          "id": "reminder-13d64f40ea4a585448fc576d79dd452ef362d996c74cf20fd0ca3f732fbcaaa8",
+          "name": "可见成果验收提醒",
+          "prompt": "提醒：请查看成果并做验收（只提醒，不执行任务）。",
+          "scheduleType": "at",
+          "scheduleExpr": "2026-11-12T03:57:11.664Z",
+          "timezone": "Asia/Shanghai",
+          "enabled": false,
+          "createdAt": 1794455806173,
+          "updatedAt": 1794455831666,
+          "lastRunAt": 1794455831666,
+          "reminder": {
+            "state": "delivered",
+            "kind": "bot-reminder",
+            "userId": "user-local-primary",
+            "botId": "bot-mybuddy-default",
+            "conversationId": "bot-conversation-8fb0341b-22bc-4c4a-a355-a4b69aba1c24"
+          },
+          "restartPolicy": "resume",
+          "runCount": 1
+        },
+        "note": {
+          "id": "0a78ad5c-61a6-48ab-add9-0f3268206540",
+          "type": "reminder.due",
+          "level": "info",
+          "title": "⏰ 可见成果验收提醒",
+          "body": "提醒：请查看成果并做验收（只提醒，不执行任务）。",
+          "sourceType": "automation",
+          "sourceId": "reminder-13d64f40ea4a585448fc576d79dd452ef362d996c74cf20fd0ca3f732fbcaaa8",
+          "dedupeKey": "reminder-e1d04321b875a4c1fed06685bda2c4697ae71a9ff08f134e64e1912c26003880",
+          "createdAt": 1794455831672
+        },
+        "message": {
+          "messageRevision": 1,
+          "messageId": "bot-message-reminder-e1d04321b875a4c1fed06685bda2c4697ae71a9ff08f134e64e1912c26003880",
+          "conversationId": "bot-conversation-8fb0341b-22bc-4c4a-a355-a4b69aba1c24",
+          "botId": "bot-mybuddy-default",
+          "requestId": "reminder-e1d04321b875a4c1fed06685bda2c4697ae71a9ff08f134e64e1912c26003880",
+          "botCalls": [],
+          "ordinal": 13,
+          "role": "assistant",
+          "text": "⏰ 提醒：请查看成果并做验收（只提醒，不执行任务）。",
+          "status": "completed",
+          "workIds": [],
+          "createdAt": 1794455831666,
+          "updatedAt": 1794455831666
+        }
+      }
+    },
+    {
+      "label": "supplement adds zero model calls",
+      "passed": true
+    }
+  ],
+  "modelsBefore": 37,
+  "actualText": "观察结论：本批文件真实可读。\n下一步：保留不可变保存版本。\n",
+  "originalStrictContentFailure": "Actual generated text includes a trailing newline. Primary literal-equality failure remains unchanged; this supplement verifies actual persisted bytes, not the requested text contract.",
+  "modelsAfter": 37,
+  "status": "passed",
+  "finishedAt": "2026-11-12T04:01:47.113Z"
+}

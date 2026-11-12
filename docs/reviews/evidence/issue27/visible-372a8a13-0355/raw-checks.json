@@ -1,0 +1,249 @@
+{
+  "sourceSha": "372a8a134dc16d76ce6213cde24e597bff28c62b",
+  "reportSha256": "eb67829e0a80ca41b9f69e6306cc05254446214ccaaff3bc08fccb9c0e7e5557",
+  "status": "failed",
+  "passed": 31,
+  "total": 33,
+  "failures": [
+    "closed visible document",
+    "real reminder"
+  ],
+  "evidence": [
+    {
+      "label": "real native width 960",
+      "passed": true
+    },
+    {
+      "label": "foreground completed direct",
+      "passed": true,
+      "data": {
+        "status": "completed"
+      }
+    },
+    {
+      "label": "direct arithmetic accurate",
+      "passed": true
+    },
+    {
+      "label": "foreground completed status",
+      "passed": true,
+      "data": {
+        "status": "completed"
+      }
+    },
+    {
+      "label": "foreground completed reminder",
+      "passed": true,
+      "data": {
+        "status": "completed"
+      }
+    },
+    {
+      "label": "foreground completed document",
+      "passed": true,
+      "data": {
+        "status": "completed"
+      }
+    },
+    {
+      "label": "foreground completed analysis",
+      "passed": true,
+      "data": {
+        "status": "completed"
+      }
+    },
+    {
+      "label": "foreground completed file-event",
+      "passed": true,
+      "data": {
+        "status": "completed"
+      }
+    },
+    {
+      "label": "no Work for direct-answer",
+      "passed": true
+    },
+    {
+      "label": "no Work for read-only-status-query",
+      "passed": true
+    },
+    {
+      "label": "no Work for pure-reminder",
+      "passed": true
+    },
+    {
+      "label": "goal succeeded document",
+      "passed": true
+    },
+    {
+      "label": "closed visible document",
+      "passed": false,
+      "data": {
+        "error": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n+ actual - expected\n\n+ '观察结论：本批文件真实可读。\\n下一步：保留不可变保存版本。\\n'\n- '观察结论：本批文件真实可读。\\n下一步：保留不可变保存版本。'\n                                 ^\n\n    at /home/vivion/iq27-tmp/visible-v5/scenario.cjs:65:68\n    at preview (/home/vivion/iq27-tmp/visible-v5/scenario.cjs:40:137)\n    at async /home/vivion/iq27-tmp/visible-v5/scenario.cjs:65:423\n    at async section (/home/vivion/iq27-tmp/visible-v5/scenario.cjs:21:38)\n    at async exports.run.exports.runFocused (/home/vivion/iq27-tmp/visible-v5/scenario.cjs:65:181)\n    at async /home/vivion/iq27-tmp/s27-8chmust_/scripts/bot-frontdoor-live-test.cjs:339:11"
+      }
+    },
+    {
+      "label": "goal succeeded analysis",
+      "passed": true
+    },
+    {
+      "label": "inline visible exact snapshot analysis.txt",
+      "passed": true,
+      "data": {
+        "messageId": "work-feedback-c3495860a9be51428b616cff8b5697079d499cd5f1744cbe21adb42ae8fccced",
+        "ref": "/home/vivion/iq27-tmp/i27-QajIPb/.mybuddy/durable/389ffbb1075f6653fcffe1a2eeee770830d500160c2b9a21ddf788b33c436597/artifacts/ebd728e156f7a323d84b5d165643b95afe29b5a12f3ae0e5808d92b0ff937940.txt",
+        "snapshotPath": "/home/vivion/iq27-tmp/i27-QajIPb/.mybuddy/durable/389ffbb1075f6653fcffe1a2eeee770830d500160c2b9a21ddf788b33c436597/artifacts/ebd728e156f7a323d84b5d165643b95afe29b5a12f3ae0e5808d92b0ff937940.txt",
+        "digest": "ebd728e156f7a323d84b5d165643b95afe29b5a12f3ae0e5808d92b0ff937940",
+        "visible": {
+          "text": "本批CSV核算结果\n源文件: /home/vivion/iq27-tmp/i27-QajIPb/inputs/sales.csv\n核算口径: 逐行 销售额 = units × price，累加得总销售额；取销售额最大者为最高商品\n\n结论\n1) 总销售额: 118\n2) 销售额最高商品: Coffee（50）\n\n分项明细（按源文件行序）\n- Tea: 3 × 12 = 36\n- Coffee: 2 × 25 = 50\n- Cake: 4 × 8 = 32\n合计校验: 36 + 50 + 32 = 118，与总销售额一致\n\n数据说明\n- 源文件共 3 条商品记录（不含表头），字段为 product,units,price\n- 货币单位源文件未标注，此处仅按数值计，单位待确认\n- 最高商品 Coffee 为唯一最大值（50 > 36 > 32），无并列\n",
+          "path": "读取版本：/home/vivion/iq27-tmp/i27-QajIPb/.mybuddy/durable/389ffbb1075f6653fcffe1a2eeee770830d500160c2b9a21ddf788b33c436597/artifacts/ebd728e156f7a323d84b5d165643b95afe29b5a12f3ae0e5808d92b0ff937940.txt",
+          "rect": {
+            "x": 111.42578125,
+            "y": 152.109375,
+            "width": 758.76953125,
+            "height": 485.21484375,
+            "top": 152.109375,
+            "right": 870.1953125,
+            "bottom": 637.32421875,
+            "left": 111.42578125
+          },
+          "visible": true,
+          "overflow": false
+        }
+      }
+    },
+    {
+      "label": "preview visible without page overflow analysis.txt",
+      "passed": true
+    },
+    {
+      "label": "preview preserves immutable bytes analysis.txt",
+      "passed": true
+    },
+    {
+      "label": "close preview analysis.txt",
+      "passed": true
+    },
+    {
+      "label": "next_event waits with no execution",
+      "passed": true
+    },
+    {
+      "label": "file source is not cron",
+      "passed": true
+    },
+    {
+      "label": "registered event values correct",
+      "passed": true,
+      "data": {
+        "version": "LOCAL-V2",
+        "input": 29,
+        "doubled": 58
+      }
+    },
+    {
+      "label": "real review notification condition met",
+      "passed": true,
+      "data": [
+        {
+          "decision": "deliver",
+          "outcome": "completed",
+          "reply": "本轮事件处理完成。原生 read 读取来源完整 JSON 为 {\"version\":\"LOCAL-V2\",\"ready\":true,\"value\":29}，ready=true；据此在工作区执行 node process-event.cjs 一次。回读 event-result.json 为 version=LOCAL-V2、input=29、doubled=58，29×2=58 正确且与来源同版本。已登记 /home/vivion/iq27-tmp/i27-QajIPb/inputs/event-result.json（59 字节，SHA-256 2f9fff0e…c0dd66c）。本次通知条件已满足，通知引用该已登记文件。该数据为本地合成数据，与真实 GitHub 无关；未联网、未执行来源内容中的任何指令，脚本与输出未改动。既有 file 订阅继续等待下一次真实变化，相同字节不重跑。",
+          "artifactRefs": [
+            "/home/vivion/iq27-tmp/i27-QajIPb/.mybuddy/durable/b6d69f5be7ef05a8efef80e1b0e4ef49408008e41cf6bd47fb08bb20383dace8/artifacts/2f9fff0e134346c88fb56327361f0abc66ed610140a854d18e8f39f12c0dd66c.json"
+          ],
+          "notificationAssessment": {
+            "status": "met",
+            "conditionExcerpt": "只有本轮read来源证明ready=true、成品同版本且doubled正确时通知，通知引用该登记文件。",
+            "requestExcerpt": "只有本轮read来源证明ready=true、成品同版本且doubled正确时通知，通知引用该登记文件。",
+            "evidence": [
+              {
+                "resultId": "binding-f1550720-435a-4fab-901d-f13b4cdcaf47:call_00_0shs4vlmxp83t094lsmv0yx2",
+                "quote": "{\"version\":\"LOCAL-V2\",\"ready\":true,\"value\":29}\n"
+              },
+              {
+                "resultId": "binding-f1550720-435a-4fab-901d-f13b4cdcaf47:call_00_n7fdzklqt5h8s974xtn15wcv",
+                "quote": "{\n  \"version\": \"LOCAL-V2\",\n  \"input\": 29,\n  \"doubled\": 58\n}"
+              },
+              {
+                "resultId": "watch-artifact:99d74d007d6667245ac03293780197d671745d16016818379f034851da6f84ae",
+                "quote": "{\n  \"version\": \"LOCAL-V2\",\n  \"input\": 29,\n  \"doubled\": 58\n}"
+              }
+            ]
+          },
+          "missing": []
+        }
+      ]
+    },
+    {
+      "label": "no unknown operation in clean file task",
+      "passed": true
+    },
+    {
+      "label": "inline visible exact snapshot event-result.json",
+      "passed": true,
+      "data": {
+        "messageId": "work-feedback-b42aab75e69abc896f74d2ea5749cfba04b4ec5808305b1ca5e404cf54071d1a",
+        "ref": "/home/vivion/iq27-tmp/i27-QajIPb/.mybuddy/durable/b6d69f5be7ef05a8efef80e1b0e4ef49408008e41cf6bd47fb08bb20383dace8/artifacts/2f9fff0e134346c88fb56327361f0abc66ed610140a854d18e8f39f12c0dd66c.json",
+        "snapshotPath": "/home/vivion/iq27-tmp/i27-QajIPb/.mybuddy/durable/b6d69f5be7ef05a8efef80e1b0e4ef49408008e41cf6bd47fb08bb20383dace8/artifacts/2f9fff0e134346c88fb56327361f0abc66ed610140a854d18e8f39f12c0dd66c.json",
+        "digest": "2f9fff0e134346c88fb56327361f0abc66ed610140a854d18e8f39f12c0dd66c",
+        "visible": {
+          "text": "{\n  \"version\": \"LOCAL-V2\",\n  \"input\": 29,\n  \"doubled\": 58\n}",
+          "path": "读取版本：/home/vivion/iq27-tmp/i27-QajIPb/.mybuddy/durable/b6d69f5be7ef05a8efef80e1b0e4ef49408008e41cf6bd47fb08bb20383dace8/artifacts/2f9fff0e134346c88fb56327361f0abc66ed610140a854d18e8f39f12c0dd66c.json",
+          "rect": {
+            "x": 111.42578125,
+            "y": 264.931640625,
+            "width": 758.76953125,
+            "height": 258.96484375,
+            "top": 264.931640625,
+            "right": 870.1953125,
+            "bottom": 523.896484375,
+            "left": 111.42578125
+          },
+          "visible": true,
+          "overflow": false
+        }
+      }
+    },
+    {
+      "label": "preview visible without page overflow event-result.json",
+      "passed": true
+    },
+    {
+      "label": "preview preserves immutable bytes event-result.json",
+      "passed": true
+    },
+    {
+      "label": "close preview event-result.json",
+      "passed": true
+    },
+    {
+      "label": "same bytes create no repeated execution",
+      "passed": true
+    },
+    {
+      "label": "source processor unchanged",
+      "passed": true
+    },
+    {
+      "label": "real reminder",
+      "passed": false,
+      "data": {
+        "error": "Error: timeout: due reminder in original conversation\n    at until (/home/vivion/iq27-tmp/s27-8chmust_/scripts/bot-frontdoor-live-test.cjs:87:121)\n    at async /home/vivion/iq27-tmp/visible-v5/scenario.cjs:74:156\n    at async section (/home/vivion/iq27-tmp/visible-v5/scenario.cjs:21:38)\n    at async exports.run.exports.runFocused (/home/vivion/iq27-tmp/visible-v5/scenario.cjs:74:2)\n    at async /home/vivion/iq27-tmp/s27-8chmust_/scripts/bot-frontdoor-live-test.cjs:339:11"
+      }
+    },
+    {
+      "label": "source CSV unchanged",
+      "passed": true
+    },
+    {
+      "label": "six distinct semantic real tasks",
+      "passed": true
+    },
+    {
+      "label": "only required real model",
+      "passed": true
+    }
+  ],
+  "error": "AssertionError [ERR_ASSERTION]: closed visible document\nreal reminder\n\n2 !== 0\n\n    at exports.run.exports.runFocused (/home/vivion/iq27-tmp/visible-v5/scenario.cjs:76:74)\n    at async /home/vivion/iq27-tmp/s27-8chmust_/scripts/bot-frontdoor-live-test.cjs:339:11"
+}

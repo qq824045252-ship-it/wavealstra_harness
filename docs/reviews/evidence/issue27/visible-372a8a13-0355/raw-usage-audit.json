@@ -1,0 +1,854 @@
+[
+  {
+    "requestIndex": 0,
+    "requestStartedAt": 1794455789026,
+    "firstDeltaAt": 1794455792885,
+    "endedAt": 1794455792897,
+    "usage": [
+      {
+        "prompt_tokens": 19063,
+        "prompt_tokens_details": {
+          "cached_read_tokens": 2048,
+          "cached_tokens": 2048
+        },
+        "completion_tokens": 3,
+        "completion_tokens_details": {},
+        "total_tokens": 19066
+      }
+    ],
+    "label": "composer",
+    "usageOmitted": false,
+    "httpStatus": 200,
+    "downstreamClosedAt": 1794455792897
+  },
+  {
+    "requestIndex": 1,
+    "requestStartedAt": 1794455793400,
+    "firstDeltaAt": 1794455797064,
+    "endedAt": 1794455797261,
+    "usage": [
+      {
+        "prompt_tokens": 19125,
+        "prompt_tokens_details": {
+          "cached_read_tokens": 14336,
+          "cached_tokens": 14336
+        },
+        "completion_tokens": 65,
+        "completion_tokens_details": {
+          "reasoning_tokens": 17
+        },
+        "total_tokens": 19190
+      }
+    ],
+    "label": "composer",
+    "usageOmitted": false,
+    "httpStatus": 200,
+    "downstreamClosedAt": 1794455797261
+  },
+  {
+    "requestIndex": 2,
+    "requestStartedAt": 1794455797489,
+    "firstDeltaAt": 1794455801352,
+    "endedAt": 1794455801356,
+    "usage": [
+      {
+        "prompt_tokens": 19313,
+        "prompt_tokens_details": {
+          "cached_read_tokens": 14336,
+          "cached_tokens": 14336
+        },
+        "completion_tokens": 14,
+        "completion_tokens_details": {},
+        "total_tokens": 19327
+      }
+    ],
+    "label": "composer",
+    "usageOmitted": false,
+    "httpStatus": 200,
+    "downstreamClosedAt": 1794455801356
+  },
+  {
+    "requestIndex": 3,
+    "requestStartedAt": 1794455801843,
+    "firstDeltaAt": 1794455805832,
+    "endedAt": 1794455806079,
+    "usage": [
+      {
+        "prompt_tokens": 19389,
+        "prompt_tokens_details": {
+          "cached_read_tokens": 19072,
+          "cached_tokens": 19072
+        },
+        "completion_tokens": 145,
+        "completion_tokens_details": {
+          "reasoning_tokens": 8
+        },
+        "total_tokens": 19534
+      }
+    ],
+    "label": "composer",
+    "usageOmitted": false,
+    "httpStatus": 200,
+    "downstreamClosedAt": 1794455806081
+  },
+  {
+    "requestIndex": 4,
+    "requestStartedAt": 1794455806288,
+    "firstDeltaAt": 1794455808397,
+    "endedAt": 1794455808412,
+    "usage": [
+      {
+        "prompt_tokens": 19772,
+        "prompt_tokens_details": {
+          "cached_read_tokens": 19328,
+          "cached_tokens": 19328
+        },
+        "completion_tokens": 53,
+        "completion_tokens_details": {},
+        "total_tokens": 19825
+      }
+    ],
+    "label": "composer",
+    "usageOmitted": false,
+    "httpStatus": 200,
+    "downstreamClosedAt": 1794455808412
+  },
+  {
+    "requestIndex": 5,
+    "requestStartedAt": 1794455808870,
+    "firstDeltaAt": 1794455811543,
+    "endedAt": 1794455813691,
+    "usage": [
+      {
+        "prompt_tokens": 19948,
+        "prompt_tokens_details": {
+          "cached_read_tokens": 15360,
+          "cached_tokens": 15360
+        },
+        "completion_tokens": 451,
+        "completion_tokens_details": {
+          "reasoning_tokens": 10
+        },
+        "total_tokens": 20399
+      }
+    ],
+    "label": "composer",
+    "usageOmitted": false,
+    "httpStatus": 200,
+    "downstreamClosedAt": 1794455813691
+  },
+  {
+    "requestIndex": 6,
+    "requestStartedAt": 1794455809091,
+    "firstDeltaAt": 1794455812453,
+    "endedAt": 1794455819135,
+    "usage": [
+      {
+        "prompt_tokens": 19460,
+        "prompt_tokens_details": {
+          "cached_read_tokens": 18944,
+          "cached_tokens": 18944
+        },
+        "completion_tokens": 787,
+        "completion_tokens_details": {
+          "reasoning_tokens": 169
+        },
+        "total_tokens": 20247
+      }
+    ],
+    "label": "composer",
+    "usageOmitted": false,
+    "httpStatus": 200,
+    "downstreamClosedAt": 1794455819135
+  },
+  {
+    "requestIndex": 7,
+    "requestStartedAt": 1794455809354,
+    "firstDeltaAt": 1794455813360,
+    "endedAt": 1794455813441,
+    "usage": [
+      {
+        "prompt_tokens": 19868,
+        "prompt_tokens_details": {
+          "cached_read_tokens": 18432,
+          "cached_tokens": 18432
+        },
+        "completion_tokens": 138,
+        "completion_tokens_details": {
+          "reasoning_tokens": 99
+        },
+        "total_tokens": 20006
+      }
+    ],
+    "label": "composer",
+    "usageOmitted": false,
+    "httpStatus": 200,
+    "downstreamClosedAt": 1794455813441
+  },
+  {
+    "requestIndex": 8,
+    "requestStartedAt": 1794455813633,
+    "firstDeltaAt": 1794455816054,
+    "endedAt": 1794455822436,
+    "usage": [
+      {
+        "prompt_tokens": 20063,
+        "prompt_tokens_details": {
+          "cached_read_tokens": 15360,
+          "cached_tokens": 15360
+        },
+        "completion_tokens": 1172,
+        "completion_tokens_details": {
+          "reasoning_tokens": 213
+        },
+        "total_tokens": 21235
+      }
+    ],
+    "label": "composer",
+    "usageOmitted": false,
+    "httpStatus": 200,
+    "downstreamClosedAt": 1794455822436
+  },
+  {
+    "requestIndex": 9,
+    "requestStartedAt": 1794455814067,
+    "firstDeltaAt": 1794455817623,
+    "endedAt": 1794455817646,
+    "usage": [
+      {
+        "prompt_tokens": 21290,
+        "prompt_tokens_details": {
+          "cached_read_tokens": 19712,
+          "cached_tokens": 19712
+        },
+        "completion_tokens": 54,
+        "completion_tokens_details": {},
+        "total_tokens": 21344
+      }
+    ],
+    "label": "composer",
+    "usageOmitted": false,
+    "httpStatus": 200,
+    "downstreamClosedAt": 1794455817646
+  },
+  {
+    "requestIndex": 10,
+    "requestStartedAt": 1794455814258,
+    "firstDeltaAt": 1794455819610,
+    "endedAt": 1794455820011,
+    "usage": [
+      {
+        "prompt_tokens": 23345,
+        "prompt_tokens_details": {
+          "cached_read_tokens": 0,
+          "cached_tokens": 0
+        },
+        "completion_tokens": 212,
+        "completion_tokens_details": {
+          "reasoning_tokens": 122
+        },
+        "total_tokens": 23557
+      }
+    ],
+    "label": "composer",
+    "usageOmitted": false,
+    "httpStatus": 200,
+    "downstreamClosedAt": 1794455820011
+  },
+  {
+    "requestIndex": 11,
+    "requestStartedAt": 1794455819478,
+    "firstDeltaAt": 1794455821882,
+    "endedAt": 1794455822285,
+    "usage": [
+      {
+        "prompt_tokens": 21410,
+        "prompt_tokens_details": {
+          "cached_read_tokens": 14208,
+          "cached_tokens": 14208
+        },
+        "completion_tokens": 116,
+        "completion_tokens_details": {},
+        "total_tokens": 21526
+      }
+    ],
+    "label": "composer",
+    "usageOmitted": false,
+    "httpStatus": 200,
+    "downstreamClosedAt": 1794455822285
+  },
+  {
+    "requestIndex": 12,
+    "requestStartedAt": 1794455819637,
+    "firstDeltaAt": 1794455823218,
+    "endedAt": 1794455823447,
+    "usage": [
+      {
+        "prompt_tokens": 23750,
+        "prompt_tokens_details": {
+          "cached_read_tokens": 22016,
+          "cached_tokens": 22016
+        },
+        "completion_tokens": 73,
+        "completion_tokens_details": {},
+        "total_tokens": 23823
+      }
+    ],
+    "label": "composer",
+    "usageOmitted": false,
+    "httpStatus": 200,
+    "downstreamClosedAt": 1794455823447
+  },
+  {
+    "requestIndex": 13,
+    "requestStartedAt": 1794455820403,
+    "firstDeltaAt": 1794455823896,
+    "endedAt": 1794455824135,
+    "usage": [
+      {
+        "prompt_tokens": 23594,
+        "prompt_tokens_details": {
+          "cached_read_tokens": 23296,
+          "cached_tokens": 23296
+        },
+        "completion_tokens": 64,
+        "completion_tokens_details": {
+          "reasoning_tokens": 7
+        },
+        "total_tokens": 23658
+      }
+    ],
+    "label": "composer",
+    "usageOmitted": false,
+    "httpStatus": 200,
+    "downstreamClosedAt": 1794455824135
+  },
+  {
+    "requestIndex": 14,
+    "requestStartedAt": 1794455822679,
+    "firstDeltaAt": 1794455826372,
+    "endedAt": 1794455828354,
+    "usage": [
+      {
+        "prompt_tokens": 22785,
+        "prompt_tokens_details": {
+          "cached_read_tokens": 13184,
+          "cached_tokens": 13184
+        },
+        "completion_tokens": 241,
+        "completion_tokens_details": {},
+        "total_tokens": 23026
+      }
+    ],
+    "label": "composer",
+    "usageOmitted": false,
+    "httpStatus": 200,
+    "downstreamClosedAt": 1794455828354
+  },
+  {
+    "requestIndex": 15,
+    "requestStartedAt": 1794455823724,
+    "firstDeltaAt": 1794455827637,
+    "endedAt": 1794455827734,
+    "usage": [
+      {
+        "prompt_tokens": 23847,
+        "prompt_tokens_details": {
+          "cached_read_tokens": 14336,
+          "cached_tokens": 14336
+        },
+        "completion_tokens": 153,
+        "completion_tokens_details": {
+          "reasoning_tokens": 47
+        },
+        "total_tokens": 24000
+      }
+    ],
+    "label": "composer",
+    "usageOmitted": false,
+    "httpStatus": 200,
+    "downstreamClosedAt": 1794455827734
+  },
+  {
+    "requestIndex": 16,
+    "requestStartedAt": 1794455824475,
+    "firstDeltaAt": 1794455828189,
+    "endedAt": 1794455828401,
+    "usage": [
+      {
+        "prompt_tokens": 23689,
+        "prompt_tokens_details": {
+          "cached_read_tokens": 15872,
+          "cached_tokens": 15872
+        },
+        "completion_tokens": 80,
+        "completion_tokens_details": {},
+        "total_tokens": 23769
+      }
+    ],
+    "label": "composer",
+    "usageOmitted": false,
+    "httpStatus": 200,
+    "downstreamClosedAt": 1794455828401
+  },
+  {
+    "requestIndex": 17,
+    "requestStartedAt": 1794455827997,
+    "firstDeltaAt": 1794455831557,
+    "endedAt": 1794455833276,
+    "usage": [
+      {
+        "prompt_tokens": 24075,
+        "prompt_tokens_details": {
+          "cached_read_tokens": 23680,
+          "cached_tokens": 23680
+        },
+        "completion_tokens": 285,
+        "completion_tokens_details": {},
+        "total_tokens": 24360
+      }
+    ],
+    "label": "composer",
+    "usageOmitted": false,
+    "httpStatus": 200,
+    "downstreamClosedAt": 1794455833276
+  },
+  {
+    "requestIndex": 18,
+    "requestStartedAt": 1794455828700,
+    "firstDeltaAt": 1794455832182,
+    "endedAt": 1794455832413,
+    "usage": [
+      {
+        "prompt_tokens": 23941,
+        "prompt_tokens_details": {
+          "cached_read_tokens": 23552,
+          "cached_tokens": 23552
+        },
+        "completion_tokens": 78,
+        "completion_tokens_details": {
+          "reasoning_tokens": 19
+        },
+        "total_tokens": 24019
+      }
+    ],
+    "label": "composer",
+    "usageOmitted": false,
+    "httpStatus": 200,
+    "downstreamClosedAt": 1794455832413
+  },
+  {
+    "requestIndex": 19,
+    "requestStartedAt": 1794455832739,
+    "firstDeltaAt": 1794455836419,
+    "endedAt": 1794455837388,
+    "usage": [
+      {
+        "prompt_tokens": 24102,
+        "prompt_tokens_details": {
+          "cached_read_tokens": 23936,
+          "cached_tokens": 23936
+        },
+        "completion_tokens": 266,
+        "completion_tokens_details": {},
+        "total_tokens": 24368
+      }
+    ],
+    "label": "composer",
+    "usageOmitted": false,
+    "httpStatus": 200,
+    "downstreamClosedAt": 1794455837388
+  },
+  {
+    "requestIndex": 20,
+    "requestStartedAt": 1794455833595,
+    "firstDeltaAt": 1794455838240,
+    "endedAt": 1794455838481,
+    "usage": [
+      {
+        "prompt_tokens": 24398,
+        "prompt_tokens_details": {
+          "cached_read_tokens": 24064,
+          "cached_tokens": 24064
+        },
+        "completion_tokens": 57,
+        "completion_tokens_details": {},
+        "total_tokens": 24455
+      }
+    ],
+    "label": "composer",
+    "usageOmitted": false,
+    "httpStatus": 200,
+    "downstreamClosedAt": 1794455838481
+  },
+  {
+    "requestIndex": 21,
+    "requestStartedAt": 1794455837665,
+    "firstDeltaAt": 1794455839757,
+    "endedAt": 1794455843013,
+    "usage": [
+      {
+        "prompt_tokens": 5266,
+        "prompt_tokens_details": {
+          "cached_read_tokens": 2048,
+          "cached_tokens": 2048
+        },
+        "completion_tokens": 438,
+        "completion_tokens_details": {
+          "reasoning_tokens": 365
+        },
+        "total_tokens": 5704
+      }
+    ],
+    "label": "composer",
+    "usageOmitted": false,
+    "httpStatus": 200,
+    "downstreamClosedAt": 1794455843013
+  },
+  {
+    "requestIndex": 22,
+    "requestStartedAt": 1794455838730,
+    "firstDeltaAt": 1794455842378,
+    "endedAt": 1794455842617,
+    "usage": [
+      {
+        "prompt_tokens": 24681,
+        "prompt_tokens_details": {
+          "cached_read_tokens": 24320,
+          "cached_tokens": 24320
+        },
+        "completion_tokens": 70,
+        "completion_tokens_details": {},
+        "total_tokens": 24751
+      }
+    ],
+    "label": "composer",
+    "usageOmitted": false,
+    "httpStatus": 200,
+    "downstreamClosedAt": 1794455842617
+  },
+  {
+    "requestIndex": 23,
+    "requestStartedAt": 1794455842900,
+    "firstDeltaAt": 1794455846548,
+    "endedAt": 1794455846605,
+    "usage": [
+      {
+        "prompt_tokens": 24851,
+        "prompt_tokens_details": {
+          "cached_read_tokens": 24576,
+          "cached_tokens": 24576
+        },
+        "completion_tokens": 59,
+        "completion_tokens_details": {},
+        "total_tokens": 24910
+      }
+    ],
+    "label": "composer",
+    "usageOmitted": false,
+    "httpStatus": 200,
+    "downstreamClosedAt": 1794455846605
+  },
+  {
+    "requestIndex": 24,
+    "requestStartedAt": 1794455846852,
+    "firstDeltaAt": 1794455850584,
+    "endedAt": 1794455851598,
+    "usage": [
+      {
+        "prompt_tokens": 24994,
+        "prompt_tokens_details": {
+          "cached_read_tokens": 14848,
+          "cached_tokens": 14848
+        },
+        "completion_tokens": 305,
+        "completion_tokens_details": {},
+        "total_tokens": 25299
+      }
+    ],
+    "label": "composer",
+    "usageOmitted": false,
+    "httpStatus": 200,
+    "downstreamClosedAt": 1794455851598
+  },
+  {
+    "requestIndex": 25,
+    "requestStartedAt": 1794455851897,
+    "firstDeltaAt": 1794455853523,
+    "endedAt": 1794455857679,
+    "usage": [
+      {
+        "prompt_tokens": 6450,
+        "prompt_tokens_details": {
+          "cached_read_tokens": 2048,
+          "cached_tokens": 2048
+        },
+        "completion_tokens": 634,
+        "completion_tokens_details": {
+          "reasoning_tokens": 550
+        },
+        "total_tokens": 7084
+      }
+    ],
+    "label": "composer",
+    "usageOmitted": false,
+    "httpStatus": 200,
+    "downstreamClosedAt": 1794455857679
+  },
+  {
+    "requestIndex": 26,
+    "requestStartedAt": 1794455857841,
+    "firstDeltaAt": 1794455860658,
+    "endedAt": 1794455861787,
+    "usage": [
+      {
+        "prompt_tokens": 6685,
+        "prompt_tokens_details": {
+          "cached_read_tokens": 6400,
+          "cached_tokens": 6400
+        },
+        "completion_tokens": 172,
+        "completion_tokens_details": {
+          "reasoning_tokens": 55
+        },
+        "total_tokens": 6857
+      }
+    ],
+    "label": "composer",
+    "usageOmitted": false,
+    "httpStatus": 200,
+    "downstreamClosedAt": 1794455861787
+  },
+  {
+    "requestIndex": 27,
+    "requestStartedAt": 1794455865785,
+    "firstDeltaAt": 1794455869205,
+    "endedAt": 1794455869431,
+    "usage": [
+      {
+        "prompt_tokens": 24819,
+        "prompt_tokens_details": {
+          "cached_read_tokens": 22016,
+          "cached_tokens": 22016
+        },
+        "completion_tokens": 64,
+        "completion_tokens_details": {
+          "reasoning_tokens": 6
+        },
+        "total_tokens": 24883
+      }
+    ],
+    "label": "composer",
+    "usageOmitted": false,
+    "httpStatus": 200,
+    "downstreamClosedAt": 1794455869431
+  },
+  {
+    "requestIndex": 28,
+    "requestStartedAt": 1794455869755,
+    "firstDeltaAt": 1794455873395,
+    "endedAt": 1794455873646,
+    "usage": [
+      {
+        "prompt_tokens": 24911,
+        "prompt_tokens_details": {
+          "cached_read_tokens": 14336,
+          "cached_tokens": 14336
+        },
+        "completion_tokens": 131,
+        "completion_tokens_details": {
+          "reasoning_tokens": 54
+        },
+        "total_tokens": 25042
+      }
+    ],
+    "label": "composer",
+    "usageOmitted": false,
+    "httpStatus": 200,
+    "downstreamClosedAt": 1794455873646
+  },
+  {
+    "requestIndex": 29,
+    "requestStartedAt": 1794455873958,
+    "firstDeltaAt": 1794455878566,
+    "endedAt": 1794455878826,
+    "usage": [
+      {
+        "prompt_tokens": 25267,
+        "prompt_tokens_details": {
+          "cached_read_tokens": 14464,
+          "cached_tokens": 14464
+        },
+        "completion_tokens": 107,
+        "completion_tokens_details": {
+          "reasoning_tokens": 13
+        },
+        "total_tokens": 25374
+      }
+    ],
+    "label": "composer",
+    "usageOmitted": false,
+    "httpStatus": 200,
+    "downstreamClosedAt": 1794455878826
+  },
+  {
+    "requestIndex": 30,
+    "requestStartedAt": 1794455879147,
+    "firstDeltaAt": 1794455882929,
+    "endedAt": 1794455883178,
+    "usage": [
+      {
+        "prompt_tokens": 25563,
+        "prompt_tokens_details": {
+          "cached_read_tokens": 14208,
+          "cached_tokens": 14208
+        },
+        "completion_tokens": 59,
+        "completion_tokens_details": {},
+        "total_tokens": 25622
+      }
+    ],
+    "label": "composer",
+    "usageOmitted": false,
+    "httpStatus": 200,
+    "downstreamClosedAt": 1794455883178
+  },
+  {
+    "requestIndex": 31,
+    "requestStartedAt": 1794455883435,
+    "firstDeltaAt": 1794455887621,
+    "endedAt": 1794455888072,
+    "usage": [
+      {
+        "prompt_tokens": 25753,
+        "prompt_tokens_details": {
+          "cached_read_tokens": 24704,
+          "cached_tokens": 24704
+        },
+        "completion_tokens": 67,
+        "completion_tokens_details": {},
+        "total_tokens": 25820
+      }
+    ],
+    "label": "composer",
+    "usageOmitted": false,
+    "httpStatus": 200,
+    "downstreamClosedAt": 1794455888072
+  },
+  {
+    "requestIndex": 32,
+    "requestStartedAt": 1794455888447,
+    "firstDeltaAt": 1794455894877,
+    "endedAt": 1794455895047,
+    "usage": [
+      {
+        "prompt_tokens": 25855,
+        "prompt_tokens_details": {
+          "cached_read_tokens": 13824,
+          "cached_tokens": 13824
+        },
+        "completion_tokens": 58,
+        "completion_tokens_details": {},
+        "total_tokens": 25913
+      }
+    ],
+    "label": "composer",
+    "usageOmitted": false,
+    "httpStatus": 200,
+    "downstreamClosedAt": 1794455895047
+  },
+  {
+    "requestIndex": 33,
+    "requestStartedAt": 1794455895326,
+    "firstDeltaAt": 1794455899024,
+    "endedAt": 1794455899234,
+    "usage": [
+      {
+        "prompt_tokens": 25951,
+        "prompt_tokens_details": {
+          "cached_read_tokens": 25728,
+          "cached_tokens": 25728
+        },
+        "completion_tokens": 110,
+        "completion_tokens_details": {
+          "reasoning_tokens": 50
+        },
+        "total_tokens": 26061
+      }
+    ],
+    "label": "composer",
+    "usageOmitted": false,
+    "httpStatus": 200,
+    "downstreamClosedAt": 1794455899234
+  },
+  {
+    "requestIndex": 34,
+    "requestStartedAt": 1794455899575,
+    "firstDeltaAt": 1794455903422,
+    "endedAt": 1794455903734,
+    "usage": [
+      {
+        "prompt_tokens": 26144,
+        "prompt_tokens_details": {
+          "cached_read_tokens": 13696,
+          "cached_tokens": 13696
+        },
+        "completion_tokens": 203,
+        "completion_tokens_details": {
+          "reasoning_tokens": 131
+        },
+        "total_tokens": 26347
+      }
+    ],
+    "label": "composer",
+    "usageOmitted": false,
+    "httpStatus": 200,
+    "downstreamClosedAt": 1794455903734
+  },
+  {
+    "requestIndex": 35,
+    "requestStartedAt": 1794455904024,
+    "firstDeltaAt": 1794455907570,
+    "endedAt": 1794455908609,
+    "usage": [
+      {
+        "prompt_tokens": 26382,
+        "prompt_tokens_details": {
+          "cached_read_tokens": 25856,
+          "cached_tokens": 25856
+        },
+        "completion_tokens": 344,
+        "completion_tokens_details": {},
+        "total_tokens": 26726
+      }
+    ],
+    "label": "composer",
+    "usageOmitted": false,
+    "httpStatus": 200,
+    "downstreamClosedAt": 1794455908609
+  },
+  {
+    "requestIndex": 36,
+    "requestStartedAt": 1794455909657,
+    "firstDeltaAt": 1794455913013,
+    "endedAt": 1794455926801,
+    "usage": [
+      {
+        "prompt_tokens": 8332,
+        "prompt_tokens_details": {
+          "cached_read_tokens": 0,
+          "cached_tokens": 0
+        },
+        "completion_tokens": 2172,
+        "completion_tokens_details": {
+          "reasoning_tokens": 1559
+        },
+        "total_tokens": 10504
+      }
+    ],
+    "label": "composer",
+    "usageOmitted": false,
+    "httpStatus": 200,
+    "downstreamClosedAt": 1794455926801
+  }
+]

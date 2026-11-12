@@ -1,0 +1,10 @@
+[
+  {
+    "path": "runner.cjs",
+    "sha256": "4d9d88566e4e4fab63a9bcdf8acc8b3cb776249afb50d099f546202532124a55"
+  },
+  {
+    "path": "scenario.cjs",
+    "sha256": "e47b2bc160da8b4d767baf14725287fc135b791cdfe51ea651c08710b9d2a9a4"
+  }
+]

@@ -1,0 +1,368 @@
+commit 372a8a134dc16d76ce6213cde24e597bff28c62b
+Author:     vivion <247055553+qq824045252-ship-it@users.noreply.github.com>
+AuthorDate: Thu Nov 12 11:54:51 2026 +0800
+Commit:     vivion <247055553+qq824045252-ship-it@users.noreply.github.com>
+CommitDate: Thu Nov 12 11:54:51 2026 +0800
+
+    fix(bot): preview registered text and preserve known registration failures
+
+diff --git a/scripts/bot-work-delivery-desktop-fixture.tsx b/scripts/bot-work-delivery-desktop-fixture.tsx
+index 6853a974..b845260b 100644
+--- a/scripts/bot-work-delivery-desktop-fixture.tsx
++++ b/scripts/bot-work-delivery-desktop-fixture.tsx
+@@ -26 +26 @@ function render(mode: "result" | "milestone" | "refreshed" | "legacy" | "error")
+-  root.render(<div className="bot-workspace"><section className="bot-conversation"><div className="bot-thread"><BotMessage message={current} botName="MyBuddy" works={mode === "refreshed" ? [refreshedWork] : []} onOpenWork={id => (window as unknown as { deliverySelected: string[] }).deliverySelected.push(id)} onCancel={() => {}} /></div><textarea aria-label="继续聊天" /></section></div>);
++  root.render(<div key={mode} className="bot-workspace"><section className="bot-conversation"><div className="bot-thread"><BotMessage message={current} botName="MyBuddy" works={mode === "refreshed" ? [refreshedWork] : []} onOpenWork={id => (window as unknown as { deliverySelected: string[] }).deliverySelected.push(id)} onCancel={() => {}} /></div><textarea aria-label="继续聊天" /></section></div>);
+@@ -28 +28 @@ function render(mode: "result" | "milestone" | "refreshed" | "legacy" | "error")
+-Object.assign(window, { deliverySelected: [], deliveryOpened: [], deliveryFixture: { render }, api: { openFolder: async (path: string) => {
++Object.assign(window, { deliverySelected: [], deliveryOpened: [], deliveryFixture: { render }, api: { readWorkspaceFile: async (path: string) => {
+@@ -30,0 +31 @@ Object.assign(window, { deliverySelected: [], deliveryOpened: [], deliveryFixtur
++  return { content: `保存文本：${path}` };
+diff --git a/scripts/bot-work-delivery-desktop-test.cjs b/scripts/bot-work-delivery-desktop-test.cjs
+index 04bc1baf..d568dd26 100644
+--- a/scripts/bot-work-delivery-desktop-test.cjs
++++ b/scripts/bot-work-delivery-desktop-test.cjs
+@@ -38,0 +39 @@ app.whenReady().then(async () => {
++    assert.equal(await evaluate(`document.querySelector('.bot-work-file-preview pre').textContent`), '保存文本：/fixture/report.md');
+@@ -64,0 +66 @@ app.whenReady().then(async () => {
++        assert.equal(await evaluate(`document.querySelector('.bot-work-file-preview pre').textContent`), '保存文本：/saved/A-v1.md');
+diff --git a/scripts/bot-work-phase5-review-ui-test.tsx b/scripts/bot-work-phase5-review-ui-test.tsx
+index 6fcc0c47..2eb636f3 100644
+--- a/scripts/bot-work-phase5-review-ui-test.tsx
++++ b/scripts/bot-work-phase5-review-ui-test.tsx
+@@ -13,0 +14 @@ import { WorkReviewPanel } from "../src/renderer/src/components/pages/BotWorkRev
++import { WorkFiles } from "../src/renderer/src/components/pages/BotWorkResult";
+@@ -349 +350 @@ async function main() {
+-      Object.assign(testWindow.api!, { openFolder: async (path: string) => { opened.push(path); } });
++      Object.assign(testWindow.api!, { readWorkspaceFile: async (path: string) => { opened.push(path); return { content: "<h1>read-only source</h1>" }; } });
+@@ -364,0 +366,49 @@ async function main() {
++    await check("result file preview handles exact versions, races, close, empty, errors and unsupported formats", async () => {
++      await unmount();
++      const { createRoot } = await import("react-dom/client");
++      container = testDocument.body.appendChild(testDocument.createElement("div")); root = createRoot(container);
++      const replies: ReturnType<typeof deferred<{ content: string; truncated?: boolean }>>[] = [];
++      const paths: unknown[][] = [], opened: string[] = [];
++      Object.assign(testWindow.api!, {
++        readWorkspaceFile: (...args: unknown[]) => { paths.push(args); const reply = deferred<{ content: string; truncated?: boolean }>(); replies.push(reply); return reply.promise; },
++        openFolder: async (path: string) => { opened.push(path); },
++      });
++      const files = [{ ref: "a", name: "a.txt", openPath: "/snapshot/a" }, { ref: "b", name: "b.json", openPath: "/snapshot/b" }, { ref: "c", name: "c.pdf", openPath: "/snapshot/c" }];
++      await act(async () => root!.render(<WorkFiles files={files} />));
++      const open = async (name: string) => { await act(async () => { container.querySelector<HTMLButtonElement>(`button[aria-label="打开 ${name}"]`)!.click(); }); };
++      await open("a.txt"); await open("a.txt");
++      assert.equal(replies.length, 1, "repeated click does not duplicate the read");
++      await open("b.json");
++      await act(async () => replies[1].resolve({ content: '{"version":"saved"}' }));
++      await act(async () => replies[0].resolve({ content: "OLD CONTENT" }));
++      assert.equal(container.querySelector("pre")!.textContent, '{"version":"saved"}');
++      assert.deepEqual(paths, [["/snapshot/a", "", true], ["/snapshot/b", "", true]]);
++      assert.deepEqual(opened, [], "primary action never relies on an OS application");
++      await click("关闭预览"); assert.equal(container.querySelector("pre"), null);
++      await open("a.txt"); await click("关闭预览");
++      await act(async () => replies[2].resolve({ content: "LATE CLOSED" }));
++      assert.equal(container.querySelector("pre"), null);
++      await open("a.txt"); await act(async () => replies[3].resolve({ content: "data:<script>unsafe()</script>", truncated: true }));
++      assert.equal(container.querySelector("pre")!.textContent, "data:<script>unsafe()</script>");
++      assert.equal(container.querySelector("script"), null);
++      assert.match(container.textContent!, /仅显示文件前 256 KiB/);
++      await click("关闭预览"); await open("a.txt");
++      await act(async () => replies[4].resolve({ content: "" })); assert.match(container.textContent!, /文件为空/);
++      await click("关闭预览"); await open("a.txt");
++      await act(async () => replies[5].reject(new Error("snapshot missing")));
++      assert.match(container.querySelector('[role="alert"]')!.textContent!, /snapshot missing/);
++      assert.deepEqual(opened, [], "missing snapshot must never fall back to a mutable file");
++      await click("重试读取");
++      await act(async () => replies[6].resolve({ content: "restored snapshot" }));
++      assert.equal(container.querySelector("pre")!.textContent, "restored snapshot");
++      assert.equal(container.querySelector('[role="alert"]'), null);
++      await open("c.pdf"); assert.equal(replies.length, 7);
++      assert.match(container.textContent!, /此格式暂不支持内置预览/);
++      await click("尝试用系统应用打开"); assert.deepEqual(opened, ["/snapshot/c"]);
++      assert.match(container.textContent!, /无法确认是否出现窗口/);
++      Object.assign(testWindow.api!, { openFolder: async () => { throw new Error("no application"); } });
++      await click("尝试用系统应用打开"); assert.match(container.textContent!, /无法打开文件：no application/);
++      await act(async () => root!.render(<WorkFiles files={[{ ...files[2], openPath: "/snapshot/new" }]} />));
++      assert.equal(container.querySelector(".bot-work-file-preview"), null, "old identity never appears for a replaced version");
++      await unmount();
++    });
+@@ -392 +442 @@ async function main() {
+-      Object.assign(testWindow.api!, { openFolder: async (path: string) => { opened.push(path); }, showItemInFolder: async (path: string) => { revealed.push(path); } });
++      Object.assign(testWindow.api!, { readWorkspaceFile: async (path: string) => { opened.push(path); return { content: "saved csv" }; }, showItemInFolder: async (path: string) => { revealed.push(path); } });
+diff --git a/scripts/durable-artifact-registration-test.ts b/scripts/durable-artifact-registration-test.ts
+index cc2322de..f3620475 100644
+--- a/scripts/durable-artifact-registration-test.ts
++++ b/scripts/durable-artifact-registration-test.ts
+@@ -2 +2 @@ import assert from "node:assert/strict";
+-import { mkdtemp, mkdir, writeFile, symlink, rm, readFile } from "node:fs/promises";
++import { mkdtemp, mkdir, writeFile, symlink, rm, readFile, readdir } from "node:fs/promises";
+@@ -56,0 +57,18 @@ try {
++  const beforeMissing = await readdir(directory, { recursive: true });
++  const missing = await tool.execute({ path: "workspace/report.html" }, api, ctx);
++  assert.equal(missing.isError, true, "known missing source remains a failed tool result");
++  assert(JSON.stringify(missing.output).includes(join(cwd, "workspace/report.html")));
++  assert(JSON.stringify(missing.output).includes(cwd));
++  assert.equal(entries.length, 0, "missing source cannot append a receipt");
++  assert.deepEqual(await readdir(directory, { recursive: true }), beforeMissing, "missing source creates no snapshot");
++  assert.equal(await readFile(path, "utf8"), "<h1>shell-created output</h1>");
++  const blockedStore = join(root, "not-a-directory");
++  await writeFile(blockedStore, "keep");
++  await assert.rejects(createDurableArtifactRegistrationTool(blockedStore).execute({ path }, api, ctx),
++    "store I/O failure must remain an exception, not a known missing-source result");
++  const failingCommitApi = { ...api, commit: async (fn: any) => fn({
++    conversation: async () => ({ owner: undefined }), scanEntries: async () => ({ items: [] }),
++    appendEntry: async () => { throw Object.assign(new Error("commit lost"), { code: "ENOENT" }); },
++  }), snapshot: async () => ({ run: { inputs: [71] } }) };
++  await assert.rejects(tool.execute({ path }, failingCommitApi, ctx), /commit lost/,
++    "post-snapshot commit ENOENT must not be converted to a pre-write failure");
+diff --git a/scripts/durable-tool-policy-test.ts b/scripts/durable-tool-policy-test.ts
+index fe243c22..89875985 100644
+--- a/scripts/durable-tool-policy-test.ts
++++ b/scripts/durable-tool-policy-test.ts
+@@ -340,0 +341,27 @@ try {
++  // Real artifact tool + durable hooks: only the initial missing-source path
++  // is a completed failure; storage failures retain an unknown outcome.
++  for (const storageFailure of [false, true]) {
++    const taskId = storageFailure ? "artifact-store-failure" : "artifact-path-recovery";
++    const f = await fixture(taskId, request => {
++      const results = request.messages.filter(message => message.role === "toolResult");
++      if (!results.length) return call("register_artifact", { path: storageFailure ? "result.json" : "inputs/result.json" }, "artifact-first");
++      if (!storageFailure && results.length === 1) return call("register_artifact", { path: join(root, taskId, "result.json") }, "artifact-corrected");
++      return text("Report actual registration outcomes without regenerating the source.");
++    });
++    await writeFile(join(f.cwd, "result.json"), '{"value":58}');
++    const outcomes: string[] = [];
++    f.state.settle = (_id, outcome) => outcomes.push(outcome);
++    const r = await f.open();
++    try {
++      if (storageFailure) await writeFile(join(f.cwd, "state", "artifacts"), "not a directory");
++      assert.equal((await (await r.submit("register existing result", taskId)).wait(ctx)).status, "done");
++      assert.deepEqual(outcomes, storageFailure ? ["unknown"] : ["consumed", "consumed"]);
++      const records = (db.connection.prepare("SELECT record_json FROM execution_attempts WHERE task_id=? ORDER BY rowid").all(taskId) as Array<{ record_json: string }>).map(row => JSON.parse(row.record_json));
++      assert.equal(records[0].status, storageFailure ? "inconclusive" : "failed");
++      assert.equal(records[0].verification.observed.isError, true);
++      if (!storageFailure) assert.equal(records[1].status, "passed");
++      assert.equal(await readFile(join(f.cwd, "result.json"), "utf8"), '{"value":58}');
++    } finally { await r.close(); }
++  }
++  console.log("PASS artifact missing-source failure is not success or unknown; storage failure remains unknown");
++
+diff --git a/scripts/work-artifact-desktop-test.cjs b/scripts/work-artifact-desktop-test.cjs
+index 72a1f787..1776add1 100644
+--- a/scripts/work-artifact-desktop-test.cjs
++++ b/scripts/work-artifact-desktop-test.cjs
+@@ -19 +19 @@ app.whenReady().then(async () => {
+-    await win.webContents.executeJavaScript(`window.opened=[]; window.api={openFolder:async path=>window.opened.push(path),showItemInFolder:async()=>{},botWork:{}};void 0;`);
++    await win.webContents.executeJavaScript(`window.opened=[]; window.api={readWorkspaceFile:async path=>{window.opened.push(path);return {content:"<h1>original</h1>"}},showItemInFolder:async()=>{},botWork:{}};void 0;`);
+@@ -29,0 +30,2 @@ app.whenReady().then(async () => {
++    assert.equal(await win.webContents.executeJavaScript(`document.querySelector('.bot-work-file-preview pre').textContent`), '<h1>original</h1>');
++    assert.equal(await win.webContents.executeJavaScript(`document.querySelectorAll('.bot-work-file-preview h1').length`), 0);
+@@ -40 +42 @@ app.whenReady().then(async () => {
+-    await win.webContents.executeJavaScript(`window.api.openFolder=async()=>{throw new Error('missing fixture')};[...document.querySelectorAll('button')].find(b=>b.textContent==='打开保存版本').click()`);
++    await win.webContents.executeJavaScript(`window.api.readWorkspaceFile=async()=>{throw new Error('missing fixture')};[...document.querySelectorAll('button')].find(b=>b.textContent==='关闭预览').click()`);
+@@ -42 +44,3 @@ app.whenReady().then(async () => {
+-    assert(await win.webContents.executeJavaScript(`document.body.textContent.includes('无法打开文件')`));
++    await win.webContents.executeJavaScript(`[...document.querySelectorAll('button')].find(b=>b.textContent==='打开保存版本').click()`);
++    await new Promise(r=>setTimeout(r,100));
++    assert(await win.webContents.executeJavaScript(`document.body.textContent.includes('无法读取文件')`));
+diff --git a/scripts/workspace-files-sort-test.ts b/scripts/workspace-files-sort-test.ts
+index 17cfbc80..80260aa0 100644
+--- a/scripts/workspace-files-sort-test.ts
++++ b/scripts/workspace-files-sort-test.ts
+@@ -7 +7 @@ import { spawnSync } from 'node:child_process';
+-import { listWorkspaceFiles } from '../src/main/workspace/WorkspaceService';
++import { listWorkspaceFiles, readWorkspaceFile } from '../src/main/workspace/WorkspaceService';
+@@ -38,0 +39,18 @@ try {
++  const preview = join(root, 'preview.txt');
++  for (const content of ['', 'data:ordinary text', '中文 JSON {"ok":true}']) {
++    await writeFile(preview, content);
++    const result = await readWorkspaceFile(preview, '', true);
++    assert.equal(result.content, content); assert.equal(result.truncated, false);
++  }
++  const limit = 256 * 1024;
++  await writeFile(preview, 'a'.repeat(limit - 1) + '中文');
++  const bounded = await readWorkspaceFile(preview, '', true);
++  assert.equal(bounded.content, 'a'.repeat(limit - 1)); assert.equal(bounded.truncated, true);
++  for (const bytes of [Buffer.from([0xff]), Buffer.from([0xe4, 0xb8]), Buffer.from([0x61, 0])]) {
++    await writeFile(preview, bytes); await assert.rejects(readWorkspaceFile(preview, '', true), /UTF-8|二进制/);
++  }
++  await assert.rejects(readWorkspaceFile(root, '', true), /普通文件/);
++  await assert.rejects(readWorkspaceFile(root, 'missing.txt', true));
++  await assert.rejects(readWorkspaceFile(root, '../outside.txt', true), /工作区/);
++  await writeFile(preview, 'legacy reader'); assert.equal((await readWorkspaceFile(root, 'preview.txt')).content, 'legacy reader');
++  await rm(preview);
+diff --git a/src/main/agent/durable/DurableArtifactRegistration.ts b/src/main/agent/durable/DurableArtifactRegistration.ts
+index aae88468..98d54bd5 100644
+--- a/src/main/agent/durable/DurableArtifactRegistration.ts
++++ b/src/main/agent/durable/DurableArtifactRegistration.ts
+@@ -41,0 +42,3 @@ export function durableRegisteredArtifact(entry: EntryRecord, inputId: number, w
++/** Only the initial missing-path check can produce this known, pre-write failure. */
++class ArtifactPathMissingError extends Error {}
++
+@@ -49,3 +52,4 @@ export async function inspectDurableArtifact(cwd: string, path: string, director
+-    // 常见误用：先 register_artifact 再 write。给出可执行提示，避免模型原样重试。
+-    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") throw new Error(
+-      `文件尚不存在：${path}。请先用 write/编辑或 shell 命令把文件创建出来再登记；write/edit 成功后会自动登记，只有 shell/Python 等生成的文件才需要手动调用 register_artifact。`);
++    // No snapshot directory, file or registration entry has been written yet.
++    // Do not apply this conversion to later ENOENTs after snapshot creation.
++    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") throw new ArtifactPathMissingError(
++      `登记路径不存在：${requested}（绑定工作区：${root}；传入路径：${path}）。相对路径以绑定工作区为基准；请先核对已有文件路径，必要时用正确的绝对路径登记，不要因此重跑生成脚本或重写已有成果。确实尚未生成时才先创建文件；write/edit 成功后会自动登记。`);
+@@ -97 +101,6 @@ export async function inspectDurableArtifact(cwd: string, path: string, director
+-        const stored = await inspectDurableArtifact(store, snapshotName(canonical, digest));
++        const stored = await inspectDurableArtifact(store, snapshotName(canonical, digest)).catch(error => {
++          // A snapshot disappearing during recursive integrity inspection is a
++          // post-write failure, never the original source preflight failure.
++          if (error instanceof ArtifactPathMissingError) throw new Error("Existing artifact snapshot disappeared during verification", { cause: error });
++          throw error;
++        });
+@@ -165,2 +174,7 @@ export function createDurableArtifactRegistrationTool(directory: string): ToolRe
+-      const data = await register(path, api, context, directory);
+-      return { output: [{ type: "text", text: `Registered generated file: ${data.path} (${data.sizeBytes} bytes, SHA-256 ${data.digest})` }] };
++      try {
++        const data = await register(path, api, context, directory);
++        return { output: [{ type: "text", text: `Registered generated file: ${data.path} (${data.sizeBytes} bytes, SHA-256 ${data.digest})` }] };
++      } catch (error) {
++        if (!(error instanceof ArtifactPathMissingError)) throw error;
++        return { isError: true, output: [{ type: "text", text: error.message }] };
++      }
+diff --git a/src/main/index.ts b/src/main/index.ts
+index 67064907..7af49f3a 100644
+--- a/src/main/index.ts
++++ b/src/main/index.ts
+@@ -973,2 +973,2 @@ function registerIpc(): void {
+-  ipcMain.handle("workspace:readFile", (_event, root: string, relativePath: string) =>
+-    readWorkspaceFile(root, relativePath),
++  ipcMain.handle("workspace:readFile", (_event, root: string, relativePath: string, textPreview?: boolean) =>
++    readWorkspaceFile(root, relativePath, textPreview === true),
+diff --git a/src/main/workspace/WorkspaceService.ts b/src/main/workspace/WorkspaceService.ts
+index 3977a619..4734a63e 100644
+--- a/src/main/workspace/WorkspaceService.ts
++++ b/src/main/workspace/WorkspaceService.ts
+@@ -1 +1 @@
+-import { cp, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
++import { cp, open, lstat, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+@@ -706 +706 @@ export async function createWorkspacePath(
+-export async function readWorkspaceFile(root: string, relativePath: string): Promise<WorkspaceFilePreviewDto> {
++export async function readWorkspaceFile(root: string, relativePath: string, textPreview = false): Promise<WorkspaceFilePreviewDto> {
+@@ -709 +709,24 @@ export async function readWorkspaceFile(root: string, relativePath: string): Pro
+-  return previewWorkspaceFile(target);
++  if (!textPreview) return previewWorkspaceFile(target);
++  // Result cards only need bounded plain text, never full binary hydration.
++  if (!(await lstat(target)).isFile()) throw new Error("不是普通文件");
++  const handle = await open(target, "r");
++  try {
++    const info = await handle.stat();
++    if (!info.isFile()) throw new Error("不是普通文件");
++    const limit = 256 * 1024;
++    const buffer = Buffer.alloc(limit + 1);
++    let length = 0;
++    while (length < buffer.length) {
++      const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length);
++      if (!bytesRead) break;
++      length += bytesRead;
++    }
++    const truncated = length > limit;
++    let content: string;
++    try {
++      // Streaming decode omits an incomplete trailing code point at the byte cap.
++      content = new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, Math.min(length, limit)), { stream: truncated });
++    } catch { throw new Error("文件不是有效的 UTF-8 文本，无法内置预览"); }
++    if (content.includes("\0")) throw new Error("文件包含二进制内容，无法内置预览");
++    return { path: target, name: basename(target), kind: "code", content, bytes: info.size, truncated };
++  } finally { await handle.close(); }
+diff --git a/src/preload/index.d.ts b/src/preload/index.d.ts
+index 939b83a3..1004c48e 100644
+--- a/src/preload/index.d.ts
++++ b/src/preload/index.d.ts
+@@ -230 +230 @@ export interface PreloadApi {
+-  readWorkspaceFile: (root: string, relativePath: string) => Promise<WorkspaceFilePreviewDto>;
++  readWorkspaceFile: (root: string, relativePath: string, textPreview?: boolean) => Promise<WorkspaceFilePreviewDto>;
+diff --git a/src/preload/index.ts b/src/preload/index.ts
+index 4767fec8..4212c068 100644
+--- a/src/preload/index.ts
++++ b/src/preload/index.ts
+@@ -352,2 +352,2 @@ const api = {
+-  readWorkspaceFile: (root: string, relativePath: string): Promise<WorkspaceFilePreviewDto> =>
+-    ipcRenderer.invoke("workspace:readFile", root, relativePath),
++  readWorkspaceFile: (root: string, relativePath: string, textPreview?: boolean): Promise<WorkspaceFilePreviewDto> =>
++    ipcRenderer.invoke("workspace:readFile", root, relativePath, textPreview),
+diff --git a/src/renderer/src/components/pages/BotWorkResult.tsx b/src/renderer/src/components/pages/BotWorkResult.tsx
+index af81929c..f163dad0 100644
+--- a/src/renderer/src/components/pages/BotWorkResult.tsx
++++ b/src/renderer/src/components/pages/BotWorkResult.tsx
+@@ -1 +1 @@
+-import { useState } from "react";
++import { useEffect, useState } from "react";
+@@ -29,0 +30,46 @@ function reportFile(file: WorkFile): boolean {
++/** Read the registered version directly, without the selected Task or OS file associations. */
++function WorkFilePreview({ file, target, onClose }: { file: WorkFile; target: string; onClose: () => void }): React.JSX.Element {
++  const supported = /\.(?:txt|md|json|jsonl|csv|tsv|xml|ya?ml|log|py|js|ts|tsx|jsx|css|html?|svg|sh)$/i.test(file.name);
++  const [content, setContent] = useState<string>();
++  const [truncated, setTruncated] = useState(false);
++  const [attempt, setAttempt] = useState(0);
++  const [error, setError] = useState("");
++  const [notice, setNotice] = useState("");
++  useEffect(() => {
++    let current = true;
++    if (supported) {
++      setError("");
++      setContent(undefined);
++      if (!window.api?.readWorkspaceFile) setError("文件读取接口不可用");
++      else void window.api.readWorkspaceFile(target, "", true).then(result => {
++        if (!current) return;
++        setContent(result.content);
++        setTruncated(result.truncated === true);
++      }).catch(reason => { if (current) setError(reason instanceof Error ? reason.message : String(reason)); });
++    }
++    return () => { current = false; };
++  }, [target, supported, attempt]);
++  const openSystem = async () => {
++    try {
++      if (!window.api?.openFolder) throw new Error("系统打开接口不可用");
++      await window.api.openFolder(target);
++      setNotice("已请求系统应用打开；无法确认是否出现窗口。若未打开，请检查系统默认应用或定位保存文件。");
++    } catch (reason) { setNotice(`无法打开文件：${reason instanceof Error ? reason.message : String(reason)}`); }
++  };
++  return <section className="bot-work-file-preview" aria-label={`文件预览：${file.name}`}>
++    <header><strong>{file.name}</strong><button type="button" onClick={onClose}>关闭预览</button></header>
++    <p>读取版本：{target}</p>
++    {!supported ? <p role="status">此格式暂不支持内置预览。可尝试系统应用打开，或定位保存文件。</p>
++      : error ? <><p role="alert">无法读取文件：{error}</p><button type="button" onClick={() => setAttempt(value => value + 1)}>重试读取</button></>
++      : content === undefined ? <p role="status">正在读取文件…</p>
++      : <>{content.length === 0 ? <p>文件为空。</p> : <pre tabIndex={0}>{content}</pre>}
++        {truncated && <p role="status">仅显示文件前 256 KiB 的文本；完整文件保留在上述路径。</p>}</>}
++    <button type="button" onClick={() => void openSystem()}>尝试用系统应用打开</button>
++    <button type="button" onClick={() => {
++      if (!window.api?.showItemInFolder) { setNotice("定位文件接口不可用"); return; }
++      void window.api.showItemInFolder(target).catch(reason => setNotice(`无法定位文件：${String(reason)}`));
++    }}>定位保存文件</button>
++    {notice && <p role="status">{notice}</p>}
++  </section>;
++}
++
+@@ -31,0 +78 @@ export function WorkFiles({ files, primaryRefs, compact = false, compactTitle =
++  const [selected, setSelected] = useState<{ file: WorkFile; target: string }>();
+@@ -42 +88,0 @@ export function WorkFiles({ files, primaryRefs, compact = false, compactTitle =
+-      if (!window.api?.openFolder) throw new Error("文件打开接口不可用");
+@@ -45 +91 @@ export function WorkFiles({ files, primaryRefs, compact = false, compactTitle =
+-      await window.api.openFolder(target);
++      setSelected({ file, target });
+@@ -64,0 +111,2 @@ export function WorkFiles({ files, primaryRefs, compact = false, compactTitle =
++    {selected && files.some(file => file.ref === selected.file.ref && (file.openPath ?? file.artifact?.snapshotPath ?? file.artifact?.path) === selected.target) &&
++      <WorkFilePreview key={selected.target} file={selected.file} target={selected.target} onClose={() => setSelected(undefined)} />}
+diff --git a/src/renderer/src/components/pages/BotWorkspacePage.css b/src/renderer/src/components/pages/BotWorkspacePage.css
+index 66561d46..6ac20b22 100644
+--- a/src/renderer/src/components/pages/BotWorkspacePage.css
++++ b/src/renderer/src/components/pages/BotWorkspacePage.css
+@@ -369,0 +370,5 @@
++
++.bot-work-file-preview { margin-top:12px; padding:12px; border:1px solid var(--border-subtle); border-radius:8px; min-width:0; }
++.bot-work-file-preview header { display:flex; align-items:center; justify-content:space-between; gap:8px; }
++.bot-work-file-preview p { overflow-wrap:anywhere; }
++.bot-work-file-preview pre { max-height:420px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; user-select:text; font-size:12px; }
+diff --git a/src/shared/agent-ipc.ts b/src/shared/agent-ipc.ts
+index fa214a0b..861e5609 100644
+--- a/src/shared/agent-ipc.ts
++++ b/src/shared/agent-ipc.ts
+@@ -692,0 +693,2 @@ export interface WorkspaceFilePreviewDto {
++  /** Bounded plain-text preview stopped before EOF. */
++  truncated?: boolean;

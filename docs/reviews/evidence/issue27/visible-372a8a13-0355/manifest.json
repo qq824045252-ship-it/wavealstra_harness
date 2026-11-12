@@ -1,0 +1,73 @@
+{
+  "testedSourceSha": "372a8a134dc16d76ce6213cde24e597bff28c62b",
+  "testedBaseSha": "1af669a2751544b989d7a8cde74c137b06d5e9b8",
+  "rawReportSha256": "eb67829e0a80ca41b9f69e6306cc05254446214ccaaff3bc08fccb9c0e7e5557",
+  "files": [
+    {
+      "path": "acceptance-summary.json",
+      "bytes": 77112,
+      "sha256": "487187dd3e50be415f0a865863204d782998d2f3233be1c46aa65777ac046b4d"
+    },
+    {
+      "path": "preview-event-result-json.png",
+      "bytes": 141175,
+      "sha256": "93ea48ea5bf1dc473caa33ac72407c3056b80f3368bfaefa2b285801b268d810"
+    },
+    {
+      "path": "raw-checks.json",
+      "bytes": 10715,
+      "sha256": "5e641cf8ae87ac87e602ff7fafbd8154cb6057f1f7724c6b40991eb21898cb0c"
+    },
+    {
+      "path": "raw-usage-audit.json",
+      "bytes": 20914,
+      "sha256": "2c1657ac23c6daa698615d9b419427a92458c9b937d643b34028e5ab3781db46"
+    },
+    {
+      "path": "supplement-missing-error.png",
+      "bytes": 184049,
+      "sha256": "42af5e423aa7b143c239f1e4922b5ef2d6efe266986e3c29b225d6999c7ab6aa"
+    },
+    {
+      "path": "supplement-text-visible.png",
+      "bytes": 142558,
+      "sha256": "59a2c747ba6ebb17c25a666cba6b83d3507d43f0fe2f24920315e7d89e5f03a2"
+    },
+    {
+      "path": "test-drivers/driver-manifest.json",
+      "bytes": 236,
+      "sha256": "d5166124d68d0e81652afa542a5fafa461e91096c8f7a89936db1fbbc80a9118"
+    },
+    {
+      "path": "test-drivers/launch.sh",
+      "bytes": 1022,
+      "sha256": "a0f9f5e5e198064051c898c421248ee9535eb35b59702ad15cd099df7f5aa1e2"
+    },
+    {
+      "path": "test-drivers/runner.cjs",
+      "bytes": 8293,
+      "sha256": "4d9d88566e4e4fab63a9bcdf8acc8b3cb776249afb50d099f546202532124a55"
+    },
+    {
+      "path": "test-drivers/scenario.cjs",
+      "bytes": 17487,
+      "sha256": "e47b2bc160da8b4d767baf14725287fc135b791cdfe51ea651c08710b9d2a9a4"
+    },
+    {
+      "path": "test-drivers/supplement.cjs",
+      "bytes": 7209,
+      "sha256": "27709571b19870f2e2906022a30d44d19f7d0e74887297fd09e122b0cbbc2ea1"
+    },
+    {
+      "path": "tested-product.patch",
+      "bytes": 27689,
+      "sha256": "f995563033a6636eb371c7d1eb645299a2e0ff15f3cd3b205c7e7e5efdac99f6"
+    },
+    {
+      "path": "zero-model-ui-supplement.json",
+      "bytes": 4001,
+      "sha256": "e0fb9642a15a2d8f2a03b1df18f7f131447351722b758854d6f84b8723b4ddd6"
+    }
+  ],
+  "testedPatchFormat": "git show --binary --unified=0; use git apply --unidiff-zero on the tested base"
+}
