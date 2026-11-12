@@ -68,7 +68,7 @@ export function registerLocalWorkflowTools(pi: Pick<ExtensionAPI, "registerTool"
   pi.registerTool({
     name: "terminal_exec",
     label: "Task terminal",
-    description: "模型独占持久 PTY/TUI。open 分配独立 terminal_id 和 session_id，cwd 固定当前任务，不接管用户终端。read 返回解析 ANSI 后的当前屏幕、光标和退出状态，不是输出尾部；wait_for 为字面文本，结果明确 matched/timeout/exited。input 原样发送 text，Enter 用 \\r，Ctrl-C 用 \\u0003。输入不自动重试。resize、close 均要求该任务原会话 ID。每任务最多四个终端，完成操作后 close；用户停止任务时只清理模型终端。",
+    description: "模型独占持久 PTY/TUI。交互安装向导、需要 TTY 的 CLI、密码提示和 TUI 应使用本工具，而不是非交互 bash/powershell。普通 shell 报 stdin is not a TTY 不代表本机没有终端；先检查已有操作效果再决定是否重试，不能盲目重跑安装或其他写操作。open 分配独立 terminal_id 和 session_id，cwd 固定当前任务，不接管用户终端。read 返回解析 ANSI 后的当前屏幕、光标和退出状态，不是输出尾部；wait_for 为字面文本，结果明确 matched/timeout/exited。input 原样发送 text，Enter 用 \\r，Ctrl-C 用 \\u0003。输入不自动重试。resize、close 均要求该任务原会话 ID。每任务最多四个终端，完成操作后 close；用户停止任务时只清理模型终端。",
     promptSnippet: "terminal_exec(action, terminal_id?, session_id?, text?, cols?, rows?, wait_for?, timeout_ms?)",
     parameters: Type.Object({
       action: Type.Union((["open", "list", "read", "input", "resize", "close"] as const).map(value => Type.Literal(value))),

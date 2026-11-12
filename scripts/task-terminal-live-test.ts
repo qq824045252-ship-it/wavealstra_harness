@@ -1,3 +1,5 @@
+import { spawnSync } from "node:child_process";
+import { withShellTerminalGuidance } from "../src/main/agent/durable/DurableShellTerminal";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,6 +11,10 @@ async function main() {
   const root = mkdtempSync(join(tmpdir(), "mybuddy-pty-live-"));
   const fixture = join(root, "fixture.cjs");
   writeFileSync(fixture, `
+if (!process.stdin.isTTY) {
+  console.error('SKILLS_PROMPT_REQUIRES_TTY: stdin is not a TTY');
+  process.exit(1);
+}
 process.stdin.setRawMode(true);
 process.stdin.resume();
 process.stdout.write('\\x1b[?1049h\\x1b[2J\\x1b[HSTALE\\r\\x1b[2KREADY\\r\\nPID=' + process.pid);
@@ -22,6 +28,13 @@ process.stdin.on('data', data => {
   if (text.includes('g')) process.stdout.write('\\r\\nINPUT-OK');
 });
 `);
+  const pipe = spawnSync(process.execPath, [fixture], { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
+  assert.equal(pipe.status, 1, pipe.stderr);
+  const advice: string[] = [];
+  const shellResult = { isError: true, structuredOutput: { output: pipe.stderr, exitCode: pipe.status, truncated: false } };
+  const wrapped = withShellTerminalGuidance({ name: "powershell", description: "pipe fixture", execute: async () => shellResult } as any);
+  assert.equal(await wrapped.execute({}, { output: (text: string) => advice.push(text) } as any, {} as any), shellResult);
+  assert.match(advice.join(""), /terminal_exec/);
   const host = new TerminalHost({ resolveCwd: () => root });
   const service = new TaskTerminalService(host);
   try {

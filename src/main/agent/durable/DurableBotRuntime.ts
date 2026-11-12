@@ -1,3 +1,4 @@
+import { withShellTerminalGuidance } from "./DurableShellTerminal";
 import { durableToolDiagnosticMessages } from "./DurableToolDiagnostics";
 import { emptyUsageEvidence, usagePresence, type ProviderUsageEvidence, type ProviderUsagePresence } from "../../../shared/provider-usage-evidence";
 import { supportsUsageObservation, withUsageEvidence } from "../../usage/provider-usage-evidence";
@@ -1297,7 +1298,7 @@ function codingTools(directory: string, readonlyShell?: () => boolean): ToolRegi
     ...(CodingTools.tools ?? []).map(tool => tool.name === "read" ? withDurableImageRead(tool) : withDurableArtifactRegistration(tool, directory)),
     ...createPlatformShellTools(),
     createDurableArtifactRegistrationTool(directory),
-  ];
+  ].map(withShellTerminalGuidance);
 }
 
 /** Every native generation, including retries and compaction, uses the owning task's settings. */
