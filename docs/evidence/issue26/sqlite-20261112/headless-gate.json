@@ -1,0 +1,24 @@
+{
+  "source": "aaa106fe",
+  "sourceFull": "source=aaa106fe8c38d30d36dc26363ed703b4720522a3",
+  "exitCode": 0,
+  "suite": "default headless",
+  "passed": 493,
+  "failed": 0,
+  "knownFailures": 0,
+  "newRegressions": 0,
+  "durationMinutes": 8.1,
+  "logSha256": "9b2e08df93bbbf76b6545b6a7c68b958a01daa3f7bd82f96e6ed913d771bceb4",
+  "method": "git archive immutable committed source with isolated checkout dependencies, TEST_ALL_JOBS=2, no competing real-model/GUI batch",
+  "laterDeltaValidation": [
+    "75eeb5c6 branch-cancel, durable-projection, typecheck",
+    "a4e6a718 active-view including signed reasoning, final combined typecheck"
+  ],
+  "notClaimed": [
+    "full GUI",
+    "NETWORK",
+    "ARTIFACT",
+    "all-platform",
+    "493 against later delta code"
+  ]
+}
