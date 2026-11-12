@@ -4,7 +4,7 @@
 
 **S1–S3 关键链已按分批真实证据通过，但不能称全部 28 项或全平台全绿。** 最新产品源码 `b3e90b8516dba43a37bcbb22b5585e77321dda4a` 的六类 event-only Electron 批次自然 **exit 0、36/36 断言 PASS、57 次真实 V4.1 Flash 调用**，S2 三版本执行、去重、静默/通知及既有成果提醒已通过。相关专项、typecheck 与独立窄审也通过。最近一次完整 headless 仍是 `1c4966bd` 的 **484/484 PASS**，不是最新 SHA 的全量；其六类正文真实 Flash 为 **12/12 首答 PASS**。
 
-三故事证据组合为 `5ba7e153` 长场景 + `1c4966bd` 修订/mixed 复验 + `b3e90b85` 事件 delta，并非最新 SHA 完整重跑所有 S1–S3。早期真实 FAIL 均保留，最新 S2 PASS 不回写老批。真实 OS 窄屏/多主窗口、跨端和完整测量仍有部分或未测项；它们不等于当前 S2 仍失败。本报告不提前声明已提交、推送或关闭 Issue。
+三故事证据组合为 `5ba7e153` 长场景 + `1c4966bd` 修订/mixed 复验 + `b3e90b85` 事件 delta，并非最新 SHA 完整重跑所有 S1–S3。早期真实 FAIL 均保留，最新 S2 PASS 不回写老批。实体 960×800、1200×800 窗口已补充零模型实测通过；390 实体宽度受产品最小 960 限制，官方多主窗口仍不支持。跨端和完整测量仍有部分或未测项，它们不等于当前 S2 仍失败。主线已核实发布 `f463687f582a691b6153929dbbadb05d1e485b03`，#27 仍 open；verify 被手动停用，该 SHA 没有 CI run/check，**不是 CI PASS**。安全可补的验收现已完成，新增零模型提醒可见性与只读统计补证已冻结，仍须单独提交核验。
 
 - 对照来源：[Issue #27](https://github.com/qq824045252-ship-it/wavealstra_harness/issues/27) 及附件 `mybuddy_bot_scheduling_review_2026-11-11(1).pdf`。附件 23 页，逐页提取与 Issue 内嵌 PDF 原文去空白后均为 37,512 字符，内容完全一致。
 - PDF 审查基线：`77d0d59a39a1e225288b46c722c18ba34636a19a`；本次施工起点：`14a650406359b5c4bd4cc358b2a7623364242298`。
@@ -92,7 +92,7 @@
 | 08 | 持续行动→验证，新实测更新原成果 | PASS（第二批实链） | mini-DOM 真实优化→无障碍步骤→DATA-V2 后 8,200 行实测，追加原 CSV；等待实际事件，不靠定时看一眼替代执行。此长场景未在 `1c4966bd` 重跑。 |
 | 09 | 充分 unchanged 时 review 0；来源失败不静默 | PASS（实链 + 负向服务回归） | 第二批原生充分 read/登记后真实 host_proven_unchanged，review attempts=0、通知=0；读取失败/unverified/偏好变更等由生产方法负例验证，不伪称真实外部故障测试。 |
 | 10 | S1–S3 三故事，包括提醒改期/天气不串扰 | PASS（分批关键链，非同 SHA 全重跑） | `5ba7e153` 长 mini-DOM/天气/持续目标与提醒独立性，`1c4966bd` A/B 修订复用及 mixed 成功结案，`b3e90b85` 只复验事件 delta 的 S2 三版本/去重/静默/通知/提醒。b3 批次已 36/36 自然 exit 0；不能称 S1–S3 全在 b3 完整重跑。 |
-| 11 | 会话/团队/Work/渠道/归属/版本隔离、去重、重启 | 部分 | 服务隔离与 SQLite 重开通过；第三批官方 UI 两个真实会话原请求/回答往返、0 额外模型调用、正常重启回原会话和订阅恢复均实测通过。QQ 等真实跨端未测，独立跟踪 #29/#31。 |
+| 11 | 会话/团队/Work/渠道/归属/版本隔离、去重、重启 | 部分（本机路径通过，真实跨端未测） | 服务隔离、第三批两个真实会话往返/0 额外模型、正常重启回原会话/订阅均通过；零模型实体窗补证保留同原会话。旧 l4 一次 UI 重启新增 offline-gap blocker，不是重复结果/提醒，before/after 保留。QQ 等真实跨端未测，见 #29/#31。 |
 | 12 | 紧凑分页、按需详情与长对话不因回报全扫 | PASS（有界运行路径） | 200 条/页、40 项/批、游标重放、query-scale 与 Electron lazy detail 回归；终态仍一次完整输入核算，不承诺无限长历史恒定耗时。 |
 | 13 | 第三次有真实进展仍续做 | PASS（生产服务故障注入） | `bot-scheduling-continuation` 实际持久进展与第三次产物 bytes 变化获准续办，五次进展续办均执行；无进展对照停止。不是长期外部业务 E2E。 |
 | 14 | unknown 写不重放，独立只读仍可推进 | PASS（生产服务故障注入） | 真实 admission/SQLite unknown 保留；原 action 不重新派发，当前独立只读计划实际拒写。团队恢复/监督专项同过；未制造真实支付等外部未知副作用。 |
@@ -104,12 +104,12 @@
 | 20 | 跟踪 B-4：桌面→QQ→桌面、task/bot scope | PASS（仅跟踪） | [#29](https://github.com/qq824045252-ship-it/wavealstra_harness/issues/29) 已建/open；跨端身份与自动记忆差异未实现/未实测。 |
 | 21 | 跟踪 B-7：个人跨 Work Skill 与修订收益 | PASS（仅跟踪） | [#30](https://github.com/qq824045252-ship-it/wavealstra_harness/issues/30) 已建/open；不以 Skill 数量或读取次数当真实复用效果。 |
 | 22 | 跟踪跨渠道主动文件及常驻宿主 | PASS（仅跟踪） | [#31](https://github.com/qq824045252-ship-it/wavealstra_harness/issues/31) 已建/open；本地事件/提醒不代表 QQ/Discord/钉钉送达或离线电脑外常驻。 |
-| 23 | 首实质答、真正可用部分、最终可用时刻 | 部分 | 第二批 11 类前台时刻及 A/B/分析的持久成果时刻见 §6；并非各场景全有完整 GUI 可见测量。第三批已结束，但其 completedObservedAt 为稍后采样时刻，不冒充首个可用时间。 |
-| 24 | 入库→可见、插话→版本生效、忙时 P50/P95 | 部分 | 第二批忙时 8 样本及首 A createdAt→可见按钮 775 ms；createdAt 不是 SQLite commit 探针，后滚动样本单列。完整精确控制生效延迟未汇总。 |
-| 25 | 每目标分阶段模型/工具调用、重复及承诺错配 | 部分 | 第二批 276 模型/264 工具，第三批 130 HTTP/127 唯一工具，第四批 57 HTTP/45 唯一工具；全部调用和已知重复/错误保留，第三/四批仍有 19/7 HTTP 无可靠映射。尚非每目标所有阶段完整归因，金额未知。 |
-| 26 | 各类各自先实测再设目标，不以收条冒 SLA | 部分 | 已有 11 类前台和忙时原始样本、真实局部成果时刻；没有足够重复样本或所有类别完整成果分布，未据此承诺通用 SLA。 |
-| 27 | 隔离 profile 真 Electron+模型+任务链全项 | 部分 | 四批实机/模型/原生工具、第三批两会话往返及第三/四批重启均有证据；第三批 JSON 按钮点击不等于外部打开成功。1280/390 是同窗 CDP viewport，实际 OS 窄屏 DOM 未确立；多主窗口不支持/未测。 |
-| 28 | 固定 SHA 的通过/失败/未测、证据/命令/限制 | PASS（报告记录）；发布待核 | 本报告及版本化证据保留旧失败、模拟/真实边界；最新 b3 实链 36/36、最后完整门禁为 1c 484/484，UI/metrics 等部分项明确。待主流程核阅并验证发布，不提前宣称全绿或已推送。 |
+| 23 | 首实质答、真正可用部分、最终可用时刻 | 部分（持久成果时刻已补） | 第二至四批按真实 request/message 与登记不可变快照补齐阶段时间，见 §6.2/§6.4；失败结案中的可用文件不等于整体成功，持续目标无最终完成时刻。仍不是所有场景的真实输入→GUI首见测量。 |
+| 24 | 入库→可见、插话→版本生效、忙时 P50/P95 | 部分（有界可见性/控制时刻已补） | 第二批忙时8样本、首A createdAt→按钮775ms；两批改向时刻见§6.5。零模型纯提醒8样本DOM首见经验P50界183.33–194.68ms/P95界198.57–209.54ms，7条自动进入视口另计，屏外第8条手动滚动单列，见§6.6。精确事务commit→paint及其余类别仍未测。 |
+| 25 | 每目标分阶段模型/工具调用、重复及承诺错配 | 部分（阶段/完整诊断已补） | 第二/三/四批HTTP仍276/130/57，精确token/时刻补证后未知1/1/0；真实诊断工具266/129/45，原transport可见264/127差额为取消后失败工具，计入成本。独立总结/观察阶段、金额及全量承诺错配计数仍未知。 |
+| 26 | 各类各自先实测再设目标，不以收条冒 SLA | 部分 | 11类前台、忙时样本及第二至四批登记附件时刻分开呈现，事件/定时包含主动等待。离线审计未增加模型样本；另8条零模型纯提醒只有单路径小样本经验分位界，不外推Work/模型回复或通用SLA。各类别完整屏幕可见分布仍未测。 |
+| 27 | 隔离 profile 真 Electron+模型+任务链全项 | 部分（本机受支持窗宽通过） | 四批实链及零模型复制 profile 实体 960×800/1200×800 无溢出、原会话文件按钮可见均通过；独立 profile 的8条纯提醒自然投递、0新模型/Work并完成有界可见性采样。390 请求被钳 960，旧 CDP390 非实体窗；真实第二 instance exit0 且只留原窗，符合 singleton，不算多主窗通过。JSON 外部打开仍未证实。 |
+| 28 | 固定 SHA 的通过/失败/未测、证据/命令/限制 | PASS（报告记录）；CI 未运行 | b3 实链 36/36、最后完整门禁 1c 484/484；f463687f 已在 main 核实，#27 open。verify=disabled_manually，固定 SHA run/check 均0，不是CI PASS。本次新增补证待单独提交，UI/metrics边界不抹去。 |
 
 ## 4. 历史真实失败与修复复验
 
@@ -198,19 +198,83 @@
 
 同批按原请求与持久成果消息复核：A/B 请求→首 A 里程碑 **233.287 s**，→最终双文件结果 **451.964 s**；独立 CSV 分析→含真实附件的结果消息 **75.306 s**。原始定位为第二批 `report.json.history.messages` 中 messageId `work-feedback-f419881aac2cf1352142f5719fbc2efaaa21fa907c478d49bb3e0eba6548c8e4` 的首 A 消息及最终 result 消息（createdAt 分别 1794439418335、1794439637012）；独立分析 result 的 createdAt 为 1794439260539。分析 case 原来的 267.766 s 是后来查询观察时刻，不是首份可用成果时刻。上述仍是持久投递/已验证快照时刻，不冒充逐项 GUI 首次看见；未测的场景阶段保持未测。
 
-### 6.3 调用归属和不一致
+### 6.3 离线补证：阶段调用、完整工具数与不一致
 
-第二批 276 次模型调用，264 个唯一工具调用。能归属的 Work 调用：混合检索 9、持续优化 28、持续简报 66、独立分析 7、A/B 执行 47、定时 8、事件 34，合计 **199**；前台 **65**，无法精确归属 **12**。细分记录及 usage 在第二批简明 JSON 与 raw-usage-audit 中，未归属部分不删除。金额未知，不能写 0 元。
+[只读时刻及调用审计](evidence/issue27/saved-timing-accounting-audit-2026-11-12.json) SHA-256 `32cf7f59e48562637c2633eae7a947c415531d1b7a1968f7933b50156d75ff73`。只读取保存的 SQLite/原 HTTP/usage/receipt，**新增模型调用 0、产品或 harness 运行 0**。三个 DB 读前后 hash 不变；第四批使用后来 UI 重启前留存的 `before-app.db`，不把后续 blocker 混进原批终态。
 
-没有把重试/错误 scope 自恢复排除；A 两次写、旧 B 两次写、新 B 一次写，以及真实错误通知和混合错误结案均作为缺陷保留。现有统计还不能声称完成“每个目标的前台/执行/总结/复核/观察/工具”的无遗漏归因或所有承诺错配计数，因此矩阵 25 为部分。
+先要求诊断开始位于 HTTP 前 0–1000 ms、结束相差不超过 10 ms，且 completion tokens 及 prompt=input+cacheRead+cacheWrite 精确相同；不满足时仅保留原本唯一 ±100 ms 开始匹配。映射须一对一，review 还用原始结构化 context.workId 核归属。逐条 transportIndex/diagnosticId/方法/时差保留在 JSON。它是事后相关性，不是从入口贯穿的 request-ID trace，歧义不猜测。
+
+| 实际批次 | 前台 | 原生主执行 | 原生 child | 普通完成复核 | Watch 结果复核 | 未归属 | HTTP 总数 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 5ba7e153 | 65 | 178 | 20 | 3 | 9 | 1 | 276 |
+| 1c4966bd | 24 | 81 | 16 | 4 | 4 | 1 | 130 |
+| b3e90b85 | 15 | 37 | 0 | 2 | 3 | 0 | 57 |
+
+单独总结和原生观察可能发生在执行 generations 内，没有独立插桩，均为 **null/未知，不是 0**，不可捏造阶段再加总。每个目标的 initial foreground、执行/child/review、实际工具及来源 ID 在补证 JSON 中。货币成本仍未知。
+
+| 批次 | 原 HTTP transcript 可见唯一 toolCallId | 完整持久诊断唯一 toolCallId | 差额 |
+| --- | --- | --- | --- |
+| 5ba7e153 | 264 | **266** | 取消后失败 subagent、bash 各1，没有进入后续模型请求 |
+| 1c4966bd | 127 | **129** | 取消后失败 subagent、bash 各1，没有进入后续模型请求 |
+| b3e90b85 | 45 | **45** | 0 |
+
+失败工具仍计入实际成本；failed/stopped 不证明没有副作用。原 compact 的264/127并非完整工具总数，作为旧“transport可见”口径保留，不覆盖原证据。原第二批 Work199/前台65/未知12、第三批111已匹配/19未知、第四批50已匹配/7未知，是早期较粗归属；本次使用新增时间+精确usage证据将未知降至1/1/0，没有增加或删除任何真实 HTTP。
+
+scope 误选/模型自恢复、第二批 A 重写两次/旧 B 两次/新 B 一次、错误通知与混合错误结案都保留。仍没有全量独立总结/观察阶段、全部承诺与状态错配计数或可信金额，因此矩阵25继续部分。
+
+### 6.4 离线补证：真实登记附件的投递时刻
+
+只计同 Work 已登记 snapshotPath 且现存 SHA-256/size 与登记相符的不可变文件；未登记 working-path 引用保留在原消息，但不为其历史字节或可用性背书。下表从原请求 submittedAt 到持久消息 createdAt，**不是精确 DB commit、按钮可见或屏幕 paint**。
+
+| 批次/目标 | 首个合格附件投递 | 最终状态/说明 |
+| --- | --- | --- |
+| 5ba 混合检索 | 90.481 s | 文件可用但原 Work ended_unsuccessfully，仍是错误结案，不能据文件宣布整体成功 |
+| 5ba 持续优化 | 160.980 s | 原 CSV/代码等已登记；持续目标无最终完成时间 |
+| 5ba 持续简报 | 104.460 s | 初版brief；持续目标无最终完成时间 |
+| 5ba 定时读取 | 168.509 s | 成功最终附件，包含等待到点的时间 |
+| 5ba 独立分析 | 75.306 s | 成功最终附件；纠正原稍后观察267.766s口径 |
+| 5ba A/B | A 233.287 s；最终451.964 s | 已登记A早交付；旧r1仅含未登记working-path的结果不另算合格交付 |
+| 1c 分析 / 执行 | 62.248 / 60.356 s | 两个一次目标成功最终附件 |
+| 1c mixed | 131.870 s | 成功最终诊断/验证附件；更早97.445s无合格不可变引用，不算成品交付 |
+| 1c 改向 | A 47.435 s；最终B 156.737 s | A保持原字节；最终新B交付，沿用此前A成果 |
+| b3 分析 / 执行 | 45.115 / 42.854 s | 两个一次目标成功最终附件 |
+| b3 事件首benchmark | 127.911 s | 实际benchmark.json，而非只登记状态报告；包含等待来源变化，不是纯处理延迟 |
+
+第二/三批事件目标还有状态报告与后续成果的时间，补证 JSON 分开记录 first verified artifact 与 first requested benchmark。不能把较早状态报告当作已完成 benchmark。各批负载、任务内容和等待不同，不据这些单次时刻宣称优化倍数或通用 P95。
+
+### 6.5 离线补证：插话到新版本与工具生效
+
+用原 user messageId 关联 intent snapshot.source_message_id，再定位精确 Work 的 r2 binding、admission 和最早实际 task_tool_diagnostics.started_at。下表起点是用户消息持久 createdAt，不是物理按键或精确事务提交。
+
+| 改向批次 | r2 revision / amend receipt | r2 binding submitted | 首r2实际工具开始 |
+| --- | --- | --- | --- |
+| 5ba7e153 | 14.930 s | 15.487 s | 26.163 s |
+| 1c4966bd | 23.933 s | 24.385 s | 28.827 s |
+
+两批已失效 r1 在 revision 变化后均没有新的工具开始记录；已在途工具可能到取消时才结束，不证明既有效果已撤销或未发生。第二批 r2 重写旧A/B的失败不会因 r1 未再开新工具而消失。纯提醒有界可见性补证见§6.6，与这里的改向时刻分开，不冒充 commit→paint。
+
+### 6.6 零模型纯提醒：持久化到 DOM/视口的有界采样
+
+[8条提醒采样证据](evidence/issue27/b3-zero-model-reminder-latency.json)，17,692 B，SHA-256 `d436b245ddda15a88ac217bc83cb32ebd923d44d1aa1264c0f33ad80bb60c7fe`。使用 `b3e90b85` 冻结源码、独立新 profile 与真实960逻辑宽度窗口，经官方 `window.api.cron.upsert → CronService → CronReminderDelivery` 创建8条一次纯提醒，间隔3秒；没有直接写业务数据库。8条均自然 delivered/disabled，app正常退出，全部自有进程已关闭。
+
+以最后一次查无消息的查询 **START** 为持久化区间下界L、首次查到消息的查询 **END** 为上界U，DOM/视口观察时刻为V，报告延迟区间 `[V-U, V-L]`。同宿主墙钟假定采样期间没有跳变，保留单调时刻供核查；createdAt不是commit，rAF及裁剪检查也不是compositor/物理屏幕paint。
+
+| 观察范围 | 样本数 | 经验P50保守界 | 经验P95保守界 |
+| --- | --- | --- | --- |
+| DOM首次存在 | 8 | 183.33–194.68 ms | 198.57–209.54 ms |
+| 自动进入视口 | 7 | 193.33–204.68 ms | 208.57–219.54 ms |
+
+第8条在屏外到达，手动滚回后进入视口为 **2492.73–2504.09 ms**，单列为导航等待，不加入自动可见分位样本。分位数按上下界分别取nearest-rank；小样本P95不代表稳定尾延迟或SLA。
+
+SQLite共2749次查询，请求轮询间隔10 ms，实际均值10.914 ms、最大13.882 ms；单次查询均值0.097 ms、最大3.553 ms。轮询与DOM观察开销已保留，不能把请求的10 ms当成实际采样分辨率。前后模型诊断 **57→57**、binding **5→5**、Work **3→3**，新增模型调用与 Work 绑定均0，仅新增上述8条纯测试提醒，未启动proxy。本补证只覆盖纯提醒路径，不新增真实模型批次，不外推Work结果、模型回复或其他类别；精确commit→paint仍未测。
 
 ## 7. 第三批 Electron：`1c4966bd`，40/44，未通过
 
-冻结源码 `/home/vivion/i27-src3-3z_undyw`，3149 个 git blobs，manifest SHA-256 `e9eee51205307ec45fe85f8cee906a36a477045363baa0aa592b288438c804b8`；隔离 HOME `/home/vivion/iq27-tmp/l3-nlh_kjm8`。2026-11-12 00:06:33.046 UTC 启动，自然 **exit 1**，原始 **44 断言中 40 PASS、4 FAIL**，真实 **130 HTTP 调用、127 个唯一工具调用**，全部模型为 V4.1 Flash，源码 runtime fingerprint 前后相同。
+冻结源码 `/home/vivion/i27-src3-3z_undyw`，3149 个 git blobs，manifest SHA-256 `e9eee51205307ec45fe85f8cee906a36a477045363baa0aa592b288438c804b8`；隔离 HOME `/home/vivion/iq27-tmp/l3-nlh_kjm8`。2026-11-12 00:06:33.046 UTC 启动，自然 **exit 1**，原始 **44 断言中 40 PASS、4 FAIL**，真实 **130 HTTP 调用、127 个 transport 可见工具调用**（离线完整诊断为129，见§6.3），全部模型为 V4.1 Flash，源码 runtime fingerprint 前后相同。
 
 原始证据目录：`/home/vivion/i27-src3-3z_undyw/out/diagnostics/bot-scheduling/batch-2026-11-12T00-06-33-046Z-1415643/`。[仓库简明证据](evidence/issue27/1c4966bd-electron-focused-third-batch.json) 与原 `compact-focused-third-batch.json` 字节一致，SHA-256 为 `dc95eb9f0d273cdae4279513f379553552641712c6bd19bde9fdc6b63c489617`，保留原始四个 FAIL、后核分类、原生写入回执、实际产物内容及各原始文件 hash。没有覆盖原 report 或改写原分数。
 
-本批是 8 case（7 类任务及受控 A/B 修订门槛），满足单批至少六类；等待第四批 B6 完成后才启动。长 mini-DOM/天气场景及服务故障注入未重跑。调用归属按持久 task/scope 诊断与唯一 ±100 ms transport 时间匹配，111 条成功映射（前台 23、Work 83、global 5），另 19 条明确未知；这不是所有模型阶段的完整归因，费用未知。案例 completedObservedAt 是稍后采样，不能用作首实质回答或首个成果的时间。
+本批是 8 case（7 类任务及受控 A/B 修订门槛），满足单批至少六类；等待第四批 B6 完成后才启动。长 mini-DOM/天气场景及服务故障注入未重跑。原 compact 按持久 task/scope 与唯一 ±100 ms 开始时间匹配为111条、19未知；§6.3 新增结束时刻/精确usage后映射129条，仍1条未知。两种证据各自保留，费用未知，不增加模型次数。案例 completedObservedAt 是稍后采样，不能用作首实质回答或首个成果的时间。
 
 ### 7.1 当前已验证的修复与独立路径
 
@@ -243,7 +307,7 @@ source 派发的 Queue 调用 `applyObservedSources` 漏传 original.eventId，S
 ### 7.4 文件查看器与窗口限制
 
 - 第三批 JSON 快照附件及字节核验通过，按钮可见且实际点击。**点击不等于外部查看成功**：dev.log 显示未设置 JSON 默认查看器，外部 viewer 未成功打开。源码已有 IPC catch，但本批没有采集打开 API 返回值或用户 notice，不能声称已验证错误提示，也不能写 JSON“打开 PASS”。
-- 1280/390 的无横向溢出仅为同一 Electron renderer 的 CDP viewport。尝试观测自有实体窗时 compositor bounds 656×852、Electron outerWidth 960、innerWidth/scrollWidth 1280；外部 CDP session 的 clear 没有移除主会话原 1280 override。**实际 OS 窄屏 DOM 未确立，不记 PASS。**
+- 1280/390 的无横向溢出仅为同一 Electron renderer 的 CDP viewport。尝试观测自有实体窗时 compositor bounds 656×852、Electron outerWidth 960、innerWidth/scrollWidth 1280；外部 CDP session 的 clear 没有移除主会话原 1280 override。**此批实际 OS 窄屏 DOM 未确立，不记 PASS。** 后续 §7.6 使用同一主 CDP 会话清仿真，另取得支持宽度的实体窗证据，不回写此批结论。
 - 产品 main window minWidth 为 960，只有一个主窗口；第二次启动聚焦原窗，没有官方第二 Bot 主窗口入口。两个真实会话、外部编辑器、预览或空白页均不替代多主窗口验收。
 - 原始日志、profile、数据库、快照保留。自有 runner/Electron 自然退出；按冻结 source/home/root PID 检查无残留，没有停止用户进程。
 
@@ -251,7 +315,7 @@ source 派发的 Queue 调用 `applyObservedSources` 漏传 original.eventId，S
 
 本批自然 **exit 0，36/36 断言 PASS、0 FAIL，57 次真实 `opendesign/deepseek-v4.1-flash` HTTP 调用、45 个唯一工具调用**。冻结源码 `/home/vivion/i27-src4-2n97ai_7`，runtime fingerprint 前后同为 `fa44173fa7b18d2aac9f6e8441f3123e56d08a7b295eb1402285fcf0e9adbde2`（1265 文件）。原始 report 为 `/home/vivion/i27-src4-2n97ai_7/out/diagnostics/bot-scheduling/batch-2026-11-12T00-26-04-773Z-1465892/report.json`。 [仓库简明证据](evidence/issue27/b3e90b85-electron-event-fourth-batch.json) SHA-256 `f644c5d6e02b002a3efea8a59cc46c144548bd2b37ce30ac4752c1d7fc4cc5d3`，源码完整 manifest SHA-256 `7613e28f281913bf02c919334f5f886cd2e843e4901a0b5251affd5b9147e40f`。
 
-真实 HTTP 区间为 **2026-11-12 00:26:41.545–00:32:01.889 UTC**。57 条 transport 中 50 条按唯一时刻/持久 task scope 关联，另 7 条未知；金额未知，不写 0。没有其他计划内模型批次或完整回归并跑，但无关宿主负载未测，不用于性能 SLA。
+真实 HTTP 区间为 **2026-11-12 00:26:41.545–00:32:01.889 UTC**。原 compact 的50条匹配/7条未知经§6.3离线精确usage+时刻补证后，57条全部可关联；不是新模型调用。金额未知，不写 0。没有其他计划内模型批次或完整回归并跑，但无关宿主负载未测，不用于性能 SLA。
 
 本批只重验来源事件修补及六类配套入口，**没有重跑长 mini-DOM/天气、受控 A/B 修订或 mixed**。已核实的业务链：
 
@@ -268,7 +332,25 @@ source 派发的 Queue 调用 `applyObservedSources` 漏传 original.eventId，S
 三条真实 binding 均有各自 inboxEventId，原生输入同时包含 sourceEvent 与 triggered_execution；runlog 恰好 V2/V3/V4 三次，没有靠人工补写 SQLite 冒充执行。上述耗时属于明确的本地合成 benchmark，不是用户产品性能。
 - 已有成果提醒同 ID 改期，到期额外模型 0、新 Work 0、benchmark 重跑 0；既有不可变 JSON、原会话投递及单次提醒均通过。文件 bytes/附件证明仍与外部查看器打开成功分开。
 
-真实重启保留原会话和 file 订阅，1280/390 CDP viewport 无横向溢出；自有进程已退出。后两项仍不证明实体 OS 窄窗或多主窗口。Issue 三故事的证据组合是 `5ba7e153` 长场景 + `1c4966bd` 修订/mixed 复验 + `b3e90b85` 事件 delta，不是所有 S1–S3 在最新 SHA 完整重跑。实际 OS 窄屏/多主窗口、跨端和测量不完整项仍按矩阵保留。
+真实重启保留原会话和 file 订阅，1280/390 CDP viewport 无横向溢出；自有进程已退出。后两项仍不证明实体 OS 窄窗或多主窗口。Issue 三故事的证据组合是 `5ba7e153` 长场景 + `1c4966bd` 修订/mixed 复验 + `b3e90b85` 事件 delta，不是所有 S1–S3 在最新 SHA 完整重跑。后续实体窗补证见 §7.6；390 实体宽度、多主窗口、跨端和测量边界仍按矩阵保留。
+
+### 7.6 零模型实体窗补证：960/1200 通过，390 与多主窗口限制实证
+
+[补证摘要](evidence/issue27/b3-zero-model-window/summary.json) SHA-256 `ecf806e698400a04d023bf5c345f04dd3df69e8ef3e887f68a72de84b1213009`。使用同一 `b3e90b85` 冻结产品源码、复制测试 profile 和真实 Omarchy/Hyprland，只针对已确认测试 PID/窗口地址调整尺寸，没有修改系统配置。主 CDP session 清除继承的仿真后，不再设置 viewport emulation。
+
+| 请求/观测 | compositor | outer / inner / scroll 宽度 | 结论 |
+| --- | --- | --- | --- |
+| 实体 960×800 | 960×800 | 均 960 | PASS，无横向溢出，原会话 JSON 文件按钮在 viewport 内 |
+| 实体 1200×800 | 1200×800 | 均 1200 | PASS，无横向溢出，原会话 JSON 文件按钮在 viewport 内 |
+| 请求实体 390×800 | 实际 960×800 | 均 960 | 被 minWidth 正确钳至 960；不是 390 实体窗 PASS |
+
+[960 逻辑宽度截图](evidence/issue27/b3-zero-model-window/requested-960.png) 与 [1200 逻辑宽度截图](evidence/issue27/b3-zero-model-window/requested-1200.png) 已目视核对，显示原提醒、benchmark.json 保存版本入口及三条事件执行记录；截图像素尺寸不冒充逻辑窗宽。本检查仅验证显示/路径，仍不证明 JSON 外部查看器成功打开。
+
+对同一复制 profile 真正第二次启动 `pnpm dev`（不同调试端口），第二 instance exit 0，仅原 PID/窗口身份留存、没有第二主窗，符合生产 `requestSingleInstanceLock` 分支。singleton handler 事件本身没有插桩；证据是实际启动/退出、保留原窗与生产分支，不是额外制造 BrowserWindow。官方不支持同时两个主会话窗口仍是边界。
+
+零新增业务/模型证据：持久模型诊断 **57→57**、执行绑定 **5→5**，未启动模型 proxy、端口原本不监听，UI 日志无新模型请求失败；没有单独网络抓包，不扩张成任意网络行为证明。复制 profile 下没有新建业务请求，全部测试进程已关闭，未操作用户进程。
+
+**旧测试 profile 的额外启动如实保留：** 此次补证最初曾正常启动旧 l4 profile 一次，随后关闭并改用复制 profile。旧库新增一条 `unqueryable-offline-gap` blocker：本地来源不提供历史回查，不能证明离线期间无遗漏。这不是重复 result/reminder，也没有新增模型诊断或业务 binding。保存前后观察，不恢复/覆盖旧 DB，不抹去原始 report。正式实体窗证据来自之后的复制 profile。
 
 ## 8. 命令、门禁和可复核证据
 
@@ -306,6 +388,15 @@ env -u ELECTRON_RUN_AS_NODE BOT_SCHEDULING_SNAPSHOT=<tested-sha> \
 
 运行中源指纹不变是证据要求；源码变动必须另记一批。服务/纯 UI 入口及 package 脚本在各 SHA 保留，语法 `--check-harness` 本身不启动 app 或 inference。首次默认隔离 shell 的网关 ECONNREFUSED 只说明该 shell 路径失败，随后宿主只读 HTTP 200 确认服务及模型存在；未启动/重启服务或复制用户凭据。
 
+### 8.3 主线发布与 CI 实际状态
+
+[发布核验记录](evidence/issue27/f463687f-publication.json) 于 2026-11-12 00:44:05.658 UTC 确认主线为 **`f463687f582a691b6153929dbbadb05d1e485b03`**，此前版本验收报告已在 GitHub 读回。发布提交相对 `b3e90b85` 未改变产品源码或测试脚本；真实测试仍按各自实际 SHA 记账，不说它们在文档提交上重新执行。此后新增的 UI/统计补证属于后续文档变更，不能仅凭该次发布记录称它们已经推送。
+
+- `verify`（`.github/workflows/verify.yml`）状态为 **disabled_manually**。
+- 固定 f463687f 的 workflow runs **0**、check runs **0**，因此 **CI 未运行，不是 PASS**。
+- 没有擅自启用 workflow 或更改 CI 设置；本地实测/门禁与远端 CI 分开记录。
+- Issue #27 仍为 **open**，没有执行关闭。
+
 ## 9. 独立跟踪与未实现能力
 
 以下问题已获准创建并读回 open，满足 19–22 的“记录并跟踪”，**不是本轮实现完成**：
@@ -315,4 +406,4 @@ env -u ELECTRON_RUN_AS_NODE BOT_SCHEDULING_SNAPSHOT=<tested-sha> \
 - [#30 / B-7](https://github.com/qq824045252-ship-it/wavealstra_harness/issues/30)：无 project 的个人 Work/聊天经验跨 Work 技能复用与修订收益。已有 global/project/workspace 范围不等于 bot/work；须证明下一相似任务实际用修订版、少重复纠正，并记失败和成本。
 - [#31 / 跨端交付与常驻](https://github.com/qq824045252-ship-it/wavealstra_harness/issues/31)：QQ/Discord/钉钉主动通知、真实文件送达，以及离线电脑之外常驻执行。当前本机在线要求仍在。
 
-当前源码、相关检查与真实复验结果已按批次记录，完整门禁仍注明最后实际运行的 SHA。最终主流程仍须核阅报告和矩阵的部分/未测项，再由发布步骤核对实际远端 SHA/CI。本报告不执行关闭 Issue、发评论、提交或推送，未核实前不声明这些动作已经完成。
+当前源码、相关检查与真实复验结果已按批次记录，完整门禁仍注明最后实际运行的 SHA。主线 f463687f 已核实；CI 未运行、Issue 未关闭。安全可补的验收已结束，新增只读时刻/调用归因、实体窗口和零模型提醒可见性证据已全部到齐并冻结，待核阅后仅发布文档；没有模型批次或全量门禁仍在运行。singleton/minWidth、跨端、JSON外部查看器及旧采样无法追溯的精确时刻/完整阶段数据仍是边界，不把全部28项或metrics标绿。

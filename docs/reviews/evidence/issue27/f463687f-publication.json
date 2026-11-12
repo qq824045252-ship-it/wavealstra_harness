@@ -1,0 +1,18 @@
+{
+  "observedAt": "2026-11-12T00:44:05.658237+00:00",
+  "repository": "qq824045252-ship-it/wavealstra_harness",
+  "verifiedPublishedSHA": "f463687f582a691b6153929dbbadb05d1e485b03",
+  "remoteMain": "f463687f582a691b6153929dbbadb05d1e485b03",
+  "workflows": [
+    {
+      "id": 379279212,
+      "name": "verify",
+      "path": ".github/workflows/verify.yml",
+      "state": "disabled_manually"
+    }
+  ],
+  "runCountForSHA": 0,
+  "checkRunCountForSHA": 0,
+  "issue27State": "open",
+  "conclusion": "Published commit verified on main. verify workflow is manually disabled; no CI run or checks exist for this SHA. This is not CI PASS. No workflow settings were changed."
+}

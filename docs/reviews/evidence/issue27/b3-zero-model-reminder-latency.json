@@ -1,0 +1,528 @@
+{
+  "createdAt": "2026-11-12T00:53:39.021673+00:00",
+  "sourceGitSHA": "b3e90b8516dba43a37bcbb22b5585e77321dda4a",
+  "profile": "/home/vivion/iq27-tmp/lat-65p4r5z_",
+  "officialPath": "window.api.cron.upsert -> CronService -> CronReminderDelivery, notification only; no direct business DB writes",
+  "setup": {
+    "width": 960,
+    "outerWidth": 960,
+    "scrollWidth": 960,
+    "conversationId": "bot-conversation-36347302-b270-4a12-8021-6d9a11958ea3"
+  },
+  "probeCount": 8,
+  "sampleSpacingMs": 3000,
+  "samples": [
+    {
+      "probe": 1,
+      "class": "automatic-bottom-visible",
+      "dueAt": "2026-11-12T00:52:19.138Z",
+      "persistence": {
+        "messageId": "bot-message-reminder-1558c1a0c611a524a8c464a9aae43a227896dd915bb6628dfa674cb712624a86",
+        "createdAtNotCommit": 1794444739140,
+        "lastAbsentQueryStartAt": 1794444739151.2236,
+        "firstPositiveQueryStartAt": 1794444739161.835,
+        "firstPositiveQueryEndAt": 1794444739161.9634,
+        "firstPositiveMonotonicMs": 147426347.258634
+      },
+      "dom": {
+        "messageId": "bot-message-reminder-1558c1a0c611a524a8c464a9aae43a227896dd915bb6628dfa674cb712624a86",
+        "domPresentAt": 1794444739351,
+        "firstRafAt": 1794444739353,
+        "inViewportAt": 1794444739360,
+        "rect": {
+          "x": 56.806640625,
+          "y": 502.275390625,
+          "width": 832.01171875,
+          "height": 139.677734375,
+          "top": 502.275390625,
+          "right": 888.818359375,
+          "bottom": 641.953125,
+          "left": 56.806640625
+        },
+        "performanceNow": 39286.70000001788
+      },
+      "possibleCommitIntervalMs": [
+        1794444739151.2236,
+        1794444739161.9634
+      ],
+      "firstDOMLatencyIntervalMs": [
+        189.03662109375,
+        199.7763671875
+      ],
+      "viewportLatencyRawIntervalMs": [
+        198.03662109375,
+        208.7763671875
+      ],
+      "viewportLatencyNonnegativeIntervalMs": [
+        198.03662109375,
+        208.7763671875
+      ],
+      "interpretation": "sampled durability visibility bounds; not precise transaction commit or physical screen paint"
+    },
+    {
+      "probe": 2,
+      "class": "automatic-bottom-visible",
+      "dueAt": "2026-11-12T00:52:22.138Z",
+      "persistence": {
+        "messageId": "bot-message-reminder-5abe5e59e47adb85d279db1761d372b615cf320945d647e2c6739b53d4d3098c",
+        "createdAtNotCommit": 1794444742140,
+        "lastAbsentQueryStartAt": 1794444742138.7925,
+        "firstPositiveQueryStartAt": 1794444742149.6362,
+        "firstPositiveQueryEndAt": 1794444742149.8057,
+        "firstPositiveMonotonicMs": 147429335.059635
+      },
+      "dom": {
+        "messageId": "bot-message-reminder-5abe5e59e47adb85d279db1761d372b615cf320945d647e2c6739b53d4d3098c",
+        "domPresentAt": 1794444742323,
+        "firstRafAt": 1794444742326,
+        "inViewportAt": 1794444742334,
+        "rect": {
+          "x": 56.806640625,
+          "y": 502.6953125,
+          "width": 832.01171875,
+          "height": 139.677734375,
+          "top": 502.6953125,
+          "right": 888.818359375,
+          "bottom": 642.373046875,
+          "left": 56.806640625
+        },
+        "performanceNow": 42260
+      },
+      "possibleCommitIntervalMs": [
+        1794444742138.7925,
+        1794444742149.8057
+      ],
+      "firstDOMLatencyIntervalMs": [
+        173.1943359375,
+        184.20751953125
+      ],
+      "viewportLatencyRawIntervalMs": [
+        184.1943359375,
+        195.20751953125
+      ],
+      "viewportLatencyNonnegativeIntervalMs": [
+        184.1943359375,
+        195.20751953125
+      ],
+      "interpretation": "sampled durability visibility bounds; not precise transaction commit or physical screen paint"
+    },
+    {
+      "probe": 3,
+      "class": "automatic-bottom-visible",
+      "dueAt": "2026-11-12T00:52:25.138Z",
+      "persistence": {
+        "messageId": "bot-message-reminder-a86b9305a1ac4f3e0c6c1a9a201d4e3fc8c082bafe1bbe4d2da9be019f454662",
+        "createdAtNotCommit": 1794444745142,
+        "lastAbsentQueryStartAt": 1794444745138.4583,
+        "firstPositiveQueryStartAt": 1794444745149.2927,
+        "firstPositiveQueryEndAt": 1794444745149.4321,
+        "firstPositiveMonotonicMs": 147432334.716475
+      },
+      "dom": {
+        "messageId": "bot-message-reminder-a86b9305a1ac4f3e0c6c1a9a201d4e3fc8c082bafe1bbe4d2da9be019f454662",
+        "domPresentAt": 1794444745348,
+        "firstRafAt": 1794444745351,
+        "inViewportAt": 1794444745358,
+        "rect": {
+          "x": 56.806640625,
+          "y": 502.490234375,
+          "width": 832.01171875,
+          "height": 139.677734375,
+          "top": 502.490234375,
+          "right": 888.818359375,
+          "bottom": 642.16796875,
+          "left": 56.806640625
+        },
+        "performanceNow": 45284.70000001788
+      },
+      "possibleCommitIntervalMs": [
+        1794444745138.4583,
+        1794444745149.4321
+      ],
+      "firstDOMLatencyIntervalMs": [
+        198.56787109375,
+        209.541748046875
+      ],
+      "viewportLatencyRawIntervalMs": [
+        208.56787109375,
+        219.541748046875
+      ],
+      "viewportLatencyNonnegativeIntervalMs": [
+        208.56787109375,
+        219.541748046875
+      ],
+      "interpretation": "sampled durability visibility bounds; not precise transaction commit or physical screen paint"
+    },
+    {
+      "probe": 4,
+      "class": "automatic-bottom-visible",
+      "dueAt": "2026-11-12T00:52:28.138Z",
+      "persistence": {
+        "messageId": "bot-message-reminder-3ce5ab31089d3a458d0c983576f6fbe931b1273e63d9c4a4863757c3be5c2ce7",
+        "createdAtNotCommit": 1794444748148,
+        "lastAbsentQueryStartAt": 1794444748144.3186,
+        "firstPositiveQueryStartAt": 1794444748155.4956,
+        "firstPositiveQueryEndAt": 1794444748155.6726,
+        "firstPositiveMonotonicMs": 147435340.919956
+      },
+      "dom": {
+        "messageId": "bot-message-reminder-3ce5ab31089d3a458d0c983576f6fbe931b1273e63d9c4a4863757c3be5c2ce7",
+        "domPresentAt": 1794444748339,
+        "firstRafAt": 1794444748341,
+        "inViewportAt": 1794444748349,
+        "rect": {
+          "x": 56.806640625,
+          "y": 502.28515625,
+          "width": 832.01171875,
+          "height": 139.677734375,
+          "top": 502.28515625,
+          "right": 888.818359375,
+          "bottom": 641.962890625,
+          "left": 56.806640625
+        },
+        "performanceNow": 48275.70000001788
+      },
+      "possibleCommitIntervalMs": [
+        1794444748144.3186,
+        1794444748155.6726
+      ],
+      "firstDOMLatencyIntervalMs": [
+        183.327392578125,
+        194.681396484375
+      ],
+      "viewportLatencyRawIntervalMs": [
+        193.327392578125,
+        204.681396484375
+      ],
+      "viewportLatencyNonnegativeIntervalMs": [
+        193.327392578125,
+        204.681396484375
+      ],
+      "interpretation": "sampled durability visibility bounds; not precise transaction commit or physical screen paint"
+    },
+    {
+      "probe": 5,
+      "class": "automatic-bottom-visible",
+      "dueAt": "2026-11-12T00:52:31.138Z",
+      "persistence": {
+        "messageId": "bot-message-reminder-a4915ef52c8c9ab41f526d5509d8dafa6a38f831cd4de0d726ad5ba4e19e9394",
+        "createdAtNotCommit": 1794444751143,
+        "lastAbsentQueryStartAt": 1794444751142.5193,
+        "firstPositiveQueryStartAt": 1794444751153.758,
+        "firstPositiveQueryEndAt": 1794444751153.9375,
+        "firstPositiveMonotonicMs": 147438339.18214
+      },
+      "dom": {
+        "messageId": "bot-message-reminder-a4915ef52c8c9ab41f526d5509d8dafa6a38f831cd4de0d726ad5ba4e19e9394",
+        "domPresentAt": 1794444751347,
+        "firstRafAt": 1794444751349,
+        "inViewportAt": 1794444751357,
+        "rect": {
+          "x": 56.806640625,
+          "y": 502.705078125,
+          "width": 832.01171875,
+          "height": 139.677734375,
+          "top": 502.705078125,
+          "right": 888.818359375,
+          "bottom": 642.3828125,
+          "left": 56.806640625
+        },
+        "performanceNow": 51283
+      },
+      "possibleCommitIntervalMs": [
+        1794444751142.5193,
+        1794444751153.9375
+      ],
+      "firstDOMLatencyIntervalMs": [
+        193.0625,
+        204.480712890625
+      ],
+      "viewportLatencyRawIntervalMs": [
+        203.0625,
+        214.480712890625
+      ],
+      "viewportLatencyNonnegativeIntervalMs": [
+        203.0625,
+        214.480712890625
+      ],
+      "interpretation": "sampled durability visibility bounds; not precise transaction commit or physical screen paint"
+    },
+    {
+      "probe": 6,
+      "class": "automatic-bottom-visible",
+      "dueAt": "2026-11-12T00:52:34.138Z",
+      "persistence": {
+        "messageId": "bot-message-reminder-8f845b60e4b5942befe73502a4c9edc3d50094f591a733ffe50fe742f268b67d",
+        "createdAtNotCommit": 1794444754156,
+        "lastAbsentQueryStartAt": 1794444754158.0903,
+        "firstPositiveQueryStartAt": 1794444754169.8955,
+        "firstPositiveQueryEndAt": 1794444754170.0078,
+        "firstPositiveMonotonicMs": 147441355.318191
+      },
+      "dom": {
+        "messageId": "bot-message-reminder-8f845b60e4b5942befe73502a4c9edc3d50094f591a733ffe50fe742f268b67d",
+        "domPresentAt": 1794444754330,
+        "firstRafAt": 1794444754333,
+        "inViewportAt": 1794444754340,
+        "rect": {
+          "x": 56.806640625,
+          "y": 502.5,
+          "width": 832.01171875,
+          "height": 139.677734375,
+          "top": 502.5,
+          "right": 888.818359375,
+          "bottom": 642.177734375,
+          "left": 56.806640625
+        },
+        "performanceNow": 54266.20000001788
+      },
+      "possibleCommitIntervalMs": [
+        1794444754158.0903,
+        1794444754170.0078
+      ],
+      "firstDOMLatencyIntervalMs": [
+        159.9921875,
+        171.90966796875
+      ],
+      "viewportLatencyRawIntervalMs": [
+        169.9921875,
+        181.90966796875
+      ],
+      "viewportLatencyNonnegativeIntervalMs": [
+        169.9921875,
+        181.90966796875
+      ],
+      "interpretation": "sampled durability visibility bounds; not precise transaction commit or physical screen paint"
+    },
+    {
+      "probe": 7,
+      "class": "automatic-bottom-visible",
+      "dueAt": "2026-11-12T00:52:37.138Z",
+      "persistence": {
+        "messageId": "bot-message-reminder-3daea3abe55ff10216c4ca1ea4c908ee96a7ab19e4f4b0a965f71456fec2a917",
+        "createdAtNotCommit": 1794444757140,
+        "lastAbsentQueryStartAt": 1794444757140.618,
+        "firstPositiveQueryStartAt": 1794444757151.7402,
+        "firstPositiveQueryEndAt": 1794444757151.8877,
+        "firstPositiveMonotonicMs": 147444337.165024
+      },
+      "dom": {
+        "messageId": "bot-message-reminder-3daea3abe55ff10216c4ca1ea4c908ee96a7ab19e4f4b0a965f71456fec2a917",
+        "domPresentAt": 1794444757327,
+        "firstRafAt": 1794444757329,
+        "inViewportAt": 1794444757337,
+        "rect": {
+          "x": 56.806640625,
+          "y": 502.294921875,
+          "width": 832.01171875,
+          "height": 139.677734375,
+          "top": 502.294921875,
+          "right": 888.818359375,
+          "bottom": 641.97265625,
+          "left": 56.806640625
+        },
+        "performanceNow": 57263
+      },
+      "possibleCommitIntervalMs": [
+        1794444757140.618,
+        1794444757151.8877
+      ],
+      "firstDOMLatencyIntervalMs": [
+        175.1123046875,
+        186.382080078125
+      ],
+      "viewportLatencyRawIntervalMs": [
+        185.1123046875,
+        196.382080078125
+      ],
+      "viewportLatencyNonnegativeIntervalMs": [
+        185.1123046875,
+        196.382080078125
+      ],
+      "interpretation": "sampled durability visibility bounds; not precise transaction commit or physical screen paint"
+    },
+    {
+      "probe": 8,
+      "class": "offscreen-arrival-user-scroll-visible",
+      "dueAt": "2026-11-12T00:52:40.138Z",
+      "persistence": {
+        "messageId": "bot-message-reminder-5552677a39f99a03d5d469b9b6fa77ae4282d5ef4817ee91654263484887442f",
+        "createdAtNotCommit": 1794444760143,
+        "lastAbsentQueryStartAt": 1794444760142.9114,
+        "firstPositiveQueryStartAt": 1794444760154.1108,
+        "firstPositiveQueryEndAt": 1794444760154.2666,
+        "firstPositiveMonotonicMs": 147447339.53463
+      },
+      "dom": {
+        "messageId": "bot-message-reminder-5552677a39f99a03d5d469b9b6fa77ae4282d5ef4817ee91654263484887442f",
+        "domPresentAt": 1794444760347,
+        "firstRafAt": 1794444760350,
+        "inViewportAt": 1794444762647,
+        "rect": {
+          "x": 56.806640625,
+          "y": 502.71484375,
+          "width": 832.01171875,
+          "height": 139.677734375,
+          "top": 502.71484375,
+          "right": 888.818359375,
+          "bottom": 642.392578125,
+          "left": 56.806640625
+        },
+        "performanceNow": 62573
+      },
+      "possibleCommitIntervalMs": [
+        1794444760142.9114,
+        1794444760154.2666
+      ],
+      "firstDOMLatencyIntervalMs": [
+        192.7333984375,
+        204.088623046875
+      ],
+      "viewportLatencyRawIntervalMs": [
+        2492.7333984375,
+        2504.088623046875
+      ],
+      "viewportLatencyNonnegativeIntervalMs": [
+        2492.7333984375,
+        2504.088623046875
+      ],
+      "interpretation": "sampled durability visibility bounds; not precise transaction commit or physical screen paint"
+    }
+  ],
+  "statistics": {
+    "all8DOMPresence": {
+      "n": 8,
+      "meanBoundMs": [
+        183.12832641601562,
+        194.38351440429688
+      ],
+      "empiricalP50BoundMs": [
+        183.327392578125,
+        194.681396484375
+      ],
+      "empiricalP95BoundMs": [
+        198.56787109375,
+        209.541748046875
+      ],
+      "method": "nearest-rank quantile separately over conservative lower/upper bounds; tiny single-path sample, not SLA"
+    },
+    "automatic7Viewport": {
+      "n": 7,
+      "meanBoundMs": [
+        191.75617327008928,
+        202.9970703125
+      ],
+      "empiricalP50BoundMs": [
+        193.327392578125,
+        204.681396484375
+      ],
+      "empiricalP95BoundMs": [
+        208.56787109375,
+        219.541748046875
+      ],
+      "method": "nearest-rank quantile separately over conservative lower/upper bounds; tiny single-path sample, not SLA"
+    },
+    "offscreen8Viewport": {
+      "n": 1,
+      "meanBoundMs": [
+        2492.7333984375,
+        2504.088623046875
+      ],
+      "empiricalP50BoundMs": [
+        2492.7333984375,
+        2504.088623046875
+      ],
+      "empiricalP95BoundMs": [
+        2492.7333984375,
+        2504.088623046875
+      ],
+      "method": "nearest-rank quantile separately over conservative lower/upper bounds; tiny single-path sample, not SLA"
+    }
+  },
+  "polling": {
+    "pollCount": 2749,
+    "queryCostMs": {
+      "mean": 0.09729558973149327,
+      "max": 3.552734375
+    },
+    "pollIntervalMs": {
+      "requested": 10,
+      "mean": 10.913771183730212,
+      "max": 13.88232421875
+    },
+    "startedAt": 1794444730163.061,
+    "lastQueryEndAt": 1794444760154.2666
+  },
+  "domObserver": {
+    "mutation": true,
+    "requestAnimationFrame": true,
+    "frames": 2045,
+    "actions": [
+      {
+        "at": 1794444730139,
+        "kind": "initial-scroll-bottom"
+      },
+      {
+        "at": 1794444758639,
+        "kind": "before-probe8-scroll-top",
+        "scrollTop": 0
+      },
+      {
+        "at": 1794444762640,
+        "kind": "probe8-manual-scroll-into-view",
+        "found": true
+      }
+    ],
+    "performanceTimeOrigin": 1794444700074.3
+  },
+  "clockAndBounds": "Same host Date.now/time.time_ns wall clock assumed not stepped during35s; Date.now millisecond granularity, Python higher-resolution sampling. Monotonic samples retained for drift checks. Last absent query START is lower bound and first present query END upper bound; latency [V-U,V-L]. rAF+clipping proves DOM in viewport at sampling, not compositor presentation. Polling and observers add measured overhead.",
+  "zeroModelAndWork": {
+    "before": {
+      "modelDiagnostics": 57,
+      "workBindings": 5,
+      "works": 3
+    },
+    "after": {
+      "modelDiagnostics": 57,
+      "workBindings": 5,
+      "works": 3
+    },
+    "newModelCalls": 0,
+    "newWorkBindings": 0,
+    "proxyStarted": false,
+    "newChatRequests": 0
+  },
+  "completion": {
+    "allEightJobsDisabledDelivered": true,
+    "newReminders": 8,
+    "naturalOneTimeDelivery": true,
+    "appClosedNormally": true
+  },
+  "scopeLimit": "Only this isolated pure-reminder path under real960px window. Do not generalize to Work/model replies. Offscreen navigation delay kept separate; no exact commit or paint claim.",
+  "rawEvidence": [
+    {
+      "path": "/home/vivion/iq27-tmp/ui-b3-evidence/latency-dom.json",
+      "sha256": "ab4cd45ad0aef302934cf1daa02394ac54e12a6b50484c2931b4c5504c103080"
+    },
+    {
+      "path": "/home/vivion/iq27-tmp/ui-b3-evidence/latency-persistence.json",
+      "sha256": "6487db4e997d9092c0d3753dfc5474529d71d8a16221973e98cf6ed1ae3b9b51"
+    },
+    {
+      "path": "/home/vivion/iq27-tmp/ui-b3-evidence/latency-jobs.json",
+      "sha256": "e9bdc9c6d04aa7a69f10f33a19e3a8a5074fa37d6c7843752b6c46e93aa836bc"
+    },
+    {
+      "path": "/home/vivion/iq27-tmp/ui-b3-evidence/reminder-latency.cjs",
+      "sha256": "b2e5c86150fbb9eec77c099168cd8597b6f8645fa3ec605114bb3a405fbad29b"
+    },
+    {
+      "path": "/home/vivion/iq27-tmp/ui-b3-evidence/poll-latency.py",
+      "sha256": "19ae34de3eb1ee8abc91c4ef973db19c8eda50c8fc724a58c0809a3bd1a2f8e1"
+    },
+    {
+      "path": "/home/vivion/iq27-tmp/ui-b3-evidence/latency-dev.log",
+      "sha256": "9049958d22f16622bb4b51216bd890224651f492f77926f20bffe330534b7b77"
+    }
+  ]
+}

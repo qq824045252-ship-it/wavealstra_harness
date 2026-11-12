@@ -1,0 +1,605 @@
+{
+  "createdAt": "2026-11-12T00:48:59.979123+00:00",
+  "productGitSHA": "b3e90b8516dba43a37bcbb22b5585e77321dda4a",
+  "source": "/home/vivion/i27-src4-2n97ai_7",
+  "testProfile": "/home/vivion/iq27-tmp/ui-578yp7xq",
+  "method": "pnpm dev; real Omarchy compositor; exact test PID1503295/address; one primary CDP session clears override and never sets emulation. Official installed Omarchy hl.dsp.window float/move/resize actions target only this address. No configuration edits.",
+  "windows": [
+    {
+      "sample": "initial-real",
+      "capturedAt": 1794444332188,
+      "compositor": {
+        "pid": 1503295,
+        "address": "0x5562a17731d0",
+        "position": [
+          12,
+          36
+        ],
+        "size": [
+          1326,
+          852
+        ],
+        "floating": false
+      },
+      "dom": {
+        "at": 1794444332188,
+        "innerWidth": 1326,
+        "innerHeight": 852,
+        "outerWidth": 1326,
+        "outerHeight": 852,
+        "scrollWidth": 1326,
+        "scrollHeight": 852,
+        "bodyWidth": 1326,
+        "buttons": [
+          {
+            "label": "打开 copy.csv",
+            "inViewport": false,
+            "rect": {
+              "x": 1061.4453125,
+              "y": -2844.443359375,
+              "width": 113.2421875,
+              "height": 39.12109375,
+              "top": -2844.443359375,
+              "right": 1174.6875,
+              "bottom": -2805.322265625,
+              "left": 1061.4453125
+            }
+          },
+          {
+            "label": "打开 analysis.csv",
+            "inViewport": false,
+            "rect": {
+              "x": 1061.4453125,
+              "y": -2352.67578125,
+              "width": 113.2421875,
+              "height": 39.12109375,
+              "top": -2352.67578125,
+              "right": 1174.6875,
+              "bottom": -2313.5546875,
+              "left": 1061.4453125
+            }
+          },
+          {
+            "label": "打开 benchmark.json",
+            "inViewport": false,
+            "rect": {
+              "x": 1061.4453125,
+              "y": -1697.998046875,
+              "width": 113.2421875,
+              "height": 39.12109375,
+              "top": -1697.998046875,
+              "right": 1174.6875,
+              "bottom": -1658.876953125,
+              "left": 1061.4453125
+            }
+          },
+          {
+            "label": "打开 benchmark.json",
+            "inViewport": false,
+            "rect": {
+              "x": 1061.4453125,
+              "y": -898.515625,
+              "width": 113.2421875,
+              "height": 39.12109375,
+              "top": -898.515625,
+              "right": 1174.6875,
+              "bottom": -859.39453125,
+              "left": 1061.4453125
+            }
+          },
+          {
+            "label": "打开 benchmark.json",
+            "inViewport": true,
+            "rect": {
+              "x": 1061.4453125,
+              "y": 425.322265625,
+              "width": 113.2421875,
+              "height": 39.12109375,
+              "top": 425.322265625,
+              "right": 1174.6875,
+              "bottom": 464.443359375,
+              "left": 1061.4453125
+            }
+          }
+        ]
+      },
+      "conversationId": "bot-conversation-36347302-b270-4a12-8021-6d9a11958ea3",
+      "files": [
+        {
+          "ref": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/7280157ca95d6314d39dbccbe86c063f37548feb43916286da7643918aff37e6/artifacts/128585c821775c92fd1a7d607e4b934bbf3e7454100d9682b49dde0c135068e1.csv",
+          "name": "copy.csv",
+          "openPath": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/7280157ca95d6314d39dbccbe86c063f37548feb43916286da7643918aff37e6/artifacts/128585c821775c92fd1a7d607e4b934bbf3e7454100d9682b49dde0c135068e1.csv"
+        },
+        {
+          "ref": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/da30a83e570faef2bf9ca3ce5d374097de21583138d8ad0ac5d6a540232c4d40/artifacts/fc644ae08e3ce9a53ce54883c7c23a776d153b4c60c91aac691198524f6dbc9a.csv",
+          "name": "analysis.csv",
+          "openPath": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/da30a83e570faef2bf9ca3ce5d374097de21583138d8ad0ac5d6a540232c4d40/artifacts/fc644ae08e3ce9a53ce54883c7c23a776d153b4c60c91aac691198524f6dbc9a.csv"
+        },
+        {
+          "ref": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/28197f485bd2f150d3758697719754a42a1bc1899a24370bfb98b1b702497f0c/artifacts/453b1451b9eabb65c85c99f4bcd1a01b7db7713a6b3f878053862ac92ad00a67.json",
+          "name": "benchmark.json",
+          "openPath": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/28197f485bd2f150d3758697719754a42a1bc1899a24370bfb98b1b702497f0c/artifacts/453b1451b9eabb65c85c99f4bcd1a01b7db7713a6b3f878053862ac92ad00a67.json"
+        },
+        {
+          "ref": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/921e4f3f7927f6afbc2d2679ad40ad2637472c9c7f37292ccc1ff0d1624e70ab/artifacts/a1387ea04b73cdfd9943b2590dba48ac545c90280e6cd8958ad9325dbd32c469.json",
+          "name": "benchmark.json",
+          "openPath": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/921e4f3f7927f6afbc2d2679ad40ad2637472c9c7f37292ccc1ff0d1624e70ab/artifacts/a1387ea04b73cdfd9943b2590dba48ac545c90280e6cd8958ad9325dbd32c469.json"
+        },
+        {
+          "ref": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/921e4f3f7927f6afbc2d2679ad40ad2637472c9c7f37292ccc1ff0d1624e70ab/artifacts/a1387ea04b73cdfd9943b2590dba48ac545c90280e6cd8958ad9325dbd32c469.json",
+          "name": "benchmark.json",
+          "openPath": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/921e4f3f7927f6afbc2d2679ad40ad2637472c9c7f37292ccc1ff0d1624e70ab/artifacts/a1387ea04b73cdfd9943b2590dba48ac545c90280e6cd8958ad9325dbd32c469.json"
+        }
+      ],
+      "screenshotOriginal": "/home/vivion/iq27-tmp/ui-b3-evidence/initial-real.png"
+    },
+    {
+      "sample": "requested-960",
+      "capturedAt": 1794444333094,
+      "compositor": {
+        "pid": 1503295,
+        "address": "0x5562a17731d0",
+        "position": [
+          20,
+          66
+        ],
+        "size": [
+          960,
+          800
+        ],
+        "floating": true
+      },
+      "dom": {
+        "at": 1794444333094,
+        "innerWidth": 960,
+        "innerHeight": 800,
+        "outerWidth": 960,
+        "outerHeight": 800,
+        "scrollWidth": 960,
+        "scrollHeight": 800,
+        "bodyWidth": 960,
+        "buttons": [
+          {
+            "label": "打开 copy.csv",
+            "inViewport": false,
+            "rect": {
+              "x": 746.328125,
+              "y": -2894.443359375,
+              "width": 113.2421875,
+              "height": 39.12109375,
+              "top": -2894.443359375,
+              "right": 859.5703125,
+              "bottom": -2855.322265625,
+              "left": 746.328125
+            }
+          },
+          {
+            "label": "打开 analysis.csv",
+            "inViewport": false,
+            "rect": {
+              "x": 746.328125,
+              "y": -2402.67578125,
+              "width": 113.2421875,
+              "height": 39.12109375,
+              "top": -2402.67578125,
+              "right": 859.5703125,
+              "bottom": -2363.5546875,
+              "left": 746.328125
+            }
+          },
+          {
+            "label": "打开 benchmark.json",
+            "inViewport": false,
+            "rect": {
+              "x": 746.328125,
+              "y": -1747.998046875,
+              "width": 113.2421875,
+              "height": 39.12109375,
+              "top": -1747.998046875,
+              "right": 859.5703125,
+              "bottom": -1708.876953125,
+              "left": 746.328125
+            }
+          },
+          {
+            "label": "打开 benchmark.json",
+            "inViewport": false,
+            "rect": {
+              "x": 746.328125,
+              "y": -948.515625,
+              "width": 113.2421875,
+              "height": 39.12109375,
+              "top": -948.515625,
+              "right": 859.5703125,
+              "bottom": -909.39453125,
+              "left": 746.328125
+            }
+          },
+          {
+            "label": "打开 benchmark.json",
+            "inViewport": true,
+            "rect": {
+              "x": 746.328125,
+              "y": 375.322265625,
+              "width": 113.2421875,
+              "height": 39.12109375,
+              "top": 375.322265625,
+              "right": 859.5703125,
+              "bottom": 414.443359375,
+              "left": 746.328125
+            }
+          }
+        ]
+      },
+      "conversationId": "bot-conversation-36347302-b270-4a12-8021-6d9a11958ea3",
+      "files": [
+        {
+          "ref": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/7280157ca95d6314d39dbccbe86c063f37548feb43916286da7643918aff37e6/artifacts/128585c821775c92fd1a7d607e4b934bbf3e7454100d9682b49dde0c135068e1.csv",
+          "name": "copy.csv",
+          "openPath": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/7280157ca95d6314d39dbccbe86c063f37548feb43916286da7643918aff37e6/artifacts/128585c821775c92fd1a7d607e4b934bbf3e7454100d9682b49dde0c135068e1.csv"
+        },
+        {
+          "ref": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/da30a83e570faef2bf9ca3ce5d374097de21583138d8ad0ac5d6a540232c4d40/artifacts/fc644ae08e3ce9a53ce54883c7c23a776d153b4c60c91aac691198524f6dbc9a.csv",
+          "name": "analysis.csv",
+          "openPath": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/da30a83e570faef2bf9ca3ce5d374097de21583138d8ad0ac5d6a540232c4d40/artifacts/fc644ae08e3ce9a53ce54883c7c23a776d153b4c60c91aac691198524f6dbc9a.csv"
+        },
+        {
+          "ref": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/28197f485bd2f150d3758697719754a42a1bc1899a24370bfb98b1b702497f0c/artifacts/453b1451b9eabb65c85c99f4bcd1a01b7db7713a6b3f878053862ac92ad00a67.json",
+          "name": "benchmark.json",
+          "openPath": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/28197f485bd2f150d3758697719754a42a1bc1899a24370bfb98b1b702497f0c/artifacts/453b1451b9eabb65c85c99f4bcd1a01b7db7713a6b3f878053862ac92ad00a67.json"
+        },
+        {
+          "ref": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/921e4f3f7927f6afbc2d2679ad40ad2637472c9c7f37292ccc1ff0d1624e70ab/artifacts/a1387ea04b73cdfd9943b2590dba48ac545c90280e6cd8958ad9325dbd32c469.json",
+          "name": "benchmark.json",
+          "openPath": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/921e4f3f7927f6afbc2d2679ad40ad2637472c9c7f37292ccc1ff0d1624e70ab/artifacts/a1387ea04b73cdfd9943b2590dba48ac545c90280e6cd8958ad9325dbd32c469.json"
+        },
+        {
+          "ref": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/921e4f3f7927f6afbc2d2679ad40ad2637472c9c7f37292ccc1ff0d1624e70ab/artifacts/a1387ea04b73cdfd9943b2590dba48ac545c90280e6cd8958ad9325dbd32c469.json",
+          "name": "benchmark.json",
+          "openPath": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/921e4f3f7927f6afbc2d2679ad40ad2637472c9c7f37292ccc1ff0d1624e70ab/artifacts/a1387ea04b73cdfd9943b2590dba48ac545c90280e6cd8958ad9325dbd32c469.json"
+        }
+      ],
+      "screenshotOriginal": "/home/vivion/iq27-tmp/ui-b3-evidence/requested-960.png"
+    },
+    {
+      "sample": "requested-1200",
+      "capturedAt": 1794444333936,
+      "compositor": {
+        "pid": 1503295,
+        "address": "0x5562a17731d0",
+        "position": [
+          -100,
+          66
+        ],
+        "size": [
+          1200,
+          800
+        ],
+        "floating": true
+      },
+      "dom": {
+        "at": 1794444333936,
+        "innerWidth": 1200,
+        "innerHeight": 800,
+        "outerWidth": 1200,
+        "outerHeight": 800,
+        "scrollWidth": 1200,
+        "scrollHeight": 800,
+        "bodyWidth": 1200,
+        "buttons": [
+          {
+            "label": "打开 copy.csv",
+            "inViewport": false,
+            "rect": {
+              "x": 998.3203125,
+              "y": -2894.443359375,
+              "width": 113.2421875,
+              "height": 39.12109375,
+              "top": -2894.443359375,
+              "right": 1111.5625,
+              "bottom": -2855.322265625,
+              "left": 998.3203125
+            }
+          },
+          {
+            "label": "打开 analysis.csv",
+            "inViewport": false,
+            "rect": {
+              "x": 998.3203125,
+              "y": -2402.67578125,
+              "width": 113.2421875,
+              "height": 39.12109375,
+              "top": -2402.67578125,
+              "right": 1111.5625,
+              "bottom": -2363.5546875,
+              "left": 998.3203125
+            }
+          },
+          {
+            "label": "打开 benchmark.json",
+            "inViewport": false,
+            "rect": {
+              "x": 998.3203125,
+              "y": -1747.998046875,
+              "width": 113.2421875,
+              "height": 39.12109375,
+              "top": -1747.998046875,
+              "right": 1111.5625,
+              "bottom": -1708.876953125,
+              "left": 998.3203125
+            }
+          },
+          {
+            "label": "打开 benchmark.json",
+            "inViewport": false,
+            "rect": {
+              "x": 998.3203125,
+              "y": -948.515625,
+              "width": 113.2421875,
+              "height": 39.12109375,
+              "top": -948.515625,
+              "right": 1111.5625,
+              "bottom": -909.39453125,
+              "left": 998.3203125
+            }
+          },
+          {
+            "label": "打开 benchmark.json",
+            "inViewport": true,
+            "rect": {
+              "x": 998.3203125,
+              "y": 375.322265625,
+              "width": 113.2421875,
+              "height": 39.12109375,
+              "top": 375.322265625,
+              "right": 1111.5625,
+              "bottom": 414.443359375,
+              "left": 998.3203125
+            }
+          }
+        ]
+      },
+      "conversationId": "bot-conversation-36347302-b270-4a12-8021-6d9a11958ea3",
+      "files": [
+        {
+          "ref": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/7280157ca95d6314d39dbccbe86c063f37548feb43916286da7643918aff37e6/artifacts/128585c821775c92fd1a7d607e4b934bbf3e7454100d9682b49dde0c135068e1.csv",
+          "name": "copy.csv",
+          "openPath": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/7280157ca95d6314d39dbccbe86c063f37548feb43916286da7643918aff37e6/artifacts/128585c821775c92fd1a7d607e4b934bbf3e7454100d9682b49dde0c135068e1.csv"
+        },
+        {
+          "ref": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/da30a83e570faef2bf9ca3ce5d374097de21583138d8ad0ac5d6a540232c4d40/artifacts/fc644ae08e3ce9a53ce54883c7c23a776d153b4c60c91aac691198524f6dbc9a.csv",
+          "name": "analysis.csv",
+          "openPath": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/da30a83e570faef2bf9ca3ce5d374097de21583138d8ad0ac5d6a540232c4d40/artifacts/fc644ae08e3ce9a53ce54883c7c23a776d153b4c60c91aac691198524f6dbc9a.csv"
+        },
+        {
+          "ref": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/28197f485bd2f150d3758697719754a42a1bc1899a24370bfb98b1b702497f0c/artifacts/453b1451b9eabb65c85c99f4bcd1a01b7db7713a6b3f878053862ac92ad00a67.json",
+          "name": "benchmark.json",
+          "openPath": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/28197f485bd2f150d3758697719754a42a1bc1899a24370bfb98b1b702497f0c/artifacts/453b1451b9eabb65c85c99f4bcd1a01b7db7713a6b3f878053862ac92ad00a67.json"
+        },
+        {
+          "ref": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/921e4f3f7927f6afbc2d2679ad40ad2637472c9c7f37292ccc1ff0d1624e70ab/artifacts/a1387ea04b73cdfd9943b2590dba48ac545c90280e6cd8958ad9325dbd32c469.json",
+          "name": "benchmark.json",
+          "openPath": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/921e4f3f7927f6afbc2d2679ad40ad2637472c9c7f37292ccc1ff0d1624e70ab/artifacts/a1387ea04b73cdfd9943b2590dba48ac545c90280e6cd8958ad9325dbd32c469.json"
+        },
+        {
+          "ref": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/921e4f3f7927f6afbc2d2679ad40ad2637472c9c7f37292ccc1ff0d1624e70ab/artifacts/a1387ea04b73cdfd9943b2590dba48ac545c90280e6cd8958ad9325dbd32c469.json",
+          "name": "benchmark.json",
+          "openPath": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/921e4f3f7927f6afbc2d2679ad40ad2637472c9c7f37292ccc1ff0d1624e70ab/artifacts/a1387ea04b73cdfd9943b2590dba48ac545c90280e6cd8958ad9325dbd32c469.json"
+        }
+      ],
+      "screenshotOriginal": "/home/vivion/iq27-tmp/ui-b3-evidence/requested-1200.png"
+    },
+    {
+      "sample": "requested-390",
+      "capturedAt": 1794444334852,
+      "compositor": {
+        "pid": 1503295,
+        "address": "0x5562a17731d0",
+        "position": [
+          20,
+          66
+        ],
+        "size": [
+          960,
+          800
+        ],
+        "floating": true
+      },
+      "dom": {
+        "at": 1794444334852,
+        "innerWidth": 960,
+        "innerHeight": 800,
+        "outerWidth": 960,
+        "outerHeight": 800,
+        "scrollWidth": 960,
+        "scrollHeight": 800,
+        "bodyWidth": 960,
+        "buttons": [
+          {
+            "label": "打开 copy.csv",
+            "inViewport": false,
+            "rect": {
+              "x": 746.328125,
+              "y": -2894.443359375,
+              "width": 113.2421875,
+              "height": 39.12109375,
+              "top": -2894.443359375,
+              "right": 859.5703125,
+              "bottom": -2855.322265625,
+              "left": 746.328125
+            }
+          },
+          {
+            "label": "打开 analysis.csv",
+            "inViewport": false,
+            "rect": {
+              "x": 746.328125,
+              "y": -2402.67578125,
+              "width": 113.2421875,
+              "height": 39.12109375,
+              "top": -2402.67578125,
+              "right": 859.5703125,
+              "bottom": -2363.5546875,
+              "left": 746.328125
+            }
+          },
+          {
+            "label": "打开 benchmark.json",
+            "inViewport": false,
+            "rect": {
+              "x": 746.328125,
+              "y": -1747.998046875,
+              "width": 113.2421875,
+              "height": 39.12109375,
+              "top": -1747.998046875,
+              "right": 859.5703125,
+              "bottom": -1708.876953125,
+              "left": 746.328125
+            }
+          },
+          {
+            "label": "打开 benchmark.json",
+            "inViewport": false,
+            "rect": {
+              "x": 746.328125,
+              "y": -948.515625,
+              "width": 113.2421875,
+              "height": 39.12109375,
+              "top": -948.515625,
+              "right": 859.5703125,
+              "bottom": -909.39453125,
+              "left": 746.328125
+            }
+          },
+          {
+            "label": "打开 benchmark.json",
+            "inViewport": true,
+            "rect": {
+              "x": 746.328125,
+              "y": 375.322265625,
+              "width": 113.2421875,
+              "height": 39.12109375,
+              "top": 375.322265625,
+              "right": 859.5703125,
+              "bottom": 414.443359375,
+              "left": 746.328125
+            }
+          }
+        ]
+      },
+      "conversationId": "bot-conversation-36347302-b270-4a12-8021-6d9a11958ea3",
+      "files": [
+        {
+          "ref": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/7280157ca95d6314d39dbccbe86c063f37548feb43916286da7643918aff37e6/artifacts/128585c821775c92fd1a7d607e4b934bbf3e7454100d9682b49dde0c135068e1.csv",
+          "name": "copy.csv",
+          "openPath": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/7280157ca95d6314d39dbccbe86c063f37548feb43916286da7643918aff37e6/artifacts/128585c821775c92fd1a7d607e4b934bbf3e7454100d9682b49dde0c135068e1.csv"
+        },
+        {
+          "ref": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/da30a83e570faef2bf9ca3ce5d374097de21583138d8ad0ac5d6a540232c4d40/artifacts/fc644ae08e3ce9a53ce54883c7c23a776d153b4c60c91aac691198524f6dbc9a.csv",
+          "name": "analysis.csv",
+          "openPath": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/da30a83e570faef2bf9ca3ce5d374097de21583138d8ad0ac5d6a540232c4d40/artifacts/fc644ae08e3ce9a53ce54883c7c23a776d153b4c60c91aac691198524f6dbc9a.csv"
+        },
+        {
+          "ref": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/28197f485bd2f150d3758697719754a42a1bc1899a24370bfb98b1b702497f0c/artifacts/453b1451b9eabb65c85c99f4bcd1a01b7db7713a6b3f878053862ac92ad00a67.json",
+          "name": "benchmark.json",
+          "openPath": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/28197f485bd2f150d3758697719754a42a1bc1899a24370bfb98b1b702497f0c/artifacts/453b1451b9eabb65c85c99f4bcd1a01b7db7713a6b3f878053862ac92ad00a67.json"
+        },
+        {
+          "ref": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/921e4f3f7927f6afbc2d2679ad40ad2637472c9c7f37292ccc1ff0d1624e70ab/artifacts/a1387ea04b73cdfd9943b2590dba48ac545c90280e6cd8958ad9325dbd32c469.json",
+          "name": "benchmark.json",
+          "openPath": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/921e4f3f7927f6afbc2d2679ad40ad2637472c9c7f37292ccc1ff0d1624e70ab/artifacts/a1387ea04b73cdfd9943b2590dba48ac545c90280e6cd8958ad9325dbd32c469.json"
+        },
+        {
+          "ref": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/921e4f3f7927f6afbc2d2679ad40ad2637472c9c7f37292ccc1ff0d1624e70ab/artifacts/a1387ea04b73cdfd9943b2590dba48ac545c90280e6cd8958ad9325dbd32c469.json",
+          "name": "benchmark.json",
+          "openPath": "/home/vivion/iq27-tmp/l4-0qg0z0rk/.mybuddy/durable/921e4f3f7927f6afbc2d2679ad40ad2637472c9c7f37292ccc1ff0d1624e70ab/artifacts/a1387ea04b73cdfd9943b2590dba48ac545c90280e6cd8958ad9325dbd32c469.json"
+        }
+      ],
+      "screenshotOriginal": "/home/vivion/iq27-tmp/ui-b3-evidence/requested-390.png"
+    }
+  ],
+  "results": {
+    "960": "PASS actual compositor/outerWidth/innerWidth/scrollWidth960; artifact button in viewport",
+    "1200": "PASS actual compositor/outerWidth/innerWidth/scrollWidth1200; artifact button in viewport",
+    "requested390": "Correctly clamped to960; not mobile/narrow390 support",
+    "conversationIdentity": "Same persisted source conversation in all real-size samples",
+    "multipleMainWindows": "Unsupported by product singleton; not claimed passed as multi-window"
+  },
+  "singleton": {
+    "source": "src/main/index.ts:396-412 requestSingleInstanceLock/app.quit and second-instance restores/focuses existing window",
+    "action": "Second pnpm dev with same copied profile and distinct debugging port39129",
+    "observedExitCode": 0,
+    "afterLaunchWindows": [
+      {
+        "pid": 1503295,
+        "address": "0x5562a17731d0",
+        "size": [
+          960,
+          800
+        ]
+      }
+    ],
+    "noSecondMainWindow": true,
+    "runtimeScope": "Only test profile; no extra BrowserWindow invented",
+    "log": {
+      "path": "/home/vivion/iq27-tmp/ui-b3-evidence/second-instance.log",
+      "sha256": "825f7963b489bd36d9a09430f99bcf281330485a723eae9743ae0c84712e8589"
+    },
+    "caveat": "Singleton handler event itself not instrumented; evidence is actual second launch exit0, surviving original window identity, absence second window, and production lock branch. Bundled OfficeCLI unavailable warning is unrelated and preserved."
+  },
+  "zeroModel": {
+    "configuredEndpoint": "http://127.0.0.1:37603/v1",
+    "proxyStarted": false,
+    "portObservedNotListeningBeforeLaunch": true,
+    "persistedModelDiagnosticsBefore": 57,
+    "persistedModelDiagnosticsAfter": 57,
+    "executionBindingsBefore": 5,
+    "executionBindingsAfter": 5,
+    "newBusinessRequests": 0,
+    "inferenceCalls": 0,
+    "failedModelAttemptEvidence": "No new diagnostics or connection-refused/model-request-failure entries in UI logs; no separate network packet capture"
+  },
+  "priorProfileStartupDisclosure": {
+    "reason": "Initial existing-profile UI launch was allowed by preceding task; later parent required copied profile, so closed immediately without UI interaction and never restored/overwrote oldDB",
+    "evidence": "/home/vivion/iq27-tmp/ui-b3-evidence/initial-profile-observation.json",
+    "addedFeedback": {
+      "kind": "blocker",
+      "category": "progress",
+      "eventId": "blocker:offline:work-0ec4bcfd-5503-4904-8854-9cc4392c4f12:unqueryable-offline-gap",
+      "text": "【短验PRbenchmark】\n后台事项受阻：来源没有历史回查能力，无法证明离线区间内没有错过事件\n需要进一步处理，事项尚未完成。"
+    },
+    "notDuplicateResultOrReminder": true,
+    "businessBindingsAndModelDiagnosticsUnchanged": true,
+    "originalRawReportsUnchanged": true
+  },
+  "latencyFeasibility": {
+    "notExecuted": "No new reminder or business request was created in this check",
+    "zeroModelRoute": "Official preload window.api.cron.upsert/list/onEvent exists in src/preload/index.ts:1007; a pure reminder target can fire without model. No dedicated current renderer upsert UI was located. A proposed separate authorized measurement could use this existing product API, never direct DB injection.",
+    "measurable": "Sample first durable message visible through read-only API/DB queries and first matching DOM/rAF visibility, retaining polling intervals, wall/monotonic clock alignment and viewport state. This provides sampled bounds, not exact commit latency.",
+    "notMeasurableFromCurrentEvidence": "Exact transaction commit→first compositor-presented frame requires instrumentation; createdAt is not commit, rAF is not independently verified display presentation. No need for a model batch for pure reminder, but no new test executed."
+  },
+  "screenshots": [
+    {
+      "file": "requested-960.png",
+      "sha256": "a0c8fb44698dbc5edfcb95d549673901c2ac46ef50d85857c9512546a6dbc3d1",
+      "bytes": 101210
+    },
+    {
+      "file": "requested-1200.png",
+      "sha256": "3b5144e9b3c108f0810d507af31261ba2d4f4d59a46f8b56c6149e3ee7b707f6",
+      "bytes": 141981
+    }
+  ],
+  "cleanup": {
+    "mainDevSessionExitCode": 0,
+    "secondDevSessionExitCode": 0,
+    "ownProcessesRemaining": false,
+    "noUserProcessesChanged": true
+  },
+  "remainingBoundaries": [
+    "No supported second simultaneous main conversation window",
+    "390px only emulation in prior reports, actual product minimum960 verified here",
+    "JSON external viewer association still absent; this check only observes buttons/paths, not changes file association",
+    "Exact commit-to-visible latency remains unmeasured"
+  ]
+}
