@@ -292,6 +292,8 @@ const KNOWN_HEADLESS_RED = new Set([
 const HEADLESS_TESTS = new Set([
   "test:durable-context-live-assessment",
   "test:durable-context-active-view",
+  "test:durable-context-entrypoints",
+  "test:durable-context-window-matrix",
   "test:durable-storage-replay-api",
   "test:durable-storage-migration",
   "test:durable-storage-lease",

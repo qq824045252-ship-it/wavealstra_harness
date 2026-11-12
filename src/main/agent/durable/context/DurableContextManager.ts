@@ -529,6 +529,18 @@ export class DurableContextManager {
         this.rebaseNeeded = true;
         return { summary };
       }
+      // Neither our text-only summarizer nor Pi's native summary serializer can preserve
+      // opaque media. Decline BEFORE the small-input native fallback as well: returning
+      // undefined there would let Pi replace the attachment with a text-only head.
+      // The original request can still proceed if it fits; an overflow compaction that
+      // produces no head terminates through Pi's existing bounded failure path.
+      if (input.messages.some(message => Array.isArray(message.content) && message.content.some(
+        part => part.type !== "text" && part.type !== "thinking" && part.type !== "toolCall",
+      ))) {
+        this.fail("无法安全整理包含图片或其他非文本附件的历史，原始附件仍保留",
+          new Error("文本摘要不能替代原始附件；请保留当前历史并切换更大窗口模型，或缩小输入后重试。"));
+        return { decline: true };
+      }
       const budget = Math.max(4_096, Math.floor(policy.window * 0.45));
       const inputTokens = Math.max(estimateMessages(input.messages), input.messages.reduce((total, message) => total + estimateMessageTokens(message), 0));
       this.rebaseNeeded = true;

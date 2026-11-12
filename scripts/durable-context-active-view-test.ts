@@ -21,7 +21,7 @@ function history(count: number, epoch = 0): Message[] {
     return index % 2 ? assistant(content) : { role: "user", content, timestamp: index + 1 };
   });
 }
-function fixture() {
+function fixture(providerOverflow = false) {
   let summaries = 0;
   let action: ((signal?: AbortSignal) => Promise<void>) | undefined;
   const requests: Array<readonly Message[]> = [];
@@ -33,7 +33,13 @@ function fixture() {
     streamSimple: (_model: unknown, input: { messages: readonly Message[] }) => {
       requests.push(input.messages);
       const stream = createAssistantMessageEventStream();
-      queueMicrotask(() => { stream.push({ type: "done", reason: "stop", message: assistant("Acknowledged.") }); stream.end(); });
+      queueMicrotask(() => {
+        if (providerOverflow) {
+          const error = { ...assistant(""), stopReason: "error" as const, errorMessage: "Your input exceeds the context window of this model" };
+          stream.push({ type: "error", reason: "error", error });
+        } else stream.push({ type: "done", reason: "stop", message: assistant("Acknowledged.") });
+        stream.end();
+      });
       return stream;
     } } as unknown as DurableBotOptions["models"];
   return { models, requests, summaryInputs, summaries: () => summaries, model, setAction: (next?: typeof action) => { action = next; } };
@@ -245,6 +251,47 @@ try {
       assert.equal(JSON.stringify((await runtime.conversation.context(ctx)).entries), before);
       assert.equal((await runtime.conversation.context(ctx)).head, undefined);
       console.log(`PASS ${kind}: unsafe fixed prefix declined, original bytes preserved`);
+    } finally { await runtime.close(); }
+  }
+  // Real native CompactionTask integration: both its small-input fallback and the
+  // host's chunked fallback must refuse text-only retirement of an attachment.
+  for (const mode of ["small-manual", "large-manual", "provider-overflow"] as const) {
+    const directory = join(root, `media-fallback-${mode}`); await mkdir(directory);
+    const source = fixture(mode === "provider-overflow");
+    const originals = history(mode === "large-manual" ? 160 : 40);
+    originals[0] = { role: "user", timestamp: 1, content: [
+      { type: "text", text: "Retain this exact attachment." },
+      { type: "image", mimeType: "image/png", data: "exact-media-base64" },
+    ] };
+    const runtime = await DurableBotRuntime.open({ directory, cwd: directory, models: source.models,
+      model: { provider: "fixture", modelId: "fixture" }, toolMode: "native", instructions: () => "", onSnapshot: () => {},
+      initialHistory: { messages: originals, context: [] },
+      contextManagement: { policy: () => ({ ratio: 0.8, absoluteTokens: null }), engine: () => "billion-context", toolEstimateTokens: () => 0 },
+    });
+    try {
+      const before = await runtime.conversation.context(ctx);
+      const mediaEntry = before.entries[0]!;
+      if (mode === "provider-overflow") {
+        await (await runtime.submit("Continue with the attached image.", "media-overflow")).wait(ctx);
+        await runtime.conversation.waitForIdle(ctx);
+        assert.equal(source.requests.length, 1, "declined overflow must not repeatedly resend the same image input");
+        assert(JSON.stringify(source.requests[0]).includes("exact-media-base64"), "real provider request retains media bytes");
+      } else {
+        const taskId = await runtime.conversation.compact(undefined, ctx);
+        const outcome = await runtime.harness.waitForTask(taskId, ctx);
+        assert.equal(outcome.state.outcome.status, "completed");
+        if (outcome.state.outcome.status === "completed") assert.equal(outcome.state.outcome.result.entryId, undefined);
+      }
+      assert.equal(source.summaries(), 0, "no native or host text summary may replace media");
+      assert.notEqual(runtime.contextManagementStatus()?.phase, "completed", "declined media maintenance is not a successful summary");
+      assert.equal((await runtime.conversation.context(ctx)).head, undefined, "no false summary head");
+      assert.deepEqual(await runtime.conversation.commit(tx => tx.entry(mediaEntry.id), ctx), mediaEntry);
+      if (mode === "small-manual") {
+        const result = await (await runtime.submit("Continue with the image; do not summarize.", "media-continue")).wait(ctx);
+        assert.equal(result.status, "done");
+        assert(JSON.stringify(source.requests.at(-1)).includes("exact-media-base64"), "fitting request still proceeds unchanged");
+      }
+      console.log(`PASS ${mode}: original media, no text-only head, bounded native outcome`);
     } finally { await runtime.close(); }
   }
   for (const cancel of [false, true]) {

@@ -77,3 +77,12 @@ A fresh immutable source export of `aaa106fe` completed the default headless gat
 第一次 BC 批（05:55）中断在 5/7，无最终 report/退出码，不计通过；已保留证据。恢复批（06:14）使用新隔离 profile，7/7 且退出 0。
 
 结构化证据及 SHA256：`docs/evidence/issue26/sqlite-20261112/native-bc-seven-types-comparison.json`。仍未证明巨型首次历史/受保护图片前缀有界，以及全部 Work/team/Gateway/Remote 入口矩阵；不能据此关闭整个 #26。
+
+## 后续入口与媒体完整性专项（2026-11-12）
+
+- 修复 BC fallback 图片完整性：无论小输入走 Pi 原生文本摘要，还是大输入走宿主分块摘要，都不能用图片占位文本替代真实附件并提交成功 head。现在保留原附件并报告无法安全整理；原请求仍可容纳则继续，真实 provider overflow 仍走既有有界失败，不重复发送。仅此窄保护，不宣称已实现历史媒体分页回取。
+- `test:durable-context-active-view` 新增小/大手动整理、provider overflow 三条真实 CompactionTask 链，验证没有摘要调用/伪造 head、原字节不变、可容纳请求继续；`test:durable-context-safety` 9组通过。
+- `test:durable-context-window-matrix` 用真实 Durable/SQLite 与最终 provider fixture 请求覆盖128K/272K/1M、absolute/null、同 runtime 大→小热切换、设置变化、冷恢复及父子不同模型。不是旧策略纯函数，不冒充外部模型验收。
+- `test:durable-context-entrypoints` 经真实 GatewayService inbound → DurableBotService，验证自动压缩投影、原文工具、冷重开；直接调用生产 openDurableAuxiliary，验证默认策略、独立状态、回查与恢复。Work/team/Remote链尚未用此专项覆盖。
+
+再次按原 Issue 核对：D1 初次有界补读仍有真实缺口。legacy 生产导入会把 buildSessionContext 全量存入一个 context-import，SDK 在请求 hook 前先读完整视图；仅改变 Manager beforeRequest 不够。需要保持旧摘要/路径语义、可分页完整交换及受版本控制的 SDK 初始维护边界，不能删除原文或将大历史冒充单条用户超限豁免。Remote 目前只透传事件，仍需验证消费和重连的状态单调性。这些未完成项仍属于原范围，未拆出去伪造关单。
