@@ -21,8 +21,8 @@ export interface PrependAnchor {
 
 interface HistoryPaginationOptions {
   activeTaskId: string
-  /** 当前实时窗口所属的持久会话世代（durable.epoch）；块响应 page.epoch 必须与它一致 */
-  epoch: string | undefined
+  /** 当前实时窗口所属的持久会话世代（durable.historyId）；块响应 page.historyId 必须与它一致 */
+  historyId: string | undefined
   /** 第一页更早历史的游标（实时窗口给出）；undefined = 没有更早历史可加载 */
   seedCursor: number | undefined
   timelineRef: { current: HTMLDivElement | null }
@@ -41,12 +41,12 @@ function firstMessageId(element: HTMLElement): string | undefined {
  * 远程端「更早历史」分页：**前插**，不再整页替换。
  *
  * - 游标：第一页由实时窗口给出（seedCursor），之后严格取上一块响应的 `page.before`；
- * - 世代：响应的 `page.epoch` 必须与当前 durable.epoch 一致，不一致整块丢弃（重建/切分支后序号重排）；
+ * - 世代：响应的 `page.historyId` 必须与当前 durable.historyId 一致，不一致整块丢弃（重建/切分支后序号重排）；
  * - 请求串行：loadingEarlierRef 防重入，一页落地才有下一页游标；
  * - 滚动：不再把 scrollTop 归零。插入前记录现场，交给 App 的 useLayoutEffect 一次性补偿。
  */
 export function useHistoryPagination(options: HistoryPaginationOptions) {
-  const { activeTaskId, epoch, seedCursor, timelineRef } = options
+  const { activeTaskId, historyId, seedCursor, timelineRef } = options
   const [olderBlocks, setOlderBlocks] = useState<OlderHistoryBlock[]>([])
   const [loadingEarlier, setLoadingEarlier] = useState(false)
   /** 与 olderBlocks 同步的镜像：手势回调里要读最新值，不能等 React 渲染 */
@@ -68,7 +68,7 @@ export function useHistoryPagination(options: HistoryPaginationOptions) {
    * seedCursor 变了说明实时窗口已前滚驱逐，块与窗口之间不再保证衔接（中间消息被逐出），
    * 继续拼下去就是静默缺消息；宁可重新从新游标加载。
    */
-  const generationKey = `${activeTaskId}:${epoch ?? ''}:${seedCursor ?? ''}`
+  const generationKey = `${activeTaskId}:${historyId ?? ''}:${seedCursor ?? ''}`
 
   const commitBlocks = (next: OlderHistoryBlock[]): void => {
     blocksRef.current = next
@@ -107,19 +107,19 @@ export function useHistoryPagination(options: HistoryPaginationOptions) {
       // 请求飞行期间已经离开这个任务 / 点过「回到底部」：块属于旧的现场，丢弃
       if (discardTokenRef.current !== token || useRemoteStore.getState().activeTaskId !== taskId) return
       const page = history.page
-      const liveEpoch = useRemoteStore.getState().histories[taskId]?.durable?.epoch ?? epoch
+      const liveHistoryId = useRemoteStore.getState().histories[taskId]?.durable?.historyId ?? historyId
       // 游标只认 page.before：没有 page = 服务端没按块返回（旧实现返回整段历史），拼进来就是重复
       if (!page) {
         console.warn('[remote] 更早历史响应缺少 page 元数据，已丢弃', taskId)
         return
       }
-      if (liveEpoch === undefined || page.epoch !== liveEpoch) {
-        console.warn('[remote] 更早历史块世代不一致，已丢弃', { pageEpoch: page.epoch, liveEpoch })
+      if (liveHistoryId === undefined || page.historyId !== liveHistoryId) {
+        console.warn('[remote] 更早历史块世代不一致，已丢弃', { pageHistoryId: page.historyId, liveHistoryId })
         return
       }
       const next = appendOlderBlocks(blocksRef.current, {
         taskId,
-        epoch: page.epoch,
+        historyId: page.historyId,
         messages: history.messages ?? [],
       })
       // 游标必须朝更早方向前进：服务端回同一条游标 = 已经到底（或分页坏了），停在这里别再重复请求

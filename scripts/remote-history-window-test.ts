@@ -26,7 +26,7 @@ function msg(id: string, role: "user" | "assistant", createdAt: number, text = i
 }
 
 function block(epoch: string, messages: RemoteHistoryMessage[]): OlderHistoryBlock {
-  return { taskId: "t", epoch, messages };
+  return { taskId: "t", historyId: epoch, messages };
 }
 
 function idsOf(blocks: OlderHistoryBlock[]): string[] {
@@ -50,7 +50,7 @@ function idsOf(blocks: OlderHistoryBlock[]): string[] {
   const old = appendOlderBlocks([], block("e1", [msg("durable-3", "user", T0)]));
   const rebuilt = appendOlderBlocks(old, block("e2", [msg("durable-1", "user", T0 + 10)]));
   assert.deepEqual(idsOf(rebuilt), ["durable-1"], "跨世代的块不能混进同一条时间轴");
-  assert.equal(rebuilt[0].epoch, "e2");
+  assert.equal(rebuilt[0].historyId, "e2");
 }
 
 // 3. 相邻两页重叠（块内 context-import 被过滤后可能出现）：按 durable-<entryId> 去重，不渲染两遍。

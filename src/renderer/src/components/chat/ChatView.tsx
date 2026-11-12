@@ -8,7 +8,6 @@ import { useDismissOnClickOutside } from "@/hooks/useDismissOnClickOutside";
 import { useActiveTask, useActiveTaskArtifacts, useVisibleTaskArtifacts, useAppStore } from "@/store/appStore";
 import type { Artifact, ChatMessage, Space } from "@/types";
 import MessageItem from "./MessageItem";
-import { durableMessageToChatMessage } from "@/store/app/messages/historyMapper";
 import { botMessagePresentation } from "@/lib/botMessagePresentation";
 import ChatInput from "./ChatInput";
 import ConversationGoalChip from "./ConversationGoalChip";
@@ -19,6 +18,7 @@ import SubagentRunsChip from "./SubagentRunsChip";
 import SubagentChatView from "./SubagentChatView";
 import RuntimeStatusChips from "./RuntimeStatusChips";
 import { mergeHistoryQuestions } from "@/lib/historyQuestions";
+import { useHistoryQuestions } from "./useHistoryQuestions";
 import TaskDiagnosticsButton from "./TaskDiagnosticsButton";
 import TaskDiagnosticsDialog from "./TaskDiagnosticsDialog";
 import WelcomeModeIcon from "@/components/common/WelcomeModeIcon";
@@ -273,17 +273,7 @@ function HistoryPopup({
 }): React.JSX.Element | null {
   const task = useActiveTask();
   const taskId = task?.id;
-  /** 完整提问索引来自主进程（跨实时窗口）；请求未返回前退回当前窗口内容。 */
-  const [index, setIndex] = useState<Array<{ id: string; text: string }> | null>(null);
-  useEffect(() => {
-    setIndex(null);
-    if (!taskId) return;
-    const load = window.api?.agent?.listTaskUserQuestions;
-    if (!load) return;
-    let alive = true;
-    void load(taskId).then(value => { if (alive) setIndex(value.questions); }).catch(() => { /* keep the window fallback */ });
-    return () => { alive = false; };
-  }, [taskId]);
+  const { index, hasMore, loading, error, loadMore } = useHistoryQuestions(taskId, task?.durable?.historyId);
   const windowQuestions = (task?.messages ?? [])
     .filter((m) => m.role === "user")
     .map((m) => ({
@@ -299,7 +289,7 @@ function HistoryPopup({
 
   return (
     <div className="history-popup">
-      <div className="history-popup-title">历史提问 ({questions.length})</div>
+      <div className="history-popup-title">历史提问 ({questions.length}{hasMore ? "+" : ""})</div>
       <div className="history-popup-list">
         {questions.map((q) => (
           <button
@@ -313,6 +303,10 @@ function HistoryPopup({
             {q.text}
           </button>
         ))}
+        {error && <div role="alert">{error}</div>}
+        {(loading || hasMore || error) && <button type="button" className="history-popup-item" disabled={loading} onClick={loadMore}>
+          {loading ? "正在加载提问…" : error ? "重试加载" : "加载更早提问"}
+        </button>}
       </div>
     </div>
   );
@@ -547,12 +541,14 @@ export default function ChatView(): React.JSX.Element {
     return "运行时策略";
   };
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyJumpError, setHistoryJumpError] = useState<string>();
+  useEffect(() => setHistoryJumpError(undefined), [task?.id, task?.durable?.historyId]);
   /**
    * 已加载的更早历史窗口。seed 是首次加载时实时窗口的 historyBefore：实时窗口一旦前滚驱逐，
    * 这一段块与实时窗口之间就无法再保证衔接（中间消息已被逐出），必须整段作废。
    */
-  const visibleWindow = task?.historyWindow?.epoch === task?.durable?.epoch
-    && task?.historyWindow?.seed === task?.durable?.historyBefore ? task?.historyWindow : undefined;
+  const visibleWindow = task?.historyWindow?.historyId === task?.durable?.historyId
+    && (task?.historyWindow?.kind === "focus" || task?.historyWindow?.seed === task?.durable?.historyBefore) ? task?.historyWindow : undefined;
   const beforeHistory = visibleWindow ? visibleWindow.before : task?.durable?.historyBefore;
   /** 上一帧的消息列表：用来判定本轮渲染是「前插」还是真的出现了新消息 */
   const previousDisplayMessagesRef = useRef<ChatMessage[]>([]);
@@ -574,9 +570,9 @@ export default function ChatView(): React.JSX.Element {
 
   const displayMessages = useMemo(() => {
     const live = task?.messages ?? [];
-    const messages = visibleWindow ? mergeHistoryWindow([visibleWindow.messages], live) : live;
+    const messages = visibleWindow?.kind === "focus" ? visibleWindow.messages : visibleWindow ? mergeHistoryWindow([visibleWindow.messages], live) : live;
     return task?.durable !== undefined || task?.welcomeMode === "general"
-      ? botMessagePresentation(messages, task.durable?.pendingInputs) : messages;
+      ? botMessagePresentation(messages, visibleWindow?.kind === "focus" ? [] : task.durable?.pendingInputs) : messages;
   }, [visibleWindow, task?.messages, task?.welcomeMode, task?.durable, task?.durable?.pendingInputs]);
   const messageCount = displayMessages.length;
   const hasMessages = messageCount > 0;
@@ -635,7 +631,7 @@ export default function ChatView(): React.JSX.Element {
   }, []);
 
   /** 更早历史的前插、游标推进、作废令牌与滚动补偿都归这个控制器管 */
-  const { requestEarlier, clearWindow } = useEarlierHistory({
+  const { requestEarlier, clearWindow, loadAround, loadNewer, cancelPending } = useEarlierHistory({
     taskId: task?.id,
     cursor: beforeHistory,
     scrollRef,
@@ -644,50 +640,31 @@ export default function ChatView(): React.JSX.Element {
 
   /**
    * 历史提问跳转：提问可能早于实时窗口（窗口只保留最近 200 条 entry），
-   * 先按历史块向前加载到目标消息再滚动；已在视图中则直接跳。
+   * 按目标 entry 读取附近窗口再滚动；已在视图中则直接跳。
    */
   const jumpToHistoryQuestion = useCallback(async (messageId: string): Promise<void> => {
+    setHistoryJumpError(undefined);
     commitFollow(onHistoryJump(followStateRef.current));
     if (displayMessages.some(message => message.id === messageId)) {
+      cancelPending();
       listApiRef.current?.scrollToMessageId(messageId);
       return;
     }
-    const taskId = task?.id;
-    const epoch = task?.durable?.epoch;
-    if (!taskId || !epoch) return;
-    let cursor = beforeHistory;
-    for (let pageIndex = 0; pageIndex < 40 && cursor !== undefined; pageIndex += 1) {
-      const history = await window.api?.agent?.loadTaskHistory?.(taskId, cursor);
-      const block = history?.page;
-      if (!history || history.historyError || !block || block.epoch !== epoch || block.before === cursor) return;
-      const state = useAppStore.getState();
-      const row = state.tasks.find(item => item.id === taskId);
-      if (!row || row.durable?.epoch !== epoch || state.activeTaskId !== taskId) return;
-      const current = row.historyWindow?.epoch === epoch ? row.historyWindow.before : row.durable?.historyBefore;
-      if (current !== cursor) return;
-      const messages = history.messages.map(durableMessageToChatMessage);
-      useAppStore.setState(currentState => ({
-        tasks: currentState.tasks.map(item => item.id === taskId
-          ? {
-              ...item,
-              historyWindow: {
-                epoch,
-                seed: item.historyWindow?.seed ?? cursor!,
-                before: block.before,
-                messages: mergeHistoryWindow([messages, item.historyWindow?.messages ?? []], []),
-              },
-            }
-          : item),
-      }));
-      cursor = block.before;
+    const match = /^durable-(\d+)$/.exec(messageId);
+    if (!match) return;
+    try {
+      if (!await loadAround(Number(match[1]))) return;
+      const selected = useAppStore.getState().tasks.find(item => item.id === task?.id)?.historyWindow;
       await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
-      const latest = useAppStore.getState().tasks.find(item => item.id === taskId);
-      if ((latest?.historyWindow?.messages ?? []).some(message => message.id === messageId)) {
-        listApiRef.current?.scrollToMessageId(messageId);
-        return;
-      }
+      const latest = useAppStore.getState();
+      if (latest.activeTaskId !== task?.id || latest.tasks.find(item => item.id === task?.id)?.historyWindow !== selected) return;
+      listApiRef.current?.scrollToMessageId(messageId);
+    } catch (error) {
+      const current = useAppStore.getState();
+      if (current.activeTaskId === task?.id && current.tasks.find(item => item.id === task?.id)?.durable?.historyId === task?.durable?.historyId)
+        setHistoryJumpError(error instanceof Error ? error.message : String(error));
     }
-  }, [beforeHistory, commitFollow, displayMessages, task?.durable?.epoch, task?.id]);
+  }, [commitFollow, displayMessages, loadAround, cancelPending, task?.id, task?.durable?.historyId]);
 
   const latestUserMessageIdRef = useRef(latestUserMessageId);
   latestUserMessageIdRef.current = latestUserMessageId;
@@ -1069,6 +1046,7 @@ export default function ChatView(): React.JSX.Element {
 
       <div className="chat-viewport">
         <div className="message-scroll" ref={scrollRef}>
+          {historyJumpError && <div className="conv-branch-error" role="alert">{historyJumpError}</div>}
           {branchError && branchError.taskId === task.id && (
             <div className="conv-branch-error" role="alert">
               <IconAlert size={15} />
@@ -1109,6 +1087,10 @@ export default function ChatView(): React.JSX.Element {
             followStateRef={followStateRef}
             programmaticTargetRef={programmaticTargetRef}
           />
+          {visibleWindow?.kind === "focus" && visibleWindow.after !== undefined && <button type="button" className="history-popup-item"
+            onClick={() => { void loadNewer().catch(error => setHistoryJumpError(error instanceof Error ? error.message : String(error))); }}>
+            加载较新消息
+          </button>}
         </div>
         {/* 用户接管滚动（上拉阅读历史）时出现；点击 = 显式「回到底部」动作。
             位于 chat viewport overlay 层（非滚动容器内）：消息怎么滚/虚拟行怎么重测，
@@ -1147,6 +1129,7 @@ export default function ChatView(): React.JSX.Element {
       </div>}
       <ChatInput
         onBeforeSend={() => {
+          clearWindow();
           pendingLocalSendRef.current = true;
           commitFollow(onResetForTask(followStateRef.current));
         }}

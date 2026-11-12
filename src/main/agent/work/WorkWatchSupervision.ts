@@ -179,17 +179,16 @@ export class WorkWatchSupervision {
     } catch { return false; }
   }
   private executionRisks(binding: WorkExecutionBindingDto) {
-    const {works}=this.options,bindings=works.repo.listBindings(binding.workId);
+    const {works}=this.options,{executions:pending,operations:admissions}=works.repo.executionRiskFacts(binding.workId);
     const lineage=works.partialResults.recovery.ancestry(binding).map(item=>item.bindingId);
-    const operations=works.repo.listAdmissions(binding.workId).filter(item=>['admitted','attempted','unknown'].includes(item.state)).map(item=>{
-      const source=bindings.find(candidate=>candidate.bindingId===item.bindingId);
-      return {riskId:item.admissionId,operationId:item.operationId,actionKind:item.actionKind,state:item.state,bindingId:item.bindingId,
-        intentRevision:item.intentRevision,ownerEpoch:item.ownerEpoch,invalidatedAt:source?.invalidatedAt,
-        currentLineage:!!item.bindingId&&lineage.includes(item.bindingId),retired:!!source?.invalidatedAt&&item.state!=='admitted'&&!lineage.includes(source.bindingId)};
+    const operations=admissions.map(item=>{
+      return {riskId:item.admissionId,operationId:item.operationId,actionKind:item.actionKind,state:item.state,bindingId:item.bindingId ?? undefined,
+        intentRevision:item.intentRevision,ownerEpoch:item.ownerEpoch,invalidatedAt:item.invalidatedAt ?? undefined,
+        currentLineage:!!item.bindingId&&lineage.includes(item.bindingId),retired:!!item.invalidatedAt&&item.state!=='admitted'&&!!item.bindingId&&!lineage.includes(item.bindingId)};
     });
-    const executions=bindings.filter(item=>['pending','submitted','running','unknown'].includes(item.status)).map(item=>({riskId:`execution:${item.bindingId}`,
-      operationId:item.operationId,actionKind:'execution',state:item.status,bindingId:item.bindingId,intentRevision:item.intentRevision,
-      ownerEpoch:item.ownerEpoch,invalidatedAt:item.invalidatedAt,currentLineage:lineage.includes(item.bindingId),retired:!!item.invalidatedAt&&!lineage.includes(item.bindingId)}));
+    const executions=pending.map(item=>({riskId:`execution:${item.bindingId}`,
+      operationId:item.operationId,actionKind:'execution',state:item.state,bindingId:item.bindingId,intentRevision:item.intentRevision,
+      ownerEpoch:item.ownerEpoch,invalidatedAt:item.invalidatedAt ?? undefined,currentLineage:lineage.includes(item.bindingId),retired:!!item.invalidatedAt&&!lineage.includes(item.bindingId)}));
     const all=[...operations,...executions];
     return {lineage:lineage.slice(0,WATCH_EXECUTION_RISK_LIMIT),omittedLineageCount:Math.max(0,lineage.length-WATCH_EXECUTION_RISK_LIMIT),
       items:all.slice(0,WATCH_EXECUTION_RISK_LIMIT),omittedRiskCount:Math.max(0,all.length-WATCH_EXECUTION_RISK_LIMIT),

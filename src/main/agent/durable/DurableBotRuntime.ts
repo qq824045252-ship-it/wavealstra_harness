@@ -19,7 +19,8 @@ import {
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import type { CodemodeSandboxOptions } from "@earendil-works/pi-codemode";
-import type { ChatMessageDto } from "../../../shared/agent-ipc";
+import type { ChatMessageDto, TaskHistoryTarget, TaskUserQuestionsDto, TaskUserQuestionsQuery } from "../../../shared/agent-ipc";
+import { durableHistoryIdentity } from "./DurableHistoryIdentity";
 import { summarizeToolInput } from "../../../shared/pi-event-mapper";
 import type { BotToolMode, DurableBotSnapshot, DurableHistoryBlock } from "../../../shared/durable-bot";
 import { createDurableCodeMode } from "./DurableCodeMode";
@@ -142,6 +143,7 @@ export class DurableBotRuntime {
   private watch!: ConversationWatch;
   private revision = 0;
   private readonly epoch = randomUUID();
+  private readonly historyId: string;
   private latest!: DurableBotSnapshot;
   private closeState:
     | { kind: "open" }
@@ -185,6 +187,7 @@ export class DurableBotRuntime {
   private readonly childManagers = new Map<string, Promise<DurableContextManager | undefined>>();
   private readonly ownedChildManagers = new Set<DurableContextManager>();
   private constructor(readonly harness: Harness, readonly conversation: Conversation, private readonly options: DurableBotOptions) {
+    this.historyId = durableHistoryIdentity(options.directory, String(conversation.id), options.storage);
     this.observeSession();
   }
 
@@ -713,11 +716,16 @@ export class DurableBotRuntime {
       before = page.items[size]?.id;
       if (history.messages.length) break;
     }
-    // 工具结果可能位于块之后，只补齐对应调用，不引入其他消息。
+    await this.completeHistoryTools(history, beforeEntryId, metadata);
+    return { historyId: this.historyId, before, messages: history.messages };
+  }
+
+  /** Results outside a window update its tool rows without adding intervening messages. */
+  private async completeHistoryTools(history: DurableHistoryProjection, afterEntryId: number, metadata: Map<number, BotInputMetadata>) {
     const unresolved = new Set(history.messages.flatMap(row => (row.tools ?? []).filter(tool => tool.status === "running").map(tool => tool.id)));
     let cursor: Cursor | undefined;
     while (unresolved.size) {
-      const later = await this.conversation.entries({ minEntryId: (beforeEntryId + 1) as EntryId, order: "ascending" }, 100, cursor, ctx);
+      const later = await this.conversation.entries({ minEntryId: (afterEntryId + 1) as EntryId, order: "ascending" }, 100, cursor, ctx);
       for (const entry of later.items) {
         const results = entry.model?.filter(message => message.role === "toolResult" && unresolved.has(message.toolCallId));
         if (results?.length) {
@@ -728,38 +736,65 @@ export class DurableBotRuntime {
       if (!later.next) break;
       cursor = later.next;
     }
-    return { epoch: this.epoch, before, messages: history.messages };
+  }
+
+  async loadHistoryWindow(target: TaskHistoryTarget): Promise<DurableHistoryBlock> {
+    if (typeof target === "number") return this.loadHistoryBlock(target);
+    const entryId = "aroundEntryId" in target ? target.aroundEntryId : target.afterEntryId;
+    if (!Number.isSafeInteger(entryId) || entryId < 1) throw new Error("Invalid history anchor");
+    await this.projection;
+    const around = "aroundEntryId" in target;
+    const earlier = around
+      ? await this.conversation.entries({ maxEntryId: entryId as EntryId, order: "descending" }, 26, undefined, ctx)
+      : { items: [] };
+    if (around && earlier.items[0]?.id !== entryId) throw new Error("历史消息不属于当前分支，请刷新后重试");
+    const later = await this.conversation.entries({ minEntryId: (entryId + 1) as EntryId, order: "ascending" }, around ? 26 : 51, undefined, ctx);
+    const size = around ? 25 : 50;
+    const entries = [...earlier.items.slice(0, 25).reverse(), ...later.items.slice(0, size)]
+      .filter(entry => entry.kind !== "mybuddy.context-import");
+    const metadata = new Map<number, BotInputMetadata>();
+    await this.loadInputMetadata(entries, metadata);
+    const timing = await this.harness.snapshot(ResponseTiming, this.conversation.id, ctx);
+    const history = new DurableHistoryProjection();
+    history.merge(entries, metadata, timing?.completed ?? {}, timing?.speed ?? {});
+    await this.completeHistoryTools(history, entries.at(-1)?.id ?? entryId, metadata);
+    return { historyId: this.historyId, before: earlier.items[25]?.id, after: later.items[size]?.id === undefined ? undefined : later.items[size - 1]?.id,
+      messages: history.messages };
   }
 
   /**
-   * 完整会话里的所有用户提问（跨实时历史窗口）。
+   * 完整会话里的可续读提问页，按最近到最早扫描，每页最多处理 2000 entries、返回 200 问。
    *
    * 实时窗口最多保留 DURABLE_HISTORY_ENTRY_LIMIT 条 entry，历史提问弹窗不能只
    * 依赖窗口（否则长会话里只剩最近一条提问）。这里只读扫描已提交 entry，按
    * 与投影相同的 id / displayText 口径返回，id 可直接用于消息滚动定位。
    */
-  async loadUserQuestions(limit = 2000): Promise<Array<{ id: string; text: string }>> {
+  async loadUserQuestions(query: TaskUserQuestionsQuery = {}): Promise<TaskUserQuestionsDto> {
     await this.projection;
+    if (query.historyId !== undefined && query.historyId !== this.historyId) throw new Error("历史分支已变化，请重新打开提问列表");
+    if (query.beforeEntryId !== undefined && (!Number.isSafeInteger(query.beforeEntryId) || query.beforeEntryId < 1)) throw new Error("Invalid question cursor");
     const questions: Array<{ id: string; text: string }> = [];
     const metadata = new Map<number, BotInputMetadata>();
-    let cursor: Cursor | undefined;
+    let before = query.beforeEntryId;
     let scanned = 0;
     do {
-      const page = await this.conversation.entries({ order: "ascending" }, 500, cursor, ctx);
-      const users = page.items.filter(entry => entry.kind === "pi.user" || entry.kind === "mybuddy.user");
+      const page = await this.conversation.entries({ order: "descending", ...(before === undefined ? {} : { maxEntryId: before as EntryId }) }, 501, undefined, ctx);
+      const entries = page.items.slice(0, 500);
+      const users = entries.filter(entry => entry.kind === "pi.user" || entry.kind === "mybuddy.user");
       await this.loadInputMetadata(users, metadata);
-      for (const entry of users) {
+      for (const [index, entry] of entries.entries()) {
+        scanned++;
+        if (entry.kind !== "pi.user" && entry.kind !== "mybuddy.user") continue;
         const message = entry.model?.find(item => item.role === "user");
         if (!message) continue;
         const text = metadata.get(entry.id)?.displayText ?? contentText(message.content);
         if (!text.trim()) continue;
         questions.push({ id: `durable-${entry.id}`, text });
-        if (questions.length >= limit) return questions;
+        if (questions.length >= 200) return { historyId: this.historyId, questions: questions.reverse(), nextBefore: page.items[index + 1]?.id };
       }
-      cursor = page.next;
-      scanned += page.items.length;
-    } while (cursor && scanned < 20_000);
-    return questions;
+      before = page.items[500]?.id;
+    } while (before !== undefined && scanned < 2000);
+    return { historyId: this.historyId, questions: questions.reverse(), nextBefore: before };
   }
 
   /**
@@ -1242,7 +1277,7 @@ export class DurableBotRuntime {
       && (slot.name === "request_user_input" || (slot.details && typeof slot.details === "object" && !Array.isArray(slot.details) && slot.details.waitingForInput === true)));
     const status: DurableBotSnapshot["status"] = waitingForInput ? "waiting_input" : live.generation?.retry ? "retrying"
       : busy ? "running" : queued ? "queued" : outcome === "failed" ? "failed" : outcome === "aborted" ? "stopped" : outcome === "completed" ? "completed" : "idle";
-    const snapshot: DurableBotSnapshot = { backend: "pi-durable", epoch: this.epoch, revision: ++this.revision,
+    const snapshot: DurableBotSnapshot = { backend: "pi-durable", epoch: this.epoch, historyId: this.historyId, revision: ++this.revision,
       conversationId: String(this.conversation.id), toolMode: this.options.toolMode,
       busy, queued, status, historyBefore: this.historyBefore, messages, ...(error ? { error } : {}),
       pendingInputs: (inbox?.items ?? []).flatMap(item => item.mode === "write" ? [] : [{ id: String(item.id), mode: item.mode, text: contentText(item.content) }]),

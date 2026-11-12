@@ -730,6 +730,22 @@ export class WorkRepository {
       .all(workId) as BindingRow[]).map(row => ({ ...mapBinding(row), metrics: this.metrics.read(row.binding_id) }));
   }
 
+  /** Watch risk checks need unsettled facts, never execution payloads or metrics. */
+  executionRiskFacts(workId: string) {
+    const fields = { bindingId: z.string(), operationId: z.string(), state: z.string(), intentRevision: z.number(),
+      ownerEpoch: z.number(), invalidatedAt: z.number().nullable() };
+    const executions = z.array(z.object(fields)).parse(this.db.prepare(`SELECT binding_id bindingId,operation_id operationId,
+      status state,intent_revision intentRevision,owner_epoch ownerEpoch,invalidated_at invalidatedAt
+      FROM work_execution_bindings WHERE work_id=? AND status IN ('pending','submitted','running','unknown')
+      ORDER BY admitted_at ASC,rowid ASC`).all(workId));
+    const operations = z.array(z.object({ ...fields, bindingId: z.string().nullable(), admissionId: z.string(), actionKind: z.string() }))
+      .parse(this.db.prepare(`SELECT a.admission_id admissionId,a.binding_id bindingId,a.operation_id operationId,
+        a.action_kind actionKind,a.state,a.intent_revision intentRevision,a.owner_epoch ownerEpoch,b.invalidated_at invalidatedAt
+        FROM work_action_admissions a LEFT JOIN work_execution_bindings b ON b.binding_id=a.binding_id AND b.work_id=a.work_id
+        WHERE a.work_id=? AND a.state IN ('admitted','attempted','unknown') ORDER BY a.admitted_at ASC,a.rowid ASC`).all(workId));
+    return { executions, operations };
+  }
+
   // ------------------------------------------------------------- admissions
 
   insertAdmission(admission: WorkAdmissionDto): void {

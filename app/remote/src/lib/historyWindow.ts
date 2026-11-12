@@ -5,8 +5,8 @@
  * 视觉上等于把对话翻页。现在改为**前插**（append older blocks）：
  * 每页块只追加在实时窗口之前，时间轴始终是一条连续的线。
  *
- * 契约：服务端 RemoteTaskHistory.page = { epoch, before }，顶层 messages 就是该块；
- * 块的 epoch 必须与当前 durable.epoch 一致，否则说明会话被重建/切了分支，序号已重排。
+ * 契约：服务端 RemoteTaskHistory.page = { historyId, before }，顶层 messages 就是该块；
+ * 块的 historyId 必须与当前 durable.historyId 一致，否则说明会话被重建/切了分支，序号已重排。
  */
 import type { RemoteHistoryMessage } from '@mybuddy/shared'
 
@@ -16,7 +16,7 @@ import type { RemoteHistoryMessage } from '@mybuddy/shared'
  */
 export interface OlderHistoryBlock {
   taskId: string
-  epoch: string
+  historyId: string
   messages: RemoteHistoryMessage[]
 }
 
@@ -31,7 +31,7 @@ function messageKey(message: RemoteHistoryMessage): string {
 /**
  * 前插一页更早历史块，返回新数组（不改入参）。
  *
- * - epoch 不一致的旧块整组丢弃：会话换世代后 entryId 会重排，混进去就是错位的时间轴；
+ * - historyId 不一致的旧块整组丢弃：会话换世代后 entryId 会重排，混进去就是错位的时间轴；
  * - 按消息 id 去重：同一页被重复请求、或相邻两页因为块内消息被过滤（context-import）而重叠时，
  *   都不会把同一条消息渲染两遍；
  * - 新块比现有所有块都更早，所以永远插到数组首部；数组因此保持「旧 → 新」，flat 即时间正序。
@@ -42,7 +42,7 @@ export function appendOlderBlocks(
   blocks: OlderHistoryBlock[],
   incoming: OlderHistoryBlock,
 ): OlderHistoryBlock[] {
-  const kept = blocks.filter((block) => block.epoch === incoming.epoch && block.messages.length > 0)
+  const kept = blocks.filter((block) => block.historyId === incoming.historyId && block.messages.length > 0)
   const seen = new Set<string>()
   for (const block of kept) for (const message of block.messages) seen.add(messageKey(message))
   const messages: RemoteHistoryMessage[] = []

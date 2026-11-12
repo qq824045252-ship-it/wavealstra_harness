@@ -550,7 +550,7 @@ async function fileChangeProjectionPreservesWorkspacePath(): Promise<void> {
 async function durableSnapshotsRetainInteractionCards(): Promise<void> {
   const { useAppStore: api } = store();
   api.setState({ tasks: [task("task", { messages: [], welcomeMode: "working" })] });
-  const snapshot: DurableBotSnapshot = { backend: "pi-durable", epoch: "first", revision: 1, conversationId: "1", toolMode: "native", busy: true, queued: 0, pendingInputs: [], compacting: false,
+  const snapshot: DurableBotSnapshot = { backend: "pi-durable", historyId: "history-fixture", epoch: "first", revision: 1, conversationId: "1", toolMode: "native", busy: true, queued: 0, pendingInputs: [], compacting: false,
     messages: [{ id: "durable-1", role: "assistant", text: "", streaming: true, createdAt: 2 }] };
   api.getState().applyAgentPatch({ type: "durable_snapshot", taskId: "task", snapshot });
   const interaction = { id: "question", taskId: "task", executionId: "execution", assistantMessageId: "durable-1", kind: "confirm" as const, title: "Continue?", options: [], status: "pending" as const, version: 1, createdAt: 2 };
@@ -779,7 +779,7 @@ async function durableRevisionGapReadsOnceAndReplaysBufferedUpdates(): Promise<v
   let reads = 0;
   const { useAppStore: api } = store({ agent: { loadTaskHistory: () => { reads++; return history.promise; } } });
   api.setState({ tasks: [task("task", { messages: [] })] });
-  const first: DurableBotSnapshot = { backend: "pi-durable", epoch: "epoch", revision: 1, conversationId: "1", toolMode: "native", busy: true, queued: 0, pendingInputs: [], compacting: false,
+  const first: DurableBotSnapshot = { backend: "pi-durable", historyId: "history-fixture", epoch: "epoch", revision: 1, conversationId: "1", toolMode: "native", busy: true, queued: 0, pendingInputs: [], compacting: false,
     messages: [{ id: "old", role: "user", text: "history", createdAt: 1, projectionVersion: 1 }, { id: "live", role: "assistant", text: "1", createdAt: 2 }] };
   const snapshot = (revision: number): DurableBotSnapshot => ({ ...first, revision, messages: [first.messages[0], { ...first.messages[1], text: String(revision) }] });
   const delta = (base: DurableBotSnapshot, next: DurableBotSnapshot) => {

@@ -180,7 +180,7 @@ try {
   const preludeId = weatherActivity.segments![0].id;
   assert.equal(new BotConversationRepository(db.connection).message(weatherActivity.messageId)?.segments?.[0].id, preludeId, "reconnect retains the same prelude identity");
   assert.equal(new BotConversationRepository(db.connection).message(weatherActivity.messageId)?.activity?.tool, "web_search", "activity does not rely on service memory");
-  const nativeSnapshot: DurableBotSnapshot = { backend: "pi-durable", epoch: "fixture", revision: 1, conversationId: "native",
+  const nativeSnapshot: DurableBotSnapshot = { backend: "pi-durable", historyId: "history-fixture", epoch: "fixture", revision: 1, conversationId: "native",
     toolMode: "native", busy: true, queued: 0, pendingInputs: [], compacting: false, messages: [
       { id: "user", role: "user", text: "前台天气", botRequestId: "older-request", createdAt: 1 },
       { id: "assistant", role: "assistant", text: "foreign answer", createdAt: 2,
@@ -348,9 +348,10 @@ try {
     assert.equal(message.segments?.length, 1);
     assert.match(message.segments![0].text, /正在处理/);
   }
-  const silentRevision = foreground.messages.message(slowRequests[0].assistantMessageId)!.messageRevision;
+  const silentSegments = structuredClone(foreground.messages.message(slowRequests[0].assistantMessageId)!.segments);
   await delay(600);
-  assert.equal(foreground.messages.message(slowRequests[0].assistantMessageId)!.messageRevision, silentRevision, "one quiet receipt, not repeated polling prose");
+  assert.deepEqual(foreground.messages.message(slowRequests[0].assistantMessageId)!.segments, silentSegments, "one quiet receipt, not repeated polling prose");
+  assert.equal(foreground.messages.message(slowRequests[0].assistantMessageId)!.text, "", "silent model produces no answer prose");
   const urgent = await send('priority-status', '当前进度状态');
   assert.equal(foreground.messages.message(urgent.assistantMessageId)?.status, 'completed', 'reserved capacity handles progress while normal slots are occupied');
   await foreground.cancel(DEFAULT_BOT_ID, 'slow-2');

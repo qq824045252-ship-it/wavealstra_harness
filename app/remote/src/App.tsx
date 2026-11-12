@@ -380,20 +380,20 @@ function ChatPage() {
   // 之后每一页的游标严格取上一块响应的 page.before，不再回看 durable。
   const firstPageBefore = histories[activeTaskId]?.page?.before ?? durable?.historyBefore
   const { olderBlocks, handleWheel, handleTouchStart, handleTouchMove, consumePrependAnchor, clearOlderBlocks } = useHistoryPagination({
-    activeTaskId, epoch: durable?.epoch, seedCursor: firstPageBefore, timelineRef,
+    activeTaskId, historyId: durable?.historyId, seedCursor: firstPageBefore, timelineRef,
   })
   // 只订阅当前任务的切片：其它任务的 patch 会让 histories/live 整对象换引用，
   // 若直接依赖整对象，看 A 时 B 的流式增量也会触发这里全量重建时间轴。
   // 可见历史 = 已加载的更早块（数组旧→新，flat 后即时间正序）+ 实时窗口。
-  const durableEpoch = durable?.epoch
+  const durableHistoryId = durable?.historyId
   const activeHistoryMessages = useMemo(() => {
     const windowMessages = histories[activeTaskId]?.messages ?? []
     if (!olderBlocks.length) return windowMessages
     // 世代变化（重建/切分支）后旧块立即不参与渲染：不能等清空 effect 落地，否则会闪一帧重复轮次
-    const visible = durableEpoch === undefined ? olderBlocks : olderBlocks.filter((block) => block.epoch === durableEpoch)
+    const visible = durableHistoryId === undefined ? olderBlocks : olderBlocks.filter((block) => block.historyId === durableHistoryId)
     if (!visible.length) return windowMessages
     return [...visible.flatMap((block) => block.messages), ...windowMessages]
-  }, [olderBlocks, histories[activeTaskId]?.messages, durableEpoch])
+  }, [olderBlocks, histories[activeTaskId]?.messages, durableHistoryId])
   const activeLive = live[activeTaskId]
   const messages = useMemo(() => buildRemoteTimeline(
     activeHistoryMessages, activeLive ?? {},

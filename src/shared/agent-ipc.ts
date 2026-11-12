@@ -2149,14 +2149,16 @@ export interface SessionHistoryRecoveryDto {
   message: string;
 }
 
+export type TaskHistoryTarget = number | { aroundEntryId: number } | { afterEntryId: number };
+
 export interface TaskHistoryDto {
   durable?: import("./durable-bot").DurableBotSnapshot;
   messages: ChatMessageDto[];  /**
    * 带 beforeEntryId 读取「更早历史块」时的块元数据；顶层 messages 即该块消息，
-   * durable 仍是实时窗口快照（两者的 epoch 必须一致，否则客户端丢弃该块）。
+   * historyId 标识持久存储和分支；epoch 只标识实时传输实例。
    * 缺省 = 本次读取是实时窗口，不是历史块。
    */
-  page?: { epoch: string; before?: number };
+  page?: Omit<import("./durable-bot").DurableHistoryBlock, "messages">;
   artifacts?: ChatArtifactDto[];
   sessionFile?: string;
   cwd?: string;
@@ -2184,6 +2186,13 @@ export interface TaskUserQuestionDto {
 
 export interface TaskUserQuestionsDto {
   questions: TaskUserQuestionDto[];
+  historyId?: string;
+  nextBefore?: number;
+}
+
+export interface TaskUserQuestionsQuery {
+  beforeEntryId?: number;
+  historyId?: string;
 }
 
 /** AI 命名建议；调用方负责让用户确认后再写回任务标题。 */

@@ -17,6 +17,7 @@ import {isReadOnlyScheduledFollowUp} from '../src/main/agent/work/WorkScheduledF
 import {WorkWatchFollowUp} from '../src/main/agent/work/WorkWatchFollowUp';
 import {WorkWatchSupervision,WATCH_EXECUTION_RISK_LIMIT} from '../src/main/agent/work/WorkWatchSupervision';
 import {LOCAL_USER_ID,DEFAULT_BOT_ID} from '../src/shared/bot-work';
+import {verifyWatchRiskQueries} from './work-watch-risk-fixture';
 const root=mkdtempSync(join(tmpdir(),'watch-supervisor-')),db=new AppDatabase(join(root,'test.db'));
 const bots=new BotRegistry(db.connection);bots.registerBot({userId:LOCAL_USER_ID,botId:DEFAULT_BOT_ID,displayName:"watch fixture",authorization:DESKTOP_USER_GRANTS});
 const works=new WorkService(db.connection,{bots}),messages=new BotConversationRepository(db.connection);
@@ -572,4 +573,5 @@ assert.equal(works.getWork(stopWork.workId)!.lifecycle,'active','old READY proof
 assert.equal(reviewState('historical-stop-now'),'delivered');
 const latest=works.getWork(work.workId)!;works.repo.updateWork({...latest,lifecycle:'closed',closureConclusion:'cancelled',updatedAt:Date.now()});
 feedback.drain();assert((db.connection.prepare("SELECT count(*) n FROM bot_work_feedback WHERE json_extract(metadata_json,'$.kind')='closure'").get() as {n:number}).n>0,'watch closure feedback is not suppressed by reviewed round');
+verifyWatchRiskQueries(db,works,supervisor,{kind:'user',userId:LOCAL_USER_ID,grants:DESKTOP_USER_GRANTS});
 supervisor.close();feedback.close();db.close();console.log('PASS: multi-round owner review, nonblocking queue, no duplicate raw results, restart receipts, visible model failure fallback; standing work remains active');

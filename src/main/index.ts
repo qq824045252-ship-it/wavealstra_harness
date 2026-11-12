@@ -1483,7 +1483,7 @@ function registerIpc(): void {
   ipcMain.handle(UsageIpc.dashboard, (_e, rangeDays: number) =>
     agentService.usageStats.dashboard(clampRange(rangeDays)),
   );
-  ipcMain.handle(AgentIpc.loadTaskHistory, async (_e, taskId: string, beforeEntryId?: number) => {
+  ipcMain.handle(AgentIpc.loadTaskHistory, async (_e, taskId: string, beforeEntryId?: import("../shared/agent-ipc").TaskHistoryTarget) => {
     const [nativeHistory, externalHistory] = await Promise.all([
       agentService.loadTaskHistory(taskId, beforeEntryId),
       Promise.resolve(externalAgentRuntime?.history(taskId) ?? { messages: [], runs: [] }),
@@ -1495,8 +1495,8 @@ function registerIpc(): void {
         .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)),
     };
   });
-  ipcMain.handle(AgentIpc.listTaskUserQuestions, async (_e, taskId: string) =>
-    ({ questions: await agentService.listTaskUserQuestions(taskId) }),
+  ipcMain.handle(AgentIpc.listTaskUserQuestions, async (_e, taskId: string, query?: import("../shared/agent-ipc").TaskUserQuestionsQuery) =>
+    agentService.listTaskUserQuestions(taskId, query),
   );
   ipcMain.handle(AgentIpc.generateTaskTitle, async (_e, taskId: string) =>
     agentService.generateTaskTitle(taskId),

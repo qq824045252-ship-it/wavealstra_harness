@@ -143,6 +143,39 @@ try {
       console.log("PASS hung team prepare cannot block another team or ordinary Work");
     } finally { await f.close(); }
   }
+  {
+    const f = await fixture("same-team-prepare");
+    try {
+      for (const suffix of ["owner", "one", "two", "three"]) new BotRegistry(f.db.connection).registerBot({
+        botId: `parallel:${suffix}`, userId: LOCAL_USER_ID, displayName: suffix, authorization: DESKTOP_USER_GRANTS });
+      const result = f.works.teams.handle(user, { kind: "create", request: { operationId: "parallel-team",
+        title: "parallel preparation", goalDescription: "read independent evidence", ownerBotId: "parallel:owner",
+        ownerResponsibility: "summarize", workspacePath: root, criteria: ["verify source"], executionPolicy: "parallel", maxConcurrency: 2,
+        members: ["one", "two", "three"].map(id => ({ botId: `parallel:${id}`, responsibility: "read source", delegatedScope: ["workspace:read"] })) } });
+      assert(result.ok && result.work && result.team, JSON.stringify(result));
+      const [a, b, c] = result.team.executions;
+      const gateA = f.hold("prepare", a.taskId), gateB = f.hold("prepare", b.taskId), gateC = f.hold("prepare", c.taskId);
+      f.queue.wake();
+      await until(() => f.entered.has(`prepare:${a.taskId}`) && f.entered.has(`prepare:${b.taskId}`), "two independent members prepare concurrently");
+      for (let i = 0; i < 20; i++) await f.queue.flush();
+      assert(!f.entered.has(`prepare:${c.taskId}`), "pending preparation occupies a concurrency slot");
+      assert.equal(f.calls.get(`prepare:${a.taskId}`), 1);
+      assert.equal(f.calls.get(`prepare:${b.taskId}`), 1);
+      gateA.release();
+      await until(() => f.works.repo.bindingForTask(a.taskId)?.status === "running", "first preparation becomes a running binding");
+      for (let i = 0; i < 20; i++) await f.queue.flush();
+      assert(!f.entered.has(`prepare:${c.taskId}`), "running plus preparing still occupies exactly two slots");
+      f.completed.add(f.works.repo.bindingForTask(a.taskId)!.bindingId); f.adapter.wake(); f.queue.wake();
+      await until(() => f.entered.has(`prepare:${c.taskId}`), "settlement releases one slot for the third member");
+      unwrap(f.works.cancelWork(user, { operationId: "cancel:parallel-team", workId: result.work.workId }));
+      gateB.release(); gateC.release();
+      await delay(30);
+      assert.equal(f.works.repo.bindingForTask(b.taskId), undefined);
+      assert.equal(f.works.repo.bindingForTask(c.taskId), undefined);
+      assert.deepEqual(f.errors, []);
+      console.log("PASS parallel same-team preparation, exact slot accounting, duplicate wakes and late cancellation");
+    } finally { await f.close(); }
+  }
   // A late completed result belongs to the old input; it must not stop or replace the new root.
   {
     const f = await fixture("amended-input");

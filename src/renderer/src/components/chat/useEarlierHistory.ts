@@ -50,7 +50,7 @@ export function useEarlierHistory(options: {
   scrollRef: React.RefObject<HTMLDivElement | null>;
   /** 全组件唯一的 scrollTop 写入口（带程序滚动防护） */
   applyProgrammaticScrollTop: (top: number) => void;
-}): { requestEarlier: () => void; clearWindow: () => void } {
+}) {
   const { taskId, cursor, scrollRef, applyProgrammaticScrollTop } = options;
   const loadingRef = useRef(false);
   const cooldownRef = useRef(0);
@@ -59,24 +59,29 @@ export function useEarlierHistory(options: {
   const anchorRef = useRef<PrependAnchor | null>(null);
   const historyWindow = useAppStore((state) => state.tasks.find((task) => task.id === taskId)?.historyWindow);
 
-  const clearWindow = useCallback((): void => {
+  const cancelPending = useCallback((): void => {
     tokenRef.current += 1;
+    loadingRef.current = false;
+    anchorRef.current = null;
+  }, []);
+
+  const clearWindow = useCallback((): void => {
+    cancelPending();
     useAppStore.setState((state) => ({
       tasks: state.tasks.map((task) => (task.id === taskId ? { ...task, historyWindow: undefined } : task)),
     }));
-  }, [taskId]);
+  }, [taskId, cancelPending]);
 
   // 换任务即作废：上一个任务的历史块不能留到下一个任务的视图里
   useLayoutEffect(() => {
-    tokenRef.current += 1;
-    anchorRef.current = null;
+    cancelPending();
     return () => {
       tokenRef.current += 1;
       useAppStore.setState((state) => ({
         tasks: state.tasks.map((task) => (task.id === taskId ? { ...task, historyWindow: undefined } : task)),
       }));
     };
-  }, [taskId]);
+  }, [taskId, cancelPending]);
 
   const requestEarlier = useCallback((): void => {
     const element = scrollRef.current;
@@ -86,6 +91,12 @@ export function useEarlierHistory(options: {
     if (Date.now() < cooldownRef.current) return;
     cooldownRef.current = Date.now() + EARLIER_GESTURE_COOLDOWN_MS;
     const token = tokenRef.current;
+    const starting = useAppStore.getState().tasks.find(task => task.id === taskId);
+    const epoch = starting?.durable?.epoch;
+    const historyId = starting?.durable?.historyId;
+    const storedWindow = starting?.historyWindow;
+    const startingWindow = storedWindow?.historyId === historyId
+      && (storedWindow?.kind === "focus" || storedWindow?.seed === starting?.durable?.historyBefore) ? storedWindow : undefined;
     loadingRef.current = true;
     void (async () => {
       try {
@@ -98,8 +109,10 @@ export function useEarlierHistory(options: {
         const state = useAppStore.getState();
         const row = state.tasks.find((task) => task.id === taskId);
         const loaded = row?.historyWindow;
-        const currentCursor = loaded?.epoch === row?.durable?.epoch ? loaded?.before : row?.durable?.historyBefore;
-        if (!page || state.activeTaskId !== taskId || row?.durable?.epoch !== page.epoch || currentCursor !== target) return;
+        const currentCursor = loaded?.historyId === row?.durable?.historyId
+          && (loaded?.kind === "focus" || loaded?.seed === row?.durable?.historyBefore) ? loaded?.before : row?.durable?.historyBefore;
+        if (!page || state.activeTaskId !== taskId || row?.durable?.epoch !== epoch || row?.durable?.historyId !== historyId
+          || page.historyId !== historyId || currentCursor !== target || loaded !== storedWindow) return;
         // 服务端回同一条游标 = 已经到底：别再拿同一个空页打成死循环
         if (page.before === target) return;
         const first = firstVisibleMessage(element);
@@ -116,11 +129,12 @@ export function useEarlierHistory(options: {
             ? {
                 ...task,
                 historyWindow: {
-                  epoch: page.epoch,
-                  seed: task.historyWindow?.seed ?? target,
+                  ...(startingWindow?.kind === "focus" ? { kind: "focus", after: startingWindow.after }
+                    : { kind: "prepend", seed: startingWindow?.seed ?? target }),
+                  historyId: page.historyId,
                   before: page.before,
                   messages: mergeHistoryWindow(
-                    [history.messages.map(durableMessageToChatMessage), task.historyWindow?.messages ?? []],
+                    [history.messages.map(durableMessageToChatMessage), startingWindow?.messages ?? []],
                     [],
                   ),
                 },
@@ -131,10 +145,62 @@ export function useEarlierHistory(options: {
         // 失败保持静默：下一次上拉即可重试，不在消息区插入提示条打断阅读。
         console.warn("[ChatView] 加载更早消息失败", error);
       } finally {
-        loadingRef.current = false;
+        if (token === tokenRef.current) loadingRef.current = false;
       }
     })();
   }, [cursor, scrollRef, taskId]);
+
+  const loadAround = useCallback(async (entryId: number): Promise<boolean> => {
+    if (!taskId) return false;
+    cancelPending();
+    const token = tokenRef.current;
+    const start = useAppStore.getState().tasks.find(task => task.id === taskId)?.durable;
+    if (!window.api?.agent) throw new Error("主进程 Agent API 未就绪");
+    const history = await window.api.agent.loadTaskHistory(taskId, { aroundEntryId: entryId }).catch(error => {
+      if (token !== tokenRef.current) return undefined;
+      throw error;
+    });
+    const state = useAppStore.getState();
+    const row = state.tasks.find(task => task.id === taskId);
+    if (token !== tokenRef.current || !history || state.activeTaskId !== taskId || row?.durable?.epoch !== start?.epoch
+      || row?.durable?.historyId !== start?.historyId) return false;
+    if (history.historyError) throw new Error(history.historyError);
+    const page = history.page;
+    if (!page || page.historyId !== start?.historyId) return false;
+    const messages = history.messages.map(durableMessageToChatMessage);
+    if (!messages.some(message => message.id === `durable-${entryId}`)) throw new Error("未找到所选历史消息");
+    useAppStore.setState(state => ({ tasks: state.tasks.map(task => task.id === taskId
+      ? { ...task, historyWindow: { kind: "focus", historyId: page.historyId, before: page.before, after: page.after, messages } }
+      : task) }));
+    return true;
+  }, [taskId, cancelPending]);
+
+  const loadNewer = useCallback(async (): Promise<void> => {
+    if (!taskId || loadingRef.current) return;
+    const state = useAppStore.getState();
+    const row = state.tasks.find(task => task.id === taskId);
+    const current = row?.historyWindow;
+    if (current?.kind !== "focus" || current.after === undefined) return;
+    const token = tokenRef.current;
+    const epoch = row?.durable?.epoch;
+    loadingRef.current = true;
+    try {
+      if (!window.api?.agent) throw new Error("主进程 Agent API 未就绪");
+      const history = await window.api.agent.loadTaskHistory(taskId, { afterEntryId: current.after });
+      const page = history.page;
+      const latest = useAppStore.getState();
+      const task = latest.tasks.find(task => task.id === taskId);
+      if (token !== tokenRef.current || latest.activeTaskId !== taskId || task?.historyWindow !== current
+        || task.durable?.epoch !== epoch) return;
+      if (history.historyError) throw new Error(history.historyError);
+      if (!page || page.historyId !== current.historyId) return;
+      useAppStore.setState(state => ({ tasks: state.tasks.map(task => task.id === taskId
+        ? { ...task, historyWindow: { ...current, after: page.after, messages: mergeHistoryWindow([current.messages, history.messages.map(durableMessageToChatMessage)], []) } }
+        : task) }));
+    } catch (error) {
+      if (token === tokenRef.current && useAppStore.getState().tasks.find(task => task.id === taskId)?.historyWindow === current) throw error;
+    } finally { if (token === tokenRef.current) loadingRef.current = false; }
+  }, [taskId]);
 
   useLayoutEffect(() => {
     const anchor = anchorRef.current;
@@ -162,5 +228,5 @@ export function useEarlierHistory(options: {
     return () => cancelAnimationFrame(frame);
   }, [historyWindow, taskId, scrollRef, applyProgrammaticScrollTop]);
 
-  return { requestEarlier, clearWindow };
+  return { requestEarlier, clearWindow, loadAround, loadNewer, cancelPending };
 }

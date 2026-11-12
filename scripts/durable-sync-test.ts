@@ -8,7 +8,7 @@ import { RemoteEventStream } from "../app/remote/src/api/RemoteEventStream";
 import { mapAgentPatchToRemoteEvent } from "../src/main/remote/RemoteEventBus";
 import type { DurableBotSnapshot } from "../src/shared/durable-bot";
 
-const first: DurableBotSnapshot = { backend: "pi-durable", epoch: "epoch-one", revision: 1, conversationId: "1", toolMode: "native", busy: true, queued: 0, pendingInputs: [], compacting: false,
+const first: DurableBotSnapshot = { backend: "pi-durable", historyId: "history-fixture", epoch: "epoch-one", revision: 1, conversationId: "1", toolMode: "native", busy: true, queued: 0, pendingInputs: [], compacting: false,
   messages: [{ id: "old", role: "user", text: "old history", createdAt: 1, attachments: [{ name: "safe.txt", path: "C:/private/file.txt" }] }, { id: "live", role: "assistant", text: "one", createdAt: 2 }] };
 const snapshot = (revision: number): DurableBotSnapshot => ({ ...first, revision, messages: [first.messages[0], { ...first.messages[1], text: String(revision) }] });
 const update = (base: DurableBotSnapshot, next: DurableBotSnapshot) => {

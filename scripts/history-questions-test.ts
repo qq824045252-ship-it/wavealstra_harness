@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mergeHistoryQuestions } from "../src/renderer/src/lib/historyQuestions";
+import { verifyHistoryUi } from "./history-navigation-ui-fixture";
 
 // 历史提问弹窗：完整索引（旧→新）与实时窗口（新→旧）的合并/去重/排序规则。
 const windowQuestions = [
@@ -28,3 +29,4 @@ assert.deepEqual(mergeHistoryQuestions([], index), [
 assert.deepEqual(mergeHistoryQuestions(windowQuestions, []), windowQuestions, "索引为空时保持窗口内容");
 
 console.log("PASS history question index merge: window fallback, full-index ordering and id de-duplication");
+verifyHistoryUi().catch(error => { console.error(error); process.exitCode = 1; });

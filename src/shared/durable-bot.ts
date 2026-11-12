@@ -5,6 +5,8 @@ export type BotToolMode = "native" | "codemode";
 export interface DurableBotSnapshot {
   backend: "pi-durable";
   epoch: string;
+  /** Persistent store incarnation + active branch; independent of the streaming runtime epoch. */
+  historyId: string;
   revision: number;
   conversationId: string;
   toolMode: BotToolMode;
@@ -35,8 +37,9 @@ export interface DurableBotSnapshot {
  *    客户端按消息 id 去重）；before 严格小于本块最老 entry，反复前插必然收敛；undefined = 已到最老；
  */
 export interface DurableHistoryBlock {
-  epoch: string;
+  historyId: string;
   before?: number;
+  after?: number;
   messages: ChatMessageDto[];
 }
 

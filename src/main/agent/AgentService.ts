@@ -156,6 +156,9 @@ import {
   type SkillDto,
   type SoulDto,
   type TaskHistoryDto,
+  type TaskHistoryTarget,
+  type TaskUserQuestionsDto,
+  type TaskUserQuestionsQuery,
   type TaskDto,
   type WelcomeMode,
   type FileBackupInfoDto,
@@ -4797,7 +4800,7 @@ export class AgentService {
     );
   }
 
-  async loadTaskHistory(taskId: string, beforeEntryId?: number): Promise<TaskHistoryDto> {
+  async loadTaskHistory(taskId: string, beforeEntryId?: TaskHistoryTarget): Promise<TaskHistoryDto> {
     if (this.durableBots?.owns(taskId)) return this.durableBots.history(taskId, beforeEntryId);
     const row = this.db.listTasks().find((t) => t.id === taskId);
     if (!row?.sessionFile) return { messages: [] };
@@ -4831,23 +4834,14 @@ export class AgentService {
   }
 
   /**
-   * 列出一个任务的全部用户提问（跨实时历史窗口，历史提问弹窗用）。
-   * durable 会话直接只读扫描完整 entry 流；其它会话退回历史解析结果。
+   * 列出跨实时窗口的提问页；Durable 返回续页游标，其它会话读取历史解析结果。
    */
-  async listTaskUserQuestions(taskId: string): Promise<Array<{ id: string; text: string }>> {
-    try {
-      if (this.durableBots?.owns(taskId)) {
-        const questions = await this.durableBots.userQuestions(taskId);
-        if (questions.length > 0) return questions;
-      }
-      const history = await this.loadTaskHistory(taskId);
-      return history.messages
-        .filter(message => message.role === "user" && message.text.trim())
-        .map(message => ({ id: message.id, text: message.text }));
-    } catch (error) {
-      console.warn("[AgentService] listTaskUserQuestions failed", taskId, error);
-      return [];
-    }
+  async listTaskUserQuestions(taskId: string, query?: TaskUserQuestionsQuery): Promise<TaskUserQuestionsDto> {
+    if (this.durableBots?.owns(taskId)) return this.durableBots.userQuestions(taskId, query);
+    const history = await this.loadTaskHistory(taskId);
+    return { questions: history.messages
+      .filter(message => message.role === "user" && message.text.trim())
+      .map(message => ({ id: message.id, text: message.text })) };
   }
 
   /**

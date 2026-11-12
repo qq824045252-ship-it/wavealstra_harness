@@ -509,8 +509,11 @@ export class WorkTeamService {
     for (const raw of this.db.prepare("SELECT * FROM work_teams ORDER BY created_at,work_id").all()) {
       this.works.collaboration.assertAuthority();
       const team = teamRowSchema.parse(raw);
-      if (!canDispatch() || this.dispatchFlights.has(team.work_id)) continue;
+      if (!canDispatch()) continue;
       const version = this.works.getWork(team.work_id)?.stateVersion;
+      let flightTaskId: string | undefined;
+      let finish!: () => void;
+      const completion = new Promise<void>(resolve => { finish = resolve; });
       const run = async () => {
         try {
           let work = this.works.getWork(team.work_id);
@@ -554,6 +557,9 @@ export class WorkTeamService {
           const next = this.nextDispatch(work, plan, this.rows(work.workId));
           if (!next) return;
           const { row, recovery } = next;
+          flightTaskId = row.task_id;
+          this.dispatchFlights.set(row.task_id, completion);
+          onProgress();
           try {
             const identity = row.role === "owner_summary" ? work.ownerBotId : (recovery?.bot_id ?? row.bot_id);
             const bot = this.bots.getBot(identity);
@@ -609,10 +615,10 @@ export class WorkTeamService {
         }
       };
       const flight = run().finally(() => {
-        this.dispatchFlights.delete(team.work_id);
+        if (flightTaskId) this.dispatchFlights.delete(flightTaskId);
+        finish();
         if (canDispatch() && this.works.getWork(team.work_id)?.stateVersion !== version) onProgress();
       });
-      this.dispatchFlights.set(team.work_id, flight);
       void flight.catch(error => { if (canDispatch()) console.warn("[Work] 团队派发待核对", error); });
     }
   }
@@ -969,7 +975,7 @@ export class WorkTeamService {
 
   private nextDispatch(work: WorkDto, plan: WorkTeamPlan, rows: ExecutionRow[]): { row: ExecutionRow; recovery?: RecoveryRow } | undefined {
     for (const row of rows) {
-      if (row.cancelled) continue;
+      if (row.cancelled || this.dispatchFlights.has(row.task_id)) continue;
       const binding = this.works.repo.bindingForTask(row.task_id);
       const recovery = this.latestRecovery(work.workId, row.task_id);
       if (recovery && ["pending", "claimed"].includes(recovery.state)) {
@@ -1101,7 +1107,7 @@ export class WorkTeamService {
     if (plan.executionPolicy === "parallel") {
       const active = rows.filter(item => {
         const binding = this.works.repo.bindingForTask(item.task_id);
-        return binding && !TERMINAL_BINDING.has(binding.status);
+        return this.dispatchFlights.has(item.task_id) || binding && !TERMINAL_BINDING.has(binding.status);
       }).length;
       if (active >= (plan.maxConcurrency ?? 2)) return "等待团队并行执行名额";
     }

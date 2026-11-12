@@ -198,7 +198,9 @@ export interface Task {
    * seed = 首次加载时实时窗口的 historyBefore。实时窗口一旦前滚驱逐，seed 与 durable.historyBefore
    * 不再相等，这一段与实时窗口之间已无法保证衔接（中间消息被逐出），必须整段作废重新加载。
    */
-  historyWindow?: { epoch: string; seed: number; before?: number; messages: ChatMessage[] };
+  historyWindow?: { historyId: string; before?: number; messages: ChatMessage[] } & (
+    { kind: "prepend"; seed: number } | { kind: "focus"; after?: number }
+  );
   expertBinding?: import("../../shared/expert-binding").TaskExpertBindingDto;
   durable?: import("../../shared/durable-bot").DurableBotSnapshot;
   /** Transport/configuration errors before Durable accepts an input, not execution state. */

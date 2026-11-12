@@ -146,7 +146,7 @@ const coordinator = new WorkCompletionCoordinator({ db: db.connection, works, is
     if (input.context.title === "waiting-input") return {decision:"ask",outcome:"partial",reply:"已交付请求的文字方案；收件人是谁？",missing:[]};
     if (input.context.title === "delivery-responsibility") {
       const delivery=input.context.hostDeliveryContext as {responsibility:string;routes:Array<{channel:string;fileDelivery:{capability:string}}>};
-      assert.equal(delivery.responsibility,"host");assert.equal(delivery.routes[0].channel,"qq");assert.equal(delivery.routes[0].fileDelivery.capability,"unsupported");
+      assert.equal(delivery.responsibility,"host");assert.equal(delivery.routes[0].channel,"qq");assert.equal(delivery.routes[0].fileDelivery.capability,"supported");
       return {decision:"deliver",outcome:"partial",reply:"文件已生成并核验，唯一缺口是执行环境没有 QQ 直发工具。",artifactRefs:[waitingFiles[2]],missing:[]};
     }
     if (input.context.title === "waiting-draft" && (input.context.originalRequest as {intentRevision:number}).intentRevision < 3)
@@ -549,7 +549,7 @@ try {
     operationId:"late-unknown-closure-effect",actionKind:"write",state:"unknown",intentRevision:oldWork.intentRevision,ownerEpoch:oldWork.ownerEpoch,admittedAt:Date.now()});
   assert.throws(()=>prepareClosureReview(db.connection,works,request),/未知效果/);
   works.repo.updateAdmissionState("late-unknown-closure-effect","released",Date.now());
-  const correctedDecision={decision:"deliver",outcome:"completed",reply:"文件的真实创建和核验已经完成；原会话回传由宿主负责，QQ 文件仍不支持。",
+  const correctedDecision={decision:"deliver",outcome:"completed",reply:"文件的真实创建和核验已经完成；原会话回传由宿主负责，QQ 文件尚无投递回执。",
     artifactRefs:[waitingFiles[2]],missing:[],correction:{kind:"host_delivery_responsibility"}} as const;
   const proposal={...correctedDecision,artifactRefs:[...correctedDecision.artifactRefs],missing:[]};
   const selectedResult=works.repo.listDeliverables(oldWork.workId).find(item=>item.artifactRefs.includes(waitingFiles[2]))!;
@@ -580,7 +580,7 @@ try {
   const newWork=works.getWork(oldWork.workId)!;
   assert.equal(newWork.closureConclusion,"succeeded");assert.equal(newWork.lifecycle,"closed");
   assert.equal(newWork.closeOperationId,oldWork.closeOperationId);assert.equal(newWork.closedAt,oldWork.closedAt);
-  assert.match(newWork.closureSummary!,/复核更正/);assert.match(newWork.closureSummary!,/不支持，未通过此渠道发送/);
+  assert.match(newWork.closureSummary!,/复核更正/);assert.match(newWork.closureSummary!,/文件未请求/);
   assert.equal(works.repo.listBindings(oldWork.workId).length,bindingCount);assert.deepEqual(newWork.acceptedDeliverableIds,[]);
   const history=db.connection.prepare("SELECT original_conclusion,original_summary,original_close_operation_id FROM work_closure_review_corrections WHERE work_id=?").get(oldWork.workId) as {original_conclusion:string;original_summary:string;original_close_operation_id:string};
   assert.equal(history.original_conclusion,"ended_unsuccessfully");assert.equal(history.original_summary,oldWork.closureSummary);assert.equal(history.original_close_operation_id,oldWork.closeOperationId);

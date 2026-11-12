@@ -8,6 +8,7 @@ import { AgentDoc, InboxDoc, GenerationTask } from "@earendil-works/pi-durable";
 import { ActiveDurableConversation } from "../src/main/agent/durable/DurableConversationBranch";
 import { migrateDurableWorkspace, WorkspaceMigrationBusyError } from "../src/main/agent/durable/DurableWorkspaceMigration";
 import { DurableBotRuntime } from "../src/main/agent/durable/DurableBotRuntime";
+import { verifyHistoryNavigation } from "./history-navigation-fixture";
 
 const directory = await mkdtemp(join(tmpdir(), "durable-history-block-"));
 // Keep model/auth state out of the real user profile.
@@ -42,10 +43,10 @@ try {
   while (before !== undefined) {
     const block = await runtime.loadHistoryBlock(before, 7);
     assert(block.messages.length > 0);
-    assert.equal(block.epoch, snapshot.epoch);
+    assert.equal(block.historyId, snapshot.historyId);
     assert(block.before === undefined || block.before < before);
     assert(block.messages.every(message => !liveIds.has(message.id)));
-    assert.deepEqual(Object.keys(block).sort(), ["before", "epoch", "messages"]);
+    assert.deepEqual(Object.keys(block).sort(), ["before", "historyId", "messages"]);
     messages = [...block.messages, ...messages];
     before = block.before;
     assert(++blocks < 500);
@@ -53,8 +54,18 @@ try {
   assert.equal(new Set(messages.map(message => message.id)).size, messages.length);
   assert.deepEqual(messages.map(message => message.text), Array.from({ length: 240 }, (_, n) => [`question ${n}`, `answer ${n}`]).flat());
   assert(messages.filter(message => message.role === "assistant").every(message => message.tools?.[0]?.status === "success"));
+  const firstUser = messages.find(message => message.role === "user");
+  assert(firstUser);
+  const focused = await runtime.loadHistoryWindow({ aroundEntryId: Number(firstUser.id.slice("durable-".length)) });
+  assert(focused.messages.filter(message => message.role === "assistant").every(message => message.tools?.[0]?.status === "success"),
+    "target windows must resolve tool results outside their raw entry boundary");
   // 历史提问索引必须覆盖实时窗口之外的全部用户提问，且 id 与投影消息一致。
-  const questions = await runtime.loadUserQuestions();
+  let questionPage = await runtime.loadUserQuestions();
+  let questions = questionPage.questions;
+  while (questionPage.nextBefore !== undefined) {
+    questionPage = await runtime.loadUserQuestions({ beforeEntryId: questionPage.nextBefore, historyId: questionPage.historyId });
+    questions = [...questionPage.questions, ...questions];
+  }
   assert.equal(questions.length, 240);
   assert.deepEqual(questions.map(question => question.text), Array.from({ length: 240 }, (_, n) => `question ${n}`));
   assert.deepEqual(questions.map(question => question.id), messages.filter(message => message.role === "user").map(message => message.id));
@@ -110,6 +121,7 @@ try {
   assert.equal((await runtime.conversation.agent(context)).cwd, target);
   assert.equal(runtime.snapshot.messages.at(-1)?.text, snapshot.messages.at(-1)?.text);
   console.log("PASS atomic native cwd migration, child inbox and regeneration fences, branch rollback and crash replay");
+  await verifyHistoryNavigation(directory, target);
 
 } finally {
   await runtime.close();

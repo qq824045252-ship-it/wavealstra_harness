@@ -117,7 +117,7 @@ export function createAgentProjectionActions(
             id: patch.taskId,
             welcomeMode: prior?.welcomeMode,
             durable: snapshot,
-            historyWindow: prior?.historyWindow?.epoch === snapshot.epoch ? prior.historyWindow : undefined,
+            historyWindow: prior?.historyWindow?.historyId === snapshot.historyId ? prior.historyWindow : undefined,
             historyError: undefined,
             messages,
             title:

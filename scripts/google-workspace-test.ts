@@ -63,9 +63,10 @@ for (const event of [
 // Actual subprocess tests, no gws/account/network. Only internal runner construction is injected.
 const fixture = new URL('../../scripts/google-workspace-process-fixture.cjs', import.meta.url);
 const { fileURLToPath } = await import('node:url');
-const runner = createGwsRunner({ executable: process.execPath, prefixArgs: [fileURLToPath(fixture)], timeoutMs: 80, maxBuffer: 4096 });
+const runnerOptions = { executable: process.execPath, prefixArgs: [fileURLToPath(fixture)], maxBuffer: 4096 };
+const runner = createGwsRunner(runnerOptions);
 assert.equal((await runner(['success'])).code, 0);
-const timeout = await runner(['hang']); assert(timeout.killed);
+const timeout = await createGwsRunner({ ...runnerOptions, timeoutMs: 80 })(['hang']); assert(timeout.killed);
 const buffer = await runner(['large']); assert.equal(buffer.code, 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER');
 const during = new AbortController(); setTimeout(() => during.abort(), 30);
 const aborted = await runner(['hang'], during.signal); assert.equal(aborted.code, 'ABORT_ERR');

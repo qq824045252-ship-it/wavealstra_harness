@@ -9,7 +9,7 @@ import { BACKGROUND_CONTEXT as context, withAbortSignal } from "@earendil-works/
 import { loadQuickJSWasm } from "@earendil-works/pi-codemode";
 import { McpOAuthCredentialStore, SessionManager, convertToLlm, type ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
-import type { AgentDeleteUserMessageRequest, AgentRegenerateRequest, AgentRegenerateResult, AgentPromptRequest, AgentPromptResult, AgentSubmissionReceipt, AgentUiPatch, TaskDto, TaskHistoryDto } from "../../../shared/agent-ipc";
+import type { AgentDeleteUserMessageRequest, AgentRegenerateRequest, AgentRegenerateResult, AgentPromptRequest, AgentPromptResult, AgentSubmissionReceipt, AgentUiPatch, TaskDto, TaskHistoryDto, TaskHistoryTarget, TaskUserQuestionsDto, TaskUserQuestionsQuery } from "../../../shared/agent-ipc";
 import { normalizedEditorTextHash } from "../../../shared/regenerate-hash";
 import type { BotToolMode, DurableBotSnapshot } from "../../../shared/durable-bot";
 import { durableDelta } from "../../../../shared/src/durable-sync";
@@ -868,7 +868,7 @@ export class DurableBotService {
     return admissionOnly || !accepted.receipt ? accepted : this.submissionStatus(accepted.receipt, true);
   }
 
-  async history(taskId: string, beforeEntryId?: number): Promise<TaskHistoryDto> {
+  async history(taskId: string, beforeEntryId?: TaskHistoryTarget): Promise<TaskHistoryDto> {
     if (!this.binding(taskId) && !this.options.db.getTask(taskId)?.sessionFile) return { messages: [] };
     try {
       // Opening history is inspection, not permission to resume pending tasks, migrate a
@@ -881,7 +881,7 @@ export class DurableBotService {
         return { ...history, ...(modelId ? { modelId } : {}), ...(modelRepair ? { modelRecovery: modelRepair } : {}) };
       }
       const recovered = await this.withRecovery(taskId, async open => {
-        const block = beforeEntryId === undefined ? undefined : await open.runtime.loadHistoryBlock(beforeEntryId);
+        const block = beforeEntryId === undefined ? undefined : await open.runtime.loadHistoryWindow(beforeEntryId);
         const snapshot = block ? open.runtime.snapshot : await open.runtime.refresh();
         return { runtime: open.runtime, snapshot, block, modelRepair: open.modelRepair };
       });
@@ -889,7 +889,7 @@ export class DurableBotService {
       // 复述任务当前模型（可能刚刚被目录漂移修复过），渲染层据此校正输入框的模型选择。
       const modelId = this.options.db.getTask(taskId)?.modelId;
       return { messages: recovered.block?.messages ?? recovered.snapshot.messages, durable: recovered.snapshot,
-        ...(recovered.block ? { page: { epoch: recovered.block.epoch, before: recovered.block.before } } : {}), cwd: this.binding(taskId)?.cwd,
+        ...(recovered.block ? { page: { historyId: recovered.block.historyId, before: recovered.block.before, after: recovered.block.after } } : {}), cwd: this.binding(taskId)?.cwd,
         ...(modelId ? { modelId } : {}), ...(recovered.modelRepair ? { modelRecovery: recovered.modelRepair } : {}) };
     } catch (error) {
       if (error instanceof DurableToolAssemblyError) {
@@ -908,17 +908,17 @@ export class DurableBotService {
   }
 
   /** 完整用户提问索引（历史提问弹窗用）；只读扫描，不改变实时窗口。 */
-  async userQuestions(taskId: string): Promise<Array<{ id: string; text: string }>> {
+  async userQuestions(taskId: string, query?: TaskUserQuestionsQuery): Promise<TaskUserQuestionsDto> {
     const binding = this.binding(taskId);
-    if (!binding) return [];
+    if (!binding) return { questions: [] };
     try {
       const opening = this.opening.get(taskId);
       const live = this.opened.get(taskId)?.runtime ?? (opening ? (await opening).runtime : undefined);
-      if (live) return await live.loadUserQuestions();
-      return await readDurableUserQuestions({ directory: binding.directory, cwd: binding.cwd, models: this.options.models });
+      if (live) return await live.loadUserQuestions(query);
+      return await readDurableUserQuestions({ directory: binding.directory, cwd: binding.cwd, models: this.options.models, query });
     } catch (error) {
       console.warn("[Durable] Cannot read the complete user-question index", taskId, error);
-      return [];
+      throw error;
     }
   }
 
@@ -937,7 +937,7 @@ export class DurableBotService {
     }
   }
 
-  private async passiveHistory(taskId: string, beforeEntryId?: number): Promise<TaskHistoryDto> {
+  private async passiveHistory(taskId: string, beforeEntryId?: TaskHistoryTarget): Promise<TaskHistoryDto> {
     for (;;) {
       const prior = this.passiveReads.get(taskId);
       if (!prior) break;

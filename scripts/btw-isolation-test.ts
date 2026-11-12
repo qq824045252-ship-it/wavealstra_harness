@@ -666,7 +666,7 @@ async function scenarioDurableDeltaAndReattach(): Promise<void> {
   reset(); useAppStore.setState({ tasks: [mainTask], activeTaskId: "t1" });
   useBtwStore.getState().start();
   const btwId = useBtwStore.getState().btwId!;
-  const first: DurableBotSnapshot = { backend: "pi-durable", epoch: "btw-epoch", revision: 1, conversationId: "1", toolMode: "native", busy: true,
+  const first: DurableBotSnapshot = { backend: "pi-durable", historyId: "history-fixture", epoch: "btw-epoch", revision: 1, conversationId: "1", toolMode: "native", busy: true,
     queued: 0, pendingInputs: [], compacting: false, messages: [{ id: "reply", role: "assistant", text: "1", createdAt: 1 }] };
   const next = (revision: number): DurableBotSnapshot => ({ ...first, revision, messages: [{ ...first.messages[0], text: String(revision) }] });
   const delta = (from: number, to: number) => {
