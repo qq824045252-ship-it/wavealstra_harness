@@ -1,3 +1,6 @@
+import { BotConversationMemory } from "../src/main/agent/work/BotConversationMemory";
+import { MemoryService } from "../src/main/memory/MemoryService";
+import { MemoryPipelineManager } from "../src/main/memory/MemoryPipelineManager";
 import { botForegroundHistory, botPeerHistory, botPeerHistoryWindow } from "../src/main/agent/work/BotPeerContext";
 import { BotConversationService } from "../src/main/agent/work/BotConversationService";
 import assert from "node:assert/strict";
@@ -100,6 +103,26 @@ try {
     db.prepare("DELETE FROM bot_messages WHERE request_id=?").run(marker);
   }
   assert(!receivers[0].options.evidence?.(historicalCalls("yesterday")).includes("yesterday-midnight"), "later provider reads withdraw deleted history");
+  // Execute the real recipient adapter inside the actual peer evidence closure.
+  const fixtureMemory = options.memory;
+  const kernel = new MemoryService(app, { semantic: false });
+  options.memory = new BotConversationMemory({ db: app, userId: "u", memory: kernel,
+    pipeline: new MemoryPipelineManager(app), enabled: () => memoryEnabled, changed: () => {}, extract: async () => {} });
+  const cached = kernel.create({ kind: "fact", title: "PeerRevocationTopic", content: "PEER_SCOPE_PRIVATE", scopeType: "bot", scopeId: "target", sourceType: "user" });
+  kernel.repository.addScope({ memoryId: cached.id, scopeType: "bot", scopeId: "other", binding: "promoted", createdAt: Date.now() });
+  await receivers[0].options.toolHooks!.beforeTool!({ name: "memory_search", arguments: { query: "PeerRevocationTopic" } } as never, {} as never, {} as never);
+  assert(receivers[0].options.evidence?.(searchMessages).includes("PEER_SCOPE_PRIVATE"));
+  kernel.detachScope(cached.id, "bot", "target");
+  assert(kernel.get(cached.id), "other scope preserves the active record");
+  assert(!receivers[0].options.evidence?.(searchMessages).includes("PEER_SCOPE_PRIVATE"), "scope detach withdraws prefetched peer evidence");
+  const expiring = kernel.create({ kind: "fact", title: "PeerExpiryTopic", content: "PEER_EXPIRY_PRIVATE", scopeType: "bot", scopeId: "target", sourceType: "user" });
+  await receivers[0].options.toolHooks!.beforeTool!({ name: "memory_search", arguments: { query: "PeerExpiryTopic" } } as never, {} as never, {} as never);
+  assert(receivers[0].options.evidence?.(searchMessages).includes("PEER_EXPIRY_PRIVATE"));
+  kernel.update({ id: expiring.id, validUntil: Date.now() - 1 });
+  assert(!receivers[0].options.evidence?.(searchMessages).includes("PEER_EXPIRY_PRIVATE"), "expiry withdraws prefetched peer evidence");
+  kernel.update({ id: expiring.id, validUntil: null, validFrom: Date.now() + 60_000 });
+  assert(!receivers[0].options.evidence?.(searchMessages).includes("PEER_EXPIRY_PRIVATE"), "postponed validity withdraws peer evidence");
+  options.memory = fixtureMemory;
   assert(receivers[0].options.instructions().includes('"target"'));
   receivers[1].resolve("B original answer");
   assert.equal((await second).replyText, "B original answer");

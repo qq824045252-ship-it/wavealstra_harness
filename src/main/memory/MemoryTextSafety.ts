@@ -11,9 +11,11 @@ const SENSITIVE_TOPIC = /(?:api[ _-]?key|password|passwd|secret|access[ _-]?toke
 
 /** Secret-bearing syntax: a credential header, assignment or labelled long value.
  * The cookie branch deliberately has no leading `\b`: it must also match after a
- * newline, a Chinese label, a quote (curl / JSON) or any other non-word character. */
+ * newline, a Chinese label, a quote (curl / JSON) or any other non-word character.
+ * Header values have no safe minimum length or restricted alphabet: a short first
+ * cookie, semicolon-separated values and percent encoding still carry credentials. */
 const SECRET_VALUE = new RegExp([
-  String.raw`(?:^|[^\w])(?:set[ _-]?cookie|cookie)["']?\s*[:=：]\s*["']?[A-Za-z0-9._~+/=-]{8,}`,
+  String.raw`(?:^|[^\w])(?:set[ _-]?cookie|cookie)["']?\s*[:=：]\s*["']?[^\s"']+`,
   String.raw`\b(?:authorization|bearer)\s*[:=]?\s*[A-Za-z0-9._~+/=-]{16,}`,
   String.raw`\b(?:session|auth|csrf|xsrf|tracking)[ _-]?(?:id|key|token|cookie)\s*[:=：]\s*\S{8,}`,
   String.raw`\b(?:token|secret|key|password|passwd|signature)\s*[:=]\s*["']?[A-Fa-f0-9]{32,}\b`,

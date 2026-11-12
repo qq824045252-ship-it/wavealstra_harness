@@ -14,13 +14,12 @@ type Scored = { row: Pair; matches: string[]; relevant: boolean; correction: boo
 
 /** Relevance-first retrieval: the query terms select the candidate set in SQL, so a
  * relevant pair older than any recency window is still retrievable. Candidates are
- * read in stable batches until enough of them survive the exact filters, so a burst
- * of substring or prohibited matches cannot starve an older valid pair. The work
- * cap is reported separately: hitting it never means "no history". */
-const RELEVANCE_BATCH = 200;
-const RECENT_BATCH = 300;
+ * streamed in stable order through the work bound. Three eligible rows cannot stop
+ * the scan: a newer lower-scored correction may occur after the first page. The
+ * work cap is reported separately, never as "no history" or a forbidden source. */
 const RELEVANCE_WORK_CAP = 1200;
 const RECENT_WORK_CAP = 900;
+const INSPECTION_CHAR_CAP = 8_000_000;
 const QUERY_TERM_LIMIT = 10;
 
 /** LIKE metacharacters are escaped so a term can never widen the SQL predicate. */
@@ -90,9 +89,9 @@ export function botHistoryContext(db: Database.Database, input: {
     `(CASE WHEN u.text LIKE $t${index} ESCAPE '~' OR a.text LIKE $t${index} ESCAPE '~' THEN 1 ELSE 0 END)`).join("+");
   const statement = recent
     ? db.prepare(`${PROJECTION}${SOURCE_JOINS}${SOURCE_WHERE}
-        ORDER BY u.created_at DESC,u.ordinal DESC LIMIT $limit OFFSET $offset`)
+        ORDER BY u.created_at DESC,u.ordinal DESC`)
     : db.prepare(`SELECT * FROM (${PROJECTION},(${score}) AS score${SOURCE_JOINS}${SOURCE_WHERE})
-        WHERE score>0 ORDER BY score DESC,created_at DESC,ordinal DESC LIMIT $limit OFFSET $offset`);
+        WHERE score>0 ORDER BY score DESC,created_at DESC,ordinal DESC`);
   // A restriction elsewhere in the conversation also protects follow-up answers. It is
   // evaluated exactly for each candidate source, with no shared scan budget: running out
   // of work is never the same answer as "this source forbids reuse".
@@ -117,26 +116,27 @@ export function botHistoryContext(db: Database.Database, input: {
   };
   const eligible = (row: Pair): boolean => Number.isFinite(row.created_at) && Math.abs(row.created_at) <= 8.64e15
     && botMemoryTextEligible(row.user_text) && botMemoryTextEligible(row.assistant_text);
-  const batch = recent ? RECENT_BATCH : RELEVANCE_BATCH, workCap = recent ? RECENT_WORK_CAP : RELEVANCE_WORK_CAP;
+  const workCap = recent ? RECENT_WORK_CAP : RELEVANCE_WORK_CAP;
   // Newest first. A correction only supersedes what is older than it: an earlier
   // correction can never hide a later fact, and a correction itself is superseded by a
   // newer correction that shares a query term. Entity-level semantics are limited to
   // the query terms this source can actually match.
   const select = (pool: Scored[]): Scored[] => {
     const byTime = [...pool].sort((a, b) => b.row.created_at - a.row.created_at || b.row.ordinal - a.row.ordinal);
-    const newestCorrectionAt = new Map<string, number>();
+    const correctionSources = new Map<string, Pair>();
     for (const item of byTime) {
       if (!item.correction || forbidden(item.row.conversation_id)) continue;
-      for (const term of item.matches) {
-        const previous = newestCorrectionAt.get(term);
-        if (previous === undefined || item.row.created_at > previous) newestCorrectionAt.set(term, item.row.created_at);
-      }
+      for (const term of item.matches) if (!correctionSources.has(term)) correctionSources.set(term, item.row);
     }
-    const newerCorrection = (term: string, at: number): boolean => (newestCorrectionAt.get(term) ?? -Infinity) > at;
+    const newerCorrection = (term: string, row: Pair): boolean => {
+      const source = correctionSources.get(term);
+      return Boolean(source && (source.created_at > row.created_at
+        || (source.created_at === row.created_at && source.ordinal > row.ordinal)));
+    };
     const suppressed = (item: Scored): boolean => {
       if (!item.matches.length) return false;
-      return item.correction ? item.matches.some(term => newerCorrection(term, item.row.created_at))
-        : item.matches.every(term => newerCorrection(term, item.row.created_at));
+      return item.correction ? item.matches.some(term => newerCorrection(term, item.row))
+        : item.matches.every(term => newerCorrection(term, item.row));
     };
     const newestCorrection = byTime.find(item => item.correction && !suppressed(item) && !forbidden(item.row.conversation_id));
     const ordered = [...(newestCorrection ? [newestCorrection] : []),
@@ -151,21 +151,22 @@ export function botHistoryContext(db: Database.Database, input: {
     return chosen;
   };
   const pool: Scored[] = [];
-  let inspected = 0, capped = false, exhausted = false, selected: Scored[] = [];
-  for (let offset = 0; !exhausted && selected.length < 3; offset += batch) {
-    const rows = statement.all({ ...params, limit: batch, offset }) as Pair[];
-    inspected += rows.length;
-    if (rows.length < batch) exhausted = true;
-    for (const row of rows) {
-      if (!eligible(row)) continue;
-      const scored = score1(row);
-      if (recent || scored.relevant) pool.push(scored);
+  let inspected = 0, inspectedChars = 0, capped = false, selected: Scored[] = [];
+  for (const row of statement.iterate(params) as Iterable<Pair>) {
+    if (inspected >= workCap || inspectedChars + row.user_text.length + row.assistant_text.length > INSPECTION_CHAR_CAP) {
+      capped = true;
+      break;
     }
-    // Only the sources that actually compete for the three slots are checked for a
-    // reuse prohibition; a batch with few survivors keeps reading instead of starving.
-    if (pool.length) selected = select(pool);
-    if (!exhausted && inspected >= workCap && selected.length < 3) { capped = true; break; }
+    inspected++;
+    inspectedChars += row.user_text.length + row.assistant_text.length;
+    if (!eligible(row)) continue;
+    const scored = score1(row);
+    if (recent || scored.relevant) pool.push(scored);
+    // Recent samples are already in authoritative time/ordinal order. Related
+    // retrieval must inspect lower scores before reserving correction evidence.
+    if (recent && pool.length && (selected = select(pool)).length === 3) break;
   }
+  if (!recent) selected = select(pool);
   if (!selected.length) return capped
     ? `历史检索：已检查 ${inspected} 个候选仍未找到可复用证据（达到工作上限，不能当作“没有历史记录”）。`
     : "";

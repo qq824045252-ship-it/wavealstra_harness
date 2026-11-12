@@ -238,5 +238,28 @@ try {
   const longQuote = JSON.parse(longLine).assistantQuote as string;
   assert(longQuote.startsWith("…") && longQuote.includes("9090") && longQuote.length <= 1501, "the long-answer excerpt is a window around the match");
 
+  // Follow-up review on e35fafd6: a harmless first cookie / URL encoding / short
+  // values must not hide later credential bytes, including existing L0 pointers.
+  for (const [index, header] of ["Cookie: a=b; sid=FAKE_REVIEW_ONLY_abcdefghijk", "Cookie: sid=%46%41%4B%45", "Cookie: s=abc", '{"Cookie": "a=b; sid=FAKE_REVIEW_ONLY_abcdefghijk"}'].entries()) {
+    const receipt = pair(`CookieSyntax${index} ${header}`, "legacy private answer");
+    pipeline.capture({ taskId: receipt.conversationId, sessionId: receipt.conversationId,
+      userMessageId: receipt.userMessageId, assistantMessageId: receipt.assistantMessageId,
+      userText: "", assistantText: "", metadata: {} });
+    assert(!recall(`CookieSyntax${index}`).includes(receipt.userMessageId), "Cookie syntax must not escape through historical replay");
+  }
+  // Three survivors in the first page do not prove a later-ranked, newer correction
+  // has been examined. The query score deliberately ranks the 205 old rows first.
+  for (let i = 0; i < 205; i++) pair(`PagedCorrectionTopic production service port is 808${i}`, `STALE_PAGED_${i}`);
+  pair("更正 PagedCorrectionTopic port is 9090", "LATEST_PAGED_9090");
+  assert(recall("PagedCorrectionTopic production service port").includes("LATEST_PAGED_9090"), "latest lower-score correction beyond page 1 must reserve an evidence slot");
+  const tiedOld = pair("TieCorrectionTopic port is 8080", "STALE_TIED_8080");
+  const tiedNew = pair("更正 TieCorrectionTopic port is 9090", "LATEST_TIED_9090");
+  db.connection.prepare("UPDATE bot_messages SET created_at=? WHERE message_id IN (?,?)").run(sequence * 100, tiedOld.userMessageId, tiedNew.userMessageId);
+  const tiedRecall = recall("TieCorrectionTopic port");
+  assert(tiedRecall.includes("LATEST_TIED_9090") && !tiedRecall.includes("STALE_TIED_8080"), "same-millisecond correction uses durable ordinal to retire older evidence");
+
+  for (let i = 0; i < 43; i++) pair("BoundedInspectionTopic", "x".repeat(190000));
+  assert(recall("BoundedInspectionTopic").includes("工作上限"), "streaming inspection has an explicit total-text bound even with fewer than 1200 rows");
+
   console.log("PASS history context: relevance-first retrieval beyond 1000 pairs, no 300/301 or shared-budget cliff, exact per-source prohibition, provenance, isolation, correction, Git SHA/cookie eligibility, secrets, deletion, receipts, forgetting, disabled and bounded output");
 } finally { db.close(); }

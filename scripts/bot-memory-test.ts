@@ -335,6 +335,47 @@ async function main() {
     const future = memory.create({ kind: "fact", title: "Peer future fact", content: "PEER_FUTURE_VALUE",
       scopeType: "bot", scopeId: "alice", sourceType: "user", validFrom: Date.now() + 60_000 });
     assert.equal(bridge.activeFact("alice", future.id), undefined, "a not-yet-valid record cannot be injected");
+    // Normal technical identifiers must survive the entire L1 path, not only capture.
+    for (const [index, content] of ["生产只开 TLS 1.3", "生产只开 TLS 1.3，提交 14a650406359b5c4bd4cc358b2a7623364242298", "cookie 只保存主题，不放会话票据"].entries()) {
+      const botId = `technical-${index}`;
+      bots.registerBot({ botId, userId: LOCAL_USER_ID, displayName: botId });
+      const directBot = `${botId}-direct`;
+      bots.registerBot({ botId: directBot, userId: LOCAL_USER_ID, displayName: directBot });
+      const directTurn = send(`记住：${content}`, directBot); assert(directTurn.source);
+      const direct = bridge.remember(directBot, directTurn.source, { scope: "current", kind: "fact", title: "技术直写", content, userEvidence: content }, `记住：${content}`);
+      const turn = send(`记住：${content}`, botId); assert(turn.source);
+      assert.equal(memory.get(direct.memoryId)?.content, content);
+      messages.archive(LOCAL_USER_ID, directBot, directTurn.source);
+      const nextDirect = send("请回忆技术决定", directBot); assert(nextDirect.source);
+      assert((await bridge.search(directBot, index === 2 ? "cookie" : "TLS", nextDirect.source)).some(hit => hit.memory.id === direct.memoryId), "direct remember survives a new conversation");
+      candidates = [candidate(content, content, { title: "技术提炼", kind: "fact", scopeType: "bot" })];
+      await bridge.extract(turn.source);
+      assert(memory.listExactScope("bot", botId).some(m => m.title === "技术提炼" && m.content === content), "background extraction commits the same safe fact");
+      messages.archive(LOCAL_USER_ID, botId, turn.source);
+      const next = send("请回忆技术决定", botId); assert(next.source);
+      const recalled = await bridge.search(botId, index === 2 ? "cookie" : "TLS", next.source);
+      assert(recalled.some(hit => hit.memory.content === content), "new conversation recalls persisted technical content");
+    }
+    for (const text of ["Cookie: sid=FAKE_REVIEW_ONLY_abcdEFGHxyz", "请求头：Cookie: sid=FAKE_REVIEW_ONLY_abcdEFGHxyz", "header\nCookie: sid=FAKE_REVIEW_ONLY_abcdEFGHxyz", 'curl -H "Cookie: sid=FAKE_REVIEW_ONLY_abcdEFGHxyz"', '{"Cookie": "sid=FAKE_REVIEW_ONLY_abcdEFGHxyz"}']) {
+      assert(!botMemoryTextEligible(text));
+      assert.equal(send(text).source, undefined);
+      assert.throws(() => memory.create({ kind: "fact", title: "unsafe fixture", content: text, scopeType: "bot", scopeId: "alice", sourceType: "user" }), /敏感秘密/);
+    }
+    bots.registerBot({ botId: "unsafe-extraction", userId: LOCAL_USER_ID, displayName: "unsafe-extraction" });
+    const safeExtraction = send("记住我的正常技术偏好", "unsafe-extraction"); assert(safeExtraction.source);
+    candidates = [candidate('{"Cookie": "sid=FAKE_REVIEW_ONLY_abcdEFGHxyz"}', "正常技术偏好", { title: "敏感候选拒绝", kind: "fact", scopeType: "bot" })];
+    await bridge.extract(safeExtraction.source);
+    assert.equal(memory.listExactScope("bot", "unsafe-extraction").length, 0, "secret-bearing model candidates cannot enter L1 even from an eligible source");
+    const hybrid = memory.searchHybrid.bind(memory);
+    let releaseSearch!: () => void;
+    let prefetchCount = 0;
+    memory.searchHybrid = async request => { const hits = await hybrid(request); prefetchCount = hits.length; await new Promise<void>(resolve => { releaseSearch = resolve; }); return hits; };
+    const pendingSearch = bridge.search("bob", "PEER_REVISABLE_VALUE");
+    while (!releaseSearch) await new Promise(resolve => setTimeout(resolve, 1));
+    assert(prefetchCount > 0, "deferred search must hold a real visible hit before disabling");
+    enabled = false; releaseSearch();
+    assert.deepEqual(await pendingSearch, [], "disable while hybrid is pending withdraws the returned DTO");
+    enabled = true; memory.searchHybrid = hybrid;
     console.log("PASS Bot memory: real-source L0/L1, private scope, recall, new chat, replay, source deletion race, disabled/cancelled/sensitive boundaries, temporary wording across all write paths, no approval queue, existing memory deletion");
   } finally { db.close(); }
 }
