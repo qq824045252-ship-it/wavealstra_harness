@@ -24,4 +24,3 @@ export const GATEWAY_CAPABILITIES = Object.freeze({
   qq: { ...common, media: "inbound", transport: "socket", durableInbound: false, workNotifications: true, threads: "none" },
   discord: { ...common, media: "bidirectional", transport: "socket", durableInbound: false, workNotifications: true, threads: "reply-target" },
 } satisfies Record<GatewayChannelType, GatewayCapabilities>);
-

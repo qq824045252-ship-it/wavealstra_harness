@@ -36,4 +36,3 @@ const limited = () => Response.json({ retry_after: 0.001 }, { status: 429 });
   const exhausted=fixture(limited);const end=await exhausted.adapter.sendWorkNotification(exhausted.input);assert.equal(end.ok,false);assert.equal(end.responseLost,false);assert.equal(exhausted.calls(),4);
   console.log('Gateway Work review regressions PASS: text preservation, attachment attribution, 429 recovery, immutable request, cancellation, stale revision, unknown/403 no retry, bounded attempts');
 })().catch(error=>{console.error(error);process.exitCode=1;});
-

@@ -44,4 +44,3 @@ export function completionArtifactEvidence(works: WorkService, binding: Paramete
     finally { if (fd !== undefined) closeSync(fd); }
   });
 }
-
