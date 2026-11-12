@@ -60,10 +60,40 @@ assert.equal(failure.isError, true);
 assert.equal(unpack(failure).receipt.error.code, 'auth_required');
 assert.equal(commands.length, count + 1, 'failure does not cause probes or retries');
 assert(commands.every(args => args[0] === 'gmail' || args[0] === 'cal'));
-// Foreground registration works without selected/installed skills or MCP servers.
+// An unconfigured foreground must not silently prefer Google over the selected provider.
 const runtime = await openBotComposerRuntime({ profile: { expertId: '', revision: '', version: 1, systemPromptHash: '', allowedMcpIds: [], allowedSkillIds: [], allowedConnectorIds: [], capturedAt: 0 }, cwd: process.cwd(), models: {} as ModelRuntime, connectorSkillRoots: [], enabledMcpIds: [], readOnly: () => true });
-assert.deepEqual(runtime.tools.map(t => t.name), [...tools.map(t => t.name), 'calendar_get', 'gmail_send', 'calendar_create', 'calendar_update']);
-assert.match(runtime.instructions, /仅.*写.*起草邮件/);
-assert.match(runtime.instructions, /不可信资料/);
+assert.deepEqual(runtime.tools, []);
+assert.equal(runtime.instructions, '');
 await runtime.close();
-console.log('PASS Google Workspace native tool registration, foreground without skills, read receipts, bounded inputs, cancellation, authentication failure and no implicit probes/writes');
+console.log('PASS Google Workspace native tool registration, vendor-neutral foreground without selections, read receipts, bounded inputs, cancellation, authentication failure and no implicit probes/writes');
+
+// Real stdio MCP transport remains usable in the foreground; only config discovery is isolated.
+const { McpConfigService } = await import('../src/main/mcp/McpConfigService');
+const { mkdtempSync, rmSync, readFileSync } = await import('node:fs');
+const { join } = await import('node:path');
+const { tmpdir } = await import('node:os');
+const root = mkdtempSync(join(tmpdir(), 'optional-mail-mcp-'));
+const previousConfig = McpConfigService.prototype.loadRuntimeConfig;
+McpConfigService.prototype.loadRuntimeConfig = () => ({ mcpServers: {
+  chosen_mail: { command: process.execPath, args: [join(process.cwd(), 'scripts/durable-mcp-lazy-fixture.mjs'), join(root,'audit.jsonl')] },
+  unselected_calendar: { command: '/must-not-run' },
+} });
+let selectedRuntime: Awaited<ReturnType<typeof openBotComposerRuntime>> | undefined;
+try {
+  selectedRuntime = await openBotComposerRuntime({ profile: { expertId:'',revision:'',version:1,systemPromptHash:'',allowedMcpIds:['chosen_mail'],allowedSkillIds:[],allowedConnectorIds:[],capturedAt:0 }, cwd:root,models:{} as ModelRuntime,connectorSkillRoots:[],enabledMcpIds:['chosen_mail','unselected_calendar'],readOnly:()=>false });
+  const discovery = selectedRuntime.tools.find(t => t.name === 'mcp_list_tools')!;
+  assert.match(discovery.description, /chosen_mail/);
+  assert.doesNotMatch(discovery.description, /unselected_calendar/);
+  const catalog = await discovery.execute({server:'chosen_mail'}, {} as ToolExecutionApi, BACKGROUND_CONTEXT);
+  assert.match(JSON.stringify(catalog), /read_cwd/);
+  const invokeMcp = selectedRuntime.tools.find(t => t.name === 'mcp_call_tool')!;
+  const result = await invokeMcp.execute({server:'chosen_mail',tool:'read_cwd',arguments:{label:'selected-provider'}}, {} as ToolExecutionApi, BACKGROUND_CONTEXT);
+  assert.match(JSON.stringify(result), /selected-provider/);
+  assert.match(readFileSync(join(root,'audit.jsonl'),'utf8'), /selected-provider/);
+  assert(!selectedRuntime.tools.some(t => t.name.startsWith('gmail_') || t.name.startsWith('calendar_')));
+  console.log('PASS selected provider MCP discovery and actual stdio invocation; unselected server excluded');
+} finally {
+  await selectedRuntime?.close();
+  McpConfigService.prototype.loadRuntimeConfig = previousConfig;
+  rmSync(root,{recursive:true,force:true});
+}

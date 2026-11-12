@@ -1,7 +1,4 @@
-import { durableWorkspaceScope, workWorkspaceScope } from "./work/GoogleWorkspaceRequestScope";
-import { createGoogleWorkspaceWriteTools, GOOGLE_WORKSPACE_WRITE_INSTRUCTIONS } from "../connectors/GoogleWorkspaceWriteTools";
 import { connectorRuntimeContext } from "../connectors/ConnectorRuntimeContext";
-import { createGoogleWorkspaceTools, GOOGLE_WORKSPACE_INSTRUCTIONS } from "../connectors/GoogleWorkspaceTools";
 import { WorkWatchSupervision } from "./work/WorkWatchSupervision";
 import { botExecutionDiagnostics } from "./work/BotExecutionDiagnostics";
 import { BotDisplayGroupsService } from "./work/BotDisplayGroupsService";
@@ -1850,8 +1847,6 @@ export class AgentService {
     const skills = this.resolveSkillsForContext(task.cwd, paths, { projectId: task.projectId, workspaceId: task.spaceId }).dtos;
     return [
       ...assembly.appendParts,
-      GOOGLE_WORKSPACE_INSTRUCTIONS,
-      GOOGLE_WORKSPACE_WRITE_INSTRUCTIONS,
       connectors.length ? connectorRuntimeContext(connectors, this.connectorsService.list(), "execution") : "",
       "## Skills\nRead the relevant SKILL.md before using a skill.\n" + skills.filter(s => s.enabled && s.filePath)
         .filter(s => assembly.skillFilter.visible.includes(s.name))
@@ -1962,13 +1957,7 @@ export class AgentService {
         return await consultHooks.afterTool?.(call, observed ?? result, api, context) ?? observed;
       },
     };
-    return { ...domain, toolHooks, tools: [...domain.tools, ...createGoogleWorkspaceTools(), ...createGoogleWorkspaceWriteTools(undefined, { resolveRequestScope: async (api, context) => {
-        const binding = this.workService.repo.bindingForTask(task.id);
-        if (binding) return workWorkspaceScope(this.db.connection, LOCAL_USER_ID, task.id, binding, this.workService.getWork(binding.workId));
-        if (this.db.connection.prepare("SELECT 1 FROM work_dispatch_requests WHERE task_id=?").get(task.id) || task.id.startsWith("work-execution-"))
-          throw new Error("Google 写操作缺少已绑定的 Work 来源；未执行。");
-        return durableWorkspaceScope(LOCAL_USER_ID)(api, context);
-      } }),
+    return { ...domain, toolHooks, tools: [...domain.tools,
       ...createDurableSubagentTools({ taskId: task.id, cwd, models: this.durableModels!, permissionMode: getPermissionMode,
         workBinding: () => this.workService.repo.bindingForTask(task.id),
         allowGitBranchOrWorktree: () => true,

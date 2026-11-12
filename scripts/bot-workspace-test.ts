@@ -18,6 +18,8 @@ import { WorkReviewPanel } from "../src/renderer/src/components/pages/BotWorkRev
 import { useAppStore } from "../src/renderer/src/store/appStore";
 
 const menu = renderToStaticMarkup(createElement(AccountNavigation, { go: () => {}, openProjects: () => {} }));
+assert(!menu.includes("邮箱和日历"), "vendor-specific mail/calendar is not a fixed primary destination");
+assert(menu.includes("插件"), "generic plugin entry remains available");
 const activityMessage: BotMessageDto = { messageId: "activity-message", conversationId: "activity-chat", botId: "activity-bot",
   requestId: "activity-request", ordinal: 1, role: "assistant", text: "", status: "running", workIds: [], createdAt: 1, updatedAt: 1,
   activity: { tool: "web_search", status: "running" } };
@@ -52,7 +54,7 @@ for (const status of ["completed", "cancelled", "failed", "unknown"] as const) {
 }
 assert.ok(menu.indexOf("助手") < menu.indexOf("项目"));
 assert.doesNotMatch(menu, /Bot 模式/, "account menu must not duplicate the top-level Bot mode entry");
-for (const label of ["助手", "邮箱和日历", "项目", "自动化", "插件"])
+for (const label of ["助手", "项目", "自动化", "插件"])
   assert.equal((menu.match(new RegExp(label, "g")) ?? []).length, 1, `account navigation exposes ${label} once`);
 assert.ok(menu.indexOf("项目") < menu.indexOf("自动化"));
 assert.ok(menu.indexOf("自动化") < menu.indexOf("插件"));

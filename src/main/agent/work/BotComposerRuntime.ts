@@ -1,5 +1,4 @@
 import type { WorkspaceRequestScopeResolver } from "./GoogleWorkspaceRequestScope";
-import { createGoogleWorkspaceWriteTools, GOOGLE_WORKSPACE_WRITE_INSTRUCTIONS } from "../../connectors/GoogleWorkspaceWriteTools";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import { McpOAuthCredentialStore, type ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -13,7 +12,6 @@ import { toNativeMcpConfig } from "../../mcp/NativeMcpConfig";
 import { emptyMcpFilterResult } from "../../mcp/McpModeFilter";
 import { classifyMcpToolCall } from "../../security/McpSideEffectPolicy";
 import { getPluginDirectory } from "../../plugins/PluginStorage";
-import { createGoogleWorkspaceTools, GOOGLE_WORKSPACE_INSTRUCTIONS } from "../../connectors/GoogleWorkspaceTools";
 
 export interface BotComposerRuntime {
   tools: ToolRegistration[];
@@ -32,7 +30,8 @@ export async function openBotComposerRuntime(input: {
       if (entry.isDirectory() && existsSync(join(directory,entry.name,"SKILL.md"))) skillRoots.set(`connector:${entry.name}`,realpathSync(join(directory,entry.name)));
     }
   }
-  const tools: ToolRegistration[] = [...createGoogleWorkspaceTools(), ...createGoogleWorkspaceWriteTools(undefined, { resolveRequestScope: input.resolveRequestScope, readOnly: input.readOnly })];
+  // Service capabilities come from explicitly selected MCPs/connector skills, never a fixed vendor.
+  const tools: ToolRegistration[] = [];
   if (skillRoots.size) tools.push(defineTool({ name:"read_skill", description:"Read a selected skill's SKILL.md or a relative reference file before using it. Available skill ids: " + [...skillRoots.keys()].join(", "),
     parameters:Type.Object({skillId:Type.String(),path:Type.Optional(Type.String())}),replay:"safe",
     execute:async ({skillId,path}) => {
@@ -63,5 +62,5 @@ export async function openBotComposerRuntime(input: {
       return tool.execute(args,api,context);
     }});
   }
-  return {tools,instructions:[GOOGLE_WORKSPACE_INSTRUCTIONS, GOOGLE_WORKSPACE_WRITE_INSTRUCTIONS, input.connectorContext, skillRoots.size?`本条消息已挂载技能：${[...skillRoots.keys()].join("、")}。使用前先 read_skill 读取 SKILL.md，可继续读取包内相对引用。技能要求长耗时文件/代码操作时派发 Work，所选技能及 MCP/连接器配置会随原请求传入。`:""].filter(Boolean).join("\n\n"),close:async()=>{await mcp?.close();}};
+  return {tools,instructions:[input.connectorContext, skillRoots.size?`本条消息已挂载技能：${[...skillRoots.keys()].join("、")}。使用前先 read_skill 读取 SKILL.md，可继续读取包内相对引用。技能要求长耗时文件/代码操作时派发 Work，所选技能及 MCP/连接器配置会随原请求传入。`:""].filter(Boolean).join("\n\n"),close:async()=>{await mcp?.close();}};
 }
