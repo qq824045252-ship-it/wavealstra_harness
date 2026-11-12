@@ -1,0 +1,43 @@
+{
+  "source": "f8b22b0518c77d5c5962bd3b7e0fc11b94a49c43",
+  "scope": "Focused follow-up, not another full headless gate",
+  "results": {
+    "operationsGroups": 13,
+    "actualSigkillBoundaries": 4,
+    "storageFaultBoundaries": 3,
+    "sqliteCandidate": "passed; not production backend",
+    "typecheck": "passed, zero errors",
+    "liveFunctionalCases": 7,
+    "liveRequests": 11,
+    "liveCommandExit": 0,
+    "strictFormatting": "deviation: correct PORT declaration followed by extra deprecated-port explanation"
+  },
+  "logs": {
+    "ledger-integrated-operations.log": {
+      "sha256": "ec17d4269a844d6dccad01157c68c93540bf0c003158703cb1f368598828f1d1"
+    },
+    "ledger-integrated-sqlite.log": {
+      "sha256": "f32e3c303c17638d02c7b708ded43838a7af028f0d125824980e86fee8a662f2"
+    },
+    "ledger-integrated-typecheck.log": {
+      "sha256": "5e466291d0170107de7b1030d1b0722d943fac00b628a20a2d1ab2a4f734bdfa"
+    },
+    "ledger-final-safety.log": {
+      "sha256": "e8fdc9702308cc27845a16dffa06750b0be8130625bc60d2cba9f735b11f4ea5"
+    },
+    "ledger-final-management.log": {
+      "sha256": "5a344961b9e7f27710931bb285f46e3ce1d3905b69df767d8ad59d5adc9cd674"
+    },
+    "ledger-final-branch-cancel.log": {
+      "sha256": "27a2e642b941be699e6735ff9d4501a9c6d7fcc1cd7af4462e62f677673f5c7f"
+    },
+    "ledger-final-performance.log": {
+      "sha256": "467c2a91cd9df9da5a65729aabe720fd1a3ce7fcccb6b4be3b5f86c735b63342"
+    }
+  },
+  "limitations": [
+    "Safety/management/branch-cancel/performance passed before the final initialization ordering-only adjustment; operations/typecheck were rerun after it and after rebase.",
+    "No new full headless, all-GUI, NETWORK aggregate, ARTIFACT or packaging claim.",
+    "SQLite adapter is a candidate only; existing production JSONL and BC-only scaling gaps remain."
+  ]
+}
