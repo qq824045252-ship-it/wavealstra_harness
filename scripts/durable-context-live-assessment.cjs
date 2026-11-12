@@ -12,8 +12,11 @@ function inspectTranslation(answer) {
 }
 function inspectPortCorrection(answer) {
   const assignments = [...answer.matchAll(/\bconst\s+PORT\s*=\s*(\d+)\s*;?/g)];
-  assert(assignments.length > 0 && assignments.every(match => match[1] === '6284'), 'every actual PORT declaration must use the corrected value 6284');
-  return { currentPort: 6284, outputOnlyRequestedConstant: /^(?:```(?:js|javascript)?\s*)?const\s+PORT\s*=\s*6284\s*;?\s*(?:```)?$/.test(answer.trim()) };
+  const valueOnly = answer.trim() === '6284';
+  assert(valueOnly || (assignments.length > 0 && assignments.every(match => match[1] === '6284')), 'the current value must be exactly 6284; every actual PORT declaration must agree');
+  const outputOnlyRequestedConstant = /^(?:```(?:js|javascript)?\s*)?const\s+PORT\s*=\s*6284\s*;?\s*(?:```)?$/.test(answer.trim());
+  return { currentPort: 6284, outputOnlyRequestedConstant,
+    format: outputOnlyRequestedConstant ? 'constant declaration' : valueOnly ? 'value only, no constant declaration' : 'correct declaration with additional content' };
 }
 function assess(report, requests) {
   const result = label => {
@@ -38,7 +41,7 @@ function assess(report, requests) {
   assert(projectedRequests.some(index => index >= original.requestStart), 'committed projection survives the cold restart');
   return { assessment: 'seven functional behaviors verified against recorded real data', liveCommandStatus: report.status, liveCommandError: report.error, source: report.source, model: report.modelConfiguration, requestCount: requests.length,
     cases: report.cases.filter(item => typeof item.answer === 'string'), correction: port,
-    strictFormatting: port.outputOnlyRequestedConstant ? 'passed' : 'deviation: correct constant followed by an extra explanation that the old port is deprecated',
+    strictFormatting: port.outputOnlyRequestedConstant ? 'passed' : 'deviation: ' + port.format,
     summaryRequests, projectedRequests, originalEvidence: originalEvidence.map(item => ({ requestIndex: item.requestIndex, exactQuote: quote, resultSha256: crypto.createHash('sha256').update(item.text).digest('hex') })),
     beforeRestart: report.beforeRestart, afterRestart: report.afterRestart,
     usage: { pricing: 'not measured', requests: (report.usage?.raw ?? []).map(item => ({ requestIndex: item.requestIndex, usage: item.usage })) },
@@ -56,7 +59,11 @@ if (require.main === module) {
     assert.equal(inspectPortCorrection('const PORT = 6284;\n6173 已废弃。').outputOnlyRequestedConstant, false);
     assert.throws(() => inspectPortCorrection('const PORT = 6173; // use 6284 later'));
     assert.throws(() => inspectPortCorrection('const PORT = 6284; const PORT = 6173;'));
-    assert.throws(() => inspectPortCorrection('6284'));
+    assert.equal(inspectPortCorrection('6284').outputOnlyRequestedConstant, false);
+    assert.equal(inspectPortCorrection('6284').format, 'value only, no constant declaration');
+    assert.throws(() => inspectPortCorrection('6173'));
+    assert.throws(() => inspectPortCorrection('6173 or 6284'));
+    assert.throws(() => inspectPortCorrection('use 6284 later'));
     console.log('PASS translation meaning including 明日/明天 and wrong-day/time/bay rejection; corrected PORT value, rejection of stale/conflicting assignments, and separate strict-format observation');
   } else {
     const [directory, output] = process.argv.slice(2);
