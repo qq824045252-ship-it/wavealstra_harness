@@ -72,12 +72,13 @@ const question=(task:string)=>`${task}\n请直接在聊天中完成，不调用�
 const pause=(ms:number)=>new Promise(r=>setTimeout(r,ms));
 async function until<T>(fn:()=>Promise<T|undefined>,label:string){const end=Date.now()+150000;while(Date.now()<end){const v=await fn();if(v!==undefined)return v;await pause(100);}throw Error('Timeout: '+label);}
 const currentWire=(row:any)=>report.calls.filter((c:any)=>c.caseId===row.id&&c.lane==='agent').map((c:any)=>readFileSync(join(out,`request-${c.index}.json`),'utf8')).join('\n');
-async function check(id:string,type:string,run:()=>Promise<string>,yes:string[],no:string[],expected?:RegExp){
- const row:any={id,type,yes,no,startedAt:new Date().toISOString()};report.cases.push(row);active=row;persist();
+async function check(id:string,type:string,run:()=>Promise<string>,yes:string[],no:string[],expected?:RegExp,wireOnly:string[]=[],answerExcluded:string[]=[]){
+ const row:any={id,type,yes,no,wireOnly,answerExcluded,startedAt:new Date().toISOString()};report.cases.push(row);active=row;persist();
  try{row.answer=await run();await Promise.allSettled(captures);row.wireCalls=report.calls.filter((c:any)=>c.caseId===id&&c.lane==='agent').map((c:any)=>c.index);
  const wire=currentWire(row);assert(row.wireCalls.length>0,'Actual model request required');
- for(const key of yes){assert(wire.includes(markers[key]),`wire missing ${key}`);assert(row.answer.includes(markers[key]),`answer missing ${key}`);}
+ for(const key of yes){assert(wire.includes(markers[key]),`wire missing ${key}`);if(!wireOnly.includes(key))assert(row.answer.includes(markers[key]),`answer missing ${key}`);}
  for(const key of no){assert(!wire.includes(markers[key]),`wire leaked ${key}`);assert(!row.answer.includes(markers[key]),`answer leaked ${key}`);}
+ for(const key of answerExcluded)assert(!row.answer.includes(markers[key]),`answer published excluded ${key}`);
  if(expected)assert.match(row.answer,expected);row.passed=true;
  }catch(e){row.passed=false;row.error=e instanceof Error?{message:e.message,stack:e.stack}:String(e);}
  row.finishedAt=new Date().toISOString();persist();console.log(`${row.passed?'PASS':'FAIL'} ${id}${row.error?' '+row.error.message:''}`);active=undefined;return row;
@@ -117,7 +118,10 @@ try{
  const work=unwrap(agent.getWorkService().createWork(actor,{operationId:'scope-personal-work',title:'Scope Personal Work',ownerBotId:DEFAULT_BOT_ID,projectId:p.id,workspacePath:home,inputSnapshotId:'scope-input',authorization:{allowedScopes:['workspace:read']}}));
  const bind=async(id:string,workId:string)=>{createTask(id,q.id);const namespace=await port().prepare(id);return unwrap(agent.getWorkService().dispatchExecution(actor,{operationId:'bind-'+id,workId,botId:DEFAULT_BOT_ID,...namespace,delegatedScope:['workspace:read']}));};
  await bind('personal-work-task',work.workId);seed('personalWork','work',work.workId);seed('exactTask','task','personal-work-task');
- if(live)await check('personal-work','unit-conversion',()=>task('personal-work-task','把2.5公里换算成米。'),['owner','personalWork','exactTask','projectP','public'],['foreign','teamA','teamB','projectQ','legacy','conversation'],/2500|2,500/);
+ // Task-only evidence may inform this producer, but this task explicitly withholds
+ // its code from the Work result. Published final answers are intentionally shared
+ // within a Work; requiring withdrawal of that output would test a different contract.
+ if(live)await check('personal-work','unit-conversion',()=>task('personal-work-task',question('把2.5公里换算成米。')+'\n特别限制：验收参考码仅输出非 task 范围的。标有 [task] 的参考码仅供本次执行内部判断，绝不输出到回答或工作成果，也不要写文件、调用工具。',true),['owner','personalWork','exactTask','projectP','public'],['foreign','teamA','teamB','projectQ','legacy','conversation'],/2500|2,500/,['exactTask'],['exactTask']);
  if(live){
  await bind('personal-work-second',work.workId);
  await check('same-work-second-execution','duration',()=>task('personal-work-second','90分钟等于几小时？'),['owner','personalWork','projectP','public'],['foreign','teamA','teamB','projectQ','legacy','conversation','exactTask'],/1.5|一.*半/);
