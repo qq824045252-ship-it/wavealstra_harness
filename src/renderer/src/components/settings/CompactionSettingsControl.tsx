@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { SettingsToggle } from "./SettingsPrimitives";
 import { useAppStore } from "@/store/appStore";
 import type { TaskCompactionStatusDto } from "@shared/compaction";
 import { DEFAULT_COMPACTION_TRIGGER_RATIO, DEFAULT_COMPACTION_TRIGGER_TOKENS,
@@ -52,7 +53,10 @@ export default function CompactionSettingsControl(): React.JSX.Element {
       .catch(() => { if (active) setFetchedStatus(undefined); });
     return () => { active = false; };
   }, [api, activeTaskId]);
-  const tokens = Number(k) * 1000;
+  const rawTokens = Number(k) * 1000;
+  // Decimal K values such as 1.001 represent whole tokens despite floating-point noise.
+  const tokens = Math.abs(rawTokens - Math.round(rawTokens)) <= Number.EPSILON * Math.max(1, Math.abs(rawTokens))
+    ? Math.round(rawTokens) : rawTokens;
   const valid = !enabled || (k.trim() !== "" && Number.isSafeInteger(tokens) && tokens >= MIN_COMPACTION_TRIGGER_TOKENS && tokens <= MAX_COMPACTION_TRIGGER_TOKENS);
   const policy = valid ? resolveCompactionPolicy(model?.contextWindow ?? 0, ratio, enabled ? tokens : null) : null;
   const engine = (liveStatus?.engine ? liveStatus : fetchedStatus)?.engine;
@@ -66,40 +70,72 @@ export default function CompactionSettingsControl(): React.JSX.Element {
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setSaving(false); }
   };
-  return <div className="compaction-settings" aria-label="自动上下文管理设置">
-    <p className="settings-row-desc">自动上下文管理默认生效：日常不需要手动压缩，「立即整理上下文」只是高级操作。</p>
-    <div className="font-scale-head"><label>上下文管理方式</label><strong>{engineSetting === "billion-context" ? "分层摘要" : "按比例压缩"}</strong></div>
-    <div className="font-scale-ticks">
-      <button type="button" className={"font-scale-tick" + (engineSetting === "billion-context" ? " active" : "")}
-        onClick={() => { setEngineSetting("billion-context"); changed(); }}>分层摘要（billion-context）</button>
-      <button type="button" className={"font-scale-tick" + (engineSetting === "native" ? " active" : "")}
-        onClick={() => { setEngineSetting("native"); changed(); }}>按比例压缩（Pi 原生）</button>
-    </div>
-    <p className="settings-row-desc">{engineSetting === "billion-context"
-      ? "自动分层摘要并保留原文回查（推荐）；旧内容可被折叠，细节可用 acp_retrieve 读回。"
-      : "只按下方阈值触发 Pi 原生压缩；不提供按引用的原文回查，压缩结果由 Pi 管理。"}</p>
+  return <div className="compaction-settings" aria-label="自动上下文管理设置" aria-busy={(!loaded && !error) || saving}>
     <fieldset disabled={!loaded || saving} className="compaction-settings-fields">
-      <div className="font-scale-head"><label htmlFor="compaction-ratio">上下文窗口比例</label><strong>{Math.round(ratio * 100)}%</strong></div>
-      <div className="font-slider"><span>10%</span><input id="compaction-ratio" type="range" min={10} max={90} step={5}
-        aria-label="上下文压缩触发比例" value={Math.round(ratio * 100)} onChange={e => { setRatio(Number(e.target.value) / 100); changed(); }} /><span>90%</span></div>
-      <div className="font-scale-ticks">{[30, 50, 70, 80, 90].map(n => <button type="button" key={n}
-        className={"font-scale-tick" + (Math.round(ratio * 100) === n ? " active" : "")}
-        onClick={() => { setRatio(n / 100); changed(); }}>{n}%</button>)}</div>
-      <label className="compaction-absolute-toggle"><input type="checkbox" checked={enabled}
-        aria-label="启用绝对压缩阈值" onChange={e => { setEnabled(e.target.checked); changed(); }} />或达到指定上下文用量</label>
-      <div className="compaction-absolute-input"><input type="number" min={MIN_COMPACTION_TRIGGER_TOKENS / 1000}
-        max={MAX_COMPACTION_TRIGGER_TOKENS / 1000} step="any" value={k} disabled={!enabled}
-        aria-label="自动压缩绝对阈值 K tokens" onChange={e => { setK(e.target.value); changed(); }} /><span>K tokens</span></div>
-      {enabled && <div className="font-scale-ticks">{[64, 96, 128, 160, 200, 256].map(n => <button type="button" key={n}
-        className={"font-scale-tick" + (Number(k) === n ? " active" : "")} onClick={() => { setK(String(n)); changed(); }}>{n}K</button>)}</div>}
+      <legend className="compaction-field-label">上下文管理方式</legend>
+      <div className="compaction-engine-options" role="group" aria-label="上下文管理方式">
+        <button type="button" className={"compaction-engine-option" + (engineSetting === "billion-context" ? " active" : "")}
+          aria-label="分层摘要（billion-context）" aria-pressed={engineSetting === "billion-context"}
+          onClick={() => { setEngineSetting("billion-context"); changed(); }}>
+          <span className="compaction-engine-heading"><span>分层摘要</span><span className="compaction-recommended">推荐</span></span>
+          <span className="compaction-engine-detail">保留原文，支持回查细节</span>
+        </button>
+        <button type="button" className={"compaction-engine-option" + (engineSetting === "native" ? " active" : "")}
+          aria-label="按比例压缩（Pi 原生）" aria-pressed={engineSetting === "native"}
+          onClick={() => { setEngineSetting("native"); changed(); }}>
+          <span className="compaction-engine-heading">按比例压缩</span>
+          <span className="compaction-engine-detail">使用 Pi 原生压缩策略</span>
+        </button>
+      </div>
+      <p className="compaction-help compaction-engine-help">{engineSetting === "billion-context"
+        ? "billion-context 自动分层摘要；折叠后的原文可通过 acp_retrieve 回查。"
+        : "Pi 管理压缩结果，不提供按引用的原文回查。"}</p>
+
+      <div className="compaction-thresholds">
+        <div className="compaction-field-head">
+          <div><label className="compaction-field-label" htmlFor="compaction-ratio">上下文窗口比例</label>
+            <p className="compaction-help" id="compaction-ratio-help">当前上下文占模型窗口的比例</p></div>
+          <output className="compaction-ratio-value" htmlFor="compaction-ratio">{Math.round(ratio * 100)}<span>%</span></output>
+        </div>
+        <div className="font-slider compaction-ratio-slider"><span>10%</span><input id="compaction-ratio" type="range" min={10} max={90} step={5}
+          aria-label="上下文压缩触发比例" aria-describedby="compaction-ratio-help" value={Math.round(ratio * 100)} onChange={e => { setRatio(Number(e.target.value) / 100); changed(); }} /><span>90%</span></div>
+        <div className="font-scale-ticks compaction-presets" role="group" aria-label="上下文比例预设">{[30, 50, 70, 80, 90].map(n => <button type="button" key={n}
+          className={"font-scale-tick" + (Math.round(ratio * 100) === n ? " active" : "")} aria-pressed={Math.round(ratio * 100) === n}
+          onClick={() => { setRatio(n / 100); changed(); }}>{n}%</button>)}</div>
+
+        <div className="compaction-absolute-section">
+          <div className="compaction-field-head">
+            <div><div className="compaction-field-label">指定上下文用量</div><p className="compaction-help">与比例阈值任一先达到，即自动整理</p></div>
+            <SettingsToggle on={enabled} label="启用绝对压缩阈值" disabled={!loaded || saving} onChange={value => { setEnabled(value); changed(); }} />
+          </div>
+          <div className="compaction-absolute-controls" data-disabled={!enabled}>
+            <div className="compaction-absolute-input"><input id="compaction-absolute" type="number" min={MIN_COMPACTION_TRIGGER_TOKENS / 1000}
+              max={MAX_COMPACTION_TRIGGER_TOKENS / 1000} step="any" value={k} disabled={!enabled}
+              aria-label="自动压缩绝对阈值 K tokens" aria-invalid={!valid} aria-describedby={!valid ? "compaction-validation" : "compaction-token-help"}
+              onChange={e => { setK(e.target.value); changed(); }} /><span>K tokens</span></div>
+            <div className="font-scale-ticks compaction-presets" role="group" aria-label="上下文用量预设">{[64, 96, 128, 160, 200, 256].map(n => <button type="button" key={n} disabled={!enabled}
+              className={"font-scale-tick" + (Number(k) === n ? " active" : "")} aria-pressed={Number(k) === n}
+              onClick={() => { setK(String(n)); changed(); }}>{n}K</button>)}</div>
+          </div>
+          <p className="compaction-help" id="compaction-token-help">1K = 1000 tokens。{!enabled && "已关闭指定用量，仅按窗口比例触发。"}</p>
+          {!valid && <p className="compaction-feedback compaction-feedback--error" id="compaction-validation" role="alert">请输入 1–100000K 范围内、换算后为整数的 token 数。</p>}
+        </div>
+      </div>
     </fieldset>
-    <p className="settings-row-desc">Durable 主执行路径按此策略自动整理上下文：任一条件先达到即触发。1K = 1000 tokens；按当前模型窗口计算，不是累计发送量，也不是整理后的目标大小。</p>
-    <p className="compaction-effective">当前模型：{model?.name || model?.id || "未选择"}<br />
-      实际触发线：<strong>{policy ? (policy.triggerTokens / 1000).toLocaleString("zh-CN", { maximumFractionDigits: 3 }) + "K（" + (policy.limitedBy === "absolute" ? "绝对阈值" : "比例阈值") + "）" : "—"}</strong><br />
-      当前引擎：<strong>{describeEngine(engine ?? engineSetting)}</strong></p>
-    {policy && policy.triggerTokens <= 20_000 && <p className="settings-row-desc">阈值较低。整理时默认保留最近约 20K tokens 原文；历史不足时不会强行整理，因此这不是硬性用量上限。</p>}
-    {!valid && <p role="alert">请输入 1–100000K 范围内、换算后为整数的 token 数。</p>}
-    {error && <p role="alert">{error}</p>}{notice && <p role="status">{notice}</p>}
-    <button type="button" className="btn btn--primary" disabled={!loaded || !dirty || !valid || saving} onClick={() => void save()}>{saving ? "保存中…" : "保存压缩设置"}</button>
+
+    <div className="compaction-summary" aria-label="上下文策略预览">
+      <div className="compaction-summary-trigger"><span className="compaction-summary-label">{dirty ? "保存后触发线" : "实际触发线"}</span>
+        <strong>{policy ? (policy.triggerTokens / 1000).toLocaleString("zh-CN", { maximumFractionDigits: 3 }) + "K" : "—"}</strong>
+        <span className="compaction-help">{policy ? (policy.limitedBy === "absolute" ? "绝对阈值先达到" : "比例阈值先达到") : valid ? "选择模型后计算" : "请检查阈值"}</span></div>
+      <dl className="compaction-summary-details"><div><dt>当前模型</dt><dd>{model?.name || model?.id || "未选择"}</dd></div>
+        <div><dt>当前引擎</dt><dd>{describeEngine(engine ?? engineSetting)}</dd></div></dl>
+    </div>
+    <p className="compaction-help">按当前模型窗口计算，不是累计发送量，也不是整理后的目标大小。</p>
+    {policy && policy.triggerTokens <= 20_000 && <p className="compaction-feedback compaction-feedback--warning">阈值较低。整理时默认保留最近约 20K tokens 原文；历史不足时不会强行整理，因此这不是硬性用量上限。</p>}
+    {error && <p className="compaction-feedback compaction-feedback--error" role="alert">{error}</p>}
+    <div className="compaction-footer">
+      <p className="compaction-save-state" role="status">{notice || (!loaded ? (error ? "未能读取设置" : "正在读取设置…") : dirty ? "有未保存的更改" : "设置已同步")}</p>
+      <button type="button" className="btn primary" disabled={!loaded || !dirty || !valid || saving} onClick={() => void save()}>{saving ? "保存中…" : "保存压缩设置"}</button>
+    </div>
   </div>;
 }

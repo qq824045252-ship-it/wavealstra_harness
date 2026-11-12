@@ -14,16 +14,17 @@ const modelKey = `fixture/${selectedModel}`;
 const headless = process.env.BOT_WORK_DEV_HEADLESS === '1';
 const phase5 = process.env.BOT_WORK_DEV_PHASE5 === '1';
 if (headless && process.platform !== 'linux') throw Error('Headless dev page validation requires Linux; it does not validate desktop input.');
-const out = path.join(root, process.env.GADGET_MENU_DEV === '1' ? 'out/diagnostics/gadget-menu' : process.env.EXTENSION_TOOLBAR_DEV === '1' ? 'out/diagnostics/extension-toolbar' : process.env.ACP_MENU_DEV === '1' ? 'out/diagnostics/acp-menu' : process.env.BOT_ADD_MENU_DEV === '1' ? 'out/diagnostics/bot-add-menu/dev' : process.env.SUBAGENT_POPOVER_DEV === '1' ? 'out/diagnostics/subagent-popover' : process.env.BOT_WORK_BROWSER_DEV === '1' ? 'out/diagnostics/bot-work-browser/dev' : live ? 'out/diagnostics/bot-settings/live' : 'out/diagnostics/bot-settings/dev'); fs.mkdirSync(out, { recursive: true });
+const out = path.join(root, process.env.COMPACTION_SETTINGS_DEV === '1' ? 'out/diagnostics/compaction-settings/dev' : process.env.GADGET_MENU_DEV === '1' ? 'out/diagnostics/gadget-menu' : process.env.EXTENSION_TOOLBAR_DEV === '1' ? 'out/diagnostics/extension-toolbar' : process.env.ACP_MENU_DEV === '1' ? 'out/diagnostics/acp-menu' : process.env.BOT_ADD_MENU_DEV === '1' ? 'out/diagnostics/bot-add-menu/dev' : process.env.SUBAGENT_POPOVER_DEV === '1' ? 'out/diagnostics/subagent-popover' : process.env.BOT_WORK_BROWSER_DEV === '1' ? 'out/diagnostics/bot-work-browser/dev' : live ? 'out/diagnostics/bot-settings/live' : 'out/diagnostics/bot-settings/dev'); fs.mkdirSync(out, { recursive: true });
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-work-phase3-dev-'));
 const agentDir = path.join(home, '.mybuddy'); fs.mkdirSync(agentDir, { recursive: true });
 for (const directory of ['AppData/Roaming', 'AppData/Local', 'Temp']) fs.mkdirSync(path.join(home, directory), { recursive: true });
 let processDev, socket, sequence = 0, log, providerFailure;
-let electronExecutable, devDebugPort, launcherIdentity, electronWatch;
+let electronExecutable, launcherIdentity, electronWatch;
 const ownedElectronMains = new Map();
 const pending = new Map(), requests = [];
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
-const until = async (fn, label) => { const end = Date.now() + 90000; while (!await fn()) { if (providerFailure) throw providerFailure; if (Date.now() > end) throw Error('timeout: ' + label); await wait(100); } };
+const uiDeadline = process.env.UI_ACCEPTANCE_TIMEOUT_MS ? Date.now() + Number(process.env.UI_ACCEPTANCE_TIMEOUT_MS) : Infinity;
+const until = async (fn, label) => { const end = Math.min(Date.now() + 90000, uiDeadline); while (!await fn()) { if (providerFailure) throw providerFailure; if (Date.now() > end) throw Error('timeout: ' + label); await wait(100); } };
 const freePort = () => new Promise((resolve, reject) => { const server = net.createServer(); server.on('error', reject); server.listen(0, '127.0.0.1', () => { const port = server.address().port; server.close(() => resolve(port)); }); });
 function linuxProcessState(pid) {
   try {
@@ -33,15 +34,13 @@ function linuxProcessState(pid) {
       args: fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').filter(Boolean) };
   } catch { return undefined; } // The process may have exited between proc reads.
 }
+// Called only for descendants of the verified launcher generation. Electron can
+// replace argv/environ via process.title before the first polling interval.
 function isTestElectronMain(state) {
-  if (!state || !state.args.includes(`--remote-debugging-port=${devDebugPort}`)
-    || state.args.some(arg => arg === '--type' || arg.startsWith('--type='))) return false;
+  if (!state || state.args.some(arg => arg === '--type' || arg.startsWith('--type='))) return false;
   try {
-    const env = fs.readFileSync(`/proc/${state.pid}/environ`, 'utf8').split('\0');
     return fs.realpathSync(`/proc/${state.pid}/exe`) === electronExecutable
-      && fs.realpathSync(`/proc/${state.pid}/cwd`) === fs.realpathSync(root)
-      && env.includes(`HOME=${home}`) && env.includes(`REMOTE_DEBUGGING_PORT=${devDebugPort}`)
-      && !env.includes('ELECTRON_RUN_AS_NODE=1');
+      && fs.realpathSync(`/proc/${state.pid}/cwd`) === fs.realpathSync(root);
   } catch { return false; }
 }
 function trackTestElectronMains() {
@@ -53,23 +52,39 @@ function trackTestElectronMains() {
     const parent = queue.shift();
     if (seen.has(parent.pid)) continue;
     seen.add(parent.pid);
-    if (isTestElectronMain(parent)) ownedElectronMains.set(parent.pid, parent.startedAt);
+    if (isTestElectronMain(parent)) {
+      ownedElectronMains.set(parent.pid, parent.startedAt);
+      continue; // Its renderers and Electron-Node workers are not main windows.
+    }
     let children;
-    try { children = fs.readFileSync(`/proc/${parent.pid}/task/${parent.pid}/children`, 'utf8').trim().split(/\s+/).filter(Boolean); }
-    catch { continue; }
+    try {
+      // Native package managers can spawn on a non-main thread. Its children
+      // are absent from /task/<tgid>/children, though their PPID is still tgid.
+      children = [...new Set(fs.readdirSync(`/proc/${parent.pid}/task`).flatMap(tid => {
+        try { return fs.readFileSync(`/proc/${parent.pid}/task/${tid}/children`, 'utf8').trim().split(/\s+/).filter(Boolean); }
+        catch { return []; }
+      }))];
+    } catch { continue; }
     for (const id of children) {
       const child = linuxProcessState(Number(id));
       if (child?.parent === parent.pid) queue.push(child);
     }
   }
 }
+function isTrackedTestElectronMain(pid, startedAt) {
+  // process.title may replace argv/environment after initial ownership verification.
+  // Bind subsequent operations to the already-proven PID generation, executable and checkout.
+  const state = linuxProcessState(pid);
+  if (state?.startedAt !== startedAt) return false;
+  try {
+    return fs.realpathSync(`/proc/${pid}/exe`) === electronExecutable
+      && fs.realpathSync(`/proc/${pid}/cwd`) === fs.realpathSync(root);
+  } catch { return false; }
+}
 async function stopTestElectronMains() {
   if (process.platform !== 'linux') return;
   trackTestElectronMains();
-  const stillOwned = (pid, startedAt) => {
-    const state = linuxProcessState(pid);
-    return state?.startedAt === startedAt && isTestElectronMain(state);
-  };
+  const stillOwned = isTrackedTestElectronMain;
   for (const [pid, startedAt] of ownedElectronMains) if (stillOwned(pid, startedAt)) {
     try { process.kill(pid, 'SIGTERM'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
   }
@@ -153,7 +168,7 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     log = fs.openSync(path.join(out, 'dev.log'), 'w');
     // pnpm also ships native Linux/macOS executables without a .exe extension.
     const nativePnpm = !/\.(?:cjs|mjs|js)$/i.test(process.env.npm_execpath);
-    if (process.platform === 'linux') { electronExecutable = fs.realpathSync(require('electron')); devDebugPort = port; }
+    if (process.platform === 'linux') { electronExecutable = fs.realpathSync(require('electron')); }
     processDev = cp.spawn(nativePnpm ? process.env.npm_execpath : process.execPath,
       nativePnpm ? ['dev'] : [process.env.npm_execpath, 'dev'], { cwd: root, env, windowsHide: true, stdio: ['ignore', log, log] });
     if (process.platform === 'linux') {
@@ -171,6 +186,14 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     await rpc('Runtime.enable'); await rpc('Page.enable');
     await rpc('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
     await until(() => evaluate('Boolean(window.api?.botWork?.sendMessage && document.querySelector("textarea"))'), 'preload and renderer');
+    if (process.env.COMPACTION_SETTINGS_DEV === '1') {
+      assert(!headless, 'Compaction settings acceptance requires a real desktop session');
+      await require('./compaction-settings-dev-checks.cjs')({evaluate,rpc,until,report,out,getOwnedElectronPids:()=>{
+        trackTestElectronMains(); return [...ownedElectronMains].filter(([pid,startedAt])=>isTrackedTestElectronMain(pid,startedAt)).map(([pid])=>pid);
+      }});
+      assert.equal(requests.length, 0, 'Settings checks must not invoke a model');
+      report.status='passed'; return;
+    }
     if (process.env.GADGET_MENU_DEV === '1') {
       assert(!headless, 'Gadget menu acceptance requires a real desktop session');
       await require('./gadget-menu-dev-checks.cjs')({evaluate,rpc,until,report,out,home});

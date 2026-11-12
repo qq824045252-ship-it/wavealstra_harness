@@ -1,0 +1,80 @@
+/* Context management uses the shared settings palette, buttons, slider and switch. */
+.compaction-settings {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.5;
+  container-type: inline-size;
+}
+
+.compaction-settings-fields { min-width: 0; margin: 0; padding: 0; border: 0; }
+.compaction-field-label { padding: 0; color: var(--fg); font-size: 13px; font-weight: 600; }
+legend.compaction-field-label { margin-bottom: 9px; }
+.compaction-settings .compaction-help { margin: 0; color: var(--fg-secondary); font-size: 12px; line-height: 1.6; }
+.compaction-engine-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.compaction-engine-option {
+  display: grid;
+  gap: 5px;
+  position: relative;
+  padding: 12px 14px 12px 38px;
+  text-align: left;
+  border: 1px solid var(--border-default);
+  border-radius: 10px;
+  background: var(--surface-main);
+  color: var(--fg);
+  cursor: pointer;
+  min-width: 0;
+}
+.compaction-engine-option::before { box-sizing: border-box; content: ""; position: absolute; left: 14px; top: 17px; width: 13px; height: 13px; border: 1px solid var(--border-strong); border-radius: 50%; }
+.compaction-engine-option.active { border-color: var(--fg-secondary); background: var(--surface-hover); }
+.compaction-engine-option.active::before { border: 4px solid var(--fg); background: var(--surface-main); }
+.compaction-engine-option:hover:not(:disabled) { background: var(--surface-hover); border-color: var(--fg-secondary); }
+.compaction-engine-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; font-size: 13px; font-weight: 600; line-height: 1.5; }
+.compaction-recommended { padding: 1px 5px; border-radius: 4px; color: var(--fg-secondary); background: var(--surface-active); font-size: 10px; font-weight: 500; }
+.compaction-engine-detail { color: var(--fg-secondary); font-size: 12px; line-height: 1.5; }
+.compaction-settings .compaction-engine-help { margin-top: 8px; }
+.compaction-thresholds { margin-top: 16px; padding: 16px; border: 1px solid var(--border-default); border-radius: 12px; }
+.compaction-field-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.compaction-ratio-value { flex: 0 0 auto; color: var(--fg); font-size: 24px; font-weight: 600; line-height: 1.2; font-variant-numeric: tabular-nums; letter-spacing: -0.5px; }
+.compaction-ratio-value span { margin-left: 2px; color: var(--fg-secondary); font-size: 13px; font-weight: 500; }
+.compaction-settings .compaction-ratio-slider { gap: 10px; margin: 12px 0 10px; }
+.compaction-ratio-slider > span { color: var(--fg-secondary); font-size: 11px; font-variant-numeric: tabular-nums; }
+.compaction-settings .compaction-presets { gap: 6px; }
+.compaction-settings .font-scale-tick { min-height: 28px; padding: 3px 10px; color: var(--fg-secondary); border-color: var(--border-default); border-radius: 6px; }
+.compaction-settings .font-scale-tick.active { color: var(--primary-fg); background: var(--primary); border-color: var(--primary); }
+.compaction-absolute-section { display: grid; gap: 10px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border-subtle); }
+.compaction-absolute-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
+.compaction-absolute-controls[data-disabled="true"] { opacity: 0.5; }
+.compaction-absolute-input { display: flex; align-items: center; gap: 9px; }
+.compaction-absolute-input input { box-sizing: border-box; width: 112px; min-height: 34px; padding: 6px 9px; color: var(--fg); background: var(--surface-input); border: 1px solid var(--border-default); border-radius: 7px; font: inherit; font-variant-numeric: tabular-nums; }
+.compaction-absolute-input input[aria-invalid="true"] { border-color: var(--danger); }
+.compaction-absolute-input > span { color: var(--fg-secondary); font-size: 12px; }
+.compaction-summary { display: grid; grid-template-columns: minmax(130px, 0.8fr) minmax(0, 2fr); gap: 20px; padding: 14px 16px; border: 1px solid var(--border-subtle); border-radius: 10px; background: var(--surface-hover); }
+.compaction-summary-trigger { display: grid; align-content: start; justify-items: start; gap: 3px; min-width: 0; }
+.compaction-summary-label { color: var(--fg-secondary); font-size: 11px; }
+.compaction-summary-trigger > strong { font-size: 22px; font-weight: 600; line-height: 1.3; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.compaction-summary-details { display: grid; align-content: center; gap: 9px; min-width: 0; margin: 0; padding-left: 20px; border-left: 1px solid var(--border-default); font-size: 12px; }
+.compaction-summary-details > div { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 8px; }
+.compaction-summary-details dt { color: var(--fg-secondary); }
+.compaction-summary-details dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.compaction-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 2px; }
+.compaction-save-state { margin: 0; color: var(--fg-secondary); font-size: 12px; overflow-wrap: anywhere; }
+.compaction-footer .btn { flex-shrink: 0; min-height: 34px; }
+.compaction-settings .compaction-feedback { margin: 0; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.compaction-feedback--error { color: var(--danger); }
+.compaction-feedback--warning { color: var(--fg-secondary); padding: 10px 12px; border-radius: 8px; background: var(--warning-bg); }
+.compaction-settings :is(button, input):focus-visible,
+.compaction-settings .compaction-ratio-slider input:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.compaction-settings button:disabled { cursor: not-allowed; opacity: 0.5; }
+@container (max-width: 440px) {
+  .compaction-engine-options { grid-template-columns: 1fr; gap: 8px; }
+  .compaction-thresholds { padding: 12px; }
+  .compaction-summary { grid-template-columns: 1fr; gap: 10px; padding: 12px; }
+  .compaction-summary-trigger { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; }
+  .compaction-summary-trigger > .compaction-help { flex-basis: 100%; }
+  .compaction-summary-details { border-left: 0; border-top: 1px solid var(--border-default); padding: 10px 0 0; }
+  .compaction-footer { align-items: flex-start; flex-direction: column; }
+  .compaction-footer .btn { align-self: flex-end; }
+}

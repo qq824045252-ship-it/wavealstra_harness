@@ -1,5 +1,6 @@
 @import "katex/dist/katex.min.css";
 @import "./markdown.css";
+@import "./compactionSettings.css";
 
 :root {
   color-scheme: light;
@@ -23771,11 +23772,6 @@ html[data-theme="dark"] .chat-column.task-ambient[data-mode="general"] {
 }
 
 /* Pi-native context operations: theme-neutral and constrained to the popup. */
-.compaction-settings-fields { border: 0; padding: 0; margin: 0; min-width: 0; }
-.compaction-absolute-toggle { display: flex; align-items: center; gap: 8px; margin: 14px 0 8px; }
-.compaction-absolute-input { display: flex; align-items: center; gap: 8px; }
-.compaction-absolute-input input { width: 120px; padding: 6px 8px; color: var(--fg); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; }
-.compaction-effective { line-height: 1.7; }
 .manual-compaction-control { border-top: 1px solid var(--border); margin-top: 12px; padding-top: 12px; }
 .compaction-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .compaction-result { font-size: 12px; overflow-wrap: anywhere; margin: 8px 0; }

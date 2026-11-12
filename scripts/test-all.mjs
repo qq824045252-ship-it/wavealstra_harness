@@ -75,6 +75,7 @@ const SERIAL_TEST_PATTERNS = [/^test:core-performance/, /^test:bot-work-query-sc
  * （历史教训：`-ui$` 与 `:desktop$` 都曾漏出 GUI 用例，混进"无头"门禁）。
  */
 const GUI_TESTS = new Set([
+  "test:compaction-settings-dev", // actual app, native window bounds, settings IPC, light/dark layouts
   "test:workspace-files-sort-desktop", // real Electron workspace tree + production filesystem A/B
   "test:usage-dashboard-dev", // actual pnpm dev app, isolated synthetic usage ledger
   "test:browser-tabs-ui",
@@ -262,6 +263,7 @@ const PLATFORM_ONLY_TESTS = new Map([
   ["test:bot-work-phase3:dev", ["windows"]],
   ["test:bot-work-phase3-focus-desktop", ["windows"]],
   ["test:bot-work-phase2:dev", ["windows"]], // Windows dev UI driver; Linux/Omarchy desktop acceptance remains separate.
+  ["test:compaction-settings-dev", ["linux"]], // Exact-address native window acceptance on the Hyprland desktop.
   ["test:computer-use-linux", ["linux"]],
   ["test:computer-use-linux:packaged", ["linux"]],
   ["test:atspi-transport", ["linux"]],
