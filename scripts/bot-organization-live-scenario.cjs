@@ -41,10 +41,12 @@ exports.run = async context => {
   const openArtifact = async artifact => {
     const label='打开 '+path.basename(artifact.file);
     await until(()=>evaluate(`Boolean([...document.querySelectorAll('.bot-result-files button')].find(button=>button.getAttribute('aria-label')===${JSON.stringify(label)}))`),'source official artifact-open control');
-    const point=await evaluate(`(()=>{const button=[...document.querySelectorAll('.bot-result-files button')].find(item=>item.getAttribute('aria-label')===${JSON.stringify(label)});for(let node=button.parentElement;node;node=node.parentElement)if(node.tagName==='DETAILS'&&!node.open)node.querySelector(':scope>summary')?.click();button.scrollIntoView({block:'center'});const rect=button.getBoundingClientRect();return {x:rect.x+rect.width/2,y:rect.y+rect.height/2,visible:rect.width>0&&rect.height>0&&button.contains(document.elementFromPoint(rect.x+rect.width/2,rect.y+rect.height/2))};})()`);
+    const point=await evaluate(`(()=>{const button=[...document.querySelectorAll('.bot-result-files button')].find(item=>item.getAttribute('aria-label')===${JSON.stringify(label)});for(let node=button.parentElement;node;node=node.parentElement)if(node.tagName==='DETAILS'&&!node.open)node.querySelector(':scope>summary')?.click();button.scrollIntoView({block:'center',behavior:'instant'});const rect=button.getBoundingClientRect();return {x:rect.x+rect.width/2,y:rect.y+rect.height/2,visible:rect.width>0&&rect.height>0&&button.contains(document.elementFromPoint(rect.x+rect.width/2,rect.y+rect.height/2))};})()`);
     assert(point.visible,'official returned artifact-open control is visible');
-    await rpc('Input.dispatchMouseEvent',{type:'mousePressed',button:'left',clickCount:1,x:point.x,y:point.y});
-    await rpc('Input.dispatchMouseEvent',{type:'mouseReleased',button:'left',clickCount:1,x:point.x,y:point.y});
+    await new Promise(resolve=>setTimeout(resolve,150));
+    await rpc('Input.dispatchMouseEvent',{type:'mouseMoved',x:point.x,y:point.y});
+    await rpc('Input.dispatchMouseEvent',{type:'mousePressed',button:'left',buttons:1,clickCount:1,x:point.x,y:point.y});
+    await rpc('Input.dispatchMouseEvent',{type:'mouseReleased',button:'left',buttons:0,clickCount:1,x:point.x,y:point.y});
     const auditFile=path.join(out,'official-file-open.jsonl');
     let receipts=[];
     await until(()=>{
@@ -54,7 +56,7 @@ exports.run = async context => {
     assert(!receipts.some(receipt=>receipt.phase==='failed'&&receipt.target===artifact.savedPath));
     let visiblePreview;
     await until(async()=>{
-      visiblePreview=await evaluate(`(()=>{const preview=[...document.querySelectorAll('.bot-work-file-preview')].find(el=>el.getAttribute('aria-label')===${JSON.stringify('文件预览：'+path.basename(artifact.file))});if(!preview)return null;const body=preview.querySelector('.bot-work-file-preview-body');if(!body)return null;const text=body.querySelector('.view-lines')?.innerText||body.querySelector('pre')?.innerText||body.innerText;const rect=body.getBoundingClientRect();return {text,visible:rect.width>0&&rect.height>0&&rect.top<innerHeight&&rect.bottom>0,error:preview.querySelector('[role=alert]')?.innerText};})()`);
+      visiblePreview=await evaluate(`(()=>{const preview=[...document.querySelectorAll('.bot-work-file-preview')].find(el=>el.getAttribute('aria-label')===${JSON.stringify('文件预览：'+path.basename(artifact.file))});if(!preview)return null;const body=preview.querySelector('.bot-work-file-preview-body');if(!body)return null;preview.scrollIntoView({block:'center',behavior:'instant'});const lines=[...body.querySelectorAll('.code-line-content')];const text=lines.length?lines.map(line=>line.textContent).join(String.fromCharCode(10)):body.querySelector('.view-lines')?.innerText||body.querySelector('pre')?.innerText||body.innerText;const rect=body.getBoundingClientRect();return {text,visible:rect.width>0&&rect.height>0&&rect.top<innerHeight&&rect.bottom>0,error:preview.querySelector('[role=alert]')?.innerText};})()`);
       if(!visiblePreview?.visible||!visiblePreview.text||visiblePreview.error)return false;
       try{return JSON.stringify(JSON.parse(visiblePreview.text.replace(/\u00a0/g,' ').replace(/\u200b/g,'')))===JSON.stringify(JSON.parse(fs.readFileSync(artifact.savedPath,'utf8')));}catch{return false;}
     },'visible rendered JSON equals the actual saved artifact');
