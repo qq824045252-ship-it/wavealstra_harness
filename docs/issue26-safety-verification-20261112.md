@@ -34,12 +34,30 @@ Passed so far:
 - Durable context management: actual fixture-provider input reduced from approximately 89,931 to 30,131 tokens; original tool retrieval, persistent projection, settings and restart assertions passed.
 - Branch/cancel suite: as-of branch, cancellation, bounded overflow summary requests (five calls, largest estimated input 20,786 tokens), native child, Code Mode, consultation, settings and engine-switch assertions passed.
 - Existing synthetic performance fixture passed. It ran alongside unrelated UI work, so its timings are not an isolated performance baseline.
-- Web and main-process typechecks passed. Script ratchet initially caught one branded-entry-ID type in the new fixture; it was corrected and the script ratchet passed. The later additional parallel-tool fixture will receive the final script recheck before push.
+- Web and main-process typechecks passed. Script ratchet initially caught one branded-entry-ID type in the new fixture; it was corrected and the script ratchet passed. The additional parallel-tool fixture also passed the final script ratchet recheck.
 - Test classification audit passed; live driver/scenario syntax checks passed without launching a model.
 
 The first storage integration attempt failed because host `/tmp` rejected its lease-file write with errno -122. The unchanged test passed with a private `TMPDIR` under the selected computer's home directory; no product error handling or assertion was relaxed.
 
-Real Electron/model acceptance is pending its coordinated desktop window. The complete default headless aggregate has not been run for this focused patch. No packaging or ARTIFACT tests were run.
+## Actual Electron and V4.1Flash runs
+
+Two isolated `pnpm dev` desktop-session runs completed all seven task types on 2026-11-12, using `opendesign/deepseek-v4.1-flash` from the existing local gateway. The input history is entirely synthetic. The harness uses actual Electron UI/CDP and production IPC, not physical desktop input. No user profile or credential was copied.
+
+- First run started 02:20:06 UTC on `22931cb439efae3830fbb646204b7f3a9943a432`: seven content/tool assertions passed, 11 real provider requests. The live command nevertheless exited nonzero because its final summary detector only accepted a `system` role; this provider correctly serialized the instruction as `developer`. Raw request 2 is the actual summary call, and six subsequent requests contain the committed compressed view.
+- Second run started 02:24:01 UTC on `5964ad88c6bfa8acd17981e3cbcb56665d7b8bc1`: seven real answers, 11 requests, one actual summary request and six requests using the committed summary. Original retrieval after a cold restart and Bot foreground `acp_status` both passed. The command exited nonzero on the correction case: the model correctly wrote `const PORT = 6284`, then added “6173 已废弃”. This is an extra-formatting deviation, not use of the obsolete port. The old assertion prohibited the old digits anywhere.
+- Both original failed command results are preserved. A separate recorded-data assessment verifies seven functional behaviors, exact original text in an actual provider tool message, actual summary traffic, and compressed projection after restart. It separately reports strict formatting: first run passed; second run deviated. This is offline revalidation, not a third live run and not a claim that either original live command exited zero.
+- The current driver recognizes provider-normalized `developer` summaries and checks actual constant assignments while recording whether the response contains only the requested constant. Its checker rejects old, conflicting, and missing declarations. The corrected driver has been syntax checked and its assessment behavior tested, but has not received another complete live execution.
+
+Compact reproducible evidence: [first assessment](evidence/issue26/real-seven-types-20261112/first-assessment.json), [second assessment](evidence/issue26/real-seven-types-20261112/second-assessment.json). Each preserves source SHA, cases, raw usage, original command error, and hashes of unchanged raw records. To revalidate locally:
+
+```sh
+node scripts/durable-context-live-assessment.cjs --self-test
+node scripts/durable-context-live-assessment.cjs <recorded-run-directory> <assessment.json>
+```
+
+Both runs used a declared 1,048,000-token model window and a 12,000-token absolute trigger. The observed first summary call used 11,537 prompt tokens in the first run. These are functional observations, not a controlled native-versus-BC cost/performance comparison. Pricing was not measured. No full headless aggregate, packaging or ARTIFACT tests were run. No physical-keyboard/mouse input or 100K-entry cold-store benchmark is implied.
+
+After the runs, the patch was rebased onto `94defbf80523a5a3ced6684d6cf38ccb742409a8`, preserving the UI work and the latest #27 report correction. The three production files in this patch are byte-identical to the real-tested versions. No #32 product commit was present on that remote main; this patch does not change Bot collaboration ownership or scheduling. Its Bot service change only admits the four fixed context-tool names.
 
 ## Still outside the evidence of this patch
 

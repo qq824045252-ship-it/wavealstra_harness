@@ -1,5 +1,6 @@
 /** Synthetic inputs only. Every model response and summary uses the real configured provider. */
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
+const {inspectPortCorrection}=require('./durable-context-live-assessment.cjs');
 exports.run=async({evaluate,rpc,until,report,requests,rawUsageAudit,out,home,restart})=>{
  const wait=ms=>new Promise(r=>setTimeout(r,ms));
  report.cases=[];report.summaryCalls=[];report.profileIsolation={home,syntheticInput:true,realCredentialsRead:false};
@@ -42,7 +43,7 @@ exports.run=async({evaluate,rpc,until,report,requests,rawUsageAudit,out,home,res
  ['inventory arithmetic','只做库存计算：17箱新到、29箱原有，发出8箱后还剩多少箱？写一行算式，不调用工具。以下背景日志没有库存数量，不能计入算式：\n'+padding.slice(0,30000),a=>assert(a.includes('38'))],
  ['translation','只翻译这句话，保持编号：The calibration team will inspect bay C-26 tomorrow at ten. 不调用工具。',a=>assert(a.includes('C-26')&&a.includes('明天'))],
  ['structured extraction','从这条数据抽取一行JSON，不调用工具：样品代号 AX26，数量14，单位盒，负责人Lin。字段code,count,unit,owner。',a=>assert(a.includes('AX26')&&a.includes('14')&&a.includes('Lin'))],
- ['instruction correction','配置更正：这个验收项目原端口6173已废弃，当前端口6284。请只给JavaScript常量 PORT 的当前值，不调用工具。',a=>assert(a.includes('6284')&&!a.includes('6173'))],
+ ['instruction correction','配置更正：这个验收项目原端口6173已废弃，当前端口6284。请只给JavaScript常量 PORT 的当前值，不调用工具。',a=>{report.correction=inspectPortCorrection(a);}],
  ];
  for(const [label,prompt,check] of cases){try{const result=await say(prompt,label);check(result.answer);}catch(error){report.cases.push({label,status:'failed',error:String(error.stack||error)});save();}}
  const summaryCalls=requests.map((request,index)=>({request,index})).filter(({request})=>request.messages?.some(message=>['system','developer'].includes(message.role)&&JSON.stringify(message.content).includes('compress conversation history')));
