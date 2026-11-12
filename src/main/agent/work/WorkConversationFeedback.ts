@@ -5,6 +5,7 @@ import type Database from "better-sqlite3";
 import type { WorkFeedbackDto } from "../../../shared/bot-conversation";
 import type { WorkDto } from "../../../shared/bot-work";
 import { BotConversationRepository } from "./BotConversationRepository";
+import { recordCollaborationReturnFailure } from "./BotCollaborationExecutionFacts";
 import { projectTeamReport } from "./WorkReportPresentation";
 import { workDeliveryFiles, workDeliveryResults } from "./WorkDeliveryArtifacts";
 import { workMilestoneVersion } from "./WorkMilestones";
@@ -91,7 +92,8 @@ export class WorkConversationFeedback {
         } }),
       };
       const text = `【${work.title}】\n${input.text}${input.category !== "progress" && raw !== input.text ? `\n\n原始执行记录：\n${raw}` : ""}`;
-      return this.messages.appendWorkDelivery(userId, work.workId, input.eventId, JSON.stringify([input.text,input.notices ?? [],refs,input.completion ?? null,primaryArtifactRefs ?? null]), text, metadata).delivered;
+      const delivery = this.messages.appendWorkDelivery(userId, work.workId, input.eventId, JSON.stringify([input.text,input.notices ?? [],refs,input.completion ?? null,primaryArtifactRefs ?? null]), text, metadata);
+      return delivery.delivered || Boolean(delivery.recorded);
     });
   }
 
@@ -131,7 +133,7 @@ export class WorkConversationFeedback {
         const work = works.getWork(candidate.workId);
         if (!work || work.userId !== userId) return 0;
         const origin = this.messages.resolveWorkDelivery(userId, work.workId);
-        if (!origin) return 0; // Never guess an active conversation as a fallback.
+        if (!origin && !this.messages.collaborations.byWork(userId, work.workId)) return 0;
         const managed = (bindingId: string) => (this.options.superviseWatch && work.mode === "watch"
           && (() => {
             const binding = works.repo.getBinding(bindingId);
@@ -151,7 +153,7 @@ export class WorkConversationFeedback {
           && works.repo.getBinding(bindingId)?.botId === work.ownerBotId;
         let count = 0;
         const emit = (event: string, version: unknown, body: string, metadata: Omit<WorkFeedbackDto, "workId" | "eventId">) => {
-          if (this.messages.appendWorkFeedback(origin, work.workId, event, JSON.stringify(version), `【${work.title}】\n${body}`, { ...metadata, workId: work.workId, eventId: event })) count++;
+          if (this.messages.appendWorkDelivery(userId, work.workId, event, JSON.stringify(version), `【${work.title}】\n${body}`, { ...metadata, workId: work.workId, eventId: event }).inserted) count++;
         };
         const results = works.repo.listDeliverables(work.workId);
         const generated = works.generatedArtifacts.list(work.workId, true);
@@ -273,6 +275,8 @@ export class WorkConversationFeedback {
         });
       } catch (error) {
         // A broken Work must not starve feedback for every other original chat.
+        try { recordCollaborationReturnFailure(this.options.db, userId, candidate.workId, error); }
+        catch (recordError) { console.warn("[Work] 协作回传失败记录待重试", candidate.workId, recordError); }
         console.warn("[Work] 原对话反馈待重试", candidate.workId, error);
       }
     }

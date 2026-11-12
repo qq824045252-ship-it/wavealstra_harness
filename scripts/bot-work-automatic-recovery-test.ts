@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { z } from "zod";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { BotRegistry } from "../src/main/agent/work/BotRegistry";
 import { WorkService, DESKTOP_USER_GRANTS } from "../src/main/agent/work/WorkService";
@@ -27,9 +28,16 @@ async function run(name: string, final: "completed" | "failed" | "stopped", unkn
     find: async binding => receipts.get(binding.bindingId),
     submit: async (binding, text) => {
       stages.set(binding.bindingId, inputs.length); inputs.push(text);
-      if (!text.includes('"recovery"')) { writes++; await writeFile(artifact, "杭州：已有真实任务结果\n"); }
+      const input = z.object({ recovery: z.object({
+        retainedResults: z.array(z.object({ artifacts: z.array(z.string()) })),
+        completed: z.array(z.object({ artifactRefs: z.array(z.string()) })),
+      }).optional() }).parse(JSON.parse(text));
+      if (!input.recovery) { writes++; await writeFile(artifact, "杭州：已有真实任务结果\n"); }
       else {
-        assert.equal(await readFile(artifact, "utf8"), "杭州：已有真实任务结果\n"); assert(text.includes(artifact), "every recovery retains ancestral artifact path");
+        const retainedPath = [...input.recovery.retainedResults.flatMap(result => result.artifacts),
+          ...input.recovery.completed.flatMap(item => item.artifactRefs)].find(path => path === artifact);
+        assert(retainedPath, "every recovery retains ancestral artifact path");
+        assert.equal(await readFile(retainedPath, "utf8"), "杭州：已有真实任务结果\n");
         if (name === "ancestry") assert(text.includes("original-source-weather-payload"), "later recovery keeps original trigger payload");
         if (unknown || name === "readonly") {
           const denied = works.admitTaskAction(binding.taskId, { operationId: `write:${binding.bindingId}`, actionKind: "workspace:write" });

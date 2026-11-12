@@ -24,6 +24,7 @@ import type {
 import type { ExpertConfigSnapshotDto, WorkAuthorizationDto } from "../../../shared/bot-work";
 import { captureTeamReportContext, capturedTeamReportContext } from "./WorkReportPresentation";
 import { botDelegationInput, BOT_DELEGATION_INSTRUCTIONS } from "./BotDelegationInput";
+import { z } from "zod";
 
 function json<T>(value: string | null | undefined, fallback: T): T {
   if (!value) return fallback;
@@ -529,6 +530,10 @@ export class WorkRepository {
         source_version: number; created_by: "user" | "bot" } | undefined;
     if (!row) throw new Error("执行缺少持久化的要求与输入快照");
     const userRequest = botDelegationInput(this.db, binding, row.source_version);
+    const hasCollaborationContext = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='bot_collaboration_work_context'").get();
+    const collaborationContext = hasCollaborationContext ? z.object({ context_json: z.string() }).optional().parse(
+      this.db.prepare("SELECT context_json FROM bot_collaboration_work_context WHERE work_id=? AND input_snapshot_id=?")
+        .get(binding.workId, binding.inputSnapshotId)) : undefined;
     const definition = { title: row.title, description: row.goal_description, constraints: json<string[]>(row.constraints_json, []),
       criteria: json<WorkDto["criteria"]>(row.criteria_json, []) };
     const userDefinition: Partial<typeof definition> = {}, planDefinition: Partial<typeof definition> = {};
@@ -569,6 +574,7 @@ export class WorkRepository {
     return JSON.stringify({
       ...(team?.input_json ? { teamAssignment: JSON.parse(team.input_json) } : {}),
       workId: binding.workId, intentRevision: binding.intentRevision, inputSnapshotId: binding.inputSnapshotId,
+      ...(collaborationContext ? { collaborationContext: JSON.parse(collaborationContext.context_json) } : {}),
       ...(userRequest ? { userRequest, ...userDefinition, delegationPlan: { provenance: "assistant_generated", ...planDefinition } }
         : definition),
       delegatedScope: binding.delegatedScope,

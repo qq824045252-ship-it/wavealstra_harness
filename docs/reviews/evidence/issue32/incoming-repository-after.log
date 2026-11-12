@@ -1,0 +1,8 @@
+$ esbuild scripts/bot-collaboration-repository-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/bot-collaboration-repository-test.mjs && node scripts/test-guard.mjs out/tests/bot-collaboration-repository-test.mjs
+
+  out\tests\bot-collaboration-repository-test.mjs  53.2kb
+
+Done in 13ms
+[test-guard] pid=35060 cmd=node --max-old-space-size=4096 out/tests/bot-collaboration-repository-test.mjs mem_cap=6144MB timeout=900s poll=1500ms
+bot collaboration repository: durable identity, original scope, replay, pagination, receipts and deletion PASS
+[test-guard] exit pid=35060 code=0 elapsed=1s

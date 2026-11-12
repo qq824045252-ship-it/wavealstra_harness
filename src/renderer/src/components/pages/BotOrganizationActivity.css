@@ -1,0 +1,23 @@
+.bot-organization-activity { margin:10px 0 0 36px; display:grid; gap:7px; min-width:0; color:var(--fg-secondary); font-size:12px; }
+.bot-organization-item { min-width:0; border-left:2px solid var(--border-default); padding-left:10px; }
+.bot-organization-record > summary { display:flex; align-items:center; gap:6px; width:fit-content; max-width:100%; padding:5px 0; cursor:pointer; line-height:1.5; overflow-wrap:anywhere; }
+.bot-organization-record > summary::before { content:"›"; flex:0 0 8px; transition:transform var(--motion-fast); }
+.bot-organization-record[open] > summary::before { transform:rotate(90deg); }
+.bot-organization-record > summary::-webkit-details-marker { display:none; }
+.bot-organization-record > summary svg { flex-shrink:0; }
+.bot-workspace .bot-organization-linked { padding:4px 0; border:0; background:transparent; color:var(--fg-secondary); text-align:left; justify-content:flex-start; }
+.bot-organization-linked > span { overflow-wrap:anywhere; }
+.bot-organization-linked + .bot-organization-record > summary { font-size:11px; color:var(--fg-muted); }
+.bot-organization-detail { padding:5px 0 8px; display:grid; gap:8px; overflow-wrap:anywhere; }
+.bot-organization-description { white-space:pre-wrap; }
+.bot-organization-times { display:flex; flex-wrap:wrap; gap:7px 18px; margin:0; font-size:11px; }
+.bot-organization-times > div { min-width:130px; }
+.bot-organization-times dt { color:var(--fg-muted); }
+.bot-organization-times dd { margin:2px 0 0; }
+.bot-organization-receipt-count,.bot-organization-no-receipts { color:var(--fg-muted); font-size:11px; }
+.bot-organization-receipts { display:grid; gap:8px; max-height:280px; overflow:auto; overscroll-behavior:contain; margin:0; padding:0 8px 0 18px; }
+.bot-organization-receipts li { padding-left:2px; }
+.bot-organization-receipt-heading { display:flex; flex-wrap:wrap; justify-content:space-between; gap:3px 12px; color:var(--fg-muted); font-size:11px; }
+.bot-organization-receipts [data-receipt-status="failed"] .bot-organization-receipt-heading { color:var(--fg); }
+.bot-organization-receipts p { white-space:pre-wrap; }
+@media (max-width:700px) { .bot-organization-activity { margin-left:0; } .bot-organization-times { gap:7px 12px; } }

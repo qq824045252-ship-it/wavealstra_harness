@@ -59,9 +59,14 @@ exports.run = async ({send, foregroundDone, until, evaluate, history, rpc, repor
     assert(c.check(message.botCalls.map(x=>x.replyText).join('\n')), c.type+' must verify recipient output, not only owner text');
     report.peerCalls.cases.push({type:c.type,requestId:message.requestId,calls:message.botCalls,modelCalls:requests.length-offset});
     if (c.type === '数学计算') {
-      await evaluate(`(()=>{const e=document.querySelector('[data-call-id="${message.botCalls[0].callId}"]').closest('details');e.open=true;e.scrollIntoView({block:'center'});})()`);
+      const relation = message.collaborations?.[0];
+      if (relation) {
+        await evaluate(`document.querySelector('[data-collaboration-id="${relation.collaborationId}"]').click()`);
+        await until(()=>evaluate('Boolean(document.querySelector(".bot-collaboration-messages"))'),'durable math collaboration history');
+      } else await evaluate(`(()=>{const e=document.querySelector('[data-call-id="${message.botCalls[0].callId}"]').closest('details');e.open=true;e.scrollIntoView({block:'center'});})()`);
       const shot = await rpc('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});
       fs.writeFileSync(path.join(out,'peer-math-reply.png'),Buffer.from(shot.data,'base64'));
+      if (relation) await evaluate(`document.querySelector('[aria-label="关闭协作记录"]').click()`);
     }
   }
   const offset = requests.length;
@@ -78,12 +83,17 @@ exports.run = async ({send, foregroundDone, until, evaluate, history, rpc, repor
   assert.equal((await evaluate(`window.api.botWork.history({botId:${JSON.stringify(peer)}})`)).messages.length,targetBefore.messages.length,'calls do not write fake user turns into target conversation');
   assert.equal((await evaluate('window.api.botWork.listWorks(true)')).length,0,'questions are not synthetic background Work');
   assert(report.peerCalls.observedStatuses.includes('running'),'actual calling state observed');
-  await until(()=>evaluate('document.querySelectorAll(".bot-call-thread").length >= 6'),'rendered six actual exchange summaries');
-  await evaluate('document.querySelectorAll(".bot-call-thread").forEach(e=>e.open=true)');
-  const visible = await evaluate('document.querySelectorAll(".bot-call-thread")[0].innerText');
+  await until(()=>evaluate('document.querySelectorAll(".bot-call-thread,.bot-collaboration-summaries").length >= 6'),'rendered six actual exchange summaries');
+  const relation = h.messages.find(m=>m.collaborations?.length)?.collaborations[0];
+  if (relation) {
+    await evaluate(`document.querySelector('[data-collaboration-id="${relation.collaborationId}"]').click()`);
+    await until(()=>evaluate('Boolean(document.querySelector(".bot-collaboration-messages"))'),'actual bilateral recipient reply');
+  } else await evaluate('document.querySelectorAll(".bot-call-thread").forEach(e=>e.open=true)');
+  const visible = await evaluate('document.querySelector(".bot-collaboration-view,.bot-call-thread").innerText');
   assert(visible.includes('学习搭子')&&visible.includes(marker),'real recipient reply is visible in source conversation');
   const shot = await rpc('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});
   fs.writeFileSync(path.join(out,'peer-replies.png'),Buffer.from(shot.data,'base64'));
+  if (relation) await evaluate(`document.querySelector('[aria-label="关闭协作记录"]').click()`);
   await rpc('Page.reload');
   await until(()=>evaluate('Boolean(window.api?.botWork?.history && document.querySelector("#bot-draft"))'),'reloaded source conversation');
   const restored = await history();

@@ -1,6 +1,7 @@
 import { completionReviewInput } from "../src/main/agent/work/WorkCompletionReviewTarget";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { botAttachmentSchema } from "../src/shared/bot-conversation";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -163,7 +164,10 @@ try {
   const clarifiedBinding = bind(clarified);
   const clarifiedInput = JSON.parse(works.repo.executionInput(clarifiedBinding));
   assert(works.getDetailProjection(clarified.workId)!.originalDelegation?.context?.some(row => row.role === "user" && row.text.includes("不得发布")), "clarification detail keeps trusted contextual requirements with roles");
-  assert(works.repo.attachmentInput(clarifiedBinding).includes(dataFile), "clarification preserves the earlier uploaded input as well as its text");
+  const clarifiedAttachments = works.repo.attachmentInput(clarifiedBinding).split("\n")
+    .filter(line => line.startsWith("{")).map(line => botAttachmentSchema.parse(JSON.parse(line)));
+  assert(clarifiedAttachments.some(file => file.path === dataFile && readFileSync(file.path, "utf8") === "A,3\nB,2"),
+    "clarification preserves the earlier uploaded input and readable bytes on every platform");
   assert(clarifiedInput.userRequest.dialogueContext.some((entry: { text: string; role: string }) => entry.role === "user" && entry.text.includes("不得发布")));
   assert(clarifiedInput.userRequest.dialogueContext.some((entry: { text: string; role: string }) => entry.role === "assistant" && entry.text === "报告用什么格式？"));
   assert(!JSON.stringify(clarifiedInput.userRequest).includes(longText), "already delegated Work is a dialogue boundary");

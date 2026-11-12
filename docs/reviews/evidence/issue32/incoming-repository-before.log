@@ -1,0 +1,29 @@
+$ esbuild scripts/bot-collaboration-repository-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/bot-collaboration-repository-test.mjs && node scripts/test-guard.mjs out/tests/bot-collaboration-repository-test.mjs
+
+  out\tests\bot-collaboration-repository-test.mjs  51.6kb
+
+Done in 15ms
+[test-guard] pid=10924 cmd=node --max-old-space-size=4096 out/tests/bot-collaboration-repository-test.mjs mem_cap=6144MB timeout=900s poll=1500ms
+file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/bot-collaboration-repository-test.mjs:513
+    const query = botCollaborationsQuerySchema.parse(input);
+                                               ^
+
+ZodError: [
+  {
+    "code": "unrecognized_keys",
+    "keys": [
+      "direction"
+    ],
+    "path": [],
+    "message": "Unrecognized key: \"direction\""
+  }
+]
+    at BotCollaborationRepository.list (file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/bot-collaboration-repository-test.mjs:513:48)
+    at file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/bot-collaboration-repository-test.mjs:715:25
+    at ModuleJob.run (node:internal/modules/esm/module_job:439:25)
+    at async node:internal/modules/esm/loader:643:26
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)
+
+Node.js v24.19.0
+[test-guard] exit pid=10924 code=1 elapsed=1s
+[ELIFECYCLE] Command failed with exit code 1.

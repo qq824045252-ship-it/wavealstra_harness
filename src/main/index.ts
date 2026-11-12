@@ -1107,6 +1107,8 @@ function registerIpc(): void {
   ipcMain.handle(BotWorkIpc.syncWorks, (_e, request: unknown) => agentService.syncWorkProjections(request));
   ipcMain.handle(BotWorkIpc.sendMessage, (_e, request: unknown) => agentService.sendBotMessage(request));
   ipcMain.handle(BotWorkIpc.history, (_e, request: unknown) => agentService.botMessageHistory(request));
+  ipcMain.handle(BotWorkIpc.collaborations, (_e, request: unknown) => agentService.botCollaborations(request));
+  ipcMain.handle(BotWorkIpc.collaborationHistory, (_e, request: unknown) => agentService.botCollaborationHistory(request));
   ipcMain.handle(BotWorkIpc.activeRequests, () => agentService.botActiveRequests());
   ipcMain.handle(BotWorkIpc.displayGroups, (_event, request) => agentService.botDisplayGroups(request));
   ipcMain.handle(BotWorkIpc.workspaceNavigation, () => agentService.botWorkspaceNavigation());

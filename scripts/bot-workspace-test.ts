@@ -414,16 +414,13 @@ Object.assign(snapshot, {
 });
 snapshot.botHistories = {};
 const emptyConversation = renderToStaticMarkup(createElement(BotWorkspacePage));
-assert.match(emptyConversation, /有什么想一起推进的？/);
+assert.match(emptyConversation, /正在读取收到的协作/,
+  "an empty personal transcript must check received collaborations before claiming the Bot is unused");
 const emptyNewConversationButton = emptyConversation.match(/<button[^>]*class="[^"]*bot-new-conversation[^"]*"[^>]*>/)?.[0];
 assert(emptyNewConversationButton && !emptyNewConversationButton.includes("disabled"), "empty history still lets New Conversation navigate to and focus the composer");
-for (const title of ["梳理今天的重点", "持续跟进一件事", "一起推进一个目标"]) {
-  assert.match(emptyConversation, new RegExp(`<button type="button"[^>]*><span>${title}</span>`),
-    "welcome examples only draft a message, never submit the composer");
-}
-const exampleGrid = emptyConversation.match(/<div class="bot-example-grid">([\s\S]*?)<\/div>/)?.[1];
-assert.ok(exampleGrid);
-assert.equal((exampleGrid.match(/<button /g) ?? []).length, 3);
+assert.doesNotMatch(emptyConversation, /有什么想一起推进的？/,
+  "the welcome state is shown only after the received-collaboration query is known to be empty; real example clicks are covered by the Electron collaboration test");
+assert.doesNotMatch(emptyConversation, /class="bot-example-grid"/, "examples wait for the host to confirm there are no received requests");
 snapshot.botHistories = savedSnapshot.botHistories;
 
 // Real shared Markdown renderer and real Bot page: a local-file reference must

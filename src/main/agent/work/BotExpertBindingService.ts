@@ -13,7 +13,7 @@ import type { BotRegistry } from "./BotRegistry";
 export class BotExpertBindingService {
   constructor(private readonly bots: BotRegistry, private readonly experts: ExpertService,
     private readonly tasks: TaskExpertBindingService,
-    private readonly options: { rootDir?: string; resolveSkillDirectory?: (id: string) => string | undefined } = {}) {}
+    private readonly options: { rootDir?: string; resolveSkillDirectory?: (id: string, botId: string) => string | undefined } = {}) {}
 
   stage(botId: string, userId: string, expertId: string) {
     const bot = this.bots.getBot(botId);
@@ -28,7 +28,7 @@ export class BotExpertBindingService {
       const candidate = privateRoot ? resolve(privateRoot, id) : undefined;
       const privatePath = candidate && candidate.startsWith(resolve(privateRoot!) + sep) && existsSync(candidate) ? candidate
         : privateRoot && configuration.skillIds.length === 1 && existsSync(join(privateRoot, "SKILL.md")) ? privateRoot : undefined;
-      const directory = privatePath ?? this.options.resolveSkillDirectory?.(id);
+      const directory = privatePath ?? this.options.resolveSkillDirectory?.(id, botId);
       if (!directory) throw new Error(`技能「${id}」的完整包不可用`);
       return { id, directory, origin: privatePath ? "private" as const : "global" as const };
     });
@@ -55,7 +55,7 @@ export class BotExpertBindingService {
       const candidate = privateRoot ? resolve(privateRoot, id) : undefined;
       const privatePath = candidate && candidate.startsWith(resolve(privateRoot!) + sep) && existsSync(join(candidate, "SKILL.md")) ? candidate
         : privateRoot && expert?.skills?.length === 1 && expert.skills.includes(id) && existsSync(join(privateRoot, "SKILL.md")) ? privateRoot : undefined;
-      const directory = privatePath ?? this.options.resolveSkillDirectory?.(id);
+      const directory = privatePath ?? this.options.resolveSkillDirectory?.(id, input.botId);
       if (!directory) throw new Error(`技能「${id}」不可用，请先安装并启用`);
       return { id, directory, origin: privatePath ? "private" as const : "global" as const };
     });

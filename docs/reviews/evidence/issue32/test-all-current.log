@@ -1,0 +1,848 @@
+$ node scripts/test-all.mjs
+[test-all] ARTIFACT 单独验收 3 项：授权完整构建后运行 pnpm -s test:all:artifacts（本命令不触发产品构建）。
+[test-all] 运行 485 个用例（default：headless）
+[test-all] 本机 windows，跳过 2 个平台限定用例：test:atspi-transport(linux), test:input-guardian-process(linux)
+[test-all] baseline 已知失败: 0
+
+[test-all] 并发 4 · 单用例超时 300s
+[test-all] 共享 esbuild 进程：454 个用例 / 90 批 · 24.3s；其余 31 个保留原命令。
+  PASS test:acp-catalog  (0.2s)
+  PASS test:acp-permission-policy  (1.6s)
+  PASS test:agent-loadout  (1.3s)
+(node:460) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+  PASS test:acp-remote  (3.1s)
+  PASS test:app-store-runtime  (0.2s)
+  PASS test:app-permission-ui-removal  (0.7s)
+  PASS test:app-store-structure  (0.4s)
+  PASS test:acp-desktop-hydration  (5.5s)
+  PASS test:app-store-transactions  (2.8s)
+  PASS test:architecture-graph  (4.2s)
+  PASS test:artifact-char  (0.5s)
+  PASS test:archive-deletion  (4.1s)
+  PASS test:artifact-cross-ref  (0.9s)
+  PASS test:acp-runtime  (11.7s)
+  PASS test:artifact-image-cache  (0.3s)
+  PASS test:artifact-policy-display  (0.4s)
+  PASS test:artifact-projection  (0.2s)
+  PASS test:artifact-domain  (2.6s)
+  PASS test:artifact-render-hydration  (0.2s)
+  PASS test:artifact-provenance  (1.0s)
+  PASS test:backup  (0.3s)
+  PASS test:baidu-ocr  (0.2s)
+  PASS test:black-forest-labs-provider  (0.3s)
+  PASS test:artifact-gate  (3.9s)
+  PASS test:architecture  (11.4s)
+  PASS test:bot-active-requests  (0.7s)
+  PASS test:bot-activity-monitor  (0.3s)
+  PASS test:bot-call-thread  (0.5s)
+  PASS test:bot-attachments  (1.5s)
+  PASS test:bot-collaboration-repository  (1.0s)
+  PASS test:bot-completion-evidence  (0.3s)
+  PASS test:bot-conversation-ui  (0.3s)
+  PASS test:bot-create-ui  (0.9s)
+  PASS test:bot-collaboration  (3.1s)
+  PASS test:atspi-driver  (5.5s)
+  PASS test:bot-deletion  (0.9s)
+  PASS test:bot-delegation-fidelity  (1.4s)
+  PASS test:bot-create  (2.5s)
+  PASS test:bot-foreground-metrics  (0.3s)
+  PASS test:bot-display-groups  (0.8s)
+  PASS test:bot-history-paging  (0.3s)
+  PASS test:bot-history-context  (0.6s)
+  PASS test:bot-execution-diagnostics  (0.8s)
+  PASS test:bot-memory  (0.6s)
+  PASS test:bot-history-paging-sqlite  (1.3s)
+  PASS test:bot-message-presentation  (0.2s)
+  PASS test:bot-memory-forget-watermark  (1.1s)
+  PASS test:bot-peer-calls  (2.4s)
+  FAIL  test:bot-reminders  (2.7s)  [新增回归]
+      | [test-guard] pid=38672 cmd=node --max-old-space-size=4096 out/tests/bot-reminders-test.cjs mem_cap=6144MB timeout=900s poll=1500ms
+      | PASS relative time, idempotency, busy chat independence, no model/task, direct Bot delivery
+      | PASS cancel and snooze same reminder
+      | PASS normal restart, one-time catchup, repeat catchup collapsed, no duplicate
+      | PASS early manual preview does not consume occurrence; repeat snooze keeps original recurrence
+      | PASS paused edits resume; title edit preserves snooze; paused preview; delivered/cancelled states
+      | PASS scope and reschedule
+      | TypeError: Cannot read properties of undefined (reading 'openPath')
+      |     at main (C:\Users\servi\Documents\GitHub\wavealstra_harness\out\tests\bot-reminders-test.cjs:48510:88)
+      | [test-guard] exit pid=38672 code=1 elapsed=3s
+  PASS test:bot-rename  (0.8s)
+  PASS test:bot-reply-segments  (0.8s)
+  PASS test:bot-history-query  (4.9s)
+  PASS test:bot-report-images  (1.0s)
+  PASS test:bot-memory-runtime  (5.6s)
+  PASS test:bot-report-images-ui  (2.5s)
+  PASS test:bot-scheduling-continuation  (2.4s)
+  PASS test:bot-scheduling-gaps  (2.4s)
+  PASS test:bot-result-delivery  (3.9s)
+  PASS test:bot-scheduling-routing  (1.5s)
+  PASS test:bot-settings  (1.1s)
+  PASS test:bot-summary-pagination  (0.6s)
+  PASS test:bot-team-ui  (1.1s)
+  PASS test:bot-watch-expiry  (1.2s)
+  PASS test:bot-watch-intake  (1.4s)
+  PASS test:bot-team-conversation  (2.7s)
+  PASS test:bot-watch-creation  (4.0s)
+  PASS test:bot-work-control  (1.3s)
+  PASS test:bot-work-automatic-recovery  (4.1s)
+  PASS test:bot-work-automatic-completion  (5.6s)
+  PASS test:bot-work-foreground-contract  (1.6s)
+  PASS test:bot-work-milestones  (1.3s)
+  PASS test:bot-work-no-quota  (1.1s)
+  PASS test:bot-work-execution  (4.2s)
+  PASS test:bot-work-phase1  (2.6s)
+  PASS test:bot-work-phase2-invariants  (2.5s)
+  PASS test:bot-work-phase3-collaboration  (1.0s)
+  PASS test:bot-work-phase3-handoff  (1.5s)
+  PASS test:bot-work-phase3-partial-settlement  (1.2s)
+  PASS test:bot-work-phase2-usage  (4.5s)
+  PASS test:bot-work-phase3-pause-backlog  (0.9s)
+  PASS test:bot-work-phase4-causal-guard  (1.1s)
+  PASS test:bot-work-phase4-backpressure  (1.3s)
+  PASS test:bot-work-phase4-offline-catchup  (1.0s)
+  PASS test:bot-work-phase4-hook-fanout  (1.1s)
+  PASS test:bot-work-phase4-schedule-clock  (2.5s)
+  PASS test:bot-work-phase5-e2e-story  (1.0s)
+  PASS test:bot-watch-scheduler  (20.7s)
+  PASS test:bot-work-phase5-delivery-dedup  (3.9s)
+  PASS test:bot-work-phase5-reconnect-diagnostics  (1.3s)
+  PASS test:bot-work-phase5-review  (1.3s)
+  PASS test:bot-work-phase5-gateway  (4.0s)
+  PASS test:bot-work-phase5-owner-summary  (4.1s)
+  PASS test:bot-work-phase5-review-ui  (1.3s)
+  PASS test:bot-work-phase2  (17.5s)
+  PASS test:bot-work-projection-retention  (1.3s)
+  PASS test:bot-work-review-control  (1.2s)
+  PASS test:bot-work-review-execution  (1.3s)
+  PASS test:bot-work-read-lifecycle  (2.6s)
+  PASS test:bot-work-review-projection  (0.3s)
+  PASS test:bot-work-resume-dispatch  (2.9s)
+  PASS test:bot-work-team-access  (1.3s)
+  PASS test:bot-work-review-memory  (5.4s)
+  PASS test:bot-work-team-service  (4.5s)
+  PASS test:bot-work-team-watch  (1.4s)
+  PASS test:bot-workspace  (0.8s)
+  PASS test:bot-workspace-navigation  (1.0s)
+  PASS test:bot-work-team-native  (7.3s)
+  PASS test:browser-open-guard  (0.5s)
+  PASS test:btw-arch  (0.3s)
+  PASS test:btw  (0.8s)
+  PASS test:bot-workspace-navigation-ui  (3.3s)
+  PASS test:builtin-capabilities  (3.9s)
+  PASS test:cache-boundary-matrix  (5.5s)
+  PASS test:cache-request-trace  (4.0s)
+  PASS test:capability-packaging  (0.2s)
+  PASS test:cache-trace-audit  (0.7s)
+  PASS test:capture-mode  (0.4s)
+  PASS test:chat-composer-ui  (0.4s)
+  PASS test:chat-markdown  (0.4s)
+  PASS test:chat-scroll-anchor  (0.4s)
+  PASS test:chat-selection  (0.2s)
+  FAIL  test:cloudflared-cli-detect  (0.2s)  [新增回归]
+      | [test-guard] pid=5968 cmd=node --max-old-space-size=4096 out/tests/cloudflared-cli-detect-test.mjs mem_cap=6144MB timeout=900s poll=1500ms
+      | node:internal/modules/run_main:107
+      |     triggerUncaughtException(
+      |     ^
+      | 
+      | AssertionError [ERR_ASSERTION]: PATH 里的 cloudflared 必须被解析到
+      | + actual - expected
+      | 
+      | + '\\Users\\servi\\AppData\\Local\\Temp\\mybuddy-cloudflared-detect-6xF1yr\\bin\\cloudflared'
+      | - 'C:\\Users\\servi\\AppData\\Local\\Temp\\mybuddy-cloudflared-detect-6xF1yr\\bin\\cloudflared'
+      | 
+      |     at file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/cloudflared-cli-detect-test.mjs:98:10
+      |     at ModuleJob.run (node:internal/modules/esm/module_job:439:25)
+      |     at async node:internal/modules/esm/loader:643:26
+      |     at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5) {
+      |   generatedMessage: false,
+      |   code: 'ERR_ASSERTION',
+      |   actual: '\\Users\\servi\\AppData\\Local\\Temp\\mybuddy-cloudflared-detect-6xF1yr\\bin\\cloudflared',
+      |   expected: 'C:\\Users\\servi\\AppData\\Local\\Temp\\mybuddy-cloudflared-detect-6xF1yr\\bin\\cloudflared',
+      |   operator: 'strictEqual',
+      |   diff: 'simple'
+      | }
+      | 
+      | Node.js v24.19.0
+      | [test-guard] exit pid=5968 code=1 elapsed=0s
+  PASS test:codex-image  (0.2s)
+  PASS test:bot-work-team-recovery  (15.0s)
+  PASS test:command-code-request  (0.4s)
+  PASS test:compaction-settings-ui  (0.5s)
+  PASS test:connector-id-case  (0.3s)
+  PASS test:compaction-policy-history  (1.6s)
+  PASS test:cache-strategies  (6.0s)
+  PASS test:context-usage  (0.4s)
+  PASS test:compaction  (3.1s)
+  PASS test:conversation-branch-ui  (1.2s)
+  PASS test:conversation-branch  (2.6s)
+  PASS test:conversation-branch:native  (1.7s)
+  PASS test:conversation-branch-service  (4.0s)
+  PASS test:conversation-branch:workspace  (1.7s)
+  PASS test:conversation-input  (0.5s)
+  PASS test:crash-reporting  (0.3s)
+  PASS test:conversation-runtime-ui  (0.5s)
+  PASS test:context-ledger  (5.9s)
+  PASS test:conversation-runtime  (1.2s)
+  PASS test:dashscope-provider  (0.5s)
+  PASS test:cron-scheduling  (0.9s)
+  PASS test:detail-card-layout-stability  (0.3s)
+  PASS test:db-migration  (1.1s)
+  PASS test:diagnostics-rules  (0.4s)
+  PASS test:delegated-run  (1.1s)
+  PASS test:db-schema-discard  (1.3s)
+  PASS test:dingtalk-media  (0.7s)
+  PASS test:discord-media  (0.5s)
+  PASS test:discord-gateway  (0.8s)
+  PASS test:durable-compaction-settings  (0.3s)
+  PASS test:dingtalk-gateway  (1.4s)
+  FAIL  test:durable-artifact-registration  (2.8s)  [新增回归]
+      | [test-guard] pid=33508 cmd=node --max-old-space-size=4096 out/tests/durable-artifact-registration-test.mjs mem_cap=6144MB timeout=900s poll=1500ms
+      | node:internal/fs/promises:1059
+      |   return await PromisePrototypeThen(
+      |          ^
+      | 
+      | Error: EPERM: operation not permitted, symlink 'C:\Users\servi\AppData\Local\Temp\artifact-registration-9jCXaQ\outside.html' -> 'C:\Users\servi\AppData\Local\Temp\artifact-registration-9jCXaQ\workspace\escape.html'
+      |     at async symlink (node:internal/fs/promises:1059:10)
+      |     at async file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/durable-artifact-registration-test.mjs:14268:3 {
+      |   errno: -4048,
+      |   code: 'EPERM',
+      |   syscall: 'symlink',
+      |   path: 'C:\\Users\\servi\\AppData\\Local\\Temp\\artifact-registration-9jCXaQ\\outside.html',
+      |   dest: 'C:\\Users\\servi\\AppData\\Local\\Temp\\artifact-registration-9jCXaQ\\workspace\\escape.html'
+      | }
+      | 
+      | Node.js v24.19.0
+      | [test-guard] exit pid=33508 code=1 elapsed=3s
+  PASS test:durable-context-performance  (1.2s)
+  PASS test:durable-consult  (4.5s)
+  PASS test:durable-context-management  (4.1s)
+  PASS test:durable-log-repair  (1.4s)
+  PASS test:durable-context-branch-cancel  (5.8s)
+  PASS test:durable-history-block  (3.1s)
+  PASS test:durable-resume-admission  (0.4s)
+  PASS test:durable-history-readonly  (4.0s)
+  PASS test:durable-session-recovery  (2.6s)
+  PASS test:durable-sync  (0.3s)
+  FAIL  test:durable-task-projection  (1.0s)  [新增回归]
+      | [test-guard] pid=27676 cmd=node --max-old-space-size=4096 out/tests/durable-task-projection-test.mjs mem_cap=6144MB timeout=900s poll=1500ms
+      | PASS projection writes are prepared once, conditional and idempotent
+      | node:fs:1283
+      |   return binding.rmSync(getValidatedPath(path), opts.maxRetries, opts.recursive, opts.retryDelay);
+      |                  ^
+      | 
+      | Error: EPERM, Permission denied: \\?\C:\Users\servi\AppData\Local\Temp\mybuddy-durable-task-projection-test-tE0Phe '\\?\C:\Users\servi\AppData\Local\Temp\mybuddy-durable-task-projection-test-tE0Phe'
+      |     at rmSync (node:fs:1283:18)
+      |     at file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/durable-task-projection-test.mjs:5498:3 {
+      |   errno: 1,
+      |   code: 'EPERM',
+      |   path: '\\\\?\\C:\\Users\\servi\\AppData\\Local\\Temp\\mybuddy-durable-task-projection-test-tE0Phe',
+      |   syscall: 'rm'
+      | }
+      | 
+      | Node.js v24.19.0
+      | [test-guard] exit pid=27676 code=1 elapsed=1s
+  PASS test:durable-projection  (6.0s)
+  PASS test:durable-tool-gate  (0.3s)
+  PASS test:durable-tool-diagnostics  (4.5s)
+  PASS test:durable-turn-evidence  (0.3s)
+  PASS test:durable-provider-authority  (10.7s)
+  PASS test:durable-workspace-binding  (3.0s)
+  PASS test:execution-failure-dismiss  (0.3s)
+  PASS test:execution-restart-recovery  (1.0s)
+  PASS test:expert  (0.9s)
+  PASS test:expert-metadata  (0.6s)
+  PASS test:external-cli-memory  (2.7s)
+  PASS test:external-write-grant  (0.5s)
+  PASS test:external-write-ui  (0.3s)
+  PASS test:feishu-media  (1.6s)
+  PASS test:durable-work-liveness  (12.3s)
+  FAIL  test:gadget-blueprint  (0.7s)  [新增回归]
+      | [test-guard] pid=37996 cmd=node --max-old-space-size=4096 out/tests/gadget-blueprint-test.cjs mem_cap=6144MB timeout=900s poll=1500ms
+      | Error: EPERM: operation not permitted, symlink 'C:\Users\servi\AppData\Local\Temp\mybuddy-gadget-blueprint-2ypVrQ\workspace\gadgets\中文 - - - Gadget-gdt-19097af1-c4f0-4364-8b63-27271c36f8b0\code\pages\index.html' -> 'C:\Users\servi\AppData\Local\Temp\mybuddy-gadget-blueprint-2ypVrQ\gadgets\gdt-19097af1-c4f0-4364-8b63-27271c36f8b0\code\outside.html'
+      |     at symlinkSync (node:fs:1938:11)
+      |     at main (C:\Users\servi\Documents\GitHub\wavealstra_harness\out\tests\gadget-blueprint-test.cjs:39439:37)
+      |     at Object.<anonymous> (C:\Users\servi\Documents\GitHub\wavealstra_harness\out\tests\gadget-blueprint-test.cjs:39994:6)
+      |     at Module._compile (node:internal/modules/cjs/loader:1872:14)
+      |     at Object..js (node:internal/modules/cjs/loader:2003:10)
+      |     at Module.load (node:internal/modules/cjs/loader:1594:32)
+      |     at Module._load (node:internal/modules/cjs/loader:1396:12)
+      |     at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+      |     at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+      |     at node:internal/main/run_main_module:33:47 {
+      |   errno: -4048,
+      |   code: 'EPERM',
+      |   syscall: 'symlink',
+      |   path: 'C:\\Users\\servi\\AppData\\Local\\Temp\\mybuddy-gadget-blueprint-2ypVrQ\\workspace\\gadgets\\中文 - - - Gadget-gdt-19097af1-c4f0-4364-8b63-27271c36f8b0\\code\\pages\\index.html',
+      |   dest: 'C:\\Users\\servi\\AppData\\Local\\Temp\\mybuddy-gadget-blueprint-2ypVrQ\\gadgets\\gdt-19097af1-c4f0-4364-8b63-27271c36f8b0\\code\\outside.html'
+      | }
+      | [test-guard] exit pid=37996 code=1 elapsed=0s
+  PASS test:gadget-browser-binding  (0.3s)
+  PASS test:durable-tool-policy  (16.3s)
+  PASS test:gadget-preview-recovery  (1.1s)
+  PASS test:gadget-save-copies  (1.0s)
+  PASS test:gateway-cache  (1.6s)
+  FAIL  test:gadget-runtime-lifecycle  (3.5s)  [新增回归]
+      | [test-guard] pid=37388 cmd=node --max-old-space-size=4096 out/tests/gadget-runtime-lifecycle-test.cjs mem_cap=6144MB timeout=900s poll=1500ms
+      | [GadgetRuntime] {"gadgetId":"fixture-runtime","status":"stopped","reason":"explicit_stop","occurredAt":1794454523533,"pid":34840,"url":"http://127.0.0.1:53012/","exitedAt":1794454523540,"exitCode":null,"signal":"SIGTERM","stderr":""}
+      | PASS normal concurrent open, health, graceful stop, reopen
+      | [GadgetRuntime] {"gadgetId":"fixture-runtime","status":"stopped","reason":"restart","occurredAt":1794454523704,"pid":6400,"url":"http://127.0.0.1:53019/","exitedAt":1794454523711,"exitCode":null,"signal":"SIGTERM","stderr":""}
+      | [GadgetRuntime] {"gadgetId":"fixture-runtime","status":"stopped","reason":"explicit_stop","occurredAt":1794454523831,"pid":37464,"url":"http://127.0.0.1:53024/","exitedAt":1794454523839,"exitCode":null,"signal":"SIGTERM","stderr":""}
+      | [GadgetRuntime] {"gadgetId":"fixture-runtime","status":"stopped","reason":"explicit_stop","occurredAt":1794454524007,"pid":39328,"url":"http://127.0.0.1:53028/","exitedAt":1794454524014,"exitCode":null,"signal":"SIGTERM","stderr":""}
+      | [GadgetRuntime] {"gadgetId":"fixture-runtime","status":"stopped","reason":"explicit_stop","occurredAt":1794454524007,"pid":39328,"url":"http://127.0.0.1:53028/","exitedAt":1794454524014,"exitCode":null,"signal":"SIGTERM","stderr":""}
+      | PASS serialized restart/open/stop/open and duplicate stop
+      | [GadgetRuntime] {"gadgetId":"fixture-runtime","status":"error","reason":"unexpected_exit","occurredAt":1794454525422,"exitedAt":1794454525422,"exitCode":1,"signal":null,"stderr":"","pid":30028,"url":"http://127.0.0.1:53057/"}
+      | AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+      | 
+      | null !== 'SIGTERM'
+      | 
+      |     at main (C:\Users\servi\Documents\GitHub\wavealstra_harness\out\tests\gadget-runtime-lifecycle-test.cjs:414:29) {
+      |   generatedMessage: true,
+      |   code: 'ERR_ASSERTION',
+      |   actual: null,
+      |   expected: 'SIGTERM',
+      |   operator: 'strictEqual',
+      |   diff: 'simple'
+      | }
+      | [test-guard] exit pid=37388 code=1 elapsed=2s
+  PASS test:gateway  (5.3s)
+  PASS test:gateway-delivery-journal  (4.6s)
+  FAIL  test:gateway-media  (0.5s)  [新增回归]
+      | [test-guard] pid=28952 cmd=node --max-old-space-size=4096 out/tests/gateway-media-test.mjs mem_cap=6144MB timeout=900s poll=1500ms
+      | node:internal/fs/promises:1059
+      |   return await PromisePrototypeThen(
+      |          ^
+      | 
+      | Error: EPERM: operation not permitted, symlink 'C:\Users\servi\AppData\Local\Temp\gateway-media-test-jpWC28' -> 'C:\Users\servi\AppData\Local\Temp\gateway-media-test-jpWC28\link'
+      |     at async symlink (node:internal/fs/promises:1059:10)
+      |     at async file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/gateway-media-test.mjs:239:3 {
+      |   errno: -4048,
+      |   code: 'EPERM',
+      |   syscall: 'symlink',
+      |   path: 'C:\\Users\\servi\\AppData\\Local\\Temp\\gateway-media-test-jpWC28',
+      |   dest: 'C:\\Users\\servi\\AppData\\Local\\Temp\\gateway-media-test-jpWC28\\link'
+      | }
+      | 
+      | Node.js v24.19.0
+      | [test-guard] exit pid=28952 code=1 elapsed=0s
+  PASS test:gateway-platform-registry  (0.5s)
+  PASS test:gateway-lifecycle  (3.9s)
+  PASS test:gateway-provider-config  (2.8s)
+  PASS test:durable-subagent  (31.5s)
+  PASS test:gateway-task-space  (0.8s)
+  PASS test:gateway-durable  (9.2s)
+  PASS test:google-workspace  (1.1s)
+  FAIL  test:google-workspace-faults  (0.9s)  [新增回归]
+      | $ esbuild scripts/google-workspace-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/google-workspace-test.mjs && node scripts/test-guard.mjs out/tests/google-workspace-test.mjs --faults
+      | 
+      |   out\tests\google-workspace-test.mjs  18.6kb
+      | 
+      | Done in 13ms
+      | [test-guard] pid=35440 cmd=node --max-old-space-size=4096 out/tests/google-workspace-test.mjs --faults mem_cap=6144MB timeout=900s poll=1500ms
+      | PASS gws normal operations: metadata, literal argv, body/truncation, timed/all-day calendar, explicit minimal probes
+      | PASS gws faults: invalid arguments without execution, scoped error classification/redaction, malformed response, cancellation, partial account availability
+      | node:internal/modules/run_main:107
+      |     triggerUncaughtException(
+      |     ^
+      | 
+      | AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+      | 
+      | 1 !== 0
+      | 
+      |     at file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/google-workspace-test.mjs:248:8
+      |     at process.processTicksAndRejections (node:internal/process/task_queues:104:5) {
+      |   generatedMessage: true,
+      |   code: 'ERR_ASSERTION',
+      |   actual: 1,
+      |   expected: 0,
+      |   operator: 'strictEqual',
+      |   diff: 'simple'
+      | }
+      | 
+      | Node.js v24.19.0
+      | [test-guard] exit pid=35440 code=1 elapsed=0s
+      | [ELIFECYCLE] Command failed with exit code 1.
+  PASS test:google-workspace-request-scope  (1.4s)
+  PASS test:google-workspace-ui  (0.4s)
+  PASS test:google-workspace-write-tools  (0.6s)
+  PASS test:gateway-security  (5.6s)
+  PASS test:harness-quality  (0.2s)
+  PASS test:google-workspace-write-ui  (0.6s)
+  PASS test:hero-suggest  (0.2s)
+  PASS test:google-workspace-tools  (2.6s)
+  PASS test:history-prepend-scroll  (0.2s)
+  PASS test:history-questions  (0.2s)
+  PASS test:input-guardian  (0.3s)
+  PASS test:html-edit-source  (0.8s)
+  PASS test:generation-speed  (5.8s)
+  PASS test:ipc-channel-inventory  (1.4s)
+  PASS test:knowledge-lifecycle  (1.2s)
+  PASS test:lark-wecom-gateway  (0.9s)
+  PASS test:library-document-editor  (1.4s)
+  PASS test:library-lifecycle-transaction  (1.1s)
+  PASS test:library-extension  (1.6s)
+  PASS test:library-materialization-transaction  (0.9s)
+  PASS test:library-update-transaction  (1.0s)
+  PASS test:library-workspace-context  (1.1s)
+  PASS test:library-owner-scope  (1.7s)
+  PASS test:library-domain  (3.0s)
+  PASS test:linux-native-backend  (0.5s)
+  PASS test:linux-native-outcomes  (0.5s)
+  PASS test:linux-worker-packaging  (0.8s)
+  PASS test:local-ocr-capability  (0.5s)
+  PASS test:magpie-agent-mybuddy  (0.4s)
+  PASS test:linux-session  (1.4s)
+  PASS test:magpie-capabilities  (0.3s)
+  PASS test:mcp  (0.6s)
+  PASS test:mcp-composer-focus  (0.4s)
+  PASS test:mcp-config-parse  (0.4s)
+  PASS test:magpie-catalog  (2.8s)
+  PASS test:mcp-execution-evidence  (0.4s)
+  PASS test:local-capability-checks  (4.8s)
+  PASS test:mcp-mode  (1.2s)
+  PASS test:mcp-section-stability  (0.8s)
+  PASS test:local-workflow  (7.2s)
+  PASS test:media-artifact-transaction  (2.6s)
+  PASS test:media-capability-config  (0.3s)
+  PASS test:media-capability-services  (0.4s)
+  PASS test:media-capabilities-dom  (3.0s)
+  PASS test:mcp-context-chars  (5.8s)
+  PASS test:media-provider-presets  (0.2s)
+  PASS test:memory-assistant-scopes  (0.5s)
+  PASS test:memory-cognition  (0.6s)
+  PASS test:memory  (1.4s)
+  PASS test:media-capability-extension  (4.4s)
+  PASS test:memory-lifecycle  (3.0s)
+  PASS test:memory-gateway  (3.9s)
+  PASS test:memory-projection-deletion  (0.4s)
+  PASS test:memory-scope-schema  (0.2s)
+  PASS test:memory-organization  (2.4s)
+  PASS test:memory-procedure-learning  (2.3s)
+  PASS test:memory-skill-effectiveness  (2.2s)
+  PASS test:memory-gateway-controller  (7.6s)
+  PASS test:message-lifecycle  (0.2s)
+  PASS test:memory-skill-history  (2.3s)
+  PASS test:meta-skill-authoring  (0.2s)
+  PASS test:minimal-coding-mode  (0.2s)
+  PASS test:memory-skill-learning  (2.3s)
+  PASS test:mode  (0.5s)
+  PASS test:mode-preset  (0.5s)
+  PASS test:memory-skill-revision  (2.6s)
+  PASS test:models-settings-overlay  (0.3s)
+  PASS test:model-catalog-update  (1.4s)
+  PASS test:model-refresh  (1.3s)
+  PASS test:native-cost-evidence  (0.2s)
+  PASS test:native-surface  (0.2s)
+  PASS test:model-scope-stale-heal  (2.6s)
+  PASS test:oauth-bundle  (1.7s)
+  PASS test:notes-task-tools  (2.8s)
+  PASS test:openrouter-capabilities  (0.2s)
+  PASS test:openrouter-model-autoload  (0.3s)
+  PASS test:overview-runtime  (0.2s)
+  PASS test:multi-search  (4.3s)
+  PASS test:pdf-runtime-compat  (0.6s)
+  PASS test:multi-model-consult  (7.1s)
+  PASS test:packaged-package-json-guard  (3.2s)
+  PASS test:pi-codemode-auto  (0.2s)
+  PASS test:pi-autonomous-execution  (2.8s)
+  PASS test:pi-cache-protocol  (0.9s)
+  PASS test:pi-codemode-ui  (0.2s)
+  PASS test:pi-host-control  (0.4s)
+  PASS test:pi-host-boundary  (3.2s)
+  PASS test:pi-host-native  (2.9s)
+  PASS test:pi-native-control  (0.4s)
+  PASS test:pi-codemode-native  (5.5s)
+  PASS test:pi-native-lifecycle  (2.5s)
+  PASS test:pi-reasoning-stream  (1.0s)
+  PASS test:pi-tool-call-stream  (0.4s)
+  PASS test:pi-native-core-tools  (3.9s)
+  PASS test:pi100-model-admission  (1.4s)
+  PASS test:pi100-context-boundary  (3.1s)
+  PASS test:pi104-features  (2.4s)
+  FAIL  test:pinned-public-proxy  (0.4s)  [新增回归]
+      | [test-guard] pid=38168 cmd=node --max-old-space-size=4096 out/tests/pinned-public-proxy-test.mjs mem_cap=6144MB timeout=900s poll=1500ms
+      | node:internal/modules/run_main:107
+      |     triggerUncaughtException(
+      |     ^
+      | 
+      | AssertionError [ERR_ASSERTION]: preflight fake-IP retains verified existing proxy
+      |     at file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/pinned-public-proxy-test.mjs:495:5
+      |     at process.processTicksAndRejections (node:internal/process/task_queues:104:5) {
+      |   generatedMessage: false,
+      |   code: 'ERR_ASSERTION',
+      |   actual: undefined,
+      |   expected: true,
+      |   operator: '==',
+      |   diff: 'simple'
+      | }
+      | 
+      | Node.js v24.19.0
+      | [test-guard] exit pid=38168 code=1 elapsed=0s
+  PASS test:platform-browsers  (0.2s)
+  PASS test:platform-computer-use  (0.3s)
+  PASS test:platform-providers  (0.3s)
+  PASS test:pi104-model-compat  (2.3s)
+  PASS test:preset-editor  (0.2s)
+  PASS test:officecli  (14.9s)
+  PASS test:preset-runtime-contract  (0.2s)
+  PASS test:professional-tools-live  (0.2s)
+  PASS test:professional-tools  (0.3s)
+  PASS test:project-automation  (0.2s)
+  PASS test:project-binding-matrix  (0.5s)
+  PASS test:project-autopilot  (0.5s)
+  PASS test:project-cadence  (0.4s)
+  PASS test:project-config-detail  (0.2s)
+  PASS test:project-config-rail  (0.2s)
+  PASS test:project-convergence  (0.2s)
+  PASS test:project-creation  (0.2s)
+  PASS test:project-domain  (1.3s)
+  PASS test:project-event  (1.4s)
+  PASS test:project-event-document  (1.5s)
+  PASS test:project-event-promotion-transaction  (0.6s)
+  PASS test:project-event-triage  (1.2s)
+  PASS test:project-file-import  (1.4s)
+  PASS test:project-file-import-transaction  (0.5s)
+  PASS test:project-event-promotion  (2.3s)
+  PASS test:project-folder-relocation  (0.9s)
+  PASS test:project-memory-agent  (0.9s)
+  PASS test:project-memory-extraction  (0.4s)
+  PASS test:project-knowledge  (2.2s)
+  PASS test:project-agent  (6.9s)
+  PASS test:project-memory-migration  (0.5s)
+  PASS test:project-notes  (0.4s)
+  PASS test:project-plan-schedule  (0.2s)
+  PASS test:project-task-defaults  (0.2s)
+  PASS test:project-template  (0.2s)
+  PASS test:project-plan-agent  (0.5s)
+  PASS test:project-workspace-ui  (0.2s)
+  PASS test:project-todo  (0.4s)
+  PASS test:prompt-context  (0.3s)
+  PASS test:prompt-enhance  (0.2s)
+  PASS test:prompt-execution  (0.2s)
+  PASS test:prompt-failure-recovery  (0.2s)
+  PASS test:prompt-submission  (0.2s)
+  PASS test:qq-media  (0.9s)
+  PASS test:provider-login  (1.4s)
+  PASS test:qq-gateway  (2.5s)
+  PASS test:project-materials-dom  (6.3s)
+  PASS test:regenerate-lifecycle  (0.2s)
+  PASS test:qq-qr-integration  (2.3s)
+  PASS test:qq-qr-ui  (2.4s)
+  PASS test:regenerate-connection-runtime  (1.4s)
+  PASS test:retry-display  (0.2s)
+  PASS test:runtime-orchestrator  (0.2s)
+  PASS test:regenerate-stop-runtime  (1.4s)
+  PASS test:remote-work-sync  (1.3s)
+  PASS test:runtime-prewarm  (0.6s)
+  PASS test:runtime-requirement-recovery  (0.2s)
+  PASS test:scoped-library-manager  (0.2s)
+  PASS test:scroll-follow  (0.2s)
+  PASS test:search-source-address  (0.3s)
+  PASS test:selection-store  (0.2s)
+  PASS test:runtime-probe  (1.2s)
+  PASS test:session-approval-bridge  (0.4s)
+  PASS test:runtime-materials  (2.3s)
+  PASS test:session-lifecycle  (0.2s)
+  PASS test:shell-arguments  (2.4s)
+  PASS test:shell-preferences  (2.4s)
+  PASS test:sidebar-pinned  (0.5s)
+  PASS test:sidebar-row-lookup  (0.7s)
+  PASS test:sidebar-space-collapse  (0.3s)
+  PASS test:skill-authoring-recovery  (0.2s)
+  FAIL  test:session-history-recovery  (3.9s)  [新增回归]
+      | [test-guard] pid=17384 cmd=node --max-old-space-size=4096 out/tests/session-history-recovery-test.mjs mem_cap=6144MB timeout=900s poll=1500ms
+      | node:internal/modules/run_main:107
+      |     triggerUncaughtException(
+      |     ^
+      | 
+      | AssertionError [ERR_ASSERTION]: corrupt upstream traversal must reject or hit its isolated bound: status=134, signal=null, error=undefined
+      |     at file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/session-history-recovery-test.mjs:829:12
+      |     at ModuleJob.run (node:internal/modules/esm/module_job:439:25)
+      |     at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      |     at async node:internal/modules/esm/loader:643:26
+      |     at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5) {
+      |   generatedMessage: false,
+      |   code: 'ERR_ASSERTION',
+      |   actual: false,
+      |   expected: true,
+      |   operator: '==',
+      |   diff: 'simple'
+      | }
+      | 
+      | Node.js v24.19.0
+      | [test-guard] exit pid=17384 code=1 elapsed=3s
+  PASS test:skill-root-guard  (2.0s)
+  PASS test:skill-authoring  (2.5s)
+  PASS test:skill-connector  (2.5s)
+  PASS test:space-relocate  (0.2s)
+  FAIL  test:slack-media  (0.5s)  [新增回归]
+      | [test-guard] pid=30472 cmd=node --max-old-space-size=4096 out/tests/slack-media-test.mjs mem_cap=6144MB timeout=900s poll=1500ms
+      | node:fs:1938
+      |   binding.symlink(
+      |           ^
+      | 
+      | Error: EPERM: operation not permitted, symlink 'C:\Users\servi\AppData\Local\Temp\slack-media-1iKi67\linked-bytes' -> 'C:\Users\servi\AppData\Local\Temp\slack-media-1iKi67\media\06ef5892a96037b4eaac8d9b3dd5ee8765933a1f199b36cea53d2a163e091ae0.txt'
+      |     at symlinkSync (node:fs:1938:11)
+      |     at file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/slack-media-test.mjs:1103:7 {
+      |   errno: -4048,
+      |   code: 'EPERM',
+      |   syscall: 'symlink',
+      |   path: 'C:\\Users\\servi\\AppData\\Local\\Temp\\slack-media-1iKi67\\linked-bytes',
+      |   dest: 'C:\\Users\\servi\\AppData\\Local\\Temp\\slack-media-1iKi67\\media\\06ef5892a96037b4eaac8d9b3dd5ee8765933a1f199b36cea53d2a163e091ae0.txt'
+      | }
+      | 
+      | Node.js v24.19.0
+      | [test-guard] exit pid=30472 code=1 elapsed=0s
+  PASS test:streaming-send  (0.2s)
+  PASS test:runtime-skill-loader  (10.0s)
+  PASS test:slack-gateway  (3.9s)
+  PASS test:subagent-cache-accounting  (0.3s)
+  PASS test:subagent-display-names  (0.2s)
+  PASS test:subagent-ipc-host  (0.2s)
+  PASS test:subagent-agent-discovery  (1.5s)
+  PASS test:subagent-mapper  (0.2s)
+  PASS test:subagent-acceptance-gate  (3.9s)
+  PASS test:subagent-model-ui  (0.2s)
+  PASS test:subagent-runs  (0.2s)
+  PASS test:subagent-selection  (0.2s)
+  PASS test:subagent-settings  (0.2s)
+  PASS test:subagent-write-conflict  (0.2s)
+  PASS test:task-delete-panel  (0.3s)
+  PASS test:task-diagnostics  (0.8s)
+  PASS test:subagent-parallel-limits  (2.3s)
+  PASS test:task-file-changes  (0.2s)
+  PASS test:task-isolation-audit  (0.7s)
+  PASS test:task-isolation-p2  (0.4s)
+  PASS test:task-prompt-mode  (0.3s)
+  PASS test:task-status-dot  (0.5s)
+  PASS test:task-switch  (0.3s)
+  PASS test:task-terminal  (0.2s)
+  PASS test:task-expert-binding  (3.0s)
+  PASS test:task-trash-retention  (1.0s)
+  PASS test:task-workspace-isolation  (1.0s)
+  PASS test:subagent-acceptance  (10.3s)
+  PASS test:subagent-worktree  (6.9s)
+  PASS test:task-workspace-lifecycle  (1.6s)
+  PASS test:telegram-reply-routing  (0.5s)
+  PASS test:terminal-surface  (0.2s)
+  PASS test:task-workspace-migration  (2.3s)
+  PASS test:timeline-focus  (0.2s)
+  PASS test:token-format  (0.2s)
+  PASS test:team-subagent-policy  (2.8s)
+  FAIL  test:test-bundle-pool  (1.2s)  [新增回归]
+      | $ node scripts/test-guard.mjs node --test scripts/test-bundle-pool.test.mjs
+      | [test-guard] pid=39224 cmd=node --max-old-space-size=4096 --test scripts/test-bundle-pool.test.mjs mem_cap=6144MB timeout=900s poll=1500ms
+      | ✖ batch compilation retains output paths and aliases, and recompiles changed dependencies (142.1363ms)
+      | ✖ a broken entry is attributed without losing successful tests or running stale output (144.6196ms)
+      | ✔ commands with shell behavior, unrecognized flags or shared outputs stay on their original runner (2.9823ms)
+      | ✔ invalid concurrency cannot silently report an empty successful gate (466.9166ms)
+      | ℹ tests 4
+      | ℹ suites 0
+      | ℹ pass 2
+      | ℹ fail 2
+      | ℹ cancelled 0
+      | ℹ skipped 0
+      | ℹ todo 0
+      | ℹ duration_ms 861.5262
+      | 
+      | ✖ failing tests:
+      | 
+      | test at scripts\test-bundle-pool.test.mjs:23:1
+      | ✖ batch compilation retains output paths and aliases, and recompiles changed dependencies (142.1363ms)
+      |   AssertionError [ERR_ASSERTION]: compatible entries compile in one build
+      |   
+      |   3 !== 1
+      |   
+      |       at file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/scripts/test-bundle-pool.test.mjs:29:10
+      |       at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      |       at async fixture (file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/scripts/test-bundle-pool.test.mjs:16:41)
+      |       at async Test.run (node:internal/test_runner/test:1389:7)
+      |       at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+      |     generatedMessage: false,
+      |     code: 'ERR_ASSERTION',
+      |     actual: 3,
+      |     expected: 1,
+      |     operator: 'strictEqual',
+      |     diff: 'simple'
+      |   }
+      | 
+      | test at scripts\test-bundle-pool.test.mjs:42:1
+      | ✖ a broken entry is attributed without losing successful tests or running stale output (144.6196ms)
+      |   AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+      |   + actual - expected
+      |   
+      |   + 'X [ERROR] Failed to write to output file: open C:\\Users\\servi\\AppData\\Local\\Temp\\mybuddy-test-pool-rkfYhW\\out\\tests\\good.cjs: Access is denied.\n' +
+      |   +   '\n'
+      |   - undefined
+      |   
+      |       at file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/scripts/test-bundle-pool.test.mjs:50:10
+      |       at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      |       at async fixture (file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/scripts/test-bundle-pool.test.mjs:16:41)
+      |       at async Test.run (node:internal/test_runner/test:1389:7)
+      |       at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+      |     generatedMessage: true,
+      |     code: 'ERR_ASSERTION',
+      |     actual: 'X [ERROR] Failed to write to output file: open C:\\Users\\servi\\AppData\\Local\\Temp\\mybuddy-test-pool-rkfYhW\\out\\tests\\good.cjs: Access is denied.\n\n',
+      |     expected: undefined,
+      |     operator: 'strictEqual',
+      |     diff: 'simple'
+      |   }
+      | [test-guard] exit pid=39224 code=1 elapsed=1s
+      | [ELIFECYCLE] Command failed with exit code 1.
+  PASS test:ui-automation-recovery  (0.3s)
+  PASS test:unified-media-adapters  (1.0s)
+  PASS test:telegram-media  (3.8s)
+  PASS test:tool-image-aging  (2.7s)
+  PASS test:usage-recon  (0.3s)
+  PASS test:user-prompt-display  (0.2s)
+  PASS test:usage-stats  (0.4s)
+  PASS test:verified-code-execution  (0.2s)
+  PASS test:visual-polish-ux  (0.2s)
+  PASS test:wave5b  (0.2s)
+  PASS test:wave5c  (0.5s)
+  PASS test:wave5d1  (0.2s)
+  PASS test:usage-dashboard-projection  (2.3s)
+  PASS test:wave5d3  (0.3s)
+  PASS test:web-access-capability  (0.3s)
+  PASS test:web-access-convergence  (0.2s)
+  PASS test:wave5a  (2.3s)
+  PASS test:web-artifact-runtime  (0.3s)
+  PASS test:wave5d2  (3.0s)
+  PASS test:web-access-extract-runtime  (2.7s)
+  PASS test:wechat-callback-auth  (1.0s)
+  PASS test:web-page-answer-runtime  (3.1s)
+  PASS test:wecom-media  (1.1s)
+  PASS test:weixin-gateway  (2.8s)
+  PASS test:weixin-qr-integration  (2.7s)
+  PASS test:whisper-check-feedback  (0.3s)
+  PASS test:weixin-media  (4.2s)
+  PASS test:work-budget-retirement  (1.0s)
+  PASS test:typecheck-guard  (12.5s)
+  PASS test:work-effect-retirement  (0.2s)
+  PASS test:work-execution-metrics  (0.2s)
+  PASS test:work-execution-tools  (0.8s)
+  PASS test:work-conversation-feedback  (1.3s)
+  PASS test:work-graph-bridge  (0.9s)
+  PASS test:work-graph  (1.4s)
+  PASS test:weixin-qr-ui  (4.5s)
+  PASS test:work-graph-execution  (0.8s)
+  PASS test:work-graph-hardening  (1.0s)
+  PASS test:work-graph-r3-union  (0.8s)
+  PASS test:work-graph-ux  (0.9s)
+  PASS test:work-memory-capture  (0.6s)
+  PASS test:work-isolation-retirement  (1.0s)
+  PASS test:work-partial-read  (0.7s)
+  PASS test:work-permissions-retired  (0.7s)
+  PASS test:work-shell-read  (0.2s)
+  PASS test:work-team-watch-evidence  (0.3s)
+  PASS test:work-watch-goal  (1.1s)
+  PASS test:work-revision-handoff  (2.4s)
+  PASS test:work-watch-unchanged  (2.4s)
+  PASS test:workspace-chunk-benchmark  (1.5s)
+  FAIL  test:work-watch-supervision  (4.4s)  [新增回归]
+      | [test-guard] pid=4304 cmd=node --max-old-space-size=4096 out/tests/work-watch-supervision-test.mjs mem_cap=6144MB timeout=900s poll=1500ms
+      | [Work] 持续委托结果整理等待重试 Error: 持续委托结果尚未送达原会话
+      |     at sqliteTransaction.<anonymous> (file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/work-watch-supervision-test.mjs:20929:17)
+      |     at sqliteTransaction (C:\Users\servi\Documents\GitHub\wavealstra_harness\node_modules\.pnpm\better-sqlite3@13.0.3\node_modules\better-sqlite3\lib\methods\transaction.js:65:24)
+      |     at WorkService.transaction (file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/work-watch-supervision-test.mjs:18806:38)
+      |     at WorkWatchSupervision.process (file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/work-watch-supervision-test.mjs:20885:12)
+      | [Work] 持续委托结果整理等待重试 Error: 持续委托结果尚未送达原会话
+      |     at sqliteTransaction.<anonymous> (file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/work-watch-supervision-test.mjs:20929:17)
+      |     at sqliteTransaction (C:\Users\servi\Documents\GitHub\wavealstra_harness\node_modules\.pnpm\better-sqlite3@13.0.3\node_modules\better-sqlite3\lib\methods\transaction.js:65:24)
+      |     at WorkService.transaction (file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/work-watch-supervision-test.mjs:18806:38)
+      |     at WorkWatchSupervision.process (file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/work-watch-supervision-test.mjs:20885:12)
+      | [Work] 持续委托结果整理等待重试 Error: 持续委托结果尚未送达原会话
+      |     at sqliteTransaction.<anonymous> (file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/work-watch-supervision-test.mjs:20929:17)
+      |     at sqliteTransaction (C:\Users\servi\Documents\GitHub\wavealstra_harness\node_modules\.pnpm\better-sqlite3@13.0.3\node_modules\better-sqlite3\lib\methods\transaction.js:65:24)
+      |     at WorkService.transaction (file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/work-watch-supervision-test.mjs:18806:38)
+      |     at WorkWatchSupervision.process (file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/work-watch-supervision-test.mjs:20885:12)
+      | [Work] 持续委托结果整理等待重试 Error: missing execution context
+      |     at works.repo.executionInput (file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/work-watch-supervision-test.mjs:21130:9)
+      |     at WorkWatchSupervision.process (file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/work-watch-supervision-test.mjs:20821:44)
+      |     at WorkWatchSupervision.wake (file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/work-watch-supervision-test.mjs:20602:17)
+      |     at flush (file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/work-watch-supervision-test.mjs:21048:14)
+      |     at file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/work-watch-supervision-test.mjs:21133:7
+      | [Work] 持续委托结果整理等待重试 Error: missing execution context
+      |     at works.repo.executionInput (file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/work-watch-supervision-test.mjs:21130:9)
+      |     at WorkWatchSupervision.process (file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/work-watch-supervision-test.mjs:20821:44)
+      |     at WorkWatchSupervision.wake (file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/work-watch-supervision-test.mjs:20602:17)
+      |     at flush (file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/work-watch-supervision-test.mjs:21048:14)
+      |     at file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/work-watch-supervision-test.mjs:21135:7
+      | PASS continuous execute→grounded wait→actual writable admission, replay, event baseline, fabricated dependency refusal
+      | PASS continuous followUp-only real read admission/write denial; same-lineage unknown wait rejection and independent wait preservation
+      | PASS continuous changes_only: complete reviewed unchanged artifact is silent without reviewer; actionable gap still reviews
+      | PASS duplicate Watch blocker reason is reused, real schedule clears it, later regression and closure preserve history
+      | PASS one-time default native contract and real action guard; explicit observe/ongoing/legacy unchanged; blocker reconciliation uses partial index
+      | PASS explicit future one-time completes after review; partial, ongoing single-wait and legacy watch stay open
+      | PASS independent revised one-time goal completes with old risk visible; dependency and current unknown remain open without effect replay
+      | node:internal/modules/run_main:107
+      |     triggerUncaughtException(
+      |     ^
+      | 
+      | AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+      | 
+      | 0 !== 1
+      | 
+      |     at file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/work-watch-supervision-test.mjs:21707:10 {
+      |   generatedMessage: true,
+      |   code: 'ERR_ASSERTION',
+      |   actual: 0,
+      |   expected: 1,
+      |   operator: 'strictEqual',
+      |   diff: 'simple'
+      | }
+      | 
+      | Node.js v24.19.0
+      | [test-guard] exit pid=4304 code=1 elapsed=4s
+  PASS test:workspace-files-ui  (0.2s)
+  PASS test:workspace-chunk-r2  (1.3s)
+  PASS test:workspace-library-binding  (0.5s)
+  PASS test:workspace-materials-view  (0.5s)
+  PASS test:workspace-navigation-ux  (0.2s)
+  PASS test:workspace-notes  (0.4s)
+  PASS test:workspace-phase5  (0.7s)
+  PASS test:workspace-files-sort  (3.8s)
+  PASS test:workspace-resolver  (0.3s)
+  PASS test:workspace-materials-dom  (2.7s)
+  PASS test:workspace-runtime-consolidation  (1.0s)
+  PASS test:workspace-runtime-integration  (1.1s)
+  PASS test:workspace-shared-context  (0.2s)
+  PASS test:workspace-resource-locator  (1.4s)
+  PASS test:workspace-shared-context-ui-foundation  (0.8s)
+  PASS test:work-file-event-source  (17.9s)
+  PASS test:workspace-tree  (5.9s)
+
+[test-all] 串行执行负载敏感/机器全局资源用例（7 个，隔离崩溃恢复、性能验证的 CPU/IO 争用与真实端口争用）：
+    - test:bot-work-phase2-recovery
+    - test:bot-work-phase5-native-story
+    - test:bot-work-query-scale
+    - test:bot-work-summary-query
+    - test:core-performance
+    - test:gateway-inbox-crash
+    - test:gateway-port-fallback
+  PASS test:bot-work-phase2-recovery  (32.7s)
+  PASS test:bot-work-phase5-native-story  (15.0s)
+  PASS test:bot-work-query-scale  (32.4s)
+  PASS test:bot-work-summary-query  (12.2s)
+  PASS test:core-performance  (22.6s)
+  PASS test:gateway-inbox-crash  (4.3s)
+  PASS test:gateway-port-fallback  (0.2s)
+
+================================================================
+[test-all] 6.3 min · 通过 472 · 失败 13 · 已知失败 0 · 新增回归 13
+[test-all] 新增回归（门禁失败）：
+    - test:bot-reminders
+    - test:cloudflared-cli-detect
+    - test:durable-artifact-registration
+    - test:durable-task-projection
+    - test:gadget-blueprint
+    - test:gadget-runtime-lifecycle
+    - test:gateway-media
+    - test:google-workspace-faults
+    - test:pinned-public-proxy
+    - test:session-history-recovery
+    - test:slack-media
+    - test:test-bundle-pool
+    - test:work-watch-supervision
+[test-all] 已知失败仍然可见（见上），但需修复后才能移出 baseline。
+[ELIFECYCLE] Command failed with exit code 1.

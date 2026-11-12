@@ -111,7 +111,12 @@ function activeSnapshot(profile: ExpertProfileDto): ExpertConfigSnapshotDto {
 }
 
 export class BotRegistry {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: Database.Database) {
+    db.exec(`CREATE TABLE IF NOT EXISTS bot_identity_roles (
+      user_id TEXT NOT NULL, role TEXT NOT NULL CHECK(role='primary'),
+      bot_id TEXT NOT NULL UNIQUE REFERENCES bots(bot_id) ON DELETE CASCADE,
+      assigned_at INTEGER NOT NULL, PRIMARY KEY(user_id,role));`);
+  }
 
   registerBot(input: RegisterBotInput): BotDto {
     const now = Date.now();
@@ -161,12 +166,23 @@ export class BotRegistry {
   }
 
   ensureDefaultBot(userId: string): BotDto {
-    return this.registerBot({
-      botId: DEFAULT_BOT_ID,
-      userId,
-      displayName: "MyBuddy",
-      responsibilitySummary: "默认长期主负责人 Bot",
-    });
+    return this.db.transaction(() => {
+      const bot = this.registerBot({
+        botId: DEFAULT_BOT_ID,
+        userId,
+        displayName: "MyBuddy",
+        responsibilitySummary: "默认长期主负责人 Bot",
+      });
+      this.db.prepare("INSERT OR IGNORE INTO bot_identity_roles(user_id,role,bot_id,assigned_at) VALUES(?,'primary',?,?)")
+        .run(userId, bot.botId, Date.now());
+      return this.getBot(bot.botId)!;
+    }).immediate();
+  }
+
+  isPrimaryBot(userId: string, botId: string): boolean {
+    return Boolean(this.db.prepare(`SELECT 1 FROM bot_identity_roles r
+      JOIN bots b ON b.bot_id=r.bot_id AND b.user_id=r.user_id
+      WHERE r.user_id=? AND r.bot_id=? AND r.role='primary'`).get(userId, botId));
   }
 
   getBot(botId: string): BotDto | undefined {
@@ -371,6 +387,7 @@ export class BotRegistry {
     return {
       botId: row.bot_id,
       userId: row.user_id,
+      organizationRole: this.isPrimaryBot(row.user_id, row.bot_id) ? "primary" : "ordinary",
       displayName: row.display_name,
       responsibilitySummary: row.responsibility_summary,
       expertProfile: parseJson<ExpertProfileDto>(row.expert_profile_json, defaultExpertProfile()),

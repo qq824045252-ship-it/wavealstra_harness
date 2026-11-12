@@ -1,0 +1,188 @@
+{
+  "head": "d83532da7149e9d67fa7c1e68502864020fa488e",
+  "baseline": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\out\\diagnostics\\issue32\\baseline-src",
+  "archiveSHA256": "f77b5f2fc480281c37b98b30d5f1ebcc95365dfe9128d3885dd17d8d2d732205",
+  "dependencyJunction": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\node_modules",
+  "productBuilds": false,
+  "sourceEdits": false,
+  "startedAt": "2026-11-12T03:29:47.241Z",
+  "results": [
+    {
+      "name": "architecture-graph",
+      "status": "passed",
+      "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\out\\diagnostics\\issue32\\head-architecture-graph.log",
+      "startedAt": "2026-11-12T03:29:47.242Z",
+      "code": 0,
+      "signal": null,
+      "endedAt": "2026-11-12T03:29:50.028Z",
+      "logSHA256": "68cdb7ac693e4c47d05c35d3fe17d34600c94026dc5783cd98e7f34de94563a7",
+      "tail": "\nDone in 73ms\n[test-guard] pid=31656 cmd=node --max-old-space-size=4096 out/tests/architecture-graph-test.cjs mem_cap=6144MB timeout=900s poll=1500ms\n[architecture-graph] 扫描 1231 个源文件 / 4645 条依赖边 （外部包 80 个，未解析内部路径 0 条）\nPASS 图完整性（可解析、内部路径可达）\nPASS 层间导入（5 条禁止方向）\nPASS 运行期依赖环（剔除 import type）\nPASS 文件行数棘轮（基线 32 个文件，+200 行 / 新文件 ≤2500）\n   · src/main/agent/AgentService.ts 已从 5992 降到 5739 行，可下调基线\n   · src/main/capabilities/ComputerAutomationService.ts 已从 1401 降到 15 行，可下调基线\n   · src/main/capabilities/web-access/index.ts 已从 3292 降到 3237 行，可下调基线\n   · src/main/external-agent/ExternalAgentRuntime.ts 已从 1476 降到 1409 行，可下调基线\n   · src/main/mcp/McpConfigService.ts 已从 1085 降到 1083 行，可下调基线\n   · src/main/project/ProjectService.ts 已从 1139 降到 1132 行，可下调基线\n   · src/renderer/src/components/chat/ChatInput.tsx 已从 2310 降到 1754 行，可下调基线\n   · src/renderer/src/components/pages/library/LibraryPage.tsx 已从 1058 降到 63 行，可下调基线\n   · src/renderer/src/components/settings/MemoryKernelExplorer.tsx 已从 1171 降到 1159 行，可下调基线\n   · src/renderer/src/components/settings/ModelsTab.tsx 已从 1165 降到 1056 行，可下调基线\n   · src/renderer/src/components/settings/ModesTab.tsx 已从 2285 降到 2279 行，可下调基线\nPASS preload 契约（58 键一致）\n   · 契约键数 53 → 58：确认是预期新增/删除后更新基线 preloadContract.keys（仅提示，不失败）\n[architecture-graph] PASS 5/5 项检查 · 基线例外：越层 1、运行期环 1、大文件 32（耗时 1957ms）\n[test-guard] exit pid=31656 code=0 elapsed=2s\n"
+    },
+    {
+      "name": "bot-attachments",
+      "status": "failed",
+      "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\out\\diagnostics\\issue32\\head-bot-attachments.log",
+      "startedAt": "2026-11-12T03:29:47.273Z",
+      "code": 1,
+      "signal": null,
+      "endedAt": "2026-11-12T03:29:48.453Z",
+      "logSHA256": "512e69642eaed533d7b8f54d061bb24bbeedd8dc60b4cb54f4c0e2d6179d2bcd",
+      "tail": "\nDone in 52ms\n[test-guard] pid=26656 cmd=node --max-old-space-size=4096 out/tests/bot-attachments-test.mjs mem_cap=6144MB timeout=900s poll=1500ms\nnode:internal/modules/run_main:107\n    triggerUncaughtException(\n    ^\n\nAssertionError [ERR_ASSERTION]: long human goal cannot truncate structured attachment input\n    at file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/diagnostics/issue32/baseline-src/out/tests/bot-attachments-test.mjs:19326:3\n    at ModuleJob.run (node:internal/modules/esm/module_job:439:25)\n    at async node:internal/modules/esm/loader:643:26\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5) {\n  generatedMessage: false,\n  code: 'ERR_ASSERTION',\n  actual: false,\n  expected: true,\n  operator: '==',\n  diff: 'simple'\n}\n\nNode.js v24.19.0\n[test-guard] exit pid=26656 code=1 elapsed=1s\n[ELIFECYCLE] Command failed with exit code 1.\n"
+    },
+    {
+      "name": "bot-reminders",
+      "status": "failed",
+      "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\out\\diagnostics\\issue32\\head-bot-reminders.log",
+      "startedAt": "2026-11-12T03:29:48.454Z",
+      "code": 1,
+      "signal": null,
+      "endedAt": "2026-11-12T03:29:51.641Z",
+      "logSHA256": "a7b9cccab06bd645ff1b4c68a1a1c6f6b345e5c7f9a2e22f69f9cb86795ff515",
+      "tail": "$ esbuild scripts/bot-reminders-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/bot-reminders-test.cjs --external:better-sqlite3 --alias:electron=./scripts/gateway-electron-stub.ts && node scripts/test-guard.mjs out/tests/bot-reminders-test.cjs\n\n  out\\tests\\bot-reminders-test.cjs  2.2mb\n\nDone in 254ms\n[test-guard] pid=39096 cmd=node --max-old-space-size=4096 out/tests/bot-reminders-test.cjs mem_cap=6144MB timeout=900s poll=1500ms\nPASS relative time, idempotency, busy chat independence, no model/task, direct Bot delivery\nPASS cancel and snooze same reminder\nPASS normal restart, one-time catchup, repeat catchup collapsed, no duplicate\nPASS early manual preview does not consume occurrence; repeat snooze keeps original recurrence\nPASS paused edits resume; title edit preserves snooze; paused preview; delivered/cancelled states\nPASS scope and reschedule\nTypeError: Cannot read properties of undefined (reading 'openPath')\n    at main (C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\out\\diagnostics\\issue32\\baseline-src\\out\\tests\\bot-reminders-test.cjs:47864:88)\n[test-guard] exit pid=39096 code=1 elapsed=3s\n[ELIFECYCLE] Command failed with exit code 1.\n"
+    },
+    {
+      "name": "bot-report-images",
+      "status": "failed",
+      "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\out\\diagnostics\\issue32\\head-bot-report-images.log",
+      "startedAt": "2026-11-12T03:29:50.029Z",
+      "code": 1,
+      "signal": null,
+      "endedAt": "2026-11-12T03:29:51.159Z",
+      "logSHA256": "895372260d64a8cda828b40e0ac1a7a2eb1ffb3d5315a578adf5853d76ab6747",
+      "tail": "\nDone in 40ms\n[test-guard] pid=16020 cmd=node --max-old-space-size=4096 out/tests/bot-report-images-test.mjs mem_cap=6144MB timeout=900s poll=1500ms\nnode:internal/modules/run_main:107\n    triggerUncaughtException(\n    ^\n\nAssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n\n3 !== 4\n\n    at file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/diagnostics/issue32/baseline-src/out/tests/bot-report-images-test.mjs:21083:10 {\n  generatedMessage: true,\n  code: 'ERR_ASSERTION',\n  actual: 3,\n  expected: 4,\n  operator: 'strictEqual',\n  diff: 'simple'\n}\n\nNode.js v24.19.0\n[test-guard] exit pid=16020 code=1 elapsed=1s\n[ELIFECYCLE] Command failed with exit code 1.\n"
+    },
+    {
+      "name": "bot-work-automatic-recovery",
+      "status": "failed",
+      "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\out\\diagnostics\\issue32\\head-bot-work-automatic-recovery.log",
+      "startedAt": "2026-11-12T03:29:51.161Z",
+      "code": 1,
+      "signal": null,
+      "endedAt": "2026-11-12T03:29:52.309Z",
+      "logSHA256": "c741999a0795198223c5db3934e5f1a28783be0b1d0e21a2a009f61ee83b802e",
+      "tail": "        at async WorkExecutionAdapter.deliverBinding (file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/diagnostics/issue32/baseline-src/out/tests/bot-work-automatic-recovery-test.mjs:19023:17)\n        at async WorkExecutionAdapter.deliver (file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/diagnostics/issue32/baseline-src/out/tests/bot-work-automatic-recovery-test.mjs:18982:11)\n        at async file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/diagnostics/issue32/baseline-src/out/tests/bot-work-automatic-recovery-test.mjs:18964:11\n        at async WorkDispatchQueue.deliver (file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/diagnostics/issue32/baseline-src/out/tests/bot-work-automatic-recovery-test.mjs:18715:5)\n        at async file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/diagnostics/issue32/baseline-src/out/tests/bot-work-automatic-recovery-test.mjs:18620:9\n        at async run (file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/diagnostics/issue32/baseline-src/out/tests/bot-work-automatic-recovery-test.mjs:19217:7)\n        at async file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/diagnostics/issue32/baseline-src/out/tests/bot-work-automatic-recovery-test.mjs:19256:3 {\n      generatedMessage: false,\n      code: 'ERR_ASSERTION',\n      actual: false,\n      expected: true,\n      operator: '==',\n      diff: 'simple'\n    }\n  ],\n  expected: [],\n  operator: 'deepStrictEqual',\n  diff: 'simple'\n}\n\nNode.js v24.19.0\n[test-guard] exit pid=15776 code=1 elapsed=1s\n[ELIFECYCLE] Command failed with exit code 1.\n"
+    },
+    {
+      "name": "cloudflared-cli-detect",
+      "status": "failed",
+      "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\out\\diagnostics\\issue32\\head-cloudflared-cli-detect.log",
+      "startedAt": "2026-11-12T03:29:51.642Z",
+      "code": 1,
+      "signal": null,
+      "endedAt": "2026-11-12T03:29:52.144Z",
+      "logSHA256": "70ce733f97226b0e0c6c59f52bfc5f352a4ec7699ed9af6ef3492d3e6174c676",
+      "tail": "    ^\n\nAssertionError [ERR_ASSERTION]: PATH 里的 cloudflared 必须被解析到\n+ actual - expected\n\n+ '\\\\Users\\\\servi\\\\AppData\\\\Local\\\\Temp\\\\mybuddy-cloudflared-detect-XohNk0\\\\bin\\\\cloudflared'\n- 'C:\\\\Users\\\\servi\\\\AppData\\\\Local\\\\Temp\\\\mybuddy-cloudflared-detect-XohNk0\\\\bin\\\\cloudflared'\n\n    at file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/diagnostics/issue32/baseline-src/out/tests/cloudflared-cli-detect-test.mjs:98:10\n    at ModuleJob.run (node:internal/modules/esm/module_job:439:25)\n    at async node:internal/modules/esm/loader:643:26\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5) {\n  generatedMessage: false,\n  code: 'ERR_ASSERTION',\n  actual: '\\\\Users\\\\servi\\\\AppData\\\\Local\\\\Temp\\\\mybuddy-cloudflared-detect-XohNk0\\\\bin\\\\cloudflared',\n  expected: 'C:\\\\Users\\\\servi\\\\AppData\\\\Local\\\\Temp\\\\mybuddy-cloudflared-detect-XohNk0\\\\bin\\\\cloudflared',\n  operator: 'strictEqual',\n  diff: 'simple'\n}\n\nNode.js v24.19.0\n[test-guard] exit pid=27192 code=1 elapsed=0s\n[ELIFECYCLE] Command failed with exit code 1.\n"
+    },
+    {
+      "name": "durable-artifact-registration",
+      "status": "failed",
+      "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\out\\diagnostics\\issue32\\head-durable-artifact-registration.log",
+      "startedAt": "2026-11-12T03:29:52.146Z",
+      "code": 1,
+      "signal": null,
+      "endedAt": "2026-11-12T03:29:54.791Z",
+      "logSHA256": "981b443ac167c54256e2da68eeb7c5c7ae388e185dd0ceafa3ab4ff24eaf5c16",
+      "tail": "$ esbuild scripts/durable-artifact-registration-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/durable-artifact-registration-test.mjs && node scripts/test-guard.mjs out/tests/durable-artifact-registration-test.mjs\n\n  out\\tests\\durable-artifact-registration-test.mjs  609.2kb\n\nDone in 41ms\n[test-guard] pid=36600 cmd=node --max-old-space-size=4096 out/tests/durable-artifact-registration-test.mjs mem_cap=6144MB timeout=900s poll=1500ms\nnode:internal/fs/promises:1059\n  return await PromisePrototypeThen(\n         ^\n\nError: EPERM: operation not permitted, symlink 'C:\\Users\\servi\\AppData\\Local\\Temp\\artifact-registration-ApL9UG\\outside.html' -> 'C:\\Users\\servi\\AppData\\Local\\Temp\\artifact-registration-ApL9UG\\workspace\\escape.html'\n    at async symlink (node:internal/fs/promises:1059:10)\n    at async file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/diagnostics/issue32/baseline-src/out/tests/durable-artifact-registration-test.mjs:14268:3 {\n  errno: -4048,\n  code: 'EPERM',\n  syscall: 'symlink',\n  path: 'C:\\\\Users\\\\servi\\\\AppData\\\\Local\\\\Temp\\\\artifact-registration-ApL9UG\\\\outside.html',\n  dest: 'C:\\\\Users\\\\servi\\\\AppData\\\\Local\\\\Temp\\\\artifact-registration-ApL9UG\\\\workspace\\\\escape.html'\n}\n\nNode.js v24.19.0\n[test-guard] exit pid=36600 code=1 elapsed=2s\n[ELIFECYCLE] Command failed with exit code 1.\n"
+    },
+    {
+      "name": "durable-task-projection",
+      "status": "failed",
+      "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\out\\diagnostics\\issue32\\head-durable-task-projection.log",
+      "startedAt": "2026-11-12T03:29:52.310Z",
+      "code": 1,
+      "signal": null,
+      "endedAt": "2026-11-12T03:29:53.314Z",
+      "logSHA256": "c53579028de0c8dba2d98edfed96d9b7d8d0d936f01d6557ca4670d5c3e93371",
+      "tail": "$ esbuild scripts/durable-task-projection-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/durable-task-projection-test.mjs && node scripts/test-guard.mjs out/tests/durable-task-projection-test.mjs\n\n  out\\tests\\durable-task-projection-test.mjs  259.5kb\n\nDone in 31ms\n[test-guard] pid=39712 cmd=node --max-old-space-size=4096 out/tests/durable-task-projection-test.mjs mem_cap=6144MB timeout=900s poll=1500ms\nPASS projection writes are prepared once, conditional and idempotent\nnode:fs:1283\n  return binding.rmSync(getValidatedPath(path), opts.maxRetries, opts.recursive, opts.retryDelay);\n                 ^\n\nError: EPERM, Permission denied: \\\\?\\C:\\Users\\servi\\AppData\\Local\\Temp\\mybuddy-durable-task-projection-test-PwVMDN '\\\\?\\C:\\Users\\servi\\AppData\\Local\\Temp\\mybuddy-durable-task-projection-test-PwVMDN'\n    at rmSync (node:fs:1283:18)\n    at file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/diagnostics/issue32/baseline-src/out/tests/durable-task-projection-test.mjs:5374:3 {\n  errno: 1,\n  code: 'EPERM',\n  path: '\\\\\\\\?\\\\C:\\\\Users\\\\servi\\\\AppData\\\\Local\\\\Temp\\\\mybuddy-durable-task-projection-test-PwVMDN',\n  syscall: 'rm'\n}\n\nNode.js v24.19.0\n[test-guard] exit pid=39712 code=1 elapsed=1s\n[ELIFECYCLE] Command failed with exit code 1.\n"
+    },
+    {
+      "name": "gadget-blueprint",
+      "status": "failed",
+      "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\out\\diagnostics\\issue32\\head-gadget-blueprint.log",
+      "startedAt": "2026-11-12T03:29:53.316Z",
+      "code": 1,
+      "signal": null,
+      "endedAt": "2026-11-12T03:29:54.254Z",
+      "logSHA256": "951b53c7293ef4425adf61f7a7d457a8e4df53b71af01ee021f57e32aa2001c1",
+      "tail": "  out\\tests\\gadget-blueprint-test.cjs  1.7mb\n\nDone in 183ms\n[test-guard] pid=35404 cmd=node --max-old-space-size=4096 out/tests/gadget-blueprint-test.cjs mem_cap=6144MB timeout=900s poll=1500ms\nError: EPERM: operation not permitted, symlink 'C:\\Users\\servi\\AppData\\Local\\Temp\\mybuddy-gadget-blueprint-W67y78\\workspace\\gadgets\\中文 - - - Gadget-gdt-e9390f5c-5116-47e0-aea5-16dc3712c5a9\\code\\pages\\index.html' -> 'C:\\Users\\servi\\AppData\\Local\\Temp\\mybuddy-gadget-blueprint-W67y78\\gadgets\\gdt-e9390f5c-5116-47e0-aea5-16dc3712c5a9\\code\\outside.html'\n    at symlinkSync (node:fs:1938:11)\n    at main (C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\out\\diagnostics\\issue32\\baseline-src\\out\\tests\\gadget-blueprint-test.cjs:39332:37)\n    at Object.<anonymous> (C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\out\\diagnostics\\issue32\\baseline-src\\out\\tests\\gadget-blueprint-test.cjs:39887:6)\n    at Module._compile (node:internal/modules/cjs/loader:1872:14)\n    at Object..js (node:internal/modules/cjs/loader:2003:10)\n    at Module.load (node:internal/modules/cjs/loader:1594:32)\n    at Module._load (node:internal/modules/cjs/loader:1396:12)\n    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)\n    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)\n    at node:internal/main/run_main_module:33:47 {\n  errno: -4048,\n  code: 'EPERM',\n  syscall: 'symlink',\n  path: 'C:\\\\Users\\\\servi\\\\AppData\\\\Local\\\\Temp\\\\mybuddy-gadget-blueprint-W67y78\\\\workspace\\\\gadgets\\\\中文 - - - Gadget-gdt-e9390f5c-5116-47e0-aea5-16dc3712c5a9\\\\code\\\\pages\\\\index.html',\n  dest: 'C:\\\\Users\\\\servi\\\\AppData\\\\Local\\\\Temp\\\\mybuddy-gadget-blueprint-W67y78\\\\gadgets\\\\gdt-e9390f5c-5116-47e0-aea5-16dc3712c5a9\\\\code\\\\outside.html'\n}\n[test-guard] exit pid=35404 code=1 elapsed=0s\n[ELIFECYCLE] Command failed with exit code 1.\n"
+    },
+    {
+      "name": "gadget-runtime-lifecycle",
+      "status": "failed",
+      "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\out\\diagnostics\\issue32\\head-gadget-runtime-lifecycle.log",
+      "startedAt": "2026-11-12T03:29:54.255Z",
+      "code": 1,
+      "signal": null,
+      "endedAt": "2026-11-12T03:29:55.368Z",
+      "logSHA256": "8761741c715cb5532958ede81f65c5f9f05ebfcd433ab4a69e01049295426dc1",
+      "tail": "[test-guard] pid=11152 cmd=node --max-old-space-size=4096 out/tests/gadget-runtime-lifecycle-test.cjs mem_cap=6144MB timeout=900s poll=1500ms\n[GadgetRuntime] {\"gadgetId\":\"fixture-runtime\",\"status\":\"stopped\",\"reason\":\"explicit_stop\",\"occurredAt\":1794454194853,\"pid\":26656,\"url\":\"http://127.0.0.1:52844/\",\"exitedAt\":1794454194861,\"exitCode\":null,\"signal\":\"SIGTERM\",\"stderr\":\"\"}\nPASS normal concurrent open, health, graceful stop, reopen\n[GadgetRuntime] {\"gadgetId\":\"fixture-runtime\",\"status\":\"stopped\",\"reason\":\"restart\",\"occurredAt\":1794454194962,\"pid\":9092,\"url\":\"http://127.0.0.1:52849/\",\"exitedAt\":1794454194968,\"exitCode\":null,\"signal\":\"SIGTERM\",\"stderr\":\"\"}\n[GadgetRuntime] {\"gadgetId\":\"fixture-runtime\",\"status\":\"stopped\",\"reason\":\"explicit_stop\",\"occurredAt\":1794454195077,\"pid\":8184,\"url\":\"http://127.0.0.1:52851/\",\"exitedAt\":1794454195083,\"exitCode\":null,\"signal\":\"SIGTERM\",\"stderr\":\"\"}\n[GadgetRuntime] {\"gadgetId\":\"fixture-runtime\",\"status\":\"stopped\",\"reason\":\"explicit_stop\",\"occurredAt\":1794454195196,\"pid\":39688,\"url\":\"http://127.0.0.1:52853/\",\"exitedAt\":1794454195202,\"exitCode\":null,\"signal\":\"SIGTERM\",\"stderr\":\"\"}\n[GadgetRuntime] {\"gadgetId\":\"fixture-runtime\",\"status\":\"stopped\",\"reason\":\"explicit_stop\",\"occurredAt\":1794454195196,\"pid\":39688,\"url\":\"http://127.0.0.1:52853/\",\"exitedAt\":1794454195202,\"exitCode\":null,\"signal\":\"SIGTERM\",\"stderr\":\"\"}\nPASS serialized restart/open/stop/open and duplicate stop\n[GadgetRuntime] {\"gadgetId\":\"fixture-runtime\",\"status\":\"error\",\"reason\":\"unexpected_exit\",\"occurredAt\":1794454195304,\"exitedAt\":1794454195304,\"exitCode\":1,\"signal\":null,\"stderr\":\"\",\"pid\":38776,\"url\":\"http://127.0.0.1:52855/\"}\nAssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n\nnull !== 'SIGTERM'\n\n    at main (C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\out\\diagnostics\\issue32\\baseline-src\\out\\tests\\gadget-runtime-lifecycle-test.cjs:414:29) {\n  generatedMessage: true,\n  code: 'ERR_ASSERTION',\n  actual: null,\n  expected: 'SIGTERM',\n  operator: 'strictEqual',\n  diff: 'simple'\n}\n[test-guard] exit pid=11152 code=1 elapsed=1s\n[ELIFECYCLE] Command failed with exit code 1.\n"
+    },
+    {
+      "name": "gateway-media",
+      "status": "failed",
+      "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\out\\diagnostics\\issue32\\head-gateway-media.log",
+      "startedAt": "2026-11-12T03:29:54.793Z",
+      "code": 1,
+      "signal": null,
+      "endedAt": "2026-11-12T03:29:55.330Z",
+      "logSHA256": "9cc3428f11d03da4316e8f6d4b4544a1eda70f628b11c0726fb8ddf9469598c7",
+      "tail": "$ esbuild scripts/gateway-media-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/gateway-electron-stub.ts --outfile=out/tests/gateway-media-test.mjs && node scripts/test-guard.mjs out/tests/gateway-media-test.mjs\n\n  out\\tests\\gateway-media-test.mjs  10.8kb\n\nDone in 17ms\n[test-guard] pid=9696 cmd=node --max-old-space-size=4096 out/tests/gateway-media-test.mjs mem_cap=6144MB timeout=900s poll=1500ms\nnode:internal/fs/promises:1059\n  return await PromisePrototypeThen(\n         ^\n\nError: EPERM: operation not permitted, symlink 'C:\\Users\\servi\\AppData\\Local\\Temp\\gateway-media-test-qCwluf' -> 'C:\\Users\\servi\\AppData\\Local\\Temp\\gateway-media-test-qCwluf\\link'\n    at async symlink (node:internal/fs/promises:1059:10)\n    at async file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/diagnostics/issue32/baseline-src/out/tests/gateway-media-test.mjs:239:3 {\n  errno: -4048,\n  code: 'EPERM',\n  syscall: 'symlink',\n  path: 'C:\\\\Users\\\\servi\\\\AppData\\\\Local\\\\Temp\\\\gateway-media-test-qCwluf',\n  dest: 'C:\\\\Users\\\\servi\\\\AppData\\\\Local\\\\Temp\\\\gateway-media-test-qCwluf\\\\link'\n}\n\nNode.js v24.19.0\n[test-guard] exit pid=9696 code=1 elapsed=0s\n[ELIFECYCLE] Command failed with exit code 1.\n"
+    },
+    {
+      "name": "pinned-public-proxy",
+      "status": "failed",
+      "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\out\\diagnostics\\issue32\\head-pinned-public-proxy.log",
+      "startedAt": "2026-11-12T03:29:55.332Z",
+      "code": 1,
+      "signal": null,
+      "endedAt": "2026-11-12T03:29:55.971Z",
+      "logSHA256": "12929e7ca321aa3cb2291ec11e29fd54aa7b2f4d465369f897183e57adc6a423",
+      "tail": "\n  out\\tests\\pinned-public-proxy-test.mjs  29.1kb\n\nDone in 15ms\n[test-guard] pid=21700 cmd=node --max-old-space-size=4096 out/tests/pinned-public-proxy-test.mjs mem_cap=6144MB timeout=900s poll=1500ms\nnode:internal/modules/run_main:107\n    triggerUncaughtException(\n    ^\n\nAssertionError [ERR_ASSERTION]: preflight fake-IP retains verified existing proxy\n    at file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/diagnostics/issue32/baseline-src/out/tests/pinned-public-proxy-test.mjs:495:5\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5) {\n  generatedMessage: false,\n  code: 'ERR_ASSERTION',\n  actual: undefined,\n  expected: true,\n  operator: '==',\n  diff: 'simple'\n}\n\nNode.js v24.19.0\n[test-guard] exit pid=21700 code=1 elapsed=0s\n[ELIFECYCLE] Command failed with exit code 1.\n"
+    },
+    {
+      "name": "session-history-recovery",
+      "status": "failed",
+      "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\out\\diagnostics\\issue32\\head-session-history-recovery.log",
+      "startedAt": "2026-11-12T03:29:55.369Z",
+      "code": 1,
+      "signal": null,
+      "endedAt": "2026-11-12T03:29:59.577Z",
+      "logSHA256": "dfba0afe9fa5abf843d8a8571578f79ae050a1a1768a5e8bc6ee59ed2783c372",
+      "tail": "Done in 18ms\n[test-guard] pid=38572 cmd=node --max-old-space-size=4096 out/tests/session-history-recovery-test.mjs mem_cap=6144MB timeout=900s poll=1500ms\nnode:internal/modules/run_main:107\n    triggerUncaughtException(\n    ^\n\nAssertionError [ERR_ASSERTION]: corrupt upstream traversal must reject or hit its isolated bound: status=134, signal=null, error=undefined\n    at file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/diagnostics/issue32/baseline-src/out/tests/session-history-recovery-test.mjs:829:12\n    at ModuleJob.run (node:internal/modules/esm/module_job:439:25)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async node:internal/modules/esm/loader:643:26\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5) {\n  generatedMessage: false,\n  code: 'ERR_ASSERTION',\n  actual: false,\n  expected: true,\n  operator: '==',\n  diff: 'simple'\n}\n\nNode.js v24.19.0\n[test-guard] exit pid=38572 code=1 elapsed=3s\n[ELIFECYCLE] Command failed with exit code 1.\n"
+    },
+    {
+      "name": "slack-media",
+      "status": "failed",
+      "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\out\\diagnostics\\issue32\\head-slack-media.log",
+      "startedAt": "2026-11-12T03:29:55.972Z",
+      "code": 1,
+      "signal": null,
+      "endedAt": "2026-11-12T03:29:56.710Z",
+      "logSHA256": "18e568bd78ff0e0613b70ea2c6a535ea6fe071d6540e9ff7592d0cf961e6a106",
+      "tail": "$ esbuild scripts/slack-media-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/gateway-electron-stub.ts --outfile=out/tests/slack-media-test.mjs && node scripts/test-guard.mjs out/tests/slack-media-test.mjs\n\n  out\\tests\\slack-media-test.mjs  53.6kb\n\nDone in 22ms\n[test-guard] pid=13444 cmd=node --max-old-space-size=4096 out/tests/slack-media-test.mjs mem_cap=6144MB timeout=900s poll=1500ms\nnode:fs:1938\n  binding.symlink(\n          ^\n\nError: EPERM: operation not permitted, symlink 'C:\\Users\\servi\\AppData\\Local\\Temp\\slack-media-WRWPeA\\linked-bytes' -> 'C:\\Users\\servi\\AppData\\Local\\Temp\\slack-media-WRWPeA\\media\\06ef5892a96037b4eaac8d9b3dd5ee8765933a1f199b36cea53d2a163e091ae0.txt'\n    at symlinkSync (node:fs:1938:11)\n    at file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/diagnostics/issue32/baseline-src/out/tests/slack-media-test.mjs:1103:7 {\n  errno: -4048,\n  code: 'EPERM',\n  syscall: 'symlink',\n  path: 'C:\\\\Users\\\\servi\\\\AppData\\\\Local\\\\Temp\\\\slack-media-WRWPeA\\\\linked-bytes',\n  dest: 'C:\\\\Users\\\\servi\\\\AppData\\\\Local\\\\Temp\\\\slack-media-WRWPeA\\\\media\\\\06ef5892a96037b4eaac8d9b3dd5ee8765933a1f199b36cea53d2a163e091ae0.txt'\n}\n\nNode.js v24.19.0\n[test-guard] exit pid=13444 code=1 elapsed=0s\n[ELIFECYCLE] Command failed with exit code 1.\n"
+    },
+    {
+      "name": "test-bundle-pool",
+      "status": "failed",
+      "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\out\\diagnostics\\issue32\\head-test-bundle-pool.log",
+      "startedAt": "2026-11-12T03:29:56.711Z",
+      "code": 1,
+      "signal": null,
+      "endedAt": "2026-11-12T03:29:57.985Z",
+      "logSHA256": "b80bcc709c7b2c8f3e0e6452aee1b882d3fabd840eaa95a54263bfafa1067ba1",
+      "tail": "test at scripts\\test-bundle-pool.test.mjs:42:1\n✖ a broken entry is attributed without losing successful tests or running stale output (131.5937ms)\n  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n  + actual - expected\n  \n  + 'X [ERROR] Failed to write to output file: open C:\\\\Users\\\\servi\\\\AppData\\\\Local\\\\Temp\\\\mybuddy-test-pool-vCHrxr\\\\out\\\\tests\\\\good.cjs: Access is denied.\\n' +\n  +   '\\n'\n  - undefined\n  \n      at file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/diagnostics/issue32/baseline-src/scripts/test-bundle-pool.test.mjs:50:10\n      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n      at async fixture (file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/diagnostics/issue32/baseline-src/scripts/test-bundle-pool.test.mjs:16:41)\n      at async Test.run (node:internal/test_runner/test:1389:7)\n      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: 'X [ERROR] Failed to write to output file: open C:\\\\Users\\\\servi\\\\AppData\\\\Local\\\\Temp\\\\mybuddy-test-pool-vCHrxr\\\\out\\\\tests\\\\good.cjs: Access is denied.\\n\\n',\n    expected: undefined,\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n[test-guard] exit pid=38220 code=1 elapsed=1s\n[ELIFECYCLE] Command failed with exit code 1.\n"
+    },
+    {
+      "name": "work-watch-supervision",
+      "status": "failed",
+      "log": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\out\\diagnostics\\issue32\\head-work-watch-supervision.log",
+      "startedAt": "2026-11-12T03:29:57.986Z",
+      "code": 1,
+      "signal": null,
+      "endedAt": "2026-11-12T03:30:03.638Z",
+      "logSHA256": "1fec5cd4e040f5643ce90760f648602040bc291c441c74ea14717d1ad8d229e3",
+      "tail": "PASS one-time default native contract and real action guard; explicit observe/ongoing/legacy unchanged; blocker reconciliation uses partial index\nPASS explicit future one-time completes after review; partial, ongoing single-wait and legacy watch stay open\nPASS independent revised one-time goal completes with old risk visible; dependency and current unknown remain open without effect replay\nnode:internal/modules/run_main:107\n    triggerUncaughtException(\n    ^\n\nAssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n\n0 !== 1\n\n    at file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/diagnostics/issue32/baseline-src/out/tests/work-watch-supervision-test.mjs:21027:10 {\n  generatedMessage: true,\n  code: 'ERR_ASSERTION',\n  actual: 0,\n  expected: 1,\n  operator: 'strictEqual',\n  diff: 'simple'\n}\n\nNode.js v24.19.0\n[test-guard] exit pid=31200 code=1 elapsed=5s\n[ELIFECYCLE] Command failed with exit code 1.\n"
+    }
+  ],
+  "endedAt": "2026-11-12T03:30:03.639Z"
+}

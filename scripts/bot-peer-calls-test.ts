@@ -22,6 +22,7 @@ const messages = new BotConversationRepository(db);
 const events: string[] = [];
 const originalOpen = DurableBotRuntime.open;
 const receivers: Array<{ options: Parameters<typeof DurableBotRuntime.open>[0]; resolve: (text: string) => void; reject: (error: Error) => void }> = [];
+let fastAdmission: { entered: () => void; blocked: Promise<void> } | undefined;
 let service: BotPeerCallService;
 try {
   for (const id of ["source", "target", "other"]) bots.registerBot({ botId: id, userId: "u", displayName: id });
@@ -56,7 +57,15 @@ try {
     const reply = new Promise<string>((yes, no) => { resolve = yes; reject = no; });
     receivers.push({ options, resolve, reject });
     return { conversation: { id: "unit", commit: async () => undefined }, configure: async () => {}, resume: () => {},
-      submit: async () => ({}), reply: () => reply, abort: async () => resolve(""), close: async () => resolve("") } as unknown as DurableBotRuntime;
+      submit: async () => {
+        if (fastAdmission) {
+          options.beforeProviderRequest?.();
+          options.beforeProviderRequest?.();
+          fastAdmission.entered();
+          await fastAdmission.blocked;
+        }
+        return {};
+      }, reply: () => reply, abort: async () => resolve(""), close: async () => resolve("") } as unknown as DurableBotRuntime;
   };
   await assert.rejects(service.call(team.assistantMessageId, "privacy", "target", "private memory"), /团队会话/);
   await assert.rejects(service.call(a.assistantMessageId, "self", "source", "question"), /自己/);
@@ -210,6 +219,36 @@ try {
   await new Promise(resolve => setTimeout(resolve, 20));
   receivers.at(-1)!.resolve("recovered answer");
   assert.equal((await resumed).status, "completed");
+  const fast = make("fast-admission");
+  const fastRelation = messages.collaborations.ensure({ userId: "u", sourceBotId: "source", sourceDisplayName: "source",
+    sourceConversationId: fast.conversationId, sourceRequestId: fast.requestId, sourceUserMessageId: fast.userMessageId,
+    sourceAssistantMessageId: fast.assistantMessageId, targetBotId: "target", targetDisplayName: "target", operationId: "fast-admission" });
+  const observedStages: Array<"delivered" | "accepted" | "started"> = [];
+  let admissionEntered = () => {}, releaseAdmission = () => {};
+  const entered = new Promise<void>(resolve => { admissionEntered = resolve; });
+  const blocked = new Promise<void>(resolve => { releaseAdmission = resolve; });
+  fastAdmission = { entered: admissionEntered, blocked };
+  const fastCall = service.call(fast.assistantMessageId, "fast-admission", "target", "A fast provider can start before submit returns", {
+    collaborationId: fastRelation.collaborationId, context: "", onPreview: () => {},
+    onReceipt: kind => {
+      observedStages.push(kind);
+      messages.collaborations.event("u", fastRelation.collaborationId,
+        { operationId: `fast-admission:${kind}`, kind, createdAt: 1000 + observedStages.length });
+    },
+  });
+  await entered;
+  const stagesBeforeSubmitReturned = messages.collaborations.history("u", { botId: "source", collaborationId: fastRelation.collaborationId }).events;
+  fastAdmission = undefined; releaseAdmission(); receivers.at(-1)!.resolve("actual fast reply");
+  assert.equal((await fastCall).replyText, "actual fast reply");
+  assert.deepEqual(stagesBeforeSubmitReturned.map(event => event.kind), ["delivered", "accepted", "started"],
+    "provider start proves durable admission even while submit has not returned");
+  assert.deepEqual(messages.collaborations.history("u", { botId: "source", collaborationId: fastRelation.collaborationId }).events, stagesBeforeSubmitReturned,
+    "repeat provider requests and delayed submit return preserve the original durable admission/start receipts");
+  const fastTimes = messages.collaborations.get("u", fastRelation.collaborationId)!.times;
+  assert.equal(fastTimes.deliveredAt, 1001);
+  assert.equal(fastTimes.acceptedAt, 1002);
+  assert.equal(fastTimes.startedAt, 1003);
+  assert.equal(fastTimes.startedAt! - fastTimes.acceptedAt!, 1, "recorded queue time follows actual ordered observations");
   const d = make("d");
   const interrupted = service.call(d.assistantMessageId, "close", "target", "in flight");
   await new Promise(resolve => setTimeout(resolve, 20));

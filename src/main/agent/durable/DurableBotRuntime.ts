@@ -22,7 +22,6 @@ import { summarizeToolInput } from "../../../shared/pi-event-mapper";
 import type { BotToolMode, DurableBotSnapshot, DurableHistoryBlock } from "../../../shared/durable-bot";
 import { createDurableCodeMode } from "./DurableCodeMode";
 import { seedDurableBranch, type DurableBranchSeed } from "./DurableTaskBranch";
-import type { DurableLogRepairReport } from "./DurableLogRepair";
 import type { DurableContextHook } from "./DurableDomainTools";
 import { openDurableStorage } from "./DurableStorage";
 import type { DurableStorageLease } from "./DurableStorageLease";
@@ -141,7 +140,6 @@ export class DurableBotRuntime {
   private storage!: Storage;
   /** Cross-process single-writer lease; only present when the runtime opened its own directory. */
   private lease?: DurableStorageLease;
-  private repaired?: DurableLogRepairReport;
   private readonly children = new Map<number, ConversationWatch>();
   private readonly history = new DurableHistoryProjection();
   private historyBefore?: EntryId;
@@ -169,9 +167,6 @@ export class DurableBotRuntime {
   private constructor(readonly harness: Harness, readonly conversation: Conversation, private readonly options: DurableBotOptions) {
     this.observeSession();
   }
-
-  /** Deterministic recovery of a log that a second writer corrupted; surfaced to the conversation UI. */
-  get repairReport(): DurableLogRepairReport | undefined { return this.repaired; }
 
   /** Whether the underlying Session failed and this runtime must be reopened. */
   isSessionFailed(): boolean { return this.failed; }
@@ -326,7 +321,6 @@ export class DurableBotRuntime {
       if (options.evidenceProjection) runtime.evidence = new DurableEvidenceProjection(options.evidenceProjection, conversation, options.models);
       runtime.storage = storage;
       runtime.lease = handle?.lease;
-      runtime.repaired = handle?.repair;
       runtime.registry = registry;
       runtime.nativeTools = native;
       runtime.compatibilityTools = compatibility;

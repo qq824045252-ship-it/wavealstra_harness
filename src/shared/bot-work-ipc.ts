@@ -35,6 +35,8 @@ export const BotWorkIpc = {
   syncWorks: "bot-work:sync-works",
   sendMessage: "bot-work:send-message",
   history: "bot-work:history",
+  collaborations: "bot-work:collaborations",
+  collaborationHistory: "bot-work:collaboration-history",
   activeRequests: "bot-work:active-requests",
   displayGroups: "bot-work:display-groups",
   workspaceNavigation: "bot-work:workspace-navigation",
@@ -90,6 +92,8 @@ export interface BotWorkApi {
   syncWorks(request: WorkListRequest): Promise<WorkListUpdate>;
   sendMessage(request: BotSendRequest): Promise<BotSendReceipt>;
   history(request: BotHistoryRequest): Promise<BotHistoryDto>;
+  collaborations(request: import("./bot-collaboration").BotCollaborationsQuery): Promise<import("./bot-collaboration").BotCollaborationsPage>;
+  collaborationHistory(request: import("./bot-collaboration").BotCollaborationHistoryQuery): Promise<import("./bot-collaboration").BotCollaborationHistoryPage & { work?: WorkProjectionDto }>;
   displayGroups(request: import("./bot-display-groups").BotDisplayGroupCommand): Promise<import("./bot-display-groups").BotDisplayGroups>;
   workspaceNavigation(): Promise<import("./bot-workspace-navigation").BotWorkspaceNavigationDto>;
   activeRequests(): Promise<import("./bot-conversation").BotActiveRequestDto[]>;

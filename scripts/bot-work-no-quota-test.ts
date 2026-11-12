@@ -123,5 +123,5 @@ try {
   assert.equal(works.causal.list(causalWork.workId).some(row => row.chain_id === oldCausal.chainId), false, "retired quota refusals are not current monitor items");
   const noAuthority = new WorkService(db.connection, { bots, isAuthority: () => false });
   assert.equal(noAuthority.createWork(user, { operationId: "no-authority", title: "no" }).ok, false);
-  console.log("PASS no Work quota contracts or runtime blocking; legacy v35 budget storage is retired while business history, authority and external-effect evidence are preserved");
+  console.log("PASS no Work quota contracts or runtime blocking; obsolete budget fields in the current schema are removed while current business history, authority and external-effect evidence are preserved");
 } finally { db.close(); await rm(root, { recursive: true, force: true }); }

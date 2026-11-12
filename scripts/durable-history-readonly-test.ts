@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { openNodeJsonlStorage } from "@earendil-works/pi-durable/storage/jsonl/node";
 import { AgentDoc, defineTool } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { Type } from "typebox";
@@ -82,20 +81,6 @@ try {
   await assert.rejects(runtime.configure(options.model, "native"), /read.?only/i);
   await runtime.close();
   assert.deepEqual(files(), committed, "passive native viewer must not rewrite the journal, agent or pending regeneration");
-  // Corruption refusal remains a legacy JSONL test, not a production-backend assumption.
-  const legacy = join(root, "legacy-jsonl");
-  const legacyStorage = await openNodeJsonlStorage(legacy, ctx, { fsync: true });
-  const legacyRuntime = await DurableBotRuntime.open({ ...options, directory: legacy, storage: legacyStorage });
-  await legacyRuntime.close();
-  const main = join(legacy, "main.jsonl"), valid = readFileSync(main, "utf8");
-  for (const suffix of [valid.trimEnd().split("\n").at(-1)! + "\n", '{"format":']) {
-    writeFileSync(main, valid + suffix);
-    const damaged = files(legacy);
-    await assert.rejects(DurableBotRuntime.open({ ...options, directory: legacy, readOnly: true }), /read.only|corruption|sequence/i);
-    assert.deepEqual(files(legacy), damaged, "neither custom repair nor SDK torn-tail recovery may mutate a passive view");
-    writeFileSync(main, valid);
-  }
-
   db.upsertTask({ id: "task", title: "task", cwd, modelId: "fixture/fixture", updatedAt: Date.now() });
   let factoryBroken = false, factoryCalls = 0;
   service = new DurableBotService({ db, models, agentDir: root, mcpDir: join(root, "mcp"), resolveCwd: () => cwd,

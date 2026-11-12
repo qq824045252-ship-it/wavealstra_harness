@@ -13,13 +13,13 @@
 
 ## 已有数据与升级
 
-schema 从 v35 升到 v36，v35 是唯一允许原地迁移的旧版本：`src/main/db/work-budget-retirement.ts` 在 `AppDatabase.migrate()` 事务内删除预算独占的表、列、blocker 与 `blocked-budget` 因果拒绝行，保留 Work、Bot、会话、消息、团队身份/依赖、成果、文件、验收证据、真实失败和未知外部效果。旧版 v35 应用打开 v36 库时会因 `user_version` 不匹配走既有备份/重建路径，不会在已迁移结构上静默重建预算表。
+2026-11-12 按用户要求仅支持当前数据库格式。`user_version` 与 `CURRENT_DATABASE_SCHEMA_VERSION` 不一致时，直接删除旧库及 sidecar 后重建，不备份、不做旧版本原地迁移。读取失败不会被猜成旧版本；当前版本的业务数据继续保留。
 
-不重建审批、共享资源隔离或其他已退役机制。旧 `works.budget_json` 中的额度不会被读取、投影或执行；迁移前如用户自行备份 `app.db`，该备份仍包含旧预算历史，恢复后再次启动会重新执行同一清理。
+不重建审批、共享资源隔离或其他已退役机制。`src/main/db/work-budget-retirement.ts` 仅清理当前 schema 内残留的预算独占表、列和拒绝记录，事务失败会回滚；预算值不参与投影或执行。
 
 旧团队创建的回执查找仍使用 `get_by_operation`。只忽略具有精确模块身份的旧预算 operational 阻碍和旧用量缺失阻碍；包含未知外部效果引用的阻碍仍保留。
 
-完整影响范围、回滚/重试与备份说明见 `docs/work-budget-retirement.md`。
+完整影响范围和当前格式清理说明见 `docs/work-budget-retirement.md`。
 
 ## 回归入口
 

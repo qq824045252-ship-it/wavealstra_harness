@@ -1,0 +1,30 @@
+$ esbuild scripts/bot-collaboration-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/bot-collaboration-test.mjs && node scripts/test-guard.mjs out/tests/bot-collaboration-test.mjs
+
+  out\tests\bot-collaboration-test.mjs  1.7mb
+
+Done in 63ms
+[test-guard] pid=38384 cmd=node --max-old-space-size=4096 out/tests/bot-collaboration-test.mjs mem_cap=6144MB timeout=900s poll=1500ms
+PASS collaboration provider wire schema is an object with the complete action enum
+PASS collaboration consultation, target ownership/count, immutable input/attachments and duplicate acceptance
+PASS collaboration scope, two-target separation, guarded controls/replay, revisions and bounded peer context
+PASS exact archived-source delivery, deletion tombstone, durable bilateral reports and delivery dedupe
+PASS rollback, retry, database reopen, immutable acceptance time and no duplicate scheduling
+[Work] 原对话反馈待重试 work-319a7768-9b0c-4ce4-b1bf-9b0af839d11f SqliteError: injected collaboration result feedback write failure
+    at BotConversationRepository.saveFeedbackMetadata (file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/bot-collaboration-test.mjs:19514:110)
+    at file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/bot-collaboration-test.mjs:19498:26
+    at sqliteTransaction (C:\Users\servi\Documents\GitHub\wavealstra_harness\node_modules\.pnpm\better-sqlite3@13.0.3\node_modules\better-sqlite3\lib\methods\transaction.js:65:24)
+    at BotConversationRepository.appendWorkFeedback (file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/bot-collaboration-test.mjs:19501:7)
+    at file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/bot-collaboration-test.mjs:19430:29
+    at sqliteTransaction (C:\Users\servi\Documents\GitHub\wavealstra_harness\node_modules\.pnpm\better-sqlite3@13.0.3\node_modules\better-sqlite3\lib\methods\transaction.js:65:24)
+    at BotConversationRepository.appendWorkDelivery (file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/bot-collaboration-test.mjs:19442:7)
+    at emit (file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/bot-collaboration-test.mjs:33984:31)
+    at sqliteTransaction.<anonymous> (file:///C:/Users/servi/Documents/GitHub/wavealstra_harness/out/tests/bot-collaboration-test.mjs:34038:13)
+    at sqliteTransaction (C:\Users\servi\Documents\GitHub\wavealstra_harness\node_modules\.pnpm\better-sqlite3@13.0.3\node_modules\better-sqlite3\lib\methods\transaction.js:65:24) {
+  code: 'SQLITE_CONSTRAINT_TRIGGER'
+}
+PASS real feedback insert failure persists after rollback; retry sends one result without execution rerun
+PASS deleted-source consultation recovery preserves history without phantom streaming or returned receipts
+PASS repeated exchange interruptions get distinct unknown receipts; same interruption recovery is idempotent
+PASS real collaboration file watch: target baseline, guarded amendment/replay, next_event and actual OS change
+PASS Work closure refreshes the source collaboration summary through the real stream reducer
+[test-guard] exit pid=38384 code=0 elapsed=3s

@@ -14,7 +14,7 @@
 - Electron UI 测试在继承 `ELECTRON_RUN_AS_NODE=1` 时会以 `app` undefined 失败：`env -u ELECTRON_RUN_AS_NODE pnpm -s test:<ui>`。截图落在 `out/tests/*.png`。GUI 测试必须使用临时 `userData`/HOME，不允许读真实 `~/.mybuddy` 凭据（`consult-entry` 默认空夹具，深层流程需 `CONSULT_ENTRY_SEED_USER_PROFILE=1` opt-in）。
 - Run esbuild via the pnpm scripts, not by hand in Git Bash: MSYS path conversion mangles `--alias:@/store/appStore=...`。
 - Live app data: `~/.mybuddy/app.db`（SQLite，只读诊断）、`~/.mybuddy/logs/main-YYYYMMDD.log`（主进程日志，按天 + 4MB 轮转、保留 7 份）、`~/.mybuddy/crashdumps/`（crashReporter 本地 dump，不上传）；Chromium 状态在 `~/.config/wavealstra_harness`（dev）或 `~/.config/MyBuddy`（打包版）。
-- 数据安全：`AppDatabase` 在 `user_version` 不等于当前 schema 时会把旧库**改名备份**为 `app.db.discarded-<UTC时间戳>` 后重建空库；不要恢复旧的"直接删除"行为。`test:db-schema-discard` 保护该契约。
+- 旧数据策略（用户 2026-11-12 明确要求）：仅支持当前数据格式，不维护旧数据库或旧日志格式的兼容迁移。`AppDatabase` 确认 `user_version` 不等于当前 schema 时直接删除旧库及其 sidecar 后重建，不生成 discarded 备份；Durable 旧格式同样直接清理。当前有效数据库的幂等、崩溃恢复和单写者保护仍须保留。读库权限或 I/O 失败不能冒充已确认的旧格式。`test:db-schema-discard` 保护该契约。
 - Sandbox: run unsandboxed by default — `danger-full-access` with approval `never`; do not propose or fall back to sandboxed/approval-gated commands. This is pinned in the DSH desktop profile patch `~/.dsh/profiles/desktop/cordis.patch.yml` (`sandbox-policy.mode=danger-full-access`, `approval.policy=never`; `permission.defaultPreset=danger-full-access`). `DSH_*` variables are bootstrap-only: set them in the launching shell, never in `~/.dsh/.env`, or dsh refuses to boot.
 
 ## Linux（Omarchy / Wayland）

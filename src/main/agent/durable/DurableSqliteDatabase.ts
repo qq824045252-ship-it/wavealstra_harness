@@ -2,7 +2,7 @@
 import Database from 'better-sqlite3';
 import { mkdir, open } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, toNamespacedPath } from 'node:path';
 import type { SqliteDatabase, SqliteExecutor, SqliteValue } from '@earendil-works/pi-durable/storage/sqlite';
 
 export interface DurableSqliteDatabaseOptions {
@@ -91,7 +91,7 @@ export class DurableSqliteDatabase implements SqliteDatabase {
     const { gate, releaseGate } = gateFor(path);
     const releaseSnapshot = options.readonly && options.snapshot ? await gate.read() : undefined;
     let database: Database.Database;
-    try { database = new Database(path, { readonly: options.readonly ?? false,
+    try { database = new Database(path === ':memory:' ? path : toNamespacedPath(path), { readonly: options.readonly ?? false,
       fileMustExist: options.readonly ?? false, timeout }); }
     catch (error) { releaseSnapshot?.(); releaseGate(); throw error; }
     try {

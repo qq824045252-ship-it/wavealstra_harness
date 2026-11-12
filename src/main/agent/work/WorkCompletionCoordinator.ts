@@ -4,6 +4,7 @@ import type Database from "better-sqlite3";
 import type { WorkService } from "./WorkService";
 import type { WorkResultDecision, WorkResultTurnInput } from "./BotWorkResultTurn";
 import { completionReviewInput } from "./WorkCompletionReviewTarget";
+import { recordCollaborationReturnFailure } from "./BotCollaborationExecutionFacts";
 import { completionMilestoneEvidence } from "./WorkCompletionMilestoneEvidence";
 import { applyCompletionDecision } from "./WorkCompletionDecision";
 import { workDeliveryFiles, workDeliveryResults } from "./WorkDeliveryArtifacts";
@@ -219,6 +220,8 @@ export class WorkCompletionCoordinator {
       });
     } catch (error) {
       if (this.closed || !this.options.isAuthority()) return;
+      try { recordCollaborationReturnFailure(db, candidate.work.userId, binding.workId, error, "review_or_delivery"); }
+      catch (recordError) { console.warn("[Work] 协作成果失败回执待重试", binding.workId, recordError); }
       const message = error instanceof Error ? error.message : String(error);
       works.transaction(() => {
         if (!this.current(bindingId)) return;

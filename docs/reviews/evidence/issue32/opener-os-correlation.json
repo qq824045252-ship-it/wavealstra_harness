@@ -1,0 +1,23 @@
+{
+  "checkedAt": "2026-11-12T04:13:25.034Z",
+  "officialHandlerCompleted": true,
+  "savedSHA256": "504acb65d9ea08337f59d0abfd44c39afc2901947c473cc34e67bf01ab4cbc1b",
+  "associatedProgId": "ChromeHTML",
+  "associatedOpenCommand": "\"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe\" --single-argument %1",
+  "matchingSavedFileProcesses": [
+    {
+      "ProcessId": 33308,
+      "Name": "ego.exe",
+      "CommandLine": "\"C:\\Program Files\\Citro Labs\\ego lite\\Application\\ego.exe\" --single-argument C:\\Users\\servi\\AppData\\Local\\Temp\\bot-frontdoor-live-QHwxw3\\.mybuddy\\durable\\c73a9f222c7b1c884a2b0902a663faccfaf6f33fef8a66d3fe685f383ae68cda\\artifacts\\504acb65d9ea08337f59d0abfd44c39afc2901947c473cc34e67bf01ab4cbc1b.html"
+    }
+  ],
+  "osIdentityVerified": true,
+  "fixtureProcessesRemaining": [],
+  "userMain35720": [
+    {
+      "pid": 35720,
+      "name": "electron.exe"
+    }
+  ],
+  "limitation": ""
+}

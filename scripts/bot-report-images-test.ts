@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { BotRegistry } from "../src/main/agent/work/BotRegistry";
@@ -44,7 +44,9 @@ try {
     taskId: "report-task", durableStoreKey: "store", conversationId: "native", intentRevision: work.intentRevision,
     ownerEpoch: work.ownerEpoch, inputSnapshotId: work.inputSnapshotId, expertSnapshot: bots.activeSnapshot(DEFAULT_BOT_ID)!,
     delegatedScope: [], workspaceBinding: cwd, status: "completed" as const, admittedAt: 1, settledAt: 2 };
-  const absolute = encodeURI(imagePath); const file = pathToFileURL(imagePath).href;
+  // URI destinations use forward separators; encoding Windows backslashes
+  // produces C:%5C..., which is not a canonical absolute Markdown destination.
+  const absolute = encodeURI(imagePath.split(sep).join("/")); const file = pathToFileURL(imagePath).href;
   const body = `![relative](<报告 截图.png>)\n![absolute](${absolute})\n![url](${file})\n![outside](../outside.png)\n![bad](invalid.png)\n![missing](missing.png)\n![parens](capture(1).png)\n![reference][proof]\n\n[proof]: capture(1).png`;
   works.repo.insertBinding({ ...binding, settlementNote: body });
   const feedback = new WorkConversationFeedback({ db: db.connection, userId: LOCAL_USER_ID, works, isAuthority: () => true });
@@ -61,6 +63,11 @@ try {
   assert.equal(scope.taskId, binding.taskId);
   assert.equal(scope.artifacts.length, 2, "relative/absolute/file URI aliases share one message snapshot");
   assert.equal(Object.keys(scope.sources).length, 4);
+  assert.deepEqual(Object.keys(scope.sources).sort(), ["报告 截图.png", absolute, file, "capture(1).png"].sort(),
+    "all four valid source aliases are retained while unsafe and missing paths are excluded");
+  assert.equal(scope.sources[absolute], scope.sources["报告 截图.png"], "absolute alias resolves to the relative image snapshot");
+  assert.equal(scope.sources[file], scope.sources["报告 截图.png"], "file URI resolves to the same image snapshot");
+  assert.notEqual(scope.sources["capture(1).png"], scope.sources["报告 截图.png"], "parenthesized image retains its own snapshot");
   const descriptor = scope.artifacts[0]!;
   assert.equal(descriptor.source.type, "managed-content");
   assert.equal(descriptor.createdByMessageId, report.messageId);

@@ -3,6 +3,8 @@ import ScopedMemoryPanel from "../settings/ScopedMemoryPanel";
 import { BotExecutionDiagnosticsButton } from "./BotExecutionDiagnostics";
 import { BotReplyMetrics } from "./BotReplyMetrics";
 import { BotCallThread } from "./BotCallThread";
+import { BotOrganizationActivity } from "./BotOrganizationActivity";
+import { BotCollaborationView, BotIncomingCollaborations } from "./BotCollaborationView";
 import { useBotThreadScroll } from "@/hooks/useBotThreadScroll";
 import { BotComposerCapabilities } from "./BotComposerCapabilities";
 import { BotWorkConversationDetail } from "./BotWorkConversationDetail";
@@ -15,7 +17,7 @@ import { botConversationScope } from "@/store/app/slices/botConversation";
 import { BotWorkNavigation } from "./BotWorkNavigation";
 import { ComposerAttachmentChips } from "@/components/chat/ComposerAttachmentChips";
 import { composerFiles, mergeComposerAttachments, pastedComposerFiles, pickComposerAttachment } from "@/components/chat/composerAttachments";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import type { BotDto, WorkProjectionDto } from "@shared/bot-work";
 import { botExternalAgentTaskId, botMessageDisplayText, type BotMessageDto } from "@shared/bot-conversation";
@@ -49,6 +51,13 @@ const examples = [
   { title: "一起推进一个目标", text: "我想把一个目标拆成可执行的步骤，先和我确认目标与验收条件。" },
 ];
 
+function sourceCollaborationWork(work: WorkProjectionDto, messages: BotMessageDto[], botId: string | null, conversationId: string | undefined): boolean {
+  return !work.team && Boolean(conversationId && messages.some(message => message.role === 'assistant'
+    && message.botId === botId && message.conversationId === conversationId
+    && message.collaborations?.some(item => item.sourceBotId === botId && item.sourceConversationId === conversationId
+      && item.targetBotId === work.ownerBotId && item.workId === work.workId)));
+}
+
 export default function BotWorkspacePage(props: { onToggleNavigation?: () => void; navigationVisible?: boolean; onCreateBot?: () => void } = {}): React.JSX.Element {
   const attachmentDrafts = useAppStore(s => s.botAttachmentDrafts);
   const [attachmentError, setAttachmentError] = useState("");
@@ -77,6 +86,9 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   const [view, setView] = useState<BotWorkspaceView>("conversation");
   const suppressAutoInline = useRef(false);
   const [inlineWorkId, setInlineWorkId] = useState<string | null>(null);
+  const [collaborationRoute, setCollaborationRoute] = useState<{ id?: string } | null>(null);
+  const collaborationReturn = useRef<{ scope: string; conversationId?: string; scrollTop: number; follow: boolean; trigger: HTMLElement | null } | null>(null);
+  const restoreCollaboration = useRef(false);
   const returnTarget = useRef<{ scope: string; conversationId?: string; view: BotWorkspaceView; scrollTop: number; follow: boolean; trigger: HTMLElement | null } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [archiveConfirm, setArchiveConfirm] = useState(false);
@@ -109,7 +121,8 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   // conversation can still open its team's details without moving the Work.
   const detailWorkCandidates = useMemo(() => {
     const owned = new Set(botWorks.map(work => work.workId));
-    return works.filter(work => owned.has(work.workId) || linkedConversationWork(work, messages, activeBotId, teamId, histories[scopeKey]?.conversationId));
+    return works.filter(work => owned.has(work.workId) || linkedConversationWork(work, messages, activeBotId, teamId, histories[scopeKey]?.conversationId)
+      || (!teamId && sourceCollaborationWork(work, messages, activeBotId, histories[scopeKey]?.conversationId)));
   }, [works, botWorks, messages, activeBotId, teamId, histories[scopeKey]?.conversationId]);
   // Stream frames retain unchanged Work objects. Keep the list identity too
   // when membership/order are unchanged, so unrelated messages can skip rendering.
@@ -118,14 +131,38 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   const detail = useBotWorkDetail(scopeChanged ? null : inlineWorkId, `${scopeKey}:${histories[scopeKey]?.conversationId ?? ""}`);
   const loadedWork = detail.work;
   const inlineWork = loadedWork && !loadedWork.team?.removedAt && (teamId ? loadedWork.team?.teamId === teamId : personalBotWork(loadedWork, activeBotId)
-    || linkedConversationWork(loadedWork, messages, activeBotId, teamId, histories[scopeKey]?.conversationId)) ? loadedWork : null;
+    || linkedConversationWork(loadedWork, messages, activeBotId, teamId, histories[scopeKey]?.conversationId)
+    || (!teamId && sourceCollaborationWork(loadedWork, messages, activeBotId, histories[scopeKey]?.conversationId))) ? loadedWork : null;
   const selected = (view === "conversation" ? detailWorks : botWorks).find(work => work.workId === selectedWorkId) ?? null;
   const questionsByRequest = useMemo(() => new Map(messages.filter(item => item.role === "user").map(item => [item.requestId, item])), [messages]);
   const activeReply = activeBotReply(messages);
   const { followLatest, awayFromBottom, pauseFollowing, restoreScroll, followBottom, preserveHistoryPosition } = useBotThreadScroll(
     threadRef, `${scopeKey}:${histories[scopeKey]?.conversationId ?? ""}`,
-    view === "conversation" && !inlineWorkId && !historicalTeamWork, messages,
+    view === "conversation" && !inlineWorkId && !historicalTeamWork && !collaborationRoute, messages,
   );
+  const openCollaboration = useCallback((id?: string) => {
+    if (!activeBotId || teamId) return;
+    restoreCollaboration.current = false;
+    collaborationReturn.current = { scope: scopeKey, conversationId: histories[scopeKey]?.conversationId,
+      scrollTop: (view === 'conversation' ? threadRef.current : browserRef.current)?.scrollTop ?? 0,
+      follow: followLatest.current, trigger: document.activeElement instanceof HTMLElement ? document.activeElement : null };
+    pauseFollowing(); setCollaborationRoute({ id });
+  }, [activeBotId, teamId, scopeKey, histories[scopeKey]?.conversationId, view, followLatest, pauseFollowing]);
+  const returnFromCollaboration = () => {
+    restoreCollaboration.current = true; setCollaborationRoute(null);
+  };
+  useLayoutEffect(() => {
+    if (collaborationRoute || !restoreCollaboration.current) return;
+    restoreCollaboration.current = false;
+    const target = collaborationReturn.current;
+    collaborationReturn.current = null;
+    if (!target || target.scope !== currentScope.current) return;
+    const source = view === 'conversation' ? threadRef.current : browserRef.current;
+    if (view === 'conversation') {
+      if (target.conversationId === useAppStore.getState().botHistories[target.scope]?.conversationId) restoreScroll(target.scrollTop, target.follow);
+    } else if (source) source.scrollTop = target.scrollTop;
+    (target.trigger?.isConnected ? target.trigger : source)?.focus({ preventScroll: true });
+  }, [collaborationRoute, restoreScroll, view]);
   const pending = Object.values(pendingSends).filter(item => item.request.botId === activeBotId && item.request.teamId === teamId);
   const runningReplies = messages.filter(item => item.role === "assistant" && item.status === "running");
   const queuedReplies = messages.filter(item => item.role === "assistant" && item.status === "queued");
@@ -173,6 +210,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   useEffect(() => {
     if (lastBot.current === scopeKey) return;
     lastBot.current = scopeKey; setReplyReference(null); setAttachmentError("");
+    setCollaborationRoute(null); collaborationReturn.current = null; restoreCollaboration.current = false;
     requestedWork.current = null; setNavigationNotice(""); setInlineWorkId(null); returnTarget.current = null; historicalReturn.current = null;
     setView("conversation"); closeSettings(); setArchiveConfirm(false); setNewConversationOpen(false);
   }, [scopeKey]);
@@ -292,22 +330,41 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   // Draft edits and composer controls do not change the transcript. Keep its
   // elements stable; message/store/context updates still render their own content.
   const messageTimeline = useMemo(() => view === "conversation" && messages.length > 0 ? (<div className="bot-message-list">{botWorkTimeline(messages).map(row => row.kind === "message"
-            ? <TimelineMessage key={row.key} message={row.message} botName={displayName} works={detailWorks} onOpenWork={openWork} sourceQuestion={questionsByRequest.get(row.message.requestId)} onReply={replyToMessage} onCancel={cancelMessage} />
+            ? <TimelineMessage key={row.key} message={row.message} botName={displayName} works={detailWorks} onOpenWork={openWork} onOpenCollaboration={openCollaboration} sourceQuestion={questionsByRequest.get(row.message.requestId)} onReply={replyToMessage} onCancel={cancelMessage} />
             : <details key={row.key} className="bot-work-progress" aria-label="事项进展记录">
               <summary>{row.workIds.length > 1 ? `${row.workIds.length} 个事项` : detailWorks.find(work => work.workId === row.workId)?.title ?? "事项"} · {row.messages.length} 条执行记录（展开查看）</summary>
-              {row.messages.map(message => <TimelineMessage key={message.messageId} message={message} botName={displayName} works={detailWorks} onOpenWork={openWork} onCancel={ignoreMessageCancel} />)}
-            </details>)}</div>) : null, [view, messages, displayName, detailWorks, openWork, questionsByRequest, replyToMessage, cancelMessage]);
+              {row.messages.map(message => <TimelineMessage key={message.messageId} message={message} botName={displayName} works={detailWorks} onOpenWork={openWork} onOpenCollaboration={openCollaboration} onCancel={ignoreMessageCancel} />)}
+            </details>)}</div>) : null, [view, messages, displayName, detailWorks, openWork, openCollaboration, questionsByRequest, replyToMessage, cancelMessage]);
+
+  const emptyConversation = <div className="bot-conversation-empty">
+    <span className="bot-welcome-icon" aria-hidden="true"><IconBot size={30} /></span>
+    <span className="bot-eyebrow">从一句话开始</span>
+    <h2>{activeBot ? "有什么想一起推进的？" : "还没有 Bot"}</h2>
+    <p>{activeBot ? "聊想法、交代事项，或继续上次的进展。普通聊天不会自动创建事项。" : "创建一个 Bot，给它名称和职责，就能开始独立的对话。"}</p>
+    {!activeBot && props.onCreateBot && <button type="button" className="bot-empty-create" onClick={props.onCreateBot}>创建第一个 Bot</button>}
+    {activeBot && <div className="bot-example-grid">{examples.map(example => <button type="button" key={example.title} onClick={() => draftExample(example.text)}><span>{example.title}</span><IconArrowUp size={16} /></button>)}</div>}
+  </div>;
 
   return <div className="bot-workspace" onKeyDownCapture={event => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { closeSettings(); } }}>
+    {collaborationRoute && activeBotId && <BotCollaborationView key={`${scopeKey}:${collaborationRoute.id ?? 'list'}`} botId={activeBotId} botName={displayName}
+      initialCollaborationId={collaborationRoute.id} onBack={returnFromCollaboration} onOpenWork={workId => {
+        const source = collaborationReturn.current;
+        restoreCollaboration.current = false;
+        collaborationReturn.current = null;
+        setCollaborationRoute(null);
+        openWork(workId);
+        if (source?.scope === scopeKey) returnTarget.current = { ...source, view };
+      }} />}
     {historicalTeamWork && <section className="bot-conversation" aria-label="历史团队事项">
       <HistoricalTeamWorkDetail snapshot={historicalTeamWork} onBack={returnFromHistory} />
     </section>}
-    <section ref={sourceViewRef} hidden={Boolean(historicalTeamWork)} className="bot-conversation" aria-label="Bot 对话">
+    <section ref={sourceViewRef} hidden={Boolean(historicalTeamWork || collaborationRoute)} className="bot-conversation" aria-label="Bot 对话">
       <header className="bot-workspace-header" hidden={Boolean(inlineWorkId)}>
         {props.onToggleNavigation && <button type="button" className="bot-icon-button" aria-label={props.navigationVisible ? "收起导航" : "展开导航"} aria-expanded={props.navigationVisible} onClick={props.onToggleNavigation}><IconPanel size={18} /></button>}
         <span className="bot-avatar bot-header-avatar" aria-hidden="true"><IconBot size={21} /></span>
-        <div className="bot-heading"><h1>{activeTeam?.name ?? activeBot?.displayName ?? "Bot 模式"}</h1><p><span className={`bot-presence ${hostStatus?.online && activeBot?.status === "active" ? "is-online" : ""}`} />{activeBot ? presenceLabel(activeBot, hostStatus) : "你的长期个人助理"}<span className="bot-heading-description"> · {activeTeam ? `团队工作台 · ${activeTeam.members.length + 1} 位成员` : "对话有延续，事项有着落"}</span></p></div>
+        <div className="bot-heading"><div className="bot-heading-title"><h1>{activeTeam?.name ?? activeBot?.displayName ?? "Bot 模式"}</h1>{!activeTeam && activeBot?.organizationRole === "primary" && <span className="bot-primary-badge">主助理</span>}</div><p><span className={`bot-presence ${hostStatus?.online && activeBot?.status === "active" ? "is-online" : ""}`} />{activeBot ? presenceLabel(activeBot, hostStatus) : "你的长期个人助理"}<span className="bot-heading-description"> · {activeTeam ? `团队工作台 · ${activeTeam.members.length + 1} 位成员` : "对话有延续，事项有着落"}</span></p></div>
         <div className="bot-workspace-actions">
+          {activeBotId && !teamId && <button type="button" className="bot-quiet-button" onClick={() => openCollaboration()}>协作记录</button>}
           {activeBotId && <BotExecutionDiagnosticsButton request={{kind:"foreground",botId:activeBotId,teamId,conversationId:histories[scopeKey]?.conversationId}} />}
           <button type="button" className="bot-quiet-button bot-new-conversation" disabled={!activeBot} onClick={() => {
             setArchiveError("");
@@ -347,14 +404,9 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
               }}>{historyPages[scopeKey]?.loading ? "正在加载更早消息…" : histories[scopeKey]?.before !== undefined ? "加载更早消息" : "已到最早消息"}</button>
             {historyPages[scopeKey]?.error && <p role="alert">{historyPages[scopeKey].error}</p>}
           </div>}
-          {messages.length === 0 ? <div className="bot-conversation-empty">
-            <span className="bot-welcome-icon" aria-hidden="true"><IconBot size={30} /></span>
-            <span className="bot-eyebrow">从一句话开始</span>
-            <h2>{activeBot ? "有什么想一起推进的？" : "还没有 Bot"}</h2>
-            <p>{activeBot ? "聊想法、交代事项，或继续上次的进展。普通聊天不会自动创建事项。" : "创建一个 Bot，给它名称和职责，就能开始独立的对话。"}</p>
-            {!activeBot && props.onCreateBot && <button type="button" className="bot-empty-create" onClick={props.onCreateBot}>创建第一个 Bot</button>}
-            {activeBot && <div className="bot-example-grid">{examples.map(example => <button type="button" key={example.title} onClick={() => draftExample(example.text)}><span>{example.title}</span><IconArrowUp size={16} /></button>)}</div>}
-          </div> : messageTimeline}
+          {messageTimeline}
+          {activeBotId && !teamId ? <BotIncomingCollaborations key={activeBotId} botId={activeBotId} onOpen={openCollaboration}
+            empty={messages.length === 0 ? emptyConversation : undefined} /> : messages.length === 0 ? emptyConversation : null}
         </div>
       </> : <BotWorkBrowser key={`${scopeKey}-${view}`} hidden={Boolean(inlineWorkId)} scrollRef={browserRef} view={view} selectedWorkId={selected?.workId} onOpenWork={openWork} onConversation={() => { setView("conversation"); requestAnimationFrame(() => composerRef.current?.focus()); }} />}
       <form hidden={Boolean(inlineWorkId)} className="bot-composer input-area" onDragOver={event => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; } }} onDrop={event => { if (event.dataTransfer.files.length) { event.preventDefault(); void addAttachments(Array.from(event.dataTransfer.files)); } }} onSubmit={event => { event.preventDefault(); send(); }}>
@@ -391,7 +443,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
 const ignoreMessageCancel = () => {};
 const TimelineMessage = memo(BotMessage);
 
-export function BotMessage({ message, botName, works, onOpenWork, onCancel, sourceQuestion, workLinkSource, onReply }: { workLinkSource?: BotMessageDto; sourceQuestion?: BotMessageDto; onReply?: (message: BotMessageDto) => void; message: BotMessageDto; botName: string; works: WorkProjectionDto[]; onOpenWork: (id: string) => void; onCancel: (message: BotMessageDto) => void }): React.JSX.Element {
+export function BotMessage({ message, botName, works, onOpenWork, onOpenCollaboration, onCancel, sourceQuestion, workLinkSource, onReply }: { workLinkSource?: BotMessageDto; sourceQuestion?: BotMessageDto; onReply?: (message: BotMessageDto) => void; message: BotMessageDto; botName: string; works: WorkProjectionDto[]; onOpenWork: (id: string) => void; onOpenCollaboration?: (id: string) => void; onCancel: (message: BotMessageDto) => void }): React.JSX.Element {
   const externalTask = useAppStore(state => state.tasks.find(task => task.id === botExternalAgentTaskId(message.messageId)));
   // Replace trusted image destinations before Markdown parsing: raw Windows
   // backslashes (e.g. \.mybuddy) otherwise become Markdown escapes.
@@ -423,7 +475,8 @@ export function BotMessage({ message, botName, works, onOpenWork, onCancel, sour
     </div>}
     {linkedWorkIds.length > 0 && <div className="bot-message-work-links">{linkedWorkIds.map(workId => <button type="button" key={workId} onClick={() => onOpenWork(workId)}><IconListTodo size={14} /><span>{works.find(work => work.workId === workId)?.title ?? (message.workFeedback?.workId === workId ? message.workFeedback.report?.title : undefined) ?? "查看关联事项"}</span><IconChevronRight size={14} /></button>)}</div>}
     {externalTask && <div className="bot-message-work-links"><button type="button" onClick={() => useAppStore.getState().setActiveTask(externalTask.id)}><IconBot size={14} /><span>打开外部 Agent 任务</span><IconChevronRight size={14} /></button></div>}
-    {message.role === "assistant" && <BotCallThread calls={message.botCalls} renderReply={renderMarkdown} />}
+    {message.role === "assistant" && <BotOrganizationActivity organizations={message.organizations} onOpenCollaboration={onOpenCollaboration} />}
+    {message.role === "assistant" && <BotCallThread calls={message.botCalls} collaborations={message.collaborations} onOpenCollaboration={onOpenCollaboration} renderReply={renderMarkdown} />}
     <BotReplyMetrics message={message} />
     <BotMessageActions message={message} onReply={onReply ? () => onReply(message) : undefined} onCancel={() => onCancel(message)} statusAlreadyVisible={message.role === "assistant" && (showActivity || !hasContent) && message.status !== "completed"} />
     {message.error && <p className="bot-alert" role="alert">{message.error}</p>}

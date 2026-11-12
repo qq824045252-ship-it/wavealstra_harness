@@ -29,7 +29,7 @@ import { getCurrentTools, type AssistantMessage, type Message } from "@earendil-
 import { estimateMessageTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { DurableBotRuntime, type DurableBotOptions } from "../src/main/agent/durable/DurableBotRuntime";
 import { openDurablePassiveStorage } from "../src/main/agent/durable/DurableStorage";
-import { selectedDurableSqlite } from "../src/main/agent/durable/DurableStorageMigration";
+import { selectedDurableSqlite } from "../src/main/agent/durable/DurableStorageFormat";
 import { DurableContextStateDoc } from "../src/main/agent/durable/context/DurableContextState";
 import type { ContextManagementStatusDto } from "../src/shared/context-management";
 

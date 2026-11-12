@@ -1,6 +1,64 @@
 import type { BotCallDto } from '@shared/bot-conversation';
+import type { BotCollaborationDto, BotCollaborationStatus } from '@shared/bot-collaboration';
+import { useEffect, useState } from 'react';
 import { IconBot } from '@/components/common/icons';
 import './BotCallThread.css';
+import './BotCollaborationView.css';
+
+export function collaborationStatus(status: BotCollaborationStatus): string {
+  switch (status) {
+    case 'sent': return '发送中';
+    case 'delivered': return '已送达';
+    case 'accepted': return '已接单';
+    case 'started': return '进行中';
+    case 'ended': return '本次执行已结束';
+    case 'returning': return '回传中';
+    case 'returned': return '已返回';
+    case 'failed': return '失败';
+    case 'cancelled': return '已取消';
+    case 'unknown': return '状态待核实';
+  }
+}
+function collaborationOngoing(item: BotCollaborationDto): boolean {
+  return item.work ? item.work.lifecycle !== 'closed' : !['returned', 'failed', 'cancelled', 'unknown'].includes(item.status);
+}
+export function collaborationTotalEnd(item: BotCollaborationDto, now: number): number | null {
+  if (collaborationOngoing(item)) return now;
+  if (item.work?.lifecycle === 'closed') {
+    if (item.work.closedAt == null || item.times.returnedAt === null) return null;
+    return Math.max(item.work.closedAt, item.times.returnedAt);
+  }
+  return item.status === 'returned' ? item.times.returnedAt : item.times.endedAt;
+}
+export function collaborationElapsed(item: BotCollaborationDto, now: number): string {
+  const start = item.times.sentAt ?? item.times.acceptedAt;
+  const end = collaborationTotalEnd(item, now);
+  if (start === null || end === null || end < start) return '未记录';
+  const seconds = (end - start) / 1000;
+  return seconds < 60 ? `${seconds.toFixed(1)} 秒` : `${Math.floor(seconds / 60)} 分 ${(seconds % 60).toFixed(0)} 秒`;
+}
+export function collaborationWorkStatus(work: NonNullable<BotCollaborationDto['work']>): string {
+  switch (work.lifecycle) {
+    case 'active': {
+      switch (work.executionStatus) {
+        case 'pending': return '事项等待执行';
+        case 'submitted': return '事项已提交，等待执行';
+        case 'running': return '事项进行中';
+        case 'completed': return '本次执行已结束，事项未结束';
+        case 'failed': return '本次执行失败，事项未结束';
+        case 'unknown': return '执行状态待核实，事项未结束';
+        case 'stopped': return '本次执行已停止，事项未结束';
+        case 'invalidated': return '本次执行已失效，事项未结束';
+        case undefined: return '事项已受理';
+      }
+      const unexpected: never = work.executionStatus;
+      return unexpected;
+    }
+    case 'paused': return '事项已暂停';
+    case 'closing': return '事项正在收尾';
+    case 'closed': return work.closureConclusion === 'succeeded' ? '事项已完成' : work.closureConclusion === 'cancelled' ? '事项已取消' : work.closureConclusion === 'ended_unsuccessfully' ? '事项未成功结束' : '事项已结束';
+  }
+}
 
 function callStatus(call: BotCallDto): string {
   const target = `@${call.targetDisplayName}`;
@@ -15,7 +73,34 @@ function callStatus(call: BotCallDto): string {
 }
 
 /** Only host-persisted exchanges belong here, never mentions parsed from model prose. */
-export function BotCallThread({ calls, renderReply }: { calls?: BotCallDto[]; renderReply?: (text: string, streaming: boolean) => React.ReactNode }): React.JSX.Element | null {
+export function BotCallThread({ calls, collaborations, onOpenCollaboration, renderReply }: {
+  calls?: BotCallDto[];
+  collaborations?: BotCollaborationDto[];
+  onOpenCollaboration?: (collaborationId: string) => void;
+  renderReply?: (text: string, streaming: boolean) => React.ReactNode;
+}): React.JSX.Element | null {
+  const [now, setNow] = useState(Date.now);
+  const ongoing = Boolean(collaborations?.some(collaborationOngoing));
+  useEffect(() => {
+    if (!ongoing) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [ongoing]);
+  if (collaborations?.length) {
+    const unique = [...new Map(collaborations.map(item => [item.collaborationId, item])).values()];
+    const legacy = calls?.filter(call => !('collaborationId' in call) || !unique.some(item => item.collaborationId === call.collaborationId));
+    return <>
+      <div className="bot-collaboration-summaries" aria-label="Bot 间协作记录">
+        {unique.map(item => <button type="button" className="bot-collaboration-summary" key={item.collaborationId}
+          data-collaboration-id={item.collaborationId} onClick={() => onOpenCollaboration?.(item.collaborationId)} disabled={!onOpenCollaboration}
+          aria-label={`查看与 ${item.targetDisplayName} 的协作记录，${item.messageCount} 条消息`}>
+          <span className="bot-collaboration-summary-target"><span className="bot-avatar" aria-hidden="true"><IconBot size={14} /></span><span>{item.messageCount} 条消息，与 {item.targetDisplayName}</span></span>
+          <span className="bot-collaboration-summary-meta"><span className="bot-collaboration-summary-status">{collaborationStatus(item.status)}{item.work ? ` · ${collaborationWorkStatus(item.work)}` : item.workId ? ' · 已关联事项' : ''}</span><span data-collaboration-elapsed>耗时 {collaborationElapsed(item, now)}</span></span>
+        </button>)}
+      </div>
+      {Boolean(legacy?.length) && <BotCallThread calls={legacy} renderReply={renderReply} />}
+    </>;
+  }
   if (!calls?.length) return null;
   const targets = new Map(calls.map(call => [call.targetBotId, call.targetDisplayName]));
   const count = calls.reduce((total, call) => total + Number(Boolean(call.requestText.trim())) + Number(Boolean(call.replyText?.trim())), 0);

@@ -1,4 +1,5 @@
 import { WorkExecutionMetricsStore } from "../work/WorkExecutionMetrics";
+import { recordCollaborationExecutionStarted } from "../work/BotCollaborationExecutionFacts";
 import { createHash } from "node:crypto";
 import { existsSync, statSync, readFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
@@ -8,7 +9,7 @@ import { BACKGROUND_CONTEXT as context, withAbortSignal } from "@earendil-works/
 import { loadQuickJSWasm } from "@earendil-works/pi-codemode";
 import { McpOAuthCredentialStore, SessionManager, convertToLlm, type ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
-import type { AgentDeleteUserMessageRequest, AgentRegenerateRequest, AgentRegenerateResult, AgentPromptRequest, AgentPromptResult, AgentSubmissionReceipt, AgentUiPatch, SessionHistoryRecoveryDto, TaskDto, TaskHistoryDto } from "../../../shared/agent-ipc";
+import type { AgentDeleteUserMessageRequest, AgentRegenerateRequest, AgentRegenerateResult, AgentPromptRequest, AgentPromptResult, AgentSubmissionReceipt, AgentUiPatch, TaskDto, TaskHistoryDto } from "../../../shared/agent-ipc";
 import { normalizedEditorTextHash } from "../../../shared/regenerate-hash";
 import type { BotToolMode, DurableBotSnapshot } from "../../../shared/durable-bot";
 import { durableDelta } from "../../../../shared/src/durable-sync";
@@ -37,7 +38,6 @@ import { durableWorkRuntimeState } from "./DurableWorkRuntimeState";
 import { DurableWorkProgressReader } from "./DurableWorkProgressReader";
 import { DurableMcp } from "./DurableMcp";
 import type { ExternalEffectRecovery } from "./DurableEffectRecovery";
-import type { DurableLogRepairReport } from "./DurableLogRepair";
 import { DurableStorageOwnedError } from "./DurableStorageLease";
 import type { WorkExecutionBindingDto } from "../../../shared/bot-work";
 import type { WorkExecutionPort } from "../work/WorkExecutionAdapter";
@@ -445,7 +445,10 @@ export class DurableBotService {
         onEntries: (entries, info) => this.options.onEntries?.(taskId, entries, info),
         onResponse: (message, info) => { this.workMetrics.response(taskId, message, info); this.options.onResponse?.(taskId, message, info); },
         onRequest: info => this.options.onRequest?.(taskId, info),
-        beforeProviderRequest: () => this.options.beforeModelRequest?.(taskId),
+        beforeProviderRequest: () => {
+          this.options.beforeModelRequest?.(taskId);
+          recordCollaborationExecutionStarted(this.options.db.connection, taskId);
+        },
         providerAuthorityGuarded: () => this.options.providerAuthorityGuarded?.(taskId) ?? false,
         onProviderUsage: input => { this.workMetrics.usage(taskId, input); this.options.onProviderUsage?.(taskId, input); },
         onTool: this.options.onTool,
@@ -706,26 +709,6 @@ export class DurableBotService {
     });
   }
 
-  async runGatewayTurn(request: AgentPromptRequest): Promise<string> {
-    if (!isGatewayBotTaskId(request.taskId)) throw new Error("Gateway Bot 任务身份无效");
-    const existing = this.options.db.getTask(request.taskId);
-    this.options.db.upsertTask({ ...(existing ?? { id: request.taskId,
-      title: (request.displayText ?? request.text).trim().slice(0, 60) || "助理" }),
-      ...(!existing?.spaceId && request.spaceId ? { spaceId: request.spaceId } : {}),
-      welcomeMode: "general", modePresetId: "native", updatedAt: Date.now() });
-    const { submission, open } = await this.admitTracked({ ...request, modePresetId: "native" });
-    try {
-      return await open.runtime.reply(submission);
-    } catch (error) {
-      if (!(error instanceof SessionFailed)) throw error;
-      await this.invalidate(request.taskId, open);
-      const reopened = await this.open(request.taskId);
-      const recovered = await reopened.runtime.harness.submission(submission.id, context);
-      if (!recovered) throw error;
-      return reopened.runtime.reply(recovered);
-    }
-  }
-
   async submit(request: AgentPromptRequest): Promise<AgentPromptResult> {
     const { submission } = await this.admitTracked(request);
     const state = await submission.status(context);
@@ -903,13 +886,11 @@ export class DurableBotService {
         return { runtime: open.runtime, snapshot, block, modelRepair: open.modelRepair };
       });
       await this.projections.get(taskId);
-      const recovery = durableHistoryRecovery(recovered.runtime.repairReport);
       // 复述任务当前模型（可能刚刚被目录漂移修复过），渲染层据此校正输入框的模型选择。
       const modelId = this.options.db.getTask(taskId)?.modelId;
       return { messages: recovered.block?.messages ?? recovered.snapshot.messages, durable: recovered.snapshot,
         ...(recovered.block ? { page: { epoch: recovered.block.epoch, before: recovered.block.before } } : {}), cwd: this.binding(taskId)?.cwd,
-        ...(modelId ? { modelId } : {}), ...(recovered.modelRepair ? { modelRecovery: recovered.modelRepair } : {}),
-        ...(recovery ? { sessionRecovery: recovery } : {}) };
+        ...(modelId ? { modelId } : {}), ...(recovered.modelRepair ? { modelRecovery: recovered.modelRepair } : {}) };
     } catch (error) {
       if (error instanceof DurableToolAssemblyError) {
         try { return await this.passiveHistory(taskId, beforeEntryId); }
@@ -1059,6 +1040,25 @@ export class DurableBotService {
     await Promise.allSettled(this.passiveReads.values());
     await Promise.allSettled([...new Set([...this.opened.keys(), ...this.opening.keys()])].map(id => this.release(id)));
   }
+  async runGatewayTurn(request: AgentPromptRequest): Promise<string> {
+    if (!isGatewayBotTaskId(request.taskId)) throw new Error("Gateway Bot 任务身份无效");
+    const existing = this.options.db.getTask(request.taskId);
+    this.options.db.upsertTask({ ...(existing ?? { id: request.taskId,
+      title: (request.displayText ?? request.text).trim().slice(0, 60) || "助理" }),
+      ...(!existing?.spaceId && request.spaceId ? { spaceId: request.spaceId } : {}),
+      welcomeMode: "general", modePresetId: "native", updatedAt: Date.now() });
+    const { submission, open } = await this.admitTracked({ ...request, modePresetId: "native" });
+    try {
+      return await open.runtime.reply(submission);
+    } catch (error) {
+      if (!(error instanceof SessionFailed)) throw error;
+      await this.invalidate(request.taskId, open);
+      const reopened = await this.open(request.taskId);
+      const recovered = await reopened.runtime.harness.submission(submission.id, context);
+      if (!recovered) throw error;
+      return reopened.runtime.reply(recovered);
+    }
+  }
 }
 
 function submissionResult(taskId: string, state: SubmissionRecord): AgentPromptResult {
@@ -1069,18 +1069,6 @@ function submissionResult(taskId: string, state: SubmissionRecord): AgentPromptR
       : { receipt, queued: false, error: { code: "DURABLE_UNANSWERED", message: typeof state.detail === "string" ? state.detail : state.reason } };
   }
   return { receipt, queued: state.status !== "done" };
-}
-
-/** 修复过损坏日志时，把「已恢复 + 已备份」的事实告诉用户，而不是静默继续。 */
-function durableHistoryRecovery(report: DurableLogRepairReport | undefined): SessionHistoryRecoveryDto | undefined {
-  if (!report) return undefined;
-  const dropped = report.droppedMainCommits + report.droppedSidecarRecords;
-  return {
-    kind: "corrupt-records",
-    invalidRecords: dropped,
-    tailOnly: false,
-    message: `检测到 ${report.droppedMainCommits} 条重复提交记录（两个 MyBuddy 实例同时写入了同一个 Bot 会话）。已保留 ${report.keptMainCommits} 条有效提交并恢复会话；原始日志备份在 ${report.backupDirectory}。`,
-  };
 }
 
 function failureText(error: unknown): string {
@@ -1097,8 +1085,5 @@ function describeDurableHistoryFailure(error: unknown): string {
     return `该 Bot 会话正被另一个 MyBuddy 实例占用（PID ${error.owner.pid}）。请只保留一个 MyBuddy 实例，稍后重新打开本会话。`;
   }
   const message = error instanceof Error ? error.message : String(error);
-  if (message.includes("JsonlCorruptionError")) {
-    return `Bot 会话日志损坏，自动修复未成功：${message}。原始日志未被删除，可先复制出来再做诊断。`;
-  }
   return message;
 }

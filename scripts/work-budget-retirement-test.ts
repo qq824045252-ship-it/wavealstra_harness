@@ -81,7 +81,7 @@ try {
   assert(before.works > 0 && before.work_team_executions > 0 && before.work_blockers >= 2 && before.work_causal_chains >= 1, JSON.stringify(before));
   app.close();
 
-  // 3. Simulate an old v35 profile that still carries every budget-only owner.
+  // 3. Obsolete budget-only fields in an otherwise current-schema database.
   let raw = new Database(dbPath);
   raw.pragma("foreign_keys = OFF");
   raw.exec(`
@@ -90,75 +90,36 @@ try {
     ALTER TABLE work_execution_bindings ADD COLUMN reservation_id TEXT;
     ALTER TABLE work_blockers ADD COLUMN window_id TEXT;
 
-    CREATE TABLE work_budget_reservations (
-      reservation_id TEXT PRIMARY KEY, work_id TEXT NOT NULL, window_id TEXT NOT NULL,
-      tokens INTEGER NOT NULL CHECK (tokens >= 0),
-      state TEXT NOT NULL CHECK (state IN ('reserved','committed','released','unknown')),
-      created_at INTEGER NOT NULL, settled_at INTEGER,
-      reported_tokens INTEGER, request_kind TEXT, request_id TEXT, binding_id TEXT,
-      attempt_id TEXT, attempt_identity TEXT, receipt_key TEXT, metering TEXT
-    );
-    CREATE INDEX idx_work_budget_reservations_work ON work_budget_reservations(work_id, state);
-    CREATE TABLE work_budget_windows (
-      window_id TEXT PRIMARY KEY, work_id TEXT NOT NULL, policy_revision INTEGER NOT NULL,
-      scope TEXT NOT NULL DEFAULT 'work', period_start_at INTEGER NOT NULL, period_end_at INTEGER,
-      timezone TEXT, limit_tokens INTEGER NOT NULL, auto_rollover INTEGER NOT NULL DEFAULT 0,
-      carry_policy TEXT NOT NULL DEFAULT 'none', status TEXT NOT NULL,
-      committed_tokens INTEGER NOT NULL DEFAULT 0, reserved_tokens INTEGER NOT NULL DEFAULT 0,
-      unknown_tokens INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, closed_at INTEGER
-    );
-    CREATE TABLE work_budget_requests (
-      request_id TEXT PRIMARY KEY, work_id TEXT NOT NULL, window_id TEXT NOT NULL,
-      binding_id TEXT, task_id TEXT NOT NULL, conversation_id TEXT, generation_task_id INTEGER,
-      request_kind TEXT NOT NULL, attempt_identity TEXT NOT NULL UNIQUE,
-      estimated_tokens INTEGER NOT NULL, reported_tokens INTEGER, metering TEXT NOT NULL,
-      receipt_key TEXT UNIQUE, created_at INTEGER NOT NULL, settled_at INTEGER
-    );
+    CREATE TABLE work_budget_reservations (reservation_id TEXT PRIMARY KEY, work_id TEXT NOT NULL);
+    CREATE TABLE work_budget_windows (window_id TEXT PRIMARY KEY, work_id TEXT NOT NULL);
+    CREATE TABLE work_budget_requests (request_id TEXT PRIMARY KEY, work_id TEXT NOT NULL);
     CREATE TABLE work_budget_request_sequences (task_id TEXT PRIMARY KEY, sequence INTEGER NOT NULL DEFAULT 0);
   `);
-  raw.prepare(`INSERT INTO work_budget_reservations(reservation_id,work_id,window_id,tokens,state,created_at)
-    VALUES ('old-reservation',?,'win-old',40,'unknown',10)`).run(workId);
-  raw.prepare("INSERT INTO work_budget_windows(window_id,work_id,policy_revision,period_start_at,limit_tokens,status,created_at) VALUES ('win-old',?,1,1,100,'open',1)").run(workId);
-  raw.prepare(`INSERT INTO work_budget_requests(request_id,work_id,window_id,task_id,request_kind,attempt_identity,estimated_tokens,metering,created_at)
-    VALUES ('old-request',?,'win-old','retirement-task','generation','attempt-old',40,'unknown',1)`).run(workId);
+  raw.prepare("INSERT INTO work_budget_reservations VALUES ('obsolete-reservation',?)").run(workId);
+  raw.prepare("INSERT INTO work_budget_windows VALUES ('obsolete-window',?)").run(workId);
+  raw.prepare("INSERT INTO work_budget_requests VALUES ('obsolete-request',?)").run(workId);
   raw.prepare("INSERT INTO work_budget_request_sequences(task_id,sequence) VALUES ('retirement-task',3)").run();
   raw.prepare(`INSERT INTO work_blockers(blocker_id,work_id,reason,kind,reason_code,details_json,window_id,status,waiting_for_user_input,created_at)
     VALUES ('budget:exhausted:old',?,'旧预算耗尽','operational','budget-exhausted','{}','win-old','open',1,5)`).run(workId);
   raw.prepare(`INSERT INTO work_blockers(blocker_id,work_id,reason,kind,details_json,window_id,status,waiting_for_user_input,created_at)
     VALUES ('usage:old',?,'旧用量未结算','operational','{}','win-old','open',0,6)`).run(workId);
-  // Recreate the old causal CHECK so a historical budget refusal can be represented.
-  raw.exec(`
-    ALTER TABLE work_causal_chains RENAME TO work_causal_chains_old;
-    CREATE TABLE work_causal_chains (
-      chain_id TEXT PRIMARY KEY, root_event_id TEXT NOT NULL, parent_chain_id TEXT,
-      parent_causal_event_id TEXT, origin_work_id TEXT NOT NULL, origin_bot_id TEXT,
-      target_work_id TEXT NOT NULL, target_subscription_id TEXT, source TEXT NOT NULL,
-      source_event_id TEXT, input_snapshot_id TEXT, target_state_hash TEXT,
-      depth INTEGER NOT NULL CHECK (depth >= 0), hops INTEGER NOT NULL CHECK (hops >= 0),
-      dispatch_count INTEGER NOT NULL DEFAULT 0 CHECK (dispatch_count >= 0),
-      admission_key TEXT NOT NULL UNIQUE,
-      decision TEXT NOT NULL CHECK (decision IN ('admitted','blocked-loop','blocked-depth','blocked-hops','blocked-budget','unknown-attribution')),
-      reason_code TEXT, created_at INTEGER NOT NULL
-    );
-    INSERT INTO work_causal_chains SELECT * FROM work_causal_chains_old;
-    DROP TABLE work_causal_chains_old;
-    CREATE INDEX idx_work_causal_chains_state ON work_causal_chains(target_work_id, target_state_hash, created_at);
-    CREATE INDEX idx_work_causal_chains_root ON work_causal_chains(root_event_id);
-  `);
+  // Seed obsolete refusal data without reviving a previous database version or schema.
+  raw.pragma("ignore_check_constraints = ON");
   raw.prepare(`INSERT INTO work_causal_chains
     (chain_id,root_event_id,origin_work_id,target_work_id,source,source_event_id,input_snapshot_id,
      depth,hops,dispatch_count,admission_key,decision,reason_code,created_at)
     VALUES ('old-budget-chain','old-budget-root',?,?, 'hook','old-budget-event',?,0,0,1,'old-budget-admission','blocked-budget','budget-exhausted',4)`).run(workId, workId, inputSnapshot(raw, workId));
-  raw.pragma("user_version = 35");
+  raw.pragma("ignore_check_constraints = OFF");
+  assert.equal(Number(raw.pragma("user_version", { simple: true })), CURRENT_DATABASE_SCHEMA_VERSION);
   raw.close();
 
-  // 4. Upgrade: only budget-only facts disappear, and the business graph is unchanged.
+  // 4. Current-schema startup cleans only obsolete budget facts and retains business data.
   app = new AppDatabase(dbPath);
   const after = snapshotCounts(app.connection);
   assert.deepEqual(after, before, "budget retirement must preserve business row counts");
   assert.deepEqual(app.connection.pragma("integrity_check"), [{ integrity_check: "ok" }]);
   assert.deepEqual(app.connection.pragma("foreign_key_check"), []);
-  assert.equal(app.schemaVersion, CURRENT_DATABASE_SCHEMA_VERSION, "v35 migrates in place to the current version without a discard");
+  assert.equal(app.schemaVersion, CURRENT_DATABASE_SCHEMA_VERSION, "cleanup never changes the current schema version");
   for (const table of ["work_budget_reservations", "work_budget_windows", "work_budget_requests", "work_budget_request_sequences"]) {
     assert.equal(tables(app.connection).includes(table), false, `${table} must be dropped`);
   }
@@ -177,7 +138,7 @@ try {
   const sqlDump = app.connection.prepare("SELECT sql FROM sqlite_master WHERE sql IS NOT NULL").all().map(row => (row as { sql: string }).sql).join("\n");
   assert.equal(/work_budget_|budget_json|budget_policy_json|reservation_id|window_id|blocked-budget/.test(sqlDump), false, "no budget schema text may remain");
 
-  // 5. A real Work can dispatch again after an old budget-blocked profile is opened.
+  // 5. A real Work can dispatch again after current-schema budget-only cleanup.
   const reopenedWorks = new WorkService(app.connection, { bots: new BotRegistry(app.connection) });
   const dispatch = reopenedWorks.dispatchExecution(user, { operationId: "post-retirement-dispatch", workId: standaloneId, botId: DEFAULT_BOT_ID,
     taskId: "retirement-task", durableStoreKey: "retirement-store", conversationId: "retirement-conversation", workspaceBinding: workspace });
@@ -210,7 +171,7 @@ try {
   assert.deepEqual(snapshotCounts(app.connection), before, "repeated startup is idempotent");
   app.close();
 
-  console.log("PASS work budget retirement: new profile has no budget schema; old/partial profiles are cleaned transactionally and idempotently; business rows, relations, integrity and post-cleanup dispatch are preserved");
+  console.log("PASS work budget retirement: current profiles have no budget schema; obsolete current-schema fields are cleaned transactionally and idempotently; business rows, relations, integrity and dispatch are preserved");
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

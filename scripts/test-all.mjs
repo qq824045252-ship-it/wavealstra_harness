@@ -58,7 +58,7 @@ const SELF_EXCLUDE_PATTERNS = [/^test:all/, /^test:verify/];
  * 内部还会再跑一遍同类用例，所以性能用例仍放在最后。
  * 不跳过用例、不重试失败，也不调整 timeout 或失败基线。
  */
-const SERIAL_TEST_PATTERNS = [/^test:durable-storage-(migration|lease)$/,/^test:core-performance/, /^test:bot-work-query-scale$/, /^test:bot-work-summary-query$/, /^test:bot-work-phase2-recovery$/, /^test:bot-work-phase5-native-story$/, /^test:gateway-inbox-crash$/, /^test:gateway-port-fallback$/];
+const SERIAL_TEST_PATTERNS = [/^test:durable-storage-(current|lease)$/,/^test:core-performance/, /^test:bot-work-query-scale$/, /^test:bot-work-summary-query$/, /^test:bot-work-phase2-recovery$/, /^test:bot-work-phase5-native-story$/, /^test:gateway-inbox-crash$/, /^test:gateway-port-fallback$/];
 
 /**
  * 排除集合按执行前置条件分类（+ 一个临时桶），默认套件只跑 headless 用例：
@@ -77,6 +77,7 @@ const SERIAL_TEST_PATTERNS = [/^test:durable-storage-(migration|lease)$/,/^test:
 const GUI_TESTS = new Set([
   "test:saved-preview-desktop", // real Electron saved-version protocol and UI
   "test:compaction-settings-dev", // actual app, native window bounds, settings IPC, light/dark layouts
+  "test:bot-collaboration-ui",
   "test:workspace-files-sort-desktop", // real Electron workspace tree + production filesystem A/B
   "test:usage-dashboard-dev", // actual pnpm dev app, isolated synthetic usage ledger
   "test:browser-tabs-ui",
@@ -173,7 +174,9 @@ const GUI_TESTS = new Set([
 ]);
 
 const NETWORK_TESTS = new Set([
+  "test:bot-organization:live",
   "test:durable-context-dev:live", // real pnpm dev/Electron + configured online provider; isolated synthetic profile
+  "test:bot-collaboration:live",
   "test:bot-completion-evidence:live", // six registered text task types with real result review
   "test:work-isolation-live", // isolated Electron + real model, six semantic tasks; not a headless substitute
   "test:bot-scheduling-live", // real Electron + configured real model; at least six task types per batch
@@ -291,12 +294,15 @@ const KNOWN_HEADLESS_RED = new Set([
  * 显式清单优先于下面的命名兜底，否则它们会被 `^test:browser-` 之类正则误伤。
  */
 const HEADLESS_TESTS = new Set([
+  "test:bot-organization-primitives",
+  "test:bot-organization",
+  "test:bot-foreground-lifecycle",
+  "test:durable-storage-current",
   "test:durable-context-live-assessment",
   "test:durable-context-active-view",
   "test:durable-context-entrypoints",
   "test:durable-context-window-matrix",
   "test:durable-storage-replay-api",
-  "test:durable-storage-migration",
   "test:durable-storage-lease",
   "test:work-file-event-source", // Real local fs.watch + SQLite; no Electron or external source account.
   "test:gadget-save-copies",

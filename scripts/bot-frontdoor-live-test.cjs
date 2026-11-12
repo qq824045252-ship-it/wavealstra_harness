@@ -5,12 +5,15 @@ const path = require('node:path');
 const os = require('node:os');
 const net = require('node:net');
 const http = require('node:http');
+const crypto = require('node:crypto');
 const cp = require('node:child_process');
 const root = path.resolve(__dirname, '..');
 const teamMissingScenario = process.argv.includes('--team-missing');
 const performanceScenario = process.argv.includes('--performance');
 const peerFollowupScenario = process.argv.includes('--peer-followup');
 const peerCallsScenario = peerFollowupScenario || process.argv.includes('--peer-calls');
+const collaborationScenario = process.argv.includes('--collaboration');
+const collaborationRun = new Date().toISOString().replace(/[:.]/g, '-');
 const commitmentQueryScenario = process.argv.includes("--commitment-query");
 const outputPressureScenario = process.argv.includes('--responsiveness-output-pressure');
 const responsivenessScenario = process.argv.includes('--responsiveness') || outputPressureScenario;
@@ -66,7 +69,7 @@ const workMemoryScopesScenario = process.argv.includes('--work-memory-scopes');
 const workMemoryScenario = process.argv.includes('--work-memory') || workMemoryScopesScenario;
 const watchMemoryScenario = process.argv.includes('--watch-memory');
 const windows = process.platform === 'win32';
-const selectedModel = process.env.BOT_FRONTDOOR_MODEL || 'opendesign/deepseek-v4.1-flash';
+const selectedModel = process.env.BOT_FRONTDOOR_MODEL || (collaborationScenario ? 'auto/deepseek-v4.1-flash' : 'opendesign/deepseek-v4.1-flash');
 const modelKey = `fixture/${selectedModel}`;
 const headless = process.env.BOT_WORK_DEV_HEADLESS === '1';
 const trackingScenario = process.argv.includes('--tracking');
@@ -74,7 +77,7 @@ const watchStatusScenario = process.argv.includes('--watch-status');
 const watchScenario = process.argv.includes('--watch');
 const watchIntentScenario = process.argv.includes('--watch-intent');
 if (headless && process.platform !== 'linux') throw Error('Headless dev page validation requires Linux; it does not validate desktop input.');
-const out = path.join(root, performanceScenario ? 'out/diagnostics/performance-step5/live' : teamMissingScenario ? 'out/diagnostics/team-missing/live' : googleWorkspaceWriteScenario ? 'out/diagnostics/google-workspace-write/live' : googleWorkspaceScenario ? 'out/diagnostics/google-workspace/live' : historyContextScenario ? 'out/diagnostics/bot-history-context/live' : peerFollowupScenario ? 'out/diagnostics/bot-peer-followup/live' : peerCallsScenario ? 'out/diagnostics/bot-peer-calls/live' : outputPressureScenario ? 'out/diagnostics/bot-responsiveness/output-pressure' : responsivenessScenario ? 'out/diagnostics/bot-responsiveness/live' : commitmentQueryScenario ? 'out/diagnostics/bot-commitment-query/live' : teamNativeMemoryScenario ? 'out/diagnostics/team-native-memory/live' : teamAutoMemoryScenario ? 'out/diagnostics/team-auto-memory/live' : teamMemoryScopesScenario ? 'out/diagnostics/team-memory-scopes/live' : workMemoryScopesScenario ? 'out/diagnostics/work-memory-scopes/live' : memoryScopesScenario ? 'out/diagnostics/bot-memory-scopes/live' : botIsolationScenario ? 'out/diagnostics/bot-isolation/live' : connectorReadinessScenario ? 'out/diagnostics/bot-connector-readiness/live' : watchMemoryScenario ? 'out/diagnostics/bot-watch-memory/live' : workMemoryScenario ? 'out/diagnostics/bot-work-memory/live' : attachmentReadingScenario ? 'out/diagnostics/bot-attachment-reading/live' : remindersUiScenario ? 'out/diagnostics/bot-reminders/ui' : remindersScenario ? 'out/diagnostics/bot-reminders/live' : deadlineScenario ? 'out/diagnostics/bot-deadline-followup/live' : watchSupplementScenario ? 'out/diagnostics/bot-watch-supplement/live' : teamWatchChangesScenario ? 'out/diagnostics/bot-team-watch-changes/live' : webWatchScenario ? 'out/diagnostics/bot-web-watch/live' : teamWatchGoalScenario ? 'out/diagnostics/bot-team-watch-goal/live' : watchGoalScenario ? 'out/diagnostics/bot-watch-goal/live' : teamWatchScenario ? 'out/diagnostics/bot-team-watch/live' : watchExpiryScenario ? 'out/diagnostics/bot-watch-expiry/live' : watchChangesScenario ? 'out/diagnostics/bot-watch-changes/live' : watchFollowupScenario ? 'out/diagnostics/bot-watch-followup/live' : multiDelegationScenario ? 'out/diagnostics/bot-multi-delegation/live' : teamSubagentScenario ? 'out/diagnostics/bot-team-subagent/live' : workMetricsScenario ? 'out/diagnostics/work-execution-metrics/live' : modelPreferenceScenario ? 'out/diagnostics/bot-model-preference/live' : watchStatusScenario ? 'out/diagnostics/bot-watch-status/live' : teamDefaultWorkspaceScenario ? 'out/diagnostics/bot-team-default-workspace/live' : watchIntentScenario ? 'out/diagnostics/bot-watch-intent/live' : displayGroupsScenario ? 'out/diagnostics/bot-display-groups/live' : composerScenario ? 'out/diagnostics/bot-composer/live' : workspaceNavigationScenario ? 'out/diagnostics/bot-workspace-navigation/live' : searchGroundingScenario ? 'out/diagnostics/bot-search-grounding/live' : searchFallbackScenario ? 'out/diagnostics/bot-search-fallback/live' : searchScenario ? 'out/diagnostics/bot-search/live' : teamWorkspaceScenario ? 'out/diagnostics/bot-team-workspace/live' : concurrentScenario ? 'out/diagnostics/bot-concurrent/live' : completionScenario ? 'out/diagnostics/bot-completion/live' : trackingScenario ? 'out/diagnostics/bot-tracking/live' : teamTransientFailure ? 'out/diagnostics/bot-team-transient-failure/live' : teamTransportFailure ? 'out/diagnostics/bot-team-transport-failure/live' : teamFailureScenario ? 'out/diagnostics/bot-team-failure/live' : teamFreeScenario ? 'out/diagnostics/bot-team-free/live' : teamPlanningScenario ? 'out/diagnostics/bot-team-planning/live' : teamScenario ? 'out/diagnostics/bot-team-frontdoor/live' : cacheScenario ? 'out/diagnostics/bot-cache/live' : memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
+const out = path.join(root, collaborationScenario ? 'out/diagnostics/issue32/live/' + collaborationRun : performanceScenario ? 'out/diagnostics/performance-step5/live' : teamMissingScenario ? 'out/diagnostics/team-missing/live' : googleWorkspaceWriteScenario ? 'out/diagnostics/google-workspace-write/live' : googleWorkspaceScenario ? 'out/diagnostics/google-workspace/live' : historyContextScenario ? 'out/diagnostics/bot-history-context/live' : peerFollowupScenario ? 'out/diagnostics/bot-peer-followup/live' : peerCallsScenario ? 'out/diagnostics/bot-peer-calls/live' : outputPressureScenario ? 'out/diagnostics/bot-responsiveness/output-pressure' : responsivenessScenario ? 'out/diagnostics/bot-responsiveness/live' : commitmentQueryScenario ? 'out/diagnostics/bot-commitment-query/live' : teamNativeMemoryScenario ? 'out/diagnostics/team-native-memory/live' : teamAutoMemoryScenario ? 'out/diagnostics/team-auto-memory/live' : teamMemoryScopesScenario ? 'out/diagnostics/team-memory-scopes/live' : workMemoryScopesScenario ? 'out/diagnostics/work-memory-scopes/live' : memoryScopesScenario ? 'out/diagnostics/bot-memory-scopes/live' : botIsolationScenario ? 'out/diagnostics/bot-isolation/live' : connectorReadinessScenario ? 'out/diagnostics/bot-connector-readiness/live' : watchMemoryScenario ? 'out/diagnostics/bot-watch-memory/live' : workMemoryScenario ? 'out/diagnostics/bot-work-memory/live' : attachmentReadingScenario ? 'out/diagnostics/bot-attachment-reading/live' : remindersUiScenario ? 'out/diagnostics/bot-reminders/ui' : remindersScenario ? 'out/diagnostics/bot-reminders/live' : deadlineScenario ? 'out/diagnostics/bot-deadline-followup/live' : watchSupplementScenario ? 'out/diagnostics/bot-watch-supplement/live' : teamWatchChangesScenario ? 'out/diagnostics/bot-team-watch-changes/live' : webWatchScenario ? 'out/diagnostics/bot-web-watch/live' : teamWatchGoalScenario ? 'out/diagnostics/bot-team-watch-goal/live' : watchGoalScenario ? 'out/diagnostics/bot-watch-goal/live' : teamWatchScenario ? 'out/diagnostics/bot-team-watch/live' : watchExpiryScenario ? 'out/diagnostics/bot-watch-expiry/live' : watchChangesScenario ? 'out/diagnostics/bot-watch-changes/live' : watchFollowupScenario ? 'out/diagnostics/bot-watch-followup/live' : multiDelegationScenario ? 'out/diagnostics/bot-multi-delegation/live' : teamSubagentScenario ? 'out/diagnostics/bot-team-subagent/live' : workMetricsScenario ? 'out/diagnostics/work-execution-metrics/live' : modelPreferenceScenario ? 'out/diagnostics/bot-model-preference/live' : watchStatusScenario ? 'out/diagnostics/bot-watch-status/live' : teamDefaultWorkspaceScenario ? 'out/diagnostics/bot-team-default-workspace/live' : watchIntentScenario ? 'out/diagnostics/bot-watch-intent/live' : displayGroupsScenario ? 'out/diagnostics/bot-display-groups/live' : composerScenario ? 'out/diagnostics/bot-composer/live' : workspaceNavigationScenario ? 'out/diagnostics/bot-workspace-navigation/live' : searchGroundingScenario ? 'out/diagnostics/bot-search-grounding/live' : searchFallbackScenario ? 'out/diagnostics/bot-search-fallback/live' : searchScenario ? 'out/diagnostics/bot-search/live' : teamWorkspaceScenario ? 'out/diagnostics/bot-team-workspace/live' : concurrentScenario ? 'out/diagnostics/bot-concurrent/live' : completionScenario ? 'out/diagnostics/bot-completion/live' : trackingScenario ? 'out/diagnostics/bot-tracking/live' : teamTransientFailure ? 'out/diagnostics/bot-team-transient-failure/live' : teamTransportFailure ? 'out/diagnostics/bot-team-transport-failure/live' : teamFailureScenario ? 'out/diagnostics/bot-team-failure/live' : teamFreeScenario ? 'out/diagnostics/bot-team-free/live' : teamPlanningScenario ? 'out/diagnostics/bot-team-planning/live' : teamScenario ? 'out/diagnostics/bot-team-frontdoor/live' : cacheScenario ? 'out/diagnostics/bot-cache/live' : memoryScenario ? 'out/diagnostics/bot-memory/live' : watchScenario ? 'out/diagnostics/bot-watch/live' : 'out/diagnostics/bot-frontdoor/live'); fs.mkdirSync(out, { recursive: true });
 // Canonical HOME keeps tool artifact boundaries consistent when TMPDIR uses a short Unix-socket alias.
 const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bot-frontdoor-live-')));
 const agentDir = path.join(home, '.mybuddy'); fs.mkdirSync(agentDir, { recursive: true });
@@ -140,6 +143,7 @@ async function stopTestElectronMains() {
   while ([...ownedElectronMains].some(([pid, startedAt]) => stillOwned(pid, startedAt)) && Date.now() < deadline) await wait(50);
 }
 function rpc(method, params = {}) {
+  if (!socket || socket.readyState !== WebSocket.OPEN) return Promise.reject(Error('CDP connection closed: ' + method));
   return new Promise((resolve, reject) => {
     const id = ++sequence, timer = setTimeout(() => { pending.delete(id); reject(Error('CDP timeout: ' + method + ' ' + String(params.expression ?? '').slice(0,160))); }, 20000);
     pending.set(id, { resolve, reject, timer }); socket.send(JSON.stringify({ id, method, params }));
@@ -208,6 +212,18 @@ async function send(text) {
   await evaluate('document.querySelector(".bot-composer button[type=submit]").click()');
   await until(() => evaluate('document.querySelector("#bot-draft").value === ""'), 'accepted receipt clears matching draft');
 }
+function collaborationSourceFingerprint() {
+  const git = args => cp.execFileSync('git',args,{cwd:root,encoding:'utf8',maxBuffer:50e6,stdio:['ignore','pipe','ignore']});
+  const sha = value => crypto.createHash('sha256').update(value).digest('hex');
+  const names = [...new Set([
+    ...git(['ls-files','-z','src','scripts','package.json','pnpm-lock.yaml','electron.vite.config.ts','tsconfig.node.json','tsconfig.web.json']).split('\0'),
+    ...git(['ls-files','--others','--exclude-standard','-z','src','scripts']).split('\0'),
+  ].filter(Boolean))].sort();
+  const files = names.map(file => ({file,sha256:fs.existsSync(path.join(root,file)) ? sha(fs.readFileSync(path.join(root,file))) : null}));
+  return {capturedAt:new Date().toISOString(),baseSHA:git(['rev-parse','HEAD']).trim(),
+    baseTree:git(['rev-parse','HEAD^{tree}']).trim(),trackedDiffSHA256:sha(git(['diff','--binary','HEAD'])),
+    sourceDigest:sha(JSON.stringify(files)),files};
+}
 const report = { platform: `${process.platform} pnpm dev, isolated profile`, displayMode: headless ? 'headless-renderer' : 'desktop-session',
   validatesNativeDesktopInput: false, status: 'running', home, checks: [] };
 (async () => {
@@ -217,9 +233,16 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       process.env.BOT_FRONTDOOR_BASE_URL || 'http://127.0.0.1:3425/v1', selectedModel, outputPressureScenario);
     report.modelConfiguration = evidence;
     if (performanceScenario) report.source = { head: cp.execFileSync("git",["rev-parse","HEAD"],{cwd:root,encoding:"utf8"}).trim(), trackedChanges: cp.execFileSync("git",["diff","--name-only"],{cwd:root,encoding:"utf8"}).trim().split("\n").filter(Boolean) };
-    fs.writeFileSync(path.join(agentDir, 'models.json'), JSON.stringify({ providers: { fixture: { api: 'openai-completions', apiKey: 'fixture-only', baseUrl: `http://127.0.0.1:${provider.address().port}/v1`, models: [model, ...(teamTransportFailure?[{...model,id:'controlled-unavailable',name:'Controlled unavailable member'}]:[])] } } }));
-    fs.writeFileSync(path.join(agentDir, 'settings.json'), JSON.stringify({ defaultProvider: 'fixture', defaultModel: selectedModel, enabledModels: [modelKey, ...(teamTransportFailure?['fixture/controlled-unavailable']:[])],
-      memoryEnabled: historyContextScenario || peerCallsScenario || responsivenessScenario || teamNativeMemoryScenario || teamMemoryScopesScenario || memoryScopesScenario || botIsolationScenario || memoryScenario || workMemoryScenario || watchMemoryScenario, memoryGatewayEnabled: false, remoteAccessEnabled: false, closeToTray: false, theme: 'light', permissionMode: teamMissingScenario || teamSubagentScenario || multiDelegationScenario ? 'auto' : 'readonly' }));
+    let collaborationTargetModel;
+    if (collaborationScenario) {
+      const targetId = process.env.BOT_COLLABORATION_TARGET_MODEL || 'qwen-token-plan/qwen3.8-flash';
+      const configured = await require('./bot-live-model-config.cjs').loadLiveModel(process.env.BOT_FRONTDOOR_BASE_URL || 'http://127.0.0.1:3425/v1', targetId);
+      collaborationTargetModel = configured.model;
+      report.collaborationTargetModel = { ...configured.evidence, modelKey: 'fixture/' + targetId };
+    }
+    fs.writeFileSync(path.join(agentDir, 'models.json'), JSON.stringify({ providers: { fixture: { api: 'openai-completions', apiKey: 'fixture-only', baseUrl: `http://127.0.0.1:${provider.address().port}/v1`, models: [model, ...(collaborationTargetModel && collaborationTargetModel.id !== model.id ? [collaborationTargetModel] : []), ...(teamTransportFailure?[{...model,id:'controlled-unavailable',name:'Controlled unavailable member'}]:[])] } } }));
+    fs.writeFileSync(path.join(agentDir, 'settings.json'), JSON.stringify({ defaultProvider: 'fixture', defaultModel: selectedModel, enabledModels: [modelKey, ...(collaborationTargetModel && collaborationTargetModel.id !== model.id ? ['fixture/' + collaborationTargetModel.id] : []), ...(teamTransportFailure?['fixture/controlled-unavailable']:[])],
+      memoryEnabled: collaborationScenario || historyContextScenario || peerCallsScenario || responsivenessScenario || teamNativeMemoryScenario || teamMemoryScopesScenario || memoryScopesScenario || botIsolationScenario || memoryScenario || workMemoryScenario || watchMemoryScenario, memoryGatewayEnabled: false, remoteAccessEnabled: false, closeToTray: false, theme: 'light', permissionMode: collaborationScenario || teamMissingScenario || teamSubagentScenario || multiDelegationScenario ? 'auto' : 'readonly' }));
     if (teamSubagentScenario) {
       fs.mkdirSync(path.join(agentDir,'agents'),{recursive:true});
       fs.writeFileSync(path.join(agentDir,'agents','reader.md'),'---\nname: reader\ndescription: Read one file and report exact content.\n---\nRead the requested file, create the requested output using write, read it back, and report exact evidence. Never guess file contents.\n');
@@ -270,8 +293,34 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     // pnpm also ships native Linux/macOS executables without a .exe extension.
     const nativePnpm = !/\.(?:cjs|mjs|js)$/i.test(process.env.npm_execpath);
     if (process.platform === 'linux') { electronExecutable = fs.realpathSync(require('electron')); devDebugPort = port; }
+    const devArgs = ['dev'];
+    if (collaborationScenario) {
+      const devOutput = path.join(out, 'dev-output');
+      const bootstrap = path.join(out, 'isolated-electron-bootstrap.cjs');
+      const userData = path.join(home, 'issue32-electron-userData');
+      fs.writeFileSync(bootstrap, [
+        "const {createRequire}=require('node:module');",
+        "const requireRoot=createRequire(" + JSON.stringify(path.join(root, 'package.json')) + ");",
+        "const {app,ipcMain}=requireRoot('electron');",
+        "const fs=require('node:fs');",
+        "const fileOpenAudit=" + JSON.stringify(path.join(out, 'official-file-open.jsonl')) + ";",
+        "const originalHandle=ipcMain.handle.bind(ipcMain);",
+        "ipcMain.handle=(channel,listener)=>originalHandle(channel,channel==='workspace:openFolder'?async(...args)=>{const target=args[1];fs.appendFileSync(fileOpenAudit,JSON.stringify({phase:'started',target,at:Date.now()})+'\\n');try{const result=await listener(...args);fs.appendFileSync(fileOpenAudit,JSON.stringify({phase:'completed',target,at:Date.now()})+'\\n');return result;}catch(error){fs.appendFileSync(fileOpenAudit,JSON.stringify({phase:'failed',target,at:Date.now(),error:String(error)})+'\\n');throw error;}}:listener);",
+        "app.setAppPath(" + JSON.stringify(root) + ");",
+        "app.setPath('userData'," + JSON.stringify(userData) + ");",
+        "console.log('[issue32-isolation] '+JSON.stringify({pid:process.pid,userData:app.getPath('userData'),appPath:app.getAppPath(),entry:" + JSON.stringify(path.join(devOutput, 'main/index.js')) + "}));",
+        "require(" + JSON.stringify(path.join(devOutput, 'main/index.js')) + ");",
+      ].join('\n'));
+      new (require('node:vm').Script)(fs.readFileSync(bootstrap,'utf8'),{filename:bootstrap});
+      devArgs.push('--outDir', devOutput, '--entry', bootstrap);
+      report.devIsolation = { bootstrap, devOutput, userData, root };
+    }
+    if (collaborationScenario) {
+      report.sourceAtLaunch = collaborationSourceFingerprint();
+      fs.writeFileSync(path.join(out,'source-at-launch.json'),JSON.stringify(report.sourceAtLaunch,null,2));
+    }
     processDev = cp.spawn(nativePnpm ? process.env.npm_execpath : process.execPath,
-      nativePnpm ? ['dev'] : [process.env.npm_execpath, 'dev'], { cwd: root, env, windowsHide: true, stdio: ['ignore', log, log] });
+      nativePnpm ? devArgs : [process.env.npm_execpath, ...devArgs], { cwd: root, env, windowsHide: true, stdio: ['ignore', log, log] });
     if (process.platform === 'linux') {
       launcherIdentity = linuxProcessState(processDev.pid);
       trackTestElectronMains(); electronWatch = setInterval(trackTestElectronMains, 100); electronWatch.unref();
@@ -284,6 +333,10 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     socket = new WebSocket(target.webSocketDebuggerUrl);
     await new Promise((resolve, reject) => { socket.addEventListener('open', resolve, { once: true }); socket.addEventListener('error', reject, { once: true }); });
     socket.addEventListener('message', event => { const value = JSON.parse(event.data), call = pending.get(value.id); if (!call) return; pending.delete(value.id); clearTimeout(call.timer); value.error ? call.reject(Error(JSON.stringify(value.error))) : call.resolve(value.result); });
+    socket.addEventListener('close', () => {
+      for (const call of pending.values()) { clearTimeout(call.timer); call.reject(Error('CDP connection closed')); }
+      pending.clear();
+    });
     await rpc('Runtime.enable'); await rpc('Page.enable');
     await rpc('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
     };
@@ -310,6 +363,9 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
       await require('./google-workspace-live-scenario.cjs').run({send,foregroundDone,until,evaluate,history,rpc,report,requests,out,home});
     } else if (historyContextScenario) {
       await require('./bot-history-context-live-scenario.cjs').run({send,foregroundDone,until,evaluate,history,report,requests,out,botId,home,setBotId:value=>{botId=value;}});
+    } else if (collaborationScenario) {
+      assert(fs.readFileSync(path.join(out,'dev.log'),'utf8').includes('[issue32-isolation] '), 'isolated entry bootstrapped, shared out/main untouched');
+      await require('./bot-collaboration-live-scenario.cjs').run({send,foregroundDone,until,evaluate,history,rpc,report,requests,out,home,modelKey,targetModelKey:report.collaborationTargetModel.modelKey,botId,setBotId:value=>{botId=value;}});
     } else if (peerCallsScenario) {
       await require(peerFollowupScenario ? './bot-peer-followup-live-scenario.cjs' : './bot-peer-calls-live-scenario.cjs').run({send,foregroundDone,until,evaluate,history,rpc,report,requests,out,botId,setBotId:value=>{botId=value;}});
     } else if (commitmentQueryScenario) {
@@ -1178,6 +1234,18 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     if (socket) try { report.visibleText = await evaluate('document.body.innerText'); const shot = await rpc('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }); fs.writeFileSync(path.join(out, 'failed-page.png'), Buffer.from(shot.data, 'base64')); } catch {}
   }
   finally {
+    if (collaborationScenario) {
+      report.sourceAtEnd = collaborationSourceFingerprint();
+      const before = new Map(report.sourceAtLaunch?.files.map(file=>[file.file,file.sha256]) || []);
+      const after = new Map(report.sourceAtEnd.files.map(file=>[file.file,file.sha256]));
+      report.sourceDeltaFiles = [...new Set([...before.keys(),...after.keys()])].filter(file=>before.get(file)!==after.get(file));
+      if (report.devIsolation) {
+        report.executableBundles = ['main/index.js','preload/index.js'].map(file=>{
+          const absolute=path.join(report.devIsolation.devOutput,file);
+          return fs.existsSync(absolute) ? {file,sha256:crypto.createHash('sha256').update(fs.readFileSync(absolute)).digest('hex'),modifiedAt:fs.statSync(absolute).mtime.toISOString()} : {file,missing:true};
+        });
+      }
+    }
     if (searchScenario) { try { fs.unlinkSync(path.join(agentDir, 'web-search.json')); } catch {} }
     if (electronWatch) clearInterval(electronWatch);
     fs.writeFileSync(path.join(out, 'report.json'), JSON.stringify(report, null, 2));

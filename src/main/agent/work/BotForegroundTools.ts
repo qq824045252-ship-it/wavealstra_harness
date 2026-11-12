@@ -38,6 +38,9 @@ const create = z.object({ ...fields, ...timing, title: text,
 const change = z.object({ ...fields, ...timing, watchRule: watchRule.nullable().optional(),
   deadlineAt: timing.deadlineAt.nullable().optional(), workId: text, versionGuard: guard }).strict();
 const control = z.object({ workId: text, reason: text.optional(), versionGuard: guard }).strict();
+export const botWorkCreateSchema = create;
+export const botWorkChangeSchema = change;
+export const botWorkVersionGuardSchema = guard;
 const memory = z.object({ query: text }).strict();
 const memoryRemember = z.object({ scope: z.enum(["current", "conversation", "public"]).default("current"),
   kind: z.enum(["identity", "preference", "fact", "decision", "constraint"]),
@@ -46,7 +49,7 @@ const memoryForget = z.object({ ids: z.array(text).min(1).max(20), userEvidence:
 const teamCreate = z.object({ ...timing, requestedOutcome: create.shape.requestedOutcome, mode: create.shape.mode, startImmediately: create.shape.startImmediately, templateId: z.string().min(1).max(200).optional(), title: z.string().min(1).max(240),
   goalDescription: z.string().min(1).max(2000), criteria: z.array(z.string().min(1).max(1000)).min(1).max(12),
   taskAssignment: workTeamTaskAssignmentSchema.optional().describe("按本次任务从候选 Bot 或模板内选成员并分配具体职责、依赖；负责人汇总。不用模板时必须提供。不能新建 Bot 或增加权限。依赖成员须排在前面，互不依赖的成员无需填写依赖。省略则沿用模板分工") }).strict();
-function validateWatchIntent(requestedOutcome: "ongoing" | "one_time", input: { mode: "once" | "watch"; startImmediately?: boolean; watchRule?: z.infer<typeof watchRule> }): void {
+export function validateWatchIntent(requestedOutcome: "ongoing" | "one_time", input: { mode: "once" | "watch"; startImmediately?: boolean; watchRule?: z.infer<typeof watchRule> }): void {
   const rule = input.watchRule;
   const hasFutureAction = Boolean(rule?.cronExpression || rule?.eventSource) || rule?.nextWakeAt !== undefined;
   const actNow = input.startImmediately === true || rule?.triggerMode === "current_condition";

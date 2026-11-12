@@ -1,0 +1,10 @@
+$ esbuild scripts/google-workspace-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/google-workspace-test.mjs && node scripts/test-guard.mjs out/tests/google-workspace-test.mjs --faults
+
+  out\tests\google-workspace-test.mjs  18.6kb
+
+Done in 16ms
+[test-guard] pid=38700 cmd=node --max-old-space-size=4096 out/tests/google-workspace-test.mjs --faults mem_cap=6144MB timeout=900s poll=1500ms
+PASS gws normal operations: metadata, literal argv, body/truncation, timed/all-day calendar, explicit minimal probes
+PASS gws faults: invalid arguments without execution, scoped error classification/redaction, malformed response, cancellation, partial account availability
+PASS actual subprocess timeout, output cap, in-flight abort and malformed calendar records
+[test-guard] exit pid=38700 code=0 elapsed=0s

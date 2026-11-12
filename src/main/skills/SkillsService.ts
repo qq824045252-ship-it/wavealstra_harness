@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { basename, isAbsolute, join, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { loadSkills, loadSkillsFromDir, type ResourceDiagnostic, type Skill as PiSkill } from "@earendil-works/pi-coding-agent";
 import type { SkillDto } from "../../shared/agent-ipc";
 import { getExpertMarketDir, getPluginsDir, getMyBuddyDir, getSkillsDir } from "../paths";
@@ -38,7 +38,7 @@ export interface LearnedSkillMetadata {
   skillId: string;
   candidateId?: string;
   sourceMemoryIds: string[];
-  scopeType?: "global" | "workspace" | "project";
+  scopeType?: "global" | "workspace" | "project" | "bot";
   scopeId?: string;
   filePath: string;
 }
@@ -52,7 +52,7 @@ export interface LearnedSkillRevisionSource {
   instructions: string;
   contentHash: string;
   sourceMemoryIds: string[];
-  scopeType: "global" | "workspace" | "project";
+  scopeType: "global" | "workspace" | "project" | "bot";
   scopeId?: string;
   filePath: string;
 }
@@ -84,7 +84,7 @@ export interface LearnedSkillInstallInput {
   description: string;
   instructions: string;
   sourceMemoryIds: string[];
-  scopeType: "global" | "workspace" | "project";
+  scopeType: "global" | "workspace" | "project" | "bot";
   scopeId?: string;
   version?: string;
   supersedesCandidateId?: string;
@@ -505,7 +505,7 @@ export class SkillsService {
     };
   }
 
-  listInstalled(cwd?: string, extraSkillPaths: string[] = []): SkillDto[] {
+  listInstalled(cwd?: string, extraSkillPaths: string[] = [], context: { botId?: string } = {}): SkillDto[] {
     getSkillsDir();
     guardStrayRootSkillBeforeScan();
     const { skills } = loadSkills({
@@ -514,7 +514,7 @@ export class SkillsService {
       skillPaths: extraSkillPaths,
       includeDefaults: true,
     });
-    return skills.map((s) => this.mapLoadedSkill(s));
+    return skills.filter(skill => this.isLearnedSkillVisibleForBot(skill.filePath, context.botId)).map((s) => this.mapLoadedSkill(s));
   }
 
   /**
@@ -905,6 +905,12 @@ export class SkillsService {
     return this.readLearnedSkillMetadata(join(getSkillsDir(), slug, "SKILL.md"));
   }
 
+  /** Private learned packages require an explicit execution identity, including after restart. */
+  isLearnedSkillVisibleForBot(filePath: string, botId?: string): boolean {
+    const metadata = this.readLearnedSkillMetadata(filePath);
+    return metadata?.scopeType !== "bot" || Boolean(botId && metadata.scopeId === botId);
+  }
+
   getLearnedSkillMetadataForFile(filePath: string): LearnedSkillMetadata | undefined {
     return this.readLearnedSkillMetadata(filePath);
   }
@@ -970,7 +976,7 @@ export class SkillsService {
       const sourceMemoryIds = Array.isArray(meta.sourceMemoryIds)
         ? meta.sourceMemoryIds.filter((value): value is string => typeof value === "string" && Boolean(value.trim()))
         : [];
-      const scopeType = ["global", "workspace", "project"].includes(String(meta.scopeType))
+      const scopeType = ["global", "workspace", "project", "bot"].includes(String(meta.scopeType))
         ? meta.scopeType as LearnedSkillMetadata["scopeType"]
         : undefined;
       return {

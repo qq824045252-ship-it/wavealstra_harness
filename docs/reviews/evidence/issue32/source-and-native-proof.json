@@ -1,0 +1,66 @@
+{
+  "primarySourceDigest": "92f811bea552be3207bfcdf79c2adcee093c469fbff08f9eabbd438a857c1a06",
+  "primarySourceEndDigest": "92f811bea552be3207bfcdf79c2adcee093c469fbff08f9eabbd438a857c1a06",
+  "primaryDelta": [],
+  "supplementSourceDigest": "8f0576617d06edc51e1b14c9d6ffe7d052e8ca8ed22bd47518fd3bef3a767f73",
+  "supplementSourceEndDigest": "8a606d95a8b3ec208b72f6b7fbc6bbfe9d13cd760b8c434c3e351ca86f0bb9ea",
+  "supplementDuringRunDelta": [
+    "scripts/bot-collaboration-ui-fixture.tsx",
+    "scripts/bot-collaboration-ui-test.cjs",
+    "src/renderer/src/components/pages/BotCollaborationView.tsx"
+  ],
+  "runtimeSourceDeltaFromPrimary": [
+    {
+      "file": "src/renderer/src/components/pages/BotCollaborationView.tsx",
+      "sha256": "4759b57fc3674bb6dc5317019c1cc46e59eb3738bbb911890c208bc30d9cf832"
+    },
+    {
+      "file": "src/renderer/src/components/pages/BotWorkspacePage.tsx",
+      "sha256": "0b7f7df9260144e9b3fd08b800bc45082b63da55599bd5250a95d908a3ec8ca6"
+    }
+  ],
+  "primaryBundles": [
+    {
+      "file": "main/index.js",
+      "sha256": "b5e0fd0a8a2dbe294b53319c57b8ce1b404bd2a8b1812e3da5d932f96c73f61f",
+      "modifiedAt": "2026-11-12T03:35:39.155Z"
+    },
+    {
+      "file": "preload/index.js",
+      "sha256": "32f7ded3d3122302c7b4e1dcddf11df7ee1478eb2cccdb4624f7dccbd3d971d2",
+      "modifiedAt": "2026-11-12T03:35:39.414Z"
+    }
+  ],
+  "supplementBundles": [
+    {
+      "file": "main/index.js",
+      "sha256": "b5e0fd0a8a2dbe294b53319c57b8ce1b404bd2a8b1812e3da5d932f96c73f61f",
+      "modifiedAt": "2026-11-12T04:05:50.778Z"
+    },
+    {
+      "file": "preload/index.js",
+      "sha256": "32f7ded3d3122302c7b4e1dcddf11df7ee1478eb2cccdb4624f7dccbd3d971d2",
+      "modifiedAt": "2026-11-12T04:05:50.901Z"
+    }
+  ],
+  "supplementProviderRequestCount": 36,
+  "nativeSubagentCalls": [
+    {
+      "toolCallId": "call_625175f23b3d4ce4bcb195f2",
+      "taskCount": 2,
+      "agentScope": "user",
+      "tasks": [
+        {
+          "agent": "reader",
+          "cwd": "C:\\Users\\servi\\AppData\\Local\\Temp\\bot-frontdoor-live-QHwxw3\\collaboration-target-a",
+          "taskSHA256": "63529a9d3b4ffd4cdeb2d1c7de9c0816bb25ccc2c4af007bbd98c53a12940a47"
+        },
+        {
+          "agent": "reader",
+          "cwd": "C:\\Users\\servi\\AppData\\Local\\Temp\\bot-frontdoor-live-QHwxw3\\collaboration-target-a",
+          "taskSHA256": "2b19cf0f8a96c7fb43155381b3a8d5596352cb440dc5d2f97f880e8e53950c43"
+        }
+      ]
+    }
+  ]
+}

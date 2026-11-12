@@ -1,6 +1,6 @@
 # Work 额度/预算模块退役（#24）
 
-基线：`af4390b`（2026-11-09 公开 main）。本轮移除了 Work 额度/预算运行时，补上旧库的一次性、幂等、事务性清理，并把 schema 升到 v36（唯一允许原地迁移的 v35 来源）。
+基线：`af4390b`（2026-11-09 公开 main）。Work 额度/预算运行时已移除。2026-11-12 用户明确要求仅支持当前格式：不兼容数据库直接删除重建，原先的旧版本原地迁移和 discarded 备份策略已取消。
 
 ## 清理映射
 
@@ -23,28 +23,24 @@
 
 运行时不再读写预算：`WorkBudgetService`、Work DTO 的 `budget`、Phase 4 的预算窗口投影、`set-budget-policy` / `reconcile-budget-reservation`、provider 预算准入、团队共享预算与 UI 预算控件均已移除。
 
-## 迁移边界与安全
+## 当前格式清理
 
 - 由 `src/main/db/work-budget-retirement.ts` 执行；`AppDatabase.migrate()` 的 SQLite 事务包住全部 DDL/DML。
-- 只删除预算独占结构/记录，不重建或清空业务库。Work、Bot、会话、消息、团队身份/依赖、成果、文件、验收证据、真实失败、未知外部效果全部保留。
-- 幂等：旧库、部分迁移库、重复启动和全新库都可重复执行；列级清理逐列检查。
+- 在当前 schema 中只删除预算独占结构/记录。Work、Bot、会话、消息、团队身份/依赖、成果、文件、验收证据、真实失败、未知外部效果保留。
+- 幂等：重复启动和全新库均可执行；列级清理逐列检查。
 - 原子：任一语句失败会随 `AppDatabase.migrate()` 回滚；失败时构造函数抛错，不会留下半迁移结构。重启后重新执行。
-- `user_version` 35 -> 36 是唯一的原地迁移：`MIGRATABLE_DATABASE_SCHEMA_VERSIONS` 只放 35，其他不兼容版本仍走「备份 -> 重建空库」。因此：
-  - 新版本可直接升级 v35 旧 profile，业务数据原地保留；
-  - 旧版 v35 应用打开 v36 库时 `user_version` 不匹配，会走既有备份/重建路径，不会在已迁移结构上静默重建预算表。
-- 没有用版本提升代替迁移：v35 -> v36 的清理逻辑就是本模块，版本号只负责阻止旧二进制回写。
+- `AppDatabase` 只保留 `CURRENT_DATABASE_SCHEMA_VERSION`。确认版本不符时先删除旧 sidecar，再删除主库并重建空库，不运行旧版本兼容迁移。
 - 迁移前后记录日志：`[AppDatabase] work budget retired: {...}` 只在确有变化时打印删除的表/列/blocker/因果行数，便于从主进程日志核对影响范围。
 
-## 备份与恢复
+## 不兼容数据
 
-- `AppDatabase` 现有的 `user_version` 不兼容处理仍会把主库/WAL/SHM 改名为 `app.db.discarded-<UTC 时间戳>`，该备份是完整旧库，当然也包含被退役的预算历史。
-- 本轮退役迁移本身不创建永久副本；若要保留迁移前审计，请由用户自行对 `~/.mybuddy/app.db` 做一次性备份。恢复该备份后再次启动，会重新执行同一退役清理。
-- 不要求、也不建议为了清理预算而恢复旧库；迁移只读业务行、只删预算独占事实。
+- 不再生成 `app.db.discarded-*`。旧数据库内容不会导入新库。
+- 当前格式的幂等、执行恢复和未知外部效果核对仍保留。读取或删除失败会中止初始化，不能假装已完成清理。
 
 ## 验证
 
-- `pnpm -s test:work-budget-retirement`：新库无预算表/列；构造带全部旧预算表、列、blocker、`blocked-budget` 因果行的 v35 旧库；升级到 v36 后业务行数/关系不变、`integrity_check` 与 `foreign_key_check` 通过、旧预算结构/记录/CHECK 文本消失；清理后可正常派发独立 Work；事务回滚、部分迁移、重复启动幂等。
+- `pnpm -s test:work-budget-retirement`：新库无预算表/列；当前 schema 中的预算残留被删除，业务关系、真实失败与未知外部效果保留；覆盖事务回滚、派发和重复启动。`test:db-schema-discard` 验证不兼容旧库直接清理。
 - 相关专项：`test:bot-work-team-recovery`、`test:bot-work-team-service`、`test:bot-work-phase2*`、`test:bot-work-phase3*`、`test:bot-work-phase4-*`、`test:bot-work-phase5*`、`test:db-schema-discard`。
-- 全量门禁：`pnpm -s test:all` 以 399/399 通过（0 失败、0 新增回归）。
+- 历史全量门禁（2026-11-09）：`pnpm -s test:all` 以 399/399 通过；不作为本次格式策略更改的验证结果。
 - 真实 Electron：`pnpm -s test:bot-work-recovery-dev` 在临时 HOME + 本地 HTTP 模型夹具下通过单独 Work 恢复，确认预算删除没有破坏真实桌面恢复链路。
-- 未执行项：真实用户旧 profile 的桌面升级验收（本轮没有上传/复制用户数据库；由 fixture 构造等价 v35 旧结构）。
+- 当前实现不提供旧 profile 的数据迁移或兼容升级。

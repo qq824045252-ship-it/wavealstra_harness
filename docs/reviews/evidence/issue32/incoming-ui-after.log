@@ -1,0 +1,12 @@
+$ esbuild scripts/bot-collaboration-ui-fixture.tsx --bundle --platform=browser --format=iife --external:@terrastruct/d2 --jsx=automatic --alias:@=./src/renderer/src --alias:@shared=./src/shared --loader:.woff=file --loader:.woff2=file --loader:.ttf=file --outfile=out/tests/bot-collaboration-ui-fixture.js && electron scripts/bot-collaboration-ui-test.cjs
+
+  out\tests\bot-collaboration-ui-fixture.js     5.4mb
+  out\tests\bot-collaboration-ui-fixture.css  742.9kb
+  out\tests\KaTeX_AMS-Regular-JKX5W2C4.ttf     62.1kb
+  out\tests\KaTeX_Main-Regular-W74P5G27.ttf    52.3kb
+  out\tests\KaTeX_Main-Bold-W5FBVCZM.ttf       50.1kb
+  ...and 57 more output files...
+
+Done in 435ms
+
+PASS collaboration Electron renderer: keyboard open/back, source draft/attachment/scroll/focus, exact message counts, preview separation, event+message paging and polling; time cards use current binding endpoints; missing current endpoints remain unrecorded; first queue is labeled separately; persisted follow-up draft, source conversation binding, immutable unknown-receipt retry and one acceptance; recipient main page shows incoming consultation and Work, live returned reply, host-filtered paging, narrow layout and keyboard history/back; 390px layout, paged target-separated list, stale response isolation and target-side readonly access; target collaboration opens a closed owned Work with held animation frames; late frames retain Work focus; back returns to personal conversation

@@ -141,6 +141,7 @@ export interface WorkAuthorizationDto {
 }
 
 export interface BotDto {
+  organizationRole?: "primary" | "ordinary";
   botId: string;
   userId: string;
   displayName: string;

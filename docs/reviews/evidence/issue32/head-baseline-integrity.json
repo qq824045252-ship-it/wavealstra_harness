@@ -1,0 +1,16 @@
+{
+  "capturedAt": "2026-11-12T03:31:22.525Z",
+  "baseline": "C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\out\\diagnostics\\issue32\\baseline-src",
+  "checked": 3196,
+  "mismatches": [
+    {
+      "file": "app/remote/android/gradlew.bat",
+      "expected": "db3a6ac207e507b0bc1635a9f2c18d3b174e682e",
+      "actual": "5eed7ee8452842305a18a4eb967442683808226a",
+      "matchesOriginalArchive": true,
+      "eolOnlyDifference": true
+    }
+  ],
+  "sourceUnchangedFromArchive": true,
+  "headCodeUnchanged": true
+}

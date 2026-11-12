@@ -301,6 +301,7 @@ import { BotSettingsService } from "./work/BotSettingsService";
 import { BotExpertBindingService } from "./work/BotExpertBindingService";
 import { BotWorkContextService } from "./work/BotWorkContextService";
 import { DESKTOP_USER_GRANTS, WorkService } from "./work/WorkService";
+import { workExecutionToolAllowed } from "./work/WorkExecutionToolPolicy";
 import { WorkHostAuthority } from "./work/WorkHostAuthority";
 import { WorkExecutionAdapter } from "./work/WorkExecutionAdapter";
 import {
@@ -830,16 +831,16 @@ export class AgentService {
     this.botRegistry = new BotRegistry(db.connection);
     this.botRegistry.ensureDefaultBot(LOCAL_USER_ID);
     this.botExpertBindings = new BotExpertBindingService(this.botRegistry, this.expertsService, this.expertBindings, {
-      resolveSkillDirectory: id => {
-        const skill = this.skillsService.listInstalled().find(item => item.id === id || item.name === id);
+      resolveSkillDirectory: (id, botId) => {
+        const skill = this.skillsService.listInstalled(undefined, [], { botId }).find(item => item.id === id || item.name === id);
         return skill?.enabled && skill.filePath ? dirname(skill.filePath) : undefined;
       },
     });
-    this.botSettings = new BotSettingsService(this.db, this.botRegistry, LOCAL_USER_ID, join(getMyBuddyDir(), "bot-workspaces"), async () => {
+    this.botSettings = new BotSettingsService(this.db, this.botRegistry, LOCAL_USER_ID, join(getMyBuddyDir(), "bot-workspaces"), async botId => {
       const enabledMcp = this.mcpRuntime.previewMcpFilter("working", this.modeProfiles.getProfile("working").policy.mcpPolicy).enabled;
       return { models: (await this.listModels()).filter(item => item.kind !== "image-generation").map(item => ({ id: item.id, name: item.name, available: item.enabled !== false && item.available !== false })),
         experts: this.listExperts().map(item => ({ id: item.id, name: item.name, available: item.enabled })),
-        skills: this.listSkills().map(item => ({ id: item.id, name: item.name, available: item.enabled })),
+        skills: this.skillsService.listInstalled(undefined, [], { botId }).map(item => ({ id: item.id, name: item.name, available: item.enabled })),
         mcps: enabledMcp.map(id => ({id, name: id, available: true})),
         connectors: this.listConnectors().map(item => ({id: item.id, name: item.name, available: Boolean(item.installed && item.enabled !== false)})) };
     }, input => this.botExpertBindings.assembleSettings(input, LOCAL_USER_ID));
@@ -851,6 +852,7 @@ export class AgentService {
       requestExpert: (work, botId) => botId === work.ownerBotId ? this.botSettings.messageSettings(work.sourceMessageId, botId)?.profile : undefined,
       emitProjection: (projection) => {
         this.emitPatch({ type: "work_projection_snapshot", projection });
+        this.botConversations?.collaborations.publishWork(projection.workId);
         if (this.settingsStore.read().memoryEnabled) {
           try { this.workMemoryCapture.capture(projection.workId); } catch (error) { console.warn("[Work] memory capture deferred", error); }
         }
@@ -1247,6 +1249,8 @@ export class AgentService {
     return service.send(input, frozen);
   }
   botActiveRequests() { return this.requireBotConversations().activeRequests(); }
+  botCollaborations(request: unknown) { return this.requireBotConversations().collaborations.list(request); }
+  botCollaborationHistory(request: unknown) { return this.requireBotConversations().collaborations.history(request); }
   async botMessageHistory(request: unknown) {
     const history = this.requireBotConversations().history(request);
     return this.botReportImages ? this.botReportImages.hydrateHistory(history) : history;
@@ -1713,6 +1717,8 @@ export class AgentService {
       changed: () => this.notifyMemoryChanged({ scope: "settings" }),
     });
     this.botConversations ??= new BotConversationService({ reminders: () => this.localWorkflow?.cron, onTool: event => this.taskDiagnostics.observeTool(event), db: this.db.connection, userId: LOCAL_USER_ID,
+      organization: { settings: this.botSettings, creator: new BotCreationService(this.db.connection, this.botRegistry,
+        { userId: LOCAL_USER_ID, isAuthority: () => this.workHostAuthority.isAuthority() }) },
       bots: this.botRegistry, works: this.workService, models: this.durableModels, directory: join(getMyBuddyDir(), "bot-conversations"),
       botModel: botId => this.botSettings.get(botId).modelId || undefined,
       // 前台 Bot 会话跟随设置页的压缩阈值（与 DurableBotService 同一 getter，改设置即时生效）。
@@ -1733,6 +1739,7 @@ export class AgentService {
       messageSettings: (messageId, botId) => this.botSettings.messageSettings(messageId, botId),
       captureSettings: (messageId, botId, frozen) => this.botSettings.captureMessage(messageId, botId, frozen),
       botWorkspace: (botId, prepareDefault) => this.botSettings.resolveWorkspace(botId, prepareDefault),
+      captureWorkSettings: work => { this.botSettings.forWork(work.workId, work.ownerBotId, work.workspacePath); },
       composerTools: async (profile, cwd, resolveRequestScope) => {
         const { openBotComposerRuntime } = await import("./work/BotComposerRuntime");
         return openBotComposerRuntime({ profile, cwd, models: this.durableModels!,
@@ -1988,6 +1995,7 @@ export class AgentService {
   }
 
   private durableToolAllowed(task: TaskDto, name: string): boolean {
+    if (!workExecutionToolAllowed(name, () => this.workService.repo.bindingForTask(task.id))) return false;
     const assembly = this.durableAssembly(task);
     const permissionMode = task.permissionMode ?? "default";
     let selections = this.toolSelectionMemo.get(assembly);

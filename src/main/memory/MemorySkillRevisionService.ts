@@ -14,7 +14,7 @@ export interface LearnedSkillRevisionSource {
   instructions: string;
   contentHash: string;
   sourceMemoryIds: string[];
-  scopeType: "global" | "workspace" | "project";
+  scopeType: "global" | "workspace" | "project" | "bot";
   scopeId?: string;
 }
 

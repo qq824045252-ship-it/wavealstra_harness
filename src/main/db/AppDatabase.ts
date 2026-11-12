@@ -14,7 +14,7 @@ import { isGatewayBotTaskId } from "../../shared/gateway-task";
 import { WorkspacePathError } from "../workspace/WorkspacePathError";
 import { EXECUTION_ATTEMPT_SCHEMA } from "../agent/ExecutionAttemptRepository";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { basename, extname, isAbsolute, join, resolve } from "node:path";
 import { getDbPath, getLibraryDir, mapLegacyRootPath } from "../paths";
 import {
@@ -68,17 +68,6 @@ import type { ExternalAgentPinDto } from "../../shared/external-agent";
 import { computeEffectiveArchived as sharedComputeEffectiveArchived } from "../../shared/workspace-tree";
 
 export const CURRENT_DATABASE_SCHEMA_VERSION = 36;
-
-/**
- * Only versions with a real in-place migration may skip the backup/reset path.
- * v35 introduced the Work budget tables; v36 retires them. Keeping this set
- * explicit prevents unrelated old schemas from being silently upgraded.
- */
-export const MIGRATABLE_DATABASE_SCHEMA_VERSIONS: ReadonlySet<number> = new Set([35]);
-
-function canMigrateInPlace(version: number): boolean {
-  return version === CURRENT_DATABASE_SCHEMA_VERSION || MIGRATABLE_DATABASE_SCHEMA_VERSIONS.has(version);
-}
 
 /** tasks.external_agent_pin_json → TaskDto.externalAgentPin；损坏/缺失一律按未固定处理。 */
 function parseExternalAgentPin(raw: string | null | undefined): TaskDto["externalAgentPin"] {
@@ -240,74 +229,43 @@ function sameLegacyTaskExecutionWorkspaceStateRow(
     sameNullable(a.trash_path, b.trash_path)
   );
 }
-/** 不兼容数据库的备份时间戳：UTC、文件系统安全（Windows 文件名不允许冒号）。 */
-function incompatibleDatabaseBackupStamp(now = new Date()): string {
-  // 2026-10-26T13:36:05.123Z → 20261026T133605123Z
-  return now.toISOString().replace(/[-:.]/g, "");
-}
-
-/** 同名备份已存在时追加序号：绝不覆盖既有备份（POSIX rename 会静默覆盖目标文件）。 */
-function reserveDatabaseBackupPath(candidate: string): string {
-  if (!existsSync(candidate)) return candidate;
-  for (let index = 1; index < 1000; index++) {
-    const next = `${candidate}-${index}`;
-    if (!existsSync(next)) return next;
-  }
-  throw new Error(`无法为不兼容数据库分配备份路径（同名备份过多）: ${candidate}`);
-}
-
 /**
- * user_version 既不是当前版本、也没有显式原地迁移路径（降级/回滚/迁移中断/损坏）时：
- * 把 db / -wal / -shm 改名到同目录 `${dbPath}.discarded-<UTC 时间戳>[-wal|-shm]` 备份，再让构造函数重建空库。
- *
- * 任何情况下都不删除用户数据：rename 失败会回滚已改名的文件并抛错（启动失败好过静默清库）。
- * 备份的 -wal/-shm 与备份主库同前缀，SQLite 打开备份时仍能自动重放未 checkpoint 的 WAL。
+ * Only the current schema is retained. A positively read version mismatch is
+ * deleted with its SQLite sidecars before materializing an empty current database.
+ * Probe/deletion failures abort startup; they are never treated as an old schema.
  */
 function resetIncompatibleDatabaseFile(dbPath: string): void {
   if (dbPath === ":memory:") return;
   const dbExisted = existsSync(dbPath);
-  if (!dbExisted && !existsSync(`${dbPath}-wal`) && !existsSync(`${dbPath}-shm`)) return;
-  let version = -1;
+  const files = ["-wal", "-shm", "-journal", ""].map(suffix => `${dbPath}${suffix}`);
+  if (!files.some(file => existsSync(file))) return;
+  let version: number | undefined;
   if (dbExisted) {
-    try {
-      const probe = new Database(dbPath, { readonly: true, fileMustExist: true });
-      try { version = Number(probe.pragma("user_version", { simple: true })); }
-      finally { probe.close(); }
-    } catch {
-      version = -1;
-    }
+    const probe = new Database(dbPath, { readonly: true, fileMustExist: true });
+    try { version = Number(probe.pragma("user_version", { simple: true })); }
+    finally { probe.close(); }
   }
-  if (canMigrateInPlace(version)) return;
+  if (version === CURRENT_DATABASE_SCHEMA_VERSION) return;
 
-  const stamp = incompatibleDatabaseBackupStamp();
-  const moved: Array<{ source: string; backup: string }> = [];
+  const deleted: string[] = [];
   try {
-    // 先搬 WAL/SHM，最后搬主库：搬走主库前不让旧库以「可被误开」的形态留在原位。
-    for (const suffix of ["-wal", "-shm", ""]) {
-      const source = `${dbPath}${suffix}`;
+    // Remove sidecars first so no old WAL can be replayed into a recreated file.
+    for (const source of files) {
       if (!existsSync(source)) continue;
-      const backup = reserveDatabaseBackupPath(`${dbPath}.discarded-${stamp}${suffix}`);
-      renameSync(source, backup);
-      moved.push({ source, backup });
+      rmSync(source);
+      deleted.push(source);
     }
   } catch (error) {
-    for (const { source, backup } of moved.reverse()) {
-      try { renameSync(backup, source); }
-      catch (rollbackError) {
-        console.error(
-          `[AppDatabase] 备份回滚失败，文件保留在 ${backup}（未删除）：${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
-        );
-      }
-    }
     throw new Error(
-      `无法备份不兼容数据库 ${dbPath}（未删除任何数据）: ${error instanceof Error ? error.message : String(error)}`,
+      `无法删除不兼容数据库 ${dbPath}，未重建: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
-  if (existsSync(dbPath)) throw new Error(`无法重建不兼容数据库：${dbPath}`);
+  if (files.some(file => existsSync(file)))
+    throw new Error(`无法重建不兼容数据库：旧数据库文件仍存在 ${dbPath}`);
   const versionLabel = dbExisted ? `v${version}` : "缺失主库文件";
   console.warn(
-    `[AppDatabase] incompatible database ${versionLabel} (current v${CURRENT_DATABASE_SCHEMA_VERSION}) reset: backed up ` +
-      `${moved.map(({ source, backup }) => `${source} -> ${backup}`).join(", ") || "nothing"}; rebuilding empty database`,
+    `[AppDatabase] incompatible database ${versionLabel} (current v${CURRENT_DATABASE_SCHEMA_VERSION}) reset: deleted ` +
+      `${deleted.join(", ") || "nothing"}; rebuilding empty database`,
   );
 }
 
@@ -360,16 +318,14 @@ export class AppDatabase {
 
   private migrate(): void {
     const startVersion = this.schemaVersion;
-    if (startVersion !== 0 && !canMigrateInPlace(startVersion)) {
+    if (startVersion !== 0 && startVersion !== CURRENT_DATABASE_SCHEMA_VERSION) {
       throw new Error(
         `数据库版本 ${startVersion} 与当前开发 schema ${CURRENT_DATABASE_SCHEMA_VERSION} 不一致；文件库应在打开前被重建`,
       );
     }
 
     this.db.transaction(() => {
-      // v35 -> v36 is the one explicit in-place migration (Work budget retirement).
-      // Every other incompatible version is discarded before opening; a fresh
-      // database is materialized directly at CURRENT.
+      // Existing files must already use CURRENT; new databases are materialized directly.
       this.ensureCurrentCoreSchema();
       this.ensureProjectTodosTable();
       this.ensureProjectEventsTable();
@@ -408,7 +364,6 @@ export class AppDatabase {
         console.info(`[AppDatabase] work budget retired: ${JSON.stringify(budgetRetirement)}`);
       }
       retireWorkEffectBlockers(this.db);
-      if (startVersion === 35) console.info("[AppDatabase] migrated v35 -> v36 (Work budget retirement)");
       this.migrateLegacyWelcomeModeIds();
       this.db.pragma(`user_version = ${CURRENT_DATABASE_SCHEMA_VERSION}`);
     })();

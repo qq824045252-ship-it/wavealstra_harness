@@ -1,0 +1,61 @@
+{
+  "scope": "Actual Electron renderer with controlled host data; no live model or packaged-app claim",
+  "status": "failed",
+  "checks": [
+    "keyboard open/back, source draft/attachment/scroll/focus, exact message counts, preview separation, event+message paging and polling",
+    "time cards use current binding endpoints; missing current endpoints remain unrecorded; first queue is labeled separately",
+    "persisted follow-up draft, source conversation binding, immutable unknown-receipt retry and one acceptance"
+  ],
+  "keyboardOpen": {
+    "events": [
+      {
+        "key": "Enter",
+        "target": "bot-collaboration-summary",
+        "defaultPrevented": false
+      },
+      {
+        "click": "bot-collaboration-summary"
+      }
+    ],
+    "focus": true,
+    "active": "<button type=\"button\" aria-label=\"返回并发助理的对话\"><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-chevron-left\" aria-hidden=\"true\"><path d=\"m15 18-6-6 6-6\"></path></svg><span>并发助理</span></button>"
+  },
+  "currentBindingTimeCard": {
+    "start": "1970-01-01T00:00:03.200Z",
+    "end": "1970-01-01T00:00:08.200Z",
+    "duration": "首次排队 1.0 秒\n本次执行 5.0 秒\n总耗时 29907669 分 25.4 秒"
+  },
+  "keyboardReturn": {
+    "active": "BUTTON bot-collaboration-summary",
+    "visible": false,
+    "focus": true,
+    "initiatorConnected": true,
+    "initiatorVisible": 1,
+    "events": [
+      {
+        "key": "Enter",
+        "target": "bot-collaboration-summary",
+        "defaultPrevented": false
+      },
+      {
+        "click": "bot-collaboration-summary"
+      },
+      {
+        "click": ""
+      },
+      {
+        "click": ""
+      }
+    ]
+  },
+  "missingCurrentBindingTimeCard": [
+    "未记录",
+    "未记录"
+  ],
+  "error": "Error: timeout: Boolean(document.querySelector('.bot-incoming-collaborations'))\n    at wait (C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\scripts\\bot-collaboration-ui-test.cjs:24:126)\n    at async C:\\Users\\servi\\Documents\\GitHub\\wavealstra_harness\\scripts\\bot-collaboration-ui-test.cjs:140:5",
+  "workNavigationFailure": {
+    "collaborationVisible": false,
+    "workDetailVisible": false,
+    "getWorkCalls": []
+  }
+}

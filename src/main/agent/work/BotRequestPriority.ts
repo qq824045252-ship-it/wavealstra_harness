@@ -11,8 +11,10 @@ export function botRequestPriority(text: string, referenced = false): number {
 }
 
 /** Aging gives queued ordinary requests an opportunity under sustained controls. */
+export const BOT_REQUEST_AGING_MS = 30_000;
+
 export function botRequestQueueRank(priority: number, createdAt: number, now: number): number {
-  return now - createdAt >= 30_000 ? 3 : priority;
+  return now - createdAt >= BOT_REQUEST_AGING_MS ? 3 : priority;
 }
 
 export function botRequestCapacity(priority: number): { conversation: number; global: number } {

@@ -11,7 +11,7 @@ import { BotRegistry } from "../src/main/agent/work/BotRegistry";
 import { BotConversationRepository } from "../src/main/agent/work/BotConversationRepository";
 import { snapshotBotAttachments } from "../src/main/agent/work/BotAttachmentStorage";
 import { prepareBotAttachmentInput, BotAttachmentInputError } from "../src/main/agent/work/BotAttachmentInput";
-import { botSendSchema } from "../src/shared/bot-conversation";
+import { botAttachmentSchema, botSendSchema } from "../src/shared/bot-conversation";
 import { DEFAULT_BOT_ID, LOCAL_USER_ID } from "../src/shared/bot-work";
 import { WorkService, DESKTOP_USER_GRANTS } from "../src/main/agent/work/WorkService";
 
@@ -45,9 +45,13 @@ try {
   assert(bound.ok); if (!bound.ok) throw new Error("fixture dispatch failed");
   const binding = works.repo.listBindings(created.work.workId)[0]!;
   assert.equal(created.work.goalDescription?.length, 2000);
-  assert(multiStored.every(item => works.repo.attachmentInput(binding).includes(item.path)), "long human goal cannot truncate structured attachment input");
+  const parseAttachmentInput = (input: string) => botAttachmentSchema.array().parse(
+    input.trim().split(/\r?\n/).slice(1).map(line => JSON.parse(line)));
+  const retained = parseAttachmentInput(works.repo.attachmentInput(binding));
+  assert.deepEqual(retained, multiStored, "long human goal cannot truncate structured attachment input");
+  retained.forEach((item, index) => assert.equal(readFileSync(item.path, "utf8"), `material ${index}`, "decoded execution paths open the immutable attachment bytes"));
   repo.linkWorkAttachments(sourceReceipt, created.work.workId, "amended-snapshot", created.work.inputSnapshotId);
-  assert(multiStored.every(item => works.repo.attachmentInput({ ...binding, inputSnapshotId: "amended-snapshot" }).includes(item.path)));
+  assert.deepEqual(parseAttachmentInput(works.repo.attachmentInput({ ...binding, inputSnapshotId: "amended-snapshot" })), multiStored);
   assert.equal(works.repo.attachmentInput({ ...binding, inputSnapshotId: "unrelated-snapshot" }), "", "other execution input cannot inherit unrelated attachments");
   unlinkSync(source);
   assert(repo.accept(LOCAL_USER_ID, request).replayed, "replay validates identity without reading removed source");

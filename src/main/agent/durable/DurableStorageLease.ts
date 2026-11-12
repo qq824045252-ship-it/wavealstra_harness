@@ -1,13 +1,13 @@
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeSync } from "node:fs";
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { join, toNamespacedPath } from "node:path";
 
 /**
  * A held SQLite exclusive transaction is the writer mutex, including between handles
  * in the same process. The OS releases it on process death. Never unlink the lock DB:
  * replacing its inode would let another process lock a different file concurrently.
- * JSON metadata is diagnostic and supports conservative legacy-owner refusal.
+ * JSON metadata is diagnostic; the SQLite transaction owns exclusion.
  * Requires a local filesystem with working SQLite locks, not a distributed lease.
  */
 
@@ -89,15 +89,11 @@ export function claimDurableStorageLease(directory: string): DurableStorageLease
   const owner: DurableStorageOwner = { format: 1, pid: process.pid, token: randomUUID(), startedAt: now, updatedAt: now };
   let mutex: Database.Database | undefined;
   try {
-    mutex = new Database(join(directory, MUTEX_FILE), { timeout: 0 });
+    mutex = new Database(toNamespacedPath(join(directory, MUTEX_FILE)), { timeout: 0 });
     if (mutex.pragma("journal_mode", { simple: true }) !== "delete") {
       throw new Error("Durable writer mutex requires DELETE journal mode");
     }
     mutex.exec("BEGIN EXCLUSIVE");
-    const held = readOwner(lockPath);
-    // Old versions do not take this mutex. Never steal a live legacy lease,
-    // including same-process handles. Dead owners can be safely replaced.
-    if (held && processAlive(held.pid)) throw new DurableStorageOwnedError(held, lockPath);
     writeOwner(lockPath, owner);
   } catch (error) {
     mutex?.close();

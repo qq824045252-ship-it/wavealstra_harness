@@ -1,5 +1,7 @@
+import { botOrganizationsForMessage } from "./BotOrganizationProjection";
 import { BotForegroundMetricsStore } from "./BotForegroundMetrics";
 import { BotPeerCallRepository } from "./BotPeerCallRepository";
+import { BotCollaborationRepository } from "./BotCollaborationRepository";
 import { botInboxId, ensurePersonalConversation, ensureTeamConversation } from "./WorkDeliveryTargets";
 import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
@@ -22,9 +24,11 @@ const messageRow = z.object({ message_id: z.string(), conversation_id: z.string(
 export class BotConversationRepository {
   readonly metrics: BotForegroundMetricsStore;
   readonly peerCalls: BotPeerCallRepository;
+  readonly collaborations: BotCollaborationRepository;
   constructor(readonly db: Database.Database) {
     this.metrics = new BotForegroundMetricsStore(db);
     this.peerCalls = new BotPeerCallRepository(db);
+    this.collaborations = new BotCollaborationRepository(db);
     // Additive presentation storage: existing conversations need no destructive schema reset.
     db.exec(`CREATE TABLE IF NOT EXISTS bot_message_segments (
       message_id TEXT PRIMARY KEY REFERENCES bot_messages(message_id) ON DELETE CASCADE,
@@ -50,6 +54,7 @@ export class BotConversationRepository {
   accept(userId: string, input: BotSendRequest, persistedAttachments: BotAttachmentDto[] = input.attachments ?? []): BotSendReceipt {
     const payload = JSON.stringify({ text: input.text, conversationId: input.conversationId ?? null,
       ...(input.teamId ? { teamId: input.teamId } : {}), selectedWorkId: input.selectedWorkId ?? null, referenceMessageId: input.referenceMessageId ?? null,
+      ...(input.selectedCollaborationId ? { selectedCollaborationId: input.selectedCollaborationId } : {}),
       ...(input.attachments?.length ? { attachments: input.attachments } : {}),
       ...(input.selection ? { selection: input.selection } : {}) });
     const hash = createHash("sha256").update(payload).digest("hex");
@@ -306,6 +311,11 @@ export class BotConversationRepository {
   /** Explicit delivery target first; legacy authenticated origin second. Old
    * unlinked Work is bound to its known team/owner, never the selected UI chat. */
   resolveWorkDelivery(userId: string, workId: string): BotConversation | undefined {
+    const collaboration = this.collaborations.byWork(userId, workId);
+    if (collaboration) {
+      const exact = this.conversation(userId, collaboration.sourceBotId, collaboration.sourceConversationId);
+      return exact && !exact.team_id && exact.bot_id === collaboration.sourceBotId ? exact : undefined;
+    }
     const work = this.db.prepare("SELECT owner_bot_id FROM works WHERE work_id=? AND user_id=?").get(workId, userId) as { owner_bot_id: string } | undefined;
     if (!work) return;
     const targets = this.db.prepare(`SELECT c.* FROM work_conversations t JOIN bot_conversations c ON c.conversation_id=t.conversation_id
@@ -327,11 +337,29 @@ export class BotConversationRepository {
   }
 
   appendWorkDelivery(userId: string, workId: string, event: string, version: string, text: string, metadata?: WorkFeedbackDto):
-    { delivered: boolean; inserted: boolean; conversationId?: string } {
+    { delivered: boolean; inserted: boolean; recorded?: boolean; conversationId?: string } {
     return this.db.transaction(() => {
       const target = this.resolveWorkDelivery(userId, workId);
-      if (!target) return { delivered: false, inserted: false };
+      const collaboration = this.collaborations.byWork(userId, workId);
+      if (collaboration && metadata?.report) {
+        const operationId = `work-feedback:${createHash("sha256").update(event).digest("hex")}`;
+        const revision = createHash("sha256").update(version).digest("hex");
+        this.collaborations.appendMessage(userId, collaboration.collaborationId, { operationId, version: revision,
+          senderBotId: collaboration.targetBotId, senderDisplayName: collaboration.targetDisplayName,
+          kind: metadata.report.milestone ? "progress" : "result", text, workFeedback: metadata });
+        const binding = metadata.executionId ? z.object({ settled_at: z.number().nullable() }).optional().parse(
+          this.db.prepare("SELECT settled_at FROM work_execution_bindings WHERE binding_id=? AND work_id=?").get(metadata.executionId, workId)) : undefined;
+        if (binding?.settled_at != null) this.collaborations.event(userId, collaboration.collaborationId,
+          { operationId: `execution-end:${metadata.executionId}`, exchangeId: metadata.executionId, kind: "ended", workId, createdAt: binding.settled_at });
+        this.collaborations.event(userId, collaboration.collaborationId, { operationId, version: revision, kind: "returning", workId });
+        if (!target) this.collaborations.event(userId, collaboration.collaborationId,
+          { operationId, version: revision, kind: "unknown", workId, detail: "原来源会话已删除，成果保留在协作记录中，未改投其他会话" });
+      }
+      if (!target) return { delivered: false, inserted: false, recorded: Boolean(collaboration && metadata?.report) };
       const inserted = this.appendWorkFeedback(target, workId, event, version, text, metadata);
+      if (collaboration && metadata?.report) this.collaborations.event(userId, collaboration.collaborationId,
+        { operationId: `work-feedback:${createHash("sha256").update(event).digest("hex")}`,
+          version: createHash("sha256").update(version).digest("hex"), kind: "returned", workId });
       return { delivered: true, inserted, conversationId: target.conversation_id };
     })();
   }
@@ -433,8 +461,12 @@ export class BotConversationRepository {
     const segmentRow = row.role === "assistant" ? this.db.prepare("SELECT segments_json FROM bot_message_segments WHERE message_id=?")
       .get(row.message_id) as { segments_json: string } | undefined : undefined;
     const segments = segmentRow ? z.array(botReplySegmentSchema).parse(JSON.parse(segmentRow.segments_json)) : undefined;
-    return { teamId: scope?.team_id ?? undefined, messageRevision: version?.revision ?? 0, messageId: row.message_id, conversationId: row.conversation_id, botId: row.bot_id, requestId: row.request_id,
+    const organizationUser = row.role === "assistant" ? this.db.prepare("SELECT user_id FROM bot_conversations WHERE conversation_id=?").pluck().get(row.conversation_id) : undefined;
+    const organizations = typeof organizationUser === "string" ? botOrganizationsForMessage(this.db, organizationUser, row.message_id) : [];
+    return { ...(organizations.length ? { organizations } : {}), teamId: scope?.team_id ?? undefined, messageRevision: version?.revision ?? 0, messageId: row.message_id, conversationId: row.conversation_id, botId: row.bot_id, requestId: row.request_id,
       segments, botCalls: row.role === "assistant" ? this.peerCalls.list(row.message_id) : undefined,
+      collaborations: row.role === "assistant" ? this.collaborations.summariesForMessage(
+        z.string().parse(this.db.prepare("SELECT user_id FROM bot_conversations WHERE conversation_id=?").pluck().get(row.conversation_id)), row.message_id) : undefined,
       metrics: this.metrics.read(row.message_id), workFeedback: parsed?.success ? parsed.data : undefined, attachments, activity: activity?.success ? activity.data : undefined,
       ordinal: row.ordinal, role: row.role, text: row.text, status: row.status,
       workIds: z.array(z.string()).parse(JSON.parse(row.work_ids_json)), error: row.error ?? undefined,

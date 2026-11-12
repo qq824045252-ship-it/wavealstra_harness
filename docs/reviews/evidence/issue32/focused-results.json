@@ -1,0 +1,87 @@
+[
+  {
+    "test": "test:bot-collaboration-repository",
+    "exitCode": 0,
+    "log": "out\\diagnostics\\issue32\\test-bot-collaboration-repository.log"
+  },
+  {
+    "test": "test:bot-collaboration",
+    "exitCode": 0,
+    "log": "out\\diagnostics\\issue32\\test-bot-collaboration.log"
+  },
+  {
+    "test": "test:work-execution-tools",
+    "exitCode": 0,
+    "log": "out\\diagnostics\\issue32\\test-work-execution-tools.log"
+  },
+  {
+    "test": "test:bot-peer-calls",
+    "exitCode": 0,
+    "log": "out\\diagnostics\\issue32\\test-bot-peer-calls.log"
+  },
+  {
+    "test": "test:bot-call-thread",
+    "exitCode": 0,
+    "log": "out\\diagnostics\\issue32\\test-bot-call-thread.log"
+  },
+  {
+    "test": "test:bot-conversation-ui",
+    "exitCode": 0,
+    "log": "out\\diagnostics\\issue32\\test-bot-conversation-ui.log"
+  },
+  {
+    "test": "test:bot-work-control",
+    "exitCode": 0,
+    "log": "out\\diagnostics\\issue32\\test-bot-work-control.log"
+  },
+  {
+    "test": "test:bot-settings",
+    "exitCode": 0,
+    "log": "out\\diagnostics\\issue32\\test-bot-settings.log"
+  },
+  {
+    "test": "test:bot-deletion",
+    "exitCode": 0,
+    "log": "out\\diagnostics\\issue32\\test-bot-deletion.log"
+  },
+  {
+    "test": "test:work-conversation-feedback",
+    "exitCode": 0,
+    "log": "out\\diagnostics\\issue32\\test-work-conversation-feedback.log"
+  },
+  {
+    "test": "test:bot-delegation-fidelity",
+    "exitCode": 0,
+    "log": "out\\diagnostics\\issue32\\test-bot-delegation-fidelity.log"
+  },
+  {
+    "test": "test:work-revision-handoff",
+    "exitCode": 0,
+    "log": "out\\diagnostics\\issue32\\test-work-revision-handoff.log"
+  },
+  {
+    "test": "test:bot-work-team-access",
+    "exitCode": 0,
+    "log": "out\\diagnostics\\issue32\\test-bot-work-team-access.log"
+  },
+  {
+    "test": "test:bot-result-delivery",
+    "exitCode": 0,
+    "log": "out\\diagnostics\\issue32\\test-bot-result-delivery.log"
+  },
+  {
+    "test": "test:work-execution-metrics",
+    "exitCode": 0,
+    "log": "out\\diagnostics\\issue32\\test-work-execution-metrics.log"
+  },
+  {
+    "test": "test:bot-history-paging-sqlite",
+    "exitCode": 0,
+    "log": "out\\diagnostics\\issue32\\test-bot-history-paging-sqlite.log"
+  },
+  {
+    "test": "test:durable-tool-policy",
+    "exitCode": 0,
+    "log": "out\\diagnostics\\issue32\\test-durable-tool-policy.log"
+  }
+]
