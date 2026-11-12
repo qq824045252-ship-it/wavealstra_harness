@@ -34,14 +34,14 @@ export async function buildSubagentRuntime(root) {
   const result=await build({stdin:{contents:entry,resolveDir:root,sourcefile:'pi-worker-runtime-entry.mjs',loader:'js'},outdir,
     entryNames:'pi-runtime',chunkNames:'chunks/[name]-[hash]',outExtension:{'.js':'.mjs'},
     bundle:true,platform:'node',format:'esm',target:'node22',splitting:true,write:false,metafile:true,
-    external:['jiti','bufferutil','utf-8-validate','kerberos'],legalComments:'none',logLevel:'warning',
+    external:['jiti','bufferutil','utf-8-validate','kerberos','better-sqlite3'],legalComments:'none',logLevel:'warning',
     plugins: [{ name: 'durable-probe-sdk', setup(plugin) {
       plugin.onResolve({ filter: /^@earendil-works\/pi-coding-agent$/ }, () => ({ path: 'sdk', namespace: 'durable-probe-sdk' }));
       plugin.onLoad({ filter: /.*/, namespace: 'durable-probe-sdk' }, () => ({ contents: sdkExports, loader: 'js', resolveDir: root }));
     } }],
     banner:{js:'import {createRequire as __workerRequire} from "node:module"; const require=__workerRequire(import.meta.url);'},
   });
-  const external=Object.values(result.metafile.outputs).flatMap(o=>o.imports).filter(i=>i.external&&!isBuiltin(i.path)&&!['jiti','jiti/static','bufferutil','utf-8-validate','kerberos'].includes(i.path));
+  const external=Object.values(result.metafile.outputs).flatMap(o=>o.imports).filter(i=>i.external&&!isBuiltin(i.path)&&!['jiti','jiti/static','bufferutil','utf-8-validate','kerberos','better-sqlite3'].includes(i.path));
   if(external.length)throw Error('Unpackaged worker dependency: '+external.map(i=>i.path).join(','));
   const obsolete = [...new Set(Object.values(result.metafile.outputs).flatMap(output => Object.entries(output.inputs)
     // Pi's model resolver shares isValidThinkingLevel from cli/args; executable CLI/RPC modules remain forbidden.

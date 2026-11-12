@@ -26,6 +26,7 @@ import type { DurableLogRepairReport } from "./DurableLogRepair";
 import type { DurableContextHook } from "./DurableDomainTools";
 import { openDurableStorage } from "./DurableStorage";
 import type { DurableStorageLease } from "./DurableStorageLease";
+import { durableStorageOwnerState } from "./DurableStorageLease";
 import { durableCompletedTurns } from "./DurableTurnProjection";
 import { withDurableImageRead } from "./DurableImages";
 import { createAgentSettingsManager, getAgentBashShellPath } from "../../agent-shell-settings";
@@ -238,15 +239,17 @@ export class DurableBotRuntime {
     const harnessSettings = options.contextManagement ? () => {
       try {
         return {
+          documentRetentionMs: 0,
           compaction: resolveDurableCompactionSettings(
             runtime?.currentModelWindow() || initialModelWindow,
             options.contextManagement!.policy(),
-            { modelKey: runtime?.currentModelKey() ?? initialModelKey },
+            { modelKey: runtime?.currentModelKey() ?? initialModelKey,
+              estimateRawContext: (options.contextManagement!.engine?.() ?? "billion-context") !== "native" },
           ),
         };
       } catch {
         // 设置 store 暂时不可读时按产品默认值继续，绝不因为读阈值失败而阻断生成。
-        return { compaction: resolveDurableCompactionSettings(initialModelWindow || 128_000, { ratio: 0.8, absoluteTokens: 200_000 }, { modelKey: initialModelKey }) };
+        return { documentRetentionMs: 0, compaction: resolveDurableCompactionSettings(initialModelWindow || 128_000, { ratio: 0.8, absoluteTokens: 200_000 }, { modelKey: initialModelKey, estimateRawContext: (options.contextManagement!.engine?.() ?? "billion-context") !== "native" }) };
       }
     } : undefined;
     const handle = options.storage ? undefined : await openDurableStorage(options.directory, ctx, { readOnly: options.readOnly });
@@ -271,7 +274,7 @@ export class DurableBotRuntime {
         compatibility = [...options.restoreTools([...names])].filter(tool => !installed.has(tool.name));
         native.push(...compatibility);
       }
-    } catch (error) { await storage.close(ctx); handle?.lease.release(); throw error; }
+    } catch (error) { await storage.close(ctx); handle?.lease?.release(); throw error; }
     // 上下文管理工具必须在 Code Mode 的 tool declaration 冻结之前进入 native 列表：
     // 否则第一次 configure 会改变 codemode 的声明，同一轮内触发 planTools 的 remove+add，
     // 让 provider 请求末尾多出 tool-change system 消息（已验证会导致工具重放）。
@@ -328,13 +331,13 @@ export class DurableBotRuntime {
       runtime.compatibilityTools = compatibility;
       runtime.codemode = codemode;
       const persistedContext = await harness.snapshot(DurableContextStateDoc, conversation.id, ctx);
-      if (persistedContext) runtime.passiveContextStatus = await contextStatusFromStorage(persistedContext as DurableContextPersistedState, storage, conversation.id);
+      if (persistedContext) runtime.passiveContextStatus = await contextStatusFromStorage(persistedContext as DurableContextPersistedState, storage, conversation.id, Boolean(options.readOnly && durableStorageOwnerState(options.directory) === "inactive"));
       if (options.contextManagement && !options.readOnly) {
         runtime.modelWindow = initialModelWindow;
         runtime.modelOutputLimit = initialModel?.maxTokens;
         runtime.modelKeyCache = initialModelKey;
         const manager = new DurableContextManager({
-          conversation, models: options.models,
+          conversation, models: options.models, archiveReader: harness,
           initialState: persistedContext as DurableContextPersistedState | undefined,
           initialStatus: runtime.passiveContextStatus,
           policy: options.contextManagement.policy,
@@ -388,7 +391,7 @@ export class DurableBotRuntime {
       resolveRequestHarness(undefined);
       finishOpening(undefined);
       if (harness) await harness.close(ctx); else await storage.close(ctx);
-      handle?.lease.release();
+      handle?.lease?.release();
       throw error;
     }
   }
@@ -493,7 +496,7 @@ export class DurableBotRuntime {
         const model = agent.model ? this.options.models.getModel(agent.model.provider, agent.model.modelId) : undefined;
         const window = model?.contextWindow ?? this.modelWindow;
         const manager: DurableContextManager = new DurableContextManager({
-          conversation, models: this.options.models,
+          conversation, models: this.options.models, archiveReader: this.harness,
           initialState: await this.harness.snapshot(DurableContextStateDoc, conversationId, context) as DurableContextPersistedState | undefined,
           policy: this.options.contextManagement!.policy,
           engine: () => this.currentCompactionEngine(),
@@ -1428,8 +1431,8 @@ function botExtension(
       // 主会话与子代理/会诊各自持有独立协调器；Code Mode 私有会话没有子代理身份，不会命中。
       const manager = await getContextManager?.(api.conversationId, context);
       if (!manager) return undefined;
-      // BC 正常时拒绝 Pi 原生阈值压缩；原生手动/溢出/BC 故障时接管摘要输入，保证 fallback 有界。
-      const decision = await manager.beforeCompact({ reason: compaction.reason, messages: compaction.messages, firstKept: compaction.firstKept }, api, context);
+      // BC 安全文本前缀通过 SDK 提交真实 head；受保护的固定 cut 拒绝，手动/溢出仍使用有界 fallback。
+      const decision = await manager.beforeCompact({ reason: compaction.reason, messages: compaction.messages, entries: compaction.entries, firstKept: compaction.firstKept }, api, context);
       if (decision === undefined || (decision !== undefined && "summary" in decision)) manager.markNativeCompaction();
       return decision;
     } }), hook(GenerationTask, { beforeRequest: async (request, api, context) => {

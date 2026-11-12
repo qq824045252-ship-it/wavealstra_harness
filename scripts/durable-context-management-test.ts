@@ -1,7 +1,7 @@
 /**
  * Issue #26 验收：Durable 会话的「billion-context」自动上下文管理。
  *
- * 这个测试**真实运行** DurableBotRuntime：临时 HOME、真实 JSONL Durable 存储、真实工具执行，
+ * 这个测试**真实运行** DurableBotRuntime：临时 HOME、真实 SQLite Durable 存储、真实工具执行，
  * 只有模型 provider 是本地 fixture（不上网）。因此断言的是 provider 实际收到的 `context.messages`，
  * 不是内部投影函数自报的数字。
  *
@@ -20,7 +20,7 @@
  * 所有等待都有 20s deadline；finally 关闭 runtime、删除临时目录、恢复 HOME/USERPROFILE。
  */
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
@@ -28,6 +28,8 @@ import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat"
 import { getCurrentTools, type AssistantMessage, type Message } from "@earendil-works/pi-ai";
 import { estimateMessageTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { DurableBotRuntime, type DurableBotOptions } from "../src/main/agent/durable/DurableBotRuntime";
+import { openDurablePassiveStorage } from "../src/main/agent/durable/DurableStorage";
+import { selectedDurableSqlite } from "../src/main/agent/durable/DurableStorageMigration";
 import { DurableContextStateDoc } from "../src/main/agent/durable/context/DurableContextState";
 import type { ContextManagementStatusDto } from "../src/shared/context-management";
 
@@ -320,7 +322,7 @@ try {
     }
   };
 
-  // ── 1) 真 JSONL 存储 + 独立 HOME 上打开 runtime ─────────────────────────────
+  // ── 1) 真 SQLite 存储 + 独立 HOME 上打开 runtime ─────────────────────────────
   main = await openRuntime(botOptions({ directory: mainDirectory, withSeed: true, seed: seeded, workspace, fixture, statusHistory }), "main runtime");
   runtimes.push(main);
   assert.equal(typeof main.compact, "function", "DurableBotRuntime.compact() 不存在：Issue #26 的 runtime 接线尚未落地");
@@ -437,9 +439,16 @@ try {
   assert(messageText(retrievedEntry).includes(SEED_RETRIEVE_SENTENCE), "Durable 存储里的工具结果必须逐字包含原句");
   assert(messageText(retrievedEntry).includes(SEED_RETRIEVE_TAIL), "Durable 存储里的工具结果必须包含原句之后的原文细节");
 
-  // 真实 JSONL 存储（不是 MemoryStorage）：目录里必须有 durable 日志文件。
-  const storedFiles = await readdir(mainDirectory, { recursive: true });
-  assert(storedFiles.some(name => String(name).endsWith(".jsonl")), `Durable 必须落在真实 JSONL 存储上：${storedFiles.join(",")}`);
+  // Authoritative SQLite artifact plus an independent physical reader, not an in-memory marker.
+  const sqlitePath = selectedDurableSqlite(mainDirectory);
+  assert(sqlitePath, "Durable must select the official SQLite artifact");
+  assert.equal((await readFile(sqlitePath)).subarray(0, 16).toString("binary"), "SQLite format 3\0");
+  const passiveStore = await openDurablePassiveStorage(mainDirectory, ctx);
+  assert(passiveStore);
+  try {
+    const persisted = await passiveStore.scanEntries({ conversationId: main.conversation.id, order: "ascending" }, 500, undefined, ctx);
+    assert(persisted.items.some(entry => entry.id === seedEntryId && JSON.stringify(entry).includes(SEED_RETRIEVE_SENTENCE)), "independent SQLite reader must return exact original");
+  } finally { await passiveStore.close(ctx); }
 
   // ── 4) 重启恢复：同一 options 重新 open，摘要继续生效且不重复生成 ─────────────
   const summaryCallsBeforeRestart = fixture.summaryCalls.length;

@@ -1,12 +1,58 @@
-/** Candidate portable driver for the official Durable SQLite store; not a backend selector. */
+/** Portable driver for the official Durable SQLite store. */
 import Database from 'better-sqlite3';
 import { mkdir, open } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { realpathSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import type { SqliteDatabase, SqliteExecutor, SqliteValue } from '@earendil-works/pi-durable/storage/sqlite';
 
 export interface DurableSqliteDatabaseOptions {
   readonly readonly?: boolean;
   readonly busyTimeoutMs?: number;
+  /** Pin a coherent passive snapshot until close (read-only connections only). */
+  readonly snapshot?: boolean;
+}
+
+// DELETE-journal readers must not block this event loop while a local writer commits.
+// Cross-process arbitration remains SQLite's job. No polling or filesystem writes.
+class LocalGate {
+  readers = 0;
+  writer = false;
+  waitingWriters = 0;
+  waiters: Array<() => void> = [];
+  private wait(): Promise<void> { return new Promise(resolve => this.waiters.push(resolve)); }
+  private wake(): void { for (const resolve of this.waiters.splice(0)) resolve(); }
+  async read(): Promise<() => void> {
+    while (this.writer || this.waitingWriters) await this.wait();
+    this.readers++;
+    return () => { this.readers--; this.wake(); };
+  }
+  async write(): Promise<() => void> {
+    this.waitingWriters++;
+    while (this.writer || this.readers) await this.wait();
+    this.waitingWriters--; this.writer = true;
+    return () => { this.writer = false; this.wake(); };
+  }
+}
+const localGates = new Map<string, { gate: LocalGate; connections: number }>();
+function gateFor(path: string): { gate: LocalGate; releaseGate: () => void } {
+  if (path === ':memory:') return { gate: new LocalGate(), releaseGate: () => {} };
+  let key: string;
+  try { key = realpathSync(path); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    // mkdir has completed: canonicalize the parent even before a new artifact exists.
+    key = join(realpathSync(dirname(path)), basename(path));
+  }
+  let held = localGates.get(key);
+  if (!held) { held = { gate: new LocalGate(), connections: 0 }; localGates.set(key, held); }
+  held.connections++;
+  let released = false;
+  return { gate: held.gate, releaseGate: () => {
+    if (released) return;
+    released = true;
+    held.connections--;
+    if (held.connections === 0) localGates.delete(key);
+  } };
 }
 
 /** One serialized connection. Transaction handles bypass the queue only during their callback. */
@@ -14,7 +60,7 @@ export class DurableSqliteDatabase implements SqliteDatabase {
   private tail: Promise<unknown> = Promise.resolve();
   private closed = false;
   private readonly statements = new Map<string, Database.Statement>();
-  private constructor(private readonly database: Database.Database, private readonly readOnly: boolean) {}
+  private constructor(private readonly database: Database.Database, private readonly readOnly: boolean, private readonly snapshot: boolean, private readonly gate: LocalGate, private readonly releaseGate: () => void, private readonly releaseSnapshot?: () => void) {}
 
   static async open(path: string, options: DurableSqliteDatabaseOptions = {}): Promise<DurableSqliteDatabase> {
     const timeout = options.busyTimeoutMs ?? 5000;
@@ -42,12 +88,17 @@ export class DurableSqliteDatabase implements SqliteDatabase {
         } finally { await file.close(); }
       }
     }
-    const database = new Database(path, { readonly: options.readonly ?? false,
-      fileMustExist: options.readonly ?? false, timeout });
+    const { gate, releaseGate } = gateFor(path);
+    const releaseSnapshot = options.readonly && options.snapshot ? await gate.read() : undefined;
+    let database: Database.Database;
+    try { database = new Database(path, { readonly: options.readonly ?? false,
+      fileMustExist: options.readonly ?? false, timeout }); }
+    catch (error) { releaseSnapshot?.(); releaseGate(); throw error; }
     try {
       if (options.readonly) {
         // Connection-local protection; no migration, checkpoint, or journal-mode change.
         database.pragma('query_only = ON');
+        if (options.snapshot) database.exec('BEGIN');
       } else {
         // New SQLite databases default to DELETE. Never switch an existing journal mode.
         if (database.pragma('journal_mode', { simple: true }) !== 'delete' && path !== ':memory:') {
@@ -55,9 +106,11 @@ export class DurableSqliteDatabase implements SqliteDatabase {
         }
         database.pragma('synchronous = FULL');
       }
-      return new DurableSqliteDatabase(database, options.readonly ?? false);
+      return new DurableSqliteDatabase(database, options.readonly ?? false, Boolean(options.readonly && options.snapshot), gate, releaseGate, releaseSnapshot);
     } catch (error) {
       database.close();
+      releaseSnapshot?.();
+      releaseGate();
       throw error;
     }
   }
@@ -91,17 +144,32 @@ export class DurableSqliteDatabase implements SqliteDatabase {
     };
   }
 
-  exec(sql: string): Promise<void> { return this.enqueue(() => this.executor(() => {}).exec(sql)); }
-  run(sql: string, ...params: SqliteValue[]): Promise<void> { return this.enqueue(() => this.executor(() => {}).run(sql, ...params)); }
-  runCounted(sql: string, ...params: SqliteValue[]): Promise<number> { return this.enqueue(() => this.executor(() => {}).runCounted(sql, ...params)); }
+  /** Mutating SQL must use exec/run/runCounted or transaction, not get/all. */
+  private mutate<T>(operation: () => Promise<T>): Promise<T> {
+    return this.enqueue(async () => {
+      if (this.closed) throw new Error('SQLite database is closed');
+      const release = this.readOnly ? undefined : await this.gate.write();
+      try { return await operation(); } finally { release?.(); }
+    });
+  }
+  exec(sql: string): Promise<void> { return this.mutate(() => this.executor(() => {}).exec(sql)); }
+  run(sql: string, ...params: SqliteValue[]): Promise<void> { return this.mutate(() => this.executor(() => {}).run(sql, ...params)); }
+  runCounted(sql: string, ...params: SqliteValue[]): Promise<number> { return this.mutate(() => this.executor(() => {}).runCounted(sql, ...params)); }
   get<T extends object>(sql: string, ...params: SqliteValue[]): Promise<T | undefined> { return this.enqueue(() => this.executor(() => {}).get<T>(sql, ...params)); }
   all<T extends object>(sql: string, ...params: SqliteValue[]): Promise<T[]> { return this.enqueue(() => this.executor(() => {}).all<T>(sql, ...params)); }
 
   transaction<T>(callback: (transaction: SqliteExecutor) => Promise<T>): Promise<T> {
     return this.enqueue(async () => {
       if (this.closed) throw new Error('SQLite database is closed');
-      this.database.exec(this.readOnly ? 'BEGIN' : 'BEGIN IMMEDIATE');
+      if (this.snapshot) {
+        let active = true;
+        try { return await callback(this.executor(() => { if (!active) throw new Error('SQLite transaction handle is no longer active'); })); }
+        finally { active = false; }
+      }
+      const release = this.readOnly ? undefined : await this.gate.write();
       let active = true;
+      try { this.database.exec(this.readOnly ? 'BEGIN' : 'BEGIN IMMEDIATE'); }
+      catch (error) { release?.(); throw error; }
       const transaction = this.executor(() => { if (!active) throw new Error('SQLite transaction handle is no longer active'); });
       try {
         const result = await callback(transaction);
@@ -113,16 +181,19 @@ export class DurableSqliteDatabase implements SqliteDatabase {
         try { this.database.exec('ROLLBACK'); }
         catch (rollbackError) { throw new AggregateError([error, rollbackError], 'SQLite transaction failed and rollback failed'); }
         throw error;
-      }
+      } finally { release?.(); }
     });
   }
 
   close(): Promise<void> {
     return this.enqueue(() => {
       if (this.closed) return;
-      this.database.close();
-      this.statements.clear();
-      this.closed = true;
+      try {
+        if (this.snapshot) this.database.exec('ROLLBACK');
+      } finally {
+        try { this.database.close(); }
+        finally { this.releaseSnapshot?.(); this.releaseGate(); this.statements.clear(); this.closed = true; }
+      }
     });
   }
 }

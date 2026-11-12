@@ -1,14 +1,13 @@
-import { existsSync } from "node:fs";
-import { join } from "node:path";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { TaskHistoryDto } from "../../../shared/agent-ipc";
 import { DurableBotRuntime } from "./DurableBotRuntime";
+import { durableStorageExists } from "./DurableStorage";
 
 /** A short-lived native viewer, never cached or promoted into an execution session. */
 export async function readDurableReadOnlyHistory(input: {
   directory: string; cwd: string; models: ModelRuntime; beforeEntryId?: number;
 }): Promise<TaskHistoryDto> {
-  if (!existsSync(join(input.directory, "main.jsonl"))) return { messages: [], cwd: input.cwd };
+  if (!durableStorageExists(input.directory)) return { messages: [], cwd: input.cwd };
   const runtime = await DurableBotRuntime.open({ directory: input.directory, cwd: input.cwd,
     models: input.models, readOnly: true, toolMode: "native", instructions: () => "", onSnapshot: () => {} });
   try {
@@ -23,7 +22,7 @@ export async function readDurableReadOnlyHistory(input: {
 export async function readDurableUserQuestions(input: {
   directory: string; cwd: string; models: ModelRuntime;
 }): Promise<Array<{ id: string; text: string }>> {
-  if (!existsSync(join(input.directory, "main.jsonl"))) return [];
+  if (!durableStorageExists(input.directory)) return [];
   const runtime = await DurableBotRuntime.open({ directory: input.directory, cwd: input.cwd,
     models: input.models, readOnly: true, toolMode: "native", instructions: () => "", onSnapshot: () => {} });
   try {
@@ -35,7 +34,7 @@ export async function readDurableUserQuestions(input: {
 export async function readDurableConversationHead(input: {
   directory: string; cwd: string; models: ModelRuntime; maxTokens?: number;
 }): Promise<string> {
-  if (!existsSync(join(input.directory, "main.jsonl"))) return "";
+  if (!durableStorageExists(input.directory)) return "";
   const runtime = await DurableBotRuntime.open({ directory: input.directory, cwd: input.cwd,
     models: input.models, readOnly: true, toolMode: "native", instructions: () => "", onSnapshot: () => {} });
   try {

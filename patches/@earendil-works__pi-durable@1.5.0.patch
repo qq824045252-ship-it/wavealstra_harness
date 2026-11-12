@@ -1,0 +1,231 @@
+diff --git a/dist/harness/compaction.js b/dist/harness/compaction.js
+index e8eded7..558ef68 100644
+--- a/dist/harness/compaction.js
++++ b/dist/harness/compaction.js
+@@ -203,6 +203,7 @@ export function compactionPolicy(settings, model) {
+     const override = modelOverrides?.[`${model.provider}/${model.modelId}`];
+     return {
+         enabled: override?.enabled ?? policy.enabled,
++        estimateRawContext: override?.estimateRawContext ?? policy.estimateRawContext ?? false,
+         reserveTokens: override?.reserveTokens ?? policy.reserveTokens,
+         keepRecentTokens: override?.keepRecentTokens ?? policy.keepRecentTokens,
+         backgroundTokens: override?.backgroundTokens ?? policy.backgroundTokens,
+diff --git a/dist/harness/generation.js b/dist/harness/generation.js
+index ac42dfe..0fe38a8 100644
+--- a/dist/harness/generation.js
++++ b/dist/harness/generation.js
+@@ -1,4 +1,5 @@
+ import { copyJson } from "@earendil-works/chord";
++import { estimateMessageTokens } from "@earendil-works/pi-ai/utils/estimate";
+ import { isContextOverflow } from "@earendil-works/pi-ai/utils/overflow";
+ import { isRetryableAssistantError, retryDelayMs } from "@earendil-works/pi-ai/utils/retry";
+ import { getCurrentTools } from "@earendil-works/pi-ai/utils/transcript";
+@@ -306,7 +307,13 @@ function createToolTask(tx, runtime, assistant, callId, unoffered) {
+ function thresholdCompaction(view, planned, contextWindow, policy) {
+     if (!policy.enabled || contextWindow <= 0)
+         return undefined;
+-    const tokens = estimateContext(view, planned.flatMap((entry) => entry.model ?? []));
++    const extra = planned.flatMap((entry) => entry.model ?? []);
++    const observed = estimateContext(view, extra);
++    // BC usage describes its smaller provider projection, not the original active range.
++    // Opt-in only: native users keep the SDK's existing measured-usage policy.
++    const tokens = policy.estimateRawContext
++        ? Math.max(observed, [...view.messages, ...extra].reduce((sum, message) => sum + estimateMessageTokens(message), 0))
++        : observed;
+     const blocking = contextWindow - policy.reserveTokens;
+     const background = blocking - policy.backgroundTokens;
+     const over = tokens > blocking ? "blocking" : policy.backgroundTokens > 0 && tokens > background ? "background" : undefined;
+diff --git a/dist/harness/types.d.ts b/dist/harness/types.d.ts
+index eb64e47..7e2373d 100644
+--- a/dist/harness/types.d.ts
++++ b/dist/harness/types.d.ts
+@@ -500,6 +500,8 @@ export type ConversationRetryPolicy = {
+ };
+ /** Automatic compaction thresholds (spec §8.7); manual compaction ignores `enabled`. */
+ export type CompactionPolicy = {
++    /** Host opt-in: projected usage must not hide growth of the original active view. */
++    estimateRawContext?: boolean;
+     /** Threshold and overflow compaction. */
+     enabled: boolean;
+     /** Room kept free for the answer: generation blocks to compact above `contextWindow - reserveTokens`. */
+diff --git a/dist/storage/jsonl/storage.d.ts b/dist/storage/jsonl/storage.d.ts
+index 38d3af9..79b8839 100644
+--- a/dist/storage/jsonl/storage.d.ts
++++ b/dist/storage/jsonl/storage.d.ts
+@@ -4,6 +4,14 @@ import type { CommitResult, ConversationId, ConversationQuery, Cursor, DocumentA
+ export type JsonlStorageOptions = {
+     /** Flush every affected sidecar before appending the main marker. Defaults to false. */
+     readonly fsync?: boolean;
++    /**
++     * Migration export, in original order (including empty commits), after official in-memory validation.
++     * Receives detached, normalized writes with reclaimed sidecars resolved by the standard recovery parser.
++     * Recovery mutates its journal: use a temporary COPY, never the source journal. A later recovery check may
++     * fail after this callback has run. Keep any target unpublished until open() and verification fully succeed.
++     * Callback rejection aborts open(); earlier callbacks are not rolled back.
++     */
++    readonly onRecoveredCommit?: (commit: { readonly seq: Seq; readonly writes: readonly StorageWrite[] }) => void | Promise<void>;
+ };
+ export declare class JsonlCorruptionError extends Error {
+     constructor(message: string, cause?: Error);
+diff --git a/dist/storage/jsonl/storage.js b/dist/storage/jsonl/storage.js
+index ecd8368..3837110 100644
+--- a/dist/storage/jsonl/storage.js
++++ b/dist/storage/jsonl/storage.js
+@@ -172,7 +172,7 @@ export class JsonlStorage {
+         if (!mainPathResult.ok)
+             throw errorFromFile("path join", mainPathResult.error);
+         const storage = new JsonlStorage(fs, absolute.value, mainPathResult.value, options);
+-        await storage.recover(context);
++        await storage.recover(context, options.onRecoveredCommit);
+         return storage;
+     }
+     /**
+@@ -470,7 +470,7 @@ export class JsonlStorage {
+         }
+         await this.fs.renameFile(temporaryPath.value, path.value, context);
+     }
+-    async recover(context) {
++    async recover(context, onRecoveredCommit) {
+         const fs = this.fs;
+         const directory = this.directory;
+         const memory = this.memory;
+@@ -621,6 +621,9 @@ export class JsonlStorage {
+             catch (error) {
+                 throw new JsonlCorruptionError(`Invalid committed state at sequence ${marker.seq}`, error instanceof Error ? error : undefined);
+             }
++            // Export the official normalized recovery writes only after MemoryStorage accepts this commit.
++            // A later tail check or reclamation may still fail: the consumer must keep its target unpublished.
++            await onRecoveredCommit?.(structuredClone({ seq: marker.seq, writes }));
+         }
+         const reclamations = new Map();
+         for (const [file, parsed] of parsedFiles) {
+diff --git a/dist/storage/sqlite/storage.d.ts b/dist/storage/sqlite/storage.d.ts
+index bdf2b1f..712bcb5 100644
+--- a/dist/storage/sqlite/storage.d.ts
++++ b/dist/storage/sqlite/storage.d.ts
+@@ -14,6 +14,7 @@ export declare class SqliteStorage implements Storage {
+     private readonly db;
+     private readonly schema;
+     private nextId;
++    private readOnly;
+     private closed;
+     private closing;
+     private admittedReads;
+@@ -21,6 +22,16 @@ export declare class SqliteStorage implements Storage {
+     private constructor();
+     /** Initialize storage over an owned SQLite database facade. */
+     static open(db: SqliteDatabase, options?: SqliteStorageOptions): Promise<SqliteStorage>;
++    /** Requires an owned physically read-only facade; validates exact current schema without migration. */
++    /** Validate an existing writable artifact without bootstrap or migrations. */
++    static openExisting(db: SqliteDatabase, options?: SqliteStorageOptions): Promise<SqliteStorage>;
++    static openReadOnly(db: SqliteDatabase, options?: SqliteStorageOptions): Promise<SqliteStorage>;
++    /**
++     * Import-only single-writer staging API. Preserves original strictly increasing seq, including empty commits.
++     * Resolves after COMMIT; any refusal or failure rejects and rolls back this commit, not earlier imports.
++     * Never publish the target before the entire source recovery and verification succeed.
++     */
++    replayCommitForImport(commit: { readonly seq: Seq; readonly writes: readonly StorageWrite[] }): Promise<void>;
+     /**
+      * Commit `batches` in one SQL transaction, each with its own seq. Each batch is checked before it writes anything,
+      * against the state the earlier ones left, and the first one refused ends the batch: the transaction commits the ones
+diff --git a/dist/storage/sqlite/storage.js b/dist/storage/sqlite/storage.js
+index 890f142..5f0ace7 100644
+--- a/dist/storage/sqlite/storage.js
++++ b/dist/storage/sqlite/storage.js
+@@ -2,7 +2,7 @@ import { apply } from "@earendil-works/chord/delta";
+ import { StorageRequestError } from "../../errors.js";
+ import { idFromNumber, seqFromNumber } from "../../ids.js";
+ import { nextCursor, scanStart } from "../scan.js";
+-import { applySqliteMigrationsForSchema } from "./migrations.js";
++import { CURRENT_SQLITE_SCHEMA_VERSION, applySqliteMigrationsForSchema } from "./migrations.js";
+ import { createSqliteSchema } from "./schema.js";
+ const parseJson = (value) => JSON.parse(value);
+ const encodeJson = (value) => JSON.stringify(value);
+@@ -97,6 +97,7 @@ export class SqliteStorage {
+     db;
+     schema;
+     nextId;
++    readOnly = false;
+     closed = false;
+     closing;
+     admittedReads = 0;
+@@ -126,6 +127,61 @@ export class SqliteStorage {
+             throw error;
+         }
+     }
++    /** Open an existing writable artifact without bootstrap or migrations. */
++    static async openExisting(db, options = {}) {
++        const storage = await SqliteStorage.openReadOnly(db, options);
++        storage.readOnly = false;
++        return storage;
++    }
++    /** Open an owned, physically read-only facade without migrations. Exact current schema only. */
++    static async openReadOnly(db, options = {}) {
++        try {
++            const schema = createSqliteSchema(options.prefix);
++            const version = await db.get(`SELECT version FROM ${schema.tables.durableSchema} WHERE singleton = 1`);
++            if (version?.version !== CURRENT_SQLITE_SCHEMA_VERSION)
++                throw new Error("Durable SQLite read-only open requires the exact current schema");
++            const metadata = await db.get(`SELECT next_id, next_seq FROM ${schema.tables.durableMetadata} WHERE singleton = 1`);
++            const nextId = Number(metadata?.next_id);
++            if (typeof metadata?.next_id !== "string" || !/^[1-9][0-9]*$/.test(metadata.next_id) ||
++                !Number.isInteger(nextId) || nextId < 2 || nextId > Number.MAX_SAFE_INTEGER + 1 ||
++                String(nextId) !== metadata.next_id ||
++                !Number.isInteger(metadata.next_seq) || metadata.next_seq < 1 || metadata.next_seq > Number.MAX_SAFE_INTEGER + 1)
++                throw new Error("Durable SQLite metadata is invalid");
++            const storage = new SqliteStorage(db, schema, nextId);
++            storage.readOnly = true;
++            return storage;
++        }
++        catch (error) {
++            try { await db.close(); } catch { /* Preserve the initialization failure. */ }
++            throw error;
++        }
++    }
++    /**
++     * Import-only: replay one validated recovery commit with its original sequence, including empty commits.
++     * Use an unpublished staging database and a single writer. Resolves only after COMMIT; any validation or
++     * database failure rejects and rolls back this entire commit. Earlier successful imports remain durable.
++     * Do not publish the target until the entire source recovery and all verification have succeeded.
++     */
++    async replayCommitForImport(commit) {
++        this.assertOpen();
++        if (this.readOnly)
++            throw new StorageRequestError("SqliteStorage is read-only");
++        const { seq, writes } = structuredClone(commit);
++        if (!Number.isSafeInteger(seq) || seq < 1)
++            throw new StorageRequestError("Invalid import commit sequence");
++        let candidateNextId = this.nextId;
++        await this.db.transaction(async (transaction) => {
++            const metadata = await this.readMetadata(transaction);
++            if (seq < metadata.next_seq)
++                throw new StorageRequestError("Import commit sequence must strictly increase");
++            const actions = this.prepareDocumentActions(writes);
++            await this.checkBatch(transaction, writes, actions);
++            await this.applyBatch(transaction, writes, actions, seqFromNumber(seq));
++            candidateNextId = Math.max(candidateNextId, Number(metadata.next_id), this.candidateNextId(writes));
++            await this.writeMetadata(transaction, candidateNextId, seq + 1);
++        });
++        this.nextId = Math.max(this.nextId, candidateNextId);
++    }
+     /**
+      * Commit `batches` in one SQL transaction, each with its own seq. Each batch is checked before it writes anything,
+      * against the state the earlier ones left, and the first one refused ends the batch: the transaction commits the ones
+@@ -133,6 +189,8 @@ export class SqliteStorage {
+      */
+     async commit(batches, receive, _context) {
+         this.assertOpen();
++        if (this.readOnly)
++            throw new StorageRequestError("SqliteStorage is read-only");
+         const seqs = [];
+         let refused;
+         let candidateNextId = this.nextId;
+@@ -194,6 +252,8 @@ export class SqliteStorage {
+     }
+     async mintId() {
+         this.assertOpen();
++        if (this.readOnly)
++            throw new StorageRequestError("SqliteStorage is read-only");
+         if (!Number.isSafeInteger(this.nextId))
+             throw new Error("ID space is exhausted");
+         return idFromNumber(this.nextId++);

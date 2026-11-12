@@ -22,6 +22,7 @@ allowBuilds:
   onnxruntime-node: true
 
 patchedDependencies:
+  '@earendil-works/pi-durable@1.5.0': patches/@earendil-works__pi-durable@1.5.0.patch
   node-pty: patches/node-pty.patch
   'command-code-acp@0.1.1': patches/command-code-acp@0.1.1.patch
   '@ovftank/agy-acp@0.1.0': patches/@ovftank__agy-acp@0.1.0.patch

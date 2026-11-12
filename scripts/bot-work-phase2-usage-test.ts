@@ -129,7 +129,7 @@ try {
         identities++;
         assert(parsed.data.value.deadline <= firstChildRequestAt + parsed.data.value.timeout.timeoutMs, "retry must not extend the deadline beyond the original request's time budget");
       }
-    } finally { await handle.storage.close(context); handle.lease.release(); }
+    } finally { await handle.storage.close(context); handle.lease?.release(); }
     assert.equal(identities, 1, "all attempts reuse the one original owned-child identity");
     for (let repeat = 0; repeat < 3; repeat++) await adapter.flush();
     console.log(`PASS BW-A12 ${mode}: child requests=${childRequests}, one business binding, original child deadline, expected telemetry=${expected}`);

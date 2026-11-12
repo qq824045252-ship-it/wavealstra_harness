@@ -1,21 +1,18 @@
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeSync } from "node:fs";
+import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
 /**
- * Durable 会话存储的**单写者租约**。
- *
- * pi-durable 的 JSONL 格式没有跨进程锁，两个 MyBuddy 实例同时持有同一个目录会交错写入
- * commit seq，使日志永久无法打开（真实事故，见 DurableLogRepair）。应用级单实例锁只在
- * 相同 userData 目录内生效（打包版与 dev 版 userData 不同），所以必须在存储目录上加锁。
- *
- * 约定：锁文件 <directory>/.mybuddy-owner.json
- * - 持有者进程活着（同名进程 + 同 pid）→ 第二个实例拒绝打开，并给出可读错误；
- * - 持有者进程已退出（崩溃/被强杀）→ 后启动者接管，不会被死锁挡死；
- * - 心跳节流 10s，仅在 refresh 时刷新 updatedAt，对正常写入没有压力。
+ * A held SQLite exclusive transaction is the writer mutex, including between handles
+ * in the same process. The OS releases it on process death. Never unlink the lock DB:
+ * replacing its inode would let another process lock a different file concurrently.
+ * JSON metadata is diagnostic and supports conservative legacy-owner refusal.
+ * Requires a local filesystem with working SQLite locks, not a distributed lease.
  */
 
 const LOCK_FILE = ".mybuddy-owner.json";
+const MUTEX_FILE = ".mybuddy-writer-lock.sqlite";
 const HEARTBEAT_INTERVAL_MS = 10_000;
 
 export interface DurableStorageOwner {
@@ -40,9 +37,6 @@ export interface DurableStorageLease {
   heartbeat(): void;
   release(): void;
 }
-
-/** 每个进程一个 token：同进程内重复打开同一目录是合法的（open() 本身按 task 去重）。 */
-const processToken = randomUUID();
 
 function processAlive(pid: number): boolean {
   if (!Number.isSafeInteger(pid) || pid <= 0) return false;
@@ -77,7 +71,7 @@ export function durableStorageOwnerState(directory: string): "active" | "inactiv
 }
 
 function writeOwner(lockPath: string, owner: DurableStorageOwner): void {
-  const temporary = `${lockPath}.tmp-${process.pid}`;
+  const temporary = `${lockPath}.tmp-${owner.token}`;
   const handle = openSync(temporary, "w");
   try {
     writeSync(handle, JSON.stringify(owner));
@@ -91,14 +85,28 @@ function writeOwner(lockPath: string, owner: DurableStorageOwner): void {
 export function claimDurableStorageLease(directory: string): DurableStorageLease {
   mkdirSync(directory, { recursive: true });
   const lockPath = join(directory, LOCK_FILE);
-  const held = readOwner(lockPath);
-  // 另一个进程（不是我们）正持有 → 拒绝。同一 pid 一定是本进程的历史残留，可直接接管。
-  if (held && held.token !== processToken && held.pid !== process.pid && processAlive(held.pid)) {
-    throw new DurableStorageOwnedError(held, lockPath);
-  }
   const now = Date.now();
-  const owner: DurableStorageOwner = { format: 1, pid: process.pid, token: processToken, startedAt: now, updatedAt: now };
-  writeOwner(lockPath, owner);
+  const owner: DurableStorageOwner = { format: 1, pid: process.pid, token: randomUUID(), startedAt: now, updatedAt: now };
+  let mutex: Database.Database | undefined;
+  try {
+    mutex = new Database(join(directory, MUTEX_FILE), { timeout: 0 });
+    if (mutex.pragma("journal_mode", { simple: true }) !== "delete") {
+      throw new Error("Durable writer mutex requires DELETE journal mode");
+    }
+    mutex.exec("BEGIN EXCLUSIVE");
+    const held = readOwner(lockPath);
+    // Old versions do not take this mutex. Never steal a live legacy lease,
+    // including same-process handles. Dead owners can be safely replaced.
+    if (held && processAlive(held.pid)) throw new DurableStorageOwnedError(held, lockPath);
+    writeOwner(lockPath, owner);
+  } catch (error) {
+    mutex?.close();
+    if ((error as { code?: string }).code === "SQLITE_BUSY" || (error as { code?: string }).code === "SQLITE_LOCKED") {
+      throw new DurableStorageOwnedError(readOwner(lockPath) ?? { ...owner, pid: 0 }, lockPath);
+    }
+    throw error;
+  }
+  const heldMutex = mutex;
   let released = false;
   let heartbeatAt = now;
   return {
@@ -120,11 +128,13 @@ export function claimDurableStorageLease(directory: string): DurableStorageLease
     release() {
       if (released) return;
       released = true;
-      if (readOwner(lockPath)?.token !== owner.token) return;
       try {
-        unlinkSync(lockPath);
+        // Remove metadata while still holding the mutex, never after unlocking.
+        if (readOwner(lockPath)?.token === owner.token) unlinkSync(lockPath);
       } catch {
-        /* 已被删除或占用者已切换 */
+        /* Metadata is advisory. Always release the actual OS lock. */
+      } finally {
+        heldMutex.close();
       }
     },
   };

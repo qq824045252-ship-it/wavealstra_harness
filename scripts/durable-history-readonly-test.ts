@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { openNodeJsonlStorage } from "@earendil-works/pi-durable/storage/jsonl/node";
 import { AgentDoc, defineTool } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { Type } from "typebox";
@@ -54,10 +55,15 @@ const tool = defineTool({ name: "fixture_effect", description: "actual isolated 
   execute: async () => { effects++; appendFileSync(join(cwd, "effects.txt"), "effect\n"); return { output: [{ type: "text", text: "written" }] }; } });
 const options = { directory, cwd, models, model: { provider: "fixture", modelId: "fixture" }, toolMode: "codemode" as const,
   tools: [tool], instructions: () => "fixture", onSnapshot: () => {} };
-const files = () => Object.fromEntries(readdirSync(directory).filter(name => name.endsWith(".jsonl")).sort()
-  .map(name => [name, createHash("sha256").update(readFileSync(join(directory, name))).digest("hex")]));
+const files = (dir = directory): unknown => Object.fromEntries(readdirSync(dir).sort().map(name => {
+  const path = join(dir, name), stat = statSync(path);
+  return [name, stat.isDirectory() ? files(path) : {
+    hash: createHash("sha256").update(readFileSync(path)).digest("hex"), mtime: stat.mtimeMs,
+  }];
+}));
 const nativeOpen = DurableBotRuntime.open;
 let service: DurableBotService | undefined;
+let liveWriter: DurableBotRuntime | undefined;
 try {
   let runtime = await DurableBotRuntime.open(options);
   await (await runtime.submit("seed", "seed-request")).wait(ctx);
@@ -76,23 +82,29 @@ try {
   await assert.rejects(runtime.configure(options.model, "native"), /read.?only/i);
   await runtime.close();
   assert.deepEqual(files(), committed, "passive native viewer must not rewrite the journal, agent or pending regeneration");
-  const main = join(directory, "main.jsonl"), valid = readFileSync(main, "utf8");
+  // Corruption refusal remains a legacy JSONL test, not a production-backend assumption.
+  const legacy = join(root, "legacy-jsonl");
+  const legacyStorage = await openNodeJsonlStorage(legacy, ctx, { fsync: true });
+  const legacyRuntime = await DurableBotRuntime.open({ ...options, directory: legacy, storage: legacyStorage });
+  await legacyRuntime.close();
+  const main = join(legacy, "main.jsonl"), valid = readFileSync(main, "utf8");
   for (const suffix of [valid.trimEnd().split("\n").at(-1)! + "\n", '{"format":']) {
     writeFileSync(main, valid + suffix);
-    const damaged = files();
-    await assert.rejects(DurableBotRuntime.open({ ...options, readOnly: true }), /read.only|corruption|sequence/i);
-    assert.deepEqual(files(), damaged, "neither custom repair nor SDK torn-tail recovery may mutate a passive view");
+    const damaged = files(legacy);
+    await assert.rejects(DurableBotRuntime.open({ ...options, directory: legacy, readOnly: true }), /read.only|corruption|sequence/i);
+    assert.deepEqual(files(legacy), damaged, "neither custom repair nor SDK torn-tail recovery may mutate a passive view");
     writeFileSync(main, valid);
   }
 
   db.upsertTask({ id: "task", title: "task", cwd, modelId: "fixture/fixture", updatedAt: Date.now() });
-  let factoryBroken = true;
+  let factoryBroken = false, factoryCalls = 0;
   service = new DurableBotService({ db, models, agentDir: root, mcpDir: join(root, "mcp"), resolveCwd: () => cwd,
     instructions: () => "fixture", toolMode: () => "codemode", defaultModel: () => "fixture/fixture", emit: () => {},
-    tools: async () => { if (factoryBroken) throw new Error("factory unavailable"); return { tools: [tool], contextHooks: [] }; } });
+    tools: async () => { factoryCalls++; if (factoryBroken) throw new Error("factory unavailable"); return { tools: [tool], contextHooks: [] }; } });
   db.connection.prepare("INSERT INTO durable_bot_bindings VALUES (?, 'pi-durable', ?, ?)").run("task", directory, cwd);
   const history = await service.history("task");
   assert.equal(history.historyError, undefined);
+  assert.equal(factoryCalls, 0, "history must not assemble a healthy execution runtime either");
   assert.deepEqual(files(), committed);
   assert.equal(requests, initialRequests);
   assert.equal(effects, 0);
@@ -102,6 +114,7 @@ try {
   const hold = new Promise<void>(resolve => { release = resolve; });
   DurableBotRuntime.open = async input => {
     const viewer = await nativeOpen(input);
+    if (!input.readOnly) liveWriter = viewer;
     if (input.readOnly) { markOpened(); await hold; }
     return viewer;
   };
@@ -123,6 +136,14 @@ try {
   assert.equal(result.error, undefined);
   assert.equal(effects, 1, "only a genuine strict runtime may resume the pending business once");
   assert.equal(readFileSync(join(cwd, "effects.txt"), "utf8"), "effect\n");
+  await liveWriter!.conversation.waitForIdle(ctx);
+  const liveFiles = files(), liveRequests = requests, liveFactories = factoryCalls;
+  const liveHistory = await service.history("task");
+  assert.equal(liveHistory.historyError, undefined);
+  assert.deepEqual(files(), liveFiles, "history beside a live writer changes no bytes, mtimes, inventory or lease");
+  assert.equal(requests, liveRequests);
+  assert.equal(factoryCalls, liveFactories);
+  assert.equal(effects, 1);
   await service.release("task");
   factoryBroken = true;
   const openedAgain = new Promise<void>(resolve => { markOpened = resolve; });
@@ -143,7 +164,7 @@ try {
   release();
   assert.equal((await readingBeforeDelete).historyError, undefined);
   await deleting;
-  assert.equal(existsSync(directory), false, "permanent purge waits until the passive reader releases its lease");
+  assert.equal(existsSync(directory), false, "permanent purge waits until the passive reader closes");
   console.log("PASS passive native history preserves pending work and Code Mode configuration; strict concurrent reopening runs one actual effect");
 } finally {
   DurableBotRuntime.open = nativeOpen;

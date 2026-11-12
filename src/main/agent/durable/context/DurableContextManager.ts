@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import type { AssistantMessage, Message, Models } from "@earendil-works/pi-ai";
 import { estimateContextTokens, estimateMessageTokens, estimateTextTokens } from "@earendil-works/pi-ai/utils/estimate";
-import type { CompactionReason, Conversation, ContextView, EntryRecord, HookApi } from "@earendil-works/pi-durable";
+import type { CompactionReason, Conversation, ContextView, DocumentReader, EntryRecord, HookApi } from "@earendil-works/pi-durable";
+import { DurableContextRefArchive, DurableContextBlockArchive } from "./DurableContextArchive";
 import {
   activeBlocks, blockDocs, collectBlockContent, createCore, createInitialState, defaultConfig,
   isSummaryMessageId, searchBlocks, SUMMARY_HEADER,
@@ -53,6 +54,8 @@ export interface DurableContextManagerHost {
   /** Passive snapshot from the owning Harness; constructing a manager performs no maintenance. */
   initialState?: DurableContextPersistedState;
   initialStatus?: ContextManagementStatusDto;
+  /** Official indexed document reads; absent in legacy hosts, which retain their old in-document maps. */
+  archiveReader?: DocumentReader;
 }
 
 /** 一条 provider 消息与其 Durable 位置（未匹配到 entry 的临时证据消息没有 locator）。 */
@@ -105,6 +108,7 @@ export class DurableContextManager {
   private mutating = false;
   /** 手动整理的取消句柄；取消只停止本次维护，不影响任务停止语义。 */
   private manualAbort?: AbortController;
+  private pendingArchive?: { refs: Record<string, DurableContextRefLocator[]>; blocks: Record<string, number[]> };
 
   constructor(private readonly host: DurableContextManagerHost) {
     this.status = {
@@ -228,6 +232,19 @@ export class DurableContextManager {
   /** 原生压缩已改变 context head：清空当前内核 state 并从新边界重建，旧摘要 ref 归档。 */
   private async rebase(headEntryId: number | null, ctx: Context, reason: "boundary" | "native-fallback"): Promise<void> {
     const previous = this.kernelState ?? parseKernelState(this.persisted);
+    if (previous && this.host.archiveReader) {
+      const refs: Record<string, DurableContextRefLocator[]> = {};
+      for (const map of [this.persisted.refs, ...this.persisted.archivedRefs.map(item => item.refs)]) {
+        for (const [ref, locator] of Object.entries(map)) (refs[ref] ??= []).push(locator);
+      }
+      for (const [ref, rawId] of Object.entries(previous.messageRefs.byRef)) {
+        const locator = this.locatorOfRawId(rawId);
+        if (locator) (refs[ref] ??= []).push(locator);
+      }
+      const blocks = Object.fromEntries(this.persisted.summaries.map(item => [item.blockId, item.entryIds]));
+      for (const block of previous.blocks) blocks[block.blockId] = this.blockEntryIds(block);
+      this.pendingArchive = { refs, blocks };
+    }
     if (previous) {
       const previousEpoch = this.persisted.epoch;
       if (Object.keys(this.persisted.refs).length) {
@@ -239,11 +256,11 @@ export class DurableContextManager {
     this.kernelState = createInitialState();
     // Retire coverage, not identities: stale mNNNNN/bN must never point at a new message/block.
     if (previous) {
-      this.kernelState.messageRefs = structuredClone(previous.messageRefs);
+      if (!this.host.archiveReader) this.kernelState.messageRefs = structuredClone(previous.messageRefs);
       this.kernelState.nextBlockId = Math.max(previous.nextBlockId,
         ...this.persisted.summaries.map(item => Number(item.blockId.slice(1)) + 1).filter(Number.isSafeInteger));
       // Older adapter versions may have retired refs beyond the latest epoch's map.
-      const retired = [...Object.keys(this.persisted.refs), ...this.persisted.archivedRefs.flatMap(item => Object.keys(item.refs))];
+      const retired = [...Object.keys(previous.messageRefs.byRef), ...Object.keys(this.persisted.refs), ...this.persisted.archivedRefs.flatMap(item => Object.keys(item.refs))];
       const highest = retired.reduce((max, ref) => Math.max(max, refIndex(ref) ?? 0), 0);
       if (highest > 0) {
         const ref = `m${String(highest).padStart(5, "0")}`;
@@ -254,6 +271,11 @@ export class DurableContextManager {
         }
       }
       this.kernelState.nextRunId = previous.nextRunId;
+    }
+    if (this.host.archiveReader) {
+      this.persisted.archivedRefs = [];
+      // UI mirrors are not the archive. The transaction below preserves every retired block by stable key.
+      this.persisted.summaries = this.persisted.summaries.slice(-5);
     }
     this.persisted.refs = {};
     this.persisted.headEntryId = headEntryId;
@@ -306,13 +328,27 @@ export class DurableContextManager {
           if ((head?.id ?? null) !== expectedSource.headEntryId || (tail ?? 0) !== expectedSource.watermarkEntryId
             || this.persisted.epoch !== expectedSource.epoch) throw new Error("上下文整理的原始视图已变化，请重试");
         }
+        if (this.pendingArchive) {
+          for (const [ref, locators] of Object.entries(this.pendingArchive.refs)) {
+            const archived = await tx.doc(DurableContextRefArchive, this.host.conversation.id, ref, []);
+            for (const locator of locators) if (!archived.locators.some(item => item.entryId === locator.entryId && item.slot === locator.slot)) {
+              archived.locators.push(locator);
+            }
+          }
+          for (const [blockId, entryIds] of Object.entries(this.pendingArchive.blocks)) {
+            const archived = await tx.doc(DurableContextBlockArchive, this.host.conversation.id, blockId, entryIds);
+            if (JSON.stringify(archived.entryIds) !== JSON.stringify(entryIds)) throw new Error("历史摘要标识冲突，未替换原始记录定位");
+          }
+        }
         for (const key of Object.keys(doc)) Reflect.deleteProperty(doc, key);
         Object.assign(doc, snapshot);
       }, ctx);
       this.committed = snapshot;
+      this.pendingArchive = undefined;
       this.persisted = structuredClone(snapshot);
       this.status = { ...this.status, ...persistedContextStatus(snapshot, false) };
     } catch (error) {
+      this.pendingArchive = undefined;
       if (error instanceof StaleContextOperation) this.committed = error.current;
       this.persisted = structuredClone(this.committed);
       this.kernelState = parseKernelState(this.committed);
@@ -440,18 +476,19 @@ export class DurableContextManager {
 
   /**
    * 原生压缩前的协调点：
-   * - BC 健康且是阈值压缩：decline，交给 BC 的请求前投影处理；
+   * - BC 健康且是阈值压缩：仅对可证明完整、安全的文本前缀返回 BC 摘要，由 SDK 提交 head；
+   *   固定 cut 包含受保护内容时 decline，保留原有逐块投影，不声称该路径有界；
    * - 其他情况（原生手动/溢出/BC 故障）：若原生输入可能撑爆窗口，用自己的有界摘要替代，
    *   保证 fallback 的摘要请求本身一定装得下；否则沿用原生行为。
    */
-  async beforeCompact(input: { reason: CompactionReason; messages: readonly Message[]; firstKept?: number }, api: HookApi, ctx: Context): Promise<{ decline: true } | { summary: string } | undefined> {
+  async beforeCompact(input: { reason: CompactionReason; messages: readonly Message[]; entries?: readonly EntryRecord[]; firstKept?: number }, api: HookApi, ctx: Context): Promise<{ decline: true } | { summary: string } | undefined> {
     if (this.mutating) return { decline: true };
     this.mutating = true;
     try { return await this.prepareNativeCompact(input, api, ctx); }
     finally { this.mutating = false; }
   }
 
-  private async prepareNativeCompact(input: { reason: CompactionReason; messages: readonly Message[]; firstKept?: number }, api: HookApi, ctx: Context): Promise<{ decline: true } | { summary: string } | undefined> {
+  private async prepareNativeCompact(input: { reason: CompactionReason; messages: readonly Message[]; entries?: readonly EntryRecord[]; firstKept?: number }, api: HookApi, ctx: Context): Promise<{ decline: true } | { summary: string } | undefined> {
     // 用户显式选择“按比例压缩（Pi 原生）”时，不参与原生压缩协调，完全沿用 Pi 行为。
     if (this.engine !== "billion-context") return undefined;
     const policy = this.resolvePolicy();
@@ -461,7 +498,35 @@ export class DurableContextManager {
       // 重启后的第一次请求会误走 fallback，重复生成已经存在的摘要。
       await this.ensureReady(ctx);
       if (input.reason === "threshold" && this.healthy && this.kernelState) {
-        return { decline: true };
+        // Only the official compaction task may advance a busy conversation's head. A summary-only
+        // hook cannot carry protected media/signatures across that boundary, so refuse those cuts.
+        if (!input.entries || input.firstKept === undefined) return { decline: true };
+        const view = await this.host.conversation.context(ctx);
+        const prefixIds = new Set<number>(input.entries.map(entry => entry.id));
+        const cut = view.entries.findIndex(entry => entry.id === input.firstKept);
+        if (cut < 1 || JSON.stringify(view.entries.slice(0, cut).map(entry => entry.id)) !== JSON.stringify(input.entries.map(entry => entry.id))) return { decline: true };
+        const recent = view.entries.filter(entry => entry.model?.length).slice(-3);
+        if (recent.some(entry => prefixIds.has(entry.id)) || !safeSummaryPrefix(input.entries)) return { decline: true };
+        // Existing BC blocks are indivisible too. Compose wholly-contained committed summaries;
+        // never summarize the raw originals of a block that straddles the SDK's fixed boundary.
+        for (const block of topLevelBlocks(this.kernelState)) {
+          const ids = this.blockEntryIds(block);
+          if (ids.some(id => prefixIds.has(id)) && ids.some(id => !prefixIds.has(id))) return { decline: true };
+        }
+        const build = this.buildCoreMessages(input.messages, input.entries);
+        const projected = this.renderProjected(build, this.kernelState).messages;
+        const beforeTokens = projected.reduce((sum, message) => sum + estimateMessageTokens(message), 0);
+        operation = await this.beginOperation(ctx, "threshold", true, beforeTokens, this.operationSource(view));
+        const model = await this.resolveModel(api.models, ctx);
+        const text = await this.summarizeMessages(projected, Math.max(4_096, Math.floor(policy.window * 0.45)), model, api.models, ctx);
+        const summary = `${SUMMARY_MARKER}\n${text}\n\n[Original records remain available through acp_search (scope=originals) and acp_retrieve (entryId/ref/blockId).]`;
+        const afterTokens = estimateTextTokens(summary);
+        if (afterTokens >= beforeTokens) throw new Error("前缀摘要没有减少实际输入，未提交原生边界");
+        await this.finishOperation(operation, { phase: "applying", engine: "billion-context",
+          nativeCommit: { taskId: api.taskId, firstKept: input.firstKept, summaryDigest: nativeSummaryDigest(summary) },
+          afterTokens, message: "BC 前缀摘要已准备，等待原生边界提交" }, ctx);
+        this.rebaseNeeded = true;
+        return { summary };
       }
       const budget = Math.max(4_096, Math.floor(policy.window * 0.45));
       const inputTokens = Math.max(estimateMessages(input.messages), input.messages.reduce((total, message) => total + estimateMessageTokens(message), 0));
@@ -702,10 +767,13 @@ export class DurableContextManager {
     if (input.blockId) {
       const block = state.blocks.find(item => item.blockId === input.blockId);
       const visible = this.mutating ? this.committed : this.persisted;
-      return block ? this.blockEntryIds(block) : visible.summaries.find(item => item.blockId === input.blockId)?.entryIds ?? [];
+      if (block) return this.blockEntryIds(block);
+      const mirror = visible.summaries.find(item => item.blockId === input.blockId);
+      if (mirror) return mirror.entryIds;
+      return [...(await this.host.archiveReader?.snapshot(DurableContextBlockArchive, this.host.conversation.id, input.blockId, ctx))?.entryIds ?? []];
     }
     if (input.ref) {
-      const locator = this.lookupRef(input.ref);
+      const locator = await this.lookupRef(input.ref, ctx);
       if (locator) return [locator.entryId];
       // block 级 ref（m00012–m00020）或未知 ref：在摘要块覆盖范围内回退。
       const block = state.blocks.find(item => this.blockRefSpan(item) === input.ref);
@@ -714,11 +782,12 @@ export class DurableContextManager {
     return [];
   }
 
-  private lookupRef(ref: string): DurableContextRefLocator | undefined {
+  private async lookupRef(ref: string, ctx: Context): Promise<DurableContextRefLocator | undefined> {
     const visible = this.mutating ? this.committed : this.persisted;
     const kernel = this.mutating ? parseKernelState(this.committed) : this.kernelState;
     const rawId = kernel?.messageRefs.byRef[ref];
-    const candidates = [rawId ? this.locatorOfRawId(rawId) : undefined, visible.refs[ref], ...visible.archivedRefs.map(item => item.refs[ref])]
+    const archived = await this.host.archiveReader?.snapshot(DurableContextRefArchive, this.host.conversation.id, ref, ctx);
+    const candidates = [rawId ? this.locatorOfRawId(rawId) : undefined, visible.refs[ref], ...visible.archivedRefs.map(item => item.refs[ref]), ...archived?.locators ?? []]
       .filter((item): item is DurableContextRefLocator => Boolean(item));
     const first = candidates[0];
     if (first && candidates.some(item => item.entryId !== first.entryId || item.slot !== first.slot)) {
@@ -1144,6 +1213,27 @@ export class DurableContextManager {
   }
 
   dispose(): void { this.disposed = true; this.manualAbort?.abort(); }
+}
+
+/** A text prefix may retire only complete original exchanges. Synthetic missing results in a
+ * ContextView do not prove completion, so inspect the original entry payloads, not repaired messages. */
+function safeSummaryPrefix(entries: readonly EntryRecord[]): boolean {
+  const calls = new Set<string>();
+  const results = new Set<string>();
+  for (const entry of entries) for (const message of entry.model ?? []) {
+    if (Array.isArray(message.content)) for (const part of message.content) {
+      if (part.type !== "text" && part.type !== "toolCall") return false;
+      if (part.type === "toolCall") {
+        if (calls.has(part.id)) return false;
+        calls.add(part.id);
+      }
+    }
+    if (message.role === "toolResult") {
+      if (results.has(message.toolCallId)) return false;
+      results.add(message.toolCallId);
+    }
+  }
+  return [...calls].every(id => results.has(id)) && [...results].every(id => calls.has(id));
 }
 
 export interface ToolReader {

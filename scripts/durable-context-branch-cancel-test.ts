@@ -1,7 +1,7 @@
 /**
  * Issue #26 行为测试：会话分支的 as-of 压缩状态、手动整理取消、状态投影一致性。
  *
- * 真实运行 DurableBotRuntime + 真实 JSONL 存储；provider 由本地 fixture 代替（不上网）。
+ * 真实运行 DurableBotRuntime + 真实 SQLite 存储；provider 由本地 fixture 代替（不上网）。
  * 前置：`pnpm -s test:durable-context-management` 已覆盖自动整理/原文回查/重启；
  * 本文件只覆盖那组测试没有覆盖、但 Issue #26 C.4 / E.3 明确要求的边界。
  */

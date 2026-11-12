@@ -28,6 +28,8 @@ export const DEFAULT_PRODUCT_COMPACTION_SETTINGS: ProductCompactionSettings = {
 };
 
 export interface ResolveDurableCompactionOptions {
+  /** Version-pinned SDK extension: BC's projected usage must not hide growth of the original view. */
+  estimateRawContext?: boolean;
   /** 摘要保留的最近上下文 token 数；缺省 20000。 */
   keepRecentTokens?: number;
   /** 当前会话模型的精确 `"provider/modelId"` key；给了才写 modelOverrides。 */
@@ -36,6 +38,7 @@ export interface ResolveDurableCompactionOptions {
 
 /** 可直接交给 pi-durable `HarnessSettings.compaction` 的完整字段（全必填）。 */
 export interface ResolvedDurableCompactionSettings {
+  estimateRawContext?: boolean;
   enabled: boolean;
   reserveTokens: number;
   keepRecentTokens: number;
@@ -69,5 +72,5 @@ export function resolveDurableCompactionSettings(contextWindow: number, product:
   // 窗口非法：harness 级保守值对所有模型一致，不需要 per-model 覆盖。
   if (!policy) return resolved(keepRecentTokens, CONSERVATIVE_DURABLE_RESERVE_TOKENS);
   const reserveTokens = Math.min(contextWindow - 1, Math.max(1024, contextWindow - policy.triggerTokens));
-  return resolved(keepRecentTokens, reserveTokens, options.modelKey);
+  return { ...resolved(keepRecentTokens, reserveTokens, options.modelKey), ...(options.estimateRawContext ? { estimateRawContext: true } : {}) };
 }

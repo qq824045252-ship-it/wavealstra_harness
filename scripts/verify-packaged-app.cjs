@@ -391,7 +391,7 @@ function verifyPackagedApp(appDir, options = {}) {
         fail(`packaged subagent worker failed to start (exit ${probe.status}): ${stderr.trim().slice(0, 400)}`);
       } else if (pin && facts.workerVersion !== pin) {
         fail(`packaged subagent worker reported version ${JSON.stringify(facts.workerVersion)}, expected ${pin}`);
-      } else if (nativeProbe?.runtime !== "pi-durable" || nativeProbe.ownedChild !== true || nativeProbe.recoveredReceipt !== true || nativeProbe.effectCount !== 1) {
+      } else if (nativeProbe?.runtime !== "pi-durable" || nativeProbe.backend !== "sqlite" || nativeProbe.ownedChild !== true || nativeProbe.recoveredReceipt !== true || nativeProbe.effectCount !== 1) {
         fail("packaged Durable child, effect or restored receipt acceptance failed");
       }
     }

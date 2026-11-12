@@ -888,6 +888,15 @@ export class DurableBotService {
   async history(taskId: string, beforeEntryId?: number): Promise<TaskHistoryDto> {
     if (!this.binding(taskId) && !this.options.db.getTask(taskId)?.sessionFile) return { messages: [] };
     try {
+      // Opening history is inspection, not permission to resume pending tasks, migrate a
+      // Durable journal, repair configuration, or assemble execution tools. A legacy Pi
+      // sessionFile has no Durable binding yet and retains its separate import path below.
+      if (this.binding(taskId)) {
+        const history = await this.passiveHistory(taskId, beforeEntryId);
+        const modelId = this.options.db.getTask(taskId)?.modelId;
+        const modelRepair = this.opened.get(taskId)?.modelRepair;
+        return { ...history, ...(modelId ? { modelId } : {}), ...(modelRepair ? { modelRecovery: modelRepair } : {}) };
+      }
       const recovered = await this.withRecovery(taskId, async open => {
         const block = beforeEntryId === undefined ? undefined : await open.runtime.loadHistoryBlock(beforeEntryId);
         const snapshot = block ? open.runtime.snapshot : await open.runtime.refresh();
@@ -954,8 +963,7 @@ export class DurableBotService {
       await prior;
     }
     if (this.closing) throw new Error("Bot runtime is closing");
-    // Another request may already have rebuilt a healthy writer. Use it instead of claiming its lease.
-    if (this.opened.has(taskId) || this.opening.has(taskId)) return this.history(taskId, beforeEntryId);
+    // Passive readers never claim a writer lease, even if a live runtime exists.
     const binding = this.binding(taskId);
     if (!binding) return { messages: [] };
     const reading = readDurableReadOnlyHistory({ directory: binding.directory, cwd: binding.cwd,

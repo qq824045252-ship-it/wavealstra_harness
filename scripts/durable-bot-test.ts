@@ -537,7 +537,7 @@ for (const mode of ["native", "codemode"] as const) {
   console.log("PASS 模型目录漂移解析：精确命中 / 同名换路由 / 默认模型 / 无模型明确报错");
 }
 {
-  // 端到端：model_id 悬空的 Bot 任务必须能打开历史，并把替换结果写回任务、如实告知用户。
+  // 历史读取不修复配置；进入执行运行时后才修复悬空模型并如实告知用户。
   const agentDir = join(root, "model-drift"); await mkdir(agentDir);
   const cwd = join(agentDir, "cwd"); await mkdir(cwd);
   const db = new AppDatabase(join(agentDir, "app.db"));
@@ -558,15 +558,21 @@ for (const mode of ["native", "codemode"] as const) {
   try {
     const history = await service.history(taskId);
     assert.equal(history.historyError, undefined, "模型下线不能被当成会话损坏（这才是「会话记录打不开」的根因）");
-    assert.deepEqual(history.modelRecovery, { from: staleId, to: "magpie/workbuddy/glm-5.3-flash" });
-    assert.equal(history.modelId, "magpie/workbuddy/glm-5.3-flash");
+    assert.equal(history.modelRecovery, undefined, "只读历史不能触发模型修复");
+    assert.equal(history.modelId, staleId);
+    assert.equal(db.getTask(taskId)!.modelId, staleId);
+    // This explicit execution-session operation may open/configure the writer; no provider request is needed.
+    assert.equal(await service.findSubmission(taskId, "missing-fixture-operation"), undefined);
+    const configured = await service.history(taskId);
+    assert.deepEqual(configured.modelRecovery, { from: staleId, to: "magpie/workbuddy/glm-5.3-flash" });
+    assert.equal(configured.modelId, "magpie/workbuddy/glm-5.3-flash");
     assert.equal(db.getTask(taskId)!.modelId, "magpie/workbuddy/glm-5.3-flash", "修复必须写回任务，输入框才不会继续显示已下线模型");
     await service.release(taskId);
     const reopened = await service.history(taskId);
     assert.equal(reopened.modelRecovery, undefined, "任务模型已修复，重开不再重复提示");
     assert.equal(db.getTask(taskId)!.modelId, "magpie/workbuddy/glm-5.3-flash");
   } finally { await service.close(); db.close(); }
-  console.log("PASS 悬空模型不阻塞 Bot 历史：同名路由替换 + 写回任务 + 一次性告知");
+  console.log("PASS 悬空模型不阻塞只读历史：仅执行运行时修复同名路由 + 写回任务 + 一次性告知");
 }
 {
   // 真实事故 2：图片淘汰这类扩展钩子 `pi.on("context")` 被 Durable 桥接层直接拒绝，

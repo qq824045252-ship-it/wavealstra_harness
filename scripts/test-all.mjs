@@ -58,7 +58,7 @@ const SELF_EXCLUDE_PATTERNS = [/^test:all/, /^test:verify/];
  * 内部还会再跑一遍同类用例，所以性能用例仍放在最后。
  * 不跳过用例、不重试失败，也不调整 timeout 或失败基线。
  */
-const SERIAL_TEST_PATTERNS = [/^test:core-performance/, /^test:bot-work-query-scale$/, /^test:bot-work-summary-query$/, /^test:bot-work-phase2-recovery$/, /^test:bot-work-phase5-native-story$/, /^test:gateway-inbox-crash$/, /^test:gateway-port-fallback$/];
+const SERIAL_TEST_PATTERNS = [/^test:durable-storage-(migration|lease)$/,/^test:core-performance/, /^test:bot-work-query-scale$/, /^test:bot-work-summary-query$/, /^test:bot-work-phase2-recovery$/, /^test:bot-work-phase5-native-story$/, /^test:gateway-inbox-crash$/, /^test:gateway-port-fallback$/];
 
 /**
  * 排除集合按执行前置条件分类（+ 一个临时桶），默认套件只跑 headless 用例：
@@ -290,6 +290,10 @@ const KNOWN_HEADLESS_RED = new Set([
  * 显式清单优先于下面的命名兜底，否则它们会被 `^test:browser-` 之类正则误伤。
  */
 const HEADLESS_TESTS = new Set([
+  "test:durable-context-active-view",
+  "test:durable-storage-replay-api",
+  "test:durable-storage-migration",
+  "test:durable-storage-lease",
   "test:work-file-event-source", // Real local fs.watch + SQLite; no Electron or external source account.
   "test:gadget-save-copies",
   "test:bot-call-thread",

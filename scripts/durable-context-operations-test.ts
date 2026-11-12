@@ -1,4 +1,4 @@
-/** Production manager/runtime + real JSONL; fixture providers only. Three actual SIGKILL boundaries. */
+/** Production manager/runtime + real SQLite; fixture providers only. Four actual SIGKILL boundaries. */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { fork } from "node:child_process";

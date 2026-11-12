@@ -7,7 +7,8 @@ import { ModelRuntime, VERSION } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { createRegistry, defineExtension, defineTool, Harness } from "@earendil-works/pi-durable";
-import { openNodeJsonlStorage } from "@earendil-works/pi-durable/storage/jsonl/node";
+import { openDurableStorage, openDurablePassiveStorage } from "./DurableStorage";
+import type { DurableStorageLease } from "./DurableStorageLease";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { Type } from "typebox";
 import { createDurableSubagentTools, resolveDurableExecutionCwd } from "./DurableSubagents";
@@ -21,6 +22,7 @@ export async function verifyPackagedDurable() {
   const savedProfile = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = agentDir;
   let harness: Harness | undefined;
+  let lease: DurableStorageLease | undefined;
   let writes = 0;
   try {
     await mkdir(join(agentDir, "agents"), { recursive: true }); await mkdir(cwd);
@@ -51,7 +53,9 @@ export async function verifyPackagedDurable() {
     const open = async () => {
       const registry = createRegistry();
       registry.install(defineExtension({ name: "package-probe", tools: [proof, ...createDurableSubagentTools({ taskId: "package-probe", cwd, models, permissionMode: () => "auto" })] }));
-      return Harness.open(await openNodeJsonlStorage(join(directory, "state"), context, { fsync: true }), { models, registry,
+      lease?.release();
+      const handle = await openDurableStorage(join(directory, "state"), context); lease = handle.lease;
+      return Harness.open(handle.storage, { models, registry,
         env: async (target, ctx) => new NodeExecutionEnv({ cwd: await resolveDurableExecutionCwd(target, ctx, cwd) }) }, context);
     };
     harness = await open();
@@ -64,9 +68,14 @@ export async function verifyPackagedDurable() {
     const restored = await conversation.submit({ type: "input", content: "Run offline probe", requestId: "package-operation" }, context);
     assert.equal(restored.id, receipt.id); assert.equal((await restored.wait(context)).status, "done");
     assert.equal(writes, 1); assert.equal(await readFile(join(cwd, "proof.txt"), "utf8"), "1");
-    return { version: VERSION, runtime: "pi-durable", ownedChild: true, recoveredReceipt: true, effectCount: writes };
+    const passive = await openDurablePassiveStorage(join(directory, "state"), context);
+    assert(passive); await passive.close(context);
+    const selector = JSON.parse(await readFile(join(directory, "state", ".mybuddy-storage.json"), "utf8"));
+    assert.equal(selector.backend, "sqlite");
+    return { version: VERSION, runtime: "pi-durable", backend: "sqlite", ownedChild: true, recoveredReceipt: true, effectCount: writes };
   } finally {
     await harness?.close(context);
+    lease?.release();
     if (savedProfile === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = savedProfile;
     await rm(directory, { recursive: true, force: true });
   }

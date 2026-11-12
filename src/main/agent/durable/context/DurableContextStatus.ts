@@ -6,7 +6,10 @@ import { ActiveDurableConversation } from "../DurableConversationBranch";
 import { DurableContextStateDoc, persistedContextStatus, matchesNativeContextCommit, type DurableContextPersistedState } from "./DurableContextState";
 import type { ContextManagementStatusDto } from "../../../../shared/context-management";
 
-/** No Harness, model, scheduler, lease file, repair, or document initialization on a passive read. */
+/** No Harness, model, scheduler, lease file, repair, or document initialization on a passive read.
+ * The passive Storage pins one read snapshot through close, so branch, state, native head
+ * and submission proof cannot come from different commits of an active writer.
+ */
 export async function readDurableContextStatus(directory: string): Promise<ContextManagementStatusDto | undefined> {
   const storage = await openDurablePassiveStorage(directory, ctx);
   if (!storage) return undefined;

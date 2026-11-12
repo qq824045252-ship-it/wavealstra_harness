@@ -87,17 +87,18 @@ assert(repairDurableJsonlLog(corrupt) === undefined, "second repair must be a no
 await storage.close(ctx);
 console.log("repaired log opens; commits:", sequences.length);
 
-// 4. openDurableStorage 端到端：损坏目录 → 自动修复 → 打开 + 报告
-const autoHealed = join(root, "auto-healed");
+// 4. Production migration fails closed on conflicting commits; repair helpers remain explicit diagnostics.
+// Dropping duplicate seq may discard different committed content or receipts, so it cannot safely resume tasks.
+const autoHealed = join(root, "migration-corruption-refused");
 mkdirSync(autoHealed, { recursive: true });
 await buildCorruptedLog(autoHealed);
-const handle = await openDurableStorage(autoHealed, ctx);
-assert(handle.repair !== undefined, "openDurableStorage must report the repair");
-assert(existsSync(join(autoHealed, ".mybuddy-owner.json")), "lease file must exist while owned");
-await handle.storage.close(ctx);
-handle.lease.release();
-assert(!existsSync(join(autoHealed, ".mybuddy-owner.json")), "lease file must be removed on release");
-console.log("openDurableStorage auto-repair:", handle.repair!.droppedMainCommits, "duplicate commit(s) dropped");
+const originalBytes = new Map(readdirSync(autoHealed).filter(name => name.endsWith(".jsonl"))
+  .map(name => [name, readFileSync(join(autoHealed, name))]));
+await assert.rejects(openDurableStorage(autoHealed, ctx), error => isJsonlCorruption(error));
+for (const [name, bytes] of originalBytes) assert.deepEqual(readFileSync(join(autoHealed, name)), bytes);
+assert(!existsSync(join(autoHealed, ".mybuddy-storage.json")), "corrupt migration must stay unpublished");
+assert(!existsSync(join(autoHealed, ".mybuddy-owner.json")), "failed opener must release its lease");
+console.log("production migration refuses ambiguous corruption and preserves all originals");
 
 // 5. 租约：另一个活进程持有 → 拒绝；进程退出 → 接管
 const leased = join(root, "leased");
@@ -106,6 +107,7 @@ const owner = await openDurableStorage(leased, ctx);
 const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "ignore" });
 await wait(600);
 writeFileSync(join(leased, ".mybuddy-owner.json"), JSON.stringify({ format: 1, pid: child.pid, token: "foreign-writer", startedAt: Date.now(), updatedAt: Date.now() }));
+await owner.storage.close(ctx);
 owner.lease.release();
 let owned: unknown;
 try {
