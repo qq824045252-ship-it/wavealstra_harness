@@ -7,6 +7,7 @@ import { GatewayWorkTargets, type GatewayWorkRoute } from "../../gateway/Gateway
 import { GatewayWorkNotSentError, type GatewayWorkTarget, type GatewayWorkSendInput, type GatewayWorkSendResult } from "../../gateway/work-outbound";
 import type { AsyncWorkNotificationChannel } from "./WorkNotificationDelivery";
 import type { WorkService } from "./WorkService";
+import { closureCorrectionNotice } from "./WorkClosureCorrectionDelivery";
 
 export interface WorkGatewayPort {
   checkWorkTarget(target: GatewayWorkTarget): string | undefined;
@@ -90,8 +91,11 @@ export class WorkGatewayNotificationChannels {
         try {
           const rejected = this.admit(route, input.notification);
           if (rejected) return { ok: false, retryable: true, responseLost: false, error: rejected };
-          return await this.gateway.sendWorkNotification({ target: route.target, text: workGatewayText(input.notification),
-            effectKey: input.idempotencyKey, signal: input.signal, assertCurrent: input.assertCurrent });
+          const correction = closureCorrectionNotice(this.db, input.notification);
+          return await this.gateway.sendWorkNotification({ target: route.target, text: workGatewayText(correction
+            ? { ...input.notification, body: input.notification.deliveryFiles?.length ? correction : input.notification.body, deliveryFiles: undefined } : input.notification),
+            qqMessageSequence: route.target.channelType === "qq" ? qqWorkMessageSequence(this.db, route.targetKey, `gateway:${route.target.channelId}`, input.idempotencyKey) : undefined,
+            files: correction ? [] : input.notification.deliveryFiles, recordProgress: input.recordProgress, effectKey: input.idempotencyKey, signal: input.signal, assertCurrent: input.assertCurrent });
         } catch (error) {
           return error instanceof GatewayWorkNotSentError
             ? { ok: false, retryable: error.retryable, responseLost: false, error: error.message }
@@ -116,9 +120,19 @@ export class WorkGatewayNotificationChannels {
 }
 
 /** One bounded plain-text request avoids untracked partial chunk sends. */
-export function workGatewayText(notification: Pick<WorkNotificationDto, "title" | "body">): string {
+export function workGatewayText(notification: Pick<WorkNotificationDto, "title" | "body" | "deliveryFiles"> & Partial<Pick<WorkNotificationDto, "kind">>): string {
   const suffix = "\n\n完整成果、待决事项和验证范围请在 MyBuddy 结果卡中查看。";
-  const content = [notification.title, notification.body].filter(Boolean).join("\n\n");
+  // A model's desktop summary can say "attached" before this channel has sent anything.
+  // External delivery wording is derived from this immutable request's actual files.
+  const attachmentStatus = notification.deliveryFiles === undefined ? undefined
+    : notification.deliveryFiles.length ? `本次请求包含文件：${notification.deliveryFiles.map(file => file.name).join("、")}。文件送达以渠道实际附件和回执为准。`
+      : "本次通知没有附件。";
+  // Preserve the actual answer (including text-only results). Keep model claims
+  // separate from transport facts rather than discarding the whole answer.
+  const body = notification.deliveryFiles !== undefined && notification.body
+    ? `执行方说明（不代表渠道投递回执）：\n${notification.body.split("\n").map(line => `> ${line}`).join("\n")}`
+    : notification.body;
+  const content = [notification.title, body, attachmentStatus].filter(Boolean).join("\n\n");
   let text = "";
   let bytes = Buffer.byteLength(suffix, "utf8");
   for (const character of content) {
@@ -127,4 +141,16 @@ export function workGatewayText(notification: Pick<WorkNotificationDto, "title" 
     text += character; bytes += length;
   }
   return text + suffix;
+}
+
+/** Effect row order is the reservation: retries retain a slot; different Works sharing one source cannot collide. */
+export function qqWorkMessageSequence(db: Database.Database, targetKey: string, channel: string, effectKey: string): number {
+  const effect = z.object({ rowid: z.number() }).optional().parse(db.prepare(
+    "SELECT rowid FROM work_notification_effects WHERE effect_key=? AND target_key=? AND channel=?").get(effectKey, targetKey, channel));
+  if (!effect) throw new GatewayWorkNotSentError("QQ 通知缺少原始目标的持久投递意图，未发送");
+  const prior = z.object({ count: z.number() }).parse(db.prepare(
+    "SELECT COUNT(*) count FROM work_notification_effects WHERE target_key=? AND channel=? AND rowid<?").get(targetKey, channel, effect.rowid));
+  const sequence = prior.count + 2;
+  if (sequence > 5) throw new GatewayWorkNotSentError("QQ 原消息最多回复 5 次，Work 通知槽位已用完，未发送");
+  return sequence;
 }

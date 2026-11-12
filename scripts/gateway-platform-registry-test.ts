@@ -32,7 +32,7 @@ for (const platform of Object.keys(GATEWAY_CAPABILITIES) as GatewayChannelType[]
   assert.equal(event?.source.accountKey, adapter.key);
   assert.equal(event?.text, "hello");
   assert.equal(event?.message.messageId, "message");
-  assert.equal(event?.capabilities.media, ["telegram", "discord", "feishu", "slack", "dingtalk", "weixin", "qq"].includes(platform) ? "inbound" : false);
+  assert.equal(event?.capabilities.media, ["discord", "dingtalk"].includes(platform) ? "bidirectional" : ["telegram", "feishu", "slack", "weixin", "qq"].includes(platform) ? "inbound" : false);
   await event!.message.reply("reply");
   assert.equal(replies, 1);
   await assert.rejects(() => adapter.handler({ ...message, channelId: "another-default" }), /身份/);
@@ -56,8 +56,8 @@ for (const patch of [{ channelId: "other" }, { connectionKey: "b".repeat(64) }, 
   await assert.rejects(() => adapter.handler({ ...message, workTarget: { ...message.workTarget!, ...patch } }), /来源/);
 }
 assert.equal(GATEWAY_CAPABILITIES.slack.durableInbound, true);
-assert.equal(GATEWAY_CAPABILITIES.dingtalk.workNotifications, false);
-assert.equal(GATEWAY_CAPABILITIES.discord.workNotifications, false);
+assert.equal(GATEWAY_CAPABILITIES.dingtalk.workNotifications, true);
+assert.equal(GATEWAY_CAPABILITIES.discord.workNotifications, true);
 // A slow turn cannot overlap the next turn in the same native conversation.
 {
   const registry = new GatewayPlatformRegistry();

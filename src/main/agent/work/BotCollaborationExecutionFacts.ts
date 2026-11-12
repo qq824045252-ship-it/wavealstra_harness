@@ -21,7 +21,7 @@ export function recordCollaborationExecutionStarted(db: Database.Database, taskI
 
 /** Called after the failed delivery transaction has rolled back. */
 export function recordCollaborationReturnFailure(db: Database.Database, userId: string, workId: string,
-  error: unknown, phase: "delivery" | "review_or_delivery" = "delivery"): void {
+  error: unknown, phase: "delivery" | "review_or_delivery" | "review" | "application" = "delivery"): void {
   const message = error instanceof Error ? error.message : String(error);
   const repo = new BotCollaborationRepository(db);
   const row = repo.byWork(userId, workId);
@@ -30,5 +30,5 @@ export function recordCollaborationReturnFailure(db: Database.Database, userId: 
     db.prepare("SELECT input_snapshot_id FROM works WHERE work_id=? AND user_id=?").get(workId, userId));
   const identity = createHash("sha256").update(JSON.stringify([work?.input_snapshot_id, phase, message])).digest("hex");
   repo.event(userId, row.collaborationId, { operationId: `return-failure:${identity}`, workId, kind: "failed",
-    detail: `${phase === "delivery" ? "成果回传失败" : "成果整理或回传失败"}，正在保留原结果并等待重试：${message.slice(0, 2000)}` });
+    detail: `${({ delivery: "成果回传失败", review: "成果整理失败", application: "成果判定应用失败", review_or_delivery: "成果整理或回传失败" })[phase]}，正在保留原结果并等待重试：${message.slice(0, 2000)}` });
 }

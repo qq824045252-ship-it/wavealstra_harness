@@ -29,6 +29,7 @@ export interface ChannelAdapter {
 }
 
 export interface GatewayInboundMessage {
+  audience?: "private" | "shared";
   channelId: string;
   chatId: string;
   text: string;

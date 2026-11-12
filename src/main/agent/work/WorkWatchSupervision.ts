@@ -2,8 +2,9 @@ import { createHash } from "node:crypto";
 import { WorkWatchFollowUp } from "./WorkWatchFollowUp";
 import { previousWatchObservations } from "./WorkWatchComparison";
 import { watchGoalEvidence, watchGoalMet, watchNotificationNotMet, watchNotificationArtifactEvidence, watchGoalClosureSummary } from "./WorkWatchGoal";
-import { completionArtifactEvidence, type WorkCompletionOptions } from "./WorkCompletionCoordinator";
-import type { WorkResultDecision } from "./BotWorkResultTurn";
+import { completionArtifactEvidence } from "./WorkCompletionArtifactEvidence";
+import type { WorkCompletionOptions } from "./WorkCompletionCoordinator";
+import type { WorkResultDecision } from "./WorkResultDecision";
 import type { WorkDto, WorkExecutionBindingDto } from "../../../shared/bot-work";
 import { watchTimeExpired } from "../../../shared/work-watch-expiry";
 import { watchObservationDelivery, watchTeamReadEvidence, type WatchObservationPresentation } from "./WorkWatchObservation";
@@ -339,14 +340,14 @@ export class WorkWatchSupervision {
       this.reconcileNextStepBlockers(work.workId,followUp.scheduled);
       const waitingOnPlan = works.repo.listSubscriptions(work.workId).some(s => !s.stoppedAt && (s.nextWakeAt !== undefined || s.source !== 'cron'));
       if (!met && latest.work.lifecycle === 'active' && latest.work.watchRule?.executionMode === 'continuous' && !followUp.scheduled
-        && (decision.decision === 'ask' || !waitingOnPlan)) {
-        const reasonCode = decision.decision === 'ask' ? 'user-input' : 'invalid-schedule';
+        && (['ask', 'wait'].includes(decision.decision) || !waitingOnPlan)) {
+        const reasonCode = ['ask', 'wait'].includes(decision.decision) ? 'user-input' : 'invalid-schedule';
         const blockerId = `watch-next-step:${id}:${reasonCode}`;
         if (!works.repo.listOpenBlockers(work.workId).some(blocker => blocker.reasonCode === reasonCode)) {
           if (works.repo.getBlocker(blockerId)) works.repo.reopenBlocker(blockerId,work.workId);
           else works.repo.insertBlocker({blockerId,workId:work.workId,reportedByBotId:work.ownerBotId,kind:'operational',
-            reasonCode,reason:decision.decision === 'ask' ? decision.reply : followUp.notice ?? '持续目标尚未结束，但没有可执行的下一步或真实等待安排。',
-            waitingForUserInput:decision.decision === 'ask',status:'open',createdAt:Date.now()});
+            reasonCode,reason:['ask', 'wait'].includes(decision.decision) ? decision.reply : followUp.notice ?? '持续目标尚未结束，但没有可执行的下一步或真实等待安排。',
+            waitingForUserInput:['ask', 'wait'].includes(decision.decision),status:'open',createdAt:Date.now()});
         }
       }
       const reply = (decision.decision === "continue" || decision.waitPlan) && !followUp.scheduled ? "本次交付已保留的结果，原目标仍有未完成部分。没有安排继续执行，也没有重放已完成或结果未知的动作。" : requestedStop && !met ? `${presentation.summary}\n\n停止条件尚未由本轮有效证据完成核对，未将持续委托标记完成。` : decision.reply;
@@ -358,7 +359,7 @@ export class WorkWatchSupervision {
         && results.length > 0 && results.every(result=>result.status!=='rejected' && !result.isSpeculation && !result.hasWriteConflicts && !result.uncoveredScope.length && !result.uncoveredCriterionIds.length)
         && artifactEvidence.length > 0 && artifactEvidence.every(item=>item.state==='text' && !item.truncated && !item.omittedEvidenceCount)
         && results.every(result=>!result.artifactRefs.length || artifactEvidence.length > 0);
-      const silent = !met && !latest.executionRisks.items.length && (conditionSilent || (!decision.notificationAssessment || decision.notificationAssessment.status === 'not_applicable') && work.watchRule?.executionMode !== 'continuous' && !decision.followUp && !requestedStop && decision.stopAssessment?.status !== 'unknown' && presentation.silent && decision.outcome === 'completed' && decision.decision !== 'ask' && !error);
+      const silent = !met && !latest.executionRisks.items.length && (conditionSilent || (!decision.notificationAssessment || decision.notificationAssessment.status === 'not_applicable') && work.watchRule?.executionMode !== 'continuous' && !decision.followUp && !requestedStop && decision.stopAssessment?.status !== 'unknown' && presentation.silent && decision.outcome === 'completed' && !['ask', 'wait'].includes(decision.decision) && !error);
       if (!silent && !this.options.deliver({bindingId:id,eventId:`watch-supervision:${id}`,text:reply,category:'result',
         notices:[...(latest.executionRisks.items.length ? ['仍有旧执行或工具效果尚未核实：'+latest.executionRisks.items.map(item=>`${item.actionKind}（操作 ${item.operationId}，绑定 ${item.bindingId??'未绑定'}，版本 ${item.intentRevision}，状态 ${item.state}）`).join('；')+(latest.executionRisks.omittedRiskCount ? `；另有 ${latest.executionRisks.omittedRiskCount} 项未在本次消息展开，可在事项记录查询` : '')+'。这些风险保留在事项记录；未重放原动作，停止请求不代表已经停止或成功。'] : []),...(followUp.notice ? [followUp.notice] : []),...(source.teamAssignment?.watchRound?.sequence ? [`团队观察轮次：第 ${source.teamAssignment.watchRound.sequence} 轮（持久调度记录）`] : []),`本轮执行回执时间：${binding.settledAt ? new Date(binding.settledAt).toISOString() : '未记录'}（不是来源内容发布时间）`,...(error ? [`前台整理错误：${error}`] : []), met ? oneTimeMet ? '已核对一次执行目标完成，不再安排下一轮。' : '已依据本轮实际观察核对停止条件，停止新检查并结算在途轮次，无须人工确认。' : work.lifecycle!=='active' ? '持续委托已暂停或正在结束，不会安排新检查。' : followUp.scheduled ? '下一步已持久安排，继续推进原目标。' : works.repo.listSubscriptions(work.workId).some(s => !s.stoppedAt && (s.nextWakeAt !== undefined || s.source !== 'cron')) ? '本轮结束不结束持续委托，后续按已保存计划运行。' : '持续目标尚未结束，但当前没有可运行的后续安排，需要明确下一步或等待条件。']})) throw Error('持续委托结果尚未送达原会话');
       db.prepare('UPDATE work_watch_reviews SET state=?,reviewed_at=?,retry_at=0 WHERE binding_id=?').run(met?'finishing':silent?'silent':'delivered',Date.now(),id);

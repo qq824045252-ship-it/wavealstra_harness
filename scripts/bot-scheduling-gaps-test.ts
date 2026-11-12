@@ -29,7 +29,7 @@ const now=Date.now(), launched:string[]=[];
 const queueMessages=[{messageId:'ordinary',botId:'bot',requestId:'ordinary',createdAt:now-10},
  {messageId:'steer',botId:'bot',requestId:'steer',createdAt:now}];
 const service=Object.assign(Object.create(BotConversationService.prototype),{
- closing:false, options:{userId:'user',isAuthority:()=>true,db:{prepare:()=>({all:(id:string)=>[{message_id:id==='c1'?'ordinary':'steer'}]})}},
+ closing:false, options:{userId:'user',isAuthority:()=>true,bots:{getBot:()=>({status:'active'})},db:{prepare:()=>({all:(id:string)=>[{message_id:id==='c1'?'ordinary':'steer'}]})}},
  messages:{pending:()=>[{bot_id:'bot',conversation_id:'c1'},{bot_id:'bot',conversation_id:'c2'}],
   message:(id:string)=>id==='user-steer'?{text:'这轮只修历史读取'}:id==='user-ordinary'?{text:'执行多步骤项目'}:queueMessages.find(m=>m.messageId===id),
   receipt:(_user:string,_bot:string,id:string)=>({user_message_id:`user-${id}`})},

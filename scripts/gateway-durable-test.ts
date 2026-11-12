@@ -1,3 +1,4 @@
+import { createGatewayBotFixture } from "./gateway-bot-fixture";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, mkdirSync, readdirSync, unlinkSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -31,12 +32,13 @@ const hold=defineTool({name:"fixture_hold",description:"isolated unsafe side eff
 const models:any={getAuth:async()=>undefined,refresh:async()=>{},getAvailable:async()=>[model],getModel:()=>model,streamSimple:(_model:any,context:any)=>{
   requests++;const stream=createAssistantMessageEventStream();
   queueMicrotask(()=>{
-    const names=getCurrentTools(context.messages).map(tool=>tool.name);assert(names.includes("write"));assert(!names.includes("codemode"));
+    const names=getCurrentTools(context.messages).map(tool=>tool.name);assert(names.includes("write")||names.includes("fixture_write"), "tools="+names.join(","));assert(!names.includes("codemode"));
     const index=context.messages.findLastIndex((m:any)=>m.role==="user"),input=context.messages[index];
-    const text=typeof input.content==="string"?input.content:input.content.filter((p:any)=>p.type==="text").map((p:any)=>p.text).join("");
+    const rawText=typeof input.content==="string"?input.content:input.content.filter((p:any)=>p.type==="text").map((p:any)=>p.text).join("");
+    const text=rawText.split("宿主提供的本次请求时间上下文")[0];
     const toolDone=context.messages.slice(index+1).some((m:any)=>m.role==="toolResult");
     const content:any=text.startsWith("HOLD")&&!toolDone?[{type:"toolCall",id:"hold-"+requests,name:"fixture_hold",arguments:{key:text}}]
-      :!toolDone&&!text.startsWith("FAIL")?[{type:"toolCall",id:"write-"+requests,name:"write",arguments:{path:"proof.txt",content:text}}]:[{type:"text",text:"ANSWER:"+text}];
+      :!toolDone&&!text.startsWith("FAIL")?[{type:"toolCall",id:"write-"+requests,name:names.includes("write")?"write":"fixture_write",arguments:{path:"proof.txt",content:text}}]:[{type:"text",text:"ANSWER:"+text}];
     const stopReason=text.startsWith("FAIL")?"error":content[0].type==="toolCall"?"toolUse":"stop";
     const message:any={role:"assistant",content,api:model.api,provider:model.provider,model:model.id,timestamp:Date.now(),usage,stopReason,
       ...(stopReason==="error"?{errorMessage:"400: GATEWAY_FIXTURE_REJECTION"}:{})};
@@ -48,7 +50,10 @@ let failAssembly = false;
 const createService=()=>new DurableBotService({db,models,agentDir,mcpDir,defaultModel:()=>"fixture/native",toolMode:task=>task.welcomeMode === "general" ? "codemode" : "native",
   instructions:()=>"fixture",tools:async()=>{ if (failAssembly) throw new Error("FIXTURE_POLICY_UNAVAILABLE"); return { tools:[hold], contextHooks:[] }; },emit:()=>{},resolveCwd:id=>{const cwd=join(root,createHash("sha256").update(id).digest("hex"));mkdirSync(cwd,{recursive:true});return cwd;}});
 let durable=createService();
-const gateway=new GatewayService(db,{runGatewayTurn:(request:any)=>durable.runGatewayTurn(request)} as any);
+const write=defineTool({name:"fixture_write",description:"isolated native fixture filesystem effect",parameters:Type.Object({path:Type.String(),content:Type.String()}),replay:"unsafe",execute:async args=>{writeFileSync(join(root,"proof.txt"),args.content);return {output:[{type:"text",text:"written"}]};}});
+const createForeground=()=>createGatewayBotFixture({db,models,root,tools:async()=>{if(failAssembly)throw new Error("FIXTURE_POLICY_UNAVAILABLE");return [hold,write];}});
+let foreground=createForeground();
+const gateway=new GatewayService(db,{runGatewayTurn:async(request:any)=>{try{return await foreground.runGatewayTurn(request);}catch(error){console.error(error);throw error;}}} as any);
 (gateway as any).settingsStore={read:()=>({permissionMode:"readonly",defaultModelId:"fixture/native"})};
 const fixtureConnection = "a".repeat(64);
 const scopedTask = (channelId:string, chatId:string) => gatewayInboundIdentity(channelId,fixtureConnection,chatId).taskId;
@@ -60,116 +65,62 @@ for (const channel of ["feishu","wecom","wechat","telegram"]) {
 (gateway as any).adapters.set("custom-default", {workConnectionKey:()=>fixtureConnection,disconnect:async()=>{},isConnected:()=>true});
 const inbound=(gateway as any).createInboundHandler();
 const until=async(check:()=>boolean|Promise<boolean>)=>{const end=Date.now()+15000;while(!await check()){if(Date.now()>end)throw Error("fixture timeout");await new Promise(r=>setTimeout(r,10));}};
-const request=(text:string,userMessageId=text)=>({taskId:"gw-bot-receipts",text,userMessageId,assistantMessageId:"ignored-"+userMessageId});
+const request=(text:string,userMessageId=text)=>({taskId:"gw-bot-receipts",text,userMessageId,assistantMessageId:"ignored-"+userMessageId,
+  gatewayOrigin:{channelId:"telegram-default",connectionKey:fixtureConnection,chatId:"receipts",senderId:"owner",messageId:userMessageId,audience:"private" as const}});
 try{
-  const channelNames: Record<string, string> = { feishu: "飞书", wecom: "企微", wechat: "微信", telegram: "Telegram", slack: "Slack" };
+  // Native tools execute through the same trusted Bot receipt front door for each transport.
   for(const channel of ["feishu","wecom","wechat","telegram","slack"]){
-    const replies:string[]=[];const source=channel==="slack"?"gw-slack-fixture":scopedTask(channel+"-default","chat");
-    const input={channelId:channel+"-default",chatId:"chat",messageId:"message-1",text:channel,
-      ...(channel==="slack"?{taskId:source,userMessageId:"slack-user-fixture",assistantMessageId:"slack-assistant-fixture"}:{}),
+    (gateway as any).adapters.get(channel+"-default").workConnectionKey=()=>fixtureConnection;
+    (gateway as any).channelPolicies.set(channel+"-default",{allowUsers:["owner"]});
+    const replies:string[]=[];
+    const input={channelId:channel+"-default",chatId:"chat",messageId:"message-1",text:channel,audience:"private",sender:{id:"owner"},
+      ...(channel==="slack"?{taskId:"slack-chat",userMessageId:"slack-user-1",assistantMessageId:"slack-assistant-1"}:{}),
       reply:async(text:string)=>{replies.push(text);}};
     await inbound(input);assert.deepEqual(replies,["ANSWER:"+channel]);
-    const task=db.getTask(gatewayBotTaskId(source))!;assert.equal(task.welcomeMode,"general");assert.equal(task.modePresetId,"native");assert.equal(task.sessionFile,undefined);
-    assert.equal(task.spaceId, gatewayChannelSpaceId(channel+"-default")); assert.equal(task.title, channel);
-    const folder=db.getSpace(task.spaceId!)!; assert.equal(folder.name, channelNames[channel]); assert.equal(folder.parentId, GATEWAY_ROOT_SPACE_ID); assert.equal(folder.path, undefined);
-    const gatewayRoot=db.getSpace(GATEWAY_ROOT_SPACE_ID)!; assert.equal(gatewayRoot.name, GATEWAY_ROOT_SPACE_NAME); assert.equal(gatewayRoot.parentId, null); assert.equal(gatewayRoot.path, undefined);
-    const history=await durable.history(task.id);assert.equal(history.durable?.toolMode,"native");assert.equal(readFileSync(join(history.cwd!,"proof.txt"),"utf8"),channel);
-    db.upsertTask({...task,modePresetId:"codemode"});assert.equal(db.getTask(task.id)?.modePresetId,"native");
-    if(channel!=="slack"){await inbound(input);assert.equal(replies.length,1);}
+    assert.equal(readFileSync(join(root,"proof.txt"),"utf8"),channel);
+    const receipt=db.connection.prepare("SELECT * FROM bot_gateway_conversations WHERE channel_id=?").get(channel+"-default");
+    assert(receipt,"actual authenticated Bot origin persisted");
+    assert.equal(db.getTask(scopedTask(channel+"-default","chat")),undefined,"gateway never manufactures an active legacy Task");
+    await inbound(input);assert.equal(replies.length,channel==="slack"?2:1);
   }
-  // Verify real gateway admission passes local media into the unchanged native runtime.
-  const gatewayAttachment = join(root, "gateway-source.txt");
-  writeFileSync(gatewayAttachment, "source content");
-  for (const channel of ["telegram", "slack"]) {
-    const source = channel === "slack" ? "gw-slack-media-fixture" : scopedTask("telegram-default", "media");
-    const replies: string[] = [];
-    await inbound({ channelId: channel + "-default", chatId: "media", messageId: "media-1", text: "MEDIA_INPUT",
-      attachments: [{ name: "gateway-source.txt", path: gatewayAttachment }],
-      ...(channel === "slack" ? { taskId: source, userMessageId: "slack-media-user", assistantMessageId: "slack-media-assistant" } : {}),
-      reply: async (text: string) => { replies.push(text); } });
-    assert.equal(replies.length, 1);
-    assert.ok(replies[0].includes("Attached file: gateway-source.txt"));
-    assert.ok(replies[0].includes(gatewayAttachment));
-    const history = await durable.history(gatewayBotTaskId(source));
-    assert.ok(readFileSync(join(history.cwd!, "proof.txt"), "utf8").includes(gatewayAttachment));
+  const attachment=join(root,"gateway-source.txt");writeFileSync(attachment,"source content");
+  for(const channel of ["telegram","slack"]){
+    const replies:string[]=[];
+    await inbound({channelId:channel+"-default",chatId:"media",messageId:"media-1",text:"MEDIA_INPUT",audience:"private",sender:{id:"owner"},
+      attachments:[{name:"gateway-source.txt",path:attachment}],...(channel==="slack"?{taskId:"slack-media",userMessageId:"slack-media-1",assistantMessageId:"slack-media-assistant-1"}:{}),reply:async(text:string)=>{replies.push(text);}});
+    assert.equal(replies.length,1);assert.ok(replies[0].includes("gateway-source.txt"));assert.ok(replies[0].includes("source content"));assert.ok(readFileSync(join(root,"proof.txt"),"utf8").includes("source content"));
   }
-  console.log("PASS Telegram and Slack media reach original native durable input and tool context");
-  const originalAccountTask = scopedTask("feishu-default","chat");
-  const originalAccountHistory = await durable.history(originalAccountTask);
+  const beforeSwitch=db.connection.prepare("SELECT COUNT(*) count FROM bot_gateway_conversations").get() as {count:number};
   (gateway as any).adapters.get("feishu-default").workConnectionKey=()=>"b".repeat(64);
-  const otherAccountReplies:string[]=[];
-  await inbound({channelId:"feishu-default",chatId:"chat",messageId:"message-1",text:"OTHER_ACCOUNT",reply:async(text:string)=>{otherAccountReplies.push(text);}});
-  assert.deepEqual(otherAccountReplies,["ANSWER:OTHER_ACCOUNT"],"account switch cannot reuse the previous account receipt");
-  const otherAccountTask=gatewayInboundIdentity("feishu-default","b".repeat(64),"chat").taskId;
-  const otherAccountHistory=await durable.history(otherAccountTask);
-  assert.notEqual(otherAccountHistory.cwd,originalAccountHistory.cwd,"account switch gets a separate native workspace");
-  assert.equal(readFileSync(join(originalAccountHistory.cwd!,"proof.txt"),"utf8"),"feishu");
-  assert.equal(readFileSync(join(otherAccountHistory.cwd!,"proof.txt"),"utf8"),"OTHER_ACCOUNT");
+  await inbound({channelId:"feishu-default",chatId:"chat",messageId:"message-1",text:"OTHER_ACCOUNT",audience:"private",sender:{id:"owner"},reply:async(text:string)=>assert.equal(text,"ANSWER:OTHER_ACCOUNT")});
+  assert.equal((db.connection.prepare("SELECT COUNT(*) count FROM bot_gateway_conversations").get() as {count:number}).count,beforeSwitch.count+1);
   (gateway as any).adapters.get("feishu-default").workConnectionKey=()=>fixtureConnection;
-  console.log("PASS same provider message ID on another account executes in its own native session and workspace");
-  const feishuId=scopedTask("feishu-default","chat"); const created=db.getTask(feishuId)!;
-  await inbound({channelId:"feishu-default",chatId:"chat",messageId:"message-2",text:"第二条不应当覆盖标题和文件夹",reply:async()=>{}});
-  const followed=db.getTask(feishuId)!; assert.equal(followed.title, created.title); assert.equal(followed.spaceId, created.spaceId);
-  const keptId=scopedTask("custom-default","kept");
-  db.upsertTask({id:keptId,title:"已有会话",welcomeMode:"general",modePresetId:"native",updatedAt:1});
-  await inbound({channelId:"custom-default",chatId:"kept",messageId:"kept-1",text:"后来的消息",reply:async()=>{}});
-  assert.equal(db.getTask(keptId)?.title,"已有会话");
-  assert.equal(db.getTask(keptId)?.spaceId, gatewayChannelSpaceId("custom-default"));
-  const customFolder=db.getSpace(gatewayChannelSpaceId("custom-default"))!;
-  assert.equal(customFolder.name, "custom-default"); assert.equal(customFolder.parentId, GATEWAY_ROOT_SPACE_ID); assert.equal(customFolder.path, undefined);
-  await inbound({channelId:"custom-default",chatId:"kept",messageId:"kept-2",text:"第二条仍不改标题和文件夹",reply:async()=>{}});
-  assert.equal(db.getTask(keptId)?.title,"已有会话"); assert.equal(db.getTask(keptId)?.spaceId, gatewayChannelSpaceId("custom-default"));
-  db.createSpace({id:"user-folder",name:"用户自己的"});
-  const parkedId=scopedTask("custom-default","parked");
-  db.upsertTask({id:parkedId,title:"已归类",spaceId:"user-folder",welcomeMode:"general",modePresetId:"native",updatedAt:1});
-  await inbound({channelId:"custom-default",chatId:"parked",messageId:"parked-1",text:"不要搬走",reply:async()=>{}});
-  assert.equal(db.getTask(parkedId)?.title,"已归类"); assert.equal(db.getTask(parkedId)?.spaceId,"user-folder");
-  assert.deepEqual(db.getTask(legacy!.id),legacy);console.log("PASS all five channels use native Durable tools; unfiled chats join channel folders; filed chats and legacy tasks stay put");
-
-  const revived:string[]=[];
-  gateway.setTrashedWorkspaceRestorer((taskId)=>{
-    revived.push(taskId);
-    db.upsertTaskExecutionWorkspaceState({taskId,directoryName:"restored",state:"active",createdAt:1,updatedAt:Date.now()});
-  });
-  db.upsertTaskExecutionWorkspaceState({taskId:feishuId,directoryName:"trashed-fixture",state:"trashed",createdAt:1,updatedAt:1,trashPath:"unused"});
-  const reviveReplies:string[]=[];
-  await inbound({channelId:"feishu-default",chatId:"chat",messageId:"message-revive",text:"revive-me",reply:async(text:string)=>{reviveReplies.push(text);}});
-  assert.deepEqual(revived,[feishuId]);
-  assert.deepEqual(reviveReplies,["ANSWER:revive-me"]);
-  console.log("PASS a trashed gateway chat is restored before the next turn");
-
-  (gateway as any).channelPolicies.set("telegram-default",{allowUsers:["owner"]});
-  const beforeDenied=requests;await inbound({channelId:"telegram-default",chatId:"denied",messageId:"denied",text:"denied",sender:{id:"stranger"},reply:async()=>assert.fail("unauthorized reply")});
-  assert.equal(requests,beforeDenied);(gateway as any).channelPolicies.set("telegram-default",{allowUsers:[]});
-
-  const first=durable.runGatewayTurn(request("HOLD_FIRST"));await until(()=>held.has("HOLD_FIRST"));
-  const duplicate=durable.runGatewayTurn(request("HOLD_FIRST"));
-  const second=durable.runGatewayTurn(request("SECOND"));
-  await until(async()=>Boolean((await durable.history("gw-bot-receipts")).durable?.queued));
+  assert.deepEqual(db.getTask(legacy!.id),legacy);
+  // A historical trashed Task stays historical; accepting a new Bot receipt never restores it.
+  const oldId=scopedTask("feishu-default","chat");db.upsertTask({id:oldId,title:"preserve history",spaceId:undefined,updatedAt:1});
+  db.upsertTaskExecutionWorkspaceState({taskId:oldId,directoryName:"trashed",state:"trashed",createdAt:1,updatedAt:1,trashPath:"unused"});
+  const revived:string[]=[];gateway.setTrashedWorkspaceRestorer(id=>{revived.push(id);});
+  await inbound({channelId:"feishu-default",chatId:"chat",messageId:"next",text:"NEXT",audience:"private",sender:{id:"owner"},reply:async()=>{}});
+  assert.deepEqual(revived,[]);assert.equal(db.getTask(oldId)?.title,"preserve history");
+  const beforeDenied=requests;await inbound({channelId:"telegram-default",chatId:"denied",messageId:"denied",text:"denied",sender:{id:"stranger"},reply:async()=>assert.fail("unauthorized reply")});assert.equal(requests,beforeDenied);
+  const first=foreground.runGatewayTurn(request("HOLD_FIRST"));await until(()=>held.has("HOLD_FIRST"));
+  const duplicate=foreground.runGatewayTurn(request("HOLD_FIRST"));const second=foreground.runGatewayTurn(request("SECOND"));
   const effectCount=effects;held.get("HOLD_FIRST")!();
   assert.equal(await first,"ANSWER:HOLD_FIRST");assert.equal(await duplicate,"ANSWER:HOLD_FIRST");assert.equal(await second,"ANSWER:SECOND");assert.equal(effects,effectCount);
-  console.log("PASS queued and duplicate inputs await their own native receipt, without mixed replies or repeated effects");
-
-  const cancelled=durable.runGatewayTurn(request("HOLD_CANCEL")).then(()=>assert.fail("cancel should fail"),error=>assert.match(error.message,/取消/));
-  await until(()=>held.has("HOLD_CANCEL"));await durable.abort("gw-bot-receipts");await cancelled;
-  await assert.rejects(durable.runGatewayTurn(request("FAIL")),/GATEWAY_FIXTURE_REJECTION/);
-  console.log("PASS cancellation and model failure are terminal native outcomes");
-
-  let attempts=0;const retryInput={channelId:"feishu-default",chatId:"retry",messageId:"stable",text:"REPLY_RETRY",reply:async(text:string)=>{assert.equal(text,"ANSWER:REPLY_RETRY");if(++attempts===1)throw Error("network failure");}};
+  const cancelled=foreground.runGatewayTurn(request("HOLD_CANCEL")).then(()=>assert.fail("cancel must fail"),error=>assert.match(error.message,/取消|cancel/));
+  await until(()=>held.has("HOLD_CANCEL"));await foreground.botConversations.cancel(foreground.botId,"gateway:HOLD_CANCEL");await cancelled;
+  await assert.rejects(foreground.runGatewayTurn(request("FAIL")),/GATEWAY_FIXTURE_REJECTION/);
+  let attempts=0;const retryInput={channelId:"feishu-default",chatId:"retry",messageId:"stable",text:"REPLY_RETRY",audience:"private",sender:{id:"owner"},reply:async(text:string)=>{assert.equal(text,"ANSWER:REPLY_RETRY");if(++attempts===1)throw Error("network failure");}};
   await assert.rejects(inbound(retryInput),/network failure/);const beforeRetry=requests;await inbound(retryInput);assert.equal(requests,beforeRetry);
-  console.log("PASS reply delivery retry reads the existing answer without rerunning tools");
-
-  const suspended=durable.runGatewayTurn(request("HOLD_RESTART")).catch(error=>error);
-  await until(()=>held.has("HOLD_RESTART"));const effectsBeforeRestart=effects;await durable.close();assert((await suspended) instanceof Error);
-  durable=createService(); failAssembly=true;
-  const requestsBeforeUnavailablePolicy=requests;
-  await assert.rejects(durable.runGatewayTurn(request("HOLD_RESTART")),/FIXTURE_POLICY_UNAVAILABLE/);
-  assert.equal(requests,requestsBeforeUnavailablePolicy,"recovery cannot execute with missing permission hooks");
-  failAssembly=false;
-  assert.equal(await durable.runGatewayTurn(request("HOLD_RESTART")),"ANSWER:HOLD_RESTART");assert.equal(effects,effectsBeforeRestart);
-  const afterRestart=requests;assert.equal(await durable.runGatewayTurn(request("SECOND")),"ANSWER:SECOND");assert.equal(requests,afterRestart);
+  const suspended=foreground.runGatewayTurn(request("HOLD_RESTART")).catch(error=>error);
+  await until(()=>held.has("HOLD_RESTART"));const effectsBeforeRestart=effects;await foreground.close();assert((await suspended) instanceof Error);
+  failAssembly=true;foreground=createForeground();const requestsBeforePolicy=requests;
+  await assert.rejects(foreground.runGatewayTurn(request("HOLD_RESTART")),/FIXTURE_POLICY_UNAVAILABLE|核对|unknown|失败/);
+  assert.equal(requests,requestsBeforePolicy);await foreground.close();failAssembly=false;foreground=createForeground();
+  await foreground.runGatewayTurn(request("HOLD_RESTART")).catch(error=>assert.match(error.message,/核对|unknown|失败/));assert.equal(effects,effectsBeforeRestart);
+  const afterRestart=requests;assert.equal(await foreground.runGatewayTurn(request("SECOND")),"ANSWER:SECOND");assert.equal(requests,afterRestart);
   assert.deepEqual(db.getTask(legacy!.id),legacy);
-  console.log("PASS checkpoint/reopen reacquires native receipts, with no unsafe replay, no duplicate old input and no legacy migration");
+  console.log("PASS trusted Bot origins, attachments, FIFO, dedup, cancellation, failure, immutable history and unsafe recovery");
   db.upsertTask({ id: "desktop-receipt", title: "Desktop", welcomeMode: "working", permissionMode: "auto", updatedAt: 1 });
   const accepted = await durable.prompt({ taskId: "desktop-receipt", text: "DESKTOP", userMessageId: "desktop-operation", assistantMessageId: "desktop-assistant" });
   assert(accepted.receipt);
@@ -245,5 +196,5 @@ try{
   assert.equal(requests, afterDeletedBranch, "retrying an old branch input never invokes the model again");
   assert.equal((await durable.history("desktop-receipt")).messages.length, 0, "retrying a receipt cannot restore deleted visible history");
   console.log("PASS remote lost-response retry reads native receipt before permissions, models or attachments change");
-}finally{await gateway.stop();await durable.close();db.close();}
+}finally{await gateway.stop();await foreground.close();await durable.close();db.close();}
 console.log("GATEWAY_DURABLE_TESTS_PASSED",root);

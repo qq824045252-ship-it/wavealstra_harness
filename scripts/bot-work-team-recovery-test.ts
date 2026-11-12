@@ -1,4 +1,4 @@
-import { resultDecisionSchema } from "../src/main/agent/work/BotWorkResultTurn";
+import { resultDecisionSchema } from "../src/main/agent/work/WorkResultDecision";
 import { WorkCompletionCoordinator } from "../src/main/agent/work/WorkCompletionCoordinator";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";

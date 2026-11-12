@@ -1,8 +1,11 @@
+import { extname } from "node:path";
+import { deliveryFileBytes } from "../agent/work/WorkDeliveryArtifacts";
+import { assertGatewayWorkSend, workRequestSignal, GatewayWorkNotSentError, type GatewayWorkSendInput, type GatewayWorkSendResult } from "./work-outbound";
 import { gatewayInboundAccepted, type ChannelAdapter, type ChannelConfig, type GatewayInboundHandler } from "./channels";
 import { GatewayReplyNotSentError, type GatewayReplyRestoreInput, type GatewayRouteCodec, type GatewayReplyRoute } from "./GatewayReply";
 import { BoundedTTLCache } from "./BoundedTTLCache";
 import { withGatewayMedia, GatewayMediaError, GATEWAY_MEDIA_LIMITS, type GatewayMediaSource } from "./GatewayMedia";
-import { gatewayConnectionKey } from "./work-outbound";
+import { gatewayConnectionKey, gatewayWorkTarget } from "./work-outbound";
 
 const TOPIC = "/v1.0/im/bot/messages/get";
 export interface DingTalkSocket {
@@ -123,6 +126,50 @@ export class DingTalkStreamAdapter implements ChannelAdapter {
   workConnectionKey(): string | undefined {
     return this.connected && this.activated && this.config
       ? gatewayConnectionKey(this.type, [this.config.corpId, this.config.clientId, this.config.robotCode]) : undefined;
+  }
+  async sendWorkNotification(input: GatewayWorkSendInput): Promise<GatewayWorkSendResult> {
+    assertGatewayWorkSend(input, this);
+    const config = this.config, target = input.target;
+    if (!config || target.channelType !== "dingtalk" || !config.allowUsers.includes(target.senderId)) throw new GatewayWorkNotSentError("钉钉原始发送者未获授权");
+    const files = (input.files ?? []).map(file => ({ file, bytes: deliveryFileBytes(file) }));
+    const receipts: Array<{ part: string; receipt: string }> = [];
+    const record = (part: string, receipt: string) => { receipts.push({ part, receipt }); input.recordProgress?.(JSON.stringify(receipts)); };
+    let attempted = false;
+    try {
+      const auth = await this.fetcher("https://api.dingtalk.com/v1.0/oauth2/accessToken", { method: "POST", redirect: "error", signal: workRequestSignal(input.signal),
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ appKey: config.clientId, appSecret: config.clientSecret }) });
+      const token = required(object(await auth.json())?.accessToken);
+      if (!auth.ok || !token) throw new GatewayWorkNotSentError("钉钉主动发送授权失败");
+      const send = async (part: string, msgKey: string, msgParam: object) => {
+        assertGatewayWorkSend(input, this); attempted = true;
+        const response = await this.fetcher(`https://api.dingtalk.com/v1.0/robot/${target.address.group ? "groupMessages/send" : "oToMessages/batchSend"}`, {
+          method: "POST", redirect: "error", signal: workRequestSignal(input.signal), headers: { "Content-Type": "application/json", "x-acs-dingtalk-access-token": token },
+          body: JSON.stringify({ robotCode: config.robotCode, ...(target.address.group ? { openConversationId: target.address.chatId } : { userIds: [target.address.userId] }), msgKey, msgParam: JSON.stringify(msgParam) }) });
+        const data = object(await response.json());
+        if (!response.ok || !required(data?.processQueryKey)) throw new Error("钉钉消息回执不完整");
+        record(part, required(data?.processQueryKey));
+      };
+      await send("text", "sampleText", { content: input.text });
+      for (const {file, bytes} of files) {
+        assertGatewayWorkSend(input, this);
+        const authUrl = new URL("https://oapi.dingtalk.com/gettoken"); authUrl.searchParams.set("appkey", config.clientId); authUrl.searchParams.set("appsecret", config.clientSecret);
+        const oldAuth = await this.fetcher(authUrl, { redirect: "error", signal: workRequestSignal(input.signal) });
+        const oldToken = required(object(await oldAuth.json())?.access_token);
+        if (!oldAuth.ok || !oldToken) throw new Error("钉钉文件授权失败");
+        const form = new FormData(); form.append("media", new Blob([bytes]), file.name);
+        const uploadUrl = new URL("https://oapi.dingtalk.com/media/upload"); uploadUrl.searchParams.set("access_token", oldToken); uploadUrl.searchParams.set("type", "file");
+        assertGatewayWorkSend(input, this);
+        const upload = await this.fetcher(uploadUrl, { method: "POST", redirect: "error", signal: workRequestSignal(input.signal), body: form });
+        const data = object(await upload.json());
+        const mediaId = required(data?.media_id);
+        if (!upload.ok || data?.errcode !== 0 || !mediaId) throw new Error("钉钉文件上传未确认");
+        record(`upload:${file.sha256}`, mediaId);
+        await send(`file:${file.sha256}`, "sampleFile", { mediaId, fileName: file.name, fileType: extname(file.name).slice(1) || "bin" });
+      }
+      return { ok: true, receipt: JSON.stringify(receipts) };
+    } catch (error) {
+      return { ok: false, retryable: false, responseLost: attempted, error: attempted ? "钉钉存在部分成功或未知回执，停止自动重发" : "钉钉授权未完成，未发送" };
+    }
   }
   async connect(value: ChannelConfig): Promise<void> {
     await this.disconnect();
@@ -375,7 +422,8 @@ export class DingTalkStreamAdapter implements ChannelAdapter {
         }));
         const delivery = this.handler!({ channelId: this.id, chatId, text: text || "请查看附件。", attachments, messageId: eventId,
           sender: { id: senderId, name: required(body.senderNick) || undefined },
-          replyRoute, reply,
+          workTarget: gatewayWorkTarget({ version: 1, channelType: this.type, channelId: this.id, connectionKey: this.workConnectionKey(), chatId, senderId, address: { chatId, userId: senderId, group: body.conversationType === "2", messageId: eventId } }),
+          audience: body.conversationType === "1" ? "private" : "shared", replyRoute, reply,
         });
         // Observe execution rejection immediately while awaiting durable admission.
         // ACK only after the inbox commit; a rejected admission must be redeliverable.

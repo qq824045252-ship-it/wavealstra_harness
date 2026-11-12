@@ -33,6 +33,7 @@ import "./RecordManagement.css";
 import ModelsTab from "./ModelsTab";
 import WeixinGatewaySettings from "./WeixinGatewaySettings";
 import QQGatewaySettings from "./QQGatewaySettings";
+import GatewayBotBindings from "./GatewayBotBindings";
 import SubagentSettingsTab from "./SubagentSettingsTab";
 import ModesTab from "./ModesTab";
 import MemoryTab from "./MemoryTab";
@@ -278,6 +279,7 @@ function SystemTab(): React.JSX.Element {
   const [language, setLanguage] = useState("zh-CN");
   const [proxyUrl, setProxyUrl] = useState("");
   const [closeToTray, setCloseToTray] = useState(true);
+  const [residentHostEnabled, setResidentHostEnabled] = useState(false);
   const [hint, setHint] = useState("");
   const [fontHint, setFontHint] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
@@ -340,6 +342,7 @@ function SystemTab(): React.JSX.Element {
         setLanguage(settings.language || "zh-CN");
         setProxyUrl(settings.proxyUrl || "");
         setCloseToTray(settings.closeToTray !== false);
+        setResidentHostEnabled(settings.residentHostEnabled === true);
         setUiFontSize(nextUiFontSize);
         setCodeFontSize(nextCodeFontSize);
         setUiFontFamily(nextUiFontFamily);
@@ -553,7 +556,7 @@ function SystemTab(): React.JSX.Element {
     setCloseToTray(v);
     try {
       await window.api?.agent?.updateAppSettings?.({ closeToTray: v });
-      setHint(v ? "已开启：点击关闭按钮将最小化到系统托盘" : "已关闭：点击关闭按钮将直接退出应用");
+      setHint(v ? "已开启：点击关闭按钮将最小化到系统托盘" : "已关闭最小化到托盘");
     } catch (err) {
       setCloseToTray(!v);
       setErrorMsg(err instanceof Error ? err.message : String(err));
@@ -572,6 +575,15 @@ function SystemTab(): React.JSX.Element {
         </Row>
         <Row label="关闭时最小化到托盘" desc="关闭窗口后后台继续运行；托盘图标可恢复，菜单可退出。">
           <Toggle on={closeToTray} onChange={(v) => void toggleCloseToTray(v)} />
+        </Row>
+        <Row label="退出界面后保持助理在线" desc="由本机常驻进程继续任务、提醒和渠道回复。本机关机或断网时暂停；托盘菜单可停止助理。">
+          <Toggle on={residentHostEnabled} onChange={(enabled) => {
+            setResidentHostEnabled(enabled);
+            void window.api?.agent.updateAppSettings({ residentHostEnabled: enabled }).catch(error => {
+              setResidentHostEnabled(!enabled);
+              setErrorMsg(error instanceof Error ? error.message : String(error));
+            });
+          }} />
         </Row>
       </SettingsSection>
 
@@ -993,6 +1005,7 @@ function AssistantTab(): React.JSX.Element {
 
       <QQGatewaySettings />
       <WeixinGatewaySettings />
+      <GatewayBotBindings />
 
       <GatewayBlock
         channelId="slack-default"
@@ -1018,7 +1031,7 @@ function AssistantTab(): React.JSX.Element {
       <GatewayBlock
         channelId="dingtalk-default"
         title="钉钉企业机器人"
-        desc="官方 Stream 长连接，无需公网回调。仅接受指定企业与员工消息，回复原会话；回复受会话有效期限制，暂不支持主动 Work 通知。凭据加密保存。"
+        desc="官方 Stream 长连接，无需公网回调。仅接受指定企业与员工消息，任务进度和文件发回原会话；需要机器人消息与文件权限。凭据加密保存。"
         fields={[
           { key: "clientId", label: "Client ID", placeholder: "应用 AppKey" },
           { key: "clientSecret", label: "Client Secret", type: "password", placeholder: "应用 AppSecret" },
@@ -1029,7 +1042,7 @@ function AssistantTab(): React.JSX.Element {
       <GatewayBlock
         channelId="discord-default"
         title="Discord 官方 Bot"
-        desc="使用官方 Bot Token 和 Gateway 长连接，服务器中仅接受 @Bot，私聊需显式启用；仅使用基本消息 intents，无需 Message Content 特权。暂不支持主动 Work 通知。凭据加密保存，不支持个人账号 Token。"
+        desc="使用官方 Bot Token 和 Gateway 长连接，服务器中仅接受 @Bot，私聊需显式启用。任务进度和文件发回原频道或讨论串；需要发送消息与附件权限。凭据加密保存，不支持个人账号 Token。"
         fields={[
           { key: "applicationId", label: "Application ID", placeholder: "Discord 应用 ID" },
           { key: "botToken", label: "Bot Token", type: "password", placeholder: "官方机器人 Token" },

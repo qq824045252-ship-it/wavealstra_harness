@@ -1,7 +1,8 @@
+import { botExtractionPolicy } from "./BotMemoryExtractionPolicy";
 import { MemoryForgetWatermarks } from "./MemoryForgetWatermarks";
 import { hasSensitiveMemoryContent } from "./MemoryTextSafety";
 import { resolveAssistantScopeChain, resolveWorkMemoryScope } from "./AssistantMemoryScopes";
-import { botMemorySource, botMemoryTextEligible, botMemoryWriteEvidenceAllowed, botMemoryConversationOnly } from "./BotMemorySource";
+import { botMemorySource, botMemoryTextEligible, botMemoryAutomaticBoundary } from "./BotMemorySource";
 import { projectMemoryContext } from "../agent/MemoryContextProjection";
 import { createHash, randomUUID } from "node:crypto";
 import type { AgentSession, ModelRuntime } from "@earendil-works/pi-coding-agent";
@@ -326,6 +327,7 @@ export class MemoryService {
     const work = this.workMemoryScope(taskId);
     if (work) return { scopeType: "work", scopeId: work.work_id };
     const conversation = botMemorySource(this.db, taskId);
+    if (conversation?.shared) return { scopeType: "conversation", scopeId: taskId };
     if (conversation?.team_id) return { scopeType: "team", scopeId: conversation.team_id };
     const botId = this.channelBotId(taskId);
     if (botId) return { scopeType: "bot", scopeId: botId };
@@ -677,10 +679,10 @@ export class MemoryService {
     const work = this.workMemoryScope(taskId);
     if (work) return (targetScopeType === "task" && targetScopeId === taskId)
       || (targetScopeType === "work" && targetScopeId === work.work_id)
-      || (targetScopeType === "project" && Boolean(work.project_id) && targetScopeId === work.project_id);
+      || (!work.shared && targetScopeType === "project" && Boolean(work.project_id) && targetScopeId === work.project_id);
     const conversation = botMemorySource(this.db, taskId);
     if (conversation) return (targetScopeType === "conversation" && targetScopeId === taskId)
-      || (targetScopeType === (conversation.team_id ? "team" : "bot") && targetScopeId === (conversation.team_id ?? conversation.bot_id));
+      || (!conversation.shared && targetScopeType === (conversation.team_id ? "team" : "bot") && targetScopeId === (conversation.team_id ?? conversation.bot_id));
     const channelBotId = this.channelBotId(taskId);
     if (channelBotId) return (targetScopeType === "bot" && targetScopeId === channelBotId)
       || (targetScopeType === "task" && targetScopeId === taskId);
@@ -946,7 +948,7 @@ export class MemoryService {
     };
     const response = await input.modelRuntime.completeSimple(
       input.model,
-      { systemPrompt: EXTRACTION_SYSTEM_PROMPT + (botSource ? "\n当前来源是用户与 Bot 或团队的直接对话。只提取有用户原话支持的身份、偏好、事实、决定或约束。默认保存到当前Bot或团队专属范围，不读写成员私有记忆。用户明确要求所有Bot共享时scopeType=global；明确仅本次对话时scopeType=conversation、retention=temporary；否则稳定信息retention=stable。一次性查询与任务本身、敏感细节和权限授予不得成为记忆。scope最终由宿主根据原话决定。每条候选 JSON 必须显式包含 retention（稳定事实为 \"stable\"，仅本会话为 \"temporary\"）和 sensitivity（非敏感为 \"none\"）；不得省略这两个字段。敏感内容不输出候选。不要把用户要求本轮直接回答或不调用工具误当作禁止后台提炼；只有明确不保存、不要记住或仅本会话等要求才限制记忆。userEvidence仅引用支持事实的最短原话。不重复输出已保存的相同事实。" : ""), messages: [{ role: "user", content: JSON.stringify(payload), timestamp: Date.now() }] },
+      { systemPrompt: EXTRACTION_SYSTEM_PROMPT + (botSource ? "\n当前来源是用户与 Bot 或团队的直接对话。只提取有用户原话支持的身份、偏好、事实、决定或约束。稳定身份与偏好保存到当前Bot或团队专属范围，不读写成员私有记忆。任务要求、一次性约束、执行决定和局部事实必须与长期偏好分成不同候选；候选不要自行指定Work身份，宿主根据该候选原话所属的实际用户消息关联Work，无法唯一关联则限本对话。用户明确要求所有Bot共享时scopeType=global；明确仅本次对话时scopeType=conversation、retention=temporary；否则稳定信息retention=stable。一次性查询与任务本身、敏感细节和权限授予不得成为记忆。scope最终由宿主根据原话决定。每条候选 JSON 必须显式包含 retention（稳定事实为 \"stable\"，仅本会话为 \"temporary\"）和 sensitivity（非敏感为 \"none\"）；不得省略这两个字段。敏感内容不输出候选。不要把用户要求本轮直接回答或不调用工具误当作禁止后台提炼；只有明确不保存、不要记住或仅本会话等要求才限制记忆。userEvidence仅引用支持事实的最短原话。不重复输出已保存的相同事实。" : ""), messages: [{ role: "user", content: JSON.stringify(payload), timestamp: Date.now() }] },
       // Reasoning shares the response ceiling on Responses-compatible providers.
       // Leave room for both low-effort reasoning and the complete candidate JSON.
       { maxTokens: Math.min(input.model.maxTokens || 8192, input.model.reasoning ? 8192 : 4096), reasoning: "low", cacheRetention: "none" },
@@ -962,26 +964,12 @@ export class MemoryService {
     for (const candidate of extracted) {
       if (!input.isEnabled()) break;
       assertExtractionScope();
-      const supportingTurns = sourceTurns.filter(turn => candidate.userEvidence && turn.userText.includes(candidate.userEvidence)
-        && (!botSource || botMemoryWriteEvidenceAllowed(turn.userText, candidate.userEvidence)));
-      // Scope follows the newest real user statement, not capture/completion order or old sharing instructions.
-      const scopeWording = [...supportingTurns].sort((a, b) => b.capturedAt - a.capturedAt
-        || Number(b.metadata.sourceUserOrdinal ?? 0) - Number(a.metadata.sourceUserOrdinal ?? 0))[0]?.userText ?? "";
-      const temporary = Boolean(botSource) && botMemoryConversationOnly(scopeWording);
-      const publicShared = Boolean(botSource) && !temporary
-        && /(?:所有|全部|每个).{0,12}(?:bot|助理)|(?:公共|共享)记忆|(?:all|every)\s+(?:bots?|assistants?)|public\s+memor/i.test(scopeWording)
-        && !/(?:不要|别|不必|不能|勿).{0,8}(?:共享|公开|所有|全部)|(?:do not|don['’]?t|never).{0,12}(?:share|public|all bots)/i.test(scopeWording);
-      // Private Bot learning never escalates uncertain facts to a new review workflow.
-      // Ignore unsupported/short-lived material; direct user quotes remain mandatory.
-      if (botSource && (!candidate.userEvidence || candidate.userEvidence.trim().length < 2
-        || !supportingTurns.length
-        || (candidate.retention !== "stable" && !(temporary && candidate.retention === "temporary")) || candidate.sensitivity !== "none" || !botMemoryTextEligible(`${candidate.title} ${candidate.content} ${candidate.userEvidence ?? ""} ${candidate.replaces ?? ""}`)
-        || candidate.executionEvidence || ["progress", "open_question", "risk", "procedure"].includes(candidate.kind)
-        // Foreground forget has an exact tool receipt. Never run the same deletion
-        // again through fuzzy reconciliation after that reply. Other scopes retain their existing path.
-        || candidate.operationHint === "forget"
-        || (!candidate.explicit && candidate.confidence < 0.85))) continue;
-      const scope = publicShared ? { scopeType: "global" as const, scopeId: undefined }
+      const { supportingTurns, durableEvidence, localFact, sourceWork, temporary, publicShared, rejected } =
+        botExtractionPolicy(this.db, input.taskId, candidate, sourceTurns, botSource);
+      if (rejected) continue;
+      const scope = botSource && localFact && !temporary
+        ? sourceWork ? { scopeType: "work" as const, scopeId: sourceWork } : { scopeType: "conversation" as const, scopeId: input.taskId }
+        : publicShared ? { scopeType: "global" as const, scopeId: undefined }
         : this.normalizeCandidateScope(botSource ? temporary ? "conversation" : "bot" : candidate.scopeType, { projectId, workspaceId, taskId: input.taskId });
       if (!scope) continue;
       const eligibleTurns = this.forgetWatermarks.newerSources(scope.scopeType, scope.scopeId, botSource ? supportingTurns : sourceTurns);
@@ -996,7 +984,7 @@ export class MemoryService {
         scopeId: scope.scopeId,
         confidence: candidate.executionEvidence ? Math.min(0.9, candidate.confidence) : candidate.explicit ? Math.max(0.98, candidate.confidence) : candidate.confidence,
         importance: candidate.importance,
-        explicit: candidate.executionEvidence ? false : candidate.explicit,
+        explicit: candidate.executionEvidence ? false : botSource ? durableEvidence || publicShared : candidate.explicit,
         operationHint: candidate.operationHint,
         replaces: candidate.replaces,
         status: "pending",
@@ -1158,7 +1146,9 @@ export class MemoryService {
       sourceId: botMemorySource(this.db, candidate.taskId) ? candidate.taskId : undefined,
       scopeType: candidate.scopeType,
       scopeId: candidate.scopeId,
-      metadata: publicShared ? { publicShared: true } : undefined,
+      metadata: botSource ? { ...(publicShared ? { publicShared: true } : {}), botAutomaticScopePolicy: "source-work-v1",
+        sourceUserMessageIds: [...new Set(sourceTurns.flatMap(turn => turn.userMessageId ? [turn.userMessageId] : []))] }
+        : publicShared ? { publicShared: true } : undefined,
       evidence: [
         { evidenceKind: botMemorySource(this.db, candidate.taskId) ? "conversation" : "task", refId: candidate.taskId },
         ...sourceTurns.map((turn) => ({ evidenceKind: "conversation" as const, refId: turn.id, refTitle: "L0 conversation turn", excerpt: this.l0EvidenceExcerpt(turn) })),
@@ -1246,14 +1236,14 @@ export class MemoryService {
     if (this.isCapturedSnapshot(memory.id)) return false;
     const work = this.workMemoryScope(taskId);
     const conversation = botMemorySource(this.db, taskId);
-    const botId = work || conversation?.team_id ? undefined : this.channelBotId(taskId);
+    const botId = work || conversation?.team_id || conversation?.shared ? undefined : this.channelBotId(taskId);
     if (!work && !botId && !conversation) return true;
     // A retained local scope does not grant permission to rewrite the same atom
     // after it has been promoted to shared/project/global memory.
     return memory.scopes.length > 0 && memory.scopes.every(scope =>
       (scope.scopeType === "task" && scope.scopeId === taskId)
       || (work && scope.scopeType === "work" && scope.scopeId === work.work_id)
-      || (work && memory.scopes.length === 1 && memory.sourceType === "agent" && Boolean(memory.sourceTaskId)
+      || (work && !work.shared && memory.scopes.length === 1 && memory.sourceType === "agent" && Boolean(memory.sourceTaskId)
         && this.workMemoryScope(memory.sourceTaskId!)?.work_id === work.work_id
         && scope.scopeType === "project" && Boolean(work.project_id) && scope.scopeId === work.project_id)
       || (!work && scope.scopeType === "bot" && scope.scopeId === botId)
@@ -1280,6 +1270,8 @@ export class MemoryService {
   private workMemoryScope(taskId: string) { return resolveWorkMemoryScope(this.db, taskId); }
 
   private visibleInChain(memory: MemoryRecordDto, chain: Array<{ scopeType: MemoryScopeType; scopeId?: string }>, request: MemorySearchRequest): boolean {
+    const legacyBoundary = botMemoryAutomaticBoundary(this.db, memory);
+    if (legacyBoundary) return chain.some(scope => scope.scopeType === legacyBoundary.scopeType && scope.scopeId === legacyBoundary.scopeId);
     const assistantContext = Boolean(request.botId || request.teamId || request.conversationId || request.workId
       || (request.taskId && (this.workMemoryScope(request.taskId) || this.channelBotId(request.taskId))));
     return memory.scopes.some(scope => chain.some(c => c.scopeType === scope.scopeType && (c.scopeId ?? "") === (scope.scopeId ?? ""))
@@ -1313,10 +1305,10 @@ export class MemoryService {
 
   private normalizeCandidateScope(scopeType: MemoryScopeType, ctx: { projectId?: string; workspaceId?: string; taskId: string }): { scopeType: MemoryScopeType; scopeId?: string } | null {
     const conversation = botMemorySource(this.db, ctx.taskId);
-    if (conversation) return scopeType === "conversation" ? { scopeType: "conversation", scopeId: ctx.taskId }
+    if (conversation) return scopeType === "conversation" || conversation.shared ? { scopeType: "conversation", scopeId: ctx.taskId }
       : { scopeType: conversation.team_id ? "team" : "bot", scopeId: conversation.team_id ?? conversation.bot_id };
     const work = this.workMemoryScope(ctx.taskId);
-    if (work) return scopeType === "project" && work.project_id ? { scopeType: "project", scopeId: work.project_id }
+    if (work) return !work.shared && scopeType === "project" && work.project_id ? { scopeType: "project", scopeId: work.project_id }
       : { scopeType: "work", scopeId: work.work_id };
     if (this.channelBotId(ctx.taskId)) return { scopeType: "task", scopeId: ctx.taskId };
     if (scopeType === "global") return { scopeType: "global" };

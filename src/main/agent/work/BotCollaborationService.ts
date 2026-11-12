@@ -282,7 +282,8 @@ export class BotCollaborationService {
     if (versionGuard) this.options.db.prepare(`INSERT INTO bot_collaboration_reads VALUES(?,?,?)
       ON CONFLICT(collaboration_id,request_id) DO UPDATE SET guard_json=excluded.guard_json`)
       .run(row.collaborationId, source.request_id, JSON.stringify(versionGuard));
-    return { ...this.history({ botId: source.bot_id, collaborationId: row.collaborationId, limit: 30 }), versionGuard };
+    return { ...this.history({ botId: source.bot_id, collaborationId: row.collaborationId, limit: 30 }), versionGuard,
+      methodFeedback: work ? this.options.recordWorkFeedback?.(source, work) : undefined };
   }
 
   private async ask(row: BotCollaborationDto, source: BotMessageReceipt, operationId: string, text: string, controlParentMessageId = source.assistant_message_id,

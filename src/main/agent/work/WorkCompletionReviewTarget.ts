@@ -5,11 +5,11 @@ import type { WorkExecutionBindingDto } from "../../../shared/bot-work";
 export function completionReviewInput(binding: WorkExecutionBindingDto, source: Record<string, unknown>) {
   if (source.workId !== binding.workId || source.intentRevision !== binding.intentRevision || source.inputSnapshotId !== binding.inputSnapshotId)
     throw Error("Completion review input does not match its execution binding");
-  const { teamAssignment: _teamAssignment, instructions: _instructions, ...originalRequest } = source;
+  const { teamAssignment: _teamAssignment, instructions: _instructions, hostDeliveryContext, ...originalRequest } = source;
   const definition = (value: Record<string, unknown>): Partial<Record<"title" | "description" | "constraints" | "criteria", unknown>> => Object.fromEntries(
     ["title", "description", "constraints", "criteria"].filter(key => value[key] !== undefined).map(key => [key, value[key]]));
   const plan = source.delegationPlan as Record<string, unknown> | undefined;
-  return { originalRequest, reviewTarget: {
+  return { originalRequest, hostDeliveryContext, reviewTarget: {
     kind: "single_work_delegation" as const,
     provenance: "host_persisted_execution_input_not_new_user_authorization" as const,
     workId: binding.workId, bindingId: binding.bindingId, intentRevision: binding.intentRevision,

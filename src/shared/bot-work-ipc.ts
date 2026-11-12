@@ -10,6 +10,7 @@ import type { BotSendRequest, BotSendReceipt, BotHistoryRequest, BotHistoryDto, 
 import type { WorkPhase3ControlRequest, WorkPhase3ControlResult } from "./bot-work-phase3-control";
 import type { WorkPhase4ControlRequest, WorkPhase4ControlResult } from "./bot-work-phase4";
 import type { WorkReviewControlRequest } from "./bot-work-review";
+import type { WorkClosureReviewRequest } from "./work-closure-review";
 import type { BotCreateRequest, BotCreateResult } from "./bot-create";
 import type { WorkTeamControlRequest, WorkTeamControlResult } from "./bot-work-team";
 export type { BotCreateRequest, BotCreateResult, BotCreateErrorCode } from "./bot-create";
@@ -53,6 +54,7 @@ export const BotWorkIpc = {
   workDiagnostics: "bot-work:work-diagnostics",
   resendNotification: "bot-work:resend-notification",
   reviewControl: "bot-work:review-control",
+  reassessClosedWork: "bot-work:reassess-closed-work",
   phase3Control: "bot-work:phase3-control",
   phase4Control: "bot-work:phase4-control",
 } as const;
@@ -112,6 +114,7 @@ export interface BotWorkApi {
   /** Explicit user-authorized resend of a delivery whose external outcome is unknown. */
   resendNotification(request: WorkManualResendRequest): Promise<WorkControlResult>;
   reviewControl(request: WorkReviewControlRequest): Promise<WorkControlResult>;
+  reassessClosedWork(request: WorkClosureReviewRequest): Promise<WorkControlResult>;
   phase3Control(request: WorkPhase3ControlRequest): Promise<WorkPhase3ControlResult>;
   phase4Control(request: WorkPhase4ControlRequest): Promise<WorkPhase4ControlResult>;
 }

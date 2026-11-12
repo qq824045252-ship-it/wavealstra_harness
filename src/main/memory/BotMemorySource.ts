@@ -2,13 +2,29 @@ import type { AppDatabase } from "../db/AppDatabase";
 import { LOCAL_USER_ID } from "../../shared/bot-work";
 import { hasSensitiveMemoryContent } from "./MemoryTextSafety";
 
+export function botWorkHasSharedOrigin(db: AppDatabase, workId: string): boolean {
+  if (!db.connection.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='bot_turn_origins'").get()) return false;
+  const origin = db.connection.prepare(`SELECT json_extract(o.origin_json,'$.audience') audience FROM works w
+    JOIN bot_turn_origins o ON o.user_message_id=w.source_message_id AND o.user_id=w.user_id WHERE w.work_id=?`)
+    .get(workId) as { audience: string } | undefined;
+  if (origin) return origin.audience !== "private";
+  // An old/deleted Gateway source has no proof of a private audience. Do not
+  // introduce personal Bot memory into an execution whose origin is unknown.
+  return Boolean(db.connection.prepare(`SELECT 1 FROM works w JOIN gateway_work_targets t
+    ON t.user_id=w.user_id AND t.source_message_id=w.source_message_id WHERE w.work_id=?`).get(workId));
+}
+
 /** A foreground conversation is a real memory source, never a fabricated Task row. */
 export function botMemorySource(db: AppDatabase, conversationId: string, userId = LOCAL_USER_ID) {
-  return db.connection.prepare(`SELECT c.conversation_id,c.bot_id,c.team_id,c.user_id,b.status
+  const source = db.connection.prepare(`SELECT c.conversation_id,c.bot_id,c.team_id,c.user_id,b.status
     FROM bot_conversations c JOIN bots b ON b.bot_id=c.bot_id AND b.user_id=c.user_id
     WHERE c.conversation_id=? AND c.user_id=?`).get(conversationId, userId) as {
       conversation_id: string; bot_id: string; team_id: string | null; user_id: string; status: string;
     } | undefined;
+  if (!source) return;
+  const origins = db.connection.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='bot_gateway_conversations'").get();
+  const shared = Boolean(origins && db.connection.prepare("SELECT 1 FROM bot_gateway_conversations WHERE conversation_id=? AND audience='shared'").get(conversationId));
+  return { ...source, shared };
 }
 
 /** One conservative scope boundary for direct writes, extraction, forgetting and
@@ -42,4 +58,59 @@ export function botMemoryWriteEvidenceAllowed(userText: string, evidence: string
     clause.includes(evidence.trim()) && /(?:记住|记下|保存|remember|memorize|save)/i.test(clause)
     && !/(?:不要|别|勿|不再|无需).{0,8}(?:记住|记下|保存)|(?:do not|don['’]?t|never)\s+(?:remember|memorize|save)/i.test(clause)
     && !forgetting.test(clause));
+}
+
+/** Resolve a single real input to its Work, never from candidate text or a model-selected ID. */
+export function botMemoryWorkForSource(db: AppDatabase, conversationId: string, userMessageId: string, userId = LOCAL_USER_ID): string | undefined {
+  const source = db.connection.prepare(`SELECT 1 FROM bot_send_receipts r JOIN bot_messages m ON m.message_id=r.user_message_id
+    JOIN bot_conversations c ON c.conversation_id=r.conversation_id AND c.user_id=r.user_id
+    WHERE r.user_id=? AND r.conversation_id=? AND r.user_message_id=? AND m.role='user'
+      AND m.conversation_id=r.conversation_id AND m.bot_id=r.bot_id AND m.request_id=r.request_id`)
+    .get(userId, conversationId, userMessageId);
+  if (!source) return;
+  const tables = new Set((db.connection.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{name:string}>).map(row=>row.name));
+  if (!tables.has('works')) return;
+  const ids = new Set<string>();
+  const collect = (sql: string) => {
+    for (const row of db.connection.prepare(sql).all(userId,userMessageId) as Array<{work_id:string}>) ids.add(row.work_id);
+  };
+  collect('SELECT work_id FROM works WHERE user_id=? AND source_message_id=?');
+  if (tables.has('work_intent_snapshots')) collect(`SELECT w.work_id FROM works w JOIN work_intent_snapshots s ON s.work_id=w.work_id
+    WHERE w.user_id=? AND s.source_message_id=?`);
+  if (tables.has('bot_work_user_inputs')) collect(`SELECT w.work_id FROM works w JOIN bot_work_user_inputs s ON s.work_id=w.work_id
+    WHERE w.user_id=? AND s.source_message_id=?`);
+  if (tables.has('bot_collaboration_requests')) collect(`SELECT w.work_id FROM works w JOIN bot_collaborations c ON c.work_id=w.work_id AND c.user_id=w.user_id
+    JOIN bot_collaboration_requests r ON r.collaboration_id=c.collaboration_id WHERE w.user_id=? AND r.user_message_id=?`);
+  return ids.size === 1 ? [...ids][0] : undefined;
+}
+
+/** An explicit durable write must apply to this candidate's own quoted clause. */
+export function botMemoryDurableEvidence(userText: string, evidence: string): boolean {
+  return Boolean(evidence.trim()) && userText.split(/[。；;！!？?\n]/).some(clause => clause.includes(evidence)
+    && /(?:记住|记下|保存.{0,8}(?:偏好|记忆)|长期.{0,8}(?:保留|保存)|\bremember\b|\bmemorize\b|\bsave\b.{0,16}\b(?:memory|preference)\b)/i.test(clause)
+    && !/(?:不要|别|勿|不再|无需).{0,8}(?:记住|记下|保存)|(?:do not|don['’]?t|never)\s+(?:remember|memorize|save)/i.test(clause));
+}
+
+/** Narrow legacy automatic atoms at read time; preserve stored records and their evidence for audit. */
+export function botMemoryAutomaticBoundary(db: AppDatabase, memory: import("../../shared/memory-kernel").MemoryRecordDto):
+  { scopeType: "work" | "conversation"; scopeId: string } | undefined {
+  if (memory.explicit || memory.sourceType !== "agent" || !memory.sourceId
+    || !["fact", "constraint", "decision"].includes(memory.kind)
+    || !memory.scopes.some(scope => ["bot", "team", "global"].includes(scope.scopeType))) return;
+  const source = botMemorySource(db, memory.sourceId);
+  if (!source && !/^(?:bot-conversation-|bot-gateway-)/.test(memory.sourceId)) return;
+  if (!source) return { scopeType: "conversation", scopeId: memory.sourceId };
+  const rows = db.connection.prepare(`SELECT t.user_message_id,m.text,e.excerpt FROM memory_evidence e
+    JOIN memory_turns t ON t.id=e.ref_id AND t.task_id=?
+    JOIN bot_send_receipts r ON r.user_message_id=t.user_message_id AND r.conversation_id=t.task_id AND r.user_id=?
+    JOIN bot_messages m ON m.message_id=r.user_message_id AND m.role='user' AND m.bot_id=r.bot_id
+      AND m.conversation_id=r.conversation_id AND m.request_id=r.request_id
+    WHERE e.memory_id=?`).all(memory.sourceId,source.user_id,memory.id) as Array<{user_message_id:string;text:string;excerpt:string|null}>;
+  // Do not narrow a real user-authorized durable write merely because its old extractor marked it automatic.
+  if (rows.some(row => {
+    const quote = /^用户：([\s\S]*?)(?:\n助手：|$)/.exec(row.excerpt ?? "")?.[1]?.trim();
+    return quote && row.text.includes(quote) && botMemoryDurableEvidence(row.text,quote);
+  })) return;
+  const works = new Set(rows.map(row => botMemoryWorkForSource(db,memory.sourceId!,row.user_message_id,source.user_id)).filter(id=>id!==undefined));
+  return works.size === 1 ? {scopeType:"work",scopeId:[...works][0]} : {scopeType:"conversation",scopeId:memory.sourceId};
 }

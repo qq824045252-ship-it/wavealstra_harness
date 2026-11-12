@@ -163,12 +163,6 @@ app.whenReady().then(() => {
   };
   const menuSvc = new TrayService();
   menuSvc.initialize(menuWin, { createTray: () => spy });
-  const menuLabels = (spy.menu?.items ?? []).map((item) => item.label).filter(Boolean);
-  assert(
-    "托盘菜单包含 显示/刷新/退出",
-    ["显示 MyBuddy", "刷新", "退出"].every((label) => menuLabels.includes(label)),
-    menuLabels.join("|"),
-  );
   if (resolveTrayPlatformBehavior().menuBinding === "setContextMenu") {
     assert("Linux 用 setContextMenu 注册菜单（不是 popUpContextMenu）", spy.menu !== null && spy.popped === 0);
   } else {
@@ -176,6 +170,8 @@ app.whenReady().then(() => {
     spy.handlers.get("right-click")();
     assert("Windows/macOS 右键会弹出菜单", spy.popped === 1 && spy.menu !== null);
   }
+  const menuLabels = (spy.menu?.items ?? []).map((item) => item.label).filter(Boolean);
+  assert("托盘菜单包含 显示/刷新/退出", ["显示 MyBuddy", "刷新", "退出"].every(label => menuLabels.includes(label)), menuLabels.join("|"));
   menuSvc.dispose();
   menuWin.destroy();
 
@@ -205,7 +201,6 @@ app.whenReady().then(() => {
   const failed = results.filter((r) => !r.ok);
   console.log(`\n==== ${results.length - failed.length}/${results.length} passed ====`);
   win.destroy();
-  process.exitCode = failed.length > 0 ? 1 : 0;
   cleanupSandboxProfile();
-  app.quit();
+  app.exit(failed.length > 0 ? 1 : 0);
 });

@@ -1,6 +1,6 @@
 import { WorkCompletionCoordinator } from "../src/main/agent/work/WorkCompletionCoordinator";
 import { WorkConversationFeedback } from "../src/main/agent/work/WorkConversationFeedback";
-import type { WorkResultDecision } from "../src/main/agent/work/BotWorkResultTurn";
+import type { WorkResultDecision } from "../src/main/agent/work/WorkResultDecision";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

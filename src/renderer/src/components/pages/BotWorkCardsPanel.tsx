@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { WorkProjectionDto } from "@shared/bot-work";
 import type { WorkDiagnosticsSection, WorkExpandedDiagnosticsDto } from "@shared/bot-work-phase5";
+import type { WorkClosureReviewRequest } from "@shared/work-closure-review";
 import { useAppStore } from "@/store/appStore";
 import { WorkResultText } from "./BotWorkResult";
 
@@ -15,12 +16,38 @@ export function WorkCardsPanel(props: { work: WorkProjectionDto; includeClosed: 
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [diagnostics, setDiagnostics] = useState<WorkExpandedDiagnosticsDto | null>(null);
+  const closureReview = useRef<WorkClosureReviewRequest | null>(null);
+  const reviewingClosure = useRef(false);
   const mounted = useRef(true);
   const currentScope = useRef(includeClosed);
   currentScope.current = includeClosed;
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const cards = work.cards ?? [];
   const refresh = () => useAppStore.getState().refreshBotWork(currentScope.current);
+
+  const reassessClosure = async () => {
+    if (reviewingClosure.current || !work.closureReview) return;
+    reviewingClosure.current = true; setBusy(true); setNotice("");
+    const request = closureReview.current ?? {
+      requestId: crypto.randomUUID(), workId: work.workId, expectedCloseOperationId: work.closureReview.expectedCloseOperationId,
+      versionGuard: { expectedStateVersion: work.stateVersion, expectedIntentRevision: work.intentRevision,
+        expectedOwnerEpoch: work.ownerEpoch },
+    };
+    closureReview.current = request;
+    try {
+      if (!window.api) throw Error("桌面接口不可用");
+      const result = await window.api.botWork.reassessClosedWork(request);
+      if (!mounted.current) return;
+      if (!result.ok) closureReview.current = null;
+      setNotice(result.ok ? "复核完成，请查看最新结案说明。" : result.message);
+      if (result.ok) await refresh();
+    } catch (error) {
+      if (mounted.current) setNotice(error instanceof Error ? error.message : "复核尚未确认，请重试");
+    } finally {
+      reviewingClosure.current = false;
+      if (mounted.current) setBusy(false);
+    }
+  };
 
   const read = async (semanticCardKey: string) => {
     setBusy(true);
@@ -72,6 +99,12 @@ export function WorkCardsPanel(props: { work: WorkProjectionDto; includeClosed: 
   };
 
   return <section className="bot-detail-section bot-result-cards" aria-label="结果卡片与证据">
+    {work.closureReview && <div>
+        <button type="button" className="btn" disabled={busy} onClick={() => { void reassessClosure(); }}>
+          {reviewingClosure.current ? "正在复核…" : "复核结论"}
+        </button>
+        <p>依据已有成果重新核对结案，保留原结案记录。</p>
+      </div>}
     {cards.length > 0 && <h3>结果卡片</h3>}
     {cards.map((card, cardIndex) => <article key={card.cardKey} id={`work-card-${card.cardKey}`} aria-label="结果卡片">
       <p><strong>{card.title}</strong>{card.currency === "current" ? "" : ` · ${card.currency === "superseded" ? "已失效" : "历史"}`}</p>

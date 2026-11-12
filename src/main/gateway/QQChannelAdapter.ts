@@ -1,3 +1,4 @@
+import { assertGatewayWorkSend, postGatewayWork, GatewayWorkNotSentError, type GatewayWorkSendInput, type GatewayWorkSendResult } from "./work-outbound";
 import { BoundedTTLCache } from './BoundedTTLCache';
 import { GatewayReplyNotSentError, type GatewayReplyRestoreInput, type GatewayReplyRoute } from './GatewayReply';
 /** Official QQ bot WS protocol informed by NousResearch/hermes-agent QQ adapter
@@ -5,7 +6,7 @@ import { GatewayReplyNotSentError, type GatewayReplyRestoreInput, type GatewayRe
  * See docs/third-party/hermes-agent-LICENSE.txt. No personal QQ or HTTP callback.
  */
 import type { ChannelAdapter, ChannelConfig, GatewayInboundHandler } from "./channels";
-import { gatewayConnectionKey } from "./work-outbound";
+import { gatewayConnectionKey, gatewayWorkTarget } from "./work-outbound";
 import { GATEWAY_MEDIA_LIMITS, withGatewayMedia, type GatewayMediaSource } from "./GatewayMedia";
 
 export interface QQSocket {
@@ -85,6 +86,32 @@ export class QQChannelAdapter implements ChannelAdapter {
   statusText(): string { return this.lastError || (this.connected ? "已连接（QQ 官方机器人 WebSocket）" : "未连接"); }
   workConnectionKey(): string | undefined {
     return this.connected && this.activated && this.config ? gatewayConnectionKey(this.type, [this.config.appId]) : undefined;
+  }
+  async sendWorkNotification(input: GatewayWorkSendInput): Promise<GatewayWorkSendResult> {
+    const check = () => {
+      assertGatewayWorkSend(input, this);
+      if (input.target.channelType !== "qq" || !this.config?.allowUsers.includes(input.target.senderId)) throw new GatewayWorkNotSentError("QQ 原始发送者未获授权");
+      if (Date.now() >= input.target.address.expiresAt) throw new GatewayWorkNotSentError("QQ 原消息回复窗口已过期；官方主动推送能力未获确认，未发送");
+      if (typeof input.qqMessageSequence !== "number" || !Number.isInteger(input.qqMessageSequence) || input.qqMessageSequence < 2 || input.qqMessageSequence > 5) throw new GatewayWorkNotSentError("QQ 通知缺少有效的持久回复槽位，未发送");
+    };
+    check();
+    if (input.target.channelType !== "qq") throw new GatewayWorkNotSentError("QQ 路由不一致");
+    const target = input.target;
+    const token = await this.refreshToken(this.generation);
+    check();
+    const hasFiles = Boolean(input.files?.length);
+    const result = await postGatewayWork({ url: `https://api.sgroup.qq.com/v2/${target.address.group ? "groups" : "users"}/${encodeURIComponent(target.address.recipient)}/messages`,
+      headers: { Authorization: `QQBot ${token}`, "X-Union-Appid": this.config!.appId }, signal: input.signal, fetcher: this.fetcher, label: "QQ",
+      body: { content: hasFiles ? `${input.text}\n\nQQ 无法发送这份文件，文件仍在 MyBuddy 对应 Work 中，请打开该事项查看。` : input.text, msg_type: 0, msg_id: target.address.messageId,
+        msg_seq: input.qqMessageSequence },
+      interpret: (data, response) => response.ok && str(data.id) && (data.code === undefined || data.code === 0)
+        ? { ok: true, receipt: str(data.id) }
+        : { ok: false, retryable: false, responseLost: response.status >= 500, error: "QQ 未确认通知；可能超过回复次数或账号能力限制" } });
+    if (!hasFiles || !result.ok) return result;
+    input.recordProgress?.(JSON.stringify([{ part: "text", receipt: result.receipt },
+      { part: "files", status: "failed", code: "fileunsupported" }]));
+    return { ok: false, retryable: false, responseLost: false,
+      error: `fileunsupported: QQ 文件未发送；摘要和限制说明已送达，text receipt=${result.receipt}` };
   }
   restoreGatewayReply(input: GatewayReplyRestoreInput): ((text: string) => Promise<void>) | undefined {
     const route = input.route, senderId = input.sender?.id;
@@ -326,7 +353,7 @@ export class QQChannelAdapter implements ChannelAdapter {
       return withGatewayMedia(media.map(item => ({ ...item, fetch: guardedFetch })), async attachments => {
         assertInbound();
         enteredGateway = true;
-        const delivery = this.inbound!({ channelId: this.id, chatId, messageId, text, attachments, sender: { id: senderId }, replyRoute, reply });
+        const delivery = this.inbound!({ channelId: this.id, chatId, messageId, text, attachments, audience: group ? "shared" : "private", sender: { id: senderId }, workTarget: gatewayWorkTarget({ version: 1, channelType: this.type, channelId: this.id, connectionKey: this.workConnectionKey(), chatId, senderId, address: { recipient, group, messageId, expiresAt: expires } }), replyRoute, reply });
         if (delivery.accepted) {
           enteredGateway = false;
           void delivery.catch(() => {});

@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { completionArtifactEvidence } from "../src/main/agent/work/WorkCompletionCoordinator";
+import { completionArtifactEvidence } from "../src/main/agent/work/WorkCompletionArtifactEvidence";
 import type { WorkService } from "../src/main/agent/work/WorkService";
 import type { WorkExecutionBindingDto, WorkDeliverableDto } from "../src/shared/bot-work";
 import type { GeneratedArtifact } from "../src/shared/bot-work-phase3";

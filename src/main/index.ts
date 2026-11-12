@@ -1,6 +1,10 @@
 import { SavedArtifactIpc } from "../shared/saved-artifact";
 import { savedArtifactPreviewService } from "./artifact/SavedArtifactPreview";
 import "./platform/credentials";
+import { ResidentLifecycle, RESIDENT_HOST_ARGUMENT } from "./host/ResidentLifecycle";
+import { GatewayBotBindingIpc } from "../shared/gateway-bot-binding";
+import { configureGatewayBotBinding } from "./gateway/GatewayBotBindingSettings";
+import { isMainAppWindowRequest } from "./AppWindowIpc";
 import { GoogleWorkspaceWriteIpc } from "../shared/google-workspace-write";
 import { googleWorkspaceWriteService } from "./connectors/GoogleWorkspaceWriteService";
 import { GoogleWorkspaceIpc } from "../shared/google-workspace";
@@ -371,6 +375,24 @@ let htmlEditService: HtmlEditService | null = null;
 let reopenSelectionComment: (() => void) | null = null;
 let perfStartupReported = false;
 let botManagementWindow: BrowserWindow | null = null;
+let compositionReady = false;
+let interfaceRequested = false;
+const residentLifecycle = new ResidentLifecycle({
+  argv: process.argv, packaged: app.isPackaged, executable: process.execPath, appPath: app.getAppPath(),
+  enabled: () => agentService?.getAppSettings().residentHostEnabled === true,
+  quit: () => app.quit(), relaunch: args => app.relaunch({ args }),
+  closeInterface: () => { for (const win of BrowserWindow.getAllWindows()) if (!win.isDestroyed()) win.destroy(); },
+  diagnosticsPath: join(getMyBuddyDir(), "logs", "resident-launcher.log"),
+  developmentOutput: join(__dirname, ".."),
+  log: (event, data) => console.log(`[ResidentHost] ${event}`, data),
+});
+
+function showClientInterface(): void {
+  if (!compositionReady) { interfaceRequested = true; return; }
+  const win = botManagementWindow;
+  if (!win || win.isDestroyed()) createWindow();
+  else { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
+}
 
 // §5-7 崩溃可观测性（必须在 app ready 前装配）：
 // - crashDumps 固定到 <MyBuddyDir>/crashdumps，crashReporter 只落本地、不上传；
@@ -395,20 +417,12 @@ const reportProcessGone = createProcessGoneReporter({
 // P3-6：单实例 —— 第二个实例直接退出并聚焦/恢复主窗口（复用托盘恢复路径），
 // 保证同一时刻只有一个 MyBuddy 实例写用户设置（settings.json 无跨实例合并）。
 // 必须在 app ready 前尽早申请；测试/无头路径不加载本模块，不受影响。
-if (!app.requestSingleInstanceLock()) {
+const holdsInstanceLock = app.requestSingleInstanceLock();
+if (!holdsInstanceLock) {
   app.quit();
 } else {
-  app.on("second-instance", () => {
-    if (trayService) {
-      trayService.showMainWindow();
-      return;
-    }
-    const win = BrowserWindow.getAllWindows()[0];
-    if (win && !win.isDestroyed()) {
-      if (win.isMinimized()) win.restore();
-      win.show();
-      win.focus();
-    }
+  app.on("second-instance", (_event, argv) => {
+    if (!argv.includes(RESIDENT_HOST_ARGUMENT)) showClientInterface();
   });
 }
 /** Native Surface 唯一显示决策层（V3.5 Wave 4A §75）：Renderer intent → Coordinator → PreviewHost → WCV */
@@ -697,7 +711,9 @@ function createWindow(initialTheme: AppTheme = "light"): void {
   // 系统托盘：关闭窗口 → 最小化到后台（重建窗口时先释放旧托盘）
   trayService?.dispose();
   trayService = new TrayService();
-  trayService.initialize(win, { onBeforeReload: hideNativeOverlays });
+  trayService.initialize(win, { onBeforeReload: hideNativeOverlays, onShow: showClientInterface,
+    onExitInterface: () => residentLifecycle.exitInterface(), onStopAssistant: () => residentLifecycle.stop(),
+    residentEnabled: () => residentLifecycle.resident || agentService.getAppSettings().residentHostEnabled === true });
   trayService.setCloseToTray(agentService.getAppSettings().closeToTray !== false);
   notificationService?.setDesktopDelivery(
     (notice) => trayService.showNotification({ title: notice.title, body: notice.body }),
@@ -1126,6 +1142,12 @@ function registerIpc(): void {
   ipcMain.handle(BotWorkIpc.workDiagnostics, (_e, request: unknown) => agentService.getWorkDiagnostics(request));
   ipcMain.handle(BotWorkIpc.resendNotification, (_e, request: unknown) => agentService.resendWorkNotification(request));
   ipcMain.handle(BotWorkIpc.reviewControl, (_e, request: unknown) => agentService.reviewWork(request));
+  ipcMain.handle(BotWorkIpc.reassessClosedWork, (event, request: unknown) => {
+    if (!isMainAppWindowRequest(event, botManagementWindow,
+      process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href))
+      return { ok: false, code: "forbidden", message: "只能从应用主窗口复核结案结果" };
+    return agentService.reassessClosedWork(request);
+  });
 
   // BTW（临时上下文分支）：瞬时会话，与 Task Registry / agent:event 完全隔离
   ipcMain.handle(BtwIpc.start, async (_e, req: BtwStartRequest) => {
@@ -1330,6 +1352,7 @@ function registerIpc(): void {
   );
   ipcMain.handle(AgentIpc.getAppSettings, () => agentService.getAppSettings());
   ipcMain.handle(AgentIpc.updateAppSettings, async (_e, partial) => {
+    if (partial?.gatewayBotBindings !== undefined) throw new Error("请通过渠道个人助理绑定保存");
     const {
       memoryGatewayEnabled, memoryGatewayWriteEnabled, memoryGatewayPort,
       remoteAccessEnabled, remoteAccessPort, remoteAccessBaseUrl,
@@ -1352,6 +1375,7 @@ function registerIpc(): void {
     const next = await agentService.updateAppSettings(ordinary);
     // 关闭到托盘开关实时生效
     trayService?.setCloseToTray(next.closeToTray !== false);
+    trayService?.refreshMenu();
     return next;
   });
   ipcMain.handle(MemoryGatewayIpc.status, () => {
@@ -2255,6 +2279,19 @@ function registerIpc(): void {
   ipcMain.handle(GatewayIpc.weixinQrCancel, (_e, sessionId?: string) => gatewayService.cancelWeixinQrLogin(sessionId));
   ipcMain.handle(GatewayIpc.qqQrCancel, (_e, sessionId?: string) => gatewayService.cancelQQQrLogin(sessionId));
   ipcMain.handle(GatewayIpc.status, () => gatewayService.status());
+  ipcMain.handle(GatewayBotBindingIpc.configure, async (event, input) => {
+    if (!isMainAppWindowRequest(event, botManagementWindow,
+      process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href)) {
+      throw new Error("只能从应用主窗口绑定渠道个人助理");
+    }
+    const next = configureGatewayBotBinding(input, {
+      current: agentService.getAppSettings().gatewayBotBindings ?? {},
+      connectedIdentity: id => gatewayService.connectedWorkIdentity(id),
+      ownsActiveBot: id => agentService.listBots().some(bot => bot.botId === id && bot.status === "active"),
+    });
+    await agentService.updateAppSettings({ gatewayBotBindings: next });
+    return next;
+  });
   ipcMain.handle(GatewayIpc.listChannels, () => gatewayService.listChannels());
   ipcMain.handle(
     GatewayIpc.connect,
@@ -2725,6 +2762,7 @@ function registerIpc(): void {
 }
 
 app.whenReady().then(async () => {
+  if (!holdsInstanceLock) return;
   // Issue #17 A1: phase marks are opt-in and exit once the required phases are recorded.
   if (startupMarkEnabled()) {
     onStartupReport(() => app.exit(0));
@@ -2848,7 +2886,6 @@ app.whenReady().then(async () => {
     onError: (error) => console.warn("[Work] 通知投递失败", error),
   });
   agentService.setWorkNotificationWake(() => workNotificationHost?.wake());
-  workNotificationHost.start();
   computerUseOverlayService.setAbortHandler(async (taskId) => {
     computerUseRunCoordinator.cancel(taskId);
   });
@@ -3463,7 +3500,17 @@ app.whenReady().then(async () => {
       },
     ]),
   );
-  createWindow();
+  compositionReady = true;
+  if (!residentLifecycle.resident || interfaceRequested) createWindow();
+  else {
+    trayService = new TrayService();
+    trayService.initialize(null, { onShow: showClientInterface,
+      onExitInterface: () => residentLifecycle.exitInterface(), onStopAssistant: () => residentLifecycle.stop(),
+      residentEnabled: () => true });
+    notificationService?.setDesktopDelivery(notice => trayService.showNotification({ title: notice.title, body: notice.body }), () => false);
+    console.log(`[ResidentHost] online pid=${process.pid} storage=${getMyBuddyDir()}`);
+  }
+  workNotificationHost.start();
   await agentService.resumePersistedTasks();
   startupMark("restoreDelivered");
   cronService.start();
@@ -3492,11 +3539,7 @@ app.whenReady().then(async () => {
   }
 
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
-    } else {
-      trayService?.showMainWindow();
-    }
+    showClientInterface();
   });
 });
 
@@ -3516,6 +3559,7 @@ app.on("child-process-gone", (_event, details) => {
 });
 
 app.on("window-all-closed", () => {
+  if (residentLifecycle.resident) return;
   // 托盘存活时驻留后台，不退出；macOS 始终驻留。平台差异收在 platform/lifecycle.ts。
   if (shouldQuitOnAllWindowsClosed({ suppressQuit: trayService?.shouldSuppressQuit() ?? false })) app.quit();
 });
@@ -3555,6 +3599,8 @@ app.on("before-quit", (event) => {
     } catch { /* best effort */ }
     try { db?.close(); } catch { /* best effort */ }
   })().finally(() => {
+    try { residentLifecycle.afterCleanup(); }
+    catch (error) { console.error("[ResidentHost] handoff failed; assistant is offline", error); }
     quitCleanupComplete = true;
     app.quit();
   });

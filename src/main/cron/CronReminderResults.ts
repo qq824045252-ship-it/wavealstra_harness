@@ -1,5 +1,4 @@
-import { createHash } from "node:crypto";
-import { constants, openSync, closeSync, fstatSync, readSync } from "node:fs";
+import { hashVerifiedRegularFiles } from "../platform/fs-security";
 import type Database from "better-sqlite3";
 import type { CronJobDto } from "../../shared/agent-ipc";
 import { type WorkFeedbackDto } from "../../shared/bot-conversation";
@@ -7,28 +6,18 @@ import { generatedArtifactSchema } from "../../shared/bot-work-phase3";
 
 export const REMINDER_RESULT_LIMITS = { fileBytes: 4*1024*1024, totalBytes: 8*1024*1024, files: 20, refs: 64, registrations: 128, chunkBytes: 64*1024 } as const;
 
-/** Bounded descriptor reads: never follow a final symlink or block opening a FIFO.
- * Fail closed when the runtime cannot enforce these flags. Counts consumed bytes
+/** Bounded regular descriptor reads with platform-owned identity checks. Counts consumed bytes
  * even on failed validation so corrupt files cannot multiply the IO budget. */
 export function verifyReminderSnapshot(path: string, size: number, digest: string, budget: {bytes:number}): 'verified'|'budget'|'unreadable' {
-  if (size>REMINDER_RESULT_LIMITS.fileBytes || size>budget.bytes) return 'budget';
-  let fd:number|undefined;
-  try {
-    if (!constants.O_NOFOLLOW || !constants.O_NONBLOCK) return 'unreadable';
-    fd=openSync(path,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
-    const before=fstatSync(fd);
-    if (!before.isFile() || before.size!==size) return 'unreadable';
-    const hash=createHash('sha256'),chunk=Buffer.alloc(REMINDER_RESULT_LIMITS.chunkBytes);
-    let offset=0;
-    while(offset<size) {
-      const count=readSync(fd,chunk,0,Math.min(chunk.length,size-offset),offset);
-      if (!count) return 'unreadable';
-      offset+=count;budget.bytes-=count;hash.update(chunk.subarray(0,count));
-    }
-    const after=fstatSync(fd);
-    return after.size===before.size && after.mtimeMs===before.mtimeMs && after.ctimeMs===before.ctimeMs && hash.digest('hex')===digest ? 'verified':'unreadable';
-  } catch { return 'unreadable'; }
-  finally { if(fd!==undefined) closeSync(fd); }
+  return verifyReminderSnapshots([{path,size,digest}],budget)[0];
+}
+
+export function verifyReminderSnapshots(files: Array<{path:string;size:number;digest:string}>, budget: {bytes:number}): Array<'verified'|'budget'|'unreadable'> {
+  const results=hashVerifiedRegularFiles(files,{fileBytes:REMINDER_RESULT_LIMITS.fileBytes,totalBytes:budget.bytes,chunkBytes:REMINDER_RESULT_LIMITS.chunkBytes});
+  return results.map((result,index)=>{
+    budget.bytes-=result.bytesRead;
+    return result.status==='budget' ? 'budget' : result.valid && result.digest===files[index].digest ? 'verified':'unreadable';
+  });
 }
 
 type Target = NonNullable<CronJobDto["reminder"]>;
@@ -92,10 +81,14 @@ export function reminderResult(db: Database.Database, target: Target, eventId: s
   const selected=source.report!.files??[];
   const budget={bytes:REMINDER_RESULT_LIMITS.totalBytes as number};
   let budgetSkipped=0, unreadable=0;
-  const files=selected.slice(0,REMINDER_RESULT_LIMITS.files).flatMap(file=>{
+  const checked=selected.slice(0,REMINDER_RESULT_LIMITS.files).map(file=>{
     const artifact=artifacts.find(a=>a.snapshotPath && a.snapshotPath===file.openPath && file.ref===a.snapshotPath);
-    const status=artifact?.snapshotPath ? verifyReminderSnapshot(artifact.snapshotPath,artifact.sizeBytes,artifact.digest,budget) : 'unreadable';
-    if(status==='verified') return [file];
+    return {file,path:artifact?.snapshotPath??'',size:artifact?.sizeBytes??0,digest:artifact?.digest??''};
+  });
+  const statuses=verifyReminderSnapshots(checked,budget);
+  const files=checked.flatMap((entry,index)=>{
+    const status=statuses[index];
+    if(status==='verified') return [entry.file];
     if(status==='budget') budgetSkipped++; else unreadable++;
     return [];
   });

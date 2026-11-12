@@ -8,6 +8,7 @@ import { MemoryPipelineManager } from "../src/main/memory/MemoryPipelineManager"
 import { SkillsService } from "../src/main/skills/SkillsService";
 // 技能聚合根已迁移到 ~/.mybuddy/plugins/skills（PluginStorage v1）；旧测试写死迁移前路径。
 import { getSkillsDir } from "../src/main/paths";
+import { verifyBotSkillContract } from "./memory-bot-skill-contract";
 
 async function main(): Promise<void> {
   const sandbox = mkdtempSync(join(tmpdir(), "mybuddy-memory-skill-"));
@@ -285,6 +286,7 @@ async function main(): Promise<void> {
     assert.ok(stats.skillCandidates >= 0);
     assert.ok(stats.readySkillCandidates >= 0);
 
+    await verifyBotSkillContract(db);
     console.log("memory-skill-learning-test: PASS");
   } finally {
     db.close();

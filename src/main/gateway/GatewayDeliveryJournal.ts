@@ -20,6 +20,7 @@ export interface GatewayStoredPayload {
   messageId: string;
   text: string;
   sender?: { id: string; name?: string };
+  audience?: "private" | "shared";
   attachments?: StoredAttachment[];
   workTarget?: GatewayWorkTarget;
   replyRoute?: GatewayReplyRoute;
@@ -106,6 +107,7 @@ export class GatewayDeliveryJournal {
   private payload(message: GatewayInboundMessage, messageId: string): GatewayStoredPayload {
     if (!nonempty(message.channelId) || !nonempty(message.chatId) || !nonempty(messageId)
       || typeof message.text !== "string" || message.text.length > 64_000
+      || (message.audience !== undefined && message.audience !== "private" && message.audience !== "shared")
       || (message.sender && (!nonempty(message.sender.id) || (message.sender.name !== undefined && (typeof message.sender.name !== "string" || message.sender.name.length > 2048))))) {
       throw new Error("Gateway 持久消息内容无效或过长");
     }
@@ -115,6 +117,7 @@ export class GatewayDeliveryJournal {
     const attachments = message.attachments?.map(file => this.attachment(file));
     if (attachments && attachments.reduce((sum, file) => sum + file.size, 0) > GATEWAY_MEDIA_LIMITS.batch) throw new Error("Gateway 持久附件总大小超过限制");
     const payload: GatewayStoredPayload = { version: 1, channelId: message.channelId, chatId: message.chatId, messageId, text: message.text,
+      ...(message.audience ? { audience: message.audience } : {}),
       ...(message.sender ? { sender: { id: message.sender.id, ...(message.sender.name ? { name: message.sender.name } : {}) } } : {}),
       ...(attachments?.length ? { attachments } : {}),
       ...(message.workTarget ? { workTarget: gatewayWorkTargetSchema.parse(message.workTarget) } : {}),
@@ -164,6 +167,7 @@ export class GatewayDeliveryJournal {
     const value = JSON.parse(entry.payload_json) as GatewayStoredPayload;
     if (!value || value.version !== 1 || value.channelId !== entry.channel_id || value.chatId !== entry.chat_id
       || value.messageId !== entry.message_id || !nonempty(value.messageId) || typeof value.text !== "string" || value.text.length > 64_000
+      || (value.audience !== undefined && value.audience !== "private" && value.audience !== "shared")
       || (value.sender && (!nonempty(value.sender.id) || (value.sender.name !== undefined && !nonempty(value.sender.name))))) {
       throw new Error("Gateway 持久消息格式无效");
     }

@@ -449,7 +449,7 @@ export interface MemorySkillCandidateDto {
   description: string;
   instructions: string;
   status: MemorySkillCandidateStatus;
-  scopeType: "global" | "workspace" | "project";
+  scopeType: "global" | "workspace" | "project" | "bot";
   scopeId?: string;
   sourceMemoryIds: string[];
   sourceSignature: string;

@@ -34,9 +34,6 @@ import { assertGatewayProviderStorage, isSecureGatewayProvider, validateGatewayP
   openGatewayProviderConfig, gatewayProviderConfigView } from "./GatewayProviderConfig";
 import { SlackGatewayJournal } from "./SlackGatewayJournal";
 import { sealSlackGatewayConfig, openSlackGatewayConfig, slackGatewayConfigView } from "./SlackGatewayCredentials";
-import { gatewayBotTaskId } from "../../shared/gateway-task";
-import { LOCAL_USER_ID } from "../../shared/bot-work";
-import { GatewayWorkTargets } from "./GatewayWorkTargets";
 import { gatewayWorkTargetSchema, GatewayWorkNotSentError,
   type GatewayWorkSendInput, type GatewayWorkSendResult, type GatewayWorkTarget } from "./work-outbound";
 import {
@@ -103,7 +100,6 @@ export class GatewayService {
   private weixinQrPending?: Promise<void>;
   private weixinQrEpoch = 0;
   private readonly settingsStore: Pick<AppSettingsStore, "read">;
-  private readonly workTargets: GatewayWorkTargets;
   private workNotificationWake?: () => void;
   /** 通道级策略：白名单（空 = 不限制） */
   private readonly channelPolicies = new Map<string, { allowUsers: string[] }>();
@@ -137,7 +133,6 @@ export class GatewayService {
     options: GatewayServiceOptions = {},
   ) {
     this.settingsStore = options.settingsStore ?? new AppSettingsStore();
-    this.workTargets = new GatewayWorkTargets(db.connection);
     this.platforms = new GatewayPlatformRegistry({
       ...(options.durableInbox !== false && db.connection ? { journal: new GatewayDeliveryJournal(db.connection) } : {}),
       replayNativeReceipts: true,
@@ -377,6 +372,7 @@ export class GatewayService {
     };
     check();
     const adapter = this.adapters.get(input.target.channelId)!;
+    if (input.files?.length && !["discord", "dingtalk", "qq"].includes(input.target.channelType)) throw new GatewayWorkNotSentError("当前渠道尚未支持成果附件，未发送或降级为文本成功");
     const text = this.secrets.redact(input.text);
     const result = await adapter.sendWorkNotification!({ ...input, text, assertCurrent: check });
     if (result.ok) this.emitEvent({ channelId: input.target.channelId, chatId: input.target.chatId,
@@ -384,19 +380,10 @@ export class GatewayService {
     return result;
   }
 
-  private recordWorkTarget(msg: GatewayInboundMessage, sourceTaskId: string, sourceMessageId: string): void {
-    // Older/unaddressable inputs remain without an outbound route. No message text,
-    // latest conversation or historical chat log may manufacture an authorized target.
-    if (!msg.workTarget) return;
-    const target = gatewayWorkTargetSchema.parse(msg.workTarget);
-    if (target.channelId !== msg.channelId || target.chatId !== msg.chatId || target.senderId !== msg.sender?.id) {
-      throw new Error("Gateway 受信任目标与原始消息身份不一致");
-    }
-    const rejected = this.checkWorkTarget(target);
-    if (rejected) throw new Error(rejected);
-    this.workTargets.record({ userId: LOCAL_USER_ID, conversationId: gatewayBotTaskId(sourceTaskId),
-      sourceMessageId, target, createdAt: Date.now() });
-    this.workNotificationWake?.();
+  connectedWorkIdentity(channelId: string): { channelId: string; connectionKey: string } | undefined {
+    const adapter = this.adapters.get(channelId);
+    const connectionKey = adapter?.isConnected() ? adapter.workConnectionKey?.() : undefined;
+    return connectionKey ? { channelId, connectionKey } : undefined;
   }
 
   setTrashedWorkspaceRestorer(restore: (taskId: string) => void): void {
@@ -410,7 +397,6 @@ export class GatewayService {
       slackId: () => this.slack.id, isAuthorized: channelId => this.channelPolicies.has(channelId),
       isAllowed: (channelId, senderId) => this.isAllowed(channelId, senderId), processed: this.processed,
       emitEvent: event => this.emitEvent(event),
-      recordWorkTarget: (message, taskId, messageId) => this.recordWorkTarget(message, taskId, messageId),
       projectMessageSink: this.projectMessageSink,
       restoreTrashedWorkspace: taskId => this.restoreTrashedWorkspace?.(taskId),
       redact: text => this.secrets.redact(text), safeError: error => this.secrets.error(error),

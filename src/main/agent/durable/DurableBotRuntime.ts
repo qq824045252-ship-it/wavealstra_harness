@@ -122,6 +122,20 @@ export interface DurableBotOptions {
 /** Native submission has conclusively ended without a usable answer; not an unknown effect. */
 export class DurableReplyError extends Error {}
 
+/** Failed opening has not transferred a runtime, but still owns real resources. */
+export class DurableOpenCleanupError extends Error {
+  constructor(readonly release: () => Promise<void>, openingError: unknown, cleanupError: unknown) {
+    super("Durable 打开失败且资源尚未释放，可重试原资源清理", { cause: new AggregateError([openingError, cleanupError]) });
+    this.name = "DurableOpenCleanupError";
+  }
+}
+
+async function failedOpen(error: unknown, release: () => Promise<void>): Promise<never> {
+  try { await release(); }
+  catch (cleanupError) { throw new DurableOpenCleanupError(release, error, cleanupError); }
+  throw error;
+}
+
 export class DurableBotRuntime {
   private watch!: ConversationWatch;
   private revision = 0;
@@ -275,7 +289,9 @@ export class DurableBotRuntime {
         compatibility = [...options.restoreTools([...names])].filter(tool => !installed.has(tool.name));
         native.push(...compatibility);
       }
-    } catch (error) { await storage.close(ctx); handle?.lease?.release(); throw error; }
+    } catch (error) {
+      return failedOpen(error, async () => { await storage.close(ctx); handle?.lease?.release(); });
+    }
     // 上下文管理工具必须在 Code Mode 的 tool declaration 冻结之前进入 native 列表：
     // 否则第一次 configure 会改变 codemode 的声明，同一轮内触发 planTools 的 remove+add，
     // 让 provider 请求末尾多出 tool-change system 消息（已验证会导致工具重放）。
@@ -390,9 +406,12 @@ export class DurableBotRuntime {
     } catch (error) {
       resolveRequestHarness(undefined);
       finishOpening(undefined);
-      if (harness) await harness.close(ctx); else await storage.close(ctx);
-      handle?.lease?.release();
-      throw error;
+      return failedOpen(error, async () => {
+        if (runtime) await runtime.close();
+        else if (harness) await harness.close(ctx);
+        else await storage.close(ctx);
+        handle?.lease?.release();
+      });
     }
   }
 
@@ -864,15 +883,16 @@ export class DurableBotRuntime {
   }
 
   /** The answer belongs to this receipt even if another turn has already started or failed. */
-  async reply(submission: Submission, options?: { requireText?: boolean }): Promise<string> {
+  async reply(submission: Submission, options?: { requireText?: boolean; context?: Context }): Promise<string> {
     this.assertSessionHealthy();
+    const callContext = options?.context ?? ctx;
     try {
-      const settled = await submission.wait(ctx);
+      const settled = await submission.wait(callContext);
       if (settled.status === "unanswered") {
         throw new DurableReplyError(settled.reason === "aborted" ? "任务已取消" : `Durable 未完成回复：${typeof settled.detail === "string" ? settled.detail : settled.reason}`);
       }
       if (settled.type !== "input") throw new Error("Gateway 需要用户输入回执");
-      const record = await this.storage.entry(this.conversation.id, settled.answer, ctx);
+      const record = await this.storage.entry(this.conversation.id, settled.answer, callContext);
       const message = record?.entry.model?.find(item => item.role === "assistant");
       if (!message) throw new Error("Durable 回复记录不存在");
       if (message.stopReason === "error" || message.stopReason === "aborted" || message.stopReason === "length") {

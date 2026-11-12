@@ -33,13 +33,13 @@ const adapter = new DiscordGatewayAdapter('channel', 'Discord', {
   socketFactory: () => { const socket = new Socket(); sockets.push(socket); queueMicrotask(() => socket.frame({ op: 10, d: { heartbeat_interval: 1000 } })); return socket; },
   fetch: (async (url, init) => {
     const path = String(url).split('/v10')[1];
-    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+    const body = init?.body instanceof FormData ? JSON.parse(String(init.body.get('payload_json'))) : init?.body ? JSON.parse(String(init.body)) : undefined;
     requests.push({ path, body, auth: (init?.headers as Record<string, string>)?.Authorization });
     if (path === '/users/@me') return Response.json({ id: '100', bot });
     if (path === '/oauth2/applications/@me') return Response.json({ id: applicationId });
     if (path === '/gateway/bot') return Response.json({ url: 'wss://gateway.discord.gg', session_start_limit: { remaining: 10 } });
     if (limited && retryCount++ === 0) return Response.json({ retry_after: 0.001 }, { status: 429 });
-    return Response.json({ id: '900' });
+    return Response.json({ id: '900', channel_id: '500' });
   }) as typeof fetch,
 });
 const config = { botToken: 'test-secret', applicationId: '200', allowUsers: ['300'], guildIds: ['400'], allowDirectMessages: true };
@@ -125,6 +125,24 @@ assert.deepEqual(entered, ['20', '21', '22'], 'executed failures stay deduplicat
   });
   event('32'); await tick(); event('32'); await tick(); event('32'); await tick();
   assert.equal(attempts, 2, 'failed admission is redeliverable; committed admission is deduplicated');
+}
+{
+  const { gatewayWorkTargetSchema } = await import('../src/main/gateway/work-outbound');
+  const { freezeDeliveryFiles, deliveryFileBytes } = await import('../src/main/agent/work/WorkDeliveryArtifacts');
+  const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os'); const { join } = await import('node:path');
+  const { createHash } = await import('node:crypto');
+  const dir = mkdtempSync(join(tmpdir(), 'discord-frozen-')); const path = join(dir, 'result.txt');
+  try {
+    writeFileSync(path, 'approved bytes');
+    const files = freezeDeliveryFiles({ workId: 'w', intentRevision: 1, inputSnapshotId: 'i', observed: [{ path, entity: path, digest: createHash('sha256').update('approved bytes').digest('hex') }] });
+    writeFileSync(path, 'later different bytes');
+    assert.equal(Buffer.from(deliveryFileBytes(files[0])).toString(), 'approved bytes');
+    const target = gatewayWorkTargetSchema.parse({ version: 1, channelType: 'discord', channelId: 'channel', connectionKey: adapter.workConnectionKey(), chatId: 'channel:200:100:400:500:300', senderId: '300', address: { channelId: '500', guildId: '400', applicationId: '200', botId: '100', messageId: '1' } });
+    const result = await adapter.sendWorkNotification({ target, text: 'completed', files, effectKey: 'one-effect', assertCurrent: () => {} });
+    assert.equal(result.ok, true); assert.equal(requests.at(-1)?.body?.attachments instanceof Array, true);
+    await assert.rejects(adapter.sendWorkNotification({ target, text: 'bad', files: [{ ...files[0], sha256: '0'.repeat(64) }], effectKey: 'two', assertCurrent: () => {} }), /哈希/);
+  } finally { rmSync(dir, { recursive: true }); }
 }
 sockets.at(-1)!.onclose?.({ code: 4014 }); await tick(); assert.equal(adapter.isConnected(), false); assert.match(adapter.statusText(), /Intents/);
 await adapter.disconnect();

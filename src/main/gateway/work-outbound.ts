@@ -1,3 +1,4 @@
+import type { FrozenDeliveryFile } from "../agent/work/WorkDeliveryArtifacts";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { GatewayChannelType } from "../../shared/agent-ipc";
@@ -10,6 +11,9 @@ const base = z.object({
 
 /** Only routing identities enter the database; message text and credentials never do. */
 export const gatewayWorkTargetSchema = z.discriminatedUnion("channelType", [
+  base.extend({ channelType: z.literal("qq"), address: z.object({ recipient: identifier, group: z.boolean(), messageId: identifier, expiresAt: z.number().int().positive() }).strict() }).strict(),
+  base.extend({ channelType: z.literal("dingtalk"), address: z.object({ chatId: identifier, userId: identifier, group: z.boolean(), messageId: identifier }).strict() }).strict(),
+  base.extend({ channelType: z.literal("discord"), address: z.object({ channelId: identifier, guildId: identifier.nullable(), applicationId: identifier, botId: identifier, messageId: identifier }).strict() }).strict(),
   base.extend({ channelType: z.literal("feishu"), address: z.object({ chatId: identifier, replyToMessageId: identifier.optional(), threadId: identifier.optional() }).strict() }).strict(),
   base.extend({ channelType: z.literal("wecom"), address: z.object({ chatId: identifier, userId: identifier }).strict() }).strict(),
   base.extend({ channelType: z.literal("wechat"), address: z.object({ openId: identifier }).strict() }).strict(),
@@ -22,6 +26,9 @@ export const gatewayWorkTargetSchema = z.discriminatedUnion("channelType", [
     channel: z.string().regex(/^[CDG][A-Z0-9]+$/), threadTs: z.string().regex(/^\d+\.\d+$/),
   }).strict() }).strict(),
 ]).refine(target => {
+  if (target.channelType === "qq") return target.chatId === `${target.address.group ? "group" : "c2c"}:${target.address.recipient}` && (target.address.group || target.senderId === target.address.recipient);
+  if (target.channelType === "dingtalk") return target.chatId === target.address.chatId && target.senderId === target.address.userId;
+  if (target.channelType === "discord") return target.chatId === [target.channelId, target.address.applicationId, target.address.botId, target.address.guildId ?? "dm", target.address.channelId, target.senderId].join(":");
   if (target.channelType === "slack") return target.chatId === [target.address.teamId, target.address.channel, target.address.threadTs].join(":");
   if (target.channelType === "wechat") return target.address.openId === target.chatId && target.senderId === target.chatId;
   if (target.channelType === "wecom") return target.address.chatId === target.chatId && target.address.userId === target.senderId;
@@ -31,6 +38,10 @@ export type GatewayWorkTarget = z.infer<typeof gatewayWorkTargetSchema>;
 export type GatewayWorkSendResult = { ok: true; receipt: string }
   | { ok: false; retryable: boolean; responseLost: boolean; error: string };
 export interface GatewayWorkSendInput {
+  /** QQ reply slot reserved by the existing immutable effect ledger; slot 1 belongs to passive reply. */
+  qqMessageSequence?: number;
+  files?: FrozenDeliveryFile[];
+  recordProgress?: (receipt: string) => void;
   target: GatewayWorkTarget;
   text: string;
   effectKey: string;

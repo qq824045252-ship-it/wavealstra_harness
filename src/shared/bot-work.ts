@@ -379,6 +379,7 @@ export interface WorkSubscriptionDto {
 }
 
 export interface WorkNotificationDto extends Partial<WorkNotificationIdentity> {
+  deliveryFiles?: Array<{ name: string; sha256: string; bytes: number; base64: string }>;
   notificationId: string;
   workId: string;
   semanticKey: string;
@@ -494,6 +495,8 @@ export interface WorkProjectionDto {
   pendingConclusion?: WorkClosureConclusion;
   closureConclusion?: WorkClosureConclusion;
   closureSummary?: string;
+  /** Host-issued request capability; review still validates current facts and authority. */
+  closureReview?: { expectedCloseOperationId: string };
   ownerBotId: string;
   ownerEpoch: number;
   intentRevision: number;

@@ -75,6 +75,8 @@ const SERIAL_TEST_PATTERNS = [/^test:durable-storage-(current|lease)$/,/^test:co
  * （历史教训：`-ui$` 与 `:desktop$` 都曾漏出 GUI 用例，混进"无头"门禁）。
  */
 const GUI_TESTS = new Set([
+  "test:resident-host-dev",
+  "test:resident-host",
   "test:saved-preview-desktop", // real Electron saved-version protocol and UI
   "test:compaction-settings-dev", // actual app, native window bounds, settings IPC, light/dark layouts
   "test:bot-collaboration-ui",
@@ -174,6 +176,7 @@ const GUI_TESTS = new Set([
 ]);
 
 const NETWORK_TESTS = new Set([
+  "test:bot-cross-channel-model-live",
   "test:bot-organization:live",
   "test:durable-context-dev:live", // real pnpm dev/Electron + configured online provider; isolated synthetic profile
   "test:bot-collaboration:live",
@@ -294,6 +297,13 @@ const KNOWN_HEADLESS_RED = new Set([
  * 显式清单优先于下面的命名兜底，否则它们会被 `^test:browser-` 之类正则误伤。
  */
 const HEADLESS_TESTS = new Set([
+  "test:bot-work-result-artifacts",
+  "test:work-result-lifecycle",
+  "test:work-completion-recovery",
+  "test:gateway-work-review",
+  "test:bot-work-method-feedback",
+  "test:bot-cross-channel-contract",
+  "test:gateway-bot-binding",
   "test:bot-organization-primitives",
   "test:bot-organization",
   "test:bot-foreground-lifecycle",

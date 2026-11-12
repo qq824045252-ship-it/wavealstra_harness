@@ -18,6 +18,7 @@ import { loadSkills, loadSkillsFromDir, type ResourceDiagnostic, type Skill as P
 import type { SkillDto } from "../../shared/agent-ipc";
 import { getExpertMarketDir, getPluginsDir, getMyBuddyDir, getSkillsDir } from "../paths";
 import { DIMAGENT_DEBUG_SKILL_ID, DIMAGENT_DEBUG_SKILL_MD } from "./BuiltinSkills";
+import { createBotComposerSkillAccess } from "../agent/work/BotComposerSkillAccess";
 
 export interface MarketSkillDto {
   id: string;
@@ -514,7 +515,8 @@ export class SkillsService {
       skillPaths: extraSkillPaths,
       includeDefaults: true,
     });
-    return skills.filter(skill => this.isLearnedSkillVisibleForBot(skill.filePath, context.botId)).map((s) => this.mapLoadedSkill(s));
+    return skills.filter(skill => this.isLearnedSkillVisibleForBot(skill.filePath, context.botId))
+      .map((s) => this.mapLoadedSkill(s));
   }
 
   /**
@@ -526,6 +528,7 @@ export class SkillsService {
     cwd?: string,
     extraSkillPaths: string[] = [],
     include?: (skill: SkillDto) => boolean,
+    context: { botId?: string } = {},
   ): RuntimeSkillSelection {
     getSkillsDir();
     guardStrayRootSkillBeforeScan();
@@ -555,6 +558,7 @@ export class SkillsService {
         // disable-model-invocation is runtime eligibility, not collision priority. A disabled Global
         // Skill must not reserve the name and shadow an active Project/Expert/Connector copy.
         if (!dto.enabled) continue;
+        if (!this.isLearnedSkillVisibleForBot(skill.filePath, context.botId)) continue;
         if (include && !include(dto)) continue;
         const pathKey = resolvedPathKey(skill.filePath);
         if (seenPaths.has(pathKey)) continue;
@@ -908,7 +912,16 @@ export class SkillsService {
   /** Private learned packages require an explicit execution identity, including after restart. */
   isLearnedSkillVisibleForBot(filePath: string, botId?: string): boolean {
     const metadata = this.readLearnedSkillMetadata(filePath);
+    if (!metadata && this.hasLearnedSkillProvenance(filePath)) return false;
     return metadata?.scopeType !== "bot" || Boolean(botId && metadata.scopeId === botId);
+  }
+
+  /** Classification only. A copied header never grants runtime eligibility. */
+  hasLearnedSkillProvenance(filePath: string): boolean {
+    const metaPath = join(dirname(resolve(filePath)), "_skillhub_meta.json");
+    if (!existsSync(metaPath)) return false;
+    try { return JSON.parse(readFileSync(metaPath, "utf8"))?.source === "memory-learned"; }
+    catch { return true; }
   }
 
   getLearnedSkillMetadataForFile(filePath: string): LearnedSkillMetadata | undefined {
@@ -957,7 +970,7 @@ export class SkillsService {
     const parent = resolve(join(canonicalFile, ".."));
     const cmpParent = pathKey(parent);
     const cmpRoot = pathKey(skillsRoot);
-    if (!(cmpParent === cmpRoot || cmpParent.startsWith(cmpRoot + sep))) return undefined;
+    const installed = cmpParent === cmpRoot || cmpParent.startsWith(cmpRoot + sep);
     const metaPath = join(parent, "_skillhub_meta.json");
     if (!existsSync(canonicalFile) || !existsSync(metaPath)) return undefined;
     try {
@@ -979,6 +992,10 @@ export class SkillsService {
       const scopeType = ["global", "workspace", "project", "bot"].includes(String(meta.scopeType))
         ? meta.scopeType as LearnedSkillMetadata["scopeType"]
         : undefined;
+      // A copied header is evidence to compare, never a second installation authority.
+      if (!installed && !createBotComposerSkillAccess({ identity: { botId: "", shared: false },
+        current: id => this.getLearnedSkillRevisionSource(id), runnable: () => true, scopeAllowed: () => true,
+      }).canRead({ id: skillId, directory: parent })) return undefined;
       return {
         skillId,
         candidateId: typeof meta.candidateId === "string" && meta.candidateId ? meta.candidateId : undefined,
@@ -999,6 +1016,7 @@ export class SkillsService {
    * are never overwritten. Re-approving a newer candidate from the same learned lineage may update it.
    */
   installLearnedSkill(input: LearnedSkillInstallInput): SkillDto {
+    if (input.scopeType === "bot" && !input.scopeId?.trim()) throw new Error("Bot 学习技能缺少执行 Bot 身份");
     const slug = input.slug.trim().toLowerCase();
     if (!/^[a-z0-9][a-z0-9-]{2,62}$/.test(slug)) throw new Error(`学习技能 slug 非法：${input.slug}`);
     if (!input.candidateId.trim()) throw new Error("Skill Candidate id 为空");
@@ -1009,6 +1027,12 @@ export class SkillsService {
     const dest = join(skillsRoot, slug);
     const metaPath = join(dest, "_skillhub_meta.json");
     if (existsSync(dest)) {
+      const prior = this.readLearnedSkillMetadata(join(dest, "SKILL.md"));
+      if (prior?.scopeType === "bot" || input.scopeType === "bot") {
+        if (!prior || prior.scopeType !== input.scopeType || prior.scopeId !== input.scopeId) {
+          throw new Error("拒绝改变学习技能的私有 Bot 归属");
+        }
+      }
       let meta: { source?: string; sourceMemoryIds?: string[]; candidateId?: string; version?: string } | null = null;
       try {
         meta = JSON.parse(readFileSync(metaPath, "utf-8")) as { source?: string; sourceMemoryIds?: string[]; candidateId?: string; version?: string };
@@ -1102,7 +1126,8 @@ export class SkillsService {
       rmSync(staged, { recursive: true, force: true });
       // A successful swap removes backup above. A failed restore may intentionally leave backup for manual recovery.
     }
-    const installed = this.listInstalled().find((skill) => skill.name === slug || skill.id === slug);
+    const installed = this.listInstalled(undefined, [], { botId: input.scopeType === "bot" ? input.scopeId : undefined })
+      .find((skill) => skill.name === slug || skill.id === slug);
     if (installed) return { ...installed, enabled: false, source: "memory-learned" };
     return {
       id: slug,
@@ -1118,8 +1143,8 @@ export class SkillsService {
     };
   }
 
-  uninstall(id: string): void {
-    const skill = this.listInstalled().find((s) => s.id === id || s.name === id);
+  uninstall(id: string, context: { botId?: string } = {}): void {
+    const skill = this.listInstalled(undefined, [], context).find((s) => s.id === id || s.name === id);
     if (!skill?.filePath) throw new Error(`未找到已安装技能: ${id}`);
     const dir = resolve(join(skill.filePath, ".."));
     const skillsRoot = resolve(getSkillsDir());
@@ -1131,8 +1156,8 @@ export class SkillsService {
     rmSync(dir, { recursive: true, force: true });
   }
 
-  setEnabled(id: string, enabled: boolean): SkillDto {
-    const skill = this.listInstalled().find((s) => s.id === id || s.name === id);
+  setEnabled(id: string, enabled: boolean, context: { botId?: string } = {}): SkillDto {
+    const skill = this.listInstalled(undefined, [], context).find((s) => s.id === id || s.name === id);
     if (!skill?.filePath || !existsSync(skill.filePath)) {
       throw new Error(`未找到技能文件: ${id}`);
     }

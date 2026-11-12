@@ -16,7 +16,7 @@ export function ensureBotInbox(db: Database.Database, userId: string, botId: str
 /** Personal work binds its owner identity at creation/delivery, not the UI selection. */
 export function ensurePersonalConversation(db: Database.Database, userId: string, botId: string): string | undefined {
   if (!db.prepare("SELECT 1 FROM bots WHERE user_id=? AND bot_id=?").get(userId, botId)) return;
-  const prior = db.prepare("SELECT conversation_id FROM bot_conversations WHERE user_id=? AND bot_id=? AND team_id IS NULL AND archived_at IS NULL")
+  const prior = db.prepare("SELECT conversation_id FROM bot_conversations WHERE user_id=? AND bot_id=? AND team_id IS NULL AND ingress_kind='desktop' AND archived_at IS NULL")
     .get(userId, botId) as { conversation_id: string } | undefined;
   if (prior) return prior.conversation_id;
   const id = `bot-conversation-${randomUUID()}`, now = Date.now();

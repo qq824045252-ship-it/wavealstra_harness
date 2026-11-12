@@ -1,5 +1,6 @@
 import { SavedArtifactIpc, type SavedArtifactRequest, type SavedArtifactPreview } from "../shared/saved-artifact";
 import { GoogleWorkspaceWriteIpc, type GoogleWorkspaceWriteApi } from "../shared/google-workspace-write";
+import { GatewayBotBindingIpc, type GatewayBotBinding, type GatewayBotBindingRequest } from "../shared/gateway-bot-binding";
 import { GoogleWorkspaceIpc, type GoogleWorkspaceApi } from "../shared/google-workspace";
 import type { BrowserOpenOptions, BrowserTabInfo, BrowserTabsState } from "../shared/browser-tabs";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
@@ -704,6 +705,7 @@ const api = {
     workDiagnostics: (request) => ipcRenderer.invoke(BotWorkIpc.workDiagnostics, request),
     resendNotification: (request) => ipcRenderer.invoke(BotWorkIpc.resendNotification, request),
     reviewControl: (request) => ipcRenderer.invoke(BotWorkIpc.reviewControl, request),
+    reassessClosedWork: (request) => ipcRenderer.invoke(BotWorkIpc.reassessClosedWork, request),
   } satisfies BotWorkApi,
 
   notification: {
@@ -1027,6 +1029,8 @@ const api = {
   },
 
   gateway: {
+    configureBotBinding: (request: GatewayBotBindingRequest): Promise<Record<string, GatewayBotBinding>> =>
+      ipcRenderer.invoke(GatewayBotBindingIpc.configure, request),
     weixinQrStart: (approvedPersistentAccess: boolean): Promise<GatewayWeixinQrLoginStateDto> => ipcRenderer.invoke(GatewayIpc.weixinQrStart, approvedPersistentAccess),
     qqQrStart: (approvedPersistentAccess: boolean): Promise<GatewayQQQrLoginStateDto> => ipcRenderer.invoke(GatewayIpc.qqQrStart, approvedPersistentAccess),
     weixinQrState: (): Promise<GatewayWeixinQrLoginStateDto> => ipcRenderer.invoke(GatewayIpc.weixinQrState),

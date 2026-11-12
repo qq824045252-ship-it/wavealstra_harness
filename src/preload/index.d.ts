@@ -611,6 +611,7 @@ export interface PreloadApi {
     onEvent: (callback: (ev: unknown) => void) => () => void;
   };
   gateway: {
+    configureBotBinding: (request: import("../shared/gateway-bot-binding").GatewayBotBindingRequest) => Promise<Record<string, import("../shared/gateway-bot-binding").GatewayBotBinding>>;
     weixinQrStart: (approvedPersistentAccess: boolean) => Promise<GatewayWeixinQrLoginStateDto>;
     qqQrStart: (approvedPersistentAccess: boolean) => Promise<GatewayQQQrLoginStateDto>;
     weixinQrState: () => Promise<GatewayWeixinQrLoginStateDto>;

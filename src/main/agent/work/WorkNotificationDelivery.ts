@@ -1,3 +1,5 @@
+import { deliveryFileSchema, freezeCardDeliveryFiles } from "./WorkDeliveryArtifacts";
+import { closureCorrectionNotice } from "./WorkClosureCorrectionDelivery";
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import { z } from "zod";
@@ -24,7 +26,7 @@ const effectSchema = z.object({ effect_key: z.string(), notification_id: z.strin
   authorization_kind: z.enum(["initial", "manual-resend"]), authorization_operation_id: z.string(),
   authorization_reason: z.string().nullable(), resend_of_attempt_id: z.string().nullable(), created_at: z.number() });
 // Persisted channel payloads are immutable and parsed at the database boundary.
-const notificationSchema = z.object({ notificationId: z.string(), workId: z.string(), semanticKey: z.string(),
+const notificationSchema = z.object({ deliveryFiles: z.array(deliveryFileSchema).optional(), notificationId: z.string(), workId: z.string(), semanticKey: z.string(),
   kind: z.enum(["result", "blocked", "closed", "handoff", "summary"]), title: z.string(), body: z.string().optional(),
   stateVersion: z.number(), intentRevision: z.number(), delivery: z.enum(["pending", "sent", "unknown", "failed"]),
   channel: z.string().optional(), idempotencyKey: z.string().optional(), attemptCount: z.number(),
@@ -47,7 +49,7 @@ type Endpoint = Omit<WorkNotificationChannel, "send" | "lookup"> & {
 };
 export interface AsyncWorkNotificationChannel extends Omit<Endpoint, "lookup"> {
   send(input: { notification: WorkNotificationDto; idempotencyKey: string; signal?: AbortSignal;
-    assertCurrent: () => void }): Promise<SendResult>;
+    assertCurrent: () => void; recordProgress: (receipt: string) => void }): Promise<SendResult>;
   lookup?(input: { notification: WorkNotificationDto; idempotencyKey: string; signal?: AbortSignal }): Promise<"delivered" | "missing" | "unknown">;
 }
 export interface WorkAsyncDeliveryOptions { signal?: AbortSignal; isActive?: () => boolean; limit?: number }
@@ -143,7 +145,7 @@ export class WorkNotificationDelivery {
     if (blocked) return { ok: false, message: blocked };
     const capability = this.channelCapabilities.get(endpointKey);
     if (!capability) return { ok: false, message: "通知渠道尚未在当前宿主核验，请等待渠道恢复后再确认重发" };
-    const payload: WorkNotificationDto = { ...notification, delivery: "pending",
+    const payload: WorkNotificationDto = { ...notification, deliveryFiles: notificationSchema.parse(JSON.parse(prior.payload_json)).deliveryFiles, delivery: "pending",
       attemptCount: notification.attemptCount + 1, channel: notification.channel ?? prior.channel,
       targetKey, inputSnapshotId: work.inputSnapshotId, ownerEpoch: work.ownerEpoch,
       senderBotId: work.ownerBotId, semanticValidity: "active" };
@@ -332,7 +334,8 @@ export class WorkNotificationDelivery {
         this.assertAsyncClaimCurrent(claim, channel, options);
         response = await channel.send({ notification: claim.notification,
           idempotencyKey: claim.attempt.provider_effect_key ?? claim.attempt.idempotency_key, signal: options.signal,
-          assertCurrent: () => this.assertAsyncClaimCurrent(claim, channel, options) });
+          assertCurrent: () => this.assertAsyncClaimCurrent(claim, channel, options),
+          recordProgress: receipt => { this.db.prepare("UPDATE work_notification_attempts SET receipt=? WHERE attempt_id=? AND status='unknown'").run(receipt, claim.attempt.attempt_id); } });
       } catch { return { notificationId: id, delivery: "unknown" }; }
       if (!this.asyncActive(options)) return { notificationId: id, delivery: "unknown" };
       if (response.ok) this.settle(claim.attempt, "sent", response.receipt);
@@ -397,6 +400,11 @@ export class WorkNotificationDelivery {
     const workId = this.works.repo.getNotification(notificationId)?.workId;
     if (!workId) return undefined;
     const inspection = this.options.artifacts?.capture(workId);
+    const freezeSource = this.works.repo.getNotification(notificationId);
+    const correctionText = channel.channel.startsWith("gateway:") && freezeSource
+      ? closureCorrectionNotice(this.db, { ...freezeSource, channel: channel.channel, targetKey: channel.targetKey }) : undefined;
+    const deliveryFiles = channel.channel.startsWith("gateway:") && freezeSource
+      ? correctionText ? [] : freezeCardDeliveryFiles(this.works, freezeSource) : undefined;
     return this.works.transaction((): { attempt: Attempt; notification: WorkNotificationDto } | undefined => {
       this.assertAuthority();
       const notification = this.works.repo.getNotification(notificationId);
@@ -419,10 +427,10 @@ export class WorkNotificationDelivery {
       // one provider effect. A changed target, owner line or payload still requires a new
       // explicit authorization instead of silently reusing the key.
       const candidate: WorkNotificationDto = {
-        notificationId, workId: notification.workId, semanticKey: notification.semanticKey,
+        deliveryFiles, notificationId, workId: notification.workId, semanticKey: notification.semanticKey,
         kind: notification.kind, title: notification.title,
-        body: ownerChanged ? `${notification.body ?? ""}
-当前负责人：${ownerName}` : notification.body,
+        body: correctionText ?? (ownerChanged ? `${notification.body ?? ""}
+当前负责人：${ownerName}` : notification.body),
         stateVersion: notification.stateVersion, intentRevision: notification.intentRevision,
         delivery: "pending", attemptCount: 0, createdAt: notification.createdAt,
         cardKey: notification.cardKey,
@@ -469,6 +477,7 @@ export class WorkNotificationDelivery {
     const workId = this.works.repo.getNotification(notificationId)?.workId;
     if (!workId) return undefined;
     const inspection = this.options.artifacts?.capture(workId);
+
     return this.works.transaction((): { attempt: Attempt; notification: WorkNotificationDto } | undefined => {
       this.assertAuthority();
       const notification = this.works.repo.getNotification(notificationId);
@@ -622,7 +631,7 @@ export class WorkNotificationDelivery {
       if (!effect || effect.channel !== attempt.channel || effect.payload_hash !== attempt.payload_hash
         || (effect.target_key ?? undefined) !== payload.targetKey
         || sha256(canonicalJson(payload)) !== effect.payload_hash) return;
-      const updated = this.db.prepare(`UPDATE work_notification_attempts SET status=?,settled_at=?,receipt=?
+      const updated = this.db.prepare(`UPDATE work_notification_attempts SET status=?,settled_at=?,receipt=COALESCE(?,receipt)
         WHERE attempt_id=? AND status='unknown' AND claim_generation=? AND payload_hash=? AND provider_effect_key=? AND channel=?`)
         .run(status, this.now(), receipt ?? null, attempt.attempt_id, attempt.claim_generation ?? 1,
           attempt.payload_hash, attempt.provider_effect_key, attempt.channel);

@@ -1,3 +1,7 @@
+import { createHash } from "node:crypto";
+import { readFileSync, statSync } from "node:fs";
+import { basename } from "node:path";
+import type { ArtifactInspection } from "./WorkArtifactValidation";
 import { z } from "zod";
 import type { WorkDeliverableDto, WorkExecutionBindingDto } from "../../../shared/bot-work";
 import type { WorkFeedbackDto } from "../../../shared/bot-conversation";
@@ -72,4 +76,44 @@ export function workDeliveryFiles(works: WorkService, results: WorkDeliverableDt
   const unique = new Map<string, DeliveryFile>();
   for (const {file} of files.values()) if (!unique.has(file.ref) || file.openPath) unique.set(file.ref, file);
   return [...unique.values()];
+}
+export const deliveryFileSchema = z.object({ name: z.string().min(1), sha256: z.string().regex(/^[a-f0-9]{64}$/), bytes: z.number().int().nonnegative(), base64: z.string() });
+export type FrozenDeliveryFile = z.infer<typeof deliveryFileSchema>;
+/** Frozen bytes belong to the existing immutable effect payload, never a live path. */
+export function freezeDeliveryFiles(inspection: ArtifactInspection): FrozenDeliveryFile[] {
+  let total = 0;
+  return inspection.observed.map(item => {
+    const size = statSync(item.path).size;
+    if (size > 10 * 1024 * 1024 || total + size > 20 * 1024 * 1024) throw new Error("通知附件超过 10 MiB/文件或 20 MiB/通知限制");
+    const bytes = readFileSync(item.path); total += bytes.length;
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    if (sha256 !== item.digest || bytes.length !== size) throw new Error("通知附件已改变，需要重新验收");
+    return { name: basename(item.path), sha256, bytes: bytes.length, base64: bytes.toString("base64") };
+  });
+}
+export function deliveryFileBytes(file: FrozenDeliveryFile): Uint8Array<ArrayBuffer> {
+  const bytes = Uint8Array.from(Buffer.from(file.base64, "base64"));
+  if (bytes.length !== file.bytes || createHash("sha256").update(bytes).digest("hex") !== file.sha256) throw new Error("冻结附件哈希不一致，未发送");
+  return bytes;
+}
+
+/** Select only the exact card's delivered immutable versions, never all Work dependencies. */
+export function freezeCardDeliveryFiles(works: WorkService, notification: { workId: string; cardKey?: string }): FrozenDeliveryFile[] {
+  const work = works.getWork(notification.workId);
+  const card = work && works.cards.list(work).find(item => item.cardKey === notification.cardKey);
+  if (!card || card.currency === "historical") return [];
+  const results = works.repo.listDeliverables(work.workId).filter(item => card.deliverableIds.includes(item.deliverableId));
+  const generated = works.generatedArtifacts.list(work.workId, true);
+  const files = workDeliveryFiles(works, results.map(result => ({ ...result, artifactRefs: generated.filter(artifact => artifact.bindingId === result.executionId
+    && result.artifactRefs.some(ref => ref === artifact.path || ref === artifact.snapshotPath)
+    && (card.artifactRefs.includes(artifact.path) || Boolean(artifact.snapshotPath && card.artifactRefs.includes(artifact.snapshotPath))))
+    .map(artifact => artifact.snapshotPath ?? artifact.path) }))).filter(file => card.artifactRefs.includes(file.ref)
+    || generated.some(artifact => artifact.snapshotPath === file.openPath && card.artifactRefs.includes(artifact.path)));
+  const observed = files.map(file => {
+    const artifact = generated.find(item => item.snapshotPath && item.snapshotPath === file.openPath);
+    if (!artifact?.snapshotPath) throw new Error("成果缺少已登记的不可变文件版本，未发送");
+    return { path: artifact.snapshotPath, digest: artifact.digest, entity: artifact.snapshotPath };
+  });
+  return freezeDeliveryFiles({workId: work.workId, inputSnapshotId: work.inputSnapshotId, intentRevision: work.intentRevision, observed})
+    .map((file, index) => ({ ...file, name: files[index].name }));
 }

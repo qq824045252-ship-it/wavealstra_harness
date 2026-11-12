@@ -87,6 +87,7 @@ export interface BotForegroundToolOptions {
   schedule: (work: WorkDto, operationId: string, retryBlocked?: boolean) => void;
   wake: (workId?: string) => void;
   memorySearch: (query: string) => unknown | Promise<unknown>;
+  recordWorkFeedback?: (source: import("./BotConversationRepository").BotMessageReceipt, work: WorkDto) => unknown;
   memoryRemember?: (input: z.infer<typeof memoryRemember>, userText: string) => unknown;
   memoryForget?: (ids: string[], userText: string, evidence: string, source?: { createdAt: number; messageId: string }) => unknown;
   isAuthority: () => boolean;
@@ -110,7 +111,8 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
       || !["queued", "running", "unknown"].includes(message.status)) throw new Error("原始用户消息已结束或不属于当前对话");
     return value;
   };
-  const catalogue = new BotWorkQuery(db, userId, botId, options.teamId);
+  const catalogue = new BotWorkQuery(db, userId, botId, options.teamId,
+    messages.origins.isShared(conversationId) ? conversationId : undefined);
   // Deterministic title resolution only when no stronger fact exists. Bounded SQL
   // pages; never hydrates Work detail or interprets model arguments.
   const openWorksForTargets = () => {
@@ -338,7 +340,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
           .run(conversationId, source.request_id, work.workId, JSON.stringify(versionGuard));
         const projection = works.getProjection(work.workId);
         const visibleMessages = works.collaboration.list(actor(), work.workId);
-        return [{ ...projection, phase3: projection?.phase3 ? { ...projection.phase3,
+        return [{ ...projection, methodFeedback: options.recordWorkFeedback?.(source, work), phase3: projection?.phase3 ? { ...projection.phase3,
           collaborationMessages: visibleMessages, handoffs: visibleMessages.filter(message => message.kind === "handoff") } : undefined,
           versionGuard }];
       }

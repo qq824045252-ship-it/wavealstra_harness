@@ -123,8 +123,11 @@ export function ensureBotWorkPhase2Tables(db: Database.Database): void {
   // Additive scope migration: never bump/reset the application schema or rewrite history.
   const conversationColumns = db.pragma("table_info(bot_conversations)") as Array<{ name: string }>;
   if (!conversationColumns.some(column => column.name === "team_id")) db.exec("ALTER TABLE bot_conversations ADD COLUMN team_id TEXT");
+  if (!conversationColumns.some(column => column.name === "ingress_kind")) db.exec("ALTER TABLE bot_conversations ADD COLUMN ingress_kind TEXT NOT NULL DEFAULT 'desktop' CHECK(ingress_kind IN ('desktop','gateway'))");
+  const personalIndex = db.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='uq_bot_personal_live'").get() as { sql: string } | undefined;
+  if (personalIndex && !personalIndex.sql.includes("ingress_kind")) db.exec("DROP INDEX uq_bot_personal_live");
   db.exec(`DROP INDEX IF EXISTS uq_bot_live_conversation;
-    CREATE UNIQUE INDEX IF NOT EXISTS uq_bot_personal_live ON bot_conversations(user_id,bot_id) WHERE archived_at IS NULL AND team_id IS NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_bot_personal_live ON bot_conversations(user_id,bot_id) WHERE archived_at IS NULL AND team_id IS NULL AND ingress_kind='desktop';
     CREATE UNIQUE INDEX IF NOT EXISTS uq_bot_team_live ON bot_conversations(user_id,team_id) WHERE archived_at IS NULL AND team_id IS NOT NULL;`);
   // Run at startup as well, including when there are no connected readers or new writes.
   // Keep the stream epoch/sequence: pruning must never reuse a tombstone's sequence.

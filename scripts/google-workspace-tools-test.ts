@@ -61,7 +61,7 @@ assert.equal(unpack(failure).receipt.error.code, 'auth_required');
 assert.equal(commands.length, count + 1, 'failure does not cause probes or retries');
 assert(commands.every(args => args[0] === 'gmail' || args[0] === 'cal'));
 // An unconfigured foreground must not silently prefer Google over the selected provider.
-const runtime = await openBotComposerRuntime({ profile: { expertId: '', revision: '', version: 1, systemPromptHash: '', allowedMcpIds: [], allowedSkillIds: [], allowedConnectorIds: [], capturedAt: 0 }, cwd: process.cwd(), models: {} as ModelRuntime, connectorSkillRoots: [], enabledMcpIds: [], readOnly: () => true });
+const runtime = await openBotComposerRuntime({ profile: { expertId: '', revision: '', version: 1, systemPromptHash: '', allowedMcpIds: [], allowedSkillIds: [], allowedConnectorIds: [], capturedAt: 0 }, cwd: process.cwd(), models: {} as ModelRuntime, connectorSkillRoots: [], enabledMcpIds: [], readOnly: () => true, skillAccess: { canRead: () => false } });
 assert.deepEqual(runtime.tools, []);
 assert.equal(runtime.instructions, '');
 await runtime.close();
@@ -80,7 +80,7 @@ McpConfigService.prototype.loadRuntimeConfig = () => ({ mcpServers: {
 } });
 let selectedRuntime: Awaited<ReturnType<typeof openBotComposerRuntime>> | undefined;
 try {
-  selectedRuntime = await openBotComposerRuntime({ profile: { expertId:'',revision:'',version:1,systemPromptHash:'',allowedMcpIds:['chosen_mail'],allowedSkillIds:[],allowedConnectorIds:[],capturedAt:0 }, cwd:root,models:{} as ModelRuntime,connectorSkillRoots:[],enabledMcpIds:['chosen_mail','unselected_calendar'],readOnly:()=>false });
+  selectedRuntime = await openBotComposerRuntime({ profile: { expertId:'',revision:'',version:1,systemPromptHash:'',allowedMcpIds:['chosen_mail'],allowedSkillIds:[],allowedConnectorIds:[],capturedAt:0 }, cwd:root,models:{} as ModelRuntime,connectorSkillRoots:[],enabledMcpIds:['chosen_mail','unselected_calendar'],readOnly:()=>false,skillAccess:{canRead:()=>false} });
   const discovery = selectedRuntime.tools.find(t => t.name === 'mcp_list_tools')!;
   assert.match(discovery.description, /chosen_mail/);
   assert.doesNotMatch(discovery.description, /unselected_calendar/);

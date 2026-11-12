@@ -1,3 +1,5 @@
+import { createGatewayBotFixture } from "./gateway-bot-fixture";
+import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat";
 import assert from "node:assert/strict";
 import type { AgentPromptRequest } from "../src/shared/agent-ipc";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -79,17 +81,23 @@ function harness(path = join(root, "db-" + ++serial + ".db")) {
   const created: WorkDto[] = [];
   const requests: AgentPromptRequest[] = [];
   const feishu = new FeishuChannelAdapter("feishu-default", "Fixture Feishu");
+  const model:any={provider:"fixture",id:"native",name:"fixture",api:"openai-completions",reasoning:false,input:["text"],contextWindow:128000,maxTokens:4096,cost:{input:0,output:0,cacheRead:0,cacheWrite:0}};
+  const models:any={getAuth:async()=>undefined,refresh:async()=>{},getAvailable:async()=>[model],getModel:()=>model,
+    streamSimple:()=>{const stream=createAssistantMessageEventStream();queueMicrotask(()=>{stream.push({type:"done",reason:"stop",message:{role:"assistant",content:[{type:"text",text:"fixture native receipt"}],api:model.api,provider:model.provider,model:model.id,timestamp:Date.now(),stopReason:"stop",usage:{input:1,output:1,cacheRead:0,cacheWrite:0,totalTokens:2,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}}});stream.end();});return stream;}};
+  const foreground=createGatewayBotFixture({db,models,root,botId:DEFAULT_BOT_ID});
   const gateway = new GatewayService(db, { runGatewayTurn: async request => {
     state.executions++;
     requests.push(request);
+    const receipt=foreground.botConversations.acceptGateway({botId:DEFAULT_BOT_ID,requestId:"gateway:"+request.userMessageId,
+      text:request.text,attachments:request.attachments,origin:request.gatewayOrigin});
     const work = unwrap(works.createWork(user, { operationId: "create:" + request.userMessageId,
-      title: request.text, conversationId: request.taskId, sourceMessageId: request.userMessageId,
+      title: request.text, conversationId: receipt.conversationId, sourceMessageId: receipt.userMessageId,
       authorization: grants, inputSnapshotId: "input:" + request.userMessageId, criteria: [{ text: "Checked evidence" }] }));
-    created.push(work); await state.answerGate; return "fixture native receipt";
+    created.push(work); await state.answerGate; return foreground.botConversations.awaitReply(receipt);
   } }, undefined, { settingsStore: { read: () => ({}) as ReturnType<AppSettingsStore["read"]> }, adapters: { feishu } });
   const bridge = new WorkGatewayNotificationChannels(db.connection, works, gateway, { isAuthority: () => state.authority });
   const result = { path, db, bots, works, state, gateway, feishu, bridge, created, requests,
-    async close() { if (state.closed) return; await state.host?.close(); await gateway.stop(); db.close(); state.closed = true; } };
+    async close() { if (state.closed) return; await state.host?.close(); await gateway.stop(); await foreground.close(); db.close(); state.closed = true; } };
   harnesses.push(result);
   return result;
 }
@@ -516,6 +524,19 @@ try {
       const wrongChat = await telegram.sendWorkNotification({ target: targets[2]!.target, text: "protocol-test", effectKey: "wrongchat", assertCurrent: () => {} });
       assert.equal(wrongChat.ok, false); assert.equal(!wrongChat.ok && wrongChat.responseLost, true);
     } finally { await slack.disconnect(); await telegram.disconnect(); await wechat.disconnect(); await wecom.disconnect(); }
+  });
+  await check("blocked explanation remains readable while attachment state uses frozen files", () => {
+    const question = "已附草稿。请确认目标读者是工程师还是管理者？";
+    const empty = workGatewayText({ title: "等待补充", kind: "blocked", body: question, deliveryFiles: [] });
+    assert(empty.includes("本次通知没有附件。"));
+    assert(empty.includes("执行方说明（不代表渠道投递回执）：\n> " + question));
+    const attached = workGatewayText({ title: "等待补充", kind: "blocked", body: "原用户待补充要求：我稍后补充目标读者", deliveryFiles: [
+      {name:"draft.txt",sha256:"a".repeat(64),bytes:0,base64:""},
+    ] });
+    assert(attached.includes("本次请求包含文件：draft.txt"));
+    assert(attached.includes("文件送达以渠道实际附件和回执为准"));
+    assert(attached.includes("> 原用户待补充要求：我稍后补充目标读者"));
+    assert(!attached.includes("本次通知没有附件"));
   });
   await check("one bounded UTF-8 provider request preserves a complete result-card pointer", () => {
     const text = workGatewayText({ title: "成果".repeat(500), body: "🚀".repeat(5000) });

@@ -1,3 +1,5 @@
+import { z } from "zod";
+import { workDeliveryFiles, workDeliveryResults } from "./WorkDeliveryArtifacts";
 import type Database from "better-sqlite3";
 import type { WorkDto, WorkDeliverableDto } from "../../../shared/bot-work";
 import {
@@ -23,7 +25,7 @@ export class WorkPhase5Facts {
   private readonly repo: WorkService["repo"];
   private readonly cards: WorkResultCards;
   readonly ownerSummaries: WorkOwnerSummary;
-  constructor(private readonly works: WorkService, private readonly now: () => number, db: Database.Database) {
+  constructor(private readonly works: WorkService, private readonly now: () => number, private readonly db: Database.Database) {
     this.repo = works.repo;
     this.cards = works.cards;
     this.ownerSummaries = new WorkOwnerSummary(db, works, now);
@@ -59,16 +61,18 @@ export class WorkPhase5Facts {
     return card;
   }
 
-  recordClosure(work: WorkDto, conclusion: NonNullable<WorkDto["closureConclusion"]>, now: number) {
+  recordClosure(work: WorkDto, conclusion: NonNullable<WorkDto["closureConclusion"]>, now: number, review?: { correctionOperationId: string }) {
     const kind = conclusion === "succeeded" ? "closure_succeeded" as const
       : conclusion === "cancelled" ? "closure_cancelled" as const : "closure_failed" as const;
     // Closing an already accepted outcome confirms the same substantive result: reuse it
     // instead of minting a mechanically duplicated card. An independent closure decision
     // (cancelled / ended) carries new substance of its own.
-    const confirmed = conclusion === "succeeded" ? this.cards.latestAcceptedCard(work) : undefined;
+    const automatic = review ? this.correctedDeliveryOutcome(work, conclusion, review.correctionOperationId)
+      : this.automaticDeliveryOutcome(work, conclusion);
+    const confirmed = !automatic && conclusion === "succeeded" ? this.cards.latestAcceptedCard(work) : undefined;
     const card = confirmed ?? this.cards.ensure({
       work, kind,
-      outcome: WorkResultCards.closureOutcome(work, this.repo.listDeliverables(work.workId), conclusion),
+      outcome: automatic ?? WorkResultCards.closureOutcome(work, this.repo.listDeliverables(work.workId), conclusion),
       title: `事项已结束：${work.title}`,
       summary: work.closureSummary ?? (conclusion === "succeeded" ? "事项已完成" : ""),
       unverifiedScope: this.unverifiedText(work),
@@ -82,12 +86,64 @@ export class WorkPhase5Facts {
     return { ...card, suppressNotification: team && conclusion === "succeeded" };
   }
 
+  /** Automatic delivery is not user acceptance. Preserve the exact reviewed result lineage. */
+  private automaticDeliveryOutcome(work: WorkDto, conclusion: NonNullable<WorkDto["closureConclusion"]>) {
+    const prefix = "automatic-completion:";
+    if (!work.closeOperationId?.startsWith(prefix)) return;
+    const delivery = this.reviewedDelivery(work, work.closeOperationId.slice(prefix.length), "deliver");
+    return delivery && { ...WorkResultCards.closureOutcome(work, [], conclusion), ...delivery };
+  }
+
+  private reviewedDelivery(work: WorkDto, bindingId: string, kind: "deliver" | "waiting") {
+    if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='work_completion_turns'").get()) return;
+    const receipt = z.object({ decision_json: z.string() }).optional().parse(this.db.prepare(`SELECT t.decision_json FROM work_completion_turns t
+      LEFT JOIN work_automatic_completion_deliveries d ON d.binding_id=t.binding_id
+      WHERE t.binding_id=? AND (?='waiting' OR d.goal_reviewed=1) AND t.decision_json IS NOT NULL`).get(bindingId, kind));
+    if (!receipt) return;
+    const decision = z.object({ decision: z.enum(["deliver", "wait", "ask"]), artifactRefs: z.array(z.string()).optional() }).safeParse(JSON.parse(receipt.decision_json));
+    if (!decision.success || (kind === "deliver" ? decision.data.decision !== "deliver" : decision.data.decision === "deliver")) return;
+    return this.selectedDelivery(work, bindingId, decision.data.artifactRefs ?? []);
+  }
+
+  private selectedDelivery(work: WorkDto, bindingId: string, artifactRefs: string[]) {
+    const binding = this.repo.getBinding(bindingId);
+    if (!binding || binding.workId !== work.workId || binding.botId !== work.ownerBotId || binding.ownerEpoch !== work.ownerEpoch
+      || binding.intentRevision !== work.intentRevision || binding.inputSnapshotId !== work.inputSnapshotId || binding.invalidatedAt) return;
+    const selected = new Set(artifactRefs);
+    const results = workDeliveryResults(this.works, binding);
+    const generated = this.works.generatedArtifacts.list(work.workId, true);
+    const delivered = results.map(result => ({ deliverableId: result.deliverableId,
+      artifactRefs: workDeliveryFiles(this.works, [{ ...result, artifactRefs: generated.filter(artifact => artifact.bindingId === result.executionId
+        && result.artifactRefs.some(ref => ref === artifact.path || ref === artifact.snapshotPath)
+        && (selected.has(artifact.path) || Boolean(artifact.snapshotPath && selected.has(artifact.snapshotPath))))
+        .map(artifact => artifact.snapshotPath ?? artifact.path) }]).map(file => file.ref).sort(),
+      evidenceRefs: [...result.evidenceRefs].sort(), uncoveredCriterionIds: [...result.uncoveredCriterionIds].sort(),
+    }));
+    return { deliverables: delivered,
+      artifactRefs: [...new Set(delivered.flatMap(result => result.artifactRefs))].sort() };
+  }
+
+  private correctedDeliveryOutcome(work: WorkDto, conclusion: NonNullable<WorkDto["closureConclusion"]>, operationId: string) {
+    const row = z.object({ binding_id: z.string(), decision_json: z.string() }).parse(this.db.prepare(
+      "SELECT binding_id,decision_json FROM work_closure_review_corrections WHERE operation_id=? AND work_id=?")
+      .get(operationId, work.workId));
+    const decision = z.object({ decision: z.literal("deliver"), outcome: z.literal("completed"), artifactRefs: z.array(z.string()).optional(),
+      correction: z.object({ kind: z.literal("host_delivery_responsibility") }) }).parse(JSON.parse(row.decision_json));
+    const delivery = this.selectedDelivery(work, row.binding_id, decision.artifactRefs ?? []);
+    if (conclusion !== "succeeded" || !delivery) throw Error("更正成果卡缺少当前执行的持久复核依据");
+    const outcome = WorkResultCards.closureOutcome(work, [], conclusion);
+    return { ...outcome, ...delivery, sourceRefs: [...outcome.sourceRefs, `closure-review-correction:${operationId}`].sort() };
+  }
+
   /** A blocker waiting for a human is substantive; internal retries are not. */
-  recordEscalation(work: WorkDto, reason: string, now: number) {
+  recordEscalation(work: WorkDto, reason: string, now: number, reviewedBindingId?: string) {
     const open = this.repo.listOpenBlockers(work.workId)
       .filter(blocker => blocker.waitingForUserInput);
+    const delivery = reviewedBindingId && open.some(blocker => blocker.sourceRef === `user-input:completion:${reviewedBindingId}:question`)
+      ? this.reviewedDelivery(work, reviewedBindingId, "waiting") : undefined;
+    const waitingRequest = delivery && reviewedBindingId ? this.reviewedWaitingRequest(reviewedBindingId) : undefined;
     const card = this.cards.ensure({
-      work, kind: "blocked_escalation", outcome: WorkResultCards.escalationOutcome(work, open),
+      work, kind: "blocked_escalation", outcome: { ...WorkResultCards.escalationOutcome(work, open), ...delivery },
       title: `${work.title}：需要你的决定`, summary: open.map(blocker => blocker.reason).join("\n"),
       unverifiedScope: [], now,
     });
@@ -95,13 +151,24 @@ export class WorkPhase5Facts {
       notificationId: `notification-${work.workId}-blocked-${card.semanticCardKey.slice(0, 16)}`,
       workId: work.workId, semanticKey: `work:${work.workId}:blocked:${card.semanticCardKey}`,
       kind: "blocked", title: `${work.title}：需要你的决定`,
-      body: reason.trim().slice(0, 1000), stateVersion: work.stateVersion,
+      body: waitingRequest ? `原用户待补充要求：${waitingRequest}` : reason.trim().slice(0, 1000), stateVersion: work.stateVersion,
       intentRevision: work.intentRevision, delivery: "pending", createdAt: now, attemptCount: 0,
       cardKey: card.cardKey,
     });
     this.cards.refreshSummary(work, now);
     this.ownerSummaries.observe(work.workId, now);
     return card;
+  }
+
+  private reviewedWaitingRequest(bindingId: string): string | undefined {
+    const row = z.object({ decision_json: z.string(), context_json: z.string() }).parse(this.db.prepare(
+      "SELECT decision_json,context_json FROM work_completion_turns WHERE binding_id=?").get(bindingId));
+    const decision = z.object({ decision: z.literal("wait"), userInput: z.object({ requestExcerpt: z.string().min(1) }) })
+      .safeParse(JSON.parse(row.decision_json));
+    const context = z.object({ originalRequest: z.object({ userRequest: z.object({ messages: z.array(z.object({ text: z.string() })) }) }) })
+      .safeParse(JSON.parse(row.context_json));
+    if (decision.success && context.success && context.data.originalRequest.userRequest.messages
+      .some(message => message.text.includes(decision.data.userInput.requestExcerpt))) return decision.data.userInput.requestExcerpt;
   }
 
   refreshSummary(workId: string): void {

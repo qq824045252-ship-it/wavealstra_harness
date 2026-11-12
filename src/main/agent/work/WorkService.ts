@@ -10,6 +10,9 @@ import { WorkIntentMutations } from "./WorkIntentMutations";
 import { pauseWorkMutation, resumeWorkMutation } from "./WorkPauseResumeMutations";
 import { handoffOwnerMutation, addParticipantMutation } from "./WorkDelegationMutations";
 import { WorkClosureMutations } from "./WorkClosureMutations";
+import { recordClosureCorrection, type ClosureReviewEvidence } from "./WorkClosureReview";
+import type { WorkClosureReviewRequest } from "../../../shared/work-closure-review";
+import type { WorkResultDecision } from "./WorkResultDecision";
 import type { Fail, Mutation, ResolvedActor } from "./WorkControlTypes";
 import { WorkListQuery } from "./WorkListQuery";
 import { WorkProjectionBuilder } from "./WorkProjectionBuilder";
@@ -485,6 +488,26 @@ export class WorkService {
     }, (work, resolved, now) => this.closureMutations().close(work, resolved, params, now, artifactInspection));
   }
 
+  /** Host-reviewed factual correction only. It never reopens or dispatches business work. */
+  correctAutomaticClosure(actor: WorkActor, request: WorkClosureReviewRequest,
+    review?: { evidence: ClosureReviewEvidence; decision: WorkResultDecision }): WorkControlResult {
+    if (actor.kind !== "user") return { ok:false,code:"unauthorized_actor",message:"结案复核必须由已认证用户入口发起" };
+    const params = { operationId:`closure-review:${request.requestId}`,workId:request.workId,
+      expectedCloseOperationId:request.expectedCloseOperationId,versionGuard:request.versionGuard };
+    return this.runWorkControl(actor,"correctAutomaticClosure",params,{guard:"full",ownerOnly:true,allowLifecycles:["closed"]},(work,_resolved,now)=>{
+      if (!review) return {ok:false,code:"invalid_request",message:"缺少宿主只读事实复核，原结论保留"};
+        const next = recordClosureCorrection(this.db,this,work,request,review.evidence,review.decision,now);
+        const card = this.phase5.recordClosure(next,"succeeded",now,{correctionOperationId:params.operationId});
+        this.repo.insertNotification({notificationId:newId("notification"),workId:work.workId,
+          semanticKey:`work:${work.workId}:closure-review:${params.operationId}`,kind:"closed",title:`复核更正：${next.title}`,
+          body:next.closureSummary,stateVersion:next.stateVersion,intentRevision:next.intentRevision,delivery:"pending",
+          createdAt:now,attemptCount:0,cardKey:card.cardKey});
+        return {ok:true,outboxEventId:this.outbox({work:next,eventType:"work.closure_review_corrected",operationId:params.operationId,
+          bindingId:review.evidence.binding.bindingId,payload:{originalCloseOperationId:work.closeOperationId,
+            originalConclusion:work.closureConclusion,conclusion:next.closureConclusion,correctionOperationId:params.operationId}})};
+    });
+  }
+
   private closeWithConclusion(work: WorkDto, conclusion: WorkDto["closureConclusion"],
     params: { operationId: string; closureSummary?: string }, now: number): Mutation {
     return this.closureMutations().closeWithConclusion(work, conclusion, params, now);
@@ -804,12 +827,12 @@ export class WorkService {
 
   // ============================================================== blockers
 
-  reportBlocker(actor: WorkActor, params: ReportBlockerParams): WorkControlResult {
+  reportBlocker(actor: WorkActor, params: ReportBlockerParams, reviewedBindingId?: string): WorkControlResult {
     const resolved = this.resolveActor(actor);
     if (typeof resolved === "string") return { ok: false, code: "unauthorized_actor", message: resolved };
     return this.runWorkControl(actor, "reportBlocker", params, {
       guard: "versions", ownerOnly: false, allowLifecycles: ["active", "paused", "closing"],
-    }, (work, _resolved, now) => reportWorkBlockerMutation({ repo: this.repo, phase5: this.phase5 }, work, resolved, params, now, this.isOwnerOrUser(work, resolved))
+    }, (work, _resolved, now) => reportWorkBlockerMutation({ repo: this.repo, phase5: this.phase5 }, work, resolved, params, now, this.isOwnerOrUser(work, resolved), reviewedBindingId)
     );
   }
 

@@ -10,7 +10,7 @@ import {WorkService,DESKTOP_USER_GRANTS} from '../src/main/agent/work/WorkServic
 import {WorkWatchSupervision} from '../src/main/agent/work/WorkWatchSupervision';
 import {watchGoalEvidence,watchGoalMet} from '../src/main/agent/work/WorkWatchGoal';
 import {LOCAL_USER_ID,DEFAULT_BOT_ID} from '../src/shared/bot-work';
-import type {WorkResultDecision} from '../src/main/agent/work/BotWorkResultTurn';
+import type {WorkResultDecision} from '../src/main/agent/work/WorkResultDecision';
 const root=mkdtempSync(join(tmpdir(),'watch-goal-')),db=new AppDatabase(join(root,'test.db'));
 const bots=new BotRegistry(db.connection);bots.ensureDefaultBot(LOCAL_USER_ID);
 const works=new WorkService(db.connection,{bots});

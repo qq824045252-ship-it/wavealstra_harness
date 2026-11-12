@@ -106,7 +106,9 @@ export class WorkResultCards {
       criteria: work.criteria.map(criterion => ({ id: criterion.id, status: criterion.status,
         requiredIntentRevision: criterion.requiredIntentRevision,
         evidenceRefs: [...criterion.evidenceRefs].sort() })).sort((left, right) => left.id.localeCompare(right.id)),
-      sourceRefs: [...new Set(work.goalSources.map(source => source.sourceRef))].sort(),
+      sourceRefs: [...new Set([...work.goalSources.map(source => source.sourceRef),
+        ...(blockers.some(blocker => blocker.sourceRef?.startsWith("user-input:completion:"))
+          ? blockers.map(blocker => `work-blocker:${blocker.blockerId}`) : [])])].sort(),
       artifactRefs: [],
       pendingBlockerCodes: [...new Set(blockers.map(blocker => blocker.reasonCode ?? blocker.kind))].sort(),
     };
@@ -300,16 +302,30 @@ export class WorkResultCards {
       if (latest?.card_key && latest.card_key !== row.card_key) return "superseded";
     }
     const outcome = JSON.parse(row.canonical_outcome_json) as WorkOutcomePayload;
+    if (["closure_succeeded", "closure_failed", "closure_cancelled"].includes(row.kind)
+      && this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='work_closure_review_corrections'").get()) {
+      const correction = z.object({ operation_id: z.string() }).optional().parse(this.db.prepare(
+        "SELECT operation_id FROM work_closure_review_corrections WHERE work_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1").get(work.workId));
+      if (correction && !outcome.sourceRefs.includes(`closure-review-correction:${correction.operation_id}`)) return "superseded";
+    }
     if (row.kind === "blocked_escalation") {
+      if (row.origin_owner_epoch !== work.ownerEpoch) return "historical";
+      const sourceIds = outcome.sourceRefs.filter(ref => ref.startsWith("work-blocker:")).map(ref => ref.slice("work-blocker:".length));
+      const blockers = this.repo.listBlockers(work.workId);
+      if (sourceIds.length) {
+        const exactSources = blockers.filter(blocker => sourceIds.includes(blocker.blockerId));
+        if (exactSources.length === sourceIds.length && !pendingDecisionBlockers(exactSources).length) return "superseded";
+      } else {
       // Legacy escalation cards saved codes and the exact joined reasons, not
       // blocker IDs. Require both to identify their sources conservatively:
       // another/new question in this Work must not keep an old effect alert alive.
-      const sources = this.repo.listBlockers(work.workId).filter(blocker => blocker.createdAt <= row.created_at
+      const sources = blockers.filter(blocker => blocker.createdAt <= row.created_at
         && outcome.pendingBlockerCodes.includes(blocker.reasonCode ?? blocker.kind)
         && (`\n${row.summary}\n`).includes(`\n${blocker.reason}\n`));
       const sameSources = sources.map(blocker => blocker.reason).join("\n") === row.summary
         && listText(sources.map(blocker => blocker.reasonCode ?? blocker.kind)) === listText(outcome.pendingBlockerCodes);
-      if (sameSources && sources.some(isWorkEffectDiagnostic) && !pendingDecisionBlockers(sources).length) return "superseded";
+      if (sameSources && !pendingDecisionBlockers(sources).length) return "superseded";
+      }
     }
     const superseded = outcome.deliverables.some(item => this.repo.getDeliverable(item.deliverableId)?.status === "superseded");
     return superseded ? "superseded" : "current";

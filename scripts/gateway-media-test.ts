@@ -39,7 +39,7 @@ try {
   await assert.rejects(withGatewayMedia([source], async () => {}, { directory: attachment.path }),
     error => error instanceof GatewayMediaError && !error.retryable && !error.message.includes(attachment.path));
   const link = join(directory, "link");
-  await symlink(directory, link);
+  await symlink(directory, link, process.platform === "win32" ? "junction" : "dir");
   await assert.rejects(withGatewayMedia([source], async () => {}, { directory: link }), /目录/);
   console.log("gateway-media: passed bounded downloads, trusted hosts, redaction, dedupe, rollback, retention and symlink rejection");
 } finally { await rm(directory, { recursive: true, force: true }); }

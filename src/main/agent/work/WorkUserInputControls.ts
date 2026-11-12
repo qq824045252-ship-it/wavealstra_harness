@@ -19,7 +19,7 @@ type Mutation = { ok: true } | { ok: false; code: WorkControlErrorCode; message:
  * They never dispatch work or relax action/resource/acceptance guards. */
 export function reportWorkBlockerMutation(
   { repo, phase5 }: { repo: WorkRepository; phase5: Pick<WorkPhase5Facts, "recordEscalation" | "refreshSummary"> },
-  work: WorkDto, resolved: ResolvedInputActor, params: ReportBlockerParams, now: number, ownerOrUser: boolean,
+  work: WorkDto, resolved: ResolvedInputActor, params: ReportBlockerParams, now: number, ownerOrUser: boolean, reviewedBindingId?: string,
 ): Mutation {
   if (resolved.kind !== "user" && resolved.kind !== "worker" && !ownerOrUser) {
     return { ok: false, code: "unauthorized_actor", message: "只有负责人、协作者或执行者可上报阻碍" };
@@ -50,7 +50,7 @@ export function reportWorkBlockerMutation(
   const next: WorkDto = { ...work, stateVersion: work.stateVersion + 1, updatedAt: now };
   repo.updateWork(next);
   if (params.waitingForUserInput && !isWorkEffectDiagnostic({ kind: params.kind ?? "operational",
-    unknownExternalEffectRef: params.unknownExternalEffectRef })) phase5.recordEscalation(next, params.reason, now);
+    unknownExternalEffectRef: params.unknownExternalEffectRef })) phase5.recordEscalation(next, params.reason, now, reviewedBindingId);
   else phase5.refreshSummary(next.workId);
   return { ok: true };
 }

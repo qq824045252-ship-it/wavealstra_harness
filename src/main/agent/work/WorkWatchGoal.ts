@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
-import type { CompletionArtifactEvidence } from "./WorkCompletionCoordinator";
+import type { CompletionArtifactEvidence } from "./WorkCompletionArtifactEvidence";
 import type Database from "better-sqlite3";
 import { resolve } from "node:path";
 import type { WorkExecutionBindingDto, WorkDto } from "../../../shared/bot-work";
 import type { WorkService } from "./WorkService";
-import type { WorkResultDecision } from "./BotWorkResultTurn";
+import type { WorkResultDecision } from "./WorkResultDecision";
 import { workExecutionObservationSchema } from "../../../shared/bot-work-phase3";
 import { watchTimeExpired } from "../../../shared/work-watch-expiry";
 

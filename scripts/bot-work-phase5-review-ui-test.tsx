@@ -69,16 +69,19 @@ let container: HTMLElement;
 let refreshes: boolean[] = [];
 let reviewRequests: WorkReviewControlRequest[] = [];
 let readRequests: Parameters<BotWorkApi["markCardRead"]>[0][] = [];
+let closureRequests: Parameters<BotWorkApi["reassessClosedWork"]>[0][] = [];
 let reviewReply = deferred<WorkControlResult>();
 let readReply = deferred<WorkCardReadResult>();
+let closureReply = deferred<WorkControlResult>();
 let diagnosticsReply = deferred<WorkExpandedDiagnosticsDto | undefined>();
 let diagnosticsRequests = 0;
-const api: Pick<BotWorkApi, "reviewControl" | "markCardRead" | "workDiagnostics" | "queryWorks" | "getWork"> = {
+const api: Pick<BotWorkApi, "reviewControl" | "markCardRead" | "workDiagnostics" | "queryWorks" | "getWork" | "reassessClosedWork"> = {
   queryWorks: async request => queryWorkFixture(useAppStore.getState().botWorks, request),
   getWork: async id => useAppStore.getState().botWorks.find(work => work.workId === id),
   reviewControl(request) { reviewRequests.push(request); return reviewReply.promise; },
   markCardRead(request) { readRequests.push(request); return readReply.promise; },
   workDiagnostics() { diagnosticsRequests += 1; return diagnosticsReply.promise; },
+  reassessClosedWork(request) { closureRequests.push(request); return closureReply.promise; },
 };
 Object.defineProperty(testWindow, "api", { value: { botWork: api }, configurable: true });
 const originalRefresh = useAppStore.getState().refreshBotWork;
@@ -118,6 +121,7 @@ async function change(label: string, value: string | boolean) {
 async function reset(panel: Panel) {
   await unmount(); testDocument.body.replaceChildren();
   refreshes = []; reviewRequests = []; readRequests = []; diagnosticsRequests = 0;
+  closureRequests = []; closureReply = deferred<WorkControlResult>();
   reviewReply = deferred<WorkControlResult>(); readReply = deferred<WorkCardReadResult>();
   diagnosticsReply = deferred<WorkExpandedDiagnosticsDto | undefined>();
   await mount(panel);
@@ -573,6 +577,32 @@ async function main() {
       } finally {
         await unmount(); globalThis.setInterval = originalSetInterval; globalThis.clearInterval = originalClearInterval;
         testWindow.api!.botWork.getWork = originalGetWork;
+      }
+    });
+    await check("automatic failed closure requests guarded review and preserves its retry identity", async () => {
+      await reset("cards");
+      const closed: WorkProjectionDto = { ...projection, lifecycle: "closed", closureConclusion: "ended_unsuccessfully",
+        closureReview: { expectedCloseOperationId: "automatic-completion:binding" }, closedAt: 8 };
+      await render("cards", true, closed);
+      await click("复核结论");
+      assert.equal(closureRequests.length, 1);
+      assert.equal(container.querySelector<HTMLButtonElement>("button.btn")?.disabled, true);
+      assert.deepEqual({ ...closureRequests[0], requestId: "request" }, { requestId: "request", workId: closed.workId,
+        expectedCloseOperationId: "automatic-completion:binding", versionGuard: { expectedStateVersion: 7,
+          expectedIntentRevision: 2, expectedOwnerEpoch: 3 } });
+      await act(async () => closureReply.reject(Error("response unavailable")));
+      assert.match(container.textContent!, /response unavailable/);
+      closureReply = deferred<WorkControlResult>();
+      await click("复核结论");
+      assert.deepEqual(closureRequests[1], closureRequests[0], "an unknown response retries the same request instead of minting another review");
+      await act(async () => closureReply.resolve({ ok: true, replayed: false, operationId: "corrected",
+        work: { ...work, lifecycle: "closed", closureConclusion: "succeeded", stateVersion: 8 } }));
+      assert.deepEqual(refreshes, [true]);
+      assert.match(container.textContent!, /复核完成/);
+      for (const ineligible of [projection, { ...closed, closureConclusion: "cancelled", closureReview: undefined },
+        { ...closed, closureReview: undefined }] satisfies WorkProjectionDto[]) {
+        await render("cards", true, ineligible);
+        assert(![...container.querySelectorAll("button")].some(button => button.textContent === "复核结论"));
       }
     });
     console.log(`Bot Work review UI: ${count} React lifecycle scenarios passed (controlled API promises, no real IPC/browser claim)`);

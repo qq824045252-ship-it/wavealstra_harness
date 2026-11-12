@@ -1,5 +1,5 @@
 /** Native Durable skill-policy, learned-skill invocation, loadout and scope regression fixture. */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createAgentDurableFixture, verifySkillProjectionRecovery } from "./agent-durable-fixture";
@@ -57,7 +57,7 @@ async function main(): Promise<void> {
     title: string;
     description: string;
     instructions: string;
-    scopeType: "global" | "workspace" | "project";
+    scopeType: "global" | "workspace" | "project" | "bot";
     scopeId?: string;
   }) => {
     const procedure = governanceMemory.create({
@@ -84,7 +84,7 @@ async function main(): Promise<void> {
       scopeId: input.scopeId,
     });
     governanceMemory.learning.markMaterialized(candidate.id, installed.id);
-    return learnedSkillsService.setEnabled(installed.id, true);
+    return learnedSkillsService.setEnabled(installed.id, true, input.scopeType === "bot" ? {botId:input.scopeId} : {});
   };
 
   /* ---------- 磁盘 fixture ---------- */
@@ -126,10 +126,12 @@ async function main(): Promise<void> {
   });
 
   let readSkillPath: string | undefined;
+  let beforeSkillRead: (() => void) | undefined;
   const fixture = await createAgentDurableFixture(root, db, request => {
     const reverseUser = [...request.messages].reverse().findIndex(message => message.role === "user");
     const latestUser = reverseUser < 0 ? -1 : request.messages.length - 1 - reverseUser;
     if (readSkillPath && !request.messages.slice(latestUser + 1).some(message => message.role === "toolResult")) {
+      beforeSkillRead?.(); beforeSkillRead = undefined;
       return [{ type: "toolCall", id: "learned-read-1", name: "read", arguments: { path: readSkillPath } }];
     }
     return [{ type: "text", text: "[]" }];
@@ -532,6 +534,80 @@ async function main(): Promise<void> {
     );
   }
 
+  console.log("\n[L9] Frozen background learned Skill reads keep current governance and actual invocation lineage");
+  {
+    const { BotRegistry } = await import("../src/main/agent/work/BotRegistry");
+    const { TaskExpertBindingService } = await import("../src/main/experts/TaskExpertBindingService");
+    const { LOCAL_USER_ID } = await import("../src/shared/bot-work");
+    const registry = new BotRegistry(db.connection);
+    registry.registerBot({botId:"copied-b",userId:LOCAL_USER_ID,displayName:"Executor B"});
+    const method = installGovernedLearnedSkill({slug:"learned-copied-b",title:"B copied method",description:"B current method",
+      instructions:"Read real input and independently verify the output.",scopeType:"bot",scopeId:"copied-b"});
+    const original = learnedSkillsService.getLearnedSkillRevisionSource(method.id)!;
+    const taskId="copied-b-task";
+    db.upsertTask({id:taskId,title:"Real native copied Skill reader",updatedAt:Date.now(),welcomeMode:"coding"});
+    registry.bindChannel({channelType:"desktop",channelIdentifier:JSON.stringify([LOCAL_USER_ID,taskId]),botId:"copied-b",boundAt:Date.now()});
+    const bindings = new TaskExpertBindingService(db,new ExpertService());
+    bindings.installFrozen(taskId,{revision:"copied-b-frozen",name:"Executor B",instructions:"Use the selected method when requested.",
+      skillIds:[method.id],mcpIds:[],connectorIds:[]},[{id:method.id,directory:dirname(method.filePath!),origin:"global"}]);
+    let copy=join(bindings.activeSkillPackages(taskId)[0].directory,"SKILL.md");
+    assert(learnedSkillsService.resolveLearnedSkillRead(copy,root)?.candidateId===original.candidateId,"copied metadata is matched to the current installation, not treated as ordinary");
+    savePreset({id:"copied-gate",label:"Copied method",skillPolicy:{allow:[method.id],hide:[],prefer:[],demote:[]}});
+    const readCopied=async(suffix:string, allowInterrupted=false)=>{
+      readSkillPath=copy;
+      try {
+        const request={taskId,text:"Read the selected frozen method.",userMessageId:`copied-user-${suffix}`,
+          assistantMessageId:`copied-answer-${suffix}`,modePresetId:"copied-gate",permissionMode:"auto" as const};
+        if (!allowInterrupted) await fixture.prompt(request);
+        else {
+          const accepted=await agent.prompt({...request,modelId:"fixture/model"});
+          if (!accepted.receipt) throw Error("native read was not admitted");
+          const settled=await agent.waitForSubmission(accepted.receipt);
+          assert(["done","unanswered"].includes(settled.receipt?.status ?? ""),"source forget may explicitly invalidate the active native turn");
+          await agent.loadTaskHistory(taskId);
+        }
+      }
+      finally { readSkillPath=undefined; beforeSkillRead=undefined; }
+      return db.connection.prepare("SELECT invocation_kind,tool_call_id FROM memory_skill_effectiveness WHERE task_id=? AND assistant_message_id=? AND skill_id=?")
+        .get(taskId,`copied-answer-${suffix}`,method.id) as {invocation_kind:string|null;tool_call_id:string|null}|undefined;
+    };
+    const used=await readCopied("valid");
+    assert(used?.invocation_kind==="read" && used.tool_call_id==="learned-read-1","actual native read of copied path records B's current learned candidate invocation");
+    const frozenText=readFileSync(copy,"utf8");
+    beforeSkillRead=()=>learnedSkillsService.setEnabled(method.id,false,{botId:"copied-b"});
+    const disabled=await readCopied("disabled-in-flight");
+    assert(!disabled?.invocation_kind,"disabling after advertisement but before the actual native read blocks the copy");
+    const denied=JSON.stringify(requests.at(-1)?.input.messages.filter(message=>message.role==="toolResult"));
+    assert(denied.includes("该方法已撤销"),"native tool result exposes the real revocation refusal");
+    learnedSkillsService.setEnabled(method.id,true,{botId:"copied-b"});
+    beforeSkillRead=()=>writeFileSync(copy,`${frozenText}\nUnreviewed altered method`);
+    assert(!(await readCopied("tampered-in-flight"))?.invocation_kind,"changed copied semantic bytes are rejected at actual read");
+    writeFileSync(copy,frozenText);
+    const {MemorySkillEffectivenessService}=await import("../src/main/memory/MemorySkillEffectivenessService");
+    const {MemorySkillRevisionService}=await import("../src/main/memory/MemorySkillRevisionService");
+    const effect=db.connection.prepare("SELECT id FROM memory_skill_effectiveness WHERE task_id=? AND assistant_message_id=? AND skill_id=?")
+      .get(taskId,"copied-answer-valid",method.id) as {id:string};
+    new MemorySkillEffectivenessService(db).setFeedback(effect.id,"incorrect","Independently compare the real output with a literal expected result.");
+    const revisions=new MemorySkillRevisionService(db);
+    const revised=revisions.refresh(original).candidate;
+    if(!revised) throw Error("actual invocation feedback did not produce a revision");
+    learnedSkillsService.installLearnedSkill({candidateId:revised.id,supersedesCandidateId:original.candidateId,version:"1.0.1",slug:method.id,
+      title:original.title,description:revised.proposedDescription,instructions:revised.proposedInstructions,
+      scopeType:original.scopeType,scopeId:original.scopeId,sourceMemoryIds:original.sourceMemoryIds});
+    revisions.markMaterialized(revised.id,revised.id,"1.0.1");
+    learnedSkillsService.setEnabled(method.id,true,{botId:"copied-b"});
+    assert(!(await readCopied("superseded"))?.invocation_kind,"current installation revision revokes an older frozen package at actual native read");
+    bindings.installFrozen(taskId,{revision:"copied-b-revised",name:"Executor B",instructions:"Use the current corrected method.",
+      skillIds:[method.id],mcpIds:[],connectorIds:[]},[{id:method.id,directory:dirname(method.filePath!),origin:"global"}]);
+    copy=join(bindings.activeSkillPackages(taskId)[0].directory,"SKILL.md");
+    assert((await readCopied("revised"))?.invocation_kind==="read","new frozen copy is read through the real native runtime after approval");
+    const currentInvocation=db.connection.prepare("SELECT candidate_id FROM memory_skill_effectiveness WHERE task_id=? AND assistant_message_id=? AND skill_id=?")
+      .get(taskId,"copied-answer-revised",method.id) as {candidate_id:string};
+    assert(currentInvocation.candidate_id===revised.id,"actual read invocation records the corrected candidate version");
+    beforeSkillRead=()=>governanceMemory.forget(original.sourceMemoryIds[0]);
+    assert(!(await readCopied("forgotten-in-flight",true))?.invocation_kind,"forgetting source after advertisement immediately revokes copied native reads");
+    assert(learnedSkillsService.resolveRuntimeSkills(root,[dirname(copy)],undefined,{botId:"other-bot"}).dtos.every(skill=>skill.id!==method.id),"copied Bot method cannot be discovered by another Bot");
+  }
   await verifySkillProjectionRecovery(db, root, fixture.models);
   console.log(`\n[runtime-skill-loader-test] passed=${passed} failed=${failed}`);
   if (failed > 0) throw new Error(`${failed} skill runtime assertions failed`);

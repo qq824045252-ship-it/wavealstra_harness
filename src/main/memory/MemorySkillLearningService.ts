@@ -75,6 +75,8 @@ function mapRow(row: CandidateRow): MemorySkillCandidateDto {
 }
 
 function chooseScope(memory: MemoryRecordDto): LearnableScope | null {
+  const bot = memory.scopes.find((scope) => scope.scopeType === "bot" && scope.scopeId);
+  if (bot) return { scopeType: "bot", scopeId: bot.scopeId };
   const global = memory.scopes.find((scope) => scope.scopeType === "global");
   if (global) return { scopeType: "global" };
   const project = memory.scopes.find((scope) => scope.scopeType === "project" && scope.scopeId);
@@ -163,7 +165,7 @@ export class MemorySkillLearningService {
     if (!memory || memory.kind !== "procedure" || memory.status !== "active") {
       return { evaluated: 0, created: 0, updated: 0, staled: this.invalidateByMemoryIds([memoryId], now), ready: 0 };
     }
-    const scope = chooseScope(memory);
+    const scope = this.chooseScope(memory);
     if (!scope || memory.content.trim().length < 12) {
       return { evaluated: 1, created: 0, updated: 0, staled: this.invalidateByMemoryIds([memoryId], now), ready: 0 };
     }
@@ -189,7 +191,7 @@ export class MemorySkillLearningService {
     for (const row of procedureIds) {
       const memory = this.memories.get(row.id);
       if (!memory) continue;
-      const scope = chooseScope(memory);
+      const scope = this.chooseScope(memory);
       if (!scope || memory.content.trim().length < 12) {
         this.invalidateByMemoryIds([memory.id], now);
         continue;
@@ -376,7 +378,7 @@ export class MemorySkillLearningService {
     const memories = candidate.sourceMemoryIds.map((id) => this.memories.get(id));
     if (memories.some((memory) => !memory || memory.status !== "active" || memory.kind !== "procedure")) return false;
     const memory = memories[0]!;
-    const scope = chooseScope(memory);
+    const scope = this.chooseScope(memory);
     if (!scope || scope.scopeType !== candidate.scopeType || (scope.scopeId ?? "") !== (candidate.scopeId ?? "")) return false;
     const signature = hash([
       memory.id,
@@ -385,6 +387,32 @@ export class MemorySkillLearningService {
       scope.scopeId ?? "",
     ].join("\n"));
     return signature === candidate.sourceSignature;
+  }
+
+  private chooseScope(memory: MemoryRecordDto): LearnableScope | null {
+    const now = Date.now();
+    if (memory.validUntil !== undefined && memory.validUntil <= now
+      || memory.validFrom !== undefined && memory.validFrom > now) return null;
+    const workScopes = memory.scopes.filter(scope => scope.scopeType === "work" && scope.scopeId);
+    if (!workScopes.length) return chooseScope(memory);
+    const project = memory.scopes.find(scope => scope.scopeType === "project" && scope.scopeId);
+    if (project) return { scopeType: "project", scopeId: project.scopeId };
+    // A Work procedure is reusable only when its source Task proves the executor.
+    // The initiating conversation and today's Work owner are not execution evidence.
+    if (workScopes.length !== 1 || !memory.sourceTaskId) return null;
+    if (this.conn.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='work_teams'").get()
+      && this.conn.prepare("SELECT 1 FROM work_teams WHERE work_id=?").get(workScopes[0].scopeId)) return null;
+    const rows = this.conn.prepare(`SELECT DISTINCT b.bot_id,w.project_id FROM work_execution_bindings b
+      JOIN works w ON w.work_id=b.work_id
+      JOIN bots bot ON bot.bot_id=b.bot_id AND bot.user_id=w.user_id
+      WHERE b.work_id=? AND b.task_id=? AND b.status NOT IN ('invalidated','unknown')`)
+      .all(workScopes[0].scopeId, memory.sourceTaskId) as Array<{ bot_id: string; project_id: string | null }>;
+    if (rows.length !== 1) return null;
+    if (rows[0].project_id) {
+      return memory.scopes.some(scope => scope.scopeType === "project" && scope.scopeId === rows[0].project_id)
+        ? { scopeType: "project", scopeId: rows[0].project_id } : null;
+    }
+    return { scopeType: "bot", scopeId: rows[0].bot_id };
   }
 
   private supportStats(memory: MemoryRecordDto): { distinctTaskCount: number; completedTaskCount: number; evidenceCount: number } {

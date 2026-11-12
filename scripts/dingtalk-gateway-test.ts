@@ -33,6 +33,10 @@ async function main() {
     fetch: async (url, init) => {
       calls.push({ url: String(url), init });
       if (String(url).includes("connections/open")) return Response.json({ endpoint: "wss://wss-open-connection.dingtalk.com/connect", ticket: "ticket" });
+      if (String(url).includes('oauth2/accessToken')) return Response.json({ accessToken: 'test-token' });
+      if (String(url).includes('/gettoken')) return Response.json({ access_token: 'test-old-token' });
+      if (String(url).includes('/media/upload')) return Response.json({ errcode: 0, media_id: '@media' });
+      if (String(url).includes('/robot/groupMessages/send')) return failReply ? Response.json({}, {status: 503}) : Response.json({ processQueryKey: 'receipt-' + calls.length });
       return failReply ? Response.json({ errcode: 130101 }, { status: 429 }) : Response.json({ errcode: 0 });
     },
     socketFactory: url => { assert.match(url, /^wss:\/\/wss-open-connection\.dingtalk\.com\/connect\?ticket=ticket$/); const s = new Socket(); sockets.push(s); setTimeout(() => s.onopen?.(), 0); return s; },
@@ -52,6 +56,20 @@ async function main() {
   s.emit({ type: "SYSTEM", headers: { topic: "ping", messageId: "ping-1" }, data: '{"opaque":"challenge"}' });
   assert.equal(s.sent.at(-1)?.data, '{"opaque":"challenge"}');
   s.emit(frame()); await tick(); assert.equal(inbound.length, 1); assert.equal(inbound[0].sender?.id, "employee");
+  {
+    const { createHash } = await import('node:crypto');
+    const bytes = Buffer.from('immutable file');
+    const file = { name: 'result.txt', sha256: createHash('sha256').update(bytes).digest('hex'), bytes: bytes.length, base64: bytes.toString('base64') };
+    const progress: string[] = [];
+    const result = await adapter.sendWorkNotification({ target: inbound[0].workTarget!, text: 'done', files: [file], effectKey: 'work', assertCurrent: () => {}, recordProgress: receipt => progress.push(receipt) });
+    assert(result.ok); assert.equal(progress.length, 3, 'text, upload, file each persist a receipt');
+    const body = JSON.parse(String(calls.at(-1)?.init?.body)); assert.equal(body.msgKey, 'sampleFile');
+    assert.equal(JSON.parse(body.msgParam).mediaId, '@media');
+    failReply = true;
+    const unknown = await adapter.sendWorkNotification({ target: inbound[0].workTarget!, text: 'unknown', effectKey: 'work-2', assertCurrent: () => {} });
+    assert(!unknown.ok && unknown.responseLost); failReply = false;
+    calls = calls.slice(0, 1);
+  }
   s.emit(frame({}, "new-envelope")); await tick(); assert.equal(inbound.length, 1);
   for (const invalid of [{ chatbotCorpId: "other" }, { senderCorpId: "other" }, { robotCode: "other" },
     { senderStaffId: "intruder" }, { isInAtList: false }, { sessionWebhook: "https://evil.example/send" },

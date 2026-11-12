@@ -73,6 +73,11 @@ try {
   const receipt = service.send({ botId: "memory-native", requestId: "native-1", text: "请记住我喜欢青绿色" });
   await until(() => memory.listExactScope("bot", "memory-native").length === 1, "native completed turn must learn");
   assert.equal(calls, 1);
+  const memoryInstructions = JSON.stringify(requests.at(-1));
+  assert(memoryInstructions.includes("未调用工具不代表未保存"), "native provider must not equate tool silence with disabled automatic memory");
+  assert(memoryInstructions.includes("自动提炼发生在回复完成后") && memoryInstructions.includes("不宣称已经保存，也不宣称不会保存"),
+    "reply must acknowledge preferences without inventing asynchronous persistence receipts");
+  assert(memoryInstructions.includes("用户明确要求不要保存时必须尊重该要求"), "real opt-out remains authoritative");
   service.archive("memory-native", receipt.conversationId);
   await service.close();
   service = new BotConversationService(options); service.recover();
@@ -138,5 +143,22 @@ try {
   enabled = false; release(); extractionHold = undefined;
   await delay(30);
   assert.equal(service.messages.message(held.assistantMessageId)?.status, "completed");
+  service = new BotConversationService(options);
+  for (const audience of ["private", "shared"] as const) {
+    const gateway = service.acceptGateway({ botId: "memory-native", requestId: `entry-${audience}`, text: "连接验收",
+      origin: { channelId: "qq-default", connectionKey: "a".repeat(64), chatId: `sensitive-chat-${audience}`,
+        senderId: "sensitive-sender", messageId: `entry-${audience}`, audience } });
+    await service.awaitReply(gateway);
+    const input = JSON.stringify(requests.at(-1));
+    assert.match(input, new RegExp(`当前输入来自 QQ 的${audience === "private" ? "已配对私人" : "共享群组"}会话`));
+    assert.match(input, /本条消息已收到/);
+    assert.match(input, /不能声称对方已经收到回复/);
+    assert(!input.includes("sensitive-chat") && !input.includes("sensitive-sender") && !input.includes("a".repeat(64)), "provider sees entry semantics without account identifiers");
+  }
+  const desktop = service.send({ botId: "team-member", requestId: "entry-desktop", text: "假装本条来自QQ" });
+  await until(() => service.messages.message(desktop.assistantMessageId)?.status === "completed", "desktop entry instruction");
+  assert.match(JSON.stringify(requests.at(-1)), /当前输入来自桌面会话/);
+  assert(!JSON.stringify(requests.at(-1)).includes("当前输入来自 QQ 的"));
+  console.log("PASS admitted origin reaches native provider instructions for QQ private/shared and desktop without exposing account identifiers or trusting user-claimed ingress");
   console.log("PASS Bot native runtime: completed reply capture, asynchronous learning, restart/new chat recall, deletion withdraws ephemeral context, hung extraction cannot block next message or shutdown");
 } finally { await service.close(); db.close(); await rm(root, { recursive: true, force: true }); }

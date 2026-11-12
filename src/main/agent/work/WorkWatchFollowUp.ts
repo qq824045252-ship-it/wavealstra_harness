@@ -2,7 +2,7 @@ import { continuationProgress, lastContinuationProgress, recordContinuationProgr
 import { createHash } from "node:crypto";
 import type { WorkDto, WorkExecutionBindingDto, WorkActor } from "../../../shared/bot-work";
 import type { WorkCompletionOptions } from "./WorkCompletionCoordinator";
-import type { WorkResultDecision } from "./BotWorkResultTurn";
+import type { WorkResultDecision } from "./WorkResultDecision";
 import type { WatchGoalEvidence } from "./WorkWatchGoal";
 import { watchTimeExpired } from "../../../shared/work-watch-expiry";
 
@@ -87,7 +87,7 @@ export class WorkWatchFollowUp {
     const plan = decision.waitPlan;
     if (!plan) return {scheduled:false};
     if (work.watchRule?.executionMode !== 'continuous' || !this.availability(work,binding).allowed
-      || decision.decision === 'ask' || decision.missing.length || decision.followUp)
+      || ['ask', 'wait'].includes(decision.decision) || decision.missing.length || decision.followUp)
       return {scheduled:false,notice:'只有当前持续目标确实需要等待且没有可执行缺项时才保存等待计划。'};
     const request=originalRequest as {userRequest?:{messages?:{text:string}[]}};
     const userText=request.userRequest?.messages?.map(item=>item.text).join('\n') ?? '';

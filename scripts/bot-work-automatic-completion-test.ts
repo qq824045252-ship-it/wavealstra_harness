@@ -15,12 +15,18 @@ import { WorkDispatchQueue } from "../src/main/agent/work/WorkDispatchQueue";
 import { WorkExecutionAdapter, type WorkExecutionPort } from "../src/main/agent/work/WorkExecutionAdapter";
 import { DEFAULT_BOT_ID, LOCAL_USER_ID, type WorkActor } from "../src/shared/bot-work";
 import type { AgentSubmissionReceipt } from "../src/shared/agent-ipc";
+import { prepareClosureReview } from "../src/main/agent/work/WorkClosureReview";
+import { capabilityOfGuarantee } from "../src/shared/bot-work-phase5";
 
 const root = mkdtempSync(join(tmpdir(), "automatic-completion-"));
 const evidenceSnapshot = join(root,"registered-final.md");
 const evidenceText = "# Final report\nReal current contents, not a filename claim.";
 writeFileSync(evidenceSnapshot,evidenceText);
 const evidenceDigest = createHash("sha256").update(evidenceText).digest("hex");
+const waitingRequest = "先交付草稿，最终文件的内容我稍后补充；保留同一事项，不轮询，不算整体完成。";
+const waitingFiles = [join(root, "draft.txt"), join(root, "draft-r2.txt"), join(root, "final.txt")];
+const waitingBytes = ["DRAFT_ALPHA", "DRAFT_BETA", "FINAL_BETA"];
+waitingFiles.forEach((path,index)=>writeFileSync(path,waitingBytes[index]));
 let evidenceReviews = 0;
 let milestoneReviews = 0;
 let scopeReviews = 0;
@@ -53,6 +59,17 @@ const port: WorkExecutionPort = {
   inspect: async binding => {
     if (states.get(binding.workId) === "running") return { status: "running" };
     const title = works.getWork(binding.workId)?.title;
+    if (title === "delivery-responsibility") return {status:"completed",summary:"final.txt 已真实生成并核验；执行器没有 QQ 直发工具。",
+      artifactRefs:[waitingFiles[2]],hasWriteConflicts:false,generatedArtifacts:[{path:waitingFiles[2],snapshotPath:waitingFiles[2],
+        digest:createHash("sha256").update(waitingBytes[2]).digest("hex"),sizeBytes:Buffer.byteLength(waitingBytes[2]),registeredAt:Date.now(),sourceEntryId:1}]};
+    if (title === "waiting-draft") {
+      const snapshot = waitingFiles[binding.intentRevision - 1];
+      const text = waitingBytes[binding.intentRevision - 1];
+      return { status: "completed", summary: binding.intentRevision < 3 ? "草稿已登记，最终内容等待用户补充。" : "最终文件已按新内容完成。",
+        artifactRefs: [snapshot], hasWriteConflicts: false,
+        generatedArtifacts: [{ path: snapshot, snapshotPath: snapshot, digest: createHash("sha256").update(text).digest("hex"),
+          sizeBytes: Buffer.byteLength(text), registeredAt: Date.now(), sourceEntryId: binding.intentRevision }] };
+    }
     if (title === "evidence-race") return {status:"completed",summary:"文件已完成",artifactRefs:[evidenceSnapshot],hasWriteConflicts:false,
       generatedArtifacts:[{path:join(root,"final.md"),snapshotPath:evidenceSnapshot,digest:evidenceDigest,sizeBytes:Buffer.byteLength(evidenceText),registeredAt:1,sourceEntryId:1}]};
     const failedOwner = title?.startsWith("team-owner-failure-") && binding.botId === DEFAULT_BOT_ID;
@@ -127,6 +144,14 @@ const coordinator = new WorkCompletionCoordinator({ db: db.connection, works, is
     if (lateQuestionWork) { works.repo.insertBlocker({blockerId:"late-question",workId:lateQuestionWork,kind:"operational",reason:"必须提供收件人",waitingForUserInput:true,status:"open",createdAt:Date.now()}); lateQuestionWork=undefined; }
     if ((input.context.pendingQuestions as Array<{blockerId:string}>|undefined)?.some(item=>item.blockerId === "late-question")) return {decision:"ask",outcome:"partial",reply:"必须提供收件人",missing:[]};
     if (input.context.title === "waiting-input") return {decision:"ask",outcome:"partial",reply:"已交付请求的文字方案；收件人是谁？",missing:[]};
+    if (input.context.title === "delivery-responsibility") {
+      const delivery=input.context.hostDeliveryContext as {responsibility:string;routes:Array<{channel:string;fileDelivery:{capability:string}}>};
+      assert.equal(delivery.responsibility,"host");assert.equal(delivery.routes[0].channel,"qq");assert.equal(delivery.routes[0].fileDelivery.capability,"unsupported");
+      return {decision:"deliver",outcome:"partial",reply:"文件已生成并核验，唯一缺口是执行环境没有 QQ 直发工具。",artifactRefs:[waitingFiles[2]],missing:[]};
+    }
+    if (input.context.title === "waiting-draft" && (input.context.originalRequest as {intentRevision:number}).intentRevision < 3)
+      return {decision:"wait",outcome:"partial",reply:"草稿已交付，等待你稍后补充最终内容。",missing:[],
+        userInput:{requestExcerpt:"最终文件的内容我稍后补充"},artifactRefs:[waitingFiles[(input.context.originalRequest as {intentRevision:number}).intentRevision - 1]]};
     if (lateResultWork) { db.connection.prepare("UPDATE work_deliverables SET summary=summary || ' 后到证据' WHERE work_id=?").run(lateResultWork); lateResultWork=undefined; }
     if (reviewContinue && ["continue-required","team-review-followup"].includes(String(input.context.title))) { reviewContinue=false; return {decision:"continue",outcome:"partial",reply:"已完成第一部分，补充剩余内容",missing:[{task:"补充剩余内容",requestExcerpt:String(input.context.title), ...(input.context.title === "team-review-followup" ? {teamTarget:(() => { const target = (input.context.teamContinuationTargets as any[])[0]; return {sourceBindingId:target.sourceBindingId,botId:target.botId,responsibility:target.responsibility,intentRevision:target.intentRevision,inputSnapshotId:target.inputSnapshotId,evidence:{deliverableId:target.results[0].deliverableId,quote:target.results[0].summary}}; })()} : {})}]}; }
     return { decision: "deliver", outcome: reviewPartial || ["explicit", "uncertain"].includes(String(input.context.title)) ? "partial" : "completed", reply: `已整理：${input.context.title}。结果依据原始执行记录。`, missing: [] }; },
@@ -360,6 +385,47 @@ try {
   const waitingOrigin=feedback.messages.resolveWorkDelivery(LOCAL_USER_ID,waiting)!;
   assert(feedback.messages.history(LOCAL_USER_ID,{botId:waitingOrigin.bot_id,conversationId:waitingOrigin.conversation_id}).messages.some(item => item.workIds.includes(waiting) && item.text.includes("收件人是谁") && item.text.includes("已交付请求的文字方案")),"terminal partial result and real question remain visible");
   authority = false; works.automaticCompletion.drain(); authority = true;
+  const waitingSource = feedback.messages.accept(LOCAL_USER_ID, {botId:DEFAULT_BOT_ID,requestId:"waiting-draft-source",text:waitingRequest});
+  const waitingCreated = works.createWork(user, {operationId:"waiting-draft",title:"waiting-draft",goalDescription:waitingRequest,
+    sourceMessageId:waitingSource.userMessageId,inputSnapshotId:`input:${waitingSource.userMessageId}`,authorization:DESKTOP_USER_GRANTS});
+  assert(waitingCreated.ok,JSON.stringify(waitingCreated));
+  const waitingId = waitingCreated.work.workId;
+  works.transaction(() => queue.enqueue(waitingCreated.work,"waiting-draft"));
+  states.set(waitingId,"completed"); await flush();
+  assert.equal(works.getWork(waitingId)?.lifecycle,"active","one-time goal waiting for promised user input remains amendable");
+  assert.equal(works.getWork(waitingId)?.closureConclusion,undefined);
+  const waitingBlockers=works.repo.listOpenBlockers(waitingId);
+  assert.equal(waitingBlockers.length,1);assert.equal(waitingBlockers[0].reasonCode,"user-input");
+  assert(waitingBlockers[0].waitingForUserInput && waitingBlockers[0].details?.userInput);
+  const waitingOrigin2=feedback.messages.resolveWorkDelivery(LOCAL_USER_ID,waitingId)!;
+  assert(feedback.messages.history(LOCAL_USER_ID,{botId:waitingOrigin2.bot_id,conversationId:waitingOrigin2.conversation_id}).messages
+    .some(message=>message.workFeedback?.report?.completion?.nextStep === "ask" && message.workFeedback.report.files?.some(file=>file.ref===waitingFiles[0])));
+  for(let i=0;i<3;i++) await flush();
+  assert.equal(works.repo.listBindings(waitingId).length,1,"waiting consumes the review without polling or replaying business work");
+  const latestWaiting=works.getWork(waitingId)!;
+  const amendedWaiting=works.amendWork(user,{operationId:"waiting-draft-input",workId:waitingId,goalDescription:"先更新草稿为 DRAFT_BETA，最终内容仍稍后补充。",
+    versionGuard:{expectedStateVersion:latestWaiting.stateVersion,expectedIntentRevision:latestWaiting.intentRevision,expectedOwnerEpoch:latestWaiting.ownerEpoch}});
+  assert(amendedWaiting.ok,JSON.stringify(amendedWaiting));assert.equal(amendedWaiting.work?.intentRevision,2);
+  assert.equal(amendedWaiting.work?.sourceMessageId,waitingSource.userMessageId);
+  works.transaction(()=>queue.enqueue(works.getWork(waitingId)!,"waiting-draft-input"));await flush();
+  assert.equal(works.getWork(waitingId)?.lifecycle,"active");
+  assert.equal(works.repo.listOpenBlockers(waitingId).length,1,"new wait replaces only the exact reviewed prior result-lane question");
+  const secondBinding=works.repo.listBindings(waitingId).at(-1)!;
+  assert.equal(works.repo.listOpenBlockers(waitingId)[0].sourceRef,`user-input:completion:${secondBinding.bindingId}:question`);
+  const partialCards=works.cards.list(works.getWork(waitingId)!).filter(card=>card.kind==="blocked_escalation");
+  assert(partialCards.some(card=>card.artifactRefs.length===1 && card.artifactRefs[0]===waitingFiles[0]));
+  assert(partialCards.some(card=>card.artifactRefs.length===1 && card.artifactRefs[0]===waitingFiles[1]),"revision 2 has its own exact new partial artifact card");
+  assert.equal(works.repo.listNotifications(waitingId).filter(notification=>notification.kind==="blocked").length,2,"two distinct partial results use existing semantic notification dedupe");
+  for(let i=0;i<3;i++) await flush();
+  assert.equal(works.repo.listBindings(waitingId).length,2);
+  const secondWaiting=works.getWork(waitingId)!;
+  const finalWaiting=works.amendWork(user,{operationId:"waiting-final-input",workId:waitingId,goalDescription:"最终文件内容为 FINAL_BETA，完成后交付。",
+    versionGuard:{expectedStateVersion:secondWaiting.stateVersion,expectedIntentRevision:secondWaiting.intentRevision,expectedOwnerEpoch:secondWaiting.ownerEpoch}});
+  assert(finalWaiting.ok,JSON.stringify(finalWaiting));assert.equal(finalWaiting.work?.intentRevision,3);
+  works.transaction(()=>queue.enqueue(works.getWork(waitingId)!,"waiting-final-input"));await flush();
+  assert.equal(works.getWork(waitingId)?.closureConclusion,"succeeded","same Work closes successfully only after current-revision completion");
+  assert.equal(works.repo.listBindings(waitingId).length,3);assert.equal(works.repo.listOpenBlockers(waitingId).length,0);
+  console.log("PASS two precise partial artifact notifications + one current user-input blocker on the same Work without polling, then revision 3 completes");
   const withheld = create("no-delivery"); await flush(); deliveryAvailable = false;
   states.set(withheld, "completed"); await flush();
   assert.equal(works.getWork(withheld)?.lifecycle, "active", "a failed delivery cannot silently archive");
@@ -453,6 +519,83 @@ try {
   assert(!fallbackReport.summary.includes("已交付请求的文字方案"),"failure does not dump the worker report into the foreground");
   assert(fallbackMessages.at(-1)!.text.includes("已交付请求的文字方案"),"raw worker result stays in the exact delivery record");
   assert(fallbackReport.sourceNotices?.includes("model unavailable"),"technical diagnostic stays available as secondary evidence");
+  const qqOrigin={channelId:"qq-default",connectionKey:"c".repeat(64),chatId:"c2c:closure-owner",senderId:"closure-owner",
+    messageId:"closure-natural-request",audience:"private" as const};
+  const deliverySource=db.connection.transaction(()=>{
+    const conversationId=feedback.messages.origins.gatewayConversation(LOCAL_USER_ID,DEFAULT_BOT_ID,qqOrigin);
+    const receipt=feedback.messages.accept(LOCAL_USER_ID,{botId:DEFAULT_BOT_ID,conversationId,requestId:"closure-natural-request",
+      text:"生成 final.txt，逐字 FINAL_BETA，读取核验并登记，完成后把结果发回最初的 QQ 会话。"});
+    feedback.messages.origins.recordGateway(LOCAL_USER_ID,receipt,{...qqOrigin,workTarget:{version:1,channelType:"qq",channelId:qqOrigin.channelId,
+      connectionKey:qqOrigin.connectionKey,chatId:qqOrigin.chatId,senderId:qqOrigin.senderId,
+      address:{recipient:qqOrigin.senderId,group:false,messageId:qqOrigin.messageId,expiresAt:Date.now()+600000}}});
+    return receipt;
+  })();
+  const oldFailure=works.createWork(user,{operationId:"delivery-responsibility",title:"delivery-responsibility",
+    sourceMessageId:deliverySource.userMessageId,inputSnapshotId:`input:${deliverySource.userMessageId}`,authorization:DESKTOP_USER_GRANTS});
+  assert(oldFailure.ok);
+  works.transaction(()=>queue.enqueue(oldFailure.work,"delivery-responsibility"));states.set(oldFailure.work.workId,"completed");await flush();
+  const oldWork=works.getWork(oldFailure.work.workId)!;
+  assert.equal(oldWork.closureConclusion,"ended_unsuccessfully","fixture retains the original real failure mechanism, rather than editing its history");
+  const bindingCount=works.repo.listBindings(oldWork.workId).length;
+  works.notifications.deliver({channel:"desktop",...capabilityOfGuarantee("best-effort-unqueryable"),
+    send:()=>({ok:false,retryable:false,responseLost:false,error:"fixture outbound rejected"})},oldWork.workId);
+  const oldNotifications=JSON.stringify(works.repo.listNotifications(oldWork.workId));
+  const oldAttempts=JSON.stringify(works.repo.listNotifications(oldWork.workId).flatMap(item=>works.notifications.attempts(item.notificationId)));
+  const guardWork=works.getWork(oldWork.workId)!;
+  const request={requestId:"correct-host-return",workId:oldWork.workId,expectedCloseOperationId:oldWork.closeOperationId!,versionGuard:{
+    expectedStateVersion:guardWork.stateVersion,expectedIntentRevision:guardWork.intentRevision,expectedOwnerEpoch:guardWork.ownerEpoch}};
+  const evidence=prepareClosureReview(db.connection,works,request);
+  works.repo.insertAdmission({admissionId:"late-unknown-closure-effect",workId:oldWork.workId,bindingId:evidence.binding.bindingId,
+    operationId:"late-unknown-closure-effect",actionKind:"write",state:"unknown",intentRevision:oldWork.intentRevision,ownerEpoch:oldWork.ownerEpoch,admittedAt:Date.now()});
+  assert.throws(()=>prepareClosureReview(db.connection,works,request),/未知效果/);
+  works.repo.updateAdmissionState("late-unknown-closure-effect","released",Date.now());
+  const correctedDecision={decision:"deliver",outcome:"completed",reply:"文件的真实创建和核验已经完成；原会话回传由宿主负责，QQ 文件仍不支持。",
+    artifactRefs:[waitingFiles[2]],missing:[],correction:{kind:"host_delivery_responsibility"}} as const;
+  const proposal={...correctedDecision,artifactRefs:[...correctedDecision.artifactRefs],missing:[]};
+  const selectedResult=works.repo.listDeliverables(oldWork.workId).find(item=>item.artifactRefs.includes(waitingFiles[2]))!;
+  assert.deepEqual(evidence.context.results.find(item=>item.deliverableId===selectedResult.deliverableId)?.uncoveredCriterionIds,[]);
+  assert.equal(evidence.context.results.find(item=>item.deliverableId===selectedResult.deliverableId)?.executionId,selectedResult.executionId);
+  const gapResult={...selectedResult,deliverableId:"legacy-explicit-business-gap",uncoveredCriterionIds:["required-business-output"]};
+  works.repo.insertDeliverable(gapResult);
+  assert.throws(()=>prepareClosureReview(db.connection,works,request),/明确业务缺项|未覆盖验收项/);
+  assert.throws(()=>works.correctAutomaticClosure(user,request,{evidence,decision:proposal}),/明确业务缺项|未覆盖验收项/,
+    "a completed correction marker cannot wash a current selected deliverable's explicit business gap");
+  assert.equal(works.getWork(oldWork.workId)?.closureConclusion,"ended_unsuccessfully");
+  db.connection.prepare("DELETE FROM work_deliverables WHERE deliverable_id=?").run(gapResult.deliverableId);
+  const priorTurn=db.connection.prepare("SELECT decision_json FROM work_completion_turns WHERE binding_id=?").get(evidence.binding.bindingId) as {decision_json:string};
+  db.connection.prepare("UPDATE work_completion_turns SET decision_json=? WHERE binding_id=?")
+    .run(JSON.stringify({...JSON.parse(priorTurn.decision_json),missing:[{task:"真正尚未完成的业务动作",requestExcerpt:"生成 final.txt"}]}),evidence.binding.bindingId);
+  assert.throws(()=>prepareClosureReview(db.connection,works,request),/非 continue 时 missing/,
+    "legacy deliver decisions with missing business actions are already rejected by the real decision schema");
+  db.connection.prepare("UPDATE work_completion_turns SET decision_json=? WHERE binding_id=?").run(priorTurn.decision_json,evidence.binding.bindingId);
+  assert(!works.correctAutomaticClosure({kind:"bot",botId:DEFAULT_BOT_ID,userId:LOCAL_USER_ID,host:"background",grants:DESKTOP_USER_GRANTS},request,{evidence,decision:proposal}).ok);
+  const stale=works.correctAutomaticClosure(user,{...request,versionGuard:{...request.versionGuard,expectedStateVersion:request.versionGuard.expectedStateVersion-1}},{evidence,decision:proposal});
+  assert(!stale.ok&&stale.code==="version_conflict");
+  assert.throws(()=>works.correctAutomaticClosure(user,request,{evidence,decision:{...proposal,outcome:"partial"}}),/没有证明/);
+  assert.throws(()=>works.correctAutomaticClosure(user,request,{evidence,decision:{...proposal,correction:undefined}}),/没有证明/);
+  writeFileSync(waitingFiles[2],"CHANGED");
+  assert.throws(()=>works.correctAutomaticClosure(user,request,{evidence,decision:proposal}),/已变化|不能核验/);
+  writeFileSync(waitingFiles[2],waitingBytes[2]);
+  const correction=works.correctAutomaticClosure(user,request,{evidence,decision:proposal});assert(correction.ok,JSON.stringify(correction));
+  const newWork=works.getWork(oldWork.workId)!;
+  assert.equal(newWork.closureConclusion,"succeeded");assert.equal(newWork.lifecycle,"closed");
+  assert.equal(newWork.closeOperationId,oldWork.closeOperationId);assert.equal(newWork.closedAt,oldWork.closedAt);
+  assert.match(newWork.closureSummary!,/复核更正/);assert.match(newWork.closureSummary!,/不支持，未通过此渠道发送/);
+  assert.equal(works.repo.listBindings(oldWork.workId).length,bindingCount);assert.deepEqual(newWork.acceptedDeliverableIds,[]);
+  const history=db.connection.prepare("SELECT original_conclusion,original_summary,original_close_operation_id FROM work_closure_review_corrections WHERE work_id=?").get(oldWork.workId) as {original_conclusion:string;original_summary:string;original_close_operation_id:string};
+  assert.equal(history.original_conclusion,"ended_unsuccessfully");assert.equal(history.original_summary,oldWork.closureSummary);assert.equal(history.original_close_operation_id,oldWork.closeOperationId);
+  assert.equal(JSON.stringify(works.repo.listNotifications(oldWork.workId).filter(item=>JSON.parse(oldNotifications).some((old:{notificationId:string})=>old.notificationId===item.notificationId))),oldNotifications);
+  assert.equal(JSON.stringify(works.repo.listNotifications(oldWork.workId).flatMap(item=>works.notifications.attempts(item.notificationId))),oldAttempts);
+  assert(works.cards.list(newWork).some(card=>card.kind==="closure_failed"&&card.currency==="superseded"));
+  assert(works.cards.list(newWork).some(card=>card.kind==="closure_succeeded"&&card.currency==="current"&&card.artifactRefs[0]===waitingFiles[2]));
+  assert(works.correctAutomaticClosure(user,request).ok,"same authenticated request replays the original correction receipt");
+  assert.equal((db.connection.prepare("SELECT count(*) n FROM work_closure_review_corrections WHERE work_id=?").get(oldWork.workId) as {n:number}).n,1);
+  assert.throws(()=>prepareClosureReview(db.connection,works,{...request,workId:healthy}),/仅可复核/);
+  const manual=works.createWork(user,{operationId:"manual-final-decision",title:"User explicitly ended",inputSnapshotId:"manual-final"});assert(manual.ok);
+  const manualEnd=works.closeWork(user,{operationId:"manual-final-close",workId:manual.work.workId,conclusion:"ended_unsuccessfully",closureSummary:"用户明确不再继续。",
+    versionGuard:{expectedStateVersion:manual.work.stateVersion,expectedIntentRevision:1,expectedOwnerEpoch:1}});assert(manualEnd.ok);
+  assert.throws(()=>prepareClosureReview(db.connection,works,{...request,workId:manual.work.workId,expectedCloseOperationId:"manual-final-close"}),/用户结案或取消/);
+  console.log("PASS natural QQ return responsibility context and guarded read-only closure correction: original verdict/events/attempts preserved, current card corrected, no rerun/new Work/accepted fiction");
   assert.deepEqual(errors, []);
   console.log("PASS automatic completion: delivery, in-flight, replay, watch, honest missing evidence, legacy history, unknown effects, real clarification");
 } finally { coordinator.close(); await queue.close(); await adapter.close(); db.close(); rmSync(root, { recursive: true, force: true }); }

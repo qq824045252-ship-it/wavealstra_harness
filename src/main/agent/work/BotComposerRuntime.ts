@@ -1,3 +1,4 @@
+import type { BotComposerSkillAccess } from "./BotComposerSkillAccess";
 import type { WorkspaceRequestScopeResolver } from "./GoogleWorkspaceRequestScope";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import { McpOAuthCredentialStore, type ModelRuntime } from "@earendil-works/pi-coding-agent";
@@ -22,12 +23,18 @@ export interface BotComposerRuntime {
 export async function openBotComposerRuntime(input: {
   profile: ExpertConfigSnapshotDto; cwd: string; models: ModelRuntime;
   connectorSkillRoots: string[]; connectorContext?: string; enabledMcpIds: string[]; readOnly: () => boolean; resolveRequestScope?: WorkspaceRequestScopeResolver;
+  skillAccess: BotComposerSkillAccess;
 }): Promise<BotComposerRuntime> {
-  const skillRoots = new Map((input.profile.skillPackages ?? []).map(item => [item.id, realpathSync(item.directory)]));
+  const skillRoots = new Map((input.profile.skillPackages ?? []).filter(item => input.skillAccess.canRead(item))
+    .map(item => [item.id, realpathSync(item.directory)]));
   for (const directory of input.connectorSkillRoots) {
-    if (existsSync(join(directory,"SKILL.md"))) skillRoots.set(`connector:${directory.split(/[\\/]/).at(-2)}`, realpathSync(directory));
+    if (existsSync(join(directory,"SKILL.md"))) {
+      const id = `connector:${directory.split(/[\\/]/).at(-2)}`;
+      if (input.skillAccess.canRead({ id, directory })) skillRoots.set(id, realpathSync(directory));
+    }
     else for (const entry of readdirSync(directory,{withFileTypes:true})) {
-      if (entry.isDirectory() && existsSync(join(directory,entry.name,"SKILL.md"))) skillRoots.set(`connector:${entry.name}`,realpathSync(join(directory,entry.name)));
+      const id = `connector:${entry.name}`, path = join(directory, entry.name);
+      if (entry.isDirectory() && existsSync(join(path,"SKILL.md")) && input.skillAccess.canRead({ id, directory: path })) skillRoots.set(id,realpathSync(path));
     }
   }
   // Service capabilities come from explicitly selected MCPs/connector skills, never a fixed vendor.
@@ -36,6 +43,7 @@ export async function openBotComposerRuntime(input: {
     parameters:Type.Object({skillId:Type.String(),path:Type.Optional(Type.String())}),replay:"safe",
     execute:async ({skillId,path}) => {
       const root = skillRoots.get(skillId); if (!root) throw Error("技能不属于本条消息："+skillId);
+      if (!input.skillAccess.canRead({ id: skillId, directory: root })) throw Error("技能来源、版本或当前 Bot 权限已变化，未读取旧技能包");
       const file=realpathSync(resolve(root,path||"SKILL.md")), rel=relative(root,file);
       if (rel.startsWith("..") || isAbsolute(rel)) throw Error("技能引用超出已选包目录");
       const content=readFileSync(file,"utf8"); if(content.length>128000) throw Error("技能引用文件过大，请选择较小的具体引用");

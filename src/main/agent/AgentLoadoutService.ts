@@ -37,7 +37,7 @@ export interface AgentLoadoutServiceDeps {
   resolveSkillsForContext: (
     cwd: string | undefined,
     extraSkillPaths: string[],
-    context: { projectId?: string | null; workspaceId?: string | null },
+    context: { projectId?: string | null; workspaceId?: string | null; taskId?: string },
   ) => RuntimeSkillSelection;
 }
 
@@ -198,7 +198,7 @@ export class AgentLoadoutService {
     const runtimeSkills = d.resolveSkillsForContext(
       cwd,
       skillPaths,
-      { projectId: task.projectId, workspaceId: task.spaceId },
+      { projectId: task.projectId, workspaceId: task.spaceId, taskId: task.id },
     );
     for (const skill of runtimeSkills.dtos) {
       const decision = resolveSkillCapability(

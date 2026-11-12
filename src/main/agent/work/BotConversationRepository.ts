@@ -9,6 +9,7 @@ import { z } from "zod";
 import { botActivitySchema, botReplySegmentSchema, type BotReplySegment, type BotActivityDto, botAttachmentSchema, type BotAttachmentDto, botMessageSchema, workFeedbackSchema, type WorkFeedbackDto, type BotHistoryDto, type BotHistoryRequest, type BotMessageDto, type BotSendReceipt, type BotSendRequest } from "../../../shared/bot-conversation";
 import type { WorkDto } from "../../../shared/bot-work";
 import { BOT_MESSAGE_ID_PREFIX } from "../../../shared/bot-conversation";
+import { BotTurnOrigins } from "./BotTurnOrigins";
 
 const conversationRow = z.object({ conversation_id: z.string(), bot_id: z.string(), team_id: z.string().nullable().optional(), user_id: z.string(), revision: z.number(),
   current_request_id: z.string().nullable(), archived_at: z.number().nullable(), created_at: z.number(), updated_at: z.number() });
@@ -25,10 +26,12 @@ export class BotConversationRepository {
   readonly metrics: BotForegroundMetricsStore;
   readonly peerCalls: BotPeerCallRepository;
   readonly collaborations: BotCollaborationRepository;
+  readonly origins: BotTurnOrigins;
   constructor(readonly db: Database.Database) {
     this.metrics = new BotForegroundMetricsStore(db);
     this.peerCalls = new BotPeerCallRepository(db);
     this.collaborations = new BotCollaborationRepository(db);
+    this.origins = new BotTurnOrigins(db);
     // Additive presentation storage: existing conversations need no destructive schema reset.
     db.exec(`CREATE TABLE IF NOT EXISTS bot_message_segments (
       message_id TEXT PRIMARY KEY REFERENCES bot_messages(message_id) ON DELETE CASCADE,
@@ -43,7 +46,9 @@ export class BotConversationRepository {
     const row = conversationId ? this.db.prepare(`SELECT * FROM bot_conversations WHERE user_id=? AND conversation_id=?
       AND (bot_id=? OR team_id IS NOT NULL)`).get(userId, conversationId, botId)
       : teamId ? this.db.prepare("SELECT * FROM bot_conversations WHERE user_id=? AND team_id=? AND archived_at IS NULL").get(userId, teamId)
-      : this.db.prepare("SELECT * FROM bot_conversations WHERE user_id=? AND bot_id=? AND team_id IS NULL AND archived_at IS NULL").get(userId, botId);
+      : this.db.prepare(`SELECT * FROM bot_conversations c WHERE user_id=? AND bot_id=? AND team_id IS NULL AND archived_at IS NULL AND ingress_kind='desktop'
+          AND NOT EXISTS(SELECT 1 FROM bot_gateway_conversations g WHERE g.conversation_id=c.conversation_id)`)
+          .get(userId, botId);
     return row ? conversationRow.parse(row) : undefined;
   }
 

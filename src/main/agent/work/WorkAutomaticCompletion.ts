@@ -2,6 +2,7 @@ import { workExecutionObservationSchema } from "../../../shared/bot-work-phase3"
 import type Database from "better-sqlite3";
 import { isCriterionResolved, isRequiredCriterion, type WorkDto, type WorkExecutionBindingDto } from "../../../shared/bot-work";
 import type { WorkService } from "./WorkService";
+import { completionEvidence, completionFingerprint } from "./WorkCompletionEvidence";
 
 /** A delivered once-task ends without a human acceptance ceremony. This does not
  * accept deliverables, attest criteria, or turn a native stop into goal evidence. */
@@ -11,7 +12,8 @@ export class WorkAutomaticCompletion {
     private readonly isAuthority: () => boolean) {
     db.exec(`CREATE TABLE IF NOT EXISTS work_automatic_completion (
       binding_id TEXT PRIMARY KEY, work_id TEXT NOT NULL, consumed_at INTEGER, recovered INTEGER NOT NULL DEFAULT 0);
-      CREATE TABLE IF NOT EXISTS work_automatic_completion_deliveries (binding_id TEXT PRIMARY KEY, summary TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT 'completed', goal_reviewed INTEGER NOT NULL DEFAULT 0)`);
+      CREATE TABLE IF NOT EXISTS work_automatic_completion_deliveries (binding_id TEXT PRIMARY KEY, summary TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT 'completed', goal_reviewed INTEGER NOT NULL DEFAULT 0);
+      CREATE TABLE IF NOT EXISTS work_completion_review_evidence (binding_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL)`);
     if (!(db.prepare("PRAGMA table_info(work_automatic_completion)").all() as Array<{name:string}>).some(row => row.name === "recovered"))
       db.exec("ALTER TABLE work_automatic_completion ADD COLUMN recovered INTEGER NOT NULL DEFAULT 0");
     if (!(db.prepare("PRAGMA table_info(work_automatic_completion_deliveries)").all() as Array<{name:string}>).some(row => row.name === "outcome"))
@@ -51,7 +53,12 @@ export class WorkAutomaticCompletion {
     return (this.db.prepare("SELECT binding_id FROM work_automatic_completion WHERE consumed_at IS NULL").all() as Array<{ binding_id: string }>).map(row => row.binding_id);
   }
   recordDelivery(bindingId: string, summary: string, outcome: "completed" | "partial" | "unknown" = "completed", goalReviewed = false): void {
-    this.db.prepare("INSERT OR IGNORE INTO work_automatic_completion_deliveries(binding_id,summary,outcome,goal_reviewed) VALUES (?,?,?,?)").run(bindingId, summary, outcome, Number(goalReviewed));
+    const inserted = this.db.prepare("INSERT OR IGNORE INTO work_automatic_completion_deliveries(binding_id,summary,outcome,goal_reviewed) VALUES (?,?,?,?)").run(bindingId, summary, outcome, Number(goalReviewed));
+    if (goalReviewed && inserted.changes) {
+      const binding = this.works.repo.getBinding(bindingId), facts = this.outcome(bindingId);
+      if (binding && facts) this.db.prepare("INSERT OR REPLACE INTO work_completion_review_evidence(binding_id,fingerprint) VALUES (?,?)")
+        .run(bindingId, completionFingerprint(completionEvidence(this.db, this.works, binding, facts)));
+    }
   }
   drain(): void {
     for (const bindingId of this.pending()) {
@@ -62,7 +69,19 @@ export class WorkAutomaticCompletion {
       this.works.transaction(() => {
         if (!this.isAuthority()) return;
         const outcome = this.outcome(row.binding_id);
-        if (!outcome || this.works.repo.listOpenBlockers(outcome.work.workId).some(item => item.waitingForUserInput && item.kind === "operational" && !item.unknownExternalEffectRef)) return;
+        if (!outcome) return;
+        if (delivered.goal_reviewed) {
+          const binding = this.works.repo.getBinding(bindingId)!;
+          const reviewed = this.db.prepare("SELECT fingerprint FROM work_completion_review_evidence WHERE binding_id=?")
+            .get(bindingId) as { fingerprint: string } | undefined;
+          if (reviewed?.fingerprint !== completionFingerprint(completionEvidence(this.db, this.works, binding, outcome))) {
+            this.db.prepare("DELETE FROM work_automatic_completion_deliveries WHERE binding_id=?").run(bindingId);
+            this.db.prepare("DELETE FROM work_completion_review_evidence WHERE binding_id=?").run(bindingId);
+            this.db.prepare("UPDATE work_completion_turns SET state='queued',decision_json=NULL,retry_at=0,error='evidence changed after delivery' WHERE binding_id=?").run(bindingId);
+            return;
+          }
+        }
+        if (this.works.repo.listOpenBlockers(outcome.work.workId).some(item => item.waitingForUserInput && item.kind === "operational" && !item.unknownExternalEffectRef)) return;
         // The goal review, not untouched manual-attestation rows or a past tool error,
         // determines whether the user's requested deliverable was achieved.
         // Native delivery failures still cannot be promoted to success.
@@ -145,7 +164,7 @@ export class WorkAutomaticCompletion {
       && !results.some(item => item.hasWriteConflicts || item.status === "rejected"), conclusion: reasons.length ? "ended_unsuccessfully" : "succeeded",
       summary: reasons.length
         ? `本次执行已结束，已有成果已返回；仍有未完成或未核实部分：${reasons.join("；")}`
-        : "本次执行已完成，成果已返回，已自动移入已结束。这是执行交付状态，不代表用户已验收或全部结论经过独立验证。" };
+        : "本次原生执行已结束，可用结果已保存；原委托是否完成、继续或等待用户输入仍需结果回合对照原请求判断，事项尚未因此结案。" };
   }
 
   consume(bindingId: string): void {

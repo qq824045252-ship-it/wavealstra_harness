@@ -1,8 +1,11 @@
+import { setTimeout as delay } from "node:timers/promises";
+import { deliveryFileBytes } from "../agent/work/WorkDeliveryArtifacts";
+import { assertGatewayWorkSend, workRequestSignal, GatewayWorkNotSentError, type GatewayWorkSendInput, type GatewayWorkSendResult } from "./work-outbound";
 import { createHash } from 'node:crypto';
 import { BoundedTTLCache } from './BoundedTTLCache';
 import { GatewayReplyNotSentError, type GatewayReplyRestoreInput, type GatewayReplyRoute } from './GatewayReply';
 import { withGatewayMedia, type GatewayMediaSource } from './GatewayMedia';
-import { gatewayConnectionKey } from './work-outbound';
+import { gatewayConnectionKey, gatewayWorkTarget } from './work-outbound';
 import type { ChannelAdapter, ChannelConfig, GatewayInboundHandler } from './channels';
 
 export interface DiscordSocket {
@@ -72,6 +75,60 @@ export class DiscordGatewayAdapter implements ChannelAdapter {
     return this.connected && this.activated && this.config && this.botId
       ? gatewayConnectionKey(this.type, [this.config.applicationId, this.botId]) : undefined;
   }
+  async sendWorkNotification(input: GatewayWorkSendInput): Promise<GatewayWorkSendResult> {
+    const target = input.target;
+    const generation = this.generation;
+    const check = () => {
+      if (input.signal?.aborted || generation !== this.generation) throw new GatewayWorkNotSentError("Discord 投递已取消或连接已更换，未发送");
+      assertGatewayWorkSend(input, this);
+      if (target.channelType !== "discord" || !this.config || !this.config.allowUsers.includes(target.senderId)) throw new GatewayWorkNotSentError("Discord 原始发送者未获授权");
+      if (target.address.guildId ? !this.config.guildIds.includes(target.address.guildId) : !this.config.allowDirectMessages) throw new GatewayWorkNotSentError("Discord 原始群或私聊已停用");
+    };
+    check();
+    if (target.channelType !== "discord") throw new GatewayWorkNotSentError("Discord 路由不一致");
+    const files = input.files ?? [];
+    if (files.length > 10) throw new GatewayWorkNotSentError("Discord 每条消息最多 10 个附件");
+    const body = new FormData();
+    body.append("payload_json", JSON.stringify({ content: input.text, allowed_mentions: { parse: [], replied_user: false },
+      message_reference: { message_id: target.address.messageId, fail_if_not_exists: false },
+      nonce: createHash("sha256").update(input.effectKey).digest("hex").slice(0, 24), enforce_nonce: true,
+      attachments: files.map((file, id) => ({ id, filename: file.name })) }));
+    files.forEach((file, id) => body.append(`files[${id}]`, new Blob([deliveryFileBytes(file)]), file.name));
+    const run = async (): Promise<GatewayWorkSendResult> => {
+      for (let attempt = 0; attempt < 4; attempt++) {
+        check();
+        const wait = this.rateLimitUntil - Date.now();
+        if (wait > 0) {
+          try { await delay(wait, undefined, { signal: input.signal }); }
+          catch { throw new GatewayWorkNotSentError("Discord 限流等待已取消，未发送"); }
+        }
+        check(); // Revalidate cancellation, connection, audience and Work revision after every wait.
+        let response: Response;
+        let result: Record<string, unknown>;
+        try {
+          response = await this.fetcher(`https://discord.com/api/v10/channels/${encodeURIComponent(target.address.channelId)}/messages`, {
+            method: "POST", redirect: "error", signal: workRequestSignal(input.signal), headers: { Authorization: `Bot ${this.config!.botToken}` }, body });
+          result = object(await response.json());
+        } catch {
+          return { ok: false, retryable: false, responseLost: true, error: "Discord 回执未知，停止自动重发" };
+        }
+        if (response.status === 429) {
+          const retry = Number(result.retry_after ?? response.headers.get("retry-after"));
+          if (!Number.isFinite(retry) || retry < 0 || retry > 300) return { ok: false, retryable: false, responseLost: false, error: "Discord 限流等待时间无效或过长，未发送" };
+          this.rateLimitUntil = Date.now() + Math.max(100, retry * 1000);
+          continue; // Only an explicit non-acceptance may replay this immutable request.
+        }
+        if (response.ok && snowflake(result.id) && result.channel_id === target.address.channelId) return { ok: true, receipt: result.id };
+        if (response.status >= 400 && response.status < 500) return { ok: false, retryable: false, responseLost: false, error: `Discord 拒绝通知 (${response.status})` };
+        return { ok: false, retryable: false, responseLost: true, error: "Discord 回执未知，停止自动重发" };
+      }
+      return { ok: false, retryable: false, responseLost: false, error: "Discord 持续限流，已达到本次有限重试上限" };
+    };
+    const request = this.restQueue.catch(() => undefined).then(run);
+    this.restQueue = request;
+    return request;
+  }
+
   activate(): void {
     if (this.stopped) return;
     this.activated = true;
@@ -345,7 +402,8 @@ export class DiscordGatewayAdapter implements ChannelAdapter {
         this.check(generation);
         // Once invoked, an error may follow real side effects: never auto-execute again.
         enteredGateway = true;
-        const delivery = this.onInbound!({ channelId: this.id, chatId: scope, messageId, text, attachments, sender: { id: author.id as string },
+        const delivery = this.onInbound!({ channelId: this.id, chatId: scope, messageId, text, attachments, audience: guild ? "shared" : "private", sender: { id: author.id as string },
+          workTarget: gatewayWorkTarget({ version: 1, channelType: this.type, channelId: this.id, connectionKey: this.workConnectionKey(), chatId: scope, senderId: author.id, address: { channelId, guildId: guild || null, applicationId: config.applicationId, botId: this.botId, messageId } }),
           replyRoute: { kind: 'discord', channelId, messageId, replyToMode: config.replyToMode, nonceKey: key },
           reply: this.createReply({ kind: 'discord', channelId, messageId, replyToMode: config.replyToMode, nonceKey: key }, generation, config),
         });

@@ -1,9 +1,9 @@
 import type { GatewayEventDto } from "../../shared/agent-ipc";
-import { gatewayBotTaskId } from "../../shared/gateway-task";
+
 import type { AppDatabase } from "../db/AppDatabase";
 import type { AppSettingsStore } from "../AppSettingsStore";
 import { gatewayInboundIdentity } from "./gateway-inbound-identity";
-import { ensureGatewayChannelSpace } from "./gateway-task-space";
+
 import { isSecureGatewayProvider } from "./GatewayProviderConfig";
 import { runGatewayAgentTurn, withSlackChannelHistory, type GatewayAgentPort } from "./GatewayAgentTurn";
 import { safeSlackError, redactSlackText } from "./SlackSocketModeAdapter";
@@ -22,7 +22,7 @@ interface GatewayRouterOptions {
   isAllowed(channelId: string, senderId?: string): boolean;
   processed: ReturnType<typeof createIdempotencyGuard>;
   emitEvent(event: GatewayEventDto): void;
-  recordWorkTarget(message: GatewayInboundMessage, taskId: string, messageId: string): void;
+
   projectMessageSink?: GatewayProjectMessageSink;
   restoreTrashedWorkspace?(taskId: string): void;
   redact(text: string): string;
@@ -36,23 +36,14 @@ interface GatewayRouterOptions {
 export class GatewayRouter {
   constructor(private readonly options: GatewayRouterOptions) {}
 
-  /** 已删除的网关会话还有同一条外部聊天。执行前把工作目录从回收区移回，避免「目录不存在」。 */
-  private reviveTrashedGatewayTask(sourceTaskId: string): void {
-    if (!this.options.restoreTrashedWorkspace) return;
-    const taskId = gatewayBotTaskId(sourceTaskId);
-    if (this.options.db.getTaskExecutionWorkspaceState?.(taskId)?.state !== "trashed") return;
-    this.options.restoreTrashedWorkspace(taskId);
-  }
-
-  /** 还没有文件夹的会话归入渠道空间。已经有归属的不搬走，失败也不挡住这条消息。 */
-  private spaceIdForUnfiledGatewayTask(channelId: string, sourceTaskId: string): string | undefined {
-    if (this.options.db.getTask(gatewayBotTaskId(sourceTaskId))?.spaceId) return undefined;
-    try {
-      return ensureGatewayChannelSpace(this.options.db, channelId, this.options.adapters.get(channelId)?.name ?? channelId);
-    } catch (error) {
-      console.warn(`[Gateway] 未能为 ${channelId} 建立渠道文件夹：`, this.options.safeError(error));
-      return undefined;
-    }
+  private origin(msg: GatewayInboundMessage, connectionKey: string, fallbackMessageId: string) {
+    const route = msg.replyRoute;
+    const privateRoute = route?.kind === "qq" && !route.group || route?.kind === "weixin" || route?.kind === "wechat"
+      || route?.kind === "telegram" && route.chatId === msg.sender?.id && !route.messageThreadId
+      || route?.kind === "wecom" && route.chatId === route.userId;
+    return { channelId: msg.channelId, connectionKey, chatId: msg.chatId,
+      senderId: msg.sender?.id ?? "", messageId: msg.messageId ?? fallbackMessageId,
+      audience: msg.audience ?? (privateRoute ? "private" as const : "shared" as const), workTarget: msg.workTarget };
   }
 
   handler(): GatewayInboundHandler {
@@ -109,20 +100,15 @@ export class GatewayRouter {
         console.warn(`[Gateway] 项目投递钩子失败 ${msg.channelId}：`, this.options.safeError(err));
       }
 
-      const spaceId = this.spaceIdForUnfiledGatewayTask(msg.channelId, taskId);
-      try { this.options.recordWorkTarget(msg, taskId, `gw-user-${turnId}`); }
-      catch (error) {
-        if (msg.messageId) this.options.processed.forget(taskId, msg.chatId, msg.messageId);
-        throw error;
-      }
+
       let text: string;
       try {
-        this.reviveTrashedGatewayTask(taskId);
+
         const modelId = this.options.readSettings().defaultModelId?.trim();
         text = await runGatewayAgentTurn(this.options.agent, {
           taskId, text: msg.text, attachments: msg.attachments, assistantMessageId: `gw-asst-${turnId}`, userMessageId: `gw-user-${turnId}`,
           ...(modelId ? { modelId } : {}),
-          ...(spaceId ? { spaceId } : {}),
+          gatewayOrigin: this.origin(msg, connectionKey, turnId),
         });
       } catch (err) {
         if (this.options.isStopping()) throw err;
@@ -158,7 +144,7 @@ export class GatewayRouter {
 
   private async handleSlackInbound(msg: GatewayInboundMessage, redact: (text: string) => string): Promise<void> {
     if (!msg.taskId || !msg.userMessageId || !msg.assistantMessageId) throw new Error("Slack 任务身份缺失，未执行");
-    this.options.recordWorkTarget(msg, msg.taskId, msg.userMessageId);
+
     this.options.emitEvent({
       channelId: msg.channelId, direction: "in", text: msg.text, at: Date.now(),
       chatId: msg.chatId, senderId: msg.sender?.id, messageId: msg.messageId,
@@ -178,15 +164,16 @@ export class GatewayRouter {
     }
     let text: string;
     try {
-      this.reviveTrashedGatewayTask(msg.taskId);
+
       const settings = this.options.readSettings();
       const modelId = settings.defaultModelId?.trim() || undefined;
-      const spaceId = this.spaceIdForUnfiledGatewayTask(msg.channelId, msg.taskId);
+      const connectionKey = this.options.adapters.get(msg.channelId)?.workConnectionKey?.();
+      if (!connectionKey) throw new Error("Slack 缺少已认证账号身份");
       text = await runGatewayAgentTurn(this.options.agent, {
         taskId: msg.taskId, text: withSlackChannelHistory(msg.text, msg.slackHistory), displayText: msg.text, userMessageId: msg.userMessageId,
         assistantMessageId: msg.assistantMessageId, attachments: msg.attachments,
         streamingBehavior: "followUp", ...(modelId ? { modelId } : {}),
-        ...(spaceId ? { spaceId } : {}),
+        gatewayOrigin: this.origin(msg, connectionKey, msg.userMessageId),
       });
     } catch (error) {
       if (this.options.isStopping()) throw error;

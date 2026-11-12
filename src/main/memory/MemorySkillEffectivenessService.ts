@@ -190,6 +190,21 @@ export class MemorySkillEffectivenessService {
     return this.get(id)!;
   }
 
+  /** Host-resolved cross-Bot corrections retain the actual execution and Skill revision. */
+  setWorkFeedback(input: { id: string; workId: string; executorBotId: string; candidateId: string;
+    kind: MemorySkillFeedbackKind; note: string }): MemorySkillEffectivenessDto {
+    const exposure = this.get(input.id);
+    if (!exposure?.invokedAt || exposure.candidateId !== input.candidateId) {
+      throw new Error("反馈未关联实际调用的 Skill 版本");
+    }
+    const binding = this.conn.prepare(`SELECT 1 FROM work_execution_bindings b
+      JOIN works w ON w.work_id=b.work_id JOIN bots bot ON bot.bot_id=b.bot_id AND bot.user_id=w.user_id
+      WHERE b.work_id=? AND b.bot_id=? AND b.task_id=? AND b.status!='invalidated'`)
+      .get(input.workId, input.executorBotId, exposure.taskId);
+    if (!binding) throw new Error("反馈不属于已关联 Work 的执行 Bot");
+    return this.setFeedback(input.id, input.kind, input.note);
+  }
+
   get(id: string): MemorySkillEffectivenessDto | undefined {
     const row = this.conn.prepare("SELECT * FROM memory_skill_effectiveness WHERE id=?").get(id) as EffectivenessRow | undefined;
     if (!row) return undefined;

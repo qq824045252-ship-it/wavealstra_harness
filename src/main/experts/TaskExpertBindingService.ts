@@ -22,7 +22,7 @@ export interface TaskExpertBindingOptions {
   rootDir?: string;
   resolveSkillDirectory?: (id: string) => string | undefined;
   /** Only a global disable removes a copied global skill; private packages remain task owned. */
-  isSkillEnabled?: (id: string) => boolean;
+  isSkillEnabled?: (id: string, taskId: string) => boolean;
 }
 
 const parseSnapshot = (value: string | null): TaskExpertSnapshot | null => value ? JSON.parse(value) : null;
@@ -121,10 +121,15 @@ export class TaskExpertBindingService {
     return path;
   }
   activeSkillDirectories(taskId: string): string[] {
+    return this.activeSkillPackages(taskId)
+      .filter(copy => copy.origin !== "global" || this.options.isSkillEnabled?.(copy.id, taskId) !== false)
+      .map(copy => copy.directory).filter(path => existsSync(path));
+  }
+  /** Host-owned package identities remain available for revocation checks after disable. */
+  activeSkillPackages(taskId: string): Array<{ id: string; directory: string; origin: "private" | "global" }> {
     const row = this.row(taskId);
     const copies: SkillCopy[] = row ? JSON.parse(row.active_skills_json) : [];
-    return copies.filter(copy => copy.origin !== "global" || this.options.isSkillEnabled?.(copy.id) !== false)
-      .map(copy => this.ownedPath(taskId, copy.relativePath)).filter(path => existsSync(path));
+    return copies.map(copy => ({ id: copy.id, directory: this.ownedPath(taskId, copy.relativePath), origin: copy.origin }));
   }
   activePrivateSkillsDir(taskId: string): string | undefined {
     const directories = this.activeSkillDirectories(taskId);

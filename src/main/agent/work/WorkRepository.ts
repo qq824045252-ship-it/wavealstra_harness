@@ -1,5 +1,6 @@
 import { parseWatchObservation, CONTINUOUS_WATCH_OBSERVATION_INSTRUCTIONS, WATCH_COMPARISON_INSTRUCTIONS, WATCH_OBSERVATION_INSTRUCTIONS } from "./WorkWatchObservation";
 import { WorkExecutionMetricsStore } from "./WorkExecutionMetrics";
+import { workDeliveryContext } from "./WorkDeliveryContext";
 import { botAttachmentSchema } from "../../../shared/bot-conversation";
 import { nonBlockingEffect, workAdmissionInFlight } from "../../../shared/work-effect-policy";
 import { randomUUID } from "node:crypto";
@@ -574,6 +575,7 @@ export class WorkRepository {
     return JSON.stringify({
       ...(team?.input_json ? { teamAssignment: JSON.parse(team.input_json) } : {}),
       workId: binding.workId, intentRevision: binding.intentRevision, inputSnapshotId: binding.inputSnapshotId,
+      hostDeliveryContext: workDeliveryContext(this.db, binding),
       ...(collaborationContext ? { collaborationContext: JSON.parse(collaborationContext.context_json) } : {}),
       ...(userRequest ? { userRequest, ...userDefinition, delegationPlan: { provenance: "assistant_generated", ...planDefinition } }
         : definition),

@@ -6,6 +6,7 @@ import { ensureBotWorkPhase4Tables } from "./bot-work-phase4-schema";
 import { ensureBotWorkPhase5Tables } from "./bot-work-phase5-schema";
 import { ensureGatewayDeliveryTables } from "./gateway-delivery-schema";
 import { ensureExtendedMemoryScopes } from "./memory-scope-schema";
+import { ensureBotSkillScope } from "./memory-skill-scope-schema";
 import { retireWorkIsolation } from "./work-isolation-retirement";
 import { retireWorkBudget } from "./work-budget-retirement";
 import { retireWorkEffectBlockers } from "./work-effect-retirement";
@@ -810,6 +811,7 @@ export class AppDatabase {
       CREATE INDEX IF NOT EXISTS idx_memory_skill_revision_skill ON memory_skill_revision_candidates(skill_id, base_candidate_id, updated_at DESC);
     `);
     ensureExtendedMemoryScopes(this.db);
+    ensureBotSkillScope(this.db);
     // Crash/exit recovery: a process can disappear after marking an L0 batch processing but before commit.
     // No live extraction exists while AppDatabase is constructing, so these rows are safe to retry.
     this.db.prepare(

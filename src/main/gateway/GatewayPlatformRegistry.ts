@@ -4,30 +4,8 @@ import { gatewayWorkTargetSchema } from "./work-outbound";
 import { GatewayDeliveryJournal, type GatewayInboxEntry } from "./GatewayDeliveryJournal";
 import { GatewayReplyNotSentError, gatewayReplyRouteSchema } from "./GatewayReply";
 
-/** Implemented capabilities, not the provider's theoretical API surface. */
-export interface GatewayCapabilities {
-  transport: "webhook" | "polling" | "socket";
-  text: true;
-  /** inbound means attachment ingestion only; file replies are not yet wired. */
-  media: false | "inbound" | "bidirectional";
-  editStreaming: false;
-  interactiveApproval: false;
-  durableInbound: boolean;
-  workNotifications: boolean;
-  threads: "none" | "reply-target" | "native-session";
-}
-const common = { text: true, media: false, editStreaming: false, interactiveApproval: false } as const;
-export const GATEWAY_CAPABILITIES = Object.freeze({
-  feishu: { ...common, media: "inbound", transport: "webhook", durableInbound: false, workNotifications: true, threads: "reply-target" },
-  wecom: { ...common, transport: "webhook", durableInbound: false, workNotifications: true, threads: "none" },
-  wechat: { ...common, transport: "webhook", durableInbound: false, workNotifications: true, threads: "none" },
-  telegram: { ...common, media: "inbound", transport: "polling", durableInbound: false, workNotifications: true, threads: "reply-target" },
-  slack: { ...common, media: "inbound", transport: "socket", durableInbound: true, workNotifications: true, threads: "native-session" },
-  dingtalk: { ...common, media: "inbound", transport: "socket", durableInbound: false, workNotifications: false, threads: "none" },
-  weixin: { ...common, media: "inbound", transport: "polling", durableInbound: false, workNotifications: false, threads: "none" },
-  qq: { ...common, media: "inbound", transport: "socket", durableInbound: false, workNotifications: false, threads: "none" },
-  discord: { ...common, media: "inbound", transport: "socket", durableInbound: false, workNotifications: false, threads: "reply-target" },
-} satisfies Record<GatewayChannelType, GatewayCapabilities>);
+import { GATEWAY_CAPABILITIES, type GatewayCapabilities } from "./GatewayCapabilities";
+export { GATEWAY_CAPABILITIES, type GatewayCapabilities } from "./GatewayCapabilities";
 
 /** Internal transport envelope. Account is a public-identity digest, never a token.
  * Do not put this envelope or transport metadata in model instructions.

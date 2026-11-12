@@ -1,8 +1,8 @@
 {
   "scope": "src/main/**",
-  "mainRegistrations": 532,
-  "allRegistrations": 548,
-  "uniqueChannels": 532,
+  "mainRegistrations": 534,
+  "allRegistrations": 550,
+  "uniqueChannels": 534,
   "channels": [
     "agent:abort",
     "agent:abortCompaction",
@@ -167,6 +167,7 @@
     "bot-work:phase3-control",
     "bot-work:phase4-control",
     "bot-work:query-works",
+    "bot-work:reassess-closed-work",
     "bot-work:record-user-feedback",
     "bot-work:rename-bot",
     "bot-work:resend-notification",
@@ -309,6 +310,7 @@
     "gadget:stop",
     "gadget:update",
     "gadget:updateSource",
+    "gateway:configureBotBinding",
     "gateway:connect",
     "gateway:disconnect",
     "gateway:getChannelConfig",
@@ -554,7 +556,7 @@
       {
         "channel": "artifact-domain:get",
         "entries": [
-          "src/main/index.ts:2275",
+          "src/main/index.ts:2312",
           "scripts/wave5-real-open-e2e.ts:304"
         ],
         "foreign": [
@@ -564,7 +566,7 @@
       {
         "channel": "artifact-domain:list",
         "entries": [
-          "src/main/index.ts:2279",
+          "src/main/index.ts:2316",
           "scripts/wave5-real-open-e2e.ts:300"
         ],
         "foreign": [
@@ -574,7 +576,7 @@
       {
         "channel": "artifact-domain:snapshot",
         "entries": [
-          "src/main/index.ts:2283",
+          "src/main/index.ts:2320",
           "scripts/wave5-real-open-e2e.ts:297"
         ],
         "foreign": [
@@ -584,7 +586,7 @@
       {
         "channel": "artifact-domain:register",
         "entries": [
-          "src/main/index.ts:2294",
+          "src/main/index.ts:2331",
           "scripts/wave5-real-open-e2e.ts:296"
         ],
         "foreign": [
@@ -594,7 +596,7 @@
       {
         "channel": "artifact-domain:readContent",
         "entries": [
-          "src/main/index.ts:2298",
+          "src/main/index.ts:2335",
           "scripts/wave5-real-open-e2e.ts:292"
         ],
         "foreign": [
@@ -604,7 +606,7 @@
       {
         "channel": "artifact-domain:removeTask",
         "entries": [
-          "src/main/index.ts:2303",
+          "src/main/index.ts:2340",
           "scripts/wave5-real-open-e2e.ts:307"
         ],
         "foreign": [
@@ -614,7 +616,7 @@
       {
         "channel": "artifact-domain:remove",
         "entries": [
-          "src/main/index.ts:2307",
+          "src/main/index.ts:2344",
           "scripts/wave5-real-open-e2e.ts:310"
         ],
         "foreign": [

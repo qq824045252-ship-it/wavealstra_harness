@@ -112,7 +112,7 @@ export default function QQGatewaySettings(): React.JSX.Element {
   return <section className="settings-section" aria-label="QQ 扫码授权">
     <div className="settings-section-card">
       <div className="settings-card-head"><span className="settings-card-title">QQ 扫码机器人</span><span className={`channel-status${connected ? " on" : ""}`}>{connected ? "已连接" : "未连接"}</span></div>
-      <div className="settings-card-desc">使用手机 QQ 扫描官方授权二维码，接入 QQ 机器人；不是个人聊天账号托管，也不会导入个人聊天历史。仅允许扫码用户发给机器人的消息，暂不支持主动 Work 通知。</div>
+      <div className="settings-card-desc">使用手机 QQ 扫描官方授权二维码，接入 QQ 机器人。仅允许扫码用户使用；任务进度可在原消息的回复有效期内回传。QQ 通用文件无法发送时会明确提示，成果保留在对应事项中。</div>
       <label style={{ display: "flex", gap: 8, margin: "12px 0" }}>
         <input type="checkbox" aria-label="同意 QQ 持久访问授权" checked={approved} disabled={busy || pending(state)} onChange={event => setApproved(event.target.checked)} />
         <span>我同意申请 QQ 机器人凭据，并由此应用加密保存，用于持续接收和回复我的机器人消息；下次启动时可恢复连接。扫码后仍需在手机端确认。</span>

@@ -43,6 +43,8 @@ adapter.setInboundHandler(async message => {
 });
 const config = { appId: '123', appSecret: 'secret', allowUsers: ['user'] };
 const tick = () => new Promise(resolve => setTimeout(resolve, 40));
+const until = async (ready: () => boolean) => { const deadline=Date.now()+5000;
+  while(!ready()){if(Date.now()>deadline)throw new Error("QQ media observable completion timeout");await new Promise(resolve=>setTimeout(resolve,5));} };
 const media = (url = 'https://multimedia.nt.qq.com/download/file', extra: Record<string, unknown> = {}) => ({ url, filename: 'photo.png', content_type: 'image/png', size: 3, ...extra });
 const event = (id: string, extra: Record<string, unknown> = {}, group = false) => socket.frame({ op: 0, t: group ? 'GROUP_AT_MESSAGE_CREATE' : 'C2C_MESSAGE_CREATE', d: {
   id, content: '', author: group ? { member_openid: 'user' } : { user_openid: 'user' }, group_openid: 'group', timestamp: new Date().toISOString(), attachments: [media()], ...extra,
@@ -53,14 +55,14 @@ process.env.HOME = process.env.USERPROFILE = home;
 try {
   await adapter.connect(config);
   event('buffered'); await tick(); assert.equal(downloads, 0);
-  adapter.activate(); await tick(); assert.equal(messages.length, 1); assert.equal(messages[0].text, '');
+  adapter.activate(); await until(()=>messages.length===1); assert.equal(messages.length, 1); assert.equal(messages[0].text, '');
   assert.equal(messages[0].attachments?.[0].name, 'photo.png');
   event('buffered'); event('unauthorized', { author: { user_openid: 'stranger' } }); await tick(); assert.equal(downloads, 1);
   event('batch', { content: 'caption', attachments: [media('//gchat.qpic.cn/image'),
     media('https://multimedia.nt.qq.com/file', { filename: '../doc.pdf', content_type: 'application/pdf' }),
     media('https://grouptalk.c2c.qq.com/audio', { filename: 'voice.silk', content_type: 'audio/silk', asr_refer_text: 'not trusted', voice_wav_url: 'https://evil.example/voice' }),
     media('https://multimedia.nt.qq.com/video', { filename: 'video.mp4', content_type: 'video/mp4' })] }, true);
-  await tick(); assert.equal(messages.length, 2); assert.equal(messages[1].text, 'caption');
+  await until(()=>messages.length===2); assert.equal(messages.length, 2); assert.equal(messages[1].text, 'caption');
   assert.equal(messages[1].attachments?.length, 4); assert.equal(messages[1].chatId, 'group:group');
   assert(!messages[1].attachments![1].name.includes('/'));
   await messages[1].reply('answer'); assert.equal(posts[0].msg_id, 'batch');
@@ -72,19 +74,19 @@ try {
   event('malformed', { attachments: [null] });
   await tick(); assert.equal(downloads, before); assert.equal(messages.length, 2);
   event('text-url', { content: 'https://multimedia.nt.qq.com/not-an-attachment', attachments: [] });
-  await tick(); assert.equal(downloads, before); assert.equal(messages.length, 3);
+  await until(()=>messages.length===3); assert.equal(downloads, before); assert.equal(messages.length, 3);
   mode = 'redirect'; event('redirect'); await tick(); assert.equal(messages.length, 3); assert(statuses.some(value => value.includes('处理失败')));
   mode = 'failure'; event('retry-media'); await tick(); assert.equal(messages.length, 3);
   assert(statuses.at(-1)?.includes('允许平台重新投递'));
   const failedDownloads = downloads;
-  mode = ''; event('retry-media'); event('retry-media'); await tick();
+  mode = ''; event('retry-media'); event('retry-media'); await until(()=>messages.length===4);
   assert.equal(downloads, failedDownloads + 1); assert.equal(messages.length, 4);
-  failHandler = true; event('handler-error'); await tick(); assert.equal(messages.length, 5);
+  failHandler = true; event('handler-error'); await until(()=>messages.length===5 && statuses.at(-1)?.includes('避免重复执行')===true); assert.equal(messages.length, 5);
   assert(statuses.at(-1)?.includes('避免重复执行'));
   const enteredDownloads = downloads;
   failHandler = false; event('handler-error'); await tick();
   assert.equal(downloads, enteredDownloads); assert.equal(messages.length, 5);
-  mode = 'hold'; event('old-generation'); await tick(); assert(release);
+  mode = 'hold'; event('old-generation'); await until(()=>Boolean(release)); assert(release);
   await adapter.disconnect(); await adapter.connect({ ...config, appId: '456' }); adapter.activate();
   release(); await tick(); assert.equal(messages.length, 5);
   console.log('QQ media: attachment-only/caption, image/file/audio/video bytes, activation, dedup, auth, fixed CDN/HTTPS/size/count, no URL scraping, redirects, stale generation PASS');

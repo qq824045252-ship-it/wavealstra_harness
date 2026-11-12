@@ -10,7 +10,8 @@ import { BACKGROUND_CONTEXT as storageContext } from "@earendil-works/chord/cont
 import type { Cursor } from "@earendil-works/pi-durable";
 import { openDurablePassiveStorage } from "../src/main/agent/durable/DurableStorage";
 import { DurableBotRuntime } from "../src/main/agent/durable/DurableBotRuntime";
-import { BotWorkResultTurn, resultDecisionSchema, type WorkResultTurnInput } from "../src/main/agent/work/BotWorkResultTurn";
+import { BotWorkResultTurn } from "../src/main/agent/work/BotWorkResultTurn";
+import { resultDecisionSchema, type WorkResultTurnInput } from "../src/main/agent/work/WorkResultDecision";
 import { workResultArtifactSelection } from "../src/main/agent/work/WorkResultArtifactSelection";
 
 const refs = ["/snap/ce-bEUAMi/甲/报告.md", "/snap/ce-BEUAMi/乙/报告.md", "/snap/café/报告.md"];
@@ -134,6 +135,36 @@ try {
   for(const decision of ["deliver","ask"]) assert(!resultDecisionSchema.safeParse({...valid,decision,missing:[gap]}).success,
     "non-continue missing entries must fail validation, never be silently cleared");
   assert(resultDecisionSchema.safeParse({...valid,decision:"continue",missing:[gap]}).success);
+  assert(!resultDecisionSchema.safeParse({...valid,decision:"wait"}).success,"waiting needs an exact original user excerpt");
+  assert(!resultDecisionSchema.safeParse({...valid,decision:"wait",outcome:"completed",userInput:{requestExcerpt:"I will provide it later"}}).success);
+  assert(resultDecisionSchema.safeParse({...valid,decision:"wait",userInput:{requestExcerpt:"I will provide it later"}}).success);
+  respond=(current,request)=>{
+    assert(getCurrentSystemPrompt(request.messages).includes("它会关闭一次事项"),"result reviewer sees actual delivery-versus-closure semantics");
+    return {...valid,decision:"wait",userInput:{requestExcerpt:"I will provide it later"},artifactRefs:[current.availableFiles[0].selectionId]};
+  };
+  const waiting=await turn.review({...input,eventId:"promised-user-input-wait",context:{...input.context,
+    originalRequest:{userRequest:{messages:[{text:"Prepare a draft first. I will provide it later; keep the same item open."}]}}}});
+  assert.equal(waiting.decision,"wait");assert.equal(waiting.outcome,"partial");
+  assert.deepEqual(waiting.artifactRefs,[refs[0]],"a real durable wait review preserves the selected immutable partial artifact");
+  const hostDeliveryContext={provenance:"host_persisted_delivery_route",responsibility:"host",scope:"reply_to_original_request_only",
+    routes:[{channel:"qq",connection:"last_observed_connected",summaryDelivery:{capability:"supported",state:"sent"},fileDelivery:{capability:"unsupported",state:"unsupported"}}]};
+  respond=(current,request)=>{
+    assert.equal(getCurrentTools(request.messages).length,0,"closure review cannot rerun a business tool or send a channel message");
+    assert(getCurrentSystemPrompt(request.messages).includes("不能免除用户要求另发给其他渠道"));
+    assert.deepEqual(current.hostDeliveryContext,hostDeliveryContext);
+    const otherRecipient=JSON.stringify(current.originalRequest ?? {}).includes("另外发给Discord收件人");
+    return {decision:"deliver",outcome:otherRecipient?"partial":"completed",reply:otherRecipient?"另发给 Discord 收件人的业务动作没有执行回执。":"文件已生成核验，QQ文字已发送，但QQ文件不支持且未发送。",
+      artifactRefs:[current.availableFiles[0].selectionId],missing:[],...(current.closedWorkReview?{correction:{kind:"host_delivery_responsibility"}}:{})};
+  };
+  for(const otherRecipient of [false,true]){
+    const reviewed=await turn.review({...input,eventId:`host-original-return-${otherRecipient}`,context:{...input.context,hostDeliveryContext,
+      originalRequest:{userRequest:{messages:[{text:`生成文件并核验，完成后把结果发回最初QQ。${otherRecipient?"另外发给Discord收件人。":""}`}]}}}});
+    assert.equal(reviewed.outcome,otherRecipient?"partial":"completed");
+  }
+  const reassessed=await turn.review({...input,eventId:"closed-host-delivery-responsibility",context:{...input.context,hostDeliveryContext,
+    closedWorkReview:{kind:"host_delivery_responsibility",originalConclusion:"ended_unsuccessfully",originalDecision:{...valid,reply:"文件正确，但执行器没有QQ直发工具。"}}}});
+  assert.equal(reassessed.correction?.kind,"host_delivery_responsibility");assert.equal(reassessed.outcome,"completed");
+  assert.deepEqual(reassessed.artifactRefs,[refs[0]]);
   const userText=(request:TranscriptContext)=>{
     const message=request.messages.filter(message=>message.role==="user").at(-1)!;
     return typeof message.content==="string" ? message.content : message.content.filter(block=>block.type==="text").map(block=>block.text).join("\n");

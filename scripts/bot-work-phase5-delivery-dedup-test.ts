@@ -1,5 +1,8 @@
+import type { QQSocket } from "../src/main/gateway/QQChannelAdapter";
+import { qqWorkMessageSequence } from "../src/main/agent/work/WorkGatewayNotificationChannel";
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -814,3 +817,310 @@ check("a late original receipt cannot consume a newly authorized resend", () => 
 }
 
 console.log(`Phase 5 delivery dedup: ${passes.length} passed`);
+{
+  const created = fixture("gateway-multipart-receipts");
+  const snapshotPath = join(root, "immutable-delivery.txt"); writeFileSync(snapshotPath, "frozen payload bytes");
+  works.transaction(() => works.generatedArtifacts.record(created.binding, [{ path: join(root, "mutable-source.txt"), snapshotPath,
+    digest: createHash("sha256").update("frozen payload bytes").digest("hex"), sizeBytes: 20, registeredAt: clock, sourceEntryId: 1 }]));
+  unwrap(works.submitDeliverable(created.worker, { operationId: "multipart-submit", workId: created.work.workId, bindingId: created.binding.bindingId,
+    deliverableId: "multipart-deliverable", summary: "file delivered", artifactRefs: [snapshotPath], evidence: [{kind: "tool_receipt", sourceRef: "multipart-proof"}] }));
+  unwrap(works.acceptDeliverable(user, { operationId: "multipart-accept", workId: created.work.workId, deliverableId: "multipart-deliverable" }));
+  works.reconcileExecution(user, { bindingId: created.binding.bindingId, outcome: "completed" });
+  const f = {...created, notification: works.repo.listNotifications(created.work.workId).find(item => item.kind === "result")!};
+  let calls = 0;
+  const endpoint: AsyncWorkNotificationChannel = {
+    channel: "gateway:multipart-test", targetKey: "multipart-original-route", ...capabilityOfGuarantee("best-effort-unqueryable"),
+    send: async input => {
+      calls++;
+      input.assertCurrent();
+      assert.equal(Buffer.from(input.notification.deliveryFiles![0].base64, "base64").toString(), "frozen payload bytes");
+      writeFileSync(snapshotPath, "file changed after claim");
+      input.recordProgress(JSON.stringify([{ part: "text", receipt: "provider-text-1" }, { part: "upload:file-hash", receipt: "provider-media-1" }]));
+      return { ok: false, retryable: false, responseLost: true, error: "file-send response lost after text success" };
+    },
+  };
+  works.repo.updateNotificationLinks(f.notification.notificationId, { targetKey: "multipart-original-route", cardKey: f.notification.cardKey });
+  works.repo.updateNotificationDelivery(f.notification.notificationId, { channel: endpoint.channel, delivery: "pending" });
+  await works.notifications.deliverAsync(endpoint, f.work.workId);
+  await works.notifications.deliverAsync(endpoint, f.work.workId);
+  const row = db.connection.prepare("SELECT receipt,payload_json FROM work_notification_attempts WHERE notification_id=?").get(f.notification.notificationId) as { receipt: string; payload_json: string };
+  assert.equal(Buffer.from(JSON.parse(row.payload_json).deliveryFiles[0].base64, "base64").toString(), "frozen payload bytes");
+  assert.equal(calls, 1, "unknown multipart attempt never blind-retries");
+  assert.equal(JSON.parse(row.receipt)[0].receipt, "provider-text-1");
+  assert.equal(JSON.parse(row.receipt)[1].part, "upload:file-hash");
+  assert.equal(works.repo.getNotification(f.notification.notificationId)?.delivery, "unknown");
+  const reader = new Database(path, {readonly: true});
+  assert.equal((reader.prepare("SELECT receipt FROM work_notification_attempts WHERE notification_id=?").get(f.notification.notificationId) as {receipt: string}).receipt, row.receipt);
+  reader.close();
+  console.log("PASS multipart partial receipts survive independent SQLite read and unknown never retries");
+}
+
+{
+  const sequenceByEffect = new Map<string, number>();
+  let providerCalls = 0;
+  const endpoint: AsyncWorkNotificationChannel = { channel: "gateway:qq-ledger", targetKey: "same-qq-source-target",
+    ...capabilityOfGuarantee("best-effort-unqueryable"), send: async input => {
+      const sequence = qqWorkMessageSequence(db.connection, "same-qq-source-target", "gateway:qq-ledger", input.idempotencyKey);
+      assert.equal(qqWorkMessageSequence(db.connection, "same-qq-source-target", "gateway:qq-ledger", input.idempotencyKey), sequence);
+      sequenceByEffect.set(input.idempotencyKey, sequence); providerCalls++;
+      return { ok: true, receipt: "qq-" + sequence };
+    } };
+  for(let i=0;i<5;i++) {
+    const f=accepted("shared-qq-source-"+i);
+    works.repo.updateNotificationLinks(f.notification.notificationId, {targetKey:endpoint.targetKey,cardKey:f.notification.cardKey});
+    works.repo.updateNotificationDelivery(f.notification.notificationId, {channel:endpoint.channel,delivery:"pending"});
+    await works.notifications.deliverAsync(endpoint,f.work.workId);
+  }
+  assert.equal(providerCalls,4,"passive slot 1 leaves only Work slots 2..5 across all Works from one source");
+  assert.deepEqual([...sequenceByEffect.values()],[2,3,4,5]);
+  const reader=new Database(path,{readonly:true});
+  for(const [effectKey,sequence] of sequenceByEffect) assert.equal(qqWorkMessageSequence(reader,"same-qq-source-target","gateway:qq-ledger",effectKey),sequence);
+  assert.throws(()=>qqWorkMessageSequence(reader,"other-source","gateway:qq-ledger",[...sequenceByEffect.keys()][0]),/持久/);
+  reader.close();console.log("PASS QQ source-wide sequence reservations derive from real effect ledger and survive reopen");
+}
+{
+  const { QQChannelAdapter } = await import("../src/main/gateway/QQChannelAdapter");
+  const { gatewayWorkTargetSchema } = await import("../src/main/gateway/work-outbound");
+  class Socket implements QQSocket {
+    onmessage: QQSocket["onmessage"]=null; onclose: QQSocket["onclose"]=null; onerror: QQSocket["onerror"]=null;
+    constructor(){setImmediate(()=>this.emit({op:10,d:{heartbeat_interval:10000}}));}
+    emit(value:unknown){this.onmessage?.({data:JSON.stringify(value)});}
+    send(raw:string){const value=JSON.parse(raw);if(value.op===2)setImmediate(()=>this.emit({op:0,s:1,t:"READY",d:{session_id:"ledger"}}));if(value.op===1)this.emit({op:11});}
+    close(){}
+  }
+  let posts=0; const bodies:Array<Record<string,unknown>>=[];
+  const adapter=new QQChannelAdapter("qq-ledger-real","QQ",{socketFactory:()=>new Socket(),fetch:async(url,init)=>{
+    const href=String(url);
+    if(href.endsWith("getAppAccessToken"))return Response.json({access_token:"token",expires_in:7200});
+    if(href.endsWith("/gateway"))return Response.json({url:"wss://gateway.qq.com/ws"});
+    assert.equal(href,"https://api.sgroup.qq.com/v2/users/user/messages");
+    posts++;bodies.push(JSON.parse(String(init?.body)));return Response.json({id:"provider-qq-summary"});
+  }});
+  await adapter.connect({appId:"123",appSecret:"fixture",allowUsers:["user"]});
+  try {
+    const f=accepted("qq-file-limitation");
+    const target=gatewayWorkTargetSchema.parse({version:1,channelType:"qq",channelId:adapter.id,connectionKey:adapter.workConnectionKey(),
+      chatId:"c2c:user",senderId:"user",address:{recipient:"user",group:false,messageId:"original",expiresAt:Date.now()+60000}});
+    const {GatewayWorkTargets}=await import('../src/main/gateway/GatewayWorkTargets');
+    const {workDeliveryContext}=await import('../src/main/agent/work/WorkDeliveryContext');
+    const originMessage=`qq-source:${f.suffix}`,originConversation=`qq-conversation:${f.suffix}`;
+    works.repo.updateWork({...works.getWork(f.work.workId)!,sourceMessageId:originMessage});
+    db.connection.prepare('INSERT INTO work_conversations(work_id,conversation_id,channel_type,last_referenced_at) VALUES(?,?,?,?)')
+      .run(f.work.workId,originConversation,'bot-delivery',clock);
+    const recorded=new GatewayWorkTargets(db.connection).record({userId:LOCAL_USER_ID,conversationId:originConversation,sourceMessageId:originMessage,target,createdAt:clock});
+    db.connection.prepare("INSERT INTO gateway_channels(id,type,name,connected) VALUES(?,?,?,?)").run(adapter.id,'qq','QQ fixture',0);
+    const endpoint:AsyncWorkNotificationChannel={channel:"gateway:qq-ledger-real",targetKey:recorded.targetKey,...capabilityOfGuarantee("best-effort-unqueryable"),
+      send:async input=>adapter.sendWorkNotification({target,text:"成果摘要",effectKey:input.idempotencyKey,
+        qqMessageSequence:qqWorkMessageSequence(db.connection,recorded.targetKey,"gateway:qq-ledger-real",input.idempotencyKey),
+        files:[{name:"report.txt",sha256:createHash("sha256").update("a").digest("hex"),bytes:1,base64:"YQ=="}],
+        assertCurrent:input.assertCurrent,recordProgress:input.recordProgress})};
+    works.repo.updateNotificationLinks(f.notification.notificationId,{targetKey:endpoint.targetKey,cardKey:f.notification.cardKey});
+    works.repo.updateNotificationDelivery(f.notification.notificationId,{channel:endpoint.channel,delivery:"pending"});
+    const pending=workDeliveryContext(db.connection,f.binding)!;
+    assert.equal(pending.routes[0].connection,'disconnected');assert.equal(pending.routes[0].summaryDelivery.state,'pending');
+    assert.equal(pending.routes[0].fileDelivery.capability,'unsupported');
+    await works.notifications.deliverAsync(endpoint,f.work.workId);await works.notifications.deliverAsync(endpoint,f.work.workId);
+    assert.equal(posts,1);assert.match(String(bodies[0].content),/成果摘要.*|QQ 无法发送这份文件/);
+    assert(String(bodies[0].content).includes("QQ 无法发送这份文件"));
+    assert.equal(works.repo.getNotification(f.notification.notificationId)?.delivery,"failed","text success does not mark file delivery successful");
+    const row=db.connection.prepare("SELECT status,receipt FROM work_notification_attempts WHERE notification_id=?").get(f.notification.notificationId) as {status:string;receipt:string};
+    assert.equal(row.status,"failed");const parts=JSON.parse(row.receipt);
+    assert.equal(parts[0].receipt,"provider-qq-summary");assert.equal(parts[1].code,"fileunsupported");
+    const reader=new Database(path,{readonly:true});
+    const facts=workDeliveryContext(reader,f.binding)!;
+    assert.equal(facts.routes[0].summaryDelivery.state,'sent');assert.equal(facts.routes[0].fileDelivery.state,'unsupported');
+    assert.equal(facts.scope,'reply_to_original_request_only');
+    const serialized=JSON.stringify(facts);
+    for(const hidden of [recorded.targetKey,target.connectionKey,originMessage,originConversation,'provider-qq-summary','c2c:user'])assert(!serialized.includes(hidden));
+    assert.equal(workDeliveryContext(reader,{...f.binding,intentRevision:f.binding.intentRevision+1}),undefined);
+    assert.equal(workDeliveryContext(reader,{...f.binding,botId:'other-user-bot'}),undefined);
+    reader.close();
+    db.connection.prepare("UPDATE work_notification_attempts SET status='unknown',receipt=NULL WHERE notification_id=?").run(f.notification.notificationId);
+    assert.equal(workDeliveryContext(db.connection,f.binding)?.routes[0].summaryDelivery.state,'unknown');
+    db.connection.prepare("UPDATE work_notification_attempts SET status=?,receipt=? WHERE notification_id=?").run(row.status,row.receipt,f.notification.notificationId);
+    const before=works.getWork(f.work.workId)!;
+    db.connection.prepare('UPDATE works SET user_id=? WHERE work_id=?').run('other-user',before.workId);
+    assert.equal(workDeliveryContext(db.connection,f.binding),undefined,'other user cannot acquire the original recipient context');
+    db.connection.prepare('UPDATE works SET user_id=? WHERE work_id=?').run(before.userId,before.workId);
+    console.log('PASS host delivery facts separate real QQ text receipt/file unsupported, keep disconnect and unknown honest, reject other user/version and expose no route identifiers');
+
+    console.log("PASS QQ actual adapter informs file limitation once, preserves text receipt, and marks full delivery failed");
+  } finally {await adapter.disconnect();}
+}
+{
+  const {freezeCardDeliveryFiles}=await import('../src/main/agent/work/WorkDeliveryArtifacts');
+  const f=fixture('automatic-proposed-file-card');
+  const snapshot=join(root,'automatic-final.txt');writeFileSync(snapshot,'FINAL_BETA');
+  const unselected=join(root,'automatic-unselected.txt');writeFileSync(unselected,'private intermediate');
+  const digest=createHash('sha256').update('FINAL_BETA').digest('hex');
+  works.transaction(()=>works.generatedArtifacts.record(f.binding,[{path:join(root,'final.txt'),snapshotPath:snapshot,digest,sizeBytes:10,registeredAt:clock,sourceEntryId:17},
+    {path:join(root,'intermediate.txt'),snapshotPath:unselected,digest:createHash('sha256').update('private intermediate').digest('hex'),sizeBytes:20,registeredAt:clock,sourceEntryId:18}]));
+  unwrap(works.submitDeliverable(f.worker,{operationId:'automatic-proposed-submit',workId:f.work.workId,bindingId:f.binding.bindingId,
+    deliverableId:'automatic-proposed-deliverable',summary:'file ready',artifactRefs:[snapshot,unselected],evidence:[{kind:'tool_receipt',sourceRef:'read-exact-bytes'}]}));
+  works.reconcileExecution(user,{bindingId:f.binding.bindingId,outcome:'completed'});
+  db.connection.exec('CREATE TABLE IF NOT EXISTS work_completion_turns(binding_id TEXT PRIMARY KEY,context_json TEXT NOT NULL,decision_json TEXT,state TEXT,attempts INTEGER,retry_at INTEGER,error TEXT)');
+  db.connection.prepare('INSERT INTO work_completion_turns(binding_id,context_json,decision_json,state) VALUES(?,?,?,?)').run(f.binding.bindingId,'{}',JSON.stringify({decision:'deliver',outcome:'completed',artifactRefs:[snapshot]}),'running');
+  works.automaticCompletion.recordDelivery(f.binding.bindingId,'ready','completed',true);
+  const work={...works.getWork(f.work.workId)!,closeOperationId:'automatic-completion:'+f.binding.bindingId};
+  const card=works.transaction(()=>works.phase5.recordClosure(work,'succeeded',clock));
+  assert.deepEqual(card.deliverableIds,['automatic-proposed-deliverable']);assert.deepEqual(card.artifactRefs,[snapshot]);
+  assert.deepEqual(works.getWork(f.work.workId)!.acceptedDeliverableIds,[],'automatic delivery must not manufacture user acceptance');
+  const files=freezeCardDeliveryFiles(works,{workId:f.work.workId,cardKey:card.cardKey});
+  assert.equal(files.length,1);assert.equal(files[0].sha256,digest);assert.equal(files[0].name,'final.txt');
+  assert.equal(Buffer.from(files[0].base64,'base64').toString(),'FINAL_BETA');
+  console.log('PASS automatic closure card keeps exact reviewed proposed file without fake acceptance');
+}
+{
+  const f=fixture('reviewed-wait-partial');
+  const snapshot=join(root,'wait-draft.txt');writeFileSync(snapshot,'DRAFT_ALPHA');
+  const digest=createHash('sha256').update('DRAFT_ALPHA').digest('hex');
+  works.transaction(()=>works.generatedArtifacts.record(f.binding,[{path:join(root,'draft.txt'),snapshotPath:snapshot,digest,sizeBytes:11,registeredAt:clock,sourceEntryId:21}]));
+  unwrap(works.submitDeliverable(f.worker,{operationId:'wait-proposed-submit',workId:f.work.workId,bindingId:f.binding.bindingId,
+    deliverableId:'wait-proposed-deliverable',summary:'draft needs user direction',artifactRefs:[snapshot],evidence:[{kind:'tool_receipt',sourceRef:'read-draft'}]}));
+  works.reconcileExecution(user,{bindingId:f.binding.bindingId,outcome:'completed'});
+  db.connection.prepare('INSERT INTO work_completion_turns(binding_id,context_json,decision_json,state) VALUES(?,?,?,?)')
+    .run(f.binding.bindingId,JSON.stringify({originalRequest:{userRequest:{messages:[{text:'先交草稿，我稍后补充目标读者。'}]}}}),JSON.stringify({decision:'wait',outcome:'partial',artifactRefs:[snapshot],userInput:{requestExcerpt:'我稍后补充目标读者'}}),'running');
+  unwrap(works.reportBlocker(owner,{operationId:`completion:${f.binding.bindingId}:question`,workId:f.work.workId,
+    reason:'Please confirm the draft',kind:'operational',waitingForUserInput:true,userInput:{kind:'reply'},
+    versionGuard:guard(works.getWork(f.work.workId)!)},f.binding.bindingId));
+  const work=works.getWork(f.work.workId)!;
+  assert.equal(work.lifecycle,'active');assert.deepEqual(work.acceptedDeliverableIds,[]);
+  const card=works.cards.list(work).find(item=>item.kind==='blocked_escalation')!;
+  assert.deepEqual(card.deliverableIds,['wait-proposed-deliverable']);assert.deepEqual(card.artifactRefs,[snapshot]);
+  const notification=works.repo.listNotifications(work.workId).find(item=>item.cardKey===card.cardKey)!;
+  assert.equal(notification.body,'原用户待补充要求：我稍后补充目标读者');
+  let sends=0;
+  const channel:AsyncWorkNotificationChannel={channel:'gateway:reviewed-wait-test',targetKey:'original-wait-route',...capabilityOfGuarantee('best-effort-unqueryable'),
+    send:async input=>{sends++;input.assertCurrent();assert.equal(input.notification.kind,'blocked');
+      assert.equal(input.notification.deliveryFiles?.length,1);const file=input.notification.deliveryFiles![0];
+      assert.equal(file.name,'draft.txt');assert.equal(file.sha256,digest);assert.equal(Buffer.from(file.base64,'base64').toString(),'DRAFT_ALPHA');
+      return {ok:true,receipt:'real-fixture-partial-receipt'};}};
+  works.repo.updateNotificationLinks(notification.notificationId,{targetKey:channel.targetKey,cardKey:card.cardKey});
+  works.repo.updateNotificationDelivery(notification.notificationId,{channel:channel.channel,delivery:'pending'});
+  await works.notifications.deliverAsync(channel,work.workId);await works.notifications.deliverAsync(channel,work.workId);
+  assert.equal(sends,1);assert.equal(works.repo.getNotification(notification.notificationId)?.delivery,'sent');
+  assert.equal(works.notifications.attempts(notification.notificationId).at(-1)?.receipt,'real-fixture-partial-receipt');
+  console.log('PASS reviewed wait sends exact partial file via existing notification ledger once without accepting or closing Work');
+}
+for (const recovery of [false,true]) {
+  const f=fixture(`same-revision-wait-${recovery}`);
+  const stage=(binding:typeof f.binding,label:string)=>{
+    const snapshot=join(root,`${f.suffix}-${label}.txt`);writeFileSync(snapshot,label);
+    works.transaction(()=>works.generatedArtifacts.record(binding,[{path:join(root,`${label}.txt`),snapshotPath:snapshot,
+      digest:createHash('sha256').update(label).digest('hex'),sizeBytes:label.length,registeredAt:clock,sourceEntryId:31}]));
+    unwrap(works.submitDeliverable({kind:'worker',botId:binding.botId,bindingId:binding.bindingId},{operationId:`submit:${binding.bindingId}`,workId:f.work.workId,bindingId:binding.bindingId,
+      deliverableId:`deliverable:${binding.bindingId}`,summary:label,artifactRefs:[snapshot],evidence:[{kind:'tool_receipt',sourceRef:'read-stage'}]}));
+    works.reconcileExecution(user,{bindingId:binding.bindingId,outcome:'completed'});
+    db.connection.prepare('INSERT INTO work_completion_turns(binding_id,context_json,decision_json,state) VALUES(?,?,?,?)')
+      .run(binding.bindingId,'{}',JSON.stringify({decision:'ask',outcome:'partial',artifactRefs:[snapshot]}),'running');
+    unwrap(works.reportBlocker(owner,{operationId:`completion:${binding.bindingId}:question`,workId:f.work.workId,
+      reason:'Which audience?',kind:'operational',waitingForUserInput:true,userInput:{kind:'reply'},
+      versionGuard:guard(works.getWork(f.work.workId)!)},binding.bindingId));
+    const card=works.cards.list(works.getWork(f.work.workId)!).find(item=>item.deliverableIds.includes(`deliverable:${binding.bindingId}`))!;
+    const notification=works.repo.listNotifications(f.work.workId).find(item=>item.cardKey===card.cardKey)!;
+    return {card,notification};
+  };
+  const first=stage(f.binding,'old-draft');let oldSends=0,newSends=0;
+  const channel:AsyncWorkNotificationChannel={channel:`gateway:wait-replacement-${recovery}`,targetKey:`route:${f.suffix}`,
+    ...capabilityOfGuarantee('idempotent-queryable'),lookup:async()=> 'missing',send:async input=>{
+      input.assertCurrent();if(input.notification.notificationId===first.notification.notificationId){oldSends++;return {ok:false,retryable:false,responseLost:true,error:'response lost'};}
+      newSends++;assert.equal(input.notification.deliveryFiles?.length,1);
+      assert.equal(Buffer.from(input.notification.deliveryFiles![0].base64,'base64').toString(),'new-draft');
+      return {ok:true,receipt:'new-draft-provider-receipt'};
+    }};
+  const route=(notificationId:string,cardKey:string)=>{works.repo.updateNotificationLinks(notificationId,{targetKey:channel.targetKey,cardKey});
+    works.repo.updateNotificationDelivery(notificationId,{channel:channel.channel,delivery:'pending'});};
+  route(first.notification.notificationId,first.card.cardKey);
+  if(recovery)await works.notifications.deliverAsync(channel,f.work.workId);
+  const oldBlocker=works.repo.listOpenBlockers(f.work.workId)[0];works.repo.clearBlocker(oldBlocker.blockerId,f.work.workId,clock);
+  assert.equal(works.cards.list(works.getWork(f.work.workId)!).find(item=>item.cardKey===first.card.cardKey)?.currency,'superseded');
+  const taskId=`second:${f.suffix}`;db.upsertTask({id:taskId,title:taskId,updatedAt:clock});
+  unwrap(works.dispatchExecution(user,{operationId:`dispatch:${taskId}`,workId:f.work.workId,botId:DEFAULT_BOT_ID,taskId,
+    durableStoreKey:`store:${taskId}`,conversationId:'2',workspaceBinding:root,delegatedScope:['workspace:read','workspace:write']}));
+  const secondBinding=works.repo.listBindings(f.work.workId).find(item=>item.taskId===taskId)!;
+  assert.equal(secondBinding.intentRevision,f.binding.intentRevision);
+  const second=stage(secondBinding,'new-draft');route(second.notification.notificationId,second.card.cardKey);
+  const cards=works.cards.list(works.getWork(f.work.workId)!);
+  assert.equal(cards.find(item=>item.cardKey===first.card.cardKey)?.currency,'superseded','same text and timestamp of new question cannot revive old card');
+  assert.equal(cards.find(item=>item.cardKey===second.card.cardKey)?.currency,'current');
+  await works.notifications.deliverAsync(channel,f.work.workId);await works.notifications.deliverAsync(channel,f.work.workId);
+  assert.equal(oldSends,recovery?1:0,'cleared question cannot send pending or retry missing delivery');assert.equal(newSends,1);
+  console.log(`PASS same-revision replacement fences old ${recovery?'queryable recovery':'pending'} partial and delivers only new snapshot`);
+}
+for (const priorDelivery of ['unknown','sent'] as const) {
+  const f=fixture(`closure-review-card-${priorDelivery}`);
+  const files=['prior-choice','corrected-choice'].map((text,index)=>{const snapshot=join(root,`${f.suffix}-${index}.txt`);writeFileSync(snapshot,text);
+    return {path:join(root,`${text}.txt`),snapshotPath:snapshot,digest:createHash('sha256').update(text).digest('hex'),sizeBytes:text.length,registeredAt:clock,sourceEntryId:40+index};});
+  works.transaction(()=>works.generatedArtifacts.record(f.binding,files));
+  unwrap(works.submitDeliverable(f.worker,{operationId:`submit:${f.suffix}`,workId:f.work.workId,bindingId:f.binding.bindingId,
+    deliverableId:`deliverable:${f.suffix}`,summary:'two registered versions',artifactRefs:files.map(file=>file.snapshotPath),evidence:[{kind:'tool_receipt',sourceRef:'read-files'}]}));
+  works.reconcileExecution(user,{bindingId:f.binding.bindingId,outcome:'completed'});
+  db.connection.prepare('INSERT INTO work_completion_turns(binding_id,context_json,decision_json,state) VALUES(?,?,?,?)')
+    .run(f.binding.bindingId,'{}',JSON.stringify({decision:'deliver',outcome:'partial',artifactRefs:[files[0].snapshotPath]}),'delivered');
+  works.automaticCompletion.recordDelivery(f.binding.bindingId,'mistaken transport failure','partial',true);
+  const failed={...works.getWork(f.work.workId)!,closeOperationId:`automatic-completion:${f.binding.bindingId}`};
+  const oldCard=works.transaction(()=>works.phase5.recordClosure(failed,'ended_unsuccessfully',clock));
+  const {DiscordGatewayAdapter}=await import('../src/main/gateway/DiscordGatewayAdapter');
+  const {closureCorrectionNotice}=await import('../src/main/agent/work/WorkClosureCorrectionDelivery');
+  const {workGatewayText}=await import('../src/main/agent/work/WorkGatewayNotificationChannel');
+  class CorrectionSocket {
+    onmessage: ((event:{data:unknown})=>void)|null=null;
+    onclose: ((event:{code?:number})=>void)|null=null;
+    onerror: (()=>void)|null=null;
+    frame(value:unknown){this.onmessage?.({data:JSON.stringify(value)});}
+    send(value:string){const op=JSON.parse(value).op;if(op===2)queueMicrotask(()=>this.frame({op:0,t:'READY',s:1,d:{user:{id:'100',bot:true},application:{id:'200'},session_id:'correction',resume_gateway_url:'wss://gateway.discord.gg'}}));if(op===1)this.frame({op:11});}
+    close(){}
+  }
+  let filePosts=0,textPosts=0;
+  const adapter=new DiscordGatewayAdapter(`correction-${f.suffix}`,'Discord',{
+    socketFactory:()=>{const socket=new CorrectionSocket();queueMicrotask(()=>socket.frame({op:10,d:{heartbeat_interval:60000}}));return socket;},
+    fetch:async(url,init)=>{
+      if(String(url).endsWith('/users/@me'))return Response.json({id:'100',bot:true});
+      if(String(url).endsWith('/oauth2/applications/@me'))return Response.json({id:'200'});
+      if(String(url).endsWith('/gateway/bot'))return Response.json({url:'wss://gateway.discord.gg'});
+      assert(init?.body instanceof FormData);const body=JSON.parse(String(init.body.get('payload_json')));
+      if(body.attachments.length){filePosts++;assert.equal(await (init.body.get('files[0]') as Blob).text(),'prior-choice');if(priorDelivery==='unknown')throw new Error('provider accepted file but response lost');}
+      else {textPosts++;assert.match(body.content,/结论更正/);assert.match(body.content,priorDelivery==='unknown'?/回执未知/:/已有发送回执/);assert.equal(init.body.get('files[0]'),null);}
+      return Response.json({id:'900',channel_id:'500'});
+    }});
+  await adapter.connect({botToken:'fixture',applicationId:'200',allowUsers:['300'],allowDirectMessages:true});
+  const target={version:1 as const,channelType:'discord' as const,channelId:adapter.id,connectionKey:adapter.workConnectionKey()!,chatId:'chat',senderId:'300',
+    address:{channelId:'500',guildId:null,applicationId:'200',botId:'100',messageId:'600'}};
+  const endpoint:AsyncWorkNotificationChannel={channel:`gateway:${adapter.id}`,targetKey:`target:${f.suffix}`,...capabilityOfGuarantee('best-effort-unqueryable'),
+    send:async input=>adapter.sendWorkNotification({target,text:workGatewayText(closureCorrectionNotice(db.connection,input.notification)?{...input.notification,deliveryFiles:undefined}:input.notification),
+      files:input.notification.deliveryFiles,effectKey:input.idempotencyKey,assertCurrent:input.assertCurrent,recordProgress:input.recordProgress,signal:input.signal})};
+  const notify=(cardKey:string,id:string)=>works.repo.insertNotification({notificationId:id,workId:f.work.workId,semanticKey:id,kind:'closed',title:'closure',body:'closure summary',
+    stateVersion:failed.stateVersion,intentRevision:failed.intentRevision,delivery:'pending',createdAt:clock,attemptCount:0,cardKey,channel:endpoint.channel,targetKey:endpoint.targetKey});
+  const oldId=`old:${f.suffix}`;notify(oldCard.cardKey,oldId);
+  await works.notifications.deliverAsync(endpoint,f.work.workId);
+  assert.equal(filePosts,1);assert.equal(works.repo.getNotification(oldId)?.delivery,priorDelivery);
+  const oldAttempts=JSON.stringify(works.notifications.attempts(oldId));
+  db.connection.exec(`CREATE TABLE IF NOT EXISTS work_closure_review_corrections (
+    operation_id TEXT PRIMARY KEY,work_id TEXT NOT NULL,binding_id TEXT NOT NULL,
+    original_close_operation_id TEXT NOT NULL,original_conclusion TEXT NOT NULL,original_summary TEXT,
+    original_closed_at INTEGER NOT NULL,evidence_json TEXT NOT NULL,decision_json TEXT NOT NULL,created_at INTEGER NOT NULL)`);
+  const operationId=`correct:${f.suffix}`;
+  db.connection.prepare('INSERT INTO work_closure_review_corrections VALUES(?,?,?,?,?,?,?,?,?,?)').run(operationId,f.work.workId,f.binding.bindingId,
+    failed.closeOperationId,'ended_unsuccessfully','mistaken transport failure',clock,'{}',JSON.stringify({decision:'deliver',outcome:'completed',
+      correction:{kind:'host_delivery_responsibility'},artifactRefs:[files[1].snapshotPath]}),clock);
+  const corrected=works.transaction(()=>works.phase5.recordClosure(failed,'succeeded',clock,{correctionOperationId:operationId}));
+  assert.deepEqual(corrected.artifactRefs,[files[1].snapshotPath],'new readonly review selection replaces original review selection');
+  assert.notEqual(corrected.cardKey,oldCard.cardKey);
+  const cards=works.cards.list(works.getWork(f.work.workId)!);
+  assert.equal(cards.find(card=>card.cardKey===oldCard.cardKey)?.currency,'superseded');
+  assert.equal(cards.find(card=>card.cardKey===corrected.cardKey)?.currency,'current');
+  assert.deepEqual(cards.find(card=>card.cardKey===oldCard.cardKey)?.artifactRefs,[files[0].snapshotPath],'old failed card evidence preserved');
+  assert.deepEqual(works.getWork(f.work.workId)?.acceptedDeliverableIds,[]);
+  const {freezeCardDeliveryFiles}=await import('../src/main/agent/work/WorkDeliveryArtifacts');
+  const frozen=freezeCardDeliveryFiles(works,{workId:f.work.workId,cardKey:corrected.cardKey});
+  assert.equal(frozen.length,1);assert.equal(Buffer.from(frozen[0].base64,'base64').toString(),'corrected-choice');
+  const correctionId=`new:${f.suffix}`;notify(corrected.cardKey,correctionId);
+  await works.notifications.deliverAsync(endpoint,f.work.workId);await works.notifications.deliverAsync(endpoint,f.work.workId);
+  assert.equal(filePosts,1,'conclusion correction must never replay original attachments');assert.equal(textPosts,1);
+  assert.equal(JSON.stringify(works.notifications.attempts(oldId)),oldAttempts,'old receipts and unknown state remain immutable');
+  const newPayload=JSON.parse((db.connection.prepare('SELECT payload_json FROM work_notification_attempts WHERE notification_id=?').get(correctionId) as {payload_json:string}).payload_json);
+  assert.deepEqual(newPayload.deliveryFiles,[],'existing effect freezes text-only correction');
+  await adapter.disconnect();
+  assert.throws(()=>works.phase5.recordClosure(failed,'succeeded',clock,{correctionOperationId:'unknown-correction'}));
+  console.log('PASS closure correction card uses new persisted review exact file and preserves superseded failed card without fake acceptance');
+}

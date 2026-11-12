@@ -40,15 +40,22 @@ export class TrayService {
   };
   /** 刷新前收起原生叠加层（WebContentsView），避免盖住刚重载的页面 */
   private onBeforeReload: (() => void) | null = null;
+  private onShow: (() => void) | undefined;
+  private refreshMenuHandle: (() => void) | undefined;
 
   /** 绑定主窗口：创建托盘并接管关闭行为 */
-  initialize(win: BrowserWindow, options?: {
+  initialize(win: BrowserWindow | null, options?: {
     onBeforeReload?: () => void;
+    onShow?: () => void;
+    onExitInterface?: () => void;
+    onStopAssistant?: () => void;
+    residentEnabled?: () => boolean;
     /** 测试注入。生产路径走 Electron Tray。抛错视为托盘不可用。 */
     createTray?: (image: NativeImage) => Tray;
   }): void {
     this.win = win;
     this.onBeforeReload = options?.onBeforeReload ?? null;
+    this.onShow = options?.onShow;
     const createTray = options?.createTray ?? ((image: NativeImage) => new Tray(image.isEmpty() ? nativeImage.createEmpty() : image));
 
     try {
@@ -67,18 +74,26 @@ export class TrayService {
       const tray = createTray(icon);
       tray.setToolTip(this.behavior.initialLabel);
 
-      const contextMenu = Menu.buildFromTemplate([
+      const makeMenu = () => Menu.buildFromTemplate([
         { label: "显示 MyBuddy", click: () => this.showMainWindow() },
         { label: "刷新", click: () => this.reloadMainWindow() },
         { type: "separator" },
+        ...(options?.onExitInterface ? [{ label: "退出界面，助理保持在线", enabled: options.residentEnabled?.() ?? false,
+          click: () => options.onExitInterface?.() }] : []),
         {
-          label: "退出",
+          label: options?.onStopAssistant ? "停止助理并退出" : "退出",
           click: () => {
             this.quitting = true;
-            app.quit();
+            if (options?.onStopAssistant) options.onStopAssistant();
+            else app.quit();
           },
         },
       ]);
+      let contextMenu = makeMenu();
+      this.refreshMenuHandle = () => {
+        contextMenu = makeMenu();
+        if (this.behavior.menuBinding === "setContextMenu") tray.setContextMenu(contextMenu);
+      };
 
       // 菜单绑定方式按平台走 behavior：
       // - Windows/macOS：左键恢复窗口，右键在事件里 popUpContextMenu；
@@ -91,7 +106,7 @@ export class TrayService {
       if (this.behavior.menuBinding === "setContextMenu") {
         tray.setContextMenu(contextMenu);
       } else {
-        tray.on("right-click", () => tray.popUpContextMenu(contextMenu));
+        tray.on("right-click", () => { this.refreshMenu(); tray.popUpContextMenu(contextMenu); });
       }
       this.tray = tray;
       this.trayUnavailable = false;
@@ -107,7 +122,12 @@ export class TrayService {
 
     // 关闭窗口 → 最小化到托盘；正在退出或未开启该行为时走正常关闭。
     // Linux 上托盘失败仍拦截关闭，避免 window-all-closed 把后台任务一起杀掉。
-    win.on("close", (event) => {
+    win?.on("close", (event) => {
+      if (options?.onExitInterface && options.residentEnabled?.() && !this.quitting) {
+        event.preventDefault();
+        options.onExitInterface();
+        return;
+      }
       if (!this.shouldRemainResident()) return;
       event.preventDefault();
       win.hide();
@@ -123,6 +143,8 @@ export class TrayService {
     }
   }
 
+  refreshMenu(): void { this.refreshMenuHandle?.(); }
+
   /** window-all-closed 时是否抑制退出 */
   shouldSuppressQuit(): boolean {
     return this.shouldRemainResident();
@@ -136,7 +158,7 @@ export class TrayService {
   /** 从托盘/系统恢复主窗口 */
   showMainWindow(): void {
     const win = this.win;
-    if (!win || win.isDestroyed()) return;
+    if (!win || win.isDestroyed()) { this.onShow?.(); return; }
     if (win.isMinimized()) win.restore();
     win.show();
     win.focus();
@@ -182,6 +204,7 @@ export class TrayService {
 
   /** 退出前销毁托盘，避免图标残留 */
   dispose(): void {
+    this.refreshMenuHandle = undefined;
     this.quitting = true;
     for (const notice of this.liveNotifications) {
       try { notice.close(); } catch { /* ignore */ }

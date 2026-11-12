@@ -22,11 +22,11 @@ class Socket implements QQSocket {
   close(code = 1000) { if (this.closed) return; this.closed = true; this.onclose?.({ code }); }
 }
 const sockets: Socket[] = [];
-const requests: Array<{ url: string; body: Record<string, any> }> = [];
+const requests: Array<{ url: string; body: Record<string, any>; headers?: HeadersInit }> = [];
 let failedSend = false;
 const fetcher = (async (url, init) => {
   const href = String(url), body = JSON.parse(String(init?.body ?? "{}"));
-  requests.push({ url: href, body });
+  requests.push({ url: href, body, headers: init?.headers });
   assert.equal(init?.redirect, "error");
   return new Response(JSON.stringify(href.endsWith("getAppAccessToken") ? { access_token: "synthetic-token", expires_in: 7200 }
     : href.endsWith("/gateway") ? { url: "wss://gateway.qq.com/ws" }
@@ -58,12 +58,36 @@ try {
   sockets[0].event(event("unauthorized", false, 0, "stranger"));
   sockets[0].event(event("one")); sockets[0].event(event("one")); await until(() => inbound.length === 1);
   assert.equal(inbound[0].chatId, "c2c:user");
-  assert.equal(inbound[0].workTarget, undefined); assert.equal("sendWorkNotification" in adapter, false);
+  assert.equal(inbound[0].workTarget?.channelType, "qq"); assert.equal("sendWorkNotification" in adapter, true);
+  const target = inbound[0].workTarget!;
+  if (target.channelType !== "qq") throw new Error("wrong route");
+  await assert.rejects(adapter.sendWorkNotification({target: {...target, address: {...target.address, expiresAt: 1}}, text: "late", effectKey: "late", assertCurrent: () => {}}), /过期/);
   await Promise.all(Array.from({ length: 5 }, () => inbound[0].reply("answer")));
   await assert.rejects(() => inbound[0].reply("sixth"), /5 次/);
   const sends = requests.filter(v => v.url.endsWith("/messages"));
   assert.deepEqual(sends.map(v => v.body.msg_seq), [1, 2, 3, 4, 5]);
   assert(sends.every(v => v.body.msg_id === "one"));
+  const beforeWorkSend = requests.length;
+  const workInput = { target, text: "Work completion", effectKey: "existing-effect", qqMessageSequence: 2, assertCurrent: () => {} };
+  assert.equal((await adapter.sendWorkNotification(workInput)).ok, true);
+  assert.equal(requests.at(-1)?.url, "https://api.sgroup.qq.com/v2/users/user/messages");
+  assert.equal(new Headers(requests.at(-1)?.headers).get("X-Union-Appid"), config.appId);
+  assert.equal(new Headers(requests.at(-1)?.headers).get("Authorization"), "QQBot synthetic-token");
+  assert.equal(requests.at(-1)?.body.msg_seq, 2); assert.equal(requests.at(-1)?.body.msg_id, "one");
+  assert.equal((await adapter.sendWorkNotification(workInput)).ok, true);
+  assert.equal(requests.at(-1)?.body.msg_seq, 2, "same effect must retain the same provider sequence");
+  const afterValidWorkSend = requests.length;
+  await assert.rejects(adapter.sendWorkNotification({...workInput, qqMessageSequence: 6}), /槽位/);
+  await assert.rejects(adapter.sendWorkNotification({...workInput, qqMessageSequence: undefined}), /槽位/);
+  assert.equal(requests.length, afterValidWorkSend, "missing/exhausted reservations never call provider");
+  assert(afterValidWorkSend > beforeWorkSend);
+  const progress: string[]=[];
+  const partial=await adapter.sendWorkNotification({...workInput, files:[{name:"report.txt",sha256:"0".repeat(64),bytes:1,base64:"YQ=="}],recordProgress:receipt=>progress.push(receipt)});
+  assert(!partial.ok && !partial.responseLost && !partial.retryable && partial.error.includes("fileunsupported"));
+  assert.match(String(requests.at(-1)?.body.content),/QQ 无法发送这份文件/);
+  assert.equal(JSON.parse(progress[0])[0].receipt,"receipt");
+  assert.equal(JSON.parse(progress[0])[1].code,"fileunsupported");
+
   sockets[0].event(event("group", true)); await until(() => inbound.length === 2);
   assert.equal(inbound[1].chatId, "group:group");
   sockets[0].event(event("expired-group", true, 301_000));

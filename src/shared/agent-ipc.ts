@@ -1,5 +1,6 @@
 import type { SubagentExecutionPolicy } from "./subagent-execution-policy";
 import type { CronExecutionSettings } from "./cron-execution";
+import type { GatewayBotBinding } from "./gateway-bot-binding";
 import type { ModelMetadataDto, ModelPreferencesDto, ModelReasoningPreferenceDto } from "./model-metadata";
 
 /** Main ↔ Renderer agent / cron / gateway IPC 契约 */
@@ -1501,6 +1502,8 @@ export interface ModelsFileConfigDto {
 }
 
 export interface AppSettingsDto {
+  gatewayBotBindings?: Record<string, GatewayBotBinding>;
+  residentHostEnabled?: boolean;
   language: string;
   permissionMode: PermissionMode;
   defaultModelId: string;

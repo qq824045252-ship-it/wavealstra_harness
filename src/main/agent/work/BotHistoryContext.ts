@@ -53,6 +53,7 @@ const SOURCE_JOINS = `
 const SOURCE_WHERE = `
     WHERE r.user_id=$user AND ($exclude IS NULL OR c.conversation_id<>$exclude)
       AND (($team IS NULL AND c.team_id IS NULL AND c.bot_id=$bot AND r.bot_id=$bot) OR ($team IS NOT NULL AND c.team_id=$team))
+      AND NOT EXISTS(SELECT 1 FROM bot_gateway_conversations g WHERE g.conversation_id=c.conversation_id AND g.audience='shared')
       AND u.created_at<$before AND a.updated_at<=$before AND ($after IS NULL OR u.created_at>=$after)
       AND length(u.text)<=$maxText AND length(a.text)<=$maxText
       AND EXISTS (SELECT 1 FROM memory_turns t WHERE t.assistant_message_id=a.message_id

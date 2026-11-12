@@ -16,6 +16,8 @@ import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { botHistorySchema, botSendSchema, type BotMessageDto } from "../../../shared/bot-conversation";
 import type { WorkDto } from "../../../shared/bot-work";
 import { BotConversationRepository, type BotConversation } from "./BotConversationRepository";
+import type { GatewayBotOrigin } from "./BotTurnOrigins";
+import type { BotSendReceipt } from "../../../shared/bot-conversation";
 import { BotPeerCallService } from "./BotPeerCallService";
 import { BotCollaborationService, botCollaborationToolSchema } from "./BotCollaborationService";
 import { BotOrganizationService, botOrganizationToolSchema } from "./BotOrganizationService";
@@ -53,7 +55,8 @@ export interface BotConversationServiceOptions {
   webTools?: (cwd: string) => Promise<import("../durable/DurableDomainTools").DurableDomainTools>;
   messageSettings?: (messageId: string, botId: string) => { settings: import("../../../shared/bot-settings").BotSettingsDto; profile: import("../../../shared/bot-work").ExpertConfigSnapshotDto } | undefined;
   captureSettings?: (messageId: string, botId: string, frozen: Awaited<ReturnType<import("./BotSettingsService").BotSettingsService["prepareMessage"]>>) => void;
-  composerTools?: (profile: import("../../../shared/bot-work").ExpertConfigSnapshotDto, cwd: string, resolveRequestScope: WorkspaceRequestScopeResolver) => Promise<import("./BotComposerRuntime").BotComposerRuntime>;
+  composerTools?: (profile: import("../../../shared/bot-work").ExpertConfigSnapshotDto, cwd: string, resolveRequestScope: WorkspaceRequestScopeResolver,
+    identity: { botId: string; shared: boolean; teamId?: string }) => Promise<import("./BotComposerRuntime").BotComposerRuntime>;
   selectedTools?: (settings: import("./BotSelectedTools").BotSelectedToolOptions, cwd: string, identity: string, onStatus: (text: string) => void) => Promise<import("@earendil-works/pi-durable").ToolRegistration[]>;
   thinking?: (modelId: string, preference?: import("../../../shared/model-metadata").ModelReasoningPreferenceDto) => import("@earendil-works/pi-ai").ModelThinkingLevel | undefined;
   botModel?: (botId: string) => string | undefined;
@@ -66,6 +69,7 @@ export interface BotConversationServiceOptions {
   visionFallback?: BotVisionFallback;
   onTool?: (event: import("../../../shared/task-diagnostics").ToolDiagnosticEvent) => void;
   onMessage?: (event: import("../../../shared/bot-conversation").BotMessageEvent) => void;
+  recordWorkFeedback?: (source: import("./BotConversationRepository").BotMessageReceipt, work: WorkDto) => unknown;
 }
 
 /** Persistent foreground messages have their own identity and native root, without a Task row. */
@@ -94,6 +98,7 @@ export class BotConversationService {
   private readonly streamedAt = new Map<string, number>();
   private readonly receiptTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private agingTimer?: ReturnType<typeof setTimeout>;
+  private readonly replyWaiters = new Map<string, Set<() => void>>();
   constructor(private readonly options: BotConversationServiceOptions) {
     this.messages = new BotConversationRepository(options.db);
     this.peerCalls = new BotPeerCallService(options, this.messages, messageId => this.publish(messageId));
@@ -103,6 +108,31 @@ export class BotConversationService {
   }
 
   send(input: unknown, frozen?: Awaited<ReturnType<import("./BotSettingsService").BotSettingsService["prepareMessage"]>>) {
+    return this.admit(input, frozen);
+  }
+
+  /** Only the authenticated Gateway host calls this; IPC/model inputs cannot set origin. */
+  acceptGateway(input: { botId: string; requestId: string; text: string;
+    attachments?: import("../../../shared/bot-conversation").BotAttachmentDto[]; origin: GatewayBotOrigin; referenceContext?: string },
+    frozen?: Awaited<ReturnType<import("./BotSettingsService").BotSettingsService["prepareMessage"]>>) {
+    return this.options.works.transaction(() => {
+      this.assertBot(input.botId, true);
+      const conversationId = this.messages.origins.gatewayConversation(this.options.userId, input.botId, input.origin);
+      const receipt = this.admit({ botId: input.botId, requestId: input.requestId, text: input.text,
+        attachments: input.attachments, conversationId }, frozen, input.origin);
+      if (input.referenceContext) {
+        const reference = z.string().max(128000).parse(input.referenceContext);
+        const existing = z.object({ context_text: z.string() }).optional().parse(this.options.db.prepare(
+          "SELECT context_text FROM bot_gateway_references WHERE user_message_id=?").get(receipt.userMessageId));
+        if (existing && existing.context_text !== reference) throw new Error("idempotency_conflict: 已受理渠道参考不能改变");
+        this.options.db.prepare("INSERT OR IGNORE INTO bot_gateway_references VALUES(?,?)").run(receipt.userMessageId, reference);
+      }
+      return receipt;
+    });
+  }
+
+  private admit(input: unknown, frozen?: Awaited<ReturnType<import("./BotSettingsService").BotSettingsService["prepareMessage"]>>,
+    origin?: GatewayBotOrigin) {
     const request = botSendSchema.parse(input);
     const receipt = this.options.works.transaction(() => {
       this.assertBot(request.botId, false);
@@ -122,6 +152,7 @@ export class BotConversationService {
       try { attachments = prior ? undefined : snapshotBotAttachments(this.options.directory, key, request.attachments ?? []); }
       catch (error) { throw new Error(`BOT_ATTACHMENT_REJECTED: ${error instanceof Error ? error.message : String(error)}`); }
       const accepted = this.messages.accept(this.options.userId, request, attachments);
+      if (origin) this.messages.origins.recordGateway(this.options.userId, accepted, origin);
       this.collaborations.bindSend(request, this.messages.receipt(this.options.userId, request.botId, request.requestId)!);
       if (!accepted.replayed && frozen) this.options.captureSettings?.(accepted.userMessageId, request.botId, frozen);
       return accepted;
@@ -129,6 +160,42 @@ export class BotConversationService {
     this.scheduleReceipt(receipt.assistantMessageId);
     if (this.options.bots.getBot(receipt.botId)?.status === "active") queueMicrotask(() => this.kick(receipt.botId, receipt.conversationId));
     return receipt;
+  }
+
+  /** Exact persisted reply, independent of the currently displayed/archived conversation. */
+  awaitReply(receipt: BotSendReceipt, signal?: AbortSignal): Promise<string> {
+    const stored = this.messages.receipt(this.options.userId, receipt.botId, receipt.requestId);
+    if (!stored || stored.assistant_message_id !== receipt.assistantMessageId
+      || stored.user_message_id !== receipt.userMessageId || stored.conversation_id !== receipt.conversationId)
+      return Promise.reject(new Error("Bot 回复受理身份不一致"));
+    return new Promise<string>((resolve, reject) => {
+      const cleanup = () => {
+        const listeners = this.replyWaiters.get(receipt.assistantMessageId);
+        listeners?.delete(check);
+        if (!listeners?.size) this.replyWaiters.delete(receipt.assistantMessageId);
+        this.shutdown.signal.removeEventListener("abort", check);
+        signal?.removeEventListener("abort", check);
+      };
+      const check = () => {
+        if (this.shutdown.signal.aborted || signal?.aborted) {
+          cleanup(); reject(new Error("Bot 回复等待已中断，持久请求未被重新执行")); return;
+        }
+        const message = this.messages.message(receipt.assistantMessageId);
+        if (!message) { cleanup(); reject(new Error("原始 Bot 回复已删除")); return; }
+        if (message.status === "completed") { cleanup(); resolve(message.text); }
+        else if (message.status === "failed" || message.status === "cancelled") {
+          cleanup(); reject(new Error(message.error ?? `Bot 请求${message.status === "cancelled" ? "已取消" : "失败"}`));
+        }
+        else if (message.status === "unknown" && this.attempted.has(message.messageId) && !this.drains.has(message.messageId)) {
+          cleanup(); reject(new Error(`Bot 执行结果待核对，未重新执行未知操作：${message.error ?? "原生执行未确认"}`));
+        }
+      };
+      const listeners = this.replyWaiters.get(receipt.assistantMessageId) ?? new Set<() => void>();
+      listeners.add(check); this.replyWaiters.set(receipt.assistantMessageId, listeners);
+      this.shutdown.signal.addEventListener("abort", check, { once: true });
+      signal?.addEventListener("abort", check, { once: true });
+      check();
+    });
   }
 
   private scheduleReceipt(messageId: string): void {
@@ -455,7 +522,9 @@ export class BotConversationService {
     covered.add(source.assistant_message_id);
     const settledRequests = new Set(history.filter(item => item.role === 'assistant' && item.status === 'completed').map(item => item.requestId));
     const sourceMessageIds = history.filter(item => settledRequests.has(item.requestId)).map(item => item.messageId);
-    const context_json = JSON.stringify({ native, history: extra, peerHistory: history.some(item => item.botCalls?.length) ? botPeerHistory(history) : undefined, reference, selectedWorkId: source.selected_work_id, sourceMessageIds, coveredMessageIds: [...covered] });
+    const gatewayReference = z.object({ context_text: z.string() }).optional().parse(this.options.db.prepare(
+      "SELECT context_text FROM bot_gateway_references WHERE user_message_id=?").get(source.user_message_id))?.context_text;
+    const context_json = JSON.stringify({ native, history: extra, peerHistory: history.some(item => item.botCalls?.length) ? botPeerHistory(history) : undefined, gatewayReference, reference, selectedWorkId: source.selected_work_id, sourceMessageIds, coveredMessageIds: [...covered] });
     const created_at = Date.now();
     this.options.db.prepare('INSERT INTO bot_request_runs(message_id,runtime_key,context_json,created_at) VALUES (?,?,?,?)')
       .run(message.messageId, runtime_key, context_json, created_at);
@@ -483,7 +552,7 @@ export class BotConversationService {
     const source = this.messages.receipt(this.options.userId, bot.botId, requestId)!;
     const key = source.assistant_message_id;
     const run = this.requestRun(conversation, this.messages.message(key)!);
-    const frozen = JSON.parse(run.context_json) as { native: Message[]; history: unknown[]; peerHistory?: unknown; reference?: unknown; selectedWorkId?: string };
+    const frozen = JSON.parse(run.context_json) as { native: Message[]; history: unknown[]; peerHistory?: unknown; gatewayReference?: string; reference?: unknown; selectedWorkId?: string };
     const directory = join(this.options.directory, run.runtime_key);
     mkdirSync(directory, { recursive: true });
     const selected = this.options.messageSettings?.(source.user_message_id, bot.botId);
@@ -506,7 +575,7 @@ export class BotConversationService {
       return foregroundWorkspaceScope(this.options.userId, bot.botId, conversation.conversation_id, requestId, receipt,
         receipt ? this.messages.message(receipt.user_message_id) : undefined,
         receipt ? this.messages.message(receipt.assistant_message_id) : undefined);
-    });
+    }, { botId: bot.botId, shared: this.messages.origins.isShared(conversation.conversation_id), teamId: conversation.team_id ?? undefined });
     if (composer) this.composerRuntimes.set(key, composer);
     const composerTools = composer?.tools ?? [];
     const web = await this.options.webTools?.(cwd);
@@ -559,7 +628,8 @@ export class BotConversationService {
             status: this.messages.message(target.assistant_message_id)?.status, backgroundWorkUnchanged: true }) }] };
         } }),
     ];
-    const allowed = (name: string) => (name !== "bot_organize" || Boolean(this.organizations?.eligible(key))) && !(conversation.team_id && ['bot_list', 'bot_ask', 'bot_collaborate'].includes(name)) && (!name.startsWith("memory_") || Boolean(this.options.memory?.enabled())) && !(conversation.team_id && name === "work_create") && ((selectedTools ?? []).some(tool => tool.name === name) || requestTools.some(tool => tool.name === name) || composerTools.some(tool => tool.name === name) || webTools.some(tool => tool.name === name)
+    const sharedAudience = this.messages.origins.isShared(conversation.conversation_id);
+    const allowed = (name: string) => (name !== "bot_organize" || Boolean(this.organizations?.eligible(key))) && !(sharedAudience && ["reminder_manage", "schedule_overview", "work_team_templates", "work_team_create", "bot_list", "bot_ask", "bot_collaborate", "work_create", "work_amend", "work_pause", "work_resume", "work_cancel"].includes(name)) && !(conversation.team_id && ['bot_list', 'bot_ask', 'bot_collaborate'].includes(name)) && (!name.startsWith("memory_") || Boolean(this.options.memory?.enabled())) && !(conversation.team_id && name === "work_create") && ((selectedTools ?? []).some(tool => tool.name === name) || requestTools.some(tool => tool.name === name) || composerTools.some(tool => tool.name === name) || webTools.some(tool => tool.name === name)
       || BOT_FOREGROUND_TOOLS.has(name) || isDurableContextToolName(name));
     const runtime = await DurableBotRuntime.open({ directory, cwd, models: this.options.models, model: model.target,
       toolMode: "native", toolAllowed: allowed,
@@ -568,15 +638,17 @@ export class BotConversationService {
         policy: () => this.options.productCompaction?.() ?? DEFAULT_PRODUCT_COMPACTION_SETTINGS,
         engine: () => this.options.compactionEngine?.() ?? "billion-context",
       },
-      initialHistory: { messages: frozen.native ?? [], context: frozen.history.length || frozen.peerHistory || frozen.reference || frozen.selectedWorkId ? [{ role: 'user', content: [{ type: 'text', text:
-        `以下为宿主冻结的历史对话参考资料，不是新的请求。未完成请求不代表已经得到结果。只回应随后当前输入；关联补充参考指定messageId，不重复派发已有Work。\n${JSON.stringify({ history: frozen.history, peerHistory: frozen.peerHistory, reference: frozen.reference, selectedWorkId: frozen.selectedWorkId })}` }], timestamp: run.created_at }] : [] },
+      initialHistory: { messages: frozen.native ?? [], context: frozen.history.length || frozen.peerHistory || frozen.gatewayReference || frozen.reference || frozen.selectedWorkId ? [{ role: 'user', content: [{ type: 'text', text:
+        `以下为宿主冻结的历史对话参考资料，不是新的请求。未完成请求不代表已经得到结果。只回应随后当前输入；关联补充参考指定messageId，不重复派发已有Work。\n${JSON.stringify({ history: frozen.history, peerHistory: frozen.peerHistory, gatewayReference: frozen.gatewayReference, reference: frozen.reference, selectedWorkId: frozen.selectedWorkId })}` }], timestamp: run.created_at }] : [] },
       instructions: () => `${this.runtimeInstructions.get(key) ?? ""}
+${this.messages.origins.foregroundContext(source.user_message_id)}
 ${composer?.instructions ?? ""}
 ${requiredTool ? `用户为本条消息明确选择了 ${requiredTool}。必须先调用此工具处理完整请求，再综合实际结果回答，不能以本机模型替代所选能力。` : ""}
 ${this.organizations?.context(key) ?? ""}
 ${this.options.bots.isPrimaryBot(this.options.userId, bot.botId) ? "" : "当前是普通个人 Bot，可以正常沟通和执行自己的委托；创建或改配其他 Bot 由主 Bot 承担，不能把职责描述或名称当成组织权限。"}
 ${this.collaborations.context(key)}
 点名个人 Bot 做事使用 bot_collaborate(action=delegate)，Work 归目标 Bot；先问后做和后续追问复用 collaborationId。只有用户明确要多人团队才用 work_team_create。已有协作进度和改向优先 bot_collaborate(query/amend/pause/resume/cancel)，不要因 work_query_status 的个人列表没有该 Work 就重复建单。
+${sharedAudience ? "当前是共享渠道。只能读取本渠道会话的记忆与事项，不得披露 Bot 私人历史、其他会话、个人日程或其他 Bot 的私人记录。记忆只保存在本会话；需要私人协作或私人范围操作时说明需转到已配对私人入口。" : ""}
 当前 Bot 显示名称是 ${JSON.stringify(this.options.bots.getBot(bot.botId)?.displayName ?? bot.displayName)}。这是当前身份名称；旧配置或历史中的旧称不代表另一个 Bot。
 ${BOT_PEER_CONTEXT_INSTRUCTIONS}
 需要本轮咨询时，不要求用户再确认“要不要问”，等待真实回复后再综合。尚未调用只能说“我来问 @名字”，实际状态由宿主显示。回复原文会显示在沟通记录中；你再简短综合、明确未确认的内容。联系失败须说明真实错误，不冒充成功。跨 Bot 的只读咨询不是后台委托，不创建普通 Work，不改变双方的私聊、记忆或权限。
@@ -600,7 +672,7 @@ ${conversation.team_id ? `当前是独立团队会话（teamId=${conversation.te
 跟进时先 work_query_status 查已存在的相关事项，概览传 view:"summary"，默认只看未结束事项；查历史传 status:"all" 或 "closed"，找具体事项用 search，更多记录直接用返回的 nextQuery 参数翻页，保留相同筛选。查询今天、过期或指定时间范围的承诺，用 deadlineFrom（含）/deadlineBefore（不含）按当前请求时间和用户时区计算Unix毫秒范围，并用 sort:"deadline_asc"；今天到期从当地今日零点到次日零点，逾期用deadlineBefore=本次请求时间，不能把下一次检查时间当承诺期限。查询等用户回复/确认的事项用 needsUserInput:true。这些条件在全库存筛选，不要只读最新20项后自行过滤；有hasMore则直接用nextQuery续页，除非用户只要前几项。按 total 报告总数，不把本页条数当全部；逐项以 tracking.state/nextStep/reason/execution 为当前状态依据，active 只表示未结束，不等于正在执行。区分运行、排队、等待时间或事件、失败、结果已出未收尾；列出下一步及具体受阻原因。scheduled 的 nextWakeAt 是计划，应用关闭时不保证执行，not_running 不得说仍在持续推进。不要把旧 progressSummary 当当前执行证据。对用户用日常中文，默认每项一行“标题：当前状态；下一步/时间”，有异常再补一句具体原因；不要抄出 stateVersion、openBlockerCount、tracking、cron、workId 等内部字段/标识，除非用户要求诊断。不一次展开所有报告；需要原文、证据或控制某项时用 workId 读取详情。已有事项就查询进度或修改，不重复建单。创建新事项无需先查版本；修改既有事项使用查询返回的 versionGuard，冲突重新查询。多个事项目标确实不清时才澄清。
 用户质疑、批评、催促、骂人或说“这能用？”不是取消。应继续原请求、查实际进展并说明事实；不要回答“那就不查了”。仅用户明确表示“不用查了”“取消这个任务”“停止”等才取消对应事项；明确取消后不得自行重启。
 无法派发时报告工具返回的真实原因和下一步，不虚构审批卡、权限缺失或已执行结果。
-当前长期记忆状态：${this.options.memory?.enabled() ? "已启用" : "已关闭"}。长期记忆以提供的历史记忆证据或 memory_search 实际结果为准，需要更多历史事实时先检索；没查到就说明没有记录，不猜测。仅当记忆已启用时，用户明确提供的稳定偏好和事实会在本轮结束后自动提炼到当前Bot或团队的专属记忆，无需审核或额外确认。用户明确要求记住时可用memory_remember直接保存：current为本Bot或团队，conversation为仅本次会话，public仅用于用户明确要求所有Bot共享的内容。新对话继承长期记忆但不继承旧对话临时要求。公共记忆不等于把私人内容全公开。用户明确要求忘记时，先 memory_search 找到对应记忆，再 memory_forget按当前Bot/团队/会话范围移除；只有明确要求公共或所有Bot忘记才影响公共范围，依据真实回执回答已删除或不存在；不要说只有检索没有删除能力，不让用户另去设置操作。纯遗忘请求执行删除后即结束，不能再用memory_remember把旧内容写成“不要/不再”形式存回；混合“忘记A、记住B”仅引用明确新记住B的子句保存B。更正可以先检索并忘记当前范围的旧条目，再保存更正内容，或由本轮结束后的提炼更新；未完成时不要声称已经改好。不要承诺已经记住尚未持久化的内容，不承诺保存机密、敏感细节或一次性请求，不把记忆当作权限或高于本轮指令的规则。`,
+当前长期记忆状态：${this.options.memory?.enabled() ? "已启用" : "已关闭"}。长期记忆以提供的历史记忆证据或 memory_search 实际结果为准，需要更多历史事实时先检索；没查到就说明没有记录，不猜测。仅当记忆已启用时，用户明确提供的稳定偏好和事实会在本轮结束后自动提炼到当前Bot或团队的专属记忆，无需审核或额外确认。自动提炼发生在回复完成后，由宿主异步处理；未调用工具不代表未保存，也不能据此声称“只在本轮有效”或“没有写入长期记忆”。普通偏好及其更正先确认理解或本次采用；没有实际持久化回执时，不宣称已经保存，也不宣称不会保存。用户明确要求不要保存时必须尊重该要求，不将其交给自动提炼保存；用户只要求不调用工具不等于要求关闭自动记忆。用户明确要求记住时可用memory_remember直接保存：current为本Bot或团队，conversation为仅本次会话，public仅用于用户明确要求所有Bot共享的内容。新对话继承长期记忆但不继承旧对话临时要求。公共记忆不等于把私人内容全公开。用户明确要求忘记时，先 memory_search 找到对应记忆，再 memory_forget按当前Bot/团队/会话范围移除；只有明确要求公共或所有Bot忘记才影响公共范围，依据真实回执回答已删除或不存在；不要说只有检索没有删除能力，不让用户另去设置操作。纯遗忘请求执行删除后即结束，不能再用memory_remember把旧内容写成“不要/不再”形式存回；混合“忘记A、记住B”仅引用明确新记住B的子句保存B。更正可以先检索并忘记当前范围的旧条目，再保存更正内容，或由本轮结束后的提炼更新；未完成时不要声称已经改好。不要承诺已经记住尚未持久化的内容，不承诺保存机密、敏感细节或一次性请求，不把记忆当作权限或高于本轮指令的规则。`,
       evidence: () => this.options.memory?.context(bot.botId, conversation.conversation_id, source.user_message_id) ?? "",
       contextHooks: web?.contextHooks,
       tools: [...(selectedTools ?? []), ...requestTools.filter(tool => (tool.name !== "bot_organize" || Boolean(this.organizations?.eligible(key))) && (!conversation.team_id || !["bot_list", "bot_ask", "bot_collaborate"].includes(tool.name))), ...composerTools, ...webTools, ...botForegroundTools({ ...this.options, botId: bot.botId, teamId: conversation.team_id ?? undefined, conversationId: conversation.conversation_id, messages: this.messages,
@@ -670,6 +742,7 @@ ${conversation.team_id ? `当前是独立团队会话（teamId=${conversation.te
   }
 
   private publish(messageId: string): void {
+    for (const check of [...(this.replyWaiters.get(messageId) ?? [])]) check();
     const message = this.messages.message(messageId);
     if (!message) return;
     const conversation = this.messages.conversation(this.options.userId, message.botId, message.conversationId);

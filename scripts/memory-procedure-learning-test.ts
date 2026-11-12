@@ -8,6 +8,7 @@ import { MemoryService } from "../src/main/memory/MemoryService";
 import { MemoryPipelineManager } from "../src/main/memory/MemoryPipelineManager";
 import { captureProcedureExecution } from "../src/main/memory/MemoryProcedureEvidence";
 import { SkillsService } from "../src/main/skills/SkillsService";
+import { BotRegistry } from "../src/main/agent/work/BotRegistry";
 // 技能聚合根已迁移到 ~/.mybuddy/plugins/skills（PluginStorage v1）；旧断言写死迁移前路径。
 import { getSkillsDir } from "../src/main/paths";
 
@@ -81,7 +82,8 @@ try {
   console.log("PASS actual SQLite extraction, automatic candidate, bounded options and preserved tool proof");
 
   const agent = Object.create(AgentService.prototype) as any;
-  Object.assign(agent, { db, memoryService: memory, memoryPipeline: pipeline, skillsService: skills, notifyMemoryChanged: () => {} });
+  Object.assign(agent, { db, botRegistry: new BotRegistry(db.connection), memoryService: memory,
+    memoryPipeline: pipeline, skillsService: skills, notifyMemoryChanged: () => {} });
   const approved = agent.approveKernelMemorySkillCandidate(candidate.id);
   assert.equal(approved.status, "materialized");
   const skillPath = join(getSkillsDir(), candidate.slug, "SKILL.md");

@@ -1,9 +1,10 @@
 import {createHash} from "node:crypto";
 import {execFileSync} from "node:child_process";
-import {REMINDER_RESULT_LIMITS,verifyReminderSnapshot} from "../src/main/cron/CronReminderResults";
+import {REMINDER_RESULT_LIMITS,verifyReminderSnapshot,verifyReminderSnapshots} from "../src/main/cron/CronReminderResults";
 import {CronReminderDelivery} from "../src/main/cron/CronReminderDelivery";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, symlinkSync, truncateSync } from "node:fs";
+import { closeSync, lstatSync, mkdirSync, mkdtempSync, openSync, renameSync, rmSync, writeFileSync, symlinkSync, truncateSync } from "node:fs";
+import { hashWindowsSnapshot } from "../src/main/platform/windows-snapshot";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
@@ -170,8 +171,37 @@ async function main() {
   assert.equal(verifyReminderSnapshot(large,REMINDER_RESULT_LIMITS.fileBytes+1,'unused',ioBudget),'budget');
   assert.equal(ioBudget.bytes,REMINDER_RESULT_LIMITS.totalBytes);
   const valid=join(root,'valid-snapshot');writeFileSync(valid,'valid');const digest=createHash('sha256').update('valid').digest('hex');
-  const link=join(root,'symlink-snapshot');symlinkSync(valid,link);
-  assert.equal(verifyReminderSnapshot(link,5,digest,ioBudget),'unreadable','symlink never followed');
+  const beforeValid=ioBudget.bytes;
+  assert.equal(verifyReminderSnapshot(valid,5,digest,ioBudget),'verified','real regular snapshot works on the current host');
+  assert.equal(ioBudget.bytes,beforeValid-5);
+  assert.equal(verifyReminderSnapshot(valid,5,'0'.repeat(64),ioBudget),'unreadable','corrupt snapshot consumes its actual read budget');
+  assert.equal(ioBudget.bytes,beforeValid-10);
+  assert.equal(verifyReminderSnapshot(root,0,createHash('sha256').digest('hex'),ioBudget),'unreadable','directory is never a snapshot');
+  if(process.platform==='win32') {
+    // Junction creation does not require Windows symbolic-link privileges. This
+    // is a real reparse-point negative, not a skipped symlink assertion.
+    const actual=join(root,'junction-target'),link=join(root,'junction-snapshot');mkdirSync(actual);writeFileSync(join(actual,'file'),'valid');
+    symlinkSync(actual,link,'junction');
+    assert.equal(verifyReminderSnapshot(join(link,'file'),5,digest,ioBudget),'unreadable','Windows junction ancestor is never followed');
+    assert.equal(verifyReminderSnapshot(link,0,createHash('sha256').digest('hex'),ioBudget),'unreadable','final reparse point is rejected');
+    const alternate=valid+':untrusted';writeFileSync(alternate,'valid');
+    assert.equal(verifyReminderSnapshot(alternate,5,digest,ioBudget),'unreadable','real NTFS alternate stream is not a snapshot');
+    assert.equal(verifyReminderSnapshot('\\\\.\\pipe\\mybuddy-reminder-test',0,createHash('sha256').digest('hex'),ioBudget),'unreadable','pipe namespace is rejected before opening');
+    const writer=openSync(valid,'r+');
+    try { assert.equal(verifyReminderSnapshot(valid,5,digest,ioBudget),'unreadable','native share-read handle excludes existing writers'); }
+    finally { closeSync(writer); }
+    assert.equal(verifyReminderSnapshot(valid,5,digest,ioBudget),'verified','same regular bytes remain readable after writer closes');
+    const exchanged=join(root,'exchanged-snapshot');writeFileSync(exchanged,'valid');
+    const beforeSwap=lstatSync(exchanged,{bigint:true});
+    renameSync(exchanged,exchanged+'.old');writeFileSync(exchanged,'valid');
+    const staleIdentity=hashWindowsSnapshot(exchanged,5,REMINDER_RESULT_LIMITS.chunkBytes,beforeSwap);
+    assert.equal(staleIdentity.valid,false,'same bytes at a substituted inode cannot satisfy the pre-open identity');
+    assert.equal(staleIdentity.bytesRead,0,'TOCTOU replacement is refused before content reads');
+    console.log('PASS Windows native regular handle, real junction/reparse and ADS rejection, pipe namespace rejection and writer exclusion');
+  } else {
+    const link=join(root,'symlink-snapshot');symlinkSync(valid,link);
+    assert.equal(verifyReminderSnapshot(link,5,digest,ioBudget),'unreadable','symlink never followed');
+  }
   // mkfifo is a fixture only on hosts which provide it; assertions are not skipped on Linux.
   if(process.platform!=='win32') {
     const fifo=join(root,'fifo-snapshot');execFileSync('mkfifo',[fifo]);
@@ -180,19 +210,28 @@ async function main() {
   const full=join(root,'budget-snapshot'),fullBytes=Buffer.alloc(REMINDER_RESULT_LIMITS.fileBytes,1);
   writeFileSync(full,fullBytes);const fullDigest=createHash('sha256').update(fullBytes).digest('hex');
   const exhausted={bytes:REMINDER_RESULT_LIMITS.totalBytes as number};
-  assert.equal(verifyReminderSnapshot(full,fullBytes.length,fullDigest,exhausted),'verified');
-  assert.equal(verifyReminderSnapshot(full,fullBytes.length,fullDigest,exhausted),'verified');
-  assert.equal(verifyReminderSnapshot(full,fullBytes.length,fullDigest,exhausted),'budget');assert.equal(exhausted.bytes,0);
+  assert.deepEqual(verifyReminderSnapshots(Array.from({length:3},()=>({path:full,size:fullBytes.length,digest:fullDigest})),exhausted),['verified','verified','budget']);
+  assert.equal(exhausted.bytes,0);
+  const failedBudget={bytes:5};
+  assert.deepEqual(verifyReminderSnapshots([{path:valid,size:5,digest:'0'.repeat(64)},{path:join(root,'missing-after-budget'),size:5,digest}],failedBudget),['unreadable','budget']);
+  assert.equal(failedBudget.bytes,0,'a failed digest still exhausts the shared content budget');
   const many=Array.from({length:70},(_,i)=>join(root,`registered-${i}.json`));
   for(const [i,path] of many.entries()) db.connection.prepare('INSERT INTO work_generated_artifacts VALUES (?,?,?,?)')
     .run('result-binding-2',path,digest,JSON.stringify({path,snapshotPath:valid,digest,sizeBytes:5,registeredAt:i+10,sourceEntryId:i+10}));
   db.connection.prepare('UPDATE work_deliverables SET artifact_refs_json=? WHERE execution_id=?').run(JSON.stringify(many),'result-binding-2');
   await invoke({action:'update',reminderId:resultJobId,result:{workId:w.workId}});
-  const capped=host.deliver(resultJob(),Date.now(),Date.now(),true);
+  const childProcess:typeof import('node:child_process')=require('node:child_process');
+  const originalExec=childProcess.execFileSync;let nativeReaders=0;
+  Object.defineProperty(childProcess,'execFileSync',{value(file:string,args:string[],options:import('node:child_process').ExecFileSyncOptionsWithStringEncoding){
+    if(options.env?.MYBUDDY_SNAPSHOT_READS) nativeReaders++;
+    return originalExec(file,args,options);
+  }});
+  const capped=(()=>{try{return host.deliver(resultJob(),Date.now(),Date.now(),true);}finally{Object.defineProperty(childProcess,'execFileSync',{value:originalExec});}})();
   assert.equal(capped.event.message.workFeedback!.report!.files!.length,20);
+  if(process.platform==='win32') assert.equal(nativeReaders,1,'actual 20-file reminder starts one native reader, not 20 compilers');
   assert.match(capped.body,/6 条引用未检查/);assert.match(capped.body,/44 个文件未检查/);
   db.connection.prepare('UPDATE work_deliverables SET artifact_refs_json=? WHERE execution_id=?').run(JSON.stringify([sourcePath]),'result-binding-2');
-  console.log('PASS bounded chunk hashing, per-file/total bytes, reference/file caps, symlink and FIFO rejection');
+  console.log('PASS bounded chunk hashing, per-file/total bytes, reference/file caps and host-native special-file rejection');
   rmSync(newest);
   assert.match(host.deliver(resultJob(),due,Date.now(),true).body,/已删除/);
   db.connection.prepare('UPDATE works SET user_id=? WHERE work_id=?').run('other',w.workId);

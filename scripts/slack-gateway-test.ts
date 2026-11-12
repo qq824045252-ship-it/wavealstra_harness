@@ -396,6 +396,7 @@ try {
     const service = new GatewayService(db as any, agent as any);
     const fakeAdapter = {
       id: "slack-default", type: "slack", name: "Slack",
+      workConnectionKey: () => connected ? "a".repeat(64) : undefined,
       connect: async (raw: any) => { assert.equal(raw.botToken, config.botToken); connected = true; },
       disconnect: async () => { connected = false; }, isConnected: () => connected, statusText: () => connected ? "connected" : "disconnected",
       activate: () => { assert(stored?.connected); assert(stored.configJson.includes("encryptedSecrets")); activations++; },
@@ -442,7 +443,9 @@ try {
   });
   await check("Gateway awaits its native answer and forces Bot/native without legacy policy", async () => {
     let finish!: (text: string) => void;
-    const request = { taskId: "task", text: "fixture", assistantMessageId: "assistant", userMessageId: "user" };
+    const request = { taskId: "task", text: "fixture", assistantMessageId: "assistant", userMessageId: "user",
+      gatewayOrigin: { channelId: "slack-default", connectionKey: "a".repeat(64), chatId: "T:D:thread", senderId: "owner",
+        messageId: "message", audience: "private" as const } };
     const port: GatewayAgentPort = {
       runGatewayTurn: async input => {
         assert.equal(input.welcomeMode,"general"); assert.equal(input.modePresetId,"native");
@@ -517,6 +520,8 @@ try {
     };
     f.adapter.setInboundHandler(async message => {
       const reply = await runGatewayAgentTurn(port, { taskId: message.taskId!, text: message.text,
+        gatewayOrigin: { channelId: message.channelId, connectionKey: "a".repeat(64), chatId: message.chatId,
+          senderId: message.sender!.id, messageId: message.messageId!, audience: "private" },
         assistantMessageId: message.assistantMessageId!, userMessageId: message.userMessageId!, streamingBehavior: "followUp" });
       await message.reply(reply);
     });

@@ -1,13 +1,12 @@
-import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
-import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { WorkService } from "./WorkService";
-import type { WorkResultDecision, WorkResultTurnInput } from "./BotWorkResultTurn";
-import { completionReviewInput } from "./WorkCompletionReviewTarget";
+import type { WorkResultDecision, WorkResultTurnInput } from "./WorkResultDecision";
 import { recordCollaborationReturnFailure } from "./BotCollaborationExecutionFacts";
-import { completionMilestoneEvidence } from "./WorkCompletionMilestoneEvidence";
-import { applyCompletionDecision } from "./WorkCompletionDecision";
+import { CompletionDeliveryError, applyCompletionDecision } from "./WorkCompletionDecision";
 import { workDeliveryFiles, workDeliveryResults } from "./WorkDeliveryArtifacts";
+import { completionEvidence, completionFingerprint } from "./WorkCompletionEvidence";
+import { resultDecisionSchema } from "./WorkResultDecision";
+import { WorkResultLifecycleError } from "./WorkResultLifecycleError";
 import type { WorkFeedbackDto } from "../../../shared/bot-conversation";
 
 export interface WorkCompletionDelivery {
@@ -23,48 +22,6 @@ export interface WorkCompletionOptions {
   review: (input: WorkResultTurnInput) => Promise<WorkResultDecision>;
   deliver: (input: WorkCompletionDelivery) => boolean; wake: () => void;
 }
-/** Exact registered immutable snapshots only. Content is untrusted evidence,
- * never reviewer instructions. Both file IO and total model text are bounded. */
-export interface CompletionArtifactEvidence {
-  ref: string; name: string; trust: "untrusted_artifact_content";
-  registeredDigest?: string; registeredSizeBytes?: number;
-  state: string; omittedEvidenceCount?: number; reason?: string; text?: string; truncated?: boolean; placeholderIndicators?: string[];
-}
-export function completionArtifactEvidence(works: WorkService, binding: Parameters<typeof workDeliveryResults>[1]): CompletionArtifactEvidence[] {
-  const registered = works.generatedArtifacts.list(binding.workId);
-  let remaining = 48000;
-  const files = workDeliveryFiles(works, workDeliveryResults(works, binding));
-  return files.slice(0, 20).map((file, index) => {
-    const artifact = file.openPath ? registered.find(item => item.snapshotPath === file.ref) : undefined;
-    const base = { ref: file.ref, name: file.name, ...(index === 0 && files.length > 20 ? { omittedEvidenceCount: files.length - 20 } : {}), trust: "untrusted_artifact_content" as const,
-      registeredDigest: artifact?.digest, registeredSizeBytes: artifact?.sizeBytes };
-    if (!artifact?.snapshotPath) return { ...base, state: "unavailable", reason: "No immutable registered snapshot" };
-    if (remaining <= 0) return { ...base, state: "unavailable", reason: "Review text budget exhausted" };
-    let fd: number | undefined;
-    try {
-      fd = openSync(artifact.snapshotPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
-      const stat = fstatSync(fd);
-      if (!stat.isFile() || stat.size > 1024 * 1024) return { ...base, state: "unavailable", reason: "Not a regular file or exceeds 1 MiB inspection limit" };
-      const bytes = Buffer.alloc(stat.size + 1);
-      let length = 0, read = 0;
-      while (length < bytes.length && (read = readSync(fd, bytes, length, bytes.length - length, null)) > 0) length += read;
-      const content = bytes.subarray(0, length);
-      const digest = createHash("sha256").update(content).digest("hex");
-      if (length !== artifact.sizeBytes || digest !== artifact.digest) return { ...base, state: "changed", reason: "Snapshot bytes do not match registration" };
-      let text: string;
-      try { text = new TextDecoder("utf-8", { fatal: true }).decode(content); }
-      catch { return { ...base, state: "unavailable", reason: "Binary or unsupported text encoding" }; }
-      if (text.includes("\0")) return { ...base, state: "unavailable", reason: "Binary content requires separate verification" };
-      const limit = Math.min(12000, remaining);
-      const excerpt = text.slice(0, limit); remaining -= excerpt.length;
-      return { ...base, state: text.trim() ? "text" : "empty", text: excerpt, truncated: text.length > excerpt.length,
-        // Indicators are not a blanket verdict: the user may have requested a template.
-        placeholderIndicators: [...new Set(text.match(/\b(?:TODO|TBD|PLACEHOLDER|LOREM IPSUM)\b|待填写|待补充|占位/gi) ?? [])].slice(0, 12) };
-    } catch { return { ...base, state: "unavailable", reason: "Registered snapshot cannot be read" }; }
-    finally { if (fd !== undefined) closeSync(fd); }
-  });
-}
-
 /** Independent result lane: delivery commits before closure, retries never resubmit business work. */
 export class WorkCompletionCoordinator {
   private readonly active = new Set<string>();
@@ -106,11 +63,6 @@ export class WorkCompletionCoordinator {
   private row(bindingId: string): CompletionTurn | undefined {
     return this.options.db.prepare("SELECT * FROM work_completion_turns WHERE binding_id=?").get(bindingId) as CompletionTurn | undefined;
   }
-  private questions(workId: string) {
-    return this.options.works.repo.listOpenBlockers(workId)
-      .filter(item => item.waitingForUserInput && item.kind === "operational" && !item.unknownExternalEffectRef)
-      .map(item => ({blockerId:item.blockerId,reason:item.reason})).sort((a,b)=>a.blockerId.localeCompare(b.blockerId));
-  }
   private temporalContext(bindingId: string) {
     const receipt = this.options.db.prepare("SELECT MAX(received_at) observed_at FROM work_native_inbox WHERE binding_id=? AND consumed_at IS NOT NULL")
       .get(bindingId) as { observed_at: number | null };
@@ -136,97 +88,84 @@ export class WorkCompletionCoordinator {
     const candidate = works.transaction(() => this.current(bindingId));
     const binding = works.repo.getBinding(bindingId);
     if (!candidate || !binding || this.closed || !this.options.isAuthority()) return;
-    const results = workDeliveryResults(works, binding);
-    const availableFiles = workDeliveryFiles(works, results).filter(file => file.openPath).map(({ref, name}) => ({ref, name}));
-    const artifactEvidence = completionArtifactEvidence(works, binding);
-    const milestoneDeliveryEvidence = completionMilestoneEvidence(db, binding);
     const eventId = `completion:${bindingId}`;
-    const personalPreferences = this.options.preferences?.(binding.taskId) ?? "";
-    const preferenceFingerprint = createHash("sha256").update(personalPreferences).digest("hex");
-    const { originalRequest, reviewTarget } = completionReviewInput(binding, JSON.parse(works.repo.executionInput(binding)));
-    if (!this.row(bindingId)) {
-      db.prepare("INSERT OR IGNORE INTO work_completion_turns(binding_id,context_json) VALUES (?,?)").run(bindingId, JSON.stringify({
-        temporalContext: this.temporalContext(bindingId), preferenceFingerprint,
-        originalRequest, reviewTarget, title: candidate.work.title, goal: candidate.work.goalDescription,
-        results: results.map(item => ({ summary: item.summary, artifactRefs: item.artifactRefs, uncoveredScope: item.uncoveredScope })),
-        availableFiles, artifactEvidence, milestoneDeliveryEvidence,
-        previousResults: works.repo.listDeliverables(binding.workId).filter(item => item.executionId !== bindingId
-          && item.intentRevision === binding.intentRevision && item.inputSnapshotId === binding.inputSnapshotId && item.status !== "superseded")
-          .map(item => ({ executionId:item.executionId, summary:item.summary, artifactRefs:item.artifactRefs, uncoveredScope:item.uncoveredScope, status:item.status })),
-        // These are observations, not a verdict that the original request failed.
-        executionFacts: { status: binding.status, outputReceived: candidate.executionDelivered,
-          diagnosticSummary: candidate.summary },
-        criteria: candidate.work.criteria,
-        continuationScope: binding.delegatedScope,
-        teamContinuationTargets: works.teams.continuationTargets(binding),
-        pendingQuestions: this.questions(binding.workId),
-        actualMissing: works.partialResults.gaps(binding.workId).map(item => ({task:item.task, summary:item.summary, outcome:item.outcome})),
-        unknownEffects: works.repo.listAdmissions(binding.workId).filter(item => item.state === "unknown").map(item => item.operationId),
-      }));
-    }
-    let row = this.row(bindingId)!;
-    if (JSON.stringify(JSON.parse(row.context_json).reviewTarget) !== JSON.stringify(reviewTarget)
-      || JSON.stringify(JSON.parse(row.context_json).originalRequest) !== JSON.stringify(originalRequest)
-      || JSON.parse(row.context_json).preferenceFingerprint !== preferenceFingerprint
-      || JSON.stringify(JSON.parse(row.context_json).milestoneDeliveryEvidence) !== JSON.stringify(milestoneDeliveryEvidence)
-      || JSON.stringify(JSON.parse(row.context_json).artifactEvidence) !== JSON.stringify(artifactEvidence)) {
-      db.prepare("UPDATE work_completion_turns SET context_json=?,decision_json=NULL,state='queued',retry_at=0 WHERE binding_id=?")
-        .run(JSON.stringify({...JSON.parse(row.context_json),preferenceFingerprint,artifactEvidence,milestoneDeliveryEvidence,originalRequest,reviewTarget}),bindingId);
-      row = this.row(bindingId)!;
-    }
+    const snapshot = () => {
+      const current = this.current(bindingId);
+      const latestBinding = works.repo.getBinding(bindingId);
+      if (!current || !latestBinding) return;
+      const personalPreferences = this.options.preferences?.(binding.taskId) ?? "";
+      const context = { ...completionEvidence(db, works, latestBinding, current),
+        preferenceFingerprint: completionFingerprint(personalPreferences) };
+      return { current, context, personalPreferences, fingerprint: completionFingerprint(context) };
+    };
+    const refresh = (latest: NonNullable<ReturnType<typeof snapshot>>) => {
+      db.prepare(`INSERT INTO work_completion_turns(binding_id,context_json) VALUES (?,?)
+        ON CONFLICT(binding_id) DO UPDATE SET context_json=excluded.context_json,decision_json=NULL,
+        state='queued',attempts=0,retry_at=0,error=NULL`).run(bindingId, JSON.stringify({ ...latest.context,
+          evidenceFingerprint: latest.fingerprint, temporalContext: this.temporalContext(bindingId) }));
+    };
+    const initial = works.transaction(snapshot);
+    if (!initial) return;
+    const old = this.row(bindingId);
+    const { evidenceFingerprint: storedFingerprint, temporalContext: _temporal, ...storedContext } = old ? JSON.parse(old.context_json) : {};
+    if (!old || storedFingerprint !== initial.fingerprint || completionFingerprint(storedContext) !== storedFingerprint) refresh(initial);
+    const row = this.row(bindingId)!;
+    const frozenFingerprint: string = JSON.parse(row.context_json).evidenceFingerprint;
+    let phase: "review" | "application" | "delivery" = "review";
     try {
       let decision: WorkResultDecision;
-      if (row.decision_json) decision = JSON.parse(row.decision_json);
+      if (row.decision_json) decision = resultDecisionSchema.parse(JSON.parse(row.decision_json));
       else {
-        this.options.deliver({ bindingId, eventId: `${eventId}:progress`, category: "progress", text: this.temporalContext(bindingId).historicalRecovery
-          ? "正在整理此前执行的历史结果，没有重新执行任务。你可以继续交代其他事情。"
-          : "后台结果已返回，我正在对照你的委托整理结论。你可以继续交代其他事情。" });
-        const attempt = row.state === "running" ? Math.max(1,row.attempts) : row.attempts + 1;
-        db.prepare("UPDATE work_completion_turns SET state='running',attempts=? WHERE binding_id=?").run(attempt,bindingId);
-        const reviewContext = JSON.parse(row.context_json);
-        // Also sanitize persisted turns written by an older host.
-        const { teamAssignment: _teamAssignment, instructions: _instructions, ...originalRequest } = reviewContext.originalRequest ?? {};
-        decision = await this.options.review({ eventId: `${eventId}:review:${attempt}:${preferenceFingerprint}:${createHash("sha256").update(JSON.stringify([milestoneDeliveryEvidence,reviewTarget,originalRequest])).digest("hex")}`, botId: binding.botId, personalPreferences, context: {...reviewContext, originalRequest, temporalContext: this.temporalContext(bindingId)} });
+        // A progress notification failure must not consume a semantic review attempt.
+        try { this.options.deliver({ bindingId, eventId: `${eventId}:progress`, category: "progress",
+          text: this.temporalContext(bindingId).historicalRecovery
+            ? "正在整理此前执行的历史结果，没有重新执行任务。你可以继续交代其他事情。"
+            : "后台结果已返回，我正在对照你的委托整理结论。你可以继续交代其他事情。" }); }
+        catch (error) { console.warn("[Bot] 整理进度通知待恢复", bindingId, error); }
+        const attempt = row.state === "running" ? Math.max(1, row.attempts) : row.attempts + 1;
+        db.prepare("UPDATE work_completion_turns SET state='running',attempts=? WHERE binding_id=?").run(attempt, bindingId);
+        decision = resultDecisionSchema.parse(await this.options.review({
+          eventId: `${eventId}:review:${attempt}:${initial.context.preferenceFingerprint}:${frozenFingerprint}`,
+          botId: binding.botId, personalPreferences: initial.personalPreferences,
+          context: { ...initial.context, temporalContext: this.temporalContext(bindingId) },
+        }));
       }
       if (this.closed || !this.options.isAuthority()) return;
-      const latestArtifactEvidence = completionArtifactEvidence(works, binding);
-      works.transaction(() => {
-        const current = this.current(bindingId);
-        if (!current) return;
-        const latestReviewInput = completionReviewInput(binding, JSON.parse(works.repo.executionInput(binding)));
-        const latestMilestoneDeliveryEvidence = completionMilestoneEvidence(db, binding);
-        const deliveryResults = workDeliveryResults(works, binding);
-        const latestResults = deliveryResults.map(item => ({summary:item.summary,artifactRefs:item.artifactRefs,uncoveredScope:item.uncoveredScope}));
-        const latestFiles = workDeliveryFiles(works, deliveryResults).filter(file => file.openPath).map(({ref,name}) => ({ref,name}));
-        const frozen = JSON.parse(row.context_json);
-        const pendingQuestions = this.questions(binding.workId);
-        const latestPreferences = this.options.preferences?.(binding.taskId) ?? "";
-        const latestPreferenceFingerprint = createHash("sha256").update(latestPreferences).digest("hex");
-        if (JSON.stringify(latestReviewInput.reviewTarget) !== JSON.stringify(frozen.reviewTarget)
-          || JSON.stringify(latestReviewInput.originalRequest) !== JSON.stringify(frozen.originalRequest)
-          || latestPreferenceFingerprint !== preferenceFingerprint
-          || JSON.stringify(latestMilestoneDeliveryEvidence) !== JSON.stringify(frozen.milestoneDeliveryEvidence)
-          || JSON.stringify(latestArtifactEvidence) !== JSON.stringify(frozen.artifactEvidence)
-          || JSON.stringify(latestResults) !== JSON.stringify(frozen.results)
-          || JSON.stringify(latestFiles) !== JSON.stringify(frozen.availableFiles ?? [])
-          || JSON.stringify(works.teams.continuationTargets(binding)) !== JSON.stringify(frozen.teamContinuationTargets)
-          || JSON.stringify(pendingQuestions) !== JSON.stringify(frozen.pendingQuestions ?? [])) {
-          db.prepare("UPDATE work_completion_turns SET context_json=?,decision_json=NULL,state='queued',retry_at=0 WHERE binding_id=?")
-            .run(JSON.stringify({...frozen,...latestReviewInput,preferenceFingerprint:latestPreferenceFingerprint,results:latestResults,availableFiles:latestFiles,artifactEvidence:latestArtifactEvidence,milestoneDeliveryEvidence:latestMilestoneDeliveryEvidence,pendingQuestions,teamContinuationTargets:works.teams.continuationTargets(binding),actualMissing:current.conclusion === "succeeded" ? [] : [current.summary]}),bindingId);
-          return; // A late result must not be guided by a decision on older evidence.
-        }
+      phase = "application";
+      // Persist a valid review independently of delivery. Reuse it only against its exact inputs.
+      const saved = works.transaction(() => {
+        const latest = snapshot();
+        if (!latest) return false;
+        if (latest.fingerprint !== frozenFingerprint) { refresh(latest); return false; }
         db.prepare("UPDATE work_completion_turns SET decision_json=?,error=NULL WHERE binding_id=?").run(JSON.stringify(decision), bindingId);
-        applyCompletionDecision(this.options, binding, current.work, decision, eventId);
+        return true;
+      });
+      if (!saved) return;
+      works.transaction(() => {
+        const latest = snapshot();
+        if (!latest) return;
+        if (latest.fingerprint !== frozenFingerprint) { refresh(latest); return; }
+        applyCompletionDecision(this.options, binding, latest.current.work, decision, eventId);
       });
     } catch (error) {
       if (this.closed || !this.options.isAuthority()) return;
-      try { recordCollaborationReturnFailure(db, candidate.work.userId, binding.workId, error, "review_or_delivery"); }
-      catch (recordError) { console.warn("[Work] 协作成果失败回执待重试", binding.workId, recordError); }
+      if (error instanceof CompletionDeliveryError) phase = "delivery";
+      const lifecycle = error instanceof WorkResultLifecycleError;
+      const failurePhase = lifecycle ? `runtime:${error.phase}` : phase;
       const message = error instanceof Error ? error.message : String(error);
+      try { recordCollaborationReturnFailure(db, candidate.work.userId, binding.workId, error, phase === "review" ? "review" : phase); }
+      catch (recordError) { console.warn("[Work] 协作成果失败回执待重试", binding.workId, recordError); }
+      works.transaction(() => {
+        if (!this.current(bindingId)) return;
+        db.prepare("UPDATE work_completion_turns SET state=?,retry_at=?,error=? WHERE binding_id=?")
+          .run(lifecycle ? "running" : "queued", Date.now() + 15000, `${failurePhase}: ${message}`, bindingId);
+      });
+      // Application and local delivery failures retain the decision and its attempt.
+      // Only actual model/format failures use the bounded raw-result fallback.
+      if (phase !== "review" || lifecycle || this.row(bindingId)?.decision_json) return;
       works.transaction(() => {
         if (!this.current(bindingId)) return;
         const exhausted = (this.row(bindingId)?.attempts ?? 0) >= 2;
-        db.prepare("UPDATE work_completion_turns SET state='queued',retry_at=?,error=? WHERE binding_id=?").run(Date.now() + 15000, message, bindingId);
         const historical = this.temporalContext(bindingId).historicalRecovery;
         const fallbackFiles = workDeliveryFiles(works, workDeliveryResults(works, binding)).filter(file => file.openPath);
         const delivered = this.options.deliver({ bindingId, eventId: `${eventId}:fallback:${exhausted ? "final" : "retrying"}`, category: "result",

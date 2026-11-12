@@ -57,6 +57,8 @@ export class BotConversationMemory {
     if (!conversationId) return { botId, scopeTypes: ["bot"] as MemoryScopeType[], includeInherited: false };
     const conversation = this.messages.conversation(this.options.userId, botId, conversationId);
     if (!conversation) return;
+    if (this.messages.origins.isShared(conversationId)) return { botId, conversationId,
+      scopeTypes: ["conversation"], includeInherited: false };
     return { botId, conversationId, teamId: conversation.team_id ?? undefined,
       scopeTypes: ["global", "conversation", conversation.team_id ? "team" : "bot"] as MemoryScopeType[], includeInherited: true };
   }
@@ -71,7 +73,9 @@ export class BotConversationMemory {
     if (!botMemoryWriteEvidenceAllowed(userText, input.userEvidence)) throw new Error("本次是遗忘请求，不能把已删除内容换成否定形式重新保存。若同时要求记住新事实，只引用明确的新记住子句");
     if (!botMemoryTextEligible(`${userText} ${input.title} ${input.content}`)) throw new Error("记忆内容含敏感秘密或用户明确要求不保存，本次未写入");
     if (input.scope === "public" && !publicScopeRequested(userText)) throw new Error("公共记忆需要用户明确要求所有 Bot 共享；否则使用 current 范围");
-    const temporary = botMemoryConversationOnly(userText);
+    const shared = this.messages.origins.isShared(conversationId);
+    if (shared && input.scope === "public") throw new Error("共享渠道只能保存本会话记忆，公共分享请在私人对话中明确设置");
+    const temporary = shared || botMemoryConversationOnly(userText);
     const scopeType: MemoryScopeType = temporary || input.scope === "conversation" ? "conversation"
       : publicScopeRequested(userText) ? "global" : context.teamId ? "team" : "bot";
     const scopeId = scopeType === "global" ? undefined : scopeType === "conversation" ? conversationId : scopeType === "team" ? context.teamId : botId;
@@ -104,9 +108,9 @@ export class BotConversationMemory {
       if (!context) throw new Error("当前对话记忆范围不可用");
       const allowPublic = publicScopeRequested(userText);
       const scopeMatches = (scope: { scopeType: MemoryScopeType; scopeId?: string }) =>
-        scope.scopeType === (context.teamId ? "team" : "bot") && scope.scopeId === (context.teamId ?? botId)
+        !this.messages.origins.isShared(conversationId ?? "") && scope.scopeType === (context.teamId ? "team" : "bot") && scope.scopeId === (context.teamId ?? botId)
         || scope.scopeType === "conversation" && Boolean(conversationId) && scope.scopeId === conversationId
-        || scope.scopeType === "global" && allowPublic;
+        || scope.scopeType === "global" && allowPublic && !this.messages.origins.isShared(conversationId ?? "");
       if (records.some(record => record && !record.scopes.some(scope => scopeMatches(scope)
         && (scope.scopeType !== "global" || record.metadata.publicShared === true)))) {
         throw new Error("只能移除当前 Bot、团队或本次对话的记忆；其他范围或公共记忆需要相应明确要求");
@@ -129,6 +133,7 @@ export class BotConversationMemory {
     const stable = this.options.memory.resolveContext({ ...context,
       statuses: ["active"], budgetChars: 6000, limit: 12 }).text;
     const source = sourceMessageId && this.messages.message(sourceMessageId);
+    if (this.messages.origins.isShared(conversationId)) return stable;
     if (!source || source.role !== "user" || source.botId !== botId || source.conversationId !== conversationId) return stable;
     const historical = botHistoryContext(this.options.db.connection, { userId: this.options.userId, botId,
       excludeConversationId: conversationId, teamId: context.teamId, query: source.text, before: source.createdAt });
@@ -151,7 +156,7 @@ export class BotConversationMemory {
     // exist yet. Record its source time, not this delayed completion time.
     if (/(?:忘记|删除.{0,24}记忆|清除.{0,24}记忆|\bforget\b|\bdelete\b.{0,32}\bmemor)/i.test(user.text)
       && !user.text.split(/[，,、。；;！!？?\n]/).some(clause => botMemoryWriteEvidenceAllowed(user.text, clause))) {
-      const temporary = botMemoryConversationOnly(user.text);
+      const temporary = this.messages.origins.isShared(receipt.conversation_id) || botMemoryConversationOnly(user.text);
       const scopeType = temporary ? "conversation" : publicScopeRequested(user.text) ? "global" : source.team_id ? "team" : "bot";
       const scopeId = scopeType === "conversation" ? receipt.conversation_id : scopeType === "global" ? undefined : source.team_id ?? botId;
       this.options.memory.recordForgetBoundary(scopeType, scopeId, user.createdAt);

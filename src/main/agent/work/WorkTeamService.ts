@@ -1,4 +1,4 @@
-import type { WorkResultDecision } from "./BotWorkResultTurn";
+import type { WorkResultDecision } from "./WorkResultDecision";
 import { WorkTeamWatchCycles } from "./WorkTeamWatchCycles";
 import { watchEndedByTime, watchTimeExpired } from "../../../shared/work-watch-expiry";
 import { ensureTeamConversation } from "./WorkDeliveryTargets";

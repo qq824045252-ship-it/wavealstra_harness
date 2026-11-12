@@ -7,7 +7,9 @@ import { BotConversationMemory } from "../src/main/agent/work/BotConversationMem
 import { MemoryService } from "../src/main/memory/MemoryService";
 import { MemoryPipelineManager } from "../src/main/memory/MemoryPipelineManager";
 import { botMemoryTextEligible } from "../src/main/memory/BotMemorySource";
+import { WorkService, DESKTOP_USER_GRANTS } from "../src/main/agent/work/WorkService";
 import { LOCAL_USER_ID } from "../src/shared/bot-work";
+import type { GatewayBotOrigin } from "../src/main/agent/work/BotTurnOrigins";
 
 async function main() {
   const db = new AppDatabase(":memory:");
@@ -15,6 +17,7 @@ async function main() {
     const bots = new BotRegistry(db.connection);
     for (const id of ["alice", "bob"]) bots.registerBot({ botId: id, userId: LOCAL_USER_ID, displayName: id });
     bots.registerBot({ botId: "foreign", userId: "another-user", displayName: "foreign" });
+    const works = new WorkService(db.connection,{bots});
     const memory = new MemoryService(db, { semantic: false });
     const insertCandidate = memory.repository.insertCandidate.bind(memory.repository);
     memory.repository.insertCandidate = candidate => {
@@ -43,8 +46,13 @@ async function main() {
         assert.equal(result.reviewCount, 0);
         if (isEnabled()) pipeline.completeL1(id, turns);
       } });
-    const send = (text: string, botId = "alice", status: "completed" | "cancelled" | "running" = "completed") => {
-      const receipt = messages.accept(LOCAL_USER_ID, { botId, requestId: `request-${++sequence}`, text });
+    const send = (text: string, botId = "alice", status: "completed" | "cancelled" | "running" = "completed", origin?: GatewayBotOrigin) => {
+      const receipt = db.connection.transaction(() => {
+        const conversationId = origin ? messages.origins.gatewayConversation(LOCAL_USER_ID, botId, origin) : undefined;
+        const accepted = messages.accept(LOCAL_USER_ID, { botId, requestId: `request-${++sequence}`, text, conversationId });
+        if (origin) messages.origins.recordGateway(LOCAL_USER_ID, accepted, origin);
+        return accepted;
+      })();
       messages.update(receipt.assistantMessageId, status, "UNSUPPORTED_ASSISTANT: 我猜用户住在上海");
       return { receipt, source: bridge.capture(botId, receipt.requestId) };
     };
@@ -167,9 +175,8 @@ async function main() {
     assert.equal(memory.listExactScope("bot", "alice").length, 0);
     assert.equal(pipeline.turns.listByTask(final.source).length, 0);
     // Foreground tools resolve ownership from conversations, not model-selected entity IDs.
-    db.connection.exec(`CREATE TABLE IF NOT EXISTS work_team_templates (
-      template_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, deleted_at INTEGER);
-      INSERT INTO work_team_templates(template_id,user_id) VALUES ('memory-team','${LOCAL_USER_ID}');`);
+    db.connection.prepare(`INSERT INTO work_team_templates(template_id,user_id,operation_id,request_hash,name,plan_json,created_at)
+      VALUES ('memory-team',?,'memory-team','fixture','Memory team','{}',?)`).run(LOCAL_USER_ID,Date.now());
     const team = messages.accept(LOCAL_USER_ID, { botId: "alice", teamId: "memory-team", requestId: "team-memory", text: "记住团队偏好绿茶" });
     const ownConversation = final.source;
     const save = (botId: string, conversationId: string, scope: "current" | "conversation" | "public", content: string, userText = `记住${content}`) =>
@@ -366,6 +373,89 @@ async function main() {
     candidates = [candidate('{"Cookie": "sid=FAKE_REVIEW_ONLY_abcdEFGHxyz"}', "正常技术偏好", { title: "敏感候选拒绝", kind: "fact", scopeType: "bot" })];
     await bridge.extract(safeExtraction.source);
     assert.equal(memory.listExactScope("bot", "unsafe-extraction").length, 0, "secret-bearing model candidates cannot enter L1 even from an eligible source");
+    for (const reverse of [false, true]) {
+      const botId = reverse ? "gateway-to-desktop" : "desktop-to-gateway";
+      bots.registerBot({ botId, userId: LOCAL_USER_ID, displayName: botId });
+      const route: GatewayBotOrigin = { channelId: "qq-default", connectionKey: "a".repeat(64), chatId: "c2c:owner",
+        senderId: "owner", messageId: `first-${botId}`, audience: "private" };
+      const original = send("记住：以后请用中文简短回答。", botId, "completed", reverse ? route : undefined);
+      assert(original.source);
+      candidates = [candidate("以后用中文简短回答。", "以后请用中文简短回答")];
+      await bridge.extract(original.source);
+      const correction = send("更正：以后请用英文简短回答，不再用中文。", botId, "completed",
+        reverse ? undefined : { ...route, messageId: `correct-${botId}` });
+      assert(correction.source);
+      candidates = [candidate("以后用英文简短回答。", "以后请用英文简短回答", {
+        operationHint: "update", replaces: "以后用中文简短回答。" })];
+      await bridge.extract(correction.source);
+      const stable = memory.listExactScope("bot", botId).filter(item => item.status === "active");
+      assert(stable.some(item => item.content.includes("英文简短")));
+      assert(!stable.some(item => item.content.includes("中文简短")), "latest automatic correction retires the old private Bot fact across entrances");
+      const desktopConversation = reverse ? correction.source : original.source;
+      messages.archive(LOCAL_USER_ID, botId, desktopConversation);
+      const fresh = send("你好", botId, "completed", reverse ? { ...route, messageId: `new-${botId}` } : undefined);
+      assert(fresh.source);
+      assert(bridge.context(botId, fresh.source).includes("英文简短"));
+      assert(!bridge.context(botId, fresh.source).includes("中文简短"));
+      assert.equal((await bridge.search("alice", "英文简短")).some(item => item.memory.scopes.some(scope => scope.scopeId === botId)), false);
+      const shared = send("记住：本群以后先列依据。", botId, "completed", {
+        ...route, messageId: `group-${botId}`, chatId: "group:room", audience: "shared" });
+      assert(shared.source);
+      candidates = [candidate("本群以后先列依据。", "本群以后先列依据", { title: "群内偏好" })];
+      await bridge.extract(shared.source);
+      assert(memory.listExactScope("conversation", shared.source).some(item => item.title === "群内偏好"));
+      assert(!memory.listExactScope("bot", botId).some(item => item.title === "群内偏好"));
+      assert(!bridge.context(botId, shared.source).includes("英文简短"));
+    }
+    console.log("PASS automatic desktop/QQ preferences and natural corrections in both directions; shared audience extraction and recall stay conversation-local");
+    // Production L0 capture -> model candidate extraction -> L1 SQLite reconciliation.
+    const actor = {kind:"user" as const,userId:LOCAL_USER_ID,grants:DESKTOP_USER_GRANTS};
+    const localBot="work-source-memory";bots.registerBot({botId:localBot,userId:LOCAL_USER_ID,displayName:localBot});
+    const mixedSource=send("工作小结先结论后依据。final.txt逐字FINAL_QQ_29。只建一个B Work不组队。",localBot);
+    assert(mixedSource.source);
+    const created=works.createWork(actor,{operationId:"memory-work-original",title:"输出文件",ownerBotId:localBot,
+      sourceMessageId:mixedSource.receipt.userMessageId,inputSnapshotId:"input:memory-original",authorization:DESKTOP_USER_GRANTS});
+    assert(created.ok,JSON.stringify(created));
+    candidates=[candidate("工作小结先结论后依据","工作小结先结论后依据",{title:"稳定小结偏好",explicit:false}),
+      candidate("final.txt逐字FINAL_QQ_29","final.txt逐字FINAL_QQ_29",{title:"本次文件字节",kind:"constraint",explicit:false,scopeType:"global",scopeId:"model-invented-work"}),
+      candidate("只建一个B Work不组队","只建一个B Work不组队",{title:"本次委派决定",kind:"decision",explicit:false})];
+    await bridge.extract(mixedSource.source);
+    assert(memory.listExactScope("bot",localBot).some(item=>item.title==="稳定小结偏好"));
+    assert.deepEqual(memory.listExactScope("work",created.work.workId).map(item=>item.title).sort(),["本次委派决定","本次文件字节"]);
+    assert(!memory.listExactScope("bot",localBot).some(item=>item.kind==="constraint" || item.kind==="decision"));
+    const amendedSource=send("amend原Work，不要另建，final.txt逐字FINAL_QQ_30。",localBot);assert(amendedSource.source);
+    const amended=works.amendWork(actor,{operationId:"memory-work-amend",workId:created.work.workId,goalDescription:"改为FINAL_QQ_30",
+      sourceMessageId:amendedSource.receipt.userMessageId,inputSnapshotId:"input:memory-amended",versionGuard:{expectedStateVersion:created.work.stateVersion,
+        expectedIntentRevision:created.work.intentRevision,expectedOwnerEpoch:created.work.ownerEpoch}});
+    assert(amended.ok,JSON.stringify(amended));
+    candidates=[candidate("amend原Work，不要另建","amend原Work，不要另建",{title:"本次改向",kind:"decision",explicit:false})];
+    await bridge.extract(amendedSource.source);
+    assert(memory.listExactScope("work",created.work.workId).some(item=>item.title==="本次改向"),"amend source is resolved through saved intent, not original source replacement");
+    const unbound=send("临时文件取名 temp.txt。",localBot);assert(unbound.source);
+    candidates=[candidate("临时文件取名 temp.txt","临时文件取名 temp.txt",{title:"无Work的临时事实",kind:"fact",retention:"temporary",explicit:false,scopeType:"work",scopeId:created.work.workId})];
+    await bridge.extract(unbound.source);
+    assert(memory.listExactScope("conversation",unbound.source).some(item=>item.title==="无Work的临时事实"));
+    assert(!memory.listExactScope("work",created.work.workId).some(item=>item.title==="无Work的临时事实"),"candidate cannot claim another Work by ID");
+    const explicit=send("记住：生产环境只开TLS1.3。",localBot);assert(explicit.source);
+    candidates=[candidate("生产环境只开TLS1.3","生产环境只开TLS1.3",{title:"明确保存的约束",kind:"constraint",explicit:true})];
+    await bridge.extract(explicit.source);
+    assert(memory.listExactScope("bot",localBot).some(item=>item.title==="明确保存的约束"));
+    const sourceTurn=pipeline.turns.listByTask(mixedSource.source).find(turn=>turn.userMessageId===mixedSource.receipt.userMessageId)!;
+    const legacy=memory.create({kind:"constraint",title:"旧自动跨域记录",content:"final.txt逐字FINAL_QQ_29",scopeType:"bot",scopeId:localBot,
+      explicit:false,sourceType:"agent",sourceId:mixedSource.source,evidence:[{evidenceKind:"conversation",refId:sourceTurn.id,
+        excerpt:"用户：final.txt逐字FINAL_QQ_29\n助手："}]});
+    assert.equal(memory.canAccess(legacy.id,{botId:localBot}),false,"legacy automatic Work fact cannot enter broad Bot recall");
+    assert.equal(memory.canAccess(legacy.id,{workId:created.work.workId}),true,"proven original Work remains the only authorized runtime scope");
+    const another=works.createWork(actor,{operationId:"unrelated-memory-work",title:"unrelated",ownerBotId:localBot,inputSnapshotId:"unrelated-input",authorization:DESKTOP_USER_GRANTS});
+    assert(another.ok,JSON.stringify(another));assert.equal(memory.canAccess(legacy.id,{workId:another.work.workId}),false);
+    assert(memory.get(legacy.id)?.scopes.some(scope=>scope.scopeType==="bot"),"read repair preserves original scope/history for auditable migration");
+    assert(!memory.search({botId:localBot,query:"FINAL_QQ_29",statuses:["active"]}).some(hit=>hit.memory.id===legacy.id));
+    messages.archive(LOCAL_USER_ID,localBot,mixedSource.source);
+    const futureWorkTurn=send("新工作，请回忆要求。",localBot);assert(futureWorkTurn.source);
+    const context=bridge.context(localBot,futureWorkTurn.source);
+    assert(context.includes("先结论后依据"));
+    assert(!context.includes("FINAL_QQ_29") && !context.includes("FINAL_QQ_30") && !context.includes("只建一个B Work"),"new Work cannot inherit old local requirements through Bot L1");
+    console.log("PASS automatic L0/L1 splits stable preferences from original/amended Work facts; unbound temporary facts stay conversation-local; explicit durable scope remains authorized");
     const hybrid = memory.searchHybrid.bind(memory);
     let releaseSearch!: () => void;
     let prefetchCount = 0;

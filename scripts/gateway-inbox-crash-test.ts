@@ -1,3 +1,4 @@
+import { createGatewayBotFixture } from "./gateway-bot-fixture";
 /** Actual process death between Gateway admission and native completion. All
  * accounts, models, tools, database files and replies are private fixtures. */
 import assert from "node:assert/strict";
@@ -54,7 +55,7 @@ class FixtureTelegram {
   }
   message(id: string, text: string): GatewayInboundMessage {
     const route = { kind: "telegram", chatId: "100", replyToMessageId: Number(id) } as const;
-    return { channelId: this.id, chatId: "100", messageId: id, text, sender: { id: "owner" }, replyRoute: route,
+    return { channelId: this.id, chatId: "100", messageId: id, text, sender: { id: "owner" }, audience: "private", replyRoute: route,
       reply: this.restoreGatewayReply({ deliveryId: "fixture", chatId: "100", messageId: id, route }) };
   }
 }
@@ -76,7 +77,8 @@ function runtime() {
       const stream = createAssistantMessageEventStream();
       queueMicrotask(() => {
         const index = context.messages.findLastIndex((message: any) => message.role === "user"), input = context.messages[index];
-        const text = typeof input.content === "string" ? input.content : input.content.filter((part: any) => part.type === "text").map((part: any) => part.text).join("");
+        const rawText = typeof input.content === "string" ? input.content : input.content.filter((part: any) => part.type === "text").map((part: any) => part.text).join("");
+        const text=rawText.split("宿主提供的本次请求时间上下文")[0];
         const afterTool = context.messages.slice(index + 1).some((message: any) => message.role === "toolResult");
         const content: any = text === "HOLD" && !afterTool ? [{ type: "toolCall", id: "crash-tool", name: "crash_fixture_effect", arguments: {} }]
           : [{ type: "text", text: "ANSWER:" + text }];
@@ -88,9 +90,7 @@ function runtime() {
       return stream;
     } };
   models.completeSimple = (model: any, context: any, options: any) => models.streamSimple(model, context, options).result();
-  const durable = new DurableBotService({ db, models, agentDir, mcpDir, defaultModel: () => "fixture/native", toolMode: () => "native",
-    instructions: () => "fixture", tools: async () => ({ tools: [hold], contextHooks: [] }), emit: () => {},
-    resolveCwd: () => { const path = join(root, "task-workspace"); mkdirSync(path, { recursive: true }); return path; } });
+  const durable = createGatewayBotFixture({db,models,root,tools:[hold]});
   const adapter = new FixtureTelegram();
   const gateway = new GatewayService(db, { runGatewayTurn: request => durable.runGatewayTurn(request) }, undefined, {
     adapters: { telegram: adapter as never }, settingsStore: { read: () => ({ defaultModelId: "fixture/native" }) as never },
@@ -144,8 +144,8 @@ if (childMode) {
       [{ message_id: "1", retry_count: 2 }, { message_id: "2", retry_count: 1 }]);
     console.log("PASS actual SIGKILL: committed Gateway FIFO survives; running native receipt resumes without repeating unsafe effect; replies and redelivery dedupe remain stable");
   } finally {
-    if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    if (child && child.exitCode === null && child.signalCode === null) { const stopped=once(child,"exit"); child.kill("SIGKILL"); await stopped; }
     if (active) { await active.gateway.stop(); await active.durable.close(); active.db.close(); }
-    rmSync(root, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 }

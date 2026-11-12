@@ -95,6 +95,9 @@ export class WorkProjectionBuilder {
       pendingConclusion: work.pendingConclusion,
       closureConclusion: work.closureConclusion,
       closureSummary: work.closureSummary,
+      closureReview: work.mode === "once" && work.lifecycle === "closed" && work.closureConclusion === "ended_unsuccessfully"
+        && work.closeOperationId?.startsWith("automatic-completion:")
+        ? { expectedCloseOperationId: work.closeOperationId } : undefined,
       ownerBotId: work.ownerBotId,
       team: this.sources.teams?.get(work.workId),
       archive: this.sources.recordArchive?.get(work.workId),

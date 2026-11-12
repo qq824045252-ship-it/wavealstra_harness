@@ -19,6 +19,10 @@ import { currentNodePlatform } from "../platform/runtime";
 import { DurableBotService } from "./durable/DurableBotService";
 import { BotWorkIpc } from "../../shared/bot-work-ipc";
 import { BotConversationService } from "./work/BotConversationService";
+import { gatewayBotOriginSchema } from "./work/BotTurnOrigins";
+import type { GatewayBotTurnRequest } from "../gateway/GatewayAgentTurn";
+import { botWorkHasSharedOrigin } from "../memory/BotMemorySource";
+import { BotWorkMethodFeedback } from "./work/BotWorkMethodFeedback";
 import { BotReportImageService } from "./work/BotReportImageService";
 import { WorkConversationFeedback } from "./work/WorkConversationFeedback";
 import { WorkDispatchQueue } from "./work/WorkDispatchQueue";
@@ -34,6 +38,10 @@ import { createDurableReadOnlyTools, createDurableSubagentTools, durableSubagent
 import { guardSubagentWriteCall } from "../capabilities/subagent/write-conflict";
 import { openDurableAuxiliary, type DurableAuxiliaryBinding } from "./durable/DurableAuxiliaryRuntime";
 import { DurableSkillProjection, durableInputAuditSchema, type DurableInputAudit } from "./durable/DurableSkillProjection";
+import { createBotComposerSkillAccess } from "./work/BotComposerSkillAccess";
+import { homedir } from "node:os";
+import { prepareClosureReview } from "./work/WorkClosureReview";
+import { workClosureReviewRequestSchema } from "../../shared/work-closure-review";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { DurableBotRuntime, DurableBotOptions } from "./durable/DurableBotRuntime";
 import type { DurableBotSnapshot } from "../../shared/durable-bot";
@@ -787,7 +795,8 @@ export class AgentService {
         const skill = this.skillsService.listInstalled().find(item => item.id === id || item.name === id);
         return skill?.filePath ? dirname(skill.filePath) : undefined;
       },
-      isSkillEnabled: (id) => this.skillsService.listInstalled().some(item => (item.id === id || item.name === id) && item.enabled),
+      isSkillEnabled: (id, taskId) => this.skillsService.listInstalled(undefined, [], { botId: this.runtimeBotId(taskId) })
+        .some(item => (item.id === id || item.name === id) && item.enabled),
     });
     this.usageStats = new UsageStatsService(db.connection);
     // P0：任务执行工作区唯一解析器（可注入测试 root；默认 ~/.mybuddy/task-workspaces）
@@ -1275,6 +1284,26 @@ export class AgentService {
     return this.workService;
   }
 
+  async reassessClosedWork(input: unknown): Promise<WorkControlResult> {
+    try {
+      const request = workClosureReviewRequestSchema.parse(input);
+      const work = this.workService.getWork(request.workId);
+      if (!work || work.userId !== LOCAL_USER_ID) return {ok:false,code:"not_found",message:"找不到事项"};
+      const actor = {kind:"user",userId:LOCAL_USER_ID,entry:"desktop",grants:DESKTOP_USER_GRANTS} as const;
+      if (this.workService.repo.getReceipt(LOCAL_USER_ID,`closure-review:${request.requestId}`))
+        return this.workService.correctAutomaticClosure(actor,request);
+      if (!this.workHostAuthority.isAuthority() || !this.botResultTurns) throw Error("当前宿主尚未准备好只读事实复核");
+      if (work.stateVersion !== request.versionGuard.expectedStateVersion || work.intentRevision !== request.versionGuard.expectedIntentRevision
+        || work.ownerEpoch !== request.versionGuard.expectedOwnerEpoch) return {ok:false,code:"version_conflict",message:"事项已变化，请刷新后复核"};
+      const evidence = prepareClosureReview(this.db.connection,this.workService,request);
+      const decision = await this.botResultTurns.review({eventId:`closure-review:${request.requestId}:${evidence.fingerprint}`,
+        botId:evidence.binding.botId,context:evidence.context});
+      const result = this.workService.correctAutomaticClosure(actor,request,{evidence,decision});
+      if (result.ok) this.workNotificationWake?.();
+      return result;
+    } catch (error) { return {ok:false,code:"invalid_request",message:error instanceof Error?error.message:String(error)}; }
+  }
+
   private workNotificationWake?: () => void;
 
   /** Set by the host once the real delivery channels exist. */
@@ -1716,6 +1745,8 @@ export class AgentService {
       extract: id => this.queuePendingMemoryExtraction([id]),
       changed: () => this.notifyMemoryChanged({ scope: "settings" }),
     });
+    const methodFeedback = new BotWorkMethodFeedback({ db: this.db, works: this.workService, userId: LOCAL_USER_ID, memory: this.memoryService,
+      skills: this.skillsService, effectiveness: this.skillEffectiveness, revisions: this.skillRevision });
     this.botConversations ??= new BotConversationService({ reminders: () => this.localWorkflow?.cron, onTool: event => this.taskDiagnostics.observeTool(event), db: this.db.connection, userId: LOCAL_USER_ID,
       organization: { settings: this.botSettings, creator: new BotCreationService(this.db.connection, this.botRegistry,
         { userId: LOCAL_USER_ID, isAuthority: () => this.workHostAuthority.isAuthority() }) },
@@ -1740,9 +1771,15 @@ export class AgentService {
       captureSettings: (messageId, botId, frozen) => this.botSettings.captureMessage(messageId, botId, frozen),
       botWorkspace: (botId, prepareDefault) => this.botSettings.resolveWorkspace(botId, prepareDefault),
       captureWorkSettings: work => { this.botSettings.forWork(work.workId, work.ownerBotId, work.workspacePath); },
-      composerTools: async (profile, cwd, resolveRequestScope) => {
+      composerTools: async (profile, cwd, resolveRequestScope, identity) => {
+        if (identity.shared) return { tools: [], instructions: "共享渠道未挂载个人 Bot 的私人技能、专家资料或连接器。", close: async () => {} };
         const { openBotComposerRuntime } = await import("./work/BotComposerRuntime");
-        return openBotComposerRuntime({ profile, cwd, models: this.durableModels!,
+        const skillAccess = createBotComposerSkillAccess({ identity: { botId: identity.botId, shared: identity.shared || Boolean(identity.teamId) },
+          current: id => this.skillsService.getLearnedSkillRevisionSource(id),
+          runnable: (id, sourceMemoryIds) => this.memoryService.learning.isInstalledSkillRunnable(id, sourceMemoryIds)
+            && this.skillsService.listInstalled(undefined, [], { botId: identity.botId }).some(skill => skill.id === id && skill.enabled),
+        });
+        return openBotComposerRuntime({ profile, cwd, models: this.durableModels!, skillAccess,
           connectorSkillRoots: this.connectorsService.getPrivateSkillDirs(profile.allowedConnectorIds),
           connectorContext: profile.allowedConnectorIds.length ? connectorRuntimeContext(profile.allowedConnectorIds, this.connectorsService.list(), "foreground") : "",
           enabledMcpIds: this.mcpRuntime.previewMcpFilter("working", this.modeProfiles.getProfile("working").policy.mcpPolicy).enabled,
@@ -1795,6 +1832,7 @@ export class AgentService {
         return result.descriptions.map(item => `${item.imagePath}\n${item.text}`).join("\n");
       },
       onMessage: event => broadcast(BotWorkIpc.messageChanged, event),
+      recordWorkFeedback: (source, work) => this.settingsStore.read().memoryEnabled ? methodFeedback.record(source, work) : undefined,
     });
     this.botResultTurns ??= new BotWorkResultTurn({ models: this.durableModels, directory: join(getMyBuddyDir(), "bot-result-turns"),
       defaultModel: () => this.settingsStore.read().defaultModelId, botModel: botId => this.botSettings.get(botId).modelId || undefined,
@@ -1851,7 +1889,7 @@ export class AgentService {
     const identity = this.expertBindings.active(task.id);
     const connectors = this.expertConnectorIds(task.id);
     const paths = this.expertSkillPaths(task.id, identity?.sourceExpertId, connectors);
-    const skills = this.resolveSkillsForContext(task.cwd, paths, { projectId: task.projectId, workspaceId: task.spaceId }).dtos;
+    const skills = this.resolveSkillsForContext(task.cwd, paths, { projectId: task.projectId, workspaceId: task.spaceId, taskId: task.id }).dtos;
     return [
       ...assembly.appendParts,
       connectors.length ? connectorRuntimeContext(connectors, this.connectorsService.list(), "execution") : "",
@@ -1868,9 +1906,21 @@ export class AgentService {
     const identity = this.expertBindings.active(task.id);
     const connectors = this.expertConnectorIds(task.id);
     const paths = this.expertSkillPaths(task.id, identity?.sourceExpertId, connectors);
-    const skills = this.resolveSkillsForContext(task.cwd, paths, { projectId: task.projectId, workspaceId: task.spaceId }).dtos
+    const skills = this.resolveSkillsForContext(task.cwd, paths, { projectId: task.projectId, workspaceId: task.spaceId, taskId: task.id }).dtos
       .filter(skill => skill.enabled && skill.filePath && assembly.skillFilter.visible.includes(skill.name))
       .map(skill => ({ id: skill.id, name: skill.name, path: skill.filePath!, learned: this.skillsService.getLearnedSkillMetadataForFile(skill.filePath!) }));
+    // A frozen task-owned package is an authorized read location for the same
+    // advertised Skill. Preserve that exact location and lineage for native read receipts.
+    for (const pack of this.expertBindings.activeSkillPackages(task.id)) {
+      const advertised = skills.find(skill => skill.id === pack.id);
+      const filePath = join(pack.directory, "SKILL.md");
+      if (!advertised || skills.some(skill => resolve(skill.path) === resolve(filePath))
+        || !this.learnedSkillVisibleInContext({ id: pack.id, filePath }, {
+          projectId: task.projectId, workspaceId: task.spaceId, botId: this.runtimeBotId(task.id), taskId: task.id,
+        })) continue;
+      skills.push({ id: advertised.id, name: advertised.name, path: filePath,
+        learned: this.skillsService.getLearnedSkillMetadataForFile(filePath) });
+    }
     return durableInputAuditSchema.parse(JSON.parse(JSON.stringify({ userMessageId: request.userMessageId,
       assistantMessageId: request.assistantMessageId, cwd: task.cwd ?? this.resolveTaskExecutionWorkspaceCwd(task.id), skills,
       recommendation: this.loadoutService.resolve(task.id, request.text, assembly, connectors, identity?.sourceExpertId) })));
@@ -1952,6 +2002,21 @@ export class AgentService {
         // D-2: a parallel child writing a file another child already wrote is blocked here — pi's write
         // has no version check, so without this the later write silently overwrites the earlier content.
         // The block becomes a tool error the child sees, and the conflict is reported back to the caller.
+        if (call.name === "read" && typeof call.arguments.path === "string") {
+          const expanded = call.arguments.path.replace(/^~(?=[\\/])/, homedir());
+          const filePath = resolve(cwd, expanded);
+          const frozen = this.expertBindings.activeSkillPackages(task.id).find(pack => {
+            const root = resolve(pack.directory);
+            return filePath === root || filePath.startsWith(root + sep);
+          });
+          if (frozen || basename(filePath).toLowerCase() === "skill.md") {
+            const skillFile = frozen ? join(frozen.directory, "SKILL.md") : filePath;
+            const currentTask = this.db.getTask(task.id) ?? task;
+            if (!this.learnedSkillVisibleInContext({ id: frozen?.id, filePath: skillFile }, {
+              projectId: currentTask.projectId, workspaceId: currentTask.spaceId, botId: this.runtimeBotId(task.id), taskId: task.id,
+            })) return { block: "该方法已撤销、版本/内容已变化或不属于当前执行范围，不能读取旧技能包。" };
+          }
+        }
         const writeConflict = guardSubagentWriteCall(call, api.conversationId, task.id);
         if (writeConflict) return writeConflict;
         const consultation = await consultHooks.beforeTool?.(call, api, context);
@@ -2063,11 +2128,24 @@ export class AgentService {
     await this.workExecutions?.close(); await this.durableBots?.close();
   }
 
-  async runGatewayTurn(request: AgentPromptRequest): Promise<string> {
-    if (!this.durableBots) throw new Error("Bot 尚未初始化");
-    const bot = this.botWorkContext.resolveBot(LOCAL_USER_ID, "gateway", request.taskId, DEFAULT_BOT_ID);
-    this.botWorkContext.bind(LOCAL_USER_ID, "desktop", request.taskId, bot.botId);
-    return this.durableBots.runGatewayTurn(request);
+  async runGatewayTurn(request: GatewayBotTurnRequest): Promise<string> {
+    const origin = gatewayBotOriginSchema.parse(request.gatewayOrigin);
+    const binding = this.settingsStore.read().gatewayBotBindings?.[origin.channelId];
+    const bot = this.botWorkContext.resolveGatewayBot(LOCAL_USER_ID, origin, binding);
+    const service = this.requireBotConversations();
+    const requestId = `gateway:${request.userMessageId}`;
+    const prior = service.messages.receipt(LOCAL_USER_ID, bot.botId, requestId);
+    const selected = prior ? undefined : await this.botSettings.prepareMessage(bot.botId);
+    const frozen = selected && origin.audience === "shared" ? { settings: { ...selected.settings,
+      expertId: "", skillIds: [], mcpIds: [], connectorIds: [] }, profile: { ...selected.profile,
+      allowedSkillIds: [], allowedMcpIds: [], allowedConnectorIds: [], skillPackages: [],
+      configuration: { revision: selected.profile.configuration?.revision ?? "gateway-shared", name: bot.displayName,
+        instructions: "你在共享渠道回答当前用户的本次请求，不得读取私人会话、私人记忆、私人技能或个人连接器。",
+        skillIds: [], mcpIds: [], connectorIds: [] } } } : selected;
+    const receipt = service.acceptGateway({ botId: bot.botId, requestId, text: request.displayText ?? request.text,
+      attachments: request.attachments, origin,
+      referenceContext: request.displayText !== undefined && request.displayText !== request.text ? request.text : undefined }, frozen);
+    return service.awaitReply(receipt);
   }
 
 
@@ -2767,7 +2845,7 @@ export class AgentService {
   }
 
   listSkills(cwd?: string): SkillDto[] {
-    return this.skillsService.listInstalled(cwd);
+    return cwd ? this.skillsService.listInstalled(cwd) : this.ownedInstalledSkills();
   }
 
   listMarketSkills(cwd?: string): MarketSkillDto[] {
@@ -3090,7 +3168,7 @@ export class AgentService {
   }
 
   uninstallSkill(id: string): void {
-    this.skillsService.uninstall(id);
+    this.skillsService.uninstall(id, this.ownedSkillContext(id));
   }
 
   deleteMarketSkill(id: string): void {
@@ -3098,7 +3176,7 @@ export class AgentService {
   }
 
   setSkillEnabled(id: string, enabled: boolean): SkillDto {
-    return this.skillsService.setEnabled(id, enabled);
+    return this.skillsService.setEnabled(id, enabled, this.ownedSkillContext(id));
   }
 
   /* ---------- 专家（ExpertService 委托） ---------- */
@@ -3370,7 +3448,7 @@ export class AgentService {
     const effectiveConnectorIds = effectiveConnectorDecisions.filter((item) => item.enabled).map((item) => item.id);
     const sessionSkillPaths = this.expertSkillPaths(req.taskId, effectiveExpertId, effectiveConnectorIds, expertDecision?.enabled !== false);
     const runtimeSkills = this.resolveSkillsForContext(
-      req.cwd, sessionSkillPaths, { projectId: req.projectId, workspaceId: req.spaceId },
+      req.cwd, sessionSkillPaths, { projectId: req.projectId, workspaceId: req.spaceId, taskId: req.taskId ?? undefined },
     );
     // Collision diagnostics are computed after learned-scope eligibility, matching the real loader.
     const shadowed = runtimeSkills.shadowedExtraSkillNames;
@@ -3449,21 +3527,32 @@ export class AgentService {
    * Eligibility is applied before first-wins collision resolution.
    */
   private learnedSkillVisibleInContext(
-    skill: SkillDto,
-    context: { projectId?: string | null; workspaceId?: string | null },
+    skill: Pick<SkillDto, "filePath"> & Partial<Pick<SkillDto, "id">>,
+    context: { projectId?: string | null; workspaceId?: string | null; botId?: string; taskId?: string },
   ): boolean {
     if (!skill.filePath) return true;
+    const directory = dirname(resolve(skill.filePath));
+    const frozen = context.taskId ? this.expertBindings.activeSkillPackages(context.taskId)
+      .find(pack => resolve(pack.directory) === directory) : undefined;
     const learned = this.skillsService.getLearnedSkillMetadataForFile(skill.filePath);
-    if (!learned) return true;
-    if (!this.memoryService.learning.isInstalledSkillRunnable(learned.skillId, learned.sourceMemoryIds)) {
-      return false;
-    }
+    if (!frozen && !learned && !this.skillsService.hasLearnedSkillProvenance(skill.filePath)) return true;
+    const id = frozen?.id ?? learned?.skillId ?? skill.id ?? basename(directory);
+    return createBotComposerSkillAccess({ identity: { botId: context.botId ?? "", shared: !context.botId },
+      current: skillId => this.skillsService.getLearnedSkillRevisionSource(skillId),
+      runnable: (skillId, ids) => this.memoryService.learning.isInstalledSkillRunnable(skillId, ids),
+      scopeAllowed: source => this.learnedSkillScopeAllowed(source, context),
+    }).canRead({ id, directory });
+  }
+
+  private learnedSkillScopeAllowed(
+    learned: import("../skills/SkillsService").LearnedSkillRevisionSource,
+    context: { projectId?: string | null; workspaceId?: string | null; botId?: string },
+  ): boolean {
     const projectId = context.projectId?.trim() || undefined;
     const workspaceId = context.workspaceId?.trim() || undefined;
     if (learned.scopeType === "global") return true;
-    if (learned.scopeType === "project") {
-      return Boolean(learned.scopeId && projectId && learned.scopeId === projectId);
-    }
+    if (learned.scopeType === "bot") return Boolean(context.botId && learned.scopeId === context.botId);
+    if (learned.scopeType === "project") return Boolean(learned.scopeId && projectId && learned.scopeId === projectId);
     if (learned.scopeType === "workspace") {
       if (!learned.scopeId || !workspaceId) return false;
       let current: string | undefined = workspaceId;
@@ -3473,7 +3562,6 @@ export class AgentService {
         visited.add(current);
         current = this.db.getSpace(current)?.parentId ?? undefined;
       }
-      return false;
     }
     return false;
   }
@@ -3481,13 +3569,45 @@ export class AgentService {
   private resolveSkillsForContext(
     cwd: string | undefined,
     extraSkillPaths: string[],
-    context: { projectId?: string | null; workspaceId?: string | null },
+    context: { projectId?: string | null; workspaceId?: string | null; botId?: string; taskId?: string },
   ) {
+    const identity = { ...context, botId: context.botId ?? this.runtimeBotId(context.taskId) };
     return this.skillsService.resolveRuntimeSkills(
       cwd,
       extraSkillPaths,
-      (skill) => this.learnedSkillVisibleInContext(skill, context),
+      (skill) => this.learnedSkillVisibleInContext(skill, identity),
+      { botId: identity.botId },
     );
+  }
+
+  private runtimeBotId(taskId?: string): string | undefined {
+    if (!taskId) return;
+    const binding = this.db.connection.prepare(`SELECT b.bot_id,b.work_id FROM work_execution_bindings b
+      JOIN works w ON w.work_id=b.work_id AND w.user_id=?
+      WHERE b.task_id=? AND b.invalidated_at IS NULL AND b.owner_epoch=w.owner_epoch
+        AND b.intent_revision=w.intent_revision AND b.input_snapshot_id=w.input_snapshot_id
+      ORDER BY b.admitted_at DESC,b.rowid DESC LIMIT 1`).get(LOCAL_USER_ID, taskId) as { bot_id: string; work_id: string } | undefined;
+    if (binding) return botWorkHasSharedOrigin(this.db, binding.work_id)
+      || Boolean(this.db.connection.prepare("SELECT 1 FROM work_teams WHERE work_id=?").get(binding.work_id)) ? undefined : binding.bot_id;
+    if (this.db.connection.prepare("SELECT 1 FROM work_execution_bindings WHERE task_id=? LIMIT 1").get(taskId)) return;
+    return this.botRegistry.resolveBotByChannel("desktop", JSON.stringify([LOCAL_USER_ID, taskId]))?.botId;
+  }
+
+  private ownedInstalledSkills() {
+    const skills = this.skillsService.listInstalled();
+    for (const bot of this.botRegistry.listBots(LOCAL_USER_ID))
+      skills.push(...this.skillsService.listInstalled(undefined, [], { botId: bot.botId }));
+    return [...new Map(skills.map(skill => [skill.id, skill])).values()];
+  }
+
+  private ownedSkillContext(id: string): { botId?: string } {
+    const installed = this.ownedInstalledSkills().find(skill => skill.id === id || skill.name === id);
+    const learned = installed?.filePath && this.skillsService.getLearnedSkillMetadataForFile(installed.filePath);
+    if (learned && learned.scopeType === "bot") {
+      if (!learned.scopeId || this.botRegistry.getBot(learned.scopeId)?.userId !== LOCAL_USER_ID) throw new Error("技能不属于当前用户的 Bot");
+      return { botId: learned.scopeId };
+    }
+    return {};
   }
 
   listAgentLoadoutObservations(taskId: string, limit = 50) {
@@ -4344,7 +4464,7 @@ export class AgentService {
     }
     const latest = this.db.connection.prepare("SELECT last_error FROM memory_turns WHERE extraction_state='failed' ORDER BY captured_at DESC LIMIT 1").get() as { last_error?: string } | undefined;
     const blockedSkills: import("../../shared/memory-kernel").MemorySkillLearningStatusDto["blockedSkills"] = [];
-    for (const skill of this.skillsService.listInstalled()) {
+    for (const skill of this.ownedInstalledSkills()) {
       if (!skill.filePath) continue;
       const learned = this.skillsService.getLearnedSkillMetadataForFile(skill.filePath);
       if (!learned) continue;
@@ -4413,7 +4533,7 @@ export class AgentService {
     let staled = 0;
     let ready = 0;
     const activeLearned = new Set<string>();
-    for (const skill of this.skillsService.listInstalled()) {
+    for (const skill of this.ownedInstalledSkills()) {
       const source = this.skillsService.getLearnedSkillRevisionSource(skill.id);
       if (!source) continue;
       activeLearned.add(source.skillId);
@@ -4437,7 +4557,7 @@ export class AgentService {
       const recovered = candidate.status === "materialized"
         ? candidate
         : this.skillRevision.markMaterialized(id, candidate.id, source.version);
-      const installed = this.skillsService.listInstalled().find((skill) => skill.id === candidate.skillId || skill.name === candidate.skillId);
+      const installed = this.ownedInstalledSkills().find((skill) => skill.id === candidate.skillId || skill.name === candidate.skillId);
       if (!installed) throw new Error(`已物化 Skill 不可见：${candidate.skillId}`);
       return { candidate: recovered, skill: installed };
     }
