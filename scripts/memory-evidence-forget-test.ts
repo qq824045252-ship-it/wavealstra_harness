@@ -22,7 +22,7 @@ try {
   messages.update(r.assistantMessageId,'completed','已保存紫杉7319和青丘8264');bridge.capture('owner',r.requestId);
   const common={kind:'fact' as const,scopeType:'bot' as const,scopeId:'owner',sourceType:'user' as const,explicit:true,
     evidence:[{evidenceKind:'conversation' as const,refId:r.conversationId,excerpt:raw}]};
-  const a=memory.create({...common,title:'AsterPreference 标记',content:'AsterPreference 的标记是 紫杉7319。（长期测试事实，仅存于本 Bot 专属记忆，不共享给其他 Bot）'});
+  const a=memory.create({...common,title:'AsterPreference 标记：紫杉7319',content:'测试事实 A（独立条目）：AsterPreference 的标记是 紫杉7319。仅属于当前 Bot，不共享给其他 Bot。'});
   const b=memory.create({...common,title:'HeliosCalibration 标记',content:'HeliosCalibration 的标记是 青丘8264。（长期测试事实，仅存于本 Bot 专属记忆，不共享给其他 Bot）'});
   const request={botId:'owner',scopeTypes:['bot' as const],includeInherited:false,query:'HeliosCalibration',limit:20};
   assert(JSON.stringify(memory.search(request)).includes('紫杉7319'),'positive precondition: wide evidence really contains A');
@@ -91,8 +91,18 @@ try {
   memory.forget(identityA.id);
   const identitySafe=revocations.sourceFilter([{scopeType:'bot',scopeId:'owner'}])(sharedEvidence,'',0).userText;
   assert(!identitySafe.includes('AlphaSetting'));assert(identitySafe.includes('BetaSetting 的值是蓝色'));assert(identitySafe.includes('不共享给其他Bot'));
-  const paraphrased=revocations.sourceFilter([{scopeType:'bot',scopeId:'owner'}])('之前的设置呢？','AlphaSetting 为“蓝色”；BetaSetting 为“蓝色”。',0);
-  assert(!paraphrased.assistantText.includes('AlphaSetting'));assert(paraphrased.assistantText.includes('BetaSetting'),'same value with another identity is not withdrawn');
+  const paraphrased=revocations.sourceFilter([{scopeType:'bot',scopeId:'owner'}])('之前的设置呢？','AlphaSetting 的值“蓝色”；AlphaSetting 的颜色“蓝色”；BetaSetting 的值“蓝色”。',0);
+  assert(!paraphrased.assistantText.includes('AlphaSetting 的值'));assert(paraphrased.assistantText.includes('BetaSetting'),'same value with another identity is not withdrawn');
+  assert(paraphrased.assistantText.includes('AlphaSetting 的颜色'),'same identity and value but different property is retained');
+  for (const [i,prefix] of ['来源说明【模型整理标签】：','记录摘要（需跨会话保留）：'].entries()) {
+    const id=`PrefixNeedle${i}`, other=`OtherNeedle${i}`;
+    const excerpt=`${id} 的色值是蓝色；${id} 的标题是蓝色；${other} 的色值是蓝色`;
+    const atom=memory.create({...common,title:`${id} 色值：蓝色`,content:`${prefix}${id} 的色值是蓝色。仅作项目事实`,
+      evidence:[{evidenceKind:'conversation',refId:r.conversationId,excerpt}]});
+    memory.forget(atom.id);
+    const projected=revocations.sourceFilter([{scopeType:'bot',scopeId:'owner'}])(excerpt,'',0).userText;
+    assert(!projected.includes(`${id} 的色值`));assert(projected.includes(`${id} 的标题`));assert(projected.includes(other));
+  }
   const wrapped=memory.create({...common,title:'Wrapper B',content:'B-only retained',evidence:[{evidenceKind:'conversation',refId:r.conversationId,
     excerpt:'用户：'+raw+'\n助手：A是紫杉7319，B是青丘8264'}]});
   // Set original evidence time before the deletion: a later new statement is not retroactively forgotten.

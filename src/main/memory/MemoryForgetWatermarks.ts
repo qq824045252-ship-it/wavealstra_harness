@@ -33,8 +33,11 @@ export class MemoryForgetWatermarks {
       // alone or generic retention notes. A/B may legitimately have equal values.
       for (const fact of [record, ...revisions]) {
         const core = fact.content.replace(/（[^）]*）|\([^)]*\)/g, "");
-        const fragments = memoryClauses(core).filter(part => normalize(part).length >= 4 && normalize(part) !== normalize(fact.title));
         const identities = [fact.title, ...(fact.title.match(/[a-z][a-z0-9_-]*/gi) ?? [])];
+        const named = new Set(identities.filter(identity => /^[a-z][a-z0-9_-]*$/i.test(identity)).map(identity => identity.toLowerCase()));
+        const fragments = [...new Set(memoryClauses(core).flatMap(part => [part,
+          ...[...part.matchAll(/[a-z][a-z0-9_-]*/gi)].filter(match => named.has(match[0].toLowerCase())).map(match => part.slice(match.index))]))]
+          .filter(part => normalize(part).length >= 4 && normalize(part) !== normalize(fact.title));
         for (const clause of clauses) for (const fragment of fragments) {
           if (!normalize(clause).includes(normalize(fragment))) continue;
           const identity = identities.find(value => {
@@ -51,7 +54,9 @@ export class MemoryForgetWatermarks {
           if (assignment && /^[a-z][a-z0-9_-]*$/i.test(identity) && normalize(assignment[1]).includes(normalize(identity))) {
             const value = assignment[2].trim();
             if (normalize(value).length >= 2 && normalize(value) !== normalize(identity)) {
-              evidence.push({ kind: "fact", value, identity });
+              // Guard the property as well: X.color=blue must not withdraw
+              // X.label=blue. Identity-free restatements use host lineage instead.
+              evidence.push({ kind: "fact", value, identity: assignment[1].trim() });
             }
           }
         }
