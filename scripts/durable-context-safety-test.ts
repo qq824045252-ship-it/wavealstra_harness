@@ -51,8 +51,8 @@ function fixture() {
     },
   };
   const manager = new DurableContextManager({ conversation: conversation as never, models: models as never,
-    policy: () => ({ ratio: 0.8, absoluteTokens: null }), contextWindow: () => model.contextWindow });
-  return { manager, models, summaryRequests,
+    policy: () => ({ ratio: 0.8, absoluteTokens: null }), contextWindow: () => model.contextWindow, outputReserveTokens: () => model.maxTokens });
+  return { manager, models, summaryRequests, setOutputLimit: (tokens: number) => { model.maxTokens = tokens; },
     doc: () => structuredClone(doc),
     messages: () => entries.flatMap(e => e.model ?? []),
     setRejectWrites: (value: boolean) => { rejectWrites = value; },
@@ -195,4 +195,12 @@ over.setView(history(5001, 1, 600_000), 5000);
 await assert.rejects(over.prepare(), /超过当前模型安全输入上限/);
 console.log("PASS oversized protected input cannot escape via raw fallback");
 
-console.log("durable context safety tests passed (8 behavior groups)");
+// 9. Actual model output ceiling participates in the hard input guard, even below the soft trigger.
+const outputLimited = fixture();
+outputLimited.setView(history(6001, 1, 250_000), 6000);
+outputLimited.setOutputLimit(64_000);
+await assert.rejects(outputLimited.prepare(), /超过当前模型安全输入上限/);
+outputLimited.setOutputLimit(4_096);
+await outputLimited.prepare();
+console.log("PASS actual output ceiling and hot model-budget changes constrain protected input");
+console.log("durable context safety tests passed (9 behavior groups)");

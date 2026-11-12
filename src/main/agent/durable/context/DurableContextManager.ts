@@ -44,6 +44,8 @@ export interface DurableContextManagerHost {
   contextWindow: () => number;
   modelKey?: () => string | undefined;
   toolEstimateTokens?: () => number;
+  /** Current model output ceiling, independent of the soft compaction trigger. */
+  outputReserveTokens?: () => number | undefined;
   onStatus?: (status: ContextManagementStatusDto) => void;
   log?: (message: string, error?: unknown) => void;
   /** 只读估算：当前工具 schema 的字符数（避免循环依赖 pi 内部）。 */
@@ -300,12 +302,20 @@ export class DurableContextManager {
   }
 
   /** Never send an oversized raw fallback after maintenance failed or protected input could not shrink. */
+  private requestReserve(window: number): number {
+    const declared = this.host.outputReserveTokens?.();
+    // Missing metadata keeps a conservative nonzero fallback; it is never interpreted as free output.
+    const fallback = Math.min(16_384, Math.max(1_024, Math.floor(window * 0.1)));
+    const output = Number.isSafeInteger(declared) && declared! > 0 ? declared! : fallback;
+    return Math.max(fallback, output) + 1_024;
+  }
+
   private assertRequestFits(messages: readonly Message[]): void {
     const { window } = this.resolvePolicy();
     if (!window) throw new Error("当前模型窗口未知，无法安全发送上下文");
     const input = messages.reduce((sum, message) => sum + estimateMessageTokens(message), 0)
       + Math.max(0, this.host.toolEstimateTokens?.() ?? 0);
-    const reserve = Math.min(16_384, Math.max(1_024, Math.floor(window * 0.1)));
+    const reserve = this.requestReserve(window);
     if (input + reserve > window) {
       throw new Error(`上下文超过当前模型安全输入上限（估算 ${input}，上限 ${Math.max(0, window - reserve)} tokens）。原始记录仍保留；请拆分过大的输入，或切换更大窗口模型后重试。`);
     }
@@ -608,13 +618,14 @@ export class DurableContextManager {
     let folds = 0;
     let tokensCompressed = 0;
     const ranges = turn.nudge?.compressibleRanges ?? [];
-    const pressure = beforeTokens > policy.triggerTokens;
+    const safeTrigger = Math.min(policy.triggerTokens, Math.max(0, policy.window - this.requestReserve(policy.window)));
+    const pressure = beforeTokens > safeTrigger;
     const knownGrowth = Boolean(turn.nudge?.shouldInject);
     let skippedReason: string | undefined;
     if (!ranges.length) {
       skippedReason = this.describeNothingToCompress(turn.state, build.messages.length);
     } else if (pressure || knownGrowth || options.force) {
-      const target = Math.max(2_048, Math.floor(policy.triggerTokens * 0.7));
+      const target = Math.max(2_048, Math.floor(safeTrigger * 0.7));
       const chosen = selectRanges(ranges, target);
       const model = await this.resolveModel(models, ctx);
       const appliedRanges: Array<{ startRef: string; endRef: string; summary: string; topic?: string }> = [];

@@ -156,6 +156,7 @@ export class DurableBotRuntime {
   private contextTools: ToolRegistration[] = [];
   /** 当前会话模型窗口/键的同步缓存，供 Harness settings getter 每次读取。 */
   private modelWindow = 0;
+  private modelOutputLimit: number | undefined;
   private modelKeyCache?: string;
   /** 子代理/会诊 conversation 的独立协调器（每个 conversation 一份压缩状态）。 */
   private readonly childManagers = new Map<string, Promise<DurableContextManager | undefined>>();
@@ -325,6 +326,7 @@ export class DurableBotRuntime {
       runtime.codemode = codemode;
       if (options.contextManagement && !options.readOnly) {
         runtime.modelWindow = initialModelWindow;
+        runtime.modelOutputLimit = initialModel?.maxTokens;
         runtime.modelKeyCache = initialModelKey;
         const manager = new DurableContextManager({
           conversation, models: options.models,
@@ -332,6 +334,7 @@ export class DurableBotRuntime {
           engine: () => runtime!.currentCompactionEngine(),
           contextWindow: () => runtime!.currentModelWindow(),
           modelKey: () => runtime!.currentModelKey(),
+          outputReserveTokens: () => runtime!.modelOutputLimit,
           toolEstimateTokens: options.contextManagement.toolEstimateTokens ?? (() => runtime!.estimateNativeToolTokens()),
           ...(options.contextManagement.onStatus ? { onStatus: options.contextManagement.onStatus } : {}),
           log: (message, error) => console.warn(message, error ?? ""),
@@ -351,6 +354,7 @@ export class DurableBotRuntime {
       if (bound.model) {
         const boundModel = options.models.getModel(bound.model.provider, bound.model.modelId);
         runtime.modelWindow = boundModel?.contextWindow ?? initialModelWindow;
+        runtime.modelOutputLimit = boundModel?.maxTokens;
         runtime.modelKeyCache = `${bound.model.provider}/${bound.model.modelId}`;
       }
       finishOpening(runtime.evidence);
@@ -392,6 +396,7 @@ export class DurableBotRuntime {
     if (model) {
       const resolved = this.options.models.getModel(model.provider, model.modelId);
       this.modelWindow = resolved?.contextWindow ?? this.modelWindow;
+      this.modelOutputLimit = resolved?.maxTokens;
       this.modelKeyCache = `${model.provider}/${model.modelId}`;
     }
     if (extensions || contextHooks) {
@@ -485,6 +490,7 @@ export class DurableBotRuntime {
           policy: this.options.contextManagement!.policy,
           engine: () => this.currentCompactionEngine(),
           contextWindow: () => window,
+          outputReserveTokens: () => model?.maxTokens,
           ...(agent.model ? { modelKey: () => `${agent.model!.provider}/${agent.model!.modelId}` } : {}),
           toolEstimateTokens: this.options.contextManagement!.toolEstimateTokens ?? (() => this.estimateNativeToolTokens()),
           log: (message, error) => console.warn(message, error ?? ""),
