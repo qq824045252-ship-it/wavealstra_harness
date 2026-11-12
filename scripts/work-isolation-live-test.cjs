@@ -2,6 +2,7 @@
 const fs = require('node:fs'), path = require('node:path'), Module = require('node:module');
 const filename = path.join(__dirname, 'bot-frontdoor-live-test.cjs');
 const closure = process.argv.includes('--closure');
+const background = process.argv.includes('--background');
 let source = fs.readFileSync(filename, 'utf8');
 function replaceOnce(before, after) {
   if (!source.includes(before)) throw Error('Frontdoor harness anchor changed: ' + before.slice(0, 90));
@@ -41,7 +42,7 @@ const sourceLine = source.split('\n').find(line=>line.includes('if (performanceS
 if(!sourceLine)throw Error('source provenance anchor changed');
 replaceOnce(sourceLine, `    const fingerprint=()=>{const hash=require('node:crypto').createHash('sha256');let count=0;
       const walk=dir=>{for(const e of fs.readdirSync(dir,{withFileTypes:true}).sort((a,b)=>a.name.localeCompare(b.name))){const p=path.join(dir,e.name);if(e.isDirectory())walk(p);else if(e.isFile()){hash.update(path.relative(root,p));hash.update(fs.readFileSync(p));count++;}}};
-      walk(path.join(root,'src'));if(fs.existsSync(path.join(root,'shared')))walk(path.join(root,'shared'));if(fs.existsSync(path.join(root,'resources')))walk(path.join(root,'resources'));for(const name of ['package.json','pnpm-lock.yaml','scripts/bot-frontdoor-live-test.cjs','scripts/work-isolation-live-test.cjs','scripts/work-isolation-live-scenario.cjs','scripts/work-isolation-closure-live-scenario.cjs']){const p=path.join(root,name);hash.update(name);hash.update(fs.readFileSync(p));count++;}return {sha256:hash.digest('hex'),files:count};};
+      walk(path.join(root,'src'));if(fs.existsSync(path.join(root,'shared')))walk(path.join(root,'shared'));if(fs.existsSync(path.join(root,'resources')))walk(path.join(root,'resources'));for(const name of ['package.json','pnpm-lock.yaml','scripts/bot-frontdoor-live-test.cjs','scripts/work-isolation-live-test.cjs','scripts/work-isolation-live-scenario.cjs','scripts/work-isolation-closure-live-scenario.cjs','scripts/work-isolation-background-live-scenario.cjs']){const p=path.join(root,name);hash.update(name);hash.update(fs.readFileSync(p));count++;}return {sha256:hash.digest('hex'),files:count};};
     report.source={root,capturedAt:Date.now(),fingerprint:fingerprint(),snapshotLabel:process.env.WORK_ISOLATION_SNAPSHOT||'UNVERIFIED_SOURCE_COPY'};
     fs.writeFileSync(path.join(out,'source-provenance.json'),JSON.stringify(report.source,null,2));
     report.performanceCaveat='This is functional acceptance, not a latency or throughput benchmark.';`);
@@ -64,7 +65,7 @@ source = source.slice(0, start) + `
       }
       await until(()=>evaluate('Boolean(document.querySelector("#bot-draft"))'),'restart composer');
     };
-    try { await require(${JSON.stringify(closure?'./work-isolation-closure-live-scenario.cjs':'./work-isolation-live-scenario.cjs')}).run({send,foregroundDone,until,evaluate,history,rpc,report,requests,rawUsageAudit,out,home,modelKey,botId,restart}); } finally {
+    try { await require(${JSON.stringify(background?'./work-isolation-background-live-scenario.cjs':closure?'./work-isolation-closure-live-scenario.cjs':'./work-isolation-live-scenario.cjs')}).run({send,foregroundDone,until,evaluate,history,rpc,report,requests,rawUsageAudit,out,home,modelKey,botId,restart}); } finally {
       report.source.finishedFingerprint=fingerprint();
       assert.equal(report.source.finishedFingerprint.sha256,report.source.fingerprint.sha256,'frozen source must not change during live batch');
     }
