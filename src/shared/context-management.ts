@@ -51,6 +51,14 @@ export interface ContextManagementStatusDto {
   processedMessages?: number;
   operationId?: string;
   revision?: number;
+  /** False only when a local error could not be written; revision remains the last durable revision. */
+  durable?: boolean;
+  interrupted?: boolean;
+  sessionId?: string;
+  conversationId?: number;
+  sourceRevision?: number;
+  viewDigest?: string;
+  configDigest?: string;
   message?: string;
   lastError?: string;
   updatedAt: number;

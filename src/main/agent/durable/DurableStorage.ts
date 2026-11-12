@@ -1,4 +1,6 @@
 import type { Storage } from "@earendil-works/pi-durable";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { JsonlStorage, openNodeJsonlStorage } from "@earendil-works/pi-durable/storage/jsonl/node";
 import { DurableReadOnlyFiles } from "./DurableReadOnlyFiles";
 import { repairDurableJsonlLog, type DurableLogRepairReport } from "./DurableLogRepair";
@@ -46,4 +48,10 @@ export async function openDurableStorage(directory: string, context: JsonlContex
     lease.release();
     throw error;
   }
+}
+
+/** Passive document inspection: no ownership/repair/bootstrap writes, and no execution host. */
+export async function openDurablePassiveStorage(directory: string, context: JsonlContext): Promise<Storage | undefined> {
+  if (!existsSync(join(directory, "main.jsonl"))) return undefined;
+  return JsonlStorage.open(directory, new DurableReadOnlyFiles({ cwd: directory }), context, { fsync: true });
 }

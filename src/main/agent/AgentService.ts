@@ -4479,10 +4479,10 @@ export class AgentService {
   private readonly lastCompactionStatus = new Map<string, TaskCompactionStatusDto>();
   private readonly compactionEstimates = new Map<string, { leafId: string; tokens: number }>();
 
-  getCompactionStatus(taskId: string): TaskCompactionStatusDto {
+  async getCompactionStatus(taskId: string): Promise<TaskCompactionStatusDto> {
     const previous = this.lastCompactionStatus.get(taskId);
     // Durable 是唯一真实状态源：查询只读投影，绝不为读状态去打开运行时。
-    const live = this.durableBots?.contextManagementStatus(taskId);
+    const live = await this.durableBots?.contextManagementStatus(taskId);
     // 正在整理时以运行时为准。运行时停在 idle/上一次终态时不能盖掉本地刚发布的
     // running/终态记录（手动操作锁仍在，或运行时尚未投影本次结果）。
     if (live && this.durableCompactionRunning(live)) return this.durableCompactionStatus(taskId, live, previous);

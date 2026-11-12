@@ -30,6 +30,8 @@ const CompressParams = Type.Object({
   endRef: Type.String({ description: "Last message ref of the range." }),
   summary: Type.String({ description: "Summary that replaces every message in the range. Preserve paths, versions, errors, decisions and exact quotes." }),
   topic: Type.Optional(Type.String({ description: "Short topic label for the block." })),
+  expectedRevision: Type.Optional(Type.Integer({ minimum: 0, description: "Durable view revision observed in acp_status. A stale revision is rejected; omitted binds the view at tool execution." })),
+  expectedConfigDigest: Type.Optional(Type.String({ description: "Current configDigest from acp_status; rejects a changed model/window/policy." })),
 }, { additionalProperties: false });
 
 export interface DurableContextToolsOptions {
@@ -55,12 +57,14 @@ export function createDurableContextTools(options: DurableContextToolsOptions) {
     execute: async (_params, api, context) => {
       const manager = await managerFor(api, context); if (!manager) return { output: [{ type: "text" as const, text: "该会话没有独立的上下文管理状态。" }] };
       return guard(context, async () => {
-        const snapshot = manager.statusSnapshot();
-        const state = await manager.readState(context);
+        const { state, status: snapshot } = manager.readStatusSnapshot();
         const lines = [
           `engine: ${snapshot.engine}`,
           `enabled: ${snapshot.enabled}`,
           `phase: ${snapshot.phase}${snapshot.reason ? ` (${snapshot.reason})` : ""}`,
+          `revision: ${snapshot.revision ?? 0}`,
+          `configDigest: ${snapshot.configDigest ?? "unknown"}`,
+          `operationId: ${snapshot.operationId ?? "none"}`,
           `contextWindow: ${snapshot.contextWindow}`,
           `triggerTokens: ${snapshot.triggerTokens}`,
           `estimatedInputTokens: ${snapshot.estimatedInputTokens ?? "unknown"}`,

@@ -1,7 +1,8 @@
-import type { Context } from "@earendil-works/chord/context";
+import { createHash } from "node:crypto";
+import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import type { AssistantMessage, Message, Models } from "@earendil-works/pi-ai";
 import { estimateContextTokens, estimateMessageTokens, estimateTextTokens } from "@earendil-works/pi-ai/utils/estimate";
-import type { CompactionReason, Conversation, EntryRecord, HookApi } from "@earendil-works/pi-durable";
+import type { CompactionReason, Conversation, ContextView, EntryRecord, HookApi } from "@earendil-works/pi-durable";
 import {
   activeBlocks, blockDocs, collectBlockContent, createCore, createInitialState, defaultConfig,
   isSummaryMessageId, searchBlocks, SUMMARY_HEADER,
@@ -12,9 +13,10 @@ import type {
   ContextManagementEngine, ContextManagementReason, ContextManagementStatusDto, ContextManagementSummaryDto,
 } from "../../../../shared/context-management";
 import {
-  contextConfigDigest, DurableContextStateDoc, emptyPersistedState, mergeRefLocators, parseKernelState,
+  contextConfigDigest, DurableContextStateDoc, DurableContextSessionDoc, emptyPersistedState, mergeRefLocators, parseKernelState,
+  normalizePersisted, persistedContextStatus, matchesNativeContextCommit, nativeSummaryDigest,
   serializeKernelState, summaryRefSpan,
-  type DurableContextPersistedState, type DurableContextRefLocator,
+  type DurableContextPersistedState, type DurableContextRefLocator, type DurableContextLastOperation,
 } from "./DurableContextState";
 import type { DurableCompactionOutcome, ProductCompactionSettings } from "./types";
 
@@ -48,8 +50,9 @@ export interface DurableContextManagerHost {
   outputReserveTokens?: () => number | undefined;
   onStatus?: (status: ContextManagementStatusDto) => void;
   log?: (message: string, error?: unknown) => void;
-  /** 只读估算：当前工具 schema 的字符数（避免循环依赖 pi 内部）。 */
-  contextId?: string;
+  /** Passive snapshot from the owning Harness; constructing a manager performs no maintenance. */
+  initialState?: DurableContextPersistedState;
+  initialStatus?: ContextManagementStatusDto;
 }
 
 /** 一条 provider 消息与其 Durable 位置（未匹配到 entry 的临时证据消息没有 locator）。 */
@@ -77,6 +80,7 @@ interface TurnOutcome {
   reason?: ContextManagementReason;
   skippedReason?: string;
 }
+type OperationSource = DurableContextLastOperation["source"];
 
 /**
  * Durable 会话的上下文管理协调点。
@@ -96,7 +100,9 @@ export class DurableContextManager {
   private disposed = false;
   private status: ContextManagementStatusDto;
   private lastPublished = 0;
-  private operationCounter = 0;
+  private activeOperation?: DurableContextLastOperation;
+  /** Synchronous admission, before any await: no two callbacks may stage the same manager's state. */
+  private mutating = false;
   /** 手动整理的取消句柄；取消只停止本次维护，不影响任务停止语义。 */
   private manualAbort?: AbortController;
 
@@ -113,6 +119,11 @@ export class DurableContextManager {
       revision: 0,
       updatedAt: Date.now(),
     };
+    if (host.initialState) {
+      this.persisted = normalizePersisted(structuredClone(host.initialState));
+      this.committed = structuredClone(this.persisted);
+      this.status = host.initialStatus ?? persistedContextStatus(this.persisted);
+    }
   }
 
   get conversationId(): number { return this.host.conversation.id; }
@@ -145,14 +156,17 @@ export class DurableContextManager {
   statusSnapshot(): ContextManagementStatusDto {
     const policy = this.resolvePolicy();
     const engine = this.engine;
+    const visible = this.mutating || this.loading ? this.committed : this.persisted;
+    const kernel = this.mutating || this.loading ? parseKernelState(this.committed) : this.kernelState;
     return {
       ...this.status,
       engine,
       enabled: engine === "billion-context" && this.status.enabled && this.healthy && !this.disposed,
       contextWindow: policy.window,
       triggerTokens: policy.triggerTokens,
-      blocks: this.kernelState ? countTopLevelBlocks(this.kernelState) : 0,
-      summaries: this.persisted.summaries.slice(-5).map(toSummaryDto),
+      configDigest: this.configDigest(),
+      blocks: kernel ? countTopLevelBlocks(kernel) : this.status.blocks ?? 0,
+      summaries: visible.summaries.slice(-5).map(toSummaryDto),
       updatedAt: this.status.updatedAt,
     };
   }
@@ -160,8 +174,8 @@ export class DurableContextManager {
   /** 原生压缩边界变化（或首次打开）后重建内核 state；旧 ref 映射归档，原文仍可回查。 */
   async ensureReady(ctx: Context): Promise<void> {
     if (this.disposed) return;
-    if (this.loaded || this.kernelState) return;
     if (this.loading) return this.loading;
+    if (this.loaded) return;
     this.loading = (async () => {
       try {
         const view = await this.host.conversation.context(ctx);
@@ -177,10 +191,13 @@ export class DurableContextManager {
             headEntryId: doc.headEntryId, watermarkEntryId: doc.watermarkEntryId, epoch: doc.epoch,
             refs: doc.refs, archivedRefs: doc.archivedRefs, stateJson: doc.stateJson,
             summaries: doc.summaries, stats: doc.stats, lastOperation: doc.lastOperation,
+            revision: doc.revision, sessionId: (await tx.doc(DurableContextSessionDoc)).sessionId,
           })) as DurableContextPersistedState;
         }, ctx);
         this.persisted = normalizePersisted(record);
+        if (typeof this.persisted.sessionId !== "string" || !this.persisted.sessionId) throw new Error("持久会话身份无效，原始记录已保留");
         this.committed = structuredClone(this.persisted);
+        this.status = persistedContextStatus(this.persisted);
         this.headEntryId = currentHead;
         if (this.persisted.headEntryId === currentHead) {
           const parsed = parseKernelState(this.persisted);
@@ -190,6 +207,12 @@ export class DurableContextManager {
           }
         }
         if (!this.kernelState) await this.rebase(currentHead, ctx, "boundary");
+        const unfinished = this.persisted.lastOperation;
+        if (unfinished && (unfinished.phase === "summarizing" || unfinished.phase === "applying")) {
+          this.persisted.lastOperation = { ...unfinished, phase: "failed", interrupted: true,
+            message: "上次上下文整理被中断，已保留原文和已提交摘要；未自动重放", lastError: "维护进程在提交终态前结束", at: Date.now() };
+          await this.save(ctx, true);
+        }
         this.loaded = true;
       } catch (error) {
         this.log("[Context] 无法恢复上下文管理状态，等待下一次重建", error);
@@ -238,34 +261,124 @@ export class DurableContextManager {
     this.rebaseNeeded = false;
     this.consecutiveFailures = 0;
     this.persisted.kernelVersion = EMPTY_KERNEL_VERSION;
+    const operation = this.persisted.lastOperation;
+    if (operation?.phase === "applying" && operation.source.headEntryId !== headEntryId) {
+      const head = (await this.host.conversation.context(ctx)).head;
+      // A reset/rewind/unrelated compaction is not proof that our native fallback was placed.
+      const matched = await matchesNativeContextCommit(operation, head, requestId => this.host.conversation.commit(
+        tx => tx.submissionByRequest(this.host.conversation.id, requestId), ctx));
+      this.persisted.lastOperation = { ...operation, phase: matched ? "completed" : "failed", at: Date.now(),
+        interrupted: !matched, message: matched ? "原生压缩边界已提交" : "原生边界已变化，但无法验证本次摘要提交，原文与已提交记录保留" };
+    }
     await this.save(ctx, true);
     this.log(`[Context] 上下文 state 从边界重建（${reason}）`);
   }
 
   /** 持久化节流：refs/统计每轮都变，但只有摘要/边界变化才必须立即落盘；崩溃后可确定性重建。 */
   private roundsSinceSave = 0;
-  private async save(ctx: Context, force = false): Promise<void> {
+  private async save(ctx: Context, force = false, expectedOperation?: DurableContextLastOperation,
+    expectedSource = expectedOperation?.source, expectedConfig = expectedOperation?.configDigest): Promise<void> {
     if (!this.kernelState) return;
     if (!force && this.roundsSinceSave < SAVE_INTERVAL_ROUNDS) { this.roundsSinceSave += 1; return; }
     this.roundsSinceSave = 0;
     this.persisted.stateJson = serializeKernelState(this.kernelState);
     this.persisted.kernelVersion = EMPTY_KERNEL_VERSION;
-    const snapshot = structuredClone(this.persisted);
+    // Durable documents are strict JSON: optional diagnostic fields must be absent, not undefined.
+    const snapshot = JSON.parse(JSON.stringify(this.persisted)) as DurableContextPersistedState;
+    const expectedRevision = this.committed.revision ?? 0;
+    if (expectedRevision >= Number.MAX_SAFE_INTEGER) throw new Error("上下文状态修订序列已耗尽");
+    snapshot.revision = expectedRevision + 1;
+    if (snapshot.lastOperation) snapshot.lastOperation.revision = snapshot.revision;
     try {
       await this.host.conversation.commit(async tx => {
         const doc = await tx.doc(DurableContextStateDoc, this.host.conversation.id);
+        if ((doc.revision ?? 0) !== expectedRevision
+          || (expectedOperation && doc.lastOperation?.operationId !== expectedOperation.operationId)) {
+          throw new StaleContextOperation(normalizePersisted(JSON.parse(JSON.stringify(doc))));
+        }
+        if (expectedOperation) {
+          if (this.disposed || this.activeOperation?.operationId !== expectedOperation.operationId
+            || this.configDigest() !== expectedOperation.configDigest) throw new Error("上下文整理的操作或配置已变化，请重试");
+        }
+        if (expectedConfig !== undefined && this.configDigest() !== expectedConfig) throw new Error("上下文整理的配置已变化，请重试");
+        if (expectedSource) {
+          const [head, tail] = await Promise.all([tx.latestHeadMarker(this.host.conversation.id), tx.latestEntryId(this.host.conversation.id)]);
+          if ((head?.id ?? null) !== expectedSource.headEntryId || (tail ?? 0) !== expectedSource.watermarkEntryId
+            || this.persisted.epoch !== expectedSource.epoch) throw new Error("上下文整理的原始视图已变化，请重试");
+        }
         for (const key of Object.keys(doc)) Reflect.deleteProperty(doc, key);
         Object.assign(doc, snapshot);
       }, ctx);
       this.committed = snapshot;
+      this.persisted = structuredClone(snapshot);
+      this.status = { ...this.status, ...persistedContextStatus(snapshot, false) };
     } catch (error) {
+      if (error instanceof StaleContextOperation) this.committed = error.current;
       this.persisted = structuredClone(this.committed);
       this.kernelState = parseKernelState(this.committed);
       this.headEntryId = this.committed.headEntryId;
       this.rebaseNeeded = !this.kernelState;
       this.loaded = Boolean(this.kernelState);
+      this.status = persistedContextStatus(this.committed, !this.activeOperation);
+      if (error instanceof StaleContextOperation) throw error;
       throw new Error(`上下文管理状态未保存，已放弃未提交的摘要：${errorText(error)}`);
     }
+  }
+
+  private configDigest(): string {
+    const policy = this.resolvePolicy();
+    return contextConfigDigest({ contextWindow: policy.window, triggerTokens: policy.triggerTokens,
+      keepRecentTokens: 20_000, modelKey: this.host.modelKey?.(), outputReserveTokens: this.requestReserve(policy.window), engine: this.engine });
+  }
+
+  private operationSource(view: ContextView): OperationSource {
+    return { headEntryId: view.head?.id ?? null, watermarkEntryId: highestEntryId(view.entries), epoch: this.persisted.epoch,
+      viewDigest: viewDigest(view.messages) };
+  }
+
+  private async beginOperation(ctx: Context, reason: ContextManagementReason, automatic: boolean, beforeTokens?: number, expectedSource?: OperationSource): Promise<DurableContextLastOperation> {
+    if (this.activeOperation) throw new Error("已有一次上下文整理正在进行");
+    const view = await this.host.conversation.context(ctx);
+    const observed = this.operationSource(view);
+    if (expectedSource !== undefined && JSON.stringify(observed) !== JSON.stringify(expectedSource)) throw new Error("上下文整理的原始视图已变化，请重试");
+    const policy = this.resolvePolicy();
+    const sourceRevision = this.committed.revision ?? 0;
+    const operation: DurableContextLastOperation = {
+      operationId: `${this.persisted.sessionId}:${this.conversationId}:${sourceRevision + 1}`,
+      revision: sourceRevision + 1, sourceRevision, sessionId: this.persisted.sessionId!, conversationId: this.conversationId,
+      source: expectedSource ?? observed,
+      configDigest: this.configDigest(), contextWindow: policy.window, triggerTokens: policy.triggerTokens,
+      phase: "summarizing", reason, engine: this.engine, automatic, estimated: true, beforeTokens, at: Date.now(),
+    };
+    this.persisted.lastOperation = operation;
+    await this.save(ctx, true, undefined, operation.source, operation.configDigest);
+    this.activeOperation = operation;
+    this.publish(this.status);
+    return operation;
+  }
+
+  private async finishOperation(operation: DurableContextLastOperation, outcome: Partial<DurableContextLastOperation>, ctx: Context): Promise<void> {
+    if (this.disposed || this.activeOperation !== operation) throw new StaleContextOperation(this.committed);
+    const view = await this.host.conversation.context(ctx);
+    if (viewDigest(view.messages) !== operation.source.viewDigest) throw new Error("上下文整理的原始视图已变化，请重试");
+    this.persisted.lastOperation = { ...operation, ...outcome, at: Date.now() };
+    await this.save(ctx, true, operation);
+    if (this.activeOperation === operation) this.activeOperation = undefined;
+    this.publish(this.status);
+  }
+
+  private async rejectOperation(operation: DurableContextLastOperation, error: unknown): Promise<void> {
+    if (this.activeOperation !== operation) return;
+    this.activeOperation = undefined;
+    // A newer manager's state wins. An old callback may not write a failure over its result.
+    if (this.committed.lastOperation?.operationId !== operation.operationId || error instanceof StaleContextOperation || this.disposed) return;
+    this.persisted = structuredClone(this.committed);
+    this.kernelState = parseKernelState(this.committed);
+    const cancelled = this.manualAbort?.signal.aborted || isAbortError(error);
+    this.persisted.lastOperation = { ...operation, phase: cancelled ? "cancelled" : "failed", at: Date.now(),
+      message: cancelled ? "已取消" : "上下文整理失败", lastError: cancelled ? undefined : errorText(error) };
+    try { await this.save(BACKGROUND_CONTEXT, true); this.publish(this.status); }
+    catch (writeError) { this.fail("上下文整理失败，终态未能保存", writeError); }
   }
 
   /**
@@ -273,6 +386,13 @@ export class DurableContextManager {
    * 失败时只在原始消息仍可容纳时回退；不可容纳则明确失败，禁止发送超限输入。
    */
   async beforeRequest(messages: readonly Message[], api: HookApi, ctx: Context): Promise<{ messages: readonly Message[] } | undefined> {
+    if (this.mutating) { this.assertRequestFits(messages); return undefined; }
+    this.mutating = true;
+    try { return await this.prepareRequest(messages, api, ctx); }
+    finally { this.mutating = false; }
+  }
+
+  private async prepareRequest(messages: readonly Message[], api: HookApi, ctx: Context): Promise<{ messages: readonly Message[] } | undefined> {
     if (this.disposed || this.engine !== "billion-context") return undefined;
     try {
       await this.ensureReady(ctx);
@@ -284,14 +404,11 @@ export class DurableContextManager {
         await this.rebase(headEntryId, ctx, "boundary");
       }
       if (!this.healthy) { this.assertRequestFits(messages); return undefined; }
-      const outcome = await this.maintainAndProject(messages, view.entries, api.models, ctx, { automatic: true });
+      const outcome = await this.maintainAndProject(messages, view.entries, api.models, ctx, { automatic: true, source: this.operationSource(view) });
       this.assertRequestFits(outcome.projected);
       this.consecutiveFailures = 0;
-      this.publish({ ...this.status, phase: outcome.folds > 0 ? "completed" : "idle",
-        automatic: true, reason: outcome.reason, beforeTokens: outcome.beforeTokens,
-        afterTokens: outcome.afterTokens !== undefined && outcome.folds > 0 ? outcome.afterTokens : undefined,
-        estimatedInputTokens: outcome.beforeTokens, blocks: outcome.blocks,
-        processedMessages: outcome.folds > 0 ? outcome.processed : 0, estimated: true });
+      this.publish({ ...this.status, estimatedInputTokens: outcome.beforeTokens, blocks: outcome.blocks,
+        processedMessages: outcome.folds > 0 ? outcome.processed : 0 });
       return outcome.projectedApplied ? { messages: outcome.projected } : undefined;
     } catch (error) {
       this.consecutiveFailures++;
@@ -327,30 +444,40 @@ export class DurableContextManager {
    * - 其他情况（原生手动/溢出/BC 故障）：若原生输入可能撑爆窗口，用自己的有界摘要替代，
    *   保证 fallback 的摘要请求本身一定装得下；否则沿用原生行为。
    */
-  async beforeCompact(input: { reason: CompactionReason; messages: readonly Message[] }, api: HookApi, ctx: Context): Promise<{ decline: true } | { summary: string } | undefined> {
+  async beforeCompact(input: { reason: CompactionReason; messages: readonly Message[]; firstKept?: number }, api: HookApi, ctx: Context): Promise<{ decline: true } | { summary: string } | undefined> {
+    if (this.mutating) return { decline: true };
+    this.mutating = true;
+    try { return await this.prepareNativeCompact(input, api, ctx); }
+    finally { this.mutating = false; }
+  }
+
+  private async prepareNativeCompact(input: { reason: CompactionReason; messages: readonly Message[]; firstKept?: number }, api: HookApi, ctx: Context): Promise<{ decline: true } | { summary: string } | undefined> {
     // 用户显式选择“按比例压缩（Pi 原生）”时，不参与原生压缩协调，完全沿用 Pi 行为。
     if (this.engine !== "billion-context") return undefined;
     const policy = this.resolvePolicy();
+    let operation: DurableContextLastOperation | undefined;
     try {
       // prepare 阶段会先跑阈值压缩、再跑 beforeRequest；若这里不先加载 state，
       // 重启后的第一次请求会误走 fallback，重复生成已经存在的摘要。
       await this.ensureReady(ctx);
       if (input.reason === "threshold" && this.healthy && this.kernelState) {
-        this.publish({ ...this.status, phase: "skipped", automatic: true, reason: "threshold",
-          message: "billion-context 在请求前自行整理，跳过 Pi 原生阈值压缩" });
         return { decline: true };
       }
       const budget = Math.max(4_096, Math.floor(policy.window * 0.45));
-      const inputTokens = estimateMessages(input.messages);
+      const inputTokens = Math.max(estimateMessages(input.messages), input.messages.reduce((total, message) => total + estimateMessageTokens(message), 0));
       this.rebaseNeeded = true;
       if (inputTokens <= budget) return undefined;
+      operation = await this.beginOperation(ctx, input.reason === "manual" ? "manual" : "fallback", input.reason !== "manual", inputTokens);
       const model = await this.resolveModel(api.models, ctx);
       const summary = await this.summarizeMessages(input.messages, budget, model, api.models, ctx);
-      this.publish({ ...this.status, phase: "completed", automatic: input.reason !== "manual",
-        reason: input.reason === "manual" ? "manual" : "fallback", beforeTokens: inputTokens,
-        afterTokens: estimateTextTokens(summary), estimated: true, message: "已用有界摘要接管原生压缩输入" });
+      // The native task has not committed its head yet. Do not publish completed from a before hook.
+      await this.finishOperation(operation, { phase: "applying", engine: "native",
+        ...(input.firstKept !== undefined ? { nativeCommit: { taskId: api.taskId, firstKept: input.firstKept,
+          summaryDigest: nativeSummaryDigest(summary) } } : {}),
+        afterTokens: estimateTextTokens(summary), message: "有界摘要已准备，等待原生压缩边界提交" }, ctx);
       return { summary };
     } catch (error) {
+      if (operation) await this.rejectOperation(operation, error);
       this.fail("原生压缩兜底摘要失败", error);
       return { decline: true };
     }
@@ -358,6 +485,13 @@ export class DurableContextManager {
 
   /** 手动“立即整理上下文”。成功/无内容都返回真实结果，不伪报节省。 */
   async compressNow(ctx: Context): Promise<DurableCompactionOutcome> {
+    if (this.mutating) return { applied: false, engine: "billion-context", estimated: true, skippedReason: "已有一次上下文整理正在进行" };
+    this.mutating = true;
+    try { return await this.runManualCompression(ctx); }
+    finally { this.mutating = false; }
+  }
+
+  private async runManualCompression(ctx: Context): Promise<DurableCompactionOutcome> {
     if (this.disposed) return { applied: false, engine: "billion-context", estimated: true, skippedReason: "上下文管理已停用" };
     if (this.engine !== "billion-context") return { applied: false, engine: "native", estimated: true,
       skippedReason: "当前设置为按比例压缩（Pi 原生），未启用 billion-context 分层摘要" };
@@ -370,21 +504,19 @@ export class DurableContextManager {
       const view = await this.host.conversation.context(ctx);
       const headEntryId = view.head?.id ?? null;
       if (headEntryId !== this.headEntryId || this.rebaseNeeded) await this.rebase(headEntryId, ctx, "boundary");
-      const outcome = await this.maintainAndProject(view.messages, view.entries, this.host.models, ctx, { automatic: false, force: true });
+      const outcome = await this.maintainAndProject(view.messages, view.entries, this.host.models, ctx, { automatic: false, force: true, source: this.operationSource(view) });
       this.consecutiveFailures = 0;
       const result: DurableCompactionOutcome = outcome.folds > 0
         ? { applied: true, engine: "billion-context", beforeTokens: outcome.beforeTokens, afterTokens: outcome.afterTokens, estimated: true, blocks: outcome.blocks }
         : { applied: false, engine: "billion-context", beforeTokens: outcome.beforeTokens, estimated: true,
             skippedReason: outcome.skippedReason ?? "没有可整理的历史" };
-      this.publish({ ...this.status, phase: outcome.folds > 0 ? "completed" : "skipped", automatic: false,
-        reason: "manual", beforeTokens: outcome.beforeTokens, afterTokens: outcome.afterTokens,
-        estimatedInputTokens: outcome.beforeTokens, blocks: outcome.blocks, message: result.skippedReason });
+      this.publish({ ...this.status, estimatedInputTokens: outcome.beforeTokens, blocks: outcome.blocks });
       return result;
     } catch (error) {
       const cancelled = controller.signal.aborted || isAbortError(error);
       if (cancelled) {
         // 取消是一个明确的终态，不是失败：保留已提交状态，只释放本次维护。
-        this.publish({ ...this.status, phase: "cancelled", automatic: false, reason: "manual", message: "已取消" });
+        if (this.status.phase !== "cancelled") this.publish({ ...this.status, phase: "cancelled", automatic: false, reason: "manual", message: "已取消", durable: false });
       } else {
         this.consecutiveFailures++;
         this.fail("手动上下文整理失败", error);
@@ -410,16 +542,31 @@ export class DurableContextManager {
   }
 
   /** 关闭前强制落盘一次；失败必须向调用者报告，不能伪造跨重启恢复成功。 */
-  async flush(ctx: Context): Promise<void> { await this.save(ctx, true); }
+  async flush(ctx: Context): Promise<void> {
+    if (this.mutating) return; // An unfinished operation already has a durable start; never flush staged coverage.
+    this.mutating = true;
+    try { await this.loading; await this.save(ctx, true); }
+    finally { this.mutating = false; }
+  }
 
   /** 原生压缩结束后通知管理器：下一次请求必须按新边界重建。 */
   markNativeCompaction(): void { this.rebaseNeeded = true; }
 
+  async nativeCompactionCommitted(ctx: Context): Promise<void> {
+    if (!this.loaded || this.mutating) return;
+    this.mutating = true;
+    try {
+      const view = await this.host.conversation.context(ctx);
+      if ((view.head?.id ?? null) !== this.headEntryId) await this.rebase(view.head?.id ?? null, ctx, "native-fallback");
+    } finally { this.mutating = false; }
+  }
+
   /** 某个原始 entry 当前代次/历史代次里的 ref，供模型引用。 */
   refsForEntry(entryId: number): string[] {
+    const visible = this.mutating || this.loading ? this.committed : this.persisted;
     const refs = new Set<string>();
-    for (const [ref, locator] of Object.entries(this.persisted.refs)) if (locator.entryId === entryId) refs.add(ref);
-    for (const archived of this.persisted.archivedRefs) {
+    for (const [ref, locator] of Object.entries(visible.refs)) if (locator.entryId === entryId) refs.add(ref);
+    for (const archived of visible.archivedRefs) {
       for (const [ref, locator] of Object.entries(archived.refs)) if (locator.entryId === entryId) refs.add(ref);
     }
     return [...refs].sort();
@@ -427,13 +574,26 @@ export class DurableContextManager {
 
   /** 模型主动调用 compress 时的应用路径：摘要由模型给出，内核负责范围校验与分层。 */
   async applyModelCompression(
-    input: { startRef: string; endRef: string; summary: string; topic?: string },
+    input: { startRef: string; endRef: string; summary: string; topic?: string; expectedRevision?: number; expectedConfigDigest?: string },
     ctx: Context,
+  ): Promise<{ ok: boolean; message: string }> {
+    if (this.mutating) return { ok: false, message: "已有一次上下文整理正在进行，请稍后重试" };
+    this.mutating = true;
+    try { return await this.runModelCompression(input, ctx); }
+    finally { this.mutating = false; }
+  }
+
+  private async runModelCompression(
+    input: { startRef: string; endRef: string; summary: string; topic?: string; expectedRevision?: number; expectedConfigDigest?: string }, ctx: Context,
   ): Promise<{ ok: boolean; message: string }> {
     if (this.engine !== "billion-context") return { ok: false, message: "当前设置为按比例压缩（Pi 原生），未启用 billion-context" };
     await this.ensureReady(ctx);
     const view = await this.host.conversation.context(ctx);
     if ((view.head?.id ?? null) !== this.headEntryId || this.rebaseNeeded) await this.rebase(view.head?.id ?? null, ctx, "boundary");
+    if ((input.expectedRevision !== undefined && input.expectedRevision !== (this.committed.revision ?? 0))
+      || (input.expectedConfigDigest !== undefined && input.expectedConfigDigest !== this.configDigest())) {
+      return { ok: false, message: "上下文视图或配置版本已变化，请先调用 acp_status 重新读取 revision/configDigest 后重试" };
+    }
     const state = this.kernelState;
     if (!state) return { ok: false, message: "上下文状态尚未就绪，请稍后重试" };
     const build = this.buildCoreMessages(view.messages, view.entries);
@@ -451,19 +611,27 @@ export class DurableContextManager {
       >= view.messages.reduce((sum, message) => sum + estimateMessageTokens(message), 0)) {
       return { ok: false, message: "摘要没有减少实际输入，未提交压缩结果" };
     }
-    this.kernelState = applied.state;
-    this.indexRefs(applied.state);
-    this.recordSummaries(applied.state);
-    await this.save(ctx, true);
-    this.publish({ ...this.status, phase: "completed", automatic: false, reason: "manual",
-      blocks: countTopLevelBlocks(applied.state), message: `模型压缩：${result.blocksCreated} 个摘要块` });
+    const operation = await this.beginOperation(ctx, "manual", false, view.messages.reduce((sum, message) => sum + estimateMessageTokens(message), 0), this.operationSource(view));
+    try {
+      this.kernelState = applied.state;
+      this.indexRefs(applied.state);
+      this.recordSummaries(applied.state);
+      await this.finishOperation(operation, { phase: "completed", blocks: countTopLevelBlocks(applied.state),
+        afterTokens: projected.messages.reduce((sum, message) => sum + estimateMessageTokens(message), 0),
+        message: `模型压缩：${result.blocksCreated} 个摘要块` }, ctx);
+    } catch (error) { await this.rejectOperation(operation, error); throw error; }
     return { ok: true, message: `已创建 ${result.blocksCreated} 个摘要块（压缩 ${result.tokensCompressed} tokens）${result.warnings.length ? `；提示：${result.warnings.join("；")}` : ""}` };
   }
 
   /** 内核状态与原文的只读查询，供 acp_status / acp_search / acp_retrieve 使用。 */
   async readState(ctx: Context): Promise<CompressionState | undefined> {
     await this.ensureReady(ctx);
-    return this.kernelState;
+    return this.mutating ? parseKernelState(this.committed) : this.kernelState;
+  }
+
+  /** Status inspection is passive, even before the manager has performed its first maintenance. */
+  readStatusSnapshot(): { status: ContextManagementStatusDto; state: CompressionState | undefined } {
+    return { status: this.statusSnapshot(), state: this.mutating || this.loading ? parseKernelState(this.committed) : this.kernelState ?? parseKernelState(this.persisted) };
   }
 
   async searchSummaries(query: string, limit: number, ctx: Context): Promise<Array<{ blockId: string; refs: string; topic?: string; summary: string; entryIds: number[] }>> {
@@ -485,21 +653,22 @@ export class DurableContextManager {
 
   /** 通过 ref / blockId / entryId 取回原始 entry 文本，分页且有上限。 */
   async retrieveOriginal(input: { ref?: string; blockId?: string; entryId?: number; offset?: number; limit?: number; cursor?: string }, api: ToolReader, ctx: Context): Promise<{ text: string; entryIds: number[]; page?: { offset: number; total?: number; nextCursor?: string } }> {
+    await this.ensureReady(ctx);
     const entryIds = await this.resolveEntryIds(input, ctx);
-    if (!entryIds.length) return { text: "", entryIds: [] };
-    const target = JSON.stringify([this.host.contextId, this.conversationId, input.ref, input.blockId, input.entryId]);
+    const target = JSON.stringify([this.persisted.sessionId, this.conversationId, input.ref, input.blockId, input.entryId, entryIds]);
     let index = 0;
     let skip = Math.max(0, Math.floor(input.offset ?? 0));
     let offset = skip;
     if (input.cursor) {
-      let cursor: { target: string; index: number; skip: number; offset: number };
+      let cursor: { version: number; target: string; index: number; skip: number; offset: number };
       try { cursor = JSON.parse(Buffer.from(input.cursor, "base64url").toString("utf8")); }
       catch { throw new Error("原文分页 cursor 无效，请重新读取第一页"); }
-      if (cursor.target !== target || ![cursor.index, cursor.skip, cursor.offset].every(n => Number.isSafeInteger(n) && n >= 0)) {
-        throw new Error("原文分页 cursor 与查询目标不一致");
+      if (!cursor || cursor.version !== 2 || cursor.target !== target || ![cursor.index, cursor.skip, cursor.offset].every(n => Number.isSafeInteger(n) && n >= 0) || cursor.index >= entryIds.length) {
+        throw new Error("原文分页 cursor 已失效或与会话/查询目标不一致，请重新读取第一页");
       }
       ({ index, skip, offset } = cursor);
     }
+    if (!entryIds.length) return { text: "", entryIds: [] };
     const limit = Math.min(12_000, Math.max(200, Math.floor(input.limit ?? 8_000)));
     const parts: string[] = [];
     const readIds: number[] = [];
@@ -520,7 +689,7 @@ export class DurableContextManager {
       skip = 0;
     }
     const nextCursor = index < entryIds.length
-      ? Buffer.from(JSON.stringify({ target, index, skip, offset: offset + length })).toString("base64url")
+      ? Buffer.from(JSON.stringify({ version: 2, target, index, skip, offset: offset + length })).toString("base64url")
       : undefined;
     return { text: parts.join(""), entryIds: readIds, page: { offset,
       ...(nextCursor ? { nextCursor } : { total: offset + length }) } };
@@ -532,7 +701,8 @@ export class DurableContextManager {
     if (!state) return [];
     if (input.blockId) {
       const block = state.blocks.find(item => item.blockId === input.blockId);
-      return block ? this.blockEntryIds(block) : this.persisted.summaries.find(item => item.blockId === input.blockId)?.entryIds ?? [];
+      const visible = this.mutating ? this.committed : this.persisted;
+      return block ? this.blockEntryIds(block) : visible.summaries.find(item => item.blockId === input.blockId)?.entryIds ?? [];
     }
     if (input.ref) {
       const locator = this.lookupRef(input.ref);
@@ -545,8 +715,10 @@ export class DurableContextManager {
   }
 
   private lookupRef(ref: string): DurableContextRefLocator | undefined {
-    const rawId = this.kernelState?.messageRefs.byRef[ref];
-    const candidates = [rawId ? this.locatorOfRawId(rawId) : undefined, this.persisted.refs[ref], ...this.persisted.archivedRefs.map(item => item.refs[ref])]
+    const visible = this.mutating ? this.committed : this.persisted;
+    const kernel = this.mutating ? parseKernelState(this.committed) : this.kernelState;
+    const rawId = kernel?.messageRefs.byRef[ref];
+    const candidates = [rawId ? this.locatorOfRawId(rawId) : undefined, visible.refs[ref], ...visible.archivedRefs.map(item => item.refs[ref])]
       .filter((item): item is DurableContextRefLocator => Boolean(item));
     const first = candidates[0];
     if (first && candidates.some(item => item.entryId !== first.entryId || item.slot !== first.slot)) {
@@ -587,7 +759,7 @@ export class DurableContextManager {
     entries: readonly EntryRecord[],
     models: Models,
     ctx: Context,
-    options: { automatic: boolean; force?: boolean },
+    options: { automatic: boolean; force?: boolean; source?: OperationSource },
   ): Promise<TurnOutcome & { processed: number }> {
     if (!this.kernelState) throw new Error("上下文状态尚未初始化");
     const policy = this.resolvePolicy();
@@ -599,6 +771,11 @@ export class DurableContextManager {
     const estimatedMessages = messages.reduce((total, message) => total + estimateMessageTokens(message), 0);
     const beforeTokens = Math.max(measured.tokens, estimatedMessages) + toolTokens;
     if (!build.messages.length) {
+      if (options.force) {
+        const operation = await this.beginOperation(ctx, "manual", false, beforeTokens, options.source);
+        try { await this.finishOperation(operation, { phase: "skipped", message: "没有可整理的历史", blocks: 0 }, ctx); }
+        catch (error) { await this.rejectOperation(operation, error); throw error; }
+      }
       return {
         state: this.kernelState, projected: messages, projectedApplied: false, folds: 0,
         blocks: countTopLevelBlocks(this.kernelState), beforeTokens, afterTokens: beforeTokens,
@@ -621,6 +798,10 @@ export class DurableContextManager {
     const safeTrigger = Math.min(policy.triggerTokens, Math.max(0, policy.window - this.requestReserve(policy.window)));
     const pressure = beforeTokens > safeTrigger;
     const knownGrowth = Boolean(turn.nudge?.shouldInject);
+    const reason = options.force ? "manual" : pressure ? "threshold" : "growth";
+    const operation = options.force || (ranges.length > 0 && (pressure || knownGrowth))
+      ? await this.beginOperation(ctx, reason, options.automatic, beforeTokens, options.source) : undefined;
+    try {
     let skippedReason: string | undefined;
     if (!ranges.length) {
       skippedReason = this.describeNothingToCompress(turn.state, build.messages.length);
@@ -660,22 +841,27 @@ export class DurableContextManager {
     this.indexRefs(state);
     this.recordSummaries(state);
     this.persisted.headEntryId = this.headEntryId;
-    this.persisted.configDigest = contextConfigDigest({
-      contextWindow: policy.window, triggerTokens: policy.triggerTokens, keepRecentTokens: 20_000,
-      modelKey: this.host.modelKey?.(),
-    });
+    this.persisted.configDigest = this.configDigest();
     this.persisted.stats.rounds += 1;
     if (folds > 0 || options.force) {
       this.persisted.stats.lastBeforeTokens = beforeTokens;
       this.persisted.stats.lastAfterTokens = afterTokens;
     }
-    await this.save(ctx, folds > 0);
+    if (operation) {
+      await this.finishOperation(operation, { phase: folds > 0 ? "completed" : "skipped",
+        beforeTokens, afterTokens: folds > 0 ? afterTokens : undefined, blocks: countTopLevelBlocks(state),
+        message: skippedReason }, ctx);
+    } else await this.save(ctx, folds > 0);
     return {
       state, projected: rendered.messages, projectedApplied: rendered.applied, folds, blocks: countTopLevelBlocks(state),
       beforeTokens, afterTokens, processed: build.messages.length,
       reason: folds > 0 ? (options.force ? "manual" : pressure ? "threshold" : "growth") : undefined,
       skippedReason,
     };
+    } catch (error) {
+      if (operation) await this.rejectOperation(operation, error);
+      throw error;
+    }
   }
 
   private describeNothingToCompress(state: CompressionState, messageCount: number): string {
@@ -940,7 +1126,8 @@ export class DurableContextManager {
   }
 
   private publish(status: ContextManagementStatusDto): void {
-    this.status = { ...status, revision: ++this.operationCounter, updatedAt: Date.now() };
+    // Pressure telemetry is ephemeral. It must not invent a revision or erase the durable terminal result.
+    this.status = { ...status, revision: this.committed.revision ?? status.revision ?? 0 };
     const now = Date.now();
     if (now - this.lastPublished < 300 && status.phase === "idle") return;
     this.lastPublished = now;
@@ -949,28 +1136,26 @@ export class DurableContextManager {
   }
 
   private fail(message: string, error: unknown): void {
+    if (error instanceof StaleContextOperation || this.disposed) return;
     this.log(`[Context] ${message}`, error);
-    this.publish({ ...this.status, phase: "failed", lastError: errorText(error), message });
+    if ((this.status.phase === "failed" || this.status.phase === "cancelled") && this.status.durable
+      && this.committed.lastOperation?.phase === this.status.phase) return;
+    this.publish({ ...this.status, phase: "failed", lastError: errorText(error), message, durable: false });
   }
 
-  dispose(): void { this.disposed = true; }
+  dispose(): void { this.disposed = true; this.manualAbort?.abort(); }
 }
 
 export interface ToolReader {
   entry(id: number, ctx: Context): Promise<EntryRecord | undefined>;
 }
 
-function normalizePersisted(value: DurableContextPersistedState | undefined): DurableContextPersistedState {
-  const base = emptyPersistedState();
-  if (!value || typeof value !== "object") return base;
-  return {
-    ...base,
-    ...value,
-    refs: value.refs && typeof value.refs === "object" ? value.refs : {},
-    archivedRefs: Array.isArray(value.archivedRefs) ? value.archivedRefs : [],
-    summaries: Array.isArray(value.summaries) ? value.summaries : [],
-    stats: { ...base.stats, ...(value.stats ?? {}) },
-  };
+class StaleContextOperation extends Error {
+  constructor(readonly current: DurableContextPersistedState) { super("上下文整理操作已过期，较新状态已保留，请重试"); }
+}
+
+function viewDigest(messages: readonly Message[]): string {
+  return createHash("sha256").update(JSON.stringify(messages)).digest("hex");
 }
 
 function toSummaryDto(record: DurableContextPersistedState["summaries"][number]): ContextManagementSummaryDto {

@@ -110,7 +110,8 @@ function createFixture(activeSize: number, archiveCount: number): Fixture {
     context: async () => ({ head: undefined, entries, messages }),
     entries: async () => { fixture.scanCount += 1; return { items: [], next: undefined }; },
     commit: async (fn: (tx: { doc: () => Promise<typeof doc> }) => unknown) => {
-      const result = await fn({ doc: async () => currentDoc });
+      const result = await fn({ doc: async (token: { definition: { kind: string } }) => token.definition.kind === "mybuddy.context-session" ? { sessionId: "performance-fixture" } : currentDoc,
+        latestHeadMarker: async () => undefined, latestEntryId: async () => entries.at(-1)?.id } as never);
       fixture.docBytes = JSON.stringify(currentDoc).length;
       return result;
     },

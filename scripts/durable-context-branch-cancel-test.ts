@@ -291,9 +291,13 @@ try {
     const fakeConversation = {
       id: 1 as never,
       context: async () => ({ head: undefined, entries: [], messages: [] }),
-      commit: async (fn: (tx: { doc: () => Promise<ReturnType<typeof fakeDoc>> }) => unknown) => fn({ doc: async () => fakeDoc() }),
+      commit: async (fn: (tx: { doc: () => Promise<ReturnType<typeof fakeDoc>> }) => unknown) => fn({
+        doc: async (token: { definition: { kind: string } }) => token.definition.kind === "mybuddy.context-session" ? { sessionId: "overflow-fixture" } : overflowDoc,
+        latestHeadMarker: async () => undefined, latestEntryId: async () => undefined,
+      } as never),
       agent: async () => ({ model: { provider: "fixture", modelId: "fixture" } }),
     } as never;
+    const overflowDoc = fakeDoc();
     const manager = new DurableContextManager({
       conversation: fakeConversation, models: fakeModels,
       policy: () => ({ ratio: 0.8, absoluteTokens: null }),

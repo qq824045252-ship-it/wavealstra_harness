@@ -22,6 +22,7 @@ import { DurableBotRuntime } from "./DurableBotRuntime";
 import type { DurableCompactionOutcome, ProductCompactionSettings } from "./context/types";
 import { DEFAULT_PRODUCT_COMPACTION_SETTINGS } from "./context/CompactionPolicy";
 import type { ContextManagementEngine, ContextManagementStatusDto } from "../../../shared/context-management";
+import { readDurableContextStatus } from "./context/DurableContextStatus";
 import { DurableTaskProjection } from "./DurableTaskProjection";
 import { ToolGate } from "./ToolGate";
 import { DEFAULT_DURABLE_RESUME_CONCURRENCY, ResumeAdmission, type ResumeAdmissionReport } from "./ResumeAdmission";
@@ -165,10 +166,13 @@ export class DurableBotService {
   }
   /**
    * 会话级上下文管理的只读状态投影：不打开运行时、不建 host、无副作用。
-   * 没有已打开运行时（或运行时未启用上下文管理）时返回 undefined，由调用方回退旧逻辑。
+   * 未打开运行时时只读取 Durable 文档，绝不创建 Harness、模型或维护任务。
    */
-  contextManagementStatus(taskId: string): ContextManagementStatusDto | undefined {
-    return this.opened.get(taskId)?.runtime.contextManagementStatus();
+  async contextManagementStatus(taskId: string): Promise<ContextManagementStatusDto | undefined> {
+    const live = this.opened.get(taskId)?.runtime.contextManagementStatus();
+    if (live) return live;
+    const binding = this.binding(taskId);
+    return binding ? readDurableContextStatus(binding.directory) : undefined;
   }
   /**
    * MCP 元工具定义的字符口径（只读投影）：当前已打开 bot 的元工具字符数 / 元工具个数 / 已配置服务数。

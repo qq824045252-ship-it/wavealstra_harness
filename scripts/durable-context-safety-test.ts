@@ -5,7 +5,7 @@ import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
 import { estimateTextTokens, estimateMessageTokens } from "@earendil-works/pi-ai/utils/estimate";
 import type { EntryRecord } from "@earendil-works/pi-durable";
 import { DurableContextManager, splitByTokens, splitByText } from "../src/main/agent/durable/context/DurableContextManager";
-import { emptyPersistedState } from "../src/main/agent/durable/context/DurableContextState";
+import { DurableContextSessionDoc, emptyPersistedState } from "../src/main/agent/durable/context/DurableContextState";
 import { searchOriginalEntries, createDurableContextTools, isDurableContextToolName } from "../src/main/agent/durable/context/DurableContextTools";
 
 function assistant(text: string, at: number): AssistantMessage {
@@ -23,6 +23,7 @@ function history(base = 1, size = 10, chars = 14_000): EntryRecord[] {
 }
 function fixture() {
   let doc = emptyPersistedState();
+  const identity = { sessionId: "safety-fixture-session" };
   let entries = history();
   let head: { id: number } | undefined;
   let rejectWrites = false;
@@ -44,7 +45,8 @@ function fixture() {
     agent: async () => ({ model: { provider: "fixture", modelId: "fixture" } }),
     commit: async (fn: (tx: { doc: () => Promise<typeof doc> }) => unknown) => {
       const next = structuredClone(doc);
-      const result = await fn({ doc: async () => next });
+      const result = await fn({ doc: async (token: unknown) => token === DurableContextSessionDoc ? identity : next,
+        latestHeadMarker: async () => head, latestEntryId: async () => entries.at(-1)?.id } as never);
       if (rejectWrites && JSON.stringify(next) !== JSON.stringify(doc)) throw new Error("injected disk full");
       doc = next;
       return result;

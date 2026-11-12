@@ -68,6 +68,14 @@ function readOwner(lockPath: string): DurableStorageOwner | undefined {
   }
 }
 
+/** Passive status never claims ownership or rewrites a dead owner's lock. */
+export function durableStorageOwnerState(directory: string): "active" | "inactive" | "unknown" {
+  const path = join(directory, LOCK_FILE);
+  const owner = readOwner(path);
+  if (!owner) return existsSync(path) ? "unknown" : "inactive";
+  return processAlive(owner.pid) ? "active" : "inactive";
+}
+
 function writeOwner(lockPath: string, owner: DurableStorageOwner): void {
   const temporary = `${lockPath}.tmp-${process.pid}`;
   const handle = openSync(temporary, "w");

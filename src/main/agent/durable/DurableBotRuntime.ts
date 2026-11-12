@@ -38,6 +38,8 @@ import type { CacheTraceBoundary, CacheTraceOperation } from "../CacheRequestTra
 import { DurableSubagentIdentity, resolveDurableExecutionCwd } from "./DurableSubagents";
 import { DurableEvidenceProjection, type DurableEvidenceOptions } from "./DurableEvidenceProjection";
 import { DurableContextManager } from "./context/DurableContextManager";
+import { DurableContextStateDoc, type DurableContextPersistedState } from "./context/DurableContextState";
+import { contextStatusFromStorage } from "./context/DurableContextStatus";
 import { createDurableContextTools } from "./context/DurableContextTools";
 import { resolveDurableCompactionSettings } from "./context/CompactionPolicy";
 import type { DurableCompactionOutcome, DurableContextManagementOptions } from "./context/types";
@@ -152,6 +154,7 @@ export class DurableBotRuntime {
   private evidence?: DurableEvidenceProjection;
   /** 自动上下文管理协调器；仅在 DurableBotOptions.contextManagement 提供时存在。 */
   private contextManager?: DurableContextManager;
+  private passiveContextStatus?: ContextManagementStatusDto;
   /** 上下文管理工具需在 configure 重建 nativeTools 时保留。 */
   private contextTools: ToolRegistration[] = [];
   /** 当前会话模型窗口/键的同步缓存，供 Harness settings getter 每次读取。 */
@@ -324,12 +327,16 @@ export class DurableBotRuntime {
       runtime.nativeTools = native;
       runtime.compatibilityTools = compatibility;
       runtime.codemode = codemode;
+      const persistedContext = await harness.snapshot(DurableContextStateDoc, conversation.id, ctx);
+      if (persistedContext) runtime.passiveContextStatus = await contextStatusFromStorage(persistedContext as DurableContextPersistedState, storage, conversation.id);
       if (options.contextManagement && !options.readOnly) {
         runtime.modelWindow = initialModelWindow;
         runtime.modelOutputLimit = initialModel?.maxTokens;
         runtime.modelKeyCache = initialModelKey;
         const manager = new DurableContextManager({
           conversation, models: options.models,
+          initialState: persistedContext as DurableContextPersistedState | undefined,
+          initialStatus: runtime.passiveContextStatus,
           policy: options.contextManagement.policy,
           engine: () => runtime!.currentCompactionEngine(),
           contextWindow: () => runtime!.currentModelWindow(),
@@ -454,7 +461,7 @@ export class DurableBotRuntime {
   }
 
   /** 上下文管理真实状态；未启用时返回 undefined（UI/服务层不得伪造）。 */
-  contextManagementStatus(): ContextManagementStatusDto | undefined { return this.contextManager?.statusSnapshot(); }
+  contextManagementStatus(): ContextManagementStatusDto | undefined { return this.contextManager?.statusSnapshot() ?? this.passiveContextStatus; }
 
   /** 当前设置的引擎：native = Pi 原生按比例压缩；billion-context = 内嵌分层摘要。 */
   currentCompactionEngine(): ContextManagementEngine {
@@ -487,6 +494,7 @@ export class DurableBotRuntime {
         const window = model?.contextWindow ?? this.modelWindow;
         const manager: DurableContextManager = new DurableContextManager({
           conversation, models: this.options.models,
+          initialState: await this.harness.snapshot(DurableContextStateDoc, conversationId, context) as DurableContextPersistedState | undefined,
           policy: this.options.contextManagement!.policy,
           engine: () => this.currentCompactionEngine(),
           contextWindow: () => window,
@@ -910,6 +918,7 @@ export class DurableBotRuntime {
       const submissionId = payload.submissionId;
       if (submissionId) await (await this.harness.submission(submissionId, ctx))?.wait(ctx);
       this.contextManager?.markNativeCompaction();
+      await this.contextManager?.nativeCompactionCommitted(ctx);
       await this.refresh();
       const applied = payload.entryId !== undefined || payload.submissionId !== undefined;
       const afterTokens = this.latest?.contextUsage?.usedTokens ?? undefined;
@@ -1420,7 +1429,7 @@ function botExtension(
       const manager = await getContextManager?.(api.conversationId, context);
       if (!manager) return undefined;
       // BC 正常时拒绝 Pi 原生阈值压缩；原生手动/溢出/BC 故障时接管摘要输入，保证 fallback 有界。
-      const decision = await manager.beforeCompact({ reason: compaction.reason, messages: compaction.messages }, api, context);
+      const decision = await manager.beforeCompact({ reason: compaction.reason, messages: compaction.messages, firstKept: compaction.firstKept }, api, context);
       if (decision === undefined || (decision !== undefined && "summary" in decision)) manager.markNativeCompaction();
       return decision;
     } }), hook(GenerationTask, { beforeRequest: async (request, api, context) => {
