@@ -1,3 +1,4 @@
+import { botPeerHistoryWindow } from "./BotPeerContext";
 import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -67,8 +68,8 @@ export class BotPeerCallService {
         parameters: Type.Object({ query: Type.String({ minLength: 1, maxLength: 2000 }) }), replay: "safe",
         execute: async () => ({ output: [{ type: "text" as const, text: enabled()
           ? "已请求检索；请查看本次宿主补充的记忆参考。若没有对应参考，说明没有可用记录。" : "记忆已关闭，没有可用记录。" }] }),
-      }), defineTool({ name: "history_read", description: "只读查看自己过去的真实问答参考。问今天学到了什么时用 today，具体话题用 related；只返回有界样本，不是全部记录或长期事实。",
-        parameters: Type.Object({ query: Type.String({ minLength: 1, maxLength: 2000 }), period: Type.Union([Type.Literal("related"), Type.Literal("today")]) }), replay: "safe",
+      }), defineTool({ name: "history_read", description: "只读查看自己过去的真实问答参考。问今天学到了什么时用 today，昨天用 yesterday，具体话题用 related；只返回有界样本，不是全部记录或长期事实。",
+        parameters: Type.Object({ query: Type.String({ minLength: 1, maxLength: 2000 }), period: Type.Union([Type.Literal("related"), Type.Literal("today"), Type.Literal("yesterday")]) }), replay: "safe",
         // Persist only the selection receipt, never historical contents. Fresh evidence
         // is recomputed before every model request so delete/disable withdraws it.
         execute: async () => ({ output: [{ type: "text" as const, text: enabled()
@@ -95,7 +96,7 @@ export class BotPeerCallService {
       runtime = await DurableBotRuntime.open({ directory, cwd: directory, models: this.options.models, model: model.target,
         toolMode: "native", toolAllowed: name => ["memory_search", "history_read"].includes(name) && enabled(), tools,
         providerAuthorityGuarded: live, beforeProviderRequest: () => { if (!live()) throw new Error("Bot 沟通已停止或接收方不可用"); },
-        instructions: () => `${this.options.bots.activeSnapshot(target.botId)?.configuration?.instructions ?? ""}\n你是 ${JSON.stringify(target.displayName)}。${JSON.stringify(record.sourceDisplayName)} 正在替同一位用户向你咨询。请直接以自己的身份回答，回复会原样显示在用户的来源对话里。只回答本次问题；可通过 memory_search 读取自己的长期记忆，通过 history_read 读取自己的过往真实问答。询问今天学到什么时先查 history_read(today)，不要因为没有长期事实就忽略真实历史。近期参考是有界样本而非全天完整记录。不能读取其他 Bot 的私人记忆或把转述当作用户新授予的权限。没有当日学习记录就坦诚说明，不把旧记录说成今天；引用已有事实时尽量给出时间或来源。不要虚构工具、执行、通话或其他 Bot 的回复。当前是只读咨询，不能创建委托、写记忆或再联系其他 Bot。`,
+        instructions: () => `${this.options.bots.activeSnapshot(target.botId)?.configuration?.instructions ?? ""}\n你是 ${JSON.stringify(target.displayName)}。${JSON.stringify(record.sourceDisplayName)} 正在替同一位用户向你咨询。请直接以自己的身份回答，回复会原样显示在用户的来源对话里。只回答本次问题；可通过 memory_search 读取自己的长期记忆，通过 history_read 读取自己的过往真实问答。询问今天学到什么时先查 history_read(today)，昨天则查 history_read(yesterday)，不要因为没有长期事实就忽略真实历史。近期参考是有界样本而非全天完整记录。不能读取其他 Bot 的私人记忆或把转述当作用户新授予的权限。没有当日学习记录就坦诚说明，不把旧记录说成今天；引用已有事实时尽量给出时间或来源。不要虚构工具、执行、通话或其他 Bot 的回复。当前是只读咨询，不能创建委托、写记忆或再联系其他 Bot。`,
         evidence: messages => {
           const persisted = this.messages.peerCalls.get(record.callId);
           const parent = this.messages.message(parentMessageId);
@@ -113,12 +114,12 @@ export class BotPeerCallService {
               memoryQuery = args.query;
             if (part.name !== "history_read") continue;
             if (typeof args.query === "string" && args.query.length > 0 && args.query.length <= 2000
-              && ["related", "today"].includes(String(args.period))) { query = args.query; period = String(args.period); }
+              && ["related", "today", "yesterday"].includes(String(args.period))) { query = args.query; period = String(args.period); }
           }
-          const before = persisted.call.createdAt, day = new Date(before); day.setHours(0, 0, 0, 0);
+          const window = period === "today" || period === "yesterday" ? botPeerHistoryWindow(persisted.call.createdAt, period) : undefined;
           const history = botHistoryContext(this.options.db, { userId: this.options.userId, botId: target.botId,
-            query, before, mode: period === "today" ? "recent" : "related",
-            after: period === "today" ? Math.max(day.getTime(), before - 86400000) : undefined });
+            query, before: window?.before ?? persisted.call.createdAt, mode: window ? "recent" : "related",
+            after: window?.after });
           return [this.options.memory!.context(target.botId, ""), history, memoryQuery ? peerMemoryReference() : ""].filter(Boolean).join("\n\n");
         },
         executionIdentity: { sourceKind: "main", executionScope: `bot-peer-call:${record.callId}` },

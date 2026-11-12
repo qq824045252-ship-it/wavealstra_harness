@@ -14,6 +14,7 @@ const completed = render([call]);
 assert.match(completed, /<details[^>]*><summary>/, 'native disclosure supports keyboard expansion');
 assert.doesNotMatch(completed, /<details[^>]*\bopen\b/, 'starts collapsed');
 assert.match(completed, /2 条消息，与 学习搭子/);
+assert(completed.slice(0, completed.indexOf('</summary>')).includes('已收到 @学习搭子 的回复'), 'completed state remains visible without expanding');
 assert.match(completed, /总管<\/strong><span>→ @学习搭子/);
 assert.match(completed, /学习搭子<\/strong><span>回复 总管/);
 assert.match(completed, /我今天学习了事务隔离。/);

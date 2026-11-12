@@ -55,7 +55,7 @@ export function botHistoryContext(db: Database.Database, input: {
   if (!Number.isFinite(input.before)) return "";
   const recent = input.mode === "recent";
   const queryTerms = terms(input.query).slice(0, QUERY_TERM_LIMIT);
-  if (recent ? !Number.isFinite(input.after) || input.after! >= input.before || input.before - input.after! > 86400000 : !queryTerms.length) return "";
+  if (recent ? !Number.isFinite(input.after) || input.after! >= input.before || input.before - input.after! > 25 * 60 * 60 * 1000 : !queryTerms.length) return "";
   const params: Record<string, unknown> = {
     user: input.userId, bot: input.botId, team: input.teamId ?? null,
     exclude: input.excludeConversationId ?? null, before: input.before,

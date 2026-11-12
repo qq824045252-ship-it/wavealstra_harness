@@ -109,7 +109,7 @@ try {
   assert(!botHistoryContext(db.connection, { ...recentInput, excludeConversationId: active.conversationId }).includes("current-private"));
   assert.equal(botHistoryContext(db.connection, { ...recentInput, mode: "related" }), "", "related retains lexical relevance");
   assert.equal(botHistoryContext(db.connection, { ...recentInput, after: recentInput.before }), "");
-  assert.equal(botHistoryContext(db.connection, { ...recentInput, after: recentInput.before - 86400001 }), "", "recent must not exceed 24h");
+  assert.equal(botHistoryContext(db.connection, { ...recentInput, after: recentInput.before - 25 * 60 * 60 * 1000 - 1 }), "", "recent must not exceed one local day (25h DST bound)");
   assert.equal(botHistoryContext(db.connection, { ...recentInput, after: NaN }), "");
   assert.equal(botHistoryContext(db.connection, { ...recentInput, before: recentInput.after }), "", "before excludes later completion");
   assert.equal(botHistoryContext(db.connection, { ...recentInput, userId: "foreign-user" }), "", "caller cannot read another owner");

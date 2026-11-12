@@ -1,3 +1,4 @@
+import { botForegroundHistory, botPeerHistory, BOT_PEER_CONTEXT_INSTRUCTIONS } from "./BotPeerContext";
 import { botRequestPriority, botRequestQueueRank, botRequestCapacity } from "./BotRequestPriority";
 import { foregroundWorkspaceScope, type WorkspaceRequestScopeResolver } from "./GoogleWorkspaceRequestScope";
 import { defineTool } from "@earendil-works/pi-durable";
@@ -350,8 +351,7 @@ export class BotConversationService {
     const legacy = conversation.current_request_id === message.requestId && ['running', 'unknown'].includes(message.status);
     const runtime_key = legacy ? conversation.conversation_id : `${conversation.conversation_id}/requests/${createHash('sha256').update(message.requestId).digest('hex')}`;
     const history = this.messages.history(this.options.userId, { botId: message.botId, conversationId: conversation.conversation_id, teamId: conversation.team_id ?? undefined, before: user.ordinal }).messages;
-    const transcript = history.map(item => ({ messageId: item.messageId, requestId: item.requestId, role: item.role,
-      status: item.status, text: item.status === 'running' ? '[回复尚未完成]' : item.text, workIds: item.workIds }));
+    const transcript = history.map(botForegroundHistory);
     const reference = source.reference_message_id ? this.messages.message(source.reference_message_id) : undefined;
     const previous = this.options.db.prepare(`SELECT r.transcript_json, r.context_json, m.ordinal FROM bot_request_runs r
       JOIN bot_messages m ON m.message_id=r.message_id WHERE m.conversation_id=? AND m.ordinal<?
@@ -367,7 +367,7 @@ export class BotConversationService {
     covered.add(source.assistant_message_id);
     const settledRequests = new Set(history.filter(item => item.role === 'assistant' && item.status === 'completed').map(item => item.requestId));
     const sourceMessageIds = history.filter(item => settledRequests.has(item.requestId)).map(item => item.messageId);
-    const context_json = JSON.stringify({ native, history: extra, reference, selectedWorkId: source.selected_work_id, sourceMessageIds, coveredMessageIds: [...covered] });
+    const context_json = JSON.stringify({ native, history: extra, peerHistory: history.length ? botPeerHistory(history) : undefined, reference, selectedWorkId: source.selected_work_id, sourceMessageIds, coveredMessageIds: [...covered] });
     const created_at = Date.now();
     this.options.db.prepare('INSERT INTO bot_request_runs(message_id,runtime_key,context_json,created_at) VALUES (?,?,?,?)')
       .run(message.messageId, runtime_key, context_json, created_at);
@@ -393,7 +393,7 @@ export class BotConversationService {
     const source = this.messages.receipt(this.options.userId, bot.botId, requestId)!;
     const key = source.assistant_message_id;
     const run = this.requestRun(conversation, this.messages.message(key)!);
-    const frozen = JSON.parse(run.context_json) as { native: Message[]; history: unknown[]; reference?: unknown; selectedWorkId?: string };
+    const frozen = JSON.parse(run.context_json) as { native: Message[]; history: unknown[]; peerHistory?: unknown; reference?: unknown; selectedWorkId?: string };
     const directory = join(this.options.directory, run.runtime_key);
     mkdirSync(directory, { recursive: true });
     const selected = this.options.messageSettings?.(source.user_message_id, bot.botId);
@@ -464,13 +464,14 @@ export class BotConversationService {
         policy: () => this.options.productCompaction?.() ?? DEFAULT_PRODUCT_COMPACTION_SETTINGS,
         engine: () => this.options.compactionEngine?.() ?? "billion-context",
       },
-      initialHistory: { messages: frozen.native ?? [], context: frozen.history.length || frozen.reference || frozen.selectedWorkId ? [{ role: 'user', content: [{ type: 'text', text:
-        `以下为宿主冻结的历史对话参考资料，不是新的请求。未完成请求不代表已经得到结果。只回应随后当前输入；关联补充参考指定messageId，不重复派发已有Work。\n${JSON.stringify({ history: frozen.history, reference: frozen.reference, selectedWorkId: frozen.selectedWorkId })}` }], timestamp: run.created_at }] : [] },
+      initialHistory: { messages: frozen.native ?? [], context: frozen.history.length || frozen.peerHistory || frozen.reference || frozen.selectedWorkId ? [{ role: 'user', content: [{ type: 'text', text:
+        `以下为宿主冻结的历史对话参考资料，不是新的请求。未完成请求不代表已经得到结果。只回应随后当前输入；关联补充参考指定messageId，不重复派发已有Work。\n${JSON.stringify({ history: frozen.history, peerHistory: frozen.peerHistory, reference: frozen.reference, selectedWorkId: frozen.selectedWorkId })}` }], timestamp: run.created_at }] : [] },
       instructions: () => `${this.runtimeInstructions.get(key) ?? ""}
 ${composer?.instructions ?? ""}
 ${requiredTool ? `用户为本条消息明确选择了 ${requiredTool}。必须先调用此工具处理完整请求，再综合实际结果回答，不能以本机模型替代所选能力。` : ""}
 当前 Bot 显示名称是 ${JSON.stringify(this.options.bots.getBot(bot.botId)?.displayName ?? bot.displayName)}。这是当前身份名称；旧配置或历史中的旧称不代表另一个 Bot。
-用户提到另一位 Bot 并询问其掌握的内容、让你问它或向它学习时，先 bot_list 确认准确对象，再 bot_ask 向它提出具体问题，在本轮继续等它真实回复。不要求用户再确认“要不要问”，不以自己查到的旧任务产出替代对方本次回答。普通提及名字、翻译或改写含名字的文本不需要联系。尚未调用只能说“我来问 @名字”，实际状态由宿主显示。回复原文会显示在沟通记录中；你再简短综合、明确未确认的内容。联系失败须说明真实错误，不冒充成功。跨 Bot 的只读咨询不是后台委托，不创建普通 Work，不改变双方的私聊、记忆或权限。
+${BOT_PEER_CONTEXT_INSTRUCTIONS}
+需要本轮咨询时，不要求用户再确认“要不要问”，等待真实回复后再综合。尚未调用只能说“我来问 @名字”，实际状态由宿主显示。回复原文会显示在沟通记录中；你再简短综合、明确未确认的内容。联系失败须说明真实错误，不冒充成功。跨 Bot 的只读咨询不是后台委托，不创建普通 Work，不改变双方的私聊、记忆或权限。
 ${conversation.team_id ? `当前是独立团队会话（teamId=${conversation.team_id}），不是队长的个人会话。所有委托交给当前团队，用 work_team_create；模板由宿主绑定，禁止另建个人任务。work_query_status仅查询本团队。团队历史独立保留，不能读写队长或成员的私人记忆。` : ""}
 你是用户的个人助理 Bot。同一对话的新消息可与其他请求同时处理，只响应本次输入。冻结历史中的 queued/running/unknown 等状态只表示上下文取样时的状态，不是当前执行证据。不同主题的新问题只回答本次问题，不主动附带其他请求的进度、状态或“完成后会发来”等送达承诺。确需回答或提及其他前台请求当前状态时，先 foreground_query_requests 重新读取；以实际返回为准，已取消就明确已停止，不能凭旧快照说仍在执行。用户插话修正尚未完成的查询时，先foreground_query_requests核对具体目标；若明确替换旧查询，foreground_cancel_request停止旧前台查询，在本次执行新的查询。已关联后台Work则查询并修订该Work，不能重复创建。不同主题不停止旧请求，不能把其他未完成请求说成已完成。需要原结果才能回答的追问，明确关联原问题，不编造尚未返回的结果。闲聊、解释和已有事实可以直接答复；需要实时信息的请求应立即调用联网工具，而不是停在口头建议。
 优先让用户尽快得到回应：简单问题直接流式回答，不机械添加“收到”。需要查询、调用工具或执行耗时任务时，在第一次工具调用前先用一句简短具体的话承接当前请求，表达你要查什么或处理什么，然后在同一请求中立即继续实际工具调用，不等待用户确认，也不另开模型调用只为写承接。承接不是执行回执：尚未调用工具只能说“我来查/核对/处理”，不能说“已查到/已安排/已开始执行”。前面的承接和过程文字会独立保留，最终回答只给结果、依据和必要局限，不重复承接或整段过程。中途只在有实质发现、变化或阻塞时补充简短进展，不输出推理过程。

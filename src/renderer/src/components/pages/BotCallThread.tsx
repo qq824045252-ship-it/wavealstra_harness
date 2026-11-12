@@ -20,11 +20,10 @@ export function BotCallThread({ calls, renderReply }: { calls?: BotCallDto[]; re
   const targets = new Map(calls.map(call => [call.targetBotId, call.targetDisplayName]));
   const count = calls.reduce((total, call) => total + Number(Boolean(call.requestText.trim())) + Number(Boolean(call.replyText?.trim())), 0);
   const participants = targets.size === 1 ? [...targets.values()][0] : `${targets.size} 个 Bot`;
-  const pending = calls.filter(call => call.status !== 'completed');
   return <details className="bot-call-thread" aria-label="Bot 间通信记录">
     <summary>
       <span className="bot-call-summary">{count} 条消息，与 {participants}</span>
-      {pending.length > 0 && <span className="bot-call-summary-status" role="status">{pending.map(call => <span key={call.callId} data-call-status={call.status}>{callStatus(call)}</span>)}</span>}
+      {calls.length > 0 && <span className="bot-call-summary-status" role="status">{calls.map(call => <span key={call.callId} data-call-status={call.status}>{callStatus(call)}</span>)}</span>}
     </summary>
     <ol className="bot-call-exchanges">
       {calls.map(call => <li key={call.callId} className="bot-call-exchange" data-call-id={call.callId} data-call-status={call.status}>

@@ -1,3 +1,5 @@
+import { botForegroundHistory, botPeerHistory, botPeerHistoryWindow } from "../src/main/agent/work/BotPeerContext";
+import { BotConversationService } from "../src/main/agent/work/BotConversationService";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -78,6 +80,26 @@ try {
   memoryEnabled = false;
   assert.equal(receivers[0].options.evidence?.(searchMessages), "", "disabled memory withdraws all fresh references");
   memoryEnabled = true;
+  const historicalCalls = (period: string) => [{ role: "assistant", content: [{ type: "toolCall", id: "history-lookup", name: "history_read", arguments: { query: "学习记录", period } }] }] as unknown as Parameters<NonNullable<typeof receivers[0]["options"]["evidence"]>>[0];
+  const yesterday = botPeerHistoryWindow(messages.peerCalls.list(a.assistantMessageId).at(-1)!.createdAt, "yesterday");
+  const samples = [["before-day", yesterday.after - 100], ["yesterday-midnight", yesterday.after], ["today-midnight", yesterday.before]] as const;
+  for (const [marker, at] of samples) {
+    const sample = messages.accept("u", { botId: "target", requestId: marker, text: `课堂 ${marker}` });
+    messages.update(sample.assistantMessageId, "completed", marker);
+    db.prepare("UPDATE bot_messages SET created_at=?,updated_at=? WHERE request_id=?").run(at, at + 1, marker);
+    db.prepare("INSERT INTO memory_turns(id,task_id,user_message_id,assistant_message_id,user_text,assistant_text,content_hash,captured_at,extraction_state) VALUES (?,?,?,?,?,?,?,?,?)")
+      .run(marker, sample.conversationId, sample.userMessageId, sample.assistantMessageId, `课堂 ${marker}`, marker, marker, at, "completed");
+  }
+  const yesterdayEvidence = receivers[0].options.evidence?.(historicalCalls("yesterday")) ?? "";
+  assert(yesterdayEvidence.includes("yesterday-midnight"), "real recipient evidence reads yesterday from inclusive local midnight");
+  assert(!yesterdayEvidence.includes("before-day") && !yesterdayEvidence.includes("today-midnight"), "yesterday neither leaks an earlier day nor substitutes today's learning");
+  assert(receivers[0].options.evidence?.(historicalCalls("today")).includes("today-midnight"));
+  assert(!receivers[0].options.evidence?.(historicalCalls("today")).includes("yesterday-midnight"));
+  for (const [marker] of samples) {
+    db.prepare("DELETE FROM memory_turns WHERE id=?").run(marker);
+    db.prepare("DELETE FROM bot_messages WHERE request_id=?").run(marker);
+  }
+  assert(!receivers[0].options.evidence?.(historicalCalls("yesterday")).includes("yesterday-midnight"), "later provider reads withdraw deleted history");
   assert(receivers[0].options.instructions().includes('"target"'));
   receivers[1].resolve("B original answer");
   assert.equal((await second).replyText, "B original answer");
@@ -85,6 +107,51 @@ try {
   receivers[0].resolve("A original answer");
   assert.equal((await first).replyText, "A original answer");
   assert.deepEqual(await duplicate, await first);
+  // A subsequent question must retain host exchange provenance, not just the owner's prose.
+  const oldAnswer = messages.message(a.assistantMessageId)!;
+  const projection = botForegroundHistory(oldAnswer);
+  assert.equal(projection.botCalls?.at(-1)?.replyText, "A original answer");
+  assert.equal(projection.botCalls?.[0].status, "failed");
+  assert.deepEqual(botForegroundHistory({ ...oldAnswer, text: "我已联系其他 Bot", botCalls: undefined }).botCalls, [],
+    "claims do not create communication evidence");
+  assert.equal(botForegroundHistory({ ...oldAnswer, role: "user" }).botCalls, undefined,
+    "user text cannot project host records");
+  const bounded = botForegroundHistory({ ...oldAnswer, botCalls: Array.from({ length: 12 }, (_, i) => ({ ...oldAnswer.botCalls![1], callId: String(i), replyText: "x".repeat(5000) })) });
+  assert.equal(bounded.botCalls?.length, 8); assert.equal(bounded.botCallsOmitted, 4);
+  assert.equal(bounded.botCalls?.[0].replyText?.length, 4000); assert.equal(bounded.botCalls?.[0].truncated, true);
+  const follow = make("context-followup");
+  const foreground = new BotConversationService(options);
+  const snapshot = (foreground as unknown as { requestRun: (conversation: unknown, message: unknown) => { context_json: string } })
+    .requestRun(messages.conversation("u", "source", follow.conversationId)!, messages.message(follow.assistantMessageId)!);
+  const frozen = JSON.parse(snapshot.context_json);
+  assert.equal(frozen.history.find((item: { messageId: string }) => item.messageId === a.assistantMessageId)?.botCalls.at(-1).replyText,
+    "A original answer", "real service snapshot preserves original recipient evidence for follow-up");
+  assert.equal(frozen.peerHistory.calls.find((call: { callId: string }) => call.callId === oldAnswer.botCalls![1].callId)?.replyText, "A original answer");
+  messages.update(follow.assistantMessageId, "completed", "historical summary");
+  db.prepare("UPDATE bot_request_runs SET transcript_json='[]',context_json=? WHERE message_id=?")
+    .run(JSON.stringify({ ...frozen, coveredMessageIds: [a.userMessageId,a.assistantMessageId,b.userMessageId,b.assistantMessageId,follow.userMessageId,follow.assistantMessageId] }), follow.assistantMessageId);
+  messages.update(a.assistantMessageId, "completed", "旧摘要不能代替对方原文");
+  const compactedFollow = make("covered-followup");
+  const compacted = JSON.parse((foreground as unknown as { requestRun: (conversation: unknown, message: unknown) => { context_json: string } })
+    .requestRun(messages.conversation("u", "source", compactedFollow.conversationId)!, messages.message(compactedFollow.assistantMessageId)!).context_json);
+  assert(!compacted.history.some((item: { messageId: string }) => item.messageId === a.assistantMessageId), "native coverage still avoids duplicate transcript text");
+  assert(compacted.peerHistory.calls.some((call: { replyText: string }) => call.replyText === "A original answer"), "host peer receipts survive native coverage and compaction");
+  const peerBound = botPeerHistory([{ ...oldAnswer, botCalls: Array.from({ length: 20 }, (_, i) => ({ ...oldAnswer.botCalls![1], callId: String(i), replyText: "x".repeat(5000) })) }]);
+  assert.equal(peerBound.calls.length,8); assert.equal(peerBound.omittedCalls,12); assert.equal(peerBound.calls[0].replyText?.length,2000);
+  // Original replay tests exercise a still-active request, not the completed fixture above.
+  messages.update(a.assistantMessageId, "running", "");
+  const previousTimezone = process.env.TZ;
+  try {
+    process.env.TZ = "Asia/Shanghai";
+    assert.deepEqual(botPeerHistoryWindow(Date.parse("2026-11-12T01:04:00Z"), "yesterday"),
+      { after: Date.parse("2026-11-10T16:00:00Z"), before: Date.parse("2026-11-11T16:00:00Z") });
+    assert.equal(botPeerHistoryWindow(Date.parse("2026-11-12T01:04:00Z"), "today").before, Date.parse("2026-11-12T01:04:00Z"));
+    process.env.TZ = "America/New_York";
+    const autumn = botPeerHistoryWindow(Date.parse("2026-11-02T17:00:00Z"), "yesterday");
+    assert.equal(autumn.before - autumn.after, 25 * 3600000, "fall-back day is not silently truncated");
+    const spring = botPeerHistoryWindow(Date.parse("2026-03-09T17:00:00Z"), "yesterday");
+    assert.equal(spring.before - spring.after, 23 * 3600000, "spring day does not include the previous day");
+  } finally { if (previousTimezone === undefined) delete process.env.TZ; else process.env.TZ = previousTimezone; }
   const before = receivers.length;
   assert.equal((await service.call(a.assistantMessageId, "op-a", "target", "request A")).status, "completed");
   assert.equal(receivers.length, before, "terminal replay reads receipt without recontacting");
