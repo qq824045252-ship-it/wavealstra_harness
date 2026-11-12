@@ -1,0 +1,8 @@
+{
+  "passed": true,
+  "elapsedMs": 47,
+  "signalAborted": true,
+  "toolError": "AbortError: 浏览器操作已取消",
+  "scope": "real DurableBotRuntime.abort -> Pi codemode -> DurableDomainTools signal -> real Electron renderer wait; controlled model; not UI click",
+  "electron": "44.5.1"
+}

@@ -1,0 +1,23 @@
+{
+  "checks": [
+    "closed task tab never redirects to UI-selected page",
+    "background task fixed tab; trusted ordinary/textarea/contenteditable/React Chinese submission with unrelated DOM changes",
+    "readonly/disabled/occlusion/rejected controlled value are explicit failures",
+    "node replacement rejected and semantic ambiguity explicit",
+    "confirmed submission survives after-observation deadline",
+    "foreground full ordinary/textarea/contenteditable/React Chinese and readonly/disabled/covered/rejected matrix",
+    "minimized full ordinary/textarea/contenteditable/React Chinese and readonly/disabled/covered/rejected matrix",
+    "actual busy renderer abort bounded; independent tab read succeeds",
+    "actual busy renderer deadline bounded; independent tab read succeeds",
+    "actual busy renderer destroy bounded; independent tab read succeeds",
+    "long text >100k Unicode complete continuation and stale-content rejection",
+    "120 targets paginated without omissions; selector-scoped read",
+    "bounded async readiness, explicit empty and iframe support boundary",
+    "real Electron pending renderer cancel; independent tab remains usable",
+    "closing a previously leased minimized page cleans native ownership"
+  ],
+  "passed": true,
+  "electron": "44.5.1",
+  "node": "24.21.0",
+  "profile": "C:\\Users\\servi\\dot-browser-46-47-a2b9\\out\\diagnostics\\browser-46-47-followup\\electron-O3LSoz"
+}
