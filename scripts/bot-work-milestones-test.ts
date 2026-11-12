@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { mock } from "node:test";
 import { workFeedbackSchema } from "../src/shared/bot-conversation";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -196,7 +197,10 @@ try {
   assert.deepEqual(detail.phase3.milestones.openGaps, JSON.parse(JSON.stringify(milestones.openGaps)));
 
   // (c) Multiple verified items become one merged progress message; replay adds none.
+  const hydration = mock.method(works.repo, "getWork");
   assert.equal(feedback.drain(created.workId), 1);
+  assert.equal(hydration.mock.callCount(), 1, "milestone feedback reuses its one hydrated Work for artifacts and gaps");
+  hydration.mock.restore();
   assert.equal(feedback.drain(created.workId), 0, "replaying the same milestone digest sends nothing");
   const history = () => messages.history(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID, conversationId: source.conversationId });
   const milestoneMessages = () => history().messages.filter(message => message.workFeedback?.eventId === `milestone:${binding.bindingId}`);

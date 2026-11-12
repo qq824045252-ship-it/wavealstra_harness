@@ -1,0 +1,24 @@
+diff --git a/dist/sqlite/node.js b/dist/sqlite/node.js
+index 4c031cf107903603871a8a551dee90109ebba7f5..61c665afb1611db702bf1f3197477021ace6241a 100644
+--- a/dist/sqlite/node.js
++++ b/dist/sqlite/node.js
+@@ -150,13 +150,17 @@ export class NodeSqliteDatabase extends NodeSqliteExecutor {
+         return this.access.run(() => {
+             if (this.closed)
+                 return;
+-            this.closed = true;
+             this.statements.clear();
+             try {
+                 this.database.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+             }
+             finally {
+-                this.database.close();
++                try {
++                    this.database.close();
++                }
++                finally {
++                    this.closed = !this.database.isOpen;
++                }
+             }
+         });
+     }

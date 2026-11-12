@@ -59,6 +59,8 @@ function gateFor(path: string): { gate: LocalGate; releaseGate: () => void } {
 export class DurableSqliteDatabase implements SqliteDatabase {
   private tail: Promise<unknown> = Promise.resolve();
   private closed = false;
+  private closeRequested = false;
+  private closing?: Promise<void>;
   private readonly statements = new Map<string, Database.Statement>();
   private constructor(private readonly database: Database.Database, private readonly readOnly: boolean, private readonly snapshot: boolean, private readonly gate: LocalGate, private readonly releaseGate: () => void, private readonly releaseSnapshot?: () => void) {}
 
@@ -115,7 +117,8 @@ export class DurableSqliteDatabase implements SqliteDatabase {
     }
   }
 
-  private enqueue<T>(operation: () => T | Promise<T>): Promise<T> {
+  private enqueue<T>(operation: () => T | Promise<T>, cleanup = false): Promise<T> {
+    if (this.closeRequested && !cleanup) return Promise.reject(new Error('SQLite database is closing or closed'));
     const result = this.tail.then(operation);
     this.tail = result.then(() => undefined, () => undefined);
     return result;
@@ -186,14 +189,32 @@ export class DurableSqliteDatabase implements SqliteDatabase {
   }
 
   close(): Promise<void> {
-    return this.enqueue(() => {
+    if (this.closing) return this.closing;
+    if (this.closed) return Promise.resolve();
+    // Seal new calls now, but let calls admitted before close finish on the queue.
+    this.closeRequested = true;
+    this.closing = this.enqueue(() => {
       if (this.closed) return;
       try {
-        if (this.snapshot) this.database.exec('ROLLBACK');
+        // A previous attempt may have rolled back successfully before close failed.
+        if (this.snapshot && this.database.inTransaction) this.database.exec('ROLLBACK');
       } finally {
         try { this.database.close(); }
-        finally { this.releaseSnapshot?.(); this.releaseGate(); this.statements.clear(); this.closed = true; }
+        finally {
+          // A thrown close can precede or follow actual native release. Never let
+          // another local writer through while this handle remains open.
+          if (!this.database.open) {
+            this.releaseSnapshot?.();
+            this.releaseGate();
+            this.statements.clear();
+            this.closed = true;
+          }
+        }
       }
+    }, true).catch(error => {
+      this.closing = undefined;
+      throw error;
     });
+    return this.closing;
   }
 }

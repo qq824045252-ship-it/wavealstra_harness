@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync } from "node
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+import { mock } from "node:test";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { BotRegistry } from "../src/main/agent/work/BotRegistry";
 import { WorkService, DESKTOP_USER_GRANTS } from "../src/main/agent/work/WorkService";
@@ -148,3 +149,68 @@ try {
   assert.equal(messages.messageWithWorkFeedback("missing-message"), undefined);
   console.log("PASS bot report images: old/new reports, exact binding, aliases, immutable recovery, boundaries, stale DTO/backfill, fresh scope and IPC");
 } finally { db.close(); rmSync(root, { recursive: true, force: true }); }
+
+// Run the actual image service behind Work feedback. Its best-effort history
+// reader must not silently acknowledge a transient background snapshot failure.
+for (const fault of ["registration", "missing", "partial", "partial-header", "partial-body", "service-unavailable"]) {
+  const retryRoot = mkdtempSync(join(tmpdir(), "bot-report-image-retry-"));
+  const retryDb = new AppDatabase(join(retryRoot, "test.db"));
+  let feedback: WorkConversationFeedback | undefined;
+  mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  try {
+    const bots = new BotRegistry(retryDb.connection); bots.ensureDefaultBot(LOCAL_USER_ID);
+    const works = new WorkService(retryDb.connection, { bots });
+    const messages = new BotConversationRepository(retryDb.connection);
+    const storage = new ArtifactStorage(join(retryRoot, "artifacts"));
+    const artifacts = new ArtifactService(storage, new ArtifactRepository(retryDb.connection), new ArtifactRegistry());
+    let serviceUnavailable = fault === "service-unavailable";
+    const images = new BotReportImageService(retryDb.connection, LOCAL_USER_ID, works, () => serviceUnavailable ? null : artifacts);
+    const source = messages.accept(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID, requestId: "retry-source", text: "截图成果" });
+    messages.update(source.assistantMessageId, "completed", "已受理");
+    const created = works.createWork({ kind: "user", userId: LOCAL_USER_ID, grants: DESKTOP_USER_GRANTS },
+      { operationId: "retry-work", title: "截图成果", conversationId: source.conversationId, sourceMessageId: source.userMessageId });
+    assert(created.ok); const work = created.work;
+    const imagePath = join(retryRoot, "retry.png");
+    if (fault !== "missing") writeFileSync(imagePath, fault === "partial" ? Buffer.alloc(0)
+      : fault === "partial-header" ? bytes.subarray(0, 4) : fault === "partial-body" ? bytes.subarray(0, bytes.length - 6) : bytes);
+    let failRegistration = fault === "registration";
+    const materialize = storage.materialize.bind(storage);
+    mock.method(storage, "materialize", (...args: Parameters<ArtifactStorage["materialize"]>) => {
+      if (failRegistration) throw Error("fixture artifact storage unavailable");
+      return materialize(...args);
+    });
+    works.repo.insertBinding({ bindingId: "retry-binding", workId: work.workId, operationId: "retry-execution", botId: DEFAULT_BOT_ID,
+      taskId: "retry-task", durableStoreKey: "store", conversationId: "native", intentRevision: work.intentRevision,
+      ownerEpoch: work.ownerEpoch, inputSnapshotId: work.inputSnapshotId, expertSnapshot: bots.activeSnapshot(DEFAULT_BOT_ID)!,
+      delegatedScope: [], workspaceBinding: retryRoot, status: "completed", admittedAt: 1, settledAt: 2,
+      settlementNote: "真实截图成果\n![proof](retry.png)" });
+    feedback = new WorkConversationFeedback({ db: retryDb.connection, userId: LOCAL_USER_ID, works,
+      isAuthority: () => true, prepareImages: id => images.captureWork(id) });
+    assert.equal(feedback.drain(), 1);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(artifacts.listByTask("retry-task").length, 0);
+    const history = () => messages.history(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID, conversationId: source.conversationId });
+    const before = history().messages.map(message => [message.messageId, message.text]);
+    const unchangedWork = works.getWork(work.workId);
+    failRegistration = false;
+    serviceUnavailable = false;
+    writeFileSync(imagePath, bytes);
+    mock.timers.tick(2_001);
+    assert.equal(feedback.drain(), 0, "retry does not add a duplicate result message");
+    await new Promise<void>(resolve => setImmediate(resolve));
+    const saved = artifacts.listByTask("retry-task");
+    assert.equal(saved.length, 1, `${fault} recovers through real image preparation without Work changes or a UI read`);
+    assert.deepEqual((await artifacts.readImageVariant(saved[0]!.id, "full"))?.data, bytes);
+    assert.deepEqual(history().messages.map(message => [message.messageId, message.text]), before);
+    assert.deepEqual(works.getWork(work.workId), unchangedWork);
+    const idle = mock.method(images, "captureWork");
+    mock.timers.tick(2_001); feedback.drain();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(idle.mock.callCount(), 0, "successful image completion removes the retry candidate");
+    idle.mock.restore();
+    console.log(`PASS #34 real image service ${fault} failure recovers while Work remains unchanged`);
+  } finally {
+    feedback?.close(); mock.timers.reset(); mock.restoreAll();
+    retryDb.close(); rmSync(retryRoot, { recursive: true, force: true });
+  }
+}

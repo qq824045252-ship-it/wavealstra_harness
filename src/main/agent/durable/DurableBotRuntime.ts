@@ -127,7 +127,11 @@ export class DurableBotRuntime {
   private revision = 0;
   private readonly epoch = randomUUID();
   private latest!: DurableBotSnapshot;
-  private closed = false;
+  private closeState:
+    | { kind: "open" }
+    | { kind: "closing"; completion: Promise<void> }
+    | { kind: "retry" }
+    | { kind: "closed" } = { kind: "open" };
   private failure: unknown = undefined;
   private failed = false;
   private closeBegun = false;
@@ -185,7 +189,7 @@ export class DurableBotRuntime {
     });
   }
   private markFailure(error: unknown): void {
-    if (this.failed || this.closed) return;
+    if (this.failed || this.closeState.kind !== "open") return;
     this.failed = true;
     this.failure = error;
     console.warn("[Durable] Session failed; reopening recovers committed content", error);
@@ -197,6 +201,7 @@ export class DurableBotRuntime {
   }
   private assertSessionHealthy(): void {
     if (this.failed) throw new SessionFailed(this.failure);
+    if (this.closeState.kind !== "open") throw new Error("Durable runtime is closing or closed");
   }
   /** Convert a failed call into the recognizable SessionFailed, preserving the original cause. */
   private async normalizeFailure(error: unknown): Promise<never> {
@@ -647,12 +652,13 @@ export class DurableBotRuntime {
   }
 
   async refresh(): Promise<DurableBotSnapshot> {
+    if (this.closeState.kind !== "open") return this.latest;
     this.assertSessionHealthy();
     // Keep the single-writer lease fresh; a stale lease only matters after an unclean shutdown.
     this.lease?.heartbeat();
     // Serialize presentation reads only. Durable alone schedules execution.
     const projection = this.projection.then(async () => {
-      if (this.closed || this.failed) return;
+      if (this.closeState.kind !== "open" || this.failed) return;
       await this.project(this.watch.value);
     });
     this.projection = projection.catch(() => {});
@@ -949,10 +955,10 @@ export class DurableBotRuntime {
     return captureContextBranchAt(this.storage, conversationId, entryId, ctx);
   }
 
-  async close(): Promise<void> {
-    if (this.closed) return;
-    this.closed = true;
-    try {
+  close(): Promise<void> {
+    if (this.closeState.kind === "closed") return Promise.resolve();
+    if (this.closeState.kind === "closing") return this.closeState.completion;
+    const completion = Promise.resolve().then(async () => {
       try { await this.watch?.stop(); }
       catch (error) { if (!this.failed) throw error; }
       await Promise.allSettled([...this.children.values()].map(watch => watch.stop()));
@@ -963,16 +969,22 @@ export class DurableBotRuntime {
         for (const manager of this.ownedChildManagers) await manager.flush(ctx);
       } catch (error) { console.warn("[Durable] Context state flush before close failed", error); }
       // close checkpoints pending work; abort would permanently cancel it.
-      try { await this.harness.close(ctx); }
-      catch (error) { if (!(error instanceof SessionFailed) && !this.failed) throw error; }
-    } finally {
+      await this.harness.close(ctx);
+      // Keep ownership and retryable resources until the underlying close succeeds.
       this.evidence?.dispose();
       this.contextManager?.dispose();
       for (const manager of this.ownedChildManagers) manager.dispose();
       this.ownedChildManagers.clear();
       this.childManagers.clear();
       this.lease?.release();
-    }
+    }).then(() => {
+      this.closeState = { kind: "closed" };
+    }, (error: unknown) => {
+      this.closeState = { kind: "retry" };
+      throw error;
+    });
+    this.closeState = { kind: "closing", completion };
+    return completion;
   }
 
   /**
@@ -1034,7 +1046,7 @@ export class DurableBotRuntime {
   }
 
   private async project(value: ConversationView): Promise<void> {
-    if (this.closed || this.failed) return;
+    if (this.closeState.kind !== "open" || this.failed) return;
     // One observation clock for this revision: the same `now` feeds the stream clocks and the retry countdown.
     const now = Date.now();
     const entries = value.entries.filter(entry => entry.kind !== "mybuddy.context-import");

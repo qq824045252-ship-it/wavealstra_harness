@@ -86,6 +86,9 @@ export class BotConversationService {
   private readonly stops = new Map<string, Promise<void>>();
   private readonly cancellationUsers = new Set<string>();
   private readonly releases = new Map<string, Promise<void>>();
+  private readonly pendingReleases = new Set<string>();
+  private releaseRetryTimer?: ReturnType<typeof setTimeout>;
+  private retryingReleases = false;
   private readonly shutdown = new AbortController();
   private closing = false;
   private readonly streamedAt = new Map<string, number>();
@@ -165,6 +168,11 @@ export class BotConversationService {
     const source = this.messages.receipt(this.options.userId, botId, requestId);
     if (!source) throw new Error("找不到发送请求");
     const message = this.messages.message(source.assistant_message_id);
+    if (message?.status === "cancelled") {
+      await this.stopPending(botId, source.conversation_id);
+      await this.releaseRequest(message.messageId);
+      return;
+    }
     if (!message || !["queued", "running", "unknown"].includes(message.status)) return;
     this.options.works.transaction(() => {
       if (!this.options.isAuthority()) throw new Error("当前宿主不持有取消权");
@@ -186,6 +194,8 @@ export class BotConversationService {
 
   recover(): void {
     if (!this.options.isAuthority()) return;
+    for (const messageId of this.pendingReleases) void this.releaseRequest(messageId)
+      .catch(error => console.warn("[Bot] 请求资源释放待恢复", messageId, error));
     this.peerCalls.recover();
     this.collaborations.recover();
     this.organizations?.recover();
@@ -203,6 +213,8 @@ export class BotConversationService {
 
   async close(): Promise<void> {
     this.closing = true;
+    if (this.releaseRetryTimer) clearTimeout(this.releaseRetryTimer);
+    this.releaseRetryTimer = undefined;
     if (this.agingTimer) clearTimeout(this.agingTimer);
     this.agingTimer = undefined;
     for (const timer of this.receiptTimers.values()) clearTimeout(timer);
@@ -224,7 +236,7 @@ export class BotConversationService {
     this.agingTimer = undefined;
     if (this.closing || !this.options.isAuthority()) return;
     const waiting = this.messages.pending(this.options.userId).flatMap(conversation => {
-      if (conversation.archived_at != null) return [];
+      if (conversation.archived_at != null || this.options.bots.getBot(conversation.bot_id)?.status !== "active") return [];
       const candidates = this.options.db.prepare(`SELECT message_id FROM bot_messages WHERE conversation_id=?
         AND role='assistant' AND status IN ('queued','running','unknown') ORDER BY ordinal`).all(conversation.conversation_id)
         .map(value => this.messages.message(z.object({ message_id: z.string() }).parse(value).message_id)!)
@@ -288,12 +300,35 @@ export class BotConversationService {
       this.runtimeInstructions.delete(messageId);
       this.streamedAt.delete(messageId);
       if (this.messages.message(messageId)?.status !== 'unknown') this.attempted.delete(messageId);
+      this.pendingReleases.delete(messageId);
     }).catch(error => {
+      this.pendingReleases.add(messageId);
       console.warn("[Bot] 请求资源仍待释放", messageId, error);
       throw error;
-    }).finally(() => { this.releases.delete(messageId); });
+    }).finally(() => {
+      this.releases.delete(messageId);
+      this.scheduleReleaseRetry();
+    });
     this.releases.set(messageId, releasing);
     return releasing;
+  }
+
+  /** Cancellation acknowledgement and process-local resource disposal are independent. */
+  private scheduleReleaseRetry(): void {
+    if (!this.pendingReleases.size && this.releaseRetryTimer) {
+      clearTimeout(this.releaseRetryTimer);
+      this.releaseRetryTimer = undefined;
+    }
+    if (this.closing || this.retryingReleases || this.releaseRetryTimer || !this.pendingReleases.size) return;
+    this.releaseRetryTimer = setTimeout(() => {
+      this.releaseRetryTimer = undefined;
+      this.retryingReleases = true;
+      const batch = [...this.pendingReleases].slice(0, 16);
+      for (const messageId of batch) { this.pendingReleases.delete(messageId); this.pendingReleases.add(messageId); }
+      void Promise.allSettled(batch.map(messageId => this.releaseRequest(messageId)))
+        .finally(() => { this.retryingReleases = false; this.scheduleReleaseRetry(); });
+    }, 1000);
+    this.releaseRetryTimer.unref?.();
   }
 
   private async runRequest(botId: string, conversationId: string, next: BotMessageDto): Promise<void> {
@@ -303,10 +338,12 @@ export class BotConversationService {
           this.assertBot(botId, true);
           const value = this.messages.conversation(this.options.userId, botId, conversationId);
           if (!value) throw new Error("对话不存在");
+          if (value.archived_at !== null) return undefined;
           this.requestRun(value, next);
           this.messages.update(next.messageId, "running", next.text);
           return { ...value, bot_id: botId };
         });
+        if (!conversation) return;
         this.scheduleReceipt(next.messageId);
         const source = this.messages.receipt(this.options.userId, botId, next.requestId);
         const user = source && this.messages.message(source.user_message_id);
@@ -655,22 +692,21 @@ ${conversation.team_id ? `当前是独立团队会话（teamId=${conversation.te
         if (!source) continue;
         this.cancellationUsers.add(source.assistant_message_id);
         try {
-        const run = source && this.options.db.prepare('SELECT 1 FROM bot_request_runs WHERE message_id=?').get(source.assistant_message_id);
-        await (source && this.submissions.get(source.assistant_message_id))?.catch(() => {});
-        const runtime = run ? await this.runtime({ ...conversation, bot_id: botId }, request.request_id) : undefined;
-        if (this.closing) return;
-        const record = runtime && await runtime.conversation.commit(tx => tx.submissionByRequest(runtime.conversation.id, request.request_id), context);
-        if (runtime && (record?.status === "queued" || record?.status === "placed")) {
-          // The drain cannot admit another input while this cancellation is pending.
-          // Recovered tools independently check the immutable cancelled source.
-          runtime.resume();
-          await runtime.abort();
-        }
-        this.options.works.transaction(() => {
-          if (!this.options.isAuthority()) throw new Error("取消回执前宿主租约已变化");
-          this.options.db.prepare("UPDATE bot_cancel_intents SET confirmed_at=? WHERE conversation_id=? AND request_id=?")
-            .run(Date.now(), conversationId, request.request_id);
-        });
+          const run = this.options.db.prepare('SELECT 1 FROM bot_request_runs WHERE message_id=?').get(source.assistant_message_id);
+          await this.submissions.get(source.assistant_message_id)?.catch(() => {});
+          const runtime = run ? await this.runtime({ ...conversation, bot_id: botId }, request.request_id) : undefined;
+          if (this.closing) return;
+          const record = runtime && await runtime.conversation.commit(tx => tx.submissionByRequest(runtime.conversation.id, request.request_id), context);
+          if (runtime && (record?.status === "queued" || record?.status === "placed")) {
+            // Recovered tools independently check the immutable cancelled source.
+            runtime.resume();
+            await runtime.abort();
+          }
+          this.options.works.transaction(() => {
+            if (!this.options.isAuthority()) throw new Error("取消回执前宿主租约已变化");
+            this.options.db.prepare("UPDATE bot_cancel_intents SET confirmed_at=? WHERE conversation_id=? AND request_id=?")
+              .run(Date.now(), conversationId, request.request_id);
+          });
         } finally {
           this.cancellationUsers.delete(source.assistant_message_id);
           await this.releaseRequest(source.assistant_message_id);

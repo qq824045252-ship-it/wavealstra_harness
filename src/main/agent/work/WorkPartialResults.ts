@@ -83,6 +83,10 @@ export class WorkPartialResults {
   gaps(workId: string): WorkSubitemDto[] {
     const work = this.works.getWork(workId);
     if (!work) return [];
+    return this.gapsForWork(work);
+  }
+  gapsForWork(work: WorkDto): WorkSubitemDto[] {
+    const workId = work.workId;
     // Reuse immutable facts only within this synchronous read. No cache survives
     // a call: a later read must see settlements, owner changes and rollbacks.
     const bindings = new Map<string, WorkExecutionBindingDto | undefined>();

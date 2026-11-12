@@ -13,8 +13,8 @@ const MILESTONE_LIMIT = 40;
 
 export interface WorkMilestoneSources {
   repo: Pick<WorkRepository, "listDeliverables" | "listBlockers">;
-  partialResults: Pick<WorkPartialResults, "list" | "gaps">;
-  generatedArtifacts: Pick<WorkGeneratedArtifacts, "list">;
+  partialResults: Pick<WorkPartialResults, "list" | "gapsForWork">;
+  generatedArtifacts: Pick<WorkGeneratedArtifacts, "listForWork">;
 }
 
 /**
@@ -31,7 +31,7 @@ export class WorkMilestones {
     const bindings = new Map(executions.filter(binding => binding.invalidatedAt === undefined
       && binding.status !== "invalidated" && current(binding)).map(binding => [binding.bindingId, binding]));
     const deliverables = this.sources.repo.listDeliverables(work.workId);
-    const artifacts = this.sources.generatedArtifacts.list(work.workId);
+    const artifacts = this.sources.generatedArtifacts.listForWork(work);
     const requiresUserInput = this.sources.repo.listBlockers(work.workId)
       .some(blocker => blocker.status === "open" && blocker.waitingForUserInput);
     const items = this.sources.partialResults.list(work.workId)
@@ -64,7 +64,7 @@ export class WorkMilestones {
     milestones.sort((left, right) => left.createdAt - right.createdAt || left.milestoneId.localeCompare(right.milestoneId));
     const ready = milestones.slice(-MILESTONE_LIMIT);
     const readyDeliverables = new Set(ready.flatMap(item => item.deliverableId ? [item.deliverableId] : []));
-    const gaps = this.sources.partialResults.gaps(work.workId).map(item => ({ itemId: item.itemId, bindingId: item.bindingId,
+    const gaps = this.sources.partialResults.gapsForWork(work).map(item => ({ itemId: item.itemId, bindingId: item.bindingId,
       task: item.task, outcome: item.outcome, required: item.required }));
     // "Covered" is only the required scope that also has a published partial fact.
     const covered = items.filter(item => item.required && item.deliverableId !== undefined

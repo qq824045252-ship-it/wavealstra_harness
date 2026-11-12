@@ -6,6 +6,8 @@ import type { WorkFeedbackDto } from "../../../shared/bot-conversation";
 import type { WorkDto } from "../../../shared/bot-work";
 import { BotConversationRepository } from "./BotConversationRepository";
 import { recordCollaborationReturnFailure } from "./BotCollaborationExecutionFacts";
+import { WorkFeedbackCandidates, type WorkFeedbackCandidate } from "./WorkFeedbackCandidates";
+import type { BotReportImagePreparation } from "./BotReportImageService";
 import { projectTeamReport } from "./WorkReportPresentation";
 import { workDeliveryFiles, workDeliveryResults } from "./WorkDeliveryArtifacts";
 import { workMilestoneVersion } from "./WorkMilestones";
@@ -19,7 +21,7 @@ export interface WorkConversationFeedbackOptions {
   isAuthority: () => boolean;
   pollIntervalMs?: number;
   superviseWatch?: boolean;
-  prepareImages?: (workId: string) => Promise<void>;
+  prepareImages?: (workId: string) => Promise<BotReportImagePreparation>;
 }
 
 /** Durable facts are replayable inputs; completed Bot messages are atomic delivery
@@ -29,14 +31,20 @@ export interface WorkConversationFeedbackOptions {
 export class WorkConversationFeedback {
   readonly messages: BotConversationRepository;
   private timer?: ReturnType<typeof setInterval>;
+  private continuation?: ReturnType<typeof setImmediate>;
+  private readonly candidates: WorkFeedbackCandidates;
+  private readonly preparingImages = new Set<string>();
+  private stopped = false;
   constructor(private readonly options: WorkConversationFeedbackOptions) {
     this.messages = new BotConversationRepository(options.db);
+    this.candidates = new WorkFeedbackCandidates(options.db, options.userId);
   }
 
   /** Start the retry loop before recovery so a transient startup failure cannot
    * leave persisted facts stranded until an unrelated Work changes. */
   start(): void {
     if (this.timer) return;
+    this.stopped = false;
     this.timer = setInterval(() => this.drain(), Math.max(10, this.options.pollIntervalMs ?? 2000));
     this.timer.unref();
     this.recover();
@@ -45,9 +53,12 @@ export class WorkConversationFeedback {
   close(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
+    this.stopped = true;
+    if (this.continuation) clearImmediate(this.continuation);
+    this.continuation = undefined;
   }
 
-  recover(): number { return this.drain(); }
+  recover(): number { this.candidates.recover(); return this.drain(); }
 
   drain(workId?: string): number {
     try { return this.drainPending(workId); }
@@ -56,6 +67,12 @@ export class WorkConversationFeedback {
       // reported failure. Durable source facts remain available on the next tick.
       console.warn("[Work] 原对话反馈待重试", workId ?? "recovery", error);
       return 0;
+    }
+    finally {
+      if (this.timer && !this.continuation && this.options.isAuthority() && this.candidates.hasMore(Date.now())) {
+        this.continuation = setImmediate(() => { this.continuation = undefined; this.drain(); });
+        this.continuation.unref();
+      }
     }
   }
 
@@ -124,16 +141,19 @@ export class WorkConversationFeedback {
   private drainPending(workId?: string): number {
     if (!this.options.isAuthority()) return 0;
     const { works, userId } = this.options;
-    const candidates = workId ? [works.getWork(workId)].filter((work): work is WorkDto => !!work)
-      : works.repo.listWorks(userId, { includeClosed: true });
+    const candidates = this.candidates.batch(Date.now(), workId);
     let inserted = 0;
     for (const candidate of candidates) {
+      let imageJob: WorkFeedbackCandidate | undefined;
       try { inserted += works.transaction(() => {
         if (!this.options.isAuthority()) return 0;
+        const current = this.candidates.current(candidate.workId);
+        if (!current) return 0;
+        if (current.projected) { imageJob = current; return 0; }
         const work = works.getWork(candidate.workId);
-        if (!work || work.userId !== userId) return 0;
+        if (!work || work.userId !== userId) { this.candidates.projected(candidate.workId, false); return 0; }
         const origin = this.messages.resolveWorkDelivery(userId, work.workId);
-        if (!origin && !this.messages.collaborations.byWork(userId, work.workId)) return 0;
+        if (!origin && !this.messages.collaborations.byWork(userId, work.workId)) { this.candidates.projected(work.workId, false); return 0; }
         const managed = (bindingId: string) => (this.options.superviseWatch && work.mode === "watch"
           && (() => {
             const binding = works.repo.getBinding(bindingId);
@@ -156,7 +176,7 @@ export class WorkConversationFeedback {
           if (this.messages.appendWorkDelivery(userId, work.workId, event, JSON.stringify(version), `【${work.title}】\n${body}`, { ...metadata, workId: work.workId, eventId: event }).inserted) count++;
         };
         const results = works.repo.listDeliverables(work.workId);
-        const generated = works.generatedArtifacts.list(work.workId, true);
+        const generated = works.generatedArtifacts.listForWork(work, true);
         const bindings = works.repo.listBindings(work.workId);
         const completed = new Set(bindings.filter(b => b.status === "completed").map(b => b.bindingId));
         // 运行中已验证子项与详情读共用同一份里程碑投影；合并成一条，不逐项转发。
@@ -267,17 +287,31 @@ export class WorkConversationFeedback {
           emit("closure", [work.closedAt, work.closureConclusion, work.closureSummary],
             work.closeOperationId?.startsWith("watch-goal:") ? work.closureSummary || "持续委托已完成，后续不再检查。" : `事项已关闭（${watchEndedByTime(work) ? "到期结束" : work.closureConclusion ?? "已结束"}）。${work.closureSummary ? `\n${work.closureSummary}` : ""}\n关闭状态不等同于用户验收。`, { kind: "closure", category: "result" });
         }
+        imageJob = this.candidates.projected(work.workId, Boolean(this.options.prepareImages));
         return count;
       });
         // File reads/materialization must run after all enclosing Work transactions.
-        if (this.options.prepareImages) queueMicrotask(() => {
-          void this.options.prepareImages!(candidate.workId).catch(error => console.warn("[Work] 报告图片待重试", error));
-        });
+        if (imageJob) {
+          const job = imageJob;
+          this.candidates.defer(job, Date.now() + (this.options.pollIntervalMs ?? 2000));
+          if (!this.preparingImages.has(job.workId) && !this.stopped && this.options.prepareImages) {
+            this.preparingImages.add(job.workId);
+            queueMicrotask(() => {
+              if (this.stopped || !this.options.isAuthority()) { this.preparingImages.delete(job.workId); return; }
+              void this.options.prepareImages!(job.workId).then(preparation => {
+                if (preparation === "complete" && !this.stopped && this.options.isAuthority()) this.candidates.acknowledge(job);
+              }).catch(error => console.warn("[Work] 报告图片待重试", error))
+                .finally(() => this.preparingImages.delete(job.workId));
+            });
+          }
+        }
       } catch (error) {
         // A broken Work must not starve feedback for every other original chat.
         try { recordCollaborationReturnFailure(this.options.db, userId, candidate.workId, error); }
         catch (recordError) { console.warn("[Work] 协作回传失败记录待重试", candidate.workId, recordError); }
         console.warn("[Work] 原对话反馈待重试", candidate.workId, error);
+        const retry = this.candidates.current(candidate.workId);
+        if (retry) this.candidates.defer(retry, Date.now() + (this.options.pollIntervalMs ?? 2000));
       }
     }
     return inserted;
