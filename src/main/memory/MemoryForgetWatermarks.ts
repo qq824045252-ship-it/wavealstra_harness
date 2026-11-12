@@ -22,16 +22,31 @@ export class MemoryForgetWatermarks {
 
   withdrawRecord(record: MemoryRecordDto, revisions: readonly MemoryRevisionDto[], scopes: readonly Scope[],
     source?: MemoryForgetSource): void {
-    const evidence = record.evidence.flatMap(item => {
-      const quote = /^用户：([\s\S]*?)(?:\n助手：|$)/.exec(item.excerpt ?? "")?.[1] ?? item.excerpt ?? "";
-      if (normalize(quote) === normalize(record.title) || revisions.some(revision => normalize(quote) === normalize(revision.title))) return [];
-      const clauses = memoryClauses(quote);
-      return clauses.length === 1 ? clauses : clauses.filter(clause => clause.includes(record.content));
-    });
-    // Whole multi-fact excerpts are not a deletion target. Minimal evidence and
-    // historical revisions protect paraphrased atoms without withdrawing B.
     const facts: Withdrawal[] = [record, ...revisions].map(fact => ({ kind: "fact", value: fact.content, identity: fact.title }));
-    this.persist(scopes, [...facts, ...evidence.map((value): Withdrawal => ({ kind: "evidence", value }))], source?.createdAt, source?.messageId);
+    const evidence: Withdrawal[] = [];
+    for (const item of record.evidence) {
+      const quote = /^用户：([\s\S]*?)(?:\s+助手：|$)/.exec(item.excerpt ?? "")?.[1] ?? item.excerpt ?? "";
+      if (normalize(quote) === normalize(record.title) || revisions.some(revision => normalize(quote) === normalize(revision.title))) continue;
+      const clauses = memoryClauses(quote);
+      if (clauses.length === 1) { evidence.push({ kind: "evidence", value: clauses[0] }); continue; }
+      // Match literal fact sentences AND their identity, never category titles
+      // alone or generic retention notes. A/B may legitimately have equal values.
+      for (const fact of [record, ...revisions]) {
+        const core = fact.content.replace(/（[^）]*）|\([^)]*\)/g, "");
+        const fragments = memoryClauses(core).filter(part => normalize(part).length >= 4 && normalize(part) !== normalize(fact.title));
+        const identities = [fact.title, ...(fact.title.match(/[a-z][a-z0-9_-]*/gi) ?? [])];
+        for (const clause of clauses) for (const fragment of fragments) {
+          if (!normalize(clause).includes(normalize(fragment))) continue;
+          const identity = identities.find(value => {
+            if (/^[a-z0-9_-]+$/i.test(value)) return (clause.match(/[a-z][a-z0-9_-]*/gi) ?? []).some(word => word.toLowerCase() === value.toLowerCase());
+            return normalize(clause).includes(normalize(value));
+          });
+          if (!identity) continue;
+          evidence.push({ kind: "fact", value: fragment, identity });
+        }
+      }
+    }
+    this.persist(scopes, [...facts, ...evidence], source?.createdAt, source?.messageId);
     if (source) {
       const put = this.db.prepare(`INSERT OR IGNORE INTO memory_forget_receipts(scope_type,scope_id,source_message_id,request_fingerprint) VALUES (?,?,?,?)`);
       for (const scope of scopes) for (const clause of source.requestClauses ?? []) put.run(scope.scopeType, scope.scopeId ?? "", source.messageId, fingerprint(clause));
@@ -120,6 +135,34 @@ export class MemoryForgetWatermarks {
       const changed = userText !== user;
       return { userText: user, assistantText: changed ? "" : keep(assistantText) };
     };
+  }
+
+  /** Recall DTOs must not reintroduce revoked A via the evidence of retained B.
+   * The stored audit excerpt remains untouched. Use the original turn timestamp
+   * when available, not a later extraction/evidence insertion timestamp. */
+  projectEvidence(record: MemoryRecordDto, scopes: readonly Scope[]): MemoryRecordDto {
+    const filter = this.sourceFilter(scopes);
+    const boundaries = scopes.flatMap(scope => {
+      const row = this.db.prepare("SELECT cutoff_at,allowed_message_id FROM memory_forget_watermarks WHERE scope_type=? AND scope_id=?")
+        .get(scope.scopeType, scope.scopeId ?? "") as Pick<Target, "cutoff_at" | "allowed_message_id"> | undefined;
+      return row ? [row] : [];
+    });
+    return { ...record, evidence: record.evidence.flatMap(evidence => {
+      const turn = this.db.prepare(`SELECT COALESCE(m.created_at,t.captured_at) captured_at,t.user_message_id FROM memory_turns t
+        LEFT JOIN bot_messages m ON m.message_id=t.user_message_id AND m.conversation_id=t.task_id AND m.role='user' WHERE t.id=?`)
+        .get(evidence.refId) as { captured_at: number; user_message_id: string | null } | undefined;
+      const createdAt = turn?.captured_at ?? evidence.createdAt;
+      const messageId = turn?.user_message_id ?? undefined;
+      if (boundaries.some(boundary => !this.after(boundary, createdAt, messageId))) return [];
+      const excerpt = evidence.excerpt;
+      if (!excerpt) return [evidence];
+      const wrapped = /^用户：([\s\S]*?)(?:\s+助手：([\s\S]*))?$/.exec(excerpt);
+      const safe = filter(wrapped?.[1] ?? excerpt, wrapped?.[2] ?? "", createdAt, messageId);
+      const result = wrapped ? [safe.userText && "用户：" + safe.userText, safe.assistantText && "助手：" + safe.assistantText].filter(Boolean).join("\n") : safe.userText;
+      if (!result.trim()) return [];
+      const refTitle = evidence.refTitle ? filter(evidence.refTitle, "", createdAt, messageId).userText : undefined;
+      return [{ ...evidence, excerpt: result, refTitle }];
+    }) };
   }
 
   candidateSources(scopeType: MemoryScopeType, scopeId: string | undefined, turns: readonly MemoryTurnDto[], text: string): MemoryTurnDto[] {

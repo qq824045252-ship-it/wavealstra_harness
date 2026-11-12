@@ -65,6 +65,26 @@ async function check(name: string, run: () => void | Promise<void>) {
   catch (error) { failures++; console.error(`FAIL ${name}`, error); }
 }
 
+await check("#40 distribute/save adverb is not an opt-out; real prohibitions still reject", () => {
+  for (const [text, allowed] of [
+    ["请长期记住两条独立事实：AsterPreference 的标记是紫杉7319；HeliosCalibration 的标记是青丘8264。分别保存，不要共享给其他Bot。", true],
+    ["请分别记住：HeliosCalibration 的标记是青丘8264。", true],
+    ["请别保存：HeliosCalibration 的标记是青丘8264。", false],
+    ["千万别记住：HeliosCalibration 的标记是青丘8264。", false],
+    ["不要保存：HeliosCalibration 的标记是青丘8264。", false],
+    ["Do not save HeliosCalibration 的标记是青丘8264。", false],
+  ] as const) {
+    const s = fixture();
+    try {
+      const r=s.send(text);
+      const action=()=>s.bridge.remember("owner",r.conversationId,{scope:"current",kind:"fact",title:"HeliosCalibration",content:"标记是青丘8264",userEvidence:"HeliosCalibration 的标记是青丘8264"},text);
+      if (allowed) { assert(action().saved,text); assert.equal(s.pipeline.turns.listPending(r.conversationId,50).length,1,text); }
+      else { assert.throws(action,/敏感秘密|不保存/,text); assert.equal(s.pipeline.turns.listPending(r.conversationId,50).length,0,text); }
+      assert.equal((s.db.connection.prepare("SELECT count(*) n FROM memory_forget_watermarks").get() as { n: number }).n,0);
+    } finally { s.db.close(); }
+  }
+});
+
 await check("#40 non-delete wording keeps history and permits evidence", () => {
   for (const text of ["不要忘记我的回复偏好是先给结论。", "别忘记后续用中文回答。",
     "Don't forget my preferred output is Markdown.", "Never forget my preferred output is Markdown.",

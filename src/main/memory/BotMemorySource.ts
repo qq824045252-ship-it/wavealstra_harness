@@ -41,11 +41,14 @@ export function botMemoryConversationOnly(text: string): boolean {
 
 /** Explicit "do not keep this" wording. Kept separate from secret syntax so a
  * technical discussion can be captured while a real opt-out still wins. */
-const BOT_MEMORY_OPT_OUT = /不要(?:记住|记录|保存|存储)|别(?:记住|保存)|do not (?:remember|store|save)|don.t (?:remember|store|save)/i;
+const BOT_MEMORY_OPT_OUT = /不要(?:记住|记录|保存|存储)|(?<!分)别(?:记住|保存)|do not (?:remember|store|save)|don.t (?:remember|store|save)/i;
+
+/** Shared opt-out wording: the adverb "分别" is not the prohibition "别". */
+export function botMemoryOptedOut(text: string): boolean { return BOT_MEMORY_OPT_OUT.test(text); }
 
 /** Conservative capture boundary: never copy secrets or one-off private details into memory evidence. */
 export function botMemoryTextEligible(text: string): boolean {
-  if (!text.trim() || BOT_MEMORY_OPT_OUT.test(text)) return false;
+  if (!text.trim() || botMemoryOptedOut(text)) return false;
   return !hasSensitiveMemoryContent(text);
 }
 

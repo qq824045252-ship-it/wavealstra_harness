@@ -1,9 +1,8 @@
 import type Database from "better-sqlite3";
-import { botMemoryTextEligible, botMemoryConversationOnly } from "../../memory/BotMemorySource";
+import { botMemoryTextEligible, botMemoryConversationOnly, botMemoryOptedOut } from "../../memory/BotMemorySource";
 import { MemoryForgetWatermarks } from "../../memory/MemoryForgetWatermarks";
 
 const CORRECTION = /更正|纠正|修正|不是.{0,40}而是|\bcorrection\b|\bactually\b|\bnot .{0,40}but\b/i;
-const OPT_OUT = /不要(?:记住|记录|保存|存储)|别(?:记住|保存)|do not (?:remember|store|save)|don.t (?:remember|store|save)/i;
 const STOP = new Set("the and for with this that please research project start use using help about what how 我要 开始 使用 项目 帮我 调研 之前 继续 这个 那个 什么 怎么 请问 研究 一下".split(/\s+/));
 function terms(text: string): string[] {
   const latin = text.toLowerCase().match(/[a-z][a-z0-9_.-]{1,47}/g) ?? [];
@@ -108,7 +107,7 @@ export function botHistoryContext(db: Database.Database, input: {
     if (cached !== undefined) return cached;
     let denied = false;
     for (const item of db.prepare("SELECT text FROM bot_messages WHERE conversation_id=? AND role='user'").iterate(conversationId) as Iterable<{ text: string }>) {
-      if (botMemoryConversationOnly(item.text) || OPT_OUT.test(item.text)) { denied = true; break; }
+      if (botMemoryConversationOnly(item.text) || botMemoryOptedOut(item.text)) { denied = true; break; }
     }
     restricted.set(conversationId, denied);
     return denied;

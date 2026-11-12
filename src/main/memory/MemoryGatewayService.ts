@@ -517,7 +517,7 @@ export class MemoryGatewayService {
       // Deliberately collapse missing and out-of-scope ids to avoid existence probing.
       throw new MemoryGatewayError("not_found", "memory not found in the requested context", 404);
     }
-    const memory = this.memory.get(id);
+    const memory = this.memory.getForRecall(id, context);
     if (!memory || !this.memoryReadableByPrincipal(memory)) {
       throw new MemoryGatewayError("not_found", "memory not found in the requested context", 404);
     }

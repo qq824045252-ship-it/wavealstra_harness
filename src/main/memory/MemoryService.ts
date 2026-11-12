@@ -262,6 +262,15 @@ export class MemoryService {
 
   get(id: string): MemoryRecordDto | undefined { return this.repository.get(id); }
 
+  /** Model-facing read; raw get stays available to audit and mutation internals. */
+  getForRecall(id: string, request: MemorySearchRequest): MemoryRecordDto | undefined {
+    const memory = this.repository.get(id);
+    if (!memory) return;
+    const scopes = this.resolveScopeChain({ ...request, includeInherited: request.includeInherited ?? true });
+    if (!this.visibleInChain(memory, scopes, request)) return;
+    return this.forgetWatermarks.projectEvidence(memory, scopes);
+  }
+
   /** Scope-safe visibility check used by Agent/MCP surfaces; guessed ids must not cross scope boundaries. */
   canAccess(id: string, request: MemorySearchRequest): boolean {
     const memory = this.repository.get(id);
@@ -726,7 +735,8 @@ export class MemoryService {
       memory => this.visibleInChain(memory, scopes, request)) : undefined;
     const scoped = candidates?.scoped ?? this.repository.listByScopes({ ...scopeQuery, limit: Math.max((request.limit ?? 20) * 30, 500) });
     const ftsRank = candidates?.ftsRanks ?? new Map<string, number>();
-    return rankMemorySearch({ scoped, ftsRank, query, request, scopes, visible: memory => this.visibleInChain(memory, scopes, request) });
+    return rankMemorySearch({ scoped, ftsRank, query, request, scopes, visible: memory => this.visibleInChain(memory, scopes, request) })
+      .map(hit => ({ ...hit, memory: this.forgetWatermarks.projectEvidence(hit.memory, scopes) }));
   }
 
   private async searchLexicalAsync(request: MemorySearchRequest): Promise<MemorySearchHit[]> {
@@ -740,7 +750,8 @@ export class MemoryService {
     if (!this.db.connection.open || this.recallScopeStamp(request) !== stamp) return [];
     const hits = await rankMemorySearchAsync({ scoped: candidates.scoped, ftsRank: candidates.ftsRanks, query, request, scopes,
       visible: memory => this.visibleInChain(memory, scopes, request), current: id => this.repository.get(id) });
-    return this.db.connection.open && this.recallScopeStamp(request) === stamp ? hits : [];
+    return this.db.connection.open && this.recallScopeStamp(request) === stamp
+      ? hits.map(hit => ({ ...hit, memory: this.forgetWatermarks.projectEvidence(hit.memory, scopes) })) : [];
   }
 
   /** A pending external computation must never retain an old task/scope authorization. */
@@ -798,7 +809,7 @@ export class MemoryService {
         if (entry.semanticRank !== undefined) { rrf += 1 / (RRF_K + entry.semanticRank); reasons.push("semantic"); }
         if (entry.lexicalRank !== undefined && entry.semanticRank !== undefined) reasons.push("rrf");
         const metadataBoost = Math.max(0, 7 - distance) + entry.memory.importance * 1.8 + entry.memory.confidence * 1.5 + (entry.memory.explicit ? 2 : 0);
-        return { memory: entry.memory, score: rrf * 1000 + metadataBoost,
+        return { memory: this.forgetWatermarks.projectEvidence(entry.memory, currentScopes), score: rrf * 1000 + metadataBoost,
           reasons: [...reasons, `scope:${scope.scopeType}${distance ? `/${distance}` : ""}`], scopeDistance: distance };
       }).sort((a, b) => b.score - a.score || b.memory.updatedAt - a.memory.updatedAt).slice(0, requestedLimit);
     } catch (error) {

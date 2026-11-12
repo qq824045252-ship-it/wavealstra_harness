@@ -48,7 +48,7 @@ export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionF
   });
   const requireVisible = (id: string) => {
     if (!bridge.service.canAccess(id, context())) throw new Error("记忆不存在或不属于当前任务可见作用域");
-    const memory = bridge.service.get(id);
+    const memory = bridge.service.getForRecall(id, context());
     if (!memory) throw new Error("记忆不存在");
     return memory;
   };

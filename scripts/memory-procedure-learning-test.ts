@@ -110,16 +110,31 @@ try {
   db.upsertTaskExecutionWorkspaceState({ taskId: "task-a", directoryName: "task-a", state: "active", createdAt: Date.now(), updatedAt: Date.now() });
   console.log("PASS real approval/file/activation/runtime selection, scope isolation and lost-source diagnosis");
 
-  current = { ...current, kind: "fact", title: "伪造事实" };
-  assert.equal((await extract(turn)).committedCount, 0, "tools cannot supply facts or preferences");
+  const beforeRevokedReplay = options.length;
+  assert.equal((await extract(turn)).committedCount, 0, "forgotten procedure cannot be recreated from its old source");
+  assert.equal(options.length, beforeRevokedReplay, "fully withdrawn old source must not invoke extraction");
+  assert.equal(memory.get(procedure.id), undefined);
+
+  // Parser/provenance checks need a live, independent source: replaying the
+  // deliberately forgotten turn only exercises the early withdrawal guard.
+  const validationTurn = pipeline.capture({ taskId: "task-a", userText: "重新检查另一组独立样本",
+    assistantText: "", metadata: { procedureExecution: captureProcedureExecution(messages("validation")) } }).turn;
+  const extractValidation = async () => {
+    const before = options.length;
+    try { return await extract(validationTurn); }
+    finally { assert.equal(options.length, before + 1, "each parser/provenance case must reach the model exactly once"); }
+  };
+  current = { ...current, kind: "fact", title: "伪造事实",
+    executionEvidence: { turnId: validationTurn.id, toolCallId: "verify-validation", quote: "VALIDATED_OK: sum=12; independent check passed" } };
+  assert.equal((await extractValidation()).committedCount, 0, "tools cannot supply facts or preferences");
   current = { ...current, kind: "procedure", title: "错误验证来源", executionEvidence: { ...current.executionEvidence, quote: "不存在的验证结果" } };
-  assert.equal((await extract(turn)).committedCount, 0, "fabricated quotes cannot commit a procedure");
+  assert.equal((await extractValidation()).committedCount, 0, "fabricated quotes cannot commit a procedure");
   raw = "";
-  await assert.rejects(() => extract(turn), /完整.*JSON/);
+  await assert.rejects(extractValidation, /完整.*JSON/);
   raw = '{"candidates":[';
-  await assert.rejects(() => extract(turn), /完整.*JSON/);
+  await assert.rejects(extractValidation, /完整.*JSON/);
   raw = '{"candidates":[]}'; reason = "length";
-  await assert.rejects(() => extract(turn), /截断/);
+  await assert.rejects(extractValidation, /截断/);
   console.log("PASS forged provenance, incomplete JSON and truncation remain failures");
   console.log("memory-procedure-learning-test: PASS");
 } finally {
