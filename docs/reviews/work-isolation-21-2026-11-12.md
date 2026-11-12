@@ -63,3 +63,33 @@
 `pinned-public-proxy` 安全专项覆盖公开 IPv4/IPv6、DNS 身份与私网混合答案、407 无后备路线、TLS 证书错误、非法输入零网络。此专项是受控测试，不构成被拒 RFC 网址已可访问的证明。没有改动任何地址安全检查或系统网络设置。
 
 恢复后新增检查：durable-tool-policy、IPC inventory、pinned-public-proxy、architecture（278 项）、typecheck（web/node/scripts）、test-all 分类自检均通过。首次 durable-tool-policy 在默认 /tmp 创建 SQLite 时遇 IOERR_WRITE；改用约定的仓库外磁盘 TMPDIR 后通过，保留两次日志，未删除或掩盖首次失败。
+
+
+## 修正驱动后的真实补测（de4ae9f4）
+
+- 命令：`TMPDIR=<仓库外临时目录> WORK_ISOLATION_SNAPSHOT=de4ae9f477881708375a9d32f76319bcd91b606d pnpm -s test:work-isolation-live`。
+- **7/7 PASS，39 次真实 Flash 请求**，源码指纹前后一致。脱敏证据：`evidence/issue21/live-de4ae9f4.json`。
+- 普通磁盘、公开搜索、内置浏览器阅读、真实网络错误、Bot 表格分析、Bot 来源文档与同会话重启继续全部通过。两项 Bot 工作真实业务关闭成功，四份交付在 renderer 可见；另比对不可变交付副本与工作文件字节一致。
+- 本轮公开搜索没有追加原文抓取。因此只证明搜索通过，**不撤销前批 RFC 原文 URL-policy 失败**，也不宣称该网址已恢复访问。
+- 普通任务经真实 preload 提交、Durable 状态/历史观测；没有把它写成逐项原生聊天页面视觉验收。Bot 成果交付则另有真实 renderer 可见证据。
+- 模型批自有 Electron/驱动结束后，再运行下述零模型输入专项，避免争用。
+
+## Linux 实际输入补验（同一 de4ae9f4）
+
+命令：`TMPDIR=<仓库外临时目录> node scripts/run-linux-computer-use.cjs --report-dir out/diagnostics/issue21-physical-input-20261112`。使用该源码的 `pnpm dev` 生成的既有验收资产，不 build/pack。
+
+**23/23 PASS**，真实 Hyprland/Wayland、Electron 44.5.1 / Node 24.21.0、独立 Electron 与 GTK 靶窗，实际 1.6 缩放。证据：`evidence/issue21/physical-input-de4ae9f4.json`。
+
+- 排队任务取消后，键盘输入未落到桌面。
+- 真实按住时取消和超时均及时释放，只收到一对 DOWN/UP，无重放；实测按住分别约 75ms 和 665ms。
+- worker 意外退出时释放自己按住的 Shift，旧引用失效，新 worker 恢复。
+- 键鼠显式 down/up、拖拽、滚动、中文输入、窗口身份/坐标失效、应用重启均过。
+- 核实报告内所有进程 PID 在完成后均已退出，再交还测试窗口。未修改监视器、缩放或系统安全设置。
+
+这补上 Linux 真机输入证据，不等于 Windows、发行包或全部 GUI 通过；本轮仍未重跑完整 headless，采用相关专项与类型检查，未改失败基线。
+
+## 主线集成收尾
+
+发布前 rebase 到 `414bf2bf`，保留已合入的 UI、#26 上下文和 #28 历史召回修复。与实测本地快照 `de4ae9f4` 比较，本专项 BrowserAutomationService、退役迁移、相关测试和 live driver 文件无字节变化；真实批仍按原始实测 SHA/指纹记录，不追改成发布后的 SHA。
+
+2026-11-12 02:39:36–02:39:48 UTC，在集成后的 main 再跑迁移 6 组、browser recovery、Linux backend 27 项、live observation 回归、typecheck web/node/scripts、harness 编译与测试分类 audit，全部通过。未为收尾重复跑完整 headless，也未修改失败基线。

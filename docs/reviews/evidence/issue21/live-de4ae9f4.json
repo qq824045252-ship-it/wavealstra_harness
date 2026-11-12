@@ -1,0 +1,329 @@
+{
+  "sourceSha": "de4ae9f477881708375a9d32f76319bcd91b606d",
+  "sourceFingerprint": {
+    "sha256": "1d61e995728c88e0faee79630b6a6a3ef5d6b6a67d6d6af29cb3e146766ead39",
+    "files": 1266
+  },
+  "finishedFingerprint": {
+    "sha256": "1d61e995728c88e0faee79630b6a6a3ef5d6b6a67d6d6af29cb3e146766ead39",
+    "files": 1266
+  },
+  "rawReportSha256": "0b3b2ea55974e4819201368d832c9420968c3c53310b6ea5cdcd778525a87f62",
+  "status": "passed",
+  "summary": {
+    "passed": 7,
+    "failed": 0
+  },
+  "modelCalls": 39,
+  "model": [
+    "opendesign/deepseek-v4.1-flash"
+  ],
+  "legacySeed": {
+    "businessCounts": {
+      "bots": 1,
+      "tasks": 0,
+      "works": 0
+    },
+    "seededOutboxStates": [
+      "pending",
+      "queued",
+      "running"
+    ],
+    "quarantinedHost": true
+  },
+  "afterLegacyRestart": {
+    "retiredTables": [],
+    "businessCounts": {
+      "bots": 1,
+      "tasks": 0,
+      "works": 0
+    },
+    "quickCheck": "ok",
+    "foreignKeyErrors": []
+  },
+  "cases": [
+    {
+      "name": "ordinary filesystem verification",
+      "kind": "filesystem",
+      "status": "passed",
+      "modelCalls": 7,
+      "tools": [
+        {
+          "name": "read",
+          "status": "success"
+        },
+        {
+          "name": "bash",
+          "status": "success"
+        },
+        {
+          "name": "bash",
+          "status": "success"
+        },
+        {
+          "name": "write",
+          "status": "success"
+        },
+        {
+          "name": "write",
+          "status": "success"
+        },
+        {
+          "name": "read",
+          "status": "success"
+        },
+        {
+          "name": "read",
+          "status": "success"
+        },
+        {
+          "name": "bash",
+          "status": "success"
+        }
+      ]
+    },
+    {
+      "name": "ordinary public information research",
+      "kind": "public-search",
+      "status": "passed",
+      "modelCalls": 2,
+      "tools": [
+        {
+          "name": "web_search",
+          "status": "success"
+        }
+      ],
+      "searchEvidence": {
+        "searchStatus": "passed",
+        "sourceVerification": "not-requested",
+        "sourceFailures": []
+      }
+    },
+    {
+      "name": "ordinary public webpage extraction",
+      "kind": "browser-reading",
+      "status": "passed",
+      "modelCalls": 3,
+      "tools": [
+        {
+          "name": "browser_exec",
+          "status": "success"
+        },
+        {
+          "name": "browser_exec",
+          "status": "success"
+        }
+      ]
+    },
+    {
+      "name": "ordinary network failure diagnosis",
+      "kind": "network-diagnosis",
+      "status": "passed",
+      "modelCalls": 2,
+      "tools": [
+        {
+          "name": "bash",
+          "status": "success"
+        },
+        {
+          "name": "bash",
+          "status": "success"
+        }
+      ]
+    },
+    {
+      "name": "Bot background tabular analysis",
+      "kind": "data-analysis",
+      "status": "passed",
+      "modelCalls": 12,
+      "tools": [
+        {
+          "name": "ls",
+          "status": "success"
+        },
+        {
+          "name": "bash",
+          "status": "success"
+        },
+        {
+          "name": "read",
+          "status": "success"
+        },
+        {
+          "name": "read",
+          "status": "success"
+        },
+        {
+          "name": "write",
+          "status": "success"
+        },
+        {
+          "name": "write",
+          "status": "success"
+        },
+        {
+          "name": "bash",
+          "status": "success"
+        },
+        {
+          "name": "read",
+          "status": "success"
+        },
+        {
+          "name": "read",
+          "status": "success"
+        },
+        {
+          "name": "register_artifact",
+          "status": "success"
+        },
+        {
+          "name": "register_artifact",
+          "status": "success"
+        },
+        {
+          "name": "conversation_goal_get",
+          "status": "success"
+        },
+        {
+          "name": "conversation_goal_update",
+          "status": "success"
+        }
+      ],
+      "business": {
+        "lifecycle": "closed",
+        "conclusion": "succeeded",
+        "executions": [
+          "completed"
+        ]
+      },
+      "deliveredFiles": [
+        "sales-detail.csv",
+        "sales-summary.txt"
+      ],
+      "savedCopiesMatchWorkingFiles": true,
+      "visibleFiles": [
+        "sales-detail.csv",
+        "sales-summary.txt"
+      ]
+    },
+    {
+      "name": "Bot background sourced document writing",
+      "kind": "document-writing",
+      "status": "passed",
+      "modelCalls": 11,
+      "tools": [
+        {
+          "name": "ls",
+          "status": "success"
+        },
+        {
+          "name": "browser_exec",
+          "status": "success"
+        },
+        {
+          "name": "browser_exec",
+          "status": "success"
+        },
+        {
+          "name": "read",
+          "status": "success"
+        },
+        {
+          "name": "bash",
+          "status": "success"
+        },
+        {
+          "name": "write",
+          "status": "success"
+        },
+        {
+          "name": "bash",
+          "status": "success"
+        },
+        {
+          "name": "read",
+          "status": "success"
+        },
+        {
+          "name": "register_artifact",
+          "status": "success"
+        },
+        {
+          "name": "register_artifact",
+          "status": "success"
+        }
+      ],
+      "business": {
+        "lifecycle": "closed",
+        "conclusion": "succeeded",
+        "executions": [
+          "completed"
+        ]
+      },
+      "deliveredFiles": [
+        "public-brief.md",
+        "public-brief.txt"
+      ],
+      "savedCopiesMatchWorkingFiles": true,
+      "visibleFiles": [
+        "public-brief.md",
+        "public-brief.txt"
+      ]
+    },
+    {
+      "name": "restart continuation without historical replay",
+      "kind": "same-session-restart",
+      "status": "passed",
+      "modelCalls": 2,
+      "tools": [
+        {
+          "name": "read",
+          "status": "success"
+        }
+      ],
+      "finalDb": {
+        "quickCheck": "ok",
+        "foreignKeyErrors": []
+      }
+    }
+  ],
+  "files": [
+    {
+      "name": "native-output/one.txt",
+      "bytes": 26,
+      "sha256": "974dc4b2e182048c35394e1c1854d0c96be4132d80e7be5c54ca25147bc5f272"
+    },
+    {
+      "name": "native-output/two.txt",
+      "bytes": 26,
+      "sha256": "974dc4b2e182048c35394e1c1854d0c96be4132d80e7be5c54ca25147bc5f272"
+    },
+    {
+      "name": "sales-summary.txt",
+      "bytes": 271,
+      "sha256": "7d048ed74d83030745667ad862327119be085a0af0a0000a09a59bf8a1437988"
+    },
+    {
+      "name": "sales-detail.csv",
+      "bytes": 78,
+      "sha256": "f208c243d989b6182ed61561bb14d64c07d4d46940300852c736ad03375e5fca"
+    },
+    {
+      "name": "public-brief.md",
+      "bytes": 1005,
+      "sha256": "6cc3c81112c11c636188f639861b1b05593a8b931b5f9fb35c5905ffc0fdeab2"
+    },
+    {
+      "name": "public-brief.txt",
+      "bytes": 1005,
+      "sha256": "6cc3c81112c11c636188f639861b1b05593a8b931b5f9fb35c5905ffc0fdeab2"
+    }
+  ],
+  "limitations": [
+    "Prior RFC original-page URL-policy denial was not retried or bypassed. This batch used web_search and did not claim that RFC page was verified.",
+    "Native tasks were submitted through real preload and observed through Durable state/history; Bot delivery visibility was also checked in the real renderer.",
+    "Windows, live team/subagent/Code Mode, packaged output, all GUI and the real historical 248-row user profile were not tested."
+  ],
+  "scope": "Real pnpm dev, isolated profile, real model and real public browser/disk; functional, not a latency benchmark."
+}

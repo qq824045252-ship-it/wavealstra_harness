@@ -1,0 +1,138 @@
+{
+  "sourceSha": "de4ae9f477881708375a9d32f76319bcd91b606d",
+  "status": "passed",
+  "startedAt": "2026-11-12T02:35:01.493Z",
+  "finishedAt": "2026-11-12T02:35:23.819Z",
+  "mode": "development-backend",
+  "runtime": {
+    "node": "24.21.0",
+    "electron": "44.5.1",
+    "nodeMode": true
+  },
+  "tests": [
+    {
+      "name": "real Hyprland session and fixed tool prerequisites",
+      "status": "passed"
+    },
+    {
+      "name": "cold diagnostic probe succeeds with the screenshot provider disabled",
+      "status": "passed"
+    },
+    {
+      "name": "owned fixture is placed on the actual fractional-scale output when present",
+      "status": "passed"
+    },
+    {
+      "name": "reliable AT-SPI bounds drive click, double-click, long press and modifiers",
+      "status": "passed"
+    },
+    {
+      "name": "GTK exports real controls and receives semantic Chinese/Unicode writes",
+      "status": "passed"
+    },
+    {
+      "name": "Electron invoke and Chinese/Unicode text replacement reach the real application",
+      "status": "passed"
+    },
+    {
+      "name": "keyboard and mouse down persist until explicit up, including intervening observation",
+      "status": "passed"
+    },
+    {
+      "name": "scroll and timed drag produce application-visible wheel/motion effects",
+      "status": "passed"
+    },
+    {
+      "name": "global logical pointer actions reach the same fixture at the observed output scale",
+      "status": "passed"
+    },
+    {
+      "name": "keyboard/clipboard Unicode input preserves the requested content",
+      "status": "passed"
+    },
+    {
+      "name": "popup controls are reobserved and semantically operated",
+      "status": "passed"
+    },
+    {
+      "name": "rebuilt controls reject their old object references",
+      "status": "passed"
+    },
+    {
+      "name": "window move/resize invalidates coordinate observations",
+      "status": "passed"
+    },
+    {
+      "name": "same-title same-PID windows do not silently select a sibling, and focus is reread",
+      "status": "passed"
+    },
+    {
+      "name": "cancelled queued input never reaches the desktop",
+      "status": "passed",
+      "evidence": {
+        "queuedRejected": true,
+        "queuedInputReceived": false,
+        "batchStatus": "rejected"
+      }
+    },
+    {
+      "name": "a partial batch preserves the first input and stops after geometry changes",
+      "status": "passed"
+    },
+    {
+      "name": "cancel during a real held press releases input without replay",
+      "status": "passed",
+      "evidence": {
+        "receivedHolds": 1,
+        "actualHoldMs": 74.7999999821186,
+        "receivedClicks": 1,
+        "released": true
+      }
+    },
+    {
+      "name": "timeout during a real held press releases input without replay",
+      "status": "passed",
+      "evidence": {
+        "receivedHolds": 1,
+        "actualHoldMs": 665.3000000119209,
+        "receivedClicks": 1,
+        "released": true
+      }
+    },
+    {
+      "name": "unexpected worker exit releases owned held keys and invalidates old references",
+      "status": "passed",
+      "evidence": {
+        "keysReleased": true,
+        "referenceRejected": true
+      }
+    },
+    {
+      "name": "application restart invalidates old window and control identities",
+      "status": "passed"
+    },
+    {
+      "name": "the complete cold-start workflow made zero capture/OCR/legacy-backend calls",
+      "status": "passed"
+    },
+    {
+      "name": "an optional capture_after failure preserves an already-executed input",
+      "status": "passed"
+    },
+    {
+      "name": "the real desktop includes a fractional-scale output",
+      "status": "passed"
+    }
+  ],
+  "actualScale": 1.6,
+  "actualFixtureDesktop": "Hyprland/Wayland, Electron and GTK owned test windows",
+  "acceptanceSha256": "5bd8e239ea5185f47bcef74f648e5ca1632407ad56e3fe072acab3aa88245f20",
+  "workerSha256": "227536f301527380d75a2664f5798c17c4155853474ceb862112634b6cf1b030",
+  "rawReportSha256": "88ac461ca53fbcd3fc62e53701860dc7b4ef2c438b8c5641eaa19f1890308b26",
+  "cleanup": "All numeric PIDs evidenced in the report were absent from host /proc after completion.",
+  "notTested": [
+    "Windows",
+    "packaged application",
+    "live concurrent cross-platform input"
+  ]
+}
