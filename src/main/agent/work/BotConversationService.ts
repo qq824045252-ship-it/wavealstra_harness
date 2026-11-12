@@ -660,7 +660,7 @@ export class BotConversationService {
           const result = await this.collaborations.command(key, String(api.taskId), { action: "ask", targetBotId: args.botId, text: args.question.trim() });
           return { output: [{ type: 'text' as const, text: JSON.stringify(result) }] };
         } }),
-      defineTool({ name: "bot_collaborate", description: "个人 Bot 沟通与委派。先 bot_list 确认目标。ask/delegate/follow_up 均持久送达对方正常前台，返回是排队回执，不是执行结果。delegate 给 text 目标，可附 plan 建议；由对方自主决定直接回答或创建唯一的个人 Work，使用自己的模型、配置与目录。答案和成果稍后回流。先问后做、追问或改向必须沿用 collaborationId，新独立目标提供 targetBotId 发起新协作。query 可读真实接收状态、进度、往来、成果与 versionGuard。未创建 Work 可直接 cancel；已有 Work 的 amend/pause/resume/cancel 须先本回合 query 并携带完整 versionGuard，保留用户限制与已完成步骤，不另建 Work。不把前台接单说明或部分结果当 Work 完成。",
+      defineTool({ name: "bot_collaborate", description: "个人 Bot 沟通与委派。主 Bot 的新默认派送用 bot_organize(dispatch)；同一原请求已派送后，此入口只回读原意图，不改目标或正文重发。普通 Bot、明确咨询及新的真实用户后续请求保持正常沟通能力。先 bot_list 确认目标。ask/delegate/follow_up 均持久送达对方正常前台，返回是排队回执，不是执行结果。delegate 给 text 目标，可附 plan 建议；由对方自主决定直接回答或创建唯一的个人 Work，使用自己的模型、配置与目录。答案和成果稍后回流。先问后做、追问或改向必须沿用 collaborationId，新独立目标提供 targetBotId 发起新协作。query 可读真实接收状态、进度、往来、成果与 versionGuard。未创建 Work 可直接 cancel；已有 Work 的 amend/pause/resume/cancel 须先本回合 query 并携带完整 versionGuard，保留用户限制与已完成步骤，不另建 Work。不把前台接单说明或部分结果当 Work 完成。",
         parameters: Type.Unsafe<z.input<typeof botCollaborationToolSchema>>(z.toJSONSchema(botCollaborationToolSchema, { target: "draft-7", io: "input" })),
         replay: "safe", execute: async (args, api, ctx) => {
           const origin = await botForegroundRequest(api, api.callId, ctx);
@@ -712,12 +712,12 @@ ${requiredTool ? `用户为本条消息明确选择了 ${requiredTool}。必须�
 ${this.organizations?.context(key) ?? ""}
 ${this.options.bots.isPrimaryBot(this.options.userId, bot.botId) ? "" : "当前是普通个人 Bot，可以正常沟通和执行自己的委托；创建或改配其他 Bot 由主 Bot 承担，不能把职责描述或名称当成组织权限。"}
 ${this.collaborations.context(key)}
-点名个人 Bot 做事使用 bot_collaborate(action=delegate)，Work 归目标 Bot；先问后做和后续追问复用 collaborationId。只有用户明确要多人团队才用 work_team_create。已有协作进度和改向优先 bot_collaborate(query/amend/pause/resume/cancel)，不要因 work_query_status 的个人列表没有该 Work 就重复建单。
+点名个人 Bot 做事时，主 Bot 的新事项用 bot_organize(action=dispatch)，普通 Bot 用 bot_collaborate(action=delegate)，Work 归目标 Bot；先问后做和后续追问复用 collaborationId。只有用户明确要多人团队才用 work_team_create。已有协作进度和改向优先 bot_collaborate(query/amend/pause/resume/cancel)，不要因 work_query_status 的个人列表没有该 Work 就重复建单。
 ${sharedAudience ? "当前是共享渠道。只能读取本渠道会话的记忆与事项，不得披露 Bot 私人历史、其他会话、个人日程或其他 Bot 的私人记录。记忆只保存在本会话；需要私人协作或私人范围操作时说明需转到已配对私人入口。" : ""}
 当前 Bot 显示名称是 ${JSON.stringify(this.options.bots.getBot(bot.botId)?.displayName ?? bot.displayName)}。这是当前身份名称；旧配置或历史中的旧称不代表另一个 Bot。
 ${BOT_PEER_CONTEXT_INSTRUCTIONS}
 需要本轮咨询时，不要求用户再确认“要不要问”。尚未调用只能说“我来问 @名字”，实际状态由宿主显示。收到受理回执即可结束本轮，不轮询等待；真实回复稍后回到原会话再由你综合，不能把回执当答案。联系失败须说明真实错误，不冒充成功。目标正常前台自行判断是否需要 Work，接收动作本身不会创建 Work。保留双方独立的私聊、记忆与权限边界。
-新的个人协作优先使用 bot_collaborate(action=ask)，跟进已有协作时保留其 collaborationId。
+纯咨询可用 bot_collaborate(action=ask)，主 Bot 的新默认派送用 bot_organize(action=dispatch)。同一原请求已有 dispatch 时，不能再改走 bot_collaborate/bot_ask 重发或更换目标，先 query/resume 原 intentId；只有新的真实用户补充请求才沿原 collaborationId 继续交流。
 ${conversation.team_id ? `当前是独立团队会话（teamId=${conversation.team_id}），不是队长的个人会话。所有委托交给当前团队，用 work_team_create；模板由宿主绑定，禁止另建个人任务。work_query_status仅查询本团队。团队历史独立保留，不能读写队长或成员的私人记忆。` : ""}
 你是用户的个人助理 Bot。同一对话的新消息可与其他请求同时处理，只响应本次输入。冻结历史中的 queued/running/unknown 等状态只表示上下文取样时的状态，不是当前执行证据。不同主题的新问题只回答本次问题，不主动附带其他请求的进度、状态或“完成后会发来”等送达承诺。确需回答或提及其他前台请求当前状态时，先 foreground_query_requests 重新读取；以实际返回为准，已取消就明确已停止，不能凭旧快照说仍在执行。用户插话修正尚未完成的查询时，先foreground_query_requests核对具体目标；若明确替换旧查询，foreground_cancel_request停止旧前台查询，在本次执行新的查询。已关联后台Work则查询并修订该Work，不能重复创建。不同主题不停止旧请求，不能把其他未完成请求说成已完成。需要原结果才能回答的追问，明确关联原问题，不编造尚未返回的结果。闲聊、解释和已有事实可以直接答复；需要实时信息的请求应立即调用联网工具，而不是停在口头建议。
 优先让用户尽快得到回应：简单问题直接流式回答，不机械添加“收到”。需要查询、调用工具或执行耗时任务时，在第一次工具调用前先用一句简短具体的话承接当前请求，表达你要查什么或处理什么，然后在同一请求中立即继续实际工具调用，不等待用户确认，也不另开模型调用只为写承接。承接不是执行回执：尚未调用工具只能说“我来查/核对/处理”，不能说“已查到/已安排/已开始执行”。前面的承接和过程文字会独立保留，最终回答只给结果、依据和必要局限，不重复承接或整段过程。中途只在有实质发现、变化或阻塞时补充简短进展，不输出推理过程。

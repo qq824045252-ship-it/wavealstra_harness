@@ -10,6 +10,7 @@ import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat"
 import type { AssistantMessage, Context } from "@earendil-works/pi-ai";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { BotRegistry } from "../src/main/agent/work/BotRegistry";
+import { BotOrganizationService } from "../src/main/agent/work/BotOrganizationService";
 import { BotCreationService } from "../src/main/agent/work/BotCreationService";
 import { ExpertService } from "../src/main/experts/ExpertService";
 import { TaskExpertBindingService } from "../src/main/experts/TaskExpertBindingService";
@@ -122,6 +123,23 @@ const send = (tag: string) => { const scenario = cases.get(tag)!; return service
   requestId: `request-${tag}`, text: `${scenario.text} CASE:${tag}` }); };
 const dispatch = (parent: string, targetBotId: string, text = "同一用户目标", revision = settings.get(targetBotId).revision) =>
   service.organizations!.command(parent, randomUUID(), { action: "dispatch", targetBotId, settingsRevision: revision, text, reason: "受控语义选择替身" });
+const boundaryFailures: Error[] = [];
+async function boundary(name: string, check: () => Promise<void>) {
+  try { await check(); console.log(`PASS boundary: ${name}`); }
+  catch (error) { const failure = error instanceof Error ? error : Error(String(error)); boundaryFailures.push(failure); console.error(`FAIL boundary: ${name}: ${failure.message}`); }
+}
+const request = (text: string) => service.messages.accept(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID, requestId: randomUUID(), text });
+async function checkpoint(targetBotId: string) {
+  const origin = request(`原始用户目标 checkpoint ${randomUUID()}`);
+  const crashing = new BotOrganizationService({ ...options, settings, creator, messages: service.messages,
+    collaborations: service.collaborations, publish: () => { throw Error("controlled crash after journal commit"); } });
+  await assert.rejects(crashing.command(origin.assistantMessageId, "admit-before-crash", { action: "dispatch",
+    targetBotId, settingsRevision: settings.get(targetBotId).revision, text: "持久派送目标", reason: "故障注入" }), /controlled crash/);
+  const row = z.object({ organization_id: z.string(), expected_revision: z.number(), applied_revision: z.number().nullable(), value_json: z.string() }).parse(
+    db.prepare("SELECT * FROM bot_organization_records WHERE json_extract(origin_json,'$.user_message_id')=?").get(origin.userMessageId));
+  assert.equal(JSON.parse(row.value_json).phase, "configuring"); assert.equal(row.applied_revision, null);
+  return { origin, row };
+}
 const intentSchema = z.object({ organization: z.object({ intentId: z.string(), phase: z.string(), collaborationId: z.string().nullable(),
   target: z.object({ botId: z.string() }) }) });
 try {
@@ -214,6 +232,99 @@ try {
   await service.collaborations.command(existingSource.assistantMessageId, "first-question", { action: "ask", targetBotId: "learner", text: "先咨询同一目标" });
   await assert.rejects(dispatch(existingSource.assistantMessageId, "tester"), /dispatch_existing_collaboration/);
   console.log("PASS preexisting personal collaboration cannot be duplicated by default dispatch; follow-up keeps original identity");
+  receiverGate = new Promise(resolve => { receiverRelease = resolve; });
+  await boundary("persisted configuring must retain original configuration revision after change", async () => {
+    const { origin, row } = await checkpoint("learner");
+    const previous = settings.get("learner"), changedWorkspace = join(root, "changed-by-user"); mkdirSync(changedWorkspace);
+    const changed = await settings.save({ botId: previous.botId, expectedRevision: previous.revision,
+      workspacePath: changedWorkspace, modelId: previous.modelId, expertId: previous.expertId,
+      skillIds: previous.skillIds, mcpIds: previous.mcpIds, connectorIds: previous.connectorIds });
+    assert.equal(changed.settings.revision, row.expected_revision + 1);
+    const priorDeliveries = service.messages.peers.deliveries(LOCAL_USER_ID).length;
+    const controller = request("恢复中断的原派送，不覆盖用户已修改的配置");
+    const result = intentSchema.parse(await service.organizations!.command(controller.assistantMessageId, "resume-changed", { action: "resume", intentId: row.organization_id }));
+    assert.equal(result.organization.phase, "configuration_failed", "changed settings must fail closed rather than silently become approved");
+    assert.equal(service.messages.peers.deliveries(LOCAL_USER_ID).length, priorDeliveries);
+    assert.equal(settings.get("learner").revision, changed.settings.revision);
+    assert.equal(settings.get("learner").workspacePath, changedWorkspace);
+    assert.equal(z.object({ applied_revision: z.number().nullable() }).parse(db.prepare("SELECT applied_revision FROM bot_organization_records WHERE organization_id=?").get(row.organization_id)).applied_revision, null);
+    assert.equal(service.collaborations.repo.summariesForMessage(LOCAL_USER_ID, origin.assistantMessageId).length, 0);
+  });
+  await boundary("unchanged configuring resume, pause, deletion and valid source", async () => {
+    const saved = await checkpoint("learner");
+    db.prepare("UPDATE bots SET status='paused' WHERE bot_id='learner'").run();
+    const controller = request("目标暂停时只恢复原身份");
+    const paused = intentSchema.parse(await service.organizations!.command(controller.assistantMessageId, "resume-paused", { action: "resume", intentId: saved.row.organization_id }));
+    assert.equal(paused.organization.phase, "configuration_failed");
+    assert.equal(service.collaborations.organizationCollaboration(saved.row.organization_id), undefined);
+    db.prepare("UPDATE bots SET status='active' WHERE bot_id='learner'").run();
+    const recovered = intentSchema.parse(await service.organizations!.command(controller.assistantMessageId, "resume-unchanged", { action: "resume", intentId: saved.row.organization_id }));
+    assert.equal(recovered.organization.phase, "linked");
+    const approved = z.object({ applied_revision: z.number() }).parse(db.prepare("SELECT applied_revision FROM bot_organization_records WHERE organization_id=?").get(saved.row.organization_id));
+    assert.equal(approved.applied_revision, saved.row.expected_revision);
+    const target = bots.registerBot({ botId: "deleted-checkpoint", userId: LOCAL_USER_ID, displayName: "临时夹具", authorization: DESKTOP_USER_GRANTS });
+    const removed = await checkpoint(target.botId); assert(bots.deleteBot(target.botId).ok);
+    const deleted = intentSchema.parse(await service.organizations!.command(controller.assistantMessageId, "resume-deleted", { action: "resume", intentId: removed.row.organization_id }));
+    assert.equal(deleted.organization.phase, "configuration_failed");
+    assert.equal(deleted.organization.target.botId, target.botId);
+    assert.equal(service.collaborations.organizationCollaboration(removed.row.organization_id), undefined);
+    const ordinaryController = service.messages.accept(LOCAL_USER_ID, { botId: "learner", requestId: randomUUID(), text: "普通 Bot 不可恢复主 Bot 管理意图" });
+    await assert.rejects(service.organizations!.command(ordinaryController.assistantMessageId, "forbidden-resume", { action: "resume", intentId: saved.row.organization_id }), /主 Bot/);
+  });
+  const boundaryRelations: string[] = [];
+  for (const state of ["accepted", "unknown"] as const) {
+    const origin = request(`原请求 ${state} 保持唯一派送`);
+    failPreparation = state === "unknown";
+    const initial = intentSchema.parse(await dispatch(origin.assistantMessageId, "learner", "唯一派送目标"));
+    assert.equal(initial.organization.phase, state === "accepted" ? "linked" : "contact_unknown");
+    const id = service.collaborations.organizationCollaboration(initial.organization.intentId)!.collaborationId;
+    boundaryRelations.push(id);
+    for (const variant of [
+      { action: "delegate", targetBotId: "learner", text: "唯一派送目标" },
+      { action: "ask", targetBotId: "learner", text: "同一请求的新模型改写" },
+      { action: "delegate", targetBotId: "tester", text: "不能静默转给另一个目标" },
+      { action: "delegate", collaborationId: id, text: "有原协作 ID 也不能重发同一来源" },
+      { action: "follow_up", collaborationId: id, text: "不能把同源重试伪装成新用户补充" },
+    ]) await boundary(`${state} dispatch then legacy ${JSON.stringify(variant)} remains one receipt`, async () => {
+      const beforeRelations = count("bot_collaborations"), beforeDeliveries = service.messages.peers.deliveries(LOCAL_USER_ID).length;
+      let response: unknown;
+      try { response = await service.collaborations.command(origin.assistantMessageId, randomUUID(), variant); } catch { /* Assert durable effects even when an admission fails. */ }
+      assert.equal(count("bot_collaborations"), beforeRelations, "legacy tool must not create a second collaboration");
+      assert.equal(service.messages.peers.deliveries(LOCAL_USER_ID).length, beforeDeliveries, "legacy tool must not create a second receiver/outbox operation");
+      assert.equal(z.object({ collaboration: z.object({ collaborationId: z.string() }) }).parse(response).collaboration.collaborationId, id);
+    });
+    failPreparation = false;
+    const controller = request(`明确恢复 ${state} 原身份`);
+    const resumed = intentSchema.parse(await service.organizations!.command(controller.assistantMessageId, "resume-original", { action: "resume", intentId: initial.organization.intentId }));
+    assert.equal(resumed.organization.collaborationId, id);
+    const peer = service.messages.peers.deliveries(LOCAL_USER_ID).find(item => JSON.parse(item.origin_json).collaborationId === id && JSON.parse(item.origin_json).kind === "request")!;
+    assert(peer.accepted_message_id);
+    await boundary(`${state} peer source cannot inherit management or send a loop`, async () => {
+      const peerParent = peer.accepted_message_id!;
+      assert.equal(service.organizations!.eligible(peerParent), false);
+      await assert.rejects(service.organizations!.command(peerParent, "peer-manage", { action: "resume", intentId: initial.organization.intentId }), /管理权限/);
+      const before = service.messages.peers.deliveries(LOCAL_USER_ID).length;
+      await assert.rejects(service.collaborations.command(peerParent, "peer-loop", { action: "delegate", targetBotId: DEFAULT_BOT_ID, text: "不得把 Bot 转述当用户新授权" }), /转述|用户授权/);
+      assert.equal(service.messages.peers.deliveries(LOCAL_USER_ID).length, before);
+    });
+  }
+  await boundary("fresh explicit user requests keep normal ask/delegate/follow-up", async () => {
+    const first = request("新的真实用户请求，另问一件事");
+    const ask = z.object({ collaboration: z.object({ collaborationId: z.string() }) }).parse(await service.collaborations.command(first.assistantMessageId, "new-ask", { action: "ask", targetBotId: "tester", text: "新的明确咨询" }));
+    const second = request("新的真实用户请求，明确委托新目标");
+    const delegated = z.object({ collaboration: z.object({ collaborationId: z.string() }) }).parse(await service.collaborations.command(second.assistantMessageId, "new-delegate", { action: "delegate", targetBotId: "learner", text: "新的明确委托" }));
+    assert.notEqual(ask.collaboration.collaborationId, delegated.collaboration.collaborationId);
+    const continued = request("新的真实用户要求继续原主 Bot 派送");
+    const continuedResult = z.object({ collaboration: z.object({ collaborationId: z.string() }) }).parse(await service.collaborations.command(continued.assistantMessageId, "explicit-new-delegate", {
+      action: "delegate", collaborationId: boundaryRelations[0], text: "用户明确提出新的后续要求" }));
+    assert.equal(continuedResult.collaboration.collaborationId, boundaryRelations[0]);
+    const follow = request("用户明确补充原咨询");
+    const before = service.messages.peers.deliveries(LOCAL_USER_ID).length;
+    await service.collaborations.command(follow.assistantMessageId, "fresh-follow-up", { action: "follow_up", collaborationId: ask.collaboration.collaborationId, text: "新的真实补充" });
+    assert.equal(service.messages.peers.deliveries(LOCAL_USER_ID).length, before + 1);
+  });
+  receiverRelease!(); receiverGate = undefined;
+  if (boundaryFailures.length) throw new AggregateError(boundaryFailures, "primary dispatch boundary regressions");
   const workReceipt = send("work");
   await wait(() => Boolean(service.collaborations.repo.summariesForMessage(LOCAL_USER_ID, workReceipt.assistantMessageId)[0]?.workId), "B independently creates Work");
   const workRelation = service.collaborations.repo.summariesForMessage(LOCAL_USER_ID, workReceipt.assistantMessageId)[0];

@@ -1,3 +1,4 @@
+import { botDispatchIdentity } from "./BotDispatchIdentity";
 import { isSharedBotConversation } from "./BotConversationAudience";
 import { createHash } from "node:crypto";
 import { z } from "zod";
@@ -206,6 +207,19 @@ export class BotCollaborationService {
         { conversationId: source.conversation_id, requestId: source.request_id,
           userMessageId: source.user_message_id, assistantMessageId: source.assistant_message_id }));
       return this.query(row, source, true);
+    }
+    if (command.action === "ask" || command.action === "delegate" || command.action === "follow_up") {
+      // Other tool names/task IDs cannot turn an admitted default dispatch into
+      // another logical send. Only that exact original user message is fenced;
+      // a fresh explicit user request keeps normal ask/delegate semantics.
+      const intentId = `bot-organization-${botDispatchIdentity(source.bot_id, source.user_message_id)}`;
+      const hasJournal = this.options.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='bot_organization_records'").get();
+      if (hasJournal && this.options.db.prepare("SELECT 1 FROM bot_organization_records WHERE user_id=? AND source_bot_id=? AND organization_id=?")
+        .get(this.options.userId, source.bot_id, intentId)) {
+        const dispatched = this.organizationCollaboration(intentId);
+        return { ...(dispatched ? this.query(dispatched, source) : {}), intentId, replayed: true,
+          error: "dispatch_existing_intent: 本次原请求已有唯一选派，返回原目标和真实回执，未通过旧入口再次派送；query/resume 原 intentId，改向或补充沿原协作和新的真实用户请求。" };
+      }
     }
     const payloadHash = key(JSON.stringify(command));
     const operationSchema = z.object({ operation_id: z.string(), parent_message_id: z.string(), collaboration_id: z.string(), payload_hash: z.string(), completed_at: z.number().nullable() }).optional();

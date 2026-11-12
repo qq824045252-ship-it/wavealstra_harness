@@ -1,3 +1,4 @@
+import { botDispatchIdentity } from "./BotDispatchIdentity";
 import { isSharedBotConversation } from "./BotConversationAudience";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -108,7 +109,7 @@ export class BotOrganizationService {
     const source = this.source(parentMessageId), parsed = botOrganizationCommandSchema.parse(input);
     // One default routing decision per real user request, across tool retries and
     // restarts. Keep the existing organization journal and collaboration outbox.
-    const dispatchIdentity = parsed.action === "dispatch" ? hash("primary-dispatch", source.bot_id, source.user_message_id) : undefined;
+    const dispatchIdentity = parsed.action === "dispatch" ? botDispatchIdentity(source.bot_id, source.user_message_id) : undefined;
     if (dispatchIdentity) {
       const saved = this.row(`bot-organization-${dispatchIdentity}`);
       if (saved) {
@@ -130,7 +131,8 @@ export class BotOrganizationService {
         throw new Error("dispatch_not_sent: 目标配置已变化，尚未派送；重新 discover 核对实际职责和能力。");
     }
     const command = parsed.action === "dispatch"
-      ? { action: "arrange" as const, target: { kind: "existing" as const, botId: parsed.targetBotId },
+      ? { action: "arrange" as const, target: { kind: "existing" as const, botId: parsed.targetBotId,
+          configuration: { expectedRevision: parsed.settingsRevision, changes: {} } },
           contact: { kind: "delegate" as const, text: parsed.text } } : parsed;
     const operation = `organization-op:${hash(parentMessageId, operationId)}`;
     if (command.action === "query" && !command.intentId) return { items: this.list(source.bot_id), primaryBotId: source.bot_id };
@@ -486,7 +488,12 @@ export class BotOrganizationService {
           const saved = await this.options.settings.configureOperation({ operationId: this.configurationKey(intentId), botId: bot.botId,
             expectedRevision: fixedExpected, changes }, () => { this.source(parentMessageId); });
           this.configured(intentId, saved.settings.revision, saved.appliedAt);
-        } else this.configured(intentId, this.options.settings.get(bot.botId).revision, null);
+        } else {
+          const revision = this.options.settings.get(bot.botId).revision;
+          if (plan.target.kind === "existing" && revision !== record.row.expected_revision)
+            throw new Error("目标配置已被其他位置修改，保留修改；恢复必须遵守原 expectedRevision，请查询当前设置后明确选择，不静默采用新配置");
+          this.configured(intentId, revision, null);
+        }
       }
       record = this.intent(intentId, source.bot_id);
       if (plan.contact.kind === "none") return { organization: record.view };
