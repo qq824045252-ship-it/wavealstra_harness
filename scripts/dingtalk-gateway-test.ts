@@ -28,15 +28,17 @@ async function main() {
   let calls: { url: string; init?: RequestInit }[] = [];
   const sockets: Socket[] = [];
   let failReply = false;
+  let failFileReceipt = false;
+  let onWorkAuth: (() => void) | undefined;
   const adapter = new DingTalkStreamAdapter("ding", "钉钉", {
     deferInboundUntilActivated: true, reconnectDelayMs: 1, heartbeatTimeoutMs: 100_000,
     fetch: async (url, init) => {
       calls.push({ url: String(url), init });
       if (String(url).includes("connections/open")) return Response.json({ endpoint: "wss://wss-open-connection.dingtalk.com/connect", ticket: "ticket" });
-      if (String(url).includes('oauth2/accessToken')) return Response.json({ accessToken: 'test-token' });
+      if (String(url).includes('oauth2/accessToken')) { onWorkAuth?.(); return Response.json({ accessToken: 'test-token' }); }
       if (String(url).includes('/gettoken')) return Response.json({ access_token: 'test-old-token' });
       if (String(url).includes('/media/upload')) return Response.json({ errcode: 0, media_id: '@media' });
-      if (String(url).includes('/robot/groupMessages/send')) return failReply ? Response.json({}, {status: 503}) : Response.json({ processQueryKey: 'receipt-' + calls.length });
+      if (String(url).includes('/robot/groupMessages/send')) return (failReply || failFileReceipt && JSON.parse(String(init?.body)).msgKey === 'sampleFile') ? Response.json({}, {status: 503}) : Response.json({ processQueryKey: 'receipt-' + calls.length });
       return failReply ? Response.json({ errcode: 130101 }, { status: 429 }) : Response.json({ errcode: 0 });
     },
     socketFactory: url => { assert.match(url, /^wss:\/\/wss-open-connection\.dingtalk\.com\/connect\?ticket=ticket$/); const s = new Socket(); sockets.push(s); setTimeout(() => s.onopen?.(), 0); return s; },
@@ -65,6 +67,27 @@ async function main() {
     assert(result.ok); assert.equal(progress.length, 3, 'text, upload, file each persist a receipt');
     const body = JSON.parse(String(calls.at(-1)?.init?.body)); assert.equal(body.msgKey, 'sampleFile');
     assert.equal(JSON.parse(body.msgParam).mediaId, '@media');
+    const originalHash=file.sha256;
+    onWorkAuth=()=>{file.name='changed.bin';file.sha256='0'.repeat(64);};
+    const stable=await adapter.sendWorkNotification({target:inbound[0].workTarget!,text:'immutable metadata',files:[file],effectKey:'snapshot',assertCurrent:()=>{}});
+    onWorkAuth=undefined;
+    assert(stable.ok);
+    const immutableBody=JSON.parse(String(calls.at(-1)?.init?.body));
+    assert.equal(JSON.parse(immutableBody.msgParam).fileName,'result.txt','async credential wait must not change frozen filename');
+    const uploaded=calls.findLast(call=>call.url.includes('/media/upload'))!.init!.body as FormData;
+    const uploadedFile=uploaded.get('media') as File;
+    assert.equal(uploadedFile.name,'result.txt');
+    assert.equal(createHash('sha256').update(Buffer.from(await uploadedFile.arrayBuffer())).digest('hex'),originalHash,'actual uploaded bytes match persisted frozen hash');
+    assert(JSON.parse(stable.receipt).some((part:{part:string})=>part.part===`file:${originalHash}`),'receipt must identify the bytes actually validated');
+    file.name='result.txt';file.sha256=originalHash;
+    failFileReceipt=true;const failureProgress:string[]=[];const failStart=calls.length;
+    const partialFile=await adapter.sendWorkNotification({target:inbound[0].workTarget!,text:'partial',files:[file],effectKey:'partial-file',assertCurrent:()=>{},recordProgress:receipt=>failureProgress.push(receipt)});
+    assert(!partialFile.ok && partialFile.responseLost && !partialFile.retryable);
+    assert.equal(failureProgress.length,2,'text and upload receipts retained, failed file send is not recorded as delivered');
+    const afterFailure=calls.length;await tick();assert.equal(calls.length,afterFailure,'unknown file send is never retried implicitly');
+    assert.equal(calls.slice(failStart).filter(call=>call.url.includes('/media/upload')).length,1);
+    assert(!JSON.parse(failureProgress.at(-1)!).some((part:{part:string})=>part.part.startsWith('file:')));
+    failFileReceipt=false;
     failReply = true;
     const unknown = await adapter.sendWorkNotification({ target: inbound[0].workTarget!, text: 'unknown', effectKey: 'work-2', assertCurrent: () => {} });
     assert(!unknown.ok && unknown.responseLost); failReply = false;

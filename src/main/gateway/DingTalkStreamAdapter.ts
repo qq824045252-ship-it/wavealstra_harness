@@ -131,7 +131,8 @@ export class DingTalkStreamAdapter implements ChannelAdapter {
     assertGatewayWorkSend(input, this);
     const config = this.config, target = input.target;
     if (!config || target.channelType !== "dingtalk" || !config.allowUsers.includes(target.senderId)) throw new GatewayWorkNotSentError("钉钉原始发送者未获授权");
-    const files = (input.files ?? []).map(file => ({ file, bytes: deliveryFileBytes(file) }));
+    // Freeze metadata together with the verified bytes before awaiting credentials.
+    const files = (input.files ?? []).map(original => { const file = { ...original }; return { file, bytes: deliveryFileBytes(file) }; });
     const receipts: Array<{ part: string; receipt: string }> = [];
     const record = (part: string, receipt: string) => { receipts.push({ part, receipt }); input.recordProgress?.(JSON.stringify(receipts)); };
     let attempted = false;
