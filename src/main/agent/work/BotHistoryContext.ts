@@ -81,6 +81,9 @@ export function botHistoryContext(db: Database.Database, input: {
     // Eligibility has to read the whole message, so an oversized paste is a deterministic
     // per-pair exclusion instead of a truncated scan that could miss a secret tail.
     maxText: 200_000,
+    // LIMIT bounds SQLite's top-N sort payload before iterate() can yield. One
+    // lookahead distinguishes an exhausted exact-cap result from incomplete work.
+    limit: (recent ? RECENT_WORK_CAP : RELEVANCE_WORK_CAP) + 1,
   };
   if (!recent) queryTerms.forEach((term, index) => { params[`t${index}`] = likePattern(term); });
   // Rank by how many distinct query terms the pair contains, then by recency; `ordinal`
@@ -89,9 +92,9 @@ export function botHistoryContext(db: Database.Database, input: {
     `(CASE WHEN u.text LIKE $t${index} ESCAPE '~' OR a.text LIKE $t${index} ESCAPE '~' THEN 1 ELSE 0 END)`).join("+");
   const statement = recent
     ? db.prepare(`${PROJECTION}${SOURCE_JOINS}${SOURCE_WHERE}
-        ORDER BY u.created_at DESC,u.ordinal DESC`)
+        ORDER BY u.created_at DESC,u.ordinal DESC LIMIT $limit`)
     : db.prepare(`SELECT * FROM (${PROJECTION},(${score}) AS score${SOURCE_JOINS}${SOURCE_WHERE})
-        WHERE score>0 ORDER BY score DESC,created_at DESC,ordinal DESC`);
+        WHERE score>0 ORDER BY score DESC,created_at DESC,ordinal DESC LIMIT $limit`);
   // A restriction elsewhere in the conversation also protects follow-up answers. It is
   // evaluated exactly for each candidate source, with no shared scan budget: running out
   // of work is never the same answer as "this source forbids reuse".

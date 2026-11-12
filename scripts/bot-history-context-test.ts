@@ -258,6 +258,11 @@ try {
   const tiedRecall = recall("TieCorrectionTopic port");
   assert(tiedRecall.includes("LATEST_TIED_9090") && !tiedRecall.includes("STALE_TIED_8080"), "same-millisecond correction uses durable ordinal to retire older evidence");
 
+  conversation(Array.from({ length: 1200 }, (_, i) => [`ExactCapTopic ${i}`, "bounded reference"] as [string, string]));
+  const exactCap = () => botHistoryContext(db.connection, { userId: LOCAL_USER_ID, botId: "learn", query: "ExactCapTopic", before: sequence * 100 + 2 });
+  assert(!exactCap().includes("工作上限"), "exactly 1200 exhausted candidates are not falsely labelled incomplete");
+  pair("ExactCapTopic 1201", "bounded reference");
+  assert(exactCap().includes("工作上限"), "1201st SQL lookahead marks a result incomplete even with three valid evidence slots");
   for (let i = 0; i < 43; i++) pair("BoundedInspectionTopic", "x".repeat(190000));
   assert(recall("BoundedInspectionTopic").includes("工作上限"), "streaming inspection has an explicit total-text bound even with fewer than 1200 rows");
 
