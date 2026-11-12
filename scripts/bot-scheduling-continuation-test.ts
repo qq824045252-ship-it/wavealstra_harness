@@ -99,7 +99,7 @@ const coordinator = new WorkCompletionCoordinator({ db: db.connection, works, is
   deliver: input => feedback.deliverCompletion(input), wake: () => {} });
 
 async function flush() {
-  await queue.flush(); await adapter.flush(); coordinator.wake();
+  await queue.drain(); await adapter.flush(); coordinator.wake();
   await new Promise(resolve => setImmediate(resolve));
 }
 async function settle(times = 10) { for (let round = 0; round < times; round++) await flush(); }

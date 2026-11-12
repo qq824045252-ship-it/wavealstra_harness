@@ -68,10 +68,10 @@ async function fixture(name: string) {
   const adapter = new WorkExecutionAdapter(works, port, LOCAL_USER_ID, () => authority, (_id, error) => { throw error; });
   const queue = new WorkDispatchQueue(db, works, adapter, () => authority, () => "fixture");
   works.transaction(() => queue.enqueue(result.work, name));
-  await queue.flush();
+  await queue.drain();
   const binding = works.repo.listBindings(workId)[0]!;
   assert(binding);
-  const finish = async () => { running = false; await queue.flush(); assert(works.automaticCompletion.outcome(binding.bindingId)); };
+  const finish = async () => { running = false; await queue.drain(); assert(works.automaticCompletion.outcome(binding.bindingId)); };
   const start = (review: WorkCompletionOptions["review"], deliver?: WorkCompletionOptions["deliver"]) => {
     const coordinator = new WorkCompletionCoordinator({ db: db.connection, works, isAuthority: () => authority,
       review, deliver: deliver ?? (input => feedback.deliverCompletion(input)), wake: () => {} });
@@ -83,7 +83,7 @@ async function fixture(name: string) {
       const source = feedback.messages.accept(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID, requestId: name, text: name });
       const created = works.createWork(user, { operationId: name, title: name, sourceMessageId: source.userMessageId,
         conversationId: source.conversationId, inputSnapshotId: `input:${source.userMessageId}`, authorization: DESKTOP_USER_GRANTS });
-      assert(created.ok); works.transaction(() => queue.enqueue(created.work, name)); await queue.flush();
+      assert(created.ok); works.transaction(() => queue.enqueue(created.work, name)); await queue.drain();
       return { workId: created.work.workId, binding: works.repo.listBindings(created.work.workId)[0]! };
     },
     turn: () => turnSchema.parse(db.connection.prepare("SELECT * FROM work_completion_turns WHERE binding_id=?").get(binding.bindingId)),

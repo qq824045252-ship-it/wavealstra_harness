@@ -1744,7 +1744,6 @@ export class AgentService {
     this.workExecutions ??= new WorkExecutionAdapter(this.workService, nativeWork, LOCAL_USER_ID,
       () => this.workHostAuthority.isAuthority(),
       (bindingId, error) => console.warn("[Work] 原生执行核对未完成", bindingId, error));
-    await this.workExecutions.flush();
     this.workExecutions.start();
     if (!this.durableModels) throw new Error("模型服务尚未初始化");
     this.workDispatchQueue ??= new WorkDispatchQueue(this.db, this.workService, this.workExecutions,

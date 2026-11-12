@@ -157,7 +157,7 @@ const coordinator = new WorkCompletionCoordinator({ db: db.connection, works, is
     return { decision: "deliver", outcome: reviewPartial || ["explicit", "uncertain"].includes(String(input.context.title)) ? "partial" : "completed", reply: `已整理：${input.context.title}。结果依据原始执行记录。`, missing: [] }; },
   deliver: input => { assert.notEqual(works.getWork(works.repo.getBinding(input.bindingId)!.workId)?.lifecycle, "closed", "delivery precedes closure");
     return deliveryAvailable && feedback.deliverCompletion(input); }, wake: () => {} });
-async function flush() { await queue.flush(); coordinator.wake(); await new Promise(resolve => setImmediate(resolve)); }
+async function flush() { await queue.drain(); coordinator.wake(); await new Promise(resolve => setImmediate(resolve)); }
 
 function create(name: string, watch = false, criteria?: string[]) {
   const result = works.createWork(user, { operationId: name, title: name, inputSnapshotId: name,
@@ -224,7 +224,7 @@ try {
   db.connection.prepare("UPDATE works SET owner_epoch=owner_epoch+1 WHERE work_id=?").run(milestoneWork);
   assert.equal(readMilestones().deliveries.length,0,"old ownership is not current evidence");
   db.connection.prepare("UPDATE works SET owner_epoch=owner_epoch-1 WHERE work_id=?").run(milestoneWork);
-  states.set(milestoneWork,"completed"); await queue.flush(); await adapter.flush(); await queue.flush();
+  states.set(milestoneWork,"completed"); await queue.drain(); await adapter.flush(); await queue.drain();
   db.connection.prepare("UPDATE work_execution_bindings SET settled_at=? WHERE binding_id=?").run(1794436540715,milestoneBinding.bindingId);
   coordinator.wake(); await new Promise(resolve=>setTimeout(resolve,20));
   assert.equal(milestoneReviews,1);
@@ -274,7 +274,7 @@ try {
   coordinator.wake(); await new Promise(resolve => setImmediate(resolve));
   assert(!reviewed.some(event => event.startsWith(`completion:${failedBinding.bindingId}:`)), "failed receipt must not race recovery with a premature model review");
   assert.equal(works.getWork(recoveryRace)?.lifecycle, "active", "failure receipt cannot close before recovery dispatch");
-  await queue.flush();
+  await queue.drain();
   states.set(recoveryRace, "completed");
   for (let i=0;i<4;i++) await flush();
   assert.equal(works.getWork(recoveryRace)?.closureConclusion, "succeeded", "recovered real output still receives the final goal review");
@@ -325,7 +325,7 @@ try {
   await flush(); assert.equal(works.getWork(healthy)?.stateVersion, version, "replay does not reclose");
 
   const legacy = create("legacy-unreviewed"); await flush(); states.set(legacy,"completed");
-  await queue.flush();
+  await queue.drain();
   const legacyBinding = works.repo.listBindings(legacy)[0];
   db.connection.prepare("UPDATE work_native_inbox SET received_at=? WHERE binding_id=?").run(historicalReceiptAt,legacyBinding.bindingId);
   db.connection.prepare("DELETE FROM work_automatic_completion WHERE binding_id=?").run(legacyBinding.bindingId);
@@ -469,7 +469,7 @@ try {
     ownerBotId:DEFAULT_BOT_ID,ownerResponsibility:"汇总真实成果",members:[{botId:"team-review-member",responsibility:"分析资料",delegatedScope:["workspace:read"]}],criteria:["补充剩余内容"]}});
   assert(teamResult.ok,JSON.stringify(teamResult));
   const teamId=teamResult.work!.workId;
-  for(let i=0;i<5;i++) await queue.flush();
+  for(let i=0;i<5;i++) await queue.drain();
   const originalTeamBindings=works.repo.listBindings(teamId);
   assert.equal(originalTeamBindings.length,2);
   db.connection.prepare("DELETE FROM work_automatic_completion WHERE work_id=?").run(teamId);

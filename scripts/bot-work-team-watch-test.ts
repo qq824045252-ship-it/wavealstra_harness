@@ -61,7 +61,7 @@ function setup() {
   return { name, plan, request };
 }
 async function flush(count = 5) { for (let i = 0; i < count; i++) {
-  await queue.flush();
+  await queue.drain();
   for (const id of works.automaticCompletion.pending()) if (works.transaction(() => works.automaticCompletion.outcome(id)))
     works.automaticCompletion.recordDelivery(id,"fixture report delivered");
   works.automaticCompletion.drain();

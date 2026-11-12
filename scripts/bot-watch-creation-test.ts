@@ -40,7 +40,7 @@ function open() {
     const result = works.dispatchExecution(actor, { ...params, durableStoreKey: `store:${params.taskId}`, conversationId: "1", workspaceBinding: root });
     if (result.ok) dispatched.push(params.taskId);
     return result;
-  }, flush: async () => {} } as Pick<WorkExecutionAdapter, "dispatch" | "flush">;
+  }, onProgress: () => () => {}, wake: () => {}, flush: async () => {} } as Pick<WorkExecutionAdapter, "dispatch" | "flush" | "wake" | "onProgress">;
   queue = new WorkDispatchQueue(db, works, adapter as WorkExecutionAdapter, () => true, () => undefined);
 }
 open();
@@ -144,7 +144,7 @@ const receiptFor = (binding: WorkExecutionBindingDto): AgentSubmissionReceipt =>
 async function newImmediateWatch(title: string) {
   const work = unwrap(await invoke("work_create", { requestedOutcome: "one_time", title, mode: "watch", startImmediately: true,
     watchRule: { executionMode: "observe", scheduleBasis: "user_specified", nextWakeAt: clock.at + 24 * 60 * 60_000 } }));
-  await queue.flush();
+  await queue.drain();
   const binding = works.repo.listBindings(work.workId)[0]; assert(binding);
   return { work, binding };
 }
@@ -163,7 +163,7 @@ async function checkManualWatchGap() {
   const plan = works.partialResults.plans(work.workId).find(item => item.sourceBindingId === binding.bindingId)!;
   assert(plan); assert.equal(works.partialResults.recovery.record(plan.planId), undefined);
   assert.equal(works.partialResults.isReadOnlyPlan(plan), true, "a normal watch continuation is read-only without being artifact revalidation");
-  await queue.flush();
+  await queue.drain();
   const continuation = works.repo.listBindings(work.workId).find(item => item.bindingId !== binding.bindingId)!;
   assert(continuation);
   assert.deepEqual(works.nativeResults.receive(continuation, receiptFor(continuation), { status: "completed",
@@ -186,14 +186,14 @@ async function checkStoppedWatchReadback(outcome: "completed" | "failed" | "pend
   };
   const firstPlan = failAndPlan(binding);
   assert.equal(works.partialResults.recovery.record(firstPlan.planId)!.mode, "recover");
-  await queue.flush();
+  await queue.drain();
   const retry = works.repo.listBindings(work.workId).find(item => item.bindingId !== binding.bindingId)!;
   assert(retry);
   const readbackPlan = failAndPlan(retry);
   assert.equal(works.partialResults.recovery.record(readbackPlan.planId)!.mode, "readback", "unchanged failed evidence reaches the actual readback path");
   let readback: WorkExecutionBindingDto | undefined;
   if (outcome !== "pending") {
-    await queue.flush();
+    await queue.drain();
     readback = works.repo.listBindings(work.workId).find(item => item.bindingId !== binding.bindingId && item.bindingId !== retry.bindingId)!;
     assert(readback);
     assert.equal(works.partialResults.recovery.readOnlyTask(readback.taskId), true);
@@ -211,7 +211,7 @@ async function checkStoppedWatchReadback(outcome: "completed" | "failed" | "pend
       artifactRefs: [], hasWriteConflicts: false }), []);
     works.partialResults.recovery.markEvidenceRead(readback.bindingId);
   }
-  await queue.flush(); await queue.flush();
+  await queue.drain(); await queue.drain();
   assert.equal(works.getWork(work.workId)!.lifecycle, "active", `${outcome}: stopping a schedule never authorizes closing the underlying Work`);
   assert.equal(works.repo.listBindings(work.workId).length, bindingCount, `${outcome}: no new continuation after stopping the schedule`);
   assert.equal(works.partialResults.plans(work.workId).length, planCount);
@@ -239,7 +239,7 @@ try {
   await queue.close(); db.close(); open();
   subscription = works.repo.listSubscriptions(work.workId)[0];
   clock.at = subscription.nextWakeAt!;
-  works.tick(clock.at); await queue.flush();
+  works.tick(clock.at); await queue.drain();
   let bindings = works.repo.listBindings(work.workId);
   assert.equal(bindings.length, 1);
   assert.deepEqual(bindings[0].delegatedScope, ["workspace:read"]);
@@ -310,10 +310,10 @@ try {
     }
   }
   settle(work.workId);
-  works.tick(clock.at); await queue.flush();
+  works.tick(clock.at); await queue.drain();
   assert.equal(works.repo.listBindings(work.workId).length, 1, "same slot never starts a duplicate execution");
   clock.at = works.repo.listSubscriptions(work.workId)[0].nextWakeAt!;
-  works.tick(clock.at); await queue.flush();
+  works.tick(clock.at); await queue.drain();
   bindings = works.repo.listBindings(work.workId);
   assert.equal(bindings.length, 2, "a later slot must run even when source/input content is unchanged");
   assert.equal(new Set(bindings.map(item => item.inboxEventId)).size, 2);
@@ -335,11 +335,11 @@ try {
   request("暂停跟踪", work.workId);
   work = unwrap(await invoke("work_pause", { workId: work.workId, versionGuard: await read(work.workId) }));
   clock.at = changed.nextWakeAt! + 2 * 24 * 60 * 60_000;
-  works.tick(clock.at); await queue.flush();
+  works.tick(clock.at); await queue.drain();
   assert.equal(works.repo.listBindings(work.workId).length, 2);
   request("恢复跟踪", work.workId);
   unwrap(await invoke("work_resume", { workId: work.workId, versionGuard: await read(work.workId) }));
-  works.tick(clock.at); await queue.flush();
+  works.tick(clock.at); await queue.drain();
   assert.equal(works.repo.listBindings(work.workId).length, 3, "latest catches up once after pause");
   settle(work.workId);
 
@@ -347,7 +347,7 @@ try {
   work = unwrap(await invoke("work_amend", { workId: work.workId, versionGuard: await read(work.workId), watchRule: null }));
   assert.equal(work.mode, "once"); assert.equal(work.watchRule, undefined);
   assert(works.repo.listSubscriptions(work.workId).every(item => item.stoppedAt));
-  clock.at += 24 * 60 * 60_000; works.tick(clock.at); await queue.flush();
+  clock.at += 24 * 60 * 60_000; works.tick(clock.at); await queue.drain();
   assert.equal(works.repo.listBindings(work.workId).length, 4, "the missed independent deadline is still followed up after the watch is stopped");
   const resumedDeadline = works.repo.listBindings(work.workId).at(-1)!;
   assert.equal(works.repo.getInbox(resumedDeadline.inboxEventId!)?.eventType, "deadline_expired");
@@ -357,16 +357,16 @@ try {
   work = unwrap(await invoke("work_amend", { workId: work.workId, versionGuard: await read(work.workId),
     watchRule: { scheduleBasis: "user_specified", nextWakeAt: clock.at + 60_000 }, deadlineAt: clock.at + 120_000 }));
   assert.equal(work.mode, "watch"); assert(work.deadlineRevision > 1);
-  clock.at += 60_000; works.tick(clock.at); await queue.flush(); settle(work.workId);
+  clock.at += 60_000; works.tick(clock.at); await queue.drain(); settle(work.workId);
   const onceCount = works.repo.listBindings(work.workId).length;
   assert.equal(onceCount, 5);
-  clock.at += 60_000; works.tick(clock.at); await queue.flush();
+  clock.at += 60_000; works.tick(clock.at); await queue.drain();
   const due = works.repo.listBindings(work.workId).at(-1)!;
   assert.equal(works.repo.getInbox(due.inboxEventId!)?.eventType, "deadline_expired");
   assert.equal(JSON.parse(works.repo.executionInput(due)).deadlineFollowUp.readOnly, true);
   settle(work.workId);
   await queue.close(); db.close(); open();
-  works.tick(clock.at); await queue.flush();
+  works.tick(clock.at); await queue.drain();
   assert.equal(works.repo.listBindings(work.workId).length, onceCount + 1, "deadline instance survives restart without duplicate follow-up");
 
   const before = works.listWorks(LOCAL_USER_ID, { includeClosed: true }).length;
@@ -386,7 +386,7 @@ try {
   const immediate = unwrap(await invoke("work_create", { requestedOutcome: "one_time", title: "现在和明天各检查一次", mode: "watch", startImmediately: true,
     watchRule: { executionMode: "observe", scheduleBasis: "user_specified", nextWakeAt: clock.at + 24 * 60 * 60_000 } }));
   assert.equal(scheduled.length, 0);
-  await queue.flush();
+  await queue.drain();
   const firstCheck = works.repo.listBindings(immediate.workId)[0];
   assert(firstCheck); assert.deepEqual(firstCheck.delegatedScope, ["workspace:read"]);
   assert(works.repo.listSubscriptions(immediate.workId)[0].nextWakeAt! > clock.at);
@@ -406,7 +406,7 @@ try {
   works.partialResults.recovery.markEvidenceRead(firstCheck.bindingId);
   const failedCheck = works.repo.getBinding(firstCheck.bindingId)!;
   works.transaction(() => assert(works.partialResults.recovery.prepare(works.getWork(immediate.workId)!, failedCheck, clock.at)));
-  await queue.flush();
+  await queue.drain();
   const recovery = works.repo.listBindings(immediate.workId).find(item => item.bindingId !== firstCheck.bindingId)!;
   assert(recovery, "the interrupted check creates a real continuation binding");
   assert(works.partialResults.recovery.ancestry(recovery).some(item => item.bindingId === firstCheck.bindingId));
@@ -419,7 +419,7 @@ try {
   // Continuous authorized execution is not observation: neither mode=watch nor
   // a legacy scope label may accidentally turn all ongoing work read-only.
   const continuous = unwrap(await invoke("work_create", { requestedOutcome: "ongoing", title: "持续完成当前可执行任务", mode: "watch", startImmediately: true }));
-  await queue.flush();
+  await queue.drain();
   const continuousBinding = works.repo.listBindings(continuous.workId)[0];
   assert(continuousBinding);
   assert.equal(works.getWork(continuous.workId)?.watchRule?.executionMode, "continuous");
@@ -437,7 +437,7 @@ try {
   // Converting an ordinary item and changing its goal in the same request must
   // not schedule an unrestricted immediate run before the future read-only check.
   const ordinary = unwrap(await invoke("work_create", { requestedOutcome: "one_time", title: "普通事项", goalDescription: "原目标", mode: "once" }));
-  await queue.flush(); settle(ordinary.workId);
+  await queue.drain(); settle(ordinary.workId);
   const schedulesBeforeConversion = scheduled.length;
   const bindingsBeforeConversion = works.repo.listBindings(ordinary.workId).length;
   request("改目标并从明天开始持续检查", ordinary.workId);
@@ -446,7 +446,7 @@ try {
     watchRule: { scheduleBasis: "user_specified", nextWakeAt: clock.at + 24 * 60 * 60_000 } }));
   assert.equal(converted.mode, "watch");
   assert.equal(scheduled.length, schedulesBeforeConversion, "once-to-watch plus new content must not enqueue ordinary execution");
-  await queue.flush();
+  await queue.drain();
   assert.equal(works.repo.listBindings(ordinary.workId).length, bindingsBeforeConversion);
   for (const change of ["stop", "revise", "skip"] as const) {
     await checkPendingNativeBinding(change, false);

@@ -53,14 +53,14 @@ function open() {
   }, flush: async () => {
     for (const row of submitted) for (const binding of works.repo.listBindings(row.workId)) if (binding.status === "pending")
       unwrap(works.reconcileExecution({ kind: "system", reason: "deterministic native fixture" }, { bindingId: binding.bindingId, outcome: "completed" }));
-  } } as Pick<WorkExecutionAdapter, "dispatch" | "flush">;
+  }, onProgress: () => () => {}, wake: () => { void adapter.flush(); } } as Pick<WorkExecutionAdapter, "dispatch" | "flush" | "wake" | "onProgress">;
   queue = new WorkDispatchQueue(db, works, adapter as WorkExecutionAdapter, () => authority, () => undefined);
   queue.start();
 }
 async function close() { await queue.close(); db.close(); }
 async function until(predicate: () => boolean, message: string, timeout = 7000) {
   const deadline = Date.now() + timeout;
-  while (!predicate() && Date.now() < deadline) { await delay(50); await queue.flush(); }
+  while (!predicate() && Date.now() < deadline) { await delay(50); await queue.drain(); }
   assert(predicate(), message);
 }
 const count = (id: string) => submitted.filter(item => item.workId === id).length;
@@ -106,7 +106,7 @@ try {
   assert(works.ingress.adapter("hook"), "internal hook tests retain direct ingress support");
   const created = await createWatch(path), id = created.work.workId;
   const subscription = works.repo.listSubscriptions(id)[0];
-  await queue.flush();
+  await queue.drain();
   assert.equal(created.work.goalSources[0].inputSnapshotId, hash(state(0)));
   assert.equal(created.work.inputSnapshotId, hash(state(0)));
   assert.equal(works.ingress.cursor(subscription.subscriptionId, "file", path)?.enumerationWatermark, hash(state(0)));
@@ -131,7 +131,7 @@ try {
   try {
     assert.deepEqual(works.repo.listActiveSubscriptions("file").map(row => row.subscriptionId), [subscription.subscriptionId]);
     assert.deepEqual(works.repo.listActiveSubscriptions("absent-source"), []);
-    await queue.flush();
+    await queue.drain();
     assert.equal(unrelatedHydrations, 0, "actual receiver flush never parses unrelated cron subscriptions");
     assert.equal(works.repo.listActiveSubscriptions().length, 4097, "omitted source retains original all-source behavior");
     assert(unrelatedHydrations >= 4096, "fixture instrumentation observes legacy all-source hydration");
@@ -140,7 +140,7 @@ try {
     db.connection.prepare("DELETE FROM work_subscriptions WHERE subscription_id LIKE 'perf-%'").run();
   }
   console.log("PASS file receiver query: indexed source lookup, zero unrelated cron hydration, legacy all-source compatibility");
-  await delay(1200); await queue.flush();
+  await delay(1200); await queue.drain();
   assert.equal(count(id), 0, "next_event reads baseline without model dispatch");
   assert.equal(inboxCount(id), 0);
   await writeFile(path, state(1));
@@ -162,7 +162,7 @@ try {
 
   assert.equal(works.getWork(id)!.goalSources[0].inputSnapshotId, hash(state(1)));
   const replay = await created.replay(); assert.equal(replay.replayed, true, "tool replay uses its original baseline identity");
-  await writeFile(path, state(1)); await delay(1300); await queue.flush();
+  await writeFile(path, state(1)); await delay(1300); await queue.drain();
   assert.equal(count(id), 1); assert.equal(inboxCount(id), 1, "same bytes never enqueue duplicate writes");
   await writeFile(`${path}.replacement`, state(2)); await rename(`${path}.replacement`, path);
   await until(() => count(id) === 2, "atomic rename still watched");
@@ -175,34 +175,34 @@ try {
   await writeFile(path, state(4)); await until(() => count(id) === 4, "read error recovers on a real file event");
   assert(!works.repo.listOpenBlockers(id).some(item => item.blockerId.startsWith("file-receiver:")));
   // Pause releases listener. Resume reconciles only current latest state, explicitly marked catch-up.
-  unwrap(works.pauseWork(actor, { operationId: "pause-file", workId: id, versionGuard: guard(id) })); await queue.flush();
+  unwrap(works.pauseWork(actor, { operationId: "pause-file", workId: id, versionGuard: guard(id) })); await queue.drain();
   const beforePauseEvents = inboxCount(id);
   await writeFile(path, state(5)); await delay(300); assert.equal(inboxCount(id), beforePauseEvents);
   unwrap(works.resumeWork(actor, { operationId: "resume-file", workId: id, versionGuard: guard(id) }));
   await until(() => count(id) === 5, "resume latest catch-up");
   assert(works.repo.listInbox(id, ["pending", "merged", "blocked", "processed", "skipped"]).some(event => event.payload.observation === "current-state-catch-up"));
   // Host authority loss releases listener before any file read or ingress mutation.
-  authority = false; await queue.flush(); const beforeLoss = inboxCount(id);
+  authority = false; await queue.drain(); const beforeLoss = inboxCount(id);
   await writeFile(path, state(6)); await delay(300); assert.equal(inboxCount(id), beforeLoss);
   authority = true; await until(() => count(id) === 6, "authority restoration latest catch-up");
   // Durable cursor survives a real DB close/reopen. Unchanged restart never replays old source.
-  await close(); open(); await queue.flush(); await delay(1200); await queue.flush(); assert.equal(count(id), 6);
+  await close(); open(); await queue.drain(); await delay(1200); await queue.drain(); assert.equal(count(id), 6);
   await close(); await writeFile(path, state(7)); open(); await until(() => count(id) === 7, "offline change catches latest once");
   const skipPath = join(root, "skip.json"); await writeFile(skipPath, "skip-0");
-  const skipId = (await createWatch(skipPath, "skip")).work.workId; await queue.flush();
-  await close(); await writeFile(skipPath, "skip-1"); open(); await queue.flush(); await delay(300);
+  const skipId = (await createWatch(skipPath, "skip")).work.workId; await queue.drain();
+  await close(); await writeFile(skipPath, "skip-1"); open(); await queue.drain(); await delay(300);
   assert.equal(count(skipId), 0, "skip policy never dispatches offline change");
   assert(works.repo.listInbox(skipId, ["pending", "merged", "blocked", "processed", "skipped"]).some(event => event.status === "skipped" && event.processReason === "offline-skip"));
   await writeFile(skipPath, "skip-2"); await until(() => count(skipId) === 1, "skip still handles online real change");
   // A frontend next_event reconfiguration uses a new true baseline, not stale cursor catch-up.
   const amendPath = join(root, "rebaseline.json"); await writeFile(amendPath, "baseline-0");
-  const amended = await createWatch(amendPath); await queue.flush();
+  const amended = await createWatch(amendPath); await queue.drain();
   const amendId = amended.work.workId;
-  unwrap(works.pauseWork(actor, { operationId: "pause-rebaseline", workId: amendId, versionGuard: guard(amendId) })); await queue.flush();
+  unwrap(works.pauseWork(actor, { operationId: "pause-rebaseline", workId: amendId, versionGuard: guard(amendId) })); await queue.drain();
   await writeFile(amendPath, "baseline-1"); await amended.amendBaseline();
   assert.equal(works.getWork(amendId)!.inputSnapshotId, hash("baseline-1"));
   unwrap(works.resumeWork(actor, { operationId: "resume-rebaseline", workId: amendId, versionGuard: guard(amendId) }));
-  await queue.flush(); await delay(1200); await queue.flush(); assert.equal(count(amendId), 0);
+  await queue.drain(); await delay(1200); await queue.drain(); assert.equal(count(amendId), 0);
   await writeFile(amendPath, "baseline-2"); await until(() => count(amendId) === 1, "new change after rebaseline executes once");
   const victim=works.getWork(skipId)!;
   const rejected=works.applyObservedSources(skipId,'wrong-work-trigger',victim,{inputSnapshotId:hash('fake'),sources:victim.goalSources},firstEvent.eventId);
@@ -216,7 +216,7 @@ try {
   const bad = works.ingestSourceEvent({ source: "file", sourceEventId: "untrusted-target", eventType: "file.changed", timestamp: Date.now(),
     workId: id, subscriptionId: subscription.subscriptionId, payload: { target: skipPath, inputSnapshotId: "forged" } });
   assert.equal(bad.outcomes[0].reasonCode, "target-mismatch");
-  unwrap(works.cancelWork(actor, { operationId: "cancel-file", workId: id, versionGuard: guard(id) })); await queue.flush();
+  unwrap(works.cancelWork(actor, { operationId: "cancel-file", workId: id, versionGuard: guard(id) })); await queue.drain();
   const beforeCancel = inboxCount(id); await writeFile(path, state(8)); await delay(300); assert.equal(inboxCount(id), beforeCancel);
   // Bounded reader rejects files beyond its cap, directories, and nonregular targets.
   const large = join(root, "too-large"); await writeFile(large, Buffer.alloc(MAX_WORK_FILE_BYTES + 1));

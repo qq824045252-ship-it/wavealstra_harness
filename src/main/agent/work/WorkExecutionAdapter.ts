@@ -27,9 +27,10 @@ export interface WorkExecutionPort {
 
 /** Delivers persisted instructions, never retries the underlying business execution. */
 export class WorkExecutionAdapter {
-  private readonly workFlights = new Map<string, Promise<void>>();
-  private readonly dirtyWorks = new Set<string>();
+  private readonly bindingFlights = new Map<string, Promise<void>>();
+  private readonly progressListeners = new Set<() => void>();
   private timer?: ReturnType<typeof setInterval>;
+  private closed = false;
 
   constructor(
     private readonly service: WorkService,
@@ -39,83 +40,94 @@ export class WorkExecutionAdapter {
     private readonly onError: (bindingId: string, error: unknown) => void,
   ) {}
 
-  async dispatch(actor: WorkActor, input: Omit<DispatchExecutionParams, keyof WorkExecutionNamespace> & { taskId: string }): Promise<WorkControlResult> {
+  async dispatch(actor: WorkActor, input: Omit<DispatchExecutionParams, keyof WorkExecutionNamespace> & { taskId: string }, canDispatch: () => boolean = () => true): Promise<WorkControlResult> {
+    if (!this.available() || !canDispatch()) return { ok: false, code: "invalid_lifecycle_transition", message: "执行适配器已停止或失去执行权" };
     const namespace = await this.native.prepare(input.taskId);
+    if (!this.available() || !canDispatch()) return { ok: false, code: "invalid_lifecycle_transition", message: "执行适配器已停止或失去执行权" };
+    if (namespace.taskId !== input.taskId) throw new Error("原生准备返回了另一任务的命名空间");
     const result = this.service.dispatchExecution(actor, { ...input, ...namespace });
     if (result.ok) this.wake();
     return result;
   }
 
   start(): void {
-    if (this.timer) return;
+    if (this.timer || this.closed) return;
     this.timer = setInterval(() => this.wake(), 1_000);
     this.timer.unref?.();
     this.wake();
   }
 
   async close(): Promise<void> {
+    this.closed = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
-    await Promise.all([...this.workFlights.values()]);
+    this.progressListeners.clear();
   }
 
+  onProgress(listener: () => void): () => void {
+    this.progressListeners.add(listener);
+    return () => { this.progressListeners.delete(listener); };
+  }
+
+  private available(): boolean { return !this.closed && this.isAuthority(); }
+
   wake(taskId?: string): void {
-    if (taskId && this.isAuthority()) {
+    if (!this.available()) return;
+    if (taskId) {
       const binding = this.service.repo.bindingForTask(taskId);
       if (binding) this.service.nativeResults.allowInspect(binding.bindingId);
     }
-    void this.flush().catch(error => this.onError("scheduler", error));
+    try { this.deliver(); }
+    catch (error) { this.onError("scheduler", error); }
   }
 
   wakeWork(workId: string): void {
-    if (this.isAuthority()) for (const binding of this.service.repo.listBindings(workId)) this.service.nativeResults.allowInspect(binding.bindingId);
+    if (!this.available()) return;
+    for (const binding of this.service.repo.listBindings(workId)) this.service.nativeResults.allowInspect(binding.bindingId);
     this.wake();
   }
 
   flush(): Promise<void> {
-    if (!this.isAuthority()) return Promise.resolve();
-    for (const failure of this.service.nativeResults.consume()) this.onError(failure.bindingId, failure.error);
-    // A native read or cancellation may wait for an unresponsive tool. Serialize
-    // revisions within each Work, not all Work in the application. A later wake
-    // can still collect an unrelated result without replaying the blocked input.
-    for (const work of this.service.listWorks(this.userId, { includeClosed: true })) {
-      const workId = work.workId;
-      this.dirtyWorks.add(workId);
-      if (this.workFlights.has(workId)) continue;
-      const flight = Promise.resolve().then(async () => {
-        do {
-          this.dirtyWorks.delete(workId);
-          await this.deliverWork(workId);
-        } while (this.dirtyWorks.has(workId) && this.isAuthority());
-      }).finally(() => {
-        this.dirtyWorks.delete(workId);
-        if (this.workFlights.get(workId) === flight) this.workFlights.delete(workId);
-      });
-      this.workFlights.set(workId, flight);
-    }
-    return Promise.all([...this.workFlights.values()]).then(() => undefined);
+    if (!this.available()) return Promise.resolve();
+    this.deliver();
+    // An explicit caller may wait for this snapshot. Scheduling never waits on it.
+    return Promise.all(this.bindingFlights.values()).then(() => {});
   }
 
-  private async deliverWork(workId: string): Promise<void> {
-    if (!this.isAuthority() || !this.service.getWork(workId)) return;
-    for (const binding of this.service.repo.listBindings(workId)) {
-      const terminal = ["completed", "failed", "stopped", "invalidated"].includes(binding.status);
-      if (terminal && this.service.partialResults.recovery.evidenceRead(binding.bindingId)) continue;
-      if (!this.service.nativeResults.shouldInspect(binding.bindingId)) continue;
-      if (!this.isAuthority()) return;
-      try { await this.deliverBinding(binding); }
-      catch (error) { this.service.nativeResults.readFailed(binding, error); this.onError(binding.bindingId, error); }
+  private deliver(): void {
+    if (!this.available()) return;
+    for (const failure of this.service.nativeResults.consume()) this.onError(failure.bindingId, failure.error);
+    for (const work of this.service.listWorks(this.userId, { includeClosed: true })) {
+      for (const binding of this.service.repo.listBindings(work.workId)) {
+        if (this.bindingFlights.has(binding.bindingId)) continue;
+        const terminal = ["completed", "failed", "stopped", "invalidated"].includes(binding.status);
+        if (terminal && this.service.partialResults.recovery.evidenceRead(binding.bindingId)) continue;
+        if (!this.service.nativeResults.shouldInspect(binding.bindingId)) continue;
+        if (!this.available()) return;
+        const version = this.service.getWork(work.workId)?.stateVersion;
+        const flight = this.deliverBinding(binding).catch(error => {
+          if (!this.available()) return;
+          this.service.nativeResults.readFailed(binding, error); this.onError(binding.bindingId, error);
+        }).finally(() => {
+          this.bindingFlights.delete(binding.bindingId);
+          if (this.available() && this.service.getWork(work.workId)?.stateVersion !== version)
+            for (const listener of this.progressListeners) listener();
+        });
+        this.bindingFlights.set(binding.bindingId, flight);
+        void flight.catch(error => { if (this.available()) this.onError("scheduler", error); });
+      }
+      // Retired uncertainty must not strand an already requested cancellation
+      // merely because its terminal native receipt was consumed before upgrade.
+      this.service.settlePendingClosure(work.workId);
     }
-    // Retired uncertainty must not strand an already requested cancellation
-    // merely because its terminal native receipt was consumed before upgrade.
-    if (this.isAuthority()) this.service.settlePendingClosure(workId);
   }
 
   private async deliverBinding(binding: WorkExecutionBindingDto): Promise<void> {
     // Recovery is deliberately before the new-business filter (BW-A15).
     let receipt = await this.native.find(binding);
+    if (!this.available()) return;
     let work = this.service.getWork(binding.workId);
-    if (!work || !this.isAuthority()) return;
+    if (!work) return;
     const current = this.service.repo.getBinding(binding.bindingId);
     if (!current) return;
     const canStart = !watchTimeExpired(work, Date.now()) && work.lifecycle === "active" && !current.invalidatedAt
@@ -145,23 +157,25 @@ export class WorkExecutionAdapter {
       this.service.repo.captureReportContext(current, input);
       receipt = await this.native.submit(current, input + this.service.repo.attachmentInput(current));
     }
-    if (!this.isAuthority()) return;
+    if (!this.available()) return;
+    if (receipt.taskId !== current.taskId || receipt.operationId !== current.operationId) throw new Error("原生回执不属于原执行身份");
     this.service.recordSubmissionReceipt(current.bindingId, JSON.stringify(receipt));
     let observation = await this.native.inspect(current, receipt);
-    if (!this.isAuthority()) return;
+    if (!this.available()) return;
     // A lost receipt may belong to an already completed input in an older native
     // conversation. Reconcile that result without aborting a newer active one.
     if (observation.status === "running") {
       work = this.service.getWork(current.workId);
       const latestBinding = this.service.repo.getBinding(current.bindingId);
       if (!work || !latestBinding) return;
-      if (watchTimeExpired(work, Date.now()) || work.lifecycle !== "active" || latestBinding.invalidatedAt || !this.service.scheduledBindingCurrent(latestBinding)) {
+      if (watchTimeExpired(work, Date.now()) || work.lifecycle !== "active" || latestBinding.invalidatedAt || !this.service.scheduledBindingCurrent(latestBinding)
+        || latestBinding.intentRevision !== work.intentRevision || latestBinding.inputSnapshotId !== work.inputSnapshotId) {
         await this.native.stop(current);
-        if (!this.isAuthority()) return;
+        if (!this.available()) return;
         observation = await this.native.inspect(current, receipt);
       }
     }
-    if (!this.isAuthority()) return;
+    if (!this.available()) return;
     const failures = this.service.nativeResults.receive(current, receipt, observation);
     for (const failure of failures) this.onError(failure.bindingId, failure.error);
     if (!failures.length) {

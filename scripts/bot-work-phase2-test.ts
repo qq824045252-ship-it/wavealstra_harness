@@ -133,7 +133,7 @@ let foreground = new BotConversationService({ db: db.connection, userId: LOCAL_U
     defineTool({ name: "fetch_content", description: "failure fixture", parameters: Type.Object({}), replay: "safe", execute: async () => ({output:text("Blocked internal address: fixture"), isError:true}) }),
     defineTool({ name: "unrelated_extension_write", description: "never exposed", parameters: Type.Object({}), replay: "unsafe", execute: async () => { assert.fail("frontend must only mount the two web read tools"); } }),
   ] }),
-  wake: () => { void queue.flush(); }, onMessage: event => streamEvents.push(event) });
+  wake: () => { void queue.drain(); }, onMessage: event => streamEvents.push(event) });
 const send = async (requestId: string, value: string, selectedWorkId?: string, attachments?: { name: string; path: string }[]) => {
   const request = { botId: DEFAULT_BOT_ID, requestId, text: value, selectedWorkId, attachments };
   const receipt = foreground.send(request);
@@ -253,7 +253,7 @@ try {
   assert.equal(works.listWorks(LOCAL_USER_ID).length, 1);
   await send("query-running", "查询");
   await send("delegate-b", "委托 B", undefined, [{ name: "background-material.txt", path: attachmentPath }]);
-  await queue.flush();
+  await queue.drain();
   await wait(() => effects === 2, "独立 root 并发启动，不再有共享资源序列化屏障");
   const b = works.listWorks(LOCAL_USER_ID).find(work => work.workId !== a.workId)!;
   const bBinding = works.repo.listBindings(b.workId)[0]!;
@@ -293,7 +293,7 @@ try {
   await send("cancel-b", `取消 ${b.workId}`, b.workId);
   // 两个独立 root 并发运行：取消 b 之后仍在途的派发要等 b 的模拟工具返回，
   // 因此先发起 flush，再释放工具，避免把 flush 与 held 互相等待成死锁。
-  const cancelFlush = queue.flush();
+  const cancelFlush = queue.drain();
   releaseEffect(); held = Promise.resolve();
   await cancelFlush;
   await wait(async () => { await adapter.flush(); return works.repo.getBinding(aBinding.bindingId)?.status === "completed"; }, "native result independent of usage telemetry");
@@ -308,7 +308,7 @@ try {
   assert.equal(works.getWork(a.workId)!.stateVersion, version);
   assert.equal(works.repo.getBinding(aBinding.bindingId)?.status, "completed");
   await send("amend-a", `修订 ${a.workId}`, a.workId);
-  await wait(async () => { await queue.flush(); return effects === 3 && works.repo.listBindings(a.workId).filter(binding => binding.status === "completed").length === 2; }, "new input gets its own root");
+  await wait(async () => { await queue.drain(); return effects === 3 && works.repo.listBindings(a.workId).filter(binding => binding.status === "completed").length === 2; }, "new input gets its own root");
   const amendedBindings = works.repo.listBindings(a.workId);
   assert.equal(amendedBindings.length, 2);
   assert.equal(amendedBindings[0].conversationId, amendedBindings[1].conversationId);

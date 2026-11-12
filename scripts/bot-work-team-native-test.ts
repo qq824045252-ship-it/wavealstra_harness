@@ -141,7 +141,7 @@ function open() {
 async function close() { await queue.close(); await adapter.close(); await native.close(); db.close(); }
 async function until(predicate: () => boolean, label: string) {
   const end = Date.now() + 30000;
-  while (!predicate()) { await queue.flush(); if (Date.now() > end) throw Error(`timeout ${label}: ${JSON.stringify(works.listProjections(LOCAL_USER_ID))}; ${errors.join(";")}`); await delay(20); }
+  while (!predicate()) { await queue.drain(); if (Date.now() > end) throw Error(`timeout ${label}: ${JSON.stringify(works.listProjections(LOCAL_USER_ID))}; ${errors.join(";")}`); await delay(20); }
 }
 open();
 try {
@@ -166,12 +166,12 @@ try {
   const persistedTasks = works.teams.get(workId)!.executions.map(item => item.taskId);
   await close(); open();
   assert.deepEqual(works.teams.get(workId)!.executions.map(item => item.taskId), persistedTasks, "queued identities survive host reopen");
-  for (let pass = 0; pass < 3; pass++) await queue.flush();
+  for (let pass = 0; pass < 3; pass++) await queue.drain();
   assert.equal(modelCalls.length, hasSystemVerification ? 6 : 3, "paused team cannot start queued member after restart");
   assert.equal(works.teams.get(workId)?.state, "paused");
   assert(works.resumeWork(actor, { operationId: "resume-mid-team", workId }).ok);
   await until(() => works.teams.get(workId)?.state === "awaiting_review", "team native settlement after mid-team restart");
-  await queue.flush();
+  await queue.drain();
   const team = works.teams.get(workId)!; assert.equal(team.executions.length, 3);
   assert(team.executions.every(item => item.status === "completed"));
   assert.deepEqual(team.executions.map(item => item.botId), [ids[1], ids[2], ids[3]]);
@@ -197,7 +197,7 @@ try {
   assert(firstBeta >= (hasSystemVerification ? 6 : 3), "beta starts only after alpha settles");
   await close(); open();
   const replay = works.teams.handle(actor, { kind: "create", request }); assert(replay.ok && replay.replayed);
-  for (let pass = 0; pass < 5; pass++) { await queue.flush(); await delay(20); }
+  for (let pass = 0; pass < 5; pass++) { await queue.drain(); await delay(20); }
   assert.equal(modelCalls.length, callsBefore, "reopen and repeat create never repeat native execution");
   assert.deepEqual(db.listTasks().map(task => task.id).sort(), tasksBefore);
   assert.equal(works.teams.get(workId)?.state, "awaiting_review");
@@ -221,7 +221,7 @@ try {
   await until(() => works.teams.get(parallelId)?.state === "awaiting_review", "parallel native owner result");
   const parallelCalls = modelCalls.length;
   await close(); open();
-  for (let pass = 0; pass < 4; pass++) { await queue.flush(); await delay(20); }
+  for (let pass = 0; pass < 4; pass++) { await queue.drain(); await delay(20); }
   assert.equal(modelCalls.length, parallelCalls, "parallel reopening does not replay effects");
   assert.equal(works.repo.listBindings(parallelId).length, 3);
   console.log("PASS native parallel team: real overlapping roots, real file verification, owner barrier and reopened idempotency");
@@ -246,7 +246,7 @@ try {
   assert.equal(works.getWork(failedId)!.acceptedDeliverableIds.length, 0);
   const finalCalls = modelCalls.length;
   await close(); open();
-  for (let pass = 0; pass < 4; pass++) { await queue.flush(); await delay(20); }
+  for (let pass = 0; pass < 4; pass++) { await queue.drain(); await delay(20); }
   assert.equal(modelCalls.length, finalCalls, "native summary is not repeated after restart");
   console.log("PASS native failed chain: retained real-read finding, distinct failures, unstarted dependency, truthful owner summary and restart dedupe");
   assert.deepEqual(errors, []);

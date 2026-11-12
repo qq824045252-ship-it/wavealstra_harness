@@ -84,7 +84,7 @@ try {
   const actor: WorkActor = { kind: "user", userId: LOCAL_USER_ID, grants };
   const created = works.createWork(actor, { operationId: "create-owned", title: "owned total", inputSnapshotId: "source-v1", authorization: grants });
   assert(created.ok); works.transaction(() => queue.enqueue(created.work, "owned-dispatch"));
-  await queue.flush();
+  await queue.drain();
   const until = Date.now() + 15000;
   while (works.repo.listBindings(created.work.workId)[0]?.status !== "completed") {
     if (Date.now() > until) throw new Error(`owned usage timeout: root=${rootRequests}, child=${childRequests}, ${JSON.stringify(works.getProjection(created.work.workId))}, errors=${errors.map(String).join(";")}`);
@@ -103,7 +103,7 @@ try {
     scenario = mode; rootRequests = 0; childRequests = 0;
     const next = works.createWork(actor, { operationId: `create-${mode}`, title: mode, inputSnapshotId: `source-${mode}`, authorization: grants });
     assert(next.ok);
-    works.transaction(() => queue.enqueue(next.work, `dispatch-${mode}`)); await queue.flush();
+    works.transaction(() => queue.enqueue(next.work, `dispatch-${mode}`)); await queue.drain();
     const deadline = Date.now() + 15000;
     const expected = mode === "business" ? 10 : 27;
     while (works.repo.listBindings(next.work.workId)[0]?.status !== "completed") {

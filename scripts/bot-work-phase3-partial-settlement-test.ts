@@ -54,7 +54,7 @@ try {
     inspect:async()=>({status:"completed",summary:"gap only",hasWriteConflicts:false,artifactRefs:[join(root,"gap.txt")],usageTokens:3,subitems:[item("two","completed",[join(root,"gap.txt")])]}),stop:async()=>{}};
   const errors:unknown[]=[]; const adapter=new WorkExecutionAdapter(works,native,LOCAL_USER_ID,()=>true,(_id,error)=>errors.push(error));
   const queue=new WorkDispatchQueue(db,works,adapter,()=>true,()=>undefined);
-  await queue.flush();await queue.flush();await queue.close();await adapter.close();
+  await queue.drain();await queue.drain();await queue.close();await adapter.close();
   assert.deepEqual(errors,[]);assert.equal(submitted.length,1);assert.equal(works.repo.listBindings(work.workId).length,beforeResume+1);
   assert(submittedTexts[0].includes("task-two"));assert(!submittedTexts[0].includes("task-one"));
   assert.equal(await readFile(join(root,"done.txt"),"utf8"),"retained-effect");assert.equal(await readFile(join(root,"gap.txt"),"utf8"),"new-gap-effect");

@@ -88,7 +88,7 @@ async function run(name: string, final: "completed" | "failed" | "stopped", unkn
     works.repo.insertBlocker({ blockerId: `dispatch:${name}`, workId: work.workId, kind: "operational",
       reason: "legacy quota dispatch refusal", waitingForUserInput: false, status: "open", createdAt: Date.now() });
   }
-  await queue.flush();
+  await queue.drain();
   if (name === "ancestry") works.transaction(() => {
     works.repo.insertInbox({ eventId: "original-event", dedupeKey: "original-event", source: "test", sourceEventId: "source", eventType: "test", workId: work.workId,
       intentRevision: work.intentRevision, stateVersion: work.stateVersion, ownerEpoch: work.ownerEpoch, status: "processed", payload: { request: "original-source-weather-payload" }, mergedCount: 0, receivedAt: Date.now() });
@@ -110,7 +110,7 @@ async function run(name: string, final: "completed" | "failed" | "stopped", unkn
   ({ adapter, queue } = create());
   try {
     for (let i = 0; i < 8; i++) {
-      await queue.flush();
+      await queue.drain();
       for (const id of works.automaticCompletion.pending()) if (works.transaction(() => works.automaticCompletion.outcome(id)))
         works.automaticCompletion.recordDelivery(id,"fixture report delivered");
       works.automaticCompletion.drain();

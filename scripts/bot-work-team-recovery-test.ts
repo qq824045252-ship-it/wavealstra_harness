@@ -98,7 +98,7 @@ function fixture() {
   const errors: unknown[] = [];
   let adapter = new WorkExecutionAdapter(works, host, LOCAL_USER_ID, () => true, (_id, error) => errors.push(error));
   let queue = new WorkDispatchQueue(db, works, adapter, () => true, () => "fixture/root");
-  const flush = async (times = 12) => { for (let index = 0; index < times; index++) { await queue.flush(); await adapter.flush(); } };
+  const flush = async (times = 12) => { for (let index = 0; index < times; index++) { await queue.drain(); await adapter.flush(); } };
   const create = (name: string, members: Array<{ botId: string; dependsOnBotIds?: string[] }>, parallel = false): WorkTeamControlResult => {
     const request = { operationId: `team:${name}`, title: name, goalDescription: "持续完成分工并保留真实成果",
       workspacePath: workspace, ownerBotId: "recovery-owner", ownerResponsibility: "只读汇总成员结果",

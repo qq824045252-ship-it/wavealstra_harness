@@ -61,7 +61,7 @@ function setup() {
   return { name, plan, request };
 }
 async function flush(count = 5) { for (let i = 0; i < count; i++) {
-  await queue.flush();
+  await queue.drain();
   for (const id of works.automaticCompletion.pending()) if (works.transaction(() => works.automaticCompletion.outcome(id)))
     works.automaticCompletion.recordDelivery(id,"fixture report delivered");
   works.automaticCompletion.drain();
@@ -141,7 +141,7 @@ try {
 
   const stoppingSetup = setup(), stopping = ok(works.teams.handle(user, { kind: "create", request: stoppingSetup.request }));
   for (const item of stopping.team!.executions) runningTasks.add(item.taskId);
-  await queue.flush();
+  await queue.drain();
   const liveBindings = bindings(stopping.work!.workId);
   assert.ok(liveBindings.some(item => item.status === "running"));
   const pendingRemoval = ok(works.teams.handle(user, { kind: "stop_and_remove_work", workId: stopping.work!.workId }));
@@ -191,7 +191,7 @@ try {
     "lookup neither creates work/tasks nor changes the existing operation");
   queue.enqueue(works.getWork(workId)!, "must-not-schedule-owner");
   assert.equal((db.connection.prepare("SELECT count(*) n FROM work_dispatch_requests WHERE work_id=?").get(workId) as { n: number }).n, 0);
-  await queue.flush(); assert.equal(bindings(workId).length, 1);
+  await queue.drain(); assert.equal(bindings(workId).length, 1);
   await flush(); assert.equal(bindings(workId).length, 3);
   assert.equal(works.teams.get(workId)!.state, "ended_unsuccessfully");
   assert.equal(works.getWork(workId)!.lifecycle, "closed");
@@ -221,7 +221,7 @@ try {
   // Preparation failure can retry only with the current versions and no binding.
   const retrySetup = setup(), retry = ok(works.teams.handle(user, { kind: "create", request: retrySetup.request }));
   const retryTask = retry.team!.executions[0]!.taskId;
-  failPrepare.add(retryTask); await queue.flush();
+  failPrepare.add(retryTask); await queue.drain();
   assert.equal(works.teams.get(retry.work!.workId)!.state, "blocked"); assert.equal(bindings(retry.work!.workId).length, 0);
   reject(works.teams.handle(user, { kind: "retry", workId: retry.work!.workId, versionGuard: guard(retry.work!), confirmNotStarted: true }), "version_conflict");
   failPrepare.delete(retryTask);
@@ -231,7 +231,7 @@ try {
 
   // Revoked owner/reporting rights block only that team; independent teams still proceed.
   const pausedSetup = setup(), paused = ok(works.teams.handle(user, { kind: "create", request: pausedSetup.request }));
-  await queue.flush();
+  await queue.drain();
   db.connection.prepare("UPDATE bots SET status='paused' WHERE bot_id=?").run(pausedSetup.plan.ownerBotId);
   const independentSetup = setup(), independent = ok(works.teams.handle(user, { kind: "create", request: independentSetup.request }));
   await flush();
@@ -290,7 +290,7 @@ try {
 
   // In-flight/unknown results hold the next member instead of spawning a replacement.
   const uncertainSetup = setup(), uncertain = ok(works.teams.handle(user, { kind: "create", request: uncertainSetup.request }));
-  await queue.flush(); const uncertainBinding = bindings(uncertain.work!.workId)[0]!;
+  await queue.drain(); const uncertainBinding = bindings(uncertain.work!.workId)[0]!;
   works.transaction(() => works.repo.updateBinding({ ...uncertainBinding, status: "unknown" }));
   await works.teams.dispatchPending(db, adapter, () => "fixture");
   assert.equal(bindings(uncertain.work!.workId).length, 1, "unknown native liveness holds the dependent member");
@@ -308,7 +308,7 @@ try {
   const meteringSetup = setup(), metering = ok(works.teams.handle(user, { kind: "create", request: meteringSetup.request }));
   const meteringWorkId = metering.work!.workId, firstTask = metering.team!.executions[0]!.taskId;
   unknownGeneration.add(firstTask); runningTasks.add(firstTask);
-  await queue.flush();
+  await queue.drain();
   const firstBinding = bindings(meteringWorkId)[0]!;
   assert.equal(firstBinding.status, "running");
   assert.equal("budget" in works.getWork(meteringWorkId)!, false);

@@ -149,7 +149,7 @@ export async function openNativeHost(root: string, stage: number) {
     ledger.prepare("INSERT INTO steps(number,name,evidence_json) VALUES (?,?,?)").run(number, name, JSON.stringify(evidence));
     console.log(`STEP ${number} PASS ${name}`);
   };
-  const flushUntil = async (predicate: () => boolean, description: string) => waitFor(async () => { await queue.flush(); assert.deepEqual(errors.map(String), []); return predicate(); }, description);
+  const flushUntil = async (predicate: () => boolean, description: string) => waitFor(async () => { await queue.drain(); assert.deepEqual(errors.map(String), []); return predicate(); }, description);
   const directSubmission = async (workId: string, taskId: string, modelId: string, botId = DEFAULT_BOT_ID, operationId = `native:${taskId}`) => {
     db.upsertTask({ id: taskId, title: taskId, cwd, modelId, permissionMode: "auto", updatedAt: Date.now() });
     const namespace = await port.prepare(taskId);

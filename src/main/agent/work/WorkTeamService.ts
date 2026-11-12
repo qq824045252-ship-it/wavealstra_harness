@@ -118,6 +118,7 @@ export function ensureWorkTeamSchema(db: Database.Database): void {
 
 /** A bounded, explicit user-created team. It does not create a second execution engine. */
 export class WorkTeamService {
+  private readonly dispatchFlights = new Map<string, Promise<void>>();
   readonly watchCycles: WorkTeamWatchCycles;
   constructor(private readonly db: Database.Database, private readonly works: WorkService,
     private readonly bots: BotRegistry, private readonly now: () => number = Date.now) { ensureWorkTeamSchema(db); this.watchCycles = new WorkTeamWatchCycles(db, works, now); }
@@ -495,101 +496,124 @@ export class WorkTeamService {
   async dispatchPending(app: AppDatabase, adapter: WorkExecutionAdapter, model: () => string | undefined,
     permission: () => import("../../../shared/agent-ipc").PermissionMode = () => "default",
     botSettings?: (work: WorkDto, botId?: string) => import("../../../shared/bot-settings").BotSettingsDto): Promise<void> {
+    this.wakePending(app, adapter, model, permission, botSettings);
+    await this.waitForDispatches();
+  }
+
+  waitForDispatches(): Promise<void> { return Promise.all(this.dispatchFlights.values()).then(() => {}); }
+
+  wakePending(app: AppDatabase, adapter: WorkExecutionAdapter, model: () => string | undefined,
+    permission: () => import("../../../shared/agent-ipc").PermissionMode = () => "default",
+    botSettings?: (work: WorkDto, botId?: string) => import("../../../shared/bot-settings").BotSettingsDto,
+    onProgress: () => void = () => {}, canDispatch: () => boolean = () => true): void {
     for (const raw of this.db.prepare("SELECT * FROM work_teams ORDER BY created_at,work_id").all()) {
       this.works.collaboration.assertAuthority();
       const team = teamRowSchema.parse(raw);
-      try {
-        let work = this.works.getWork(team.work_id);
-        if (!work) continue;
-        this.finishRequestedRemoval(work.workId);
-        this.cancelStaleRecoveries(team, work);
-        if (work.lifecycle !== "active" || team.intent_revision !== work.intentRevision || team.input_snapshot_id !== work.inputSnapshotId) continue;
-        if (work.mode === "watch" && (!this.watchCycles.eligible(work) || watchTimeExpired(work, this.now()))) continue;
-        const plan = workTeamPlanSchema.parse(JSON.parse(team.plan_json));
-        // Settle/report native facts first, then decide whether this member needs a
-        // durable continuation. Reporting is per binding, so a recovery result is
-        // visible without repeating the original failure message.
-        for (const original of this.rows(work.workId)) {
-          if (original.cancelled) continue;
-          const binding = this.works.repo.bindingForTask(original.task_id);
-          if (!binding || !TERMINAL_BINDING.has(binding.status) || binding.invalidatedAt
-            || !this.works.collaboration.isDelegationAdopted(binding, work)) continue;
-          if (this.works.repo.listAdmissions(work.workId).some(item => item.bindingId === binding.bindingId && workAdmissionInFlight(item))) continue;
-          if (!this.bindingReported(original, binding)) {
-            try {
-              this.reportResult(work, original, binding);
-            } catch (error) {
-              const message = error instanceof Error ? error.message : String(error);
-              if (original.error !== message) this.works.transaction(() => {
-                this.works.collaboration.assertAuthority();
-                this.db.prepare("UPDATE work_team_executions SET error=? WHERE work_id=? AND ordinal=?").run(message, work!.workId, original.ordinal);
-                const current = this.works.getWork(work!.workId)!;
-                this.works.repo.updateWork({ ...current, stateVersion: current.stateVersion + 1, updatedAt: this.now() });
-                this.works.emitCurrentProjection(current.workId);
-              });
-              continue;
-            }
-          }
-          work = this.works.getWork(work.workId)!;
-          this.settleRecoveryAttempts(work.workId, original.task_id);
-          this.ensureRecovery(work, original, binding);
-          work = this.works.getWork(work.workId)!;
-        }
-        this.stopBlockedMissingRepairs(work, plan);
-        work = this.works.getWork(work.workId)!;
-        const next = this.nextDispatch(work, plan, this.rows(work.workId));
-        if (!next) continue;
-        const { row, recovery } = next;
+      if (!canDispatch() || this.dispatchFlights.has(team.work_id)) continue;
+      const version = this.works.getWork(team.work_id)?.stateVersion;
+      const run = async () => {
         try {
-          const identity = row.role === "owner_summary" ? work.ownerBotId : (recovery?.bot_id ?? row.bot_id);
-          const bot = this.bots.getBot(identity);
-          if (!bot || bot.userId !== work.userId || bot.status !== "active")
-            throw new TeamError("unauthorized_actor", "执行 Bot 已停用或不再属于该事项");
-          const rowScopes = z.array(z.string()).parse(JSON.parse(row.scopes_json));
-          const semanticReadOnly = recovery?.failure_class === "semantic_missing" && recovery.missing_json
-            && (JSON.parse(recovery.missing_json) as WorkResultDecision["missing"]).every(item => item.readOnly === true);
-          const scopes = semanticReadOnly ? rowScopes.filter(scope => scope === "workspace:read") : rowScopes;
-          const operationId = recovery?.operation_id ?? `team-dispatch:${row.task_id}`;
-          if (!recovery && row.role === "owner_summary" && identity !== row.bot_id && !this.works.repo.bindingForTask(row.task_id)) {
-            const currentWorkId = work.workId;
-            this.works.transaction(() => {
-              this.works.collaboration.assertAuthority();
-              this.db.prepare("UPDATE work_team_executions SET bot_id=?,input_json=NULL,error=NULL WHERE work_id=? AND ordinal=?")
-                .run(identity, currentWorkId, row.ordinal);
-            });
-            row.bot_id = identity; row.input_json = null;
+          let work = this.works.getWork(team.work_id);
+          if (!work || !canDispatch()) return;
+          this.finishRequestedRemoval(work.workId);
+          this.cancelStaleRecoveries(team, work);
+          if (work.lifecycle !== "active" || team.intent_revision !== work.intentRevision || team.input_snapshot_id !== work.inputSnapshotId) return;
+          if (work.mode === "watch" && (!this.watchCycles.eligible(work) || watchTimeExpired(work, this.now()))) return;
+          const plan = workTeamPlanSchema.parse(JSON.parse(team.plan_json));
+          // Settle/report native facts first, then decide whether this member needs a
+          // durable continuation. Reporting is per binding, so a recovery result is
+          // visible without repeating the original failure message.
+          for (const original of this.rows(work.workId)) {
+            if (original.cancelled) continue;
+            const binding = this.works.repo.bindingForTask(original.task_id);
+            if (!binding || !TERMINAL_BINDING.has(binding.status) || binding.invalidatedAt
+              || !this.works.collaboration.isDelegationAdopted(binding, work)) continue;
+            if (this.works.repo.listAdmissions(work.workId).some(item => item.bindingId === binding.bindingId && workAdmissionInFlight(item))) continue;
+            if (!this.bindingReported(original, binding)) {
+              try {
+                this.reportResult(work, original, binding);
+              } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                if (original.error !== message) this.works.transaction(() => {
+                  this.works.collaboration.assertAuthority();
+                  this.db.prepare("UPDATE work_team_executions SET error=? WHERE work_id=? AND ordinal=?").run(message, work!.workId, original.ordinal);
+                  const current = this.works.getWork(work!.workId)!;
+                  this.works.repo.updateWork({ ...current, stateVersion: current.stateVersion + 1, updatedAt: this.now() });
+                  this.works.emitCurrentProjection(current.workId);
+                });
+                continue;
+              }
+            }
+            work = this.works.getWork(work.workId)!;
+            this.settleRecoveryAttempts(work.workId, original.task_id);
+            this.ensureRecovery(work, original, binding);
+            work = this.works.getWork(work.workId)!;
           }
-          if (recovery) {
-            const claimed = this.claimRecovery(recovery, work);
-            if (!claimed) continue;
-            this.prepareRecoveryInput(work, plan, row, recovery, scopes);
-          } else {
-            this.works.transaction(() => {
-              this.works.collaboration.assertAuthority();
-              const current = this.works.getWork(work!.workId)!;
-              if (current.lifecycle !== "active" || current.stateVersion !== work!.stateVersion) throw new TeamError("version_conflict", "事项状态已变化");
-              this.prepareInitialInput(current, plan, row, identity);
-            });
-          }
+          this.stopBlockedMissingRepairs(work, plan);
           work = this.works.getWork(work.workId)!;
-          const settings = botSettings?.(work, bot.botId);
-          const previousTask = app.getTask(row.task_id);
-          app.upsertTask({ id: row.task_id, title: `${work.title} · ${row.role === "owner_summary" ? "负责人汇总" : bot.displayName}`,
-            updatedAt: this.now(), cwd: previousTask?.cwd ?? work.workspacePath ?? settings?.effectiveWorkspacePath,
-            spaceId: settings?.spaceId ?? previousTask?.spaceId, projectId: work.projectId,
-            modelId: previousTask?.modelId ?? (settings?.modelId || model()), permissionMode: permission(), modePresetId: "native" });
-          const result = await adapter.dispatch({ kind: "bot", userId: work.userId, botId: work.ownerBotId, host: "background", grants: work.authorization }, {
-            operationId, taskId: row.task_id, workId: work.workId, botId: identity, delegatedScope: scopes, inboxEventId: this.watchCycles.current(work.workId)?.inbox_event_id, versionGuard: guard(work) });
-          if (!result.ok) throw new TeamError(result.code, result.message);
-          if (recovery) this.markRecoveryDispatched(recovery, work.workId, operationId);
+          const next = this.nextDispatch(work, plan, this.rows(work.workId));
+          if (!next) return;
+          const { row, recovery } = next;
+          try {
+            const identity = row.role === "owner_summary" ? work.ownerBotId : (recovery?.bot_id ?? row.bot_id);
+            const bot = this.bots.getBot(identity);
+            if (!bot || bot.userId !== work.userId || bot.status !== "active")
+              throw new TeamError("unauthorized_actor", "执行 Bot 已停用或不再属于该事项");
+            const rowScopes = z.array(z.string()).parse(JSON.parse(row.scopes_json));
+            const semanticReadOnly = recovery?.failure_class === "semantic_missing" && recovery.missing_json
+              && (JSON.parse(recovery.missing_json) as WorkResultDecision["missing"]).every(item => item.readOnly === true);
+            const scopes = semanticReadOnly ? rowScopes.filter(scope => scope === "workspace:read") : rowScopes;
+            const operationId = recovery?.operation_id ?? `team-dispatch:${row.task_id}`;
+            if (!recovery && row.role === "owner_summary" && identity !== row.bot_id && !this.works.repo.bindingForTask(row.task_id)) {
+              const currentWorkId = work.workId;
+              this.works.transaction(() => {
+                this.works.collaboration.assertAuthority();
+                this.db.prepare("UPDATE work_team_executions SET bot_id=?,input_json=NULL,error=NULL WHERE work_id=? AND ordinal=?")
+                  .run(identity, currentWorkId, row.ordinal);
+              });
+              row.bot_id = identity; row.input_json = null;
+            }
+            if (recovery) {
+              const claimed = this.claimRecovery(recovery, work);
+              if (!claimed) return;
+              this.prepareRecoveryInput(work, plan, row, recovery, scopes);
+            } else {
+              this.works.transaction(() => {
+                this.works.collaboration.assertAuthority();
+                const current = this.works.getWork(work!.workId)!;
+                if (current.lifecycle !== "active" || current.stateVersion !== work!.stateVersion) throw new TeamError("version_conflict", "事项状态已变化");
+                this.prepareInitialInput(current, plan, row, identity);
+              });
+            }
+            work = this.works.getWork(work.workId)!;
+            const settings = botSettings?.(work, bot.botId);
+            const previousTask = app.getTask(row.task_id);
+            app.upsertTask({ id: row.task_id, title: `${work.title} · ${row.role === "owner_summary" ? "负责人汇总" : bot.displayName}`,
+              updatedAt: this.now(), cwd: previousTask?.cwd ?? work.workspacePath ?? settings?.effectiveWorkspacePath,
+              spaceId: settings?.spaceId ?? previousTask?.spaceId, projectId: work.projectId,
+              modelId: previousTask?.modelId ?? (settings?.modelId || model()), permissionMode: permission(), modePresetId: "native" });
+            const result = await adapter.dispatch({ kind: "bot", userId: work.userId, botId: work.ownerBotId, host: "background", grants: work.authorization }, {
+              operationId, taskId: row.task_id, workId: work.workId, botId: identity, delegatedScope: scopes, inboxEventId: this.watchCycles.current(work.workId)?.inbox_event_id, versionGuard: guard(work) }, canDispatch);
+            if (!canDispatch()) return;
+            if (!result.ok) throw new TeamError(result.code, result.message);
+            if (recovery) this.markRecoveryDispatched(recovery, work.workId, operationId);
+          } catch (error) {
+          if (!canDispatch()) return;
+            if (error instanceof TeamError && ["version_conflict", "epoch_mismatch", "invalid_lifecycle_transition"].includes(error.code)) return;
+            this.handleDispatchFailure(work, row, recovery, error);
+          }
         } catch (error) {
-          if (error instanceof TeamError && ["version_conflict", "epoch_mismatch", "invalid_lifecycle_transition"].includes(error.code)) continue;
-          this.handleDispatchFailure(work, row, recovery, error);
+          if (!canDispatch()) return;
+          // A single unavailable/corrupt team must not stop unrelated Work dispatch.
+          console.warn("[Work] 团队准备等待核对", team.work_id, error instanceof Error ? error.message : String(error));
         }
-      } catch (error) {
-        // A single unavailable/corrupt team must not stop unrelated Work dispatch.
-        console.warn("[Work] 团队准备等待核对", team.work_id, error instanceof Error ? error.message : String(error));
-      }
+      };
+      const flight = run().finally(() => {
+        this.dispatchFlights.delete(team.work_id);
+        if (canDispatch() && this.works.getWork(team.work_id)?.stateVersion !== version) onProgress();
+      });
+      this.dispatchFlights.set(team.work_id, flight);
+      void flight.catch(error => { if (canDispatch()) console.warn("[Work] 团队派发待核对", error); });
     }
   }
 

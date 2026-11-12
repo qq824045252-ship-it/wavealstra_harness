@@ -271,15 +271,15 @@ try {
   const queueAdapter = new WorkExecutionAdapter(works, queuePort, LOCAL_USER_ID, () => true, () => {});
   const queue = new WorkDispatchQueue(db, works, queueAdapter, () => true, () => "fixture");
   works.transaction(() => queue.enqueue(queued, "queue-original"));
-  const starting = queue.flush();
+  const starting = queue.drain();
   unwrap(works.pauseWork(user, { operationId: "pause-preparing", workId: queued.workId }));
   const resumed = unwrap(works.resumeWork(user, { operationId: "resume-preparing", workId: queued.workId }));
   works.transaction(() => queue.enqueue(resumed, "queue-resume"));
   assert.equal(rowCount(db.connection.prepare("SELECT COUNT(*) count FROM work_dispatch_requests WHERE work_id=?").get(queued.workId)), 1);
-  release(); await starting; await queue.flush();
+  release(); await starting; await queue.drain();
   // Simulate losing only the business acknowledgement after the binding transaction.
   db.connection.prepare("UPDATE work_dispatch_requests SET state='pending' WHERE work_id=?").run(queued.workId);
-  await queue.flush(); await queue.close(); await queueAdapter.close();
+  await queue.drain(); await queue.close(); await queueAdapter.close();
   assert.equal(submissions, 1, "prepare races and lost dispatch acknowledgement cannot start a second business execution");
   assert.equal(works.repo.listBindings(queued.workId).length, 1);
   assert.equal(rowCount(db.connection.prepare("SELECT COUNT(*) count FROM work_dispatch_requests WHERE work_id=? AND state='dispatched'").get(queued.workId)), 1);

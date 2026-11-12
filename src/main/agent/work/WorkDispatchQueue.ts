@@ -27,6 +27,8 @@ export class WorkDispatchQueue {
   private closed = false;
   private dirty = false;
   private timer?: ReturnType<typeof setInterval>;
+  private readonly dispatchFlights = new Map<string, Promise<void>>();
+  private detachProgress?: () => void;
   constructor(private readonly db: AppDatabase, private readonly works: WorkService,
     private readonly adapter: WorkExecutionAdapter, private readonly isAuthority: () => boolean,
     private readonly defaultModel: () => string | undefined,
@@ -69,99 +71,135 @@ export class WorkDispatchQueue {
     if (this.timer || this.closed) return;
     this.timer = setInterval(() => this.wake(), 1000);
     this.timer.unref?.();
+    this.detachProgress = this.adapter.onProgress(() => this.wake());
     this.wake();
   }
   wake(): void { void this.flush().catch(error => console.warn("[Work] 派发恢复待核对", error)); }
-  async close(): Promise<void> { this.closed = true; if (this.timer) clearInterval(this.timer); this.timer = undefined; await this.fileEvents.close(); await this.flushing; }
+  async close(): Promise<void> {
+    this.closed = true; this.detachProgress?.();
+    if (this.timer) clearInterval(this.timer);
+    this.timer = undefined;
+    await this.fileEvents.close(); await this.flushing;
+  }
   flush(): Promise<void> {
     if (this.closed) return Promise.resolve();
     this.dirty = true;
     if (!this.flushing) this.flushing = (async () => {
-      do { this.dirty = false; await this.deliver(); } while (this.dirty);
+      do { this.dirty = false; await this.deliver(); } while (this.dirty && !this.closed);
     })().finally(() => { this.flushing = undefined; });
     return this.flushing;
+  }
+
+  /** Explicit native reconciliation barrier for diagnostics. Normal wakeups use flush. */
+  async drain(): Promise<void> {
+    if (this.closed) return;
+    await this.flush();
+    await Promise.all([...this.dispatchFlights.values(), this.works.teams.waitForDispatches()]);
+    await this.adapter.flush();
+    if (!this.closed && this.isAuthority()) this.settleDispatches();
   }
 
   private async deliver(): Promise<void> {
     await this.fileEvents.reconcile();
     if (this.closed || !this.isAuthority()) return;
     await this.resumeDeferredActions?.();
+    if (this.closed || !this.isAuthority()) return;
     this.resumeRetiredQuotaRequests();
-    await this.works.teams.dispatchPending(this.db, this.adapter, this.defaultModel, this.permissionMode, this.botSettings);
+    this.works.teams.wakePending(this.db, this.adapter, this.defaultModel, this.permissionMode, this.botSettings,
+      () => { if (this.timer) this.wake(); }, () => !this.closed && this.isAuthority());
     await this.drainSourceEvents();
+    if (this.closed || !this.isAuthority()) return;
     this.prepareSourceIntents();
     this.prepareContinuations();
     for (const request of this.db.connection.prepare("SELECT * FROM work_dispatch_requests WHERE state='pending' ORDER BY created_at,rowid").all().map(row => rowSchema.parse(row))) {
-      if (!this.isAuthority()) return;
-      const original = this.works.repo.getBindingByOperation(request.work_id, `dispatch:${request.operation_id}`);
-      if (original) {
-        if (original.taskId !== request.task_id || original.botId !== request.bot_id || original.intentRevision !== request.intent_revision || original.inputSnapshotId !== request.input_snapshot_id) throw new Error("原始派发命名空间不匹配");
-        this.finishRequest(request.operation_id, request.work_id, "dispatched");
-        continue;
-      }
-      const work = this.works.getWork(request.work_id);
-      if (!work || watchTimeExpired(work, Date.now()) || work.lifecycle === "closed" || work.lifecycle === "closing" || work.intentRevision !== request.intent_revision || work.inputSnapshotId !== request.input_snapshot_id) {
-        this.db.connection.prepare("UPDATE work_dispatch_requests SET state='cancelled' WHERE operation_id=?").run(request.operation_id);
-        continue;
-      }
-      if (work.lifecycle !== "active") continue;
-      if (work.ownerBotId !== request.bot_id) {
-        // Never reinterpret an old owner's unsubmitted decision as new authorization.
-        this.finishRequest(request.operation_id,request.work_id,"cancelled");
-        continue;
-      }
-      // A pending request can outlive the caller/crash that created it. Apply the
-      // same input dedupe on recovery, before preparing another native namespace.
-      // The matching operation above keeps its original binding/receipt instead.
-      const continuation = request.continuation_plan_id && this.works.partialResults.plans(work.workId).find(plan => plan.planId === request.continuation_plan_id);
-      if (request.continuation_plan_id && (!continuation || continuation.state === "cancelled" || continuation.ownerEpoch !== work.ownerEpoch || continuation.ownerBotId !== work.ownerBotId)) {
-        this.finishRequest(request.operation_id,request.work_id,"cancelled"); continue;
-      }
-      const requestEvent = request.inbox_event_id ? this.works.repo.getInbox(request.inbox_event_id) : undefined;
-      const readOnlyFollowUp = isScheduledFollowUp(requestEvent);
-      if (readOnlyFollowUp && !scheduledFollowUpCurrent(work, requestEvent, requestEvent?.subscriptionId ? this.works.repo.getSubscription(requestEvent.subscriptionId) : undefined)) {
-        this.finishRequest(request.operation_id, request.work_id, "cancelled"); continue;
-      }
-      if (!continuation && !readOnlyFollowUp && this.works.repo.listBindings(work.workId).some(binding => retainsInput(binding, work))) {
-        this.finishRequest(request.operation_id, request.work_id, "cancelled");
-        continue;
-      }
-      try {
-        const actor: WorkActor = { kind: "bot", userId: work.userId, botId: work.ownerBotId, host: "background", grants: DESKTOP_USER_GRANTS };
-        const result = await this.adapter.dispatch(actor, { taskId: request.task_id, operationId: `dispatch:${request.operation_id}`,
-          workId: work.workId, botId: request.bot_id,
-          delegatedScope: isReadOnlyScheduledFollowUp(requestEvent,work) ? ["workspace:read"]
-            : continuation && this.works.partialResults.isReadOnlyPlan(continuation) ? ["workspace:read"]
-              : continuation ? work.authorization.allowedScopes.filter(scope => this.works.repo.getBinding(continuation.sourceBindingId)?.delegatedScope.includes(scope))
-                : work.authorization.allowedScopes,
-          inboxEventId: request.inbox_event_id ?? undefined,
-          causal: requestEvent ? { source: requestEvent.source, sourceEventId: requestEvent.sourceEventId,
-            causalEventId: requestEvent.causalEventId, trustedRoot: true, actionKind: readOnlyFollowUp ? "scheduled-follow-up" : "source-dispatch" } : undefined,
-          versionGuard: { expectedStateVersion: work.stateVersion, expectedIntentRevision: work.intentRevision, expectedOwnerEpoch: work.ownerEpoch } });
-        if (!result.ok) {
-          if (["version_conflict", "epoch_mismatch", "invalid_lifecycle_transition"].includes(result.code)) continue;
-          throw new Error(`${result.code}: ${result.message}`);
-        }
-        this.finishRequest(request.operation_id, request.work_id, "dispatched");
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        this.works.transaction(() => {
-          if (!this.isAuthority()) return;
-          this.db.connection.prepare("UPDATE work_dispatch_requests SET attempts=attempts+1,error=?,state=CASE WHEN attempts>=2 THEN 'blocked' ELSE 'pending' END WHERE operation_id=?")
-            .run(message, request.operation_id);
-          const current = this.works.getWork(request.work_id);
-          if (current && !this.works.repo.getBlocker(`dispatch:${request.operation_id}`)) {
-            this.works.repo.insertBlocker({ blockerId: `dispatch:${request.operation_id}`, workId: current.workId,
-              reason: `后台准备受阻，保留原派发身份；核验后暂停/恢复可再次尝试：${message}`,
-              kind: "operational", waitingForUserInput: false, status: "open", createdAt: Date.now() });
-            this.works.repo.updateWork({ ...current, stateVersion: current.stateVersion + 1, updatedAt: Date.now() });
-          }
-        });
-        this.works.emitCurrentProjection(request.work_id);
-        console.warn("[Work] 派发受阻", request.work_id, message);
-      }
+      if (this.closed || !this.isAuthority()) return;
+      if (this.dispatchFlights.has(request.operation_id)) continue;
+      const version = this.works.getWork(request.work_id)?.stateVersion;
+      const flight = this.deliverRequest(request).finally(() => {
+        this.dispatchFlights.delete(request.operation_id);
+        if (this.timer && !this.closed && this.isAuthority() && this.works.getWork(request.work_id)?.stateVersion !== version) this.wake();
+      });
+      this.dispatchFlights.set(request.operation_id, flight);
+      void flight.catch(error => { if (!this.closed) console.warn("[Work] 派发恢复待核对", error); });
     }
-    await this.adapter.flush();
+    this.adapter.wake();
+    this.settleDispatches();
+  }
+
+  private async deliverRequest(request: z.infer<typeof rowSchema>): Promise<void> {
+    if (this.closed || !this.isAuthority()) return;
+    const original = this.works.repo.getBindingByOperation(request.work_id, `dispatch:${request.operation_id}`);
+    if (original) {
+      if (original.taskId !== request.task_id || original.botId !== request.bot_id || original.intentRevision !== request.intent_revision || original.inputSnapshotId !== request.input_snapshot_id) throw new Error("原始派发命名空间不匹配");
+      this.finishRequest(request.operation_id, request.work_id, "dispatched");
+      return;
+    }
+    const work = this.works.getWork(request.work_id);
+    if (!work || watchTimeExpired(work, Date.now()) || work.lifecycle === "closed" || work.lifecycle === "closing" || work.intentRevision !== request.intent_revision || work.inputSnapshotId !== request.input_snapshot_id) {
+      this.db.connection.prepare("UPDATE work_dispatch_requests SET state='cancelled' WHERE operation_id=?").run(request.operation_id);
+      return;
+    }
+    if (work.lifecycle !== "active") return;
+    if (work.ownerBotId !== request.bot_id) {
+      // Never reinterpret an old owner's unsubmitted decision as new authorization.
+      this.finishRequest(request.operation_id,request.work_id,"cancelled");
+      return;
+    }
+    // A pending request can outlive the caller/crash that created it. Apply the
+    // same input dedupe on recovery, before preparing another native namespace.
+    // The matching operation above keeps its original binding/receipt instead.
+    const continuation = request.continuation_plan_id && this.works.partialResults.plans(work.workId).find(plan => plan.planId === request.continuation_plan_id);
+    if (request.continuation_plan_id && (!continuation || continuation.state === "cancelled" || continuation.ownerEpoch !== work.ownerEpoch || continuation.ownerBotId !== work.ownerBotId)) {
+      this.finishRequest(request.operation_id,request.work_id,"cancelled"); return;
+    }
+    const requestEvent = request.inbox_event_id ? this.works.repo.getInbox(request.inbox_event_id) : undefined;
+    const readOnlyFollowUp = isScheduledFollowUp(requestEvent);
+    if (readOnlyFollowUp && !scheduledFollowUpCurrent(work, requestEvent, requestEvent?.subscriptionId ? this.works.repo.getSubscription(requestEvent.subscriptionId) : undefined)) {
+      this.finishRequest(request.operation_id, request.work_id, "cancelled"); return;
+    }
+    if (!continuation && !readOnlyFollowUp && this.works.repo.listBindings(work.workId).some(binding => retainsInput(binding, work))) {
+      this.finishRequest(request.operation_id, request.work_id, "cancelled");
+      return;
+    }
+    try {
+      const actor: WorkActor = { kind: "bot", userId: work.userId, botId: work.ownerBotId, host: "background", grants: DESKTOP_USER_GRANTS };
+      const result = await this.adapter.dispatch(actor, { taskId: request.task_id, operationId: `dispatch:${request.operation_id}`,
+        workId: work.workId, botId: request.bot_id,
+        delegatedScope: isReadOnlyScheduledFollowUp(requestEvent,work) ? ["workspace:read"]
+          : continuation && this.works.partialResults.isReadOnlyPlan(continuation) ? ["workspace:read"]
+            : continuation ? work.authorization.allowedScopes.filter(scope => this.works.repo.getBinding(continuation.sourceBindingId)?.delegatedScope.includes(scope))
+              : work.authorization.allowedScopes,
+        inboxEventId: request.inbox_event_id ?? undefined,
+        causal: requestEvent ? { source: requestEvent.source, sourceEventId: requestEvent.sourceEventId,
+          causalEventId: requestEvent.causalEventId, trustedRoot: true, actionKind: readOnlyFollowUp ? "scheduled-follow-up" : "source-dispatch" } : undefined,
+        versionGuard: { expectedStateVersion: work.stateVersion, expectedIntentRevision: work.intentRevision, expectedOwnerEpoch: work.ownerEpoch } }, () => !this.closed);
+      if (this.closed || !this.isAuthority()) return;
+      if (!result.ok) {
+        if (["version_conflict", "epoch_mismatch", "invalid_lifecycle_transition"].includes(result.code)) return;
+        throw new Error(`${result.code}: ${result.message}`);
+      }
+      this.finishRequest(request.operation_id, request.work_id, "dispatched");
+    } catch (error) {
+      if (this.closed || !this.isAuthority()) return;
+      const message = error instanceof Error ? error.message : String(error);
+      this.works.transaction(() => {
+        if (!this.isAuthority()) return;
+        this.db.connection.prepare("UPDATE work_dispatch_requests SET attempts=attempts+1,error=?,state=CASE WHEN attempts>=2 THEN 'blocked' ELSE 'pending' END WHERE operation_id=?")
+          .run(message, request.operation_id);
+        const current = this.works.getWork(request.work_id);
+        if (current && !this.works.repo.getBlocker(`dispatch:${request.operation_id}`)) {
+          this.works.repo.insertBlocker({ blockerId: `dispatch:${request.operation_id}`, workId: current.workId,
+            reason: `后台准备受阻，保留原派发身份；核验后暂停/恢复可再次尝试：${message}`,
+            kind: "operational", waitingForUserInput: false, status: "open", createdAt: Date.now() });
+          this.works.repo.updateWork({ ...current, stateVersion: current.stateVersion + 1, updatedAt: Date.now() });
+        }
+      });
+      this.works.emitCurrentProjection(request.work_id);
+      console.warn("[Work] 派发受阻", request.work_id, message);
+    }
+  }
+
+  private settleDispatches(): void {
     for (const row of this.db.connection.prepare(`SELECT DISTINCT request.work_id FROM work_dispatch_requests request
       JOIN works work ON work.work_id=request.work_id WHERE request.state='dispatched' AND work.lifecycle='active'`).all()) {
       const work = this.works.getWork(z.object({ work_id: z.string() }).parse(row).work_id);

@@ -98,7 +98,7 @@ try {
   unwrap(works.continueWork(user, { operationId: "continue-fidelity", workId: work.workId, sourceBindingId: binding.bindingId,
     gapItemIds: ["remaining"], reason: "补齐说明", versionGuard: guard(works.getWork(work.workId)!) }));
   const queue = new WorkDispatchQueue(db, works, adapter, () => true, () => undefined);
-  await queue.flush(); await adapter.flush(); await queue.close(); await adapter.close();
+  await queue.drain(); await adapter.flush(); await queue.close(); await adapter.close();
   assert.deepEqual(errors, []);
   assert(submitted[1].includes("补充报告说明"));
   assert(submitted[1].includes(JSON.stringify(input.userRequest)), "continuation carries exact source instead of the model's gap description alone");
