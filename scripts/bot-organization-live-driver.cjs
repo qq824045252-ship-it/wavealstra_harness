@@ -30,6 +30,7 @@ function sourceFingerprint() {
   const files = names.map(file => ({ file, sha256: fs.existsSync(path.join(root,file)) ? sha(fs.readFileSync(path.join(root,file))) : null }));
   return { capturedAt: new Date().toISOString(), ...(archived?{snapshotProvenance:provenance,sourceManifestPath:manifestPath}:{baseSHA:git(['rev-parse','HEAD']).trim(),trackedDiffSHA256:sha(git(['diff','--binary','HEAD']))}), sourceDigest: sha(JSON.stringify(files)), files };
 }
+const applicationSourceDigest = source => sha(JSON.stringify(source.files.filter(item=>!['scripts/bot-organization-live-driver.cjs','scripts/bot-organization-live-scenario.cjs'].includes(item.file))));
 const runId = new Date().toISOString().replace(/[:.]/g, '-');
 const out = path.join(root, 'out/diagnostics/issue32/organization-live', runId);
 let home, agentDir, dbPath, devOutput, userData, socket, processDev, broker, brokerLines, log;
@@ -145,7 +146,7 @@ async function launch() {
     `require(${JSON.stringify(path.join(devOutput,'main/index.js'))});`,
   ].join('\n'));
   new(require('node:vm').Script)(fs.readFileSync(bootstrap,'utf8'),{filename:bootstrap});
-  const source=sourceFingerprint(); if(report.sourceAtLaunch)assert.equal(source.sourceDigest,report.sourceAtLaunch.sourceDigest,'production/script source stays frozen throughout this exact run');else report.sourceAtLaunch=source;
+  const source=sourceFingerprint(); if(report.sourceAtLaunch)assert.equal(source.sourceDigest,report.sourceAtLaunch.sourceDigest,'production/script source stays frozen throughout this exact run');else{report.sourceAtLaunch=source;report.applicationSourceDigest=applicationSourceDigest(source);}
   const env={...process.env,HOME:home,USERPROFILE:home,APPDATA:path.join(home,'AppData/Roaming'),LOCALAPPDATA:path.join(home,'AppData/Local'),XDG_CONFIG_HOME:path.join(home,'.config'),XDG_CACHE_HOME:path.join(home,'.cache'),XDG_DATA_HOME:path.join(home,'.local/share'),REMOTE_DEBUGGING_PORT:String(port),ELECTRON_CLI_ARGS:JSON.stringify(['--remote-debugging-address=127.0.0.1','--disable-background-timer-throttling','--disable-backgrounding-occluded-windows'])};
   delete env.ELECTRON_RUN_AS_NODE;
   assert(process.env.npm_execpath&&fs.existsSync(process.env.npm_execpath),'launch this driver with pnpm exec node scripts/bot-organization-live-driver.cjs');
@@ -399,7 +400,7 @@ async function main() {
     fs.writeFileSync(path.join(agentDir,'settings.json'),JSON.stringify({defaultProvider:'fixture',defaultModel:sourceModel,enabledModels:[modelKey,targetModelKey],memoryEnabled:true,memoryGatewayEnabled:false,remoteAccessEnabled:false,closeToTray:false,theme:'light',permissionMode:'auto'}));
     await launch();await startSqliteBroker();
     await require('./bot-organization-live-scenario.cjs').run({send,until,evaluate,history,rpc,report,requests,out,home,modelKey,targetModelKey,botId:'bot-mybuddy-default',setBotId:selectBot,organizationHooks:{fault,restart,verifyRestart,boundary,audit:async()=>({faults,restarts,runtimes,finalState:await snapshot()})}});
-    report.status=report.organization?.status==='passed'?'passed':'failed';
+    report.status=['passed','selected_passed'].includes(report.organization?.status)?report.organization.status:'failed';
   } catch(error){report.status='failed';report.error=String(error.stack||error);console.error(report.error);process.exitCode=1;}
   finally {
     report.endedAt=new Date().toISOString();report.sourceAtEnd=sourceFingerprint();report.executableBundles=devOutput?bundles():[];

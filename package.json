@@ -727,6 +727,7 @@
     "test:work-execution-tools": "esbuild scripts/work-execution-tools-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/work-execution-tools-test.mjs && node scripts/test-guard.mjs out/tests/work-execution-tools-test.mjs",
     "test:bot-organization-primitives": "esbuild scripts/bot-organization-primitives-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/bot-organization-primitives-test.mjs && node scripts/test-guard.mjs out/tests/bot-organization-primitives-test.mjs",
     "test:bot-organization": "esbuild scripts/bot-organization-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/bot-organization-test.mjs && node scripts/test-guard.mjs out/tests/bot-organization-test.mjs",
+    "test:bot-organization-selection": "node scripts/bot-organization-selection-test.cjs",
     "test:bot-organization:live": "node scripts/bot-organization-live-driver.cjs",
     "test:durable-storage-current": "node scripts/durable-storage-current-test.cjs",
     "test:gateway-bot-binding": "esbuild scripts/gateway-bot-binding-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/gateway-bot-binding-test.mjs && node scripts/test-guard.mjs out/tests/gateway-bot-binding-test.mjs",

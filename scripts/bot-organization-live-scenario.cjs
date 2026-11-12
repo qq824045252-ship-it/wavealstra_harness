@@ -14,10 +14,29 @@ exports.driverContract = {
   audit: 'audit() => current real fault/process/effect audit',
 };
 
+exports.selection = (env = process.env) => {
+  const caseIds=['A','B','C','D','E','F'];
+  const faultKinds=['creation_storage','dispatch_storage','execution_transport','delivery_storage'];
+  const selectedCases=new Set((env.BOT_ORGANIZATION_CASES||caseIds.join(',')).split(',').filter(Boolean));
+  const selectedFaults=(env.BOT_ORGANIZATION_C_FAULTS||faultKinds.join(',')).split(',').filter(Boolean);
+  assert(selectedCases.size&&[...selectedCases].every(id=>caseIds.includes(id)),'selected cases must be an explicit A–F subset');
+  assert(selectedFaults.length&&new Set(selectedFaults).size===selectedFaults.length&&selectedFaults.every(kind=>faultKinds.includes(kind)),'selected C faults must be known unique boundaries');
+  return {caseIds,faultKinds,selectedCases,selectedFaults};
+};
+exports.selectionStatus = (rows, selection) => {
+  const {caseIds,faultKinds,selectedCases,selectedFaults}=selection;
+  const selectedRows=rows.filter(row=>selectedCases.has(row.id));
+  const fullSelection=selectedCases.size===caseIds.length&&selectedFaults.length===faultKinds.length;
+  const complete=selectedRows.length===selectedCases.size&&new Set(selectedRows.map(row=>row.id)).size===selectedCases.size;
+  return {selectedRows,fullSelection,status:complete&&selectedRows.every(row=>row.status==='passed')?(fullSelection?'passed':'selected_passed'):'failed'};
+};
+
 exports.run = async context => {
   const { send, until, evaluate: evaluateRaw, history, rpc, report, requests, out, home,
     modelKey, targetModelKey = modelKey, botId: primaryBotId, setBotId,
     organizationHooks: hooks = {} } = context;
+  const selection=exports.selection();
+  const {caseIds,faultKinds,selectedCases,selectedFaults}=selection;
   const evaluate = expression => { new Function(expression); return evaluateRaw(expression); };
   const seed = crypto.randomBytes(4).toString('hex');
   const fixtureRoot = path.join(home, 'organization-fixtures-' + seed);
@@ -29,7 +48,8 @@ exports.run = async context => {
   fs.writeFileSync(path.join(workspace('lesson'), 'brief.txt'), 'Audience: age 8. Theme: water cycle. Explain evaporation, condensation and precipitation. Classroom marker: CLOUD_' + seed + '\n');
   fs.writeFileSync(path.join(workspace('incident'), 'incident.txt'), 'Ticket: INC-' + seed + '\nSeverity: P2\nAffected users: 17\nCustomer: Lin\n');
   const result = report.organization = { seed,primaryBotId,home,fixtureRoot,status:'running',
-    testedSource:report.sourceAtLaunch ?? null,models:{source:modelKey,target:targetModelKey},cases:['A','B','C','D','E','F'].map(id=>({id,status:'not_run'})),artifacts:[],limitations:[] };
+    testedSource:report.sourceAtLaunch ?? null,models:{source:modelKey,target:targetModelKey},selectedCases:[...selectedCases],selectedCFaults:selectedFaults,
+    cases:caseIds.map(id=>({id,status:'not_run'})),artifacts:[],limitations:[] };
   const persist = () => fs.writeFileSync(path.join(out,'organization-progress.json'),JSON.stringify(result,null,2));
   const api = (method, input) => evaluate(`window.api.botWork.${method}(${JSON.stringify(input)})`);
   const bots = () => evaluate('window.api.botWork.listBots()');
@@ -139,11 +159,12 @@ exports.run = async context => {
       collaborationId:organization.collaborationId,file,savedPath,sha256:crypto.createHash('sha256').update(contents).digest('hex')};
     result.artifacts.push(artifact);return {...observed,artifact};
   };
-  const createPrompt = ({name,responsibility,directory,task,isolatedIdentity=false}) =>
+  const createPrompt = ({name,responsibility,directory,task,isolatedIdentity=false,fileToolsOnly=false}) =>
     `这是主 Bot 的组织验收 ${seed}。先真实查询已有 Bot 的职责、能力和状态，优先复用合适者。现在需要专门的“${name}”，职责是${responsibility}。`+
     (isolatedIdentity ? `本次是故障隔离试验，用户明确要求新建一个独立身份“${name}”；现有 Bot 不满足本次独立身份要求，不复用或重命名它们，保留所有已有配置。` : '')+
     `如果当前没有匹配者，用宿主 bot_organize 真实创建并配置，目标模型选目录中可用的 ${targetModelKey}，目标工作区 ${directory}。`+
     `然后在同一条个人协作中直接委派一次性 Work，不创建团队，目标 Bot 是唯一 owner。${task}`+
+    (fileToolsOnly ? `本次仅允许文件工具完成生成、回读、本地校验和 register_artifact 登记；不要 browser_exec、ui_exec、computer_exec、浏览器打开、截图、滚动或任何可选 GUI QA，不安装软件。成品的源会话官方预览另行验证，不属于此 Work。` : '')+
     `主会话立即返回真实受理状态和可继续的 intentId/协作入口，不能把创建成功说成已完成。所有成果都必须实际写入、回读并登记。`;
   const requireHook = name => { assert.equal(typeof hooks[name],'function','missing real isolated organization driver hook: '+name);return hooks[name]; };
   const fault = async (spec, execute) => {
@@ -165,6 +186,7 @@ exports.run = async context => {
   };
   const runCase = async (id,type,execute) => {
     const row=result.cases.find(item=>item.id===id);assert(row);
+    if(!selectedCases.has(id)){row.reason='not selected in this explicit supplemental run';persist();return;}
     Object.assign(row,{type,status:'running',startedAt:Date.now(),providerOffset:requests.length});persist();
     let fatal;
     try { await execute(row);row.status='passed'; }
@@ -243,7 +265,7 @@ exports.run = async context => {
   await runCase('C','JavaScript review: real failure and continuation at four boundaries',async row=>{
     row.failures=[];
     const sourceFile=path.join(workspace('review'),'average.js'),original=fs.readFileSync(sourceFile,'utf8');
-    for(const kind of ['creation_storage','dispatch_storage','execution_transport','delivery_storage']) {
+    for(const kind of selectedFaults) {
       const marker=kind+'_'+seed,name='代码审查员-'+marker,output='review-'+kind+'.md';
       const observed=await fault({kind,marker,targetName:name,output},()=>submit(createPrompt({name,
         isolatedIdentity:true,
@@ -272,7 +294,8 @@ exports.run = async context => {
       const marker=stage+'_'+seed,name='课堂设计员-'+marker,output='lesson-'+stage+'.html';
       const observed=await restart({stage,marker,targetName:name,output,directory:workspace('lesson')},()=>submit(createPrompt({name,
         isolatedIdentity:true,
-        responsibility:'制作适合儿童的离线课堂教材，保存阶段成果',directory:workspace('lesson'),
+        fileToolsOnly:true,
+        responsibility:'只用文件工具制作儿童离线教材、保存阶段成果并本地回读登记；不使用浏览器、ui_exec、截图或任何GUI QA',directory:workspace('lesson'),
         task:`${marker} 读取 brief.txt，先写并登记 outline-${stage}.md，再写 ${output}，至少六节，解释蒸发、凝结、降水，包含课堂提问和 CLOUD_${seed}。HTML 自包含，不依赖网络。`}),true));
       assert(observed.evidence.intentId,'restart evidence preserves original organization identity');
       const pending=await findIntent(item=>item.intentId===observed.evidence.intentId);
@@ -355,7 +378,9 @@ exports.run = async context => {
   if(typeof hooks.audit==='function')result.driverAudit=await hooks.audit();
   result.limitations.push('This supplement is separate from earlier six-type collaboration acceptance.');
   result.limitations.push('Real Gateway file delivery, Connector login, native OS input and packaged app acceptance are not established by this local dev/CDP run.');
-  result.status=result.cases.length===6&&result.cases.every(row=>row.status==='passed')?'passed':'failed';
-  persist();assert.equal(result.cases.length,6);assert.equal(result.status,'passed','all six real organization supplement scenarios must pass');
-  report.checks.push('six distinct organization model scenarios, actual host management and target-owned Work/artifacts, controlled real faults/restarts, original-source/private boundaries');
+  const {selectedRows,fullSelection,status}=exports.selectionStatus(result.cases,selection);
+  result.status=status;
+  if(!fullSelection)result.limitations.push('Explicit selected supplement only; unselected cases are not_run. This report alone does not pass all six scenarios.');
+  persist();assert.equal(selectedRows.length,selectedCases.size);assert(selectedRows.every(row=>row.status==='passed'),'every explicitly selected organization scenario must pass');
+  report.checks.push(fullSelection?'six distinct organization model scenarios, actual host management and target-owned Work/artifacts, controlled real faults/restarts, original-source/private boundaries':`selected real organization supplement cases ${[...selectedCases].join(',')}; C boundaries ${selectedFaults.join(',')}; unselected cases not run`);
 };
