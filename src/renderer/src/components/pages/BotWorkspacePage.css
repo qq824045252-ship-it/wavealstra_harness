@@ -368,7 +368,31 @@
 .bot-history-controls button[aria-disabled="true"] { opacity: .65; cursor: default; }
 .bot-history-controls p { color: var(--danger, #b91c1c); font-size: 12px; margin: 6px 0; }
 
-.bot-work-file-preview { margin-top:12px; padding:12px; border:1px solid var(--border-subtle); border-radius:8px; min-width:0; }
-.bot-work-file-preview header { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+/* Saved deliverables share ordinary viewers, without moving the conversation. */
+.bot-work-file-preview { margin-top:12px; padding:16px; border:1px solid var(--border-subtle); border-radius:12px; min-width:0; background:var(--bg-primary,transparent); }
+.bot-work-file-preview-header { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; }
+.bot-work-file-preview-header > div:first-child { min-width:0; display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+.bot-work-file-preview-header strong { overflow-wrap:anywhere; }
+.bot-work-file-version-label { color:var(--text-secondary); font-size:12px; }
+.bot-work-file-preview-actions { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+.bot-work-file-preview footer { margin-top:12px; }
 .bot-work-file-preview p { overflow-wrap:anywhere; }
-.bot-work-file-preview pre { max-height:420px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; user-select:text; font-size:12px; }
+.bot-work-file-version { margin:10px 0; color:var(--text-secondary); font-size:12px; }
+.bot-work-file-version summary { cursor:pointer; }
+.bot-work-file-preview-tabs { display:flex; gap:4px; margin-top:12px; }
+.bot-work-file-preview-tabs button[aria-pressed="true"] { color:var(--accent,#3463ed); background:var(--accent-soft,rgba(52,99,237,.08)); }
+.bot-work-file-preview-body { height:420px; min-width:0; overflow:auto; margin-top:10px; border:1px solid var(--border-subtle); border-radius:8px; }
+.bot-work-file-preview.is-expanded .bot-work-file-preview-body { height:min(78vh,900px); }
+.bot-work-file-preview-body > iframe { display:block; width:100%; height:100%; border:0; background:white; }
+.bot-work-file-preview-body > iframe[hidden] { display:none; }
+.bot-work-file-preview-body > .code-view, .bot-work-file-preview-body > .md-doc-viewer { height:100%; }
+.bot-work-file-preview pre { margin:0; padding:12px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; user-select:text; font-size:12px; }
+.bot-work-file-warnings { padding:8px 12px; margin-top:10px; border-left:3px solid var(--warning,#b7791f); font-size:12px; }
+.bot-work-file-warnings p { margin:4px 0; }
+
+/* Saved previews share the attachment surface without inheriting page-specific button resets. */
+.bot-work-file-preview-actions button, .bot-work-file-preview-tabs button { border:1px solid var(--border-subtle); border-radius:7px; padding:6px 10px; font-size:12px; line-height:1.4; color:var(--text-secondary); background:var(--bg-secondary,transparent); cursor:pointer; }
+.bot-work-file-preview-actions button:hover, .bot-work-file-preview-tabs button:hover { color:var(--text-primary); background:var(--bg-hover,rgba(127,127,127,.1)); }
+.bot-work-file-preview-tabs { width:fit-content; padding:3px; border:1px solid var(--border-subtle); border-radius:9px; }
+.bot-work-file-preview-tabs button { border-color:transparent; min-width:54px; }
+.bot-work-file-preview footer button { font-size:11px; }

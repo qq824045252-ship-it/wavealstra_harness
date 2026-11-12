@@ -20,7 +20,7 @@ export const workSubitemSchema = z.object({
 }).strict();
 export type WorkSubitemResult = z.infer<typeof workSubitemSchema>;
 export const generatedArtifactSchema = z.object({
-  path: z.string(), snapshotPath: z.string().optional(), digest: z.string(), sizeBytes: z.number().nonnegative(),
+  previewManifestPath: z.string().optional(), path: z.string(), snapshotPath: z.string().optional(), digest: z.string(), sizeBytes: z.number().nonnegative(),
   registeredAt: z.number(), sourceEntryId: z.number(),
 }).strict();
 export type GeneratedArtifact = z.infer<typeof generatedArtifactSchema>;
@@ -61,7 +61,7 @@ export interface WorkContinuationDto {
 
 /** 已登记的文件版本。存在与可用分开：只有宿主登记过的路径才可打开。 */
 export interface WorkMilestoneFileDto {
-  ref: string; name: string; openPath?: string; digest?: string; immutable: boolean;
+  ref: string; name: string; openPath?: string; previewManifestPath?: string; digest?: string; immutable: boolean;
 }
 /** 运行中已核实子项（partial deliverable）的只读投影，不是目标完成证明。 */
 export interface WorkMilestoneDto {

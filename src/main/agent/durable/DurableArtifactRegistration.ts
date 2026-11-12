@@ -1,3 +1,4 @@
+import { captureSavedWebBundle, savedBundleDependsOn } from "../../artifact/SavedArtifactPreview";
 import { createHash, randomUUID } from "node:crypto";
 import { constants, realpathSync } from "node:fs";
 import { lstat, open, realpath, mkdir, link, unlink } from "node:fs/promises";
@@ -9,7 +10,7 @@ import { z } from "zod";
 export const DURABLE_ARTIFACT_ENTRY_KIND = "mybuddy.artifact-registered";
 const ArtifactRegistered = defineEntry<DurableArtifactRegistration>(DURABLE_ARTIFACT_ENTRY_KIND);
 export const durableArtifactRegistrationSchema = z.object({
-  snapshotPath: z.string().min(1), path: z.string().min(1), cwd: z.string().min(1), digest: z.string().regex(/^[a-f0-9]{64}$/),
+  previewManifestPath: z.string().optional(), snapshotPath: z.string().min(1), path: z.string().min(1), cwd: z.string().min(1), digest: z.string().regex(/^[a-f0-9]{64}$/),
   sizeBytes: z.number().int().nonnegative(), registeredAt: z.number().int().nonnegative(),
   toolCallId: z.string().min(1), toolTaskId: z.number().int().nonnegative(),
   toolConversationId: z.number().int().nonnegative(), inputIds: z.array(z.number().int().nonnegative()).min(1),
@@ -155,12 +156,43 @@ async function register(path: string, api: Api, context: Context, directory: str
   const file = await inspectDurableArtifact(agent.cwd, path, directory);
   context.abortSignal?.throwIfAborted();
   if (!file.snapshotPath) throw new Error("Artifact snapshot was not persisted");
-  const data = { ...file, snapshotPath: file.snapshotPath, registeredAt: Date.now(), toolCallId: api.callId, toolTaskId: api.taskId,
+  const previewManifestPath = /\.html?$/i.test(file.path) ? await captureSavedWebBundle(agent.cwd, file.path, file.snapshotPath, directory, inspectDurableArtifact) : undefined;
+  const data = { ...file, ...(previewManifestPath ? { previewManifestPath } : {}), snapshotPath: file.snapshotPath, registeredAt: Date.now(), toolCallId: api.callId, toolTaskId: api.taskId,
     toolConversationId: api.conversationId, inputIds };
+  // HTML is often written before its styles/scripts. Capture a new immutable
+  // bundle at the later resource registration, never by reading live files at preview time.
+  const priorHtml = await api.commit(async tx => {
+    const latest = new Map<string, DurableArtifactRegistration>();
+    let cursor: Cursor | undefined;
+    do {
+      const page = await tx.scanEntries({ conversationId: owner, order: "descending" }, 100, cursor);
+      for (const entry of page.items) {
+        if (entry.kind !== DURABLE_ARTIFACT_ENTRY_KIND) continue;
+        const parsed = durableArtifactRegistrationSchema.safeParse(entry.data);
+        if (!parsed.success) continue;
+        const old = parsed.data;
+        if (old.path !== file.path && /\.html?$/i.test(old.path) && old.cwd === file.cwd
+          && old.inputIds.some(id => inputIds.some(input => input === id)) && !latest.has(old.path)) latest.set(old.path, old);
+      }
+      cursor = page.next;
+    } while (cursor);
+    return [...latest.values()];
+  }, context);
+  const refreshes: DurableArtifactRegistration[] = [];
+  for (const old of priorHtml) {
+    context.abortSignal?.throwIfAborted();
+    if (!await savedBundleDependsOn(old.previewManifestPath, old.cwd, file.path)) continue;
+    const manifest = await captureSavedWebBundle(old.cwd, old.path, old.snapshotPath, directory, inspectDurableArtifact);
+    if (manifest !== old.previewManifestPath) refreshes.push({ ...old, previewManifestPath: manifest, registeredAt: Date.now(),
+      toolCallId: `${api.callId}#web-bundle:${old.digest}`, toolTaskId: api.taskId, toolConversationId: api.conversationId, inputIds });
+  }
+  context.abortSignal?.throwIfAborted();
   return api.commit(async tx => {
     const previous = await findExisting(tx);
     if (previous) return previous;
+    context.abortSignal?.throwIfAborted();
     await tx.appendEntry(ArtifactRegistered, owner, { data });
+    for (const refreshed of refreshes) await tx.appendEntry(ArtifactRegistered, owner, { data: refreshed });
     return data;
   }, context);
 }

@@ -24,6 +24,8 @@ import { FONT_SETTINGS_EVENT, getAppliedFontSettings, type AppliedFontSettings }
 interface Props {
   content: string;
   language?: string;
+  /** Saved deliverables must not imply their immutable source can be edited. */
+  readOnly?: boolean;
 }
 
 /** 超过该行数时启用虚拟列表，避免大文件挂载整棵 DOM */
@@ -58,7 +60,7 @@ function CodeLine({ index, html }: LineProps): React.JSX.Element {
  * 编辑模式：仅用户点击「编辑」才 dynamic import Monaco（§53 冻结决策）
  *   - 1MB+ 降级禁用；退出/卸载必须 dispose（1G 实测内存回收）
  */
-export default function CodeView({ content, language }: Props): React.JSX.Element {
+export default function CodeView({ content, language, readOnly = false }: Props): React.JSX.Element {
   const theme = useAppStore((s) => s.theme);
   const [codeFontSize, setCodeFontSize] = useState(() => getAppliedFontSettings().codeFontSize);
 
@@ -264,7 +266,7 @@ export default function CodeView({ content, language }: Props): React.JSX.Elemen
           {copied ? <IconCheck size={13} /> : <IconCopy size={13} />}
           {copied ? "已复制" : "复制"}
         </button>
-        <button
+        {!readOnly && <button
           type="button"
           className="code-view-btn"
           data-action="edit"
@@ -274,7 +276,7 @@ export default function CodeView({ content, language }: Props): React.JSX.Elemen
         >
           <IconPencil size={13} />
           {editMode ? "编辑中" : "编辑"}
-        </button>
+        </button>}
       </div>
     </div>
   );

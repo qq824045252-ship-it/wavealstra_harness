@@ -101,7 +101,7 @@ async function scanExecutionEvidence(tx: DurableWorkReadTx,
       if (registered) {
         artifacts.add(registered.snapshotPath ?? registered.path);
         generatedArtifacts.push({ path: registered.path, digest: registered.digest, sizeBytes: registered.sizeBytes,
-          registeredAt: registered.registeredAt, sourceEntryId: entry.id, ...(registered.snapshotPath ? { snapshotPath: registered.snapshotPath } : {}) });
+          registeredAt: registered.registeredAt, sourceEntryId: entry.id, ...(registered.previewManifestPath ? { previewManifestPath: registered.previewManifestPath } : {}), ...(registered.snapshotPath ? { snapshotPath: registered.snapshotPath } : {}) });
       }
     }
     for (const entry of entries) for (const message of entry.model ?? []) {

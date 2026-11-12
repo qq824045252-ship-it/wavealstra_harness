@@ -1,3 +1,5 @@
+import { SavedArtifactIpc } from "../shared/saved-artifact";
+import { savedArtifactPreviewService } from "./artifact/SavedArtifactPreview";
 import "./platform/credentials";
 import { GoogleWorkspaceWriteIpc } from "../shared/google-workspace-write";
 import { googleWorkspaceWriteService } from "./connectors/GoogleWorkspaceWriteService";
@@ -967,6 +969,20 @@ function registerIpc(): void {
 
   ipcMain.handle("workspace:showInFolder", (_event, filePath: string) => {
     shell.showItemInFolder(filePath);
+  });
+
+  ipcMain.handle(SavedArtifactIpc.prepare, async (event, request) => {
+    if (event.senderFrame !== event.sender.mainFrame) throw new Error("仅应用主界面可以打开保存版本");
+    const id = event.sender.id;
+    savedArtifactPreviewService.attachOwner(event.sender, url => {
+      browserHost.open(url);
+      event.sender.send(BrowserIpc.openRequest, { url });
+    });
+    return savedArtifactPreviewService.prepare(id, request);
+  });
+  ipcMain.handle(SavedArtifactIpc.release, (event, token: string) => {
+    if (event.senderFrame !== event.sender.mainFrame) throw new Error("仅应用主界面可以关闭保存版本");
+    savedArtifactPreviewService.release(event.sender.id, token);
   });
 
   ipcMain.handle("workspace:listFiles", (_event, root: string) => listWorkspaceFiles(root));

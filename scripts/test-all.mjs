@@ -75,6 +75,7 @@ const SERIAL_TEST_PATTERNS = [/^test:durable-storage-(migration|lease)$/,/^test:
  * （历史教训：`-ui$` 与 `:desktop$` 都曾漏出 GUI 用例，混进"无头"门禁）。
  */
 const GUI_TESTS = new Set([
+  "test:saved-preview-desktop", // real Electron saved-version protocol and UI
   "test:compaction-settings-dev", // actual app, native window bounds, settings IPC, light/dark layouts
   "test:workspace-files-sort-desktop", // real Electron workspace tree + production filesystem A/B
   "test:usage-dashboard-dev", // actual pnpm dev app, isolated synthetic usage ledger

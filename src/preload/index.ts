@@ -1,3 +1,4 @@
+import { SavedArtifactIpc, type SavedArtifactRequest, type SavedArtifactPreview } from "../shared/saved-artifact";
 import { GoogleWorkspaceWriteIpc, type GoogleWorkspaceWriteApi } from "../shared/google-workspace-write";
 import { GoogleWorkspaceIpc, type GoogleWorkspaceApi } from "../shared/google-workspace";
 import type { BrowserOpenOptions, BrowserTabInfo, BrowserTabsState } from "../shared/browser-tabs";
@@ -349,6 +350,10 @@ const api = {
     ipcRenderer.invoke("workspace:showInFolder", filePath),
   listWorkspaceFiles: (root: string): Promise<WorkspaceFileNodeDto[]> =>
     ipcRenderer.invoke("workspace:listFiles", root),
+  savedArtifact: {
+    prepare: (request: SavedArtifactRequest): Promise<SavedArtifactPreview> => ipcRenderer.invoke(SavedArtifactIpc.prepare, request),
+    release: (token: string): Promise<void> => ipcRenderer.invoke(SavedArtifactIpc.release, token),
+  },
   readWorkspaceFile: (root: string, relativePath: string, textPreview?: boolean): Promise<WorkspaceFilePreviewDto> =>
     ipcRenderer.invoke("workspace:readFile", root, relativePath, textPreview),
   trashWorkspacePath: (root: string, relativePath: string): Promise<WorkspaceMutationResult> =>

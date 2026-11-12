@@ -49,7 +49,7 @@ export class DurableWorkProgressReader {
           after = entry.id;
           const file = durableRegisteredArtifact(entry, record.id, workspace, store);
           if (file) artifacts.push({ path: file.path, digest: file.digest, sizeBytes: file.sizeBytes,
-            registeredAt: file.registeredAt, sourceEntryId: entry.id, ...(file.snapshotPath ? { snapshotPath: file.snapshotPath } : {}) });
+            registeredAt: file.registeredAt, sourceEntryId: entry.id, ...(file.previewManifestPath ? { previewManifestPath: file.previewManifestPath } : {}), ...(file.snapshotPath ? { snapshotPath: file.snapshotPath } : {}) });
           // Tool result details already persist both the plan and results. Reading
           // them directly avoids reconstructing every previous chat/tool row.
           for (const message of entry.model ?? []) if (message.role === "toolResult" && message.details !== undefined) {

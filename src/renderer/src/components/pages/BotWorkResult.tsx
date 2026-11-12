@@ -1,17 +1,21 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { BotMessageDto, WorkFeedbackDto } from "@shared/bot-conversation";
 import type { WorkProjectionDto } from "@shared/bot-work";
 import { fileNameFromPath } from "@/lib/localFilePath";
 import ChatMarkdown from "@/components/chat/ChatMarkdown";
+import WorkFilePreview from "./WorkFilePreview";
 
 type GeneratedFile = NonNullable<WorkProjectionDto["generatedArtifacts"]>[number];
-export interface WorkFile { ref: string; name: string; artifact?: GeneratedFile; openPath?: string }
+export interface WorkFile { ref: string; name: string; artifact?: GeneratedFile; openPath?: string; previewManifestPath?: string | null }
+
+export const previewManifestFor = (file: WorkFile): string | undefined => file.previewManifestPath === null ? undefined : file.previewManifestPath ?? file.artifact?.previewManifestPath;
 
 /** Match exact paths within this execution, never a basename or the selected Task. */
 export function workFiles(refs: string[], work?: WorkProjectionDto, executionId?: string): WorkFile[] {
   return [...new Set(refs)].map(ref => {
     const candidates = [...(work?.generatedArtifacts ?? []), ...(executionId ? work?.historicalGeneratedArtifacts ?? [] : [])]
-      .filter(item => !executionId || item.bindingId === executionId);
+      .filter(item => !executionId || item.bindingId === executionId)
+      .sort((a, b) => b.sourceEntryId - a.sourceEntryId);
     const sources = candidates.filter(item => item.path === ref);
     const artifact = candidates.find(item => item.snapshotPath === ref) ?? (sources.length === 1 ? sources[0] : undefined);
     return { ref, name: fileNameFromPath(artifact?.path ?? ref), artifact };
@@ -25,52 +29,6 @@ export function generatedWorkFiles(work: WorkProjectionDto): WorkFile[] {
 
 function reportFile(file: WorkFile): boolean {
   return /\.(?:pdf|docx?|xlsx?|csv|tsv|json|jsonl|xml|ya?ml|pptx?|md|txt|html?|png|jpe?g|webp|svg)$/i.test(file.name);
-}
-
-/** Read the registered version directly, without the selected Task or OS file associations. */
-function WorkFilePreview({ file, target, onClose }: { file: WorkFile; target: string; onClose: () => void }): React.JSX.Element {
-  const supported = /\.(?:txt|md|json|jsonl|csv|tsv|xml|ya?ml|log|py|js|ts|tsx|jsx|css|html?|svg|sh)$/i.test(file.name);
-  const [content, setContent] = useState<string>();
-  const [truncated, setTruncated] = useState(false);
-  const [attempt, setAttempt] = useState(0);
-  const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
-  useEffect(() => {
-    let current = true;
-    if (supported) {
-      setError("");
-      setContent(undefined);
-      if (!window.api?.readWorkspaceFile) setError("文件读取接口不可用");
-      else void window.api.readWorkspaceFile(target, "", true).then(result => {
-        if (!current) return;
-        setContent(result.content);
-        setTruncated(result.truncated === true);
-      }).catch(reason => { if (current) setError(reason instanceof Error ? reason.message : String(reason)); });
-    }
-    return () => { current = false; };
-  }, [target, supported, attempt]);
-  const openSystem = async () => {
-    try {
-      if (!window.api?.openFolder) throw new Error("系统打开接口不可用");
-      await window.api.openFolder(target);
-      setNotice("已请求系统应用打开；无法确认是否出现窗口。若未打开，请检查系统默认应用或定位保存文件。");
-    } catch (reason) { setNotice(`无法打开文件：${reason instanceof Error ? reason.message : String(reason)}`); }
-  };
-  return <section className="bot-work-file-preview" aria-label={`文件预览：${file.name}`}>
-    <header><strong>{file.name}</strong><button type="button" onClick={onClose}>关闭预览</button></header>
-    <p>读取版本：{target}</p>
-    {!supported ? <p role="status">此格式暂不支持内置预览。可尝试系统应用打开，或定位保存文件。</p>
-      : error ? <><p role="alert">无法读取文件：{error}</p><button type="button" onClick={() => setAttempt(value => value + 1)}>重试读取</button></>
-      : content === undefined ? <p role="status">正在读取文件…</p>
-      : <>{content.length === 0 ? <p>文件为空。</p> : <pre tabIndex={0}>{content}</pre>}
-        {truncated && <p role="status">仅显示文件前 256 KiB 的文本；完整文件保留在上述路径。</p>}</>}
-    <button type="button" onClick={() => void openSystem()}>尝试用系统应用打开</button>
-    <button type="button" onClick={() => {
-      if (!window.api?.showItemInFolder) { setNotice("定位文件接口不可用"); return; }
-      void window.api.showItemInFolder(target).catch(reason => setNotice(`无法定位文件：${String(reason)}`));
-    }}>定位保存文件</button>
-    {notice && <p role="status">{notice}</p>}
-  </section>;
 }
 
 export function WorkFiles({ files, primaryRefs, compact = false, compactTitle = "本次交付" }: { files: WorkFile[]; primaryRefs?: string[]; compact?: boolean; compactTitle?: string }): React.JSX.Element | null {
@@ -92,7 +50,7 @@ export function WorkFiles({ files, primaryRefs, compact = false, compactTitle = 
       setNotice("");
     } catch (error) { setNotice(`无法打开文件：${error instanceof Error ? error.message : String(error)}`); }
   };
-  const list = (items: WorkFile[]) => <ul className="bot-result-files">{items.map(file => <li key={file.artifact ? JSON.stringify([file.artifact.bindingId, file.artifact.path, file.artifact.digest]) : file.ref}>
+  const list = (items: WorkFile[]) => <ul className="bot-result-files">{items.map(file => <li key={file.artifact ? JSON.stringify([file.artifact.bindingId, file.artifact.path, file.artifact.digest, previewManifestFor(file)]) : JSON.stringify([file.ref, file.previewManifestPath])}>
     <div><strong title={file.name}>{file.name}</strong>{file.artifact && <small>{formatSize(file.artifact.sizeBytes)}</small>}</div>
     {!(file.artifact || file.openPath) && <small>未登记可打开文件</small>}
     {(file.artifact || file.openPath) && <button type="button" aria-label={`打开 ${file.name}`} onClick={() => void open(file)}>{file.artifact?.snapshotPath || file.openPath ? "打开保存版本" : "打开文件"}</button>}
@@ -108,8 +66,9 @@ export function WorkFiles({ files, primaryRefs, compact = false, compactTitle = 
       {reports.length > 0 && others.length > 0 && <details className="bot-result-other-files"><summary>其他文件与脚本 · {others.length}</summary>{list(others)}</details>}
     </>}
     {notice && <p role="alert">{notice}</p>}
-    {selected && files.some(file => file.ref === selected.file.ref && (file.openPath ?? file.artifact?.snapshotPath ?? file.artifact?.path) === selected.target) &&
-      <WorkFilePreview key={selected.target} file={selected.file} target={selected.target} onClose={() => setSelected(undefined)} />}
+    {selected && files.some(file => file.ref === selected.file.ref && (file.openPath ?? file.artifact?.snapshotPath ?? file.artifact?.path) === selected.target
+      && (previewManifestFor(file)) === (previewManifestFor(selected.file))) &&
+      <WorkFilePreview key={JSON.stringify([selected.target, previewManifestFor(selected.file)])} file={selected.file} target={selected.target} onClose={() => setSelected(undefined)} />}
   </section>;
 }
 
@@ -170,10 +129,12 @@ export function WorkReport({ report, originalText, executionId, work, renderMark
   // must not upgrade mutable evidence or replace the early saved version.
   const files: WorkFile[] = report.milestone ? [...new Set(report.artifactRefs)].map(ref => ({ ref,
     name: report.files?.find(file => file.ref === ref)?.name ?? fileNameFromPath(ref),
-    openPath: report.files?.find(file => file.ref === ref)?.openPath }))
+    openPath: report.files?.find(file => file.ref === ref)?.openPath,
+    previewManifestPath: report.files?.find(file => file.ref === ref)?.previewManifestPath ?? null }))
     : workFiles(report.artifactRefs, work, executionId).map(file => ({ ...file,
       name: report.files?.find(item => item.ref === file.ref)?.name ?? file.name,
-      openPath: report.files?.find(item => item.ref === file.ref)?.openPath }));
+      openPath: report.files?.find(item => item.ref === file.ref)?.openPath,
+      previewManifestPath: report.files?.find(item => item.ref === file.ref)?.previewManifestPath ?? null }));
   const sourceConclusions = report.structured?.conclusions ?? [];
   const hasDetails = Boolean(report.teamFacts?.length || sourceConclusions.length || report.structured?.observations.length || report.sourceNotices?.length || additionalRecord);
   const status = !report.current ? (report.milestone ? "历史阶段成果" : "历史成果") : report.milestone ? "阶段成果" : report.completion

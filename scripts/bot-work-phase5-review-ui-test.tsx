@@ -11,7 +11,7 @@ import type { WorkCardReadResult, WorkExpandedDiagnosticsDto } from "../src/shar
 import type { WorkReviewControlRequest } from "../src/shared/bot-work-review";
 import type { WorkPhase3ControlRequest } from "../src/shared/bot-work-phase3-control";
 import { WorkReviewPanel } from "../src/renderer/src/components/pages/BotWorkReviewPanel";
-import { WorkFiles } from "../src/renderer/src/components/pages/BotWorkResult";
+import { WorkFiles, previewManifestFor, workFiles } from "../src/renderer/src/components/pages/BotWorkResult";
 import { BotWorkDetails } from "../src/renderer/src/components/pages/BotWorkDetails";
 import { WorkCardsPanel } from "../src/renderer/src/components/pages/BotWorkCardsPanel";
 import BotWorkspacePage, { BotMessage } from "../src/renderer/src/components/pages/BotWorkspacePage";
@@ -347,7 +347,7 @@ async function main() {
       const { createRoot } = await import("react-dom/client");
       container = testDocument.body.appendChild(testDocument.createElement("div")); root = createRoot(container);
       const opened: string[] = [];
-      Object.assign(testWindow.api!, { readWorkspaceFile: async (path: string) => { opened.push(path); return { content: "<h1>read-only source</h1>" }; } });
+      Object.assign(testWindow.api!, { savedArtifact: { prepare: async ({ snapshotPath }: { snapshotPath: string }) => { opened.push(snapshotPath); return { url: "mybuddy-artifact://saved-fixture/", token: "fixture", source: "<h1>read-only source</h1>", warnings: [] }; }, release: async () => {} } });
       await act(async () => root!.render(<BotWorkDetails work={{ ...projection, deliverables: [],
         runtimeObservations: [{ bindingId: "b", state: "recovering", reason: "宿主正在恢复原执行" }],
         generatedArtifacts: [{ bindingId: "b", path: "/fixture/result.html", digest: "a".repeat(64), sizeBytes: 31, registeredAt: 1, sourceEntryId: 12 }],
@@ -381,7 +381,8 @@ async function main() {
       await open("b.json");
       await act(async () => replies[1].resolve({ content: '{"version":"saved"}' }));
       await act(async () => replies[0].resolve({ content: "OLD CONTENT" }));
-      assert.equal(container.querySelector("pre")!.textContent, '{"version":"saved"}');
+      assert.equal(Array.from(container.querySelectorAll(".code-line-content")).map(line => line.textContent).join("\n"), JSON.stringify({ version: "saved" }, null, 2));
+      assert.equal(container.querySelector('[data-action="edit"]'), null, "saved code is read-only");
       assert.deepEqual(paths, [["/snapshot/a", "", true], ["/snapshot/b", "", true]]);
       assert.deepEqual(opened, [], "primary action never relies on an OS application");
       await click("关闭预览"); assert.equal(container.querySelector("pre"), null);
@@ -410,6 +411,50 @@ async function main() {
       await click("尝试用系统应用打开"); assert.match(container.textContent!, /无法打开文件：no application/);
       await act(async () => root!.render(<WorkFiles files={[{ ...files[2], openPath: "/snapshot/new" }]} />));
       assert.equal(container.querySelector(".bot-work-file-preview"), null, "old identity never appears for a replaced version");
+      await unmount();
+    });
+    await check("saved resource identities distinguish latest projection from frozen legacy reports", async () => {
+      const old = { bindingId: "b", path: "/work/demo.html", snapshotPath: "/snapshot/demo.html", digest: "same", sizeBytes: 1, registeredAt: 1, sourceEntryId: 1, previewManifestPath: "/old.web.json" };
+      const latest = { ...old, sourceEntryId: 2, previewManifestPath: "/new.web.json" };
+      const file = workFiles([old.snapshotPath], { ...projection, generatedArtifacts: [old, latest] }, "b")[0];
+      assert.equal(previewManifestFor(file), "/new.web.json");
+      assert.equal(previewManifestFor({ ...file, previewManifestPath: "/old.web.json" }), "/old.web.json");
+      assert.equal(previewManifestFor({ ...file, previewManifestPath: null }), undefined, "frozen legacy report cannot acquire newer resources");
+    });
+    await check("saved HTML uses isolated version URL, source toggle, warnings and releases late replies", async () => {
+      await unmount();
+      const { createRoot } = await import("react-dom/client");
+      container = testDocument.body.appendChild(testDocument.createElement("div")); root = createRoot(container);
+      const replies: ReturnType<typeof deferred<{ url: string; token: string; source: string; warnings: string[] }>>[] = [];
+      const requests: unknown[] = [], releases: string[] = [];
+      Object.assign(testWindow.api!, { savedArtifact: {
+        prepare: (request: unknown) => { requests.push(request); const reply = deferred<{ url: string; token: string; source: string; warnings: string[] }>(); replies.push(reply); return reply.promise; },
+        release: async (token: string) => { releases.push(token); },
+      } });
+      const files = [{ ref: "html", name: "demo.html", openPath: "/snapshot/demo.html", previewManifestPath: "/snapshot/frozen.web.json" }];
+      await act(async () => root!.render(<WorkFiles files={files} />));
+      await click("打开保存版本"); await click("打开保存版本");
+      assert.equal(requests.length, 1);
+      assert.deepEqual(requests[0], { snapshotPath: "/snapshot/demo.html", name: "demo.html", manifestPath: "/snapshot/frozen.web.json" });
+      await act(async () => replies[0].resolve({ token: "one", url: "mybuddy-artifact://saved-one/", source: "<h1>saved</h1>", warnings: ["缺少资源：image.png"] }));
+      const frame = container.querySelector("iframe")!;
+      assert.equal(frame.getAttribute("src"), "mybuddy-artifact://saved-one/");
+      assert.equal(frame.getAttribute("srcdoc"), null);
+      assert.equal(frame.getAttribute("sandbox"), "allow-scripts allow-same-origin");
+      assert.equal(container.querySelector(".bot-work-file-version")!.hasAttribute("open"), false);
+      assert.match(container.textContent!, /缺少资源：image.png/);
+      await click("源码");
+      assert.equal(container.querySelector("iframe"), frame, "source switch preserves the interactive document");
+      assert.equal(frame.hidden, true);
+      assert.equal(container.querySelector(".code-line-content")!.textContent, "<h1>saved</h1>");
+      assert.equal(container.querySelector('[data-action="edit"]'), null);
+      await click("预览"); assert.equal(frame.hidden, false);
+      await click("展开查看"); assert(container.querySelector(".is-expanded"));
+      await click("关闭预览"); assert.deepEqual(releases, ["one"]);
+      await click("打开保存版本"); await click("关闭预览");
+      await act(async () => replies[1].resolve({ token: "late", url: "mybuddy-artifact://saved-late/", source: "late", warnings: [] }));
+      assert.deepEqual(releases, ["one", "late"]);
+      assert.equal(container.querySelector("iframe"), null);
       await unmount();
     });
     await check("unknown effects remain visible as nonblocking evidence while real blockers remain actionable", async () => {

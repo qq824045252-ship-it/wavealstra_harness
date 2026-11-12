@@ -51,7 +51,7 @@ export function workDeliveryFiles(works: WorkService, results: WorkDeliverableDt
   const files = new Map<string, { file: DeliveryFile; version: number[] }>();
   const later = (a: number[], b: number[]) => a[0] > b[0] || a[0] === b[0] && (a[1] > b[1] || a[1] === b[1] && a[2] > b[2]);
   for (const result of results) for (const ref of result.artifactRefs) {
-    const candidates = generated.filter(item => item.bindingId === result.executionId);
+    const candidates = generated.filter(item => item.bindingId === result.executionId).sort((a, b) => b.sourceEntryId - a.sourceEntryId);
     // A raw source path can have several saved versions in this execution. The
     // latest registration is authoritative; a basename match never suffices.
     const artifact = candidates.find(item => item.snapshotPath === ref)
@@ -63,7 +63,7 @@ export function workDeliveryFiles(works: WorkService, results: WorkDeliverableDt
     const key = artifact ? artifact.path : JSON.stringify([result.executionId, ref]);
     const file: DeliveryFile = artifact
       ? { ref: artifact.snapshotPath ?? artifact.path, name: artifact.path.split(/[\\/]/).pop() || artifact.path,
-          openPath: artifact.snapshotPath ?? artifact.path }
+          openPath: artifact.snapshotPath ?? artifact.path, ...(artifact.previewManifestPath ? { previewManifestPath: artifact.previewManifestPath } : {}) }
       : { ref, name: ref.split(/[\\/]/).pop() || ref };
     const version = [artifact?.registeredAt ?? result.createdAt, binding?.admittedAt ?? result.createdAt, artifact?.sourceEntryId ?? 0];
     const previous = files.get(key);

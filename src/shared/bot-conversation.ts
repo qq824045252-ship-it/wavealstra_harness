@@ -57,7 +57,7 @@ export const workFeedbackSchema = z.object({
     completion: z.object({ outcome: z.enum(["completed", "partial", "unknown"]), nextStep: z.enum(["deliver", "continue", "ask"]) }).strict().optional(),
     primaryArtifactRefs: z.array(z.string()).optional(),
     sourceNotices: z.array(z.string()).optional(),
-    files: z.array(z.object({ ref: z.string(), name: z.string(), openPath: z.string().optional() }).strict()).optional(),
+    files: z.array(z.object({ ref: z.string(), name: z.string(), openPath: z.string().optional(), previewManifestPath: z.string().optional() }).strict()).optional(),
     reviewStatus: z.enum(["proposed", "accepted", "rejected", "superseded"]),
     current: z.boolean(), notices: z.array(z.string()),
     teamFacts: z.array(z.object({ displayName: z.string(), responsibility: z.string(), executionStatus: z.string(),

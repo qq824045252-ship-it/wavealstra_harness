@@ -278,6 +278,20 @@ try {
   assert.equal(waiting.requiresUserInput, true);
   assert(waiting.ready.every(item => item.requiresUserInput), "a waiting Work is never presented as needing nothing");
   assert.equal(waiting.digest, after.digest, "the user-input gate is not a new milestone fact");
+  // #33: unchanged entry HTML can own multiple immutable resource bundles.
+  const htmlPath = join(root, "index.html"), htmlSnapshot = join(root, "artifacts", "saved.html");
+  const savedBundle = { path: htmlPath, snapshotPath: htmlSnapshot, digest: "d".repeat(64), sizeBytes: 42, registeredAt: 2, sourceEntryId: 300 };
+  works.transaction(() => works.generatedArtifacts.record(binding, [
+    { ...savedBundle, previewManifestPath: join(root, "bundle-v1.web.json") },
+    { ...savedBundle, sourceEntryId: 301, previewManifestPath: join(root, "bundle-v2.web.json") },
+  ]));
+  const bundled = works.generatedArtifacts.list(created.workId).filter(item => item.path === htmlPath);
+  assert.equal(bundled.length, 2, "resource-only revision is not discarded by the file-digest key");
+  assert(bundled.every(item => item.digest === savedBundle.digest), "payload digest remains the real entry file digest");
+  works.transaction(() => works.generatedArtifacts.record(binding, [
+    { ...savedBundle, sourceEntryId: 301, previewManifestPath: join(root, "bundle-v2.web.json") },
+  ]));
+  assert.equal(works.generatedArtifacts.list(created.workId).filter(item => item.path === htmlPath).length, 2, "same bundle replay is deduplicated");
   console.log("PASS running Work milestones: bounded in-flight subitems, one shared projection for proactive return and work_query_status detail, one merged progress message, dedupe across replay/restart, full final result without goal overclaim");
 } finally {
   db.close();

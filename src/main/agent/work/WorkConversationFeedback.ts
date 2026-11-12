@@ -217,10 +217,10 @@ export class WorkConversationFeedback {
               intentRevision: result.intentRevision, inputSnapshotId: result.inputSnapshotId,
               report: { title: work.title, summary: presentationResult.summary, artifactRefs: result.artifactRefs, ...presentation,
                 files: result.artifactRefs.map(ref => {
-                  const candidates = generated.filter(item => item.bindingId === result.executionId);
+                  const candidates = generated.filter(item => item.bindingId === result.executionId).sort((a, b) => b.sourceEntryId - a.sourceEntryId);
                   const sources = candidates.filter(item => item.path === ref);
                   const artifact = candidates.find(item => item.snapshotPath === ref) ?? (sources.length === 1 ? sources[0] : undefined);
-                  return { ref, name: (artifact?.path ?? ref).split(/[\\/]/).pop() || ref, openPath: artifact?.snapshotPath ?? artifact?.path };
+                  return { ref, name: (artifact?.path ?? ref).split(/[\\/]/).pop() || ref, openPath: artifact?.snapshotPath ?? artifact?.path, ...(artifact?.previewManifestPath ? { previewManifestPath: artifact.previewManifestPath } : {}) };
                 }),
                 reviewStatus: result.status, current, notices: [
                   ...result.uncoveredScope.length ? [`尚未覆盖：${result.uncoveredScope.join("；")}`] : [],
@@ -236,7 +236,7 @@ export class WorkConversationFeedback {
           // Persist the same registered versions used by Work detail. Never turn
           // a mutable/unregistered reference into an openable path in chat.
           const files = [...new Map(items.flatMap(item => item.files).map(file => [file.ref,
-            { ref: file.ref, name: file.name, ...(file.immutable && file.openPath ? { openPath: file.openPath } : {}) }])).values()];
+            { ref: file.ref, name: file.name, ...(file.immutable && file.openPath ? { openPath: file.openPath, ...(file.previewManifestPath ? { previewManifestPath: file.previewManifestPath } : {}) } : {}) }])).values()];
           emit(`milestone:${bindingId}`, workMilestoneVersion(bindingId, items), this.milestoneBody(items, milestones),
             { kind: "binding", category: "progress", executionId: bindingId,
               intentRevision: binding.intentRevision, inputSnapshotId: binding.inputSnapshotId,

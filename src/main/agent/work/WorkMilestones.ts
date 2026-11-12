@@ -109,14 +109,14 @@ function projectFiles(refs: readonly string[], artifacts: readonly (GeneratedArt
   const files = new Map<string, WorkMilestoneFileDto>();
   for (const ref of refs) {
     const resolved = !isAbsolute(ref) && binding.workspaceBinding ? resolve(binding.workspaceBinding, ref) : ref;
-    const candidates = artifacts.filter(item => item.bindingId === binding.bindingId);
+    const candidates = artifacts.filter(item => item.bindingId === binding.bindingId).sort((a, b) => b.sourceEntryId - a.sourceEntryId);
     const artifact = candidates.find(item => item.snapshotPath === ref || item.snapshotPath === resolved)
       ?? candidates.filter(item => item.path === ref || item.path === resolved)
         .sort((left, right) => right.sourceEntryId - left.sourceEntryId || right.registeredAt - left.registeredAt)[0];
     const refValue = artifact?.snapshotPath ?? artifact?.path ?? ref;
     if (files.has(refValue)) continue;
     files.set(refValue, { ref: refValue, name: basename(artifact?.path ?? refValue) || refValue,
-      ...(artifact ? { ...(artifact.snapshotPath ? { openPath: artifact.snapshotPath } : {}), digest: artifact.digest, immutable: artifact.snapshotPath !== undefined } : { immutable: false }) });
+      ...(artifact ? { ...(artifact.snapshotPath ? { openPath: artifact.snapshotPath, ...(artifact.previewManifestPath ? { previewManifestPath: artifact.previewManifestPath } : {}) } : {}), digest: artifact.digest, immutable: artifact.snapshotPath !== undefined } : { immutable: false }) });
   }
   return [...files.values()];
 }

@@ -1,3 +1,4 @@
+import { savedArtifactPreviewService } from "./SavedArtifactPreview";
 /**
  * ArtifactProtocol — V3.5 Wave 4B（§17/§101）
  *
@@ -51,6 +52,8 @@ export class ArtifactProtocol {
   async handle(request: Request): Promise<Response> {
     try {
       const url = new URL(request.url);
+      if (url.hostname.startsWith("saved-")) return savedArtifactPreviewService.handle(request);
+      if (request.referrer.startsWith(`${ArtifactProtocol.SCHEME}://saved-`)) return this.text(403, "Forbidden");
       if (url.hostname !== ArtifactProtocol.HOST) return this.text(404, "Not Found");
       if (request.method !== "GET" && request.method !== "HEAD") {
         return this.text(405, "Method Not Allowed");
