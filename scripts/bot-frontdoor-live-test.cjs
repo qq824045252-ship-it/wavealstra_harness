@@ -309,7 +309,7 @@ const report = { platform: `${process.platform} pnpm dev, isolated profile`, dis
     } else if (googleWorkspaceScenario) {
       await require('./google-workspace-live-scenario.cjs').run({send,foregroundDone,until,evaluate,history,rpc,report,requests,out,home});
     } else if (historyContextScenario) {
-      await require('./bot-history-context-live-scenario.cjs').run({send,foregroundDone,until,evaluate,history,report,requests,out,botId,setBotId:value=>{botId=value;}});
+      await require('./bot-history-context-live-scenario.cjs').run({send,foregroundDone,until,evaluate,history,report,requests,out,botId,home,setBotId:value=>{botId=value;}});
     } else if (peerCallsScenario) {
       await require(peerFollowupScenario ? './bot-peer-followup-live-scenario.cjs' : './bot-peer-calls-live-scenario.cjs').run({send,foregroundDone,until,evaluate,history,rpc,report,requests,out,botId,setBotId:value=>{botId=value;}});
     } else if (commitmentQueryScenario) {

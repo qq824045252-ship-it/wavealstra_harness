@@ -36,7 +36,7 @@ try {
     memory: { enabled: () => memoryEnabled, context: (...args: unknown[]) => { memoryContexts.push(args); return "own Bot facts"; },
       recall: async (botId: string, query: string) => { recallCalls.push([botId, query]);
         return searchValue ? [{ memory: fact(searchValue), score: 1, reasons: ["lexical"] }] : []; },
-      activeFact: (id: string) => id === "m1" && searchValue ? fact(searchValue) : undefined },
+      activeFact: (botId: string, id: string) => id === "m1" && searchValue && botId === "target" ? fact(searchValue) : undefined },
     defaultModel: () => "test/model", isAuthority: () => authority, memorySearch: () => [], schedule: () => {}, wake: () => {},
   } as unknown as BotConversationServiceOptions;
   const emptyRuntime = { assertSessionHealthy: () => {}, conversation: { id: "empty" },

@@ -292,6 +292,49 @@ async function main() {
       assert(db.connection.prepare("SELECT 1 FROM memory_forget_watermarks WHERE scope_type='conversation' AND scope_id=?").get(erased.source), `pure forget stays within conversation: ${wording}`);
       assert(!db.connection.prepare("SELECT 1 FROM memory_forget_watermarks WHERE scope_type='bot' AND scope_id=?").get(botId), "temporary forget cannot affect the whole Bot");
     }
+    // ── Review follow-up: kernel L1 uses the same technical/secret boundary ────────
+    const sha = "14a650406359b5c4bd4cc358b2a7623364242298";
+    const shaRecord = memory.create({ kind: "fact", title: "生产只开 TLS 1.3", content: `提交 ${sha}`,
+      scopeType: "bot", scopeId: "alice", sourceType: "user", explicit: true });
+    assert(shaRecord.content.includes(sha), "direct remember keeps a full Git SHA");
+    const cookieRecord = memory.create({ kind: "decision", title: "cookie 讨论", content: "cookie 只保存主题，不放会话票据",
+      scopeType: "bot", scopeId: "alice", sourceType: "user", explicit: true });
+    assert(cookieRecord.title.includes("cookie"), "ordinary cookie terminology is not a secret in L1");
+    assert.throws(() => memory.create({ kind: "fact", title: "密码", content: "password=hunter2",
+      scopeType: "bot", scopeId: "alice", sourceType: "user" }), /敏感/);
+    // Extraction keeps the same text (candidate level) and the saved record is recallable.
+    const keep = send("记住：发布说明要带上提交 14a650406359b5c4bd4cc358b2a7623364242298"); assert(keep.source);
+    candidates = [candidate(`发布说明附提交 ${sha}`, "发布说明要带上提交", { kind: "fact", title: "发布说明" })];
+    await bridge.extract(keep.source);
+    assert(memory.listExactScope("bot", "alice").some(record => record.content.includes(sha)),
+      "extraction no longer drops a candidate that quotes a Git SHA");
+    assert((await bridge.search("alice", "发布说明")).some(hit => hit.memory.content.includes(sha)),
+      "hybrid search finds the saved SHA fact");
+    assert((await bridge.search("alice", "TLS 1.3")).some(hit => hit.memory.id === shaRecord.id),
+      "a directly remembered technical fact is recallable through the same hybrid entry");
+    assert((await bridge.search("alice", "cookie 主题")).some(hit => hit.memory.id === cookieRecord.id),
+      "a cookie terminology record is recallable, not silently dropped");
+    candidates = [candidate("api_key=sk_live_abcdefghijklmnop", "api_key", { kind: "fact", title: "密钥" })];
+    const secretTurn = send("记住这个配置入口"); assert(secretTurn.source);
+    await bridge.extract(secretTurn.source);
+    assert(!memory.listExactScope("bot", "alice").some(record => record.content.includes("sk_live")),
+      "extraction still drops a real credential");
+
+    // ── Review follow-up: peer prefetch is re-authorized per evidence rebuild ─────
+    const revisable = memory.create({ kind: "fact", title: "Peer revisable fact", content: "PEER_REVISABLE_VALUE",
+      scopeType: "bot", scopeId: "alice", sourceType: "user" });
+    memory.promote(revisable.id, "bot", "bob");
+    assert(bridge.activeFact("alice", revisable.id), "current scope may read the hit");
+    assert(bridge.activeFact("bob", revisable.id), "the other bound scope may read the same record");
+    memory.detachScope(revisable.id, "bot", "alice");
+    assert.equal(bridge.activeFact("alice", revisable.id), undefined, "scope detach withdraws the cached hit");
+    assert(bridge.activeFact("bob", revisable.id), "another still-bound scope keeps its own access");
+    const expiring = memory.create({ kind: "fact", title: "Peer expiring fact", content: "PEER_EXPIRING_VALUE",
+      scopeType: "bot", scopeId: "alice", sourceType: "user", validUntil: Date.now() - 1000 });
+    assert.equal(bridge.activeFact("alice", expiring.id), undefined, "an expired record cannot be injected");
+    const future = memory.create({ kind: "fact", title: "Peer future fact", content: "PEER_FUTURE_VALUE",
+      scopeType: "bot", scopeId: "alice", sourceType: "user", validFrom: Date.now() + 60_000 });
+    assert.equal(bridge.activeFact("alice", future.id), undefined, "a not-yet-valid record cannot be injected");
     console.log("PASS Bot memory: real-source L0/L1, private scope, recall, new chat, replay, source deletion race, disabled/cancelled/sensitive boundaries, temporary wording across all write paths, no approval queue, existing memory deletion");
   } finally { db.close(); }
 }

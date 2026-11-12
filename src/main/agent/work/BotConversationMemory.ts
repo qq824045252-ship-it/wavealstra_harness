@@ -23,21 +23,32 @@ export class BotConversationMemory {
   async search(botId: string, query: string, conversationId?: string) {
     const context = this.scopeContext(botId, conversationId);
     if (!context) return [];
-    return this.options.memory.searchHybrid({ ...context, query, statuses: ["active"], limit: 20 });
+    const hits = await this.options.memory.searchHybrid({ ...context, query, statuses: ["active"], limit: 20 });
+    // Memory may have been switched off while the hybrid runtime was working.
+    return this.options.enabled() ? hits : [];
   }
 
   /** Read-only recall for an isolated peer consultation: the receiving Bot's own scope only. */
   async recall(botId: string, query: string) {
     const context = this.scopeContext(botId);
     if (!context) return [];
-    return this.options.memory.searchHybrid({ ...context, query, statuses: ["active"], limit: 20 });
+    const hits = await this.options.memory.searchHybrid({ ...context, query, statuses: ["active"], limit: 20 });
+    return this.options.enabled() ? hits : [];
   }
 
-  /** Peer evidence is recomputed per request; a prefetched hit must not outlive its record. */
-  activeFact(id: string) {
+  /** Peer evidence is recomputed per request. A prefetched hit is re-authorized for
+   * the receiving Bot: deletion, scope detach, expiry and status all withdraw it.
+   * "still active" alone never means "this Bot may still read it". */
+  activeFact(botId: string, id: string) {
     if (!this.options.enabled()) return;
+    const context = this.scopeContext(botId);
+    if (!context) return;
     const record = this.options.memory.get(id);
-    return record && record.status === "active" ? record : undefined;
+    if (!record || record.status !== "active") return;
+    const now = Date.now();
+    if ((record.validFrom !== undefined && record.validFrom > now)
+      || (record.validUntil !== undefined && record.validUntil <= now)) return;
+    return this.options.memory.canAccess(id, context) ? record : undefined;
   }
 
   /** A user-owned scope is selected from the real conversation, never from a model-supplied entity ID. */

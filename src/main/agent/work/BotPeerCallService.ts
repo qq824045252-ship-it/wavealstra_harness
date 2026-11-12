@@ -86,7 +86,7 @@ export class BotPeerCallService {
       const peerMemoryReference = (): string => {
         if (!enabled() || !this.options.memory) return "";
         const hits = peerHits.flatMap(hit => {
-          const current = this.options.memory!.activeFact(hit.memory.id);
+          const current = this.options.memory!.activeFact(target.botId, hit.memory.id);
           return current ? [{ id: current.id, kind: current.kind, title: current.title,
             content: current.content.slice(0, 1200), scopes: current.scopes.map(scope => `${scope.scopeType}${scope.scopeId ? `:${scope.scopeId}` : ""}`) }] : [];
         });

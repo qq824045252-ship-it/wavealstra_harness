@@ -7,7 +7,7 @@ import { MemoryService } from "../src/main/memory/MemoryService";
 import { MemoryPipelineManager } from "../src/main/memory/MemoryPipelineManager";
 import { LOCAL_USER_ID } from "../src/shared/bot-work";
 import { botHistoryContext } from "../src/main/agent/work/BotHistoryContext";
-import { botMemoryConversationOnly } from "../src/main/memory/BotMemorySource";
+import { botMemoryConversationOnly, botMemoryTextEligible } from "../src/main/memory/BotMemorySource";
 
 const db = new AppDatabase(":memory:");
 const bots = new BotRegistry(db.connection);
@@ -188,6 +188,55 @@ try {
   assert(recall("LongAnswerTopic 超长答案主题").includes("MARKER"), "an oversized answer is quoted instead of silently dropping the pair");
   pair("OversizeTopic 超限内容", "x".repeat(210000) + "MARKER");
   assert.equal(recall("OversizeTopic 超限内容"), "", "a message above the per-pair size bound is excluded, never truncated into a leak");
+
+  // ── Review follow-up: final-context assertions, not only entry booleans ──────────
+  for (const secret of ["Cookie: sid=FAKE_REVIEW_ONLY_abcdEFGHxyz",
+    "请求头：Cookie: sid=FAKE_REVIEW_ONLY_abcdEFGHxyz",
+    "排查失败的请求：" + String.fromCharCode(10) + "Cookie: sid=FAKE_REVIEW_ONLY_abcdEFGHxyz",
+    'curl -H "Cookie: sid=FAKE_REVIEW_ONLY_abcdEFGHxyz" https://example.invalid',
+    '{"Cookie": "sid=FAKE_REVIEW_ONLY_abcdEFGHxyz"}']) {
+    assert(!botMemoryTextEligible(secret), `value-shaped cookie is rejected: ${secret}`);
+    const receipt = pair(secret, "登录排查记录");
+    // Even if such a pair somehow reached L0, recall must not replay the value.
+    db.connection.prepare(`INSERT INTO memory_turns(id,task_id,user_message_id,assistant_message_id,user_text,assistant_text,content_hash,captured_at)
+      VALUES (?,?,?,?,?,?,?,?)`).run(`forced-${receipt.userMessageId}`, receipt.conversationId,
+      receipt.userMessageId, receipt.assistantMessageId, "", "", "forced", 0);
+    const context = recall(`AcmePortal 登录排查 ${receipt.requestId}`);
+    assert(!context.includes("FAKE_REVIEW_ONLY_abcdEFGHxyz"), "secret value never reaches the final history context");
+  }
+  assert(botMemoryTextEligible("cookie 只保存主题，不放会话票据"));
+
+  // Correction time relations: an older correction must never suppress a newer fact.
+  pair("更正 NSH port is 8080", "STALE_8080");
+  pair("NSH port is now 9090", "LATEST_9090");
+  assert(recall("NSH port").includes("LATEST_9090"), "a newer fact survives an older explicit correction");
+  for (const port of [8080, 8081, 8082]) pair(`更正 NSH production service port is ${port}`, `STALE_${port}`);
+  pair("更正 NSH port is 9090", "LATEST_CORRECTION_9090");
+  const correctionContext = recall("NSH production service port");
+  assert(correctionContext.includes("LATEST_CORRECTION_9090"), "the newest correction always earns an evidence slot");
+
+  // Substring false positives and prohibited sources must not starve the valid pair.
+  const exact = pair("NSH", "EXACT_ALLOWED_REFERENCE");
+  for (let i = 0; i < 200; i++) pair(`NSH2 unrelated deployment ${i}`, `unrelated answer ${i}`);
+  assert(recall("NSH").includes("EXACT_ALLOWED_REFERENCE"), "200 substring matches cannot starve the exact token pair");
+  const maple = pair("MapleTopic exact decision", "MAPLE_ALLOWED_REFERENCE");
+  const noiseSource = conversation([["MapleTopic 不要保存：旧草稿", "禁止来源首条"],
+    ...Array.from({ length: 200 }, (_, i) => [`MapleTopic follow-up ${i}`, `禁止来源 follow-up ${i}`] as [string, string])]);
+  assert(noiseSource && recall("MapleTopic").includes("MAPLE_ALLOWED_REFERENCE"), "a prohibited source cannot starve the valid one");
+  assert(!recall("MapleTopic").includes("禁止来源 follow-up"), "the prohibited source itself stays excluded");
+
+  // Work cap is expressed, never reported as "no history".
+  for (let i = 0; i < 1250; i++) pair(`CapTopic2 entry ${i}`, `cap answer ${i}`);
+  const capped = recall("CapTopic");
+  assert(capped.includes("工作上限") && !capped.includes('"source":"historical_conversation"'), "reaching the work cap is stated separately from an empty history");
+
+  // A long answer is quoted around the matching passage, not from its head.
+  const longMatch = pair("PortsTopic operational decision", "preface ".repeat(300) + "NSH exact operational decision: port 9090");
+  const longContext = recall("PortsTopic NSH operational decision port 9090");
+  assert(longContext.includes(longMatch.userMessageId) && longContext.includes("9090"), "a long answer is excerpted around the match");
+  const longLine = longContext.split(String.fromCharCode(10)).find(line => line.includes(longMatch.userMessageId))!;
+  const longQuote = JSON.parse(longLine).assistantQuote as string;
+  assert(longQuote.startsWith("…") && longQuote.includes("9090") && longQuote.length <= 1501, "the long-answer excerpt is a window around the match");
 
   console.log("PASS history context: relevance-first retrieval beyond 1000 pairs, no 300/301 or shared-budget cliff, exact per-source prohibition, provenance, isolation, correction, Git SHA/cookie eligibility, secrets, deletion, receipts, forgetting, disabled and bounded output");
 } finally { db.close(); }

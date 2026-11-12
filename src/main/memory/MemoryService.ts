@@ -1,4 +1,5 @@
 import { MemoryForgetWatermarks } from "./MemoryForgetWatermarks";
+import { hasSensitiveMemoryContent } from "./MemoryTextSafety";
 import { resolveAssistantScopeChain, resolveWorkMemoryScope } from "./AssistantMemoryScopes";
 import { botMemorySource, botMemoryTextEligible, botMemoryWriteEvidenceAllowed, botMemoryConversationOnly } from "./BotMemorySource";
 import { projectMemoryContext } from "../agent/MemoryContextProjection";
@@ -150,12 +151,10 @@ function normalizeText(value: string): string {
   return value.normalize("NFKC").toLocaleLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
 }
 
+/** One shared rule with the Bot capture boundary: technical identifiers such as a
+ * lone `cookie` term or a commit SHA are not credentials, value-shaped secrets are. */
 function isSensitive(value: string): boolean {
-  return (
-    /(?:api[ _-]?key|password|passwd|secret|access[ _-]?token|refresh[ _-]?token|cookie|密钥|密码|口令|令牌)/i.test(value) ||
-    /\b(?:sk|pk|ghp|github_pat|xox[baprs])[-_][A-Za-z0-9_-]{12,}\b/i.test(value) ||
-    /\b[A-Fa-f0-9]{40,}\b/.test(value)
-  );
+  return hasSensitiveMemoryContent(value);
 }
 
 function hashContent(kind: MemoryKind, title: string, content: string): string {

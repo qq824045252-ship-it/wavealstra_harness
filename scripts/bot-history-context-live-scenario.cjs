@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-exports.run = async ({ send, foregroundDone, until, evaluate, history, report, requests, out, setBotId }) => {
+exports.run = async ({ send, foregroundDone, until, evaluate, history, report, requests, out, home, setBotId }) => {
   let currentBot;
   report.cases = [];
   const atoms = () => evaluate(`window.api.memory.list(${JSON.stringify({ scopeType: 'bot', scopeId: currentBot, status: 'active' })})`);
@@ -38,6 +38,47 @@ exports.run = async ({ send, foregroundDone, until, evaluate, history, report, r
     for(const text of wireForbidden) assert(!wire.includes(text), `provider received forbidden historical source ${text}`);
     return {answer, modelCalls:requests.length-from, conversationId:(await history()).conversationId};
   };
+  /** Issue #28 acceptance: >1000 synthetic pairs across interleaved conversations, none
+   * promoted into L1, with one older decision that the real model turn must retrieve.
+   * Written straight into the isolated profile DB; memory_turns are marked skipped so
+   * extraction never turns them into durable facts. */
+  const seedLongHistory = ({ botId }) => {
+    const Database = require('better-sqlite3');
+    const db = new Database(path.join(home, '.mybuddy', 'app.db'), { fileMustExist: true });
+    db.pragma('busy_timeout = 8000');
+    const now = Date.now(), pairs = 1100, conversations = 12;
+    const filler = '普通排期与会议记录，和本次问题无关。';
+    const buriedUser = '长航项目418 的旧方案：灰度回滚演练先用 NSH 的 MTLS 双通道演练，再由值班同学手动切换。';
+    const buriedAnswer = '长航项目418 方案记录编号 B-8412：灰度回滚演练使用 NSH MTLS 双通道，先演练再切换。';
+    const decoyUser = '松岛项目907 的结论：用延迟队列削峰。';
+    const decoyAnswer = '松岛项目907 结论保持不变。';
+    const insertConversation = db.prepare("INSERT INTO bot_conversations(conversation_id,bot_id,user_id,created_at,updated_at,archived_at) VALUES (?,?,?,?,?,?)");
+    const insertMessage = db.prepare(`INSERT INTO bot_messages(message_id,conversation_id,bot_id,request_id,role,text,status,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,'completed',?,?)`);
+    const insertReceipt = db.prepare(`INSERT INTO bot_send_receipts(user_id,bot_id,request_id,payload_hash,conversation_id,user_message_id,assistant_message_id)
+      VALUES (?,?,?,?,?,?,?)`);
+    const insertTurn = db.prepare(`INSERT INTO memory_turns(id,task_id,user_message_id,assistant_message_id,user_text,assistant_text,content_hash,captured_at,extraction_state)
+      VALUES (?,?,?,?,?,?,?,?,'skipped')`);
+    let seeded = 0;
+    db.transaction(() => {
+      for (let c = 0; c < conversations; c++) insertConversation.run(`hist-c${c}`, botId, 'user-local-primary', now, now, now);
+      for (let i = 0; i < pairs; i++) {
+        const conversation = `hist-c${i % conversations}`;
+        const userText = i === 0 ? buriedUser : i === 1 ? decoyUser : `历史讨论 ${i}：${filler}`;
+        const assistantText = i === 0 ? buriedAnswer : i === 1 ? decoyAnswer : `历史回答 ${i}：${filler}`;
+        const at = now - (pairs - i) * 60_000;
+        const userMessageId = `hist-u${i}`, assistantMessageId = `hist-a${i}`, requestId = `hist-r${i}`;
+        insertMessage.run(userMessageId, conversation, botId, requestId, 'user', userText, at, at);
+        insertMessage.run(assistantMessageId, conversation, botId, requestId, 'assistant', assistantText, at + 1, at + 1);
+        insertReceipt.run('user-local-primary', botId, requestId, `hash-${i}`, conversation, userMessageId, assistantMessageId);
+        insertTurn.run(`hist-t${i}`, conversation, userMessageId, assistantMessageId, '', '', `hist-hash-${i}`, at);
+        seeded++;
+      }
+    })();
+    db.close();
+    return { pairs: seeded, conversations, buriedUser, buriedAnswer, decoyUser };
+  };
+
   const cases = [
     ['framework learning continuity', async () => {
       await say('用两句话解释NSH（Native Shell）和GPUI Kit的分工，给这次课堂笔记取名“星桥课堂783”。这是一次解释练习，不是长期用户事实。');
@@ -96,6 +137,18 @@ exports.run = async ({ send, foregroundDone, until, evaluate, history, report, r
       await newChat();
       return probe('把“The meeting starts at ten tomorrow.”翻译成简短中文。', ['明天'], ['落叶画室','黄蜡笔646'], ['落叶画室','黄蜡笔646']);
     }],
+    ['long synthetic history beyond the old recency window', async () => {
+      const seeded = seedLongHistory({ botId: currentBot });
+      const from = requests.length;
+      const answer = await say('继续长航项目418的灰度回滚演练：之前定的旧方案是什么？只复述旧方案和出处，不要重新设计。');
+      assert(answer.includes('NSH') && answer.includes('MTLS'), `answer must quote the old decision: ${answer}`);
+      assert(!answer.includes('松岛项目907'), `unrelated project must not leak: ${answer}`);
+      const wire = JSON.stringify(requests.slice(from));
+      assert(wire.includes('B-8412'), 'the buried original answer was actually injected into the provider request');
+      assert(!wire.includes('松岛项目907'), 'a different project was not injected');
+      return {answer, seeded: {pairs: seeded.pairs, conversations: seeded.conversations}, modelCalls: requests.length - from,
+        conversationId: (await history()).conversationId, wireProvenance: 'B-8412'};
+    }],
   ];
   for(let index=0;index<cases.length;index++) {
     const [title, run]=cases[index], started=Date.now();
@@ -109,8 +162,8 @@ exports.run = async ({ send, foregroundDone, until, evaluate, history, report, r
     fs.writeFileSync(path.join(out,'cases-progress.json'),JSON.stringify(report.cases,null,2));
     console.log(JSON.stringify(report.cases.at(-1)));
   }
-  assert.equal(report.cases.length,8,'all eight distinct real-model task types attempted');
-  report.checks.push('eight distinct real-model task types through isolated Bot composer; source/answer continuity, correction, forgetting, Bot isolation, conversation-only scope, relevance; provider-wire assertions');
+  assert.equal(report.cases.length,9,'all nine distinct real-model task types attempted');
+  report.checks.push('nine distinct real-model task types through isolated Bot composer; source/answer continuity, correction, forgetting, Bot isolation, conversation-only scope, relevance, 1100-pair un-extracted history beyond the old recency window; provider-wire assertions');
   const failures=report.cases.filter(row=>row.status!=='passed');
   assert.equal(failures.length,0,failures.map(row=>row.title).join(', '));
 };
