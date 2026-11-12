@@ -1,0 +1,137 @@
+{
+  "correctionOf": "d83532da report statement that due reminder was absent from the observed message-change stream",
+  "cause": "Post-processing mistakenly filtered only work-feedback/cron prefixes and missed the exact persisted bot-message-reminder ID. Raw collector and phase-summary already captured this sample.",
+  "rawDataModified": false,
+  "busyEightSampleMetricsChanged": false,
+  "sampleCount": 1,
+  "notAnSLA": true,
+  "messageId": "bot-message-reminder-74e1c81d9f1e98686d873ecd3aae5452b520f712662e5635b6b945874e7fa834",
+  "phaseRow": {
+    "messageId": "bot-message-reminder-74e1c81d9f1e98686d873ecd3aae5452b520f712662e5635b6b945874e7fa834",
+    "requestId": "reminder-74e1c81d9f1e98686d873ecd3aae5452b520f712662e5635b6b945874e7fa834",
+    "messageRevision": 1,
+    "status": "completed",
+    "role": "assistant",
+    "segmentKinds": [],
+    "commit": {
+      "kind": "transaction-commit-return",
+      "tx": 4546,
+      "seq": 17191,
+      "monoNs": "149850010110322"
+    },
+    "broadcast": {
+      "seq": 17192,
+      "monoNs": "149850010541460"
+    },
+    "rendererPid": 1601037,
+    "domTraceUs": 149850222962,
+    "receiveTraceUs": 149850011149,
+    "visibleRafTraceUs": 149850234252,
+    "firstSubsequentPaint": {
+      "ts": 149850224757,
+      "dur": 856,
+      "tid": 1601037,
+      "args": {
+        "data": {
+          "clip": [
+            0,
+            0,
+            1920,
+            0,
+            1920,
+            1280,
+            0,
+            1280
+          ],
+          "frame": "B323767777F1DADF5A5702A3F49944C3",
+          "layerId": 0,
+          "nodeId": 1,
+          "nodeName": "#document"
+        }
+      }
+    },
+    "firstSubsequentDrawFrame": {
+      "ts": 149850232795,
+      "tid": 1601072,
+      "args": {
+        "frameSeqId": 9570,
+        "layerTreeId": 1
+      }
+    },
+    "commitToReceiveMs": [
+      0.7473650207519531,
+      1.507552001953125
+    ],
+    "commitToDomMs": [
+      212.56036502075196,
+      213.32055200195313
+    ],
+    "commitToSubsequentPaintStartMs": [
+      214.35536502075195,
+      215.11555200195312
+    ],
+    "commitToSubsequentPaintEndMs": [
+      215.21136502075194,
+      215.9715520019531
+    ]
+  },
+  "rendererMarks": [
+    {
+      "kind": "receive",
+      "name": "iq27-receive-bot-message-reminder-74e1c81d9f1e98686d873ecd3aae5452b520f712662e5635b6b945874e7fa834-r1",
+      "now": 159251.19999998808,
+      "messageId": "bot-message-reminder-74e1c81d9f1e98686d873ecd3aae5452b520f712662e5635b6b945874e7fa834",
+      "requestId": "reminder-74e1c81d9f1e98686d873ecd3aae5452b520f712662e5635b6b945874e7fa834",
+      "messageRevision": 1,
+      "revision": 154
+    },
+    {
+      "kind": "dom",
+      "name": "iq27-dom-bot-message-reminder-74e1c81d9f1e98686d873ecd3aae5452b520f712662e5635b6b945874e7fa834-r1",
+      "now": 159463,
+      "messageId": "bot-message-reminder-74e1c81d9f1e98686d873ecd3aae5452b520f712662e5635b6b945874e7fa834",
+      "requestId": "reminder-74e1c81d9f1e98686d873ecd3aae5452b520f712662e5635b6b945874e7fa834",
+      "messageRevision": 1,
+      "revision": 154,
+      "textLength": 69
+    },
+    {
+      "kind": "visible-raf",
+      "name": "iq27-visible-raf-bot-message-reminder-74e1c81d9f1e98686d873ecd3aae5452b520f712662e5635b6b945874e7fa834-r1",
+      "now": 159474.30000001192,
+      "messageId": "bot-message-reminder-74e1c81d9f1e98686d873ecd3aae5452b520f712662e5635b6b945874e7fa834",
+      "requestId": "reminder-74e1c81d9f1e98686d873ecd3aae5452b520f712662e5635b6b945874e7fa834",
+      "messageRevision": 1,
+      "revision": 154,
+      "rect": {
+        "x": 308.798828125,
+        "y": 502.5390625,
+        "width": 832.01171875,
+        "height": 139.677734375,
+        "top": 502.5390625,
+        "right": 1140.810546875,
+        "bottom": 642.216796875,
+        "left": 308.798828125
+      },
+      "viewport": {
+        "width": 1200,
+        "height": 800
+      }
+    }
+  ],
+  "commitToBroadcastMs": 0.431138,
+  "commitToVisibleRafMs": [
+    223.85036502075195,
+    224.61055200195312
+  ],
+  "sources": {
+    "phase-summary.json": "652e8d23aaffd1634d12476f42fa80f6062840cd09ad2cb103e624efa2ef0817",
+    "renderer-probe.json": "7b6a5b419f7bba72920cbf00dea405692223b2ef4bb8beb1dd9e6f635e5fcd58"
+  },
+  "remainingLimitations": [
+    "Work feedback is not present in this measured message-change stream; its commit-to-DOM/Paint remains unmeasured.",
+    "This is one reminder observation, not a distribution.",
+    "Paint is first subsequent same-renderer #document Paint, not target-specific pixels or physical scanout.",
+    "Original compact-result and busy-phase-metrics are retained verbatim. Their broader reminder-absent limitation is superseded by this correction."
+  ]
+}

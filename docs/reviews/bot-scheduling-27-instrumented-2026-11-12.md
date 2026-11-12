@@ -9,7 +9,7 @@
 - 使用真实 Omarchy/Hyprland 原生 Electron `pnpm dev`、新隔离 HOME，宿主已有 Magpie `http://127.0.0.1:3425/v1`，唯一真实模型 `opendesign/deepseek-v4.1-flash`。未改网关、用户实例、凭据或系统配置。
 - 实际发送 **6 类不同语义任务 + 8 个忙时算术样本**：并行 A/B、直接回答、只读状态查询、CSV 分析委托、纯定时提醒、真实本地文件事件。第七类“运行中自然改向”因为测试脚本错误没有发送，不能算已覆盖。
 - 新增有效证据：960/1200 原生窗口、A 的真实不可变成果在 B 等待时交付、两个持久会话及 Work 回原会话、真实 file 事件去重，以及 8 个忙时实质答案的 COMMIT/广播/接收/DOM/可见 rAF/后续 Paint 分阶段观测。
-- 本批不能证明运行中改向、文件点击/外部查看器、后台成果的精确 COMMIT→Paint、多个主窗口或 GitHub webhook。原矩阵 11、23–27 仍不能整体改为 PASS。
+- 本批不能证明运行中改向、文件点击/外部查看器、Work 里程碑的精确 COMMIT→Paint、多个主窗口或 GitHub webhook。原矩阵 11、23–27 仍不能整体改为 PASS。
 
 ## 2. 实际时间和成本
 
@@ -79,11 +79,19 @@
 2. DOM 使用消息 ID/版本和规范化文本匹配；rAF 检查消息矩形。它们不是物理显示确认。
 3. Paint/DrawFrame 是实际 Chromium trace 事件，但此处 Paint 的节点为 `#document`/整视口，只能称**同 renderer 第一次后续绘制**。不能证明该 Paint 包含目标消息每个像素，更不能称物理屏幕 scanout 时刻。
 4. 输入计时来自 renderer 的真实 input 事件记录，不是操作系统按键时间戳。
-5. 本批 onMessageChanged 观察流没有 Work feedback 和到期 reminder，所以其精确 COMMIT→DOM/Paint **没有测到**。既有 host/截图时间不得填入这条链。
+5. 本批 onMessageChanged 观察流没有 Work feedback，其精确 COMMIT→DOM/Paint **没有测到**。到期提醒实际上捕获一条完整链，见下方更正；不能把两者混称未测。既有 host/截图时间不得填入 Work 链。
 
 原始 trace 共767,627事件，1,740 Paint、2,496 DrawFrame，traceComplete dataLossOccurred=false。16/16时钟校准匹配，单调时钟偏移交集有效，区间宽0.760187ms。总108个 DOM 版本中62个后来有可见rAF；其余或延迟很久才可见的版本没有混入八样本性能组。[全链摘要](evidence/issue27/b5-instrumented-0129/phase-summary.json)和[校准记录](evidence/issue27/b5-instrumented-0129/trace-calibration.json)可核对。
 
 插桩确有开销：main 元数据/入队计量398.908ms，renderer observer累计9581.5ms/17,854次；未计 main 批量落盘和Chrome tracing全部成本，未做减法修饰。因此这是**插桩下实测**，不是无插桩性能基线，也不据此宣称某次性能优化收益。
+
+### 5.1 提醒样本筛选更正（保留原始数据）
+
+`d83532da` 初稿错误称到期提醒没有进入观察流。复核确切持久消息ID发现，后处理只筛选 `work-feedback`/`cron` 前缀，遗漏 `bot-message-reminder-…`。原始 `phase-summary.json`/renderer记录早已完整包含此提醒，**没有改造原始数据，也没有影响上表八个算术样本**。
+
+[该条提醒的精确来源与阶段](evidence/issue27/b5-instrumented-0129/reminder-phase-correction.json)：COMMIT返回→广播0.431ms；→renderer接收0.747–1.508ms；→DOM212.560–213.321ms；→可见rAF223.850–224.611ms；→随后renderer Paint开始214.355–215.116ms。这是一条观测，不据此报总体P50/P95；Paint早于后一次rAF标记也不证明目标像素的实际显示时刻。
+
+原始 compact/派生 busy-phase JSON 保留初稿，里面“reminder缺失”的过宽限制由本节明确更正。Work反馈的缺口仍存在，不能因这条提醒改为全部后台成果已测。后续关联使用实际持久ID，不再猜前缀。
 
 ## 6. 再现、保留和后续验收
 
