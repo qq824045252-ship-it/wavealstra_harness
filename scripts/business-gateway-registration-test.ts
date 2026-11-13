@@ -1,0 +1,48 @@
+import assert from "node:assert/strict";
+import { BusinessBotRegistration, type RegistrationDriver } from "../src/main/gateway/BusinessBotRegistration";
+import { createFeishuRegistrationDriver, createDingTalkRegistrationDriver } from "../src/main/gateway/BusinessBotRegistrationDrivers";
+const tick = () => new Promise<void>(r => setImmediate(r));
+function mock(responses: Array<Record<string, unknown> | Response>) {
+  const calls: Array<{url: string; options: RequestInit}> = [];
+  const fetcher = (async (url, options) => { calls.push({url: String(url), options: options!}); const r = responses.shift(); assert.ok(r); return r instanceof Response ? r : Response.json(r); }) as typeof fetch;
+  return { calls, fetcher };
+}
+const signal = new AbortController().signal;
+const f = mock([{supported_auth_methods:["client_secret"]},{device_code:"device-secret",verification_uri_complete:"https://accounts.feishu.cn/scan?a=1",expire_in:600,interval:5},new Response(JSON.stringify({error:"authorization_pending"}),{status:400}),{client_id:"app",client_secret:"secret",user_info:{open_id:"owner"}}]);
+const fd = createFeishuRegistrationDriver(f.fetcher); const ft = await fd.begin(signal);
+assert.equal(new URLSearchParams(f.calls[1].options.body as string).get("archetype"),"PersonalAgent");
+assert.deepEqual(await fd.poll(ft,signal),{state:"pending"}); assert.equal((await fd.poll(ft,signal)).state,"authorized");
+assert.ok(f.calls.every(c => c.options.redirect === "error"));
+const d = mock([{errcode:0,nonce:"n"},{errcode:0,device_code:"d",verification_uri_complete:"https://login.dingtalk.com/qr",interval:3},{errcode:0,status:"SUCCESS",client_id:"app",client_secret:"secret"}]);
+const dd=createDingTalkRegistrationDriver(d.fetcher), dt=await dd.begin(signal);
+assert.deepEqual(JSON.parse(d.calls[0].options.body as string),{source:"DING_DWS_CLAW"});
+assert.deepEqual(await dd.poll(dt,signal),{state:"authorized",credentials:{clientId:"app",clientSecret:"secret"}});
+const evil=mock([{errcode:0,nonce:"n"},{errcode:0,device_code:"d",verification_uri_complete:"https://dingtalk.com.attacker.invalid/qr"}]);
+await assert.rejects(createDingTalkRegistrationDriver(evil.fetcher).begin(signal));
+const lark=mock([{client_id:"a",client_secret:"s",user_info:{tenant_brand:"lark"}}]); await assert.rejects(createFeishuRegistrationDriver(lark.fetcher).poll(ft,signal));
+const ticket={qrUrl:"https://login.dingtalk.com/qr",expiresInSeconds:600,intervalSeconds:1,token:"s"};
+const driver:RegistrationDriver={begin:async()=>ticket,poll:async()=>({state:"authorized",credentials:{clientId:"a",clientSecret:"never-render"}})};
+let saved:Record<string,unknown>|undefined; let saves=0;
+const registration=new BusinessBotRegistration({provider:"dingtalk",driver,delay:async()=>{},onAuthorized:async(config,current)=>{current(); saved=config; saves++;}});
+await assert.rejects(registration.start(false)); await registration.start(true); await tick();
+assert.equal(registration.getState().state,"configuration"); assert.ok(!JSON.stringify(registration.getState()).includes("never-render"));
+const id=registration.getState().sessionId!;
+await registration.finish(id,{}); assert.equal(saves,0);
+await registration.finish(id,{corpId:"corp",robotCode:"robot",allowUsers:["owner"]}); assert.equal(saves,1); assert.deepEqual(saved?.allowUsers,["owner"]);
+assert.equal(registration.getState().state,"connected");
+let resolvePoll!:(value:any)=>void;
+const late=new BusinessBotRegistration({provider:"feishu",driver:{begin:async()=>ticket,poll:()=>new Promise(r=>{resolvePoll=r;})},delay:async()=>{},onAuthorized:async()=>{throw new Error("late result must not save");}});
+await late.start(true); await tick(); late.cancel(); resolvePoll({state:"authorized",credentials:{clientId:"a",clientSecret:"s",ownerId:"o"}}); await tick(); assert.equal(late.getState().state,"cancelled");
+let now=1;
+const expired=new BusinessBotRegistration({provider:"feishu",driver,now:()=>now,delay:async()=>{now+=700000;},onAuthorized:async()=>{throw new Error("expired must not save");}});
+await expired.start(true);await tick();assert.equal(expired.getState().state,"expired");
+console.log("PASS business registration official protocols, QR host checks, identity completion, secret isolation, cancellation and expiry");
+
+let release!:()=>void;let committed=false;let attempted=0;
+const binding=new BusinessBotRegistration({provider:"feishu",driver:{begin:async()=>ticket,poll:async()=>({state:"authorized",credentials:{clientId:"a",clientSecret:"s",ownerId:"owner"}})},delay:async()=>{},onAuthorized:async(config,current,signal)=>{attempted++;assert.deepEqual(config.allowUsers,["owner"]);await new Promise<void>(r=>release=r);current();assert.equal(signal.aborted,false);committed=true;}});
+await binding.start(true);await tick();assert.equal(binding.getState().state,"binding");binding.cancel("wrong-session");assert.equal(binding.getState().state,"binding");binding.cancel();release();await tick();assert.equal(committed,false);assert.equal(attempted,1);assert.equal(binding.getState().state,"cancelled");
+let calls=0;let releases:Array<()=>void>=[];
+const serial=new BusinessBotRegistration({provider:"dingtalk",driver,delay:async()=>{},onAuthorized:async()=>{calls++;await new Promise<void>(r=>releases.push(r));}});
+await serial.start(true);await tick();const sid=serial.getState().sessionId!;
+const first=serial.finish(sid,{corpId:"c",robotCode:"r",allowUsers:["u"]});const second=serial.finish(sid,{corpId:"other",robotCode:"other",allowUsers:["other"]});assert.equal(calls,1);releases[0]();await Promise.all([first,second]);assert.equal(serial.getState().state,"connected");
+console.log("PASS late connection commit rejected after cancellation; duplicate finish remains one operation");

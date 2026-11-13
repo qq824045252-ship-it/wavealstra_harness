@@ -302,6 +302,10 @@ export const GatewayIpc = {
   qqQrStart: "gateway:qqQrStart",
   qqQrState: "gateway:qqQrState",
   qqQrCancel: "gateway:qqQrCancel",
+  registrationStart: "gateway:registrationStart",
+  registrationState: "gateway:registrationState",
+  registrationFinish: "gateway:registrationFinish",
+  registrationCancel: "gateway:registrationCancel",
 } as const;
 
 /** 浏览器 / HTML 产物预览共享控制台通道。target 仅允许 browser | artifact。 */

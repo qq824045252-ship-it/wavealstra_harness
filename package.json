@@ -766,7 +766,11 @@
     "test:gateway-qr-race-ui": "node scripts/run-gateway-ui-test.mjs scripts/gateway-qr-race-ui-test.tsx",
     "test:gateway-setup-guide": "node scripts/run-gateway-ui-test.mjs scripts/gateway-setup-guide-test.ts",
     "test:gateway-binding-slack-identity": "node scripts/test-guard.mjs node --import ./scripts/test-typescript-memory-loader.mjs scripts/gateway-binding-slack-identity-test.ts",
-    "test:gateway-bot-binding-ui": "node scripts/run-gateway-ui-test.mjs scripts/gateway-bot-binding-ui-test.tsx"
+    "test:gateway-bot-binding-ui": "node scripts/run-gateway-ui-test.mjs scripts/gateway-bot-binding-ui-test.tsx",
+    "test:business-gateway-registration": "node scripts/run-gateway-ui-test.mjs scripts/business-gateway-registration-test.ts",
+    "test:business-gateway-registration-ui": "node scripts/run-gateway-ui-test.mjs scripts/business-gateway-registration-ui-test.tsx",
+    "test:gateway-registration-card-ui": "node scripts/run-gateway-ui-test.mjs scripts/gateway-registration-card-ui-test.tsx",
+    "test:business-gateway-registration-service": "node scripts/test-guard.mjs scripts/business-gateway-registration-service-test.mjs"
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.85.0",

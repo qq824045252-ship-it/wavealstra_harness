@@ -21,3 +21,11 @@ Tests use controlled DOM/IPC fixtures. No real external account was enrolled, no
 Base: `2e3f3b99`. Adds a saved binding list with edit, unbind and refresh; disconnected channels and missing/inactive Bots remain manageable. Recent sender suggestions are scoped to the authenticated connection identity. Changing account invalidates an editing session. Binding writes are serialized and read current settings inside the queue, then validate connection generation before a synchronous binding-only write.
 
 PASS on the integrated candidate: full node/web TypeScript checks; binding validation/concurrent update/generation tests; Slack current/old/unknown connection identity tests; binding-management DOM tests; test classification audit. These are controlled fixtures, not a live external account acceptance. The second batch contains no Feishu/DingTalk automatic registration changes.
+
+## Third batch: Feishu / DingTalk registration
+
+Base: `cf8ccfa7`. Empty channels offer official robot-creation QR onboarding first, with an existing-application manual option. Existing saved configurations are not replaced by registration. Explicit creation/persistent-credential consent is required; credentials remain in the main process and are encrypted at rest. Feishu support is mainland Feishu, not international Lark. DingTalk requires enterprise/robot/allowed-user identity completion where the official response does not supply it.
+
+PASS: full node/web TypeScript checks; official-protocol fixtures and registration state-machine tests; registration component DOM test; single-card DOM integration (including status-before-result ordering and manual-connect/disconnect preservation); extracted production GatewayService-method race/identity/persistence tests; existing generic channel and binding DOM tests; test classification audit.
+
+Independent UI review found and fixed early status-driven unmount before registration completion, and missing saved-config state after manual connection. Regression coverage was added for both. The protocol/service tests use fixtures and do not establish live official platform acceptance. No real platform account or app was created during this work. Packaging/full-suite/real-provider QR acceptance were not run.

@@ -1,3 +1,4 @@
+import type { GatewayRegistrationProvider, GatewayRegistrationDetails, GatewayRegistrationState } from "../shared/gateway-registration";
 import type { GoogleWorkspaceWriteApi } from "../shared/google-workspace-write";
 import type { GoogleWorkspaceApi } from "../shared/google-workspace";
 import type { BrowserOpenOptions, BrowserTabInfo, BrowserTabsState } from "../shared/browser-tabs";
@@ -623,6 +624,10 @@ export interface PreloadApi {
     weixinQrState: () => Promise<GatewayWeixinQrLoginStateDto>;
     qqQrState: () => Promise<GatewayQQQrLoginStateDto>;
     weixinQrCancel: (sessionId?: string) => Promise<GatewayWeixinQrLoginStateDto>;
+    registrationStart: (provider: GatewayRegistrationProvider, approved: boolean) => Promise<GatewayRegistrationState>;
+    registrationState: (provider: GatewayRegistrationProvider) => Promise<GatewayRegistrationState>;
+    registrationFinish: (provider: GatewayRegistrationProvider, sessionId: string, details: GatewayRegistrationDetails) => Promise<GatewayRegistrationState>;
+    registrationCancel: (provider: GatewayRegistrationProvider, sessionId?: string) => Promise<GatewayRegistrationState>;
     qqQrCancel: (sessionId?: string) => Promise<GatewayQQQrLoginStateDto>;
     status: () => Promise<GatewayStatusDto>;
     listChannels: () => Promise<GatewayStatusDto["channels"]>;

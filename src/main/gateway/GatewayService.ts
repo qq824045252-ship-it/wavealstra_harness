@@ -1,3 +1,6 @@
+import { BusinessBotRegistration } from "./BusinessBotRegistration";
+import { createFeishuRegistrationDriver, createDingTalkRegistrationDriver } from "./BusinessBotRegistrationDrivers";
+import type { GatewayRegistrationProvider, GatewayRegistrationDetails } from "../../shared/gateway-registration";
 import { createHash, randomUUID } from "node:crypto";
 import { GatewayPlatformRegistry, gatewayCapabilities } from "./GatewayPlatformRegistry";
 import { GatewayRouter } from "./GatewayRouter";
@@ -97,6 +100,9 @@ export class GatewayService {
   private readonly qqQrLogin: QQBotQrLogin;
   private qqQrPending?: Promise<void>;
   private qqQrEpoch = 0;
+  private readonly businessQr = new Map<GatewayRegistrationProvider, BusinessBotRegistration>();
+  private readonly businessQrPending = new Map<GatewayRegistrationProvider, Promise<void>>();
+  private readonly businessQrEpoch = new Map<GatewayRegistrationProvider, number>();
   private readonly weixin: WeixinIlinkAdapter;
   private readonly weixinQrLogin: WeixinQrLogin;
   private weixinQrPending?: Promise<void>;
@@ -184,6 +190,12 @@ export class GatewayService {
       onAuthorized: (credentials, assertCurrent, signal) => this.acceptWeixinQrLogin(credentials, assertCurrent, signal),
     };
     this.weixinQrLogin = options.weixinQrLoginFactory?.(weixinQrOptions) ?? new WeixinQrLogin(weixinQrOptions);
+    for (const provider of ["feishu", "dingtalk"] as const) {
+      this.businessQr.set(provider, new BusinessBotRegistration({ provider,
+        driver: provider === "feishu" ? createFeishuRegistrationDriver() : createDingTalkRegistrationDriver(),
+        onAuthorized: (config, current, signal) => this.acceptBusinessRegistration(provider, config, current, signal),
+      }));
+    }
     this.lifecycle = new GatewayLifecycleManager({
       feishu: this.feishu, wecom: this.wecom, wechat: this.wechat,
       safeError: error => this.secrets.error(error),
@@ -192,6 +204,86 @@ export class GatewayService {
       this.platforms.register(adapter, event => inbound(event.message));
       this.adapters.set(adapter.id, adapter);
     }
+  }
+
+  private registration(provider: GatewayRegistrationProvider): BusinessBotRegistration {
+    if (provider !== "feishu" && provider !== "dingtalk") throw new Error("不支持的扫码渠道");
+    return this.businessQr.get(provider)!;
+  }
+  private assertBusinessRegistrationEmpty(provider: GatewayRegistrationProvider): void {
+    const adapter = provider === "feishu" ? this.feishu : this.dingtalk;
+    const stored = this.db.listGatewayChannels().find(channel => channel.id === adapter.id);
+    if (adapter.isConnected() || stored?.connected || (stored && stored.configJson.trim() !== "" && stored.configJson.trim() !== "{}")) {
+      throw new Error("此渠道已有配置或连接，请管理现有机器人；扫码创建不会替换已有账号");
+    }
+  }
+  getBusinessRegistration(provider: GatewayRegistrationProvider) { return this.registration(provider).getState(); }
+  async startBusinessRegistration(provider: GatewayRegistrationProvider, approved: boolean) {
+    const registration = this.registration(provider);
+    if (approved !== true) throw new Error("请明确同意创建机器人并保存凭据");
+    assertGatewayProviderStorage();
+    this.assertBusinessRegistrationEmpty(provider);
+    const cancelled = this.cancelBusinessRegistration(provider);
+    const epoch = this.businessQrEpoch.get(provider);
+    await cancelled;
+    if (epoch !== this.businessQrEpoch.get(provider)) return registration.getState();
+    this.stopping = false;
+    const result = await registration.start(true);
+    if (epoch !== this.businessQrEpoch.get(provider)) return registration.getState();
+    return result;
+  }
+  finishBusinessRegistration(provider: GatewayRegistrationProvider, sessionId: string, details: GatewayRegistrationDetails) {
+    return this.registration(provider).finish(sessionId, details);
+  }
+  async cancelBusinessRegistration(provider: GatewayRegistrationProvider, sessionId?: string) {
+    const registration = this.registration(provider);
+    if (sessionId !== undefined && registration.getState().sessionId !== sessionId) return registration.getState();
+    this.businessQrEpoch.set(provider, (this.businessQrEpoch.get(provider) ?? 0) + 1);
+    registration.cancel(sessionId);
+    const pending = this.businessQrPending.get(provider);
+    if (pending) await pending.catch(() => {});
+    return registration.getState();
+  }
+  private acceptBusinessRegistration(provider: GatewayRegistrationProvider, input: Record<string, unknown>, current: () => void, signal: AbortSignal): Promise<void> {
+    const adapter = provider === "feishu" ? this.feishu : this.dingtalk;
+    const epoch = this.lifecycleEpoch;
+    this.assertBusinessRegistrationEmpty(provider);
+    const owner = this.beginChannelOperation(adapter.id);
+    const operation = (async () => {
+      const stop = () => { if (this.channelOperations.get(adapter.id) === owner) void adapter.disconnect().catch(() => {}); };
+      signal.addEventListener("abort", stop, { once: true });
+      try {
+        current();
+        if (signal.aborted || this.stopping) throw new Error("cancelled");
+        const config = validateGatewayProviderConfig(provider, input);
+        const saved = sealGatewayProviderConfig(provider, config);
+        this.secrets.remember(adapter.id, adapter.type, config);
+        this.channelPolicies.delete(adapter.id);
+        await adapter.connect(config);
+        current();
+        if (signal.aborted || !this.ownsChannelOperation(adapter.id, owner, epoch)) throw new Error("cancelled");
+        this.db.connection.transaction(() => {
+          const stored = this.db.listGatewayChannels().find(channel => channel.id === adapter.id);
+          if (stored?.connected || (stored && stored.configJson.trim() !== "" && stored.configJson.trim() !== "{}")) throw new Error("existing configuration must not be replaced");
+          this.db.upsertGatewayChannel({ id: adapter.id, type: adapter.type, name: adapter.name,
+            configJson: JSON.stringify(saved), connected: true, statusText: adapter.statusText() });
+          adapter.activate();
+        })();
+        this.channelPolicies.set(adapter.id, { allowUsers: toStrArray(config.allowUsers) });
+        this.platforms.resume(adapter.id);
+        this.running = true;
+        try { this.emitEvent({ channelId: adapter.id, direction: "system", text: "扫码接入完成", at: Date.now() }); } catch { /* state remains readable */ }
+      } catch {
+        if (this.channelOperations.get(adapter.id) === owner) {
+          await adapter.disconnect().catch(() => {});
+          if (this.channelOperations.get(adapter.id) === owner) this.channelPolicies.delete(adapter.id);
+        }
+        throw new Error("扫码接入失败；原有保存配置未覆盖");
+      } finally { signal.removeEventListener("abort", stop); }
+    })();
+    this.businessQrPending.set(provider, operation);
+    void operation.finally(() => { if (this.businessQrPending.get(provider) === operation) this.businessQrPending.delete(provider); }).catch(() => {});
+    return operation;
   }
 
   /** A scan is a separate, explicit persistent-access enrollment, never a generic config write. */
@@ -516,6 +608,8 @@ export class GatewayService {
     ++this.lifecycleEpoch;
     this.stopping = true;
     this.platforms.suspend();
+    await this.cancelBusinessRegistration("feishu");
+    await this.cancelBusinessRegistration("dingtalk");
     await this.cancelQQQrLogin();
     await this.cancelWeixinQrLogin();
     for (const a of this.adapters.values()) {
@@ -578,6 +672,8 @@ export class GatewayService {
   }
 
   private async connectChannel(channelId: string, config: Record<string, unknown>): Promise<GatewayStatusDto> {
+    if (channelId === this.feishu.id) await this.cancelBusinessRegistration("feishu");
+    if (channelId === this.dingtalk.id) await this.cancelBusinessRegistration("dingtalk");
     if (channelId === this.weixin.id) throw new Error("微信请使用专用扫码授权入口，不接收手工提交的凭据");
     if (channelId === this.qq.id) throw new Error("QQ 请使用专用扫码授权入口，不接收手工提交的凭据");
     const epoch = this.lifecycleEpoch;
@@ -673,6 +769,8 @@ export class GatewayService {
     const operation = this.beginChannelOperation(channelId);
     const current = () => this.channelOperations.get(channelId) === operation && this.lifecycleEpoch === epoch;
     this.platforms.pause(channelId);
+    if (channelId === this.feishu.id) await this.cancelBusinessRegistration("feishu");
+    if (channelId === this.dingtalk.id) await this.cancelBusinessRegistration("dingtalk");
     if (channelId === this.qq.id) await this.cancelQQQrLogin();
     if (channelId === this.weixin.id) await this.cancelWeixinQrLogin();
     if (!current()) return this.status();

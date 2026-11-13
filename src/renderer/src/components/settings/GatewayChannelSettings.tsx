@@ -26,11 +26,13 @@ export default function GatewayBlock({
   title,
   desc,
   fields,
+  registration,
 }: {
   channelId: string;
   title: string;
   desc: string;
   fields: GatewayField[];
+  registration?: (onConnected: () => void) => ReactNode;
 }): React.JSX.Element {
   const [values, setValues] = useState<Record<string, string>>({});
   const [allowUsers, setAllowUsers] = useState("");
@@ -40,6 +42,9 @@ export default function GatewayBlock({
   const [formError, setFormError] = useState("");
   const [busy, setBusy] = useState(false);
   const [configReady, setConfigReady] = useState(false);
+  const [hasConfig, setHasConfig] = useState(false);
+  const [manualSetup, setManualSetup] = useState(false);
+  const [configRefresh, setConfigRefresh] = useState(0);
   const mounted = useRef(false);
   const lifecycle = useRef(0);
   const statusEpoch = useRef(0);
@@ -79,6 +84,8 @@ export default function GatewayBlock({
       if (!mounted.current || owner !== lifecycle.current) return;
       if (!c) throw new Error("配置不可用");
       setConfigReady(true);
+      setHasConfig(c.hasConfig);
+      if (configRefresh > 0 && dirty.current > 0) return;
       if (dirty.current !== edits) return;
       if (!c.hasConfig) {
         if (channelId === "feishu-default") setValues({ transport: "websocket" });
@@ -105,7 +112,7 @@ export default function GatewayBlock({
     const timer = setInterval(() => void refreshStatus(), 5000);
     return () => { mounted.current = false; lifecycle.current++; statusEpoch.current++; clearInterval(timer); unsubscribe?.(); };
   // Field objects are presentational props; new arrays must not discard an in-progress edit.
-  }, [channelId, fieldKeys, refreshStatus]);
+  }, [channelId, fieldKeys, refreshStatus, configRefresh]);
 
   const connect = async (): Promise<void> => {
     if (operationBusy.current || !configReady) return;
@@ -127,6 +134,7 @@ export default function GatewayBlock({
         .filter(Boolean);
       await window.api?.gateway?.connect(channelId, config);
       if (!mounted.current || owner !== lifecycle.current) return;
+      setHasConfig(true);
       setValues(v => ({ ...v, ...Object.fromEntries(fields.filter(f => f.type === "password").map(f => [f.key, "••••••"])) }));
       await refreshStatus();
     } catch (err) {
@@ -156,6 +164,13 @@ export default function GatewayBlock({
     }
   };
 
+  const offerRegistration = Boolean(registration) && configReady && !hasConfig;
+  const manualVisible = !offerRegistration || manualSetup;
+  const registrationConnected = (): void => {
+    setHasConfig(true); setManualSetup(false);
+    if (dirty.current > 0) setFormError("扫码配置已保存；手工草稿未覆盖，保存手工草稿会更改当前连接。");
+    setConfigRefresh(value => value + 1);
+  };
   return (
     <SettingsSection>
       <div className="settings-card-head">
@@ -166,6 +181,12 @@ export default function GatewayBlock({
       {formError && <div role="alert">{formError}</div>}
       <GatewayConnectionPanel title={title} connected={connected}>
       <div className="settings-card-desc">{desc}</div>
+      {offerRegistration && <div className="settings-card-footer">
+        <button type="button" className="btn" aria-pressed={!manualSetup} onClick={() => setManualSetup(false)}>扫码创建机器人</button>
+        <button type="button" className="btn" aria-pressed={manualSetup} onClick={() => setManualSetup(true)}>已有机器人手工接入</button>
+      </div>}
+      {offerRegistration && !manualSetup && registration?.(registrationConnected)}
+      <div hidden={!manualVisible}>
       {guide && <div className="settings-card-desc">
         <ol>{guide.steps.map((step, index) => <li key={index}>{step}</li>)}</ol>
         <button type="button" className="btn" onClick={() => window.api?.browser?.openExternal?.(guide.url)}>{guide.title}</button>
@@ -207,6 +228,7 @@ export default function GatewayBlock({
         {connected && <button className="btn" disabled={!known || busy} onClick={() => void disconnect()}>
           断开
         </button>}
+      </div>
       </div>
       </GatewayConnectionPanel>
     </SettingsSection>

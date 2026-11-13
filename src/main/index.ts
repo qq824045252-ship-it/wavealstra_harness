@@ -2365,6 +2365,14 @@ function registerIpc(): void {
     }
     return updateGatewayBotBinding(input);
   });
+  const guardRegistration = (event: Electron.IpcMainInvokeEvent) => {
+    if (!isMainAppWindowRequest(event, botManagementWindow,
+      process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href)) throw new Error("只能从应用主窗口配置扫码接入");
+  };
+  ipcMain.handle(GatewayIpc.registrationStart, (event, provider, approved) => { guardRegistration(event); return gatewayService.startBusinessRegistration(provider, approved); });
+  ipcMain.handle(GatewayIpc.registrationState, (event, provider) => { guardRegistration(event); return gatewayService.getBusinessRegistration(provider); });
+  ipcMain.handle(GatewayIpc.registrationFinish, (event, provider, sessionId, details) => { guardRegistration(event); return gatewayService.finishBusinessRegistration(provider, sessionId, details); });
+  ipcMain.handle(GatewayIpc.registrationCancel, (event, provider, sessionId) => { guardRegistration(event); return gatewayService.cancelBusinessRegistration(provider, sessionId); });
   ipcMain.handle(GatewayIpc.listChannels, () => gatewayService.listChannels());
   ipcMain.handle(
     GatewayIpc.connect,

@@ -1,3 +1,4 @@
+import type { GatewayRegistrationProvider, GatewayRegistrationDetails, GatewayRegistrationState } from "../shared/gateway-registration";
 import { BotAvatarIpc } from "../shared/bot-avatar";
 import { SavedArtifactIpc, type SavedArtifactRequest, type SavedArtifactPreview } from "../shared/saved-artifact";
 import { GoogleWorkspaceWriteIpc, type GoogleWorkspaceWriteApi } from "../shared/google-workspace-write";
@@ -1051,6 +1052,10 @@ const api = {
     weixinQrState: (): Promise<GatewayWeixinQrLoginStateDto> => ipcRenderer.invoke(GatewayIpc.weixinQrState),
     qqQrState: (): Promise<GatewayQQQrLoginStateDto> => ipcRenderer.invoke(GatewayIpc.qqQrState),
     weixinQrCancel: (sessionId?: string): Promise<GatewayWeixinQrLoginStateDto> => ipcRenderer.invoke(GatewayIpc.weixinQrCancel, sessionId),
+    registrationStart: (provider: GatewayRegistrationProvider, approved: boolean): Promise<GatewayRegistrationState> => ipcRenderer.invoke(GatewayIpc.registrationStart, provider, approved),
+    registrationState: (provider: GatewayRegistrationProvider): Promise<GatewayRegistrationState> => ipcRenderer.invoke(GatewayIpc.registrationState, provider),
+    registrationFinish: (provider: GatewayRegistrationProvider, sessionId: string, details: GatewayRegistrationDetails): Promise<GatewayRegistrationState> => ipcRenderer.invoke(GatewayIpc.registrationFinish, provider, sessionId, details),
+    registrationCancel: (provider: GatewayRegistrationProvider, sessionId?: string): Promise<GatewayRegistrationState> => ipcRenderer.invoke(GatewayIpc.registrationCancel, provider, sessionId),
     qqQrCancel: (sessionId?: string): Promise<GatewayQQQrLoginStateDto> => ipcRenderer.invoke(GatewayIpc.qqQrCancel, sessionId),
     status: (): Promise<GatewayStatusDto> => ipcRenderer.invoke(GatewayIpc.status),
     listChannels: (): Promise<GatewayStatusDto["channels"]> =>

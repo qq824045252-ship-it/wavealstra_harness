@@ -34,6 +34,7 @@ import ModelsTab from "./ModelsTab";
 import WeixinGatewaySettings from "./WeixinGatewaySettings";
 import QQGatewaySettings from "./QQGatewaySettings";
 import GatewayBlock from "./GatewayChannelSettings";
+import BusinessGatewayRegistration from "./BusinessGatewayRegistration";
 import GatewayBotBindings from "./GatewayBotBindings";
 import SubagentSettingsTab from "./SubagentSettingsTab";
 import ModesTab from "./ModesTab";
@@ -871,6 +872,7 @@ function AssistantTab(): React.JSX.Element {
 
       <GatewayBlock
         channelId="dingtalk-default"
+        registration={onConnected => <BusinessGatewayRegistration provider="dingtalk" onConnected={onConnected} />}
         title="钉钉企业机器人"
         desc="官方 Stream 长连接，无需公网回调。仅接受指定企业与员工消息，任务进度和文件发回原会话；需要机器人消息与文件权限。凭据加密保存。"
         fields={[
@@ -892,6 +894,7 @@ function AssistantTab(): React.JSX.Element {
       />
       <GatewayBlock
         channelId="feishu-default"
+        registration={onConnected => <BusinessGatewayRegistration provider="feishu" onConnected={onConnected} />}
         title="飞书"
         desc="推荐 websocket：飞书官方 SDK 长连接，无需公网回调。保留 webhook 模式，需 Verification Token 与公网 /feishu 回调。当前仅文本消息，不含 Hermes 富媒体、卡片等能力。"
         fields={[
