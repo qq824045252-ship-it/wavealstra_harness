@@ -1,6 +1,7 @@
 import { BotAvatar } from "../common/BotAvatar";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { z } from 'zod';
+import { useAppStore } from '@/store/appStore';
 import type {
   BotCollaborationDto, BotCollaborationHistoryPage, BotCollaborationMessageDto, BotCollaborationsPage, BotCollaborationsQuery,
 } from '@shared/bot-collaboration';
@@ -8,7 +9,7 @@ import { botSendSchema } from '@shared/bot-conversation';
 import { IconBot, IconChevronLeft, IconX } from '@/components/common/icons';
 import ChatMarkdown from './BotChatMarkdown';
 import { ChatImageScope } from '@/components/chat/ChatImage';
-import { BotCallThread, collaborationElapsed, collaborationStatus, collaborationTotalEnd, collaborationWorkStatus } from './BotCallThread';
+import { BotCallThread, collaborationDisplayStatus, collaborationParticipantUnavailable, collaborationElapsed, collaborationStatus, collaborationTotalEnd, collaborationWorkStatus } from './BotCallThread';
 import './BotCollaborationView.css';
 
 const PAGE_SIZE = 50;
@@ -81,7 +82,7 @@ function Followup({ collaboration, botId, onAccepted }: { collaboration: BotColl
   const flight = useRef(false);
   const update = (next: FollowupDraft) => { setValue(next); saveDraft(key, next); };
   const submit = async () => {
-    if (flight.current || !collaboration.originAvailable || (!value.pending && !value.draft.trim())) return;
+    if (flight.current || collaborationParticipantUnavailable(collaboration) || !collaboration.originAvailable || (!value.pending && !value.draft.trim())) return;
     const request = value.pending ?? {
       botId: collaboration.sourceBotId, conversationId: collaboration.sourceConversationId,
       selectedCollaborationId: collaboration.collaborationId, requestId: crypto.randomUUID(), text: value.draft.trim(),
@@ -102,6 +103,7 @@ function Followup({ collaboration, botId, onAccepted }: { collaboration: BotColl
     } catch (cause) { setError(cause instanceof Error ? cause.message : '发送结果未确认，请按原请求重试。'); }
     finally { flight.current = false; setSending(false); }
   };
+  if (collaborationParticipantUnavailable(collaboration)) return <p className="bot-collaboration-readonly" role="status">参与协作的 Bot 已删除。历史消息和成果仍可查看，不能向已删除的 Bot 发送跟进。</p>;
   if (botId !== collaboration.sourceBotId) return <p className="bot-collaboration-readonly">这是 {collaboration.sourceDisplayName} 发起的协作。可在来源 Bot 的协作记录中继续。</p>;
   if (!collaboration.originAvailable) return <p className="bot-collaboration-readonly" role="status">原始对话已不可用。保留的记录不会转发到其他对话。</p>;
   return <form className="bot-collaboration-followup" onSubmit={event => { event.preventDefault(); void submit(); }}>
@@ -168,13 +170,14 @@ function CollaborationHistory({ botId, collaborationId, onOpenWork }: { botId: s
   const relation = page?.collaboration;
   const executionStart = relation?.work ? relation.work.startedAt : relation?.times.startedAt ?? null;
   const recordedExecutionEnd = relation?.work ? relation.work.endedAt : relation?.times.endedAt ?? null;
-  const executionEnd = recordedExecutionEnd ?? (relation?.work ? relation.work.executionStatus === 'running' ? Date.now() : null
+  const participantsUnavailable = relation ? collaborationParticipantUnavailable(relation) : false;
+  const executionEnd = recordedExecutionEnd ?? (participantsUnavailable ? null : relation?.work ? relation.work.executionStatus === 'running' ? Date.now() : null
     : relation?.status === 'started' ? Date.now() : null);
   return <div className="bot-collaboration-body" ref={body} tabIndex={-1}>
     {error && <p role="alert" className="bot-alert">{error} <button type="button" onClick={refresh}>重试读取</button></p>}
     {!page && !error && <p role="status">正在读取协作记录…</p>}
     {page && relation && <>
-      <header className="bot-collaboration-participants"><BotAvatar botId={relation.sourceBotId} name={relation.sourceDisplayName} /><BotAvatar botId={relation.targetBotId} name={relation.targetDisplayName} /><div><h2>{relation.sourceDisplayName} 与 {relation.targetDisplayName}</h2><p>{page.totalMessages} 条消息 · {collaborationStatus(relation.status)}</p></div></header>
+      <header className="bot-collaboration-participants"><BotAvatar botId={relation.sourceBotId} name={relation.sourceDisplayName} /><BotAvatar botId={relation.targetBotId} name={relation.targetDisplayName} /><div><h2>{relation.sourceDisplayName} 与 {relation.targetDisplayName}</h2><p>{page.totalMessages} 条消息 · {collaborationDisplayStatus(relation)}</p></div></header>
       <dl className="bot-collaboration-times" aria-label="协作回执时间">
         <div><dt>发送</dt><dd>{recordedTime(relation.times.sentAt)}</dd></div>
         <div><dt>送达</dt><dd>{recordedTime(relation.times.deliveredAt)}</dd></div>
@@ -198,7 +201,7 @@ function CollaborationHistory({ botId, collaborationId, onOpenWork }: { botId: s
           {message.workFeedback?.report?.completion?.outcome === 'partial' && <p className="bot-collaboration-partial">这是阶段成果，事项仍需继续。</p>}
         </li>)}
       </ol>
-      {page.previews.map(preview => <section className="bot-collaboration-preview" key={preview.exchangeId} aria-label="正在生成的回复"><header><BotAvatar botId={preview.senderBotId} name={preview.senderDisplayName} /><strong>{preview.senderDisplayName}</strong><span>正在回复，尚未计为消息</span></header><ChatMarkdown resolveTaskFiles={false} text={preview.text} streaming /></section>)}
+      {page.previews.map(preview => <section className="bot-collaboration-preview" key={preview.exchangeId} aria-label={participantsUnavailable ? "历史未完成片段" : "正在生成的回复"}><header><BotAvatar botId={preview.senderBotId} name={preview.senderDisplayName} /><strong>{preview.senderDisplayName}</strong><span>{participantsUnavailable ? "历史未完成片段，未计为消息" : "正在回复，尚未计为消息"}</span></header><ChatMarkdown resolveTaskFiles={false} text={preview.text} streaming={!participantsUnavailable} /></section>)}
       </ChatImageScope>
       <Followup key={`${botId}:${collaborationId}`} collaboration={relation} botId={botId} onAccepted={refresh} />
     </>}
@@ -206,6 +209,7 @@ function CollaborationHistory({ botId, collaborationId, onOpenWork }: { botId: s
 }
 
 function useCollaborations(botId: string, direction: NonNullable<BotCollaborationsQuery['direction']> = 'all', limit = PAGE_SIZE) {
+  const membership = useAppStore(state => state.botIdentities.map(bot => bot.botId).sort().join('\n'));
   const [page, setPage] = useState<BotCollaborationsPage>();
   const [error, setError] = useState('');
   const [loadingMore, setLoadingMore] = useState(false);
@@ -214,6 +218,7 @@ function useCollaborations(botId: string, direction: NonNullable<BotCollaboratio
   const moreFlight = useRef(false);
   useEffect(() => {
     const current = ++generation.current;
+    setPage(undefined); setLoadingMore(false);
     let inFlight = false;
     const read = async () => {
       if (inFlight) return;
@@ -234,7 +239,7 @@ function useCollaborations(botId: string, direction: NonNullable<BotCollaboratio
     const timer = setInterval(refreshVisible, direction === 'incoming' ? 2000 : 5000);
     document.addEventListener('visibilitychange', refreshVisible);
     return () => { generation.current++; clearInterval(timer); document.removeEventListener('visibilitychange', refreshVisible); };
-  }, [botId, direction, limit, retry]);
+  }, [botId, direction, limit, retry, membership]);
   const more = async () => {
     if (!page?.nextCursor || moreFlight.current) return;
     const current = generation.current;
@@ -259,7 +264,7 @@ export function BotIncomingCollaborations({ botId, onOpen, empty }: {
     <div className="bot-message-list">{page?.items.map(item => <article key={item.collaborationId} className="bot-message msg-row assistant" data-incoming-collaboration={item.collaborationId} aria-label={`${item.targetDisplayName}的协作回复`}>
       <div className="bot-message-author"><BotAvatar botId={item.targetBotId} name={item.targetDisplayName} /><strong>{item.targetDisplayName}</strong></div>
       <div className="bot-assistant-content bot-incoming-reply">
-        <ChatMarkdown text={item.replyPreview || item.work?.progressSummary || `已收到来自 ${item.sourceDisplayName} 的协作请求，${collaborationStatus(item.status)}。`} streaming={false} resolveTaskFiles={false} />
+        <ChatMarkdown text={item.replyPreview || item.work?.progressSummary || `已收到来自 ${item.sourceDisplayName} 的协作请求，${collaborationDisplayStatus(item)}。`} streaming={false} resolveTaskFiles={false} />
       </div>
       <BotCallThread collaborations={[item]} viewerBotId={botId} onOpenCollaboration={onOpen} />
     </article>)}</div>
@@ -275,7 +280,7 @@ function CollaborationList({ botId, onOpen }: { botId: string; onOpen: (id: stri
     {!page && !error && <p role="status">正在读取协作列表…</p>}
     {page && <><p>{page.total} 段协作</p>{page.items.length === 0 && <p>还没有协作记录。</p>}
       <ul className="bot-collaboration-list">{page.items.map(item => <li key={item.collaborationId}><button type="button" onClick={() => onOpen(item.collaborationId)} data-collaboration-id={item.collaborationId}>
-        <span className="bot-collaboration-list-title"><BotAvatar botId={item.sourceBotId === botId ? item.targetBotId : item.sourceBotId} name={item.sourceBotId === botId ? item.targetDisplayName : item.sourceDisplayName} />{item.sourceBotId === botId ? `发给 ${item.targetDisplayName}` : `来自 ${item.sourceDisplayName}`}</span><span>{item.messageCount} 条消息 · {collaborationStatus(item.status)}</span><span>{recordedTime(item.updatedAt)}{item.workId && ' · 已关联个人事项'}</span>
+        <span className="bot-collaboration-list-title"><BotAvatar botId={item.sourceBotId === botId ? item.targetBotId : item.sourceBotId} name={item.sourceBotId === botId ? item.targetDisplayName : item.sourceDisplayName} />{item.sourceBotId === botId ? `发给 ${item.targetDisplayName}` : `来自 ${item.sourceDisplayName}`}</span><span>{item.messageCount} 条消息 · {collaborationDisplayStatus(item)}</span><span>{recordedTime(item.updatedAt)}{item.workId && ' · 已关联个人事项'}</span>
       </button></li>)}</ul>
       {page.nextCursor && <button type="button" className="bot-collaboration-more" onClick={() => void more()} disabled={loadingMore}>{loadingMore ? '正在加载…' : '加载更多协作'}</button>}
     </>}

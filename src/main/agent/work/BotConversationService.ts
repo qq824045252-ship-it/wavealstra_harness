@@ -192,6 +192,11 @@ export class BotConversationService {
       this.assertTeam(request.botId, request.teamId);
       const prior = this.messages.receipt(this.options.userId, request.botId, request.requestId);
       if (!prior) this.assertBot(request.botId, true);
+      if (!prior && request.selectedCollaborationId) {
+        const relation = this.collaborations.repo.scoped(this.options.userId, request.botId, request.selectedCollaborationId);
+        if (relation.sourceBotExists === false || relation.targetBotExists === false)
+          throw new Error("参与协作的 Bot 已删除，不能发送新的跟进；历史记录仍可查看。");
+      }
       if (!prior && request.selectedWorkId) this.assertWork(request.botId, request.selectedWorkId, request.teamId, request.conversationId);
       if (!prior && request.referenceMessageId) {
         const message = this.messages.message(request.referenceMessageId);

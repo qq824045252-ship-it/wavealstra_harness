@@ -177,6 +177,20 @@ try {
   assert.equal(reopened.get("u", relation.collaborationId)?.times.deliveredAt, 1420);
   assert.equal(reopened.list("u", { botId: "target", direction: "incoming" }).items.find(item => item.collaborationId === relation.collaborationId)?.replyPreview,
     "Real partial output", "received summaries survive restart and deletion of source chat without fabricated messages");
+  const beforeDeletion = reopened.get("u", relation.collaborationId)!;
+  assert.equal(beforeDeletion.sourceBotExists, true);
+  assert.equal(beforeDeletion.targetBotExists, true);
+  db.prepare("DELETE FROM bots WHERE bot_id=?").run("target");
+  const deleted = reopened.list("u", { botId: "source" }).items.find(item => item.collaborationId === relation.collaborationId)!;
+  assert.equal(deleted.targetBotExists, false, "current registry deletion is projected on next list read");
+  assert.equal(deleted.sourceBotExists, true);
+  assert.equal(deleted.targetDisplayName, beforeDeletion.targetDisplayName, "historical identity remains readable");
+  assert.equal(deleted.messageCount, beforeDeletion.messageCount);
+  assert.equal(reopened.history("u", { botId: "source", collaborationId: relation.collaborationId }).totalMessages, 3);
+  assert.equal(deleted.workId, "work-target", "deletion must not discard or relink the historical Work");
+  db.prepare("DELETE FROM bots WHERE bot_id=?").run("source");
+  assert.equal(reopened.get("u", relation.collaborationId)?.sourceBotExists, false);
+  assert.equal(reopened.get("u", relation.collaborationId)?.originAvailable, false);
   console.log("bot collaboration repository: durable identity, original scope, replay, pagination, receipts and deletion PASS");
 } finally {
   db.close();

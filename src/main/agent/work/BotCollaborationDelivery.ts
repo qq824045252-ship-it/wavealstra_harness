@@ -32,6 +32,11 @@ export class BotCollaborationDelivery {
       sourceBotId: source.bot_id, sourceConversationId: source.conversation_id, sourceRequestId: source.request_id,
       sourceUserMessageId: source.user_message_id, sourceAssistantMessageId: source.assistant_message_id, ...(configuration ? { configuration } : {}), ...(review ? { review } : {}) };
     this.options.works.transaction(() => {
+      if (!this.messages.peers.get(operationId)) {
+        const current = this.repo.get(this.options.userId, row.collaborationId);
+        if (!current || current.sourceBotExists === false || current.targetBotExists === false)
+          throw new Error("参与协作的 Bot 已删除，不能创建新的协作发送；历史回执仍保留。");
+      }
       assertBotContactAdmission(this.options.db, source,
         review ? botContactIntent(this.options.db, source) : configuration?.organizationIntentId, row.collaborationId);
       guard?.();

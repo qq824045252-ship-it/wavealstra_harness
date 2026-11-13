@@ -24,6 +24,8 @@ export const botCollaborationSchema = z.object({
   createdAt: time, updatedAt: time, messageCount: z.number().int().nonnegative(),
   status: botCollaborationStatusSchema, times: botCollaborationTimesSchema,
   originAvailable: z.boolean(),
+  /** Current registry presence, separate from immutable historical participant names. */
+  sourceBotExists: z.boolean().optional(), targetBotExists: z.boolean().optional(),
   /** Bounded excerpts from persisted exchanges, never streaming previews. */
   requestPreview: z.string().max(500).optional(), replyPreview: z.string().max(500).optional(),
   work: botCollaborationWorkSchema.optional(),

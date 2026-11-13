@@ -166,7 +166,9 @@ export class BotCollaborationRepository {
     const base = botCollaborationSchema.parse(JSON.parse(row.value_json));
     const count = z.object({ total: z.number() }).parse(this.db.prepare(`SELECT COUNT(*) total FROM bot_collaboration_messages
       WHERE collaboration_id=?`).get(collaborationId)).total;
-    const originAvailable = Boolean(this.db.prepare(`SELECT 1 FROM bot_conversations
+    const sourceBotExists = Boolean(this.db.prepare("SELECT 1 FROM bots WHERE user_id=? AND bot_id=?").get(userId, base.sourceBotId));
+    const targetBotExists = Boolean(this.db.prepare("SELECT 1 FROM bots WHERE user_id=? AND bot_id=?").get(userId, base.targetBotId));
+    const originAvailable = sourceBotExists && Boolean(this.db.prepare(`SELECT 1 FROM bot_conversations
       WHERE user_id=? AND bot_id=? AND conversation_id=?`).get(userId, base.sourceBotId, base.sourceConversationId));
     const work = row.work_id ? this.workProjection(userId, collaborationId, row.work_id) : undefined;
     const excerpts = z.object({ requestPreview: z.string().nullable(), replyPreview: z.string().nullable() }).parse(this.db.prepare(`SELECT
@@ -177,7 +179,7 @@ export class BotCollaborationRepository {
           AND json_extract(value_json,'$.kind')<>'request' ORDER BY ordinal DESC LIMIT 1) replyPreview`)
       .get({ relation: collaborationId, target: base.targetBotId }));
     return botCollaborationSchema.parse({ ...base, workId: row.work_id, updatedAt: row.updated_at,
-      messageCount: count, status: row.status, times: JSON.parse(row.times_json), originAvailable,
+      messageCount: count, status: row.status, times: JSON.parse(row.times_json), originAvailable, sourceBotExists, targetBotExists,
       ...(excerpts.requestPreview !== null ? { requestPreview: excerpts.requestPreview } : {}),
       ...(excerpts.replyPreview !== null ? { replyPreview: excerpts.replyPreview } : {}), ...(work ? { work } : {}) });
   }

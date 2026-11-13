@@ -20,7 +20,14 @@ export function collaborationStatus(status: BotCollaborationStatus): string {
     case 'unknown': return '状态待核实';
   }
 }
+export function collaborationParticipantUnavailable(item: BotCollaborationDto): boolean {
+  return item.sourceBotExists === false || item.targetBotExists === false;
+}
+export function collaborationDisplayStatus(item: BotCollaborationDto): string {
+  return collaborationParticipantUnavailable(item) ? 'Bot 已删除 · 历史记录' : collaborationStatus(item.status);
+}
 function collaborationOngoing(item: BotCollaborationDto): boolean {
+  if (collaborationParticipantUnavailable(item)) return false;
   return item.work ? item.work.lifecycle !== 'closed' : !['returned', 'failed', 'cancelled', 'unknown'].includes(item.status);
 }
 export function collaborationTotalEnd(item: BotCollaborationDto, now: number): number | null {
@@ -102,7 +109,7 @@ export function BotCallThread({ calls, collaborations, onOpenCollaboration, rend
           aria-label={`查看与 ${partnerName} 的协作记录，${item.messageCount} 条消息`}>
           <span className="bot-collaboration-summary-target"><BotAvatar botId={partnerId} name={partnerName} /><span title={partnerName}>{partnerName}</span></span>
           <span className="bot-collaboration-summary-count">{item.messageCount} 条消息</span>
-          <span className="bot-collaboration-summary-meta"><span className="bot-collaboration-summary-status">{collaborationStatus(item.status)}{item.work ? ` · ${collaborationWorkStatus(item.work)}` : item.workId ? ' · 已关联事项' : ''}</span><span data-collaboration-elapsed>耗时 {collaborationElapsed(item, now)}</span></span>
+          <span className="bot-collaboration-summary-meta"><span className="bot-collaboration-summary-status">{collaborationDisplayStatus(item)}{item.work ? ` · ${collaborationWorkStatus(item.work)}` : item.workId ? ' · 已关联事项' : ''}</span><span data-collaboration-elapsed>耗时 {collaborationElapsed(item, now)}</span></span>
           <IconChevronRight size={13} />
         </button>})}
       </div>
