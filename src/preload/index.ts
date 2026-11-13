@@ -355,6 +355,7 @@ const api = {
   listWorkspaceFiles: (root: string): Promise<WorkspaceFileNodeDto[]> =>
     ipcRenderer.invoke("workspace:listFiles", root),
   savedArtifact: {
+    saveMessageHtml: (request: import('../shared/saved-artifact').MessageHtmlRequest): Promise<import('../shared/saved-artifact').MessageHtmlArtifact> => ipcRenderer.invoke(SavedArtifactIpc.saveMessageHtml, request),
     openSystem: (request: SavedArtifactRequest): Promise<void> => ipcRenderer.invoke(SavedArtifactIpc.openSystem, request),
     saveAs: (request: SavedArtifactRequest): Promise<{ canceled: boolean; path?: string }> => ipcRenderer.invoke(SavedArtifactIpc.saveAs, request),
     prepare: (request: SavedArtifactRequest): Promise<SavedArtifactPreview> => ipcRenderer.invoke(SavedArtifactIpc.prepare, request),

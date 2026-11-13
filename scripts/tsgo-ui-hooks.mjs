@@ -1,11 +1,12 @@
 import {registerHooks} from 'node:module';
-import {existsSync,readFileSync} from 'node:fs';
+import {existsSync,readFileSync,statSync} from 'node:fs';
 import {resolve} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 const compiled=process.env.TSGO_UI_COMPILED;
 if(!compiled)throw new Error('Missing compiled test root');
 registerHooks({
  resolve(specifier,context,next){
+  if(specifier==='@/lib/monacoWorkerEntry?worker&inline')return {url:'data:text/javascript,export default class {constructor(){throw new Error(%22Monaco worker is outside this DOM fixture%22)}}',shortCircuit:true};
   let path;
   if(specifier==='@/lib/botAvatarAssets')path=resolve(compiled,'scripts/bot-avatar-ui-assets.js');
   else if(specifier.startsWith('@/'))path=resolve(compiled,'src/renderer/src',specifier.slice(2));
@@ -13,11 +14,12 @@ registerHooks({
   else if(specifier.startsWith('.')&&context.parentURL?.startsWith('file:'))path=fileURLToPath(new URL(specifier,context.parentURL));
   if(path){
    if(path.endsWith('.css'))return {url:'data:text/javascript,export default {}',shortCircuit:true};
-   for(const candidate of [path,path+'.js',resolve(path,'index.js')])if(existsSync(candidate))return {url:pathToFileURL(candidate).href,shortCircuit:true};
+   for(const candidate of [path,path+'.js',resolve(path,'index.js')])if(existsSync(candidate)&&statSync(candidate).isFile())return {url:pathToFileURL(candidate).href,shortCircuit:true};
   }
   return next(specifier,context);
  },
  load(url,context,next){
+  if(url.endsWith('.css'))return {format:'module',source:'export default {}',shortCircuit:true};
   if(url.startsWith(pathToFileURL(compiled).href+'/')&&url.endsWith('.json'))return {format:'module',source:'export default '+readFileSync(fileURLToPath(url),'utf8'),shortCircuit:true};
   if(url.startsWith(pathToFileURL(compiled).href)&&url.endsWith('.js'))return {format:'module',source:readFileSync(fileURLToPath(url),'utf8'),shortCircuit:true};
   return next(url,context);

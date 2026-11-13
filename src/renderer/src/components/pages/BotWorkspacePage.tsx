@@ -36,6 +36,7 @@ import { IconStop, IconPlus, IconArchive, IconChevronDown, IconArrowUp, IconBot,
 import { activeBotReply, personalBotWork, linkedConversationWork, botMessageStatus, botMessageWorkLinks, botReplyQuestions, botWorkTimeline, shouldSendBotComposer, type BotWorkspaceView } from "@/lib/botWorkspacePresentation";
 import { BotWorkBrowser } from "./BotWorkBrowser";
 import { BotResultReport, BotReturnedFiles } from "./BotWorkResult";
+import BotMessageHtmlFiles from "./BotMessageHtmlFiles";
 import { BotActivityMonitor } from "./BotActivityMonitor";
 import { BotDeletion } from "./BotDeletion";
 import { BotExecutionSettings } from "./BotExecutionSettings";
@@ -481,6 +482,7 @@ export function BotMessage({ message, botName, works, onOpenWork, onOpenCollabor
         </div>) : message.text ? renderMarkdown(message.text) : null}
       {(showActivity || !hasContent) && <p className="bot-reply-placeholder" role={running ? "status" : undefined}>{message.status === "completed" ? "没有文本回复" : botMessageStatus(message)}{running && <span className="bot-typing-dots" aria-hidden="true">···</span>}</p>}
       <BotReturnedFiles message={message} />
+      <BotMessageHtmlFiles message={message} />
     </div>}
     {linkedWorkIds.length > 0 && <div className="bot-message-work-links">{linkedWorkIds.map(workId => <button type="button" key={workId} onClick={() => onOpenWork(workId)}><IconListTodo size={14} /><span>{works.find(work => work.workId === workId)?.title ?? (message.workFeedback?.workId === workId ? message.workFeedback.report?.title : undefined) ?? "查看关联事项"}</span><IconChevronRight size={14} /></button>)}</div>}
     {externalTask && <div className="bot-message-work-links"><button type="button" onClick={() => useAppStore.getState().setActiveTask(externalTask.id)}><IconBot size={14} /><span>打开外部 Agent 任务</span><IconChevronRight size={14} /></button></div>}

@@ -1275,6 +1275,9 @@ export class AgentService {
       .catch(error => { throw new Error(`BOT_SELECTION_REJECTED: ${error instanceof Error ? error.message : String(error)}`); });
     return service.send(input, frozen);
   }
+  botMessageForHtmlExport(request: import('../../shared/saved-artifact').MessageHtmlRequest) {
+    return this.requireBotConversations().messageForHtmlExport(request);
+  }
   botActiveRequests() { return this.requireBotConversations().activeRequests(); }
   botCollaborations(request: unknown) { return this.requireBotConversations().collaborations.list(request); }
   botCollaborationHistory(request: unknown) { return this.requireBotConversations().collaborations.history(request); }

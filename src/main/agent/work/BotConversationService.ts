@@ -276,6 +276,19 @@ export class BotConversationService {
 
   activeRequests() { return this.messages.activeRequests(this.options.userId); }
 
+  messageForHtmlExport(request: import('../../../shared/saved-artifact').MessageHtmlRequest) {
+    this.assertBot(request.botId, false);
+    const conversation = this.messages.conversation(this.options.userId, request.botId, request.conversationId);
+    const sourceKind = this.options.db.prepare('SELECT source_kind FROM bot_conversations WHERE conversation_id=? AND user_id=?').pluck().get(request.conversationId, this.options.userId);
+    if (!conversation || conversation.bot_id !== request.botId || sourceKind !== 'user')
+      throw new Error('消息不属于可导出的用户会话');
+    this.assertTeam(request.botId, conversation.team_id ?? undefined);
+    const message = this.messages.message(request.messageId);
+    if (!message || message.conversationId !== conversation.conversation_id || message.botId !== request.botId)
+      throw new Error('消息不属于当前会话');
+    return message;
+  }
+
   history(input: unknown) {
     const request = botHistorySchema.parse(input);
     this.assertBot(request.botId, false);

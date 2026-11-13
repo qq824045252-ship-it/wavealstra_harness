@@ -1,4 +1,5 @@
 import { SavedArtifactActions } from "./artifact/SavedArtifactActions";
+import { BotMessageHtmlService } from "./artifact/BotMessageHtmlService";
 import { WindowsNotificationActivation } from "./platform/notification-activation";
 import { normalizeBotAvatar } from "./agent/work/BotAvatarImageDecoder";
 import { BotAvatarIpc } from "../shared/bot-avatar";
@@ -1022,6 +1023,11 @@ function registerIpc(): void {
     shell.showItemInFolder(filePath);
   });
 
+  const messageHtml = new BotMessageHtmlService(getMyBuddyDir(), request => agentService.botMessageForHtmlExport(request));
+  ipcMain.handle(SavedArtifactIpc.saveMessageHtml, (event, request) => {
+    if (!isMainAppWindowRequest(event, botManagementWindow, process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href)) throw new Error('仅应用主界面可以保存消息 HTML');
+    return messageHtml.save(request);
+  });
   const savedArtifactActions = new SavedArtifactActions({
     storageRoot: getMyBuddyDir(),
     exportRoot: join(app.getPath("temp"), "mybuddy-saved-exports"),
