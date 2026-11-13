@@ -22,6 +22,7 @@
 .sidebar-bot-state { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .sidebar-bot-work { flex:0 0 auto; padding:0 5px; border-radius:5px; background:var(--bg-hover); color:var(--fg-secondary); font-size:clamp(10px,calc(var(--font-ui-size,15px) * .72),12px); line-height:16px; font-variant-numeric:tabular-nums; }
 .sidebar-bot-work[data-tone="active"] { background:var(--bg-active); color:var(--fg); font-weight:600; }
+.sidebar-bot-work[data-tone="reply"] { background:color-mix(in srgb, var(--accent) 14%, transparent); color:var(--accent); font-weight:600; }
 .bot-display-actions > button { display:grid; place-items:center; width:32px; height:32px; border-radius:8px; }
 .bot-display-groups :is(button,summary):focus-visible, .bot-teams-navigation button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 @media(pointer:coarse) { .bot-display-actions > button { width:44px; height:44px; } }

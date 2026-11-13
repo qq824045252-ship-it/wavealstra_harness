@@ -5,6 +5,7 @@ export const EMPTY_BOT_DIRECTORY_ACTIVITY: BotDirectoryActivitySnapshotDto = { b
 export type BotPresenceState = "working" | "idle" | "offline" | "unknown" | "paused" | "disabled";
 export interface BotPresence { state: BotPresenceState; label: string }
 export interface BotWorkBadge { key: "active" | "completed"; label: string; value: number; title: string }
+export interface BotReplyBadge { label: "回复中"; title: string }
 
 /** One unfinished Work or one queued/streaming foreground answer means 工作中.
  * `live` is the reply this window already renders, ahead of the host count.
@@ -18,6 +19,13 @@ export function botPresence(bot: { status: BotLifecycleStatus } | null | undefin
   if (!host.online) return { state: "offline", label: "离线" };
   const busy = live || (activity?.activeWorks ?? 0) > 0 || (activity?.activeReplies ?? 0) > 0;
   return busy ? { state: "working", label: "工作中" } : { state: "idle", label: "空闲" };
+}
+
+/** Foreground output is a state, not a Work count, so it never joins 进行中/已完成. */
+export function botReplyBadge(activity?: BotDirectoryActivityDto, live = false): BotReplyBadge | null {
+  const replies = Math.max(activity?.activeReplies ?? 0, live ? 1 : 0);
+  if (replies === 0) return null;
+  return { label: "回复中", title: replies > 1 ? `${replies} 条回复正在输出` : "正在输出回复" };
 }
 
 /** Zero counters stay silent: an empty badge would add noise, not information. */

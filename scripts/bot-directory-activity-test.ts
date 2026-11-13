@@ -8,7 +8,7 @@ import { WorkService, DESKTOP_USER_GRANTS } from '../src/main/agent/work/WorkSer
 import { WorkListQuery } from '../src/main/agent/work/WorkListQuery';
 import { readBotDirectoryActivity } from '../src/main/agent/work/BotDirectoryActivity';
 import { LOCAL_USER_ID, type WorkActor } from '../src/shared/bot-work';
-import { botPresence, botWorkBadges } from '../src/renderer/src/lib/botDirectoryActivity';
+import { botPresence, botReplyBadge, botWorkBadges } from '../src/renderer/src/lib/botDirectoryActivity';
 
 const root = mkdtempSync(join(tmpdir(), 'bot-directory-activity-'));
 const db = new AppDatabase(join(root, 'app.db'));
@@ -103,6 +103,14 @@ try {
   assert.deepEqual(botWorkBadges({ activeWorks: 2, completedWorks: 0, activeReplies: 3 }).map(badge => badge.label), ['进行中'], 'an empty counter stays silent');
   assert.deepEqual(botWorkBadges({ activeWorks: 2, completedWorks: 6, activeReplies: 1 }).map(badge => `${badge.label}${badge.value}`), ['进行中2', '已完成6']);
   assert.deepEqual(botWorkBadges(undefined), []);
+  // Foreground output is its own badge, never a Work count.
+  assert.equal(botReplyBadge({ activeWorks: 0, completedWorks: 3, activeReplies: 0 }), null);
+  assert.deepEqual(botReplyBadge({ activeWorks: 0, completedWorks: 3, activeReplies: 1 }), { label: '回复中', title: '正在输出回复' });
+  assert.equal(botReplyBadge({ activeWorks: 0, completedWorks: 3, activeReplies: 2 })?.title, '2 条回复正在输出');
+  assert.deepEqual(botReplyBadge(undefined, true), { label: '回复中', title: '正在输出回复' });
+  assert.equal(botReplyBadge(undefined, false), null);
+  assert.deepEqual(botWorkBadges({ activeWorks: 2, completedWorks: 5, activeReplies: 4 }).map(badge => badge.value), [2, 5],
+    'an in-flight reply never inflates 进行中/已完成');
 
   console.log('PASS bot directory activity: personal/team Work counters match the tabs, foreground output counts independently and clears on completion, reads are side-effect free, presence and badges follow unfinished Work and replies');
 } finally {

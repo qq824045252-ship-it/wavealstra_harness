@@ -27,6 +27,7 @@
 .bot-presence.is-working { background:var(--danger); }
 .bot-work-badge { padding:0 5px; border-radius:5px; background:var(--bg-hover); color:var(--fg-secondary); font-size:10px; line-height:16px; font-variant-numeric:tabular-nums; }
 .bot-work-badge[data-tone="active"] { background:var(--bg-active); color:var(--fg); font-weight:600; }
+.bot-work-badge[data-tone="reply"] { background:color-mix(in srgb, var(--accent) 14%, transparent); color:var(--accent); font-weight:600; }
 .bot-workspace-actions { display:flex; align-items:center; gap:6px; }
 .bot-view-tabs { display:flex; align-items:center; gap:8px; padding:0 24px 12px; border-bottom:1px solid var(--border-subtle); overflow-x:auto; flex-shrink:0; }
 .bot-view-tabs button { flex-shrink:0; gap:7px; padding:8px 12px; border:1px solid transparent; color:var(--fg-secondary); background:transparent; }
