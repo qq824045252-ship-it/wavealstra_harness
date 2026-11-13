@@ -13,6 +13,8 @@ import { BotRegistry } from "../src/main/agent/work/BotRegistry";
 import { WorkService, DESKTOP_USER_GRANTS } from "../src/main/agent/work/WorkService";
 import { BotConversationRepository } from "../src/main/agent/work/BotConversationRepository";
 import { WorkConversationFeedback } from "../src/main/agent/work/WorkConversationFeedback";
+import { readWorkPublishedReport } from "../src/main/agent/work/WorkPublishedReport";
+import { BotCollaborationRepository } from "../src/main/agent/work/BotCollaborationRepository";
 import { DEFAULT_BOT_ID, LOCAL_USER_ID } from "../src/shared/bot-work";
 
 const root = mkdtempSync(join(tmpdir(), "work-conversation-feedback-"));
@@ -471,5 +473,59 @@ try {
         "recovery must not replay silent baseline or unchanged results");
     }
   }
+  const reviewedWork = create("detail-published-review");
+  const reviewedBinding = { ...reportBinding, bindingId: "detail-published-binding", workId: reviewedWork.workId,
+    taskId: "detail-published-task", operationId: "detail-published-operation", intentRevision: reviewedWork.intentRevision,
+    ownerEpoch: reviewedWork.ownerEpoch, inputSnapshotId: reviewedWork.inputSnapshotId };
+  works.repo.insertBinding(reviewedBinding);
+  const reviewFeedback = new WorkConversationFeedback({ db: db.connection, userId: LOCAL_USER_ID, works, isAuthority: () => authority });
+  assert.equal(works.getDetailProjection(reviewedWork.workId)?.publishedReport, undefined, "execution completion alone is not a published conclusion");
+  assert(reviewFeedback.deliverCompletion({ bindingId: reviewedBinding.bindingId, eventId: "detail-final", category: "result",
+    text: "仅完成两份报告，现场核验尚未完成。", completion: { outcome: "partial", nextStep: "deliver" }, primaryArtifactRefs: [] }));
+  const savedReview = history().messages.find(message => message.workFeedback?.eventId === "detail-final")!;
+  const detailReview = works.getDetailProjection(reviewedWork.workId)!.publishedReport!;
+  assert.deepEqual(detailReview.report, savedReview.workFeedback!.report, "details read the exact foreground review, files and limitations delivered to conversation");
+  assert.equal(detailReview.messageId, savedReview.messageId);
+  const reviewCount = history().messages.length;
+  const stateBeforeRead = works.getWork(reviewedWork.workId);
+  for (let index = 0; index < 3; index++) works.getDetailProjection(reviewedWork.workId);
+  assert.equal(history().messages.length, reviewCount, "reading details never triggers a new report or model turn");
+  assert.deepEqual(works.getWork(reviewedWork.workId), stateBeforeRead);
+  assert.equal(works.getProjection(reviewedWork.workId)!.publishedReport, undefined, "ordinary projections do not hydrate publication history");
+  for (const mismatch of [{ userId: "another-user" }, { intentRevision: reviewedWork.intentRevision + 1 },
+    { inputSnapshotId: "other-input" }, { ownerEpoch: reviewedWork.ownerEpoch + 1 }]) {
+    assert.equal(readWorkPublishedReport(db.connection, { ...reviewedWork, ...mismatch }), undefined,
+      "a published conclusion cannot cross user, intent, input or owner generations");
+  }
+  db.connection.prepare("UPDATE work_execution_bindings SET invalidated_at=123 WHERE binding_id=?").run(reviewedBinding.bindingId);
+  assert.equal(works.getDetailProjection(reviewedWork.workId)!.publishedReport, undefined, "invalidated execution reports remain historical");
+  db.connection.prepare("UPDATE work_execution_bindings SET invalidated_at=NULL WHERE binding_id=?").run(reviewedBinding.bindingId);
+  assert(reviewFeedback.deliverCompletion({ bindingId: reviewedBinding.bindingId, eventId: "detail-progress", category: "result",
+    text: "新的成员原始输出不能覆盖正式汇报" }));
+  assert.deepEqual(works.getDetailProjection(reviewedWork.workId)!.publishedReport, detailReview);
+  assert(reviewFeedback.deliverCompletion({ bindingId: reviewedBinding.bindingId, eventId: "detail-updated", category: "result",
+    text: "已补齐核验，报告可以使用。", completion: { outcome: "completed", nextStep: "deliver" } }));
+  assert.equal(works.getDetailProjection(reviewedWork.workId)!.publishedReport!.report.summary, "已补齐核验，报告可以使用。",
+    "a newer formal review replaces the earlier partial report");
+  const collaborationRepo = new BotCollaborationRepository(db.connection);
+  const collaborationSource = messages.accept(LOCAL_USER_ID, { botId: "new-owner", requestId: "detail-collaboration-source", text: "核对这项工作" });
+  const relation = collaborationRepo.ensure({ userId: LOCAL_USER_ID, sourceBotId: "new-owner", sourceDisplayName: "New owner",
+    sourceConversationId: collaborationSource.conversationId, sourceRequestId: "detail-collaboration-source",
+    sourceUserMessageId: collaborationSource.userMessageId, sourceAssistantMessageId: collaborationSource.assistantMessageId,
+    targetBotId: DEFAULT_BOT_ID, targetDisplayName: "Owner", operationId: "detail-collaboration" });
+  collaborationRepo.linkWork(LOCAL_USER_ID, relation.collaborationId, reviewedWork.workId);
+  const collaborationReview = { ...savedReview.workFeedback!, eventId: "collaboration-reviewed",
+    report: { ...detailReview.report, summary: "协作中已发布的负责人结论" } };
+  const exchange = collaborationRepo.appendMessage(LOCAL_USER_ID, relation.collaborationId, {
+    senderBotId: DEFAULT_BOT_ID, senderDisplayName: "Owner", kind: "result", text: collaborationReview.report.summary,
+    operationId: "collaboration-reviewed", workFeedback: collaborationReview });
+  db.connection.prepare("DELETE FROM work_conversations WHERE work_id=?").run(reviewedWork.workId);
+  assert.deepEqual(works.getDetailProjection(reviewedWork.workId)!.publishedReport!.report, collaborationReview.report,
+    "an already-published collaboration review remains readable without a conversation association");
+  assert.equal(works.getDetailProjection(reviewedWork.workId)!.publishedReport!.messageId, exchange.messageId);
+  assert.equal(readWorkPublishedReport(db.connection, { ...reviewedWork, userId: "other-user" }), undefined,
+    "collaboration history uses the same user boundary as conversation history");
+  reviewFeedback.close();
+  console.log("PASS published detail review: exact conversation snapshot, revisions, ownership, invalidation, no read effects");
   console.log("PASS durable Work feedback: origin, archive, handoff, result/blocker versions, restart, rollback, authority, no model turns, retry lifecycle");
 } finally { db.close(); rmSync(root, { recursive: true, force: true }); }

@@ -497,6 +497,15 @@ export interface WorkProjectionDto {
   closureSummary?: string;
   /** Host-issued request capability; review still validates current facts and authority. */
   closureReview?: { expectedCloseOperationId: string };
+  /** Exact published foreground review for this input. Detail-only; worker reports are evidence. */
+  publishedReport?: {
+    messageId: string;
+    createdAt: number;
+    executionId: string;
+    intentRevision: number;
+    inputSnapshotId: string;
+    report: NonNullable<import("./bot-work-feedback").WorkFeedbackDto["report"]>;
+  };
   ownerBotId: string;
   ownerEpoch: number;
   intentRevision: number;

@@ -113,12 +113,10 @@ export function WorkCardsPanel(props: { work: WorkProjectionDto; includeClosed: 
       {work.lifecycle === "closed" && work.closureConclusion === "succeeded"
         && card.currency === "current" && (card.kind === "accepted_result" || card.kind === "closure_succeeded")
         && <p role="status">已完成并关闭</p>}
-      {card.currency !== "current" || card.summary.length > 1600
-        || cards.slice(0, cardIndex).some(prior => prior.summary === card.summary)
-        ? <details className="bot-original-report"><summary>{cards.slice(0, cardIndex).some(prior => prior.summary === card.summary)
-          ? "正文与前面卡片相同 · 展开本卡记录" : card.currency !== "current" ? "查看历史卡片正文" : "展开完整卡片正文"}</summary>
+      <details className="bot-original-report"><summary>{cards.slice(0, cardIndex).some(prior => prior.summary === card.summary)
+          ? "正文与前面卡片相同 · 展开本卡记录" : card.currency !== "current" ? "查看历史卡片正文" : "查看卡片正文"}</summary>
           <WorkResultText text={card.summary} />
-        </details> : <WorkResultText text={card.summary} />}
+      </details>
       <p>包含 {card.deliverableIds.length} 项成果</p>
       <details><summary>卡片版本记录</summary><p>要求 r{card.intentRevision} · 阅读版本 {card.readVersion}</p>
         <p>生成时间 {Number.isFinite(card.createdAt) ? <time dateTime={new Date(card.createdAt).toISOString()}>{new Date(card.createdAt).toLocaleString()}</time> : "未记录"}</p></details>

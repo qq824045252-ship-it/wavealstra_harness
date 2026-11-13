@@ -227,7 +227,7 @@ async function main() {
         await act(async () => tabs[0].dispatchEvent(new testWindow.Event("click", { bubbles: true })));
         await act(async () => tabs[1].dispatchEvent(new testWindow.Event("click", { bubbles: true })));
         await act(async () => container.querySelector<HTMLButtonElement>(".bot-work-card")!.dispatchEvent(new testWindow.Event("click", { bubbles: true })));
-        await click("向负责人回复此问题");
+        await click("回复此问题");
         const after = useAppStore.getState();
         assert.equal(after.activeBotId, "owner"); assert.equal(after.selectedWorkId, legacy.workId);
         assert.equal(after.botDrafts.member, "Member unfinished draft");
@@ -237,7 +237,7 @@ async function main() {
         const draft = after.botDraft;
         assert.equal(container.querySelector(".bot-work-conversation-detail"), null, "reply returns to the composer");
         await act(async () => container.querySelector<HTMLButtonElement>(".bot-composer-context button")!.dispatchEvent(new testWindow.Event("click", { bubbles: true })));
-        await click("向负责人回复此问题");
+        await click("回复此问题");
         assert.equal(useAppStore.getState().botDraft, draft, "repeat click does not append duplicate question text");
         await act(async () => useAppStore.setState({ botWorks: [{ ...legacy, stateVersion: 8 }] }));
         assert.equal(useAppStore.getState().botDraft, draft, "background refresh retains the reply draft");
@@ -332,12 +332,14 @@ async function main() {
             structured: { version: 1, conclusions: [{ text: "两份文件已保存", requestMessageId: "req", requestText: "整理文件", sources: [{ ref: "member", label: "资料员" }] }], observations: ["附加说明"] },
             teamFacts: [{ displayName: "核对员", responsibility: "核对文件", executionStatus: "failed", failureReason: "连接中断", sourceRefs: ["member"] }],
           } }], }} ownerName="Owner" includeClosed />));
-        const progress = container.querySelector('[aria-label="目标与进度"]')!;
+        const progress = container.querySelector('.bot-work-detail-heading')!;
         assert.match(progress.textContent!, new RegExp(label));
-        assert.match(progress.textContent!, /处理结论已返回对话/);
         assert.doesNotMatch(progress.textContent!, /暂不能确认完成进度/);
-        assert.equal(progress.querySelector('details')!.hasAttribute('open'), false);
-        const report = container.querySelector('.bot-result-report')!;
+        assert.equal(container.querySelector('[aria-label="过程与依据"]')!.hasAttribute('open'), false);
+        assert.match(container.querySelector('[aria-label="当前结果"] > h3')!.textContent!, /处理结果/);
+        assert.match(container.querySelector('[aria-label="当前结果"]')!.textContent!, /没有保存可直接阅读的正式结论/,
+          "worker results do not become a reviewed task conclusion");
+        const report = container.querySelector('[aria-label="成果依据"] .bot-result-report')!;
         assert.match(report.querySelector('.bot-result-body')!.textContent!, /两份文件已保存/);
         assert.doesNotMatch(report.querySelector('.bot-result-body')!.textContent!, /bot-team-report-v1/);
         assert.match(report.textContent!, /执行失败/);
@@ -476,10 +478,11 @@ async function main() {
       assert.match(diagnostics.textContent!, /Lost legacy receipt/);
       assert.match(diagnostics.textContent!, /Timed-out process/);
       assert.match(diagnostics.textContent!, /未知结果不会自动重放/);
-      const blockers = container.querySelector('[aria-label="需要关注的阻碍"]');
+      const blockers = container.querySelector('[aria-label="处理进展"]');
       assert(blockers);
       assert.match(blockers.textContent!, /Required permission is missing/);
       assert.doesNotMatch(blockers.textContent!, /Lost legacy receipt|Timed-out process/);
+      assert.equal(container.querySelector('[aria-label="需要你补充"]'), null, "an internal execution obstacle is not a user-information request");
       assert.equal(diagnostics.querySelector("button"), null, "uncertainty does not offer an unsafe replay or clear button");
       await unmount();
     });
@@ -536,7 +539,7 @@ async function main() {
         { blockerId: "recovery-ended:gap", workId: projection.workId, kind: "operational", reason: "Recovery ended without a new result",
           waitingForUserInput: false, status: "open", createdAt: 1 },
       ] }} ownerName="Owner" includeClosed onReplyToBlocker={() => {}} />));
-      assert.doesNotMatch(container.textContent!, /向负责人回复此问题/,
+      assert.doesNotMatch(container.textContent!, /回复此问题/,
         "operational recovery gaps do not ask the user to fill information or approve a rerun");
       assert.match(container.textContent!, /Recovery ended without a new result/, "remaining execution gaps are still visible");
     });

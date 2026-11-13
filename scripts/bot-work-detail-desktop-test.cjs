@@ -5,23 +5,38 @@ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'detail-ui-')); app.setPath('user
 app.whenReady().then(async()=>{let win;try{
 const out=path.resolve('out/tests'); const url=name=>pathToFileURL(path.join(out,name)).href;
 fs.writeFileSync(path.join(dir,'index.html'),`<html><head><link rel="stylesheet" href="${url('bot-work-detail-desktop-fixture.css')}"><style>body{margin:0;padding:16px;font:14px system-ui;background:#fff;color:#222}*{box-sizing:border-box}:root{--surface-right:#fff;--fg:#222;--fg-secondary:#555;--border-default:#ddd;--border-subtle:#eee}#root{max-width:860px;margin:auto}</style></head><body><div id="root"></div><script src="${url('bot-work-detail-desktop-fixture.js')}"></script></body></html>`);
-win=new BrowserWindow({width:1000,height:900,show:true,webPreferences:{contextIsolation:true}});
+win=new BrowserWindow({width:1000,height:900,show:true,webPreferences:{contextIsolation:true,backgroundThrottling:false}});
 await win.loadFile(path.join(dir,'index.html'));win.webContents.debugger.attach('1.3');
 const ev=s=>win.webContents.executeJavaScript(s);
 const until=async(expression,label)=>{const deadline=Date.now()+8000;while(!await ev(expression)){if(Date.now()>deadline)throw Error('timeout: '+label);await new Promise(resolve=>setTimeout(resolve,30));}};
 await until(`Boolean(document.querySelector('.bot-result-body'))`,'initial detail');
+assert(await ev(`Array.from(document.querySelectorAll('.bot-work-details > details')).every(el=>!el.open)`),'secondary sections start closed');
+assert(await ev(`document.querySelector('.bot-work-outcome').getBoundingClientRect().top<440`),'result leads the first viewport');
+assert(await ev(`getComputedStyle(document.querySelector('.bot-result-body .md')).fontSize==='14px'`),'readable body size');
+assert(await ev(`!document.querySelector('.bot-result-body.is-collapsed')`),'detail report is fully readable');
+assert(await ev(`getComputedStyle(document.querySelector('.bot-result-body .markdown-renderer')).contentVisibility==='visible'`),'report height is measured instead of using a 600px placeholder');
+for (const theme of ['light','dark']) for (const width of [390,760,1440]) {
+  await win.webContents.debugger.sendCommand('Emulation.setDeviceMetricsOverride',{width,height:900,deviceScaleFactor:1,mobile:false});
+  await ev(`document.documentElement.style.cssText=${JSON.stringify(theme==='dark'?'--surface-right:#202124;--fg:#efefef;--fg-secondary:#b5b6ba;--border-default:#444;--border-subtle:#36373a;--bg-panel:#202124;--bg-input:#25262a;--bg-active:#36373a;--accent:#8ab4f8':'--surface-right:#fff;--fg:#222;--fg-secondary:#555;--border-default:#ddd;--border-subtle:#eee;--bg-panel:#fff;--bg-input:#fff;--bg-active:#f1f3f5;--accent:#315fbd')};document.body.style.background=${JSON.stringify(theme==='dark'?'#202124':'#fff')}`);
+  await new Promise(r=>setTimeout(r,80));
+  assert(await ev('document.documentElement.scrollWidth<=innerWidth'),'default view has no overflow at '+width);
+  const shot=await win.webContents.debugger.sendCommand('Page.captureScreenshot',{format:'png'});
+  fs.writeFileSync(path.join(out,`bot-work-detail-overview-${theme}-${width}.png`),Buffer.from(shot.data,'base64'));
+}
 assert(await ev(`document.querySelector('.bot-result-body').textContent.includes('完成两份对照报告')`));
-assert(await ev(`document.querySelector('.bot-result-report').textContent.includes('执行失败')`));
+assert(await ev(`!document.querySelector('.bot-work-outcome').textContent.includes('执行失败')`),'worker execution facts do not replace the reviewed conclusion');
+assert(await ev(`document.querySelector('[aria-label="成果依据"]').textContent.includes('执行失败')`),'worker failures remain in evidence');
 assert(await ev(`!document.querySelector('.bot-result-body').textContent.includes('bot-team-report-v1')`));
 assert(await ev(`!document.querySelector('.bot-original-report').open`));
 assert.equal(await ev('window.originalCalls()'),0,'original messages are not fetched until explicitly expanded');
 assert(await ev(`document.querySelector('.bot-work-goal').textContent.includes('第二行包含界面尾部目标标记')`),'full description instead of repeated title');
+await ev(`document.querySelector('[aria-label="过程与依据"] > summary').click();document.querySelector('[aria-label="任务目标与原委托"] > summary').click()`);
 await ev(`document.querySelector('.bot-work-original-delegation summary').click()`);await new Promise(r=>setTimeout(r,100));
 assert.equal(await ev('window.originalCalls()'),1);
 assert(await ev(`document.querySelector('.bot-work-original-delegation').textContent.includes('原文尾部标记')`),'exact original separate from assistant goal');
 assert(await ev(`document.querySelector('.bot-work-original-delegation').textContent.includes('上方目标由助理整理')`),'no provenance laundering');
 
-await ev(`Array.from(document.querySelectorAll('details > summary')).find(el=>el.textContent==='高级设置与诊断').click()`);
+await ev(`Array.from(document.querySelectorAll('details > summary')).find(el=>el.textContent==='管理任务').click()`);
 assert(await ev(`document.querySelectorAll('.bot-collaboration-entry').length===2`),'only exact repeats grouped');
 assert(await ev(`document.querySelector('.bot-collaboration-body h2')?.textContent==='核对结论'`),'heading rendered');
 assert(await ev(`document.querySelector('.bot-collaboration-body strong')?.textContent==='实际完成'`),'strong rendered');
@@ -31,15 +46,60 @@ assert(await ev(`!window.collabInjected && !document.querySelector('.bot-collabo
 assert(await ev(`document.querySelector('.bot-collaboration-log').textContent.includes('独有的后续发现不可丢失')`));
 await ev(`document.querySelector('.bot-collaboration-repeats summary').click()`);
 assert(await ev(`document.querySelector('.bot-collaboration-repeats').open && document.querySelector('.bot-collaboration-repeats').textContent.includes('collab-2')`),'repeat metadata retained');
+await ev(`document.querySelector('[aria-label="诊断信息"] > summary').click()`);
 await ev(`Array.from(document.querySelectorAll('details > summary')).find(el=>el.textContent==='投递与版本记录').click()`);
 assert(await ev(`!document.querySelector('#work-card-card-history .bot-original-report').open`),'historical report collapsed');
 await ev(`document.querySelector('#work-card-card-history .bot-original-report summary').click()`);
 assert(await ev(`!!document.querySelector('#work-card-card-history table')`),'card markdown table');
 assert(await ev(`document.querySelector('#work-card-card-history').textContent.includes('相同原文共 2 条')`),'duplicate diagnostic count preserved');
-for(const width of [390,760,1440]){await win.webContents.debugger.sendCommand('Emulation.setDeviceMetricsOverride',{width,height:900,deviceScaleFactor:1,mobile:false});await new Promise(r=>setTimeout(r,100));assert(await ev('document.documentElement.scrollWidth<=innerWidth'),'no overflow at '+width);await ev(`document.querySelector('[aria-label="目标与进度"]').scrollIntoView()`);const shot=await win.webContents.debugger.sendCommand('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,'bot-work-detail-'+width+'.png'),Buffer.from(shot.data,'base64'));}
+for(const width of [390,760,1440]){await win.webContents.debugger.sendCommand('Emulation.setDeviceMetricsOverride',{width,height:900,deviceScaleFactor:1,mobile:false});await new Promise(r=>setTimeout(r,100));assert(await ev('document.documentElement.scrollWidth<=innerWidth'),'no overflow at '+width);await ev(`document.querySelector('[aria-label="任务目标与原委托"]').scrollIntoView()`);const shot=await win.webContents.debugger.sendCommand('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,'bot-work-detail-'+width+'.png'),Buffer.from(shot.data,'base64'));}
 await ev(`document.querySelector('.bot-original-report summary').click()`);assert(await ev(`document.querySelector('.bot-original-report').open`));
-await ev(`window.renderDetailFixture({closureConclusion:'ended_unsuccessfully'})`);await new Promise(r=>setTimeout(r,100));assert(await ev(`document.querySelector('[aria-label="目标与进度"]').textContent.includes('未完成')`));
-await ev(`window.renderDetailFixture({closureConclusion:'cancelled'})`);await new Promise(r=>setTimeout(r,100));assert(await ev(`document.querySelector('[aria-label="目标与进度"]').textContent.includes('已取消')`));
+await ev(`window.renderDetailFixture({closureConclusion:'ended_unsuccessfully'})`);await new Promise(r=>setTimeout(r,100));assert(await ev(`document.querySelector('.bot-work-detail-heading').textContent.includes('部分完成')`));
+await ev(`window.renderDetailFixture({closureConclusion:'cancelled'})`);await new Promise(r=>setTimeout(r,100));assert(await ev(`document.querySelector('.bot-work-detail-heading').textContent.includes('已取消')`));
+// Full detail reports, exact closure deduplication, version isolation and single question entry.
+await ev(`window.renderDetailCase('long')`);
+await until(`document.querySelector('.bot-work-outcome').textContent.includes('最后一条结论必须完整可读')`,'long report');
+assert(await ev(`!document.querySelector('.bot-result-expand') && !document.querySelector('.bot-result-body.is-collapsed')`),'no length-based disclosure in details');
+assert(await ev(`document.querySelector('.bot-work-outcome').innerText.split('最后一条结论必须完整可读').length===2`),'closure and deliverable share one visible body');
+await ev(`document.documentElement.style.setProperty('--font-ui-size','18px')`);
+assert(await ev(`getComputedStyle(document.querySelector('.bot-result-body .md')).fontSize==='18px'`),'user font preference remains effective');
+await ev(`document.documentElement.style.removeProperty('--font-ui-size');window.renderDetailCase('versions')`);
+await until(`document.querySelector('.bot-work-outcome').innerText.includes('负责人核对后的当前结论')`,'version results');
+assert(await ev(`!document.querySelector('.bot-work-outcome').innerText.includes('旧输入成果不得冒充当前结论')`),'old input is not a current outcome');
+assert(await ev(`document.querySelector('[aria-label="历史成果"]').textContent.includes('未通过核验的原文') && document.querySelector('[aria-label="历史成果"]').textContent.includes('已替代版本原文')`),'rejected and superseded evidence is retained');
+await ev(`window.memberRecord=Array.from(document.querySelectorAll('.bot-work-result-record')).find(el=>el.textContent.includes('成员的不同结论不能丢失'));window.memberRecord.querySelector('summary').click();window.memberRecord.scrollIntoView({block:'center'})`);
+await until(`window.memberRecord.innerText.includes('成员的不同结论不能丢失')`,'member evidence remains accessible');
+await ev(`window.renderDetailCase('versions')`);await new Promise(r=>setTimeout(r,60));
+assert(await ev(`window.memberRecord.open && document.querySelector('[aria-label="过程与依据"]').open`),'refresh preserves chosen disclosure state');
+await ev(`window.renderDetailCase('closure')`);await until(`document.querySelector('.bot-work-outcome')`,'closure conclusion');
+await until(`document.querySelector('.bot-work-outcome').innerText.includes('最终只完成了部分内容')`,'actual closure leads worker evidence');
+await ev(`window.renderDetailCase('blocked')`);await until(`document.querySelector('[aria-label="需要你补充"]')`,'blocked');
+assert.equal(await ev(`document.querySelector('.bot-work-details').innerText.split('请补充原始文件').length-1`),1,'question appears only once');
+assert(await ev(`!document.querySelector('.bot-work-details').textContent.includes('回复待补充信息')`),'no link to retired form');
+await ev(`document.querySelector('[aria-label="需要你补充"] button').click()`);assert.equal(await ev('window.replyTarget'),'question','reply retains the exact blocker identity');
+await ev(`window.renderDetailCase('asked')`);await until(`document.querySelector('[aria-label="需要你补充"]')?.textContent.includes('两份报告已保存')`,'question includes the already-verified progress');
+assert.equal(await ev(`document.querySelector('.bot-work-details').innerText.split('请补充原始文件').length-1`),1,'review question and blocker share one visible body');
+await ev(`document.querySelector('[aria-label="需要你补充"] button').click()`);assert.equal(await ev('window.replyTarget'),'specific-question');
+await ev(`window.renderDetailCase('answered')`);await new Promise(r=>setTimeout(r,60));
+assert(await ev(`!document.querySelector('[aria-label="需要你补充"]') && !document.querySelector('.bot-work-outcome')`),'cleared questions do not return through a previous ask report');
+await ev(`window.renderDetailCase('continuing')`);await until(`document.querySelector('[aria-label="处理进展"]')?.textContent.includes('Bot 会继续补齐')`,'continuation belongs to Bot');
+assert(await ev(`document.querySelector('.bot-work-detail-byline').textContent.includes('继续处理中') && !document.querySelector('[aria-label="需要你补充"]')`),'continuation is not a user todo');
+await ev(`window.renderDetailCase('running')`);await until(`document.querySelector('[aria-label="处理进展"]')`,'running');
+assert(await ev(`document.querySelector('[aria-label="处理进展"]').innerText.includes('Bot 正在处理')`),'active progress remains visible');
+await ev(`window.renderDetailCase('no-review')`);await until(`document.querySelector('[aria-label="处理进展"]')?.textContent.includes('正在核对')`,'unreviewed worker outcome');
+assert(await ev(`!document.querySelector('.bot-work-outcome') && !document.querySelector('[aria-label="下一步"]')`),'worker output and internal acceptance checklist cannot masquerade as the user result');
+await ev(`window.renderDetailCase('stale-review')`);await new Promise(r=>setTimeout(r,60));
+assert(await ev(`!document.querySelector('.bot-work-outcome')`),'older input review is not reused');
+await ev(`window.renderDetailCase('internal')`);await new Promise(r=>setTimeout(r,60));
+assert(await ev(`!document.querySelector('[aria-label="需要你补充"]') && document.querySelector('[aria-label="处理进展"]').textContent.includes('遇到阻碍')`),'internal recovery is not a user question');
+await ev(`window.renderDetailCase('paused')`);await until(`document.querySelector('[aria-label="处理进展"]')?.textContent.includes('已暂停')`,'paused explanation');
+await ev(`window.renderDetailCase('watch')`);await until(`document.querySelector('[aria-label="持续跟踪安排"]')?.textContent.includes('运行服务离线')`,'watch offline impact');
+await ev(`window.renderDetailCase('default')`);await until(`document.querySelector('.bot-result-body')`,'restore original fixture');
+// Keyboard operates the same native disclosures as pointer input.
+await ev(`document.querySelector('[aria-label="任务目标与原委托"]').open=false;document.querySelector('[aria-label="任务目标与原委托"] > summary').focus()`);
+await win.webContents.debugger.sendCommand('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13,text:'\r',unmodifiedText:'\r'});
+await win.webContents.debugger.sendCommand('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13});
+await until(`document.querySelector('[aria-label="任务目标与原委托"]').open`,'keyboard disclosure');
 // Older detail replies cannot install another Work's original text after navigation.
 await ev(`window.pendingOriginal={};window.api.botWork.getWork=(id)=>new Promise(resolve=>window.pendingOriginal[id]=resolve);window.renderDetailFixture({workId:'first-pending'});`);await new Promise(r=>setTimeout(r,100));
 await ev(`window.renderDetailFixture({workId:'second-pending'})`);await new Promise(r=>setTimeout(r,100));

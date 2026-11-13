@@ -1,0 +1,95 @@
+.bot-work-details {
+  min-width: 0;
+  width: 100%;
+  color: var(--fg);
+  font-size: var(--font-ui-size, 14px);
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+}
+
+.bot-work-details .bot-work-detail-heading h2 { margin: 0 0 12px; font-size: 23px; line-height: 1.4; font-weight: 650; }
+.bot-work-details h3 { margin: 0 0 12px; font-size: 16px; line-height: 1.5; font-weight: 600; }
+.bot-work-details h4 { margin: 16px 0 8px; font-size: 14px; line-height: 1.5; }
+.bot-work-details p { margin: 8px 0; color: inherit; }
+.bot-work-details ul { margin: 10px 0; padding-left: 22px; }
+.bot-work-details li { margin: 6px 0; }
+.bot-work-details dl { margin: 12px 0; }
+.bot-work-details dt { color: var(--fg-secondary); font-size: 13px; }
+.bot-work-details dd { margin: 2px 0 12px; }
+.bot-work-details article { margin: 14px 0; padding: 12px 0; border-bottom: 1px solid var(--border-subtle); }
+.bot-work-details button { margin: 4px 6px 4px 0; min-height: 30px; font-size: 13px; }
+
+.bot-work-detail-heading { padding-bottom: 24px; }
+.bot-work-detail-byline { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; color: var(--fg-secondary); font-size: 13px; }
+.bot-work-goal-preview { margin-top: 14px; color: var(--fg-secondary); }
+.bot-work-details .bot-work-goal-preview p { margin: 0; white-space: pre-wrap; font-size: 13px; }
+.bot-work-details .bot-work-goal-preview button { margin-top: 6px; }
+.bot-work-details .bot-work-result-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; margin-bottom: 16px; }
+.bot-work-details .bot-work-result-heading h3 { margin: 0; font-size: 13px; color: var(--fg-secondary); }
+.bot-work-details .bot-work-activity, .bot-work-details .bot-work-watch { margin-bottom: 24px; }
+.bot-work-details .bot-work-limitation { padding: 12px 16px; border-left: 3px solid var(--border-default); margin: 16px 0; }
+.bot-work-details .bot-work-status { font-size: 12px; line-height: 1.5; }
+.bot-work-details .bot-work-outcome { padding: 22px 0 28px; border-top: 1px solid var(--border-subtle); }
+.bot-work-details .bot-work-outcome > h3 { color: var(--fg-secondary); font-size: 13px; }
+.bot-work-details .bot-work-detail-meta { color: var(--fg-secondary); font-size: 13px; }
+.bot-work-details .bot-work-alert { margin: 0 0 20px; padding: 16px 18px; }
+.bot-work-details .bot-work-alert article { margin: 8px 0; padding: 0; border: 0; }
+.bot-work-details .bot-work-next { margin: 0 0 24px; padding: 0 0 20px; border: 0; border-bottom: 1px solid var(--border-subtle); background: none; border-radius: 0; }
+
+.bot-work-details details { min-width: 0; }
+.bot-work-details details > summary {
+  padding: 10px 0;
+  min-height: 36px;
+  box-sizing: border-box;
+  font-size: 13px;
+  font-weight: 550;
+  line-height: 1.6;
+  color: var(--fg-secondary);
+  cursor: pointer;
+}
+.bot-work-details summary::marker { color: var(--fg-secondary); }
+.bot-work-details summary:hover { color: var(--fg); }
+.bot-work-details :is(summary, button, a):focus-visible { outline: 2px solid var(--accent, Highlight); outline-offset: 3px; border-radius: 4px; }
+.bot-work-details .bot-work-disclosure { margin: 0; padding: 0; border: 0; border-top: 1px solid var(--border-subtle); border-radius: 0; }
+.bot-work-details .bot-work-disclosure > summary { padding: 16px 0; color: var(--fg); font-size: 14px; }
+.bot-work-details .bot-work-disclosure[open] { padding-bottom: 20px; }
+.bot-work-details .bot-work-detail-count { margin-left: 10px; color: var(--fg-secondary); font-size: 12px; font-weight: 400; }
+.bot-work-details .bot-work-result-record { padding: 0 0 0 14px; border-left: 2px solid var(--border-subtle); margin: 8px 0; }
+.bot-work-details .bot-work-result-record > summary { font-weight: 400; }
+.bot-work-details .bot-advanced { margin: 12px 0; border: 0; border-top: 1px solid var(--border-subtle); border-radius: 0; padding: 0; }
+.bot-work-details .bot-advanced[open] { padding-bottom: 12px; }
+.bot-work-details .bot-detail-section { padding: 18px 0; }
+.bot-work-details .bot-original-report { font-size: 13px; }
+
+.bot-work-details .bot-result-report { border: 0; border-radius: 0; padding: 0; background: transparent; max-width: 100%; min-width: 0; }
+.bot-work-details .bot-result-report > header { margin-bottom: 12px; }
+.bot-work-details .bot-work-result-record .bot-result-report > header h3 { display: none; }
+.bot-work-details .bot-result-report article { border: 0; padding: 0; background: transparent; }
+.bot-work-details .bot-result-details { margin-top: 20px; padding-top: 0; font-size: 13px; }
+.bot-work-details .bot-result-notices { font-size: 14px; }
+.bot-work-details .bot-result-limitations { margin-top: 18px; }
+.bot-work-details .bot-result-limitations h4, .bot-work-details .bot-result-attachments h4 { font-size: 13px; }
+.bot-work-details .bot-result-files strong { font-size: 14px; }
+.bot-work-details .bot-result-files small, .bot-work-details .bot-result-files details p { font-size: 12px; }
+.bot-work-details .bot-result-files details summary { font-size: 12px; min-height: 28px; }
+
+.bot-work-details .md { font-size: var(--font-ui-size, 14px); line-height: 1.8; color: var(--fg); max-width: 100%; }
+/* Native details already defer closed content. Estimated Markdown heights make opening and scrolling jump. */
+.bot-work-details .markstream-react.markdown-renderer { content-visibility: visible; contain-intrinsic-size: none; }
+.bot-work-details .md :is(h1, h2) { font-size: 19px; line-height: 1.5; margin: 24px 0 12px; }
+.bot-work-details .md h3 { font-size: 16px; margin: 20px 0 10px; }
+.bot-work-details .md h4 { font-size: 14px; margin: 16px 0 8px; }
+.bot-work-details .md > :first-child { margin-top: 0; }
+.bot-work-details .md .node-slot:first-child :is(h1, h2, h3, h4) { margin-top: 0; }
+.bot-work-details .md p { margin: 10px 0; }
+.bot-work-details .md :is(pre, code) { font-size: 13px; }
+.bot-work-details .md pre { max-width: 100%; overflow-x: auto; }
+.bot-work-details .bot-original-report .md { overflow-x: auto; }
+.bot-work-details .table-node__resize-handle { margin: 0; }
+
+@media (max-width: 600px) {
+  .bot-work-details .bot-work-detail-heading h2 { font-size: 21px; }
+  .bot-work-detail-heading { padding-bottom: 20px; }
+  .bot-work-details .bot-work-outcome { padding-top: 18px; }
+  .bot-work-details .bot-work-alert { padding: 12px; }
+}

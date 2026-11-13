@@ -1,7 +1,6 @@
 import { useLayoutEffect, useRef, type ReactNode } from "react";
 import type { WorkProjectionDto } from "@shared/bot-work";
 import { IconChevronLeft, IconX } from "@/components/common/icons";
-import { workStatusLabel } from "@/lib/botWorkspacePresentation";
 import { BotWorkDetails } from "./BotWorkDetails";
 import "./BotWorkConversationDetail.css";
 
@@ -29,9 +28,8 @@ export function BotWorkConversationDetail({ work, workId, loading = false, error
         <button ref={back} type="button" onClick={onBack} aria-label={`返回${conversationName}的${returnLabel}`} title={`返回${conversationName}的${returnLabel}`}>
           <IconChevronLeft size={17} /><span>{conversationName}{returnLabel === "对话" ? "" : ` · ${returnLabel}`}</span>
         </button>
-        <span aria-hidden="true">/</span><strong title={work?.title}>{work?.title ?? "事项详情"}</strong>
+        <span aria-hidden="true">/</span><span>事项详情</span>
       </div>
-      {work && <span className="bot-work-conversation-status">{workStatusLabel(work)}</span>}
       <button type="button" className="bot-icon-button" aria-label={`关闭事项详情并返回${returnLabel}`} onClick={onBack}><IconX size={18} /></button>
     </header>
     <div className="bot-work-conversation-body" tabIndex={-1}>

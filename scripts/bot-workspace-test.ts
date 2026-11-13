@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { parseHTML } from "linkedom";
 import type { BotMessageDto } from "../src/shared/bot-conversation";
 import { linkedConversationWork, personalBotWork, activeBotReply, botMessageStatus, botWorkTimeline, shouldSendBotComposer, workMatchesView, workStatusLabel, workExecutionComplete, workCardExcerpt, workStatus, workSearchText, workMatchesSearch } from "../src/renderer/src/lib/botWorkspacePresentation";
 import type { BotDto, WorkProjectionDto } from "../src/shared/bot-work";
@@ -329,13 +330,47 @@ assert.equal(renderReview({ lifecycle: "closed" }), "", "closed Work has no addi
 const renderDetails = (changes: Partial<WorkProjectionDto>) => renderToStaticMarkup(createElement(BotWorkDetails, {
   work: { ...completedWork, ...changes }, ownerName: duty.displayName, includeClosed: true,
 }));
+const publishedDetail: NonNullable<WorkProjectionDto["publishedReport"]> = {
+  messageId: "foreground-review", createdAt: 10, executionId: proposedOutput.executionId,
+  intentRevision: completedWork.intentRevision, inputSnapshotId: completedWork.inputSnapshotId,
+  report: { title: completedWork.title, summary: "负责人核对后的正式结论", artifactRefs: [], current: true,
+    reviewStatus: "proposed", notices: ["现场验证尚未完成"], completion: { outcome: "partial", nextStep: "deliver" } },
+};
+function detailDocument(html: string): Document {
+  return parseHTML(`<html><body>${html}</body></html>`).document;
+}
+function requiredElement(root: ParentNode, selector: string): Element {
+  const element = root.querySelector(selector);
+  assert.ok(element, `rendered detail must contain ${selector}`);
+  return element;
+}
 for (const closureConclusion of ["succeeded", "cancelled", "ended_unsuccessfully"] as const) {
-  const closedDetails = renderDetails({ closureConclusion, deliverables: [proposedOutput] });
+  const closedDetails = renderDetails({ closureConclusion, deliverables: [proposedOutput], publishedReport: publishedDetail });
   assert.doesNotMatch(closedDetails, /class="bot-work-decision-hint"|<h3>需要你决定<\/h3>|<button[^>]*>采纳成果<\/button>/,
     "closed matters must not solicit review decisions that cannot be acted on");
   assert.match(closedDetails, /结果已返回/, "completion does not fabricate acceptance of a proposed result");
-  assert.match(closedDetails, /原始执行记录/);
+  const document = detailDocument(closedDetails);
+  const outcome = requiredElement(document, '[aria-label="当前结果"]');
+  assert.equal(outcome.closest("details"), null, "current result is readable without opening a disclosure");
+  assert.match(requiredElement(outcome, ".bot-result-body").textContent!, /负责人核对后的正式结论/);
+  assert.doesNotMatch(outcome.textContent!, /Current proposal/, "worker prose cannot replace the published review");
+  assert.match(outcome.textContent!, /现场验证尚未完成/, "limits affecting use remain visible");
+  const execution = requiredElement(document, 'details[aria-label="诊断信息"]');
+  assert.equal(execution.hasAttribute("open"), false, "execution records start collapsed for every terminal outcome");
+  requiredElement(execution, '[aria-label="结果卡片与证据"]');
 }
+const originalClosure = '{"source":"original-close","note":"原始结案说明保留"}';
+const recordedDetail = detailDocument(renderDetails({ deliverables: [proposedOutput], cards: [acceptedCard], closureSummary: originalClosure }));
+const executionRecords = requiredElement(recordedDetail, '[aria-label="执行过程"]');
+const closureRecord = requiredElement(executionRecords, ":scope > details.bot-original-report");
+assert.equal(requiredElement(closureRecord, "summary").textContent, "结束说明原文");
+assert.equal(closureRecord.hasAttribute("open"), false);
+assert.equal(requiredElement(closureRecord, ".md-chat").textContent!.replace(/[“”]/g, '"'), originalClosure,
+  "folding preserves the complete original closure record through Markdown typography");
+assert.match(requiredElement(recordedDetail, '[aria-label="诊断信息"] [aria-label="结果卡片与证据"]').textContent!, /验收记录完整/,
+  "result-card evidence remains reachable inside execution records");
+assert.doesNotMatch(requiredElement(recordedDetail, '[aria-label="当前结果"]').textContent!, /original-close/,
+  "raw closure data does not duplicate the readable result");
 const emptyExecution: NonNullable<WorkProjectionDto["phase3"]> = { subitems: [], continuations: [], gaps: [],
   settlingActions: 0, pausedEventCount: 0, handoffs: [], collaborationMessages: [] };
 assert.doesNotMatch(renderDetails({ lifecycle: "active", phase3: emptyExecution }), /aria-label="事项执行情况"/,
@@ -350,9 +385,15 @@ assert.match(proposalDetails, /历史检查记录/); assert.match(proposalDetail
 assert.doesNotMatch(proposalDetails, /aria-label="已通过的验收项"/, "model suggestions do not inflate mandatory user acceptance progress");
 assert.equal(renderReview({ criteria: [proposalCriterion] }), "");
 
-const actionableDetails = renderDetails({ lifecycle: "active", deliverables: [proposedOutput], cards: [acceptedCard] });
-assert.ok(actionableDetails.indexOf('aria-label="成果评审与结束"') < actionableDetails.indexOf('aria-label="结果卡片与证据"'),
-  "review decisions must precede result ledgers and diagnostics");
+const actionableDetails = renderDetails({ lifecycle: "active", deliverables: [proposedOutput], cards: [acceptedCard], publishedReport: publishedDetail });
+const actionableDocument = detailDocument(actionableDetails);
+assert.equal(requiredElement(actionableDocument, '[aria-label="当前结果"]').closest("details"), null);
+const resultLedger = requiredElement(actionableDocument, '[aria-label="结果卡片与证据"]');
+const ledgerDisclosure = resultLedger.closest("details");
+assert.ok(ledgerDisclosure, "result ledgers belong to secondary disclosures");
+assert.equal(ledgerDisclosure.hasAttribute("open"), false);
+assert.equal(actionableDocument.querySelector('[aria-label="成果评审与结束"]'), null,
+  "automatic review does not reintroduce a manual decision form");
 const emptyCards = renderToStaticMarkup(createElement(WorkCardsPanel, { work: { ...completedWork, cards: [], notifications: [] }, includeClosed: true }));
 assert.doesNotMatch(emptyCards, /<h3>结果卡片<\/h3>|<h3>外部通知<\/h3>|还没有结果卡片|还没有外部通知记录/,
   "empty ledgers must not distract from the actual review action");
@@ -461,10 +502,14 @@ const populatedDetail = renderToStaticMarkup(createElement(BotWorkConversationDe
   work: night, conversationName: duty.displayName, ownerName: duty.displayName,
   includeClosed: true, onBack: () => {}, onReplyToBlocker: () => {},
 }));
-assert.match(populatedDetail, /日志齐全/);
-assert.match(populatedDetail, /值班 · 一次性事项/);
+assert.doesNotMatch(populatedDetail, /<h3>下一步<\/h3>/, "internal nextSteps are not presented as user work");
+const populatedDocument = detailDocument(populatedDetail);
+const byline = requiredElement(populatedDocument, ".bot-work-detail-byline");
+assert.match(byline.textContent!, /值班/);
+assert.match(byline.textContent!, /单次委托/);
 assert.match(populatedDetail, /aria-label="对话中的事项详情"/);
-assert.match(populatedDetail, /<details class="bot-advanced"><summary>高级设置与诊断<\/summary>/, "advanced settings start collapsed");
+const settings = requiredElement(populatedDocument, 'details[aria-label="诊断信息"]');
+assert.equal(settings.hasAttribute("open"), false, "advanced settings start collapsed");
 for (const returnLabel of ["对话", "进行中", "已完成", "归档"]) {
   const html = renderToStaticMarkup(createElement(BotWorkConversationDetail, {
     work: night, conversationName: duty.displayName, ownerName: duty.displayName,
@@ -473,13 +518,19 @@ for (const returnLabel of ["对话", "进行中", "已完成", "归档"]) {
   assert.match(html, new RegExp(`aria-label="返回值班的${returnLabel}"`));
   assert.match(html, new RegExp(`aria-label="关闭事项详情并返回${returnLabel}"`));
 }
-const detailsStart = populatedDetail.indexOf('class="bot-work-details"');
-const overview = populatedDetail.slice(detailsStart);
-const orderedHeadings = ["目标", "进度", "下一步", "成果与证据", "原始执行记录"];
-for (let index = 1; index < orderedHeadings.length; index++) {
-  assert.ok(overview.indexOf(`<h3>${orderedHeadings[index - 1]}</h3>`) < overview.indexOf(`<h3>${orderedHeadings[index]}</h3>`), "details prioritize actionable information");
+const overview = requiredElement(populatedDocument, ".bot-work-details");
+assert.deepEqual(Array.from(overview.children).map(element => element.getAttribute("aria-label")).filter(label => label !== null),
+  ["处理进展", "过程与依据", "任务管理", "诊断信息"],
+  "active work explains current activity before secondary evidence, management and diagnostics");
+for (const label of ["处理进展"]) {
+  assert.equal(requiredElement(overview, `[aria-label="${label}"]`).closest("details"), null,
+    `${label} must not be hidden behind a disclosure`);
 }
-assert.ok(overview.indexOf("高级设置与诊断") < overview.indexOf("要求 r2"), "technical versions live in advanced settings");
+for (const label of ["过程与依据", "任务管理", "诊断信息"]) {
+  assert.equal(requiredElement(overview, `details[aria-label="${label}"]`).hasAttribute("open"), false,
+    `${label} uses the same closed-by-default rule`);
+}
+assert.match(requiredElement(settings, "dl").textContent!, /要求 r2/, "technical versions live inside settings");
 assert.match(populatedDetail, /要求 r2/);
 assert.doesNotMatch(populatedDetail, /要求 r5/);
 night.phase4 = {

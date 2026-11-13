@@ -112,14 +112,17 @@ export function resultBodyText(report: NonNullable<WorkFeedbackDto["report"]>): 
   return report.completion ? report.summary : report.structured?.conclusions.map(item => item.text).join("\n") ?? report.summary;
 }
 
-export function WorkReport({ report, originalText, executionId, work, renderMarkdown }: {
+export function WorkReport({ report, originalText, executionId, work, renderMarkdown, presentation = "conversation" }: {
   report: NonNullable<WorkFeedbackDto["report"]>; originalText: string; executionId?: string; work?: WorkProjectionDto;
   renderMarkdown: (text: string) => React.JSX.Element;
+  presentation?: "conversation" | "detail" | "record";
 }): React.JSX.Element {
   const [expanded, setExpanded] = useState(false);
   const bodyText = resultBodyText(report);
-  const unprojectedJson = !report.structured && /^(?:```(?:json)?\s*)?[{[]/.test(bodyText.trim());
-  const long = !unprojectedJson && (bodyText.length > 800 || bodyText.split("\n").length > 12);
+  const notices = [...new Set(report.notices)].filter(notice => presentation !== "detail"
+    || !bodyText.replace(/\r\n/g, "\n").includes(notice.replace(/\r\n/g, "\n").trim()));
+  const unprojectedJson = !report.completion && !report.structured && /^(?:```(?:json)?\s*)?[{[]/.test(bodyText.trim());
+  const long = presentation === "conversation" && !unprojectedJson && (bodyText.length > 800 || bodyText.split("\n").length > 12);
   const additionalRecord = unprojectedJson
     ? (originalText.includes(report.summary) ? originalText : [report.summary, originalText].filter(Boolean).join("\n\n"))
     : additionalReportRecord(report, originalText);
@@ -134,21 +137,22 @@ export function WorkReport({ report, originalText, executionId, work, renderMark
       openPath: report.files?.find(item => item.ref === file.ref)?.openPath,
       previewManifestPath: report.files?.find(item => item.ref === file.ref)?.previewManifestPath ?? null }));
   const sourceConclusions = report.structured?.conclusions ?? [];
+  const detailFiles = report.primaryArtifactRefs === undefined ? files.filter(reportFile) : files.filter(file => report.primaryArtifactRefs?.includes(file.ref));
   const hasDetails = Boolean(report.teamFacts?.length || sourceConclusions.length || report.structured?.observations.length || report.sourceNotices?.length || additionalRecord);
   const status = !report.current ? (report.milestone ? "历史阶段成果" : "历史成果") : report.milestone ? "阶段成果" : report.completion
     ? report.completion.nextStep === "ask" ? "需要你补充" : report.completion.nextStep === "continue" ? "继续处理中"
       : { completed: "已完成", partial: "部分完成", unknown: "尚未核实" }[report.completion.outcome]
     : { proposed: "结果已返回", accepted: "负责人已核验", rejected: "未通过核验", superseded: "已被新成果替代" }[report.reviewStatus];
   return <section className="bot-result-report" aria-label={`成果：${report.title}`}>
-    <header><h3>{report.title}</h3><span className="bot-status-badge" data-outcome={report.completion?.outcome}>{status}</span></header>
+    {presentation !== "detail" && <header><h3>{report.title}</h3><span className="bot-status-badge" data-outcome={report.completion?.outcome}>{status}</span></header>}
     <div className={`bot-result-body ${long && !expanded ? "is-collapsed" : ""}`}>
       {unprojectedJson ? <p>原始报告已保留，尚未整理成可读结论。请展开执行详情查看，不代表目标已完成。</p>
-        : <>{!report.completion && report.structured && <h4>本次请求的结论</h4>}{renderMarkdown(bodyText)}</>}
+        : <>{presentation === "conversation" && !report.completion && report.structured && <h4>本次请求的结论</h4>}{renderMarkdown(bodyText)}</>}
     </div>
     {long && <button className="bot-result-expand" type="button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? "收起长报告" : "展开完整报告"}</button>}
-    {report.notices.length > 0 && <section className="bot-result-limitations" aria-label="需要注意"><h4>需要注意</h4><ul className="bot-result-notices">{[...new Set(report.notices)].map((notice, i) => <li key={i}>{notice}</li>)}</ul></section>}
-    <WorkFiles files={files} primaryRefs={report.primaryArtifactRefs} compact compactTitle={report.milestone ? "当前可用文件" : "本次交付"} />
-    {hasDetails && <details className="bot-result-details"><summary>执行详情与来源</summary>
+    {notices.length > 0 && <section className="bot-result-limitations" aria-label="需要注意"><h4>需要注意</h4><ul className="bot-result-notices">{notices.map((notice, i) => <li key={i}>{notice}</li>)}</ul></section>}
+    <WorkFiles files={presentation === "detail" ? (report.primaryArtifactRefs === undefined && !detailFiles.length ? files : detailFiles) : files} primaryRefs={report.primaryArtifactRefs} compact={presentation === "conversation"} compactTitle={report.milestone ? "当前可用文件" : "本次交付"} />
+    {presentation !== "detail" && hasDetails && <details className="bot-result-details"><summary>执行详情与来源</summary>
       {!!report.sourceNotices?.length && <section aria-label="执行报告中的限制"><h4>执行报告中的限制</h4><ul>{report.sourceNotices.map((notice,index) => <li key={index}>{notice}</li>)}</ul></section>}
       {report.teamFacts?.length ? <section aria-label="汇总时的执行事实"><h4>汇总时的执行事实</h4><ul>{report.teamFacts.map((fact, index) => <li key={index}>
         <strong>{fact.displayName}</strong>：{{ completed: "执行结束", failed: "执行失败", stopped: "执行停止", invalidated: "执行已失效", unknown: "执行结果未知", not_started: "未启动", running: "执行中", submitted: "已派发", pending: "准备中" }[fact.executionStatus] ?? fact.executionStatus}

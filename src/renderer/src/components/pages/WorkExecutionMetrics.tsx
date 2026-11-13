@@ -16,7 +16,7 @@ export function WorkExecutionMetrics({work}:{work:WorkProjectionDto}) {
       const metrics=execution.metrics;
       const usage=metrics?{totalInput:metrics.totalInputTokens??undefined,input:metrics.inputTokens??undefined,output:metrics.outputTokens??undefined,cacheRead:metrics.cacheReadTokens??undefined,cacheWrite:metrics.cacheWriteTokens??undefined}:undefined;
       const active=['pending','submitted','running'].includes(execution.status);
-      return <details key={execution.bindingId} className="work-execution-metrics-row" open={index===work.executions.length-1}>
+      return <details key={execution.bindingId} className="work-execution-metrics-row">
         <summary>{name} · 第 {index+1} 次执行 <span>{active?'进行中':execution.status==='completed'?'执行结束':execution.status==='failed'?'执行失败':'已停止'}</span></summary>
         <ExecutionUsageMetrics scope="本次执行" usage={usage} elapsed={metrics?.durationMs==null?undefined:`${(metrics.durationMs/1000).toFixed(1)}s`} elapsedTitle="本次原生执行从受理到最后生成结束的耗时，包含工具等待，不用于计算生成速度" finishedAt={execution.settledAt}/>
         <div className="work-execution-metrics-extra">

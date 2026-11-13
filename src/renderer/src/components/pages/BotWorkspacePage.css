@@ -112,20 +112,9 @@
 .bot-inspector.is-drawer { position:fixed; inset:0 0 0 auto; width:min(430px,calc(100vw - 32px)); height:100dvh; max-width:none; box-shadow:var(--shadow-lg); }
 .bot-inspector.is-overlay { position:absolute; inset:0 0 0 auto; width:min(430px,calc(100% - 32px)); z-index:5; box-shadow:var(--shadow-lg); }
 .bot-inspector::backdrop, .bot-settings-dialog::backdrop, .bot-navigation-drawer::backdrop { background:var(--overlay); }
-.bot-work-details { font-size:12px; line-height:1.7; overflow-wrap:anywhere; }
-.bot-work-details h2 { font-size:20px; margin:6px 0 10px; }
-.bot-work-details h3 { margin-bottom:10px; }
-.bot-work-details p { color:var(--fg-secondary); margin:6px 0; }
 .bot-detail-section { padding:20px 0; border-bottom:1px solid var(--border-default); }
 .bot-detail-section:first-of-type { padding-top:12px; }
 .bot-work-status { display:inline-flex; font-size:11px; background:var(--bg-active); padding:3px 7px; border-radius:6px; }
-.bot-work-details ul { padding-left:19px; margin:8px 0; }
-.bot-work-details li { margin:5px 0; }
-.bot-work-details dl { margin:12px 0; }
-.bot-work-details dt { color:var(--fg-secondary); font-size:11px; }
-.bot-work-details dd { margin:2px 0 12px; }
-.bot-work-details article { margin:12px 0; padding:12px; background:var(--bg-panel); border:1px solid var(--border-subtle); border-radius:10px; }
-.bot-work-details button { margin:4px 5px 4px 0; }
 .bot-work-alert { padding:12px; border-radius:10px; background:color-mix(in srgb,var(--warning) 7%,var(--bg-panel)); border:1px solid color-mix(in srgb,var(--warning) 24%,var(--border-subtle)); }
 .bot-work-next { background:var(--bg-panel); border:1px solid var(--border-default); border-radius:12px; padding:14px; margin:18px 0 0; }
 .bot-work-goal-note { color:var(--fg-secondary); }
@@ -164,7 +153,6 @@
 .sidebar-bot-identity { justify-content:flex-start!important; }
 .sidebar-bot-identity .sidebar-bot-avatar { flex:0 0 34px; }
 .sidebar-bot-identity.sidebar-bot-row > span { margin-left:0; }
-.bot-work-details > h3 { margin-top:22px; }
 .sidebar-tree-header .sidebar-bot-create { margin-left:auto; border:0; padding:5px 6px; border-radius:6px; background:transparent; color:var(--fg-secondary); font:inherit; font-size:11px; cursor:pointer; }
 .sidebar-tree-header .sidebar-bot-create:hover { background:var(--bg-hover); color:var(--fg); }
 .bot-empty-create { margin-top:20px; }
@@ -282,8 +270,6 @@
 .bot-result-other-files { margin-top:8px; color:var(--fg-secondary); }
 @media (max-width:700px) { .bot-assistant-content { padding-left:0; } .bot-result-report { padding:13px; } }
 
-.bot-work-details .table-node__resize-handle { margin:0; }
-
 /* Keep a large delegation list navigable without mounting every result card. */
 .bot-work-toolbar { position:sticky; top:-28px; z-index:1; background:var(--bg-panel); margin:0 -2px 16px; padding:12px 2px; border-bottom:1px solid var(--border-subtle); }
 .bot-work-search-row { display:flex; align-items:center; gap:8px; }
@@ -339,16 +325,6 @@
 }
 
 .bot-view-tabs button > span { white-space:nowrap; }
-
-/* Detail reports share the conversation renderer without forcing a wide column. */
-.bot-work-details .bot-result-report { max-width:100%; min-width:0; }
-.bot-work-details .bot-result-report article, .bot-work-details .bot-original-report { min-width:0; overflow-wrap:anywhere; }
-.bot-work-details .bot-original-report .md { max-width:100%; overflow-x:auto; }
-
-.bot-work-details .bot-result-report { border:0; border-radius:0; padding:0; background:transparent; }
-.bot-work-details .bot-result-report article { border:0; border-radius:0; padding:0; background:transparent; }
-.bot-work-details .bot-result-report > header h3 { display:none; }
-.bot-work-details .bot-result-report > header { margin-bottom:8px; }
 
 .bot-rename-trigger { font-size: 12px; padding: 3px 8px; }
 .bot-rename-dialog { width: min(420px, calc(100vw - 32px)); padding: 24px; border: 1px solid var(--border-default, #555); border-radius: 14px; background: var(--bg-elevated, #202124); color: var(--fg, #eee); }

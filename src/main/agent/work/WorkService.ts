@@ -16,6 +16,7 @@ import type { WorkResultDecision } from "./WorkResultDecision";
 import type { Fail, Mutation, ResolvedActor } from "./WorkControlTypes";
 import { WorkListQuery } from "./WorkListQuery";
 import { WorkProjectionBuilder } from "./WorkProjectionBuilder";
+import { readWorkPublishedReport } from "./WorkPublishedReport";
 import { submitDeliverableMutation, acceptDeliverableMutation, rejectDeliverableMutation, recordUserFeedbackMutation, attestCriteriaMutation } from "./WorkDeliverableMutations";
 import { WorkRecordArchive } from "./WorkRecordArchive";
 import { recordWorkDelivery } from "./WorkDeliveryTargets";
@@ -235,7 +236,8 @@ export class WorkService {
 
   getDetailProjection(workId: string): WorkProjectionDto | undefined {
     const work = this.repo.getWork(workId);
-    return work ? { ...this.project(work), originalDelegation: this.repo.originalDelegation(work) } : undefined;
+    return work ? { ...this.project(work), originalDelegation: this.repo.originalDelegation(work),
+      publishedReport: readWorkPublishedReport(this.db, work) } : undefined;
   }
 
   listProjections(userId: string, options?: { includeClosed?: boolean }): WorkProjectionDto[] {

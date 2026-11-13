@@ -51,12 +51,12 @@ function getWork(id: string): Promise<WorkProjectionDto | undefined> {
   if ((id === "history" && !useAppStore.getState().botWorks.some(w => w.workId === id)) || id.startsWith("pending-")) return new Promise(resolve => pendingDetails.set(id, resolve));
   return Promise.resolve(useAppStore.getState().botWorks.find(work => work.workId === id));
 }
-Object.assign(window,{detailRequests, api:{botWork:{getWork,queryWorks:async(request:WorkQueryRequest)=>queryWorkFixture(useAppStore.getState().botWorks,request),listBotExpertVersions:async()=>[],getSettings:async()=>({settings:{botId:"owner",revision:0,workspacePath:"",effectiveWorkspacePath:"/fixture",spaceId:"fixture",modelId:"",expertId:"",skillIds:[],mcpIds:[],connectorIds:[]},models:[],experts:[],skills:[],mcps:[],connectors:[]})},openFolder:async(path:string)=>events.push(path)},detailEvents:events,
+Object.assign(window,{detailRequests, api:{botWork:{getWork,queryWorks:async(request:WorkQueryRequest)=>queryWorkFixture(useAppStore.getState().botWorks,request),listBotExpertVersions:async()=>[],getSettings:async()=>({settings:{botId:"owner",revision:0,workspacePath:"",effectiveWorkspacePath:"/fixture",spaceId:"fixture",modelId:"",expertId:"",skillIds:[],mcpIds:[],connectorIds:[]},models:[],experts:[],skills:[],mcps:[],connectors:[]})},readWorkspaceFile:async(path:string)=>{events.push(path);return {content:"# 已保存的报告\n\n版本一"};},openFolder:async(path:string)=>events.push(path)},detailEvents:events,
   detailFixture:{listCase,
     removeTeam:()=>useAppStore.setState(s=>({botWorks:s.botWorks.map(w=>w.team?{...w,team:{...w.team,removedAt:3}}:w)})),
     historical:()=>useAppStore.getState().setHistoricalTeamWork(teamWork),
     settle:(id:string,title:string)=>{const value={...work,workId:id,title};detailOverrides.set(id,value);pendingDetails.get(id)?.(value);},
-    invalidate:(id:string,removed=false)=>{const existing=detailOverrides.get(id);detailOverrides.set(id,existing?(removed?{...existing,archive:{archivedAt:1,deletedAt:2}}:{...existing,nextSteps:["水位更新后的下一步"]}):undefined);useAppStore.setState(s=>({botWorkCursor:{scope:"all",epoch:"fixture",sequence:(s.botWorkCursor?.sequence ?? 0)+1}}));},
+    invalidate:(id:string,removed=false)=>{const existing=detailOverrides.get(id);detailOverrides.set(id,existing?(removed?{...existing,archive:{archivedAt:1,deletedAt:2}}:{...existing,goalDescription:"水位更新后的目标"}):undefined);useAppStore.setState(s=>({botWorkCursor:{scope:"all",epoch:"fixture",sequence:(s.botWorkCursor?.sequence ?? 0)+1}}));},
     identity:()=>({bot:useAppStore.getState().activeBotId,team:useAppStore.getState().activeTeam,selected:useAppStore.getState().selectedWorkId}),
     old:()=>useAppStore.setState({selectedWorkId:"pending-old"}),
     newer:()=>useAppStore.setState({selectedWorkId:"pending-new"}),

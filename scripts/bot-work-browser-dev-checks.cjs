@@ -10,6 +10,32 @@ module.exports = async ({ evaluate, rpc, until, report, out, isolatedSql }) => {
   await evaluate(`document.querySelector('.bot-work-card').click()`);
   await until(() => evaluate(`Boolean(document.querySelector('.bot-work-conversation-detail .bot-work-details'))`), 'real delegated Work details');
   assert(await evaluate(`document.querySelector('.bot-work-details').textContent.includes('后台原生界面成果')`), 'native task result appears in real details');
+  const actual = (await evaluate(`window.api.botWork.queryWorks({scope:{kind:'all'},view:'all',pageSize:1})`)).works[0];
+  const detail = await evaluate(`window.api.botWork.getWork(${JSON.stringify(actual.workId)})`);
+  const binding = detail.executions.find(item=>item.intentRevision===detail.intentRevision && item.inputSnapshotId===detail.inputSnapshotId && !item.invalidatedAt);
+  assert(binding, 'actual native binding provides the review identity');
+  const origin = isolatedSql({statements:[],query:{sql:`SELECT c.conversation_id,c.bot_id FROM work_conversations w
+    JOIN bot_conversations c ON c.conversation_id=w.conversation_id WHERE w.work_id=? LIMIT 1`,params:[actual.workId]}})[0];
+  assert(origin, 'actual Work retains its conversation association');
+  const review = {workId:actual.workId,eventId:'detail-dev-review',kind:'result',category:'result',executionId:binding.bindingId,
+    intentRevision:detail.intentRevision,inputSnapshotId:detail.inputSnapshotId,
+    report:{title:detail.title,summary:'负责人核对：已有成果可以阅读，现场检查未完成。',artifactRefs:[],current:true,
+      reviewStatus:'proposed',notices:['现场检查未完成'],completion:{outcome:'partial',nextStep:'deliver'}}};
+  isolatedSql({statements:[
+    {sql:`INSERT INTO bot_messages(message_id,conversation_id,bot_id,request_id,role,text,status,work_ids_json,created_at,updated_at)
+      VALUES (?,?,?,?,'assistant',?,'completed',?,?,?)`,params:['work-feedback-detail-dev',origin.conversation_id,origin.bot_id,'detail-dev-review',review.report.summary,JSON.stringify([actual.workId]),Date.now(),Date.now()]},
+    {sql:'INSERT INTO bot_work_feedback(message_id,metadata_json) VALUES (?,?)',params:['work-feedback-detail-dev',JSON.stringify(review)]},
+  ]});
+  const hydrated = await evaluate(`window.api.botWork.getWork(${JSON.stringify(actual.workId)})`);
+  assert.deepEqual(hydrated.publishedReport.report,review.report,'actual main process and preload return the saved foreground report');
+  await until(()=>evaluate(`document.querySelector('.bot-work-outcome')?.innerText.includes('负责人核对：已有成果可以阅读')`),'open detail refreshes the published review');
+  assert(await evaluate(`!document.querySelector('.bot-work-outcome').textContent.includes('后台原生界面成果')`),'worker result stays in evidence instead of replacing the foreground review');
+  assert(await evaluate(`document.querySelector('.bot-work-detail-byline').textContent.includes('部分完成')`),'header uses the same reviewed outcome as the body');
+  assert.equal(await evaluate(`document.querySelector('.bot-work-outcome').innerText.split('现场检查未完成').length-1`),1,'an exact repeated limitation is displayed once');
+  assert(await evaluate(`Array.from(document.querySelectorAll('.bot-work-details > details')).every(item=>!item.open)`),'secondary views remain closed after review refresh');
+  const detailShot=await rpc('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});
+  fs.writeFileSync(path.join(out,'bot-work-detail-published-review.png'),Buffer.from(detailShot.data,'base64'));
+  report.seededPresentationFacts.push('One formal partial-review message in the isolated database, matched to the actual native binding; verified through real preload/IPC and the open detail refresh');
   await evaluate(`document.querySelector('[aria-label="关闭事项详情并返回进行中"]').click()`);
   await until(() => evaluate(`!document.querySelector('.bot-work-conversation-detail')`), 'dismiss details');
   report.actualControlChecks.push('actual pnpm dev settings -> message -> host -> native task -> Work browser -> real result details -> close');

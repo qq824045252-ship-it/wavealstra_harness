@@ -6,13 +6,13 @@ app.whenReady().then(async()=>{let win;try{
  const out=path.resolve('out/tests'),url=n=>pathToFileURL(path.join(out,n)).href;
  fs.writeFileSync(path.join(dir,'index.html'),`<html><meta charset="utf-8"><link rel="stylesheet" href="${url('bot-work-conversation-desktop-fixture.css')}"><style>*{box-sizing:border-box}body{margin:0;font:14px system-ui;color:#222;background:white}#root{height:100vh;display:flex}:root{--surface-right:white;--fg:#222;--fg-secondary:#666;--border-subtle:#eee;--border-default:#ddd;--bg-input:white;--bg-sidebar:#f5f5f5;--accent:#3871ed}h1,h2,h3,p{margin:0}</style><div id="root"></div><script src="${url('bot-work-conversation-desktop-fixture.js')}"></script></html>`);
  const rendererErrors=[];
- win=new BrowserWindow({width:1100,height:900,show:true});
+ win=new BrowserWindow({width:1100,height:900,show:true,webPreferences:{backgroundThrottling:false}});
  win.webContents.on('console-message',event=>{
    console.log('renderer:',event.message);
    if(event.level==='error')rendererErrors.push(event.message);
  });
  await win.loadFile(path.join(dir,'index.html'));
- const ev=s=>win.webContents.executeJavaScript(s),wait=async s=>{for(let i=0;i<100;i++){if(await ev(s))return;await new Promise(r=>setTimeout(r,40));}throw Error(s);};
+ const ev=async s=>{let timer;try{return await Promise.race([win.webContents.executeJavaScript(s),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Renderer query timed out: '+s)),10000);})]);}finally{clearTimeout(timer);}},wait=async s=>{for(let i=0;i<100;i++){if(await ev(s))return;await new Promise(r=>setTimeout(r,40));}throw Error(s);};
  await wait('document.querySelectorAll("[data-message-id]").length===16');
  assert.deepEqual(rendererErrors,[],'fixture startup must not hide renderer errors');
  assert.equal(await ev('window.detailRequests.length'),0,'initial conversation loads no full Work details');
@@ -56,8 +56,10 @@ app.whenReady().then(async()=>{let win;try{
   assert(await ev('document.querySelector(".bot-thread").hidden'));
   assert(await ev('!document.querySelector("dialog[open]")'),'no blocking side overlay');
   assert(await ev('document.documentElement.scrollWidth<=innerWidth+1'),'no horizontal overflow '+width);
+  await click('[aria-label="过程与依据"] > summary');
   await click('[aria-label="全部生成文件"] > summary');
   await click('[aria-label="全部生成文件"] .bot-result-files button');
+  await wait(`window.detailEvents.at(-1)==='/saved/report-v1.md'`);
   assert.equal((await ev('window.detailEvents')).at(-1),'/saved/report-v1.md');
   assert(await ev('document.querySelector(".bot-work-conversation-header").getBoundingClientRect().top>=0'),'back remains visible');
   fs.writeFileSync(path.join(out,`bot-work-conversation-${width}.png`),(await win.webContents.capturePage()).toPNG());
@@ -68,7 +70,7 @@ app.whenReady().then(async()=>{let win;try{
  }
  await ev('window.detailFixture.selectWork()');await wait('!!document.querySelector(".bot-work-conversation-detail")');
  await ev('window.detailFixture.update()');
- await wait('document.querySelector(".bot-work-conversation-status").textContent.includes("已完成")');
+ await wait('document.querySelector(".bot-work-detail-heading .bot-work-status").textContent.includes("已完成")');
  await ev('window.detailFixture.remove()');await wait('document.querySelector(".bot-work-conversation-body").textContent.includes("已不可用")');
  await click('[aria-label="关闭事项详情并返回对话"]');await ev('window.detailFixture.reset()');
  await click('[data-message-id="m5"] .bot-message-work-links button');
@@ -85,12 +87,12 @@ app.whenReady().then(async()=>{let win;try{
  await ev('window.detailFixture.blocked()');
  await click('.bot-view-tabs button:nth-child(2)');await click('.bot-work-card');
  await wait('!!document.querySelector(".bot-work-conversation-detail")');
- await ev(`[...document.querySelectorAll('.bot-work-conversation-detail button')].find(b=>b.textContent==='向负责人回复此问题').click()`);
+ await ev(`[...document.querySelectorAll('.bot-work-conversation-detail button')].find(b=>b.textContent==='回复此问题').click()`);
  await wait('!document.querySelector(".bot-work-conversation-detail") && document.querySelector("#bot-draft").value.includes("补充原始文件")');
  assert(await ev('!document.querySelector(".bot-composer").hidden'),'reply from list retains editable composer');
  await ev('window.detailFixture.team()');await wait(`!!document.querySelector('[data-message-id="m4"] .bot-message-work-links button')`);
  await click('[data-message-id="m4"] .bot-message-work-links button');
- await wait('document.querySelector(".bot-work-conversation-breadcrumb strong")?.textContent === "临时学习团队的报告"');
+ await wait('document.querySelector(".bot-work-detail-heading h2")?.textContent === "临时学习团队的报告"');
  assert(await ev('document.querySelector(".bot-heading h1").textContent === "MyBuddy"'),'source personal conversation retained');
  fs.writeFileSync(path.join(out,'bot-linked-team-detail.png'),(await win.webContents.capturePage()).toPNG());
  const teamScroll=await ev('window.beforeDetailScroll');
@@ -163,7 +165,7 @@ app.whenReady().then(async()=>{let win;try{
  await click('.bot-work-card-container:nth-child(12) .bot-work-card');
  await wait('!!document.querySelector(".bot-work-conversation-detail")');
  await ev('window.detailFixture.updateSelected()');
- await wait('document.querySelector(".bot-work-conversation-status").textContent.includes("已完成")');
+ await wait('document.querySelector(".bot-work-detail-heading .bot-work-status").textContent.includes("已完成")');
  assert(await ev('!document.querySelector(".bot-inspector")'),'live archive transition stays inline');
  await escape();await wait('!!document.querySelector(".bot-work-browser") && !document.querySelector(".bot-work-conversation-detail")');
  assert(await ev('document.querySelector(".bot-work-browser").getAttribute("aria-label")==="进行中事项"'),'status change returns to source view');
@@ -186,11 +188,11 @@ app.whenReady().then(async()=>{let win;try{
  await ev('window.detailFixture.settle("pending-old","过期详情不得出现")');
  assert(await ev('!document.querySelector(".bot-work-conversation-detail").textContent.includes("过期详情不得出现")'),'late old result ignored');
  await ev('window.detailFixture.settle("pending-new","当前完整详情")');
- await wait('document.querySelector(".bot-work-conversation-breadcrumb strong")?.textContent==="当前完整详情"');
+ await wait('document.querySelector(".bot-work-detail-heading h2")?.textContent==="当前完整详情"');
  await ev('window.detailFixture.summary()');
- await wait('document.querySelector(".bot-work-conversation-breadcrumb strong")?.textContent==="当前完整详情"');
+ await wait('document.querySelector(".bot-work-detail-heading h2")?.textContent==="当前完整详情"');
  await ev('window.detailFixture.invalidate("pending-new")');
- await wait('document.querySelector(".bot-work-conversation-body")?.textContent.includes("水位更新后的下一步")');
+ await wait('document.querySelector(".bot-work-conversation-body")?.textContent.includes("水位更新后的目标")');
  await ev('window.detailFixture.invalidate("pending-new",true)');
  await wait('document.querySelector(".bot-work-conversation-body")?.textContent.includes("已不可用")');
  await escape();await wait('!document.querySelector(".bot-work-conversation-detail")');
@@ -199,7 +201,7 @@ app.whenReady().then(async()=>{let win;try{
  await ev('window.detailFixture.team()');await wait('!!document.querySelector(".bot-view-tabs")');
  await click('.bot-view-tabs button:first-child');
  await click('[data-message-id="m4"] .bot-message-work-links button');
- await wait('document.querySelector(".bot-work-conversation-breadcrumb strong")?.textContent==="临时学习团队的报告"');
+ await wait('document.querySelector(".bot-work-detail-heading h2")?.textContent==="临时学习团队的报告"');
  await ev('window.detailFixture.removeTeam()');
  await wait('document.querySelector(".bot-work-conversation-body")?.textContent.includes("已不可用")');
  assert.equal(await ev('document.querySelector(".bot-work-conversation-body").querySelectorAll("button").length'),0,'removed team Work exposes no execution or management actions in ordinary route');
@@ -212,7 +214,7 @@ app.whenReady().then(async()=>{let win;try{
    await click('.bot-view-tabs button:nth-child('+ (sourceView==='conversation'?1:2) +')');
    await wait(sourceView==='conversation'?'!!document.querySelector(".bot-thread")':'!!document.querySelector(".bot-work-card")');
    await ev(`(()=>{const source=document.querySelector(${JSON.stringify('.bot-thread')}); const list=document.querySelector('.bot-work-browser');window.historySource=list??source;window.historySource.scrollTop=200;window.historyScroll=window.historySource.scrollTop;window.historyTrigger=window.historySource.querySelector('button')??window.historySource;window.historyTrigger.focus({preventScroll:true});window.historyIdentity=window.detailFixture.identity();window.detailFixture.historical();})()`);
-   await wait(`document.querySelector('[aria-label="历史团队事项"] .bot-work-conversation-breadcrumb strong')?.textContent==="临时学习团队的报告"`);
+   await wait(`document.querySelector('[aria-label="历史团队事项"] .bot-work-detail-heading h2')?.textContent==="临时学习团队的报告"`);
    assert(await ev('!!window.historySource.closest("[hidden]")'),'historical source stays mounted and hidden');
    assert.deepEqual(await ev('window.detailFixture.identity()'),await ev('window.historyIdentity'),'history creates no team or composer identity');
    await escape();await wait(`!document.querySelector('[aria-label="历史团队事项"]')`);
