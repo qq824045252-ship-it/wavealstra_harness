@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { withShellTerminalGuidance } from "../src/main/agent/durable/DurableShellTerminal";
 import assert from "node:assert/strict";
 import { TerminalHost, type PtyLike, type PtyExitEvent } from "../src/main/terminal/TerminalHost";
@@ -17,7 +18,39 @@ class FakePty implements PtyLike {
   kill() { this.killed = true; this.exit({ exitCode: 0 }); }
 }
 
+async function installerAdviceProbe() {
+  // Synthetic parser only: never invokes npx, the real skills CLI or an installer.
+  const fakeCli = `const args=process.argv.slice(1); const target=args.slice(args.indexOf('skills')+1); const yes=target.includes('-y')||target.includes('--yes'); console.log(yes?'synthetic ready':'SKILLS_PROMPT_REQUIRES_TTY'); process.exitCode=yes?0:23;`;
+  for (const argv of [
+    ['-y', 'skills', 'add', 'synthetic'],
+    ['-y', 'skills', 'add', 'synthetic', '--yes', '--agent', 'test-agent'],
+    ['-y', 'skills', 'add', 'synthetic', '--yes', '--agent', 'test-agent', '-g'],
+  ]) {
+    const original = [...argv]; let calls = 0; const streamed: string[] = [];
+    const tool: any = { name: 'powershell', description: 'synthetic installer', execute: async (args: { argv: string[] }) => {
+      calls++; assert.deepEqual(args.argv, original);
+      const child = spawnSync(process.execPath, ['-e', fakeCli, '--', ...args.argv], { encoding: 'utf8' });
+      assert.ifError(child.error);
+      return { structuredOutput: { output: child.stdout, exitCode: child.status }, isError: child.status !== 0 };
+    } };
+    const wrapped = withShellTerminalGuidance(tool);
+    const result = await wrapped.execute({ argv } as any, { output: (text: string) => streamed.push(text) } as any, {} as any);
+    assert.equal(calls, 1); assert.deepEqual(argv, original, 'no scope or argument rewriting');
+    const failed = argv.length === 4;
+    assert.equal((result.structuredOutput as any).exitCode, failed ? 23 : 0);
+    assert.equal(result.isError, failed);
+    if (failed) {
+      assert.match((result.structuredOutput as any).output, /SKILLS_PROMPT_REQUIRES_TTY/);
+      assert.match(streamed.join(''), /npx -y.*does not pass --yes/);
+      assert.match(streamed.join(''), /--global\/-g is not a generic TTY fix/);
+      assert.match(streamed.join(''), /--agent\/--skill/);
+      assert.match(streamed.join(''), /does not change or rerun/);
+    } else assert.equal(streamed.length, 0, 'successful project/global target options stay untouched');
+  }
+}
+
 async function main() {
+  await installerAdviceProbe();
   for (const name of ["bash", "powershell"]) {
     for (const text of ["[SKILLS_PROMPT_REQUIRES_TTY] Interactive prompt required but stdin is not a TTY", "the input device is not a TTY", "requires an interactive terminal"]) {
       let calls = 0;
@@ -30,6 +63,7 @@ async function main() {
       assert.equal(calls, 1, "no automatic replay of possibly mutating commands");
       assert.match(streamed.join(""), /inspect partial effects/);
       assert.match(streamed.join(""), /does not establish/);
+      assert.equal(streamed.join("").includes("For SKILLS_PROMPT_REQUIRES_TTY"), text.includes("SKILLS_PROMPT_REQUIRES_TTY"), "skills-specific advice only follows its diagnostic");
     }
     const printed = { output: [{ type: "text", text: "child says stdin is not a TTY" }], structuredOutput: { output: "child says stdin is not a TTY", exitCode: 0 } };
     const printing = withShellTerminalGuidance({ name, description: "shell", execute: async () => printed } as any);
