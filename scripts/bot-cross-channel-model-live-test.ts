@@ -144,7 +144,9 @@ try {
   for (const bot of [a,b]) { const view = await agent.getBotSettings(bot.botId); const { revision, spaceId, effectiveWorkspacePath, ...settings } = view.settings;
     const saved = await agent.saveBotSettings({ ...settings, modelId: `acceptance/${modelId}`, workspacePath: workspace, expectedRevision: revision }); assert(saved.ok, JSON.stringify(saved)); }
   await gateway.connect(adapter.id, { botToken: "synthetic-only", applicationId:"200", allowUsers: ["300"], guildIds:[], allowDirectMessages:true });
-  const bindings = configureGatewayBotBinding({ action: "bind", channelId: adapter.id, botId: a.botId, ownerSenderIds: ["300"] }, { current: {}, connectedIdentity: id => gateway.connectedWorkIdentity(id), ownsActiveBot: id => agent.listBots().some(bot => bot.botId === id && bot.status === "active") });
+  const bindingIdentity = gateway.connectedBindingIdentity(adapter.id);
+  assert(bindingIdentity, "connected adapter must expose a binding revision");
+  const bindings = configureGatewayBotBinding({ action: "bind", channelId: adapter.id, botId: a.botId, ownerSenderIds: ["300"], connectionRevision: bindingIdentity.connectionRevision }, { current: {}, connectedIdentity: id => gateway.connectedBindingIdentity(id), ownsActiveBot: id => agent.listBots().some(bot => bot.botId === id && bot.status === "active") });
   await agent.updateAppSettings({ gatewayBotBindings: bindings });
   if(protocolOnly) {
     const initial=socket!;
