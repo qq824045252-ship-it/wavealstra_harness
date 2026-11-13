@@ -419,3 +419,8 @@
   font-size: 12px;
   margin: 6px 0;
 }
+
+/* Compact header actions retain native buttons, focus outlines and touch targets. */
+.bot-workspace-actions .bot-icon-button { width:34px; min-width:34px; height:34px; padding:6px; color:var(--fg-secondary); }
+.bot-workspace-actions .bot-icon-button:hover:not(:disabled), .bot-workspace-actions .bot-icon-button[aria-expanded="true"] { color:var(--fg); background:var(--bg-hover); }
+@media (max-width:640px) { .bot-workspace-actions { overflow:visible; flex-wrap:wrap; } .bot-workspace-actions .bot-icon-button { width:36px; min-width:36px; height:36px; padding:7px; } }

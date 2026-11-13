@@ -1,5 +1,9 @@
 import type { SVGProps } from "react";
 import {
+  Activity,
+  Settings,
+  MessagesSquare,
+  MessageSquarePlus,
   AlertTriangle,
   AppWindow,
   Archive,
@@ -136,6 +140,10 @@ export const IconChevronLeft = wrapLucide(ChevronLeft);
 
 export const IconBell = wrapLucide(Bell);
 export const IconSettings = wrapLucide(SlidersHorizontal);
+export const IconSettingsGear = wrapLucide(Settings);
+export const IconDiagnostics = wrapLucide(Activity);
+export const IconMessages = wrapLucide(MessagesSquare);
+export const IconNewConversation = wrapLucide(MessageSquarePlus);
 
 /** Pi Agent 官方 Logo 图标 */
 export function IconPiLogo({

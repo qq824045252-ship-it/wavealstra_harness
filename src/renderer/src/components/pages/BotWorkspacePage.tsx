@@ -31,7 +31,7 @@ import { artifactImageUrl } from "@shared/artifact-ipc";
 import { ChatImageScope } from "@/components/chat/ChatImage";
 import ChatComposer from "@/components/chat/ChatComposer";
 import ChatMarkdown from "./BotChatMarkdown";
-import { IconStop, IconPlus, IconArchive, IconChevronDown, IconArrowUp, IconBot, IconChevronRight, IconListTodo, IconPanel, IconSettings, IconX } from "@/components/common/icons";
+import { IconStop, IconPlus, IconArchive, IconChevronDown, IconArrowUp, IconBot, IconChevronRight, IconListTodo, IconPanel, IconSettingsGear, IconUsers, IconNewConversation, IconX } from "@/components/common/icons";
 import { activeBotReply, personalBotWork, linkedConversationWork, botMessageStatus, botMessageWorkLinks, botReplyQuestions, botWorkTimeline, shouldSendBotComposer, type BotWorkspaceView } from "@/lib/botWorkspacePresentation";
 import { botPresence, botReplyBadge, botWorkBadges } from "@/lib/botDirectoryActivity";
 import { useBotDirectoryActivity } from "@/hooks/useBotDirectoryActivity";
@@ -369,9 +369,9 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
         {activeTeam ? <BotTeamAvatar team={activeTeam} bots={identities} className="bot-header-avatar" /> : <BotAvatar botId={activeBotId ?? undefined} name={displayName} play className="bot-header-avatar" />}
         <div className="bot-heading"><div className="bot-heading-title"><h1>{activeTeam?.name ?? activeBot?.displayName ?? "Bot 模式"}</h1>{!activeTeam && activeBot?.organizationRole === "primary" && <span className="bot-primary-badge">主助理</span>}</div><p><span className={`bot-presence is-${presence.state}`} />{activeBot || activeTeam ? presence.label : "你的长期个人助理"}{replyBadge && <span className="bot-work-badge" data-tone="reply" title={replyBadge.title}>{replyBadge.label}</span>}{botWorkBadges(scopeActivity).map(badge => <span key={badge.key} className="bot-work-badge" data-tone={badge.key} title={badge.title}>{badge.label} {badge.value}</span>)}<span className="bot-heading-description"> · {activeTeam ? `团队工作台 · ${activeTeam.members.length + 1} 位成员` : "对话有延续，事项有着落"}</span></p></div>
         <div className="bot-workspace-actions">
-          {activeBotId && !teamId && <button type="button" className="bot-quiet-button" onClick={() => openCollaboration()}>协作记录</button>}
-          {activeBotId && <BotExecutionDiagnosticsButton request={{kind:"foreground",botId:activeBotId,teamId,conversationId:histories[scopeKey]?.conversationId}} />}
-          <button type="button" className="bot-quiet-button bot-new-conversation" disabled={!activeBot} onClick={() => {
+          {activeBotId && !teamId && <button type="button" className="bot-icon-button" title="协作记录" aria-label="协作记录" onClick={() => openCollaboration()}><IconUsers size={18} /></button>}
+          {activeBotId && <BotExecutionDiagnosticsButton iconOnly request={{kind:"foreground",botId:activeBotId,teamId,conversationId:histories[scopeKey]?.conversationId}} />}
+          <button type="button" className="bot-icon-button bot-new-conversation" title="新对话" aria-label="新对话" disabled={!activeBot} onClick={() => {
             setArchiveError("");
             if (messages.length === 0) {
               setView("conversation"); setSelectedWorkId(null);
@@ -379,8 +379,8 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
               return;
             }
             setNewConversationOpen(true);
-          }}>新对话</button>
-          <BotActivityMonitor onOpenWork={() => { suppressAutoInline.current = false; setIncludeClosed(true); }} onOpenBotMessage={messageId => {
+          }}><IconNewConversation size={18} /></button>
+          <BotActivityMonitor iconOnly onOpenWork={() => { suppressAutoInline.current = false; setIncludeClosed(true); }} onOpenBotMessage={messageId => {
             pauseFollowing();
             setView("conversation");
             requestAnimationFrame(() => requestAnimationFrame(() => {
@@ -388,7 +388,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
               node?.scrollIntoView({ block: "center" });
             }));
           }} />
-          <button type="button" className="bot-icon-button" aria-label={activeTeam ? "团队设置与管理" : "Bot 设置与对话管理"} onClick={() => { settingsEpoch.current++; setSettingsOpen(true); }}><IconSettings size={18} /></button>
+          <button type="button" className="bot-icon-button" title={activeTeam ? "团队设置与管理" : "Bot 设置与对话管理"} aria-label={activeTeam ? "团队设置与管理" : "Bot 设置与对话管理"} onClick={() => { settingsEpoch.current++; setSettingsOpen(true); }}><IconSettingsGear size={18} /></button>
         </div>
       </header>
       {!inlineWorkId && <BotWorkNavigation view={view} onChange={changeView} />}

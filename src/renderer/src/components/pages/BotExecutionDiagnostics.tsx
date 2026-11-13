@@ -1,14 +1,15 @@
 import { useEffect, useState } from "react";
+import { IconDiagnostics } from "@/components/common/icons";
 import { ExecutionDiagnosticsDialog } from "@/components/chat/TaskDiagnosticsDialog";
 import type { BotExecutionDiagnosticsDto, BotExecutionDiagnosticsRequest } from "@shared/bot-execution-diagnostics";
 import { TaskDiagnosticsView } from "@/components/chat/TaskDiagnosticsPanel";
 import "./BotExecutionDiagnostics.css";
 
-export function BotExecutionDiagnosticsButton({ request }: { request: BotExecutionDiagnosticsRequest }) {
+export function BotExecutionDiagnosticsButton({ request, iconOnly = false }: { request: BotExecutionDiagnosticsRequest; iconOnly?: boolean }) {
   const [open, setOpen] = useState(false);
   const identity = JSON.stringify(request);
   useEffect(() => setOpen(false), [identity]);
-  return <><button type="button" className="bot-quiet-button" onClick={() => setOpen(true)}>执行诊断</button>
+  return <><button type="button" className={iconOnly ? "bot-icon-button" : "bot-quiet-button"} title="执行诊断" aria-label="执行诊断" aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen(true)}>{iconOnly ? <IconDiagnostics size={18} /> : "执行诊断"}</button>
     {open && <BotExecutionDiagnosticsDialog request={request} onClose={() => setOpen(false)} />}</>;
 }
 

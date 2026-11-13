@@ -4,12 +4,12 @@ import type { BotActiveRequestDto } from "@shared/bot-conversation";
 import type { SubagentSummaryDto } from "@shared/agent-ipc";
 import { activityKindLabels, buildActivityRows, useWorkSummaryPages, type ActivityKind, type ActivityRow } from "@/lib/botActivityMonitor";
 import { botMessageStatus } from "@/lib/botWorkspacePresentation";
-import { IconX } from "@/components/common/icons";
+import { IconX, IconMessages } from "@/components/common/icons";
 import "./BotActivityMonitor.css";
 
 const PAGE_SIZE = 40;
 /** Mounted only while open: no background polling or global mutation of execution state. */
-export function BotActivityMonitor({ onOpenBotMessage, onOpenWork }: { onOpenBotMessage: (messageId: string) => void; onOpenWork?: () => void }): React.JSX.Element {
+export function BotActivityMonitor({ onOpenBotMessage, onOpenWork, iconOnly = false }: { iconOnly?: boolean; onOpenBotMessage: (messageId: string) => void; onOpenWork?: () => void }): React.JSX.Element {
   const [open, setOpen] = useState(false);
   const anchor = useRef<HTMLButtonElement>(null);
   const activeBotId = useAppStore(s => s.activeBotId);
@@ -18,7 +18,7 @@ export function BotActivityMonitor({ onOpenBotMessage, onOpenWork }: { onOpenBot
   const contextKey = activeTeam ? "team:" + activeTeam.templateId : activeBotId;
   const globalScope = globalBotId !== null && globalBotId === contextKey;
   const setGlobalScope = (global: boolean) => setGlobalBotId(global ? contextKey : null);
-  return <><button type="button" ref={anchor} className="bot-quiet-button" aria-haspopup="dialog" aria-expanded={open} onClick={() => { setGlobalScope(false); setOpen(value => !value); }}>所有消息</button>
+  return <><button type="button" ref={anchor} className={iconOnly ? "bot-icon-button" : "bot-quiet-button"} title="所有消息" aria-label="所有消息" aria-haspopup="dialog" aria-expanded={open} onClick={() => { setGlobalScope(false); setOpen(value => !value); }}>{iconOnly ? <IconMessages size={18} /> : "所有消息"}</button>
     {open && <ActivityWindow anchor={anchor.current} key={(activeTeam?.templateId ?? activeBotId ?? "") + ":" + globalScope} scopeTeamId={globalScope ? undefined : activeTeam?.templateId} scopeBotId={globalScope ? null : activeBotId ?? ""} onScopeChange={setGlobalScope} onClose={() => setOpen(false)} onOpenBotMessage={onOpenBotMessage} onOpenWork={onOpenWork} />}</>;
 }
 export function ActivityWindow({ anchor, scopeTeamId, scopeBotId, onScopeChange, onClose, onOpenBotMessage, onOpenWork }: { anchor: HTMLButtonElement | null; scopeTeamId?: string; scopeBotId: string | null; onScopeChange: (global: boolean) => void; onClose: () => void; onOpenBotMessage: (messageId: string) => void; onOpenWork?: () => void }): React.JSX.Element {
