@@ -3877,6 +3877,10 @@ export class AgentService {
     };
   }
 
+  /** Host-only synchronous binding write: no model-settings await between identity check and persistence. */
+  saveGatewayBotBindings(bindings: NonNullable<AppSettingsDto["gatewayBotBindings"]>): void {
+    this.settingsStore.write({ gatewayBotBindings: bindings });
+  }
   async updateAppSettings(partial: Partial<AppSettingsDto>): Promise<AppSettingsDto> {
     const previous = this.getAppSettings();
     const { enabledModels, defaultModelId, modelPreferences, ...productPartial } = partial;

@@ -9,7 +9,7 @@ import { SavedArtifactIpc } from "../shared/saved-artifact";
 import { savedArtifactPreviewService } from "./artifact/SavedArtifactPreview";
 import { ResidentLifecycle, RESIDENT_HOST_ARGUMENT } from "./host/ResidentLifecycle";
 import { GatewayBotBindingIpc } from "../shared/gateway-bot-binding";
-import { configureGatewayBotBinding } from "./gateway/GatewayBotBindingSettings";
+import { createGatewayBotBindingUpdater } from "./gateway/GatewayBotBindingSettings";
 import { isMainAppWindowRequest } from "./AppWindowIpc";
 import { GoogleWorkspaceWriteIpc } from "../shared/google-workspace-write";
 import { googleWorkspaceWriteService } from "./connectors/GoogleWorkspaceWriteService";
@@ -2352,18 +2352,18 @@ function registerIpc(): void {
   ipcMain.handle(GatewayIpc.weixinQrCancel, (_e, sessionId?: string) => gatewayService.cancelWeixinQrLogin(sessionId));
   ipcMain.handle(GatewayIpc.qqQrCancel, (_e, sessionId?: string) => gatewayService.cancelQQQrLogin(sessionId));
   ipcMain.handle(GatewayIpc.status, () => gatewayService.status());
+  const updateGatewayBotBinding = createGatewayBotBindingUpdater({
+    readCurrent: () => agentService.getAppSettings().gatewayBotBindings ?? {},
+    writeCurrent: next => agentService.saveGatewayBotBindings(next),
+    connectedIdentity: id => gatewayService.connectedBindingIdentity(id),
+    ownsActiveBot: id => agentService.listBots().some(bot => bot.botId === id && bot.status === "active"),
+  });
   ipcMain.handle(GatewayBotBindingIpc.configure, async (event, input) => {
     if (!isMainAppWindowRequest(event, botManagementWindow,
       process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href)) {
       throw new Error("只能从应用主窗口绑定渠道个人助理");
     }
-    const next = configureGatewayBotBinding(input, {
-      current: agentService.getAppSettings().gatewayBotBindings ?? {},
-      connectedIdentity: id => gatewayService.connectedWorkIdentity(id),
-      ownsActiveBot: id => agentService.listBots().some(bot => bot.botId === id && bot.status === "active"),
-    });
-    await agentService.updateAppSettings({ gatewayBotBindings: next });
-    return next;
+    return updateGatewayBotBinding(input);
   });
   ipcMain.handle(GatewayIpc.listChannels, () => gatewayService.listChannels());
   ipcMain.handle(

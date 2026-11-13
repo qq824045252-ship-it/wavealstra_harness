@@ -1941,6 +1941,10 @@ export interface GatewayChannelDto {
   name: string;
   connected: boolean;
   statusText?: string;
+  /** Opaque connection generation; pairing drafts echo this value. */
+  bindingRevision?: string;
+  /** Non-secret account fingerprint used to display stale saved bindings. */
+  bindingConnectionKey?: string;
 }
 
 export interface GatewayStatusDto {
@@ -1955,6 +1959,8 @@ export interface GatewayChannelConfigDto {
 }
 
 export interface GatewayEventDto {
+  /** Verified receiving account identity; absent on legacy/unverified events. */
+  bindingConnectionKey?: string;
   channelId: string;
   direction: "in" | "out" | "system";
   text: string;

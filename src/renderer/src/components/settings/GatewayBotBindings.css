@@ -128,3 +128,17 @@
 .gateway-assistant-notice.success { color: var(--accent); }
 .gateway-assistant-notice.error { color: var(--danger, #ef4444); }
 .gateway-assistant-sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.gateway-assistant-toolbar { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-bottom: 14px; }
+.gateway-assistant-toolbar .btn { font-size: 12px; padding: 6px 12px; }
+.gateway-assistant-list { margin: 0; padding: 0; list-style: none; }
+.gateway-assistant-binding { display: flex; flex-wrap: wrap; gap: 12px; padding: 14px 0; border-top: 1px solid var(--border-subtle, var(--border)); }
+.gateway-assistant-binding-info { flex: 1 1 240px; min-width: 0; }
+.gateway-assistant-binding-info strong { color: var(--fg); font-size: 13px; margin-right: 8px; }
+.gateway-assistant-binding-info p { font-size: 12px; line-height: 1.6; margin: 7px 0 0; color: var(--fg-secondary, var(--fg)); overflow-wrap: anywhere; }
+.gateway-assistant-owner-ids { user-select: text; }
+.gateway-assistant-binding > .gateway-assistant-actions { align-self: center; flex-wrap: wrap; }
+.gateway-assistant-empty { color: var(--fg-muted); padding: 8px 0 18px; font-size: 12px; line-height: 1.6; }
+.gateway-assistant-editor { border-top: 1px solid var(--border-subtle, var(--border)); padding-top: 16px; }
+.gateway-assistant-editor h4 { margin: 0 0 14px; font-size: 13px; color: var(--fg); }
+.gateway-assistant-field textarea { width: 100%; min-height: 64px; resize: vertical; box-sizing: border-box; padding: 7px 10px; border: 1px solid var(--border); border-radius: 7px; color: var(--fg); background: var(--surface-input); font: inherit; }
+.gateway-assistant-field textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }

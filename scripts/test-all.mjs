@@ -315,6 +315,8 @@ const HEADLESS_TESTS = new Set([
   "test:bot-work-method-feedback",
   "test:bot-cross-channel-contract",
   "test:gateway-bot-binding",
+  "test:gateway-bot-binding-ui",
+  "test:gateway-binding-slack-identity",
   "test:gateway-connected-ui",
   "test:gateway-channel-ui",
   "test:gateway-qr-race-ui",

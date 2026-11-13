@@ -15,3 +15,9 @@ PASS using `scripts/run-gateway-ui-test.mjs`: `qq-qr-ui-test.tsx`, `weixin-qr-ui
 PASS: `node scripts/test-all.mjs --audit` (classification only, not a full test run).
 
 Tests use controlled DOM/IPC fixtures. No real external account was enrolled, no user configuration was altered, and no package/build was produced. Feishu/DingTalk automatic registration and binding-management changes are separate follow-up batches; this report does not certify them.
+
+## Second batch: saved personal-assistant bindings
+
+Base: `2e3f3b99`. Adds a saved binding list with edit, unbind and refresh; disconnected channels and missing/inactive Bots remain manageable. Recent sender suggestions are scoped to the authenticated connection identity. Changing account invalidates an editing session. Binding writes are serialized and read current settings inside the queue, then validate connection generation before a synchronous binding-only write.
+
+PASS on the integrated candidate: full node/web TypeScript checks; binding validation/concurrent update/generation tests; Slack current/old/unknown connection identity tests; binding-management DOM tests; test classification audit. These are controlled fixtures, not a live external account acceptance. The second batch contains no Feishu/DingTalk automatic registration changes.

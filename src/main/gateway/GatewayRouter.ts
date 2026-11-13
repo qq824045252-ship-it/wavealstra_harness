@@ -77,6 +77,7 @@ export class GatewayRouter {
       }
 
       if (!msg.gatewayDelivery?.replay) this.options.emitEvent({
+        bindingConnectionKey: connectionKey,
         channelId: msg.channelId,
         direction: "in",
         text: msg.text,
@@ -145,7 +146,13 @@ export class GatewayRouter {
   private async handleSlackInbound(msg: GatewayInboundMessage, redact: (text: string) => string): Promise<void> {
     if (!msg.taskId || !msg.userMessageId || !msg.assistantMessageId) throw new Error("Slack 任务身份缺失，未执行");
 
+    const connectionKey = this.options.adapters.get(msg.channelId)?.workConnectionKey?.();
+    if (!connectionKey) throw new Error("Slack 缺少已认证账号身份");
+    if (msg.workTarget && msg.workTarget.connectionKey !== connectionKey) {
+      throw new Error("Slack 入站连接账号已改变，未执行");
+    }
     this.options.emitEvent({
+      bindingConnectionKey: connectionKey,
       channelId: msg.channelId, direction: "in", text: msg.text, at: Date.now(),
       chatId: msg.chatId, senderId: msg.sender?.id, messageId: msg.messageId,
     });
@@ -167,8 +174,6 @@ export class GatewayRouter {
 
       const settings = this.options.readSettings();
       const modelId = settings.defaultModelId?.trim() || undefined;
-      const connectionKey = this.options.adapters.get(msg.channelId)?.workConnectionKey?.();
-      if (!connectionKey) throw new Error("Slack 缺少已认证账号身份");
       text = await runGatewayAgentTurn(this.options.agent, {
         taskId: msg.taskId, text: withSlackChannelHistory(msg.text, msg.slackHistory), displayText: msg.text, userMessageId: msg.userMessageId,
         assistantMessageId: msg.assistantMessageId, attachments: msg.attachments,

@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from "node:crypto";
 import { GatewayPlatformRegistry, gatewayCapabilities } from "./GatewayPlatformRegistry";
 import { GatewayRouter } from "./GatewayRouter";
 import { GatewaySecrets, GATEWAY_SECRET_FIELDS, GATEWAY_REDACTED } from "./GatewaySecrets";
@@ -114,10 +115,13 @@ export class GatewayService {
   /** Invalidates startup/restore work when shutdown crosses an awaited operation. */
   private lifecycleEpoch = 0;
   private readonly channelOperations = new Map<string, symbol>();
+  private readonly bindingSessionId = randomUUID();
+  private readonly bindingGenerations = new Map<string, number>();
 
   private beginChannelOperation(channelId: string): symbol {
     const operation = Symbol(channelId);
     this.channelOperations.set(channelId, operation);
+    this.bindingGenerations.set(channelId, (this.bindingGenerations.get(channelId) ?? 0) + 1);
     return operation;
   }
 
@@ -400,6 +404,13 @@ export class GatewayService {
     return connectionKey ? { channelId, connectionKey } : undefined;
   }
 
+  connectedBindingIdentity(channelId: string): { connectionKey: string; connectionRevision: string } | undefined {
+    const identity = this.connectedWorkIdentity(channelId);
+    if (!identity || this.stopping) return undefined;
+    return { connectionKey: identity.connectionKey, connectionRevision: createHash("sha256")
+      .update(JSON.stringify([this.bindingSessionId, this.lifecycleEpoch, channelId,
+        this.bindingGenerations.get(channelId) ?? 0, identity.connectionKey])).digest("hex") };
+  }
   setTrashedWorkspaceRestorer(restore: (taskId: string) => void): void {
     this.restoreTrashedWorkspace = restore;
   }
@@ -534,6 +545,8 @@ export class GatewayService {
       const pending = Object.entries(this.platforms.deliveryStatus(adapter.id))
         .filter(([, count]) => count > 0).map(([state, count]) => `${labels[state] ?? state} ${count}`);
       return { id: adapter.id, type: adapter.type, name: adapter.name, connected: adapter.isConnected(),
+        bindingRevision: this.connectedBindingIdentity(adapter.id)?.connectionRevision,
+        bindingConnectionKey: this.connectedWorkIdentity(adapter.id)?.connectionKey,
         statusText: this.secrets.redact([adapter.statusText(), ...pending].join("；")) };
     });
   }

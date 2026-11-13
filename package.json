@@ -734,7 +734,7 @@
     "test:bot-organization-selection": "node scripts/bot-organization-selection-test.cjs",
     "test:bot-organization:live": "node scripts/bot-organization-live-driver.cjs",
     "test:durable-storage-current": "node scripts/durable-storage-current-test.cjs",
-    "test:gateway-bot-binding": "esbuild scripts/gateway-bot-binding-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/gateway-bot-binding-test.mjs && node scripts/test-guard.mjs out/tests/gateway-bot-binding-test.mjs",
+    "test:gateway-bot-binding": "node scripts/test-guard.mjs node --import ./scripts/test-typescript-memory-loader.mjs scripts/gateway-bot-binding-test.ts",
     "test:bot-cross-channel-contract": "esbuild scripts/bot-cross-channel-contract-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/bot-cross-channel-contract-test.mjs && node scripts/test-guard.mjs out/tests/bot-cross-channel-contract-test.mjs",
     "test:bot-cross-channel-model-live": "esbuild scripts/bot-cross-channel-model-live-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/bot-cross-channel-model-electron-fixture.ts --outfile=out/tests/bot-cross-channel-model-live-test.mjs && node scripts/test-guard.mjs out/tests/bot-cross-channel-model-live-test.mjs",
     "test:resident-host": "esbuild scripts/resident-host-fixture.ts --bundle --platform=node --format=cjs --packages=external --outfile=out/tests/resident-host-fixture.cjs --external:electron && node scripts/resident-host-test.cjs",
@@ -764,7 +764,9 @@
     "test:gateway-connected-ui": "node scripts/run-gateway-ui-test.mjs scripts/gateway-connected-ui-test.tsx",
     "test:gateway-channel-ui": "node scripts/run-gateway-ui-test.mjs scripts/gateway-channel-ui-test.tsx",
     "test:gateway-qr-race-ui": "node scripts/run-gateway-ui-test.mjs scripts/gateway-qr-race-ui-test.tsx",
-    "test:gateway-setup-guide": "node scripts/run-gateway-ui-test.mjs scripts/gateway-setup-guide-test.ts"
+    "test:gateway-setup-guide": "node scripts/run-gateway-ui-test.mjs scripts/gateway-setup-guide-test.ts",
+    "test:gateway-binding-slack-identity": "node scripts/test-guard.mjs node --import ./scripts/test-typescript-memory-loader.mjs scripts/gateway-binding-slack-identity-test.ts",
+    "test:gateway-bot-binding-ui": "node scripts/run-gateway-ui-test.mjs scripts/gateway-bot-binding-ui-test.tsx"
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.85.0",

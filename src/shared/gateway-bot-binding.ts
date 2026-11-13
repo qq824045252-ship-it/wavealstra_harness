@@ -9,7 +9,7 @@ export const gatewayBotBindingSchema = z.object({
 export type GatewayBotBinding = z.infer<typeof gatewayBotBindingSchema>;
 export const gatewayBotBindingRequestSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("bind"), channelId: identifier, botId: identifier,
-    ownerSenderIds: z.array(identifier).min(1).max(100) }).strict(),
+    ownerSenderIds: z.array(identifier).min(1).max(100), connectionRevision: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
   z.object({ action: z.literal("unbind"), channelId: identifier }).strict(),
 ]);
 export type GatewayBotBindingRequest = z.infer<typeof gatewayBotBindingRequestSchema>;
