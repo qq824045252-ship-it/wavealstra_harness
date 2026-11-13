@@ -238,7 +238,7 @@ app.whenReady().then(async () => {
     await click('.bot-incoming-more');
     await wait(`document.querySelectorAll('[data-incoming-collaboration]').length===6`);
     report.checks.push('recipient main page shows incoming consultation and Work, live returned reply, host-filtered paging, narrow layout and keyboard history/back');
-    await evaluate(`[...document.querySelectorAll('.bot-workspace-actions button')].find(e=>e.textContent==='协作记录').click()`);
+    await click('[aria-label="协作记录"]');
     await wait(`document.querySelector('.bot-collaboration-list')?.innerText.includes('来自 并发助理')`);
     assert((await evaluate(`document.querySelector('.bot-collaboration-list').innerText`)).includes('「学习搭子的个人核验事项」'), 'the collaboration list names the delegated task');
     await click('.bot-collaboration-list [data-collaboration-id="relation-a"]');

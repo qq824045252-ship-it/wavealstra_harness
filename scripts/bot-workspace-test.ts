@@ -184,7 +184,8 @@ for (const lifecycle of ["active", "paused", "closing", "closed"] as const) {
   const candidate = { ...plain, lifecycle };
   assert.equal(workMatchesView(candidate, "active"), lifecycle !== "closed");
   assert.equal(workMatchesView(candidate, "conversation"), lifecycle !== "closed");
-  assert.equal(workMatchesView(candidate, "closed"), lifecycle === "closed");
+  assert.equal(workMatchesView(candidate, "completed"), lifecycle === "closed");
+  assert.equal(workMatchesView(candidate, "closed"), false, "closing a Work is not an explicit archive");
 }
 assert.equal(workStatusLabel(plain), "尚未执行");
 assert.equal(workStatusLabel({ ...plain, lifecycle: "paused" }), "已暂停");
@@ -786,8 +787,8 @@ assert.equal(workCardExcerpt("路径 `C:\\Users\\Tester\\My Reports\\sales.csv`�
 
 for (const conclusion of ["succeeded", "cancelled", "ended_unsuccessfully", undefined] as const) {
  const ended = { ...plain, lifecycle: "closed" as const, closureConclusion: conclusion };
- assert.equal(workMatchesView(ended, "completed"), conclusion === "succeeded");
- assert.equal(workMatchesView(ended, "closed"), conclusion !== "succeeded");
+ assert.equal(workMatchesView(ended, "completed"), true, "completed counts every closed lifecycle; the conclusion stays separate");
+ assert.equal(workMatchesView(ended, "closed"), false, "only an explicit archive moves a Work into the archive view");
  assert.equal(workMatchesView(ended, "active"), false);
 }
 assert.equal(workMatchesView(executed, "completed"), false);
