@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import { mkdtempSync, rmSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
@@ -11,7 +13,7 @@ import { BotRegistry } from "../src/main/agent/work/BotRegistry";
 import { BotDeletionService } from "../src/main/agent/work/BotDeletionService";
 import { BotConversationRepository } from "../src/main/agent/work/BotConversationRepository";
 import { BotCollaborationService } from "../src/main/agent/work/BotCollaborationService";
-import { botWorkCreateSchema, botWorkVersionGuardSchema } from "../src/main/agent/work/BotForegroundTools";
+import { botForegroundTools, botWorkCreateSchema, botWorkVersionGuardSchema } from "../src/main/agent/work/BotForegroundTools";
 import { WorkService, DESKTOP_USER_GRANTS } from "../src/main/agent/work/WorkService";
 import { WorkConversationFeedback } from "../src/main/agent/work/WorkConversationFeedback";
 import { WorkFileEventSource, readWorkFileSource } from "../src/main/agent/work/WorkFileEventSource";
@@ -217,6 +219,91 @@ try {
   assert.equal(mergedClosure?.messages.find(message => message.messageId === rollback.assistantMessageId)?.collaborations
     ?.find(row => row.collaborationId === stableRelation)?.work?.lifecycle, "closed", "a real Work closure must pass source message stream revision fencing");
   console.log("PASS Work closure refreshes the source collaboration summary through the real stream reducer");
+  // Real SQLite identities/outbox; no model, network, or real-user data.
+  let acceptedCount = 0;
+  const redoHost = { accept: async (delivery: import("../src/main/agent/work/BotPeerIngress").BotPeerDelivery, guard?: () => void) => {
+    guard?.(); acceptedCount++;
+    const accepted = messages.accept("u", {botId:"target", requestId:delivery.request_id, text:delivery.text});
+    works.transaction(() => { messages.peers.record(accepted, JSON.parse(delivery.origin_json));
+      db.prepare("UPDATE bot_peer_deliveries SET accepted_message_id=? WHERE operation_id=?").run(accepted.assistantMessageId,delivery.operation_id); });
+    return accepted;
+  }, cancel: async () => {} };
+  const redoService = new BotCollaborationService(options,messages,()=>{},redoHost);
+  const fresh = messages.accept("u",{botId:"unrelated", requestId:"redo-user-1",text:"重新做一份"});
+  const read = page(await redoService.command(fresh.assistantMessageId,"read-redo",{action:"query",collaborationId:stableRelation}));
+  const redo = {action:"redo",collaborationId:stableRelation,text:"重新做一份，保留原标准",requestExcerpt:"重新做一份",versionGuard:read.versionGuard};
+  const successor = page(await redoService.command(fresh.assistantMessageId,"redo-tool-1",redo));
+  assert.notEqual(successor.collaboration.collaborationId,stableRelation);
+  assert.equal(successor.collaboration.workId,null);
+  assert.equal(successor.collaboration.sourceUserMessageId,fresh.userMessageId);
+  const replay = page(await redoService.command(fresh.assistantMessageId,"different-tool-id",redo));
+  assert.equal(replay.collaboration.collaborationId,successor.collaboration.collaborationId);
+  assert.equal(acceptedCount,1,"same user redo cannot duplicate delivery when model changes tool ID");
+  await assert.rejects(redoService.command(fresh.assistantMessageId,"changed",{...redo,text:"changed payload"}),/idempotency_conflict/);
+  assert.equal(redoService.repo.get("u",stableRelation)?.workId,stableWork);
+  assert.equal(works.getWork(stableWork)?.lifecycle,"closed");
+  await redoService.delivery!.cancel(stableRelation);
+  const nextDelivery = messages.peers.deliveries("u",successor.collaboration.collaborationId)[0];
+  assert.equal(nextDelivery.cancelled_at,null,"old cancel cannot cancel successor");
+  const acceptedMessage = messages.message(nextDelivery.accepted_message_id!)!;
+  const acceptedReceipt = messages.receipt("u","target",acceptedMessage.requestId)!;
+  assert.equal(messages.userSource(acceptedReceipt).user_message_id,fresh.userMessageId,"new user authority survives ingress");
+  const restored = new BotCollaborationService(options,messages,()=>{},redoHost);
+  assert.equal(page(await restored.command(fresh.assistantMessageId,"after-restart",redo)).collaboration.collaborationId,successor.collaboration.collaborationId);
+  assert.equal(acceptedCount,1);
+  const originalWork = works.getWork(stableWork)!;
+  const tools = botForegroundTools({...options,botId:"target",conversationId:acceptedReceipt.conversation_id,messages,workspacePath:root,memorySearch:()=>[]});
+  const createTool = tools.find(tool=>tool.name==="work_create")!;
+  const createArgs = {title:"Redo fixture",mode:"once",requestedOutcome:"one_time",sourceMessageIds:[fresh.userMessageId]};
+  const invokeCreate = async(taskId:string) => {
+    const output = await createTool.execute(createArgs as never,{callId:taskId,taskId,memo:async()=>acceptedReceipt.request_id} as unknown as ToolExecutionApi,BACKGROUND_CONTEXT);
+    const block=output.output?.find(item=>item.type==="text"); assert(block?.type==="text");
+    return JSON.parse(block.text) as {ok:boolean;work:import("../src/shared/bot-work").WorkDto};
+  };
+  const nextWork=await invokeCreate("redo-create-1"); assert(nextWork.ok,JSON.stringify(nextWork));
+  assert.notEqual(nextWork.work.workId,stableWork);
+  assert.equal((await invokeCreate("redo-create-changed-tool")).work.workId,nextWork.work.workId);
+  assert.equal(redoService.repo.get("u",successor.collaboration.collaborationId)?.workId,nextWork.work.workId);
+  assert.equal(nextWork.work.workspacePath,root);
+  assert.deepEqual(nextWork.work.authorization,bots.getBot("target")!.authorization);
+  assert.equal(nextWork.work.sourceMessageId,fresh.userMessageId);
+  assert.equal(works.getWork(stableWork)?.stateVersion,originalWork.stateVersion);
+  const activeRedoRequest=messages.accept("u",{botId:"unrelated",requestId:"redo-active",text:"重新做一份"});
+  const activePage=page(await redoService.command(activeRedoRequest.assistantMessageId,"active-read",{action:"query",collaborationId:successor.collaboration.collaborationId}));
+  await assert.rejects(redoService.command(activeRedoRequest.assistantMessageId,"active-redo",{...redo,collaborationId:successor.collaboration.collaborationId,versionGuard:activePage.versionGuard}),/已结案/);
+  const forged=messages.accept("u",{botId:"unrelated",requestId:"redo-forged",text:"查询进度"});
+  const forgedPage=page(await redoService.command(forged.assistantMessageId,"forged-read",{action:"query",collaborationId:stableRelation}));
+  await assert.rejects(redoService.command(forged.assistantMessageId,"forged-redo",{...redo,versionGuard:forgedPage.versionGuard}),/逐字/);
+  const badSource = messages.accept("u",{botId:"other",requestId:"cross-redo",text:"重新做一份"});
+  await assert.rejects(restored.command(badSource.assistantMessageId,"cross-redo",redo),/属于|发起/);
+  // A new private conversation must query/link the predecessor before redo.
+  db.prepare("UPDATE bot_conversations SET archived_at=? WHERE user_id=? AND bot_id=? AND archived_at IS NULL").run(Date.now(),"u","unrelated");
+  db.prepare("INSERT INTO bot_conversations(conversation_id,bot_id,user_id,created_at,updated_at) VALUES(?,?,?,?,?)").run("redo-new-private","unrelated","u",Date.now(),Date.now());
+  const privateTurn=messages.accept("u",{botId:"unrelated",conversationId:"redo-new-private",requestId:"redo-private",text:"重新做一份"});
+  const privateRead=page(await redoService.command(privateTurn.assistantMessageId,"private-read",{action:"query",collaborationId:stableRelation}));
+  const privateRedo={...redo,versionGuard:privateRead.versionGuard};
+  await assert.rejects(redoService.command(privateTurn.assistantMessageId,"no-guard",{...privateRedo,versionGuard:undefined}),/versionGuard/);
+  await assert.rejects(redoService.command(privateTurn.assistantMessageId,"old-guard",{...privateRedo,versionGuard:{...privateRead.versionGuard,expectedStateVersion:1}}));
+  // Simulate process failure after command+successor+outbox commit, before acceptance.
+  let failOnce=true;
+  const failingHost={...redoHost,accept:async(...args:Parameters<typeof redoHost.accept>)=>{if(failOnce){failOnce=false;throw Error("injected before accept");}return redoHost.accept(...args);}};
+  const failingService=new BotCollaborationService(options,messages,()=>{},failingHost);
+  await assert.rejects(failingService.command(privateTurn.assistantMessageId,"private-first",privateRedo),/injected/);
+  const pending=db.prepare("SELECT successor_id FROM bot_collaboration_successors WHERE source_user_message_id=?").get(privateTurn.userMessageId) as {successor_id:string};
+  assert(pending);
+  assert.equal(messages.peers.deliveries("u",pending.successor_id).length,1);
+  assert.equal(messages.peers.deliveries("u",pending.successor_id)[0].accepted_message_id,null);
+  failingService.close();
+  const restartedService=new BotCollaborationService(options,messages,()=>{},redoHost);
+  const beforeConcurrent=acceptedCount;
+  const concurrent=await Promise.all(["private-restart-a","private-restart-b"].map(id=>restartedService.command(privateTurn.assistantMessageId,id,privateRedo)));
+  assert(concurrent.every(value=>page(value).collaboration.collaborationId===pending.successor_id));
+  assert.equal(acceptedCount,beforeConcurrent+1);
+  assert.equal(messages.peers.deliveries("u",pending.successor_id).length,1);
+  await assert.rejects(redoService.command(acceptedReceipt.assistant_message_id,"peer-redo",redo));
+  console.log("PASS redo real work_create identity/source/workspace/authorization; new private conversation; guards; peer rejection; failed-send restart/concurrency");
+  console.log("PASS closed Work redo successor: request identity, retry, restart, provenance, old cancellation isolation");
+
 } finally {
   app.close();
   const cleanup = resolve(root);

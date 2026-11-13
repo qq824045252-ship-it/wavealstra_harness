@@ -21,6 +21,7 @@ const text = z.string().trim().min(1).max(8000);
 const queryPage = { cursor: botCollaborationsQuerySchema.shape.cursor, limit: botCollaborationsQuerySchema.shape.limit };
 export const botCollaborationCommandSchema = z.discriminatedUnion("action", [
   botReviewResultCommandSchema,
+  z.object({ action: z.literal("redo"), collaborationId: id, text, requestExcerpt: text, versionGuard: botWorkVersionGuardSchema }).strict(),
   z.object({ action: z.enum(["ask", "follow_up"]), ...destination, text }).strict(),
   z.object({ action: z.literal("delegate"), ...destination, text: text.optional(), plan: botWorkCreateSchema.optional() }).strict(),
   z.object({ action: z.literal("query"), ...relation, ...queryPage }).strict(),
@@ -41,7 +42,7 @@ export interface BotOrganizationContact {
 // Providers require an object at the root. The action union remains the
 // runtime authority and rejects fields belonging to another action.
 export const botCollaborationToolSchema = z.object({
-  action: z.enum(["ask", "follow_up", "delegate", "query", "amend", "pause", "resume", "cancel", "review_result"]),
+  action: z.enum(["ask", "follow_up", "delegate", "query", "amend", "pause", "resume", "cancel", "review_result", "redo"]),
   ...destination, text: text.optional(), plan: botWorkCreateSchema.optional(),
   changes: botWorkChangeSchema.omit({ workId: true, versionGuard: true }).optional(),
   versionGuard: botWorkVersionGuardSchema.optional(), reason: text.optional(),
@@ -72,7 +73,11 @@ export class BotCollaborationService {
       PRIMARY KEY(user_id,operation_id));
       CREATE TABLE IF NOT EXISTS bot_collaboration_organization_links(
       user_id TEXT NOT NULL,intent_id TEXT NOT NULL,collaboration_id TEXT NOT NULL,
-      PRIMARY KEY(user_id,intent_id),UNIQUE(user_id,collaboration_id));`);
+      PRIMARY KEY(user_id,intent_id),UNIQUE(user_id,collaboration_id));
+      CREATE TABLE IF NOT EXISTS bot_collaboration_successors(
+      user_id TEXT NOT NULL, source_user_message_id TEXT NOT NULL, predecessor_id TEXT NOT NULL,
+      successor_id TEXT NOT NULL UNIQUE, predecessor_work_id TEXT NOT NULL,
+      PRIMARY KEY(user_id,source_user_message_id,predecessor_id));`);
   }
 
   organizationCollaboration(intentId: string): BotCollaborationDto | undefined {
@@ -226,6 +231,8 @@ export class BotCollaborationService {
           error: "dispatch_existing_intent: 本次原请求已有唯一选派，返回原目标和真实回执，未通过旧入口再次派送；query/resume 原 intentId，改向或补充沿原协作和新的真实用户请求。" };
       }
     }
+    // A logical redo survives tool-call retries, but not a different user request.
+    if (command.action === "redo") operationId = `collab-redo:${key(this.options.userId, source.user_message_id, command.collaborationId)}`;
     const payloadHash = key(JSON.stringify(command));
     const operationSchema = z.object({ operation_id: z.string(), parent_message_id: z.string(), collaboration_id: z.string(), payload_hash: z.string(), completed_at: z.number().nullable() }).optional();
     let operation = operationSchema.parse(this.options.db.prepare("SELECT * FROM bot_collaboration_commands WHERE user_id=? AND operation_id=?").get(this.options.userId, operationId));
@@ -238,7 +245,7 @@ export class BotCollaborationService {
       throw new Error("idempotency_conflict: 同一协作操作不能更换目标、动作或正文");
     const collaboration = this.options.works.transaction(() => {
       const row = operation ? this.repo.scoped(this.options.userId, source.bot_id, operation.collaboration_id, source.conversation_id)
-        : this.resolve(source, operationId, command);
+        : command.action === "redo" ? this.resolveRedo(source, operationId, command) : this.resolve(source, operationId, command);
       this.repo.linkRequest(this.options.userId, row.collaborationId, { conversationId: source.conversation_id,
         requestId: source.request_id, userMessageId: source.user_message_id, assistantMessageId: source.assistant_message_id });
       this.options.db.prepare("INSERT OR IGNORE INTO bot_collaboration_commands VALUES(?,?,?,?,?,NULL)")
@@ -247,9 +254,9 @@ export class BotCollaborationService {
     });
     if (operation?.completed_at != null) return this.query(collaboration, source);
     if (command.action === "query") return this.query(collaboration, source, true);
-    if (command.action === "ask" || command.action === "follow_up" || command.action === "delegate"
+    if (command.action === "ask" || command.action === "follow_up" || command.action === "delegate" || command.action === "redo"
       || command.action === "amend" && (!collaboration.workId || this.delivery?.hasIngress(collaboration.collaborationId))) {
-      const text = command.action === "delegate" ? this.delegateText(command) : command.action === "amend"
+      const text = command.action === "redo" ? this.redoText(collaboration, command.text) : command.action === "delegate" ? this.delegateText(command) : command.action === "amend"
         ? `对同一事项的改向建议：${JSON.stringify(command.changes)}` : command.text;
       const verify = () => {
         if (command.action !== "amend" || !collaboration.workId) return;
@@ -333,6 +340,42 @@ export class BotCollaborationService {
     return source;
   }
 
+  private redoText(row: BotCollaborationDto, request: string): string {
+    const previous = z.object({ predecessor_work_id: z.string() }).parse(this.options.db.prepare(
+      "SELECT predecessor_work_id FROM bot_collaboration_successors WHERE user_id=? AND successor_id=?")
+      .get(this.options.userId, row.collaborationId));
+    return request + "\n宿主重做关系：前次已结案 Work=" + previous.predecessor_work_id
+      + "。这是新的真实用户重做请求，可在本协作创建新 Work；不要 amend/resume 已结案旧事项。先读取旧事项的目标、限制、标准和真实成果作为参考，按本次用户要求明确保留或替换，不把旧助理计划当新增授权；不得将旧成果冒充本次新交付。旧执行和取消仍属于旧协作。";
+  }
+
+  private resolveRedo(source: BotMessageReceipt, operationId: string, command: Extract<Command, {action: "redo"}>): BotCollaborationDto {
+    // Never promote a result/review or a peer paraphrase into fresh authority.
+    if (this.messages.peers.origin(source.user_message_id)) throw new Error("重做必须来自新的真实用户请求");
+    const old = this.repo.scoped(this.options.userId, source.bot_id, command.collaborationId, source.conversation_id);
+    if (old.sourceBotId !== source.bot_id || old.sourceUserMessageId === source.user_message_id)
+      throw new Error("重做必须由原发起 Bot 基于新的用户消息受理");
+    const user = this.messages.message(source.user_message_id);
+    if (!user || user.role !== "user" || !user.text.includes(command.requestExcerpt))
+      throw new Error("重做依据必须逐字引用本次用户要求");
+    this.checkRead(old, source, command.versionGuard);
+    const work = old.workId ? this.options.works.getWork(old.workId) : undefined;
+    if (!work || work.lifecycle !== "closed" || work.stateVersion !== command.versionGuard.expectedStateVersion
+      || work.intentRevision !== command.versionGuard.expectedIntentRevision || work.ownerEpoch !== command.versionGuard.expectedOwnerEpoch)
+      throw new Error("仅可重做已结案且版本已核对的事项；进行中的事项请修订原 Work");
+    const target = this.options.bots.getBot(old.targetBotId);
+    if (!target || target.userId !== this.options.userId || target.status !== "active") throw new Error("目标 Bot 当前不可受理重做");
+    // Validate cross-audience control before recording the successor. The old
+    // relation/work is immutable: old cancellation and late results stay there.
+    this.repo.linkRequest(this.options.userId, old.collaborationId, { conversationId: source.conversation_id,
+      requestId: source.request_id, userMessageId: source.user_message_id, assistantMessageId: source.assistant_message_id });
+    const next = this.repo.ensure({ userId: this.options.userId, sourceBotId: source.bot_id, sourceDisplayName: old.sourceDisplayName,
+      sourceConversationId: source.conversation_id, sourceRequestId: source.request_id, sourceUserMessageId: source.user_message_id,
+      sourceAssistantMessageId: source.assistant_message_id, targetBotId: old.targetBotId, targetDisplayName: target.displayName, operationId });
+    this.options.db.prepare("INSERT INTO bot_collaboration_successors VALUES(?,?,?,?,?)")
+      .run(this.options.userId, source.user_message_id, old.collaborationId, next.collaborationId, work.workId);
+    return next;
+  }
+
   private resolve(source: BotMessageReceipt, operationId: string, command: Command): BotCollaborationDto {
     const selected = this.repo.summariesForMessage(this.options.userId, source.assistant_message_id)
       .filter(item => !("targetBotId" in command) || !command.targetBotId || item.targetBotId === command.targetBotId);
@@ -378,7 +421,7 @@ export class BotCollaborationService {
   }
 
   private mutate(row: BotCollaborationDto, source: BotMessageReceipt, operationId: string,
-    command: Exclude<Command, { action: "ask" | "follow_up" } | { action: "query" | "review_result" } | { action: "delegate" }>, fileBaseline?: WorkGoalSourceDto) {
+    command: Exclude<Command, { action: "ask" | "follow_up" } | { action: "query" | "review_result" | "redo" } | { action: "delegate" }>, fileBaseline?: WorkGoalSourceDto) {
     const { works } = this.options;
     const result = works.transaction(() => {
       this.source(source.assistant_message_id);
