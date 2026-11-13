@@ -64,31 +64,39 @@ async function main() {
   Object.assign(globalThis, { localStorage: { getItem: () => null, setItem() {}, removeItem() {} } });
   Object.assign(window.HTMLElement.prototype, { close() {}, showModal() {} });
   Object.assign(window, { matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }) });
-  const { BotTeamsNavigation } = await import("../src/renderer/src/components/BotTeamsNavigation");
+  const { BotTeamManagement } = await import("../src/renderer/src/components/pages/BotTeamManagement");
   const { useAppStore } = await import("../src/renderer/src/store/appStore");
   const historyWorks = Array.from({ length: 30 }, (_, index) => ({ ...works[0], workId: "history-" + index, title: "历史事项 " + index }));
-  let selectedId = "";
-  useAppStore.setState({ botWorks: works, botIdentities: [], activeTeam: null, setHistoricalTeamWork: work => { selectedId = work?.workId ?? ""; } });
+  let openedId = "";
+  useAppStore.setState({ botWorks: works, botIdentities: [], activeTeam: null });
+  const flush = async () => { for (let index = 0; index < 5; index++) await Promise.resolve(); };
   Object.assign(window, { api: { botWork: {
-    teamControl: async () => ({ ok: true, templates: [] }),
+    teamControl: async () => ({ ok: true, templates: [{ templateId: "deleted-team", name: "已删除团队", ownerBotId: "bot",
+      ownerResponsibility: "汇总", members: [], executionPolicy: "parallel", maxConcurrency: 2, createdAt: 1, deletedAt: 2 }] }),
     queryWorks: async (value: WorkQueryRequest) => {
-      assert.equal(value.scope.kind, "historical_teams");
+      if (value.scope.kind !== "team") return result([]);
+      assert.equal(value.pageSize, 24, "history pages stay bounded");
       const offset = ((value.page ?? 1) - 1) * 24;
       return { ...result([]), works: historyWorks.slice(offset, offset + 24), total: 30, filtered: 30, page: value.page ?? 1, pageSize: 24, pages: 2 };
     },
   } } });
-  const sidebar = createRoot(document.getElementById("root")!);
-  await act(async () => sidebar.render(<BotTeamsNavigation />));
-  assert(document.body.textContent!.includes("Work 历史（30）"));
-  assert(!document.body.textContent!.includes("临时团队"));
-  assert(!document.body.textContent!.includes("历史事项 29"));
-  const more = [...document.querySelectorAll("button")].find(button => button.textContent === "加载更多历史事项")!;
-  await act(async () => more.dispatchEvent(new window.Event("click", { bubbles: true })));
-  const oldWork = [...document.querySelectorAll("button")].find(button => button.textContent === "历史事项 29")!;
+  const management = createRoot(document.getElementById("root")!);
+  await act(async () => management.render(<BotTeamManagement onChanged={() => {}} onOpenWork={work => { openedId = work.workId; }} />));
+  const recycle = document.querySelector("details.bot-team-recycle")!;
+  recycle.setAttribute("open", "");
+  await act(async () => { recycle.dispatchEvent(new window.Event("toggle")); await flush(); });
+  const viewRecords = [...document.querySelectorAll("button")].find(button => button.textContent === "查看事项");
+  assert.ok(viewRecords, "a deleted team exposes its retained Work records");
+  await act(async () => { viewRecords.dispatchEvent(new window.Event("click", { bubbles: true })); await flush(); });
+  assert(!document.body.textContent!.includes("历史事项 29"), "only the first page loads initially");
+  const next = [...document.querySelectorAll("button")].find(button => button.textContent === "下一页");
+  assert.ok(next, "a retained team with more records offers page navigation");
+  await act(async () => { next.dispatchEvent(new window.Event("click", { bubbles: true })); await flush(); });
+  const oldWork = [...document.querySelectorAll("button")].find(button => button.textContent === "历史事项 29");
   assert(oldWork, "historical records beyond the initial 24 must be reachable");
-  await act(async () => oldWork.dispatchEvent(new window.Event("click", { bubbles: true })));
-  assert.equal(selectedId, "history-29");
-  await act(async () => sidebar.unmount());
+  await act(async () => { oldWork.dispatchEvent(new window.Event("click", { bubbles: true })); });
+  assert.equal(openedId, "history-29");
+  await act(async () => management.unmount());
   console.log("PASS summary pagination: deferred query ownership, atomic prefix replacement, metadata and off-page task dedup");
 }
-main().catch(error => { console.error(error); process.exitCode = 1; });
+main().catch(error => { console.error(error); process.exit(1); });

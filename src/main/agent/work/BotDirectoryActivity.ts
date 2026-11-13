@@ -18,7 +18,7 @@ export function readBotDirectoryActivity(db: Database.Database, userId: string):
     const open = archive ? 'a.archived_at IS NULL' : '1';
     const column = (kind: 'active' | 'completed'): string => kind === 'active'
       ? `sum(CASE WHEN w.lifecycle!='closed' AND ${open} THEN 1 ELSE 0 END) AS active`
-      : `sum(CASE WHEN w.lifecycle='closed' AND w.closure_conclusion='succeeded' AND ${open} THEN 1 ELSE 0 END) AS completed`;
+      : `sum(CASE WHEN w.lifecycle='closed' AND ${open} THEN 1 ELSE 0 END) AS completed`;
     const readWorks = (sql: string): Record<string, BotDirectoryActivityDto> =>
       Object.fromEntries((db.prepare(sql).all(userId) as Array<{ id: string; active: number; completed: number }>)
         .filter(row => row.active > 0 || row.completed > 0)

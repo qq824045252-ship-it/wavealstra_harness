@@ -464,8 +464,13 @@ try {
   for (const mismatch of [{workId:"foreign"},{intentRevision:999},{inputSnapshotId:"foreign"},{ownerEpoch:999},{botId:"foreign"},{taskId:"foreign"}])
     assert.equal(works.partialResults.deliverySource({...continuationBindings[1],...mismatch}),undefined,"continuation ancestry cannot cross identity, input or ownership boundaries");
   bots.registerBot({botId:"team-review-member",userId:LOCAL_USER_ID,displayName:"成员",authorization:DESKTOP_USER_GRANTS});
+  // Formal team Work now needs a saved team template; the fixture saves the same plan first.
+  const savedTeam=works.teams.handle({...user,grants:{...DESKTOP_USER_GRANTS,allowRedelegation:true}}, {kind:"save_template",request:{
+    operationId:"team-review-template",name:"自动完成复核团队",plan:{ownerBotId:DEFAULT_BOT_ID,ownerResponsibility:"汇总真实成果",
+      members:[{botId:"team-review-member",responsibility:"分析资料",delegatedScope:["workspace:read"]}]}}});
+  assert(savedTeam.ok && savedTeam.template,JSON.stringify(savedTeam));
   const teamResult=works.teams.handle({...user,grants:{...DESKTOP_USER_GRANTS,allowRedelegation:true}}, {kind:"create",request:{
-    operationId:"team-review-followup",title:"team-review-followup",goalDescription:"补充剩余内容",workspacePath:root,
+    operationId:"team-review-followup",templateId:savedTeam.template!.templateId,title:"team-review-followup",goalDescription:"补充剩余内容",workspacePath:root,
     ownerBotId:DEFAULT_BOT_ID,ownerResponsibility:"汇总真实成果",members:[{botId:"team-review-member",responsibility:"分析资料",delegatedScope:["workspace:read"]}],criteria:["补充剩余内容"]}});
   assert(teamResult.ok,JSON.stringify(teamResult));
   const teamId=teamResult.work!.workId;
@@ -483,7 +488,7 @@ try {
 
   for (const variant of ["empty", "reusable"]) {
     const teamFailure = works.teams.handle({...user,grants:{...DESKTOP_USER_GRANTS,allowRedelegation:true}}, {kind:"create",request:{
-      operationId:`team-owner-failure-${variant}`,title:`team-owner-failure-${variant}`,goalDescription:"交付团队成果并说明实际缺项",workspacePath:root,
+      operationId:`team-owner-failure-${variant}`,templateId:savedTeam.template!.templateId,title:`team-owner-failure-${variant}`,goalDescription:"交付团队成果并说明实际缺项",workspacePath:root,
       ownerBotId:DEFAULT_BOT_ID,ownerResponsibility:"汇总真实成果",members:[{botId:"team-review-member",responsibility:"分析资料",delegatedScope:["workspace:read"]}],criteria:["有真实成果与明确缺项"]}});
     assert(teamFailure.ok,JSON.stringify(teamFailure));
     const id = teamFailure.work!.workId;

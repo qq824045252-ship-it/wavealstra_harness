@@ -111,6 +111,13 @@ async function click(label: string) {
   assert.equal(button.disabled, false, `${label} must be enabled before dispatch`);
   await act(async () => { button.dispatchEvent(new testWindow.Event("click", { bubbles: true })); });
 }
+/** File actions are icon buttons now: their text is gone, the accessible name keeps the file. */
+async function clickPreview(name: string) {
+  const button = container.querySelector<HTMLButtonElement>(`button[aria-label="预览 ${name}"]`);
+  assert.ok(button, `expected a preview button for ${name}`);
+  assert.equal(button.disabled, false, `${name} preview must be enabled before dispatch`);
+  await act(async () => { button.dispatchEvent(new testWindow.Event("click", { bubbles: true })); });
+}
 async function change(label: string, value: string | boolean) {
   const field = container.querySelector<HTMLElement>(`[aria-label="${label}"]`);
   assert.ok(field, `expected mounted field ${label}`);
@@ -365,7 +372,7 @@ async function main() {
       assert.match(container.textContent!, /31 B/);
       assert.match(container.textContent!, /是否完成由助理结合原委托与实际结果判断/);
       assert.match(container.textContent!, /恢复中/);
-      await click("预览");
+      await clickPreview("result.html");
       assert.deepEqual(opened, ["/fixture/result.html"]);
       await unmount();
     });
@@ -382,8 +389,10 @@ async function main() {
       const files = [{ ref: "a", name: "a.txt", openPath: "/snapshot/a" }, { ref: "b", name: "b.json", openPath: "/snapshot/b" }, { ref: "c", name: "c.pdf", openPath: "/snapshot/c" }];
       await act(async () => root!.render(<WorkFiles files={files} />));
       const open = async (name: string) => { await act(async () => { container.querySelector<HTMLButtonElement>(`button[aria-label="预览 ${name}"]`)!.click(); }); };
-      await open("a.txt"); await open("a.txt");
-      assert.equal(replies.length, 1, "repeated click does not duplicate the read");
+      await open("a.txt");
+      assert.equal(replies.length, 1, "opening a card preview starts exactly one read");
+      await open("a.txt");
+      assert.equal(container.querySelector(".bot-work-file-preview"), null, "a second click on the same file closes its preview");
       await open("b.json");
       await act(async () => replies[1].resolve({ content: '{"version":"saved"}' }));
       await act(async () => replies[0].resolve({ content: "OLD CONTENT" }));
@@ -391,17 +400,17 @@ async function main() {
       assert.equal(container.querySelector('[data-action="edit"]'), null, "saved code is read-only");
       assert.deepEqual(paths, [["/snapshot/a", "", true], ["/snapshot/b", "", true]]);
       assert.deepEqual(opened, [], "primary action never relies on an OS application");
-      await click("关闭预览"); assert.equal(container.querySelector("pre"), null);
-      await open("a.txt"); await click("关闭预览");
+      await open("b.json"); assert.equal(container.querySelector("pre"), null);
+      await open("a.txt"); await open("a.txt");
       await act(async () => replies[2].resolve({ content: "LATE CLOSED" }));
       assert.equal(container.querySelector("pre"), null);
       await open("a.txt"); await act(async () => replies[3].resolve({ content: "data:<script>unsafe()</script>", truncated: true }));
       assert.equal(container.querySelector("pre")!.textContent, "data:<script>unsafe()</script>");
       assert.equal(container.querySelector("script"), null);
       assert.match(container.textContent!, /仅显示文件前 256 KiB/);
-      await click("关闭预览"); await open("a.txt");
+      await open("a.txt"); await open("a.txt");
       await act(async () => replies[4].resolve({ content: "" })); assert.match(container.textContent!, /文件为空/);
-      await click("关闭预览"); await open("a.txt");
+      await open("a.txt"); await open("a.txt");
       await act(async () => replies[5].reject(new Error("snapshot missing")));
       assert.match(container.querySelector('[role="alert"]')!.textContent!, /snapshot missing/);
       assert.deepEqual(opened, [], "missing snapshot must never fall back to a mutable file");
@@ -413,7 +422,7 @@ async function main() {
       assert.match(container.textContent!, /此格式暂不支持内置预览/);
       await click("尝试用系统应用打开"); assert.deepEqual(opened, ["/snapshot/c"]);
       assert.match(container.textContent!, /无法确认是否出现窗口/);
-      Object.assign(testWindow.api!, { openFolder: async () => { throw new Error("no application"); } });
+      Object.assign(testWindow.api!, { savedArtifact: { openSystem: async () => { throw new Error("no application"); } } });
       await click("尝试用系统应用打开"); assert.match(container.textContent!, /无法打开文件：no application/);
       await act(async () => root!.render(<WorkFiles files={[{ ...files[2], openPath: "/snapshot/new" }]} />));
       assert.equal(container.querySelector(".bot-work-file-preview"), null, "old identity never appears for a replaced version");
@@ -439,7 +448,7 @@ async function main() {
       } });
       const files = [{ ref: "html", name: "demo.html", openPath: "/snapshot/demo.html", previewManifestPath: "/snapshot/frozen.web.json" }];
       await act(async () => root!.render(<WorkFiles files={files} />));
-      await click("预览"); await click("预览");
+      await clickPreview("demo.html");
       assert.equal(requests.length, 1);
       assert.deepEqual(requests[0], { snapshotPath: "/snapshot/demo.html", name: "demo.html", manifestPath: "/snapshot/frozen.web.json" });
       await act(async () => replies[0].resolve({ token: "one", url: "mybuddy-artifact://saved-one/", source: "<h1>saved</h1>", warnings: ["缺少资源：image.png"] }));
@@ -455,9 +464,11 @@ async function main() {
       assert.equal(container.querySelector(".code-line-content")!.textContent, "<h1>saved</h1>");
       assert.equal(container.querySelector('[data-action="edit"]'), null);
       await act(async () => { container.querySelector<HTMLButtonElement>('.bot-work-file-preview-tabs button[aria-pressed="false"]')!.click(); }); assert.equal(frame.hidden, false);
-      await click("展开查看"); assert(container.querySelector(".is-expanded"));
-      await click("关闭预览"); assert.deepEqual(releases, ["one"]);
-      await click("预览"); await click("关闭预览");
+      assert(container.querySelector(".bot-work-file-preview")!.classList.contains("is-expanded"), "the card opens its preview in place");
+      await clickPreview("demo.html");
+      assert.equal(container.querySelector(".bot-work-file-preview"), null, "the card icon toggles its own preview closed");
+      assert.deepEqual(releases, ["one"], "closing the card preview releases its prepared document");
+      await clickPreview("demo.html"); await clickPreview("demo.html");
       await act(async () => replies[1].resolve({ token: "late", url: "mybuddy-artifact://saved-late/", source: "late", warnings: [] }));
       assert.deepEqual(releases, ["one", "late"]);
       assert.equal(container.querySelector("iframe"), null);
@@ -513,7 +524,8 @@ async function main() {
       assert.equal(scripts.hasAttribute("open"), false, "scripts stay accessible without competing with the report");
       const files = [...container.querySelectorAll<HTMLLIElement>(".bot-result-files > li")];
       assert(files[0].textContent!.includes("report.csv"));
-      const openReport = [...files[0].querySelectorAll("button")].find(button => button.textContent === "预览")!;
+      const openReport = files[0].querySelector<HTMLButtonElement>('button[aria-label="预览 report.csv"]');
+      assert.ok(openReport, "the report card exposes its own preview action");
       await act(async () => { openReport.click(); });
       assert.deepEqual(opened, ["/snap/hash-csv"]);
       files[0].querySelector("details")!.setAttribute("open", "");

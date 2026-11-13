@@ -48,7 +48,7 @@ const sales = "A,3,12.50\nB,2,8.00\nA,4,12.50\nC,5,3.20\nB,1,8.00\nC,10,3.20";
 const original = `用真实脚本汇总以下销售数据的数量和金额，交付 sales.csv、summary.json 和 report.html：\n${sales}\n只在所选工作区写文件，不发送、不发布。`;
 try {
   const request = receive(original);
-  const args = { requestedOutcome: "one_time", mode: "once", title: "销售汇总", goalDescription: "执行核算，产品数量合计必须=27件。",
+  const args = { requestedOutcome: "one_time", mode: "once", title: "销售汇总", sourceMessageIds: [], goalDescription: "执行核算，产品数量合计必须=27件。",
     constraints: ["总量必须为27，不同就让用户决策"], criteria: [{ text: "合计27件", requiresRealEnvironmentCheck: true, requiredEnvironment: "模型假定环境" }] };
   const work = unwrap(await invoke(request, "work_create", args, "replay-create"));
   assert.equal(unwrap(await invoke(request, "work_create", args, "replay-create")).workId, work.workId);
@@ -120,7 +120,7 @@ try {
   messages.update(context.assistantMessageId, "completed", "助理建议：日期可能为2031-01-01，尚未核验。");
   const longText = `${"完整用户材料。".repeat(1200)}\n最后要求：以原始日期2029-02-03为准，不得对外发送。`;
   const longRequest = receive(longText, undefined, context.assistantMessageId);
-  const longWork = unwrap(await invoke(longRequest, "work_create", { requestedOutcome: "one_time", mode: "once", title: "长材料", goalDescription: "短摘要" }));
+  const longWork = unwrap(await invoke(longRequest, "work_create", { requestedOutcome: "one_time", mode: "once", title: "长材料", sourceMessageIds: [], goalDescription: "短摘要" }));
   const longBinding = bind(longWork), longInput = JSON.parse(works.repo.executionInput(longBinding));
   assert.equal(longInput.userRequest.messages[0].text, longText);
   assert.deepEqual(works.getDetailProjection(longWork.workId)!.originalDelegation?.messages.map(row => row.text), [longText], "detail is full text, not clipped or from other Work");
@@ -132,7 +132,7 @@ try {
   let direct = unwrap(works.createWork(user, { operationId: "direct", title: "用户明确验收", goalDescription: "只读核验指定环境",
     constraints: ["禁止发布"], criteria: [{ id: "required", text: "用户明确要求真机验收", requiresRealEnvironmentCheck: true }], inputSnapshotId: "direct-source" }));
   assert.equal(works.closeWork(user, { operationId: "direct-close", workId: direct.workId, conclusion: "succeeded", versionGuard: guard(direct) }).ok, false);
-  const directChange = receive("增加一份检查说明，不改变原来的限制。", direct.workId);
+  const directChange = receive("调整检查说明，增加一份检查，不改变原来的限制。", direct.workId);
   const directRead = await invoke(directChange, "work_query_status", { workId: direct.workId });
   direct = unwrap(await invoke(directChange, "work_amend", { workId: direct.workId, versionGuard: directRead[0].versionGuard,
     goalDescription: "更新检查说明", criteria: [{ text: "建议附一个示例" }] }));
@@ -143,7 +143,7 @@ try {
   assert.equal(directInput.criteria[0].id, "required");
   assert.deepEqual(directInput.userRequest.structuredUserRequirements[0].changes.constraints, ["禁止发布"]);
   const adviceRequest = receive("只需计算结果，不设置其他验收门槛。");
-  const advice = unwrap(await invoke(adviceRequest, "work_create", { requestedOutcome: "one_time", mode: "once", title: "独立建议检查", criteria: [{ text: "模型虚构数值必须为123456" }] }));
+  const advice = unwrap(await invoke(adviceRequest, "work_create", { requestedOutcome: "one_time", mode: "once", title: "独立建议检查", sourceMessageIds: [], criteria: [{ text: "模型虚构数值必须为123456" }] }));
   assert.equal(works.closeWork(user, { operationId: "advice-not-gate", workId: advice.workId, conclusion: "succeeded", versionGuard: guard(advice) }).ok, true,
     "pending assistant criteria are not a fabricated mandatory gate; explicit user closing remains supported");
 

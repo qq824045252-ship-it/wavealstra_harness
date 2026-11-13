@@ -24,7 +24,8 @@
     "closeSubagentView": "Return from the subagent conversation to its parent task without deleting the run.",
     "setBotComposerSelection": "Update the active Bot or team composer model, experts, skills, MCP and connectors without changing ordinary task selection.",
     "setHistoricalTeamWork": "Select or clear a runtime-only historical team Work viewer and advance the navigation intent version without changing composer or active team ownership.",
-    "loadOlderBotHistory": "Explicit bounded conversation paging with scope and cursor fences."
+    "loadOlderBotHistory": "Explicit bounded conversation paging with scope and cursor fences.",
+    "openNotificationConversation": "Notifications: open the host-authoritative Bot conversation named by an activation target; navigation resolves the existing record and never creates a Work or a message."
   },
   "publicExports": {
     "CreateRelatedTaskOptions": "type",

@@ -86,7 +86,7 @@ models.registerProvider("dispatch-fixture", { api: "openai-completions", apiKey:
             action: "dispatch", targetBotId: target.botId, settingsRevision: target.settingsRevision,
             text: scenario.text + ` CASE:${tag}`, reason: scenario.explicitBotId ? "用户明确点名覆盖默认职责匹配" : `原目标与职责关联：${target.responsibilitySummary}` } }];
         } else if (model.id !== DEFAULT_BOT_ID && scenario?.work && !afterTool) content = [{ type: "toolCall", id: `work-${++sequence}`,
-          name: "work_create", arguments: { title: `目标自主计划 CASE:${tag}`, goalDescription: "接收前台自主决定的报告任务", mode: "once", requestedOutcome: "one_time" } }];
+          name: "work_create", arguments: { title: `目标自主计划 CASE:${tag}`, goalDescription: "接收前台自主决定的报告任务", mode: "once", requestedOutcome: "one_time", sourceMessageIds: [] } }];
         const message: AssistantMessage = { role: "assistant", content, stopReason: content.some(item => item.type === "toolCall") ? "toolUse" : "stop",
           provider: model.provider, model: model.id, api: model.api, timestamp: Date.now(), usage: usage() };
         stream.push({ type: "done", reason: message.stopReason === "toolUse" ? "toolUse" : "stop", message }); stream.end();

@@ -48,9 +48,11 @@ async function main() {
     assert.equal(service.snapshot().uploads.length,1);
     assert.equal(service.read(importedId),`data:image/png;base64,${poster.toString("base64")}`);
     const userDirectory=join(root,"private",readdirSync(join(root,"private"))[0]);
-    assert.equal(statSync(userDirectory).mode & 0o777,0o700);
+    // Windows has no POSIX mode bits (Node reports 0o666); only POSIX hosts can prove 0700/0600.
+    const posixModes=process.platform!=="win32";
+    if(posixModes) assert.equal(statSync(userDirectory).mode & 0o777,0o700);
     const privateFile=join(userDirectory,`${importedId.slice(7)}.png`);
-    assert.equal(statSync(privateFile).mode & 0o777,0o600);
+    if(posixModes) assert.equal(statSync(privateFile).mode & 0o777,0o600);
     service.set("b",importedId,0);service.motion(false);
     db.close();db=new Database(dbPath);db.pragma("foreign_keys=ON");service=new BotAvatarService(db,"owner",join(root,"private"));
     assert.equal(service.snapshot().selections.a.assetId,builtinBotAvatars[0].id);

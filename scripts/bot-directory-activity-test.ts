@@ -75,8 +75,8 @@ try {
   assert.deepEqual({ active: activity.teams['team-indicator']?.activeWorks, completed: activity.teams['team-indicator']?.completedWorks },
     { active: teamCounts.viewCounts.active, completed: teamCounts.viewCounts.completed },
     'a team badge equals its team tab totals');
-  assert.deepEqual(activity.bots[primary.botId], { activeWorks: 1, completedWorks: 1, activeReplies: 2 },
-    'archived, deleted, cancelled and team Works never leak into the Bot counters; every foreground output counts');
+  assert.deepEqual(activity.bots[primary.botId], { activeWorks: 1, completedWorks: 2, activeReplies: 2 },
+    'archived, deleted and team Works never leak into the Bot counters; every closed lifecycle and foreground output counts');
   assert.deepEqual(activity.bots[second.botId], { activeWorks: 1, completedWorks: 0, activeReplies: 0 });
   assert.deepEqual(activity.teams['team-indicator'], { activeWorks: 1, completedWorks: 1, activeReplies: 1 },
     'a team counts its own replies without borrowing personal Work');
@@ -85,7 +85,7 @@ try {
 
   db.connection.prepare("UPDATE bot_messages SET status='completed' WHERE message_id IN ('reply-running','reply-queued')").run();
   assert.deepEqual(readBotDirectoryActivity(db.connection, LOCAL_USER_ID).bots[primary.botId],
-    { activeWorks: 1, completedWorks: 1, activeReplies: 0 },
+    { activeWorks: 1, completedWorks: 2, activeReplies: 0 },
     'a finished reply stops counting as foreground output');
 
   // Presence follows unfinished Work or unfinished foreground output; availability

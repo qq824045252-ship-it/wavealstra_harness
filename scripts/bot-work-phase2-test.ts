@@ -69,14 +69,14 @@ const reply = (modelId: string, request: TranscriptContext): AssistantMessage["c
       const targets = JSON.parse(contentText(last.content));
       const selected = targets.find((item: { workId: string }) => input.includes(item.workId)) ?? targets[0];
       const name = input.includes("暂停") ? "work_pause" : input.includes("修订") ? "work_amend" : "work_cancel";
-      return tool(name, { workId: selected.workId, versionGuard: selected.versionGuard, ...(name === "work_amend" ? { goalDescription: "新的业务要求" } : {}) });
+      return tool(name, { workId: selected.workId, versionGuard: selected.versionGuard, ...(name === "work_amend" ? { goalDescription: "新的业务要求", sourceMessageIds: [] } : {}) });
     }
     return text(contentText(last.content));
   }
   if (input === "前台天气" || input === "前台天气迟到流") return [...text("我来查杭州天气。"), ...tool("web_search", {})];
   if (input === "前台抓取失败") return tool("fetch_content", {});
   if (input === "扩展写入越权") return tool("unrelated_extension_write", {});
-  if (input.startsWith("委托")) return tool("work_create", { requestedOutcome: "one_time", mode: "once", title: input, criteria: [{ text: "核验实际成果" }] });
+  if (input.startsWith("委托")) return tool("work_create", { requestedOutcome: "one_time", mode: "once", title: input, sourceMessageIds: [], criteria: [{ text: "核验实际成果" }] });
   if (/查询|暂停|修订|取消/.test(input)) return tool("work_query_status", {});
   if (input === "越权写文件") return tool("write", { path: join(cwd, "forbidden.txt"), content: "forbidden" });
   return text("前台普通答复");

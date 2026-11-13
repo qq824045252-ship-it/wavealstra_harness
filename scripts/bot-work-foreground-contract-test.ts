@@ -62,13 +62,17 @@ const tools: ToolRegistration[] = botForegroundTools({ db: db.connection, userId
 const findTool = (name: string) => { const tool = tools.find(item => item.name === name); assert(tool, name); return tool; };
 // Check the JSON actually sent to Function Calling, not TypeBox metadata or the Zod object.
 const schemas = new Map(tools.map(tool => [tool.name, Type.Unsafe(JSON.parse(JSON.stringify(tool.parameters)))]));
-const accepts = (name: string, args: unknown) => Value.Check(schemas.get(name)!, args);
+// The wire schema requires the frozen source selection for create/amend; these
+// fixtures add no extra sources and rely on the current request message.
+const withSources = (name: string, args: unknown) => name === "work_create" || name === "work_amend"
+  ? { sourceMessageIds: [], ...(args as Record<string, unknown>) } : args;
+const accepts = (name: string, args: unknown) => Value.Check(schemas.get(name)!, withSources(name, args));
 let nextTask = 0;
 const invoke = async (name: string, args: unknown, requestId = first.requestId, replayTaskId?: string): Promise<unknown> => {
   // Only the native invocation identity is a fixture. Tool parsing, receipts, reads,
   // Work guards, mutations and transaction effects all use the real implementations.
   const api = { callId: `call-${++nextTask}`, taskId: replayTaskId ?? `tool-${nextTask}`, memo: async () => requestId } as unknown as ToolExecutionApi;
-  const result = await findTool(name).execute(args as never, api, BACKGROUND_CONTEXT);
+  const result = await findTool(name).execute(withSources(name, args) as never, api, BACKGROUND_CONTEXT);
   const output = result.output?.find(block => block.type === "text");
   assert(output?.type === "text");
   return JSON.parse(output.text);

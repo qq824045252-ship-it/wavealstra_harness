@@ -41,11 +41,15 @@ const tools:ToolRegistration[]=botForegroundTools({db:db.connection,userId:LOCAL
  conversationId:first.conversationId,bots,messages,works,isAuthority:()=>true,schedule:(work)=>scheduled.push(work.workId),
  wake:()=>{},memorySearch:()=>[],reminders:()=>cron});
 const schemas=new Map(tools.map(tool=>[tool.name,Type.Unsafe(JSON.parse(JSON.stringify(tool.parameters)))]));
-const accepts=(name:string,args:unknown)=>Value.Check(schemas.get(name)!,args);
+// The wire schema requires the frozen source selection for create/amend; these
+// fixtures add no extra sources and rely on the current request message.
+const withSources=(name:string,args:unknown)=>name==='work_create'||name==='work_amend'
+ ? {sourceMessageIds:[],...(args as Record<string,unknown>)} : args;
+const accepts=(name:string,args:unknown)=>Value.Check(schemas.get(name)!,withSources(name,args));
 let nextTask=0,serial=0;
 const invoke=async(name:string,args:unknown,requestId=first.requestId):Promise<any>=>{
  const api={callId:`call-${++nextTask}`,taskId:`tool-${nextTask}`,memo:async()=>requestId} as unknown as ToolExecutionApi;
- const result=await tools.find(tool=>tool.name===name)!.execute(args as never,api,BACKGROUND_CONTEXT);
+ const result=await tools.find(tool=>tool.name===name)!.execute(withSources(name,args) as never,api,BACKGROUND_CONTEXT);
  const output=result.output?.find(block=>block.type==='text');assert(output?.type==='text');return JSON.parse(output.text);
 };
 const validInvoke=async(name:string,args:unknown,requestId=first.requestId)=>{

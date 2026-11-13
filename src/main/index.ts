@@ -1,10 +1,10 @@
+import "./platform/credentials";
 import { SavedArtifactActions } from "./artifact/SavedArtifactActions";
 import { BotMessageHtmlService } from "./artifact/BotMessageHtmlService";
 import { WindowsNotificationActivation } from "./platform/notification-activation";
 import { normalizeBotAvatar } from "./agent/work/BotAvatarImageDecoder";
 import { BotAvatarIpc } from "../shared/bot-avatar";
 import { createBotAvatarIpcHandler } from "./agent/work/BotAvatarIpc";
-import "./platform/credentials";
 import { SavedArtifactIpc } from "../shared/saved-artifact";
 import { savedArtifactPreviewService } from "./artifact/SavedArtifactPreview";
 import { ResidentLifecycle, RESIDENT_HOST_ARGUMENT } from "./host/ResidentLifecycle";
