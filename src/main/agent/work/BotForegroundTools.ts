@@ -13,7 +13,7 @@ import type { BotConversationRepository } from "./BotConversationRepository";
 import { botForegroundRequest } from "./BotForegroundIdentity";
 import { BotWorkQuery, botWorkQuerySchema, type BotWorkQueryInput } from "./BotWorkQuery";
 import { resolveWorkTarget } from "./BotWorkTargetSelection";
-import { botScheduleOverview } from "./BotScheduleOverview";
+import { botScheduleOverview, botScheduleOverviewQuerySchema } from "./BotScheduleOverview";
 import { peerKey } from "./BotPeerIngress";
 import { botMemoryDurableEvidence } from "../../memory/BotMemorySource";
 
@@ -29,7 +29,8 @@ const query = botWorkQuerySchema;
 const watchRule = workWatchIntentSchema;
 const timing = { mode: z.enum(["once", "watch"]).optional(), watchRule: watchRule.optional(),
   deadlineAt: z.number().int().nonnegative().optional().describe("承诺期限 Unix 毫秒时间戳，到期只读跟进，不等同于自动取消") };
-const create = z.object({ ...fields, ...timing, title: text,
+const sourceMessageIds = z.array(z.string().min(1).max(500)).max(32).optional().describe("本轮冻结来源索引中，与当前目标有关的原要求、澄清问答和仍有效限制的消息ID。承接此前目标时明确选择这些来源；当前用户消息自动保留。不选择无关主题、已撤销要求或把助理转述当用户原话。");
+const create = z.object({ ...fields, ...timing, title: text, sourceMessageIds,
   sourceIdentity: z.object({ provider: z.string().trim().min(1).max(500), account: z.string().trim().min(1).max(500),
     objectId: z.string().trim().min(1).max(500), action: z.string().trim().min(1).max(500), version: z.string().trim().min(1).max(500),
     revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional() }).strict().optional()
@@ -37,7 +38,7 @@ const create = z.object({ ...fields, ...timing, title: text,
   requestedOutcome: z.enum(["one_time", "ongoing"]).describe("你对用户本次目标的语义理解，结合上下文而非关键词：one_time是交付一次结果，ongoing是之后仍须继续观察/跟进。实现监控功能、总结历史周期数据不等于要求Bot持续监控。这是你的理解，不替代宿主保存的用户原文"),
   mode: z.enum(["once", "watch"]).describe("实际执行计划：立即一次执行用once；未来检查或持续关注用watch。ongoing不能降为once，一次性未来跟进也可用watch"),
   startImmediately: z.boolean().optional().describe("持续计划默认等到首次检查；用户要求现在也行动时设 true。持续推进现在可行动就设true，不要求预先虚构nextWakeAt；确实需要等待时才安排后续") }).strict();
-const change = z.object({ ...fields, ...timing, watchRule: watchRule.nullable().optional(),
+const change = z.object({ ...fields, ...timing, sourceMessageIds, watchRule: watchRule.nullable().optional(),
   deadlineAt: timing.deadlineAt.nullable().optional(), workId: text, versionGuard: guard }).strict();
 const control = z.object({ workId: text, reason: text.optional(), versionGuard: guard }).strict();
 export const botWorkCreateSchema = create;
@@ -48,9 +49,11 @@ const memoryRemember = z.object({ scope: z.enum(["current", "conversation", "pub
   kind: z.enum(["identity", "preference", "fact", "decision", "constraint"]),
   title: z.string().min(1).max(200), content: z.string().min(1).max(4000), userEvidence: text }).strict();
 const memoryForget = z.object({ ids: z.array(text).min(1).max(20), userEvidence: text }).strict();
-const teamCreate = z.object({ ...timing, requestedOutcome: create.shape.requestedOutcome, mode: create.shape.mode, startImmediately: create.shape.startImmediately, templateId: z.string().min(1).max(200).optional(), title: z.string().min(1).max(240),
+const teamCreate = z.object({ ...timing, sourceMessageIds, requestedOutcome: create.shape.requestedOutcome, mode: create.shape.mode, startImmediately: create.shape.startImmediately, templateId: z.string().min(1).max(200).optional(), title: z.string().min(1).max(240),
   goalDescription: z.string().min(1).max(2000), criteria: z.array(z.string().min(1).max(1000)).min(1).max(12),
   taskAssignment: workTeamTaskAssignmentSchema.optional().describe("按本次任务从候选 Bot 或模板内选成员并分配具体职责、依赖；负责人汇总。不用模板时必须提供。不能新建 Bot 或增加权限。依赖成员须排在前面，互不依赖的成员无需填写依赖。省略则沿用模板分工") }).strict();
+const teamReplan = z.object({ workId: text, versionGuard: guard, taskAssignment: workTeamTaskAssignmentSchema,
+  executionPolicy: z.enum(["sequential", "parallel"]).optional(), maxConcurrency: z.number().int().min(1).max(4).optional() }).strict();
 export function validateWatchIntent(requestedOutcome: "ongoing" | "one_time", input: { mode: "once" | "watch"; startImmediately?: boolean; watchRule?: z.infer<typeof watchRule> }): void {
   const rule = input.watchRule;
   const hasFutureAction = Boolean(rule?.cronExpression || rule?.eventSource) || rule?.nextWakeAt !== undefined;
@@ -99,7 +102,7 @@ export interface BotForegroundToolOptions {
 }
 
 /** Foreground Work/memory controls. Read-only web tools are mounted separately by the host. */
-export const BOT_FOREGROUND_TOOLS = new Set(["reminder_manage", "schedule_overview", "work_query_status", "work_watch_sources", "work_create", "work_amend", "work_pause", "work_resume", "work_cancel", "memory_search", "memory_forget", "memory_remember", "work_team_templates", "work_team_create"]);
+export const BOT_FOREGROUND_TOOLS = new Set(["reminder_manage", "schedule_overview", "work_query_status", "work_watch_sources", "work_create", "work_amend", "work_pause", "work_resume", "work_cancel", "memory_search", "memory_forget", "memory_remember", "work_team_templates", "work_team_create", "work_team_replan"]);
 
 export function botForegroundTools(options: BotForegroundToolOptions) {
   const { db, works, bots, messages, userId, botId, conversationId } = options;
@@ -131,7 +134,9 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
     }
     return { items, complete: false };
   };
-  const select = (workId: string, source: ReturnType<typeof receipt>) => {
+  const select = (workId: string, source: ReturnType<typeof receipt>, requestedAction?: "pause" | "resume" | "cancel" | "amend") => {
+    if (!catalogue.canRead(workId) && catalogue.outgoingCollaboration(workId))
+      throw new Error("委派给其他 Bot 的事项仅可在这里查询；修改须沿原 collaborationId 调用 bot_collaborate query，再携带其 versionGuard 控制原事项");
     const reference = source.reference_message_id ? messages.message(source.reference_message_id)?.workIds ?? [] : [];
     const userMessage = messages.message(source.user_message_id);
     // Read the actual user input, not model arguments or the current UI selection.
@@ -147,7 +152,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
       const requested = works.getWork(workId);
       if (requested) available.items.push({ workId, title: requested.title });
     }
-    const resolution = resolveWorkTarget({ userText: userMessage?.text ?? "", explicitWorkIds: explicit,
+    const resolution = resolveWorkTarget({ userText: userMessage?.text ?? "", explicitWorkIds: explicit, requestedAction,
       referencedWorkIds: reference, selectedWorkId: source.selected_work_id ?? undefined, linkedWorkIds: linked,
       openWorks: available.items, openWorksComplete: available.complete,
       soleOpenWorkId: higherPriority ? undefined : catalogue.soleOpenWorkId(), requestedWorkId: workId });
@@ -167,8 +172,8 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
   const output = (value: unknown) => ({ output: [{ type: "text" as const, text: JSON.stringify(value) }] });
   const mutations = (["work_create", "work_amend", "work_pause", "work_resume", "work_cancel"] as const).map(name => defineTool({
     name, description: name === "work_create"
-      ? "受理长耗时、多步骤或文件/代码/桌面操作并派发后台。goalDescription、constraints、criteria 是你的规划，宿主会独立附上用户原文；忠实传达要求，计算结果和未验证假设不得写成用户约束。日常天气、新闻等实时查询直接使用前台 web_search/fetch_content，不创建 Work。用户已经提出的执行请求无需再确认创建任务。同一调用用requestedOutcome记录对用户目标的一次性/持续性理解，用mode和watchRule记录实际计划，不能省略mode后默认一次性。持续目标使用 mode=watch；只读观察用watchRule.executionMode=observe，持续执行/修复/更新原成果用continuous，即使有周期cron也应显式设continuous。周期跟踪给 watchRule.cronExpression；若现在就能推进、之后才需等待，用 startImmediately=true 先执行；确实需要等待时再给 watchRule.nextWakeAt 或真实 eventSource 安排跟进；一次未来检查可用nextWakeAt，不得只在文字中承诺。ongoing不能降为once；startImmediately可先持续推进，无需编造等待时间。按用户指定频率和时区，未指定时明确区分建议安排。deadlineAt 是到期跟进，不是授权到期。仅为新的独立目标创建。用户改已有事项的输出、执行方向、约束或验收条件时必须先查询原Work并用work_amend；即使涉及文件写入、原执行仍在途或需要等待，也不得另建修正Work与原执行竞争。创建新目标无需先查询版本。返回成功才可声称已受理或已安排；未来检查不得声称正在执行。"
-      : `${name}: 操作用户明确指定的已有事项，先查询并携带返回的 versionGuard；冲突重新查询。work_amend 可直接修改原事项的goalDescription、constraints、criteria、title和watchRule/期限；修改执行目标时保留不变的用户要求，携带原workId与本次查询的versionGuard。必须检查查询返回的现有goalDescription、constraints和criteria，在同一次work_amend中完整更新所有受本次修改影响的规划字段；省略字段会原样保留，不会自动删除已过时的步骤。新目标替换旧目标时，去掉助理旧计划中已被替换的中间写入或重复启动步骤，不能只改description/criteria却遗留冲突constraints；未受影响的真实用户限制必须保留，不把助理计划当用户硬性要求。已完成且未受影响的部分继续复用，修订不是重新执行整个原请求。正在执行也应修订原Work，宿主负责在边界使旧意图失效并安排后续，不用work_create另建修正任务，不自行sleep等待后再用另一Work覆盖文件。watchRule=null 停止后续跟踪而保留事项；work_pause/resume 暂停/恢复，work_cancel 取消整个事项。仅改时间表不会立即重跑原任务。团队watch调整时间只传watchRule/deadlineAt及身份/版本，不要顺手改标题或目标，否则会使成员分工失效；真正改目标需另行重新规划。批评、催促、抱怨不是暂停或取消意图；仅明确要求停止/取消时调用对应控制。`,
+      ? "受理长耗时、多步骤或文件/代码/桌面操作并派发后台。goalDescription、constraints、criteria 是你的规划，宿主会独立附上用户原文；criteria应按交付用途说明实际检查及所需环境，必要检查不能只写“任务完成”或“文件已生成”；忠实传达要求，计算结果和未验证假设不得写成用户约束。日常天气、新闻等实时查询直接使用前台 web_search/fetch_content，不创建 Work。用户已经提出的执行请求无需再确认创建任务。同一调用用requestedOutcome记录对用户目标的一次性/持续性理解，用mode和watchRule记录实际计划，不能省略mode后默认一次性。持续目标使用 mode=watch；只读观察用watchRule.executionMode=observe，持续执行/修复/更新原成果用continuous，即使有周期cron也应显式设continuous。周期跟踪给 watchRule.cronExpression；若现在就能推进、之后才需等待，用 startImmediately=true 先执行；确实需要等待时再给 watchRule.nextWakeAt 或真实 eventSource 安排跟进；一次未来检查可用nextWakeAt，不得只在文字中承诺。ongoing不能降为once；startImmediately可先持续推进，无需编造等待时间。按用户指定频率和时区，未指定时明确区分建议安排。deadlineAt 是到期跟进，不是授权到期。仅为新的独立目标创建。用户改已有事项的输出、执行方向、约束或验收条件时必须先查询原Work并用work_amend；即使涉及文件写入、原执行仍在途或需要等待，也不得另建修正Work与原执行竞争。创建新目标无需先查询版本。返回成功才可声称已受理或已安排；未来检查不得声称正在执行。"
+      : `${name}: 操作用户明确指定的已有事项，先查询并携带返回的 versionGuard；冲突重新查询。work_amend 可直接修改原事项的goalDescription、constraints、criteria、title和watchRule/期限；修改执行目标时保留不变的用户要求，携带原workId与本次查询的versionGuard。必须检查查询返回的现有goalDescription、constraints和criteria，在同一次work_amend中完整更新所有受本次修改影响的规划字段；省略字段会原样保留，不会自动删除已过时的步骤。新目标替换旧目标时，去掉助理旧计划中已被替换的中间写入或重复启动步骤，不能只改description/criteria却遗留冲突constraints；未受影响的真实用户限制必须保留，不把助理计划当用户硬性要求。已完成且未受影响的部分继续复用，修订不是重新执行整个原请求。正在执行也应修订原Work，宿主负责在边界使旧意图失效并安排后续，不用work_create另建修正任务，不自行sleep等待后再用另一Work覆盖文件。watchRule=null 停止后续跟踪而保留事项；work_pause/resume 暂停/恢复，work_cancel 取消整个事项。仅改时间表不会立即重跑原任务。团队watch调整时间只传watchRule/deadlineAt及身份/版本，不要顺手改标题或目标，否则会使成员分工失效；真正改目标后必须继续调用work_team_replan修订剩余分工，不能只报告amend成功。用户明确控制多个事项时按动作和目标逐项调用，先查询每项版本，准确区分暂停A/恢复B/保持C；一项失败只重查重试该项，不重复已成功动作，不把未来条件执行成立即动作。批评、催促、抱怨不是暂停或取消意图；仅明确要求停止/取消时调用对应控制。`,
     parameters: name === "work_create" ? inputParameters.create
       : name === "work_amend" ? inputParameters.change : inputParameters.control,
     replay: "safe",
@@ -181,7 +186,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
         const parsed = name === "work_create" ? create.parse(args) : change.parse(args);
         assertActive();
         const source = receipt(requestId);
-        const target = name === "work_amend" ? select((parsed as z.infer<typeof change>).workId, source) : undefined;
+        const target = name === "work_amend" ? select((parsed as z.infer<typeof change>).workId, source, "amend") : undefined;
         const operationId = `bot:${conversationId}:${options.requestNamespace ? `request:${options.requestNamespace}:` : ""}tool:${api.taskId}`;
         const prior = works.repo.getReceipt(userId, operationId);
         const rule = parsed.watchRule;
@@ -220,7 +225,9 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
         if (peer && relation?.workId && name !== "work_create" && "workId" in args && args.workId !== relation.workId)
           throw new Error("本次协作只能控制其原 Work");
         const operationId = name === "work_create" && peer ? `peer-work:${peerKey(peer.collaborationId)}`
-          : `bot:${conversationId}:${options.requestNamespace ? `request:${options.requestNamespace}:` : ""}tool:${api.taskId}`;
+          : name === "work_pause" || name === "work_resume" || name === "work_cancel"
+            ? `bot-control:${peerKey(source.user_message_id, name, control.parse(args).workId)}`
+            : `bot:${conversationId}:${options.requestNamespace ? `request:${options.requestNamespace}:` : ""}tool:${api.taskId}`;
         if (name === "work_create" && relation?.workId) {
           const existing = works.getWork(relation.workId);
           if (!existing || existing.ownerBotId !== botId) throw new Error("原协作 Work 归属待核对");
@@ -231,8 +238,11 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
         let previousSnapshotId: string | undefined;
         let shouldSchedule = false;
         let startWatchImmediately = false;
+        let selectedSources: string[] | undefined;
         if (name === "work_create") {
-          const { startImmediately, requestedOutcome, ...input } = create.parse(args);
+          const { startImmediately, requestedOutcome, sourceMessageIds, ...input } = create.parse(args);
+          selectedSources = sourceMessageIds;
+          messages.validateWorkUserInput(human, selectedSources);
           if (options.teamId) throw new Error("当前是团队会话，请用 work_team_create 为当前团队派发，不创建个人事项");
           const mode = input.mode;
           // Enforce the model's structured distinction, not a host-language
@@ -253,16 +263,22 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
             ...(fileBaseline ? { goalSources: [fileBaseline] } : {}), authorization: bot.authorization });
         } else {
           const input = name === "work_amend" ? change.parse(args) : control.parse(args);
-          const target = select(input.workId, source);
+          const target = select(input.workId, source, name === "work_amend" ? "amend" : name === "work_pause" ? "pause" : name === "work_resume" ? "resume" : "cancel");
           previousSnapshotId = target.inputSnapshotId;
           // Team membership grants shared facts, not control of the owner's Work.
           if (target.ownerBotId !== botId) throw new Error("团队成员只能查看和讨论此事项；请联系负责人修改、暂停或取消");
+          if (name !== "work_amend") {
+            const saved = works.repo.getReceipt(userId, operationId);
+            if (saved) return { ok: true as const, replayed: true, work: target };
+          }
           const read = db.prepare(`SELECT guard_json FROM bot_work_reads WHERE conversation_id=? AND request_id=? AND work_id=?`)
             .get(conversationId, source.request_id, input.workId);
           const readGuard = z.object({ guard_json: z.string() }).safeParse(read);
           if (!readGuard.success || readGuard.data.guard_json !== JSON.stringify(input.versionGuard)) throw new Error("必须先查询 Work，并使用本回合读取的完整版本守卫");
           if (name === "work_amend") {
-            const amended = change.parse(args);
+            const { sourceMessageIds, ...amended } = change.parse(args);
+            selectedSources = sourceMessageIds;
+            messages.validateWorkUserInput(human, selectedSources);
             if (amended.watchRule?.eventSource && !works.ingress.availableEventSources().some(item => item.source === amended.watchRule!.eventSource))
               throw new Error("此事件来源尚未接入；请查询work_watch_sources，明确说明只能定时检查");
             if (amended.watchRule?.scheduleBasis === "recommended" && !amended.watchRule.scheduleRationale?.trim())
@@ -315,7 +331,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
               messages.linkWorkAttachments(original, result.work.workId, result.work.inputSnapshotId);
               messages.linkWork(original, result.work.workId);
             }
-            messages.linkWorkUserInput(human, result.work);
+            messages.linkWorkUserInput(human, result.work, selectedSources);
             messages.linkWorkAttachments(human, result.work.workId, result.work.inputSnapshotId, previousSnapshotId);
           }
           if (peer) {
@@ -357,7 +373,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
   }));
   return [defineTool({ name: "work_watch_sources", description: "查询宿主真实支持的事件来源。未列出的外部服务/文件不能承诺事件订阅，只可明确采用定时检查。file 是宿主真实文件变化监听：eventTarget 须为已存在常规文件的规范绝对路径，最多4MiB；next_event保存当前基线而不执行，只支持latest/skip补查，不能回放每次写入历史。未接收的hook不公开。", parameters: parameters(z.object({}).strict()), replay: "safe",
     execute: async () => output({ sources: works.ingress.availableEventSources().map(({ source, namespace, canQueryHistory, versionMode }) => ({source, namespace, canQueryHistory, versionMode})),
-      pollingFallback: "没有可用事件来源时，明确说明只能定时检查，用cronExpression或nextWakeAt安排，不称为事件监听" }) }), botReminderTool(options),defineTool({ name: "work_query_status", description: "查询当前 Bot 的事项。概览用 view:summary，默认仅未结束事项、每页20项；支持 status、search、期限窗口deadlineFrom（含）/deadlineBefore（不含）、needsUserInput、sort、limit、cursor。到期/逾期查询使用期限窗口和sort:deadline_asc；等用户回复用needsUserInput:true，不以最新20项代替筛选。期限窗口用请求时间及指定时区计算的Unix毫秒，不是下次检查时间。返回准确总数与nextQuery续页参数。只展示摘要，不能把本页数当总数；用 workId 按需读取完整成果和版本守卫。detail 必须指定 workId。不会启动业务工具。",
+      pollingFallback: "没有可用事件来源时，明确说明只能定时检查，用cronExpression或nextWakeAt安排，不称为事件监听" }) }), botReminderTool(options),defineTool({ name: "work_query_status", description: "查询当前 Bot 负责、参与及由本 Bot 沿原协作委派的事项。委派项带delegation，只可读原协作公开摘要和成果，修改须走bot_collaborate，不能把可见性当成普通work_*控制权限。概览用 view:summary，默认仅未结束事项、每页20项；支持 status、search、期限窗口deadlineFrom（含）/deadlineBefore（不含）、needsUserInput、sort、limit、cursor。到期/逾期查询使用期限窗口和sort:deadline_asc；等用户回复用needsUserInput:true，不以最新20项代替筛选。期限窗口用请求时间及指定时区计算的Unix毫秒，不是下次检查时间。返回准确总数与nextQuery续页参数。只展示摘要，不能把本页数当总数；用 workId 按需读取详情：本人原有范围返回完整成果和普通Work版本守卫；委派项只返回原协作公开成果，修改须按controlRoute调用bot_collaborate query获取其守卫。detail 必须指定 workId。不会启动业务工具。",
     parameters: inputParameters.query, replay: "safe",
     execute: async (args, api, context) => {
       const requestId = await botForegroundRequest(api, api.callId, context);
@@ -368,7 +384,17 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
       if (input.view === "detail" && !input.workId) throw new Error("完整详情必须指定 workId；概览请用 view:summary");
       if (input.workId && input.view !== "summary") {
         if (input.cursor || input.search || input.status || input.limit || input.deadlineFrom !== undefined || input.deadlineBefore !== undefined || input.needsUserInput !== undefined || input.sort) throw new Error("按 workId 读取详情时不要携带列表筛选或游标");
-        if (!catalogue.canRead(input.workId)) return [];
+        if (!catalogue.canRead(input.workId)) {
+          const delegation = catalogue.outgoingCollaboration(input.workId);
+          if (!delegation) return [];
+          const page = messages.collaborations.history(userId, { botId, collaborationId: delegation.collaborationId, limit: 30 });
+          return [{ ...page.collaboration.work, workId: input.workId, ownerBotId: delegation.targetBotId,
+            readOnly: true, delegation, collaboration: page.collaboration, messages: page.messages, events: page.events,
+            totalMessages: page.totalMessages, hasMore: page.nextCursor !== null,
+            nextQuery: page.nextCursor ? { action: "query", collaborationId: delegation.collaborationId, limit: 30, cursor: page.nextCursor } : null,
+            controlRoute: { tool: "bot_collaborate", query: { action: "query", collaborationId: delegation.collaborationId },
+              instructions: "这是原协作公开给你的摘要和成果，不包含对方私人执行记录。修改须先沿该 query 获取原协作 versionGuard；不能用普通 work_* 控制工具。" } }];
+        }
         const work = works.getWork(input.workId)!;
         const versionGuard = { expectedStateVersion: work.stateVersion, expectedIntentRevision: work.intentRevision, expectedOwnerEpoch: work.ownerEpoch };
         db.prepare(`INSERT INTO bot_work_reads(conversation_id,request_id,work_id,guard_json) VALUES (?,?,?,?)
@@ -381,10 +407,11 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
           versionGuard }];
       }
       const legacy = Object.keys(input).length === 0;
-      const page = catalogue.page(legacy ? { status: "all" } : input);
+      const page = catalogue.responsibilitiesPage(legacy ? { status: "all" } : input);
       const recordRead = db.prepare(`INSERT INTO bot_work_reads(conversation_id,request_id,work_id,guard_json) VALUES (?,?,?,?)
         ON CONFLICT(conversation_id,request_id,work_id) DO UPDATE SET guard_json=excluded.guard_json`);
-      for (const item of page.items) recordRead.run(conversationId, source.request_id, item.workId, JSON.stringify(item.versionGuard));
+      for (const item of page.items) if (!item.delegation || catalogue.canRead(item.workId))
+        recordRead.run(conversationId, source.request_id, item.workId, JSON.stringify(item.versionGuard));
       if (!legacy) return page;
       // Preserve the old list's array shape. Metadata belongs to an item because
       // JSON.stringify ignores non-index properties attached to an Array.
@@ -392,15 +419,15 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
       return items.map((item, index) => index === 0 ? { ...item, queryPage } : item);
     })); } }), ...mutations,
   defineTool({ name: "schedule_overview",
-    description: "只读汇总当前用户/Bot 的“我的安排”：把纯提醒(kind=reminder)与尚未结束的后台事项(kind=work，含一次性执行、持续观察和事件订阅)合并成一个列表，逐项说明具体时间或触发条件、实际会做什么、当前状态和结果回到哪里。提醒由 CronService 到期直接发已保存内容，不调用模型、不创建 Work；事项是真实后台执行。二者不会互相冒充：提醒没有工作模式，事项不是提醒。本工具不写库、不新建 Work、不新建调度器，只投影既有 Cron/Work/Watch 事实。宿主离线或休眠时不会到点执行/投递(hostMustBeRunning)，恢复后按各自补查策略处理；已登记安排不等于正在执行。用户问“明天有什么安排/提醒和跟进”时优先用本工具一次查询，不要用 work_query_status 逐项猜测，也不要为查安排创建 Work。",
-    parameters: parameters(z.object({}).strict()), replay: "safe",
-    execute: async (_args, api, context) => {
-      z.object({}).strict().parse(_args);
+    description: "只读汇总当前用户/Bot 的“我的安排”：合并纯提醒(kind=reminder)、本人负责/参与/已委派的事项(kind=work)及尚无Work的协作(kind=collaboration)。支持status、search、workId、limit、cursor、sort及期限/待用户输入筛选；默认open、每页20项，按total/counts报告完整匹配数，hasMore时用nextQuery继续，不能把本页当全部。期限窗口和needsUserInput只筛Work事实，不把提醒时间或协作状态冒充Work期限/阻碍。团队和共享会话只读原有本范围。逐项说明具体时间或触发条件、实际会做什么、当前状态和结果回到哪里。提醒由 CronService 到期直接发已保存内容，不调用模型、不创建 Work；事项是真实后台执行。二者不会互相冒充：提醒没有工作模式，事项不是提醒。本工具不写库、不新建 Work、不新建调度器，只投影既有 Cron/Work/Watch 事实。宿主离线或休眠时不会到点执行/投递(hostMustBeRunning)，恢复后按各自补查策略处理；已登记安排不等于正在执行。用户问“明天有什么安排/提醒和跟进”时优先用本工具一次查询，不要用 work_query_status 逐项猜测，也不要为查安排创建 Work。",
+    parameters: parameters(botScheduleOverviewQuerySchema), replay: "safe",
+    execute: async (args, api, context) => {
+      const input = botScheduleOverviewQuerySchema.parse(args);
       const requestId = await botForegroundRequest(api, api.callId, context);
       return output(options.db.transaction(() => {
         assertActive(); receipt(requestId);
         return botScheduleOverview({ db, works, catalogue, reminders: options.reminders, userId, botId,
-          teamId: options.teamId, conversationId, now: Date.now });
+          teamId: options.teamId, conversationId, now: Date.now }, input);
       }).deferred());
     } }),
   defineTool({ name: "work_team_templates", description: "查询当前 Bot 负责的已保存团队分工。同时返回当前工作目录可用的现有候选 Bot。需要多人协作时先查成员名字与职责；无模板也可从 availableBots 选择成员直接组队，无需用户先保存模板。",
@@ -419,7 +446,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
   defineTool({ name: "work_team_create", description: "创建并启动团队：先查 work_team_templates；可省略 templateId，提供 taskAssignment 从 availableBots 自主选择适合本次委托的成员和依赖，宿主默认有界并行。也可复用模板内成员和上限。负责人保持当前 Bot，权限仅来自已有范围，目录来自 Bot 设置。title/goalDescription/criteria 是执行规划，宿主独立保留用户原文与附件。用户要求执行即可开工，无需再次确认。不要另调用 work_create 重复派发。持续委托必须传 requestedOutcome=ongoing 和 mode=watch：周期观察给 watchRule.cronExpression；若现在就有可执行步骤、之后才需等待，传 startImmediately=true ；确实需要等待时再给 watchRule.nextWakeAt 或真实 eventSource 安排跟进，不能创建once后文字承诺持续。每轮重新观察由成员执行、负责人汇总，默认等首次检查。成功后可用 work_query_status 查询成员进度，work_pause/resume/cancel 控制已有团队。",
     parameters: parameters(teamCreate), replay: "safe",
     execute: async (args, api, context) => {
-      const { requestedOutcome, startImmediately, ...input } = teamCreate.parse(args);
+      const { requestedOutcome, startImmediately, sourceMessageIds, ...input } = teamCreate.parse(args);
       validateWatchIntent(requestedOutcome, { ...input, startImmediately });
           if (input.watchRule?.eventSource && !works.ingress.availableEventSources().some(item => item.source === input.watchRule!.eventSource))
             throw new Error("此事件来源尚未接入；请查询work_watch_sources，明确说明只能定时检查并提供真实轮询时间，不要声称事件订阅成功");
@@ -433,6 +460,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
         assertActive();
         const source = receipt(requestId);
         if (messages.peers.origin(source.user_message_id)) throw new Error("个人 Bot 协作不创建临时团队；使用接收 Bot 自己的个人 Work");
+        messages.validateWorkUserInput(source, sourceMessageIds);
         const workspacePath = input.templateId ? works.teams.resolveWorkspace(userId, input.templateId) : options.botWorkspace?.(botId, true);
         if (!workspacePath) throw new Error("当前 Bot 没有可用工作目录，请在 Bot 设置中指定文件夹");
         const result = works.teams.createFromForeground(actor(), { ...input,
@@ -442,7 +470,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
           if (startImmediately && result.work.mode === "watch" && !result.replayed) {
             works.teams.requestImmediateWatch(result.work);
           }
-          messages.linkWorkUserInput(source, result.work);
+          messages.linkWorkUserInput(source, result.work, sourceMessageIds);
           messages.linkWorkAttachments(source, result.work.workId, result.work.inputSnapshotId);
           messages.linkWork(source, result.work.workId);
           works.repo.linkConversation(result.work.workId, conversationId, "desktop", Date.now());
@@ -450,6 +478,29 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
         return result;
       });
       if (result.ok && result.work) options.wake(result.work.workId);
+      return output(result);
+    } }),
+  defineTool({ name: "work_team_replan", description: "调整同一团队事项的剩余分工。先 work_query_status 读取当前团队、成果和 versionGuard，再查 work_team_templates 的候选成员。目标不变而原方法失败、需要换人或增加必要验证时直接调整计划，不用work_amend伪造用户改目标。用户真正修改目标时先work_amend，再调用本工具接续新分工。taskAssignment保留仍适用的职责和依赖，仅修改确需调整的部分；已完成且不受影响的成果继续复用，不重跑写入或发送。不创建新Work，不改变用户目标。",
+    parameters: parameters(teamReplan), replay: "safe",
+    execute: async (args, api, context) => {
+      const input = teamReplan.parse(args);
+      const requestId = await botForegroundRequest(api, api.callId, context);
+      const result = works.transaction(() => {
+        assertActive();
+        const source = receipt(requestId);
+        if (messages.peers.origin(source.user_message_id)) throw new Error("团队计划修订须来自负责人当前用户请求或宿主结果复核");
+        const target = select(input.workId, source, "amend");
+        if (target.ownerBotId !== botId || !works.teams.get(target.workId)) throw new Error("只能修订当前负责人已有团队的计划");
+        const read = z.object({ guard_json: z.string() }).optional().parse(db.prepare(
+          "SELECT guard_json FROM bot_work_reads WHERE conversation_id=? AND request_id=? AND work_id=?").get(conversationId, source.request_id, input.workId));
+        if (read?.guard_json !== JSON.stringify(input.versionGuard)) throw new Error("请先查询团队 Work，并使用本回合读取的完整版本守卫");
+        const revised = works.teams.replanFromForeground(actor(), { ...input,
+          operationId: `bot-team-replan:${peerKey(source.user_message_id, String(api.taskId))}`,
+          conversationId, sourceMessageId: source.user_message_id });
+        if (revised.ok) messages.linkWork(source, target.workId);
+        return revised;
+      });
+      if (result.ok) options.wake(input.workId);
       return output(result);
     } }),
   defineTool({ name: "memory_search", description: "查询当前对话可见记忆：本 Bot 或团队、本次会话，以及用户明确共享的公共记忆；不读其他 Bot 私人记忆。",

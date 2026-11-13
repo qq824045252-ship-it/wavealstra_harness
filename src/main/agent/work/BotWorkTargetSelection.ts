@@ -23,6 +23,8 @@ export type WorkTargetBasis =
   | "request_link";
 
 export interface WorkTargetFacts {
+  /** The actual control being invoked, used to separate explicit multi-item instructions. */
+  requestedAction?: "pause" | "resume" | "cancel" | "amend";
   /** Actual persisted user message text, never model arguments. */
   userText: string;
   /** workIds literally present in userText (deduped by the caller). */
@@ -134,6 +136,65 @@ function targetClauses(text: string): { positive: string; excluded: string } {
 
 const ambiguous = (): WorkTargetResolution => ({ ok: false, code: "ambiguous_target", message: WORK_TARGET_ERROR });
 
+const controlVerbs = /暂停|挂起|恢复|解除暂停|取消|终止|停止|修改|调整|修复|改为|改成|\bpause\b|\bsuspend\b|\bresume\b|\bcancel\b|\bstop\b|\bamend\b|\bchange\b/gi;
+const deferredControl = /如果|若|等到|等[^\n]*(?:完成|结束|之后)|之后再|以后再|\b(if|when|after|until)\b/i;
+function actionOf(verb: string, instruction = ""): WorkTargetFacts["requestedAction"] {
+  if (/^(暂停|挂起|pause|suspend)$/i.test(verb)) return "pause";
+  if (/^(恢复|解除暂停|resume)$/i.test(verb)) return "resume";
+  if (/^(取消|终止|停止|cancel|stop)$/i.test(verb)) {
+    const retainsWork = /保留(?:这[个项])?(?:事项|任务|work)|(?:事项|任务|work)[^\n]*(?:保留|照常)/i.test(instruction);
+    if (retainsWork && /跟踪|跟进|观察|监听|定时|订阅|检查/.test(instruction)) return "amend";
+    return "cancel";
+  }
+  return "amend";
+}
+
+/** Narrow explicit batches by their original action clauses. Never turn a
+ * conditional future instruction, exclusion, or duplicate title into a target. */
+function explicitActionTarget(facts: WorkTargetFacts, positive: string): WorkTargetResolution | undefined {
+  if (!facts.requestedAction) return undefined;
+  const named = namedTargets({ ...facts, userText: positive });
+  const allIds = facts.explicitWorkIds.filter(id => normalize(positive).includes(normalize(id)));
+  const actionText = (value: string) => {
+    let result = normalize(value);
+    const labels = [...facts.explicitWorkIds, ...facts.openWorks.map(work => work.title.trim()).filter(title => title.length >= WORK_TARGET_TITLE_MIN_LENGTH)]
+      .sort((a, b) => b.length - a.length);
+    for (const label of labels) result = result.split(normalize(label)).join(" ");
+    return result;
+  };
+  const verbs = [...actionText(positive).matchAll(controlVerbs)];
+  if (allIds.length <= 1 && named.matches.length <= 1 && verbs.length <= 1) {
+    if (deferredControl.test(actionText(positive)) || verbs.length === 1 && actionOf(verbs[0][0], actionText(positive)) !== facts.requestedAction) return ambiguous();
+    return undefined;
+  }
+  const clauses = positive.split(/[，,。；;！？!?\n]+|(?:、|并且|同时|然后|\band\b)\s*(?=暂停|挂起|恢复|解除暂停|取消|终止|停止|修改|调整|修复|改为|改成|pause\b|resume\b|cancel\b|stop\b|amend\b|change\b)/i);
+  const matching = new Set<NonNullable<WorkTargetFacts["requestedAction"]>>();
+  let basis: WorkTargetBasis = "explicit_work_id";
+  let deferred = false;
+  for (const clause of clauses) {
+    const instruction = actionText(clause);
+    // A condition can be in the preceding clause: "如果成功，再恢复 B".
+    if (deferredControl.test(instruction)) deferred = true;
+    else if (/^\s*(?:现在|立即|先|now\b)/i.test(instruction)) deferred = false;
+    if (deferred) continue;
+    const actions = [...new Set([...instruction.matchAll(controlVerbs)].map(match => actionOf(match[0], instruction)))];
+    if (actions.length !== 1 || !actions[0]) continue;
+    const explicit = allIds.filter(id => normalize(clause).includes(normalize(id)));
+    if (explicit.length) {
+      if (explicit.includes(facts.requestedWorkId)) matching.add(actions[0]);
+      continue;
+    }
+    if (facts.openWorksComplete === false) continue;
+    const titles = namedTitles({ ...facts, userText: clause });
+    const target = facts.openWorks.find(work => work.workId === facts.requestedWorkId);
+    if (!target || !titles.includes(target.workId)) continue;
+    if (facts.openWorks.filter(work => normalize(work.title.trim()) === normalize(target.title.trim())).length !== 1) continue;
+    matching.add(actions[0]); basis = "unique_title";
+  }
+  return matching.size === 1 && matching.has(facts.requestedAction)
+    ? { ok: true, workId: facts.requestedWorkId, basis } : ambiguous();
+}
+
 export function resolveWorkTarget(facts: WorkTargetFacts): WorkTargetResolution {
   const clauses = targetClauses(facts.userText);
   if (!clauses.positive) return ambiguous();
@@ -141,6 +202,8 @@ export function resolveWorkTarget(facts: WorkTargetFacts): WorkTargetResolution 
   const excluded = new Set([...namedTargets(excludedFacts).matches,
     ...facts.explicitWorkIds.filter(id => normalize(clauses.excluded).includes(normalize(id)))]);
   if (excluded.has(facts.requestedWorkId)) return ambiguous();
+  const batch = explicitActionTarget(facts, clauses.positive);
+  if (batch) return batch;
   const positiveFacts = { ...facts, userText: clauses.positive };
   const explicit = [...new Set(facts.explicitWorkIds.filter(id => !excluded.has(id)))];
   const referenced = [...new Set(facts.referencedWorkIds)];

@@ -13,6 +13,7 @@ export const completionFingerprint = (value: unknown): string => createHash("sha
 
 /** Only decision inputs belong here. Poll times, metrics and unrelated state versions do not. */
 export function completionEvidence(db: Database.Database, works: WorkService, binding: WorkExecutionBindingDto, facts: CompletionFacts) {
+  const team = works.teams.get(binding.workId);
   const bindings = works.repo.listBindings(binding.workId);
   const lineage = new Set(works.partialResults.recovery.ancestry(binding).map(item => item.bindingId));
   const results = workDeliveryResults(works, binding);
@@ -39,6 +40,13 @@ export function completionEvidence(db: Database.Database, works: WorkService, bi
     criteria: byId(facts.work.criteria.map(item => ({ ...item, evidenceRefs: [...item.evidenceRefs].sort() })), item => item.id),
     continuationScope: [...binding.delegatedScope].sort(),
     teamContinuationTargets: works.teams.continuationTargets(binding),
+    ...(team ? { teamReplanning: {
+      planRevision: team.planRevision, ownerBotId: team.ownerBotId,
+      ownerResponsibility: team.ownerResponsibility, members: team.members,
+      executionPolicy: team.executionPolicy, maxConcurrency: team.maxConcurrency,
+      availableBots: facts.work.workspacePath ? works.teams.foregroundCandidates(facts.work.userId, facts.work.ownerBotId, facts.work.workspacePath) : [],
+      versionGuard: { expectedStateVersion: facts.work.stateVersion, expectedIntentRevision: facts.work.intentRevision, expectedOwnerEpoch: facts.work.ownerEpoch },
+    } } : {}),
     blockers,
     pendingQuestions: blockers.filter(item => item.waitingForUserInput && item.kind === "operational" && !item.unknownExternalEffectRef)
       .map(({ blockerId, reason }) => ({ blockerId, reason })),

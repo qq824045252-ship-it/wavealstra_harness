@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 import type { WorkService } from "./WorkService";
 import type { WorkResultDecision, WorkResultTurnInput } from "./WorkResultDecision";
 import { recordCollaborationReturnFailure } from "./BotCollaborationExecutionFacts";
-import { CompletionDeliveryError, applyCompletionDecision } from "./WorkCompletionDecision";
+import { CompletionDeliveryError, CompletionPlanError, applyCompletionDecision } from "./WorkCompletionDecision";
 import { workDeliveryFiles, workDeliveryResults } from "./WorkDeliveryArtifacts";
 import { completionEvidence, completionFingerprint } from "./WorkCompletionEvidence";
 import { resultDecisionSchema } from "./WorkResultDecision";
@@ -127,7 +127,8 @@ export class WorkCompletionCoordinator {
         decision = resultDecisionSchema.parse(await this.options.review({
           eventId: `${eventId}:review:${attempt}:${initial.context.preferenceFingerprint}:${frozenFingerprint}`,
           botId: binding.botId, personalPreferences: initial.personalPreferences,
-          context: { ...initial.context, temporalContext: this.temporalContext(bindingId) },
+          context: { ...initial.context, temporalContext: this.temporalContext(bindingId),
+            ...(row.error?.startsWith("plan_rejected:") ? { continuationFeedback: row.error.slice("plan_rejected:".length) } : {}) },
         }));
       }
       if (this.closed || !this.options.isAuthority()) return;
@@ -153,6 +154,28 @@ export class WorkCompletionCoordinator {
       const lifecycle = error instanceof WorkResultLifecycleError;
       const failurePhase = lifecycle ? `runtime:${error.phase}` : phase;
       const message = error instanceof Error ? error.message : String(error);
+      if (error instanceof CompletionPlanError) {
+        works.transaction(() => {
+          const latest = snapshot();
+          if (!latest) return;
+          if (latest.fingerprint !== frozenFingerprint) { refresh(latest); return; }
+          if ((this.row(bindingId)?.attempts ?? 0) < 3) {
+            db.prepare("UPDATE work_completion_turns SET decision_json=NULL,state='queued',retry_at=0,error=? WHERE binding_id=?")
+              .run(`plan_rejected:${message}`, bindingId);
+            return;
+          }
+          const fallback: WorkResultDecision = {
+            decision: "deliver", outcome: "partial", missing: [],
+            reply: `已有成果已保留，但剩余工作还未完成。调整后的续办方案仍未能受理：${message}`,
+          };
+          // Persist the replacement before delivery, so a transport failure uses
+          // the normal retry path without reconsidering or replaying rejected work.
+          db.prepare("UPDATE work_completion_turns SET decision_json=?,state='queued',retry_at=0,error=NULL WHERE binding_id=?")
+            .run(JSON.stringify(fallback), bindingId);
+        });
+        this.options.wake();
+        return;
+      }
       try { recordCollaborationReturnFailure(db, candidate.work.userId, binding.workId, error, phase === "review" ? "review" : phase); }
       catch (recordError) { console.warn("[Work] 协作成果失败回执待重试", binding.workId, recordError); }
       works.transaction(() => {

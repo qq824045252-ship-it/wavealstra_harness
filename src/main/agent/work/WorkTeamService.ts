@@ -1,5 +1,6 @@
 import type { WorkResultDecision } from "./WorkResultDecision";
 import { WorkTeamWatchCycles } from "./WorkTeamWatchCycles";
+import { readTeamPlan, writeTeamPlan, type TeamPlanPredecessors } from "./WorkTeamPlanRevision";
 import { watchEndedByTime, watchTimeExpired } from "../../../shared/work-watch-expiry";
 import { ensureTeamConversation } from "./WorkDeliveryTargets";
 import { createHash, randomUUID } from "node:crypto";
@@ -16,7 +17,8 @@ import type { WorkExecutionAdapter } from "./WorkExecutionAdapter";
 import type { WorkActor, WorkDto, WorkExecutionBindingDto } from "../../../shared/bot-work";
 import { workAdmissionInFlight, workExecutionInFlight } from "../../../shared/work-effect-policy";
 import { workTeamControlSchema, workTeamPlanSchema, workTeamTaskAssignmentSchema, type WorkTeamTaskAssignment, type WorkTeamControlResult,
-  type WorkTeamDto, type WorkTeamExecution, type WorkTeamTemplateDto, type WorkTeamPlan } from "../../../shared/bot-work-team";
+  type WorkTeamDto, type WorkTeamExecution, type WorkTeamTemplateDto, type WorkTeamPlan, type WorkTeamForegroundReplanInput,
+  type WorkTeamControlRequest } from "../../../shared/bot-work-team";
 
 import { TEAM_REPORT_FORMAT } from "./WorkReportPresentation";
 import { WATCH_OBSERVATION_INSTRUCTIONS } from "./WorkWatchObservation";
@@ -221,13 +223,69 @@ export class WorkTeamService {
     return this.control(actor, { kind: "create", request: { ...request, ...plan, templateId: input.templateId } }, sourceMessageId);
   }
 
+  replanFromForeground(actor: WorkActor, input: WorkTeamForegroundReplanInput): WorkTeamControlResult {
+    if (actor.kind !== "bot" || actor.host !== "foreground")
+      return { ok: false, code: "unauthorized_actor", message: "重新安排需要当前前台负责人身份" };
+    const bot = this.bots.getBot(actor.botId);
+    const work = this.works.getWork(input.workId);
+    if (!work || work.userId !== actor.userId || work.ownerBotId !== actor.botId || !bot || bot.status !== "active" || bot.userId !== actor.userId)
+      return { ok: false, code: "unauthorized_actor", message: "只有当前启用的负责人可以重新安排此事项" };
+    const source = this.db.prepare(`SELECT r.user_message_id FROM bot_send_receipts r
+      JOIN bot_messages m ON m.message_id=r.user_message_id JOIN bot_messages a ON a.message_id=r.assistant_message_id
+      WHERE r.user_id=? AND r.bot_id=? AND r.conversation_id=? AND r.user_message_id=?
+      AND m.role='user' AND a.status IN ('queued','running','unknown')`)
+      .get(actor.userId, actor.botId, input.conversationId, input.sourceMessageId);
+    if (!source) return { ok: false, code: "unauthorized_actor", message: "重新安排需要当前对话的真实用户输入" };
+    return this.replanAssignment(actor, work, input);
+  }
+
+  replanFromResult(binding: WorkExecutionBindingDto,
+    input: Omit<WorkTeamForegroundReplanInput, "workId" | "conversationId" | "sourceMessageId">): WorkTeamControlResult {
+    const current = this.works.repo.getBinding(binding.bindingId), work = this.works.getWork(binding.workId);
+    const owner = work && this.bots.getBot(work.ownerBotId);
+    const row = work && this.rows(work.workId).find(item => item.task_id === binding.taskId && item.role === "owner_summary");
+    const receipt = work && this.works.repo.getReceipt(work.userId, input.operationId);
+    const replay = receipt?.operation_type === "replanTeam" && receipt.work_id === binding.workId;
+    if (!current || !work || !owner || owner.status !== "active" || (!row || row.cancelled) && !replay
+      || current.taskId !== binding.taskId || current.botId !== work.ownerBotId || current.invalidatedAt
+      || current.ownerEpoch !== work.ownerEpoch || current.intentRevision !== work.intentRevision || current.inputSnapshotId !== work.inputSnapshotId
+      || !["completed", "failed", "stopped"].includes(current.status))
+      return { ok: false, code: "unauthorized_actor", message: "只有当前已结算的负责人结果可以修订剩余计划" };
+    return this.replanAssignment({ kind: "bot", userId: work.userId, botId: work.ownerBotId,
+      host: "background", grants: work.authorization }, work, input);
+  }
+
+  private replanAssignment(actor: Extract<WorkActor, { kind: "bot" }>, work: WorkDto,
+    input: Omit<WorkTeamForegroundReplanInput, "workId" | "conversationId" | "sourceMessageId">): WorkTeamControlResult {
+    const assignment = workTeamTaskAssignmentSchema.safeParse(input.taskAssignment), previous = this.row(work.workId);
+    if (!assignment.success || !previous) return { ok: false, code: "invalid_request", message: "重新安排需要有效的剩余成员分工" };
+    const payloadHash = hash({ workId: work.workId, taskAssignment: assignment.data,
+      executionPolicy: input.executionPolicy, maxConcurrency: input.maxConcurrency });
+    const receipt = this.works.repo.getReceipt(actor.userId, input.operationId);
+    if (receipt) return receipt.operation_type === "replanTeam" && receipt.work_id === work.workId && receipt.payload_hash === payloadHash
+      ? { ok: true, operationId: input.operationId, work, team: this.get(work.workId), replayed: true }
+      : { ok: false, code: "idempotency_conflict", message: "操作标识已绑定另一团队计划" };
+    const oldPlan = readTeamPlan(previous.plan_json).plan;
+    const candidates = this.foregroundCandidates(work.userId, work.ownerBotId, work.workspacePath ?? "");
+    const members = assignment.data.members.map(member => {
+      const candidate = candidates.find(item => item.botId === member.botId);
+      const oldMember = oldPlan.members.find(item => item.botId === member.botId);
+      return candidate ? { ...member, delegatedScope: oldMember?.delegatedScope ?? candidate.allowedScopes } : undefined;
+    });
+    if (members.some(member => !member)) return { ok: false, code: "unauthorized_actor", message: "重新安排只能选择当前用户的启用成员" };
+    return this.control(actor, { kind: "replan", workId: work.workId, operationId: input.operationId,
+      versionGuard: input.versionGuard, plan: { ownerBotId: work.ownerBotId, ownerResponsibility: assignment.data.ownerResponsibility,
+        members, executionPolicy: input.executionPolicy ?? oldPlan.executionPolicy ?? "parallel",
+        maxConcurrency: input.maxConcurrency ?? oldPlan.maxConcurrency ?? 2 } }, undefined, payloadHash);
+  }
+
   handle(actor: WorkActor, raw: unknown): WorkTeamControlResult {
     if (actor.kind !== "user" || !actor.userId.trim())
       return { ok: false, code: "unauthorized_actor", message: "组队操作需要已认证用户，不能跨用户管理团队" };
     return this.control(actor, raw);
   }
 
-  private control(actor: Extract<WorkActor, { kind: "user" | "bot" }>, raw: unknown, sourceMessageId?: string): WorkTeamControlResult {
+  private control(actor: Extract<WorkActor, { kind: "user" | "bot" }>, raw: unknown, sourceMessageId?: string, replanPayloadHash?: string): WorkTeamControlResult {
     try {
       const request = workTeamControlSchema.parse(raw);
       if (request.kind === "get_by_operation") {
@@ -247,42 +305,7 @@ export class WorkTeamService {
       return this.works.transaction(() => {
         this.works.collaboration.assertAuthority();
         if (request.kind === "replan") {
-          const work = this.works.getWork(request.workId), team = this.row(request.workId);
-          if (!work || !team || work.userId !== actor.userId) throw new TeamError("not_found", "找不到团队事项");
-          this.checkGuard(work, request.versionGuard);
-          if (work.lifecycle !== "active" || team.intent_revision === work.intentRevision && team.input_snapshot_id === work.inputSnapshotId)
-            throw new TeamError("invalid_request", "只能为已变更的当前要求重新安排团队，不能重跑原要求");
-          const unsettled = this.works.repo.listBindings(work.workId).some(binding => workExecutionInFlight(binding.status)
-            || binding.status === "invalidated" && !!(binding.attemptId || binding.submissionReceipt || binding.submittedAt));
-          if (unsettled || this.works.repo.listAdmissions(work.workId).some(workAdmissionInFlight)
-            || this.works.repo.listOpenBlockers(work.workId).some(item => item.kind === "external_effect"))
-            throw new TeamError("unsettled_effects", "原执行或效果尚未确认，不能重新安排业务动作");
-          if (request.plan.ownerBotId !== work.ownerBotId) throw new TeamError("unauthorized_actor", "重新安排不能更换负责人，请先使用负责人交接");
-          this.validatePlan(actor.userId, request.plan);
-          if (request.plan.workspacePath) this.validateWorkspace(request.plan.workspacePath);
-          const workspace = this.db.prepare("SELECT canonical_path,entity FROM work_team_workspaces WHERE work_id=?").get(work.workId) as { canonical_path: string; entity: string } | undefined;
-          if (!workspace || workspace.canonical_path !== work.workspacePath || fileResourceIdentity(workspace.canonical_path).entity !== workspace.entity)
-            throw new TeamError("invalid_workspace", "原工作区身份已变化，不能静默接管新目录");
-          for (const row of this.rows(work.workId)) this.db.prepare("INSERT INTO work_team_execution_history(task_id,work_id,input_json,execution_json,archived_at) VALUES (?,?,?,?,?)")
-            .run(row.task_id, work.workId, row.input_json, JSON.stringify(row), this.now());
-          this.db.prepare("DELETE FROM work_team_recovery_attempts WHERE work_id=?").run(work.workId);
-          this.db.prepare("DELETE FROM work_team_executions WHERE work_id=?").run(work.workId);
-          this.db.prepare("DELETE FROM work_participants WHERE work_id=?").run(work.workId);
-          this.db.prepare("UPDATE work_teams SET plan_json=?,intent_revision=?,input_snapshot_id=? WHERE work_id=?")
-            .run(JSON.stringify(request.plan), work.intentRevision, work.inputSnapshotId, work.workId);
-          const assignments = [...request.plan.members.map(member => ({ ...member, role: "member" as const })),
-            { botId: work.ownerBotId, responsibility: request.plan.ownerResponsibility, delegatedScope: ["workspace:read"], role: "owner_summary" as const }];
-          for (const [ordinal, member] of assignments.entries()) {
-            if (member.role === "member") {
-              const added = this.works.addParticipant(actor, { operationId: `team-replan:${work.workId}:${work.intentRevision}:${ordinal}`, workId: work.workId,
-                botId: member.botId, role: "worker", delegatedScope: member.delegatedScope });
-              if (!added.ok) throw new TeamError(added.code, added.message);
-            }
-            this.db.prepare("INSERT INTO work_team_executions(work_id,ordinal,bot_id,task_id,role,responsibility,scopes_json) VALUES (?,?,?,?,?,?,?)")
-              .run(work.workId, ordinal, member.botId, `team-execution-${randomUUID()}`, member.role, member.responsibility, JSON.stringify(member.delegatedScope));
-          }
-          this.works.emitCurrentProjection(work.workId);
-          return { ok: true, work: this.works.getWork(work.workId), team: this.get(work.workId) };
+          return this.replan(actor, request, replanPayloadHash);
         }
         if (request.kind === "retry") {
           const work = this.works.getWork(request.workId), team = this.row(request.workId);
@@ -405,7 +428,7 @@ export class WorkTeamService {
         if (!created.ok) throw new TeamError(created.code, created.message);
         const workId = created.work.workId;
         this.db.prepare("INSERT INTO work_teams(work_id,user_id,operation_id,request_hash,plan_json,intent_revision,input_snapshot_id,created_at) VALUES (?,?,?,?,?,?,?,?)")
-          .run(workId, actor.userId, input.operationId, digest, JSON.stringify(plan), created.work.intentRevision, created.work.inputSnapshotId, now);
+          .run(workId, actor.userId, input.operationId, digest, writeTeamPlan(plan, 1), created.work.intentRevision, created.work.inputSnapshotId, now);
         if (owningTeam) this.db.prepare("INSERT INTO work_team_ownership(work_id,team_id,team_name) VALUES (?,?,?)")
           .run(workId, owningTeam.templateId, owningTeam.name);
         const workspaceIdentity = fileResourceIdentity(workspacePath);
@@ -437,10 +460,111 @@ export class WorkTeamService {
     }
   }
 
+  private replan(actor: Extract<WorkActor, { kind: "user" | "bot" }>,
+    request: Extract<WorkTeamControlRequest, { kind: "replan" }>, suppliedPayloadHash?: string): WorkTeamControlResult {
+    let work = this.works.getWork(request.workId);
+    const team = this.row(request.workId);
+    if (!work || !team || work.userId !== actor.userId) throw new TeamError("not_found", "找不到团队事项");
+    if (actor.kind === "bot" && actor.botId !== work.ownerBotId)
+      throw new TeamError("unauthorized_actor", "只有当前负责人可以修订团队计划");
+    const plan = workTeamPlanSchema.parse(request.plan);
+    const operationId = request.operationId ?? `team-replan:${hash([work.workId, request.versionGuard, plan])}`;
+    const payloadHash = suppliedPayloadHash ?? hash({ workId: work.workId, plan });
+    const receipt = this.works.repo.getReceipt(actor.userId, operationId);
+    if (receipt) {
+      if (receipt.operation_type !== "replanTeam" || receipt.work_id !== work.workId || receipt.payload_hash !== payloadHash)
+        throw new TeamError("idempotency_conflict", "操作标识已绑定另一团队计划");
+      return { ok: true, operationId, work, team: this.get(work.workId), replayed: true };
+    }
+    this.checkGuard(work, request.versionGuard);
+    if (work.lifecycle !== "active") throw new TeamError("invalid_request", "只能重新安排当前活动事项");
+    if (plan.ownerBotId !== work.ownerBotId) throw new TeamError("unauthorized_actor", "重新安排不能更换负责人，请先使用负责人交接");
+    const previous = readTeamPlan(team.plan_json);
+    const sameInput = team.intent_revision === work.intentRevision && team.input_snapshot_id === work.inputSnapshotId;
+    if (sameInput && hash(previous.plan) === hash(plan)) throw new TeamError("invalid_request", "剩余计划没有变化，沿用已有执行和恢复");
+    this.validatePlan(actor.userId, plan);
+    const workspace = this.db.prepare("SELECT canonical_path,entity FROM work_team_workspaces WHERE work_id=?").get(work.workId) as { canonical_path: string; entity: string } | undefined;
+    if (!workspace || workspace.canonical_path !== work.workspacePath || fileResourceIdentity(workspace.canonical_path).entity !== workspace.entity
+      || plan.workspacePath && this.validateWorkspace(plan.workspacePath) !== workspace.canonical_path)
+      throw new TeamError("invalid_workspace", "重新安排必须保留原工作区身份");
+    const priorRows = this.rows(work.workId), revision = previous.revision + 1;
+    const assignments = [...plan.members.map(member => ({ ...member, role: "member" as const })),
+      { botId: work.ownerBotId, responsibility: plan.ownerResponsibility, delegatedScope: ["workspace:read"], role: "owner_summary" as const }];
+    const nextRows = assignments.map((member, ordinal): ExecutionRow => {
+      const prior = priorRows.find(row => row.bot_id === member.botId && row.role === member.role && !row.cancelled);
+      const oldMember = previous.plan.members.find(item => item.botId === member.botId);
+      const dependencyIds = plan.executionPolicy === "parallel" ? plan.members.find(item => item.botId === member.botId)?.dependsOnBotIds ?? []
+        : plan.members.slice(0, ordinal).map(item => item.botId);
+      const oldDependencies = previous.plan.executionPolicy === "parallel" ? oldMember?.dependsOnBotIds ?? []
+        : previous.plan.members.slice(0, previous.plan.members.findIndex(item => item.botId === member.botId)).map(item => item.botId);
+      const binding = prior && this.works.repo.bindingForTask(prior.task_id);
+      const reusable = sameInput && member.role === "member" && prior && !binding?.invalidatedAt
+        && prior.responsibility === member.responsibility
+        && hash([...JSON.parse(prior.scopes_json)].sort()) === hash([...member.delegatedScope].sort())
+        && (binding?.status === "completed" || hash(oldDependencies) === hash(dependencyIds));
+      if (reusable) return { ...prior, ordinal };
+      return { work_id: work!.workId, ordinal, bot_id: member.botId, task_id: `team-execution-${randomUUID()}`,
+        role: member.role, responsibility: member.responsibility, scopes_json: JSON.stringify(member.delegatedScope),
+        input_json: null, original_input_json: null, error: null, cancelled: 0, reported: 0, reported_binding_id: null };
+    });
+    const retained = new Set(nextRows.map(row => row.task_id));
+    const retired = priorRows.filter(row => !retained.has(row.task_id));
+    const retiredIds = new Set(retired.map(row => row.task_id));
+    const invalidated = this.works.repo.listBindings(work.workId).filter(binding => retiredIds.has(binding.taskId)
+      && !binding.invalidatedAt && workExecutionInFlight(binding.status));
+    if (invalidated.length) {
+      const stopped = this.works.amendWork(actor, { operationId: `team-plan-stop:${hash(operationId)}`, workId: work.workId,
+        invalidateExecutionIds: invalidated.map(binding => binding.bindingId), versionGuard: guard(work) });
+      if (!stopped.ok) throw new TeamError(stopped.code, stopped.message);
+      work = stopped.work;
+    }
+    for (const row of retired) {
+      this.db.prepare("INSERT OR IGNORE INTO work_team_execution_history(task_id,work_id,input_json,execution_json,archived_at) VALUES (?,?,?,?,?)")
+        .run(row.task_id, work.workId, row.input_json, JSON.stringify(row), this.now());
+      this.db.prepare("UPDATE work_team_recovery_attempts SET state='stopped',outcome='superseded',settled_at=? WHERE task_id=? AND state IN ('pending','claimed','dispatched')")
+        .run(this.now(), row.task_id);
+    }
+    const predecessors: TeamPlanPredecessors = nextRows.map(row => {
+      const replaced = retired.filter(prior => prior.bot_id === row.bot_id || prior.role === row.role && prior.responsibility === row.responsibility);
+      const priorTaskIds = new Set([
+        ...previous.predecessors.find(item => item.taskId === row.task_id)?.priorTaskIds ?? [],
+        ...replaced.flatMap(prior => [prior.task_id, ...previous.predecessors.find(item => item.taskId === prior.task_id)?.priorTaskIds ?? []]),
+      ]);
+      return { taskId: row.task_id, priorTaskIds: [...priorTaskIds] };
+    }).filter(item => item.priorTaskIds.length > 0);
+    const watchRound = this.watchCycles.current(work.workId)?.sequence;
+    const retainedResults = { watchRound, taskIds: sameInput ? [...new Set([
+      ...(previous.retainedResults?.watchRound === watchRound ? previous.retainedResults?.taskIds ?? [] : []),
+      ...retired.filter(row => row.role === "member").map(row => row.task_id),
+    ])] : [] };
+    this.db.prepare("DELETE FROM work_team_executions WHERE work_id=?").run(work.workId);
+    this.db.prepare("DELETE FROM work_participants WHERE work_id=?").run(work.workId);
+    this.db.prepare("UPDATE work_teams SET plan_json=?,intent_revision=?,input_snapshot_id=? WHERE work_id=?")
+      .run(writeTeamPlan(plan, revision, predecessors, retainedResults), work.intentRevision, work.inputSnapshotId, work.workId);
+    for (const row of nextRows) {
+      if (row.role === "member") {
+        const added = this.works.addParticipant(actor, { operationId: `team-plan-member:${hash([operationId, row.task_id])}`, workId: work.workId,
+          botId: row.bot_id, role: "worker", delegatedScope: JSON.parse(row.scopes_json), versionGuard: guard(this.works.getWork(work.workId)!) });
+        if (!added.ok) throw new TeamError(added.code, added.message);
+      }
+      this.db.prepare(`INSERT INTO work_team_executions(work_id,ordinal,bot_id,task_id,role,responsibility,scopes_json,input_json,
+        original_input_json,error,cancelled,reported,reported_binding_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .run(row.work_id, row.ordinal, row.bot_id, row.task_id, row.role, row.responsibility, row.scopes_json,
+          row.input_json, row.original_input_json ?? null, row.error, row.cancelled, row.reported, row.reported_binding_id ?? null);
+    }
+    const current = this.works.getWork(work.workId)!;
+    const updated = { ...current, stateVersion: current.stateVersion + 1, updatedAt: this.now() };
+    this.works.repo.updateWork(updated);
+    this.works.repo.saveReceipt({ userId: actor.userId, operationId, workId: work.workId, operationType: "replanTeam",
+      payloadHash, workSnapshot: updated, now: this.now() });
+    this.works.emitCurrentProjection(work.workId);
+    return { ok: true, operationId, work: updated, team: this.get(work.workId), replayed: false };
+  }
+
   get(workId: string): WorkTeamDto | undefined {
     const row = this.row(workId), work = this.works.getWork(workId);
     if (!row || !work) return undefined;
-    const plan = workTeamPlanSchema.parse(JSON.parse(row.plan_json));
+    const { plan, revision } = readTeamPlan(row.plan_json);
     const executions: WorkTeamExecution[] = this.rows(workId).map(item => {
       const binding = this.works.repo.bindingForTask(item.task_id);
       const recovery = this.latestRecovery(workId, item.task_id);
@@ -480,7 +604,7 @@ export class WorkTeamService {
           : executions.some(item => item.status !== "queued") ? "running" : "queued";
     const ownership = this.db.prepare("SELECT team_id,team_name FROM work_team_ownership WHERE work_id=?").get(workId) as { team_id: string; team_name: string } | undefined;
     const visibility = this.db.prepare("SELECT removed_at,removal_requested_at FROM work_team_record_visibility WHERE work_id=?").get(workId) as { removed_at: number | null; removal_requested_at: number | null } | undefined;
-    return { ...plan, ...(visibility?.removed_at ? { removedAt: visibility.removed_at } : {}), ...(visibility?.removal_requested_at ? { removalRequestedAt: visibility.removal_requested_at } : {}), ...(ownership ? { teamId: ownership.team_id, teamName: ownership.team_name } : {}), ownerBotId: work.ownerBotId, workId, intentRevision: row.intent_revision, inputSnapshotId: row.input_snapshot_id,
+    return { ...plan, planRevision: revision, ...(visibility?.removed_at ? { removedAt: visibility.removed_at } : {}), ...(visibility?.removal_requested_at ? { removalRequestedAt: visibility.removal_requested_at } : {}), ...(ownership ? { teamId: ownership.team_id, teamName: ownership.team_name } : {}), ownerBotId: work.ownerBotId, workId, intentRevision: row.intent_revision, inputSnapshotId: row.input_snapshot_id,
       ownerEpoch: work.ownerEpoch, state, watchRound: work.mode === "watch" ? this.watchCycles.current(workId)?.sequence : undefined, executions, createdAt: row.created_at };
   }
 
@@ -522,7 +646,7 @@ export class WorkTeamService {
           this.cancelStaleRecoveries(team, work);
           if (work.lifecycle !== "active" || team.intent_revision !== work.intentRevision || team.input_snapshot_id !== work.inputSnapshotId) return;
           if (work.mode === "watch" && (!this.watchCycles.eligible(work) || watchTimeExpired(work, this.now()))) return;
-          const plan = workTeamPlanSchema.parse(JSON.parse(team.plan_json));
+          const { plan } = readTeamPlan(team.plan_json);
           // Settle/report native facts first, then decide whether this member needs a
           // durable continuation. Reporting is per binding, so a recovery result is
           // visible without repeating the original failure message.
@@ -557,6 +681,8 @@ export class WorkTeamService {
           const next = this.nextDispatch(work, plan, this.rows(work.workId));
           if (!next) return;
           const { row, recovery } = next;
+          const assignmentCurrent = () => canDispatch()
+            && this.rows(work!.workId).some(current => current.task_id === row.task_id && !current.cancelled);
           flightTaskId = row.task_id;
           this.dispatchFlights.set(row.task_id, completion);
           onProgress();
@@ -599,12 +725,12 @@ export class WorkTeamService {
               spaceId: settings?.spaceId ?? previousTask?.spaceId, projectId: work.projectId,
               modelId: previousTask?.modelId ?? (settings?.modelId || model()), permissionMode: permission(), modePresetId: "native" });
             const result = await adapter.dispatch({ kind: "bot", userId: work.userId, botId: work.ownerBotId, host: "background", grants: work.authorization }, {
-              operationId, taskId: row.task_id, workId: work.workId, botId: identity, delegatedScope: scopes, inboxEventId: this.watchCycles.current(work.workId)?.inbox_event_id, versionGuard: guard(work) }, canDispatch);
-            if (!canDispatch()) return;
+              operationId, taskId: row.task_id, workId: work.workId, botId: identity, delegatedScope: scopes, inboxEventId: this.watchCycles.current(work.workId)?.inbox_event_id, versionGuard: guard(work) }, assignmentCurrent);
+            if (!assignmentCurrent()) return;
             if (!result.ok) throw new TeamError(result.code, result.message);
             if (recovery) this.markRecoveryDispatched(recovery, work.workId, operationId);
           } catch (error) {
-          if (!canDispatch()) return;
+          if (!assignmentCurrent()) return;
             if (error instanceof TeamError && ["version_conflict", "epoch_mismatch", "invalid_lifecycle_transition"].includes(error.code)) return;
             this.handleDispatchFailure(work, row, recovery, error);
           }
@@ -849,11 +975,16 @@ export class WorkTeamService {
     if (row.input_json !== null) return;
     const dependencyIds = plan.members.find(member => member.botId === row.bot_id)?.dependsOnBotIds ?? [];
     const rows = this.rows(work.workId);
+    const planState = readTeamPlan(this.row(work.workId)!.plan_json);
     const input = { role: row.role, botId: identity, displayName: this.memberDisplayName(work, identity), responsibility: row.responsibility,
+      planRevision: planState.revision,
+      replacesTaskIds: planState.predecessors.find(item => item.taskId === row.task_id)?.priorTaskIds ?? [],
       previousResults: this.resultsFor(work, plan, row, rows), historicalResults: this.historicalResults(work),
       executionPolicy: plan.executionPolicy ?? "sequential", dependsOnBotIds: dependencyIds,
       dependencyPolicy: "依赖表示等待前置成员结算并读取其真实结果，不代表成功。前置失败时仅执行可确认安全的分工，明确报告无法覆盖的目标，不伪造前置成功。",
-      historicalResultPolicy: "历史成果与效果不因要求变化而消失。只用于核对来源和避免重复，不自动满足当前验收；变更后重新安排仅只读，不重做已有业务动作。",
+      historicalResultPolicy: "历史成果与效果不因计划修订而消失。先读取并复用已完成部分，只执行本次剩余分工，不重做已完成或结果未知的动作。历史结果不自动满足已变化的要求；与旧效果无关的授权步骤仍可继续。",
+      uncertainOperations: this.works.repo.listAdmissions(work.workId).filter(item => item.state === "unknown")
+        .map(item => ({ operationId: item.operationId, bindingId: item.bindingId, actionKind: item.actionKind })),
       watchRound: this.watchCycles.current(work.workId),
       instructions: this.instructionsFor(row, identity, work.mode === "watch" && work.watchRule?.executionMode !== "continuous") + (work.mode === "watch" && work.watchRule?.executionMode !== "continuous" ? " 本轮是长期委托的一次新观察，不结束长期职责；只读核验当前事实，不重复历史写入；成员失败与未覆盖必须进入负责人本轮报告。" : "") };
     this.db.prepare("UPDATE work_team_executions SET input_json=? WHERE work_id=? AND ordinal=? AND input_json IS NULL")
@@ -906,7 +1037,7 @@ export class WorkTeamService {
   }
   private resultsFor(work: WorkDto, plan: WorkTeamPlan, row: ExecutionRow, rows: ExecutionRow[]): TeamDependencyResult[] {
     const dependencyIds = plan.members.find(member => member.botId === row.bot_id)?.dependsOnBotIds ?? [];
-    return rows.filter(item => item.ordinal < row.ordinal && (row.role === "owner_summary"
+    const results = rows.filter(item => item.ordinal < row.ordinal && (row.role === "owner_summary"
       || plan.executionPolicy !== "parallel" || dependencyIds.includes(item.bot_id))).flatMap<TeamDependencyResult>(item => {
       const binding = this.works.repo.bindingForTask(item.task_id);
       if (!binding) {
@@ -931,6 +1062,25 @@ export class WorkTeamService {
           failureReason, summary: (binding.settlementNote || "前置执行已结算但没有可验收成果，不能视为分工成功").slice(0, 8000),
           artifactRefs: [], uncoveredScope: [item.responsibility], hasWriteConflicts: false }];
     });
+    if (row.role !== "owner_summary") return results;
+    const retained = readTeamPlan(this.row(work.workId)!.plan_json).retainedResults;
+    if (!retained || retained.watchRound !== this.watchCycles.current(work.workId)?.sequence) return results;
+    const activeTasks = new Set(rows.map(item => item.task_id));
+    const archived = this.db.prepare("SELECT execution_json FROM work_team_execution_history WHERE work_id=?").all(work.workId)
+      .map(value => executionRowSchema.parse(JSON.parse(z.object({ execution_json: z.string() }).parse(value).execution_json)));
+    for (const result of this.works.repo.listDeliverables(work.workId)) {
+      const binding = this.works.repo.getBinding(result.executionId);
+      const source = binding && archived.find(item => item.task_id === binding.taskId && item.role === "member");
+      if (!binding || !source || !retained.taskIds.includes(binding.taskId) || activeTasks.has(binding.taskId) || binding.invalidatedAt
+        || result.intentRevision !== work.intentRevision || result.inputSnapshotId !== work.inputSnapshotId
+        || result.ownerEpoch !== work.ownerEpoch || ["superseded", "rejected"].includes(result.status)) continue;
+      results.push({ botId: result.producerBotId, displayName: this.memberDisplayName(work, result.producerBotId),
+        bindingId: binding.bindingId, executionStatus: binding.status, responsibility: source.responsibility,
+        deliverableId: result.deliverableId, status: result.status, summary: result.summary.slice(0, 8000),
+        failureReason: binding.status === "completed" ? undefined : binding.settlementNote ?? binding.status,
+        artifactRefs: result.artifactRefs.slice(0, 128), uncoveredScope: result.uncoveredScope, hasWriteConflicts: result.hasWriteConflicts });
+    }
+    return results;
   }
   /** Resolve identity from the host, never from member-authored prose or a different user's registry. */
   private memberDisplayName(work: WorkDto, botId: string): string {
@@ -938,8 +1088,10 @@ export class WorkTeamService {
     return bot?.userId === work.userId && bot.displayName.trim() ? bot.displayName : "成员名称不可用";
   }
   private historicalResults(work: WorkDto) {
+    const tasks = new Set(this.rows(work.workId).map(row => row.task_id));
     return this.works.repo.listDeliverables(work.workId)
-      .filter(result => result.intentRevision !== work.intentRevision || result.inputSnapshotId !== work.inputSnapshotId)
+      .filter(result => result.intentRevision !== work.intentRevision || result.inputSnapshotId !== work.inputSnapshotId
+        || !tasks.has(this.works.repo.getBinding(result.executionId)?.taskId ?? ""))
       .slice(-48)
       .map(result => ({ botId: result.producerBotId, displayName: this.memberDisplayName(work, result.producerBotId), bindingId: result.executionId, deliverableId: result.deliverableId,
         intentRevision: result.intentRevision, inputSnapshotId: result.inputSnapshotId, status: result.status,
@@ -1082,6 +1234,8 @@ export class WorkTeamService {
   /** Dependencies freeze a result boundary, not an assumption that a predecessor succeeded. */
   private waitingReason(work: WorkDto, plan: WorkTeamPlan, row: ExecutionRow, rows: ExecutionRow[]): string | undefined {
     if (work.lifecycle !== "active") return "事项未处于执行状态";
+    const replacing = this.replacementWaitingReason(work.workId, row.task_id);
+    if (replacing) return replacing;
     const predecessors = row.role === "owner_summary" || plan.executionPolicy !== "parallel"
       ? rows.filter(item => item.ordinal < row.ordinal)
       : rows.filter(item => (plan.members.find(member => member.botId === row.bot_id)?.dependsOnBotIds ?? []).includes(item.bot_id));
@@ -1110,6 +1264,19 @@ export class WorkTeamService {
         return this.dispatchFlights.has(item.task_id) || binding && !TERMINAL_BINDING.has(binding.status);
       }).length;
       if (active >= (plan.maxConcurrency ?? 2)) return "等待团队并行执行名额";
+    }
+    return undefined;
+  }
+
+  private replacementWaitingReason(workId: string, taskId: string): string | undefined {
+    const team = this.row(workId);
+    const priorTaskIds = team ? readTeamPlan(team.plan_json).predecessors.find(item => item.taskId === taskId)?.priorTaskIds ?? [] : [];
+    for (const priorId of priorTaskIds) {
+      const binding = this.works.repo.bindingForTask(priorId);
+      if (this.dispatchFlights.has(priorId) || binding && (workExecutionInFlight(binding.status)
+        || binding.status === "invalidated" && Boolean(binding.attemptId || binding.submissionReceipt || binding.submittedAt)
+        || this.works.repo.listAdmissions(workId).some(item => item.bindingId === binding.bindingId && workAdmissionInFlight(item))))
+        return "正在结算本分工被替换的执行；独立分工继续推进";
     }
     return undefined;
   }
@@ -1170,6 +1337,8 @@ export class WorkTeamService {
       && ["completed","failed","stopped"].includes(source.status)) return undefined;
     const row = this.rows(workId).find(item => item.task_id === taskId);
     if (!row || row.bot_id !== botId || row.cancelled) return "团队执行必须使用持久分工与原任务身份，不能追加未登记执行";
+    const replacing = this.replacementWaitingReason(workId, taskId);
+    if (replacing) return replacing;
     const recovery = operationId ? this.recoveryForOperation(operationId) : undefined;
     if (recovery) {
       if (recovery.task_id !== taskId || recovery.bot_id !== botId || !["pending", "claimed"].includes(recovery.state))

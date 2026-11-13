@@ -14,6 +14,10 @@ import { botForegroundTools } from "../src/main/agent/work/BotForegroundTools";
 import { BotWorkQuery } from "../src/main/agent/work/BotWorkQuery";
 import { WorkService, DESKTOP_USER_GRANTS } from "../src/main/agent/work/WorkService";
 import { LOCAL_USER_ID, type WorkDto } from "../src/shared/bot-work";
+import { verifyResponsibilityQueries } from "./bot-responsibility-query-cases";
+import { botScheduleOverview } from "../src/main/agent/work/BotScheduleOverview";
+
+verifyResponsibilityQueries();
 
 const root = mkdtempSync(join(tmpdir(), "bot-query-scale-"));
 const db = new AppDatabase(join(root, "app.db"));
@@ -68,6 +72,20 @@ try {
   works.getProjection = () => { throw Error("list must not build projections"); };
   works.getWork = () => { throw Error("list must not hydrate Work"); };
   works.listWorks = () => { throw Error("list must not load all Work"); };
+  const overviewStart = performance.now();
+  const overviewDependencies = { db: db.connection, works, catalogue: query, userId: LOCAL_USER_ID,
+    botId: "owner", conversationId: receipt.conversationId };
+  const responsibilityFirst = botScheduleOverview(overviewDependencies);
+  const responsibilityFirstMs = performance.now() - overviewStart;
+  assert.equal(responsibilityFirst.total, 4502); assert.equal(responsibilityFirst.items.length, 20); assert(responsibilityFirst.nextQuery);
+  const overviewNextStart = performance.now();
+  const responsibilityNext = botScheduleOverview(overviewDependencies, responsibilityFirst.nextQuery);
+  const responsibilityNextMs = performance.now() - overviewNextStart;
+  assert(!responsibilityNext.items.some(item => responsibilityFirst.items.some(previous => previous.id === item.id)));
+  const responsibilityBytes = Buffer.byteLength(JSON.stringify(responsibilityFirst));
+  assert(!JSON.stringify(responsibilityFirst).includes(long)); assert(responsibilityBytes < 100000);
+  assert(responsibilityFirstMs < 3000 && responsibilityNextMs < 3000, "unified overview keeps the existing 3-second list responsiveness bound");
+  console.log(`PASS unified overview on 12000 long-text Works: ${responsibilityFirstMs.toFixed(1)}ms first/${responsibilityNextMs.toFixed(1)}ms next, ${responsibilityBytes} bytes, no full hydration`);
   const start = performance.now();
   const page = await invoke({ view: "summary" });
   const elapsed = performance.now() - start;

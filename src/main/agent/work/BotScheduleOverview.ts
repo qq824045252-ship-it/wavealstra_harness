@@ -2,7 +2,8 @@ import type Database from "better-sqlite3";
 import type { CronJobDto } from "../../../shared/agent-ipc";
 import type { WorkSubscriptionDto } from "../../../shared/bot-work";
 import type { CronService } from "../../cron/CronService";
-import type { BotWorkQuery, BotWorkSummary } from "./BotWorkQuery";
+import { botWorkQuerySchema, type BotWorkQuery, type BotWorkSummary } from "./BotWorkQuery";
+import type { z } from "zod";
 import type { WorkService } from "./WorkService";
 import type { WorkSubscriptionCursor } from "./WorkWatchIngress";
 
@@ -22,7 +23,7 @@ export interface ScheduleOverviewDependencies {
     repo: Pick<WorkService["repo"], "listSubscriptions" | "listConversationIds">;
     ingress: Pick<WorkService["ingress"], "listCursors" | "adapter">;
   };
-  catalogue: Pick<BotWorkQuery, "page">;
+  catalogue: Pick<BotWorkQuery, "responsibilitiesPage" | "overviewPage" | "reminderConversationAllowed">;
   reminders?: () => CronService | undefined;
   userId: string;
   botId: string;
@@ -46,6 +47,7 @@ export interface ScheduleOverviewReminderItem {
   id: string;
   reminderId: string;
   title: string;
+  createdAt: number;
   content: string;
   enabled: boolean;
   state: string;
@@ -77,7 +79,9 @@ export interface ScheduleOverviewWorkItem {
   kind: "work";
   id: string;
   workId: string;
+  collaborationId?: string;
   title: string;
+  delegation?: BotWorkSummary["delegation"];
   workMode: "once" | "watch";
   lifecycle: BotWorkSummary["lifecycle"];
   notificationMode: "every_check" | "changes_only" | null;
@@ -99,24 +103,50 @@ export interface ScheduleOverviewWorkItem {
   deliveryBoundary: string;
 }
 
-export type ScheduleOverviewItem = ScheduleOverviewReminderItem | ScheduleOverviewWorkItem;
+export interface ScheduleOverviewCollaborationItem {
+  kind: "collaboration";
+  id: string;
+  collaborationId: string;
+  title: string;
+  createdAt: number;
+  targetBotId: string;
+  targetDisplayName: string;
+  status: string;
+  statusSource: "collaboration_receipt";
+  observedAt: number;
+  needsUserInput: null;
+  scopeChanged: boolean;
+  requestPreview: string | null;
+  replyPreview: string | null;
+  statusDetail: string;
+  resultReturnsTo: { conversationId: string; currentConversation: boolean };
+  controlRoute: "bot_collaborate";
+}
+export type ScheduleOverviewItem = ScheduleOverviewReminderItem | ScheduleOverviewWorkItem | ScheduleOverviewCollaborationItem;
+export const botScheduleOverviewQuerySchema = botWorkQuerySchema.omit({ view: true }).extend({
+  status: botWorkQuerySchema.shape.status.describe("open/all合并各类安排；active/paused/closing/closed仅筛选Work生命周期，不代表协作回执或提醒状态。暂停提醒请用reminder_manage查询。"),
+});
+export type BotScheduleOverviewQuery = z.infer<typeof botScheduleOverviewQuerySchema>;
 
 export interface BotScheduleOverviewResult {
   observedAt: number;
   readOnly: true;
   hostMustBeRunning: true;
   scope: { userId: string; botId: string; teamId: string | null };
-  sources: { reminders: "scheduled" | "unavailable"; works: "open_works"; events: "work_subscriptions" };
+  sources: { reminders: "scheduled" | "unavailable"; works: "responsibilities"; events: "work_subscriptions" };
   hostBoundary: string;
-  counts: { reminders: number; onceWorks: number; watchWorks: number; eventSubscriptions: number; total: number };
+  counts: { reminders: number; onceWorks: number; watchWorks: number; collaborations: number; eventSubscriptions: number; total: number };
+  total: number;
+  limit: number;
+  hasMore: boolean;
+  nextCursor: string | null;
+  nextQuery: BotScheduleOverviewQuery | null;
+  order: string;
   truncated: boolean;
   notices: string[];
   items: ScheduleOverviewItem[];
 }
 
-const OPEN_WORK_PAGE_SIZE = 50;
-/** Bounded projection: a plan question must never scan/hydrate every Work. */
-const OPEN_WORK_PAGE_LIMIT = 10;
 const REMINDER_CONTENT_LIMIT = 500;
 const PROGRESS_LIMIT = 400;
 const EVENT_SOURCE_LIMIT = 8;
@@ -149,7 +179,7 @@ function reminderTiming(job: CronJobDto, nextAt: number | null): ScheduleOvervie
 }
 
 function reminderItems(cron: CronService | undefined, deps: ScheduleOverviewDependencies,
-  notices: string[]): ScheduleOverviewReminderItem[] {
+  notices: string[]): Array<ScheduleOverviewReminderItem & { searchTitle: string; searchContent: string }> {
   if (!cron) { notices.push("提醒服务尚未初始化；本投影未包含纯提醒安排。"); return []; }
   let jobs: CronJobDto[];
   try { jobs = cron.list(); }
@@ -159,19 +189,19 @@ function reminderItems(cron: CronService | undefined, deps: ScheduleOverviewDepe
   }
   return jobs.filter(job => job.reminder?.userId === deps.userId
     && (deps.teamId ? job.reminder.teamId === deps.teamId : job.reminder.botId === deps.botId && !job.reminder.teamId)
-    // Delivered/cancelled reminders are history, not upcoming arrangements.
-    && job.reminder.state !== "cancelled" && job.reminder.state !== "delivered")
+    && deps.catalogue.reminderConversationAllowed(job.reminder.conversationId))
     .map(job => {
       const reminder = job.reminder!;
       const nextAt = job.nextRunAt ?? null;
       const state = reminder.state ?? (job.enabled ? "scheduled" : "paused");
       return {
-        kind: "reminder" as const, id: job.id, reminderId: job.id, title: job.name,
+        kind: "reminder" as const, id: job.id, reminderId: job.id, title: job.name.slice(0, 200), createdAt: job.createdAt,
+        searchTitle: job.name, searchContent: job.prompt,
         content: job.prompt.slice(0, REMINDER_CONTENT_LIMIT), enabled: job.enabled, state,
         deliveredCount: job.runCount ?? 0, timing: reminderTiming(job, nextAt),
         // A reminder writes the saved text at the due time; it never runs a model
         // or creates a Work, so it must not be described as background execution.
-        whatWillHappen: `到时直接把已保存内容「${job.name}」发到本机对话；不调用模型、不创建 Work。`,
+        whatWillHappen: `到时直接把已保存内容「${job.name.slice(0, 200)}」发到本机对话；不调用模型、不创建 Work。`,
         status: job.enabled ? (state === "scheduled" ? "已安排" : state) : "已暂停",
         resultReturnsTo: { conversationId: reminder.conversationId, label: "本机应用内该提醒所属对话；到期直接写入消息" },
         hostMustBeRunning: true as const,
@@ -180,20 +210,6 @@ function reminderItems(cron: CronService | undefined, deps: ScheduleOverviewDepe
     })
     .sort((a, b) => (a.timing.nextAt ?? Number.MAX_SAFE_INTEGER) - (b.timing.nextAt ?? Number.MAX_SAFE_INTEGER)
       || a.reminderId.localeCompare(b.reminderId));
-}
-
-function openWorkPage(catalogue: Pick<BotWorkQuery, "page">) {
-  const items: BotWorkSummary[] = [];
-  let query: Parameters<BotWorkQuery["page"]>[0] = { status: "open", limit: OPEN_WORK_PAGE_SIZE };
-  let total = 0;
-  for (let page = 0; page < OPEN_WORK_PAGE_LIMIT; page++) {
-    const result = catalogue.page(query);
-    total = result.total;
-    items.push(...result.items);
-    if (!result.hasMore || !result.nextQuery) return { items, total, truncated: false };
-    query = result.nextQuery;
-  }
-  return { items, total, truncated: items.length < total };
 }
 
 interface WatchFacts { notificationMode: "every_check" | "changes_only" | null; notifyInitial: boolean | null; terminationReason: string | null }
@@ -261,7 +277,7 @@ function workItem(deps: ScheduleOverviewDependencies, summary: BotWorkSummary, c
     : "在后台真实执行并回报实际结果；不是只发一条提醒";
   const stop = summary.mode === "watch" ? summary.watchRule?.stopConditionText ?? null : null;
   return {
-    kind: "work", id: summary.workId, workId: summary.workId, title: summary.title, workMode: summary.mode,
+    kind: "work", id: summary.workId, workId: summary.workId, title: summary.title, workMode: summary.mode, delegation: summary.delegation,
     lifecycle: summary.lifecycle, notificationMode, notifyInitial: summary.mode === "watch" ? facts.notifyInitial : null,
     stopConditionText: stop, terminationReason: facts.terminationReason, deadlineAt,
     timing: workTiming, eventSubscriptions: events,
@@ -278,28 +294,47 @@ function workItem(deps: ScheduleOverviewDependencies, summary: BotWorkSummary, c
   };
 }
 
-export function botScheduleOverview(deps: ScheduleOverviewDependencies): BotScheduleOverviewResult {
+export function botScheduleOverview(deps: ScheduleOverviewDependencies, query: BotScheduleOverviewQuery = {}): BotScheduleOverviewResult {
+  const input = botScheduleOverviewQuerySchema.parse(query);
   const now = deps.now ? deps.now() : Date.now();
   const notices: string[] = [];
   const cron = deps.reminders?.();
   const reminderList = reminderItems(cron, deps, notices);
-  const page = openWorkPage(deps.catalogue);
-  if (page.truncated)
-    notices.push(`未结束事项共 ${page.total} 项，本投影只读取了最近 ${page.items.length} 项；更早安排请用 work_query_status 分页查询。`);
-  const items: ScheduleOverviewItem[] = [
-    ...reminderList,
-    ...page.items.map(summary => workItem(deps, summary, deps.conversationId)),
-  ].sort((a, b) => (a.timing.nextAt ?? Number.MAX_SAFE_INTEGER) - (b.timing.nextAt ?? Number.MAX_SAFE_INTEGER)
-    || (a.kind === b.kind ? a.id.localeCompare(b.id) : a.kind === "reminder" ? -1 : 1));
-  const onceWorks = page.items.filter(item => item.mode === "once").length;
-  const watchWorks = page.items.filter(item => item.mode === "watch").length;
-  const eventSubscriptions = items.reduce((sum, item) => sum + (item.kind === "work" ? item.eventSubscriptions.length : 0), 0);
+  const page = deps.catalogue.overviewPage(input, reminderList.map(item => ({ reminderId: item.reminderId,
+    title: item.searchTitle, content: item.searchContent, createdAt: item.createdAt, state: item.state })));
+  if (page.hasMore) notices.push(`符合筛选的安排共 ${page.total} 项；本页 ${page.references.length} 项，请使用 nextQuery 继续读取。`);
+  if (input.deadlineFrom !== undefined || input.deadlineBefore !== undefined || input.needsUserInput !== undefined)
+    notices.push("期限和待用户输入筛选仅依据 Work 的已保存事实；提醒时间不是承诺期限，尚无可读 Work 的协作不推测这些字段。");
+  const items = page.references.map((reference): ScheduleOverviewItem => {
+    if (reference.kind === "work") {
+      const summary = deps.catalogue.responsibilitiesPage({ workId: reference.workId, status: "all", limit: 1 }).items[0];
+      if (!summary) throw new Error("事项范围已变化，请重新查询第一页");
+      const item = workItem(deps, summary, deps.conversationId);
+      if (summary.delegation) item.resultReturnsTo = { conversationIds: [summary.delegation.sourceConversationId],
+        currentConversation: summary.delegation.sourceConversationId === deps.conversationId, label: "协作成果回到原发起对话" };
+      return { ...item, id: reference.id, collaborationId: reference.collaborationId ?? undefined };
+    }
+    if (reference.kind === "reminder") {
+      const reminder = reminderList.find(item => `reminder:${item.reminderId}` === reference.id);
+      if (!reminder) throw new Error("提醒范围已变化，请重新查询第一页");
+      const { searchTitle: _title, searchContent: _content, ...item } = reminder;
+      return { ...item, id: reference.id };
+    }
+    return { kind: "collaboration", id: reference.id, collaborationId: reference.collaborationId,
+      title: reference.title, createdAt: reference.createdAt, targetBotId: reference.targetBotId, targetDisplayName: reference.targetDisplayName,
+      status: reference.state, statusSource: "collaboration_receipt", observedAt: now, needsUserInput: null,
+      scopeChanged: Boolean(reference.scopeChanged), requestPreview: reference.requestPreview, replyPreview: reference.replyPreview,
+      statusDetail: reference.scopeChanged ? "原关联事项的负责人或可读范围已变化，保留协作记录；请沿原协作核对，未读取新负责人的事项详情。"
+        : "这是实际协作送达或回流状态，尚无可读 Work；回执不代表用户目标已经完成。",
+      resultReturnsTo: { conversationId: reference.sourceConversationId, currentConversation: reference.sourceConversationId === deps.conversationId },
+      controlRoute: "bot_collaborate" };
+  });
   return {
     observedAt: now, readOnly: true, hostMustBeRunning: true,
     scope: { userId: deps.userId, botId: deps.botId, teamId: deps.teamId ?? null },
-    sources: { reminders: cron ? "scheduled" : "unavailable", works: "open_works", events: "work_subscriptions" },
+    sources: { reminders: cron ? "scheduled" : "unavailable", works: "responsibilities", events: "work_subscriptions" },
     hostBoundary: "所有提醒与事项调度都依赖本机宿主在线：宿主退出或系统休眠期间不会到点执行/投递，恢复后按各自补查策略处理；已登记安排不等于正在执行。",
-    counts: { reminders: reminderList.length, onceWorks, watchWorks, eventSubscriptions, total: items.length },
-    truncated: page.truncated, notices, items,
+    counts: page.counts, total: page.total, limit: page.limit, hasMore: page.hasMore, nextCursor: page.nextCursor,
+    nextQuery: page.nextQuery, order: page.order, truncated: page.hasMore, notices, items,
   };
 }

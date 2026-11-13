@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import { z } from "zod";
 import { workTrackingReader, type BotWorkTracking } from "./BotWorkTracking";
+import { delegationSchema, hasOutgoingScope, outgoingJoin, responsibilityPage, workReadPredicate,
+  type BotReadScope, type BotWorkDelegation, type ReminderReadFact } from "./BotResponsibilityPage";
 import type { WorkLifecycle, WorkMode, WorkClosureConclusion, DeliverableStatus } from "../../../shared/bot-work";
 
 export const botWorkQuerySchema = z.object({
@@ -47,6 +49,7 @@ export interface BotWorkSummary {
   /** Summaries omit long reports, history and evidence. Read workId for originals. */
   detailAvailable: true;
   tracking: BotWorkTracking;
+  delegation?: BotWorkDelegation;
 }
 
 /** SQL-only catalogue. Never hydrate every Work or build projections to list it. */
@@ -64,6 +67,28 @@ export class BotWorkQuery {
     return this.conversationScope ? `${owner} AND EXISTS(SELECT 1 FROM work_conversations c WHERE c.work_id=w.work_id AND c.conversation_id=@conversationScope)` : owner;
   }
 
+  private scope(): BotReadScope {
+    return { userId: this.userId, botId: this.botId, teamId: this.teamId, conversationScope: this.conversationScope };
+  }
+
+  outgoingCollaboration(workId: string): BotWorkDelegation | undefined {
+    if (!hasOutgoingScope(this.db, this.scope())) return;
+    return delegationSchema.optional().parse(this.db.prepare(`SELECT c.collaboration_id collaborationId,
+      c.source_conversation_id sourceConversationId,c.target_bot_id targetBotId FROM works w
+      JOIN bot_collaborations c ON ${outgoingJoin()} WHERE w.user_id=@userId AND w.work_id=@workId`)
+      .get({ userId: this.userId, botId: this.botId, workId }));
+  }
+
+  responsibilitiesPage(input: BotWorkQueryInput) { return this.readPage(input, true); }
+
+  overviewPage(input: BotWorkQueryInput, reminders: ReminderReadFact[]) {
+    return responsibilityPage(this.db, this.scope(), input, reminders);
+  }
+
+  reminderConversationAllowed(conversationId: string): boolean {
+    return !this.conversationScope || this.conversationScope === conversationId;
+  }
+
   canRead(workId: string): boolean {
     return !!this.db.prepare(`SELECT 1 FROM works w WHERE w.work_id=@workId AND ${this.visible()}`)
       .get({ userId: this.userId, botId: this.botId, teamId: this.teamId ?? "", conversationScope: this.conversationScope ?? "", workId });
@@ -76,13 +101,17 @@ export class BotWorkQuery {
   }
 
   page(input: BotWorkQueryInput) {
+    return this.readPage(input, false);
+  }
+
+  private readPage(input: BotWorkQueryInput, includeOutgoing: boolean) {
     const status = input.status ?? (input.workId ? "all" : "open");
     const limit = input.limit ?? 20;
     const sort = input.sort ?? "created_desc";
     if (input.deadlineFrom !== undefined && input.deadlineBefore !== undefined && input.deadlineFrom >= input.deadlineBefore)
       throw new Error("承诺期限窗口无效：deadlineFrom 必须小于 deadlineBefore");
     // Bind cursors to caller and filters. They are positions, never authorization.
-    const scope = createHash("sha256").update(JSON.stringify([this.userId, this.botId, this.teamId ?? null, this.conversationScope ?? null, status, input.search ?? "", input.workId ?? "",
+    const scope = createHash("sha256").update(JSON.stringify([this.userId, this.botId, this.teamId ?? null, this.conversationScope ?? null, includeOutgoing, status, input.search ?? "", input.workId ?? "",
       input.deadlineFrom ?? null, input.deadlineBefore ?? null, input.needsUserInput ?? null, sort]))
       .digest("hex");
     let after: z.infer<typeof cursorSchema> | undefined;
@@ -92,7 +121,7 @@ export class BotWorkQuery {
       if (after.scope !== scope) throw new Error("查询游标与当前用户、Bot 或筛选不匹配，请重新查询第一页");
     }
     const params: Record<string, string | number> = { userId: this.userId, botId: this.botId, teamId: this.teamId ?? "", conversationScope: this.conversationScope ?? "" };
-    const predicates = [this.visible()];
+    const predicates = [includeOutgoing ? workReadPredicate(this.scope(), hasOutgoingScope(this.db, this.scope())) : this.visible()];
     if (input.workId) { predicates.push("w.work_id=@workId"); params.workId = input.workId; }
     if (input.search) {
       // Literal substring search, including % and _, rather than SQL wildcards.
@@ -158,7 +187,8 @@ export class BotWorkQuery {
       watchRule: row.mode === "watch" ? { cronExpression, timezone, stopConditionText, endsAt, terminationReason } : null,
       versionGuard: { expectedStateVersion: stateVersion, expectedIntentRevision: intentRevision, expectedOwnerEpoch: ownerEpoch },
       detailAvailable: true }));
-    const items: BotWorkSummary[] = summaries.map(item => ({ ...item, tracking: tracking(item, observedAt) }));
+    const items: BotWorkSummary[] = summaries.map(item => ({ ...item, tracking: tracking(item, observedAt),
+      ...(includeOutgoing ? { delegation: this.outgoingCollaboration(item.workId) } : {}) }));
     const last = items.at(-1);
     const nextCursor = hasMore && last ? Buffer.from(JSON.stringify({ v: 2, scope, createdAt: last.createdAt, deadlineAt: last.deadlineAt, workId: last.workId })).toString("base64url") : null;
     const nextQuery: BotWorkQueryInput | null = nextCursor ? { view: "summary", status, limit, cursor: nextCursor,

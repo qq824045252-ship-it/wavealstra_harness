@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, writeFile, access } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, access, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
@@ -26,6 +26,9 @@ import { createDurableToolPolicy } from "../src/main/agent/durable/DurableToolPo
 import { createDurableSubagentTools } from "../src/main/agent/durable/DurableSubagents";
 import { computeChildTools, tightenPolicy, READONLY_TOOLS, RECURSION_TOOLS } from "../src/main/capabilities/subagent/policy";
 import type { ExternalEffectRecovery } from "../src/main/agent/durable/DurableEffectRecovery";
+import { defineTool } from "@earendil-works/pi-durable";
+import { Type } from "typebox";
+import { verifyDurableToolCoordination } from "./durable-tool-coordination-cases";
 
 const root = await mkdtemp(join(tmpdir(), "mybuddy-team-child-policy-"));
 process.env.HOME = root;
@@ -136,4 +139,58 @@ try {
   };
   await Promise.all([run("team-a-writable", true), run("team-b-writable", true), run("team-c-scope-denied", false), run("team-d-readonly", true, "readonly"), run("team-e-outside", true, "auto", true)]);
   console.log("PASS five native runtimes: inherited read/write under old modes, explicit external cwd, identity evidence, and operational failure reporting");
+  await verifyDurableToolCoordination(root);
+
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const isolatedAgents = join(root, "parallel-agent-settings");
+  await mkdir(isolatedAgents);
+  process.env.PI_CODING_AGENT_DIR = isolatedAgents;
+  await writeFile(join(isolatedAgents, "subagent.json"), JSON.stringify({ maxConcurrency: 2 }));
+  let releaseFirst!: () => void;
+  const firstBlocked = new Promise<void>(resolve => { releaseFirst = resolve; });
+  let markFirstStarted!: () => void;
+  const firstStarted = new Promise<void>(resolve => { markFirstStarted = resolve; });
+  const started: string[] = [], ended: string[] = [], childIdentities = new Set<number>();
+  let collected = "";
+  const parallel = await fixture("main-only-parallel", request => {
+    const parent = request.messages.some(message => message.role === "system" && message.toolsAdded?.some(tool => tool.name === "subagent"));
+    const results = request.messages.filter(message => message.role === "toolResult");
+    if (parent) {
+      if (results.length) { collected = JSON.stringify(results); return text("All child evidence collected."); }
+      return call("subagent", { tasks: ["first", "second", "third"].map(tag => ({ agent: "worker",
+        task: `INDEPENDENT_CHILD=${tag}`, model: "fixture/model", isolation: "shared" })), agentScope: "project", confirmProjectAgents: false });
+    }
+    if (results.length) return text("Child completed its independent lookup.");
+    const source = JSON.stringify(request.messages.filter(message => message.role === "user"));
+    const tag = /INDEPENDENT_CHILD=(first|second|third)/.exec(source)?.[1];
+    assert(tag, source);
+    return call("web_search", { query: tag });
+  }, "native", [defineTool({ name: "web_search", description: "Controlled independent search", parameters: Type.Object({ query: Type.String() }), replay: "safe", execute: async (args, api) => {
+    started.push(args.query); childIdentities.add(api.conversationId);
+    if (args.query === "first") { markFirstStarted(); await firstBlocked; }
+    else if (args.query === "second") await firstStarted;
+    ended.push(args.query);
+    return { output: [{ type: "text", text: `Observed ${args.query}` }] };
+  } })], [], undefined, true);
+  await mkdir(join(parallel.cwd, CONFIG_DIR_NAME, "agents"), { recursive: true });
+  await writeFile(join(parallel.cwd, CONFIG_DIR_NAME, "agents", "worker.md"), "---\nname: worker\ndescription: Independent lookup\n---\nComplete the assigned lookup.\n");
+  await writeFile(join(parallel.cwd, "AGENTS.md"), "Use main as the only active local branch. Do not create additional branches or worktrees.");
+  const parallelRuntime = await parallel.open();
+  try {
+    const submission = await parallelRuntime.submit("Run independent lookups", "main-only-parallel");
+    const deadline = Date.now() + 10_000;
+    while (!started.includes("third") && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.deepEqual([...started].sort(), ["first", "second", "third"], "third child starts while the first child is held; inherited write tools do not serialize shared research");
+    assert.equal(started.at(-1), "third");
+    assert(ended.includes("second") && !ended.includes("first"));
+    assert.equal(childIdentities.size, 3, "three actual durable child conversations executed");
+    releaseFirst();
+    assert.equal((await submission.wait(ctx)).status, "done");
+    assert.match(collected, /Concurrency: 2 workers/);
+    assert(!(await readdir(parallel.cwd)).includes(".git"), "main-only execution does not create a repository or worktree");
+    console.log("PASS production DurableBotRuntime -> subagent -> three native children: first held, second finishes, third starts under main-only explicit shared, inherited write tools, no model network");
+  } finally {
+    releaseFirst(); await parallelRuntime.close();
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+  }
 } finally { db.close(); }

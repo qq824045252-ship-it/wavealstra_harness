@@ -4,6 +4,7 @@ import { durableToolDiagnosticMessages } from "./DurableToolDiagnostics";
 import { emptyUsageEvidence, usagePresence, type ProviderUsageEvidence, type ProviderUsagePresence } from "../../../shared/provider-usage-evidence";
 import { supportsUsageObservation, withUsageEvidence } from "../../usage/provider-usage-evidence";
 import { createDurableArtifactRegistrationTool, withDurableArtifactRegistration } from "./DurableArtifactRegistration";
+import { withDurableToolCoordination } from "./DurableToolCoordination";
 import { withNativeNotStarted } from "./DurableToolLifecycle";
 import { canRebindDurableWorkspace, migrateDurableWorkspace, WorkspaceMigrationBusyError } from "./DurableWorkspaceMigration";
 import { randomUUID } from "node:crypto";
@@ -86,6 +87,7 @@ export interface DurableBotOptions {
   onResponse?: (message: AssistantMessage, identity: { conversationId: string; generationTaskId: number; sourceKind: "main" | "subagent"; usageEvidence?: ProviderUsageEvidence; usagePresence?: ProviderUsagePresence }) => void;
   onRequest?: (identity: { conversationId: string; generationTaskId: number; sourceKind: "main" | "subagent" }) => void;
   beforeProviderRequest?: () => void;
+  beforeToolExecution?: (name: string, args: unknown) => void;
   /** Authority revocation must be rechecked before every provider attempt. */
   providerAuthorityGuarded?: () => boolean;
   onProviderUsage?: (input: { taskId?: string; conversationId: string; generationTaskId: number;
@@ -1487,7 +1489,10 @@ function botExtension(
       return changed;
     },
   };
-  return defineExtension({ name: "mybuddy.bot", tasks: [], tools: [...native, codemode],
+  return defineExtension({ name: "mybuddy.bot", tasks: [], tools: [...native, codemode].map(tool => withDurableToolCoordination(tool, options.cwd, (name, args) => {
+    if (options.toolAllowed?.(name) === false) throw new Error(`当前任务工具已不可用：${name}`);
+    options.beforeToolExecution?.(name, args);
+  })),
     sections: [section("mybuddy", async (input, context) => {
       const child = await input.read.snapshot(DurableSubagentIdentity, input.conversationId, context);
       const consult = await input.read.snapshot(DurableConsultIdentity, input.conversationId, context);

@@ -421,6 +421,7 @@ export class DurableBotService {
         workspaceMigrationFrom: move?.from_cwd,
         projectionAfterEntryId: projectionCheckpoint?.entry_id ?? 0,
         toolAllowed: name => toolGate.allowed(name),
+        beforeToolExecution: () => this.options.beforeModelRequest?.(taskId),
         // 产品阈值以同步 getter 注入运行时：运行中改设置不需要重开会话，也不会留在旧副本上。
         // 只有宿主显式提供设置源/状态回调时才启用内嵌上下文管理；直接构造服务的测试
         // （无 productCompaction）沿用 Pi 原生压缩，避免改变既有语义。

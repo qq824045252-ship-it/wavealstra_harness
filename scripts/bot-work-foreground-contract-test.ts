@@ -1,5 +1,6 @@
 // Selected composer execution is part of the foreground contract, not a separate full-suite gate.
 import "./bot-selected-tools-test";
+import { verifyUnifiedForegroundQueries } from "./bot-unified-query-foreground-fixture";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -40,6 +41,7 @@ await assert.rejects(resolveIdentity([[toolEntry,userEntry("pi.compaction",{}),u
 await assert.rejects(resolveIdentity([[originalEntry]]),/原始输入身份/);
 console.log("PASS foreground identity: original request, compaction and pagination, imported history, malformed input boundary, missing original and missing call");
 
+await verifyUnifiedForegroundQueries();
 const root = await mkdtemp(join(tmpdir(), "bot-foreground-contract-"));
 const db = new AppDatabase(join(root, "business.db"));
 const bots = new BotRegistry(db.connection);

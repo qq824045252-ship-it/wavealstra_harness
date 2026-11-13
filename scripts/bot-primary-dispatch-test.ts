@@ -51,6 +51,11 @@ let sequence = 0, receiverRelease: (() => void) | undefined;
 let receiverGate: Promise<void> | undefined;
 const contentText = (value: Context["messages"][number]["content"]) => typeof value === "string" ? value
   : value.filter(part => part.type === "text").map(part => part.text).join("\n");
+const requestText = (value: Context["messages"][number]["content"]) => {
+  if (typeof value === "string") return value;
+  const part = value.find(part => part.type === "text");
+  return part?.type === "text" ? part.text : "";
+};
 const usage = () => ({ input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } });
 models.registerProvider("dispatch-fixture", { api: "openai-completions", apiKey: "fixture-only", baseUrl: "http://127.0.0.1:1",
   models: [DEFAULT_BOT_ID, "learner", "tester"].map(id => ({ id, name: id, reasoning: false, input: ["text"],
@@ -58,7 +63,7 @@ models.registerProvider("dispatch-fixture", { api: "openai-completions", apiKey:
   streamSimple: (model, context) => {
     const stream = createAssistantMessageEventStream();
     const user = [...context.messages].reverse().find(item => item.role === "user");
-    const input = user ? contentText(user.content) : "";
+    const input = user ? requestText(user.content) : "";
     const tag = [...input.matchAll(/CASE:([\w-]+)/g)].at(-1)?.[1] ?? "plain";
     observed.push({ model: model.id, tag, context: structuredClone(context) });
     queueMicrotask(async () => {
@@ -149,6 +154,12 @@ try {
     const relation = service.collaborations.repo.summariesForMessage(LOCAL_USER_ID, receipt.assistantMessageId)[0];
     assert.equal(relation.targetBotId, expected); assert.equal(relation.sourceUserMessageId, receipt.userMessageId);
     assert.equal(relation.workId, null); assert(relation.times.deliveredAt); assert(relation.times.returnedAt);
+    if (tag === "test") {
+      const turn = observed.find(item => item.model === DEFAULT_BOT_ID && item.tag === tag)!;
+      const current = [...turn.context.messages].reverse().find(message => message.role === "user")!;
+      assert.equal(requestText(current.content), `${cases.get(tag)!.text} CASE:${tag}`);
+      assert(contentText(current.content).includes("CASE:learn"), "the fixture must route the current request even when a different prior goal remains in its source index");
+    }
     assert(observed.some(item => item.model === DEFAULT_BOT_ID && item.tag === tag && item.context.messages.some(message => contentText(message.content).includes("目标实际答复"))), "result returns through A foreground");
   }
   assert.equal(count("bots"), 4); assert.equal(count("works"), 0); assert.equal(count("work_teams"), 0);

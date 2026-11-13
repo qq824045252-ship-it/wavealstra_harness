@@ -281,6 +281,46 @@ try {
  assert.equal(reviewState(alpha.workId),'active');assert.equal(reviewState(beta.workId),'active');
  console.log('PASS target resolution: unique title resolves, explicit ID/card keep priority, ambiguous/named-duplicate/short/unrelated refuse, request links and cancel reuse the same policy');
 
+ // One natural request controls several exact targets without replaying a
+ // successful item when another item conflicts or the model retries the batch.
+ const batchA=unwrap(works.createWork(user,{operationId:'batch-a',title:'报价文档准备'}));
+ const batchB=unwrap(works.createWork(user,{operationId:'batch-b',title:'客户资料整理'}));
+ const batchC=unwrap(works.createWork(user,{operationId:'batch-c',title:'库存变化观察'}));
+ const batch=requestFor(`把 ${batchA.workId} 和 ${batchB.workId} 都暂停，${batchC.workId} 照常。`);
+ const batchGuardA=await queryGuard(batchA.workId,batch.requestId);
+ const batchGuardB=await queryGuard(batchB.workId,batch.requestId);
+ unwrap(await invoke('work_pause',{workId:batchA.workId,versionGuard:batchGuardA},batch.requestId));
+ unwrap(works.amendWork(user,{operationId:'batch-b-concurrent',workId:batchB.workId,title:'客户资料整理新版',versionGuard:batchGuardB}));
+ const conflict=await invoke('work_pause',{workId:batchB.workId,versionGuard:batchGuardB},batch.requestId);
+ assert.equal(conflict.ok,false);assert.equal(reviewState(batchA.workId),'paused');
+ const aVersion=works.getWork(batchA.workId)!.stateVersion;
+ const replay=await invoke('work_pause',{workId:batchA.workId,versionGuard:await queryGuard(batchA.workId,batch.requestId)},batch.requestId);
+ assert.equal(replay.replayed,true);assert.equal(works.getWork(batchA.workId)!.stateVersion,aVersion);
+ unwrap(await invoke('work_pause',{workId:batchB.workId,versionGuard:await queryGuard(batchB.workId,batch.requestId)},batch.requestId));
+ await assertRejectedTarget(batch.requestId,batchC.workId);
+ assert.equal(reviewState(batchC.workId),'active');
+ const mixed=requestFor(`暂停 ${batchC.workId}，恢复 ${batchA.workId}，不要动 ${batchB.workId}`);
+ await assert.rejects(()=>invoke('work_resume',{workId:batchC.workId,versionGuard:guardOf(works.getWork(batchC.workId)!)},mixed.requestId),/请明确/);
+ unwrap(await invoke('work_pause',{workId:batchC.workId,versionGuard:await queryGuard(batchC.workId,mixed.requestId)},mixed.requestId));
+ unwrap(await invoke('work_resume',{workId:batchA.workId,versionGuard:await queryGuard(batchA.workId,mixed.requestId)},mixed.requestId));
+ assert.equal(reviewState(batchB.workId),'paused');
+ const namedBatch=requestFor('恢复客户资料整理新版和库存变化观察');
+ for(const work of [batchB,batchC])unwrap(await invoke('work_resume',{workId:work.workId,versionGuard:await queryGuard(work.workId,namedBatch.requestId)},namedBatch.requestId));
+ const conditional=requestFor(`先暂停 ${batchA.workId}，等 ${batchB.workId} 完成再恢复 ${batchA.workId}`);
+ unwrap(await invoke('work_pause',{workId:batchA.workId,versionGuard:await queryGuard(batchA.workId,conditional.requestId)},conditional.requestId));
+ const conditionalGuard=await queryGuard(batchA.workId,conditional.requestId);
+ await assert.rejects(()=>invoke('work_resume',{workId:batchA.workId,versionGuard:conditionalGuard},conditional.requestId),/请明确/);
+ for(const text of [`如果发布成功，再恢复 ${batchA.workId}`,`等发布完成之后再恢复 ${batchA.workId}`]) {
+  const request=requestFor(text);
+  await assert.rejects(()=>invoke('work_resume',{workId:batchA.workId,versionGuard:guardOf(works.getWork(batchA.workId)!)},request.requestId),/请明确/);
+ }
+ const singlePause=requestFor(`暂停 ${batchB.workId}`);
+ await assert.rejects(()=>invoke('work_cancel',{workId:batchB.workId,versionGuard:guardOf(works.getWork(batchB.workId)!)},singlePause.requestId),/请明确/);
+ const separatedCondition=requestFor(`先暂停 ${batchC.workId}，如果发布成功，再恢复 ${batchA.workId}`);
+ unwrap(await invoke('work_pause',{workId:batchC.workId,versionGuard:await queryGuard(batchC.workId,separatedCondition.requestId)},separatedCondition.requestId));
+ await assert.rejects(()=>invoke('work_resume',{workId:batchA.workId,versionGuard:guardOf(works.getWork(batchA.workId)!)},separatedCondition.requestId),/请明确/);
+ console.log('PASS explicit multi-item control: mixed actions, exclusions, partial conflict, per-item replay, full titles and deferred action refused');
+
  // ----------------------------------------------------- (d) ongoing can act then wait
  const future=Date.now()+3_600_000;
  const ongoingThenWait=requestFor('持续优化首屏速度，先把现在能做的做完，之后复查');

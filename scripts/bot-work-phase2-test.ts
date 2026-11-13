@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
-import { appendFileSync, existsSync, writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -27,6 +27,8 @@ import { DEFAULT_BOT_ID, LOCAL_USER_ID, type WorkActor, type WorkControlResult }
 const root = await mkdtemp(join(tmpdir(), "bot-work-phase2-"));
 const text = (value: string) => [{ type: "text" as const, text: value }];
 let toolSequence = 0;
+let effectSequence = 0;
+const effectPaths: string[] = [];
 const foregroundRequests: TranscriptContext[] = [];
 let holdForeground = false;
 let foregroundHeld = false;
@@ -48,7 +50,17 @@ const works = new WorkService(db.connection, { bots, isAuthority: () => lease.is
 const models = await ModelRuntime.create({ authPath: join(root, "auth.json"), modelsPath: null, modelsStorePath: join(root, "models.json"), refreshOnCreate: false });
 const reply = (modelId: string, request: TranscriptContext): AssistantMessage["content"] => {
   const last = request.messages.at(-1);
-  if (modelId === "backend") return last?.role === "toolResult" ? text("后台实际成果") : tool("fixture_effect", {});
+  if (modelId === "backend") {
+    if (last?.role === "toolResult") {
+      if (last.toolName !== "write") return text("后台实际成果");
+      const write = request.messages.flatMap(message => message.role === "assistant" ? message.content : [])
+        .findLast(block => block.type === "toolCall" && block.name === "write");
+      assert(write?.type === "toolCall");
+      return tool("web_search", { path: write.arguments.path });
+    }
+    const sequence = ++effectSequence;
+    return tool("write", { path: join(cwd, `effect-${sequence}.txt`), content: `effect-${sequence}\n` });
+  }
   const user = [...request.messages].reverse().find(message => message.role === "user");
   const input = user ? (typeof user.content === "string" ? user.content : user.content.find(part => part.type === "text")?.text ?? "") : "";
   if (last?.role === "toolResult") {
@@ -117,10 +129,10 @@ let held = new Promise<void>(resolve => { releaseEffect = resolve; });
 let effects = 0;
 let adapter: WorkExecutionAdapter;
 const native = new DurableBotService({ db, models, agentDir: join(root, "native"), mcpDir: join(root, "mcp"), resolveCwd: () => cwd,
-  instructions: () => "后台实际执行", defaultModel: () => "fixture/backend", toolMode: () => "native", toolAllowed: (_task, name) => name === "fixture_effect",
+  instructions: () => "后台实际执行", defaultModel: () => "fixture/backend", toolMode: () => "native", toolAllowed: (_task, name) => ["write", "web_search"].includes(name),
   mcpSelection: () => [], beforeSubmit: request => { const error = works.checkTaskInput(request.taskId, request.userMessageId); if (error) throw new Error(error); },
-  tools: async task => ({ contextHooks: [], tools: [defineTool({ name: "fixture_effect", description: "实际计数文件", parameters: Type.Object({}), replay: "unsafe",
-    execute: async () => { effects++; appendFileSync(join(cwd, "effects.txt"), `${task.id}\n`); await held; return { output: text("执行完成") }; } })] }),
+  tools: async () => ({ contextHooks: [], tools: [defineTool({ name: "web_search", description: "写入完成后等待独立只读查询", parameters: Type.Object({ path: Type.String() }), replay: "safe",
+    execute: async args => { assert(existsSync(args.path)); effects++; effectPaths.push(args.path); await held; return { output: text("执行完成") }; } })] }),
   onSettled: () => { void adapter?.flush(); }, emit: () => {} });
 const errors: unknown[] = [];
 adapter = new WorkExecutionAdapter(works, native.workExecutionPort(), LOCAL_USER_ID, () => lease.isAuthority(), (_id, error) => errors.push(error));
@@ -149,8 +161,15 @@ try {
   await send("ordinary-cache-followup", "缓存连续第二轮");
   const secondRequest = foregroundRequests.at(-1)!;
   assert(firstRequest.messages.some(message => message.role === "system"));
-  assert.deepEqual(secondRequest.messages.filter(message => message.role === "system"), firstRequest.messages.filter(message => message.role === "system"), "new user time must not rewrite the system prefix");
-  assert.deepEqual(secondRequest.messages.slice(0, firstRequest.messages.length), firstRequest.messages, "earlier user clock and text stay byte-for-byte stable");
+  // Pi stamps each session's initial system entry at construction. Providers do
+  // not serialize that metadata; sections, tool declarations and user clocks must stay stable.
+  const prefixMessage = (message: TranscriptContext["messages"][number]) => {
+    if (message.role !== "system") return message;
+    const { timestamp: _timestamp, ...prompt } = message;
+    return prompt;
+  };
+  assert.deepEqual(secondRequest.messages.filter(message => message.role === "system").map(prefixMessage), firstRequest.messages.filter(message => message.role === "system").map(prefixMessage), "new user time must not rewrite system sections or tool declarations");
+  assert.deepEqual(secondRequest.messages.slice(0, firstRequest.messages.length).map(prefixMessage), firstRequest.messages.map(prefixMessage), "earlier user clock and text stay byte-for-byte stable");
   const firstUser = firstRequest.messages.find(message => message.role === "user")!;
   const secondUser = [...secondRequest.messages].reverse().find(message => message.role === "user")!;
   assert.match(contentText(firstUser.content), /宿主提供的本次请求时间上下文/);
@@ -254,7 +273,7 @@ try {
   await send("query-running", "查询");
   await send("delegate-b", "委托 B", undefined, [{ name: "background-material.txt", path: attachmentPath }]);
   await queue.drain();
-  await wait(() => effects === 2, "独立 root 并发启动，不再有共享资源序列化屏障");
+  await wait(() => effects === 2, "independent root file effects start while the first root is held");
   const b = works.listWorks(LOCAL_USER_ID).find(work => work.workId !== a.workId)!;
   const bBinding = works.repo.listBindings(b.workId)[0]!;
   const backgroundAttachment = foreground.messages.history(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID }).messages.find(message => message.requestId === "delegate-b" && message.role === "user")?.attachments?.[0];
@@ -299,7 +318,9 @@ try {
   await wait(async () => { await adapter.flush(); return works.repo.getBinding(aBinding.bindingId)?.status === "completed"; }, "native result independent of usage telemetry");
   assert.equal(errors.length, 0, errors.map(String).join("\n"));
   assert.equal(effects, 2);
-  assert.equal((await readFile(join(cwd, "effects.txt"), "utf8")).trim().split("\n").length, 2);
+  assert.equal(new Set(effectPaths).size, 2, "the two real writes target independent files");
+  assert.deepEqual((await Promise.all(effectPaths.map(path => readFile(path, "utf8")))).map(text => text.trim()).sort(),
+    ["effect-1", "effect-2"], "each native root wrote its own file once");
   assert.equal(works.repo.listDeliverables(a.workId).length, 1);
   assert.equal(works.getWork(a.workId)?.lifecycle, "active", "native completion is not acceptance");
   const version = works.getWork(a.workId)!.stateVersion;

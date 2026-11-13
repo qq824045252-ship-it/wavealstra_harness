@@ -70,11 +70,6 @@ type Dispatch = {
   agentScope: AgentScope;
   projectAgentsDir: string | null;
   concurrency: number;
-  /**
-   * D-5：并行派发无法隔离并发写入（仓库/Work 禁止分支与 worktree，工具集却可写）时，
-   * 并发被压到 1 的真实原因。随 details 与结果一起回传，避免调用方把“串行”当成配置或事故。
-   */
-  serializedReason?: string;
   permissionMode: PermissionMode;
   timeout: ReturnType<typeof resolveSubagentTimeout>;
   /** D-4：调用方传了 timeout_ms、但固定策略把它丢掉时，随结果一起回传的可见诊断。 */
@@ -201,8 +196,7 @@ export function createDurableSubagentTools(options: DurableSubagentOptions): Too
       // race; single and chain write in order, and chain steps may legitimately rewrite a prior file.
       const writeGuard = dispatch.mode === "parallel" && workers > 1 ? createParallelWriteGuard() : undefined;
       const detailsOf = () => json({ mode: dispatch.mode, agentScope: dispatch.agentScope, projectAgentsDir: dispatch.projectAgentsDir,
-        concurrency: { workers, queued, maxConcurrency: dispatch.concurrency,
-          ...(dispatch.serializedReason ? { serializedReason: dispatch.serializedReason } : {}) },
+        concurrency: { workers, queued, maxConcurrency: dispatch.concurrency },
         // 面板的“排队中”行从这里派生：plan 是入参快照，results 是本派发已完结项，
         // 差集即尚未建子会话的项。名字、agent 与工作目录一并给出，UI 不必从任务正文里猜谁在排队。
         plan: items.map(item => ({ itemId: item.id, index: item.index, agent: item.agentName, displayName: item.displayName,
@@ -419,20 +413,19 @@ async function planDispatch(params: Invocation, api: ToolExecutionApi, context: 
   // invalid item can neither force nor prevent isolation for its valid peers. A dispatch that can run
   // only one child at a time resolves to the supplied directory and says why.
   const isolationAllowed = await repositoryAllowsGitIsolation(options.cwd, options.allowGitBranchOrWorktree);
-  const serialFallback = !isolationAllowed && candidates.some(candidate => isWritable(candidate.tools));
-  const effectiveConcurrency = serialFallback ? 1 : limits.maxConcurrency;
-  const serializedReason = serialFallback ? SERIALIZED_CONCURRENCY_REASON : undefined;
-  const plannedWorkers = Math.max(1, Math.min(effectiveConcurrency, candidates.length));
+  const plannedWorkers = Math.max(1, Math.min(limits.maxConcurrency, candidates.length));
   for (const { base, role, sourceCwd, tools, selection, explicitIsolation } of candidates) {
     const itemBase: PlanBase = { ...base, sourceCwd };
     if (base.isolation === "worktree" && !isolationAllowed) {
-      plan.set(base.index, { ...itemBase, kind: "rejected", rejection: rejectionOf(new Error("当前 Work 或仓库禁止分支/worktree，显式隔离计划被拒绝；请明确改为串行 shared")) });
+      plan.set(base.index, { ...itemBase, kind: "rejected", rejection: rejectionOf(new Error("当前 Work 或仓库禁止分支/worktree，显式隔离计划被拒绝；请改用 shared，共享资源访问由宿主协调")) });
       continue;
     }
-    const workspace = resolveIsolation({ requested: base.isolation, explicit: explicitIsolation, mode,
-      writable: isWritable(tools), workers: plannedWorkers, runnable: candidates.length });
+    const workspace: PlannedWorkspace = !isolationAllowed
+      ? { kind: "shared", note: "仓库/Work 禁止分支与 worktree；保留共享目录并行，实际工具调用按资源读写协调" }
+      : resolveIsolation({ requested: base.isolation, explicit: explicitIsolation, mode,
+        writable: isWritable(tools), workers: plannedWorkers, runnable: candidates.length });
     if (workspace.kind === "shared") {
-      plan.set(base.index, { ...itemBase, kind: "run", role, tools, selection, workspace: serialFallback ? { kind: "shared", note: SERIALIZED_CONCURRENCY_REASON } : workspace });
+      plan.set(base.index, { ...itemBase, kind: "run", role, tools, selection, workspace });
       continue;
     }
     // A repository is probed at most once per dispatch; the receipt check stays per operation.
@@ -450,8 +443,7 @@ async function planDispatch(params: Invocation, api: ToolExecutionApi, context: 
   }
   const planned = [...plan.values()].sort((a, b) => a.index - b.index);
   const workRevisionContext = await readDurableWorkRevisionContext(api, context, options.workBinding?.(), options.taskId);
-  return { mode, agentScope: scope, projectAgentsDir: discovery.projectAgentsDir, concurrency: effectiveConcurrency,
-    ...(serializedReason ? { serializedReason } : {}),
+  return { mode, agentScope: scope, projectAgentsDir: discovery.projectAgentsDir, concurrency: limits.maxConcurrency,
     ...(workRevisionContext ? { workRevisionContext } : {}),
     permissionMode, timeout, ...(timeoutDiagnostic ? { timeoutDiagnostic } : {}), items: planned };
 }
@@ -487,12 +479,6 @@ function resolveIsolation(input: { requested: IsolationRequest; explicit: boolea
 function isWritable(tools: string[]): boolean {
   return tools.some(name => !(READONLY_TOOLS as readonly string[]).includes(name));
 }
-
-/**
- * 并发降为 1 的唯一原因短语：不能隔离并发写入，但工具集可写。
- * details 与 workspace note 引同一句，UI 提示与子代理可见的证据不会各说一套。
- */
-const SERIALIZED_CONCURRENCY_REASON = "仓库/Work 禁止分支与 worktree，且子代理工具集可写；无法隔离并发写入，本次派发串行（1 并发）";
 
 export type WorktreePreflight = { repository: string; clean: boolean };
 /** Only `auto` needs the explanation: a non-Git dispatch only fails here when auto would isolate. */

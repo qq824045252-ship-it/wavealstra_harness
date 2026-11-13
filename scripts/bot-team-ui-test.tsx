@@ -171,7 +171,7 @@ function creationReceipt(patch: Partial<import("../src/shared/bot-work").WorkDto
   const request = requests.at(-1)!;
   const created = { ...work, workId: "new-team", title: request.title, ...patch } as unknown as import("../src/shared/bot-work").WorkDto;
   return { ok: true, operationId: request.operationId, work: created,
-    team: { workId: created.workId, ownerBotId: created.ownerBotId, ownerResponsibility: request.ownerResponsibility,
+    team: { workId: created.workId, planRevision: 1, ownerBotId: created.ownerBotId, ownerResponsibility: request.ownerResponsibility,
       members: request.members.map(member => ({ ...member, delegatedScope: member.delegatedScope ?? [] })), intentRevision: created.intentRevision, ownerEpoch: created.ownerEpoch, inputSnapshotId: created.inputSnapshotId, state: "queued", executions: [], createdAt: 1 } };
 }
 async function succeed() { await act(async () => reply.resolve(creationReceipt())); }
@@ -479,7 +479,7 @@ async function testRecoveryControls() {
   let calls: WorkTeamControlRequest[] = [];
   let controlReply = deferred<WorkTeamControlResult>();
   const projection = (state: "blocked" | "superseded" | "awaiting_review", patch: Partial<WorkProjectionDto> = {}): WorkProjectionDto => ({ ...work,
-    team: { workId: work.workId, ownerBotId: mybuddy.botId, ownerResponsibility: "Review all evidence", intentRevision: 1, inputSnapshotId: "input", ownerEpoch: 1, state, createdAt: 1,
+    team: { workId: work.workId, planRevision: 1, ownerBotId: mybuddy.botId, ownerResponsibility: "Review all evidence", intentRevision: 1, inputSnapshotId: "input", ownerEpoch: 1, state, createdAt: 1,
       members: [{ botId: other.botId, responsibility: "Inspect earlier effects", delegatedScope: ["workspace:read", "workspace:write"] }],
       executions: [{ botId: other.botId, responsibility: "Inspect earlier effects", delegatedScope: ["workspace:read", "workspace:write"], role: "member", taskId: "member-task", status: "blocked", error: "Setup unavailable" }] }, ...patch });
   const render = async (value: WorkProjectionDto) => { await act(async () => root!.render(<StrictMode><BotTeamPanel work={value} identities={[mybuddy, other]} /></StrictMode>)); };

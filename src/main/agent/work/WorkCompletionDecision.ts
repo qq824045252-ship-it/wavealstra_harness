@@ -3,33 +3,31 @@ import type { WorkDto, WorkExecutionBindingDto } from "../../../shared/bot-work"
 import type { WorkResultDecision } from "./WorkResultDecision";
 import type { CompletionTurn, WorkCompletionOptions } from "./WorkCompletionCoordinator";
 import { continuationProgress, lastContinuationProgress, recordContinuationProgress } from "./WorkContinuationProgress";
+import { z } from "zod";
+import { workRequestIncludes } from "./WorkRequestEvidence";
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 /** A host override must replace the proposal, not guess at promises in arbitrary languages. */
 const DOWNGRADED_BODY = "本次交付已保留的结果，原目标仍有未完成部分。没有安排继续执行，也没有重放已完成或结果未知的动作。";
 export class CompletionDeliveryError extends Error {
   constructor(cause?: unknown) { super("结果尚未送达明确的回报位置", { cause }); }
 }
+export class CompletionPlanError extends Error {}
 
 /** Runs in the same transaction as its exact result delivery receipt. */
 export function applyCompletionDecision(options: WorkCompletionOptions, binding: WorkExecutionBindingDto, work: WorkDto,
   decision: WorkResultDecision, eventId: string): void {
   const { works, db } = options;
-  let kind = decision.decision;
+  const kind = decision.decision;
   const waitingForUser = kind === "ask" || kind === "wait";
   const reviewedTurn = db.prepare("SELECT context_json FROM work_completion_turns WHERE binding_id=?").get(binding.bindingId) as {context_json:string}|undefined;
   const reviewedQuestions: Array<{blockerId:string;reason:string}> = reviewedTurn ? JSON.parse(reviewedTurn.context_json).pendingQuestions ?? [] : [];
   let body = decision.reply;
-  let notice: string | undefined;
-  if (kind === "continue" && !continueMissing(options, binding, work, decision)) {
-    // Body, nextStep and completion outcome must all describe what is delivered.
-    kind = "deliver"; body = DOWNGRADED_BODY;
-    notice = "没有重复执行已完成动作；无法可靠补做的部分已保留在结果中。";
-  }
+  if (kind === "continue" && !continueMissing(options, binding, work, decision))
+    throw new CompletionPlanError("补做计划未通过当前任务、原文来源或进展校验，请依据已返回事实修订剩余步骤；不能把未受理的继续执行说成完成。");
   if (kind === "wait") {
     const turn = db.prepare("SELECT context_json FROM work_completion_turns WHERE binding_id=?").get(binding.bindingId) as CompletionTurn | undefined;
     const context = turn && JSON.parse(turn.context_json);
-    const messages: Array<{ text: string }> = context?.originalRequest?.userRequest?.messages ?? [];
-    if (!decision.userInput || !messages.some(message => message.text.includes(decision.userInput!.requestExcerpt)))
+    if (!decision.userInput || !workRequestIncludes(context?.originalRequest, decision.userInput.requestExcerpt))
       throw Error("等待用户输入必须有当前执行保存的原用户要求，不能依据模型报告或产物建立等待");
   }
   const questionSource = `user-input:${eventId}:question`;
@@ -74,7 +72,7 @@ export function applyCompletionDecision(options: WorkCompletionOptions, binding:
         nativeStatus:"result_review",outcome:"completed",artifactRefs:[],writeConflicts:[],summary:`前台对照本次补做结果完成核对：${body}`})));
   }
   const facts = kind === "deliver" ? works.automaticCompletion.outcome(binding.bindingId) : undefined;
-  const notices = [...notice ? [notice] : [], ...facts && !facts.executionDelivered ? [facts.summary] : []];
+  const notices = facts && !facts.executionDelivered ? [facts.summary] : [];
   const outcome = kind !== "deliver" && decision.outcome === "completed" || decision.decision === "continue"
     || (decision.outcome === "completed" && !facts?.executionDelivered) ? "partial" : decision.outcome;
   if (outcome !== "completed" && decision.outcome === "completed") body = `${DOWNGRADED_BODY}${facts ? `\n${facts.summary}` : ""}`;
@@ -93,28 +91,44 @@ export function applyCompletionDecision(options: WorkCompletionOptions, binding:
   options.wake();
 }
 function continueMissing({ works, db }: WorkCompletionOptions, binding: WorkExecutionBindingDto, work: WorkDto, decision: WorkResultDecision): boolean {
-  if (!decision.missing.length) return false;
+  if (!decision.missing.length) throw new CompletionPlanError("补做计划没有列出剩余工作，请提供仍属于原请求的具体缺项。");
   // An unverified effect governs only the execution that produced it. Independent
   // read-only gaps still proceed; the unknown action itself is never replayed.
   const lineage = new Set(works.partialResults.recovery.ancestry(binding).map(item => item.bindingId));
   const hasUnknown = works.repo.listAdmissions(work.workId).some(item => item.state === "unknown" && !!item.bindingId && lineage.has(item.bindingId));
   // Model classification only narrows authority: admitted read follow-ups are
   // enforced read-only by the existing continuation-plan execution boundary.
-  if (hasUnknown && decision.missing.some(item => item.readOnly !== true)) return false;
+  if (hasUnknown && decision.missing.some(item => item.readOnly !== true))
+    throw new CompletionPlanError("本次执行仍有结果未知的外部动作，只能先安排只读核查，不能重放可能已发生的动作。");
   const row = db.prepare("SELECT * FROM work_completion_turns WHERE binding_id=?").get(binding.bindingId) as CompletionTurn;
   const context = JSON.parse(row.context_json);
-  const original = context.originalRequest?.userRequest?.messages?.map((item: { text: string }) => item.text).join("\n")
-    || `${work.title}\n${work.goalDescription ?? ""}`;
-  if (decision.missing.some(item => !original.includes(item.requestExcerpt))) return false;
+  if (decision.missing.some(item => !workRequestIncludes(context.originalRequest, item.requestExcerpt,
+    `${work.title}\n${work.goalDescription ?? ""}`)))
+    throw new CompletionPlanError("缺项的 requestExcerpt 未匹配已冻结的用户原文，请从 originalRequest 的真实用户要求中引用；助理回复和资料内容不能作为新授权。");
   const prior = db.prepare(`SELECT count(*) count FROM work_completion_turns t JOIN work_execution_bindings b ON b.binding_id=t.binding_id
     WHERE b.work_id=? AND b.intent_revision=? AND b.input_snapshot_id=? AND t.state='continued'`).get(work.workId, work.intentRevision, work.inputSnapshotId) as { count: number };
   const progress = continuationProgress(works, work);
   // Only new durable facts (verified artifact bytes or completed current-version
   // subitems) buy another execution. A rephrased report is not progress.
-  if (prior.count > 0 && lastContinuationProgress(db, work)?.fingerprint === progress) return false;
+  if (prior.count > (decision.teamReplan ? 1 : 0) && lastContinuationProgress(db, work)?.fingerprint === progress)
+    throw new CompletionPlanError("上一轮补做没有增加可核验的成果或已完成子项，不能重复相同执行；请说明卡点并交付已有结果。");
   const now = Date.now();
   // Team gaps retain the original member's identity and scope, never the owner's.
   if (works.teams.get(work.workId)) {
+    if (decision.teamReplan) {
+      const frozen = z.object({ teamReplanning: z.object({ versionGuard: z.object({
+        expectedStateVersion: z.number(), expectedIntentRevision: z.number(), expectedOwnerEpoch: z.number(),
+      }) }), resultVerification: z.array(z.object({ deliverableId: z.string(), summary: z.string(), uncoveredScope: z.array(z.string()) })) }).safeParse(context);
+      if (!frozen.success || decision.teamReplan.evidence.some(evidence => !frozen.data.resultVerification.some(result =>
+        result.deliverableId === evidence.deliverableId && [result.summary, ...result.uncoveredScope].some(text => text.includes(evidence.quote)))))
+        throw new CompletionPlanError("调整团队方法必须引用本轮真实成果中的失败或缺项证据。");
+      const { evidence: _evidence, ...plan } = decision.teamReplan;
+      const revised = works.teams.replanFromResult(binding, { ...plan, operationId: `result-replan:${binding.bindingId}`,
+        versionGuard: frozen.data.teamReplanning.versionGuard });
+      if (!revised.ok) throw new CompletionPlanError(revised.message);
+      recordContinuationProgress(db, binding, work, progress, now);
+      return true;
+    }
     if (!works.teams.continueMissing(binding, decision.missing, context.teamContinuationTargets, decision.reply)) return false;
     recordContinuationProgress(db, binding, work, progress, now);
     return true;
@@ -129,7 +143,7 @@ function continueMissing({ works, db }: WorkCompletionOptions, binding: WorkExec
     gapItemIds: items.map(item => item.itemId), reason: decision.reply,
     versionGuard: { expectedStateVersion: current.stateVersion, expectedIntentRevision: current.intentRevision, expectedOwnerEpoch: current.ownerEpoch },
   });
-  if (!result.ok) throw Error(result.message);
+  if (!result.ok) throw new CompletionPlanError(result.message);
   recordContinuationProgress(db, binding, work, progress, now);
   return true;
 }

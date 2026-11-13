@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { workTeamTaskAssignmentSchema } from "../../../shared/bot-work-team";
 
 /** Pure result contracts; importing Work facts must not load the model runtime. */
 export const watchStopAssessmentSchema = z.object({
@@ -42,8 +43,16 @@ export const resultDecisionSchema = z.object({
   waitPlan: workWaitPlanSchema.optional(),
   userInput: z.object({ requestExcerpt: z.string().trim().min(1).max(1500) }).strict().optional(),
   correction: z.object({ kind: z.literal("host_delivery_responsibility") }).strict().optional(),
+  teamReplan: z.object({
+    taskAssignment: workTeamTaskAssignmentSchema,
+    executionPolicy: z.enum(["sequential", "parallel"]).optional(),
+    maxConcurrency: z.number().int().min(1).max(4).optional(),
+    evidence: z.array(z.object({ deliverableId: z.string().min(1), quote: z.string().trim().min(1).max(4000) }).strict()).min(1).max(8),
+  }).strict().optional(),
   missing: z.array(z.object({ task: z.string().trim().min(1).max(1500), requestExcerpt: z.string().trim().min(1).max(1500), teamTarget: teamMissingTargetSchema.optional(), readOnly: z.boolean().optional() }).strict()).max(8),
 }).strict().superRefine((decision, ctx) => {
+  if (decision.teamReplan && (decision.decision !== "continue" || decision.outcome === "completed" || !decision.missing.length))
+    ctx.addIssue({ code: "custom", path: ["teamReplan"], message: "团队计划修订必须是有原请求缺项的 continue，结果保持 partial/unknown" });
   if (decision.decision !== "continue" && decision.missing.length) {
     ctx.addIssue({ code: "custom", path: ["missing"], message: "非 continue 时 missing 必须为空数组；已知缺口仍须在 reply 中如实说明" });
   }

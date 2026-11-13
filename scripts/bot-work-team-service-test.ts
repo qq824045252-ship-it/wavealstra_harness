@@ -4,13 +4,18 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { BotRegistry } from "../src/main/agent/work/BotRegistry";
+import { BotConversationRepository } from "../src/main/agent/work/BotConversationRepository";
 import { WorkService, DESKTOP_USER_GRANTS } from "../src/main/agent/work/WorkService";
 import { WorkDispatchQueue } from "../src/main/agent/work/WorkDispatchQueue";
+import { WorkCompletionCoordinator } from "../src/main/agent/work/WorkCompletionCoordinator";
+import { WorkConversationFeedback } from "../src/main/agent/work/WorkConversationFeedback";
+import { workDeliveryResults } from "../src/main/agent/work/WorkDeliveryArtifacts";
 import { WorkExecutionAdapter, type WorkExecutionPort } from "../src/main/agent/work/WorkExecutionAdapter";
 import { LOCAL_USER_ID, type WorkActor, type WorkDto } from "../src/shared/bot-work";
 import type { AgentSubmissionReceipt } from "../src/shared/agent-ipc";
 import { collectOwnerSummaryFacts } from "../src/main/agent/work/WorkOwnerSummaryFacts";
 import type { WorkTeamControlResult, WorkTeamPlan } from "../src/shared/bot-work-team";
+import { z } from "zod";
 
 const root = mkdtempSync(join(tmpdir(), "team-service-")), workspace = join(root, "workspace");
 mkdirSync(workspace); writeFileSync(join(workspace, "input.txt"), "verified input");
@@ -26,9 +31,11 @@ const failPrepare = new Set<string>();
 const failSummary = new Set<string>();
 const unknownGeneration = new Set<string>();
 const runningTasks = new Set<string>();
+const heldPrepares = new Map<string, Promise<void>>();
 const errors: unknown[] = [];
 const port: WorkExecutionPort = {
   prepare: async taskId => {
+    await heldPrepares.get(taskId);
     if (failPrepare.has(taskId)) throw Error("fixture preparation unavailable before submission");
     return { taskId, durableStoreKey: `store:${taskId}`, conversationId: "1", workspaceBinding: workspace };
   },
@@ -68,6 +75,80 @@ async function flush(count = 5) { for (let i = 0; i < count; i++) {
 } }
 const bindings = (workId: string) => works.repo.listBindings(workId);
 const countWorks = () => works.listWorks(LOCAL_USER_ID, { includeClosed: true }).length;
+async function verifyResultReplanning(): Promise<void> {
+  const loopDb = new AppDatabase(join(root, "result-replan.db")), loopBots = new BotRegistry(loopDb.connection);
+  try {
+  for (const botId of ["loop-owner", "loop-a", "loop-b"]) loopBots.registerBot({ botId, userId: LOCAL_USER_ID, displayName: botId, authorization: grants });
+  const loopWorks = new WorkService(loopDb.connection, { bots: loopBots, isAuthority: () => true });
+  const feedback = new WorkConversationFeedback({ db: loopDb.connection, works: loopWorks, userId: LOCAL_USER_ID, isAuthority: () => true });
+  const source = feedback.messages.accept(LOCAL_USER_ID, { botId: "loop-owner", requestId: "loop-request", text: "核对两个来源并交付结果" });
+  const created = loopWorks.transaction(() => {
+    const result = ok(loopWorks.teams.createFromForeground({ kind: "bot", userId: LOCAL_USER_ID, botId: "loop-owner", host: "foreground", grants }, {
+    operationId: "loop-team", title: "核对两个来源", goalDescription: "核对两个来源并交付结果", criteria: ["两个来源均有核对结果"],
+    workspacePath: workspace, conversationId: source.conversationId, sourceMessageId: source.userMessageId,
+    taskAssignment: { ownerResponsibility: "汇总两份核对结果", members: [
+            { botId: "loop-a", responsibility: "核对来源 A" }, { botId: "loop-b", responsibility: "核对来源 B" }] } }));
+    feedback.messages.linkWorkUserInput(feedback.messages.receipt(LOCAL_USER_ID, "loop-owner", "loop-request")!, result.work!);
+    return result;
+  });
+  const workId = created.work!.workId;
+  const loopReceipts = new Map<string, AgentSubmissionReceipt>(), submitted: string[] = [], reviews: number[] = [];
+  const loopAdapter = new WorkExecutionAdapter(loopWorks, {
+    prepare: async taskId => ({ taskId, durableStoreKey: taskId, conversationId: "1", workspaceBinding: workspace }),
+    find: async binding => loopReceipts.get(binding.bindingId),
+    submit: async binding => {
+      submitted.push(binding.taskId);
+      const receipt: AgentSubmissionReceipt = { taskId: binding.taskId, operationId: binding.operationId, submissionId: 1, status: "done" };
+      loopReceipts.set(binding.bindingId, receipt); return receipt;
+    },
+    inspect: async binding => {
+      const assignment = z.object({ teamAssignment: z.object({ responsibility: z.string(), planRevision: z.number() }) })
+        .parse(JSON.parse(loopWorks.repo.executionInput(binding))).teamAssignment;
+      return { status: "completed", artifactRefs: [], hasWriteConflicts: false,
+        summary: binding.botId === "loop-b" && assignment.planRevision === 1 ? "原读取方法未能核对来源 B，仍缺来源 B 的结果。"
+          : `${assignment.responsibility}已核对，保留真实来源结果。` };
+    },
+    stop: async () => {},
+  }, LOCAL_USER_ID, () => true, (_id, error) => { throw error; });
+  const loopQueue = new WorkDispatchQueue(loopDb, loopWorks, loopAdapter, () => true, () => "fixture");
+  const coordinator = new WorkCompletionCoordinator({ db: loopDb.connection, works: loopWorks, isAuthority: () => true,
+    review: async input => {
+      const context = z.object({ teamReplanning: z.object({ planRevision: z.number() }), resultVerification: z.array(z.object({
+        deliverableId: z.string(), producerBotId: z.string(), summary: z.string() })) }).parse(input.context);
+      reviews.push(context.teamReplanning.planRevision);
+      if (context.teamReplanning.planRevision === 1) {
+        const failure = context.resultVerification.find(item => item.producerBotId === "loop-b")!;
+        return { decision: "continue", outcome: "partial", reply: "来源 A 已核对，改用另一种方法完成来源 B。",
+          missing: [{ task: "只补来源 B 核对", requestExcerpt: "核对两个来源并交付结果" }],
+          teamReplan: { executionPolicy: "parallel", taskAssignment: { ownerResponsibility: "汇总保留的 A 与补齐的 B", members: [
+            { botId: "loop-b", responsibility: "换用可用来源，只补来源 B 核对" }] },
+            evidence: [{ deliverableId: failure.deliverableId, quote: failure.summary }] } };
+      }
+      return { decision: "deliver", outcome: "completed", reply: "两个来源均已核对，结果完整交付。", missing: [] };
+    },
+    deliver: input => feedback.deliverCompletion(input), wake: () => {} });
+  try {
+    for (let round = 0; round < 40 && loopWorks.getWork(workId)!.lifecycle !== "closed"; round++) {
+      await loopQueue.drain(); coordinator.wake(); await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    assert.deepEqual(reviews, [1, 2], "result coordinator revises the original plan, then reviews the actual replacement result");
+    assert.equal(loopWorks.getWork(workId)!.closureConclusion, "succeeded");
+    assert.equal(loopWorks.getWork(workId)!.intentRevision, created.work!.intentRevision);
+    assert.equal(loopWorks.teams.get(workId)!.planRevision, 2);
+    assert.equal(loopWorks.listWorks(LOCAL_USER_ID, { includeClosed: true }).length, 1);
+    const allBindings = loopWorks.repo.listBindings(workId);
+    assert.equal(allBindings.filter(binding => binding.botId === "loop-a").length, 1, "completed A is reused across the entire result loop");
+    assert.equal(allBindings.filter(binding => binding.botId === "loop-b").length, 2, "only unfinished B gets a new strategy execution");
+    assert.equal(new Set(submitted).size, submitted.length, "each execution is submitted once");
+    const reports = loopDb.connection.prepare("SELECT metadata_json FROM bot_work_feedback WHERE json_extract(metadata_json,'$.workId')=? AND json_extract(metadata_json,'$.report.completion') IS NOT NULL")
+      .all(workId).map(value => JSON.parse(z.object({ metadata_json: z.string() }).parse(value).metadata_json));
+    assert(reports.some(report => report.report.completion.nextStep === "continue"), "the original conversation receives the admitted strategy change");
+    assert(reports.some(report => report.report.completion.outcome === "completed"), "the original conversation receives final delivery before closure");
+    const finalOwner = allBindings.filter(binding => binding.botId === "loop-owner").at(-1)!;
+    assert(workDeliveryResults(loopWorks, finalOwner).some(result => result.producerBotId === "loop-a"), "final delivery retains the omitted completed member's result");
+  } finally { coordinator.close(); feedback.close(); await loopQueue.close(); await loopAdapter.close(); }
+  } finally { loopDb.close(); }
+}
 try {
   // User-only validated atomic admission; templates confer no authorization.
   const initial = setup();
@@ -256,6 +337,107 @@ try {
   assert.match(works.repo.executionInput(bindings(replanWorkId)[0]!), /teamAssignment/, "old immutable team input remains available");
   await flush(); assert.equal(bindings(replanWorkId).length, originalTasks.length + 2);
   reject(works.teams.handle(user, { kind: "replan", workId: replanWorkId, versionGuard: guard(works.getWork(replanWorkId)!), plan: revisedPlan }), "invalid_request");
+
+  // Strategy revisions keep the same user goal and completed work. Only the
+  // replacement of a live assignment waits; a new independent member advances.
+  const strategySetup = setup();
+  const strategy = ok(works.teams.handle(user, { kind: "create", request: { ...strategySetup.request, executionPolicy: "parallel" } }));
+  const strategyId = strategy.work!.workId, completedTask = strategy.team!.executions[0]!.taskId;
+  const replacedTask = strategy.team!.executions[1]!.taskId;
+  runningTasks.add(replacedTask);
+  await queue.drain(); await queue.drain();
+  assert.equal(works.repo.bindingForTask(completedTask)?.status, "completed");
+  assert.equal(works.repo.bindingForTask(replacedTask)?.status, "running");
+  const originalIntent = works.getWork(strategyId)!.intentRevision;
+  const strategyPlan: WorkTeamPlan = { ...strategySetup.plan, executionPolicy: "parallel", maxConcurrency: 2,
+    members: [strategySetup.plan.members[0]!, { ...strategySetup.plan.members[1]!, responsibility: "只补 B 缺失的实际验证" },
+      { botId: `${strategySetup.name}-new-owner`, responsibility: "独立检查新增来源", delegatedScope: ["workspace:read"] }] };
+  const strategyRequest = { kind: "replan" as const, operationId: "strategy-revision", workId: strategyId,
+    versionGuard: guard(works.getWork(strategyId)!), plan: strategyPlan };
+  const strategyResult = ok(works.teams.handle(user, strategyRequest));
+  assert.equal(strategyResult.work!.intentRevision, originalIntent);
+  assert.equal(strategyResult.team!.planRevision, 2);
+  assert.equal(strategyResult.team!.executions[0]!.taskId, completedTask);
+  const replacementTask = strategyResult.team!.executions[1]!.taskId, independentTask = strategyResult.team!.executions[2]!.taskId;
+  assert.notEqual(replacementTask, replacedTask);
+  assert(works.repo.bindingForTask(replacedTask)?.invalidatedAt);
+  assert.equal(ok(works.teams.handle(user, strategyRequest)).replayed, true, "lost replan receipts reuse the same revision and tasks");
+  reject(works.teams.handle(user, { ...strategyRequest, plan: { ...strategyPlan, ownerResponsibility: "another plan" } }), "idempotency_conflict");
+  reject(works.teams.handle(user, { ...strategyRequest, operationId: "stale-strategy" }), "version_conflict");
+  await queue.drain(); await queue.drain();
+  assert(works.repo.bindingForTask(independentTask), "independent C starts while old B is still running");
+  assert.equal(works.repo.bindingForTask(replacementTask), undefined, "new B cannot race its unconfirmed predecessor");
+  assert.equal(submissions.filter(item => item.taskId === completedTask).length, 1, "completed A is never rerun");
+  const oldB = works.repo.bindingForTask(replacedTask)!;
+  works.repo.insertAdmission({ admissionId: "replan-unknown-effect", workId: strategyId, bindingId: oldB.bindingId,
+    operationId: "original-effect-identity", actionKind: "write", state: "unknown", intentRevision: oldB.intentRevision,
+    ownerEpoch: oldB.ownerEpoch, admittedAt: Date.now() });
+  runningTasks.delete(replacedTask); await queue.drain(); await queue.drain();
+  assert(works.repo.bindingForTask(replacementTask), "settled old execution releases only its replacement");
+  assert.equal(works.repo.listAdmissions(strategyId).find(item => item.operationId === "original-effect-identity")?.state, "unknown");
+  const replacementInput = JSON.parse(works.repo.executionInput(works.repo.bindingForTask(replacementTask)!));
+  assert.equal(replacementInput.teamAssignment.planRevision, 2);
+  assert(replacementInput.teamAssignment.uncertainOperations.some((item: { operationId: string }) => item.operationId === "original-effect-identity"));
+  assert.equal(works.teams.get(strategyId)!.executions[1]!.taskId, replacementTask, "late old receipt never replaces the current assignment");
+  assert.equal(new WorkService(db.connection, { bots, isAuthority: () => authority }).teams.get(strategyId)!.planRevision, 2, "plan revision survives service restart");
+  const remaining = ok(works.teams.handle(user, { kind: "replan", operationId: "omit-completed-member", workId: strategyId,
+    versionGuard: guard(works.getWork(strategyId)!), plan: { ...strategyPlan, members: strategyPlan.members.slice(1) } }));
+  await queue.drain(); await queue.drain();
+  const remainingOwner = works.repo.bindingForTask(remaining.team!.executions.at(-1)!.taskId)!;
+  const remainingInput = JSON.parse(works.repo.executionInput(remainingOwner));
+  assert(remainingInput.teamAssignment.previousResults.some((result: { bindingId: string }) => result.bindingId === works.repo.bindingForTask(completedTask)!.bindingId),
+    "omitting already completed A from the remaining plan preserves A's deliverable in the new owner's input");
+  await flush();
+
+  // A native prepare that completes after a replan cannot submit or attach its
+  // failure to the replacement that now occupies the old ordinal.
+  const lateSetup = setup(), late = ok(works.teams.handle(user, { kind: "create", request: lateSetup.request }));
+  const retiredPrepareTask = late.team!.executions[0]!.taskId;
+  let releasePrepare!: () => void;
+  heldPrepares.set(retiredPrepareTask, new Promise<void>(resolve => { releasePrepare = resolve; }));
+  await queue.flush();
+  const latePlan = { ...lateSetup.plan, members: [{ ...lateSetup.plan.members[0]!, responsibility: "改用新方法核对缺项" }] };
+  const lateReplan = ok(works.teams.handle(user, { kind: "replan", operationId: "late-prepare-replan", workId: late.work!.workId,
+    versionGuard: guard(works.getWork(late.work!.workId)!), plan: latePlan }));
+  releasePrepare(); heldPrepares.delete(retiredPrepareTask);
+  await queue.drain(); await flush();
+  assert.equal(works.repo.bindingForTask(retiredPrepareTask), undefined);
+  assert(!submissions.some(item => item.taskId === retiredPrepareTask));
+  assert(works.repo.bindingForTask(lateReplan.team!.executions[0]!.taskId));
+  assert.equal(works.teams.get(late.work!.workId)!.executions[0]!.error, undefined);
+
+  // Real foreground ownership can resume a changed goal without impersonating
+  // a user; result-owned replanning needs no additional user message.
+  const foregroundSetup = setup(), foreground = ok(works.teams.handle(user, { kind: "create", request: foregroundSetup.request }));
+  const foregroundId = foreground.work!.workId;
+  assert(works.amendWork(user, { operationId: "foreground-goal-change", workId: foregroundId, goalDescription: "只检查剩余的新要求" }).ok);
+  const messages = new BotConversationRepository(db.connection);
+  const foregroundActor: WorkActor = { kind: "bot", userId: LOCAL_USER_ID, botId: foregroundSetup.plan.ownerBotId, host: "foreground", grants };
+  const source = messages.accept(LOCAL_USER_ID, { botId: foregroundSetup.plan.ownerBotId, requestId: "foreground-replan-message", text: "按新要求继续" });
+  const foregroundInput = { workId: foregroundId, operationId: "foreground-replan", conversationId: source.conversationId,
+    sourceMessageId: source.userMessageId, versionGuard: guard(works.getWork(foregroundId)!), taskAssignment: {
+      ownerResponsibility: "核对新目标与剩余成果", members: [{ botId: foregroundSetup.plan.members[1]!.botId, responsibility: "完成剩余的新要求" }] } };
+  reject(works.teams.replanFromForeground(foregroundActor, { ...foregroundInput, sourceMessageId: "forged" }), "unauthorized_actor");
+  reject(works.teams.replanFromForeground(user, foregroundInput), "unauthorized_actor");
+  reject(works.teams.replanFromForeground({ ...foregroundActor, botId: foregroundSetup.plan.members[0]!.botId }, foregroundInput), "unauthorized_actor");
+  const foregroundReplan = ok(works.teams.replanFromForeground(foregroundActor, foregroundInput));
+  assert.equal(foregroundReplan.team!.planRevision, 2);
+  for (let round = 0; round < 4; round++) await queue.drain();
+  const ownerResult = works.repo.bindingForTask(foregroundReplan.team!.executions.at(-1)!.taskId)!;
+  assert.equal(ownerResult.status, "completed");
+  const resultInput = { operationId: "owner-result-replan", executionPolicy: "sequential" as const, maxConcurrency: 1,
+    versionGuard: guard(works.getWork(foregroundId)!), taskAssignment: {
+    ownerResponsibility: "复核剩余验证是否完成", members: [{ botId: foregroundSetup.plan.members[1]!.botId, responsibility: "只补结果核对发现的缺项" }] } };
+  const ownerReplan = ok(works.teams.replanFromResult(ownerResult, resultInput));
+  assert.equal(ownerReplan.work!.intentRevision, foregroundReplan.work!.intentRevision);
+  assert.equal(ownerReplan.team!.planRevision, 3);
+  assert.equal(ok(works.teams.replanFromForeground(foregroundActor, foregroundInput)).replayed, true,
+    "replaying a foreground request after another strategy revision does not recompute its omitted policy defaults");
+  reject(works.teams.replanFromForeground(foregroundActor, { ...foregroundInput, maxConcurrency: 4 }), "idempotency_conflict");
+  assert.equal(ok(works.teams.replanFromResult(ownerResult, resultInput)).replayed, true, "a committed result replan is idempotent after its owner task is archived");
+  reject(works.teams.replanFromResult(ownerResult, { ...resultInput, operationId: "stale-owner-result" }), "unauthorized_actor");
+  await flush();
+  await verifyResultReplanning();
 
   // A prepared but unsubmitted owner input is safely re-frozen after explicit handoff.
   const handedSetup = setup(), handed = ok(works.teams.handle(user, { kind: "create", request: handedSetup.request }));

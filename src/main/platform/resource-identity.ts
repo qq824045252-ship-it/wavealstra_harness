@@ -16,6 +16,25 @@ function absent(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
 
+/** Lock identity without reading file contents or enumerating a directory. */
+export function fileResourceAddress(input: string): Pick<FileResourceIdentity, "path" | "entity"> {
+  let ancestor = resolve(input);
+  const suffix: string[] = [];
+  for (;;) {
+    try { lstatSync(ancestor); break; }
+    catch (error) {
+      if (!absent(error)) throw error;
+      const parent = dirname(ancestor);
+      if (parent === ancestor) throw new Error(`无法解析资源父目录：${input}`);
+      suffix.unshift(basename(ancestor)); ancestor = parent;
+    }
+  }
+  const canonical = realpathSync.native(ancestor), stat = statSync(canonical, { bigint: true });
+  if (suffix.length && !stat.isDirectory()) throw new Error("新资源的父路径不是目录");
+  if (stat.ino === 0n) throw new Error("当前文件系统未提供可信实体身份，不能协调细粒度资源访问");
+  return { path: resolve(canonical, ...suffix), entity: suffix.length ? null : `${stat.dev}:${stat.ino}` };
+}
+
 /** Real names, entity IDs and content are separate: realpath alone misses hard links. */
 export function fileResourceIdentity(input: string): FileResourceIdentity {
   const requested = resolve(input);

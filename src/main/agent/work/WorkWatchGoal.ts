@@ -1,3 +1,4 @@
+import { workRequestIncludes } from "./WorkRequestEvidence";
 import { createHash } from "node:crypto";
 import type { CompletionArtifactEvidence } from "./WorkCompletionArtifactEvidence";
 import type Database from "better-sqlite3";
@@ -89,9 +90,7 @@ export function watchGoalMet(work: WorkDto, binding: WorkExecutionBindingDto, de
     || binding.invalidatedAt || binding.ownerEpoch !== work.ownerEpoch || binding.intentRevision !== work.intentRevision
     || binding.inputSnapshotId !== work.inputSnapshotId || stop?.status !== "met" || decision.outcome !== "completed"
     || stop.conditionExcerpt.trim() !== work.watchRule.stopConditionText.trim() || !stop.requestExcerpt.trim() || !stop.evidence.length) return false;
-  const request=originalRequest as {userRequest?:{messages?:{text:string}[]}};
-  const userText=request.userRequest?.messages?.map(m=>m.text).join("\n") ?? "";
-  if (!userText.includes(stop.requestExcerpt)) return false;
+  if (!workRequestIncludes(originalRequest, stop.requestExcerpt)) return false;
   return stop.evidence.every(proof=>proof.quote.trim() && evidence.some(item=>item.resultId===proof.resultId && (item.text.includes(proof.quote) || JSON.stringify(item.text).slice(1,-1).includes(proof.quote))));
 }
 
@@ -132,8 +131,6 @@ export function watchNotificationNotMet(work: WorkDto, binding: WorkExecutionBin
     || binding.intentRevision!==work.intentRevision || binding.inputSnapshotId!==work.inputSnapshotId || binding.ownerEpoch!==work.ownerEpoch
     || decision.decision!=="deliver" || decision.outcome!=="completed" || decision.missing.length || decision.followUp || decision.waitPlan
     || assessment?.status!=="not_met" || !assessment.conditionExcerpt.trim() || !assessment.requestExcerpt.trim() || !assessment.evidence.length) return false;
-  const request=originalRequest as {userRequest?:{messages?:{text:string}[]}};
-  const texts=request.userRequest?.messages?.map(message=>message.text) ?? [];
-  if (!texts.some(text=>text.includes(assessment.requestExcerpt)) || !assessment.requestExcerpt.includes(assessment.conditionExcerpt)) return false;
+  if (!workRequestIncludes(originalRequest, assessment.requestExcerpt) || !assessment.requestExcerpt.includes(assessment.conditionExcerpt)) return false;
   return assessment.evidence.every(proof=>proof.quote.trim() && evidence.some(item=>item.resultId===proof.resultId && item.text.includes(proof.quote)));
 }

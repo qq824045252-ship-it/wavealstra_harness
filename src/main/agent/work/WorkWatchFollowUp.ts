@@ -1,3 +1,4 @@
+import { workRequestIncludes } from "./WorkRequestEvidence";
 import { continuationProgress, lastContinuationProgress, recordContinuationProgress } from "./WorkContinuationProgress";
 import { createHash } from "node:crypto";
 import type { WorkDto, WorkExecutionBindingDto, WorkActor } from "../../../shared/bot-work";
@@ -41,9 +42,8 @@ export class WorkWatchFollowUp {
     if (!next) return {scheduled:false};
     const availability = this.availability(work,binding);
     if (!availability.allowed) return {scheduled:false,notice:availability.reason};
-    const request = originalRequest as {userRequest?:{messages?:{text:string}[]}};
-    const text = request.userRequest?.messages?.map(m => m.text).join('\n') || `${work.title}\n${work.goalDescription ?? ''}`;
-    if (!text.includes(next.requestExcerpt)) return {scheduled:false,notice:'补查未对应原委托中的明确要求，保留原计划。'};
+    const matchesRequest = (excerpt: string) => workRequestIncludes(originalRequest, excerpt, `${work.title}\n${work.goalDescription ?? ''}`);
+    if (!matchesRequest(next.requestExcerpt)) return {scheduled:false,notice:'补查未对应原委托中的明确要求，保留原计划。'};
     if (!continuous && decision.outcome === 'completed') return {scheduled:false,notice:'本轮观察已完整，不另行补查。'};
     if (continuous) {
       const lineage=new Set(this.options.works.partialResults.recovery.ancestry(binding).map(item=>item.bindingId));
@@ -55,7 +55,7 @@ export class WorkWatchFollowUp {
     if (previousProgress && previousProgress.bindingId !== binding.bindingId && previousProgress.fingerprint === progress)
       return {scheduled:false,notice:'上一轮后没有新增已核验成果，不重复执行同一缺项；保留实际缺口。'};
     if (actionableMissing && this.options.works.teams.get(work.workId)) {
-      if (decision.missing.some(item => !text.includes(item.requestExcerpt))) return {scheduled:false,notice:'后续步骤必须对应原始委托。'};
+      if (decision.missing.some(item => !matchesRequest(item.requestExcerpt))) return {scheduled:false,notice:'后续步骤必须对应原始委托。'};
       const scheduled = this.options.works.teams.continueMissing(binding,decision.missing,teamTargets,decision.reply);
       if (scheduled) recordContinuationProgress(this.options.db,binding,work,progress!,Date.now());
       return {scheduled,notice:scheduled ? '已按原成员分工安排下一步推进，负责人收到结果后继续核对。' : '团队后续步骤未能派发，需要核对当前成员与缺项证据。'};
@@ -89,9 +89,7 @@ export class WorkWatchFollowUp {
     if (work.watchRule?.executionMode !== 'continuous' || !this.availability(work,binding).allowed
       || ['ask', 'wait'].includes(decision.decision) || decision.missing.length || decision.followUp)
       return {scheduled:false,notice:'只有当前持续目标确实需要等待且没有可执行缺项时才保存等待计划。'};
-    const request=originalRequest as {userRequest?:{messages?:{text:string}[]}};
-    const userText=request.userRequest?.messages?.map(item=>item.text).join('\n') ?? '';
-    if (!plan.requestExcerpt.trim() || !userText.includes(plan.requestExcerpt)) return {scheduled:false,notice:'等待安排没有对应原始委托。'};
+    if (!workRequestIncludes(originalRequest, plan.requestExcerpt)) return {scheduled:false,notice:'等待安排没有对应原始委托。'};
     if (plan.basis === 'observed_dependency' && (!plan.evidence || !evidence.some(item=>item.resultId===plan.evidence!.resultId && item.text.includes(plan.evidence!.quote))))
       return {scheduled:false,notice:'等待依赖缺少本轮真实来源证据。'};
     if (plan.nextWakeAt !== undefined && (!Number.isSafeInteger(plan.nextWakeAt) || plan.nextWakeAt <= Date.now() || plan.nextWakeAt > 8640000000000000))

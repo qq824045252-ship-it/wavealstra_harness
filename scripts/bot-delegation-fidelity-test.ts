@@ -1,4 +1,5 @@
 import { completionReviewInput } from "../src/main/agent/work/WorkCompletionReviewTarget";
+import { verifyBotDelegationSources } from "./bot-delegation-sources-fixture";
 import assert from "node:assert/strict";
 import { botAttachmentSchema } from "../src/shared/bot-conversation";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
@@ -159,16 +160,17 @@ try {
   const dataTurn = messages.accept(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID, requestId: `request-${++sequence}`,
     text: "A=3，B=2。帮我做报告，不得发布。", attachments: [{ name: "clarification-data.csv", path: dataFile }] });
   messages.update(dataTurn.assistantMessageId, "completed", "报告用什么格式？");
-  const formatTurn = receive("HTML。");
-  const clarified = unwrap(await invoke(formatTurn, "work_create", { requestedOutcome: "one_time", mode: "once", title: "澄清后的报告", goalDescription: "HTML报告" }));
+  const formatTurn = receive("HTML。", undefined, dataTurn.assistantMessageId);
+  const clarified = unwrap(await invoke(formatTurn, "work_create", { requestedOutcome: "one_time", mode: "once", title: "澄清后的报告", goalDescription: "HTML报告",
+    sourceMessageIds: [dataTurn.userMessageId, dataTurn.assistantMessageId] }));
   const clarifiedBinding = bind(clarified);
   const clarifiedInput = JSON.parse(works.repo.executionInput(clarifiedBinding));
-  assert(works.getDetailProjection(clarified.workId)!.originalDelegation?.context?.some(row => row.role === "user" && row.text.includes("不得发布")), "clarification detail keeps trusted contextual requirements with roles");
+  assert(works.getDetailProjection(clarified.workId)!.originalDelegation?.messages.some(row => row.text.includes("不得发布")), "selected clarification requirements remain authoritative user input");
   const clarifiedAttachments = works.repo.attachmentInput(clarifiedBinding).split("\n")
     .filter(line => line.startsWith("{")).map(line => botAttachmentSchema.parse(JSON.parse(line)));
   assert(clarifiedAttachments.some(file => file.path === dataFile && readFileSync(file.path, "utf8") === "A,3\nB,2"),
     "clarification preserves the earlier uploaded input and readable bytes on every platform");
-  assert(clarifiedInput.userRequest.dialogueContext.some((entry: { text: string; role: string }) => entry.role === "user" && entry.text.includes("不得发布")));
+  assert(clarifiedInput.userRequest.messages.some((entry: { text: string; role: string }) => entry.role === "user" && entry.text.includes("不得发布")));
   assert(clarifiedInput.userRequest.dialogueContext.some((entry: { text: string; role: string }) => entry.role === "assistant" && entry.text === "报告用什么格式？"));
   assert(!JSON.stringify(clarifiedInput.userRequest).includes(longText), "already delegated Work is a dialogue boundary");
 
@@ -207,11 +209,12 @@ try {
   bots.registerBot({ userId: "foreign", botId: "foreign-bot", displayName: "foreign", authorization: DESKTOP_USER_GRANTS });
   const foreign = messages.accept("foreign", { botId: "foreign-bot", requestId: "private", text: "foreign private data" });
   const badReference = receive("处理当前输入", undefined, foreign.userMessageId);
-  const isolated = unwrap(await invoke(badReference, "work_create", { requestedOutcome: "one_time", mode: "once", title: "隔离" }));
-  assert.deepEqual(JSON.parse(works.repo.executionInput(bind(isolated))).userRequest.referencedContext, []);
-  assert(!JSON.stringify(works.getDetailProjection(isolated.workId)!.originalDelegation).includes("foreign private data"), "original detail never includes a foreign user reference");
+  const workCount = db.connection.prepare("SELECT count(*) count FROM works").get();
+  await assert.rejects(() => invoke(badReference, "work_create", { requestedOutcome: "one_time", mode: "once", title: "隔离" }), /来源不属于/);
+  assert.deepEqual(db.connection.prepare("SELECT count(*) count FROM works").get(), workCount, "invalid source leaves no orphan Work");
   db.connection.prepare("UPDATE bot_messages SET request_id='corrupt' WHERE message_id=?").run(longRequest.userMessageId);
   assert.equal(JSON.parse(works.repo.executionInput(longBinding)).userRequest.messages[0].text, longText, "frozen original input survives changes to mutable chat rows");
   await assert.rejects(() => invoke(longRequest, "work_create", { requestedOutcome: "one_time", mode: "once", title: "不能使用损坏身份" }), /已结束或不属于当前对话/);
+  await verifyBotDelegationSources();
   console.log("PASS delegation fidelity: exact user data, advisory model calculations/criteria, persistent adapter delivery, gap continuation, bounded amendments, long input, role/tenant isolation and direct-user acceptance gates");
 } finally { db.close(); rmSync(root, { recursive: true, force: true }); }

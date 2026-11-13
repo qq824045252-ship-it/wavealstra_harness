@@ -640,9 +640,9 @@ try {
   allowGitIsolation = false;
   const forbiddenAuto = await runScenario("forbidden-auto", "SCENARIO=forbidden-auto");
   assert.equal(forbiddenAuto.children, 2);
-  assert.equal(writtenFiles.length, 2, "serial shared actually performs both ordered writes, rather than parallel-guard blocking the second");
-  assert.match(forbiddenAuto.output, /Concurrency: 1 worker/);
-  assert(!forbiddenAuto.output.includes("blocked by write conflict"));
+  assert.equal(writtenFiles.length, 1, "main-only keeps parallel admission while the real same-file conflict remains blocked");
+  assert.match(forbiddenAuto.output, /Concurrency: 2 workers/);
+  assert(forbiddenAuto.output.includes("blocked by write conflict"));
   const forbiddenExplicit = await runScenario("forbidden-explicit", "SCENARIO=forbidden-explicit");
   assert.equal(forbiddenExplicit.children, 0);
   assert.equal(writtenFiles.length, 0);

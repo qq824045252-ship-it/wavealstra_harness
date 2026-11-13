@@ -61,7 +61,7 @@ export const workTeamControlSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("get"), workId: id }).strict(),
   z.object({ kind: z.literal("get_by_operation"), operationId: id }).strict(),
   z.object({ kind: z.literal("retry"), workId: id, versionGuard, confirmNotStarted: z.literal(true) }).strict(),
-  z.object({ kind: z.literal("replan"), workId: id, versionGuard, plan: workTeamPlanSchema }).strict(),
+  z.object({ kind: z.literal("replan"), workId: id, operationId: id.optional(), versionGuard, plan: workTeamPlanSchema }).strict(),
   z.object({ kind: z.literal("resolve_workspace"), templateId: id }).strict(),
   z.object({ kind: z.literal("list_templates"), includeDeleted: z.boolean().optional() }).strict(),
   z.object({ kind: z.literal("save_template"), request: z.object({ operationId: id,
@@ -80,6 +80,16 @@ export type WorkTeamMember = z.infer<typeof workTeamMemberSchema>;
 export type WorkTeamPlan = z.infer<typeof workTeamPlanSchema>;
 export type CreateTeamWorkRequest = z.input<typeof createTeamWorkSchema>;
 export type WorkTeamControlRequest = z.input<typeof workTeamControlSchema>;
+export interface WorkTeamForegroundReplanInput {
+  workId: string;
+  operationId: string;
+  conversationId: string;
+  sourceMessageId: string;
+  versionGuard: z.infer<typeof versionGuard>;
+  taskAssignment: WorkTeamTaskAssignment;
+  executionPolicy?: WorkTeamPlan["executionPolicy"];
+  maxConcurrency?: number;
+}
 export interface WorkTeamExecution extends WorkTeamMember {
   role: "member" | "owner_summary";
   taskId: string;
@@ -105,6 +115,8 @@ export interface WorkTeamDto extends WorkTeamPlan {
   removedAt?: number;
   removalRequestedAt?: number;
   workId: string;
+  /** Execution strategy changes independently of the user's requirement revision. */
+  planRevision: number;
   intentRevision: number;
   inputSnapshotId: string;
   ownerEpoch: number;

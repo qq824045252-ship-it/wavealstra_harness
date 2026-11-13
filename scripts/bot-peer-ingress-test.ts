@@ -6,12 +6,16 @@ import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat";
+import { defineTool } from "@earendil-works/pi-durable";
+import { Type } from "typebox";
 import type { AssistantMessage, Context } from "@earendil-works/pi-ai";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { BotRegistry } from "../src/main/agent/work/BotRegistry";
 import { WorkService, DESKTOP_USER_GRANTS } from "../src/main/agent/work/WorkService";
 import { BotConversationService, type BotConversationServiceOptions } from "../src/main/agent/work/BotConversationService";
 import { botCollaborationToolSchema } from "../src/main/agent/work/BotCollaborationService";
+import { assertPeerReviewCurrent, assertPeerReviewReadTool } from "../src/main/agent/work/BotCollaborationReview";
+import { botPeerOriginSchema } from "../src/shared/bot-peer-origin";
 import { botMemorySource, botPeerMemoryInput } from "../src/main/memory/BotMemorySource";
 import { botExtractionPolicy } from "../src/main/memory/BotMemoryExtractionPolicy";
 import { botForegroundHistory } from "../src/main/agent/work/BotPeerContext";
@@ -35,14 +39,14 @@ function gate(tag: string) {
   const value = { entered: false, release, wait }; gates.set(tag, value); return value;
 }
 const requests: Array<{ tag: string; model: string; context: Context }> = [];
-let sequence = 0, throwFreeze = false, freezeGate: ReturnType<typeof gate> | undefined;
+let sequence = 0, throwFreeze = false, freezeGate: ReturnType<typeof gate> | undefined, mutatingMcpCalls = 0;
 models.registerProvider("peer43", { api: "openai-completions", apiKey: "fixture-only", baseUrl: "http://127.0.0.1:1",
   models: ["a", "b", "c", "ordinary"].map(id => ({ id, name: id, reasoning: false, input: ["text"], contextWindow: 128000,
     maxTokens: 2048, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } })),
   streamSimple: (model, context, options) => {
     const stream = createAssistantMessageEventStream();
     const user = [...context.messages].reverse().find(message => message.role === "user");
-    const input = user ? textOf(user.content) : "";
+    const input = user ? typeof user.content === "string" ? user.content : user.content.find(part => part.type === "text")?.text ?? "" : "";
     const tag = [...input.matchAll(/CASE:([\w-]+)/g)].at(-1)?.[1] ?? "plain";
     requests.push({ tag, model: model.id, context: structuredClone(context) });
     queueMicrotask(async () => {
@@ -54,10 +58,26 @@ models.registerProvider("peer43", { api: "openai-completions", apiKey: "fixture-
         stream.push({ type: "error", reason: "aborted", error }); stream.end(); return;
       }
       const afterTool = context.messages.at(-1)?.role === "toolResult";
-      const content: AssistantMessage["content"] = model.id !== "a" && tag.startsWith("work") && !afterTool
+      let content: AssistantMessage["content"] = model.id !== "a" && tag.startsWith("work") && !afterTool
         ? [{ type: "toolCall", id: `create-${++sequence}`, name: "work_create", arguments: {
           title: `B plan CASE:${tag}`, goalDescription: "B 自己决定的执行计划", requestedOutcome: "one_time", mode: "once" } }]
         : [{ type: "text", text: model.id === "a" ? `A 整理收到的结果 CASE:${tag}` : `B 实际答复 CASE:${tag}` }];
+      if (tag === "review-read" && model.id === "a" && input.includes("Bot 消息正文：B 实际答复 CASE:review-read") && !afterTool) {
+        const collaboration = JSON.parse(input.match(/协作：(\{.+?\})。/)![1]) as { collaborationId: string };
+        const replyMessageId = input.match(/当前 replyMessageId=([^。]+)/)![1];
+        content = [{ type: "toolCall", id: `review-${++sequence}`, name: "bot_collaborate", arguments: {
+          action: "review_result", collaborationId: collaboration.collaborationId, replyMessageId,
+          requestExcerpt: "原用户目标 CASE:review-read", evidenceQuote: "B 实际答复 CASE:review-read", gap: "请核对已有 evidence.txt 原文 CASE:review-read" } }];
+      }
+      if (tag === "review-read" && model.id === "b" && input.includes("这是原协作成果的只读补查")) {
+        const lastUser = context.messages.findLastIndex(message => message.role === "user");
+        const results = context.messages.slice(lastUser + 1).filter(message => message.role === "toolResult");
+        content = results.length === 0 ? [{ type: "toolCall", id: `forbidden-${++sequence}`, name: "work_create", arguments: {
+          title: "补查不能重做", goalDescription: "不应创建", requestedOutcome: "one_time", mode: "once" } }]
+          : results.length === 1 ? [{ type: "toolCall", id: `mcp-write-${++sequence}`, name: "mcp_call_tool", arguments: { server: "fixture", tool: "write_file", arguments: { path: "evidence.txt", content: "bad" } } }]
+          : results.length === 2 ? [{ type: "toolCall", id: `evidence-${++sequence}`, name: "read", arguments: { path: join(root, "b", "evidence.txt") } }]
+          : [{ type: "text", text: `B 已核对现有成果 CASE:review-read ${results.map(result => textOf(result.content)).join(" ")}` }];
+      }
       const message: AssistantMessage = { role: "assistant", content, stopReason: content.some(part => part.type === "toolCall") ? "toolUse" : "stop",
         api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), usage: usage() };
       stream.push({ type: "done", reason: message.stopReason === "toolUse" ? "toolUse" : "stop", message }); stream.end();
@@ -81,7 +101,10 @@ const options: BotConversationServiceOptions = { db, bots, works, models, userId
 };
 // Profile has no public botId field; assert the actual frozen cwd against the fixture directories instead.
 options.composerTools = async (_profile, cwd) => { assert(["a", "b", "c", "ordinary"].some(id => cwd === join(root, id)));
-  composerOwners.push(cwd); return { tools: [], instructions: "fixture composer", close: async () => {} }; };
+  composerOwners.push(cwd); return { tools: [defineTool({ name: "mcp_call_tool", description: "fixture MCP envelope",
+    parameters: Type.Object({ server: Type.String(), tool: Type.String(), arguments: Type.Record(Type.String(), Type.Unknown()) }), replay: "safe",
+    execute: async () => { mutatingMcpCalls++; return { output: [{ type: "text" as const, text: "UNSAFE_EXECUTED" }] }; } })],
+    instructions: "fixture composer", close: async () => {} }; };
 let preparedFrozenWorkspace = false;
 Object.assign(options, { prepareMessageWorkspace: (value: ReturnType<typeof frozen>["settings"]) => {
   if (value.botId === "b") preparedFrozenWorkspace = true;
@@ -332,6 +355,77 @@ try {
   assert(service.collaborations.history({ botId: "a", collaborationId: first.id, limit: 100 }).messages
     .some(message => message.workFeedback?.eventId === "late-public-report"), "actual Work evidence survives cancellation");
   console.log("PASS #43 cancellation retains late Work evidence without creating another A return");
+
+  writeFileSync(join(root, "b", "evidence.txt"), "EXISTING_RESULT_5386");
+  const reviewWorkCount = works.listWorks(LOCAL_USER_ID).length, scheduleCount = schedules.length;
+  const reviewed = await command("review-read", "b", "ask");
+  await wait(() => service.messages.peers.deliveries(LOCAL_USER_ID, reviewed.id).some(item => {
+    const origin = botPeerOriginSchema.parse(JSON.parse(item.origin_json));
+    return origin.kind === "request" && Boolean(origin.review) && item.observed_status === "completed";
+  }), "review_result returns through B normal foreground");
+  const reviewDelivery = service.messages.peers.deliveries(LOCAL_USER_ID, reviewed.id).find(item => {
+    const origin = botPeerOriginSchema.parse(JSON.parse(item.origin_json)); return origin.kind === "request" && origin.review;
+  })!;
+  const reviewOrigin = botPeerOriginSchema.parse(JSON.parse(reviewDelivery.origin_json));
+  assert(reviewOrigin.kind === "request" && reviewOrigin.review);
+  const reviewReply = service.messages.message(reviewDelivery.accepted_message_id!)!;
+  assert(reviewReply.text.includes("EXISTING_RESULT_5386"), "B reads the actual existing file through its native runtime");
+  assert.equal(works.listWorks(LOCAL_USER_ID).length, reviewWorkCount, "the attempted work_create is denied");
+  assert.equal(schedules.length, scheduleCount, "readonly review never dispatches business execution");
+  assert.equal(mutatingMcpCalls, 0, "actual mcp_call_tool leaf guard rejects writes even though the envelope tool is exposed");
+  assert.equal(reviewOrigin.sourceUserMessageId, reviewed.receipt.userMessageId);
+  assert.equal(service.messages.message(service.messages.receipt(LOCAL_USER_ID, "b", reviewReply.requestId)!.user_message_id)?.peerOrigin?.kind, "request");
+  const originalReturn = service.messages.peers.get(reviewOrigin.review.returnExchangeId)!;
+  const returnAssistantId = originalReturn.accepted_message_id!;
+  await wait(() => service.messages.message(returnAssistantId)?.status === "completed", "A review request settles");
+  service.messages.update(returnAssistantId, "running", "retrying same committed native operation");
+  const reviewCommand = { action: "review_result", collaborationId: reviewed.id, replyMessageId: reviewOrigin.review.replyMessageId,
+    requestExcerpt: reviewOrigin.review.requestExcerpt, evidenceQuote: reviewOrigin.review.evidenceQuote, gap: reviewOrigin.review.gap };
+  const beforeReviewRetry = service.messages.peers.deliveries(LOCAL_USER_ID, reviewed.id).length;
+  const replay = await service.collaborations.command(returnAssistantId, "different-native-id", reviewCommand) as { operationId: string };
+  assert.equal(replay.operationId, reviewDelivery.operation_id);
+  assert.equal(service.messages.peers.deliveries(LOCAL_USER_ID, reviewed.id).length, beforeReviewRetry, "duplicate return review is one durable operation");
+  await assert.rejects(service.collaborations.command(returnAssistantId, "rewrite-review", { ...reviewCommand, gap: "different gap" }), /不能改写/);
+  await assert.rejects(service.collaborations.command(returnAssistantId, "invent-request", { ...reviewCommand, requestExcerpt: "用户从未授权" }), /原用户/);
+  await assert.rejects(service.collaborations.command(returnAssistantId, "invent-evidence", { ...reviewCommand, evidenceQuote: "编造答复" }), /实际存在/);
+  await assert.rejects(service.collaborations.command(returnAssistantId, "return-mutation", { action: "amend", collaborationId: reviewed.id,
+    changes: { title: "不得改写" } }), /不是新的/);
+  assertPeerReviewCurrent(options, service.messages, service.collaborations.repo, reviewOrigin);
+  assert.throws(() => assertPeerReviewReadTool("write", { path: join(root, "b", "evidence.txt"), content: "bad" }, []), /仅可读取/);
+  assert.throws(() => assertPeerReviewReadTool("mcp_call_tool", { server: "fixture", tool: "write_file", arguments: { path: "x", content: "bad" } }, ["fixture"]), /不能证明只读/);
+  service.messages.update(returnAssistantId, "completed", "A 已收到补查回执");
+  const completedReviewReturn = async (excluding: string[]) => {
+    await wait(() => service.messages.peers.deliveries(LOCAL_USER_ID, reviewed.id).some(item => {
+      const origin = botPeerOriginSchema.parse(JSON.parse(item.origin_json));
+      return origin.kind === "return" && !excluding.includes(item.operation_id) && item.accepted_message_id
+        && service.messages.message(item.accepted_message_id)?.status === "completed";
+    }), "review reply returns to original A foreground");
+    return service.messages.peers.deliveries(LOCAL_USER_ID, reviewed.id).find(item => {
+      const origin = botPeerOriginSchema.parse(JSON.parse(item.origin_json));
+      return origin.kind === "return" && !excluding.includes(item.operation_id) && item.accepted_message_id
+        && service.messages.message(item.accepted_message_id)?.status === "completed";
+    })!;
+  };
+  const secondReturn = await completedReviewReturn([originalReturn.operation_id]);
+  const secondOrigin = botPeerOriginSchema.parse(JSON.parse(secondReturn.origin_json)); assert(secondOrigin.kind === "return");
+  service.messages.update(secondReturn.accepted_message_id!, "running", "A 核对剩余缺口");
+  await service.collaborations.command(secondReturn.accepted_message_id!, "second-review", { ...reviewCommand,
+    replyMessageId: secondOrigin.replyMessageId, evidenceQuote: "B 已核对现有成果", gap: "核对该文件是否覆盖原目标 CASE:review-read" });
+  service.messages.update(secondReturn.accepted_message_id!, "completed", "已提交第二次只读补查");
+  const thirdReturn = await completedReviewReturn([originalReturn.operation_id, secondReturn.operation_id]);
+  const thirdOrigin = botPeerOriginSchema.parse(JSON.parse(thirdReturn.origin_json)); assert(thirdOrigin.kind === "return");
+  service.messages.update(thirdReturn.accepted_message_id!, "running", "A 检查是否继续循环");
+  await assert.rejects(service.collaborations.command(thirdReturn.accepted_message_id!, "third-review", { ...reviewCommand,
+    replyMessageId: thirdOrigin.replyMessageId, evidenceQuote: "B 已核对现有成果", gap: "换一个说法不能无限补查" }), /两次/);
+  service.messages.update(thirdReturn.accepted_message_id!, "completed", "真实缺口保留，结束重复核验");
+  const completedReviewDeliveryCount = service.messages.peers.deliveries(LOCAL_USER_ID, reviewed.id).length;
+  await service.close(); service = new BotConversationService(options); service.recover();
+  await delay(100);
+  assert.equal(service.messages.peers.deliveries(LOCAL_USER_ID, reviewed.id).length, completedReviewDeliveryCount, "restart does not resend a completed review");
+  assertPeerReviewCurrent(options, service.messages, service.collaborations.repo, reviewOrigin);
+  works.transaction(() => service.collaborations.delivery!.markCancelled(reviewed.id));
+  assert.throws(() => assertPeerReviewCurrent(options, service.messages, service.collaborations.repo, reviewOrigin), /取消/);
+  console.log("PASS evidence-backed review: original human provenance, actual readonly file, forbidden Work mutation, stable retry, restart and cancellation");
 
   const closingGate = gate("close-during-prepare"); freezeGate = closingGate;
   const closingSource = source("关闭时保留未受理发送 CASE:close");

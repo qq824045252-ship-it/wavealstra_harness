@@ -11,6 +11,8 @@ import type { WorkDto } from "../../../shared/bot-work";
 import { BOT_MESSAGE_ID_PREFIX } from "../../../shared/bot-conversation";
 import { BotTurnOrigins } from "./BotTurnOrigins";
 import { BotPeerIngress } from "./BotPeerIngress";
+import { projectBotMemoryHistory } from "./BotMemoryHistoryProjection";
+import { botDelegationSourceSchema, type BotDelegationSource } from "./BotDelegationSources";
 
 const conversationRow = z.object({ conversation_id: z.string(), bot_id: z.string(), team_id: z.string().nullable().optional(), user_id: z.string(), revision: z.number(),
   current_request_id: z.string().nullable(), archived_at: z.number().nullable(), created_at: z.number(), updated_at: z.number() });
@@ -246,45 +248,70 @@ export class BotConversationRepository {
   }
 
   /** Work-owned request evidence survives removal of the original Bot/chat. */
-  linkWorkUserInput(receipt: BotMessageReceipt, work: WorkDto): void {
+  validateWorkUserInput(receipt: BotMessageReceipt, sourceMessageIds: readonly string[] = []): void {
+    this.workUserInput(receipt, sourceMessageIds);
+  }
+
+  private workUserInput(receipt: BotMessageReceipt, sourceMessageIds: readonly string[]) {
+    const selectedIds = new Set(z.array(z.string().min(1)).max(32).parse(sourceMessageIds));
+    const conversation = this.conversation(receipt.user_id, receipt.bot_id, receipt.conversation_id);
+    const current = this.message(receipt.user_message_id);
+    if (!conversation || !current || current.role !== "user" || current.botId !== receipt.bot_id
+      || current.conversationId !== receipt.conversation_id || current.requestId !== receipt.request_id)
+      throw new Error("缺少可核验的原始用户输入");
+    selectedIds.delete(current.messageId);
+    const run = z.object({ context_json: z.string() }).optional().parse(this.db.prepare(
+      "SELECT context_json FROM bot_request_runs WHERE message_id=?").get(receipt.assistant_message_id));
+    const frozen = run ? z.object({ delegationSources: z.array(botDelegationSourceSchema).default([]) })
+      .parse(JSON.parse(run.context_json)).delegationSources : [];
+    const visible = new Map(frozen.map(source => [source.messageId, source]));
+    const referenceIds = new Set<string>();
+    if (receipt.reference_message_id) {
+      referenceIds.add(receipt.reference_message_id);
+      const reference = this.message(receipt.reference_message_id);
+      if (reference?.role === "assistant") {
+        const original = this.receipt(receipt.user_id, reference.botId, reference.requestId);
+        if (original) referenceIds.add(original.user_message_id);
+      }
+    }
+    const resolveSource = (messageId: string, explicitReference: boolean): BotDelegationSource => {
+      const stored = this.message(messageId);
+      if (!stored || stored.ordinal >= current.ordinal || !this.messageBelongsToConversation(receipt.user_id, receipt.conversation_id, messageId))
+        throw new Error("委托来源不属于本次请求可见的历史对话");
+      const source = visible.get(messageId);
+      if (!source && (run || !explicitReference)) throw new Error("委托来源未包含在本轮冻结上下文中");
+      const userReceipt = stored.role === "assistant" ? this.receipt(receipt.user_id, stored.botId, stored.requestId) : undefined;
+      const pairedUser = userReceipt && this.message(userReceipt.user_message_id);
+      const projection = projectBotMemoryHistory(this.db, [...pairedUser ? [pairedUser] : [], stored],
+        { botId: receipt.bot_id, conversationId: receipt.conversation_id, teamId: conversation.team_id ?? undefined });
+      const projected = projection.messages.find(message => message.messageId === messageId);
+      if (!projected || !projection.sourceMessageIds.includes(messageId) || projected.status !== "completed")
+        throw new Error("委托来源已撤销或尚未完成，不能作为当前要求");
+      const currentSource = botDelegationSourceSchema.parse(projected);
+      if (source && JSON.stringify(source) !== JSON.stringify(currentSource)) throw new Error("委托来源在本轮开始后已变化，请重新读取");
+      return source ?? currentSource;
+    };
+    const selected = [...selectedIds].map(id => resolveSource(id, referenceIds.has(id)));
+    const references = [...referenceIds].map(id => resolveSource(id, true));
+    return { current, selected, references };
+  }
+
+  linkWorkUserInput(receipt: BotMessageReceipt, work: WorkDto, sourceMessageIds: readonly string[] = []): void {
     if (!this.db.inTransaction) throw new Error("用户原文必须与委托受理同事务保存");
     if (work.userId !== receipt.user_id || !this.conversation(receipt.user_id, receipt.bot_id, receipt.conversation_id))
       throw new Error("委托与用户原文不属于同一用户和会话");
-    const current = this.message(receipt.user_message_id);
-    if (!current || current.role !== "user" || current.botId !== receipt.bot_id
-      || current.conversationId !== receipt.conversation_id || current.requestId !== receipt.request_id)
-      throw new Error("缺少可核验的原始用户输入");
-    // Retain the unresolved dialogue, including clarification answers. A prior
-    // delegated request is a boundary, not an excuse to copy another Work's chat.
-    const boundary = this.db.prepare(`SELECT MAX(ordinal) AS ordinal FROM bot_messages
-      WHERE conversation_id=? AND role='user' AND ordinal<? AND json_array_length(work_ids_json)>0`)
-      .get(receipt.conversation_id, current.ordinal) as { ordinal: number | null };
-    const run = this.db.prepare('SELECT context_json FROM bot_request_runs WHERE message_id=?').get(receipt.assistant_message_id) as { context_json: string } | undefined;
-    // New concurrent requests have no implicit adjacency relationship. Only the
-    // current input is delegated; explicit reply references are retained separately.
-    const sourceIds = run ? new Set<string>() : undefined;
-    const dialogue = this.db.prepare(`SELECT m.* FROM bot_messages m
-      JOIN bot_send_receipts r ON r.conversation_id=m.conversation_id AND r.bot_id=m.bot_id AND r.request_id=m.request_id
-        AND r.user_id=? AND (r.user_message_id=m.message_id OR r.assistant_message_id=m.message_id)
-      WHERE m.conversation_id=? AND m.ordinal>? AND m.ordinal<=? ORDER BY m.ordinal`)
-      .all(receipt.user_id, receipt.conversation_id, boundary.ordinal ?? 0, current.ordinal).map(row => this.mapMessage(row))
-      .filter(message => !message.peerOrigin && (!sourceIds || message.messageId === current.messageId || sourceIds.has(message.messageId)));
-    const compact = (message: BotMessageDto) => ({ messageId: message.messageId, conversationId: message.conversationId,
+    const { current, selected, references } = this.workUserInput(receipt, sourceMessageIds);
+    const compact = (message: BotDelegationSource | BotMessageDto, selectedRequirement = false) => ({ messageId: message.messageId, conversationId: message.conversationId,
       role: message.role, text: message.text, ordinal: message.ordinal,
       ...(message.peerOrigin ? { peerOrigin: message.peerOrigin } : {}),
+      ...(selectedRequirement && message.role === "user" && !message.peerOrigin ? { delegationRole: "requirement" } : {}),
       intentRevision: work.intentRevision, sourceVersion: work.sourceVersion,
       ...(message.attachments?.length ? { attachments: message.attachments } : {}) });
-    const reference = receipt.reference_message_id ? this.message(receipt.reference_message_id) : undefined;
-    const references = reference && this.messageBelongsToConversation(receipt.user_id, receipt.conversation_id, reference.messageId)
-      && reference.ordinal < current.ordinal ? [compact(reference)] : [];
-    if (references.length && reference?.role === 'assistant') {
-      const original = this.receipt(receipt.user_id, reference.botId, reference.requestId);
-      const originalUser = original && this.message(original.user_message_id);
-      if (originalUser && originalUser.ordinal < current.ordinal) references.unshift(compact(originalUser));
-    }
+    const dialogue = [...selected.map(message => compact(message, true)), compact(current)]
+      .sort((left, right) => left.ordinal - right.ordinal);
     this.db.prepare(`INSERT OR IGNORE INTO bot_work_user_inputs(work_id,source_message_id,intent_revision,source_version,messages_json,references_json)
       VALUES (?,?,?,?,?,?)`).run(work.workId, current.messageId, work.intentRevision, work.sourceVersion,
-        JSON.stringify(dialogue.map(compact)), JSON.stringify(references));
+        JSON.stringify(dialogue), JSON.stringify(references.sort((left, right) => left.ordinal - right.ordinal).map(message => compact(message))));
   }
 
   /** Immutable input attachment snapshot, independent of human-readable goal length. */

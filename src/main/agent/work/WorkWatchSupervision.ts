@@ -1,3 +1,4 @@
+import { workRequestIncludes } from "./WorkRequestEvidence";
 import { createHash } from "node:crypto";
 import { WorkWatchFollowUp } from "./WorkWatchFollowUp";
 import { previousWatchObservations } from "./WorkWatchComparison";
@@ -201,8 +202,7 @@ export class WorkWatchSupervision {
     const assessment=decision.priorRiskAssessment;
     if(risks.items.some(item=>!item.retired) || assessment?.status!=='independent' || !assessment.reason.trim()
       || assessment.riskIds.length!==risks.items.length || !risks.items.every(item=>assessment.riskIds.includes(item.riskId)))return false;
-    const text=(originalRequest as {userRequest?:{messages?:{text:string}[]}}).userRequest?.messages?.map(message=>message.text).join('\n')??'';
-    return !!assessment.requestExcerpt.trim() && text.includes(assessment.requestExcerpt) && assessment.evidence.length>0
+    return workRequestIncludes(originalRequest, assessment.requestExcerpt) && assessment.evidence.length>0
       && assessment.evidence.every(proof=>proof.quote.trim()&&evidence.some(item=>item.resultId===proof.resultId&&item.text.includes(proof.quote)));
   }
   private snapshot(id: string) {

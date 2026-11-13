@@ -71,12 +71,18 @@ const feedback = new WorkConversationFeedback({ db: db.connection, works, userId
 const guard = (work: WorkDto) => ({ expectedStateVersion: work.stateVersion, expectedIntentRevision: work.intentRevision, expectedOwnerEpoch: work.ownerEpoch });
 const unwrap = (result: WorkControlResult) => { if (!result.ok) throw Error(`${result.code}: ${result.message}`); return result.work!; };
 const reviewed: string[] = [];
+let rejectedDeliveryFailures = 0;
 const coordinator = new WorkCompletionCoordinator({ db: db.connection, works, isAuthority: () => authority,
   review: async (input): Promise<WorkResultDecision> => {
     const title = String(input.context.title);
     const bindingId = input.eventId.split(":")[1];
     const index = works.repo.listBindings(works.repo.getBinding(bindingId)!.workId).length;
     reviewed.push(`${title}:${index}`);
+    if (title === "correctable-continuation") {
+      if (index > 1) return { decision: "deliver", outcome: "completed", reply: "缺项已经补齐并核对。", missing: [] };
+      return { decision: "continue", outcome: "partial", reply: "保留已有结果并补齐缺项。",
+        missing: [{ task: "补齐原请求缺项", requestExcerpt: input.context.continuationFeedback ? title : "不属于原请求的错误引用" }] };
+    }
     const settlement = works.automaticCompletion.outcome(bindingId);
     settlements.push({ bindingId, defined: !!settlement, summary: settlement?.summary ?? "", conclusion: settlement?.conclusion ?? "" });
     if (["third-continuation", "progress-cap"].includes(title)) return index <= (title === "third-continuation" ? 3 : 5)
@@ -96,7 +102,13 @@ const coordinator = new WorkCompletionCoordinator({ db: db.connection, works, is
       reply: "当前修订的结果已交付；旧执行的未知效果仍需核对。", missing: [] };
     return { decision: "deliver", outcome: "completed", reply: `已整理：${title}。`, missing: [] };
   },
-  deliver: input => feedback.deliverCompletion(input), wake: () => {} });
+  deliver: input => {
+    const binding = works.repo.getBinding(input.bindingId);
+    if (binding && works.getWork(binding.workId)?.title === "same-binding-unknown"
+      && input.text.includes("续办方案仍未能受理") && rejectedDeliveryFailures++ === 0)
+      throw Error("fixture result transport unavailable");
+    return feedback.deliverCompletion(input);
+  }, wake: () => {} });
 
 async function flush() {
   await queue.drain(); await adapter.flush(); coordinator.wake();
@@ -132,11 +144,16 @@ function assertNoContinuationPromise(workId: string) {
     assert(!report.summary.includes(promise), `delivered body must not keep the model's promise: ${promise}`);
     assert(!reports(workId).at(-1)!.text.includes(promise), `delivered message must not keep the model's promise: ${promise}`);
   }
-  assert(report.notices.some(notice => notice.includes("没有重复执行已完成动作")), "the host override keeps its own notice");
+  assert(report.summary.includes("续办方案仍未能受理"), "bounded planning failure is reported without promising execution");
   assert.deepEqual(report.completion, { outcome: "partial", nextStep: "deliver" }, "outcome and next step match the delivered body");
   return report;
 }
 try {
+  const corrected = create("correctable-continuation"); await flush();
+  states.set(corrected, "completed"); await settle(10);
+  assert.equal(works.repo.listBindings(corrected).length, 2, "a rejected proposal is repaired before scheduling exactly one continuation");
+  assert.equal(reviewed.filter(item => item === "correctable-continuation:1").length, 2, "host rejection returns to the decision maker");
+  assert.equal(works.getWork(corrected)?.closureConclusion, "succeeded");
   // Acceptance 1: the third continuation still runs because every round made
   // real durable progress (a completed current-version subitem each time).
   const third = create("third-continuation"); await flush();
@@ -161,6 +178,7 @@ try {
   assert.equal(works.repo.listBindings(noProgress).length, 3, "no third continuation without new durable progress");
   assert.equal(continuedTurns(noProgress), 2, "only the two progress-making continuations were admitted");
   assert.equal(progressRows(noProgress), 2);
+  assert.equal(reviewed.filter(item => item === "repeated-no-progress:3").length, 3, "no-progress proposals have bounded reconsideration without replaying execution");
   const rewritten = assertNoContinuationPromise(noProgress);
   assert(!rewritten.summary.includes("可直接使用"), "host never preserves unsupported model claims after override");
   assert.equal(works.getWork(noProgress)?.closureConclusion, "ended_unsuccessfully", "refused continuation ends honestly as partial");
@@ -201,6 +219,14 @@ try {
   works.admitTaskAction(blockedBinding.taskId, { operationId: "same-unknown-write", actionKind: "workspace:write" });
   works.settleTaskAction(blockedBinding.taskId, "same-unknown-write", "unknown");
   states.set(blocked, "completed"); await settle(8);
+  const pendingDelivery = db.connection.prepare("SELECT decision_json,attempts FROM work_completion_turns WHERE binding_id=?")
+    .get(blockedBinding.bindingId) as { decision_json: string; attempts: number };
+  assert.equal(JSON.parse(pendingDelivery.decision_json).decision, "deliver", "rejected plan is durably replaced before delivery retry");
+  assert.equal(pendingDelivery.attempts, 3);
+  db.connection.prepare("UPDATE work_completion_turns SET retry_at=0 WHERE binding_id=?").run(blockedBinding.bindingId);
+  await settle(3);
+  assert.equal(reviewed.filter(item => item === "same-binding-unknown:1").length, 3, "delivery retry does not review or replay the rejected business plan");
+  assert.equal(rejectedDeliveryFailures, 2);
   assert.equal(works.repo.listBindings(blocked).length, 1, "an unknown effect in the same lineage is not retried");
   const blockedReport = assertNoContinuationPromise(blocked);
   assert(!blockedReport.summary.includes("已确认的部分已交付"), "host replacement does not rely on model claims");
