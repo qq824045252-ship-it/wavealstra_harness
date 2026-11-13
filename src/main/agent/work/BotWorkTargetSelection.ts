@@ -111,10 +111,58 @@ function namedTargets(facts: WorkTargetFacts): { fullTitles: string[]; matches: 
 /** Explicit exclusions only narrow targeting. A negative clause never supplies
  * authorization, even when it names the sole Work or a selected/replied card.
  * Keep ambiguous mixed clauses conservative instead of inferring intent. */
-function targetClauses(text: string): { positive: string; excluded: string } {
+function targetClauses(facts: WorkTargetFacts): { positive: string; excluded: string; excludedInstructions: string[] } {
+  // Names are opaque data, not grammar: a title may itself contain "but", "not",
+  // punctuation or a control verb. Protect complete known labels before parsing.
+  let text = normalize(facts.userText);
+  const protectedLabels: string[] = [];
+  const labels = [...new Set([...facts.explicitWorkIds, ...facts.openWorks.map(work => work.title.trim())
+    .filter(title => title.length >= WORK_TARGET_TITLE_MIN_LENGTH)].map(normalize))].sort((a, b) => b.length - a.length);
+  for (const label of labels) {
+    if (!label || !text.includes(label)) continue;
+    const token = `\uE000${protectedLabels.length}\uE001`;
+    protectedLabels.push(label);
+    // Protect only a complete object immediately following an explicit control.
+    // Merely having another Work named "don't ever" must not erase negation.
+    let cursor = 0;
+    while (cursor < text.length) {
+      const at = text.indexOf(label, cursor); if (at < 0) break;
+      const before = text.slice(0, at), after = text.slice(at + label.length);
+      const objectPosition = /(?:\b(?:pause|suspend|resume|cancel|stop|amend|change)\s+|(?:暂停|挂起|恢复|解除暂停|取消|终止|停止|修改|调整|修复)\s*)$/i.test(before);
+      const objectEnd = /^\s*(?:$|[，,。.;；！？!?\n]|\b(?:and|or|but|instead)\b)/i.test(after);
+      if (objectPosition && objectEnd) {text = before + token + after; cursor = at + token.length;}
+      else cursor = at + label.length;
+    }
+  }
+  const restore = (value: string) => value.replace(/\uE000(\d+)\uE001/g, (_, index: string) => protectedLabels[Number(index)] ?? "");
   const positive: string[] = [], excluded: string[] = [];
   const negative = /不(?:改|动)|别动|不要(?:改|动|修|处理|操作|暂停|恢复|取消|停止)|别(?:改|修|处理|操作|暂停|恢复|取消|停止)|不是/;
-  const clauses = text.split(/[，,。；;！？!?\n]+|但是|但|而是/);
+  // English negation scopes over a coordinated phrase (including commas and
+  // and/or). Only a sentence/semicolon or explicit contrast starts a new scope.
+  // Do this before comma splitting, otherwise "do not pause A, resume B"
+  // could silently turn its second forbidden action into authorization.
+  // A negation token makes its scope non-authorizing regardless of intervening
+  // adverbs or request wording. This is a conservative gate, not intent inference.
+  const englishNegative = /\b(?:[a-z]+n['’]t|never|not|cannot)\b|禁止|不许|不得/i;
+  const positiveSegments: string[] = [];
+  let prohibitionHeader = false;
+  for (const segment of text.split(/[;；。.!?！？\n]+|\b(?:but|instead)\b|,\s*(?=(?:not|never|don['’]t|do\s+not)\b)/i)) {
+    // A heading such as "Do not:" governs following list items. Missing
+    // attachment is not permission: keep it closed until an explicit new-now
+    // instruction, rather than guessing a scope from line breaks.
+    if (/^\s*(?:now\b|现在|立即)/i.test(segment)) prohibitionHeader = false;
+    const negated = englishNegative.test(segment);
+    if (negated && !deferredControl.test(segment)
+      && (!new RegExp(controlVerbs.source, "i").test(segment) || /[:：]\s*$/.test(segment))) prohibitionHeader = true;
+    if (negated || prohibitionHeader) {
+      excluded.push(segment);
+      // Excluding a forbidden action must not erase a condition that governs
+      // later clauses. Retain its syntax for the existing deferred-control gate.
+      if (deferredControl.test(segment)) positiveSegments.push(segment);
+    }
+    else positiveSegments.push(segment);
+  }
+  const clauses = positiveSegments.join("\n").split(/[，,。；;！？!?\n]+|但是|但|而是/);
   const exclusive = /(?:只|仅)(?:修复|修改|调整|处理|修|改)/;
   const hasExclusiveChange = clauses.some(clause => exclusive.test(clause) && !negative.test(clause)
     && !/不只|不仅|并非只|并非仅/.test(clause));
@@ -131,7 +179,8 @@ function targetClauses(text: string): { positive: string; excluded: string } {
       && (/保持(?:不变|原样|现状)|照常/.test(clause) || /继续/.test(clause) && unchangedReference);
     (negative.test(clause) || preserve ? excluded : positive).push(clause);
   }
-  return { positive: positive.join("\n").trim(), excluded: excluded.join("\n").trim() };
+  return { positive: restore(positive.join("\n").trim()), excluded: restore(excluded.join("\n").trim()),
+    excludedInstructions: excluded };
 }
 
 const ambiguous = (): WorkTargetResolution => ({ ok: false, code: "ambiguous_target", message: WORK_TARGET_ERROR });
@@ -196,11 +245,35 @@ function explicitActionTarget(facts: WorkTargetFacts, positive: string): WorkTar
 }
 
 export function resolveWorkTarget(facts: WorkTargetFacts): WorkTargetResolution {
-  const clauses = targetClauses(facts.userText);
+  const clauses = targetClauses(facts);
   if (!clauses.positive) return ambiguous();
+  // Removing a prohibition must not turn courtesy text into authorization via
+  // the selected/replied card. Require a surviving control instruction before
+  // using any contextual target after an exclusion. Labels are opaque data:
+  // a task named "Pause report" is not itself a fresh instruction.
+  if (clauses.excluded) {
+    let instruction = normalize(clauses.positive);
+    const labels = [...facts.explicitWorkIds, ...facts.openWorks.map(work => work.title.trim())
+      .filter(title => title.length >= WORK_TARGET_TITLE_MIN_LENGTH)].sort((a, b) => b.length - a.length);
+    for (const label of labels) instruction = instruction.split(normalize(label)).join(" ");
+    if (!new RegExp(controlVerbs.source, "i").test(instruction)) return ambiguous();
+  }
   const excludedFacts = { ...facts, userText: clauses.excluded };
   const excluded = new Set([...namedTargets(excludedFacts).matches,
     ...facts.explicitWorkIds.filter(id => normalize(clauses.excluded).includes(normalize(id)))]);
+  // A pronoun prohibition refers to the same contextual target the fallback
+  // would use. Keep it excluded for that action even if later text contains
+  // another control verb; an unresolved contradiction is not permission.
+  const contextualTargets = facts.referencedWorkIds.length ? facts.referencedWorkIds
+    : facts.selectedWorkId ? [facts.selectedWorkId] : facts.soleOpenWorkId ? [facts.soleOpenWorkId] : [];
+  // Use the still-tokenized clauses, not restored titles: "This report" is
+  // an opaque Work name, not the selected card's pronoun. Keep action/pronoun
+  // association within one clause so a separate exclusion cannot lend a verb.
+  const pronounExclusion = clauses.excludedInstructions.some(instruction =>
+    /\b(?:it|this|that|these|those)\b|它|这个|这项|该任务|该事项/.test(instruction)
+    && [...instruction.matchAll(controlVerbs)].some(match => actionOf(match[0], instruction) === facts.requestedAction));
+  if (pronounExclusion && facts.requestedAction
+    && contextualTargets.includes(facts.requestedWorkId)) return ambiguous();
   if (excluded.has(facts.requestedWorkId)) return ambiguous();
   const batch = explicitActionTarget(facts, clauses.positive);
   if (batch) return batch;

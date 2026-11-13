@@ -11,6 +11,7 @@
     "node": ">=24.0.0"
   },
   "scripts": {
+    "test:bot-work-target-negation": "node scripts/bot-work-target-negation-test.cjs",
     "test:memory-forget-scope-entry": "esbuild scripts/memory-forget-scope-entry-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/memory-forget-scope-entry-test.mjs && node scripts/test-guard.mjs out/tests/memory-forget-scope-entry-test.mjs",
     "test:memory-evidence-forget": "esbuild scripts/memory-evidence-forget-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/memory-evidence-forget-test.mjs && node scripts/test-guard.mjs out/tests/memory-evidence-forget-test.mjs",
     "test:memory-correctness": "esbuild scripts/memory-correctness-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/memory-correctness-test.mjs && node scripts/test-guard.mjs out/tests/memory-correctness-test.mjs",
