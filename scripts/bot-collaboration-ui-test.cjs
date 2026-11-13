@@ -45,7 +45,7 @@ app.whenReady().then(async () => {
     assert(referenceLayout.quoteBottom <= referenceLayout.bodyTop, 'quote sits above its own answer');
     assert.equal(referenceLayout.weight, '400');
     assert.equal(await evaluate(`document.querySelector('[data-message-id="source-27"] .bot-assistant-content').textContent.includes('WORKER_REPORT_MUST_NOT_REPLACE_REPLY')`), false);
-    await click('[aria-label="打开 一年英语计划.html"]');
+    await click('[aria-label="预览 一年英语计划.html"]');
     await wait(`document.querySelector('[data-message-id="source-27"] .bot-work-file-preview iframe') !== null`);
     console.log('PASS returned saved file preview and quote placement');
     assert.deepEqual(await evaluate(`window.returnedFileFixture.preparedFiles.map(f=>({snapshotPath:f.snapshotPath,manifestPath:f.manifestPath}))`), [{snapshotPath:'/saved/plan.html',manifestPath:'/saved/plan.web.json'}]);
@@ -65,6 +65,7 @@ app.whenReady().then(async () => {
       await wait(`document.querySelector('.bot-organization-record > summary')?.textContent.includes(${JSON.stringify(label)})`);
       assert.equal(await evaluate(`document.querySelectorAll('.bot-collaboration-summary').length`), 2, 'management facts do not duplicate bilateral summaries');
       assert.equal(await evaluate(`document.querySelectorAll('[data-collaboration-message-id]').length`), 0, 'management receipts never become bilateral messages');
+      assert.equal(await evaluate(`document.querySelectorAll('.bot-organization-task').length`), 0, 'an organization record without a linked Work invents no task name');
     }
     await click('.bot-organization-record > summary');
     assert((await evaluate(`document.querySelector('.bot-organization-detail').innerText`)).includes('委派受理失败'), 'created/configured target and failed handoff remain visible together');
@@ -82,6 +83,8 @@ app.whenReady().then(async () => {
     win.setBounds({ width: 1280, height: 900 }); await pause();
     await evaluate(`window.collaborationFixture.setOrganization('linked')`);
     await wait(`Boolean(document.querySelector('.bot-organization-linked'))`);
+    assert.equal(await evaluate(`document.querySelector('.bot-organization-linked .bot-organization-task').textContent`), '「学习搭子的个人核验事项」', 'linked management entry names the delegated task');
+    assert((await evaluate(`document.querySelector('.bot-organization-linked').innerText`)).includes('已接入协作 · 学习搭子'), 'the target Bot stays visible next to the task name');
     const organizationSource = await evaluate(`window.collaborationFixture.sourceState()`);
     await click('.bot-organization-linked');
     await wait(`Boolean(document.querySelector('.bot-collaboration-view'))`);
@@ -102,6 +105,8 @@ app.whenReady().then(async () => {
     assert.equal(summaryLayout.align, 'flex-start');
     assert.equal(summaryLayout.fontSize, '12px');
     assert.equal(await evaluate(`document.querySelectorAll('.bot-collaboration-summary .bot-avatar svg').length`), 2, 'each target summary has its own Bot icon');
+    assert.equal(await evaluate(`document.querySelector('.bot-collaboration-summary-work').textContent`), '「学习搭子的个人核验事项」', 'delegating entry names the delegated task');
+    assert((await evaluate(`document.querySelector('.bot-collaboration-summary').getAttribute('aria-label')`)).includes('委托「学习搭子的个人核验事项」'), 'the task name is part of the accessible name');
     assert((await evaluate(`document.querySelector('.bot-collaboration-summary').innerText`)).includes('已返回 · 本次执行已结束，事项未结束'), 'returned partial execution does not imply Work completion');
     assert.equal(await evaluate(`document.querySelectorAll('[data-collaboration-elapsed]')[1].textContent`), '耗时 5.2 秒', 'terminal elapsed uses sent/returned receipts rather than updatedAt');
     for (const [status, label] of [['failed','本次执行失败，事项未结束'], ['unknown','执行状态待核实，事项未结束'], ['pending','事项等待执行'], ['submitted','事项已提交，等待执行'], ['running','事项进行中']]) {
@@ -202,6 +207,12 @@ app.whenReady().then(async () => {
     await evaluate(`window.collaborationFixture.selectTarget()`);
     await wait(`document.querySelector('.bot-heading h1')?.textContent==='学习搭子'`);
     await wait(`Boolean(document.querySelector('.bot-incoming-collaborations'))`);
+    await wait(`Boolean(document.querySelector('[data-message-id="target-peer-accept"] .bot-delegation-reference'))`);
+    assert.equal(await evaluate(`document.querySelector('[data-message-id="target-peer-input"]') === null`), true, 'peer delegation input stays in the collaboration journal');
+    assert(!(await evaluate(`document.body.textContent`)).includes('PEER_REQUEST_TEXT_MUST_STAY_IN_JOURNAL'), 'the acceptance reference never copies peer input text');
+    const delegationReference = await evaluate(`(()=>{const m=document.querySelector('[data-message-id="target-peer-accept"]'),q=m.querySelector('.bot-delegation-reference'),b=m.querySelector('.bot-assistant-content');return {text:q.innerText,above:q.getBoundingClientRect().bottom<=b.getBoundingClientRect().top,weight:getComputedStyle(q.querySelector('summary')).fontWeight,open:q.hasAttribute('open')}})()`);
+    assert(delegationReference.text.includes('接受委托') && delegationReference.text.includes('学习搭子的个人核验事项'), 'accepting reply opens with the actual delegated task name');
+    assert(delegationReference.above && delegationReference.weight === '400' && !delegationReference.open, 'acceptance reference is a collapsed quote above its own answer');
     assert.equal(await evaluate(`document.querySelectorAll('.bot-primary-badge').length`), 0, 'ordinary recipient does not inherit the primary role badge');
     assert.equal(await evaluate(`document.querySelectorAll('.bot-conversation-empty').length`), 0, 'a recipient with real incoming requests must not appear unused');
     assert((await evaluate(`document.querySelector('.bot-incoming-collaborations').innerText`)).includes('来自 翻译搭子'));
@@ -209,6 +220,7 @@ app.whenReady().then(async () => {
     assert((await evaluate(`document.querySelector('[data-incoming-collaboration="incoming-question"] .bot-collaboration-summary').innerText`)).includes('进行中'));
     assert.equal(await evaluate(`document.querySelector('[data-incoming-collaboration="relation-a"] .bot-message-author').innerText`), '学习搭子');
     assert.equal(await evaluate(`document.querySelector('[data-incoming-collaboration="relation-a"] .bot-collaboration-summary-target').innerText`), '并发助理', 'recipient communication entry names the initiating Bot');
+    assert.equal(await evaluate(`document.querySelector('[data-incoming-collaboration="relation-a"] .bot-collaboration-summary-work').textContent`), '「学习搭子的个人核验事项」', 'recipient communication entry names the delegated task');
     assert(await evaluate(`(()=>{const row=document.querySelector('[data-incoming-collaboration="relation-a"]');return row.querySelector('.bot-incoming-reply').getBoundingClientRect().bottom<=row.querySelector('.bot-collaboration-summaries').getBoundingClientRect().top})()`), 'recipient reply precedes the shared compact communication entry');
     assert.equal(await evaluate(`document.querySelectorAll('[data-incoming-collaboration="outgoing-from-target"]').length`), 0, 'incoming feed excludes requests sent by this Bot');
     assert(await evaluate(`window.collaborationFixture.listCalls.some(r=>r.botId==='target'&&r.direction==='incoming')`), 'incoming scope is filtered by the host before pagination');
@@ -228,6 +240,7 @@ app.whenReady().then(async () => {
     report.checks.push('recipient main page shows incoming consultation and Work, live returned reply, host-filtered paging, narrow layout and keyboard history/back');
     await evaluate(`[...document.querySelectorAll('.bot-workspace-actions button')].find(e=>e.textContent==='协作记录').click()`);
     await wait(`document.querySelector('.bot-collaboration-list')?.innerText.includes('来自 并发助理')`);
+    assert((await evaluate(`document.querySelector('.bot-collaboration-list').innerText`)).includes('「学习搭子的个人核验事项」'), 'the collaboration list names the delegated task');
     await click('.bot-collaboration-list [data-collaboration-id="relation-a"]');
     await wait(`document.querySelector('.bot-collaboration-readonly')?.innerText.includes('来源 Bot')`);
     assert.equal(await evaluate(`document.querySelectorAll('.bot-collaboration-followup').length`), 0, 'target history never impersonates source user');

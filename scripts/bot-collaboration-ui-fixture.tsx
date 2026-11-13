@@ -61,13 +61,24 @@ const targetWork: WorkProjectionDto = { workId: 'target-owned-work', title: '学
   ownerEpoch: 1, intentRevision: 1, sourceVersion: 1, stateVersion: 1, inputSnapshotId: 'target-input', inputSnapshotBound: true,
   goalSources: [], criteria: [], acceptedDeliverableIds: [], deliverables: [], blockers: [], executions: [], notifications: [], subscriptionIds: [], uncoveredScope: [], nextSteps: [], updatedAt: 9000 };
 const accepted = new Map<string, BotSendReceipt>();
+const targetPeerOrigin = { kind: 'request' as const, collaborationId: first.collaborationId, exchangeId: 'target-peer-exchange',
+  senderBotId: 'bot', senderDisplayName: '并发助理', sourceBotId: 'bot', sourceConversationId: 'source-chat',
+  sourceRequestId: 'source-24', sourceUserMessageId: 'source-24', sourceAssistantMessageId: 'source-25' };
+const targetHistory: BotHistoryDto = { botId: 'target', conversationId: 'target-peer-chat', revision: 1, archived: false, messages: [
+  { botId: 'target', conversationId: 'target-peer-chat', requestId: 'target-peer-request', messageId: 'target-peer-input', ordinal: 1,
+    role: 'user', text: 'PEER_REQUEST_TEXT_MUST_STAY_IN_JOURNAL 请核验库存并保留阶段成果', status: 'completed',
+    workIds: ['target-owned-work'], peerOrigin: targetPeerOrigin, createdAt: 1000, updatedAt: 1000 },
+  { botId: 'target', conversationId: 'target-peer-chat', requestId: 'target-peer-request', messageId: 'target-peer-accept', ordinal: 2,
+    role: 'assistant', text: '已受理：先核验库存，再保留阶段成果。', status: 'completed', workIds: ['target-owned-work'],
+    peerOrigin: targetPeerOrigin, createdAt: 1100, updatedAt: 1100 },
+] };
 let failFirstReceipt = true;
 let heldRelation: string | undefined, releaseRead: (() => void) | undefined;
 let inlineSourceHistory: BotHistoryDto | undefined;
 Object.assign(window.api!.botWork, {
   getWork: async (workId: string) => { getWorkCalls.push(workId); return workId === targetWork.workId ? structuredClone(targetWork) : undefined; },
   history: async ({ botId }: { botId: string }) => botId === 'bot' ? structuredClone(inlineSourceHistory ?? sourceHistory)
-    : { botId, conversationId: '', revision: 0, archived: false, messages: [] },
+    : botId === 'target' ? structuredClone(targetHistory) : { botId, conversationId: '', revision: 0, archived: false, messages: [] },
   collaborations: async (request: BotCollaborationsQuery) => {
     listCalls.push(request);
     const available = allRelations.filter(item => (item.sourceBotId === request.botId || item.targetBotId === request.botId)
@@ -129,6 +140,7 @@ const organizationStates = {
     summary: '学习搭子已创建并配置；委派受理失败，可在原意图继续。',
     receipts: [{ receiptId: 'receipt-contact-failed', step: 'contact', status: 'failed', createdAt: 4100, summary: '派发暂时不可用，未创建新的执行事项。' }] },
   linked: { ...organizationIntent, phase: 'linked', target: organizationTarget, collaborationId: first.collaborationId,
+    taskTitle: '学习搭子的个人核验事项',
     times: { ...organizationTimes, botCreatedAt: 2000, configuredAt: 3000, contactStartedAt: 4000, linkedAt: 5000 } },
   many: { ...organizationIntent, phase: 'contact_failed', target: organizationTarget, collaborationId: null,
     receipts: Array.from({ length: 40 }, (_, index) => ({ receiptId: `receipt-${index}`, step: 'contact', status: 'failed', createdAt: 4100 + index, summary: `保留的管理回执 ${index + 1}` })), totalReceipts: 47 },
@@ -142,6 +154,7 @@ const organizationSchemaChecks = {
   rejectsOversizedReceipts: !botOrganizationSummarySchema.safeParse({ ...organizationStates.many, receipts: [...organizationStates.many.receipts, organizationStates.many.receipts[0]] }).success,
 };
 useAppStore.setState({ botHistories: { bot: sourceHistory }, botDraft: '尚未发送的来源草稿', botDrafts: { bot: '尚未发送的来源草稿' },
+  botWorks: [targetWork],
   botAttachmentDrafts: { bot: [{ name: '保留附件.txt', path: '/fixture/attachment.txt' }] },
   botIdentities: [{ ...sourceBot, organizationRole: 'primary' }, { ...sourceBot, botId: 'target', displayName: '学习搭子', organizationRole: 'ordinary' }, { ...sourceBot, botId: 'other-target', displayName: '翻译搭子', organizationRole: 'ordinary' },
     { ...sourceBot, botId: 'idle', displayName: '新助理', organizationRole: 'ordinary' }],

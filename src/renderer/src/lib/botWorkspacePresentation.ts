@@ -140,8 +140,9 @@ export function botWorkTimeline(messages: BotMessageDto[]): BotTimelineEntry[] {
     latest.set(eventKey(message), message.messageId);
   const rows: BotTimelineEntry[] = [];
   for (const message of messages) {
-    // Peer inputs drive the foreground, but their text belongs to the collaboration journal.
-    if (message.peerOrigin && (message.role === "user" || message.peerOrigin.kind === "request")) continue;
+    // Peer input text belongs to the collaboration journal, but a reply to a delegated
+    // request is still this Bot's own answer and keeps its acceptance reference visible.
+    if (message.peerOrigin && message.role === "user") continue;
     const feedback = message.role === "assistant" && message.status === "completed" ? message.workFeedback : undefined;
     const fold = feedback && !message.error && (feedback.category === "progress" || latest.get(eventKey(message)) !== message.messageId);
     const previous = rows.at(-1);

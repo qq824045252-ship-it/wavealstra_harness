@@ -50,8 +50,8 @@ runRendererFixture({name:'bot-conversation-concurrent',width:1050,height:820,sho
     assert(await evaluate(`document.querySelectorAll('.bot-reply-metrics')[1].textContent.includes('平均 40.0 tok/s')`));
     assert(await evaluate(`document.querySelectorAll('.bot-reply-metrics')[2].textContent.includes('输入 —')`));
     assert(await evaluate(`document.querySelectorAll('.bot-reply-metrics')[0].querySelector('span').title.includes('100,030 tokens')`));
-    const refs = await evaluate(`[...document.querySelectorAll('.bot-reply-reference')].map(e=>e.textContent)`);
-    assert.deepEqual(refs, ['回复：A 查天气','回复：B 算术','回复：C 写文档']);
+    const refs = await evaluate(`[...document.querySelectorAll('.bot-reply-reference')].map(e=>e.querySelector('.bot-reply-reference-preview').textContent)`);
+    assert.deepEqual(refs, ['A 查天气','B 算术','C 写文档']);
     await evaluate(`[...document.querySelectorAll('.bot-message.assistant')][2].querySelector('.bot-message-meta button:last-child').click()`);
     await wait('window.concurrentFixture.cancellations.length===1');
     assert(await evaluate('window.concurrentFixture.cancellations[0]===window.concurrentFixture.requests[2].requestId'));

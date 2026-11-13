@@ -104,10 +104,13 @@ export function BotCallThread({ calls, collaborations, onOpenCollaboration, rend
           const incoming = viewerBotId === item.targetBotId;
           const partnerId = incoming ? item.sourceBotId : item.targetBotId;
           const partnerName = incoming ? item.sourceDisplayName : item.targetDisplayName;
+          // The delegated task name, host-projected from the bound Work; never parsed from bot prose.
+          const taskTitle = item.work?.title.trim();
           return <button type="button" className="bot-collaboration-summary" key={item.collaborationId}
           data-collaboration-id={item.collaborationId} onClick={() => onOpenCollaboration?.(item.collaborationId)} disabled={!onOpenCollaboration}
-          aria-label={`查看与 ${partnerName} 的协作记录，${item.messageCount} 条消息`}>
+          aria-label={`查看与 ${partnerName} 的协作记录${taskTitle ? `，委托「${taskTitle}」` : ''}，${item.messageCount} 条消息`}>
           <span className="bot-collaboration-summary-target"><BotAvatar botId={partnerId} name={partnerName} /><span title={partnerName}>{partnerName}</span></span>
+          {taskTitle && <span className="bot-collaboration-summary-work" title={taskTitle}>{`「${taskTitle}」`}</span>}
           <span className="bot-collaboration-summary-count">{item.messageCount} 条消息</span>
           <span className="bot-collaboration-summary-meta"><span className="bot-collaboration-summary-status">{collaborationDisplayStatus(item)}{item.work ? ` · ${collaborationWorkStatus(item.work)}` : item.workId ? ' · 已关联事项' : ''}</span><span data-collaboration-elapsed>耗时 {collaborationElapsed(item, now)}</span></span>
           <IconChevronRight size={13} />

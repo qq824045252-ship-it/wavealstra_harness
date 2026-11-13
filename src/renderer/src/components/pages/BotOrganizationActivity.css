@@ -7,6 +7,7 @@
 .bot-organization-record > summary svg { flex-shrink:0; }
 .bot-workspace .bot-organization-linked { padding:4px 0; border:0; background:transparent; color:var(--fg-secondary); text-align:left; justify-content:flex-start; }
 .bot-organization-linked > span { overflow-wrap:anywhere; }
+.bot-organization-task { color:var(--fg); }
 .bot-organization-linked + .bot-organization-record > summary { font-size:11px; color:var(--fg-muted); }
 .bot-organization-detail { padding:5px 0 8px; display:grid; gap:8px; overflow-wrap:anywhere; }
 .bot-organization-description { white-space:pre-wrap; }

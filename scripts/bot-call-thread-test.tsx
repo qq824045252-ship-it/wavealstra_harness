@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { BotCallDto, BotMessageDto } from '../src/shared/bot-conversation';
+import type { BotCollaborationDto } from '../src/shared/bot-collaboration';
+import type { WorkProjectionDto } from '../src/shared/bot-work';
 import { BotCallThread } from '../src/renderer/src/components/pages/BotCallThread';
 import { BotMessage } from '../src/renderer/src/components/pages/BotWorkspacePage';
 
@@ -44,3 +46,43 @@ const second = renderMessage({ ...message, messageId: 'parent-two', requestId: '
 assert.match(second, /1 条消息，与 ERP 后端/);
 assert.doesNotMatch(second, /data-call-id="call-learning"|我今天学习了事务隔离。/, 'concurrent parent messages do not mix records');
 console.log('bot-call-thread rendering: PASS');
+
+// A collaboration entry names the delegated Work on both sides, and a reply to a
+// peer request opens with the host-recorded acceptance reference.
+const collaboration: BotCollaborationDto = { collaborationId: 'relation-one', userId: 'user', sourceBotId: 'manager',
+  sourceDisplayName: '总管', sourceConversationId: 'chat', sourceRequestId: 'request-one', sourceUserMessageId: 'user-one',
+  sourceAssistantMessageId: 'parent-one', targetBotId: 'learning', targetDisplayName: '学习搭子', workId: 'work-poster',
+  createdAt: 1, updatedAt: 2, messageCount: 2, status: 'returned', originAvailable: true,
+  times: { sentAt: 1, deliveredAt: 2, acceptedAt: 3, startedAt: 4, endedAt: 5, returningAt: 6, returnedAt: 7 },
+  work: { workId: 'work-poster', title: '制作海洋保护 HTML 海报', lifecycle: 'active', executionStatus: 'running',
+    startedAt: 4, endedAt: null, closedAt: null } };
+const collaborationHtml = renderToStaticMarkup(<BotCallThread collaborations={[collaboration]} viewerBotId="manager" />);
+assert.match(collaborationHtml, /class="bot-collaboration-summary-work"[^>]*>「制作海洋保护 HTML 海报」</, 'the delegated task name is visible');
+assert.match(collaborationHtml, /aria-label="查看与 学习搭子 的协作记录，委托「制作海洋保护 HTML 海报」，2 条消息"/);
+const recipientHtml = renderToStaticMarkup(<BotCallThread collaborations={[collaboration]} viewerBotId="learning" />);
+assert.match(recipientHtml, /「制作海洋保护 HTML 海报」/, 'the accepting side names the same delegated task');
+const withoutWork = renderToStaticMarkup(<BotCallThread collaborations={[{ ...collaboration, workId: null, work: undefined }]} viewerBotId="manager" />);
+assert.doesNotMatch(withoutWork, /bot-collaboration-summary-work/, 'no Work means no invented task name');
+assert.match(withoutWork, /已返回/, 'the receipt stays visible without a Work');
+
+const delegatedWork: WorkProjectionDto = { workId: 'work-poster', title: '制作海洋保护 HTML 海报', ownerBotId: 'learning',
+  mode: 'once', lifecycle: 'active', ownerEpoch: 1, intentRevision: 1, sourceVersion: 1, stateVersion: 1,
+  inputSnapshotId: 'peer-input', inputSnapshotBound: true, goalSources: [], criteria: [], acceptedDeliverableIds: [],
+  deliverables: [], blockers: [], executions: [], notifications: [], subscriptionIds: [], uncoveredScope: [], nextSteps: [], updatedAt: 9 };
+const delegationOrigin = { kind: 'request' as const, collaborationId: 'relation-one', exchangeId: 'peer-exchange',
+  senderBotId: 'manager', senderDisplayName: '总管', sourceBotId: 'manager', sourceConversationId: 'chat',
+  sourceRequestId: 'request-one', sourceUserMessageId: 'user-one', sourceAssistantMessageId: 'parent-one' };
+const delegation: BotMessageDto = { messageId: 'peer-accept', conversationId: 'peer-chat', botId: 'learning', requestId: 'peer-request',
+  ordinal: 1, role: 'assistant', text: '已受理，正在制作海报。', status: 'completed', workIds: ['work-poster'],
+  peerOrigin: delegationOrigin, createdAt: 1, updatedAt: 2 };
+const renderDelegation = (value: BotMessageDto, works: WorkProjectionDto[] = [delegatedWork]) => renderToStaticMarkup(
+  <BotMessage message={value} botName="学习搭子" works={works} onOpenWork={() => {}} onCancel={() => {}} />);
+const acceptedHtml = renderDelegation(delegation);
+assert.match(acceptedHtml, /class="bot-reply-reference bot-delegation-reference"/);
+assert.match(acceptedHtml, /接受委托<\/span><span class="bot-reply-reference-preview">制作海洋保护 HTML 海报/);
+assert.ok(acceptedHtml.indexOf('bot-delegation-reference') < acceptedHtml.indexOf('bot-assistant-content'), 'the delegated task precedes the answer');
+assert.doesNotMatch(acceptedHtml, /<details class="bot-reply-reference bot-delegation-reference" open/, 'the reference starts collapsed like a quote');
+assert.match(renderDelegation(delegation, []), /来自 总管/, 'a Work that is not loaded still names the sender');
+assert.doesNotMatch(renderDelegation({ ...delegation, peerOrigin: undefined }), /bot-delegation-reference/, 'ordinary replies claim no delegation');
+assert.doesNotMatch(renderDelegation({ ...delegation, peerOrigin: { ...delegationOrigin, kind: 'return', replyMessageId: 'reply' } }), /bot-delegation-reference/, 'returned collaboration results are not a new acceptance');
+console.log('bot delegation reference: PASS');

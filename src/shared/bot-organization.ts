@@ -28,6 +28,9 @@ const base = z.object({
 const intent = base.extend({
   kind: z.literal("intent"),
   intentId: id,
+  /** Read-model only: the linked collaboration's current Work title. It is joined
+   * when a message is read, so a Work rename never rewrites an organization receipt. */
+  taskTitle: z.string().trim().min(1).max(2000).optional(),
   times: z.object({
     searchedAt: time.nullable(),
     botCreatedAt: time.nullable(),

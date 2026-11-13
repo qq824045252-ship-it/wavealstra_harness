@@ -72,15 +72,17 @@ export function BotOrganizationActivity({ organizations, onOpenCollaboration }: 
     {[...latest.values()].map(item => {
       const label = activityLabel(item);
       const targetName = item.kind === "intent" ? item.target?.displayName : undefined;
+      // The linked task name is the host-joined Work title, shown with the Bot it was delegated to.
+      const taskTitle = item.kind === "intent" ? item.taskTitle : undefined;
       return <div key={item.organizationId} className="bot-organization-item" data-organization-id={item.organizationId}
         data-organization-phase={item.kind === "discovery" ? item.status : item.phase}>
         {item.kind === "intent" && item.phase === "linked" && onOpenCollaboration ? <>
           <button type="button" className="bot-organization-linked" onClick={() => onOpenCollaboration(item.collaborationId)}>
-            <IconBot size={14} /><span>{label} · {targetName}</span><IconChevronRight size={14} />
+            <IconBot size={14} /><span>{label} · {targetName}{taskTitle && <> · <span className="bot-organization-task">{`「${taskTitle}」`}</span></>}</span><IconChevronRight size={14} />
           </button>
           <details className="bot-organization-record"><summary>查看查找与配置回执</summary><ManagementReceipts item={item} /></details>
         </> : <details className="bot-organization-record"><summary>
-          <IconBot size={14} /><span>{label}{targetName ? ` · ${targetName}` : ""}</span>
+          <IconBot size={14} /><span>{label}{targetName ? ` · ${targetName}` : ""}{taskTitle && <> · <span className="bot-organization-task">{`「${taskTitle}」`}</span></>}</span>
         </summary><ManagementReceipts item={item} /></details>}
       </div>;
     })}

@@ -636,6 +636,9 @@ const peerInput: BotMessageDto = { ...untyped, messageId: "peer-input", requestI
 const peerAnswer: BotMessageDto = { ...peerInput, role: "assistant", messageId: "peer-answer", text: "已完成，文件在下方。" };
 const peerTranscript = [humanRequest, peerInput, peerAnswer];
 assert.deepEqual(botWorkTimeline(peerTranscript).map(row => row.key), [humanRequest.messageId, peerAnswer.messageId], "peer inputs belong only to the communication journal; the source Bot reply stays visible");
+const peerRequest: BotMessageDto = { ...peerInput, peerOrigin: { ...peerInput.peerOrigin!, kind: "request" } };
+const peerAcceptance: BotMessageDto = { ...peerRequest, role: "assistant", messageId: "peer-acceptance", text: "已接单，正在处理。" };
+assert.deepEqual(botWorkTimeline([peerRequest, peerAcceptance]).map(row => row.key), [peerAcceptance.messageId], "a delegated request's acceptance reply remains this Bot's visible answer while the peer input stays in the journal");
 assert.equal(botReplyQuestions(peerTranscript).get(peerAnswer.requestId), humanRequest, "returned answer quotes the actual user's commission, not the internal payload");
 assert.equal(botReplyQuestions([peerInput, peerAnswer]).get(peerAnswer.requestId), undefined, "partial history must not quote a hidden peer input");
 assert.equal(botReplyQuestions([{ ...humanRequest, conversationId: "other" }, peerAnswer]).get(peerAnswer.requestId), undefined);

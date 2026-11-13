@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
+import { z } from "zod";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { BotCollaborationRepository, type BotCollaborationInitiation } from "../src/main/agent/work/BotCollaborationRepository";
+import { botOrganizationsForMessage } from "../src/main/agent/work/BotOrganizationProjection";
+import { botOrganizationSummarySchema, type BotOrganizationSummaryDto } from "../src/shared/bot-organization";
 
 const directory = mkdtempSync(join(tmpdir(), "bot-collaboration-store-"));
 const file = join(directory, "app.db");
@@ -89,6 +92,47 @@ try {
   assert.throws(() => repo.linkWork("u", second.collaborationId, "work-target"), /另一协作/);
   assert.equal(repo.byWork("u", "work-target")?.collaborationId, relation.collaborationId);
   assert.equal(repo.byWork("v", "work-target"), undefined);
+
+  // The organization read model shows the linked task name without writing it into a receipt.
+  db.exec(`CREATE TABLE bot_organization_records(organization_id TEXT PRIMARY KEY,user_id TEXT NOT NULL,source_bot_id TEXT NOT NULL,
+      admission_key TEXT NOT NULL,request_hash TEXT NOT NULL,request_json TEXT NOT NULL,origin_json TEXT NOT NULL,create_request_json TEXT,
+      expected_revision INTEGER,applied_revision INTEGER,value_json TEXT NOT NULL CHECK(json_valid(value_json)),
+      created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL);
+    CREATE TABLE bot_organization_message_links(organization_id TEXT NOT NULL,message_id TEXT NOT NULL,PRIMARY KEY(organization_id,message_id));
+    CREATE TABLE bot_collaboration_organization_links(user_id TEXT NOT NULL,intent_id TEXT NOT NULL,collaboration_id TEXT NOT NULL,
+      PRIMARY KEY(user_id,intent_id),UNIQUE(user_id,collaboration_id));`);
+  const organizationIntent = (intentId: string, collaborationId: string) => botOrganizationSummarySchema.parse({
+    organizationId: intentId, kind: "intent", intentId, sourceBotId: "source", sourceDisplayName: "Source",
+    sourceConversationId: "source-conversation", sourceRequestId: "first", sourceUserMessageId: "user-first",
+    sourceAssistantMessageId: "assistant-first", createdAt: 1000, updatedAt: 9000,
+    summary: "已接入原个人协作，执行和成果以事项记录为准", receipts: [], totalReceipts: 0,
+    phase: "linked", target: { botId: "target", displayName: "Target" }, collaborationId,
+    times: { searchedAt: null, botCreatedAt: null, configuredAt: null, contactStartedAt: null, linkedAt: 9000 },
+  });
+  const recordOrganization = (value: BotOrganizationSummaryDto, messageId: string) => {
+    if (value.kind !== "intent") throw new Error("fixture expects an organization intent");
+    db.prepare(`INSERT INTO bot_organization_records(organization_id,user_id,source_bot_id,admission_key,request_hash,request_json,
+      origin_json,value_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`)
+      .run(value.organizationId, "u", "source", value.organizationId, "hash", "{}", "{}", JSON.stringify(value), 1000, 9000);
+    db.prepare("INSERT INTO bot_organization_message_links VALUES (?,?)").run(value.organizationId, messageId);
+    db.prepare("INSERT INTO bot_collaboration_organization_links VALUES (?,?,?)")
+      .run("u", value.intentId, value.collaborationId);
+  };
+  recordOrganization(organizationIntent("intent-one", relation.collaborationId), "assistant-first");
+  recordOrganization(organizationIntent("intent-two", second.collaborationId), "assistant-second");
+  const taskTitleOf = (messageId: string) => {
+    const projected = botOrganizationsForMessage(db, "u", messageId);
+    assert.equal(projected.length, 1);
+    return projected[0].kind === "intent" ? projected[0].taskTitle : undefined;
+  };
+  assert.equal(taskTitleOf("assistant-first"), "Actual target work", "organization entry joins the linked Work title");
+  db.prepare("UPDATE works SET title='Renamed target task' WHERE work_id='work-target'").run();
+  assert.equal(taskTitleOf("assistant-first"), "Renamed target task", "a Work rename reaches the read model without a new receipt");
+  assert.equal(taskTitleOf("assistant-second"), undefined, "a collaboration without a Work invents no task name");
+  assert.equal(botOrganizationsForMessage(db, "v", "assistant-first").length, 0, "another account cannot read the organization entry");
+  const stored = botOrganizationSummarySchema.parse(JSON.parse(z.object({ value_json: z.string() })
+    .parse(db.prepare("SELECT value_json FROM bot_organization_records WHERE organization_id='intent-one'").get()).value_json));
+  assert.equal(stored.kind === "intent" ? stored.taskTitle : undefined, undefined, "the stored organization receipt remains unchanged");
   assert.throws(() => repo.appendMessage("u", relation.collaborationId, { operationId: "foreign-feedback", senderBotId: "target",
     senderDisplayName: "Target", kind: "result", text: "forged unrelated result",
     workFeedback: { workId: "work-source", eventId: "foreign-result", kind: "result", category: "result" } }), /Work 不属于/);

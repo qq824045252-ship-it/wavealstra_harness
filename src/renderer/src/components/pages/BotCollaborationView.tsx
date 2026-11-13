@@ -286,7 +286,7 @@ function CollaborationList({ botId, onOpen }: { botId: string; onOpen: (id: stri
     {!page && !error && <p role="status">正在读取协作列表…</p>}
     {page && <><p>{page.total} 段协作</p>{page.items.length === 0 && <p>{participants === 'current' ? '没有当前 Bot 的协作记录。' : '没有已删除 Bot 的协作记录。'}</p>}
       <ul className="bot-collaboration-list">{page.items.map(item => <li key={item.collaborationId}><button type="button" onClick={() => onOpen(item.collaborationId)} data-collaboration-id={item.collaborationId}>
-        <span className="bot-collaboration-list-title"><BotAvatar botId={item.sourceBotId === botId ? item.targetBotId : item.sourceBotId} name={item.sourceBotId === botId ? item.targetDisplayName : item.sourceDisplayName} />{item.sourceBotId === botId ? `发给 ${item.targetDisplayName}` : `来自 ${item.sourceDisplayName}`}</span><span>{item.messageCount} 条消息 · {collaborationDisplayStatus(item)}</span><span>{recordedTime(item.updatedAt)}{item.workId && ' · 已关联个人事项'}</span>
+        <span className="bot-collaboration-list-title"><BotAvatar botId={item.sourceBotId === botId ? item.targetBotId : item.sourceBotId} name={item.sourceBotId === botId ? item.targetDisplayName : item.sourceDisplayName} />{item.sourceBotId === botId ? `发给 ${item.targetDisplayName}` : `来自 ${item.sourceDisplayName}`}</span>{item.work?.title.trim() && <span className="bot-collaboration-list-work">{`「${item.work.title.trim()}」`}</span>}<span>{item.messageCount} 条消息 · {collaborationDisplayStatus(item)}</span><span>{recordedTime(item.updatedAt)}{item.workId && ' · 已关联个人事项'}</span>
       </button></li>)}</ul>
       {page.nextCursor && <button type="button" className="bot-collaboration-more" onClick={() => void more()} disabled={loadingMore}>{loadingMore ? '正在加载…' : '加载更多协作'}</button>}
     </>}
