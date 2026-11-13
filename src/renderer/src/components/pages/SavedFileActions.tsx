@@ -27,9 +27,9 @@ export default function SavedFileActions({ request, name, onPreview, previewExpa
   const label = name ?? request?.name ?? '文件';
   return <>
     <span className="saved-file-actions" role="group" aria-label={`${label} 文件操作`}>
-      <button type="button" aria-label={`预览 ${label}`} aria-expanded={previewExpanded} aria-controls={previewExpanded ? previewId : undefined} title={previewExpanded ? "收起预览" : "预览"} onClick={onPreview}><Eye size={16} aria-hidden="true" /></button>
-      <button type="button" disabled={!request || pending} aria-label={`系统方式打开 ${label}`} title="系统方式打开：单文件副本不受内置预览隔离，HTML依赖不会一并导出" onClick={() => void run('openSystem')}><ExternalLink size={16} aria-hidden="true" /></button>
-      <button type="button" disabled={!request || pending} aria-label={`另存为 ${label}`} title="另存为：选择位置保存单文件副本，HTML依赖不会一并导出" onClick={() => void run('saveAs')}><Download size={16} aria-hidden="true" /></button>
+      <button type="button" aria-label={`预览 ${label}`} aria-expanded={previewExpanded} aria-controls={previewExpanded ? previewId : undefined} title={previewExpanded ? "收起预览" : "预览"} onClick={onPreview}><Eye size={20} strokeWidth={1.8} aria-hidden="true" /></button>
+      <button type="button" disabled={!request || pending} aria-label={`系统方式打开 ${label}`} title="系统方式打开：单文件副本不受内置预览隔离，HTML依赖不会一并导出" onClick={() => void run('openSystem')}><ExternalLink size={20} strokeWidth={1.8} aria-hidden="true" /></button>
+      <button type="button" disabled={!request || pending} aria-label={`另存为 ${label}`} title="另存为：选择位置保存单文件副本，HTML依赖不会一并导出" onClick={() => void run('saveAs')}><Download size={20} strokeWidth={1.8} aria-hidden="true" /></button>
     </span>
     {notice && <small className="saved-file-notice" role="status">{notice}</small>}
   </>;

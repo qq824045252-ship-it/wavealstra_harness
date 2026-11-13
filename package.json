@@ -752,6 +752,7 @@
     "test:bot-avatars": "esbuild scripts/bot-avatars-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/bot-avatars-test.mjs && node scripts/test-guard.mjs out/tests/bot-avatars-test.mjs",
     "test:saved-artifact-actions": "node scripts/test-guard.mjs node scripts/saved-artifact-actions-test.mjs",
     "test:bot-collaboration-deletion-admission": "node scripts/test-guard.mjs node --import ./scripts/test-typescript-memory-loader.mjs scripts/bot-collaboration-deletion-admission-test.ts",
+    "test:artifact-card-visual-desktop": "node scripts/run-tsgo-ui-test.mjs scripts/artifact-card-visual-fixture.tsx && electron scripts/artifact-card-visual-test.cjs",
     "test:bot-deleted-collaboration-ui": "node scripts/run-tsgo-ui-test.mjs scripts/bot-deleted-collaboration-ui-test.tsx",
     "test:bot-new-conversation-ui": "node scripts/run-tsgo-ui-test.mjs scripts/bot-new-conversation-investigation-test.ts",
     "test:bot-header-icons-ui": "node scripts/run-tsgo-ui-test.mjs scripts/bot-header-icons-test.tsx",

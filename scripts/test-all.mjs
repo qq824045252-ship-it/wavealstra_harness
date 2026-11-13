@@ -75,6 +75,7 @@ const SERIAL_TEST_PATTERNS = [/^test:memory-semantic-scale$/,/^test:durable-stor
  * （历史教训：`-ui$` 与 `:desktop$` 都曾漏出 GUI 用例，混进"无头"门禁）。
  */
 const GUI_TESTS = new Set([
+  "test:artifact-card-visual-desktop", // isolated Electron CSS cascade fixture, no live profile
   "test:resident-host-dev",
   "test:resident-host",
   "test:saved-preview-desktop", // real Electron saved-version protocol and UI

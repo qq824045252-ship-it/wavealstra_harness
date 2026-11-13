@@ -111,3 +111,6 @@ electron.vite.config.*.mjs
 
 # TypeScript-only targeted UI test output
 .test-tsgo/
+
+# Isolated artifact-card visual test output
+.visual-card/

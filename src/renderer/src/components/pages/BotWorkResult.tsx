@@ -5,6 +5,7 @@ import { fileNameFromPath } from "@/lib/localFilePath";
 import ChatMarkdown from "./BotChatMarkdown";
 import WorkFilePreview from "./WorkFilePreview";
 import SavedFileActions from "./SavedFileActions";
+import { IconFileCode, IconFileText, IconFileSpreadsheet, IconFileGeneric } from "@/components/common/icons";
 
 import { previewManifestFor, type WorkFile } from "./workFileIdentity";
 export { previewManifestFor, type WorkFile } from "./workFileIdentity";
@@ -24,6 +25,18 @@ export function workFiles(refs: string[], work?: WorkProjectionDto, executionId?
 export function generatedWorkFiles(work: WorkProjectionDto): WorkFile[] {
   return (work.generatedArtifacts ?? []).map(artifact => ({ ref: artifact.snapshotPath ?? artifact.path,
     name: fileNameFromPath(artifact.path), artifact }));
+}
+
+function filePresentation(name: string) {
+  if (/\.html?$/i.test(name)) return { Icon: IconFileCode, label: "HTML 网页" };
+  if (/\.(md|txt|pdf|docx?)$/i.test(name)) return { Icon: IconFileText, label: /\.md$/i.test(name) ? "Markdown 文档" : "文档" };
+  if (/\.(csv|tsv|xlsx?)$/i.test(name)) return { Icon: IconFileSpreadsheet, label: "表格与数据" };
+  return { Icon: IconFileGeneric, label: "文件" };
+}
+
+function FileHeading({ file }: { file: WorkFile }): React.JSX.Element {
+  const { Icon, label } = filePresentation(file.name);
+  return <div className="bot-file-heading"><span className="bot-file-type-icon"><Icon size={22} /></span><span className="bot-file-labels"><strong title={file.name}>{file.name}</strong><small>{label}{file.artifact ? ` · ${formatSize(file.artifact.sizeBytes)}` : ""}</small></span></div>;
 }
 
 function reportFile(file: WorkFile): boolean {
@@ -65,7 +78,7 @@ export function WorkFiles({ files, primaryRefs, compact = false, compactTitle = 
     } catch (error) { setNotice(`无法打开文件：${error instanceof Error ? error.message : String(error)}`); }
   };
   const list = (items: WorkFile[]) => <ul className="bot-result-files">{items.map(file => <li key={identity(file)}>
-    <div><strong title={file.name}>{file.name}</strong>{file.artifact && <small>{formatSize(file.artifact.sizeBytes)}</small>}</div>
+    <FileHeading file={file} />
     {!(file.artifact || file.openPath) && <small>未登记可打开文件</small>}
     {(file.artifact || file.openPath) && <SavedFileActions
       name={file.name} previewId={previewId} previewExpanded={selected?.identity === identity(file)}
