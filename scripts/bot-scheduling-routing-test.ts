@@ -166,7 +166,11 @@ try {
  const duplicateA=unwrap(works.createWork(user,{operationId:'routing-title-duplicate-a',title:'重名事项复核'}));
  const duplicateB=unwrap(works.createWork(user,{operationId:'routing-title-duplicate-b',title:'重名事项复核'}));
  // Unique title literally named in the actual user message resolves without a card.
- const named=requestFor('这轮只修历史读取修复，不要动别的');
+ const wrongAction=requestFor('这轮只修历史读取修复，不要动别的');
+ const wrongActionGuard=await queryGuard(alpha.workId,wrongAction.requestId);
+ await assert.rejects(()=>invoke('work_pause',{workId:alpha.workId,versionGuard:wrongActionGuard},wrongAction.requestId),/请明确/);
+ assert.equal(reviewState(alpha.workId),'active','a repair request must not authorize pause');
+ const named=requestFor('暂停历史读取修复，不要动别的');
  const namedGuard=await queryGuard(alpha.workId,named.requestId);
  assert.equal(unwrap(await invoke('work_pause',{workId:alpha.workId,versionGuard:namedGuard},named.requestId)).lifecycle,'paused');
  assert.equal(reviewState(beta.workId),'active','an unrelated Work is untouched');

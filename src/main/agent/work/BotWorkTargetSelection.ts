@@ -128,7 +128,7 @@ function targetClauses(facts: WorkTargetFacts): { positive: string; excluded: st
     while (cursor < text.length) {
       const at = text.indexOf(label, cursor); if (at < 0) break;
       const before = text.slice(0, at), after = text.slice(at + label.length);
-      const objectPosition = /(?:\b(?:pause|suspend|resume|cancel|stop|amend|change)\s+|(?:暂停|挂起|恢复|解除暂停|取消|终止|停止|修改|调整|修复)\s*)$/i.test(before);
+      const objectPosition = /(?:\b(?:pause|suspend|resume|cancel|stop|amend|change)\s+|(?:只修|仅修|只改|仅改|暂停|挂起|恢复|解除暂停|取消|终止|停止|修改|调整|修复)\s*)$/i.test(before);
       const objectEnd = /^\s*(?:$|[，,。.;；！？!?\n]|\b(?:and|or|but|instead)\b)/i.test(after);
       if (objectPosition && objectEnd) {text = before + token + after; cursor = at + token.length;}
       else cursor = at + label.length;
@@ -136,7 +136,7 @@ function targetClauses(facts: WorkTargetFacts): { positive: string; excluded: st
   }
   const restore = (value: string) => value.replace(/\uE000(\d+)\uE001/g, (_, index: string) => protectedLabels[Number(index)] ?? "");
   const positive: string[] = [], excluded: string[] = [];
-  const negative = /不(?:改|动)|别动|不要(?:改|动|修|处理|操作|暂停|恢复|取消|停止)|别(?:改|修|处理|操作|暂停|恢复|取消|停止)|不是/;
+  const negative = /(?:不|非)(?:只|仅)|(?:不要|别|不必|不用|无需|不能|不应|不该|禁止|不许|不得)[^，,。；;！？!?\n]*(?:只|仅)(?:修|改)|不(?:改|动)|别动|不要(?:改|动|修|处理|操作|暂停|恢复|取消|停止)|别(?:改|修|处理|操作|暂停|恢复|取消|停止)|不是/;
   // English negation scopes over a coordinated phrase (including commas and
   // and/or). Only a sentence/semicolon or explicit contrast starts a new scope.
   // Do this before comma splitting, otherwise "do not pause A, resume B"
@@ -185,7 +185,7 @@ function targetClauses(facts: WorkTargetFacts): { positive: string; excluded: st
 
 const ambiguous = (): WorkTargetResolution => ({ ok: false, code: "ambiguous_target", message: WORK_TARGET_ERROR });
 
-const controlVerbs = /暂停|挂起|恢复|解除暂停|取消|终止|停止|修改|调整|修复|改为|改成|\bpause\b|\bsuspend\b|\bresume\b|\bcancel\b|\bstop\b|\bamend\b|\bchange\b/gi;
+const controlVerbs = /只修|仅修|只改|仅改|暂停|挂起|恢复|解除暂停|取消|终止|停止|修改|调整|修复|改为|改成|\bpause\b|\bsuspend\b|\bresume\b|\bcancel\b|\bstop\b|\bamend\b|\bchange\b/gi;
 const deferredControl = /如果|若|等到|等[^\n]*(?:完成|结束|之后)|之后再|以后再|\b(if|when|after|until)\b/i;
 function actionOf(verb: string, instruction = ""): WorkTargetFacts["requestedAction"] {
   if (/^(暂停|挂起|pause|suspend)$/i.test(verb)) return "pause";

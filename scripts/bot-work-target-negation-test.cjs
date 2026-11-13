@@ -42,3 +42,24 @@ for(const text of ['不要暂停这个报告项目；暂停 work-a','Do not canc
  assert.equal(resolve(facts).ok,text.startsWith('不要'),text);count++;
 }
 console.log('PASS '+count+' negative/action target checks');
+
+// Restricted repair/change wording must not authorize negated or broadened instructions.
+for (const prefix of ['不要','别','不必','不用','无需','不能','不应','不该','禁止','不许','不得','不','并非','并不','绝非','非','绝不','决不']) {
+ for(const action of ['只修','仅修','只改','仅改']) {
+  const text=`${prefix}${action}历史读取，不动长期记忆`;
+  const facts={userText:text,explicitWorkIds:[],referencedWorkIds:[],linkedWorkIds:[],openWorks:[{workId:'a',title:'历史读取优化'},{workId:'b',title:'长期记忆优化'}],openWorksComplete:true,requestedWorkId:'a',requestedAction:'amend'};
+  assert.equal(resolve(facts).ok,false,text);count++;
+ }
+}
+for(const action of ['只修','仅修','只改','仅改']) {
+ const facts={userText:`这轮${action}历史读取，不动长期记忆`,explicitWorkIds:[],referencedWorkIds:[],linkedWorkIds:[],openWorks:[{workId:'a',title:'历史读取优化'},{workId:'b',title:'长期记忆优化'}],openWorksComplete:true,requestedWorkId:'a',requestedAction:'amend'};
+ assert.equal(resolve(facts).ok,true,facts.userText);count++;
+ assert.equal(resolve({...facts,requestedAction:'pause'}).ok,false,'repair does not authorize pause');count++;
+}
+console.log('PASS '+count+' total negative/action target checks including restricted wording');
+for(const title of ['不要修改报告','不仅是报告','禁止改动测试'])for(const action of ['只修','仅修','只改','仅改']){
+ const facts={userText:`${action}${title}，不动其他任务`,explicitWorkIds:[],referencedWorkIds:[],linkedWorkIds:[],openWorks:[{workId:'a',title}],openWorksComplete:true,requestedWorkId:'a',requestedAction:'amend'};
+ assert.equal(resolve(facts).ok,true,facts.userText);count++;
+ assert.equal(resolve({...facts,userText:`不要${action}${title}，不动其他任务`}).ok,false,'negative prefix outside opaque title');count++;
+}
+console.log('PASS '+count+' total checks including opaque restricted-action titles');
