@@ -1,3 +1,4 @@
+import { ToolStreamIdentityTrace } from './ToolStreamIdentityTrace';
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import { reportedCostTotal, reportedTokenUsage, unknownTokenUsage } from './ReportedTokenUsage';
@@ -186,12 +187,14 @@ export class CacheRequestTracer {
         return undefined;
       }
     };
+    const toolIdentity = new ToolStreamIdentityTrace(value => this.digest(value), record => emit({ ...base, ...record }));
     return {
       identify: (identity: ModelExecutionIdentity) => { emit({ ...base, event: 'execution', ...identity }); },
       firstResponse: () => { if (firstResponseAt === null) { firstResponseAt = Date.now(); emit({ ...base, event: 'first-response' }); } },
       payload: (payload: unknown) => { payloadSnapshot = capture(payload, 'provider', 0); },
       providerEvent: (data: unknown) => {
         try {
+          if (model.api === 'openai-completions') toolIdentity.observe(data);
           const observed = reportedTokenUsage(data);
           if (observed) { reported = { ...reported, ...observed.values }; usageSource = observed.source; }
           const event = object(data);

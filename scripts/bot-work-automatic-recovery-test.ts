@@ -70,7 +70,7 @@ async function run(name: string, final: "completed" | "failed" | "stopped", unkn
             nativeStatus: status, outcome: status === "completed" ? "completed" as const : "failed" as const, artifactRefs: [], writeConflicts: [], summary: "weather fact" }])]
         : [];
       return { status, summary: status === "completed" ? "已读取现有报告并给出天气答案" : "",
-        failureReason: status === "failed" ? "parser unavailable" : undefined,
+        failureReason: status === "failed" ? name === "stream-retry-exhausted" ? "Ambiguous streamed tool call index; provider must send a stable call id" : "parser unavailable" : undefined,
         artifactRefs: staged && stage === 1 ? [] : [artifact], hasWriteConflicts: false, subitems: items };
     }, stop: async () => {},
   };
@@ -155,6 +155,7 @@ try {
   await run("handoff", "completed");
   await run("watch", "failed");
   await run("no-progress", "failed");
+  await run("stream-retry-exhausted", "failed");
   await run("unknown-effect", "completed", true);
   console.log("PASS automatic recovery: root task, original output, restart dedupe, stop, no progress and nonblocking unknown-effect evidence");
 } finally { await rm(root, { recursive: true, force: true }); }

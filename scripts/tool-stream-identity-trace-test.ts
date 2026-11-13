@@ -1,0 +1,13 @@
+import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
+import {CacheRequestTracer} from '../src/main/agent/CacheRequestTracer';
+const rows:any[]=[];const trace=new CacheRequestTracer(r=>rows.push(r)).start({provider:'fixture',id:'model',api:'openai-completions'});
+const part=(index:number,id?:string)=>({choices:[{index:0,delta:{tool_calls:[{index,id,function:{name:'SECRET_NAME',arguments:'SECRET_ARGS'}}]}}]});
+trace.providerEvent(part(0,'SECRET_ID_A'));trace.providerEvent(part(1,'SECRET_ID_B'));trace.providerEvent(part(0));
+assert.equal(rows.filter(r=>r.event==='tool-stream-identity').length,0);
+trace.providerEvent(part(0,'SECRET_ID_B'));trace.providerEvent(part(0));
+let records=rows.filter(r=>r.event==='tool-stream-identity');assert.deepEqual(records.map(r=>r.phase),['index_reused','missing_id_after_reuse']);assert.deepEqual(records.map(r=>r.chunkOrdinal),[4,5]);
+assert(!JSON.stringify(rows).includes('SECRET_'));
+for(let n=0;n<100;n++)trace.providerEvent(part(0));assert.equal(rows.filter(r=>r.event==='tool-stream-identity').length,16);
+const fresh=new CacheRequestTracer(r=>rows.push(r)).start({provider:'fixture',id:'model',api:'openai-completions'});fresh.providerEvent(part(0));assert.equal(rows.filter(r=>r.event==='tool-stream-identity').length,16);
+console.log('PASS bounded content-free identity diagnostic; request isolation; no false alarm on ordinary index-only continuation');

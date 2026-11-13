@@ -25,7 +25,15 @@ index d33b8069b80bc454b0db59a221aba9332d522bf3..3cbc89a9264f6ecb58c08cd776be5f14
      // Sign in with ChatGPT: the subscription's shared usage limit, which resets
      // after hours rather than seconds.
      "subscription_sharing_usage_limit_exceeded",
-@@ -208,6 +207,23 @@ export function isRetryableAssistantError(message) {
+@@ -29,3 +28,7 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
++    // This parser error fails the entire model response before tool dispatch.
++    // Retry the model turn under the native finite retry/cancellation policy;
++    // never guess fragment ownership or replay earlier successful tool rounds.
++    "^Ambiguous streamed tool call index; provider must send a stable call id$",
+     // Generic provider load, HTTP status, and server-side transient failures.
+     "overloaded",
+     "server_busy",
+@@ -208,6 +211,23 @@ export function isRetryableAssistantError(message) {
      const errorMessage = message.errorMessage;
      if (NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN.test(errorMessage))
          return false;
