@@ -6,11 +6,12 @@
 .bot-display-group { margin-bottom:16px; }
 .bot-display-group header { min-height:30px; padding:2px 18px; font-size:12px; }
 .bot-display-group header > button { padding:4px 0; font:inherit; overflow-wrap:anywhere; }
-.bot-display-row { margin:3px 10px; border-radius:12px; }
+.bot-display-row { margin:3px 16px; border-radius:8px; }
 .bot-display-row:has(>button[aria-pressed="true"]) { background:var(--bg-active); }
 .bot-display-row:hover { background:var(--bg-hover); }
-.bot-display-row > .sidebar-bot-identity { margin:0; width:auto; padding:10px!important; background:transparent; }
-.sidebar-bot-identity > span:last-child { min-width:0; flex:1; gap:3px; }
+.bot-display-row > .sidebar-bot-identity { margin:0; width:auto; padding:7px 8px!important; }
+.bot-display-row > .sidebar-bot-identity, .bot-display-row > .sidebar-bot-identity[aria-pressed="true"] { background:transparent; }
+.bot-display-row .sidebar-bot-identity > span:last-child { min-width:0; flex:1; gap:1px; }
 .sidebar-bot-identity strong, .sidebar-bot-identity small { display:block; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; line-height:1.5; }
 .sidebar-bot-identity strong { font-weight:550; }
 .sidebar-bot-identity .sidebar-bot-avatar { width:32px; height:32px; flex-basis:32px; border:0; border-radius:11px; background:var(--bg-panel); }

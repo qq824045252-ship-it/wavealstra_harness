@@ -517,7 +517,10 @@ export class BotConversationRepository {
     const segments = segmentRow ? z.array(botReplySegmentSchema).parse(JSON.parse(segmentRow.segments_json)) : undefined;
     const organizationUser = row.role === "assistant" ? this.db.prepare("SELECT user_id FROM bot_conversations WHERE conversation_id=?").pluck().get(row.conversation_id) : undefined;
     const organizations = typeof organizationUser === "string" ? botOrganizationsForMessage(this.db, organizationUser, row.message_id) : [];
-    return { peerOrigin: this.peers.origin(row.message_id), ...(organizations.length ? { organizations } : {}), teamId: scope?.team_id ?? undefined, messageRevision: version?.revision ?? 0, messageId: row.message_id, conversationId: row.conversation_id, botId: row.bot_id, requestId: row.request_id,
+    const peerOrigin = this.peers.origin(row.message_id);
+    const collaborationResult = peerOrigin && typeof organizationUser === "string"
+      ? this.collaborations.feedbackForReturn({ userId: organizationUser, botId: row.bot_id, conversationId: row.conversation_id, origin: peerOrigin }) : undefined;
+    return { peerOrigin, collaborationResult, ...(organizations.length ? { organizations } : {}), teamId: scope?.team_id ?? undefined, messageRevision: version?.revision ?? 0, messageId: row.message_id, conversationId: row.conversation_id, botId: row.bot_id, requestId: row.request_id,
       segments, botCalls: row.role === "assistant" ? this.peerCalls.list(row.message_id) : undefined,
       collaborations: row.role === "assistant" ? this.collaborations.summariesForMessage(
         z.string().parse(this.db.prepare("SELECT user_id FROM bot_conversations WHERE conversation_id=?").pluck().get(row.conversation_id)), row.message_id) : undefined,

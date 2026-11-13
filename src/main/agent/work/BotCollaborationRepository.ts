@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import { z } from "zod";
 import { isSharedBotConversation } from "./BotConversationAudience";
+import type { BotPeerOrigin } from "../../../shared/bot-peer-origin";
+import type { WorkFeedbackDto } from "../../../shared/bot-work-feedback";
 import {
   botCollaborationSchema, botCollaborationMessageSchema, botCollaborationEventSchema,
   botCollaborationPreviewSchema, botCollaborationsQuerySchema, botCollaborationHistoryQuerySchema,
@@ -244,6 +246,20 @@ export class BotCollaborationRepository {
       ON r.collaboration_id=c.collaboration_id WHERE c.user_id=? AND (r.user_message_id=? OR r.assistant_message_id=?)
       ORDER BY c.created_at,c.collaboration_id`).all(userId, messageId, messageId)
       .map(row => this.required(userId, z.object({ collaboration_id: id }).parse(row).collaboration_id));
+  }
+
+  feedbackForReturn(input: { userId: string; botId: string; conversationId: string; origin: BotPeerOrigin }): WorkFeedbackDto | undefined {
+    const { userId, botId, conversationId, origin } = input;
+    if (origin.kind !== "return" || origin.sourceBotId !== botId || origin.sourceConversationId !== conversationId) return;
+    const row = z.object({ value_json: z.string(), work_id: z.string().nullable(), target_bot_id: z.string() }).optional().parse(
+      this.db.prepare(`SELECT m.value_json,c.work_id,c.target_bot_id FROM bot_collaboration_messages m
+        JOIN bot_collaborations c ON c.collaboration_id=m.collaboration_id
+        WHERE c.user_id=? AND c.source_bot_id=? AND c.source_conversation_id=? AND c.collaboration_id=? AND m.message_id=?`)
+        .get(userId, botId, conversationId, origin.collaborationId, origin.replyMessageId));
+    if (!row || row.target_bot_id !== origin.senderBotId) return;
+    const message = botCollaborationMessageSchema.parse(JSON.parse(row.value_json));
+    if (message.senderBotId !== origin.senderBotId || message.workFeedback?.workId !== row.work_id) return;
+    return message.workFeedback;
   }
 
   appendMessage(userId: string, collaborationId: string, input: BotCollaborationMessageInput): BotCollaborationMessageDto {

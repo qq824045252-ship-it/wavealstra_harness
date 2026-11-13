@@ -5,6 +5,35 @@ import type { BotHistoryDto, BotSendReceipt, BotSendRequest, WorkListUpdate } fr
 import type { BotDto, WorkProjectionDto } from "../src/shared/bot-work";
 import { createAppStore } from "../src/renderer/src/store/app/createAppStore";
 import { mergeWorkList } from "../src/renderer/src/store/app/slices/botWorkSync";
+import { botChatMarkdown } from "../src/renderer/src/lib/botChatMarkdown";
+
+function checkInlineSourcePresentation(): void {
+  const example = "一个短示例：\n\n```html\n<button>确认</button>\n```\n\n继续说明。";
+  assert.equal(botChatMarkdown(example).text, example, "short teaching examples remain readable");
+  const quotedTag = '```js\nconst tag = "<html>";\n```';
+  assert.equal(botChatMarkdown(quotedTag).text, quotedTag, "an HTML tag inside a short code explanation is not a document");
+  for (const marker of ["```", "````", "~~~", "~~~~"]) {
+    const prefix = "已核对需求。\n\n";
+    const body = "<!DOCTYPE html>\n<html>\n" + '<div class="page">INLINE_SOURCE_MARKER</div>\n'.repeat(2100);
+    for (const text of [prefix + marker + "html\n" + body, prefix + marker + "html\n" + body + "</html>\n" + marker]) {
+      const view = botChatMarkdown(text);
+      assert.equal(view.sourceOmitted, true, "unclosed streaming and completed documents are both blocked");
+      assert.equal(view.text, prefix, "the Markdown renderer never receives the large source");
+      assert(text.includes("INLINE_SOURCE_MARKER"), "the original record remains untouched");
+    }
+  }
+  for (const text of ["<!doctype html>\n<html>\n<p>secret source</p>\n</html>\n最后说明", "> <html>\n> <p>secret source</p>\n> </html>\n最后说明"]) {
+    const view = botChatMarkdown(text);
+    assert(view.sourceOmitted && !view.text.includes("secret source") && view.text.includes("最后说明"));
+  }
+  const longCode = "说明\n```js\n" + 'const a = "large source";\n'.repeat(400) + "```\n结束";
+  assert.equal(botChatMarkdown(longCode).text, "说明\n结束", "long non-HTML code is also kept out of parsing/highlighting");
+  const unterminated = "```js\n" + "x".repeat(200_000);
+  assert.equal(botChatMarkdown(unterminated).text, "", "a single huge streaming line is bounded before parsing");
+  assert(botChatMarkdown("长回复".repeat(100_000)).text.length <= 16_000, "unfenced or malformed output has a total parser budget");
+  console.log("PASS Bot source presentation: streaming/settled HTML, raw/quoted documents, long code and malformed output bounded; short examples and original records preserved");
+}
+checkInlineSourcePresentation();
 
 function deferred<T>() {
   let resolve!: (value: T) => void;

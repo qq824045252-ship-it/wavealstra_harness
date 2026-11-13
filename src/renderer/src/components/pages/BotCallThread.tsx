@@ -2,6 +2,7 @@ import type { BotCallDto } from '@shared/bot-conversation';
 import type { BotCollaborationDto, BotCollaborationStatus } from '@shared/bot-collaboration';
 import { useEffect, useState } from 'react';
 import { BotAvatar } from '@/components/common/BotAvatar';
+import { IconChevronRight } from '@/components/common/icons';
 import './BotCallThread.css';
 import './BotCollaborationView.css';
 
@@ -73,11 +74,12 @@ function callStatus(call: BotCallDto): string {
 }
 
 /** Only host-persisted exchanges belong here, never mentions parsed from model prose. */
-export function BotCallThread({ calls, collaborations, onOpenCollaboration, renderReply }: {
+export function BotCallThread({ calls, collaborations, onOpenCollaboration, renderReply, viewerBotId }: {
   calls?: BotCallDto[];
   collaborations?: BotCollaborationDto[];
   onOpenCollaboration?: (collaborationId: string) => void;
   renderReply?: (text: string, streaming: boolean) => React.ReactNode;
+  viewerBotId?: string;
 }): React.JSX.Element | null {
   const [now, setNow] = useState(Date.now);
   const ongoing = Boolean(collaborations?.some(collaborationOngoing));
@@ -91,12 +93,18 @@ export function BotCallThread({ calls, collaborations, onOpenCollaboration, rend
     const legacy = calls?.filter(call => !('collaborationId' in call) || !unique.some(item => item.collaborationId === call.collaborationId));
     return <>
       <div className="bot-collaboration-summaries" aria-label="Bot 间协作记录">
-        {unique.map(item => <button type="button" className="bot-collaboration-summary" key={item.collaborationId}
+        {unique.map(item => {
+          const incoming = viewerBotId === item.targetBotId;
+          const partnerId = incoming ? item.sourceBotId : item.targetBotId;
+          const partnerName = incoming ? item.sourceDisplayName : item.targetDisplayName;
+          return <button type="button" className="bot-collaboration-summary" key={item.collaborationId}
           data-collaboration-id={item.collaborationId} onClick={() => onOpenCollaboration?.(item.collaborationId)} disabled={!onOpenCollaboration}
-          aria-label={`查看与 ${item.targetDisplayName} 的协作记录，${item.messageCount} 条消息`}>
-          <span className="bot-collaboration-summary-target"><BotAvatar botId={item.targetBotId} name={item.targetDisplayName} /><span>{item.messageCount} 条消息，与 {item.targetDisplayName}</span></span>
+          aria-label={`查看与 ${partnerName} 的协作记录，${item.messageCount} 条消息`}>
+          <span className="bot-collaboration-summary-target"><BotAvatar botId={partnerId} name={partnerName} /><span title={partnerName}>{partnerName}</span></span>
+          <span className="bot-collaboration-summary-count">{item.messageCount} 条消息</span>
           <span className="bot-collaboration-summary-meta"><span className="bot-collaboration-summary-status">{collaborationStatus(item.status)}{item.work ? ` · ${collaborationWorkStatus(item.work)}` : item.workId ? ' · 已关联事项' : ''}</span><span data-collaboration-elapsed>耗时 {collaborationElapsed(item, now)}</span></span>
-        </button>)}
+          <IconChevronRight size={13} />
+        </button>})}
       </div>
       {Boolean(legacy?.length) && <BotCallThread calls={legacy} renderReply={renderReply} />}
     </>;

@@ -297,14 +297,14 @@
 .bot-settings-save { display:flex; align-items:center; flex-wrap:wrap; gap:10px; padding-block:10px; border-top:1px solid var(--border-color, #8885); }
 .bot-settings-save span { font-size:12px; opacity:.7; }
 
-.bot-reply-reference { color:var(--fg-secondary); font-size:var(--bot-meta-size); margin-top:8px; min-width:0; max-width:100%; }
-.bot-reply-reference > summary { display:flex; align-items:center; gap:6px; cursor:pointer; min-width:0; padding:4px 0; }
+.bot-reply-reference { align-self:flex-start; box-sizing:border-box; width:fit-content; max-width:calc(100% - 36px); min-width:0; margin:2px 0 8px; padding:0 10px; border-left:2px solid var(--border-default); border-radius:0 5px 5px 0; background:var(--bg-sidebar); color:var(--fg-secondary); font-size:var(--bot-meta-size); }
+.bot-workspace .bot-reply-reference > summary { display:flex; align-items:center; gap:7px; cursor:pointer; min-width:0; padding:6px 0; font-weight:400; line-height:1.5; }
 .bot-reply-reference > summary::before { content:"›"; flex:none; }
 .bot-reply-reference[open] > summary::before { transform:rotate(90deg); }
 .bot-reply-reference > summary::-webkit-details-marker { display:none; }
 .bot-reply-reference-label { flex:none; }
 .bot-reply-reference-preview { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
-.bot-reply-reference-original { margin-top:4px; border-left:2px solid var(--border-default); padding:4px 10px; white-space:pre-wrap; overflow-wrap:anywhere; max-height:12rem; overflow:auto; }
+.bot-reply-reference-original { margin:0 0 6px; padding:6px 0; border-top:1px solid var(--border-subtle); white-space:pre-wrap; overflow-wrap:anywhere; max-height:12rem; overflow:auto; }
 .bot-reply-reference > summary:focus-visible, .bot-reply-reference-original:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 .bot-reply-reference-attachments { margin-top:4px; }
 .bot-pending-requests { max-height: 140px; overflow: auto; }
@@ -405,8 +405,13 @@
   .bot-message-list { padding:20px 14px; gap:24px; }
   .bot-assistant-content { margin-left:0; padding:12px 14px; border-radius:18px; background:var(--bg-sidebar); }
   .bot-message-meta, .bot-message-work-links { padding-left:0; }
-  .bot-reply-reference { margin-left:0; }
+  .bot-reply-reference { margin-left:0; max-width:100%; }
   .bot-composer.input-area { padding:8px 12px 12px; }
   .bot-composer .bot-composer-capabilities { flex-basis:calc(100% - 86px); }
 }
 @media(pointer:coarse) { .bot-workspace .bot-composer-send-actions button { width:44px; height:44px; min-width:44px; } }
+.bot-source-omitted {
+  color: var(--fg-muted);
+  font-size: 12px;
+  margin: 6px 0;
+}

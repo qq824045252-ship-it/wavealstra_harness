@@ -6,9 +6,9 @@ import type {
 } from '@shared/bot-collaboration';
 import { botSendSchema } from '@shared/bot-conversation';
 import { IconBot, IconChevronLeft, IconX } from '@/components/common/icons';
-import ChatMarkdown from '@/components/chat/ChatMarkdown';
+import ChatMarkdown from './BotChatMarkdown';
 import { ChatImageScope } from '@/components/chat/ChatImage';
-import { collaborationElapsed, collaborationStatus, collaborationTotalEnd, collaborationWorkStatus } from './BotCallThread';
+import { BotCallThread, collaborationElapsed, collaborationStatus, collaborationTotalEnd, collaborationWorkStatus } from './BotCallThread';
 import './BotCollaborationView.css';
 
 const PAGE_SIZE = 50;
@@ -254,19 +254,15 @@ export function BotIncomingCollaborations({ botId, onOpen, empty }: {
   const { page, error, loadingMore, more, retry } = useCollaborations(botId, 'incoming', 3);
   if (page?.total === 0 && !error) return <>{empty}</>;
   return <section className="bot-incoming-collaborations" aria-label="收到的协作">
-    <header><h2>收到的协作{page ? <span>{page.total}</span> : null}</h2><p>其他 Bot 发来的咨询与委派</p></header>
     {error && <p className="bot-alert" role="alert">{error} <button type="button" onClick={retry}>重试读取</button></p>}
     {!page && !error && <p role="status">正在读取收到的协作…</p>}
-    <ul>{page?.items.map(item => <li key={item.collaborationId}>
-      <button type="button" data-incoming-collaboration={item.collaborationId} onClick={() => onOpen(item.collaborationId)}>
-        <span className="bot-incoming-sender"><BotAvatar botId={item.sourceBotId} name={item.sourceDisplayName} /><strong>来自 {item.sourceDisplayName}</strong><span>{item.messageCount} 条消息</span></span>
-        <strong className="bot-incoming-request">{item.work?.title ?? item.requestPreview ?? '查看协作请求'}</strong>
-        {item.work && item.requestPreview && <span className="bot-incoming-request-context">原始请求：{item.requestPreview}</span>}
-        <span className="bot-incoming-status">{item.workId ? '委派' : '咨询'} · {collaborationStatus(item.status)}{item.work ? ` · ${collaborationWorkStatus(item.work)}` : ''}</span>
-        {item.replyPreview && <span className="bot-incoming-reply">{item.workId ? '最近回传' : '回复'}：{item.replyPreview}</span>}
-        <span className="bot-incoming-meta">{recordedTime(item.times.sentAt)}<span>耗时 {collaborationElapsed(item, Date.now())}</span><span>查看双方记录 →</span></span>
-      </button>
-    </li>)}</ul>
+    <div className="bot-message-list">{page?.items.map(item => <article key={item.collaborationId} className="bot-message msg-row assistant" data-incoming-collaboration={item.collaborationId} aria-label={`${item.targetDisplayName}的协作回复`}>
+      <div className="bot-message-author"><BotAvatar botId={item.targetBotId} name={item.targetDisplayName} /><strong>{item.targetDisplayName}</strong></div>
+      <div className="bot-assistant-content bot-incoming-reply">
+        <ChatMarkdown text={item.replyPreview || item.work?.progressSummary || `已收到来自 ${item.sourceDisplayName} 的协作请求，${collaborationStatus(item.status)}。`} streaming={false} resolveTaskFiles={false} />
+      </div>
+      <BotCallThread collaborations={[item]} viewerBotId={botId} onOpenCollaboration={onOpen} />
+    </article>)}</div>
     {page?.nextCursor && <button type="button" className="bot-incoming-more" disabled={loadingMore} onClick={() => void more()}>{loadingMore ? '正在加载…' : '加载更早协作'}</button>}
   </section>;
 }

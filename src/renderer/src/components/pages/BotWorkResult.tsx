@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { BotMessageDto, WorkFeedbackDto } from "@shared/bot-conversation";
 import type { WorkProjectionDto } from "@shared/bot-work";
 import { fileNameFromPath } from "@/lib/localFilePath";
-import ChatMarkdown from "@/components/chat/ChatMarkdown";
+import ChatMarkdown from "./BotChatMarkdown";
 import WorkFilePreview from "./WorkFilePreview";
 import SavedFileActions from "./SavedFileActions";
 
@@ -28,6 +28,17 @@ export function generatedWorkFiles(work: WorkProjectionDto): WorkFile[] {
 
 function reportFile(file: WorkFile): boolean {
   return /\.(?:pdf|docx?|xlsx?|csv|tsv|json|jsonl|xml|ya?ml|pptx?|md|txt|html?|png|jpe?g|webp|svg)$/i.test(file.name);
+}
+
+export function BotReturnedFiles({ message }: { message: BotMessageDto }): React.JSX.Element | null {
+  const report = message.collaborationResult?.report;
+  if (message.status !== "completed" || !report) return null;
+  const files = [...new Set(report.artifactRefs)].map(ref => {
+    const file = report.files?.find(item => item.ref === ref);
+    return { ref, name: file?.name ?? fileNameFromPath(ref), openPath: file?.openPath,
+      previewManifestPath: file?.previewManifestPath ?? null };
+  });
+  return <WorkFiles files={files} primaryRefs={report.primaryArtifactRefs} compact />;
 }
 
 export function WorkFiles({ files, primaryRefs, compact = false, compactTitle = "本次交付" }: { files: WorkFile[]; primaryRefs?: string[]; compact?: boolean; compactTitle?: string }): React.JSX.Element | null {

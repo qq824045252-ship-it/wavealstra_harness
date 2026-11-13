@@ -3,7 +3,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { parseHTML } from "linkedom";
 import type { BotMessageDto } from "../src/shared/bot-conversation";
-import { linkedConversationWork, personalBotWork, activeBotReply, botMessageStatus, botWorkTimeline, shouldSendBotComposer, workMatchesView, workStatusLabel, workExecutionComplete, workCardExcerpt, workStatus, workSearchText, workMatchesSearch } from "../src/renderer/src/lib/botWorkspacePresentation";
+import { linkedConversationWork, personalBotWork, activeBotReply, botMessageStatus, botReplyQuestions, botWorkTimeline, shouldSendBotComposer, workMatchesView, workStatusLabel, workExecutionComplete, workCardExcerpt, workStatus, workSearchText, workMatchesSearch } from "../src/renderer/src/lib/botWorkspacePresentation";
 import type { BotDto, WorkProjectionDto } from "../src/shared/bot-work";
 import type { WorkResultCardDto } from "../src/shared/bot-work-phase5";
 import Sidebar, { AccountNavigation } from "../src/renderer/src/components/Sidebar";
@@ -627,6 +627,18 @@ assert.deepEqual(timelineRows.filter(row => row.kind === "message").map(row => r
 assert.equal(JSON.stringify(timeline), timelineBefore, "folding must never change persisted records");
 assert.deepEqual(timelineRows.flatMap(row => row.kind === "message" ? [row.message] : row.messages), timeline, "every original message remains available in original order");
 const untyped = { ...timeline[0], workFeedback: undefined };
+const humanRequest: BotMessageDto = { ...untyped, messageId: "human-request", requestId: "human-turn", role: "user", text: "让新的 Bot 接着做" };
+const peerInput: BotMessageDto = { ...untyped, messageId: "peer-input", requestId: "peer-turn", role: "user", text: "成果文件：[{internal:true}]",
+  peerOrigin: { kind: "return", collaborationId: "collaboration", exchangeId: "exchange", replyMessageId: "journal-result",
+    senderBotId: "planner", senderDisplayName: "儿童发展学习规划师", sourceBotId: "bot", sourceConversationId: "chat", sourceRequestId: "human-turn",
+    sourceUserMessageId: humanRequest.messageId, sourceAssistantMessageId: "human-reply" } };
+const peerAnswer: BotMessageDto = { ...peerInput, role: "assistant", messageId: "peer-answer", text: "已完成，文件在下方。" };
+const peerTranscript = [humanRequest, peerInput, peerAnswer];
+assert.deepEqual(botWorkTimeline(peerTranscript).map(row => row.key), [humanRequest.messageId, peerAnswer.messageId], "peer inputs belong only to the communication journal; the source Bot reply stays visible");
+assert.equal(botReplyQuestions(peerTranscript).get(peerAnswer.requestId), humanRequest, "returned answer quotes the actual user's commission, not the internal payload");
+assert.equal(botReplyQuestions([peerInput, peerAnswer]).get(peerAnswer.requestId), undefined, "partial history must not quote a hidden peer input");
+assert.equal(botReplyQuestions([{ ...humanRequest, conversationId: "other" }, peerAnswer]).get(peerAnswer.requestId), undefined);
+assert.equal(peerTranscript.length, 3, "presentation preserves execution records");
 assert.equal(botWorkTimeline([untyped])[0].kind, "message", "legacy/unclassified text is never silently hidden");
 const userFeedback = { ...timeline[0], role: "user" as const };
 assert.equal(botWorkTimeline([userFeedback])[0].kind, "message", "a user message cannot be folded as system progress");

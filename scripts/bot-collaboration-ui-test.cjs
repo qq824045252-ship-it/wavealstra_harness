@@ -14,7 +14,7 @@ app.whenReady().then(async () => {
     const html = path.join(profile, 'fixture.html');
     const url = suffix => pathToFileURL(path.join(out, `bot-collaboration-ui-fixture.${suffix}`)).href;
     fs.writeFileSync(html, `<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="${url('css')}"><style>body{margin:0;font:14px system-ui}*{box-sizing:border-box}:root{--fg:#222;--fg-secondary:#555;--fg-muted:#777;--bg-panel:#fafafa;--bg-sidebar:#f3f4f6;--bg-elevated:#fff;--bg-hover:#e8ecf2;--border-default:#ddd;--border-subtle:#ddd;--accent:#2563eb}#root,.bot-workspace{height:100vh}</style></head><body><div id="root"></div><script src="${url('js')}"></script></body></html>`);
-    win = new BrowserWindow({ width: 1280, height: 900, show: false, webPreferences: { contextIsolation: true } });
+    win = new BrowserWindow({ width: 1280, height: 900, show: true, webPreferences: { contextIsolation: true } });
     const errors = [];
     win.webContents.on('render-process-gone', (_event, value) => errors.push(value.reason));
     await win.loadFile(html);
@@ -31,14 +31,28 @@ app.whenReady().then(async () => {
     };
     const click = selector => evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
     const shot = async name => {
-      const value = await win.webContents.debugger.sendCommand('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
-      fs.writeFileSync(path.join(out, name), Buffer.from(value.data, 'base64'));
+      let timer;
+      try {
+        const value = await Promise.race([win.webContents.debugger.sendCommand('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }),
+          new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Screenshot timed out: ' + name)), 10000); })]);
+        fs.writeFileSync(path.join(out, name), Buffer.from(value.data, 'base64'));
+      } finally { clearTimeout(timer); }
     };
     await wait(`Boolean(window.collaborationFixture && document.querySelector('.bot-collaboration-summary'))`);
-    assert.equal(await evaluate(`document.querySelector('[data-message-id="source-26"]').getAttribute('aria-label')`), '来自 学习搭子 · Bot 协作的消息');
-    assert.equal(await evaluate(`document.querySelector('[data-message-id="source-26"] .bot-message-author').textContent`), '来自 学习搭子 · Bot 协作');
+    assert.equal(await evaluate(`document.querySelector('[data-message-id="source-26"]') === null`), true, 'internal peer input stays in collaboration records');
+    assert.equal(await evaluate(`document.querySelector('[data-message-id="source-27"] .bot-reply-reference').dataset.sourceMessageId`), 'source-24');
+    const referenceLayout = await evaluate(`(()=>{const m=document.querySelector('[data-message-id="source-27"]'),q=m.querySelector('.bot-reply-reference'),b=m.querySelector('.bot-assistant-content');return {quoteBottom:q.getBoundingClientRect().bottom,bodyTop:b.getBoundingClientRect().top,weight:getComputedStyle(q.querySelector('summary')).fontWeight}})()`);
+    assert(referenceLayout.quoteBottom <= referenceLayout.bodyTop, 'quote sits above its own answer');
+    assert.equal(referenceLayout.weight, '400');
+    assert.equal(await evaluate(`document.querySelector('[data-message-id="source-27"] .bot-assistant-content').textContent.includes('WORKER_REPORT_MUST_NOT_REPLACE_REPLY')`), false);
+    await click('[aria-label="打开 一年英语计划.html"]');
+    await wait(`document.querySelector('[data-message-id="source-27"] .bot-work-file-preview iframe') !== null`);
+    console.log('PASS returned saved file preview and quote placement');
+    assert.deepEqual(await evaluate(`window.returnedFileFixture.preparedFiles.map(f=>({snapshotPath:f.snapshotPath,manifestPath:f.manifestPath}))`), [{snapshotPath:'/saved/plan.html',manifestPath:'/saved/plan.web.json'}]);
+    await evaluate(`document.querySelector('[data-message-id="source-27"]').scrollIntoView()`);
+    await shot('bot-returned-delivery.png');
     assert.equal(await evaluate(`document.querySelector('[data-message-id="source-28"]').getAttribute('aria-label')`), '你的消息');
-    report.checks.push('peer source has a visible and accessible Bot author; ordinary human input keeps its true author');
+    report.checks.push('peer input hidden; source Bot answer preserved; user quote above reply; returned saved file opens with its exact manifest');
     assert(Object.values(await evaluate(`window.collaborationFixture.organizationSchemaChecks`)).every(Boolean), 'organization projection rejects impossible targets, links and oversized receipt pages');
     assert.equal(await evaluate(`document.querySelector('.bot-heading h1').textContent`), '并发助理', 'primary badge keeps the heading name unchanged');
     assert.equal(await evaluate(`document.querySelector('.bot-primary-badge')?.textContent`), '主助理');
@@ -80,7 +94,13 @@ app.whenReady().then(async () => {
     await wait(`!document.querySelector('.bot-organization-activity')`);
     report.checks.push('primary role badge survives rename; legal organization phases, real nullable times, bounded host receipts and narrow layout; linked management opens existing collaboration without fake messages or losing draft');
     assert.equal(await evaluate(`document.querySelectorAll('.bot-collaboration-summary').length`), 2, 'deduplicate relation summaries and separate targets');
-    assert((await evaluate(`document.querySelector('.bot-collaboration-summary').innerText`)).includes('112 条消息，与 学习搭子'));
+    assert.equal(await evaluate(`document.querySelector('.bot-collaboration-summary-target').innerText`), '学习搭子');
+    assert.equal(await evaluate(`document.querySelector('.bot-collaboration-summary-count').innerText`), '112 条消息');
+    const summaryLayout = await evaluate(`(()=>{const e=document.querySelector('.bot-collaboration-summary'),r=e.getBoundingClientRect();return {width:r.width,height:r.height,parentWidth:e.parentElement.getBoundingClientRect().width,align:getComputedStyle(e).justifyContent,fontSize:getComputedStyle(e).fontSize}})()`);
+    assert(summaryLayout.width < summaryLayout.parentWidth, 'communication entry fits its contents');
+    assert(summaryLayout.height <= 42, 'communication entry stays a compact row on desktop');
+    assert.equal(summaryLayout.align, 'flex-start');
+    assert.equal(summaryLayout.fontSize, '12px');
     assert.equal(await evaluate(`document.querySelectorAll('.bot-collaboration-summary .bot-avatar svg').length`), 2, 'each target summary has its own Bot icon');
     assert((await evaluate(`document.querySelector('.bot-collaboration-summary').innerText`)).includes('已返回 · 本次执行已结束，事项未结束'), 'returned partial execution does not imply Work completion');
     assert.equal(await evaluate(`document.querySelectorAll('[data-collaboration-elapsed]')[1].textContent`), '耗时 5.2 秒', 'terminal elapsed uses sent/returned receipts rather than updatedAt');
@@ -185,21 +205,24 @@ app.whenReady().then(async () => {
     assert.equal(await evaluate(`document.querySelectorAll('.bot-primary-badge').length`), 0, 'ordinary recipient does not inherit the primary role badge');
     assert.equal(await evaluate(`document.querySelectorAll('.bot-conversation-empty').length`), 0, 'a recipient with real incoming requests must not appear unused');
     assert((await evaluate(`document.querySelector('.bot-incoming-collaborations').innerText`)).includes('来自 翻译搭子'));
-    assert((await evaluate(`document.querySelector('[data-incoming-collaboration="incoming-question"]').innerText`)).includes('请核算十九乘二十三'));
-    assert((await evaluate(`document.querySelector('[data-incoming-collaboration="incoming-question"]').innerText`)).includes('咨询 · 进行中'));
-    assert((await evaluate(`document.querySelector('[data-incoming-collaboration="relation-a"]').innerText`)).includes('请核验库存并保留阶段成果'));
+    assert((await evaluate(`document.querySelector('[data-incoming-collaboration="incoming-question"] .bot-incoming-reply').innerText`)).includes('已收到来自 翻译搭子 的协作请求'));
+    assert((await evaluate(`document.querySelector('[data-incoming-collaboration="incoming-question"] .bot-collaboration-summary').innerText`)).includes('进行中'));
+    assert.equal(await evaluate(`document.querySelector('[data-incoming-collaboration="relation-a"] .bot-message-author').innerText`), '学习搭子');
+    assert.equal(await evaluate(`document.querySelector('[data-incoming-collaboration="relation-a"] .bot-collaboration-summary-target').innerText`), '并发助理', 'recipient communication entry names the initiating Bot');
+    assert(await evaluate(`(()=>{const row=document.querySelector('[data-incoming-collaboration="relation-a"]');return row.querySelector('.bot-incoming-reply').getBoundingClientRect().bottom<=row.querySelector('.bot-collaboration-summaries').getBoundingClientRect().top})()`), 'recipient reply precedes the shared compact communication entry');
     assert.equal(await evaluate(`document.querySelectorAll('[data-incoming-collaboration="outgoing-from-target"]').length`), 0, 'incoming feed excludes requests sent by this Bot');
     assert(await evaluate(`window.collaborationFixture.listCalls.some(r=>r.botId==='target'&&r.direction==='incoming')`), 'incoming scope is filtered by the host before pagination');
     assert(await evaluate(`document.documentElement.scrollWidth<=390`), 'recipient cards fit a narrow window');
     await shot('bot-collaboration-incoming-active.png');
     await evaluate(`window.collaborationFixture.finishIncomingQuestion()`);
     await wait(`document.querySelector('[data-incoming-collaboration="incoming-question"]')?.innerText.includes('19 × 23 = 437')`);
-    assert((await evaluate(`document.querySelector('[data-incoming-collaboration="incoming-question"]').innerText`)).includes('咨询 · 已返回'));
-    await evaluate(`document.querySelector('[data-incoming-collaboration="relation-a"]').focus()`); await key('Enter');
+    assert((await evaluate(`document.querySelector('[data-incoming-collaboration="incoming-question"] .bot-collaboration-summary').innerText`)).includes('已返回'));
+    await evaluate(`document.querySelector('[data-incoming-collaboration="relation-a"] .bot-collaboration-summary').focus()`); await key('Enter');
     await wait(`document.querySelector('.bot-collaboration-readonly')?.innerText.includes('来源 Bot')`);
     assert.equal(await evaluate(`document.querySelectorAll('.bot-collaboration-followup').length`), 0, 'recipient inbox opens actual history without impersonating the source');
     await click('[aria-label="关闭协作记录"]'); await pause();
-    assert.equal(await evaluate(`document.activeElement.dataset.incomingCollaboration`), 'relation-a', 'return restores the received-card focus');
+    assert.equal(await evaluate(`document.activeElement.closest('[data-incoming-collaboration]')?.dataset.incomingCollaboration`), 'relation-a', 'return restores the recipient communication entry focus');
+    assert.equal(await evaluate(`document.activeElement.classList.contains('bot-collaboration-summary')`), true);
     await click('.bot-incoming-more');
     await wait(`document.querySelectorAll('[data-incoming-collaboration]').length===6`);
     report.checks.push('recipient main page shows incoming consultation and Work, live returned reply, host-filtered paging, narrow layout and keyboard history/back');
@@ -235,6 +258,30 @@ app.whenReady().then(async () => {
       assert.equal(await evaluate(`window.collaborationFixture.sendCalls.length`), sendsBeforeExamples, 'welcome examples never send or create a Work');
     }
     report.checks.push('empty received scope keeps the welcome examples; all three actual clicks fill a draft without sending');
+    // No real profile is read: live evidence is opt-in as an explicit text fixture.
+    const inlineSource = process.env.BOT_INLINE_SOURCE_FIXTURE ? fs.readFileSync(process.env.BOT_INLINE_SOURCE_FIXTURE, 'utf8')
+      : '这是网页说明。\n\n```html\n<!doctype html>\n<html><body>\n' + '<div>INLINE_SOURCE_MARKER</div>\n'.repeat(3000) + '</body></html>\n```';
+    for (const team of [false, true]) {
+      for (const { status, text } of [
+        { status: 'running', text: inlineSource.slice(0, 1024) },
+        { status: 'running', text: inlineSource.slice(0, 8192) },
+        { status: 'running', text: inlineSource },
+        { status: 'completed', text: inlineSource },
+      ]) {
+        const start = Date.now();
+        await evaluate(`window.collaborationFixture.setInlineSource(${JSON.stringify(text)}, ${JSON.stringify(status)}, ${team})`);
+        await wait(`document.querySelector('[data-message-id="source-29"] .bot-source-omitted') !== null`);
+        const body = await evaluate(`document.querySelector('[data-message-id="source-29"] .bot-assistant-content').textContent`);
+        assert(body.length < 18000 && !body.includes('<!doctype') && !body.includes('INLINE_SOURCE_MARKER'), 'full source never reaches the visible chat');
+        assert.equal(await evaluate(`document.querySelectorAll('[data-message-id="source-29"] pre').length`), 0, 'large source never reaches the highlighter');
+        assert(Date.now() - start < 5000, 'large source render keeps the Electron event loop responsive');
+        await click('#bot-draft');
+        await win.webContents.insertText('输入仍可响应');
+        assert((await evaluate(`document.querySelector('#bot-draft').value`)).includes('输入仍可响应'));
+      }
+    }
+    await shot('bot-inline-source-protected.png');
+    report.checks.push('personal/team streaming and completed large HTML keep source out of parser/highlighter; actual composer input remains responsive');
     assert.deepEqual(errors, []);
     report.status = 'passed';
     console.log('PASS collaboration Electron renderer: '+report.checks.join('; '));

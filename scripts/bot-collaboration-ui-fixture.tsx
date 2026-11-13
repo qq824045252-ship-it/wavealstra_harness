@@ -38,12 +38,24 @@ const sourceHistory: BotHistoryDto = { botId: 'bot', conversationId: 'source-cha
   botId: 'bot', conversationId: 'source-chat', requestId: `source-${index}`, messageId: `source-${index}`, ordinal: index + 1,
   role: index % 2 ? 'assistant' : 'user', text: `原始对话消息 ${index}\n\n${'原始对话保持原来的阅读位置。\n\n'.repeat(3)}`,
   status: 'completed', workIds: [], createdAt: 1000, updatedAt: 1000,
-  ...(index === 26 ? { peerOrigin: { kind: 'return' as const, collaborationId: first.collaborationId, exchangeId: 'peer-return-ui',
+  ...(index === 26 || index === 27 ? { requestId: 'peer-return-ui', peerOrigin: { kind: 'return' as const, collaborationId: first.collaborationId, exchangeId: 'peer-return-ui',
     replyMessageId: 'peer-answer-ui', senderBotId: 'target', senderDisplayName: '学习搭子', sourceBotId: 'bot',
     sourceConversationId: 'source-chat', sourceRequestId: 'source-24', sourceUserMessageId: 'source-24', sourceAssistantMessageId: 'source-25' } } : {}),
+  ...(index === 27 ? { collaborationResult: { workId: 'target-owned-work', eventId: 'returned-result', kind: 'result' as const, category: 'result' as const,
+    report: { title: '一年英语计划', summary: 'WORKER_REPORT_MUST_NOT_REPLACE_REPLY', artifactRefs: ['/saved/plan.html', '/saved/helper.py'], primaryArtifactRefs: ['/saved/plan.html'],
+      files: [{ ref: '/saved/plan.html', name: '一年英语计划.html', openPath: '/saved/plan.html', previewManifestPath: '/saved/plan.web.json' },
+        { ref: '/saved/helper.py', name: 'helper.py', openPath: '/saved/helper.py' }], reviewStatus: 'accepted' as const, current: true, notices: [] } } } : {}),
   ...(index === 29 ? { collaborations: [first, first, second] } : {}),
 })) };
 const historyCalls: BotCollaborationHistoryQuery[] = [], listCalls: BotCollaborationsQuery[] = [], sendCalls: BotSendRequest[] = [];
+const preparedFiles: Array<{ snapshotPath: string; manifestPath?: string | null }> = [];
+Object.assign(window.api!, { savedArtifact: {
+  prepare: async (input: { snapshotPath: string; manifestPath?: string | null }) => {
+    preparedFiles.push(input);
+    return { token: 'saved-plan', url: 'data:text/html,<h1>一年英语计划</h1>', source: '<h1>一年英语计划</h1>', warnings: [] };
+  }, release: async () => {},
+} });
+Object.assign(window, { returnedFileFixture: { preparedFiles } });
 const getWorkCalls: string[] = [];
 const targetWork: WorkProjectionDto = { workId: 'target-owned-work', title: '学习搭子的个人核验事项', ownerBotId: 'target', mode: 'once', lifecycle: 'closed', closureConclusion: 'succeeded',
   ownerEpoch: 1, intentRevision: 1, sourceVersion: 1, stateVersion: 1, inputSnapshotId: 'target-input', inputSnapshotBound: true,
@@ -51,9 +63,10 @@ const targetWork: WorkProjectionDto = { workId: 'target-owned-work', title: '学
 const accepted = new Map<string, BotSendReceipt>();
 let failFirstReceipt = true;
 let heldRelation: string | undefined, releaseRead: (() => void) | undefined;
+let inlineSourceHistory: BotHistoryDto | undefined;
 Object.assign(window.api!.botWork, {
   getWork: async (workId: string) => { getWorkCalls.push(workId); return workId === targetWork.workId ? structuredClone(targetWork) : undefined; },
-  history: async ({ botId }: { botId: string }) => botId === 'bot' ? structuredClone(sourceHistory)
+  history: async ({ botId }: { botId: string }) => botId === 'bot' ? structuredClone(inlineSourceHistory ?? sourceHistory)
     : { botId, conversationId: '', revision: 0, archived: false, messages: [] },
   collaborations: async (request: BotCollaborationsQuery) => {
     listCalls.push(request);
@@ -135,6 +148,15 @@ useAppStore.setState({ botHistories: { bot: sourceHistory }, botDraft: '尚未�
 });
 Object.assign(window, { collaborationFixture: {
   historyCalls, listCalls, sendCalls, getWorkCalls, organizationSchemaChecks,
+  setInlineSource: (text: string, status: 'running' | 'completed', team: boolean) => {
+    const teamId = team ? 'source-team' : undefined;
+    const history: BotHistoryDto = { ...sourceHistory, teamId, messages: [{ ...sourceHistory.messages[29], teamId, text, status,
+      segments: [{ id: 'inline-source', kind: 'answer', text, createdAt: 1000, updatedAt: Date.now() }], collaborations: [], organizations: [] }] };
+    inlineSourceHistory = history;
+    useAppStore.setState({ activeBotId: 'bot', activeTeam: team ? { templateId: 'source-team', name: '源码交付测试团队', createdAt: 1000,
+      ownerBotId: 'bot', ownerResponsibility: '整合交付', members: [{ botId: 'target', responsibility: '制作网页', delegatedScope: [] }] } : null,
+      botHistories: { bot: history, 'team:source-team': history } });
+  },
   setOrganization: (key: keyof typeof organizationStates | null) => {
     sourceHistory.messages[29].organizations = key === null ? [] : [organizationStates[key]];
     useAppStore.setState({ botHistories: { bot: structuredClone(sourceHistory) } });

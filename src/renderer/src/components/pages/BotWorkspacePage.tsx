@@ -31,11 +31,11 @@ import { rewriteMarkdownImageSources } from "@shared/markdown-images";
 import { artifactImageUrl } from "@shared/artifact-ipc";
 import { ChatImageScope } from "@/components/chat/ChatImage";
 import ChatComposer from "@/components/chat/ChatComposer";
-import ChatMarkdown from "@/components/chat/ChatMarkdown";
+import ChatMarkdown from "./BotChatMarkdown";
 import { IconStop, IconPlus, IconArchive, IconChevronDown, IconArrowUp, IconBot, IconChevronRight, IconListTodo, IconPanel, IconSettings, IconX } from "@/components/common/icons";
-import { activeBotReply, personalBotWork, linkedConversationWork, botMessageStatus, botMessageWorkLinks, botWorkTimeline, shouldSendBotComposer, type BotWorkspaceView } from "@/lib/botWorkspacePresentation";
+import { activeBotReply, personalBotWork, linkedConversationWork, botMessageStatus, botMessageWorkLinks, botReplyQuestions, botWorkTimeline, shouldSendBotComposer, type BotWorkspaceView } from "@/lib/botWorkspacePresentation";
 import { BotWorkBrowser } from "./BotWorkBrowser";
-import { BotResultReport } from "./BotWorkResult";
+import { BotResultReport, BotReturnedFiles } from "./BotWorkResult";
 import { BotActivityMonitor } from "./BotActivityMonitor";
 import { BotDeletion } from "./BotDeletion";
 import { BotExecutionSettings } from "./BotExecutionSettings";
@@ -138,7 +138,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
     || linkedConversationWork(loadedWork, messages, activeBotId, teamId, histories[scopeKey]?.conversationId)
     || (!teamId && sourceCollaborationWork(loadedWork, messages, activeBotId, histories[scopeKey]?.conversationId))) ? loadedWork : null;
   const selected = (view === "conversation" ? detailWorks : botWorks).find(work => work.workId === selectedWorkId) ?? null;
-  const questionsByRequest = useMemo(() => new Map(messages.filter(item => item.role === "user").map(item => [item.requestId, item])), [messages]);
+  const questionsByRequest = useMemo(() => botReplyQuestions(messages), [messages]);
   // Foreground reply controls must never cancel a background Work report.
   const activeReply = activeBotReply(messages);
   const composerReply = activeBotReply(messages.filter(message => !message.workFeedback));
@@ -472,6 +472,7 @@ export function BotMessage({ message, botName, works, onOpenWork, onOpenCollabor
   return <article className={`bot-message msg-row ${message.role}`} data-message-id={message.messageId} data-streaming={message.role === "assistant" && message.status === "running" ? "true" : undefined} aria-label={`${author}的消息`}>
     {message.role === "user" && message.peerOrigin && <div className="bot-message-author"><strong>{author}</strong></div>}
     {message.role === "assistant" && <div className="bot-message-author"><BotAvatar botId={message.botId} name={botName} /><strong>{botName}</strong></div>}
+    {message.role === "assistant" && sourceQuestion && !sourceQuestion.peerOrigin && !message.workFeedback && <BotReplyReference message={sourceQuestion} />}
 
     {message.role === "user" ? <div className="user-bubble">{Boolean(message.attachments?.length) && <div className="input-attach-chips"><ComposerAttachmentChips attachments={message.attachments ?? []} /></div>}{message.text && <div className="user-bubble-text">{botMessageDisplayText(message.text)}</div>}</div> : <div className="bot-assistant-content">
       {result && message.text ? <BotResultReport message={message} work={works.find(work => work.workId === message.workFeedback?.workId)} renderMarkdown={renderMarkdown} />
@@ -479,6 +480,7 @@ export function BotMessage({ message, botName, works, onOpenWork, onOpenCollabor
           {renderMarkdown(segment.text, message.status === "running" && segment.kind === "answer" && index === segments.length - 1)}
         </div>) : message.text ? renderMarkdown(message.text) : null}
       {(showActivity || !hasContent) && <p className="bot-reply-placeholder" role={running ? "status" : undefined}>{message.status === "completed" ? "没有文本回复" : botMessageStatus(message)}{running && <span className="bot-typing-dots" aria-hidden="true">···</span>}</p>}
+      <BotReturnedFiles message={message} />
     </div>}
     {linkedWorkIds.length > 0 && <div className="bot-message-work-links">{linkedWorkIds.map(workId => <button type="button" key={workId} onClick={() => onOpenWork(workId)}><IconListTodo size={14} /><span>{works.find(work => work.workId === workId)?.title ?? (message.workFeedback?.workId === workId ? message.workFeedback.report?.title : undefined) ?? "查看关联事项"}</span><IconChevronRight size={14} /></button>)}</div>}
     {externalTask && <div className="bot-message-work-links"><button type="button" onClick={() => useAppStore.getState().setActiveTask(externalTask.id)}><IconBot size={14} /><span>打开外部 Agent 任务</span><IconChevronRight size={14} /></button></div>}
@@ -487,6 +489,5 @@ export function BotMessage({ message, botName, works, onOpenWork, onOpenCollabor
     <BotReplyMetrics message={message} />
     <BotMessageActions message={message} onReply={onReply ? () => onReply(message) : undefined} onCancel={() => onCancel(message)} statusAlreadyVisible={message.role === "assistant" && (showActivity || !hasContent) && message.status !== "completed"} />
     {message.error && <p className="bot-alert" role="alert">{message.error}</p>}
-    {message.role === "assistant" && sourceQuestion && !message.workFeedback && <BotReplyReference message={sourceQuestion} />}
   </article>;
 }

@@ -61,7 +61,7 @@ models.registerProvider("peer43", { api: "openai-completions", apiKey: "fixture-
       const afterTool = context.messages.at(-1)?.role === "toolResult";
       let content: AssistantMessage["content"] = model.id !== "a" && tag.startsWith("work") && !afterTool
         ? [{ type: "toolCall", id: `create-${++sequence}`, name: "work_create", arguments: {
-          title: `B plan CASE:${tag}`, goalDescription: "B 自己决定的执行计划", requestedOutcome: "one_time", mode: "once" } }]
+          title: `B plan CASE:${tag}`, goalDescription: "B 自己决定的执行计划", requestedOutcome: "one_time", mode: "once", sourceMessageIds: [] } }]
         : [{ type: "text", text: model.id === "a" ? `A 整理收到的结果 CASE:${tag}` : `B 实际答复 CASE:${tag}` }];
       if (tag === "review-read" && model.id === "a" && input.includes("Bot 消息正文：B 实际答复 CASE:review-read") && !afterTool) {
         const collaboration = JSON.parse(input.match(/协作：(\{.+?\})。/)![1]) as { collaborationId: string };
@@ -74,7 +74,7 @@ models.registerProvider("peer43", { api: "openai-completions", apiKey: "fixture-
         const lastUser = context.messages.findLastIndex(message => message.role === "user");
         const results = context.messages.slice(lastUser + 1).filter(message => message.role === "toolResult");
         content = results.length === 0 ? [{ type: "toolCall", id: `forbidden-${++sequence}`, name: "work_create", arguments: {
-          title: "补查不能重做", goalDescription: "不应创建", requestedOutcome: "one_time", mode: "once" } }]
+          title: "补查不能重做", goalDescription: "不应创建", requestedOutcome: "one_time", mode: "once", sourceMessageIds: [] } }]
           : results.length === 1 ? [{ type: "toolCall", id: `mcp-write-${++sequence}`, name: "mcp_call_tool", arguments: { server: "fixture", tool: "write_file", arguments: { path: "evidence.txt", content: "bad" } } }]
           : results.length === 2 ? [{ type: "toolCall", id: `evidence-${++sequence}`, name: "read", arguments: { path: join(root, "b", "evidence.txt") } }]
           : [{ type: "text", text: `B 已核对现有成果 CASE:review-read ${results.map(result => textOf(result.content)).join(" ")}` }];
@@ -86,7 +86,7 @@ models.registerProvider("peer43", { api: "openai-completions", apiKey: "fixture-
         content = results.length === 0 ? [{ type: "toolCall", id: `query-${++sequence}`, name: "work_query_status", arguments: { view: "detail", workId: amendmentTarget } }]
           : results.length === 1 ? [{ type: "toolCall", id: `amend-${++sequence}`, name: "work_amend", arguments: {
             workId: amendmentTarget, versionGuard: { expectedStateVersion: current.stateVersion, expectedIntentRevision: current.intentRevision, expectedOwnerEpoch: current.ownerEpoch },
-            goalDescription: "Updated through B foreground", title: "updated original Work" } }]
+            goalDescription: "Updated through B foreground", title: "updated original Work", sourceMessageIds: [] } }]
           : [{ type: "text", text: `amend result ${results.map(result => textOf(result.content)).join(" ")}` }];
       }
       const message: AssistantMessage = { role: "assistant", content, stopReason: content.some(part => part.type === "toolCall") ? "toolUse" : "stop",
@@ -207,7 +207,11 @@ try {
   console.log("PASS #43 recipient amendment targets verified human Work ID despite shortened ID and file-preservation wording in peer plan");
   const publicFeedback = { workId, eventId: "public-report", kind: "result" as const, category: "result" as const,
     intentRevision: work.intentRevision, inputSnapshotId: work.inputSnapshotId,
-    report: { title: "经过核验的阶段成果", summary: "PUBLIC_REPORT CASE:public-result", artifactRefs: [], milestone: true as const,
+    report: { title: "经过核验的阶段成果", summary: "PUBLIC_REPORT CASE:public-result", artifactRefs: ["/saved/plan.html", "/saved/helper.py"],
+      primaryArtifactRefs: ["/saved/plan.html"], files: [
+        { ref: "/saved/plan.html", name: "年度计划.html", openPath: "/saved/plan.html", previewManifestPath: "/saved/plan.web.json" },
+        { ref: "/saved/helper.py", name: "helper.py", openPath: "/saved/helper.py" },
+      ], milestone: true as const,
       reviewStatus: "accepted" as const, current: true, notices: [] } };
   const returnsBefore = count("SELECT COUNT(*) n FROM bot_peer_deliveries WHERE json_extract(origin_json,'$.kind')='return'");
   service.messages.appendWorkDelivery(LOCAL_USER_ID, workId, "public-report", "v1", "PRIVATE_TOOL_LOG: raw execution record", publicFeedback);
@@ -215,6 +219,17 @@ try {
   await wait(() => requests.some(item => item.model === "a" && item.tag === "public-result"), "A summarizes the public report");
   const sourceReport = service.history({ botId: "a", conversationId: first.receipt.conversationId });
   assert(!sourceReport.messages.some(message => message.text.includes("PRIVATE_TOOL_LOG")), "raw tools stay in B/Work records");
+  const returnedReport = sourceReport.messages.find(message => message.role === "assistant" && message.collaborationResult?.eventId === "public-report");
+  assert(returnedReport?.peerOrigin?.kind === "return");
+  assert.deepEqual(returnedReport.collaborationResult, publicFeedback, "A receives the exact report files, selected deliverables and preview manifest independently of model prose");
+  assert.equal(returnedReport.workFeedback, undefined, "the worker report cannot replace A's own answer");
+  assert.deepEqual(service.messages.message(returnedReport.messageId)?.collaborationResult, publicFeedback, "history reload restores delivery without replaying the task");
+  for (const changed of [{ userId: "other-user" }, { botId: "b" }, { conversationId: "other-chat" },
+    { origin: { ...returnedReport.peerOrigin, senderBotId: "c" } },
+    { origin: { ...returnedReport.peerOrigin, replyMessageId: "other-journal-message" } }]) {
+    assert.equal(service.collaborations.repo.feedbackForReturn({ userId: LOCAL_USER_ID, botId: "a", conversationId: first.receipt.conversationId,
+      origin: returnedReport.peerOrigin, ...changed }), undefined, "another account, Bot, conversation or journal cannot supply files");
+  }
   service.messages.appendWorkDelivery(LOCAL_USER_ID, workId, "public-report", "v1", "PRIVATE_TOOL_LOG: raw execution record", publicFeedback);
   service.collaborations.publishWork(workId); await delay(80);
   const reportReturns = service.messages.peers.deliveries(LOCAL_USER_ID).filter(item => item.text.includes("PUBLIC_REPORT"));

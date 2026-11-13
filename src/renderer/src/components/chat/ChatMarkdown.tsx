@@ -137,9 +137,9 @@ function ChatCodeBlockNode({ node }: NodeComponentProps<MarkstreamCodeBlockNode>
   // hooks 必须无条件先跑完。流式 ```` → ````md 时同一实例会换分支；
   // 提前 return 再 useState 会触发 "Rendered more/fewer hooks" → 整树卸掉灰屏。
   const [highlighted, setHighlighted] = useState<string | null>(null);
-  // 流式时不高亮（避免每 delta 全量 hljs）；settled 后一次性高亮（rAF 合并）
+  // 流式和长代码不高亮；rAF 仍在主线程，不能把不限长的同步 hljs 工作推迟到下一帧。
   useEffect(() => {
-    if (isMdFence || isSvgFence || isStreaming) {
+    if (isMdFence || isSvgFence || isStreaming || node.code.length > 4_000) {
       setHighlighted(null);
       return;
     }

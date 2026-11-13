@@ -93,7 +93,7 @@ export function botMessageStatus(message: BotMessageDto): string {
  * No text/title matching or cross-turn deduplication: associations are not messages.
  */
 export function botMessageWorkLinks(message: BotMessageDto, sourceQuestion?: BotMessageDto): string[] {
-  const workIds = [...new Set(message.workIds)];
+  const workIds = [...new Set([...message.workIds, ...(message.collaborationResult ? [message.collaborationResult.workId] : [])])];
   if (message.role !== "assistant" || message.workFeedback || sourceQuestion?.role !== "user"
     || message.requestId !== sourceQuestion.requestId || message.conversationId !== sourceQuestion.conversationId
     || message.botId !== sourceQuestion.botId || message.teamId !== sourceQuestion.teamId) return workIds;
@@ -140,6 +140,8 @@ export function botWorkTimeline(messages: BotMessageDto[]): BotTimelineEntry[] {
     latest.set(eventKey(message), message.messageId);
   const rows: BotTimelineEntry[] = [];
   for (const message of messages) {
+    // Peer inputs drive the foreground, but their text belongs to the collaboration journal.
+    if (message.peerOrigin && (message.role === "user" || message.peerOrigin.kind === "request")) continue;
     const feedback = message.role === "assistant" && message.status === "completed" ? message.workFeedback : undefined;
     const fold = feedback && !message.error && (feedback.category === "progress" || latest.get(eventKey(message)) !== message.messageId);
     const previous = rows.at(-1);
@@ -150,6 +152,18 @@ export function botWorkTimeline(messages: BotMessageDto[]): BotTimelineEntry[] {
     } else rows.push({ key: `progress:${message.messageId}`, kind: "progress", workId: feedback.workId, workIds: [feedback.workId], messages: [message] });
   }
   return rows;
+}
+
+export function botReplyQuestions(messages: readonly BotMessageDto[]): Map<string, BotMessageDto> {
+  const users = new Map(messages.filter(message => message.role === "user" && !message.peerOrigin).map(message => [message.messageId, message]));
+  const questions = new Map([...users.values()].map(message => [message.requestId, message]));
+  for (const message of messages) {
+    if (message.peerOrigin?.kind !== "return") continue;
+    const source = users.get(message.peerOrigin.sourceUserMessageId);
+    if (source && source.conversationId === message.conversationId && source.botId === message.botId)
+      questions.set(message.requestId, source);
+  }
+  return questions;
 }
 
 /** Stop targets the running reply, not a later message waiting in the send queue. */

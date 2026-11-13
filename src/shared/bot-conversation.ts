@@ -77,6 +77,8 @@ export const botCallSchema = z.object({
 export type BotCallDto = z.infer<typeof botCallSchema>;
 export const botMessageSchema = z.object({
   peerOrigin: botPeerOriginSchema.optional(),
+  /** Exact returned Work evidence; the source Bot's answer remains its own prose. */
+  collaborationResult: workFeedbackSchema.optional(),
   messageId: id, conversationId: id, botId: id, teamId: id.optional(), requestId: id, ordinal: z.number().int().positive(),
   messageRevision: z.number().int().nonnegative().optional(),
   metrics: z.custom<BotForegroundMetrics>().optional(),
