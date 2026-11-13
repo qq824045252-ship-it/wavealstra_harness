@@ -770,7 +770,8 @@
     "test:business-gateway-registration": "node scripts/run-gateway-ui-test.mjs scripts/business-gateway-registration-test.ts",
     "test:business-gateway-registration-ui": "node scripts/run-gateway-ui-test.mjs scripts/business-gateway-registration-ui-test.tsx",
     "test:gateway-registration-card-ui": "node scripts/run-gateway-ui-test.mjs scripts/gateway-registration-card-ui-test.tsx",
-    "test:business-gateway-registration-service": "node scripts/test-guard.mjs scripts/business-gateway-registration-service-test.mjs"
+    "test:business-gateway-registration-service": "node scripts/test-guard.mjs scripts/business-gateway-registration-service-test.mjs",
+    "test:bot-team-recycle-ui": "node scripts/run-tsgo-ui-test.mjs scripts/bot-team-recycle-dom-test.tsx"
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.85.0",

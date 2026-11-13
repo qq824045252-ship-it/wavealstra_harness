@@ -343,6 +343,7 @@ const HEADLESS_TESTS = new Set([
   "test:work-watch-goal",
   "test:bot-rename",
   "test:bot-team-conversation",
+  "test:bot-team-recycle-ui",
   "test:bot-active-requests",
   "test:bot-activity-monitor",
   "test:bot-work-query-scale",

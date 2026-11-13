@@ -297,9 +297,13 @@ try {
     assert.deepEqual(query.query(LOCAL_USER_ID, { scope: { kind: 'historical_teams' }, view: 'all' }).works.map(w => w.workId), [historical.workId]);
     assert.deepEqual(query.query(LOCAL_USER_ID, { scope: { kind: 'removed_teams' }, view: 'all' }).works.map(w => w.workId), [removed.workId]);
     assert.equal(query.query('foreign', { scope: { kind: 'team', teamId: 'team' }, view: 'all' }).total, 0);
-    assert.ok(!query.query(LOCAL_USER_ID, { scope: { kind: 'personal', botId: DEFAULT_BOT_ID }, view: 'all', query: 'team-subject' }).works.length);
+    const personalOwned = query.query(LOCAL_USER_ID, { scope: { kind: 'personal', botId: DEFAULT_BOT_ID }, view: 'all', query: 'team-subject' }).works;
+    assert.deepEqual(personalOwned.map(w => w.workId), [historical.workId], 'legacy team plan uses its real personal Bot owner, not a third history category');
+    assert.equal(query.query(LOCAL_USER_ID, { scope: { kind: 'personal', botId: 'other-bot' }, view: 'all', query: 'historical-team-subject' }).total, 0);
     db.connection.prepare("UPDATE work_team_templates SET deleted_at=1 WHERE template_id='team'").run();
     assert.equal(query.query(LOCAL_USER_ID, { scope: { kind: 'historical_teams' }, view: 'all' }).total, 2);
+    assert.deepEqual(query.query(LOCAL_USER_ID, { scope: { kind: 'team', teamId: 'team' }, view: 'all' }).works.map(w => w.workId), [teamWork.workId], 'deleted formal team keeps its own query and provenance');
+    assert.deepEqual(query.query(LOCAL_USER_ID, { scope: { kind: 'personal', botId: DEFAULT_BOT_ID }, view: 'all', query: 'team-subject' }).works.map(w => w.workId), [historical.workId], 'deleted formal team must not be relabeled personal');
     const competing = new Database(join(root, 'test.db'), { timeout: 0 });
     let competingAttempt = false;
     db.connection.function('work_list_matches', { deterministic: true }, (_text: unknown, _query: unknown) => {

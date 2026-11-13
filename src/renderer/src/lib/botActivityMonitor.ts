@@ -37,7 +37,7 @@ export function buildActivityRows(input: {
       activeRequests: input.activeRequests?.filter(request => request.message.teamId === teamId) };
   } else if (input.scopeBotId !== undefined && input.scopeBotId !== null) {
     const botId = input.scopeBotId;
-    const works = input.works.filter(work => work.ownerBotId === botId && !work.team);
+    const works = input.works.filter(work => work.ownerBotId === botId && !work.team?.teamId && !work.team?.removedAt);
     const taskIds = new Set(input.workExecutionTaskIds ?? works.flatMap(work => work.listSummary?.executionTaskIds ?? work.executions.map(binding => binding.taskId)));
     input = { ...input, works, tasks: input.tasks.filter(task => taskIds.has(task.id)),
       bots: input.bots.filter(bot => bot.botId === botId),
@@ -109,7 +109,7 @@ export function buildActivityRows(input: {
       label: submittedOnly ? "已提交，等待执行" : status.label, running: executing, ended: work.lifecycle === "closed" || Boolean(work.archive?.archivedAt || work.team?.removedAt),
       detail: work.listSummary?.excerpt ?? [work.criteria.length ? completed + "/" + work.criteria.length + " 项目标已核验" : "",
         work.blockers.find(item => item.status === "open")?.reason || latest?.summary || work.nextSteps[0]].filter(Boolean).join(" · "),
-      updatedAt: work.updatedAt, botId: work.ownerBotId, workId: work.workId, teamWork: Boolean(work.team) });
+      updatedAt: work.updatedAt, botId: work.ownerBotId, workId: work.workId, teamWork: Boolean(work.team?.teamId) });
   }
   return rows.map(row => ({ ...row, title: workCardExcerpt(row.title) || "未命名任务", detail: workCardExcerpt(row.detail) }))
     .sort((a, b) => Number(b.running) - Number(a.running) || b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));

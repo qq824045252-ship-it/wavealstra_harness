@@ -1,16 +1,21 @@
+import { useAppStore } from "@/store/appStore";
 import { useWorkQueryPage } from "@/hooks/useWorkQueryPage";
 import { useEffect, useState } from "react";
 import type { WorkProjectionDto } from "@shared/bot-work";
 import type { WorkTeamControlRequest, WorkTeamTemplateDto } from "@shared/bot-work-team";
 
 /** Management actions never replay work or silently delete workspace files. */
-export function BotTeamManagement({ team, work, onChanged }: {
-  team?: WorkTeamTemplateDto; work?: WorkProjectionDto; onChanged: () => void;
+export function BotTeamManagement({ team, work, onChanged, onOpenWork }: {
+  team?: WorkTeamTemplateDto; work?: WorkProjectionDto; onChanged: () => void; onOpenWork?: (work: WorkProjectionDto) => void;
 }): React.JSX.Element {
+  const bots = useAppStore(state => state.botIdentities);
+  const ownerName = bots.find(bot => bot.botId === work?.ownerBotId)?.displayName;
   const [teams, setTeams] = useState<WorkTeamTemplateDto[]>([]);
   const [recycleOpen, setRecycleOpen] = useState(false), [recyclePage, setRecyclePage] = useState(1);
   const recycle = useWorkQueryPage({ scope: { kind: "removed_teams" }, view: "all", page: recyclePage, pageSize: 24 }, recycleOpen);
   const removed = recycle.result?.works ?? [];
+  const [deletedTeamId, setDeletedTeamId] = useState(""), [deletedTeamPage, setDeletedTeamPage] = useState(1);
+  const deletedTeamWorks = useWorkQueryPage({ scope: { kind: "team", teamId: deletedTeamId }, view: "all", page: deletedTeamPage, pageSize: 24 }, recycleOpen && !!deletedTeamId);
   const [target, setTarget] = useState(""), [busy, setBusy] = useState(false), [notice, setNotice] = useState("");
   const [confirm, setConfirm] = useState<"team" | "work" | null>(null);
   const reload = async () => {
@@ -35,7 +40,7 @@ export function BotTeamManagement({ team, work, onChanged }: {
   return <section className="bot-team-management" aria-label="团队与事项管理">
     {work && <section>
       <h3>管理事项：{work.title}</h3>
-      <p>当前归属：{work.team?.teamName ?? "未归属现有团队（历史事项）"}。移动只改变归属位置，原成员、已执行步骤、成果和工作目录不变，不会重新执行。</p>
+      <p>当前归属：{work.team?.teamName ?? (ownerName ? `个人 Bot · ${ownerName}` : "原归属 Bot 不可用，记录保留待核对")}。移动只改变归属位置，原成员、已执行步骤、成果和工作目录不变，不会重新执行。</p>
       <label>移到团队<select aria-label="事项目标团队" value={target} disabled={busy} onChange={e => setTarget(e.target.value)}>
         <option value="">选择目标团队</option>{teams.filter(item => !item.deletedAt && item.templateId !== work.team?.teamId).map(item => <option key={item.templateId} value={item.templateId}>{item.name}</option>)}
       </select></label>
@@ -46,7 +51,7 @@ export function BotTeamManagement({ team, work, onChanged }: {
     </section>}
     {team && <section>
       <h3>管理团队：{team.name}</h3>
-      <p>删除团队只将团队入口移到回收站。成员 Bot 不删除，已创建事项继续保留在“Work 历史”，不会停止或重跑。</p>
+      <p>删除团队只将团队入口移到回收站。成员 Bot 不删除，已创建事项继续保留在该团队的回收管理中，不会停止或重跑。</p>
       <button type="button" disabled={busy} onClick={() => setConfirm("team")}>删除此团队</button>
     </section>}
     {confirm && <div role="alert" className="bot-team-management-confirm">
@@ -59,7 +64,8 @@ export function BotTeamManagement({ team, work, onChanged }: {
     </div>}
     <details className="bot-team-recycle" onToggle={event => setRecycleOpen(event.currentTarget.open)}><summary>回收站（团队 {teams.filter(item => item.deletedAt).length}{recycle.result ? ` · 事项 ${recycle.result.filtered}` : ""}）</summary>
       <p>这里能恢复删除的团队与已结束事项。恢复不重新执行任务。</p>
-      {teams.filter(item => item.deletedAt).map(item => <p key={item.templateId}>团队：{item.name} <button type="button" disabled={busy} onClick={() => void perform({ kind: "restore_template", templateId: item.templateId }, "团队已恢复。")}>恢复团队</button></p>)}
+      {teams.filter(item => item.deletedAt).map(item => <p key={item.templateId}>团队：{item.name} <button type="button" onClick={() => { setDeletedTeamId(item.templateId); setDeletedTeamPage(1); }}>查看事项</button> <button type="button" disabled={busy} onClick={() => void perform({ kind: "restore_template", templateId: item.templateId }, "团队已恢复。")}>恢复团队</button></p>)}
+      {deletedTeamId && <section aria-label="已删除团队的事项">{deletedTeamWorks.loading && <p role="status">读取团队事项…</p>}{deletedTeamWorks.error && <p role="alert">{deletedTeamWorks.error}</p>}{deletedTeamWorks.result?.works.map(item => <button type="button" key={item.workId} onClick={() => onOpenWork ? onOpenWork(item) : useAppStore.getState().setHistoricalTeamWork(item)}>{item.title}</button>)}{deletedTeamWorks.result && deletedTeamWorks.result.pages > 1 && <nav aria-label="已删除团队事项分页"><button disabled={deletedTeamPage <= 1} onClick={() => setDeletedTeamPage(page => page - 1)}>上一页</button><span>第 {deletedTeamPage} / {deletedTeamWorks.result.pages} 页</span><button disabled={deletedTeamPage >= deletedTeamWorks.result.pages} onClick={() => setDeletedTeamPage(page => page + 1)}>下一页</button></nav>}</section>}
       {recycle.loading && <p role="status">正在读取事项回收站…</p>}
       {recycle.error && <p role="alert">{recycle.error}<button type="button" onClick={recycle.retry}>重试</button></p>}
       {removed.map(item => <p key={item.workId}>事项：{item.title} <button type="button" disabled={busy} onClick={() => void perform({ kind: "restore_work", workId: item.workId }, "事项已恢复。")}>恢复事项</button></p>)}

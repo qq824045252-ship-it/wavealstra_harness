@@ -212,7 +212,7 @@ export class WorkListQuery {
         let scopeSql: string;
         switch (scope.kind) {
             case 'personal':
-                scopeSql = 't.work_id IS NULL AND w.owner_bot_id=@scopeId';
+                scopeSql = '(t.work_id IS NULL OR o.team_id IS NULL) AND v.removed_at IS NULL AND w.owner_bot_id=@scopeId';
                 break;
             case 'team':
                 scopeSql = 'o.team_id=@scopeId AND v.removed_at IS NULL';
