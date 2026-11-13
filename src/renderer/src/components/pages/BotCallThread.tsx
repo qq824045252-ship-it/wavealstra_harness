@@ -1,7 +1,7 @@
 import type { BotCallDto } from '@shared/bot-conversation';
 import type { BotCollaborationDto, BotCollaborationStatus } from '@shared/bot-collaboration';
 import { useEffect, useState } from 'react';
-import { IconBot } from '@/components/common/icons';
+import { BotAvatar } from '@/components/common/BotAvatar';
 import './BotCallThread.css';
 import './BotCollaborationView.css';
 
@@ -94,7 +94,7 @@ export function BotCallThread({ calls, collaborations, onOpenCollaboration, rend
         {unique.map(item => <button type="button" className="bot-collaboration-summary" key={item.collaborationId}
           data-collaboration-id={item.collaborationId} onClick={() => onOpenCollaboration?.(item.collaborationId)} disabled={!onOpenCollaboration}
           aria-label={`查看与 ${item.targetDisplayName} 的协作记录，${item.messageCount} 条消息`}>
-          <span className="bot-collaboration-summary-target"><span className="bot-avatar" aria-hidden="true"><IconBot size={14} /></span><span>{item.messageCount} 条消息，与 {item.targetDisplayName}</span></span>
+          <span className="bot-collaboration-summary-target"><BotAvatar botId={item.targetBotId} name={item.targetDisplayName} /><span>{item.messageCount} 条消息，与 {item.targetDisplayName}</span></span>
           <span className="bot-collaboration-summary-meta"><span className="bot-collaboration-summary-status">{collaborationStatus(item.status)}{item.work ? ` · ${collaborationWorkStatus(item.work)}` : item.workId ? ' · 已关联事项' : ''}</span><span data-collaboration-elapsed>耗时 {collaborationElapsed(item, now)}</span></span>
         </button>)}
       </div>
@@ -113,11 +113,11 @@ export function BotCallThread({ calls, collaborations, onOpenCollaboration, rend
     <ol className="bot-call-exchanges">
       {calls.map(call => <li key={call.callId} className="bot-call-exchange" data-call-id={call.callId} data-call-status={call.status}>
         {call.requestText.trim() && <div className="bot-call-request">
-          <div className="bot-call-author"><span className="bot-avatar" aria-hidden="true"><IconBot size={14} /></span><strong>{call.sourceDisplayName}</strong><span>→ @{call.targetDisplayName}</span></div>
+          <div className="bot-call-author"><BotAvatar botId={call.sourceBotId} name={call.sourceDisplayName} /><strong>{call.sourceDisplayName}</strong><span>→ @{call.targetDisplayName}</span></div>
           <p className="bot-call-text">{call.requestText}</p>
         </div>}
         {call.replyText?.trim() && <div className="bot-call-reply">
-          <div className="bot-call-author"><span className="bot-avatar" aria-hidden="true"><IconBot size={14} /></span><strong>{call.targetDisplayName}</strong><span>回复 {call.sourceDisplayName}</span></div>
+          <div className="bot-call-author"><BotAvatar botId={call.targetBotId} name={call.targetDisplayName} /><strong>{call.targetDisplayName}</strong><span>回复 {call.sourceDisplayName}</span></div>
           <div className="bot-call-text bot-call-markdown">{renderReply ? renderReply(call.replyText, call.status === "running") : call.replyText}</div>
         </div>}
         <p className="bot-call-state">{callStatus(call)}</p>

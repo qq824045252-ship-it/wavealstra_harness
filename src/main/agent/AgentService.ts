@@ -1,3 +1,4 @@
+import { BotAvatarService } from "./work/BotAvatarService";
 import { connectorRuntimeContext } from "../connectors/ConnectorRuntimeContext";
 import { WorkWatchSupervision } from "./work/WorkWatchSupervision";
 import { botExecutionDiagnostics } from "./work/BotExecutionDiagnostics";
@@ -641,6 +642,7 @@ export class AgentService {
   private readonly stopDiagnosticObservation: () => void;
   private readonly conversationInteractions: ConversationInteractionService;
   private readonly conversationGoals: ConversationGoalService;
+  readonly botAvatars: BotAvatarService;
   private readonly botRegistry: BotRegistry;
   private readonly botSettings: BotSettingsService;
   private readonly botExpertBindings: BotExpertBindingService;
@@ -852,6 +854,7 @@ export class AgentService {
       },
     );
     this.botRegistry = new BotRegistry(db.connection);
+    this.botAvatars = new BotAvatarService(db.connection, LOCAL_USER_ID, join(getMyBuddyDir(), "bot-avatars"));
     this.botRegistry.ensureDefaultBot(LOCAL_USER_ID);
     this.botExpertBindings = new BotExpertBindingService(this.botRegistry, this.expertsService, this.expertBindings, {
       resolveSkillDirectory: (id, botId) => {

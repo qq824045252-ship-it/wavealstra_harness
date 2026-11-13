@@ -1,0 +1,1586 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "id": "builtin:companion-001",
+      "label": "学习搭子",
+      "provenance": "original-approved",
+      "copyright": "Generated original asset; no third-party character or source art intentionally used. No third-party open-source license claimed. Source: Original image_gen generation; keyframe-sheet GIF assembly, not realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-52e6eedbe0308191afd90dc28d916bed_6a6405ea2b7c8191b494414abeaffcee@ccc15aa2a329f40dd5def085d04ff15de74ac6cfa039c455c740555e2bdd571d",
+      "poster": {
+        "file": "companion-001.png",
+        "sha256": "4c88a162edba9cdb7040c682b7740398ba7dc054f16957ba663683643a7ffbf9",
+        "bytes": 91307
+      },
+      "animation": {
+        "file": "companion-001.gif",
+        "sha256": "dc4ae3775bd4f988f8a6e4b4ba27ae21f1983faf501ce884ab61f5d21c609028",
+        "bytes": 230618
+      }
+    },
+    {
+      "id": "builtin:companion-002",
+      "label": "论文研究员",
+      "provenance": "original-approved",
+      "copyright": "Generated original asset; no third-party character or source art intentionally used. No third-party open-source license claimed. Source: Original image_gen generation; keyframe-sheet GIF assembly, not realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-52e6eedbe0308191afd90dc28d916bed_6a6405ea2b7c8191b494414abeaffcee@ccc15aa2a329f40dd5def085d04ff15de74ac6cfa039c455c740555e2bdd571d",
+      "poster": {
+        "file": "companion-002.png",
+        "sha256": "f7e69ad0d07e4fa8c8e5e44506bb3e24831423bf490c87728503b2699d9aa59a",
+        "bytes": 98180
+      },
+      "animation": {
+        "file": "companion-002.gif",
+        "sha256": "3341dea18708b5128017684e9b428e5dc42d3d80ba1d8160bc993435b5e9bd82",
+        "bytes": 197504
+      }
+    },
+    {
+      "id": "builtin:companion-003",
+      "label": "数学伙伴",
+      "provenance": "original-approved",
+      "copyright": "Generated original asset; no third-party character or source art intentionally used. No third-party open-source license claimed. Source: Original image_gen generation; keyframe-sheet GIF assembly, not realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-52e6eedbe0308191afd90dc28d916bed_6a6405ea2b7c8191b494414abeaffcee@ccc15aa2a329f40dd5def085d04ff15de74ac6cfa039c455c740555e2bdd571d",
+      "poster": {
+        "file": "companion-003.png",
+        "sha256": "973695f7851ef35e2c6f17f544c6fe75e0dcf7df09c46afcdd726a8ea9ae8324",
+        "bytes": 78678
+      },
+      "animation": {
+        "file": "companion-003.gif",
+        "sha256": "7e85b3866900c9335489b36d9a24bbec3cffa30a19358c2d67c9cb24abb8ef8f",
+        "bytes": 187737
+      }
+    },
+    {
+      "id": "builtin:companion-004",
+      "label": "语言教练",
+      "provenance": "original-approved",
+      "copyright": "Generated original asset; no third-party character or source art intentionally used. No third-party open-source license claimed. Source: Original image_gen generation; keyframe-sheet GIF assembly, not realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-52e6eedbe0308191afd90dc28d916bed_6a6405ea2b7c8191b494414abeaffcee@ccc15aa2a329f40dd5def085d04ff15de74ac6cfa039c455c740555e2bdd571d",
+      "poster": {
+        "file": "companion-004.png",
+        "sha256": "646888160bf94a23fc12e4af918482b4125d94f7b49f42243b2820ebd512916b",
+        "bytes": 84283
+      },
+      "animation": {
+        "file": "companion-004.gif",
+        "sha256": "d0ca444c8761621bcac291932bf86e5816ba0ad79d691d0e9911a319a8cf97d3",
+        "bytes": 206836
+      }
+    },
+    {
+      "id": "builtin:companion-005",
+      "label": "写作伙伴",
+      "provenance": "original-approved",
+      "copyright": "Generated original asset; no third-party character or source art intentionally used. No third-party open-source license claimed. Source: Original image_gen generation; keyframe-sheet GIF assembly, not realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-52e6eedbe0308191afd90dc28d916bed_6a6405ea2b7c8191b494414abeaffcee@ccc15aa2a329f40dd5def085d04ff15de74ac6cfa039c455c740555e2bdd571d",
+      "poster": {
+        "file": "companion-005.png",
+        "sha256": "fad4364834e3cebe5a58605bf1d2874e27c1719a02231ea70ca5987f0d679656",
+        "bytes": 79364
+      },
+      "animation": {
+        "file": "companion-005.gif",
+        "sha256": "35903da8f8d7ee7f3e9f142e34666cf4ccaf8c06f2040dc37aee26c8a5d3f6b2",
+        "bytes": 219535
+      }
+    },
+    {
+      "id": "builtin:companion-006",
+      "label": "灵感搭子",
+      "provenance": "original-approved",
+      "copyright": "Generated original asset; no third-party character or source art intentionally used. No third-party open-source license claimed. Source: Original image_gen generation; keyframe-sheet GIF assembly, not realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-52e6eedbe0308191afd90dc28d916bed_6a6405ea2b7c8191b494414abeaffcee@ccc15aa2a329f40dd5def085d04ff15de74ac6cfa039c455c740555e2bdd571d",
+      "poster": {
+        "file": "companion-006.png",
+        "sha256": "621d8e1eab60e91d3f9486367b9f113c0d54abd9a1d6d2e1c609d660d3d158ee",
+        "bytes": 100971
+      },
+      "animation": {
+        "file": "companion-006.gif",
+        "sha256": "519d9a7c429a1152e9ee80a7fbdcdd0ef91b584f5b625286b7d4403fe0a91ee7",
+        "bytes": 225318
+      }
+    },
+    {
+      "id": "builtin:companion-007",
+      "label": "阅读伙伴",
+      "provenance": "original-approved",
+      "copyright": "Generated original asset; no third-party character or source art intentionally used. No third-party open-source license claimed. Source: Original image_gen generation; keyframe-sheet GIF assembly, not realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-52e6eedbe0308191afd90dc28d916bed_6a6405ea2b7c8191b494414abeaffcee@ccc15aa2a329f40dd5def085d04ff15de74ac6cfa039c455c740555e2bdd571d",
+      "poster": {
+        "file": "companion-007.png",
+        "sha256": "cf268404357d905e0cd0b819b2286801b856da0df18f084e8f9467ea69388af6",
+        "bytes": 89110
+      },
+      "animation": {
+        "file": "companion-007.gif",
+        "sha256": "b5ed95dbbd494f80e6b7bab67ae971f48c827be16e87b7ecb02a06cd8bca2c1b",
+        "bytes": 259379
+      }
+    },
+    {
+      "id": "builtin:companion-008",
+      "label": "历史讲述者",
+      "provenance": "original-approved",
+      "copyright": "Generated original asset; no third-party character or source art intentionally used. No third-party open-source license claimed. Source: Original image_gen generation; keyframe-sheet GIF assembly, not realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-52e6eedbe0308191afd90dc28d916bed_6a6405ea2b7c8191b494414abeaffcee@ccc15aa2a329f40dd5def085d04ff15de74ac6cfa039c455c740555e2bdd571d",
+      "poster": {
+        "file": "companion-008.png",
+        "sha256": "9807891dc80e8e0340c13b6675af46fcc976b6a9a64ced8dc2d9c9529d5338bb",
+        "bytes": 95761
+      },
+      "animation": {
+        "file": "companion-008.gif",
+        "sha256": "ce190af72ca921641062a22660fce1a67eab16e5d7a4df7187a673873d43a2c3",
+        "bytes": 252906
+      }
+    },
+    {
+      "id": "builtin:companion-009",
+      "label": "哲学伙伴",
+      "provenance": "original-approved",
+      "copyright": "Generated original asset; no third-party character or source art intentionally used. No third-party open-source license claimed. Source: Original image_gen generation; keyframe-sheet GIF assembly, not realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-52e6eedbe0308191afd90dc28d916bed_6a6405ea2b7c8191b494414abeaffcee@ccc15aa2a329f40dd5def085d04ff15de74ac6cfa039c455c740555e2bdd571d",
+      "poster": {
+        "file": "companion-009.png",
+        "sha256": "eef7edef3d814fc846246016c0db39b8775261146ae442f18b1e632eea4cbb88",
+        "bytes": 89409
+      },
+      "animation": {
+        "file": "companion-009.gif",
+        "sha256": "04d182bfc2a97fd08665ff1cdfa092eafb8a39310fc2ff72937791600b6ae6cb",
+        "bytes": 233807
+      }
+    },
+    {
+      "id": "builtin:companion-010",
+      "label": "科学伙伴",
+      "provenance": "original-approved",
+      "copyright": "Generated original asset; no third-party character or source art intentionally used. No third-party open-source license claimed. Source: Original image_gen generation; keyframe-sheet GIF assembly, not realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-52e6eedbe0308191afd90dc28d916bed_6a6405ea2b7c8191b494414abeaffcee@ccc15aa2a329f40dd5def085d04ff15de74ac6cfa039c455c740555e2bdd571d",
+      "poster": {
+        "file": "companion-010.png",
+        "sha256": "c8e0961536e1eca956bc800371c00320e9e72620419e8e66e64ec863e6c47de5",
+        "bytes": 82271
+      },
+      "animation": {
+        "file": "companion-010.gif",
+        "sha256": "cc7b8293d0cb5fec7673ac7a2ca66cf6101d9eafe89a1058eedcc124f5fe0a9b",
+        "bytes": 235629
+      }
+    },
+    {
+      "id": "builtin:companion-011",
+      "label": "天文伙伴",
+      "provenance": "original-approved",
+      "copyright": "Generated original asset; no third-party character or source art intentionally used. No third-party open-source license claimed. Source: Original image_gen generation; keyframe-sheet GIF assembly, not realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-52e6eedbe0308191afd90dc28d916bed_6a6405ea2b7c8191b494414abeaffcee@ccc15aa2a329f40dd5def085d04ff15de74ac6cfa039c455c740555e2bdd571d",
+      "poster": {
+        "file": "companion-011.png",
+        "sha256": "b570b72181519d5f60a7281e77b8dc156c5c59257c36f32484d586adfc5c81da",
+        "bytes": 84638
+      },
+      "animation": {
+        "file": "companion-011.gif",
+        "sha256": "816b86da15b442eeffae1d0b2ff8e1ccfa9cfbdc1340da5f26e472497e374dc0",
+        "bytes": 234604
+      }
+    },
+    {
+      "id": "builtin:companion-012",
+      "label": "生物伙伴",
+      "provenance": "original-approved",
+      "copyright": "Generated original asset; no third-party character or source art intentionally used. No third-party open-source license claimed. Source: Original image_gen generation; keyframe-sheet GIF assembly, not realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-52e6eedbe0308191afd90dc28d916bed_6a6405ea2b7c8191b494414abeaffcee@ccc15aa2a329f40dd5def085d04ff15de74ac6cfa039c455c740555e2bdd571d",
+      "poster": {
+        "file": "companion-012.png",
+        "sha256": "173319515b1d9c0a54fd91018565890fe9977223cdabe139a574cf2f0e822b6e",
+        "bytes": 91679
+      },
+      "animation": {
+        "file": "companion-012.gif",
+        "sha256": "4a305a8a3365811e9d6fce2a109086ffae19f04d1d2a6d466c5d276ffa551b8f",
+        "bytes": 253505
+      }
+    },
+    {
+      "id": "builtin:companion-013",
+      "label": "物理伙伴",
+      "provenance": "original-approved",
+      "copyright": "Generated original asset; no third-party character or source art intentionally used. No third-party open-source license claimed. Source: Original image_gen generation; keyframe-sheet GIF assembly, not realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-52e6eedbe0308191afd90dc28d916bed_6a6405ea2b7c8191b494414abeaffcee@ccc15aa2a329f40dd5def085d04ff15de74ac6cfa039c455c740555e2bdd571d",
+      "poster": {
+        "file": "companion-013.png",
+        "sha256": "e255c9c031e1e1bc4a5c5d50284793dd61c161a41cb8252dfadc13454bb5335d",
+        "bytes": 80830
+      },
+      "animation": {
+        "file": "companion-013.gif",
+        "sha256": "10dc7e14d20a5585227ae2025d91227fdfb874917b607b6a2e0c8c12afbf0161",
+        "bytes": 235548
+      }
+    },
+    {
+      "id": "builtin:companion-014",
+      "label": "化学伙伴",
+      "provenance": "original-approved",
+      "copyright": "Generated original asset; no third-party character or source art intentionally used. No third-party open-source license claimed. Source: Original image_gen generation; keyframe-sheet GIF assembly, not realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-52e6eedbe0308191afd90dc28d916bed_6a6405ea2b7c8191b494414abeaffcee@ccc15aa2a329f40dd5def085d04ff15de74ac6cfa039c455c740555e2bdd571d",
+      "poster": {
+        "file": "companion-014.png",
+        "sha256": "47cce1559efd334ed29457bf8113a145a1be263d0291a2a057420bb295fb3f96",
+        "bytes": 79627
+      },
+      "animation": {
+        "file": "companion-014.gif",
+        "sha256": "5dff61dfcd1a147fe55610bf4b66a41db025f6672507c49159a20f49c115b21d",
+        "bytes": 231977
+      }
+    },
+    {
+      "id": "builtin:companion-015",
+      "label": "地理伙伴",
+      "provenance": "original-approved",
+      "copyright": "Generated original asset; no third-party character or source art intentionally used. No third-party open-source license claimed. Source: Original image_gen generation; keyframe-sheet GIF assembly, not realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-52e6eedbe0308191afd90dc28d916bed_6a6405ea2b7c8191b494414abeaffcee@ccc15aa2a329f40dd5def085d04ff15de74ac6cfa039c455c740555e2bdd571d",
+      "poster": {
+        "file": "companion-015.png",
+        "sha256": "fbc9ef106ac39d1d37ca020bd7c3fae63089d32230cbed4a28581b641332aadb",
+        "bytes": 96154
+      },
+      "animation": {
+        "file": "companion-015.gif",
+        "sha256": "f6e250c7000ae89938d65ad26f5a0b7becf76aae24ac01c01559843c57a0d76b",
+        "bytes": 267020
+      }
+    },
+    {
+      "id": "builtin:companion-016",
+      "label": "音乐伙伴",
+      "provenance": "original-approved",
+      "copyright": "Generated original asset; no third-party character or source art intentionally used. No third-party open-source license claimed. Source: Original image_gen generation; keyframe-sheet GIF assembly, not realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-52e6eedbe0308191afd90dc28d916bed_6a6405ea2b7c8191b494414abeaffcee@ccc15aa2a329f40dd5def085d04ff15de74ac6cfa039c455c740555e2bdd571d",
+      "poster": {
+        "file": "companion-016.png",
+        "sha256": "5c4138f7a5ce508ddbcaf37b3d3d19295371277cbc6cd0ff6c9e88aeee32f34f",
+        "bytes": 93507
+      },
+      "animation": {
+        "file": "companion-016.gif",
+        "sha256": "2ab2ae19664ebe38569ac1c88401f739aece68180a953b4a7ba00f64e8b1ac8a",
+        "bytes": 244023
+      }
+    },
+    {
+      "id": "builtin:companion-017",
+      "label": "绘画伙伴",
+      "provenance": "original-approved",
+      "copyright": "Generated original asset; no third-party character or source art intentionally used. No third-party open-source license claimed. Source: Original image_gen generation; keyframe-sheet GIF assembly, not realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-52e6eedbe0308191afd90dc28d916bed_6a6405ea2b7c8191b494414abeaffcee@ccc15aa2a329f40dd5def085d04ff15de74ac6cfa039c455c740555e2bdd571d",
+      "poster": {
+        "file": "companion-017.png",
+        "sha256": "1fad3b4c3aa97281aa683f75a7e651a277fdf5a90ce2ac65f322e86d271bba51",
+        "bytes": 90856
+      },
+      "animation": {
+        "file": "companion-017.gif",
+        "sha256": "465eacdf11dc3ea141bb3c5cc2ffad22c7d2243a3b6b3cc1f73c112c4650fdbe",
+        "bytes": 249725
+      }
+    },
+    {
+      "id": "builtin:companion-018",
+      "label": "摄影伙伴",
+      "provenance": "original-approved",
+      "copyright": "Generated original asset; no third-party character or source art intentionally used. No third-party open-source license claimed. Source: Original image_gen generation; keyframe-sheet GIF assembly, not realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-52e6eedbe0308191afd90dc28d916bed_6a6405ea2b7c8191b494414abeaffcee@ccc15aa2a329f40dd5def085d04ff15de74ac6cfa039c455c740555e2bdd571d",
+      "poster": {
+        "file": "companion-018.png",
+        "sha256": "c4831512bb92f83d812100ff4bae6a7e69e1553d568a53f8fe2cb16bf3577572",
+        "bytes": 105066
+      },
+      "animation": {
+        "file": "companion-018.gif",
+        "sha256": "96f513d094b1b22cb03174fbc639730da290fb4933cdc6bca37a626503f13a75",
+        "bytes": 264809
+      }
+    },
+    {
+      "id": "builtin:companion-019",
+      "label": "设计伙伴",
+      "provenance": "original-approved",
+      "copyright": "Generated original asset; no third-party character or source art intentionally used. No third-party open-source license claimed. Source: Original image_gen generation; keyframe-sheet GIF assembly, not realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-52e6eedbe0308191afd90dc28d916bed_6a6405ea2b7c8191b494414abeaffcee@ccc15aa2a329f40dd5def085d04ff15de74ac6cfa039c455c740555e2bdd571d",
+      "poster": {
+        "file": "companion-019.png",
+        "sha256": "4123afab0caa4b08ad633e066766a3a5e790ff1477f8d353c320d1e4351cb9e6",
+        "bytes": 95017
+      },
+      "animation": {
+        "file": "companion-019.gif",
+        "sha256": "1f747ae05b74943112cb9580e04f3b47536fceb8150999be57e40a16257349c9",
+        "bytes": 223449
+      }
+    },
+    {
+      "id": "builtin:companion-020",
+      "label": "电影伙伴",
+      "provenance": "original-approved",
+      "copyright": "Generated original asset; no third-party character or source art intentionally used. No third-party open-source license claimed. Source: Original image_gen generation; keyframe-sheet GIF assembly, not realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-52e6eedbe0308191afd90dc28d916bed_6a6405ea2b7c8191b494414abeaffcee@ccc15aa2a329f40dd5def085d04ff15de74ac6cfa039c455c740555e2bdd571d",
+      "poster": {
+        "file": "companion-020.png",
+        "sha256": "16028e59f454180f1bc12b6a099cd6352ab15d90de9d201380dc03fd41f4cea9",
+        "bytes": 84932
+      },
+      "animation": {
+        "file": "companion-020.gif",
+        "sha256": "4bea21708299cfe4b7a0f38cd3877afd123b9f6f5500a9b62129866fe3e78b84",
+        "bytes": 244721
+      }
+    },
+    {
+      "id": "builtin:companion-021",
+      "label": "诗歌伙伴",
+      "provenance": "original-approved",
+      "copyright": "Generated original asset; no third-party character or source art intentionally used. No third-party open-source license claimed. Source: Original image_gen generation; keyframe-sheet GIF assembly, not realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-52e6eedbe0308191afd90dc28d916bed_6a6405ea2b7c8191b494414abeaffcee@ccc15aa2a329f40dd5def085d04ff15de74ac6cfa039c455c740555e2bdd571d",
+      "poster": {
+        "file": "companion-021.png",
+        "sha256": "e4438a63ded922f72cf5d08a41021fedd46ace490cc51a22361ce61fb07288cc",
+        "bytes": 86901
+      },
+      "animation": {
+        "file": "companion-021.gif",
+        "sha256": "1d21502082da7b39bd1b76c7184e05bf3c8ad2c1e6174637a8c63cf02a15e1ff",
+        "bytes": 246156
+      }
+    },
+    {
+      "id": "builtin:companion-022",
+      "label": "脑暴伙伴",
+      "provenance": "original-approved",
+      "copyright": "Generated original asset; no third-party character or source art intentionally used. No third-party open-source license claimed. Source: Original image_gen generation; keyframe-sheet GIF assembly, not realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-52e6eedbe0308191afd90dc28d916bed_6a6405ea2b7c8191b494414abeaffcee@ccc15aa2a329f40dd5def085d04ff15de74ac6cfa039c455c740555e2bdd571d",
+      "poster": {
+        "file": "companion-022.png",
+        "sha256": "e45d4a5d50e630743cbf86c2aca1beb9bbeff7c728e36f93b1de4d61d33f6fd1",
+        "bytes": 97759
+      },
+      "animation": {
+        "file": "companion-022.gif",
+        "sha256": "8f5a927a631bbcf558a6080ab297b9b527f0a5e5ee526bc4a443a4217cb66339",
+        "bytes": 198912
+      }
+    },
+    {
+      "id": "builtin:companion-023",
+      "label": "辩论伙伴",
+      "provenance": "original-approved",
+      "copyright": "Generated original asset; no third-party character or source art intentionally used. No third-party open-source license claimed. Source: Original image_gen generation; keyframe-sheet GIF assembly, not realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-52e6eedbe0308191afd90dc28d916bed_6a6405ea2b7c8191b494414abeaffcee@ccc15aa2a329f40dd5def085d04ff15de74ac6cfa039c455c740555e2bdd571d",
+      "poster": {
+        "file": "companion-023.png",
+        "sha256": "da12c6f05052b4feefa9069204fba6d90d32ac68ca2fe108e5f1affbf30c71ad",
+        "bytes": 103456
+      },
+      "animation": {
+        "file": "companion-023.gif",
+        "sha256": "d13820a89a59fa907ec53fd4250441ebe4456ed7445f0960fc2c6560ffd5569c",
+        "bytes": 279845
+      }
+    },
+    {
+      "id": "builtin:companion-024",
+      "label": "专注伙伴",
+      "provenance": "original-approved",
+      "copyright": "Generated original asset; no third-party character or source art intentionally used. No third-party open-source license claimed. Source: Original image_gen generation; keyframe-sheet GIF assembly, not realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-52e6eedbe0308191afd90dc28d916bed_6a6405ea2b7c8191b494414abeaffcee@ccc15aa2a329f40dd5def085d04ff15de74ac6cfa039c455c740555e2bdd571d",
+      "poster": {
+        "file": "companion-024.png",
+        "sha256": "5fe9bdfb94dda8f7ce31d66aa29626f3cdbe58cac569b4d529f9111e2c17dc49",
+        "bytes": 69906
+      },
+      "animation": {
+        "file": "companion-024.gif",
+        "sha256": "160401d5e403bc83bb6066a83e7026ff9abceb56558bf0834736cab9f4e5f8fd",
+        "bytes": 211473
+      }
+    },
+    {
+      "id": "builtin:companion-025",
+      "label": "考试伙伴",
+      "provenance": "original-approved",
+      "copyright": "Generated original asset; no third-party character or source art intentionally used. No third-party open-source license claimed. Source: Original image_gen generation; keyframe-sheet GIF assembly, not realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-52e6eedbe0308191afd90dc28d916bed_6a6405ea2b7c8191b494414abeaffcee@ccc15aa2a329f40dd5def085d04ff15de74ac6cfa039c455c740555e2bdd571d",
+      "poster": {
+        "file": "companion-025.png",
+        "sha256": "ad4ce6f04169faf2d3372b87d8027481d7c95b03e076b7c0a8d9f2a8d82c132c",
+        "bytes": 78999
+      },
+      "animation": {
+        "file": "companion-025.gif",
+        "sha256": "de238a6d3ae90606ccdb6dd0b36a6aeebe802e2e289ed1695bef6efb155b7989",
+        "bytes": 220202
+      }
+    },
+    {
+      "id": "builtin:companion-026",
+      "label": "记忆伙伴",
+      "provenance": "original-approved",
+      "copyright": "Generated original asset; no third-party character or source art intentionally used. No third-party open-source license claimed. Source: Original image_gen generation; keyframe-sheet GIF assembly, not realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-52e6eedbe0308191afd90dc28d916bed_6a6405ea2b7c8191b494414abeaffcee@ccc15aa2a329f40dd5def085d04ff15de74ac6cfa039c455c740555e2bdd571d",
+      "poster": {
+        "file": "companion-026.png",
+        "sha256": "889e6df56e09ab4b9617f3e1f73453fb2edc6837c5e1ab2f9917ef473ecfb728",
+        "bytes": 78962
+      },
+      "animation": {
+        "file": "companion-026.gif",
+        "sha256": "47a7e8452c4a8c60b42ab46efab88b25d302be675f2fc2867f17909006f3393e",
+        "bytes": 216841
+      }
+    },
+    {
+      "id": "builtin:companion-027",
+      "label": "博物伙伴",
+      "provenance": "original-approved",
+      "copyright": "Generated original asset; no third-party character or source art intentionally used. No third-party open-source license claimed. Source: Original image_gen generation; keyframe-sheet GIF assembly, not realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-52e6eedbe0308191afd90dc28d916bed_6a6405ea2b7c8191b494414abeaffcee@ccc15aa2a329f40dd5def085d04ff15de74ac6cfa039c455c740555e2bdd571d",
+      "poster": {
+        "file": "companion-027.png",
+        "sha256": "7a92aede07d5b8efe7adbb9454c62a66873432dd83d0f7dea3762a06ede17e8b",
+        "bytes": 95466
+      },
+      "animation": {
+        "file": "companion-027.gif",
+        "sha256": "0dbdaac2786182cc5eb1c69785acfae0893a8a3d5cd93dc2a733f2329f0ffe35",
+        "bytes": 276231
+      }
+    },
+    {
+      "id": "builtin:companion-028",
+      "label": "手作伙伴",
+      "provenance": "original-approved",
+      "copyright": "Generated original asset; no third-party character or source art intentionally used. No third-party open-source license claimed. Source: Original image_gen generation; keyframe-sheet GIF assembly, not realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-52e6eedbe0308191afd90dc28d916bed_6a6405ea2b7c8191b494414abeaffcee@ccc15aa2a329f40dd5def085d04ff15de74ac6cfa039c455c740555e2bdd571d",
+      "poster": {
+        "file": "companion-028.png",
+        "sha256": "069b0ffd8dfb3b51fd5d3d637e2ae16afbb2548c527b11f0ef0028fa90cfacd7",
+        "bytes": 88215
+      },
+      "animation": {
+        "file": "companion-028.gif",
+        "sha256": "1993212a12edf407adb97e7b2bb5af5d2f182f5eb786b065174400bd517db342",
+        "bytes": 250475
+      }
+    },
+    {
+      "id": "builtin:companion-029",
+      "label": "故事伙伴",
+      "provenance": "original-approved",
+      "copyright": "Generated original asset; no third-party character or source art intentionally used. No third-party open-source license claimed. Source: Original image_gen generation; keyframe-sheet GIF assembly, not realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-52e6eedbe0308191afd90dc28d916bed_6a6405ea2b7c8191b494414abeaffcee@ccc15aa2a329f40dd5def085d04ff15de74ac6cfa039c455c740555e2bdd571d",
+      "poster": {
+        "file": "companion-029.png",
+        "sha256": "fe9f9a7e183153b601ffef29ac8628b391ec6bfa8e69ce3fd4a41c98d9979c93",
+        "bytes": 84953
+      },
+      "animation": {
+        "file": "companion-029.gif",
+        "sha256": "03f377c6c0a7b4d17ff68e61b55215350f24b5d41749b9462f6431d90a13c5bb",
+        "bytes": 215536
+      }
+    },
+    {
+      "id": "builtin:companion-030",
+      "label": "创作伙伴",
+      "provenance": "original-approved",
+      "copyright": "Generated original asset; no third-party character or source art intentionally used. No third-party open-source license claimed. Source: Original image_gen generation; keyframe-sheet GIF assembly, not realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-52e6eedbe0308191afd90dc28d916bed_6a6405ea2b7c8191b494414abeaffcee@ccc15aa2a329f40dd5def085d04ff15de74ac6cfa039c455c740555e2bdd571d",
+      "poster": {
+        "file": "companion-030.png",
+        "sha256": "7c0aa76c4089cd252d630fe880a575be9e510881fbd0491678c49aeb4e01e4d6",
+        "bytes": 102857
+      },
+      "animation": {
+        "file": "companion-030.gif",
+        "sha256": "cb940b6fd08cf07ab96d7986bd60d0fd6f243535f6a7e1b47e3feee96d258f59",
+        "bytes": 245294
+      }
+    },
+    {
+      "id": "builtin:companion-031",
+      "label": "自然观察员",
+      "provenance": "original-approved",
+      "copyright": "Generated original asset; no third-party character or source art intentionally used. No third-party open-source license claimed. Source: Original image_gen generation; keyframe-sheet GIF assembly, not realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-52e6eedbe0308191afd90dc28d916bed_6a6405ea2b7c8191b494414abeaffcee@ccc15aa2a329f40dd5def085d04ff15de74ac6cfa039c455c740555e2bdd571d",
+      "poster": {
+        "file": "companion-031.png",
+        "sha256": "d2320c92bd1ea2be0f21a18683fb988734407e2721482921aacfd5252b4b23f6",
+        "bytes": 79515
+      },
+      "animation": {
+        "file": "companion-031.gif",
+        "sha256": "653c5fbdb69d40ae67546fabb4c9d165e47da620c7a0e20aed4bf0bb1f317296",
+        "bytes": 201354
+      }
+    },
+    {
+      "id": "builtin:companion-032",
+      "label": "逻辑伙伴",
+      "provenance": "original-approved",
+      "copyright": "Generated original asset; no third-party character or source art intentionally used. No third-party open-source license claimed. Source: Original image_gen generation; keyframe-sheet GIF assembly, not realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-52e6eedbe0308191afd90dc28d916bed_6a6405ea2b7c8191b494414abeaffcee@ccc15aa2a329f40dd5def085d04ff15de74ac6cfa039c455c740555e2bdd571d",
+      "poster": {
+        "file": "companion-032.png",
+        "sha256": "ba197e158263fabc2ae81e4b80b41d26b255303376b502c03b8e09bed56b616c",
+        "bytes": 77384
+      },
+      "animation": {
+        "file": "companion-032.gif",
+        "sha256": "3c7aa15334630ed1c607ebbbff57ca1d9473142d4f7b3d90f3b2e95daacc42af",
+        "bytes": 210668
+      }
+    },
+    {
+      "id": "builtin:companion-033",
+      "label": "探索伙伴",
+      "provenance": "original-approved",
+      "copyright": "Generated original asset; no third-party character or source art intentionally used. No third-party open-source license claimed. Source: Original image_gen generation; keyframe-sheet GIF assembly, not realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-52e6eedbe0308191afd90dc28d916bed_6a6405ea2b7c8191b494414abeaffcee@ccc15aa2a329f40dd5def085d04ff15de74ac6cfa039c455c740555e2bdd571d",
+      "poster": {
+        "file": "companion-033.png",
+        "sha256": "ba0f4df0197df50b94c82ffb151b531eb9fd899f1cedaeda991f70b7740f90e1",
+        "bytes": 92109
+      },
+      "animation": {
+        "file": "companion-033.gif",
+        "sha256": "0d018aba0526f0dd6c3b6e34409ed85f82dd0121cc4214b0d2591505d2a4381e",
+        "bytes": 239196
+      }
+    },
+    {
+      "id": "builtin:companion-034",
+      "label": "工作助理",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: image_gen keyframe loop, NOT realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-da0327bbaf0c81919c4b3f8bafe927cd_6a6405ea2b7c8191b494414abeaffcee@d6996f288a2e38c719a816497d05eed46dadc5579040a7d12ac9f77454817174",
+      "poster": {
+        "file": "companion-034.png",
+        "sha256": "708a373cd8e5ababb77764c1df5d48533d4e5bb6bc7ffa75efe1ce945f508184",
+        "bytes": 85563
+      },
+      "animation": {
+        "file": "companion-034.gif",
+        "sha256": "c131f8511ad8cb0791e28e6fccee693c23538cf2cfb6b57ed4137e057b04d03a",
+        "bytes": 231304
+      }
+    },
+    {
+      "id": "builtin:companion-035",
+      "label": "编程专家",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: image_gen keyframe loop, NOT realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-da0327bbaf0c81919c4b3f8bafe927cd_6a6405ea2b7c8191b494414abeaffcee@d6996f288a2e38c719a816497d05eed46dadc5579040a7d12ac9f77454817174",
+      "poster": {
+        "file": "companion-035.png",
+        "sha256": "30401ee781b24771bf4a162c58abd7cc38d2c118fddf36ec42ae1f78f7cf546b",
+        "bytes": 90749
+      },
+      "animation": {
+        "file": "companion-035.gif",
+        "sha256": "41c9e0cea7d9f5589250974e925f8022100b8b5df89462e2b043e36521e8c297",
+        "bytes": 241392
+      }
+    },
+    {
+      "id": "builtin:companion-036",
+      "label": "测试专家",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: image_gen keyframe loop, NOT realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-da0327bbaf0c81919c4b3f8bafe927cd_6a6405ea2b7c8191b494414abeaffcee@d6996f288a2e38c719a816497d05eed46dadc5579040a7d12ac9f77454817174",
+      "poster": {
+        "file": "companion-036.png",
+        "sha256": "0bf3882c3f0ab5eb780f92df2c92b63daa678bb2b826c239be1fa0a3b22944d5",
+        "bytes": 79049
+      },
+      "animation": {
+        "file": "companion-036.gif",
+        "sha256": "db11552cf86c5975251a37b8154579101e6e1a033fe4eff10288d38a15eeb1e7",
+        "bytes": 253891
+      }
+    },
+    {
+      "id": "builtin:companion-037",
+      "label": "产品经理",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: image_gen keyframe loop, NOT realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-da0327bbaf0c81919c4b3f8bafe927cd_6a6405ea2b7c8191b494414abeaffcee@d6996f288a2e38c719a816497d05eed46dadc5579040a7d12ac9f77454817174",
+      "poster": {
+        "file": "companion-037.png",
+        "sha256": "f43adf2e1d2c5c652d08191797f9f300e60325f1e68063b9f352a7fd01fcd9c3",
+        "bytes": 87450
+      },
+      "animation": {
+        "file": "companion-037.gif",
+        "sha256": "8724fb7b3b4719d0a993a86cb38591720a18cc400a0130cd0b6123723b74fcaf",
+        "bytes": 233887
+      }
+    },
+    {
+      "id": "builtin:companion-038",
+      "label": "网络工程师",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: image_gen keyframe loop, NOT realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-da0327bbaf0c81919c4b3f8bafe927cd_6a6405ea2b7c8191b494414abeaffcee@d6996f288a2e38c719a816497d05eed46dadc5579040a7d12ac9f77454817174",
+      "poster": {
+        "file": "companion-038.png",
+        "sha256": "cf22462a27ac4eb7e297c9ec1188b0377ae26ad023da34b7d265fe16cc7bb293",
+        "bytes": 75271
+      },
+      "animation": {
+        "file": "companion-038.gif",
+        "sha256": "91dd9040a607a0a2fed3371a27cb2dc806b0a189cc9a2d683a16f89aa7046e74",
+        "bytes": 241015
+      }
+    },
+    {
+      "id": "builtin:companion-039",
+      "label": "数据分析师",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: image_gen keyframe loop, NOT realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-da0327bbaf0c81919c4b3f8bafe927cd_6a6405ea2b7c8191b494414abeaffcee@d6996f288a2e38c719a816497d05eed46dadc5579040a7d12ac9f77454817174",
+      "poster": {
+        "file": "companion-039.png",
+        "sha256": "4990236430ec35a65c0b7cb2e14e9953c922f046bf10007016f354ba374aee70",
+        "bytes": 80695
+      },
+      "animation": {
+        "file": "companion-039.gif",
+        "sha256": "fe3e4c5fe24aaea5efeeb433362a6461e6647df7ce8d10404325c47da729629d",
+        "bytes": 268424
+      }
+    },
+    {
+      "id": "builtin:companion-040",
+      "label": "安全专家",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: image_gen keyframe loop, NOT realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-da0327bbaf0c81919c4b3f8bafe927cd_6a6405ea2b7c8191b494414abeaffcee@d6996f288a2e38c719a816497d05eed46dadc5579040a7d12ac9f77454817174",
+      "poster": {
+        "file": "companion-040.png",
+        "sha256": "a2b2fcd3e5b8bcf3179047cfe4fe08b3b043a46f301cbe5074a9c04067fc8b80",
+        "bytes": 86977
+      },
+      "animation": {
+        "file": "companion-040.gif",
+        "sha256": "988b673f994a7bc7f8c6bd57560a7b9c0d393e6d78dcefca171aaee6950bf55a",
+        "bytes": 213513
+      }
+    },
+    {
+      "id": "builtin:companion-041",
+      "label": "运维工程师",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: image_gen keyframe loop, NOT realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-da0327bbaf0c81919c4b3f8bafe927cd_6a6405ea2b7c8191b494414abeaffcee@d6996f288a2e38c719a816497d05eed46dadc5579040a7d12ac9f77454817174",
+      "poster": {
+        "file": "companion-041.png",
+        "sha256": "65018ecef9bd58247dd759654f9249351552de57dfd81e7ef758ff5156a30fc4",
+        "bytes": 80223
+      },
+      "animation": {
+        "file": "companion-041.gif",
+        "sha256": "42e229dbbfe7d47e87a74ae7c369b3b9712e6810828aa25b9f360b0518d2f3df",
+        "bytes": 209834
+      }
+    },
+    {
+      "id": "builtin:companion-042",
+      "label": "技术写作",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: image_gen keyframe loop, NOT realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-da0327bbaf0c81919c4b3f8bafe927cd_6a6405ea2b7c8191b494414abeaffcee@d6996f288a2e38c719a816497d05eed46dadc5579040a7d12ac9f77454817174",
+      "poster": {
+        "file": "companion-042.png",
+        "sha256": "12b1e0de68c227dc023cc146d39b943546278d9b89dd32393231440163089d2f",
+        "bytes": 81946
+      },
+      "animation": {
+        "file": "companion-042.gif",
+        "sha256": "f047729ac0dc6cce70b81ed6c3f646c3dca8e2279f05998ce50407163f4f7694",
+        "bytes": 245947
+      }
+    },
+    {
+      "id": "builtin:companion-043",
+      "label": "UX设计师",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: image_gen keyframe loop, NOT realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-da0327bbaf0c81919c4b3f8bafe927cd_6a6405ea2b7c8191b494414abeaffcee@d6996f288a2e38c719a816497d05eed46dadc5579040a7d12ac9f77454817174",
+      "poster": {
+        "file": "companion-043.png",
+        "sha256": "6be9446ef43d2ec86b8259e2b28bffc6f924a6fb0b5c87f4ae0e1401b5c7d8ed",
+        "bytes": 91476
+      },
+      "animation": {
+        "file": "companion-043.gif",
+        "sha256": "d198829ff76b250d7f39098ad36a56e6343378e514c3728bea0d8359f53bcef3",
+        "bytes": 180710
+      }
+    },
+    {
+      "id": "builtin:companion-044",
+      "label": "项目经理",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: image_gen keyframe loop, NOT realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-da0327bbaf0c81919c4b3f8bafe927cd_6a6405ea2b7c8191b494414abeaffcee@d6996f288a2e38c719a816497d05eed46dadc5579040a7d12ac9f77454817174",
+      "poster": {
+        "file": "companion-044.png",
+        "sha256": "4c93120d661bc9d53a21e944197cb1e71773a2d0fa72b7d52447b718db5e8f82",
+        "bytes": 79700
+      },
+      "animation": {
+        "file": "companion-044.gif",
+        "sha256": "1e3209acb55f208b5bc37aa10541474e80541a044043c94768c87de4f400f8f6",
+        "bytes": 194309
+      }
+    },
+    {
+      "id": "builtin:companion-045",
+      "label": "数据库专家",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: image_gen keyframe loop, NOT realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-da0327bbaf0c81919c4b3f8bafe927cd_6a6405ea2b7c8191b494414abeaffcee@d6996f288a2e38c719a816497d05eed46dadc5579040a7d12ac9f77454817174",
+      "poster": {
+        "file": "companion-045.png",
+        "sha256": "139ac0d009fbf1d984f67fc2e47a3cc5058054de3550fbea2775df71ce515153",
+        "bytes": 84829
+      },
+      "animation": {
+        "file": "companion-045.gif",
+        "sha256": "5ec652176c8a4b4ffb4943c385497f595b865973220d7095c6efe9e2e209890a",
+        "bytes": 217095
+      }
+    },
+    {
+      "id": "builtin:companion-046",
+      "label": "前端工程师",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: image_gen keyframe loop, NOT realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-da0327bbaf0c81919c4b3f8bafe927cd_6a6405ea2b7c8191b494414abeaffcee@d6996f288a2e38c719a816497d05eed46dadc5579040a7d12ac9f77454817174",
+      "poster": {
+        "file": "companion-046.png",
+        "sha256": "b681f3c045dd5e1c0c81b2ce140d79de6a8445dbfc826e801512b38d70627df1",
+        "bytes": 59750
+      },
+      "animation": {
+        "file": "companion-046.gif",
+        "sha256": "7bfe3afe7f979a08cf05fbd63cf2f99e2e4eba1faa22c3e6d132295042b6f61b",
+        "bytes": 154353
+      }
+    },
+    {
+      "id": "builtin:companion-047",
+      "label": "后端工程师",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: image_gen keyframe loop, NOT realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-da0327bbaf0c81919c4b3f8bafe927cd_6a6405ea2b7c8191b494414abeaffcee@d6996f288a2e38c719a816497d05eed46dadc5579040a7d12ac9f77454817174",
+      "poster": {
+        "file": "companion-047.png",
+        "sha256": "ec680ae9945bb7bfd011ca8a527be10b584dcc7cc66181e5b3e4eb4e08de7cea",
+        "bytes": 86945
+      },
+      "animation": {
+        "file": "companion-047.gif",
+        "sha256": "6dd91b66eb613abd33c9f109314460aef57f302bd9a1af43af4a49df930d418d",
+        "bytes": 241461
+      }
+    },
+    {
+      "id": "builtin:companion-048",
+      "label": "移动开发",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: image_gen keyframe loop, NOT realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-da0327bbaf0c81919c4b3f8bafe927cd_6a6405ea2b7c8191b494414abeaffcee@d6996f288a2e38c719a816497d05eed46dadc5579040a7d12ac9f77454817174",
+      "poster": {
+        "file": "companion-048.png",
+        "sha256": "6d0bb2452c726ee425b9d8fe890a9f97cedf5e8b128aacea15925dc4706be964",
+        "bytes": 80529
+      },
+      "animation": {
+        "file": "companion-048.gif",
+        "sha256": "412e4c62f54d0ea5584661735ef28d7e8140eccc1a2d94f1094f03e256a22ca2",
+        "bytes": 189968
+      }
+    },
+    {
+      "id": "builtin:companion-049",
+      "label": "云架构师",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: image_gen keyframe loop, NOT realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-da0327bbaf0c81919c4b3f8bafe927cd_6a6405ea2b7c8191b494414abeaffcee@d6996f288a2e38c719a816497d05eed46dadc5579040a7d12ac9f77454817174",
+      "poster": {
+        "file": "companion-049.png",
+        "sha256": "f0064b2eb8be24b64599a36ed8dd5370108b71f4ebee6a6aa3ef81cd1c145ef3",
+        "bytes": 77372
+      },
+      "animation": {
+        "file": "companion-049.gif",
+        "sha256": "7d43b6efb6dc300b2be73b532bf4489f4c0546a948484cdc53243fbf6b5c70f0",
+        "bytes": 183312
+      }
+    },
+    {
+      "id": "builtin:companion-050",
+      "label": "AI研究员",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: image_gen keyframe loop, NOT realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-da0327bbaf0c81919c4b3f8bafe927cd_6a6405ea2b7c8191b494414abeaffcee@d6996f288a2e38c719a816497d05eed46dadc5579040a7d12ac9f77454817174",
+      "poster": {
+        "file": "companion-050.png",
+        "sha256": "49ca19e114a24d706134bd74ad8feb1bf5c55547e96c5659106b168fc6253aa9",
+        "bytes": 89121
+      },
+      "animation": {
+        "file": "companion-050.gif",
+        "sha256": "3ee2b0b57ebc2fa04778435d1125bcd1478601604d3136a6131eca580320e2d3",
+        "bytes": 261262
+      }
+    },
+    {
+      "id": "builtin:companion-052",
+      "label": "游戏开发",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: image_gen keyframe loop, NOT realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-da0327bbaf0c81919c4b3f8bafe927cd_6a6405ea2b7c8191b494414abeaffcee@d6996f288a2e38c719a816497d05eed46dadc5579040a7d12ac9f77454817174",
+      "poster": {
+        "file": "companion-052.png",
+        "sha256": "f2b929a28d4b2d3dc7e191a8daeac65f2c4aaa1a9579d3b7bc3c56b9e8f19bb3",
+        "bytes": 65975
+      },
+      "animation": {
+        "file": "companion-052.gif",
+        "sha256": "23a265f3b2cb7d0870c80e6353df4de8f1d2dc5d43d1cf9e771b7c3c279c6396",
+        "bytes": 165697
+      }
+    },
+    {
+      "id": "builtin:companion-053",
+      "label": "研究助理",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: image_gen keyframe loop, NOT realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-da0327bbaf0c81919c4b3f8bafe927cd_6a6405ea2b7c8191b494414abeaffcee@d6996f288a2e38c719a816497d05eed46dadc5579040a7d12ac9f77454817174",
+      "poster": {
+        "file": "companion-053.png",
+        "sha256": "890ee7c4bc713c4c5adac4adb297fbb76bc634d05c58b7b7652eecc6854ad2ba",
+        "bytes": 99641
+      },
+      "animation": {
+        "file": "companion-053.gif",
+        "sha256": "3da899392c0c04602581943889edea83b12780db7242fc0d092023ef345d80e5",
+        "bytes": 261581
+      }
+    },
+    {
+      "id": "builtin:companion-054",
+      "label": "商业分析",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: image_gen keyframe loop, NOT realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-da0327bbaf0c81919c4b3f8bafe927cd_6a6405ea2b7c8191b494414abeaffcee@d6996f288a2e38c719a816497d05eed46dadc5579040a7d12ac9f77454817174",
+      "poster": {
+        "file": "companion-054.png",
+        "sha256": "13adf0512656c183ab02e53ae8ea4171abec44c09bbdb0633345379220a9bc39",
+        "bytes": 86168
+      },
+      "animation": {
+        "file": "companion-054.gif",
+        "sha256": "1933c667968b5025799280ced15523c8e61696226fab2c0edc8f58e681ce8557",
+        "bytes": 240423
+      }
+    },
+    {
+      "id": "builtin:companion-055",
+      "label": "法律助理",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: image_gen keyframe loop, NOT realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-da0327bbaf0c81919c4b3f8bafe927cd_6a6405ea2b7c8191b494414abeaffcee@d6996f288a2e38c719a816497d05eed46dadc5579040a7d12ac9f77454817174",
+      "poster": {
+        "file": "companion-055.png",
+        "sha256": "2d9389fa7fcf65552c8099d343af9ba3349edee6003453779180e7ad9ddb7edd",
+        "bytes": 86006
+      },
+      "animation": {
+        "file": "companion-055.gif",
+        "sha256": "2b467503b6d23a4c6fe4736fde461c3d632013d8cf328f808751efb44f422148",
+        "bytes": 236913
+      }
+    },
+    {
+      "id": "builtin:companion-057",
+      "label": "销售助理",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: image_gen keyframe loop, NOT realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-da0327bbaf0c81919c4b3f8bafe927cd_6a6405ea2b7c8191b494414abeaffcee@d6996f288a2e38c719a816497d05eed46dadc5579040a7d12ac9f77454817174",
+      "poster": {
+        "file": "companion-057.png",
+        "sha256": "8ac9a45f68afd58fd475267a13bfd57a7c947ead6e62c9089e46621a4cc85ffb",
+        "bytes": 85296
+      },
+      "animation": {
+        "file": "companion-057.gif",
+        "sha256": "01475e3be99e019cff72a7be53ac8086f8ccdde21cfe84008cc33b7a143c3d92",
+        "bytes": 215474
+      }
+    },
+    {
+      "id": "builtin:companion-058",
+      "label": "客服助理",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: image_gen keyframe loop, NOT realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-da0327bbaf0c81919c4b3f8bafe927cd_6a6405ea2b7c8191b494414abeaffcee@d6996f288a2e38c719a816497d05eed46dadc5579040a7d12ac9f77454817174",
+      "poster": {
+        "file": "companion-058.png",
+        "sha256": "ca001e4a693d3f1ebd365bb547f68f060e88361b4bc1cf04422e37f7a0cccb57",
+        "bytes": 77957
+      },
+      "animation": {
+        "file": "companion-058.gif",
+        "sha256": "1a00f65cd40ab5cdb97831bc569f4c659f8515f88435b781779cbdd14f4b0bd0",
+        "bytes": 221527
+      }
+    },
+    {
+      "id": "builtin:companion-059",
+      "label": "营销专家",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: image_gen keyframe loop, NOT realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-da0327bbaf0c81919c4b3f8bafe927cd_6a6405ea2b7c8191b494414abeaffcee@d6996f288a2e38c719a816497d05eed46dadc5579040a7d12ac9f77454817174",
+      "poster": {
+        "file": "companion-059.png",
+        "sha256": "7b77c87e465d3da22ae849ad117c799bcd9ffff688ed39eb4a1a188569a9ef44",
+        "bytes": 73596
+      },
+      "animation": {
+        "file": "companion-059.gif",
+        "sha256": "0e0891424a91e91ebdab307cf9fcb7e2fe6df0369c93887ae817ed46895b86bc",
+        "bytes": 178569
+      }
+    },
+    {
+      "id": "builtin:companion-060",
+      "label": "视频剪辑",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: image_gen keyframe loop, NOT realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-da0327bbaf0c81919c4b3f8bafe927cd_6a6405ea2b7c8191b494414abeaffcee@d6996f288a2e38c719a816497d05eed46dadc5579040a7d12ac9f77454817174",
+      "poster": {
+        "file": "companion-060.png",
+        "sha256": "75706434c093962e78aa403ac8b4ccd3a1665db93223f1ca1882308019354c25",
+        "bytes": 73542
+      },
+      "animation": {
+        "file": "companion-060.gif",
+        "sha256": "cbfda40fbd04cc92b9ad1341e895cde1333682f9baafd19625c85121de6e017b",
+        "bytes": 190071
+      }
+    },
+    {
+      "id": "builtin:companion-062",
+      "label": "架构评审",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: image_gen keyframe loop, NOT realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-da0327bbaf0c81919c4b3f8bafe927cd_6a6405ea2b7c8191b494414abeaffcee@d6996f288a2e38c719a816497d05eed46dadc5579040a7d12ac9f77454817174",
+      "poster": {
+        "file": "companion-062.png",
+        "sha256": "b6f876b208d79d22cadc8dfb0fae0fa91f826097ee27ff9d8294b36fc2af6b2f",
+        "bytes": 56343
+      },
+      "animation": {
+        "file": "companion-062.gif",
+        "sha256": "19bf8ec4e10e0144edb7e24e20735181afc1ad3ce342829d050f8bba1db1be2f",
+        "bytes": 150767
+      }
+    },
+    {
+      "id": "builtin:companion-063",
+      "label": "发布经理",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: image_gen keyframe loop, NOT realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-da0327bbaf0c81919c4b3f8bafe927cd_6a6405ea2b7c8191b494414abeaffcee@d6996f288a2e38c719a816497d05eed46dadc5579040a7d12ac9f77454817174",
+      "poster": {
+        "file": "companion-063.png",
+        "sha256": "191ee87621ed0ac73884ae06671627b0839a82001c224e01a511802035896c22",
+        "bytes": 95228
+      },
+      "animation": {
+        "file": "companion-063.gif",
+        "sha256": "1cc0d06361a47cb7cdcbeeb6d8692af96a85d0f654b4485f3d1fbf32449c6879",
+        "bytes": 244872
+      }
+    },
+    {
+      "id": "builtin:companion-064",
+      "label": "故障响应",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: image_gen keyframe loop, NOT realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-da0327bbaf0c81919c4b3f8bafe927cd_6a6405ea2b7c8191b494414abeaffcee@d6996f288a2e38c719a816497d05eed46dadc5579040a7d12ac9f77454817174",
+      "poster": {
+        "file": "companion-064.png",
+        "sha256": "7bf66243cacf6ca800b4149bd374011b915aa7d6b54eb75d87ac14cf87bae5de",
+        "bytes": 69500
+      },
+      "animation": {
+        "file": "companion-064.gif",
+        "sha256": "08f69e7c71b88dc2416c74285c170dede1e4c7a0f60fc2d45b5560a69f9526a2",
+        "bytes": 177438
+      }
+    },
+    {
+      "id": "builtin:companion-065",
+      "label": "质量教练",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: image_gen keyframe loop, NOT realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-da0327bbaf0c81919c4b3f8bafe927cd_6a6405ea2b7c8191b494414abeaffcee@d6996f288a2e38c719a816497d05eed46dadc5579040a7d12ac9f77454817174",
+      "poster": {
+        "file": "companion-065.png",
+        "sha256": "378b55815010b53384f5d4c81d544e8f56538784557ab4d37b98c06b47b3b229",
+        "bytes": 94150
+      },
+      "animation": {
+        "file": "companion-065.gif",
+        "sha256": "5c2455c85aa42ac070e0c59c7d8f4c661538ddbb71429267df1a677ac78a4112",
+        "bytes": 275579
+      }
+    },
+    {
+      "id": "builtin:companion-066",
+      "label": "系统工程师",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: image_gen keyframe loop, NOT realtime 3D. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-da0327bbaf0c81919c4b3f8bafe927cd_6a6405ea2b7c8191b494414abeaffcee@d6996f288a2e38c719a816497d05eed46dadc5579040a7d12ac9f77454817174",
+      "poster": {
+        "file": "companion-066.png",
+        "sha256": "15adb3ef5e05a3958d46f36b78021531ce029683a120a922aaa278f1593b4164",
+        "bytes": 69431
+      },
+      "animation": {
+        "file": "companion-066.gif",
+        "sha256": "efb44fa09c0feae998167358a064a123b6528da4a8c81b24291213a9b8a40698",
+        "bytes": 193948
+      }
+    },
+    {
+      "id": "builtin:companion-067",
+      "label": "生活助理",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: generated_keyframe_loop_not_realtime_3d. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-4d813430c3548191948e04d3fc88d0b4_6a6405ea2b7c8191b494414abeaffcee@55d9d5f871e593ac1a5bbacb87e1653eb21aa8e5e2eb368bc865def530317a0d",
+      "poster": {
+        "file": "companion-067.png",
+        "sha256": "1f3bc7397004736074f8a45343572cda381a5869f7829528dfc114e41f6506b1",
+        "bytes": 64116
+      },
+      "animation": {
+        "file": "companion-067.gif",
+        "sha256": "6b8adf1238edba2c8832f377011a0d5394c53dfca7b795ce484a2eddd6a855af",
+        "bytes": 239407
+      }
+    },
+    {
+      "id": "builtin:companion-068",
+      "label": "日程管家",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: generated_keyframe_loop_not_realtime_3d. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-4d813430c3548191948e04d3fc88d0b4_6a6405ea2b7c8191b494414abeaffcee@55d9d5f871e593ac1a5bbacb87e1653eb21aa8e5e2eb368bc865def530317a0d",
+      "poster": {
+        "file": "companion-068.png",
+        "sha256": "5275de3e63344669a30410355deb7ab5d624934130565214f326445e08971fbc",
+        "bytes": 48536
+      },
+      "animation": {
+        "file": "companion-068.gif",
+        "sha256": "df943e500a845e64119f4498d1d32c9e269ab78737321818c1031f50ceb42554",
+        "bytes": 180000
+      }
+    },
+    {
+      "id": "builtin:companion-069",
+      "label": "财务管家",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: generated_keyframe_loop_not_realtime_3d. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-4d813430c3548191948e04d3fc88d0b4_6a6405ea2b7c8191b494414abeaffcee@55d9d5f871e593ac1a5bbacb87e1653eb21aa8e5e2eb368bc865def530317a0d",
+      "poster": {
+        "file": "companion-069.png",
+        "sha256": "88e6341bbb3186dd9ad36da72affb3fe3050296e7dbbaa6a5a51e9d1506a7abd",
+        "bytes": 56184
+      },
+      "animation": {
+        "file": "companion-069.gif",
+        "sha256": "e650c63df784ffbbc1d13c3d4f25f9d87e2d0a2dd2b103c48d59ef40175ec01a",
+        "bytes": 218124
+      }
+    },
+    {
+      "id": "builtin:companion-070",
+      "label": "旅行向导",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: generated_keyframe_loop_not_realtime_3d. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-4d813430c3548191948e04d3fc88d0b4_6a6405ea2b7c8191b494414abeaffcee@55d9d5f871e593ac1a5bbacb87e1653eb21aa8e5e2eb368bc865def530317a0d",
+      "poster": {
+        "file": "companion-070.png",
+        "sha256": "60653aeefface1535985bd98165365cd837ddc0847d4e5c97888aea1b8972246",
+        "bytes": 55513
+      },
+      "animation": {
+        "file": "companion-070.gif",
+        "sha256": "0cdcfce84d65bc8988e3d6be0c87fef8ff89dc2ee57bf02aefbb48ad6c7f628f",
+        "bytes": 206857
+      }
+    },
+    {
+      "id": "builtin:companion-071",
+      "label": "烹饪搭子",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: generated_keyframe_loop_not_realtime_3d. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-4d813430c3548191948e04d3fc88d0b4_6a6405ea2b7c8191b494414abeaffcee@55d9d5f871e593ac1a5bbacb87e1653eb21aa8e5e2eb368bc865def530317a0d",
+      "poster": {
+        "file": "companion-071.png",
+        "sha256": "8416c563db255261689dfd83028124356cbb4aa6a5505428e3f955c85cfc82f2",
+        "bytes": 50134
+      },
+      "animation": {
+        "file": "companion-071.gif",
+        "sha256": "1428a9d0e234ea6005f9238c975530877f38c6a35e9ee6d3db41e766706ff348",
+        "bytes": 197080
+      }
+    },
+    {
+      "id": "builtin:companion-072",
+      "label": "健身教练",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: generated_keyframe_loop_not_realtime_3d. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-4d813430c3548191948e04d3fc88d0b4_6a6405ea2b7c8191b494414abeaffcee@55d9d5f871e593ac1a5bbacb87e1653eb21aa8e5e2eb368bc865def530317a0d",
+      "poster": {
+        "file": "companion-072.png",
+        "sha256": "ee90689d70413206d549bce69088b0f8d4192ca63257e19bcdf7ed1353c13e4a",
+        "bytes": 56758
+      },
+      "animation": {
+        "file": "companion-072.gif",
+        "sha256": "a7a2a1db51ac615f2136ba96f5341f5df09ae6786d795aca9e3c6c6639246297",
+        "bytes": 202136
+      }
+    },
+    {
+      "id": "builtin:companion-073",
+      "label": "健康陪伴",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: generated_keyframe_loop_not_realtime_3d. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-4d813430c3548191948e04d3fc88d0b4_6a6405ea2b7c8191b494414abeaffcee@55d9d5f871e593ac1a5bbacb87e1653eb21aa8e5e2eb368bc865def530317a0d",
+      "poster": {
+        "file": "companion-073.png",
+        "sha256": "a54817033f8b24d18303c56842c6c9a217835119527453c282cc4be34050a3ac",
+        "bytes": 50312
+      },
+      "animation": {
+        "file": "companion-073.gif",
+        "sha256": "5be3951c829efebe03969bc7992dbac56a0226c622c596e7b93256ced8f85227",
+        "bytes": 207833
+      }
+    },
+    {
+      "id": "builtin:companion-074",
+      "label": "睡眠搭子",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: generated_keyframe_loop_not_realtime_3d. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-4d813430c3548191948e04d3fc88d0b4_6a6405ea2b7c8191b494414abeaffcee@55d9d5f871e593ac1a5bbacb87e1653eb21aa8e5e2eb368bc865def530317a0d",
+      "poster": {
+        "file": "companion-074.png",
+        "sha256": "7c5bf34e04ea856007de6c2c472271bb541878ee6c7284ddac58939b75140fb1",
+        "bytes": 81062
+      },
+      "animation": {
+        "file": "companion-074.gif",
+        "sha256": "f9525deccb857e0efadf312460e393cef049819dc593cb5cd0521a3a6058e818",
+        "bytes": 312172
+      }
+    },
+    {
+      "id": "builtin:companion-075",
+      "label": "收纳管家",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: generated_keyframe_loop_not_realtime_3d. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-4d813430c3548191948e04d3fc88d0b4_6a6405ea2b7c8191b494414abeaffcee@55d9d5f871e593ac1a5bbacb87e1653eb21aa8e5e2eb368bc865def530317a0d",
+      "poster": {
+        "file": "companion-075.png",
+        "sha256": "87ce9a50a40ee651517fcdc5310c836527d2fb163972fe92002bf52c82ced896",
+        "bytes": 74438
+      },
+      "animation": {
+        "file": "companion-075.gif",
+        "sha256": "865fd5839074729355c66b273f28a7cbe6b07663230f111666be96c5a0a6a28e",
+        "bytes": 270971
+      }
+    },
+    {
+      "id": "builtin:companion-076",
+      "label": "园艺助手",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: generated_keyframe_loop_not_realtime_3d. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-4d813430c3548191948e04d3fc88d0b4_6a6405ea2b7c8191b494414abeaffcee@55d9d5f871e593ac1a5bbacb87e1653eb21aa8e5e2eb368bc865def530317a0d",
+      "poster": {
+        "file": "companion-076.png",
+        "sha256": "54eddfd4e76c0926e4f03fdc1468d108c33a6e19e80fd7b71dd9553e139ed319",
+        "bytes": 68754
+      },
+      "animation": {
+        "file": "companion-076.gif",
+        "sha256": "208283d7fb12d9e290088cdf1373a85b39331530f738f986c7ca5410fd8a6a02",
+        "bytes": 240675
+      }
+    },
+    {
+      "id": "builtin:companion-077",
+      "label": "宠物照护",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: generated_keyframe_loop_not_realtime_3d. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-4d813430c3548191948e04d3fc88d0b4_6a6405ea2b7c8191b494414abeaffcee@55d9d5f871e593ac1a5bbacb87e1653eb21aa8e5e2eb368bc865def530317a0d",
+      "poster": {
+        "file": "companion-077.png",
+        "sha256": "5d9d2efe4bb87217a85f1fdf5ad08df5c798bce0304b22f92cbb257c010e2ad6",
+        "bytes": 78613
+      },
+      "animation": {
+        "file": "companion-077.gif",
+        "sha256": "38ab7f57afe35d92290cfdef09ac9e249c2ffc29a685ca78b3676566e0bd9325",
+        "bytes": 298866
+      }
+    },
+    {
+      "id": "builtin:companion-078",
+      "label": "购物参谋",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: generated_keyframe_loop_not_realtime_3d. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-4d813430c3548191948e04d3fc88d0b4_6a6405ea2b7c8191b494414abeaffcee@55d9d5f871e593ac1a5bbacb87e1653eb21aa8e5e2eb368bc865def530317a0d",
+      "poster": {
+        "file": "companion-078.png",
+        "sha256": "505798acf5045b294602d2adeb631d0b897950c3901d60361bd233cdc3f7b45f",
+        "bytes": 62470
+      },
+      "animation": {
+        "file": "companion-078.gif",
+        "sha256": "4145efeed095818d5328280dd7b2535ee429ad60f8e7da26c1449724a5f7f1b1",
+        "bytes": 233437
+      }
+    },
+    {
+      "id": "builtin:companion-079",
+      "label": "语言搭子",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: generated_keyframe_loop_not_realtime_3d. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-4d813430c3548191948e04d3fc88d0b4_6a6405ea2b7c8191b494414abeaffcee@55d9d5f871e593ac1a5bbacb87e1653eb21aa8e5e2eb368bc865def530317a0d",
+      "poster": {
+        "file": "companion-079.png",
+        "sha256": "7f3e66a8401aefbfb530a1dc9b37199a57cb24093d38bd66513fc40e067de351",
+        "bytes": 52276
+      },
+      "animation": {
+        "file": "companion-079.gif",
+        "sha256": "3c961623bd60f637053bc0f4264bdacc04a569b4e322fb4673f62db335a1c954",
+        "bytes": 194351
+      }
+    },
+    {
+      "id": "builtin:companion-080",
+      "label": "音乐搭子",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: generated_keyframe_loop_not_realtime_3d. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-4d813430c3548191948e04d3fc88d0b4_6a6405ea2b7c8191b494414abeaffcee@55d9d5f871e593ac1a5bbacb87e1653eb21aa8e5e2eb368bc865def530317a0d",
+      "poster": {
+        "file": "companion-080.png",
+        "sha256": "5f3525cf720e033efe5a2d55f8cf8569ad83b6470a3ccdb467dec56b6391823e",
+        "bytes": 54289
+      },
+      "animation": {
+        "file": "companion-080.gif",
+        "sha256": "2e2a3b6d248f27524a0feb85db0fbfe5462ea45bce9785e7f3870c798dce822c",
+        "bytes": 207632
+      }
+    },
+    {
+      "id": "builtin:companion-083",
+      "label": "摄影搭子",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: generated_keyframe_loop_not_realtime_3d. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-4d813430c3548191948e04d3fc88d0b4_6a6405ea2b7c8191b494414abeaffcee@55d9d5f871e593ac1a5bbacb87e1653eb21aa8e5e2eb368bc865def530317a0d",
+      "poster": {
+        "file": "companion-083.png",
+        "sha256": "fd3703536ac666a7345e7e0510d277008a77547dff7a0684182ae84b8cd82fea",
+        "bytes": 89521
+      },
+      "animation": {
+        "file": "companion-083.gif",
+        "sha256": "71c6e96c2e0b6a4b8d91c3df8facd34c1f6905b5971305730898e44919bcc7a5",
+        "bytes": 341827
+      }
+    },
+    {
+      "id": "builtin:companion-084",
+      "label": "咖啡搭子",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: generated_keyframe_loop_not_realtime_3d. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-4d813430c3548191948e04d3fc88d0b4_6a6405ea2b7c8191b494414abeaffcee@55d9d5f871e593ac1a5bbacb87e1653eb21aa8e5e2eb368bc865def530317a0d",
+      "poster": {
+        "file": "companion-084.png",
+        "sha256": "529ccb58537c381ec35c35037e8df86dc42bf6ad87cc92b0016ffb64f1a83547",
+        "bytes": 78608
+      },
+      "animation": {
+        "file": "companion-084.gif",
+        "sha256": "39c1b926a7a233eb484552a088609d6e2c0b225830820bf7e6776a248fd19484",
+        "bytes": 294272
+      }
+    },
+    {
+      "id": "builtin:companion-085",
+      "label": "户外向导",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: generated_keyframe_loop_not_realtime_3d. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-4d813430c3548191948e04d3fc88d0b4_6a6405ea2b7c8191b494414abeaffcee@55d9d5f871e593ac1a5bbacb87e1653eb21aa8e5e2eb368bc865def530317a0d",
+      "poster": {
+        "file": "companion-085.png",
+        "sha256": "35c6b0314c4d4ac1194e82f144ba466a32f9fbdc6c28099db5795dd72717c2d0",
+        "bytes": 57200
+      },
+      "animation": {
+        "file": "companion-085.gif",
+        "sha256": "75fe0c93f4cd4648b55e7521bac6c5581a9c8eddfcb9c83c4c771a1d845df273",
+        "bytes": 214383
+      }
+    },
+    {
+      "id": "builtin:companion-086",
+      "label": "旅程规划",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: generated_keyframe_loop_not_realtime_3d. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-4d813430c3548191948e04d3fc88d0b4_6a6405ea2b7c8191b494414abeaffcee@55d9d5f871e593ac1a5bbacb87e1653eb21aa8e5e2eb368bc865def530317a0d",
+      "poster": {
+        "file": "companion-086.png",
+        "sha256": "58923d33229680cbdb73310a0d8c00bb9b1d56df138fd11e0b09c2deff9a118f",
+        "bytes": 56287
+      },
+      "animation": {
+        "file": "companion-086.gif",
+        "sha256": "c1e97cd195ec0165cfd11027a732872bff41bbbced1610d8ce5c783c42de298f",
+        "bytes": 204405
+      }
+    },
+    {
+      "id": "builtin:companion-087",
+      "label": "清洁助手",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: generated_keyframe_loop_not_realtime_3d. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-4d813430c3548191948e04d3fc88d0b4_6a6405ea2b7c8191b494414abeaffcee@55d9d5f871e593ac1a5bbacb87e1653eb21aa8e5e2eb368bc865def530317a0d",
+      "poster": {
+        "file": "companion-087.png",
+        "sha256": "59734c10b731dfcd8060ab38901fd37d202ac9dffd8d83e8c5f0e763d741490a",
+        "bytes": 76016
+      },
+      "animation": {
+        "file": "companion-087.gif",
+        "sha256": "a296cd9443bb7eef5655bddc238a6c87fe24a14aa8a380f3280c5dd13e3e67d6",
+        "bytes": 281783
+      }
+    },
+    {
+      "id": "builtin:companion-088",
+      "label": "家庭助手",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: generated_keyframe_loop_not_realtime_3d. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-4d813430c3548191948e04d3fc88d0b4_6a6405ea2b7c8191b494414abeaffcee@55d9d5f871e593ac1a5bbacb87e1653eb21aa8e5e2eb368bc865def530317a0d",
+      "poster": {
+        "file": "companion-088.png",
+        "sha256": "3ec36343863c03fa26cd961f22c4116e16dad02bd4094dd37b34264bed96e02f",
+        "bytes": 56142
+      },
+      "animation": {
+        "file": "companion-088.gif",
+        "sha256": "99163088ed361002e3bd09580c330c5217d2477c3edbe0d80ce3a2a6d53b33ce",
+        "bytes": 216925
+      }
+    },
+    {
+      "id": "builtin:companion-089",
+      "label": "正念搭子",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: generated_keyframe_loop_not_realtime_3d. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-4d813430c3548191948e04d3fc88d0b4_6a6405ea2b7c8191b494414abeaffcee@55d9d5f871e593ac1a5bbacb87e1653eb21aa8e5e2eb368bc865def530317a0d",
+      "poster": {
+        "file": "companion-089.png",
+        "sha256": "be80ac5ada0489ef1a7824a1bb021ba2ec286eba2d20ddbb81797831dfa6e610",
+        "bytes": 67305
+      },
+      "animation": {
+        "file": "companion-089.gif",
+        "sha256": "882a57a171668ac38292e3afdc61f3c733a8eefe9ec540431cabdccf4c96ba71",
+        "bytes": 245967
+      }
+    },
+    {
+      "id": "builtin:companion-090",
+      "label": "预算搭子",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: generated_keyframe_loop_not_realtime_3d. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-4d813430c3548191948e04d3fc88d0b4_6a6405ea2b7c8191b494414abeaffcee@55d9d5f871e593ac1a5bbacb87e1653eb21aa8e5e2eb368bc865def530317a0d",
+      "poster": {
+        "file": "companion-090.png",
+        "sha256": "f967033cd0214ac64ec28f1c624ed922b3d2f8708ee3ea33975e5b4988fd12b2",
+        "bytes": 67207
+      },
+      "animation": {
+        "file": "companion-090.gif",
+        "sha256": "3e906857c36b3865b9a3b0d0657311e5edb0e3e159d00df3276bf242beac8da3",
+        "bytes": 259959
+      }
+    },
+    {
+      "id": "builtin:companion-091",
+      "label": "预订助手",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: generated_keyframe_loop_not_realtime_3d. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-4d813430c3548191948e04d3fc88d0b4_6a6405ea2b7c8191b494414abeaffcee@55d9d5f871e593ac1a5bbacb87e1653eb21aa8e5e2eb368bc865def530317a0d",
+      "poster": {
+        "file": "companion-091.png",
+        "sha256": "b1dba42832d182fb8e5bcb0d27fe00b2f130dd5986f0a8377e220d16d2c8f0c0",
+        "bytes": 61298
+      },
+      "animation": {
+        "file": "companion-091.gif",
+        "sha256": "7ead91ed518d82e7c3116089729de7dc52a1e6a3b8571c0a72542022274a885e",
+        "bytes": 238975
+      }
+    },
+    {
+      "id": "builtin:companion-093",
+      "label": "运动搭子",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: generated_keyframe_loop_not_realtime_3d. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-4d813430c3548191948e04d3fc88d0b4_6a6405ea2b7c8191b494414abeaffcee@55d9d5f871e593ac1a5bbacb87e1653eb21aa8e5e2eb368bc865def530317a0d",
+      "poster": {
+        "file": "companion-093.png",
+        "sha256": "00a0ab005ab66b5d9ec8d284cd8d5f2b51cdc3777343699909fa42187ad9c089",
+        "bytes": 59563
+      },
+      "animation": {
+        "file": "companion-093.gif",
+        "sha256": "b1e2b029529124a96e2c006c85dbebcc3cf1f361de42833bf2af5b0dae0e6335",
+        "bytes": 216653
+      }
+    },
+    {
+      "id": "builtin:companion-094",
+      "label": "穿搭参谋",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: generated_keyframe_loop_not_realtime_3d. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-4d813430c3548191948e04d3fc88d0b4_6a6405ea2b7c8191b494414abeaffcee@55d9d5f871e593ac1a5bbacb87e1653eb21aa8e5e2eb368bc865def530317a0d",
+      "poster": {
+        "file": "companion-094.png",
+        "sha256": "9aae9ed5f25ffb713ec1642f655c72a893dd87224fac8c26cf00fb557f5becac",
+        "bytes": 56435
+      },
+      "animation": {
+        "file": "companion-094.gif",
+        "sha256": "f810ce16ee4f5aa1faa070cd3366bb7fc88da5f7a331451714d0a9a870b10099",
+        "bytes": 214880
+      }
+    },
+    {
+      "id": "builtin:companion-095",
+      "label": "城市向导",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: generated_keyframe_loop_not_realtime_3d. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-4d813430c3548191948e04d3fc88d0b4_6a6405ea2b7c8191b494414abeaffcee@55d9d5f871e593ac1a5bbacb87e1653eb21aa8e5e2eb368bc865def530317a0d",
+      "poster": {
+        "file": "companion-095.png",
+        "sha256": "7ea3bb2ad5a016f0b9541aabb3540747da8c6aee382fd37c0c140c8913392d4e",
+        "bytes": 66294
+      },
+      "animation": {
+        "file": "companion-095.gif",
+        "sha256": "459c13dd832248e431e89d6199b35a5550f7d18bdc28063ce341497a3df93f39",
+        "bytes": 262560
+      }
+    },
+    {
+      "id": "builtin:companion-096",
+      "label": "海洋向导",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: generated_keyframe_loop_not_realtime_3d. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-4d813430c3548191948e04d3fc88d0b4_6a6405ea2b7c8191b494414abeaffcee@55d9d5f871e593ac1a5bbacb87e1653eb21aa8e5e2eb368bc865def530317a0d",
+      "poster": {
+        "file": "companion-096.png",
+        "sha256": "89412f0d370ef43f6249a32b02c62039da72c1b6c38f45a8b5491e558a1ad707",
+        "bytes": 67849
+      },
+      "animation": {
+        "file": "companion-096.gif",
+        "sha256": "a27b0071c74b510f440278be96a2aabba89c0ffed213990f8b8a7bfb41f99dd6",
+        "bytes": 235744
+      }
+    },
+    {
+      "id": "builtin:companion-097",
+      "label": "手工搭子",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: generated_keyframe_loop_not_realtime_3d. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-4d813430c3548191948e04d3fc88d0b4_6a6405ea2b7c8191b494414abeaffcee@55d9d5f871e593ac1a5bbacb87e1653eb21aa8e5e2eb368bc865def530317a0d",
+      "poster": {
+        "file": "companion-097.png",
+        "sha256": "2216e910649ce69f6a91cfc3d7bdd95d466dfe6e26d81c9765335874294efb73",
+        "bytes": 61445
+      },
+      "animation": {
+        "file": "companion-097.gif",
+        "sha256": "2e881a9c03cb61cc8b840cc4e7c85ee34e57ee43a7ef5664809ff589f46e145c",
+        "bytes": 235475
+      }
+    },
+    {
+      "id": "builtin:companion-098",
+      "label": "日记搭子",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: generated_keyframe_loop_not_realtime_3d. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-4d813430c3548191948e04d3fc88d0b4_6a6405ea2b7c8191b494414abeaffcee@55d9d5f871e593ac1a5bbacb87e1653eb21aa8e5e2eb368bc865def530317a0d",
+      "poster": {
+        "file": "companion-098.png",
+        "sha256": "b99a5df002702f57ce52b2e52d822d96d573273e15bfa87dc829f79d8be65927",
+        "bytes": 77284
+      },
+      "animation": {
+        "file": "companion-098.gif",
+        "sha256": "19882e39d446ab016220be4c10f1e7c8cfa834e35c89030c2f8a6386fc183822",
+        "bytes": 279144
+      }
+    },
+    {
+      "id": "builtin:companion-099",
+      "label": "家务管家",
+      "provenance": "original-approved",
+      "copyright": "Original AI generation declared by authorized handoff; no separate third-party/open-source license stated. Source: generated_keyframe_loop_not_realtime_3d. Supplied for this user-requested MyBuddy avatar collection.",
+      "approval": "handoff:libfile_fde3_f-4d813430c3548191948e04d3fc88d0b4_6a6405ea2b7c8191b494414abeaffcee@55d9d5f871e593ac1a5bbacb87e1653eb21aa8e5e2eb368bc865def530317a0d",
+      "poster": {
+        "file": "companion-099.png",
+        "sha256": "59eff175ea874fadd2212f1c95146aac8c23018f11b9860c947f39d846a486ec",
+        "bytes": 52375
+      },
+      "animation": {
+        "file": "companion-099.gif",
+        "sha256": "011a618ae9ee2b678b6d2eee27350a53848332caa2a508bd42bd18f6b469b89b",
+        "bytes": 216256
+      }
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "id": "builtin:synthetic-mint",
+      "label": "合成测试 · 薄荷团",
+      "provenance": "synthetic-test",
+      "approval": "Engineering-only original geometric test fixture; not part of the 99 commissioned companions.",
+      "poster": {
+        "file": "synthetic-mint.png",
+        "sha256": "d98f633ddce638e115419833062f0da28cd1610e10dcaeb1f3b79025bd4dfd3d",
+        "bytes": 1138
+      },
+      "animation": {
+        "file": "synthetic-mint.gif",
+        "sha256": "bd085cc17d36cc6f414929f09251cdf991c6aea8fd8a7bef4f100479922d6831",
+        "bytes": 1092
+      },
+      "copyright": "Original geometric engineering fixture authored for this change; no third-party character or source image; not an approved production companion."
+    },
+    {
+      "id": "builtin:synthetic-peach",
+      "label": "合成测试 · 桃桃团",
+      "provenance": "synthetic-test",
+      "approval": "Engineering-only original geometric test fixture; not part of the 99 commissioned companions.",
+      "poster": {
+        "file": "synthetic-peach.png",
+        "sha256": "0cd3b8696b22ac40005fd74c16375a7edb0e78b8e054687a840d511763aecdc8",
+        "bytes": 1116
+      },
+      "animation": {
+        "file": "synthetic-peach.gif",
+        "sha256": "e77eb1bbfa3735c004cb9d5bcb7d9ce7e10aefbd63629a44bb58c91e5e89c021",
+        "bytes": 1048
+      },
+      "copyright": "Original geometric engineering fixture authored for this change; no third-party character or source image; not an approved production companion."
+    }
+  ]
+}

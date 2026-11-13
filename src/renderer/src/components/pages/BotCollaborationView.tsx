@@ -1,3 +1,4 @@
+import { BotAvatar } from "../common/BotAvatar";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { z } from 'zod';
 import type {
@@ -173,7 +174,7 @@ function CollaborationHistory({ botId, collaborationId, onOpenWork }: { botId: s
     {error && <p role="alert" className="bot-alert">{error} <button type="button" onClick={refresh}>重试读取</button></p>}
     {!page && !error && <p role="status">正在读取协作记录…</p>}
     {page && relation && <>
-      <header className="bot-collaboration-participants"><IconBot size={22} /><div><h2>{relation.sourceDisplayName} 与 {relation.targetDisplayName}</h2><p>{page.totalMessages} 条消息 · {collaborationStatus(relation.status)}</p></div></header>
+      <header className="bot-collaboration-participants"><BotAvatar botId={relation.sourceBotId} name={relation.sourceDisplayName} /><BotAvatar botId={relation.targetBotId} name={relation.targetDisplayName} /><div><h2>{relation.sourceDisplayName} 与 {relation.targetDisplayName}</h2><p>{page.totalMessages} 条消息 · {collaborationStatus(relation.status)}</p></div></header>
       <dl className="bot-collaboration-times" aria-label="协作回执时间">
         <div><dt>发送</dt><dd>{recordedTime(relation.times.sentAt)}</dd></div>
         <div><dt>送达</dt><dd>{recordedTime(relation.times.deliveredAt)}</dd></div>
@@ -192,12 +193,12 @@ function CollaborationHistory({ botId, collaborationId, onOpenWork }: { botId: s
       {hasJournalGap(page) && <p role="status">部分记录尚未加载，请加载更早消息补齐。</p>}
       <ChatImageScope taskId={null} artifacts={[]} sources={{}}><ol className="bot-collaboration-messages" aria-label="双方协作消息">
         {page.messages.map(message => <li key={message.messageId} data-collaboration-message-id={message.messageId} data-message-kind={message.kind}>
-          <header><strong>{message.senderDisplayName}</strong><span>{messageLabel(message)}</span>{recordedTime(message.createdAt)}</header>
+          <header><BotAvatar botId={message.senderBotId} name={message.senderDisplayName} /><strong>{message.senderDisplayName}</strong><span>{messageLabel(message)}</span>{recordedTime(message.createdAt)}</header>
           <ChatMarkdown resolveTaskFiles={false} text={message.text} streaming={false} />
           {message.workFeedback?.report?.completion?.outcome === 'partial' && <p className="bot-collaboration-partial">这是阶段成果，事项仍需继续。</p>}
         </li>)}
       </ol>
-      {page.previews.map(preview => <section className="bot-collaboration-preview" key={preview.exchangeId} aria-label="正在生成的回复"><header><strong>{preview.senderDisplayName}</strong><span>正在回复，尚未计为消息</span></header><ChatMarkdown resolveTaskFiles={false} text={preview.text} streaming /></section>)}
+      {page.previews.map(preview => <section className="bot-collaboration-preview" key={preview.exchangeId} aria-label="正在生成的回复"><header><BotAvatar botId={preview.senderBotId} name={preview.senderDisplayName} /><strong>{preview.senderDisplayName}</strong><span>正在回复，尚未计为消息</span></header><ChatMarkdown resolveTaskFiles={false} text={preview.text} streaming /></section>)}
       </ChatImageScope>
       <Followup key={`${botId}:${collaborationId}`} collaboration={relation} botId={botId} onAccepted={refresh} />
     </>}
@@ -258,7 +259,7 @@ export function BotIncomingCollaborations({ botId, onOpen, empty }: {
     {!page && !error && <p role="status">正在读取收到的协作…</p>}
     <ul>{page?.items.map(item => <li key={item.collaborationId}>
       <button type="button" data-incoming-collaboration={item.collaborationId} onClick={() => onOpen(item.collaborationId)}>
-        <span className="bot-incoming-sender"><span className="bot-avatar" aria-hidden="true"><IconBot size={17} /></span><strong>来自 {item.sourceDisplayName}</strong><span>{item.messageCount} 条消息</span></span>
+        <span className="bot-incoming-sender"><BotAvatar botId={item.sourceBotId} name={item.sourceDisplayName} /><strong>来自 {item.sourceDisplayName}</strong><span>{item.messageCount} 条消息</span></span>
         <strong className="bot-incoming-request">{item.work?.title ?? item.requestPreview ?? '查看协作请求'}</strong>
         {item.work && item.requestPreview && <span className="bot-incoming-request-context">原始请求：{item.requestPreview}</span>}
         <span className="bot-incoming-status">{item.workId ? '委派' : '咨询'} · {collaborationStatus(item.status)}{item.work ? ` · ${collaborationWorkStatus(item.work)}` : ''}</span>
@@ -278,7 +279,7 @@ function CollaborationList({ botId, onOpen }: { botId: string; onOpen: (id: stri
     {!page && !error && <p role="status">正在读取协作列表…</p>}
     {page && <><p>{page.total} 段协作</p>{page.items.length === 0 && <p>还没有协作记录。</p>}
       <ul className="bot-collaboration-list">{page.items.map(item => <li key={item.collaborationId}><button type="button" onClick={() => onOpen(item.collaborationId)} data-collaboration-id={item.collaborationId}>
-        <span className="bot-collaboration-list-title">{item.sourceBotId === botId ? `发给 ${item.targetDisplayName}` : `来自 ${item.sourceDisplayName}`}</span><span>{item.messageCount} 条消息 · {collaborationStatus(item.status)}</span><span>{recordedTime(item.updatedAt)}{item.workId && ' · 已关联个人事项'}</span>
+        <span className="bot-collaboration-list-title"><BotAvatar botId={item.sourceBotId === botId ? item.targetBotId : item.sourceBotId} name={item.sourceBotId === botId ? item.targetDisplayName : item.sourceDisplayName} />{item.sourceBotId === botId ? `发给 ${item.targetDisplayName}` : `来自 ${item.sourceDisplayName}`}</span><span>{item.messageCount} 条消息 · {collaborationStatus(item.status)}</span><span>{recordedTime(item.updatedAt)}{item.workId && ' · 已关联个人事项'}</span>
       </button></li>)}</ul>
       {page.nextCursor && <button type="button" className="bot-collaboration-more" onClick={() => void more()} disabled={loadingMore}>{loadingMore ? '正在加载…' : '加载更多协作'}</button>}
     </>}

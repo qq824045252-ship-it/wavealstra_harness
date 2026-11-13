@@ -1,3 +1,4 @@
+import { BotAvatarIpc } from "../shared/bot-avatar";
 import { SavedArtifactIpc, type SavedArtifactRequest, type SavedArtifactPreview } from "../shared/saved-artifact";
 import { GoogleWorkspaceWriteIpc, type GoogleWorkspaceWriteApi } from "../shared/google-workspace-write";
 import { GatewayBotBindingIpc, type GatewayBotBinding, type GatewayBotBindingRequest } from "../shared/gateway-bot-binding";
@@ -670,6 +671,7 @@ const api = {
     phase3Control: request => ipcRenderer.invoke(BotWorkIpc.phase3Control, request),
     phase4Control: request => ipcRenderer.invoke(BotWorkIpc.phase4Control, request),
     hostStatus: () => ipcRenderer.invoke(BotWorkIpc.hostStatus),
+    avatars: request => ipcRenderer.invoke(BotAvatarIpc, request),
     listBots: () => ipcRenderer.invoke(BotWorkIpc.listBots),
     deleteBot: request => ipcRenderer.invoke(BotWorkIpc.deleteBot, request),
     renameBot: request => ipcRenderer.invoke(BotWorkIpc.renameBot, request),

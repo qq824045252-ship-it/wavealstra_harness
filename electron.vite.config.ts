@@ -1,3 +1,4 @@
+import { buildBotAvatarImageAssets } from "./scripts/build-bot-avatar-image-assets.mjs";
 import { defineConfig, externalizeDepsPlugin } from "electron-vite";
 import react from "@vitejs/plugin-react";
 import { resolve } from "node:path";
@@ -49,6 +50,7 @@ export default defineConfig({
         for (const asset of await buildSubagentRuntime(__dirname)) this.emitFile(asset);
         for (const asset of await buildPiCodemodeAssets(__dirname)) this.emitFile(asset);
         for (const asset of await buildPiImageResizeAssets(__dirname)) this.emitFile(asset);
+        for (const asset of await buildBotAvatarImageAssets(__dirname)) this.emitFile(asset);
         for (const asset of await buildLinuxComputerUseAssets(__dirname)) this.emitFile(asset);
         for (const fileName of ["capabilities/subagent/worker-launcher.mjs"]) {
           const outputName = fileName;

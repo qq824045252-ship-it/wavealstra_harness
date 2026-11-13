@@ -1,3 +1,6 @@
+import { normalizeBotAvatar } from "./agent/work/BotAvatarImageDecoder";
+import { BotAvatarIpc } from "../shared/bot-avatar";
+import { createBotAvatarIpcHandler } from "./agent/work/BotAvatarIpc";
 import "./platform/credentials";
 import { SavedArtifactIpc } from "../shared/saved-artifact";
 import { savedArtifactPreviewService } from "./artifact/SavedArtifactPreview";
@@ -1090,6 +1093,18 @@ function registerIpc(): void {
     getMainWindow: () => botManagementWindow,
     rendererUrl: process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href,
     save: request => agentService.saveBotSettings(request),
+  }));
+  ipcMain.handle(BotAvatarIpc, createBotAvatarIpcHandler({
+    service: agentService.botAvatars, getWindow: () => botManagementWindow,
+    rendererUrl: process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href,
+    pick: async () => {
+      const window = botManagementWindow;
+      if (!window || window.isDestroyed()) throw new Error("主窗口已关闭");
+      const result = await dialog.showOpenDialog(window, { title: "添加本地 Bot 头像", properties: ["openFile"],
+        filters: [{ name: "头像图片", extensions: ["png","jpg","jpeg","gif","webp"] }] });
+      return result.canceled ? undefined : result.filePaths[0];
+    },
+    normalize: normalizeBotAvatar,
   }));
   ipcMain.handle(BotWorkIpc.listBots, () => agentService.listBots());
   ipcMain.handle(BotWorkIpc.updateWorkspaceAuthorization, createBotIpcHandler({

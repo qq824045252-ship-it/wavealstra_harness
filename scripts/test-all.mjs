@@ -178,6 +178,7 @@ const GUI_TESTS = new Set([
 ]);
 
 const NETWORK_TESTS = new Set([
+  "test:bot-avatar-browser",
   "test:bot-cross-channel-model-live",
   "test:bot-organization:live",
   "test:durable-context-dev:live", // real pnpm dev/Electron + configured online provider; isolated synthetic profile
@@ -300,6 +301,11 @@ const KNOWN_HEADLESS_RED = new Set([
  * 显式清单优先于下面的命名兜底，否则它们会被 `^test:browser-` 之类正则误伤。
  */
 const HEADLESS_TESTS = new Set([
+  "test:bot-avatars",
+  "test:bot-avatar-ui",
+  "test:bot-avatar-decoder",
+  "test:bot-avatar-containers",
+  "test:bot-avatar-assets",
   "test:work-execution-isolation",
   "test:ui-automation-cancellation",
   "test:bot-work-result-artifacts",

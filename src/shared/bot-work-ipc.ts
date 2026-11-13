@@ -78,6 +78,7 @@ export interface BotWorkNotificationReadResult {
 }
 
 export interface BotWorkApi {
+  avatars(request: import("./bot-avatar").BotAvatarCommand): Promise<import("./bot-avatar").BotAvatarResult>;
   getSettings(botId: string): Promise<import("./bot-settings").BotSettingsView>;
   saveSettings(request: import("./bot-settings").BotSettingsSaveRequest): Promise<import("./bot-settings").BotSettingsResult>;
   hostStatus(): Promise<BotWorkHostStatusDto>;
