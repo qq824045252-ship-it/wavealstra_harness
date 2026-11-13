@@ -208,7 +208,7 @@ function CollaborationHistory({ botId, collaborationId, onOpenWork }: { botId: s
   </div>;
 }
 
-function useCollaborations(botId: string, direction: NonNullable<BotCollaborationsQuery['direction']> = 'all', limit = PAGE_SIZE) {
+function useCollaborations(botId: string, direction: NonNullable<BotCollaborationsQuery['direction']> = 'all', limit = PAGE_SIZE, participants: NonNullable<BotCollaborationsQuery['participants']> = 'current') {
   const membership = useAppStore(state => state.botIdentities.map(bot => bot.botId).sort().join('\n'));
   const [page, setPage] = useState<BotCollaborationsPage>();
   const [error, setError] = useState('');
@@ -226,9 +226,9 @@ function useCollaborations(botId: string, direction: NonNullable<BotCollaboratio
       try {
         const api = window.api?.botWork;
         if (!api?.collaborations) throw new Error('协作记录接口不可用，请更新并重启应用。');
-        const result = await api.collaborations({ botId, direction, limit });
+        const result = await api.collaborations({ botId, direction, limit, participants });
         if (generation.current === current) {
-          setPage(previous => previous && previous.items.length > limit ? { ...result, nextCursor: previous.nextCursor, items: [...new Map([...previous.items, ...result.items].map(item => [item.collaborationId, item])).values()].sort((a, b) => b.createdAt - a.createdAt || b.collaborationId.localeCompare(a.collaborationId)) } : result);
+          setPage(previous => previous && previous.total === result.total && previous.items.length > limit ? { ...result, nextCursor: previous.nextCursor, items: [...new Map([...previous.items, ...result.items].map(item => [item.collaborationId, item])).values()].sort((a, b) => b.createdAt - a.createdAt || b.collaborationId.localeCompare(a.collaborationId)) } : result);
           setError('');
         }
       } catch (cause) { if (generation.current === current) setError(cause instanceof Error ? cause.message : '协作列表暂时无法读取。'); }
@@ -239,13 +239,13 @@ function useCollaborations(botId: string, direction: NonNullable<BotCollaboratio
     const timer = setInterval(refreshVisible, direction === 'incoming' ? 2000 : 5000);
     document.addEventListener('visibilitychange', refreshVisible);
     return () => { generation.current++; clearInterval(timer); document.removeEventListener('visibilitychange', refreshVisible); };
-  }, [botId, direction, limit, retry, membership]);
+  }, [botId, direction, limit, retry, membership, participants]);
   const more = async () => {
     if (!page?.nextCursor || moreFlight.current) return;
     const current = generation.current;
     moreFlight.current = true; setLoadingMore(true);
     try {
-      const result = await window.api!.botWork.collaborations({ botId, direction, cursor: page.nextCursor, limit });
+      const result = await window.api!.botWork.collaborations({ botId, direction, cursor: page.nextCursor, limit, participants });
       if (generation.current === current) setPage(previous => ({ ...result, items: [...new Map([...(previous?.items ?? []), ...result.items].map(item => [item.collaborationId, item])).values()] }));
     } catch (cause) { if (generation.current === current) setError(cause instanceof Error ? cause.message : '更早协作加载失败。'); }
     finally { moreFlight.current = false; if (generation.current === current) setLoadingMore(false); }
@@ -273,12 +273,18 @@ export function BotIncomingCollaborations({ botId, onOpen, empty }: {
 }
 
 function CollaborationList({ botId, onOpen }: { botId: string; onOpen: (id: string) => void }) {
-  const { page, error, loadingMore, more, retry } = useCollaborations(botId);
+  const [participants, setParticipants] = useState<'current' | 'deleted'>('current');
+  const { page, error, loadingMore, more, retry } = useCollaborations(botId, 'all', PAGE_SIZE, participants);
   return <div className="bot-collaboration-body" tabIndex={-1}>
-    <h2>协作记录</h2><p className="bot-collaboration-description">查看这个 Bot 发起或接收的协作。这里的消息与个人对话分别保存。</p>
+    <h2>{participants === 'current' ? '协作记录' : '已删除 Bot 的协作记录'}</h2>
+    <div role="group" aria-label="协作记录范围">
+      <button type="button" aria-pressed={participants === 'current'} onClick={() => setParticipants('current')}>当前 Bot</button>
+      <button type="button" aria-pressed={participants === 'deleted'} onClick={() => setParticipants('deleted')}>已删除 Bot 的记录</button>
+    </div>
+    <p className="bot-collaboration-description">{participants === 'current' ? '仅显示仍存在的 Bot 之间的协作。' : '仅供查看已删除 Bot 的历史消息和成果，不能继续跟进。'}</p>
     {error && <p role="alert" className="bot-alert">{error} <button type="button" onClick={retry}>重试读取</button></p>}
     {!page && !error && <p role="status">正在读取协作列表…</p>}
-    {page && <><p>{page.total} 段协作</p>{page.items.length === 0 && <p>还没有协作记录。</p>}
+    {page && <><p>{page.total} 段协作</p>{page.items.length === 0 && <p>{participants === 'current' ? '没有当前 Bot 的协作记录。' : '没有已删除 Bot 的协作记录。'}</p>}
       <ul className="bot-collaboration-list">{page.items.map(item => <li key={item.collaborationId}><button type="button" onClick={() => onOpen(item.collaborationId)} data-collaboration-id={item.collaborationId}>
         <span className="bot-collaboration-list-title"><BotAvatar botId={item.sourceBotId === botId ? item.targetBotId : item.sourceBotId} name={item.sourceBotId === botId ? item.targetDisplayName : item.sourceDisplayName} />{item.sourceBotId === botId ? `发给 ${item.targetDisplayName}` : `来自 ${item.sourceDisplayName}`}</span><span>{item.messageCount} 条消息 · {collaborationDisplayStatus(item)}</span><span>{recordedTime(item.updatedAt)}{item.workId && ' · 已关联个人事项'}</span>
       </button></li>)}</ul>

@@ -9,3 +9,9 @@ Passed via existing non-esbuild runners: repository SQLite regression; new admis
 During DOM test development, an assertion incorrectly expected the preserved historical fragment to be absent and failed; its large DOM assertion output exceeded the test guard memory cap. The final assertions verify that the fragment is retained but not described as streaming. A whitespace-sensitive duration assertion was corrected to match visible whitespace. Final tests pass with production semantics preserved.
 
 The author's separate candidate runner encountered blocked telemetry network initialization; that run is not reported as passed and no network/security change was made. Integration used its existing permitted project dependencies and runner. No current-user profile, application reload, full-suite run or physical desktop acceptance occurred.
+
+## Default list visibility follow-up
+
+Integrated on main 712b51f3. Collaboration lists now default to records whose two participants still exist under the current user. An explicit deleted-Bot history tab retains access to removed participants' messages and Work. Count, pagination and cursor scope use the same participant filter; history permissions and deletion-admission protections remain unchanged. Membership changes or a changed result count clear previously cached pages.
+
+Final repository regression, DOM tab switching/current-empty/deleted-history/detail behavior, and complete typecheck passed. Independent review passed. No user data or running instance was changed. New incoming-message timeline work is a separate unmerged candidate and must preserve this filtering contract.

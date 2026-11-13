@@ -56,6 +56,7 @@ export type BotCollaborationPreviewDto = z.infer<typeof botCollaborationPreviewS
 export const botCollaborationsQuerySchema = z.object({
   botId: id, conversationId: id.optional(), otherBotId: id.optional(), cursor: z.string().max(4000).optional(),
   direction: z.enum(["all", "incoming", "outgoing"]).optional(),
+  participants: z.enum(["current", "deleted", "all"]).optional(),
   limit: z.number().int().min(1).max(100).optional(),
 }).strict();
 export type BotCollaborationsQuery = z.infer<typeof botCollaborationsQuerySchema>;

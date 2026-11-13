@@ -347,7 +347,7 @@ export class BotCollaborationRepository {
   list(userId: string, input: BotCollaborationsQuery): BotCollaborationsPage {
     const query = botCollaborationsQuerySchema.parse(input);
     this.requireBot(userId, query.botId);
-    const scope = digest(["relations", userId, query.botId, query.conversationId ?? null, query.otherBotId ?? null, query.direction ?? "all"]);
+    const scope = digest(["relations", userId, query.botId, query.conversationId ?? null, query.otherBotId ?? null, query.direction ?? "all", query.participants ?? "current"]);
     const cursor = query.cursor ? this.cursor(query.cursor, listCursorSchema, scope) : undefined;
     const params: Record<string, string | number> = { userId, botId: query.botId };
     const predicates = ["user_id=@userId", "(source_bot_id=@botId OR target_bot_id=@botId)"];
@@ -359,6 +359,9 @@ export class BotCollaborationRepository {
     if (query.otherBotId) {
       predicates.push("(source_bot_id=@otherBotId OR target_bot_id=@otherBotId)"); params.otherBotId = query.otherBotId;
     }
+    const participantsExist = `(EXISTS (SELECT 1 FROM bots s WHERE s.user_id=bot_collaborations.user_id AND s.bot_id=source_bot_id)
+      AND EXISTS (SELECT 1 FROM bots t WHERE t.user_id=bot_collaborations.user_id AND t.bot_id=target_bot_id))`;
+    if (query.participants !== "all") predicates.push(query.participants === "deleted" ? `NOT ${participantsExist}` : participantsExist);
     const base = predicates.join(" AND ");
     const total = z.object({ total: z.number() }).parse(this.db.prepare(`SELECT COUNT(*) total FROM bot_collaborations WHERE ${base}`).get(params)).total;
     if (cursor) {
