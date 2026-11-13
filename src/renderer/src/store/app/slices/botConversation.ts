@@ -270,10 +270,27 @@ export function createBotConversationActions({ get, set, getApi }: AppContext): 
       await get().refreshBotHistory(botId, get().activeTeam?.templateId);
     },
     archiveBotConversation: async (botId, teamId) => {
-      const history = get().botHistories[botConversationScope(botId, teamId)];
+      const scopeKey = botConversationScope(botId, teamId);
+      const history = get().botHistories[scopeKey];
+      const navigationEpoch = get().botNavigationEpoch;
       if (!history?.conversationId) return;
-      await getApi()?.botWork.archiveConversation(botId, history.conversationId);
-      notificationConversations.delete(botConversationScope(botId, teamId));
+      const api = getApi();
+      if (!api) throw new Error("主机离线，无法开始新对话，原对话已保留。");
+      await api.botWork.archiveConversation(botId, history.conversationId);
+      // A confirmed archive retires this transcript even if the subsequent read
+      // fails. In-flight reads and events must not restore the archived context.
+      // Navigation may have selected another conversation while IPC was pending.
+      if (get().botHistories[scopeKey]?.conversationId !== history.conversationId) return;
+      notificationConversations.delete(scopeKey);
+      histories.set(scopeKey, (histories.get(scopeKey) ?? 0) + 1);
+      olderReads.delete(scopeKey);
+      set(state => ({
+        // Reject notification reads started before this archive, but do not
+        // cancel a newer navigation chosen while the archive IPC was pending.
+        ...(state.botNavigationEpoch === navigationEpoch ? { botNavigationEpoch: navigationEpoch + 1 } : {}),
+        botHistories: { ...state.botHistories, [scopeKey]: { botId, teamId, conversationId: "", revision: 0, archived: false, messages: [] } },
+        botHistoryPages: { ...state.botHistoryPages, [scopeKey]: { loading: false } },
+      }));
       await get().refreshBotHistory(botId, teamId);
     },
   };
