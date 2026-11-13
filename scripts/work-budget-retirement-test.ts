@@ -50,7 +50,10 @@ try {
   bots.registerBot({ userId: LOCAL_USER_ID, botId: "member-a", displayName: "member", authorization: DESKTOP_USER_GRANTS });
   const works = new WorkService(app.connection, { bots });
   const user: WorkActor = { kind: "user", userId: LOCAL_USER_ID, grants: { ...DESKTOP_USER_GRANTS, allowRedelegation: true } };
-  const team = works.teams.handle(user, { kind: "create", request: {
+  const formalTemplate = works.teams.handle(user, { kind: "save_template", request: { operationId: "fixture-formal-team", name: "Formal fixture team",
+    plan: { ownerBotId: DEFAULT_BOT_ID, ownerResponsibility: "Summarize", members: [{ botId: "member-a", responsibility: "Inspect", delegatedScope: ["workspace:read"] }] } } });
+  assert(formalTemplate.ok && formalTemplate.template);
+  const team = works.teams.handle(user, { kind: "create", request: { templateId: formalTemplate.template.templateId,
     operationId: "retirement-team", title: "Retirement fixture", goalDescription: "Keep business facts",
     workspacePath: workspace, ownerBotId: DEFAULT_BOT_ID, ownerResponsibility: "Summarize",
     members: [{ botId: "member-a", responsibility: "Inspect", delegatedScope: ["workspace:read"] }],

@@ -461,7 +461,10 @@ try {
   for (const botId of ["watch-team-owner", "watch-team-member"]) bots.registerBot({
     userId: LOCAL_USER_ID, botId, displayName: botId, authorization: teamGrants });
   const teamActor: WorkActor = { kind: "user", userId: LOCAL_USER_ID, grants: teamGrants };
-  const teamResult = works.teams.handle(teamActor, { kind: "create", request: {
+  const formalTemplate = works.teams.handle(teamActor, { kind: "save_template", request: { operationId: "fixture-formal-team", name: "Formal fixture team",
+    plan: { ownerBotId: "watch-team-owner", ownerResponsibility: "Summarize", members: [{ botId: "watch-team-member", responsibility: "Inspect", delegatedScope: ["workspace:read"] }] } } });
+  assert(formalTemplate.ok && formalTemplate.template);
+  const teamResult = works.teams.handle(teamActor, { kind: "create", request: { templateId: formalTemplate.template.templateId,
     operationId: "watch-team-create", title: "真实团队委托", goalDescription: "独立检查并汇总",
     workspacePath: root, ownerBotId: "watch-team-owner", ownerResponsibility: "只读汇总",
     members: [{ botId: "watch-team-member", responsibility: "只读检查", delegatedScope: ["workspace:read"] }],

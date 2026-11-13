@@ -10,8 +10,8 @@ export function HistoricalTeamWorkDetail({ snapshot, onBack }: {
 }): React.JSX.Element {
   const detail = useBotWorkDetail(snapshot.workId, "historical-team");
   const work = detail.work;
-  return <BotWorkConversationDetail work={work} workId={snapshot.workId} loading={detail.loading} error={detail.error} conversationName={work?.team?.teamName ?? "历史团队"}
-    ownerName={work?.team?.teamName ?? "历史团队"} includeClosed returnLabel="原视图" onBack={onBack}>
+  return <BotWorkConversationDetail work={work} workId={snapshot.workId} loading={detail.loading} error={detail.error} conversationName={work?.team?.teamName ?? "历史事项"}
+    ownerName={work?.team?.teamName ?? "历史事项"} includeClosed returnLabel="原视图" onBack={onBack}>
     {work && <BotTeamManagement key={work.workId} work={work} onChanged={() => { void useAppStore.getState().refreshBotWork(true); }} />}
   </BotWorkConversationDetail>;
 }

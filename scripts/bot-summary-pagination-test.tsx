@@ -79,7 +79,8 @@ async function main() {
   } } });
   const sidebar = createRoot(document.getElementById("root")!);
   await act(async () => sidebar.render(<BotTeamsNavigation />));
-  assert(document.body.textContent!.includes("临时与历史团队事项（30）"));
+  assert(document.body.textContent!.includes("Work 历史（30）"));
+  assert(!document.body.textContent!.includes("临时团队"));
   assert(!document.body.textContent!.includes("历史事项 29"));
   const more = [...document.querySelectorAll("button")].find(button => button.textContent === "加载更多历史事项")!;
   await act(async () => more.dispatchEvent(new window.Event("click", { bubbles: true })));

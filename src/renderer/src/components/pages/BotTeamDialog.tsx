@@ -12,7 +12,7 @@ function readPending(): PendingTeamCreation | null {
     const request = { ...stored } as Record<string, unknown>;
     // Old uncertain creations must resolve their original operation before the
     // retired field can be removed from a request. Never silently start a new team.
-    const needsLookup = Object.prototype.hasOwnProperty.call(request, "budgetTokens");
+    const needsLookup = !request.templateId || Object.prototype.hasOwnProperty.call(request, "budgetTokens");
     delete request.budgetTokens;
     const parsed = createTeamWorkSchema.safeParse(request);
     return parsed.success ? { request: parsed.data, needsLookup } : null;
@@ -80,7 +80,7 @@ export function BotTeamDialog({ open, onClose, initialTeam }: { open: boolean; o
     let live = true;
     void window.api?.botWork.teamControl({ kind: "list_templates" }).then(result => {
       if (live && result.ok) setTemplates(result.templates ?? []);
-    }).catch(() => { if (live) setTemplateNotice("暂时无法读取团队模板，可直接填写本次分工。"); });
+    }).catch(() => { if (live) setTemplateNotice("暂时无法读取正式团队，请稍后重试。"); });
     return () => { live = false; };
   }, [open]);
   const close = () => { epoch.current++; openRef.current = false; onClose(); };
@@ -105,7 +105,7 @@ export function BotTeamDialog({ open, onClose, initialTeam }: { open: boolean; o
   }, [open, pending, selectedTeam]);
   const candidates = bots.filter(bot => bot.status === "active" && (!selectedTeam || bot.botId === selectedTeam.ownerBotId || selectedTeam.members.some(member => member.botId === bot.botId)));
   const candidate = (id: string) => candidates.find(bot => bot.botId === id);
-  const valid = title.trim() && goal.trim() && workspace.trim() && ownerResponsibility.trim()
+  const valid = selectedTeam && title.trim() && goal.trim() && workspace.trim() && ownerResponsibility.trim()
     && candidate(owner) && members.length > 0
     && members.every(member => member.botId !== owner && member.responsibility.trim() && candidate(member.botId))
     && criteria.split("\n").some(line => line.trim());
@@ -128,7 +128,7 @@ export function BotTeamDialog({ open, onClose, initialTeam }: { open: boolean; o
   const submit = async () => {
     if (inFlight.current || (!pending && !valid)) return;
     const request = pending ?? { operationId: `desktop-team:${crypto.randomUUID()}`, title: title.trim(), goalDescription: goal.trim(),
-      workspacePath: workspace.trim(), ...(selectedTeamId ? { templateId: selectedTeamId } : {}), executionPolicy, maxConcurrency: executionPolicy === "parallel" ? maxConcurrency : 1, ownerBotId: owner, ownerResponsibility: ownerResponsibility.trim(),
+      workspacePath: workspace.trim(), templateId: selectedTeamId, executionPolicy, maxConcurrency: executionPolicy === "parallel" ? maxConcurrency : 1, ownerBotId: owner, ownerResponsibility: ownerResponsibility.trim(),
       members: members.map(member => ({ ...member, responsibility: member.responsibility.trim() })),
       criteria: criteria.split("\n").map(line => line.trim()).filter(Boolean) };
     const parsed = createTeamWorkSchema.safeParse(request);
@@ -146,6 +146,11 @@ export function BotTeamDialog({ open, onClose, initialTeam }: { open: boolean; o
       let result = needsLookup ? await api.teamControl({ kind: "get_by_operation", operationId: parsed.data.operationId }) : undefined;
       if (result && !result.ok) {
         if (result.code === "not_found") {
+          if (!parsed.data.templateId) {
+            clearPending(parsed.data.operationId);
+            if (mounted.current) { setPendingCreation(null); setError("原操作未创建事项。请先创建或选择正式团队，再派发新事项。"); }
+            return;
+          }
           try { localStorage.setItem(pendingKey, JSON.stringify(parsed.data)); }
           catch { if (mounted.current) setError("无法保存请求，尚未派发。请检查本地存储后重试。"); return; }
           if (mounted.current) {
@@ -157,7 +162,7 @@ export function BotTeamDialog({ open, onClose, initialTeam }: { open: boolean; o
       }
       if (!result) result = await api.teamControl({ kind: "create", request: parsed.data });
       if (!result.ok) {
-        const rejected = ["invalid_request", "unauthorized_actor", "invalid_team", "not_found", "scope_denied", "invalid_workspace"].includes(result.code);
+        const rejected = ["team_required", "invalid_request", "unauthorized_actor", "invalid_team", "not_found", "scope_denied", "invalid_workspace"].includes(result.code);
         if (rejected) clearPending(parsed.data.operationId);
         if (mounted.current) { if (rejected) setPendingCreation(null); setError(result.message); }
         return;
@@ -187,7 +192,9 @@ export function BotTeamDialog({ open, onClose, initialTeam }: { open: boolean; o
       if (!result.template || result.template.name !== request.name) throw new Error("模板回执不匹配");
       clearPendingTemplate(request.operationId); setPendingTemplate(null);
       setTemplates(current => [...current.filter(item => item.templateId !== result.template!.templateId), result.template!]);
-      setTemplateNotice("团队模板已保存。仅保存成员和分工，使用时仍会核对成员是否可用。");
+      setSelectedTeamId(result.template.templateId);
+      window.dispatchEvent(new Event("mybuddy:teams-refresh"));
+      setTemplateNotice("正式团队已保存并选中。派发事项时仍会核对成员是否可用。");
     } catch { if (mounted.current) setTemplateNotice("模板保存结果尚未确认，核对原请求不会重复保存。"); }
     finally { templateInFlight.current = false; if (mounted.current) setTemplateBusy(false); }
   };
@@ -199,6 +206,8 @@ export function BotTeamDialog({ open, onClose, initialTeam }: { open: boolean; o
       if (!mounted.current) return;
       if (!result?.ok) { setTemplateNotice(result && !result.ok ? result.message : "模板接口不可用。"); return; }
       setTemplates(current => current.filter(item => item.templateId !== templateId)); setDeleteTemplateId(null);
+      if (selectedTeamId === templateId) setSelectedTeamId("");
+      window.dispatchEvent(new Event("mybuddy:teams-refresh"));
       setTemplateNotice("模板已删除；既有团队事项和 Bot 不受影响。");
     } catch { if (mounted.current) setTemplateNotice("删除结果未确认，请刷新模板列表后核对。"); }
     finally { if (mounted.current) setTemplateBusy(false); }
@@ -211,13 +220,13 @@ export function BotTeamDialog({ open, onClose, initialTeam }: { open: boolean; o
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") close();
     }}>
     <header className="bot-create-header"><span className="bot-avatar" aria-hidden="true"><IconBot size={20} /></span>
-      <div><h2 id="bot-team-title">组队开工</h2><p>一个目标，明确分工，由负责人统一汇总</p></div>
-      <button type="button" className="icon-btn" aria-label="关闭组队开工" onClick={close}><IconX size={18} /></button></header>
-    {created ? <section className="bot-create-success"><h3>已建立团队事项</h3><p>{created.title} 已受理。成员按计划在各自范围内执行，负责人随后核对和汇总。结果会随团队事项返回，也可在负责人的任务收件箱查看，无需留在此窗口等待。</p><div className="bot-create-actions"><button type="button" onClick={() => { setCreated(null); setTitle(""); setGoal(""); setCriteria(""); setError(""); }}>再建一队</button><button type="button" onClick={() => openWork(created)}>查看团队事项</button></div></section>
+      <div><h2 id="bot-team-title">团队新事项</h2><p>交给正式团队，由负责人统一汇总</p></div>
+      <button type="button" className="icon-btn" aria-label="关闭团队新事项" onClick={close}><IconX size={18} /></button></header>
+    {created ? <section className="bot-create-success"><h3>已建立团队事项</h3><p>{created.title} 已受理。成员按计划在各自范围内执行，负责人随后核对和汇总。结果会随团队事项返回，也可在负责人的任务收件箱查看，无需留在此窗口等待。</p><div className="bot-create-actions"><button type="button" onClick={() => { setCreated(null); setTitle(""); setGoal(""); setCriteria(""); setError(""); }}>再建事项</button><button type="button" onClick={() => openWork(created)}>查看团队事项</button></div></section>
       : <form onSubmit={event => { event.preventDefault(); void submit(); }}>
-        <p>选择负责人和至少一位成员。每位成员使用自己的身份和配置，不共享私人记忆。</p>
+        <p>先选择正式团队；也可填写分工并保存团队后派发。每位成员使用自己的身份和配置，不共享私人记忆。</p>
         <fieldset disabled={Boolean(pending)}>
-          {templates.length > 0 && <><label htmlFor="team-template">使用团队模板</label><select id="team-template" value={selectedTeamId} onChange={event => {
+          {templates.length > 0 && <><label htmlFor="team-template">归属团队</label><select id="team-template" value={selectedTeamId} onChange={event => {
             setSelectedTeamId(event.target.value);
             const template = templates.find(item => item.templateId === event.target.value); if (!template) return;
             setOwner(template.ownerBotId); setOwnerResponsibility(template.ownerResponsibility);
@@ -225,7 +234,7 @@ export function BotTeamDialog({ open, onClose, initialTeam }: { open: boolean; o
             setExecutionPolicy(template.executionPolicy ?? "sequential"); setMaxConcurrency(template.maxConcurrency ?? 2);
             setMembers(template.members.map(member => ({ ...member, delegatedScope: ["workspace:read", "workspace:write"] })));
             setTemplateNotice("已填入模板。请核对成员与分工，再填写本次目标和工作区。");
-          }}><option value="">选择模板（可选）</option>{templates.map(template => <option key={template.templateId} value={template.templateId}>{template.name}</option>)}</select></>}
+          }}><option value="">请选择正式团队</option>{templates.map(template => <option key={template.templateId} value={template.templateId}>{template.name}</option>)}</select></>}
 
           {templates.length > 0 && <details className="bot-team-template"><summary>管理团队模板</summary>{templates.map(template => <div className="bot-team-template-row" key={template.templateId}><span>{template.name}</span>{deleteTemplateId === template.templateId ? <><span>仅删除模板？</span><button type="button" disabled={templateBusy} onClick={() => { void deleteTemplate(template.templateId); }}>确认删除</button><button type="button" disabled={templateBusy} onClick={() => setDeleteTemplateId(null)}>保留</button></> : <button type="button" disabled={templateBusy} onClick={() => setDeleteTemplateId(template.templateId)}>删除模板</button>}</div>)}</details>}
           <label htmlFor="team-title">事项名称</label><input id="team-title" value={title} onChange={event => setTitle(event.target.value)} maxLength={200} required placeholder="例如：梳理项目现状与改进建议" />

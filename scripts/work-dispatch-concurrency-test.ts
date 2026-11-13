@@ -125,10 +125,14 @@ try {
       const team = (name: string) => {
         for (const suffix of ["owner", "member"]) new BotRegistry(f.db.connection).registerBot({
           botId: `${name}:${suffix}`, userId: LOCAL_USER_ID, displayName: `${name} ${suffix}`, authorization: DESKTOP_USER_GRANTS });
-        const result = f.works.teams.handle(user, { kind: "create", request: { operationId: name,
+        const request = { operationId: name,
           title: name, goalDescription: "verify independent team dispatch", ownerBotId: `${name}:owner`,
           ownerResponsibility: "summarize original receipts", workspacePath: root, criteria: ["verify source evidence"],
-          members: [{ botId: `${name}:member`, responsibility: "read source", delegatedScope: ["workspace:read"] }] } });
+          members: [{ botId: `${name}:member`, responsibility: "read source", delegatedScope: ["workspace:read"] }] };
+        const saved = f.works.teams.handle(user, { kind: "save_template", request: { operationId: `saved:${name}`, name,
+          plan: { ownerBotId: request.ownerBotId, ownerResponsibility: request.ownerResponsibility, members: request.members } } });
+        assert(saved.ok && saved.template);
+        const result = f.works.teams.handle(user, { kind: "create", request: { ...request, templateId: saved.template.templateId } });
         assert(result.ok && result.work && result.team, JSON.stringify(result)); return { work: result.work, team: result.team };
       };
       const a = team("A"), firstTask = a.team.executions[0].taskId;
@@ -148,10 +152,15 @@ try {
     try {
       for (const suffix of ["owner", "one", "two", "three"]) new BotRegistry(f.db.connection).registerBot({
         botId: `parallel:${suffix}`, userId: LOCAL_USER_ID, displayName: suffix, authorization: DESKTOP_USER_GRANTS });
-      const result = f.works.teams.handle(user, { kind: "create", request: { operationId: "parallel-team",
+      const request = { operationId: "parallel-team",
         title: "parallel preparation", goalDescription: "read independent evidence", ownerBotId: "parallel:owner",
         ownerResponsibility: "summarize", workspacePath: root, criteria: ["verify source"], executionPolicy: "parallel", maxConcurrency: 2,
-        members: ["one", "two", "three"].map(id => ({ botId: `parallel:${id}`, responsibility: "read source", delegatedScope: ["workspace:read"] })) } });
+        members: ["one", "two", "three"].map(id => ({ botId: `parallel:${id}`, responsibility: "read source", delegatedScope: ["workspace:read"] })) };
+      const saved = f.works.teams.handle(user, { kind: "save_template", request: { operationId: "saved:parallel", name: "Parallel team",
+        plan: { ownerBotId: request.ownerBotId, ownerResponsibility: request.ownerResponsibility, members: request.members,
+          executionPolicy: "parallel", maxConcurrency: 2 } } });
+      assert(saved.ok && saved.template);
+      const result = f.works.teams.handle(user, { kind: "create", request: { ...request, templateId: saved.template.templateId } });
       assert(result.ok && result.work && result.team, JSON.stringify(result));
       const [a, b, c] = result.team.executions;
       const gateA = f.hold("prepare", a.taskId), gateB = f.hold("prepare", b.taskId), gateC = f.hold("prepare", c.taskId);

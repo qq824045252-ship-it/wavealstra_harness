@@ -104,7 +104,10 @@ function fixture() {
       workspacePath: workspace, ownerBotId: "recovery-owner", ownerResponsibility: "只读汇总成员结果",
       members: members.map(member => ({ ...member, responsibility: `职责 ${member.botId}`, delegatedScope: ["workspace:read", "workspace:write"] as Array<"workspace:read" | "workspace:write"> })),
       criteria: ["保留真实成果"], executionPolicy: parallel ? "parallel" as const : "sequential" as const, maxConcurrency: 3 };
-    return works.teams.handle(actor, { kind: "create", request });
+    const saved = works.teams.handle(actor, { kind: "save_template", request: { operationId: `saved:${name}`, name, plan: {
+      ownerBotId: request.ownerBotId, ownerResponsibility: request.ownerResponsibility, members: request.members } } });
+    assert(saved.ok && saved.template, JSON.stringify(saved));
+    return works.teams.handle(actor, { kind: "create", request: { ...request, templateId: saved.template.templateId } });
   };
   const team = (workId: string): WorkTeamDto => works.teams.get(workId)!;
   const bindings = (workId: string) => works.repo.listBindings(workId);

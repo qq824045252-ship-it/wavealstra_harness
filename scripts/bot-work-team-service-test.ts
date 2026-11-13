@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { createTeamWorkSchema } from "../src/shared/bot-work-team";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync, renameSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -63,7 +65,8 @@ function setup() {
     displayName: suffix, authorization: grants });
   const plan: WorkTeamPlan = { ownerBotId: `${name}-owner`, ownerResponsibility: "只读核对并统一汇总",
     members: ["a", "b"].map(suffix => ({ botId: `${name}-${suffix}`, responsibility: `独立检查 ${suffix}`, delegatedScope: ["workspace:read"] })) };
-  const request = { operationId: name, ...plan, title: name, goalDescription: "逐项检查输入", workspacePath: workspace,
+  const template = ok(works.teams.handle(user, { kind: "save_template", request: { operationId: `saved:${name}`, name, plan } })).template!;
+  const request = { templateId: template.templateId, operationId: name, ...plan, title: name, goalDescription: "逐项检查输入", workspacePath: workspace,
     criteria: ["有来源的团队成果并明确缺口"] };
   return { name, plan, request };
 }
@@ -82,9 +85,11 @@ async function verifyResultReplanning(): Promise<void> {
   const loopWorks = new WorkService(loopDb.connection, { bots: loopBots, isAuthority: () => true });
   const feedback = new WorkConversationFeedback({ db: loopDb.connection, works: loopWorks, userId: LOCAL_USER_ID, isAuthority: () => true });
   const source = feedback.messages.accept(LOCAL_USER_ID, { botId: "loop-owner", requestId: "loop-request", text: "核对两个来源并交付结果" });
+  const template = ok(loopWorks.teams.handle(user, { kind: "save_template", request: { operationId: "loop-template", name: "Loop team",
+    plan: { ownerBotId: "loop-owner", ownerResponsibility: "汇总", members: ["loop-a", "loop-b"].map(botId => ({ botId, responsibility: "核对", delegatedScope: [] })) } } })).template!;
   const created = loopWorks.transaction(() => {
     const result = ok(loopWorks.teams.createFromForeground({ kind: "bot", userId: LOCAL_USER_ID, botId: "loop-owner", host: "foreground", grants }, {
-    operationId: "loop-team", title: "核对两个来源", goalDescription: "核对两个来源并交付结果", criteria: ["两个来源均有核对结果"],
+    templateId: template.templateId, operationId: "loop-team", title: "核对两个来源", goalDescription: "核对两个来源并交付结果", criteria: ["两个来源均有核对结果"],
     workspacePath: workspace, conversationId: source.conversationId, sourceMessageId: source.userMessageId,
     taskAssignment: { ownerResponsibility: "汇总两份核对结果", members: [
             { botId: "loop-a", responsibility: "核对来源 A" }, { botId: "loop-b", responsibility: "核对来源 B" }] } }));
@@ -152,6 +157,9 @@ async function verifyResultReplanning(): Promise<void> {
 try {
   // User-only validated atomic admission; templates confer no authorization.
   const initial = setup();
+  const { templateId: _savedTeam, ...unownedRequest } = initial.request;
+  reject(works.teams.handle(user, { kind: "create", request: unownedRequest }), "team_required");
+  assert.equal(countWorks(), 0, "rejected unowned creation leaves no Work or executions");
   const emptyScopePlan = { ...initial.plan, members: initial.plan.members.map(member => ({ ...member, delegatedScope: [] })) };
   const noGrantTemplate = ok(works.teams.handle(user, { kind: "save_template", request: { operationId: "no-grant-template", name: "No retired grants", plan: emptyScopePlan } })).template!;
   assert(noGrantTemplate.members.every(member => member.delegatedScope.length === 0), "new Bots can create teams without retired grants");
@@ -161,7 +169,7 @@ try {
   reject(works.teams.handle(user, { kind: "create", request: { ...initial.request, workspacePath: "relative" } }), "invalid_workspace");
   reject(works.teams.handle(user, { kind: "create", request: { ...initial.request, actor: { kind: "user" } } }), "invalid_request");
   const foreign = bots.registerBot({ botId: "foreign", userId: "foreign-user", displayName: "foreign" });
-  reject(works.teams.handle(user, { kind: "create", request: { ...initial.request, members: [{ ...initial.plan.members[0], botId: foreign.botId }] } }), "unauthorized_actor");
+  reject(works.teams.handle(user, { kind: "create", request: { ...initial.request, members: [{ ...initial.plan.members[0], botId: foreign.botId }] } }), "invalid_team");
   assert.equal(countWorks(), 0);
   const template = ok(works.teams.handle(user, { kind: "save_template", request: { operationId: "template-one", name: "Audit", plan: initial.plan } })).template!;
   assert.equal(ok(works.teams.handle(user, { kind: "save_template", request: { operationId: "template-one", name: "Audit", plan: initial.plan } })).replayed, true);
@@ -524,6 +532,7 @@ try {
     plan: { ownerBotId: parallelRequest.ownerBotId, ownerResponsibility: parallelRequest.ownerResponsibility,
       members: parallelRequest.members, executionPolicy: "parallel", maxConcurrency: 2 } } })).template!;
   assert.equal(parallelTemplate.executionPolicy, "parallel");
+  parallelRequest.templateId = parallelTemplate.templateId;
   assert.deepEqual(parallelTemplate.members[2]!.dependsOnBotIds, [parallelRequest.members[0]!.botId]);
   const parallel = ok(works.teams.handle(user, { kind: "create", request: parallelRequest }));
   const parallelId = parallel.work!.workId;
@@ -586,6 +595,36 @@ try {
   assert.equal("budget" in works.getWork(debtId)!, false);
   for (const row of debt.team!.executions) assert.equal(submissions.filter(item => item.taskId === row.taskId).length, 1);
   console.log("Parallel team: bounded overlapping members, dependency snapshots, owner barrier and pause/resume passed");
+
+  // Seed the current persisted unowned shape produced before admission retirement.
+  // This is not a migration: execution identities and request hash remain durable.
+  const legacySetup = setup();
+  const legacy = ok(works.teams.handle(user, { kind: "create", request: legacySetup.request }));
+  const legacyId = legacy.work!.workId;
+  const { templateId: _legacyTemplate, ...legacyRequest } = legacySetup.request;
+  db.connection.prepare("DELETE FROM work_team_ownership WHERE work_id=?").run(legacyId);
+  db.connection.prepare("UPDATE work_teams SET request_hash=? WHERE work_id=?").run(
+    createHash("sha256").update(JSON.stringify(createTeamWorkSchema.parse(legacyRequest))).digest("hex"), legacyId);
+  const legacyTasks = legacy.team!.executions.map(item => item.taskId);
+  const beforeLegacyReplay = countWorks();
+  assert.equal(ok(works.teams.handle(user, { kind: "create", request: legacyRequest })).work!.workId, legacyId);
+  reject(works.teams.handle(user, { kind: "create", request: { ...legacyRequest, title: "different" } }), "idempotency_conflict");
+  reject(works.teams.handle(user, { kind: "create", request: { ...legacyRequest, operationId: "new-unowned" } }), "team_required");
+  assert.equal(countWorks(), beforeLegacyReplay);
+  assert(works.listQuery.query(LOCAL_USER_ID, { scope: { kind: "historical_teams" }, view: "all" }).works.some(item => item.workId === legacyId));
+  await flush(4);
+  assert.deepEqual(works.teams.get(legacyId)!.executions.map(item => item.taskId), legacyTasks);
+  assert(works.repo.listDeliverables(legacyId).length > 0, "old unowned work can still execute and retain results");
+  const legacyReopened = new WorkService(db.connection, { bots, isAuthority: () => true });
+  assert.equal(ok(legacyReopened.teams.handle(user, { kind: "get_by_operation", operationId: legacyRequest.operationId })).work!.workId, legacyId);
+  assert(legacyReopened.getDetailProjection(legacyId)!.deliverables.length > 0, "results remain accessible after service recreation");
+  const legacyExecutions = works.teams.get(legacyId)!.executions;
+  ok(works.teams.handle(user, { kind: "set_work_team", workId: legacyId, templateId: legacySetup.request.templateId }));
+  assert.deepEqual(works.teams.get(legacyId)!.executions, legacyExecutions, "assigning a formal home never recreates execution");
+  ok(works.teams.handle(user, { kind: "delete_template", templateId: legacySetup.request.templateId }));
+  assert(works.listQuery.query(LOCAL_USER_ID, { scope: { kind: "historical_teams" }, view: "all" }).works.some(item => item.workId === legacyId), "deleted formal teams retain accessible Work history");
+  assert(legacyReopened.getDetailProjection(legacyId)!.deliverables.length > 0);
+  console.log("PASS retired team admission: no new unowned Work, original replay, recovery, result access and deleted formal team history");
 
   // Authority loss is checked before writes; no baseline widening or model-claimed acceptance.
   const deniedSetup = setup(); authority = false;

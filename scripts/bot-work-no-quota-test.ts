@@ -98,7 +98,10 @@ try {
   assert.equal(works.repo.getBlocker(`budget:exhausted:${protectedWork.workId}`)?.details?.effectDisposition, "continue_without_replay");
   assert.equal(unwrap(works.closeWork(user, { operationId: "stop-protected", workId: protectedWork.workId, conclusion: "ended_unsuccessfully", closureSummary: "Unverified external effect remains diagnostic evidence" })).lifecycle, "closed");
   bots.registerBot({ userId: LOCAL_USER_ID, botId: "quota-team-member", displayName: "member", authorization: DESKTOP_USER_GRANTS });
-  const teamResult = works.teams.handle({ ...user, grants: { ...DESKTOP_USER_GRANTS, allowRedelegation: true } }, { kind: "create", request: {
+  const formalTemplate = works.teams.handle(user, { kind: "save_template", request: { operationId: "fixture-formal-team", name: "Formal fixture team",
+    plan: { ownerBotId: DEFAULT_BOT_ID, ownerResponsibility: "Summarize", members: [{ botId: "quota-team-member", responsibility: "Inspect", delegatedScope: ["workspace:read"] }] } } });
+  assert(formalTemplate.ok && formalTemplate.template);
+  const teamResult = works.teams.handle({ ...user, grants: { ...DESKTOP_USER_GRANTS, allowRedelegation: true } }, { kind: "create", request: { templateId: formalTemplate.template.templateId,
     operationId: "quota-team", title: "legacy team quota", goalDescription: "Read input", workspacePath: root, criteria: ["Report findings"],
     ownerBotId: DEFAULT_BOT_ID, ownerResponsibility: "Review findings", members: [{ botId: "quota-team-member", responsibility: "Read input", delegatedScope: ["workspace:read"] }],
   } });

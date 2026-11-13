@@ -430,7 +430,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
           teamId: options.teamId, conversationId, now: Date.now }, input);
       }).deferred());
     } }),
-  defineTool({ name: "work_team_templates", description: "查询当前 Bot 负责的已保存团队分工。同时返回当前工作目录可用的现有候选 Bot。需要多人协作时先查成员名字与职责；无模板也可从 availableBots 选择成员直接组队，无需用户先保存模板。",
+  defineTool({ name: "work_team_templates", description: "查询当前 Bot 负责的正式团队及成员分工。新团队事项必须选择已有正式团队；没有适合的团队时请用户先建立团队。availableBots 仅供已有事项调整剩余分工，不用于创建无归属事项。个人 Bot 之间委派使用 bot_collaborate 或 bot_organize，由接收方创建自己的 Work。",
     parameters: parameters(z.object({}).strict()), replay: "safe",
     execute: async (_args, api, context) => {
       z.object({}).strict().parse(_args);
@@ -443,7 +443,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
       const workspacePath = options.teamId ? works.teams.resolveWorkspace(userId, options.teamId) : options.botWorkspace?.(botId);
       return output({ templates, availableBots: workspacePath ? works.teams.foregroundCandidates(userId, botId, workspacePath) : [], workspacePath: workspacePath ?? null });
     } }),
-  defineTool({ name: "work_team_create", description: "创建并启动团队：先查 work_team_templates；可省略 templateId，提供 taskAssignment 从 availableBots 自主选择适合本次委托的成员和依赖，宿主默认有界并行。也可复用模板内成员和上限。负责人保持当前 Bot，权限仅来自已有范围，目录来自 Bot 设置。title/goalDescription/criteria 是执行规划，宿主独立保留用户原文与附件。用户要求执行即可开工，无需再次确认。不要另调用 work_create 重复派发。持续委托必须传 requestedOutcome=ongoing 和 mode=watch：周期观察给 watchRule.cronExpression；若现在就有可执行步骤、之后才需等待，传 startImmediately=true ；确实需要等待时再给 watchRule.nextWakeAt 或真实 eventSource 安排跟进，不能创建once后文字承诺持续。每轮重新观察由成员执行、负责人汇总，默认等首次检查。成功后可用 work_query_status 查询成员进度，work_pause/resume/cancel 控制已有团队。",
+  defineTool({ name: "work_team_create", description: "为已有正式团队创建并启动事项：先查 work_team_templates 并传 templateId；独立团队会话由宿主绑定当前团队。taskAssignment 只能选择所选团队已有成员和依赖，也可沿用团队分工及上限。负责人保持当前 Bot，目录来自团队设置。没有正式团队时不能创建，先请用户建立团队；个人 Bot 委派使用 bot_collaborate 或 bot_organize。title/goalDescription/criteria 是执行规划，宿主独立保留用户原文与附件。用户要求执行即可开工，无需再次确认。不要另调用 work_create 重复派发。持续委托必须传 requestedOutcome=ongoing 和 mode=watch：周期观察给 watchRule.cronExpression；若现在就有可执行步骤、之后才需等待，传 startImmediately=true ；确实需要等待时再给 watchRule.nextWakeAt 或真实 eventSource 安排跟进，不能创建once后文字承诺持续。每轮重新观察由成员执行、负责人汇总，默认等首次检查。成功后可用 work_query_status 查询成员进度，work_pause/resume/cancel 控制已有事项。",
     parameters: parameters(teamCreate), replay: "safe",
     execute: async (args, api, context) => {
       const { requestedOutcome, startImmediately, sourceMessageIds, ...input } = teamCreate.parse(args);
@@ -455,17 +455,20 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
       if (input.watchRule?.eventSource) throw new Error("团队事件订阅暂不支持，请创建个人事项或明确使用轮询");
       if (options.teamId && input.templateId && input.templateId !== options.teamId) throw new Error("不能向其他团队派发任务");
       if (options.teamId) input.templateId = options.teamId;
+      const operationId = `bot:${conversationId}:${options.requestNamespace ? `request:${options.requestNamespace}:` : ""}team:${api.taskId}`;
       const requestId = await botForegroundRequest(api, api.callId, context);
       const result = works.transaction(() => {
         assertActive();
         const source = receipt(requestId);
         if (messages.peers.origin(source.user_message_id)) throw new Error("个人 Bot 协作不创建临时团队；使用接收 Bot 自己的个人 Work");
         messages.validateWorkUserInput(source, sourceMessageIds);
-        const workspacePath = input.templateId ? works.teams.resolveWorkspace(userId, input.templateId) : options.botWorkspace?.(botId, true);
+        const previous = db.prepare("SELECT work_id FROM work_teams WHERE user_id=? AND operation_id=?").get(userId, operationId) as { work_id: string } | undefined;
+        if (!input.templateId && !previous) throw new Error("请先创建或选择正式团队；个人 Bot 委派使用接收方自己的 Work");
+        const workspacePath = previous ? works.getWork(previous.work_id)?.workspacePath : works.teams.resolveWorkspace(userId, input.templateId!);
         if (!workspacePath) throw new Error("当前 Bot 没有可用工作目录，请在 Bot 设置中指定文件夹");
         const result = works.teams.createFromForeground(actor(), { ...input,
           ...(input.mode === "watch" ? { watchRule: { ...input.watchRule, requestedOutcome } } : {}),
-          operationId: `bot:${conversationId}:${options.requestNamespace ? `request:${options.requestNamespace}:` : ""}team:${api.taskId}`, workspacePath, conversationId, sourceMessageId: source.user_message_id });
+          operationId, workspacePath, conversationId, sourceMessageId: source.user_message_id });
         if (result.ok && result.work) {
           if (startImmediately && result.work.mode === "watch" && !result.replayed) {
             works.teams.requestImmediateWatch(result.work);

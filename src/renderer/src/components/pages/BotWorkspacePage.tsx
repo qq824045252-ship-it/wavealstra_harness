@@ -356,7 +356,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
         openWork(workId);
         if (source?.scope === scopeKey) returnTarget.current = { ...source, view };
       }} />}
-    {historicalTeamWork && <section className="bot-conversation" aria-label="历史团队事项">
+    {historicalTeamWork && <section className="bot-conversation" aria-label="Work 历史">
       <HistoricalTeamWorkDetail snapshot={historicalTeamWork} onBack={returnFromHistory} />
     </section>}
     <section ref={sourceViewRef} hidden={Boolean(historicalTeamWork || collaborationRoute)} className="bot-conversation" aria-label="Bot 对话">

@@ -159,8 +159,13 @@ function nativeClick(button: HTMLButtonElement) {
   if (accepted && button.type === "submit") button.closest("form")?.dispatchEvent(new testWindow.Event("submit", { bubbles: true, cancelable: true }));
 }
 async function submit() {
+  if (submitButton().disabled && container.querySelector("#team-template-name") && !values.has("mybuddy.pending-team-creation")) await saveFixtureTeam();
   assert.equal(submitButton().disabled, false, "valid form must permit submission");
   await act(async () => nativeClick(submitButton()));
+}
+async function saveFixtureTeam() {
+  await edit(container.querySelector<HTMLInputElement>("#team-template-name")!, "Fixture team");
+  await act(async () => nativeClick([...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "保存团队模板")!));
 }
 function closeButton() {
   const node = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => /关闭/.test(button.getAttribute("aria-label") ?? button.textContent ?? ""));
@@ -188,7 +193,10 @@ async function main() {
   try {
     await check("form requires concrete goal, workspace, member responsibility and criteria", async () => {
       await reset(); assert.equal(submitButton().disabled, true); assert.deepEqual(requests, []);
-      await fill(); assert.equal(submitButton().disabled, false);
+      await fill(); assert.equal(submitButton().disabled, true, "unsaved composition cannot create a Work");
+      await act(async () => form().dispatchEvent(new testWindow.Event("submit", { bubbles: true, cancelable: true })));
+      assert.deepEqual(requests, [], "native submit cannot bypass the team requirement");
+      await saveFixtureTeam(); assert.equal(submitButton().disabled, false);
       await edit(container.querySelector<HTMLTextAreaElement>(`#team-role-${other.botId}`)!, ""); assert.equal(submitButton().disabled, true);
     });
     await check("explicit submit carries compatibility scopes without permission UI and does not send foreground messages", async () => {
@@ -196,6 +204,7 @@ async function main() {
       assert.deepEqual(requests[0].members[0].delegatedScope, ["workspace:read", "workspace:write"]);
       assert.doesNotMatch(container.textContent!, /已有授权|读取权限/);
       assert.equal(requests[0].members[0].botId, other.botId); assert.equal(requests[0].ownerBotId, mybuddy.botId);
+      assert.equal(requests[0].templateId, "template-a");
       assert.deepEqual(forbiddenCalls, []); assert.equal(store.getState().botDraft, "MyBuddy draft");
       await act(async () => form().dispatchEvent(new testWindow.Event("submit", { bubbles: true, cancelable: true })));
       assert.equal(requests.length, 1, "repeated submit cannot dispatch twice");
@@ -231,6 +240,19 @@ async function main() {
       assert.equal(requests.length, 1); assert.equal(requests[0].operationId, original.operationId);
       assert.equal("budgetTokens" in requests[0], false); await succeed();
     });
+    for (const found of [true, false]) await check(`unowned pending operation is lookup-only: ${found ? "found" : "missing"}`, async () => {
+      await reset(); await fill(); await submit(); const original = requests[0]; const existing = creationReceipt();
+      await act(async () => reply.reject(new Error("uncertain"))); await unmount();
+      const { templateId: _team, ...unowned } = original;
+      values.set("mybuddy.pending-team-creation", JSON.stringify(unowned)); hostTemplates = [];
+      requests = []; await mount(); await submit();
+      assert.deepEqual(lookupRequests, [original.operationId]); assert.deepEqual(requests, []);
+      await act(async () => lookupReply.resolve(found ? { ...existing, replayed: true } : { ok: false, code: "not_found", message: "missing" }));
+      assert.deepEqual(requests, [], "unowned pending request never dispatches a new Work");
+      assert.equal(values.has("mybuddy.pending-team-creation"), false);
+      if (found) assert.equal(openedTeamWorks.at(-1), "new-team");
+      else { assert.equal(submitButton().disabled, true); assert.match(container.textContent!, /正式团队/); }
+    });
     await check("closing before success never steals newer navigation", async () => {
       await reset(); await fill(); await submit(); await close();
       await act(async () => store.setState({ activeBotId: other.botId, selectedWorkId: null }));
@@ -248,7 +270,7 @@ async function main() {
       assert.equal(store.getState().selectedWorkId, work.workId);
     });
     await check("storage failure prevents dispatch and preserves editable draft", async () => {
-      await reset(); await fill(); const save = storage.setItem; storage.setItem = () => { throw Error("quota"); };
+      await reset(); await fill(); await saveFixtureTeam(); const save = storage.setItem; storage.setItem = () => { throw Error("quota"); };
       try { await submit(); } finally { storage.setItem = save; }
       assert.equal(requests.length, 0); assert.match(container.textContent!, /无法保存请求/);
     });
@@ -264,7 +286,7 @@ async function main() {
     });
     await check("a confirmed team can be followed by a distinct new team", async () => {
       await reset(); await fill(); await submit(); await succeed(); await act(async () => openDialog!());
-      const again = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "再建一队")!;
+      const again = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "再建事项")!;
       await act(async () => nativeClick(again));
       assert.equal(container.querySelector<HTMLInputElement>("#team-title")!.value, ""); assert.equal(submitButton().disabled, true);
       for (const [id, value] of Object.entries({ "team-title": "Second project", "team-goal": "Second review", "team-criteria": "Sources checked" })) await edit(container.querySelector<HTMLInputElement | HTMLTextAreaElement>(`#${id}`)!, value);
@@ -313,6 +335,7 @@ async function main() {
     });
     await check("legacy revoked grants never block team member selection", async () => {
       await reset(); await fill();
+      await saveFixtureTeam();
       const revoked = { ...other, authorization: { ...other.authorization, allowedScopes: [] } };
       await act(async () => store.setState({ botIdentities: [mybuddy, revoked] }));
       assert.equal(submitButton().disabled, false);

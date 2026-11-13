@@ -155,6 +155,9 @@ try {
     members: [{ botId: ids[1]!, responsibility: "READ_ALPHA_ASSIGNMENT", delegatedScope: ["workspace:read"] },
       { botId: ids[2]!, responsibility: "READ_BETA_ASSIGNMENT", delegatedScope: ["workspace:read"] }], criteria: ["Both source contents and denied actions are correctly reported"] };
   const actor: WorkActor = { kind: "user", userId: LOCAL_USER_ID, grants: { ...DESKTOP_USER_GRANTS, allowRedelegation: true } };
+  const saved = works.teams.handle(actor, { kind: "save_template", request: { operationId: "native-team", name: "Native team", plan: {
+    ownerBotId: request.ownerBotId, ownerResponsibility: request.ownerResponsibility, members: request.members } } });
+  assert(saved.ok && saved.template, JSON.stringify(saved)); request.templateId = saved.template.templateId;
   const result = works.teams.handle(actor, { kind: "create", request }); assert(result.ok && result.work, JSON.stringify(result));
   const workId = result.work.workId;
   await until(() => works.teams.get(workId)?.executions[0]?.status === "completed", "first member native settlement");
@@ -228,10 +231,14 @@ try {
   // Real Durable failure/recovery receipts, not a FakeHost projection: a prior
   // member's actual read succeeds, the next retains a finding then fails twice,
   // and the owner summarizes without ever starting the blocked dependency.
-  const failedChain = works.teams.handle(actor, { kind: "create", request: { ...request, operationId: randomUUID(),
+  const failedRequest = { ...request, operationId: randomUUID(),
     title: "Native exhausted chain", ownerBotId: ids[3]!, ownerResponsibility: "RECOVERY_SUMMARY_ASSIGNMENT",
     members: [request.members[0]!, { botId: ids[2]!, responsibility: "FAIL_AFTER_SOURCE_ASSIGNMENT", delegatedScope: ["workspace:read"] },
-      { botId: ids[0]!, responsibility: "MUST_NOT_START_ASSIGNMENT", delegatedScope: ["workspace:read"] }] } });
+      { botId: ids[0]!, responsibility: "MUST_NOT_START_ASSIGNMENT", delegatedScope: ["workspace:read"] }] };
+  const failedTemplate = works.teams.handle(actor, { kind: "save_template", request: { operationId: "native-failure-template", name: "Failure recovery team",
+    plan: { ownerBotId: failedRequest.ownerBotId, ownerResponsibility: failedRequest.ownerResponsibility, members: failedRequest.members } } });
+  assert(failedTemplate.ok && failedTemplate.template);
+  const failedChain = works.teams.handle(actor, { kind: "create", request: { ...failedRequest, templateId: failedTemplate.template.templateId } });
   assert(failedChain.ok && failedChain.work, JSON.stringify(failedChain));
   const failedId = failedChain.work.workId;
   await until(() => works.teams.get(failedId)?.executions.at(-1)?.status === "completed", "native owner accounts for terminal failed chain");

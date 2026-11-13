@@ -56,7 +56,8 @@ function setup() {
     displayName: suffix, authorization: grants });
   const plan: WorkTeamPlan = { ownerBotId: `${name}-owner`, ownerResponsibility: "只读核对并统一汇总",
     members: ["a", "b"].map(suffix => ({ botId: `${name}-${suffix}`, responsibility: `独立检查 ${suffix}`, delegatedScope: ["workspace:read"] })) };
-  const request = { operationId: name, ...plan, title: name, goalDescription: "逐项检查输入", workspacePath: workspace,
+  const template = ok(works.teams.handle(user, { kind: "save_template", request: { operationId: `saved:${name}`, name, plan } })).template!;
+  const request = { templateId: template.templateId, operationId: name, ...plan, title: name, goalDescription: "逐项检查输入", workspacePath: workspace,
     criteria: ["有来源的团队成果并明确缺口"] };
   return { name, plan, request };
 }

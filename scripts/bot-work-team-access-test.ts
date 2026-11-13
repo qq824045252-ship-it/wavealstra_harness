@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { createTeamWorkSchema } from "../src/shared/bot-work-team";
 import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -104,20 +106,18 @@ try {
       { botId: "member", responsibility: "核对乙", dependsOnBotIds: ["outsider"] }] } };
   const defaultWorkspace = settings.get("owner").effectiveWorkspacePath;
   assert(!existsSync(defaultWorkspace), "listing templates/candidates must not create the unused Bot directory");
-  const free = await invokeOwner("work_team_create", freeRequest, "free-team");
-  assert(free.ok, JSON.stringify(free));
-  assert(existsSync(defaultWorkspace), "first free team dispatch creates the host-owned default directory");
-  assert.equal(free.work.workspacePath, defaultWorkspace);
-  assert.equal(free.work.sourceMessageId, ownerInput.userMessageId);
-  assert.equal(free.team.ownerBotId, "owner");
-  assert.deepEqual(free.team.members.map((member: { delegatedScope: string[] }) => member.delegatedScope), [["workspace:read", "workspace:write"], ["workspace:read", "workspace:write"]]);
-  assert.equal((await invokeOwner("work_team_templates", {})).templates.length, 1, "free team does not save a template");
-  assert.equal((await invokeOwner("work_team_create", freeRequest, "free-team")).work.workId, free.work.workId);
-  assert.equal((await invokeOwner("work_team_create", { mode: "once", requestedOutcome: "one_time", title: "missing", goalDescription: "missing", criteria: ["check"] }, "missing-plan")).ok, false);
+  const beforeUnowned = db.connection.prepare("SELECT COUNT(*) AS n FROM works").get();
+  await assert.rejects(invokeOwner("work_team_create", freeRequest, "free-team"), /正式团队/);
+  assert(!existsSync(defaultWorkspace), "rejected unowned creation does not create the Bot directory");
+  assert.deepEqual(db.connection.prepare("SELECT COUNT(*) AS n FROM works").get(), beforeUnowned);
+  await assert.rejects(invokeOwner("work_team_create", { mode: "once", requestedOutcome: "one_time", title: "missing", goalDescription: "missing", criteria: ["check"] }, "missing-plan"), /正式团队/);
+  const directUnowned = works.teams.createFromForeground({ kind: "bot", userId: LOCAL_USER_ID, botId: "owner", host: "foreground", grants }, {
+    ...freeRequest, operationId: "direct-unowned", workspacePath: root, conversationId: ownerInput.conversationId, sourceMessageId: ownerInput.userMessageId });
+  assert(!directUnowned.ok && directUnowned.code === "team_required", "direct host API also rejects new unowned teams");
   assert.equal(works.teams.createFromForeground({ kind: "bot", userId: LOCAL_USER_ID, botId: "owner", host: "foreground", grants }, {
     ...freeRequest, operationId: "forged-source", workspacePath: root, conversationId: ownerInput.conversationId, sourceMessageId: "missing-source" }).ok, false);
   bots.registerBot({ botId: "foreign", userId: "another-user", displayName: "foreign", authorization: minimumAuthorization() });
-  assert.equal((await invokeOwner("work_team_create", { ...freeRequest, taskAssignment: { ...freeRequest.taskAssignment,
+  assert.equal((await invokeOwner("work_team_create", { ...request, taskAssignment: { ...freeRequest.taskAssignment,
     members: [{ botId: "foreign", responsibility: "读取" }] } }, "foreign-team")).ok, false);
   const flexibleTemplate = works.teams.handle(user, { kind: "save_template", request: { operationId: "flexible-team", name: "多人目录团队",
     plan: { ownerBotId: "owner", ownerResponsibility: "汇总", executionPolicy: "parallel", maxConcurrency: 2,
@@ -147,13 +147,40 @@ try {
     members: [{ ...taskAssignment.members[0], delegatedScope: ["workspace:write"] }] } }, "expanded-scope"), /unrecognized|Unrecognized/);
   assert.deepEqual(db.connection.prepare("SELECT COUNT(*) AS n FROM work_teams").get(), countBeforeInvalid);
   assert.deepEqual(bots.getBot("owner")?.authorization, minimumAuthorization());
+  // Current-format persisted unowned operation: only the original request can replay.
+  const legacyPlan = { ownerBotId: "owner", ownerResponsibility: freeRequest.taskAssignment.ownerResponsibility,
+    members: freeRequest.taskAssignment.members.map(member => ({ ...member, delegatedScope: ["workspace:read", "workspace:write"] })),
+    executionPolicy: "parallel", maxConcurrency: 2 };
+  const legacyTemplate = works.teams.handle(user, { kind: "save_template", request: { operationId: "legacy-seed-template", name: "Seed team", plan: legacyPlan } });
+  assert(legacyTemplate.ok && legacyTemplate.template);
+  const { requestedOutcome: _outcome, taskAssignment: _assignment, ...legacyInput } = freeRequest;
+  const legacyRequest = createTeamWorkSchema.parse({ ...legacyInput, ...legacyPlan,
+    operationId: `bot:${ownerInput.conversationId}:team:legacy-team`, workspacePath: root, conversationId: ownerInput.conversationId });
+  const legacySeed = works.teams.handle(user, { kind: "create", request: { ...legacyRequest, templateId: legacyTemplate.template.templateId } });
+  assert(legacySeed.ok && legacySeed.work);
+  db.connection.prepare("DELETE FROM work_team_ownership WHERE work_id=?").run(legacySeed.work.workId);
+  db.connection.prepare("UPDATE work_teams SET request_hash=? WHERE work_id=?").run(
+    createHash("sha256").update(JSON.stringify(legacyRequest)).digest("hex"), legacySeed.work.workId);
+  const beforeLegacy = db.connection.prepare("SELECT COUNT(*) AS n FROM works").get();
+  const replayedLegacy = await invokeOwner("work_team_create", freeRequest, "legacy-team");
+  assert(replayedLegacy.ok && replayedLegacy.replayed && replayedLegacy.work.workId === legacySeed.work.workId);
+  const conflictingLegacy = await invokeOwner("work_team_create", { ...freeRequest, title: "changed request" }, "legacy-team");
+  assert(!conflictingLegacy.ok && conflictingLegacy.code === "idempotency_conflict");
+  db.connection.prepare("UPDATE bots SET status='disabled' WHERE bot_id='outsider'").run();
+  const disabledLegacy = await invokeOwner("work_team_create", freeRequest, "legacy-team");
+  assert(!disabledLegacy.ok, "unavailable member is never silently replaced on a legacy replay");
+  const lookupLegacy = works.teams.handle(user, { kind: "get_by_operation", operationId: legacyRequest.operationId });
+  assert(lookupLegacy.ok && lookupLegacy.work!.workId === legacySeed.work.workId, "historical results remain queryable without member availability");
+  assert.deepEqual(db.connection.prepare("SELECT COUNT(*) AS n FROM works").get(), beforeLegacy);
+  db.connection.prepare("UPDATE bots SET status='active' WHERE bot_id='outsider'").run();
+
   // A user-selected directory must not silently fall back to the managed default.
   const missingCustom = join(root, "removed-user-folder");
   const beforeMissing = db.connection.prepare("SELECT COUNT(*) AS n FROM work_teams").get();
   const beforeSettings = settings.get("owner");
   db.connection.prepare("INSERT INTO bot_execution_settings VALUES (?,?,?)").run("owner", 1,
     JSON.stringify({ ...beforeSettings, revision: 1, workspacePath: missingCustom, effectiveWorkspacePath: missingCustom }));
-  await assert.rejects(invokeOwner("work_team_create", freeRequest, "missing-folder-team"), /重新选择文件夹.*未创建团队/);
+  await assert.rejects(invokeOwner("work_team_create", freeRequest, "missing-folder-team"), /正式团队/);
   assert(!existsSync(missingCustom), "missing custom directories are never recreated or replaced");
   assert.deepEqual(db.connection.prepare("SELECT COUNT(*) AS n FROM work_teams").get(), beforeMissing);
   db.connection.prepare("DELETE FROM bot_execution_settings WHERE bot_id=?").run("owner");

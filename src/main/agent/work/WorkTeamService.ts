@@ -192,8 +192,12 @@ export class WorkTeamService {
       const { templateId: _id, name: _name, createdAt: _created, ...saved } = template;
       plan = saved;
     } else {
+      // Only an already persisted operation may replay the retired unowned shape.
+      // Keep its original hash check below; this path must never admit new work.
+      if (!this.db.prepare("SELECT 1 FROM work_teams WHERE user_id=? AND operation_id=?").get(actor.userId, input.operationId))
+        return { ok: false, code: "team_required", message: "请先建立正式团队，再向该团队派发事项；个人 Bot 协作使用接收方自己的 Work" };
       const parsed = workTeamTaskAssignmentSchema.safeParse(input.taskAssignment);
-      if (!parsed.success) return { ok: false, code: "invalid_request", message: "自由组队需要本次成员分工" };
+      if (!parsed.success) return { ok: false, code: "invalid_request", message: "核对原操作需要原成员分工" };
       const candidates = this.foregroundCandidates(actor.userId, actor.botId, input.workspacePath);
       const selected = parsed.data.members.map(member => {
         const candidate = candidates.find(item => item.botId === member.botId);
@@ -403,17 +407,18 @@ export class WorkTeamService {
           if (previous.request_hash !== digest) throw new TeamError("idempotency_conflict", "操作标识已绑定不同的组队要求");
           return { ok: true, operationId: input.operationId, work: this.works.getWork(previous.work_id), team: this.get(previous.work_id), replayed: true };
         }
+        if (!input.templateId) throw new TeamError("team_required", "新事项必须归属已建立的正式团队，请先创建或选择团队");
         const plan = workTeamPlanSchema.parse({ ownerBotId: input.ownerBotId, ownerResponsibility: input.ownerResponsibility, members: input.members, executionPolicy: input.executionPolicy, maxConcurrency: input.maxConcurrency });
-        const owningTeam = input.templateId ? this.templates(actor.userId).find(team => team.templateId === input.templateId) : undefined;
-        if (input.templateId && !owningTeam) throw new TeamError("not_found", "该团队不存在或已删除");
-        if (owningTeam && (owningTeam.ownerBotId !== plan.ownerBotId || plan.members.some(member => !owningTeam.members.some(saved => saved.botId === member.botId))))
+        const owningTeam = this.templates(actor.userId).find(team => team.templateId === input.templateId);
+        if (!owningTeam) throw new TeamError("not_found", "该团队不存在或已删除");
+        if (owningTeam.ownerBotId !== plan.ownerBotId || plan.members.some(member => !owningTeam.members.some(saved => saved.botId === member.botId)))
           throw new TeamError("invalid_team", "任务负责人和成员必须属于所选团队");
         this.validatePlan(actor.userId, plan);
         if (!isAbsolute(input.workspacePath)) throw new TeamError("invalid_workspace", "工作区必须是绝对路径");
         let workspacePath: string;
         try { workspacePath = realpathSync(input.workspacePath); if (!statSync(workspacePath).isDirectory()) throw Error(); }
         catch { throw new TeamError("invalid_workspace", "工作区必须是当前可访问的目录"); }
-        const conversationId = !sourceMessageId && owningTeam
+        const conversationId = !sourceMessageId
           ? ensureTeamConversation(this.db, actor.userId, input.ownerBotId, owningTeam.templateId) : input.conversationId;
         const now = this.now();
         const created = this.works.createWork(actor, { operationId: `team:${hash([actor.userId, input.operationId])}`, title: input.title,
@@ -429,7 +434,7 @@ export class WorkTeamService {
         const workId = created.work.workId;
         this.db.prepare("INSERT INTO work_teams(work_id,user_id,operation_id,request_hash,plan_json,intent_revision,input_snapshot_id,created_at) VALUES (?,?,?,?,?,?,?,?)")
           .run(workId, actor.userId, input.operationId, digest, writeTeamPlan(plan, 1), created.work.intentRevision, created.work.inputSnapshotId, now);
-        if (owningTeam) this.db.prepare("INSERT INTO work_team_ownership(work_id,team_id,team_name) VALUES (?,?,?)")
+        this.db.prepare("INSERT INTO work_team_ownership(work_id,team_id,team_name) VALUES (?,?,?)")
           .run(workId, owningTeam.templateId, owningTeam.name);
         const workspaceIdentity = fileResourceIdentity(workspacePath);
         if (!workspaceIdentity.entity) throw new TeamError("invalid_workspace", "工作区缺少可核验的目录身份");

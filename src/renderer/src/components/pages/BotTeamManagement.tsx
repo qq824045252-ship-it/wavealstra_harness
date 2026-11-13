@@ -35,7 +35,7 @@ export function BotTeamManagement({ team, work, onChanged }: {
   return <section className="bot-team-management" aria-label="团队与事项管理">
     {work && <section>
       <h3>管理事项：{work.title}</h3>
-      <p>当前归属：{work.team?.teamName ?? "临时团队"}。移动只改变归属位置，原成员、已执行步骤、成果和工作目录不变，不会重新执行。</p>
+      <p>当前归属：{work.team?.teamName ?? "未归属现有团队（历史事项）"}。移动只改变归属位置，原成员、已执行步骤、成果和工作目录不变，不会重新执行。</p>
       <label>移到团队<select aria-label="事项目标团队" value={target} disabled={busy} onChange={e => setTarget(e.target.value)}>
         <option value="">选择目标团队</option>{teams.filter(item => !item.deletedAt && item.templateId !== work.team?.teamId).map(item => <option key={item.templateId} value={item.templateId}>{item.name}</option>)}
       </select></label>
@@ -46,7 +46,7 @@ export function BotTeamManagement({ team, work, onChanged }: {
     </section>}
     {team && <section>
       <h3>管理团队：{team.name}</h3>
-      <p>删除团队只将团队入口移到回收站。成员 Bot 不删除，已创建事项继续保留在“临时与历史团队事项”，不会停止或重跑。</p>
+      <p>删除团队只将团队入口移到回收站。成员 Bot 不删除，已创建事项继续保留在“Work 历史”，不会停止或重跑。</p>
       <button type="button" disabled={busy} onClick={() => setConfirm("team")}>删除此团队</button>
     </section>}
     {confirm && <div role="alert" className="bot-team-management-confirm">

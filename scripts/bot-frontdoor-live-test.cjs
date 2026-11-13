@@ -880,7 +880,9 @@ const outputPlugin={name:'isolated-node-cache-write',setup(build){build.onEnd(re
       const settings = (await evaluate(`window.api.botWork.getSettings('${botId}')`)).settings;
       assert.equal(settings.workspacePath, '');
       assert(!fs.existsSync(settings.effectiveWorkspacePath), 'fresh Bot managed directory must not exist before dispatch');
-      await send('给学习搭子派一个任务：执行 pwd 查询实际工作目录，报告真实工具返回的绝对路径。请从现有 Bot 自由组队，只让学习搭子执行，你负责汇总；不要保存团队模板，不要创建普通独立 Work。现在执行，权限只读，不修改文件。');
+      const defaultTeam = await evaluate(`window.api.botWork.teamControl(${JSON.stringify({kind:'save_template',request:{operationId:'default-workspace-template',name:'默认目录团队',plan:{ownerBotId:botId,ownerResponsibility:'核对并汇总实际目录',members:[{botId:created.bot.botId,responsibility:'执行 pwd 并报告真实路径',delegatedScope:['workspace:read']}]}}})})`);
+      assert(defaultTeam.ok && defaultTeam.template, JSON.stringify(defaultTeam));
+      await send('请使用已保存的默认目录团队，给学习搭子派一个任务：执行 pwd 查询团队实际工作目录，报告真实工具返回的绝对路径。只让学习搭子执行，你负责汇总；不要创建普通独立 Work。现在执行，权限只读，不修改文件。');
       await foregroundDone(0);
       await until(async () => {
         const works = await evaluate('window.api.botWork.listWorks(true)');
@@ -894,11 +896,13 @@ const outputPlugin={name:'isolated-node-cache-write',setup(build){build.onEnd(re
       const stored = sqlite.prepare('SELECT workspace_path FROM works WHERE work_id=?').get(work.workId);
       const executions = sqlite.prepare('SELECT t.cwd FROM tasks t JOIN work_team_executions e ON e.task_id=t.id WHERE e.work_id=?').all(work.workId);
       sqlite.close();
-      assert.equal(stored.workspace_path, settings.effectiveWorkspacePath);
+      assert.equal(path.dirname(stored.workspace_path), path.join(agentDir, "team-workspaces"));
+      assert(!fs.existsSync(settings.effectiveWorkspacePath), "formal team dispatch does not create an unused personal directory");
       assert(executions.length === 2 && executions.every(e => e.cwd === stored.workspace_path));
       assert(fs.statSync(stored.workspace_path).isDirectory());
       assert.equal(work.team.executions.length, 2);
-      assert.equal((await evaluate(`window.api.botWork.teamControl({kind:'list_templates'})`)).templates.length, 0);
+      assert.equal((await evaluate(`window.api.botWork.teamControl({kind:'list_templates'})`)).templates.length, 1);
+      assert.equal(work.team.teamId, defaultTeam.template.templateId);
       assert(requests.some(r => r.messages?.some(m => m.tool_calls?.some(c => c.function?.name === 'work_team_create'))));
       assert(requests.some(r => r.messages?.some(m => m.tool_calls?.some(c => c.function?.name === 'bash' && JSON.parse(c.function.arguments).command === 'pwd'))), 'member invokes real host-backed readonly pwd');
       await until(async () => (await history()).messages.some(m => m.workFeedback?.workId === work.workId && m.workFeedback?.report), 'team result returns to original Bot conversation');
@@ -906,7 +910,7 @@ const outputPlugin={name:'isolated-node-cache-write',setup(build){build.onEnd(re
       assert(!report.history.messages.some(m => m.role === 'assistant' && m.text.includes('工作区必须是当前可访问')));
       const shot = await rpc('Page.captureScreenshot', {format:'png',captureBeyondViewport:false});
       fs.writeFileSync(path.join(out,'team-default-workspace.png'),Buffer.from(shot.data,'base64'));
-      report.checks.push('fresh Bot without configured folder: real model chooses existing peer, managed folder prepared at dispatch, real native directory read, owner summary returned without fallback or settings prompt');
+      report.checks.push('formal team without configured folder: real model chooses existing team, dedicated managed folder prepared at dispatch, real native directory read, owner summary returned without fallback or settings prompt');
     } else if (teamScenario) {
       const workspace = path.join(home, 'team-workspace'); fs.mkdirSync(workspace);
       fs.writeFileSync(path.join(workspace, 'alpha.txt'), 'ALPHA-31415\n');
@@ -924,9 +928,9 @@ const outputPlugin={name:'isolated-node-cache-write',setup(build){build.onEnd(re
         const unavailable=await evaluate(`window.api.botWork.saveSettings(${JSON.stringify({botId:members[1],expectedRevision:memberSettings.revision,workspacePath:workspace,modelId:'fixture/controlled-unavailable',expertId:'',skillIds:[],mcpIds:[],connectorIds:[]})})`);
         assert(unavailable.ok,JSON.stringify(unavailable));
       }
-      const template = teamFreeScenario ? {ok:true} : await evaluate(`window.api.botWork.teamControl(${JSON.stringify({kind:'save_template',request:{operationId:'live-template',name:'文件双人核对',plan:{ownerBotId:botId,ownerResponsibility:'汇总两位成员各自读到的文件原文，清楚标明文件名，不推算内容',executionPolicy:'parallel',maxConcurrency:2,members:members.map((id,index)=>({botId:id,responsibility:teamPlanningScenario?'通用文件整理，等待本次任务分工':index===2?'仅核对乙读取员的真实 beta.txt 结果，若前置失败或缺失就如实说明无法核对，不推算、不造文件、不写盘':`使用真实 read 工具读取 ${path.join(workspace,index===0?'alpha.txt':'beta.txt')}，只报告该文件原文；不存在必须报告失败，不替代、不创建文件、不写盘`,delegatedScope:['workspace:read'],...(index===2?{dependsOnBotIds:[members[1]]}:{})}))}}})})`);
+      const template = await evaluate(`window.api.botWork.teamControl(${JSON.stringify({kind:'save_template',request:{operationId:'live-template',name:'文件双人核对',plan:{workspacePath:workspace,ownerBotId:botId,ownerResponsibility:'汇总两位成员各自读到的文件原文，清楚标明文件名，不推算内容',executionPolicy:'parallel',maxConcurrency:2,members:members.map((id,index)=>({botId:id,responsibility:teamPlanningScenario?'通用文件整理，等待本次任务分工':index===2?'仅核对乙读取员的真实 beta.txt 结果，若前置失败或缺失就如实说明无法核对，不推算、不造文件、不写盘':`使用真实 read 工具读取 ${path.join(workspace,index===0?'alpha.txt':'beta.txt')}，只报告该文件原文；不存在必须报告失败，不替代、不创建文件、不写盘`,delegatedScope:['workspace:read'],...(index===2?{dependsOnBotIds:[members[1]]}:{})}))}}})})`);
       assert(template.ok, JSON.stringify(template));
-      await send((teamFreeScenario ? '从现有 Bot 自主挑选适合文件读取和交叉核对的两位成员组队，不使用或保存任何团队模板，不安排图片设计。先由读取成员读取 beta.txt，再由核对成员等前者完成后读取 alpha.txt 并核对 beta 原文，负责人汇总结果。' : '')+(teamPlanningScenario && !teamFreeScenario ? '本次请重新安排分工：甲读取员读取 beta.txt，乙读取员等甲完成后读取 alpha.txt 并核对甲的 beta 原文；负责人汇总两者。本次分工不要保存覆盖模板。' : '')+(teamFreeScenario ? '请直接开始，读取原文，不创建普通独立 Work，不猜测内容。' : '请使用已保存的“文件双人核对”团队，现在读取 alpha.txt、beta.txt，分别报告真实文件内容并汇总。不存在的文件必须标明失败，不能替代或创建；依赖缺失文件的分工说明无法完成。不要创建普通独立 Work，不需要再次确认，不能猜测文件内容。'));
+      await send((teamFreeScenario ? '使用已保存的文件双人核对团队，从该团队内自主挑选适合文件读取和交叉核对的两位成员，不修改团队模板，不安排图片设计。先由读取成员读取 beta.txt，再由核对成员等前者完成后读取 alpha.txt 并核对 beta 原文，负责人汇总结果。' : '')+(teamPlanningScenario && !teamFreeScenario ? '本次请重新安排分工：甲读取员读取 beta.txt，乙读取员等甲完成后读取 alpha.txt 并核对甲的 beta 原文；负责人汇总两者。本次分工不要保存覆盖模板。' : '')+(teamFreeScenario ? '请直接开始，读取原文，不创建普通独立 Work，不猜测内容。' : '请使用已保存的“文件双人核对”团队，现在读取 alpha.txt、beta.txt，分别报告真实文件内容并汇总。不存在的文件必须标明失败，不能替代或创建；依赖缺失文件的分工说明无法完成。不要创建普通独立 Work，不需要再次确认，不能猜测文件内容。'));
       await foregroundDone(0);
       await until(async () => {
         const works=await evaluate('window.api.botWork.listWorks(true)');
@@ -946,7 +950,7 @@ const outputPlugin={name:'isolated-node-cache-write',setup(build){build.onEnd(re
         assert(team.members.find(m=>m.botId===members[1]).responsibility.includes('alpha'));
         assert.deepEqual(team.members.find(m=>m.botId===members[1]).dependsOnBotIds,[members[0]]);
         const preserved=await evaluate(`window.api.botWork.teamControl({kind:'list_templates'})`);
-        if (teamFreeScenario) { assert.equal(preserved.templates.length, 0); assert.equal(JSON.parse(createCall.function.arguments).templateId, undefined); assert(!team.members.some(member=>member.botId===members[2]), 'irrelevant designer not selected'); }
+        if (teamFreeScenario) { assert.equal(preserved.templates.length, 1); assert.equal(JSON.parse(createCall.function.arguments).templateId, template.template.templateId); assert.equal(preserved.templates[0].members.length, 3); assert(!team.members.some(member=>member.botId===members[2]), 'irrelevant designer not selected'); }
         else assert(preserved.templates[0].members.every(m=>m.responsibility==='通用文件整理，等待本次任务分工'));
         report.checks.push('real model selected current-task responsibilities and dependency; saved template unchanged');
       }

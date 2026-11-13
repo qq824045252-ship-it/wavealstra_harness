@@ -114,7 +114,7 @@ export function BotTeamsNavigation({ onSelect }: { onSelect?: () => void } = {})
     finally { saveFlight.current = false; setSaving(false); }
   };
   const historical = useWorkSummaryPages({ scope: { kind: "historical_teams" }, view: "all", pageSize: 24, sort: "recent" }, historyPages, teams.map(team => team.templateId).sort().join("|"));
-  const adHoc = historical.result?.works ?? [];
+  const historyWorks = historical.result?.works ?? [];
   return <section className="bot-teams-navigation" aria-label="我的 Bot 团队">
     <div className="sidebar-tree-header"><span className="section-title">我的 Bot 团队</span><span className="sidebar-section-count">{teams.length}</span>
       <button type="button" className="sidebar-bot-create" onClick={() => { viewEpoch.current++; setError(""); setCreating(true); if (!saveRequest.current) { setName(""); setOwner(candidates[0]?.botId ?? ""); setMembers([]); } }}><IconPlus size={12} />新建团队</button>
@@ -123,12 +123,13 @@ export function BotTeamsNavigation({ onSelect }: { onSelect?: () => void } = {})
     {teams.map(team => <button type="button" className={`sidebar-bot-row sidebar-bot-identity ${activeTeam?.templateId === team.templateId ? "active" : ""}`} aria-pressed={activeTeam?.templateId === team.templateId} key={team.templateId} onClick={() => openTeam(team)}>
       <span className="sidebar-bot-avatar"><IconUsers size={18} /></span><span><strong title={team.name}>{team.name}</strong><small>{team.members.length + 1} 位 Bot · 队长 {botName(team.ownerBotId)}</small></span>
     </button>)}
-    {(historical.loading || historical.error || (historical.result?.filtered ?? 0) > 0) && <details className="bot-team-history"><summary>临时与历史团队事项（{historical.result?.filtered ?? "…"}）</summary>
-      {adHoc.map(work => <button type="button" key={work.workId} onClick={() => openWork(work)}>{work.title}</button>)}
-      {historical.loading && <p role="status">正在加载历史团队事项…</p>}
+    {(historical.loading || historical.error || (historical.result?.filtered ?? 0) > 0) && <details className="bot-team-history"><summary>Work 历史（{historical.result?.filtered ?? "…"}）</summary>
+      <p>保留的历史事项与已删除团队的事项，可查看成果、移动归属和管理。</p>
+      {historyWorks.map(work => <button type="button" key={work.workId} onClick={() => openWork(work)}>{work.title}</button>)}
+      {historical.loading && <p role="status">正在加载历史事项…</p>}
       {historical.error && <p role="alert">{historical.error}</p>}
-      {historical.result && <p>已加载 {adHoc.length} / {historical.result.filtered} 项</p>}
-      {historical.result && adHoc.length < historical.result.filtered && <button type="button" disabled={historical.loading} onClick={() => setHistoryPages(value => value + 1)}>加载更多历史事项</button>}
+      {historical.result && <p>已加载 {historyWorks.length} / {historical.result.filtered} 项</p>}
+      {historical.result && historyWorks.length < historical.result.filtered && <button type="button" disabled={historical.loading} onClick={() => setHistoryPages(value => value + 1)}>加载更多历史事项</button>}
     </details>}
     {error && !creating && !selected && <p role="status">{error}</p>}
     <dialog ref={dialog} className="bot-team-directory-dialog" aria-label={creating ? "新建 Bot 团队" : "团队工作空间"} onCancel={event => { event.preventDefault(); close(); }} onClose={close}>

@@ -46,6 +46,7 @@ export const createTeamWorkSchema = workTeamPlanSchema.safeExtend({
   watchRule: workWatchNormalizedSchema.optional(),
   deadlineAt: z.number().int().nonnegative().optional(),
   operationId: id,
+  /** Required for new admission; optional only to validate persisted operation replays. */
   templateId: id.optional(),
   title: z.string().trim().min(1).max(240),
   goalDescription: z.string().trim().min(1).max(2000),
@@ -108,7 +109,7 @@ export interface WorkTeamExecution extends WorkTeamMember {
   failureReason?: string;
 }
 export interface WorkTeamDto extends WorkTeamPlan {
-  /** Stable owning team; absent for historical/ad-hoc commissions. */
+  /** Stable owning team; may be absent only on historical records. */
   teamId?: string;
   teamName?: string;
   /** Recoverable removal from normal team/task lists; execution and artifacts remain intact. */
