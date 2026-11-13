@@ -21,9 +21,9 @@ app.whenReady().then(async () => {
       generatedArtifacts:[{bindingId:'b',path:source,snapshotPath:snapshot,digest:'a'.repeat(64),sizeBytes:17,registeredAt:1,sourceEntryId:2}],
       runtimeObservations:[{bindingId:'b',state:'recovering',reason:'正在恢复原执行，文件快照保留'}] };
     await win.webContents.executeJavaScript(`window.renderArtifactFixture(${JSON.stringify(work)})`);
-    for(let i=0;i<100;i++){if(await win.webContents.executeJavaScript(`document.body.textContent.includes('打开保存版本')`))break;await new Promise(r=>setTimeout(r,50));}
+    for(let i=0;i<100;i++){if(await win.webContents.executeJavaScript(`document.body.textContent.includes('预览')`))break;await new Promise(r=>setTimeout(r,50));}
     assert(await win.webContents.executeJavaScript(`document.body.textContent.includes('恢复中')`));
-    await win.webContents.executeJavaScript(`[...document.querySelectorAll('button')].find(b=>b.textContent==='打开保存版本').click()`);
+    await win.webContents.executeJavaScript(`[...document.querySelectorAll('button')].find(b=>b.textContent==='预览').click()`);
     await new Promise(r=>setTimeout(r,100));
     assert.deepEqual(await win.webContents.executeJavaScript('window.opened'),[snapshot]);
     assert.equal(fs.readFileSync(snapshot,'utf8'),'<h1>original</h1>');
@@ -38,12 +38,12 @@ app.whenReady().then(async () => {
     await win.webContents.executeJavaScript(`window.renderArtifactFixture(${JSON.stringify(work)})`);
     await new Promise(r=>setTimeout(r,100));
     assert(await win.webContents.executeJavaScript(`document.body.textContent.includes('result.html')`));
-    await win.webContents.executeJavaScript(`[...document.querySelectorAll('button')].find(b=>b.textContent==='打开保存版本').click()`);
+    await win.webContents.executeJavaScript(`[...document.querySelectorAll('button')].find(b=>b.textContent==='预览').click()`);
     await new Promise(r=>setTimeout(r,100));
     assert.deepEqual(await win.webContents.executeJavaScript('window.opened'),[snapshot,snapshot]);
     await win.webContents.executeJavaScript(`window.api.savedArtifact.prepare=async()=>{throw new Error('missing fixture')};[...document.querySelectorAll('button')].find(b=>b.textContent==='关闭预览').click()`);
     await new Promise(r=>setTimeout(r,100));
-    await win.webContents.executeJavaScript(`[...document.querySelectorAll('button')].find(b=>b.textContent==='打开保存版本').click()`);
+    await win.webContents.executeJavaScript(`[...document.querySelectorAll('button')].find(b=>b.textContent==='预览').click()`);
     await new Promise(r=>setTimeout(r,100));
     assert(await win.webContents.executeJavaScript(`document.body.textContent.includes('无法读取文件')`));
     const image = await win.webContents.capturePage();

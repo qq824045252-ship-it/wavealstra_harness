@@ -662,7 +662,7 @@ const attachmentHtml = renderToStaticMarkup(createElement(WorkFiles, { files: wo
 assert(attachmentHtml.indexOf("report.csv") < attachmentHtml.indexOf("create.py"), "readable reports precede scripts");
 assert.match(attachmentHtml, /<details class="bot-result-other-files"><summary>其他文件与脚本/);
 assert.match(attachmentHtml, /<summary>路径与版本<\/summary><p>\/snap\/hash-report/);
-assert.match(attachmentHtml, /打开保存版本/);
+assert.match(attachmentHtml, /预览/);
 assert.equal(generatedWorkFiles({ ...fileWork, generatedArtifacts: [...generated, { ...generated[0], digest: "new-version", snapshotPath: "/snap/new-version" }] }).length, 3, "same-name historical versions stay available");
 const structuredResult: BotMessageDto = { ...feedbackMessage("result-card", "plain", "result:done", "result"),
   text: "完整原始消息 /snap/hash-report", workFeedback: { workId: "plain", eventId: "result:done", kind: "result", category: "result", executionId: "done",
@@ -680,8 +680,8 @@ for (const cachedWorks of [[], [fileWork], [rerunWork]]) {
   assert.match(html, /阶段成果/);
   assert.match(html, /当前可用文件/);
   assert.match(html, /不代表整体目标已完成/);
-  assert.match(html, /aria-label="打开 report-v1.csv"/);
-  assert.doesNotMatch(html, /aria-label="打开 (?:mutable|unregistered).csv"/, "live Work cache must not turn mutable or unregistered milestone evidence into an open button");
+  assert.match(html, /aria-label="预览 report-v1.csv"/);
+  assert.doesNotMatch(html, /aria-label="预览 (?:mutable|unregistered).csv"/, "live Work cache must not turn mutable or unregistered milestone evidence into an open button");
   assert.doesNotMatch(html, /本次交付|data-outcome=|>已完成<|>结果已返回</, "an early result is neither final delivery nor a fabricated goal review");
 }
 assert.equal(earlyMilestone.workFeedback!.report!.completion, undefined);
@@ -830,7 +830,7 @@ assert.equal(resultBodyText(reviewedResult.workFeedback!.report!), "初稿已做
 const reviewedHtml = renderToStaticMarkup(createElement(BotMessage,{message:reviewedResult,botName:"Bot",works:[fileWork],onOpenWork(){},onCancel(){}}));
 assert.match(reviewedHtml,/部分完成/);
 assert(reviewedHtml.indexOf("初稿已做好") < reviewedHtml.indexOf("执行详情与来源"));
-assert(reviewedHtml.indexOf("打开保存版本") < reviewedHtml.indexOf("执行详情与来源"));
+assert(reviewedHtml.indexOf("预览") < reviewedHtml.indexOf("执行详情与来源"));
 assert(reviewedHtml.indexOf("执行详情与来源") < reviewedHtml.indexOf("文件没有读到"),"worker conclusions cannot override or precede reviewed reply");
 assert.match(reviewedHtml,/<details class="bot-result-details"><summary>执行详情与来源/);
 assert.match(reviewedHtml,/完整原始消息/,"full raw evidence remains available without becoming the answer");

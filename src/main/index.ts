@@ -1,3 +1,4 @@
+import { SavedArtifactActions } from "./artifact/SavedArtifactActions";
 import { WindowsNotificationActivation } from "./platform/notification-activation";
 import { normalizeBotAvatar } from "./agent/work/BotAvatarImageDecoder";
 import { BotAvatarIpc } from "../shared/bot-avatar";
@@ -1019,6 +1020,26 @@ function registerIpc(): void {
 
   ipcMain.handle("workspace:showInFolder", (_event, filePath: string) => {
     shell.showItemInFolder(filePath);
+  });
+
+  const savedArtifactActions = new SavedArtifactActions({
+    storageRoot: getMyBuddyDir(),
+    exportRoot: join(app.getPath("temp"), "mybuddy-saved-exports"),
+    openPath: path => shell.openPath(path),
+    chooseDestination: async name => {
+      const win = BrowserWindow.getFocusedWindow();
+      const options = { title: "保存成果副本", defaultPath: name };
+      const result = win ? await dialog.showSaveDialog(win, options) : await dialog.showSaveDialog(options);
+      return result.canceled ? undefined : result.filePath;
+    },
+  });
+  ipcMain.handle(SavedArtifactIpc.openSystem, (event, request) => {
+    if (!isMainAppWindowRequest(event, botManagementWindow, process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href)) throw new Error("仅应用主界面可以打开保存版本");
+    return savedArtifactActions.openSystem(request);
+  });
+  ipcMain.handle(SavedArtifactIpc.saveAs, (event, request) => {
+    if (!isMainAppWindowRequest(event, botManagementWindow, process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href)) throw new Error("仅应用主界面可以保存成果副本");
+    return savedArtifactActions.saveAs(request);
   });
 
   ipcMain.handle(SavedArtifactIpc.prepare, async (event, request) => {

@@ -365,7 +365,7 @@ async function main() {
       assert.match(container.textContent!, /31 B/);
       assert.match(container.textContent!, /是否完成由助理结合原委托与实际结果判断/);
       assert.match(container.textContent!, /恢复中/);
-      await click("打开文件");
+      await click("预览");
       assert.deepEqual(opened, ["/fixture/result.html"]);
       await unmount();
     });
@@ -377,11 +377,11 @@ async function main() {
       const paths: unknown[][] = [], opened: string[] = [];
       Object.assign(testWindow.api!, {
         readWorkspaceFile: (...args: unknown[]) => { paths.push(args); const reply = deferred<{ content: string; truncated?: boolean }>(); replies.push(reply); return reply.promise; },
-        openFolder: async (path: string) => { opened.push(path); },
+        savedArtifact: { openSystem: async ({ snapshotPath }: { snapshotPath: string }) => { opened.push(snapshotPath); } },
       });
       const files = [{ ref: "a", name: "a.txt", openPath: "/snapshot/a" }, { ref: "b", name: "b.json", openPath: "/snapshot/b" }, { ref: "c", name: "c.pdf", openPath: "/snapshot/c" }];
       await act(async () => root!.render(<WorkFiles files={files} />));
-      const open = async (name: string) => { await act(async () => { container.querySelector<HTMLButtonElement>(`button[aria-label="打开 ${name}"]`)!.click(); }); };
+      const open = async (name: string) => { await act(async () => { container.querySelector<HTMLButtonElement>(`button[aria-label="预览 ${name}"]`)!.click(); }); };
       await open("a.txt"); await open("a.txt");
       assert.equal(replies.length, 1, "repeated click does not duplicate the read");
       await open("b.json");
@@ -439,7 +439,7 @@ async function main() {
       } });
       const files = [{ ref: "html", name: "demo.html", openPath: "/snapshot/demo.html", previewManifestPath: "/snapshot/frozen.web.json" }];
       await act(async () => root!.render(<WorkFiles files={files} />));
-      await click("打开保存版本"); await click("打开保存版本");
+      await click("预览"); await click("预览");
       assert.equal(requests.length, 1);
       assert.deepEqual(requests[0], { snapshotPath: "/snapshot/demo.html", name: "demo.html", manifestPath: "/snapshot/frozen.web.json" });
       await act(async () => replies[0].resolve({ token: "one", url: "mybuddy-artifact://saved-one/", source: "<h1>saved</h1>", warnings: ["缺少资源：image.png"] }));
@@ -454,10 +454,10 @@ async function main() {
       assert.equal(frame.hidden, true);
       assert.equal(container.querySelector(".code-line-content")!.textContent, "<h1>saved</h1>");
       assert.equal(container.querySelector('[data-action="edit"]'), null);
-      await click("预览"); assert.equal(frame.hidden, false);
+      await act(async () => { container.querySelector<HTMLButtonElement>('.bot-work-file-preview-tabs button[aria-pressed="false"]')!.click(); }); assert.equal(frame.hidden, false);
       await click("展开查看"); assert(container.querySelector(".is-expanded"));
       await click("关闭预览"); assert.deepEqual(releases, ["one"]);
-      await click("打开保存版本"); await click("关闭预览");
+      await click("预览"); await click("关闭预览");
       await act(async () => replies[1].resolve({ token: "late", url: "mybuddy-artifact://saved-late/", source: "late", warnings: [] }));
       assert.deepEqual(releases, ["one", "late"]);
       assert.equal(container.querySelector("iframe"), null);
@@ -513,7 +513,7 @@ async function main() {
       assert.equal(scripts.hasAttribute("open"), false, "scripts stay accessible without competing with the report");
       const files = [...container.querySelectorAll<HTMLLIElement>(".bot-result-files > li")];
       assert(files[0].textContent!.includes("report.csv"));
-      const openReport = [...files[0].querySelectorAll("button")].find(button => button.textContent === "打开保存版本")!;
+      const openReport = [...files[0].querySelectorAll("button")].find(button => button.textContent === "预览")!;
       await act(async () => { openReport.click(); });
       assert.deepEqual(opened, ["/snap/hash-csv"]);
       files[0].querySelector("details")!.setAttribute("open", "");

@@ -4,6 +4,7 @@ import type { WorkProjectionDto } from "@shared/bot-work";
 import { fileNameFromPath } from "@/lib/localFilePath";
 import ChatMarkdown from "@/components/chat/ChatMarkdown";
 import WorkFilePreview from "./WorkFilePreview";
+import SavedFileActions from "./SavedFileActions";
 
 import { previewManifestFor, type WorkFile } from "./workFileIdentity";
 export { previewManifestFor, type WorkFile } from "./workFileIdentity";
@@ -51,7 +52,11 @@ export function WorkFiles({ files, primaryRefs, compact = false, compactTitle = 
   const list = (items: WorkFile[]) => <ul className="bot-result-files">{items.map(file => <li key={file.artifact ? JSON.stringify([file.artifact.bindingId, file.artifact.path, file.artifact.digest, previewManifestFor(file)]) : JSON.stringify([file.ref, file.previewManifestPath])}>
     <div><strong title={file.name}>{file.name}</strong>{file.artifact && <small>{formatSize(file.artifact.sizeBytes)}</small>}</div>
     {!(file.artifact || file.openPath) && <small>未登记可打开文件</small>}
-    {(file.artifact || file.openPath) && <button type="button" aria-label={`打开 ${file.name}`} onClick={() => void open(file)}>{file.artifact?.snapshotPath || file.openPath ? "打开保存版本" : "打开文件"}</button>}
+    {(file.artifact || file.openPath) && <SavedFileActions
+      name={file.name}
+      key={JSON.stringify([file.openPath ?? file.artifact?.snapshotPath, file.name])}
+      request={file.openPath || file.artifact?.snapshotPath ? { snapshotPath: (file.openPath ?? file.artifact?.snapshotPath)!, name: file.name, manifestPath: previewManifestFor(file) } : undefined}
+      onPreview={() => void open(file)} />}
     <details><summary>路径与版本</summary><p>{file.ref}</p>{file.artifact && <><p>原文件：{file.artifact.path}</p><p>SHA-256：{file.artifact.digest}</p><button type="button" onClick={() => void window.api?.showItemInFolder?.(file.artifact!.path)}>定位文件</button></>}</details>
   </li>)}</ul>;
   return <section className="bot-result-attachments" aria-label="成果附件">

@@ -355,6 +355,8 @@ const api = {
   listWorkspaceFiles: (root: string): Promise<WorkspaceFileNodeDto[]> =>
     ipcRenderer.invoke("workspace:listFiles", root),
   savedArtifact: {
+    openSystem: (request: SavedArtifactRequest): Promise<void> => ipcRenderer.invoke(SavedArtifactIpc.openSystem, request),
+    saveAs: (request: SavedArtifactRequest): Promise<{ canceled: boolean; path?: string }> => ipcRenderer.invoke(SavedArtifactIpc.saveAs, request),
     prepare: (request: SavedArtifactRequest): Promise<SavedArtifactPreview> => ipcRenderer.invoke(SavedArtifactIpc.prepare, request),
     release: (token: string): Promise<void> => ipcRenderer.invoke(SavedArtifactIpc.release, token),
   },

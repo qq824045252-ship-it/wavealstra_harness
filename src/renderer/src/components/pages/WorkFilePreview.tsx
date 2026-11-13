@@ -64,8 +64,8 @@ export default function WorkFilePreview({ file, target, onClose }: { file: WorkF
 
   const openSystem = async (): Promise<void> => {
     try {
-      if (!window.api?.openFolder) throw new Error("系统打开接口不可用");
-      await window.api.openFolder(target);
+      if (!window.api?.savedArtifact?.openSystem) throw new Error("系统打开接口不可用");
+      await window.api.savedArtifact.openSystem({ snapshotPath: target, name: file.name, manifestPath: previewManifestFor(file) });
       setNotice("已请求系统应用打开；无法确认是否出现窗口。若未打开，请检查系统默认应用或定位保存文件。");
     } catch (reason) { setNotice(`无法打开文件：${reason instanceof Error ? reason.message : String(reason)}`); }
   };

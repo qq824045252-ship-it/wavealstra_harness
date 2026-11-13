@@ -33,7 +33,7 @@ app.whenReady().then(async () => {
     await evaluate(`[...document.querySelectorAll('button')].find(x=>x.textContent.includes('合作完成一个项目')).click()`);
     assert.deepEqual(await evaluate('window.deliverySelected'), ['team-1']);
     await evaluate(`[...document.querySelectorAll('.bot-work-file')].length`);
-    await evaluate(`[...document.querySelectorAll('button')].find(x=>x.textContent.includes('打开保存版本')).click()`);
+    await evaluate(`[...document.querySelectorAll('button')].find(x=>x.textContent.includes('预览')).click()`);
     await until(`window.deliveryOpened.length === 1`, 'file open');
     assert.deepEqual(await evaluate('window.deliveryOpened'), ['/fixture/report.md']);
     assert.equal(await evaluate(`document.querySelector('.bot-work-file-preview .md-doc-viewer').textContent`), '保存文本：/fixture/report.md');
@@ -60,7 +60,7 @@ app.whenReady().then(async () => {
         assert(await evaluate(`document.querySelector('.bot-result-report').textContent.includes('当前可用文件')`));
         assert.equal(await evaluate(`document.querySelectorAll('.bot-result-files button').length`),1,'only saved early A opens, including after refreshed B is registered');
         const before = await evaluate('window.deliveryOpened.length');
-        await nativeClick('[aria-label="打开 A.md"]');
+        await nativeClick('[aria-label="预览 A.md"]');
         await until(`window.deliveryOpened.length === ${before+1}`, 'native early file button');
         assert.equal((await evaluate('window.deliveryOpened')).at(-1),'/saved/A-v1.md','the old saved version never drifts to current A-v2');
         assert.equal(await evaluate(`document.querySelector('.bot-work-file-preview .md-doc-viewer').textContent`), '保存文本：/saved/A-v1.md');
@@ -70,10 +70,10 @@ app.whenReady().then(async () => {
       await screenshot(`bot-work-milestone-delivery-${width}.png`);
     }
     await evaluate('window.deliveryFixture.render("error")');
-    await nativeClick('[aria-label="打开 A.md"]');
+    await nativeClick('[aria-label="预览 A.md"]');
     await until(`document.querySelector('[role="alert"]')?.textContent.includes('保存文件暂不可用')`, 'open error');
     await evaluate('window.deliveryFixture.render("milestone")');
-    await nativeClick('[aria-label="打开 A.md"]');
+    await nativeClick('[aria-label="预览 A.md"]');
     await until(`!document.querySelector('[role="alert"]')`, 'open retry clears error');
     await evaluate('window.deliveryFixture.render("legacy")');
     await until(`!document.querySelector('.bot-result-report') && document.body.textContent.includes('A 已核实可先使用')`, 'legacy text preserved');

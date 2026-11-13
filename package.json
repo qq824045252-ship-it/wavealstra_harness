@@ -749,6 +749,8 @@
     "test:bot-peer-ingress": "esbuild scripts/bot-peer-ingress-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/bot-peer-ingress-test.mjs && node scripts/test-guard.mjs out/tests/bot-peer-ingress-test.mjs",
     "test:bot-avatar-assets": "esbuild scripts/bot-avatar-assets-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/bot-avatar-assets-test.cjs && node scripts/test-guard.mjs out/tests/bot-avatar-assets-test.cjs",
     "test:bot-avatars": "esbuild scripts/bot-avatars-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/bot-avatars-test.mjs && node scripts/test-guard.mjs out/tests/bot-avatars-test.mjs",
+    "test:saved-artifact-actions": "node scripts/test-guard.mjs node scripts/saved-artifact-actions-test.mjs",
+    "test:saved-file-actions-ui": "node scripts/run-tsgo-ui-test.mjs scripts/saved-file-actions-dom-test.tsx",
     "test:bot-avatar-ui": "node scripts/run-tsgo-ui-test.mjs scripts/bot-avatar-dom-test.tsx",
     "test:bot-team-avatar-ui": "node scripts/run-tsgo-ui-test.mjs scripts/bot-team-avatar-dom-test.tsx",
     "test:bot-reply-reference-ui": "node scripts/run-tsgo-ui-test.mjs scripts/bot-reply-reference-dom-test.tsx",

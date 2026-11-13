@@ -26,7 +26,7 @@ const ev=(s:string)=>win.webContents.executeJavaScript(s);
 async function until(fn:()=>Promise<any>,label:string){for(let i=0;i<150;i++){if(await fn())return;await sleep(60)}throw Error('Timed out: '+label)}
 async function click(text:string){await ev(`[...document.querySelectorAll('button')].find(b=>b.textContent===${JSON.stringify(text)}).click()`);}
 async function frame(){await until(async()=>win.webContents.mainFrame.frames.some(f=>f.url.startsWith('mybuddy-artifact:')),'saved frame');return win.webContents.mainFrame.frames.find(f=>f.url.startsWith('mybuddy-artifact:'))!;}
-async function render(name:string,path:string,manifest?:string){await ev(`window.savedPreviewFixture.render([{ref:${JSON.stringify(path)},name:${JSON.stringify(name)},openPath:${JSON.stringify(path)},artifact:{bindingId:'b',path:${JSON.stringify(path)},snapshotPath:${JSON.stringify(path)},digest:'test',sizeBytes:1,registeredAt:1,sourceEntryId:1,previewManifestPath:${JSON.stringify(manifest)}}}])`);await sleep(100);await click('打开保存版本');}
+async function render(name:string,path:string,manifest?:string){await ev(`window.savedPreviewFixture.render([{ref:${JSON.stringify(path)},name:${JSON.stringify(name)},openPath:${JSON.stringify(path)},artifact:{bindingId:'b',path:${JSON.stringify(path)},snapshotPath:${JSON.stringify(path)},digest:'test',sizeBytes:1,registeredAt:1,sourceEntryId:1,previewManifestPath:${JSON.stringify(manifest)}}}])`);await sleep(100);await click('预览');}
 app.whenReady().then(async()=>{
  try{
  assert(process.env.DISPLAY||process.env.WAYLAND_DISPLAY,'Real desktop required');
