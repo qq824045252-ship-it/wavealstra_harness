@@ -9,8 +9,8 @@ import { WorkService, DESKTOP_USER_GRANTS } from '../src/main/agent/work/WorkSer
 import { WorkListQuery } from '../src/main/agent/work/WorkListQuery';
 import { WorkProjectionJournal } from '../src/main/agent/work/WorkProjectionJournal';
 import { LOCAL_USER_ID, DEFAULT_BOT_ID, type WorkActor } from '../src/shared/bot-work';
-import { canArchiveWork } from '../src/shared/bot-work-archive';
-import { workStatus } from '../src/renderer/src/lib/botWorkspacePresentation';
+import { canArchiveWork, isWorkArchived } from '../src/shared/bot-work-archive';
+import { workStatus, workMatchesView } from '../src/renderer/src/lib/botWorkspacePresentation';
 const root = mkdtempSync(join(tmpdir(), 'work-summary-query-'));
 const db = new AppDatabase(join(root, 'test.db'));
 const bots = new BotRegistry(db.connection);
@@ -304,6 +304,29 @@ try {
     assert.equal(query.query(LOCAL_USER_ID, { scope: { kind: 'historical_teams' }, view: 'all' }).total, 2);
     assert.deepEqual(query.query(LOCAL_USER_ID, { scope: { kind: 'team', teamId: 'team' }, view: 'all' }).works.map(w => w.workId), [teamWork.workId], 'deleted formal team keeps its own query and provenance');
     assert.deepEqual(query.query(LOCAL_USER_ID, { scope: { kind: 'personal', botId: DEFAULT_BOT_ID }, view: 'all', query: 'team-subject' }).works.map(w => w.workId), [historical.workId], 'deleted formal team must not be relabeled personal');
+    for (const conclusion of ['succeeded', 'ended_unsuccessfully', 'cancelled', undefined] as const) {
+      const terminal = create('manual-archive-' + (conclusion ?? 'legacy'));
+      db.connection.prepare("UPDATE works SET lifecycle='closed',closure_conclusion=? WHERE work_id=?").run(conclusion ?? null,terminal.workId);
+      const assertPlacement = (kind: 'completed' | 'closed') => {
+        const projection = works.getProjection(terminal.workId)!;
+        assert.equal(isWorkArchived(projection), kind === 'closed');
+        assert(workMatchesView(projection, kind));
+        assert.equal(query.query(LOCAL_USER_ID,{scope:{kind:'personal',botId:DEFAULT_BOT_ID},view:kind,query:terminal.title}).filtered,1);
+        assert.equal(query.query(LOCAL_USER_ID,{scope:{kind:'personal',botId:DEFAULT_BOT_ID},view:kind === 'closed' ? 'completed' : 'closed',query:terminal.title}).filtered,0);
+      };
+      assertPlacement('completed');
+      assert.equal(new WorkService(db.connection,{bots}).getProjection(terminal.workId)!.archive, undefined, 'service restart never archives completed outcomes');
+      // Formal team placement obeys the same rule without changing outcome or ownership.
+      db.connection.prepare("INSERT INTO work_teams(work_id,user_id,operation_id,request_hash,plan_json,intent_revision,input_snapshot_id,created_at) VALUES (?,?,?,'hash',?,1,?,1)").run(terminal.workId,LOCAL_USER_ID,terminal.workId,plan,terminal.inputSnapshotId);
+      db.connection.prepare("INSERT INTO work_team_ownership(work_id,team_id,team_name) VALUES (?,'team','Team')").run(terminal.workId);
+      assert.equal(query.query(LOCAL_USER_ID,{scope:{kind:'team',teamId:'team'},view:'completed',query:terminal.title}).filtered,1);
+      const archive = works.recordArchive.control(actor,{workId:terminal.workId,operationId:terminal.workId+':archive',action:'archive'});
+      assert(archive.ok);
+      assert.equal(query.query(LOCAL_USER_ID,{scope:{kind:'team',teamId:'team'},view:'closed',query:terminal.title}).filtered,1);
+      assert.equal(query.query(LOCAL_USER_ID,{scope:{kind:'team',teamId:'team'},view:'completed',query:terminal.title}).filtered,0);
+      assert.equal(works.getWork(terminal.workId)!.closureConclusion, conclusion);
+      assert(new WorkService(db.connection,{bots}).getProjection(terminal.workId)!.archive?.archivedAt, 'existing explicit archive survives restart');
+    }
     const competing = new Database(join(root, 'test.db'), { timeout: 0 });
     let competingAttempt = false;
     db.connection.function('work_list_matches', { deterministic: true }, (_text: unknown, _query: unknown) => {

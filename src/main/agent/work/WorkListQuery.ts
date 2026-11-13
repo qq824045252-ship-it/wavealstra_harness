@@ -201,10 +201,10 @@ export class WorkListQuery {
     private base(scope: string, inline = false): string {
         const hint = inline ? ' NOT MATERIALIZED' : '';
         return `WITH facts AS${hint} (SELECT w.*,a.archived_at,a.deleted_at,t.plan_json,t.created_at AS team_created_at,o.team_id,o.team_name,v.removed_at,
-  (a.archived_at IS NOT NULL OR (w.lifecycle='closed' AND coalesce(w.closure_conclusion,'')!='succeeded')) AS is_archived,${statusSql} AS status_key
+  (a.archived_at IS NOT NULL) AS is_archived,${statusSql} AS status_key
   FROM works w LEFT JOIN work_record_archive a ON a.work_id=w.work_id LEFT JOIN work_teams t ON t.work_id=w.work_id AND t.user_id=w.user_id
   LEFT JOIN work_team_ownership o ON o.work_id=t.work_id LEFT JOIN work_team_record_visibility v ON v.work_id=t.work_id WHERE w.user_id=@userId AND (${scope})),
-  classified AS${hint} (SELECT *,CASE WHEN is_archived THEN 'closed' WHEN lifecycle='closed' AND closure_conclusion='succeeded' THEN 'completed' ELSE 'active' END AS view_kind,
+  classified AS${hint} (SELECT *,CASE WHEN is_archived THEN 'closed' WHEN lifecycle='closed' THEN 'completed' ELSE 'active' END AS view_kind,
   CASE status_key ${Object.entries(statuses).map(([key, value]) => `WHEN '${key}' THEN '${value.group}'`).join(' ')} END AS status_group FROM facts) `;
     }
     private read(userId: string, request: WorkQueryRequest, online: boolean, watermark: WorkQueryResult['watermark']): WorkQueryResult {

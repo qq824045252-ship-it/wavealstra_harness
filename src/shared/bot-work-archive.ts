@@ -2,7 +2,8 @@ import type { WorkProjectionDto } from "./bot-work";
 
 /** Archive is presentation/lifecycle management, never evidence of task success. */
 export function isWorkArchived(work: WorkProjectionDto): boolean {
-  return Boolean(work.archive?.archivedAt) || (work.lifecycle === "closed" && work.closureConclusion !== "succeeded");
+  // Only an explicit user archive operation changes list placement. Outcome is separate.
+  return work.archive?.archivedAt !== undefined;
 }
 export function hasWorkExecutionInFlight(work: WorkProjectionDto): boolean {
   return work.executions.some(item => ["pending", "submitted", "running", "unknown"].includes(item.status))

@@ -71,7 +71,7 @@ export function workMatchesView(work: WorkProjectionDto, view: BotWorkspaceView)
   if (work.archive?.deletedAt) return false;
   if (view === "closed") return isWorkArchived(work);
   if (isWorkArchived(work)) return false;
-  if (view === "completed") return work.lifecycle === "closed" && work.closureConclusion === "succeeded";
+  if (view === "completed") return work.lifecycle === "closed";
   return work.lifecycle !== "closed";
 }
 

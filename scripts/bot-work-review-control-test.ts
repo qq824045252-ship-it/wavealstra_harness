@@ -1,5 +1,5 @@
 import { reviewWork } from "../src/main/agent/work/WorkReviewControl";
-import { canArchiveWork } from "../src/shared/bot-work-archive";
+import { canArchiveWork, isWorkArchived } from "../src/shared/bot-work-archive";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -116,8 +116,11 @@ try {
     assert.equal(service.getWork(done.workId)!.closureConclusion, "succeeded");
     const cancelled = create();
     unwrap(service.cancelWork(user, { workId: cancelled.workId, operationId: operation(), reason: "fixture cancellation" }));
+    assert(!isWorkArchived(service.getProjection(cancelled.workId)!));
+    assert.equal(manage(cancelled.workId, "delete").ok, false, "cancelled terminal records are not automatically archived");
+    unwrap(manage(cancelled.workId, "archive"));
     unwrap(manage(cancelled.workId, "delete"));
-    assert(service.getProjection(cancelled.workId)!.archive?.deletedAt, "old non-successful closed records belong to archive");
+    assert(service.getProjection(cancelled.workId)!.archive?.deletedAt, "explicitly archived cancellation can be deleted and recovered");
   });
   for (const change of ["source", "intent"] as const) {
     check(`an accepted ${change === "source" ? "old-input" : "old-requirement"} result stays historical`, () => {
