@@ -1,4 +1,6 @@
 import { useRef, useState } from 'react';
+import { Eye, ExternalLink, Download } from 'lucide-react';
+import './SavedFileActions.css';
 import type { SavedArtifactRequest } from '@shared/saved-artifact';
 
 /** One immutable identity for both exports; preview retains the caller's existing behavior. */
@@ -22,10 +24,13 @@ export default function SavedFileActions({ request, name, onPreview }: { request
     } catch (error) { setNotice('操作失败：' + (error instanceof Error ? error.message : String(error))); }
     finally { busy.current = false; setPending(false); }
   };
+  const label = name ?? request?.name ?? '文件';
   return <>
-    <button type="button" aria-label={`预览 ${name ?? request?.name ?? '文件'}`} onClick={onPreview}>预览</button>
-    <button type="button" disabled={!request || pending} title="使用系统默认应用打开单文件副本；不受内置预览隔离，HTML依赖不会一并导出" onClick={() => void run('openSystem')}>系统方式打开</button>
-    <button type="button" disabled={!request || pending} title="选择位置另存为单文件副本；HTML依赖不会一并导出" onClick={() => void run('saveAs')}>保存</button>
-    {notice && <small role="status">{notice}</small>}
+    <span className="saved-file-actions" role="group" aria-label={`${label} 文件操作`}>
+      <button type="button" aria-label={`预览 ${label}`} title="预览" onClick={onPreview}><Eye size={16} aria-hidden="true" /></button>
+      <button type="button" disabled={!request || pending} aria-label={`系统方式打开 ${label}`} title="系统方式打开：单文件副本不受内置预览隔离，HTML依赖不会一并导出" onClick={() => void run('openSystem')}><ExternalLink size={16} aria-hidden="true" /></button>
+      <button type="button" disabled={!request || pending} aria-label={`另存为 ${label}`} title="另存为：选择位置保存单文件副本，HTML依赖不会一并导出" onClick={() => void run('saveAs')}><Download size={16} aria-hidden="true" /></button>
+    </span>
+    {notice && <small className="saved-file-notice" role="status">{notice}</small>}
   </>;
 }

@@ -16,7 +16,8 @@ async function main() {
  const { createRoot } = await import('react-dom/client'); const root = createRoot(document.getElementById('root')!);
  await act(async () => { root.render(<SavedFileActions request={request} onPreview={() => previews++} />); });
  const buttons = () => [...document.querySelectorAll('button')];
- assert.deepEqual(buttons().map(b=>b.textContent), ['预览','系统方式打开','保存']);
+ assert.deepEqual(buttons().map(b=>b.getAttribute('aria-label')), ['预览 report.txt','系统方式打开 report.txt','另存为 report.txt']);
+ assert(buttons().every(b=>b.textContent === '' && b.querySelector('svg') && b.title && b.type === 'button'));
  await act(async () => buttons()[0].click()); assert.equal(previews,1); assert.equal(opens+saves,0);
  await act(async () => { buttons()[1].click(); buttons()[1].click(); }); assert.equal(opens,1);
  await act(async () => buttons()[2].click()); assert.equal(saves,1); assert.equal(document.querySelector('[role=status]'),null);

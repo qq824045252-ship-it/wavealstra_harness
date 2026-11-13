@@ -23,9 +23,9 @@ const message={messageId:'m',botId:'b',conversationId:'c',role:'assistant',statu
 await act(async()=>root.render(<BotMessageHtmlFiles message={{...message,status:'running'}}/>));assert.equal(document.querySelector('button'),null);
 await act(async()=>root.render(<BotMessageHtmlFiles message={message}/>));assert.equal(document.querySelectorAll('pre,code,iframe').length,0);assert(document.body.textContent!.length<500);assert.match(document.body.textContent!,/尚未保存/);
 await act(async()=>{document.querySelector('button')!.click();document.querySelector('button')!.click();});assert.equal(calls,1);
-assert(!document.body.textContent?.includes('系统方式打开'));
+assert.equal(document.querySelector('button[aria-label^="系统方式打开"]'), null);
 await act(async()=>resolveSave({snapshotPath:'C:/saved/artifacts/hash.html',name:'message.html',digest:'hash',sizeBytes:html.length}));
-assert.match(document.body.textContent!,/已将这条消息/);assert.match(document.body.textContent!,/系统方式打开/);assert.equal(document.querySelector('iframe'),null);
+assert.match(document.body.textContent!,/已将这条消息/);assert(document.querySelector('button[aria-label="系统方式打开 message.html"]')); assert.equal(document.querySelector('iframe'),null);
 await act(async()=>root.render(<BotMessageHtmlFiles message={{...message,messageId:'other'}}/>));assert.match(document.body.textContent!,/尚未保存/);
 const oversized='<html><body>'+'汉'.repeat(3*1024*1024)+'</body></html>';
 await act(async()=>root.render(<BotMessageHtmlFiles message={{...message,messageId:'oversized',text:oversized}}/>));
