@@ -137,8 +137,10 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
   const select = (workId: string, source: ReturnType<typeof receipt>, requestedAction?: "pause" | "resume" | "cancel" | "amend") => {
     if (!catalogue.canRead(workId) && catalogue.outgoingCollaboration(workId))
       throw new Error("委派给其他 Bot 的事项仅可在这里查询；修改须沿原 collaborationId 调用 bot_collaborate query，再携带其 versionGuard 控制原事项");
-    const reference = source.reference_message_id ? messages.message(source.reference_message_id)?.workIds ?? [] : [];
-    const userMessage = messages.message(source.user_message_id);
+    const human = messages.userSource(source);
+    const reference = human.reference_message_id ? messages.message(human.reference_message_id)?.workIds ?? [] : [];
+    // Peer plans are model-generated; targeting uses verified original human input.
+    const userMessage = messages.message(human.user_message_id);
     // Read the actual user input, not model arguments or the current UI selection.
     // Include unknown/foreign IDs so they cannot fall back to an unrelated card.
     const explicit = [...new Set(userMessage?.text.match(/(?<![A-Za-z0-9_-])work-[A-Za-z0-9_-]+(?![A-Za-z0-9_-])/g) ?? [])];

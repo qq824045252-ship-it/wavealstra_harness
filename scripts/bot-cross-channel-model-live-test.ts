@@ -110,8 +110,19 @@ const works = agent.getWorkService();
 const channels = new WorkGatewayNotificationChannels(db.connection, works, gateway, { isAuthority: () => agent.getWorkHostStatus().isAuthority });
 const notifications = new WorkNotificationHost(works, { isAuthority: () => agent.getWorkHostStatus().isAuthority, channels: () => [], asyncChannels: () => channels.channels(), intervalMs: 250, onError: error => stage("notification-error", String(error)), onBlocked: outcome => { if(!report.lastBlocked || JSON.stringify(report.lastBlocked)!==JSON.stringify(outcome)) { report.lastBlocked=outcome; stage("notification-blocked",outcome); } } });
 const wait = async (name: string, predicate: () => any, timeout = 180000) => { report.waitingFor=name; save(); const deadline = Date.now() + timeout; while (Date.now() < deadline) { const value = predicate(); if (value) { delete report.waitingFor; return value; } await delay(250); } throw Error(`Timeout: ${name}`); };
-const pendingRequest = (receipt: {assistantMessageId:string}, expected: string) => {
+const pendingRequest = (receipt: {assistantMessageId:string}, expected: string, allowRecipientPending = false) => {
   const response:any=db.connection.prepare("SELECT status,error,text FROM bot_messages WHERE message_id=?").get(receipt.assistantMessageId);
+  if (response?.status === "completed" && allowRecipientPending) {
+    // A finishes after durable delivery; B owns the asynchronous decision. Do not
+    // confuse A's receipt with B's completion or loosen the outer Work deadline.
+    const pending = db.connection.prepare(`SELECT d.operation_id FROM bot_peer_deliveries d
+      LEFT JOIN bot_messages m ON m.message_id=d.accepted_message_id
+      WHERE json_extract(d.origin_json,'$.kind')='request'
+        AND json_extract(d.origin_json,'$.sourceAssistantMessageId')=?
+        AND d.cancelled_at IS NULL AND d.error IS NULL
+        AND (d.accepted_message_id IS NULL OR m.status IN ('queued','running','unknown')) LIMIT 1`).get(receipt.assistantMessageId);
+    if (pending) return;
+  }
   if(response && ["completed","failed","cancelled"].includes(response.status)) throw Error(`${expected} was not produced before request settled: ${JSON.stringify(response)}`);
 };
 const snapshot = () => { for (const table of ["memory_records", "memory_scopes", "memory_candidates", "memory_turns", "works", "work_execution_bindings", "bot_collaborations", "bot_messages", "work_generated_artifacts", "work_result_cards", "work_completion_turns", "work_deliverables", "bot_work_method_feedback", "memory_skill_candidates", "memory_skill_effectiveness", "work_notifications", "work_notification_attempts"]) { try { writeFileSync(join(out, `${table}.json`), JSON.stringify(db.connection.prepare(`SELECT * FROM ${table}`).all(), null, 2)); } catch {} } };
@@ -164,7 +175,7 @@ try {
   stage("real-partial-returned-and-awaiting-user",{...partial,delivery:sent.filter(item=>item.files.some((file:any)=>file.text==="DRAFT_ALPHA")),ownership:assertOwnership(1)});
   const control = await agent.sendBotMessage({ botId: a.botId, requestId: randomUUID(), text: `补充给验收B刚才的事项 ${work.work_id}：最终内容改为逐字 FINAL_BETA。请查询已有协作后amend同一个Work；保留draft.txt已完成部分，写final.txt并读取核验后登记成果。只改原事项，不新建Work。` });
   stage("desktop-amend-submitted", control);
-  await wait("intent revision 2", () => { const current=works.getWork(work.work_id); if(current?.lifecycle === "closed" && current.intentRevision < 2) throw Error(`Original Work closed before amendment: ${current.closureConclusion}; ${current.closureSummary}`); if(current && current.intentRevision >= 2) return current; pendingRequest(control,"Amended original Work"); });
+  await wait("intent revision 2", () => { const current=works.getWork(work.work_id); if(current?.lifecycle === "closed" && current.intentRevision < 2) throw Error(`Original Work closed before amendment: ${current.closureConclusion}; ${current.closureSummary}`); if(current && current.intentRevision >= 2) return current; pendingRequest(control,"Amended original Work",true); });
   }
   await wait("real final file", () => existsSync(join(workspace,"final.txt")) && readFileSync(join(workspace,"final.txt"),"utf8").includes("FINAL_BETA"));
   await wait("work closes succeeded", () => { const current=works.getWork(work.work_id); return current?.lifecycle === "closed" && current; });
@@ -188,7 +199,7 @@ try {
       const row=db.connection.prepare("SELECT c.* FROM memory_skill_candidates c,json_each(c.source_memory_ids_json) s WHERE c.scope_type='bot' AND c.scope_id=? AND c.status IN ('draft','ready') AND s.value=? ORDER BY c.updated_at DESC LIMIT 1").get(b.botId,result.memoryId);
       if(row) { stage("grounded-method-feedback",result); return row; }
     }
-    pendingRequest(feedback,"Real method feedback and grounded candidate");
+    pendingRequest(feedback,"Real method feedback and grounded candidate",true);
   });
   assert(candidate.instructions.includes("VERIFIED_REUSE"),"reviewed method must retain the explicit correction");
   stage("synthetic-candidate-review",{actor:"automated acceptance reviewer, not a human UI click",candidateId:candidate.id,scopeType:candidate.scope_type,scopeId:candidate.scope_id,instructions:candidate.instructions,decision:"approve for one isolated reuse experiment",expectedEvidence:"actual Skill read, second.txt and verification.txt disk bytes"});
@@ -200,7 +211,7 @@ try {
   stage("reviewed-method-enabled",{candidate,approved,selection:applied});
   const second = await agent.sendBotMessage({botId:a.botId,requestId:randomUUID(),text:"请委派验收B一个新的独立事项，按它已经审核启用的方法处理同一目录：读取final.txt，然后生成second.txt，内容逐字为 SECOND_GAMMA，核验并登记全部本次输出。这是方法复用验收，必须先读取实际挂载Skill，再照方法执行，不得只口头说已用。"});
   stage("second-work-request",second);
-  const next: any = await wait("second delegated Work",()=> { const row=db.connection.prepare("SELECT * FROM works WHERE owner_bot_id=? AND work_id<>? ORDER BY created_at DESC LIMIT 1").get(b.botId,work.work_id); if(row)return row; pendingRequest(second,"Second Work"); });
+  const next: any = await wait("second delegated Work",()=> { const row=db.connection.prepare("SELECT * FROM works WHERE owner_bot_id=? AND work_id<>? ORDER BY created_at DESC LIMIT 1").get(b.botId,work.work_id); if(row)return row; pendingRequest(second,"Second Work",true); });
   await wait("second Work completed",()=>works.getWork(next.work_id)?.lifecycle==="closed");
   assert.equal(works.getWork(next.work_id)?.closureConclusion,"succeeded");
   assert.equal(readFileSync(join(workspace,"second.txt"),"utf8"),"SECOND_GAMMA");

@@ -39,6 +39,7 @@ function gate(tag: string) {
   const value = { entered: false, release, wait }; gates.set(tag, value); return value;
 }
 const requests: Array<{ tag: string; model: string; context: Context }> = [];
+let amendmentTarget = "";
 let sequence = 0, throwFreeze = false, freezeGate: ReturnType<typeof gate> | undefined, mutatingMcpCalls = 0;
 models.registerProvider("peer43", { api: "openai-completions", apiKey: "fixture-only", baseUrl: "http://127.0.0.1:1",
   models: ["a", "b", "c", "ordinary"].map(id => ({ id, name: id, reasoning: false, input: ["text"], contextWindow: 128000,
@@ -77,6 +78,16 @@ models.registerProvider("peer43", { api: "openai-completions", apiKey: "fixture-
           : results.length === 1 ? [{ type: "toolCall", id: `mcp-write-${++sequence}`, name: "mcp_call_tool", arguments: { server: "fixture", tool: "write_file", arguments: { path: "evidence.txt", content: "bad" } } }]
           : results.length === 2 ? [{ type: "toolCall", id: `evidence-${++sequence}`, name: "read", arguments: { path: join(root, "b", "evidence.txt") } }]
           : [{ type: "text", text: `B 已核对现有成果 CASE:review-read ${results.map(result => textOf(result.content)).join(" ")}` }];
+      }
+      if (tag === "amend-real-source" && model.id === "b") {
+        const lastUser = context.messages.findLastIndex(message => message.role === "user");
+        const results = context.messages.slice(lastUser + 1).filter(message => message.role === "toolResult");
+        const current = works.getWork(amendmentTarget)!;
+        content = results.length === 0 ? [{ type: "toolCall", id: `query-${++sequence}`, name: "work_query_status", arguments: { view: "detail", workId: amendmentTarget } }]
+          : results.length === 1 ? [{ type: "toolCall", id: `amend-${++sequence}`, name: "work_amend", arguments: {
+            workId: amendmentTarget, versionGuard: { expectedStateVersion: current.stateVersion, expectedIntentRevision: current.intentRevision, expectedOwnerEpoch: current.ownerEpoch },
+            goalDescription: "Updated through B foreground", title: "updated original Work" } }]
+          : [{ type: "text", text: `amend result ${results.map(result => textOf(result.content)).join(" ")}` }];
       }
       const message: AssistantMessage = { role: "assistant", content, stopReason: content.some(part => part.type === "toolCall") ? "toolUse" : "stop",
         api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), usage: usage() };
@@ -176,6 +187,24 @@ try {
     "a rejected Work control cannot cancel the foreground or its returns");
   console.log("PASS #43 invalid Work cancellation leaves the recipient and all return deliveries intact");
 
+  const amendSeed = await command("work-amend-seed");
+  await wait(() => Boolean(service.collaborations.repo.get(LOCAL_USER_ID, amendSeed.id)?.workId), "amend seed Work");
+  amendmentTarget = service.collaborations.repo.get(LOCAL_USER_ID, amendSeed.id)!.workId!;
+  await wait(() => service.messages.message(accepted(amendSeed.id)!.accepted_message_id!)?.status === "completed", "seed foreground finishes");
+  const worksBeforeAmend = count("SELECT COUNT(*) n FROM works");
+  const unrelatedBeforeAmend = JSON.stringify(works.getWork(workId));
+  const amendSource = source(`修改 ${amendmentTarget} 的最终输出为 FINAL_BETA，保留已有部分。CASE:amend-real-source`);
+  const amendRead = z.object({ versionGuard: z.object({ expectedStateVersion: z.number(), expectedIntentRevision: z.number(), expectedOwnerEpoch: z.number() }) }).parse(
+    await service.collaborations.command(amendSource.assistantMessageId, "amend-read", { action: "query", collaborationId: amendSeed.id }));
+  await service.collaborations.command(amendSource.assistantMessageId, "amend-real", { action: "amend", collaborationId: amendSeed.id, versionGuard: amendRead.versionGuard,
+    changes: { goalDescription: "CASE:amend-real-source 修改同一事项，保留已完成文件，不改写旧文件", constraints: ["只修改原 Work（work-truncated），不新建"] } });
+  await wait(() => works.getWork(amendmentTarget)!.intentRevision === 2, "B amendment uses original human target, not shortened peer plan ID");
+  assert.equal(count("SELECT COUNT(*) n FROM bot_work_user_inputs WHERE work_id=? AND source_message_id=?", amendmentTarget, amendSource.userMessageId), 1);
+  assert.equal(works.getWork(amendmentTarget)!.ownerBotId, "b");
+  assert.equal(count("SELECT COUNT(*) n FROM works WHERE work_id=?", amendmentTarget), 1);
+  assert.equal(count("SELECT COUNT(*) n FROM works"), worksBeforeAmend, "amendment cannot create an extra Work");
+  assert.equal(JSON.stringify(works.getWork(workId)), unrelatedBeforeAmend, "unrelated Work remains unchanged");
+  console.log("PASS #43 recipient amendment targets verified human Work ID despite shortened ID and file-preservation wording in peer plan");
   const publicFeedback = { workId, eventId: "public-report", kind: "result" as const, category: "result" as const,
     intentRevision: work.intentRevision, inputSnapshotId: work.inputSnapshotId,
     report: { title: "经过核验的阶段成果", summary: "PUBLIC_REPORT CASE:public-result", artifactRefs: [], milestone: true as const,
