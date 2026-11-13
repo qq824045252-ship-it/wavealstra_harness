@@ -39,9 +39,9 @@ export function BusinessGatewayRegistration({ provider, onConnected }: { provide
     } catch { if (generation === epoch.current && request === revision.current) setState(s => ({ ...s, message: "操作失败，请重试。未完成的扫码不会覆盖原有保存配置。" })); }
     finally { if (request === revision.current) { lock.current = false; if (generation === epoch.current) setBusy(false); } }
   };
-  return <section aria-label={`${provider === "feishu" ? "飞书" : "钉钉"}扫码接入`}>
+  return <section aria-label={`${provider === "feishu" ? "飞书" : provider === "wecom" ? "企业微信" : "钉钉"}扫码接入`}>
     <p>仅用于尚未配置的渠道。已有配置或连接不会被扫码创建替换，请使用现有机器人管理。</p>
-    <p>{provider === "feishu" ? "仅支持中国大陆飞书。扫码在飞书官方创建机器人，本人身份默认加入允许名单。国际 Lark 请勿使用此入口。" : "使用钉钉官方创建流程，授权页面可能显示 openClaw 品牌。扫码后还需补全企业 ID、机器人编码及允许的用户。"}</p>
+    <p>{provider === "feishu" ? "仅支持中国大陆飞书。扫码在飞书官方创建机器人，本人身份默认加入允许名单。国际 Lark 请勿使用此入口。" : provider === "wecom" ? "实验性：沿用 Hermes 的企业微信管理控制台扫码流程，连接企业微信官方域名；这不是稳定公开 API，可能随平台变化失效。扫码后必须补充允许的用户 ID，失败可改用手工配置。" : "使用钉钉官方创建流程，授权页面可能显示 openClaw 品牌。扫码后还需补全企业 ID、机器人编码及允许的用户。"}</p>
     {!active(state) && <><label><input type="checkbox" checked={approved} onChange={e => setApproved(e.target.checked)} />同意在官方平台创建机器人，并在本机加密保存凭据用于持续连接</label><button type="button" disabled={!approved || busy} onClick={() => void run("start")}>扫码创建并接入</button></>}
     <p role="status">{state.message}</p>
     {image && <img src={image} width={240} height={240} alt="官方机器人创建二维码" />}

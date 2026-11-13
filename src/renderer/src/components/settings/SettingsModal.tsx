@@ -907,6 +907,7 @@ function AssistantTab(): React.JSX.Element {
 
       <GatewayBlock
         channelId="wecom-default"
+        registration={onConnected => <BusinessGatewayRegistration provider="wecom" onConnected={onConnected}/> }
         title="企微"
         desc="smart：官方 Smart Robot 长连接，填写 Bot ID 和 Secret；callback：原自建应用回调，填写下方 Corp ID、Agent ID、Secret、Token 和 AES Key，需公网 /wecom。Smart Robot 当前支持文本收取/Markdown 回复，暂不支持主动 Work 通知、富媒体或原生流式。"
         fields={[

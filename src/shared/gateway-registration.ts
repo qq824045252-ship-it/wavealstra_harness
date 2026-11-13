@@ -1,5 +1,5 @@
 /** Public device-registration view. Secrets and provider polling tickets never cross IPC. */
-export type GatewayRegistrationProvider = "feishu" | "dingtalk";
+export type GatewayRegistrationProvider = "feishu" | "dingtalk" | "wecom";
 export type GatewayRegistrationField = "corpId" | "robotCode" | "allowUsers";
 export interface GatewayRegistrationDetails {
   corpId?: string;

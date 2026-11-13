@@ -315,6 +315,8 @@ const HEADLESS_TESTS = new Set([
   "test:bot-work-method-feedback",
   "test:bot-cross-channel-contract",
   "test:gateway-bot-binding",
+  "test:wecom-registration",
+  "test:wecom-registration-ui",
   "test:business-gateway-registration",
   "test:business-gateway-registration-ui",
   "test:gateway-registration-card-ui",

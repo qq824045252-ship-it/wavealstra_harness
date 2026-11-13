@@ -126,6 +126,7 @@ export class BusinessBotRegistration {
     if (allowUsers.length > 100) throw new Error("允许的用户过多");
     const config = this.options.provider === "feishu"
       ? { appId: credentials.clientId, appSecret: credentials.clientSecret, transport: "websocket", allowUsers }
+      : this.options.provider === "wecom" ? { botId: credentials.clientId, secret: credentials.clientSecret, mode: "smart", allowUsers }
       : { clientId: credentials.clientId, clientSecret: credentials.clientSecret, corpId: value(credentials.corpId) || value(details.corpId), robotCode: value(credentials.robotCode) || value(details.robotCode), allowUsers };
     this.state = { state: "binding", sessionId, message: "正在加密保存并验证连接" };
     const finishing = (async () => {

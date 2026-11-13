@@ -1,5 +1,5 @@
 import { BusinessBotRegistration } from "./BusinessBotRegistration";
-import { createFeishuRegistrationDriver, createDingTalkRegistrationDriver } from "./BusinessBotRegistrationDrivers";
+import { createFeishuRegistrationDriver, createDingTalkRegistrationDriver, createWecomRegistrationDriver } from "./BusinessBotRegistrationDrivers";
 import type { GatewayRegistrationProvider, GatewayRegistrationDetails } from "../../shared/gateway-registration";
 import { createHash, randomUUID } from "node:crypto";
 import { GatewayPlatformRegistry, gatewayCapabilities } from "./GatewayPlatformRegistry";
@@ -190,9 +190,9 @@ export class GatewayService {
       onAuthorized: (credentials, assertCurrent, signal) => this.acceptWeixinQrLogin(credentials, assertCurrent, signal),
     };
     this.weixinQrLogin = options.weixinQrLoginFactory?.(weixinQrOptions) ?? new WeixinQrLogin(weixinQrOptions);
-    for (const provider of ["feishu", "dingtalk"] as const) {
+    for (const provider of ["feishu", "dingtalk", "wecom"] as const) {
       this.businessQr.set(provider, new BusinessBotRegistration({ provider,
-        driver: provider === "feishu" ? createFeishuRegistrationDriver() : createDingTalkRegistrationDriver(),
+        driver: provider === "feishu" ? createFeishuRegistrationDriver() : provider === "wecom" ? createWecomRegistrationDriver() : createDingTalkRegistrationDriver(),
         onAuthorized: (config, current, signal) => this.acceptBusinessRegistration(provider, config, current, signal),
       }));
     }
@@ -207,11 +207,11 @@ export class GatewayService {
   }
 
   private registration(provider: GatewayRegistrationProvider): BusinessBotRegistration {
-    if (provider !== "feishu" && provider !== "dingtalk") throw new Error("不支持的扫码渠道");
+    if (provider !== "feishu" && provider !== "dingtalk" && provider !== "wecom") throw new Error("不支持的扫码渠道");
     return this.businessQr.get(provider)!;
   }
   private assertBusinessRegistrationEmpty(provider: GatewayRegistrationProvider): void {
-    const adapter = provider === "feishu" ? this.feishu : this.dingtalk;
+    const adapter = provider === "feishu" ? this.feishu : provider === "wecom" ? this.wecom : this.dingtalk;
     const stored = this.db.listGatewayChannels().find(channel => channel.id === adapter.id);
     if (adapter.isConnected() || stored?.connected || (stored && stored.configJson.trim() !== "" && stored.configJson.trim() !== "{}")) {
       throw new Error("此渠道已有配置或连接，请管理现有机器人；扫码创建不会替换已有账号");
@@ -245,7 +245,7 @@ export class GatewayService {
     return registration.getState();
   }
   private acceptBusinessRegistration(provider: GatewayRegistrationProvider, input: Record<string, unknown>, current: () => void, signal: AbortSignal): Promise<void> {
-    const adapter = provider === "feishu" ? this.feishu : this.dingtalk;
+    const adapter = provider === "feishu" ? this.feishu : provider === "wecom" ? this.wecom : this.dingtalk;
     const epoch = this.lifecycleEpoch;
     this.assertBusinessRegistrationEmpty(provider);
     const owner = this.beginChannelOperation(adapter.id);
@@ -610,6 +610,7 @@ export class GatewayService {
     this.platforms.suspend();
     await this.cancelBusinessRegistration("feishu");
     await this.cancelBusinessRegistration("dingtalk");
+    await this.cancelBusinessRegistration("wecom");
     await this.cancelQQQrLogin();
     await this.cancelWeixinQrLogin();
     for (const a of this.adapters.values()) {
@@ -674,6 +675,7 @@ export class GatewayService {
   private async connectChannel(channelId: string, config: Record<string, unknown>): Promise<GatewayStatusDto> {
     if (channelId === this.feishu.id) await this.cancelBusinessRegistration("feishu");
     if (channelId === this.dingtalk.id) await this.cancelBusinessRegistration("dingtalk");
+    if (channelId === this.wecom.id) await this.cancelBusinessRegistration("wecom");
     if (channelId === this.weixin.id) throw new Error("微信请使用专用扫码授权入口，不接收手工提交的凭据");
     if (channelId === this.qq.id) throw new Error("QQ 请使用专用扫码授权入口，不接收手工提交的凭据");
     const epoch = this.lifecycleEpoch;
@@ -771,6 +773,7 @@ export class GatewayService {
     this.platforms.pause(channelId);
     if (channelId === this.feishu.id) await this.cancelBusinessRegistration("feishu");
     if (channelId === this.dingtalk.id) await this.cancelBusinessRegistration("dingtalk");
+    if (channelId === this.wecom.id) await this.cancelBusinessRegistration("wecom");
     if (channelId === this.qq.id) await this.cancelQQQrLogin();
     if (channelId === this.weixin.id) await this.cancelWeixinQrLogin();
     if (!current()) return this.status();

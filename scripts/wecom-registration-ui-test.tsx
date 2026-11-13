@@ -1,0 +1,18 @@
+import assert from "node:assert/strict";
+import {parseHTML} from "linkedom";
+import {act} from "react";
+import Business from "../src/renderer/src/components/settings/BusinessGatewayRegistration";
+const {window:w,document:d}=parseHTML("<html><body></body></html>");Object.assign(globalThis,{window:w,document:d,IS_REACT_ACT_ENVIRONMENT:true});
+const {createRoot}=await import("react-dom/client");const tick=async()=>{await act(async()=>{await new Promise(r=>setTimeout(r,20));});};
+let initial!:(value:any)=>void, lateStart!:(value:any)=>void;const cancelled:string[]=[];let starts=0,connected=0;
+Object.assign(w,{api:{gateway:{registrationState:()=>new Promise(r=>initial=r),registrationStart:()=>{starts++;return new Promise(r=>lateStart=r);},registrationCancel:async(_:string,id:string)=>{cancelled.push(id);return{state:"cancelled",sessionId:id,message:"cancelled"};}}}});
+const host=d.body.appendChild(d.createElement("div")),root=createRoot(host);
+await act(async()=>root.render(<Business provider="wecom" onConnected={()=>connected++}/>));await tick();
+assert.equal(starts,0);assert(host.textContent?.includes("不是稳定公开 API"));
+const button=host.querySelector("button") as HTMLButtonElement;assert(button.disabled);
+await act(async()=>{const input=host.querySelector("input") as HTMLInputElement;input.checked=true;input.dispatchEvent(new w.Event("click",{bubbles:true}));});
+await act(async()=>button.click());assert.equal(starts,1);
+await act(async()=>initial({state:"connected",message:"stale",sessionId:"old"}));assert.equal(connected,0);
+await act(async()=>root.unmount());
+await act(async()=>lateStart({state:"waiting",sessionId:"new",message:"waiting",qrUrl:"https://login.dingtalk.com/qr"}));await tick();assert.deepEqual(cancelled,["new"]);
+console.log("PASS business registration UI: no automatic account creation, consent required, stale state ignored, late unmounted start cancelled");

@@ -84,3 +84,56 @@ export function createDingTalkRegistrationDriver(fetcher: typeof fetch = fetch):
     },
   };
 }
+
+/** Hermes upstream adapter.py blob 708d5566e00f54d78d79ec138dbbdd587d0a8e7b.
+ * Official-host admin-console endpoints, NOT a stable public API. The upstream
+ * compatibility source is disclosed in UI; no cookies or existing account token
+ * are obtained. The auth URL must remain on official WeCom/WeChat HTTPS hosts.
+ */
+export function createWecomRegistrationDriver(fetcher: typeof fetch = fetch): RegistrationDriver {
+  const get = async (url: string, signal: AbortSignal): Promise<Record<string, unknown>> => {
+    const response = await fetcher(url, { method: "GET", redirect: "error",
+      signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
+      headers: { Accept: "application/json", "User-Agent": "MyBuddy/1.0" } });
+    if (!response.ok || !response.body) throw new Error("WeCom registration unavailable");
+    const reader = response.body.getReader(); const chunks: Uint8Array[] = []; let size = 0;
+    try {
+      while (true) { const next = await reader.read(); if (next.done) break; size += next.value.byteLength; if (size > 65_536) throw new Error("oversized response"); chunks.push(next.value); }
+    } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+    const result = object(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+    if (Object.hasOwn(result, "errcode") && result.errcode !== 0 && result.errcode !== "0") throw new Error("WeCom registration returned an error");
+    return result;
+  };
+  return {
+    async begin(signal) {
+      const response = await get("https://work.weixin.qq.com/ai/qc/generate?source=hermes", signal);
+      const data = object(response.data); const scode = string(data.scode);
+      if (!scode || scode.length > 4096) throw new Error("invalid WeCom registration code");
+      return { token: { scode }, qrUrl: qrUrl(data.auth_url, ["weixin.qq.com"]), expiresInSeconds: 300, intervalSeconds: 3 };
+    },
+    async poll(ticket, signal): Promise<RegistrationPoll> {
+      const scode = string(object(ticket.token).scode); if (!scode || scode.length > 4096) throw new Error("invalid WeCom registration ticket");
+      const response = await get(`https://work.weixin.qq.com/ai/qc/query_result?scode=${encodeURIComponent(scode)}`, signal);
+      const data = object(response.data);
+      if (Object.hasOwn(response, "errcode") && response.errcode !== 0 && response.errcode !== "0") throw new Error("WeCom registration returned an error");
+      const status = string(data.status).toLowerCase();
+      if (!status) throw new Error("WeCom registration response missing status");
+      if (["expired", "timeout"].includes(status)) return { state: "expired" };
+      if (["error", "failed", "failure", "denied", "cancelled", "canceled"].includes(status)) throw new Error("WeCom registration was denied or failed");
+      if (status !== "success") {
+        // Unknown states get a short compatibility grace, never authorization.
+        if (!["waiting", "pending", "scanned"].includes(status)) {
+          const token = object(ticket.token); const attempts = Number(token.unknownStatusPolls ?? 0) + 1;
+          token.unknownStatusPolls = attempts;
+          if (attempts >= 3) throw new Error("Unsupported WeCom registration status");
+        }
+        return { state: "pending" };
+      }
+      const info = object(data.bot_info); const clientId = string(info.botid) || string(info.bot_id), clientSecret = string(info.secret);
+      if (!clientId || !clientSecret) throw new Error("WeCom scan succeeded without bot credentials");
+      // Upstream does not return a verified user identity. Explicit allowlist
+      // completion is mandatory before any connection/credential persistence.
+      return { state: "authorized", credentials: { clientId, clientSecret } };
+    },
+  };
+}

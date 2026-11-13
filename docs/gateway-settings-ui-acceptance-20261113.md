@@ -29,3 +29,9 @@ Base: `cf8ccfa7`. Empty channels offer official robot-creation QR onboarding fir
 PASS: full node/web TypeScript checks; official-protocol fixtures and registration state-machine tests; registration component DOM test; single-card DOM integration (including status-before-result ordering and manual-connect/disconnect preservation); extracted production GatewayService-method race/identity/persistence tests; existing generic channel and binding DOM tests; test classification audit.
 
 Independent UI review found and fixed early status-driven unmount before registration completion, and missing saved-config state after manual connection. Regression coverage was added for both. The protocol/service tests use fixtures and do not establish live official platform acceptance. No real platform account or app was created during this work. Packaging/full-suite/real-provider QR acceptance were not run.
+
+## Follow-up: WeCom Smart Robot QR registration
+
+Integrated on `19498268`. The official WeCom creation flow is available for an empty channel, with explicit consent and required allowed-user completion before connecting. Existing configuration protection, cancellation/generation checks and main-process-only credential handling are retained. Expired tickets, explicit errors, malformed success responses and bounded unknown statuses fail safely rather than authorizing a connection.
+
+PASS on integrated source: complete node/web typechecks; WeCom protocol/error classification fixtures; WeCom UI; existing Feishu/DingTalk protocol/UI; single-card registration regression; production GatewayService-method fixture; test classification audit. Independent review passed. No real WeCom account enrollment, official live handshake or packaging was performed; fixture success is not real-platform acceptance.
