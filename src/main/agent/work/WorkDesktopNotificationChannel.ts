@@ -28,6 +28,7 @@ export function createDesktopWorkChannel(notifications: NotificationService): Wo
         body: notification.body,
         sourceType: "task",
         sourceId: notification.workId,
+        target: { kind: "work", workId: notification.workId },
         dedupeKey,
         createdAt: notification.createdAt,
       });

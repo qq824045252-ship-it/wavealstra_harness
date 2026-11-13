@@ -152,6 +152,7 @@ export interface AppActions {
   setBotComposerSelection: (scope: string, selection: import("@shared/bot-conversation").BotComposerSelection) => void;
   submitBotDraft: (options?: { retryRequestId?: string; editRejectedRequestId?: string; referenceMessageId?: string }) => Promise<void>;
   loadOlderBotHistory: (botId: string, teamId?: string) => Promise<void>;
+  openNotificationConversation: (target: Extract<import("../../../../shared/notification").NotificationActivationTarget, { kind: "botConversation" }>, signal?: AbortSignal) => Promise<void>;
   refreshBotHistory: (botId: string, teamId?: string) => Promise<void>;
   cancelBotSend: (botId: string, requestId: string) => Promise<void>;
   archiveBotConversation: (botId: string, teamId?: string) => Promise<void>;

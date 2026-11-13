@@ -5,6 +5,7 @@ import {
   normalizeNotificationPreferences,
   notificationPreferenceEnabled,
   type NotificationChangedEvent,
+  type NotificationActivationTarget,
   type NotificationDto,
   type NotificationLevel,
   type NotificationListRequest,
@@ -14,6 +15,7 @@ import {
 import { NotificationRepository } from "./NotificationRepository";
 
 export interface PublishNotificationInput {
+  target?: NotificationActivationTarget;
   type: NotificationType;
   level: NotificationLevel;
   title: string;
@@ -46,7 +48,7 @@ export class NotificationService {
   /** in-app 关闭时没有 DB dedupe，仍需挡住同一 lifecycle event 的重复 desktop delivery。 */
   private readonly transientDedupe = new Map<string, number>();
 
-  constructor(db: AppDatabase, settingsStore = new AppSettingsStore()) {
+  constructor(private readonly db: AppDatabase, settingsStore = new AppSettingsStore()) {
     this.repository = new NotificationRepository(db.connection);
     this.settingsStore = settingsStore;
     this.repository.cleanup();
@@ -59,6 +61,25 @@ export class NotificationService {
   setDesktopDelivery(presenter: DesktopPresenter | null, foregroundProbe?: ForegroundProbe | null): void {
     this.desktopPresenter = presenter;
     this.foregroundProbe = foregroundProbe ?? null;
+  }
+
+  resolveActivation(id: string): NotificationActivationTarget | null {
+    const target = this.repository.resolveActivation(id);
+    if (!target) return null;
+    // Existence is rechecked at click time; Bot history/getWork enforce user scope
+    // again at the renderer-facing API boundary before displaying any data.
+    const db = this.db.connection;
+    try {
+      switch (target.kind) {
+        case "task": return db.prepare("SELECT 1 FROM tasks WHERE id = ?").get(target.taskId) ? target : null;
+        case "project": return db.prepare("SELECT 1 FROM projects WHERE id = ?").get(target.projectId) ? target : null;
+        case "work": return db.prepare("SELECT 1 FROM works w JOIN bots b ON b.bot_id = w.owner_bot_id WHERE w.work_id = ?").get(target.workId) ? target : null;
+        case "botConversation": return db.prepare(`SELECT 1 FROM bot_conversations c JOIN bots b ON b.bot_id = c.bot_id
+          WHERE c.conversation_id = ? AND c.bot_id = ? AND c.team_id IS ?`)
+          .get(target.conversationId, target.botId, target.teamId ?? null) ? target : null;
+        default: return target;
+      }
+    } catch { return null; }
   }
 
   list(request: NotificationListRequest = {}): NotificationDto[] {
@@ -107,6 +128,7 @@ export class NotificationService {
     const normalizedBody = input.body?.trim().slice(0, 1200) || undefined;
     const record: NotificationDto = {
       id: randomUUID(),
+      target: input.target,
       type: input.type,
       level: input.level,
       title: normalizedTitle,
@@ -133,6 +155,8 @@ export class NotificationService {
     }
 
     if (preferences.desktopEnabled && this.shouldDeliverDesktop(effective, preferences.desktopBackgroundOnly)) {
+      // Persist before delivery, including when the bell is disabled.
+      this.repository.saveActivation(effective);
       try {
         this.desktopPresenter?.(effective);
       } catch (error) {

@@ -28,8 +28,9 @@ export function createBotConversationState(): BotConversationUiState {
 }
 
 export function createBotConversationActions({ get, set, getApi }: AppContext): Pick<AppActions,
-  "setBotComposerSelection" | "forgetDeletedBot" | "setBotAttachments" | "setBotDraft" | "submitBotDraft" | "setActiveBotId" | "setActiveTeam" | "refreshBotHistory" | "loadOlderBotHistory" | "cancelBotSend" | "archiveBotConversation"> {
+  "openNotificationConversation" | "setBotComposerSelection" | "forgetDeletedBot" | "setBotAttachments" | "setBotDraft" | "submitBotDraft" | "setActiveBotId" | "setActiveTeam" | "refreshBotHistory" | "loadOlderBotHistory" | "cancelBotSend" | "archiveBotConversation"> {
   const histories = new Map<string, number>();
+  const notificationConversations = new Map<string, string>();
   const olderReads = new Map<string, symbol>();
   const pendingOffsets = new Map<string, number>();
   const persist = () => {
@@ -37,6 +38,31 @@ export function createBotConversationActions({ get, set, getApi }: AppContext): 
       requests: Object.fromEntries(Object.entries(get().botPendingSends).map(([botId, pending]) => [botId, pending.request])) })); } catch { /* Host receipt remains authoritative. */ }
   };
   return {
+    openNotificationConversation: async (target, signal) => {
+      signal?.throwIfAborted();
+      const api = getApi()?.botWork;
+      if (!api) throw new Error("主机离线，无法打开通知来源");
+      const epoch = get().botNavigationEpoch + 1;
+      set({ botNavigationEpoch: epoch });
+      const bots = await api.listBots();
+      if (!bots.some(bot => bot.botId === target.botId)) throw new Error("通知对应的 Bot 已不可用");
+      let team: import("../../../../../shared/bot-work-team").WorkTeamTemplateDto | null = null;
+      if (target.teamId) {
+        const result = await api.teamControl({ kind: "list_templates" });
+        team = result.ok ? result.templates?.find(item => item.templateId === target.teamId && item.ownerBotId === target.botId) ?? null : null;
+        if (!team) throw new Error("通知对应的团队已不可用");
+      }
+      const history = await api.history({ botId: target.botId, teamId: target.teamId, conversationId: target.conversationId });
+      if (history.botId !== target.botId || history.teamId !== target.teamId || history.conversationId !== target.conversationId) throw new Error("通知来源会话已不可用");
+      signal?.throwIfAborted();
+      if (get().botNavigationEpoch !== epoch) throw new Error("通知导航已被新的选择取代，请重新点击通知");
+      const key = botConversationScope(target.botId, target.teamId);
+      histories.set(key, (histories.get(key) ?? 0) + 1);
+      notificationConversations.set(key, target.conversationId);
+      set(state => ({ page: "bot", activeBotId: target.botId, activeTeam: team, selectedWorkId: null, historicalTeamWork: null,
+        botHistories: { ...state.botHistories, [key]: history }, botDraft: state.botDrafts[key] ?? "",
+        botHistoryPages: { ...state.botHistoryPages, [key]: { loading: false } } }));
+    },
     setBotComposerSelection: (scope, selection) => { set(state => ({ botComposerDrafts: {...state.botComposerDrafts, [scope]: selection} })); persist(); },
     forgetDeletedBot: botId => {
       olderReads.delete(botId);
@@ -59,6 +85,7 @@ export function createBotConversationActions({ get, set, getApi }: AppContext): 
       persist();
     },
     setActiveTeam: team => {
+      notificationConversations.clear();
       try { if (team) localStorage.setItem("mybuddy.active-team", team.templateId); else localStorage.removeItem("mybuddy.active-team"); } catch {}
       if (!team) { set(state => ({ activeTeam: null, historicalTeamWork: null, botNavigationEpoch: state.botNavigationEpoch + 1 })); return; }
       const key = botConversationScope(team.ownerBotId, team.templateId);
@@ -66,6 +93,7 @@ export function createBotConversationActions({ get, set, getApi }: AppContext): 
       void get().refreshBotHistory(team.ownerBotId, team.templateId);
     },
     setActiveBotId: botId => {
+      notificationConversations.clear();
       try { localStorage.removeItem("mybuddy.active-team"); } catch {}
       set(state => ({ historicalTeamWork: null, botNavigationEpoch: state.botNavigationEpoch + 1, activeTeam: null, activeBotId: botId, selectedWorkId: null, botDraft: botId ? state.botDrafts[botId] ?? "" : "", botSubmissionNotice: false }));
       if (botId) void get().refreshBotHistory(botId);
@@ -163,7 +191,8 @@ export function createBotConversationActions({ get, set, getApi }: AppContext): 
       const sequence = (histories.get(scopeKey) ?? 0) + 1; histories.set(scopeKey, sequence);
       try {
         const api = getApi(); if (!api) throw new Error("主机离线，消息状态待核对");
-        let history = await api.botWork.history({ botId, teamId });
+        const conversationId = notificationConversations.get(scopeKey);
+        let history = await api.botWork.history({ botId, teamId, conversationId });
         if (histories.get(scopeKey) !== sequence || history.botId !== botId || history.teamId !== teamId) return;
         const previous = get().botHistories[scopeKey];
         // A burst larger than the latest page must not create an invisible gap.
@@ -171,7 +200,7 @@ export function createBotConversationActions({ get, set, getApi }: AppContext): 
         const newest = previous?.messages.at(-1)?.ordinal;
         if (previous?.conversationId === history.conversationId && newest !== undefined && history.before
           && history.messages[0]?.ordinal > newest) {
-          history = await api.botWork.history({ botId, teamId, after: newest });
+          history = await api.botWork.history({ botId, teamId, conversationId, after: newest });
           if (histories.get(scopeKey) !== sequence || history.botId !== botId || history.teamId !== teamId) return;
         }
         set(state => {
@@ -244,6 +273,7 @@ export function createBotConversationActions({ get, set, getApi }: AppContext): 
       const history = get().botHistories[botConversationScope(botId, teamId)];
       if (!history?.conversationId) return;
       await getApi()?.botWork.archiveConversation(botId, history.conversationId);
+      notificationConversations.delete(botConversationScope(botId, teamId));
       await get().refreshBotHistory(botId, teamId);
     },
   };

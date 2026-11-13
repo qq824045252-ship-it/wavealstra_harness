@@ -1,3 +1,4 @@
+import { WindowsNotificationActivation } from "./platform/notification-activation";
 import { normalizeBotAvatar } from "./agent/work/BotAvatarImageDecoder";
 import { BotAvatarIpc } from "../shared/bot-avatar";
 import { createBotAvatarIpcHandler } from "./agent/work/BotAvatarIpc";
@@ -26,7 +27,7 @@ import { HtmlEditIpc, type HtmlEditStart } from "../shared/html-edit";
 import "./pi-bundled-runtime";
 import { randomUUID } from "node:crypto";
 import { closeSync, copyFileSync, existsSync, openSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import { basename, extname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { app, BrowserWindow, crashReporter, dialog, ipcMain, Menu, nativeImage, nativeTheme, powerMonitor, protocol, shell } from "electron";
@@ -365,6 +366,20 @@ let externalCliMemoryBridge: ExternalCliMemoryBridge | null = null;
 let remoteAccessController: RemoteAccessController | null = null;
 let trayService: TrayService;
 let notificationService: NotificationService;
+let notificationActivation: WindowsNotificationActivation | undefined;
+const earlyNotificationArguments: string[] = [];
+const pendingNotificationActivations: string[] = [];
+function activateDesktopNotification(id: string): void {
+  if (!pendingNotificationActivations.includes(id)) pendingNotificationActivations.push(id);
+  if (pendingNotificationActivations.length > 100) pendingNotificationActivations.shift();
+  showClientInterface();
+  broadcastToWindows(NotificationIpc.activated, undefined);
+}
+function presentDesktopNotification(notice: import("../shared/notification").NotificationDto): void {
+  const toastXml = notificationActivation?.toast(notice.id, notice.title, notice.body);
+  trayService.showNotification({ ...notice, toastXml, onClick: () => activateDesktopNotification(notice.id) });
+}
+
 let taskLifecycle: TaskExecutionWorkspaceLifecycle;
 let archivedContentDeletion: ArchivedContentDeletion;
 let artifactDomainService: ReturnType<typeof createArtifactDomain>["service"];
@@ -425,7 +440,8 @@ if (!holdsInstanceLock) {
   app.quit();
 } else {
   app.on("second-instance", (_event, argv) => {
-    if (!argv.includes(RESIDENT_HOST_ARGUMENT)) showClientInterface();
+    if (!notificationActivation) earlyNotificationArguments.push(...argv);
+    if (!notificationActivation?.accept(argv) && !argv.includes(RESIDENT_HOST_ARGUMENT)) showClientInterface();
   });
 }
 /** Native Surface 唯一显示决策层（V3.5 Wave 4A §75）：Renderer intent → Coordinator → PreviewHost → WCV */
@@ -719,12 +735,27 @@ function createWindow(initialTheme: AppTheme = "light"): void {
     residentEnabled: () => residentLifecycle.resident || agentService.getAppSettings().residentHostEnabled === true });
   trayService.setCloseToTray(agentService.getAppSettings().closeToTray !== false);
   notificationService?.setDesktopDelivery(
-    (notice) => trayService.showNotification({ title: notice.title, body: notice.body }),
+    presentDesktopNotification,
     () => win.isVisible() && win.isFocused(),
   );
 }
 
 function registerIpc(): void {
+  ipcMain.handle(NotificationIpc.activate, (event, id: string) => {
+    if (!isMainAppWindowRequest(event, botManagementWindow, process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href) || typeof id !== "string" || !/^[0-9a-f-]{36}$/i.test(id)) return;
+    activateDesktopNotification(id);
+  });
+  ipcMain.handle(NotificationIpc.consumeActivation, (event) => {
+    if (!isMainAppWindowRequest(event, botManagementWindow, process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href)) return null;
+    const notificationId = pendingNotificationActivations[0];
+    if (!notificationId) return null;
+    return { notificationId, target: notificationService.resolveActivation(notificationId) };
+  });
+  ipcMain.handle(NotificationIpc.acknowledgeActivation, (event, id: string) => {
+    if (!isMainAppWindowRequest(event, botManagementWindow, process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href)) return;
+    if (pendingNotificationActivations[0] === id) pendingNotificationActivations.shift();
+  });
+
   ipcMain.handle(NotificationIpc.list, (_event, request?: NotificationListRequest) => notificationService.list(request));
   ipcMain.handle(NotificationIpc.unreadCount, () => notificationService.unreadCount());
   ipcMain.handle(NotificationIpc.markRead, (_event, id: string) => notificationService.markRead(id));
@@ -2787,6 +2818,19 @@ app.whenReady().then(async () => {
   }
   // Windows 专属初始化（AppUserModelID）收在 platform/app.ts；其它平台 no-op。
   applyPlatformAppIdentity(app);
+  const notificationEnvironment: Record<string, string> = {};
+  for (const key of ["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "PI_CODING_AGENT_DIR"]) {
+    const value = process.env[key];
+    if (value !== undefined) notificationEnvironment[key] = value;
+  }
+  notificationActivation = new WindowsNotificationActivation(app, {
+    execPath: process.execPath, appPath: app.getAppPath(), appName: app.getName(), userData: app.getPath("userData"),
+    home: homedir(), entry: join(__dirname, "index.js"), packaged: app.isPackaged,
+    rendererUrl: process.env.ELECTRON_RENDERER_URL, environment: notificationEnvironment,
+  }, activateDesktopNotification);
+  notificationActivation.accept(process.argv);
+  notificationActivation.accept(earlyNotificationArguments.splice(0));
+
 
   getMyBuddyDir();
   getPluginStorage();
@@ -3439,6 +3483,7 @@ app.whenReady().then(async () => {
       broadcastToWindows(BotWorkIpc.messageChanged, delivery.event);
       notificationService.publish({ type: "reminder.due", level: "info", title: `⏰ ${delivery.title}`,
         body: delivery.body, sourceType: "automation", sourceId: delivery.jobId,
+        target: { kind: "botConversation", botId: delivery.event.botId, teamId: delivery.event.teamId, conversationId: delivery.event.conversationId },
         dedupeKey: delivery.deliveryId });
     },
   );
@@ -3523,7 +3568,7 @@ app.whenReady().then(async () => {
     trayService.initialize(null, { onShow: showClientInterface,
       onExitInterface: () => residentLifecycle.exitInterface(), onStopAssistant: () => residentLifecycle.stop(),
       residentEnabled: () => true });
-    notificationService?.setDesktopDelivery(notice => trayService.showNotification({ title: notice.title, body: notice.body }), () => false);
+    notificationService?.setDesktopDelivery(presentDesktopNotification, () => false);
     console.log(`[ResidentHost] online pid=${process.pid} storage=${getMyBuddyDir()}`);
   }
   workNotificationHost.start();

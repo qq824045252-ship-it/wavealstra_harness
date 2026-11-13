@@ -754,7 +754,9 @@
     "test:bot-reply-reference-ui": "node scripts/run-tsgo-ui-test.mjs scripts/bot-reply-reference-dom-test.tsx",
     "test:bot-avatar-decoder": "node scripts/build-bot-avatar-test-assets.mjs && esbuild scripts/bot-avatar-decoder-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/bot-avatar-decoder-test.cjs && node scripts/test-guard.mjs out/tests/bot-avatar-decoder-test.cjs",
     "test:bot-avatar-browser": "node scripts/build-bot-avatar-test-assets.mjs && esbuild scripts/bot-avatar-ui-fixture.tsx --bundle --platform=browser --format=iife --jsx=automatic --alias:@=./src/renderer/src --alias:@shared=./src/shared --alias:@/lib/botAvatarAssets=./scripts/bot-avatar-ui-assets.ts --loader:.woff=file --loader:.woff2=file --loader:.ttf=file --outfile=out/tests/bot-avatar-ui-fixture.js && esbuild scripts/bot-avatar-ui-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/bot-avatar-ui-test.mjs && node scripts/test-guard.mjs out/tests/bot-avatar-ui-test.mjs",
-    "test:bot-avatar-containers": "node scripts/build-bot-avatar-test-assets.mjs && esbuild scripts/bot-avatar-container-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/bot-avatar-container-test.cjs && node scripts/test-guard.mjs out/tests/bot-avatar-container-test.cjs"
+    "test:bot-avatar-containers": "node scripts/build-bot-avatar-test-assets.mjs && esbuild scripts/bot-avatar-container-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/bot-avatar-container-test.cjs && node scripts/test-guard.mjs out/tests/bot-avatar-container-test.cjs",
+    "test:notification-activation": "node scripts/test-guard.mjs node --import ./scripts/test-typescript-memory-loader.mjs scripts/notification-activation-test.ts",
+    "test:notification-routing": "node scripts/test-guard.mjs node --import ./scripts/test-typescript-memory-loader.mjs scripts/notification-routing-test.ts"
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.85.0",

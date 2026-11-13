@@ -179,14 +179,14 @@ export class TrayService {
   }
 
   /** NotificationService 的 native delivery：点击桌面通知恢复 MyBuddy。 */
-  showNotification(input: { title: string; body?: string }): void {
+  showNotification(input: { title: string; body?: string; toastXml?: string; onClick?: () => void }): void {
     const title = input.title.trim() || "MyBuddy";
     const body = input.body?.trim() || "";
     try {
       if (Notification.isSupported()) {
-        const notice = new Notification({ title, body, icon: this.behavior.iconAsset });
+        const notice = new Notification({ title, body, icon: this.behavior.iconAsset, ...(input.toastXml ? { toastXml: input.toastXml } : {}) });
         this.liveNotifications.add(notice);
-        notice.on("click", () => this.showMainWindow());
+        notice.on("click", () => { if (input.onClick) input.onClick(); else this.showMainWindow(); });
         notice.on("close", () => this.liveNotifications.delete(notice));
         notice.show();
         return;

@@ -1,3 +1,4 @@
+import { notificationTarget, parseNotificationTarget, type NotificationActivationTarget } from "../../shared/notification";
 import type Database from "better-sqlite3";
 import type {
   NotificationDto,
@@ -44,9 +45,34 @@ function mapRow(row: NotificationSqlRow): NotificationDto {
 }
 
 export class NotificationRepository {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: Database.Database) {
+    // Separate from bell visibility: desktop-only notifications must survive restart.
+    this.db.exec(`CREATE TABLE IF NOT EXISTS notification_activation_targets (
+      notification_id TEXT PRIMARY KEY, target_json TEXT NOT NULL, created_at INTEGER NOT NULL
+    )`);
+  }
+
+  saveActivation(record: NotificationDto): void {
+    const target = notificationTarget(record);
+    if (!target) return;
+    this.db.prepare(`INSERT OR REPLACE INTO notification_activation_targets VALUES (?, ?, ?)`)
+      .run(record.id, JSON.stringify(target), record.createdAt);
+  }
+
+  resolveActivation(id: string, now = Date.now()): NotificationActivationTarget | null {
+    const row = this.db.prepare(`SELECT target_json FROM notification_activation_targets WHERE notification_id = ? AND created_at >= ?`)
+      .get(id, now - 90 * 24 * 60 * 60 * 1000) as { target_json: string } | undefined;
+    if (row) { try { return parseNotificationTarget(JSON.parse(row.target_json)); } catch { return null; } }
+    const legacy = this.db.prepare(`SELECT * FROM notifications WHERE id = ? AND created_at >= ?`)
+      .get(id, now - 90 * 24 * 60 * 60 * 1000) as NotificationSqlRow | undefined;
+    return legacy ? notificationTarget(mapRow(legacy)) : null;
+  }
 
   insert(record: NotificationDto): { record: NotificationDto; inserted: boolean } {
+    return this.db.transaction(() => this.insertRecord(record))();
+  }
+
+  private insertRecord(record: NotificationDto): { record: NotificationDto; inserted: boolean } {
     const result = this.db.prepare(`
       INSERT OR IGNORE INTO notifications (
         id, type, level, title, body, source_type, source_id,
@@ -69,7 +95,7 @@ export class NotificationRepository {
       record.readAt ?? null,
       record.dismissedAt ?? null,
     );
-    if (result.changes > 0) return { record, inserted: true };
+    if (result.changes > 0) { this.saveActivation(record); return { record, inserted: true }; }
     if (record.dedupeKey) {
       const existing = this.findByDedupeKey(record.dedupeKey);
       if (existing) return { record: existing, inserted: false };
@@ -147,6 +173,10 @@ export class NotificationRepository {
   }
 
   cleanup(now = Date.now(), maxAgeMs = 90 * 24 * 60 * 60 * 1000, maxRows = 1000): void {
+    this.db.prepare(`DELETE FROM notification_activation_targets WHERE created_at < ?`).run(now - maxAgeMs);
+    this.db.prepare(`DELETE FROM notification_activation_targets WHERE notification_id IN (
+      SELECT notification_id FROM notification_activation_targets ORDER BY created_at DESC LIMIT -1 OFFSET ?
+    )`).run(maxRows);
     this.db.prepare(`DELETE FROM notifications WHERE created_at < ?`).run(now - maxAgeMs);
     this.db.prepare(`
       DELETE FROM notifications

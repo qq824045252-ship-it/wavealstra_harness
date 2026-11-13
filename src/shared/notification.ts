@@ -6,6 +6,10 @@ export const NotificationIpc = {
   dismiss: "notification:dismiss",
   dismissAll: "notification:dismissAll",
   changed: "notification:changed",
+  activate: "notification:activate",
+  consumeActivation: "notification:consumeActivation",
+  acknowledgeActivation: "notification:acknowledgeActivation",
+  activated: "notification:activated",
 } as const;
 
 export type NotificationType =
@@ -21,7 +25,42 @@ export type NotificationType =
 export type NotificationLevel = "info" | "success" | "warning" | "error";
 export type NotificationSourceType = "task" | "project" | "automation" | "runtime" | "system";
 
+export type NotificationActivationTarget =
+  | { kind: "task"; taskId: string }
+  | { kind: "project"; projectId: string }
+  | { kind: "work"; workId: string }
+  | { kind: "botConversation"; botId: string; teamId?: string; conversationId: string; messageId?: string }
+  | { kind: "automation" }
+  | { kind: "runtime" };
+
+export interface NotificationActivation { notificationId: string; target: NotificationActivationTarget | null }
+
+/** Reject malformed persisted targets rather than interpreting arbitrary navigation input. */
+export function parseNotificationTarget(value: unknown): NotificationActivationTarget | null {
+  if (!value || typeof value !== "object") return null;
+  const v = value as Record<string, unknown>;
+  const id = (key: string) => typeof v[key] === "string" && (v[key] as string).length > 0 && (v[key] as string).length <= 256;
+  switch (v.kind) {
+    case "task": return id("taskId") ? { kind: v.kind, taskId: v.taskId as string } : null;
+    case "project": return id("projectId") ? { kind: v.kind, projectId: v.projectId as string } : null;
+    case "work": return id("workId") ? { kind: v.kind, workId: v.workId as string } : null;
+    case "botConversation": return id("botId") && id("conversationId") && (v.teamId === undefined || id("teamId")) && (v.messageId === undefined || id("messageId"))
+      ? { kind: v.kind, botId: v.botId as string, conversationId: v.conversationId as string, teamId: v.teamId as string | undefined, messageId: v.messageId as string | undefined } : null;
+    case "automation": case "runtime": return { kind: v.kind };
+    default: return null;
+  }
+}
+
+export function notificationTarget(record: Pick<NotificationDto, "target" | "taskId" | "projectId" | "sourceType">): NotificationActivationTarget | null {
+  if (record.target) return parseNotificationTarget(record.target);
+  if (record.taskId) return { kind: "task", taskId: record.taskId };
+  if (record.projectId) return { kind: "project", projectId: record.projectId };
+  if (record.sourceType === "automation" || record.sourceType === "runtime") return { kind: record.sourceType };
+  return null;
+}
+
 export interface NotificationDto {
+  target?: NotificationActivationTarget;
   id: string;
   type: NotificationType;
   level: NotificationLevel;

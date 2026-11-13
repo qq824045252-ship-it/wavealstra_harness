@@ -88,7 +88,7 @@ export async function verifyBotDelegationSources(): Promise<void> {
     assert(!workRequestIncludes(input, "也可以对外发布"), "assistant suggestions never authorize completion actions");
     assert(works.repo.attachmentInput(binding).includes("sales.csv"), "selected earlier attachments reach the execution snapshot");
 
-    console.log("PASS #53 team actual foreground source/attachment execution handoff"); return; const receipts = new Map<string, AgentSubmissionReceipt>();
+    console.log("PASS #53 team actual foreground source/attachment execution handoff"); const receipts = new Map<string, AgentSubmissionReceipt>();
     const native: WorkExecutionPort = {
       prepare: async taskId => ({ taskId, durableStoreKey: taskId, conversationId: taskId, workspaceBinding: root }),
       find: async current => receipts.get(current.bindingId),
@@ -100,15 +100,23 @@ export async function verifyBotDelegationSources(): Promise<void> {
     const errors: unknown[] = [];
     adapter = new WorkExecutionAdapter(works, native, LOCAL_USER_ID, () => true, (_id, error) => errors.push(error));
     await adapter.flush(); await adapter.flush(); assert.deepEqual(errors, []);
+    await works.teams.dispatchPending(app, adapter, () => undefined);
+    await adapter.flush(); await adapter.flush(); assert.deepEqual(errors, []);
+    const completionBinding = works.repo.listBindings(workId).find(item => item.botId === work.ownerBotId);
+    assert(completionBinding, "team scheduler dispatched the owner after member completion");
+    await works.teams.dispatchPending(app, adapter, () => undefined);
     coordinator = new WorkCompletionCoordinator({ db, works, isAuthority: () => true, wake: () => {}, deliver: () => true,
       review: async review => {
         assert(workRequestIncludes(review.context.originalRequest, "逐项核对"), "completion reads the original request after clarification");
-        return { decision: "continue", outcome: "partial", reply: "报告已保留，继续逐项核对。", missing: [{ task: "逐项核对数据", requestExcerpt: "逐项核对" }] };
+        const targets = z.array(z.object({ sourceBindingId:z.string(),botId:z.string(),responsibility:z.string(),intentRevision:z.number(),inputSnapshotId:z.string(),results:z.array(z.object({deliverableId:z.string(),summary:z.string()})) })).parse(review.context.teamContinuationTargets);
+        const target=targets.find(item=>item.botId==="member53"); assert(target);
+        const evidence=target.results.find(item=>item.summary.includes("逐项核对仍缺")); assert(evidence);
+        return { decision: "continue", outcome: "partial", reply: "报告已保留，继续逐项核对。", missing: [{ task: "逐项核对数据", requestExcerpt: "逐项核对", teamTarget:{sourceBindingId:target.sourceBindingId,botId:target.botId,responsibility:target.responsibility,intentRevision:target.intentRevision,inputSnapshotId:target.inputSnapshotId,evidence:{deliverableId:evidence.deliverableId,quote:"逐项核对仍缺"}} }] };
       } });
     coordinator.wake();
-    await wait(() => works.partialResults.plans(workId).length > 0, "real completion accepts a gap from the earlier user requirement");
+    await wait(() => Boolean(db.prepare("SELECT 1 FROM work_team_recovery_attempts WHERE work_id=? AND bot_id=? AND failure_class='semantic_missing' AND state='pending'").get(workId,"member53")), "real completion accepts a gap from the earlier user requirement");
     assert.equal(z.object({ state: z.string() }).parse(db.prepare("SELECT state FROM work_completion_turns WHERE binding_id=?")
-      .get(binding.bindingId)).state, "continued");
+      .get(completionBinding.bindingId)).state, "continued");
 
     const receipt = service.messages.receipt(LOCAL_USER_ID, DEFAULT_BOT_ID, answer.requestId)!;
     const future = service.messages.accept(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID, requestId: "future", conversationId: first.conversationId, text: "未来新要求" });

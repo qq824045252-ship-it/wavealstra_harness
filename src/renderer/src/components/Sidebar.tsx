@@ -1,3 +1,4 @@
+import { deliverNotificationActivation } from "../lib/notificationActivationDelivery";
 import { BotDisplayGroups } from "./BotDisplayGroups";
 import "./workspace/WorkspaceForeground.css";
 import { useBotWorkspaceNavigation, openWorkspaceRequest, foregroundStatus } from "@/hooks/useBotWorkspaceNavigation";
@@ -383,22 +384,71 @@ export default function Sidebar({ onClose, onCreateBot }: { onClose?: () => void
     });
   }, [notificationFilter, refreshNotifications]);
 
+  const [notificationError, setNotificationError] = useState<string | null>(null);
   const openNotificationTarget = useCallback((notification: NotificationDto): void => {
-    if (notification.taskId) {
-      useAppStore.getState().setActiveTask(notification.taskId);
-      return;
-    }
-    if (notification.projectId) {
-      useAppStore.getState().openProjectDetails(notification.projectId);
-      return;
-    }
-    if (notification.sourceType === "automation") {
-      useAppStore.getState().setPage("automation");
-      return;
-    }
-    if (notification.sourceType === "runtime") {
-      useAppStore.getState().setSettingsOpen(true, "extensions");
-    }
+    void window.api?.notification?.activate(notification.id).catch(error => setNotificationError(String(error)));
+  }, []);
+
+  useEffect(() => {
+    const api = window.api?.notification;
+    if (!api?.consumeActivation || !api.onActivation || !api.acknowledgeActivation) return;
+    const controller = new AbortController();
+    let disposed = false;
+    let draining = false;
+    let dirty = false;
+    const drain = async (): Promise<void> => {
+      dirty = true;
+      if (draining) return;
+      draining = true;
+      try {
+        do {
+          dirty = false;
+          let activation;
+          while (!disposed && (activation = await api.consumeActivation())) {
+            if (disposed) return;
+            const target = activation.target;
+            if (!target) {
+              setNotificationError("通知来源已过期或不可用");
+              await api.acknowledgeActivation(activation.notificationId);
+              continue;
+            }
+            const delivered = await deliverNotificationActivation(activation, {
+              disposed: () => disposed,
+              showError: setNotificationError,
+              markRead: id => api.markRead(id),
+              acknowledge: id => api.acknowledgeActivation(id),
+              navigate: async () => {
+              const state = useAppStore.getState();
+              switch (target.kind) {
+                case "task": state.setActiveTask(target.taskId); break;
+                case "project": state.openProjectDetails(target.projectId); break;
+                case "automation": state.setPage("automation"); break;
+                case "runtime": state.setSettingsOpen(true, "extensions"); break;
+                case "botConversation": await state.openNotificationConversation(target, controller.signal); break;
+                case "work": {
+                  const epoch = state.botNavigationEpoch;
+                  const work = await window.api?.botWork.getWork(target.workId);
+                  if (!work || work.workId !== target.workId || work.archive?.deletedAt !== undefined) throw new Error("通知对应的事项已不可用");
+                  if (disposed) return;
+                  if (useAppStore.getState().botNavigationEpoch !== epoch) throw new Error("通知导航已被新的选择取代，请重新点击通知");
+                  state.setActiveBotId(work.ownerBotId);
+                  useAppStore.getState().setSelectedWorkId(target.workId);
+                  if (work.team) useAppStore.getState().setHistoricalTeamWork(work);
+                  useAppStore.getState().setPage("bot");
+                  break;
+                }
+              }
+              },
+            });
+            if (!delivered) return;
+          }
+        } while (dirty && !disposed);
+      } catch (error) { if (!disposed) setNotificationError(String(error)); }
+      finally { draining = false; }
+    };
+    const unsubscribe = api.onActivation(() => { void drain(); });
+    void drain();
+    return () => { disposed = true; controller.abort(); unsubscribe(); };
   }, []);
 
   const sidebarScrollRef = useRef<HTMLDivElement>(null);
@@ -1125,6 +1175,7 @@ export default function Sidebar({ onClose, onCreateBot }: { onClose?: () => void
       <ConfirmDialog open={relocateNotice !== null} title="无法重新定位" body={relocateNotice} confirmLabel="知道了" onCancel={() => setRelocateNotice(null)} onConfirm={() => setRelocateNotice(null)} />
       <ConfirmDialog open={confirmDeleteSpace !== null} title="删除空间？" body={confirmDeleteSpace ? (<>确定要删除空间「{confirmDeleteSpace.name}」吗？<br />仅空空间可删除：该空间下不能有子空间、任务或自有资料，请先处理这些内容后再删除。<br />若为空空间，删除时会一并清理该空间的记忆，操作不可恢复。</>) : null} confirmLabel="删除" danger onCancel={() => setConfirmDeleteSpace(null)} onConfirm={async () => { const target = confirmDeleteSpace; setConfirmDeleteSpace(null); if (!target) return; try { await deleteSpace(target.id); } catch (err) { const msg = err instanceof Error ? err.message : String(err); if (msg.includes("非空") || msg.includes("workspace_not_empty") || msg.includes("尚有")) { setDeleteError("该空间下还有子空间、任务或自有资料，请先处理后再删除。取消资料引用不会删除原文。"); } else { setDeleteError(msg || "删除失败，请稍后重试"); } } }} />
       <ConfirmDialog open={deleteError !== null} title="无法删除" body={deleteError} confirmLabel="知道了" onCancel={() => setDeleteError(null)} onConfirm={() => setDeleteError(null)} />
+      <ConfirmDialog open={notificationError !== null} title="无法打开通知" body={notificationError} confirmLabel="知道了" onCancel={() => setNotificationError(null)} onConfirm={() => setNotificationError(null)} />
       <ConfirmDialog open={dndError !== null} title="无法移动" body={dndError} confirmLabel="知道了" onCancel={() => setDndError(null)} onConfirm={() => setDndError(null)} />
       <CreateWorkspaceDialog
         open={createWorkspaceOpen}

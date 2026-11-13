@@ -396,6 +396,10 @@ export interface PreloadApi {
     onEvent: (callback: (patch: AgentUiPatch) => void) => () => void;
   };
   notification: {
+    activate: (id: string) => Promise<void>;
+    acknowledgeActivation: (id: string) => Promise<void>;
+    consumeActivation: () => Promise<import("../shared/notification").NotificationActivation | null>;
+    onActivation: (callback: () => void) => () => void;
     list: (request?: NotificationListRequest) => Promise<NotificationDto[]>;
     unreadCount: () => Promise<number>;
     markRead: (id: string) => Promise<void>;

@@ -713,6 +713,14 @@ const api = {
   } satisfies BotWorkApi,
 
   notification: {
+    activate: (id: string): Promise<void> => ipcRenderer.invoke(NotificationIpc.activate, id),
+    acknowledgeActivation: (id: string): Promise<void> => ipcRenderer.invoke(NotificationIpc.acknowledgeActivation, id),
+    consumeActivation: (): Promise<import("../shared/notification").NotificationActivation | null> => ipcRenderer.invoke(NotificationIpc.consumeActivation),
+    onActivation: (callback: () => void): (() => void) => {
+      const handler = (): void => callback();
+      ipcRenderer.on(NotificationIpc.activated, handler);
+      return () => ipcRenderer.removeListener(NotificationIpc.activated, handler);
+    },
     list: (request?: NotificationListRequest): Promise<NotificationDto[]> =>
       ipcRenderer.invoke(NotificationIpc.list, request),
     unreadCount: (): Promise<number> => ipcRenderer.invoke(NotificationIpc.unreadCount),

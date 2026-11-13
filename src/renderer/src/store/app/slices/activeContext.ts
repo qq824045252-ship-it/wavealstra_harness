@@ -111,6 +111,7 @@ export function createActiveContextActions(
   | "forgetDeletedBot"
   | "setBotDraft"
   | "submitBotDraft"
+  | "openNotificationConversation"
   | "refreshBotHistory"
   | "loadOlderBotHistory"
   | "cancelBotSend"
