@@ -3,7 +3,7 @@ import { readWorkFileSource } from "./WorkFileEventSource";
 import { botReminderTool } from "./BotReminderTools";
 import { workWatchIntentSchema } from "../../../shared/work-watch-intent";
 import type Database from "better-sqlite3";
-import { workTeamTaskAssignmentSchema } from "../../../shared/bot-work-team";
+import { workTeamBuildSchema, workTeamTaskAssignmentSchema } from "../../../shared/bot-work-team";
 import { defineTool } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { z } from "zod";
@@ -104,7 +104,7 @@ export interface BotForegroundToolOptions {
 }
 
 /** Foreground Work/memory controls. Read-only web tools are mounted separately by the host. */
-export const BOT_FOREGROUND_TOOLS = new Set(["reminder_manage", "schedule_overview", "work_query_status", "work_watch_sources", "work_create", "work_amend", "work_pause", "work_resume", "work_cancel", "memory_search", "memory_forget", "memory_remember", "work_team_templates", "work_team_create", "work_team_replan", "work_clarify"]);
+export const BOT_FOREGROUND_TOOLS = new Set(["reminder_manage", "schedule_overview", "work_query_status", "work_watch_sources", "work_create", "work_amend", "work_pause", "work_resume", "work_cancel", "memory_search", "memory_forget", "memory_remember", "work_team_templates", "work_team_build", "work_team_create", "work_team_replan", "work_clarify"]);
 
 export function botForegroundTools(options: BotForegroundToolOptions) {
   const { db, works, bots, messages, userId, botId, conversationId } = options;
@@ -457,7 +457,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
       const requestId=await botForegroundRequest(api,api.callId,context);
       return output(works.transaction(()=>{assertActive();const source=receipt(requestId);if(input.action==="cancel"){if(!input.goalId)throw Error("取消需要明确待澄清goalId");clarifications.cancel(source,String(api.taskId),input.goalId);return {cancelled:true,goalId:input.goalId};}if(!input.question)throw Error("澄清必须有具体问题");return {goalId:clarifications.clarify(source,String(api.taskId),input.question,input.sourceMessageIds,input.goalId),question:input.question};}));
     }}),
-  defineTool({ name: "work_team_templates", description: "查询当前 Bot 负责的正式团队及成员分工。新团队事项必须选择已有正式团队；没有适合的团队时请用户先建立团队。availableBots 仅供已有事项调整剩余分工，不用于创建无归属事项。个人 Bot 之间委派使用 bot_collaborate 或 bot_organize，由接收方创建自己的 Work。",
+  defineTool({ name: "work_team_templates", description: "查询当前 Bot 负责的正式团队及成员分工。availableBots 是当前用户已启用的现有 Bot，可用于调整团队分工，也可作为 work_team_build 组建新团队的候选成员。缺少合适成员时，主 Bot 可先按用户明确要求用 bot_organize 创建或调整其他 Bot，再重新查询 availableBots。新团队事项必须选择已有正式团队；没有适合的团队时，只有用户明确要求组队才可由主 Bot 用 work_team_build 建立。个人 Bot 之间委派使用 bot_collaborate 或 bot_organize，由接收方创建自己的 Work。",
     parameters: parameters(z.object({}).strict()), replay: "safe",
     execute: async (_args, api, context) => {
       z.object({}).strict().parse(_args);
@@ -470,7 +470,24 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
       const workspacePath = options.teamId ? works.teams.resolveWorkspace(userId, options.teamId) : options.botWorkspace?.(botId);
       return output({ templates, availableBots: workspacePath ? works.teams.foregroundCandidates(userId, botId, workspacePath) : [], workspacePath: workspacePath ?? null });
     } }),
-  defineTool({ name: "work_team_create", description: "为已有正式团队创建并启动事项：先查 work_team_templates 并传 templateId；独立团队会话由宿主绑定当前团队。taskAssignment 只能选择所选团队已有成员和依赖，也可沿用团队分工及上限。负责人保持当前 Bot，目录来自团队设置。没有正式团队时不能创建，先请用户建立团队；个人 Bot 委派使用 bot_collaborate 或 bot_organize。title/goalDescription/criteria 是执行规划，宿主独立保留用户原文与附件。用户要求执行即可开工，无需再次确认。不要另调用 work_create 重复派发。持续委托必须传 requestedOutcome=ongoing 和 mode=watch：周期观察给 watchRule.cronExpression；若现在就有可执行步骤、之后才需等待，传 startImmediately=true ；确实需要等待时再给 watchRule.nextWakeAt 或真实 eventSource 安排跟进，不能创建once后文字承诺持续。每轮重新观察由成员执行、负责人汇总，默认等首次检查。成功后可用 work_query_status 查询成员进度，work_pause/resume/cancel 控制已有事项。",
+  defineTool({ name: "work_team_build",
+    description: "仅主 Bot：按用户明确要求，从当前用户已启用的现有 Bot 组建并保存一个正式团队（可复用模板），负责人是当前主 Bot。先用 work_team_templates 读取 availableBots；members 只能选其中的现有 Bot，本工具不创建 Bot、不修改成员配置、不授予新范围。缺少合适成员时，主 Bot 可先按用户明确要求用 bot_organize 创建新 Bot，重新查询 availableBots 后再纳入团队。name 在当前用户团队中唯一，依赖只能指向排在前面的成员。团队只保存名称、负责人、成员职责与调度方式，不派发事项；需要执行时再用 work_team_create 并传返回的 templateId。用户没有明确要求组队时不要建队，也不能用本工具绕过正式团队派发。",
+    parameters: parameters(workTeamBuildSchema), replay: "safe",
+    execute: async (args, api, context) => {
+      const input = workTeamBuildSchema.parse(args);
+      const requestId = await botForegroundRequest(api, api.callId, context);
+      const result = works.transaction(() => {
+        assertActive();
+        const source = receipt(requestId);
+        if (messages.peers.origin(source.user_message_id)) throw new Error("成果回流不能组建团队");
+        if (options.teamId) throw new Error("独立团队会话不能组建新团队，请在主 Bot 的个人会话中组队");
+        const operationId = `team-build:${peerKey(conversationId, source.user_message_id, String(api.taskId))}`;
+        return works.teams.buildFromForeground(actor(), { ...input, operationId,
+          conversationId, sourceMessageId: source.user_message_id });
+      });
+      return output(result);
+    } }),
+  defineTool({ name: "work_team_create", description: "为已有正式团队创建并启动事项：先查 work_team_templates 并传 templateId；独立团队会话由宿主绑定当前团队。taskAssignment 只能选择所选团队已有成员和依赖，也可沿用团队分工及上限。负责人保持当前 Bot，目录来自团队设置。没有正式团队时不能创建；若用户明确要求组队，主 Bot 可先用 work_team_build 从现有 Bot 建立，再派发；个人 Bot 委派使用 bot_collaborate 或 bot_organize。title/goalDescription/criteria 是执行规划，宿主独立保留用户原文与附件。用户要求执行即可开工，无需再次确认。不要另调用 work_create 重复派发。持续委托必须传 requestedOutcome=ongoing 和 mode=watch：周期观察给 watchRule.cronExpression；若现在就有可执行步骤、之后才需等待，传 startImmediately=true ；确实需要等待时再给 watchRule.nextWakeAt 或真实 eventSource 安排跟进，不能创建once后文字承诺持续。每轮重新观察由成员执行、负责人汇总，默认等首次检查。成功后可用 work_query_status 查询成员进度，work_pause/resume/cancel 控制已有事项。",
     parameters: parameters(teamCreate.required({ sourceMessageIds: true })), replay: "safe",
     execute: async (args, api, context) => {
       const { requestedOutcome, startImmediately, sourceMessageIds: requestedSources, clarificationGoalId, independentGoal, ...input } = teamCreate.parse(args);

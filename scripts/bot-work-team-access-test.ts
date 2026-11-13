@@ -21,6 +21,8 @@ const bots = new BotRegistry(db.connection);
 const grants = { ...DESKTOP_USER_GRANTS, allowRedelegation: true };
 for (const botId of ["owner", "member", "outsider"]) bots.registerBot({ botId, userId: LOCAL_USER_ID,
   displayName: botId, authorization: minimumAuthorization() });
+db.connection.prepare("INSERT INTO bot_identity_roles(user_id,role,bot_id,assigned_at) VALUES(?,'primary',?,?)")
+  .run(LOCAL_USER_ID, "owner", Date.now());
 const works = new WorkService(db.connection, { bots });
 const user: WorkActor = { kind: "user", userId: LOCAL_USER_ID, grants };
 const unwrap = (result: WorkControlResult) => { assert(result.ok, JSON.stringify(result)); return result.work; };
@@ -101,6 +103,45 @@ try {
   assert.equal((await invokeOwner("work_team_templates", {})).templates[0].members[0].responsibility, "检查文件", "task plan never mutates saved template");
   const candidates = (await invokeOwner("work_team_templates", {})).availableBots;
   assert.deepEqual(candidates.map((bot: { botId: string }) => bot.botId).sort(), ["member", "outsider"]);
+  // The primary Bot assembles a persisted team from existing Bots without creating
+  // identities or grants; the same tool call replays instead of duplicating the team.
+  const buildInput = { name: "主 Bot 组建团队", ownerResponsibility: "核对并汇总",
+    members: [{ botId: "member", responsibility: "检查甲" },
+      { botId: "outsider", responsibility: "检查乙", dependsOnBotIds: ["member"] }],
+    executionPolicy: "parallel" as const, maxConcurrency: 2 };
+  const built = await invokeOwner("work_team_build", buildInput, "build-team");
+  assert(built.ok && built.template, JSON.stringify(built));
+  assert.equal(built.template.ownerBotId, "owner");
+  assert.equal(built.template.executionPolicy, "parallel");
+  assert.deepEqual(built.template.members.map((member: { botId: string }) => member.botId), ["member", "outsider"]);
+  assert.deepEqual(built.template.members[1].dependsOnBotIds, ["member"]);
+  assert.deepEqual(built.template.members.map((member: { delegatedScope: string[] }) => member.delegatedScope),
+    [["workspace:read", "workspace:write"], ["workspace:read", "workspace:write"]], "scopes come from the host, not the model payload");
+  assert.equal((await invokeOwner("work_team_build", buildInput, "build-team")).template.templateId, built.template.templateId,
+    "retrying the same tool call does not create a second team");
+  const duplicateName = await invokeOwner("work_team_build", { ...buildInput }, "build-team-duplicate");
+  assert(!duplicateName.ok && duplicateName.code === "name_conflict");
+  const unknownMember = await invokeOwner("work_team_build", { name: "未知成员团队", ownerResponsibility: "汇总",
+    members: [{ botId: "ghost", responsibility: "检查" }] }, "build-team-unknown");
+  assert(!unknownMember.ok, "only existing active Bots can join");
+  await assert.rejects(invokeOwner("work_team_build", { name: "依赖倒置团队", ownerResponsibility: "汇总",
+    members: [{ botId: "member", responsibility: "先检查", dependsOnBotIds: ["outsider"] },
+      { botId: "outsider", responsibility: "后检查" }] }, "build-team-cycle"), /依赖只能选择排在前面的不同成员/);
+  const ordinaryBuild = await invoke("work_team_build", { name: "普通 Bot 团队", ownerResponsibility: "汇总",
+    members: [{ botId: "outsider", responsibility: "检查" }] });
+  assert(!ordinaryBuild.ok && /主 Bot/.test(ordinaryBuild.message), "an ordinary Bot cannot build teams");
+  const builtWork = await invokeOwner("work_team_create", { ...request, templateId: built.template.templateId,
+    title: "主 Bot 组建的团队事项" }, "build-team-work");
+  assert(builtWork.ok && builtWork.team.members.length === 2, JSON.stringify(builtWork));
+  assert.equal(builtWork.work.ownerBotId, "owner");
+  // A Bot created through the normal organization flow becomes eligible immediately;
+  // work_team_build itself still never creates identities.
+  bots.registerBot({ botId: "created-member", userId: LOCAL_USER_ID, displayName: "created-member",
+    authorization: minimumAuthorization() });
+  assert((await invokeOwner("work_team_templates", {})).availableBots.some((bot: { botId: string }) => bot.botId === "created-member"));
+  const withCreated = await invokeOwner("work_team_build", { name: "新增成员团队",
+    ownerResponsibility: "汇总", members: [{ botId: "created-member", responsibility: "检查新增范围" }] }, "build-team-created");
+  assert(withCreated.ok && withCreated.template.members[0].botId === "created-member", JSON.stringify(withCreated));
   const freeRequest = { mode: "once" as const, requestedOutcome: "one_time" as const, title: "自然组队", goalDescription: "当前委托分工", criteria: ["核对两个文件"], taskAssignment: {
     ownerResponsibility: "汇总", members: [{ botId: "outsider", responsibility: "读取乙" },
       { botId: "member", responsibility: "核对乙", dependsOnBotIds: ["outsider"] }] } };

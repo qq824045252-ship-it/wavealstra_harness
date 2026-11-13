@@ -16,7 +16,7 @@ import type { WorkService } from "./WorkService";
 import type { WorkExecutionAdapter } from "./WorkExecutionAdapter";
 import type { WorkActor, WorkDto, WorkExecutionBindingDto } from "../../../shared/bot-work";
 import { workAdmissionInFlight, workExecutionInFlight } from "../../../shared/work-effect-policy";
-import { workTeamControlSchema, workTeamPlanSchema, workTeamTaskAssignmentSchema, type WorkTeamTaskAssignment, type WorkTeamControlResult,
+import { workTeamBuildSchema, workTeamControlSchema, workTeamPlanSchema, workTeamTaskAssignmentSchema, type WorkTeamBuildInput, type WorkTeamTaskAssignment, type WorkTeamControlResult,
   type WorkTeamDto, type WorkTeamExecution, type WorkTeamTemplateDto, type WorkTeamPlan, type WorkTeamForegroundReplanInput,
   type WorkTeamControlRequest } from "../../../shared/bot-work-team";
 
@@ -168,6 +168,45 @@ export class WorkTeamService {
     return this.bots.listBots(userId).filter(bot => bot.botId !== ownerBotId && bot.status === "active")
       .map(bot => ({ botId: bot.botId, displayName: bot.displayName, responsibilitySummary: bot.responsibilitySummary,
         allowedScopes: ["workspace:read", "workspace:write"] as Array<"workspace:read" | "workspace:write"> }));
+  }
+
+  /** Primary-Bot only: persist a named team assembled from existing active Bots.
+   * This never creates Bots, grants scopes, or dispatches Work. */
+  buildFromForeground(actor: WorkActor, input: WorkTeamBuildInput & { operationId: string;
+    conversationId: string; sourceMessageId: string }): WorkTeamControlResult {
+    if (actor.kind !== "bot" || actor.host !== "foreground" || !actor.botId)
+      return { ok: false, code: "unauthorized_actor", message: "需要当前前台 Bot 身份" };
+    const bot = this.bots.getBot(actor.botId);
+    if (!bot || bot.userId !== actor.userId || bot.status !== "active")
+      return { ok: false, code: "unauthorized_actor", message: "当前 Bot 不可用" };
+    if (!this.bots.isPrimaryBot(actor.userId, actor.botId))
+      return { ok: false, code: "unauthorized_actor", message: "只有主 Bot 可以根据现有 Bot 组建团队" };
+    const source = this.db.prepare(`SELECT r.user_message_id FROM bot_send_receipts r
+      JOIN bot_messages m ON m.message_id=r.user_message_id
+      JOIN bot_messages a ON a.message_id=r.assistant_message_id
+      WHERE r.user_id=? AND r.bot_id=? AND r.conversation_id=? AND r.user_message_id=?
+        AND m.role='user' AND a.status IN ('queued','running','unknown')`)
+      .get(actor.userId, actor.botId, input.conversationId, input.sourceMessageId);
+    if (!source) return { ok: false, code: "unauthorized_actor", message: "组队需要当前对话的真实用户委托" };
+    const { operationId, conversationId: _conversationId, sourceMessageId: _sourceMessageId, ...build } = input;
+    const parsed = workTeamBuildSchema.safeParse(build);
+    if (!parsed.success) return { ok: false, code: "invalid_request",
+      message: parsed.error.issues[0]?.message ?? "团队名称、成员或分工无效" };
+    const candidates = this.foregroundCandidates(actor.userId, actor.botId, input.workspacePath ?? "");
+    const members = parsed.data.members.map(member => {
+      const candidate = candidates.find(item => item.botId === member.botId);
+      return candidate ? { ...member, delegatedScope: [...candidate.allowedScopes] } : undefined;
+    });
+    if (members.some(member => !member))
+      return { ok: false, code: "unauthorized_actor", message: "所选成员不是当前用户启用的现有 Bot，请先查询 availableBots；需要新 Bot 时先用 bot_organize 创建后再组队" };
+    const plan = workTeamPlanSchema.safeParse({ ownerBotId: actor.botId,
+      ownerResponsibility: parsed.data.ownerResponsibility, members,
+      executionPolicy: parsed.data.executionPolicy, maxConcurrency: parsed.data.maxConcurrency,
+      ...(parsed.data.workspacePath ? { workspacePath: parsed.data.workspacePath } : {}) });
+    if (!plan.success) return { ok: false, code: "invalid_request",
+      message: plan.error.issues[0]?.message ?? "团队分工无效" };
+    return this.control(actor, { kind: "save_template", request: { operationId,
+      name: parsed.data.name, plan: plan.data } });
   }
 
   createFromForeground(actor: WorkActor, input: { templateId?: string; operationId: string; title: string;

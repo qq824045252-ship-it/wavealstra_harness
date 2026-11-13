@@ -244,6 +244,25 @@ try {
   const noContact = intent(await f.command(noneSource.assistantMessageId, "contact-none", createCommand("只配置助理", workspace, "none")));
   assert.equal(noContact.phase, "ready"); assert.equal(noContact.collaborationId, null);
   console.log("PASS existing target and contact:none preserve settings, separate delivery from answer and Work");
+  // Creating a new Bot can attach the exact capability selection in the same
+  // organization operation; the settings service validates real availability.
+  const capabilitySource = f.request("创建带 Skill、MCP 和连接器的 Bot");
+  await f.discover(capabilitySource.assistantMessageId);
+  const capabilityIntent = intent(await f.command(capabilitySource.assistantMessageId, "create-with-capabilities", {
+    action: "arrange", target: { kind: "create", displayName: "能力助理",
+      responsibilitySummary: "使用用户选择的能力完成委托。",
+      whyExistingBotsDoNotFit: "需要独立的 Skill、MCP 和连接器组合。",
+      configuration: { modelId, workspacePath: workspace, skillIds: ["organization-check"],
+        mcpIds: ["fixture-mcp"], connectorIds: ["fixture-connector"] } },
+    contact: { kind: "none" },
+  }));
+  assert.equal(capabilityIntent.phase, "ready"); assert(capabilityIntent.target);
+  const capabilitySettings = f.settings.get(capabilityIntent.target.botId);
+  assert.deepEqual(capabilitySettings.skillIds, ["organization-check"]);
+  assert.deepEqual(capabilitySettings.mcpIds, ["fixture-mcp"]);
+  assert.deepEqual(capabilitySettings.connectorIds, ["fixture-connector"]);
+  assert(f.bots.getBot(capabilityIntent.target.botId)?.expertProfile.allowedSkillIds.includes("organization-check"));
+  console.log("PASS create Bot with Skill, MCP and connector in one organization request");
 
   const faulty = await openFixture(join(root, "faults"));
   const original = faulty.request("创建失败后继续同一个意图"); await faulty.discover(original.assistantMessageId);

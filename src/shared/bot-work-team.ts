@@ -22,6 +22,30 @@ export const workTeamTaskAssignmentSchema = z.object({
   }).strict()).min(1).max(24),
 }).strict();
 export type WorkTeamTaskAssignment = z.infer<typeof workTeamTaskAssignmentSchema>;
+/** A primary Bot assembling a new named team from existing Bots. The host supplies
+the owner identity and scopes; the model only chooses available members and duties. */
+export const workTeamBuildSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  ownerResponsibility: responsibility,
+  members: z.array(z.object({
+    botId: id,
+    responsibility,
+    dependsOnBotIds: z.array(id).max(24).optional(),
+  }).strict()).min(1).max(24),
+  executionPolicy: z.enum(["sequential", "parallel"]).optional(),
+  maxConcurrency: z.number().int().min(1).max(4).optional(),
+  /** Optional team folder; omitted means the host-managed team directory. */
+  workspacePath: z.string().trim().min(1).max(4096).optional(),
+}).strict().superRefine((plan, ctx) => {
+  const ids = plan.members.map(member => member.botId);
+  if (new Set(ids).size !== ids.length) ctx.addIssue({ code: "custom", message: "成员必须唯一" });
+  for (const [index, member] of plan.members.entries()) {
+    const dependencies = member.dependsOnBotIds ?? [];
+    if (new Set(dependencies).size !== dependencies.length || dependencies.some(botId => !ids.slice(0, index).includes(botId)))
+      ctx.addIssue({ code: "custom", message: "依赖只能选择排在前面的不同成员，不能重复、自依赖或形成循环" });
+  }
+});
+export type WorkTeamBuildInput = z.infer<typeof workTeamBuildSchema>;
 export const workTeamPlanSchema = z.object({
   ownerBotId: id,
   ownerResponsibility: responsibility,
