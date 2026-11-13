@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useId, useMemo, useRef, useState } from 'react';
 import type { BotMessageDto } from '@shared/bot-conversation';
 import type { SavedArtifactRequest } from '@shared/saved-artifact';
 import { extractMessageHtml } from '@shared/bot-message-html';
@@ -8,6 +8,7 @@ import WorkFilePreview from './WorkFilePreview';
 const MAX_HTML_BYTES = 8 * 1024 * 1024;
 
 function HtmlSourceFile({ message, index, chars, bytes }: { message: BotMessageDto; index: number; chars: number; bytes: number }): React.JSX.Element {
+  const previewId = useId();
   const [saved, setSaved] = useState<SavedArtifactRequest>();
   const [preview, setPreview] = useState(false);
   const [pending, setPending] = useState(false);
@@ -29,10 +30,10 @@ function HtmlSourceFile({ message, index, chars, bytes }: { message: BotMessageD
     <strong>{saved?.name ?? `HTML 源码 ${index + 1}`}</strong>
     <p>{saved ? '已将这条消息的完整源码保存为文件；不是后台任务重新生成的成果。' : `消息包含完整 HTML（${chars.toLocaleString()} 字符），尚未保存为文件。`}</p>
     {!saved ? <button type="button" disabled={pending || bytes > MAX_HTML_BYTES} onClick={() => void save()}>{pending ? '正在保存…' : '将消息源码保存为 HTML 文件'}</button>
-      : <SavedFileActions request={saved} onPreview={() => setPreview(true)} />}
+      : <SavedFileActions request={saved} previewId={previewId} previewExpanded={preview} onPreview={() => setPreview(value => !value)} />}
     {bytes > MAX_HTML_BYTES && <p role="alert">HTML 超过 8 MiB 保存与预览大小限制，原消息源码仍保留，未生成文件。</p>}
     {error && <p role="alert">保存失败：{error}</p>}
-    {saved && preview && <WorkFilePreview file={{ref:saved.snapshotPath,name:saved.name,openPath:saved.snapshotPath,previewManifestPath:saved.manifestPath ?? null}} target={saved.snapshotPath} onClose={() => setPreview(false)} />}
+    {saved && preview && <WorkFilePreview cardControlled id={previewId} file={{ref:saved.snapshotPath,name:saved.name,openPath:saved.snapshotPath,previewManifestPath:saved.manifestPath ?? null}} target={saved.snapshotPath} onClose={() => setPreview(false)} />}
   </section>;
 }
 

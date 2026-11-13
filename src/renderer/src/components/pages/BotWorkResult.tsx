@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import type { BotMessageDto, WorkFeedbackDto } from "@shared/bot-conversation";
 import type { WorkProjectionDto } from "@shared/bot-work";
 import { fileNameFromPath } from "@/lib/localFilePath";
@@ -42,6 +42,7 @@ export function BotReturnedFiles({ message }: { message: BotMessageDto }): React
 }
 
 export function WorkFiles({ files, primaryRefs, compact = false, compactTitle = "本次交付" }: { files: WorkFile[]; primaryRefs?: string[]; compact?: boolean; compactTitle?: string }): React.JSX.Element | null {
+  const previewId = useId();
   const [notice, setNotice] = useState("");
   const [selected, setSelected] = useState<{ identity: string; target: string }>();
   const identity = (file: WorkFile): string => JSON.stringify([file.ref, file.openPath, file.name,
@@ -59,7 +60,7 @@ export function WorkFiles({ files, primaryRefs, compact = false, compactTitle = 
     try {
       const target = file.openPath ?? file.artifact?.snapshotPath ?? file.artifact?.path;
       if (!target) throw new Error("此引用没有已登记的可打开文件");
-      setSelected({ identity: identity(file), target });
+      setSelected(current => current?.identity === identity(file) ? undefined : { identity: identity(file), target });
       setNotice("");
     } catch (error) { setNotice(`无法打开文件：${error instanceof Error ? error.message : String(error)}`); }
   };
@@ -67,13 +68,13 @@ export function WorkFiles({ files, primaryRefs, compact = false, compactTitle = 
     <div><strong title={file.name}>{file.name}</strong>{file.artifact && <small>{formatSize(file.artifact.sizeBytes)}</small>}</div>
     {!(file.artifact || file.openPath) && <small>未登记可打开文件</small>}
     {(file.artifact || file.openPath) && <SavedFileActions
-      name={file.name}
+      name={file.name} previewId={previewId} previewExpanded={selected?.identity === identity(file)}
       key={JSON.stringify([file.openPath ?? file.artifact?.snapshotPath, file.name])}
       request={file.openPath || file.artifact?.snapshotPath ? { snapshotPath: (file.openPath ?? file.artifact?.snapshotPath)!, name: file.name, manifestPath: previewManifestFor(file) } : undefined}
       onPreview={() => void open(file)} />}
     <details><summary>路径与版本</summary><p>{file.ref}</p>{file.artifact && <><p>原文件：{file.artifact.path}</p><p>SHA-256：{file.artifact.digest}</p><button type="button" onClick={() => void window.api?.showItemInFolder?.(file.artifact!.path)}>定位文件</button></>}</details>
     {selected && identity(file) === selected.identity &&
-      <WorkFilePreview key={selected.identity} file={file} target={selected.target} onClose={() => setSelected(undefined)} />}
+      <WorkFilePreview cardControlled id={previewId} key={selected.identity} file={file} target={selected.target} onClose={() => setSelected(undefined)} />}
   </li>)}</ul>;
   return <section className="bot-result-attachments" aria-label="成果附件">
     {compact ? <>

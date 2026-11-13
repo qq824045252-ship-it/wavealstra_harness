@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {parseHTML} from 'linkedom';
 import {act} from 'react';
+import WorkFilePreview from '../src/renderer/src/components/pages/WorkFilePreview';
 import {WorkFiles} from '../src/renderer/src/components/pages/BotWorkResult';
 const {window}=parseHTML('<html><body><div id="root"></div></body></html>');
 Object.assign(globalThis,{window,document:window.document,HTMLElement:window.HTMLElement,IS_REACT_ACT_ENVIRONMENT:true});
@@ -12,11 +13,12 @@ await act(async()=>root.render(<WorkFiles files={files} compact/>));
 const cards=()=>[...document.querySelectorAll('li')];
 const previewButtons=()=>[...document.querySelectorAll<HTMLButtonElement>('button[aria-label="预览 index.html"]')];
 assert.equal(previewButtons().length,2);
-await act(async()=>previewButtons()[0].click());
+const initialButton=previewButtons()[0];assert.equal(initialButton.getAttribute('aria-expanded'),'false');
+await act(async()=>initialButton.click());assert.equal(previewButtons()[0],initialButton);assert.equal(initialButton.getAttribute('aria-expanded'),'true');assert.equal(document.querySelector('.bot-work-file-preview')!.id,initialButton.getAttribute('aria-controls'));assert(document.querySelector('.bot-work-file-preview.is-expanded'));assert(![...document.querySelectorAll('button')].some(b=>['关闭预览','展开查看','收起查看'].includes(b.textContent!)));
 assert.equal(document.querySelectorAll('.bot-work-file-preview').length,1);assert(cards()[0].querySelector('.bot-work-file-preview'));assert(!cards()[1].querySelector('.bot-work-file-preview'));assert.deepEqual(prepared,['/saved/a.html']);
 await act(async()=>previewButtons()[1].click());
 assert(!cards()[0].querySelector('.bot-work-file-preview'));assert(cards()[1].querySelector('.bot-work-file-preview'));assert.deepEqual(prepared,['/saved/a.html','/saved/b.html']);
-await act(async()=>[...document.querySelectorAll('button')].find(b=>b.textContent==='关闭预览')!.click());assert.equal(document.querySelector('.bot-work-file-preview'),null);
+const closeButton=previewButtons()[1];await act(async()=>closeButton.click());assert.equal(previewButtons()[1],closeButton);assert.equal(closeButton.getAttribute('aria-expanded'),'false');assert.equal(document.querySelector('.bot-work-file-preview'),null);
 await act(async()=>document.querySelector<HTMLButtonElement>('button[aria-label="预览 README.md"]')!.click());assert(cards()[2].querySelector('.bot-work-file-preview'));
 await act(async()=>root.render(<WorkFiles files={files.slice(0,2)} compact/>));assert.equal(document.querySelector('.bot-work-file-preview'),null);
 const shared = [1,2].map(i => ({ref:'/same.html',name:'same.html',artifact:{bindingId:`binding-${i}`,path:'/original/same.html',snapshotPath:'/saved/same.html',digest:'shared-digest',sizeBytes:1}})) as Parameters<typeof WorkFiles>[0]['files'];
@@ -25,4 +27,5 @@ const sharedButtons=()=>[...document.querySelectorAll<HTMLButtonElement>('button
 await act(async()=>sharedButtons()[0].click());assert.equal(document.querySelectorAll('.bot-work-file-preview').length,1);assert(cards()[0].querySelector('.bot-work-file-preview'));assert(!cards()[1].querySelector('.bot-work-file-preview'));
 await act(async()=>sharedButtons()[1].click());assert.equal(document.querySelectorAll('.bot-work-file-preview').length,1);assert(!cards()[0].querySelector('.bot-work-file-preview'));assert(cards()[1].querySelector('.bot-work-file-preview'));
 await act(async()=>root.render(<WorkFiles files={shared.slice(0,1)}/>));assert.equal(document.querySelector('.bot-work-file-preview'),null);
+await act(async()=>root.render(<WorkFilePreview file={files[0]} target={files[0].openPath} onClose={()=>{}}/>));assert([...document.querySelectorAll('button')].some(b=>b.textContent==='展开查看'));assert([...document.querySelectorAll('button')].some(b=>b.textContent==='关闭预览'));
 await act(async()=>root.unmount());console.log('PASS file-card preview placement, duplicate basenames, switch/close/removal; no HTML executed');

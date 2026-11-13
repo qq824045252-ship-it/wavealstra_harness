@@ -17,7 +17,7 @@ assert.equal(extractMessageHtml('```html\n<html>one</html>\n```\n```html\n<html>
 const {window}=parseHTML('<html><body><div id="root"></div></body></html>');
 Object.assign(globalThis,{window,document:window.document,HTMLElement:window.HTMLElement,Event:window.Event,IS_REACT_ACT_ENVIRONMENT:true});
 let calls=0;let resolveSave:(v:any)=>void=()=>{};
-Object.assign(window,{api:{savedArtifact:{saveMessageHtml:async(request:any)=>{calls++;assert.equal(request.messageId,'m');assert.equal(request.index,0);assert(!('source' in request));return new Promise(resolve=>{resolveSave=resolve;});}}}});
+Object.assign(window,{api:{savedArtifact:{prepare:async()=>{throw new Error('fixture no document execution');},saveMessageHtml:async(request:any)=>{calls++;assert.equal(request.messageId,'m');assert.equal(request.index,0);assert(!('source' in request));return new Promise(resolve=>{resolveSave=resolve;});}}}});
 const {createRoot}=await import('react-dom/client');const root=createRoot(document.getElementById('root')!);
 const message={messageId:'m',botId:'b',conversationId:'c',role:'assistant',status:'completed',messageRevision:7,text} as BotMessageDto;
 await act(async()=>root.render(<BotMessageHtmlFiles message={{...message,status:'running'}}/>));assert.equal(document.querySelector('button'),null);
@@ -26,6 +26,10 @@ await act(async()=>{document.querySelector('button')!.click();document.querySele
 assert.equal(document.querySelector('button[aria-label^="系统方式打开"]'), null);
 await act(async()=>resolveSave({snapshotPath:'C:/saved/artifacts/hash.html',name:'message.html',digest:'hash',sizeBytes:html.length}));
 assert.match(document.body.textContent!,/已将这条消息/);assert(document.querySelector('button[aria-label="系统方式打开 message.html"]')); assert.equal(document.querySelector('iframe'),null);
+const previewButton=document.querySelector<HTMLButtonElement>('button[aria-label="预览 message.html"]')!;
+await act(async()=>previewButton.click());assert(document.querySelector('.bot-work-file-preview.is-expanded'));assert.equal(previewButton.getAttribute('aria-expanded'),'true');assert.equal(document.querySelector('.bot-work-file-preview')!.id,previewButton.getAttribute('aria-controls'));
+assert(![...document.querySelectorAll('button')].some(b=>b.textContent==='关闭预览'||b.textContent==='展开查看'));
+await act(async()=>previewButton.click());assert.equal(document.querySelector('.bot-work-file-preview'),null);assert.equal(previewButton.getAttribute('aria-expanded'),'false');
 await act(async()=>root.render(<BotMessageHtmlFiles message={{...message,messageId:'other'}}/>));assert.match(document.body.textContent!,/尚未保存/);
 const oversized='<html><body>'+'汉'.repeat(3*1024*1024)+'</body></html>';
 await act(async()=>root.render(<BotMessageHtmlFiles message={{...message,messageId:'oversized',text:oversized}}/>));

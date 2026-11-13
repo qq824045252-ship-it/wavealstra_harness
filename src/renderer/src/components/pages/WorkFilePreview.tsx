@@ -10,7 +10,7 @@ const languageFor = (name: string): string => {
 };
 
 /** The saved identity is independent of the selected ordinary Task and mutable source path. */
-export default function WorkFilePreview({ file, target, onClose }: { file: WorkFile; target: string; onClose: () => void }): React.JSX.Element {
+export default function WorkFilePreview({ file, target, onClose, cardControlled = false, id }: { file: WorkFile; target: string; onClose: () => void; cardControlled?: boolean; id?: string }): React.JSX.Element {
   const html = /\.html?$/i.test(file.name);
   const markdown = /\.md$/i.test(file.name);
   const supported = /\.(?:txt|md|json|jsonl|csv|tsv|xml|ya?ml|log|py|js|ts|tsx|jsx|css|html?|svg|sh)$/i.test(file.name);
@@ -78,13 +78,13 @@ export default function WorkFilePreview({ file, target, onClose }: { file: WorkF
     try { formatted = JSON.stringify(JSON.parse(content), null, 2); } catch { /* Preserve invalid JSON verbatim. */ }
   }
   const plain = /\.(txt|log|csv|tsv)$/i.test(file.name);
-  return <section className={`bot-work-file-preview${expanded ? " is-expanded" : ""}`} aria-label={`文件预览：${file.name}`}>
+  return <section id={id} className={`bot-work-file-preview${cardControlled || expanded ? " is-expanded" : ""}`} aria-label={`文件预览：${file.name}`}>
     <header className="bot-work-file-preview-header">
       <div><strong>{file.name}</strong><span className="bot-work-file-version-label">保存版本 · 只读</span></div>
-      <div className="bot-work-file-preview-actions">
+      {!cardControlled && <div className="bot-work-file-preview-actions">
         <button type="button" aria-expanded={expanded} onClick={toggleExpanded}>{expanded ? "收起查看" : "展开查看"}</button>
         <button type="button" onClick={onClose}>关闭预览</button>
-      </div>
+      </div>}
     </header>
     {(html || markdown) && <div className="bot-work-file-preview-tabs" role="group" aria-label="查看方式">
       <button type="button" aria-pressed={mode === "preview"} onClick={() => setMode("preview")}>预览</button>
