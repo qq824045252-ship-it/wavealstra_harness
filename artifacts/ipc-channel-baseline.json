@@ -1,8 +1,8 @@
 {
   "scope": "src/main/**",
-  "mainRegistrations": 534,
-  "allRegistrations": 550,
-  "uniqueChannels": 534,
+  "mainRegistrations": 546,
+  "allRegistrations": 566,
+  "uniqueChannels": 545,
   "channels": [
     "agent:abort",
     "agent:abortCompaction",
@@ -178,6 +178,7 @@
     "bot-work:team-control",
     "bot-work:update-workspace-authorization",
     "bot-work:work-diagnostics",
+    "bot-work:work-indicators",
     "bot-work:work-summary",
     "bot-work:workspace-navigation",
     "browser:addBlocker",
@@ -319,6 +320,10 @@
     "gateway:qqQrCancel",
     "gateway:qqQrStart",
     "gateway:qqQrState",
+    "gateway:registrationCancel",
+    "gateway:registrationFinish",
+    "gateway:registrationStart",
+    "gateway:registrationState",
     "gateway:status",
     "gateway:weixinQrCancel",
     "gateway:weixinQrStart",
@@ -439,6 +444,9 @@
     "memory:turnTasks",
     "memory:turns",
     "memory:update",
+    "notification:acknowledgeActivation",
+    "notification:activate",
+    "notification:consumeActivation",
     "notification:dismiss",
     "notification:dismissAll",
     "notification:list",
@@ -480,8 +488,11 @@
     "remoteAccess:status",
     "runtimeConsole:clear",
     "runtimeConsole:snapshot",
+    "saved-artifact:open-system",
     "saved-artifact:prepare",
     "saved-artifact:release",
+    "saved-artifact:save-as",
+    "saved-artifact:save-message-html",
     "selection-popover:action",
     "selection:clear",
     "selection:comment",
@@ -548,7 +559,9 @@
       "line": 134
     }
   ],
-  "unresolved": [],
+  "unresolved": [
+    "src/main/index.ts:1155 → BotAvatarIpc"
+  ],
   "duplicates": {
     "real": [],
     "mutex": [],
@@ -556,7 +569,7 @@
       {
         "channel": "artifact-domain:get",
         "entries": [
-          "src/main/index.ts:2312",
+          "src/main/index.ts:2394",
           "scripts/wave5-real-open-e2e.ts:304"
         ],
         "foreign": [
@@ -566,7 +579,7 @@
       {
         "channel": "artifact-domain:list",
         "entries": [
-          "src/main/index.ts:2316",
+          "src/main/index.ts:2398",
           "scripts/wave5-real-open-e2e.ts:300"
         ],
         "foreign": [
@@ -576,7 +589,7 @@
       {
         "channel": "artifact-domain:snapshot",
         "entries": [
-          "src/main/index.ts:2320",
+          "src/main/index.ts:2402",
           "scripts/wave5-real-open-e2e.ts:297"
         ],
         "foreign": [
@@ -586,7 +599,7 @@
       {
         "channel": "artifact-domain:register",
         "entries": [
-          "src/main/index.ts:2331",
+          "src/main/index.ts:2413",
           "scripts/wave5-real-open-e2e.ts:296"
         ],
         "foreign": [
@@ -596,7 +609,7 @@
       {
         "channel": "artifact-domain:readContent",
         "entries": [
-          "src/main/index.ts:2335",
+          "src/main/index.ts:2417",
           "scripts/wave5-real-open-e2e.ts:292"
         ],
         "foreign": [
@@ -606,7 +619,7 @@
       {
         "channel": "artifact-domain:removeTask",
         "entries": [
-          "src/main/index.ts:2340",
+          "src/main/index.ts:2422",
           "scripts/wave5-real-open-e2e.ts:307"
         ],
         "foreign": [
@@ -616,7 +629,7 @@
       {
         "channel": "artifact-domain:remove",
         "entries": [
-          "src/main/index.ts:2344",
+          "src/main/index.ts:2426",
           "scripts/wave5-real-open-e2e.ts:310"
         ],
         "foreign": [
@@ -633,6 +646,46 @@
         ],
         "foreign": [
           "scripts/subagent-ipc-host-test.ts:109"
+        ]
+      },
+      {
+        "channel": "agent:abort",
+        "entries": [
+          "src/main/index.ts:1278",
+          "scripts/browser-stop-ui-electron-test.ts:42"
+        ],
+        "foreign": [
+          "scripts/browser-stop-ui-electron-test.ts:42"
+        ]
+      },
+      {
+        "channel": "agent:getAppSettings",
+        "entries": [
+          "src/main/index.ts:1427",
+          "scripts/browser-stop-ui-electron-test.ts:41"
+        ],
+        "foreign": [
+          "scripts/browser-stop-ui-electron-test.ts:41"
+        ]
+      },
+      {
+        "channel": "agent:loadTaskHistory",
+        "entries": [
+          "src/main/index.ts:1560",
+          "scripts/browser-stop-ui-electron-test.ts:43"
+        ],
+        "foreign": [
+          "scripts/browser-stop-ui-electron-test.ts:43"
+        ]
+      },
+      {
+        "channel": "agent:getModeProfile",
+        "entries": [
+          "src/main/index.ts:1593",
+          "scripts/browser-stop-ui-electron-test.ts:40"
+        ],
+        "foreign": [
+          "scripts/browser-stop-ui-electron-test.ts:40"
         ]
       }
     ]

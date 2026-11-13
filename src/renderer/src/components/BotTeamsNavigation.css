@@ -16,3 +16,6 @@
 .bot-teams-navigation > .sidebar-bot-identity:hover { background:var(--bg-hover); }
 .bot-teams-navigation > .sidebar-bot-identity[aria-pressed="true"] { background:var(--bg-active); }
 .bot-teams-navigation .sidebar-bot-avatar { color:var(--fg-secondary); }
+/* A team row keeps its identity line intact and appends the same Work badges. */
+.bot-teams-navigation .sidebar-bot-identity small.bot-team-meta { display:flex; flex-wrap:nowrap; align-items:center; gap:5px; }
+.bot-teams-navigation .bot-team-meta > span:first-child { min-width:0; overflow:hidden; text-overflow:ellipsis; }

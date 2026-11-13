@@ -33,6 +33,7 @@ export const BotWorkIpc = {
   adoptBotExpertVersion: "bot-work:adopt-bot-expert-version",
   listWorks: "bot-work:list-works",
   queryWorks: "bot-work:query-works",
+  workIndicators: "bot-work:work-indicators",
   syncWorks: "bot-work:sync-works",
   sendMessage: "bot-work:send-message",
   history: "bot-work:history",
@@ -65,6 +66,18 @@ export interface BotWorkHostStatusDto {
   authorityId: string;
 }
 
+/** Truthful, unscoped counters for the Bot directory. They mirror the personal
+ * (Bot) and team Work tabs; archived and deleted records are not counted. */
+export interface BotWorkIndicatorDto {
+  active: number;
+  completed: number;
+}
+
+export interface BotWorkIndicatorsDto {
+  bots: Record<string, BotWorkIndicatorDto>;
+  teams: Record<string, BotWorkIndicatorDto>;
+}
+
 export interface BotExpertAdoptionResult {
   ok: boolean;
   code?: string;
@@ -92,6 +105,7 @@ export interface BotWorkApi {
   adoptBotExpertVersion(botId: string, expected: { pendingVersion: number; snapshotId: string }): Promise<BotExpertAdoptionResult>;
   listWorks(includeClosed?: boolean): Promise<WorkProjectionDto[]>;
   queryWorks(request: import("./bot-work-query").WorkQueryRequest): Promise<import("./bot-work-query").WorkQueryResult>;
+  workIndicators(): Promise<BotWorkIndicatorsDto>;
   syncWorks(request: WorkListRequest): Promise<WorkListUpdate>;
   sendMessage(request: BotSendRequest): Promise<BotSendReceipt>;
   history(request: BotHistoryRequest): Promise<BotHistoryDto>;

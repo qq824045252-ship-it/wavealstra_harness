@@ -6,6 +6,8 @@ import { IconPlus, IconX } from "@/components/common/icons";
 import { BotTeamSettings } from "./pages/BotTeamSettings";
 import { BotTeamDialog } from "./pages/BotTeamDialog";
 import { workTeamControlSchema, type WorkTeamTemplateDto, type WorkTeamMember, type WorkTeamPlan } from "@shared/bot-work-team";
+import { botWorkBadges } from "@/lib/botWorkIndicators";
+import { useBotWorkIndicators } from "@/hooks/useBotWorkIndicators";
 import "./BotTeamsNavigation.css";
 
 type SavedTeamRequest = { operationId: string; name: string; plan: WorkTeamPlan };
@@ -19,6 +21,7 @@ function pendingTeam(): SavedTeamRequest | null {
 export function BotTeamsNavigation({ onSelect }: { onSelect?: () => void } = {}): React.JSX.Element {
   const activeTeam = useAppStore(state => state.activeTeam);
   const bots = useAppStore(s => s.botIdentities);
+  const indicators = useBotWorkIndicators();
   const [teams, setTeams] = useState<WorkTeamTemplateDto[]>([]);
   const [error, setError] = useState("");
   const [selected, setSelected] = useState<WorkTeamTemplateDto | null>(null);
@@ -70,7 +73,13 @@ export function BotTeamsNavigation({ onSelect }: { onSelect?: () => void } = {})
       }).catch(() => { if (live && epoch === teamRefreshEpoch.current) setError("团队暂时无法刷新。"); });
     };
     window.addEventListener("mybuddy:teams-refresh", refresh);
-    return () => { live = false; window.removeEventListener("mybuddy:teams-refresh", refresh); };
+    let messageTimer: ReturnType<typeof setTimeout> | undefined;
+    const messageChanged = () => {
+      if (messageTimer) return;
+      messageTimer = setTimeout(() => { messageTimer = undefined; refresh(); }, 400);
+    };
+    const unsubscribe = window.api?.botWork.onMessageChanged?.(messageChanged);
+    return () => { live = false; if (messageTimer) clearTimeout(messageTimer); unsubscribe?.(); window.removeEventListener("mybuddy:teams-refresh", refresh); };
   }, []);
   useEffect(() => {
     if (creating || selected) { if (!dialog.current?.open) dialog.current?.showModal(); }
@@ -138,9 +147,9 @@ export function BotTeamsNavigation({ onSelect }: { onSelect?: () => void } = {})
       <button type="button" className="sidebar-bot-create" onClick={() => { viewEpoch.current++; setError(""); setCreating(true); if (!saveRequest.current) { setName(""); setOwner(candidates[0]?.botId ?? ""); setMembers([]); } }}><IconPlus size={12} />新建团队</button>
     </div>
     {!teams.length && <p className="sidebar-empty">把常用 Bot 组成团队，统一接收任务和返回成果。</p>}
-    {teams.map(team => <button type="button" className={`sidebar-bot-row sidebar-bot-identity ${activeTeam?.templateId === team.templateId ? "active" : ""}`} aria-pressed={activeTeam?.templateId === team.templateId} key={team.templateId} onClick={() => openTeam(team)}>
-      <BotTeamAvatar team={team} bots={bots} className="sidebar-bot-avatar" /><span><strong title={team.name}>{team.name}</strong><small>{team.members.length + 1} 位 Bot · 队长 {botName(team.ownerBotId)}</small></span>
-    </button>)}
+    {teams.map(team => { const badges = botWorkBadges(indicators.teams[team.templateId]); return <button type="button" className={`sidebar-bot-row sidebar-bot-identity ${activeTeam?.templateId === team.templateId ? "active" : ""}`} aria-pressed={activeTeam?.templateId === team.templateId} key={team.templateId} onClick={() => openTeam(team)}>
+      <BotTeamAvatar team={team} bots={bots} className="sidebar-bot-avatar" /><span><strong title={team.name}>{team.name}</strong><small className="bot-team-meta"><span>{team.members.length + 1} 位 Bot · 队长 {botName(team.ownerBotId)}</span>{badges.map(badge => <span key={badge.key} className="sidebar-bot-work" data-tone={badge.key} title={badge.title}>{badge.label} {badge.value}</span>)}</small></span>
+    </button>; })}
     {error && !creating && !selected && <p role="status">{error}</p>}
     <dialog ref={dialog} className="bot-team-directory-dialog" aria-label={creating ? "新建 Bot 团队" : "团队工作空间"} onCancel={event => { event.preventDefault(); close(); }} onClose={close}>
       <header><h2>{creating ? "新建 Bot 团队" : settings ? `${selected?.name} · 团队设置` : selected?.name}</h2><button type="button" aria-label="关闭团队面板" onClick={close}><IconX size={18} /></button></header>

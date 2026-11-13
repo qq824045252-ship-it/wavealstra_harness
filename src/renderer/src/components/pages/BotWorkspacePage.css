@@ -23,7 +23,10 @@
 .bot-avatar { display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; width:27px; height:27px; border-radius:9px; color:var(--fg-secondary); background:var(--bg-sidebar); border:1px solid var(--border-subtle); }
 .bot-header-avatar { width:39px; height:39px; border-radius:13px; }
 .bot-presence { width:5px; height:5px; border-radius:50%; background:var(--fg-muted); }
-.bot-presence.is-online { background:var(--success); }
+.bot-presence.is-idle { background:var(--success); }
+.bot-presence.is-working { background:var(--danger); }
+.bot-work-badge { padding:0 5px; border-radius:5px; background:var(--bg-hover); color:var(--fg-secondary); font-size:10px; line-height:16px; font-variant-numeric:tabular-nums; }
+.bot-work-badge[data-tone="active"] { background:var(--bg-active); color:var(--fg); font-weight:600; }
 .bot-workspace-actions { display:flex; align-items:center; gap:6px; }
 .bot-view-tabs { display:flex; align-items:center; gap:8px; padding:0 24px 12px; border-bottom:1px solid var(--border-subtle); overflow-x:auto; flex-shrink:0; }
 .bot-view-tabs button { flex-shrink:0; gap:7px; padding:8px 12px; border:1px solid transparent; color:var(--fg-secondary); background:transparent; }

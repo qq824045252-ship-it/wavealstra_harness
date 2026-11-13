@@ -15,9 +15,13 @@
 .sidebar-bot-identity strong, .sidebar-bot-identity small { display:block; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; line-height:1.5; }
 .sidebar-bot-identity strong { font-weight:550; }
 .sidebar-bot-identity .sidebar-bot-avatar { width:32px; height:32px; flex-basis:32px; border:0; border-radius:11px; background:var(--bg-panel); }
-.sidebar-bot-identity small[data-state] { display:flex; align-items:center; gap:5px; font-size:max(11px,calc(var(--font-ui-size,15px) * .8)); }
+.sidebar-bot-identity small[data-state] { display:flex; align-items:center; gap:5px; font-size:max(11px,calc(var(--font-ui-size,15px) * .8)); min-width:0; }
 .sidebar-bot-identity small[data-state]::before { content:""; width:5px; height:5px; flex:0 0 5px; border-radius:50%; background:var(--fg-muted); }
-.sidebar-bot-identity small[data-state="online"]::before { background:var(--success); }
+.sidebar-bot-identity small[data-state="idle"]::before { background:var(--success); }
+.sidebar-bot-identity small[data-state="working"]::before { background:var(--danger); }
+.sidebar-bot-state { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.sidebar-bot-work { flex:0 0 auto; padding:0 5px; border-radius:5px; background:var(--bg-hover); color:var(--fg-secondary); font-size:clamp(10px,calc(var(--font-ui-size,15px) * .72),12px); line-height:16px; font-variant-numeric:tabular-nums; }
+.sidebar-bot-work[data-tone="active"] { background:var(--bg-active); color:var(--fg); font-weight:600; }
 .bot-display-actions > button { display:grid; place-items:center; width:32px; height:32px; border-radius:8px; }
 .bot-display-groups :is(button,summary):focus-visible, .bot-teams-navigation button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 @media(pointer:coarse) { .bot-display-actions > button { width:44px; height:44px; } }

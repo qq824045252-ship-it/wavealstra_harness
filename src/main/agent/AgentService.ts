@@ -4,6 +4,7 @@ import { WorkWatchSupervision } from "./work/WorkWatchSupervision";
 import { botExecutionDiagnostics } from "./work/BotExecutionDiagnostics";
 import { BotDisplayGroupsService } from "./work/BotDisplayGroupsService";
 import { BotWorkspaceNavigationService } from "./work/BotWorkspaceNavigationService";
+import { readBotWorkIndicators } from "./work/BotWorkIndicators";
 import { BotWorkResultTurn } from "./work/BotWorkResultTurn";
 import { WorkCompletionCoordinator } from "./work/WorkCompletionCoordinator";
 import { BotConversationMemory } from "./work/BotConversationMemory";
@@ -1265,6 +1266,7 @@ export class AgentService {
     return new WorkProjectionJournal(this.db.connection, this.workService).sync(LOCAL_USER_ID, request);
   }
   botDisplayGroups(request: unknown) { return new BotDisplayGroupsService(this.db.connection, LOCAL_USER_ID).execute(request); }
+  botWorkIndicators() { return readBotWorkIndicators(this.db.connection, LOCAL_USER_ID); }
   botExecutionDiagnostics(request: unknown) { return botExecutionDiagnostics(this.db.connection, LOCAL_USER_ID, request, this.taskDiagnostics, this.workService, this.botRegistry); }
   botWorkspaceNavigation() { return new BotWorkspaceNavigationService(this.db, LOCAL_USER_ID).snapshot(); }
   async sendBotMessage(request: unknown) {
