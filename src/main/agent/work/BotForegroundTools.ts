@@ -1,3 +1,4 @@
+import { BotClarificationGoals } from "./BotClarificationGoals";
 import { readWorkFileSource } from "./WorkFileEventSource";
 import { botReminderTool } from "./BotReminderTools";
 import { workWatchIntentSchema } from "../../../shared/work-watch-intent";
@@ -30,7 +31,8 @@ const watchRule = workWatchIntentSchema;
 const timing = { mode: z.enum(["once", "watch"]).optional(), watchRule: watchRule.optional(),
   deadlineAt: z.number().int().nonnegative().optional().describe("承诺期限 Unix 毫秒时间戳，到期只读跟进，不等同于自动取消") };
 const sourceMessageIds = z.array(z.string().min(1).max(500)).max(32).optional().describe("本轮冻结来源索引中，与当前目标有关的原要求、澄清问答和仍有效限制的消息ID。承接此前目标时明确选择这些来源；当前用户消息自动保留。不选择无关主题、已撤销要求或把助理转述当用户原话。");
-const create = z.object({ ...fields, ...timing, title: text, sourceMessageIds,
+const clarificationSelection = { clarificationGoalId: z.string().min(1).optional(), independentGoal: z.boolean().optional().describe("仅当本请求明确是与所有待澄清目标无关的新任务时为true。回答先前问题不能用true跳过原文交接。") };
+const create = z.object({ ...fields, ...timing, ...clarificationSelection, title: text, sourceMessageIds,
   sourceIdentity: z.object({ provider: z.string().trim().min(1).max(500), account: z.string().trim().min(1).max(500),
     objectId: z.string().trim().min(1).max(500), action: z.string().trim().min(1).max(500), version: z.string().trim().min(1).max(500),
     revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional() }).strict().optional()
@@ -49,7 +51,7 @@ const memoryRemember = z.object({ scope: z.enum(["current", "conversation", "pub
   kind: z.enum(["identity", "preference", "fact", "decision", "constraint"]),
   title: z.string().min(1).max(200), content: z.string().min(1).max(4000), userEvidence: text }).strict();
 const memoryForget = z.object({ ids: z.array(text).min(1).max(20), userEvidence: text }).strict();
-const teamCreate = z.object({ ...timing, sourceMessageIds, requestedOutcome: create.shape.requestedOutcome, mode: create.shape.mode, startImmediately: create.shape.startImmediately, templateId: z.string().min(1).max(200).optional(), title: z.string().min(1).max(240),
+const teamCreate = z.object({ ...timing, ...clarificationSelection, sourceMessageIds, requestedOutcome: create.shape.requestedOutcome, mode: create.shape.mode, startImmediately: create.shape.startImmediately, templateId: z.string().min(1).max(200).optional(), title: z.string().min(1).max(240),
   goalDescription: z.string().min(1).max(2000), criteria: z.array(z.string().min(1).max(1000)).min(1).max(12),
   taskAssignment: workTeamTaskAssignmentSchema.optional().describe("按本次任务从候选 Bot 或模板内选成员并分配具体职责、依赖；负责人汇总。不用模板时必须提供。不能新建 Bot 或增加权限。依赖成员须排在前面，互不依赖的成员无需填写依赖。省略则沿用模板分工") }).strict();
 const teamReplan = z.object({ workId: text, versionGuard: guard, taskAssignment: workTeamTaskAssignmentSchema,
@@ -75,7 +77,7 @@ export function validateWatchIntent(requestedOutcome: "ongoing" | "one_time", in
 // array bounds and all three positive version guards must not drift apart.
 const parameters = <Schema extends z.ZodType>(schema: Schema) =>
   Type.Unsafe<z.input<Schema>>(z.toJSONSchema(schema, { target: "draft-7", io: "input" }));
-const inputParameters = { query: parameters(query), create: parameters(create), change: parameters(change),
+const inputParameters = { query: parameters(query), create: parameters(create.required({ sourceMessageIds: true })), change: parameters(change.required({ sourceMessageIds: true })),
   control: parameters(control), memory: parameters(memory) };
 
 export interface BotForegroundToolOptions {
@@ -102,7 +104,7 @@ export interface BotForegroundToolOptions {
 }
 
 /** Foreground Work/memory controls. Read-only web tools are mounted separately by the host. */
-export const BOT_FOREGROUND_TOOLS = new Set(["reminder_manage", "schedule_overview", "work_query_status", "work_watch_sources", "work_create", "work_amend", "work_pause", "work_resume", "work_cancel", "memory_search", "memory_forget", "memory_remember", "work_team_templates", "work_team_create", "work_team_replan"]);
+export const BOT_FOREGROUND_TOOLS = new Set(["reminder_manage", "schedule_overview", "work_query_status", "work_watch_sources", "work_create", "work_amend", "work_pause", "work_resume", "work_cancel", "memory_search", "memory_forget", "memory_remember", "work_team_templates", "work_team_create", "work_team_replan", "work_clarify"]);
 
 export function botForegroundTools(options: BotForegroundToolOptions) {
   const { db, works, bots, messages, userId, botId, conversationId } = options;
@@ -170,6 +172,17 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
     if (!options.isAuthority() || !bot || bot.userId !== userId || bot.status !== "active") throw new Error("当前宿主或 Bot 不可受理新动作");
     return bot;
   };
+  // A source decision must not disappear silently between the model-visible index
+  // and admission. Retried operations keep their already frozen evidence.
+  const requireSourceDecision = (source: ReturnType<typeof receipt>, ids: readonly string[] | undefined) => {
+    if (ids !== undefined) return;
+    const row = db.prepare("SELECT context_json FROM bot_request_runs WHERE message_id=?")
+      .get(source.assistant_message_id) as { context_json: string } | undefined;
+    if (!row) return;
+    const frozen = z.object({ delegationSources: z.array(z.unknown()).default([]) }).parse(JSON.parse(row.context_json));
+    if (frozen.delegationSources.length) throw new Error("尚未声明本次委托的原始来源，未创建或修改事项。请依据本轮 delegationSources 选择相关原要求、澄清问答及附件的 sourceMessageIds 后重试；确认完全独立的新目标才明确传 []。不要为通过校验复制整段对话，不向用户增加审批。");
+  };
+  const clarifications = new BotClarificationGoals(db, messages);
   const actor = (): WorkActor => ({ kind: "bot", userId, botId, host: "foreground", grants: DESKTOP_USER_GRANTS });
   const output = (value: unknown) => ({ output: [{ type: "text" as const, text: JSON.stringify(value) }] });
   const mutations = (["work_create", "work_amend", "work_pause", "work_resume", "work_cancel"] as const).map(name => defineTool({
@@ -241,9 +254,12 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
         let shouldSchedule = false;
         let startWatchImmediately = false;
         let selectedSources: string[] | undefined;
+        let clarificationGoalId: string | undefined;
         if (name === "work_create") {
-          const { startImmediately, requestedOutcome, sourceMessageIds, ...input } = create.parse(args);
-          selectedSources = sourceMessageIds;
+          const { startImmediately, requestedOutcome, sourceMessageIds, clarificationGoalId: requestedGoal, independentGoal, ...input } = create.parse(args);
+          const choice = works.repo.getReceipt(userId, operationId) ? {sourceMessageIds,goalId:undefined} : clarifications.select(human,{sourceMessageIds,clarificationGoalId:requestedGoal,independentGoal});
+          selectedSources = choice.sourceMessageIds; clarificationGoalId = choice.goalId;
+          if (!works.repo.getReceipt(userId, operationId)) requireSourceDecision(human, selectedSources);
           messages.validateWorkUserInput(human, selectedSources);
           if (options.teamId) throw new Error("当前是团队会话，请用 work_team_create 为当前团队派发，不创建个人事项");
           const mode = input.mode;
@@ -280,6 +296,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
           if (name === "work_amend") {
             const { sourceMessageIds, ...amended } = change.parse(args);
             selectedSources = sourceMessageIds;
+            if (!works.repo.getReceipt(userId, operationId)) requireSourceDecision(human, selectedSources);
             messages.validateWorkUserInput(human, selectedSources);
             if (amended.watchRule?.eventSource && !works.ingress.availableEventSources().some(item => item.source === amended.watchRule!.eventSource))
               throw new Error("此事件来源尚未接入；请查询work_watch_sources，明确说明只能定时检查");
@@ -307,6 +324,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
           else result = works.cancelWork(actor(), { ...input, operationId });
         }
         if (result.ok) {
+          if (!result.replayed) clarifications.consume(human, clarificationGoalId, result.work.workId);
           if (fileBaseline && name === "work_amend" && !result.replayed) {
             // Reconfiguring next_event establishes a new baseline, not an offline change.
             for (const subscription of works.repo.listSubscriptions(result.work.workId))
@@ -432,6 +450,13 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
           teamId: options.teamId, conversationId, now: Date.now }, input);
       }).deferred());
     } }),
+  defineTool({ name: "work_clarify", description: "仅缺少执行必需信息时，必须先用本工具持久登记待澄清目标，再向用户显示问题；不得只在聊天里问而丢失原始目标。当前用户原文/附件自动归入目标，沿用历史要求选择sourceMessageIds。回答已有澄清还缺信息时传goalId延长同一链；后续创建用返回的goalId作为clarificationGoalId，宿主自动移交整条原文链。用户明确取消尚未派发的目标时用action:cancel与goalId；明确的新任务正常直接创建，不需要本工具审批。",
+    parameters: parameters(z.object({action:z.enum(["ask","cancel"]).default("ask"),question:text.optional(),sourceMessageIds:z.array(z.string()).max(32),goalId:z.string().optional()}).strict()), replay:"safe",
+    execute:async(args,api,context)=>{
+      const input=z.object({action:z.enum(["ask","cancel"]).default("ask"),question:text.optional(),sourceMessageIds:z.array(z.string()).max(32),goalId:z.string().optional()}).strict().parse(args);
+      const requestId=await botForegroundRequest(api,api.callId,context);
+      return output(works.transaction(()=>{assertActive();const source=receipt(requestId);if(input.action==="cancel"){if(!input.goalId)throw Error("取消需要明确待澄清goalId");clarifications.cancel(source,String(api.taskId),input.goalId);return {cancelled:true,goalId:input.goalId};}if(!input.question)throw Error("澄清必须有具体问题");return {goalId:clarifications.clarify(source,String(api.taskId),input.question,input.sourceMessageIds,input.goalId),question:input.question};}));
+    }}),
   defineTool({ name: "work_team_templates", description: "查询当前 Bot 负责的正式团队及成员分工。新团队事项必须选择已有正式团队；没有适合的团队时请用户先建立团队。availableBots 仅供已有事项调整剩余分工，不用于创建无归属事项。个人 Bot 之间委派使用 bot_collaborate 或 bot_organize，由接收方创建自己的 Work。",
     parameters: parameters(z.object({}).strict()), replay: "safe",
     execute: async (_args, api, context) => {
@@ -446,9 +471,9 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
       return output({ templates, availableBots: workspacePath ? works.teams.foregroundCandidates(userId, botId, workspacePath) : [], workspacePath: workspacePath ?? null });
     } }),
   defineTool({ name: "work_team_create", description: "为已有正式团队创建并启动事项：先查 work_team_templates 并传 templateId；独立团队会话由宿主绑定当前团队。taskAssignment 只能选择所选团队已有成员和依赖，也可沿用团队分工及上限。负责人保持当前 Bot，目录来自团队设置。没有正式团队时不能创建，先请用户建立团队；个人 Bot 委派使用 bot_collaborate 或 bot_organize。title/goalDescription/criteria 是执行规划，宿主独立保留用户原文与附件。用户要求执行即可开工，无需再次确认。不要另调用 work_create 重复派发。持续委托必须传 requestedOutcome=ongoing 和 mode=watch：周期观察给 watchRule.cronExpression；若现在就有可执行步骤、之后才需等待，传 startImmediately=true ；确实需要等待时再给 watchRule.nextWakeAt 或真实 eventSource 安排跟进，不能创建once后文字承诺持续。每轮重新观察由成员执行、负责人汇总，默认等首次检查。成功后可用 work_query_status 查询成员进度，work_pause/resume/cancel 控制已有事项。",
-    parameters: parameters(teamCreate), replay: "safe",
+    parameters: parameters(teamCreate.required({ sourceMessageIds: true })), replay: "safe",
     execute: async (args, api, context) => {
-      const { requestedOutcome, startImmediately, sourceMessageIds, ...input } = teamCreate.parse(args);
+      const { requestedOutcome, startImmediately, sourceMessageIds: requestedSources, clarificationGoalId, independentGoal, ...input } = teamCreate.parse(args);
       validateWatchIntent(requestedOutcome, { ...input, startImmediately });
           if (input.watchRule?.eventSource && !works.ingress.availableEventSources().some(item => item.source === input.watchRule!.eventSource))
             throw new Error("此事件来源尚未接入；请查询work_watch_sources，明确说明只能定时检查并提供真实轮询时间，不要声称事件订阅成功");
@@ -463,8 +488,11 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
         assertActive();
         const source = receipt(requestId);
         if (messages.peers.origin(source.user_message_id)) throw new Error("个人 Bot 协作不创建临时团队；使用接收 Bot 自己的个人 Work");
-        messages.validateWorkUserInput(source, sourceMessageIds);
         const previous = db.prepare("SELECT work_id FROM work_teams WHERE user_id=? AND operation_id=?").get(userId, operationId) as { work_id: string } | undefined;
+        const choice = previous ? {sourceMessageIds:requestedSources,goalId:undefined} : clarifications.select(source,{sourceMessageIds:requestedSources,clarificationGoalId,independentGoal});
+        const sourceMessageIds=choice.sourceMessageIds;
+        if (!previous) requireSourceDecision(source, sourceMessageIds);
+        messages.validateWorkUserInput(source, sourceMessageIds);
         if (!input.templateId && !previous) throw new Error("请先创建或选择正式团队；个人 Bot 委派使用接收方自己的 Work");
         const workspacePath = previous ? works.getWork(previous.work_id)?.workspacePath : works.teams.resolveWorkspace(userId, input.templateId!);
         if (!workspacePath) throw new Error("当前 Bot 没有可用工作目录，请在 Bot 设置中指定文件夹");
@@ -472,6 +500,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
           ...(input.mode === "watch" ? { watchRule: { ...input.watchRule, requestedOutcome } } : {}),
           operationId, workspacePath, conversationId, sourceMessageId: source.user_message_id });
         if (result.ok && result.work) {
+          if (!result.replayed) clarifications.consume(source,choice.goalId,result.work.workId);
           if (startImmediately && result.work.mode === "watch" && !result.replayed) {
             works.teams.requestImmediateWatch(result.work);
           }
