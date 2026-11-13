@@ -1201,7 +1201,7 @@ function registerIpc(): void {
   ipcMain.handle(BotWorkIpc.activeRequests, () => agentService.botActiveRequests());
   ipcMain.handle(BotWorkIpc.displayGroups, (_event, request) => agentService.botDisplayGroups(request));
   ipcMain.handle(BotWorkIpc.workspaceNavigation, () => agentService.botWorkspaceNavigation());
-  ipcMain.handle(BotWorkIpc.workIndicators, () => agentService.botWorkIndicators());
+  ipcMain.handle(BotWorkIpc.directoryActivity, () => agentService.botDirectoryActivity());
   ipcMain.handle(BotWorkIpc.cancelSend, (_e, botId: string, requestId: string) => agentService.cancelBotSend(botId, requestId));
   ipcMain.handle(BotWorkIpc.archiveConversation, (_e, botId: string, conversationId: string) => agentService.archiveBotConversation(botId, conversationId));
   ipcMain.handle(BotWorkIpc.queryWorks, (_e, request: unknown) => agentService.queryWorkProjections(request));

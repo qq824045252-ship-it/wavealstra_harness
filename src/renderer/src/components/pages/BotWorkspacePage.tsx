@@ -33,8 +33,8 @@ import ChatComposer from "@/components/chat/ChatComposer";
 import ChatMarkdown from "./BotChatMarkdown";
 import { IconStop, IconPlus, IconArchive, IconChevronDown, IconArrowUp, IconBot, IconChevronRight, IconListTodo, IconPanel, IconSettings, IconX } from "@/components/common/icons";
 import { activeBotReply, personalBotWork, linkedConversationWork, botMessageStatus, botMessageWorkLinks, botReplyQuestions, botWorkTimeline, shouldSendBotComposer, type BotWorkspaceView } from "@/lib/botWorkspacePresentation";
-import { botPresence, botWorkBadges } from "@/lib/botWorkIndicators";
-import { useBotWorkIndicators } from "@/hooks/useBotWorkIndicators";
+import { botPresence, botWorkBadges } from "@/lib/botDirectoryActivity";
+import { useBotDirectoryActivity } from "@/hooks/useBotDirectoryActivity";
 import { BotWorkBrowser } from "./BotWorkBrowser";
 import { BotResultReport, BotReturnedFiles } from "./BotWorkResult";
 import BotMessageHtmlFiles from "./BotMessageHtmlFiles";
@@ -113,9 +113,10 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   const selectionChanged = previousSelection.current !== selectedWorkId;
   previousSelection.current = selectedWorkId;
   const activeBot = identities.find(bot => bot.botId === activeBotId) ?? null;
-  const workIndicators = useBotWorkIndicators();
-  const scopeIndicator = activeTeam ? workIndicators.teams[activeTeam.templateId] : activeBot ? workIndicators.bots[activeBot.botId] : undefined;
-  const presence = botPresence(activeTeam ? { status: activeBot?.status ?? "active" } : activeBot, hostStatus, scopeIndicator);
+  const directory = useBotDirectoryActivity();
+  const scopeActivity = activeTeam ? directory.teams[activeTeam.templateId] : activeBot ? directory.bots[activeBot.botId] : undefined;
+  const foreground = activeTeam ? directory.liveTeams.includes(activeTeam.templateId) : directory.liveBots.includes(activeBot?.botId ?? "");
+  const presence = botPresence(activeTeam ? { status: activeBot?.status ?? "active" } : activeBot, hostStatus, scopeActivity, foreground);
   const botWorks = useMemo(() => works.filter(work => !work.team?.removedAt && (teamId ? work.team?.teamId === teamId : personalBotWork(work, activeBotId))), [works, activeBotId, teamId]);
   const displayName = activeTeam?.name ?? activeBot?.displayName ?? "Bot";
   const messages = activeBotId ? histories[scopeKey]?.messages ?? [] : [];
@@ -365,7 +366,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
       <header className="bot-workspace-header" hidden={Boolean(inlineWorkId)}>
         {props.onToggleNavigation && <button type="button" className="bot-icon-button" aria-label={props.navigationVisible ? "收起导航" : "展开导航"} aria-expanded={props.navigationVisible} onClick={props.onToggleNavigation}><IconPanel size={18} /></button>}
         {activeTeam ? <BotTeamAvatar team={activeTeam} bots={identities} className="bot-header-avatar" /> : <BotAvatar botId={activeBotId ?? undefined} name={displayName} play className="bot-header-avatar" />}
-        <div className="bot-heading"><div className="bot-heading-title"><h1>{activeTeam?.name ?? activeBot?.displayName ?? "Bot 模式"}</h1>{!activeTeam && activeBot?.organizationRole === "primary" && <span className="bot-primary-badge">主助理</span>}</div><p><span className={`bot-presence is-${presence.state}`} />{activeBot || activeTeam ? presence.label : "你的长期个人助理"}{botWorkBadges(scopeIndicator).map(badge => <span key={badge.key} className="bot-work-badge" data-tone={badge.key} title={badge.title}>{badge.label} {badge.value}</span>)}<span className="bot-heading-description"> · {activeTeam ? `团队工作台 · ${activeTeam.members.length + 1} 位成员` : "对话有延续，事项有着落"}</span></p></div>
+        <div className="bot-heading"><div className="bot-heading-title"><h1>{activeTeam?.name ?? activeBot?.displayName ?? "Bot 模式"}</h1>{!activeTeam && activeBot?.organizationRole === "primary" && <span className="bot-primary-badge">主助理</span>}</div><p><span className={`bot-presence is-${presence.state}`} />{activeBot || activeTeam ? presence.label : "你的长期个人助理"}{botWorkBadges(scopeActivity).map(badge => <span key={badge.key} className="bot-work-badge" data-tone={badge.key} title={badge.title}>{badge.label} {badge.value}</span>)}<span className="bot-heading-description"> · {activeTeam ? `团队工作台 · ${activeTeam.members.length + 1} 位成员` : "对话有延续，事项有着落"}</span></p></div>
         <div className="bot-workspace-actions">
           {activeBotId && !teamId && <button type="button" className="bot-quiet-button" onClick={() => openCollaboration()}>协作记录</button>}
           {activeBotId && <BotExecutionDiagnosticsButton request={{kind:"foreground",botId:activeBotId,teamId,conversationId:histories[scopeKey]?.conversationId}} />}

@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { useAppStore } from '@/store/appStore';
 import { BotAvatar } from './common/BotAvatar';
-import { botPresence, botWorkBadges } from '@/lib/botWorkIndicators';
-import { useBotWorkIndicators } from '@/hooks/useBotWorkIndicators';
+import { botPresence, botWorkBadges } from '@/lib/botDirectoryActivity';
+import { useBotDirectoryActivity } from '@/hooks/useBotDirectoryActivity';
 import type { BotDisplayGroupCommand, BotDisplayGroups as Snapshot } from '@shared/bot-display-groups';
 import './BotDisplayGroups.css';
 import { useTextPrompt } from './common/useTextPrompt';
@@ -14,15 +14,15 @@ export function BotDisplayGroups({onSelect}:{onSelect?:()=>void}) {
  function toggleMenu(id:string,element:HTMLElement){const r=element.getBoundingClientRect();setMenuPosition({top:Math.max(8,Math.min(r.bottom+4,window.innerHeight-310)),left:Math.max(8,Math.min(r.right-200,window.innerWidth-248))});setMenu(menu===id?null:id);}
  const {requestText,textPromptDialog}=useTextPrompt();
  useEffect(()=>{if(!menu)return;const close=(event:PointerEvent)=>{if(!(event.target as Element).closest('.bot-display-actions'))setMenu(null);};document.addEventListener('pointerdown',close);return()=>document.removeEventListener('pointerdown',close);},[menu]);
- const indicators=useBotWorkIndicators();
+ const directory=useBotDirectoryActivity();
  const flight=useRef(false);
  useEffect(()=>{let live=true;Promise.resolve().then(()=>window.api!.botWork.displayGroups({kind:'list'})).then(d=>{if(live)setData(d);}).catch(e=>{if(live)setError(String(e));});return()=>{live=false;};},[]);
  async function mutate(command:BotDisplayGroupCommand){if(flight.current)return false;flight.current=true;setBusy(true);setError('');try{setData(await window.api!.botWork.displayGroups(command));setMenu(null);return true;}catch(e){setError(e instanceof Error?e.message:String(e));return false;}finally{flight.current=false;setBusy(false);}}
  async function edit(id?:string,botId?:string){setMenu(null);setError('');const name=await requestText({title:id?'重命名分组':'创建分组',label:'分组名称',initialValue:data.groups.find(g=>g.id===id)?.name??'',placeholder:'例如：工作、学习、生活',confirmLabel:'保存',maxLength:60,description:'仅整理 Bot 列表，不影响任务、对话或工作空间。'});if(name!==null)await mutate(id?{kind:'rename',id,name}:{kind:'create',name,botId});}
  function rows(id:string|null){return bots.filter(b=>(data.membership[b.botId]??null)===id).map(b=>{
-  const counts=indicators.bots[b.botId],presence=botPresence(b,host,counts);
+  const counts=directory.bots[b.botId],presence=botPresence(b,host,counts,directory.liveBots.includes(b.botId));
   return <div className="bot-display-row" key={b.botId}>
-  <button type="button" className="sidebar-bot-row sidebar-bot-identity" aria-pressed={!team&&active===b.botId} onClick={()=>{select(b.botId);onSelect?.();}}><BotAvatar className="sidebar-bot-avatar" botId={b.botId} name={b.displayName}/><span><strong title={b.displayName}>{b.displayName}</strong><small data-state={presence.state} title={`${presence.label}${counts?` · ${counts.active} 个进行中 · ${counts.completed} 个已完成`:''}`}><span className="sidebar-bot-state">{presence.label}</span>{botWorkBadges(counts).map(badge=><span key={badge.key} className="sidebar-bot-work" data-tone={badge.key} title={badge.title}>{badge.label} {badge.value}</span>)}</small></span></button>
+  <button type="button" className="sidebar-bot-row sidebar-bot-identity" aria-pressed={!team&&active===b.botId} onClick={()=>{select(b.botId);onSelect?.();}}><BotAvatar className="sidebar-bot-avatar" botId={b.botId} name={b.displayName}/><span><strong title={b.displayName}>{b.displayName}</strong><small data-state={presence.state} title={`${presence.label}${counts?` · ${counts.activeWorks} 个进行中 · ${counts.completedWorks} 个已完成${counts.activeReplies?` · ${counts.activeReplies} 条回复进行中`:''}`:''}`}><span className="sidebar-bot-state">{presence.label}</span>{botWorkBadges(counts).map(badge=><span key={badge.key} className="sidebar-bot-work" data-tone={badge.key} title={badge.title}>{badge.label} {badge.value}</span>)}</small></span></button>
   <div className="bot-display-actions"><button type="button" aria-label={`移动 ${b.displayName} 到分组`} aria-expanded={menu===b.botId} onClick={e=>toggleMenu(b.botId,e.currentTarget)}>⋯</button>{menu===b.botId&&<div className="bot-display-menu" style={menuPosition} role="menu" aria-label="移至分组"><span>移至</span>{[{id:null,name:'未分组'},...data.groups].map(g=><button role="menuitemradio" aria-checked={id===g.id} disabled={busy} key={g.id??'none'} onClick={()=>void mutate({kind:'move',botId:b.botId,groupId:g.id})}>{id===g.id?'✓ ':''}{g.name}</button>)}<button role="menuitem" onClick={()=>edit(undefined,b.botId)}>＋ 创建分组</button></div>}</div>
  </div>;});}
  return <section className="bot-display-groups" aria-label="Bot 分组" onKeyDown={e=>{if(e.key==='Escape')setMenu(null);}}>

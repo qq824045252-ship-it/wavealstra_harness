@@ -18,6 +18,15 @@ runRendererFixture({name:'bot-display-groups',show:true,width:Number(process.env
  assert.ok(red[0]>red[1]&&red[0]>red[2],'工作中 paints a red presence dot');
  assert.ok(green[1]>green[0]&&green[1]>green[2],'空闲 paints a green presence dot');
  for(const row of status){assert.ok(row.height<=62,'badges keep the directory row compact');for(const badge of row.badges)assert.ok(badge.visible&&badge.right<=row.edge+0.5,'work badges stay inside the sidebar');}
+ const idleActivity={bots:{a:{activeWorks:2,completedWorks:5,activeReplies:0},b:{activeWorks:0,completedWorks:1,activeReplies:0}},teams:{}};
+ const stateOf=index=>run(`document.querySelectorAll('.bot-display-row')[${index}].querySelector('small').dataset.state`);
+ await run(`window.__setActivity({bots:{a:${JSON.stringify(idleActivity.bots.a)},b:{activeWorks:0,completedWorks:1,activeReplies:1}},teams:{}});window.__emitMessage({message:{messageId:'reply-b',status:'running'}})`);
+ await wait(`document.querySelectorAll('.bot-display-row')[1].querySelector('small').dataset.state==='working'`);
+ assert.equal(await stateOf(0),'working');assert.equal(await stateOf(1),'working','a foreground reply alone makes the Bot 工作中');
+ assert.match(await run(`document.querySelectorAll('.bot-display-row')[1].querySelector('small').textContent`),/工作中/);
+ await run(`window.__setActivity(${JSON.stringify(idleActivity)});window.__emitMessage({message:{messageId:'reply-b',status:'completed'}})`);
+ await wait(`document.querySelectorAll('.bot-display-row')[1].querySelector('small').dataset.state==='idle'`);
+ assert.equal(await stateOf(1),'idle','a finished reply returns the Bot to 空闲');
  await click('＋ 创建分组');await wait(`!!document.querySelector('[role=dialog]')`);const layout=await run(`(()=>{const e=document.querySelector('.text-prompt-dialog'),r=e.getBoundingClientRect(),i=e.querySelector('input');return {cx:r.x+r.width/2,cy:r.y+r.height/2,w:innerWidth,h:innerHeight,bg:getComputedStyle(i).backgroundColor}})()`);assert.ok(Math.abs(layout.cx-layout.w/2)<2);assert.ok(Math.abs(layout.cy-layout.h/2)<2);assert.notEqual(layout.bg,'rgb(25, 25, 25)');await f.screenshot(path.join(out,'bot-group-dialog-light-'+(process.env.UI_TEST_WIDTH||900)+'.png'));await fill('ERP');await click('保存');await wait(`document.querySelectorAll('.bot-display-group').length===2`);
  await run(`document.querySelector('[aria-label="移动 ERP 前端 到分组"]').click()`);await click('ERP');await wait(`document.querySelector('.bot-display-group:first-of-type .bot-display-row')?.textContent.includes('ERP 前端')`);
  await run(`document.querySelector('.bot-display-group header>button').click()`);await wait(`!document.querySelector('.bot-display-group:first-of-type .bot-display-row')`);
