@@ -1,8 +1,10 @@
+import { BotAvatarSettings } from "./BotAvatarSettings";
+import { loadBotAvatars } from "@/lib/botAvatarStore";
 import { useEffect, useRef, useState } from "react";
 import { botCreateRequestSchema, type BotCreateRequest } from "@shared/bot-create";
 import type { BotDto } from "@shared/bot-work";
 import { useAppStore } from "@/store/appStore";
-import { IconBot, IconCheck, IconX } from "@/components/common/icons";
+import { IconCheck, IconX } from "@/components/common/icons";
 
 const pendingKey = "mybuddy.pending-bot-creation";
 
@@ -30,6 +32,7 @@ export function BotCreateDialog({ open, onClose }: { open: boolean; onClose: () 
   const [pending, setPending] = useState(readPending);
   const [name, setName] = useState(() => pending?.displayName ?? "");
   const [responsibility, setResponsibility] = useState(() => pending?.responsibilitySummary ?? "");
+  const [avatarAssetId, setAvatarAssetId] = useState<string|null>(() => pending?.avatarAssetId ?? null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [created, setCreated] = useState<BotDto | null>(null);
@@ -61,7 +64,7 @@ export function BotCreateDialog({ open, onClose }: { open: boolean; onClose: () 
   }, [open]);
 
   const close = () => { intentEpoch.current += 1; openRef.current = false; onClose(); };
-  const reset = () => { setPending(null); setName(""); setResponsibility("");  setCreated(null); setError(""); };
+  const reset = () => { setPending(null); setName(""); setResponsibility(""); setAvatarAssetId(null); setCreated(null); setError(""); };
   const openBot = (bot: BotDto) => {
     const state = useAppStore.getState();
     state.setActiveBotId(bot.botId);
@@ -70,7 +73,7 @@ export function BotCreateDialog({ open, onClose }: { open: boolean; onClose: () 
   };
   const submit = async () => {
     if (inFlight.current || (!pending && (!name.trim() || duplicateName))) return;
-    const request = pending ?? { requestId: crypto.randomUUID(), displayName: name.trim(), responsibilitySummary: responsibility.trim(), allowWorkspaceFiles: true };
+    const request = pending ?? { requestId: crypto.randomUUID(), displayName: name.trim(), responsibilitySummary: responsibility.trim(), allowWorkspaceFiles: true, avatarAssetId };
     const parsed = botCreateRequestSchema.safeParse(request);
     if (!parsed.success) { setError("请填写 1–80 字的名称，职责说明最多 2000 字。"); return; }
     // Save before dispatch. Reloads and lost acknowledgements retry the same identity.
@@ -82,6 +85,7 @@ export function BotCreateDialog({ open, onClose }: { open: boolean; onClose: () 
       const result = await useAppStore.getState().createBot(parsed.data);
       if (result.ok) {
         forgetPending(parsed.data.requestId);
+        void loadBotAvatars(true);
         if (!mounted.current) return;
         setPending(null); setCreated(result.bot);
         if (openRef.current && intentEpoch.current === epoch) openBot(result.bot);
@@ -108,7 +112,7 @@ export function BotCreateDialog({ open, onClose }: { open: boolean; onClose: () 
       if (event.key === "Enter" && (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229)) event.preventDefault();
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") close();
     }}>
-    <header className="bot-create-header"><span className="bot-avatar" aria-hidden="true"><IconBot size={20} /></span>
+    <header className="bot-create-header">
       <div><h2 id="bot-create-title">新建 Bot</h2><p id="bot-create-intro">一个有自己职责的长期助理</p></div>
       <button type="button" className="icon-btn" aria-label="关闭新建 Bot" onClick={close}><IconX size={18} /></button>
     </header>
@@ -116,6 +120,7 @@ export function BotCreateDialog({ open, onClose }: { open: boolean; onClose: () 
       <p>它已出现在「我的 Bot」中。你可以打开对话，或继续创建其他 Bot。</p>
       <div className="bot-create-actions"><button type="button" onClick={reset}>再创建一个</button><button type="button" className="bot-create-primary" onClick={() => openBot(created)}>打开 Bot</button></div>
     </section> : <form onSubmit={event => { event.preventDefault(); void submit(); }}>
+      <BotAvatarSettings name={name.trim() || "新 Bot"} draftAssetId={avatarAssetId} onDraftSelect={setAvatarAssetId} disabled={Boolean(pending) || busy}/>
       <p>为它起个名字，说明主要负责什么。对话、事项与私人记忆会按 Bot 分开。</p>
       <label htmlFor="bot-create-name">名称 <span>必填</span></label>
       <input ref={nameRef} id="bot-create-name" name="displayName" value={name} onChange={event => { setName(event.target.value); setError(""); }}

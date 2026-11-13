@@ -1,0 +1,25 @@
+import assert from "node:assert/strict";
+import {parseHTML} from "linkedom";
+import {act,useState} from "react";
+import {BotAvatarSettings} from "../src/renderer/src/components/pages/BotAvatarSettings";
+import {builtinBotAvatars} from "../src/shared/bot-avatar";
+import {useBotAvatarStore} from "../src/renderer/src/lib/botAvatarStore";
+import "./bot-avatar-ui-assets";
+const {window:w,document:d}=parseHTML("<html><body></body></html>");
+(w.HTMLElement.prototype as any).showModal=function(){this.setAttribute("open","");};(w.HTMLElement.prototype as any).close=function(){this.removeAttribute("open");};
+Object.assign(globalThis,{window:w,document:d,HTMLElement:w.HTMLElement,IS_REACT_ACT_ENVIRONMENT:true});
+Object.assign(w,{matchMedia:()=>({matches:false,addEventListener(){},removeEventListener(){}}),api:{botWork:{avatars:async()=>{throw Error("draft must not save existing bot avatar");}}}});
+useBotAvatarStore.setState({snapshot:{selections:{},uploads:[],motion:false},error:"",images:{}});
+let selection:string|null=null;
+function Fixture(){const [value,setValue]=useState<string|null>(null);return <BotAvatarSettings name="新 Bot" draftAssetId={value} onDraftSelect={id=>{selection=id;setValue(id);}}/>;}
+const {createRoot}=await import("react-dom/client"),host=d.body.appendChild(d.createElement("div")),root=createRoot(host);
+await act(async()=>root.render(<Fixture/>));
+const trigger=()=>host.querySelector('.bot-avatar-edit') as HTMLButtonElement;
+await act(async()=>trigger().click());assert(host.querySelector('dialog[open]'));
+assert(host.textContent?.includes('创建 Bot 时一并保存'));
+const option=host.querySelectorAll('[role="radio"]')[1] as HTMLButtonElement;
+await act(async()=>option.click());assert.equal(selection,builtinBotAvatars[0].id);assert.equal(host.querySelector('dialog'),null);
+await act(async()=>trigger().click());await act(async()=>{const event=new w.Event('cancel',{bubbles:true,cancelable:true});host.querySelector('dialog')!.dispatchEvent(event);});assert.equal(selection,builtinBotAvatars[0].id,'cancel preserves previous draft');
+await act(async()=>trigger().click());await act(async()=>{(host.querySelector('[role="radio"]') as HTMLButtonElement).click();});assert.equal(selection,null);
+await act(async()=>trigger().click());await act(async()=>{const event=new w.Event('keydown',{bubbles:true,cancelable:true});Object.defineProperty(event,'key',{value:'End'});host.querySelector('[role="radiogroup"]')!.dispatchEvent(event);});assert.equal(selection,builtinBotAvatars.at(-1)!.id,'keyboard End selects final option');
+await act(async()=>root.unmount());console.log('PASS draft avatar opens picker, selects without persistence, cancellation preserves draft, default reset');

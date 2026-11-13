@@ -1244,6 +1244,7 @@ export class AgentService {
   createBot(request: unknown) {
     return new BotCreationService(this.db.connection, this.botRegistry, {
       userId: LOCAL_USER_ID, isAuthority: () => this.workHostAuthority.isAuthority(),
+      setInitialAvatar: (botId, assetId) => { this.botAvatars.set(botId, assetId, 0); },
     }).createBot(request);
   }
 

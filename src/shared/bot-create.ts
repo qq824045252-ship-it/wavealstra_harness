@@ -6,6 +6,7 @@ export const BOT_RESPONSIBILITY_MAX_LENGTH = 2000;
 
 /** The renderer selects only the explicit local-file grant; the host assigns all other permissions. */
 export const botCreateSchema = z.object({
+  avatarAssetId: z.string().min(1).max(128).nullable().optional(),
   allowWorkspaceFiles: z.boolean().optional().default(true),
   requestId: z.string().uuid().transform(value => value.toLowerCase()),
   displayName: z.string().max(BOT_DISPLAY_NAME_MAX_LENGTH * 2).trim().min(1)

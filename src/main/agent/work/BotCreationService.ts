@@ -14,10 +14,10 @@ function comparableName(value: string): string {
 }
 
 function creationIdentity(userId: string, input: z.infer<typeof botCreateSchema>) {
+  const legacy = input.allowWorkspaceFiles ? [input.displayName, input.responsibilitySummary, true] : [input.displayName, input.responsibilitySummary];
   return {
     botId: `bot-created-${digest([userId, input.requestId])}`,
-    creationRevision: `bot-create-v1:${digest(input.allowWorkspaceFiles
-      ? [input.displayName, input.responsibilitySummary, true] : [input.displayName, input.responsibilitySummary])}`,
+    creationRevision: `bot-create-v1:${digest(input.avatarAssetId ? [...legacy, { avatarAssetId: input.avatarAssetId }] : legacy)}`,
   };
 }
 
@@ -26,7 +26,7 @@ export class BotCreationService {
   constructor(
     private readonly db: Database.Database,
     private readonly bots: BotRegistry,
-    private readonly host: { userId: string; isAuthority: () => boolean },
+    private readonly host: { userId: string; isAuthority: () => boolean; setInitialAvatar?: (botId: string, assetId: string) => void },
   ) {}
 
   renameBot(request: unknown): BotCreateResult {
@@ -105,11 +105,18 @@ export class BotCreationService {
           responsibilitySummary: input.responsibilitySummary, expertProfile: profile,
           authorization: minimumAuthorization(),
         });
+        // Same database transaction as the identity. Failed/removed/foreign assets
+        // roll back the identity too; replay never overwrites a later avatar edit.
+        if (input.avatarAssetId) {
+          if (!this.host.setInitialAvatar) throw new Error("Avatar persistence unavailable");
+          this.host.setInitialAvatar(bot.botId, input.avatarAssetId);
+        }
         return { ok: true, bot, replayed: false };
       }).immediate();
-    } catch {
+    } catch (cause) {
+      if (cause instanceof Error && cause.message === "头像不可用，请重新选择") return { ok: false, code: "invalid_request", message: "所选头像已不可用，请重新选择后创建" };
       // No raw SQLite messages, paths or configuration content cross the IPC boundary.
-      return { ok: false, code: "storage_error", message: "Bot 暂未保存，请保留当前内容并重试" };
+      return { ok: false, code: "storage_error", message: "Bot 和头像未确认保存，请保留当前内容并重试；若所选头像已移除，请重新选择" };
     }
   }
 
