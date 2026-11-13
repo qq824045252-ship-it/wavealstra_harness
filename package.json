@@ -585,11 +585,11 @@
     "test:gateway-provider-config": "esbuild scripts/gateway-provider-config-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/gateway-electron-stub.ts --outfile=out/tests/gateway-provider-config-test.mjs && node scripts/test-guard.mjs out/tests/gateway-provider-config-test.mjs",
     "test:qq-qr-integration": "esbuild scripts/qq-qr-integration-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/gateway-electron-stub.ts --outfile=out/tests/qq-qr-integration-test.mjs && node scripts/test-guard.mjs out/tests/qq-qr-integration-test.mjs",
     "test:qq-gateway": "esbuild scripts/qq-gateway-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/qq-gateway-test.mjs && node scripts/test-guard.mjs out/tests/qq-gateway-test.mjs",
-    "test:qq-qr-ui": "esbuild scripts/qq-qr-ui-test.tsx --bundle --platform=node --format=esm --packages=external --jsx=automatic --outfile=out/tests/qq-qr-ui-test.mjs && node scripts/test-guard.mjs out/tests/qq-qr-ui-test.mjs",
+    "test:qq-qr-ui": "node scripts/run-gateway-ui-test.mjs scripts/qq-qr-ui-test.tsx",
     "test:gateway-platform-registry": "esbuild scripts/gateway-platform-registry-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/gateway-platform-registry-test.mjs && node scripts/test-guard.mjs out/tests/gateway-platform-registry-test.mjs",
     "test:weixin-gateway": "esbuild scripts/weixin-gateway-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/weixin-gateway-test.mjs && node scripts/test-guard.mjs out/tests/weixin-gateway-test.mjs",
     "test:weixin-qr-integration": "esbuild scripts/weixin-qr-integration-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/gateway-electron-stub.ts --outfile=out/tests/weixin-qr-integration-test.mjs && node scripts/test-guard.mjs out/tests/weixin-qr-integration-test.mjs",
-    "test:weixin-qr-ui": "esbuild scripts/weixin-qr-ui-test.tsx --bundle --platform=node --format=esm --packages=external --jsx=automatic --outfile=out/tests/weixin-qr-ui-test.mjs && node scripts/test-guard.mjs out/tests/weixin-qr-ui-test.mjs",
+    "test:weixin-qr-ui": "node scripts/run-gateway-ui-test.mjs scripts/weixin-qr-ui-test.tsx",
     "test:lark-wecom-gateway": "esbuild scripts/lark-wecom-gateway-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/gateway-electron-stub.ts --outfile=out/tests/lark-wecom-gateway-test.mjs && node scripts/test-guard.mjs out/tests/lark-wecom-gateway-test.mjs",
     "test:telegram-reply-routing": "esbuild scripts/telegram-reply-routing-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/telegram-reply-routing-test.mjs && node scripts/test-guard.mjs out/tests/telegram-reply-routing-test.mjs",
     "test:gateway-media": "esbuild scripts/gateway-media-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/gateway-electron-stub.ts --outfile=out/tests/gateway-media-test.mjs && node scripts/test-guard.mjs out/tests/gateway-media-test.mjs",
@@ -760,7 +760,11 @@
     "test:notification-activation": "node scripts/test-guard.mjs node --import ./scripts/test-typescript-memory-loader.mjs scripts/notification-activation-test.ts",
     "test:bot-message-html-service": "node scripts/test-guard.mjs node --import ./scripts/test-typescript-memory-loader.mjs scripts/bot-message-html-service-test.ts",
     "test:message-html-ui": "node scripts/run-tsgo-ui-test.mjs scripts/bot-message-html-ui-test.tsx",
-    "test:notification-routing": "node scripts/test-guard.mjs node --import ./scripts/test-typescript-memory-loader.mjs scripts/notification-routing-test.ts"
+    "test:notification-routing": "node scripts/test-guard.mjs node --import ./scripts/test-typescript-memory-loader.mjs scripts/notification-routing-test.ts",
+    "test:gateway-connected-ui": "node scripts/run-gateway-ui-test.mjs scripts/gateway-connected-ui-test.tsx",
+    "test:gateway-channel-ui": "node scripts/run-gateway-ui-test.mjs scripts/gateway-channel-ui-test.tsx",
+    "test:gateway-qr-race-ui": "node scripts/run-gateway-ui-test.mjs scripts/gateway-qr-race-ui-test.tsx",
+    "test:gateway-setup-guide": "node scripts/run-gateway-ui-test.mjs scripts/gateway-setup-guide-test.ts"
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.85.0",

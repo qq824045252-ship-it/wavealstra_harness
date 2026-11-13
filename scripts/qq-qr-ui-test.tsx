@@ -22,7 +22,7 @@ Object.assign(testWindow, { api: { gateway: {
 const host = testDocument.body.appendChild(testDocument.createElement("div"));
 let root = createRoot(host);
 const button = (text: string) => Array.from(testDocument.querySelectorAll("button")).find(value => value.textContent === text) as HTMLButtonElement;
-const mount = async () => { await act(async () => { root.render(<QQGatewaySettings />); }); await tick(); };
+const mount = async () => { await act(async () => { root.render(<QQGatewaySettings />); }); await tick(); await act(async () => button("配置").click()); };
 const approve = async () => {
   const checkbox = testDocument.querySelector("input") as HTMLInputElement;
   await act(async () => { checkbox.checked = true; checkbox.dispatchEvent(new testWindow.Event("click", { bubbles: true })); });
@@ -53,8 +53,10 @@ await act(async () => resolveStart(remote)); await tick();
 connected = true; remote = { state: "connected", sessionId: "complete", message: "connected", appId: "123" };
 await tick(1100);
 assert.equal(testDocument.querySelector("img"), null);
+assert.equal(button("管理").getAttribute("aria-expanded"), "false");
+await act(async () => button("管理").click());
 assert.equal(button("断开 QQ").disabled, false);
-assert(button("开始扫码授权").disabled);
+assert.equal(button("开始扫码授权"), undefined);
 await act(async () => button("断开 QQ").click());
 assert.equal(disconnects, 1);
 await act(async () => root.unmount());

@@ -33,6 +33,7 @@ import "./RecordManagement.css";
 import ModelsTab from "./ModelsTab";
 import WeixinGatewaySettings from "./WeixinGatewaySettings";
 import QQGatewaySettings from "./QQGatewaySettings";
+import GatewayBlock from "./GatewayChannelSettings";
 import GatewayBotBindings from "./GatewayBotBindings";
 import SubagentSettingsTab from "./SubagentSettingsTab";
 import ModesTab from "./ModesTab";
@@ -836,165 +837,6 @@ function PersonalizeTab(): React.JSX.Element {
   );
 }
 
-interface GatewayField {
-  key: string;
-  label: string;
-  type?: "text" | "password" | "list";
-  placeholder?: string;
-}
-
-const CHANNEL_COLORS: Record<string, string> = {
-  "telegram-default": "#2AABEE",
-  "feishu-default": "#3370FF",
-  "wecom-default": "#0082EF",
-  "wechat-default": "#07C160",
-  "slack-default": "#4A154B",
-  "dingtalk-default": "#0089FF",
-  "discord-default": "#5865F2",
-};
-
-/** 通用通道配置块：彩色标识 + 状态圆点 + 表单 + 连接/断开 */
-function GatewayBlock({
-  channelId,
-  title,
-  desc,
-  fields,
-}: {
-  channelId: string;
-  title: string;
-  desc: string;
-  fields: GatewayField[];
-}): React.JSX.Element {
-  const [values, setValues] = useState<Record<string, string>>({});
-  const [allowUsers, setAllowUsers] = useState("");
-  const [status, setStatus] = useState("");
-  const [connected, setConnected] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const isSlack = channelId === "slack-default";
-  const isDiscord = channelId === "discord-default";
-  const requiresAllowUsers = isSlack || ["dingtalk-default", "discord-default"].includes(channelId)
-    || (channelId === "feishu-default" && (values.transport === "websocket" || (!values.transport && !values.verificationToken)))
-    || (channelId === "wecom-default" && (values.mode === "smart" || (!values.mode && Boolean(values.botId))));
-  const [allowDirectMessages, setAllowDirectMessages] = useState(false);
-
-  const refreshStatus = useCallback(async (): Promise<void> => {
-    try {
-      const s = await window.api?.gateway?.status();
-      const ch = s?.channels.find((c) => c.id === channelId);
-      setStatus(ch?.statusText ?? (ch?.connected ? "已连接" : "未连接"));
-      setConnected(Boolean(ch?.connected));
-    } catch {
-      setStatus("状态未知");
-      setConnected(false);
-    }
-  }, [channelId]);
-
-  useEffect(() => {
-    void window.api?.gateway?.getChannelConfig(channelId).then((c) => {
-      if (!c?.hasConfig) {
-        if (isSlack) {
-          setValues({ appId: "A0C8GCD53CJ", teamId: "T0C854NS7CK" });
-          setAllowUsers("U0C8F24C8Q4");
-        }
-        return;
-      }
-      const v: Record<string, string> = {};
-      for (const f of fields) {
-        const raw = c.config[f.key];
-        if (typeof raw === "string" && raw) v[f.key] = raw;
-        if (f.type === "list" && Array.isArray(raw)) v[f.key] = raw.join(", ");
-      }
-      setValues(v);
-      setAllowDirectMessages(c.config.allowDirectMessages === true);
-      const users = c.config.allowUsers;
-      if (Array.isArray(users)) setAllowUsers(users.join(", "));
-    });
-    void refreshStatus();
-    const unsubscribe = window.api?.gateway?.onEvent(event => {
-      if (event.channelId === channelId && event.direction === "system") void refreshStatus();
-    });
-    return () => unsubscribe?.();
-  }, [channelId, fields, isSlack, refreshStatus]);
-
-  const connect = async (): Promise<void> => {
-    setBusy(true);
-    setStatus("连接中…");
-    try {
-      const config: Record<string, unknown> = { ...values };
-      for (const field of fields) {
-        if (field.type === "list") config[field.key] = (values[field.key] ?? "").split(/[,，;；\s]+/).filter(Boolean);
-      }
-      if (isDiscord) config.allowDirectMessages = allowDirectMessages;
-      config.allowUsers = allowUsers
-        .split(/[,，;；\s]+/)
-        .map((s) => s.trim())
-        .filter(Boolean);
-      await window.api?.gateway?.connect(channelId, config);
-      setValues(v => ({ ...v, ...Object.fromEntries(fields.filter(f => f.type === "password").map(f => [f.key, "••••••"])) }));
-      await refreshStatus();
-    } catch (err) {
-      setStatus(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const disconnect = async (): Promise<void> => {
-    setBusy(true);
-    try {
-      await window.api?.gateway?.disconnect(channelId);
-      await refreshStatus();
-    } catch (err) {
-      setStatus(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <SettingsSection>
-      <div className="settings-card-head">
-        <span className="channel-dot" style={{ background: CHANNEL_COLORS[channelId] }} />
-        <span className="settings-card-title">{title}</span>
-        <span className={`channel-status${connected ? " on" : ""}`}>{status || "未连接"}</span>
-      </div>
-      <div className="settings-card-desc">{desc}</div>
-      {fields.map((f) => (
-        <Row key={f.key} label={f.label}>
-          <input
-            className="settings-input"
-            type={f.type === "password" ? "password" : "text"}
-            aria-label={f.label}
-            autoComplete={f.type === "password" ? "new-password" : "off"}
-            value={values[f.key] ?? ""}
-            placeholder={f.placeholder ?? ""}
-            onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
-          />
-        </Row>
-      ))}
-      {isDiscord && <Row label="允许 Discord 私聊" desc="默认关闭；打开后也仅允许下方用户 ID。">
-        <input type="checkbox" aria-label="允许 Discord 私聊" checked={allowDirectMessages} onChange={e => setAllowDirectMessages(e.target.checked)} />
-      </Row>}
-      <Row label="允许的用户" desc={isSlack ? "必填：允许触发机器人的 Slack Member ID，逗号分隔。" : requiresAllowUsers ? "必填：平台用户 ID（钉钉为员工 senderStaffId），逗号分隔。" : "只允许这些用户使用，逗号分隔；留空则谁都能用。"}>
-        <input
-          className="settings-input"
-          aria-label={isSlack ? "允许的 Slack 用户" : undefined}
-          value={allowUsers}
-          placeholder={isSlack ? "U0123456789" : "user1, user2"}
-          onChange={(e) => setAllowUsers(e.target.value)}
-        />
-      </Row>
-      <div className="settings-card-footer">
-        <button className="btn primary" disabled={busy || (requiresAllowUsers && !allowUsers.trim()) || (isSlack && (!allowUsers.trim() || !values.appId?.trim() || !values.teamId?.trim() || !values.botToken?.trim() || !values.appToken?.trim()))} onClick={() => void connect()}>
-          连接
-        </button>
-        <button className="btn" disabled={busy} onClick={() => void disconnect()}>
-          断开
-        </button>
-      </div>
-    </SettingsSection>
-  );
-}
 
 function AssistantTab(): React.JSX.Element {
   return (
@@ -1005,7 +847,6 @@ function AssistantTab(): React.JSX.Element {
 
       <QQGatewaySettings />
       <WeixinGatewaySettings />
-      <GatewayBotBindings />
 
       <GatewayBlock
         channelId="slack-default"
@@ -1079,7 +920,7 @@ function AssistantTab(): React.JSX.Element {
       <GatewayBlock
         channelId="wechat-default"
         title="微信公众号"
-        desc="在公众号后台配置回调：http://127.0.0.1:52140/wechat（需要公网）。"
+        desc="公众号消息回调接入，需要将本应用 /wechat 路径提供为平台可达的公网 HTTPS 地址。与个人微信扫码接入不同。"
         fields={[
           { key: "appId", label: "App ID", placeholder: "wx_xxx" },
           { key: "appSecret", label: "App Secret", type: "password", placeholder: "密钥" },
@@ -1087,6 +928,7 @@ function AssistantTab(): React.JSX.Element {
           { key: "encodingAESKey", label: "EncodingAESKey", type: "password", placeholder: "43 位密钥" },
         ]}
       />
+      <GatewayBotBindings />
     </>
   );
 }
