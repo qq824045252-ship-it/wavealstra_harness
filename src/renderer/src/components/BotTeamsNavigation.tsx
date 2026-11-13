@@ -1,8 +1,9 @@
+import { BotTeamAvatar } from "./common/BotTeamAvatar";
 import { useWorkSummaryPages } from "@/lib/botActivityMonitor";
 import type { WorkProjectionDto } from "@shared/bot-work";
 import { useEffect, useRef, useState } from "react";
 import { useAppStore } from "@/store/appStore";
-import { IconUsers, IconPlus, IconX } from "@/components/common/icons";
+import { IconPlus, IconX } from "@/components/common/icons";
 import { BotTeamSettings } from "./pages/BotTeamSettings";
 import { BotTeamDialog } from "./pages/BotTeamDialog";
 import { workTeamControlSchema, type WorkTeamTemplateDto, type WorkTeamMember, type WorkTeamPlan } from "@shared/bot-work-team";
@@ -36,19 +37,40 @@ export function BotTeamsNavigation({ onSelect }: { onSelect?: () => void } = {})
   const saveRequest = useRef<SavedTeamRequest | null>(pending);
   const viewEpoch = useRef(0);
   const settingsEpoch = useRef(0);
+  const teamRefreshEpoch = useRef(0);
   const dialog = useRef<HTMLDialogElement>(null);
   const candidates = bots.filter(bot => bot.status === "active");
   const botName = (id: string) => bots.find(bot => bot.botId === id)?.displayName ?? "已停用 Bot";
   useEffect(() => {
     let live = true;
+    const initialEpoch = ++teamRefreshEpoch.current;
     void window.api?.botWork.teamControl({ kind: "list_templates" }).then(result => {
-      if (!live) return;
+      if (!live || initialEpoch !== teamRefreshEpoch.current) return;
       if (result.ok) {
         const listed = result.templates ?? []; setTeams(listed);
+        const state = useAppStore.getState();
+        if (state.activeTeam) {
+          const current = listed.find(team => team.templateId === state.activeTeam?.templateId);
+          if (!current) state.setActiveBotId(state.activeBotId);
+          else if (current.ownerBotId !== state.activeTeam.ownerBotId) state.setActiveTeam(current);
+          else useAppStore.setState({ activeTeam: current });
+        }
         try { const saved = localStorage.getItem("mybuddy.active-team"); const team = listed.find(item => item.templateId === saved); if (team && !useAppStore.getState().activeTeam) useAppStore.getState().setActiveTeam(team); } catch {}
       } else setError(result.message);
-    }).catch(() => { if (live) setError("团队暂时无法加载。"); });
-    const refresh = () => { void window.api?.botWork.teamControl({ kind: "list_templates" }).then(result => { if (live && result.ok) { const listed = result.templates ?? []; setTeams(listed); const state = useAppStore.getState(); if (state.activeTeam && !listed.some(team => team.templateId === state.activeTeam?.templateId)) state.setActiveBotId(state.activeBotId); } }); };
+    }).catch(() => { if (live && initialEpoch === teamRefreshEpoch.current) setError("团队暂时无法加载。"); });
+    const refresh = () => {
+      const epoch = ++teamRefreshEpoch.current;
+      void window.api?.botWork.teamControl({ kind: "list_templates" }).then(result => {
+        if (!live || epoch !== teamRefreshEpoch.current || !result.ok) return;
+        const listed = result.templates ?? []; setTeams(listed);
+        const state = useAppStore.getState();
+        if (!state.activeTeam) return;
+        const current = listed.find(team => team.templateId === state.activeTeam?.templateId);
+        if (!current) state.setActiveBotId(state.activeBotId);
+        else if (current.ownerBotId !== state.activeTeam.ownerBotId) state.setActiveTeam(current);
+        else useAppStore.setState({ activeTeam: current });
+      }).catch(() => { if (live && epoch === teamRefreshEpoch.current) setError("团队暂时无法刷新。"); });
+    };
     window.addEventListener("mybuddy:teams-refresh", refresh);
     return () => { live = false; window.removeEventListener("mybuddy:teams-refresh", refresh); };
   }, []);
@@ -84,7 +106,7 @@ export function BotTeamsNavigation({ onSelect }: { onSelect?: () => void } = {})
     return () => { viewEpoch.current++; window.removeEventListener("mybuddy:open-team-work", listener); };
   }, [teams]);
   useEffect(() => {
-    const update = (event: Event) => { const team = (event as CustomEvent<WorkTeamTemplateDto>).detail; if (team?.templateId) setTeams(current => current.map(item => item.templateId === team.templateId ? team : item)); };
+    const update = (event: Event) => { const team = (event as CustomEvent<WorkTeamTemplateDto>).detail; if (team?.templateId) { teamRefreshEpoch.current++; setTeams(current => current.map(item => item.templateId === team.templateId ? team : item)); const state = useAppStore.getState(); if (state.activeTeam?.templateId === team.templateId) { if (state.activeTeam.ownerBotId === team.ownerBotId) useAppStore.setState({ activeTeam: team }); else state.setActiveTeam(team); } } };
     window.addEventListener("mybuddy:team-updated", update);
     return () => window.removeEventListener("mybuddy:team-updated", update);
   }, []);
@@ -121,7 +143,7 @@ export function BotTeamsNavigation({ onSelect }: { onSelect?: () => void } = {})
     </div>
     {!teams.length && <p className="sidebar-empty">把常用 Bot 组成团队，统一接收任务和返回成果。</p>}
     {teams.map(team => <button type="button" className={`sidebar-bot-row sidebar-bot-identity ${activeTeam?.templateId === team.templateId ? "active" : ""}`} aria-pressed={activeTeam?.templateId === team.templateId} key={team.templateId} onClick={() => openTeam(team)}>
-      <span className="sidebar-bot-avatar"><IconUsers size={18} /></span><span><strong title={team.name}>{team.name}</strong><small>{team.members.length + 1} 位 Bot · 队长 {botName(team.ownerBotId)}</small></span>
+      <BotTeamAvatar team={team} bots={bots} className="sidebar-bot-avatar" /><span><strong title={team.name}>{team.name}</strong><small>{team.members.length + 1} 位 Bot · 队长 {botName(team.ownerBotId)}</small></span>
     </button>)}
     {(historical.loading || historical.error || (historical.result?.filtered ?? 0) > 0) && <details className="bot-team-history"><summary>Work 历史（{historical.result?.filtered ?? "…"}）</summary>
       <p>保留的历史事项与已删除团队的事项，可查看成果、移动归属和管理。</p>

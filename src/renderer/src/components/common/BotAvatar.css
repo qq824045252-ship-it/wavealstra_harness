@@ -1,6 +1,6 @@
 .bot-identity-avatar { overflow:hidden; vertical-align:middle; isolation:isolate; }
 .bot-identity-avatar img { display:block; width:100%; height:100%; object-fit:cover; }
-.bot-avatar-settings { margin-block:16px; padding:16px; border:1px solid var(--border-subtle); border-radius:12px; min-width:0; }
+.bot-avatar-settings { margin-block:0 16px; min-width:0; }
 .bot-avatar-settings h4 { margin:0 0 8px; }
 .bot-avatar-settings p { color:var(--fg-secondary); font-size:12px; line-height:1.6; }
 .bot-avatar-choices { display:grid; align-items:start; grid-template-columns:repeat(auto-fill,minmax(92px,1fr)); gap:8px; max-height:280px; overflow:auto; padding:3px; }
@@ -15,3 +15,16 @@
 .bot-avatar-controls label { display:flex; align-items:center; gap:6px; font-size:12px; }
 .bot-avatar-status { font-size:12px; min-height:18px; margin:8px 0 0; }
 @media (prefers-reduced-motion: reduce) { .bot-avatar-settings * { scroll-behavior:auto; } }
+
+.bot-settings-profile { display:flex; align-items:center; gap:16px; min-width:0; }
+.bot-avatar-edit { display:flex; flex:none; flex-direction:column; align-items:center; gap:6px; padding:4px; border:0; background:transparent; color:var(--fg-secondary); font:inherit; font-size:11px; cursor:pointer; border-radius:12px; }
+.bot-avatar-edit .bot-avatar { width:64px; height:64px; border-radius:18px; }
+.bot-avatar-edit:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+.bot-settings-profile-name { min-width:0; }
+.bot-settings-profile-name h3 { margin:0 0 6px; overflow-wrap:anywhere; }
+.bot-avatar-picker { box-sizing:border-box; width:min(640px,calc(100vw - 32px)); max-height:calc(100dvh - 48px); overflow:auto; padding:20px; border:1px solid var(--border-subtle); border-radius:16px; color:var(--fg); background:var(--bg-panel); }
+.bot-avatar-picker::backdrop { background:rgba(0,0,0,.4); }
+.bot-avatar-picker-heading { display:flex; justify-content:space-between; align-items:center; gap:12px; }
+.bot-avatar-picker-heading h4 { margin:0; }
+.bot-avatar-picker-heading button { flex:none; }
+@media(max-width:480px) { .bot-avatar-picker { padding:14px; } .bot-avatar-choices { grid-template-columns:repeat(auto-fill,minmax(76px,1fr)); } }

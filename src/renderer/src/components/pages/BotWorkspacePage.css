@@ -297,7 +297,16 @@
 .bot-settings-save { display:flex; align-items:center; flex-wrap:wrap; gap:10px; padding-block:10px; border-top:1px solid var(--border-color, #8885); }
 .bot-settings-save span { font-size:12px; opacity:.7; }
 
-.bot-reply-reference { color: var(--fg-secondary); font-size: var(--bot-meta-size); border-left: 2px solid var(--border-default); padding: 4px 10px; margin-bottom: 8px; white-space: pre-wrap; max-height: 64px; overflow: auto; }
+.bot-reply-reference { color:var(--fg-secondary); font-size:var(--bot-meta-size); margin-top:8px; min-width:0; max-width:100%; }
+.bot-reply-reference > summary { display:flex; align-items:center; gap:6px; cursor:pointer; min-width:0; padding:4px 0; }
+.bot-reply-reference > summary::before { content:"›"; flex:none; }
+.bot-reply-reference[open] > summary::before { transform:rotate(90deg); }
+.bot-reply-reference > summary::-webkit-details-marker { display:none; }
+.bot-reply-reference-label { flex:none; }
+.bot-reply-reference-preview { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
+.bot-reply-reference-original { margin-top:4px; border-left:2px solid var(--border-default); padding:4px 10px; white-space:pre-wrap; overflow-wrap:anywhere; max-height:12rem; overflow:auto; }
+.bot-reply-reference > summary:focus-visible, .bot-reply-reference-original:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.bot-reply-reference-attachments { margin-top:4px; }
 .bot-pending-requests { max-height: 140px; overflow: auto; }
 .bot-pending-request { display: flex; gap: 8px; align-items: center; padding: 6px 8px; font-size: 12px; }
 .bot-pending-request span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

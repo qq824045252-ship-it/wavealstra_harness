@@ -1,10 +1,19 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { builtinBotAvatars, type BotAvatarCommand } from "@shared/bot-avatar";
 import { avatarCommand, loadBotAvatars, useBotAvatars, useBotAvatarStore } from "@/lib/botAvatarStore";
 import { BotAvatar } from "../common/BotAvatar";
 
-export function BotAvatarSettings({botId,name}:{botId:string;name:string}) {
+export function BotAvatarSettings({botId,name,children}:{botId:string;name:string;children?:ReactNode}) {
   const snapshot = useBotAvatars();
+  const [open,setOpen] = useState(false);
+  const dialog = useRef<HTMLDialogElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const close = () => { dialog.current?.close(); setOpen(false); trigger.current?.focus(); };
+  useEffect(() => {
+    if (!open) return;
+    dialog.current?.showModal();
+    dialog.current?.querySelector<HTMLButtonElement>('[role="radio"][aria-checked="true"]')?.focus();
+  }, [open]);
   const flight = useRef(false);
   const readError = useBotAvatarStore(state => state.error);
   const [busy,setBusy] = useState(false), [error,setError] = useState(""), [status,setStatus] = useState("");
@@ -31,7 +40,14 @@ export function BotAvatarSettings({botId,name}:{botId:string;name:string}) {
     </button>;
   }
   return <section className="bot-avatar-settings" aria-label="Bot 头像设置" aria-busy={busy}>
-    <h4>Bot 头像</h4><p>选择即保存。头像用于此 Bot 的列表、对话与协作记录。</p><p>{builtinBotAvatars.filter(asset=>asset.provenance === "original-approved").length} 款原创陪伴头像</p>
+    <div className="bot-settings-profile">
+      <button ref={trigger} type="button" className="bot-avatar-edit" aria-label={`更换${name}的头像`} aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen(true)}>
+        <BotAvatar botId={botId} name={name}/><span>更换头像</span>
+      </button>
+      <div className="bot-settings-profile-name"><h3>{name}</h3>{children}</div>
+    </div>
+    {open && <dialog ref={dialog} className="bot-avatar-picker" aria-label={`更换${name}的头像`} onCancel={event => { event.preventDefault(); event.stopPropagation(); close(); }} onClose={() => {setOpen(false); trigger.current?.focus();}}>
+    <header className="bot-avatar-picker-heading"><h4>更换头像</h4><button type="button" aria-label="关闭头像选择器" onClick={close}>关闭</button></header><p>选择即保存。头像用于此 Bot 的列表、对话与协作记录。</p><p>{builtinBotAvatars.filter(asset=>asset.provenance === "original-approved").length} 款原创陪伴头像</p>
     <div className="bot-avatar-choices" role="radiogroup" aria-label="选择 Bot 头像" onKeyDown={event => {
       if (!["ArrowLeft","ArrowRight","ArrowUp","ArrowDown","Home","End"].includes(event.key)) return;
       const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="radio"]:not(:disabled)'));
@@ -54,5 +70,6 @@ export function BotAvatarSettings({botId,name}:{botId:string;name:string}) {
     {builtinBotAvatars.some(asset => asset.provenance === "synthetic-test") && <p>当前内置图片为明确自制的合成测试素材，不代表正在制作的 99 个正式陪伴小兽。</p>}
     {(error || readError) && <p role="alert">{error || readError} <button type="button" disabled={busy} onClick={() => void loadBotAvatars(true)}>刷新头像</button></p>}
     <div className="bot-avatar-status" role="status">{busy ? "正在保存…" : status}</div>
+    </dialog>}
   </section>;
 }

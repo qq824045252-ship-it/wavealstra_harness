@@ -8,8 +8,15 @@ import {builtinBotAvatars,type BotAvatarCommand,type BotAvatarSnapshot} from "..
 
 const {window}=parseHTML('<!doctype html><html><body><div id="root"></div></body></html>');
 const document=window.document;
+// DOM fixture emulates dialog visibility and focus requests; real focus containment/Escape
+// and narrow-screen layout still require desktop verification.
+(window.HTMLElement.prototype as any).showModal=function(){this.setAttribute('open','');};
+(window.HTMLElement.prototype as any).close=function(){this.removeAttribute('open');};
 Object.assign(globalThis,{window,document,HTMLElement:window.HTMLElement,Event:window.Event,IS_REACT_ACT_ENVIRONMENT:true});
 Object.defineProperty(document,'visibilityState',{configurable:true,value:'visible'});
+let focusedElement:HTMLElement|null=null;
+(window.HTMLElement.prototype as any).focus=function(){focusedElement=this;};
+let outerCancelCount=0;
 const mediaListeners=new Set<()=>void>();
 const media={matches:false,addEventListener:(_name:string,callback:()=>void)=>mediaListeners.add(callback),removeEventListener:(_name:string,callback:()=>void)=>mediaListeners.delete(callback)};
 Object.assign(window,{matchMedia:()=>media});
@@ -36,16 +43,29 @@ function Fixture({botId}:{botId:string}) {
  return <><div data-header><BotAvatar botId={botId} name={`Bot ${botId}`} play/></div>
  <div data-static>{Array.from({length:99},(_,index)=><BotAvatar key={index} botId={botId} name={`Bot ${botId}`}/>)}</div>
  <div data-message><BotAvatar botId={botId} name={`Bot ${botId}`}/><strong>Bot {botId}</strong></div>
- <BotAvatarSettings key={botId} botId={botId} name={`Bot ${botId}`}/></>;
+ <dialog open data-settings-dialog onCancel={event=>{event.preventDefault();outerCancelCount++;event.currentTarget.removeAttribute("open");}}><BotAvatarSettings key={botId} botId={botId} name={`Bot ${botId}`}/></dialog></>;
 }
 async function main(){
  const {createRoot}=await import('react-dom/client');const root=createRoot(document.getElementById('root')!);
  const draw=(botId='a')=>act(async()=>{root.render(<Fixture botId={botId}/>);});
- const click=(label:string)=>act(async()=>{const button=document.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);assert(button,label);button.click();});
+ const openPicker=()=>act(async()=>{if(!document.querySelector('.bot-avatar-picker'))document.querySelector<HTMLButtonElement>('.bot-avatar-edit')!.click();});
+ const click=async(label:string)=>{await openPicker();return act(async()=>{const button=document.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);assert(button,label);button.click();});};
  const visible=(value:boolean)=>act(()=>{for(const observer of observers)observer.set(value);});
  const animated=()=>document.querySelector('[data-header] [data-animated]')?.getAttribute('data-animated');
  const identity=()=>document.querySelector('[data-header] [data-avatar-id]')?.getAttribute('data-avatar-id');
- await draw();assert.equal(calls.filter(call=>call.kind==='list').length,1,'All 100+ instances share one snapshot request');
+ await draw();
+ assert.equal(document.querySelectorAll('[role="radiogroup"]').length,0,'Palette is absent until current avatar is clicked');
+ await openPicker();assert.equal(document.querySelectorAll('[role="radio"]').length,builtinBotAvatars.length+1);
+ await act(async()=>{document.querySelector<HTMLButtonElement>('[aria-label="关闭头像选择器"]')!.click();});
+ assert.equal(document.querySelectorAll('[role="radiogroup"]').length,0,'Closing returns to compact identity row');
+ await openPicker();
+ const picker=document.querySelector('.bot-avatar-picker')!;
+ await act(async()=>{picker.dispatchEvent(new window.Event('cancel',{bubbles:false,cancelable:true}));});
+ assert.equal(document.querySelector('.bot-avatar-picker'),null,'Escape cancellation closes only the avatar picker');
+ assert.equal(outerCancelCount,0,'React cancel must not propagate to the enclosing settings dialog');
+ assert(document.querySelector('[data-settings-dialog]')!.hasAttribute('open'),'Enclosing Bot settings stay open');
+ assert.equal(focusedElement,document.querySelector('.bot-avatar-edit'),'Closing requests focus back on the current avatar');
+ assert.equal(calls.filter(call=>call.kind==='list').length,1,'All 100+ instances share one snapshot request');
  assert.equal(identity(),'default');
  await click(builtinBotAvatars[0].label);await visible(true);assert.equal(animated(),'true');
  assert.equal(document.querySelectorAll('[data-static] [data-animated="true"]').length,0);
