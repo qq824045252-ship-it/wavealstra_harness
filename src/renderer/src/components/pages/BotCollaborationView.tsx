@@ -1,3 +1,5 @@
+import { useBotIncomingMessages } from '@/hooks/useBotIncomingMessages';
+import { mergeBotTimeline, groupBotTimeline, unrepresentedIncomingMessages } from '@/lib/botMergedTimeline';
 import { BotAvatar } from "../common/BotAvatar";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { z } from 'zod';
@@ -6,7 +8,7 @@ import type {
   BotCollaborationDto, BotCollaborationHistoryPage, BotCollaborationMessageDto, BotCollaborationsPage, BotCollaborationsQuery,
 } from '@shared/bot-collaboration';
 import { botSendSchema } from '@shared/bot-conversation';
-import { IconBot, IconChevronLeft, IconX } from '@/components/common/icons';
+import { IconBot, IconChevronLeft, IconChevronUp, IconMessageDashed, IconRefresh, IconX } from '@/components/common/icons';
 import ChatMarkdown from './BotChatMarkdown';
 import { ChatImageScope } from '@/components/chat/ChatImage';
 import { BotCallThread, collaborationDisplayStatus, collaborationParticipantUnavailable, collaborationElapsed, collaborationStatus, collaborationTotalEnd, collaborationWorkStatus } from './BotCallThread';
@@ -253,23 +255,29 @@ function useCollaborations(botId: string, direction: NonNullable<BotCollaboratio
   return { page, error, loadingMore, more, retry: () => setRetry(value => value + 1) };
 }
 
-export function BotIncomingCollaborations({ botId, onOpen, empty }: {
-  botId: string; onOpen: (id: string) => void; empty?: React.ReactNode;
+export function BotIncomingCollaborations({ botId, onOpen, empty, entries = [], onBeforeOlder, membershipKey = '', representedReplies = [] }: {
+ botId?:string; representedReplies?:readonly {collaborationId:string;exchangeId:string}[]; membershipKey?:string; entries?:{key:string;createdAt:number;ordinal:number;value:React.ReactNode;foldKey?:string}[]; onBeforeOlder?:()=>void;onOpen:(id:string)=>void;empty?:React.ReactNode;
 }) {
-  const { page, error, loadingMore, more, retry } = useCollaborations(botId, 'incoming', 3);
-  if (page?.total === 0 && !error) return <>{empty}</>;
-  return <section className="bot-incoming-collaborations" aria-label="收到的协作">
-    {error && <p className="bot-alert" role="alert">{error} <button type="button" onClick={retry}>重试读取</button></p>}
-    {!page && !error && <p role="status">正在读取收到的协作…</p>}
-    <div className="bot-message-list">{page?.items.map(item => <article key={item.collaborationId} className="bot-message msg-row assistant" data-incoming-collaboration={item.collaborationId} aria-label={`${item.targetDisplayName}的协作回复`}>
-      <div className="bot-message-author"><BotAvatar botId={item.targetBotId} name={item.targetDisplayName} /><strong>{item.targetDisplayName}</strong></div>
-      <div className="bot-assistant-content bot-incoming-reply">
-        <ChatMarkdown text={item.replyPreview || item.work?.progressSummary || `已收到来自 ${item.sourceDisplayName} 的协作请求，${collaborationDisplayStatus(item)}。`} streaming={false} resolveTaskFiles={false} />
-      </div>
-      <BotCallThread collaborations={[item]} viewerBotId={botId} onOpenCollaboration={onOpen} />
-    </article>)}</div>
-    {page?.nextCursor && <button type="button" className="bot-incoming-more" disabled={loadingMore} onClick={() => void more()}>{loadingMore ? '正在加载…' : '加载更早协作'}</button>}
-  </section>;
+ const {items,before,error,loading,more,retry}=useBotIncomingMessages(botId,membershipKey);
+ const personalIds=new Set(entries.map(entry=>entry.key));
+ const visibleItems=unrepresentedIncomingMessages(items,personalIds,representedReplies);
+ const byId=new Map(visibleItems.map(item=>[item.message.messageId,item]));
+ const rows=mergeBotTimeline(entries,visibleItems.map(item=>({collaborationId:item.message.messageId,createdAt:item.message.createdAt})));
+ return <section className="bot-merged-timeline" aria-label="对话与协作时间线">
+  {error && <p className="bot-alert" role="alert">{error}<button type="button" className="bot-icon-button" title="重试读取" aria-label="重试读取" onClick={()=>void retry()}><IconRefresh size={18}/></button></p>}
+  {before && <button type="button" className="bot-icon-button" title="加载更早协作消息" aria-label="加载更早协作消息" disabled={loading} onClick={()=>{onBeforeOlder?.();void more();}}><IconChevronUp size={18}/></button>}
+  <div className="bot-message-list">{rows.length===0 ? empty : groupBotTimeline(rows).map(group=>{
+   const row=group[0];
+   if(row.kind==='personal' && row.foldKey)return <details key={row.key} className="bot-work-progress"><summary>{group.length} 条执行记录</summary>{group.map(item=>item.kind==='personal'?<div key={item.key}>{item.value}</div>:null)}</details>;
+   if(row.kind==='personal')return <div key={row.key}>{row.value}</div>;
+   const {message,collaboration,summary}=byId.get(row.collaborationId)!;
+   return <article key={row.key} className="bot-message msg-row assistant" data-message-id={row.key} data-incoming-collaboration={collaboration.collaborationId}>
+    <div className="bot-message-author"><BotAvatar botId={message.senderBotId} name={message.senderDisplayName}/><strong>{message.senderDisplayName}</strong>{recordedTime(message.createdAt)}</div>
+    <div className="bot-assistant-content bot-incoming-reply">{summary?.status==='completed' && summary.text.trim() ? <><small>{summary.senderDisplayName} 整理</small><ChatMarkdown text={summary.text} streaming={false} resolveTaskFiles={false}/></> : message.workFeedback?.report?.summary ? <ChatMarkdown text={message.workFeedback.report.summary} streaming={false} resolveTaskFiles={false}/> : message.kind!=='request' ? <p role="status">{summary && ['failed','cancelled','unknown'].includes(summary.status) ? '前台整理未完成，原文已保留。' : '尚无前台整理结果，原文已保留。'}</p> : null}<details><summary><span>原文摘录 · </span>{Array.from(message.text.trim()).slice(0,160).join('')}{Array.from(message.text.trim()).length>160?'…':''}</summary><ChatMarkdown text={message.text} streaming={false} resolveTaskFiles={false}/></details></div>
+    <button type="button" className="bot-icon-button" title="查看协作记录" aria-label="查看协作记录" onClick={()=>onOpen(collaboration.collaborationId)}><IconMessageDashed size={18}/></button>
+   </article>;
+  })}</div>
+ </section>;
 }
 
 function CollaborationList({ botId, onOpen }: { botId: string; onOpen: (id: string) => void }) {

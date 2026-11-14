@@ -1,3 +1,4 @@
+import { botClarificationSchema } from "../../../shared/bot-conversation";
 import { botOrganizationsForMessage } from "./BotOrganizationProjection";
 import { BotForegroundMetricsStore } from "./BotForegroundMetrics";
 import { BotPeerCallRepository } from "./BotPeerCallRepository";
@@ -42,6 +43,10 @@ export class BotConversationRepository {
       message_id TEXT PRIMARY KEY REFERENCES bot_messages(message_id) ON DELETE CASCADE,
       segments_json TEXT NOT NULL CHECK(json_valid(segments_json))
     );
+    CREATE TABLE IF NOT EXISTS bot_clarification_answers (
+      question_message_id TEXT NOT NULL REFERENCES bot_messages(message_id) ON DELETE CASCADE,
+      goal_id TEXT NOT NULL, answer_message_id TEXT NOT NULL REFERENCES bot_messages(message_id) ON DELETE CASCADE,
+      PRIMARY KEY(question_message_id,goal_id));
     CREATE INDEX IF NOT EXISTS idx_bot_messages_conversation_ordinal ON bot_messages(conversation_id,ordinal);`);
   }
 
@@ -63,7 +68,7 @@ export class BotConversationRepository {
 
   accept(userId: string, input: BotSendRequest, persistedAttachments: BotAttachmentDto[] = input.attachments ?? []): BotSendReceipt {
     const payload = JSON.stringify({ text: input.text, conversationId: input.conversationId ?? null,
-      ...(input.teamId ? { teamId: input.teamId } : {}), selectedWorkId: input.selectedWorkId ?? null, referenceMessageId: input.referenceMessageId ?? null,
+      ...(input.teamId ? { teamId: input.teamId } : {}), ...(input.clarificationGoalId ? {clarificationGoalId:input.clarificationGoalId} : {}), selectedWorkId: input.selectedWorkId ?? null, referenceMessageId: input.referenceMessageId ?? null,
       ...(input.selectedCollaborationId ? { selectedCollaborationId: input.selectedCollaborationId } : {}),
       ...(input.attachments?.length ? { attachments: input.attachments } : {}),
       ...(input.selection ? { selection: input.selection } : {}) });
@@ -78,6 +83,12 @@ export class BotConversationRepository {
     this.assertScope(conversation, input.teamId);
     if (input.conversationId && !conversation) throw new Error("对话不属于当前用户与 Bot");
     if (conversation?.archived_at) throw new Error("该对话已归档，请开始新对话");
+    if(input.clarificationGoalId) {
+      const question=input.referenceMessageId ? this.message(input.referenceMessageId) : undefined;
+      if(!question || question.conversationId!==conversation?.conversation_id || question.botId!==input.botId
+        || !question.clarifications?.some(card=>card.goalId===input.clarificationGoalId && card.status==="pending"))
+        throw Error("这个问题已回答、失效或不属于当前对话，请刷新后继续");
+    }
     const now = Date.now();
     if (!conversation) {
       const conversationId = `bot-conversation-${randomUUID()}`;
@@ -97,6 +108,7 @@ export class BotConversationRepository {
       assistant_message_id,selected_work_id,reference_message_id) VALUES (?,?,?,?,?,?,?,?,?)`).run(userId, input.botId,
       input.requestId, hash, receipt.conversationId, receipt.userMessageId, receipt.assistantMessageId,
       input.selectedWorkId ?? null, input.referenceMessageId ?? null);
+    if(input.clarificationGoalId) this.db.prepare("INSERT INTO bot_clarification_answers(question_message_id,goal_id,answer_message_id) VALUES (?,?,?)").run(input.referenceMessageId,input.clarificationGoalId,receipt.userMessageId);
     this.touch(receipt.conversationId);
     return receipt;
   }
@@ -520,7 +532,18 @@ export class BotConversationRepository {
     const peerOrigin = this.peers.origin(row.message_id);
     const collaborationResult = peerOrigin && typeof organizationUser === "string"
       ? this.collaborations.feedbackForReturn({ userId: organizationUser, botId: row.bot_id, conversationId: row.conversation_id, origin: peerOrigin }) : undefined;
-    return { peerOrigin, collaborationResult, ...(organizations.length ? { organizations } : {}), teamId: scope?.team_id ?? undefined, messageRevision: version?.revision ?? 0, messageId: row.message_id, conversationId: row.conversation_id, botId: row.bot_id, requestId: row.request_id,
+    const clarificationRows = row.role === "assistant" && row.status === "completed" ? this.db.prepare(`SELECT g.value AS goal FROM bot_request_runs r
+      JOIN bot_messages m ON m.message_id=r.message_id, json_each(r.context_json,'$.clarificationState.goals') g
+      WHERE m.conversation_id=? AND json_extract(g.value,'$.updatedBy')=?`).all(row.conversation_id,row.message_id) as {goal:string}[] : [];
+    const team = scope?.team_id ? this.db.prepare("SELECT plan_json,deleted_at FROM work_team_templates WHERE template_id=?").get(scope.team_id) as {plan_json:string;deleted_at:number|null}|undefined : undefined;
+    const ownerChanged = Boolean(scope?.team_id && (!team || team.deleted_at!==null || JSON.parse(team.plan_json).ownerBotId!==row.bot_id));
+    const clarifications = clarificationRows.flatMap(value=>{
+      const goal=JSON.parse(value.goal);
+      const answer = this.db.prepare("SELECT m.text FROM bot_clarification_answers a JOIN bot_messages m ON m.message_id=a.answer_message_id WHERE a.question_message_id=? AND a.goal_id=?").get(row.message_id,goal.goalId) as {text:string}|undefined;
+      const answered=goal.state==="pending" && Boolean(answer);
+      return goal.options ? [botClarificationSchema.parse({goalId:goal.goalId,question:goal.question,options:goal.options,answerText:answer?.text,status:goal.state==="pending"&&ownerChanged ? "expired" : answered ? "answered" : goal.state})] : [];
+    });
+    return { clarifications, peerOrigin, collaborationResult, ...(organizations.length ? { organizations } : {}), teamId: scope?.team_id ?? undefined, messageRevision: version?.revision ?? 0, messageId: row.message_id, conversationId: row.conversation_id, botId: row.bot_id, requestId: row.request_id,
       segments, botCalls: row.role === "assistant" ? this.peerCalls.list(row.message_id) : undefined,
       collaborations: row.role === "assistant" ? this.collaborations.summariesForMessage(
         z.string().parse(this.db.prepare("SELECT user_id FROM bot_conversations WHERE conversation_id=?").pluck().get(row.conversation_id)), row.message_id) : undefined,

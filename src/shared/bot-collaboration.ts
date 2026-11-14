@@ -80,3 +80,8 @@ export interface BotCollaborationHistoryPage {
 export type BotCollaborationReceiver = Omit<BotSendReceipt, "teamId" | "replayed"> & {
   exchangeId: string; status: BotMessageDto["status"]; acceptedAt: number; startedAt: number | null; endedAt: number | null;
 };
+
+export const botIncomingMessagesQuerySchema = z.object({ botId:id, before:z.string().max(4000).optional(), after:z.string().max(4000).optional(), limit:z.number().int().min(1).max(100).optional(), refreshIds:z.array(id).max(100).optional() }).strict().refine(q=>!(q.before && q.after) && !(q.refreshIds && (q.before || q.after)), 'Choose one pagination direction');
+export type BotIncomingMessagesQuery = z.infer<typeof botIncomingMessagesQuerySchema>;
+export interface BotIncomingMessage { message:BotCollaborationMessageDto; collaboration:BotCollaborationDto; cursor:string; foregroundMessageIds?:string[]; summary?:{text:string;status:string;senderBotId:string;senderDisplayName:string} }
+export interface BotIncomingMessagesPage { items:BotIncomingMessage[]; nextCursor:string|null }

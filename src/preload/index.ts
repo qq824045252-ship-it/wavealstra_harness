@@ -692,6 +692,7 @@ const api = {
     syncWorks: request => ipcRenderer.invoke(BotWorkIpc.syncWorks, request),
     sendMessage: request => ipcRenderer.invoke(BotWorkIpc.sendMessage, request),
     history: request => ipcRenderer.invoke(BotWorkIpc.history, request),
+    incomingMessages: request => ipcRenderer.invoke(BotWorkIpc.incomingMessages, request),
     collaborations: request => ipcRenderer.invoke(BotWorkIpc.collaborations, request),
     collaborationHistory: request => ipcRenderer.invoke(BotWorkIpc.collaborationHistory, request),
     activeRequests: () => ipcRenderer.invoke(BotWorkIpc.activeRequests),

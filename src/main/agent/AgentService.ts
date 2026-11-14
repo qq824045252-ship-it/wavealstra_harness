@@ -1282,6 +1282,7 @@ export class AgentService {
     return this.requireBotConversations().messageForHtmlExport(request);
   }
   botActiveRequests() { return this.requireBotConversations().activeRequests(); }
+  botIncomingMessages(request: unknown) { return this.requireBotConversations().collaborations.incomingMessages(request); }
   botCollaborations(request: unknown) { return this.requireBotConversations().collaborations.list(request); }
   botCollaborationHistory(request: unknown) { return this.requireBotConversations().collaborations.history(request); }
   async botMessageHistory(request: unknown) {

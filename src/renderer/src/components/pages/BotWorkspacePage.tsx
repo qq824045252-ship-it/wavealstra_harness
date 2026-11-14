@@ -31,6 +31,7 @@ import { artifactImageUrl } from "@shared/artifact-ipc";
 import { ChatImageScope } from "@/components/chat/ChatImage";
 import ChatComposer from "@/components/chat/ChatComposer";
 import ChatMarkdown from "./BotChatMarkdown";
+import { BotClarificationCard } from "./BotClarificationCard";
 import { IconStop, IconPlus, IconArchive, IconChevronDown, IconArrowUp, IconBot, IconChevronRight, IconListTodo, IconPanel, IconSettingsGear, IconUsers, IconNewConversation, IconX } from "@/components/common/icons";
 import { activeBotReply, personalBotWork, linkedConversationWork, botMessageStatus, botMessageWorkLinks, botReplyQuestions, botWorkTimeline, shouldSendBotComposer, type BotWorkspaceView } from "@/lib/botWorkspacePresentation";
 import { botPresence, botReplyBadge, botWorkBadges } from "@/lib/botDirectoryActivity";
@@ -334,12 +335,12 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
 
   // Draft edits and composer controls do not change the transcript. Keep its
   // elements stable; message/store/context updates still render their own content.
-  const messageTimeline = useMemo(() => view === "conversation" && messages.length > 0 ? (<div className="bot-message-list">{botWorkTimeline(messages).map(row => row.kind === "message"
-            ? <TimelineMessage key={row.key} message={row.message} botName={displayName} works={detailWorks} onOpenWork={openWork} onOpenCollaboration={openCollaboration} sourceQuestion={questionsByRequest.get(row.message.requestId)} onReply={replyToMessage} onCancel={cancelMessage} />
-            : <details key={row.key} className="bot-work-progress" aria-label="事项进展记录">
-              <summary>{row.workIds.length > 1 ? `${row.workIds.length} 个事项` : detailWorks.find(work => work.workId === row.workId)?.title ?? "事项"} · {row.messages.length} 条执行记录（展开查看）</summary>
-              {row.messages.map(message => <TimelineMessage key={message.messageId} message={message} botName={displayName} works={detailWorks} onOpenWork={openWork} onOpenCollaboration={openCollaboration} onCancel={ignoreMessageCancel} />)}
-            </details>)}</div>) : null, [view, messages, displayName, detailWorks, openWork, openCollaboration, questionsByRequest, replyToMessage, cancelMessage]);
+  const messageTimeline = useMemo(() => botWorkTimeline(messages).flatMap(row => {
+    if (row.kind === 'message') return [{key:row.key,createdAt:row.message.createdAt,ordinal:row.message.ordinal,foldKey:undefined as string|undefined,
+      value:<TimelineMessage key={row.key} message={row.message} botName={displayName} works={detailWorks} onOpenWork={openWork} onOpenCollaboration={openCollaboration} sourceQuestion={questionsByRequest.get(row.message.requestId)} onReply={replyToMessage} onCancel={cancelMessage}/> }];
+    return row.messages.map(message=>({key:message.messageId,createdAt:message.createdAt,ordinal:message.ordinal,foldKey:message.conversationId,
+      value:<TimelineMessage key={message.messageId} message={message} botName={displayName} works={detailWorks} onOpenWork={openWork} onOpenCollaboration={openCollaboration} onCancel={ignoreMessageCancel}/> }));
+  }), [messages, displayName, detailWorks, openWork, openCollaboration, questionsByRequest, replyToMessage, cancelMessage]);
 
   const emptyConversation = <div className="bot-conversation-empty">
     <span className="bot-welcome-icon" aria-hidden="true"><IconBot size={30} /></span>
@@ -409,9 +410,9 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
               }}>{historyPages[scopeKey]?.loading ? "正在加载更早消息…" : histories[scopeKey]?.before !== undefined ? "加载更早消息" : "已到最早消息"}</button>
             {historyPages[scopeKey]?.error && <p role="alert">{historyPages[scopeKey].error}</p>}
           </div>}
-          {messageTimeline}
-          {activeBotId && !teamId ? <BotIncomingCollaborations key={activeBotId} botId={activeBotId} onOpen={openCollaboration}
-            empty={messages.length === 0 ? emptyConversation : undefined} /> : messages.length === 0 ? emptyConversation : null}
+          <BotIncomingCollaborations key={scopeKey} botId={!teamId ? activeBotId ?? undefined : undefined} onOpen={openCollaboration}
+            representedReplies={messages.flatMap(message=>message.role==='assistant' && message.peerOrigin?.kind==='request' ? [{collaborationId:message.peerOrigin.collaborationId,exchangeId:message.peerOrigin.exchangeId}] : [])}
+            entries={messageTimeline} membershipKey={identities.map(bot=>bot.botId).sort().join('|')} onBeforeOlder={preserveHistoryPosition} empty={emptyConversation} />
         </div>
       </> : <BotWorkBrowser key={`${scopeKey}-${view}`} hidden={Boolean(inlineWorkId)} scrollRef={browserRef} view={view} selectedWorkId={selected?.workId} onOpenWork={openWork} onConversation={() => { setView("conversation"); requestAnimationFrame(() => composerRef.current?.focus()); }} />}
       <form hidden={Boolean(inlineWorkId)} className="bot-composer input-area" onDragOver={event => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; } }} onDrop={event => { if (event.dataTransfer.files.length) { event.preventDefault(); void addAttachments(Array.from(event.dataTransfer.files)); } }} onSubmit={event => { event.preventDefault(); send(); }}>
@@ -487,6 +488,7 @@ export function BotMessage({ message, botName, works, onOpenWork, onOpenCollabor
           {renderMarkdown(segment.text, message.status === "running" && segment.kind === "answer" && index === segments.length - 1)}
         </div>) : message.text ? renderMarkdown(message.text) : null}
       {(showActivity || !hasContent) && <p className="bot-reply-placeholder" role={running ? "status" : undefined}>{message.status === "completed" ? "没有文本回复" : botMessageStatus(message)}{running && <span className="bot-typing-dots" aria-hidden="true">···</span>}</p>}
+      <BotClarificationCard key={message.messageId} message={message} />
       <BotReturnedFiles message={message} />
       <BotMessageHtmlFiles message={message} />
     </div>}

@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ConversationInteractionAnswer, ConversationInteractionDto } from "@shared/conversation-interaction";
 
-export function ConversationInteractionCard({ interaction }: { interaction: ConversationInteractionDto }): React.JSX.Element {
+export function ConversationInteractionCard({ interaction, onRespond, onDismiss, answerDisplayText }: { interaction: ConversationInteractionDto;
+  onRespond?: (answer: ConversationInteractionAnswer, source: "option" | "custom") => Promise<{ok:boolean;message?:string}>;
+  onDismiss?: () => void; answerDisplayText?: string;
+}): React.JSX.Element {
   const [selected, setSelected] = useState<string[]>([]);
   const [text, setText] = useState("");
   const [custom, setCustom] = useState("");
@@ -15,19 +18,21 @@ export function ConversationInteractionCard({ interaction }: { interaction: Conv
     if (interaction.status === "pending") return null;
     if (interaction.status === "cancelled") return "已取消";
     if (interaction.status === "expired") return "已过期，请重新发起";
+    if (answerDisplayText !== undefined) return `已回答：${answerDisplayText}`;
+    if (interaction.answer === undefined) return "已回答";
     if (typeof interaction.answer === "boolean") return interaction.answer ? "已确认" : "已拒绝";
     if (Array.isArray(interaction.answer)) {
       return `已回答：${interaction.answer.map((id) => interaction.options.find((option) => option.id === id)?.label ?? id).join("、")}`;
     }
     return `已回答：${interaction.options.find((option) => option.id === interaction.answer)?.label ?? interaction.answer ?? ""}`;
-  }, [interaction]);
+  }, [interaction, answerDisplayText]);
 
-  const submit = async (answer: ConversationInteractionAnswer): Promise<void> => {
+  const submit = async (answer: ConversationInteractionAnswer, source: "option" | "custom" = "custom"): Promise<void> => {
     if (submitting) return;
     setSubmitting(true);
     setError(null);
     try {
-      const result = await window.api?.conversationRuntime?.respondInteraction({ interactionId: interaction.id, answer });
+      const result = onRespond ? await onRespond(answer, source) : await window.api?.conversationRuntime?.respondInteraction({ interactionId: interaction.id, answer });
       if (!result?.ok) {
         setError(result?.message ?? "提交失败，请重试");
         setSubmitting(false);
@@ -94,10 +99,10 @@ export function ConversationInteractionCard({ interaction }: { interaction: Conv
             <input className="conversation-interaction-input" value={custom} onChange={(event) => setCustom(event.target.value)} placeholder={interaction.customPlaceholder ?? "其他回答"} />
           )}
           <div className="conversation-interaction-actions">
-            <button type="button" className="secondary" disabled={submitting} onClick={() => void window.api?.conversationRuntime?.cancelInteraction({ interactionId: interaction.id })}>暂不回答</button>
+            <button type="button" className="secondary" disabled={submitting} onClick={() => onDismiss ? onDismiss() : void window.api?.conversationRuntime?.cancelInteraction({ interactionId: interaction.id })}>暂不回答</button>
             <button type="button" className="primary" disabled={submitting || (selected.length === 0 && !custom.trim())} onClick={() => {
               const answer = custom.trim() || undefined;
-              void submit(interaction.kind === "single_select" ? (answer ?? selected[0]!) : [...selected, ...(answer ? [answer] : [])]);
+              void submit(interaction.kind === "single_select" ? (answer ?? selected[0]!) : [...selected, ...(answer ? [answer] : [])], answer ? "custom" : "option");
             }}>提交回答</button>
           </div>
         </>
@@ -108,7 +113,7 @@ export function ConversationInteractionCard({ interaction }: { interaction: Conv
             ? <textarea className="conversation-interaction-input" rows={4} value={text} onChange={(event) => setText(event.target.value)} placeholder={interaction.customPlaceholder ?? "请输入回答"} />
             : <input className="conversation-interaction-input" value={text} onChange={(event) => setText(event.target.value)} placeholder={interaction.customPlaceholder ?? "请输入回答"} />}
           <div className="conversation-interaction-actions">
-            <button type="button" className="secondary" disabled={submitting} onClick={() => void window.api?.conversationRuntime?.cancelInteraction({ interactionId: interaction.id })}>暂不回答</button>
+            <button type="button" className="secondary" disabled={submitting} onClick={() => onDismiss ? onDismiss() : void window.api?.conversationRuntime?.cancelInteraction({ interactionId: interaction.id })}>暂不回答</button>
             <button type="button" className="primary" disabled={submitting || !text.trim()} onClick={() => void submit(text.trim())}>提交回答</button>
           </div>
         </>

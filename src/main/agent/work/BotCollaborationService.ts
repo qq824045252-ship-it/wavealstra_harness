@@ -80,6 +80,8 @@ export class BotCollaborationService {
       PRIMARY KEY(user_id,source_user_message_id,predecessor_id));`);
   }
 
+  incomingMessages(input: unknown) { return this.repo.incomingMessages(this.options.userId, input as import('../../../shared/bot-collaboration').BotIncomingMessagesQuery); }
+
   organizationCollaboration(intentId: string): BotCollaborationDto | undefined {
     const link = z.object({ collaboration_id: z.string() }).optional().parse(this.options.db.prepare(
       "SELECT collaboration_id FROM bot_collaboration_organization_links WHERE user_id=? AND intent_id=?")

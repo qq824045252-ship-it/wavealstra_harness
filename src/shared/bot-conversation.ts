@@ -43,7 +43,7 @@ export const botComposerSelectionSchema = z.object({
 export type BotComposerSelection = z.infer<typeof botComposerSelectionSchema>;
 export const botSendSchema = z.object({
   botId: id, teamId: id.optional(), requestId: id, text: z.string().trim().max(32000), attachments: z.array(botAttachmentSchema).max(10).optional(),
-  selection: botComposerSelectionSchema.optional(),
+  selection: botComposerSelectionSchema.optional(), clarificationGoalId: id.optional(),
   conversationId: id.optional(), selectedWorkId: id.optional(), selectedCollaborationId: id.optional(), referenceMessageId: id.optional(),
 }).strict().refine(input => input.text.length > 0 || (input.attachments?.length ?? 0) > 0, "请输入消息或添加附件");
 export type BotSendRequest = z.infer<typeof botSendSchema>;
@@ -75,7 +75,24 @@ export const botCallSchema = z.object({
   error: z.string().optional(), createdAt: z.number(), updatedAt: z.number(),
 }).strict();
 export type BotCallDto = z.infer<typeof botCallSchema>;
+export const botClarificationOptionSchema = z.object({
+  id: z.string().trim().min(1).max(100), label: z.string().trim().min(1).max(160),
+  description: z.string().max(500).optional(), recommended: z.boolean().optional(),
+}).strict();
+export const botClarificationOptionsSchema = z.array(botClarificationOptionSchema).min(1).max(20)
+  .refine(options => new Set(options.map(option => option.id)).size === options.length, "选项 ID 不能重复");
+export const botClarificationSchema = z.object({ goalId: z.string(), question: z.string(),
+  answerText: z.string().optional(), options: botClarificationOptionsSchema, status: z.enum(["pending", "answered", "consumed", "cancelled", "expired"]),
+});
+export type BotClarificationDto = z.infer<typeof botClarificationSchema>;
+export function botClarificationAnswerText(card: BotClarificationDto, answer: string, source: "option" | "custom"): string | undefined {
+  return source === "option" ? card.options.find(option => option.id === answer)?.label : answer.trim();
+}
+export function botClarificationAnswerRequestId(messageId: string, goalId: string): string {
+  return `clarification-answer:${messageId}:${goalId}`;
+}
 export const botMessageSchema = z.object({
+  clarifications: z.array(botClarificationSchema).optional(),
   peerOrigin: botPeerOriginSchema.optional(),
   /** Exact returned Work evidence; the source Bot's answer remains its own prose. */
   collaborationResult: workFeedbackSchema.optional(),

@@ -3,7 +3,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { BotConversationRepository, BotMessageReceipt } from "./BotConversationRepository";
 import { botDelegationSourceSchema } from "./BotDelegationSources";
-const goalSchema = z.object({ goalId: z.string(), sources: z.array(botDelegationSourceSchema), question: z.string(),
+import { botClarificationOptionsSchema, type BotClarificationDto } from "../../../shared/bot-conversation";
+const goalSchema = z.object({ goalId: z.string(), sources: z.array(botDelegationSourceSchema), question: z.string(), options: botClarificationOptionsSchema.optional(),
   state: z.enum(["pending", "consumed", "cancelled"]), updatedBy: z.string(), workId: z.string().optional() });
 const stateSchema = z.object({ version: z.literal(1), goals: z.array(goalSchema),
   operations: z.array(z.object({ operationId: z.string(), hash: z.string(), goalId: z.string(), action: z.enum(["ask", "cancel"]) })) });
@@ -74,9 +75,9 @@ export class BotClarificationGoals {
   private record(receipt: BotMessageReceipt, operation: State["operations"][number]) {
     this.update(receipt.assistant_message_id, state => { state.operations.push(operation); });
   }
-  clarify(receipt: BotMessageReceipt, operationId: string, question: string, sourceMessageIds: readonly string[], goalId?: string) {
+  clarify(receipt: BotMessageReceipt, operationId: string, question: string, sourceMessageIds: readonly string[], goalId?: string, options?: BotClarificationDto["options"]) {
     if (this.messages.peers.origin(receipt.user_message_id)) throw Error("Bot 转述不能登记用户待澄清目标");
-    const { hash, prior } = this.replay(receipt, operationId, { action: "ask", question, sourceMessageIds, goalId });
+    const { hash, prior } = this.replay(receipt, operationId, { action: "ask", question, sourceMessageIds, goalId, ...(options ? { options: botClarificationOptionsSchema.parse(options) } : {}) });
     if (prior) return prior.goalId;
     const previous = goalId ? this.pending(receipt).find(value => value.goalId === goalId) : undefined;
     if (goalId && (!previous || previous.unavailable)) throw Error("待澄清目标已变化或不属于本轮可见上下文");
@@ -90,7 +91,7 @@ export class BotClarificationGoals {
     const sources = ids.map(id => botDelegationSourceSchema.parse(this.messages.message(id)));
     const id = goalId ?? `clarification:${randomUUID()}`;
     const stored = previous ? this.scoped(receipt).find(item => item.goal.goalId === id) : undefined;
-    const next: Goal = { goalId: id, sources, question, state: "pending", updatedBy: receipt.assistant_message_id };
+    const next: Goal = { goalId: id, sources, question, ...(options ? {options} : {}), state: "pending", updatedBy: receipt.assistant_message_id };
     this.update(stored?.messageId ?? receipt.assistant_message_id, state => {
       if (stored) {
         const index = state.goals.findIndex(item => item.goalId === id && JSON.stringify(item) === JSON.stringify(stored.goal));

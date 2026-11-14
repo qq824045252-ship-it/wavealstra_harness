@@ -1,3 +1,4 @@
+import { botClarificationOptionsSchema } from "../../../shared/bot-conversation";
 import { BotClarificationGoals } from "./BotClarificationGoals";
 import { readWorkFileSource } from "./WorkFileEventSource";
 import { botReminderTool } from "./BotReminderTools";
@@ -450,12 +451,12 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
           teamId: options.teamId, conversationId, now: Date.now }, input);
       }).deferred());
     } }),
-  defineTool({ name: "work_clarify", description: "仅缺少执行必需信息时，必须先用本工具持久登记待澄清目标，再向用户显示问题；不得只在聊天里问而丢失原始目标。当前用户原文/附件自动归入目标，沿用历史要求选择sourceMessageIds。回答已有澄清还缺信息时传goalId延长同一链；后续创建用返回的goalId作为clarificationGoalId，宿主自动移交整条原文链。用户明确取消尚未派发的目标时用action:cancel与goalId；明确的新任务正常直接创建，不需要本工具审批。",
-    parameters: parameters(z.object({action:z.enum(["ask","cancel"]).default("ask"),question:text.optional(),sourceMessageIds:z.array(z.string()).max(32),goalId:z.string().optional()}).strict()), replay:"safe",
+  defineTool({ name: "work_clarify", description: "可以给出明确候选答案时传 options，前台会显示选择按钮且始终允许手动输入；不要在正文模拟选项。仅缺少执行必需信息时，必须先用本工具持久登记待澄清目标，再向用户显示问题；不得只在聊天里问而丢失原始目标。当前用户原文/附件自动归入目标，沿用历史要求选择sourceMessageIds。回答已有澄清还缺信息时传goalId延长同一链；后续创建用返回的goalId作为clarificationGoalId，宿主自动移交整条原文链。用户明确取消尚未派发的目标时用action:cancel与goalId；明确的新任务正常直接创建，不需要本工具审批。",
+    parameters: parameters(z.object({action:z.enum(["ask","cancel"]).default("ask"),question:text.optional(),options:botClarificationOptionsSchema.optional(),sourceMessageIds:z.array(z.string()).max(32),goalId:z.string().optional()}).strict()), replay:"safe",
     execute:async(args,api,context)=>{
-      const input=z.object({action:z.enum(["ask","cancel"]).default("ask"),question:text.optional(),sourceMessageIds:z.array(z.string()).max(32),goalId:z.string().optional()}).strict().parse(args);
+      const input=z.object({action:z.enum(["ask","cancel"]).default("ask"),question:text.optional(),options:botClarificationOptionsSchema.optional(),sourceMessageIds:z.array(z.string()).max(32),goalId:z.string().optional()}).strict().parse(args);
       const requestId=await botForegroundRequest(api,api.callId,context);
-      return output(works.transaction(()=>{assertActive();const source=receipt(requestId);if(input.action==="cancel"){if(!input.goalId)throw Error("取消需要明确待澄清goalId");clarifications.cancel(source,String(api.taskId),input.goalId);return {cancelled:true,goalId:input.goalId};}if(!input.question)throw Error("澄清必须有具体问题");return {goalId:clarifications.clarify(source,String(api.taskId),input.question,input.sourceMessageIds,input.goalId),question:input.question};}));
+      return output(works.transaction(()=>{assertActive();const source=receipt(requestId);if(input.action==="cancel"){if(!input.goalId)throw Error("取消需要明确待澄清goalId");clarifications.cancel(source,String(api.taskId),input.goalId);return {cancelled:true,goalId:input.goalId};}if(!input.question)throw Error("澄清必须有具体问题");return {goalId:clarifications.clarify(source,String(api.taskId),input.question,input.sourceMessageIds,input.goalId,input.options),question:input.question};}));
     }}),
   defineTool({ name: "work_team_templates", description: "查询当前 Bot 负责的正式团队及成员分工。availableBots 是当前用户已启用的现有 Bot，可用于调整团队分工，也可作为 work_team_build 组建新团队的候选成员。缺少合适成员时，主 Bot 可先按用户明确要求用 bot_organize 创建或调整其他 Bot，再重新查询 availableBots。新团队事项必须选择已有正式团队；没有适合的团队时，只有用户明确要求组队才可由主 Bot 用 work_team_build 建立。个人 Bot 之间委派使用 bot_collaborate 或 bot_organize，由接收方创建自己的 Work。",
     parameters: parameters(z.object({}).strict()), replay: "safe",

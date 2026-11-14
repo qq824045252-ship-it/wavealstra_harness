@@ -11,6 +11,12 @@
     "node": ">=24.0.0"
   },
   "scripts": {
+    "test:bot-clarification-options": "node scripts/test-guard.mjs node --import ./scripts/headless-source-test-hooks.mjs scripts/bot-clarification-options-test.ts",
+    "test:bot-clarification-multi-goal": "node scripts/test-guard.mjs node --import ./scripts/headless-source-test-hooks.mjs scripts/bot-clarification-multi-goal-test.ts",
+    "test:bot-clarification-options-ui": "node scripts/run-tsgo-ui-test.mjs scripts/bot-clarification-options-dom-test.tsx",
+    "test:bot-incoming-timeline": "node scripts/test-guard.mjs node --import ./scripts/headless-source-test-hooks.mjs scripts/bot-incoming-timeline-test.ts",
+    "test:bot-incoming-hook": "node scripts/test-guard.mjs node --import ./scripts/headless-source-test-hooks.mjs scripts/bot-incoming-hook-test.ts",
+    "test:bot-incoming-scroll": "node scripts/test-guard.mjs node --import ./scripts/headless-source-test-hooks.mjs scripts/bot-incoming-scroll-test.ts",
     "test:bot-work-target-negation": "node scripts/bot-work-target-negation-test.cjs",
     "test:memory-forget-scope-entry": "esbuild scripts/memory-forget-scope-entry-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/memory-forget-scope-entry-test.mjs && node scripts/test-guard.mjs out/tests/memory-forget-scope-entry-test.mjs",
     "test:memory-evidence-forget": "esbuild scripts/memory-evidence-forget-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/memory-evidence-forget-test.mjs && node scripts/test-guard.mjs out/tests/memory-evidence-forget-test.mjs",

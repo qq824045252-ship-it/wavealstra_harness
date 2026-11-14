@@ -1,3 +1,4 @@
+import {botIncomingMessagesQuerySchema, type BotIncomingMessagesQuery, type BotIncomingMessagesPage} from '../../../shared/bot-collaboration';
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import { z } from "zod";
@@ -95,6 +96,17 @@ export class BotCollaborationRepository {
         exchange_id TEXT NOT NULL, value_json TEXT NOT NULL CHECK(json_valid(value_json)),
         PRIMARY KEY(collaboration_id,exchange_id)
       );
+      CREATE TABLE IF NOT EXISTS bot_collaboration_message_order (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        message_id TEXT NOT NULL UNIQUE REFERENCES bot_collaboration_messages(message_id) ON DELETE CASCADE
+      );
+      INSERT INTO bot_collaboration_message_order(message_id)
+        SELECT message_id FROM bot_collaboration_messages m
+        WHERE NOT EXISTS (SELECT 1 FROM bot_collaboration_message_order o WHERE o.message_id=m.message_id)
+        ORDER BY m.rowid;
+      CREATE TRIGGER IF NOT EXISTS bot_collaboration_message_order_insert AFTER INSERT ON bot_collaboration_messages BEGIN
+        INSERT INTO bot_collaboration_message_order(message_id) VALUES (NEW.message_id);
+      END;
       CREATE TRIGGER IF NOT EXISTS bot_collaboration_source_revision AFTER UPDATE OF work_id,updated_at,status,times_json ON bot_collaborations BEGIN
         UPDATE bot_message_revisions SET revision=revision+1 WHERE message_id IN (
           SELECT user_message_id FROM bot_collaboration_requests WHERE collaboration_id=NEW.collaboration_id
@@ -377,6 +389,53 @@ export class BotCollaborationRepository {
     const last = items.at(-1);
     return { items, total, nextCursor: rows.length > limit && last
       ? this.encode({ scope, createdAt: last.createdAt, collaborationId: last.collaborationId }) : null };
+  }
+
+  incomingMessages(userId:string, input:BotIncomingMessagesQuery):BotIncomingMessagesPage {
+    const query=botIncomingMessagesQuerySchema.parse(input); this.requireBot(userId,query.botId);
+    const scope=digest(['incoming-message-sequence-v1',userId,query.botId]);
+    const schema=z.object({scope:z.string(),sequence:z.number().int().positive()}).strict();
+    const boundary=query.before ?? query.after; const cursor=boundary ? this.cursor(boundary,schema,scope) : undefined;
+    const ascending=Boolean(query.after), op=ascending?'>':'<', direction=ascending?'ASC':'DESC';
+    if(query.refreshIds?.length===0)return {items:[],nextCursor:null};
+    const refreshParams:Record<string,string>={};query.refreshIds?.forEach((id,i)=>{refreshParams['refresh'+i]=id;});
+    const refreshClause=query.refreshIds ? 'AND m.message_id IN ('+query.refreshIds.map((_id,i)=>'@refresh'+i).join(',')+')' : '';
+    const rows=this.db.prepare(`SELECT m.message_id,m.collaboration_id,m.value_json,m.operation_key,o.sequence
+      FROM bot_collaboration_messages m JOIN bot_collaboration_message_order o ON o.message_id=m.message_id JOIN bot_collaborations c ON c.collaboration_id=m.collaboration_id
+      WHERE c.user_id=@user AND c.target_bot_id=@bot
+      AND EXISTS (SELECT 1 FROM bots source WHERE source.bot_id=c.source_bot_id AND source.user_id=c.user_id)
+      AND EXISTS (SELECT 1 FROM bots target WHERE target.bot_id=c.target_bot_id AND target.user_id=c.user_id)
+      ${refreshClause}
+      AND (@edge=0 OR o.sequence${op}@sequence)
+      ORDER BY o.sequence ${direction} LIMIT @take`)
+      .all({user:userId,bot:query.botId,edge:cursor?1:0,sequence:cursor?.sequence??0,take:query.refreshIds?101:(query.limit??30)+1,...refreshParams}) as {message_id:string;collaboration_id:string;value_json:string;operation_key:string;sequence:number}[];
+    const selected=rows.slice(0,query.refreshIds?100:query.limit??30); const cache=new Map<string,BotCollaborationDto>();
+    const items=selected.map(row=>{ let collaboration=cache.get(row.collaboration_id); if(!collaboration){collaboration=this.required(userId,row.collaboration_id);cache.set(row.collaboration_id,collaboration);}
+      const message=botCollaborationMessageSchema.parse(JSON.parse(row.value_json));
+      const foregroundMessageIds:string[]=[];
+      if(message.workFeedback){
+        const linked=this.db.prepare(`SELECT m.message_id,m.request_id FROM bot_messages m
+          JOIN bot_work_feedback f ON f.message_id=m.message_id
+          JOIN bot_conversations conversation ON conversation.conversation_id=m.conversation_id
+          WHERE conversation.user_id=? AND m.bot_id=? AND m.role='assistant'
+            AND json_extract(f.metadata_json,'$.workId')=? AND json_extract(f.metadata_json,'$.eventId')=?`)
+          .all(userId,query.botId,message.workFeedback.workId,message.workFeedback.eventId) as {message_id:string;request_id:string}[];
+        for(const projected of linked){
+          const version=projected.request_id.match(/^work-feedback:[a-f0-9]{64}:([a-f0-9]{64})$/)?.[1];
+          if(version && digest([message.operationId,message.kind,version])===row.operation_key)foregroundMessageIds.push(projected.message_id);
+        }
+      }
+      const summaryRow=message.kind==='request'?undefined:this.db.prepare(`SELECT m.text,m.status FROM bot_peer_deliveries d
+        JOIN bot_messages m ON m.message_id=d.accepted_message_id
+        WHERE d.user_id=? AND d.journal_message_id=? AND m.bot_id=? AND m.role='assistant'
+          AND json_extract(d.origin_json,'$.kind')='return'
+          AND json_extract(d.origin_json,'$.collaborationId')=?
+          AND json_extract(d.origin_json,'$.replyMessageId')=? ORDER BY d.rowid DESC LIMIT 1`)
+        .get(userId,message.messageId,collaboration.sourceBotId,message.collaborationId,message.messageId) as {text:string;status:string}|undefined;
+      const summary=summaryRow ? {...summaryRow,senderBotId:collaboration.sourceBotId,senderDisplayName:collaboration.sourceDisplayName}:undefined;
+      return {message,collaboration,foregroundMessageIds,summary,cursor:this.encode({scope,sequence:row.sequence})}; });
+    const nextCursor=rows.length>selected.length ? items.at(-1)?.cursor??null : null;
+    return {items:ascending?items:items.reverse(),nextCursor};
   }
 
   history(userId: string, input: BotCollaborationHistoryQuery): BotCollaborationHistoryPage {
