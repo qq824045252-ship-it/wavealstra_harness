@@ -32,5 +32,10 @@ export function useBotIncomingMessages(botId:string|undefined, membershipKey = '
   void read.current();const timer=setInterval(()=>{if(!document.hidden)void read.current();},2000);
   return()=>{generation.current++;clearInterval(timer);};
  },[botId,membershipKey]);
- return {items:publishedScope.current===scope?items:[],before:publishedScope.current===scope?before:null,error,loading,more:()=>before?read.current(before):Promise.resolve(),retry:()=>read.current()};
+ return {items:publishedScope.current===scope?items:[],before:publishedScope.current===scope?before:null,error,loading,more:()=>before?read.current(before):Promise.resolve(),retry:()=>read.current(),retrySummary:async(id:string)=>{
+  if(!botId||flight.current)return;const epoch=generation.current;flight.current=true;setLoading(true);
+  try{const api=window.api?.botWork?.incomingMessages;if(!api)throw Error("主机离线，请稍后重试");const page=await api({botId,refreshIds:[id],retrySummaryIds:[id]});if(epoch===generation.current)setItems(old=>mergeIncomingMessages(old,page.items));}
+  catch(error){if(epoch===generation.current)setError(error instanceof Error?error.message:String(error));}
+  finally{if(epoch===generation.current){flight.current=false;setLoading(false);}}
+ }};
 }

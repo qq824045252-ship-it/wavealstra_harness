@@ -14,6 +14,7 @@
     "test:bot-clarification-options": "node scripts/test-guard.mjs node --import ./scripts/headless-source-test-hooks.mjs scripts/bot-clarification-options-test.ts",
     "test:bot-clarification-multi-goal": "node scripts/test-guard.mjs node --import ./scripts/headless-source-test-hooks.mjs scripts/bot-clarification-multi-goal-test.ts",
     "test:bot-clarification-options-ui": "node scripts/run-tsgo-ui-test.mjs scripts/bot-clarification-options-dom-test.tsx",
+    "test:bot-incoming-summary": "node scripts/test-guard.mjs node --import ./scripts/test-typescript-memory-loader.mjs scripts/bot-incoming-summary-test.ts",
     "test:bot-incoming-timeline": "node scripts/test-guard.mjs node --import ./scripts/headless-source-test-hooks.mjs scripts/bot-incoming-timeline-test.ts",
     "test:bot-incoming-hook": "node scripts/test-guard.mjs node --import ./scripts/headless-source-test-hooks.mjs scripts/bot-incoming-hook-test.ts",
     "test:bot-incoming-scroll": "node scripts/test-guard.mjs node --import ./scripts/headless-source-test-hooks.mjs scripts/bot-incoming-scroll-test.ts",
