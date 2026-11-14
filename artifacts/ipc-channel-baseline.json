@@ -1,8 +1,8 @@
 {
   "scope": "src/main/**",
-  "mainRegistrations": 546,
-  "allRegistrations": 566,
-  "uniqueChannels": 545,
+  "mainRegistrations": 547,
+  "allRegistrations": 567,
+  "uniqueChannels": 546,
   "channels": [
     "agent:abort",
     "agent:abortCompaction",
@@ -160,6 +160,7 @@
     "bot-work:get-work",
     "bot-work:history",
     "bot-work:host-status",
+    "bot-work:incoming-messages",
     "bot-work:list-bot-expert-versions",
     "bot-work:list-bots",
     "bot-work:list-works",

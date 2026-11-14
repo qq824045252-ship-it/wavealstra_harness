@@ -258,7 +258,7 @@ function useCollaborations(botId: string, direction: NonNullable<BotCollaboratio
 export function BotIncomingCollaborations({ botId, onOpen, empty, entries = [], onBeforeOlder, membershipKey = '', representedReplies = [] }: {
  botId?:string; representedReplies?:readonly {collaborationId:string;exchangeId:string}[]; membershipKey?:string; entries?:{key:string;createdAt:number;ordinal:number;value:React.ReactNode;foldKey?:string}[]; onBeforeOlder?:()=>void;onOpen:(id:string)=>void;empty?:React.ReactNode;
 }) {
- const {items,before,error,loading,more,retry,retrySummary}=useBotIncomingMessages(botId,membershipKey);
+ const {items,before,error,loading,initialLoading,more,retry,retrySummary}=useBotIncomingMessages(botId,membershipKey);
  const personalIds=new Set(entries.map(entry=>entry.key));
  const visibleItems=unrepresentedIncomingMessages(items,personalIds,representedReplies);
  const byId=new Map(visibleItems.map(item=>[item.message.messageId,item]));
@@ -266,7 +266,7 @@ export function BotIncomingCollaborations({ botId, onOpen, empty, entries = [], 
  return <section className="bot-merged-timeline" aria-label="对话与协作时间线">
   {error && <p className="bot-alert" role="alert">{error}<button type="button" className="bot-icon-button" title="重试读取" aria-label="重试读取" onClick={()=>void retry()}><IconRefresh size={18}/></button></p>}
   {before && <button type="button" className="bot-icon-button" title="加载更早协作消息" aria-label="加载更早协作消息" disabled={loading} onClick={()=>{onBeforeOlder?.();void more();}}><IconChevronUp size={18}/></button>}
-  <div className="bot-message-list">{rows.length===0 ? empty : groupBotTimeline(rows).map(group=>{
+  <div className="bot-message-list">{rows.length===0 ? initialLoading ? <p role="status">正在读取收到的协作…</p> : error ? null : empty : groupBotTimeline(rows).map(group=>{
    const row=group[0];
    if(row.kind==='personal' && row.foldKey)return <details key={row.key} className="bot-work-progress"><summary>{group.length} 条执行记录</summary>{group.map(item=>item.kind==='personal'?<div key={item.key}>{item.value}</div>:null)}</details>;
    if(row.kind==='personal')return <div key={row.key}>{row.value}</div>;

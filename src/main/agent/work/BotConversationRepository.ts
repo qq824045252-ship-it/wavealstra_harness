@@ -535,10 +535,13 @@ export class BotConversationRepository {
     const clarificationRows = row.role === "assistant" && row.status === "completed" ? this.db.prepare(`SELECT g.value AS goal FROM bot_request_runs r
       JOIN bot_messages m ON m.message_id=r.message_id, json_each(r.context_json,'$.clarificationState.goals') g
       WHERE m.conversation_id=? AND json_extract(g.value,'$.updatedBy')=?`).all(row.conversation_id,row.message_id) as {goal:string}[] : [];
-    const team = scope?.team_id ? this.db.prepare("SELECT plan_json,deleted_at FROM work_team_templates WHERE template_id=?").get(scope.team_id) as {plan_json:string;deleted_at:number|null}|undefined : undefined;
-    const ownerChanged = Boolean(scope?.team_id && (!team || team.deleted_at!==null || JSON.parse(team.plan_json).ownerBotId!==row.bot_id));
-    const clarifications = clarificationRows.flatMap(value=>{
-      const goal=JSON.parse(value.goal);
+    // Ordinary history must not depend on the optional team-template service schema.
+    // Only live interactive goals need a current-owner check.
+    const clarificationGoals = clarificationRows.map(value=>JSON.parse(value.goal)).filter(goal=>goal.options);
+    const needsTeamOwner = Boolean(scope?.team_id && clarificationGoals.some(goal=>goal.state==="pending"));
+    const team = needsTeamOwner ? this.db.prepare("SELECT plan_json,deleted_at FROM work_team_templates WHERE template_id=?").get(scope.team_id) as {plan_json:string;deleted_at:number|null}|undefined : undefined;
+    const ownerChanged = Boolean(needsTeamOwner && (!team || team.deleted_at!==null || JSON.parse(team.plan_json).ownerBotId!==row.bot_id));
+    const clarifications = clarificationGoals.flatMap(goal=>{
       const answer = this.db.prepare("SELECT m.text FROM bot_clarification_answers a JOIN bot_messages m ON m.message_id=a.answer_message_id WHERE a.question_message_id=? AND a.goal_id=?").get(row.message_id,goal.goalId) as {text:string}|undefined;
       const answered=goal.state==="pending" && Boolean(answer);
       return goal.options ? [botClarificationSchema.parse({goalId:goal.goalId,question:goal.question,options:goal.options,answerText:answer?.text,status:goal.state==="pending"&&ownerChanged ? "expired" : answered ? "answered" : goal.state})] : [];

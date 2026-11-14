@@ -11,6 +11,7 @@
     "node": ">=24.0.0"
   },
   "scripts": {
+    "test:bot-clarification-history-schema": "node scripts/test-guard.mjs node --import ./scripts/headless-source-test-hooks.mjs scripts/bot-clarification-history-schema-test.ts",
     "test:bot-clarification-options": "node scripts/test-guard.mjs node --import ./scripts/headless-source-test-hooks.mjs scripts/bot-clarification-options-test.ts",
     "test:bot-clarification-multi-goal": "node scripts/test-guard.mjs node --import ./scripts/headless-source-test-hooks.mjs scripts/bot-clarification-multi-goal-test.ts",
     "test:bot-clarification-options-ui": "node scripts/run-tsgo-ui-test.mjs scripts/bot-clarification-options-dom-test.tsx",
