@@ -1,0 +1,30 @@
+.bot-task-reply { min-width:0; margin-top:16px; border:1px solid var(--border-default); border-radius:12px; background:var(--surface-right); overflow:clip; }
+.bot-task-reply-heading { display:flex; flex-wrap:wrap; align-items:flex-start; justify-content:space-between; gap:8px 12px; padding:14px 16px 12px; }
+.bot-task-reply-heading h3 { flex:1 1 180px; min-width:0; font-size:var(--bot-body-size); font-weight:600; overflow-wrap:anywhere; }
+.bot-task-reply-status { padding:3px 7px; border-radius:6px; background:var(--bg-active); color:var(--fg-secondary); font-size:var(--bot-meta-size); line-height:1.5; }
+.bot-task-reply-status[data-state="completed"] { color:var(--success); background:color-mix(in srgb,var(--success) 9%,transparent); }
+.bot-task-reply-status[data-state="attention"] { color:var(--warning); background:color-mix(in srgb,var(--warning) 9%,transparent); }
+.bot-task-reply-tabs { display:flex; gap:4px; padding:0 12px; border-bottom:1px solid var(--border-subtle); overflow-x:auto; scrollbar-width:thin; }
+.bot-workspace .bot-task-reply-tabs > button { flex:1 0 auto; display:flex; gap:6px; padding:10px 9px; border:0; border-bottom:2px solid transparent; border-radius:6px 6px 0 0; background:transparent; color:var(--fg-secondary); white-space:nowrap; }
+.bot-workspace .bot-task-reply-tabs > button[aria-selected="true"] { border-bottom-color:var(--accent); color:var(--fg); background:var(--bg-hover); font-weight:600; }
+.bot-task-stage-marker { display:inline-flex; align-items:center; justify-content:center; width:13px; height:13px; flex-shrink:0; box-sizing:border-box; border:1px solid var(--border-strong); border-radius:50%; font-size:10px; line-height:1; }
+.bot-task-reply-tabs > button[data-state="current"] .bot-task-stage-marker { border:4px solid var(--accent); }
+.bot-task-reply-tabs > button[data-state="completed"] .bot-task-stage-marker { border-color:var(--success); color:var(--success); }
+.bot-task-reply-tabs > button[data-state="attention"] .bot-task-stage-marker { border-color:var(--warning); color:var(--warning); }
+.bot-task-reply-tabs > button[data-state="paused"] .bot-task-stage-marker { border-radius:2px; background:var(--fg-muted); }
+.bot-task-stage-count { color:var(--fg-muted); font-size:11px; font-weight:400; font-variant-numeric:tabular-nums; }
+.bot-task-reply-panel { padding:16px; min-width:0; }
+.bot-task-reply-panel[hidden] { display:none; }
+.bot-task-reply-panel:focus-visible { outline:2px solid var(--accent); outline-offset:-3px; }
+.bot-task-reply-goal { white-space:pre-wrap; overflow-wrap:anywhere; font-size:var(--bot-body-size); }
+.bot-task-reply-empty { color:var(--fg-secondary); font-size:var(--bot-meta-size); }
+.bot-task-reply-historical { margin-bottom:10px!important; color:var(--fg-muted); font-size:var(--bot-meta-size); }
+.bot-task-reply-update + .bot-task-reply-update { border-top:1px solid var(--border-subtle); margin-top:16px; padding-top:16px; }
+.bot-task-reply-record > .bot-assistant-content { margin-left:0; }
+.bot-task-reply-record > .bot-message-meta { padding-left:0; margin-top:8px; }
+.bot-task-reply-record .bot-result-report { border:0; padding:0; background:transparent; }
+.bot-task-reply-record .bot-result-report > header h3 { font-size:var(--bot-body-size); }
+.bot-task-reply-progress { display:flex; flex-wrap:wrap; gap:6px 12px; align-items:center; padding:10px 16px; border-top:1px solid var(--border-subtle); background:var(--bg-sidebar); color:var(--fg-secondary); font-size:var(--bot-meta-size); }
+.bot-workspace .bot-task-reply-progress > button { padding:2px 0; border:0; background:transparent; color:var(--accent); font-size:inherit; }
+.bot-task-reply-times { display:flex; flex-wrap:wrap; gap:8px 12px; width:100%; font-size:11px; color:var(--fg-muted); font-variant-numeric:tabular-nums; }
+@media (max-width:480px) { .bot-task-reply-heading,.bot-task-reply-panel { padding:12px; } .bot-task-reply-tabs { padding:0 6px; gap:2px; } .bot-workspace .bot-task-reply-tabs > button { padding:9px 7px; gap:4px; } .bot-task-reply-progress { padding:10px 12px; } }

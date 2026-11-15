@@ -361,6 +361,8 @@ const HEADLESS_TESTS = new Set([
   "test:bot-create-avatar-ui",
   "test:bot-create-avatar-dialog",
   "test:bot-team-recycle-ui",
+  "test:bot-task-reply-ui", // Actual React component events in linkedom; no Electron/display.
+  "test:bot-task-reply-presentation",
   "test:bot-active-requests",
   "test:bot-activity-monitor",
   "test:bot-work-query-scale",

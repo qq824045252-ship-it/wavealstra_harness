@@ -255,12 +255,12 @@ function useCollaborations(botId: string, direction: NonNullable<BotCollaboratio
   return { page, error, loadingMore, more, retry: () => setRetry(value => value + 1) };
 }
 
-export function BotIncomingCollaborations({ botId, onOpen, empty, entries = [], onBeforeOlder, membershipKey = '', representedReplies = [] }: {
- botId?:string; representedReplies?:readonly {collaborationId:string;exchangeId:string}[]; membershipKey?:string; entries?:{key:string;createdAt:number;ordinal:number;value:React.ReactNode;foldKey?:string}[]; onBeforeOlder?:()=>void;onOpen:(id:string)=>void;empty?:React.ReactNode;
+export function BotIncomingCollaborations({ botId, onOpen, empty, entries = [], onBeforeOlder, membershipKey = '', representedReplies = [], representedMessageIds = [] }: {
+ botId?:string; representedMessageIds?:readonly string[]; representedReplies?:readonly {collaborationId:string;exchangeId:string}[]; membershipKey?:string; entries?:{key:string;createdAt:number;ordinal:number;value:React.ReactNode;foldKey?:string}[]; onBeforeOlder?:()=>void;onOpen:(id:string)=>void;empty?:React.ReactNode;
 }) {
  const {items,before,error,loading,initialLoading,more,retry,retrySummary}=useBotIncomingMessages(botId,membershipKey);
  const personalIds=new Set(entries.map(entry=>entry.key));
- const visibleItems=unrepresentedIncomingMessages(items,personalIds,representedReplies);
+ const visibleItems=unrepresentedIncomingMessages(items,personalIds,representedReplies,representedMessageIds);
  const byId=new Map(visibleItems.map(item=>[item.message.messageId,item]));
  const rows=mergeBotTimeline(entries,visibleItems.map(item=>({collaborationId:item.message.messageId,createdAt:item.message.createdAt})));
  return <section className="bot-merged-timeline" aria-label="对话与协作时间线">

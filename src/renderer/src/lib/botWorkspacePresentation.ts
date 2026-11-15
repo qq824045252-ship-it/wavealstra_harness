@@ -128,6 +128,71 @@ export function linkedConversationWork(work: WorkProjectionDto, messages: BotMes
 export type BotTimelineEntry = { key: string; kind: "message"; message: BotMessageDto }
   | { key: string; kind: "progress"; workId: string; workIds: string[]; messages: BotMessageDto[] };
 
+export interface BotTaskReplyGroup {
+  /** A task's view state survives feedback revisions and history pagination. */
+  key: string;
+  workId: string;
+  messages: BotMessageDto[];
+}
+
+export interface BotTaskTimelineEntry {
+  key: string;
+  kind: "message";
+  message: BotMessageDto;
+  tasks: BotTaskReplyGroup[];
+}
+
+/** Keep each Work's feedback in its first associated assistant reply. A reply
+ * that creates multiple Works stays one message with independent task panels.
+ * Only host-authored identities associate records; no text, title, owner or
+ * current selection is used. Ordinary follow-up replies stay in the transcript.
+ *
+ * If the original reply is outside the loaded history window, the first feedback
+ * is its temporary container. Its message also lives in the task's messages, so
+ * the renderer must not repeat that feedback as a separate outer message body.
+ * Loading older history can reveal the original container; appending progress
+ * or a later amendment never relocates it or changes its message key.
+ */
+export function botTaskTimeline(messages: readonly BotMessageDto[]): BotTaskTimelineEntry[] {
+  const rows: BotTaskTimelineEntry[] = [];
+  const groups = new Map<string, BotTaskReplyGroup>();
+  const taskKey = (message: BotMessageDto, workId: string) => JSON.stringify([
+    message.botId, message.teamId ?? null, message.conversationId, workId,
+  ]);
+  const attach = (row: BotTaskTimelineEntry, workId: string): BotTaskReplyGroup => {
+    const key = taskKey(row.message, workId);
+    let group = groups.get(key);
+    if (!group) {
+      group = { key, workId, messages: [] };
+      groups.set(key, group);
+      row.tasks.push(group);
+    }
+    return group;
+  };
+  for (const message of messages) {
+    if (message.role === "user" && message.peerOrigin) continue;
+    const feedback = message.role === "assistant" ? message.workFeedback : undefined;
+    if (feedback) {
+      let group = groups.get(taskKey(message, feedback.workId));
+      if (!group) {
+        const row: BotTaskTimelineEntry = { key: message.messageId, kind: "message", message, tasks: [] };
+        rows.push(row);
+        group = attach(row, feedback.workId);
+      }
+      // Retain running/error records and every result/event version unchanged.
+      group.messages.push(message);
+      continue;
+    }
+    const row: BotTaskTimelineEntry = { key: message.messageId, kind: "message", message, tasks: [] };
+    rows.push(row);
+    if (message.role === "assistant") {
+      const workIds = new Set([...message.workIds, ...(message.collaborationResult ? [message.collaborationResult.workId] : [])]);
+      for (const workId of workIds) attach(row, workId);
+    }
+  }
+  return rows;
+}
+
 /** Presentation only. Durable messages and order remain intact inside each fold.
  * Latest decisions/results stay visible; ordinary progress and older versions of
  * the exact same event can be expanded. Never classify by human-written text.

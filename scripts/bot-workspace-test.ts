@@ -3,7 +3,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { parseHTML } from "linkedom";
 import type { BotMessageDto } from "../src/shared/bot-conversation";
-import { linkedConversationWork, personalBotWork, activeBotReply, botMessageStatus, botReplyQuestions, botWorkTimeline, shouldSendBotComposer, workMatchesView, workStatusLabel, workExecutionComplete, workCardExcerpt, workStatus, workSearchText, workMatchesSearch } from "../src/renderer/src/lib/botWorkspacePresentation";
+import { linkedConversationWork, personalBotWork, activeBotReply, botMessageStatus, botReplyQuestions, botWorkTimeline, botTaskTimeline, shouldSendBotComposer, workMatchesView, workStatusLabel, workExecutionComplete, workCardExcerpt, workStatus, workSearchText, workMatchesSearch } from "../src/renderer/src/lib/botWorkspacePresentation";
 import type { BotDto, WorkProjectionDto } from "../src/shared/bot-work";
 import type { WorkResultCardDto } from "../src/shared/bot-work-phase5";
 import Sidebar, { AccountNavigation } from "../src/renderer/src/components/Sidebar";
@@ -662,6 +662,64 @@ const groupedSix = botWorkTimeline(sixProgress);
 assert.equal(groupedSix.length, 1);
 assert.equal(groupedSix[0].kind === "progress" && groupedSix[0].workIds.length, 6);
 assert.deepEqual(groupedSix.flatMap(row => row.kind === "progress" ? row.messages : [row.message]), sixProgress);
+
+// The conversation surface keeps one reply per task, independent of event order
+// across parallel Works. It never rewrites the durable messages to achieve this.
+const taskQuestion: BotMessageDto = { ...humanRequest, workIds: ["work-a", "work-b"] };
+const taskReply: BotMessageDto = { ...untyped, messageId: "task-reply", requestId: taskQuestion.requestId,
+  workIds: ["work-a", "work-b", "work-a"], status: "running", segments: [receiptSegment, modelSegment] };
+const taskFollowup: BotMessageDto = { ...taskReply, messageId: "task-followup", requestId: "followup", status: "completed",
+  text: "保留已经完成的内容，继续核对。", workIds: ["work-a"] };
+const failedFeedback: BotMessageDto = { ...feedbackMessage("failed-feedback", "work-a", "binding:error", "decision"),
+  status: "failed", error: "读取未完成" };
+const streamingFeedback: BotMessageDto = { ...feedbackMessage("streaming-feedback", "work-b", "result:stream", "result"),
+  status: "running", text: "正在返回的部分内容", segments: [modelSegment] };
+const taskTranscript = [taskQuestion, taskReply, timeline[0], timeline[8], taskFollowup, ...timeline.slice(1, 8),
+  failedFeedback, streamingFeedback];
+const taskTranscriptBefore = JSON.stringify(taskTranscript);
+const taskRows = botTaskTimeline(taskTranscript);
+assert.deepEqual(taskRows.map(row => row.message.messageId), [taskQuestion.messageId, taskReply.messageId, taskFollowup.messageId]);
+assert.equal(taskRows[0].tasks.length, 0, "user links do not turn the input into an assistant reply");
+assert.equal(taskRows[1].message, taskReply, "streamed text, tools and message identity stay on the original reply");
+assert.equal(taskRows[1].message.segments, taskReply.segments);
+assert.deepEqual(taskRows[1].tasks.map(task => task.workId), ["work-a", "work-b"], "multiple Works share their source message without copying its answer");
+assert.equal(taskRows[2].tasks.length, 0, "an amendment's ordinary prose remains visible without duplicating the task card");
+assert.deepEqual(taskRows[1].tasks[0].messages, [...timeline.slice(0, 8), failedFeedback], "decisions, results, errors and superseded event versions all remain reviewable");
+assert.deepEqual(taskRows[1].tasks[1].messages, [timeline[8], streamingFeedback], "interleaved progress and running content cannot leak between tasks");
+assert.equal(JSON.stringify(taskTranscript), taskTranscriptBefore, "inline grouping does not change source data");
+const originalVisible = taskRows.flatMap(row => [row.message, ...row.tasks.flatMap(task => task.messages)]);
+assert.equal(originalVisible.length, taskTranscript.length);
+assert.deepEqual(new Set(originalVisible), new Set(taskTranscript), "every visible durable record is retained exactly once");
+const nextTaskRows = botTaskTimeline([...taskTranscript, feedbackMessage("next-progress", "work-a", "binding:next", "progress")]);
+assert.equal(nextTaskRows[1].key, taskRows[1].key, "new task progress cannot remount the original reply");
+assert.deepEqual(nextTaskRows[1].tasks.map(task => task.key), taskRows[1].tasks.map(task => task.key));
+
+// Paginated history starts at its first available feedback, and never attaches
+// that older progress to a later follow-up merely because it mentions the Work.
+const partialTaskRows = botTaskTimeline([timeline[0], timeline[1], taskFollowup, timeline[2]]);
+assert.deepEqual(partialTaskRows.map(row => row.key), [timeline[0].messageId, taskFollowup.messageId]);
+assert.deepEqual(partialTaskRows[0].tasks[0].messages, timeline.slice(0, 3));
+assert.equal(partialTaskRows[1].tasks.length, 0);
+const prependedTaskRows = botTaskTimeline([taskQuestion, taskReply, timeline[0], timeline[1], taskFollowup, timeline[2]]);
+assert.equal(prependedTaskRows[1].key, taskReply.messageId);
+assert.equal(prependedTaskRows[1].tasks[0].key, partialTaskRows[0].tasks[0].key,
+  "logical task view identity survives discovery of the original reply on an older page");
+assert.deepEqual(prependedTaskRows[1].tasks[0].messages, partialTaskRows[0].tasks[0].messages);
+assert.deepEqual(botTaskTimeline(sixProgress).map(row => row.tasks[0].workId), sixProgress.map(message => message.workFeedback!.workId),
+  "independent task fallbacks are never combined into a multi-Work progress fold");
+
+const scopedFeedback = [timeline[0], { ...timeline[0], messageId: "other-chat", conversationId: "other-chat" },
+  { ...timeline[0], messageId: "other-bot", botId: "other-bot" }, { ...timeline[0], messageId: "team-feedback", teamId: "team-a" }];
+const scopedTaskRows = botTaskTimeline(scopedFeedback);
+assert.equal(scopedTaskRows.length, 4);
+assert.equal(new Set(scopedTaskRows.map(row => row.tasks[0].key)).size, 4, "bot, team and conversation identities all scope each task reply");
+for (let i = 0; i < scopedTaskRows.length; i++) assert.deepEqual(scopedTaskRows[i].tasks[0].messages, [scopedFeedback[i]]);
+assert.equal(botTaskTimeline([userFeedback])[0].tasks.length, 0, "user metadata is never treated as host feedback");
+assert.equal(botTaskTimeline([untyped])[0].message, untyped, "unclassified content stays an ordinary original reply");
+assert.deepEqual(botTaskTimeline(peerTranscript).map(row => row.key), [humanRequest.messageId, peerAnswer.messageId]);
+assert.deepEqual(botTaskTimeline([peerRequest, peerAcceptance]).map(row => row.key), [peerAcceptance.messageId]);
+const returnedTask = { ...peerAnswer, workIds: [], collaborationResult: timeline[2].workFeedback };
+assert.equal(botTaskTimeline([returnedTask])[0].tasks[0].workId, "work-a", "typed collaboration result association stays available without parsing its prose");
 const generated = [
   { bindingId: "done", path: "/work/report.csv", snapshotPath: "/snap/hash-report", digest: "sha-one", sizeBytes: 20, registeredAt: 1, sourceEntryId: 1 },
   { bindingId: "done", path: "/work/create.py", snapshotPath: "/snap/hash-script", digest: "sha-two", sizeBytes: 40, registeredAt: 1, sourceEntryId: 2 },

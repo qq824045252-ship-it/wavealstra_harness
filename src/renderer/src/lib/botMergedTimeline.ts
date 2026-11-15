@@ -13,6 +13,9 @@ export function groupBotTimeline<T extends {kind:string;foldKey?:string}>(rows:r
 }
 
 /** Hide only copies whose authenticated durable identity is already visible. */
-export function unrepresentedIncomingMessages<T extends {message:{collaborationId:string;operationId:string};foregroundMessageIds?:readonly string[]}>(items:readonly T[],personalIds:ReadonlySet<string>,replies:readonly {collaborationId:string;exchangeId:string}[]):T[]{
- return items.filter(item=>!item.foregroundMessageIds?.some(id=>personalIds.has(id)) && !replies.some(reply=>reply.collaborationId===item.message.collaborationId && item.message.operationId===reply.exchangeId+':reply'));
+export function unrepresentedIncomingMessages<T extends {message:{collaborationId:string;operationId:string};foregroundMessageIds?:readonly string[]}>(items:readonly T[],personalIds:ReadonlySet<string>,replies:readonly {collaborationId:string;exchangeId:string}[],representedMessageIds:readonly string[]=[]):T[]{
+ // Task feedback can be nested inside an older reply instead of owning a row.
+ // Its exact durable ID still represents that record in the conversation.
+ const represented=new Set([...personalIds,...representedMessageIds]);
+ return items.filter(item=>!item.foregroundMessageIds?.some(id=>represented.has(id)) && !replies.some(reply=>reply.collaborationId===item.message.collaborationId && item.message.operationId===reply.exchangeId+':reply'));
 }

@@ -42,6 +42,15 @@ const rowsForDedup=[{message:{collaborationId:'c',operationId:'e:reply'},foregro
 assert.equal(unrepresentedIncomingMessages(rowsForDedup,new Set(),[]).length,3);
 assert.deepEqual(unrepresentedIncomingMessages(rowsForDedup,new Set(['exact']),[{collaborationId:'c',exchangeId:'e'}]),[rowsForDedup[2]]);
 console.log('PASS visible-only reply and Work identity dedup, unrelated collaboration retained');
+const originalReplyIds=new Set(['original-task-reply']);
+assert.deepEqual(unrepresentedIncomingMessages(rowsForDedup,originalReplyIds,[],['exact']),[rowsForDedup[0],rowsForDedup[2]],
+  'feedback embedded in its original task reply still suppresses its exact incoming journal copy');
+assert.deepEqual([...originalReplyIds],['original-task-reply'],'dedup does not mutate the timeline row identities');
+assert.deepEqual(unrepresentedIncomingMessages(rowsForDedup,originalReplyIds,[],['different-version']),rowsForDedup,
+  'a different feedback version cannot suppress the incoming record');
+assert.deepEqual(unrepresentedIncomingMessages(rowsForDedup,originalReplyIds,[{collaborationId:'c',exchangeId:'e'}],['exact']),[rowsForDedup[2]],
+  'nested Work feedback and peer acceptance identities both remain effective');
+console.log('PASS nested task feedback identity dedup without hiding other versions or collaborations');
 
 // Reuse the persisted foreground return for each exact journal message, never truncate raw text into a summary.
 function summary(id:string,journal:string,user='u',reply=journal){
