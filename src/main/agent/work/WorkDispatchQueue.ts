@@ -4,11 +4,30 @@ import { isReadOnlyScheduledFollowUp, isScheduledFollowUp, scheduledFollowUpCurr
 import { createHash,randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { AppDatabase } from "../../db/AppDatabase";
-import type { WorkActor, WorkDto, WorkExecutionBindingDto } from "../../../shared/bot-work";
+import type { WorkActor, WorkDto, WorkExecutionBindingDto, WorkInboxEventDto, WorkSubscriptionDto } from "../../../shared/bot-work";
 import type { WorkService } from "./WorkService";
 import type { WorkExecutionAdapter } from "./WorkExecutionAdapter";
 import { DESKTOP_USER_GRANTS } from "./WorkService";
-import { WorkSourceObserver,sourceSnapshot } from "./WorkSourceObserver";
+import { WorkSourceObserver,sourceSnapshot, type AuthoritativeWorkSource } from "./WorkSourceObserver";
+import { sameSourceReadbackClaim } from "./WorkPausedBacklog";
+import { workHostLeaseIdentity } from "./WorkHostAuthority";
+
+export interface WorkSourceDispatchOptions {
+  /** Limits live source I/O only; all waiting obligations stay in the original Inbox. */
+  sourceConcurrency?: number;
+  sourceReadTimeoutMs?: number;
+  readSource?: (work: WorkDto, signal: AbortSignal) => Promise<AuthoritativeWorkSource>;
+}
+type SourceFlight = { work: WorkDto; event: WorkInboxEventDto; authority: string;
+  subscription?: WorkSubscriptionDto; readsSource: boolean; controller: AbortController;
+  promise: Promise<void>; readSettled?: Promise<void> };
+const sourceSubscriptionIdentity = (subscription: WorkSubscriptionDto): string => JSON.stringify([
+  subscription.subscriptionId, subscription.workId, subscription.source, subscription.sourceTarget,
+  subscription.configRevision, subscription.scheduleRevision, subscription.catchUpPolicy, subscription.filter,
+  subscription.maxMergeWaitMs, subscription.maxQueueDepth, subscription.maxBacklogEvents, subscription.maxBacklogBytes,
+  subscription.stopConditionText, subscription.timezone, subscription.cronExpression, subscription.versionMode,
+  subscription.dstPolicy, subscription.stoppedAt,
+]);
 
 const rowSchema = z.object({ operation_id: z.string(), work_id: z.string(), task_id: z.string(), bot_id: z.string(),
   intent_revision: z.number(), input_snapshot_id: z.string(), continuation_plan_id: z.string().nullable().optional(),
@@ -28,14 +47,19 @@ export class WorkDispatchQueue {
   private dirty = false;
   private timer?: ReturnType<typeof setInterval>;
   private readonly dispatchFlights = new Map<string, Promise<void>>();
+  private readonly sourceFlights = new Map<string, SourceFlight>();
+  private fileReconcileFlight?: Promise<void>;
+  private sourceCursor = "";
   private detachProgress?: () => void;
   constructor(private readonly db: AppDatabase, private readonly works: WorkService,
     private readonly adapter: WorkExecutionAdapter, private readonly isAuthority: () => boolean,
     private readonly defaultModel: () => string | undefined,
     private readonly permissionMode: () => import("../../../shared/agent-ipc").PermissionMode = () => "default",
     private readonly resumeDeferredActions?: () => Promise<void>,
-    private readonly botSettings?: (work: WorkDto, botId?: string) => import("../../../shared/bot-settings").BotSettingsDto) {
-    this.fileEvents = new WorkFileEventSource(works, isAuthority, () => this.wake());
+    private readonly botSettings?: (work: WorkDto, botId?: string) => import("../../../shared/bot-settings").BotSettingsDto,
+    private readonly sourceOptions: WorkSourceDispatchOptions = {}) {
+    this.fileEvents = new WorkFileEventSource(works, isAuthority, () => this.wake(), undefined,
+      { authorityIdentity: () => workHostLeaseIdentity(this.db.connection) });
   }
 
   enqueue(work: WorkDto, operationId: string, retryBlocked = false, inboxEventId?: string): void {
@@ -79,7 +103,11 @@ export class WorkDispatchQueue {
     this.closed = true; this.detachProgress?.();
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
+    for (const flight of this.sourceFlights.values()) flight.controller.abort();
     await this.fileEvents.close(); await this.flushing;
+    // The read race settles on abort even when a provider ignores cancellation.
+    // Its eventual reply never reaches the backlog consumer or the database.
+    await Promise.all([...this.sourceFlights.values()].map(flight => flight.promise));
   }
   flush(): Promise<void> {
     if (this.closed) return Promise.resolve();
@@ -94,20 +122,29 @@ export class WorkDispatchQueue {
   async drain(): Promise<void> {
     if (this.closed) return;
     await this.flush();
+    await this.fileReconcileFlight;
+    await this.fileEvents.drain();
+    await this.flush();
+    while (!this.closed && this.sourceFlights.size) {
+      await Promise.all([...this.sourceFlights.values()].flatMap(flight => [flight.promise, flight.readSettled]));
+      await this.flush();
+    }
+    if (this.closed) return;
     await Promise.all([...this.dispatchFlights.values(), this.works.teams.waitForDispatches()]);
     await this.adapter.flush();
     if (!this.closed && this.isAuthority()) this.settleDispatches();
   }
 
   private async deliver(): Promise<void> {
-    await this.fileEvents.reconcile();
+    this.reconcileFiles();
+    this.cancelStaleSourceFlights();
     if (this.closed || !this.isAuthority()) return;
     await this.resumeDeferredActions?.();
     if (this.closed || !this.isAuthority()) return;
     this.resumeRetiredQuotaRequests();
     this.works.teams.wakePending(this.db, this.adapter, this.defaultModel, this.permissionMode, this.botSettings,
       () => { if (this.timer) this.wake(); }, () => !this.closed && this.isAuthority());
-    await this.drainSourceEvents();
+    this.drainSourceEvents();
     if (this.closed || !this.isAuthority()) return;
     this.prepareSourceIntents();
     this.prepareContinuations();
@@ -243,12 +280,47 @@ export class WorkDispatchQueue {
     });
   }
 
-  private async drainSourceEvents():Promise<void> {
+  private reconcileFiles(): void {
+    if (this.closed || this.fileReconcileFlight) return;
+    const flight = this.fileEvents.reconcile().catch(error => {
+      if (!this.closed && this.isAuthority()) console.warn("[Work] 文件来源协调待重试", error);
+    }).finally(() => { if (this.fileReconcileFlight === flight) this.fileReconcileFlight = undefined; });
+    this.fileReconcileFlight = flight;
+  }
+
+  private sourceClaimCurrent(flight: Pick<SourceFlight, "work" | "event" | "authority" | "subscription">): boolean {
+    if (this.closed || !this.isAuthority() || workHostLeaseIdentity(this.db.connection) !== flight.authority) return false;
+    const work = this.works.getWork(flight.work.workId);
+    if (!work || work.lifecycle !== "active" || watchTimeExpired(work, Date.now()) || work.stateVersion !== flight.work.stateVersion
+      || work.intentRevision !== flight.work.intentRevision || work.inputSnapshotId !== flight.work.inputSnapshotId
+      || work.ownerEpoch !== flight.work.ownerEpoch || work.ownerBotId !== flight.work.ownerBotId) return false;
+    if (flight.event.subscriptionId) {
+      const subscription = this.works.repo.getSubscription(flight.event.subscriptionId);
+      // Stopping one of several subscriptions for the same source need not change
+      // Work.stateVersion. Revalidate that independent control fact explicitly.
+      if (!subscription || !flight.subscription || subscription.stoppedAt !== undefined
+        || sourceSubscriptionIdentity(subscription) !== sourceSubscriptionIdentity(flight.subscription)) return false;
+    }
+    const event = this.works.repo.getInbox(flight.event.eventId);
+    return !!event && ["pending", "merged"].includes(event.status) && sameSourceReadbackClaim(flight.event, event);
+  }
+
+  private cancelStaleSourceFlights(): void {
+    for (const flight of this.sourceFlights.values()) if (!this.sourceClaimCurrent(flight)) flight.controller.abort();
+  }
+
+  private drainSourceEvents():void {
     const ids=this.db.connection.prepare(`SELECT DISTINCT work_id FROM work_events_inbox WHERE status IN ('pending','merged','blocked')
-      UNION SELECT subscription.work_id FROM work_paused_source_routes route JOIN work_subscriptions subscription ON subscription.subscription_id=route.subscription_id WHERE route.inbox_event_id IS NULL`).all().map(row=>z.object({work_id:z.string()}).parse(row).work_id);
-    const observer=new WorkSourceObserver(this.works);
-    for(const workId of ids) {
-      if(!this.isAuthority())return;
+      UNION SELECT subscription.work_id FROM work_paused_source_routes route JOIN work_subscriptions subscription ON subscription.subscription_id=route.subscription_id WHERE route.inbox_event_id IS NULL ORDER BY work_id`).all().map(row=>z.object({work_id:z.string()}).parse(row).work_id);
+    const configured = this.sourceOptions.sourceConcurrency ?? 4;
+    const limit = Number.isFinite(configured) ? Math.max(1, Math.min(64, Math.floor(configured))) : 4;
+    let reading = [...this.sourceFlights.values()].filter(flight => flight.readsSource).length;
+    let scheduled = 0;
+    const start = ids.findIndex(id => id > this.sourceCursor);
+    const ordered = start < 0 ? ids : [...ids.slice(start), ...ids.slice(0, start)];
+    for(const workId of ordered) {
+      if(this.closed || !this.isAuthority() || scheduled >= 64)return;
+      if(this.sourceFlights.has(workId))continue;
       let work=this.works.getWork(workId);if(!work || work.lifecycle!=="active")continue;
       this.works.transaction(()=>{
         this.works.pausedBacklog.refill(workId,Date.now());
@@ -260,43 +332,98 @@ export class WorkDispatchQueue {
       const pendingBinding=this.works.repo.listBindings(workId).some(binding=>["pending","submitted","running","unknown"].includes(binding.status));
       const pendingIntent=this.works.repo.listOutbox(workId,["pending","attempted","unknown"]).some(event=>event.eventType==="work.source_dispatch_requested");
       if(pendingBinding || pendingIntent || this.db.connection.prepare("SELECT 1 FROM work_dispatch_requests WHERE work_id=? AND state IN ('pending','blocked')").get(workId))continue;
-      const event=this.works.ingress.listReady(workId,Date.now())[0];if(!event)continue;
+      // A stopped subscription can retain its original Inbox obligation, but it
+      // cannot pin active sibling subscriptions behind the first ready row.
+      const event=this.works.ingress.listReady(workId,Date.now()).find(candidate => !candidate.subscriptionId
+        || this.works.repo.getSubscription(candidate.subscriptionId)?.stoppedAt === undefined);if(!event)continue;
       const subscription=event.subscriptionId?this.works.repo.getSubscription(event.subscriptionId):undefined;
       if(event.subscriptionId && !subscription) {this.sourceBlocked(workId,event.eventId,"事件缺少原订阅，等待核对");continue;}
       if (isScheduledFollowUp(event) && !scheduledFollowUpCurrent(work, event, subscription)) {
         this.works.repo.setInboxStatus(event.eventId, "skipped", Date.now()); continue;
       }
-      try {
-        const result=await this.works.pausedBacklog.consume(event.eventId,async()=>{
-          if(isScheduledFollowUp(event)) return {inputSnapshotId:work.inputSnapshotId, sources:work.goalSources};
-          const needsReadback=subscription?.catchUpPolicy==="latest" || event.payload.authoritativeReadbackRequired===true;
-          if(needsReadback) return observer.readCurrent(work);
-          // each obligations need no current-state readback: their immutable event payload is the input.
-          const sourceRef=`work-event:${event.subscriptionId ?? event.source}`;
-          const eventSource={sourceType:"external_input" as const,sourceRef,inputSnapshotId:`source-event:${createHash("sha256").update(JSON.stringify([event.source,event.sourceEventId,event.sourceVersion,event.frozenPayload ?? event.payload])).digest("hex")}`,observedAt:Date.now()};
-          const sources=[...work.goalSources.filter(item=>!(item.sourceType==="external_input" && item.sourceRef===sourceRef)),eventSource];
-          return {inputSnapshotId:sourceSnapshot(sources),sources};
-        },(current,original,source)=>{
-          if(isScheduledFollowUp(original)) {
-            this.works.repo.insertOutbox({ eventId:`followup-outbox:${original.eventId}`,
-              dedupeKey:`work:${current.workId}:op:followup:${original.eventId}:work.source_dispatch_requested`,
-              eventType:"work.source_dispatch_requested", workId:current.workId, intentRevision:current.intentRevision,
-              stateVersion:current.stateVersion, ownerEpoch:current.ownerEpoch, requestId:`followup:${original.eventId}`,
-              payload:{ inputSnapshotId:current.inputSnapshotId, inboxEventId:original.eventId }, deliveryStatus:"pending",
-              attemptCount:0, createdAt:Date.now() });
-            return;
-          }
-          const applied=this.works.applyObservedSources(current.workId,`source-inbox:${original.eventId}`,current,source,original.eventId);
-          if(!applied.ok)throw Error(`${applied.code}: ${applied.message}`);
-          this.works.repo.clearBlocker(`source-readback:${original.eventId}`,current.workId,Date.now());
-        });
-        if(result.ok)this.works.emitCurrentProjection(workId);
-      } catch(error) {this.sourceBlocked(workId,event.eventId,error instanceof Error?error.message:String(error));}
+      const readsSource = !isScheduledFollowUp(event)
+        && (subscription?.catchUpPolicy === "latest" || event.payload.authoritativeReadbackRequired === true);
+      // Saturated source I/O must not block immutable each events or scheduled
+      // followups that can prepare their existing input without a provider read.
+      if (readsSource && reading >= limit) continue;
+      this.sourceCursor = workId;
+      const flight: SourceFlight = { work, event, authority: workHostLeaseIdentity(this.db.connection),
+        subscription, readsSource, controller: new AbortController(), promise: Promise.resolve() };
+      scheduled++; if (readsSource) reading++;
+      this.sourceFlights.set(workId, flight);
+      flight.promise = this.consumeSource(flight, subscription).finally(() => {
+        const release = () => {
+          if (this.sourceFlights.get(workId) === flight) this.sourceFlights.delete(workId);
+          if (!this.closed && this.isAuthority()) this.wake();
+        };
+        // A provider can ignore AbortSignal. Fence its consumer immediately but
+        // retain the physical I/O slot and Work lock until that read really ends.
+        if (flight.readSettled) void flight.readSettled.then(release);
+        else release();
+      });
+      void flight.promise.catch(error => { if (!this.closed) console.warn("[Work] 来源回读待核对", error); });
     }
   }
-  private sourceBlocked(workId:string,eventId:string,reason:string):void {
+
+  private async consumeSource(flight: SourceFlight, subscription: WorkSubscriptionDto | undefined): Promise<void> {
+    const { work, event, controller } = flight;
+    const configured = this.sourceOptions.sourceReadTimeoutMs ?? 30_000;
+    const timeoutMs = Number.isFinite(configured) ? Math.max(1, configured) : 30_000;
+    const timeoutError = Error(`来源回读超过 ${timeoutMs} 毫秒，保留原事件等待恢复`);
+    const deadline = setTimeout(() => controller.abort(timeoutError), timeoutMs);
+    deadline.unref?.();
+    const active = () => !controller.signal.aborted && this.sourceClaimCurrent(flight);
+    try {
+      const result = await this.works.pausedBacklog.consume(event.eventId, async () => {
+        if (isScheduledFollowUp(event)) return { inputSnapshotId: work.inputSnapshotId, sources: work.goalSources };
+        const needsReadback = subscription?.catchUpPolicy === "latest" || event.payload.authoritativeReadbackRequired === true;
+        if (needsReadback) return this.readSource(flight);
+        // Each obligations retain their immutable event payload instead of reading current state.
+        const sourceRef = `work-event:${event.subscriptionId ?? event.source}`;
+        const eventSource = { sourceType: "external_input" as const, sourceRef,
+          inputSnapshotId: `source-event:${createHash("sha256").update(JSON.stringify([event.source, event.sourceEventId, event.sourceVersion, event.frozenPayload ?? event.payload])).digest("hex")}`, observedAt: Date.now() };
+        const sources = [...work.goalSources.filter(item => !(item.sourceType === "external_input" && item.sourceRef === sourceRef)), eventSource];
+        return { inputSnapshotId: sourceSnapshot(sources), sources };
+      }, (current, original, source) => {
+        if (isScheduledFollowUp(original)) {
+          this.works.repo.insertOutbox({ eventId: `followup-outbox:${original.eventId}`,
+            dedupeKey: `work:${current.workId}:op:followup:${original.eventId}:work.source_dispatch_requested`,
+            eventType: "work.source_dispatch_requested", workId: current.workId, intentRevision: current.intentRevision,
+            stateVersion: current.stateVersion, ownerEpoch: current.ownerEpoch, requestId: `followup:${original.eventId}`,
+            payload: { inputSnapshotId: current.inputSnapshotId, inboxEventId: original.eventId }, deliveryStatus: "pending",
+            attemptCount: 0, createdAt: Date.now() });
+          return;
+        }
+        const applied = this.works.applyObservedSources(current.workId, `source-inbox:${original.eventId}`, current, source, original.eventId);
+        if (!applied.ok) throw Error(`${applied.code}: ${applied.message}`);
+        this.works.repo.clearBlocker(`source-readback:${original.eventId}`, current.workId, Date.now());
+      }, active);
+      if (result.ok && !this.closed && this.isAuthority()) this.works.emitCurrentProjection(work.workId);
+    } catch (error) {
+      // A stale rejection cannot block a revised Work or a newer merged batch.
+      if (!controller.signal.aborted || controller.signal.reason === timeoutError)
+        this.sourceBlocked(work.workId, event.eventId, error instanceof Error ? error.message : String(error), flight);
+    } finally { clearTimeout(deadline); }
+  }
+
+  private readSource(flight: SourceFlight): Promise<AuthoritativeWorkSource> {
+    const { work, controller: { signal } } = flight;
+    if (signal.aborted) return Promise.reject(signal.reason);
+    return new Promise((resolve, reject) => {
+      const aborted = () => reject(signal.reason);
+      signal.addEventListener("abort", aborted, { once: true });
+      const read = this.sourceOptions.readSource ?? ((current: WorkDto, currentSignal: AbortSignal) =>
+        new WorkSourceObserver(this.works).readCurrent(current, { signal: currentSignal, awaitSettlement: true }));
+      // Install the cancellation listener before entering user/provider code.
+      const reading = Promise.resolve().then(() => { signal.throwIfAborted(); return read(work, signal); });
+      flight.readSettled = reading.then(resolve, reject).finally(() => signal.removeEventListener("abort", aborted));
+    });
+  }
+
+  private sourceBlocked(workId:string,eventId:string,reason:string, claim?: Pick<SourceFlight, "work" | "event" | "authority" | "subscription">):void {
+    if (this.closed || !this.isAuthority() || claim && !this.sourceClaimCurrent(claim)) return;
     this.works.transaction(()=>{
-      if(!this.isAuthority())return;
+      if(this.closed || !this.isAuthority() || claim && !this.sourceClaimCurrent(claim))return;
       const work=this.works.getWork(workId),event=this.works.repo.getInbox(eventId);if(!work || work.lifecycle!=="active" || !event || !["pending","merged"].includes(event.status))return;
       this.works.repo.setInboxStatus(eventId,"blocked");
       this.db.connection.prepare("UPDATE work_events_inbox SET payload_json=? WHERE event_id=?").run(JSON.stringify({...event.payload,_sourceReadbackError:reason,_sourceReadbackFailedAtSourceVersion:work.sourceVersion}),eventId);

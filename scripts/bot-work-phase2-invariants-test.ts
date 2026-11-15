@@ -9,7 +9,7 @@ import type { AgentSubmissionReceipt } from "../src/shared/agent-ipc";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { BotRegistry } from "../src/main/agent/work/BotRegistry";
 import { WorkService, DESKTOP_USER_GRANTS } from "../src/main/agent/work/WorkService";
-import { WorkHostAuthority } from "../src/main/agent/work/WorkHostAuthority";
+import { WorkHostAuthority, workHostLeaseIdentity } from "../src/main/agent/work/WorkHostAuthority";
 import { WorkExecutionAdapter, type WorkExecutionPort } from "../src/main/agent/work/WorkExecutionAdapter";
 import { WorkDispatchQueue } from "../src/main/agent/work/WorkDispatchQueue";
 import { WorkProjectionJournal } from "../src/main/agent/work/WorkProjectionJournal";
@@ -258,6 +258,26 @@ try {
     unwrap(controlled.pauseWork(bot, { operationId: "cas-pause", workId: target.workId, versionGuard: guard(target) }));
     assert.equal(controlled.cancelWork(bot, { operationId: "stale-cancel", workId: target.workId, versionGuard: guard(target) }).ok, false);
     leaseA.stop(); assert(leaseB.acquire().ok); assert(!leaseA.isAuthority()); leaseB.stop();
+    // Old asynchronous observations stay fenced even when the same authority
+    // reacquires within one millisecond or the host clock moves backwards.
+    let leaseTime = Date.now();
+    const sameHost = new WorkHostAuthority(db.connection, "same-authority", 60_000, () => leaseTime);
+    assert(sameHost.acquire().ok);
+    const initialIdentity = workHostLeaseIdentity(db.connection);
+    leaseTime += 1;
+    assert(sameHost.heartbeat());
+    assert.equal(workHostLeaseIdentity(other.connection), initialIdentity, "heartbeats keep the same lease identity");
+    sameHost.release();
+    assert.notEqual(workHostLeaseIdentity(other.connection), initialIdentity, "release fences the old lease immediately");
+    assert(sameHost.acquire().ok);
+    const renewedIdentity = workHostLeaseIdentity(db.connection);
+    assert.notEqual(renewedIdentity, initialIdentity);
+    sameHost.release(); assert(sameHost.acquire().ok);
+    assert.notEqual(workHostLeaseIdentity(db.connection), renewedIdentity, "same-clock reacquisition never revives a stale flight");
+    const beforeRollback = workHostLeaseIdentity(db.connection);
+    sameHost.release(); leaseTime -= 1000; assert(sameHost.acquire().ok);
+    assert.notEqual(workHostLeaseIdentity(other.connection), beforeRollback, "clock rollback cannot reuse acquisition identity");
+    sameHost.stop();
   } finally { other.close(); }
 
   // prepare is asynchronous; pause/resume while it waits reuses the persistent request.

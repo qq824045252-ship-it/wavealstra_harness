@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -15,8 +15,9 @@ import { BotConversationRepository } from "../src/main/agent/work/BotConversatio
 import { botForegroundTools } from "../src/main/agent/work/BotForegroundTools";
 import { WorkService, DESKTOP_USER_GRANTS } from "../src/main/agent/work/WorkService";
 import { WorkDispatchQueue } from "../src/main/agent/work/WorkDispatchQueue";
-import { WorkFileEventSource, readWorkFileSource, MAX_WORK_FILE_BYTES } from "../src/main/agent/work/WorkFileEventSource";
-import { WorkSourceObserver } from "../src/main/agent/work/WorkSourceObserver";
+import { WorkFileEventSource, readWorkFileSource, withWorkSourceRead, MAX_WORK_FILE_BYTES } from "../src/main/agent/work/WorkFileEventSource";
+import { WorkSourceObserver, MAX_WORK_GIT_BYTES } from "../src/main/agent/work/WorkSourceObserver";
+import { WorkHostAuthority, workHostLeaseIdentity } from "../src/main/agent/work/WorkHostAuthority";
 import type { WorkExecutionAdapter } from "../src/main/agent/work/WorkExecutionAdapter";
 import { DEFAULT_BOT_ID, LOCAL_USER_ID, type WorkActor, type WorkControlResult, type WorkDto } from "../src/shared/bot-work";
 
@@ -239,3 +240,167 @@ try {
   db.close();
   console.log("PASS real file receiver: frontend baseline, fs.watch, atomic rename, hash dedupe, error/recovery, pause, authority, restart, skip, cancel, close, bounded IO");
 } finally { await queue?.close(); try { db?.close(); } catch {} await rm(root, { recursive: true, force: true }); }
+
+// Issue #57: actual receiver and SQLite cursor/Inbox with a deliberately held
+// filesystem read. These are ordering assertions, not device latency benchmarks.
+async function fileReadFlights() {
+  const dir = await mkdtemp(join(tmpdir(), "work-file-flights-"));
+  const database = new AppDatabase(join(dir, "fixture.db"));
+  const registry = new BotRegistry(database.connection); registry.ensureDefaultBot(LOCAL_USER_ID);
+  const service = new WorkService(database.connection, { bots: registry });
+  const host = new WorkHostAuthority(database.connection, "file-flight-host", 60_000, () => 1000);
+  assert(host.acquire().ok);
+  const receivers: WorkFileEventSource[] = [];
+  const timeline: string[] = [];
+  const waitFor = async (check: () => boolean, label: string) => {
+    for (let turn = 0; turn < 100 && !check(); turn++) await delay(5);
+    assert(check(), label);
+  };
+  const deferred = <T,>() => {
+    let resolve!: (value: T) => void, reject!: (error: Error) => void;
+    const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+    return { promise, resolve, reject };
+  };
+  const create = async (name: string) => {
+    const target = join(dir, `${name}.txt`); await writeFile(target, `${name}-0`);
+    const source = await readWorkFileSource(target);
+    const work = unwrap(service.createWork(actor, { operationId: `flight:${name}`, title: name,
+      authorization: DESKTOP_USER_GRANTS, mode: "watch", inputSnapshotId: source.inputSnapshotId, goalSources: [source],
+      watchRule: { eventSource: "file", eventTarget: target, triggerMode: "next_event", executionMode: "continuous",
+        catchUpPolicy: "latest", maxMergeWaitMs: 1, notificationMode: "changes_only" } }));
+    return { target, source, work, subscription: service.repo.listSubscriptions(work.workId)[0] };
+  };
+  const events = (workId: string) => service.repo.listInbox(workId, ["pending", "merged", "blocked", "processed", "skipped"]);
+  try {
+    const a = await create("slow"), b = await create("fast");
+    await writeFile(b.target, "fast-1");
+    const gate = deferred<Awaited<ReturnType<typeof readWorkFileSource>>>();
+    let slowReads = 0, activeReads = 0, peakReads = 0, slowSignal: AbortSignal | undefined;
+    const receiver = new WorkFileEventSource(service, () => true, () => timeline.push("ingress-wake"), 2, {
+      authorityIdentity: () => workHostLeaseIdentity(database.connection),
+      read: async (target, options) => {
+        activeReads++; peakReads = Math.max(peakReads, activeReads);
+        try {
+          if (target === a.target) { slowReads++; slowSignal = options?.signal; timeline.push("start:slow"); return await gate.promise; }
+          timeline.push(`read:${target === b.target ? "fast" : "new"}`); return await readWorkFileSource(target, options);
+        } finally { activeReads--; }
+      },
+    });
+    receivers.push(receiver);
+    await receiver.reconcile();
+    await waitFor(() => slowReads === 1 && events(b.work.workId).length === 1, "independent initial file advances before held read returns");
+    timeline.push("fast:ingested-before-slow");
+    // Stop B to release its existing watcher slot; C is created after A entered.
+    unwrap(service.pauseWork(actor, { operationId: "pause-fast", workId: b.work.workId }));
+    await receiver.reconcile();
+    const c = await create("new"); await writeFile(c.target, "new-1");
+    await receiver.reconcile();
+    await waitFor(() => events(c.work.workId).length === 1, "new file source advances during the held read");
+    timeline.push("new:ingested-before-slow");
+    for (let i = 0; i < 20; i++) await receiver.reconcile();
+    assert.equal(slowReads, 1, "frequent reconcile does not duplicate a physical read");
+    // Reconfiguration and a release/reacquire are invisible to a boolean that
+    // is true at both ends. Lease identity and retained raw slots still fence A.
+    host.release(); assert(host.acquire().ok);
+    for (let i = 0; i < 20; i++) await receiver.reconcile();
+    await delay(10);
+    assert(slowSignal?.aborted, "reacquisition cancels the old receiver read");
+    assert.equal(slowReads, 1, "an uncooperative old read keeps its per-subscription slot through reconfiguration");
+    assert(peakReads <= 2, "actual I/O remains bounded, including detached operations");
+    await receiver.close();
+    const beforeClose = events(a.work.workId).length;
+    gate.resolve({ ...a.source, inputSnapshotId: hash("late-stale") });
+    await delay(10);
+    assert.equal(events(a.work.workId).length, beforeClose, "late success after close cannot advance the cursor or Inbox");
+    assert(!service.repo.listOpenBlockers(a.work.workId).length);
+    timeline.push("slow:late-result-ignored");
+
+    // A late failure after an amend must not create a blocker for the new input.
+    const failure = deferred<Awaited<ReturnType<typeof readWorkFileSource>>>();
+    let failureEntered = false;
+    const staleError = new WorkFileEventSource(service, () => true, () => {}, 64, {
+      read: async (target, options) => target === a.target ? (failureEntered = true, failure.promise) : readWorkFileSource(target, options),
+    });
+    receivers.push(staleError); await staleError.reconcile();
+    await waitFor(() => failureEntered, "stale failure probe entered");
+    unwrap(service.amendWork(actor, { operationId: "amend-during-file-read", workId: a.work.workId, title: "new file intent" }));
+    failure.reject(new Error("old input read failed")); await staleError.drain();
+    assert(!service.repo.listOpenBlockers(a.work.workId).some(blocker => blocker.blockerId.startsWith("file-receiver:")));
+    await staleError.close();
+
+    const deadlineGate = deferred<Awaited<ReturnType<typeof readWorkFileSource>>>();
+    let deadlineSignal: AbortSignal | undefined, deadlineReads = 0;
+    const deadline = new WorkFileEventSource(service, () => true, () => {}, 64, { timeoutMs: 20,
+      read: async (target, options) => {
+        if (target !== a.target) return readWorkFileSource(target, options);
+        deadlineSignal = options?.signal; deadlineReads++; return deadlineGate.promise;
+      },
+    });
+    receivers.push(deadline); await deadline.reconcile();
+    await waitFor(() => service.repo.listOpenBlockers(a.work.workId).some(blocker => /超过 20/.test(blocker.reason)), "deadline exposes controlled failure");
+    assert(deadlineSignal?.aborted);
+    for (let i = 0; i < 20; i++) await deadline.reconcile();
+    assert.equal(deadlineReads, 1, "timeout cannot duplicate unresolved physical I/O");
+    await deadline.close();
+    // Observe any accidental post-close access, including swallowed failures.
+    let lateDatabaseReads = 0;
+    const getWork = service.getWork.bind(service);
+    service.getWork = workId => { if (!database.connection.open) lateDatabaseReads++; return getWork(workId); };
+    database.close();
+    deadlineGate.resolve(a.source); await delay(10);
+    assert.equal(lateDatabaseReads, 0, "uncooperative result does not touch the closed database");
+    console.log("PASS file source flights: independent/new source, single physical flight, bounded detach/reconfigure, lease fencing, stale error, timeout, close");
+    console.log(`FILE_SOURCE_TIMELINE ${JSON.stringify(timeline)}`);
+  } finally {
+    for (const receiver of receivers) await receiver.close();
+    if (database.connection.open) database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+async function gitReadSafety() {
+  const dir = await mkdtemp(join(tmpdir(), "work-git-source-"));
+  const database = new AppDatabase(join(dir, "fixture.db"));
+  const registry = new BotRegistry(database.connection); registry.ensureDefaultBot(LOCAL_USER_ID);
+  const service = new WorkService(database.connection, { bots: registry });
+  const observer = new WorkSourceObserver(service);
+  const repo = join(dir, "repo"); await mkdir(repo);
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, stdio: "pipe" });
+  try {
+    git("init"); await writeFile(join(repo, "tracked.txt"), "before"); git("add", "tracked.txt");
+    git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "source fixture");
+    const work = unwrap(service.createWork(actor, { operationId: "git-source", title: "Git source", authorization: DESKTOP_USER_GRANTS,
+      goalSources: [{ sourceType: "git_commit", sourceRef: repo, inputSnapshotId: "initial", observedAt: Date.now() }] }));
+    const initial = await observer.readCurrent(work);
+    await writeFile(join(repo, "tracked.txt"), "after");
+    assert.notEqual((await observer.readCurrent(work)).inputSnapshotId, initial.inputSnapshotId);
+    await rm(join(repo, "tracked.txt"));
+    const deleted = await observer.readCurrent(work);
+    assert.notEqual(deleted.inputSnapshotId, initial.inputSnapshotId, "confirmed tracked deletion is observable");
+    await mkdir(join(repo, "tracked.txt"));
+    await assert.rejects(observer.readCurrent(work), /常规文件/, "unsupported content is a failure, never a fake unchanged snapshot");
+    await rm(join(repo, "tracked.txt"), { recursive: true });
+    if (process.platform !== "win32") {
+      await symlink("missing-target", join(repo, "tracked.txt"));
+      const link = await observer.readCurrent(work); assert.notEqual(link.inputSnapshotId, deleted.inputSnapshotId);
+      await rm(join(repo, "tracked.txt"));
+    }
+    // A sparse file exercises the total budget without allocating or reading it.
+    const { open } = await import("node:fs/promises");
+    const large = await open(join(repo, "large.bin"), "w");
+    await large.truncate(MAX_WORK_GIT_BYTES + 1); await large.close();
+    await assert.rejects(observer.readCurrent(work), /读取上限/);
+    const cancelled = new AbortController(); cancelled.abort(new Error("cancelled source"));
+    await assert.rejects(observer.readCurrent(work, { signal: cancelled.signal }), /cancelled source/);
+    await assert.rejects(readWorkFileSource(join(repo, "tracked.txt"), { signal: cancelled.signal }), /cancelled source/);
+    let signal: AbortSignal | undefined, release!: () => void, settled = false;
+    const physical = assert.rejects(withWorkSourceRead(async current => { signal = current; await new Promise<void>(resolve => { release = resolve; }); },
+      { timeoutMs: 10, awaitSettlement: true }), /超过 10/).then(() => { settled = true; });
+    await delay(25); assert(signal?.aborted); assert.equal(settled, false, "queue option exposes physical rather than raced settlement");
+    release(); await physical;
+    console.log("PASS authoritative source I/O: real Git content/deletion/link, unreadable rejection, byte budget, abort, physical settlement");
+  } finally { database.close(); await rm(dir, { recursive: true, force: true }); }
+}
+
+await fileReadFlights();
+await gitReadSafety();

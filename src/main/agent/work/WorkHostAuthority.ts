@@ -8,6 +8,13 @@ interface LeaseRow {
   released_at: number | null;
 }
 
+/** Stable across heartbeats, different after release or reacquisition. Check lifecycle before reading it. */
+export function workHostLeaseIdentity(db: Database.Database): string {
+  const row = db.prepare("SELECT authority_id,acquired_at,released_at FROM work_host_lease WHERE lease_id='singleton'")
+    .get() as Pick<LeaseRow, "authority_id" | "acquired_at" | "released_at"> | undefined;
+  return row ? JSON.stringify([row.authority_id, row.acquired_at, row.released_at]) : "";
+}
+
 export interface HostAuthorityStatus {
   authorityId: string;
   isAuthority: boolean;
@@ -63,11 +70,15 @@ export class WorkHostAuthority {
       const now = this.now();
       const row = this.row();
       if (!row || row.released_at !== null || now - row.heartbeat_at > this.leaseTtlMs) {
+        // Reacquisition can occur within one clock tick (or after a clock rollback).
+        // Keep the existing acquisition watermark monotonic so in-flight I/O from
+        // a previous lease cannot become current again under the same authority ID.
+        const acquiredAt = Math.max(now, (row?.acquired_at ?? now - 1) + 1);
         this.db.prepare(`INSERT INTO work_host_lease (lease_id, authority_id, acquired_at, heartbeat_at, released_at)
           VALUES ('singleton', ?, ?, ?, NULL)
           ON CONFLICT(lease_id) DO UPDATE SET authority_id=excluded.authority_id,
             acquired_at=excluded.acquired_at, heartbeat_at=excluded.heartbeat_at, released_at=NULL`)
-          .run(this.authorityId, now, now);
+          .run(this.authorityId, acquiredAt, now);
         return { ok: true, previousAuthorityId: row?.authority_id };
       }
       if (row.authority_id === this.authorityId) {

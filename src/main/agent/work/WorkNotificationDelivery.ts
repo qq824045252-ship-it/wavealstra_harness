@@ -12,6 +12,7 @@ import {
 import type { ArtifactInspection, WorkArtifactValidation } from "./WorkArtifactValidation";
 import { ensureWorkCollaborationTables } from "./WorkCollaborationService";
 import type { WorkService } from "./WorkService";
+import { workHostLeaseIdentity } from "./WorkHostAuthority";
 
 const identitySchema = z.object({ input_snapshot_id: z.string(), owner_epoch: z.number(), sender_bot_id: z.string(),
   semantic_validity: z.enum(["active", "superseded", "cancelled"]) });
@@ -90,6 +91,7 @@ export function resolveChannelCapability(channel: Endpoint): WorkChannelCapabili
 /** Fresh-fact claim, immutable attempt, external call, and receipt settlement are separate steps. */
 export class WorkNotificationDelivery {
   private readonly sending = new Set<string>();
+  private readonly asyncRoutes = new Set<string>();
   // Scheduling cursors only: delivery truth stays in the persisted attempt ledger.
   // Scope by endpoint and optional Work so one targeted drain cannot move another's scan.
   private readonly asyncCursors = new Map<string, { after?: ScanPosition; through: ScanPosition }>();
@@ -237,6 +239,22 @@ export class WorkNotificationDelivery {
   async deliverAsync(channel: AsyncWorkNotificationChannel, workId?: string, options: WorkAsyncDeliveryOptions = {}): Promise<Outcome[]> {
     if (!this.asyncActive(options)) return [];
     if (!channel.targetKey) throw new Error("异步通知必须绑定明确接收目标");
+    const routeKey = this.channelKey(channel.channel, channel.targetKey);
+    // Target ordering also applies to direct callers and differently scoped drains.
+    // Waiting work remains in SQLite, rather than queuing another in-memory send.
+    if (this.asyncRoutes.has(routeKey)) return [];
+    this.asyncRoutes.add(routeKey);
+    try {
+      const authority = workHostLeaseIdentity(this.db);
+      const isActive = options.isActive;
+      return await this.deliverRoute(channel, workId, { ...options, isActive: () =>
+        (isActive?.() ?? true) && (this.options.isAuthority?.() ?? true)
+          && workHostLeaseIdentity(this.db) === authority });
+    } finally { this.asyncRoutes.delete(routeKey); }
+  }
+
+  private async deliverRoute(channel: AsyncWorkNotificationChannel, workId: string | undefined,
+    options: WorkAsyncDeliveryOptions): Promise<Outcome[]> {
     const capability = resolveChannelCapability(channel);
     const endpointKey = this.channelKey(channel.channel, channel.targetKey);
     this.channelCapabilities.set(endpointKey, capability);
@@ -335,7 +353,15 @@ export class WorkNotificationDelivery {
         response = await channel.send({ notification: claim.notification,
           idempotencyKey: claim.attempt.provider_effect_key ?? claim.attempt.idempotency_key, signal: options.signal,
           assertCurrent: () => this.assertAsyncClaimCurrent(claim, channel, options),
-          recordProgress: receipt => { this.db.prepare("UPDATE work_notification_attempts SET receipt=? WHERE attempt_id=? AND status='unknown'").run(receipt, claim.attempt.attempt_id); } });
+          recordProgress: receipt => {
+            // A provider may ignore AbortSignal and report a partial receipt after close.
+            // Check lifecycle before touching SQLite; the original unknown claim survives.
+            if (!this.asyncActive(options)) return;
+            this.db.prepare(`UPDATE work_notification_attempts SET receipt=? WHERE attempt_id=? AND status='unknown'
+              AND provider_effect_key=? AND claim_generation=? AND payload_hash=?`)
+              .run(receipt, claim.attempt.attempt_id, claim.attempt.provider_effect_key,
+                claim.attempt.claim_generation, claim.attempt.payload_hash);
+          } });
       } catch { return { notificationId: id, delivery: "unknown" }; }
       if (!this.asyncActive(options)) return { notificationId: id, delivery: "unknown" };
       if (response.ok) this.settle(claim.attempt, "sent", response.receipt);

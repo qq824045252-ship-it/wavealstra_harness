@@ -1,4 +1,5 @@
 import type { QQSocket } from "../src/main/gateway/QQChannelAdapter";
+import { testWorkNotificationConcurrency } from "./work-notification-concurrency-test";
 import { qqWorkMessageSequence } from "../src/main/agent/work/WorkGatewayNotificationChannel";
 import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
@@ -817,6 +818,7 @@ check("a late original receipt cannot consume a newly authorized resend", () => 
 }
 
 console.log(`Phase 5 delivery dedup: ${passes.length} passed`);
+await testWorkNotificationConcurrency();
 {
   const created = fixture("gateway-multipart-receipts");
   const snapshotPath = join(root, "immutable-delivery.txt"); writeFileSync(snapshotPath, "frozen payload bytes");

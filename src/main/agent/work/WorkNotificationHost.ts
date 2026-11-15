@@ -5,6 +5,14 @@ import type { AsyncWorkNotificationChannel, WorkNotificationOutcome } from "./Wo
 type HostOutcome = WorkNotificationOutcome & { channel: string };
 type HostWork = Pick<WorkService, "deliverPendingNotifications"> & Partial<Pick<WorkService, "notifications" | "phase5">>;
 const MAX_INLINE_PASSES = 8;
+const routeLimit = (value: number | undefined, fallback: number) => value !== undefined && Number.isFinite(value)
+  ? Math.min(64, Math.max(1, Math.floor(value))) : fallback;
+type RouteFlight = {
+  channel: string;
+  controller: AbortController;
+  completion: Promise<HostOutcome[]>;
+  rescan: boolean;
+};
 
 /** One authority-owned pump for synchronous desktop and asynchronous external delivery. */
 export class WorkNotificationHost {
@@ -14,8 +22,13 @@ export class WorkNotificationHost {
   private pendingDrain = false;
   private lifecycleGeneration = 0;
   private started = false;
-  private abortDrain: AbortController | undefined;
-  private activeAsyncDrain: Promise<HostOutcome[]> | undefined;
+  private stopped = false;
+  private closed = false;
+  private readonly routeFlights = new Map<string, RouteFlight>();
+  private routeCursor = 0;
+  private waitingRoutes = false;
+  private readonly routeSweep = new Set<string>();
+  private resetRouteSweep = true;
   private summaryTimer: ReturnType<typeof setTimeout> | undefined;
   private summaryDeadline: number | undefined;
 
@@ -24,13 +37,16 @@ export class WorkNotificationHost {
     channels: () => WorkNotificationChannel[];
     asyncChannels?: () => AsyncWorkNotificationChannel[];
     intervalMs?: number;
+    maxConcurrentRoutes?: number;
+    maxConcurrentRoutesPerChannel?: number;
     now?: () => number;
     onError?: (error: unknown) => void;
     onBlocked?: (outcome: HostOutcome) => void;
   }) {}
 
   start(): void {
-    if (this.started) return;
+    if (this.started || this.closed) return;
+    this.stopped = false;
     this.started = true;
     this.timer = setInterval(() => { void this.drainAsync(); }, this.options.intervalMs ?? 15_000);
     this.timer.unref?.();
@@ -39,9 +55,10 @@ export class WorkNotificationHost {
 
   stop(): void {
     this.started = false;
+    this.stopped = true;
     this.lifecycleGeneration++;
     this.pendingDrain = false;
-    this.abortDrain?.abort();
+    for (const flight of this.routeFlights.values()) flight.controller.abort();
     if (this.wakeTimer) clearTimeout(this.wakeTimer);
     this.wakeTimer = undefined;
     if (this.timer) clearInterval(this.timer);
@@ -51,27 +68,33 @@ export class WorkNotificationHost {
     this.summaryDeadline = undefined;
   }
 
-  /** Stop new claims and finish/abort the current provider wait before the database closes. */
+  /** Stop claims without waiting indefinitely for a provider that ignores cancellation. */
   async close(): Promise<void> {
+    this.closed = true;
     this.stop();
-    await this.activeAsyncDrain;
+    await Promise.all([...this.routeFlights.values()].map(flight => flight.completion));
   }
 
   wake(): void {
+    this.resetRouteSweep = true;
+    this.queueWake();
+  }
+
+  private queueWake(): void {
     if (!this.started) return;
     if (this.draining) { this.pendingDrain = true; return; }
     if (this.wakeTimer) return;
     const generation = this.lifecycleGeneration;
     this.wakeTimer = setTimeout(() => {
       this.wakeTimer = undefined;
-      if (this.started && generation === this.lifecycleGeneration) void this.drainAsync();
+      if (this.started && generation === this.lifecycleGeneration) void this.runAsyncScan();
     }, 0);
     this.wakeTimer.unref?.();
   }
 
   /** Existing synchronous callers can still drain desktop adapters without a Promise. */
   drain(workId?: string): HostOutcome[] {
-    if (!this.options.isAuthority()) return [];
+    if (!this.active(this.lifecycleGeneration)) { this.abortInactiveRoutes(); return []; }
     if (this.draining) { this.pendingDrain = true; return []; }
     this.draining = true;
     const generation = this.lifecycleGeneration;
@@ -89,22 +112,26 @@ export class WorkNotificationHost {
     return results;
   }
 
-  /** Production entry: a provider Promise is awaited, never mistaken for a success receipt. */
+  /** Explicit receipt barrier; wake/timer scans release their scheduling lock before I/O. */
   drainAsync(workId?: string): Promise<HostOutcome[]> {
-    if (!this.options.isAuthority()) return Promise.resolve([]);
-    if (this.draining) { this.pendingDrain = true; return Promise.resolve([]); }
-    const running = this.runAsyncDrain(workId).catch(error => { this.options.onError?.(error); return []; });
-    this.activeAsyncDrain = running;
-    void running.then(() => { if (this.activeAsyncDrain === running) this.activeAsyncDrain = undefined; });
-    return running;
+    this.resetRouteSweep = true;
+    return this.runAsyncScan(workId);
   }
 
-  private async runAsyncDrain(workId?: string): Promise<HostOutcome[]> {
+  private runAsyncScan(workId?: string): Promise<HostOutcome[]> {
+    if (!this.active(this.lifecycleGeneration)) { this.abortInactiveRoutes(); return Promise.resolve([]); }
+    if (this.draining) { this.pendingDrain = true; return Promise.resolve([]); }
+    try {
+      const { results, flights } = this.scheduleAsyncDrain(workId);
+      return Promise.all(flights).then(outcomes => [...results, ...outcomes.flat()]);
+    } catch (error) { this.options.onError?.(error); return Promise.resolve([]); }
+  }
+
+  private scheduleAsyncDrain(workId?: string): { results: HostOutcome[]; flights: Promise<HostOutcome[]>[] } {
     this.draining = true;
     const generation = this.lifecycleGeneration;
-    const controller = new AbortController();
-    this.abortDrain = controller;
     const results: HostOutcome[] = [];
+    const flights: Promise<HostOutcome[]>[] = [];
     let scope = workId;
     let passes = 0;
     try {
@@ -113,27 +140,86 @@ export class WorkNotificationHost {
         this.flushSummaries();
         this.drainSynchronous(scope, generation, results);
         if (!this.active(generation)) break;
-        for (const channel of this.options.asyncChannels?.() ?? []) {
-          if (!this.active(generation)) break;
-          try {
-            if (!this.works.notifications) throw new Error("异步通知投递服务未接线");
-            const outcomes = await this.works.notifications.deliverAsync(channel, scope, {
-              signal: controller.signal, isActive: () => this.active(generation), limit: 25,
-            });
-            for (const outcome of outcomes) {
-              const row = { channel: channel.channel, ...outcome };
-              results.push(row);
-              if (row.blockedReason) this.options.onBlocked?.(row);
-            }
-          } catch (error) { this.options.onError?.(error); }
-        }
+        this.scheduleRoutes(scope, generation, flights);
         scope = undefined;
       } while (++passes < MAX_INLINE_PASSES && this.pendingDrain && this.active(generation));
-    } finally {
-      if (this.abortDrain === controller) this.abortDrain = undefined;
-      this.release(generation);
+    } finally { this.release(generation); }
+    return { results, flights };
+  }
+
+  private scheduleRoutes(workId: string | undefined, generation: number, completions: Promise<HostOutcome[]>[]): void {
+    if (this.resetRouteSweep) { this.routeSweep.clear(); this.resetRouteSweep = false; }
+    const channels = this.options.asyncChannels?.() ?? [];
+    const totalLimit = routeLimit(this.options.maxConcurrentRoutes, 16);
+    // A single provider's internal REST queue must not occupy the whole host.
+    const channelLimit = Math.min(totalLimit, routeLimit(this.options.maxConcurrentRoutesPerChannel, 4));
+    const counts = new Map<string, number>();
+    for (const flight of this.routeFlights.values()) counts.set(flight.channel, (counts.get(flight.channel) ?? 0) + 1);
+    const start = this.routeCursor % Math.max(1, channels.length);
+    const seen = new Set<string>();
+    let resumeFrom: number | undefined;
+    this.waitingRoutes = false;
+    for (let offset = 0; offset < channels.length; offset++) {
+      if (!this.active(generation)) break;
+      const index = (start + offset) % channels.length;
+      const channel = channels[index];
+      const key = JSON.stringify([channel.channel, channel.targetKey]);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (this.routeSweep.has(key)) continue;
+      const existing = this.routeFlights.get(key);
+      if (existing) { existing.rescan = true; this.routeSweep.add(key); continue; }
+      if (this.routeFlights.size >= totalLimit || (counts.get(channel.channel) ?? 0) >= channelLimit) {
+        resumeFrom ??= index;
+        this.waitingRoutes = true; continue;
+      }
+      this.routeSweep.add(key);
+      counts.set(channel.channel, (counts.get(channel.channel) ?? 0) + 1);
+      this.routeCursor = (index + 1) % channels.length;
+      const controller = new AbortController();
+      const flight: RouteFlight = { channel: channel.channel, controller, completion: Promise.resolve([]), rescan: false };
+      this.routeFlights.set(key, flight);
+      const running = (async (): Promise<HostOutcome[]> => {
+        try {
+          if (!this.works.notifications) throw new Error("异步通知投递服务未接线");
+          const outcomes = await this.works.notifications.deliverAsync(channel, workId, {
+            signal: controller.signal, isActive: () => this.active(generation), limit: 25,
+          });
+          if (!this.active(generation) || controller.signal.aborted) return [];
+          return outcomes.map(outcome => {
+            const row = { channel: channel.channel, ...outcome };
+            if (row.blockedReason) this.options.onBlocked?.(row);
+            return row;
+          });
+        } catch (error) {
+          if (this.active(generation) && !controller.signal.aborted) this.options.onError?.(error);
+          return [];
+        }
+      })().finally(() => {
+        if (this.routeFlights.get(key) === flight) this.routeFlights.delete(key);
+        if (flight.rescan) this.routeSweep.delete(key);
+        if (this.started && !this.closed && (flight.rescan || this.waitingRoutes)) this.queueWake();
+      });
+      // Keep the actual route lock until the provider returns, including across stop/start.
+      // Its cancellable completion lets shutdown finish even for noncooperative adapters.
+      flight.completion = this.untilAborted(running, controller.signal);
+      completions.push(flight.completion);
     }
-    return results;
+    // Resume the first capacity-skipped route, not the last fast provider in the batch.
+    if (resumeFrom !== undefined) this.routeCursor = resumeFrom;
+  }
+
+  private untilAborted(running: Promise<HostOutcome[]>, signal: AbortSignal): Promise<HostOutcome[]> {
+    if (signal.aborted) return Promise.resolve([]);
+    return new Promise(resolve => {
+      const abort = () => { signal.removeEventListener("abort", abort); resolve([]); };
+      signal.addEventListener("abort", abort, { once: true });
+      void running.then(results => { signal.removeEventListener("abort", abort); resolve(results); }, () => abort());
+    });
+  }
+
+  private abortInactiveRoutes(): void {
+    for (const flight of this.routeFlights.values()) flight.controller.abort();
   }
 
   private drainSynchronous(workId: string | undefined, generation: number, results: HostOutcome[]): void {
@@ -146,7 +232,7 @@ export class WorkNotificationHost {
   }
 
   private flushSummaries(): void { this.works.phase5?.flushOwnerSummaries(); }
-  private active(generation: number): boolean { return generation === this.lifecycleGeneration && this.options.isAuthority(); }
+  private active(generation: number): boolean { return !this.closed && !this.stopped && generation === this.lifecycleGeneration && this.options.isAuthority(); }
   private release(generation: number): void {
     const trailing = this.pendingDrain && this.started && this.active(generation);
     this.pendingDrain = false;

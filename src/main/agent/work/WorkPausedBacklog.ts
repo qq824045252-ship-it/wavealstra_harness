@@ -4,6 +4,14 @@ import type { WorkDto, WorkInboxEventDto, WorkSourceEventDto, WorkSubscriptionDt
 import { newId } from "./WorkRepository";
 import type { WorkService } from "./WorkService";
 
+/** A late read belongs to exactly the original frozen/merged Inbox obligation. */
+export function sameSourceReadbackClaim(event: WorkInboxEventDto, stored: WorkInboxEventDto): boolean {
+  return stored.claimVersion === event.claimVersion && stored.frozenAt === event.frozenAt
+    && stored.sourceVersion === event.sourceVersion && stored.sourceEventId === event.sourceEventId
+    && stored.mergedCount === event.mergedCount && JSON.stringify(stored.payload) === JSON.stringify(event.payload)
+    && JSON.stringify(stored.frozenPayload) === JSON.stringify(event.frozenPayload);
+}
+
 export function ensureWorkPausedTables(db: Database.Database): void {
   const names = db.prepare("PRAGMA table_info(work_events_inbox)").all().map(row => z.object({ name: z.string() }).parse(row).name);
   if (names.length && !names.includes("queued_while_paused")) db.exec("ALTER TABLE work_events_inbox ADD COLUMN queued_while_paused INTEGER NOT NULL DEFAULT 0 CHECK(queued_while_paused IN (0,1))");
@@ -131,21 +139,26 @@ export class WorkPausedBacklog {
   }
   count(workId: string): number { return this.works.repo.listInbox(workId,["pending","merged","blocked"]).length; }
   /** readCurrent performs real source I/O outside SQLite; apply is a trusted host CAS consumer. */
-  async consume<T>(eventId: string, readCurrent: (event: WorkInboxEventDto) => Promise<T>, apply: (work: WorkDto, event: WorkInboxEventDto, current: T) => void): Promise<{ ok: boolean; message?: string }> {
+  async consume<T>(eventId: string, readCurrent: (event: WorkInboxEventDto) => Promise<T>, apply: (work: WorkDto, event: WorkInboxEventDto, current: T) => void,
+    isActive: () => boolean = () => true): Promise<{ ok: boolean; message?: string }> {
+    if (!isActive()) return { ok: false, message: "来源读取宿主已失效，保留原事件" };
     const event = this.works.repo.getInbox(eventId); const before = event && this.works.getWork(event.workId);
     if (!event || !before || before.lifecycle !== "active") return { ok: false, message: "事项尚未恢复或事件不存在" };
     if (event.status === "processed") return { ok: true };
     const current = await readCurrent(event);
+    // The host may have closed SQLite while an uncooperative reader was pending.
+    // Test lifecycle/authority before opening a transaction or reading any row.
+    if (!isActive()) return { ok: false, message: "来源读取宿主已失效，保留原事件" };
     return this.works.transaction(() => {
+      if (!isActive()) return { ok: false, message: "来源读取宿主已失效，保留原事件" };
       const latest = this.works.getWork(before.workId);
-      if (!latest || latest.lifecycle !== "active" || latest.stateVersion !== before.stateVersion || latest.ownerEpoch !== before.ownerEpoch)
+      if (!latest || latest.lifecycle !== "active" || latest.stateVersion !== before.stateVersion || latest.ownerEpoch !== before.ownerEpoch
+        || latest.ownerBotId !== before.ownerBotId || latest.intentRevision !== before.intentRevision || latest.inputSnapshotId !== before.inputSnapshotId)
         return { ok: false, message: "读取期间事项或负责人变化，保留原事件重读" };
       const stored = this.works.repo.getInbox(eventId);
       if (!stored || stored.status === "processed") return { ok: true };
       if (!["pending","merged"].includes(stored.status)) return { ok: false, message: "事件不可消费" };
-      if (stored.claimVersion !== event.claimVersion || stored.frozenAt !== event.frozenAt
-        || stored.sourceVersion !== event.sourceVersion || stored.sourceEventId !== event.sourceEventId
-        || stored.mergedCount !== event.mergedCount || JSON.stringify(stored.payload) !== JSON.stringify(event.payload))
+      if (!sameSourceReadbackClaim(event, stored))
         return { ok: false, message: "读取期间事件批次已变化，保留最新批次重新回读" };
       apply(latest,stored,current);
       this.works.ingress.markConsumed(eventId, { providerSourceVersion: stored.payload.authoritativeReadbackRequired

@@ -529,6 +529,10 @@ export class WorkWatchIngress {
       for (const event of this.works.repo.listInbox(subscription.workId, ["blocked"])) {
         if (promoted >= limit) break;
         if (event.subscriptionId !== subscription.subscriptionId) continue;
+        // Readback failures are not queue overflow. Only a changed source or
+        // explicit resume may retry that original event through PausedBacklog;
+        // promoting it on every completion wake would create an unbounded loop.
+        if (event.payload._sourceReadbackError) continue;
         const stats = this.queueStats(subscription);
         if (stats.ready + stats.frozen >= subscription.maxQueueDepth) break;
         this.db.prepare("UPDATE work_events_inbox SET status='pending',payload_json=?,process_reason='backlog-refill' WHERE event_id=? AND status='blocked'")
