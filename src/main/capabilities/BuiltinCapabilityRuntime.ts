@@ -142,7 +142,7 @@ export interface LocalCapabilityCheckResult { state: "ready" | "degraded"; detai
 export interface LocalCapabilityAvailability { available: boolean; tools?: string[]; detail?: string }
 
 const LABELS: Record<string, { label: string; description: string; category: BuiltinCapabilityStatusDto["category"] }> = {
-  ocr: { label: "图片文字识别", description: "识别任务内图片；不提供窗口点击或 PDF/Office 转换。", category: "media" },
+  ocr: { label: "图片文字识别", description: "识别任务内图片；DeepSeek 服务也支持 PDF、Word 与 PowerPoint 文档。", category: "media" },
   web: { label: "联网搜索", description: "搜索互联网并提取网页正文。", category: "web" },
   vision: { label: "图像理解", description: "分析任务目录内的图片。", category: "media" },
   "image-generation": { label: "图像生成", description: "生成或编辑图片并保存为任务产物。", category: "media" },

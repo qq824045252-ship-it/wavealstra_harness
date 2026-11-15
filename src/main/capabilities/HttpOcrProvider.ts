@@ -7,6 +7,14 @@ export interface OcrResult {
   text: string;
   /** Input-image pixels. Absent boxes/confidence remain unknown; never synthesize them. */
   boxes?: Array<{ text: string; x: number; y: number; width: number; height: number; confidence?: number }>;
+  /** Document pages retain their provider page index and incomplete-output state. */
+  pages?: Array<{ index: number; text: string; finishReason: "stop" | "length" }>;
+  pageCount?: number;
+  truncated?: boolean;
+  purpose?: "text_recognition" | "rich_layout_recognition";
+  provider?: string;
+  requestId?: string;
+  metadata?: Record<string, unknown>;
 }
 export interface ImageRecognitionAdapter {
   recognize(imagePath: string, context: ToolExecutionContext): Promise<OcrResult>;

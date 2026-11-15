@@ -662,16 +662,25 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
 
     if (config.ocr?.enabled) {
       pi.registerTool({
-        name: "ocr_file", label: "图片文字识别",
-        description: "识别任务目录内 PNG/JPEG（≤10 MiB）。返回正文和可选输入像素框；无框不能用于点击。PDF/Office、窗口 OCR 未支持。",
-        parameters: Type.Object({ image_path: Type.String() }),
-        execute: async (tc, p: { image_path: string }, signal?: AbortSignal) => {
+        name: "ocr_file", label: "文件文字识别",
+        description: "识别任务目录内图片或文档，格式和大小取决于所选服务。DeepSeek 支持 PDF、Word、PowerPoint 和图片（≤100 MiB、≤1000 页）；其他图片 OCR 服务仍按各自格式限制执行。返回正文、文档页次和截断状态。仅 boxes 为输入图片像素框；页面归一化标记不能用于桌面点击。",
+        parameters: Type.Object({ file_path: Type.Optional(Type.String()), image_path: Type.Optional(Type.String()) }, {
+          anyOf: [{ required: ["file_path"] }, { required: ["image_path"] }],
+        }),
+        execute: async (tc, p: { file_path?: string; image_path?: string }, signal?: AbortSignal) => {
           try {
             bridge.runtime.assertRecognitionAgentPolicy("ocr");
             const adapter = bridge.runtime.ocrAdapter();
-            if (!adapter) throw new Error("请先配置图片文字识别服务。");
-            const result = await adapter.recognize(capabilityPath(bridge, p.image_path), toolContext(bridge, tc, signal));
-            return jsonResult(result.boxes?.length ? "图片文字识别完成（含输入像素位置框）" : "图片文字提取完成（服务未提供位置框）", result);
+            if (!adapter) throw new Error("请先配置文件文字识别服务。");
+            if (p.file_path && p.image_path && p.file_path !== p.image_path) throw new Error("请只指定一个待识别文件。");
+            const path = p.file_path ?? p.image_path;
+            if (typeof path !== "string" || !path.trim()) throw new Error("请提供 file_path。");
+            const result = await adapter.recognize(capabilityPath(bridge, path), toolContext(bridge, tc, signal));
+            const summary = result.pages ? result.truncated
+              ? `文档识别部分完成（${result.pages.length} 页；部分页面内容被截断）`
+              : `文档识别完成（${result.pages.length} 页）`
+              : result.boxes?.length ? "图片文字识别完成（含输入像素位置框）" : "图片文字提取完成（服务未提供位置框）";
+            return jsonResult(summary, result);
           } catch (error) { return errorResult("ocr_file", error); }
         },
       });

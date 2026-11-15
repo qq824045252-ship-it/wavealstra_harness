@@ -31,6 +31,8 @@ export interface SearchOptions {
 	numResults?: number;
 	recencyFilter?: "day" | "week" | "month" | "year";
 	domainFilter?: string[];
+	/** DeepSeek query-understanding context, separate from search keywords. */
+	originalQuestion?: string;
 	signal?: AbortSignal;
 }
 

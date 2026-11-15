@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { DEFAULT_SEARCH_POLICY, normalizeSearchPolicy, type SearchProviderRun, type WebSearchPolicy } from "../../../shared/web-search";
+import { DEFAULT_SEARCH_POLICY, SEARCH_PROVIDER_IDS, normalizeSearchPolicy, type SearchProviderRun, type WebSearchPolicy } from "../../../shared/web-search";
 import { mergeSearchSources, runSearchBatch, probeSearchAvailability } from "./search-aggregation";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { activityMonitor } from "./activity.ts";
@@ -8,6 +8,7 @@ import { getApiKey, getVersionedApiBase, fetchGeminiApi, isGatewayConfigured, is
 import { getGeminiWebAvailabilityDiagnostic, isGeminiWebAvailable, queryWithCookies } from "./gemini-web.ts";
 import { isPerplexityAvailable, searchWithPerplexity, type SearchResult, type SearchResponse, type SearchOptions } from "./perplexity.ts";
 import { isExaAvailable, searchWithExa } from "./exa.ts";
+import { isDeepSeekAvailable, searchWithDeepSeek } from "./deepseek.ts";
 import { isBraveAvailable, searchWithBrave } from "./brave.ts";
 import { isCodexSearchAvailable, isOpenAISearchAvailable, searchWithOpenAI } from "./openai-search.ts";
 import { isParallelAvailable, searchWithParallel } from "./parallel.ts";
@@ -27,7 +28,7 @@ import { isBrightDataAvailable, searchWithBrightData } from "./brightdata.ts";
 import { isSerpBaseAvailable, searchWithSerpBase } from "./serpbase.ts";
 import { getWebSearchConfigPath } from "./utils.ts";
 
-export const RESOLVED_SEARCH_PROVIDERS = ["openai", "codex", "brave", "parallel", "tinyfish", "search1api", "searchinfinity", "querit", "tavily", "searxng", "perplexity", "gemini", "exa", "serpdive", "serper", "kagi", "ollama", "anysearch", "xai", "brightdata", "serpbase"] as const;
+export const RESOLVED_SEARCH_PROVIDERS = SEARCH_PROVIDER_IDS;
 export const SEARCH_PROVIDERS = ["auto", "all", ...RESOLVED_SEARCH_PROVIDERS] as const;
 
 export type ResolvedSearchProvider = typeof RESOLVED_SEARCH_PROVIDERS[number];
@@ -92,7 +93,7 @@ const CONFIG_PATH = getWebSearchConfigPath();
 const DEFAULT_SEARCH_MODEL = "gemini-3.6-flash";
 // Explicit-only providers (AnySearch, xAI, Bright Data, SerpBase) are deliberately absent:
 // `all` must never fan out to a paid/surprising provider without the user asking for it.
-const ALL_SEARCH_PROVIDERS: ResolvedSearchProvider[] = ["searxng", "openai", "exa", "brave", "parallel", "tinyfish", "search1api", "searchinfinity", "querit", "tavily", "serper", "serpdive", "kagi", "ollama", "perplexity", "gemini"];
+const ALL_SEARCH_PROVIDERS: ResolvedSearchProvider[] = ["searxng", "openai", "exa", "deepseek", "brave", "parallel", "tinyfish", "search1api", "searchinfinity", "querit", "tavily", "serper", "serpdive", "kagi", "ollama", "perplexity", "gemini"];
 const VALID_ROUTING_KINDS = ["transient", "quota", "network"] as const;
 
 type SearchConfig = {
@@ -321,6 +322,7 @@ async function searchWithResolvedProvider(
 		return { ...result, provider };
 	}
 	if (provider === "brave") return { ...(await searchWithBrave(query, options)), provider };
+	if (provider === "deepseek") return { ...(await searchWithDeepSeek(query, options)), provider };
 	if (provider === "parallel") return { ...(await searchWithParallel(query, options)), provider };
 	if (provider === "tinyfish") return { ...(await searchWithTinyFish(query, options)), provider };
 	if (provider === "search1api") return { ...(await searchWithSearch1API(query, options)), provider };
@@ -356,6 +358,7 @@ async function isResolvedProviderAvailable(provider: ResolvedSearchProvider, opt
 	if (provider === "openai") return isOpenAISearchAvailable(options.extensionContext);
 	if (provider === "codex") return isCodexSearchAvailable(options.extensionContext);
 	if (provider === "brave") return isBraveAvailable();
+	if (provider === "deepseek") return isDeepSeekAvailable();
 	if (provider === "parallel") return isParallelAvailable();
 	if (provider === "tinyfish") return isTinyFishAvailable();
 	if (provider === "search1api") return isSearch1APIAvailable();
@@ -378,6 +381,7 @@ async function isResolvedProviderAvailable(provider: ResolvedSearchProvider, opt
 
 function providerLabel(provider: ResolvedSearchProvider): string {
 	if (provider === "openai") return "OpenAI";
+	if (provider === "deepseek") return "DeepSeek";
 	if (provider === "tinyfish") return "TinyFish";
 	if (provider === "search1api") return "Search1API";
 	if (provider === "searchinfinity") return "Searchinfinity";

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { BuiltinCapabilitiesConfigDto, SaveBuiltinCapabilitySettingsRequest, TestBuiltinCapabilityResultDto, BuiltinCapabilityStatusDto } from "../../shared/builtin-capabilities";
 import { BUILTIN_CODEX_IMAGE_MODEL, BUILTIN_CODEX_IMAGE_PROVIDER_ID } from "../../shared/builtin-capabilities";
-import { API_PROTOCOL_CAPABILITIES, BAIDU_OCR_API_ROOT, BAIDU_OCR_MODES, CODEX_CONNECTION_ID, LOCAL_OCR_CONNECTION_ID, LOCAL_WHISPER_CONNECTION_ID, MAGPIE_CONNECTION_ID, MEDIA_CAPABILITY_IDS, MEDIA_PROVIDER_PRESETS, OPENROUTER_API_ROOT, connectionCapabilities, type CapabilityConnectionOption, type MediaCapabilityBinding, type MediaCapabilityId } from "../../shared/media-capabilities";
+import { API_PROTOCOL_CAPABILITIES, BAIDU_OCR_API_ROOT, BAIDU_OCR_MODES, CODEX_CONNECTION_ID, DEEPSEEK_API_ROOT, LOCAL_OCR_CONNECTION_ID, LOCAL_WHISPER_CONNECTION_ID, MAGPIE_CONNECTION_ID, MEDIA_CAPABILITY_IDS, MEDIA_PROVIDER_PRESETS, OPENROUTER_API_ROOT, connectionCapabilities, connectionRequiresModel, type CapabilityConnectionOption, type MediaCapabilityBinding, type MediaCapabilityId } from "../../shared/media-capabilities";
 import type { MagpieGatewayConfig } from "../agent/providers/magpie";
 import type { BuiltinCapabilityRuntime, GeneratedMediaOutput, MediaCapabilityProvider, SpeechCapabilityProvider, ToolExecutionContext } from "./BuiltinCapabilityRuntime";
 import { createHttpOcrAdapter, type ImageRecognitionAdapter } from "./HttpOcrProvider";
@@ -12,6 +12,8 @@ import { createApiMediaProvider } from "./providers/ApiMediaProvider";
 import { createBlackForestLabsProvider } from "./providers/BlackForestLabsProvider";
 import { createDashScopeProvider } from "./providers/DashScopeProvider";
 import { createApiSpeechProvider } from "./providers/ApiSpeechProvider";
+import { createDeepSeekSpeechProvider } from "./providers/DeepSeekSpeechProvider";
+import { createDeepSeekOcrAdapter } from "./providers/DeepSeekOcrProvider";
 import { createApiOcrAdapter } from "./providers/ApiOcrProvider";
 import { createBaiduOcrAdapter, type BaiduOcrSettings } from "./providers/BaiduOcrProvider";
 import type { ResolvedApiConnection } from "./providers/ApiServiceConnection";
@@ -41,6 +43,7 @@ export function capabilityApiRoot(value: string): string {
   }
   // Baidu's native OCR host is a root API origin, not an OpenAI /v1 endpoint.
   if (url.origin === BAIDU_OCR_API_ROOT && url.pathname === "/") return BAIDU_OCR_API_ROOT;
+  if (url.origin === DEEPSEEK_API_ROOT && ["/", "/v1", "/v1/"].includes(url.pathname)) return DEEPSEEK_API_ROOT;
   if (url.pathname === "/") url.pathname = "/v1";
   return url.toString().replace(/\/+$/, "");
 }
@@ -204,7 +207,8 @@ export class MediaCapabilityServices {
       const savedCatalog = this.openRouterCatalogs.get(id);
       const catalog = identity && savedCatalog?.identity === identity ? savedCatalog.catalog : undefined;
       const addressValid = connection.protocol === "openrouter" ? baseUrl === OPENROUTER_API_ROOT
-        : connection.protocol === "baidu-ocr" ? baseUrl === BAIDU_OCR_API_ROOT : true;
+        : connection.protocol === "baidu-ocr" ? baseUrl === BAIDU_OCR_API_ROOT
+          : connection.protocol === "deepseek" ? baseUrl === DEEPSEEK_API_ROOT && connection.auth === "api-key" : true;
       const preset = connection.presetId ? MEDIA_PROVIDER_PRESETS.find(item => item.id === connection.presetId) : undefined;
       const native = connection.protocol === "black-forest-labs" || connection.protocol === "dashscope";
       result.push({
@@ -212,13 +216,16 @@ export class MediaCapabilityServices {
         models: connection.protocol === "baidu-ocr"
           ? { ocr: BAIDU_OCR_MODES.map(({ id, label }) => ({ id, label })) }
           : native ? (preset?.models ?? {}) : catalog?.models ?? {},
-        allowCustomModel: connection.protocol !== "baidu-ocr",
+        allowCustomModel: connection.protocol !== "baidu-ocr" && connectionRequiresModel(connection),
+        requiresModel: connectionRequiresModel(connection),
         configured: Boolean(baseUrl && addressValid) && (connection.auth === "none" || hasKey),
         authState: connection.auth === "none" ? "none" : hasKey ? "configured" : "missing-key",
         ...(slots ? { credentialSlotsConfigured: slots } : {}),
         ...(baseUrl ? { location: location(baseUrl) } : {}),
         detail: connection.protocol === "baidu-ocr"
           ? "百度 OCR 专用识别：API Key + Secret Key，按识别模式调用；尚未发送样本测试。"
+          : connection.protocol === "deepseek"
+          ? "DeepSeek 原生工具；无需模型名称。搜索、网页读取、文档 OCR 和语音可共用此连接。"
           : connection.protocol === "openrouter"
           ? this.openRouterErrorDetail(id, identity) ?? this.openRouterKeyProblem(id, config) ?? openRouterCatalogDetail(catalog)
           : native
@@ -400,6 +407,7 @@ export class MediaCapabilityServices {
     if (!connection || !connectionCapabilities(connection).includes(capability)) throw new Error("所选服务不支持此能力。");
     if (connection.protocol === "baidu-ocr") throw new Error("百度 OCR 必须通过专用双密钥适配器调用。");
     if (connection.protocol === "openrouter" && (connection.baseUrl !== OPENROUTER_API_ROOT || connection.auth !== "api-key")) throw new Error("OpenRouter 连接必须使用官方 API 地址和 API Key。");
+    if (connection.protocol === "deepseek" && (connection.baseUrl !== DEEPSEEK_API_ROOT || connection.auth !== "api-key")) throw new Error("DeepSeek 工具连接必须使用官方 API 地址和 API Key。");
     const secret = connection.auth === "api-key" && connection.credentialRef ? this.runtime.credentials.get(connection.credentialRef) : undefined;
     if (connection.auth === "api-key" && !secret) throw new Error("请填写此服务的 API Key。");
     if (secret) {
@@ -496,7 +504,7 @@ export class MediaCapabilityServices {
       : binding.connectionId.startsWith("legacy:") && id === "speech-to-text" ? this.runtime.registeredSpeechProvider("http-asr")
         : binding.connectionId.startsWith("registered:") ? this.runtime.registeredSpeechProvider(binding.connectionId.slice(11))
         : binding.connectionId === MAGPIE_CONNECTION_ID || this.runtime.config().connections?.[binding.connectionId]
-          ? createApiSpeechProvider({ id: binding.connectionId, label: this.services().find((service) => service.id === binding.connectionId)?.label ?? "API 服务", getConnection: (connectionId) => this.resolveApi(id, connectionId), fetch: this.options.fetch }) : null;
+          ? (this.runtime.config().connections?.[binding.connectionId]?.protocol === "deepseek" ? createDeepSeekSpeechProvider : createApiSpeechProvider)({ id: binding.connectionId, label: this.services().find((service) => service.id === binding.connectionId)?.label ?? "API 服务", getConnection: (connectionId) => this.resolveApi(id, connectionId), fetch: this.options.fetch }) : null;
     if (!provider || (id === "speech-to-text" ? !provider.speechToText : !provider.textToSpeech)) return null;
     return { ...provider,
       ...(provider.speechToText ? { speechToText: async (input, context) => {
@@ -552,7 +560,8 @@ export class MediaCapabilityServices {
         });
         this.baiduOcrAdapters.set(connectionId, adapter);
       }
-    } else if (connection) adapter = createApiOcrAdapter({ getConnection: () => this.resolveApi("ocr"), fetch: this.options.fetch });
+    } else if (connection?.protocol === "deepseek") adapter = createDeepSeekOcrAdapter({ getConnection: () => this.resolveApi("ocr"), purpose: () => this.binding("ocr")?.ocrPurpose ?? "text_recognition", fetch: this.options.fetch });
+    else if (connection) adapter = createApiOcrAdapter({ getConnection: () => this.resolveApi("ocr"), fetch: this.options.fetch });
     if (!adapter) return null;
     const selectedAdapter = adapter;
     return { recognize: async (path, context) => {
@@ -576,7 +585,7 @@ export class MediaCapabilityServices {
     if (!capabilityEnabled(config, id)) return { state: "disabled", detail: "已关闭。保存后新会话按此设置提供工具。" };
     const binding = this.binding(id, config);
     const service = this.services().find((entry) => entry.id === binding?.connectionId);
-    if (!service) return { state: "needs-configuration", detail: binding?.selection === "auto" ? "等待可用的已登录图片服务；可刷新目录或手动选择。" : "请选择服务并填写所需模型。" };
+    if (!service || !binding) return { state: "needs-configuration", detail: binding?.selection === "auto" ? "等待可用的已登录图片服务；可刷新目录或手动选择。" : "请选择服务并填写所需模型。" };
     const base = { provider: service.label, credentialConfigured: service.configured };
     if (!service.capabilities.includes(id)) return { ...base, state: "needs-configuration", detail: "所选服务不支持此能力，请重新选择。" };
     if (!service.configured) return { ...base, state: "needs-configuration", detail: service.authState === "missing-key"
@@ -585,8 +594,8 @@ export class MediaCapabilityServices {
     if (id === "ocr" || id === "speech-to-text") {
       try { this.assertRecognitionPolicy(id); } catch (error) { return { ...base, state: "needs-configuration", detail: (error as Error).message }; }
     }
-    if (binding?.connectionId !== LOCAL_WHISPER_CONNECTION_ID && binding?.connectionId !== LOCAL_OCR_CONNECTION_ID && !binding?.connectionId.startsWith("registered:") && !binding?.model) return { ...base, state: "needs-configuration", detail: "请填写此能力使用的模型。" };
-    if (id === "text-to-speech" && !binding.connectionId.startsWith("registered:") && !config.textToSpeech.voice) return { ...base, state: "needs-configuration", detail: "请填写服务支持的默认音色，或在调用时指定音色。" };
+    if (service.requiresModel !== false && binding?.connectionId !== LOCAL_WHISPER_CONNECTION_ID && binding?.connectionId !== LOCAL_OCR_CONNECTION_ID && !binding?.connectionId.startsWith("registered:") && !binding?.model) return { ...base, state: "needs-configuration", detail: "请填写此能力使用的模型。" };
+    if (id === "text-to-speech" && config.connections?.[binding.connectionId]?.protocol !== "deepseek" && !binding.connectionId.startsWith("registered:") && !config.textToSpeech.voice) return { ...base, state: "needs-configuration", detail: "请填写服务支持的默认音色，或在调用时指定音色。" };
     const last = this.lastRuns.get(id);
     return { ...base, state: last?.key === this.key(id) ? "ready" : "unchecked", detail: last?.key === this.key(id) ? `最近成功使用：${new Date(last.at).toLocaleString()}。` : "配置已保存；尚未执行实际任务。检查不会发送样本或产生生成请求。" };
   }
@@ -627,6 +636,7 @@ export class MediaCapabilityServices {
       if (connection.protocol === "baidu-ocr" && (connection.presetId !== "baidu-ocr" ||
         connection.baseUrl !== BAIDU_OCR_API_ROOT || connection.auth !== "baidu-ak-sk")) throw new Error("百度 OCR 必须使用官方 HTTPS 接口和双密钥认证。");
       if (connection.protocol === "openrouter" && (connection.baseUrl !== OPENROUTER_API_ROOT || connection.auth !== "api-key")) throw new Error("OpenRouter 只允许官方 HTTPS API 地址和 Key 认证。");
+      if (connection.protocol === "deepseek" && (connection.presetId !== "deepseek" || connection.baseUrl !== DEEPSEEK_API_ROOT || connection.auth !== "api-key")) throw new Error("DeepSeek 工具服务请使用官方 API 预设。");
       if (!Number.isSafeInteger(connection.timeoutMs) || connection.timeoutMs < 1000 || connection.timeoutMs > 600_000) throw new Error("请求超时应为 1 至 600 秒。");
       connection.credentialRef = connection.protocol === "baidu-ocr" ? undefined : previous.connections?.[id]?.credentialRef;
       connection.credentialRefs = connection.protocol === "baidu-ocr" ? {

@@ -4,6 +4,7 @@ import type { EntryRecord, TaskId } from "@earendil-works/pi-durable";
 import type { ChatMessageDto } from "../../../shared/agent-ipc";
 import { summarizeToolInput } from "../../../shared/pi-event-mapper";
 import type { DurableBotSnapshot } from "../../../shared/durable-bot";
+import { deepseekCitationMarkdown, deepseekHostedToolRows } from "../../../shared/deepseek";
 
 export type DurableInputMetadata = { text: string; displayText: string; attachments: Array<{ name: string; path: string }>; botRequestId?: string; audit?: import("./DurableSkillProjection").DurableInputAudit };
 /** 完成态实测速度（由 `DurableBotRuntime.recordResponse()` 用 host 侧生成计时算出）。 */
@@ -161,12 +162,12 @@ export function assistantRow(id: string, taskId: TaskId | undefined, message: As
       tps: streaming ? null : validSpeed(metrics?.tps), estimated: false, outputTokens: message.usage.output,
       ttftMs: streaming ? null : validDuration(metrics?.ttftMs),
       ...(!streaming ? { outcome: message.stopReason === "aborted" ? "aborted" as const : message.stopReason === "error" || message.stopReason === "length" ? "error" as const : "completed" as const } : {}) },
-    text: durableContentText(message.content) + (message.errorMessage ? `\n${message.errorMessage}` : ""),
+    text: durableContentText(message.content) + deepseekCitationMarkdown(message) + (message.errorMessage ? `\n${message.errorMessage}` : ""),
     thinking: message.content.filter(item => item.type === "thinking").map(item => item.thinking).join(""),
-    tools: message.content.filter(item => item.type === "toolCall").map(call => {
+    tools: [...deepseekHostedToolRows(message, streaming), ...message.content.filter(item => item.type === "toolCall").map(call => {
       const text = summarizeToolInput(call.name, call.arguments);
       return { id: call.id, tool: call.name, summary: text.summary, ...(text.detail === undefined ? {} : { detail: text.detail }), status: "running" as const };
-    }),
+    })],
     modelName: message.model, createdAt: message.timestamp, streaming,
   };
 }

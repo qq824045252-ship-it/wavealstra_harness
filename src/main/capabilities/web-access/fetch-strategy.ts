@@ -31,6 +31,13 @@ export function decideBrowserReuse(input: DecideBrowserReuseInput): BrowserReuse
   return { useBrowser: true, reason: "match" };
 }
 
+/** Remote page extraction must leave raw responses, local files and media paths intact. */
+export function shouldUseDeepSeekFetch(url: URL, options: { provider?: "auto" | "deepseek"; mode?: "readable" | "raw" | "answer"; forceClone?: boolean; timestamp?: string; frames?: number }): boolean {
+  if (options.provider !== "deepseek" || options.mode === "raw" || !["https:", "http:"].includes(url.protocol)) return false;
+  if (options.forceClone || options.timestamp || options.frames) return false;
+  return !/\.(?:pdf|png|jpe?g|gif|webp|bmp|tiff?|svg|avif|heic|heif|ico|mp4|webm|mov|avi|mkv|m4v|mp3|wav|ogg|m4a|flac|aac|zip|gz|tar|7z|rar|exe|dmg|iso|docx?|xlsx?|pptx?)$/i.test(url.pathname);
+}
+
 /**
  * 显式 provider=codex 且 OAuth 不可用时的 fallback：
  * 1) 用户 searchRouting 中 codex 之后的第一个可用 provider（尊重配置）；
@@ -49,7 +56,7 @@ export function resolveCodexFallbackProvider(
       }
     }
   }
-  const fallbackOrder: ResolvedSearchProvider[] = ["openai", "exa", "brave", "parallel", "tinyfish", "search1api", "searchinfinity", "querit", "tavily", "serpdive", "kagi", "ollama", "perplexity", "gemini", "searxng"];
+	const fallbackOrder: ResolvedSearchProvider[] = ["openai", "exa", "deepseek", "brave", "parallel", "tinyfish", "search1api", "searchinfinity", "querit", "tavily", "serpdive", "kagi", "ollama", "perplexity", "gemini", "searxng"];
   for (const p of fallbackOrder) {
     if (available[p]) return p;
   }

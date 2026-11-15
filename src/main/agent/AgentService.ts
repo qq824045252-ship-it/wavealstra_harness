@@ -362,6 +362,7 @@ import { browserHost } from "../browser/BrowserHost";
 import { BrowserAutomationService } from "../capabilities/BrowserAutomationService";
 import { BuiltinCapabilityRuntime } from "../capabilities/BuiltinCapabilityRuntime";
 import { MediaCapabilityServices } from "../capabilities/MediaCapabilityServices";
+import { configureDeepSeekConnectionSource, isDeepSeekConnectionConfigured } from "../capabilities/providers/DeepSeekConnection";
 import { VideoGenerationJobs } from "../capabilities/VideoGenerationJobs";
 import { CODEX_CONNECTION_ID } from "../../shared/media-capabilities";
 import { registerLocalCapabilityChecks } from "../capabilities/LocalCapabilityChecks";
@@ -1022,6 +1023,11 @@ export class AgentService {
       videoJobs: this.videoGenerationJobs,
     });
     this.builtinCapabilities.attachMediaServices(this.mediaCapabilityServices);
+    configureDeepSeekConnectionSource({
+      getConfig: () => this.builtinCapabilities.config(),
+      getCredential: ref => this.builtinCapabilities.credentials.get(ref),
+      hasCredential: ref => this.builtinCapabilities.credentials.has(ref),
+    });
     registerLocalCapabilityChecks(this.builtinCapabilities, this.browserAutomation, this.pythonRuntime);
     // 旧版连接器全局技能副本安全迁移（幂等；meta 归属校验，失败不阻断启动）
     try {
@@ -4057,7 +4063,10 @@ export class AgentService {
         searchPolicy: raw.searchPolicy ? normalizeSearchPolicy(raw.searchPolicy) : undefined,
         searchProvider: raw.searchProvider as WebSearchConfigDto["searchProvider"],
         provider: raw.provider as WebSearchConfigDto["provider"],
+        deepseekConnectionId: typeof raw.deepseekConnectionId === "string" ? raw.deepseekConnectionId : undefined,
+        fetchProvider: raw.fetchProvider === "deepseek" ? "deepseek" : "auto",
         configuredProviders: SEARCH_PROVIDER_IDS.filter(id => {
+          if (id === "deepseek") return isDeepSeekConnectionConfigured(typeof raw.deepseekConnectionId === "string" ? raw.deepseekConnectionId : undefined);
           const keys = (raw.apiKeyPools as Record<string, unknown> | undefined)?.[id];
           const key = raw[`${id}ApiKey`];
           return (typeof key === "string" && key.trim()) || (Array.isArray(keys) && keys.some(k => typeof k === "string" && k.trim()))
@@ -4072,7 +4081,7 @@ export class AgentService {
         configPath: path,
       };
     } catch {
-      return { configPath: path };
+      return { configPath: path, configuredProviders: isDeepSeekConnectionConfigured() ? ["deepseek"] : [] };
     }
   }
 
@@ -4093,6 +4102,15 @@ export class AgentService {
     if (config.apiKeyPools !== undefined) next.apiKeyPools = config.apiKeyPools;
     if (config.apiKeyStates !== undefined) next.apiKeyStates = config.apiKeyStates;
     if (config.searchPolicy !== undefined) next.searchPolicy = normalizeSearchPolicy(config.searchPolicy);
+    if (config.deepseekConnectionId !== undefined) {
+      if (config.deepseekConnectionId && !/^api-[a-z0-9-]{1,80}$/i.test(config.deepseekConnectionId)) throw new Error("DeepSeek 服务引用无效。");
+      // Only the reference is persisted. Keys remain in the shared capability keyring.
+      next.deepseekConnectionId = config.deepseekConnectionId || undefined;
+    }
+    if (config.fetchProvider !== undefined) {
+      if (config.fetchProvider !== "auto" && config.fetchProvider !== "deepseek") throw new Error("网页读取服务无效。");
+      next.fetchProvider = config.fetchProvider;
+    }
     if (config.searchRouting === null) delete next.searchRouting;
     else if (config.searchRouting !== undefined) next.searchRouting = config.searchRouting;
     if (config.workflow !== undefined) next.workflow = config.workflow;

@@ -1659,6 +1659,9 @@ export interface WebSearchConfigDto {
 	configuredProviders?: string[];
 	searchProvider?: string | string[];
 	provider?: string | string[];
+  /** Shared API service reference; no DeepSeek plaintext key is stored here. */
+  deepseekConnectionId?: string;
+  fetchProvider?: "auto" | "deepseek";
   tavilyApiKey?: string;
   tinyfishApiKey?: string;
   braveApiKey?: string;
@@ -1727,6 +1730,7 @@ export interface SearchProviderKeyUsageDto {
 export const WEB_SEARCH_PROVIDER_OPTIONS: Array<{ id: string; label: string; needsKey?: boolean }> = [
   { id: "codex", label: "Codex OAuth（ChatGPT 订阅）", needsKey: false },
   { id: "openai", label: "OpenAI Responses", needsKey: true },
+  { id: "deepseek", label: "DeepSeek Search", needsKey: true },
   { id: "brave", label: "Brave", needsKey: true },
   { id: "parallel", label: "Parallel", needsKey: true },
   { id: "tinyfish", label: "TinyFish", needsKey: true },

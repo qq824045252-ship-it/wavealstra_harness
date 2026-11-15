@@ -39,6 +39,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { isPerplexityAvailable } from "./perplexity.ts";
 import { isExaAvailable } from "./exa.ts";
+import { isDeepSeekAvailable } from "./deepseek.ts";
 import { isGeminiApiAvailable } from "./gemini-api.ts";
 import { getActiveGoogleEmail, getGeminiWebAvailabilityDiagnostic, isGeminiWebAvailable } from "./gemini-web.ts";
 import { isBrowserCookieAccessAllowed } from "./gemini-web-config.ts";
@@ -110,9 +111,11 @@ async function fetchWithBrowserReuse(
 		bridgeAvailable: bridge.available,
 		matchResult: "unknown",
 	});
-	if (decision.useBrowser && bridge) {
+	// "unknown" is only the preflight: the bridge must resolve the actual same-page match.
+	if (!signal?.aborted && !options?.forceClone && !options?.timestamp && !options?.frames && (decision.useBrowser || decision.reason === "no-match")) {
 		try {
 			const { strategy, page } = await bridge.tryBrowserReuse(urls[0], true);
+			if (signal?.aborted) return fetchAllContent(urls, signal, options);
 			if (strategy === "browser-reuse" && page && page.text) {
 				return [
 					{
@@ -190,6 +193,7 @@ interface WebSearchConfig {
 }
 
 interface ProviderAvailability {	all: boolean; 	openai: boolean; 	codex: boolean;
+	deepseek: boolean;
 	brave: boolean;
 	parallel: boolean;
 	tinyfish: boolean;
@@ -392,6 +396,7 @@ async function getProviderAvailability(ctx: ExtensionContext): Promise<ProviderA
 	const providers = {
 		openai: await isOpenAISearchAvailable(ctx),
 		codex: await isCodexSearchAvailable(ctx),
+		deepseek: isDeepSeekAvailable(),
 		brave: isBraveAvailable(),
 		parallel: isParallelAvailable(),
 		tinyfish: isTinyFishAvailable(),
@@ -447,6 +452,7 @@ function firstAvailableProvider(available: ProviderAvailability, preferOpenAI: b
 	if (available.searxng) return "searxng";
 	if (preferOpenAI && available.openai) return "openai";
 	if (available.exa) return "exa";
+	if (available.deepseek) return "deepseek";
 	if (available.brave) return "brave";
 	if (available.parallel) return "parallel";
 	if (available.tinyfish) return "tinyfish";
@@ -558,6 +564,7 @@ interface PendingCurate {
 	includeContent: boolean;
 	evidenceMode?: "snippets" | "verify";
 	numResults?: number;
+	originalQuestion?: string;
 	recencyFilter?: "day" | "week" | "month" | "year";
 	domainFilter?: string[];
 	availableProviders: ProviderAvailability;
@@ -673,11 +680,11 @@ function formatFullResults(queryData: QueryResultData): string {
 		output += `${queryData.answer}\n\n---\n\n`;
 	}
 	for (const r of queryData.results) {
-		output += `### ${r.title}\n${r.url}\n${r.snippet}\n\n`;
+		output += `### ${r.title}\n${r.url}\n${r.snippet}${r.summary ? `\nProvider summary (unverified): ${r.summary}` : ""}\n\n`;
 	}
 	for (const run of queryData.providerRuns ?? []) {
 		output += `### ${run.provider} (${run.status}, ${run.durationMs}ms)\n${run.error ?? run.answer}\n`;
-		for (const [i, source] of run.results.entries()) output += `${i + 1}. ${source.title}\n${source.url}\n${source.snippet}\n\n`;
+		for (const [i, source] of run.results.entries()) output += `${i + 1}. ${source.title}\n${source.url}\n${source.snippet}${source.summary ? `\nProvider summary (unverified): ${source.summary}` : ""}\n\n`;
 	}
 	return output;
 }
@@ -1388,6 +1395,7 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 						const response = await search(query, {
 							provider: requestedProvider,
 							numResults: pc.numResults,
+							originalQuestion: pc.originalQuestion,
 							recencyFilter: pc.recencyFilter,
 							domainFilter: pc.domainFilter,
 							includeContent: pc.includeContent,
@@ -1530,11 +1538,12 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 		name: toolNames.webSearch,
 		label: "Web Search",
 		description:
-			`Search the web using OpenAI, Brave, Parallel, TinyFish, Search1API, Searchinfinity, Querit, Tavily, SERPdive, Kagi, Ollama, SearXNG, Exa, Perplexity, Gemini, AnySearch, xAI, Bright Data, or SerpBase. Pass a provider array to search only those providers simultaneously, or use provider "all" to search every eligible provider except AnySearch, xAI, Bright Data, and SerpBase. Returns attributed sources and snippets quickly by default. Only request evidenceMode=verify when original-page semantic verification is needed; that adds page reads and a model call. Provider summaries and repeated URLs are not independent verification. Cite original passages, retain conflicts, and never infer confidence from provider counts. OpenAI search uses a Codex subscription or OpenAI API key; xAI search uses a SuperGrok/X Premium subscription or xAI API key. AnySearch, xAI, Bright Data, and SerpBase are available only when explicitly selected. For comprehensive research, prefer queries (plural) with 2-4 varied angles over a single query — each query gets its own synthesized answer, so varying phrasing and scope gives much broader coverage. When includeContent is true, full page content is fetched within this call. Searches auto-open the interactive browser curator and stream results live; set workflow to "none" to skip curation or "auto-summary" for a model-generated summary without the browser curator. The configured provider is used when provider is omitted or set to auto; omit provider unless explicitly overriding it. Without a configured provider, auto-selects OpenAI when suitable and available, then Exa, Brave, Parallel, TinyFish, Search1API, Searchinfinity, Querit, Tavily, SERPdive, Kagi, Ollama, Perplexity, Gemini API, or Gemini Web. When SearXNG is configured, it is preferred first for local/private search.`,
+			`Search the web using OpenAI, DeepSeek Search, Brave, Parallel, TinyFish, Search1API, Searchinfinity, Querit, Tavily, SERPdive, Kagi, Ollama, SearXNG, Exa, Perplexity, Gemini, AnySearch, xAI, Bright Data, or SerpBase. Pass a provider array to search only those providers simultaneously, or use provider "all" to search every eligible provider except AnySearch, xAI, Bright Data, and SerpBase. Returns attributed sources and snippets quickly by default. Only request evidenceMode=verify when original-page semantic verification is needed; that adds page reads and a model call. Provider summaries and repeated URLs are not independent verification. Cite original passages, retain conflicts, and never infer confidence from provider counts. OpenAI search uses a Codex subscription or OpenAI API key; xAI search uses a SuperGrok/X Premium subscription or xAI API key. AnySearch, xAI, Bright Data, and SerpBase are available only when explicitly selected. For comprehensive research, prefer queries (plural) with 2-4 varied angles over a single query — each query gets its own synthesized answer, so varying phrasing and scope gives much broader coverage. When includeContent is true, full page content is fetched within this call. Searches auto-open the interactive browser curator and stream results live; set workflow to "none" to skip curation or "auto-summary" for a model-generated summary without the browser curator. The configured provider is used when provider is omitted or set to auto; omit provider unless explicitly overriding it. Without a configured provider, auto-selects OpenAI when suitable and available, then Exa, DeepSeek Search, Brave, Parallel, TinyFish, Search1API, Searchinfinity, Querit, Tavily, SERPdive, Kagi, Ollama, Perplexity, Gemini API, or Gemini Web. DeepSeek Search is independent of the chat model, shares the DeepSeek service credential, and accepts web text queries up to 128 Unicode characters including filters. When SearXNG is configured, it is preferred first for local/private search.`,
 		promptSnippet:
 			"Use for web research. Omit provider to honor configured parallel search; only override when the user requests a particular provider. Use up to 4 queries; provider coverage is fairly allocated within the total request budget. Ordinary questions use the default quick snippets mode; request evidenceMode=verify only for explicit deep verification. Base claims on cited original passages, not provider consensus. Report partial failures and conflicting evidence.",
 		parameters: Type.Object({
-			query: Type.Optional(Type.String({ description: "Single search query. For research tasks, prefer 'queries' with multiple varied angles instead." })),
+			query: Type.Optional(Type.String({ description: "Single search query. For research tasks, prefer 'queries' with multiple varied angles instead. DeepSeek accepts at most 128 Unicode characters including translated domain/date filters." })),
+			originalQuestion: Type.Optional(Type.String({ description: "Optional original user question for DeepSeek Search query understanding (1 to 128 Unicode characters); distinct from the search keywords." })),
 			queries: Type.Optional(Type.Array(Type.String(), { description: "Multiple queries searched in sequence, each returning its own synthesized answer. Prefer this for research — vary phrasing, scope, and angle across 2-4 queries to maximize coverage. Good: ['React vs Vue performance benchmarks 2026', 'React vs Vue developer experience comparison', 'React ecosystem size vs Vue ecosystem']. Bad: ['React vs Vue', 'React vs Vue comparison', 'React vs Vue review'] (too similar, redundant results)." })),
 			numResults: Type.Optional(Type.Number({ description: "Results per query (default: 5, max: 20)" })),
 			includeContent: Type.Optional(Type.Boolean({ description: "Fetch full page content within this tool call" })),
@@ -1628,6 +1637,7 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 					includeContent,
 					evidenceMode: params.evidenceMode === "verify" ? "verify" : "snippets",
 					numResults: params.numResults,
+					originalQuestion: params.originalQuestion,
 					recencyFilter,
 					domainFilter: params.domainFilter,
 					availableProviders,
@@ -1689,6 +1699,7 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 							onProviderUpdate: providerRuns => emitReport(buildWebSearchReport(callId, queryList, [...searchResults.values(), { query: queryList[qi], answer: "", results: [], error: null, providerRuns }], true)),
 							provider: requestedProvider,
 							numResults: params.numResults,
+							originalQuestion: params.originalQuestion,
 							recencyFilter,
 							domainFilter: params.domainFilter,
 							includeContent: params.includeContent,
@@ -1788,6 +1799,7 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 						onProviderUpdate: providerRuns => emitReport(buildWebSearchReport(callId, queryList, [...searchResults, { query, answer: "", results: [], error: null, providerRuns }], true)),
 						provider: resolvedProvider,
 						numResults: params.numResults,
+						originalQuestion: params.originalQuestion,
 						recencyFilter,
 						domainFilter: params.domainFilter,
 						includeContent: params.includeContent,
@@ -2229,7 +2241,7 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: toolNames.fetchContent,
 		label: "Fetch Content",
-		description: `Fetch URL(s) and extract readable content as markdown. Use mode "raw" for exact textual HTTP response bodies or mode "answer" with prompt to answer using only fetched content. Mode answer invokes a separate model after fetching; prefer readable when you will use the original text to write your own answer. Direct image URLs return resized image content. Supports YouTube transcripts, GitHub repositories, PDFs, and local videos. Full original content is stored for retrieval with ${toolNames.getSearchContent}.`,
+		description: `Fetch URL(s) and extract readable content as markdown using the configured page reader, including independent DeepSeek Fetch. Use mode "raw" for exact textual HTTP response bodies or mode "answer" with prompt to answer using only fetched content. Mode answer invokes a separate model after fetching; prefer readable when you will use the original text to write your own answer. Direct image URLs return resized image content. Supports YouTube transcripts, GitHub repositories, PDFs, and local videos. Full original content is stored for retrieval with ${toolNames.getSearchContent}.`,
 		promptSnippet:
 			"Use readable to read original evidence for your own answer. Mode answer is a separate model call, not required to verify or quote a source. Also supports raw URLs, images, repos and videos.",
 		parameters: Type.Object({
@@ -2243,6 +2255,9 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 			})),
 			mode: Type.Optional(StringEnum(["readable", "raw", "answer"], {
 				description: "Fetch mode: readable (default extraction), raw (exact textual HTTP body), or answer (answer prompt using only fetched content).",
+			})),
+			provider: Type.Optional(StringEnum(["auto", "deepseek"], {
+				description: "Page reader override. Omit to honor Settings → Tool capabilities. DeepSeek Fetch uses the shared DeepSeek API service. Auto uses the existing HTTP/render pipeline. Existing same-page browser content and specialized image, video, repository and raw paths keep their own readers.",
 			})),
 			answerModel: Type.Optional(Type.String({
 				description: "Optional provider/model-id override for mode answer. Defaults to the current Pi model.",
@@ -2391,6 +2406,8 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 						mode,
 						mimeType: result.mimeType,
 						status: result.status,
+						source: result.source,
+						provider: result.provider,
 						totalBytes: slice.totalBytes,
 						totalLines: slice.totalLines,
 						shownBytes: slice.shownBytes,
@@ -2414,7 +2431,7 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 			return {
 				isError: successful === 0,
 				content: [{ type: "text", text: output }],
-				details: { urls: urlList, urlCount: urlList.length, successful, totalChars, responseId, results: presentedResults.map(r=>({url:r.url,error:r.error,errorCode:r.errorCode,retryable:r.retryable})) },
+				details: { urls: urlList, urlCount: urlList.length, successful, totalChars, responseId, results: presentedResults.map(r=>({url:r.url,error:r.error,errorCode:r.errorCode,retryable:r.retryable,source:r.source,provider:r.provider})) },
 			};
 		},
 

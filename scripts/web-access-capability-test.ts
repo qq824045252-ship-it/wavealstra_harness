@@ -1,4 +1,5 @@
 import { pageAnswerFallback } from "../src/main/capabilities/web-access/page-answer-fallback";
+import { WEB_SEARCH_PROVIDER_OPTIONS } from "../src/shared/agent-ipc";
 /**
  * WebAccess Capability 纯逻辑测试（P2-3/P3：browser reuse 决策、codex fallback、provider 一致性）。
  *
@@ -9,6 +10,7 @@ import { pageAnswerFallback } from "../src/main/capabilities/web-access/page-ans
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 
 // test-guard 在 repo 根运行；esbuild 打包为 cjs 时无 import.meta
 const require = createRequire(join(process.cwd(), "package.json"));
@@ -49,6 +51,7 @@ function evalModule(): { decideBrowserReuse: (i: unknown) => unknown; resolveCod
   };
 }
 
+async function main(): Promise<void> {
 console.log("== WebAccess Capability：decideBrowserReuse（Capability 真源） ==");
 {
   const { decideBrowserReuse } = evalModule();
@@ -90,14 +93,19 @@ console.log("== WebAccess Capability：resolveCodexFallbackProvider（尊重 rou
   assert(resolveCodexFallbackProvider(av, ["openai", "codex"]) === "openai", "codex 在 routing 末尾 → 其后为空 → 固定顺序第一个可用（openai）");
 }
 
-console.log("== WebAccess provider 一致性（shared UI 列表 ⊆ Capability 真源 RESOLVED） ==");
+console.log("== WebAccess provider 一致性（shared UI 列表 = Capability 实际导出） ==");
 {
-  const shared = readFileSync(join(repo, "src", "shared", "agent-ipc.ts"), "utf-8");
-  const geminiSearch = readFileSync(join(bundledDir, "gemini-search.ts"), "utf-8");
-  const sharedIds = [...shared.matchAll(/id: "(\w+)"/g)].map((m) => m[1]);
-  const extMatch = geminiSearch.match(/RESOLVED_SEARCH_PROVIDERS = \[([^\]]+)\]/);
-  const extIds = extMatch ? [...extMatch[1].matchAll(/"(\w+)"/g)].map((m) => m[1]) : [];
+  // Load the real exported list through the existing Node-only source loader.
+  // A source regex cannot distinguish a missing provider from a canonical-array re-export.
+  const hooksUrl = pathToFileURL(join(repo, "scripts", "headless-source-test-hooks.mjs")).href;
+  await import(hooksUrl);
+  const providerUrl = pathToFileURL(join(bundledDir, "gemini-search.ts")).href;
+  const { RESOLVED_SEARCH_PROVIDERS } = await import(providerUrl) as typeof import("../src/main/capabilities/web-access/gemini-search");
+  const sharedIds = WEB_SEARCH_PROVIDER_OPTIONS.map(provider => provider.id);
+  const extIds: string[] = [...RESOLVED_SEARCH_PROVIDERS];
   assert(extIds.length >= 15, `Capability 真源 provider 数（${extIds.length}）`);
+  assert(new Set(extIds).size === extIds.length, "Capability provider 列表无重复");
+  assert(new Set(sharedIds).size === sharedIds.length, "UI provider 列表无重复");
   const missing = sharedIds.filter((x) => !extIds.includes(x));
   const extra = extIds.filter((x) => !sharedIds.includes(x));
   assert(missing.length === 0, `UI 列表无Capability 真源之外的 provider（${missing.join(",") || "无"}）`);
@@ -144,3 +152,6 @@ console.log("== WebAccess product capability boundary ==");
 }
 console.log(`\n结果: passed=${passed} failed=${failed}`);
 if (failed > 0) process.exit(1);
+}
+
+main().catch(error => { console.error(error); process.exitCode = 1; });

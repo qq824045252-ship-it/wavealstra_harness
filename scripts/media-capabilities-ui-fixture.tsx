@@ -3,7 +3,7 @@ import { flushSync } from "react-dom";
 import CapabilitiesTab from "../src/renderer/src/components/settings/CapabilitiesTab";
 import { BUILTIN_CAPABILITY_TOOLS, DEFAULT_BUILTIN_CAPABILITIES_CONFIG } from "../src/shared/builtin-capabilities";
 import type { BuiltinCapabilitiesConfigDto, BuiltinCapabilitiesSnapshotDto, BuiltinCapabilityId, SaveBuiltinCapabilitySettingsRequest } from "../src/shared/builtin-capabilities";
-import { API_PROTOCOL_CAPABILITIES, CODEX_CONNECTION_ID, LOCAL_WHISPER_CONNECTION_ID, MAGPIE_CONNECTION_ID, MEDIA_CAPABILITY_IDS, OPENROUTER_API_ROOT } from "../src/shared/media-capabilities";
+import { API_PROTOCOL_CAPABILITIES, CODEX_CONNECTION_ID, connectionRequiresModel, DEEPSEEK_API_ROOT, LOCAL_WHISPER_CONNECTION_ID, MAGPIE_CONNECTION_ID, MEDIA_CAPABILITY_IDS, OPENROUTER_API_ROOT } from "../src/shared/media-capabilities";
 import type { CapabilityConnectionOption, MediaCapabilityId } from "../src/shared/media-capabilities";
 import type { WebSearchConfigDto } from "../src/shared/agent-ipc";
 import "../src/renderer/src/styles/global.css";
@@ -59,7 +59,7 @@ function snapshot(): BuiltinCapabilitiesSnapshotDto {
       const capability = service.adapter === "http-asr" ? "speech-to-text" : "ocr";
       return { id: `legacy:${id}`, label: "现有识别服务", source: "legacy", capabilities: [capability], models: { [capability]: [{ id: service.model, label: service.model }] }, allowCustomModel: true, configured: true, authState: service.credentialRef ? keyReferences.has(service.credentialRef) ? "configured" : "missing-key" : "none", location: "loopback" };
     }),
-    ...Object.entries(config.connections ?? {}).map(([id, connection]): CapabilityConnectionOption => ({ id, label: connection.name, source: "api", capabilities: API_PROTOCOL_CAPABILITIES[connection.protocol], models: clone(catalogs[id] ?? {}), allowCustomModel: true, configured: true, authState: connection.auth === "none" ? "none" : connection.credentialRef && keyReferences.has(connection.credentialRef) ? "configured" : "missing-key", location: "remote" })),
+    ...Object.entries(config.connections ?? {}).map(([id, connection]): CapabilityConnectionOption => ({ id, label: connection.name, source: "api", capabilities: API_PROTOCOL_CAPABILITIES[connection.protocol], models: clone(catalogs[id] ?? {}), requiresModel: connectionRequiresModel(connection), allowCustomModel: connectionRequiresModel(connection), configured: true, authState: connection.auth === "none" ? "none" : connection.credentialRef && keyReferences.has(connection.credentialRef) ? "configured" : "missing-key", location: "remote" })),
   ];
   if (config.videoGeneration.provider) mediaServices.push({ id: `registered:${config.videoGeneration.provider}`, label: "原有服务（尚未接入）", source: "legacy", capabilities: [], models: {}, allowCustomModel: false, configured: false, authState: "none" });
   return clone({ config, revision: String(revision), checkedAt: Date.now(), mediaServices, capabilities: Object.keys(BUILTIN_CAPABILITY_TOOLS).map(raw => { const id = raw as BuiltinCapabilityId; return { id, label: id, description: "fixture", category: "media" as const, enabled: enabled(id), state: enabled(id) ? "unchecked" as const : "disabled" as const, tools: BUILTIN_CAPABILITY_TOOLS[id], detail: "已读取配置，未上传任何样本。" }; }) });
@@ -468,6 +468,58 @@ export async function run(): Promise<string[]> {
   await clickText("刷新状态");
   assert(element<HTMLSelectElement>('[aria-label="图片生成模型"]').tagName.toLowerCase() === "select", "手动刷新后模型目录恢复为下拉");
   passed.push("模型目录刷新失败只提示且保留保存成功状态，手动刷新后可恢复下拉");
+  await setup(value => {
+    value.services = {};
+    value.ocr = { enabled: false };
+    value.mediaBindings = {};
+    value.textToSpeech = { enabled: false, voice: "old-provider-voice", rate: "1.5" };
+  });
+  await change('[aria-label="DeepSeek 搜索服务"]', "__add_api__");
+  const deepseekId = element("[data-connection-id]").getAttribute("data-connection-id")!;
+  const deepseekPanel = `[data-connection-id="${deepseekId}"]`;
+  assert(element<HTMLInputElement>(`${deepseekPanel} [aria-label="API 地址"]`).value === DEEPSEEK_API_ROOT, "DeepSeek preset uses the official tool root");
+  assert(element<HTMLInputElement>(`${deepseekPanel} [aria-label="API 地址"]`).matches(":disabled"), "Native preset endpoint remains fixed");
+  await change(`${deepseekPanel} [aria-label="API Key"]`, "fixture-deepseek-key");
+  await change('[aria-label="语音转文字服务"]', deepseekId);
+  await change('[aria-label="图片文字识别服务"]', deepseekId);
+  await change('[aria-label="文字转语音服务"]', deepseekId);
+  assert(!document.querySelector('[aria-label="语音转文字模型"], [aria-label="图片文字识别模型"], [aria-label="文字转语音模型"]'), "Native DeepSeek tools have no fabricated model field");
+  assert(!document.querySelector('[aria-label="文字转语音语速"]'), "DeepSeek does not offer an unsupported speed field");
+  assert(element<HTMLSelectElement>('[aria-label="文字转语音声音"]').value === "stella", "Selecting DeepSeek resets a previous provider's voice to Stella");
+  await change('[aria-label="文字转语音声音"]', "tide");
+  await change('[aria-label="DeepSeek OCR 识别方式"]', "rich_layout_recognition");
+  await change('[aria-label="网页读取服务"]', "deepseek");
+  await change('[aria-label="搜索方式"]', "single");
+  await click('input[name="search-provider"][value="deepseek"]');
+  assert(element('input[value="deepseek"]').closest("label")?.textContent?.includes("已配置"), "An unsaved shared key makes DeepSeek available in the search selector");
+  for (const capability of ["speech-to-text", "ocr", "text-to-speech"]) {
+    if (element(`${row(capability)} .switch`).getAttribute("aria-pressed") !== "true") await click(`${row(capability)} .switch`);
+  }
+  assert(element<HTMLButtonElement>(`${deepseekPanel} .capability-connection-actions .btn`).disabled, "A referenced shared service cannot be removed while still selected");
+  failMain = true;
+  await save();
+  assert(calls.main.length === 1 && calls.search.length === 0, "Dependent DeepSeek search settings wait for successful connection persistence");
+  assert(element<HTMLInputElement>(`${deepseekPanel} [aria-label="API Key"]`).value === "fixture-deepseek-key", "Failed native connection save retains the key draft");
+  failMain = false;
+  await save();
+  assert(calls.main.length === 2 && calls.search.length === 1, "Retry commits the shared connection before its search reference");
+  assert(calls.main[1].credentials?.length === 1, "Search, fetch, OCR and speech submit the shared secret once");
+  assert(search.deepseekConnectionId === deepseekId && search.fetchProvider === "deepseek" && search.searchPolicy?.providers[0] === "deepseek", "Search and page reading persist the same connection reference");
+  assert(!JSON.stringify(search).includes("fixture-deepseek-key") && !JSON.stringify(config).includes("fixture-deepseek-key"), "Only the credential change payload carries the key");
+  assert(config.mediaBindings?.ocr?.ocrPurpose === "rich_layout_recognition" && config.textToSpeech.voice === "tide" && config.textToSpeech.rate === undefined, "OCR mode and supported voice survive save; stale speed is cleared");
+  assert(config.connections?.[deepseekId]?.timeoutMs === 180_000, "Native document calls receive a 180-second default wait");
+  passed.push("DeepSeek shares one model-free connection across five tools with ordered persistence, OCR mode and native voices");
+
+  flushSync(() => root.render(null));
+  flushSync(() => root.render(<CapabilitiesTab />));
+  await waitFor(() => Boolean(document.querySelector('[aria-label="DeepSeek OCR 识别方式"]')), "Reopened DeepSeek settings load");
+  assert(element<HTMLSelectElement>('[aria-label="DeepSeek OCR 识别方式"]').value === "rich_layout_recognition", "Reopening retains document recognition mode");
+  assert(element<HTMLSelectElement>('[aria-label="文字转语音声音"]').value === "tide", "Reopening retains selected native voice");
+  assert(element<HTMLSelectElement>('[aria-label="DeepSeek 搜索服务"]').value === deepseekId, "Reopening retains the shared search service");
+  assert(element<HTMLSelectElement>('[aria-label="网页读取服务"]').value === "deepseek", "Reopening retains native page reading");
+  assert(element<HTMLInputElement>(`${deepseekPanel} [aria-label="API Key"]`).value === "", "Reopening does not expose a saved key");
+  assert(element<HTMLButtonElement>(saveButton).disabled, "Reopened configuration is clean without a synthetic model edit");
+  passed.push("DeepSeek settings reopen with all selections and no secret disclosure or required model");
   return passed;
 }
 

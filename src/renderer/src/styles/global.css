@@ -10048,6 +10048,21 @@ html[data-theme="dark"] .switch.on {
   font-size: 12px;
 }
 
+.models-native-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.models-field .models-native-option input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
 .models-field-row {
   display: grid;
   grid-template-columns: 1fr 1fr;

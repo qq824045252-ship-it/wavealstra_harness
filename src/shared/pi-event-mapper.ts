@@ -3,6 +3,7 @@ import { consultReportFromDetails, consultSummary } from "./multi-model-consult"
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import type { AgentUiPatch } from "./agent-ipc";
 import { MUTATING_BUILTIN_TOOLS } from "./native-tools";
+import { deepseekCitationMarkdown, deepseekHostedToolRows } from "./deepseek";
 
 export interface MapperContext {
   taskId: string;
@@ -236,10 +237,18 @@ export function mapPiEventToPatches(
         : [];
     }
 
-    case "message_end":
-      return event.message.role === "assistant"
-        ? reconcileThinkingSnapshot(assistantThinkingSnapshot(event.message), ctx, taskId, messageId)
-        : [];
+    case "message_end": {
+      if (event.message.role !== "assistant") return [];
+      const patches = reconcileThinkingSnapshot(assistantThinkingSnapshot(event.message), ctx, taskId, messageId);
+      const citations = deepseekCitationMarkdown(event.message);
+      if (citations) patches.push({ type: "text_delta", taskId, messageId, delta: citations, final: true });
+      for (const tool of deepseekHostedToolRows(event.message)) {
+        patches.push({ type: "tool_start", taskId, messageId, toolCallId: tool.id, tool: tool.tool, summary: tool.summary, dangerous: false, status: "running" });
+        if (tool.status !== "running") patches.push({ type: "tool_update", taskId, messageId, toolCallId: tool.id,
+          output: tool.output ?? "", status: tool.status });
+      }
+      return patches;
+    }
 
     case "tool_execution_start": {
       const tool = event.toolName;

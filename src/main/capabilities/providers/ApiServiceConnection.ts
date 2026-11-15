@@ -12,7 +12,7 @@ export interface ResolvedApiConnection {
   baseUrl: string;
   headers?: Record<string, string>;
   timeoutMs: number;
-  protocol: "openai-compatible" | "openrouter" | "magpie" | "mistral-ocr" | "black-forest-labs" | "dashscope";
+  protocol: "openai-compatible" | "openrouter" | "magpie" | "mistral-ocr" | "black-forest-labs" | "dashscope" | "deepseek";
   model?: string;
   /** An adapter-specific default output, separate from the persisted connection contract. */
   speechFormat?: "mp3" | "wav";
@@ -65,7 +65,7 @@ export async function resolveApiConnection(options: ApiProviderOptions, connecti
   let raw: ResolvedApiConnection;
   try { raw = await options.getConnection(connectionId); }
   catch { throw new ApiProviderError("configuration", "selected service connection is unavailable"); }
-  if (!raw || !["openai-compatible", "openrouter", "magpie", "mistral-ocr", "black-forest-labs", "dashscope"].includes(raw.protocol)) {
+  if (!raw || !["openai-compatible", "openrouter", "magpie", "mistral-ocr", "black-forest-labs", "dashscope", "deepseek"].includes(raw.protocol)) {
     throw new ApiProviderError("configuration", "unsupported service protocol");
   }
   const id = requiredText(raw.id, "service ID", 200);
@@ -89,6 +89,7 @@ export async function resolveApiConnection(options: ApiProviderOptions, connecti
 }
 
 export function assertOpenAiShape(connection: ResolvedApiConnection): void {
+  if (connection.protocol === "deepseek") throw new ApiProviderError("unsupported", "DeepSeek tools require their native tool API adapter");
   if (connection.protocol === "mistral-ocr") throw new ApiProviderError("unsupported", "this connection only supports OCR");
   // Native task APIs have their own adapters; never route them through the OpenAI-shaped client.
   if (connection.protocol === "black-forest-labs" || connection.protocol === "dashscope") {

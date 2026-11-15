@@ -1,5 +1,5 @@
 /** Canonical search policy and persisted tool report. No credentials cross this boundary. */
-export const SEARCH_PROVIDER_IDS = ["openai", "codex", "brave", "parallel", "tinyfish", "search1api", "searchinfinity", "querit", "tavily", "searxng", "perplexity", "gemini", "exa", "serpdive", "serper", "kagi", "ollama", "anysearch", "xai", "brightdata", "serpbase"] as const;
+export const SEARCH_PROVIDER_IDS = ["openai", "codex", "deepseek", "brave", "parallel", "tinyfish", "search1api", "searchinfinity", "querit", "tavily", "searxng", "perplexity", "gemini", "exa", "serpdive", "serper", "kagi", "ollama", "anysearch", "xai", "brightdata", "serpbase"] as const;
 export type SearchMode = "auto" | "single" | "fallback" | "parallel";
 export interface WebSearchPolicy {
   mode: SearchMode;
@@ -37,6 +37,12 @@ export function searchPolicyFromConfig(raw: { searchPolicy?: unknown; searchProv
 export interface SearchOrigin { provider: string; query: string; rank: number; url: string }
 export interface WebSearchSource {
   title: string; url: string; snippet: string;
+  /** Provider-generated summary; never treat it as original page content. */
+  summary?: string;
+  siteName?: string;
+  siteIcon?: string;
+  rerankScore?: number;
+  authority?: number;
   canonicalUrl?: string;
   origins?: SearchOrigin[];
   publishedAt?: string;

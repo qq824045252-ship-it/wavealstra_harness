@@ -8,6 +8,7 @@ export interface FetchContentParams {
 	model?: unknown;
 	mode?: unknown;
 	answerModel?: unknown;
+	provider?: unknown;
 }
 
 export interface NormalizedFetchContentParams {
@@ -20,6 +21,7 @@ export interface NormalizedFetchContentParams {
 		model?: string;
 		mode?: "readable" | "raw" | "answer";
 		answerModel?: string;
+		provider?: "auto" | "deepseek";
 	};
 }
 
@@ -36,6 +38,10 @@ export function normalizeFetchContentParams(params: FetchContentParams): Normali
 	const model = normalizeOptionalString(params.model);
 	const mode = normalizeMode(params.mode);
 	const answerModel = normalizeOptionalString(params.answerModel);
+	if (params.provider !== undefined && params.provider !== "auto" && params.provider !== "deepseek") {
+		throw new Error('provider must be "auto" or "deepseek"');
+	}
+	if (params.provider === "deepseek" && mode === "raw") throw new Error('DeepSeek Fetch supports readable page text; use provider="auto" for raw responses');
 
 	return {
 		urlList,
@@ -47,6 +53,7 @@ export function normalizeFetchContentParams(params: FetchContentParams): Normali
 			...(model !== undefined ? { model } : {}),
 			...(mode !== undefined ? { mode } : {}),
 			...(answerModel !== undefined ? { answerModel } : {}),
+			...(params.provider !== undefined ? { provider: params.provider as "auto" | "deepseek" } : {}),
 		},
 	};
 }

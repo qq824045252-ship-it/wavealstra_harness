@@ -20,6 +20,8 @@ import { extractWithKagi, isKagiExtractAvailable } from "./kagi.ts";
 import { extractWithOllama, isOllamaFetchAvailable } from "./ollama.ts";
 import { extractWithFirecrawl, isFirecrawlAvailable } from "./firecrawl.ts";
 import { extractWithBrightDataUnlocker, isBrightDataUnlockerAvailable } from "./brightdata-unlocker.ts";
+import { fetchWithDeepSeek, getDeepSeekWebSettings } from "./deepseek.ts";
+import { shouldUseDeepSeekFetch } from "./fetch-strategy.ts";
 import { isVideoFile, extractVideo, extractVideoFrame, getLocalVideoDuration } from "./video-extract.ts";
 import { appendDeclaredWebLinks, discoverDeclaredWebLinks, type DeclaredWebLink } from "./declared-web-links.ts";
 import { fetchRemoteUrl, configuredPinnedProxy, PINNED_PUBLIC_PROXY, loadFetchContentDomainPolicy, loadSsrfConfig, validateRemoteUrl, UrlPolicyError, type Lookup } from "./ssrf-protection.ts";
@@ -92,6 +94,8 @@ export interface ExtractedContent {
 	status?: number;
 	/** 内容来源（可观测：http=HTTP 抓取；browser=MyBuddy 浏览器已渲染页复用；render=第三方渲染服务） */
 	source?: "http" | "browser" | "render";
+	/** API provider used for a rendered page; no credential/configuration data. */
+	provider?: string;
 }
 
 type HttpExtractedContent = ExtractedContent & { declaredLinks?: DeclaredWebLink[] };
@@ -106,6 +110,7 @@ export interface ExtractOptions {
 	model?: string;
 	mode?: "readable" | "raw" | "answer";
 	answerModel?: string;
+	provider?: "auto" | "deepseek";
 	/** Custom DNS resolver used for SSRF validation. Primarily a test seam. */
 	lookup?: Lookup;
 }
@@ -487,6 +492,17 @@ export async function extractContent(
 	}
 
 	if (signal?.aborted) return abortedResult(url);
+
+	try {
+		const settings = getDeepSeekWebSettings();
+		if (remoteUrl && shouldUseDeepSeekFetch(remoteUrl, { ...options, provider: options?.provider ?? settings.fetchProvider })) {
+			return await fetchWithDeepSeek(url, { signal, timeoutMs: options?.timeoutMs, lookup: options?.lookup, connectionId: settings.deepseekConnectionId });
+		}
+	} catch (err) {
+		if (isAbortError(err)) return abortedResult(url);
+		return { url, title: "", content: "", error: errorMessage(err), source: "render", provider: "deepseek",
+			...(err instanceof UrlPolicyError ? { errorCode: "url-policy" as const, retryable: false as const } : {}) };
+	}
 
 	const { declaredLinks = [], ...httpResult } = await extractViaHttp(url, signal, options);
 	const withDeclaredLinks = (result: ExtractedContent): ExtractedContent => ({

@@ -16,7 +16,7 @@ import {
   type BuiltinCapabilitiesConfigDto,
 } from "../../shared/builtin-capabilities";
 import { getMyBuddyDir } from "../paths";
-import { MEDIA_CAPABILITY_IDS, type ApiCapabilityConnection, type MediaCapabilityBinding, type MediaCapabilityId } from "../../shared/media-capabilities";
+import { API_PROTOCOL_CAPABILITIES, MEDIA_CAPABILITY_IDS, type ApiCapabilityConnection, type MediaCapabilityBinding, type MediaCapabilityId } from "../../shared/media-capabilities";
 
 const CONFIG_FILE = "capabilities.json";
 
@@ -36,7 +36,7 @@ function normalizeConnections(raw: BuiltinCapabilitiesConfigDto["connections"]):
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return connections;
   for (const [id, item] of Object.entries(raw)) {
     if (!/^api-[a-z0-9-]{1,80}$/i.test(id) || !item || typeof item !== "object") continue;
-    if (item.protocol !== "openai-compatible" && item.protocol !== "openrouter" && item.protocol !== "mistral-ocr" && item.protocol !== "baidu-ocr") continue;
+    if (!Object.hasOwn(API_PROTOCOL_CAPABILITIES, item.protocol)) continue;
     connections[id] = {
       name: cleanOptionalText(item.name, 100) ?? "API 服务",
       protocol: item.protocol,
@@ -63,6 +63,7 @@ function normalizeBindings(raw: BuiltinCapabilitiesConfigDto["mediaBindings"]): 
     bindings[capability] = {
       connectionId: cleanOptionalText(item.connectionId, 200) ?? "",
       model: cleanOptionalText(item.model, 300),
+      ...(capability === "ocr" && (item.ocrPurpose === "text_recognition" || item.ocrPurpose === "rich_layout_recognition") ? { ocrPurpose: item.ocrPurpose } : {}),
       selection: item.selection === "auto" && capability === "image-generation" ? "auto" : "manual",
       dataPolicy: item.dataPolicy === "local-only" ? "local-only" : item.dataPolicy === "allow-cloud" ? "allow-cloud" : undefined,
     };

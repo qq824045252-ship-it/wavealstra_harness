@@ -4,6 +4,8 @@ import type { UserInput } from "@earendil-works/pi-durable";
 import type { BotAttachmentDto } from "../../../shared/bot-conversation";
 import { ContentExtractorRegistry, defaultBudget } from "../../library/ContentExtractorRegistry";
 import { modelSupportsImageInput } from "../../capabilities/VisionRouting";
+import { deepseekNativeOptions } from "../../../shared/deepseek";
+import { deepseekFileAttachment } from "../providers/deepseek-files";
 
 const imageTypes: Record<string, string> = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif" };
 const documentTypes: Record<string, { kind: "pdf" | "office"; mime: string }> = {
@@ -29,6 +31,7 @@ export async function prepareBotAttachmentInput(options: {
   let inlineBytes = 0;
   let documentChars = 0;
   const extractionStartedAt = Date.now();
+  const nativeFiles = deepseekNativeOptions(options.model).files;
   for (const attachment of options.attachments) {
     let bytes: Buffer;
     try {
@@ -40,6 +43,11 @@ export async function prepareBotAttachmentInput(options: {
     const mime = imageTypes[extension];
     if ([".bmp", ".avif", ".heic", ".heif", ".tif", ".tiff"].includes(extension)) throw new BotAttachmentInputError(`图片「${attachment.name}」格式暂不支持直接识别，请转换为 PNG、JPEG、WebP 或 GIF 后发送。`);
     content.push({ type: "text", text: `用户附件（持久副本）：${JSON.stringify(attachment.name)}\n路径：${attachment.path}` });
+    if (nativeFiles) {
+      if (!bytes.length) throw new BotAttachmentInputError(`附件「${attachment.name}」为空，未发送给 DeepSeek。`);
+      const native = deepseekFileAttachment(attachment.path, attachment.name, bytes, nativeFiles);
+      if (native) { content.push(native); continue; }
+    }
     if (mime) {
       if (!bytes.length || bytes.length > 12 * 1024 * 1024) throw new BotAttachmentInputError(`图片「${attachment.name}」为空或超过 12MB，未发送给模型。`);
       if (modelSupportsImageInput(options.model)) content.push({ type: "image", mimeType: mime, data: bytes.toString("base64") });

@@ -55,6 +55,7 @@ import type { DiagnosticSource, ToolDiagnosticEvent } from "../../../shared/task
 import { durableInputAuditSchema, type DurableInputAudit } from "./DurableSkillProjection";
 import { mergeContextUsage } from "../../usage/context-usage-merge";
 import { GenerationTiming, generationContentTokens } from "../../usage/generation-timing";
+import { deepseekCitationMarkdown } from "../../../shared/deepseek";
 
 type BotInputMetadata = DurableInputMetadata;
 const CompactionRequestSequence = defineDoc({ kind: "mybuddy.compaction-request-sequence", version: 1, scope: "session",
@@ -937,7 +938,7 @@ export class DurableBotRuntime {
       if (message.stopReason === "error" || message.stopReason === "aborted" || message.stopReason === "length") {
         throw new Error(message.errorMessage || `Durable 回复未完成：${message.stopReason}`);
       }
-      const text = contentText(message.content).trim();
+      const text = (contentText(message.content) + deepseekCitationMarkdown(message)).trim();
       if (!text && options?.requireText) throw new DurableReplyError("接收方未产生文本回复");
       return text || "任务已处理，但未产生文本回复。";
     } catch (error) {

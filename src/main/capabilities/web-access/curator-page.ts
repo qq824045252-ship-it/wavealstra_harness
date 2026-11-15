@@ -8,13 +8,14 @@ function safeInlineJSON(data: unknown): string {
 }
 
 function buildProviderButtons(
-	available: { all: boolean; openai: boolean; brave: boolean; parallel: boolean; tinyfish: boolean; search1api: boolean; searchinfinity: boolean; querit: boolean; tavily: boolean; serpdive: boolean; kagi: boolean; ollama: boolean; searxng: boolean; perplexity: boolean; exa: boolean; gemini: boolean; anysearch: boolean; xai: boolean; brightdata: boolean; serpbase: boolean },
+	available: { all: boolean; openai: boolean; deepseek?: boolean; brave: boolean; parallel: boolean; tinyfish: boolean; search1api: boolean; searchinfinity: boolean; querit: boolean; tavily: boolean; serpdive: boolean; kagi: boolean; ollama: boolean; searxng: boolean; perplexity: boolean; exa: boolean; gemini: boolean; anysearch: boolean; xai: boolean; brightdata: boolean; serpbase: boolean },
 	selected: string,
 	hasInitialQueries: boolean,
 ): string {
 	const providers = [
 		{ value: "all", label: "All", available: available.all },
 		{ value: "openai", label: "OpenAI", available: available.openai },
+		{ value: "deepseek", label: "DeepSeek", available: available.deepseek },
 		{ value: "exa", label: "Exa", available: available.exa },
 		{ value: "brave", label: "Brave", available: available.brave },
 		{ value: "parallel", label: "Parallel", available: available.parallel },
@@ -51,7 +52,7 @@ export function generateCuratorPage(
 	queries: string[],
 	sessionToken: string,
 	timeout: number,
-	availableProviders: { all: boolean; openai: boolean; brave: boolean; parallel: boolean; tinyfish: boolean; search1api: boolean; searchinfinity: boolean; querit: boolean; tavily: boolean; serpdive: boolean; kagi: boolean; ollama: boolean; searxng: boolean; perplexity: boolean; exa: boolean; gemini: boolean; anysearch: boolean; xai: boolean; brightdata: boolean; serpbase: boolean },
+	availableProviders: { all: boolean; openai: boolean; deepseek?: boolean; brave: boolean; parallel: boolean; tinyfish: boolean; search1api: boolean; searchinfinity: boolean; querit: boolean; tavily: boolean; serpdive: boolean; kagi: boolean; ollama: boolean; searxng: boolean; perplexity: boolean; exa: boolean; gemini: boolean; anysearch: boolean; xai: boolean; brightdata: boolean; serpbase: boolean },
 	defaultProvider: string,
 	searchProvider: string,
 	summaryModels: Array<{ value: string; label: string }>,
@@ -1447,7 +1448,7 @@ const SCRIPT = `(function() {
   var token = DATA.sessionToken;
   var timeoutSec = DATA.timeout;
   var queries = Array.isArray(DATA.queries) ? DATA.queries : [];
-  var providers = ["all", "openai", "exa", "brave", "parallel", "tinyfish", "search1api", "searchinfinity", "querit", "tavily", "serpdive", "kagi", "ollama", "searxng", "perplexity", "gemini", "anysearch", "xai", "brightdata", "serpbase"];
+  var providers = ["all", "openai", "deepseek", "exa", "brave", "parallel", "tinyfish", "search1api", "searchinfinity", "querit", "tavily", "serpdive", "kagi", "ollama", "searxng", "perplexity", "gemini", "anysearch", "xai", "brightdata", "serpbase"];
   var availProviders = DATA.availableProviders && typeof DATA.availableProviders === "object" ? DATA.availableProviders : {};
   var workflow = "summary-review";
   var initialDefaultProvider = typeof DATA.defaultProvider === "string" ? DATA.defaultProvider : "exa";
@@ -1649,6 +1650,7 @@ const SCRIPT = `(function() {
   function providerLabel(provider) {
     if (provider === "all") return "All";
     if (provider === "openai") return "OpenAI";
+    if (provider === "deepseek") return "DeepSeek";
     if (provider === "brave") return "Brave";
     if (provider === "parallel") return "Parallel";
     if (provider === "tinyfish") return "TinyFish";
@@ -1700,6 +1702,7 @@ const SCRIPT = `(function() {
   function summaryProviderLabel(provider) {
     if (!provider) return "";
     if (provider === "openai") return "OpenAI";
+    if (provider === "deepseek") return "DeepSeek";
     if (provider === "google") return "Google";
     if (provider === "anthropic") return "Anthropic";
     return provider.charAt(0).toUpperCase() + provider.slice(1);

@@ -23,6 +23,7 @@ export function mergeSearchSources(runs: SearchProviderRun[], limit = 60): WebSe
         existing.score += 1 / (60 + i + 1);
       }
       if (!existing.source.snippet && item.snippet) existing.source.snippet = item.snippet;
+      if (!existing.source.summary && item.summary) existing.source.summary = item.summary;
     } else merged.set(key, { source: { ...item, canonicalUrl: key, origins: [origin], evidence: item.evidence ?? "snippet" }, score: 1 / (60 + i + 1) });
   }
   return [...merged.values()].sort((a, b) => b.score - a.score).slice(0, limit).map(x => x.source);
@@ -53,7 +54,7 @@ export async function runSearchBatch(query: string, providers: string[], options
         timer = setTimeout(() => { controller.abort(); reject(new Error("Search deadline exceeded")); }, Math.min(options.providerTimeoutMs, options.totalTimeoutMs));
       });
       const reply = await Promise.race([deadline, Promise.resolve().then(() => { controller.signal.throwIfAborted(); return options.run(item.provider, controller.signal); })]);
-      item.results = reply.results.filter(r => /^https?:\/\//i.test(r.url)).slice(0, 20).map(r => ({ ...r, title: r.title.slice(0, 600), snippet: r.snippet.slice(0, 3000) }));
+      item.results = reply.results.filter(r => /^https?:\/\//i.test(r.url)).slice(0, 20).map(r => ({ ...r, title: r.title.slice(0, 600), snippet: r.snippet.slice(0, 3000), ...(r.summary !== undefined ? { summary: r.summary.slice(0, 6000) } : {}) }));
       item.answer = reply.answer.slice(0, 12000);
       if (reply.answer.length > 12000) item.answerTruncated = true;
       item.status = item.results.length ? "success" : "empty";

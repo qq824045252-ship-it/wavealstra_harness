@@ -9,7 +9,14 @@ export const LOCAL_WHISPER_CONNECTION_ID = "builtin-whisper";
 export const LOCAL_OCR_CONNECTION_ID = "builtin-local-ocr";
 
 /** These presets name implemented protocols, not a promise about every server. */
-export type ApiCapabilityProtocol = "openai-compatible" | "openrouter" | "mistral-ocr" | "baidu-ocr" | "black-forest-labs" | "dashscope";
+export type ApiCapabilityProtocol = "openai-compatible" | "openrouter" | "mistral-ocr" | "baidu-ocr" | "black-forest-labs" | "dashscope" | "deepseek";
+export const DEEPSEEK_API_ROOT = "https://api.deepseek.com";
+export const DEEPSEEK_OCR_PURPOSES = [
+  { id: "text_recognition", label: "文字识别" },
+  { id: "rich_layout_recognition", label: "富版面识别" },
+] as const;
+export type DeepSeekOcrPurpose = (typeof DEEPSEEK_OCR_PURPOSES)[number]["id"];
+export const DEEPSEEK_TTS_VOICES = [{ id: "stella", label: "Stella（女声）" }, { id: "tide", label: "Tide（男声）" }] as const;
 export const BAIDU_OCR_API_ROOT = "https://aip.baidubce.com";
 export const BLACK_FOREST_LABS_API_ROOT = "https://api.bfl.ai/v1";
 export const DASHSCOPE_API_ROOT = "https://dashscope.aliyuncs.com/api/v1";
@@ -27,6 +34,7 @@ export const API_PROTOCOL_CAPABILITIES: Record<ApiCapabilityProtocol, MediaCapab
   openrouter: [...MEDIA_CAPABILITY_IDS],
   "mistral-ocr": ["ocr"],
   "baidu-ocr": ["ocr"],
+  deepseek: ["speech-to-text", "ocr", "text-to-speech"],
   /** Native asynchronous task APIs: image + video only, never audio or OCR. */
   "black-forest-labs": ["image-generation", "video-generation"],
   dashscope: ["image-generation", "video-generation"],
@@ -59,6 +67,7 @@ export interface MediaProviderPreset {
 
 /** Built-in API choices. Custom compatible gateways remain available separately. */
 export const MEDIA_PROVIDER_PRESETS: MediaProviderPreset[] = [
+  { id: "deepseek", label: "DeepSeek 官方 API", protocol: "deepseek", baseUrl: DEEPSEEK_API_ROOT, capabilities: ["speech-to-text", "ocr", "text-to-speech"], hint: "一把 API Key 共用搜索、网页读取、文档 OCR、语音识别与语音合成；独立工具无需填写模型名称。" },
   { id: "openrouter", label: "OpenRouter（五项共用）", protocol: "openrouter", baseUrl: OPENROUTER_API_ROOT, capabilities: [...MEDIA_CAPABILITY_IDS], hint: "一把 API Key 连接五项能力；模型由实时能力目录或模型 ID 决定。" },
   { id: "openai", label: "OpenAI API", protocol: "openai-compatible", baseUrl: "https://api.openai.com/v1", capabilities: ["speech-to-text", "ocr", "text-to-speech", "image-generation"], hint: "使用原生转写、语音、图片 API 与视觉模型 OCR；不使用已经停用的旧视频接口。" },
   { id: "groq", label: "Groq", protocol: "openai-compatible", baseUrl: "https://api.groq.com/openai/v1", capabilities: ["speech-to-text", "ocr", "text-to-speech"], hint: "语音合成使用 WAV，Orpheus 模型每次最多约 200 字；OCR 需要支持图片输入的视觉模型。" },
@@ -113,14 +122,21 @@ export function connectionCapabilities(connection: ApiCapabilityConnection): Med
   // The Baidu native protocol only has the verified official preset;
   // generic OpenAI-compatible endpoints cannot claim to implement it.
   if (connection.protocol === "baidu-ocr" && connection.presetId !== "baidu-ocr") return [];
+  if (connection.protocol === "deepseek" && connection.presetId !== "deepseek") return [];
   const preset = MEDIA_PROVIDER_PRESETS.find((item) => item.id === connection.presetId);
   if (preset) return preset.protocol === connection.protocol ? preset.capabilities : [];
   return API_PROTOCOL_CAPABILITIES[connection.protocol] ?? [];
 }
 
+/** Native DeepSeek tools select an operation, not a chat model. */
+export function connectionRequiresModel(connection: Pick<ApiCapabilityConnection, "protocol">): boolean {
+  return connection.protocol !== "deepseek";
+}
+
 export interface MediaCapabilityBinding {
   connectionId: string;
   model?: string;
+  ocrPurpose?: DeepSeekOcrPurpose;
   /** Auto resolves once and stays pinned, including after logout or failures. */
   selection?: "auto" | "manual";
   /** Recognition output enters the current conversation. Preserve restrictive legacy intent. */
@@ -136,6 +152,8 @@ export interface CapabilityConnectionOption {
   models: Partial<Record<MediaCapabilityId, CapabilityModelOption[]>>;
   /** A protocol can be implemented without having a vendor model catalogue. */
   allowCustomModel: boolean;
+  /** False for native operations which do not accept a model parameter. */
+  requiresModel?: boolean;
   configured: boolean;
   authState: "signed-in" | "needs-login" | "configured" | "missing-key" | "none";
   location?: "loopback" | "remote";
