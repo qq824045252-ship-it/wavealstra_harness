@@ -715,7 +715,7 @@ function MessageItem({ message, taskId, artifacts = EMPTY_ARTIFACTS, visibleArti
           </span>
         </div>
 
-        <ExecutionTimeline message={message} />
+        <ExecutionTimeline message={message} taskId={taskId} />
 
         {(message.interactions ?? []).map((interaction) => (
           <ConversationInteractionCard key={interaction.id} interaction={interaction} />
@@ -736,6 +736,7 @@ function MessageItem({ message, taskId, artifacts = EMPTY_ARTIFACTS, visibleArti
                 block={visibleBlock}
                 index={i}
                 messageId={message.id}
+                taskId={taskId}
                 streaming={message.streaming}
               />
             );

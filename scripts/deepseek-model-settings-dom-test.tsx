@@ -54,10 +54,16 @@ try {
   assert.equal(field<HTMLSelectElement>("DeepSeek 附件处理").value, "rich");
   await toggle("DeepSeek 联网搜索", false); await toggle("DeepSeek 网页读取", false); await files(""); await save();
   assert.deepEqual(saved!.override?.compat, { supportsStore: false, mybuddyDeepSeek: { webSearch: false, readUrl: false } });
-  for (const entry of [{ ...initial, baseUrl: "https://gateway.example/v1" }, { ...initial, api: "openai-responses" }, { ...initial, modelId: "deepseek-v4-pro" }]) {
+  for (const entry of [{ ...initial, baseUrl: "https://gateway.example/v1" }, { ...initial, api: "anthropic-messages" }, { ...initial, modelId: "deepseek-v4-pro" }]) {
     await draw(entry);
     assert(field<HTMLInputElement>("DeepSeek 联网搜索").disabled);
     assert(field<HTMLSelectElement>("DeepSeek 附件处理").disabled);
+  }
+  for (const entry of [{ ...initial, api: "openai-responses" }, { ...initial, api: "anthropic-messages", baseUrl: "https://api.deepseek.com/anthropic" }]) {
+    await draw(entry);
+    assert(!field<HTMLInputElement>("DeepSeek 联网搜索").disabled, "all supported official transports expose the same native capabilities");
+    assert(!field<HTMLSelectElement>("DeepSeek 附件处理").disabled);
+    assert.match(document.body.textContent ?? "", /重启后仍复用/);
   }
   await draw({ ...initial, baseUrl: "https://gateway.example/v1", api: "openai-responses",
     definition: { id: "deepseek-flash", api: "openai-completions", baseUrl: "https://api.deepseek.com" } });

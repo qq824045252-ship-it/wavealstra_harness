@@ -1,5 +1,6 @@
 import WebSearchCard from "./WebSearchCard";
 import MultiModelConsultCard from "./MultiModelConsultCard";
+import CapabilityResultCard, { isCapabilityTool } from "./CapabilityResultCard";
 import { useState } from "react";
 import type { ToolCall } from "@/types";
 import {
@@ -29,6 +30,8 @@ const STATUS_CLASS: Record<ToolCall["status"], string> = {
 interface Props {
   messageId: string;
   toolCall: ToolCall;
+  taskId?: string;
+  onSearchFollowup?: ((text: string) => void) | null;
 }
 
 function acpPermissionLabel(option: NonNullable<ToolCall["acpPermissionOptions"]>[number]): string {
@@ -59,7 +62,7 @@ function acpPermissionLabel(option: NonNullable<ToolCall["acpPermissionOptions"]
   return "始终允许";
 }
 
-export default function ToolCallCard({ messageId, toolCall }: Props): React.JSX.Element {
+export default function ToolCallCard({ messageId, toolCall, taskId, onSearchFollowup }: Props): React.JSX.Element {
   const needsApproval = toolCall.status === "pending_approval";
   const [open, setOpen] = useState(needsApproval);
 
@@ -81,9 +84,11 @@ export default function ToolCallCard({ messageId, toolCall }: Props): React.JSX.
       <IconAlert size={13} />
     );
 
-  if (toolCall.webSearch) return <WebSearchCard toolCall={toolCall} />;
+  if (toolCall.webSearch) return <WebSearchCard toolCall={toolCall} onFollowup={onSearchFollowup} />;
 
   if (toolCall.tool === "multi_model_consult") return <MultiModelConsultCard toolCall={toolCall} />;
+
+  if (isCapabilityTool(toolCall.tool) && !needsApproval) return <CapabilityResultCard toolCall={toolCall} taskId={taskId} />;
 
   if (needsApproval && isAcpPermission) {
     return (

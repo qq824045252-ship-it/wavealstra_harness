@@ -3,6 +3,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 
 import type { ChatMessage, MessageBlock } from "@/types";
 import MessageBlockView from "./MessageBlockView";
 import WebSearchCard from "./WebSearchCard";
+import { isCapabilityTool } from "./CapabilityResultCard";
 import { IconChevronRight } from "@/components/common/icons";
 import {
   computeFocusView,
@@ -25,6 +26,7 @@ function normalizeThinkingText(text: string): string {
 
 interface Props {
   message: ChatMessage;
+  taskId?: string;
 }
 
 /**
@@ -198,7 +200,7 @@ function messageHasFinalOutput(message: ChatMessage): boolean {
 /** 执行过程时间线：默认折叠为「已完成 xx」；展开可见多段思考与工具。
  *  流式期间启用「聚焦最新」：只显示最新活跃思考 + 当前运行工具，旧内容退入
  *  可展开历史摘要（historyOpen）；assistant_end 后沿用整体折叠。 */
-function ExecutionTimeline({ message }: Props): React.JSX.Element | null {
+function ExecutionTimeline({ message, taskId }: Props): React.JSX.Element | null {
   const hasPendingApproval = message.blocks.some(
     (b) => b.type === "tool" && b.toolCall.status === "pending_approval",
   );
@@ -283,7 +285,7 @@ function ExecutionTimeline({ message }: Props): React.JSX.Element | null {
   const activeToolNames = message.blocks.flatMap((block) => block.type === "tool" && block.toolCall.status === "running" ? [block.toolCall.tool] : []);
   const runningLabel = nativeRunPhaseLabel(message.generationStats?.phase, activeToolNames, hasFinalOutput,
     message.generationStats?.retry, message.generationStats?.attempts);
-  const isResultCard = (block: MessageBlock): boolean => block.type === "tool" && (block.toolCall.tool === "multi_model_consult" || Boolean(block.toolCall.webSearch));
+  const isResultCard = (block: MessageBlock): boolean => block.type === "tool" && (block.toolCall.tool === "multi_model_consult" || Boolean(block.toolCall.webSearch) || isCapabilityTool(block.toolCall.tool));
   const resultBlocks = message.blocks.filter(isResultCard);
   const searchCalls = resultBlocks.flatMap(block => block.type === "tool" && block.toolCall.webSearch ? [block.toolCall] : []);
   const groups = groupTimelineBlocks(message.blocks.filter(block => !isResultCard(block)));
@@ -359,6 +361,7 @@ function ExecutionTimeline({ message }: Props): React.JSX.Element | null {
                     block={group.block}
                     index={group.index}
                     messageId={message.id}
+                    taskId={taskId}
                     streaming={message.streaming}
                   />
                 );
@@ -374,7 +377,7 @@ function ExecutionTimeline({ message }: Props): React.JSX.Element | null {
         return block.toolCall.id === searchCalls[0]?.id
           ? <WebSearchCard key={block.toolCall.id} toolCall={block.toolCall} toolCalls={searchCalls} /> : null;
       }
-      return <MessageBlockView key={block.type === "tool" ? block.toolCall.id : index} block={block} index={index} messageId={message.id} streaming={message.streaming} />;
+      return <MessageBlockView key={block.type === "tool" ? block.toolCall.id : index} block={block} index={index} messageId={message.id} taskId={taskId} streaming={message.streaming} />;
     })}
     </>
   );

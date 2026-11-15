@@ -153,7 +153,7 @@ export default function ModelEditorModal({
               <div className="models-modal-sub">
                 {supportsNativeDeepSeek
                   ? "使用此模型的 API Key。联网搜索与网页读取由 DeepSeek 服务端执行；引用来源和网页上下文会随对话保存。"
-                  : "原生能力需使用官方 api.deepseek.com 的 deepseek-flash 与 Chat Completions 协议。其他模型或协议保留普通对话能力。"}
+                  : "原生能力需使用官方 api.deepseek.com 的 deepseek-flash，支持 Chat Completions、Responses 和 Anthropic Messages（/anthropic）协议。"}
               </div>
               <label className="models-field">
                 <span className="models-native-option"><input type="checkbox" aria-label="DeepSeek 联网搜索" disabled={busy || !supportsNativeDeepSeek} checked={deepseek.webSearch === true}
@@ -171,7 +171,7 @@ export default function ModelEditorModal({
                   <option value="text">DeepSeek Files：文档正文</option>
                   <option value="rich">DeepSeek Files：文档正文和插图</option>
                 </select>
-                <small>启用后，受支持的 Bot 附件会上传至 DeepSeek，并通过 file_id 交给模型。PDF、Word、PowerPoint 使用所选解析模式；图片、文本、表格和电子书使用原生文件输入。服务器副本保留 24 小时，应用保留的附件副本可在后续请求中重新上传。</small>
+                <small>启用后，受支持的 Bot 附件会上传至 DeepSeek，并通过 file_id 交给模型。PDF、Word、PowerPoint、BMP 和 TIFF 使用所选解析模式；其他支持的图片、文本、表格和电子书使用原生文件输入。对话中显示上传与解析进度。服务器副本保留 24 小时，重启后仍复用有效上传记录；过期后重新上传。</small>
               </label>
             </>
           )}

@@ -52,6 +52,7 @@ import type { PythonRuntimeService } from "../runtime/PythonRuntimeService";
 import { executePython } from "../runtime/PythonExecutor";
 import type { PythonEnvironmentSpec } from "../../shared/python-runtime";
 import type { SkillScriptOwner } from "../skills/SkillsService";
+import type { SpeechStreamHandle } from "./SpeechStreamService";
 
 export interface BuiltinCapabilityExtensionBridge {
   localWorkflow?: LocalWorkflowBridge;
@@ -65,6 +66,7 @@ export interface BuiltinCapabilityExtensionBridge {
   artifactService: () => ArtifactService | null;
   markArtifactEmitted?: (path: string) => void;
   getProducerMessageId: () => string | undefined;
+  inputFilePaths?: readonly string[];
   getIsolationLevel: () => IsolationLevel | unknown;
   getExecutionRunId?: () => string | undefined;
   /** Evidence for the optional execute_code capability; Pi core tools do not use this bridge. */
@@ -209,6 +211,7 @@ function toolContext(
     taskRoot: bridge.taskRoot,
     toolCallId,
     producerMessageId: bridge.getProducerMessageId(),
+    inputFilePaths: bridge.inputFilePaths,
     signal,
   };
 }
@@ -713,13 +716,21 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
         description: "把文本合成为语音；输出保存到当前任务目录并登记 Audio Artifact。",
         promptSnippet: "text_to_speech(text, voice?, rate?, format?)",
         parameters: textToSpeechSchema,
-        execute: async (tc, p: TextToSpeechInput, signal?: AbortSignal) => {
+        execute: async (tc, p: TextToSpeechInput, signal, onUpdate) => {
+          let stream: SpeechStreamHandle | undefined;
           try {
             const context = toolContext(bridge, tc, signal);
             if (!bridge.runtime.config().textToSpeech.enabled) throw new Error("文字转语音已关闭。");
             const provider = bridge.runtime.textToSpeechProvider();
             if (!provider?.textToSpeech) throw new Error("请先配置文字转语音服务。");
+            if (provider.supportsAudioStreaming) {
+              stream = bridge.runtime.speechStreams.start(context);
+              context.signal = stream.signal;
+              context.audioStream = stream.audioStream;
+            }
             const current = bridge.runtime.config().textToSpeech;
+            onUpdate?.({ content: [], details: { provider: provider.id, metadata: { voice: p.voice ?? current.voice },
+              capabilityResult: { kind: "speech", stream: stream?.scope, artifacts: [] } } });
             const generated = await provider.textToSpeech({
               ...p,
               model: bridge.runtime.mediaModel("text-to-speech"),
@@ -727,8 +738,11 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
               rate: p.rate ?? current.rate,
             }, context);
             const saved = await materializer.materialize("audio", generated, context, "合成语音");
-            return jsonResult(`已生成并保存 ${saved.paths.length} 个音频`, { ...generated, items: saved.paths, artifactIds: saved.artifacts.map((a) => a.id) });
-          } catch (error) { return errorResult("text_to_speech", error); }
+            stream?.complete();
+            return jsonResult(`已生成并保存 ${saved.paths.length} 个音频`, { ...generated, items: saved.paths, artifactIds: saved.artifacts.map((a) => a.id),
+              capabilityResult: { kind: "speech", stream: stream?.scope, durationSeconds: generated.items[0]?.durationSeconds,
+                artifacts: saved.artifacts.map((artifact, index) => ({ id: artifact.id, name: artifact.title ?? "合成语音", durationSeconds: generated.items[index]?.durationSeconds })) } });
+          } catch (error) { stream?.fail(error); return errorResult("text_to_speech", error); }
         },
       });
     }

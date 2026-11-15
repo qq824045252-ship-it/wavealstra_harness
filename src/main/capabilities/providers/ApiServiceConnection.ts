@@ -121,7 +121,8 @@ export async function readTaskFile(path: string, context: ToolExecutionContext, 
     const actual = await realpath(resolve(root, path));
     const rel = relative(root, actual);
     if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
-      throw new ApiProviderError("policy", "input file must be inside the current task");
+      const attached = await Promise.all((context.inputFilePaths ?? []).map(path => realpath(path).catch(() => undefined)));
+      if (!attached.includes(actual)) throw new ApiProviderError("policy", "input file must be inside the current task or an attached host snapshot");
     }
     const info = await stat(actual);
     if (!info.isFile() || info.size < 1 || info.size > limit) throw new ApiProviderError("limit", "input file is empty or exceeds the upload limit");

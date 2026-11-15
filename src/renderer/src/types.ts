@@ -11,6 +11,7 @@ export interface ToolCall {
   output?: string;
   consult?: import("../../shared/multi-model-consult").MultiModelConsultReport;
   webSearch?: import("../../shared/web-search").WebSearchReport;
+  capabilityResult?: import("../../shared/capability-result").CapabilityResult;
   status: ToolStatus;
   /** 是否为需要审批的危险操作 */
   dangerous?: boolean;

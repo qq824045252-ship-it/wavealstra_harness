@@ -656,6 +656,14 @@ export default function CapabilitiesTab(): React.JSX.Element {
           {id === "text-to-speech" && deepseek && <SettingsSelect label="声音" aria-label="文字转语音声音" value={draft.textToSpeech.voice ?? "stella"} onChange={event => changeConfig(current => ({ ...current, textToSpeech: { ...current.textToSpeech, voice: event.target.value, rate: undefined } }))}>
             {DEEPSEEK_TTS_VOICES.map(voice => <option key={voice.id} value={voice.id}>{voice.label}</option>)}
           </SettingsSelect>}
+          {id === "text-to-speech" && deepseek && <>
+            <SettingsSelect label="播放方式" aria-label="文字转语音播放方式" value={draft.textToSpeech.transport ?? "websocket"}
+              onChange={event => changeConfig(current => ({ ...current, textToSpeech: { ...current.textToSpeech, transport: event.target.value === "http" ? "http" : "websocket" } }))}>
+              <option value="websocket">实时播放（WebSocket）</option>
+              <option value="http">生成后播放（HTTP WAV）</option>
+            </SettingsSelect>
+            <p className="settings-row-desc">实时模式可在对话中的语音卡片开始播放、暂停或停止。合成完成后保留 WAV 文件，便于重播和下载。</p>
+          </>}
           {id === "text-to-speech" && !deepseek && <div className="capability-form-grid">
             <div><SettingsInput label="声音" aria-label="文字转语音声音"
               list="capability-tts-voice-options" value={draft.textToSpeech.voice ?? ""}

@@ -486,6 +486,8 @@ export async function run(): Promise<string[]> {
   assert(!document.querySelector('[aria-label="语音转文字模型"], [aria-label="图片文字识别模型"], [aria-label="文字转语音模型"]'), "Native DeepSeek tools have no fabricated model field");
   assert(!document.querySelector('[aria-label="文字转语音语速"]'), "DeepSeek does not offer an unsupported speed field");
   assert(element<HTMLSelectElement>('[aria-label="文字转语音声音"]').value === "stella", "Selecting DeepSeek resets a previous provider's voice to Stella");
+  assert(element<HTMLSelectElement>('[aria-label="文字转语音播放方式"]').value === "websocket", "DeepSeek defaults to real-time WebSocket speech");
+  await change('[aria-label="文字转语音播放方式"]', "http");
   await change('[aria-label="文字转语音声音"]', "tide");
   await change('[aria-label="DeepSeek OCR 识别方式"]', "rich_layout_recognition");
   await change('[aria-label="网页读取服务"]', "deepseek");
@@ -508,6 +510,7 @@ export async function run(): Promise<string[]> {
   assert(!JSON.stringify(search).includes("fixture-deepseek-key") && !JSON.stringify(config).includes("fixture-deepseek-key"), "Only the credential change payload carries the key");
   assert(config.mediaBindings?.ocr?.ocrPurpose === "rich_layout_recognition" && config.textToSpeech.voice === "tide" && config.textToSpeech.rate === undefined, "OCR mode and supported voice survive save; stale speed is cleared");
   assert(config.connections?.[deepseekId]?.timeoutMs === 180_000, "Native document calls receive a 180-second default wait");
+  assert(config.textToSpeech.transport === "http", "Explicit HTTP WAV choice is persisted");
   passed.push("DeepSeek shares one model-free connection across five tools with ordered persistence, OCR mode and native voices");
 
   flushSync(() => root.render(null));
@@ -515,11 +518,17 @@ export async function run(): Promise<string[]> {
   await waitFor(() => Boolean(document.querySelector('[aria-label="DeepSeek OCR 识别方式"]')), "Reopened DeepSeek settings load");
   assert(element<HTMLSelectElement>('[aria-label="DeepSeek OCR 识别方式"]').value === "rich_layout_recognition", "Reopening retains document recognition mode");
   assert(element<HTMLSelectElement>('[aria-label="文字转语音声音"]').value === "tide", "Reopening retains selected native voice");
+  assert(element<HTMLSelectElement>('[aria-label="文字转语音播放方式"]').value === "http", "Reopening retains explicit HTTP speech");
   assert(element<HTMLSelectElement>('[aria-label="DeepSeek 搜索服务"]').value === deepseekId, "Reopening retains the shared search service");
   assert(element<HTMLSelectElement>('[aria-label="网页读取服务"]').value === "deepseek", "Reopening retains native page reading");
   assert(element<HTMLInputElement>(`${deepseekPanel} [aria-label="API Key"]`).value === "", "Reopening does not expose a saved key");
   assert(element<HTMLButtonElement>(saveButton).disabled, "Reopened configuration is clean without a synthetic model edit");
   passed.push("DeepSeek settings reopen with all selections and no secret disclosure or required model");
+  await change('[aria-label="文字转语音播放方式"]', "websocket");
+  await save();
+  assert(config.textToSpeech.transport === "websocket", "Switching to streaming persists without changing model, voice or credentials");
+  assert(config.textToSpeech.voice === "tide" && config.textToSpeech.model === undefined, "Streaming does not fabricate model or reset the voice");
+  passed.push("DeepSeek speech transport defaults, explicit HTTP persistence and WebSocket re-selection");
   return passed;
 }
 

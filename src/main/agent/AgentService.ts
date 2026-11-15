@@ -361,6 +361,7 @@ import { createProjectPlanExtension } from "../project/project-plan-extension";
 import { browserHost } from "../browser/BrowserHost";
 import { BrowserAutomationService } from "../capabilities/BrowserAutomationService";
 import { BuiltinCapabilityRuntime } from "../capabilities/BuiltinCapabilityRuntime";
+import { createBotCapabilityTools } from "./work/BotCapabilityTools";
 import { MediaCapabilityServices } from "../capabilities/MediaCapabilityServices";
 import { configureDeepSeekConnectionSource, isDeepSeekConnectionConfigured } from "../capabilities/providers/DeepSeekConnection";
 import { VideoGenerationJobs } from "../capabilities/VideoGenerationJobs";
@@ -1851,6 +1852,10 @@ export class AgentService {
       webTools: async cwd => {
         const { createWebAccessCapabilityExtension } = await import("../capabilities/web-access");
         return durableDomainTools([createWebAccessCapabilityExtension], { cwd, models: this.durableModels! });
+      },
+      capabilityTools: async (cwd, messageId, inputFilePaths) => {
+        return createBotCapabilityTools({ cwd, messageId, models: this.durableModels!, runtime: this.builtinCapabilities,
+          browser: this.browserAutomation, artifactService: () => this.artifactService, getIsolationLevel: () => this.getShellIsolationLevel(), inputFilePaths });
       },
       defaultModel: () => this.settingsStore.read().defaultModelId, isAuthority: () => this.workHostAuthority.isAuthority(),
       memory: botMemory, memorySearch: (botId, query) => botMemory.search(botId, query),
@@ -5363,6 +5368,7 @@ export class AgentService {
   }
 
   dispose(): void {
+    this.builtinCapabilities.speechStreams.close();
     this.workService.scheduler.stop();
     this.workService.scheduler.markStopped();
     this.workHostAuthority.stop();

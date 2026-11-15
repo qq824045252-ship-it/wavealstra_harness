@@ -86,6 +86,8 @@ export interface BuiltinTextToSpeechConfig {
   model?: string;
   voice?: string;
   rate?: string;
+  /** DeepSeek streaming playback or explicit HTTP WAV synthesis. */
+  transport?: "http" | "websocket";
 }
 
 export interface BuiltinBrowserConfig {

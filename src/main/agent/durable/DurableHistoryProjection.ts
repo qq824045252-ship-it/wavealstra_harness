@@ -5,6 +5,9 @@ import type { ChatMessageDto } from "../../../shared/agent-ipc";
 import { summarizeToolInput } from "../../../shared/pi-event-mapper";
 import type { DurableBotSnapshot } from "../../../shared/durable-bot";
 import { deepseekCitationMarkdown, deepseekHostedToolRows } from "../../../shared/deepseek";
+import { capabilityResultFromDetails } from "../../../shared/capability-result";
+import { searchReportFromDetails } from "../../../shared/web-search";
+import { consultReportFromDetails } from "../../../shared/multi-model-consult";
 
 export type DurableInputMetadata = { text: string; displayText: string; attachments: Array<{ name: string; path: string }>; botRequestId?: string; audit?: import("./DurableSkillProjection").DurableInputAudit };
 /** 完成态实测速度（由 `DurableBotRuntime.recordResponse()` 用 host 侧生成计时算出）。 */
@@ -140,7 +143,9 @@ export class DurableHistoryProjection {
     const details = resultDetails(message);
     const calls = (details?.calls ?? []).map((call, index) => nestedToolRow(message.toolCallId, call, index));
     const tools = (owner.tools ?? []).map(tool => tool.id === message.toolCallId
-      ? { ...tool, status: message.isError ? "error" as const : "success" as const, output: durableContentText(message.content), detail: message.details === undefined ? tool.detail : JSON.stringify(message.details) } : tool);
+      ? { ...tool, status: message.isError ? "error" as const : "success" as const, output: durableContentText(message.content), detail: message.details === undefined ? tool.detail : JSON.stringify(message.details),
+          capabilityResult: capabilityResultFromDetails(message.toolName, message.details),
+          webSearch: searchReportFromDetails(message.details), consult: consultReportFromDetails(message.details) } : tool);
     for (const call of calls) if (!tools.some(tool => tool.id === call.id)) tools.push(call);
     if (details?.conversationId && message.toolName === "codemode") this.children.set(message.toolCallId, details.conversationId);
     const artifacts = details?.imagePaths?.map(path => ({ id: `${message.toolCallId}:${path}`, name: basename(path), kind: "image" as const, path, content: "" }));
@@ -182,14 +187,16 @@ function validDuration(value: number | null | undefined): number | null {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 }
 
-export type NestedCallDetail = { readonly id?: string | number; readonly name: string; readonly args?: unknown; readonly status?: string; readonly output?: string; readonly durationMs?: number; readonly error?: string };
+export type NestedCallDetail = { readonly id?: string | number; readonly name: string; readonly args?: unknown; readonly status?: string; readonly output?: string; readonly durationMs?: number; readonly error?: string;
+  readonly capabilityResult?: ToolRow["capabilityResult"]; readonly webSearch?: ToolRow["webSearch"]; readonly consult?: ToolRow["consult"] };
 export function nestedToolRow(parentCallId: string, call: NestedCallDetail, index: number): ToolRow {
   // 嵌套调用的 args 可能是字符串（已成形文本）或对象；字符串保持原样，对象走统一摘要。
   const text = summarizeToolInput(call.name, call.args);
   return { id: typeof call.id === "number" ? `${parentCallId}/c${call.id}` : `${parentCallId}:nested:${call.id ?? String(index)}`, parentToolCallId: parentCallId, tool: call.name,
     summary: typeof call.args === "string" ? call.args : text.summary,
+    capabilityResult: call.capabilityResult, webSearch: call.webSearch, consult: call.consult,
     ...(typeof call.args === "string" || text.detail === undefined ? {} : { detail: text.detail }),
-    status: call.status === "error" ? "error" : call.status === "running" || call.status === "pending" ? "running" : "success", output: call.output ?? call.error ?? "" };
+    status: call.status === "error" || call.status === "cancelled" ? "error" : call.status === "running" || call.status === "pending" ? "running" : "success", output: call.output ?? call.error ?? "" };
 }
 function resultDetails(message: ToolResult): { conversationId?: number; imagePaths?: string[]; calls?: readonly NestedCallDetail[] } | undefined {
   return message.details as { conversationId?: number; imagePaths?: string[]; calls?: readonly NestedCallDetail[] } | undefined;

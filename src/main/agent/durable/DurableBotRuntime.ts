@@ -18,6 +18,9 @@ import {
   type LiveState, type InboxState, type Storage, type TaskId, type ToolRegistration, type UserInput, type Cursor, type UsageState, type Submission, type ToolHooks, type EntryId, type HookApi,
 } from "@earendil-works/pi-durable";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
+import { capabilityResultFromDetails } from "../../../shared/capability-result";
+import { searchReportFromDetails } from "../../../shared/web-search";
+import { consultReportFromDetails } from "../../../shared/multi-model-consult";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import type { CodemodeSandboxOptions } from "@earendil-works/pi-codemode";
 import type { ChatMessageDto, TaskHistoryTarget, TaskUserQuestionsDto, TaskUserQuestionsQuery } from "../../../shared/agent-ipc";
@@ -1194,7 +1197,16 @@ export class DurableBotRuntime {
     }
     for (const slot of live.tools ?? []) {
       const tool = tools.get(slot.callId);
-      if (tool) { tool.output = slot.output ?? tool.output; if (slot.details !== undefined) tool.detail = JSON.stringify(slot.details); if (slot.status !== "done") tool.status = "running"; }
+      if (tool) {
+        tool.output = slot.output ?? tool.output;
+        if (slot.details !== undefined) {
+          tool.detail = JSON.stringify(slot.details);
+          tool.capabilityResult = capabilityResultFromDetails(slot.name, slot.details) ?? tool.capabilityResult;
+          tool.webSearch = searchReportFromDetails(slot.details) ?? tool.webSearch;
+          tool.consult = consultReportFromDetails(slot.details) ?? tool.consult;
+        }
+        if (slot.status !== "done") tool.status = "running";
+      }
       const details = slot.details as { conversationId?: number; calls?: readonly NestedCallDetail[] } | undefined;
       if (details?.conversationId && slot.name === "codemode") childIds.set(slot.callId, details.conversationId);
       const ownerIndex = this.history.index(this.history.ownerId(slot.callId) ?? "");
@@ -1212,7 +1224,8 @@ export class DurableBotRuntime {
       const status = slot.status === "done" ? (slot.summary?.isError ? "error" as const : "success" as const) : "running" as const;
       const text = summarizeToolInput(slot.name, slot.arguments);
       const row: NonNullable<ChatMessageDto["tools"]>[number] = { id: slot.callId, parentToolCallId: slot.parentCallId, tool: slot.name,
-        summary: text.summary, ...(text.detail === undefined ? {} : { detail: text.detail }), status, output: slot.output ?? slot.summary?.error ?? "" };
+        summary: text.summary, ...(text.detail === undefined ? {} : { detail: text.detail }), status, output: slot.output ?? slot.summary?.error ?? "",
+        capabilityResult: capabilityResultFromDetails(slot.name, slot.details), webSearch: searchReportFromDetails(slot.details), consult: consultReportFromDetails(slot.details) };
       tools.set(row.id, row);
       const index = owner.tools!.findIndex(item => item.id === row.id);
       if (index < 0) owner.tools!.push(row); else owner.tools![index] = row;
@@ -1247,7 +1260,11 @@ export class DurableBotRuntime {
           }
           if (message.role === "toolResult") {
             const tool = childTools.get(message.toolCallId);
-            if (tool) { tool.status = message.isError ? "error" : "success"; tool.output = contentText(message.content); }
+            if (tool) {
+              tool.status = message.isError ? "error" : "success"; tool.output = contentText(message.content);
+              tool.capabilityResult = capabilityResultFromDetails(message.toolName, message.details);
+              tool.webSearch = searchReportFromDetails(message.details); tool.consult = consultReportFromDetails(message.details);
+            }
           }
         }
         const saved = this.history.replace(owner);

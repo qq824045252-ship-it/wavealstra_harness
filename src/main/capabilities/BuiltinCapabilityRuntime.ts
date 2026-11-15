@@ -15,13 +15,17 @@ import { BuiltinCredentialStore } from "./BuiltinCredentialStore";
 import { capabilityConfigRevision, type MediaCapabilityServices } from "./MediaCapabilityServices";
 import { MEDIA_CAPABILITY_IDS, type MediaCapabilityId } from "../../shared/media-capabilities";
 import { createHttpOcrAdapter, type ImageRecognitionAdapter } from "./HttpOcrProvider";
+import { SpeechStreamService } from "./SpeechStreamService";
 
 export interface ToolExecutionContext {
   taskId: string;
   taskRoot: string;
   toolCallId: string;
   producerMessageId?: string;
+  /** Immutable user attachments bound by the host, including snapshots outside the workspace. */
+  inputFilePaths?: readonly string[];
   signal?: AbortSignal;
+  audioStream?: (event: import("../../shared/speech-stream").SpeechProviderAudioEvent) => void;
 }
 
 export interface VisionDescribeInput {
@@ -129,6 +133,7 @@ export interface SpeechCapabilityProvider {
   readonly id: string;
   readonly label: string;
   readonly credentialId?: BuiltinCredentialId;
+  readonly supportsAudioStreaming?: boolean;
   speechToText?(input: SpeechToTextInput, context: ToolExecutionContext): Promise<SpeechToTextOutput>;
   textToSpeech?(input: TextToSpeechInput, context: ToolExecutionContext): Promise<GeneratedMediaOutput>;
   test?(): Promise<string>;
@@ -157,6 +162,7 @@ const LABELS: Record<string, { label: string; description: string; category: Bui
 };
 
 export class BuiltinCapabilityRuntime {
+  readonly speechStreams = new SpeechStreamService();
   readonly store: Pick<BuiltinCapabilityStore, "read" | "write">;
   readonly credentials: Pick<BuiltinCredentialStore, "has" | "get" | "set" | "clear">;
   private readonly providers = new Map<string, AnyProvider>();

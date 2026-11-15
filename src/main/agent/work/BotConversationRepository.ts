@@ -14,6 +14,8 @@ import { BotTurnOrigins } from "./BotTurnOrigins";
 import { BotPeerIngress } from "./BotPeerIngress";
 import { projectBotMemoryHistory } from "./BotMemoryHistoryProjection";
 import { botDelegationSourceSchema, type BotDelegationSource } from "./BotDelegationSources";
+import { settleBotCapabilityTools } from "./BotCapabilityPresentation";
+import type { ChatToolCallDto } from "../../../shared/agent-ipc";
 
 const conversationRow = z.object({ conversation_id: z.string(), bot_id: z.string(), team_id: z.string().nullable().optional(), user_id: z.string(), revision: z.number(),
   current_request_id: z.string().nullable(), archived_at: z.number().nullable(), created_at: z.number(), updated_at: z.number() });
@@ -42,6 +44,11 @@ export class BotConversationRepository {
     db.exec(`CREATE TABLE IF NOT EXISTS bot_message_segments (
       message_id TEXT PRIMARY KEY REFERENCES bot_messages(message_id) ON DELETE CASCADE,
       segments_json TEXT NOT NULL CHECK(json_valid(segments_json))
+    );
+    CREATE TABLE IF NOT EXISTS bot_message_tools (
+      message_id TEXT PRIMARY KEY REFERENCES bot_messages(message_id) ON DELETE CASCADE,
+      task_id TEXT NOT NULL,
+      tools_json TEXT NOT NULL CHECK(json_valid(tools_json))
     );
     CREATE TABLE IF NOT EXISTS bot_clarification_answers (
       question_message_id TEXT NOT NULL REFERENCES bot_messages(message_id) ON DELETE CASCADE,
@@ -224,7 +231,7 @@ export class BotConversationRepository {
     return row ? this.mapMessage(row) : undefined;
   }
 
-  update(messageId: string, status: BotMessageDto["status"], text: string, error?: string, activity?: BotActivityDto, segments?: BotReplySegment[]): void {
+  update(messageId: string, status: BotMessageDto["status"], text: string, error?: string, activity?: BotActivityDto, segments?: BotReplySegment[], presentation?: { taskId: string; tools: ChatToolCallDto[] }): void {
     this.db.transaction(() => {
       const message = this.message(messageId);
       if (!message) throw new Error("消息不存在");
@@ -232,6 +239,8 @@ export class BotConversationRepository {
         .run(status, text, error ?? null, Date.now(), messageId);
       if (segments !== undefined) this.db.prepare("INSERT OR REPLACE INTO bot_message_segments(message_id,segments_json) VALUES (?,?)")
         .run(messageId, JSON.stringify(z.array(botReplySegmentSchema).parse(segments)));
+      if (presentation !== undefined) this.db.prepare("INSERT OR REPLACE INTO bot_message_tools(message_id,task_id,tools_json) VALUES (?,?,?)")
+        .run(messageId, presentation.taskId, JSON.stringify(presentation.tools));
       if (status === "running" && activity) {
         this.db.prepare("INSERT OR REPLACE INTO bot_message_activity(message_id,activity_json) VALUES (?,?)")
           .run(messageId, JSON.stringify(botActivitySchema.parse(activity)));
@@ -527,6 +536,9 @@ export class BotConversationRepository {
     const segmentRow = row.role === "assistant" ? this.db.prepare("SELECT segments_json FROM bot_message_segments WHERE message_id=?")
       .get(row.message_id) as { segments_json: string } | undefined : undefined;
     const segments = segmentRow ? z.array(botReplySegmentSchema).parse(JSON.parse(segmentRow.segments_json)) : undefined;
+    const toolRow = row.role === "assistant" ? this.db.prepare("SELECT task_id,tools_json FROM bot_message_tools WHERE message_id=?")
+      .get(row.message_id) as { task_id: string; tools_json: string } | undefined : undefined;
+    const tools = toolRow ? settleBotCapabilityTools(JSON.parse(toolRow.tools_json) as ChatToolCallDto[], row.status) : undefined;
     const organizationUser = row.role === "assistant" ? this.db.prepare("SELECT user_id FROM bot_conversations WHERE conversation_id=?").pluck().get(row.conversation_id) : undefined;
     const organizations = typeof organizationUser === "string" ? botOrganizationsForMessage(this.db, organizationUser, row.message_id) : [];
     const peerOrigin = this.peers.origin(row.message_id);
@@ -547,7 +559,7 @@ export class BotConversationRepository {
       return goal.options ? [botClarificationSchema.parse({goalId:goal.goalId,question:goal.question,options:goal.options,answerText:answer?.text,status:goal.state==="pending"&&ownerChanged ? "expired" : answered ? "answered" : goal.state})] : [];
     });
     return { clarifications, peerOrigin, collaborationResult, ...(organizations.length ? { organizations } : {}), teamId: scope?.team_id ?? undefined, messageRevision: version?.revision ?? 0, messageId: row.message_id, conversationId: row.conversation_id, botId: row.bot_id, requestId: row.request_id,
-      segments, botCalls: row.role === "assistant" ? this.peerCalls.list(row.message_id) : undefined,
+      segments, tools, toolTaskId: toolRow?.task_id, botCalls: row.role === "assistant" ? this.peerCalls.list(row.message_id) : undefined,
       collaborations: row.role === "assistant" ? this.collaborations.summariesForMessage(
         z.string().parse(this.db.prepare("SELECT user_id FROM bot_conversations WHERE conversation_id=?").pluck().get(row.conversation_id)), row.message_id) : undefined,
       metrics: this.metrics.read(row.message_id), workFeedback: parsed?.success ? parsed.data : undefined, attachments, activity: activity?.success ? activity.data : undefined,

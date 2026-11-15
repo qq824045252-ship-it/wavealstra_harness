@@ -51,6 +51,7 @@ function makeFixture(): { root: string; artifacts: Map<string, FixtureArtifact>;
   );
   writeFileSync(join(ws, "nested", "deep.txt"), "deep", "utf-8");
   writeFileSync(join(ws, "数据.txt"), "chinese filename", "utf-8");
+  writeFileSync(join(ws, "speech.wav"), Buffer.from(Array.from({ length: 100 }, (_, index) => index)));
   writeFileSync(join(mc, "index.html"), "<!doctype html><title>mc</title>", "utf-8");
   writeFileSync(join(mc, "sub.txt"), "mc sub", "utf-8");
   // root 外的敏感文件（验证 traversal 无法触达）
@@ -192,6 +193,36 @@ async function main(): Promise<void> {
       }
       const r13 = await runtime.resolve("ws-artifact", "index.html/../index.html");
       check("E13 合法路径段但…(目录内 .. 归位)", is(r13, 200)); // a/.. 归位后仍在 root 内 → 200
+    }
+
+    // Inline media controls must seek through the trusted artifact protocol,
+    // without transferring a full WAV through readContent IPC for every seek.
+    {
+      const audioUrl = urlFor("ws-artifact", "speech.wav");
+      const full = await protocol.handle(new Request(audioUrl));
+      check("M1 WAV serves the correct MIME with byte length", full.status === 200 && full.headers.get("content-type") === "audio/wav"
+        && full.headers.get("content-length") === "100" && full.headers.get("accept-ranges") === "bytes");
+      check("M2 WAV full-body bytes stay unchanged", Buffer.from(await full.arrayBuffer()).equals(Buffer.from(Array.from({ length: 100 }, (_, index) => index))));
+      const range = await protocol.handle(new Request(audioUrl, { headers: { range: "bytes=20-29" } }));
+      check("M3 seeking serves exact range bytes", range.status === 206 && range.headers.get("content-range") === "bytes 20-29/100"
+        && range.headers.get("content-length") === "10" && Buffer.from(await range.arrayBuffer()).equals(Buffer.from([20, 21, 22, 23, 24, 25, 26, 27, 28, 29])));
+      const suffix = await protocol.handle(new Request(audioUrl, { headers: { range: "bytes=-3" } }));
+      check("M4 suffix range", suffix.status === 206 && suffix.headers.get("content-range") === "bytes 97-99/100"
+        && Buffer.from(await suffix.arrayBuffer()).equals(Buffer.from([97, 98, 99])));
+      const open = await protocol.handle(new Request(audioUrl, { headers: { range: "bytes=98-" } }));
+      check("M5 open-ended range", open.status === 206 && (await open.arrayBuffer()).byteLength === 2);
+      const clamped = await protocol.handle(new Request(audioUrl, { headers: { range: "bytes=98-999" } }));
+      check("M6 end range clamps to file size", clamped.status === 206 && clamped.headers.get("content-range") === "bytes 98-99/100");
+      for (const invalid of ["bytes=100-", "bytes=20-10", "bytes=-0", "bytes=0-1,4-5", "bytes=x-y"]) {
+        const response = await protocol.handle(new Request(audioUrl, { headers: { range: invalid } }));
+        check(`M7 invalid range ${invalid}`, response.status === 416 && response.headers.get("content-range") === "bytes */100"
+          && (await response.arrayBuffer()).byteLength === 0);
+      }
+      const head = await protocol.handle(new Request(audioUrl, { method: "HEAD", headers: { range: "bytes=20-29" } }));
+      check("M8 HEAD returns full metadata without reading a body", head.status === 200 && head.headers.get("content-length") === "100"
+        && (await head.arrayBuffer()).byteLength === 0);
+      const missing = await protocol.handle(new Request(urlFor("missing-artifact", "speech.wav"), { headers: { range: "bytes=0-1" } }));
+      check("M9 Range cannot bypass artifact lookup", missing.status === 404);
     }
 
     // ========== Runtime 行为 ==========

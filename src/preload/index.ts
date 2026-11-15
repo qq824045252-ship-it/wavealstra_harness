@@ -1,5 +1,6 @@
 import type { GatewayRegistrationProvider, GatewayRegistrationDetails, GatewayRegistrationState } from "../shared/gateway-registration";
 import { BotAvatarIpc } from "../shared/bot-avatar";
+import { SpeechIpc, type SpeechAudioEvent, type SpeechCancelRequest } from "../shared/speech-stream";
 import { SavedArtifactIpc, type SavedArtifactRequest, type SavedArtifactPreview } from "../shared/saved-artifact";
 import { GoogleWorkspaceWriteIpc, type GoogleWorkspaceWriteApi } from "../shared/google-workspace-write";
 import { GatewayBotBindingIpc, type GatewayBotBinding, type GatewayBotBindingRequest } from "../shared/gateway-bot-binding";
@@ -659,6 +660,15 @@ const api = {
       const handler = (_: Electron.IpcRendererEvent, patch: AgentUiPatch): void => callback(patch);
       ipcRenderer.on(AgentIpc.event, handler);
       return () => ipcRenderer.removeListener(AgentIpc.event, handler);
+    },
+  },
+
+  speech: {
+    cancel: (request: SpeechCancelRequest): Promise<boolean> => ipcRenderer.invoke(SpeechIpc.cancel, request),
+    onAudio: (listener: (event: SpeechAudioEvent) => void): (() => void) => {
+      const handler = (_: Electron.IpcRendererEvent, event: SpeechAudioEvent): void => listener(event);
+      ipcRenderer.on(SpeechIpc.audio, handler);
+      return () => ipcRenderer.removeListener(SpeechIpc.audio, handler);
     },
   },
 

@@ -39,6 +39,7 @@ import { useBotDirectoryActivity } from "@/hooks/useBotDirectoryActivity";
 import { BotWorkBrowser } from "./BotWorkBrowser";
 import { BotResultReport, BotReturnedFiles } from "./BotWorkResult";
 import BotMessageHtmlFiles from "./BotMessageHtmlFiles";
+import BotToolResults from "./BotToolResults";
 import { BotActivityMonitor } from "./BotActivityMonitor";
 import { BotDeletion } from "./BotDeletion";
 import { BotExecutionSettings } from "./BotExecutionSettings";
@@ -99,6 +100,11 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   const requestedWork = useRef<string | null>(null);
   const threadRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const appendSearchFollowup = useCallback((text: string) => {
+    const state = useAppStore.getState();
+    state.setBotDraft([state.botDraft.trim(), text].filter(Boolean).join("\n\n"));
+    composerRef.current?.focus();
+  }, []);
   const browserRef = useRef<HTMLElement>(null);
   const sourceViewRef = useRef<HTMLElement>(null);
   const historicalReturn = useRef<{ scope: string; conversationId?: string; source: HTMLElement | null; scrollTop: number; follow: boolean; trigger: HTMLElement | null } | null>(null);
@@ -337,10 +343,10 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   // elements stable; message/store/context updates still render their own content.
   const messageTimeline = useMemo(() => botWorkTimeline(messages).flatMap(row => {
     if (row.kind === 'message') return [{key:row.key,createdAt:row.message.createdAt,ordinal:row.message.ordinal,foldKey:undefined as string|undefined,
-      value:<TimelineMessage key={row.key} message={row.message} botName={displayName} works={detailWorks} onOpenWork={openWork} onOpenCollaboration={openCollaboration} sourceQuestion={questionsByRequest.get(row.message.requestId)} onReply={replyToMessage} onCancel={cancelMessage}/> }];
+      value:<TimelineMessage key={row.key} message={row.message} botName={displayName} works={detailWorks} onOpenWork={openWork} onOpenCollaboration={openCollaboration} sourceQuestion={questionsByRequest.get(row.message.requestId)} onReply={replyToMessage} onCancel={cancelMessage} onSearchFollowup={appendSearchFollowup}/> }];
     return row.messages.map(message=>({key:message.messageId,createdAt:message.createdAt,ordinal:message.ordinal,foldKey:message.conversationId,
-      value:<TimelineMessage key={message.messageId} message={message} botName={displayName} works={detailWorks} onOpenWork={openWork} onOpenCollaboration={openCollaboration} onCancel={ignoreMessageCancel}/> }));
-  }), [messages, displayName, detailWorks, openWork, openCollaboration, questionsByRequest, replyToMessage, cancelMessage]);
+      value:<TimelineMessage key={message.messageId} message={message} botName={displayName} works={detailWorks} onOpenWork={openWork} onOpenCollaboration={openCollaboration} onCancel={ignoreMessageCancel} onSearchFollowup={appendSearchFollowup}/> }));
+  }), [messages, displayName, detailWorks, openWork, openCollaboration, questionsByRequest, replyToMessage, cancelMessage, appendSearchFollowup]);
 
   const emptyConversation = <div className="bot-conversation-empty">
     <span className="bot-welcome-icon" aria-hidden="true"><IconBot size={30} /></span>
@@ -450,7 +456,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
 const ignoreMessageCancel = () => {};
 const TimelineMessage = memo(BotMessage);
 
-export function BotMessage({ message, botName, works, onOpenWork, onOpenCollaboration, onCancel, sourceQuestion, workLinkSource, onReply }: { workLinkSource?: BotMessageDto; sourceQuestion?: BotMessageDto; onReply?: (message: BotMessageDto) => void; message: BotMessageDto; botName: string; works: WorkProjectionDto[]; onOpenWork: (id: string) => void; onOpenCollaboration?: (id: string) => void; onCancel: (message: BotMessageDto) => void }): React.JSX.Element {
+export function BotMessage({ message, botName, works, onOpenWork, onOpenCollaboration, onCancel, sourceQuestion, workLinkSource, onReply, onSearchFollowup }: { workLinkSource?: BotMessageDto; sourceQuestion?: BotMessageDto; onReply?: (message: BotMessageDto) => void; message: BotMessageDto; botName: string; works: WorkProjectionDto[]; onOpenWork: (id: string) => void; onOpenCollaboration?: (id: string) => void; onCancel: (message: BotMessageDto) => void; onSearchFollowup?: (text: string) => void }): React.JSX.Element {
   const externalTask = useAppStore(state => state.tasks.find(task => task.id === botExternalAgentTaskId(message.messageId)));
   // Replace trusted image destinations before Markdown parsing: raw Windows
   // backslashes (e.g. \.mybuddy) otherwise become Markdown escapes.
@@ -483,6 +489,7 @@ export function BotMessage({ message, botName, works, onOpenWork, onOpenCollabor
     {message.role === "assistant" && sourceQuestion && !sourceQuestion.peerOrigin && !message.workFeedback && <BotReplyReference message={sourceQuestion} />}
 
     {message.role === "user" ? <div className="user-bubble">{Boolean(message.attachments?.length) && <div className="input-attach-chips"><ComposerAttachmentChips attachments={message.attachments ?? []} /></div>}{message.text && <div className="user-bubble-text">{botMessageDisplayText(message.text)}</div>}</div> : <div className="bot-assistant-content">
+      <BotToolResults tools={message.tools} taskId={message.toolTaskId} messageId={message.messageId} onSearchFollowup={onSearchFollowup} />
       {result && message.text ? <BotResultReport message={message} work={works.find(work => work.workId === message.workFeedback?.workId)} renderMarkdown={renderMarkdown} />
         : segments.length > 0 ? segments.map((segment, index) => <div key={segment.id} data-segment-id={segment.id} data-segment-kind={segment.kind} aria-label={segment.kind === "receipt" ? "消息回执" : undefined} className={`bot-reply-segment bot-reply-segment-${segment.kind}`}>
           {renderMarkdown(segment.text, message.status === "running" && segment.kind === "answer" && index === segments.length - 1)}

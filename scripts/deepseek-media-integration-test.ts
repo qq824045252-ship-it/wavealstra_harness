@@ -33,7 +33,7 @@ try {
     "speech-to-text": { connectionId: "api-deepseek" },
     "text-to-speech": { connectionId: "api-deepseek" },
   };
-  config.ocr = { enabled: true }; config.speechToText = { enabled: true }; config.textToSpeech = { enabled: true, voice: "stella" };
+  config.ocr = { enabled: true }; config.speechToText = { enabled: true }; config.textToSpeech = { enabled: true, voice: "stella", transport: "http" };
   config.imageGeneration.enabled = false; config.videoGeneration.enabled = false; config.vision.enabled = false;
   config.web.enabled = false; config.browser.enabled = false; config.subagent.enabled = false;
   config.diagnostics = { enabled: false }; config.execution = { terminalEnabled: false, codeExecutionEnabled: false }; config.multiModelConsult.enabled = false;

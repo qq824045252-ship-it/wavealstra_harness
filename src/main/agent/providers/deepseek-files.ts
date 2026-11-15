@@ -1,8 +1,8 @@
-import { createHash } from "node:crypto";
-import { readFile, stat } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { extname } from "node:path";
 import type { Api, Model, StreamOptions, TextContent } from "@earendil-works/pi-ai";
-import { deepseekRecord } from "../../../shared/deepseek";
+import { deepseekRecord, type DeepSeekFileProgress } from "../../../shared/deepseek";
 
 export interface DeepSeekFileReference {
   version: 1;
@@ -14,7 +14,7 @@ export interface DeepSeekFileReference {
 }
 export type DeepSeekFileContent = TextContent & { mybuddyDeepSeekFile: DeepSeekFileReference };
 
-const parsedDocuments = new Set([".pdf", ".doc", ".docx", ".ppt", ".pptx"]);
+const parsedDocuments = new Set([".pdf", ".doc", ".docx", ".ppt", ".pptx", ".bmp", ".tif", ".tiff"]);
 const userData = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".xlsx", ".xls", ".epub", ".mobi",
   ".txt", ".md", ".csv", ".json", ".jsonl", ".xml", ".yaml", ".yml", ".log", ".ts", ".tsx", ".js", ".jsx",
   ".py", ".html", ".css", ".sql", ".sh", ".toml", ".ini"]);
@@ -45,20 +45,23 @@ export function deepseekFileReference(block: unknown): DeepSeekFileReference | u
 
 export function deepseekRequestHeaders(model: Model<Api>, options?: StreamOptions): Headers {
   const headers = new Headers();
+  const authHeader = model.api === "anthropic-messages" ? "x-api-key" : "authorization";
   let suppressAuthorization = false;
   for (const values of [model.headers, options?.headers]) for (const [name, value] of Object.entries(values ?? {})) {
     if (value === undefined) continue;
     if (value === null) headers.delete(name); else headers.set(name, value);
-    if (name.toLowerCase() === "authorization") suppressAuthorization = value === null;
+    if (name.toLowerCase() === authHeader) suppressAuthorization = value === null;
   }
-  if (!headers.has("authorization") && !suppressAuthorization && options?.apiKey) headers.set("authorization", `Bearer ${options.apiKey}`);
+  if (!headers.has(authHeader) && !suppressAuthorization && options?.apiKey) headers.set(authHeader, authHeader === "authorization" ? `Bearer ${options.apiKey}` : options.apiKey);
   return headers;
 }
 
 /** A credential fingerprint scopes opaque provider state without persisting keys.
  * Rotating to another key deliberately causes a fresh upload / page read. */
 export function deepseekCredentialTag(model: Model<Api>, options?: StreamOptions): string {
-  return createHash("sha256").update(deepseekRequestHeaders(model, options).get("authorization") ?? "").digest("hex");
+  const headers = deepseekRequestHeaders(model, options);
+  const auth = model.api === "anthropic-messages" ? headers.get("x-api-key") ?? headers.get("authorization") : headers.get("authorization");
+  return createHash("sha256").update(auth?.replace(/^Bearer\s+/i, "") ?? "").digest("hex");
 }
 
 export function deepseekSafeError(message: string, model: Model<Api>, options: StreamOptions): string {
@@ -96,61 +99,151 @@ async function uploadResponse(response: Response, signal: AbortSignal): Promise<
 
 type UploadedFile = { id: string; expiresAt: number };
 const FILE_LIFETIME_SECONDS = 24 * 60 * 60;
+type Progress = (value: DeepSeekFileProgress) => void;
+type PendingUpload = { promise: Promise<UploadedFile>; controller: AbortController; listeners: Set<Progress>; users: number; latest?: DeepSeekFileProgress };
+const pendingUploads = new Map<string, PendingUpload>();
+const receiptWrites = new Map<string, Promise<void>>();
 
-/** One provider instance owns its cache. Restart keeps the immutable attachment
- * in Durable and uploads again; it never relies on an expired server-side file. */
+async function readReceipts(path: string): Promise<Record<string, UploadedFile>> {
+  let bytes: Buffer;
+  try {
+    if ((await stat(path)).size > 64 * 1024) throw new Error("上传记录过大");
+    bytes = await readFile(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw new Error("无法读取 DeepSeek 附件上传记录，未重复上传。请检查附件目录后重试。");
+  }
+  try {
+    const value = deepseekRecord(JSON.parse(bytes.toString("utf8")));
+    const entries = deepseekRecord(value?.files);
+    if (value?.version !== 1 || !entries) throw new Error("无效记录");
+    const result: Record<string, UploadedFile> = {};
+    for (const [key, item] of Object.entries(entries)) {
+      const file = deepseekRecord(item);
+      if (/^[a-f0-9]{64}$/.test(key) && typeof file?.id === "string" && /^[\w-]{1,256}$/.test(file.id)
+        && typeof file.expiresAt === "number" && Number.isFinite(file.expiresAt) && file.expiresAt > Date.now() + 60_000) {
+        result[key] = { id: file.id, expiresAt: file.expiresAt };
+      }
+    }
+    return result;
+  } catch { throw new Error("DeepSeek 附件上传记录损坏，未重复上传。请重新添加附件后重试。"); }
+}
+
+async function writeReceipt(path: string, key: string, file: UploadedFile): Promise<void> {
+  const previous = receiptWrites.get(path) ?? Promise.resolve();
+  const write = previous.catch(() => undefined).then(async () => {
+    const files = await readReceipts(path);
+    files[key] = file;
+    const temporary = `${path}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(temporary, JSON.stringify({ version: 1, files }), { mode: 0o600, flag: "wx" });
+      await rename(temporary, path);
+    } finally { await rm(temporary, { force: true }).catch(() => undefined); }
+  });
+  receiptWrites.set(path, write);
+  try { await write; } finally { if (receiptWrites.get(path) === write) receiptWrites.delete(path); }
+}
+
+/** Upload receipts live beside the immutable host attachment. They contain only
+ * opaque IDs, expiry and hashed identity; no API key or source text. */
 export class DeepSeekFileUploads {
   private readonly completed = new Map<string, UploadedFile>();
 
-  async upload(reference: DeepSeekFileReference, model: Model<Api>, options: StreamOptions): Promise<string> {
+  async upload(reference: DeepSeekFileReference, model: Model<Api>, options: StreamOptions, onProgress?: Progress): Promise<string> {
     options.signal?.throwIfAborted();
-    const key = [new URL(model.baseUrl).origin, deepseekCredentialTag(model, options), reference.path, reference.sha256, reference.purpose].join("\n");
-    const now = Date.now();
-    for (const [cacheKey, value] of this.completed) if (value.expiresAt <= now + 60_000) this.completed.delete(cacheKey);
-    const prior = this.completed.get(key);
-    if (prior) return prior.id;
-    const fileStat = await stat(reference.path);
-    if (!fileStat.isFile() || fileStat.size !== reference.bytes) throw new Error(`DeepSeek 附件「${reference.name}」持久副本已变化，请重新添加附件。`);
-    const bytes = await readFile(reference.path);
-    if (createHash("sha256").update(bytes).digest("hex") !== reference.sha256) throw new Error(`DeepSeek 附件「${reference.name}」内容已变化，请重新添加附件。`);
-    options.signal?.throwIfAborted();
-    const headers = deepseekRequestHeaders(model, options);
-    if (!headers.get("authorization")) throw new Error("DeepSeek Files 缺少模型 API Key");
-    headers.delete("content-type");
-    const body = new FormData();
-    // DeepSeek parses multipart fields sequentially: purpose must precede file.
-    body.append("purpose", reference.purpose);
-    body.append("expires_after[anchor]", "created_at");
-    body.append("expires_after[seconds]", String(FILE_LIFETIME_SECONDS));
-    body.append("file", new Blob([new Uint8Array(bytes)]), reference.name);
-    // Parsing can take another 120s after upload; cover both phases. Plain text,
-    // spreadsheets, ebooks and images have a ten-minute upload limit.
-    const timeout = AbortSignal.timeout(reference.purpose === "user_data" ? 600_000 : 240_000);
-    const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
-    let response: Response;
+    const key = createHash("sha256").update([new URL(model.baseUrl).origin, deepseekCredentialTag(model, options), reference.sha256, reference.purpose].join("\n")).digest("hex");
+    const pendingKey = `${reference.path}\n${key}`;
+    let pending = pendingUploads.get(pendingKey);
+    if (!pending || pending.controller.signal.aborted) {
+      const controller = new AbortController();
+      const active: PendingUpload = { controller, listeners: new Set(), users: 0, promise: Promise.resolve({ id: "", expiresAt: 0 }) };
+      const report: Progress = value => { active.latest = value; for (const listener of active.listeners) listener(value); };
+      active.promise = this.performUpload(reference, key, model, { ...options, signal: controller.signal }, report)
+        .finally(() => { if (pendingUploads.get(pendingKey) === active) pendingUploads.delete(pendingKey); });
+      pendingUploads.set(pendingKey, active);
+      pending = active;
+    }
+    const active = pending;
+    return await new Promise<string>((resolve, reject) => {
+      active.users++;
+      if (onProgress) { active.listeners.add(onProgress); if (active.latest) onProgress(active.latest); }
+      let settled = false;
+      const cleanup = () => { settled = true; active.users--; options.signal?.removeEventListener("abort", abort); if (onProgress) active.listeners.delete(onProgress); };
+      const abort = () => { if (settled) return; cleanup(); if (active.users === 0) active.controller.abort(options.signal?.reason); reject(options.signal?.reason ?? new Error("附件上传已停止")); };
+      options.signal?.addEventListener("abort", abort, { once: true });
+      if (options.signal?.aborted) abort();
+      active.promise.then(file => { if (!settled) { cleanup(); resolve(file.id); } }, error => { if (!settled) { cleanup(); reject(error); } });
+    });
+  }
+
+  private async performUpload(reference: DeepSeekFileReference, key: string, model: Model<Api>, options: StreamOptions, onProgress: Progress): Promise<UploadedFile> {
+    const progress = { id: createHash("sha256").update(`${reference.path}\n${key}`).digest("hex").slice(0, 24), name: reference.name, purpose: reference.purpose };
+    onProgress({ ...progress, status: "preparing" });
     try {
-      response = await (options.fetch ?? fetch)(`${new URL(model.baseUrl).origin}/files`, {
-        method: "POST", headers, body, signal, redirect: "error",
-      });
-    } catch {
-      throw new Error("DeepSeek 文件上传 / 解析被中断，服务器可能仍在处理。未自动重传，请检查文件上传结果后再重试。");
+      const receiptPath = `${reference.path}.deepseek-files.json`;
+      const now = Date.now();
+      for (const [cacheKey, value] of this.completed) if (value.expiresAt <= now + 60_000) this.completed.delete(cacheKey);
+      const fileStat = await stat(reference.path);
+      if (!fileStat.isFile() || fileStat.size !== reference.bytes) throw new Error(`DeepSeek 附件「${reference.name}」持久副本已变化，请重新添加附件。`);
+      const bytes = await readFile(reference.path);
+      if (createHash("sha256").update(bytes).digest("hex") !== reference.sha256) throw new Error(`DeepSeek 附件「${reference.name}」内容已变化，请重新添加附件。`);
+      options.signal?.throwIfAborted();
+      const prior = this.completed.get(`${reference.path}\n${key}`) ?? (await readReceipts(receiptPath))[key];
+      options.signal?.throwIfAborted();
+      if (prior) { onProgress({ ...progress, status: "ready", reused: true, expiresAt: prior.expiresAt }); return prior; }
+      const headers = deepseekRequestHeaders(model, options);
+      if (model.api === "anthropic-messages" && headers.has("x-api-key")) {
+        headers.set("authorization", `Bearer ${headers.get("x-api-key")}`);
+        headers.delete("x-api-key");
+      }
+      if (!headers.get("authorization")) throw new Error("DeepSeek Files 缺少模型 API Key");
+      headers.delete("content-type");
+      const body = new FormData();
+      // DeepSeek parses multipart fields sequentially: purpose must precede file.
+      body.append("purpose", reference.purpose);
+      body.append("expires_after[anchor]", "created_at");
+      body.append("expires_after[seconds]", String(FILE_LIFETIME_SECONDS));
+      body.append("file", new Blob([new Uint8Array(bytes)]), reference.name);
+      // Parsing can take another 120s after upload; cover both phases. Plain text,
+      // spreadsheets, ebooks and images have a ten-minute upload limit.
+      const timeout = AbortSignal.timeout(reference.purpose === "user_data" ? 600_000 : 240_000);
+      const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
+      let response: Response;
+      onProgress({ ...progress, status: "uploading" });
+      try {
+        response = await (options.fetch ?? fetch)(`${new URL(model.baseUrl).origin}/files`, {
+          method: "POST", headers, body, signal, redirect: "error",
+        });
+      } catch {
+        throw new Error("DeepSeek 文件上传 / 解析被中断，服务器可能仍在处理。未自动重传，请检查文件上传结果后再重试。");
+      }
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new Error(`DeepSeek 文件上传 / 解析失败（HTTP ${response.status}）：${reference.name}`);
+      }
+      let result: Record<string, unknown> | undefined;
+      try { result = await uploadResponse(response, signal); }
+      catch (error) {
+        if (signal.aborted) throw new Error("DeepSeek 文件上传 / 解析被中断，服务器可能仍在处理。未自动重传，请检查文件上传结果后再重试。");
+        throw new Error(deepseekSafeError(error instanceof Error ? error.message : "DeepSeek Files 响应读取失败", model, options));
+      }
+      if (result && "error" in result) throw new Error("DeepSeek Files 返回了上传 / 解析错误，未使用文件 ID");
+      if (typeof result?.id !== "string" || !/^[\w-]{1,256}$/.test(result.id)) throw new Error("DeepSeek Files 返回了无效 file_id");
+      options.signal?.throwIfAborted();
+      const expiresAt = typeof result.expires_at === "number" ? Math.min(result.expires_at * 1000, now + FILE_LIFETIME_SECONDS * 1000) : now + FILE_LIFETIME_SECONDS * 1000;
+      if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) throw new Error("DeepSeek Files 返回的文件已过期");
+      const uploaded = { id: result.id, expiresAt };
+      this.completed.set(`${reference.path}\n${key}`, uploaded);
+      let message: string | undefined;
+      try { await writeReceipt(receiptPath, key, uploaded); }
+      catch { message = "文件已就绪，但复用记录未能保存。当前请求可继续，应用重启后可能需要重新上传。"; }
+      onProgress({ ...progress, status: "ready", reused: false, expiresAt, ...(message ? { message } : {}) });
+      return uploaded;
+    } catch (error) {
+      onProgress({ ...progress, status: "error", message: options.signal?.aborted
+        ? "附件上传 / 解析已停止等待，服务器可能仍在处理；未自动重传。"
+        : deepseekSafeError(error instanceof Error ? error.message : String(error), model, options) });
+      throw error;
     }
-    if (!response.ok) {
-      await response.body?.cancel().catch(() => undefined);
-      throw new Error(`DeepSeek 文件上传 / 解析失败（HTTP ${response.status}）：${reference.name}`);
-    }
-    let result: Record<string, unknown> | undefined;
-    try { result = await uploadResponse(response, signal); }
-    catch (error) {
-      if (signal.aborted) throw new Error("DeepSeek 文件上传 / 解析被中断，服务器可能仍在处理。未自动重传，请检查文件上传结果后再重试。");
-      throw new Error(deepseekSafeError(error instanceof Error ? error.message : "DeepSeek Files 响应读取失败", model, options));
-    }
-    if (result && "error" in result) throw new Error("DeepSeek Files 返回了上传 / 解析错误，未使用文件 ID");
-    if (typeof result?.id !== "string" || !/^[\w-]{1,256}$/.test(result.id)) throw new Error("DeepSeek Files 返回了无效 file_id");
-    options.signal?.throwIfAborted();
-    const expiresAt = typeof result.expires_at === "number" ? Math.min(result.expires_at * 1000, now + FILE_LIFETIME_SECONDS * 1000) : now + FILE_LIFETIME_SECONDS * 1000;
-    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) throw new Error("DeepSeek Files 返回的文件已过期");
-    this.completed.set(key, { id: result.id, expiresAt });
-    return result.id;
   }
 }

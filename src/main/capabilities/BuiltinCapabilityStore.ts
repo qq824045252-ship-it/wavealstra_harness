@@ -113,6 +113,7 @@ function normalize(raw: unknown): BuiltinCapabilitiesConfigDto {
       model: cleanOptionalText(value.textToSpeech?.model, 300),
       voice: cleanOptionalText(value.textToSpeech?.voice, 200),
       rate: cleanOptionalText(value.textToSpeech?.rate, 40),
+      transport: value.textToSpeech?.transport === "http" ? "http" : value.textToSpeech?.transport === "websocket" ? "websocket" : undefined,
     },
     browser: { enabled: value.browser?.enabled !== false },
     diagnostics: { enabled: value.diagnostics?.enabled ?? value.browser?.enabled !== false },

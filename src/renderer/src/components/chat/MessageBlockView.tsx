@@ -14,6 +14,7 @@ interface Props {
   block: MessageBlock;
   index: number;
   messageId?: string;
+  taskId?: string;
   streaming?: boolean;
   className?: string;
 }
@@ -22,6 +23,7 @@ function MessageBlockView({
   block,
   index,
   messageId,
+  taskId,
   streaming,
   className = "assistant-block",
 }: Props): React.JSX.Element | null {
@@ -92,7 +94,7 @@ function MessageBlockView({
     }
     case "tool":
       if (!messageId) return null;
-      return <ToolCallCard key={index} messageId={messageId} toolCall={block.toolCall} />;
+      return <ToolCallCard key={index} messageId={messageId} toolCall={block.toolCall} taskId={taskId} />;
     case "file_table":
       return (
         <div key={index} className={className}>

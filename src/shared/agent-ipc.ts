@@ -1113,6 +1113,7 @@ export type AgentUiPatch =
       output?: string;
       consult?: import("./multi-model-consult").MultiModelConsultReport;
       webSearch?: import("./web-search").WebSearchReport;
+      capabilityResult?: import("./capability-result").CapabilityResult;
       summary?: string;
     }
   | {
@@ -2117,6 +2118,7 @@ export interface ChatToolCallDto {
   output?: string;
   consult?: import("./multi-model-consult").MultiModelConsultReport;
   webSearch?: import("./web-search").WebSearchReport;
+  capabilityResult?: import("./capability-result").CapabilityResult;
   status: "success" | "error" | "running";
 }
 

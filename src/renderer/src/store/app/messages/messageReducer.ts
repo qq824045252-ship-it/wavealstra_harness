@@ -187,6 +187,7 @@ export function applyPatchToMessage(
                   output: patch.output ?? b.toolCall.output,
                   consult: patch.consult ?? b.toolCall.consult,
                   webSearch: patch.webSearch ?? b.toolCall.webSearch,
+                  capabilityResult: patch.capabilityResult ?? b.toolCall.capabilityResult,
                   summary: patch.summary ?? b.toolCall.summary,
                 },
               }

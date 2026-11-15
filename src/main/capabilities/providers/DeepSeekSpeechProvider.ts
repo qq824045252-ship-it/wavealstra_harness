@@ -3,6 +3,7 @@ import {
   ApiProviderError, apiJson, apiMedia, assertNotAborted, readTaskFile, requiredText,
   resolveApiConnection, type ApiProviderOptions,
 } from "./ApiServiceConnection";
+import { streamDeepSeekSpeech, type DeepSeekTtsSocketFactory } from "./DeepSeekTtsStream";
 
 interface AudioInfo { mime: "audio/wav" | "audio/ogg"; durationMs: number; channels: number }
 const SAMPLE_RATES = new Set([8_000, 16_000, 22_050, 24_000, 32_000, 44_100, 48_000]);
@@ -98,8 +99,14 @@ export function deepSeekSpeechCharacterCount(text: string): number {
   return Array.from(text).reduce((count, character) => count + (/\p{Script=Han}/u.test(character) ? 2 : 1), 0);
 }
 
+export interface DeepSeekSpeechProviderOptions extends ApiProviderOptions {
+  transport?: () => "http" | "websocket";
+  /** Main-process transport injection for isolated, unpaid protocol tests. */
+  createWebSocket?: DeepSeekTtsSocketFactory;
+}
+
 /** Native speech endpoints do not accept a model, language, prompt or speed parameter. */
-export function createDeepSeekSpeechProvider(options: ApiProviderOptions): SpeechCapabilityProvider {
+export function createDeepSeekSpeechProvider(options: DeepSeekSpeechProviderOptions): SpeechCapabilityProvider {
   const id = options.id ?? "deepseek-speech";
   const getConnection = async () => {
     const connection = await resolveApiConnection(options);
@@ -108,6 +115,7 @@ export function createDeepSeekSpeechProvider(options: ApiProviderOptions): Speec
   };
   return {
     id, label: options.label ?? "DeepSeek 语音",
+    get supportsAudioStreaming() { return options.transport?.() === "websocket"; },
     async test() { await getConnection(); return "DeepSeek 语音配置完整；尚未发送音频或合成请求。"; },
     async speechToText(input, context) {
       assertNotAborted(context.signal);
@@ -140,13 +148,24 @@ export function createDeepSeekSpeechProvider(options: ApiProviderOptions): Speec
       if (input.format !== undefined && input.format !== "wav") throw new ApiProviderError("unsupported", "DeepSeek speech artifacts use WAV; MP3 and Ogg output are not supported");
       const body = JSON.stringify({ text, voice_id: voice, format: "wav", filter_markdown: true });
       if (Buffer.byteLength(body, "utf8") > 64 * 1024) throw new ApiProviderError("limit", "DeepSeek speech request exceeds 64 KiB");
+      const transport = options.transport?.() ?? "http";
+      if (transport === "websocket") {
+        const result = await streamDeepSeekSpeech(connection, text, voice, {
+          signal: context.signal, audioStream: context.audioStream, createWebSocket: options.createWebSocket,
+        });
+        assertNotAborted(context.signal);
+        return { provider: id,
+          items: [{ bytes: result.bytes, mimeType: "audio/wav", fileName: "speech.wav", durationSeconds: result.durationSeconds }],
+          metadata: { voice, transport, sampleRate: 24_000, channels: 1, billingUnit: "character", billableCharacters } };
+      }
+      if (transport !== "http") throw new ApiProviderError("configuration", "DeepSeek speech transport must be HTTP or WebSocket");
       const result = await apiMedia(connection, "/v1/tools/tts", "audio", { body, signal: context.signal, maxBytes: 90 * 1024 * 1024 }, options);
       if (result.mimeType !== "audio/wav") throw new ApiProviderError("response", "DeepSeek did not return WAV speech");
       const info = wavInfo(result.bytes, true);
       if (info.durationMs > 30 * 60_000) throw new ApiProviderError("response", "DeepSeek speech exceeds the maximum duration");
       return { provider: id, requestId: result.requestId,
         items: [{ bytes: result.bytes, mimeType: "audio/wav", fileName: "speech.wav", durationSeconds: info.durationMs / 1_000 }],
-        metadata: { voice, billingUnit: "character", billableCharacters } };
+        metadata: { voice, transport, billingUnit: "character", billableCharacters } };
     },
   };
 }

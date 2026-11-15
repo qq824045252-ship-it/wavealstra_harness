@@ -36,7 +36,7 @@ export async function durableDomainTools(factories: readonly InlineExtension[], 
   const settings = capabilities && createAgentSettingsManager(capabilities.cwd, getMyBuddyDir());
   const tools: ToolRegistration[] = [];
   const contextHooks: DurableContextHook[] = [];
-  const invocation = new AsyncLocalStorage<{ native: NativeApi; context: NativeContext; conversationId: ConversationId; writes: Promise<unknown>[] }>();
+  const invocation = new AsyncLocalStorage<{ native: NativeApi; context: NativeContext; conversationId: ConversationId; writes: Promise<unknown>[]; progress?: Promise<void>; progressError?: unknown }>();
   const api = new Proxy({
     registerTool(tool: ToolDefinition) {
       tools.push({ name: tool.name, description: tool.description, parameters: tool.parameters,
@@ -49,13 +49,25 @@ export async function durableDomainTools(factories: readonly InlineExtension[], 
             const extensionContext = capabilities ? await capabilityContext(native, context, capabilities, conversationId) : undefined;
             try {
               const result = await tool.execute(native.callId, args, context.abortSignal,
-                update => { for (const block of update.content ?? []) if (block.type === "text") native.output(block.text); },
+                update => {
+                  for (const block of update.content ?? []) if (block.type === "text") native.output(block.text);
+                  if (update.details !== undefined) {
+                    const current = invocation.getStore()!;
+                    const details = JSON.parse(JSON.stringify(update.details));
+                    current.progress = (current.progress ?? Promise.resolve()).then(() => native.details(details, context))
+                      .catch(error => { current.progressError ??= error; });
+                  }
+                },
                 extensionContext as Parameters<typeof tool.execute>[4]);
               context.abortSignal?.throwIfAborted();
               const details = result.details === undefined ? undefined : JSON.parse(JSON.stringify(result.details));
               return { output: result.content, isError: result.isError, diagnostics: durableExtensionDiagnostics(result), details,
                 ...(tool.name === "browser_exec" ? { structuredOutput: { ...details, ...(details?.details?.outcome ? { outcome: details.details.outcome } : {}), isError: Boolean(result.isError) } } : {}) };
-            } finally { await Promise.all(invocation.getStore()!.writes); }
+            } finally {
+              const current = invocation.getStore()!;
+              await Promise.all([...current.writes, current.progress]);
+              if (current.progressError) throw current.progressError;
+            }
           });
           const execute = () => settings ? withModelInvocationSettings(settings, invoke) : invoke();
           if (!capabilities?.taskId) return execute();

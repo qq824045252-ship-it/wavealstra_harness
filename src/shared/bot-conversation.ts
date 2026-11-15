@@ -17,6 +17,8 @@ export function botMessageDisplayText(text: string): string {
 
 /** Host-generated Bot-chat identity namespace, distinct from native Task input IDs. */
 export const botExternalAgentTaskId = (assistantMessageId: string): string => `bot-acp-${assistantMessageId}`;
+/** Artifact/audio scope for one foreground Bot request; this is not a Task row. */
+export const botCapabilityTaskId = (assistantMessageId: string): string => `bot-media-${assistantMessageId}`;
 
 export const BOT_MESSAGE_ID_PREFIX = "bot-message-";
 export const isBotConversationMessageId = (value: string): boolean => value.startsWith(BOT_MESSAGE_ID_PREFIX);
@@ -99,6 +101,8 @@ export const botMessageSchema = z.object({
   messageId: id, conversationId: id, botId: id, teamId: id.optional(), requestId: id, ordinal: z.number().int().positive(),
   messageRevision: z.number().int().nonnegative().optional(),
   metrics: z.custom<BotForegroundMetrics>().optional(),
+  toolTaskId: z.string().optional(),
+  tools: z.custom<import("./agent-ipc").ChatToolCallDto[]>().optional(),
   segments: z.array(botReplySegmentSchema).optional(),
   botCalls: z.array(botCallSchema).optional(),
   collaborations: z.array(z.lazy(() => botCollaborationSchema)).optional(),

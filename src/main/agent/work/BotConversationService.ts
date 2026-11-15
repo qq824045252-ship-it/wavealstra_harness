@@ -10,6 +10,8 @@ import type { Message } from "@earendil-works/pi-ai";
 import { createHash } from "node:crypto";
 import { projectBotReplySegments, completeBotReplySegments } from "./BotReplySegments";
 import { botFileDispatchInstructions } from "./BotFileDeliveryInstructions";
+import { botCapabilityTools, botRequestCapabilityTools } from "./BotCapabilityPresentation";
+import { botCapabilityTaskId } from "../../../shared/bot-conversation";
 import { BotAttachmentInputError, prepareBotAttachmentInput, type BotVisionFallback } from "./BotAttachmentInput";
 import { snapshotBotAttachments } from "./BotAttachmentStorage";
 import { mkdirSync } from "node:fs";
@@ -61,6 +63,7 @@ export interface BotConversationServiceOptions {
   productCompaction?: () => ProductCompactionSettings;
   compactionEngine?: () => ContextManagementEngine;
   webTools?: (cwd: string) => Promise<import("../durable/DurableDomainTools").DurableDomainTools>;
+  capabilityTools?: (cwd: string, messageId: string, inputFilePaths: readonly string[]) => Promise<import("../durable/DurableDomainTools").DurableDomainTools>;
   messageSettings?: (messageId: string, botId: string) => { settings: import("../../../shared/bot-settings").BotSettingsDto; profile: import("../../../shared/bot-work").ExpertConfigSnapshotDto } | undefined;
   prepareMessageWorkspace?: (settings: import("../../../shared/bot-settings").BotSettingsDto) => string;
   captureSettings?: (messageId: string, botId: string, frozen: Awaited<ReturnType<import("./BotSettingsService").BotSettingsService["prepareMessage"]>>) => void;
@@ -96,6 +99,7 @@ export class BotConversationService {
   private readonly runtimes = new Map<string, DurableBotRuntime>();
   private readonly composerRuntimes = new Map<string, import("./BotComposerRuntime").BotComposerRuntime>();
   private readonly runtimeModels = new Map<string, unknown>();
+  private readonly runtimeCapabilityNames = new Map<string, string[]>();
   private readonly runtimeInstructions = new Map<string, string>();
   private readonly openings = new Map<string, Promise<DurableBotRuntime>>();
   private readonly stops = new Map<string, Promise<void>>();
@@ -442,6 +446,7 @@ export class BotConversationService {
         this.composerRuntimes.delete(messageId);
       }
       this.runtimeModels.delete(messageId);
+      this.runtimeCapabilityNames.delete(messageId);
       this.runtimeInstructions.delete(messageId);
       this.streamedAt.delete(messageId);
       if (this.messages.message(messageId)?.status !== 'unknown') this.attempted.delete(messageId);
@@ -512,6 +517,7 @@ export class BotConversationService {
           const preparedInput = await prepareBotAttachmentInput({ text: peer ? `${this.collaborations.peerContext(source!)}\nBot 消息正文：${user.text}` : user.text,
             attachments: human?.attachments ?? user.attachments ?? [],
             model: this.runtimeModels.get(next.messageId), directory: join(this.options.directory, conversationId),
+            availableTools: this.runtimeCapabilityNames.get(next.messageId),
             requestId: next.requestId, visionFallback: this.options.visionFallback,
             requestTime: { createdAt: user.createdAt, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone } });
           const input = typeof preparedInput === "string" ? [{ type: "text" as const, text: preparedInput }] : preparedInput;
@@ -525,6 +531,7 @@ export class BotConversationService {
           try { submission = await pending; } finally { this.submissions.delete(next.messageId); }
         }
         const reply = await this.untilClose(runtime.reply(submission));
+        let finalToolPresentation: { taskId: string; tools: import("../../../shared/agent-ipc").ChatToolCallDto[] } | undefined;
         try {
           // Answer receipts precede the watch's final commit. Allow its bounded
           // presentation lag, never manufacture a completed speed from wall time.
@@ -534,6 +541,8 @@ export class BotConversationService {
             snapshot = await runtime.refresh();
           }
           this.messages.metrics.project(next.messageId, next.requestId, snapshot);
+          const tools = botRequestCapabilityTools(snapshot.messages, next.requestId);
+          if (tools) finalToolPresentation = { taskId: botCapabilityTaskId(next.messageId), tools };
         }
         catch (error) { console.warn("[Bot] 最终用量快照暂不可用", error); }
 
@@ -564,7 +573,7 @@ export class BotConversationService {
             if (this.messages.message(next.messageId)?.status === 'cancelled') return;
             this.messages.update(next.messageId, "completed", reply, undefined, undefined,
               completeBotReplySegments(projectBotReplySegments(replyRows,
-                this.messages.message(next.messageId)?.segments), reply, next.requestId));
+                this.messages.message(next.messageId)?.segments), reply, next.requestId), finalToolPresentation);
             // The adapter resolves the real conversation owner (team or personal Bot).
             // Team replies must enter the same verified L0/L1 pipeline, not the leader's private namespace.
             try { if (!user.peerOrigin) memorySource = this.options.memory?.capture(botId, next.requestId); }
@@ -685,6 +694,15 @@ export class BotConversationService {
     const web = await this.options.webTools?.(cwd);
     const webNames = new Set(["web_search", "fetch_content"]);
     const webTools = (web?.tools ?? []).filter(tool => webNames.has(tool.name)).map(tool => ({ ...tool, replay: "safe" as const }));
+    const originalAttachments = originalMessage && this.messages.peers.origin(originalMessage.messageId)?.kind === "request"
+      ? this.messages.message(this.messages.userSource(source).user_message_id)?.attachments : originalMessage?.attachments;
+    const frozenSources = z.object({ delegationSources: z.array(botDelegationSourceSchema).optional() }).parse(JSON.parse(run.context_json)).delegationSources ?? [];
+    const referencedAttachments = frozenSources.filter(item => item.role === "user" && !item.peerOrigin && item.conversationId === conversation.conversation_id)
+      .flatMap(item => item.attachments ?? []);
+    const inputFilePaths = [...new Set([...originalAttachments ?? [], ...referencedAttachments].map(attachment => attachment.path))];
+    const capabilities = await this.options.capabilityTools?.(cwd, key, inputFilePaths);
+    const mediaTools = capabilities?.tools ?? [];
+    this.runtimeCapabilityNames.set(key, mediaTools.map(tool => tool.name));
     const requestTools = [
       defineTool({ name: 'bot_list', description: '查看同一用户现有 Bot 的准确名字、职责和状态。用户提及其他 Bot、让你问它或向它学习时先查找目标，再 bot_ask 真实联系。不是团队派活。',
         parameters: Type.Object({}), replay: 'safe', execute: async () => ({ output: [{ type: 'text' as const, text: JSON.stringify(
@@ -735,7 +753,7 @@ export class BotConversationService {
     const sharedAudience = this.messages.origins.isShared(conversation.conversation_id);
     const reviewTools = review ? createDurableReadOnlyTools(cwd) : [];
     const primaryBot = this.options.bots.isPrimaryBot(this.options.userId, bot.botId);
-    const allowed = (name: string) => (!review || peerReviewToolAllowed(name)) && (name !== "bot_organize" || Boolean(this.organizations?.eligible(key))) && (name !== "work_team_build" || primaryBot) && !(sharedAudience && ["reminder_manage", "schedule_overview", "work_team_templates", "work_team_build", "work_team_create", "work_team_replan", "bot_list", "bot_ask", "bot_collaborate", "work_create", "work_amend", "work_pause", "work_resume", "work_cancel"].includes(name)) && !(conversation.team_id && ['bot_list', 'bot_ask', 'bot_collaborate', 'work_team_build'].includes(name)) && (!name.startsWith("memory_") || Boolean(this.options.memory?.enabled())) && !(conversation.team_id && name === "work_create") && ((review && name === "read") || reviewTools.some(tool => tool.name === name) || (selectedTools ?? []).some(tool => tool.name === name) || requestTools.some(tool => tool.name === name) || composerTools.some(tool => tool.name === name) || webTools.some(tool => tool.name === name)
+    const allowed = (name: string) => (!review || peerReviewToolAllowed(name)) && (name !== "bot_organize" || Boolean(this.organizations?.eligible(key))) && (name !== "work_team_build" || primaryBot) && !(sharedAudience && ["reminder_manage", "schedule_overview", "work_team_templates", "work_team_build", "work_team_create", "work_team_replan", "bot_list", "bot_ask", "bot_collaborate", "work_create", "work_amend", "work_pause", "work_resume", "work_cancel"].includes(name)) && !(conversation.team_id && ['bot_list', 'bot_ask', 'bot_collaborate', 'work_team_build'].includes(name)) && (!name.startsWith("memory_") || Boolean(this.options.memory?.enabled())) && !(conversation.team_id && name === "work_create") && ((review && name === "read") || reviewTools.some(tool => tool.name === name) || (selectedTools ?? []).some(tool => tool.name === name) || requestTools.some(tool => tool.name === name) || composerTools.some(tool => tool.name === name) || webTools.some(tool => tool.name === name) || mediaTools.some(tool => tool.name === name)
       || BOT_FOREGROUND_TOOLS.has(name) || isDurableContextToolName(name));
     const runtime = await DurableBotRuntime.open({ directory, cwd, models: this.options.models, model: model.target,
       toolMode: "native", toolAllowed: allowed,
@@ -782,7 +800,7 @@ ${botFileDispatchInstructions(Boolean(conversation.team_id))}
 当前长期记忆状态：${this.options.memory?.enabled() ? "已启用" : "已关闭"}。长期记忆以提供的历史记忆证据或 memory_search 实际结果为准，需要更多历史事实时先检索；没查到就说明没有记录，不猜测。仅当记忆已启用时，用户明确提供的稳定偏好和事实会在本轮结束后自动提炼到当前Bot或团队的专属记忆，无需审核或额外确认。自动提炼发生在回复完成后，由宿主异步处理；未调用工具不代表未保存，也不能据此声称“只在本轮有效”或“没有写入长期记忆”。普通偏好及其更正先确认理解或本次采用；没有实际持久化回执时，不宣称已经保存，也不宣称不会保存。用户明确要求不要保存时必须尊重该要求，不将其交给自动提炼保存；用户只要求不调用工具不等于要求关闭自动记忆。用户明确要求记住时可用memory_remember直接保存：current为本Bot或团队，conversation为仅本次会话，public仅用于用户明确要求所有Bot共享的内容。新对话继承长期记忆但不继承旧对话临时要求。公共记忆不等于把私人内容全公开。用户明确要求忘记时，先 memory_search 找到对应记忆，再 memory_forget按当前Bot/团队/会话范围移除；只有明确要求公共或所有Bot忘记才影响公共范围，依据真实回执回答已删除或不存在；不要说只有检索没有删除能力，不让用户另去设置操作。纯遗忘请求执行删除后即结束，不能再用memory_remember把旧内容写成“不要/不再”形式存回；混合“忘记A、记住B”仅引用明确新记住B的子句保存B。更正可以先检索并忘记当前范围的旧条目，再保存更正内容，或由本轮结束后的提炼更新；未完成时不要声称已经改好。不要承诺已经记住尚未持久化的内容，不承诺保存机密、敏感细节或一次性请求，不把记忆当作权限或高于本轮指令的规则。`,
       evidence: () => this.options.memory?.context(bot.botId, conversation.conversation_id, source.user_message_id) ?? "",
       contextHooks: web?.contextHooks,
-      tools: [...reviewTools, ...(selectedTools ?? []), ...requestTools.filter(tool => (tool.name !== "bot_organize" || Boolean(this.organizations?.eligible(key))) && (!conversation.team_id || !["bot_list", "bot_ask", "bot_collaborate"].includes(tool.name))), ...composerTools, ...webTools, ...botForegroundTools({ ...this.options, botId: bot.botId, teamId: conversation.team_id ?? undefined, conversationId: conversation.conversation_id, messages: this.messages,
+      tools: [...reviewTools, ...(selectedTools ?? []), ...requestTools.filter(tool => (tool.name !== "bot_organize" || Boolean(this.organizations?.eligible(key))) && (!conversation.team_id || !["bot_list", "bot_ask", "bot_collaborate"].includes(tool.name))), ...composerTools, ...webTools, ...mediaTools, ...botForegroundTools({ ...this.options, botId: bot.botId, teamId: conversation.team_id ?? undefined, conversationId: conversation.conversation_id, messages: this.messages,
         requestNamespace: run.runtime_key === conversation.conversation_id ? undefined : key, workspacePath: cwd,
         memorySearch: query => this.options.memory ? this.options.memory.search(bot.botId, query, conversation.conversation_id, source.user_message_id) : this.options.memorySearch(bot.botId, query),
         memoryRemember: this.options.memory ? (input, userText) => this.options.memory!.remember(bot.botId, conversation.conversation_id, input, userText) : undefined,
@@ -837,11 +855,13 @@ ${botFileDispatchInstructions(Boolean(conversation.team_id))}
     const row = rows.at(-1);
     const text = row?.text || message.text;
     // Deduplicate native tool observations, including partial/committed rows.
-    // Only expose a bounded activity label, never arguments, outputs or reasoning.
+    // Selected capabilities expose real results; internal tools retain the activity label.
     const tools = [...new Map(rows.flatMap(item => item.tools ?? []).map(tool => [tool.id, tool])).values()];
     const tool = [...tools].reverse().find(item => item.status === "running") ?? tools.at(-1);
     const activity = tool ? { tool: tool.tool, status: tool.status } : undefined;
     const activityChanged = activity?.tool !== message.activity?.tool || activity?.status !== message.activity?.status;
+    const presented = botCapabilityTools(rows);
+    const toolsChanged = JSON.stringify(presented) !== JSON.stringify(message.tools ?? []);
     const metrics = this.messages.metrics.project(message.messageId, activeRequest, snapshot);
     const metricsChanged = JSON.stringify(metrics) !== JSON.stringify(message.metrics);
     const now = Date.now();
@@ -850,11 +870,12 @@ ${botFileDispatchInstructions(Boolean(conversation.team_id))}
     const firstVisibleText = !message.segments?.some(segment => segment.kind !== "receipt" && segment.text.trim()) && segments.some(segment => segment.kind !== "receipt" && segment.text.trim());
     // Phase transitions must not be lost behind a text frame's throttle. Unchanged
     // snapshots do nothing, so a long tool call produces one quiet status line.
-    if (text === message.text && !activityChanged && !metricsChanged && !segmentsChanged) return;
-    if (!activityChanged && !firstVisibleText && now - (this.streamedAt.get(message.messageId) ?? 0) < 80) return;
+    if (text === message.text && !activityChanged && !metricsChanged && !segmentsChanged && !toolsChanged) return;
+    if (!activityChanged && !toolsChanged && !firstVisibleText && now - (this.streamedAt.get(message.messageId) ?? 0) < 80) return;
     this.streamedAt.set(message.messageId, now);
     // Persist at a bounded cadence: a reconnect reads the same revision, not a blank placeholder.
-    this.messages.update(message.messageId, "running", text, undefined, activity, segments);
+    this.messages.update(message.messageId, "running", text, undefined, activity, segments,
+      { taskId: botCapabilityTaskId(message.messageId), tools: presented });
     this.publish(message.messageId);
   }
 

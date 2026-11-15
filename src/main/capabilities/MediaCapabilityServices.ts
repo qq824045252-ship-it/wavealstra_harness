@@ -500,11 +500,15 @@ export class MediaCapabilityServices {
   speechProvider(id: "speech-to-text" | "text-to-speech"): SpeechCapabilityProvider | null {
     const binding = this.binding(id);
     if (!binding?.connectionId) return null;
+    const speechTransport = this.runtime.config().textToSpeech.transport ?? "websocket";
     const provider = binding.connectionId === LOCAL_WHISPER_CONNECTION_ID && id === "speech-to-text" ? this.runtime.registeredSpeechProvider("local-whisper")
       : binding.connectionId.startsWith("legacy:") && id === "speech-to-text" ? this.runtime.registeredSpeechProvider("http-asr")
         : binding.connectionId.startsWith("registered:") ? this.runtime.registeredSpeechProvider(binding.connectionId.slice(11))
         : binding.connectionId === MAGPIE_CONNECTION_ID || this.runtime.config().connections?.[binding.connectionId]
-          ? (this.runtime.config().connections?.[binding.connectionId]?.protocol === "deepseek" ? createDeepSeekSpeechProvider : createApiSpeechProvider)({ id: binding.connectionId, label: this.services().find((service) => service.id === binding.connectionId)?.label ?? "API 服务", getConnection: (connectionId) => this.resolveApi(id, connectionId), fetch: this.options.fetch }) : null;
+          ? this.runtime.config().connections?.[binding.connectionId]?.protocol === "deepseek"
+            ? createDeepSeekSpeechProvider({ id: binding.connectionId, label: this.services().find((service) => service.id === binding.connectionId)?.label ?? "DeepSeek", getConnection: (connectionId) => this.resolveApi(id, connectionId), fetch: this.options.fetch,
+                transport: () => speechTransport })
+            : createApiSpeechProvider({ id: binding.connectionId, label: this.services().find((service) => service.id === binding.connectionId)?.label ?? "API 服务", getConnection: (connectionId) => this.resolveApi(id, connectionId), fetch: this.options.fetch }) : null;
     if (!provider || (id === "speech-to-text" ? !provider.speechToText : !provider.textToSpeech)) return null;
     return { ...provider,
       ...(provider.speechToText ? { speechToText: async (input, context) => {

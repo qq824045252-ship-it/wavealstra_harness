@@ -97,7 +97,7 @@ export class ArtifactProtocol {
         if (decoded === null) return this.text(400, "Bad Request");
         subPath = decoded;
       }
-      const result = await this.runtime.resolve(artifactId, subPath);
+      const result = await this.runtime.resolve(artifactId, subPath, { head: request.method === "HEAD", range: request.headers.get("range") });
       return this.fromResult(result, request.method === "HEAD");
     } catch {
       return this.text(500, "Internal Error");
@@ -131,6 +131,7 @@ export class ArtifactProtocol {
       "content-type": result.mimeType,
       "cache-control": result.cachePolicy,
       "x-content-type-options": "nosniff",
+      ...result.headers,
     };
     if (head) return new Response(null, { status: result.status, headers });
     // Buffer（Uint8Array<ArrayBufferLike>）在运行时是合法 BodyInit；仅 TS 泛型不兼容

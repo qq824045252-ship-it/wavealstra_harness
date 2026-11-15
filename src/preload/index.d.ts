@@ -219,6 +219,10 @@ export interface PreloadApi {
     benchmark: () => Promise<WorkGraphBenchmarkResult>;
   };
   conversationRuntime: ConversationRuntimeApi;
+  speech: {
+    cancel: (request: import("../shared/speech-stream").SpeechCancelRequest) => Promise<boolean>;
+    onAudio: (listener: (event: import("../shared/speech-stream").SpeechAudioEvent) => void) => () => void;
+  };
   botWork: import("../shared/bot-work-ipc").BotWorkApi;
   setTheme: (theme: "light" | "dark") => void;
   onThemeRequest: (callback: () => void) => void;

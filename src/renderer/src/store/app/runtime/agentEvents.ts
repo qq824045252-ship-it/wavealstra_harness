@@ -4,6 +4,7 @@ import { mergeBotMessageEvent } from "../slices/botMessageStream";
 import type { ExternalAgentUiEvent } from "../../../../../shared/external-agent";
 import type { RuntimeBinding } from "./binding";
 import type { AgentDeltaBuffer } from "./deltaBuffer";
+import { ingestSpeechAudio, stopSpeechPlayback } from "../../../lib/speechStreams";
 
 export function bindAgentEvents(
   binding: RuntimeBinding,
@@ -16,6 +17,9 @@ export function bindAgentEvents(
     isActive,
     addCleanup,
   } = binding;
+
+  addCleanup(api.speech?.onAudio(event => { if (isActive()) ingestSpeechAudio(event); }));
+  addCleanup(stopSpeechPlayback);
 
   addCleanup(api.botWork?.onMessageChanged?.(event => {
     if (!isActive()) return;

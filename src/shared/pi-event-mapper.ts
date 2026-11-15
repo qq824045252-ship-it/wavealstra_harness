@@ -1,5 +1,6 @@
 import { searchReportFromDetails, searchReportSummary } from "./web-search";
 import { consultReportFromDetails, consultSummary } from "./multi-model-consult";
+import { capabilityResultFromDetails } from "./capability-result";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import type { AgentUiPatch } from "./agent-ipc";
 import { MUTATING_BUILTIN_TOOLS } from "./native-tools";
@@ -12,10 +13,27 @@ export interface MapperContext {
   startedAt: number;
   /** 当前 provider assistant message 已经发给 UI 的 thinking 文本。message_start 时重置。 */
   emittedThinking?: string;
+  /** Last displayed native row snapshot, scoped to this provider message. */
+  nativeRows?: Record<string, string>;
   /** UI projection only: Pi owns all execution and retry decisions. */
   activeReplyId?: string;
   settled?: boolean;
   terminalError?: string;
+}
+
+function nativeToolPatches(message: unknown, ctx: MapperContext, streaming: boolean): AgentUiPatch[] {
+  const patches: AgentUiPatch[] = [];
+  const seen = ctx.nativeRows ??= {};
+  for (const tool of deepseekHostedToolRows(message, streaming)) {
+    const signature = JSON.stringify(tool);
+    if (seen[tool.id] === signature) continue;
+    if (!seen[tool.id]) patches.push({ type: "tool_start", taskId: ctx.taskId, messageId: ctx.messageId, toolCallId: tool.id,
+      tool: tool.tool, summary: tool.summary, dangerous: false, status: "running" });
+    patches.push({ type: "tool_update", taskId: ctx.taskId, messageId: ctx.messageId, toolCallId: tool.id,
+      output: tool.output ?? "", status: tool.status, ...(tool.webSearch ? { webSearch: tool.webSearch } : {}) });
+    seen[tool.id] = signature;
+  }
+  return patches;
 }
 
 function assistantThinkingSnapshot(message: unknown): string {
@@ -198,6 +216,7 @@ export function mapPiEventToPatches(
       ctx.settled = false;
       ctx.terminalError = undefined;
       ctx.emittedThinking = "";
+      ctx.nativeRows = {};
       return [
         {
           type: "assistant_start",
@@ -212,6 +231,7 @@ export function mapPiEventToPatches(
       // a retry must not continue an interrupted Markdown fence from the last attempt.
       if (event.message.role === "assistant") {
         ctx.emittedThinking = "";
+        ctx.nativeRows = {};
         ctx.terminalError = undefined;
         return [{ type: "assistant_message_start", taskId, messageId }];
       }
@@ -220,21 +240,22 @@ export function mapPiEventToPatches(
     case "message_update": {
       const ame = event.assistantMessageEvent;
       if (!ame) return [];
+      const native = nativeToolPatches(event.message, ctx, true);
       // Native Pi deltas are the live path. Do not inspect growing snapshots here:
       // a partial can lag a delta (dropping it) or already contain later events.
       if (ame.type === "text_delta" && typeof ame.delta === "string") {
-        return ame.delta ? [{ type: "text_delta", taskId, messageId, delta: ame.delta, final: true }] : [];
+        return [...native, ...(ame.delta ? [{ type: "text_delta" as const, taskId, messageId, delta: ame.delta, final: true }] : [])];
       }
       if (ame.type === "thinking_delta" && typeof ame.delta === "string") {
-        if (!ame.delta) return [];
+        if (!ame.delta) return native;
         ctx.emittedThinking = (ctx.emittedThinking ?? "") + ame.delta;
-        return [{ type: "thinking_delta", taskId, messageId, delta: ame.delta }];
+        return [...native, { type: "thinking_delta", taskId, messageId, delta: ame.delta }];
       }
       // Boundary-only recovery for providers that publish text only at block end.
       // This is a final consistency fallback, never a replacement for streaming.
-      return ame.type === "thinking_end"
+      return [...native, ...(ame.type === "thinking_end"
         ? reconcileThinkingSnapshot(assistantThinkingSnapshot(event.message), ctx, taskId, messageId)
-        : [];
+        : [])];
     }
 
     case "message_end": {
@@ -242,11 +263,7 @@ export function mapPiEventToPatches(
       const patches = reconcileThinkingSnapshot(assistantThinkingSnapshot(event.message), ctx, taskId, messageId);
       const citations = deepseekCitationMarkdown(event.message);
       if (citations) patches.push({ type: "text_delta", taskId, messageId, delta: citations, final: true });
-      for (const tool of deepseekHostedToolRows(event.message)) {
-        patches.push({ type: "tool_start", taskId, messageId, toolCallId: tool.id, tool: tool.tool, summary: tool.summary, dangerous: false, status: "running" });
-        if (tool.status !== "running") patches.push({ type: "tool_update", taskId, messageId, toolCallId: tool.id,
-          output: tool.output ?? "", status: tool.status });
-      }
+      patches.push(...nativeToolPatches(event.message, ctx, false));
       return patches;
     }
 
@@ -272,6 +289,8 @@ export function mapPiEventToPatches(
 
     case "tool_execution_update": {
       const partial = event.partialResult;
+      const capabilityResult = capabilityResultFromDetails(event.toolName, (partial as { details?: unknown })?.details);
+      if (capabilityResult) return [{ type: "tool_update", taskId, messageId, toolCallId: event.toolCallId, capabilityResult }];
       const webSearch = searchReportFromDetails((partial as { details?: unknown })?.details);
       if (webSearch) return [{ type: "tool_update", taskId, messageId, toolCallId: event.toolCallId, webSearch, summary: searchReportSummary(webSearch) }];
       if (event.toolName === "multi_model_consult") {
@@ -299,6 +318,7 @@ export function mapPiEventToPatches(
 
     case "tool_execution_end": {
       const isError = Boolean(event.isError);
+      const capabilityResult = capabilityResultFromDetails(event.toolName, (event.result as { details?: unknown })?.details);
       const webSearch = searchReportFromDetails((event.result as { details?: unknown })?.details);
       const consult = event.toolName === "multi_model_consult" ? consultReportFromDetails((event.result as { details?: unknown })?.details) : undefined;
       let output: string | undefined;
@@ -328,6 +348,7 @@ export function mapPiEventToPatches(
           ...(event.parentToolCallId ? { parentToolCallId: event.parentToolCallId } : {}),
           status: isError ? "error" : "success",
           output,
+          ...(capabilityResult ? { capabilityResult } : {}),
           ...(consult ? { consult, summary: consultSummary(consult) } : {}),
           ...(webSearch ? { webSearch, summary: searchReportSummary(webSearch) } : {}),
         },

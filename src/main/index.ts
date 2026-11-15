@@ -1,4 +1,5 @@
 import "./platform/credentials";
+import { SpeechIpc } from "../shared/speech-stream";
 import { SavedArtifactActions } from "./artifact/SavedArtifactActions";
 import { BotMessageHtmlService } from "./artifact/BotMessageHtmlService";
 import { WindowsNotificationActivation } from "./platform/notification-activation";
@@ -328,7 +329,7 @@ const TITLE_BAR_HEIGHT = 32;
 protocol.registerSchemesAsPrivileged([
   {
     scheme: "mybuddy-artifact",
-    privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true },
+    privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true },
   },
   {
     scheme: "mybuddy-library",
@@ -743,6 +744,10 @@ function createWindow(initialTheme: AppTheme = "light"): void {
 }
 
 function registerIpc(): void {
+  ipcMain.handle(SpeechIpc.cancel, (event, request: import("../shared/speech-stream").SpeechCancelRequest) => {
+    if (!isMainAppWindowRequest(event, botManagementWindow, process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href)) return false;
+    return agentService.builtinCapabilities.speechStreams.cancel(request);
+  });
   ipcMain.handle(NotificationIpc.activate, (event, id: string) => {
     if (!isMainAppWindowRequest(event, botManagementWindow, process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href) || typeof id !== "string" || !/^[0-9a-f-]{36}$/i.test(id)) return;
     activateDesktopNotification(id);
@@ -2972,6 +2977,11 @@ app.whenReady().then(async () => {
     console.log(`[index] 任务执行工作区路径重绑完成：cwd=${rebind.cwds}, trash_path=${rebind.trashPaths}`);
   }
   agentService = new AgentService(db);
+  agentService.builtinCapabilities.speechStreams.onAudio(event => {
+    if (botManagementWindow && !botManagementWindow.isDestroyed() && !botManagementWindow.webContents.isDestroyed()) {
+      botManagementWindow.webContents.send(SpeechIpc.audio, event);
+    }
+  });
   // Cards remain available in-app. External effects use the same authority-owned ledger;
   // an unqueryable desktop/Gateway receipt stays unknown across a restart.
   workNotificationHost = new WorkNotificationHost(agentService.getWorkService(), {
