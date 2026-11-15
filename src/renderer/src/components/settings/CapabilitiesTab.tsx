@@ -8,11 +8,17 @@ import { searchPolicyFromConfig, normalizeSearchPolicy, DEFAULT_SEARCH_POLICY } 
 import type { WebSearchPolicy } from "@shared/web-search";
 import { BUILTIN_CODEX_IMAGE_PROVIDER_ID } from "@shared/builtin-capabilities";
 import type { BuiltinCapabilitiesConfigDto, BuiltinCapabilitiesSnapshotDto, BuiltinCapabilityId, BuiltinCapabilityStatusDto } from "@shared/builtin-capabilities";
-import { API_PROTOCOL_CAPABILITIES, BAIDU_OCR_DEFAULT_MODE, BAIDU_OCR_MODES, CODEX_CONNECTION_ID, DEEPSEEK_OCR_PURPOSES, DEEPSEEK_TTS_VOICES, LOCAL_WHISPER_CONNECTION_ID, MEDIA_CAPABILITY_IDS, MEDIA_PROVIDER_PRESETS, OPENROUTER_API_ROOT, connectionCapabilities, connectionRequiresModel } from "@shared/media-capabilities";
+import { API_PROTOCOL_CAPABILITIES, BAIDU_OCR_DEFAULT_MODE, BAIDU_OCR_MODES, CODEX_CONNECTION_ID, LOCAL_WHISPER_CONNECTION_ID, MEDIA_CAPABILITY_IDS, MEDIA_PROVIDER_PRESETS, OPENROUTER_API_ROOT, connectionCapabilities, connectionRequiresModel } from "@shared/media-capabilities";
 import type { ApiCapabilityConnection, ApiCapabilityProtocol, CapabilityConnectionOption, CapabilityCredentialChange, CapabilityVideoJobDto, MediaCapabilityBinding, MediaCapabilityId } from "@shared/media-capabilities";
 import { desktopPlatformLabel, desktopRuntimeSummary } from "@shared/desktop-platform";
 import { useAppStore } from "@/store/appStore";
 import { WEB_SEARCH_PROVIDER_OPTIONS, type WebSearchConfigDto } from "@shared/agent-ipc";
+import ApiServicePicker from "./ApiServicePicker";
+import WebServiceSettings from "./WebServiceSettings";
+import {
+  API_SERVICE_PROTOCOL_SETTINGS, API_WEB_SERVICE_BINDINGS, apiConnectionUsedForWeb, apiServiceCapabilityLabels,
+  apiServiceMediaControls, createApiServiceConnection, selectedWebServiceConnection, webSettingsDependOnConnections,
+} from "@shared/api-service-settings";
 import "./CapabilitiesTab.css";
 
 const AUTO_SERVICE = "__automatic__";
@@ -30,7 +36,7 @@ const MEDIA_ROWS: Record<MediaCapabilityId, { title: string; description: string
   "image-generation": { title: "图片生成", description: "根据描述生成图片；服务支持时可使用参考图。", tool: "image_generate" },
   "video-generation": { title: "视频生成", description: "根据描述生成视频，并保存到当前任务。", tool: "video_generate" },
 };
-const PROTOCOL_LABEL: Record<ApiCapabilityProtocol, string> = { "openai-compatible": "OpenAI 兼容 API", openrouter: "OpenRouter 多模态 API", "mistral-ocr": "Mistral OCR API", "baidu-ocr": "百度智能云 OCR API", "black-forest-labs": "Black Forest Labs（FLUX）原生任务 API", dashscope: "阿里云百炼（千问 / 万相）原生任务 API", deepseek: "DeepSeek 原生工具 API" };
+const protocolLabel = (protocol: ApiCapabilityProtocol): string => API_SERVICE_PROTOCOL_SETTINGS[protocol]?.label ?? protocol;
 type CredentialDraft = Pick<CapabilityCredentialChange, "secret" | "clear">;
 const differs = (left: unknown, right: unknown): boolean => JSON.stringify(left) !== JSON.stringify(right);
 const errorText = (reason: unknown): string => reason instanceof Error ? reason.message : String(reason);
@@ -293,11 +299,11 @@ function ApiConnectionEditor({ id, value, option, credentials, secretKeyCredenti
         const protocol = event.target.value as ApiCapabilityProtocol;
         onChange({ ...value, protocol, ...(protocol === "openrouter" ? { baseUrl: OPENROUTER_API_ROOT, auth: "api-key" as const } : {}) });
       }}>
-        {(Object.keys(PROTOCOL_LABEL) as ApiCapabilityProtocol[]).filter(protocol => {
+        {(Object.keys(API_SERVICE_PROTOCOL_SETTINGS) as ApiCapabilityProtocol[]).filter(protocol => {
           // Native task APIs only exist behind their official preset (fixed endpoint + model family).
-          const presetOnly = protocol === "baidu-ocr" || protocol === "black-forest-labs" || protocol === "dashscope" || protocol === "deepseek";
+          const { presetOnly } = API_SERVICE_PROTOCOL_SETTINGS[protocol];
           return presetOnly ? value.presetId === protocol : true;
-        }).map(protocol => <option key={protocol} value={protocol} disabled={usedBy.some(capability => !API_PROTOCOL_CAPABILITIES[protocol].includes(capability))}>{PROTOCOL_LABEL[protocol]}</option>)}
+        }).map(protocol => <option key={protocol} value={protocol} disabled={usedBy.some(capability => !API_PROTOCOL_CAPABILITIES[protocol].includes(capability))}>{protocolLabel(protocol)}</option>)}
       </SettingsSelect>
     </div>
     <SettingsInput label="API 地址" type="url" disabled={Boolean(value.presetId)} value={value.baseUrl} spellCheck={false} autoComplete="off" placeholder="https://api.example.com/v1" hint="填写服务的 API 根地址，通常以 /v1 结尾。" onChange={event => onChange({ ...value, baseUrl: event.target.value })} />
@@ -316,7 +322,8 @@ function ApiConnectionEditor({ id, value, option, credentials, secretKeyCredenti
         onChange={secret => onSecretKeyCredentialChange({ secret, clear: false })}
         onClearChange={clear => onSecretKeyCredentialChange({ secret: "", clear })} />
     </div>}
-    <p className="settings-row-desc">{MEDIA_PROVIDER_PRESETS.find(preset => preset.id === value.presetId)?.hint ?? (value.protocol === "mistral-ocr" ? "用于 Mistral OCR 接口。" : value.protocol === "openrouter" ? "使用 OpenRouter 专用多模态接口及实时目录。" : "使用对应的 OpenAI 兼容接口；服务端需实际支持所选能力。")}{uses.length > 0 ? ` 当前用于：${uses.join("、")}。修改此服务会应用到这些能力。` : "保存后可供上方的能力选择。"}</p>
+    <p className="settings-row-desc">{MEDIA_PROVIDER_PRESETS.find(preset => preset.id === value.presetId)?.hint ?? (value.protocol === "mistral-ocr" ? "用于 Mistral OCR 接口。" : value.protocol === "openrouter" ? "使用 OpenRouter 专用多模态接口及实时目录。" : "使用对应的 OpenAI 兼容接口；服务端需实际支持所选能力。")}{uses.length > 0 ? ` 当前用于：${uses.join("、")}。修改此服务会应用到这些能力。` : "保存后可供各项能力选择。"}</p>
+    <p className="settings-row-desc">已接入接口：{apiServiceCapabilityLabels(value).join("、") || "未声明"}。实际可用性仍需账户与模型支持。</p>
     <details className="capability-options"><summary>连接选项</summary><SettingsInput label="等待上限（秒）" type="number" min={1} value={value.timeoutMs / 1000 || ""} onChange={event => onChange({ ...value, timeoutMs: Number(event.target.value) * 1000 })} /></details>
     <div className="capability-connection-actions"><button type="button" className="btn" disabled={disabled || uses.length > 0} title={uses.length ? "先为使用此服务的能力选择其他服务" : undefined} onClick={onRemove}>移除此服务</button></div>
   </fieldset>;
@@ -333,6 +340,7 @@ export default function CapabilitiesTab(): React.JSX.Element {
   const [searchPolicy, setSearchPolicy] = useState(DEFAULT_SEARCH_POLICY);
   const [credentialDrafts, setCredentialDrafts] = useState<Record<string, CredentialDraft>>({});
   const [openConnections, setOpenConnections] = useState<Set<string>>(() => new Set());
+  const [newServicePreset, setNewServicePreset] = useState("");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -406,15 +414,13 @@ export default function CapabilitiesTab(): React.JSX.Element {
     const searchKeys = { tavily: webSearchDraft?.tavilyApiKey, serper: webSearchDraft?.serperApiKey, tinyfish: webSearchDraft?.tinyfishApiKey, brave: webSearchDraft?.braveApiKey };
     for (const [id, key] of Object.entries(searchKeys)) if (key?.trim() || webSearchDraft?.apiKeyPools?.[id]?.length) ready.add(id);
     for (const provider of savedWebSearch?.searchRouting?.providers ?? []) ready.add(provider);
-    const deepseekId = webSearchDraft?.deepseekConnectionId;
-    const deepseekServices = Object.entries(draft?.connections ?? {}).filter(([, entry]) => entry.protocol === "deepseek");
-    const selected = deepseekId ? deepseekServices.find(([id]) => id === deepseekId) : deepseekServices.length === 1 ? deepseekServices[0] : undefined;
-    if (selected) {
-      const pendingKey = credentialDrafts[selected[0]];
-      const savedService = services.find(service => service.id === selected[0]);
-      if (!pendingKey?.clear && (pendingKey?.secret?.trim() || savedService?.authState === "configured")) ready.add("deepseek");
-      else ready.delete("deepseek");
-    } else ready.delete("deepseek");
+    for (const binding of API_WEB_SERVICE_BINDINGS) {
+      const selected = selectedWebServiceConnection(binding, webSearchDraft, draft?.connections);
+      const pendingKey = selected ? credentialDrafts[selected[0]] : undefined;
+      const savedService = selected ? services.find(service => service.id === selected[0]) : undefined;
+      if (selected && !pendingKey?.clear && (pendingKey?.secret?.trim() || savedService?.authState === "configured")) ready.add(binding.provider);
+      else ready.delete(binding.provider);
+    }
     return WEB_SEARCH_PROVIDER_OPTIONS.filter(provider => ready.has(provider.id)).map(provider => provider.id);
   }, [models, savedWebSearch, webSearchDraft, draft?.connections, credentialDrafts, services]);
   const credentialChanges = Object.entries(credentialDrafts).filter(([, change]) => hasCredentialChange(change)).map(([key, change]) =>
@@ -454,18 +460,14 @@ export default function CapabilitiesTab(): React.JSX.Element {
     if (preset && capability && !preset.capabilities.includes(capability)) return;
     const id = `api-${crypto.randomUUID()}`;
     changeConfig(current => {
-      const protocol = preset?.protocol ?? (capability === "ocr" ? "mistral-ocr" : "openai-compatible");
+      const connection = createApiServiceConnection(presetId, capability, Object.keys(current.connections ?? {}).length + 1);
       const previous = capability ? mediaBinding(current, capability) : undefined;
       return {
         ...current,
-        connections: { ...current.connections, [id]: {
-          name: preset?.label ?? `API 服务 ${Object.keys(current.connections ?? {}).length + 1}`,
-          protocol, ...(preset ? { presetId: preset.id } : {}),
-          baseUrl: preset?.baseUrl ?? "", auth: preset?.protocol === "baidu-ocr" ? "baidu-ak-sk" as const : "api-key" as const, timeoutMs: preset?.protocol === "deepseek" ? 180000 : 60000,
-        } },
+        connections: { ...current.connections, [id]: connection },
         ...(capability ? { mediaBindings: { ...current.mediaBindings, [capability]: { connectionId: id, selection: "manual" as const, ...(capability === "ocr" || capability === "speech-to-text" ? { dataPolicy: previous?.dataPolicy ?? "allow-cloud" } : {}),
-          ...(capability === "ocr" && preset?.protocol === "baidu-ocr" ? { model: BAIDU_OCR_DEFAULT_MODE } : {}) } } } : {}),
-        ...(capability === "text-to-speech" ? { textToSpeech: { ...current.textToSpeech, voice: preset?.protocol === "deepseek" ? "stella" : undefined, rate: undefined } } : {}),
+          ...(API_SERVICE_PROTOCOL_SETTINGS[connection.protocol].initialModels?.[capability] ? { model: API_SERVICE_PROTOCOL_SETTINGS[connection.protocol].initialModels?.[capability] } : {}) } } } : {}),
+        ...(capability === "text-to-speech" ? { textToSpeech: { ...current.textToSpeech, voice: apiServiceMediaControls(connection).speech?.defaultVoice, rate: undefined } } : {}),
       };
     });
     editConnection(id);
@@ -493,7 +495,7 @@ export default function CapabilitiesTab(): React.JSX.Element {
         const targetPolicy = selected.startsWith("legacy:") ? current.services?.[selected.slice(7)]?.dataPolicy : undefined;
         binding.dataPolicy = previous.dataPolicy === "local-only" || targetPolicy === "local-only" ? "local-only" : previous.dataPolicy ?? targetPolicy ?? "allow-cloud";
       }
-      const next = { ...current, mediaBindings: { ...current.mediaBindings, [id]: binding }, ...(id === "text-to-speech" && previous.connectionId !== selected ? { textToSpeech: { ...current.textToSpeech, voice: current.connections?.[selected]?.protocol === "deepseek" ? "stella" : undefined, rate: undefined } } : {}) };
+      const next = { ...current, mediaBindings: { ...current.mediaBindings, [id]: binding }, ...(id === "text-to-speech" && previous.connectionId !== selected ? { textToSpeech: { ...current.textToSpeech, voice: apiServiceMediaControls(current.connections?.[selected]).speech?.defaultVoice, rate: undefined } } : {}) };
       return selected ? next : setMediaEnabled(next, id, false);
     });
   };
@@ -513,9 +515,9 @@ export default function CapabilitiesTab(): React.JSX.Element {
     try {
       const capabilitySave = mainPending ? settingsApi().saveBuiltinCapabilitySettings({ config: submittedConfig, credentials: submittedCredentials, expectedRevision: draftRevision }) : Promise.resolve(null);
       // Search must see the saved shared connection/key; unrelated settings keep their independent saves.
-      const dependsOnDeepSeek = mainPending && searchToSave && (searchToSave.deepseekConnectionId || searchToSave.fetchProvider === "deepseek" || searchPolicy.providers.includes("deepseek"));
-      const searchSave = searchToSave ? (dependsOnDeepSeek ? capabilitySave.then(saved => {
-        if (!saved) throw new Error("请先成功保存 DeepSeek API 服务。");
+      const dependsOnConnections = mainPending && searchToSave && webSettingsDependOnConnections(searchToSave, searchPolicy, submittedConfig.connections);
+      const searchSave = searchToSave ? (dependsOnConnections ? capabilitySave.then(saved => {
+        if (!saved) throw new Error("请先成功保存关联的 API 服务。");
         return settingsApi().saveWebSearchConfig(searchToSave);
       }) : settingsApi().saveWebSearchConfig(searchToSave)) : Promise.resolve(null);
       const [capabilities, search] = await Promise.allSettled([capabilitySave, searchSave]);
@@ -591,6 +593,27 @@ export default function CapabilitiesTab(): React.JSX.Element {
 
   return <div className="capabilities-page" aria-busy={saving}>
     <p className="settings-section-desc capabilities-intro">为每项能力选择服务。已有登录和本机服务可直接使用，也可以添加 API 服务供多项能力共用。</p>
+    <SettingsSection title="API 服务" description="所有服务商统一管理。一个连接可供多项工具共用；模型登录仍在模型设置中管理。">
+      {Object.entries(draft.connections ?? {}).map(([id, connection]) => <details id={`capability-connection-${id}`} key={id} className="capability-connection" open={openConnections.has(id)} onToggle={event => { const open = event.currentTarget.open; setOpenConnections(current => { if (current.has(id) === open) return current; const next = new Set(current); if (open) next.add(id); else next.delete(id); return next; }); }}>
+        <summary><span><strong>{connection.name || "未命名 API 服务"}</strong><span className="settings-row-desc">{protocolLabel(connection.protocol)}</span></span><span className="settings-disclosure-chevron" aria-hidden="true">⌄</span></summary>
+        <ApiConnectionEditor id={id} value={connection} option={snapshot?.mediaServices?.find(option => option.id === id)}
+          credentials={credentialDrafts[id]} secretKeyCredentials={credentialDrafts[`${id}::secretKey`]}
+          usedBy={connectionUsers(id)} usedForSearch={apiConnectionUsedForWeb(id, webSearchDraft, searchPolicy, draft.connections)} disabled={busy}
+          onChange={value => {
+            changeConfig(current => ({ ...current, connections: { ...current.connections, [id]: value } }));
+            if (value.auth === "none") setCredentialDrafts(current => { const next = { ...current }; delete next[id]; delete next[`${id}::secretKey`]; return next; });
+          }}
+          onCredentialChange={value => changeCredential(id, value)}
+          onSecretKeyCredentialChange={value => changeCredential(`${id}::secretKey`, value)}
+          onRemove={() => {
+            changeConfig(current => { const connections = { ...current.connections }; delete connections[id]; return { ...current, connections }; });
+            setCredentialDrafts(current => { const next = { ...current }; delete next[id]; delete next[`${id}::secretKey`]; return next; });
+          }} />
+      </details>)}
+      <ApiServicePicker value={newServicePreset} disabled={busy} onChange={setNewServicePreset}
+        onAdd={presetId => { addConnection(undefined, presetId); }} />
+    </SettingsSection>
+
     <SettingsSection title="语音与图像" description="开关控制能力是否提供给新会话；关闭时仍可编辑服务设置。">
       {MEDIA_CAPABILITY_IDS.map(id => {
         const row = MEDIA_ROWS[id];
@@ -601,7 +624,7 @@ export default function CapabilitiesTab(): React.JSX.Element {
         const legacyId = binding.connectionId.startsWith("legacy:") ? binding.connectionId.slice(7) : undefined;
         const legacy = legacyId ? draft.services?.[legacyId] : undefined;
         const connection = draft.connections?.[binding.connectionId];
-        const deepseek = connection?.protocol === "deepseek";
+        const controls = apiServiceMediaControls(connection);
         const credentials = credentialDrafts[binding.connectionId];
         const secretKeyCredentials = credentialDrafts[`${binding.connectionId}::secretKey`];
         const ref = credentialReference(draft, binding.connectionId);
@@ -618,7 +641,7 @@ export default function CapabilitiesTab(): React.JSX.Element {
         const privacy = id === "speech-to-text" || id === "ocr";
         const hasUnknownSelection = selectedValue && selectedValue !== AUTO_SERVICE && !choices.some(option => option.id === selectedValue);
         const sharedLegacyCredentials = legacy?.credentialRef ? Object.values(draft.services ?? {}).filter(item => item.credentialRef === legacy.credentialRef).length : 0;
-        return <CapabilityRow key={id} {...rowCommon(id, mediaEnabled(draft, id))} title={row.title} description={deepseek && id === "ocr" ? "识别图片、扫描 PDF、Word 和 PowerPoint，保留页次及完整性。" : row.description} tools={[row.tool]} configurationPending={pending} preventEnable={restrictive || (!configured && selectedValue !== AUTO_SERVICE) || (id === "text-to-speech" && !deepseek && !draft.textToSpeech.voice?.trim())} detailsContent={id === "video-generation" ? <VideoJobs disabled={busy} /> : undefined} onToggle={enabled => changeConfig(current => setMediaEnabled(current, id, enabled))}>
+        return <CapabilityRow key={id} {...rowCommon(id, mediaEnabled(draft, id))} title={row.title} description={controls.descriptions?.[id] ?? row.description} tools={[row.tool]} configurationPending={pending} preventEnable={restrictive || (!configured && selectedValue !== AUTO_SERVICE) || (id === "text-to-speech" && !controls.speech?.defaultVoice && !draft.textToSpeech.voice?.trim())} detailsContent={id === "video-generation" ? <VideoJobs disabled={busy} /> : undefined} onToggle={enabled => changeConfig(current => setMediaEnabled(current, id, enabled))}>
           <div className={`capability-form-grid${legacy ? " capability-form-grid--single" : ""}`}>
             <SettingsSelect label="服务" aria-label={`${row.title}服务`} value={selectedValue} onChange={event => selectService(id, event.target.value)}>
               <option value="">暂不配置（关闭此能力）</option>
@@ -636,8 +659,8 @@ export default function CapabilitiesTab(): React.JSX.Element {
               ...current,
               mediaBindings: { ...current.mediaBindings, [id]: { ...mediaBinding(current, id), model } },
             }))} />}
-            {deepseek && id === "ocr" && <SettingsSelect label="识别方式" aria-label="DeepSeek OCR 识别方式" value={binding.ocrPurpose ?? "text_recognition"} onChange={event => changeConfig(current => ({ ...current, mediaBindings: { ...current.mediaBindings, ocr: { ...mediaBinding(current, "ocr"), ocrPurpose: event.target.value as MediaCapabilityBinding["ocrPurpose"] } } }))}>
-              {DEEPSEEK_OCR_PURPOSES.map(purpose => <option key={purpose.id} value={purpose.id}>{purpose.label}</option>)}
+            {controls.ocrPurpose && id === "ocr" && <SettingsSelect label="识别方式" aria-label={controls.ocrPurpose.ariaLabel} value={binding.ocrPurpose ?? controls.ocrPurpose.defaultValue} onChange={event => changeConfig(current => ({ ...current, mediaBindings: { ...current.mediaBindings, ocr: { ...mediaBinding(current, "ocr"), ocrPurpose: event.target.value as MediaCapabilityBinding["ocrPurpose"] } } }))}>
+              {controls.ocrPurpose.options.map(purpose => <option key={purpose.id} value={purpose.id}>{purpose.label}</option>)}
             </SettingsSelect>}
           </div>
           {/* API 服务没有模型目录时，把服务行的可操作原因（例如 Key 含中文）直接显示在模型控件下面。 */}
@@ -652,19 +675,18 @@ export default function CapabilitiesTab(): React.JSX.Element {
           {id === "ocr" && connection?.protocol === "openai-compatible" && <p className="settings-row-desc">视觉模型提取文字，不提供位置框。</p>}
           {legacy && legacyId && <RecognitionServiceEditor value={legacy} adapter={legacy.adapter} effectiveDataPolicy={restrictive ? "local-only" : "allow-cloud"} onAllowConversation={legacy.dataPolicy !== "local-only" && binding.dataPolicy === "local-only" ? () => changeConfig(current => ({ ...current, mediaBindings: { ...current.mediaBindings, [id]: { ...mediaBinding(current, id), dataPolicy: "allow-cloud" } } })) : undefined} disabled={busy} secret={credentials?.secret} clearCredential={credentials?.clear} credentialConfigured={service?.authState === "configured"} sharedCredentialNote={sharedLegacyCredentials > 1 ? "此密钥由多个识别服务共用；更新或移除会同时影响这些服务。" : undefined} onCredentialChange={change => changeCredential(binding.connectionId, change)} onChange={value => changeConfig(current => ({ ...current, services: { ...current.services, [legacyId]: value }, ...(current.mediaBindings?.[id] ? { mediaBindings: { ...current.mediaBindings, [id]: { ...current.mediaBindings[id]!, model: value.model, dataPolicy: mediaBinding(current, id).dataPolicy === "local-only" ? "local-only" : value.dataPolicy } } } : {}) }))} />}
           {privacy && !legacy && (restrictive ? <div className="capability-policy-note" role="note"><p>已保留“仅限本机”的限制。当前对话无法保证识别正文只在本机处理，因此暂不能使用此能力。</p><SettingsSelect label="识别结果用于" value={binding.dataPolicy} onChange={event => changeConfig(current => ({ ...current, mediaBindings: { ...current.mediaBindings, [id]: { ...mediaBinding(current, id), dataPolicy: event.target.value as MediaCapabilityBinding["dataPolicy"] } } }))}><option value="local-only">仅限本机（对话中不可用）</option><option value="allow-cloud">当前对话（可能使用云端模型）</option></SettingsSelect></div> : <p className="settings-row-desc">识别正文会进入当前对话，并按当前模型设置处理。</p>)}
-          {deepseek && id === "speech-to-text" && <p className="settings-row-desc">支持 PCM WAV 或 Ogg Opus；单次最多 120 秒、8 MiB，自动识别语言。</p>}
-          {id === "text-to-speech" && deepseek && <SettingsSelect label="声音" aria-label="文字转语音声音" value={draft.textToSpeech.voice ?? "stella"} onChange={event => changeConfig(current => ({ ...current, textToSpeech: { ...current.textToSpeech, voice: event.target.value, rate: undefined } }))}>
-            {DEEPSEEK_TTS_VOICES.map(voice => <option key={voice.id} value={voice.id}>{voice.label}</option>)}
+          {controls.hints?.[id] && <p className="settings-row-desc">{controls.hints[id]}</p>}
+          {id === "text-to-speech" && controls.speech && <SettingsSelect label="声音" aria-label="文字转语音声音" value={draft.textToSpeech.voice ?? controls.speech.defaultVoice} onChange={event => changeConfig(current => ({ ...current, textToSpeech: { ...current.textToSpeech, voice: event.target.value, rate: undefined } }))}>
+            {controls.speech.voices.map(voice => <option key={voice.id} value={voice.id}>{voice.label}</option>)}
           </SettingsSelect>}
-          {id === "text-to-speech" && deepseek && <>
-            <SettingsSelect label="播放方式" aria-label="文字转语音播放方式" value={draft.textToSpeech.transport ?? "websocket"}
+          {id === "text-to-speech" && controls.speech && <>
+            <SettingsSelect label="播放方式" aria-label="文字转语音播放方式" value={draft.textToSpeech.transport ?? controls.speech.defaultTransport}
               onChange={event => changeConfig(current => ({ ...current, textToSpeech: { ...current.textToSpeech, transport: event.target.value === "http" ? "http" : "websocket" } }))}>
-              <option value="websocket">实时播放（WebSocket）</option>
-              <option value="http">生成后播放（HTTP WAV）</option>
+              {controls.speech.transports.map(transport => <option key={transport.id} value={transport.id}>{transport.label}</option>)}
             </SettingsSelect>
-            <p className="settings-row-desc">实时模式可在对话中的语音卡片开始播放、暂停或停止。合成完成后保留 WAV 文件，便于重播和下载。</p>
+            <p className="settings-row-desc">{controls.speech.hint}</p>
           </>}
-          {id === "text-to-speech" && !deepseek && <div className="capability-form-grid">
+          {id === "text-to-speech" && !controls.speech && <div className="capability-form-grid">
             <div><SettingsInput label="声音" aria-label="文字转语音声音"
               list="capability-tts-voice-options" value={draft.textToSpeech.voice ?? ""}
               placeholder="输入或选择模型支持的音色"
@@ -677,47 +699,14 @@ export default function CapabilitiesTab(): React.JSX.Element {
       })}
     </SettingsSection>
 
-    <SettingsSection title="API 服务" description="连接和密钥只需设置一次。已有登录服务在模型设置中管理。">
-      {Object.entries(draft.connections ?? {}).map(([id, connection]) => <details id={`capability-connection-${id}`} key={id} className="capability-connection" open={openConnections.has(id)} onToggle={event => { const open = event.currentTarget.open; setOpenConnections(current => { if (current.has(id) === open) return current; const next = new Set(current); if (open) next.add(id); else next.delete(id); return next; }); }}>
-        <summary><span><strong>{connection.name || "未命名 API 服务"}</strong><span className="settings-row-desc">{PROTOCOL_LABEL[connection.protocol]}</span></span><span className="settings-disclosure-chevron" aria-hidden="true">⌄</span></summary>
-        <ApiConnectionEditor id={id} value={connection} option={snapshot?.mediaServices?.find(option => option.id === id)}
-          credentials={credentialDrafts[id]} secretKeyCredentials={credentialDrafts[`${id}::secretKey`]}
-          usedBy={connectionUsers(id)} usedForSearch={webSearchDraft?.deepseekConnectionId === id || (connection.protocol === "deepseek" && !webSearchDraft?.deepseekConnectionId && Object.values(draft.connections ?? {}).filter(entry => entry.protocol === "deepseek").length === 1 && (webSearchDraft?.fetchProvider === "deepseek" || searchPolicy.providers.includes("deepseek")))} disabled={busy}
-          onChange={value => {
-            changeConfig(current => ({ ...current, connections: { ...current.connections, [id]: value } }));
-            if (value.auth === "none") setCredentialDrafts(current => { const next = { ...current }; delete next[id]; delete next[`${id}::secretKey`]; return next; });
-          }}
-          onCredentialChange={value => changeCredential(id, value)}
-          onSecretKeyCredentialChange={value => changeCredential(`${id}::secretKey`, value)}
-          onRemove={() => {
-            changeConfig(current => { const connections = { ...current.connections }; delete connections[id]; return { ...current, connections }; });
-            setCredentialDrafts(current => { const next = { ...current }; delete next[id]; delete next[`${id}::secretKey`]; return next; });
-          }} />
-      </details>)}
-      <div className="settings-row capability-add-service"><div className="settings-row-desc">{Object.keys(draft.connections ?? {}).length ? "可添加另一家服务，再为需要的能力选择它。" : "有服务地址和 API Key 时，可以在这里添加连接。"}</div><button type="button" className="btn" disabled={busy} onClick={() => addConnection(undefined, "deepseek")}>添加 DeepSeek</button><button type="button" className="btn" disabled={busy} onClick={() => addConnection()}>添加 API 服务</button></div>
-    </SettingsSection>
-
     <SettingsSection title="搜索与图像理解">
       <CapabilityRow {...rowCommon("web", draft.web.enabled)} title="联网搜索" description={searchPolicy.mode === "parallel" ? `同时搜索 ${searchPolicy.providers.length} 家供应商` : "选择检索方式与供应商。"} tools={["web_search", "fetch_content", "source_check", "get_search_content"]} configurationPending={searchPending} collapsible defaultCollapsed summary={searchSummary(draft.web.enabled, searchPolicy)} onToggle={enabled => changeConfig(current => ({ ...current, web: { ...current.web, enabled } }))}>
         {searchLoadError ? <div className="capability-search-error"><p className="settings-inline-error" role="alert">{searchLoadError}</p><button type="button" className="btn" disabled={busy || refreshing} onClick={() => void retrySearch()}>重新读取搜索设置</button></div> : <>
           <SearchSettings value={searchPolicy} configured={searchProviderChoices} disabled={!draft.web.enabled || busy} onChange={setSearchPolicy} />
-          <div className="capability-form-grid">
-            <SettingsSelect label="DeepSeek 服务" aria-label="DeepSeek 搜索服务" value={webSearchDraft?.deepseekConnectionId ?? ""} onChange={event => {
-              const selected = event.target.value;
-              const connectionId = selected === ADD_SERVICE ? addConnection(undefined, "deepseek") : selected;
-              if (connectionId !== undefined) setWebSearchDraft(current => ({ ...(current ?? {}), deepseekConnectionId: connectionId }));
-            }}>
-              <option value="">自动使用唯一的 DeepSeek 连接</option>
-              {webSearchDraft?.deepseekConnectionId && draft.connections?.[webSearchDraft.deepseekConnectionId]?.protocol !== "deepseek" && <option value={webSearchDraft.deepseekConnectionId}>原 DeepSeek 服务暂不可用</option>}
-              {Object.entries(draft.connections ?? {}).filter(([, connection]) => connection.protocol === "deepseek").map(([id, connection]) => <option key={id} value={id}>{connection.name}</option>)}
-              <option value={ADD_SERVICE}>＋ 添加 DeepSeek 官方 API</option>
-            </SettingsSelect>
-            <SettingsSelect label="网页读取服务" aria-label="网页读取服务" value={webSearchDraft?.fetchProvider ?? "auto"} onChange={event => setWebSearchDraft(current => ({ ...(current ?? {}), fetchProvider: event.target.value as WebSearchConfigDto["fetchProvider"] }))}>
-              <option value="auto">自动（现有网页读取）</option><option value="deepseek">DeepSeek</option>
-            </SettingsSelect>
-          </div>
-          <p className="settings-row-desc">DeepSeek 搜索和网页读取共用上述 API 连接，可与语音、文档识别使用同一把 Key。主聊天模型可独立选择。</p>
-          <details className="capability-options"><summary>其他搜索 API Key</summary><div className="capability-form-grid">{([['tavilyApiKey', 'Tavily'], ['serperApiKey', 'Serper'], ['tinyfishApiKey', 'TinyFish'], ['braveApiKey', 'Brave']] as const).map(([key, label]) => <SettingsInput key={key} label={`${label} API Key`} type="password" autoComplete="new-password" value={webSearchDraft?.[key] ?? ""} onChange={event => setWebSearchDraft(current => ({ ...(current ?? {}), [key]: event.target.value || undefined }))} />)}</div></details>
+          <WebServiceSettings value={webSearchDraft ?? {}} connections={draft.connections ?? {}} disabled={busy}
+            onChange={patch => setWebSearchDraft(current => ({ ...(current ?? {}), ...patch }))}
+            onAdd={presetId => addConnection(undefined, presetId)} />
+          <details className="capability-options"><summary>独立搜索 API Key</summary><div className="capability-form-grid">{([['tavilyApiKey', 'Tavily'], ['serperApiKey', 'Serper'], ['tinyfishApiKey', 'TinyFish'], ['braveApiKey', 'Brave']] as const).map(([key, label]) => <SettingsInput key={key} label={`${label} API Key`} type="password" autoComplete="new-password" value={webSearchDraft?.[key] ?? ""} onChange={event => setWebSearchDraft(current => ({ ...(current ?? {}), [key]: event.target.value || undefined }))} />)}</div></details>
         </>}
       </CapabilityRow>
       <CapabilityRow {...rowCommon("vision", draft.vision.enabled)} title="图像理解" description="为不支持图片输入的主模型选择视觉模型；用于分析图片。" tools={["describe_image"]} configurationPending={savedConfig?.vision.model !== draft.vision.model} preventEnable={!visionModels.length} collapsible summary={draft.vision.model ? `视觉模型 · ${visionModels.find(model => model.id === draft.vision.model)?.name ?? draft.vision.model}` : "自动使用可用视觉模型"} onToggle={enabled => changeConfig(current => ({ ...current, vision: { ...current.vision, enabled } }))}>

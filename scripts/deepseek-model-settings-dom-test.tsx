@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import "./api-service-settings-test";
+import { verifyApiServiceSettingsDom } from "./api-service-settings-dom-checks";
 import { parseHTML } from "linkedom";
 import { act } from "react";
 import ModelEditorModal from "../src/renderer/src/components/settings/models/ModelEditorModal";
@@ -44,7 +46,10 @@ async function files(value: string) {
 }
 async function save() { await act(async () => { [...document.querySelectorAll("button")].find(button => button.textContent === "保存")!.click(); }); assert(saved); }
 try {
+  await verifyApiServiceSettingsDom(root, document);
   await draw();
+  assert([...document.querySelectorAll(".models-adv-title")].some(title => title.textContent === "模型原生能力"));
+  assert(!document.body.textContent?.includes("DeepSeek 原生能力"));
   assert(!field<HTMLInputElement>("DeepSeek 联网搜索").disabled, "built-in provider base URL / API makes native settings reachable");
   await toggle("DeepSeek 联网搜索", true); await toggle("DeepSeek 网页读取", true); await files("rich"); await save();
   assert.deepEqual(saved!.override?.compat, { supportsStore: false, mybuddyDeepSeek: { webSearch: true, readUrl: true, files: "rich" } });
@@ -68,5 +73,7 @@ try {
   await draw({ ...initial, baseUrl: "https://gateway.example/v1", api: "openai-responses",
     definition: { id: "deepseek-flash", api: "openai-completions", baseUrl: "https://api.deepseek.com" } });
   assert(!field<HTMLInputElement>("DeepSeek 联网搜索").disabled, "model-level transport declarations take precedence over provider defaults");
+  await draw({ ...initial, providerId: "openrouter" });
+  assert.equal(document.querySelector('[aria-label="DeepSeek 联网搜索"]'), null, "another provider must not inherit native controls by model name");
   console.log("PASS DOM DeepSeek model settings: native opt-ins, preserved compat, save/reopen/disable, endpoint/protocol/model gates");
 } finally { await act(async () => { root.unmount(); }); }

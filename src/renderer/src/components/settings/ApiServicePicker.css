@@ -1,0 +1,18 @@
+.settings-row.capability-add-service--unified {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 10px 12px;
+}
+.capability-add-service--unified > .settings-field { min-width: 0; }
+.capability-add-service--unified > .settings-row-desc {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.capability-add-service--unified > .btn { grid-column: 2; grid-row: 1; }
+@media (max-width: 560px) {
+  .settings-row.capability-add-service--unified { grid-template-columns: minmax(0, 1fr); }
+  .capability-add-service--unified > .btn { grid-column: 1; grid-row: 3; justify-self: start; }
+}

@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { IconX } from "@/components/common/icons";
 import type { ModelsModelConfigDto, ModelsModelOverrideDto } from "@shared/agent-ipc";
 import { reasoningEffortLabel } from "@shared/model-metadata";
-import { deepseekNativeOptions, deepseekRecord, supportsDeepSeekNative, type DeepSeekNativeOptions } from "@shared/deepseek";
+import NativeCapabilityFields from "./NativeCapabilityFields";
 import { modelLimitLabel, modelSourceLabel, modelUsesDefault, type SavedModelEntry } from "./types";
 
 interface ModelEditorModalProps {
@@ -54,12 +54,6 @@ export default function ModelEditorModal({
   };
   const nativeModel = { provider: draft.providerId, id: draft.modelId, api: native.api ?? draft.definition?.api ?? draft.api,
     baseUrl: native.baseUrl ?? draft.definition?.baseUrl ?? draft.baseUrl, compat: native.compat };
-  const supportsNativeDeepSeek = supportsDeepSeekNative(nativeModel);
-  const deepseek = deepseekNativeOptions(nativeModel);
-  const patchDeepSeek = (patch: Partial<DeepSeekNativeOptions>): void => {
-    const compat = deepseekRecord(native.compat) ?? {};
-    patchNative({ compat: { ...compat, mybuddyDeepSeek: { ...deepseekRecord(compat.mybuddyDeepSeek), ...patch } } });
-  };
   const patch = (value: Partial<SavedModelEntry>): void => {
     setDraft((current) => ({ ...current, ...value }));
     setSaveError("");
@@ -107,7 +101,7 @@ export default function ModelEditorModal({
               <span>模型 ID</span>
               <input ref={modelIdRef} value={draft.modelId} readOnly={mode === "edit"} disabled={busy}
                 onChange={(event) => patch({ modelId: event.target.value })}
-                placeholder="准确 ID，例如 deepseek-flash"
+                placeholder="填写服务商实际使用的模型 ID"
                 aria-invalid={Boolean(saveError && !draft.modelId.trim())} />
             </label>
             <label className="models-field">
@@ -147,34 +141,7 @@ export default function ModelEditorModal({
             </>
           )}
 
-          {draft.providerId === "deepseek" && (
-            <>
-              <div className="models-adv-title">DeepSeek 原生能力</div>
-              <div className="models-modal-sub">
-                {supportsNativeDeepSeek
-                  ? "使用此模型的 API Key。联网搜索与网页读取由 DeepSeek 服务端执行；引用来源和网页上下文会随对话保存。"
-                  : "原生能力需使用官方 api.deepseek.com 的 deepseek-flash，支持 Chat Completions、Responses 和 Anthropic Messages（/anthropic）协议。"}
-              </div>
-              <label className="models-field">
-                <span className="models-native-option"><input type="checkbox" aria-label="DeepSeek 联网搜索" disabled={busy || !supportsNativeDeepSeek} checked={deepseek.webSearch === true}
-                  onChange={event => patchDeepSeek({ webSearch: event.target.checked })} /> 允许模型使用 DeepSeek 联网搜索</span>
-              </label>
-              <label className="models-field">
-                <span className="models-native-option"><input type="checkbox" aria-label="DeepSeek 网页读取" disabled={busy || !supportsNativeDeepSeek} checked={deepseek.readUrl === true}
-                  onChange={event => patchDeepSeek({ readUrl: event.target.checked })} /> 允许模型使用 DeepSeek 网页读取</span>
-              </label>
-              <label className="models-field">
-                <span>Bot 对话附件处理</span>
-                <select aria-label="DeepSeek 附件处理" disabled={busy || !supportsNativeDeepSeek} value={deepseek.files ?? ""}
-                  onChange={event => patchDeepSeek({ files: event.target.value === "text" || event.target.value === "rich" ? event.target.value : undefined })}>
-                  <option value="">应用默认处理</option>
-                  <option value="text">DeepSeek Files：文档正文</option>
-                  <option value="rich">DeepSeek Files：文档正文和插图</option>
-                </select>
-                <small>启用后，受支持的 Bot 附件会上传至 DeepSeek，并通过 file_id 交给模型。PDF、Word、PowerPoint、BMP 和 TIFF 使用所选解析模式；其他支持的图片、文本、表格和电子书使用原生文件输入。对话中显示上传与解析进度。服务器副本保留 24 小时，重启后仍复用有效上传记录；过期后重新上传。</small>
-              </label>
-            </>
-          )}
+          <NativeCapabilityFields model={nativeModel} disabled={busy} onPatch={patchNative} />
 
           <div className="models-adv-title">models.json 本地参数（选填）</div>
           <div className="models-modal-sub">
