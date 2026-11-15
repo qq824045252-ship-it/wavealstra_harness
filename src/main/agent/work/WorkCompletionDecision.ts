@@ -5,6 +5,7 @@ import type { CompletionTurn, WorkCompletionOptions } from "./WorkCompletionCoor
 import { continuationProgress, lastContinuationProgress, recordContinuationProgress } from "./WorkContinuationProgress";
 import { z } from "zod";
 import { workRequestIncludes } from "./WorkRequestEvidence";
+import { completionVerification } from "./WorkCompletionVerification";
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 /** A host override must replace the proposal, not guess at promises in arbitrary languages. */
 const DOWNGRADED_BODY = "本次交付已保留的结果，原目标仍有未完成部分。没有安排继续执行，也没有重放已完成或结果未知的动作。";
@@ -20,7 +21,8 @@ export function applyCompletionDecision(options: WorkCompletionOptions, binding:
   const kind = decision.decision;
   const waitingForUser = kind === "ask" || kind === "wait";
   const reviewedTurn = db.prepare("SELECT context_json FROM work_completion_turns WHERE binding_id=?").get(binding.bindingId) as {context_json:string}|undefined;
-  const reviewedQuestions: Array<{blockerId:string;reason:string}> = reviewedTurn ? JSON.parse(reviewedTurn.context_json).pendingQuestions ?? [] : [];
+  const reviewedContext = reviewedTurn ? JSON.parse(reviewedTurn.context_json) : undefined;
+  const reviewedQuestions: Array<{blockerId:string;reason:string}> = reviewedContext?.pendingQuestions ?? [];
   let body = decision.reply;
   if (kind === "continue" && !continueMissing(options, binding, work, decision))
     throw new CompletionPlanError("补做计划未通过当前任务、原文来源或进展校验，请依据已返回事实修订剩余步骤；不能把未受理的继续执行说成完成。");
@@ -79,7 +81,8 @@ export function applyCompletionDecision(options: WorkCompletionOptions, binding:
   try {
     const delivered = options.deliver({ bindingId: binding.bindingId, eventId, text: body,
       category: waitingForUser ? "decision" : "result", notices,
-      completion: { outcome, nextStep: kind === "wait" ? "ask" : kind }, primaryArtifactRefs: decision.artifactRefs });
+      completion: { outcome, nextStep: kind === "wait" ? "ask" : kind }, primaryArtifactRefs: decision.artifactRefs,
+      verification: completionVerification(binding, reviewedContext) });
     if (!delivered) throw new CompletionDeliveryError();
   } catch (error) { throw error instanceof CompletionDeliveryError ? error : new CompletionDeliveryError(error); }
   if (kind === "deliver") {

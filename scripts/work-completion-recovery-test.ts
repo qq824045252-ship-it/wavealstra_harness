@@ -272,6 +272,46 @@ for (const kind of ["ask", "continue"] as const) {
     console.log("PASS #38 real process SIGKILL before delivery: committed review survives SQLite rollback and delivers once on restart");
   } finally { f.close(); }
 }
+{
+  const f = await fixture("review-temporal-snapshot");
+  const contextSchema = z.object({ evidenceFingerprint: z.string(), temporalContext: z.object({
+    reviewAt: z.string().datetime(), historicalRecovery: z.boolean(),
+  }) });
+  try {
+    await f.finish(); let reviews = 0;
+    const first = f.start(async input => {
+      reviews++; assert.equal(z.object({ historicalRecovery: z.boolean() }).parse(input.context.temporalContext).historicalRecovery, false);
+      throw new WorkResultLifecycleError("idle", "recover the same unfinished review");
+    });
+    first.wake(); await flush();
+    const original = contextSchema.parse(JSON.parse(f.turn().context_json));
+    assert.equal(f.turn().decision_json, null);
+    // Simulate older-host enrollment loss while retaining its review and native
+    // receipt. The real restart recovery reenrolls the same business evidence.
+    f.db.connection.prepare("DELETE FROM work_automatic_completion WHERE binding_id=?").run(f.binding.bindingId);
+    f.restart(); let deliveryAvailable = false;
+    let reviewedTemporal: z.infer<typeof contextSchema>["temporalContext"] | undefined;
+    const recovered = f.start(async input => {
+      reviews++; reviewedTemporal = contextSchema.shape.temporalContext.parse(input.context.temporalContext);
+      assert.equal(reviewedTemporal.historicalRecovery, true); return complete();
+    }, input => input.category === "progress" || deliveryAvailable && f.feedback.deliverCompletion(input));
+    f.retry(); recovered.wake(); await flush();
+    const frozenJson = f.turn().context_json, frozen = contextSchema.parse(JSON.parse(frozenJson));
+    assert.equal(frozen.evidenceFingerprint, original.evidenceFingerprint, "recovery/time do not alter semantic evidence identity");
+    assert.deepEqual(frozen.temporalContext, reviewedTemporal, "persist exactly the recovery/time facts given to the actual review");
+    assert(f.turn().decision_json); assert.equal(f.turn().attempts, 1);
+    // Even if temporal bookkeeping changes, delivery reuse keeps the original
+    // reviewed record and never invokes the review or business execution again.
+    f.db.connection.prepare("UPDATE work_automatic_completion SET recovered=0 WHERE binding_id=?").run(f.binding.bindingId);
+    deliveryAvailable = true; f.retry(); recovered.wake(); await flush();
+    assert.equal(f.turn().context_json, frozenJson, "cached decision delivery retains its reviewed snapshot");
+    assert.equal(reviews, 2); assert.equal(f.submits, 1); assert.equal(f.reports().length, 1);
+    const verification = f.reports()[0]!.workFeedback!.report!.verification!;
+    assert.equal(verification.historicalExecution, true);
+    assert.equal(verification.reviewedAt, reviewedTemporal!.reviewAt);
+    console.log("PASS verification recovery: same evidence fingerprint, frozen actual review time/history, cached delivery preserves snapshot without replay");
+  } finally { f.close(); }
+}
 for (const failure of ["target", "sqlite-write"] as const) {
   const f = await fixture(`local-${failure}`);
   try {

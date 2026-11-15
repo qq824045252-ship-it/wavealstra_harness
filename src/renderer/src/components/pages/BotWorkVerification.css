@@ -1,0 +1,13 @@
+.bot-work-verification { min-width:0; margin-top:14px; padding-top:10px; border-top:1px solid var(--border-subtle); font-size:13px; color:var(--fg-secondary); }
+.bot-work-verification summary { cursor:pointer; }
+.bot-work-verification > p { margin:9px 0; }
+.bot-work-verification-meta { color:var(--fg-muted); font-size:12px; }
+.bot-work-verification-checks { list-style:none; padding:0; margin:12px 0 0; }
+.bot-work-verification-checks > li { margin:0; padding:12px 0; border-top:1px solid var(--border-subtle); }
+.bot-work-verification-heading { display:flex; flex-wrap:wrap; align-items:flex-start; gap:6px 12px; }
+.bot-work-verification-heading strong { flex:1 1 180px; min-width:0; color:var(--fg); overflow-wrap:anywhere; }
+.bot-work-verification-heading span { font-size:12px; color:var(--fg-secondary); }
+.bot-work-verification-checks p,.bot-work-verification-checks code { overflow-wrap:anywhere; }
+.bot-work-verification-checks > li > p { margin:8px 0; }
+.bot-work-verification-limits { padding-left:18px; margin:8px 0; }
+.bot-work-verification-omitted,.bot-work-verification-unavailable { color:var(--fg-secondary); font-size:12px; }

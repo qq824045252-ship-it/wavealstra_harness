@@ -1,5 +1,6 @@
 import { watchObservationDelivery, watchReadEvidence } from "./WorkWatchObservation";
 import type { WorkCompletionDelivery } from "./WorkCompletionCoordinator";
+import { workVerificationMatches, workVerificationSchema } from "../../../shared/bot-work-verification";
 import { watchEndedByTime } from "../../../shared/work-watch-expiry";
 import type Database from "better-sqlite3";
 import type { WorkFeedbackDto } from "../../../shared/bot-conversation";
@@ -94,12 +95,18 @@ export class WorkConversationFeedback {
       const result = ownResults.at(-1);
       const primaryArtifactRefs = input.primaryArtifactRefs === undefined ? undefined
         : [...new Set(input.primaryArtifactRefs.filter(ref => files.some(file => file.ref === ref && file.openPath)))];
+      const savedVerification = workVerificationSchema.safeParse(input.verification);
+      const verification = input.completion && savedVerification.success && workVerificationMatches(savedVerification.data, {
+        workId: binding.workId, executionId: binding.bindingId, intentRevision: binding.intentRevision,
+        inputSnapshotId: binding.inputSnapshotId, ownerEpoch: binding.ownerEpoch,
+      }) ? savedVerification.data : undefined;
       const metadata: WorkFeedbackDto = { workId: work.workId, eventId: input.eventId,
         kind: input.category === "progress" ? "binding" : "result", category: input.category,
         executionId: binding.bindingId, intentRevision: binding.intentRevision, inputSnapshotId: binding.inputSnapshotId,
         ...(input.category === "progress" ? {} : { report: {
           title: work.title, summary: input.text, artifactRefs: refs, reviewStatus: result?.status ?? "proposed", current: true,
           ...(input.completion ? { completion: input.completion } : {}),
+          ...(verification ? { verification } : {}),
           ...(primaryArtifactRefs ? { primaryArtifactRefs } : {}),
           ...(input.completion ? { sourceNotices: [...new Set([...input.sourceNotices ?? [], ...results.flatMap(item => item.uncoveredScope)])] } : {}),
           ...projectTeamReport(raw, works.repo.reportContext(binding)),
@@ -110,7 +117,8 @@ export class WorkConversationFeedback {
         } }),
       };
       const text = `【${work.title}】\n${input.text}${input.category !== "progress" && raw !== input.text ? `\n\n原始执行记录：\n${raw}` : ""}`;
-      const delivery = this.messages.appendWorkDelivery(userId, work.workId, input.eventId, JSON.stringify([input.text,input.notices ?? [],refs,input.completion ?? null,primaryArtifactRefs ?? null]), text, metadata);
+      const delivery = this.messages.appendWorkDelivery(userId, work.workId, input.eventId, JSON.stringify([input.text,input.notices ?? [],refs,input.completion ?? null,primaryArtifactRefs ?? null,
+        ...(verification ? [verification] : [])]), text, metadata);
       if (delivery.delivered || delivery.recorded) queueMicrotask(() => this.options.onReport?.(work.workId));
       return delivery.delivered || Boolean(delivery.recorded);
     });

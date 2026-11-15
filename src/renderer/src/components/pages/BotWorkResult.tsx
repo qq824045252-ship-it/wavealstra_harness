@@ -5,6 +5,7 @@ import { fileNameFromPath } from "@/lib/localFilePath";
 import ChatMarkdown from "./BotChatMarkdown";
 import WorkFilePreview from "./WorkFilePreview";
 import SavedFileActions from "./SavedFileActions";
+import { BotWorkVerification } from "./BotWorkVerification";
 import { IconFileCode, IconFileText, IconFileSpreadsheet, IconFileGeneric } from "@/components/common/icons";
 
 import { previewManifestFor, type WorkFile } from "./workFileIdentity";
@@ -185,6 +186,7 @@ export function WorkReport({ report, originalText, executionId, work, renderMark
     {long && <button className="bot-result-expand" type="button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? "收起长报告" : "展开完整报告"}</button>}
     {notices.length > 0 && <section className="bot-result-limitations" aria-label="需要注意"><h4>需要注意</h4><ul className="bot-result-notices">{notices.map((notice, i) => <li key={i}>{notice}</li>)}</ul></section>}
     <WorkFiles files={presentation === "detail" ? (report.primaryArtifactRefs === undefined && !detailFiles.length ? files : detailFiles) : files} primaryRefs={report.primaryArtifactRefs} compact={presentation === "conversation"} compactTitle={report.milestone ? "当前可用文件" : "本次交付"} />
+    {report.verification && <BotWorkVerification verification={report.verification} executionId={executionId} current={report.current} work={work} />}
     {presentation !== "detail" && hasDetails && <details className="bot-result-details"><summary>执行详情与来源</summary>
       {!!report.sourceNotices?.length && <section aria-label="执行报告中的限制"><h4>执行报告中的限制</h4><ul>{report.sourceNotices.map((notice,index) => <li key={index}>{notice}</li>)}</ul></section>}
       {report.teamFacts?.length ? <section aria-label="汇总时的执行事实"><h4>汇总时的执行事实</h4><ul>{report.teamFacts.map((fact, index) => <li key={index}>

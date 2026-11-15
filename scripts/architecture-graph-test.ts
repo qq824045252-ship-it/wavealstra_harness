@@ -22,6 +22,7 @@
  *   3. 文件行数棘轮：基线内文件 +maxGrowth(200) 行失败；基线外新文件 >maxNew(2500) 失败。
  *   4. preload 契约（可选）：src/preload/index.ts 的 `api` 键集合 == index.d.ts 的
  *      `PreloadApi` 键集合；无法解析时打印 SKIP（不计入 PASS，绝不假绿）。
+ *   默认门禁先用临时源码夹具验证共享包扫描、分层与环检测，防止规则存在但扫描漏掉目录。
  *
  * 运行（与其它 test:* 一致：esbuild 打包 → test-guard）：
  *   esbuild scripts/architecture-graph-test.ts --bundle --platform=node --format=cjs \
@@ -37,6 +38,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { parse } from "@babel/parser";
 import type { ParserPlugin } from "@babel/parser";
+import { testArchitectureGraphFixtures } from "./architecture-graph-fixtures";
 
 const ROOT = process.cwd();
 const BASELINE_PATH = join(ROOT, "scripts", "architecture-graph-baseline.json");
@@ -52,7 +54,7 @@ const NEW_FILE_LIMIT = 2500; // 行：基线外新文件的上限
 // ---------------------------------------------------------------- 扫描与解析
 
 /** 只扫源码树；`app/remote/android`、构建产物、发布目录一律跳过。 */
-const SCAN_ROOTS = ["src", "app"];
+const SCAN_ROOTS = ["src", "app", "shared/src"];
 const SKIP_DIRS = new Set([
   "node_modules", "out", "dist", "build", "release", "coverage", ".git",
   "android", "ios", "vendor",
@@ -65,7 +67,7 @@ interface SourceFile {
   lines: number;
 }
 
-function walk(dirAbs: string, out: SourceFile[]): void {
+function walk(dirAbs: string, out: SourceFile[], root: string): void {
   let entries: string[];
   try {
     entries = readdirSync(dirAbs);
@@ -82,10 +84,10 @@ function walk(dirAbs: string, out: SourceFile[]): void {
       continue;
     }
     if (st.isDirectory()) {
-      walk(abs, out);
+      walk(abs, out, root);
     } else if (SOURCE_EXT.test(name)) {
       const text = readFileSync(abs, "utf8");
-      out.push({ abs, rel: toPosix(relative(ROOT, abs)), lines: countLines(text) });
+      out.push({ abs, rel: toPosix(relative(root, abs)), lines: countLines(text) });
     }
   }
 }
@@ -132,34 +134,34 @@ interface ScanResult {
 }
 
 /** 解析模块说明符 → 仓库内文件相对路径；裸包名返回 null（外部依赖）。 */
-function resolveSpec(fromRel: string, spec: string): string | null {
-  const fromAbs = join(ROOT, fromRel);
+function resolveSpec(fromRel: string, spec: string, root: string): string | null {
+  const fromAbs = join(root, fromRel);
   const candidates: string[] = [];
   if (spec.startsWith(".")) {
     candidates.push(resolve(dirname(fromAbs), spec));
   } else if (spec.startsWith("@/")) {
-    candidates.push(join(ROOT, "src/renderer/src", spec.slice(2)));
+    candidates.push(join(root, "src/renderer/src", spec.slice(2)));
   } else if (spec.startsWith("@shared/")) {
-    candidates.push(join(ROOT, "src/shared", spec.slice(8)));
+    candidates.push(join(root, "src/shared", spec.slice(8)));
   } else if (spec === "@mybuddy/shared") {
-    candidates.push(join(ROOT, "shared/src/index.ts"));
+    candidates.push(join(root, "shared/src/index.ts"));
   } else if (spec.startsWith("@mybuddy/shared/")) {
-    candidates.push(join(ROOT, "shared/src", spec.slice(16)));
+    candidates.push(join(root, "shared/src", spec.slice(16)));
   } else {
     return null; // 裸包（node_modules / node: 内建）
   }
   for (const c of candidates) {
     for (const suffix of ["", ".ts", ".tsx", ".mts", ".cts", "/index.ts", "/index.tsx"]) {
       const f = c + suffix;
-      if (existsSync(f) && statSync(f).isFile()) return toPosix(relative(ROOT, f));
+      if (existsSync(f) && statSync(f).isFile()) return toPosix(relative(root, f));
     }
   }
   return null;
 }
 
-function scan(): ScanResult {
+function scan(root = ROOT): ScanResult {
   const files: SourceFile[] = [];
-  for (const root of SCAN_ROOTS) walk(join(ROOT, root), files);
+  for (const scanRoot of SCAN_ROOTS) walk(join(root, scanRoot), files, root);
   files.sort((a, b) => a.rel.localeCompare(b.rel));
 
   const edges: Edge[] = [];
@@ -187,7 +189,7 @@ function scan(): ScanResult {
         virtualSpecs.add(spec.startsWith("virtual:") ? "virtual:*" : spec.slice(spec.indexOf("?")));
         return;
       }
-      const target = resolveSpec(f.rel, spec);
+      const target = resolveSpec(f.rel, spec, root);
       if (target) edges.push({ from: f.rel, to: target, spec, line, typeOnly });
       else if (!isInternalLooking(spec)) externals.add(bareName(spec));
       else unresolved.push({ rel: f.rel, line, spec });
@@ -678,6 +680,25 @@ function main(): void {
     console.log(`[architecture-graph] 基线可解析：越层 ${b.layers.allow.length} 条、环 ${b.runtimeCycles.allow.length} 个、大文件 ${Object.keys(b.fileSizes.entries).length} 个`);
     console.log("[architecture-graph] PASS（仅校验基线文件）");
     return;
+  }
+
+  if (!PRINT_BASELINE) {
+    const noExceptions: Baseline = {
+      layers: { allow: [] }, runtimeCycles: { allow: [] },
+      fileSizes: { maxGrowth: GROWTH_ALLOWANCE, maxNew: NEW_FILE_LIMIT, floor: SIZE_BASELINE_FLOOR, entries: {} },
+      preloadContract: { keys: 0 },
+    };
+    const fixtureCount = testArchitectureGraphFixtures(root => {
+      const fixture = scan(root);
+      return {
+        files: fixture.files.map(file => file.rel),
+        parseErrors: fixture.parseErrors.map(error => error.rel),
+        unresolved: fixture.unresolved.map(error => `${error.rel}:${error.spec}`),
+        layers: checkLayers(fixture, noExceptions).violations.map(violation => violation.key),
+        cycles: checkCycles(fixture, noExceptions).violations.map(violation => violation.key),
+      };
+    });
+    console.log(`PASS 架构检查器自检（${fixtureCount} 个共享包行为夹具）`);
   }
 
   const scanResult = scan();

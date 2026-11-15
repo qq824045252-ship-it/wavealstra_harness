@@ -8,12 +8,14 @@ import { completionEvidence, completionFingerprint } from "./WorkCompletionEvide
 import { resultDecisionSchema } from "./WorkResultDecision";
 import { WorkResultLifecycleError } from "./WorkResultLifecycleError";
 import type { WorkFeedbackDto } from "../../../shared/bot-conversation";
+import type { WorkVerificationDto } from "../../../shared/bot-work-verification";
 
 export interface WorkCompletionDelivery {
   bindingId: string; eventId: string; text: string; category: "progress" | "result" | "decision"; notices?: string[];
   completion?: NonNullable<WorkFeedbackDto["report"]>["completion"];
   primaryArtifactRefs?: string[];
   sourceNotices?: string[];
+  verification?: WorkVerificationDto;
 }
 export interface CompletionTurn { binding_id: string; context_json: string; decision_json: string | null; state: string; attempts: number; retry_at: number; error: string | null }
 export interface WorkCompletionOptions {
@@ -116,18 +118,22 @@ export class WorkCompletionCoordinator {
       let decision: WorkResultDecision;
       if (row.decision_json) decision = resultDecisionSchema.parse(JSON.parse(row.decision_json));
       else {
+        const temporalContext = this.temporalContext(bindingId);
         // A progress notification failure must not consume a semantic review attempt.
         try { this.options.deliver({ bindingId, eventId: `${eventId}:progress`, category: "progress",
-          text: this.temporalContext(bindingId).historicalRecovery
+          text: temporalContext.historicalRecovery
             ? "正在整理此前执行的历史结果，没有重新执行任务。你可以继续交代其他事情。"
             : "后台结果已返回，我正在对照你的委托整理结论。你可以继续交代其他事情。" }); }
         catch (error) { console.warn("[Bot] 整理进度通知待恢复", bindingId, error); }
         const attempt = row.state === "running" ? Math.max(1, row.attempts) : row.attempts + 1;
-        db.prepare("UPDATE work_completion_turns SET state='running',attempts=? WHERE binding_id=?").run(attempt, bindingId);
+        // Freeze the time/recovery facts actually supplied to this review. They
+        // do not change its semantic fingerprint or a cached decision's snapshot.
+        db.prepare("UPDATE work_completion_turns SET state='running',attempts=?,context_json=? WHERE binding_id=?")
+          .run(attempt, JSON.stringify({ ...initial.context, evidenceFingerprint: frozenFingerprint, temporalContext }), bindingId);
         decision = resultDecisionSchema.parse(await this.options.review({
           eventId: `${eventId}:review:${attempt}:${initial.context.preferenceFingerprint}:${frozenFingerprint}`,
           botId: binding.botId, personalPreferences: initial.personalPreferences,
-          context: { ...initial.context, temporalContext: this.temporalContext(bindingId),
+          context: { ...initial.context, temporalContext,
             ...(row.error?.startsWith("plan_rejected:") ? { continuationFeedback: row.error.slice("plan_rejected:".length) } : {}) },
         }));
       }

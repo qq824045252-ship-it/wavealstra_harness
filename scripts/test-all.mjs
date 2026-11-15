@@ -118,6 +118,7 @@ const GUI_TESTS = new Set([
   "test:bot-work-phase3:dev",
   "test:bot-work-phase3-focus-desktop",
   "test:bot-work-phase2:dev", // actual pnpm dev Electron renderer and isolated profile
+  "test:bot-task-reply:dev", // actual isolated pnpm dev, IPC, local model fixture and persisted reply stages
   "test:media-capabilities-ui",
   "test:computer-use-behavior",
   "test:computer-use-agent-desktop",
@@ -179,6 +180,7 @@ const GUI_TESTS = new Set([
 ]);
 
 const NETWORK_TESTS = new Set([
+  "test:bot-task-reply-harness", // loopback-only HTTP/WebSocket fixture and driver checks; no external account or desktop
   "test:bot-avatar-browser",
   "test:bot-cross-channel-model-live",
   "test:bot-organization:live",
